@@ -50,11 +50,14 @@ pub struct Enc {
     cur: WordBuf,
     oom: bool,
     sizing: Option<(usize, u64)>,
+    prefix_bytes: u64,
+    vertices: Option<WordBuf>,
+    vertex_words: usize,
 }
 
 impl Enc {
     pub fn new() -> Enc {
-        Enc { chunks: Vec::new(), cur: WordBuf::new(), oom: false, sizing: None }
+        Enc { chunks: Vec::new(), cur: WordBuf::new(), oom: false, sizing: None, prefix_bytes: 0, vertices: None, vertex_words: 0 }
     }
 
     /// Count the same command boundaries without allocating command frames.
@@ -67,7 +70,7 @@ impl Enc {
     /// Rounded frame bytes for a sizing pass, or failure for an unencodable command.
     pub fn backing_bytes(&self) -> Option<u64> {
         let (words, bytes) = self.sizing?;
-        (!self.oom).then_some(bytes + (words * 4).div_ceil(super::super::PAGE) as u64 * super::super::PAGE as u64)
+        (!self.oom).then_some(self.prefix_bytes + bytes + (words * 4).div_ceil(super::super::PAGE) as u64 * super::super::PAGE as u64)
     }
 
     /// Append one command: its header and `payload` (at most `CMD0_MAX_LEN` words).
@@ -77,7 +80,12 @@ impl Enc {
 
     /// Append one command whose payload is `head` then `tail`.
     fn cmd_with(&mut self, command: u32, object: u32, head: &[u32], tail: &[u32]) {
-        let Some(len) = head.len().checked_add(tail.len()).filter(|&len| len <= wire::CMD0_MAX_LEN as usize) else {
+        let Some(len) = head.len().checked_add(tail.len()) else { self.oom = true; return; };
+        self.cmd_iter(command, object, len, head.iter().chain(tail).copied());
+    }
+
+    fn cmd_iter(&mut self, command: u32, object: u32, len: usize, payload: impl Iterator<Item = u32>) {
+        let Some(len) = (len <= wire::CMD0_MAX_LEN as usize).then_some(len) else {
             self.oom = true;
             return;
         };
@@ -98,10 +106,40 @@ impl Enc {
             self.chunks.push(full);
         }
         let mut ok = self.cur.push(cmd0(command, object, len as u32));
-        for &w in head.iter().chain(tail.iter()) {
+        for w in payload {
             ok &= self.cur.push(w);
         }
         if !ok {
+            self.oom = true;
+        }
+    }
+
+    /// Collect a submission's vertices and upload them before any of its draws. Commands
+    /// cannot consume a region while a later inline write is still changing that region.
+    fn begin_vertices(&mut self) {
+        self.vertices = Some(WordBuf::new());
+        self.vertex_words = 0;
+    }
+
+    fn end_vertices(&mut self, resource: u32, offset: u32) {
+        let Some(vertices) = self.vertices.take() else { return };
+        if self.oom { return; }
+        let mut prefix = if self.sizing.is_some() { Enc::size_only() } else { Enc::new() };
+        let mut first = 0;
+        while first < self.vertex_words {
+            let count = (self.vertex_words - first).min(RECTS_PER_WRITE * 12);
+            let head = [resource, 0, 0, 0, 0, offset + first as u32 * 4, 0, 0, count as u32 * 4, 1, 1];
+            prefix.cmd_iter(ccmd::RESOURCE_INLINE_WRITE, 0, head.len() + count,
+                head.into_iter().chain((first..first + count).map(|i| vertices.word(i))));
+            first += count;
+        }
+        self.oom |= prefix.oom;
+        if self.sizing.is_some() {
+            self.prefix_bytes += prefix.backing_bytes().unwrap_or(0);
+        } else if let Some(mut chunks) = prefix.finish() {
+            chunks.append(&mut self.chunks);
+            self.chunks = chunks;
+        } else {
             self.oom = true;
         }
     }
@@ -480,7 +518,7 @@ pub struct Extras {
 }
 
 /// Translate a validated stream into `enc`, writing a draw's vertices into its own region
-/// of the submission's vertex buffer, which the submission alone uses: the device has been
+/// of its reserved vertex arena range. Vertex uploads precede drawing: the device has been
 /// seen to let a later write to a region change what an earlier draw of the same
 /// submission read from it, so no region is written twice. `flip_y` selects the viewport's
 /// vertical direction so that row 0 is the target's top row on this device. The target
@@ -490,7 +528,13 @@ pub struct Extras {
 /// constants a draw uses are bound by the draw's own commands, so a draw does not depend on
 /// what an earlier submission left bound. Returns the device ids of the targets the stream writes.
 pub fn translate(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized), b: &impl Bindings, x: Extras) -> Vec<u32> {
+    translate_at(enc, o, words, b, x, 0)
+}
+
+/// As `translate`, in a reserved byte range of the context's reusable arena.
+pub fn translate_at(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized), b: &impl Bindings, x: Extras, vertex_offset: u32) -> Vec<u32> {
     let Extras { vertex_buffer, scratch, data, data_width, flip_y, corrupt, mut suppress, swap } = x;
+    enc.begin_vertices();
     let mut written: Vec<u32> = Vec::new();
     let mut current: Option<TargetRes> = None;
     let mut current_handle = 0u64;
@@ -528,7 +572,7 @@ pub fn translate(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized), 
     }
     let mut at = 0usize;
     let mut verts: Vec<u32> = Vec::with_capacity(RECTS_PER_WRITE * 12);
-    let mut offset = 0u32;
+    let mut offset = vertex_offset;
     let mut bound = false;
     let mut programs = Bound::None;
     while at < words.len() {
@@ -794,6 +838,7 @@ pub fn translate(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized), 
     if !corrupted && current.is_some() && corrupt == Some(current_handle) {
         corrupt_pixel(enc, o, &mut programs, &mut bound, vertex_buffer, offset);
     }
+    enc.end_vertices(vertex_buffer, vertex_offset);
     written
 }
 
@@ -932,6 +977,13 @@ fn draw_vertices(enc: &mut Enc, vertex_buffer: u32, offset: u32, verts: &[u32], 
 /// Write vertices into the vertex buffer at byte `offset`; returns the offset after them.
 fn write_vertices(enc: &mut Enc, vertex_buffer: u32, offset: u32, verts: &[u32]) -> u32 {
     let bytes = (verts.len() * 4) as u32;
+    if let Some(vertices) = enc.vertices.as_mut() {
+        enc.vertex_words += verts.len();
+        if enc.sizing.is_none() {
+            for &word in verts { if !vertices.push(word) { enc.oom = true; break; } }
+        }
+        return offset + bytes;
+    }
     // RESOURCE_INLINE_WRITE: resource, level, usage, stride, layer stride, x, y, z, w, h,
     // d, then the data. A buffer's x and w are byte offsets and lengths.
     enc.cmd_with(

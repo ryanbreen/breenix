@@ -43,6 +43,7 @@ pub mod screen;
 mod observation;
 mod quota;
 mod staging;
+mod vertex_arena;
 use quota::{Charge, Quota, QuotaCharge};
 use staging::Staging;
 pub mod dma;
@@ -255,6 +256,7 @@ struct Ctx {
     /// The SVGA3D DX backend's objects of this context.
     dx: svga::encode::Objects,
     vb: u32,
+    vertex_arena: Option<VertexArena>,
     scratch: u32,
     /// The 1x1 texture the warm-up's sampling draws read.
     scratch_texture: u32,
@@ -272,6 +274,13 @@ struct Ctx {
     /// The flush answers of completed `PRESENT`s by fence number, until their callers take
     /// them. Pending callers register before sending; interrupted callers unregister.
     flushes: present_answers::Answers,
+}
+
+struct VertexArena {
+    id: u32,
+    ready: bool,
+    accepted: bool,
+    ranges: vertex_arena::Ranges,
 }
 
 impl Ctx {
@@ -1330,6 +1339,9 @@ impl Core {
             return;
         }
         let held = core::mem::take(&mut sub.held);
+        if let Some(arena) = self.contexts.get_mut(&sub.ctx).and_then(|ctx| ctx.vertex_arena.as_mut()) {
+            arena.ranges.release(serial);
+        }
         if let Some(writer) = &sub.writer { writer.end_access(); }
         self.subs.remove(&serial);
         for id in held {
@@ -1414,6 +1426,7 @@ impl Core {
         if dropped {
             if let Some(c) = self.contexts.remove(&id) {
                 gauge(&GPU_CONTEXTS, -1);
+                if let Some(arena) = c.vertex_arena { self.unhold(arena.id); }
                 for internal in [c.vb, c.scratch, c.scratch_texture] {
                     if let Some(r) = self.resources.get_mut(&internal) {
                         r.dropped = true;
@@ -2595,6 +2608,7 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
                 objects: encode::Objects::new(),
                 dx: svga::encode::Objects::new(0),
                 vb,
+                vertex_arena: None,
                 scratch,
                 scratch_texture,
                 warm: 0,
@@ -3425,6 +3439,12 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
                 // This admission sent no device work: a seal that already captured it must
                 // treat it as cancelled, rather than as a failed accepted GPU write.
                 writer.cancel();
+                let abandoned = c.contexts.get_mut(&id).and_then(|ctx| {
+                    let arena = ctx.vertex_arena.as_mut()?;
+                    arena.ranges.release(writer.serial);
+                    if !arena.accepted { ctx.vertex_arena.take() } else { None }
+                });
+                if let Some(arena) = abandoned { c.unhold(arena.id); }
                 if let Some(ctx) = c.contexts.get_mut(&id) {
                     ctx.outcomes.insert(writer.n, (fence_status::DEVICE_ERROR, 0));
                     ctx.early.insert(writer.n);
@@ -3446,8 +3466,8 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         });
         notify();
     };
-    // The submission's own vertex buffer: no other submission writes it, and it is
-    // freed when the submission no longer holds it.
+    // Each submission reserves a distinct range in the context's reusable vertex arena.
+    // The batched upload precedes drawing; completion and fence publication release ranges.
     // Test point 22, `corrupt-pixel`, armed for one of the targets this submission writes
     // (or for any): that target gets one extra draw.
     let mut corruption = None;
@@ -3460,13 +3480,14 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         });
     let svga = dev::is_svga();
     // The SVGA3D DX translation makes its own vertex, constant, data and scratch surfaces.
-    let vertex_buffer = match if svga { Ok(None) } else { vertex_buffer_for(tgid, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) } {
+    let vertex_range = match if svga { Ok(None) } else { vertex_buffer_for(tgid, id, writer.serial, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) } {
         Ok(vb) => vb,
         Err(e) => {
             release_slot(false);
             return if e == ENOMEM { refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
         }
     };
+    let vertex_buffer = vertex_range.map(|(rid, _, _)| rid);
     // The submission's scratch textures for copies within one target that overlap
     // (`docs/gui/gpu.md` section 1.3), one per target format, sized for its largest.
     let mut copy_scratch = [0u32; 2];
@@ -3570,7 +3591,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     }
     let translate = |enc: &mut encode::Enc, objects: &mut encode::Objects| {
         encode::forget_surfaces(enc, objects, &stale);
-        encode::translate(enc, objects, &words, &resolved, encode::Extras {
+        encode::translate_at(enc, objects, &words, &resolved, encode::Extras {
             vertex_buffer: vertex_buffer.unwrap_or(default_vb),
             scratch: copy_scratch,
             data: data_texture,
@@ -3579,7 +3600,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             corrupt,
             suppress,
             swap,
-        });
+        }, vertex_range.map_or(0, |(_, offset, _)| offset));
     };
     let dx_extras = || svga::encode::Extras { scratch: plan.scratch, data_width, corrupt, suppress, swap };
     // Count surface bytes, then size the complete device buffers including the surfaces'
@@ -3633,7 +3654,8 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         let mut sizing = encode::Enc::size_only();
         translate(&mut sizing, &mut sized_objects);
         let chunk_charge = match warm_bytes.and_then(|warm| {
-            sizing.backing_bytes().and_then(|bytes| bytes.checked_add(warm)).ok_or(ENOMEM)
+            sizing.backing_bytes().and_then(|bytes| bytes.checked_add(warm))
+                .and_then(|bytes| bytes.checked_add(pages(encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))))).ok_or(ENOMEM)
         }).and_then(|bytes| Charge::new(tgid, bytes, true)) {
             Ok(charge) => alloc::sync::Arc::new(charge),
             Err(e) => {
@@ -3696,9 +3718,14 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         if svga {
             return Ok(());
         }
-        if let Some(rid) = vertex_buffer {
+        if let Some((rid, _, capacity)) = vertex_range.filter(|&(_, _, capacity)| capacity != 0) {
             create_private(id, rid, wire::target::BUFFER, wire::format::R8_UNORM,
-                wire::bind::VERTEX_BUFFER, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some())) as u32, 1)?;
+                wire::bind::VERTEX_BUFFER, capacity, 1)?;
+            with_core(|c| {
+                if let Some(arena) = c.contexts.get_mut(&id).and_then(|ctx| ctx.vertex_arena.as_mut()) {
+                    if arena.id == rid { arena.ready = true; }
+                }
+            });
         }
         for ((rid, f), [w, h]) in copy_scratch.into_iter().zip([format::B8G8R8A8, format::R8G8B8A8]).zip(plan.scratch) {
             if rid != 0 {
@@ -3713,6 +3740,13 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         Ok::<(), i64>(())
     })();
     if let Err(e) = made {
+        with_core(|c| {
+            let ctx = c.contexts.get_mut(&id);
+            let failed = ctx.and_then(|ctx| {
+                if ctx.vertex_arena.as_ref().is_some_and(|a| !a.ready) { ctx.vertex_arena.take() } else { None }
+            });
+            if let Some(arena) = failed { c.unhold(arena.id); }
+        });
         drop_vertex_buffer();
         release_slot(false);
         return Err(e);
@@ -3799,6 +3833,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         let n = writer.n;
         let ns = ctx.ns;
         ctx.inflight.push_back(serial);
+        if let Some(arena) = ctx.vertex_arena.as_mut() { arena.accepted = true; }
         let count_in = |t: &mut Totals| {
             t.submissions += 1;
             t.draws += plan.draws;
@@ -3855,31 +3890,42 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     Ok(0)
 }
 
-/// A device buffer of `bytes` for one submission's vertices, attached to context `ctx`
-/// and held for the submission; `None` when the submission draws nothing. It has no guest
-/// backing (the vertices reach it by inline writes) and is freed once the submission no
-/// longer holds it.
-fn vertex_buffer_for(tgid: u64, bytes: u64) -> Result<Option<u32>, i64> {
-    if bytes == 0 {
-        return Ok(None);
-    }
-    u32::try_from(bytes).map_err(|_| ENOMEM)?;
-    // The device's vertex storage is charged to the process until the buffer is freed.
-    let charge = Charge::new(tgid, bytes, true)?;
+/// Reserve vertices in the context's arena. The context holds its resource until
+/// destruction/replacement; each submission adds a hold through genuine completion.
+/// A growth keeps the old arena charged and alive for its outstanding submissions.
+/// Return (resource, byte offset, capacity needing device creation, or 0 if ready).
+fn vertex_buffer_for(tgid: u64, ctx: u32, serial: u64, bytes: u64) -> Result<Option<(u32, u32, u32)>, i64> {
+    if bytes == 0 { return Ok(None); }
+    let requested = u32::try_from(bytes).map_err(|_| ENOMEM)?;
+    let reused = with_core(|c| {
+        let arena = c.contexts.get_mut(&ctx)?.vertex_arena.as_mut()?;
+        let offset = arena.ranges.reserve(serial, requested)?;
+        let rid = arena.id;
+        let capacity = if arena.ready { 0 } else { arena.ranges.capacity };
+        c.resources.get_mut(&rid)?.holds += 1;
+        Some((rid, offset, capacity))
+    }).flatten();
+    if let Some(range) = reused { return Ok(Some(range)); }
+    let mut ranges = vertex_arena::Ranges::new(bytes).ok_or(ENOMEM)?;
+    let offset = ranges.reserve(serial, requested).ok_or(ENOMEM)?;
+    let capacity = ranges.capacity;
+    let charge = Charge::new(tgid, capacity as u64, true)?;
     let mut backing = Pages::none();
     backing.charge_copy(charge);
-    let id = with_core(|c| {
-        let id = c.next_res;
+    let rid = with_core(|c| {
+        if !c.contexts.get(&ctx).is_some_and(|x| x.state == CtxState::Live && !x.dropped) { return Err(EIO); }
+        let rid = c.next_res;
         c.next_res += 1;
-        let mut r = new_res(0, kind::BUFFER, format::B8G8R8A8, 0, 0, bytes, 0, Arc::new(backing), c.epoch);
+        let mut r = new_res(0, kind::BUFFER, format::B8G8R8A8, 0, 0, capacity as u64, 0, Arc::new(backing), c.epoch);
         r.dropped = true;
         r.lost = true;
-        r.holds = 1;
-        c.insert_res(id, r);
-        id
-    })
-    .ok_or(ENODEV)?;
-    Ok(Some(id))
+        r.holds = 2; // context ownership and this submission's access
+        c.insert_res(rid, r);
+        let old = c.contexts.get_mut(&ctx).ok_or(EIO)?.vertex_arena.replace(VertexArena { id: rid, ready: false, accepted: false, ranges });
+        if let Some(old) = old { c.unhold(old.id); }
+        Ok(rid)
+    }).ok_or(ENODEV)??;
+    Ok(Some((rid, offset, capacity)))
 }
 
 /// Reserve a private scratch-texture record; device creation follows quota admission.

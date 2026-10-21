@@ -1,0 +1,13 @@
+[package]
+name = "gpu-host-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+gpu-abi = { path = "../../libs/gpu-abi" }
+
+[lib]
+path = "tests.rs"
