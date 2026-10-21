@@ -418,8 +418,15 @@ The fixture never multiplies the size or position passed to the text stack.
 `CachedFont::new(font, capacity)` caches GPU-atlas glyphs keyed by `(glyph, size26)` and evicts the least
 recently used entry when full. `CachedFont::with_default_cache(font)` uses the contract's capacity: at most
 256 entries and at most 4 MiB of atlas storage, evicting until both hold. `cache_stats() -> CacheStats { entries,
-bytes, hits, misses }` reports the cache. A glyph served from the cache, or evicted and rasterized again, is
-identical to a fresh rasterization.
+bytes, hits, misses }` reports the cache. Under ruling B15 (#2205), the atlas uses
+B8G8R8A8 render targets: GPU draws write coverage into one channel, and no CPU-rasterized
+coverage is uploaded. R8 remains sample-only. `bytes` counts actual atlas storage,
+four bytes per atlas texel, including every allocated texel rather than only the
+logical coverage bytes. Thus `text/cache-hit` expects four times the glyph's coverage
+pixel count, and `text/cache-bound` requires actual storage above 3 MiB and at most
+4 MiB. Both the entry and actual-storage budgets hold after every insertion; unused
+atlas space is not hidden from accounting. A glyph served from the cache, or evicted
+and rasterized again, is identical to a fresh rasterization.
 
 ### 8.5 Reference fonts and their independent tables
 
