@@ -1022,7 +1022,7 @@ impl Core {
         Ok(())
     }
 
-    /// Drain queued QEMU rendering through a fenced one-pixel transfer. Native render
+    /// Drain queued QEMU rendering through its context's private one-pixel target. Native render
     /// fences remain the publication proof. kgpu sends the transfer, keeping device
     /// notification out of the waiter's CPU time; its own fence retains the DMA hold.
     fn progress_readback(&mut self) {
@@ -1034,10 +1034,13 @@ impl Core {
             .find_map(|s| s.written.iter().find_map(|rid| {
                 let r = self.resources.get(rid)?;
                 let active = r.accepted.iter().filter(|w| !w.ended()).count();
-                (r.kind == kind::TARGET && r.writers > 0 && active == r.writers as usize
+                if !(r.kind == kind::TARGET && r.writers > 0 && active == r.writers as usize
                     && r.accepted.iter().filter(|w| !w.ended()).all(|w| w.ctx == s.ctx)
-                    && !r.reading && !r.invalid && !r.lost)
-                    .then(|| (s.ctx, *rid, r.backing.clone(), r.pitch))
+                    && !r.reading && !r.invalid && !r.lost) { return None; }
+                let scratch = self.contexts.get(&s.ctx)?.scratch;
+                let r = self.resources.get(&scratch)?;
+                (!r.reading && !r.invalid && !r.lost)
+                    .then(|| (s.ctx, scratch, r.backing.clone(), r.pitch))
             }));
         let Some((ctx, rid, backing, pitch)) = target else { return; };
         let serial = self.serial();
@@ -3447,9 +3450,9 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.window_sealed)) {
             return Some(Err(breengel_abi::errno::EBUSY as i64));
         }
-        // Progress DMA is already queued in this context. Its later GPU writes are
-        // ordered after it; CPU readers and writers in other contexts still wait.
-        if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.reading && r.progress_context != Some(id))) {
+        // Progress DMA has no CPU consumer. Later GPU writes can follow it;
+        // ordinary CPU readbacks still exclude writes until observation finishes.
+        if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.reading && r.progress_context.is_none())) {
             return None;
         }
         if ctx.inflight.len() >= limits::IN_FLIGHT {
