@@ -11,8 +11,6 @@
 mod compositor;
 #[path = "bwm/placement.rs"]
 mod placement;
-#[path = "bwm/input_backlog.rs"]
-mod input_backlog;
 
 use std::process;
 
@@ -1171,32 +1169,11 @@ fn next_visible_window(windows: &[Window], current: usize) -> usize {
     current
 }
 
-static INPUT_BACKLOG: std::sync::Mutex<input_backlog::Backlog<WindowInputEvent>> =
-    std::sync::Mutex::new(input_backlog::Backlog::new());
-
-fn flush_input() {
-    use input_backlog::Delivery;
-    INPUT_BACKLOG.lock().unwrap().flush(|id,event| match graphics::write_window_input(id,event) {
-        Ok(()) => Delivery::Accepted,
-        Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EAGAIN)) => Delivery::Full,
-        Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EINVAL)) => Delivery::Gone,
-        Err(error) => { eprintln!("bwm: window {id} input refused: {error}"); Delivery::Full }
-    });
-}
-
-fn route_input(id:u32, event:&WindowInputEvent) {
-    INPUT_BACKLOG.lock().unwrap().push(id,*event,|old,new| {
-        old.event_type == input_event_type::MOUSE_MOVE && new.event_type == input_event_type::MOUSE_MOVE
-            && old.scroll_y == 0 && new.scroll_y == 0
-    });
-    flush_input();
-}
-
 // ─── Input Routing ──────────────────────────────────────────────────────────
 
 fn route_keyboard_to_focused(windows: &[Window], focused_win: usize, event: &WindowInputEvent) {
     if focused_win < windows.len() && windows[focused_win].window_id != 0 {
-        route_input(windows[focused_win].window_id, event);
+        let _ = graphics::write_window_input(windows[focused_win].window_id, event);
     }
 }
 
@@ -1206,7 +1183,7 @@ fn send_focus_event(windows: &[Window], win_idx: usize, event_type: u16) {
             event_type,
             keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, scroll_y: 0,
         };
-        route_input(windows[win_idx].window_id, &event);
+        let _ = graphics::write_window_input(windows[win_idx].window_id, &event);
     }
 }
 
@@ -1223,7 +1200,7 @@ fn route_mouse_button_to_focused(
             modifiers: 0,
             scroll_y: if pressed { 1 } else { 0 },
         };
-        route_input(windows[focused_win].window_id, &event);
+        let _ = graphics::write_window_input(windows[focused_win].window_id, &event);
     }
 }
 
@@ -1238,7 +1215,7 @@ fn route_mouse_move_to_focused(
             mouse_x: win_local_x, mouse_y: win_local_y,
             modifiers: 0, scroll_y: 0,
         };
-        route_input(windows[focused_win].window_id, &event);
+        let _ = graphics::write_window_input(windows[focused_win].window_id, &event);
     }
 }
 
@@ -1255,7 +1232,7 @@ fn route_mouse_scroll_to_focused(
             modifiers: 0,
             scroll_y: scroll_delta,
         };
-        route_input(windows[focused_win].window_id, &event);
+        let _ = graphics::write_window_input(windows[focused_win].window_id, &event);
     }
 }
 
@@ -1363,7 +1340,7 @@ fn discover_windows(
                     modifiers: 0,
                     scroll_y: 0,
                 };
-                route_input(info.buffer_id, &resize_event);
+                let _ = graphics::write_window_input(info.buffer_id, &resize_event);
             }
         }
 
@@ -1562,7 +1539,7 @@ fn execute_hotkey_action(action: &HotkeyAction, windows: &mut Vec<Window>, focus
                         event_type: input_event_type::CLOSE_REQUESTED,
                         keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, scroll_y: 0,
                     };
-                    route_input(windows[idx].window_id, &event);
+                    let _ = graphics::write_window_input(windows[idx].window_id, &event);
                     return;
                 }
             }
@@ -1579,7 +1556,7 @@ fn execute_hotkey_action(action: &HotkeyAction, windows: &mut Vec<Window>, focus
                     event_type: input_event_type::CLOSE_REQUESTED,
                     keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, scroll_y: 0,
                 };
-                route_input(windows[focused_win].window_id, &event);
+                let _ = graphics::write_window_input(windows[focused_win].window_id, &event);
             }
         }
         HotkeyAction::FocusNext | HotkeyAction::FocusPrev => {
@@ -1829,7 +1806,6 @@ fn main() {
     }
 
     loop {
-        flush_input();
         // ── 0. Block until something needs compositing ──
         // compositor_wait blocks in the kernel until: window dirty, mouse moved,
         // or registry changed. If bwm already has local work prepared (for
@@ -1840,7 +1816,7 @@ fn main() {
         } else {
             let (ready, new_reg_gen) =
                 graphics::compositor_wait(
-                    if input_parser.state == InputState::Escape || !INPUT_BACKLOG.lock().unwrap().is_empty() { ESCAPE_TIMEOUT_MS as u32 } else { 0 },
+                    if input_parser.state == InputState::Escape { ESCAPE_TIMEOUT_MS as u32 } else { 0 },
                     registry_gen).unwrap_or((0, registry_gen));
             registry_gen = new_reg_gen;
             ready
@@ -2069,7 +2045,7 @@ fn main() {
                                 modifiers: 0,
                                 scroll_y: 0,
                             };
-                            route_input(
+                            let _ = graphics::write_window_input(
                                 windows[win_idx].window_id, &resize_event,
                             );
                         }
@@ -2146,7 +2122,7 @@ fn main() {
                                 modifiers: 0,
                                 scroll_y: 0,
                             };
-                            route_input(
+                            let _ = graphics::write_window_input(
                                 windows[win_idx].window_id, &resize_event,
                             );
                         }
@@ -2279,7 +2255,7 @@ fn main() {
                                         event_type: input_event_type::CLOSE_REQUESTED,
                                         keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, scroll_y: 0,
                                     };
-                                    route_input(windows[top].window_id, &close_event);
+                                    let _ = graphics::write_window_input(windows[top].window_id, &close_event);
                                     if windows[top].owner_pid > 0 {
                                         let _ = signal::kill(windows[top].owner_pid as i32, signal::SIGTERM);
                                     }
