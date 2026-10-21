@@ -1,9 +1,10 @@
 //! TrueType geometry on the CPU, coverage and glyph storage on the GPU.
 //! Glyphs live in B8G8R8A8 targets (B15/B19): a cached glyph in a slot of an atlas page,
 //! an uncached one in a never-used region of a scratch target.
-use alloc::{rc::Rc, vec, vec::Vec};
-use core::cell::RefCell;
+use alloc::{sync::Arc, vec, vec::Vec};
+use core::cell::UnsafeCell;
 use core::ops::Deref;
+use core::sync::atomic::{AtomicU64, Ordering};
 use bgl::{Instance, pipeline};
 use libbreenix::gpu::{self, abi};
 use libfont::{FontError, GlyphLayout, GlyphBitmap, SubpixelBitmap, CacheStats};
@@ -14,12 +15,10 @@ pub type Error = FontError;
 
 /// A parsed font whose raster entry points render GPU targets and return readback.
 /// Parsing, metrics, outline expansion and flattening remain in libfont.
-pub struct Font { font: libfont::Font, scratch: RefCell<[Option<Scratch>; 2]> }
-impl Deref for Font { type Target = libfont::Font; fn deref(&self) -> &Self::Target { &self.font } }
+pub struct Font(libfont::Font);
+impl Deref for Font { type Target = libfont::Font; fn deref(&self) -> &Self::Target { &self.0 } }
 impl Font {
-    pub fn parse(bytes: &[u8]) -> Result<Self, FontError> {
-        libfont::Font::parse(bytes).map(|font| Self { font, scratch: RefCell::new([None, None]) })
-    }
+    pub fn parse(bytes: &[u8]) -> Result<Self, FontError> { libfont::Font::parse(bytes).map(Self) }
     pub fn size26(size: f32) -> Result<i32, FontError> { libfont::Font::size26(size) }
     pub fn rasterize_glyph(&self, g: u16, size: f32) -> Result<GlyphBitmap, Error> {
         self.rasterize_glyph26(g, Self::size26(size)?)
@@ -31,39 +30,55 @@ impl Font {
         self.glyph(g, Self::size26(size)?, true)?.subpixel()
     }
     fn glyph(&self, g: u16, size26: i32, lcd: bool) -> Result<AtlasGlyph, Error> {
-        let outline = self.font.glyph_outline(g)?;
-        match self.font.layout_glyph(&outline, g, size26)? {
+        let outline = self.0.glyph_outline(g)?;
+        match self.0.layout_glyph(&outline, g, size26)? {
             GlyphLayout::Empty { advance } => Ok(AtlasGlyph::empty(advance)),
             GlyphLayout::Outline { segments, width, height, x_offset, y_offset } => {
-                let mut glyph = if lcd { self.render_lcd(&segments, width, height)? } else { self.render(&segments, width, height)? };
+                let mut glyph = if lcd { scratch_lcd(&segments, width, height)? } else { scratch_render(&segments, width, height)? };
                 (glyph.x_offset, glyph.y_offset) = (x_offset, y_offset);
                 Ok(glyph)
             }
         }
     }
-    /// A `width × height` region of scratch target `which` that nothing has drawn into.
-    fn region(&self, which: usize, width: usize, height: usize) -> Result<Region, Error> {
-        let mut scratch = self.scratch.borrow_mut();
-        let slot = &mut scratch[which];
-        let fits = slot.as_ref().is_some_and(|s| s.target.owned_here() && width <= s.target.width()
-            && s.next_row + height <= s.target.height());
-        if !fits {
-            *slot = Some(Scratch { target: Rc::new(target(width.max(SCRATCH), height.max(SCRATCH))?), next_row: 0 });
-        }
-        let s = slot.as_mut().expect("scratch made above");
-        let y = s.next_row;
-        s.next_row += height;
-        Ok(Region { target: s.target.clone(), x: 0, y })
+}
+
+/// Uncached glyphs: rows of the process's scratch targets, each handed out once, so a
+/// glyph's region is as the core zeroed it and its draws and work are a new target's.
+struct ScratchSlot { owner: AtomicU64, targets: UnsafeCell<[Option<Scratch>; 2]> }
+// SAFETY: `targets` is only reached while the PID-tagged owner lock is held.
+unsafe impl Sync for ScratchSlot {}
+static SCRATCH: ScratchSlot = ScratchSlot { owner: AtomicU64::new(0), targets: UnsafeCell::new([None, None]) };
+
+/// A `width × height` region of scratch target `which` that nothing has drawn into.
+fn region(which: usize, width: usize, height: usize) -> Result<Region, Error> {
+    let me = device::pid();
+    if me == 0 { return Err(Error::Device(-abi::errno::EIO)); }
+    let inherited = device::acquire(&SCRATCH.owner, me);
+    struct Held(u64);
+    impl Drop for Held { fn drop(&mut self) { SCRATCH.owner.store(self.0 << 1, Ordering::Release); } }
+    let _held = Held(me);
+    // A fork may copy the slot mid-update; its handles are the parent's. Abandon them unread.
+    if inherited { unsafe { SCRATCH.targets.get().write([None, None]); } }
+    // SAFETY: the PID-tagged lock is held for the rest of this call.
+    let slot = unsafe { &mut (*SCRATCH.targets.get())[which] };
+    let fits = slot.as_ref().is_some_and(|s| s.target.owned_here() && width <= s.target.width()
+        && s.next_row + height <= s.target.height());
+    if !fits {
+        *slot = Some(Scratch { target: Arc::new(target(width.max(SCRATCH_SIDE), height.max(SCRATCH_SIDE))?), next_row: 0 });
     }
-    fn render(&self, segments: &[LineSegment], width: usize, height: usize) -> Result<AtlasGlyph, Error> {
-        admit(segments, width, height)?;
-        let region = self.region(0, width, height)?;
-        let fence = render(segments, width, height, &region)?;
-        Ok(AtlasGlyph::at(region, width, height, fence))
-    }
-    fn render_lcd(&self, segments: &[LineSegment], width: usize, height: usize) -> Result<AtlasGlyph, Error> {
-        render_lcd(segments, width, height, &mut |which, w, h| self.region(which, w, h))
-    }
+    let s = slot.as_mut().expect("scratch made above");
+    let y = s.next_row;
+    s.next_row += height;
+    Ok(Region { target: s.target.clone(), x: 0, y })
+}
+fn scratch_render(segments: &[LineSegment], width: usize, height: usize) -> Result<AtlasGlyph, Error> {
+    admit(segments, width, height)?;
+    let region = region(0, width, height)?;
+    let fence = render(segments, width, height, &region)?;
+    Ok(AtlasGlyph::at(region, width, height, fence))
+}
+fn scratch_lcd(segments: &[LineSegment], width: usize, height: usize) -> Result<AtlasGlyph, Error> {
+    render_lcd(segments, width, height, &mut region)
 }
 
 /// The crossing wire layout, useful for independent host inspection.
@@ -118,11 +133,11 @@ fn render_lcd(segments: &[LineSegment], width: usize, height: usize,
 }
 
 /// A scratch target's side when no glyph needs more; its rows are handed out once each.
-const SCRATCH: usize = 256;
-struct Scratch { target: Rc<Surface>, next_row: usize }
+const SCRATCH_SIDE: usize = 256;
+struct Scratch { target: Arc<Surface>, next_row: usize }
 
 /// A glyph-sized rectangle of a target, at (x, y).
-struct Region { target: Rc<Surface>, x: usize, y: usize }
+struct Region { target: Arc<Surface>, x: usize, y: usize }
 impl Region {
     /// Encode `draw` after a `BEGIN` of this region's target and submit it.
     fn send(&self, draw: impl FnOnce(&mut bgl::Context)) -> Result<bgl::Fence, Error> {
@@ -260,7 +275,7 @@ fn charge(width: usize, height: usize) -> usize { ((width * 4 + 255) / 256 * 256
 /// page's row pitch. Its first page holds one slot, so a single cached glyph's storage is
 /// exactly its own target's charge; each new page of a class holds as many slots as the
 /// class has, so pages, and resource handles, grow with the log of the entries.
-struct Page { id: u64, pitch: usize, rows: usize, target: Rc<Surface>, used: Vec<bool>, drawn: Vec<bool> }
+struct Page { id: u64, pitch: usize, rows: usize, target: Arc<Surface>, used: Vec<bool>, drawn: Vec<bool> }
 impl Page {
     fn bytes(&self) -> usize { charge(self.pitch / 4, self.rows * self.used.len()) }
 }
@@ -272,7 +287,7 @@ fn class(width: usize, height: usize) -> (usize, usize) {
     (pitch, rows)
 }
 
-struct Entry { glyph: u16, size26: i32, image: Rc<AtlasGlyph>, used: u64, slot: Option<(u64, usize)> }
+struct Entry { glyph: u16, size26: i32, image: Arc<AtlasGlyph>, used: u64, slot: Option<(u64, usize)> }
 /// `bytes` is the charge of every atlas page, unused slots included (B15, B23).
 pub struct CachedFont {
     font: Font, entries: Vec<Entry>, pages: Vec<Page>, next_page: u64, capacity: usize, max_bytes: usize, clock: u64,
@@ -291,7 +306,7 @@ impl CachedFont {
     pub fn glyph_index(&self, ch: char) -> u16 { self.font.glyph_index(ch) }
     pub fn advance_width(&self, g: u16, size: f32) -> f32 { self.font.advance_width(g, size) }
     pub fn kern(&self, l: u16, r: u16, size: f32) -> f32 { self.font.kern(l,r,size) }
-    fn glyph(&mut self, glyph: u16, size26: i32) -> Result<Rc<AtlasGlyph>, Error> {
+    fn glyph(&mut self, glyph: u16, size26: i32) -> Result<Arc<AtlasGlyph>, Error> {
         if self.owner != device::pid() { self.clear(); self.owner = device::pid(); }
         self.clock += 1;
         if let Some(e) = self.entries.iter_mut().find(|e| e.glyph == glyph && e.size26 == size26) {
@@ -310,10 +325,10 @@ impl CachedFont {
         let (pitch, rows) = class(width, height);
         if charge(pitch / 4, rows) > self.max_bytes {
             // Larger than the whole budget: rasterized, not kept.
-            let mut image = self.font.render(&segments, width, height)?;
+            let mut image = scratch_render(&segments, width, height)?;
             (image.x_offset, image.y_offset) = (x_offset, y_offset);
             image.ready()?;
-            return Ok(Rc::new(image));
+            return Ok(Arc::new(image));
         }
         while self.entries.len() >= self.capacity { self.evict(); }
         let (page, slot) = self.slot(pitch, rows)?;
@@ -335,8 +350,8 @@ impl CachedFont {
             Err(e) => { self.free(page, slot); Err(e) }
         }
     }
-    fn insert(&mut self, glyph: u16, size26: i32, image: AtlasGlyph, slot: Option<(u64, usize)>) -> Rc<AtlasGlyph> {
-        let image = Rc::new(image);
+    fn insert(&mut self, glyph: u16, size26: i32, image: AtlasGlyph, slot: Option<(u64, usize)>) -> Arc<AtlasGlyph> {
+        let image = Arc::new(image);
         self.entries.push(Entry { glyph, size26, image: image.clone(), used: self.clock, slot });
         self.stats.entries = self.entries.len();
         image
@@ -353,7 +368,7 @@ impl CachedFont {
             let mut slots = held.max(1).min(MAX_PAGE_ROWS / rows).max(1);
             while slots > 1 && self.stats.bytes + charge(pitch / 4, rows * slots) > self.max_bytes { slots /= 2; }
             if self.stats.bytes + charge(pitch / 4, rows * slots) <= self.max_bytes {
-                let target = Rc::new(target(pitch / 4, rows * slots)?);
+                let target = Arc::new(target(pitch / 4, rows * slots)?);
                 let page = Page { id: self.next_page, pitch, rows, target, used: vec![false; slots], drawn: vec![false; slots] };
                 self.next_page += 1;
                 self.stats.bytes += page.bytes();
@@ -398,7 +413,7 @@ pub mod rasterizer {
     pub fn rasterize(s: &[LineSegment], w: usize, h: usize, x: i32, y: i32) -> Result<GlyphBitmap, Error> {
         if raster_bound(s.len(), h, w) > MAX_RASTER_STEPS { return Err(FontError::GlyphTooExpensive.into()); }
         let mut glyph = if w == 0 || h == 0 { AtlasGlyph::empty(0) } else {
-            let region = Region { target: Rc::new(target(w, h)?), x: 0, y: 0 };
+            let region = region(0, w, h)?;
             let fence = render(s, w, h, &region)?;
             AtlasGlyph::at(region, w, h, fence)
         };
@@ -408,7 +423,7 @@ pub mod rasterizer {
     pub fn rasterize_subpixel(s: &[LineSegment], w: usize, h: usize, x: i32, y: i32) -> Result<SubpixelBitmap, Error> {
         if raster_bound(s.len(), h, w*3) > MAX_RASTER_STEPS { return Err(FontError::GlyphTooExpensive.into()); }
         let mut glyph = if w == 0 || h == 0 { AtlasGlyph::empty(0) } else {
-            render_lcd(s, w, h, &mut |_, rw, rh| Ok(Region { target: Rc::new(target(rw, rh)?), x: 0, y: 0 }))?
+            scratch_lcd(s, w, h)?
         };
         (glyph.width, glyph.height, glyph.x_offset, glyph.y_offset) = (w, h, x, y);
         glyph.subpixel()
