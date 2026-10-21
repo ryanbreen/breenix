@@ -41,7 +41,10 @@ pub fn sys_semget(key: i32, nsems: i32, flags: u32) -> SyscallResult {
     if nsems < 0 || nsems as usize > SEMMSL {
         return err(EINVAL);
     }
-    let me = caller();
+    let me = match caller() {
+        Ok(me) => me,
+        Err(e) => return err(e as i32),
+    };
     let t = now();
     let mut table = SYSV_SEM.lock();
     match table.ids.resolve(key, flags) {
@@ -128,7 +131,10 @@ pub fn sys_semtimedop(id: i32, sops: u64, nsops: u64, timeout: u64) -> SyscallRe
     // An array that changes a value needs only write permission, even when
     // it also waits for zero, which POSIX asks read for: Linux's rule.
     let wanted = if ops.iter().any(|o| o.op != 0) { WRITE } else { READ };
-    let me = caller();
+    let me = match caller() {
+        Ok(me) => me,
+        Err(e) => return err(e as i32),
+    };
     let result = semop_as(&me, id, &ops, undoes, wanted, &deadline);
     if undoes {
         super::semop_finished(me.row, me.pid);
@@ -223,7 +229,10 @@ pub fn sys_semctl(id: i32, num: i32, cmd: u32, arg: u64) -> SyscallResult {
         return err(EINVAL);
     }
     let cmd = cmd & !IPC_64;
-    let me = caller();
+    let me = match caller() {
+        Ok(me) => me,
+        Err(e) => return err(e as i32),
+    };
     let layout = SemLayout::NATIVE;
     let in_set = |set: &SemSet| num >= 0 && (num as usize) < set.nsems();
     match cmd {

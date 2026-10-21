@@ -681,6 +681,7 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     } else {
         log::info!("No home filesystem: no home block device attached");
     }
+    kernel::fs::vfs::mount::bind_home_if_unmounted();
     // The boot's partitions are chosen and mounted: no further range may take writes.
     kernel::block::fence_seal();
     #[cfg(feature = "block_fence_inject")]
@@ -1236,6 +1237,8 @@ fn launch_x86_production_init(
             String::from(name), exe_path, elf_data, &argv,
         )?;
         let publication = manager.designate_init(ticket)?;
+        // Decide suite controls after designation and before the init thread is published.
+        kernel::test_control::latch_init_program(exe_path);
         let designated_pid_raw = manager
             .designated_init()
             .ok_or("init designation missing after publication")?

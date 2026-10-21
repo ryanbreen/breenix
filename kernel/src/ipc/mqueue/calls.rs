@@ -123,7 +123,7 @@ pub(super) fn open_descriptor(
     attr: Option<MqAttr>,
     fd_oflag: u32,
 ) -> Result<u64, u64> {
-    let cred = Credentials::current(false);
+    let cred = Credentials::current(false)?;
     let tid = crate::task::scheduler::current_thread_id().ok_or(ESRCH as u64)?;
 
     // Hold a descriptor slot first, so a full table refuses the open before
@@ -174,7 +174,7 @@ pub fn sys_mq_unlink(name: u64) -> SyscallResult {
 
 fn mq_unlink(name: u64) -> Result<u64, u64> {
     let name = read_name(name)?;
-    super::unlink(name.as_bytes(), &Credentials::current(false))?;
+    super::unlink(name.as_bytes(), &Credentials::current(false)?)?;
     Ok(0)
 }
 

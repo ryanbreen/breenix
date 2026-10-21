@@ -7,8 +7,9 @@
 //! In every other boot each op is ENOSYS; in a suite boot only root may use them (EPERM).
 //! The latch and the caller are checked before an argument is decoded.
 //!
-//! The points defined here are the GPU effort's, 19 to 31, and BreenGL's 2 `irq-hold` and
-//! 3 `emit-diagnostic` as the GPU core builds them (`docs/gui/gpu-abi.md`). Each is a branch in the real
+//! The points defined here are the GPU effort's, 19 to 31, BreenGL's 2 `irq-hold` and
+//! 3 `emit-diagnostic` as the GPU core builds them (`docs/gui/gpu-abi.md`), and the users
+//! effort's 32 `cred-orphan` (`docs/users/design.md`, K1). Each is a branch in the real
 //! code path that asks `take` (or `take_if`) whether its point is armed; both read the
 //! latch first, so outside a suite boot a point costs one load and cannot fire while
 //! disabled. A point is one-shot: it affects the next occurrence of its event, counts one firing and
@@ -47,12 +48,16 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Acquire)
 }
 
-const POINTS: usize = test_point::LAST as usize + 1;
+/// The users effort's point, armed with a thread ID: that thread's next credential
+/// lookup (`fs::permissions::Credentials::current`) finds no process.
+pub const CRED_ORPHAN: u32 = test_point::CRED_ORPHAN;
+
+const POINTS: usize = CRED_ORPHAN as usize + 1;
 
 /// Whether `point` is one this kernel defines: BreenGL's `irq-hold` and `emit-diagnostic`
-/// for the GPU core, and the GPU effort's 19 to 31.
+/// for the GPU core, the GPU effort's 19 to 31 and the users effort's `cred-orphan`.
 fn defined(point: u32) -> bool {
-    matches!(point, test_point::IRQ_HOLD | test_point::EMIT_DIAGNOSTIC)
+    matches!(point, test_point::IRQ_HOLD | test_point::EMIT_DIAGNOSTIC | CRED_ORPHAN)
         || (test_point::FIRST..=test_point::LAST).contains(&point)
 }
 
@@ -135,6 +140,7 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
             for p in POINT_TABLE.iter() {
                 p.disarm();
             }
+            #[cfg(target_arch = "aarch64")]
             crate::tracing::providers::gpu::reset_irq_masked();
             SyscallResult::Ok(0)
         }

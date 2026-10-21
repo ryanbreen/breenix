@@ -386,6 +386,27 @@ impl FdSlots {
     }
 }
 
+/// `/dev/null` opened for reading and writing, three times, made before an
+/// exec that runs a program with an identity its caller lacks commits. A
+/// set-ID program must not find its standard input, output or error closed:
+/// its first open would take that number, and output meant for the terminal
+/// would land in a file the caller chose. The commit, which cannot fail,
+/// gives each closed one of descriptors 0, 1 and 2 one of these
+/// (`FdTableInner::open_closed_stdio`).
+pub struct NullStdio([Option<FileDescriptor>; 3]);
+
+impl NullStdio {
+    /// No descriptors to open: the exec gains no identity.
+    pub fn none() -> Self {
+        Self([None, None, None])
+    }
+
+    pub fn try_new() -> Result<Self, u64> {
+        let null = || FileDescriptor::try_opened(FdKind::Device(crate::fs::devfs::DeviceType::Null), status_flags::O_RDWR);
+        Ok(Self([Some(null()?), Some(null()?), Some(null()?)]))
+    }
+}
+
 /// Per-process file descriptor table.
 ///
 /// Threads created with CLONE_FILES share one table (#1307): `FdTable` is a
@@ -710,6 +731,16 @@ impl FdTableInner {
             }
         }
         entries
+    }
+
+    /// Give each of descriptors 0, 1 and 2 that is closed, and not held by
+    /// `reserve_slot`, one of `stdio`'s `/dev/null` descriptors.
+    pub fn open_closed_stdio(&mut self, stdio: NullStdio) {
+        for (fd, entry) in stdio.0.into_iter().enumerate() {
+            if fd < self.fds.len() && self.fds[fd].is_none() && !self.reserved.contains(&fd) {
+                self.fds[fd] = entry;
+            }
+        }
     }
 
     /// Allocate a new file descriptor with the given kind

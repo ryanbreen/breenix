@@ -2134,11 +2134,11 @@ fn test_vfs_init() -> TestResult {
     }
 
     // Look for root mount point "/"
-    let has_root = mounts.iter().any(|(_, path, _)| path == "/");
+    let has_root = mounts.iter().any(|(_, path, _, _)| path == "/");
     if !has_root {
         // Root might not be mounted yet in some configs, but we should have
         // at least /dev mounted by the time filesystem tests run
-        let has_dev = mounts.iter().any(|(_, path, _)| path == "/dev");
+        let has_dev = mounts.iter().any(|(_, path, _, _)| path == "/dev");
         if !has_dev {
             return TestResult::Fail("neither / nor /dev is mounted");
         }
@@ -2164,7 +2164,7 @@ fn test_devfs_mounted() -> TestResult {
     let mounts = mount::list_mounts();
     let has_dev = mounts
         .iter()
-        .any(|(_, path, fs_type)| path == "/dev" && *fs_type == "devfs");
+        .any(|(_, path, fs_type, _)| path == "/dev" && *fs_type == "devfs");
 
     if !has_dev {
         return TestResult::Fail("/dev not mounted as devfs");

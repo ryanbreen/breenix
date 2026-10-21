@@ -546,7 +546,7 @@ pub(crate) fn open(
             let inner = queue.inner.lock();
             (inner.uid, inner.gid, inner.mode)
         };
-        if !cred.permits_mode(uid, gid, mode, wanted) {
+        if !cred.may(crate::fs::attrs::InodeAttrs::new(mode, uid, gid), wanted) {
             return Err(EACCES as u64);
         }
         return Ok(queue.clone());

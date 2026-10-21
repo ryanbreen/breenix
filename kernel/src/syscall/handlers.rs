@@ -2032,7 +2032,7 @@ fn load_elf_from_ext2(
     use super::errno::{EACCES, EIO};
 
     // Taken before the filesystem lock: who may execute the file.
-    let cred = crate::fs::permissions::Credentials::current(false);
+    let cred = crate::fs::permissions::Credentials::current(false).map_err(|errno| errno as i32)?;
 
     // The handle holds the inode until its content is read.
     let (mount, inode_num, _held, resolved) =
@@ -2046,14 +2046,12 @@ fn load_elf_from_ext2(
         return Err(EACCES);
     }
 
-    if !cred.permits(&inode, 1) {
-        return Err(EACCES);
-    }
+    let identity = cred.may_exec(inode.attrs(), crate::fs::vfs::mount::flags_at(&resolved))?;
 
     let data = fs
         .read_file_content_coherent_unless(inode_num, &inode, super::exec::caller_killed)?
         .ok_or(super::errno::EINTR)?;
-    Ok((data, crate::process::credentials::ExecIdentity::of(&inode), resolved))
+    Ok((data, identity, resolved))
 }
 
 /// sys_execv_with_frame - Replace the current process with a new program (with argv support)
@@ -3786,8 +3784,9 @@ pub fn sys_prlimit64(pid: u64, resource: u64, new_ptr: u64, old_ptr: u64) -> Sys
         }
         let old = process.limits.get(resource as usize);
         if let Some(new) = new {
+            let raise = crate::process::privilege::Operation::RaiseHardLimit;
             if new.hard > old.hard && euid != 0 {
-                return SyscallResult::Err(EPERM as u64);
+                return SyscallResult::Err(raise.errno());
             }
             process.limits.set(resource as usize, new);
             if resource as usize == NOFILE {
@@ -3855,60 +3854,34 @@ pub fn sys_uname(buf_ptr: u64) -> SyscallResult {
 // Identity syscalls (getuid, geteuid, getgid, getegid, setuid, setgid)
 // =============================================================================
 
+/// One of the caller's IDs: kernel credentials (0) for a kernel thread, and
+/// ESRCH for a user thread without a process, which has no identity to
+/// report and must not read as root to a check built on these calls.
+fn current_id(pick: impl FnOnce(&crate::process::credentials::ProcessCredentials) -> u32) -> SyscallResult {
+    match crate::process::privilege::current_identity() {
+        Ok(cred) => SyscallResult::Ok(pick(&cred) as u64),
+        Err(errno) => SyscallResult::Err(errno),
+    }
+}
+
 /// getuid - Get real user ID
 pub fn sys_getuid() -> SyscallResult {
-    crate::arch_without_interrupts(|| {
-        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
-            if let Some(ref manager) = *crate::process::manager() {
-                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-                    return SyscallResult::Ok(process.cred.uid as u64);
-                }
-            }
-        }
-        SyscallResult::Ok(0)
-    })
+    current_id(|cred| cred.uid)
 }
 
 /// geteuid - Get effective user ID
 pub fn sys_geteuid() -> SyscallResult {
-    crate::arch_without_interrupts(|| {
-        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
-            if let Some(ref manager) = *crate::process::manager() {
-                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-                    return SyscallResult::Ok(process.cred.euid as u64);
-                }
-            }
-        }
-        SyscallResult::Ok(0)
-    })
+    current_id(|cred| cred.euid)
 }
 
 /// getgid - Get real group ID
 pub fn sys_getgid() -> SyscallResult {
-    crate::arch_without_interrupts(|| {
-        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
-            if let Some(ref manager) = *crate::process::manager() {
-                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-                    return SyscallResult::Ok(process.cred.gid as u64);
-                }
-            }
-        }
-        SyscallResult::Ok(0)
-    })
+    current_id(|cred| cred.gid)
 }
 
 /// getegid - Get effective group ID
 pub fn sys_getegid() -> SyscallResult {
-    crate::arch_without_interrupts(|| {
-        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
-            if let Some(ref manager) = *crate::process::manager() {
-                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-                    return SyscallResult::Ok(process.cred.egid as u64);
-                }
-            }
-        }
-        SyscallResult::Ok(0)
-    })
+    current_id(|cred| cred.egid)
 }
 
 /// Apply `change` to the calling process's credentials under the process
@@ -3964,6 +3937,50 @@ pub fn sys_setregid(real: u32, effective: u32) -> SyscallResult {
     change_credentials(|cred| cred.setregid(real, effective))
 }
 
+/// setresuid - set the real, effective and saved user IDs; -1 keeps one
+pub fn sys_setresuid(real: u32, effective: u32, saved: u32) -> SyscallResult {
+    change_credentials(|cred| cred.setresuid(real, effective, saved))
+}
+
+/// setresgid - set the real, effective and saved group IDs; -1 keeps one
+pub fn sys_setresgid(real: u32, effective: u32, saved: u32) -> SyscallResult {
+    change_credentials(|cred| cred.setresgid(real, effective, saved))
+}
+
+/// getresuid - report the real, effective and saved user IDs
+pub fn sys_getresuid(real: u64, effective: u64, saved: u64) -> SyscallResult {
+    report_ids(|cred| [cred.uid, cred.euid, cred.suid], [real, effective, saved])
+}
+
+/// getresgid - report the real, effective and saved group IDs
+pub fn sys_getresgid(real: u64, effective: u64, saved: u64) -> SyscallResult {
+    report_ids(|cred| [cred.gid, cred.egid, cred.sgid], [real, effective, saved])
+}
+
+/// Read three IDs under the process manager, then copy each to its user
+/// pointer once the manager is released.
+fn report_ids(
+    pick: impl FnOnce(&crate::process::credentials::ProcessCredentials) -> [u32; 3],
+    pointers: [u64; 3],
+) -> SyscallResult {
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(super::errno::ESRCH as u64);
+    };
+    let ids = {
+        let guard = crate::process::manager();
+        match guard.as_ref().and_then(|m| m.find_process_by_thread(tid)) {
+            Some((_, process)) => pick(&process.cred),
+            None => return SyscallResult::Err(super::errno::ESRCH as u64),
+        }
+    };
+    for (id, pointer) in ids.into_iter().zip(pointers) {
+        if let Err(errno) = super::userptr::copy_to_user(pointer as *mut u32, &id) {
+            return SyscallResult::Err(errno);
+        }
+    }
+    SyscallResult::Ok(0)
+}
+
 /// Report supplementary groups without holding PM across a faultable user copy.
 pub fn sys_getgroups(size: i32, list: u64) -> SyscallResult {
     use super::errno::{EINVAL, ESRCH};
@@ -3996,15 +4013,14 @@ pub fn sys_getgroups(size: i32, list: u64) -> SyscallResult {
     }
 }
 
-/// Replace supplementary groups atomically after copying the complete user list.
-/// Only root may change the list, including clearing it with setgroups(0, NULL).
+/// Replace supplementary groups after copying the complete user list. Only
+/// root may change the list, including clearing it with setgroups(0, NULL),
+/// and the new list is committed to the process's threads at once, as
+/// the set-ID calls commit theirs.
 pub fn sys_setgroups(count: u64, list: u64) -> SyscallResult {
-    use super::errno::{EINVAL, EPERM, ESRCH};
-    if count > 65536 {
+    use super::errno::EINVAL;
+    if count > crate::process::credentials::NGROUPS_MAX as u64 {
         return SyscallResult::Err(EINVAL as u64);
-    }
-    if crate::fs::permissions::Credentials::current(false).euid != 0 {
-        return SyscallResult::Err(EPERM as u64);
     }
     let mut groups = alloc::vec![0u32; count as usize];
     if let Err(errno) = super::userptr::read_user_bytes(
@@ -4015,21 +4031,7 @@ pub fn sys_setgroups(count: u64, list: u64) -> SyscallResult {
         return SyscallResult::Err(errno);
     }
     let groups = alloc::sync::Arc::new(groups);
-    let Some(tid) = crate::task::scheduler::current_thread_id() else {
-        return SyscallResult::Err(ESRCH as u64);
-    };
-    let mut guard = crate::process::manager();
-    let Some((_, process)) = guard
-        .as_mut()
-        .and_then(|m| m.find_process_by_thread_mut(tid))
-    else {
-        return SyscallResult::Err(ESRCH as u64);
-    };
-    if !process.cred.privileged() {
-        return SyscallResult::Err(EPERM as u64);
-    }
-    process.cred.groups = groups;
-    SyscallResult::Ok(0)
+    change_credentials(|cred| cred.setgroups(groups))
 }
 
 // =============================================================================
@@ -4038,16 +4040,16 @@ pub fn sys_setgroups(count: u64, list: u64) -> SyscallResult {
 
 /// umask - Set file creation mask
 ///
-/// Sets the process's file creation mask to `mask & 0o777` and returns the old mask.
+/// Sets the file creation mask to `mask & 0o777` and returns the old mask. The
+/// mask lives with the working directory, so the threads that share it
+/// (`CLONE_FS`, which includes the threads of one process) see the change.
 pub fn sys_umask(mask: u32) -> SyscallResult {
     crate::arch_without_interrupts(|| {
         if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
-            let mut manager_guard = crate::process::manager();
-            if let Some(ref mut manager) = *manager_guard {
-                if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
-                    let old = process.umask;
-                    process.umask = mask & 0o777;
-                    return SyscallResult::Ok(old as u64);
+            let manager_guard = crate::process::manager();
+            if let Some(ref manager) = *manager_guard {
+                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+                    return SyscallResult::Ok(process.cwd.set_umask(mask & 0o777) as u64);
                 }
             }
         }

@@ -2883,7 +2883,7 @@ pub fn init_home_fs() -> Result<(), &'static str> {
     let device = device.ok_or("No home block device available")?;
 
     // Register with VFS mount system
-    let mount_id = crate::fs::vfs::mount("/home", "ext2");
+    let mount_id = crate::fs::vfs::mount::mount_with("/home", "ext2", crate::fs::vfs::mount::HOME_FLAGS);
 
     // Create the ext2 filesystem instance
     let fs = Ext2Fs::new(device, mount_id)?;

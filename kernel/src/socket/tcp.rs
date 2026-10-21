@@ -190,6 +190,12 @@ impl ProtoOps for TcpSock {
         let SockAddr::Inet { addr, port } = *addr else {
             return Err(errno::EAFNOSUPPORT);
         };
+        // Ports below 1024 are root's, so a user cannot take a service's
+        // port while the service is down (TCP and UDP alike).
+        if port != 0 && port < 1024 {
+            crate::process::privilege::require(crate::process::privilege::Operation::LowPort)
+                .map_err(|errno| errno as i32)?;
+        }
         let reuse = sk.common.reuseaddr();
         let mut inner = self.inner.lock();
         if !matches!(inner.state, TcpSockState::Unbound) {

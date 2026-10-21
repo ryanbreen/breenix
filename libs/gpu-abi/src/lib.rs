@@ -690,6 +690,9 @@ pub mod test_point {
     pub const SKIP_UPLOAD_VISIBILITY: u32 = 30;
     pub const WITHHOLD_FENCE: u32 = 31;
     pub const LAST: u32 = 31;
+    /// The users effort's point (`docs/users/design.md`, K1): the target thread's next
+    /// credential lookup finds no process, as a thread outliving its process row would.
+    pub const CRED_ORPHAN: u32 = 32;
 
     /// `WITHHOLD_FENCE`'s parameter: ignore one fence's completion (the default); stop
     /// taking any completion from the device until it is reset; or fence depth: keep the
@@ -706,7 +709,7 @@ pub mod test_point {
         matches!(
             point,
             IRQ_HOLD | EMIT_DIAGNOSTIC | SKIP_TRANSFER | STALE_FENCE | WRONG_RESOURCE | CORRUPT_PIXEL | MASK_CAPABILITY | DEVICE_ERROR | SUPPRESS_DRAW
-                | WRONG_TEXTURE | SKIP_UPLOAD_VISIBILITY | WITHHOLD_FENCE
+                | WRONG_TEXTURE | SKIP_UPLOAD_VISIBILITY | WITHHOLD_FENCE | CRED_ORPHAN
         )
     }
 }

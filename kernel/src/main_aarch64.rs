@@ -1006,6 +1006,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         Ok(()) => serial_println!("[boot] ext2 home filesystem mounted at /home"),
         Err(e) => serial_println!("[boot] No home filesystem: {} (continuing)", e),
     }
+    kernel::fs::vfs::mount::bind_home_if_unmounted();
 
     // Initialize devfs (/dev virtual filesystem)
     kernel::fs::devfs::init();
