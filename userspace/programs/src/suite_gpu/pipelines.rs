@@ -340,7 +340,7 @@ pub fn over_overlap() -> CaseResult {
     ctx.begin(t, 12, 12);
     ctx.clear(BG);
     ctx.draw(pipeline::OVER, 0, texture, 0, 0, &instances);
-    let commands = ctx.encoded();
+    let commands = ctx.commands();
     let mut at = 0;
     let mut draws = 0;
     while at < commands.len() {
