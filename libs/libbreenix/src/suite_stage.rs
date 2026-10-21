@@ -2,7 +2,7 @@
 use super::suite::{check, CaseResult, FrameTiming, JudgedFrame, Outcome, State, Suite};
 use crate::{
     gpu::{self, abi::record},
-    process, time,
+    graphics, process, time,
     window::{self as win, abi},
 };
 use abi::{op, Plain};
@@ -165,47 +165,165 @@ fn shown(fb: &FrameBuf, present: Option<u64>, pixels: &[u8], seen: &Seen) -> Res
     }
     Ok(())
 }
-/// Present through the same v2 window/composite/readback path as every graphics client.
-fn present(fb: &FrameBuf) -> Result<Seen, String> {
-    struct Cleanup(Option<u64>);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            if let Some(id) = self.0 {
-                let _ = win::destroy(id);
+/// The run stage's GPU objects, kept for the run: its context, a texture holding the
+/// logical 1280x800 frame, the mode-sized scanout target it presents, and the buffers each
+/// draw reuses. A forked case gets its own, since GPU handles are not inherited.
+struct Gpu {
+    pid: u64,
+    context: u64,
+    texture: u64,
+    scanout: u64,
+    width: u32,
+    height: u32,
+    scale: u32,
+    frame: Vec<u8>,
+    seen: Vec<u8>,
+}
+static GPU: Mutex<Option<Gpu>> = Mutex::new(None);
+
+impl Gpu {
+    /// Create the stage's objects for the current mode, which must be the stage's logical
+    /// layout at a whole display scale, and wait, bounded, for the context's warm-up.
+    fn new(pid: u64) -> Result<Gpu, String> {
+        let m = mode()?;
+        if m.scale == 0 || (m.width, m.height) != (1280 * m.scale, 800 * m.scale) {
+            return Err(std::format!(
+                "the {}x{} mode is not the stage's 1280x800 layout at scale {}",
+                m.width, m.height, m.scale
+            ));
+        }
+        let context = gpu::context_create().map_err(|e| std::format!("stage context: errno {}", -e))?;
+        let mut g = Gpu {
+            pid,
+            context,
+            texture: 0,
+            scanout: 0,
+            width: m.width,
+            height: m.height,
+            scale: m.scale,
+            frame: Vec::new(),
+            seen: Vec::new(),
+        };
+        let format = gpu::abi::format::B8G8R8A8;
+        match gpu::texture_create(format, 1280, 800) {
+            Ok(t) => g.texture = t,
+            Err(e) => {
+                g.destroy();
+                return Err(std::format!("stage texture: errno {}", -e));
             }
-            let _ = unsafe { win::raw_call(op::RELEASE_COMPOSITOR, core::ptr::null_mut(), 0) };
+        }
+        match gpu::scanout_target_create(format, m.width, m.height) {
+            Ok(t) => g.scanout = t,
+            Err(e) => {
+                g.destroy();
+                return Err(std::format!("stage scanout target: errno {}", -e));
+            }
+        }
+        g.frame.reserve_exact(1280 * 800 * 4);
+        g.seen.reserve_exact(m.width as usize * m.height as usize * 4);
+        // The device warms one context at a time, lowest handle first: a stage context
+        // still warming would hold the next case's contexts behind it inside its limit.
+        let start = time::now_monotonic().map_or(0, |t| t.as_nanos());
+        while gpu::counters(g.context).1.state == gpu::abi::context_state::WARMING
+            && time::now_monotonic().map_or(0, |t| t.as_nanos()).saturating_sub(start) < 10_000_000_000
+        {
+            let _ = time::sleep_ms(5);
+        }
+        Ok(g)
+    }
+
+    fn destroy(&self) {
+        for handle in [self.scanout, self.texture] {
+            if handle != 0 {
+                let _ = gpu::resource_destroy(handle);
+            }
+        }
+        let _ = gpu::context_destroy(self.context);
+    }
+
+    /// Upload the logical frame, enlarge it by the display scale into the scanout on the
+    /// GPU, present it, and observe the scanout. Returns the observation and the present's
+    /// context fence.
+    fn show(&mut self, fb: &FrameBuf) -> Result<(Seen, u64), String> {
+        use gpu::abi::{draw, pipeline, purpose, stream::encode};
+        self.frame.clear();
+        for y in 0..fb.height {
+            for x in 0..fb.width {
+                let p = fb.get_pixel(x, y);
+                self.frame.extend_from_slice(&[p.b, p.g, p.r, 255]);
+            }
+        }
+        let (r, _) = gpu::upload(self.context, self.texture, [0, 0, 1280, 800], &self.frame, 1280 * 4, 0, purpose::IMAGE);
+        if r != 0 {
+            return Err(std::format!("stage upload: errno {}", -r));
+        }
+        let mut stream = Vec::new();
+        encode::begin(&mut stream, self.scanout);
+        let mut params = [0u32; 16];
+        params[4] = self.scale;
+        draw::encode(&mut stream, pipeline::COPY_SCALED, draw::SOURCE_OPAQUE, self.texture, 0, 0,
+            &[draw::Instance { rect: [0, 0, self.width as i32, self.height as i32], params }]);
+        let (r, submitted) = gpu::submit(self.context, &stream);
+        if r != 0 {
+            return Err(std::format!("stage submit: errno {}", -r));
+        }
+        let (r, waited) = gpu::wait(self.context, submitted.fence, 2_000_000_000);
+        if r != 0 {
+            return Err(std::format!("stage render: errno {}, status {}", -r, waited.status));
+        }
+        // The runner keeps the display through the run; this is idempotent while it does,
+        // and the stack has restored its frame after any case that took the display.
+        graphics::take_over_display().map_err(|e| std::format!("stage display ownership: {e:?}"))?;
+        let (r, presented) = gpu::present(self.context, self.scanout);
+        // The device's native success answer (gpu.md section 1.8, ruling 47).
+        let success = if gpu::caps().1.backend == gpu::abi::backend::SVGA3D_DX { 1 } else { 0x1100 };
+        if r != 0 || presented.answer != success {
+            return Err(std::format!("stage present: errno {}, answer {:#x}", -r, presented.answer));
+        }
+        let seen = observe(&mut self.seen)?;
+        Ok((seen, presented.fence))
+    }
+}
+
+/// Create the stage's GPU objects before the memory record's first sample, as the first
+/// draw would, so both samples count them. The runner keeps the display from here on.
+pub(super) fn prepare() -> Result<(), String> {
+    let pid = process::getpid().map_err(|e| e.to_string())?.raw() as u64;
+    let mut guard = GPU.lock().unwrap();
+    if guard.as_ref().is_none_or(|g| g.pid != pid) {
+        *guard = Some(Gpu::new(pid)?);
+    }
+    Ok(())
+}
+
+/// Present the stage frame on the GPU core and check that the scanout shows it.
+fn present(fb: &FrameBuf) -> Result<Seen, String> {
+    let pid = process::getpid().map_err(|e| e.to_string())?.raw() as u64;
+    // As the GPU suite's view does: no test-control point left armed by a case can alter
+    // the stage or be spent by it.
+    let _ = gpu::tc_disarm_all();
+    let mut guard = GPU.lock().unwrap();
+    if let Some(g) = guard.as_ref().filter(|g| g.pid == pid) {
+        // A quarantined or reset context, or a mode change, needs new objects.
+        let (r, c) = gpu::counters(g.context);
+        let live = r == 0 && matches!(c.state, gpu::abi::context_state::LIVE | gpu::abi::context_state::WARMING);
+        if !live || mode().is_ok_and(|m| (m.width, m.height) != (g.width, g.height)) {
+            g.destroy();
+            *guard = None;
         }
     }
-    let mut claim = abi::Claim::ZERO;
-    win::call(op::CLAIM_COMPOSITOR, &mut claim).map_err(|e| std::format!("stage claim: {e}"))?;
-    let mut clean = Cleanup(None);
-    let w = win::create(1280, 800, 2, 1).map_err(|e| std::format!("stage window: {e}"))?;
-    clean.0 = Some(w.id);
-    win::register(w.id, b"BREENIX / run stage").map_err(|e| e.to_string())?;
-    let a = win::acquire(w.id, 1_000_000_000).map_err(|e| e.to_string())?;
-    let dest = unsafe {
-        core::slice::from_raw_parts_mut(w.buffer[a.buffer as usize] as *mut u8, 1280 * 800 * 4)
-    };
-    for y in 0..800 {
-        for x in 0..1280 {
-            let p = fb.get_pixel(x, y);
-            let i = (y * 1280 + x) * 4;
-            dest[i..i + 4].copy_from_slice(&[p.b, p.g, p.r, 255]);
-        }
+    // A forked case abandons the runner's handles, which it does not hold, undestroyed.
+    if guard.as_ref().is_none_or(|g| g.pid != pid) {
+        *guard = Some(Gpu::new(pid)?);
     }
-    win::commit(w.id, a.buffer, &[abi::Rect::new(0, 0, 1280, 800)], None)
-        .map_err(|e| e.to_string())?;
-    let mut g = abi::Geometry::ZERO;
-    g.id = w.id;
-    g.flags = abi::geometry_flags::VISIBLE;
-    win::call(op::SET_GEOMETRY, &mut g).map_err(|e| e.to_string())?;
-    let mut c = abi::Composite::ZERO;
-    win::call(op::COMPOSITE, &mut c).map_err(|e| e.to_string())?;
-    let mut pixels = Vec::new();
-    let seen = observe(&mut pixels)?;
-    // The window path has no GPU PRESENT of the stage's own.
-    shown(fb, None, &pixels, &seen)?;
-    Ok(seen)
+    let g = guard.as_mut().ok_or("stage GPU objects missing")?;
+    let shown_frame = g.show(fb).and_then(|(seen, fence)| shown(fb, Some(fence), &g.seen, &seen).map(|()| seen));
+    if shown_frame.is_err() {
+        // The next draw starts from new objects.
+        g.destroy();
+        *guard = None;
+    }
+    shown_frame
 }
 impl Show {
     fn render(&self, fb: &mut FrameBuf, bits: u32) -> Result<(), String> {
@@ -320,12 +438,11 @@ impl Show {
             fb,
             &mut stage::Run {
                 suite: &self.suite,
-                // Each backend observes exactly one target (contract section 20.2).
+                // Record version 2 names the GPU device, which ARM64 QEMU and Parallels
+                // share, rather than the target (contract section 20.2).
                 target: match self.observation.backend {
-                    abi::backend::VIRTIO_GPU_2D => "ARM64 QEMU",
-                    abi::backend::GOP_FRAMEBUFFER => "x86-64 QEMU",
-                    abi::backend::SVGA3_SCREEN_TARGET => "VMware",
-                    abi::backend::VIRGL => "Parallels",
+                    gpu::abi::backend::VIRGL => "VirGL",
+                    gpu::abi::backend::SVGA3D_DX => "SVGA3D DX",
                     _ => "unknown display",
                 },
                 case_number: self.current + 1,
@@ -353,9 +470,12 @@ impl Show {
     }
     fn draw(&mut self, bits: u32) -> Result<(), String> {
         let mut fb = FrameBuf::new(1280, 800, Format::BGRX).map_err(|e| e.to_string())?;
-        // Learn the actual backend before rendering the notice on this same frame.
-        let (_, rec) = snapshot()?;
-        self.observation = Observation { backend: rec.backend, flags: rec.flags, boundary: rec.boundary };
+        // Before the stage's first frame, learn the actual backend from the scanout, so the
+        // notice on this same frame decodes a real record.
+        if self.observation.backend == 0 {
+            let (_, rec) = snapshot()?;
+            self.observation = Observation { backend: rec.backend, flags: rec.flags, boundary: rec.boundary };
+        }
         self.render(&mut fb, bits)?;
         let rec = present(&fb)?;
         self.observation = Observation {
@@ -400,10 +520,11 @@ pub(super) fn init(suite: &Suite) -> u64 {
         selected: 0,
         last: None,
         first_failure: None,
+        // Not yet observed: the first draw reads the scanout's record before rendering.
         observation: Observation {
-            backend: 1,
-            flags: 1,
-            boundary: 1,
+            backend: 0,
+            flags: 0,
+            boundary: 0,
         },
         started_ms: clock::now_ns() / 1_000_000,
         finale: None,
