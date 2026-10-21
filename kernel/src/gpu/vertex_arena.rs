@@ -9,15 +9,17 @@ struct Range { serial: u64, start: u32, end: u32 }
 
 pub(super) struct Ranges {
     pub(super) capacity: u32,
-    held: [Option<Range>; 4],
+    held: [Option<Range>; gpu_abi::limits::IN_FLIGHT],
 }
 
 impl Ranges {
     pub(super) fn new(bytes: u64) -> Option<Self> {
         let bytes = u32::try_from(bytes).ok()?;
         if bytes == 0 || bytes > MAX_BYTES { return None; }
-        let capacity = bytes.saturating_mul(4).min(MAX_BYTES).max(MIN_BYTES).next_power_of_two();
-        Some(Self { capacity, held: [None; 4] })
+        // Reserve the requested storage, rather than speculatively multiplying it by
+        // the admission count: staging and window backing share the same quota.
+        let capacity = bytes.max(MIN_BYTES).next_multiple_of(4096);
+        Some(Self { capacity, held: [None; gpu_abi::limits::IN_FLIGHT] })
     }
 
     pub(super) fn reserve(&mut self, serial: u64, bytes: u32) -> Option<u32> {
@@ -54,6 +56,16 @@ mod tests {
         assert_eq!(a.reserve(5, 48), Some(48));
         a.release(1);
         assert_eq!(a.reserve(6, 96), Some(192));
+    }
+    #[test]
+    fn large_submission_keeps_room_for_staging_and_window_backing() {
+        let requested = 17_616_077; // 16.8 MiB, formerly rounded to a 128 MiB arena.
+        let mut a = Ranges::new(requested).unwrap();
+        assert!(u64::from(a.capacity) >= requested);
+        assert!(u64::from(a.capacity) < requested + 4096);
+        assert_eq!(a.reserve(1, requested as u32), Some(0));
+        // Arena, vertex staging and a 32 MiB window leave room for commands.
+        assert!(u64::from(a.capacity) + requested + (32 << 20) < (192 << 20));
     }
     #[test]
     fn capacity_and_offsets_never_wrap_or_exceed_the_buffer_limit() {

@@ -1283,8 +1283,10 @@ implementation. This amendment states those interfaces, in its own PR before the
   and `READBACK` staging. `COUNTERS` reports them in their own field, `copy_bytes` at offset 136, so
   `resource_bytes` keeps its meaning (guest backing and staging), and `gpu_resource_bytes` includes both. The
   quota limits the sum of `resource_bytes` and `copy_bytes`. The stream copy
-  and the snapshot are released when `SUBMIT` returns; the chunks and the vertex storage when the device has
-  returned the submission's requests or a confirmed reset has ended them. A charge that cannot be made returns
+  and the snapshot are released when `SUBMIT` returns; the chunks when the device has
+  returned the submission's requests or a confirmed reset has ended them. VirGL retains vertex storage
+  until context replacement or destruction, with submission holds through completion; SVGA uses
+  per-submission vertex storage. VirGL arena capacity is the page-rounded request with a 64 KiB minimum. A charge that cannot be made returns
   ENOMEM, with error code 22 at index 0, before anything is sent.
 <!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
 - **No addresses.** A handle is a 64-bit value whose top byte is neither 0x00 nor 0xFF, so no handle has the
