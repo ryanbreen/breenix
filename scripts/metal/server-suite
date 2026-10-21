@@ -893,15 +893,17 @@ def main():
     if args.previous_boot:
         if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.previous_boot): parser.error('invalid previous boot')
         previous_dir = '/var/lib/breenix-metal/boots/' + args.previous_boot
-        result = remote('cat', previous_dir + '/server-logs-prepared.json')
+        result = remote('cat', previous_dir + '/logs-prepared.json')
         if result.returncode: raise ValueError('previous boot has no log preparation record')
         previous = json.loads(result.stdout)
         ended = remote('test', '-e', previous_dir + '/ended')
         prior = remote('cat', previous_dir + '/run.json')
         prior = json.loads(prior.stdout) if prior.returncode == 0 else {}
-        if ended.returncode or previous.get('commit') != args.sha or prior.get('bootedCommit') != args.sha or prior.get('mode') != 'persistent':
+        if ended.returncode or previous.get('boot') != args.previous_boot or previous.get('commit') != args.sha or prior.get('bootedCommit') != args.sha or prior.get('toolsCommit') != args.sha or prior.get('mode') != 'persistent' or not prior.get('evidenceEligible'):
             raise ValueError('previous log preparation must be a completed persistent boot at this commit')
     boot = json.loads(read('run.json'))
+    if boot.get('mode') != 'persistent' or boot.get('bootedCommit') != args.sha or boot.get('toolsCommit') != args.sha or not boot.get('evidenceEligible'):
+        raise ValueError('runner needs this exact commit booted in a persistent session')
     lease = remote('cat', '/var/lib/breenix-metal/lease.json')
     if lease.returncode or json.loads(lease.stdout).get('id') != args.boot:
         raise ValueError('this boot does not hold the machine lease')
@@ -943,7 +945,7 @@ def main():
             try:
                 prepared = target.prepare()
                 prepared.update(boot=args.boot, commit=args.sha)
-                result = runner['in_metal'](env, 'tee', directory + '/server-logs-prepared.json',
+                result = runner['in_metal'](env, 'tee', directory + '/logs-prepared.json',
                     stdin=None, input=json.dumps(prepared) + '\n', capture_output=True, text=True)
                 if result.returncode: raise ValueError('cannot save log preparation')
                 print('Prepared persistent log for the next boot', flush=True)
