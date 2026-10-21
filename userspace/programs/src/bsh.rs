@@ -403,17 +403,11 @@ fn native_exec(
     let mut argv_data = [0u8; ARGV_BUF_SIZE];
     let mut argv_offsets = [0usize; MAX_ARGS];
     let mut argv_pos = 0usize;
-    if cmd_args.len() >= MAX_ARGS {
-        return Err(JsError::runtime("command exec: argument list too long"));
-    }
-    let argc = cmd_args.len();
+    let argc = cmd_args.len().min(MAX_ARGS - 1);
     for i in 0..argc {
         let arg_bytes = cmd_args[i].as_bytes();
-        if arg_bytes.contains(&0) {
-            return Err(JsError::runtime("command exec: argument contains NUL"));
-        }
         if argv_pos + arg_bytes.len() + 1 > ARGV_BUF_SIZE {
-            return Err(JsError::runtime("command exec: argument list too long"));
+            break;
         }
         argv_offsets[i] = argv_pos;
         argv_data[argv_pos..argv_pos + arg_bytes.len()].copy_from_slice(arg_bytes);
@@ -1139,11 +1133,17 @@ fn command_executor_fn(
     let mut argv_data = [0u8; ARGV_BUF_SIZE];
     let mut argv_offsets = [0usize; MAX_ARGS];
     let mut argv_pos = 0usize;
-    let argc = cmd_args.len().min(MAX_ARGS - 1);
+    if cmd_args.len() >= MAX_ARGS {
+        return Err(JsError::runtime("command exec: argument list too long"));
+    }
+    let argc = cmd_args.len();
     for i in 0..argc {
         let arg_bytes = cmd_args[i].as_bytes();
+        if arg_bytes.contains(&0) {
+            return Err(JsError::runtime("command exec: argument contains NUL"));
+        }
         if argv_pos + arg_bytes.len() + 1 > ARGV_BUF_SIZE {
-            break;
+            return Err(JsError::runtime("command exec: argument list too long"));
         }
         argv_offsets[i] = argv_pos;
         argv_data[argv_pos..argv_pos + arg_bytes.len()].copy_from_slice(arg_bytes);
