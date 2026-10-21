@@ -268,7 +268,7 @@ impl Surface {
         self.error
     }
 
-    /// Whether this process made the target (a forked child holds none of its parent's).
+    /// Whether this process made the target; a forked child cannot use its parent's handles.
     pub(crate) fn owned_here(&self) -> bool {
         self.owner == device::pid()
     }

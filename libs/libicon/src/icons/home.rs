@@ -151,7 +151,7 @@ impl Icon for HomeIcon {
                 return;
             }
 
-            // Geometry constants (all relative to scaled size s):
+            // Geometry constants (each relative to scaled size s):
             //   house body: width = 0.8s, height = 0.4s, centred, bottom at cy + 0.3s
             //   roof: triangle from (cx - 0.4s, cy - 0.1s) to apex (cx, cy - 0.5s) to (cx + 0.4s, cy - 0.1s)
             //   door: centred at cx, 0.2s wide, 0.25s tall, bottom at cy + 0.3s

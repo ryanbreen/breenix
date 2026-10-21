@@ -49,7 +49,7 @@ struct ScratchSlot { owner: AtomicU64, targets: UnsafeCell<[Option<Scratch>; 2]>
 unsafe impl Sync for ScratchSlot {}
 static SCRATCH: ScratchSlot = ScratchSlot { owner: AtomicU64::new(0), targets: UnsafeCell::new([None, None]) };
 
-/// A `width × height` region of scratch target `which` that nothing has drawn into.
+/// A `width × height` region of scratch target `which`, its rows handed out once each.
 fn region(which: usize, width: usize, height: usize) -> Result<Region, Error> {
     let me = device::pid();
     if me == 0 { return Err(Error::Device(-abi::errno::EIO)); }
@@ -170,7 +170,7 @@ fn admit(segments: &[LineSegment], width: usize, height: usize) -> Result<(), Er
 /// The bytes one crossing table may hold; a taller glyph's rows are split across tables.
 const TABLE_BYTES: usize = 8 << 20;
 
-/// Coverage of `segments` into the glyph-sized `region`, whose pixels are zero. Each table's
+/// Coverage of `segments` into the glyph-sized `region`, as the core cleared it. Each table's
 /// rows are packed into submissions by their actual crossings, each submission's estimate at
 /// most half the work cap; no pixel values reach the CPU. Returns the last fence.
 fn render(segments: &[LineSegment], width: usize, height: usize, region: &Region) -> Result<Option<bgl::Fence>, Error> {
@@ -232,7 +232,7 @@ fn render(segments: &[LineSegment], width: usize, height: usize, region: &Region
     Ok(fence)
 }
 
-/// A glyph's coverage: its `width × height` region of a target (none for an empty glyph)
+/// A glyph's coverage: its `width × height` region of a target (absent for an empty glyph)
 /// and the fence of the draw that wrote it.
 pub struct AtlasGlyph {
     region: Option<Region>, fence: Option<bgl::Fence>,
@@ -288,7 +288,7 @@ fn class(width: usize, height: usize) -> (usize, usize) {
 }
 
 struct Entry { glyph: u16, size26: i32, image: Arc<AtlasGlyph>, used: u64, slot: Option<(u64, usize)> }
-/// `bytes` is the charge of every atlas page, unused slots included (B15, B23).
+/// `bytes` is the sum of the atlas pages' charges, unused slots included (B15, B23).
 pub struct CachedFont {
     font: Font, entries: Vec<Entry>, pages: Vec<Page>, next_page: u64, capacity: usize, max_bytes: usize, clock: u64,
     stats: CacheStats, readback: Option<GlyphBitmap>, owner: u64,
