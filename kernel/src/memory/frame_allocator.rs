@@ -1484,6 +1484,38 @@ pub fn frame_census() -> Result<alloc::string::String, i32> {
     for owner in FrameOwner::ALL {
         let _ = writeln!(text, "owner {} {}", owner.name(), by_owner[owner as usize]);
     }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let _ = writeln!(text, "terminated_unreclaimed {}", crate::task::scheduler::diag_terminated_unreclaimed());
+        for cpu in 0..crate::task::scheduler::MAX_CPUS {
+            if !crate::arch_impl::x86_64::smp::is_cpu_online(cpu) {
+                continue;
+            }
+            let data = crate::per_cpu::cpu_data(cpu);
+            // SAFETY: scratch diagnostic; idle threads live for the boot.
+            let (current, idle, named) = unsafe {
+                (
+                    (&raw const (*data).current_thread).read_volatile(),
+                    (&raw const (*data).idle_thread).read_volatile(),
+                    (&raw const (*data).kernel_stack_top).read_volatile(),
+                )
+            };
+            let idle_top = if idle.is_null() {
+                0
+            } else {
+                unsafe { (*idle).kernel_stack_top.map_or(0, |top| top.as_u64()) }
+            };
+            let _ = writeln!(
+                text,
+                "kstack cpu={} cur_idle={} stale={} named={:#x} idle_top={:#x}",
+                cpu,
+                u8::from(current == idle),
+                u8::from(current == idle && named != idle_top),
+                named,
+                idle_top
+            );
+        }
+    }
     for (file, line, counts) in rows {
         let _ = writeln!(
             text,
