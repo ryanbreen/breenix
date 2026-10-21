@@ -13,4 +13,3 @@ crate-type = ["rlib"]
 
 [dev-dependencies]
 libimg-encode = { path = "../libimg-encode" }
-

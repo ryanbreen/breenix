@@ -331,4 +331,3 @@ pub fn geometry_upload(table: libfont::crossings::CrossingTable, context: &Conte
         0 => Ok(()), e => Err(e),
     }
 }
-

@@ -79,4 +79,3 @@ fn undamped_spring_skips_exact_cycles_for_large_advances() {
     assert!(spring.value.is_finite() && spring.velocity.is_finite());
     assert!((-0.1..2.1).contains(&spring.value));
 }
-

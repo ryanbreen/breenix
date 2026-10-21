@@ -12,4 +12,3 @@ pub struct CacheStats {
     pub hits: u64,
     pub misses: u64,
 }
-

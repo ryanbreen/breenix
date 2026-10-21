@@ -19,4 +19,3 @@ pub struct SubpixelBitmap {
     pub y_offset: i32,
     pub coverage: Vec<u8>,
 }
-

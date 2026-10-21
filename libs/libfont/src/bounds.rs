@@ -9,4 +9,3 @@ pub fn raster_bound(e: usize, h: usize, c: usize) -> u128 {
 
 /// Glyphs whose bound exceeds this are refused before any raster loop.
 pub const MAX_RASTER_STEPS: u128 = 1 << 28;
-
