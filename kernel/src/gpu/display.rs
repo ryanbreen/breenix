@@ -32,6 +32,8 @@ pub(super) struct Owner {
     pub last: Option<Binding>,
     /// Private CPU framebuffer target, retained across nested owners.
     pub pane: Option<u32>,
+    /// This owner's `PRESENT`s whose flush completed OK since it took the display.
+    pub presents: u64,
 }
 
 pub(super) struct State {
@@ -123,6 +125,11 @@ impl Core {
             d.latest_ok = ok;
         }
         d.known = d.outstanding == 0 && d.latest_ok;
+        if ok {
+            if let Some(o) = d.stack.iter_mut().find(|o| o.group == p.owner) {
+                o.presents += 1;
+            }
+        }
         if !(latest && ok) {
             return;
         }
@@ -534,6 +541,7 @@ pub(super) fn take(group: u64, pid: u64, vt: usize) -> Result<(), i64> {
             mode: c.display.mode,
             last: None,
             pane: None,
+            presents: 0,
         });
         publish_owner(c);
     });

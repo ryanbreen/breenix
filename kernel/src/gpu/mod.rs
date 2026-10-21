@@ -4857,6 +4857,22 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
     }
 }
 
+/// Each display owner's completed presents, one `<tgid> <count>` line per owner on the
+/// stack (`/proc/breenix/stage-composites`): the kernel's record of when the suite's run
+/// stage changed the screen, independent of the runner's own timestamps.
+pub fn present_records() -> alloc::string::String {
+    use core::fmt::Write;
+    let owners: Vec<(u64, u64)> = with_core(|c| {
+        c.display.stack.iter().map(|o| (o.group, o.presents)).collect()
+    })
+    .unwrap_or_default();
+    let mut out = alloc::string::String::new();
+    for (tgid, presents) in owners {
+        let _ = writeln!(out, "{tgid} {presents}");
+    }
+    out
+}
+
 /// Whether the clean-room device owns this ARM64 display path.
 pub fn display_active() -> bool {
     display::active()

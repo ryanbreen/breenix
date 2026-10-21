@@ -779,9 +779,13 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
             #[cfg(not(target_arch="aarch64"))]
             {Err(-38)}
         }
-        // TODO(gpu-display): the software compositor that kept these records is retired;
-        // the GPU compositor records its stage composites here again.
-        ProcEntryType::StageComposites => Err(-38),
+        // The display owners' completed GPU presents (the run stage's screen changes).
+        ProcEntryType::StageComposites => {
+            #[cfg(target_arch="aarch64")]
+            {text(crate::gpu::present_records())}
+            #[cfg(not(target_arch="aarch64"))]
+            {Err(-38)}
+        }
         ProcEntryType::Uptime => text(generate_uptime()),
         ProcEntryType::Version => text(generate_version()),
         ProcEntryType::MemInfo => text(generate_meminfo()),
