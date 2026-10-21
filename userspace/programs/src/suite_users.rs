@@ -37,11 +37,12 @@ fn fhs_paths() -> CaseResult {
         let mode = u32::from_str_radix(row[2], 8).map_err(|e| e.to_string())?;
         attrs(&Path::new("/").join(row[1]), mode, row[3].parse().map_err(|_| "bad uid")?, row[4].parse().map_err(|_| "bad gid")?, row[0] == "dir")?;
     }
-    for entry in fs::read_dir("/home").map_err(|e| e.to_string())? {
-        let path = entry.map_err(|e| e.to_string())?.path();
-        if path.file_name().and_then(|n| n.to_str()) == Some("lost+found") { continue; }
-        let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-        if meta.is_dir() { attrs(&path, 0o700, meta.uid(), meta.uid(), true)?; }
+    for line in fs::read_to_string("/etc/passwd").map_err(|e| e.to_string())?.lines() {
+        let fields: Vec<_> = line.split(':').collect();
+        if fields.len() == 7 && fields[5].starts_with("/home/") {
+            attrs(Path::new(fields[5]), 0o700, fields[2].parse().map_err(|_| "bad account uid")?,
+                fields[3].parse().map_err(|_| "bad account gid")?, true)?;
+        }
     }
     check(!Path::new("/test").exists() && !Path::new("/deep").exists() && !Path::new("/usr/local/test").exists(), "test fixtures remain in administrator paths")
 }

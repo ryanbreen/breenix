@@ -2128,7 +2128,7 @@ fn load_test_binaries_from_ext2() {
     let mut process_context_pending = true;
 
     // Search paths for test binaries - try each in order
-    let search_dirs = ["/bin", "/usr/local/cbin", "/usr/libexec/breenix", "/sbin"];
+    let search_dirs = ["/bin", "/usr/bin", "/usr/sbin", "/usr/libexec/breenix", "/sbin"];
 
     for (index, name) in test_binaries.iter().enumerate() {
         // Show which program is loading, so a hang names it on screen.
