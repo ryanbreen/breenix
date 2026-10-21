@@ -40,8 +40,8 @@ calls outside that table do not count.
 A category whose `cases` list is empty is planned: an effort names it before its cases exist,
 and its cases arrive with the lane that implements it. The binary leaves planned categories out
 and runs the others exactly as above, so a boot does not report an empty category. A manifest
-in which each category is planned is a skeleton (`server`, `users`, `filesystem` and `toolchain`
-today): it has no suite source, binary or install entry yet, `scripts/suite-sequence.py`
+in which each category is planned is a skeleton (`server`, `filesystem` and `toolchain`
+today; `users` has cases for its `kernel-checks` categories only): it has no suite source, binary or install entry yet, `scripts/suite-sequence.py`
 refuses it in a `--suite` list, and `all` leaves it out with "no cases yet". An effort
 milestone measured by a planned category is not complete, including when its other categories pass.
 Full-suite scoring refuses acceptance while a manifest category has no cases; targeted runs of populated
@@ -1311,4 +1311,29 @@ suite's own verdict is complete.
 scripts/boot-interactive.sh --mode suite --suite gpu --gpu-gl --gate-timeout 900
 ./run.sh --parallels --suite gpu --gate-timeout 900
 ./run.sh --vmware --suite gpu --gate-timeout 900
+```
+
+## Users & permissions
+
+`users` measures the users effort in `docs/efforts/path.json` against `docs/users/design.md`.
+Its `kernel-checks` milestone's categories have cases: `credentials` (7), `files` (14),
+`sticky` (7), `setid-exec` (8), `signals` (5), `proc-dev` (6) and `umask` (4), 51 cases. The
+other categories are planned and arrive with their milestones (design section 7).
+
+The suite runs as root. A case that needs another identity forks a child that becomes a
+fixture account (its supplementary groups, then setresgid and setresuid, then a refused
+setuid(0)) and reports through a pipe. The accounts are IDs only: ua 2001 (in group ug 2100),
+ub 2002 and uw 2003 (in wheel, 10). Set-ID cases copy `/usr/local/test/bin/users-exec_test`
+(`userspace/programs/src/users_exec.rs`), which has no Rust `main`, so the standard library's
+start-up does not reopen closed descriptors before the program reports them. A refusal case
+whose refusal could have an unrelated cause (a missing file, device or network stack, or a
+search check in the path) also shows the operation succeeding for an identity the rule allows. `credentials/orphan-thread-not-root` arms the
+kernel's `cred-orphan` test point (32) for its own thread. `setid-exec/nosuid-home-ignored`
+writes under `/home`, which is the home filesystem where one is mounted and the root
+filesystem's directory otherwise; the kernel gives `/home` its `nosuid,nodev` options in both
+cases.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite users
+python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite users --milestone users/kernel-checks
 ```

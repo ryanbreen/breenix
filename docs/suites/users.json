@@ -4,41 +4,253 @@
   "area": "Users & permissions",
   "summary": "Credentials, access checks, set-ID execution, accounts, su and sudo-style administration, the standard filesystem layout and non-root logins on the console and over SSH behave as POSIX and the users design specify.",
   "binary": "/sbin/suite-users",
+  "timingSensitive": true,
   "categories": [
     {
       "id": "credentials",
       "title": "Real, effective and saved IDs, supplementary groups and their thread-group commit",
-      "cases": []
+      "cases": [
+        {
+          "id": "ids-after-drop",
+          "title": "A root process that becomes a user holds that user's real, effective and saved IDs and groups"
+        },
+        {
+          "id": "no-regain-root",
+          "title": "A user cannot take user ID 0 back through setuid, setreuid or setresuid"
+        },
+        {
+          "id": "saved-toggle",
+          "title": "A process whose saved user ID differs from its real one switches its effective ID between them"
+        },
+        {
+          "id": "setres-rules",
+          "title": "Unprivileged setresuid and setresgid accept only the current three IDs, and a refusal changes nothing"
+        },
+        {
+          "id": "setgroups-user-eperm",
+          "title": "setgroups by a user fails with EPERM and leaves the groups as they were"
+        },
+        {
+          "id": "threads-share-groups",
+          "title": "setgroups in one thread changes the supplementary groups of every thread of the process"
+        },
+        {
+          "id": "orphan-thread-not-root",
+          "title": "A thread whose process cannot be found is refused, never checked as root (forcing point)"
+        }
+      ]
     },
     {
       "id": "files",
       "title": "File access classes, ownership, chmod, chown and set-ID clearing",
-      "cases": []
+      "cases": [
+        {
+          "id": "other-0600-read-eacces",
+          "title": "Another user's 0600 file cannot be opened for reading (EACCES)"
+        },
+        {
+          "id": "other-0600-write-eacces",
+          "title": "Another user's 0600 file cannot be opened for writing (EACCES)"
+        },
+        {
+          "id": "group-0640-member",
+          "title": "A member of a 0640 file's group may read it and may not write it"
+        },
+        {
+          "id": "group-0640-nonmember",
+          "title": "A user outside a 0640 file's group gets the other class: no read"
+        },
+        {
+          "id": "supplementary-access",
+          "title": "A supplementary group grants its group class"
+        },
+        {
+          "id": "root-exec-needs-x",
+          "title": "Root may not execute a file with no execute bit, and may with one in any class"
+        },
+        {
+          "id": "search-denied",
+          "title": "A directory without search permission blocks the path through it and chdir into it"
+        },
+        {
+          "id": "create-owner",
+          "title": "A new file takes the creator's effective user and group IDs and the mode less the umask"
+        },
+        {
+          "id": "sgid-dir-group",
+          "title": "In a set-group-ID directory new files take its group and new directories its set-group-ID bit"
+        },
+        {
+          "id": "chmod-not-owner-eperm",
+          "title": "chmod of another user's file fails with EPERM"
+        },
+        {
+          "id": "chown-giveaway-eperm",
+          "title": "A user cannot give a file to another user (EPERM)"
+        },
+        {
+          "id": "chgrp-nonmember-eperm",
+          "title": "The owner may change a file's group only to a group they belong to"
+        },
+        {
+          "id": "write-clears-setid",
+          "title": "A user's write or truncate clears a file's set-user-ID and set-group-ID bits"
+        },
+        {
+          "id": "utimes-explicit-nonowner-eperm",
+          "title": "Explicit times need ownership (EPERM); setting both to now needs ownership or write (EACCES)"
+        }
+      ]
     },
     {
       "id": "sticky",
       "title": "Sticky world-writable directories: removal, rename, symlinks and hard links",
-      "cases": []
+      "cases": [
+        {
+          "id": "tmp-1777",
+          "title": "/tmp is a root-owned sticky directory every user may write: mode 1777"
+        },
+        {
+          "id": "unlink-other-eperm",
+          "title": "In a sticky directory a user cannot remove another user's file (EPERM)"
+        },
+        {
+          "id": "rename-other-eperm",
+          "title": "In a sticky directory a user cannot rename another user's file (EPERM)"
+        },
+        {
+          "id": "replace-other-eperm",
+          "title": "In a sticky directory a user cannot rename over another user's file (EPERM)"
+        },
+        {
+          "id": "dir-owner-may-remove",
+          "title": "The owner of a sticky directory may remove another user's file in it"
+        },
+        {
+          "id": "symlink-follow-refused",
+          "title": "A symlink in a sticky directory is followed only by its owner or the directory's owner (EACCES)"
+        },
+        {
+          "id": "hardlink-other-refused",
+          "title": "A user cannot hard-link a file they neither own nor may read and write (EPERM)"
+        }
+      ]
     },
     {
       "id": "setid-exec",
       "title": "Set-user-ID and set-group-ID execution, nosuid and AT_SECURE",
-      "cases": []
+      "cases": [
+        {
+          "id": "setuid-euid",
+          "title": "A set-user-ID program runs with its owner as the effective user ID and the caller's real one"
+        },
+        {
+          "id": "setuid-saved",
+          "title": "A set-user-ID program switches between its real and saved user IDs"
+        },
+        {
+          "id": "setgid-egid",
+          "title": "A set-group-ID program runs with its group as the effective group ID"
+        },
+        {
+          "id": "setgid-no-gx-ignored",
+          "title": "A set-group-ID bit without group execute confers no group"
+        },
+        {
+          "id": "nosuid-home-ignored",
+          "title": "Set-ID bits confer nothing under /home, which is mounted nosuid,nodev"
+        },
+        {
+          "id": "shared-fs-no-gain",
+          "title": "An exec while another process shares the working directory gains no identity"
+        },
+        {
+          "id": "at-secure",
+          "title": "A set-ID program starts with AT_SECURE set, and an ordinary one without it"
+        },
+        {
+          "id": "closed-stdio-opened",
+          "title": "A set-ID program started with descriptors 0 to 2 closed finds them open on /dev/null"
+        }
+      ]
     },
     {
       "id": "signals",
       "title": "Signal and priority permission between users",
-      "cases": []
+      "cases": [
+        {
+          "id": "kill-other-eperm",
+          "title": "A user cannot signal another user's process (EPERM), which keeps running"
+        },
+        {
+          "id": "kill-probe-eperm",
+          "title": "kill(pid, 0) on another user's process fails with EPERM"
+        },
+        {
+          "id": "kill-setuid-child",
+          "title": "A user may signal a set-user-ID program they started"
+        },
+        {
+          "id": "root-kills-any",
+          "title": "Root may signal any user's process"
+        },
+        {
+          "id": "renice-other-eperm",
+          "title": "A user cannot change another user's priority (EPERM)"
+        }
+      ]
     },
     {
       "id": "proc-dev",
       "title": "/proc, device nodes and privileged ports by owner and mode",
-      "cases": []
+      "cases": [
+        {
+          "id": "proc-exe-other-eacces",
+          "title": "A user cannot read another user's /proc/<pid>/exe (EACCES) and may read their own"
+        },
+        {
+          "id": "kernel-output-other-eacces",
+          "title": "A user cannot read another user's thread kernel_output (EACCES) and may read their own"
+        },
+        {
+          "id": "kmsg-user-eacces",
+          "title": "/proc/kmsg is root's alone (EACCES)"
+        },
+        {
+          "id": "trace-user-eacces",
+          "title": "/proc/trace is root's alone (EACCES)"
+        },
+        {
+          "id": "vcs-user-eacces",
+          "title": "The console and the screen devices are root's 0600 nodes a user cannot open (EACCES)"
+        },
+        {
+          "id": "tcp-low-port-eacces",
+          "title": "A user cannot bind a TCP port below 1024 (EACCES); root can"
+        }
+      ]
     },
     {
       "id": "umask",
       "title": "File creation mask across files, directories, fork and threads",
-      "cases": []
+      "cases": [
+        {
+          "id": "umask-file",
+          "title": "A new file's mode is the requested mode less the umask"
+        },
+        {
+          "id": "umask-dir",
+          "title": "A new directory's mode is the requested mode less the umask"
+        },
+        {
+          "id": "umask-fork",
+          "title": "A forked child inherits the umask"
+        },
+        {
+          "id": "umask-threads",
+          "title": "umask in one thread sets the mask of every thread of the process"
+        }
+      ]
     },
     {
       "id": "layout",

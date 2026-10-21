@@ -295,7 +295,8 @@ graphical login is later main-path work.
 | `login` | `login-user` (IDs, groups, HOME, cwd, shell), `login-root-refused`, `login-locked-refused`, `login-expired-refused`, `login-tty-owned`, `login-umask`, `logout-tty-restored` |
 | `ssh` | `ssh-identity`, `ssh-root-refused`, `ssh-groups`, `ssh-pty-owner`, `ssh-bad-key-mode-refused` |
 
-The failure delays are fixed waits, not timing assertions, so the suite is not `timingSensitive`.
+The failure delays are fixed waits, not timing assertions. The suite is still `timingSensitive`, because each case
+forks and some start threads, which the suite manifests classify as concurrency (`tests/suite_manifests.rs`).
 
 ## 7. The `users` effort
 

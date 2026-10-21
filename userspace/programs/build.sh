@@ -436,6 +436,8 @@ STD_BINARIES=(
     "suite-gpu"
     "gpu-exec-probe"
     "suite-console"
+    "suite-users"
+    "users-exec_test"
     "console-login-shell"
     "files-io-exec_test"
     "processes-exec_test"
