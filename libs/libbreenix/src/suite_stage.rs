@@ -1,6 +1,7 @@
 //! The runner's real between-case stage and its live self-checks (contract §23).
 use super::suite::{check, CaseResult, FrameTiming, JudgedFrame, Outcome, State, Suite};
 use crate::{
+    gpu::{self, abi::record},
     process, time,
     window::{self as win, abi},
 };
@@ -69,19 +70,103 @@ fn fault_bits() -> u32 {
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0)
 }
-fn snapshot() -> Result<(Vec<u8>, abi::ObservationRecord), String> {
-    let mut pixels = std::vec![0;1280*800*4];
-    let mut rec = abi::ObservationRecord::ZERO;
+/// What the stage reads from one scanout observation: core record version 2 (contract
+/// section 20.1).
+#[derive(Clone, Copy)]
+struct Seen {
+    backend: u32,
+    flags: u32,
+    boundary: u32,
+    width: usize,
+    height: usize,
+    present_fence: u64,
+}
+fn word(rec: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes([rec[at], rec[at + 1], rec[at + 2], rec[at + 3]])
+}
+fn quad(rec: &[u8], at: usize) -> u64 {
+    u64::from(word(rec, at)) | u64::from(word(rec, at + 4)) << 32
+}
+/// The display's current mode; every screen-sized buffer follows it (ruling B8).
+fn mode() -> Result<gpu::abi::Mode, String> {
+    let (r, modes) = gpu::modes();
+    if r != 0 {
+        return Err(std::format!("stage MODES: errno {}", -r));
+    }
+    modes.modes.get(modes.current as usize).copied().ok_or_else(|| String::from("stage MODES: no current mode"))
+}
+/// Observe the whole scanout into `pixels` by the 48-byte SCANOUT_READBACK.
+fn observe(pixels: &mut Vec<u8>) -> Result<Seen, String> {
+    let m = mode()?;
+    pixels.resize(m.width as usize * m.height as usize * 4, 0);
+    let mut rec = [0u8; record::SIZE];
     let mut rb = abi::Readback::ZERO;
     rb.dst = pixels.as_mut_ptr() as u64;
     rb.dst_len = pixels.len() as u64;
-    rb.record = &mut rec as *mut _ as u64;
-    rb.record_len = core::mem::size_of_val(&rec) as u32;
-    win::call(op::SCANOUT_READBACK, &mut rb).map_err(|e| std::format!("stage readback: {e}"))?;
-    Ok((pixels, rec))
+    rb.record = rec.as_mut_ptr() as u64;
+    rb.record_len = rec.len() as u32;
+    if let Err(e) = win::call(op::SCANOUT_READBACK, &mut rb) {
+        return Err(std::format!("stage readback: {e}, reason {}", rb.reason));
+    }
+    let (width, height) = (word(&rec, record::WIDTH) as usize, word(&rec, record::HEIGHT) as usize);
+    if word(&rec, record::VERSION_OFF) != record::VERSION
+        || word(&rec, record::SIZE_OFF) as usize != record::SIZE
+        || quad(&rec, record::TARGET) != 0
+        || word(&rec, record::FLAGS) & 1 == 0
+        || word(&rec, record::UNWRITTEN) != 0
+        || (width, height) != (m.width as usize, m.height as usize)
+    {
+        return Err(String::from("stage readback: not a version 2 record of the whole scanout"));
+    }
+    Ok(Seen {
+        backend: word(&rec, record::BACKEND),
+        flags: word(&rec, record::FLAGS),
+        boundary: word(&rec, record::BOUNDARY),
+        width,
+        height,
+        present_fence: quad(&rec, record::PRESENT_FENCE),
+    })
+}
+fn snapshot() -> Result<(Vec<u8>, Seen), String> {
+    let mut pixels = Vec::new();
+    let seen = observe(&mut pixels)?;
+    Ok((pixels, seen))
+}
+/// The stage check: the scanout is bound by the stage's own PRESENT (its context fence),
+/// and every physical pixel is the stage frame's logical pixel enlarged by the display
+/// scale, compared on B, G and R (X normalized, ruling B11).
+fn shown(fb: &FrameBuf, present: Option<u64>, pixels: &[u8], seen: &Seen) -> Result<(), String> {
+    let fence = present.ok_or("the stage frame was not presented by a GPU PRESENT")?;
+    if seen.present_fence != fence {
+        return Err(std::format!(
+            "the scanout shows present fence {:#x}, not the stage's {fence:#x}",
+            seen.present_fence
+        ));
+    }
+    let s = seen.width / fb.width;
+    if s == 0 || seen.width != fb.width * s || seen.height != fb.height * s {
+        return Err(std::format!(
+            "the {}x{} scanout is not the stage's {}x{} layout at a whole display scale",
+            seen.width, seen.height, fb.width, fb.height
+        ));
+    }
+    for y in 0..fb.height {
+        for x in 0..fb.width {
+            let p = fb.get_pixel(x, y);
+            for py in y * s..(y + 1) * s {
+                for px in x * s..(x + 1) * s {
+                    let o = (py * seen.width + px) * 4;
+                    if pixels[o..o + 3] != [p.b, p.g, p.r] {
+                        return Err(std::format!("the scanout differs from the stage frame at physical ({px}, {py})"));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 /// Present through the same v2 window/composite/readback path as every graphics client.
-fn present(fb: &FrameBuf) -> Result<(u64, abi::ObservationRecord), String> {
+fn present(fb: &FrameBuf) -> Result<Seen, String> {
     struct Cleanup(Option<u64>);
     impl Drop for Cleanup {
         fn drop(&mut self) {
@@ -116,43 +201,11 @@ fn present(fb: &FrameBuf) -> Result<(u64, abi::ObservationRecord), String> {
     win::call(op::SET_GEOMETRY, &mut g).map_err(|e| e.to_string())?;
     let mut c = abi::Composite::ZERO;
     win::call(op::COMPOSITE, &mut c).map_err(|e| e.to_string())?;
-    let mut record_words = [0u64; 67];
-    let mut query = abi::RecordQuery {
-        serial: c.serial,
-        ptr: record_words.as_mut_ptr() as u64,
-        len: core::mem::size_of_val(&record_words) as u32,
-        reserved: 0,
-    };
-    win::call(op::COMPOSITE_RECORD, &mut query).map_err(|e| e.to_string())?;
-    let header = unsafe {
-        core::ptr::read_unaligned(record_words.as_ptr().cast::<abi::CompositeRecordHeader>())
-    };
-    if header.serial != c.serial || header.flags != 0 || header.count > 16 {
-        return Err("stage composite record invalid".into());
-    }
-    let entries = unsafe {
-        core::slice::from_raw_parts(
-            record_words.as_ptr().add(3).cast::<abi::CompositeEntry>(),
-            header.count as usize,
-        )
-    };
-    if !entries
-        .iter()
-        .any(|e| e.id == w.id && e.commit_id == 1 && e.pixel_gen == 1)
-    {
-        return Err("stage window absent from composite record".into());
-    }
-    let (_, rec) = snapshot()?;
-    if rec.serial != c.serial
-        || !rec.windows[..rec.window_count as usize]
-            .iter()
-            .any(|v| v.id == w.id && v.commit_id == 1)
-    {
-        return Err(String::from(
-            "stage composite is missing its completed window",
-        ));
-    }
-    Ok((c.serial, rec))
+    let mut pixels = Vec::new();
+    let seen = observe(&mut pixels)?;
+    // The window path has no GPU PRESENT of the stage's own.
+    shown(fb, None, &pixels, &seen)?;
+    Ok(seen)
 }
 impl Show {
     fn render(&self, fb: &mut FrameBuf, bits: u32) -> Result<(), String> {
@@ -304,7 +357,7 @@ impl Show {
         let (_, rec) = snapshot()?;
         self.observation = Observation { backend: rec.backend, flags: rec.flags, boundary: rec.boundary };
         self.render(&mut fb, bits)?;
-        let (_, rec) = present(&fb)?;
+        let rec = present(&fb)?;
         self.observation = Observation {
             backend: rec.backend,
             flags: rec.flags,
