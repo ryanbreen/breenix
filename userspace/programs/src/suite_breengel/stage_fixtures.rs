@@ -48,17 +48,17 @@ fn text(fb:&FrameBuf,x:usize,y:usize,t:&str,scale:usize,background:(u8,u8,u8)) -
     oracle_text(&mut reference,t.as_bytes(),x,y,Color::WHITE,scale);
     for py in y..y+h {for px in x..(x+w).min(1280) {expected_pixels(fb,&reference,px,py)?;}}Ok(())
 }
-/// `text`, for a label the stage draws clipped to its own box, whose bottom edge is logical row
-/// `bottom` (ruling B25): the oracle is drawn under the same clip and only the box's rows are compared.
-fn text_in_box(fb:&FrameBuf,x:usize,y:usize,t:&str,bottom:usize,background:(u8,u8,u8)) -> Result<(),String> {
+/// `text` at legacy `scale`, for text inside a box whose bottom edge is logical row `bottom`
+/// (rulings B25, B35): the oracle is drawn under the box's clip and only the box's rows are compared.
+fn text_in_box(fb:&FrameBuf,x:usize,y:usize,t:&str,scale:usize,bottom:usize,background:(u8,u8,u8)) -> Result<(),String> {
     let n=fb.width/1280;
     let mut f=CachedFont::new(Font::parse(include_bytes!("../../../../fonts/DejaVuSans.ttf")).map_err(|e|e.to_string())?,256);
-    let size=(7*n) as f32;
+    let size=(7*scale*n) as f32;
     let w=(libgfx_ref::ttf_font::text_width(&mut f,t,size) as usize).div_ceil(n);
     let mut reference=surface();
     for py in y..bottom {for px in x..(x+w).min(1280) {put(&mut reference,px,py,Color::rgb(background.0,background.1,background.2));}}
     reference.push_clip(libgfx_ref::framebuf::Rect::new(0,(y*n) as i32,(1280*n) as i32,((bottom-y)*n) as i32));
-    oracle_text(&mut reference,t.as_bytes(),x,y,Color::WHITE,1);
+    oracle_text(&mut reference,t.as_bytes(),x,y,Color::WHITE,scale);
     reference.pop_clip();
     for py in y..bottom {for px in x..(x+w).min(1280) {expected_pixels(fb,&reference,px,py)?;}}Ok(())
 }
@@ -159,7 +159,8 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
             }
             for key in [123456,1024000,u64::MAX] {
                 cases[1].key=key;let m=run(&cases,&MILESTONES);render(&mut fb,&m)?;
-                text(&fb,504,176,">",4,(145,50,58))?;
+                // The key text is compared within the tile's own rows, which end at 208 (ruling B35).
+                text_in_box(&fb,504,176,">",4,208,(145,50,58))?;
                 rect(&fb,528,176,119,28,(145,50,58))?;
                 text(&fb,840,144,&format!("key {key}"),1,(18,29,44))?;
             }
@@ -293,7 +294,7 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
             rect(&fb,638,728,2,24,(12,19,31))?;
             rect(&fb,16,743,622,9,(26,112,77))?;
             rect(&fb,640,743,622,9,(48,67,96))?;
-            text_in_box(&fb,20,736,"alpha",743,(26,112,77))?;text_in_box(&fb,644,736,"beta",743,(48,67,96))
+            text_in_box(&fb,20,736,"alpha",1,743,(26,112,77))?;text_in_box(&fb,644,736,"beta",1,743,(48,67,96))
         }
         "finale" => {
             let finale=Finale{started_ms:250,slowest:"alpha/fail",slowest_ms:9};
