@@ -44,21 +44,25 @@ impl Font {
 
 /// Uncached glyphs: rows of the process's scratch targets, each handed out once, so a
 /// glyph's region is as the core zeroed it and its draws and work are a new target's.
-struct ScratchSlot { owner: AtomicU64, targets: UnsafeCell<[Option<Scratch>; 2]> }
-// SAFETY: `targets` is only reached while the PID-tagged owner lock is held.
+struct ScratchSlot { owner: AtomicU64, targets: UnsafeCell<[Option<Scratch>; 2]>, geometry: UnsafeCell<Option<Geometry>> }
+// SAFETY: the targets and geometry are only reached with the PID-tagged owner lock held.
 unsafe impl Sync for ScratchSlot {}
-static SCRATCH: ScratchSlot = ScratchSlot { owner: AtomicU64::new(0), targets: UnsafeCell::new([None, None]) };
+static SCRATCH: ScratchSlot = ScratchSlot { owner: AtomicU64::new(0), targets: UnsafeCell::new([None, None]), geometry: UnsafeCell::new(None) };
 
-/// A `width × height` region of scratch target `which`, its rows handed out once each.
-fn region(which: usize, width: usize, height: usize) -> Result<Region, Error> {
+struct ScratchHeld(u64);
+impl Drop for ScratchHeld { fn drop(&mut self) { SCRATCH.owner.store(self.0 << 1, Ordering::Release); } }
+fn scratch_lock() -> Result<ScratchHeld, Error> {
     let me = device::pid();
     if me == 0 { return Err(Error::Device(-abi::errno::EIO)); }
     let inherited = device::acquire(&SCRATCH.owner, me);
-    struct Held(u64);
-    impl Drop for Held { fn drop(&mut self) { SCRATCH.owner.store(self.0 << 1, Ordering::Release); } }
-    let _held = Held(me);
-    // A fork may copy the slot mid-update; its handles are the parent's. Abandon them unread.
-    if inherited { unsafe { SCRATCH.targets.get().write([None, None]); } }
+    // A fork may copy either slot mid-update. Abandon foreign handles without reading them.
+    if inherited { unsafe { SCRATCH.targets.get().write([None, None]); SCRATCH.geometry.get().write(None); } }
+    Ok(ScratchHeld(me))
+}
+
+/// A `width × height` region of scratch target `which`, its rows handed out once each.
+fn region(which: usize, width: usize, height: usize) -> Result<Region, Error> {
+    let _held = scratch_lock()?;
     // SAFETY: the PID-tagged lock is held for the rest of this call.
     let slot = unsafe { &mut (*SCRATCH.targets.get())[which] };
     let context = device::with(|d| Ok(d.context.handle())).map_err(Error::Device)?;
@@ -211,6 +215,25 @@ fn admit(segments: &[LineSegment], width: usize, height: usize) -> Result<(), Er
 /// The bytes one crossing table may hold; a taller glyph's rows are split across tables.
 const TABLE_BYTES: usize = 8 << 20;
 
+/// A table-sized geometry buffer, charged by the core and replaced on context recovery.
+/// SUBMIT snapshots parameter bytes before it returns, so a later table can overwrite it
+/// while earlier draws consume their immutable snapshots. No coverage pixels are cached.
+struct Geometry { context: u64, handle: u64, bytes: u64 }
+impl Drop for Geometry { fn drop(&mut self) { gpu::resource_destroy(self.handle); } }
+
+/// The caller holds SCRATCH's owner lock and the process's drawing context lock.
+fn geometry_buffer(context: u64, bytes: u64) -> Result<u64, i64> {
+    // SAFETY: render holds the PID-tagged scratch lock through upload and SUBMIT.
+    let slot = unsafe { &mut *SCRATCH.geometry.get() };
+    if slot.as_ref().is_some_and(|g| g.context != context) { *slot = None; }
+    if slot.as_ref().is_none_or(|g| g.bytes < bytes) {
+        let capacity = bytes.max(4096).next_power_of_two();
+        let handle = gpu::buffer_create(capacity)?;
+        *slot = Some(Geometry { context, handle, bytes: capacity });
+    }
+    Ok(slot.as_ref().expect("geometry created above").handle)
+}
+
 /// Coverage of `segments` into the glyph-sized `region`, as the core cleared it. Each table's
 /// rows are packed into submissions by their actual crossings, each submission's estimate at
 /// most half the work cap; no pixel values reach the CPU. Returns the last fence.
@@ -231,8 +254,9 @@ fn render(segments: &[LineSegment], width: usize, height: usize, region: &Region
         // blend copies it once.
         let pixel = |r: usize| 8192 * (1 + crossings[r]) + 1;
         let t = &region.target;
+        let _held = scratch_lock()?;
         let result = device::with(|d| {
-            let buffer = gpu::buffer_create(bytes as u64)?;
+            let buffer = geometry_buffer(d.context.handle(), bytes as u64)?;
             let sent = (|| {
                 bgl::geometry_upload(table, &d.context, buffer)?;
                 let mut draw = |x0: usize, x1: usize, r0: usize, r1: usize| -> Result<(), i64> {
@@ -264,7 +288,6 @@ fn render(segments: &[LineSegment], width: usize, height: usize, region: &Region
                 }
                 Ok(())
             })();
-            gpu::resource_destroy(buffer);
             if sent.is_err() { d.context.discard(); }
             sent
         });
