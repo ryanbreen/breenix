@@ -991,7 +991,10 @@ fn login_credentials() -> Verdict<LoginCredentials> {
     Ok(LoginCredentials { password, hash: std::str::from_utf8(&hash[..n]).map_err(|e| e.to_string())?.into() })
 }
 
-struct LoginAccount { passwd: Vec<u8>, shadow: Option<Vec<u8>>, password: String }
+/// The getty cases' account: an ordinary user (root's console login is off,
+/// `ROOT_LOGIN no`) whose shell is the login-shell oracle, listed in /etc/shells.
+const LOGIN_NAME: &str = "vtuser";
+struct LoginAccount { passwd: Vec<u8>, shadow: Option<Vec<u8>>, shells: Vec<u8>, password: String }
 impl LoginAccount {
     fn create() -> Verdict<Self> {
         let credentials = LOGIN_CREDENTIALS.get().ok_or("run credentials were not prepared")?
@@ -1002,10 +1005,13 @@ impl LoginAccount {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(format!("read shadow: {error}")),
         };
-        let account = Self { passwd, shadow, password: credentials.password.clone() };
-        std::fs::write("/etc/passwd", b"root:x:0:0:Console suite:/:/usr/bin/console-login-shell\n").map_err(|e| e.to_string())?;
-        std::fs::write("/etc/shadow", format!("root:{}:0:0:99999:7:::\n", credentials.hash))
+        let shells = std::fs::read("/etc/shells").map_err(|e| format!("read shells: {e}"))?;
+        let account = Self { passwd, shadow, shells, password: credentials.password.clone() };
+        std::fs::write("/etc/passwd", format!("root:x:0:0:root:/root:/bin/bsh\n{LOGIN_NAME}:x:2010:2010:Console suite:/:/usr/bin/console-login-shell\n"))
             .map_err(|e| e.to_string())?;
+        std::fs::write("/etc/shadow", format!("root:!:::::::\n{LOGIN_NAME}:{}:0:0:99999:7:::\n", credentials.hash))
+            .map_err(|e| e.to_string())?;
+        std::fs::write("/etc/shells", b"/bin/bsh\n/usr/bin/console-login-shell\n").map_err(|e| e.to_string())?;
         Ok(account)
     }
     fn restore(&self) -> Verdict {
@@ -1018,12 +1024,14 @@ impl LoginAccount {
             },
         }
         std::fs::write("/etc/passwd", &self.passwd).map_err(|e| e.to_string())?;
+        std::fs::write("/etc/shells", &self.shells).map_err(|e| e.to_string())?;
         let shadow_restored = match (std::fs::read("/etc/shadow"), &self.shadow) {
             (Ok(actual), Some(expected)) => actual == *expected,
             (Err(error), None) => error.kind() == std::io::ErrorKind::NotFound,
             _ => false,
         };
-        require(shadow_restored && std::fs::read("/etc/passwd").map_err(|e| e.to_string())? == self.passwd,
+        require(shadow_restored && std::fs::read("/etc/passwd").map_err(|e| e.to_string())? == self.passwd
+            && std::fs::read("/etc/shells").map_err(|e| e.to_string())? == self.shells,
             "account files were not restored")
     }
 }
@@ -1089,7 +1097,7 @@ fn login_vt(number: usize, password: &str) -> Verdict<String> {
     let began = libbreenix::suite::case_ms_left();
     wait_vt(number, "Breenix login: ")?;
     activate(number)?;
-    type_line("root")?;
+    type_line(LOGIN_NAME)?;
     wait_vt(number, "Password: ").map_err(|e| format!("{e}; screen ends: {}", screen_ends(number)))?;
     let password_at = libbreenix::suite::case_ms_left();
     type_line(password)?;
@@ -1121,7 +1129,7 @@ fn getty_wrong_password_refused() -> CaseResult {
         let _init = start_gettys()?;
         wait_vt(2, "Breenix login: ")?;
         activate(2)?;
-        type_line("root")?;
+        type_line(LOGIN_NAME)?;
         wait_vt(2, "Password: ")?;
         type_line("wrong")?;
         let text = wait_vt(2, "Login incorrect")?;

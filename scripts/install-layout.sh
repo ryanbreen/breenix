@@ -48,14 +48,27 @@ if [ -f "$root/usr/libexec/breenix/rust-std-child_test" ]; then
     ln "$root/usr/libexec/breenix/rust-std-child_test" "$root/usr/libexec/breenix/rust-std-child_test$(printf '\377')"
 fi
 printf 'root:!:::::::\nnobody:*:::::::\nsshtest:!:::::::\n' > "$root/etc/shadow"
+# The users suite's fixture accounts (docs/users/design.md, section 6): test images
+# only, with locked passwords. Their homes sit beside the other test credentials in
+# /etc/breenix, which the persistent install leaves behind with these lines.
+for fixture in ua:2001 ub:2002 uw:2003; do
+    name=${fixture%%:*}; id=${fixture#*:}
+    printf '%s:x:%s:%s:Users suite fixture:/etc/breenix/test-users/%s:/bin/bsh\n' "$name" "$id" "$id" "$name" >> "$root/etc/passwd"
+    printf '%s:x:%s:\n' "$name" "$id" >> "$root/etc/group"
+    printf '%s:!:::::::\n' "$name" >> "$root/etc/shadow"
+    mkdir -p "$root/etc/breenix/test-users/$name"
+    chown "$id:$id" "$root/etc/breenix/test-users/$name"
+    chmod 0700 "$root/etc/breenix/test-users/$name"
+done
 printf 'permit %%wheel as root\n' > "$root/etc/sudo.policy"
 printf 'UMASK 022\nROOT_LOGIN no\nFAIL_DELAY 2\n' > "$root/etc/login.defs"
 printf '/bin/sh\n/bin/bsh\n' > "$root/etc/shells"
 cat >> "$root/etc/group" <<'GROUPS'
 adm:x:4:
 tty:x:5:
-wheel:x:10:
+wheel:x:10:uw
 users:x:100:
+ug:x:2100:ua
 GROUPS
 while read -r kind path mode uid gid; do
     case "$kind" in

@@ -29,11 +29,13 @@ const STORE: &str = ".breenix-shared";
 const OPERATOR: &str = "etc/breenix/operator-account";
 /// The operator account's uid and gid: the first ordinary account's.
 const OPERATOR_ID: u32 = 1000;
-/// The test image's SSH account (scripts/create_ext2_disk.sh), left out of each generation's account files.
-const TEST_ACCOUNT: &str = "sshtest";
-/// Source paths the copy leaves behind: the test image's SSH client key
-/// and test account home, and the staged operator account.
-const LEFT_BEHIND: [&str; 2] = ["etc/breenix/test-ssh", OPERATOR];
+/// The test image's accounts (scripts/create_ext2_disk.sh and scripts/install-layout.sh):
+/// the SSH oracle's account and the users suite's fixtures, with the fixtures' group.
+/// They are left out of each generation's account files, and out of other groups' member lists.
+const TEST_ACCOUNTS: [&str; 5] = ["sshtest", "ua", "ub", "uw", "ug"];
+/// Source paths the copy leaves behind: the test image's SSH client key and
+/// test account home, the fixture accounts' homes, and the staged operator account.
+const LEFT_BEHIND: [&str; 3] = ["etc/breenix/test-ssh", "etc/breenix/test-users", OPERATOR];
 /// Inside a copied `/root`: a test image's authorized keys are not the install's.
 const ROOT_LEFT_BEHIND: &str = "root/.ssh";
 
@@ -311,7 +313,8 @@ fn stage_store(copier: &mut Copier, target: &Path, operator: Option<&Operator>) 
     Ok(())
 }
 
-/// Leave the test image's SSH account out of a generation's account files.
+/// Leave the test image's accounts out of a generation's account files: their
+/// own lines, and their names in other groups' member lists.
 fn drop_test_account(copier: &mut Copier, etc: &Path) -> Result<(), String> {
     for file in ["passwd", "group", "shadow"] {
         let path = etc.join(file);
@@ -319,16 +322,30 @@ fn drop_test_account(copier: &mut Copier, etc: &Path) -> Result<(), String> {
             continue;
         }
         let text = fs::read_to_string(&path).map_err(|error| fail("read", &path, error))?;
-        let kept: Vec<&str> = text.lines().filter(|line| line.split(':').next() != Some(TEST_ACCOUNT)).collect();
-        if kept.len() != text.lines().count() {
+        let kept: Vec<String> = text
+            .lines()
+            .filter(|line| !TEST_ACCOUNTS.contains(&line.split(':').next().unwrap_or("")))
+            .map(|line| without_test_members(file, line))
+            .collect();
+        if kept.iter().map(String::as_str).ne(text.lines()) {
             let mode = fs::symlink_metadata(&path).map_err(|error| fail("stat", &path, error))?.mode() & 0o7777;
             let mut kept = kept.join("\n");
             kept.push('\n');
             copier.write_file(&path, &kept, mode)?;
-            println!("[persistent] left out the test account {} from /etc/{}", TEST_ACCOUNT, file);
+            println!("[persistent] left out the test accounts from /etc/{}", file);
         }
     }
     Ok(())
+}
+
+/// A group line without the test accounts among its members; other lines as they are.
+fn without_test_members(file: &str, line: &str) -> String {
+    let fields: Vec<&str> = line.split(':').collect();
+    if file != "group" || fields.len() != 4 {
+        return line.to_string();
+    }
+    let members: Vec<&str> = fields[3].split(',').filter(|m| !m.is_empty() && !TEST_ACCOUNTS.contains(m)).collect();
+    format!("{}:{}:{}:{}", fields[0], fields[1], fields[2], members.join(","))
 }
 
 /// Seed missing names through flushed scratch files and rename. Existing names
@@ -791,8 +808,9 @@ mod tests {
         fs::create_dir_all(source.join("etc/breenix/test-ssh/home")).unwrap();
         fs::write(source.join("etc/breenix/test-ssh/id_ed25519"), b"test-only private key").unwrap();
         fs::write(source.join(OPERATOR), format!("user operator\nkey {}\n", KEY)).unwrap();
-        fs::write(source.join("etc/passwd"), "root:x:0:0:root:/root:/bin/sh\nsshtest:x:2000:2000:sshtest:/etc/breenix/test-ssh/home:/bin/sh\n").unwrap();
-        fs::write(source.join("etc/group"), "root:x:0:\nsshtest:x:2000:\n").unwrap();
+        fs::create_dir_all(source.join("etc/breenix/test-users/ua")).unwrap();
+        fs::write(source.join("etc/passwd"), "root:x:0:0:root:/root:/bin/sh\nsshtest:x:2000:2000:sshtest:/etc/breenix/test-ssh/home:/bin/sh\nua:x:2001:2001:Users suite fixture:/etc/breenix/test-users/ua:/bin/bsh\n").unwrap();
+        fs::write(source.join("etc/group"), "root:x:0:ua\nsshtest:x:2000:\nua:x:2001:\nug:x:2100:ua\n").unwrap();
         fs::create_dir(source.join("root/.ssh")).unwrap();
         fs::write(source.join("root/.ssh/authorized_keys"), b"ssh-ed25519 AAAA test-image").unwrap();
         // A fresh system partition: /root is copied from the image, without its .ssh.
@@ -801,6 +819,7 @@ mod tests {
         install_tree(&source, &system, "first", &mut || Ok(())).unwrap();
         let root = selected(&system, "first");
         assert!(!root.join("etc/breenix/test-ssh").exists());
+        assert!(!root.join("etc/breenix/test-users").exists());
         assert!(!root.join(OPERATOR).exists());
         assert_eq!(fs::read_to_string(system.join(STORE).join("etc/passwd")).unwrap(), "root:x:0:0:root:/root:/bin/sh\noperator:x:1000:1000:operator:/home/operator:/bin/bsh\n");
         assert_eq!(fs::read_to_string(system.join(STORE).join("etc/group")).unwrap(), "root:x:0:\noperator:x:1000:\n");

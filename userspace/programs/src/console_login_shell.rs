@@ -9,7 +9,8 @@ fn vt_ioctl(fd: libbreenix::types::Fd, request: u64, arg: u64) -> Verdict<u64> {
     let ret = unsafe { raw::syscall3(nr::IOCTL, fd.raw(), request, arg) };
     Error::from_syscall(ret as i64).map_err(|e| format!("ioctl {request:x}: {e}"))
 }
-// Login invokes this entry point as the staged account's shell.
+// Login invokes this entry point as the staged account's shell (the console
+// suite's `vtuser`, an ordinary account, so only its own VT opens below).
 fn login_shell() -> Verdict {
     use libbreenix::{process, termios, types::Fd};
     let pid = process::getpid().map_err(|e| e.to_string())?.raw();
@@ -33,7 +34,7 @@ fn login_shell() -> Verdict {
         matches
     }).ok_or("login terminal is not a numbered VT")?;
     require(std::env::var("TERM").as_deref() == Ok("breenix")
-        && std::env::var("USER").as_deref() == Ok("root"), "login environment differs")?;
+        && std::env::var("USER").as_deref() == Ok("vtuser"), "login environment differs")?;
     println!("VTLOGIN tty{number} sid={sid} pgid={pgid}");
     let mut line = String::new();
     let count = std::io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
