@@ -152,10 +152,25 @@ fn ordinary_sync_callers_still_dispatch_their_requests() {
     assert!(c.start_sync(20, r, 3, &[7], &[], None).is_ok());
     assert_eq!(c.flushes, 1);
 }
+#[test]
+fn progress_dma_allows_later_gpu_writers_but_cpu_reads_exclude_them() {
+    let mut c = Core::new();
+    c.progress_readback();
+    let written = [7];
+    for id in [3,4] {
+        assert!(!({WRITE_BLOCKED}), "a queued progress transfer cannot block a later GPU writer in context {id}");
+    }
+    c.resources.get_mut(&7).unwrap().progress_context = None;
+    let id = 4;
+    assert!({WRITE_BLOCKED}, "an ordinary CPU read still excludes GPU context {id}");
+}
 '''
         methods = "\n".join(method(name) for name in
                             ("start_sync", "queue_sync", "progress_readback", "abandon", "unhold", "end_reading"))
         source = source.replace("// PRODUCTION", methods)
+        blocked = re.search(r"if (written\.iter\(\)\.any\([^\n]*r\.reading[^\n]*\)) \{", CORE)
+        self.assertIsNotNone(blocked, "production write/read exclusion predicate is missing")
+        source = source.replace("{WRITE_BLOCKED}", blocked[1])
         with tempfile.TemporaryDirectory(prefix="gpu-progress-") as directory:
             rust = Path(directory) / "progress.rs"
             binary = Path(directory) / "progress"
