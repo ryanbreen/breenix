@@ -1,0 +1,79 @@
+{
+  "id": "filesystem",
+  "title": "Copy-on-write filesystem",
+  "area": "Filesystem",
+  "summary": "Breenix's copy-on-write filesystem reads, writes, commits atomically, checksums and scrubs, snapshots and recovers from crashes and power cuts without losing an acknowledged write, behind a filesystem interface ext2 also implements.",
+  "binary": "/sbin/suite-filesystem",
+  "categories": [
+    {
+      "id": "interface",
+      "title": "Mounts and file operations through the filesystem interface",
+      "cases": []
+    },
+    {
+      "id": "buffer-cache",
+      "title": "The shared buffer cache: verified misses, write groups and flush ordering",
+      "cases": []
+    },
+    {
+      "id": "format",
+      "title": "Formatter images pass the independent checker and violating images are refused",
+      "cases": []
+    },
+    {
+      "id": "read",
+      "title": "A host-built filesystem reads back as its manifest",
+      "cases": []
+    },
+    {
+      "id": "write",
+      "title": "File and directory operations commit through transactions",
+      "cases": []
+    },
+    {
+      "id": "enospc",
+      "title": "Space reservation: ENOSPC with nothing changed, freeing from the reserve",
+      "cases": []
+    },
+    {
+      "id": "crash-images",
+      "title": "Host-enumerated crash images recover to an acknowledged commit",
+      "cases": []
+    },
+    {
+      "id": "checksum",
+      "title": "Corrupt data and nodes return EIO and never panic",
+      "cases": []
+    },
+    {
+      "id": "scrub",
+      "title": "Scrub finds and names corrupted blocks",
+      "cases": []
+    },
+    {
+      "id": "snapshots",
+      "title": "Read-only snapshots, writable clones and resumable deletion",
+      "cases": []
+    },
+    {
+      "id": "test-root",
+      "title": "Every suite runs with the test root on the copy-on-write filesystem",
+      "cases": []
+    },
+    {
+      "id": "power-cut",
+      "title": "Power cuts during commits lose no acknowledged write",
+      "cases": []
+    },
+    {
+      "id": "persistent-root",
+      "title": "The persistent install migrates from ext2 with equal manifests and rolls back",
+      "cases": []
+    },
+    {
+      "id": "ext2-retired",
+      "title": "The ext2 partitions are reclaimed after two verified upgrades",
+      "cases": []
+    }
+  ]
+}

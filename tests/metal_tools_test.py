@@ -1234,6 +1234,34 @@ class DriverTest(StateTest):
             self.assertFalse(d.score_suite())
         self.assertIn('timed out', (d.dir / 'suite-verdict.txt').read_text())
 
+    def test_milestone_scoring_receives_the_boot_commits_path(self):
+        d = self.driver
+        d.args.mode, d.args.suite, d.args.milestone = 'suite', 'fixture', 'fixture/first'
+        repo = TOOLS.parents[1]
+        definition = d.dir / 'definition'
+        for source, target in ((repo / 'scripts/suite-verdict.py', 'scripts/suite-verdict.py'),
+                               (repo / 'docs/boot-path.json', 'docs/boot-path.json'),
+                               (repo / 'tests/fixtures/suite-verdict/manifest.json', 'docs/suites/fixture.json')):
+            path = definition / target
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, path)
+        path = definition / 'docs/efforts/path.json'
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(dict(efforts=[dict(id='fixture', milestones=[
+            dict(id='first', measure=dict(suite='fixture', categories=['first']))])])))
+        shutil.copyfile(repo / 'tests/fixtures/suite-verdict/all-pass.txt', d.dir / 'serial.txt')
+        real_run = subprocess.run
+        def scorer(command, **options):
+            binding = next(arg.split('=', 2)[2] for arg in command if arg.startswith('--property=BindReadOnlyPaths='))
+            root, sandbox = binding.split(':')
+            start = command.index(sys.executable)
+            args = [arg.replace(sandbox, root) for arg in command[start:]]
+            self.assertEqual(args[-2:], ['--milestone', 'fixture/first'])
+            return real_run(args, **options)
+        with patch.object(boot.subprocess, 'run', side_effect=scorer):
+            self.assertTrue(d.score_suite())
+        self.assertIn('milestone categories=first passed=2 total=2', (d.dir / 'suite-verdict.txt').read_text())
+
     def test_suite_scoring_only_runs_after_confirmed_power_off(self):
         d = self.driver
         d.args.mode, d.args.suite = 'suite', 'smoke'
@@ -1779,6 +1807,9 @@ class BuildSlotTest(unittest.TestCase):
             for path in (image, stub, stub.with_name('metal-boot-manager.efi'), clone / 'testdata/ext2.img'):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b'bytes')
+            path = clone / 'docs/efforts/path.json'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('fixture effort path')
             order = []
             def run(command, **options):
                 order.append(command[2:])
@@ -1795,6 +1826,7 @@ class BuildSlotTest(unittest.TestCase):
                  patch.object(build.subprocess, 'call', side_effect=call):
                 self.assertEqual(build.inner(args), 0)
             built = json.loads((out / 'build.json').read_text())
+            self.assertEqual((out / 'definition/docs/efforts/path.json').read_text(), 'fixture effort path')
             built['builtRoot'] = (clone / 'testdata/ext2.img').read_bytes()
             built['clone'] = str(clone)
             return build, clone, tmp, order, (out / 'ext2.img').read_bytes(), built

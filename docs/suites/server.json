@@ -1,0 +1,54 @@
+{
+  "id": "server",
+  "title": "Unattended server",
+  "area": "Server",
+  "summary": "A persistent install serves the LAN unattended: SSH by keys only, binary-safe transfers, supervised services with logs, synchronized time, clean reboots, watchdog recovery, the resting state and remote upgrades with automatic rollback.",
+  "binary": "/sbin/suite-server",
+  "categories": [
+    {
+      "id": "ssh-keys",
+      "title": "Keys-only SSH: per-install host keys, per-account authorized keys, no password or telnet",
+      "cases": []
+    },
+    {
+      "id": "transfer",
+      "title": "Binary-safe exec stdin and verified uploads over SSH",
+      "cases": []
+    },
+    {
+      "id": "services",
+      "title": "Service supervision: dependencies, restart with backoff, crash-loop reporting, graceful stop",
+      "cases": []
+    },
+    {
+      "id": "logs",
+      "title": "Per-service and kernel logs with boot IDs and size-bounded rotation",
+      "cases": []
+    },
+    {
+      "id": "time",
+      "title": "SNTP synchronization, slewing after the first step, RTC kept in UTC",
+      "cases": []
+    },
+    {
+      "id": "reboot",
+      "title": "Reboot and power-off after sync and a read-only remount; a panic reboots",
+      "cases": []
+    },
+    {
+      "id": "watchdog",
+      "title": "A hang is reset by the watchdog back into the persistent install",
+      "cases": []
+    },
+    {
+      "id": "resting-state",
+      "title": "Test boots preempt the persistent install and the machine returns to it",
+      "cases": []
+    },
+    {
+      "id": "remote-upgrade",
+      "title": "Remote upgrades verified over SSH and rolled back automatically",
+      "cases": []
+    }
+  ]
+}

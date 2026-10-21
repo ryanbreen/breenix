@@ -1,0 +1,89 @@
+{
+  "id": "toolchain",
+  "title": "Native C toolchain",
+  "area": "Toolchain",
+  "summary": "Breenix's own C compiler, assembler, static linker and make build and run programs on Breenix, rebuild themselves to identical bytes, and compile the libc suite and BusyBox.",
+  "binary": "/sbin/suite-toolchain",
+  "categories": [
+    {
+      "id": "inputs",
+      "title": "The sysroot inventory and the cross-built reference corpus",
+      "cases": []
+    },
+    {
+      "id": "assembler",
+      "title": "Instruction encodings and ELF objects from our assembler",
+      "cases": []
+    },
+    {
+      "id": "linker",
+      "title": "Static links of our libc archive: GOT, archives, linker script and TLS",
+      "cases": []
+    },
+    {
+      "id": "c-core",
+      "title": "Preprocessor, parser, semantics and code generation for hello and its diagnostics",
+      "cases": []
+    },
+    {
+      "id": "make",
+      "title": "POSIX make: graphs, timestamps, inference, macros and exit status",
+      "cases": []
+    },
+    {
+      "id": "project",
+      "title": "A multi-file C and assembly project: build, no-op and header-triggered rebuild",
+      "cases": []
+    },
+    {
+      "id": "bootstrap",
+      "title": "The language subset the tools' own sources use",
+      "cases": []
+    },
+    {
+      "id": "abi",
+      "title": "System V x86-64 calling convention: aggregates, varargs, SSE and x87",
+      "cases": []
+    },
+    {
+      "id": "tls",
+      "title": "Thread-local storage and per-thread errno",
+      "cases": []
+    },
+    {
+      "id": "self-host",
+      "title": "The tools rebuild themselves with stage 2 and stage 3 byte-identical",
+      "cases": []
+    },
+    {
+      "id": "c11",
+      "title": "The declared C11 feature profile and its diagnostics",
+      "cases": []
+    },
+    {
+      "id": "c17",
+      "title": "C17 corrections and the small optimization pipeline",
+      "cases": []
+    },
+    {
+      "id": "libc-suite",
+      "title": "The libc suite's C sources compiled on the box, compared case by case",
+      "cases": []
+    },
+    {
+      "id": "gnu-workloads",
+      "title": "The GNU C and make extensions BusyBox's build needs",
+      "cases": []
+    },
+    {
+      "id": "busybox",
+      "title": "BusyBox rebuilt offline on the box with its required applets",
+      "cases": []
+    },
+    {
+      "id": "kernel-asm",
+      "title": "The kernel's assembly dialect through our assembler",
+      "cases": []
+    }
+  ]
+}
