@@ -18,8 +18,12 @@ on the R240 first and the catch-up brings the VMs to the same bar (D6). Their su
 are skeleton manifests whose cases arrive with the lanes; the plan and the
 operator decisions are in `docs/metal/server-plan.md`.
 
-The users `accounts` milestone is in progress under #2245: the shared account
-library, administration tools and 18 accounts cases ([protocol](../users/accounts.md)).
+The users `accounts` milestone landed in #2247: the shared account library,
+administration tools and 18 accounts cases ([protocol](../users/accounts.md)).
+The `login` and `admin` milestones are in progress on `metal-users/login-admin`:
+one session path for login, su, sudo and bsshd, terminal owners, `ROOT_LOGIN`,
+set-user-ID su, sudo and passwd, the sudo policy and the authentication log, with
+28 login, ssh, su and sudo cases ([logins and administration](../users/login.md)).
 
 The #2149 repair connects bwm's stdin keys to hotkey matching and makes keyboard
 input ready the compositor wait. The #2125/#2143 follow-up makes `run.sh`'s

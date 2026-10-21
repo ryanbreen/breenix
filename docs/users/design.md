@@ -273,11 +273,14 @@ graphical login is later main-path work.
 
 `docs/suites/users.json`, `/sbin/suite-users`, running as PID 1 on the test root.
 - **Fixtures:** test images only get `ua` 2001, `ub` 2002, `uw` 2003 (in wheel) and group `ug` 2100 (member
-  `ua`), with a hash generated at image build. It is not committed and not staged on the persistent install.
+  `ua`), with locked passwords; the persistent install leaves them out. The login and admin cases make their own
+  accounts through the library with passwords set at run time, and R240 console boots stage the private console
+  password for `uw` ([logins and administration](login.md)). No password or hash is committed.
 - **Cases:** each forks a child that becomes a fixture account through `become`, performs the operation and
   reports through a pipe.
 - **Targets:** ARM64 QEMU for iteration (S2); acceptance is `metal-run boot --suite users --milestone users/<milestone-id>` on the R240. The `ssh`
-  category uses loopback bssh on QEMU and the boot host's OpenSSH on the R240.
+  category uses loopback bsshd and bssh on each target; the boot host's OpenSSH drives the host-driven
+  `operator` category.
 
 | Category | Representative cases |
 |---|---|

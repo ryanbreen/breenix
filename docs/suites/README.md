@@ -250,9 +250,12 @@ the sdk suite, whose C and Rust apps open TCP sockets, 63 pages short. On x86-64
 terminated while a reclaim pass was running could also lose its place in the count the idle
 loop reclaims by, and keep its 32-page kernel stack past the second sample; a pass now adds
 back what it leaves instead of overwriting the count.
-The runner's own pages are its allocation cache: Breenix's `malloc` maps each block and keeps
-up to 16 freed blocks of each size class up to 2 KiB, so they grow as the runner draws its
-panel and formats its records.
+The runner's own pages included its allocation cache: Breenix's `malloc` maps each block and
+keeps up to 16 freed blocks of each size class up to 2 KiB (at most 128 pages), so they grew as
+the runner drew its panel and formatted its records. Each sample now first unmaps that cache
+(`__breenix_malloc_release_cached` in the C library), so both samples count what the runner
+uses and not free blocks it holds for reuse. The users suite at 105 cases had been 53 pages
+short with the cache counted and was 9 pages short with it released (ARM64 QEMU, 2026-10-21).
 
 ## Writing a suite
 
@@ -1414,12 +1417,16 @@ Its `kernel-checks` milestone's categories have cases: `credentials` (7), `files
 `sticky` (7), `setid-exec` (8), `signals` (5), `proc-dev` (8) and `umask` (4), 54 cases. The
 layout category has 5 cases, and accounts has 18 cases covering the library and
 installed administration tools ([account protocol](../users/accounts.md)).
-The remaining categories arrive with their milestones (design section 7).
+The login milestone's `login` (8) and `ssh` (5) and the admin milestone's `su` (7) and `sudo`
+(8) categories run the installed getty, login, su, sudo, passwd, bsshd and bssh as per-case
+accounts ([logins and administration](../users/login.md), "The users suite's categories").
+The `operator` category arrives with its milestone (design section 7).
 
 The suite runs as root. A case that needs another identity forks a child that becomes a
 fixture account (its supplementary groups, then setresgid and setresuid, then a refused
-setuid(0)) and reports through a pipe. The accounts are IDs only: ua 2001 (in group ug 2100),
-ub 2002 and uw 2003 (in wheel, 10). Set-ID cases copy `/usr/local/test/bin/users-exec_test`
+setuid(0)) and reports through a pipe. The fixture accounts are ua 2001 (in group ug 2100),
+ub 2002 and uw 2003 (in wheel, 10); test images list them with locked passwords and homes under
+`/etc/breenix/test-users`, and the kernel-checks cases use their IDs. Set-ID cases copy `/usr/local/test/bin/users-exec_test`
 (`userspace/programs/src/users_exec.rs`), which has no Rust `main`, so the standard library's
 start-up does not reopen closed descriptors before the program reports them. A refusal case
 whose refusal could have an unrelated cause (a missing file, device or network stack, or a
@@ -1435,4 +1442,8 @@ operations 6 and 32.
 ```bash
 scripts/boot-interactive.sh --mode suite --suite users
 python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite users --milestone users/kernel-checks
+python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite users --milestone users/admin
 ```
+
+A full-suite verdict stays refused while `operator` has no cases; each milestone's selector scores its own
+categories.

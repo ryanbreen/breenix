@@ -1144,21 +1144,28 @@ completion markers.
 Console development boots use `--mode console --input sol`. Staging selects `/sbin/init console`,
 which detaches init's controlling terminal and respawns `/bin/getty` with the shell mode's one-second rate limit.
 Getty creates a session, opens the console, acquires it as the controlling terminal, installs descriptors 0–2,
-sets canonical termios and checks the foreground group. It executes login, which reads with echo disabled,
-verifies the staged SHA-512-crypt hash, clears supplementary groups, sets the account's group and user IDs,
-changes to its home and executes the shell with a login argv[0] and a fresh environment.
-Missing, locked or unsupported shadow entries refuse authentication.
+sets canonical termios and checks the foreground group. It executes login, which reads with echo disabled and
+starts the session through the accounts library ([logins and administration](../users/login.md)): the staged
+SHA-512-crypt hash, the account's groups and IDs, the terminal, the umask, its home and the shell with a login
+argv[0] and a fresh environment. Missing, locked, expired or unsupported shadow entries refuse authentication,
+and so does root under the shipped `ROOT_LOGIN no`.
 
 The private site file supplies `CONSOLE_USER=root` and a generated `CONSOLE_PASSWORD`; the operator's
 copy belongs in their private credentials store. `CONSOLE_IDENTITY_KEY` is a separate random 32-byte key
 encoded as 64 lowercase hex digits. The kept credential identity is an HMAC-SHA256 under that key,
 so records alone do not provide a password verifier. These fields are host-only. Staging builds a fresh random
 salt and hashes through a host helper compiled from the same Breenix SHA-512-crypt code used by login.
-It writes and reads back `/etc/shadow` with root ownership and mode 0600. The cached image has no password.
+It writes and reads back `/etc/shadow` with root ownership and mode 0600, setting that password for root (su's
+target) and for the users suite's wheel fixture `uw`, each with its own salt, and keeping the image's other lines.
+The cached image has no password. On an image that carries `uw`, the console account is `uw`; login refuses root
+there, and root is reached with `sudo` or `su -`. An image from before the users effort's login milestone has no
+`uw`, and the console account is root.
 Passwords reach the helper and SOL input over stdin, without command arguments or event text.
 
-The SOL challenge requires a wrong password refusal before the successful authentication, the whole answer line
-`metal-login-ok 42`, `cat /proc/fbcon/check` showing the screen matches its shadow with that answer on a row,
+The SOL challenge logs in as the console account. It requires a wrong password refusal before the successful
+authentication, the whole answer line `metal-login-ok 42`, the root-only `/proc/fbcon/check` (through
+`sudo cat /proc/fbcon/check` and the same password when the account is `uw`) showing the screen matches its shadow
+with that answer on a row,
 logout, checked controlling-terminal reacquisition and a new login prompt. Its run records `input: sol` and
 `evidenceEligible: false`.
 
@@ -1318,10 +1325,11 @@ The driver builds main, takes the machine lease and powers on. **Hands off the k
 appears.** The kernel has finished its ten keyboard detach/reattach rounds before starting getty.
 Then type, pressing **Enter** after each line:
 
-1. `root`, then at `Password:` any wrong password. Wait for `Login incorrect` and a new `Breenix login:`.
-2. `root`, then at `Password:` the real password. Wait for the `bsh` prompt.
+1. `uw`, then at `Password:` any wrong password. Wait for `Login incorrect` and a new `Breenix login:`.
+2. `uw`, then at `Password:` the real password. Wait for the `bsh` prompt.
 3. `print("metal-login-ok", 6*7)`, and look for `metal-login-ok 42` on its own line.
-4. `cat /proc/fbcon/check`, and look for `fbcon check: shadow and screen identical`.
+4. `sudo cat /proc/fbcon/check`, the same password at `[sudo] password for uw:`, and look for
+   `fbcon check: shadow and screen identical`.
 5. `logout`, and wait for a new `Breenix login:`. The driver then powers the machine off.
 
 - A typo is fine: a failed login just returns to `Breenix login:`; start that step again. Any number of failed
