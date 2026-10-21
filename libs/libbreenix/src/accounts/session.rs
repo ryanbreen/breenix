@@ -328,14 +328,20 @@ pub fn login_environment(account: &Account, term: Option<&str>) -> Vec<String> {
     environment
 }
 
-/// Step 5: enter the home (or `/`, with a message, when it is unavailable)
-/// and replace this process with the account's shell. A login shell's
-/// `argv[0]` is `-` and the shell's name; `command` runs `shell -c command`.
-pub fn exec_shell(account: &Account, environment: &[String], login: bool, command: Option<&str>) -> Result<std::convert::Infallible> {
+/// Enter the account's home, or `/` with a message when it is unavailable.
+pub fn enter_home(account: &Account) -> Result<()> {
     if std::env::set_current_dir(&account.home).is_err() {
         eprintln!("home directory {} is not available; starting in /", account.home);
         std::env::set_current_dir("/").map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+/// Step 5: enter the home (or `/`, with a message, when it is unavailable)
+/// and replace this process with the account's shell. A login shell's
+/// `argv[0]` is `-` and the shell's name; `command` runs `shell -c command`.
+pub fn exec_shell(account: &Account, environment: &[String], login: bool, command: Option<&str>) -> Result<std::convert::Infallible> {
+    enter_home(account)?;
     let text = |s: &str| CString::new(s).map_err(|_| "text contains NUL".to_string());
     let base = account.shell.rsplit('/').next().unwrap_or("sh");
     let mut argv = vec![text(&if login { format!("-{base}") } else { base.to_owned() })?];

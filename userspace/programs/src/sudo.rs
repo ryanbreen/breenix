@@ -14,7 +14,9 @@
 //!   password would be needed.
 //! - The command gets a reset environment (PATH as above, the target's HOME,
 //!   USER and LOGNAME, TERM kept, SUDO_USER and SUDO_COMMAND), umask 022, and
-//!   the target's groups and IDs. `-i` runs the target's login shell in its home.
+//!   the target's groups and IDs. `-i` starts in the target's home with SHELL
+//!   set, and runs the target's login shell when no command is given. The
+//!   command runs as its argument vector, not through a shell.
 //! - Each attempt is recorded in `/var/log/auth.log`.
 use libbreenix::accounts::{self, policy, session};
 use std::ffi::CString;
@@ -216,8 +218,12 @@ fn run() -> Result<std::convert::Infallible, String> {
     session::set_umask(&session::LoginDefs { umask: 0o022, ..defs });
     if request.login {
         environment.push(format!("SHELL={}", target.shell));
-        let command = (!request.command.is_empty()).then(|| cmd.clone());
-        return session::exec_shell(&target, &environment, true, command.as_deref());
+        if request.command.is_empty() {
+            return session::exec_shell(&target, &environment, true, None);
+        }
+        // The permitted program runs with its own arguments: a shell would
+        // read them as a command line and run whatever else they name.
+        session::enter_home(&target)?;
     }
     let argv: Vec<CString> = std::iter::once(program.as_str())
         .chain(request.command.iter().skip(1).map(String::as_str))
