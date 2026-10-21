@@ -27,11 +27,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "libfont"
+version = "0.1.0"
+
+[[package]]
 name = "libgfx"
 version = "0.1.0"
 dependencies = [
  "bgl",
  "libbreenix",
+ "libfont",
  "libgfx-pixel",
  "noto-sans-mono-bitmap",
 ]

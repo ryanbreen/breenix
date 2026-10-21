@@ -10,6 +10,7 @@ description = "Breenix userspace graphics library: BreenGL drawing through BGL o
 crate-type = ["rlib"]
 
 [dependencies]
+libfont = { path = "../libfont" }
 bgl = { path = "../bgl" }
 libbreenix = { path = "../libbreenix" }
 libgfx-pixel = { path = "../libgfx-pixel" }
