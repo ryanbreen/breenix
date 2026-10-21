@@ -257,6 +257,7 @@ struct Ctx {
     dx: svga::encode::Objects,
     vb: u32,
     vertex_arena: Option<VertexArena>,
+    private_scratch: Vec<PrivateScratch>,
     scratch: u32,
     /// The 1x1 texture the warm-up's sampling draws read.
     scratch_texture: u32,
@@ -275,6 +276,8 @@ struct Ctx {
     /// them. Pending callers register before sending; interrupted callers unregister.
     flushes: present_answers::Answers,
 }
+
+struct PrivateScratch { id: u32, class: u32, accepted: bool }
 
 struct VertexArena {
     id: u32,
@@ -1427,6 +1430,7 @@ impl Core {
             if let Some(c) = self.contexts.remove(&id) {
                 gauge(&GPU_CONTEXTS, -1);
                 if let Some(arena) = c.vertex_arena { self.unhold(arena.id); }
+                for scratch in c.private_scratch { self.unhold(scratch.id); }
                 for internal in [c.vb, c.scratch, c.scratch_texture] {
                     if let Some(r) = self.resources.get_mut(&internal) {
                         r.dropped = true;
@@ -2609,6 +2613,7 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
                 dx: svga::encode::Objects::new(0),
                 vb,
                 vertex_arena: None,
+                private_scratch: Vec::new(),
                 scratch,
                 scratch_texture,
                 warm: 0,
@@ -3445,6 +3450,12 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
                     if !arena.accepted { ctx.vertex_arena.take() } else { None }
                 });
                 if let Some(arena) = abandoned { c.unhold(arena.id); }
+                let unused = if let Some(ctx) = c.contexts.get_mut(&id) {
+                    let unused: Vec<u32> = ctx.private_scratch.iter().filter(|s| !s.accepted).map(|s| s.id).collect();
+                    ctx.private_scratch.retain(|s| s.accepted);
+                    unused
+                } else { Vec::new() };
+                for rid in unused { c.unhold(rid); }
                 if let Some(ctx) = c.contexts.get_mut(&id) {
                     ctx.outcomes.insert(writer.n, (fence_status::DEVICE_ERROR, 0));
                     ctx.early.insert(writer.n);
@@ -3495,7 +3506,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         if w == 0 || h == 0 || svga {
             continue;
         }
-        match scratch_for(w, h) {
+        match scratch_for(tgid, id, slot as u32, w, h) {
             Ok(rid) => copy_scratch[slot] = rid,
             Err(e) => {
                 with_core(|c| {
@@ -3511,7 +3522,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     let data_width = with_core(|c| c.caps.max_width).unwrap_or(0).min(16384);
     let data_width = 1u32 << (31-data_width.leading_zeros());
     let data_texture = if plan.data_bytes > 0 && !svga {
-        match scratch_for(data_width, (plan.data_bytes/4).div_ceil(data_width)) {
+        match scratch_for(tgid, id, 2, data_width, (plan.data_bytes/4).div_ceil(data_width)) {
             Ok(rid)=>rid,
             Err(e)=>{
                 with_core(|c|for rid in vertex_buffer.into_iter().chain(copy_scratch.into_iter().filter(|&r|r!=0)){c.unhold(rid);});
@@ -3546,7 +3557,8 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         release_slot(false);
         return Err(EIO);
     };
-    let keeps = |rid: &u32| *rid != scratch && *rid != scratch_texture && !view.has_id(*rid);
+    let private_ids: Vec<u32> = with_core(|c| c.contexts.get(&id).map(|ctx| ctx.private_scratch.iter().map(|s| s.id).collect())).flatten().unwrap_or_default();
+    let keeps = |rid: &u32| *rid != scratch && *rid != scratch_texture && !view.has_id(*rid) && !private_ids.contains(rid);
     let stale: Vec<u32> = if svga {
         dx_objects.resources().filter(keeps).collect()
     } else {
@@ -3728,12 +3740,12 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             });
         }
         for ((rid, f), [w, h]) in copy_scratch.into_iter().zip([format::B8G8R8A8, format::R8G8B8A8]).zip(plan.scratch) {
-            if rid != 0 {
+            if rid != 0 && with_core(|c| c.resources.get(&rid).is_some_and(|r| r.lost)).unwrap_or(false) {
                 create_private(id, rid, wire::target::TEXTURE_2D, virgl_format(f),
                     wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW, w, h)?;
             }
         }
-        if data_texture != 0 {
+        if data_texture != 0 && with_core(|c| c.resources.get(&data_texture).is_some_and(|r| r.lost)).unwrap_or(false) {
             create_private(id, data_texture, wire::target::TEXTURE_2D, wire::format::R8G8B8A8_UNORM,
                 wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW, data_width, (plan.data_bytes / 4).div_ceil(data_width))?;
         }
@@ -3834,6 +3846,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         let ns = ctx.ns;
         ctx.inflight.push_back(serial);
         if let Some(arena) = ctx.vertex_arena.as_mut() { arena.accepted = true; }
+        for scratch in &mut ctx.private_scratch { scratch.accepted = true; }
         let count_in = |t: &mut Totals| {
             t.submissions += 1;
             t.draws += plan.draws;
@@ -3928,21 +3941,43 @@ fn vertex_buffer_for(tgid: u64, ctx: u32, serial: u64, bytes: u64) -> Result<Opt
     Ok(Some((rid, offset, capacity)))
 }
 
-/// Reserve a private scratch-texture record; device creation follows quota admission.
-/// It has no guest backing and remains held until the submission retires.
-fn scratch_for(w: u32, h: u32) -> Result<u32, i64> {
-    let id = with_core(|c| {
-        let id = c.next_res;
-        c.next_res += 1;
-        let mut r = new_res(0, kind::TEXTURE, format::B8G8R8A8, w, h, 0, 0, Arc::new(Pages::none()), c.epoch);
-        r.dropped = true;
-        r.lost = true;
-        r.holds = 1;
-        c.insert_res(id, r);
-        id
-    })
-    .ok_or(ENODEV)?;
-    Ok(id)
+/// Reuse an idle context-private copy/data texture. At most four per class can be
+/// needed by the four in-flight submissions; the owner pays their page-rounded storage.
+/// A submission's hold prevents reuse until device access and fence publication end.
+fn scratch_for(tgid: u64, ctx: u32, class: u32, w: u32, h: u32) -> Result<u32, i64> {
+    let reused = with_core(|c| {
+        let context = c.contexts.get(&ctx)?;
+        let rid = context.private_scratch.iter().find_map(|s| {
+            let r = c.resources.get(&s.id)?;
+            (s.class == class && !r.lost && r.holds == 1 && r.width >= w && r.height >= h).then_some(s.id)
+        })?;
+        c.resources.get_mut(&rid)?.holds += 1;
+        Some(rid)
+    }).flatten();
+    if let Some(rid) = reused { return Ok(rid); }
+    // Retire idle entries that cannot fit before growing the class. Busy entries keep
+    // their submission holds and remain in the cache until they become idle.
+    with_core(|c| {
+        let idle: Vec<u32> = c.contexts.get(&ctx).map(|context| context.private_scratch.iter()
+            .filter(|s| s.class == class && c.resources.get(&s.id).is_some_and(|r| r.holds == 1))
+            .map(|s| s.id).collect()).unwrap_or_default();
+        if let Some(context) = c.contexts.get_mut(&ctx) { context.private_scratch.retain(|s| !idle.contains(&s.id)); }
+        for rid in idle { c.unhold(rid); }
+    });
+    let bytes = (w as u64 * 4).next_multiple_of(256).checked_mul(h as u64).ok_or(ENOMEM)?;
+    let charge = Charge::new(tgid, bytes.div_ceil(PAGE as u64) * PAGE as u64, true)?;
+    let mut backing = Pages::none(); backing.charge_copy(charge);
+    with_core(|c| {
+        let context = c.contexts.get(&ctx).ok_or(EIO)?;
+        if context.state != CtxState::Live || context.dropped { return Err(EIO); }
+        if context.private_scratch.iter().filter(|s| s.class == class).count() >= limits::IN_FLIGHT { return Err(ENOMEM); }
+        let rid = c.next_res; c.next_res += 1;
+        let mut r = new_res(0, kind::TEXTURE, format::B8G8R8A8, w, h, 0, 0, Arc::new(backing), c.epoch);
+        r.dropped = true; r.lost = true; r.holds = 2;
+        c.insert_res(rid, r);
+        c.contexts.get_mut(&ctx).ok_or(EIO)?.private_scratch.push(PrivateScratch { id: rid, class, accepted: false });
+        Ok(rid)
+    }).ok_or(ENODEV)?
 }
 
 /// Start a private resource only after the submission's full quota is reserved.
