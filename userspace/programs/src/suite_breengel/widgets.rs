@@ -1,3 +1,4 @@
+#[path="widget_pixels/tabs.rs"] mod tab_pixels;
 #[path="widget_pixels/label.rs"] mod label_pixels;
 #[path="icon_pixels/particles_at_fractional_negative_edges_remain_visible_inside_the_box.rs"] mod pixel_particles_bounded_particles;
 #[path="icon_pixels/search_shimmer_restarts_on_each_hover.rs"] mod pixel_interrupt_search;
@@ -1028,6 +1029,8 @@ fn widgets_tabbar_select() -> CaseResult {
 }
 
 fn widgets_tabbar_overflow() -> CaseResult {
+    tab_pixels::run();
+
     let mut tabs = TabBar::new(
         Rect::new(10, 8, 70, 24),
         vec![b"First", b"Second", b"Third", b"Fourth", b"Fifth"], &Theme::dark());
