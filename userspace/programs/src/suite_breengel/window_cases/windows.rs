@@ -53,6 +53,18 @@ use super::kit::*;
 use abi::op;
 use abi::Plain;
 
+/// Window targets are BGRX: canonicalize X before comparing the colour bytes (B11).
+fn window_pixels(pixels: &[u8], width: u32, height: u32, what: &str,
+    section: &str, expected: impl Fn(u32, u32) -> [u8; 4]) -> CaseResult {
+    let mut canonical = pixels.to_vec();
+    for pixel in canonical.chunks_exact_mut(4) { pixel[3] = 0xFF; }
+    same(&canonical, width, height, true, what, section, |x, y| {
+        let mut pixel = expected(x, y);
+        pixel[3] = 0xFF;
+        pixel
+    })
+}
+
 // gpu-window: §2.2 CREATE returns GPU target handles; zeroing, count, identity and tree metadata remain guarded.
 fn windows_create() -> CaseResult {
 interface()?;
@@ -67,7 +79,7 @@ interface()?;
             let mut px=vec![0xA5;64*48*4];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
             let r=libbreenix::gpu::readback(target,[0,0,64,48],&mut px,256,&mut record);
             want_ok(r,"17.1","gpu-window: readback of CREATE target")?;
-            ensure(px.iter().all(|&b|b==0),"17.2","gpu-window: a new target is not cleared to zero")?;
+            window_pixels(&px,64,48,"new target","17.2",|_,_|[0;4])?;
         }
         ensure(w.c.tree!=0 && w.c.tree_kib==64,"17.1","gpu-window: CREATE lost its separately mapped tree pages")?;
     }Ok(())
@@ -77,9 +89,7 @@ fn windows_create_zeroed() -> CaseResult {
     interface()?;
     let w = W::new(37, 29, 3)?;
     for i in 0..3 {
-        if let Some(pos) = w.buf(i).iter().position(|&b| b != 0) {
-            return at("17.2", format!("buffer {i} of a new 37x29 window holds {:#04x} at byte {pos}; new buffers are all zero", w.buf(i)[pos]));
-        }
+        window_pixels(w.buf(i),37,29,&format!("new buffer {i}"),"17.2",|_,_|[0;4])?;
         if let Some(pos) = w.tree(i).iter().position(|&b| b != 0) {
             return at("17.2", format!("tree page {i} of a new window holds a nonzero byte at {pos}"));
         }
@@ -200,7 +210,7 @@ fn readable_window_targets(w: &W) -> CaseResult {
         let mut record = [0; libbreenix::gpu::abi::record::SIZE];
         want_ok(libbreenix::gpu::readback(*target, [0,0,w.c.width,w.c.height], &mut pixels,
             w.c.width*4, &mut record), "17.2", "gpu-window: live target READBACK before revocation")?;
-        ensure(pixels.chunks_exact(4).all(|p|p == [0,0,0,255]), "17.2", "gpu-window: new live target was not zeroed BGRX")?;
+        window_pixels(&pixels,w.c.width,w.c.height,"new live target","17.2",|_,_|[0;4])?;
     }
     Ok(())
 }
@@ -631,7 +641,7 @@ fn windows_commit_immutable() -> CaseResult {
     w.commit(a.buffer,&[full(&w.c)]).map_err(|r|format!("COMMIT {}",outcome(r))).cite("17.3")?;
     accepted.wait(2_000_000_000).map_err(|r|format!("gpu-window: pre-COMMIT fence {}",outcome(r))).cite("17.3")?;
     let (_,before)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
-    ensure(before.chunks_exact(4).all(|p|p[..3]==[51,34,17]),"17.3","gpu-window: commit lost accepted render work")?;
+    window_pixels(&before,16,16,"accepted render","17.3",|_,_|[51,34,17,255])?;
     context.begin(w.c.buffer[a.buffer as usize],16,16);context.clear(0xff556677);
     ensure(context.submit().is_err(),"17.3","gpu-window: submission wrote a committed target")?;
     let (_,after)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
@@ -1348,7 +1358,7 @@ fn windows_commit_waits_render()->CaseResult {
             let (width,height)=super::composition::screen_size()?;
             same(&screen,width as u32,height as u32,true,"completed GPU render on scanout","17.3",|x,y|if (20..36).contains(&x) && (20..36).contains(&y){[51,34,17,255]}else{[0,0,0,255]})?;
             let (_,front)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
-            ensure(front.chunks_exact(4).all(|p|p[..3]==[51,34,17]),"17.3","gpu-window: completed render did not become the front")?;
+            window_pixels(&front,16,16,"completed render","17.3",|_,_|[51,34,17,255])?;
         }
         libbreenix::test_control::disarm_all().cite("21")?;
         if error {let (_,front)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
