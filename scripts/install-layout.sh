@@ -32,6 +32,10 @@ for fixture in test deep; do
         mv "$root/$fixture" "$root/usr/libexec/breenix/$fixture"
     fi
 done
+if [ -d "$root/usr/local/libc" ]; then
+    rmdir "$root/usr/libexec/breenix/libc/bin" "$root/usr/libexec/breenix/libc"
+    mv "$root/usr/local/libc" "$root/usr/libexec/breenix/libc"
+fi
 if [ -d "$root/usr/local/test/bin" ]; then
     # Includes the Rust-std non-UTF-8 hard link, which is a fixture rather than an ELF.
     for file in "$root/usr/local/test/bin"/*; do

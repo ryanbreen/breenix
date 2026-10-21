@@ -6,7 +6,7 @@ executable placement. `scripts/install-layout.sh` consumes it during image
 creation, and `scripts/check-layout.py` compares the resulting ext2 image's
 metadata with its directory and file rows. The installer uses the same table
 for generation mount-point modes. Test programs and the `test` and `deep`
-fixtures live under `/usr/libexec/breenix`.
+fixtures live under `/usr/libexec/breenix`, including the libc suite's applet links.
 
 `BREENIX-USERLAND 2` completion records contain the generation ID and the line
 `shared etc var opt srv tmp run`. The kernel binds those directories from

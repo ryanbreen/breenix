@@ -47,7 +47,8 @@ fn fhs_paths() -> CaseResult {
                 fields[3].parse().map_err(|_| "bad account gid")?, true)?;
         }
     }
-    check(!Path::new("/test").exists() && !Path::new("/deep").exists() && !Path::new("/usr/local/test").exists(), "test fixtures remain in administrator paths")
+    check(!Path::new("/test").exists() && !Path::new("/deep").exists() && !Path::new("/usr/local/test").exists()
+        && !Path::new("/usr/local/libc").exists(), "test fixtures remain in administrator paths")
 }
 fn shadow() -> CaseResult { attrs(Path::new("/etc/shadow"), 0o600, 0, 0, false) }
 fn sudo_policy() -> CaseResult { attrs(Path::new("/etc/sudo.policy"), 0o440, 0, 0, false) }

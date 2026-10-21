@@ -10,6 +10,8 @@ dir usr/libexec 0755 0 0
 dir usr/libexec/breenix 0755 0 0
 dir usr/libexec/breenix/test 0755 0 0
 dir usr/libexec/breenix/deep 0755 0 0
+dir usr/libexec/breenix/libc 0755 0 0
+dir usr/libexec/breenix/libc/bin 0755 0 0
 dir usr/share 0755 0 0
 dir usr/share/fonts 0755 0 0
 dir usr/share/factory 0755 0 0
