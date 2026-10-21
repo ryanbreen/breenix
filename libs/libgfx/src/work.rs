@@ -1,8 +1,8 @@
 //! The always-on step counter (docs/gui/breengel.md section 7).
 //!
-//! A step is one iteration of any loop in libgfx, including iterations that reject or
-//! skip, and one call of any recursive function. Loops whose iteration count is known
-//! before they run add it in one call; the count is the same.
+//! A step is one step of CPU geometry setup: clipping a primitive and building its
+//! instances, one per primitive and one per visible glyph of a text run. Per-pixel work
+//! runs on the device and is counted by `COUNTERS` (fragment area and work estimate).
 
 use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
