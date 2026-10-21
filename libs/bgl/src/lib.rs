@@ -173,6 +173,35 @@ impl Drop for Context {
         let _ = gpu::context_destroy(self.handle);
     }
 }
+/// A GPU texture holding decoded image content. CPU pixels are discarded after upload.
+pub struct Texture {
+    handle: u64,
+    owner: u64,
+}
+impl Texture {
+    /// The Image upload boundary in gpu.md section 2.4: the image library constructs Decoded.
+    pub fn from_decoded(context: &Context, image: libimg::Decoded) -> Result<Self, i64> {
+        let owner = libbreenix::process::getpid().map_err(|e| match e {
+            libbreenix::error::Error::Os(errno) => -(errno as i64),
+        })?.raw();
+        let handle = gpu::texture_create(gpu::abi::format::B8G8R8A8, image.width(), image.height())?;
+        let texture = Self { handle, owner };
+        let (result, _) = gpu::upload(context.handle, handle,
+            [0, 0, image.width(), image.height()], image.pixels(), image.width() * 4,
+            gpu::abi::upload_source::B8G8R8A8, gpu::abi::purpose::IMAGE);
+        if result != 0 { return Err(result); }
+        Ok(texture)
+    }
+    pub fn handle(&self) -> u64 { self.handle }
+}
+impl Drop for Texture {
+    fn drop(&mut self) {
+        if libbreenix::process::getpid().is_ok_and(|pid| pid.raw() == self.owner) {
+            gpu::resource_destroy(self.handle);
+        }
+    }
+}
+
 /// A static source table: a built-in font table or a suite's declared fixture, stored whole
 /// or as separate static rows (docs/gui/gpu.md section 2.4). The only CPU bytes BGL uploads
 /// as `Fixture`; uploads verify both the bytes and row descriptors are read-only image data.

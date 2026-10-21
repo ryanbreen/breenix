@@ -33,6 +33,7 @@
 //! while holding it, and the reset itself runs on `kgpu` outside it; no path here prints
 //! (section 1.4: no kernel output on any path).
 
+pub mod window_targets;
 mod completion;
 mod present_answers;
 mod display;
@@ -312,6 +313,7 @@ struct Sub {
     /// A submission kept by test point 31's fence-depth mode: its result, until it is
     /// published.
     result: Option<(u32, u32)>,
+    writer: Option<Arc<window_targets::Writer>>,
     written: Vec<u32>,
     whole: Vec<u32>,
     /// Resources it holds until the device has returned its requests and its result has
@@ -372,6 +374,8 @@ struct Res {
     epoch: u64,
     generation: u64,
     last: Option<LastWrite>,
+    /// Admission identities survive translation, completion publication and sealing.
+    accepted: Vec<Arc<window_targets::Writer>>,
     writers: u32,
     invalid: bool,
     invalidated_by: u64,
@@ -379,6 +383,7 @@ struct Res {
     holds: u32,
     lost: bool,
     reading: bool,
+    window_sealed: bool,
     /// The kernel screen's context this resource is attached to for observing it as a
     /// retained binding (`screen::observation_context`), or 0.
     observed_in: u32,
@@ -826,18 +831,21 @@ impl Core {
     /// 0x00 nor 0xFF: no handle has the form of an address (section 1.16). The sequence it is
     /// drawn from is the core's, so a process's handles after an exec, which starts its GPU
     /// state again, are not the ones it held before.
-    fn handle(&mut self, tgid: u64) -> u64 {
+    fn handle(&mut self) -> u64 {
         let key = self.key;
         loop {
             self.handle_seq += 1;
             let seq = self.handle_seq;
-            let p = self.proc_mut(tgid);
-            let mut z = key ^ tgid.rotate_left(29) ^ seq.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            // Odd multiplication and the xor/multiply mix form a permutation.
+            // One global sequence makes resource/context/snapshot/alias values unique
+            // across processes without retaining an unbounded tombstone table.
+
+            let mut z = key ^ seq.wrapping_mul(0x9E37_79B9_7F4A_7C15);
             z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
             z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
             z ^= z >> 31;
             let top = z >> 56;
-            if top != 0 && top != 0xFF && !p.contexts.contains_key(&z) && !p.resources.contains_key(&z) {
+            if top != 0 && top != 0xFF {
                 return z;
             }
         }
@@ -1256,6 +1264,7 @@ impl Core {
             return;
         }
         sub.published = true;
+        if let Some(writer) = &sub.writer { writer.publish(status); }
         let (ctx_id, n, fence, presenting) = (sub.ctx, sub.n, sub.fence, sub.present);
         let written = core::mem::take(&mut sub.written);
         let whole = core::mem::take(&mut sub.whole);
@@ -1321,6 +1330,7 @@ impl Core {
             return;
         }
         let held = core::mem::take(&mut sub.held);
+        if let Some(writer) = &sub.writer { writer.end_access(); }
         self.subs.remove(&serial);
         for id in held {
             self.unhold(id);
@@ -2112,6 +2122,8 @@ fn reaper() {
             (c.next_deadline(now), !c.procs.is_empty(), c.reset_wanted, c.take_hung(), SENT.load(Ordering::Acquire))
         })
         .unwrap_or((None, false, false, ([None; HUNG_KEPT], 0), SENT.load(Ordering::Acquire)));
+        crate::window::scene::invalidate_stale();
+        crate::window::ops::publish_ready();
         post_hung(&hung.0, hung.1, &mut hung_losses);
         if reset {
             reset_device(tid);
@@ -2469,6 +2481,7 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
         epoch,
         generation: 0,
         last: None,
+        accepted: Vec::new(),
         writers: 0,
         invalid: false,
         invalidated_by: 0,
@@ -2476,6 +2489,7 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
         holds: 0,
         lost: false,
         reading: false,
+        window_sealed: false,
         observed_in: 0,
     }
 }
@@ -2611,7 +2625,7 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
             {
                 return Err(EIO);
             }
-            let h = c.handle(tgid);
+            let h = c.handle();
             c.proc_mut(tgid).contexts.insert(h, id);
             let ctx = c.contexts.get_mut(&id).ok_or(EIO)?;
             ctx.state = CtxState::Live;
@@ -2863,7 +2877,7 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
             r.dropped = outcome.is_err();
         }
         if outcome.is_ok() {
-            let h = c.handle(tgid);
+            let h = c.handle();
             c.proc_mut(tgid).resources.insert(h, id);
             Some(h)
         } else {
@@ -3357,11 +3371,15 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     // Take the context's submission slot: one sender at a time, at most four in flight.
     let mut waited = false;
     let admitted = wait_for(None, true, |c| {
+        if named_ids.iter().any(|rid| !c.resources.get(rid).is_some_and(|r| !r.dropped && !r.lost)) { return Some(Err(EINVAL)); }
         let Some(ctx) = c.contexts.get_mut(&id) else {
             return Some(Err(EIO));
         };
         if ctx.state != CtxState::Live || ctx.dropped {
             return Some(Err(EIO));
+        }
+        if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.window_sealed)) {
+            return Some(Err(breengel_abi::errno::EBUSY as i64));
         }
         if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.reading)) {
             return None;
@@ -3377,27 +3395,49 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             return None;
         }
         ctx.busy = true;
+        ctx.issued += 1;
+        let n = ctx.issued;
+        let serial = c.serial();
+        let fence = c.device_fence();
+        let writer = Arc::new(window_targets::Writer::new(id, n, serial, fence));
+        for rid in &named_ids {
+            let Some(r) = c.resources.get_mut(rid) else { return Some(Err(EINVAL)); };
+            r.holds += 1;
+        }
         for rid in &written {
             if let Some(r) = c.resources.get_mut(rid) {
                 r.writers += 1;
+                r.accepted.retain(|w| !w.ended());
+                r.accepted.push(writer.clone());
             }
         }
-        Some(Ok(()))
+        Some(Ok(writer))
     });
-    match admitted {
-        Ok(Ok(())) => {}
+    let writer = match admitted {
+        Ok(Ok(writer)) => writer,
         Ok(Err(e)) => return Err(e),
         Err(_) => return Err(EINTR),
-    }
+    };
+    let admitted_ids = named_ids.clone();
     let release_slot = |accepted: bool| {
         with_core(|c| {
             if !accepted {
+                // This admission sent no device work: a seal that already captured it must
+                // treat it as cancelled, rather than as a failed accepted GPU write.
+                writer.cancel();
+                if let Some(ctx) = c.contexts.get_mut(&id) {
+                    ctx.outcomes.insert(writer.n, (fence_status::DEVICE_ERROR, 0));
+                    ctx.early.insert(writer.n);
+                    while ctx.early.remove(&(ctx.done_upto + 1)) { ctx.done_upto += 1; }
+                }
                 for rid in &written {
                     if let Some(r) = c.resources.get_mut(rid) {
                         r.writers = r.writers.saturating_sub(1);
+                        r.accepted.retain(|w| !Arc::ptr_eq(w, &writer));
                     }
                     c.free_if_unused(*rid);
                 }
+                for rid in &admitted_ids { c.unhold(*rid); }
             }
             if let Some(ctx) = c.contexts.get_mut(&id) {
                 ctx.busy = false;
@@ -3710,8 +3750,8 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         // type VirtIO does not define, which the device can only refuse, and that command
         // carries the fence. Taken only once the submission is certain to be sent.
         let forced = crate::test_control::take(test_point::DEVICE_ERROR, 0).is_some();
-        let serial = c.serial();
-        let fence = c.device_fence();
+        let serial = writer.serial;
+        let fence = writer.fence;
         let ctx = c.contexts.get_mut(&id).ok_or(EINVAL)?;
         // Test point 31's fence-depth mode: this context's next four answers are kept.
         if ctx.depth.is_none()
@@ -3756,8 +3796,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         } else {
             ctx.objects = objects;
         }
-        ctx.issued += 1;
-        let n = ctx.issued;
+        let n = writer.n;
         let ns = ctx.ns;
         ctx.inflight.push_back(serial);
         let count_in = |t: &mut Totals| {
@@ -3772,12 +3811,11 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         };
         count_in(&mut ctx.totals);
         count_in(&mut c.proc_mut(tgid).totals);
-        for rid in &named_ids {
-            if let Some(r) = c.resources.get_mut(rid) {
-                r.holds += 1;
-            }
+        for rid in named_ids.iter().filter(|rid| !admitted_ids.contains(rid)) {
+            if let Some(r) = c.resources.get_mut(rid) { r.holds += 1; }
         }
         c.subs.insert(serial, Sub {
+            writer: Some(writer.clone()),
             ctx: id,
             n,
             fence,
@@ -4321,7 +4359,7 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         release();
         return refuse(readback_reason::TARGET_INVALID, invalidated_by);
     }
-    let observation = match observe(tgid, id, last, &backing, pitch, fmt, *a, &staging.pages) {
+    let observation = match observe(tgid, id, last, &backing, pitch, fmt, *a, &staging.pages, None) {
         Ok(o) => o,
         Err((errno, reason)) => {
             release();
@@ -4581,6 +4619,7 @@ fn observe(
     fmt: u32,
     a: abi::Readback,
     staging: &Pages,
+    preferred_ctx: Option<u32>,
 ) -> Result<Observation, (i64, u32)> {
     let ctx = with_core(|c| {
         // The scanout's writer may belong to any process, but not to a context being destroyed.
@@ -4591,6 +4630,7 @@ fn observe(
                     && x.device_alive
             })
         };
+        if let Some(ctx) = preferred_ctx { return (live(&ctx).then_some(ctx), false); }
         let found = last.map(|l| l.ctx).filter(live).or_else(|| {
             if a.target == 0 {
                 None

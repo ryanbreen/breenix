@@ -44,7 +44,7 @@ def digest(path):
 def fingerprint(arch):
     listed = subprocess.check_output(
         ['git', '-C', str(ROOT), 'ls-files', '-z', '--cached', '--others', '--exclude-standard',
-         '--', 'userspace', 'libs', 'rust-toolchain.toml', f'{arch}-breenix.json', *C_BUILD])
+         '--', 'userspace', 'libs', 'docs/gui/gpu-apps-pending.md', 'rust-toolchain.toml', f'{arch}-breenix.json', *C_BUILD])
     names = {os.fsdecode(name) for name in listed.split(b'\0') if name}
     names.update(name for name in LOCKFILES if (ROOT / name).is_file())
     result = hashlib.sha256(f'breenix-userspace-v1\0{arch}\0'.encode())

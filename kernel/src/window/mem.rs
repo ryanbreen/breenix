@@ -1,11 +1,8 @@
-//! Window memory: buffers and tree pages.
+//! Window tree pages.
 //!
-//! Each buffer (and each window's tree pages) is a shared-memory object the kernel holds.
-//! The owner sees it through a window mapping (`MappingOrigin::Window`): shared, never copied
-//! by fork, and with a protection only this module changes. The kernel reads and writes the
-//! pixels through the object's frames, each of which a `Mem` holds a reference to, so a
-//! composite, capture or replay copy that holds a `Mem` keeps its pages alive even after the
-//! window is destroyed or resized.
+//! Tree pages are shared memory mapped into the owner with window protections. GPU targets
+//! hold pixel buffers separately in `gpu::window_targets`; pins retain tree memory while
+//! captures copy it across a resize or destruction.
 
 use alloc::{sync::Arc, vec::Vec};
 use breengel_abi::errno::{EFAULT, ENOMEM, ESRCH};
@@ -22,7 +19,7 @@ use crate::syscall::memory_common::PAGE_SIZE;
 /// Bytes of one page: protection changes by whole pages.
 pub const PAGE_BYTES: u64 = PAGE_SIZE;
 
-/// Allocated window memory, counted by the trace counter `window_buffer_allocs` per buffer.
+/// Allocated tree memory.
 pub struct Mem {
     obj: Arc<ShmObject>,
     frames: Vec<Frame>,
@@ -54,10 +51,6 @@ impl Mem {
             mem.frames.push(frame);
         }
         Arc::try_new(mem).map_err(|_| ENOMEM)
-    }
-
-    pub fn object(&self) -> &Arc<ShmObject> {
-        &self.obj
     }
 
     pub fn len(&self) -> u64 {
@@ -94,35 +87,6 @@ impl Mem {
             // SAFETY: both ranges are valid for `n` bytes and do not overlap.
             unsafe { core::ptr::copy_nonoverlapping(ptr, base.add(at), n) }
         });
-    }
-
-    /// Copy `src` into the memory at `offset`.
-    pub fn write(&self, offset: u64, src: &[u8]) {
-        let base = src.as_ptr();
-        self.chunks(offset, src.len(), |ptr, n, at| {
-            // SAFETY: both ranges are valid for `n` bytes and do not overlap.
-            unsafe { core::ptr::copy_nonoverlapping(base.add(at), ptr, n) }
-        });
-    }
-
-    /// Clear every byte.
-    pub fn zero(&self) {
-        for page in 0..self.frames.len() {
-            // SAFETY: the page is one of this memory's frames, held by `self`.
-            unsafe { core::ptr::write_bytes(self.page_ptr(page), 0, PAGE_SIZE as usize) }
-        }
-    }
-
-    /// Copy `len` bytes at `offset` from `src` to the same offset here.
-    pub fn copy_from(&self, src: &Mem, offset: u64, len: usize) {
-        let mut row = [0u8; 256];
-        let mut done = 0usize;
-        while done < len {
-            let n = (len - done).min(row.len());
-            src.read(offset + done as u64, &mut row[..n]);
-            self.write(offset + done as u64, &row[..n]);
-            done += n;
-        }
     }
 }
 

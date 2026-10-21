@@ -11,7 +11,7 @@ use libbreenix::errno::Errno;
 use libbreenix::error::Error;
 use libbreenix::window::{self, abi};
 use libfont::CachedFont;
-use libgfx_ref::framebuf::{Format, FrameBuf};
+use libgfx::surface::{Format, Surface};
 
 use crate::event::{Delivered, Event};
 use crate::font::FontWatcher;
@@ -36,7 +36,7 @@ pub struct Acquired {
     pub replay: Vec<abi::Rect>,
 }
 
-/// What the last commit published.
+/// A commit identity and its processed watermark.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Committed {
     pub commit_id: u64,
@@ -57,9 +57,7 @@ pub struct Window {
     height: u32,
     buffers: [u64; 3],
     held: Option<Held>,
-    fb: Option<FrameBuf>,
-    /// Pixels drawn when no buffer could be acquired (the window was destroyed under us).
-    scratch_fb: Option<FrameBuf>,
+    gpu: Option<libgfx::surface::Surface>,
     font_watcher: FontWatcher,
     /// The highest serial whose handler has returned.
     handled: u64,
@@ -70,6 +68,7 @@ pub struct Window {
     /// The compositor epoch of the last `CompositorChanged`, 0 before one.
     epoch: u64,
     last: Option<Committed>,
+    pending: Option<(Committed, Option<libgfx::surface::Surface>)>,
 }
 
 impl Window {
@@ -97,38 +96,21 @@ impl Window {
             height,
             buffers: c.buffer,
             held: None,
-            fb: None,
-            scratch_fb: None,
+            gpu: None,
             font_watcher,
             handled: 0,
             since_pixel: Vec::new(),
             published: 0,
             epoch: 0,
             last: None,
+            pending: None,
         })
     }
 
-    /// Refuse a size no `FrameBuf` can describe before the kernel makes buffers of it, so a
-    /// buffer `ACQUIRE` hands out can always be drawn into.
+    /// Validate the GPU surface layout before allocating the window targets.
     fn validate_size(width: u32, height: u32) -> Result<(), Error> {
-        FrameBuf::validate_layout(width as usize, height as usize, width as usize * 4, Format::BGRX)
+        Surface::validate_layout(width as usize, height as usize, width as usize * 4, Format::BGRX)
             .map_err(|_| Error::Os(Errno::EINVAL))
-    }
-
-    fn frame_over(&self, buffer: u32) -> Result<FrameBuf, Error> {
-        let stride = self.width as usize * 4;
-        // SAFETY: ACQUIRE made this buffer, `height` rows of `stride` bytes, writable by this
-        // process until it is committed; the FrameBuf is dropped at the commit.
-        unsafe {
-            FrameBuf::from_raw_format(
-                self.buffers[buffer as usize] as *mut u8,
-                self.width as usize,
-                self.height as usize,
-                stride,
-                Format::BGRX,
-            )
-        }
-        .map_err(|_| Error::Os(Errno::EINVAL))
     }
 
     /// Take a buffer to draw the next frame into, waiting up to `timeout_ns` (`u64::MAX`
@@ -138,31 +120,40 @@ impl Window {
         if let Some(h) = &self.held {
             return Ok(h.info.clone());
         }
-        let a = window::acquire(self.id, timeout_ns)?;
+        let a = match window::acquire(self.id, timeout_ns) {
+            Ok(a) => a,
+            Err(e) => {
+                if matches!(e, Error::Os(Errno::EIO)) { self.pending = None; }
+                return Err(e);
+            }
+        };
+        if let Some((done, _)) = self.pending.take() {
+            if a.base >= done.commit_id { self.published(done); }
+        }
         let info = Acquired {
             buffer: a.buffer,
             base: a.base,
             replay_full: a.replay_full != 0,
             replay: a.replay[..(a.replay_count as usize).min(16)].to_vec(),
         };
-        self.fb = Some(self.frame_over(a.buffer)?);
+        self.gpu = Some(self.surface_over(a.buffer)?);
         self.held = Some(Held { info: info.clone(), handled_at_acquire: self.handled });
         Ok(info)
     }
 
-    /// The frame being drawn: the acquired buffer, acquired now if none is held. When no buffer
-    /// can be acquired (the window is gone), drawing goes to a scratch frame nobody sees.
-    pub fn framebuf(&mut self) -> &mut FrameBuf {
-        if self.held.is_none() && self.acquire(u64::MAX).is_err() {
-            if self.scratch_fb.is_none() {
-                self.scratch_fb = Some(
-                    FrameBuf::new(self.width as usize, self.height as usize, Format::BGRX)
-                        .expect("Breengel: no memory for a scratch frame"),
-                );
-            }
-            return self.scratch_fb.as_mut().unwrap();
-        }
-        self.fb.as_mut().unwrap()
+    fn surface_over(&self, buffer:u32) -> Result<libgfx::surface::Surface,Error> {
+        libgfx::surface::Surface::from_window_target(self.buffers[buffer as usize],self.width as usize,self.height as usize)
+            .map_err(|e| match e {
+                libgfx::surface::SurfaceError::Device(r)=>Error::Os(Errno::from_raw(-r)),
+                _=>Error::Os(Errno::EINVAL),
+            })
+    }
+
+    /// The acquired GPU target. Errors preserve ACQUIRE's semantics; no scratch image
+    /// hides destruction, render failure or memory pressure.
+    pub fn surface(&mut self) -> Result<&mut libgfx::surface::Surface, Error> {
+        if self.held.is_none() { self.acquire(u64::MAX)?; }
+        Ok(self.gpu.as_mut().expect("GPU view accompanies acquisition"))
     }
 
     /// A commit's metadata (section 17.1): the processed watermark, the compositor epoch the
@@ -182,41 +173,70 @@ impl Window {
     /// by a later frame, never by this one. A commit the kernel refuses while the buffer stays
     /// acquired (bad damage, say) keeps it held, so drawing can go on and commit again.
     pub fn commit(&mut self, damage: &[abi::Rect]) -> Result<Committed, Error> {
+        let done = self.commit_async(damage)?;
+        self.finish_pending()?;
+        Ok(done)
+    }
+
+    /// Accept the acquired frame without waiting for its rendering. Kernel publication
+    /// retains the previous front until the accepted writers complete; ACQUIRE waits for
+    /// that decision and reports a late failure once as EIO.
+    pub fn commit_async(&mut self, damage: &[abi::Rect]) -> Result<Committed, Error> {
+        if let Some(e)=self.gpu.as_ref().and_then(|s|s.error()) {
+            return Err(Error::Os(Errno::from_raw(-e)));
+        }
         let Some(h) = self.held.take() else {
             return self.no_change();
         };
         let processed = h.handled_at_acquire;
         let meta = self.meta(processed);
-        self.fb = None;
+        let surface = self.gpu.take();
         let c = match window::commit(self.id, h.info.buffer, damage, Some(&meta)) {
             Ok(c) => c,
             Err(e) => {
                 // ENOENT: the window is gone; EBUSY and EPERM: the buffer is not this
                 // window's acquisition any more. Anything else left it acquired.
                 if !matches!(e, Error::Os(Errno::ENOENT | Errno::EBUSY | Errno::EPERM)) {
-                    if let Ok(fb) = self.frame_over(h.info.buffer) {
-                        self.fb = Some(fb);
-                        self.held = Some(h);
-                    }
+                    self.gpu = surface;
+                    self.held = Some(h);
                 }
                 return Err(e);
             }
         };
-        self.published = processed;
-        self.since_pixel.retain(|&(serial, _)| serial > processed);
         let done = Committed { commit_id: c.commit_id, pixel_gen: c.pixel_gen, processed_serial: processed };
-        self.last = Some(done);
+        self.pending = Some((done, surface));
         Ok(done)
     }
 
-    /// Commit the frame drawn into `framebuf` with whole-window damage, or new metadata alone
-    /// when nothing was acquired.
+    fn published(&mut self, done: Committed) {
+        self.published = done.processed_serial;
+        self.since_pixel.retain(|&(serial, _)| serial > done.processed_serial);
+        self.last = Some(done);
+    }
+
+    /// Confirm publication before advancing library metadata. Holding a non-owning
+    /// Surface here retains fence identities, with no additional kernel buffer pin.
+    fn finish_pending(&mut self) -> Result<(), Error> {
+        let Some((done, surface)) = &self.pending else { return Ok(()); };
+        if let Some(surface) = surface {
+            surface.wait().map_err(|e| Error::Os(Errno::from_raw(-e)))?;
+        }
+        let (published, _) = window::read_meta(self.id)?;
+        if published < done.commit_id { return Err(Error::Os(Errno::EIO)); }
+        let (done, _) = self.pending.take().expect("pending publication checked above");
+        self.published(done);
+        Ok(())
+    }
+
+    /// Commit the frame drawn into `surface` with whole-window damage, or new metadata alone
+    /// when no buffer was acquired.
     pub fn present(&mut self) -> Result<(), Error> {
         let whole = abi::Rect::new(0, 0, self.width as i32, self.height as i32);
         self.commit(&[whole]).map(|_| ())
     }
 
     fn no_change(&mut self) -> Result<Committed, Error> {
+        self.finish_pending()?;
         // Every serial up to the first `Redraw` handled since the last pixel commit is
         // finished; a `Redraw` holds the watermark until a frame acquired after it commits.
         let mut processed = self.published;
@@ -386,8 +406,7 @@ impl Window {
         Self::validate_size(new_width, new_height)?;
         let r = window::resize(self.id, new_width, new_height)?;
         self.held = None;
-        self.fb = None;
-        self.scratch_fb = None;
+        self.gpu = None;
         self.buffers = r.buffer;
         self.width = new_width;
         self.height = new_height;
@@ -397,7 +416,6 @@ impl Window {
 
 impl Drop for Window {
     fn drop(&mut self) {
-        self.fb = None;
         let _ = window::destroy(self.id);
     }
 }

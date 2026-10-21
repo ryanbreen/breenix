@@ -19,6 +19,7 @@
 //! R = (x xor y xor seed) mod 256, X = 0.
 
 use std::collections::BTreeMap;
+mod window_fixture;
 
 use libbreenix::io;
 use libbreenix::types::Fd;
@@ -52,11 +53,8 @@ struct Win {
 }
 
 impl Win {
-    fn pixels(&self, buffer: u32) -> &mut [u8] {
-        let len = (self.width * self.height * 4) as usize;
-        // SAFETY: the kernel mapped this buffer read-write for the owner when it was acquired,
-        // `len` bytes long.
-        unsafe { core::slice::from_raw_parts_mut(self.buffers[buffer as usize] as *mut u8, len) }
+    fn target(&self, buffer:u32)->window_fixture::Target {
+        window_fixture::Target {handle:self.buffers[buffer as usize],width:self.width,height:self.height}
     }
 
     fn acquire(&mut self, id: u64) -> Result<(u32, u64, u32), libbreenix::error::Error> {
@@ -101,12 +99,8 @@ fn run(line: &str, wins: &mut BTreeMap<u64, Win>) -> bool {
                 }
             };
             let (width, height) = (w.width, w.height);
-            let px = w.pixels(buffer);
-            for y in 0..height {
-                for x in 0..width {
-                    let at = ((y * width + x) * 4) as usize;
-                    px[at..at + 4].copy_from_slice(&pattern(seed as u32, x, y));
-                }
+            if let Err(e)=w.target(buffer).paint([0,0,width as i32,height as i32],seed as u32) {
+                say(&format!("err 5 {e}"));return true;
             }
             let damage = [abi::Rect::new(0, 0, width as i32, height as i32)];
             match window::commit(id, buffer, &damage, None) {
@@ -130,7 +124,7 @@ fn run(line: &str, wins: &mut BTreeMap<u64, Win>) -> bool {
                 }
             };
             let (width, height) = (w.width, w.height);
-            let px = w.pixels(buffer);
+            let px=match w.target(buffer).read() { Ok(px)=>px,Err(e)=> {say(&format!("err 5 {e}"));return true;} };
             for y in 0..height {
                 for x in 0..width {
                     let at = ((y * width + x) * 4) as usize;

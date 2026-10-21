@@ -53,6 +53,18 @@ use super::kit::*;
 use abi::op;
 use abi::Plain;
 
+/// Window targets are BGRX: canonicalize X before comparing the colour bytes (B11).
+fn window_pixels(pixels: &[u8], width: u32, height: u32, what: &str,
+    section: &str, expected: impl Fn(u32, u32) -> [u8; 4]) -> CaseResult {
+    let mut canonical = pixels.to_vec();
+    for pixel in canonical.chunks_exact_mut(4) { pixel[3] = 0xFF; }
+    same(&canonical, width, height, true, what, section, |x, y| {
+        let mut pixel = expected(x, y);
+        pixel[3] = 0xFF;
+        pixel
+    })
+}
+
 // gpu-window: §2.2 CREATE returns GPU target handles; zeroing, count, identity and tree metadata remain guarded.
 fn windows_create() -> CaseResult {
 interface()?;
@@ -67,7 +79,7 @@ interface()?;
             let mut px=vec![0xA5;64*48*4];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
             let r=libbreenix::gpu::readback(target,[0,0,64,48],&mut px,256,&mut record);
             want_ok(r,"17.1","gpu-window: readback of CREATE target")?;
-            ensure(px.iter().all(|&b|b==0),"17.2","gpu-window: a new target is not cleared to zero")?;
+            window_pixels(&px,64,48,"new target","17.2",|_,_|[0;4])?;
         }
         ensure(w.c.tree!=0 && w.c.tree_kib==64,"17.1","gpu-window: CREATE lost its separately mapped tree pages")?;
     }Ok(())
@@ -77,9 +89,11 @@ fn windows_create_zeroed() -> CaseResult {
     interface()?;
     let w = W::new(37, 29, 3)?;
     for i in 0..3 {
-        if let Some(pos) = w.buf(i).iter().position(|&b| b != 0) {
-            return at("17.2", format!("buffer {i} of a new 37x29 window holds {:#04x} at byte {pos}; new buffers are all zero", w.buf(i)[pos]));
-        }
+        let mut pixels = vec![0xA5;37*29*4];
+        let mut record = [0;libbreenix::gpu::abi::record::SIZE];
+        want_ok(libbreenix::gpu::readback(w.c.buffer[i as usize],[0,0,37,29],&mut pixels,37*4,&mut record),
+            "17.2","new buffer device readback")?;
+        window_pixels(&pixels,37,29,&format!("new buffer {i}"),"17.2",|_,_|[0;4])?;
         if let Some(pos) = w.tree(i).iter().position(|&b| b != 0) {
             return at("17.2", format!("tree page {i} of a new window holds a nonzero byte at {pos}"));
         }
@@ -200,7 +214,7 @@ fn readable_window_targets(w: &W) -> CaseResult {
         let mut record = [0; libbreenix::gpu::abi::record::SIZE];
         want_ok(libbreenix::gpu::readback(*target, [0,0,w.c.width,w.c.height], &mut pixels,
             w.c.width*4, &mut record), "17.2", "gpu-window: live target READBACK before revocation")?;
-        ensure(pixels.chunks_exact(4).all(|p|p == [0,0,0,255]), "17.2", "gpu-window: new live target was not zeroed BGRX")?;
+        window_pixels(&pixels,w.c.width,w.c.height,"new live target","17.2",|_,_|[0;4])?;
     }
     Ok(())
 }
@@ -405,12 +419,12 @@ fn windows_commit_swaps() -> CaseResult {
     interface()?;
     let w = W::new(20, 10, 2)?;
     let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
-    fill(w.buf(a.buffer), 20, 10, 5);
+    fill(w.target(a.buffer), 20, 10, 5)?;
     let c = w.commit(a.buffer, &[full(&w.c)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?;
     let b = w.acquire(1_000_000_000).map_err(|r| format!("the second ACQUIRE {}", outcome(r))).cite("17.3")?;
     ensure(b.buffer != a.buffer, "17.3", format!("after committing buffer {} ACQUIRE returned it again; the committed buffer is the front", a.buffer))?;
     ensure(b.base == c.commit_id, "17.3", format!("ACQUIRE gave base {}; the buffer holds commit {}", b.base, c.commit_id))?;
-    same(w.buf(b.buffer), 20, 10, false, "the acquired buffer", "17.3", |x, y| pattern(5, x, y))
+    same(&w.pixels(b.buffer)?, 20, 10, false, "the acquired buffer", "17.3", |x, y| pattern(5, x, y))
 }
 
 /// Two-cell windows: cell 0 is x < 32, cell 1 is x >= 32, of a 64x16 window.
@@ -429,19 +443,19 @@ fn windows_acquire_replays_damage() -> CaseResult {
     let w = W::new(64, 16, 3)?;
     // Commit [1, 0]: cell 0 seed 1, cell 1 seed 0.
     let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
-    fill_rect(w.buf(a.buffer), 64, cell(0), 1);
-    fill_rect(w.buf(a.buffer), 64, cell(1), 0);
+    fill_rect(w.target(a.buffer), 64, cell(0), 1)?;
+    fill_rect(w.target(a.buffer), 64, cell(1), 0)?;
     w.commit(a.buffer, &[full(&w.c)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?;
     let mut front = (1u32, 0u32);
     for k in 0..300u32 {
         let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {k} {}", outcome(r))).cite("17.3")?;
         let (c0, c1) = front;
-        same(w.buf(a.buffer), 64, 16, false, &format!("acquire {k} (buffer {}, base {})", a.buffer, a.base), "17.3", cells_expect(c0, c1))?;
+        same(&w.pixels(a.buffer)?, 64, 16, false, &format!("acquire {k} (buffer {}, base {})", a.buffer, a.base), "17.3", cells_expect(c0, c1))?;
         // Update one cell, alternating, and damage only that cell.
         let which = k % 2 + if k == 0 { 1 } else { 0 };
         let which = which % 2;
         let seed = 2 + k;
-        fill_rect(w.buf(a.buffer), 64, cell(which), seed);
+        fill_rect(w.target(a.buffer), 64, cell(which), seed)?;
         w.commit(a.buffer, &[cell(which)]).map_err(|r| format!("COMMIT {k} {}", outcome(r))).cite("17.3")?;
         front = if which == 0 { (seed, c1) } else { (c0, seed) };
     }
@@ -459,7 +473,7 @@ struct Front {
 /// commit buffer `b` held when it was last committed or replayed, 0 for none.
 fn acquire_checked(w: &W, front: &Front, newest: u64, holds: &mut [u64; 3], seen_overflow: &mut bool) -> Result<abi::Acquire, libbreenix::suite::CaseError> {
     let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
-    same(w.buf(a.buffer), w.c.width, w.c.height, false, &format!("buffer {} acquired at base {} (newest commit {newest})", a.buffer, a.base), "17.3", |x, y| pattern(front.seed, x, y))?;
+    same(&w.pixels(a.buffer)?, w.c.width, w.c.height, false, &format!("buffer {} acquired at base {} (newest commit {newest})", a.buffer, a.base), "17.3", |x, y| pattern(front.seed, x, y))?;
     ensure(a.base == newest, "17.3", format!("ACQUIRE returned buffer {} with base {}; after its replay it holds the newest commit {newest}", a.buffer, a.base))?;
     let before = holds[a.buffer as usize];
     if before != 0 && before + 8 < newest {
@@ -478,9 +492,9 @@ fn windows_acquire_full_copy() -> CaseResult {
     let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
     ensure(a.base == newest && a.replay_full == 1, "17.3", format!(
         "ACQUIRE of a buffer that never held a commit gave base {} with {} rectangles; it is replayed in full to commit {newest}", a.base, a.replay_count))?;
-    same(w.buf(a.buffer), 48, 12, false, "a buffer with no base after its replay", "17.3", |x, y| pattern(31, x, y))?;
+    same(&w.pixels(a.buffer)?, 48, 12, false, "a buffer with no base after its replay", "17.3", |x, y| pattern(31, x, y))?;
     let mut front = Front { seed: 32 };
-    fill(w.buf(a.buffer), 48, 12, 32);
+    fill(w.target(a.buffer), 48, 12, 32)?;
     newest = w.commit(a.buffer, &[full(&w.c)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?.commit_id;
     let mut holds = [0u64; 3];
     holds[a.buffer as usize] = newest;
@@ -493,7 +507,7 @@ fn windows_acquire_full_copy() -> CaseResult {
         let x = acquire_checked(&w, &front, newest, &mut holds, &mut seen)?;
         let y = acquire_checked(&w, &front, newest, &mut holds, &mut seen)?;
         for (b, s) in [(x.buffer, front.seed + 1), (y.buffer, front.seed + 2)] {
-            fill(w.buf(b), 48, 12, s);
+            fill(w.target(b), 48, 12, s)?;
             newest = w.commit(b, &[full(&w.c)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?.commit_id;
             holds[b as usize] = newest;
             based.insert(b);
@@ -504,7 +518,7 @@ fn windows_acquire_full_copy() -> CaseResult {
     for _ in 0..10 {
         let x = acquire_checked(&w, &front, newest, &mut holds, &mut seen)?;
         front.seed += 1;
-        fill(w.buf(x.buffer), 48, 12, front.seed);
+        fill(w.target(x.buffer), 48, 12, front.seed)?;
         newest = w.commit(x.buffer, &[full(&w.c)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?.commit_id;
         holds[x.buffer as usize] = newest;
     }
@@ -525,22 +539,24 @@ fn windows_acquire_full_copy() -> CaseResult {
     // And through Breengel: the frame after the first holds the first.
     let mut bw = breengel::Window::new_without_fonts(b"full-copy", 48, 12).cite("17.3")?;
     {
-        let fb = bw.framebuf();
+        let fb = bw.surface().cite("17.3")?;
         for y in 0..12u32 {
             for x in 0..48u32 {
                 let p = pattern(55, x, y);
-                fb.put_pixel(x as usize, y as usize, libgfx_ref::color::Color::rgb(p[2], p[1], p[0]));
+                fb.put_pixel(x as usize, y as usize, libgfx::color::Color::rgb(p[2], p[1], p[0]));
             }
         }
     }
     bw.present().cite("17.3")?;
     let info = bw.acquire(1_000_000_000).cite("17.3")?;
     ensure(info.replay_full, "17.3", "Breengel's second frame, a buffer with no base, was not replayed in full")?;
-    let fb = bw.framebuf();
+    let mut replayed=vec![0;48*12*4];
+    bw.surface().cite("17.3")?.read(&mut replayed,48*4).map_err(|r|format!("gpu-window: replay readback {}",outcome(r))).cite("17.3")?;
     for y in 0..12u32 {
         for x in 0..48u32 {
             let p = pattern(55, x, y);
-            let got = fb.get_pixel(x as usize, y as usize);
+            let at=((y*48+x)*4) as usize;
+            let got=libgfx::color::Color::rgb(replayed[at+2],replayed[at+1],replayed[at]);
             ensure((got.r, got.g, got.b) == (p[2], p[1], p[0]), "17.3", format!("Breengel's acquired frame has {:?} at ({x},{y}); the committed frame has {:02x?}", got, &p[..3]))?;
         }
     }
@@ -556,16 +572,16 @@ fn windows_stale_base_commit() -> CaseResult {
     let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE A {}", outcome(r))).cite("17.3")?;
     let b = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE B {}", outcome(r))).cite("17.3")?;
     // A changes cell 0 and commits (c2 = [2, 1]); B, still at c1, changes cell 1 and commits.
-    fill_rect(w.buf(a.buffer), 64, cell(0), 2);
+    fill_rect(w.target(a.buffer), 64, cell(0), 2)?;
     w.commit(a.buffer, &[cell(0)]).map_err(|r| format!("COMMIT A {}", outcome(r))).cite("17.3")?;
-    fill_rect(w.buf(b.buffer), 64, cell(1), 3);
+    fill_rect(w.target(b.buffer), 64, cell(1), 3)?;
     let cb = w.commit(b.buffer, &[cell(1)]).map_err(|r| format!("COMMIT of the stale buffer B {}", outcome(r))).cite("17.3")?;
     // The frame is B's whole content, [1, 3].
     let (_, px) = capture(id, 64, 16, None).map_err(|r| format!("CAPTURE {}", outcome(r))).cite("17.3")?;
     same(&px, 64, 16, false, "the frame after the stale commit", "17.3", cells_expect(1, 3))?;
     // Its damage reaches cell 0 (changed back from 2 to 1): A's buffer (base c2) replays it.
     let r = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE after the stale commit {}", outcome(r))).cite("17.3")?;
-    same(w.buf(r.buffer), 64, 16, false, &format!("buffer {} replayed to the stale commit {}", r.buffer, cb.commit_id), "17.3", cells_expect(1, 3))?;
+    same(&w.pixels(r.buffer)?, 64, 16, false, &format!("buffer {} replayed to the stale commit {}", r.buffer, cb.commit_id), "17.3", cells_expect(1, 3))?;
     let covers0 = r.replay_full == 1 || r.replay[..r.replay_count as usize].iter().any(|rc| rc.x <= 0 && rc.x + rc.w >= CELL_W as i32);
     ensure(r.base != 0 && covers0, "17.3", "the stale commit's damage, replayed, does not cover cell 0, which it changed")?;
     w.commit(r.buffer, &[]).map_err(|e| format!("COMMIT {}", outcome(e))).cite("17.3")?;
@@ -582,7 +598,7 @@ fn windows_stale_base_commit() -> CaseResult {
         std::thread::spawn(move || w2.acquire(5_000_000_000))
     };
     let _ = time::sleep_ms(50);
-    fill(w2.buf(held.buffer), 64, 64, 11);
+    fill(w2.target(held.buffer), 64, 64, 11)?;
     let cc = w2.commit(held.buffer, &[abi::Rect::new(0, 0, 64, 64)]).map_err(|r| format!("thread 2's COMMIT {}", outcome(r))).cite("17.3")?;
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let t2 = {
@@ -603,8 +619,8 @@ fn windows_stale_base_commit() -> CaseResult {
     ensure(fired >= 1, "21", "the acquire-stall control never fired")?;
     ensure(!early, "17.3", "thread 2's ACQUIRE returned while thread 1's replay from the old front was paused")?;
     let base_seed = if r1.base == cc.commit_id { 11 } else { 10 };
-    same(w2.buf(r1.buffer), 64, 64, false, &format!("thread 1's buffer (base {})", r1.base), "17.3", |x, y| pattern(base_seed, x, y))?;
-    same(w2.buf(r2.buffer), 64, 64, false, "thread 2's buffer", "17.3", |x, y| pattern(11, x, y))?;
+    same(&w2.pixels(r1.buffer)?, 64, 64, false, &format!("thread 1's buffer (base {})", r1.base), "17.3", |x, y| pattern(base_seed, x, y))?;
+    same(&w2.pixels(r2.buffer)?, 64, 64, false, "thread 2's buffer", "17.3", |x, y| pattern(11, x, y))?;
     // More than eight commits after a held buffer's base: its commit gets whole-window damage.
     let w3 = W::new(64, 16, 3)?;
     w3.frame(1).cite("17.3")?;
@@ -617,7 +633,7 @@ fn windows_stale_base_commit() -> CaseResult {
     ensure(next.base == c.commit_id && next.replay_full == 1, "17.3", format!(
         "the next buffer's replay of a commit made ten commits after its buffer's base gave base {} with {} rectangles; the commit's damage is the whole window",
         next.base, next.replay_count))?;
-    same(w3.buf(next.buffer), 64, 16, false, "the buffer after the stale commit", "17.3", |x, y| pattern(1, x, y))
+    same(&w3.pixels(next.buffer)?, 64, 16, false, "the buffer after the stale commit", "17.3", |x, y| pattern(1, x, y))
 }
 
 // gpu-window: §2.2 accepted render work survives COMMIT; later front writes are refused without changing pixels.
@@ -631,7 +647,7 @@ fn windows_commit_immutable() -> CaseResult {
     w.commit(a.buffer,&[full(&w.c)]).map_err(|r|format!("COMMIT {}",outcome(r))).cite("17.3")?;
     accepted.wait(2_000_000_000).map_err(|r|format!("gpu-window: pre-COMMIT fence {}",outcome(r))).cite("17.3")?;
     let (_,before)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
-    ensure(before.chunks_exact(4).all(|p|p[..3]==[51,34,17]),"17.3","gpu-window: commit lost accepted render work")?;
+    window_pixels(&before,16,16,"accepted render","17.3",|_,_|[51,34,17,255])?;
     context.begin(w.c.buffer[a.buffer as usize],16,16);context.clear(0xff556677);
     ensure(context.submit().is_err(),"17.3","gpu-window: submission wrote a committed target")?;
     let (_,after)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
@@ -728,7 +744,7 @@ fn windows_release_order() -> CaseResult {
         let a = w.acquire(2_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
         // Commit ids rise by one per commit from 1, so commit k carries pattern k.
         let next = listed(w.id()).cite("17.3")?.map_or(0, |i| i.commit_id) + 1;
-        fill(w.buf(a.buffer), 256, 128, next as u32);
+        fill(w.target(a.buffer), 256, 128, next as u32)?;
         let c = w.commit(a.buffer, &[abi::Rect::new(0, 0, 256, 128)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?;
         ensure(c.commit_id == next, "17.3", format!("commit got id {} where {next} was next", c.commit_id))?;
     }
@@ -765,8 +781,7 @@ fn windows_resize() -> CaseResult {
     let info = listed(w.id()).cite("17.1")?.ok_or("the resized window is not listed (section 17.2)")?;
     ensure((info.width, info.height) == (60, 20), "17.1", format!("after RESIZE the window is listed {}x{}", info.width, info.height))?;
     let a = w.acquire(1_000_000_000).map_err(|e| format!("ACQUIRE after RESIZE {}", outcome(e))).cite("17.3")?;
-    // SAFETY: RESIZE mapped each new buffer, 60x20x4 bytes, into the owner.
-    let buf = unsafe { core::slice::from_raw_parts(r.buffer[a.buffer as usize] as *const u8, 60 * 20 * 4) };
+    let buf = FixtureTarget {handle:r.buffer[a.buffer as usize],width:60,height:20}.read()?;
     for y in 0..20u32 {
         for x in 0..40u32 {
             let at = ((y * 60 + x) * 4) as usize;
@@ -865,7 +880,7 @@ fn windows_resize_rlimit() -> CaseResult {
             return Err(format!("after the refused RESIZE the window's pixel ({x},{y}) changed; the old buffers stay intact (section 17.2)"));
         }
         let a = w.acquire(1_000_000_000).map_err(|e| format!("ACQUIRE after the refused RESIZE {}", outcome(e)))?;
-        if first_diff(w.buf(a.buffer), 64, 64, false, |x, y| pattern(9, x, y)).is_some() {
+        if first_diff(&w.pixels(a.buffer)?, 64, 64, false, |x, y| pattern(9, x, y)).is_some() {
             return Err(String::from("after the refused RESIZE an acquired old buffer no longer holds the frame (section 17.2)"));
         }
         let events = read_events(w.id()).map_err(|e| format!("READ_EVENTS {}", outcome(e)))?;
@@ -952,20 +967,27 @@ interface()?;
     let before=vm_size().cite("17.2")?;let gpu_before=crate::gpu_checks::counters().cite("17.2")?;
     let mut w=W::new(128,64,3)?;
     let mapped=vm_size().cite("17.2")?;let during=crate::gpu_checks::counters().cite("17.2")?;
-    ensure(mapped-before==3*64*1024,"17.2","gpu-window: only tree pages belong in the mapped window charge")?;
+    ensure(mapped-before==294_912,"17.2","gpu-window: B12 charges 196608 tree bytes plus 98304 GPU backing bytes to VmSize")?;
     ensure(during.resources-gpu_before.resources==3 && during.resource_bytes-gpu_before.resource_bytes==3*128*64*4,
         "17.2","gpu-window: window GPU target charge is not exact")?;
-    let over=192*1024*1024-during.resource_bytes+4096;
-    let refused=libbreenix::gpu::buffer_create(over);
-    if let Ok(h)=refused {libbreenix::gpu::resource_destroy(h);}
-    ensure(refused==Err(-(ENOMEM as i64)),"17.2","gpu-window: window backing did not consume the process GPU quota")?;
+    // B16: the per-buffer cap is independent of address-space quota refusal.
+    let over_cap = libbreenix::gpu::buffer_create(128 * 1024 * 1024 + 1);
+    if let Ok(h) = over_cap { libbreenix::gpu::resource_destroy(h); }
+    ensure(over_cap == Err(-(EINVAL as i64)), "17.2", "a buffer above 128 MiB must be EINVAL")?;
+    let limit = vm_size().cite("17.2")? + 1024 * 1024;
+    want_ok(set_rlimit_as(limit), "17.2", "lower RLIMIT_AS for the within-cap probe")?;
+    let refused = libbreenix::gpu::buffer_create(2 * 1024 * 1024);
+    let restored = set_rlimit_as(u64::MAX);
+    if let Ok(h) = refused { libbreenix::gpu::resource_destroy(h); }
+    want_ok(restored, "17.2", "restore RLIMIT_AS")?;
+    ensure(refused == Err(-(ENOMEM as i64)), "17.2", "a within-cap buffer exceeding RLIMIT_AS must be ENOMEM")?;
     want_ok(w.destroy(),"17.2","DESTROY")?;
-    ensure(vm_size().cite("17.2")?==before,"17.2","gpu-window: destroyed tree mappings remain charged")?;
     let start=now_ms();loop {let after=crate::gpu_checks::counters().cite("17.2")?;
         if after.resource_bytes==gpu_before.resource_bytes && after.resources==gpu_before.resources {break;}
         ensure(since(start)<1_000,"17.2","gpu-window: target charges did not return exactly to baseline")?;
         let _=time::sleep_ms(5);
-    }Ok(())
+    }
+    ensure(vm_size().cite("17.2")?==before,"17.2","gpu-window: destroyed targets or tree pages remain charged after device unref")
 }
 
 fn windows_capture_across_destroy() -> CaseResult {
@@ -986,7 +1008,7 @@ fn windows_capture_across_destroy() -> CaseResult {
         let mut w = W::new(512, 512, 2)?;
         let seed = 40 + round;
         let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
-        fill(w.buf(a.buffer), 512, 512, seed);
+        fill(w.target(a.buffer), 512, 512, seed)?;
         w.tree(a.buffer)[..8].copy_from_slice(&(seed as u64).to_le_bytes());
         w.commit(a.buffer, &[abi::Rect::new(0, 0, 512, 512)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?;
         // Even rounds destroy the window while `capture-stall` holds the capture half way
@@ -1055,7 +1077,7 @@ fn capture_across_resize() -> CaseResult {
     let w = W::new(64, 64, 2)?;
     let id = w.id();
     let first = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
-    fill(w.buf(first.buffer), 64, 64, 60);
+    fill(w.target(first.buffer), 64, 64, 60)?;
     w.tree(first.buffer)[..8].copy_from_slice(&60u64.to_le_bytes());
     let c1 = w.commit(first.buffer, &[full(&w.c)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?;
     let stalls = fired(abi::tc_point::CAPTURE_STALL).cite("21")?;
@@ -1139,7 +1161,7 @@ fn windows_two_buffer_capture_load() -> CaseResult {
         let t = now_ms();
         let a = w.acquire(2_000_000_000).map_err(|r| format!("ACQUIRE {k} {}", outcome(r))).cite("17.3")?;
         longest_wait = longest_wait.max(since(t));
-        fill_rect(w.buf(a.buffer), 512, abi::Rect::new(0, (k % 256) as i32, 512, 1), k);
+        fill_rect(w.target(a.buffer), 512, abi::Rect::new(0, (k % 256) as i32, 512, 1), k)?;
         w.commit(a.buffer, &[abi::Rect::new(0, (k % 256) as i32, 512, 1)]).map_err(|r| format!("COMMIT {k} {}", outcome(r))).cite("17.3")?;
     }
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1159,7 +1181,7 @@ fn windows_remnant_on_death() -> CaseResult {
         let Ok(w) = W::new(64, 32, 2) else { return 2 };
         if w.register(b"remnant").is_negative() { return 3; }
         let Ok(a) = w.acquire(1_000_000_000) else { return 4 };
-        fill(w.buf(a.buffer), 64, 32, 21);
+        if fill(w.target(a.buffer), 64, 32, 21).is_err() { return 8; }
         w.tree(a.buffer)[..16].copy_from_slice(b"remnant-tree-ok!");
         if w.commit(a.buffer, &[abi::Rect::new(0, 0, 64, 32)]).is_err() { return 5; }
         let _ = io::write(libbreenix::types::Fd::STDOUT, format!("{}\n", w.id()).as_bytes());
@@ -1194,6 +1216,7 @@ fn windows_remnant_on_death() -> CaseResult {
 
 fn windows_churn() -> CaseResult {
     interface()?;
+    let gpu_baseline = crate::gpu_checks::counters().cite("17.2")?;
     // Cycles first, and every read below once, so page tables the mappings need, and the
     // blocks the reads allocate (libc keeps small ones mapped), exist before the baseline.
     let cycle = || -> CaseResult {
@@ -1204,6 +1227,16 @@ fn windows_churn() -> CaseResult {
     for _ in 0..10 {
         cycle()?;
     }
+    let drain = || -> CaseResult {
+        let start = now_ms();
+        loop {
+            let now = crate::gpu_checks::counters().cite("17.2")?;
+            if now.resource_bytes == gpu_baseline.resource_bytes && now.resources == gpu_baseline.resources { return Ok(()); }
+            ensure(since(start) < 1_000, "17.2", "gpu-window: B12 device unrefs did not finish in one second")?;
+            let _ = time::sleep_ms(5);
+        }
+    };
+    drain()?;
     let _ = (list(), counter("window_buffer_allocs"), vm_size(), mem_free_kb());
     let listed_before = list().cite("17.2")?.len();
     let allocs_before = counter("window_buffer_allocs").cite("18")?;
@@ -1212,6 +1245,7 @@ fn windows_churn() -> CaseResult {
     for _ in 0..100 {
         cycle()?;
     }
+    drain()?;
     let free_after = mem_free_kb().cite("17.2")?;
     let allocs = counter("window_buffer_allocs").cite("18")? - allocs_before;
     value("buffer-allocs", allocs as i64, "", Some((200, 200)));
@@ -1338,11 +1372,18 @@ fn windows_commit_waits_render()->CaseResult {
             let commit=w.commit(a.buffer,&[full(&w.c)]);
             ensure(commit.err()==Some(-(abi::errno::EIO as i64)),"17.3","gpu-window: COMMIT accepted a failed render fence")?;
         } else {
-            w.commit(a.buffer,&[full(&w.c)]).map_err(|r|format!("gpu-window: pending COMMIT {}",outcome(r))).cite("17.3")?;
+            let accepted = w.commit(a.buffer,&[full(&w.c)]).map_err(|r|format!("gpu-window: pending COMMIT {}",outcome(r))).cite("17.3")?;
+            let id = w.id();
+            let (acquired, acquisition) = std::sync::mpsc::channel();
+            let acquiring = std::thread::spawn(move || {
+                let _ = acquired.send(acquire(id, 5_000_000_000));
+            });
             let (ret,before)=gpu::modes();want_ok(ret,"17.3","gpu-window: binding before pending composition")?;
             let (sent,received)=std::sync::mpsc::channel();
             let composing=std::thread::spawn(move||{let reply=k.ask("composite");let _=sent.send(reply);k});
             let _=time::sleep_ms(50);
+            ensure(matches!(acquisition.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
+                "17.3", "B18: ACQUIRE chose a replay base before the accepted commit's publication decision")?;
             let early=match received.try_recv(){Ok(r)=>Some(r),Err(std::sync::mpsc::TryRecvError::Empty)=>None,
                 Err(e)=>return at("17.3",format!("gpu-window: composition worker: {e}"))};
             if let Some(reply)=&early {ensure(matches!(reply,Ok(s) if s=="err 11"),"17.3","gpu-window: composition published a pending render instead of waiting or EAGAIN")?;}
@@ -1354,6 +1395,9 @@ fn windows_commit_waits_render()->CaseResult {
             let (r,last)=gpu::submit(c.handle(),c.encoded());want_ok(r,"17.3","gpu-window: release held render fences")?;
             gpu::resource_destroy(release);
             want_ok(gpu::wait(c.handle(),last.fence,2_000_000_000).0,"17.3","gpu-window: completed render")?;
+            let next = acquisition.recv().map_err(|e| e.to_string())?.map_err(|r| format!("B18: ACQUIRE {}", outcome(r))).cite("17.3")?;
+            acquiring.join().map_err(|_| "B18: acquisition worker panicked")?;
+            ensure(next.base == accepted.commit_id, "17.3", "B18: ACQUIRE replayed a frame older than the last accepted commit")?;
             k=composing.join().map_err(|_|"gpu-window: composition worker panicked".to_string()).cite("17.3")?;
             let reply=match early{Some(r)=>r,None=>received.recv().map_err(|e|e.to_string())?}.cite("17.3")?;
             if reply=="err 11" {super::composition::compose(&mut k)?;}
@@ -1362,7 +1406,7 @@ fn windows_commit_waits_render()->CaseResult {
             let (width,height)=super::composition::screen_size()?;
             same(&screen,width as u32,height as u32,true,"completed GPU render on scanout","17.3",|x,y|if (20..36).contains(&x) && (20..36).contains(&y){[51,34,17,255]}else{[0,0,0,255]})?;
             let (_,front)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
-            ensure(front.chunks_exact(4).all(|p|p[..3]==[51,34,17]),"17.3","gpu-window: completed render did not become the front")?;
+            window_pixels(&front,16,16,"completed render","17.3",|_,_|[51,34,17,255])?;
         }
         libbreenix::test_control::disarm_all().cite("21")?;
         if error {let (_,front)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
