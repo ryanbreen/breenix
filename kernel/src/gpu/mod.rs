@@ -106,9 +106,10 @@ static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
 /// is unchanged.
 static EVENTS: AtomicU64 = AtomicU64::new(0);
 static WAITERS: WaitQueueHead = WaitQueueHead::new();
-/// Counts sends to the device. `kgpu` blocks only while it is unchanged since kgpu chose its
-/// deadline: a send made after that would otherwise wait for that deadline, because an
-/// SVGA3 device raises no interrupt and only kgpu polls it for the answers.
+/// Counts sends to the device, and progress transfers queued for `kgpu` to send. `kgpu`
+/// blocks only while it is unchanged since kgpu chose its deadline: a send made after that
+/// would otherwise wait for that deadline, because an SVGA3 device raises no interrupt and
+/// only kgpu polls it for the answers; a queued transfer would wait for it too.
 static SENT: AtomicU64 = AtomicU64::new(0);
 static ISR: AtomicU64 = AtomicU64::new(0);
 /// The control queue's notification address, and whether requests were queued since it
@@ -1047,7 +1048,10 @@ impl Core {
         if let Some(r) = self.resources.get_mut(&rid) { r.reading = true; r.progress_context = Some(ctx); }
         if self.queue_sync(serial, req, ctx, &[rid], &[rid], None).is_ok() {
             self.abandon(serial);
-            notify();
+            // Only kgpu acts on the queued transfer; waking the waiters would only make
+            // them scan again. The count reaches a kgpu that has not blocked yet.
+            SENT.fetch_add(1, Ordering::AcqRel);
+            wake_reaper();
         } else { self.end_reading(rid); }
     }
 

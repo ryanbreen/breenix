@@ -40,7 +40,8 @@ mod per_cpu {
     pub fn current_thread() -> Option<Thread> { Some(Thread { id: TID.with(|t| t.get()) }) }
     pub fn set(id: u64) { TID.with(|t| t.set(id)); }
 }
-fn notify() {}
+static SENT: AtomicU64 = AtomicU64::new(0);
+fn wake_reaper() {}
 enum Tag { Sync(u64) }
 struct Read { tag: Tag, ctx: u32, fence: u64, id: u32 }
 enum Request { Virgl(Read) }
@@ -99,8 +100,10 @@ impl Core {
 #[test]
 fn drain_stays_queued_and_pinned_until_its_own_completion() {
     let mut c = Core::new();
+    let sent = SENT.load(Ordering::Acquire);
     c.progress_readback();
     assert_eq!(c.flushes, 0, "the waiter must leave device notification to kgpu");
+    assert_ne!(SENT.load(Ordering::Acquire), sent, "a kgpu that has not blocked yet must see the queued transfer");
     assert_eq!(c.backlog.len(), 1);
     let Request::Virgl(read) = &c.backlog[0].1;
     let Tag::Sync(serial) = read.tag;
