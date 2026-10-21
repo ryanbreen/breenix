@@ -21,7 +21,7 @@ class HostServerScore(unittest.TestCase):
         self.sha = 'a' * 40
         self.boot = dict(id='20261021T000000Z-metal', mode='persistent', bootedCommit=self.sha, toolsCommit=self.sha, evidenceEligible=True)
         self.records = dict(boot=self.boot['id'], commit=self.sha, milestone='server/ssh-keys', cleanup=True,
-                            cases=[dict(id='ssh-keys/' + name, result='PASS') for name, _ in host['CASES']])
+                            cases=[dict(id='ssh-keys/' + name, result='PASS') for name, _ in host['CATEGORIES']['ssh-keys']])
         self.serial = "bsshd: host key ED25519 SHA256:example\nbsshd: refused method 'password'\n"
 
     def test_complete_host_evidence_and_rejections(self):
@@ -94,9 +94,32 @@ class HostServerScore(unittest.TestCase):
             (directory / 'serial.txt').write_text(self.serial)
             (directory / 'events.jsonl').write_text('')
             write('server-ssh-keys.json', self.records | dict(cases=None))
+            write('server-services.json', self.records | dict(milestone='server/services', cases=None))
+            write('server-services-transcript.json', [])
             verdict = score_boot(directory)
             self.assertFalse(verdict['milestones']['server/ssh-keys']['passed'])
+            self.assertFalse(verdict['milestones']['server/services']['passed'])
+            self.assertNotIn('server/services-transcript', verdict['milestones'])
             self.assertTrue(verdict['captureComplete'])
+
+    def test_services_evidence_needs_its_cases_cleanup_and_console_lines(self):
+        records = dict(self.records, milestone='server/services',
+                       cases=[dict(id='services/' + name, result='PASS') for name, _ in host['CATEGORIES']['services']])
+        serial = ('bsshd: host key ED25519 SHA256:example\n[init] bsshd killed by signal 9\n'
+                  '[init] svc-suite-fail is crash-looping: 5 failures in a row, each within 10 s of starting\n')
+        def score(records=records, serial=serial):
+            return host['score'](self.manifest, self.path, records, serial, self.boot, self.sha, ['KERNEL PANIC:'])
+        self.assertTrue(score().startswith('PASS: server/services categories=services'))
+        # ssh-keys results do not complete the services milestone, nor the reverse.
+        with self.assertRaises(ValueError): score(dict(records, cases=self.records['cases']))
+        with self.assertRaises(ValueError): score(dict(self.records, milestone='server/services'))
+        with self.assertRaises(ValueError): score(dict(records, milestone='server/logs'))
+        with self.assertRaises(ValueError): score(dict(records, cleanup=False))
+        for line in serial.splitlines()[1:]:
+            with self.assertRaises(ValueError): score(serial=serial.replace(line + '\n', ''))
+        failed = copy.deepcopy(records)
+        failed['cases'][3]['result'] = 'FAIL'
+        with self.assertRaises(ValueError): score(failed)
 
     def test_missing_category_and_manifest_drift_block_acceptance(self):
         self.manifest['categories'][0]['cases'] = []
