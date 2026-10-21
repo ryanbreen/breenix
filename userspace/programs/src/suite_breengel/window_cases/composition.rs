@@ -109,7 +109,7 @@ pub(crate) fn compose(k: &mut Helper) -> Result<(u64, u64), libbreenix::suite::C
     let mut w = r.split(' ');
     match (w.next(), w.next().and_then(|s| s.parse().ok()), w.next().and_then(|s| s.parse().ok())) {
         (Some("ok"), Some(serial), Some(pixels)) => Ok((serial, pixels)),
-        _ => Err(libbreenix::suite::CaseError::Fail(format!("COMPOSITE answered `{r}` ({CONTRACT} section 18)"))),
+        _ => Err(libbreenix::suite::CaseError::Fail(format!("gpu-display: B13 userspace snapshot/stream COMPOSITE answered `{r}` ({CONTRACT} section 18)"))),
     }
 }
 
@@ -124,19 +124,21 @@ pub(crate) fn screen_size() -> Result<(usize,usize), libbreenix::suite::CaseErro
 }
 
 /// The whole composed screen and its observation record (`SCANOUT_READBACK`, as root).
-pub(crate) fn screen() -> Result<(Vec<u8>, abi::ObservationRecord), libbreenix::suite::CaseError> {
+pub(crate) fn screen() -> Result<(Vec<u8>, [u8; 1024]), libbreenix::suite::CaseError> {
     let (width,height) = screen_size()?;
     let mut px = vec![0u8; width * height * 4];
-    let mut rec = abi::ObservationRecord::ZERO;
-    let mut rb = abi::Readback::ZERO;
+    let mut rec = [0u8; 1024];
+    let mut rb = super::handoff::Readback::ZERO;
     rb.dst = px.as_mut_ptr() as u64;
     rb.dst_len = px.len() as u64;
-    rb.record = &mut rec as *mut abi::ObservationRecord as u64;
-    rb.record_len = core::mem::size_of::<abi::ObservationRecord>() as u32;
+    rb.record = rec.as_mut_ptr() as u64;
+    rb.record_len = 1024;
     let r = call(op::SCANOUT_READBACK, &mut rb);
     if r < 0 {
-        return Err(libbreenix::suite::CaseError::Fail(format!("SCANOUT_READBACK {} ({CONTRACT} section 20.1)", outcome(r))));
+        return Err(libbreenix::suite::CaseError::Fail(format!("gpu-display: B13 48-byte SCANOUT_READBACK {} reason {} ({CONTRACT} section 20.1)", outcome(r), rb.reason)));
     }
+    ensure(super::handoff::word(&rec,0)==2 && super::handoff::word(&rec,4)==1024,
+        "20.1", "gpu-display: B13 window observation must decode core record v2")?;
     Ok((px, rec))
 }
 
@@ -976,6 +978,7 @@ fn composition_scale_2()->CaseResult {
 
 // gpu-display: §2.2 retained fronts feed composition, capture and replay after handle drop; scanout holds backing too.
 fn composition_target_lifetime()->CaseResult {
+    super::handoff::snapshot_lifetime(false)?;
     interface()?;
     let before=crate::gpu_checks::counters().cite("18")?;
     let mut k=compositor()?;let mut w=W::new(64,48,3)?;

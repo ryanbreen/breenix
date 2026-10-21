@@ -2,6 +2,7 @@
 //! composition, scanout and panel.
 
 mod kit;
+mod handoff;
 mod windows;
 mod isolation;
 pub(crate) mod composition;

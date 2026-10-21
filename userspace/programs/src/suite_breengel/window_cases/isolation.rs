@@ -136,8 +136,8 @@ fn release() -> i64 {
 }
 
 fn composite() -> i64 {
-    let mut c = abi::Composite::ZERO;
-    call(op::COMPOSITE, &mut c)
+    let mut c = [0u64; 14];
+    super::handoff::wire(op::COMPOSITE, &mut c)
 }
 
 /// The listing of window `id`, which must be there.
@@ -232,6 +232,7 @@ fn isolation_other_read() -> CaseResult {
 
 // gpu-window: §2.2 replaces retired mapping authority with validator ownership of GPU handles (EINVAL).
 fn isolation_other_map() -> CaseResult {
+    super::handoff::snapshot_lifetime(true)?;
 interface()?;
     let w=W::new(16,16,2)?;let target=w.c.buffer[0];
     let mut px=vec![0;1024];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
@@ -324,6 +325,8 @@ interface()?;
 }
 
 fn isolation_composite_denied() -> CaseResult {
+    let mut snapshot = [0u64; 12];
+    want_errno(super::handoff::wire(29, &mut snapshot), EPERM, "17.4", "gpu-window: B13 root without owner+claim snapshot")?;
     interface()?;
     let _w = shown(16, 16, 12, b"composite-denied")?;
     let r = composite();
@@ -656,17 +659,17 @@ fn isolation_efault_commit() -> CaseResult {
 
 fn isolation_efault_readback() -> CaseResult {
     interface()?;
-    let mut record = vec![0u8; core::mem::size_of::<abi::ObservationRecord>()];
+    let mut record = vec![0u8; 1024];
     let (width,height)=super::composition::screen_size()?;
     let screen = (width*height*4) as u64;
-    let mut rb = abi::Readback::ZERO;
+    let mut rb = super::handoff::Readback::ZERO;
     rb.dst = unmapped();
     rb.dst_len = screen;
     rb.record = record.as_mut_ptr() as u64;
     rb.record_len = record.len() as u32;
     want_errno(call(op::SCANOUT_READBACK, &mut rb), EFAULT, "17.5", "SCANOUT_READBACK into an unmapped destination")?;
     let mut dst = vec![0u8; screen as usize];
-    let mut rb = abi::Readback::ZERO;
+    let mut rb = super::handoff::Readback::ZERO;
     rb.dst = dst.as_mut_ptr() as u64;
     rb.dst_len = screen;
     rb.record = unmapped();
@@ -1088,7 +1091,7 @@ fn isolation_retired_ops() -> CaseResult {
 fn isolation_unknown_op() -> CaseResult {
     match window_version() {
         2 => {
-            for unknown in [abi::op::LAST as u64 + 1, 0xFFFF, u32::MAX as u64] {
+            for unknown in [30, 0xFFFF, u32::MAX as u64] {
                 // SAFETY: an unknown op is refused before any argument is read.
                 let r = unsafe { raw::syscall3(SYS_WINDOW, unknown, 0, 0) as i64 };
                 ensure(r == -22, "17.1", format!("window(op {unknown:#x}) {}; an unknown op fails with EINVAL", outcome(r)))?;

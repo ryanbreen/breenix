@@ -1319,7 +1319,8 @@ interface()?;
 // gpu-window: §2.2 render handoff must not publish a pending target, and must refuse a failed render fence.
 fn windows_commit_waits_render()->CaseResult {
     interface()?;
-    for error in [false,true] {
+    for scenario in [0, 1, 2] {
+        let error = scenario != 0;
         let mut k=super::composition::compositor()?;
         let p=super::composition::Placed::new(20,20,16,16,0,7);
         let w=W::new(16,16,3)?;super::composition::show(&mut k,&w,&p)?;super::composition::compose(&mut k)?;
@@ -1333,7 +1334,20 @@ fn windows_commit_waits_render()->CaseResult {
         let mut fences=Vec::new();
         for _ in 0..if error{1}else{4} {let (r,s)=gpu::submit(c.handle(),&stream);want_ok(r,"17.3","gpu-window: pending render")?;fences.push(s.fence);}
         for &fence in &fences {want_errno(gpu::wait(c.handle(),fence,0).0,ETIMEDOUT,"17.3","gpu-window: render must still be pending")?;}
-        if error {
+        if scenario == 2 {
+            let before = listed(w.id()).cite("17.3")?.ok_or("window missing")?;
+            let accepted = w.commit(a.buffer,&[full(&w.c)]).map_err(|r|format!("gpu-window: pending acceptance {}",outcome(r))).cite("17.3")?;
+            let pending = listed(w.id()).cite("17.3")?.ok_or("window missing")?;
+            ensure(pending.commit_id == before.commit_id && pending.pixel_gen == before.pixel_gen,
+                "17.3", "gpu-window: pending COMMIT published LIST metadata before render success")?;
+            want_errno(gpu::wait(c.handle(),fences[0],3_000_000_000).0,abi::errno::EIO,"17.3","gpu-window: late render failure")?;
+            let mut acquire = abi::Acquire::ZERO; acquire.id = w.id();
+            want_errno(call(op::ACQUIRE,&mut acquire),abi::errno::EIO,"17.3","gpu-window: next ACQUIRE must deliver late failure exactly once")?;
+            ensure(acquire.buffer == 0 && acquire.base == 0,"17.3","gpu-window: failed ACQUIRE published a buffer")?;
+            let retry = w.acquire(1_000_000_000).map_err(|r|format!("gpu-window: late EIO was repeated or buffer not reusable: {}",outcome(r))).cite("17.3")?;
+            ensure(retry.base == before.commit_id && accepted.commit_id > before.commit_id,
+                "17.3", "gpu-window: rejected candidate changed published replay base or reused an accepted id")?;
+        } else if error {
             want_errno(gpu::wait(c.handle(),fences[0],3_000_000_000).0,abi::errno::EIO,"17.3","gpu-window: held render watchdog")?;
             let commit=w.commit(a.buffer,&[full(&w.c)]);
             ensure(commit.err()==Some(-(abi::errno::EIO as i64)),"17.3","gpu-window: COMMIT accepted a failed render fence")?;
