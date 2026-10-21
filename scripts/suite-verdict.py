@@ -10,7 +10,7 @@ per manifest case in manifest order, and one DONE whose counts match those CASE
 lines with failed=0, skipped=0 and passed=total=the manifest's case count;
 the suite's memory record shows its memory reclaimed; and no log shows a kernel
 panic, soft lockup or EL1 abort (`fatal` in docs/boot-path.json, plus x86-64's
-"KERNEL PANIC:"). VALUE, WAIT, PULSES and HOSTKEY records, which a case may print
+"KERNEL PANIC:"). VALUE, WAIT, PULSES, HOSTKEY and HOSTSSH records, which a case may print
 while it runs, are accepted between START and DONE when they are well formed and
 name a manifest case; they do not count.
 
@@ -43,7 +43,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 # The records a case prints while it runs, which do not count.
-LIVE = ("VALUE", "WAIT", "PULSES", "HOSTKEY")
+LIVE = ("VALUE", "WAIT", "PULSES", "HOSTKEY", "HOSTSSH")
 # The runner's memory record, around the cases.
 MEMORY = ("MEMORY", "RECLAIMED")
 
@@ -104,6 +104,8 @@ def verdict(manifest, records_log, logs, only=None, categories=None):
                             r"(?: expect=(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)([a-z]*))?$"),
         "WAIT": re.compile(rf"^SUITE {suite} WAIT {name} until=\d+ for=\d+ result=[a-z0-9]+(?:-[a-z0-9]+)*$"),
         "HOSTKEY": re.compile(rf"^SUITE {suite} HOSTKEY {name} seq=\d+ keys=[a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*$"),
+        "HOSTSSH": re.compile(rf"^SUITE {suite} HOSTSSH {name} seq=\d+ try=(?:account|root) addr=\d+\.\d+\.\d+\.\d+"
+                              rf" port=\d+ user=[a-z_][a-z0-9_-]* fp=SHA256:[A-Za-z0-9+/]+$"),
         "PULSES": re.compile(rf"^SUITE {suite} PULSES {name} every=\d+ limit=\d+ at=(?:-?\d+(?:,-?\d+)*)?$"),
         "MEMORY": re.compile(rf"^SUITE {suite} MEMORY (before|after) free=(\d+) heap_free_kb=\d+(?: [a-z_]+=\d+)+$"),
         "RECLAIMED": re.compile(rf"^SUITE {suite} MEMORY reclaimed=(PASS|FAIL) free_before=(\d+) free_after=(\d+) allowance=(\d+)$"),

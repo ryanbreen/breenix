@@ -492,8 +492,16 @@
     },
     {
       "id": "ssh",
-      "title": "SSH sessions as the account: identity, groups, PTY owner and key-file modes",
+      "title": "SSH sessions as the account: the boot host's OpenSSH with the operator's key, and loopback bssh",
       "cases": [
+        {
+          "id": "openssh-operator",
+          "title": "The boot host's OpenSSH, pinning this boot's host key strictly, logs in as the operator account with the operator's key"
+        },
+        {
+          "id": "openssh-root-refused",
+          "title": "The boot host's OpenSSH is refused root with the operator's key, and the same key logs in as the operator account"
+        },
         {
           "id": "ssh-identity",
           "title": "An SSH command runs as the account with its IDs, groups, environment and home"

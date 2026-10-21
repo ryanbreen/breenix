@@ -100,6 +100,9 @@ def console_identity(site):
 OPERATOR_USER_FIELD = 'OPERATOR_USER'
 OPERATOR_KEY_FIELD = 'OPERATOR_SSH_PUBLIC_KEY'
 OPERATOR_ACCOUNT = '/etc/breenix/operator-account'
+# The same two lines on a users suite boot's test root, for the ssh category's cases that the boot host's OpenSSH
+# answers (scripts/metal/users-hostssh). persistent-install leaves /etc/breenix/test-ssh behind.
+OPERATOR_FIXTURE = '/etc/breenix/test-ssh/operator-account'
 
 
 def operator_account(site):
@@ -235,6 +238,15 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
             commands.extend([f'rm /etc/breenix/{name}', f'write {source} /etc/breenix/{name}'])
         commands.extend(['rm /etc/resolv.conf', 'symlink /etc/resolv.conf /proc/net/pnp'])
         commands.append('rm ' + OPERATOR_ACCOUNT)
+        commands.append('rm ' + OPERATOR_FIXTURE)
+        fixture = None
+        if mode == 'suite' and 'users' in suite.split(',') and site.get(OPERATOR_USER_FIELD) and site.get(OPERATOR_KEY_FIELD):
+            fixture = operator_account(site)
+            source = scratch / 'operator-fixture'
+            source.touch(mode=0o600)
+            source.write_text(fixture)
+            commands.extend([f'write {source} {OPERATOR_FIXTURE}', f'set_inode_field {OPERATOR_FIXTURE} mode 0100600',
+                             f'set_inode_field {OPERATOR_FIXTURE} uid 0', f'set_inode_field {OPERATOR_FIXTURE} gid 0'])
         if operator is not None:
             source = scratch / 'operator-account'
             source.touch(mode=0o600)
@@ -285,6 +297,13 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         staged = subprocess.run([debugfs, '-R', 'cat ' + OPERATOR_ACCOUNT, str(image)], check=True, capture_output=True).stdout
         if staged != (operator or '').encode():
             raise ValueError('staged operator account readback differs')
+        staged = subprocess.run([debugfs, '-R', 'cat ' + OPERATOR_FIXTURE, str(image)], check=True, capture_output=True).stdout
+        if staged != (fixture or '').encode():
+            raise ValueError('staged operator fixture readback differs')
+        if fixture is not None:
+            stat = subprocess.run([debugfs, '-R', 'stat ' + OPERATOR_FIXTURE, str(image)], check=True, capture_output=True).stdout
+            if b'Mode:  0600' not in stat or not re.search(rb'User:\s+0\s+Group:\s+0', stat):
+                raise ValueError('staged operator fixture permissions differ')
         if operator is not None:
             stat = subprocess.run([debugfs, '-R', 'stat ' + OPERATOR_ACCOUNT, str(image)], check=True, capture_output=True).stdout
             if b'Mode:  0600' not in stat or not re.search(rb'User:\s+0\s+Group:\s+0', stat):

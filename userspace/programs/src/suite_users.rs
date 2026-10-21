@@ -153,7 +153,9 @@ static SUITE: Suite = suite(
         case("logout-tty-restored", "After logout getty returns the terminal to root at 0620 and records the logout", logout_tty_restored),
         case("logout-revokes-terminal", "A descriptor the old session kept on the line reads end of file, cannot write and cannot reopen it once getty serves the next login", logout_revokes_terminal),
     ]),
-    category("ssh", "SSH sessions as the account: identity, groups, PTY owner and key-file modes", &[
+    category("ssh", "SSH sessions as the account: the boot host's OpenSSH with the operator's key, and loopback bssh", &[
+        case("openssh-operator", "The boot host's OpenSSH, pinning this boot's host key strictly, logs in as the operator account with the operator's key", openssh_operator),
+        case("openssh-root-refused", "The boot host's OpenSSH is refused root with the operator's key, and the same key logs in as the operator account", openssh_root_refused),
         case("ssh-identity", "An SSH command runs as the account with its IDs, groups, environment and home", ssh_identity),
         case("ssh-root-refused", "bsshd refuses root's key, and the same key logs in as an ordinary account", ssh_root_refused),
         case("ssh-groups", "An SSH session holds the account's supplementary groups", ssh_groups),
@@ -234,6 +236,7 @@ mod nr {
     pub const GETPID: u64 = 39;
     pub const SOCKET: u64 = 41;
     pub const BIND: u64 = 49;
+    pub const GETSOCKNAME: u64 = 51;
     pub const CLONE: u64 = 56;
     pub const EXECVE: u64 = 59;
     pub const WAIT4: u64 = 61;
@@ -276,6 +279,7 @@ mod nr {
     pub const GETPID: u64 = 172;
     pub const SOCKET: u64 = 198;
     pub const BIND: u64 = 200;
+    pub const GETSOCKNAME: u64 = 204;
     pub const CLONE: u64 = 220;
     pub const EXECVE: u64 = 221;
     pub const WAIT4: u64 = 260;

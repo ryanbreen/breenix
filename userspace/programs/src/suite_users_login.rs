@@ -69,8 +69,13 @@ struct User { name: String, password: String, uid: u32, gid: u32, groups: Vec<u3
 
 impl User {
     fn add(tag: &str, groups: &[&str], shell: &str) -> Result<User, String> {
+        User::named(&format!("{tag}{}", pid()), groups, shell)
+    }
+
+    /// An account with exactly this name (the boot host's operator account).
+    fn named(name: &str, groups: &[&str], shell: &str) -> Result<User, String> {
         let root = Path::new("/");
-        let name = format!("{tag}{}", pid());
+        let name = name.to_string();
         let options = ac::UserAdd {
             groups: groups.iter().map(|g| g.to_string()).collect(),
             shell: Some(shell.into()),
@@ -502,10 +507,12 @@ impl Lines {
 struct Sshd { pid: i32 }
 
 impl Sshd {
-    fn start() -> Result<Sshd, String> {
+    fn start() -> Result<Sshd, String> { Sshd::start_on(SSH_PORT) }
+
+    fn start_on(port: u16) -> Result<Sshd, String> {
         let pid = match process::fork().map_err(|e| format!("fork: {e}"))? {
             ForkResult::Child => {
-                let argv = [cpath("/usr/sbin/bsshd"), cpath(&SSH_PORT.to_string())];
+                let argv = [cpath("/usr/sbin/bsshd"), cpath(&port.to_string())];
                 let _ = ses::exec("/usr/sbin/bsshd", &argv, &[]);
                 process::exit(127)
             }
@@ -513,7 +520,7 @@ impl Sshd {
         };
         let sshd = Sshd { pid };
         while libbreenix::suite::case_ms_left() > 6000 {
-            let addr = libbreenix::socket::SockAddrIn::new([127, 0, 0, 1], SSH_PORT);
+            let addr = libbreenix::socket::SockAddrIn::new([127, 0, 0, 1], port);
             if libbreenix::socket::TcpStream::connect(&addr).is_ok() { return Ok(sshd); }
             let _ = libbreenix::time::sleep_ms(50);
         }
@@ -527,10 +534,16 @@ impl Drop for Sshd {
 
 /// The test key authorized for `user`: `~/.ssh` 0700 and `authorized_keys` at `mode`.
 fn authorize(user: &User, mode: u32) -> Checked {
+    let key = fs::read_to_string(TEST_KEY_PUBLIC).map_err(|e| format!("{TEST_KEY_PUBLIC}: {e}"))?;
+    authorize_key(user, &key, mode)
+}
+
+/// `key`, one public key line, authorized for `user` as `authorize` does.
+fn authorize_key(user: &User, key: &str, mode: u32) -> Checked {
     let ssh = format!("{}/.ssh", user.home);
     ok("mkdir .ssh", mkdir(&ssh, 0o700))?;
     let keys = format!("{ssh}/authorized_keys");
-    fs::write(&keys, fs::read(TEST_KEY_PUBLIC).map_err(|e| format!("{TEST_KEY_PUBLIC}: {e}"))?).map_err(|e| e.to_string())?;
+    fs::write(&keys, format!("{}\n", key.trim_end())).map_err(|e| e.to_string())?;
     for path in [&ssh, &keys] { ok("chown", chown(path, user.uid, user.gid))?; }
     ok("chmod", chmod(&ssh, 0o700))?;
     ok("chmod", chmod(&keys, mode)).map(|_| ())
@@ -625,6 +638,153 @@ fn ssh_bad_key_mode_refused() -> CaseResult {
     want(run.probe().is_err(), "a group-writable authorized_keys granted a login")?;
     ok("chmod", chmod(&format!("{}/.ssh/authorized_keys", user.home), 0o600))?;
     Ok(report_has(&bssh(&user.name, Some("id"))?.probe()?, &identity(&user))?)
+}
+
+// The boot host's OpenSSH (on the R240). The bare-metal boot loop stages the
+// operator's account name and public key on the test root; a case starts bsshd on
+// port 22 with this machine's host key and asks the boot host, through a HOSTSSH
+// record carrying the address and the key's fingerprint, to log in with its own
+// client and the operator's key, pinning that fingerprint with strict host-key
+// checking. The host's login runs `report <what it saw>` as the account; the
+// probe writes that session's report into the account's home, where the case reads it.
+
+const OPERATOR_FIXTURE: &str = "/etc/breenix/test-ssh/operator-account";
+const HOST_REPORT: &str = "users-probe-report";
+
+/// The operator account the boot loop staged: its name and public key line.
+struct Operator { name: String, key: String }
+
+impl Operator {
+    fn staged() -> Result<Operator, String> {
+        let text = fs::read_to_string(OPERATOR_FIXTURE)
+            .map_err(|e| format!("no boot-host OpenSSH on this target: {OPERATOR_FIXTURE}: {e}"))?;
+        let field = |prefix: &str| text.lines().find_map(|l| l.strip_prefix(prefix)).map(str::to_string);
+        match (field("user "), field("key ")) {
+            (Some(name), Some(key)) if name != "root" && !key.is_empty() => Ok(Operator { name, key }),
+            _ => Err(format!("{OPERATOR_FIXTURE} does not name an account and a key")),
+        }
+    }
+}
+
+/// This machine's address on the boot host's network: the source a UDP socket
+/// connected toward the DHCP server is given.
+fn lan_address() -> Result<[u8; 4], String> {
+    let server = loop {
+        let pnp = fs::read_to_string("/proc/net/pnp").map_err(|e| format!("/proc/net/pnp: {e}"))?;
+        let found = pnp.lines().find_map(|l| l.strip_prefix("bootserver ")).and_then(|a| {
+            let parts: Vec<u8> = a.split('.').filter_map(|p| p.parse().ok()).collect();
+            <[u8; 4]>::try_from(parts).ok()
+        });
+        if let Some(server) = found.filter(|a| *a != [0; 4]) { break server; }
+        if libbreenix::suite::case_ms_left() < 25_000 { return Err("no DHCP lease".into()); }
+        let _ = libbreenix::time::sleep_ms(100);
+    };
+    let fd = libbreenix::socket::socket(libbreenix::socket::AF_INET, libbreenix::socket::SOCK_DGRAM, 0)
+        .map_err(|e| format!("socket: {e}"))?;
+    let result = (|| -> Result<[u8; 4], String> {
+        libbreenix::socket::connect_inet(fd, &libbreenix::socket::SockAddrIn::new(server, 67))
+            .map_err(|e| format!("connect toward the DHCP server: {e}"))?;
+        let mut name = [0u8; 16];
+        let mut length = name.len() as u32;
+        ok("getsockname", sc(nr::GETSOCKNAME, &[fd.raw(), name.as_mut_ptr() as u64, &mut length as *mut u32 as u64]))?;
+        let addr = [name[4], name[5], name[6], name[7]];
+        want(addr != [0; 4], "the connected socket has no source address")?;
+        Ok(addr)
+    })();
+    let _ = io::close(fd);
+    result
+}
+
+fn fill_random(buffer: &mut [u8]) -> Result<(), &'static str> {
+    let mut at = 0;
+    while at < buffer.len() {
+        match libbreenix::crypto::rand::getrandom_bytes(&mut buffer[at..]) {
+            Ok(0) | Err(_) => return Err("getrandom failed"),
+            Ok(n) => at += n,
+        }
+    }
+    Ok(())
+}
+
+/// bsshd on port 22 for the boot host, the fingerprint of its host key and the
+/// address the boot host reaches it at. The key is loaded (or made) before
+/// bsshd starts, so bsshd loads the same key.
+struct HostSshd { _sshd: Sshd, fingerprint: String, addr: [u8; 4] }
+
+impl HostSshd {
+    fn start() -> Result<HostSshd, String> {
+        let (key, _) = libbreenix::ssh::host_keys::load_or_generate(Path::new("/"), fill_random)
+            .map_err(|e| format!("host key: {e}"))?;
+        let fingerprint = libbreenix::ssh::keys::fingerprint_text(&key.public_key_blob());
+        let addr = lan_address()?;
+        Ok(HostSshd { _sshd: Sshd::start_on(22)?, fingerprint, addr })
+    }
+}
+
+/// The report the boot host's login as `user` left in its home.
+fn host_report(user: &User) -> Result<HashMap<String, String>, String> {
+    let path = format!("{}/{HOST_REPORT}", user.home);
+    while libbreenix::suite::case_ms_left() > 500 {
+        if let Ok(text) = fs::read_to_string(&path) {
+            if text.ends_with('\n') {
+                return Run { output: text, status: 0 }.probe();
+            }
+        }
+        let _ = libbreenix::time::sleep_ms(50);
+    }
+    Err(format!("the boot host's OpenSSH did not log in as {}; run scripts/metal/users-hostssh beside this boot", user.name))
+}
+
+/// Wait for the account's processes (its SSH session) to end, so it can be removed.
+fn sessions_ended(uid: u32) -> Checked {
+    while libbreenix::suite::case_ms_left() > 300 {
+        let running = fs::read_dir("/proc").map_err(|e| e.to_string())?.flatten().any(|entry| {
+            entry.file_name().to_str().is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
+                && fs::read_to_string(entry.path().join("status")).is_ok_and(|status| status.lines()
+                    .any(|l| l.strip_prefix("Uid:").is_some_and(|ids| ids.split_whitespace().next() == Some(&uid.to_string()))))
+        });
+        if !running { return Ok(()); }
+        let _ = libbreenix::time::sleep_ms(50);
+    }
+    Err(format!("uid {uid} still has processes after its SSH session"))
+}
+
+fn openssh_operator() -> CaseResult {
+    let operator = Operator::staged()?;
+    let _shells = probe_shells()?;
+    let user = User::named(&operator.name, &[], PROBE)?;
+    authorize_key(&user, &operator.key, 0o600)?;
+    let host = HostSshd::start()?;
+    libbreenix::suite::hostssh("account", host.addr, 22, &user.name, &host.fingerprint)?;
+    let report = host_report(&user)?;
+    let mut expected = identity(&user);
+    expected.extend([("HOME", user.home.clone()), ("USER", user.name.clone()), ("cwd", user.home.clone()),
+        ("SHELL", PROBE.to_string()), ("args", "-c_report_wrong-host-key_refused".to_string())]);
+    report_has(&report, &expected)?;
+    logged("bsshd", &user.name, &user.name, "ok")?;
+    Ok(sessions_ended(user.uid)?)
+}
+
+fn openssh_root_refused() -> CaseResult {
+    let operator = Operator::staged()?;
+    let _shells = probe_shells()?;
+    // The operator's key is listed for root too, so a refusal is root's own.
+    let _root_keys = EtcGuard::save(&["/root/.ssh/authorized_keys"])?;
+    append_etc("/root/.ssh/authorized_keys", &operator.key)?;
+    let user = User::named(&operator.name, &[], PROBE)?;
+    authorize_key(&user, &operator.key, 0o600)?;
+    let host = HostSshd::start()?;
+    let root_sessions = || fs::read_to_string(AUTH_LOG).map(|log| log.lines()
+        .filter(|l| l.contains(" bsshd[") && l.contains(" user=root ")).count()).unwrap_or(0);
+    let before = root_sessions();
+    libbreenix::suite::hostssh("root", host.addr, 22, &user.name, &host.fingerprint)?;
+    // The host tried root first; the same key then logged in as the account.
+    let report = host_report(&user)?;
+    let mut expected = identity(&user);
+    expected.push(("args", "-c_report_root_refused".to_string()));
+    report_has(&report, &expected)?;
+    want(root_sessions() == before, "a root session over SSH was recorded")?;
+    Ok(sessions_ended(user.uid)?)
 }
 
 // ---------------------------------------------------------------------------

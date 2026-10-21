@@ -7,6 +7,10 @@
 //!
 //! Values with a space or `=` are shown with `_` there, so each `key=value`
 //! stays one word.
+//!
+//! Run as `-c 'report ...'` (the command the boot host's OpenSSH sends), it
+//! also writes the line to `$HOME/users-probe-report`, where the suite case on
+//! the machine reads it.
 use libbreenix::syscall::{nr, raw};
 
 fn ids(n: u64) -> String {
@@ -53,4 +57,14 @@ fn main() {
         line.push_str(&format!(" {key}={}", std::env::var(key).map(|v| word(&v)).unwrap_or_else(|_| "-".into())));
     }
     println!("{line}");
+    let command = args.get(1).map(String::as_str) == Some("-c") && args.len() == 3
+        && (args[2] == "report" || args[2].starts_with("report "));
+    if command {
+        if let Ok(home) = std::env::var("HOME") {
+            if let Err(why) = std::fs::write(format!("{home}/users-probe-report"), format!("{line}\n")) {
+                eprintln!("probe: report: {why}");
+                std::process::exit(1);
+            }
+        }
+    }
 }
