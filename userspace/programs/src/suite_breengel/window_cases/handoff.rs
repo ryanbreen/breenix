@@ -118,3 +118,20 @@ pub(crate) fn entries(record: &[u8; 1024]) -> Vec<(u64,u64,u64,u64)> {
         let o=200+i*32; (quad(record,o),quad(record,o+8),quad(record,o+16),quad(record,o+24))
     }).collect()
 }
+
+// gpu-display owns the B13 descriptor preflight and post-send exception boundary.
+pub(crate) fn descriptor_faults() -> CaseResult {
+    let mut claim=abi::Claim::ZERO;
+    want_ok(call(abi::op::CLAIM_COMPOSITOR,&mut claim),"17.4","gpu-window: descriptor fixture claim")?;
+    struct Release;
+    impl Drop for Release {fn drop(&mut self){call_at(18,0,0);}}
+    let _release=Release;
+    // SAFETY: TAKE has no arguments and is idempotent for a current owner.
+    want_ok(unsafe {raw::syscall0(431) as i64},"18","gpu-display: descriptor fixture ownership")?;
+    let before=counter("composites").cite("18")?;
+    want_errno(call_at(19,unmapped(),112),EFAULT,"17.5","gpu-display: B13 unmapped 112-byte COMPOSITE")?;
+    let page=Pages::filled(1,0,false,|b|b.fill(0)).cite("17.5")?;
+    want_errno(call_at(19,page.addr(),112),EFAULT,"17.5","gpu-display: B13 read-only 112-byte COMPOSITE")?;
+    want_errno(call_at(29,unmapped(),96),EFAULT,"17.5","gpu-window: unmapped SceneSnapshot")?;
+    ensure(counter("composites").cite("18")?==before,"17.5","gpu-display: preflight EFAULT consumed a composite")
+}
