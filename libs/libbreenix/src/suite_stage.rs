@@ -136,8 +136,9 @@ fn snapshot() -> Result<(Vec<u8>, Seen), String> {
 }
 /// The stage check: the scanout is bound by the stage's own PRESENT (its context fence),
 /// and each physical pixel is the stage frame's pixel, rendered at the display's physical
-/// size, compared on B, G and R (X normalized, ruling B11).
-fn shown(fb: &FrameBuf, present: Option<u64>, pixels: &[u8], seen: &Seen) -> Result<(), String> {
+/// size, compared on B, G and R (X normalized, ruling B11), or the panel cursor's where the
+/// stage drew it (`cursor`, its pointer).
+fn shown(fb: &FrameBuf, present: Option<u64>, pixels: &[u8], seen: &Seen, cursor: Option<(i32, i32)>) -> Result<(), String> {
     let fence = present.ok_or("the stage frame was not presented by a GPU PRESENT")?;
     if seen.present_fence != fence {
         return Err(std::format!(
@@ -151,11 +152,23 @@ fn shown(fb: &FrameBuf, present: Option<u64>, pixels: &[u8], seen: &Seen) -> Res
             seen.width, seen.height, fb.width, fb.height
         ));
     }
+    let (outline, fill) = cursor.map_or((Vec::new(), Vec::new()), |(x, y)| crate::compositor::sprite(abi::cursor_shape::ARROW, x, y));
+    let inside = |rects: &[[i32; 4]], x: usize, y: usize| {
+        let (x, y) = (x as i32, y as i32);
+        rects.iter().any(|r| (r[0]..r[2]).contains(&x) && (r[1]..r[3]).contains(&y))
+    };
     for y in 0..fb.height {
         for x in 0..fb.width {
             let p = fb.get_pixel(x, y);
+            let want = if inside(&fill, x, y) {
+                [255, 255, 255]
+            } else if inside(&outline, x, y) {
+                [0, 0, 0]
+            } else {
+                [p.b, p.g, p.r]
+            };
             let o = (y * seen.width + x) * 4;
-            if pixels[o..o + 3] != [p.b, p.g, p.r] {
+            if pixels[o..o + 3] != want {
                 return Err(std::format!("the scanout differs from the stage frame at physical ({x}, {y})"));
             }
         }
@@ -175,8 +188,35 @@ struct Gpu {
     height: u32,
     frame: Vec<u8>,
     seen: Vec<u8>,
+    /// The panel cursor, which the stage's compositor draws (ruling B35): where the pointer
+    /// was when these objects were made, where the cursor is drawn once the pointer has moved
+    /// from there, and whether test point 10 stopped it restoring what it covered, until the
+    /// next stage frame.
+    pointer_start: Option<(u32, u32)>,
+    cursor: Option<(i32, i32)>,
+    no_restore: bool,
 }
 static GPU: Mutex<Option<Gpu>> = Mutex::new(None);
+/// The case running now leaves the display with the stage, whose panel cursor follows the
+/// pointer while it runs.
+static FOLLOW: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// The panel cursor's draws for its pointer at `at`, inside a `width` by `height` target: the
+/// compositor's arrow sprite, outline then fill.
+fn encode_cursor(stream: &mut Vec<u32>, at: (i32, i32), width: u32, height: u32) {
+    use gpu::abi::{pipeline, stream::encode};
+    let (outline, fill) = crate::compositor::sprite(abi::cursor_shape::ARROW, at.0, at.1);
+    for (rects, colour) in [(outline, 0xFF00_0000), (fill, 0xFFFF_FFFF)] {
+        let rects: Vec<[i32; 4]> = rects
+            .iter()
+            .map(|r| [r[0].max(0), r[1].max(0), r[2].min(width as i32), r[3].min(height as i32)])
+            .filter(|r| r[0] < r[2] && r[1] < r[3])
+            .collect();
+        if !rects.is_empty() {
+            encode::draw(stream, pipeline::SOLID, colour, &rects);
+        }
+    }
+}
 
 impl Gpu {
     /// Create the stage's objects for the current mode, which must be the stage's logical
@@ -199,6 +239,9 @@ impl Gpu {
             height: m.height,
             frame: Vec::new(),
             seen: Vec::new(),
+            pointer_start: graphics::mouse_pos().ok(),
+            cursor: None,
+            no_restore: false,
         };
         let format = gpu::abi::format::B8G8R8A8;
         match gpu::texture_create(format, m.width, m.height) {
@@ -238,10 +281,60 @@ impl Gpu {
         let _ = gpu::context_destroy(self.context);
     }
 
+    /// Where the panel cursor is to be drawn: at the pointer, once it has moved from where it
+    /// was when these objects were made. Reading it is the kernel's read of the pointing
+    /// device for the panel cursor (test point 17).
+    fn pointer(&self) -> Option<(i32, i32)> {
+        let p = graphics::mouse_pos().ok()?;
+        (self.cursor.is_some() || Some(p) != self.pointer_start).then_some((p.0 as i32, p.1 as i32))
+    }
+
+    /// Follow the pointer with the panel cursor while a case runs with the display left to the
+    /// stage: restore the old footprint from the stage frame, unless test point 10 stopped
+    /// that until the next frame, draw the cursor at the pointer, and present.
+    fn follow(&mut self, bits: u32) -> Result<(), String> {
+        use gpu::abi::{draw, pipeline, stream::encode};
+        if bits & (1 << abi::tc_point::PANEL_CURSOR_NO_RESTORE) != 0 {
+            self.no_restore = true;
+        }
+        let Some(at) = self.pointer() else { return Ok(()) };
+        if self.cursor == Some(at) {
+            return Ok(());
+        }
+        let mut stream = Vec::new();
+        encode::begin(&mut stream, self.scanout);
+        let old = self.cursor.filter(|_| !self.no_restore).and_then(|(x, y)| {
+            abi::Cursor { shape: abi::cursor_shape::ARROW, visible: 1, x, y }.footprint()
+        });
+        if let Some(f) = old {
+            let r = [f.x.max(0), f.y.max(0), (f.x + f.w).min(self.width as i32), (f.y + f.h).min(self.height as i32)];
+            if r[0] < r[2] && r[1] < r[3] {
+                let mut params = [0u32; 16];
+                params[2] = 1;
+                draw::encode(&mut stream, pipeline::COPY, 0, self.texture, 0, 0, &[draw::Instance { rect: r, params }]);
+            }
+        }
+        encode_cursor(&mut stream, at, self.width, self.height);
+        let (r, submitted) = gpu::submit(self.context, &stream);
+        if r != 0 {
+            return Err(std::format!("panel cursor submit: errno {}", -r));
+        }
+        let (r, waited) = gpu::wait(self.context, submitted.fence, 2_000_000_000);
+        if r != 0 {
+            return Err(std::format!("panel cursor render: errno {}, status {}", -r, waited.status));
+        }
+        let (r, presented) = gpu::present(self.context, self.scanout);
+        if r != 0 {
+            return Err(std::format!("panel cursor present: errno {}, answer {:#x}", -r, presented.answer));
+        }
+        self.cursor = Some(at);
+        Ok(())
+    }
+
     /// Upload the frame, rendered at the display's physical size, copy it into the scanout
-    /// on the GPU, present it, and observe the scanout. Returns the observation and the
-    /// present's context fence.
-    fn show(&mut self, fb: &FrameBuf) -> Result<(Seen, u64), String> {
+    /// on the GPU with the panel cursor over it, present it, and observe the scanout. Returns
+    /// the observation, the present's context fence and the cursor's pointer.
+    fn show(&mut self, fb: &FrameBuf) -> Result<(Seen, u64, Option<(i32, i32)>), String> {
         use gpu::abi::{draw, pipeline, purpose, stream::encode};
         if (fb.width, fb.height) != (self.width as usize, self.height as usize) {
             return Err(std::format!("the stage frame is {}x{}, not the {}x{} mode", fb.width, fb.height, self.width, self.height));
@@ -265,6 +358,10 @@ impl Gpu {
         encode::begin(&mut stream, self.scanout);
         draw::encode(&mut stream, pipeline::COPY, 0, self.texture, 0, 0,
             &[draw::Instance { rect: [0, 0, self.width as i32, self.height as i32], params }]);
+        let cursor = self.pointer();
+        if let Some(at) = cursor {
+            encode_cursor(&mut stream, at, self.width, self.height);
+        }
         let (r, submitted) = gpu::submit(self.context, &stream);
         if r != 0 {
             return Err(std::format!("stage submit: errno {}", -r));
@@ -282,8 +379,10 @@ impl Gpu {
         if r != 0 || presented.answer != success {
             return Err(std::format!("stage present: errno {}, answer {:#x}", -r, presented.answer));
         }
+        self.cursor = cursor;
+        self.no_restore = false;
         let seen = observe(&mut self.seen)?;
-        Ok((seen, presented.fence))
+        Ok((seen, presented.fence, cursor))
     }
 }
 
@@ -329,7 +428,7 @@ fn present(fb: &FrameBuf) -> Result<Seen, String> {
         *guard = Some(Gpu::new(pid)?);
     }
     let g = guard.as_mut().ok_or("stage GPU objects missing")?;
-    let shown_frame = g.show(fb).and_then(|(seen, fence)| shown(fb, Some(fence), &g.seen, &seen).map(|()| seen));
+    let shown_frame = g.show(fb).and_then(|(seen, fence, cursor)| shown(fb, Some(fence), &g.seen, &seen, cursor).map(|()| seen));
     if shown_frame.is_err() {
         // The next draw starts from new objects.
         g.destroy();
@@ -645,13 +744,27 @@ pub(super) fn begin() -> Result<(), String> {
     if let Some(s) = SHOW.lock().unwrap().as_mut() { s.measured = Some(serial); }
     Ok(())
 }
+/// The cases whose property is the kernel's screen itself, or the depth of the ownership
+/// stack: they start above the kernel's screen (ruling B29).
+const ABOVE_KERNEL_SCREEN: [&str; 3] = ["composition/ownership-stack", "panel/kernel-screens", "panel/boot-ribbon"];
+/// The cases whose property is the panel cursor, which the stage's compositor draws (ruling
+/// B35): the display stays with the stage while they run.
+const STAGE_CUSTODY: [&str; 2] = ["panel/cursor-restore", "panel/cursor-trail-detected"];
+
+/// Whether case `name`'s process takes the display over when it starts, nesting above the
+/// stage.
+pub(super) fn case_takes_display(name: &str) -> bool {
+    !STAGE_CUSTODY.contains(&name)
+}
+
 /// Before a case runs (ruling B29): the stage keeps the display, and the case's own
 /// takeover nests above it, so the matrix stays on screen until the case presents and is
-/// restored when it ends, without the console showing between cases. The cases whose property
-/// is the kernel's screen itself, or the depth of the ownership stack, start above the
-/// kernel's screen instead: the stage gives the display back for them.
+/// restored when it ends, without the console showing between cases. The cases above the
+/// kernel's screen start there: the stage gives the display back for them. The panel
+/// cursor follows the pointer while a case runs with the display left to the stage.
 pub(super) fn release_for(name: &str) -> Result<(), String> {
-    if matches!(name, "composition/ownership-stack" | "panel/kernel-screens" | "panel/boot-ribbon") {
+    FOLLOW.store(STAGE_CUSTODY.contains(&name), core::sync::atomic::Ordering::Relaxed);
+    if ABOVE_KERNEL_SCREEN.contains(&name) {
         release()
     } else {
         Ok(())
@@ -667,6 +780,7 @@ fn release() -> Result<(), String> {
     }
 }
 pub(super) fn end() -> Result<(), String> {
+    FOLLOW.store(false, core::sync::atomic::Ordering::Relaxed);
     let serial = kernel_serial(process::getpid().map_err(|e| e.to_string())?.raw() as u64)?;
     if let Some(s) = SHOW.lock().unwrap().as_mut() {
         if let Some(a) = s.measured.take() { s.windows.push((a, serial)); }
@@ -681,7 +795,14 @@ fn tick_show(s: &mut Show, bits: u32) -> Result<(), String> {
 }
 pub(super) fn tick() -> Result<(), String> {
     let bits = fault_bits();
-    tick_show(SHOW.lock().unwrap().as_mut().ok_or("stage missing")?, bits)
+    tick_show(SHOW.lock().unwrap().as_mut().ok_or("stage missing")?, bits)?;
+    if FOLLOW.load(core::sync::atomic::Ordering::Relaxed) {
+        let pid = process::getpid().map_err(|e| e.to_string())?.raw() as u64;
+        if let Some(g) = GPU.lock().unwrap().as_mut().filter(|g| g.pid == pid) {
+            g.follow(bits)?;
+        }
+    }
+    Ok(())
 }
 pub(super) fn redraw() -> Result<(), String> {
     SHOW.lock().unwrap().as_mut().ok_or("stage missing")?.draw(0)
