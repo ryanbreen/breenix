@@ -2,7 +2,7 @@
  * libc suite, getopt-env category: getopt (<unistd.h>), getopt_long (<getopt.h>, Linux's
  * ABI), getsubopt, environ, getenv, setenv, unsetenv and putenv. Every case runs in a new
  * process, so getopt starts each one with optind 1. The suite runs the program with the
- * environment PATH=/usr/local/libc/bin, HOME=/tmp, LIBC_SUITE=1 and nothing else.
+ * environment PATH=/usr/libexec/breenix/libc/bin, HOME=/tmp, LIBC_SUITE=1 and nothing else.
  */
 #define _POSIX_C_SOURCE 202405L
 #include "case.h"

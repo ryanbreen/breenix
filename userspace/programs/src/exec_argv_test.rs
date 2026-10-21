@@ -37,7 +37,7 @@ fn main() {
                 let _ = close(report_write);
             }
             // Child: exec argv_test with specific args.
-            let path = b"/usr/local/test/bin/argv_test\0";
+            let path = b"/usr/libexec/breenix/argv_test\0";
             let arg0 = b"argv_test\0".as_ptr();
             let arg1 = b"hello\0".as_ptr();
             let arg2 = b"world\0".as_ptr();

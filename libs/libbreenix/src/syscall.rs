@@ -118,6 +118,12 @@ pub mod nr {
     pub const UMASK: u64 = 95;
     pub const GETGROUPS: u64 = 115;
     pub const SETGROUPS: u64 = 116;
+    pub const SETREUID: u64 = 113;
+    pub const SETREGID: u64 = 114;
+    pub const SETRESUID: u64 = 117;
+    pub const GETRESUID: u64 = 118;
+    pub const SETRESGID: u64 = 119;
+    pub const GETRESGID: u64 = 120;
     pub const SETPGID: u64 = 109;
     pub const GETPPID: u64 = 110;
     pub const SETSID: u64 = 112;
@@ -246,6 +252,12 @@ pub mod nr {
     pub const UMASK: u64 = 166;
     pub const GETGROUPS: u64 = 158;
     pub const SETGROUPS: u64 = 159;
+    pub const SETREGID: u64 = 143;
+    pub const SETREUID: u64 = 145;
+    pub const SETRESUID: u64 = 147;
+    pub const GETRESUID: u64 = 148;
+    pub const SETRESGID: u64 = 149;
+    pub const GETRESGID: u64 = 150;
     pub const CHDIR: u64 = 49;
     pub const FCHDIR: u64 = 50;
     pub const OPENAT: u64 = 56;

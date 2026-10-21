@@ -30,7 +30,10 @@ pub(crate) fn mknodat_path(dirfd: i32, raw: impl AsRef<[u8]>, mode: u32, dev: u6
         Ok(kind) => kind,
         Err(e) => return SyscallResult::Err(e),
     };
-    let cred = Credentials::current(false);
+    let cred = match Credentials::current(false) {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     let resolved = match super::metadata::resolve_create_at(dirfd, &raw, &cred) {
         Ok(r) => r,
         Err(e) => return SyscallResult::Err(e),
@@ -69,11 +72,12 @@ pub(crate) fn mknodat_path(dirfd: i32, raw: impl AsRef<[u8]>, mode: u32, dev: u6
         Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
     }
     // Linux's zero-device character whiteout is exempt from CAP_MKNOD.
+    let device_node = crate::process::privilege::Operation::DeviceNode;
     if (kind == 0o020000 || kind == 0o060000)
         && !(kind == 0o020000 && dev as u32 == 0)
-        && cred.euid != 0
+        && !crate::process::privilege::allowed(&cred, device_node)
     {
-        return SyscallResult::Err(EPERM as u64);
+        return SyscallResult::Err(device_node.errno());
     }
     let mode = kind | super::fifo_policy::creation_mode(mode, &cred, gid, false);
     match fs.create_node(

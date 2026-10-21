@@ -350,7 +350,7 @@ pub fn become_account(account: &Account, credentials: &mut dyn Credentials) -> R
 
 /// The session's environment, replacing bsshd's own.
 pub fn login_environment(account: &Account, term: Option<&str>) -> Vec<String> {
-    let path = if account.uid == 0 { "/bin:/sbin:/usr/local/bin:/usr/local/cbin" } else { "/bin:/usr/local/bin:/usr/local/cbin" };
+    let path = if account.uid == 0 { "/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin" } else { "/usr/bin:/bin:/usr/local/bin" };
     let mut environment = vec![
         format!("HOME={}", account.home),
         format!("USER={}", account.name),

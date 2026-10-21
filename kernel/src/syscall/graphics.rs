@@ -166,11 +166,14 @@ fn window_frame_pending(buffer_id: u32, thread_id: u64) -> bool {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn read_window_input_events(buffer_id: u32, out_ptr: u64, max_count: usize) -> Result<usize, u64> {
+fn read_window_input_events(
+    buffer_id: u32,
+    out_ptr: u64,
+    max_count: usize,
+    caller: WindowCaller,
+) -> Result<usize, u64> {
     let mut reg = WINDOW_REGISTRY.lock();
-    let Some(buf) = reg.find_mut(buffer_id) else {
-        return Err(super::ErrorCode::InvalidArgument as u64);
-    };
+    let buf = reg.find_for(buffer_id, caller)?;
 
     let mut n = 0usize;
     while n < max_count && buf.input_tail != buf.input_head {
@@ -457,6 +460,25 @@ impl Default for WindowInfo {
     }
 }
 
+/// Who a window operation acts for. A process acts on its own windows; the
+/// display's holder, the session's compositor, and root act on other
+/// processes' windows too (`kernel/src/process/privilege.rs`,
+/// `docs/users/design.md` section 2).
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+struct WindowCaller {
+    pid: u64,
+    any: bool,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl WindowCaller {
+    /// EPERM unless the caller may act on other processes' windows: the compositor's operations.
+    fn compositor(self) -> Result<(), u64> {
+        if self.any { Ok(()) } else { Err(super::ErrorCode::PermissionDenied as u64) }
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 /// Global window buffer registry. Protected by a spinlock.
 static WINDOW_REGISTRY: Mutex<WindowRegistry> = Mutex::new(WindowRegistry::new());
@@ -529,6 +551,20 @@ impl WindowRegistry {
         self.buffers
             .iter_mut()
             .find_map(|slot| slot.as_mut().filter(|b| b.id == buffer_id))
+    }
+
+    /// Window `buffer_id` when `caller` may act on it: EINVAL when no window
+    /// has that ID, EPERM when another process owns it and the caller holds neither
+    /// the display nor root.
+    fn find_for(&mut self, buffer_id: u32, caller: WindowCaller) -> Result<&mut WindowBuffer, u64> {
+        let buf = self
+            .find_mut(buffer_id)
+            .ok_or(super::ErrorCode::InvalidArgument as u64)?;
+        if caller.any || buf.owner_pid == caller.pid {
+            Ok(buf)
+        } else {
+            Err(super::ErrorCode::PermissionDenied as u64)
+        }
     }
 
     /// Remove all window buffers owned by a given process.
@@ -799,7 +835,14 @@ fn fb_height() -> usize {
 /// Handle VirGL GPU rendering ops (7=balls, 9=rects) without needing SHELL_FRAMEBUFFER.
 /// Called early in sys_fbdraw before acquiring the framebuffer lock.
 #[cfg(target_arch = "aarch64")]
-fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
+fn handle_virgl_op(cmd: &FbDrawCmd, caller: WindowCaller) -> SyscallResult {
+    // The compositor's operations: the windows' pixels and registry, the
+    // screen they are composited onto, and the input state it routes.
+    if matches!(cmd.op, 16 | 20 | 23 | 25 | 26 | 31) {
+        if let Err(errno) = caller.compositor() {
+            return SyscallResult::Err(errno);
+        }
+    }
     match cmd.op {
         7 => {
             // VirglSubmitFrame: GPU-rendered balls
@@ -892,17 +935,15 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             };
             let registered = {
                 let mut reg = WINDOW_REGISTRY.lock();
-                match reg.find_mut(buffer_id) {
-                    Some(buf) => {
-                        buf.registered = true;
-                        buf.title_len = title.len().min(MAX_TITLE_LEN);
-                        buf.title[..buf.title_len].copy_from_slice(&title[..buf.title_len]);
-                        true
-                    }
-                    None => false,
-                }
+                reg.find_for(buffer_id, caller).map(|buf| {
+                    buf.registered = true;
+                    buf.title_len = title.len().min(MAX_TITLE_LEN);
+                    buf.title[..buf.title_len].copy_from_slice(&title[..buf.title_len]);
+                })
             };
-            if registered {
+            if let Err(errno) = registered {
+                SyscallResult::Err(errno)
+            } else {
                 // Bump registry generation + wake compositor so it discovers the new window
                 #[cfg(target_arch = "aarch64")]
                 {
@@ -910,8 +951,6 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                     COMPOSITOR_FRAME_WQ.wake_up();
                 }
                 SyscallResult::Ok(0)
-            } else {
-                SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
             }
         }
         13 => {
@@ -928,7 +967,9 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 return SyscallResult::Err(super::ErrorCode::Fault as u64);
             }
             let reg = WINDOW_REGISTRY.lock();
-            let windows = reg.registered_windows();
+            let mut windows = reg.registered_windows();
+            // A process other than the compositor lists only its own windows.
+            windows.retain(|info| caller.any || u64::from(info.owner_pid) == caller.pid);
             let count = windows.len().min(max_entries as usize);
             unsafe {
                 let dst = out_ptr as *mut WindowInfo;
@@ -970,8 +1011,8 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 page += 4096;
             }
             let mut reg = WINDOW_REGISTRY.lock();
-            match reg.find_mut(buffer_id) {
-                Some(buf) => {
+            match reg.find_for(buffer_id, caller) {
+                Ok(buf) => {
                     // Skip copy if generation hasn't changed since last read
                     if buf.generation == buf.last_read_gen {
                         return SyscallResult::Ok(0); // 0 = no new data
@@ -1007,7 +1048,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                     }
                     SyscallResult::Ok(dims)
                 }
-                None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+                Err(errno) => SyscallResult::Err(errno),
             }
         }
         15 => {
@@ -1029,12 +1070,12 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             // Bump generation and store waiting thread ID
             {
                 let mut reg = WINDOW_REGISTRY.lock();
-                match reg.find_mut(buffer_id) {
-                    Some(buf) => {
+                match reg.find_for(buffer_id, caller) {
+                    Ok(buf) => {
                         buf.generation += 1;
                         buf.waiting_thread_id = Some(thread_id);
                     }
-                    None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+                    Err(errno) => return SyscallResult::Err(errno),
                 }
             }
 
@@ -1089,14 +1130,14 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             let y = ((cmd.p2 >> 16) & 0xFFFF) as i16 as i32;
             let z_order = cmd.p3 as u32;
             let mut reg = WINDOW_REGISTRY.lock();
-            match reg.find_mut(buffer_id) {
-                Some(buf) => {
+            match reg.find_for(buffer_id, caller) {
+                Ok(buf) => {
                     buf.x = x;
                     buf.y = y;
                     buf.z_order = z_order;
                     SyscallResult::Ok(0)
                 }
-                None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+                Err(errno) => SyscallResult::Err(errno),
             }
         }
         18 => {
@@ -1113,8 +1154,9 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
 
             {
                 let mut reg = WINDOW_REGISTRY.lock();
-                let Some(buf) = reg.find_mut(buffer_id) else {
-                    return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+                let buf = match reg.find_for(buffer_id, caller) {
+                    Ok(buf) => buf,
+                    Err(errno) => return SyscallResult::Err(errno),
                 };
                 let slot = buf.input_head;
                 if !input_ring::push(
@@ -1154,7 +1196,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             }
 
             loop {
-                let count = match read_window_input_events(buffer_id, out_ptr, max_count) {
+                let count = match read_window_input_events(buffer_id, out_ptr, max_count, caller) {
                     Ok(count) => count,
                     Err(err) => return SyscallResult::Err(err),
                 };
@@ -1173,7 +1215,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 // before the current thread is queued and marked BlockedOnIO.
                 // Re-check after prepare_to_wait; if input is present, finish_wait
                 // restores runnable state without entering the scheduler.
-                match read_window_input_events(buffer_id, out_ptr, max_count) {
+                match read_window_input_events(buffer_id, out_ptr, max_count, caller) {
                     Ok(count) if count > 0 => {
                         INPUT_EVENT_WQ.finish_wait();
                         return SyscallResult::Ok(count as u64);
@@ -1212,7 +1254,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             // directly without the kernel copy in read_window_buffer (op=14).
             // p1=buffer_id, p2/p3=out_ptr (lo/hi) for mapped address (u64)
             // Returns: packed (width << 32 | height) on success.
-            handle_map_window_buffer(cmd)
+            handle_map_window_buffer(cmd, caller)
         }
         22 => {
             // CheckWindowDirty: lightweight generation check without pixel copy.
@@ -1220,8 +1262,8 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             // Returns: 1 if dirty (generation changed since last check), 0 if clean.
             let buffer_id = cmd.p1 as u32;
             let mut reg = WINDOW_REGISTRY.lock();
-            match reg.find_mut(buffer_id) {
-                Some(buf) => {
+            match reg.find_for(buffer_id, caller) {
+                Ok(buf) => {
                     if buf.generation != buf.last_read_gen {
                         buf.last_read_gen = buf.generation;
                         SyscallResult::Ok(1)
@@ -1229,7 +1271,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                         SyscallResult::Ok(0)
                     }
                 }
-                None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+                Err(errno) => SyscallResult::Err(errno),
             }
         }
         23 => {
@@ -2010,7 +2052,7 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
 /// client window pixels directly without the kernel page-by-page copy in
 /// read_window_buffer (op=14).
 #[cfg(target_arch = "aarch64")]
-fn handle_map_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
+fn handle_map_window_buffer(cmd: &FbDrawCmd, caller: WindowCaller) -> SyscallResult {
     use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
     use crate::memory::vma::{MmapFlags, Protection, Vma};
     use crate::syscall::memory_common::{
@@ -2026,9 +2068,9 @@ fn handle_map_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
     // Get page_phys_addrs from registry (release lock before acquiring process manager)
     let (page_phys_addrs, win_w, win_h) = {
         let mut reg = WINDOW_REGISTRY.lock();
-        match reg.find_mut(buffer_id) {
-            Some(buf) => (buf.page_phys_addrs.clone(), buf.width, buf.height),
-            None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+        match reg.find_for(buffer_id, caller) {
+            Ok(buf) => (buf.page_phys_addrs.clone(), buf.width, buf.height),
+            Err(errno) => return SyscallResult::Err(errno),
         }
     };
 
@@ -2266,23 +2308,29 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     // SHELL_FRAMEBUFFER. This prevents holding PROCESS_MANAGER (which disables
     // interrupts on ARM64) while also holding the framebuffer lock — that nested
     // lock pattern caused contention with the render thread and other syscall paths.
-    let (fb_mmap_info_pre, caller_owns_display): (
+    let (fb_mmap_info_pre, caller_owns_display, window_caller): (
         Option<crate::process::process::FbMmapInfo>,
         bool,
+        WindowCaller,
     ) = {
         use crate::syscall::memory_common::get_current_thread_id;
+        let nobody = (None, false, WindowCaller { pid: u64::MAX, any: false });
         let thread_id = get_current_thread_id();
         if let Some(tid) = thread_id {
             let mgr_guard = crate::process::manager();
             if let Some(ref mgr) = *mgr_guard {
                 mgr.find_process_by_thread(tid)
-                    .map(|(pid, proc)| (proc.fb_mmap, owns_display(pid, proc)))
-                    .unwrap_or((None, false))
+                    .map(|(pid, proc)| {
+                        let owner = owns_display(pid, proc);
+                        let caller = WindowCaller { pid: pid.as_u64(), any: owner || proc.cred.euid == 0 };
+                        (proc.fb_mmap, owner, caller)
+                    })
+                    .unwrap_or(nobody)
             } else {
-                (None, false)
+                nobody
             }
         } else {
-            (None, false)
+            nobody
         }
     };
 
@@ -2318,7 +2366,7 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     // Handle them before acquiring SHELL_FRAMEBUFFER.
     #[cfg(target_arch = "aarch64")]
     if cmd.op == 7 || cmd.op >= 9 {
-        return handle_virgl_op(&cmd);
+        return handle_virgl_op(&cmd, window_caller);
     }
 
     // A whole-screen mapping was made by a display owner. Once another process

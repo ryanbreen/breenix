@@ -417,6 +417,7 @@ STD_BINARIES=(
     "sync"
 
     # Effort suites, installed as /sbin/suite-<id>
+    "etc-reconcile"
     "suite-smoke"
     "suite-crypto"
     "suite-files-io"
@@ -436,6 +437,8 @@ STD_BINARIES=(
     "suite-gpu"
     "gpu-exec-probe"
     "suite-console"
+    "suite-users"
+    "users-exec_test"
     "console-login-shell"
     "files-io-exec_test"
     "processes-exec_test"

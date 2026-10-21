@@ -612,6 +612,15 @@ impl MapState {
         !inner.pages.is_empty() || !inner.poisoned.is_empty() || !inner.bindings.is_empty()
     }
 
+    /// Exec holds the mount write guard through its image copy. A shared
+    /// binding with write authority can fault or gain PROT_WRITE without that
+    /// guard, so even a clean/read-only binding must suppress set-ID identity.
+    pub(crate) fn may_change_exec_image(&self) -> bool {
+        let inner = self.inner.lock();
+        inner.bindings.iter().any(|rec| rec.shared && rec.may_write)
+            || inner.pages.entries.iter().any(|(_, page)| page.dirty)
+    }
+
     pub(crate) fn has_dirty(&self) -> bool {
         self.dirty.load(Ordering::Acquire)
     }
@@ -1593,6 +1602,15 @@ pub(crate) fn unmap(
         return Err("File mapping entry custody disagreed");
     }
     Ok(())
+}
+
+/// The file of `vma` when it is a shared mapping that may be made writable.
+/// PROCESS_MANAGER held.
+pub(crate) fn shared_writer(vma: &Vma) -> Option<FileHandle> {
+    let binding = vma.backing.as_ref()?;
+    let inner = binding.handle.object.map.inner.lock();
+    let rec = inner.bindings.iter().find(|rec| rec.id == binding.id)?;
+    (rec.shared && rec.may_write).then(|| binding.handle.clone())
 }
 
 /// mprotect of `[start, end)`, which must lie within one file VMA; returns

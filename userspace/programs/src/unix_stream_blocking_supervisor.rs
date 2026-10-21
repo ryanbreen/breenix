@@ -8,7 +8,7 @@ fn main() {
     };
     let status = match process::fork() {
         Ok(ForkResult::Child) => {
-            let _ = process::exec(b"/bin/unix_stream_blocking_oracle\0");
+            let _ = process::exec(b"/usr/bin/unix_stream_blocking_oracle\0");
             process::exit(127);
         }
         Ok(ForkResult::Parent(pid)) => {

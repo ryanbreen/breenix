@@ -40,8 +40,8 @@ calls outside that table do not count.
 A category whose `cases` list is empty is planned: an effort names it before its cases exist,
 and its cases arrive with the lane that implements it. The binary leaves planned categories out
 and runs the others exactly as above, so a boot does not report an empty category. A manifest
-in which each category is planned is a skeleton (`server`, `users`, `filesystem` and `toolchain`
-today): it has no suite source, binary or install entry yet, `scripts/suite-sequence.py`
+in which each category is planned is a skeleton (`server`, `filesystem` and `toolchain`
+today; `users` has cases for its `kernel-checks` categories only): it has no suite source, binary or install entry yet, `scripts/suite-sequence.py`
 refuses it in a `--suite` list, and `all` leaves it out with "no cases yet". An effort
 milestone measured by a planned category is not complete, including when its other categories pass.
 Full-suite scoring refuses acceptance while a manifest category has no cases; targeted runs of populated
@@ -208,11 +208,17 @@ SUITE <id> MEMORY reclaimed=PASS|FAIL free_before=<pages> free_after=<pages> all
   page tables, `page_cache` the file pages the per-inode cache holds (`memory::file_map`),
   `kernel_stacks` kernel and per-CPU stacks, `buffers` device, DMA and display buffers, and
   `other` the rest, the kernel heap's growth among it.
+- Boot's own work is not the suite's. On x86-64 the boot thread goes on after the first
+  program starts: it starts the console executor and, on bare metal, the tick census, which runs
+  a 0.5-second window on one CPU after another (5.6 seconds together for the R240's 4 CPUs in boot
+  20261021T024142Z-metal), so a suite that starts at once would count their kernel stacks. Each sample first waits, up to 30 seconds, until `/proc/breenix/frames`
+  reports `boot settled=1` (`kernel/src/boot/settled.rs`; ARM64's boot thread enters the first
+  program itself, so it reports 1 from the start).
 - Reclamation is deferred: an exited process's tables and the image an exec replaced go back
   through reclaim receipts, and an exited thread's kernel stack from an idle CPU. So each
-  sample waits, up to 5 seconds, until no receipt is queued or parked and MemFree has held
+  sample then waits, up to 5 seconds, until no receipt is queued or parked and MemFree has held
   still for 100 ms. `receipts` is what was still queued when it stopped waiting, and
-  `settle_ms` how long it waited.
+  `settle_ms` how long the sample waited, both waits together.
 - The verdict is PASS when `free_after` is at most `allowance` pages below `free_before`.
   The allowance is `MEMORY_RECLAIM_ALLOWANCE_PAGES` in `libs/libbreenix/src/suite_memory.rs`,
   set from the measurement below; only the operator loosens it.
@@ -477,10 +483,9 @@ swift run breenix-runs run x86 --boots 1 --suite files-io --gate-timeout 1800 --
 ```
 
 Suite helpers are ordinary userspace binaries named with the `_test` suffix, built via
-`STD_BINARIES` and installed in `/usr/local/test/bin`. They ship alongside the suite in
-all images, including default boot images, so changing boot mode does not require a
-second userspace image; default boot does not execute them. Files & I/O uses
-`/usr/local/test/bin/files-io-exec_test` for descriptor lifetime across exec. Helpers
+`STD_BINARIES` and installed in `/usr/libexec/breenix`. Image creation installs them for default
+and suite boots, so changing boot mode does not require a second userspace image; default boot does not execute them. Files & I/O uses
+`/usr/libexec/breenix/files-io-exec_test` for descriptor lifetime across exec. Helpers
 must return their result to the case and must not print suite serial records.
 
 ## Directories & links
@@ -535,7 +540,7 @@ only be a live system process. The three `exec/script*` cases measure `#!` inter
 scripts, an extension every Unix system provides but POSIX execve does not require (it may
 fail with ENOEXEC); their titles say so.
 
-The exec cases run `/usr/local/test/bin/processes-exec_test`, which reports its argv,
+The exec cases run `/usr/libexec/breenix/processes-exec_test`, which reports its argv,
 environment and the process state exec kept (IDs, process group, signal dispositions,
 mask, pending set, descriptors, limits, nice value, working directory, umask, alarm)
 on a descriptor named on its command line. Set-ID cases run a copy of it chowned and
@@ -593,7 +598,7 @@ read, and emit a suite-rejecting SKIP below two (#1615). Before measuring, each 
 that its two workers run on different processors at once: a thousand handoffs through shared memory, which two that
 take turns on one processor cannot make in the time allowed. None assumes more than two.
 
-The exec cases run `/usr/local/test/bin/signals-exec_test`, which reports the mask,
+The exec cases run `/usr/libexec/breenix/signals-exec_test`, which reports the mask,
 pending set, ignored and caught signals and alternate stack exec kept on a descriptor named
 on its command line, or says there that it runs and then unblocks a signal.
 
@@ -667,7 +672,7 @@ bounded at 3 seconds (6 for an exec) and stop 1.5 seconds before the deadline. C
 that must be asleep before they are stopped or before the clock is set are observed through
 `/proc/<pid>/status`.
 
-The exec cases run `/usr/local/test/bin/time-exec_test`, which reports the interval
+The exec cases run `/usr/libexec/breenix/time-exec_test`, which reports the interval
 timers exec kept and whether a timer ID still names a timer, on a descriptor named on its
 command line, and can then stay alive a given time.
 
@@ -1087,12 +1092,12 @@ unlinkat. build.rs reports which the library has, so those cases start measuring
 gains them. Under the targets' panic=abort, a panic in a thread ends the process with
 SIGABRT; `thread-sync/panic-aborts` and `panic-hook` measure that in a child process.
 
-The cases that start programs run `/usr/local/test/bin/rust-std-child_test`, a std-only
+The cases that start programs run `/usr/libexec/breenix/rust-std-child_test`, a std-only
 helper that reports its arguments, environment, directory, IDs and executable path on
 stdout, copies stdin to stdout, exits with a given code, or aborts. Each case uses the
 runner's default 10-second deadline. Waits for another process or thread are bounded at 3
 seconds and say what was still running; socket reads time out after 2 seconds. Sleeps and
-timeouts may never end early and may end at most 30 ms late, two of x86-64's 5 ms ticks and
+timeouts must end at or after their deadlines and at most 30 ms late, two of x86-64's 5 ms ticks and
 20 ms. Files live in a directory of the case's own, `/tmp/rust-std-<pid>`; TCP and UDP use
 127.0.0.1 and ports 20000-29999 numbered from the case's process ID.
 
@@ -1113,13 +1118,13 @@ one per milestone: `stdio` (35), `string-stdlib` (33), `math` (35), `locale-wcha
 C17 and POSIX.1-2024, with Linux's ABI where POSIX leaves a choice open; each title names the
 rule its case checks, and titles that measure a Linux choice say so.
 
-Every case but the busybox ones is a C function in `userspace/libc-suite/<category>.c`.
+The non-BusyBox cases are C functions in `userspace/libc-suite/<category>.c`.
 Each category is one program, `harness.c` plus the category's file, compiled against
 Breenix's libc headers and `libc.a` with `-std=c17 -fno-builtin -frounding-math` (so calls
 reach the library rather than the compiler, and the floating-point environment is honoured)
-and installed as `/usr/local/test/bin/libc-<category>_test`. The suite runs it once per case
+and installed as `/usr/libexec/breenix/libc-<category>_test`. The suite runs it once per case
 as `libc-<category>_test <case> <fd>` in a scratch directory of its own under `/tmp`, with
-the environment `PATH=/usr/local/libc/bin`, `HOME=/tmp`, `LIBC_SUITE=1` and nothing else.
+an environment consisting of `PATH=/usr/libexec/breenix/libc/bin`, `HOME=/tmp` and `LIBC_SUITE=1`.
 The program writes `PASS`, `FAIL <message>` or `SKIP <message>` to descriptor `<fd>` and
 exits 0. Its harness builds that message with `write()` alone, so a broken stdio or
 `string.h` cannot garble the report of what broke; `userspace/libc-suite/case.h` gives the
@@ -1127,8 +1132,8 @@ contract. `tests/suite_manifests.rs` checks that each C file's `libc_cases[]` ta
 the manifest's cases in order.
 
 The busybox cases run applets of a BusyBox built against Breenix's libc, installed as
-`/usr/local/libc/bin/busybox` with its applet links beside it, and compare what the applet
-prints and its exit status with the expected values. `PATH` names only `/usr/local/libc/bin`,
+`/usr/libexec/breenix/libc/bin/busybox` with its applet links beside it, and compare what the applet
+prints and its exit status with the expected values. `PATH` names only `/usr/libexec/breenix/libc/bin`,
 and `/bin` contains the same Breenix-libc BusyBox. Each applet has a case of its own
 (the shell has five), so one that does not behave is a recorded failure of its own. The
 builder records each configured applet's compile and link result in `applets.json` and
@@ -1356,4 +1361,32 @@ suite's own verdict is complete.
 scripts/boot-interactive.sh --mode suite --suite gpu --gpu-gl --gate-timeout 900
 ./run.sh --parallels --suite gpu --gate-timeout 900
 ./run.sh --vmware --suite gpu --gate-timeout 900
+```
+
+## Users & permissions
+
+`users` measures the users effort in `docs/efforts/path.json` against `docs/users/design.md`.
+Its `kernel-checks` milestone's categories have cases: `credentials` (7), `files` (15),
+`sticky` (7), `setid-exec` (8), `signals` (5), `proc-dev` (8) and `umask` (4), 54 cases. The
+other categories are planned and arrive with their milestones (design section 7).
+
+The suite runs as root. A case that needs another identity forks a child that becomes a
+fixture account (its supplementary groups, then setresgid and setresuid, then a refused
+setuid(0)) and reports through a pipe. The accounts are IDs only: ua 2001 (in group ug 2100),
+ub 2002 and uw 2003 (in wheel, 10). Set-ID cases copy `/usr/local/test/bin/users-exec_test`
+(`userspace/programs/src/users_exec.rs`), which has no Rust `main`, so the standard library's
+start-up does not reopen closed descriptors before the program reports them. A refusal case
+whose refusal could have an unrelated cause (a missing file, device or network stack, or a
+search check in the path) also shows the operation succeeding for an identity the rule allows. `credentials/orphan-thread-not-root` arms the
+kernel's `cred-orphan` test point (32) for its own thread. `setid-exec/nosuid-home-ignored`
+writes under `/home`, which is the home filesystem where one is mounted and the root
+filesystem's directory otherwise; the kernel gives `/home` its `nosuid,nodev` options in both
+cases, and `proc-dev/home-nodev-device-eacces` makes its device node there.
+`proc-dev/window-other-eperm` uses the window operations, which only ARM64 has; on x86-64 it
+shows a user's window operations refused (EINVAL): the x86-64 framebuffer call accepts only
+operations 6 and 32.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite users
+python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite users --milestone users/kernel-checks
 ```

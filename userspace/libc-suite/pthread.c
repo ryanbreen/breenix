@@ -893,7 +893,7 @@ static const char *cancel_pending_exec(void) {
         for (int i = 0; i < n; i++)
             fd[i] = digits[n - 1 - i];
         fd[n] = 0;
-        char *argv[] = { "/usr/local/test/bin/libc-pthread_test", "create-join", fd, NULL };
+        char *argv[] = { "/usr/libexec/breenix/libc-pthread_test", "create-join", fd, NULL };
         execve(argv[0], argv, libc_case_envp);
         _exit(5);
     }

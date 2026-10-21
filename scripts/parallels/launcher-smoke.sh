@@ -2,15 +2,9 @@
 #
 # launcher-smoke.sh — ONE full launcher->terminal smoke run on a fresh Parallels VM.
 #
-# Flow under test:
-#   boot (run.sh --parallels) -> BWM ready -> double-tap SUPER opens the launcher
-#   (/bin/blauncher, pre-selecting APPS[0] = "Terminal") -> Enter launches the
-#   terminal (/bin/bterm). PASS requires REAL serial evidence that bterm started
-#   (its own '[bterm] config:' line) AND became functional (spawned its child
-#   shell, '[bterm] spawned child pid=') — never "launcher opened" alone.
-#   NB: blauncher launches bterm via fork+execv, which does NOT emit the kernel's
-#   "[spawn] path='...'" line — so we validate bterm's OWN startup logs, which are
-#   stronger proof (the binary actually ran and initialized) than a spawn record.
+# Flow under test: BWM launches /usr/bin/blauncher, then Enter launches
+# /usr/bin/bterm. Acceptance requires the terminal's config and child-shell
+# startup records, produced after the executable starts.
 #
 # Usage:
 #   scripts/parallels/launcher-smoke.sh [--no-build] [--keep-vm]
@@ -66,7 +60,7 @@ ENTER_CODE=28          # Enter / Return
 # recurring [bwm-fps] compositing line (printed ~180x/s once the desktop is live,
 # so a clean, un-interleaved instance appears within milliseconds). Used with grep -aE.
 READY_MARKER='bwm-fps|hotkeys: using built-in defaults'
-LAUNCHER_MARKER="[spawn] path='/bin/blauncher'"
+LAUNCHER_MARKER="[spawn] path='/usr/bin/blauncher'"
 # GPU-init abort fast-fail: if virtio-gpu init fails (e.g. an ATTACH_BACKING
 # rejected with resp_type=0x1205 INVALID_PARAMETER), BWM correctly refuses to run
 # without compositing and the display stays black forever — waiting out the full

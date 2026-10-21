@@ -44,7 +44,7 @@ const SYS_SETUID: u64 = 146;
 #[cfg(target_arch = "x86_64")]
 const SYS_SETUID: u64 = 105;
 /// The fresh image that checks `exec-reclaims`' post-exec process.
-const EXEC_PROBE_BINARY: &str = "/bin/gpu-exec-probe";
+const EXEC_PROBE_BINARY: &str = "/usr/bin/gpu-exec-probe";
 
 // ---------------------------------------------------------------------------------------
 // Processes and messages.

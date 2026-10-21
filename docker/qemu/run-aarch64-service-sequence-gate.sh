@@ -298,9 +298,9 @@ green_sequence_complete() {
 
     grep -qF "[init] Boot script completed" "$serial_file" 2>/dev/null \
         && grep -qF "create_process_with_argv [ARM64]: ENTRY - name='telnetd'" "$serial_file" 2>/dev/null \
-        && grep -qF "[spawn] path='/bin/bounce'" "$serial_file" 2>/dev/null || return 1
+        && grep -qF "[spawn] path='/usr/bin/bounce'" "$serial_file" 2>/dev/null || return 1
 
-    bounce_line=$(grep -nF "[spawn] path='/bin/bounce'" "$serial_file" | head -1 | cut -d: -f1)
+    bounce_line=$(grep -nF "[spawn] path='/usr/bin/bounce'" "$serial_file" | head -1 | cut -d: -f1)
     [ -n "$bounce_line" ] || return 1
     heartbeat_count=$(awk -v start="$bounce_line" \
         'NR > start && index($0, "[heartbeat]") { count++ } END { print count + 0 }' \
@@ -821,7 +821,7 @@ classify_serial() {
     fi
     if grep -qF "[init] Boot script completed" "$serial_file" 2>/dev/null \
         && grep -qF "create_process_with_argv [ARM64]: ENTRY - name='telnetd'" "$serial_file" 2>/dev/null \
-        && grep -qF "[spawn] path='/bin/bounce'" "$serial_file" 2>/dev/null; then
+        && grep -qF "[spawn] path='/usr/bin/bounce'" "$serial_file" 2>/dev/null; then
         if ! grep -qF "[INIT_GROUP_REFUSAL:aarch64:phase=quiesce:probe1=-22:probe2=-22:expected=-22]" "$serial_file" 2>/dev/null; then
             CLASS_BUCKET="P5B"
             CLASS_REASON="init-group quiesce refusal marker missing"

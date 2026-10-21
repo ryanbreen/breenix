@@ -1,8 +1,33 @@
 //! Process entry: `_start` takes argc, argv and envp from the initial stack, sets
-//! `environ`, starts the thread runtime and calls `main(argc, argv, envp)`.
+//! `environ`, records the auxiliary vector, starts the thread runtime and calls
+//! `main(argc, argv, envp)`.
 
 use crate::env::environ;
 use crate::{exit, pthread};
+use core::sync::atomic::{AtomicPtr, Ordering};
+
+/// The auxiliary vector the kernel placed after the environment's NULL: pairs of
+/// (type, value) ending with type 0 (AT_NULL). Null before `_start` has run.
+static AUXV: AtomicPtr<u64> = AtomicPtr::new(core::ptr::null_mut());
+
+/// The value of auxiliary vector entry `kind`, if the kernel supplied one.
+pub(crate) fn auxv_entry(kind: u64) -> Option<u64> {
+    let mut entry = AUXV.load(Ordering::Acquire) as *const u64;
+    if entry.is_null() {
+        return None;
+    }
+    // SAFETY: the kernel ends the vector with an AT_NULL pair, and the initial stack
+    // that holds it lives for the whole process.
+    unsafe {
+        while *entry != 0 {
+            if *entry == kind {
+                return Some(*entry.add(1));
+            }
+            entry = entry.add(2);
+        }
+    }
+    None
+}
 
 /// Pristine x86_64 GPR values at process entry.
 ///
@@ -81,6 +106,11 @@ extern "C" fn _start_rust(sp: *const u64) -> ! {
         // envp starts after argv NULL terminator: sp + 1 (argc) + argc + 1 (NULL)
         let envp = sp.add(1 + argc + 1) as *const *const u8;
         environ = envp as *mut *mut u8;
+        let mut end = envp;
+        while !(*end).is_null() {
+            end = end.add(1);
+        }
+        AUXV.store(end.add(1) as *mut u64, Ordering::Release);
         pthread::startup(envp);
 
         extern "C" {

@@ -202,6 +202,13 @@ pub fn reconcile(root: &Path, home_mounted: bool) -> Result<Option<Report>, Refu
     // Read each account file before writing one, so a refused one leaves /etc as it was.
     let mut stored = Vec::new();
     for (file, mode) in ACCOUNT_FILES {
+        // v2 binds the complete store /etc directly. Merging it with itself
+        // would incorrectly classify its legitimate root entry as an import.
+        let source = store.join("etc").join(file);
+        let target = root.join("etc").join(file);
+        if let (Ok(a), Ok(b)) = (fs::metadata(&source), fs::metadata(&target)) {
+            if a.dev() == b.dev() && a.ino() == b.ino() { continue; }
+        }
         if let Some((entries, _)) = read_store_file(&store.join("etc").join(file), mode == 0o600)? {
             stored.push((file, mode, entries));
         }

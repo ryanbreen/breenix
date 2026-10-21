@@ -168,7 +168,7 @@ const CLEANUP_MS: u64 = 1500;
 /// What cleanup's own waits leave, for the case to report.
 const REPORT_MS: u64 = 300;
 /// The helper the exec cases run (`time_exec.rs`).
-const HELPER: &str = "/usr/local/test/bin/time-exec_test";
+const HELPER: &str = "/usr/libexec/breenix/time-exec_test";
 
 type Checked = Result<(), String>;
 /// struct timespec: seconds and nanoseconds.
