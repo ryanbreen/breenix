@@ -486,7 +486,7 @@ pub fn hold_canvas() -> CanvasHold {
     CanvasHold
 }
 
-/// See `hold_canvas`. Dropping it repaints every row, since the read-back may have
+/// See `hold_canvas`. Dropping it asks for a full repaint, since the read-back may have
 /// replaced rows the console wrote but had not yet uploaded.
 #[cfg(target_arch = "aarch64")]
 pub struct CanvasHold;

@@ -87,7 +87,7 @@ fn word(rec: &[u8], at: usize) -> u32 {
 fn quad(rec: &[u8], at: usize) -> u64 {
     u64::from(word(rec, at)) | u64::from(word(rec, at + 4)) << 32
 }
-/// The display's current mode; every screen-sized buffer follows it (ruling B8).
+/// The display's current mode, which sizes the stage's screen buffers (ruling B8).
 fn mode() -> Result<gpu::abi::Mode, String> {
     let (r, modes) = gpu::modes();
     if r != 0 {
@@ -133,7 +133,7 @@ fn snapshot() -> Result<(Vec<u8>, Seen), String> {
     Ok((pixels, seen))
 }
 /// The stage check: the scanout is bound by the stage's own PRESENT (its context fence),
-/// and every physical pixel is the stage frame's logical pixel enlarged by the display
+/// and each physical pixel is the stage frame's logical pixel enlarged by the display
 /// scale, compared on B, G and R (X normalized, ruling B11).
 fn shown(fb: &FrameBuf, present: Option<u64>, pixels: &[u8], seen: &Seen) -> Result<(), String> {
     let fence = present.ok_or("the stage frame was not presented by a GPU PRESENT")?;

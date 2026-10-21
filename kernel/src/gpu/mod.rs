@@ -4198,8 +4198,8 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     })
     .ok_or(ENODEV)??;
     // The console writes the kernel screen's backing, which a VirGL observation poisons and
-    // transfers into; a display owner never meets it there, since the console stops drawing
-    // while a process holds the display.
+    // transfers into. READBACK's display owner does not meet the console there: the console
+    // stops drawing while a process holds the display.
     let _canvas = (window && screen::is_target(id)).then(crate::console::hold_canvas);
     if window {
         // The whole bound target, in canonical rows.
