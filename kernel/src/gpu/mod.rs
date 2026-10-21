@@ -4089,28 +4089,98 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EINVAL);
     }
     let tgid = caller()?;
+    match read_back(tgid, &mut a, Observer::Owner, Some(arg)) {
+        Ok(_) => Ok(0),
+        Err(Refused::Errno(e)) => Err(e),
+        Err(Refused::Eio(reason, failed)) => {
+            a.reason = reason;
+            a.failed_submission = failed;
+            write_arg(arg, &a)?;
+            Err(EIO)
+        }
+    }
+}
+
+/// `SCANOUT_READBACK` (syscall 414, op 22) for an observer the window layer authorized, root
+/// or the compositor claimant: the whole bound scanout into `dst`, with record version 2 at
+/// `record`, through the pinned-binding observation READBACK of target 0 uses, without
+/// display ownership (gpu-abi.md, the window front handoff). `dst_len` holds at least the
+/// current mode. Returns the observation serial, or the errno and, for EIO, its reason.
+pub fn observe_scanout(dst: u64, dst_len: u64, record: u64) -> Result<u64, (i64, u32)> {
+    let _path = GpuPath::enter();
+    if !matches!(with_core(|c| c.admission()), Some(Ok(()))) {
+        return Err((ENODEV, readback_reason::NONE));
+    }
+    let tgid = caller().map_err(|e| (e, readback_reason::NONE))?;
+    let mode = with_core(|c| display::MODES[c.display.mode as usize])
+        .ok_or((ENODEV, readback_reason::NONE))?;
+    if dst_len < mode.width as u64 * mode.height as u64 * 4 {
+        return Err((EINVAL, readback_reason::NONE));
+    }
+    let mut a = abi::Readback::ZERO;
+    a.pixels = dst;
+    a.pixels_len = dst_len;
+    a.record = record;
+    match read_back(tgid, &mut a, Observer::Window, None) {
+        Ok(serial) => Ok(serial),
+        Err(Refused::Errno(e)) => Err((e, readback_reason::NONE)),
+        Err(Refused::Eio(reason, _)) => Err((EIO, reason)),
+    }
+}
+
+/// Who observes target 0, the scanout.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Observer {
+    /// READBACK: the current display owner, of a rectangle it names.
+    Owner,
+    /// SCANOUT_READBACK: an observer the window layer authorized, of the whole bound
+    /// target. It neither owns the display nor names the target, and an EIO leaves its
+    /// record untouched.
+    Window,
+}
+
+/// Why an observation was refused: an errno, or EIO with its reason and, for reason 4,
+/// the invalidating submission.
+enum Refused {
+    Errno(i64),
+    Eio(u32, u64),
+}
+
+impl From<i64> for Refused {
+    fn from(e: i64) -> Self {
+        Refused::Errno(e)
+    }
+}
+
+/// Observe `a`'s rectangle of `a.target` (0, the scanout) for `tgid`, write the pixels and
+/// the record, and return the observation serial. `arg`, when given, is READBACK's argument,
+/// checked writable before any device work.
+fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u64>) -> Result<u64, Refused> {
+    let window = observer == Observer::Window;
     let _scanout = if a.target == 0 {
-        if !display::owner(tgid) {
-            return Err(abi::errno::EPERM);
+        if !window && !display::owner(tgid) {
+            return Err(Refused::Errno(abi::errno::EPERM));
         }
         wait_for(None, true, |c| {
             (!console::restoring(c.display.owner_sequence)).then_some(c.display.known)
         })
         .map_err(|_| EINTR)?;
-        Some(display::Transition::for_observation(tgid)?)
+        Some(if window {
+            display::Transition::for_window_observer()?
+        } else {
+            display::Transition::for_observation(tgid)?
+        })
     } else {
         None
     };
     if a.target == 0
         && !with_core(|c| c.display.known && c.display.binding.is_some()).unwrap_or(false)
     {
-        a.reason = readback_reason::BINDING_UNKNOWN;
-        write_arg(arg, &a)?;
-        return Err(EIO);
+        return Err(Refused::Eio(readback_reason::BINDING_UNKNOWN, 0));
     }
     let (id, fmt, tw, th, pitch, backing) = with_core(|c| {
         let id = if a.target == 0 {
-            if !display::owner(tgid) {
+            if !window && !display::owner(tgid) {
                 return Err(abi::errno::EPERM);
             }
             c.display.binding.ok_or(EIO)?.id
@@ -4124,18 +4194,28 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         Ok((id, r.format, r.width, r.height, r.pitch, r.backing.clone()))
     })
     .ok_or(ENODEV)??;
+    if window {
+        // The whole bound target, in canonical rows.
+        a.x = 0;
+        a.y = 0;
+        a.width = tw;
+        a.height = th;
+        a.stride = tw * format::bytes(fmt);
+    }
     let (x, y, w, h) = (a.x as u64, a.y as u64, a.width as u64, a.height as u64);
     if w == 0 || h == 0 || x + w > tw as u64 || y + h > th as u64 {
-        return Err(EINVAL);
+        return Err(Refused::Errno(EINVAL));
     }
     // Canonical BGRA, or one byte per pixel of an R8 texture (record `canonical` 1).
     let row = w * format::bytes(fmt) as u64;
     if (a.stride as u64) < row || a.pixels_len < (h - 1) * a.stride as u64 + row {
-        return Err(EINVAL);
+        return Err(Refused::Errno(EINVAL));
     }
     // The argument, record and pixel-row pages are checked for mapping and writability
     // before any device work, serial or count (gpu-abi.md, READBACK's EFAULT).
-    probe_writable(arg, core::mem::size_of::<abi::Readback>())?;
+    if let Some(arg) = arg {
+        probe_writable(arg, core::mem::size_of::<abi::Readback>())?;
+    }
     probe_writable(a.record, record::SIZE)?;
     // The rows' span is a user range, so the row arithmetic below cannot overflow; only the
     // rows' own pages are probed, excluding the gaps a wider stride leaves between them.
@@ -4143,7 +4223,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         a.pixels,
         ((h - 1) * a.stride as u64 + row) as usize,
     ) {
-        return Err(EFAULT);
+        return Err(Refused::Errno(EFAULT));
     }
     let mut probed = u64::MAX;
     for ry in 0..h {
@@ -4159,23 +4239,18 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         }
         probed = (start + row - 1) / PAGE as u64;
     }
-    let refuse = |a: &mut abi::Readback, reason: u32, failed: u64| -> Result<u64, i64> {
-        a.reason = reason;
-        a.failed_submission = failed;
-        write_arg(arg, a)?;
-        Err(EIO)
-    };
-    match with_core(|c| display::readable(c, tgid, id)).ok_or(ENODEV)? {
+    let refuse = |reason: u32, failed: u64| -> Result<u64, Refused> { Err(Refused::Eio(reason, failed)) };
+    match with_core(|c| display::readable(c, tgid, id, window)).ok_or(ENODEV)? {
         Ok(()) => {}
-        Err(EIO) => return refuse(&mut a, readback_reason::BINDING_UNKNOWN, 0),
-        Err(e) => return Err(e),
+        Err(EIO) => return refuse(readback_reason::BINDING_UNKNOWN, 0),
+        Err(e) => return Err(Refused::Errno(e)),
     }
     let staging = Staging::new(tgid, (row * h) as usize)?;
     // Wait for the target's accepted writes to complete, then take it for reading.
     // The handle is looked up each time: one destroyed meanwhile is target-dropped.
     let taken = wait_for(None, true, |c| {
         if a.target == 0 {
-            if !display::owner(tgid)
+            if (!window && !display::owner(tgid))
                 || !c.display.known
                 || c.display.binding.is_none_or(|b| b.id != id)
             {
@@ -4199,8 +4274,8 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     });
     let (invalid, invalidated_by, generation, last) = match taken {
         Ok(Ok(t)) => t,
-        Ok(Err(reason)) => return refuse(&mut a, reason, 0),
-        Err(_) => return Err(EINTR),
+        Ok(Err(reason)) => return refuse(reason, 0),
+        Err(_) => return Err(Refused::Errno(EINTR)),
     };
     // The target is ours to poison and read until every transfer into it has ended; a
     // transfer whose waiter left keeps the mark until the device returns it.
@@ -4217,16 +4292,16 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     };
     if invalid {
         release();
-        return refuse(&mut a, readback_reason::TARGET_INVALID, invalidated_by);
+        return refuse(readback_reason::TARGET_INVALID, invalidated_by);
     }
-    let observation = match observe(tgid, id, last, &backing, pitch, fmt, a, &staging.pages) {
+    let observation = match observe(tgid, id, last, &backing, pitch, fmt, *a, &staging.pages) {
         Ok(o) => o,
         Err((errno, reason)) => {
             release();
             return if errno == EIO {
-                refuse(&mut a, reason, 0)
+                refuse(reason, 0)
             } else {
-                Err(errno)
+                Err(Refused::Errno(errno))
             };
         }
     };
@@ -4243,7 +4318,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     let made = with_core(|c| {
         // The binding is read with the serial: a PRESENT sent during the observation
         // leaves the scanout unknown, and the observation is refused naming that.
-        let binding = display::binding(c, tgid, id)?;
+        let binding = display::binding(c, tgid, id, window)?;
         let s = c.next_obs;
         c.next_obs += 1;
         let resource = dev::resource_id(id).ok_or(EIO)?;
@@ -4256,9 +4331,9 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         Err(e) => {
             release();
             return if e == EIO {
-                refuse(&mut a, readback_reason::BINDING_UNKNOWN, 0)
+                refuse(readback_reason::BINDING_UNKNOWN, 0)
             } else {
-                Err(e)
+                Err(Refused::Errno(e))
             };
         }
     };
@@ -4321,13 +4396,18 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
                 })?;
             }
         }
+        // READBACK's record carries the unwritten count; a window observation's EIO
+        // writes only its reason.
+        if unwritten != 0 && window {
+            return Ok(());
+        }
         crate::syscall::userptr::write_user_bytes(a.record, rec.as_ptr(), record::SIZE)
             .map_err(|_| EFAULT)
     })();
     release();
     output?;
     if unwritten != 0 {
-        return refuse(&mut a, readback_reason::UNWRITTEN, 0);
+        return refuse(readback_reason::UNWRITTEN, 0);
     }
     with_core(|c| {
         if let Some(l) = last {
@@ -4337,7 +4417,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         }
         c.proc_mut(tgid).totals.readbacks += 1;
     });
-    Ok(0)
+    Ok(serial)
 }
 
 /// Fail with EFAULT unless the pages of `[addr, addr + len)` are mapped and writable by
