@@ -94,9 +94,6 @@ fn window(op: u64, arg: u64, len: u64) -> Result<u64, i32> {
         None if arg != 0 || len != 0 => return Err(EINVAL),
         None => {}
     }
-    // TODO(gpu-display): the retired software compositor registered its `present::Backend`
-    // here; until the GPU compositor registers one, ops that compose or read the display
-    // answer EIO.
     if op == op::VERSION {
         return Ok(INTERFACE_VERSION as u64);
     }
@@ -165,7 +162,12 @@ fn window(op: u64, arg: u64, len: u64) -> Result<u64, i32> {
                 return Err(EINVAL);
             }
             let mut reg = REGISTRY.lock();
-            reg.present.force_full |= reg.cursor != c;
+            // The next composite repairs the sprite's old and new footprints, not the screen.
+            if reg.cursor != c {
+                let (old, new) = (reg.cursor.footprint(), c.footprint());
+                reg.present.uncover(old);
+                reg.present.uncover(new);
+            }
             reg.cursor = c;
             Ok(0)
         }

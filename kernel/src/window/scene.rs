@@ -143,6 +143,11 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
         let old = REGISTRY.lock().snapshot.take();
         drop(old);
     }
+    let sizing =
+        a.window_capacity == 0 && a.damage_capacity == 0 && a.windows == 0 && a.damage == 0;
+    // Test point 1, `ignore-damage`: a reservation takes the whole of an armed window
+    // with new pixels as its damage, so its composite does the excess work.
+    let mut ignored = Vec::new();
     let (scene_keys, targets, cursor, full, damage, uncovered) = {
         let reg = REGISTRY.lock();
         if reg.snapshot.is_some() || reg.present.busy {
@@ -177,6 +182,14 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
                 damage.extend(w.present.shown);
                 damage.extend(now);
             } else if let Some(r) = now {
+                let point = (!sizing && !w.present.pending.is_empty() && ignored.try_reserve(1).is_ok())
+                    .then(|| crate::test_control::reserve(breengel_abi::tc_point::IGNORE_DAMAGE, w.id))
+                    .flatten();
+                if let Some(point) = point {
+                    ignored.push(point);
+                    damage.push(r);
+                    continue;
+                }
                 match &w.present.pending {
                     super::Damage::Full => damage.push(r),
                     super::Damage::Rects(rects) => damage.extend(
@@ -210,8 +223,6 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
     sources
         .try_reserve_exact(scene_keys.len())
         .map_err(|_| ENOMEM)?;
-    let sizing =
-        a.window_capacity == 0 && a.damage_capacity == 0 && a.windows == 0 && a.damage == 0;
     if !sizing
         && ((a.window_capacity as usize) < scene_keys.len()
             || (a.damage_capacity as usize) < damage.len())
@@ -320,6 +331,10 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
         return Err(EAGAIN);
     }
     reg.snapshot = Some(reservation);
+    drop(reg);
+    for point in ignored {
+        point.fire();
+    }
     Ok(0)
 }
 
@@ -509,6 +524,11 @@ pub fn submit(caller: &Caller, a: &mut Composite, out: u64) -> Result<u64, i32> 
         serial: 0,
         entries,
     };
+    // Test point 16, `composite-stall`: a composite that includes the armed window pauses
+    // here, with the sources' fronts pinned, before the backend composes.
+    if frame.sources.iter().any(|s| crate::test_control::take(breengel_abi::tc_point::COMPOSITE_STALL, s.window.id).is_some()) {
+        super::ops::stall();
+    }
     let result = present::backend()
         .ok_or(EIO)
         .and_then(|b| b.submit_scene(caller, &mut frame, a));
@@ -549,7 +569,8 @@ fn finish(frame: &mut Admission, result: Result<Composed, i32>, reason: u32) -> 
             let n = frame.reservation.uncovered.min(reg.present.uncovered.len());
             reg.present.uncovered.drain(..n);
             reg.present.composed_once = true;
-            reg.present.force_full = reg.cursor != frame.reservation.cursor;
+            // A cursor change during the frame left its footprints in `uncovered`.
+            reg.present.force_full = false;
             crate::tracing::providers::window::count_composite(c.pixels);
             (c.pixels, 0)
         }
