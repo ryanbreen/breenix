@@ -193,15 +193,17 @@ class Probe:
         args = self.common + ['-i', str(self.identity), '-tt', self.user + '@' + self.host]
         process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         seen = b''
+        history = bytearray()
         def until(marker):
             nonlocal seen
             deadline = time.monotonic() + 15
-            while marker not in seen:
+            while not (marker.search(seen) if hasattr(marker, 'search') else marker in seen):
                 if time.monotonic() >= deadline: raise ValueError('interactive PTY did not reach expected shell output')
                 if select.select([process.stdout], [], [], 0.2)[0]:
                     data = os.read(process.stdout.fileno(), 4096)
                     if not data: raise ValueError('interactive SSH ended before the shell check')
                     seen += data
+                    history.extend(data)
         def send(data):
             process.stdin.write(data); process.stdin.flush()
         try:
@@ -213,8 +215,14 @@ class Probe:
                 until(b'bsh ')
                 seen = b''
                 send(b"/bin/sh -c 'printf \"<%s>\\n\" \"$1\" \"$2\" \"$3\"' sh 'two words' '' 'a\\b'\n")
-                until(b'<two words>\r\n<>\r\n<a\\b>\r\n')
-                send(b'exit\nexit\n')
+                output = b'<two words>\r\n<>\r\n<a\\b>\r\n'
+                until(re.compile(re.escape(output) + rb'bsh [^>\r\n]*> '))
+                # bsh restores termios with TCSAFLUSH after a line. Wait for
+                # each shell's fresh prompt so queued logout input is not lost.
+                seen = b''
+                send(b'exit\n')
+                until(re.compile(rb'(?:^|\n)\$ '))
+                send(b'exit\n')
                 process.wait(timeout=10)
                 if process.returncode != 0: raise ValueError('quoted command session failed')
                 return
@@ -232,7 +240,7 @@ class Probe:
             process.wait(timeout=10)
             if process.returncode != 0: raise ValueError('interactive shell exit failed')
         finally:
-            self.transcript.append(dict(interactive=seen.decode(errors='replace')))
+            self.transcript.append(dict(interactive=history.decode(errors='replace')))
             if process.poll() is None:
                 process.terminate()  # Only this exact child, started above.
                 process.wait(timeout=5)
