@@ -1353,6 +1353,7 @@ fn widgets_layout_stack() -> CaseResult {
 
 // gpu-text: R3 adds certified DejaVu label pixels to the unchanged five-widget focus ring checks.
 fn widgets_focus_ring() -> CaseResult {
+    let scale=ui_scale();
     let rect = Rect::new(20, 20, 100, 24);
     let theme = Theme::dark();
     ensure(
@@ -1365,7 +1366,7 @@ fn widgets_focus_ring() -> CaseResult {
     let mut slider = Slider::new(rect, 0.0, 1.0);
     let mut tabs = TabBar::new(rect, vec![b"One", b"Two"], &Theme::dark());
     let mut field = TextField::new(rect, 30);
-    let mut g = Drawn::bgrx(150, 70);
+    let mut g = ui_frame(150, 70);
     for focused in [false, true] {
         b.set_focused(focused);
         c.set_focused(focused);
@@ -1382,9 +1383,9 @@ fn widgets_focus_ring() -> CaseResult {
                 _ => field.draw(&mut g.fb(), &theme),
             };
     snapshot(&g)?;
-            for y in 18..46 {
-                for x in 18..122 {
-                    if x == 18 || x == 121 || y == 18 || y == 45 {
+            for y in 18*scale..46*scale {
+                for x in 18*scale..122*scale {
+                    if x < 19*scale || x >= 121*scale || y < 19*scale || y >= 45*scale {
                         let want = if focused { theme.focus_ring } else { PAPER };
                         ensure(
                             g.color(x, y) == want,
