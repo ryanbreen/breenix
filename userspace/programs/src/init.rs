@@ -97,11 +97,16 @@ fn run_init_group_refusal_probe(phase: &str) {
 fn main() {
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
     print!("[init] Breenix init starting (PID {})\n", pid);
-    match libbreenix::etc_reconcile::prepare(std::path::Path::new("/")) {
-        Ok(conflicts) => for name in conflicts {
-            println!("[etc-reconcile] kept local /etc/{}; wrote .factory sibling", name);
-        },
-        Err(why) => println!("[init] layout preparation failed; continuing boot: {}", why),
+    // Emptying /tmp and /run and reconciling /etc is boot work, done by the system's init
+    // alone. An init started as a child (the console suite runs `init console`) shares the
+    // running system's /tmp, /run and /etc, so it leaves them as they are.
+    if pid == 1 {
+        match libbreenix::etc_reconcile::prepare(std::path::Path::new("/")) {
+            Ok(conflicts) => for name in conflicts {
+                println!("[etc-reconcile] kept local /etc/{}; wrote .factory sibling", name);
+            },
+            Err(why) => println!("[init] layout preparation failed; continuing boot: {}", why),
+        }
     }
 
     // Explicit shell, console and desktop modes bypass the full startup below.
