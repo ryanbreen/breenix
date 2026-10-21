@@ -209,6 +209,13 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
             };
             match result { Ok(()) => SyscallResult::Ok(0), Err(error) => SyscallResult::Err(error) }
         }
+        FdKind::Device(crate::fs::devfs::DeviceType::Vt(n)) => {
+            let result = match change {
+                Change::Mode(mode) => crate::fs::devfs::change_vt_metadata(n, Some(mode), None, &cred),
+                Change::Owner(uid, gid) => crate::fs::devfs::change_vt_metadata(n, None, Some((uid, gid)), &cred),
+            };
+            match result { Ok(()) => SyscallResult::Ok(0), Err(error) => SyscallResult::Err(error) }
+        }
         FdKind::Ipc(object) => {
             let result = match change {
                 Change::Mode(mode) => object.chmod(mode, &cred),
