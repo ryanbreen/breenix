@@ -75,7 +75,44 @@
     {
       "id": "services",
       "title": "Service supervision: dependencies, restart with backoff, crash-loop reporting, graceful stop",
-      "cases": []
+      "cases": [
+        {
+          "id": "table",
+          "title": "svc reports bsshd, blogd, the time client and the six gettys from /etc/breenix/services, with their state under /run"
+        },
+        {
+          "id": "entropy-first",
+          "title": "bsshd starts once the random pool is ready, and the gettys start on the first pass without waiting for it"
+        },
+        {
+          "id": "network-first",
+          "title": "The time client starts only once the network is up"
+        },
+        {
+          "id": "kill-restart",
+          "title": "After kill -9 of bsshd, OpenSSH reconnects with strict host-key checking within the restart window"
+        },
+        {
+          "id": "reconnect-bsh",
+          "title": "After the restart the operator key logs in to bsh again"
+        },
+        {
+          "id": "backoff",
+          "title": "A service that keeps failing quickly restarts after doubling delays of 1, 2, 4 and 8 seconds"
+        },
+        {
+          "id": "graceful-stop",
+          "title": "svc stop ends a service with SIGTERM, kills one that ignores it at its stop timeout, and neither restarts"
+        },
+        {
+          "id": "account",
+          "title": "A service runs as the account its entry names, and only that account or root may control it"
+        },
+        {
+          "id": "crash-loop",
+          "title": "Five quick failures are reported as a crash loop on the console and in svc, and the next start follows 60 seconds later"
+        }
+      ]
     },
     {
       "id": "logs",

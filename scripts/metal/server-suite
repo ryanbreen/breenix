@@ -2,8 +2,9 @@
 """Host-driven server cases against a leased persistent boot, using the boot host's OpenSSH.
 
 Run after install-persistent and `metal-run boot --persistent`:
-    server-suite --boot ID --sha COMMIT --milestone server/ssh-keys
-Site fields: SERVER_SSH_HOST, OPERATOR_USER, OPERATOR_SSH_PUBLIC_KEY.
+    server-suite --boot ID --sha COMMIT --milestone server/ssh-keys|server/services
+Site fields: SERVER_SSH_HOST, OPERATOR_USER, OPERATOR_SSH_PUBLIC_KEY; the services cases also
+use CONSOLE_USER and CONSOLE_PASSWORD, the console account, to act as root on the SOL console.
 The boot stays leased until the caller stops it through metal-run.
 """
 import argparse
@@ -19,7 +20,7 @@ import subprocess
 import tempfile
 import time
 
-CASES = (
+SSH_KEYS = (
     ('port-22', 'SSH identification arrives on port 22 before the client sends anything'),
     ('host-key', 'OpenSSH keyscan matches the Ed25519 fingerprint printed by this boot'),
     ('strict-login', 'Strict host-key checking permits the operator key and a non-root identity'),
@@ -36,9 +37,28 @@ CASES = (
     ('quoted-command', 'Quoted sh -c scripts retain spaces, quotes and backslashes through bsh'),
 )
 
+SERVICES = (
+    ('table', 'svc reports bsshd, blogd, the time client and the six gettys from /etc/breenix/services, with their state under /run'),
+    ('entropy-first', 'bsshd starts once the random pool is ready, and the gettys start on the first pass without waiting for it'),
+    ('network-first', 'The time client starts only once the network is up'),
+    ('kill-restart', 'After kill -9 of bsshd, OpenSSH reconnects with strict host-key checking within the restart window'),
+    ('reconnect-bsh', 'After the restart the operator key logs in to bsh again'),
+    ('backoff', 'A service that keeps failing quickly restarts after doubling delays of 1, 2, 4 and 8 seconds'),
+    ('graceful-stop', 'svc stop ends a service with SIGTERM, kills one that ignores it at its stop timeout, and neither restarts'),
+    ('account', 'A service runs as the account its entry names, and only that account or root may control it'),
+    ('crash-loop', 'Five quick failures are reported as a crash loop on the console and in svc, and the next start follows 60 seconds later'),
+)
+
+# The populated categories in manifest order, and the milestone each one measures.
+CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES}
+MILESTONES = {'server/ssh-keys': 'ssh-keys', 'server/services': 'services'}
+# bsshd restarts 1 s after a run that lasted 10 s exits (libs/libbreenix/src/services.rs); the window
+# allows for the console's typing of the kill and for bsshd's start-up.
+RESTART_WINDOW_S = 10
+
 
 def validate_manifest(manifest):
-    expected = [('ssh-keys/' + name, title) for name, title in CASES]
+    expected = [(category + '/' + name, title) for category, cases in CATEGORIES.items() for name, title in cases]
     actual = [(category['id'] + '/' + case['id'], case['title'])
               for category in manifest['categories'] for case in category['cases']]
     if actual != expected:
@@ -52,32 +72,41 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
     boot at the requested commit. Never turn a missing prerequisite into a pass.
     """
     validate_manifest(manifest)
+    name = records.get('milestone')
+    if name not in MILESTONES:
+        raise ValueError('host evidence names no server milestone this runner measures')
+    category = MILESTONES[name]
     milestone = next(item for effort in effort_path['efforts'] if effort['id'] == 'server'
-                     for item in effort['milestones'] if item['id'] == 'ssh-keys')
+                     for item in effort['milestones'] if 'server/' + item['id'] == name)
     categories = milestone['measure']['categories']
-    if milestone['measure']['suite'] != 'server' or categories != ['ssh-keys']:
+    if milestone['measure']['suite'] != 'server' or categories != [category]:
         raise ValueError('milestone measure differs from the implemented category')
     if any(not c['cases'] for c in manifest['categories'] if c['id'] in categories):
         raise ValueError('measured category has no cases')
     if boot.get('mode') != 'persistent' or boot.get('bootedCommit') != sha or boot.get('toolsCommit') != sha or not boot.get('evidenceEligible'):
         raise ValueError('evidence needs this commit booted on the persistent install')
-    if records['boot'] != boot['id'] or records['commit'] != sha or records['milestone'] != 'server/ssh-keys':
+    if records['boot'] != boot['id'] or records['commit'] != sha:
         raise ValueError('host evidence belongs to another boot, commit or milestone')
-    if [r['id'] for r in records['cases']] != ['ssh-keys/' + name for name, _ in CASES]:
+    if [r['id'] for r in records['cases']] != [category + '/' + case for case, _ in CATEGORIES[category]]:
         raise ValueError('host results are missing, duplicated or out of order')
     if any(r['result'] != 'PASS' for r in records['cases']):
-        raise ValueError('one or more ssh-keys cases failed')
+        raise ValueError('one or more ' + category + ' cases failed')
     if not records.get('cleanup'):
-        raise ValueError('temporary authorized key cleanup did not succeed')
+        raise ValueError('temporary authorized key cleanup did not succeed' if category == 'ssh-keys'
+                         else 'temporary services were not removed')
     if not re.search(r'bsshd: host key ED25519 SHA256:[A-Za-z0-9+/]+', serial):
         raise ValueError('boot did not print its host-key fingerprint')
-    if "bsshd: refused method 'password'" not in serial:
+    if category == 'ssh-keys' and "bsshd: refused method 'password'" not in serial:
         raise ValueError('boot captured no actual password request refusal')
+    if category == 'services':
+        for line in ('[init] bsshd killed by signal 9', '[init] svc-suite-fail is crash-looping: 5 failures in a row'):
+            if line not in serial:
+                raise ValueError('boot captured no line ' + line)
     if records.get('consoleGaps'):
         raise ValueError('console capture has a gap')
     if any(re.search(pattern, serial) for pattern in fatal_patterns):
         raise ValueError('fatal kernel output in the persistent boot')
-    return 'PASS: server/ssh-keys categories=ssh-keys cases=' + str(len(CASES))
+    return 'PASS: ' + name + ' categories=' + category + ' cases=' + str(len(CATEGORIES[category]))
 
 
 def command(args, **kwargs):
@@ -325,18 +354,400 @@ class Probe:
             if result.stdout != self.original: raise ValueError('authorized_keys restoration differs')
 
 
+def parse_state(text):
+    """`/run/breenix/services` as libs/libbreenix/src/services.rs renders it."""
+    supervisor, services = None, {}
+    for line in text.splitlines():
+        words = line.split(' ')
+        if words[0] == 'supervisor':
+            supervisor = {k: int(v) for k, v in (w.split('=', 1) for w in words[1:])}
+        elif words[0] == 'service' and len(words) > 2:
+            fields = dict(w.split('=', 1) for w in words[2:])
+            for key in ('pid', 'starts', 'first', 'since', 'next', 'quick-failures'):
+                fields[key] = int(fields[key])
+            services[words[1]] = fields
+        elif line:
+            raise ValueError('unknown line in the published service state')
+    if supervisor is None:
+        raise ValueError('the published service state has no supervisor line')
+    return supervisor, services
+
+
+class Console:
+    """Root's commands, typed on the persistent boot's SOL console through the driver's tmux pane a few
+    bytes at a time, as the driver's own --run typing is. SOL can still drop an input byte while the console
+    is busy (#2105), so each line is pressed only once its echo shows exactly what was typed; a damaged line
+    is cleared with Ctrl-U and typed again. The console capture shows each result."""
+
+    PROMPT = r'bsh [^>\n]*>'
+    LOGIN = 'Breenix login: '
+
+    def __init__(self, in_metal, boot, directory, user, password):
+        self.in_metal, self.tmux = in_metal, 'tmux -L metal-' + boot
+        self.serial = directory + '/serial.txt'
+        self.user, self.password = user, password
+        self.step, self.logged_in = 0, False
+
+    def size(self):
+        result = self.in_metal('stat', '-c', '%s', self.serial, capture_output=True, text=True)
+        if result.returncode: raise ValueError('cannot read the console capture')
+        return int(result.stdout)
+
+    def since(self, offset):
+        result = self.in_metal('tail', '-c', '+' + str(offset + 1), self.serial, capture_output=True)
+        if result.returncode: raise ValueError('cannot read the console capture')
+        return result.stdout.decode(errors='replace')
+
+    def send(self, text, enter=True):
+        data = (text + ('\r' if enter else '')).encode()
+        for at in range(0, len(data), 4):
+            # stdin keeps the password out of process arguments.
+            result = self.in_metal('sh', '-c', self.tmux + ' load-buffer - && ' + self.tmux + ' paste-buffer -d -t sol',
+                                   stdin=None, input=data[at:at + 4], capture_output=True)
+            if result.returncode: raise ValueError('cannot type on the SOL console')
+            time.sleep(0.04)
+
+    def wait(self, offset, pattern, what, timeout=30):
+        deadline = time.monotonic() + timeout
+        while True:
+            text = self.since(offset)
+            found = re.search(pattern, text)
+            if found: return text, found
+            if time.monotonic() >= deadline: raise ValueError('the console did not show ' + what)
+            time.sleep(0.5)
+
+    def type_line(self, text, attempts=4):
+        """Type `text` at bsh's prompt, and press Enter once bsh's redrawn line matches it."""
+        echoed = re.compile(r'(?m)^' + self.PROMPT + ' ' + re.escape(text) + r'[ \t]*$')
+        for _ in range(attempts):
+            offset = self.size()
+            self.send(text, enter=False)
+            deadline = time.monotonic() + 6
+            while time.monotonic() < deadline:
+                if echoed.search(self.since(offset)):
+                    self.send('')
+                    return
+                time.sleep(0.3)
+            self.send('\x15', enter=False)
+            time.sleep(0.5)
+        raise ValueError('the console kept losing typed input: ' + text)
+
+    def login(self, attempts=3):
+        if self.logged_in: return
+        offset = self.size()
+        self.send('')
+        text, found = self.wait(offset, re.escape(self.LOGIN) + '|' + self.PROMPT, 'a login prompt')
+        if found.group(0) != self.LOGIN:
+            offset = self.size()
+            self.type_line('exit')
+            self.wait(offset, re.escape(self.LOGIN), 'a login prompt after logging out')
+        for _ in range(attempts):
+            offset = self.size()
+            self.send(self.user)
+            self.wait(offset, 'Password: ', 'the password prompt')
+            offset = self.size()
+            # getty's echo follows a prompt printed earlier and the password is not echoed, so a byte lost on
+            # the way shows as a refusal, and login is tried again.
+            self.send(self.password)
+            text, found = self.wait(offset, self.PROMPT + '|Login incorrect', 'a shell prompt')
+            if found.group(0) != 'Login incorrect':
+                self.logged_in = True
+                return
+            self.wait(offset + len(text[:found.end()].encode()), re.escape(self.LOGIN), 'a login prompt after a refusal')
+        raise ValueError('the console account was refused ' + str(attempts) + ' times')
+
+    def run(self, command, timeout=30):
+        """Type one command, then a marker computation; return the console text up to the marker's answer."""
+        self.login()
+        self.step += 1
+        marker = 'svc-suite-step-' + str(self.step)
+        offset = self.size()
+        self.type_line(command)
+        self.type_line('print("' + marker + '", 6*7)')
+        text, found = self.wait(offset, re.escape(marker) + ' 42', 'the answer to ' + command, timeout)
+        text = text[:found.start()]
+        if re.search(r'\[bsh\] command failed status=[1-9]', text): raise ValueError('console command failed: ' + command)
+        return text
+
+    def logout(self):
+        if not self.logged_in: return
+        offset = self.size()
+        self.type_line('exit')
+        self.wait(offset, r'\[init\] console session ended', 'the console session ending')
+        self.logged_in = False
+
+
+class Services:
+    """The services category: the shipped table on the persistent boot, then temporary services that run as the
+    operator, defined under /run/breenix/services.d by root on the console and removed afterwards."""
+
+    REQUIRED = ['bsshd', 'blogd', 'ntp'] + ['getty-tty' + str(n) for n in range(2, 7)] + ['getty-console']
+    FIXTURES = ['svc-suite-fail', 'svc-suite-sleep', 'svc-suite-stubborn', 'svc-suite-missing', 'svc-suite-noexec', 'svc-suite-nobody']
+
+    def __init__(self, probe, console, capture):
+        self.probe, self.console, self.capture = probe, console, capture
+        self.fixtures = None
+        self.fixture_file = '/run/breenix/services.d/svc-suite'
+
+    def state(self):
+        result = self.probe.ssh('cat /run/breenix/services')
+        self.probe.require(result)
+        return parse_state(result.stdout)
+
+    def lines(self, start, pattern):
+        """Console lines from byte offset `start` that match `pattern`, with their arrival times (serial.ts).
+        init's lines share the console with the root session's prompt, so patterns are not anchored at the start."""
+        text, stamps = self.capture()
+        data = text.encode()
+        found = []
+        for index, (arrived, offset) in enumerate(stamps):
+            if offset < start: continue
+            end = stamps[index + 1][1] if index + 1 < len(stamps) else len(data)
+            line = data[offset:end].decode(errors='replace').rstrip('\n')
+            if re.search(pattern, line): found.append((arrived, line))
+        return found
+
+    def await_line(self, start, pattern, what, timeout=15):
+        """The console capture trails init's answers over SSH; wait for a line before judging its absence."""
+        deadline = time.monotonic() + timeout
+        while not self.lines(start, pattern):
+            if time.monotonic() >= deadline: raise ValueError('the console did not show ' + what)
+            time.sleep(1)
+
+    def ensure_fixtures(self):
+        if self.fixtures is not None:
+            if isinstance(self.fixtures, str): raise ValueError(self.fixtures)
+            return
+        try:
+            user = self.probe.user
+            table = ('[svc-suite-fail]\ncommand = /bin/false\nuser = ' + user + '\nrestart = on-failure\n\n'
+                     '[svc-suite-sleep]\ncommand = /bin/sh -c \'/sbin/init service-io-check && exec /bin/sleep 3600\'\nuser = ' + user + '\n\n'
+                     '[svc-suite-stubborn]\ncommand = /bin/sh -c \'trap "" TERM; exec /bin/sleep 3600\'\nuser = ' + user
+                     + '\nstop-timeout = 2\n'
+                     '[svc-suite-missing]\ncommand = /nonexistent-svc-suite\nuser = ' + user + '\n\n'
+                     '[svc-suite-noexec]\ncommand = /etc/passwd\nuser = ' + user + '\n\n'
+                     '[svc-suite-nobody]\ncommand = /bin/true\nuser = svc-suite-absent\n')
+            self.start = self.console.size()
+            # The root console writes literal data directly into its protected directory.
+            # No file or directory controlled by the service account is trusted.
+            literal = table.replace('\\', '\\\\').replace('\n', r'\n')
+            script = 'umask 022; printf %b ' + shlex.quote(literal) + ' > ' + self.fixture_file
+            self.console.run('sh -c ' + shlex.quote(script))
+            text = self.console.run('svc reload')
+            if 'svc: reloaded' not in text or '6 added' not in text:
+                raise ValueError('svc reload did not add the six temporary services')
+            self.fixtures = True
+        except ValueError as error:
+            self.fixtures = 'temporary services were not loaded: ' + str(error)
+            raise
+
+    def remove_fixtures(self):
+        if self.fixtures is None: return
+        self.console.run('rm -f /run/breenix/services.d/svc-suite')
+        text = self.console.run('svc reload')
+        if 'svc: reloaded' not in text: raise ValueError('svc reload after removal did not answer')
+        deadline = time.monotonic() + 15
+        while any(name in self.state()[1] for name in self.FIXTURES):
+            if time.monotonic() >= deadline: raise ValueError('temporary services remain after removal')
+            time.sleep(1)
+
+    def run_case(self, name):
+        getattr(self, 'case_' + name.replace('-', '_'))()
+
+    def case_table(self):
+        result = self.probe.ssh('cat /etc/breenix/services')
+        self.probe.require(result)
+        listed = re.findall(r'^\[([a-z0-9-]+)\]', result.stdout, re.M)
+        if any(name not in listed for name in self.REQUIRED):
+            raise ValueError('the service table lacks one of ' + ', '.join(self.REQUIRED))
+        modes = self.probe.ssh('ls -ln /run/breenix/services /run/breenix/svc.sock')
+        self.probe.require(modes)
+        if not re.search(r'^-rw-r--r-- +\d+ +0 +0 .*/run/breenix/services$', modes.stdout, re.M) or \
+                not re.search(r'^srw-rw-rw- +\d+ +0 +0 .*/run/breenix/svc\.sock$', modes.stdout, re.M):
+            raise ValueError('the state file or control socket under /run has the wrong owner or mode')
+        _, services = self.state()
+        for name in self.REQUIRED:
+            if name not in services: raise ValueError(name + ' is not in the published state')
+            if name != 'ntp' and (services[name]['state'] != 'running' or services[name]['pid'] == 0):
+                raise ValueError(name + ' is not running')
+        if services['ntp']['state'] not in ('running', 'done', 'backoff', 'crash-loop') or services['ntp']['starts'] < 1:
+            raise ValueError('the time client never started')
+        report = self.probe.ssh('svc status')
+        self.probe.require(report)
+        for name in self.REQUIRED:
+            if not re.search(r'^' + re.escape(name) + r' +' + re.escape(services[name]['state']) + r' ', report.stdout, re.M):
+                raise ValueError('svc status does not report ' + name)
+
+    def case_entropy_first(self):
+        supervisor, services = self.state()
+        if supervisor['entropy'] == 0 or services['bsshd']['first'] < supervisor['entropy']:
+            raise ValueError('bsshd started before the random pool was ready')
+        for name in self.REQUIRED:
+            if name.startswith('getty-') and services[name]['first'] - supervisor['began'] > 1000:
+                raise ValueError(name + ' did not start on the supervisor\'s first pass')
+
+    def case_network_first(self):
+        supervisor, services = self.state()
+        if supervisor['network-up'] == 0 or services['ntp']['first'] < supervisor['network-up']:
+            raise ValueError('the time client started before the network was up')
+
+    def case_kill_restart(self):
+        _, services = self.state()
+        before = services['bsshd']
+        start = self.console.size()
+        self.console.login()
+        offset = self.console.size()
+        self.console.type_line('kill -9 ' + str(before['pid']))
+        sent = time.monotonic()
+        # Count from the typed kill, and only once init has seen the old listener die.
+        self.console.wait(offset, r'\[init\] bsshd killed by signal 9', 'bsshd dying', RESTART_WINDOW_S)
+        deadline = sent + RESTART_WINDOW_S
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError('no strict-host-key reconnect within ' + str(RESTART_WINDOW_S) + ' s of the kill')
+            try:
+                result = self.probe.ssh('id -u', timeout=remaining)
+            except subprocess.TimeoutExpired:
+                raise ValueError('no strict-host-key reconnect within ' + str(RESTART_WINDOW_S) + ' s of the kill')
+            if time.monotonic() > deadline:
+                raise ValueError('no strict-host-key reconnect within ' + str(RESTART_WINDOW_S) + ' s of the kill')
+            if result.returncode == 0 and result.stdout.strip() == '1000': break
+            time.sleep(min(0.25, max(0, deadline - time.monotonic())))
+        self.probe.transcript.append(dict(reconnectSeconds=round(time.monotonic() - sent, 3)))
+        _, services = self.state()
+        after = services['bsshd']
+        if after['state'] != 'running' or after['pid'] in (0, before['pid']) or after['starts'] != before['starts'] + 1 \
+                or after['exit'] != 'signal:9':
+            raise ValueError('the published state does not show the restart after SIGKILL')
+        self.await_line(start, r'\[init\] bsshd restarts in 1000 ms$', "init's report of the restart delay")
+
+    def case_reconnect_bsh(self):
+        self.probe.require(self.probe.ssh('console.log(env("SHELL"));', posix=False), '/bin/bsh')
+        # An interactive login: the bsh banner and prompt, HOME, and a quoted command through bsh.
+        self.probe.interactive_job_control(quoted=True)
+
+    def case_backoff(self):
+        self.ensure_fixtures()
+        deadline = time.monotonic() + 45
+        while not self.lines(self.start, r'\[init\] svc-suite-fail is crash-looping'):
+            if time.monotonic() >= deadline: raise ValueError('the failing service never reached its crash loop')
+            time.sleep(1)
+        exits = self.lines(self.start, r'\[init\] svc-suite-fail exited \(code 1\)$')
+        delays = [line for _, line in self.lines(self.start, r'\[init\] svc-suite-fail restarts in \d+ ms$')]
+        if delays[:4] != ['[init] svc-suite-fail restarts in ' + str(ms) + ' ms' for ms in (1000, 2000, 4000, 8000)]:
+            raise ValueError('init reported other restart delays than 1, 2, 4 and 8 s')
+        if len(exits) < 5: raise ValueError('fewer than five failures were reported')
+        gaps = [round(b[0] - a[0], 2) for a, b in zip(exits, exits[1:5])]
+        self.probe.transcript.append(dict(backoffGaps=gaps))
+        for gap, seconds in zip(gaps, (1, 2, 4, 8)):
+            if not seconds - 0.75 <= gap <= seconds + 2:
+                raise ValueError('restart gaps ' + str(gaps) + ' s differ from 1, 2, 4 and 8 s')
+
+    def stop(self, name):
+        started = time.monotonic()
+        result = self.probe.ssh('svc stop ' + name, timeout=30)
+        return result, time.monotonic() - started
+
+    def case_graceful_stop(self):
+        self.ensure_fixtures()
+        _, services = self.state()
+        pids = {name: services[name]['pid'] for name in ('svc-suite-sleep', 'svc-suite-stubborn')}
+        if 0 in pids.values(): raise ValueError('the temporary services are not running')
+        start = self.console.size()
+        result, _ = self.stop('svc-suite-sleep')
+        self.probe.require(result, 'svc: stopped svc-suite-sleep (signal 15)')
+        result, elapsed = self.stop('svc-suite-stubborn')
+        self.probe.require(result, 'svc: stopped svc-suite-stubborn (signal 9)')
+        if elapsed < 2: raise ValueError('the service that ignores SIGTERM was killed before its stop timeout')
+        self.await_line(start, r'\[init\] svc-suite-stubborn did not stop within 2 s of SIGTERM; sending SIGKILL$',
+                        'the SIGKILL report for the service that ignores SIGTERM')
+        if self.lines(start, r'\[init\] svc-suite-sleep did not stop'):
+            raise ValueError('SIGKILL went to the service that SIGTERM stopped')
+        time.sleep(3)
+        _, services = self.state()
+        for name, pid in pids.items():
+            if services[name]['state'] != 'stopped' or services[name]['pid'] != 0:
+                raise ValueError(name + ' restarted or did not stay stopped')
+            if self.probe.ssh('test -e /proc/' + str(pid)).returncode == 0:
+                raise ValueError(name + "'s process still exists")
+        result = self.probe.ssh('svc start svc-suite-sleep')
+        self.probe.require(result)
+        if not re.fullmatch(r'svc: started svc-suite-sleep pid \d+', result.stdout.strip()):
+            raise ValueError('svc start did not report the new process')
+
+    def case_account(self):
+        self.ensure_fixtures()
+        _, services = self.state()
+        pid = services['svc-suite-sleep']['pid']
+        if services['svc-suite-sleep']['state'] != 'running' or pid == 0:
+            raise ValueError('the temporary service is not running')
+        status = self.probe.ssh('cat /proc/' + str(pid) + '/status')
+        self.probe.require(status)
+        if not re.search(r'^Uid:\t1000\t1000\t1000\t1000$', status.stdout, re.M) or \
+                not re.search(r'^Gid:\t1000\t1000\t1000\t1000$', status.stdout, re.M):
+            raise ValueError('the temporary service does not run as the operator account')
+        if 'service-io-ok' not in self.console.run('cat /run/breenix/svc-suite-sleep.log'):
+            raise ValueError('a service retained console input on a standard descriptor')
+        for name in ('svc-suite-missing', 'svc-suite-noexec'):
+            result = self.probe.ssh('svc start ' + name)
+            if result.returncode != 1 or 'did not start' not in result.stdout + result.stderr:
+                raise ValueError(name + ' reported success without executing')
+        # An unknown account has no owner who can authorize this request. Root
+        # must make it so the failed account lookup, rather than access control, is tested.
+        script = "svc start svc-suite-nobody; result=$?; printf 'svc-start-status=%s\\n' \"$result\""
+        failed = self.console.run('sh -c ' + shlex.quote(script))
+        if 'did not start' not in failed or 'svc-start-status=1' not in failed:
+            raise ValueError('an unknown service account did not fail its start request')
+        bsshd = services['bsshd']['pid']
+        for request in ('svc stop bsshd', 'svc reload'):
+            result = self.probe.ssh(request)
+            # bsshd delivers an exec request's stderr as ordinary channel data.
+            if result.returncode != 1 or 'permission denied' not in result.stdout + result.stderr:
+                raise ValueError(request + ' was not refused for the operator account')
+        if self.state()[1]['bsshd']['pid'] != bsshd: raise ValueError('a refused request changed bsshd')
+
+    def case_crash_loop(self):
+        self.ensure_fixtures()
+        loops = self.lines(self.start, r'\[init\] svc-suite-fail is crash-looping: 5 failures in a row')
+        if not loops: raise ValueError('no crash loop was reported on the console')
+        report = self.probe.ssh('svc status svc-suite-fail')
+        if report.returncode != 3 or not re.search(r'^svc-suite-fail +crash-loop .*code 1', report.stdout, re.M):
+            raise ValueError('svc does not report the crash loop')
+        deadline = loops[0][0] + 75
+        while True:
+            exits = self.lines(self.start, r'\[init\] svc-suite-fail exited \(code 1\)$')
+            if len(exits) >= 6: break
+            if time.time() >= deadline: raise ValueError('no start followed the crash loop report')
+            time.sleep(2)
+        gap = round(exits[5][0] - exits[4][0], 2)
+        self.probe.transcript.append(dict(crashLoopGap=gap))
+        if not 59 <= gap <= 63: raise ValueError('the start after the crash loop came ' + str(gap) + ' s later, not 60 s')
+
+    def cleanup(self):
+        errors = []
+        for step in (self.remove_fixtures, self.console.logout):
+            try:
+                step()
+            except Exception as error:  # Any exception fails the case; cleanup still runs.
+                errors.append(type(error).__name__ + ': ' + str(error))
+        if errors: raise ValueError('; '.join(errors))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check-manifest', type=Path)
     parser.add_argument('--boot')
     parser.add_argument('--sha')
-    parser.add_argument('--milestone', default='server/ssh-keys', choices=['server/ssh-keys'])
+    parser.add_argument('--milestone', default='server/ssh-keys', choices=list(MILESTONES))
     args = parser.parse_args()
     if args.check_manifest:
         validate_manifest(json.loads(args.check_manifest.read_text()))
         return 0
     if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot or '') or not re.fullmatch(r'[a-f0-9]{40}', args.sha or ''):
         parser.error('--boot ID and --sha full commit required')
+    category = MILESTONES[args.milestone]
+    cases = CATEGORIES[category]
     runner = runpy.run_path(str(Path(__file__).with_name('metal-run')))
     env = runner['host_env']()
     remote = lambda *cmd, **kw: runner['in_metal'](env, *cmd, capture_output=True, text=True, **kw)
@@ -353,9 +764,12 @@ def main():
     manifest = json.loads(read('definition/docs/suites/server.json'))
     validate_manifest(manifest)
     effort = json.loads(read('definition/docs/efforts/path.json'))
+    fields = ["SERVER_SSH_HOST", "OPERATOR_USER", "OPERATOR_SSH_PUBLIC_KEY"]
+    if category == 'services':
+        fields += ["CONSOLE_USER", "CONSOLE_PASSWORD"]
     site = remote('python3', '-c', 'import sys,json;sys.path.insert(0,"/opt/breenix-metal");'
                   'import metal_lib;s=metal_lib.load_site();'
-                  'print(json.dumps({k:s.get(k) for k in ("SERVER_SSH_HOST","OPERATOR_USER","OPERATOR_SSH_PUBLIC_KEY")}))')
+                  'print(json.dumps({k:s.get(k) for k in ' + repr(tuple(fields)) + '}))')
     if site.returncode: raise ValueError('cannot read suite site fields')
     site = json.loads(site.stdout)
     if not site['SERVER_SSH_HOST']: raise ValueError('site needs SERVER_SSH_HOST for the persistent server')
@@ -365,29 +779,44 @@ def main():
     if identity is None: raise ValueError('boot host has no private key matching the staged operator public key')
     fatal = json.loads(read('definition/docs/boot-path.json'))['fatal'] + [r'KERNEL PANIC:']
     records = dict(boot=args.boot, commit=args.sha, milestone=args.milestone, cases=[], cleanup=False, consoleGaps=[])
-    with tempfile.TemporaryDirectory(prefix='server-ssh-keys-') as scratch:
+    with tempfile.TemporaryDirectory(prefix='server-' + category + '-') as scratch:
         probe = Probe(site['SERVER_SSH_HOST'], site['OPERATOR_USER'], identity, Path(scratch))
+        target = probe
+        if category == 'services':
+            if not site['CONSOLE_USER'] or not site['CONSOLE_PASSWORD']:
+                raise ValueError('site needs CONSOLE_USER and CONSOLE_PASSWORD for the root steps')
+            def capture():
+                stamps = [(float(a), int(b)) for a, b in (row.split('\t') for row in read('serial.ts').splitlines() if row)]
+                return read('serial.txt'), stamps
+            console = Console(lambda *cmd, **kw: runner['in_metal'](env, *cmd, **kw), args.boot, directory,
+                              site['CONSOLE_USER'], site['CONSOLE_PASSWORD'])
+            # The services cases need the strict known_hosts entry the host-key case writes.
+            probe.run_case('host-key', serial)
+            target = Services(probe, console, capture)
         try:
-            print('SUITE server START cases=' + str(len(CASES)), flush=True)
-            for name, _ in CASES:
+            print('SUITE server START cases=' + str(len(cases)), flush=True)
+            for name, _ in cases:
                 start = time.monotonic()
                 try:
-                    probe.run_case(name, serial)
+                    if target is probe:
+                        probe.run_case(name, serial)
+                    else:
+                        target.run_case(name)
                     result, reason = 'PASS', ''
-                except (ValueError, OSError, subprocess.SubprocessError) as error:
+                except Exception as error:  # Any exception fails the case; cleanup still runs.
                     result, reason = 'FAIL', type(error).__name__ + ': ' + str(error)
                 elapsed = int((time.monotonic() - start) * 1000)
-                records['cases'].append(dict(id='ssh-keys/' + name, result=result, ms=elapsed, reason=reason))
-                print(f'SUITE server CASE ssh-keys/{name} {result} ms={elapsed}' + (' msg=' + reason if reason else ''), flush=True)
+                records['cases'].append(dict(id=category + '/' + name, result=result, ms=elapsed, reason=reason))
+                print(f'SUITE server CASE {category}/{name} {result} ms={elapsed}' + (' msg=' + reason if reason else ''), flush=True)
         finally:
             try:
-                probe.cleanup()
+                target.cleanup()
                 records['cleanup'] = True
-            except (ValueError, OSError, subprocess.SubprocessError) as error:
+            except Exception as error:  # Any exception fails the case; cleanup still runs.
                 records['cleanupError'] = type(error).__name__ + ': ' + str(error)
         transcript = probe.transcript
     passed = sum(r['result'] == 'PASS' for r in records['cases'])
-    print(f'SUITE server DONE passed={passed} failed={len(CASES)-passed} skipped=0 total={len(CASES)}', flush=True)
+    print(f'SUITE server DONE passed={passed} failed={len(cases)-passed} skipped=0 total={len(cases)}', flush=True)
     # Re-read the live capture after the last operation; authentication errors never mask a kernel failure.
     serial = read('serial.txt')
     records['consoleGaps'] = [json.loads(line) for line in read('events.jsonl').splitlines()
@@ -401,10 +830,10 @@ def main():
     except ValueError as error:
         verdict, status = 'FAIL: ' + str(error), 1
     records['verdict'] = verdict
-    result = runner['in_metal'](env, 'tee', directory + '/server-ssh-keys.json',
+    result = runner['in_metal'](env, 'tee', directory + '/server-' + category + '.json',
                                 stdin=None, input=json.dumps(records) + '\n', capture_output=True, text=True)
     if result.returncode: raise ValueError('cannot save host suite evidence in the boot store')
-    result = runner['in_metal'](env, 'tee', directory + '/server-ssh-keys-transcript.json',
+    result = runner['in_metal'](env, 'tee', directory + '/server-' + category + '-transcript.json',
                                 stdin=None, input=json.dumps(transcript) + '\n', capture_output=True, text=True)
     if result.returncode: raise ValueError('cannot save host transcript')
     print(verdict)

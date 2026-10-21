@@ -45,6 +45,7 @@ extern "C" {
     fn getegid() -> u32;
     fn fchown(fd: i32, uid: u32, gid: u32) -> i32;
     fn fchmod(fd: i32, mode: u32) -> i32;
+    fn setsockopt(fd: i32, level: i32, name: i32, value: *const u8, length: u32) -> i32;
 }
 
 /// The process's own credentials, through the C library's system calls.
@@ -147,6 +148,16 @@ fn main() {
         }
     };
 
+    // A restarted bsshd binds while its predecessor's sessions, and connections in
+    // TIME_WAIT, still use the port; SO_REUSEADDR permits that (a second listener is
+    // still refused).
+    const SOL_SOCKET: i32 = 1;
+    const SO_REUSEADDR: i32 = 2;
+    let on: i32 = 1;
+    if unsafe { setsockopt(listen_fd.raw() as i32, SOL_SOCKET, SO_REUSEADDR, (&on as *const i32).cast(), 4) } != 0 {
+        eprintln!("bsshd: setsockopt(SO_REUSEADDR) failed: {}", std::io::Error::last_os_error());
+        std::process::exit(1);
+    }
     let addr = SockAddrIn::new([0, 0, 0, 0], port);
     if let Err(e) = socket::bind_inet(listen_fd, &addr) {
         eprintln!("bsshd: bind() failed: {:?}", e);

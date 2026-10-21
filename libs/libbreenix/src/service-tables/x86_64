@@ -1,0 +1,43 @@
+# Breenix service table, read by init at boot and by `svc reload`.
+# Format: libs/libbreenix/src/services.rs; status and control: svc(1).
+# Stanzas start in this order on each pass; a service whose needs do not hold
+# yet waits without holding up the ones after it.
+
+# SSH key exchange reads the random pool, so bsshd starts once it is ready.
+[bsshd]
+command = /usr/sbin/bsshd
+needs = entropy
+
+# The loopback SSH check on test images (it reports not-run elsewhere).
+[bssh-oracle]
+command = /sbin/init bssh-oracle
+restart = never
+needs = entropy, bsshd
+
+[blogd]
+command = /usr/sbin/blogd
+
+# The time client sets the clock once and exits; a failed query is retried.
+[ntp]
+command = /usr/sbin/ntp_client
+restart = on-failure
+needs = network-up
+
+[getty-tty2]
+command = /bin/getty tty2
+
+[getty-tty3]
+command = /bin/getty tty3
+
+[getty-tty4]
+command = /bin/getty tty4
+
+[getty-tty5]
+command = /bin/getty tty5
+
+[getty-tty6]
+command = /bin/getty tty6
+
+# The console (tty1) starts last, so the launch lines precede its login prompt.
+[getty-console]
+command = /bin/getty

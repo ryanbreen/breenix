@@ -56,6 +56,8 @@ pub mod process;
 pub mod pty;
 #[cfg(feature = "runtime")]
 pub mod runtime;
+#[cfg(feature = "std")]
+pub mod services;
 pub mod signal;
 pub mod socket;
 #[cfg(feature = "suite")]

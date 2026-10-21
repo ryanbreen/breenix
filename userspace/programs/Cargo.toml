@@ -648,6 +648,10 @@ name = "guskit"
 path = "src/guskit.rs"
 
 [[bin]]
+name = "svc"
+path = "src/svc.rs"
+
+[[bin]]
 name = "bsshd"
 path = "src/bsshd.rs"
 

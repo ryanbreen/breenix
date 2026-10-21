@@ -104,20 +104,26 @@ def score(directory):
             results[milestone['id']]['inputUnmeasured'] = unmeasured
     # Host-driven server cases are captured while the persistent boot holds its
     # lease, then scored again from the completed capture without rerunning them.
-    host_records = directory / 'server-ssh-keys.json'
-    if host_records.exists():
+    # Each measured category's records are server-<category>.json, beside its transcript.
+    for host_records in sorted(directory.glob('server-*.json')):
+        category = host_records.name[len('server-'):-len('.json')]
+        if category.endswith('-transcript'):
+            continue
+        milestone = 'server/' + category
         root = directory / 'definition'
         try:
             host = runpy.run_path(str(root / 'scripts/metal/server-suite'))
             manifest = read('definition/docs/suites/server.json')
-            records = read('server-ssh-keys.json')
+            records = read(host_records.name)
+            if records.get('milestone') != milestone:
+                raise ValueError(host_records.name + ' records another milestone')
             fatal = read('definition/docs/boot-path.json')['fatal'] + [r'KERNEL PANIC:']
             reason = host['score'](manifest, read('definition/docs/efforts/path.json'), records,
                                    (directory / 'serial.txt').read_text(), run, run.get('bootedCommit'), fatal)
-            total = len(host['CASES'])
-            results['server/ssh-keys'] = dict(reached=total, total=total, passed=True, reason=reason)
+            total = len(host['CATEGORIES'][category])
+            results[milestone] = dict(reached=total, total=total, passed=True, reason=reason)
         except (OSError, ValueError, KeyError, StopIteration, TypeError, AttributeError) as error:
-            results['server/ssh-keys'] = dict(reached=0, total=1, passed=False, reason=str(error))
+            results[milestone] = dict(reached=0, total=1, passed=False, reason=str(error))
     return {'bootShape': shape, 'milestones': results, 'captureComplete': 'console-gap' not in events}
 
 

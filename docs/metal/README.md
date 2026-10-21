@@ -961,6 +961,38 @@ account (uid 2000, home `/etc/breenix/test-ssh/home`, since `/home` is a separat
 oracle logs in with it: `[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]` for the key and a forged signature, and
 `[BSSH_ACCOUNT_ORACLE:root=refused:id=sshtest:PASS]` for root's refusal and the session's `id`.
 
+### Services
+
+After its boot checks and boot script, init supervises the services in `/etc/breenix/services`
+(format and restart policy in `libs/libbreenix/src/services.rs`; the shipped tables are
+`libs/libbreenix/src/service-tables/`). On x86 the table holds bsshd, the loopback SSH check,
+blogd, `ntp` (the time client) and the gettys on tty2 to tty6 and the console. The table is a
+factory file: `etc-reconcile` installs it on persistent installs and keeps a local edit with a
+`.factory` sibling.
+
+- **Needs.** bsshd needs `entropy`: init starts it once a non-blocking `getrandom` succeeds, and
+  prints `[init] random pool ready; ...`. The time client needs `network-up`: `/proc/net/pnp`
+  shows a DHCP lease or a manual configuration. A waiting service holds up nothing else, so the
+  gettys start on the first pass whatever the pool's state (#2086); the loopback SSH check runs
+  as a separate `init bssh-oracle` process once bsshd runs. claim-lint:ok: `start_due` and `conditions` in
+  `userspace/programs/src/init_services.rs`.
+- **Restarts.** A service restarts by its policy (`always`, `on-failure`, `never`) 1 s after it
+  exits. Each further failure within 10 s of starting doubles the wait (2, 4, 8 s); the fifth in a
+  row prints `[init] NAME is crash-looping: ...` and the service then restarts every 60 s until a
+  run lasts 10 s. bsshd sets SO_REUSEADDR, so a restarted bsshd binds port 22 while its
+  predecessor's sessions remain. claim-lint:ok: `after_exit` and its host tests in
+  `libs/libbreenix/src/services.rs`.
+- **Stopping.** `svc stop` sends SIGTERM and, after the service's stop timeout (5 s unless the
+  table says otherwise), SIGKILL; a stopped service stays stopped until `svc start`.
+- **State and control.** init publishes `/run/breenix/services` (one line per service: state,
+  pid, starts, first start, last exit) and serves `/run/breenix/svc.sock`. `svc` reports the
+  state to any account; `svc start|stop|restart NAME` is allowed to root and to the account the
+  service runs as (checked with SO_PEERCRED), and `svc reload`, which reads the table and
+  `/run/breenix/services.d/*` again, to root. Definitions under `/run` last until the next boot.
+
+`init console` supervises only the table's gettys. The [server suite](../suites/README.md#server-host-driven-persistent-categories)
+measures the services on a persistent boot.
+
 ### Persistent sessions
 
 `metal-run boot --persistent` takes the lease (test boots queue behind it), powers the machine on without the
