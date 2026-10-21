@@ -50,7 +50,7 @@ enum Payload {
 /// A command in the device's hands, with every buffer it uses.
 pub struct Request {
     pub tag: Tag,
-    /// The fence the command carries, when it is fenced.
+    /// Admission identity of a fenced command. The native number is assigned at send.
     pub fence: Option<u64>,
     hdr: DmaBox,
     payload: Payload,
@@ -63,6 +63,8 @@ pub struct Request {
 pub struct Done {
     pub tag: Tag,
     pub fence: Option<u64>,
+    /// The native fence written into this request when it entered the queue.
+    pub native_fence: Option<u64>,
     /// The response type and the fence it echoes.
     pub answer: u32,
     pub echoed: u64,
@@ -421,10 +423,16 @@ impl Device {
 
     /// Make `req` available to the device, or give it back when the queue has no room.
     /// The caller notifies the device (section 4.1.4.4), through [`Device::doorbell`].
-    pub fn send(&mut self, req: Request) -> Result<(), Request> {
+    pub fn send(&mut self, mut req: Request) -> Result<(), Request> {
         let segs = req.segments();
         if segs.len() > self.queue.free_count() {
             return Err(req);
+        }
+        // Preparation can finish in a different order from admission. The renderer
+        // timeline must follow the queue, including across contexts: a later, lower
+        // fence can otherwise strand an earlier request after its callback.
+        if req.fence.is_some() {
+            req.hdr.put_u64(wire::HDR_FENCE, self.made + 1);
         }
         req.publish();
         let Some(head) = self.queue.add(&segs) else { return Err(req) };
@@ -501,8 +509,9 @@ impl Device {
         self.answered = self.answered.max(self.made_at[head as usize]);
         let answer = req.resp.u32_at(wire::HDR_TYPE);
         let echoed = req.resp.u64_at(wire::HDR_FENCE);
+        let native_fence = req.fence.map(|_| req.hdr.u64_at(wire::HDR_FENCE));
         let Request { tag, fence, resp, .. } = req;
-        Reap::Done(Done { tag, fence, answer, echoed, resp })
+        Reap::Done(Done { tag, fence, native_fence, answer, echoed, resp })
     }
 
     /// Whether the device has set DEVICE_NEEDS_RESET (section 2.1): a device fault.

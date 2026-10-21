@@ -106,9 +106,10 @@ static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
 /// is unchanged.
 static EVENTS: AtomicU64 = AtomicU64::new(0);
 static WAITERS: WaitQueueHead = WaitQueueHead::new();
-/// Counts sends to the device. `kgpu` blocks only while it is unchanged since kgpu chose its
-/// deadline: a send made after that would otherwise wait for that deadline, because an
-/// SVGA3 device raises no interrupt and only kgpu polls it for the answers.
+/// Counts sends to the device, and progress transfers queued for `kgpu` to send. `kgpu`
+/// blocks only while it is unchanged since kgpu chose its deadline: a send made after that
+/// would otherwise wait for that deadline, because an SVGA3 device raises no interrupt and
+/// only kgpu polls it for the answers; a queued transfer would wait for it too.
 static SENT: AtomicU64 = AtomicU64::new(0);
 static ISR: AtomicU64 = AtomicU64::new(0);
 /// The control queue's notification address, and whether requests were queued since it
@@ -314,6 +315,8 @@ struct Sub {
     ctx: u32,
     n: u32,
     fence: u64,
+    /// Actual native fence, set by its verified completion before publication.
+    native_fence: u64,
     /// When `SUBMIT` handed it to the device's queue; the watchdog's clock.
     sent_ns: Option<u64>,
     error: Option<u32>,
@@ -395,6 +398,9 @@ struct Res {
     holds: u32,
     lost: bool,
     reading: bool,
+    /// The context of a queued progress transfer reading this target. It excludes CPU
+    /// access only; GPU writes of any context may follow it.
+    progress_context: Option<u32>,
     window_sealed: bool,
     /// The kernel screen's context this resource is attached to for observing it as a
     /// retained binding (`screen::observation_context`), or 0.
@@ -833,6 +839,8 @@ impl Core {
         s
     }
 
+    /// Reserve a completion identity before preparation. VirGL assigns its native
+    /// wire fence separately when the request enters the device queue.
     fn device_fence(&mut self) -> u64 {
         let f = self.next_fence;
         self.next_fence += 1;
@@ -987,6 +995,13 @@ impl Core {
     /// Register synchronous request `serial`, take its holds and queue it. A request of the
     /// warm-up step carries the step's fence in `warm`; nobody waits for it.
     fn start_sync(&mut self, serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32], warm: Option<u64>) -> Result<(), i64> {
+        self.queue_sync(serial, req, ctx, holds, reading, warm)?;
+        self.flush();
+        Ok(())
+    }
+
+    /// Enroll DMA holds without notifying the device from a waiting caller.
+    fn queue_sync(&mut self, serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32], warm: Option<u64>) -> Result<(), i64> {
         if !self.can_queue(&req) {
             return Err(EIO);
         }
@@ -1005,8 +1020,39 @@ impl Core {
             why: 0, warm,
         });
         self.backlog.push_back((self.epoch, req));
-        self.flush();
         Ok(())
+    }
+
+    /// Drain queued QEMU rendering through a fenced one-pixel transfer of the drawn target.
+    /// Publication still waits for the native render fences. kgpu sends the transfer, keeping
+    /// device notification out of the waiter's CPU time; its own fence retains the DMA hold.
+    fn progress_readback(&mut self) {
+        let reaper = REAPER.load(Ordering::Acquire);
+        if reaper == 0 || crate::per_cpu::current_thread().is_none_or(|t| t.id == reaper) { return; }
+        if !crate::platform_config::is_qemu() || dev::is_svga() || self.reset_wanted || self.resetting || self.stalled
+            || !self.backlog.is_empty() { return; }
+        let target = self.subs.values().filter(|s| !s.published && s.requests > 0 && s.sent_ns.is_some())
+            .find_map(|s| s.written.iter().find_map(|rid| {
+                let r = self.resources.get(rid)?;
+                let active = r.accepted.iter().filter(|w| !w.ended()).count();
+                (r.kind == kind::TARGET && r.writers > 0 && active == r.writers as usize
+                    && r.accepted.iter().filter(|w| !w.ended()).all(|w| w.ctx == s.ctx)
+                    && !r.reading && !r.invalid && !r.lost)
+                    .then(|| (s.ctx, *rid, r.backing.clone(), r.pitch))
+            }));
+        let Some((ctx, rid, backing, pitch)) = target else { return; };
+        let serial = self.serial();
+        let fence = self.device_fence();
+        let req = Request::Virgl(virgl::transfer_from_host(Tag::Sync(serial), ctx, fence, rid, backing, 0, 0, 1, 1, 0, pitch));
+        if !self.dev.as_ref().is_some_and(|d| d.has_room(req.segment_count())) { return; }
+        if let Some(r) = self.resources.get_mut(&rid) { r.reading = true; r.progress_context = Some(ctx); }
+        if self.queue_sync(serial, req, ctx, &[rid], &[rid], None).is_ok() {
+            self.abandon(serial);
+            // Only kgpu acts on the queued transfer; waking the waiters would only make
+            // them scan again. The count reaches a kgpu that has not blocked yet.
+            SENT.fetch_add(1, Ordering::AcqRel);
+            wake_reaper();
+        } else { self.end_reading(rid); }
     }
 
     /// The waiter of `serial` left: drop its answer if it came, or when it comes.
@@ -1131,7 +1177,7 @@ impl Core {
         }
         match d.tag {
             Tag::Sync(serial) => self.sync_ended(serial, Some(d)),
-            Tag::Submit { serial, last, .. } => self.submit_returned(serial, last, d.answer, d.echoed),
+            Tag::Submit { serial, last, .. } => self.submit_returned(serial, last, d),
             Tag::Background => {
                 if !dev::ok(d.answer) {
                     self.fault();
@@ -1165,12 +1211,12 @@ impl Core {
             self.fault();
         }
         if let Some(fence) = s.warm {
-            self.warm_returned(d.as_ref().map(|d| dev::ok(d.answer) && d.echoed == fence));
+            self.warm_returned(d.as_ref().map(|d| dev::ok(d.answer) && d.matches_fence(fence)));
         }
         if let Some((id, fence)) = s.upload {
             if let Some(d) = &d {
                 let device_error = !dev::ok(d.answer);
-                let ok = !device_error && d.echoed == fence && d.fenced;
+                let ok = !device_error && d.matches_fence(fence);
                 if !ok {
                     if let Some(r) = self.resources.get_mut(&id) {
                         completion::finish_write(&mut r.invalid, &mut r.invalidated_by, serial, false, false);
@@ -1210,25 +1256,26 @@ impl Core {
     }
 
     /// One SUBMIT_3D of submission `serial` came back.
-    fn submit_returned(&mut self, serial: u64, last: bool, answer: u32, echoed: u64) {
+    fn submit_returned(&mut self, serial: u64, last: bool, mut done: Done) {
+        let answer = done.answer;
         let Some(sub) = self.subs.get_mut(&serial) else { return };
         sub.requests = sub.requests.saturating_sub(1);
         if !dev::ok(answer) {
             sub.error.get_or_insert(answer);
         }
         if last {
-            let mut echoed = echoed;
             let submitted = sub.present.is_none();
             // Test point 20, `stale-fence`: the answer claims another submission's fence.
             if submitted && crate::test_control::take(test_point::STALE_FENCE, 0).is_some() {
-                echoed = sub.fence + 1;
+                done.echoed = done.native_fence.unwrap_or(0).wrapping_add(1);
             }
-            if sub.error.is_none() && echoed != sub.fence {
+            if sub.error.is_none() && !done.matches_fence(sub.fence) {
                 sub.mismatch = true;
             }
+            sub.native_fence = done.native_fence.unwrap_or(0);
             let result = match (sub.error, sub.mismatch) {
                 (Some(a), _) => (fence_status::DEVICE_ERROR, a),
-                (None, true) => (fence_status::FENCE_MISMATCH, echoed as u32),
+                (None, true) => (fence_status::FENCE_MISMATCH, done.echoed as u32),
                 (None, false) => (fence_status::OK, answer),
             };
             let ctx = sub.ctx;
@@ -1277,7 +1324,7 @@ impl Core {
         }
         sub.published = true;
         if let Some(writer) = &sub.writer { writer.publish(status); }
-        let (ctx_id, n, fence, presenting) = (sub.ctx, sub.n, sub.fence, sub.present);
+        let (ctx_id, n, fence, presenting) = (sub.ctx, sub.n, sub.native_fence, sub.present);
         let written = core::mem::take(&mut sub.written);
         let whole = core::mem::take(&mut sub.whole);
         let ok = status == fence_status::OK;
@@ -1381,6 +1428,7 @@ impl Core {
         }
         if let Some(r) = self.resources.get_mut(&id) {
             r.reading = false;
+            r.progress_context = None;
         }
         self.canvas.retain(|(held, _)| *held != id);
         self.free_if_unused(id);
@@ -1826,7 +1874,9 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
             c.poll();
             // The device's answers reach this waiter only when someone looks for them.
             let polled = dev::is_svga() && !c.stalled && c.dev.as_ref().is_some_and(|d| d.outstanding() > 0);
-            (f(c), polled)
+            let found = f(c);
+            if found.is_none() { c.progress_readback(); }
+            (found, polled)
         })
         .unwrap_or((None, false));
         if let Some(v) = found {
@@ -2506,6 +2556,7 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
         holds: 0,
         lost: false,
         reading: false,
+        progress_context: None,
         window_sealed: false,
         observed_in: 0,
     }
@@ -2761,7 +2812,7 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
             return Err(EIO);
         }
         let d = exec_req(serial, req, id, &[vb, scratch, scratch_texture], &[])?;
-        if !dev::ok(d.answer) || Some(d.echoed) != fence {
+        if !dev::ok(d.answer) || !fence.is_some_and(|f| d.matches_fence(f)) {
             return Err(EIO);
         }
     }
@@ -3400,7 +3451,9 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.window_sealed)) {
             return Some(Err(breengel_abi::errno::EBUSY as i64));
         }
-        if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.reading)) {
+        // Progress DMA has no CPU consumer. Later GPU writes can follow it;
+        // ordinary CPU readbacks still exclude writes until observation finishes.
+        if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.reading && r.progress_context.is_none())) {
             return None;
         }
         if ctx.inflight.len() >= limits::IN_FLIGHT {
@@ -3693,7 +3746,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
                         let req = virgl::submit(Tag::Sync(serial), id, Some(fence), chunk);
                         warm_sent = true;
                         let done = exec_req(serial, Request::Virgl(req), id, &[default_vb, scratch, scratch_texture], &[])?;
-                        if !virgl::ok(done.answer) || done.echoed != fence {
+                        if !virgl::ok(done.answer) || !done.matches_fence(fence) {
                             return Err(EIO);
                         }
                     }
@@ -3870,6 +3923,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             ctx: id,
             n,
             fence,
+            native_fence: 0,
             sent_ns: None,
             error: None,
             mismatch: false,
@@ -4188,6 +4242,7 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
             if !c.syncs.values().any(|s| s.reading.contains(&id)) {
                 if let Some(r) = c.resources.get_mut(&id) {
                     r.reading = false;
+                    r.progress_context = None;
                 }
                 c.free_if_unused(id);
             }
@@ -4245,8 +4300,8 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
                 match dev::transfer_to_host(Tag::Sync(serial), ctx, fence, id, backing.clone(), x as u32, y as u32, cw as u32, ch as u32, offset, pitch as u32) {
                     None => Err((EIO, 0)),
                     Some(req) => match exec_req_why(serial, req, ctx, &[id], &[id]) {
-                        Ok(d) if dev::ok(d.answer) && d.echoed == fence && d.fenced => {
-                            Ok((serial, fence, d.answer))
+                        Ok(d) if dev::ok(d.answer) && d.matches_fence(fence) => {
+                            Ok((serial, d.echoed, d.answer))
                         }
                         Ok(_) => Err((EIO, serial)),
                         Err((e @ (EIO | EINTR), _)) => Err((e, serial)),
@@ -4892,11 +4947,11 @@ fn observe(
         if !dev::ok(d.answer) {
             return Err((EIO, readback_reason::DEVICE_ERROR));
         }
-        if d.echoed != s.fence || !d.fenced {
+        if !d.matches_fence(s.fence) {
             return Err((EIO, readback_reason::FENCE_MISMATCH));
         }
         if first.is_none_or(|(order, _, _)| s.order < order) {
-            first = Some((s.order, s.fence, d.answer));
+            first = Some((s.order, d.echoed, d.answer));
         }
         Ok(())
     };
@@ -5011,6 +5066,7 @@ fn release_other(rid: Option<u32>) {
         if !c.syncs.values().any(|s| s.reading.contains(&rid)) {
             if let Some(r) = c.resources.get_mut(&rid) {
                 r.reading = false;
+                r.progress_context = None;
             }
             c.free_if_unused(rid);
         }

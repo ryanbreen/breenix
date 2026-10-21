@@ -38,7 +38,7 @@ const EIO: i64 = -5;
 const EINTR: i64 = -4;
 #[derive(Clone, Copy)] enum Tag { Sync(u64), Submit { serial: u64, last: bool }, Background }
 struct Request;
-struct Done { tag: Tag, answer: u32, echoed: u64 }
+struct Done { tag: Tag, answer: u32 }
 mod virgl {
     use super::*;
     pub fn ctx_attach(tag: Tag, ctx: u32, id: u32) -> Request {
@@ -132,7 +132,7 @@ impl Core {
     fn settle(&mut self, _: u32) {}
     fn fault(&mut self) { panic!("unexpected fault") }
     fn sync_ended(&mut self, serial: u64, _: Option<Done>) { self.syncs.remove(&serial); }
-    fn submit_returned(&mut self, _: u64, _: bool, _: u32, _: u64) {}
+    fn submit_returned(&mut self, _: u64, _: bool, _: Done) {}
     fn warm_returned(&mut self, _: Option<bool>) { panic!("unexpected warm refusal") }
     // PRODUCTION_METHODS
 }
@@ -212,20 +212,20 @@ fn warm_spacing(svga: bool) {
         let step = c.warm_step.take().unwrap();
         assert_eq!((step.ctx, step.pipeline, step.left, step.refused, step.lost), (1, 0, 1, false, false));
         let serial = *c.syncs.keys().next().unwrap();
-        c.returned(Done { tag: Tag::Sync(serial), answer, echoed: 0 });
+        c.returned(Done { tag: Tag::Sync(serial), answer });
         assert_eq!(c.traffic_ns, 0, "warm answer is not competing traffic");
         c.start_sync(99, Request, 1, &[], &[], None).unwrap();
     });
     CLOCK.with(|t| t.set(4_000_000));
     with_core(|c| {
-        c.returned(Done { tag: Tag::Sync(99), answer, echoed: 0 });
+        c.returned(Done { tag: Tag::Sync(99), answer });
         assert!(!c.syncs.contains_key(&99));
         assert_eq!(c.traffic_ns, 4_000_000);
     });
     assert_eq!(warm_next(), Some(22_000_000));
     CLOCK.with(|t| t.set(5_000_000));
     with_core(|c| {
-        c.returned(Done { tag: Tag::Submit { serial: 100, last: true }, answer, echoed: 0 });
+        c.returned(Done { tag: Tag::Submit { serial: 100, last: true }, answer });
         assert_eq!(c.traffic_ns, 5_000_000);
     });
     assert_eq!(warm_next(), Some(22_000_000));
@@ -248,7 +248,7 @@ fn sixteen_steps_with_sixteen_ms_present_answers() {
                     now = due.min(present);
                     if now == present {
                         CLOCK.with(|t| t.set(now));
-                        with_core(|c| c.returned(Done { tag: Tag::Submit { serial: 100, last: true }, answer: 0, echoed: 0 }));
+                        with_core(|c| c.returned(Done { tag: Tag::Submit { serial: 100, last: true }, answer: 0 }));
                         present += 16_000_000;
                     }
                 }
@@ -262,7 +262,7 @@ fn sixteen_steps_with_sixteen_ms_present_answers() {
         // Model a 3 ms device step and a competing answer during each step.
         now += 1_000_000;
         CLOCK.with(|t| t.set(now));
-        with_core(|c| c.returned(Done { tag: Tag::Background, answer: 0, echoed: 0 }));
+        with_core(|c| c.returned(Done { tag: Tag::Background, answer: 0 }));
         now += 2_000_000;
     }
     assert_eq!(now - first, 303_000_000);
