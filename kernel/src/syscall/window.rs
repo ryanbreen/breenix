@@ -153,7 +153,11 @@ fn window(op: u64, arg: u64, len: u64) -> Result<u64, i32> {
         op::COMPOSITE_SNAPSHOT => committing::<SceneSnapshot>(arg, |a,out| crate::window::scene::snapshot(&caller,a,out)),
         op::COMPOSITE_RECORD => composite_record(&caller, &input::<RecordQuery>(arg)?),
         op::MAP_COMPOSITOR_TEXTURE => Err(ENOSYS),
-        op::SCANOUT_READBACK => inout::<Readback>(arg, |rb| readback(&caller, rb)),
+        op::SCANOUT_READBACK => {
+            let mut rb = input::<Readback>(arg)?;
+            mem::probe_writable(arg, core::mem::size_of::<Readback>() as u64)?;
+            readback(&caller, arg, &mut rb)
+        }
         op::SET_CURSOR => {
             let c = input::<Cursor>(arg)?;
             compositor_only(&caller)?;
@@ -215,25 +219,33 @@ fn composite_record(caller: &Caller, q: &RecordQuery) -> Result<u64, i32> {
     Ok(0)
 }
 
-/// `SCANOUT_READBACK` (root or the compositor): the destination and record are checked here,
-/// the display backend fills them.
-fn readback(caller: &Caller, rb: &mut Readback) -> Result<u64, i32> {
-    use breengel_abi::limits::{SCREEN_HEIGHT, SCREEN_WIDTH};
+/// `SCANOUT_READBACK` (root or the compositor): the whole scanout and its record version 2,
+/// observed by the GPU core's pinned-binding service (gpu-abi.md, 414/22). The window layer
+/// supplies only the authority; an EIO writes only its reason.
+fn readback(caller: &Caller, arg: u64, rb: &mut Readback) -> Result<u64, i32> {
     if !caller.is_root() && !REGISTRY.lock().is_compositor(caller) {
         return Err(EPERM);
     }
-    if rb.reserved != 0 {
+    if rb.reserved != 0
+        || rb.reserved2 != 0
+        || rb.serial != 0
+        || rb.reason != 0
+        || rb.record_len as usize != gpu_abi::record::SIZE
+    {
         return Err(EINVAL);
     }
-    let pixels = SCREEN_WIDTH as u64 * SCREEN_HEIGHT as u64 * 4;
-    let record = core::mem::size_of::<breengel_abi::ObservationRecord>() as u64;
-    if rb.dst_len < pixels || (rb.record_len as u64) < record {
-        return Err(EINVAL);
+    match crate::gpu::observe_scanout(rb.dst, rb.dst_len, rb.record) {
+        Ok(serial) => {
+            rb.serial = serial;
+            output(arg, rb)?;
+            Ok(0)
+        }
+        Err((errno, reason)) => {
+            if errno == gpu_abi::errno::EIO {
+                rb.reason = reason;
+                output(arg, rb)?;
+            }
+            Err(errno as i32)
+        }
     }
-    mem::probe_writable(rb.dst, pixels)?;
-    mem::probe_writable(rb.record, record)?;
-    present::backend()
-        .ok_or(breengel_abi::errno::EIO)?
-        .readback(caller, rb)?;
-    Ok(0)
 }
