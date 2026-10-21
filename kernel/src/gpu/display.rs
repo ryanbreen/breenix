@@ -85,16 +85,17 @@ pub(super) fn owner(tgid: u64) -> bool {
     crate::syscall::graphics::DISPLAY_OWNER_GROUP.load(Ordering::Acquire) == tgid
 }
 
-/// Whether `tgid` may observe target `id`: a possible scanout is the display owner's, and
-/// only while its binding is known. EIO carries reason 10, binding-unknown.
-pub(super) fn readable(c: &Core, tgid: u64, id: u32) -> Result<(), i64> {
+/// Whether `tgid` may observe target `id`: a possible scanout is the display owner's, or a
+/// `window` observer's (one the window layer authorized for SCANOUT_READBACK), and only
+/// while its binding is known. EIO carries reason 10, binding-unknown.
+pub(super) fn readable(c: &Core, tgid: u64, id: u32, window: bool) -> Result<(), i64> {
     if c.display.holds.contains(&id)
         || c.display
             .stack
             .iter()
             .any(|o| o.last.is_some_and(|b| b.id == id))
     {
-        if !owner(tgid) {
+        if !window && !owner(tgid) {
             return Err(EPERM);
         }
         if !c.display.known {
@@ -105,8 +106,8 @@ pub(super) fn readable(c: &Core, tgid: u64, id: u32) -> Result<(), i64> {
 }
 
 /// The completed binding of `id`, for record v2's flags bit 0 and offsets 184 and 192.
-pub(super) fn binding(c: &Core, tgid: u64, id: u32) -> Result<Option<Binding>, i64> {
-    readable(c, tgid, id)?;
+pub(super) fn binding(c: &Core, tgid: u64, id: u32, window: bool) -> Result<Option<Binding>, i64> {
+    readable(c, tgid, id, window)?;
     Ok(c.display.binding.filter(|b| b.id == id))
 }
 
@@ -122,6 +123,13 @@ impl Core {
             d.latest_ok = ok;
         }
         d.known = d.outstanding == 0 && d.latest_ok;
+        if ok {
+            // The process's record already exists: it holds the presented target.
+            if let Some(owner) = self.procs.get_mut(&p.owner) {
+                owner.presents += 1;
+            }
+        }
+        let d = &mut self.display;
         if !(latest && ok) {
             return;
         }
@@ -463,6 +471,11 @@ impl Transition {
             return Err(EPERM);
         }
         Ok(guard)
+    }
+    /// A transition for SCANOUT_READBACK: the window layer authorized the observer, which
+    /// need not own the display; the binding cannot change while it is held.
+    pub(super) fn for_window_observer() -> Result<Self, i64> {
+        Self::acquire()
     }
     /// A transition for the kernel's screen: while no process owns the display, or while
     /// the owner's terminal is released and the kernel draws the foreground one (contract
