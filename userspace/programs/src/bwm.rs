@@ -15,6 +15,7 @@ mod placement;
 mod input_backlog;
 
 use std::process;
+use std::io::Write;
 
 use compositor::{Compositor, Layer, Pointer};
 
@@ -1182,7 +1183,7 @@ fn flush_input() {
             Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EAGAIN)) => Delivery::Full,
             Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EINVAL)) => Delivery::Gone,
             Err(error) => {
-                eprintln!("bwm: window {id} input disabled: {error}");
+                let _ = writeln!(std::io::stderr(), "bwm: window {id} input disabled: {error}");
                 Delivery::Failed
             }
         }
@@ -1190,13 +1191,20 @@ fn flush_input() {
 }
 
 fn route_input(id: u32, event: &WindowInputEvent) {
-    let admission = INPUT_BACKLOG.lock().unwrap().push(id, *event, |old, new| {
+    let mut backlog = INPUT_BACKLOG.lock().unwrap();
+    let admission = backlog.push(id, *event, |old, new| {
         old.event_type == input_event_type::MOUSE_MOVE
             && new.event_type == input_event_type::MOUSE_MOVE
             && old.scroll_y == 0 && new.scroll_y == 0
     });
+    if admission != input_backlog::Admission::Queued
+        && event.event_type == input_event_type::CLOSE_REQUESTED
+    {
+        backlog.request_close(id, *event);
+    }
+    drop(backlog);
     if admission == input_backlog::Admission::Overflow {
-        eprintln!("bwm: window {id} input disabled: backlog limit reached");
+        let _ = writeln!(std::io::stderr(), "bwm: window {id} input disabled: backlog limit reached; close remains available");
     }
     flush_input();
 }

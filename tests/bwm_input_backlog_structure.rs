@@ -283,3 +283,48 @@ fn adjacent_motion_can_coalesce_at_the_limit_without_losing_discrete_events() {
         }
     );
 }
+
+#[test]
+fn close_survives_overflow_and_retries_until_the_client_drains() {
+    use input_backlog::{Admission, MAX_PENDING};
+    let mut backlog = Backlog::new();
+    for value in 0..MAX_PENDING {
+        assert_eq!(backlog.push(1, value, |_, _| false), Admission::Queued);
+    }
+    assert_eq!(backlog.push(1, MAX_PENDING, |_, _| false), Admission::Overflow);
+    // Both the close hotkey and launcher toggle use this reserved request when
+    // ordinary admission reports Overflow or Disabled.
+    for _ in 0..20 {
+        backlog.request_close(1, 7);
+    }
+    assert_eq!(backlog.push(1, 99, |_, _| false), Admission::Disabled);
+    let mut ring = [0; 64];
+    let (mut head, mut tail) = (0, 0);
+    for value in 0..63 {
+        assert!(input_ring::push(&mut ring, &mut head, tail, value));
+    }
+    let mut attempts = 0;
+    backlog.flush(|id, event| {
+        assert_eq!((id, *event), (1, 7));
+        attempts += 1;
+        if input_ring::push(&mut ring, &mut head, tail, *event) {
+            Delivery::Accepted
+        } else {
+            Delivery::Full
+        }
+    });
+    assert_eq!(attempts, 1);
+    assert!(!backlog.is_empty());
+    tail = (tail + 16) % ring.len();
+    backlog.flush(|id, event| {
+        assert_eq!((id, *event), (1, 7));
+        assert!(input_ring::push(&mut ring, &mut head, tail, *event));
+        Delivery::Accepted
+    });
+    assert_eq!(ring[63], 7);
+    assert!(backlog.is_empty());
+    backlog.flush(|_, _| panic!("close was duplicated"));
+    backlog.request_close(1, 7);
+    backlog.retain_windows(|_| false);
+    assert!(backlog.is_empty());
+}
