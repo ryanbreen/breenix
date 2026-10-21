@@ -191,6 +191,17 @@ impl Layout {
     }
 }
 
+/// Fill columns `x` of pixel rows `y` with `colour`.
+#[cfg(target_arch = "aarch64")]
+pub fn fill_rect(frame: &mut [u8], layout: &Layout, x: core::ops::Range<usize>, y: core::ops::Range<usize>, colour: [u8; 3]) {
+    let bpp = layout.bytes_per_pixel;
+    let x = x.start.min(layout.width)..x.end.min(layout.width);
+    for row in y.start.min(layout.height)..y.end.min(layout.height) {
+        let line = layout.line(row);
+        layout.fill(&mut frame[line.start + x.start * bpp..line.start + x.end * bpp], colour);
+    }
+}
+
 pub fn clear(frame: &mut [u8], layout: &Layout) {
     for y in 0..layout.height {
         layout.fill(&mut frame[layout.line(y)], PALETTE[0]);

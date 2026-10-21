@@ -1318,6 +1318,10 @@ impl Screen {
             }
             raster::draw_row(&mut self.shadow, &self.layout, row, &wanted.text, wanted.cursor);
             let band = self.layout.band(row);
+            #[cfg(target_arch = "aarch64")]
+            if let Some(ribbon) = &self.ribbon {
+                ribbon.paint(&mut self.shadow, &self.layout, band.clone());
+            }
             if self.display.write(&self.shadow, band.clone(), may_draw) {
                 self.shown[row] = Some(wanted);
                 drawn += 1;

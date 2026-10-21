@@ -3,9 +3,9 @@
 //! 1280 by 800 stage layout, at the display's whole scale, drawn over the text grid.
 //! Reached stages are pass green, unreached ones the pending outline colour, and each
 //! segment's last two pixels the stage background. The console's read-back expects the
-//! ribbon in that band (`colour`).
+//! ribbon in that band (`colour`), computed apart from the painter (`paint`).
 
-use super::raster::Layout;
+use super::raster::{self, Layout};
 use core::ops::Range;
 
 const PASS: [u8; 3] = [26, 112, 77];
@@ -43,6 +43,22 @@ impl Ribbon {
     /// The pixel rows the band covers.
     pub fn rows(&self) -> Range<usize> {
         752 * self.scale..768 * self.scale
+    }
+
+    /// Draw the band's pixel rows within `rows` into `frame`: each segment, then its gap.
+    pub fn paint(&self, frame: &mut [u8], layout: &Layout, rows: Range<usize>) {
+        let band = self.rows();
+        let rows = rows.start.max(band.start)..rows.end.min(band.end);
+        if rows.is_empty() {
+            return;
+        }
+        let (s, m) = (self.scale, self.lit.len());
+        for (i, &lit) in self.lit.iter().enumerate() {
+            let (a, b) = (16 + 1248 * i / m, 16 + 1248 * (i + 1) / m);
+            let colour = if lit { PASS } else { PENDING };
+            raster::fill_rect(frame, layout, a * s..(b - 2) * s, rows.clone(), colour);
+            raster::fill_rect(frame, layout, (b - 2) * s..b * s, rows.clone(), BACKGROUND);
+        }
     }
 
     /// The read-back oracle: the ribbon's colour at physical pixel `(x, y)`, when the pixel is
