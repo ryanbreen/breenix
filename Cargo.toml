@@ -92,6 +92,7 @@ kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
 bootloader = { git = "https://github.com/rust-osdev/bootloader.git", rev = "707db11201b19541b7cfef84037866ee03aa0927", default-features = false, features = ["uefi"] }
 
 [dev-dependencies]
+breengel-abi = { path = "libs/breengel-abi" }
 toml = "0.8"
 noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "size_20", "size_24", "size_32", "regular", "bold", "unicode-basic-latin", "unicode-latin-1-supplement", "unicode-latin-extended-a", "unicode-specials"] }
 spin = "0.9"

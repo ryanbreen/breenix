@@ -441,7 +441,7 @@ fn events_processed_serial() -> CaseResult {
     let last = got.iter().map(|d| d.serial).max().unwrap_or(0);
     ensure(last == first + 2, "19.3", format!("the handled serials end at {last}; they were written {first}..{}", first + 2))?;
     w.acquire(1_000_000_000).cite("17.3")?;
-    w.framebuf().clear(libgfx_ref::color::Color::rgb(1, 2, 3));
+    w.surface().cite("17.3")?.clear(libgfx::color::Color::rgb(1, 2, 3));
     let c = w.commit(&[abi::Rect::new(0, 0, 32, 24)]).cite("17.3")?;
     let (commit_id, meta) = read_meta(w.id()).cite("19.4")?;
     ensure(commit_id == c.commit_id, "19.4", format!("READ_META gives commit {commit_id}; the newest commit is {}", c.commit_id))?;
@@ -462,7 +462,7 @@ fn events_processed_not_polled() -> CaseResult {
     ensure(!polled.is_empty(), "19.2", "the event never arrived to poll")?;
     // An animation frame, committed with the event polled but not handled.
     w.acquire(1_000_000_000).cite("17.3")?;
-    w.framebuf().clear(libgfx_ref::color::Color::rgb(9, 9, 9));
+    w.surface().cite("17.3")?.clear(libgfx::color::Color::rgb(9, 9, 9));
     w.commit(&[abi::Rect::new(0, 0, 32, 24)]).cite("17.3")?;
     let p = processed(w.id())?;
     ensure(p < s, "19.4", format!("an animation frame committed with serial {s} polled but not handled published processed serial {p}"))
@@ -475,12 +475,12 @@ fn events_processed_at_acquire() -> CaseResult {
     w.acquire(1_000_000_000).cite("17.3")?;
     let s = send(&mut k, w.id(), &[key(kind::KEY_PRESS, 30)]).cite("19.2")?;
     collect(&mut w, 1, Handled::Redraw)?;
-    w.framebuf().clear(libgfx_ref::color::Color::rgb(4, 4, 4));
+    w.surface().cite("17.3")?.clear(libgfx::color::Color::rgb(4, 4, 4));
     w.commit(&[abi::Rect::new(0, 0, 32, 24)]).cite("17.3")?;
     let n = processed(w.id())?;
     ensure(n < s, "19.4", format!("frame N, acquired before serial {s}'s handler returned, published processed serial {n}; it must not acknowledge it"))?;
     w.acquire(1_000_000_000).cite("17.3")?;
-    w.framebuf().clear(libgfx_ref::color::Color::rgb(5, 5, 5));
+    w.surface().cite("17.3")?.clear(libgfx::color::Color::rgb(5, 5, 5));
     w.commit(&[abi::Rect::new(0, 0, 32, 24)]).cite("17.3")?;
     let n1 = processed(w.id())?;
     ensure(n1 == s, "19.4", format!("frame N + 1, acquired after serial {s}'s handler returned, published processed serial {n1}"))
@@ -505,7 +505,7 @@ fn events_no_change_after_redraw() -> CaseResult {
     ensure(p == first, "19.4", format!(
         "commit_no_change after serials {first} (NoChange), {} (Redraw) and {} (NoChange) published {p}; it acknowledges only {first}, up to the Redraw", first + 1, first + 2))?;
     w.acquire(1_000_000_000).cite("17.3")?;
-    w.framebuf().clear(libgfx_ref::color::Color::rgb(6, 6, 6));
+    w.surface().cite("17.3")?.clear(libgfx::color::Color::rgb(6, 6, 6));
     w.commit(&[abi::Rect::new(0, 0, 32, 24)]).cite("17.3")?;
     let p = processed(w.id())?;
     ensure(p == first + 2, "19.4", format!("the frame acquired after all three handlers returned published {p}; it acknowledges {}", first + 2))
@@ -515,7 +515,7 @@ fn events_processed_ack() -> CaseResult {
     interface()?;
     let (mut k, mut w) = setup(b"processed-ack")?;
     w.acquire(1_000_000_000).cite("17.3")?;
-    w.framebuf().clear(libgfx_ref::color::Color::rgb(7, 8, 9));
+    w.surface().cite("17.3")?.clear(libgfx::color::Color::rgb(7, 8, 9));
     let frame = w.commit(&[abi::Rect::new(0, 0, 32, 24)]).cite("17.3")?;
     let s = send(&mut k, w.id(), &[key(kind::KEY_PRESS, 30)]).cite("19.2")?;
     collect(&mut w, 1, Handled::NoChange)?;

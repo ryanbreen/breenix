@@ -10,7 +10,7 @@ crate-type = ["rlib"]
 [dependencies]
 libbreenix = { path = "../libbreenix", features = ["std"] }
 libfont = { path = "../libfont" }
-libgfx-ref = { path = "../libgfx-ref" }
+libgfx = { path = "../libgfx" }
 libbui = { path = "../libbui" }
 
 [workspace]

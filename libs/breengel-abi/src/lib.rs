@@ -48,7 +48,8 @@ pub mod op {
     pub const GIVE_DISPLAY: u32 = 27;
     pub const READ_META: u32 = 28;
     /// The highest op number; every op above it is EINVAL.
-    pub const LAST: u32 = READ_META;
+    pub const COMPOSITE_SNAPSHOT: u32 = 29;
+    pub const LAST: u32 = COMPOSITE_SNAPSHOT;
 }
 
 /// Linux's errno values, which the interface returns negated (section 25).
@@ -64,6 +65,8 @@ pub mod errno {
     pub const EFAULT: i32 = 14;
     pub const EBUSY: i32 = 16;
     pub const EINVAL: i32 = 22;
+    pub const ENODEV: i32 = 19;
+    pub const EDQUOT: i32 = 122;
     pub const EMFILE: i32 = 24;
     pub const ENOSYS: i32 = 38;
     pub const ETIMEDOUT: i32 = 110;
@@ -306,7 +309,7 @@ pub struct Resize {
     /// Out.
     pub stride: u32,
     pub reserved: u32,
-    /// Out: the new buffers' addresses.
+    /// Out: the new buffers' GPU handles.
     pub buffer: [u64; 3],
 }
 
@@ -406,12 +409,64 @@ pub struct Claim {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Composite {
+    pub snapshot: u64,
+    pub target: u64,
+    pub stream: u64,
+    pub length: u64,
     pub flags: u32,
     pub reserved: u32,
-    /// Out.
     pub serial: u64,
-    /// Out: pixels composed.
     pub pixels: u64,
+    pub render_fence: u64,
+    pub present_fence: u64,
+    pub estimate: u64,
+    pub error_index: u32,
+    pub error: u32,
+    pub reason: u32,
+    pub fence_status: u32,
+    pub answer: u32,
+    pub phase: u32,
+    pub scene_target: u64,
+}
+
+/// Metadata-only reservation: no client buffer stays pinned between syscalls.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SceneSnapshot {
+    pub context: u64,
+    pub windows: u64,
+    pub window_capacity: u32,
+    pub window_count: u32,
+    pub damage: u64,
+    pub damage_capacity: u32,
+    pub damage_count: u32,
+    pub snapshot: u64,
+    pub width: u32,
+    pub height: u32,
+    pub scale: u32,
+    pub flags: u32,
+    pub cursor: Cursor,
+    pub claim_epoch: u64,
+    pub owner_sequence: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SceneWindow {
+    pub id: u64,
+    pub sample: u64,
+    pub commit_id: u64,
+    pub pixel_gen: u64,
+    pub render_fence: u64,
+    pub target_generation: u64,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub z: u32,
+    pub stride: u32,
+    pub format: u32,
+    pub reserved: u32,
 }
 
 /// Argument of `COMPOSITE_RECORD`.
@@ -437,6 +492,8 @@ pub struct Readback {
     pub reserved: u32,
     /// Out.
     pub serial: u64,
+    pub reason: u32,
+    pub reserved2: u32,
 }
 
 /// Cursor shapes (`Cursor.shape`).
@@ -771,9 +828,11 @@ layout!(Capture, 56, id @ 0, dst @ 8, dst_len @ 16, tree_dst @ 24, tree_len @ 32
     height @ 52);
 layout!(MapTree, 24, id @ 0, addr @ 8, len @ 16);
 layout!(Claim, 16, flags @ 0, reserved @ 4, epoch @ 8);
-layout!(Composite, 24, flags @ 0, reserved @ 4, serial @ 8, pixels @ 16);
+layout!(SceneSnapshot, 96, context @ 0, windows @ 8, window_capacity @ 16, window_count @ 20, damage @ 24, damage_capacity @ 32, damage_count @ 36, snapshot @ 40, width @ 48, height @ 52, scale @ 56, flags @ 60, cursor @ 64, claim_epoch @ 80, owner_sequence @ 88);
+layout!(SceneWindow, 80, id @ 0, sample @ 8, commit_id @ 16, pixel_gen @ 24, render_fence @ 32, target_generation @ 40, x @ 48, y @ 52, width @ 56, height @ 60, z @ 64, stride @ 68, format @ 72, reserved @ 76);
+layout!(Composite, 112, snapshot @ 0, target @ 8, stream @ 16, length @ 24, flags @ 32, reserved @ 36, serial @ 40, pixels @ 48, render_fence @ 56, present_fence @ 64, estimate @ 72, error_index @ 80, error @ 84, reason @ 88, fence_status @ 92, answer @ 96, phase @ 100, scene_target @ 104);
 layout!(RecordQuery, 24, serial @ 0, ptr @ 8, len @ 16, reserved @ 20);
-layout!(Readback, 40, dst @ 0, dst_len @ 8, record @ 16, record_len @ 24, reserved @ 28, serial @ 32);
+layout!(Readback, 48, dst @ 0, dst_len @ 8, record @ 16, record_len @ 24, reserved @ 28, serial @ 32, reason @ 40, reserved2 @ 44);
 layout!(Cursor, 16, shape @ 0, visible @ 4, x @ 8, y @ 12);
 layout!(Give, 8, pid @ 0, reserved @ 4);
 layout!(MetaQuery, 24, id @ 0, meta @ 8, commit_id @ 16);
@@ -816,6 +875,7 @@ pub const fn arg_size(op: u32) -> Option<usize> {
         op::SET_CURSOR => size_of::<Cursor>(),
         op::GIVE_DISPLAY => size_of::<Give>(),
         op::READ_META => size_of::<MetaQuery>(),
+        op::COMPOSITE_SNAPSHOT => size_of::<SceneSnapshot>(),
         _ => return None,
     })
 }

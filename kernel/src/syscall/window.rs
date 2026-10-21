@@ -13,7 +13,7 @@ use breengel_abi::errno::{EFAULT, EINVAL, ENOSYS, EPERM};
 use breengel_abi::{
     arg_size, op, Acquire, Capture, Claim, Commit, Composite, CompositeEntry, CompositeRecordHeader,
     Create, Cursor, Geometry, Give, List, MapTree, Meta, MetaQuery, NoChange, Plain, ReadEvents,
-    Readback, RecordQuery, Resize, Title, WinId, WriteEvents, INTERFACE_VERSION,
+    Readback, RecordQuery, Resize, SceneSnapshot, Title, WinId, WriteEvents, INTERFACE_VERSION,
 };
 
 /// Copy `value` to the user at `arg`: an op's output, written before its commit point.
@@ -149,27 +149,24 @@ fn window(op: u64, arg: u64, len: u64) -> Result<u64, i32> {
         op::MAP_TREE => committing::<MapTree>(arg, |m, out| ops::map_tree(&caller, m, out)),
         op::CLAIM_COMPOSITOR => committing::<Claim>(arg, |c, out| ops::claim(&caller, c, out)),
         op::RELEASE_COMPOSITOR => ops::release(&caller),
-        op::COMPOSITE => committing::<Composite>(arg, |c, out| {
-            if c.flags != 0 || c.reserved != 0 {
-                return Err(EINVAL);
-            }
-            present::composite(&caller, out)?;
-            Ok(0)
-        }),
+        op::COMPOSITE => committing::<Composite>(arg, |a,out| crate::window::scene::submit(&caller,a,out)),
+        op::COMPOSITE_SNAPSHOT => committing::<SceneSnapshot>(arg, |a,out| crate::window::scene::snapshot(&caller,a,out)),
         op::COMPOSITE_RECORD => composite_record(&caller, &input::<RecordQuery>(arg)?),
-        op::MAP_COMPOSITOR_TEXTURE => inout::<MapTree>(arg, |m| {
-            compositor_only(&caller)?;
-            present::backend().ok_or(breengel_abi::errno::EIO)?.map_texture(&caller, m)?;
-            Ok(0)
-        }),
-        op::SCANOUT_READBACK => inout::<Readback>(arg, |rb| readback(&caller, rb)),
+        op::MAP_COMPOSITOR_TEXTURE => Err(ENOSYS),
+        op::SCANOUT_READBACK => {
+            let mut rb = input::<Readback>(arg)?;
+            mem::probe_writable(arg, core::mem::size_of::<Readback>() as u64)?;
+            readback(&caller, arg, &mut rb)
+        }
         op::SET_CURSOR => {
             let c = input::<Cursor>(arg)?;
             compositor_only(&caller)?;
             if c.shape > breengel_abi::cursor_shape::HIDDEN || c.visible > 1 {
                 return Err(EINVAL);
             }
-            present::backend().ok_or(breengel_abi::errno::EIO)?.set_cursor(&caller, &c)?;
+            let mut reg = REGISTRY.lock();
+            reg.present.force_full |= reg.cursor != c;
+            reg.cursor = c;
             Ok(0)
         }
         op::HOLD_EVIDENCE => ops::hold_evidence(&caller, input::<WinId>(arg)?.id),
@@ -222,25 +219,33 @@ fn composite_record(caller: &Caller, q: &RecordQuery) -> Result<u64, i32> {
     Ok(0)
 }
 
-/// `SCANOUT_READBACK` (root or the compositor): the destination and record are checked here,
-/// the display backend fills them.
-fn readback(caller: &Caller, rb: &mut Readback) -> Result<u64, i32> {
-    use breengel_abi::limits::{SCREEN_HEIGHT, SCREEN_WIDTH};
+/// `SCANOUT_READBACK` (root or the compositor): the whole scanout and its record version 2,
+/// observed by the GPU core's pinned-binding service (gpu-abi.md, 414/22). The window layer
+/// supplies only the authority; an EIO writes only its reason.
+fn readback(caller: &Caller, arg: u64, rb: &mut Readback) -> Result<u64, i32> {
     if !caller.is_root() && !REGISTRY.lock().is_compositor(caller) {
         return Err(EPERM);
     }
-    if rb.reserved != 0 {
+    if rb.reserved != 0
+        || rb.reserved2 != 0
+        || rb.serial != 0
+        || rb.reason != 0
+        || rb.record_len as usize != gpu_abi::record::SIZE
+    {
         return Err(EINVAL);
     }
-    let pixels = SCREEN_WIDTH as u64 * SCREEN_HEIGHT as u64 * 4;
-    let record = core::mem::size_of::<breengel_abi::ObservationRecord>() as u64;
-    if rb.dst_len < pixels || (rb.record_len as u64) < record {
-        return Err(EINVAL);
+    match crate::gpu::observe_scanout(rb.dst, rb.dst_len, rb.record) {
+        Ok(serial) => {
+            rb.serial = serial;
+            output(arg, rb)?;
+            Ok(0)
+        }
+        Err((errno, reason)) => {
+            if errno == gpu_abi::errno::EIO {
+                rb.reason = reason;
+                output(arg, rb)?;
+            }
+            Err(errno as i32)
+        }
     }
-    mem::probe_writable(rb.dst, pixels)?;
-    mem::probe_writable(rb.record, record)?;
-    present::backend()
-        .ok_or(breengel_abi::errno::EIO)?
-        .readback(caller, rb)?;
-    Ok(0)
 }

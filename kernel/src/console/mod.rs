@@ -136,6 +136,8 @@ static SCREEN: AtomicBool = AtomicBool::new(false);
 static SPLASH_DRAWN: AtomicBool = AtomicBool::new(false);
 /// A process has the display.
 static DISPLAY_TAKEN: AtomicBool = AtomicBool::new(false);
+/// Read-backs of the GPU core's screen target in progress (`hold_canvas`).
+static CANVAS_HOLDS: AtomicU32 = AtomicU32::new(0);
 
 /// What `attach` set up: the shadow and the splash drawn in it, which the boot
 /// thread keeps up to date until the render thread takes them.
@@ -151,6 +153,11 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 // Covers the entire render pass, including GPU completion and read-back.
 static PRESENTING: AtomicBool = AtomicBool::new(false);
 static REDRAW: AtomicBool = AtomicBool::new(false);
+/// The render thread took a full repaint (`REDRAW`) and has not completed the screen yet.
+static REPAINTING: AtomicBool = AtomicBool::new(false);
+/// How long an observation of the kernel's screen waits for a repaint the console owes.
+#[cfg(target_arch = "aarch64")]
+const REPAINT_WAIT_MS: u64 = 1000;
 
 /// The idle read-back has been asked for.
 static IDLE_CHECK: AtomicBool = AtomicBool::new(false);
@@ -474,6 +481,67 @@ fn wait_until_not_presenting() {
     display::wait_until_idle();
 }
 
+/// A read-back of the GPU core's screen target transfers the device's pixels into the
+/// guest backing this console writes. Until the returned hold drops, the console writes no
+/// band; it returns once no pass is writing, by the protocol `take_display` uses.
+#[cfg(target_arch = "aarch64")]
+pub fn hold_canvas() -> CanvasHold {
+    CANVAS_HOLDS.fetch_add(1, Ordering::SeqCst);
+    wait_until_not_presenting();
+    CanvasHold
+}
+
+/// Before an observation of the kernel's screen, outside any display transition (the
+/// console presents only between them): while the console may draw and owes a full repaint,
+/// such as the one a display give-back or a canvas hold's end asks for, wait until the render
+/// thread has completed it, so the observation sees the screen the repaint restores. Bounded
+/// by `REPAINT_WAIT_MS`; it blocks as an I/O wait, woken at the end of each pass.
+#[cfg(target_arch = "aarch64")]
+pub fn await_repaint() {
+    use crate::task::waitqueue::PrepareOutcome;
+    let owed = || {
+        SCREEN.load(Ordering::Acquire)
+            && may_draw()
+            && (REDRAW.load(Ordering::Acquire) || REPAINTING.load(Ordering::Acquire))
+    };
+    let now_ns = || {
+        let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+        seconds * 1_000_000_000 + nanos
+    };
+    let deadline = now_ns() + REPAINT_WAIT_MS * 1_000_000;
+    while owed() {
+        let now = now_ns();
+        if now >= deadline {
+            return;
+        }
+        let outcome = PASS_ENDED.prepare_to_wait_checked(
+            crate::task::thread::ThreadState::BlockedOnIO,
+            Some(deadline.min(now + 1_000_000)),
+            owed,
+        );
+        if outcome == PrepareOutcome::Mismatch {
+            PASS_ENDED.finish_wait();
+            continue;
+        }
+        if crate::syscall::blocking_io::wait_prepared(&PASS_ENDED, outcome).is_err() {
+            crate::task::scheduler::yield_current();
+        }
+    }
+}
+
+/// See `hold_canvas`. Dropping it asks for a full repaint, since the read-back may have
+/// replaced rows the console wrote but had not yet uploaded.
+#[cfg(target_arch = "aarch64")]
+pub struct CanvasHold;
+
+#[cfg(target_arch = "aarch64")]
+impl Drop for CanvasHold {
+    fn drop(&mut self) {
+        REDRAW.store(true, Ordering::Release);
+        CANVAS_HOLDS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Return the display to the retained terminal, repainting even unchanged rows.
 pub fn give_back_display() {
     vt::give_back_display();
@@ -489,6 +557,9 @@ pub fn has_screen() -> bool {
 /// Asked with the screen held before each band is written.
 fn may_draw() -> bool {
     if DISPLAY_TAKEN.load(Ordering::Acquire) || vt::foreground_graphics() {
+        return false;
+    }
+    if CANVAS_HOLDS.load(Ordering::Acquire) != 0 {
         return false;
     }
     #[cfg(target_arch = "aarch64")]
@@ -902,6 +973,10 @@ fn render_thread(display: &'static Display, attached: Attached) {
             sleep_ms(PASS_INTERVAL_MS);
             continue;
         };
+        // Marked before it is taken, so `await_repaint` sees the repaint owed throughout.
+        if REDRAW.load(Ordering::Acquire) {
+            REPAINTING.store(true, Ordering::SeqCst);
+        }
         if REDRAW.swap(false, Ordering::AcqRel) {
             screen.cleared = false;
             screen.complete = false;
@@ -931,6 +1006,9 @@ fn render_thread(display: &'static Display, attached: Attached) {
                 #[cfg(target_arch = "aarch64")]
                 request_idle_check();
             }
+        }
+        if screen.complete {
+            REPAINTING.store(false, Ordering::SeqCst);
         }
         let session = SESSION.load(Ordering::Acquire);
         if session != last_session {

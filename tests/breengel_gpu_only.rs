@@ -2,17 +2,26 @@
 use std::{collections::HashSet,fs,path::{Path,PathBuf}};
 use syn::{visit::{self,Visit},Expr,ExprCall,ExprMethodCall,ItemFn,ImplItemFn,ItemImpl,UseTree};
 
+/// Named exceptions to §2.4's two sanctioned upload sites: a file, the one function in it
+/// that may make one upload call, and the issue whose fix removes it. Ruling B24: the run
+/// stage presents its CPU-drawn frame until gpu-display draws it with BreenGL.
+const EXCEPTIONS: &[(&str, &str, &str)] = &[("libs/libbreenix/src/suite_stage.rs", "show", "#2221")];
+
 #[derive(Default)]
-struct Uploads { bgl:bool, texture:bool, permitted:bool, aliases:HashSet<String>, violations:Vec<String> }
+struct Uploads { bgl:bool, texture:bool, permitted:bool, exception:Option<&'static str>, excepted:bool, used:usize, aliases:HashSet<String>, violations:Vec<String> }
 impl Uploads {
     fn function(&mut self,name:&str,signature:&syn::Signature,body:&syn::Block){
-        let old=self.permitted;
+        let (old,old_excepted)=(self.permitted,self.excepted);
         let typed=|wanted:&str|signature.inputs.iter().any(|arg|matches!(arg,syn::FnArg::Typed(t) if matches!(&*t.ty,syn::Type::Path(p) if p.path.segments.last().is_some_and(|s|s.ident==wanted))));
         self.permitted=self.bgl && ((self.texture && name=="from_decoded" && typed("Decoded")) || (name=="fixture_upload" && typed("DeclaredFixture")) || (name=="geometry_upload" && typed("CrossingTable")));
-        visit::visit_block(self,body);self.permitted=old;
+        self.excepted=self.exception==Some(name);
+        visit::visit_block(self,body);self.permitted=old;self.excepted=old_excepted;
     }
     fn upload(&mut self,name:&str){
-        if matches!(name,"upload"|"upload_raw") && !self.permitted {self.violations.push(format!("{name}: outside decoded image, declared fixture or typed crossing geometry upload"));}
+        if !matches!(name,"upload"|"upload_raw") || self.permitted {return;}
+        if self.excepted && self.used==0 {self.used=1;return;}
+        self.violations.push(format!("{name}: outside Texture::from_decoded(Decoded), fixture_upload(DeclaredFixture) or a listed exception"));
+
     }
 }
 impl<'ast> Visit<'ast> for Uploads {
@@ -47,12 +56,13 @@ impl<'ast> Visit<'ast> for Uploads {
     }
     fn visit_expr_method_call(&mut self,e:&'ast ExprMethodCall){self.upload(&e.method.to_string());visit::visit_expr_method_call(self,e);}
 }
-fn refuse(source:&str,bgl:bool)->Vec<String>{
+fn refuse(source:&str,bgl:bool)->Vec<String>{refuse_except(source,bgl,None)}
+fn refuse_except(source:&str,bgl:bool,exception:Option<&'static str>)->Vec<String>{
     fn aliases(tree:&UseTree,out:&mut HashSet<String>){match tree{
         UseTree::Path(p)=>aliases(&p.tree,out),UseTree::Group(g)=>for t in &g.items{aliases(t,out)},
         UseTree::Rename(r) if matches!(r.ident.to_string().as_str(),"upload"|"upload_raw")=>{out.insert(r.rename.to_string());},_=>{}
     }}
-    let ast=syn::parse_file(source).expect("owned Rust source must parse");let mut v=Uploads{bgl,..Uploads::default()};
+    let ast=syn::parse_file(source).expect("owned Rust source must parse");let mut v=Uploads{bgl,exception,..Uploads::default()};
     struct Imports<'a>(&'a mut HashSet<String>);impl<'ast> Visit<'ast> for Imports<'_>{fn visit_item_use(&mut self,u:&'ast syn::ItemUse){aliases(&u.tree,self.0);}}
     Imports(&mut v.aliases).visit_file(&ast);v.visit_file(&ast);v.violations
 }
@@ -69,6 +79,10 @@ fn planted_raw_pixel_library_and_renamed_upload_are_refused(){
     assert!(!refuse("fn f() {raw::syscall3(416,0,0,0);}",false).is_empty());
     assert!(refuse("impl Texture {fn from_decoded(image: libimg::Decoded) {gpu::upload(image);}}",true).is_empty());
     assert!(!refuse("fn from_decoded(raw: &mut [u8]) {gpu::upload(raw);}",true).is_empty());
+    // A listed exception admits one upload, in its own function only.
+    assert!(refuse_except("impl Gpu {fn show(&mut self) {gpu::upload(f);}}",false,Some("show")).is_empty());
+    assert!(!refuse_except("impl Gpu {fn show(&mut self) {gpu::upload(f);gpu::upload(g);}}",false,Some("show")).is_empty());
+    assert!(!refuse_except("fn present() {gpu::upload(f);}",false,Some("show")).is_empty());
 }
 /// Production reference dependencies and their local crate names. Installed programs
 /// share a manifest with the suites, so their source inspection uses these names too.
@@ -136,6 +150,16 @@ fn production_dependencies_and_upload_sites_are_gpu_only(){
             if relative.contains("_test") || relative.ends_with("/gpu_exec_probe.rs") || relative.ends_with("/gpu_fault_acceptance.rs"){continue;}
             for reason in refuse(&source,krate=="libs/bgl") {bad.push(format!("{relative}: {reason}"));}
         }
+    }
+    // libbreenix's suite runner, its stage included, calls BGL's upload only at a listed
+    // exception; gpu.rs and its gpu/ module are the system call wrapper that defines upload
+    // and audits it.
+    let mut paths=Vec::new();files(&root.join("libs/libbreenix/src"),&mut paths);
+    for path in paths {
+        let relative=path.strip_prefix(root).unwrap().to_string_lossy().into_owned();
+        if relative=="libs/libbreenix/src/gpu.rs" || relative.starts_with("libs/libbreenix/src/gpu/") {continue;}
+        let exception=EXCEPTIONS.iter().find(|(file,_,_)|*file==relative).map(|(_,function,_)|*function);
+        for reason in refuse_except(&fs::read_to_string(&path).unwrap(),false,exception) {bad.push(format!("{relative}: {reason}"));}
     }
     assert!(bad.is_empty(),"gpu-raster enforcement; gpu-apps/gpu-display consumers still require migration:\n{}",bad.join("\n"));
 }

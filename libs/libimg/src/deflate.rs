@@ -1,4 +1,5 @@
 //! Clean-room RFC 1951 §3.2.4 stored-block writer and RFC 1950 §2 wrapper.
+use alloc::vec::Vec;
 use crate::{inflate::adler32, work};
 pub fn deflate(input: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(input.len() + input.len().div_ceil(65535) * 5 + 5);
