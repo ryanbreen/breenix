@@ -1487,6 +1487,10 @@ pub fn frame_census() -> Result<alloc::string::String, i32> {
     #[cfg(target_arch = "x86_64")]
     {
         let _ = writeln!(text, "terminated_unreclaimed {}", crate::task::scheduler::diag_terminated_unreclaimed());
+        let pool = crate::memory::kernel_stack::kernel_stack_pool_counters();
+        let _ = writeln!(text, "kstack_pool allocated={} freed={} frames_mapped={} frames_released={} live_refusals={} drop_refused_live={}",
+            pool.slots_allocated, pool.slots_freed, pool.frames_mapped, pool.frames_released, pool.live_slot_refusals, pool.drop_refused_live);
+        crate::task::scheduler::diag_reclaim(&mut text);
         for cpu in 0..crate::task::scheduler::MAX_CPUS {
             if !crate::arch_impl::x86_64::smp::is_cpu_online(cpu) {
                 continue;

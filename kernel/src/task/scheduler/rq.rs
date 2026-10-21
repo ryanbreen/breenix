@@ -2392,6 +2392,23 @@ pub(super) fn spawn(thread: Box<Thread>, front: bool) -> Result<usize, Box<Threa
 /// creating threads faster than that ran out of thread slots (#1712).
 const RECLAIM_BATCH: usize = 16;
 
+/// Scratch diagnostic: reclaim skips by reason.
+pub static DIAG_SKIPS: [AtomicU64; 9] = [const { AtomicU64::new(0) }; 9];
+
+fn diag_skip(reason: usize) {
+    DIAG_SKIPS[reason].fetch_add(1, Ordering::Relaxed);
+}
+
+/// Scratch diagnostic: index entries that are live, as (tid, pid, flags, owner).
+pub fn diag_index(mut f: impl FnMut(u64, u64, u8, u32)) {
+    for slot in INDEX.iter() {
+        let key = slot.key.load(Ordering::Acquire);
+        if live_key(key) {
+            f(key - 1, slot.pid.load(Ordering::Acquire), slot.flags.load(Ordering::Acquire), slot.owner.load(Ordering::Acquire));
+        }
+    }
+}
+
 /// Free up to `RECLAIM_BATCH` terminated threads whose stacks a CPU can no
 /// longer be on: the scheduler-wide lock is held (`scheduler`), and only the
 /// run-queue lock of the CPU that owns each thread is taken, without waiting.
@@ -2430,33 +2447,48 @@ pub(super) fn reclaim(scheduler: &mut Scheduler) -> alloc::vec::Vec<Box<Thread>>
             .iter()
             .find(|grace| grace.thread_id == tid)
             .is_some_and(|grace| super::retirement_grace_elapsed(&grace.after_epoch));
-        if !elapsed || LEAVING_STACK.iter().any(|leaving| leaving.load(Ordering::Acquire) == tid) {
+        if !elapsed {
+            diag_skip(0);
+            continue;
+        }
+        if LEAVING_STACK.iter().any(|leaving| leaving.load(Ordering::Acquire) == tid) {
+            diag_skip(1);
             continue;
         }
         let Some(owner) = owner(tid) else {
+            diag_skip(2);
             continue;
         };
         let held = if owner == me { local() } else { try_remote(owner) };
         let Some(mut held) = held else {
+            diag_skip(3);
             continue;
         };
         if self::owner(tid) != Some(owner)
             || held.state().current_thread == Some(tid)
             || held.state().idle_thread == tid
         {
+            diag_skip(4);
             continue;
         }
         let Some(thread) = held.thread(tid) else {
+            diag_skip(5);
             continue;
         };
         let stack_live = thread
             .kernel_stack_top
             .is_some_and(|top| crate::memory::kernel_stack::is_kernel_stack_slot_live(top.as_u64()));
-        if thread.state != ThreadState::Terminated || stack_live {
+        if thread.state != ThreadState::Terminated {
+            diag_skip(6);
+            continue;
+        }
+        if stack_live {
+            diag_skip(7);
             continue;
         }
         let address = thread as *const Thread;
         let Some(at) = scheduler.threads.iter().position(|boxed| core::ptr::eq(&**boxed, address)) else {
+            diag_skip(8);
             continue;
         };
         held.remove_from_ready_queue(tid);
