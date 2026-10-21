@@ -771,6 +771,8 @@ layout!(Capture, 56, id @ 0, dst @ 8, dst_len @ 16, tree_dst @ 24, tree_len @ 32
     height @ 52);
 layout!(MapTree, 24, id @ 0, addr @ 8, len @ 16);
 layout!(Claim, 16, flags @ 0, reserved @ 4, epoch @ 8);
+layout!(SceneSnapshot, 96, context @ 0, windows @ 8, window_capacity @ 16, window_count @ 20, damage @ 24, damage_capacity @ 32, damage_count @ 36, snapshot @ 40, width @ 48, height @ 52, scale @ 56, flags @ 60, cursor @ 64, claim_epoch @ 80, owner_sequence @ 88);
+layout!(SceneWindow, 80, id @ 0, sample @ 8, commit_id @ 16, pixel_gen @ 24, render_fence @ 32, target_generation @ 40, x @ 48, y @ 52, width @ 56, height @ 60, z @ 64, stride @ 68, format @ 72, reserved @ 76);
 layout!(Composite, 112, snapshot @ 0, target @ 8, stream @ 16, length @ 24, flags @ 32, reserved @ 36, serial @ 40, pixels @ 48, render_fence @ 56, present_fence @ 64, estimate @ 72, error_index @ 80, error @ 84, reason @ 88, fence_status @ 92, answer @ 96, phase @ 100, scene_target @ 104);
 layout!(RecordQuery, 24, serial @ 0, ptr @ 8, len @ 16, reserved @ 20);
 layout!(Readback, 48, dst @ 0, dst_len @ 8, record @ 16, record_len @ 24, reserved @ 28, serial @ 32, reason @ 40, reserved2 @ 44);
