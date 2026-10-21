@@ -482,12 +482,12 @@ class Services:
     operator, defined under /run/breenix/services.d by root on the console and removed afterwards."""
 
     REQUIRED = ['bsshd', 'blogd', 'ntp'] + ['getty-tty' + str(n) for n in range(2, 7)] + ['getty-console']
-    FIXTURES = ['svc-suite-fail', 'svc-suite-sleep', 'svc-suite-stubborn']
+    FIXTURES = ['svc-suite-fail', 'svc-suite-sleep', 'svc-suite-stubborn', 'svc-suite-missing', 'svc-suite-noexec', 'svc-suite-nobody']
 
     def __init__(self, probe, console, capture):
         self.probe, self.console, self.capture = probe, console, capture
         self.fixtures = None
-        self.fixture_file = '/home/' + probe.user + '/.svc-suite-services'
+        self.fixture_file = '/run/breenix/services.d/svc-suite'
 
     def state(self):
         result = self.probe.ssh('cat /run/breenix/services')
@@ -521,15 +521,21 @@ class Services:
         try:
             user = self.probe.user
             table = ('[svc-suite-fail]\ncommand = /bin/false\nuser = ' + user + '\nrestart = on-failure\n\n'
-                     '[svc-suite-sleep]\ncommand = /bin/sleep 3600\nuser = ' + user + '\n\n'
+                     '[svc-suite-sleep]\ncommand = /bin/sh -c \'/sbin/init service-io-check && exec /bin/sleep 3600\'\nuser = ' + user + '\n\n'
                      '[svc-suite-stubborn]\ncommand = /bin/sh -c \'trap "" TERM; exec /bin/sleep 3600\'\nuser = ' + user
-                     + '\nstop-timeout = 2\n')
-            self.probe.require(self.probe.ssh('umask 022; printf %s ' + shlex.quote(table) + ' > ' + self.fixture_file))
+                     + '\nstop-timeout = 2\n'
+                     '[svc-suite-missing]\ncommand = /nonexistent-svc-suite\nuser = ' + user + '\n\n'
+                     '[svc-suite-noexec]\ncommand = /etc/passwd\nuser = ' + user + '\n\n'
+                     '[svc-suite-nobody]\ncommand = /bin/true\nuser = svc-suite-absent\n')
             self.start = self.console.size()
-            self.console.run('cp ' + self.fixture_file + ' /run/breenix/services.d/svc-suite')
+            # The root console writes literal data directly into its protected directory.
+            # No file or directory controlled by the service account is trusted.
+            literal = table.replace('\\', '\\\\').replace('\n', r'\n')
+            script = 'umask 022; printf %b ' + shlex.quote(literal) + ' > ' + self.fixture_file
+            self.console.run('sh -c ' + shlex.quote(script))
             text = self.console.run('svc reload')
-            if 'svc: reloaded' not in text or '3 added' not in text:
-                raise ValueError('svc reload did not add the three temporary services')
+            if 'svc: reloaded' not in text or '6 added' not in text:
+                raise ValueError('svc reload did not add the six temporary services')
             self.fixtures = True
         except ValueError as error:
             self.fixtures = 'temporary services were not loaded: ' + str(error)
@@ -544,7 +550,6 @@ class Services:
         while any(name in self.state()[1] for name in self.FIXTURES):
             if time.monotonic() >= deadline: raise ValueError('temporary services remain after removal')
             time.sleep(1)
-        self.probe.require(self.probe.ssh('rm -f ' + self.fixture_file))
 
     def run_case(self, name):
         getattr(self, 'case_' + name.replace('-', '_'))()
@@ -596,12 +601,19 @@ class Services:
         sent = time.monotonic()
         # Count from the typed kill, and only once init has seen the old listener die.
         self.console.wait(offset, r'\[init\] bsshd killed by signal 9', 'bsshd dying', RESTART_WINDOW_S)
+        deadline = sent + RESTART_WINDOW_S
         while True:
-            result = self.probe.ssh('id -u', timeout=15)
-            if result.returncode == 0 and result.stdout.strip() == '1000': break
-            if time.monotonic() - sent > RESTART_WINDOW_S:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise ValueError('no strict-host-key reconnect within ' + str(RESTART_WINDOW_S) + ' s of the kill')
-            time.sleep(0.25)
+            try:
+                result = self.probe.ssh('id -u', timeout=remaining)
+            except subprocess.TimeoutExpired:
+                raise ValueError('no strict-host-key reconnect within ' + str(RESTART_WINDOW_S) + ' s of the kill')
+            if time.monotonic() > deadline:
+                raise ValueError('no strict-host-key reconnect within ' + str(RESTART_WINDOW_S) + ' s of the kill')
+            if result.returncode == 0 and result.stdout.strip() == '1000': break
+            time.sleep(min(0.25, max(0, deadline - time.monotonic())))
         self.probe.transcript.append(dict(reconnectSeconds=round(time.monotonic() - sent, 3)))
         _, services = self.state()
         after = services['bsshd']
@@ -675,6 +687,12 @@ class Services:
         if not re.search(r'^Uid:\t1000\t1000\t1000\t1000$', status.stdout, re.M) or \
                 not re.search(r'^Gid:\t1000\t1000\t1000\t1000$', status.stdout, re.M):
             raise ValueError('the temporary service does not run as the operator account')
+        if 'service-io-ok' not in self.console.run('cat /run/breenix/svc-suite-sleep.log'):
+            raise ValueError('a service retained console input on a standard descriptor')
+        for name in ('svc-suite-missing', 'svc-suite-noexec', 'svc-suite-nobody'):
+            result = self.probe.ssh('svc start ' + name)
+            if result.returncode != 1 or 'did not start' not in result.stdout + result.stderr:
+                raise ValueError(name + ' reported success without executing')
         bsshd = services['bsshd']['pid']
         for request in ('svc stop bsshd', 'svc reload'):
             result = self.probe.ssh(request)

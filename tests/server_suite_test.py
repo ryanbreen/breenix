@@ -9,6 +9,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 host = runpy.run_path(str(ROOT / 'scripts/metal/server-suite'))
@@ -120,6 +122,45 @@ class HostServerScore(unittest.TestCase):
         failed = copy.deepcopy(records)
         failed['cases'][3]['result'] = 'FAIL'
         with self.assertRaises(ValueError): score(failed)
+
+    def test_fixtures_are_written_as_console_literals(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            target = Path(scratch) / 'services'
+            commands = []
+            def console_run(command):
+                commands.append(command)
+                self.assertNotIn('\n', command)
+                if command == 'svc reload': return 'svc: reloaded 6 added'
+                subprocess.run(['/bin/sh', '-c', command], check=True)
+                return ''
+            probe = SimpleNamespace(user='service-user')
+            console = SimpleNamespace(size=lambda: 0, run=console_run)
+            services = host['Services'](probe, console, None)
+            services.fixture_file = str(target)
+            services.ensure_fixtures()
+            table = target.read_text()
+            self.assertEqual(table.count('user = service-user\n'), 5)
+            self.assertIn('trap "" TERM; exec /bin/sleep 3600', table)
+            self.assertIn('user = svc-suite-absent\n', table)
+            self.assertEqual(len(commands), 2)
+
+    def test_reconnect_rejects_success_after_deadline(self):
+        services = object.__new__(host['Services'])
+        services.state = lambda: ({}, {'bsshd': {'pid': 42}})
+        services.console = SimpleNamespace(size=lambda: 0, login=lambda: None,
+                                          type_line=lambda line: None, wait=lambda *args: None)
+        clock = [0.0]
+        timeouts = []
+        def ssh(script, timeout):
+            timeouts.append(timeout)
+            clock[0] = 11.0
+            return SimpleNamespace(returncode=0, stdout='1000\n')
+        services.probe = SimpleNamespace(ssh=ssh, transcript=[])
+        with patch.object(host['time'], 'monotonic', side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(ValueError, 'within 10 s'):
+                services.case_kill_restart()
+        self.assertEqual(timeouts, [10.0])
+        self.assertEqual(services.probe.transcript, [])
 
     def test_missing_category_and_manifest_drift_block_acceptance(self):
         self.manifest['categories'][0]['cases'] = []
