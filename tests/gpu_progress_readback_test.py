@@ -168,7 +168,7 @@ fn progress_dma_allows_later_gpu_writers_but_cpu_reads_exclude_them() {
     assert!({WRITE_BLOCKED}, "an ordinary CPU read still excludes GPU context {id}");
 }
 #[test]
-fn drain_uses_the_contexts_private_one_pixel_target() {
+fn drain_reads_the_drawn_target_and_other_contexts_pass_it() {
     let mut c = Core::new();
     c.contexts.get_mut(&3).unwrap().scratch = 9;
     c.resources.insert(9,Resource { kind: kind::TARGET, writers: 0, accepted: vec![],
@@ -176,11 +176,14 @@ fn drain_uses_the_contexts_private_one_pixel_target() {
         backing: (), pitch: 256, epoch: 1, holds: 1 });
     c.progress_readback();
     let Request::Virgl(read) = &c.backlog[0].1;
-    assert_eq!((read.ctx,read.id), (3,c.contexts[&3].scratch), "the drain must not download the drawn target");
-    assert_eq!(c.resources[&9].holds, 2);
-    assert!(c.resources[&9].reading);
-    assert_eq!(c.resources[&7].holds, 1);
-    assert!(!c.resources[&7].reading, "the source target remains available to GPU writers");
+    assert_eq!((read.ctx,read.id), (3,7), "the drain must download the target the pending submission draws");
+    assert_ne!(read.id, c.contexts[&3].scratch, "a private scratch target is not behind the pending writes");
+    assert_eq!((c.resources[&7].holds, c.resources[&9].holds), (2,1));
+    assert!(c.resources[&7].reading && !c.resources[&9].reading);
+    assert_eq!(c.resources[&7].progress_context, Some(3));
+    let written = [7];
+    let id = 4;
+    assert!(!({WRITE_BLOCKED}), "context {id}'s submission passes a progress transfer it does not own");
 }
 '''
         methods = "\n".join(method(name) for name in
