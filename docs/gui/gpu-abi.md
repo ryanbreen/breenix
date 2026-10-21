@@ -172,10 +172,11 @@ private copies (the stream copy, the buffer snapshot and the translated device c
 vertex storage it creates are charged to the process's 192 MiB GPU memory quota and `RLIMIT_AS` while they
 are held; `COUNTERS.copy_bytes` reports them. The stream copy and the snapshot are released when the
 call returns; the chunks are released when the device has returned the submission's requests or a
-confirmed reset has ended them. VirGL vertex storage is retained by the context until replacement or
-destruction, with submission holds through completion; SVGA vertex storage is per submission.
-VirGL arenas use page-rounded requested capacity, with a 64 KiB minimum, rather than multiplying
-capacity by the in-flight limit. A charge that cannot be made returns ENOMEM with error code 22 at index 0
+confirmed reset has ended them. A VirGL context keeps a reusable vertex arena for submissions of at
+most 4 MiB of vertices: room for four of them in flight, a power of two between 64 KiB and 4 MiB,
+retained until replacement or destruction, with submission holds through completion. A larger
+VirGL submission, or one its arena has no free range for, gets exact page-rounded vertex storage of
+its own, released when that submission retires. SVGA vertex storage is per submission. A charge that cannot be made returns ENOMEM with error code 22 at index 0
 before anything is sent. A context that is not
 live (quarantined or reset) returns EIO. With four submissions in flight the call waits for one to
 complete; a signal ends that wait with EINTR, and a kill within 250 ms. A warming context accepts
