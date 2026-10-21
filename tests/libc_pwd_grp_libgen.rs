@@ -6,6 +6,10 @@
 //! read, close, lstat, readlink, getcwd, setgroups and the allocator) are served by a
 //! small in-memory filesystem, and errno is per thread, as in the library.
 
+extern crate self as libbreenix;
+#[path = "../libs/libbreenix/src/accounts/parse.rs"]
+pub mod account_parse;
+pub mod accounts { pub use crate::account_parse as parse; }
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};

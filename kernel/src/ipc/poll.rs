@@ -147,6 +147,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
             // Device files have different poll behavior based on type
             use crate::fs::devfs::DeviceType;
             match device_type {
+                DeviceType::Kmsg => { revents |= events & events::POLLOUT; }
                 DeviceType::Rtc => {} // Only RTC_RD_TIME is implemented.
                 DeviceType::Ptmx => {} // Never an open descriptor: open gives a master.
                 DeviceType::Null => {

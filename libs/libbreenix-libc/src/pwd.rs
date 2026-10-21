@@ -92,34 +92,6 @@ impl Database {
     }
 }
 
-/// The `:`-separated fields of a line, exactly `N` of them or None.
-pub(crate) fn fields<const N: usize>(line: &[u8]) -> Option<[&[u8]; N]> {
-    let mut out: [&[u8]; N] = [&[]; N];
-    let mut parts = line.split(|&b| b == b':');
-    for slot in out.iter_mut() {
-        *slot = parts.next()?;
-    }
-    if parts.next().is_some() {
-        return None;
-    }
-    Some(out)
-}
-
-/// A decimal ID of at most 32 bits.
-pub(crate) fn parse_id(text: &[u8]) -> Option<u32> {
-    if text.is_empty() || text.len() > 10 {
-        return None;
-    }
-    let mut value: u64 = 0;
-    for &b in text {
-        if !b.is_ascii_digit() {
-            return None;
-        }
-        value = value * 10 + (b - b'0') as u64;
-    }
-    u32::try_from(value).ok()
-}
-
 /// Copies strings and pointer arrays into a caller's buffer.
 pub(crate) struct Packer {
     buf: *mut u8,
@@ -194,8 +166,8 @@ unsafe fn fill(f: &[&[u8]; 7], uid: u32, gid: u32, pwd: *mut Passwd, buf: *mut u
 
 /// The fields and IDs of a well-formed line.
 fn parse(line: &[u8]) -> Option<([&[u8]; 7], u32, u32)> {
-    let f = fields::<7>(line)?;
-    Some((f, parse_id(f[2])?, parse_id(f[3])?))
+    let p = libbreenix::accounts::parse::Passwd::parse(line)?;
+    Some((p.fields, p.uid, p.gid))
 }
 
 /// Search /etc/passwd for the first entry `want` accepts.

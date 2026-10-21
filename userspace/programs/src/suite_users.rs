@@ -101,6 +101,26 @@ static SUITE: Suite = suite(
         case("setuid-set", "Image set-ID files are limited to the design table", setuid_set),
         case("run-cleared", "Startup removes stale runtime and temporary state", run_cleared),
     ]),
+    category("accounts", "passwd, group and shadow files and the account tools", &[
+        case("useradd-entries", "useradd creates matching passwd, group and locked shadow entries", accounts_entries),
+        case("useradd-home-0700", "useradd -m copies the skeleton into a user-owned 0700 home", accounts_home),
+        case("useradd-duplicate-refused", "Duplicate names and IDs are refused without changing any database", accounts_duplicate),
+        case("useradd-options", "Explicit IDs, groups, shell and home are stored and non-root useradd is refused", accounts_options),
+        case("userdel-removes", "userdel removes account entries, memberships and an owned home", accounts_delete),
+        case("userdel-busy-refused", "userdel refuses a user with running processes", accounts_busy),
+        case("userdel-home-owner-refused", "userdel -r refuses a home owned by another identity", accounts_home_owner),
+        case("usermod-groups", "usermod replaces or appends supplementary groups and preserves other members", accounts_groups),
+        case("usermod-lock-expire", "usermod locks and unlocks a password, changes shell and sets account expiration", accounts_modify),
+        case("groupadd-groupdel", "Group tools allocate IDs, refuse duplicates and retain primary groups", accounts_group_tools),
+        case("lock-serializes", "Concurrent useradds wait for the password lock and retain both new accounts", accounts_serializes),
+        case("libc-lock-shared", "libc lckpwdf and the library contend on the same POSIX record lock", accounts_libc_lock),
+        case("interrupted-write-intact", "Exit at every write boundary leaves complete old or new files and publishes shadow before passwd", accounts_interrupted),
+        case("passwd-own", "passwd library verifies the old password and writes a fresh 100000-round hash for the caller", accounts_password),
+        case("passwd-other-refused", "passwd library refuses another account, a wrong old password and a short replacement", accounts_password_refused),
+        case("id-output", "id and groups resolve a newly created account through libc", accounts_id),
+        case("malformed-isolated", "A malformed account is disabled while a valid neighbour remains usable", accounts_malformed),
+        case("audit-log", "Account tools append a successful change to the protected authentication log", accounts_audit),
+    ]),
     category("su", "su: passwords, wheel, login environment and the auth log", &[
         case("setuid-set", "Exactly su, passwd and sudo are installed set-user-ID root", admin_setuid_set),
     ]),
@@ -1569,3 +1589,5 @@ fn umask_threads() -> CaseResult {
         want(now == 0o053, format!("after the second thread's umask the first sees {now:o}, expected 53"))
     })
 }
+
+include!("suite_users_accounts.rs");

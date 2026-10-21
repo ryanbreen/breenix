@@ -2,7 +2,7 @@
 //! `name:password:gid:member,member,...`. Malformed lines are skipped. The `_r`
 //! functions and the static-storage ones behave as in pwd.rs.
 
-use crate::pwd::{fields, parse_id, Database, Packer};
+use crate::pwd::{Database, Packer};
 use core::ptr::{addr_of_mut, null_mut};
 
 const ERANGE: i32 = 34;
@@ -22,8 +22,8 @@ impl Group {
 }
 
 fn parse(line: &[u8]) -> Option<([&[u8]; 4], u32)> {
-    let f = fields::<4>(line)?;
-    Some((f, parse_id(f[2])?))
+    let g = libbreenix::accounts::parse::Group::parse(line)?;
+    Some((g.fields, g.gid))
 }
 
 fn members(list: &[u8]) -> impl Iterator<Item = &[u8]> {
