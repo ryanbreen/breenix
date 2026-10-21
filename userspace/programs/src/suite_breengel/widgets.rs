@@ -1,3 +1,4 @@
+#[path="icon_pixels/hover_and_click_effects_settle_with_pointer_still_inside.rs"] mod pixel_settles_hover;
 #[path="icon_pixels/hover_reversal_is_continuous_and_all_effects_settle_after_exit.rs"] mod pixel_reversal_hover;
 #[path="icon_pixels/icon_pixels_are_identical_for_every_time_partition.rs"] mod pixel_step_invariance_icon;
 //! widgets, text-entry, icons and the `text/fontwatch-*` cases (contract sections 9 and
@@ -2043,6 +2044,8 @@ fn icons_step_invariance() -> CaseResult {
 }
 
 fn icons_settles() -> CaseResult {
+    pixel_settles_hover::run();
+
     for hovering in [false, true] {
         for (name, make) in catalogue() {
             let mut icon = make();

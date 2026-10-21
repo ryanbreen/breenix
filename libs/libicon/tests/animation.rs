@@ -47,41 +47,6 @@ fn spring_uses_fixed_millisecond_quanta() {
 }
 
 
-#[test]
-fn hover_and_click_effects_settle_with_pointer_still_inside() {
-    for clicked in [false, true] {
-        for mut icon in catalogue() {
-            let mut hover = IconMouse::none();
-            hover.hovering = true;
-            icon.update(251_000, hover);
-            if clicked {
-                let mut press = hover;
-                press.pressed = true;
-                press.just_clicked = true;
-                icon.update(1_000, press);
-                press.just_clicked = false;
-                icon.update(50_000, press);
-                let mut release = hover;
-                release.just_released = true;
-                icon.update(1_000, release);
-            }
-            icon.update(2_000_000, hover);
-            assert!(
-                icon.settled(),
-                "{} clicked={clicked} did not settle under hover",
-                icon.name()
-            );
-            let old = image(&*icon);
-            icon.update(100_000, hover);
-            assert_eq!(
-                old,
-                image(&*icon),
-                "{} clicked={clicked} kept animating after reporting settled",
-                icon.name()
-            );
-        }
-    }
-}
 
 #[test]
 fn search_shimmer_restarts_on_each_hover() {
