@@ -9,6 +9,7 @@
 //! No path in this module writes to the serial log or any other kernel output (section 17.5).
 
 pub mod events;
+pub(crate) mod input_ring;
 pub mod mem;
 pub mod ops;
 pub mod present;
