@@ -588,6 +588,9 @@ pub fn boundary_notice(
         (1, 1, 1) => Ok("host copy and window outside guest view"),
         (2, 0, 2) => Ok("host scanning outside guest view"),
         (3 | 4, 0, 3) => Ok("host window outside guest view"),
+        // Record version 2 of a GPU backend's scanout (contract section 23.8): flags carry
+        // only the scanout bit and, for a composed scanout, the composite bit.
+        (4 | 5, 1 | 3, 4) => Ok("host renderer and window outside guest view"),
         _ => Err(StageError::Boundary),
     }
 }
