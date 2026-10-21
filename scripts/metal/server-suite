@@ -815,6 +815,14 @@ class Logs:
                         'grep -Fx "[stderr] stderr-marker" /var/log/logs-streams.log; '
                         '! grep -F stdout-marker /var/log/bsshd.log')
 
+        # A directory in place of the log deterministically makes sink creation fail.
+        self.root_check('mkdir /var/log/logs-unavailable.log')
+        try:
+            self.fixture('logs-unavailable', 'printf "unavailable-output\\n"')
+        finally:
+            self.root_check('rmdir /var/log/logs-unavailable.log')
+        self.root_check('sleep 1; grep -Fx "[log] lost lines=1 reason=write-error" /var/log/logs-unavailable.log')
+
     def case_rotation(self):
         # 600 complete 600-byte lines: the active file and .1 must both hold
         # this boot's header, with the first/last lines on opposite sides.
@@ -826,23 +834,42 @@ class Logs:
                         'test "$(wc -c < "$p")" -le 262144; '
                         'head -n 1 "$p" | grep -F ' + shlex.quote('boot=' + self.boot_id + ' source=logs-rotate ') + ' >/dev/null; done')
 
+        self.root_check('expected=$(i=0; while test "$i" -lt 600; do '
+                        'printf "[stdout] row-%04d %0590d\\n" "$i" 0; i=$((i+1)); done | sha256sum); '
+                        'actual=$( { tail -n +2 /var/log/logs-rotate.log.1; tail -n +2 /var/log/logs-rotate.log; } | sha256sum); '
+                        'test "$actual" = "$expected"')
+
     def case_loss(self):
         self.fixture('logs-loss', 'printf "%05000d\\nafter-loss\\n" 0')
         self.root_check('grep -Fx "[log] lost lines=1 stream=stdout reason=line-too-long" /var/log/logs-loss.log; '
                         'grep -Fx "[stdout] after-loss" /var/log/logs-loss.log')
 
     def case_kernel(self):
-        # A real collector stop lets the real ring overflow; no injected counter.
+        # A restart without an overrun must neither replay bytes nor invent loss.
+        marker = 'kernel-restart-' + self.boot_id
+        self.root_check('printf "%s\\n" ' + shlex.quote(marker) + ' > /dev/kmsg; sleep 1')
         self.console.run('svc stop blogd')
+        before = self.root_check('grep -c ring-overrun /var/log/kernel.log || true')
+        self.console.run('svc start blogd')
+        self.root_check('sleep 1; test "$(grep -c ' + shlex.quote(marker) + ' /var/log/kernel.log)" = 1')
+        after = self.root_check('grep -c ring-overrun /var/log/kernel.log || true')
+        count = lambda text: re.findall(r'^([0-9]+)\r?$', text, re.M)[-1]
+        if count(before) != count(after): raise ValueError('restart invented a ring overrun')
+        self.console.run('svc stop blogd')
+        cursor_text = self.root_check('head -n 1 /run/breenix/kmsg-' + self.boot_id)
+        cursor = int(count(cursor_text))
         try:
             self.root_check('i=0; while test "$i" -lt 400; do '
                             'printf "kernel-gap-%04d %090d\\n" "$i" 0 > /dev/kmsg; i=$((i+1)); done')
         finally:
             self.console.run('svc start blogd')
-        self.root_check('printf "kernel-live-marker\\n" > /dev/kmsg; sleep 1; '
+        text = self.root_check('printf "kernel-live-marker\\n" > /dev/kmsg; sleep 1; '
                         'grep -F "kernel-live-marker" /var/log/kernel.log >/dev/null; '
-                        'grep -E "lost lines=unknown bytes=[1-9][0-9]* reason=ring-overrun" /var/log/kernel.log >/dev/null; '
+                        'grep -E "lost lines=unknown bytes=[1-9][0-9]* reason=ring-overrun" /var/log/kernel.log; '
                         'head -n 1 /var/log/kernel.log | grep -F ' + shlex.quote('boot=' + self.boot_id + ' source=kernel ') + ' >/dev/null')
+        gaps = re.findall(r'lost lines=unknown bytes=(\d+) reason=ring-overrun from=(\d+) to=(\d+)\r?$', text, re.M)
+        if not any(int(start) == cursor and int(end) - int(start) == int(size) > 0 for size, start, end in gaps):
+            raise ValueError('no new byte-exact ring overrun from the saved restart cursor')
 
     def case_persistent(self):
         if not self.previous: raise ValueError('--previous-boot preparation required')
