@@ -380,7 +380,7 @@ struct Res {
     lost: bool,
     reading: bool,
     /// The kernel screen's context this resource is attached to for observing it as a
-    /// retained binding (`screen::observation_context`), 0 for none.
+    /// retained binding (`screen::observation_context`), or 0.
     observed_in: u32,
 }
 
@@ -1349,7 +1349,7 @@ impl Core {
     }
 
     /// Once no request reads resource `id`, clear its `reading` mark, end the console hold
-    /// an interrupted observation of it left, and free it if nothing else holds it.
+    /// an interrupted observation of it left, and free it when it is otherwise unused.
     fn end_reading(&mut self, id: u32) {
         if self.syncs.values().any(|s| s.reading.contains(&id)) {
             return;
@@ -4301,8 +4301,8 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         Ok(Err(reason)) => return refuse(reason, 0),
         Err(_) => return Err(Refused::Errno(EINTR)),
     };
-    // The target is ours to poison and read until every transfer into it has ended; a
-    // transfer whose waiter left keeps the mark until the device returns it, and with it the
+    // The target is ours to poison and read until its transfers have ended; a transfer
+    // whose waiter left keeps the mark until the device returns it, and with it the
     // console's hold, since the device may still write the backing the console draws in.
     let release = || {
         with_core(|c| {
