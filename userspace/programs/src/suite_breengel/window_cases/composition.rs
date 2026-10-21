@@ -550,14 +550,32 @@ fn composition_inflight_bound() -> CaseResult {
     let w = W::new(p.w, p.h, 2)?;
     show(&mut k, &w, &p)?;
     w.frame(19).cite("17.3")?;
-    let both = k.ask("composite2").cite("24")?;
+    // Two callers, each a thread with its own context and targets and no lock in common,
+    // compose at once. The first the kernel admits pauses there with the window's front
+    // pinned (point 16), so the other enters while it is in flight.
+    let fired = |point| libbreenix::test_control::fired(point).map_err(|e| format!("FIRED: {e}"));
+    let stalls = fired(abi::tc_point::COMPOSITE_STALL).cite("21")?;
+    libbreenix::test_control::arm(abi::tc_point::COMPOSITE_STALL, w.id(), 0).map_err(|e| format!("ARM composite-stall: {e}")).cite("21")?;
+    let both = k.ask("composite2");
+    let stalled = fired(abi::tc_point::COMPOSITE_STALL).cite("21");
+    let _ = libbreenix::test_control::disarm_all();
+    let (both, stalled) = (both.cite("24")?, stalled? - stalls);
+    ensure(stalled == 1, "21", format!("composite-stall fired {stalled} times during the two composites; the first admitted pauses once"))?;
+    // Each answer: serial, pixels, then the caller's trace: when its admitted COMPOSITE
+    // call began and returned, and how many times, first when, the kernel refused it EBUSY.
     let parts: Vec<Vec<u64>> = both.split(", ").map(|s| s.strip_prefix("ok ").unwrap_or("").split(' ').filter_map(|n| n.parse().ok()).collect()).collect();
-    ensure(parts.len() == 2 && parts.iter().all(|v| v.len() == 2), "18", format!(
+    ensure(parts.len() == 2 && parts.iter().all(|v| v.len() == 6), "18", format!(
         "two composites started at once answered `{both}`; each finishes, one after the other"))?;
     let (s1, s2) = (parts[0][0], parts[1][0]);
     ensure(s1.abs_diff(s2) == 1, "18", format!("two simultaneous composites have serials {s1} and {s2}; they run one at a time"))?;
-    // The window's generation was composed once: by whichever ran first.
     let (first, second) = if s1 < s2 { (&parts[0], &parts[1]) } else { (&parts[1], &parts[0]) };
+    // The overlap: the kernel refused the second caller while the first's composite was
+    // inside its admitted COMPOSITE call.
+    let (began, returned, refused, refused_at) = (first[2], first[3], second[4], second[5]);
+    ensure(refused > 0 && began <= refused_at && refused_at <= returned, "18", format!(
+        "composite {} was refused {refused} times, first at {refused_at} ns, while composite {} ran in the kernel from {began} to {returned} ns; \
+         the second caller enters while the first is in flight and is held off", second[0], first[0]))?;
+    // The window's generation was composed once: by whichever ran first.
     let (_, e1) = record(&mut k, first[0])?;
     let (_, e2) = record(&mut k, second[0])?;
     let p1 = e1.iter().find(|e| e.0 == w.id()).map_or(0, |e| e.3);
