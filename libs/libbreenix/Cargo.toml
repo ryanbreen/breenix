@@ -16,14 +16,15 @@ crate-type = ["rlib"]
 default = []
 std = []
 runtime = []
-# The effort-suite runner (src/suite.rs): needs std, and libgfx for its panel.
-suite = ["std", "dep:libgfx", "dep:libpixcheck"]
+# The effort-suite runner (src/suite.rs): needs std, and libgfx-ref for its CPU-drawn stage
+# until the display lane rebuilds it on the GPU (tests/breengel_gpu_only.rs lists it).
+suite = ["std", "dep:libgfx-ref", "dep:libpixcheck"]
 
 [dependencies]
 breengel-abi = { path = "../breengel-abi" }
-# A pure no_std library: gpu-abi's layouts and the window ABI always, libgfx only with the
-# suite feature.
-libgfx = { path = "../libgfx", optional = true }
+# A pure no_std library: gpu-abi's layouts and the window ABI unconditionally, libgfx-ref
+# only with the suite feature.
+libgfx-ref = { path = "../libgfx-ref", optional = true }
 libpixcheck = { path = "../libpixcheck", optional = true }
 # Syscall 416's layouts and the BGL command stream, shared with the kernel.
 gpu-abi = { path = "../gpu-abi" }

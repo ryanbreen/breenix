@@ -67,7 +67,7 @@ name = "qemu-bios"
 test = false
 
 [workspace]
-exclude = ["libs/libgfx", "libs/libfont", "libs/breenix-logo"]
+exclude = ["libs/libgfx", "libs/libgfx-pixel", "libs/libgfx-ref", "libs/libfont", "libs/breenix-logo"]
 members = [
     "kernel",
     "parallels-loader",

@@ -19,9 +19,9 @@ use libbreenix::io;
 use libbreenix::time;
 
 use libfont::{Font, CachedFont};
-use libgfx::bitmap_font;
-use libgfx::ttf_font;
-use libgfx::shapes;
+use libgfx_ref::bitmap_font;
+use libgfx_ref::ttf_font;
+use libgfx_ref::shapes;
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 

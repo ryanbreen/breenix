@@ -179,26 +179,26 @@ pub fn showcase_check(name: &str) -> CaseResult {
                     let scale=wall.scale;
                     let words: Vec<_> = e.line.split_whitespace().collect();
                     let colour = match words.get(4).copied() {
-                        Some("PASS") => libgfx::color::Color::rgb(26, 112, 77),
-                        Some("FAIL") => libgfx::color::Color::rgb(145, 50, 58),
-                        Some("SKIP") => libgfx::color::Color::rgb(57, 67, 80),
+                        Some("PASS") => libgfx_ref::color::Color::rgb(26, 112, 77),
+                        Some("FAIL") => libgfx_ref::color::Color::rgb(145, 50, 58),
+                        Some("SKIP") => libgfx_ref::color::Color::rgb(57, 67, 80),
                         _ => return Err("invalid stored CASE verdict".into()),
                     };
                     let mut expected = FrameBuf::new_filled(
                         38*scale,
                         24*scale,
                         Format::BGRX,
-                        libgfx::color::Color::rgb(12, 19, 31),
+                        libgfx_ref::color::Color::rgb(12, 19, 31),
                     )
                     .map_err(|e| e.to_string())?;
-                    libgfx::shapes::draw_rect(&mut expected, 0, 0, (38*scale) as i32, (24*scale) as i32, colour);
-                    libgfx::shapes::fill_rect(
+                    libgfx_ref::shapes::draw_rect(&mut expected, 0, 0, (38*scale) as i32, (24*scale) as i32, colour);
+                    libgfx_ref::shapes::fill_rect(
                         &mut expected,
                         (2*scale) as i32,
                         (2*scale) as i32,
                         (16*scale) as i32,
                         (12*scale) as i32,
-                        libgfx::color::Color::rgb(18, 29, 44),
+                        libgfx_ref::color::Color::rgb(18, 29, 44),
                     );
                     if let Some(p) = &e.picture {
                         for y in 0..p.height*scale {
@@ -207,7 +207,7 @@ pub fn showcase_check(name: &str) -> CaseResult {
                                 expected.put_pixel(
                                     x + 2*scale,
                                     y + 2*scale,
-                                    libgfx::color::Color::rgb(
+                                    libgfx_ref::color::Color::rgb(
                                         p.pixels[o + 2],
                                         p.pixels[o + 1],
                                         p.pixels[o],
@@ -216,17 +216,17 @@ pub fn showcase_check(name: &str) -> CaseResult {
                             }
                         }
                     }
-                    expected.push_clip(libgfx::framebuf::Rect::new((20*scale) as i32,(2*scale) as i32,(18*scale) as i32,(7*scale) as i32));
-                    libgfx::font::draw_text(
+                    expected.push_clip(libgfx_ref::framebuf::Rect::new((20*scale) as i32,(2*scale) as i32,(18*scale) as i32,(7*scale) as i32));
+                    libgfx_ref::font::draw_text(
                         &mut expected,
                         std::format!("{}", i + 1).as_bytes(),
                         20*scale,
                         2*scale,
-                        libgfx::color::Color::WHITE,
+                        libgfx_ref::color::Color::WHITE,
                         scale,
                     );
                     expected.pop_clip();
-                    libgfx::shapes::fill_rect(&mut expected, 1, (15*scale) as i32, (38*scale-2) as i32, (9*scale-1) as i32, colour);
+                    libgfx_ref::shapes::fill_rect(&mut expected, 1, (15*scale) as i32, (38*scale-2) as i32, (9*scale-1) as i32, colour);
                     let number = words
                         .iter()
                         .find_map(|w| w.strip_prefix("ms="))
@@ -235,13 +235,13 @@ pub fn showcase_check(name: &str) -> CaseResult {
                         .parse::<u64>()
                         .map_err(|_| "invalid CASE milliseconds")?;
                     let key = if n > 99999 { ">" } else { number };
-                    expected.push_clip(libgfx::framebuf::Rect::new((2*scale) as i32,(16*scale) as i32,(34*scale) as i32,(7*scale) as i32));
-                    libgfx::font::draw_text(
+                    expected.push_clip(libgfx_ref::framebuf::Rect::new((2*scale) as i32,(16*scale) as i32,(34*scale) as i32,(7*scale) as i32));
+                    libgfx_ref::font::draw_text(
                         &mut expected,
                         key.as_bytes(),
                         2*scale,
                         16*scale,
-                        libgfx::color::Color::WHITE,
+                        libgfx_ref::color::Color::WHITE,
                         scale,
                     );
                     expected.pop_clip();
@@ -265,15 +265,15 @@ pub fn showcase_check(name: &str) -> CaseResult {
                     1280,
                     800,
                     Format::BGRX,
-                    libgfx::color::Color::rgb(12, 19, 31),
+                    libgfx_ref::color::Color::rgb(12, 19, 31),
                 )
                 .map_err(|e| e.to_string())?;
-                libgfx::font::draw_text(
+                libgfx_ref::font::draw_text(
                     &mut expected,
                     notice.as_bytes(),
                     24,
                     776,
-                    libgfx::color::Color::rgb(161, 183, 204),
+                    libgfx_ref::color::Color::rgb(161, 183, 204),
                     1,
                 );
                 for y in 776..783 {
@@ -326,8 +326,8 @@ fn check_spotlight(s:&Show,bytes:&[u8])->Result<(),String> {
             let diff=if cross{[255,255,255,255]}else if d==0{[0,0,0,255]}else{[0,255-d,255,255]};
             if pixel(840+x,168+y)!=e || pixel(984+x,168+y)!=a || pixel(1128+x,168+y)!=diff{return Err("spotlight differs from judged actual, reference or heat map".into());}
         }}
-        let mut label=FrameBuf::new_filled(424,7,Format::BGRX,libgfx::color::Color::rgb(18,29,44)).map_err(|e|e.to_string())?;
-        libgfx::font::draw_text(&mut label,std::format!("{differing} pixels differ; bound {}",frame.bound).as_bytes(),0,0,libgfx::color::Color::WHITE,1);
+        let mut label=FrameBuf::new_filled(424,7,Format::BGRX,libgfx_ref::color::Color::rgb(18,29,44)).map_err(|e|e.to_string())?;
+        libgfx_ref::font::draw_text(&mut label,std::format!("{differing} pixels differ; bound {}",frame.bound).as_bytes(),0,0,libgfx_ref::color::Color::WHITE,1);
         for y in 0..7 {for x in 0..424 {let p=label.get_pixel(x,y);if pixel(840+x,312+y)!=[p.b,p.g,p.r,255]{return Err("spotlight bound differs".into());}}}
     }else{
         for y in 0..250 {for x in 0..400 {
@@ -370,11 +370,11 @@ fn words(fb: &mut FrameBuf, text: &str, x: usize, y: usize, width: usize, scale:
             if used == 0 { used = columns.min(tail.len()); line.push_str(&tail[..used]); }
             tail = tail[used..].trim_start();
         }
-        libgfx::font::draw_text(fb,line.as_bytes(),x,y+row*9*scale,libgfx::color::Color::WHITE,scale);
+        libgfx_ref::font::draw_text(fb,line.as_bytes(),x,y+row*9*scale,libgfx_ref::color::Color::WHITE,scale);
     }
 }
 fn inset(width: usize, height: usize) -> Result<FrameBuf, String> {
-    FrameBuf::new_filled(width,height,Format::BGRX,libgfx::color::Color::rgb(18,29,44)).map_err(|e|e.to_string())
+    FrameBuf::new_filled(width,height,Format::BGRX,libgfx_ref::color::Color::rgb(18,29,44)).map_err(|e|e.to_string())
 }
 fn check_input(bytes: &[u8], input: &super::super::suite::InputTrace, overlay: bool) -> Result<(), String> {
     let (top,height,scale) = if overlay {(432,184,1)} else {(184,416,2)};
@@ -385,24 +385,24 @@ fn check_input(bytes: &[u8], input: &super::super::suite::InputTrace, overlay: b
         (false,true)=>"INPUT / events",
         (false,false)=>"INPUT / pointer trail",
     };
-    libgfx::font::draw_text(&mut expected,heading.as_bytes(),0,0,libgfx::color::Color::WHITE,scale);
+    libgfx_ref::font::draw_text(&mut expected,heading.as_bytes(),0,0,libgfx_ref::color::Color::WHITE,scale);
     words(&mut expected,&input.hit,0,if overlay{16}else{32},400,scale);
     let points=&input.points;
     if points.is_empty() {
-        libgfx::font::draw_text(&mut expected,b"Events (no pointer)",0,if overlay{104}else{176},libgfx::color::Color::WHITE,2);
+        libgfx_ref::font::draw_text(&mut expected,b"Events (no pointer)",0,if overlay{104}else{176},libgfx_ref::color::Color::WHITE,2);
     } else {
         let (min_x,max_x)=(points.iter().map(|p|p.x as i64).min().unwrap(),points.iter().map(|p|p.x as i64).max().unwrap());
         let (min_y,max_y)=(points.iter().map(|p|p.y as i64).min().unwrap(),points.iter().map(|p|p.y as i64).max().unwrap());
         let map=|p:&stage::InputPoint|(16+(p.x as i64-min_x)*352/(max_x-min_x).max(1),(if overlay{84}else{152})+(p.y as i64-min_y)*(if overlay{80}else{192})/(max_y-min_y).max(1));
         for pair in points.windows(2) {
             let (x,y)=map(&pair[0]);let (xx,yy)=map(&pair[1]);
-            libgfx::shapes::draw_line(&mut expected,x as i32,y as i32,xx as i32,yy as i32,libgfx::color::Color::rgb(64,160,224));
+            libgfx_ref::shapes::draw_line(&mut expected,x as i32,y as i32,xx as i32,yy as i32,libgfx_ref::color::Color::rgb(64,160,224));
         }
         for point in points {
             let (x,y)=map(point);
-            libgfx::shapes::fill_rect(&mut expected,x as i32-2,y as i32-2,5,5,if point.pressed {libgfx::color::Color::rgb(26,112,77)}else{libgfx::color::Color::WHITE});
+            libgfx_ref::shapes::fill_rect(&mut expected,x as i32-2,y as i32-2,5,5,if point.pressed {libgfx_ref::color::Color::rgb(26,112,77)}else{libgfx_ref::color::Color::WHITE});
         }
-        if !overlay {libgfx::font::draw_text(&mut expected,b"green: pointer down / white: up",0,384,libgfx::color::Color::rgb(161,183,204),1);}
+        if !overlay {libgfx_ref::font::draw_text(&mut expected,b"green: pointer down / white: up",0,384,libgfx_ref::color::Color::rgb(161,183,204),1);}
     }
     compare_region(bytes,848,top,&expected)
 }
@@ -432,37 +432,37 @@ fn check_labels(s: &Show, bytes: &[u8]) -> Result<(), String> {
     let wall=stage::Wall::for_tiles(&ids).map_err(|e|std::format!("wall: {e:?}"))?;
     for (id,first,end) in &s.groups {
         let (x,y)=wall.origin(wall.slot(&ids,*first)-2);
-        let mut expected=FrameBuf::new_filled(78*wall.scale,24*wall.scale,Format::BGRX,libgfx::color::Color::rgb(24,39,59)).map_err(|e|e.to_string())?;
+        let mut expected=FrameBuf::new_filled(78*wall.scale,24*wall.scale,Format::BGRX,libgfx_ref::color::Color::rgb(24,39,59)).map_err(|e|e.to_string())?;
         let passed=s.entries[*first..*end].iter().filter(|e|e.stamp==Stamp::Pass).count();
-        expected.push_clip(libgfx::framebuf::Rect::new(2,2,(76*wall.scale) as i32,(7*wall.scale) as i32));
-        libgfx::font::draw_text(&mut expected,id.as_bytes(),2,2,libgfx::color::Color::WHITE,wall.scale);expected.pop_clip();
-        expected.push_clip(libgfx::framebuf::Rect::new(2,(14*wall.scale) as i32,(76*wall.scale) as i32,(7*wall.scale) as i32));
-        libgfx::font::draw_text(&mut expected,std::format!("{passed}/{} pass",end-first).as_bytes(),2,14*wall.scale,libgfx::color::Color::WHITE,wall.scale);expected.pop_clip();
+        expected.push_clip(libgfx_ref::framebuf::Rect::new(2,2,(76*wall.scale) as i32,(7*wall.scale) as i32));
+        libgfx_ref::font::draw_text(&mut expected,id.as_bytes(),2,2,libgfx_ref::color::Color::WHITE,wall.scale);expected.pop_clip();
+        expected.push_clip(libgfx_ref::framebuf::Rect::new(2,(14*wall.scale) as i32,(76*wall.scale) as i32,(7*wall.scale) as i32));
+        libgfx_ref::font::draw_text(&mut expected,std::format!("{passed}/{} pass",end-first).as_bytes(),2,14*wall.scale,libgfx_ref::color::Color::WHITE,wall.scale);expected.pop_clip();
         compare_region(bytes,x,y,&expected)?;
     }
     for (i,(id,first,end)) in s.groups.iter().enumerate() {
         let left=16+1248*i/s.groups.len();let right=16+1248*(i+1)/s.groups.len();
-        let colour=if s.entries[*first..*end].iter().all(|e|e.stamp==Stamp::Pass) {libgfx::color::Color::rgb(26,112,77)}else{libgfx::color::Color::rgb(48,67,96)};
+        let colour=if s.entries[*first..*end].iter().all(|e|e.stamp==Stamp::Pass) {libgfx_ref::color::Color::rgb(26,112,77)}else{libgfx_ref::color::Color::rgb(48,67,96)};
         let mut expected=FrameBuf::new_filled(right-left-2,24,Format::BGRX,colour).map_err(|e|e.to_string())?;
-        expected.push_clip(libgfx::framebuf::Rect::new(4,8,(right-left-6) as i32,7));
-        libgfx::font::draw_text(&mut expected,id.as_bytes(),4,8,libgfx::color::Color::WHITE,1);expected.pop_clip();
+        expected.push_clip(libgfx_ref::framebuf::Rect::new(4,8,(right-left-6) as i32,7));
+        libgfx_ref::font::draw_text(&mut expected,id.as_bytes(),4,8,libgfx_ref::color::Color::WHITE,1);expected.pop_clip();
         compare_region(bytes,left,728,&expected)?;
     }
     let entry=&s.entries[s.selected];
     let (label,colour)=match entry.stamp {
-        Stamp::Pass=>("PASS",libgfx::color::Color::rgb(26,112,77)),
-        Stamp::Fail=>("FAIL",libgfx::color::Color::rgb(145,50,58)),
-        Stamp::NotReached=>("NOT REACHED",libgfx::color::Color::rgb(57,67,80)),
+        Stamp::Pass=>("PASS",libgfx_ref::color::Color::rgb(26,112,77)),
+        Stamp::Fail=>("FAIL",libgfx_ref::color::Color::rgb(145,50,58)),
+        Stamp::NotReached=>("NOT REACHED",libgfx_ref::color::Color::rgb(57,67,80)),
         _=>return Err("label check needs a completed case".into()),
     };
     let mut expected=inset(400,21)?;
-    libgfx::font::draw_text(&mut expected,label.as_bytes(),0,0,colour,3);
+    libgfx_ref::font::draw_text(&mut expected,label.as_bytes(),0,0,colour,3);
     compare_region(bytes,848,640,&expected)?;
     let reached=std::fs::read_to_string("/proc/breenix/boot-ribbon").map_err(|e|e.to_string())?;
     let reached:Vec<_>=reached.lines().map(|l|l.starts_with("1|")).collect();
     for (i,lit) in reached.iter().enumerate() {
         let left=16+1248*i/reached.len();let right=16+1248*(i+1)/reached.len();
-        let expected=FrameBuf::new_filled(right-left-2,16,Format::BGRX,if *lit{libgfx::color::Color::rgb(26,112,77)}else{libgfx::color::Color::rgb(48,67,96)}).map_err(|e|e.to_string())?;
+        let expected=FrameBuf::new_filled(right-left-2,16,Format::BGRX,if *lit{libgfx_ref::color::Color::rgb(26,112,77)}else{libgfx_ref::color::Color::rgb(48,67,96)}).map_err(|e|e.to_string())?;
         compare_region(bytes,left,752,&expected)?;
     }
     Ok(())

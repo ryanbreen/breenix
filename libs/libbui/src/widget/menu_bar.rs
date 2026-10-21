@@ -1,9 +1,9 @@
 //! Windows-style menu bar widget with pull-down dropdown menus.
 
 use alloc::vec::Vec;
-use libgfx::color::Color;
-use libgfx::framebuf::FrameBuf;
-use libgfx::shapes;
+use libgfx_ref::color::Color;
+use libgfx_ref::framebuf::FrameBuf;
+use libgfx_ref::shapes;
 
 use crate::input::InputState;
 use crate::rect::Rect;

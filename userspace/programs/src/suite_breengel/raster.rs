@@ -3,8 +3,8 @@
 //! cases live in `widgets.rs`.
 
 use crate::*;
-use libgfx::framebuf::{Format, Rect};
-use libgfx::{alpha, blit, work};
+use libgfx_ref::framebuf::{Format, Rect};
+use libgfx_ref::{alpha, blit, work};
 
 pub(crate) const RASTER: &[Case] = &[
     pictured!("fill-rect", "fill_rect writes exactly the pixels of a half-open rectangle and no others", raster_fill_rect),
@@ -542,7 +542,7 @@ use libbreenix::gpu::{self, abi as ga};
         ensure(got==Err(-22),"3",format!("gpu-raster: target {width}x{height} format {format} returned {got:?}; Empty, TooLarge and Format are EINVAL"))?;
     }
     // Readback/conversion buffers retain their checked layout boundary (§3).
-    use libgfx::framebuf::SurfaceError;
+    use libgfx_ref::framebuf::SurfaceError;
     for (stride,want) in [(31,SurfaceError::StrideTooShort),(usize::MAX,SurfaceError::SizeOverflow)] {
         ensure(FrameBuf::validate_layout(8,4,stride,Format::BGRX)==Err(want),"3",
             format!("gpu-raster: conversion layout stride {stride} did not refuse {want:?}"))?;

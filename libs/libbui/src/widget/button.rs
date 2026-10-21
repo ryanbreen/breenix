@@ -1,4 +1,4 @@
-use libgfx::framebuf::FrameBuf;
+use libgfx_ref::framebuf::FrameBuf;
 
 use crate::input::{InputState, WidgetEvent};
 use crate::rect::Rect;

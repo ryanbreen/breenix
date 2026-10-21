@@ -953,7 +953,7 @@ fn widgets_label_clip() -> CaseResult {
     same_as(&g, PAPER, "35-pixel clipped label", "14.3", |fb| {
         let mut prefix=Vec::new();
         for c in b"ABCDEFGHIJKLM" {let mut next=prefix.clone();next.push(*c);next.extend_from_slice(b"...");if sans_width(&next)>35 {break;}prefix.push(*c);}
-        prefix.extend_from_slice(b"...");fb.push_clip(libgfx::framebuf::Rect::new(10,8,35,16));
+        prefix.extend_from_slice(b"...");fb.push_clip(libgfx_ref::framebuf::Rect::new(10,8,35,16));
         sans_draw(fb,&prefix,10,8,theme.text_primary);fb.pop_clip();
     })?;
     let mut narrow = Guarded::bgrx(80, 40);
@@ -978,7 +978,7 @@ fn widgets_label_clip() -> CaseResult {
     )?;
     // R3 uses the certified glyph pixels and clips the final dot at the physical bounds.
     same_as(&narrow, PAPER, "12x16 DejaVu ellipsis", "14.3", |fb| {
-        fb.push_clip(libgfx::framebuf::Rect::new(10,8,12,16));
+        fb.push_clip(libgfx_ref::framebuf::Rect::new(10,8,12,16));
         sans_draw(fb,b"...",10,8,theme.text_primary);fb.pop_clip();
     })?;
     narrow.reset(PAPER);

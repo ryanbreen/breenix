@@ -1,5 +1,5 @@
 //! Contract §16 independent time schedules and literal easing values.
-use libgfx::framebuf::FrameBuf;
+use libgfx_ref::framebuf::FrameBuf;
 use libicon::icon::{Icon, IconMouse};
 use libicon::icons::{arrow::ArrowIcon, home::HomeIcon, save::SaveIcon, search::SearchIcon};
 use libicon::physics::Spring;
@@ -145,7 +145,7 @@ fn a_subpixel_particle_box_never_panics_or_draws_outside_it() {
     use libicon::particles::{Particle, ParticlePool};
     let mut p = ParticlePool::with_bounds(1, 0.0, 0.0, 0.25, 0.5);
     p.emit(Particle { x: 0.0, y: 0.0, vx: 2.0, vy: 2.0, life: 1.0,
-        max_life: 1.0, size: 2.0, color: libgfx::color::Color::WHITE,
+        max_life: 1.0, size: 2.0, color: libgfx_ref::color::Color::WHITE,
         gravity: 1.0, friction: 0.0 });
     p.update(0.001);
     assert_eq!(p.active_count(), 0, "no whole pixel fits in this box");
@@ -161,7 +161,7 @@ fn huge_elapsed_time_skips_only_exact_fixed_points_and_dead_particles() {
     use libicon::particles::{Particle, ParticlePool};
     let mut pool = ParticlePool::new(1);
     pool.emit(Particle { x: 0.0, y: 0.0, vx: 2.0, vy: 2.0, life: 1.0,
-        max_life: 1.0, size: 2.0, color: libgfx::color::Color::WHITE,
+        max_life: 1.0, size: 2.0, color: libgfx_ref::color::Color::WHITE,
         gravity: 1.0, friction: 0.0 });
     pool.update(f32::MAX);
     assert_eq!(pool.active_count(), 0);
@@ -172,7 +172,7 @@ fn particles_expire_at_their_lifetime_boundary() {
     use libicon::particles::{Particle, ParticlePool};
     let mut pool = ParticlePool::new(1);
     pool.emit(Particle { x: 0.0, y: 0.0, vx: 2.0, vy: 2.0, life: 1.0,
-        max_life: 1.0, size: 2.0, color: libgfx::color::Color::WHITE,
+        max_life: 1.0, size: 2.0, color: libgfx_ref::color::Color::WHITE,
         gravity: 1.0, friction: 0.0 });
     for _ in 0..999 { pool.update(0.001); }
     assert_eq!(pool.active_count(), 1);
@@ -192,7 +192,7 @@ fn undamped_spring_skips_exact_cycles_for_large_advances() {
 #[test]
 fn particles_at_fractional_negative_edges_remain_visible_inside_the_box() {
     use libicon::particles::{Particle, ParticlePool};
-    use libgfx::{color::Color, framebuf::Format};
+    use libgfx_ref::{color::Color, framebuf::Format};
     for edge in [0.0, -0.25, -3.0] {
         let mut pool = ParticlePool::with_bounds(1, edge - 4.0, edge - 4.0, edge, edge);
         pool.emit(Particle { x: edge, y: edge, vx: 0.0, vy: 0.0, life: 1.0,

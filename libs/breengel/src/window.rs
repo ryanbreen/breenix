@@ -11,7 +11,7 @@ use libbreenix::errno::Errno;
 use libbreenix::error::Error;
 use libbreenix::window::{self, abi};
 use libfont::CachedFont;
-use libgfx::framebuf::{Format, FrameBuf};
+use libgfx_ref::framebuf::{Format, FrameBuf};
 
 use crate::event::{Delivered, Event};
 use crate::font::FontWatcher;

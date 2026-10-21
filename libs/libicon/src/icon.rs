@@ -1,9 +1,9 @@
 //! Core icon trait and shared state machine.
 
-use libgfx::framebuf::FrameBuf;
+use libgfx_ref::framebuf::FrameBuf;
 
 // Re-export Color so icon implementations don't need to import libgfx directly.
-pub use libgfx::color::Color as IconColor;
+pub use libgfx_ref::color::Color as IconColor;
 
 /// Mouse state relative to an icon, supplied by the UI framework each frame.
 #[derive(Clone, Copy, Debug)]

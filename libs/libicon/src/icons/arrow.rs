@@ -1,8 +1,8 @@
 //! Arrow icon — animated forward/back arrow with motion-blur trail on click.
 
-use libgfx::color::Color;
-use libgfx::framebuf::FrameBuf;
-use libgfx::shapes;
+use libgfx_ref::color::Color;
+use libgfx_ref::framebuf::FrameBuf;
+use libgfx_ref::shapes;
 
 use crate::easing::sin_approx;
 use crate::icon::{Icon, IconBase, IconMouse, IconState};

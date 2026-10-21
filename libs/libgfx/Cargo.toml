@@ -2,7 +2,7 @@
 name = "libgfx"
 version = "0.1.0"
 edition = "2021"
-description = "Breenix userspace graphics library — drawing primitives, fonts, and framebuffer management"
+description = "Breenix userspace graphics library: BreenGL drawing through BGL on the GPU core"
 
 [workspace]
 
@@ -10,5 +10,4 @@ description = "Breenix userspace graphics library — drawing primitives, fonts,
 crate-type = ["rlib"]
 
 [dependencies]
-noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "size_32", "regular", "unicode-basic-latin", "unicode-specials"] }
-libfont = { path = "../libfont" }
+libgfx-pixel = { path = "../libgfx-pixel" }

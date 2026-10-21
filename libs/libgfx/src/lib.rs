@@ -1,21 +1,7 @@
-//! Breenix Userspace Graphics Library
-//!
-//! Pure drawing library operating on raw pixel buffers. No syscall dependencies —
-//! callers provide the framebuffer memory and handle flushing themselves.
+//! BreenGL's drawing library (docs/gui/breengel.md). Its CPU raster moved to `libgfx-ref`.
 
 #![no_std]
 
-extern crate alloc;
+pub use libgfx_pixel::{alpha, color};
 
-pub mod alpha;
-pub mod bitmap_font;
-pub mod blit;
-pub mod color;
-pub mod diagnostics;
-pub mod font;
-pub mod framebuf;
-pub mod math;
-pub mod shapes;
-pub mod stage;
-pub mod ttf_font;
 pub mod work;

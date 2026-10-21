@@ -13,9 +13,9 @@ mod sha256;
 use std::path::{Path, PathBuf};
 
 use libfont::{CachedFont, Font};
-use libgfx::color::Color;
-use libgfx::framebuf::{Format, FrameBuf};
-use libgfx::ttf_font;
+use libgfx_ref::color::Color;
+use libgfx_ref::framebuf::{Format, FrameBuf};
+use libgfx_ref::ttf_font;
 
 const WHITE: Color = Color::rgb(255, 255, 255);
 
@@ -107,7 +107,7 @@ fn icons_assets() -> FrameBuf {
     fb
 }
 
-fn draw_icon_reference(fb: &mut libgfx::framebuf::FrameBuf) {
+fn draw_icon_reference(fb: &mut libgfx_ref::framebuf::FrameBuf) {
     use std::boxed::Box;
     use libicon::icon::{Icon, IconMouse};
     for row in 0..4 {
