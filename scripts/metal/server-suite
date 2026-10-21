@@ -802,8 +802,10 @@ class Logs:
         for name in names:
             if not re.search(r'^-rw-r----- +\d+ +0 +4 +\d+ .* /var/log/' + re.escape(name) + r'\.log\r?$', text, re.M):
                 raise ValueError(name + ' log is not 0640 root:adm')
-        if self.probe.ssh('cat /var/log/bsshd.log').returncode == 0:
-            raise ValueError('an account outside adm can read a service log')
+        for path in ('/var/log/bsshd.log', '/var/log/kernel.log.1'):
+            self.root_check('test -f ' + path)
+            if self.probe.ssh('cat ' + path).returncode == 0:
+                raise ValueError('an account outside adm can read ' + path)
 
     def case_streams(self):
         self.fixture('logs-streams', 'printf "stdout-marker\\n"; printf "stderr-marker\\n" >&2')

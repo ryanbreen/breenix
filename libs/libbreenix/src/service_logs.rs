@@ -34,7 +34,10 @@ impl Log {
             let from = if index == 1 { self.path.clone() } else { self.path.with_extension(format!("log.{}", index - 1)) };
             let to = self.path.with_extension(format!("log.{}", index));
             match fs::rename(from, to) {
-                Ok(()) => {},
+                Ok(()) => {
+                    let archive = OpenOptions::new().append(true).open(self.path.with_extension(format!("log.{}", index)))?;
+                    protect(&archive)?;
+                },
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {},
                 Err(e) => return Err(e),
             }
@@ -50,9 +53,7 @@ impl Log {
         let gap = if self.lost > 0 { format!("\n[log] lost lines={} reason=write-error\n", self.lost) } else { String::new() };
         if size.max(self.header.len() as u64) + data.len() as u64 + gap.len() as u64 > LIMIT { self.rotate()?; }
         let mut file = OpenOptions::new().create(true).append(true).mode(0o640).open(&self.path)?;
-        file.set_permissions(fs::Permissions::from_mode(0o640))?;
-        // adm is the system group from the users design, not a site identity.
-        if unsafe { chown(file.as_raw_fd(), 0, 4) } != 0 { return Err(io::Error::last_os_error()); }
+        protect(&file)?;
         if file.metadata()?.len() == 0 { file.write_all(&self.header)?; }
         file.write_all(gap.as_bytes())?;
         file.write_all(data)?;
@@ -65,7 +66,13 @@ impl Log {
     }
 }
 use std::os::unix::io::AsRawFd;
-extern "C" { #[link_name = "fchown"] fn chown(fd: i32, uid: u32, gid: u32) -> i32; }
+extern "C" { fn fchown(fd: i32, uid: u32, gid: u32) -> i32; }
+fn protect(file: &std::fs::File) -> io::Result<()> {
+    file.set_permissions(fs::Permissions::from_mode(0o640))?;
+    // adm is the system group from the users design, not a site identity.
+    if unsafe { fchown(file.as_raw_fd(), 0, 4) } != 0 { return Err(io::Error::last_os_error()); }
+    Ok(())
+}
 
 /// A stream's bounded partial line. Oversized lines are discarded through the
 /// newline and reported, rather than silently truncated or allowed to grow RAM.
