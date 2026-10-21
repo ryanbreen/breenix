@@ -1,0 +1,14 @@
+# Breenix service table, read by init at boot and by `svc reload`.
+# Format: libs/libbreenix/src/services.rs; status and control: svc(1).
+# The desktop and its applications start from init's boot script, not here.
+
+# SSH key exchange reads the random pool, so bsshd starts once it is ready.
+[bsshd]
+command = /usr/sbin/bsshd
+needs = entropy
+
+# The loopback SSH check on test images (it reports not-run elsewhere).
+[bssh-oracle]
+command = /sbin/init bssh-oracle
+restart = never
+needs = entropy, bsshd
