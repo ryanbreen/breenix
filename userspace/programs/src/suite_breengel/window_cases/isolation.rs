@@ -596,11 +596,7 @@ fn isolation_efault_inject() -> CaseResult {
 
 fn isolation_efault_composite() -> CaseResult {
     interface()?;
-    let (mut k, _) = kiosk().cite("24")?;
-    let _ = k.ask("auto 0").cite("24")?;
-    let bad = k.ask("badcomposite").cite("24")?;
-    ensure(bad == "err 14 err 14", "17.5", format!(
-        "the compositor's COMPOSITE with an unmapped and then a read-only descriptor answered `{bad}`; the contract gives EFAULT for both (`err 14 err 14`)"))
+    super::handoff::descriptor_faults()
 }
 
 // gpu-display: B7 preserves bad-user-copy protection through GPU CAPS, RESOURCE_CREATE and SUBMIT.
