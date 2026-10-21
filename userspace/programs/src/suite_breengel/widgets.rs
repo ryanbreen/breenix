@@ -2707,7 +2707,6 @@ fn widgets_scale_2()->CaseResult {
     let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("14")?;
     ensure(modes.modes[modes.current as usize].scale==2,"14","gpu-display: widget case is not in scale-2 mode")?;
     let theme=Theme::dark();let mut g=Drawn::bgrx(400,160);g.reset(PAPER);
-    g.fb().set_ui_scale(modes.modes[modes.current as usize].scale);
     Button::new(Rect::new(20,16,120,40),b"OK").draw(&mut g.fb(),&theme);
     let bytes=std::fs::read("/usr/share/fonts/DejaVuSans.ttf").map_err(|e|e.to_string())?;
     let mut font=CachedFont::new(Font::parse(&bytes).cite("14")?,256);
