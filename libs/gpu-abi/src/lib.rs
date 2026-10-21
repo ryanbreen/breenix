@@ -694,6 +694,13 @@ pub mod test_point {
     /// credential lookup finds no process, as a thread outliving its process row would.
     pub const CRED_ORPHAN: u32 = 32;
 
+    /// Whether system call 415 allocates the point, including reserved GPU points
+    /// whose layer has not been built yet.
+    pub const fn defined(point: u32) -> bool {
+        matches!(point, IRQ_HOLD | EMIT_DIAGNOSTIC | CRED_ORPHAN)
+            || (point >= FIRST && point <= LAST)
+    }
+
     /// `WITHHOLD_FENCE`'s parameter: ignore one fence's completion (the default); stop
     /// taking any completion from the device until it is reset; or fence depth: keep the
     /// answers to the next context's first four submissions unpublished until a fifth
