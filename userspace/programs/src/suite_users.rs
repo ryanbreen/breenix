@@ -437,7 +437,7 @@ fn as_account(who: Option<Account>, f: impl FnOnce() -> Checked) -> CaseResult {
 fn as_user(who: Account, f: impl FnOnce() -> Checked) -> CaseResult { as_account(Some(who), f) }
 
 /// A process running as `who` that waits until it is killed or the case ends.
-struct Holder { pid: i32, hold: Fd }
+struct Holder { pid: i32, hold: Option<Fd> }
 
 impl Holder {
     fn start(who: Account) -> Result<Holder, CaseError> {
@@ -447,27 +447,38 @@ impl Holder {
     /// `start`, with `setup` run as `who` before the holder waits; what it returns is
     /// passed back, and its failure fails the case.
     fn start_with(who: Account, setup: impl FnOnce() -> Result<String, String>) -> Result<(Holder, String), CaseError> {
+        Self::start_with_cleanup(who, setup, |_| Ok(()))
+    }
+
+    /// Run cleanup after the parent closes the hold pipe, before reporting exit.
+    fn start_with_cleanup(
+        who: Account,
+        setup: impl FnOnce() -> Result<String, String>,
+        cleanup: impl FnOnce(&str) -> Checked,
+    ) -> Result<(Holder, String), CaseError> {
         let (ready_r, ready_w) = io::pipe()?;
         let (hold_r, hold_w) = io::pipe()?;
         match process::fork()? {
             ForkResult::Child => {
                 let _ = io::close(ready_r);
                 let _ = io::close(hold_w);
-                let report = match become_account(who).and_then(|()| setup()) {
+                let result = become_account(who).and_then(|()| setup());
+                let report = match &result {
                     Ok(value) => format!("+{value}"),
                     Err(msg) => format!("-{msg}"),
                 };
                 let _ = io::write(ready_w, report.as_bytes());
                 let _ = io::close(ready_w);
                 read_all(hold_r);
-                process::exit(0)
+                let cleaned = result.and_then(|value| cleanup(&value));
+                process::exit(if cleaned.is_ok() { 0 } else { 1 })
             }
             ForkResult::Parent(child) => {
                 let _ = io::close(ready_w);
                 let _ = io::close(hold_r);
                 let report = String::from_utf8_lossy(&read_all(ready_r)).into_owned();
                 let _ = io::close(ready_r);
-                let holder = Holder { pid: child.raw() as i32, hold: hold_w };
+                let holder = Holder { pid: child.raw() as i32, hold: Some(hold_w) };
                 match report.strip_prefix('+') {
                     Some(value) => Ok((holder, value.to_string())),
                     None => Err(CaseError::Fail(format!(
@@ -480,6 +491,14 @@ impl Holder {
         }
     }
 
+    /// Release the holder and require it to acknowledge successful cleanup.
+    fn finish(mut self) -> CaseResult {
+        if let Some(hold) = self.hold.take() { io::close(hold)?; }
+        let status = wait(self.pid)?;
+        self.pid = 0;
+        check(status == 0, &format!("holder cleanup ended with {}", status_text(status)))
+    }
+
     /// Whether the holder has not ended.
     fn alive(&self) -> bool {
         let mut status = 0;
@@ -489,9 +508,11 @@ impl Holder {
 
 impl Drop for Holder {
     fn drop(&mut self) {
-        let _ = io::close(self.hold);
-        kill(self.pid, SIGKILL);
-        let _ = wait(self.pid);
+        if let Some(hold) = self.hold.take() { let _ = io::close(hold); }
+        if self.pid != 0 {
+            kill(self.pid, SIGKILL);
+            let _ = wait(self.pid);
+        }
     }
 }
 
@@ -905,6 +926,12 @@ fn write_clears_setid() -> CaseResult {
 }
 
 fn mmap_clears_setid() -> CaseResult {
+    fn unmap(addr: u64) -> Checked {
+        ok("munmap of shared file", sc(libbreenix::syscall::nr::MUNMAP, &[addr, 4096])).map(|_| ())
+    }
+    fn unmap_report(value: &str) -> Checked {
+        unmap(value.parse().map_err(|_| String::from("invalid mapped address"))?)
+    }
     let dir = Dir::new("setid-mmap", 0o755, 0, 0)?;
     // A root-owned set-ID program, mode 6777, that ua may write.
     let program = helper_copy(&dir, "p", 0, 0, 0o6777)?;
@@ -926,50 +953,56 @@ fn mmap_clears_setid() -> CaseResult {
         ok("chmod 6777 as root", chmod(&program, 0o6777)).map(|_| ())
     };
     as_user(A, || {
-        map_shared(&program, O_RDONLY, PROT_READ)?;
+        let addr = map_shared(&program, O_RDONLY, PROT_READ)?;
         setid_mode("after ua's read-only shared mapping")?;
+        unmap(addr)?;
         let addr = map_shared(&program, O_RDONLY, PROT_READ)?;
         refused("mprotect(PROT_WRITE) of a mapping opened read-only", sc(nr::MPROTECT, &[addr, 4096, PROT_READ | PROT_WRITE]), EACCES)?;
         setid_mode("after ua's refused mprotect")?;
+        unmap(addr)?;
         let addr = map_shared(&program, O_RDWR, PROT_WRITE | PROT_READ)?;
         cleared("after ua's shared writable mapping")?;
         store_padding(addr);
-        cleared("after ua's store through the mapping")
+        cleared("after ua's store through the mapping")?;
+        unmap(addr)
     })?;
     reset()?;
     as_user(A, || {
         let addr = map_shared(&program, O_RDWR, PROT_READ)?;
         setid_mode("after ua's read-only mapping of a writable descriptor")?;
         ok("mprotect(PROT_WRITE)", sc(nr::MPROTECT, &[addr, 4096, PROT_READ | PROT_WRITE]))?;
-        cleared("after ua's mprotect to PROT_WRITE")
+        cleared("after ua's mprotect to PROT_WRITE")?;
+        unmap(addr)
     })?;
     reset()?;
     // ua's stores wait for writeback while root sets the bits again: exec of the file
     // must confer no identity, as the stores' writeback will clear the bits.
-    let (_writer, _) = Holder::start_with(A, || {
-        store_padding(map_shared(&program, O_RDWR, PROT_READ | PROT_WRITE)?);
-        Ok(String::new())
-    })?;
+    let (writer, _) = Holder::start_with_cleanup(A, || {
+        let addr = map_shared(&program, O_RDWR, PROT_READ | PROT_WRITE)?;
+        store_padding(addr);
+        Ok(addr.to_string())
+    }, unmap_report)?;
     ok("chmod 6777 as root", chmod(&program, 0o6777))?;
     let (report, _) = helper_report(&program, &["p", "ids", "FD"], || become_account(B))?;
     report_is(&report, "resuid", &ids([UB; 3]), "a set-user-ID program with mapped stores pending")?;
     report_is(&report, "resgid", &ids([UB; 3]), "a set-group-ID program with mapped stores pending")?;
-    drop(_writer);
+    writer.finish()?;
+    // These mappings are explicitly unmapped before the final positive check:
+    // wait4 alone need not finish the deferred page-table/binding retirement.
     // No first write fault has occurred when root restores the bits. Exec must
     // already decline privilege: a first fault can change the ELF during its
     // copy without taking the filesystem guard. Include a read-only binding
     // that can gain PROT_WRITE by mprotect while exec holds that guard.
     for prot in [PROT_READ | PROT_WRITE, PROT_READ] {
         reset()?;
-        let (writer, _) = Holder::start_with(A, || {
-            map_shared(&program, O_RDWR, prot)?;
-            Ok(String::new())
-        })?;
+        let (writer, _) = Holder::start_with_cleanup(A, || {
+            map_shared(&program, O_RDWR, prot).map(|addr| addr.to_string())
+        }, unmap_report)?;
         ok("chmod 6777 over a clean mapping as root", chmod(&program, 0o6777))?;
         let (report, _) = helper_report(&program, &["p", "ids", "FD"], || become_account(B))?;
         report_is(&report, "resuid", &ids([UB; 3]), "a set-ID program with a clean shared write-capable mapping")?;
         report_is(&report, "resgid", &ids([UB; 3]), "a set-ID program with a clean shared write-capable mapping")?;
-        drop(writer);
+        writer.finish()?;
     }
     reset()?;
     let (report, _) = helper_report(&program, &["p", "ids", "FD"], || become_account(B))?;
