@@ -1362,11 +1362,11 @@ negative control: the device reports no resource identity and it is observed as 
 - Points: 1 `ignore-damage` (the next composite processes the whole window), 2 `irq-hold` (the next GPU <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   SUBMIT validation holds IRQs masked for 2 ms), 3 `emit-diagnostic` (param: the writer path, section 22), 4
   `acquire-stall` (target: a window; the next `ACQUIRE` pauses after copying half its replay rows until
-  released or 1 s), 5 `backend-error`; old scanout points 6–9 are retired in favour of core points 19,26,20,22; 10 `panel-cursor-no-restore`, 11 `release-stall` (resumes a paused point),
+  released or 1 s), 5 `backend-error`; old scanout points 6–9 are retired in favour of core points 19,26,20,22; 10 `panel-cursor-no-restore` (the run stage's panel cursor stops restoring the pixels it covered, from its next move until the stage's next frame, §23.9), 11 `release-stall` (resumes a paused point),
   16 `composite-stall` (target: a window; the next composite that includes it pauses before the backend
   composes, with every window's front pinned, until released, a signal reaches the compositor, or 1 s), 17
   `move-pointer` (param: x in bits 0 to 31, y in bits 32 to 63; the next time the kernel reads the pointing
-  device's position, for the panel cursor, the position is (x, y), as if the device had moved there), 18
+  device's position, for the panel cursor (system call 413, which the run stage reads), the position is (x, y), as if the device had moved there), 18
   `capture-stall` (target: a window; the next `CAPTURE` of it pauses after copying half its rows, with its pins
   held, until released or 1 s). Points 12 to 15 are the run stage's (section 23). Faults are branches in the
   real code paths, disarmed at case end by the suite. GPU points 19–31 have the exact
@@ -1376,7 +1376,8 @@ negative control: the device reports no resource identity and it is observed as 
   as a child (in a suite boot) it prints `[init] not PID 1: test-control check skipped` and makes no absence
   claim.
 
-The userspace run stage consumes its one-shot points 12–14 by reading
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B35 specifies these requirements. -->
+The userspace run stage consumes its one-shot points 10 and 12–14 by reading
 `/proc/breenix/stage-control`: a decimal bitset, bit `point` set when that point fired for
 this caller's process id (or target 0). Each open snapshots and consumes the points once.
 It is ENOSYS outside suite boots and EPERM for non-root; it never changes the latch.
@@ -1558,7 +1559,7 @@ shows its measured execution time; a skipped case has no fabricated zero-time re
 A picture takes priority over timing data, so its input overlay cannot overlap the timing plot.
 Input headings and legends describe a pointer trail only when pointer samples are present; event-only
 cases use a neutral events label. Wrapped labels keep words intact and show an ellipsis when truncated. The stage composes only between cases, never in a
-measured case window. Each result is drawn immediately after collection and verification, before
+measured case window, except for its panel cursor while a case runs with the display left to the stage (§23.9). Each result is drawn immediately after collection and verification, before
 starting another case. `opt/breenix/pace` is an optional unsigned 32-bit millisecond boot value;
 `scripts/boot-interactive.sh --mode suite --suite breengel --pace MS` supplies it through fw_cfg
 and `run.sh --parallels|--vmware --suite breengel --pace MS` supplies `/etc/breenix/pace` on its
@@ -1595,7 +1596,19 @@ property is the stack's four-owner depth, and `panel/kernel-screens` and `panel/
 whose property is the kernel's screen itself. A case that presents a full-screen scanout (the
 composition and scanout cases, whose readback judges the device pixels of the whole mode,
 section 20) shows it while it owns the display, and the stage's next frame follows when it
-ends.
+ends. After the three cases above the kernel's screen the stage takes the display back and
+shows its last frame as soon as the case's process ends, before collecting its result.
+
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B35 specifies these requirements. -->
+The stage's compositor draws the panel cursor (ruling B35): the compositor's arrow sprite
+(§18) at the pointer, read with system call 413, once the pointer has moved from where it
+was when the stage made its GPU objects. Every stage frame shows it there. While
+`panel/cursor-restore` or `panel/cursor-trail-detected` runs, the display stays with the
+stage (the case's process does not take it over), and the stage follows the pointer on its
+live-strip ticks: it restores the old footprint from the stage frame, draws the cursor at the
+pointer and presents. Point 10 stops the restores from the cursor's next move until the
+stage's next frame. These are the only presents the stage makes inside a measured window,
+and only when the pointer moved.
 
 ## 24. Helpers and boots
 
