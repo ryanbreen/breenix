@@ -210,9 +210,10 @@ impl Surface {
             return Err(SurfaceError::Format);
         }
         let device_format = if format.is_bgr { abi::format::B8G8R8A8 } else { abi::format::R8G8B8A8 };
+        let ui_scale = Self::display_scale()?;
         let target = gpu::target_create(device_format, width as u32, height as u32).map_err(SurfaceError::Device)?;
         let whole = Box64 { x0: 0, y0: 0, x1: width as i64, y1: height as i64 };
-        Ok(Surface { target, width, height, format, clip: whole, clips: Vec::new(), dirty: None, owner: device::pid(), owns_handle: true, error: None, render: None, ui_scale: 1 })
+        Ok(Surface { target, width, height, format, clip: whole, clips: Vec::new(), dirty: None, owner: device::pid(), owns_handle: true, error: None, render: None, ui_scale })
     }
 
     /// A non-owning view of a target returned by window CREATE/RESIZE. The window
@@ -223,13 +224,18 @@ impl Surface {
         if target==0 { return Err(SurfaceError::Device(-abi::errno::EINVAL)); }
         Ok(Self { target,width,height,format:Format::BGRX,
             clip:Box64 {x0:0,y0:0,x1:width as i64,y1:height as i64},clips:Vec::new(),dirty:None,
-            owner:device::pid(),owns_handle:false,error:None,render:None,ui_scale:1 })
+            owner:device::pid(),owns_handle:false,error:None,render:None,ui_scale:Self::display_scale()? })
 
     }
 
-    /// Physical surfaces default to scale 1. A logical UI view explicitly selects
-    /// its display scale; raster APIs continue to take physical pixel coordinates.
-    pub fn set_ui_scale(&mut self, scale: u32) { self.ui_scale = scale.clamp(1, 2); }
+    fn display_scale() -> Result<u32, SurfaceError> {
+        let modes = bgl::modes().map_err(SurfaceError::Device)?;
+        modes.modes.get(modes.current as usize).map(|mode| mode.scale)
+            .filter(|scale| (1..=2).contains(scale))
+            .ok_or(SurfaceError::Device(-abi::errno::EINVAL))
+    }
+
+    /// UI coordinates use the scale of the display this target was created for.
     pub fn ui_scale(&self) -> u32 { self.ui_scale }
 
     pub fn width(&self) -> usize {
