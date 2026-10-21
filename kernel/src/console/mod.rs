@@ -153,6 +153,11 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 // Covers the entire render pass, including GPU completion and read-back.
 static PRESENTING: AtomicBool = AtomicBool::new(false);
 static REDRAW: AtomicBool = AtomicBool::new(false);
+/// The render thread took a full repaint (`REDRAW`) and has not completed the screen yet.
+static REPAINTING: AtomicBool = AtomicBool::new(false);
+/// How long an observation of the kernel's screen waits for a repaint the console owes.
+#[cfg(target_arch = "aarch64")]
+const REPAINT_WAIT_MS: u64 = 1000;
 
 /// The idle read-back has been asked for.
 static IDLE_CHECK: AtomicBool = AtomicBool::new(false);
@@ -484,6 +489,44 @@ pub fn hold_canvas() -> CanvasHold {
     CANVAS_HOLDS.fetch_add(1, Ordering::SeqCst);
     wait_until_not_presenting();
     CanvasHold
+}
+
+/// Before an observation of the kernel's screen, outside any display transition (the
+/// console presents only between them): while the console may draw and owes a full repaint,
+/// such as the one a display give-back or a canvas hold's end asks for, wait until the render
+/// thread has completed it, so the observation sees the screen the repaint restores. Bounded
+/// by `REPAINT_WAIT_MS`; it blocks as an I/O wait, woken at the end of each pass.
+#[cfg(target_arch = "aarch64")]
+pub fn await_repaint() {
+    use crate::task::waitqueue::PrepareOutcome;
+    let owed = || {
+        SCREEN.load(Ordering::Acquire)
+            && may_draw()
+            && (REDRAW.load(Ordering::Acquire) || REPAINTING.load(Ordering::Acquire))
+    };
+    let now_ns = || {
+        let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+        seconds * 1_000_000_000 + nanos
+    };
+    let deadline = now_ns() + REPAINT_WAIT_MS * 1_000_000;
+    while owed() {
+        let now = now_ns();
+        if now >= deadline {
+            return;
+        }
+        let outcome = PASS_ENDED.prepare_to_wait_checked(
+            crate::task::thread::ThreadState::BlockedOnIO,
+            Some(deadline.min(now + 1_000_000)),
+            owed,
+        );
+        if outcome == PrepareOutcome::Mismatch {
+            PASS_ENDED.finish_wait();
+            continue;
+        }
+        if crate::syscall::blocking_io::wait_prepared(&PASS_ENDED, outcome).is_err() {
+            crate::task::scheduler::yield_current();
+        }
+    }
 }
 
 /// See `hold_canvas`. Dropping it asks for a full repaint, since the read-back may have
@@ -930,6 +973,10 @@ fn render_thread(display: &'static Display, attached: Attached) {
             sleep_ms(PASS_INTERVAL_MS);
             continue;
         };
+        // Marked before it is taken, so `await_repaint` sees the repaint owed throughout.
+        if REDRAW.load(Ordering::Acquire) {
+            REPAINTING.store(true, Ordering::SeqCst);
+        }
         if REDRAW.swap(false, Ordering::AcqRel) {
             screen.cleared = false;
             screen.complete = false;
@@ -959,6 +1006,9 @@ fn render_thread(display: &'static Display, attached: Attached) {
                 #[cfg(target_arch = "aarch64")]
                 request_idle_check();
             }
+        }
+        if screen.complete {
+            REPAINTING.store(false, Ordering::SeqCst);
         }
         let session = SESSION.load(Ordering::Acquire);
         if session != last_session {

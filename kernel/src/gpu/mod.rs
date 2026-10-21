@@ -4127,6 +4127,8 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
 /// display ownership (gpu-abi.md, the window front handoff). `dst_len` holds at least the
 /// current mode. Returns the observation serial, or the errno and, for EIO, its reason.
 pub fn observe_scanout(dst: u64, dst_len: u64, record: u64) -> Result<u64, (i64, u32)> {
+    // A kernel screen the console still owes a repaint is observed once it is drawn.
+    crate::console::await_repaint();
     let _path = GpuPath::enter();
     if !matches!(with_core(|c| c.admission()), Some(Ok(()))) {
         return Err((ENODEV, readback_reason::NONE));
