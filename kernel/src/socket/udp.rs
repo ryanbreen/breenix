@@ -436,14 +436,9 @@ impl ProtoOps for UdpSock {
         {
             return Err(EADDRNOTAVAIL);
         } // EADDRNOTAVAIL
-        if *port != 0
-            && *port < 1024
-            && !matches!(
-                crate::syscall::handlers::sys_geteuid(),
-                crate::syscall::SyscallResult::Ok(0)
-            )
-        {
-            return Err(EACCES);
+        if *port != 0 && *port < 1024 {
+            crate::process::privilege::require(crate::process::privilege::Operation::LowPort)
+                .map_err(|errno| errno as i32)?;
         }
         if crate::socket::udp::with_locked_masked(self, |s| s.local.is_some()) {
             return Err(EINVAL);

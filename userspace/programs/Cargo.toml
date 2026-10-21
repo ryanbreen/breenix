@@ -707,6 +707,14 @@ name = "processes-exec_test"
 path = "src/processes_exec.rs"
 
 [[bin]]
+name = "suite-users"
+path = "src/suite_users.rs"
+
+[[bin]]
+name = "users-exec_test"
+path = "src/users_exec.rs"
+
+[[bin]]
 name = "suite-signals"
 path = "src/suite_signals.rs"
 
@@ -805,7 +813,3 @@ path = "src/gpu_fault_acceptance.rs"
 [[bin]]
 name = "etc-reconcile"
 path = "src/etc_reconcile.rs"
-
-[[bin]]
-name = "suite-users"
-path = "src/suite_users.rs"

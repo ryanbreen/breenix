@@ -56,7 +56,6 @@ adm:x:4:
 tty:x:5:
 wheel:x:10:
 users:x:100:
-nogroup:x:65534:
 GROUPS
 while read -r kind path mode uid gid; do
     case "$kind" in
@@ -68,5 +67,7 @@ done < "$table"
 cp -a "$root/etc/." "$root/usr/share/factory/etc/"
 rm -rf "$root/usr/share/factory/etc/breenix" "$root/usr/share/factory/etc/ssh"
 mkdir "$root/usr/share/factory/etc/ssh"
-# PID 1 clears this fixture before the layout suite measures /run.
-printf 'stale\n' > "$root/run/layout-stale"
+# Init clears both fixtures before the suite measures their absence.
+for volatile in run tmp; do
+    printf 'stale\n' > "$root/$volatile/layout-stale"
+done

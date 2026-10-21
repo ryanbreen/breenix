@@ -9,6 +9,7 @@
 // Allow dead code for filesystem modules until they are integrated into kernel init
 #![allow(dead_code)]
 
+pub mod attrs;
 pub mod devfs;
 pub mod devptsfs;
 pub mod ext2;

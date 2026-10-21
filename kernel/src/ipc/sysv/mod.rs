@@ -52,8 +52,8 @@ pub(crate) struct Caller {
     pub row: u64,
 }
 
-pub(crate) fn caller() -> Caller {
-    let cred = Credentials::current(false);
+pub(crate) fn caller() -> Result<Caller, u64> {
+    let cred = Credentials::current(false)?;
     let pid = match crate::syscall::handlers::sys_getpid() {
         SyscallResult::Ok(pid) => pid as i32,
         SyscallResult::Err(_) => 0,
@@ -64,7 +64,7 @@ pub(crate) fn caller() -> Caller {
                 .flatten()
         })
         .unwrap_or(0);
-    Caller { cred, pid, row }
+    Ok(Caller { cred, pid, row })
 }
 
 /// The time the structures report, in seconds since the epoch.

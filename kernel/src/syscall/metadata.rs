@@ -143,7 +143,10 @@ fn pathname(fd: i32, pathname: u64, follow: bool, empty: bool, change: Change) -
     if empty && path.is_empty() {
         return if fd == AT_FDCWD { by_cwd(change) } else { by_fd(fd, change) };
     }
-    let cred = Credentials::current(false);
+    let cred = match Credentials::current(false) {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     let resolved = match resolve_at(fd, &path, follow, &cred) {
         Ok(r) => r,
         Err(errno) => return SyscallResult::Err(errno),
@@ -162,7 +165,10 @@ fn pathname(fd: i32, pathname: u64, follow: bool, empty: bool, change: Change) -
 
 // AT_EMPTY_PATH selects the held object, without searching a pathname.
 fn by_cwd(change: Change) -> SyscallResult {
-    let cred = Credentials::current(false);
+    let cred = match Credentials::current(false) {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     let (mount, handle) = match namei::current_working_dir() {
         namei::WorkingDir::Root => (namei::Mount::Root, None),
         namei::WorkingDir::Ext2 { mount, dir } => (mount, Some(dir)),
@@ -183,7 +189,10 @@ fn by_cwd(change: Change) -> SyscallResult {
 }
 
 fn by_fd(fd: i32, change: Change) -> SyscallResult {
-    let cred = Credentials::current(false);
+    let cred = match Credentials::current(false) {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     let entry = match descriptor_entry(fd) { Ok(entry) => entry, Err(e) => return SyscallResult::Err(e) };
     if let Some(handle) = &entry.native_inode {
         let mut guard = match ext2::write_mount(handle.object.mount) { Ok(g) => g, Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)) };

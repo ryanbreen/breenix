@@ -257,9 +257,6 @@ pub struct Process {
     /// CPU time charged by this process's threads and by the children it has
     /// waited for, shared by a thread group.
     pub cpu: alloc::sync::Arc<crate::task::thread::CpuAccount>,
-    /// File creation mask (umask)
-    pub umask: u32,
-
     /// Current working directory, shared by the threads of a process. Its
     /// pathname is derived from the directory.
     pub cwd: crate::fs::namei::SharedWorkingDir,
@@ -509,8 +506,6 @@ impl Process {
             cred: super::credentials::ProcessCredentials::root(),
             nice: 0,
             cpu: alloc::sync::Arc::new(crate::task::thread::CpuAccount::new(id.as_u64())),
-            // Standard default umask: owner rwx, group/other rx
-            umask: 0o022,
             // Default working directory is root
             cwd: crate::fs::namei::SharedWorkingDir::default(),
             name,

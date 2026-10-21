@@ -264,8 +264,9 @@ env("HOSTNAME", "breenix");
 console.log("Welcome to Breenix OS");
 BSHRC
 
-            # Create /tmp for filesystem write tests
+            # /tmp: owned by root, sticky and writable by other users (docs/users/design.md, section 4)
             mkdir -p /mnt/ext2/tmp
+            chmod 1777 /mnt/ext2/tmp
 
             if [ "${BREENIX_WAIT_STRESS:-0}" = "1" ]; then
                 touch /mnt/ext2/etc/wait_stress.enabled
@@ -528,8 +529,9 @@ env("HOSTNAME", "breenix");
 console.log("Welcome to Breenix OS");
 BSHRC
 
-    # Create /tmp for filesystem write tests
+    # /tmp: owned by root, sticky and writable by other users (docs/users/design.md, section 4)
     mkdir -p "$MOUNT_DIR/tmp"
+    chmod 1777 "$MOUNT_DIR/tmp"
 
     if [ "${BREENIX_WAIT_STRESS:-0}" = "1" ]; then
         touch "$MOUNT_DIR/etc/wait_stress.enabled"

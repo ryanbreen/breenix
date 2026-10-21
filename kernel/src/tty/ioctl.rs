@@ -411,7 +411,7 @@ pub fn tty_ioctl(tty: &Arc<TtyDevice>, request: u64, arg: u64) -> Result<i32, i3
     match request {
         CONSOLE_INPUT_PROOF => {
             // It flushes input and reports authentication: getty and login only.
-            if crate::fs::permissions::Credentials::current(false).euid != 0 {
+            if !crate::fs::permissions::Credentials::current(false).map_err(|errno| errno as i32)?.privileged() {
                 return Err(EPERM);
             }
             tty.input_proof(arg)

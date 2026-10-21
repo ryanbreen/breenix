@@ -101,12 +101,19 @@ fn main() {
         Ok(conflicts) => for name in conflicts {
             println!("[etc-reconcile] kept local /etc/{}; wrote .factory sibling", name);
         },
-        Err(why) => panic!("[init] layout refused: {}", why),
+        Err(why) => println!("[init] layout preparation failed; continuing boot: {}", why),
     }
 
     // Explicit shell, console and desktop modes bypass the full startup below.
     // No argument or `default` keeps the services and boot checks.
     match std::env::args().nth(1).as_deref() {
+        Some("suite") => {
+            use std::os::unix::process::CommandExt;
+            let mut args = std::env::args().skip(2);
+            let path = args.next().expect("suite path required");
+            let error = std::process::Command::new(path).args(args).exec();
+            panic!("[init] suite exec failed: {}", error);
+        }
         Some("shell") => run_shell_mode(),
         Some("console") => run_console_mode(),
         Some("desktop") => run_desktop_mode(),

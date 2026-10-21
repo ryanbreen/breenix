@@ -9,8 +9,11 @@ pub mod boot {
 }
 pub mod block;
 pub mod ext2;
+#[path = "../../../kernel/src/fs/attrs.rs"]
+pub mod attrs;
 pub mod fs {
     pub use crate::ext2;
+    pub use crate::attrs;
 }
 /// The host has no interrupts to mask.
 pub fn arch_without_interrupts<R>(f: impl FnOnce() -> R) -> R {
