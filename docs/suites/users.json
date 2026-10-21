@@ -58,7 +58,7 @@
         },
         {
           "id": "setuid-set",
-          "title": "Exactly su, passwd and sudo are installed set-user-ID root"
+          "title": "Image set-ID files are limited to the design table"
         },
         {
           "id": "run-cleared",
@@ -74,7 +74,12 @@
     {
       "id": "su",
       "title": "su: passwords, wheel, login environment and the auth log",
-      "cases": []
+      "cases": [
+        {
+          "id": "setuid-set",
+          "title": "Exactly su, passwd and sudo are installed set-user-ID root"
+        }
+      ]
     },
     {
       "id": "sudo",

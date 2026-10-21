@@ -18,8 +18,11 @@ static SUITE: Suite = suite("users", "Users & permissions", &[
         case("fhs-paths", "Standard layout paths have their specified owners and modes", fhs_paths),
         case("shadow-0600", "The shadow database is a root-owned regular file at mode 0600", shadow),
         case("sudo-policy-0440", "The admin policy is a root-owned regular file at mode 0440", sudo_policy),
-        case("setuid-set", "Exactly su, passwd and sudo are installed set-user-ID root", setuid_set),
+        case("setuid-set", "Image set-ID files are limited to the design table", setuid_set),
         case("run-cleared", "Startup removes stale runtime and temporary state", run_cleared),
+    ]),
+    category("su", "su: passwords, wheel, login environment and the auth log", &[
+        case("setuid-set", "Exactly su, passwd and sudo are installed set-user-ID root", admin_setuid_set),
     ]),
 ]);
 
@@ -50,22 +53,15 @@ fn shadow() -> CaseResult { attrs(Path::new("/etc/shadow"), 0o600, 0, 0, false) 
 fn sudo_policy() -> CaseResult { attrs(Path::new("/etc/sudo.policy"), 0o440, 0, 0, false) }
 fn setuid_set() -> CaseResult {
     startup()?;
-    fn walk(path: &Path, found: &mut Vec<String>) -> CaseResult {
-        for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
-            let path = entry.map_err(|e| e.to_string())?.path();
-            let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-            if meta.is_dir() { walk(&path, found)?; }
-            else if meta.mode() & 0o6000 != 0 {
-                check(meta.is_file() && meta.uid() == 0 && meta.gid() == 0 && meta.mode() & 0o7777 == 0o4755, "unexpected set-ID ownership or mode")?;
-                found.push(path.to_string_lossy().into_owned());
-            }
-        }
-        Ok(())
+    libbreenix::layout::check_setid(Path::new("/"), true)?;
+    Ok(())
+}
+fn admin_setuid_set() -> CaseResult {
+    setuid_set()?;
+    for path in ["/bin/su", "/usr/bin/passwd", "/usr/bin/sudo"] {
+        attrs(Path::new(path), 0o4755, 0, 0, false)?;
     }
-    let mut found = Vec::new();
-    for path in ["/bin", "/sbin", "/usr"] { walk(Path::new(path), &mut found)?; }
-    found.sort();
-    check(found == ["/bin/su", "/usr/bin/passwd", "/usr/bin/sudo"], &format!("set-ID programs: {:?}", found))
+    Ok(())
 }
 fn run_cleared() -> CaseResult {
     startup()?;

@@ -532,9 +532,14 @@ fn install() -> Result<Totals, String> {
     let target_dev = fs::metadata(target).map_err(|error| fail("stat", target, error))?.dev();
     if root_dev == target_dev { return Err(String::from("the system partition is not mounted at /home")); }
     let id = std::env::args().nth(1).ok_or("install intent names no userland generation")?;
-    if let Some(previous) = std::env::args().nth(2) {
+    let totals = if let Some(previous) = std::env::args().nth(2) {
         install_tree_from(source, target, &id, Some(&previous), &mut || Ok(()))
-    } else { install_tree(source, target, &id, &mut || Ok(())) }
+    } else { install_tree(source, target, &id, &mut || Ok(())) }?;
+    // The copier preserves inode metadata, including set-ID bits. Acceptance
+    // of a shipped generation additionally requires the design's allowlist.
+    layout::check_setid(&target.join(GENERATIONS).join(&id), false)?;
+    println!("[persistent] layout set-ID check passed");
+    Ok(totals)
 }
 
 fn main() {

@@ -54,7 +54,9 @@ checks do not establish power-loss durability on unjournaled ext2. The lead
 hardware sequence remains the v2 install, v1 rollback and return specified
 in [the design](design.md#7-the-users-effort).
 
-The `layout/setuid-set` case retains the design's literal expectation that
-su, passwd and sudo are installed set-user-ID root. Those tools are assigned
-to later milestones and are absent from this lane. The milestone is not
-claimed complete while that dependency is unresolved.
+Ruling S11 assigns the exact su, passwd and sudo expectation to the admin
+milestone's `su/setuid-set` case. `layout/setuid-set` walks the disk namespace,
+excluding virtual mounts, and refuses set-user-ID or set-group-ID inodes not
+listed with that mode in the design table. The installer applies the same
+check to the installed generation before reporting install completion and
+requesting slot promotion. No admin stub is installed.
