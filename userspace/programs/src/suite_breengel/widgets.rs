@@ -2711,7 +2711,12 @@ fn sans_draw(fb:&mut FrameBuf,text:&[u8],x:i32,y:i32,colour:Color) {
     ttf_font::draw_text_bytes(fb,&mut font,text,x*s,y*s,16.0*s as f32,colour);
 }
 fn sans_center(fb:&mut FrameBuf,text:&[u8],rect:Rect,colour:Color) {
-    sans_draw(fb,text,rect.x+(rect.w-sans_width(text))/2,rect.y+(rect.h-16)/2,colour)
+    let bytes=std::fs::read("/usr/share/fonts/DejaVuSans.ttf").expect("pinned Sans");
+    let mut font=CachedFont::new(Font::parse(&bytes).expect("pinned Sans"),256);
+    let s=ui_scale() as i32;
+    let width=ttf_font::text_width_bytes(&mut font,text,16.0*s as f32);
+    ttf_font::draw_text_bytes(fb,&mut font,text,rect.x*s+(rect.w*s-width)/2,
+        rect.y*s+(rect.h*s-16*s)/2,16.0*s as f32,colour);
 }
 
 // claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
