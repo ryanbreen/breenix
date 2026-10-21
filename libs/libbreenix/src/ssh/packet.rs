@@ -29,6 +29,10 @@ pub struct PacketIo {
     cipher_send: Option<SshCipher>,
     /// Cipher state for incoming packets (None = plaintext).
     cipher_recv: Option<SshCipher>,
+    /// An incomplete wire packet survives a nonblocking relay read. Its first
+    /// block is decrypted once, when the length becomes available.
+    incoming: Vec<u8>,
+    incoming_length: Option<usize>,
 }
 
 impl PacketIo {
@@ -41,6 +45,8 @@ impl PacketIo {
             seq_recv: 0,
             cipher_send: None,
             cipher_recv: None,
+            incoming: Vec::new(),
+            incoming_length: None,
         }
     }
 
@@ -127,66 +133,81 @@ impl PacketIo {
     /// Reads the binary packet from the socket, optionally decrypts and
     /// verifies the MAC.
     pub fn recv_packet(&mut self) -> Result<Vec<u8>, Error> {
+        loop {
+            if let Some(packet) = self.read_packet()? {
+                return Ok(packet);
+            }
+            let mut fds = [crate::io::PollFd::new(self.fd, crate::io::poll_events::POLLIN)];
+            match crate::io::poll(&mut fds, -1) {
+                Ok(_) | Err(Error::Os(Errno::EINTR)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Read only bytes already available, retaining a fragmented packet so
+    /// the relay can keep draining process output and delivering process input.
+    pub fn try_recv_packet(&mut self) -> Result<Option<Vec<u8>>, Error> {
+        let flags = crate::io::fcntl_getfl(self.fd)? as i32;
+        crate::io::fcntl_setfl(self.fd, flags | crate::io::status_flags::O_NONBLOCK)?;
+        let result = self.read_packet();
+        crate::io::fcntl_setfl(self.fd, flags)?;
+        result
+    }
+
+    fn read_packet(&mut self) -> Result<Option<Vec<u8>>, Error> {
         let gcm = self.cipher_recv.as_ref().is_some_and(SshCipher::is_gcm);
         let block_size = if gcm { 4 } else if self.cipher_recv.is_some() { 16 } else { 8 };
-
-        // Read the first block to get packet_length
-        let mut first_block = vec![0u8; block_size];
-        self.read_exact(&mut first_block)?;
-
-        if let Some(ref mut cipher) = self.cipher_recv {
-            cipher.decrypt(&mut first_block);
+        let mac_size = if gcm { 16 } else if self.cipher_recv.is_some() { 32 } else { 0 };
+        loop {
+            let needed = self.incoming_length.map(|n| 4 + n + mac_size).unwrap_or(block_size);
+            while self.incoming.len() < needed {
+                let filled = self.incoming.len();
+                self.incoming.resize(needed, 0);
+                let result = socket::recv(self.fd, &mut self.incoming[filled..]);
+                let n = match result {
+                    Ok(0) => return Err(Error::Os(Errno::ECONNRESET)),
+                    Ok(n) => n,
+                    Err(e) => {
+                        self.incoming.truncate(filled);
+                        match e {
+                            Error::Os(Errno::EINTR) => continue,
+                            Error::Os(Errno::EAGAIN) => return Ok(None),
+                            _ => return Err(e),
+                        }
+                    }
+                };
+                self.incoming.truncate(filled + n);
+            }
+            if self.incoming_length.is_none() {
+                if let Some(ref mut cipher) = self.cipher_recv {
+                    cipher.decrypt(&mut self.incoming);
+                }
+                let length = u32::from_be_bytes(self.incoming[..4].try_into().unwrap()) as usize;
+                let alignment = if self.cipher_recv.is_some() { 16 } else { 8 };
+                if length > MAX_PACKET_SIZE || length < 1 + MIN_PADDING
+                    || (length + if gcm { 0 } else { 4 }) % alignment != 0
+                {
+                    return Err(Error::Os(Errno::EMSGSIZE));
+                }
+                self.incoming_length = Some(length);
+                continue;
+            }
+            let length = self.incoming_length.take().unwrap();
+            let mut full = core::mem::take(&mut self.incoming);
+            let (packet, mac) = full.split_at_mut(4 + length);
+            if let Some(ref mut cipher) = self.cipher_recv {
+                cipher.decrypt(&mut packet[block_size..]);
+                cipher.open(self.seq_recv, packet, mac)?;
+            }
+            let padding = packet[4] as usize;
+            if padding < MIN_PADDING || padding >= length {
+                return Err(Error::Os(Errno::EBADMSG));
+            }
+            let payload = packet[5..4 + length - padding].to_vec();
+            self.seq_recv = self.seq_recv.wrapping_add(1);
+            return Ok(Some(payload));
         }
-
-        let packet_length = u32::from_be_bytes([
-            first_block[0],
-            first_block[1],
-            first_block[2],
-            first_block[3],
-        ]) as usize;
-
-        if packet_length > MAX_PACKET_SIZE || packet_length < 1 + MIN_PADDING
-            || (packet_length + if gcm { 0 } else { 4 }) % if self.cipher_recv.is_some() { 16 } else { 8 } != 0
-        {
-            return Err(Error::Os(Errno::EMSGSIZE));
-        }
-
-        // Total bytes after the length field
-        let remaining = packet_length + 4 - block_size;
-
-        // Read the rest of the packet
-        let mut rest = vec![0u8; remaining];
-        self.read_exact(&mut rest)?;
-
-        if let Some(ref mut cipher) = self.cipher_recv {
-            cipher.decrypt(&mut rest);
-        }
-
-        // Reassemble the full packet for MAC verification
-        let mut full_packet = Vec::with_capacity(4 + packet_length);
-        full_packet.extend_from_slice(&first_block);
-        full_packet.extend_from_slice(&rest);
-
-        if self.cipher_recv.is_some() {
-            // Read MAC first (before borrowing cipher mutably)
-            let mut mac_received = vec![0u8; if gcm { 16 } else { 32 }];
-            self.read_exact(&mut mac_received)?;
-
-            // Now verify MAC
-            let cipher = self.cipher_recv.as_mut().unwrap();
-            cipher.open(self.seq_recv, &mut full_packet, &mac_received)?;
-        }
-
-        // Extract payload
-        let padding_length = full_packet[4] as usize;
-        if padding_length < MIN_PADDING || padding_length >= packet_length {
-            return Err(Error::Os(Errno::EBADMSG));
-        }
-        let payload_length = packet_length - 1 - padding_length;
-        let payload = full_packet[5..5 + payload_length].to_vec();
-
-        self.seq_recv = self.seq_recv.wrapping_add(1);
-        Ok(payload)
     }
 
     /// Read a line terminated by \r\n (for version string exchange).

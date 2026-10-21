@@ -7,6 +7,7 @@ Site fields: SERVER_SSH_HOST, OPERATOR_USER, OPERATOR_SSH_PUBLIC_KEY.
 The boot stays leased until the caller stops it through metal-run.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -81,7 +82,8 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
 
 def command(args, **kwargs):
     kwargs.setdefault('timeout', 45)
-    return subprocess.run(args, capture_output=True, text=True, **kwargs)
+    kwargs.setdefault('text', True)
+    return subprocess.run(args, capture_output=True, **kwargs)
 
 
 class Probe:
@@ -102,13 +104,19 @@ class Probe:
             result = command(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(key)])
             if result.returncode: raise ValueError('cannot generate temporary Ed25519 keys')
 
-    def ssh(self, script, cipher=None, user=None, identity=None, options=(), input=None, posix=True, env=None, timeout=45):
+    def ssh(self, script, cipher=None, user=None, identity=None, options=(), input=None, posix=True, env=None, timeout=45, binary=False):
         args = self.common + ['-i', str(identity or self.identity)]
         if cipher: args += ['-c', cipher]
         args += list(options) + [(user or self.user) + '@' + self.host]
         if script is not None: args += ['sh -c ' + shlex.quote(script) if posix else script]
-        result = command(args, input=input, env=env, timeout=timeout)
-        self.transcript.append(dict(command=args, exit=result.returncode, stdout=result.stdout, stderr=result.stderr))
+        result = command(args, input=input, env=env, timeout=timeout, text=not binary)
+        if binary:
+            self.transcript.append(dict(command=args, exit=result.returncode, inputBytes=len(input),
+                                        outputBytes=len(result.stdout), inputSha256=hashlib.sha256(input).hexdigest(),
+                                        outputSha256=hashlib.sha256(result.stdout).hexdigest(),
+                                        stderr=result.stderr.decode(errors='replace')))
+        else:
+            self.transcript.append(dict(command=args, exit=result.returncode, stdout=result.stdout, stderr=result.stderr))
         return result
 
     def require(self, result, output=None):
@@ -180,7 +188,7 @@ class Probe:
                 self.common = original
             # OpenSSH will not try an unadvertised method. Our RFC 4252 client
             # sends password directly, regardless of the server's method list.
-            result = self.ssh('/bin/bssh ' + shlex.quote(self.host) + ' 22 ' + shlex.quote(self.user)
+            result = self.ssh('/usr/bin/bssh ' + shlex.quote(self.host) + ' 22 ' + shlex.quote(self.user)
                               + ' synthetic-refused-password --smoke', posix=False)
             if result.returncode != 77 or 'bssh: authentication failed' not in result.stdout:
                 raise ValueError('actual password request did not receive USERAUTH_FAILURE')
@@ -217,11 +225,16 @@ class Probe:
                 if result.returncode == 0 or 'argument list too long' not in result.stdout:
                     raise ValueError('oversized argv was executed or not reported')
         elif name == 'exec-stdin':
-            # More than one SSH packet and pipe capacity; exact output requires EOF.
+            # Exhaust channel windows and pipe capacity; exact output requires EOF.
             payload = ''.join(f'{i:06d}: stdin data and spaces\n' for i in range(360000))
             result = self.ssh('/bin/cat', input=payload, posix=False, timeout=180)
             self.require(result)
             if result.stdout != payload: raise ValueError('piped stdin differs or was truncated')
+            # Preserve NUL, high bytes and CRLF as well as text, across many window adjustments.
+            payload = b'0123456789abcdef\x00\xff\r\n' * 524288
+            result = self.ssh('/bin/cat', input=payload, posix=False, timeout=180, binary=True)
+            self.require(result)
+            if result.stdout != payload: raise ValueError('10,485,760-byte binary stdin differs or was truncated')
             self.require(self.ssh('/bin/cat', input='', posix=False), '')
         elif name == 'quoted-command':
             self.interactive_job_control(quoted=True)

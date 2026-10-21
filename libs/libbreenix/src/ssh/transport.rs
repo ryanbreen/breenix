@@ -280,17 +280,19 @@ impl<'a> ServerSession<'a> {
     /// Returns Some(data) for channel data, None for non-data messages
     /// (window adjust, etc.), or Err for disconnect/errors.
     pub fn recv_data(&mut self) -> Result<Option<Vec<u8>>, SshError> {
-        self.recv_data_inner(true)
-    }
-
-    /// Read control packets even while command stdin is backed up. The caller
-    /// returns input credit with consume_input after delivering the data.
-    pub fn recv_data_uncredited(&mut self) -> Result<Option<Vec<u8>>, SshError> {
-        self.recv_data_inner(false)
-    }
-
-    fn recv_data_inner(&mut self, replenish: bool) -> Result<Option<Vec<u8>>, SshError> {
         let msg = self.io.recv_packet().map_err(|_| SshError::Io)?;
+        self.handle_channel_packet(&msg, true)
+    }
+
+    /// Nonblocking receive for a process relay. A fragmented packet stays in
+    /// PacketIo; an incomplete packet or control message yields no channel data. The caller
+    /// returns input credit with consume_input after delivering the data.
+    pub fn try_recv_data_uncredited(&mut self) -> Result<Option<Vec<u8>>, SshError> {
+        let Some(msg) = self.io.try_recv_packet().map_err(|_| SshError::Io)? else { return Ok(None) };
+        self.handle_channel_packet(&msg, false)
+    }
+
+    fn handle_channel_packet(&mut self, msg: &[u8], replenish: bool) -> Result<Option<Vec<u8>>, SshError> {
         if msg.is_empty() {
             return Err(SshError::Disconnected);
         }
@@ -298,8 +300,8 @@ impl<'a> ServerSession<'a> {
         match msg[0] {
             SSH_MSG_CHANNEL_DATA => {
                 let mut pos = 1;
-                let _channel_id = SshBuf::get_u32(&msg, &mut pos);
-                let data = SshBuf::get_string(&msg, &mut pos)
+                let _channel_id = SshBuf::get_u32(msg, &mut pos);
+                let data = SshBuf::get_string(msg, &mut pos)
                     .ok_or(SshError::Protocol("bad channel data"))?;
 
                 // Adjust receive window
@@ -316,8 +318,8 @@ impl<'a> ServerSession<'a> {
             SSH_MSG_CHANNEL_WINDOW_ADJUST => {
                 if let Some(ref mut ch) = self.channel {
                     let mut pos = 1;
-                    let _id = SshBuf::get_u32(&msg, &mut pos);
-                    let bytes = SshBuf::get_u32(&msg, &mut pos).unwrap_or(0);
+                    let _id = SshBuf::get_u32(msg, &mut pos);
+                    let bytes = SshBuf::get_u32(msg, &mut pos).unwrap_or(0);
                     ch.send_window = ch.send_window.saturating_add(bytes);
                 }
                 Ok(None)
@@ -331,7 +333,7 @@ impl<'a> ServerSession<'a> {
             }
             SSH_MSG_CHANNEL_CLOSE => {
                 let mut pos = 1;
-                let recipient = SshBuf::get_u32(&msg, &mut pos)
+                let recipient = SshBuf::get_u32(msg, &mut pos)
                     .ok_or(SshError::Protocol("bad channel close"))?;
                 if pos != msg.len() {
                     return Err(SshError::Protocol("bad channel close length"));

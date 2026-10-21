@@ -1224,6 +1224,8 @@ stages a temporary Ed25519 authorized user key and restores the original file,
 checks authentication refusals, checks port 22 and both telnet ports, exercises PTY
 job control and executes a quoted script through bsh's interactive shorthand. The login must enter bsh;
 exec cases require `/bin/bsh` in SHELL, exact command exit statuses, and piped input plus EOF.
+The input case keeps its large text round trip and also requires 10,485,760 binary bytes
+(including NUL, high bytes and CRLF) to return unchanged with status 0 within 180 seconds.
 POSIX scripts use explicit `sh -c`; temporary-key cleanup requires a byte-for-byte match to the original authorized_keys file.
 
 The runner emits START, ordered CASE and DONE lines and stores

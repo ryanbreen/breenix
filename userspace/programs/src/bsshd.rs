@@ -538,7 +538,7 @@ fn exec_shuttle(session: &mut ServerSession, output: Fd, input: Fd) -> Result<()
                 offset = 0;
             }
             if fds[1].revents & POLLIN != 0 {
-                match session.recv_data_uncredited() {
+                match session.try_recv_data_uncredited() {
                     Ok(Some(data)) if input_open => {
                         pending.drain(..offset);
                         offset = 0;
