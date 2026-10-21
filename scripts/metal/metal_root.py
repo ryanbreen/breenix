@@ -122,8 +122,21 @@ def operator_account(site):
     return f'user {user}\nkey {line}\n'
 
 
-def console_shadow(site, hasher):
-    console_identity(site)
+# The users suite's wheel fixture account (scripts/install-layout.sh), which a console boot logs in as once the image
+# carries it: login refuses root (ROOT_LOGIN no), and the account reaches root through sudo or su.
+CONSOLE_FIXTURE = 'uw'
+CONSOLE_FIXTURE_HOME = '/etc/breenix/test-users/uw'
+
+
+def console_account(passwd):
+    """The account a console boot of an image with this passwd text logs in as: the wheel fixture when the image
+    carries it, root for images from before the users effort's login milestone."""
+    fields = [line.split(':') for line in passwd.splitlines()]
+    present = any(len(f) == 7 and f[0] == CONSOLE_FIXTURE and f[5] == CONSOLE_FIXTURE_HOME for f in fields)
+    return CONSOLE_FIXTURE if present else 'root'
+
+
+def console_hash(site, hasher):
     alphabet = './0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
     salt = ''.join(secrets.choice(alphabet) for _ in range(16))
     try:
@@ -134,7 +147,17 @@ def console_shadow(site, hasher):
     value = result.stdout.decode('ascii', errors='replace')
     if not re.fullmatch(r'\$6\$' + re.escape(salt) + r'\$[./A-Za-z0-9]{86}', value):
         raise ValueError('console password hash is malformed')
-    return 'root:' + value + ':' + str(int(time.time() // 86400)) + ':0:99999:7:::\n'
+    return value
+
+
+def console_shadow(site, hasher, image_shadow='', account='root'):
+    """The image's shadow with the console password set for root (su's target) and for `account`, each with its
+    own salt; the image's other lines are kept as they are."""
+    console_identity(site)
+    day = str(int(time.time() // 86400))
+    staged = {name: name + ':' + console_hash(site, hasher) + ':' + day + ':0:99999:7:::' for name in ('root', account)}
+    lines = [staged.pop(line.split(':')[0], line) for line in image_shadow.splitlines() if line]
+    return '\n'.join(lines + list(staged.values())) + '\n'
 
 
 def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None, idle_minutes=None, replug=False, xhci_fault=None,
@@ -173,10 +196,15 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         url = urlsplit(site['BOOT_URL'])
         lines += ['METAL_FETCH_URL=' + urlunsplit((url.scheme, url.netloc, PROBE_PATH, '', '')) + '\n',
                   'METAL_FETCH_SHA256=' + PROBE_SHA256 + '\n']
-    # Default boots use the same getty login as explicit console boots.
-    shadow = console_shadow(site, hasher) if mode in ('default', 'console') else None
     debugfs, = require_e2fsprogs('debugfs')
     image = Path(image).resolve()
+    # Default boots use the same getty login as explicit console boots.
+    account = shadow = None
+    if mode in ('default', 'console'):
+        read = lambda path: subprocess.run([debugfs, '-R', f'cat {path}', str(image)], check=True,
+                                           capture_output=True).stdout.decode('utf-8', errors='replace')
+        account = console_account(read('/etc/passwd'))
+        shadow = console_shadow(site, hasher, read('/etc/shadow'), account)
     packaged = Path(__file__).resolve().with_name('write-boot-target.sh')
     writer = Path(writer) if writer else (packaged if packaged.is_file() else
                                          Path(__file__).resolve().parents[1] / 'write-boot-target.sh')
@@ -278,6 +306,8 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         facts['operatorAccountSha256'] = hashlib.sha256(operator.encode()).hexdigest()
     if mode == 'console':
         facts['consoleIdentity'] = console_identity(site)
+    if account is not None:
+        facts['consoleAccount'] = account
     if install:
         facts['diskWrite'] = write_install_record(image, install, install_partition)
     return facts
