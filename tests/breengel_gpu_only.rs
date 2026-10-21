@@ -86,22 +86,24 @@ fn planted_raw_pixel_library_and_renamed_upload_are_refused(){
 }
 /// Production reference dependencies and their local crate names. Installed programs
 /// share a manifest with the suites, so their source inspection uses these names too.
-fn reference_names(manifest: &str) -> Vec<String> {
+fn reference_names(manifest: &str) -> Vec<String> { package_names(manifest, "libgfx-ref") }
+/// The local crate names under which a manifest's production dependencies name `wanted`.
+fn package_names(manifest: &str, wanted: &str) -> Vec<String> {
     let doc: toml::Value = manifest.parse().expect("valid Cargo manifest");
-    fn collect(doc: &toml::Value, out: &mut Vec<String>) {
+    fn collect(doc: &toml::Value, wanted: &str, out: &mut Vec<String>) {
         for kind in ["dependencies", "build-dependencies"] {
             if let Some(deps) = doc.get(kind).and_then(toml::Value::as_table) {
                 for (key, value) in deps {
                     let package = value.get("package").and_then(toml::Value::as_str).unwrap_or(key);
-                    if package.replace('_', "-") == "libgfx-ref" { out.push(key.replace('-', "_")); }
+                    if package.replace('_', "-") == wanted { out.push(key.replace('-', "_")); }
                 }
             }
         }
     }
     let mut out = Vec::new();
-    collect(&doc, &mut out);
+    collect(&doc, wanted, &mut out);
     if let Some(targets) = doc.get("target").and_then(toml::Value::as_table) {
-        for target in targets.values() { collect(target, &mut out); }
+        for target in targets.values() { collect(target, wanted, &mut out); }
     }
     out
 }
@@ -213,14 +215,55 @@ fn encoder_reachable(manifest: &Path, visited: &mut HashSet<PathBuf>) -> bool {
     dependencies(&doc, base, visited) || doc.get("target").and_then(toml::Value::as_table)
         .is_some_and(|targets| targets.values().any(|target| dependencies(target, base, visited)))
 }
+/// The path dependencies of a manifest other than those naming `except`, by manifest path.
+fn path_dependencies_except(manifest: &Path, except: &str) -> Vec<PathBuf> {
+    let doc: toml::Value = fs::read_to_string(manifest).unwrap().parse().unwrap();
+    let base = manifest.parent().unwrap();
+    let mut out = Vec::new();
+    let mut collect = |doc: &toml::Value| for kind in ["dependencies", "build-dependencies"] {
+        for (key, dep) in doc.get(kind).and_then(toml::Value::as_table).into_iter().flatten() {
+            let package = dep.get("package").and_then(toml::Value::as_str).unwrap_or(key);
+            if package.replace('_', "-") == except { continue; }
+            if let Some(path) = dep.get("path").and_then(toml::Value::as_str) { out.push(base.join(path).join("Cargo.toml")); }
+        }
+    };
+    collect(&doc);
+    for target in doc.get("target").and_then(toml::Value::as_table).into_iter().flat_map(|t| t.values()) { collect(target); }
+    out
+}
 
 #[test]
 fn png_encoder_is_unreachable_from_upload_capable_crates() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let decoder = fs::read_to_string(root.join("libs/libimg/src/png/mod.rs")).unwrap();
     assert!(!decoder.contains("fn encode("), "gpu-text: encoder remains in the upload decoder crate");
-    for krate in ["kernel", "libs/bgl", "libs/libgfx", "libs/libbui", "libs/libicon", "libs/breengel", "libs/libbreenix", "userspace/programs"] {
+    for krate in ["kernel", "libs/bgl", "libs/libgfx", "libs/libbui", "libs/libicon", "libs/breengel", "libs/libbreenix"] {
         assert!(!encoder_reachable(&root.join(krate).join("Cargo.toml"), &mut HashSet::new()),
             "{krate}: PNG encoder reachable through production dependencies");
     }
+    // Ruling B26: the suites share userspace/programs' manifest with the installed programs, so
+    // its direct encoder dependency is the suites' expectation allowance, as libgfx-ref's is.
+    // No other dependency may reach the encoder, and no source outside a suite may name it.
+    let programs = root.join("userspace/programs/Cargo.toml");
+    for dependency in path_dependencies_except(&programs, "libimg-encode") {
+        assert!(!encoder_reachable(&dependency, &mut HashSet::new()),
+            "userspace/programs: PNG encoder reachable through {}", dependency.display());
+    }
+    let names = package_names(&fs::read_to_string(&programs).unwrap(), "libimg-encode");
+    let mut paths = Vec::new(); files(&root.join("userspace/programs/src"), &mut paths);
+    for path in paths {
+        let relative = path.strip_prefix(root).unwrap().to_string_lossy().into_owned();
+        if relative.contains("/suite_") { continue; }
+        let source = fs::read_to_string(&path).unwrap();
+        assert!(!source.contains("libimg_encode") && !reference_uses(&source, &names),
+            "{relative}: names the PNG encoder outside a suite");
+    }
+}
+
+#[test]
+fn installed_program_cannot_hide_the_encoder_behind_a_package_alias() {
+    let names = package_names("[dependencies]\nenc = { package = \"libimg-encode\", path = \"../e\" }\n", "libimg-encode");
+    assert!(reference_uses("fn main() { enc::encode(&i); }", &names));
+    assert!(reference_uses("use enc as quiet; fn main() { quiet::encode(&i); }", &names));
+    assert!(!reference_uses("fn main() { libimg::png::decode(&b); }", &names));
 }
