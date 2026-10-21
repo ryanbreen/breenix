@@ -1055,7 +1055,7 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 
 ### 17.5 Pointers, errors and quiet failure
 
-- Every op copies through `copy_from_user` and `copy_to_user`. A range that overflows, is unmapped, crosses <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+- Every op copies through `copy_from_user` and `copy_to_user`. A range that overflows, is unmapped, crosses <!-- claim-lint:ok: Normative pointer-copy and COMPOSITE exception rules in gpu-abi.md Window front handoff. -->
   into an unmapped page or is read-only for output is EFAULT, and an op that fails with EFAULT has no side
   effect for preflight failures: copies in finish before state changes, output ranges are preflighted.
   For COMPOSITE, a concurrent unmap after sending GPU work is the explicit exception: return EFAULT

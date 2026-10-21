@@ -325,8 +325,11 @@ interface()?;
 }
 
 fn isolation_composite_denied() -> CaseResult {
-    let mut snapshot = [0u64; 12];
-    want_errno(super::handoff::wire(29, &mut snapshot), EPERM, "17.4", "gpu-window: B13 root without owner+claim snapshot")?;
+    step("17.4", child("gpu-window: root without owner or claim",3_000,None,|| {
+        let context=bgl::Context::new().map_err(|r|format!("gpu-display: context {}",outcome(r)))?;
+        let mut snapshot=[0u64;12];snapshot[0]=context.handle();
+        errno_is(super::handoff::wire(29,&mut snapshot),EPERM,"root without owner or claim","gpu-window: snapshot")
+    }))?;
     interface()?;
     step("17.4", child("B13 claimant without display", 3_000, None, || {
         claim().map_err(|r| format!("gpu-window: claim {}",outcome(r)))?;

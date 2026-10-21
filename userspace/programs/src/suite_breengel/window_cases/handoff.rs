@@ -70,9 +70,15 @@ pub(crate) fn snapshot_lifetime(check_aliases: bool) -> CaseResult {
     ensure(cancel[5..].iter().all(|&v| v == 0), "17.1", "gpu-display: cancellation issued work or a composite serial")?;
     let mut again = [0u64; 14]; again[0] = token; again[4] = 1;
     want_errno(wire(19, &mut again), ENOENT, "17.1", "gpu-window: cancel consumed snapshot")?;
+    if check_aliases { alias_security()?; }
     if !check_aliases {
         // Re-snapshot, then recycle its exact source before admission. The stream is
         // otherwise valid: scene work in C, followed by the full C-to-scanout copy.
+        query = [0; 12]; query[0] = context.handle();
+        want_ok(wire(29, &mut query), "17.1", "gpu-window: refreshed stale-source sizing")?;
+        let count = (query[2] >> 32) as usize;
+        let damage_count = (query[4] >> 32) as usize;
+        windows.resize(count, [0; 10]); damage.resize(damage_count, [0; 2]);
         snapshot = [0; 12]; snapshot[0] = context.handle();
         snapshot[1] = windows.as_mut_ptr() as u64; snapshot[2] = count as u64;
         snapshot[3] = damage.as_mut_ptr() as u64; snapshot[4] = damage_count as u64;
@@ -87,7 +93,7 @@ pub(crate) fn snapshot_lifetime(check_aliases: bool) -> CaseResult {
         context.begin(scanout,width,height); context.copy(scene,&[[0,0,width as i32,height as i32,0,0]]);
         w.frame(14).cite("17.3")?;
         let mut submit = [0u64; 14]; submit[0]=snapshot[5]; submit[1]=scanout;
-        submit[2]=context.encoded().as_ptr() as u64; submit[3]=context.encoded().len() as u64; submit[13]=scene;
+        submit[2]=context.encoded().as_ptr() as u64; submit[3]=(context.encoded().len()*4) as u64; submit[13]=scene;
         let result=wire(19,&mut submit);
         libbreenix::gpu::resource_destroy(scene); libbreenix::gpu::resource_destroy(scanout);
         want_errno(result,EAGAIN,"17.1","gpu-window: stale snapshot source must retry without sending")?;
@@ -134,4 +140,122 @@ pub(crate) fn descriptor_faults() -> CaseResult {
     want_errno(call_at(19,page.addr(),112),EFAULT,"17.5","gpu-display: B13 read-only 112-byte COMPOSITE")?;
     want_errno(call_at(29,unmapped(),96),EFAULT,"17.5","gpu-window: unmapped SceneSnapshot")?;
     ensure(counter("composites").cite("18")?==before,"17.5","gpu-display: preflight EFAULT consumed a composite")
+}
+
+// Each op-19 attempt consumes its reservation, including validation failures.
+fn reserve(context: u64, id: u64) -> Result<([u64; 12], u64), String> {
+    let mut q = [0u64; 12]; q[0] = context;
+    let r = wire(29, &mut q);
+    if r != 0 { return Err(format!("gpu-window: alias sizing {}", outcome(r))); }
+    let mut windows = vec![[0u64; 10]; (q[2] >> 32) as usize];
+    let mut damage = vec![[0u64; 2]; (q[4] >> 32) as usize];
+    q = [0; 12]; q[0] = context; q[1] = windows.as_mut_ptr() as u64;
+    q[2] = windows.len() as u64; q[3] = damage.as_mut_ptr() as u64; q[4] = damage.len() as u64;
+    let r = wire(29, &mut q);
+    if r != 0 { return Err(format!("gpu-window: alias reservation {}", outcome(r))); }
+    let alias = windows.iter().find(|e| e[0] == id).ok_or("gpu-window: alias fixture missing client")?[1];
+    if alias == 0 { return Err("gpu-window: published client has no alias".into()); }
+    Ok((q, alias))
+}
+
+fn alias_security() -> CaseResult {
+    use libbreenix::gpu;
+    // A separate client owns the backing: this is not the compositor's own window.
+    let mut client = raw_client().cite("24")?;
+    let created = client.ask("create 16 16 2").cite("24")?;
+    let id = created.strip_prefix("ok ").and_then(|s| s.split_whitespace().next())
+        .and_then(|s| s.parse::<u64>().ok()).ok_or("gpu-window: alias client create failed")?;
+    ensure(client.ask(&format!("register {id} alias-security"))? == "ok", "17.1", "gpu-window: alias client register")?;
+    ensure(client.ask(&format!("fill {id} 27"))?.starts_with("ok "), "17.3", "gpu-window: alias client publish")?;
+    let mut geometry = abi::Geometry::ZERO; geometry.id = id; geometry.flags = abi::geometry_flags::VISIBLE;
+    want_ok(call(abi::op::SET_GEOMETRY, &mut geometry), "18", "gpu-window: alias client geometry")?;
+    let mut context = bgl::Context::new().map_err(|r| format!("gpu-display: context {}", outcome(r)))?;
+    let (sizing, _) = reserve(context.handle(), id)?;
+    let mut cancel = [0u64;14]; cancel[0] = sizing[5]; cancel[4] = 1;
+    want_ok(wire(19, &mut cancel), "18", "gpu-window: alias sizing cancellation")?;
+    let width = sizing[6] as u32; let height = (sizing[6] >> 32) as u32;
+    struct Resource(u64);
+    impl Drop for Resource { fn drop(&mut self) { gpu::resource_destroy(self.0); } }
+    let scene = Resource(gpu::target_create(0,width,height).map_err(|r|format!("gpu-display: scene {}",outcome(r)))?);
+    let scanout = Resource(gpu::scanout_target_create(0,width,height).map_err(|r|format!("gpu-display: scanout {}",outcome(r)))?);
+    for attack in ["BEGIN", "COPY destination", "PRESENT", "UPLOAD", "other context"] {
+        let (snapshot, alias) = reserve(context.handle(), id)?;
+        let mut other = bgl::Context::new().map_err(|r|format!("gpu-display: other context {}",outcome(r)))?;
+        let mut token = snapshot[5];
+        // Establish the ordinary legal scene and transport; change just the forbidden route.
+        context.discard(); context.begin(scene.0,width,height); context.clear(0xff000000);
+        context.copy(alias,&[[0,0,16,16,0,0]]);
+        context.begin(scanout.0,width,height); context.copy(scene.0,&[[0,0,width as i32,height as i32,0,0]]);
+        let mut words = context.encoded().to_vec();
+        let mut target = scanout.0;
+        match attack {
+            "BEGIN" => { words[2] = alias as u32; words[3] = (alias >> 32) as u32; }
+            "COPY destination" => { words.extend_from_slice(&[5,12,scene.0 as u32,(scene.0>>32) as u32,0,0,16,16,alias as u32,(alias>>32) as u32,0,0]); }
+            "PRESENT" => {
+                want_errno(gpu::present(context.handle(),alias).0,EINVAL,"17.4","gpu-display: ordinary PRESENT of alias")?;
+                target = alias;
+            },
+            "UPLOAD" => {
+                // UPLOAD is a separate 416 operation, not a stream opcode.
+                let pixels = [0x55u8;1024];
+                want_errno(gpu::upload(context.handle(),alias,[0,0,16,16],&pixels,64,gpu::abi::upload_source::B8G8R8A8,gpu::abi::purpose::IMAGE).0,
+                    EINVAL,"17.4","gpu-display: UPLOAD through sample alias")?;
+                let mut cancel = [0u64;14]; cancel[0]=token; cancel[4]=1;
+                want_ok(wire(19,&mut cancel),"18","gpu-window: cancel upload probe snapshot")?;
+                continue;
+            }
+            _ => {
+                other.begin(scene.0,width,height);other.copy(alias,&[[0,0,16,16,0,0]]);
+                let (r,d)=gpu::submit(other.handle(),other.encoded());
+                ensure(r==-(EINVAL as i64) && d.error==4,"17.4","gpu-display: another context resolved live alias")?;
+                // One reservation per owner: cancel before reserving in the other context.
+                let mut cancel=[0u64;14];cancel[0]=token;cancel[4]=1;
+                want_ok(wire(19,&mut cancel),"18","gpu-window: cancel cross-context source")?;
+                let (foreign, _) = reserve(other.handle(),id)?; token = foreign[5];
+            }
+        }
+        let before = counter("composites")?;
+        let mut submit = [0u64;14]; submit[0]=token; submit[1]=target;
+        submit[2]=words.as_ptr() as u64; submit[3]=(words.len()*4) as u64; submit[13]=scene.0;
+        want_errno(wire(19,&mut submit),EINVAL,"17.4",&format!("gpu-display: op-19 alias {attack}"))?;
+        ensure(submit[5..10].iter().all(|v|*v==0) && counter("composites")?==before,
+            "17.4",format!("gpu-display: alias {attack} sent work or consumed a serial"))?;
+    }
+    // The fork child has copied integers and memory, but neither claim nor custody.
+    let (snapshot, alias) = reserve(context.handle(),id)?;
+    let probe = || -> Result<(),String> {
+        let mut c=bgl::Context::new().map_err(|r|format!("gpu-display: child context {}",outcome(r)))?;
+        let t=Resource(gpu::target_create(0,16,16).map_err(|r|format!("gpu-display: child target {}",outcome(r)))?);
+        c.begin(t.0,16,16);c.copy(alias,&[[0,0,16,16,0,0]]);
+        let (r,d)=gpu::submit(c.handle(),c.encoded());
+        if r != -(EINVAL as i64) || d.error != 4 { return Err("gpu-display: foreign process resolved inherited alias".into()); }
+        let mut submit=[0u64;14];submit[0]=snapshot[5];submit[1]=scanout.0;
+        submit[2]=context.encoded().as_ptr() as u64;submit[3]=(context.encoded().len()*4) as u64;submit[13]=scene.0;
+        let r=wire(19,&mut submit);
+        if r != -(EPERM as i64) { return Err(format!("gpu-display: foreign process op-19 alias {}",outcome(r))); }
+        Ok(())
+    };
+    step("17.4",child("gpu-display: root fork without owner or claim",3000,None,probe))?;
+    step("17.4",child("gpu-display: uid-1000 foreign process",3000,Some(1000),probe))?;
+    // Explicit delegation gives custody; the claim and source aliases stay process-private (breengel.md section 18.1).
+    let mut body=|| {
+        if setuid(1000)!=0 { return 1; }
+        let input=Fd::from_raw(0); let output=Fd::from_raw(1);
+        if io::write(output,b"ready\n").is_err() { return 1; }
+        let mut go=[0u8;1]; if io::read(input,&mut go).ok()!=Some(1) { return 1; }
+        let result=probe();
+        // SAFETY: release this child's explicitly delegated custody.
+        let released=unsafe{raw::syscall0(432) as i64};
+        let answer=if result.is_ok() && released==0 { "ok\n".into() } else { format!("gpu-display: delegated alias probe {result:?}, release {released}\n") };
+        let _=io::write(output,answer.as_bytes()); 0
+    };
+    let mut delegated=Helper::call(&mut body)?;
+    ensure(delegated.line(3000)?=="ready","18","gpu-display: delegated child readiness")?;
+    let mut give=abi::Give::ZERO;give.pid=delegated.pid as u32;
+    want_ok(call(abi::op::GIVE_DISPLAY,&mut give),"18","gpu-display: delegate custody for alias probe")?;
+    ensure(delegated.ask("g")?=="ok","17.4","gpu-display: delegated owner sampled foreign alias")?;
+    let mut cancel=[0u64;14];cancel[0]=snapshot[5];cancel[4]=1;
+    want_errno(wire(19,&mut cancel),ENOENT,"18","gpu-window: delegation invalidates old owner snapshot")?;
+    let (_,pixels)=capture(id,16,16,None).map_err(|r|format!("gpu-window: capture alias client {}",outcome(r)))?;
+    same(&pixels,16,16,false,"gpu-display: alias refusals preserve client's front","17.4",|x,y|pattern(27,x,y))
 }
