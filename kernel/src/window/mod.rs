@@ -8,10 +8,12 @@
 //!
 //! No path in this module writes to the serial log or any other kernel output (section 17.5).
 
+mod damage_union;
 pub mod events;
 pub mod mem;
 pub mod ops;
 pub mod present;
+pub mod scene;
 
 use alloc::{collections::BTreeMap, collections::VecDeque, sync::Arc, vec::Vec};
 
@@ -67,6 +69,9 @@ pub enum BufState {
 pub struct Buffer {
     /// Never reused; pins name their buffer by it.
     pub uid: u64,
+    /// Advances before each writable acquisition, independently of completed GPU generations.
+    pub write_incarnation: u64,
+    pub draining: bool,
     pub mem: Arc<Target>,
     /// The owner's GPU resource handle.
     pub addr: u64,
@@ -159,6 +164,16 @@ pub struct Waits {
     pub gate: WaitQueueHead,
 }
 
+#[derive(Clone)]
+pub struct Pending {
+    pub uid: u64,
+    pub commit_id: u64,
+    pub pixel_gen: u64,
+    pub damage: Damage,
+    pub meta: Meta,
+    pub seal: crate::gpu::window_targets::Seal,
+}
+
 /// One window.
 pub struct Window {
     pub id: u64,
@@ -181,6 +196,11 @@ pub struct Window {
     pub front: Option<usize>,
     /// The newest commit id (COMMIT and COMMIT_NO_CHANGE alike), 0 before the first.
     pub commit_id: u64,
+    pub accepted_id: u64,
+    pub accepted_pixel_gen: u64,
+    pub pending: Option<Pending>,
+    pub acquire_error: bool,
+    pub failed_publications: u64,
     /// The commit whose pixels the front holds.
     pub front_commit: u64,
     pub pixel_gen: u64,
@@ -263,6 +283,8 @@ pub struct Registry {
     pub epoch: u64,
     pub remnants: BTreeMap<u64, Remnant>,
     pub present: present::State,
+    pub snapshot: Option<scene::Reservation>,
+    pub cursor: breengel_abi::Cursor,
 }
 
 impl Registry {
@@ -275,6 +297,8 @@ impl Registry {
             epoch: 0,
             remnants: BTreeMap::new(),
             present: present::State::new(),
+            snapshot: None,
+            cursor: breengel_abi::Cursor { shape: 5, visible: 0, x: 0, y: 0 },
         }
     }
 

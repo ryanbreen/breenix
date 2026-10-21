@@ -48,7 +48,8 @@ pub mod op {
     pub const GIVE_DISPLAY: u32 = 27;
     pub const READ_META: u32 = 28;
     /// The highest op number; every op above it is EINVAL.
-    pub const LAST: u32 = READ_META;
+    pub const COMPOSITE_SNAPSHOT: u32 = 29;
+    pub const LAST: u32 = COMPOSITE_SNAPSHOT;
 }
 
 /// Linux's errno values, which the interface returns negated (section 25).
@@ -64,6 +65,8 @@ pub mod errno {
     pub const EFAULT: i32 = 14;
     pub const EBUSY: i32 = 16;
     pub const EINVAL: i32 = 22;
+    pub const ENODEV: i32 = 19;
+    pub const EDQUOT: i32 = 122;
     pub const EMFILE: i32 = 24;
     pub const ENOSYS: i32 = 38;
     pub const ETIMEDOUT: i32 = 110;
@@ -306,7 +309,7 @@ pub struct Resize {
     /// Out.
     pub stride: u32,
     pub reserved: u32,
-    /// Out: the new buffers' addresses.
+    /// Out: the new buffers' GPU handles.
     pub buffer: [u64; 3],
 }
 
@@ -406,12 +409,64 @@ pub struct Claim {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Composite {
+    pub snapshot: u64,
+    pub target: u64,
+    pub stream: u64,
+    pub length: u64,
     pub flags: u32,
     pub reserved: u32,
-    /// Out.
     pub serial: u64,
-    /// Out: pixels composed.
     pub pixels: u64,
+    pub render_fence: u64,
+    pub present_fence: u64,
+    pub estimate: u64,
+    pub error_index: u32,
+    pub error: u32,
+    pub reason: u32,
+    pub fence_status: u32,
+    pub answer: u32,
+    pub phase: u32,
+    pub scene_target: u64,
+}
+
+/// Metadata-only reservation: no client buffer stays pinned between syscalls.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SceneSnapshot {
+    pub context: u64,
+    pub windows: u64,
+    pub window_capacity: u32,
+    pub window_count: u32,
+    pub damage: u64,
+    pub damage_capacity: u32,
+    pub damage_count: u32,
+    pub snapshot: u64,
+    pub width: u32,
+    pub height: u32,
+    pub scale: u32,
+    pub flags: u32,
+    pub cursor: Cursor,
+    pub claim_epoch: u64,
+    pub owner_sequence: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SceneWindow {
+    pub id: u64,
+    pub sample: u64,
+    pub commit_id: u64,
+    pub pixel_gen: u64,
+    pub render_fence: u64,
+    pub target_generation: u64,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub z: u32,
+    pub stride: u32,
+    pub format: u32,
+    pub reserved: u32,
 }
 
 /// Argument of `COMPOSITE_RECORD`.
@@ -437,6 +492,8 @@ pub struct Readback {
     pub reserved: u32,
     /// Out.
     pub serial: u64,
+    pub reason: u32,
+    pub reserved2: u32,
 }
 
 /// Cursor shapes (`Cursor.shape`).
@@ -818,6 +875,7 @@ pub const fn arg_size(op: u32) -> Option<usize> {
         op::SET_CURSOR => size_of::<Cursor>(),
         op::GIVE_DISPLAY => size_of::<Give>(),
         op::READ_META => size_of::<MetaQuery>(),
+        op::COMPOSITE_SNAPSHOT => size_of::<SceneSnapshot>(),
         _ => return None,
     })
 }

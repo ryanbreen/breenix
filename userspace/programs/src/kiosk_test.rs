@@ -229,13 +229,13 @@ impl Kiosk {
                 })();
                 match result{Ok(()) if observed.0==0=>say("ok"),Ok(())=>say(&format!("err {} reason {}",-observed.0,observed.1)),Err(e)=>say(&format!("gpu-display: {e}"))}
             }
-            Some("composite") => reply(window::composite().map(|(serial, pixels)| format!("{serial} {pixels}"))),
+            Some("composite") => reply(window::composite(&mut { abi::Composite::ZERO }).map(|value| format!("{value}"))),
             Some("composite2") => {
-                let other = std::thread::spawn(|| window::composite());
-                let mine = window::composite();
+                let other = std::thread::spawn(|| window::composite(&mut { abi::Composite::ZERO }));
+                let mine = window::composite(&mut { abi::Composite::ZERO });
                 let theirs = other.join().unwrap_or(Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EIO)));
-                let word = |r: Result<(u64, u64), libbreenix::error::Error>| match r {
-                    Ok((serial, pixels)) => format!("ok {serial} {pixels}"),
+                let word = |r: Result<u64, libbreenix::error::Error>| match r {
+                    Ok(value) => format!("ok {value}"),
                     Err(e) => format!("err {}", errno(e)),
                 };
                 say(&format!("{}, {}", word(mine), word(theirs)));
@@ -307,7 +307,7 @@ fn compose_new_commits(seen: &mut BTreeMap<u64, u64>) {
         }
     }
     if changed {
-        let _ = window::composite();
+        let _ = window::composite(&mut { abi::Composite::ZERO });
     }
 }
 
