@@ -3534,12 +3534,18 @@ pub fn sys_take_over_display() -> SyscallResult {
                 Some(crate::tty::ctty::TtyId::Vt(n)) => usize::from(n),
                 _ => 1,
             };
-            Some((group, vt))
+            Some((group, vt, row.cred.euid))
         })
     };
-    let Some((group, vt)) = owner else {
+    let Some((group, vt, euid)) = owner else {
         return SyscallResult::Err(3);
     };
+    // Display ownership grants cross-window access, including other
+    // accounts' pixels and input. Apply the GPU core's root rule to the legacy
+    // framebuffer/VirGL path as well, before any ownership or screen change.
+    if euid != 0 {
+        return SyscallResult::Err(super::errno::EPERM as u64);
+    }
     // The boot splash gives way before the new owner's first frame (bounded).
     #[cfg(target_arch = "aarch64")]
     crate::console::await_splash();

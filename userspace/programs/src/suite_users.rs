@@ -1405,6 +1405,7 @@ fn window_other() -> CaseResult {
     let id: u32 = id.parse().map_err(|_| format!("ub's window ID {id:?} is not a number"))?;
     check(listed_windows()?.contains(&id), "root's window list does not show ub's window")?;
     as_user(A, || {
+        refused("taking over the display as a non-root user", sc(libbreenix::syscall::nr::TAKE_OVER_DISPLAY, &[]), EPERM)?;
         let listed = listed_windows()?;
         want(!listed.contains(&id), format!("ua's window list shows ub's window {id}: {listed:?}"))?;
         for (what, ret) in window_ops(id) {
@@ -1423,6 +1424,7 @@ fn window_other() -> CaseResult {
 #[cfg(target_arch = "x86_64")]
 fn window_other() -> CaseResult {
     as_user(A, || {
+        refused("taking over the display as a non-root user", sc(libbreenix::syscall::nr::TAKE_OVER_DISPLAY, &[]), EPERM)?;
         refused("creating a window", fbdraw(11, [4, 4, 0, 0], 0), EINVAL)?;
         refused("listing windows", fbdraw(13, [0, 0, 0, 0], 0), EINVAL)?;
         for (what, ret) in window_ops(1) {
