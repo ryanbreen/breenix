@@ -331,6 +331,17 @@ impl Gpu {
         Ok(())
     }
 
+    /// Show the scanout target again, as the stage last drew it, after a case that started
+    /// above the kernel's screen.
+    fn represent(&self) -> Result<(), String> {
+        graphics::take_over_display().map_err(|e| std::format!("stage display ownership: {e:?}"))?;
+        let (r, presented) = gpu::present(self.context, self.scanout);
+        if r != 0 {
+            return Err(std::format!("stage present: errno {}, answer {:#x}", -r, presented.answer));
+        }
+        Ok(())
+    }
+
     /// Upload the frame, rendered at the display's physical size, copy it into the scanout
     /// on the GPU with the panel cursor over it, present it, and observe the scanout. Returns
     /// the observation, the present's context fence and the cursor's pointer.
@@ -768,6 +779,19 @@ pub(super) fn release_for(name: &str) -> Result<(), String> {
         release()
     } else {
         Ok(())
+    }
+}
+
+/// After a case that started above the kernel's screen, the stage takes the display back and
+/// shows its frame at once, so the console does not show between cases.
+pub(super) fn restore_after(name: &str) -> Result<(), String> {
+    if !ABOVE_KERNEL_SCREEN.contains(&name) {
+        return Ok(());
+    }
+    let pid = process::getpid().map_err(|e| e.to_string())?.raw() as u64;
+    match GPU.lock().unwrap().as_ref().filter(|g| g.pid == pid) {
+        Some(g) => g.represent(),
+        None => Ok(()),
     }
 }
 

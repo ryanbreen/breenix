@@ -1278,7 +1278,10 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                     Outcome::Fail { ms: ms_since(start), msg: plain(&std::format!("waitpid failed: {error}{note}")) }
                 }
             };
-            if screen.gui {screen.stage_result(crate::suite_stage::end());}
+            if screen.gui {
+                screen.stage_result(crate::suite_stage::end());
+                screen.stage_result(crate::suite_stage::restore_after(name));
+            }
             let _ = io::close(reader);
             if let Some((r, _)) = window { let _ = io::close(r); }
             if let Some(fd) = live_reader {
