@@ -214,7 +214,29 @@ fn composition_compose_fullscreen() -> CaseResult {
 
 fn composition_compose_many() -> CaseResult {
     let scene: Vec<Placed> = (0..16u32).map(|i| Placed::new(40 + 60 * i as i32, 30 + 40 * i as i32, 160, 120, 15 - i, 10 + i)).collect();
-    scene_case(&scene, "sixteen windows, each under the one before it")
+    scene_case(&scene, "sixteen windows, each under the one before it")?;
+    let mut k=compositor()?;
+    let wins:Vec<W>=scene.iter().map(|p|W::new(p.w,p.h,2)).collect::<Result<_,_>>()?;
+    for (w,p) in wins.iter().zip(&scene) {show(&mut k,w,p)?;}
+    // The per-process limit remains sixteen. A separate client supplies window 17.
+    let mut raw=raw_client().cite("24")?;
+    let created=raw.ask("create 8 8 2").cite("24")?;
+    let id=created.strip_prefix("ok ").and_then(|s|s.split_whitespace().next()).and_then(|s|s.parse::<u64>().ok())
+        .ok_or_else(||format!("gpu-window: seventeenth-window fixture: {created}"))?;
+    ensure(raw.ask(&format!("register {id} overflow")).cite("24")?=="ok","17.1","gpu-window: extra window registration")?;
+    ensure(raw.ask(&format!("fill {id} 27")).cite("24")?.starts_with("ok "),"17.3","gpu-window: extra window publication")?;
+    place(&mut k,id,&Placed::new(0,0,8,8,16,27),abi::geometry_flags::VISIBLE)?;
+    let (serial,_)=compose(&mut k)?;
+    let (_,entries)=record(&mut k,serial)?;
+    ensure(entries.len()==17,"18","gpu-display: COMPOSITE_RECORD truncated a scene to sixteen windows")?;
+    let (width,height)=screen_size()?;
+    let mut pixels=vec![0xA5; width*height*4]; let mut observed=[0xA5u8;1024];
+    let mut rb=super::handoff::Readback::ZERO;
+    rb.dst=pixels.as_mut_ptr() as u64;rb.dst_len=pixels.len() as u64;
+    rb.record=observed.as_mut_ptr() as u64;rb.record_len=1024;
+    want_errno(call(op::SCANOUT_READBACK,&mut rb),5,"20.1","gpu-display: B13 composite-overflow observation")?;
+    ensure(rb.reason==11 && rb.serial==0 && pixels.iter().chain(observed.iter()).all(|&b|b==0xA5),
+        "20.1","gpu-display: overflow must report reason 11 without partial pixels, record or serial")
 }
 
 fn composition_generation() -> CaseResult {
