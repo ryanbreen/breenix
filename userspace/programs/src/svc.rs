@@ -82,13 +82,13 @@ fn status(names: &[String]) -> i32 {
         }
     }
     let mut out = std::io::stdout().lock();
-    let _ = writeln!(out, "{:<16} {:<10} {:>6} {:>6}  {:<10} {:<8} {}", "SERVICE", "STATE", "PID", "STARTS", "LAST-EXIT", "USER", "NOTE");
+    let _ = writeln!(out, "{:<20} {:<10} {:>6} {:>6}  {:<10} {:<8} {}", "SERVICE", "STATE", "PID", "STARTS", "LAST-EXIT", "USER", "NOTE");
     for s in &shown {
         let pid = if s.pid == 0 { "-".to_string() } else { s.pid.to_string() };
         let last = if s.last_exit.is_empty() { "-".to_string() } else { s.last_exit.replace(':', " ") };
         let _ = writeln!(
             out,
-            "{:<16} {:<10} {:>6} {:>6}  {:<10} {:<8} {}",
+            "{:<20} {:<10} {:>6} {:>6}  {:<10} {:<8} {}",
             s.name, s.state, pid, s.starts, last, s.user, note(s, &supervisor, &all, now)
         );
         if code == 0 && !names.is_empty() && !matches!(s.state.as_str(), "running" | "done") {

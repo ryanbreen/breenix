@@ -375,9 +375,12 @@ def parse_state(text):
 
 class Console:
     """Root's commands, typed on the persistent boot's SOL console through the driver's tmux pane a few
-    bytes at a time, as the driver's own --run typing is (#2105). The console capture shows each result."""
+    bytes at a time, as the driver's own --run typing is. SOL can still drop an input byte while the console
+    is busy (#2105), so each line is pressed only once its echo shows exactly what was typed; a damaged line
+    is cleared with Ctrl-U and typed again. The console capture shows each result."""
 
     PROMPT = r'bsh [^>\n]*>'
+    LOGIN = 'Breenix login: '
 
     def __init__(self, in_metal, boot, directory, user, password):
         self.in_metal, self.tmux = in_metal, 'tmux -L metal-' + boot
@@ -395,8 +398,8 @@ class Console:
         if result.returncode: raise ValueError('cannot read the console capture')
         return result.stdout.decode(errors='replace')
 
-    def send(self, text):
-        data = (text + '\r').encode()
+    def send(self, text, enter=True):
+        data = (text + ('\r' if enter else '')).encode()
         for at in range(0, len(data), 4):
             # stdin keeps the password out of process arguments.
             result = self.in_metal('sh', '-c', self.tmux + ' load-buffer - && ' + self.tmux + ' paste-buffer -d -t sol',
@@ -413,23 +416,45 @@ class Console:
             if time.monotonic() >= deadline: raise ValueError('the console did not show ' + what)
             time.sleep(0.5)
 
-    def login(self):
+    def type_line(self, text, attempts=4):
+        """Type `text` at bsh's prompt, and press Enter once bsh's redrawn line matches it."""
+        echoed = re.compile(r'(?m)^' + self.PROMPT + ' ' + re.escape(text) + r'[ \t]*$')
+        for _ in range(attempts):
+            offset = self.size()
+            self.send(text, enter=False)
+            deadline = time.monotonic() + 6
+            while time.monotonic() < deadline:
+                if echoed.search(self.since(offset)):
+                    self.send('')
+                    return
+                time.sleep(0.3)
+            self.send('\x15', enter=False)
+            time.sleep(0.5)
+        raise ValueError('the console kept losing typed input: ' + text)
+
+    def login(self, attempts=3):
         if self.logged_in: return
         offset = self.size()
         self.send('')
-        text, found = self.wait(offset, 'Breenix login: |' + self.PROMPT, 'a login prompt')
-        if found.group(0) != 'Breenix login: ':
+        text, found = self.wait(offset, re.escape(self.LOGIN) + '|' + self.PROMPT, 'a login prompt')
+        if found.group(0) != self.LOGIN:
             offset = self.size()
-            self.send('exit')
-            self.wait(offset, 'Breenix login: ', 'a login prompt after logging out')
-        offset = self.size()
-        self.send(self.user)
-        self.wait(offset, 'Password: ', 'the password prompt')
-        offset = self.size()
-        self.send(self.password)
-        text, found = self.wait(offset, self.PROMPT + '|Login incorrect', 'a shell prompt')
-        if found.group(0) == 'Login incorrect': raise ValueError('the console account was refused')
-        self.logged_in = True
+            self.type_line('exit')
+            self.wait(offset, re.escape(self.LOGIN), 'a login prompt after logging out')
+        for _ in range(attempts):
+            offset = self.size()
+            self.send(self.user)
+            self.wait(offset, 'Password: ', 'the password prompt')
+            offset = self.size()
+            # getty's echo follows a prompt printed earlier and the password is not echoed, so a byte lost on
+            # the way shows as a refusal, and login is tried again.
+            self.send(self.password)
+            text, found = self.wait(offset, self.PROMPT + '|Login incorrect', 'a shell prompt')
+            if found.group(0) != 'Login incorrect':
+                self.logged_in = True
+                return
+            self.wait(offset + len(text[:found.end()].encode()), re.escape(self.LOGIN), 'a login prompt after a refusal')
+        raise ValueError('the console account was refused ' + str(attempts) + ' times')
 
     def run(self, command, timeout=30):
         """Type one command, then a marker computation; return the console text up to the marker's answer."""
@@ -437,8 +462,8 @@ class Console:
         self.step += 1
         marker = 'svc-suite-step-' + str(self.step)
         offset = self.size()
-        self.send(command)
-        self.send('print("' + marker + '", 6*7)')
+        self.type_line(command)
+        self.type_line('print("' + marker + '", 6*7)')
         text, found = self.wait(offset, re.escape(marker) + ' 42', 'the answer to ' + command, timeout)
         text = text[:found.start()]
         if re.search(r'\[bsh\] command failed status=[1-9]', text): raise ValueError('console command failed: ' + command)
@@ -447,7 +472,7 @@ class Console:
     def logout(self):
         if not self.logged_in: return
         offset = self.size()
-        self.send('exit')
+        self.type_line('exit')
         self.wait(offset, r'\[init\] console session ended', 'the console session ending')
         self.logged_in = False
 
@@ -470,7 +495,8 @@ class Services:
         return parse_state(result.stdout)
 
     def lines(self, start, pattern):
-        """Console lines from byte offset `start` that match `pattern`, with their arrival times (serial.ts)."""
+        """Console lines from byte offset `start` that match `pattern`, with their arrival times (serial.ts).
+        init's lines share the console with the root session's prompt, so patterns are not anchored at the start."""
         text, stamps = self.capture()
         data = text.encode()
         found = []
@@ -480,6 +506,13 @@ class Services:
             line = data[offset:end].decode(errors='replace').rstrip('\n')
             if re.search(pattern, line): found.append((arrived, line))
         return found
+
+    def await_line(self, start, pattern, what, timeout=15):
+        """The console capture trails init's answers over SSH; wait for a line before judging its absence."""
+        deadline = time.monotonic() + timeout
+        while not self.lines(start, pattern):
+            if time.monotonic() >= deadline: raise ValueError('the console did not show ' + what)
+            time.sleep(1)
 
     def ensure_fixtures(self):
         if self.fixtures is not None:
@@ -559,7 +592,7 @@ class Services:
         start = self.console.size()
         self.console.login()
         offset = self.console.size()
-        self.console.send('kill -9 ' + str(before['pid']))
+        self.console.type_line('kill -9 ' + str(before['pid']))
         sent = time.monotonic()
         # Count from the typed kill, and only once init has seen the old listener die.
         self.console.wait(offset, r'\[init\] bsshd killed by signal 9', 'bsshd dying', RESTART_WINDOW_S)
@@ -575,8 +608,7 @@ class Services:
         if after['state'] != 'running' or after['pid'] in (0, before['pid']) or after['starts'] != before['starts'] + 1 \
                 or after['exit'] != 'signal:9':
             raise ValueError('the published state does not show the restart after SIGKILL')
-        if not self.lines(start, r'^\[init\] bsshd restarts in 1000 ms$'):
-            raise ValueError('init did not report the restart delay')
+        self.await_line(start, r'\[init\] bsshd restarts in 1000 ms$', "init's report of the restart delay")
 
     def case_reconnect_bsh(self):
         self.probe.require(self.probe.ssh('console.log(env("SHELL"));', posix=False), '/bin/bsh')
@@ -586,11 +618,11 @@ class Services:
     def case_backoff(self):
         self.ensure_fixtures()
         deadline = time.monotonic() + 45
-        while not self.lines(self.start, r'^\[init\] svc-suite-fail is crash-looping'):
+        while not self.lines(self.start, r'\[init\] svc-suite-fail is crash-looping'):
             if time.monotonic() >= deadline: raise ValueError('the failing service never reached its crash loop')
             time.sleep(1)
-        exits = self.lines(self.start, r'^\[init\] svc-suite-fail exited \(code 1\)$')
-        delays = [line for _, line in self.lines(self.start, r'^\[init\] svc-suite-fail restarts in \d+ ms$')]
+        exits = self.lines(self.start, r'\[init\] svc-suite-fail exited \(code 1\)$')
+        delays = [line for _, line in self.lines(self.start, r'\[init\] svc-suite-fail restarts in \d+ ms$')]
         if delays[:4] != ['[init] svc-suite-fail restarts in ' + str(ms) + ' ms' for ms in (1000, 2000, 4000, 8000)]:
             raise ValueError('init reported other restart delays than 1, 2, 4 and 8 s')
         if len(exits) < 5: raise ValueError('fewer than five failures were reported')
@@ -616,9 +648,10 @@ class Services:
         result, elapsed = self.stop('svc-suite-stubborn')
         self.probe.require(result, 'svc: stopped svc-suite-stubborn (signal 9)')
         if elapsed < 2: raise ValueError('the service that ignores SIGTERM was killed before its stop timeout')
-        if not self.lines(start, r'^\[init\] svc-suite-stubborn did not stop within 2 s of SIGTERM; sending SIGKILL$') or \
-                self.lines(start, r'^\[init\] svc-suite-sleep did not stop'):
-            raise ValueError('SIGKILL went to the wrong service or was not reported')
+        self.await_line(start, r'\[init\] svc-suite-stubborn did not stop within 2 s of SIGTERM; sending SIGKILL$',
+                        'the SIGKILL report for the service that ignores SIGTERM')
+        if self.lines(start, r'\[init\] svc-suite-sleep did not stop'):
+            raise ValueError('SIGKILL went to the service that SIGTERM stopped')
         time.sleep(3)
         _, services = self.state()
         for name, pid in pids.items():
@@ -645,31 +678,36 @@ class Services:
         bsshd = services['bsshd']['pid']
         for request in ('svc stop bsshd', 'svc reload'):
             result = self.probe.ssh(request)
-            if result.returncode != 1 or 'permission denied' not in result.stderr:
+            # bsshd delivers an exec request's stderr as ordinary channel data.
+            if result.returncode != 1 or 'permission denied' not in result.stdout + result.stderr:
                 raise ValueError(request + ' was not refused for the operator account')
         if self.state()[1]['bsshd']['pid'] != bsshd: raise ValueError('a refused request changed bsshd')
 
     def case_crash_loop(self):
         self.ensure_fixtures()
-        loops = self.lines(self.start, r'^\[init\] svc-suite-fail is crash-looping: 5 failures in a row')
+        loops = self.lines(self.start, r'\[init\] svc-suite-fail is crash-looping: 5 failures in a row')
         if not loops: raise ValueError('no crash loop was reported on the console')
         report = self.probe.ssh('svc status svc-suite-fail')
         if report.returncode != 3 or not re.search(r'^svc-suite-fail +crash-loop .*code 1', report.stdout, re.M):
             raise ValueError('svc does not report the crash loop')
         deadline = loops[0][0] + 75
-        while len(self.lines(self.start, r'^\[init\] svc-suite-fail exited \(code 1\)$')) < 6:
+        while True:
+            exits = self.lines(self.start, r'\[init\] svc-suite-fail exited \(code 1\)$')
+            if len(exits) >= 6: break
             if time.time() >= deadline: raise ValueError('no start followed the crash loop report')
             time.sleep(2)
-        exits = self.lines(self.start, r'^\[init\] svc-suite-fail exited \(code 1\)$')
         gap = round(exits[5][0] - exits[4][0], 2)
         self.probe.transcript.append(dict(crashLoopGap=gap))
         if not 59 <= gap <= 63: raise ValueError('the start after the crash loop came ' + str(gap) + ' s later, not 60 s')
 
     def cleanup(self):
-        try:
-            self.remove_fixtures()
-        finally:
-            self.console.logout()
+        errors = []
+        for step in (self.remove_fixtures, self.console.logout):
+            try:
+                step()
+            except Exception as error:  # Any exception fails the case; cleanup still runs.
+                errors.append(type(error).__name__ + ': ' + str(error))
+        if errors: raise ValueError('; '.join(errors))
 
 
 def main():
@@ -741,7 +779,7 @@ def main():
                     else:
                         target.run_case(name)
                     result, reason = 'PASS', ''
-                except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
+                except Exception as error:  # Any exception fails the case; cleanup still runs.
                     result, reason = 'FAIL', type(error).__name__ + ': ' + str(error)
                 elapsed = int((time.monotonic() - start) * 1000)
                 records['cases'].append(dict(id=category + '/' + name, result=result, ms=elapsed, reason=reason))
@@ -750,7 +788,7 @@ def main():
             try:
                 target.cleanup()
                 records['cleanup'] = True
-            except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
+            except Exception as error:  # Any exception fails the case; cleanup still runs.
                 records['cleanupError'] = type(error).__name__ + ': ' + str(error)
         transcript = probe.transcript
     passed = sum(r['result'] == 'PASS' for r in records['cases'])
