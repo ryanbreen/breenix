@@ -24,7 +24,7 @@ impl Target {
         }
         Ok(pixels)
     }
-    /// Fixture geometry is emitted as solid draws, never uploaded as a CPU image.
+    /// Draw fixture geometry with solid instances.
     pub fn paint(self, rect: [i32; 4], seed: u32) -> Result<(), String> {
         let mut context =
             bgl::Context::new().map_err(|r| format!("gpu-window: fixture context returned {r}"))?;

@@ -191,3 +191,11 @@ pub fn composite_snapshot(snapshot: &mut abi::SceneSnapshot) -> Result<u64, Erro
 pub fn composite(submission: &mut abi::Composite) -> Result<u64, Error> {
     call(op::COMPOSITE, submission)
 }
+
+/// Read the successfully published commit and its metadata.
+pub fn read_meta(id: u64) -> Result<(u64, abi::Meta), Error> {
+    let mut meta = abi::Meta::ZERO;
+    let mut query = abi::MetaQuery { id, meta: &mut meta as *mut abi::Meta as u64, commit_id: 0 };
+    call(op::READ_META, &mut query)?;
+    Ok((query.commit_id, meta))
+}

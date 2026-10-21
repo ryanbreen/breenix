@@ -2,7 +2,7 @@
 use alloc::vec::Vec;
 use breengel_abi::{errno::ENOMEM, Rect};
 
-/// The intersection of two rectangles, or `None` when it is empty.
+/// Intersect two half-open rectangles.
 pub fn intersect(a: Rect, b: Rect) -> Option<Rect> {
     let x0 = (a.x as i64).max(b.x as i64);
     let y0 = (a.y as i64).max(b.y as i64);

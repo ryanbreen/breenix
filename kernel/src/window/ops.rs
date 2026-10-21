@@ -419,11 +419,17 @@ pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
     // Take a buffer, compute its replay set and pin the front it copies from.
     let (index, uid, dst, base, set, source, width, height, tree, tree_addr, tree_len) = loop {
         publish_ready();
+        let pool = {
+            let mut reg = REGISTRY.lock();
+            let w = reg.window(a.id, caller, who::owner)?;
+            core::array::from_fn::<_, 3, _>(|i| w.buffers.get(i).map(|b| b.mem.clone()))
+        };
+        for target in pool.iter().flatten() { target.available()?; }
         let waits = {
             let mut reg = REGISTRY.lock();
             let w = reg.window(a.id, caller, who::owner)?;
             if core::mem::take(&mut w.acquire_error) { return Err(breengel_abi::errno::EIO); }
-            if let Some(i) = pick_free(w) {
+            if let Some(i) = pick_free(w).filter(|_| w.pending.is_none()) {
                 let (width, height, front_commit) = (w.width, w.height, w.front_commit);
                 let (tree, tree_addr, tree_len) = (w.tree.clone(), w.tree_addr, w.tree_len());
                 let set = match w.front {
@@ -452,7 +458,7 @@ pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
                 .lock()
                 .windows
                 .get(&id)
-                .is_some_and(|w| pick_free(w).is_none())
+                .is_some_and(|w| w.pending.is_some() || pick_free(w).is_none())
         })?;
     };
     let rects = set.rects(width, height);
@@ -965,7 +971,8 @@ pub fn resize(caller: &Caller, r: &mut Resize, out: u64) -> Result<u64, i32> {
         }
         if let Some(f) = front {
             buffers[f].state = BufState::Front;
-            w.pixel_gen += 1;
+            w.pixel_gen = w.accepted_pixel_gen + 1;
+            w.accepted_pixel_gen = w.pixel_gen;
         }
         let old = core::mem::replace(&mut w.buffers, core::mem::take(&mut buffers));
         w.front = front;

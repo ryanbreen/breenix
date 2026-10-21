@@ -33,7 +33,7 @@ pub struct Seal {
     pub render_context: u32,
 }
 impl Seal {
-    /// None means at least one admitted writer has not published its result.
+    /// Pending until successful dependencies publish and end device access.
     pub fn outcome(&self) -> Option<Result<(), i32>> {
         let mut pending = false;
         for writer in &self.writers {
@@ -120,13 +120,24 @@ impl Target {
         let pages = device_frames(owner, bytes)?;
         let id = console::resource_with(context.id, kind::TARGET, format::B8G8R8A8,
             width, height, false, pages)?;
-        let handle = with_core(|c| {
+        let published = with_core(|c| {
             let handle = c.handle();
             let resource = c.resources.get_mut(&id).ok_or(EIO)?;
             resource.owner = owner;
             c.proc_mut(owner).resources.insert(handle, id);
             Ok::<u64,i64>(handle)
-        }).ok_or(ENODEV)??;
+        }).ok_or(ENODEV).and_then(|result| result);
+        let handle = match published {
+            Ok(handle) => handle,
+            Err(error) => {
+                with_core(|c| {
+                    if let Some(resource) = c.resources.get_mut(&id) { resource.dropped = true; }
+                    c.unhold(id);
+                });
+                notify();
+                return Err(error);
+            }
+        };
         let target = Arc::new(Self { context, id, handle, width, height, bytes: bytes as u64 });
         let contexts = with_core(|c| c.procs.get(&owner).map(|p| p.contexts.values().copied().collect::<Vec<_>>()))
             .flatten().ok_or(EIO)?;
@@ -139,10 +150,9 @@ impl Target {
     pub fn revoke(&self) { let _ = destroy_resource(self.context.owner,self.handle); }
 
     pub fn handle(&self) -> u64 { self.handle }
-    pub fn device_id(&self) -> u32 { self.id }
     pub fn len(&self) -> u64 { self.bytes }
 
-    /// Seal and capture every accepted writer under the same lock as admission.
+    /// Seal writes and capture admitted dependencies under the admission lock.
     pub fn seal_writes(&self) -> Result<Seal, i32> {
         with_core(|c| {
             let r = c.resources.get_mut(&self.id).ok_or(EIO)?;
@@ -161,6 +171,14 @@ impl Target {
             if r.reading || r.accepted.iter().any(|w| !w.ended()) { return Err(breengel_abi::errno::EBUSY as i64); }
             r.window_sealed = false;
             Ok(())
+        }).unwrap_or(Err(ENODEV)).map_err(|e| e as i32)
+    }
+
+    /// Reset loses the whole pool's contents; replay cannot recover a lost front.
+    pub fn available(&self) -> Result<(), i32> {
+        with_core(|c| match c.resources.get(&self.id) {
+            Some(resource) if !resource.lost => Ok(()),
+            _ => Err(EIO),
         }).unwrap_or(Err(ENODEV)).map_err(|e| e as i32)
     }
 
@@ -358,7 +376,7 @@ impl encode::Bindings for Bindings<'_> {
     fn buffer_word(&self, _handle:u64, _offset:u64) -> u32 { 0 }
 }
 
-/// Charged private composition metadata; it never owns a client resource.
+/// Charged private composition metadata, independent of client resource backing.
 pub struct MetadataCharge { _charge: Charge }
 impl MetadataCharge {
     pub fn new(owner: u64, bytes: usize) -> Result<Self, i32> {

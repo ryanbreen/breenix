@@ -275,11 +275,11 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
     let bytes = core::mem::size_of::<Reservation>()
         .checked_add(
             sources
-                .len()
+                .capacity()
                 .checked_mul(core::mem::size_of::<Source>())
                 .ok_or(ENOMEM)?,
         )
-        .and_then(|n| n.checked_add(damage.len() * 16))
+        .and_then(|n| n.checked_add(damage.capacity() * core::mem::size_of::<Rect>()))
         .ok_or(ENOMEM)?;
     let charge = MetadataCharge::new(caller.tgid, bytes)?;
     let token = window_targets::scene_handle(caller.tgid)?;
