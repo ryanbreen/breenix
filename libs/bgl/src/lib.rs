@@ -175,22 +175,29 @@ impl Drop for Context {
 }
 /// A static source table: a built-in font table or a suite's declared fixture, stored whole
 /// or as separate static rows (docs/gui/gpu.md section 2.4). The only CPU bytes BGL uploads
-/// as `Fixture`; a computed image cannot be one, because it is not `'static` data.
+/// as `Fixture`; uploads verify both the bytes and row descriptors are read-only image data.
 pub struct DeclaredFixture {
-    rows: Vec<&'static [u8]>,
+    rows: FixtureRows,
+}
+enum FixtureRows {
+    Table(&'static [u8]),
+    Rows(&'static [&'static [u8]]),
 }
 impl DeclaredFixture {
     /// A table held in one static slice.
     pub fn table(bytes: &'static [u8]) -> Self {
-        Self { rows: alloc::vec![bytes] }
+        Self { rows: FixtureRows::Table(bytes) }
     }
     /// A table held as static rows, uploaded in order as one contiguous table.
-    pub fn rows(rows: Vec<&'static [u8]>) -> Self {
-        Self { rows }
+    pub fn rows(rows: &'static [&'static [u8]]) -> Self {
+        Self { rows: FixtureRows::Rows(rows) }
     }
     /// The table's size in bytes.
     pub fn len(&self) -> usize {
-        self.rows.iter().map(|r| r.len()).sum()
+        match &self.rows {
+            FixtureRows::Table(bytes) => bytes.len(),
+            FixtureRows::Rows(rows) => rows.iter().map(|r| r.len()).sum(),
+        }
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -207,11 +214,13 @@ pub fn fixture_upload(
     source: u32,
 ) -> Result<(), i64> {
     let joined;
-    let bytes: &[u8] = if let [one] = fixture.rows.as_slice() {
-        one
-    } else {
-        joined = fixture.rows.concat();
-        &joined
+    let bytes: &[u8] = match fixture.rows {
+        FixtureRows::Table(bytes) if libbreenix::image::read_only(bytes) => bytes,
+        FixtureRows::Rows(rows) if libbreenix::image::static_rows(rows) => {
+            joined = rows.concat();
+            &joined
+        }
+        _ => return Err(-gpu::abi::errno::EINVAL),
     };
     match gpu::upload(context.handle, resource, rect, bytes, stride, source, gpu::abi::purpose::FIXTURE).0 {
         0 => Ok(()),
@@ -237,6 +246,17 @@ fn intersect(a: [i32; 4], b: [i32; 4]) -> [i32; 4] {
 mod tests {
     use super::*;
     use core::mem::ManuallyDrop;
+    #[test]
+    fn leaked_cpu_image_and_selected_palette_rows_are_refused_before_upload() {
+        let context = ManuallyDrop::new(Context { handle: 0, words: Vec::new(), clips: Vec::new(), bounds: [0; 4] });
+        let rendered = alloc::vec![17, 34, 51, 255].leak();
+        assert_eq!(fixture_upload(DeclaredFixture::table(rendered), &context, 0, [0, 0, 1, 1], 4,
+            gpu::abi::upload_source::B8G8R8A8), Err(-gpu::abi::errno::EINVAL));
+        static PALETTE: [[u8; 4]; 2] = [[0, 0, 0, 255], [255; 4]];
+        let rows = alloc::vec![&PALETTE[1][..], &PALETTE[0][..]].leak();
+        assert_eq!(fixture_upload(DeclaredFixture::rows(rows), &context, 0, [0, 0, 1, 2], 4,
+            gpu::abi::upload_source::B8G8R8A8), Err(-gpu::abi::errno::EINVAL));
+    }
     #[test]
     fn split_preserves_overlap_order_and_half_open_edges() {
         let mut c=ManuallyDrop::new(Context { handle:0,words:Vec::new(),clips:Vec::new(),bounds:[0,0,16,16] });
