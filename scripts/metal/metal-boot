@@ -1228,6 +1228,8 @@ class Driver:
         commands = (getattr(self.args, 'run', None) or []) + ['sync']
         if not persistent(self.args) or len(commands) == 1 or self.kernel_started is None or self.fatal_at is not None:
             return
+        if self.run_step >= 2 and re.search(r'\[bsh\] command failed status=[1-9][0-9]*', text):
+            raise Finish(m.EXIT_SHORT, 'a persistent console command failed')
         fresh = self.line_start > self.sent_at
         # bsh redraws its prompt and the line typed so far on each key; only a prompt with nothing after it is a
         # fresh one, once the command before it has finished.

@@ -53,10 +53,9 @@ impl<'a> ServerSession<'a> {
     /// Returns the authenticated username on success.
     pub fn handshake(&mut self) -> Result<String, SshError> {
         // 1. Version exchange
-        // Read client version FIRST — this blocks until the TCP 3-way handshake
-        // completes (the client's ACK + version string arrive together). Sending
-        // our version first would fail because the connection may still be in
-        // SynReceived state after accept().
+        // RFC 4253 section 4.2: send identification once TCP is established.
+        // sendmsg waits for the accepted connection to leave SynReceived.
+        self.io.write_line(BSSH_VERSION).map_err(|_| SshError::Io)?;
         self.client_version = match self.io.read_line() {
             Ok(v) => v,
             Err(e) => {
@@ -66,11 +65,6 @@ impl<'a> ServerSession<'a> {
             }
         };
         println!("bsshd: client version: '{}'", self.client_version);
-        if let Err(e) = self.io.write_line(BSSH_VERSION) {
-            println!("bsshd: write_line FAILED: {:?}", e);
-            return Err(SshError::Io);
-        }
-        println!("bsshd: server version sent");
 
         if !self.client_version.starts_with("SSH-2.0-") {
             return Err(SshError::Protocol("unsupported SSH version"));
@@ -140,12 +134,10 @@ impl<'a> ServerSession<'a> {
 
         // Derive and install session keys
         let session_id = self.kex.session_id.as_ref().unwrap();
-        let is_hybrid = c_init_len == 1216;
-        let (cipher_c2s, cipher_s2c) = if is_hybrid {
-            kex::derive_keys_hybrid(&shared_secret, &exchange_hash, session_id)
-        } else {
-            kex::derive_keys(&shared_secret, &exchange_hash, session_id)
-        };
+        let (c2s, s2c) = kex::negotiate_ciphers(&self.kex.peer_kexinit, &self.kex.my_kexinit)?;
+        let (cipher_c2s, cipher_s2c) = kex::derive_keys(
+            &shared_secret, &exchange_hash, session_id, c_init_len == 1216, c2s, s2c,
+        );
 
         self.io.set_cipher_recv(cipher_c2s); // client→server = our recv
         self.io.set_cipher_send(cipher_s2c); // server→client = our send
@@ -250,6 +242,17 @@ impl<'a> ServerSession<'a> {
         }
     }
 
+    /// Bytes that can be sent without waiting for peer window credit.
+    pub fn send_capacity(&self) -> usize {
+        self.channel.as_ref().map(|ch| ch.send_window.min(ch.max_packet) as usize).unwrap_or(0)
+    }
+
+    /// Replenish input credit only after the consumer has delivered or discarded it.
+    pub fn consume_input(&mut self, bytes: usize) -> Result<(), SshError> {
+        let ch = self.channel.as_mut().ok_or(SshError::ChannelNotFound)?;
+        channel::send_window_adjust(&mut self.io, ch, bytes as u32)
+    }
+
     /// Take the command supplied by an SSH "exec" request, if any.
     pub fn take_exec_command(&mut self) -> Option<String> {
         self.channel
@@ -278,6 +281,18 @@ impl<'a> ServerSession<'a> {
     /// (window adjust, etc.), or Err for disconnect/errors.
     pub fn recv_data(&mut self) -> Result<Option<Vec<u8>>, SshError> {
         let msg = self.io.recv_packet().map_err(|_| SshError::Io)?;
+        self.handle_channel_packet(&msg, true)
+    }
+
+    /// Nonblocking receive for a process relay. A fragmented packet stays in
+    /// PacketIo; an incomplete packet or control message yields no channel data. The caller
+    /// returns input credit with consume_input after delivering the data.
+    pub fn try_recv_data_uncredited(&mut self) -> Result<Option<Vec<u8>>, SshError> {
+        let Some(msg) = self.io.try_recv_packet().map_err(|_| SshError::Io)? else { return Ok(None) };
+        self.handle_channel_packet(&msg, false)
+    }
+
+    fn handle_channel_packet(&mut self, msg: &[u8], replenish: bool) -> Result<Option<Vec<u8>>, SshError> {
         if msg.is_empty() {
             return Err(SshError::Disconnected);
         }
@@ -285,14 +300,15 @@ impl<'a> ServerSession<'a> {
         match msg[0] {
             SSH_MSG_CHANNEL_DATA => {
                 let mut pos = 1;
-                let _channel_id = SshBuf::get_u32(&msg, &mut pos);
-                let data = SshBuf::get_string(&msg, &mut pos)
+                let _channel_id = SshBuf::get_u32(msg, &mut pos);
+                let data = SshBuf::get_string(msg, &mut pos)
                     .ok_or(SshError::Protocol("bad channel data"))?;
 
                 // Adjust receive window
                 if let Some(ref mut ch) = self.channel {
-                    ch.recv_window = ch.recv_window.saturating_sub(data.len() as u32);
-                    if ch.recv_window < 512 * 1024 {
+                    ch.recv_window = ch.recv_window.checked_sub(data.len() as u32)
+                        .ok_or(SshError::Protocol("channel receive window exceeded"))?;
+                    if replenish && ch.recv_window < 512 * 1024 {
                         channel::send_window_adjust(&mut self.io, ch, 1024 * 1024)?;
                     }
                 }
@@ -302,8 +318,8 @@ impl<'a> ServerSession<'a> {
             SSH_MSG_CHANNEL_WINDOW_ADJUST => {
                 if let Some(ref mut ch) = self.channel {
                     let mut pos = 1;
-                    let _id = SshBuf::get_u32(&msg, &mut pos);
-                    let bytes = SshBuf::get_u32(&msg, &mut pos).unwrap_or(0);
+                    let _id = SshBuf::get_u32(msg, &mut pos);
+                    let bytes = SshBuf::get_u32(msg, &mut pos).unwrap_or(0);
                     ch.send_window = ch.send_window.saturating_add(bytes);
                 }
                 Ok(None)
@@ -317,7 +333,7 @@ impl<'a> ServerSession<'a> {
             }
             SSH_MSG_CHANNEL_CLOSE => {
                 let mut pos = 1;
-                let recipient = SshBuf::get_u32(&msg, &mut pos)
+                let recipient = SshBuf::get_u32(msg, &mut pos)
                     .ok_or(SshError::Protocol("bad channel close"))?;
                 if pos != msg.len() {
                     return Err(SshError::Protocol("bad channel close length"));
@@ -507,7 +523,10 @@ impl ClientSession {
 
         // Install cipher
         let session_id = self.kex.session_id.as_ref().unwrap();
-        let (cipher_c2s, cipher_s2c) = kex::derive_keys(&shared_secret, &exchange_hash, session_id);
+        let (send_cipher, recv_cipher) = kex::negotiate_ciphers(&self.kex.my_kexinit, &self.kex.peer_kexinit)?;
+        let (cipher_c2s, cipher_s2c) = kex::derive_keys(
+            &shared_secret, &exchange_hash, session_id, false, send_cipher, recv_cipher,
+        );
 
         self.io.set_cipher_send(cipher_c2s); // client→server = our send
         self.io.set_cipher_recv(cipher_s2c); // server→client = our recv

@@ -288,7 +288,7 @@ fn stage_store(copier: &mut Copier, target: &Path, operator: Option<&Operator>) 
         return Err(format!("the store already gives uid {} to another account", OPERATOR_ID));
     }
     let entries = [
-        ("passwd", passwd, format!("{0}:x:{1}:{1}:{0}:/home/{0}:/bin/sh", name, OPERATOR_ID), 0o644),
+        ("passwd", passwd, format!("{0}:x:{1}:{1}:{0}:/home/{0}:/bin/bsh", name, OPERATOR_ID), 0o644),
         ("group", read_or_empty(&etc.join("group"))?, format!("{}:x:{}:", name, OPERATOR_ID), 0o644),
         // A locked password: the account logs in with its SSH key.
         ("shadow", read_or_empty(&etc.join("shadow"))?, format!("{}:!:::::::", name), 0o600),
@@ -802,15 +802,15 @@ mod tests {
         let root = selected(&system, "first");
         assert!(!root.join("etc/breenix/test-ssh").exists());
         assert!(!root.join(OPERATOR).exists());
-        assert_eq!(fs::read_to_string(system.join(STORE).join("etc/passwd")).unwrap(), "root:x:0:0:root:/root:/bin/sh\noperator:x:1000:1000:operator:/home/operator:/bin/sh\n");
+        assert_eq!(fs::read_to_string(system.join(STORE).join("etc/passwd")).unwrap(), "root:x:0:0:root:/root:/bin/sh\noperator:x:1000:1000:operator:/home/operator:/bin/bsh\n");
         assert_eq!(fs::read_to_string(system.join(STORE).join("etc/group")).unwrap(), "root:x:0:\noperator:x:1000:\n");
         assert_eq!(fs::read(system.join("root/data")).unwrap(), b"source data");
         assert!(!system.join("root/.ssh").exists());
         let store = system.join(STORE);
         let mode = |path: &Path| fs::metadata(path).unwrap().mode() & 0o7777;
         assert_eq!(mode(&store), 0o700);
-        assert!(fs::read_to_string(store.join("etc/passwd")).unwrap().contains("operator:x:1000:1000:operator:/home/operator:/bin/sh\n"));
-        assert!(fs::read_to_string(store.join("etc/group")).unwrap().contains("operator:x:1000:\n"));
+        assert_eq!(fs::read_to_string(store.join("etc/passwd")).unwrap(), "root:x:0:0:root:/root:/bin/sh\noperator:x:1000:1000:operator:/home/operator:/bin/bsh\n");
+        assert_eq!(fs::read_to_string(store.join("etc/group")).unwrap(), "root:x:0:\noperator:x:1000:\n");
         assert_eq!(fs::read_to_string(store.join("etc/shadow")).unwrap(), "operator:!:::::::\n");
         assert_eq!(mode(&store.join("etc/shadow")), 0o600);
         let pending = store.join("var/lib/accounts/pending/operator");
@@ -821,11 +821,13 @@ mod tests {
         fs::write(store.join("etc/ssh/ssh_host_ed25519_key"), b"host key").unwrap();
         fs::write(store.join("etc/shadow"), "operator:$6$set-on-the-box:::::::\n").unwrap();
         fs::remove_file(&pending).unwrap();
+        // Upgrade an existing shell while keeping the password set on the machine.
+        fs::write(store.join("etc/passwd"), "operator:x:1000:1000:operator:/home/operator:/bin/sh\n").unwrap();
         let second = fixture.source("second");
         fs::create_dir(second.join("etc/breenix")).unwrap();
         fs::write(second.join(OPERATOR), format!("user operator\nkey {}\n", KEY)).unwrap();
         install_tree(&second, &system, "second", &mut || Ok(())).unwrap();
-        assert!(fs::read_to_string(store.join("etc/passwd")).unwrap().contains("operator:x:1000:1000:operator:/home/operator:/bin/sh\n"));
+        assert_eq!(fs::read_to_string(store.join("etc/passwd")).unwrap(), "operator:x:1000:1000:operator:/home/operator:/bin/bsh\n");
         assert_eq!(fs::read_to_string(store.join("etc/shadow")).unwrap(), "operator:$6$set-on-the-box:::::::\n");
         assert_eq!(fs::read(store.join("etc/ssh/ssh_host_ed25519_key")).unwrap(), b"host key");
         assert!(pending.exists());

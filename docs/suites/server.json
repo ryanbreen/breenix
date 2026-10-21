@@ -3,12 +3,69 @@
   "title": "Unattended server",
   "area": "Server",
   "summary": "A persistent install serves the LAN unattended: SSH by keys only, binary-safe transfers, supervised services with logs, synchronized time, clean reboots, watchdog recovery, the resting state and remote upgrades with automatic rollback.",
-  "binary": "/sbin/suite-server",
+  "binary": "scripts/metal/server-suite",
   "categories": [
     {
       "id": "ssh-keys",
       "title": "Keys-only SSH: per-install host keys, per-account authorized keys, no password or telnet",
-      "cases": []
+      "cases": [
+        {
+          "id": "port-22",
+          "title": "SSH identification arrives on port 22 before the client sends anything"
+        },
+        {
+          "id": "host-key",
+          "title": "OpenSSH keyscan matches the Ed25519 fingerprint printed by this boot"
+        },
+        {
+          "id": "strict-login",
+          "title": "Strict host-key checking permits the operator key and a non-root identity"
+        },
+        {
+          "id": "aes256-gcm",
+          "title": "OpenSSH authenticates and executes with aes256-gcm forced in both directions"
+        },
+        {
+          "id": "aes128-ctr",
+          "title": "OpenSSH authenticates and executes with aes128-ctr forced in both directions"
+        },
+        {
+          "id": "ed25519-user",
+          "title": "An authorized Ed25519 user key authenticates and executes"
+        },
+        {
+          "id": "password-refused",
+          "title": "OpenSSH password-only login and a real bssh password request are refused, with serial evidence"
+        },
+        {
+          "id": "wrong-key-refused",
+          "title": "An unauthorized Ed25519 key is refused by publickey authentication"
+        },
+        {
+          "id": "root-refused",
+          "title": "The authorized operator key cannot log in as root"
+        },
+        {
+          "id": "telnet-closed",
+          "title": "Neither the standard nor the former development telnet port has a listener"
+        },
+        {
+          "id": "job-control",
+          "title": "An interactive SSH PTY supports foreground jobs, terminal signals and owned slave"
+        },
+        {
+          "id": "exec-status",
+          "title": "SSH exec runs through bsh -c and returns the command exit status"
+        },
+        {
+          "id": "exec-stdin",
+          "title": "SSH exec delivers piped input byte for byte and closes stdin on channel EOF"
+        },
+        {
+          "id": "quoted-command",
+          "title": "Quoted sh -c scripts retain spaces, quotes and backslashes through bsh"
+        }
+      ]
     },
     {
       "id": "transfer",
@@ -50,5 +107,7 @@
       "title": "Remote upgrades verified over SSH and rolled back automatically",
       "cases": []
     }
-  ]
+  ],
+  "timingSensitive": true,
+  "hostRunner": true
 }

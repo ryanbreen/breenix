@@ -202,6 +202,13 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
     }
     let kind = entry.kind;
     match kind {
+        FdKind::PtySlave(pair) => {
+            let result = match change {
+                Change::Mode(mode) => pair.change_slave_metadata(Some(mode), None, &cred),
+                Change::Owner(uid, gid) => pair.change_slave_metadata(None, Some((uid, gid)), &cred),
+            };
+            match result { Ok(()) => SyscallResult::Ok(0), Err(error) => SyscallResult::Err(error) }
+        }
         FdKind::Ipc(object) => {
             let result = match change {
                 Change::Mode(mode) => object.chmod(mode, &cred),

@@ -1,6 +1,6 @@
 //! BSSHD — Breenix SSH server daemon
 //!
-//! Listens for SSH connections on port 2222 and runs each authenticated
+//! Listens for SSH connections on port 22 and runs each authenticated
 //! session, a shell (with a PTY when one is requested) or an exec request, as
 //! the account that logged in.
 //!
@@ -16,7 +16,7 @@
 //!   uid, home directory, shell and environment, as `login` does.
 //!
 //! Usage: bsshd [port]
-//!   Default port: 2222
+//!   Default port: 22
 
 use std::ffi::CString;
 use std::path::Path;
@@ -32,7 +32,7 @@ use libbreenix::ssh::keys::{fingerprint_text, HostKey};
 use libbreenix::ssh::transport::ServerSession;
 use libbreenix::types::Fd;
 
-const DEFAULT_PORT: u16 = 2222;
+const DEFAULT_PORT: u16 = 22;
 
 extern "C" {
     fn setgroups(count: usize, groups: *const u32) -> i32;
@@ -43,6 +43,8 @@ extern "C" {
     fn geteuid() -> u32;
     fn getgid() -> u32;
     fn getegid() -> u32;
+    fn fchown(fd: i32, uid: u32, gid: u32) -> i32;
+    fn fchmod(fd: i32, mode: u32) -> i32;
 }
 
 /// The process's own credentials, through the C library's system calls.
@@ -289,6 +291,8 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
             }
 
             if pty_requested {
+                // A PTY login owns a new session and its controlling terminal.
+                if process::setsid().is_err() { process::exit(1); }
                 // Open the slave PTY
                 let path_bytes = pty::slave_path_bytes(&slave_path);
                 let path_str = core::str::from_utf8(path_bytes).unwrap_or("/dev/pts/0");
@@ -296,6 +300,12 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
                     Ok(fd) => fd,
                     Err(_) => process::exit(1),
                 };
+
+                if libbreenix::termios::set_controlling_terminal(slave_fd).is_err()
+                    || libbreenix::termios::tcsetpgrp(slave_fd, process::getpid().unwrap().raw() as i32).is_err()
+                    || unsafe { fchown(slave_fd.raw() as i32, account.uid, account.gid) } != 0
+                    || unsafe { fchmod(slave_fd.raw() as i32, 0o620) } != 0
+                { process::exit(1); }
 
                 // Set PTY to translate \n → \r\n (ONLCR) for SSH terminals
                 let mut tio: libbreenix::termios::Termios = unsafe { core::mem::zeroed() };
@@ -346,6 +356,15 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
             let input_closed = data_shuttle(&mut session, master_fd, input_fd, pty_requested);
             println!("bsshd: session ended for user '{}'", username);
 
+            // Restore ownership while the master still keeps the slave alive.
+            if pty_requested {
+                let name = core::str::from_utf8(pty::slave_path_bytes(&slave_path)).unwrap();
+                if let Ok(slave) = libbreenix::fs::open(name, libbreenix::fs::O_RDWR | pty::O_NOCTTY as u32) {
+                    let restored = unsafe { fchown(slave.raw() as i32, 0, 0) == 0 && fchmod(slave.raw() as i32, 0o620) == 0 };
+                    if !restored { eprintln!("bsshd: cannot restore PTY ownership"); }
+                    let _ = io::close(slave);
+                }
+            }
             // Clean up
             let _ = io::close(master_fd);
             if input_fd != master_fd && !input_closed {
@@ -378,7 +397,7 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
 }
 
 fn run_exec_command(session: &mut ServerSession, account: &Account, command: &str) -> i32 {
-    println!("bsshd: exec request '{}'", command);
+    println!("bsshd: exec request");
 
     let (read_fd, write_fd) = match io::pipe() {
         Ok(pipe) => pipe,
@@ -389,9 +408,26 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
         }
     };
 
+    let (input_read, input_write) = match io::pipe() {
+        Ok(pipe) => pipe,
+        Err(_) => {
+            let _ = io::close(read_fd);
+            let _ = io::close(write_fd);
+            return 1;
+        }
+    };
+    // Backpressure on command input must not prevent draining its output.
+    if io::fcntl_setfl(input_write, io::status_flags::O_NONBLOCK).is_err() {
+        for fd in [read_fd, write_fd, input_read, input_write] { let _ = io::close(fd); }
+        return 1;
+    }
+
     match process::fork() {
         Ok(process::ForkResult::Child) => {
             let _ = io::close(read_fd);
+            let _ = io::close(input_write);
+            let _ = io::dup2(input_read, Fd::from_raw(0));
+            if input_read.raw() > 2 { let _ = io::close(input_read); }
             let _ = io::dup2(write_fd, Fd::from_raw(1));
             let _ = io::dup2(write_fd, Fd::from_raw(2));
             if write_fd.raw() > 2 {
@@ -417,29 +453,28 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
         }
         Ok(process::ForkResult::Parent(child_pid)) => {
             let _ = io::close(write_fd);
-            let mut buf = [0u8; 4096];
-            loop {
-                match io::read(read_fd, &mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if session.send_data(&buf[..n]).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
+            let _ = io::close(input_read);
+            let relay = exec_shuttle(session, read_fd, input_write);
             let _ = io::close(read_fd);
 
             let mut status = 0i32;
-            match process::waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0) {
+            let status = match process::waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0) {
                 Ok(_) if process::wifexited(status) => process::wexitstatus(status),
                 Ok(_) if process::wifsignaled(status) => 128 + process::wtermsig(status),
                 Ok(_) => 1,
                 Err(_) => 1,
+            };
+            match relay {
+                Ok(()) => status,
+                Err(why) => {
+                    eprintln!("bsshd: exec relay failed: {}", why);
+                    1
+                }
             }
         }
         Err(e) => {
+            let _ = io::close(input_read);
+            let _ = io::close(input_write);
             let _ = io::close(read_fd);
             let _ = io::close(write_fd);
             let msg = format!("bsshd: fork failed: {:?}\n", e);
@@ -447,6 +482,84 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
             1
         }
     }
+}
+
+/// RFC 4254 section 5.3: input EOF closes only stdin; output keeps flowing.
+fn exec_shuttle(session: &mut ServerSession, output: Fd, input: Fd) -> Result<(), String> {
+    use io::poll_events::{POLLERR, POLLHUP, POLLIN, POLLOUT};
+    let mut pending = Vec::new();
+    let mut offset = 0;
+    let mut input_open = true;
+    let result = (|| {
+        loop {
+            let capacity = session.send_capacity().min(4096);
+            let mut fds = [
+                io::PollFd::new(if capacity > 0 { output } else { Fd::from_raw(u64::MAX) }, POLLIN),
+                io::PollFd::new(session.io().fd(), POLLIN),
+                io::PollFd::new(if input_open { input } else { Fd::from_raw(u64::MAX) },
+                               if pending.is_empty() { 0 } else { POLLOUT }),
+            ];
+            match io::poll(&mut fds, 100) {
+                Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EINTR)) => continue,
+                Err(e) => return Err(format!("poll: {:?}", e)),
+                Ok(_) => {}
+            }
+            if capacity > 0 && fds[0].revents & (POLLIN | POLLHUP) != 0 {
+                let mut buf = [0u8; 4096];
+                match io::read(output, &mut buf[..capacity]) {
+                    Ok(0) => return Ok(()),
+                    Ok(n) => session.send_data(&buf[..n]).map_err(|e| format!("send output: {:?}", e))?,
+                    Err(e) => return Err(format!("read command output: {:?}", e)),
+                }
+            }
+            if fds[2].revents & POLLOUT != 0 {
+                match io::write(input, &pending[offset..]) {
+                    Ok(0) => return Err(String::from("zero-byte stdin write")),
+                    Ok(n) => {
+                        session.consume_input(n).map_err(|e| format!("return input credit: {:?}", e))?;
+                        offset += n;
+                        if offset == pending.len() { pending.clear(); offset = 0; }
+                    }
+                    Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EAGAIN)) => {}
+                    Err(_) => {
+                        let _ = io::close(input);
+                        input_open = false;
+                        session.consume_input(pending.len() - offset).map_err(|e| format!("discard input: {:?}", e))?;
+                        pending.clear();
+                        offset = 0;
+                    }
+                }
+            }
+            if fds[2].revents & (POLLERR | POLLHUP) != 0 && input_open {
+                let _ = io::close(input);
+                input_open = false;
+                session.consume_input(pending.len() - offset).map_err(|e| format!("closed input: {:?}", e))?;
+                pending.clear();
+                offset = 0;
+            }
+            if fds[1].revents & POLLIN != 0 {
+                match session.try_recv_data_uncredited() {
+                    Ok(Some(data)) if input_open => {
+                        pending.drain(..offset);
+                        offset = 0;
+                        pending.extend_from_slice(&data);
+                    }
+                    Ok(Some(data)) => session.consume_input(data.len()).map_err(|e| format!("discard data: {:?}", e))?,
+                    Ok(None) => {}
+                    Err(e) => return Err(format!("receive channel: {:?}", e)),
+                }
+            }
+            if session.input_eof() && pending.is_empty() && input_open {
+                let _ = io::close(input);
+                input_open = false;
+            }
+            if fds[1].revents & (POLLERR | POLLHUP) != 0 {
+                return Err(String::from("SSH socket closed before command output EOF"));
+            }
+        }
+    })();
+    if input_open { let _ = io::close(input); }
+    result
 }
 
 fn c_string(value: &str) -> Vec<u8> {
@@ -469,9 +582,10 @@ fn data_shuttle(session: &mut ServerSession, master_fd: Fd, input_fd: Fd, has_pt
     let ssh_fd = session.io().fd();
 
     loop {
-        // Poll both the PTY master and SSH socket for readable data
+        // Keep processing window adjustments while peer output credit is exhausted.
+        let capacity = session.send_capacity().min(4096);
         let mut fds = [
-            io::PollFd::new(master_fd, io::poll_events::POLLIN),
+            io::PollFd::new(if capacity > 0 { master_fd } else { Fd::from_raw(u64::MAX) }, io::poll_events::POLLIN),
             io::PollFd::new(ssh_fd, io::poll_events::POLLIN),
         ];
 
@@ -483,9 +597,9 @@ fn data_shuttle(session: &mut ServerSession, master_fd: Fd, input_fd: Fd, has_pt
         }
 
         // Check PTY master for shell output
-        if fds[0].revents & io::poll_events::POLLIN != 0 {
+        if capacity > 0 && fds[0].revents & io::poll_events::POLLIN != 0 {
             let mut pty_buf = [0u8; 4096];
-            match io::read(master_fd, &mut pty_buf) {
+            match io::read(master_fd, &mut pty_buf[..capacity]) {
                 Ok(n) if n > 0 => {
                     if session.send_data(&pty_buf[..n]).is_err() {
                         break;
@@ -518,7 +632,7 @@ fn data_shuttle(session: &mut ServerSession, master_fd: Fd, input_fd: Fd, has_pt
         }
 
         // Check for hangup/error on either fd
-        if (fds[0].revents & io::poll_events::POLLHUP != 0
+        if (capacity > 0 && fds[0].revents & io::poll_events::POLLHUP != 0
             && fds[0].revents & io::poll_events::POLLIN == 0)
             || fds[1].revents & io::poll_events::POLLHUP != 0
         {

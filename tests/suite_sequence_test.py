@@ -26,6 +26,15 @@ class ResolveTests(unittest.TestCase):
         files["docs/efforts/path.json"] = json.dumps(dict(efforts=[dict(id=e, suite=e, targets=["arm64-qemu"]) for e in efforts]))
         return files.get
 
+    def test_host_runners_need_their_persistent_host_path(self):
+        read = self.reader({"remote": manifest("remote", hostRunner=True, binary="scripts/metal/server-suite"),
+                            "local": manifest("local")}, efforts=("remote", "local"))
+        ids, skipped = SEQUENCE["resolve"]("all", "arm64-qemu", read=read)
+        self.assertEqual(ids, ["local"])
+        self.assertEqual(skipped, [("remote", "host-driven persistent suite")])
+        with self.assertRaisesRegex(ValueError, "host-driven"):
+            SEQUENCE["resolve"]("remote", "arm64-qemu", read=read)
+
     def test_all_orders_first_and_last_and_leaves_out_what_the_target_cannot_run(self):
         read = self.reader({"disk": manifest("disk", sequence="last"), "plain": manifest("plain"),
                             "screen": manifest("screen", sequence="first"), "gpu": manifest("gpu", needs3dGpu=True),

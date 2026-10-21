@@ -273,6 +273,15 @@ class DriverPersistentTest(unittest.TestCase):
         with self.assertRaises(boot.Finish):
             d.challenge_persistent('Login incorrect')
 
+    def test_run_refuses_a_reported_command_failure(self):
+        d = self.driver
+        d.args.payload, d.args.mode, d.args.run = 'persistent', 'persistent', ['false']
+        d.kernel_started, d.run_step = 1, 3
+        with self.assertRaises(boot.Finish) as result:
+            d.challenge_persistent('[bsh] command failed status=1')
+        self.assertEqual(result.exception.status, m.EXIT_SHORT)
+        self.assertFalse(d.run_done)
+
     def test_run_answers_a_prompt_that_a_log_line_completed(self):
         d = self.driver
         d.args.payload, d.args.mode, d.args.run = 'persistent', 'persistent', ['true']

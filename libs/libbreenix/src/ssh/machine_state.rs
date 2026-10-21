@@ -424,6 +424,26 @@ mod tests {
     }
 
     #[test]
+    fn shell_upgrade_preserves_password_and_every_authorized_line() {
+        let tree = Tree::new("shell-upgrade");
+        let primary = key(11);
+        tree.stage_operator(&primary);
+        reconcile(&tree.root, true).unwrap();
+        let path = tree.root.join("home/operator/.ssh/authorized_keys");
+        let original = format!("# locally maintained keys\n{}\n{}", primary.public_line("primary"), key(12).public_line("second"));
+        fs::write(&path, &original).unwrap();
+        let shadow = "operator:$6$changed-locally:20000:0:99999:7:::\n";
+        tree.store_file("etc/shadow", shadow, 0o600);
+        tree.store_file("etc/passwd", &format!("operator:x:{}:{}:operator:/home/operator:/bin/bsh\n", tree.uid, tree.gid), 0o644);
+        tree.store_file(&format!("{}/operator", PENDING), &primary.public_line("primary"), 0o600);
+        let report = reconcile(&tree.root, true).unwrap().unwrap();
+        assert!(report.problems.is_empty(), "{:?}", report.problems);
+        assert!(tree.read("etc/passwd").ends_with("/bin/bsh\n"));
+        assert!(tree.read("etc/shadow").ends_with(shadow));
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
     fn root_and_colliding_or_malformed_entries_are_refused() {
         let tree = Tree::new("collide");
         tree.store_file("etc/passwd", "toor:x:0:0:toor:/root:/bin/sh\nimposter:x:65534:1:x:/home/imposter:/bin/sh\nshort:x:5\n", 0o644);

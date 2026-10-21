@@ -1193,6 +1193,53 @@ scripts/boot-interactive.sh --mode suite --suite utilities
 swift run breenix-runs run x86 --mode suite --boots 1 --suite utilities --sha <pushed-sha>
 ```
 
+## Server: host-driven persistent categories
+
+The `server` manifest declares `hostRunner: true` and names its Python runner in
+`binary`. Its populated cases run from the boot host against a leased persistent
+install. They do not replace PID 1, sweep the persistent server's processes or
+claim guest memory reclamation. Guest suite boot selection refuses host runners;
+the suite-list resolver leaves them out. `tests/suite_manifests.rs` checks a host runner's executable
+case table against the manifest, including order and titles.
+
+For `server/ssh-keys`, install the pushed commit, start one persistent boot and
+run the matching runner on the boot host while that boot holds the lease:
+
+```sh
+python3 ~/.local/share/breenix-metal/metal-run install-persistent --branch BRANCH --sha SHA
+python3 ~/.local/share/breenix-metal/metal-run boot --persistent
+python3 ~/.local/share/breenix-metal/server-suite --boot ID --sha SHA --milestone server/ssh-keys
+python3 ~/.local/share/breenix-metal/metal-run stop ID
+```
+
+Wait for each boot through `metal-run follow ID` before starting the next. The
+persistent session used by the host runner stays up until `stop`; start the runner
+once its console has printed bsshd's fingerprint and network readiness. The private
+site field `SERVER_SSH_HOST` supplies its destination; the existing operator fields
+supply the account and public key. The boot host must hold the matching private key.
+The runner uses OpenSSH with an isolated known_hosts file: keyscan must match the
+fingerprint printed by that specific boot before strict host-key logins proceed.
+A deliberately wrong host key must fail strict checking. It forces both ciphers,
+stages a temporary Ed25519 authorized user key and restores the original file,
+checks authentication refusals, checks port 22 and both telnet ports, exercises PTY
+job control and executes a quoted script through bsh's interactive shorthand. The login must enter bsh;
+exec cases require `/bin/bsh` in SHELL, exact command exit statuses, and piped input plus EOF.
+The input case keeps its large text round trip and also requires 10,485,760 binary bytes
+(including NUL, high bytes and CRLF) to return unchanged with status 0 within 180 seconds.
+POSIX scripts use explicit `sh -c`; temporary-key cleanup requires a byte-for-byte match to the original authorized_keys file.
+
+The runner emits START, ordered CASE and DONE lines and stores
+`server-ssh-keys.json` in that boot's private store. After the boot ends, the metal scorer also includes its recorded case results in `milestone-verdict.json`, using the completed capture without executing the cases again. Its host verdict requires the
+requested commit actually booted in persistent mode, evidence eligibility, the
+live machine lease, the manifest's exact case list, a populated category set
+matching `docs/efforts/path.json`, passing results for that set, key cleanup and
+no fatal kernel output in the capture. A missing prerequisite fails its case;
+connection failures do not count as authentication refusals. It reports a milestone
+verdict, not full-suite acceptance: the server's other planned categories remain
+unmeasured. This host contract is separate from the guest runner's PID-1 memory
+contract, whose scorer remains unchanged. ARM64 persistent coverage follows in
+this effort's catch-up (D6).
+
 ## Developer SDK
 
 `sdk` measures the Developer SDK effort in `docs/efforts/path.json`: our own applications

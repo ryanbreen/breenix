@@ -47,6 +47,7 @@ struct Manifest {
     id: String,
     title: String,
     categories: Vec<Category>,
+    host_runner: Option<String>,
 }
 
 impl Manifest {
@@ -171,6 +172,12 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
             errors.push(format!("{at}: needs3dGpu is true when present"));
         }
     }
+    if let Some(host) = object.get("hostRunner") {
+        expected.push("hostRunner");
+        if host != &Value::Bool(true) {
+            errors.push(format!("{at}: hostRunner is true when present"));
+        }
+    }
     keys(object, &expected, &at, errors);
     let id = text(object, "id", &at, errors).to_string();
     if !id.is_empty() && !is_id(&id) {
@@ -183,7 +190,12 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
     text(object, "area", &at, errors);
     text(object, "summary", &at, errors);
     let binary = text(object, "binary", &at, errors);
-    if binary != format!("/sbin/suite-{id}") {
+    let host_runner = (object.get("hostRunner") == Some(&Value::Bool(true))).then(|| binary.to_string());
+    if host_runner.is_some() {
+        if binary != "scripts/metal/server-suite" || id != "server" {
+            errors.push(format!("{at}: unrecognized host runner {binary:?}"));
+        }
+    } else if binary != format!("/sbin/suite-{id}") {
         errors.push(format!("{at}: binary is {binary:?}, expected \"/sbin/suite-{id}\""));
     }
     let mut categories = Vec::new();
@@ -218,7 +230,7 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
         }
         _ => errors.push(format!("{at}: \"categories\" must be a non-empty array")),
     }
-    Some(Manifest { id, title, categories })
+    Some(Manifest { id, title, categories, host_runner })
 }
 
 /// Why a suite source's table could not be read.
@@ -499,6 +511,14 @@ fn suite_manifests_match_their_binaries() {
             // A suite with no cases cannot run, so it has no source, binary or install entry yet.
             if root.join(&source_rel).exists() || bins.iter().any(|(name, _)| *name == format!("suite-{id}")) {
                 errors.push(format!("{id}: each category is planned, but {source_rel} or its binary exists; list its cases"));
+            }
+            continue;
+        }
+        if let Some(runner) = &manifest.host_runner {
+            let checked = std::process::Command::new("python3").arg(root.join(runner))
+                .arg("--check-manifest").arg(path).output().expect("host runner starts");
+            if !checked.status.success() {
+                errors.push(format!("{id}: host case table differs: {}", String::from_utf8_lossy(&checked.stderr)));
             }
             continue;
         }
@@ -795,6 +815,12 @@ fn suites_using_time_or_concurrency_require_timing_metadata() {
         if path.extension().is_none_or(|ext| ext != "json") { continue; }
         let manifest: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         if is_skeleton_value(&manifest) { continue; }
+        if manifest.get("hostRunner") == Some(&Value::Bool(true)) {
+            checked += 1;
+            assert_eq!(manifest.get("timingSensitive"), Some(&Value::Bool(true)),
+                "{}: host runner timeouts and concurrency require timingSensitive=true", path.display());
+            continue;
+        }
         let id = manifest["id"].as_str().unwrap();
         let source = fs::read_to_string(root.join(format!(
             "userspace/programs/src/suite_{}.rs", id.replace('-', "_")

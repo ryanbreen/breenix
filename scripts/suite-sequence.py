@@ -72,6 +72,8 @@ def resolve(spec, target, has_3d=False, read=read_repo):
                 skipped.append((suite, f"not an effort target of {target}"))
             elif manifest(suite) is None:
                 skipped.append((suite, "no manifest"))
+            elif manifest(suite).get("hostRunner"):
+                skipped.append((suite, "host-driven persistent suite"))
             elif planned(suite):
                 skipped.append((suite, "no cases yet"))
             elif any(not category.get("cases") for category in manifest(suite).get("categories", [])):
@@ -94,6 +96,8 @@ def resolve(spec, target, has_3d=False, read=read_repo):
             loaded = manifest(suite)
             if loaded is None:
                 raise ValueError(f"no manifest docs/suites/{suite}.json")
+            if loaded.get("hostRunner"):
+                raise ValueError(f"suite {suite} is host-driven; run {loaded['binary']} against its persistent boot")
             if planned(suite):
                 raise ValueError(f"suite {suite} has no cases yet: every category in docs/suites/{suite}.json is planned")
             if loaded.get("needs3dGpu") and not has_3d:

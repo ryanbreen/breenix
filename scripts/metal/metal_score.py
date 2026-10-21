@@ -102,6 +102,22 @@ def score(directory):
         results[milestone['id']] = {'reached': reached, 'total': len(stages), 'passed': reached == len(stages)}
         if unmeasured:
             results[milestone['id']]['inputUnmeasured'] = unmeasured
+    # Host-driven server cases are captured while the persistent boot holds its
+    # lease, then scored again from the completed capture without rerunning them.
+    host_records = directory / 'server-ssh-keys.json'
+    if host_records.exists():
+        root = directory / 'definition'
+        try:
+            host = runpy.run_path(str(root / 'scripts/metal/server-suite'))
+            manifest = read('definition/docs/suites/server.json')
+            records = read('server-ssh-keys.json')
+            fatal = read('definition/docs/boot-path.json')['fatal'] + [r'KERNEL PANIC:']
+            reason = host['score'](manifest, read('definition/docs/efforts/path.json'), records,
+                                   (directory / 'serial.txt').read_text(), run, run.get('bootedCommit'), fatal)
+            total = len(host['CASES'])
+            results['server/ssh-keys'] = dict(reached=total, total=total, passed=True, reason=reason)
+        except (OSError, ValueError, KeyError, StopIteration, TypeError, AttributeError) as error:
+            results['server/ssh-keys'] = dict(reached=0, total=1, passed=False, reason=str(error))
     return {'bootShape': shape, 'milestones': results, 'captureComplete': 'console-gap' not in events}
 
 

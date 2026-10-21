@@ -40,7 +40,7 @@ Operator decisions, 2026-10-20 (times ET):
 Coordinator rulings:
 
 - **S1 Security first:** the compiled-in SSH keys, the `breenix` password, sessions as root and telnetd are closed
-  before the box stays up. This is the `ssh-keys` milestone, in progress on branch `metal-fix/ssh-doors`.
+  before the box stays up. This is the `ssh-keys` milestone, under review in PR #2202.
 - **S2:** the efforts follow the existing ones. Filesystem and toolchain code is architecture-independent where
   possible; iteration runs on the host harness and ARM64 QEMU, and the R240 carries the acceptance proofs.
 - **S3:** the 24-hour uptime measurement is one measured session, recorded as milestone evidence, not a recurring soak.
@@ -50,13 +50,15 @@ Coordinator rulings:
 - **S6:** the kernel may drive the BMC's IPMI watchdog over KCS (IPMI 2.0). It does not reset or write BCM5720 APE
   state, and Vigil still does not talk to the management controller.
 - **S7:** the private site file supplies the operator's account name, group and home; the account uses uid 1000
-  and login shell `sh`. Examples below use `operator` as a placeholder, not a fixed account name.
+  and login shell `/bin/bsh` (S12). Examples below use `operator` as a placeholder, not a fixed account name.
 - **S8 (7:45 PM):** machine state that must survive upgrades (SSH host keys, accounts, shadow entries, admin policy)
   lives in `/.breenix-shared` on the system partition, outside the generation trees, and is reconciled into `/etc`
   at boot; generations keep shipping `/etc` defaults.
 - **S9:** root gets its own password from a private site field (`ROOT_PASSWORD_HASH`, a hash kept out of the repository) for
   su and the console; root cannot log in over SSH (D4). A broken `operator` account is recovered by a test-root boot (the
   boot manager's test path), with no back door in the persistent install.
+- **S12:** the operator logs in to `/bin/bsh`; `bsh -c COMMAND` runs an SSH exec request and returns its command status.
+  POSIX scripts request `sh -c` explicitly. Upgrades change the operator shell while preserving passwords and authorized keys.
 - **S10:** a persistent VM install mirrors the R240's: a persistent disk image per VM (system and home partitions,
   the generation and shared-state layout, upgrade and rollback), booted by each launcher in a persistent mode that
   keeps the disk across boots, separate from the disposable test disks. It is part of the server effort's catch-up.
@@ -114,7 +116,7 @@ modes, so these milestones use suite measures instead.
 Each R240 acceptance is one metal-run sequence at the lane's final head, on the persistent install unless it says test
 root.
 
-1. **`ssh-keys` (`server/ssh-keys`), in progress on `metal-fix/ssh-doors`.** Remove the development password and
+1. **`ssh-keys` (`server/ssh-keys`), completion on `metal-fix/ssh-keys-finish`.** Remove the development password and
    telnetd; generate an Ed25519 host key (RFC 8032, RFC 8709) per install into `/etc/ssh`; read per-account
    `authorized_keys` staged by `install-persistent` from the site file instead of compiled-in keys; listen on port
    22; add aes256-gcm (RFC 5647) and Ed25519 user keys. Until the users effort's `layout` milestone moves `/etc/ssh`
