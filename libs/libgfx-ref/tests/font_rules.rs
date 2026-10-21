@@ -4,9 +4,10 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
-use libfont::rasterizer::{rasterize, raster_bound};
+use libgfx_ref::rasterizer::{rasterize, raster_bound};
 use libfont::outline::LineSegment;
-use libfont::{work, Font, FontError};
+use libfont::{work, FontError};
+use libgfx_ref::ttf_font::Font;
 
 use ttf::*;
 

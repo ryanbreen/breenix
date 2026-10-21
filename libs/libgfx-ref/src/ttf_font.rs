@@ -8,7 +8,8 @@
 //! whose bitmap rectangle, from its record header, lies wholly outside the surface or clip
 //! is laid out but never rasterized.
 
-use libfont::{CachedFont, Font, GlyphBitmap, SubpixelBitmap};
+pub use crate::font_api::{CachedFont, Font};
+use crate::rasterizer::{GlyphBitmap, SubpixelBitmap};
 
 use crate::alpha::{blend, div255};
 use crate::color::Color;

@@ -14,7 +14,7 @@ use crate::*;
 
 use crate::raster::Drawn;
 use libgfx_ref::{shapes, ttf_font};
-use libfont::{Font,CachedFont};
+use libgfx_ref::ttf_font::{Font,CachedFont};
 use breengel::font::{FontChange, FontWatchError, FontWatcher};
 use libbui::focus::FocusChain;
 use libbui::widget::{file_picker::FilePickerResult, label::Label, text_field::TextField};
@@ -540,9 +540,9 @@ fn text_fontwatch_idle() -> CaseResult {
             format!("idle epoch {ns}: font events={font_events}, input events={input_events}"))?;
         let mut font = win.take_mono_font().ok_or("idle window lost mono font").cite("9.3")?;
         let size = win.mono_size();
-        let fb = win.framebuf();
+        let fb = win.surface().map_err(|e| format!("idle surface: {e:?}")).cite("9.3")?;
         fb.clear(PAPER);
-        libgfx_ref::ttf_font::draw_text(fb, &mut font, "Wi é A", 8, 40, size, Color::WHITE);
+        libgfx::ttf_font::draw_text(fb, &mut font, "Wi é A", 8, 40, size, Color::WHITE);
         win.put_mono_font(Some(font));
         let commit = win.commit(&[libbreenix::window::abi::Rect::new(0, 0, 200, 70)])
             .map_err(|e| format!("idle commit: {e:?}")).cite("9.3")?;
@@ -2656,8 +2656,8 @@ impl Drop for FontFixture {
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
-fn watch_frame(w: &mut FontWatcher, mono: bool) -> Guarded {
-    let mut g = crate::Guarded::bgrx(200, 70);
+fn watch_frame(w: &mut FontWatcher, mono: bool) -> Drawn {
+    let mut g = Drawn::bgrx(200, 70);
     g.reset(PAPER);
     let size = if mono {
         w.mono_size()
@@ -2670,7 +2670,7 @@ fn watch_frame(w: &mut FontWatcher, mono: bool) -> Guarded {
         w.display_font()
     }
     .expect("loaded watcher font");
-    libgfx_ref::ttf_font::draw_text(&mut g.fb(), font, "Wi é A", 8, 40, size, Color::WHITE);
+    libgfx::ttf_font::draw_text(&mut g.fb(), font, "Wi é A", 8, 40, size, Color::WHITE);
     g
 }
 

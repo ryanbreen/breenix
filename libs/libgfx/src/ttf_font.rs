@@ -63,7 +63,7 @@ fn finish(surface: &Surface) -> Result<(), Error> {
 /// Render batches admitted against the original total bound before any crossings or device work.
 /// Each batch stays below the unchanged submission work quota; no pixel values reach the CPU.
 fn render(segments: &[LineSegment], width: usize, height: usize) -> Result<Surface, Error> {
-    use libfont::rasterizer::{raster_bound, MAX_RASTER_STEPS};
+    use libfont::bounds::{raster_bound, MAX_RASTER_STEPS};
     if raster_bound(segments.len(), height, width) > MAX_RASTER_STEPS { return Err(FontError::GlyphTooExpensive.into()); }
     let surface = target(width, height)?;
     let row_bound = 8192u64 * width as u64 * (1 + 8 * segments.len() as u64) + width as u64;
@@ -103,7 +103,7 @@ fn render(segments: &[LineSegment], width: usize, height: usize) -> Result<Surfa
 /// Downsample each column class on the GPU, zero its other channels with a constant
 /// channel mask, then use it as an LCD coverage mask to assemble the packed atlas.
 fn render_lcd(segments: &[LineSegment], width: usize, height: usize) -> Result<Surface, Error> {
-    if libfont::rasterizer::raster_bound(segments.len(), height, width * 3) > libfont::rasterizer::MAX_RASTER_STEPS {
+    if libfont::bounds::raster_bound(segments.len(), height, width * 3) > libfont::bounds::MAX_RASTER_STEPS {
         return Err(FontError::GlyphTooExpensive.into());
     }
     let scaled = libfont::crossings::lcd_segments(segments);
@@ -130,7 +130,7 @@ fn render_lcd(segments: &[LineSegment], width: usize, height: usize) -> Result<S
 
 pub struct AtlasGlyph { surface: Option<Surface>, pub width: usize, pub height: usize, pub x_offset: i32, pub y_offset: i32 }
 impl AtlasGlyph {
-    fn bytes(&self) -> usize { self.surface.as_ref().map_or(0, |_| self.width * self.height * 4) }
+    fn bytes(&self) -> usize { self.surface.as_ref().map_or(0, |_| ((self.width * 4 + 255) / 256 * 256 * self.height + 4095) / 4096 * 4096) }
     fn pixels(&self) -> Result<Vec<u8>, Error> {
         let mut pixels = vec![0; self.width * self.height * 4];
         if let Some(s) = &self.surface { s.read(&mut pixels, self.width * 4).map_err(Error::Device)?; }
@@ -142,7 +142,7 @@ impl AtlasGlyph {
     }
 }
 struct Entry { glyph: u16, size26: i32, image: Rc<AtlasGlyph>, used: u64 }
-/// Exact-size atlas targets avoid unused page storage and charge every allocated texel.
+/// Atlas targets charge padded rows and page-rounded backing, as the kernel does.
 pub struct CachedFont {
     font: Font, entries: Vec<Entry>, capacity: usize, max_bytes: usize, clock: u64,
     stats: CacheStats, readback: Option<GlyphBitmap>, owner: u64,
@@ -192,7 +192,7 @@ impl CachedFont {
 /// GPU raster entry points with the same readback shape as libfont's CPU reference.
 pub mod rasterizer {
     use super::*;
-    pub use libfont::rasterizer::{raster_bound, MAX_RASTER_STEPS};
+    pub use libfont::bounds::{raster_bound, MAX_RASTER_STEPS};
     pub fn rasterize(s: &[LineSegment], w: usize, h: usize, x: i32, y: i32) -> Result<GlyphBitmap, Error> {
         if raster_bound(s.len(), h, w) > MAX_RASTER_STEPS { return Err(FontError::GlyphTooExpensive.into()); }
         let surface = if w == 0 || h == 0 { None } else { Some(render(s,w,h)?) };

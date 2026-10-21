@@ -12,7 +12,7 @@ mod sha256;
 
 use std::path::{Path, PathBuf};
 
-use libfont::{CachedFont, Font};
+use libgfx_ref::ttf_font::{CachedFont, Font};
 use libgfx_ref::color::Color;
 use libgfx_ref::framebuf::{Format, FrameBuf};
 use libgfx_ref::ttf_font;

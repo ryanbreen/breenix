@@ -57,7 +57,7 @@ pub use window::Window;
 pub use event::{buttons, keys, Delivered, Event, Modifiers};
 pub use window::{Acquired, Committed, Handled};
 pub use font::FontConfig;
-pub use libfont::CachedFont;
+pub use libgfx::ttf_font::CachedFont;
 pub use libbreenix::graphics::{WindowInputEvent, input_event_type};
 pub use libgfx::color::Color;
 pub use libbui::widget::tab_bar::TabBar;

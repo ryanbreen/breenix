@@ -2,7 +2,7 @@
 //! Inputs are immutable result snapshots. The caller owns the UI clock and display handoff.
 use crate::{color::Color, font, framebuf::FrameBuf, shapes, ttf_font};
 use core::fmt::Write;
-use libfont::{CachedFont, Font};
+use crate::font_api::{CachedFont, Font};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stamp {

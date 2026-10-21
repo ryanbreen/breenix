@@ -20,6 +20,6 @@ pub fn steps() -> u64 {
 
 /// Count `n` steps.
 #[inline]
-pub(crate) fn add(n: u64) {
+pub fn add(n: u64) {
     STEPS.fetch_add(n, Relaxed);
 }
