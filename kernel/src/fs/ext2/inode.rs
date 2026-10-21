@@ -205,6 +205,11 @@ impl Ext2Inode {
         self.i_gid as u32 | ((u16::from_le_bytes([self.i_osd2[6], self.i_osd2[7]]) as u32) << 16)
     }
 
+    /// The mode, owner and group an access check reads.
+    pub fn attrs(&self) -> crate::fs::attrs::InodeAttrs {
+        crate::fs::attrs::InodeAttrs::new(self.i_mode as u32, self.uid(), self.gid())
+    }
+
     pub fn set_owner(&mut self, uid: u32, gid: u32) {
         self.i_uid = uid as u16;
         self.i_gid = gid as u16;
@@ -572,7 +577,8 @@ impl Ext2Inode {
         let now = crate::time::current_unix_time() as u32;
 
         Self {
-            i_mode: EXT2_S_IFDIR | (mode & 0o1777),
+            // Sticky and set-group-ID (inherited from a set-group-ID parent) survive.
+            i_mode: EXT2_S_IFDIR | (mode & 0o3777),
             i_uid: 0,  // root for now
             i_size: 0, // Will be set when directory data is written
             i_atime: now,

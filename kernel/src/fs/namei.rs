@@ -69,6 +69,12 @@ impl Mount {
         }.map_err(fs_errno)
     }
 
+    /// Exclude mapping creation and inode mutation while copying an exec image.
+    /// This reads the filesystem, so a read-only or write-failed mount is valid.
+    pub fn read_exclusive(self) -> Result<ext2::Ext2WriteGuard, u64> {
+        ext2::fs_sync_guard(matches!(self, Mount::Home)).map_err(fs_errno)
+    }
+
     pub fn write(self) -> Result<ext2::Ext2WriteGuard, u64> {
         match self {
             Mount::Root => ext2::root_fs_write(),
@@ -422,8 +428,21 @@ pub(crate) fn resolve_rename_from(
     walk_bytes(path, Mode::Rename, start, cred)
 }
 
+/// Whether `cred` may follow a symlink with `link` attributes found in a
+/// directory with `dir` attributes. In a sticky directory other users may
+/// write, a link is followed only when the follower or the directory's owner
+/// owns it, root included; otherwise EACCES. A user who plants a link in
+/// `/tmp` under a name another user's program will open cannot redirect
+/// that program to a file of the attacker's choosing.
+fn may_follow(dir: &super::attrs::InodeAttrs, link: &super::attrs::InodeAttrs, cred: &super::permissions::Credentials) -> Result<(), u64> {
+    if dir.is_sticky_world_writable() && link.uid != cred.euid && link.uid != dir.uid {
+        return Err(crate::syscall::errno::EACCES as u64);
+    }
+    Ok(())
+}
+
 fn walk(path: &str, mode: Mode) -> Result<Resolved, u64> {
-    let cred = super::permissions::Credentials::current(false);
+    let cred = super::permissions::Credentials::current(false)?;
     walk_with(path, mode, None, &cred)
 }
 
@@ -528,7 +547,7 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
             None
         } else if let Node::Ext2(mount, dir) = top(&stack) {
             let inode = read_dir_inode(held.fs(mount)?, dir)?;
-            if !cred.permits(&inode, 1) {
+            if !cred.may(inode.attrs(), 1) {
                 return Err(crate::syscall::errno::EACCES as u64);
             }
             Some(inode)
@@ -563,7 +582,7 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                 let joined = join(&stack)?;
                 let link = match core::str::from_utf8(&joined) {
                     Ok(path) if !is_final || follow_final => {
-                        crate::fs::procfs::link_target(path, cred)
+                        crate::fs::procfs::link_target(path)
                     }
                     _ => None,
                 };
@@ -648,6 +667,7 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                 };
                 let inode = fs.read_inode(ino).map_err(fs_errno)?;
                 if inode.is_symlink() && (!is_final || follow_final) {
+                    may_follow(&dir_inode.attrs(), &inode.attrs(), cred)?;
                     links += 1;
                     if links > MAX_SYMLINKS {
                         return Err(ELOOP as u64);
@@ -755,7 +775,7 @@ pub(crate) fn resolve_file_bytes(path: &[u8]) -> Result<(Mount, u32, FileHandle,
 }
 
 pub(crate) fn resolve_bytes(path: &[u8], follow: bool) -> Result<Resolved<Vec<u8>>, u64> {
-    let cred = super::permissions::Credentials::current(false);
+    let cred = super::permissions::Credentials::current(false)?;
     walk_bytes(path, Mode::Lookup { follow }, None, &cred)
 }
 
@@ -777,17 +797,30 @@ impl Default for WorkingDir {
 }
 
 /// A process's working directory and its root directory.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Dirs {
     cwd: WorkingDir,
     root: WorkingDir,
+    /// The file creation mask, which travels with the directories: `CLONE_FS`
+    /// threads share it, so a umask in one applies to the others.
+    umask: u32,
 }
 
-/// The working and root directories a process holds. Threads created with
-/// `CLONE_FS` share them, so a chdir, fchdir or chroot in any of them moves
-/// all of them; fork, spawn and a clone without `CLONE_FS` start from a copy.
-/// Its lock is only taken under the process manager's, and nothing else is
-/// taken under it. An exited row holds none (`release`) and reads as `/`.
+/// The mask a process starts with: no write permission for group or other.
+pub const DEFAULT_UMASK: u32 = 0o022;
+
+impl Default for Dirs {
+    fn default() -> Self {
+        Self { cwd: WorkingDir::default(), root: WorkingDir::default(), umask: DEFAULT_UMASK }
+    }
+}
+
+/// The working and root directories and the file creation mask a process
+/// holds. Threads created with `CLONE_FS` share them, so a chdir, fchdir,
+/// chroot or umask in one of them changes them for the others too; fork, spawn and a
+/// clone without `CLONE_FS` start from a copy. Its lock is only taken under
+/// the process manager's, and no other lock is taken under it. An exited row
+/// holds no share (`release`) and reads as `/` with the default mask.
 #[derive(Debug)]
 pub struct SharedWorkingDir(Option<Arc<spin::Mutex<Dirs>>>);
 
@@ -812,9 +845,22 @@ impl SharedWorkingDir {
     pub fn copy(&self) -> Self {
         let dirs = self.0.as_ref().map_or_else(Dirs::default, |shared| {
             let dirs = shared.lock();
-            Dirs { cwd: dirs.cwd.clone(), root: dirs.root.clone() }
+            Dirs { cwd: dirs.cwd.clone(), root: dirs.root.clone(), umask: dirs.umask }
         });
         Self(Some(Arc::new(spin::Mutex::new(dirs))))
+    }
+
+    /// The file creation mask.
+    pub fn umask(&self) -> u32 {
+        self.0.as_ref().map_or(DEFAULT_UMASK, |dirs| dirs.lock().umask)
+    }
+
+    /// Set the file creation mask the sharing threads use; the previous mask.
+    pub fn set_umask(&self, mask: u32) -> u32 {
+        match &self.0 {
+            Some(shared) => core::mem::replace(&mut shared.lock().umask, mask),
+            None => DEFAULT_UMASK,
+        }
     }
 
     pub fn get(&self) -> WorkingDir {
@@ -958,7 +1004,7 @@ pub(crate) fn may_search(
     if !inode.is_dir() {
         return Err(ENOTDIR as u64);
     }
-    if !cred.permits(&inode, 1) {
+    if !cred.may(inode.attrs(), 1) {
         return Err(crate::syscall::errno::EACCES as u64);
     }
     Ok(())

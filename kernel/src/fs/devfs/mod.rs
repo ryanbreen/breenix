@@ -61,6 +61,9 @@ pub enum DeviceType {
     Vcsa(u8),
 }
 
+/// The tty group, which owns the virtual terminals.
+pub const TTY_GID: u32 = 5;
+
 const VT_NAMES: [&str; 7] = ["tty0", "tty1", "tty2", "tty3", "tty4", "tty5", "tty6"];
 const VCS_NAMES: [&str; 7] = ["vcs", "vcs1", "vcs2", "vcs3", "vcs4", "vcs5", "vcs6"];
 const VCSA_NAMES: [&str; 7] = ["vcsa", "vcsa1", "vcsa2", "vcsa3", "vcsa4", "vcsa5", "vcsa6"];
@@ -108,6 +111,22 @@ impl DeviceType {
             DeviceType::Tty0 => Some(crate::console::vt::foreground()),
             _ => None,
         }
+    }
+
+    /// The node's type, permission bits, owner and group, which open, stat
+    /// and access checks read (`docs/users/design.md`, section 2). The
+    /// data sinks and sources, the controlling terminal and the multiplexor
+    /// are for everyone; the console and the screens are root's; the virtual
+    /// terminals are root's and writable by the tty group; the clock is
+    /// read-only.
+    pub fn attrs(&self) -> crate::fs::attrs::InodeAttrs {
+        let (permissions, gid) = match self {
+            DeviceType::Null | DeviceType::Zero | DeviceType::Tty | DeviceType::Ptmx => (0o666, 0),
+            DeviceType::Console | DeviceType::Vcs(_) | DeviceType::Vcsa(_) => (0o600, 0),
+            DeviceType::Tty0 | DeviceType::Vt(_) => (0o620, TTY_GID),
+            DeviceType::Rtc => (0o444, 0),
+        };
+        crate::fs::attrs::InodeAttrs::new(0o020000 | permissions, 0, gid)
     }
 
     /// Check if this device is readable

@@ -3,6 +3,7 @@
 //! Manages filesystem mount points and the global mount table.
 
 use super::error::VfsError;
+pub use crate::fs::attrs::MountFlags;
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -16,8 +17,14 @@ pub struct MountPoint {
     pub mount_id: usize,
     /// Filesystem type (e.g., "ext2", "tmpfs")
     pub fs_type: &'static str,
+    /// The mount's options.
+    pub flags: MountFlags,
     // Future: Will hold Arc<dyn Filesystem> for actual filesystem operations
 }
+
+/// `/home`'s options: users' files there confer no identity at exec and open
+/// no device (`docs/users/design.md`, section 2).
+pub const HOME_FLAGS: MountFlags = MountFlags { read_only: false, nosuid: true, nodev: true, noexec: false };
 
 /// Global mount table
 static MOUNT_TABLE: Mutex<Vec<MountPoint>> = Mutex::new(Vec::new());
@@ -35,6 +42,11 @@ static NEXT_MOUNT_ID: Mutex<usize> = Mutex::new(0);
 /// The mount ID for this mount point
 #[allow(dead_code)] // Called from ext2::init_root_fs which may not be invoked in all configs
 pub fn mount(path: &str, fs_type: &'static str) -> usize {
+    mount_with(path, fs_type, MountFlags::default())
+}
+
+/// Register a mount point with options.
+pub fn mount_with(path: &str, fs_type: &'static str, flags: MountFlags) -> usize {
     let mut table = MOUNT_TABLE.lock();
     let mut next_id = NEXT_MOUNT_ID.lock();
 
@@ -45,9 +57,35 @@ pub fn mount(path: &str, fs_type: &'static str) -> usize {
         mount_path: String::from(path),
         mount_id,
         fs_type,
+        flags,
     });
 
     mount_id
+}
+
+/// Mount `/home` with `HOME_FLAGS` over the root filesystem's own `/home`
+/// directory when no home filesystem was mounted there, so the options hold
+/// for `/home` whichever filesystem holds it.
+pub fn bind_home_if_unmounted() {
+    if !MOUNT_TABLE.lock().iter().any(|m| m.mount_path == "/home") {
+        mount_with("/home", "ext2", HOME_FLAGS);
+    }
+}
+
+/// The options of the mount a physical absolute pathname lies on: the mount
+/// whose path is the pathname or its longest leading run of whole components.
+pub fn flags_at(path: &[u8]) -> MountFlags {
+    let table = MOUNT_TABLE.lock();
+    let mut best: Option<&MountPoint> = None;
+    for mount in table.iter() {
+        let prefix = mount.mount_path.as_bytes();
+        let within = prefix == b"/"
+            || (path.starts_with(prefix) && matches!(path.get(prefix.len()), None | Some(b'/')));
+        if within && best.is_none_or(|b| prefix.len() > b.mount_path.len()) {
+            best = Some(mount);
+        }
+    }
+    best.map(|m| m.flags).unwrap_or_default()
 }
 
 /// Unmount a filesystem
@@ -122,12 +160,12 @@ pub fn get_mount_info(mount_id: usize) -> Option<(String, &'static str)> {
 /// List all mount points
 ///
 /// # Returns
-/// A vector of (mount_id, mount_path, fs_type) tuples
+/// A vector of (mount_id, mount_path, fs_type, options) tuples
 #[allow(dead_code)] // Part of VFS mount API
-pub fn list_mounts() -> Vec<(usize, String, &'static str)> {
+pub fn list_mounts() -> Vec<(usize, String, &'static str, MountFlags)> {
     let table = MOUNT_TABLE.lock();
     table
         .iter()
-        .map(|m| (m.mount_id, m.mount_path.clone(), m.fs_type))
+        .map(|m| (m.mount_id, m.mount_path.clone(), m.fs_type, m.flags))
         .collect()
 }

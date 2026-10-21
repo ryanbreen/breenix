@@ -48,26 +48,25 @@ pub fn read_program(path: &str) -> Result<(Vec<u8>, Vec<u8>), i32> {
 pub fn read_program_image(
     path: impl AsRef<[u8]>,
 ) -> Result<(Vec<u8>, crate::process::credentials::ExecIdentity, Vec<u8>), i32> {
-    use crate::syscall::errno::{EACCES, EIO, EISDIR};
+    use crate::syscall::errno::{EIO, EISDIR};
 
     // Taken before the filesystem lock: who may execute the file.
-    let cred = crate::fs::permissions::Credentials::current(false);
+    let cred = crate::fs::permissions::Credentials::current(false).map_err(|errno| errno as i32)?;
 
-    // The handle holds the inode until its content is read.
+    // Exclude new mapping bindings until the image and its identity are copied.
+    // Existing shared write authority is checked by exec_attrs.
     let (mount, inode_num, _held, resolved) =
         crate::fs::namei::resolve_file_bytes(path.as_ref()).map_err(|errno| errno as i32)?;
-    let fs_guard = mount.read().map_err(|errno| errno as i32)?;
-    let fs = fs_guard.as_ref().ok_or(EIO)?;
+    let mut fs_guard = mount.read_exclusive().map_err(|errno| errno as i32)?;
+    let fs = fs_guard.as_mut().ok_or(EIO)?;
 
     let inode = fs.read_inode(inode_num).map_err(|_| EIO)?;
 
     if inode.is_dir() {
         return Err(EISDIR);
     }
-    // A privileged caller still needs at least one execute bit (`permits`).
-    if !cred.permits(&inode, 1) {
-        return Err(EACCES);
-    }
+    // A privileged caller still needs at least one execute bit (`may`).
+    let identity = cred.may_exec(fs.exec_attrs(inode_num, &inode), crate::fs::vfs::mount::flags_at(&resolved))?;
 
     let elf_data = fs
         .read_file_content_coherent_unless(inode_num, &inode, crate::syscall::exec::caller_killed)?
@@ -75,5 +74,5 @@ pub fn read_program_image(
 
     drop(fs_guard);
 
-    Ok((elf_data, crate::process::credentials::ExecIdentity::of(&inode), resolved))
+    Ok((elf_data, identity, resolved))
 }

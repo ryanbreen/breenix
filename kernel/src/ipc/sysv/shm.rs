@@ -102,7 +102,10 @@ fn live(ids: &mut IpcIds<Segment>, id: i32) -> Result<Arc<ShmObject>, i32> {
 /// when IPC_CREAT asks for it. For an existing segment, asking for more
 /// than its size is EINVAL before the permission check, as on Linux.
 pub fn sys_shmget(key: i32, size: u64, flags: u32) -> SyscallResult {
-    let me = caller();
+    let me = match caller() {
+        Ok(me) => me,
+        Err(e) => return err(e as i32),
+    };
     let existing = {
         let ids = SYSV_SHM.lock();
         match ids.resolve(key, flags) {
@@ -180,7 +183,10 @@ pub fn sys_shmat(id: i32, addr: u64, flags: u32) -> SyscallResult {
     } else if flags & SHM_REMAP != 0 {
         return err(EINVAL);
     }
-    let me = caller();
+    let me = match caller() {
+        Ok(me) => me,
+        Err(e) => return err(e as i32),
+    };
     let rdonly = flags & SHM_RDONLY != 0;
     let (obj, segsz) = {
         let mut ids = SYSV_SHM.lock();
@@ -286,7 +292,10 @@ pub fn sys_shmctl(id: i32, cmd: u32, buf: u64) -> SyscallResult {
     if id < 0 {
         return err(EINVAL);
     }
-    let me = caller();
+    let me = match caller() {
+        Ok(me) => me,
+        Err(e) => return err(e as i32),
+    };
     let cmd = cmd & !IPC_64;
     // An object reference taken under the table lock is dropped after it,
     // since dropping the last one frees the segment's frames.
@@ -354,7 +363,10 @@ pub fn sys_shmctl(id: i32, cmd: u32, buf: u64) -> SyscallResult {
             // CAP_IPC_LOCK, charging its pages to the locker's real user
             // within RLIMIT_MEMLOCK. Breenix has no swap, so the lock is
             // that accounting and the SHM_LOCKED mode bit.
-            let real_uid = Credentials::current(true).euid;
+            let real_uid = match Credentials::current(true) {
+                Ok(cred) => cred.euid,
+                Err(e) => return err(e as i32),
+            };
             let limit = memlock_limit();
             let privileged = me.cred.euid == 0;
             let mut ids = SYSV_SHM.lock();

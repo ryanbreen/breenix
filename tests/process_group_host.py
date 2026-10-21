@@ -25,14 +25,10 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct ProcessId(u64);
 impl ProcessId { pub fn as_u64(self) -> u64 { self.0 } }
-pub mod fs { pub mod ext2 {
-    pub struct Ext2Inode;
-    impl Ext2Inode {
-        pub fn permissions(&self) -> u16 { 0 }
-        pub fn uid(&self) -> u32 { 0 }
-        pub fn gid(&self) -> u32 { 0 }
-    }
-} }
+pub mod fs {
+    #[path = "ATTRS_PATH"]
+    pub mod attrs;
+}
 #[path = "CREDENTIALS_PATH"]
 pub mod credentials;
 pub struct Row {
@@ -137,7 +133,8 @@ fn children_remain_in_group_when_spawning_thread_exits() {
     assert_eq!(m.processes.live_row(&ProcessId(20)).unwrap().parent, Some(ProcessId(1)));
 }
 '''
-harness = harness.replace("CREDENTIALS_PATH", str(ROOT / "kernel/src/process/credentials.rs")).replace("METHODS", methods).replace("CHANGE", change)
+harness = harness.replace("CREDENTIALS_PATH", str(ROOT / "kernel/src/process/credentials.rs"))
+harness = harness.replace("ATTRS_PATH", str(ROOT / "kernel/src/fs/attrs.rs")).replace("METHODS", methods).replace("CHANGE", change)
 with tempfile.TemporaryDirectory(prefix="breenix-process-group-") as tmp:
     test = Path(tmp) / "tests.rs"
     test.write_text(harness)

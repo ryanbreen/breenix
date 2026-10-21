@@ -10074,6 +10074,13 @@ pub fn current_thread_id() -> Option<u64> {
     })
 }
 
+/// Whether `thread_id` is a thread the scheduler runs in user mode. Boot code
+/// that runs before its thread is registered is not one.
+pub fn thread_is_user(thread_id: u64) -> bool {
+    with_thread_mut(thread_id, |thread| thread.privilege == super::thread::ThreadPrivilege::User)
+        .unwrap_or(false)
+}
+
 /// Set the current thread ID
 /// Used during boot to establish the initial userspace thread as current
 /// before jumping to userspace.

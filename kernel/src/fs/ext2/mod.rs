@@ -683,6 +683,32 @@ impl Ext2Fs {
         self.write_file_range_disk(ino, offset, bytes, true, true)
     }
 
+    /// Clear what an unprivileged writer's content change clears, before a
+    /// shared writable mapping lets its stores reach the file with no further
+    /// system call (K4).
+    pub(crate) fn drop_content_privilege(&mut self, ino: u32) -> Result<(), &'static str> {
+        let mut inode = self.read_inode(ino)?;
+        let kill = content_privilege(inode.i_mode) & inode.i_mode;
+        if !inode.is_file() || kill == 0 {
+            return Ok(());
+        }
+        inode.i_mode &= !kill;
+        inode.update_timestamps(false, false, true);
+        self.write_inode(ino, &inode)
+    }
+
+    /// Exec must retain the mount write guard from this check through the
+    /// coherent image copy, excluding new bindings and filesystem mutations.
+    /// Existing shared bindings can write or gain write protection without it;
+    /// their authority, not just their dirty pages, suppresses set-ID identity.
+    pub fn exec_attrs(&mut self, ino: u32, inode: &Ext2Inode) -> crate::fs::attrs::InodeAttrs {
+        let mut attrs = inode.attrs();
+        if self.live_inodes.get(ino).is_some_and(|object| object.map.may_change_exec_image()) {
+            attrs.mode &= !(content_privilege(inode.i_mode) as u32);
+        }
+        attrs
+    }
+
     /// Write data to a file at the specified offset
     ///
     /// # Arguments
@@ -761,13 +787,7 @@ impl Ext2Fs {
         let mode_before = inode.i_mode;
         let times_before = (inode.i_mtime, inode.i_ctime);
         if unprivileged {
-            let kill = 0o4000
-                | if inode.i_mode & 0o0010 != 0 {
-                    0o2000
-                } else {
-                    0
-                };
-            inode.i_mode &= !kill;
+            inode.i_mode &= !content_privilege(inode.i_mode);
         }
 
         // Allocation updates the group counters. Publish their aggregate and
@@ -1036,13 +1056,7 @@ impl Ext2Fs {
             return Err("Invalid file size or type");
         }
         if unprivileged {
-            let kill = 0o4000
-                | if inode.i_mode & 0o0010 != 0 {
-                    0o2000
-                } else {
-                    0
-                };
-            inode.i_mode &= !kill;
+            inode.i_mode &= !content_privilege(inode.i_mode);
         }
         if length < inode.size() {
             // Publish EOF before modifying any content that used to be visible.
@@ -2883,7 +2897,7 @@ pub fn init_home_fs() -> Result<(), &'static str> {
     let device = device.ok_or("No home block device available")?;
 
     // Register with VFS mount system
-    let mount_id = crate::fs::vfs::mount("/home", "ext2");
+    let mount_id = crate::fs::vfs::mount::mount_with("/home", "ext2", crate::fs::vfs::mount::HOME_FLAGS);
 
     // Create the ext2 filesystem instance
     let fs = Ext2Fs::new(device, mount_id)?;
@@ -2947,6 +2961,12 @@ pub fn is_home_mounted() -> bool {
 pub fn home_mount_id() -> Option<usize> {
     let id = HOME_MOUNT_ID.load(Ordering::Acquire);
     (id != usize::MAX).then_some(id)
+}
+
+/// The set-ID bits an unprivileged change to a file's content clears:
+/// set-user-ID, and set-group-ID when group execute makes it one.
+fn content_privilege(mode: u16) -> u16 {
+    0o4000 | if mode & 0o0010 != 0 { 0o2000 } else { 0 }
 }
 
 /// Strip the /home prefix from a path, returning the path within the home filesystem.
