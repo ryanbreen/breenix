@@ -537,6 +537,7 @@ impl Suite {
                     }
                 }
                 states[c][k] = State::Done(outcome);
+                diag_case(&name);
                 done += 1;
                 if place.is_some() { sequence::progress_after(done); }
             }
@@ -602,11 +603,43 @@ fn memory_sample(id: &str, when: &str) -> Option<memory_record::Sample> {
     match memory_record::settled() {
         Ok(sample) => {
             emit(&sample.record(id, when));
+            diag_dump(when);
             Some(sample)
         }
         Err(why) => {
             emit(&std::format!("SUITE {id} ERROR memory {when}: {}", plain(&why)));
             None
+        }
+    }
+}
+
+fn diag_case(name: &str) {
+    let status = std::fs::read_to_string("/proc/1/status").unwrap_or_default();
+    let rss = status.lines().find(|l| l.starts_with("VmRSS")).unwrap_or("").replace('\t', " ");
+    let frames = std::fs::read_to_string("/proc/breenix/frames").unwrap_or_default();
+    let mut parts: Vec<String> = Vec::new();
+    for line in frames.lines() {
+        if line.starts_with("owner user") || line.starts_with("owner page_tables") || line.starts_with("owner kernel_stacks") {
+            parts.push(String::from(&line[6..]));
+        } else if line.starts_with("site ") && (line.ends_with("interrupts.rs:1088") || line.contains("anon_map.rs") || line.contains("process_memory.rs:3812") || line.contains("elf.rs") || line.contains("fork.rs")) {
+            parts.push(String::from(&line[5..]));
+        }
+    }
+    emit(&std::format!("DIAG case {name} {rss} {}", parts.join(" ; ")));
+}
+
+fn diag_dump(when: &str) {
+    if let Ok(text) = std::fs::read_to_string("/proc/breenix/frames") {
+        for line in text.lines() { emit(&std::format!("DIAG {when} {line}")); }
+    }
+    if let Ok(dir) = std::fs::read_dir("/proc") {
+        for entry in dir.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.bytes().all(|b| b.is_ascii_digit()) { continue; }
+            let status = std::fs::read_to_string(std::format!("/proc/{name}/status")).unwrap_or_default();
+            let keep: Vec<&str> = status.lines().filter(|l| l.starts_with("Name") || l.starts_with("State") || l.starts_with("PPid") || l.starts_with("Vm") || l.starts_with("Threads")).collect();
+            let tasks: Vec<String> = std::fs::read_dir(std::format!("/proc/{name}/task")).map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+            emit(&std::format!("DIAG {when} proc {name} {} tasks={}", keep.join(" | "), tasks.join(",")));
         }
     }
 }
