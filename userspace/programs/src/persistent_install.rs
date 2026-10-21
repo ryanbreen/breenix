@@ -535,9 +535,12 @@ fn install() -> Result<Totals, String> {
     let totals = if let Some(previous) = std::env::args().nth(2) {
         install_tree_from(source, target, &id, Some(&previous), &mut || Ok(()))
     } else { install_tree(source, target, &id, &mut || Ok(())) }?;
-    // The copier preserves inode metadata, including set-ID bits. Acceptance
-    // of a shipped generation additionally requires the design's allowlist.
-    layout::check_setid(&target.join(GENERATIONS).join(&id), false)?;
+    // Retained rollback trees are subject to the same allowlist as the new tree.
+    for entry in fs::read_dir(target.join(GENERATIONS)).map_err(|e| fail("read generations", target, e))? {
+        let tree = entry.map_err(|e| fail("read generation", target, e))?.path();
+        require_directory(&tree)?;
+        layout::check_setid(&tree, false)?;
+    }
     println!("[persistent] layout set-ID check passed");
     Ok(totals)
 }

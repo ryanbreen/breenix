@@ -53,6 +53,8 @@ def check(image, table):
                 raise ValueError('unreadable image directory: ' + parent)
             child, mode, uid, gid = int(fields[1]), int(fields[2], 8), int(fields[3]), int(fields[4])
             name = fields[5]
+            if parent == '' and name == '.' and mode & 0o6000:
+                raise ValueError('/: unlisted set-ID inode')
             if not child or name in ('.', '..'):
                 continue
             path = parent + '/' + name

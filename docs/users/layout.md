@@ -58,5 +58,5 @@ Ruling S11 assigns the exact su, passwd and sudo expectation to the admin
 milestone's `su/setuid-set` case. `layout/setuid-set` walks the disk namespace,
 excluding virtual mounts, and refuses set-user-ID or set-group-ID inodes not
 listed with that mode in the design table. The installer applies the same
-check to the installed generation before reporting install completion and
+check to the new and retained generations before reporting install completion and
 requesting slot promotion. No admin stub is installed.
