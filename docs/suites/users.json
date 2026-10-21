@@ -293,7 +293,80 @@
     {
       "id": "accounts",
       "title": "passwd, group and shadow files and the account tools",
-      "cases": []
+      "cases": [
+        {
+          "id": "useradd-entries",
+          "title": "useradd creates matching passwd, group and locked shadow entries"
+        },
+        {
+          "id": "useradd-home-0700",
+          "title": "useradd -m copies the skeleton into a user-owned 0700 home"
+        },
+        {
+          "id": "useradd-duplicate-refused",
+          "title": "Duplicate names and IDs are refused without changing any database"
+        },
+        {
+          "id": "useradd-options",
+          "title": "Explicit IDs, groups, shell and home are stored and non-root useradd is refused"
+        },
+        {
+          "id": "userdel-removes",
+          "title": "userdel removes account entries, memberships and an owned home"
+        },
+        {
+          "id": "userdel-busy-refused",
+          "title": "userdel refuses a user with running processes"
+        },
+        {
+          "id": "userdel-home-owner-refused",
+          "title": "userdel -r refuses a home owned by another identity"
+        },
+        {
+          "id": "usermod-groups",
+          "title": "usermod replaces or appends supplementary groups and preserves other members"
+        },
+        {
+          "id": "usermod-lock-expire",
+          "title": "usermod locks and unlocks a password, changes shell and sets account expiration"
+        },
+        {
+          "id": "groupadd-groupdel",
+          "title": "Group tools allocate IDs, refuse duplicates and retain primary groups"
+        },
+        {
+          "id": "lock-serializes",
+          "title": "Concurrent useradds wait for the password lock and retain both new accounts"
+        },
+        {
+          "id": "libc-lock-shared",
+          "title": "libc lckpwdf and the library contend on the same POSIX record lock"
+        },
+        {
+          "id": "interrupted-write-intact",
+          "title": "Exit at every write boundary leaves complete old or new files and publishes shadow before passwd"
+        },
+        {
+          "id": "passwd-own",
+          "title": "passwd library verifies the old password and writes a fresh 100000-round hash for the caller"
+        },
+        {
+          "id": "passwd-other-refused",
+          "title": "passwd library refuses another account, a wrong old password and a short replacement"
+        },
+        {
+          "id": "id-output",
+          "title": "id and groups resolve a newly created account through libc"
+        },
+        {
+          "id": "malformed-isolated",
+          "title": "A malformed account is disabled while a valid neighbour remains usable"
+        },
+        {
+          "id": "audit-log",
+          "title": "Account tools append a successful change to the protected authentication log"
+        }
+      ]
     },
     {
       "id": "su",

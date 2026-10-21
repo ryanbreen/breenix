@@ -18,6 +18,9 @@ on the R240 first and the catch-up brings the VMs to the same bar (D6). Their su
 are skeleton manifests whose cases arrive with the lanes; the plan and the
 operator decisions are in `docs/metal/server-plan.md`.
 
+The users `accounts` milestone is in progress under #2245: the shared account
+library, administration tools and 18 accounts cases ([protocol](../users/accounts.md)).
+
 The #2149 repair connects bwm's stdin keys to hotkey matching and makes keyboard
 input ready the compositor wait. The #2125/#2143 follow-up makes `run.sh`'s
 `--headless` and `--serial` select the VM no-GUI path that Vigil records.

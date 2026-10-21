@@ -813,3 +813,23 @@ path = "src/gpu_fault_acceptance.rs"
 [[bin]]
 name = "etc-reconcile"
 path = "src/etc_reconcile.rs"
+
+[[bin]]
+name = "useradd"
+path = "src/useradd.rs"
+
+[[bin]]
+name = "userdel"
+path = "src/userdel.rs"
+
+[[bin]]
+name = "usermod"
+path = "src/usermod.rs"
+
+[[bin]]
+name = "groupadd"
+path = "src/groupadd.rs"
+
+[[bin]]
+name = "groupdel"
+path = "src/groupdel.rs"

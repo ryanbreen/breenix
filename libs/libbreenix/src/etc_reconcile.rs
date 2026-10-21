@@ -122,30 +122,15 @@ pub fn reconcile(root: &Path, generation: &str, checkpoint: &mut dyn FnMut() -> 
     let previous = if exists(&record)? { parse_record(&regular(&record)?)? } else { (String::new(), BTreeMap::new()) };
     let mut files = BTreeMap::new();
     walk(&factory, "", &mut files)?;
+    crate::accounts::reconcile_system(root, checkpoint)?;
     let mut writer = Writer(checkpoint);
     let mut conflicts = Vec::new();
     for (name, (bytes, mode)) in &files {
         if previous.0 == generation && !machine_owned(name) { continue; }
         let path = writer.parents(&etc, name)?;
+        if matches!(name.as_str(), "passwd" | "group" | "shadow") { continue; }
         if !exists(&path)? { writer.write(&path, bytes, *mode)?; continue; }
-        if machine_owned(name) {
-            // Add required system entries, preserving existing lines byte for byte.
-            if matches!(name.as_str(), "passwd" | "group" | "shadow") {
-                let existing = regular(&path)?;
-                let text = std::str::from_utf8(&existing).map_err(|_| "account database is not text")?;
-                let incoming = std::str::from_utf8(bytes).map_err(|_| "factory account database is not text")?;
-                let mut merged = text.to_string();
-                for line in incoming.lines() {
-                    let account = line.split(':').next().unwrap_or("");
-                    if !text.lines().any(|old| old.split(':').next() == Some(account)) {
-                        if !merged.is_empty() && !merged.ends_with('\n') { merged.push('\n'); }
-                        merged.push_str(line); merged.push('\n');
-                    }
-                }
-                if merged.as_bytes() != existing { writer.write(&path, merged.as_bytes(), *mode)?; }
-            }
-            continue;
-        }
+        if machine_owned(name) { continue; }
         // A symlink or another kind is a local edit. Do not follow it.
         let existing = if io(fs::symlink_metadata(&path), &path)?.is_file() { Some(regular(&path)?) } else { None };
         let hash = existing.as_deref().map(digest);
