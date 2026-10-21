@@ -171,8 +171,14 @@ Validation scratch allocation is fallible: exhaustion returns ENOMEM with error 
 private copies (the stream copy, the buffer snapshot and the translated device chunks) and the device
 vertex storage it creates are charged to the process's 192 MiB GPU memory quota and `RLIMIT_AS` while they
 are held; `COUNTERS.copy_bytes` reports them. The stream copy and the snapshot are released when the
-call returns, the chunks and the vertex storage when the device has returned the submission's requests or a
-confirmed reset has ended them. A charge that cannot be made returns ENOMEM with error code 22 at index 0
+call returns; the chunks are released when the device has returned the submission's requests or a
+confirmed reset has ended them. A VirGL context keeps one reusable vertex arena, retained until
+replacement or destruction, with submission holds through completion. It is replaced at twice the
+largest recent submission, page-rounded with a 64 KiB minimum, when a submission does not fit or after
+16 consecutive submissions that each use under a quarter of it. A submission gets page-rounded vertex
+storage of its own, released when it retires, when the arena is large enough but its free space is held
+or when charging a replacement would exceed the quota. SVGA vertex storage is per submission. A charge
+that cannot be made returns ENOMEM with error code 22 at index 0
 before anything is sent. A context that is not
 live (quarantined or reset) returns EIO. With four submissions in flight the call waits for one to
 complete; a signal ends that wait with EINTR, and a kill within 250 ms. A warming context accepts

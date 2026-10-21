@@ -3905,40 +3905,67 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
 
 /// Reserve vertices in the context's arena. The context holds its resource until
 /// destruction/replacement; each submission adds a hold through genuine completion.
-/// A growth keeps the old arena charged and alive for its outstanding submissions.
+/// The arena is replaced at twice the largest recent submission when it is too small or
+/// a run of small submissions shrinks it (ruling B31); a replacement keeps the old arena
+/// charged and alive for its outstanding submissions. A submission gets exact storage of
+/// its own, freed when it retires, when the arena is large enough but its free space is
+/// held, or when charging a replacement would exceed the owner's quota.
 /// Return (resource, byte offset, capacity needing device creation, or 0 if ready).
 fn vertex_buffer_for(tgid: u64, ctx: u32, serial: u64, bytes: u64) -> Result<Option<(u32, u32, u32)>, i64> {
     if bytes == 0 { return Ok(None); }
     let requested = u32::try_from(bytes).map_err(|_| ENOMEM)?;
-    let reused = with_core(|c| {
-        let arena = c.contexts.get_mut(&ctx)?.vertex_arena.as_mut()?;
-        let offset = arena.ranges.reserve(serial, requested)?;
+    let (reused, recent, current) = with_core(|c| {
+        let Some(arena) = c.contexts.get_mut(&ctx).and_then(|x| x.vertex_arena.as_mut()) else { return (None, requested, 0) };
+        let recent = arena.ranges.note(requested);
+        let current = arena.ranges.capacity;
+        if vertex_arena::capacity_for(recent) < current { return (None, recent, current) }
+        let Some(offset) = arena.ranges.reserve(serial, requested) else { return (None, recent, current) };
         let rid = arena.id;
-        let capacity = if arena.ready { 0 } else { arena.ranges.capacity };
-        c.resources.get_mut(&rid)?.holds += 1;
-        Some((rid, offset, capacity))
-    }).flatten();
+        let capacity = if arena.ready { 0 } else { current };
+        if let Some(r) = c.resources.get_mut(&rid) {
+            r.holds += 1;
+            return (Some((rid, offset, capacity)), recent, current);
+        }
+        arena.ranges.release(serial);
+        (None, recent, current)
+    }).unwrap_or((None, requested, 0));
     if let Some(range) = reused { return Ok(Some(range)); }
-    let mut ranges = vertex_arena::Ranges::new(bytes).ok_or(ENOMEM)?;
-    let offset = ranges.reserve(serial, requested).ok_or(ENOMEM)?;
-    let capacity = ranges.capacity;
+    if vertex_arena::capacity_for(recent) != current {
+        let mut ranges = vertex_arena::Ranges::new(recent.into()).ok_or(ENOMEM)?;
+        let offset = ranges.reserve(serial, requested).ok_or(ENOMEM)?;
+        let capacity = ranges.capacity;
+        match private_vertex_storage(tgid, ctx, capacity, 2, Some(ranges)) { // context ownership and this submission's access
+            Ok(rid) => return Ok(Some((rid, offset, capacity))),
+            Err(e) if e != ENOMEM => return Err(e),
+            Err(_) => {}
+        }
+    }
+    let capacity = vertex_arena::exact(bytes).ok_or(ENOMEM)?;
+    let rid = private_vertex_storage(tgid, ctx, capacity, 1, None)?; // this submission's access only
+    Ok(Some((rid, 0, capacity)))
+}
+
+/// Charge and register `capacity` bytes of context-private vertex storage with `holds`.
+/// With `ranges` it becomes the context's arena, replacing (and unholding) the old one.
+fn private_vertex_storage(tgid: u64, ctx: u32, capacity: u32, holds: u32, ranges: Option<vertex_arena::Ranges>) -> Result<u32, i64> {
     let charge = Charge::new(tgid, capacity as u64, true)?;
     let mut backing = Pages::none();
     backing.charge_copy(charge);
-    let rid = with_core(|c| {
+    with_core(|c| {
         if !c.contexts.get(&ctx).is_some_and(|x| x.state == CtxState::Live && !x.dropped) { return Err(EIO); }
         let rid = c.next_res;
         c.next_res += 1;
         let mut r = new_res(0, kind::BUFFER, format::B8G8R8A8, 0, 0, capacity as u64, 0, Arc::new(backing), c.epoch);
         r.dropped = true;
         r.lost = true;
-        r.holds = 2; // context ownership and this submission's access
+        r.holds = holds;
         c.insert_res(rid, r);
-        let old = c.contexts.get_mut(&ctx).ok_or(EIO)?.vertex_arena.replace(VertexArena { id: rid, ready: false, accepted: false, ranges });
-        if let Some(old) = old { c.unhold(old.id); }
+        if let Some(ranges) = ranges {
+            let old = c.contexts.get_mut(&ctx).ok_or(EIO)?.vertex_arena.replace(VertexArena { id: rid, ready: false, accepted: false, ranges });
+            if let Some(old) = old { c.unhold(old.id); }
+        }
         Ok(rid)
-    }).ok_or(ENODEV)??;
-    Ok(Some((rid, offset, capacity)))
+    }).ok_or(ENODEV)?
 }
 
 /// Reuse an idle context-private copy/data texture. At most four per class can be
