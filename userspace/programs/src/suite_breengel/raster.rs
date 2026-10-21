@@ -2044,7 +2044,59 @@ fn text_cache_evict_correct() -> CaseResult {
     let again = font.rasterize_glyph(a, 18.0).map_err(|e| e.to_string())?.clone();
     ensure((again.width, again.height, again.x_offset, again.y_offset, &again.coverage)
         == (first.width, first.height, first.x_offset, first.y_offset, &first.coverage),
-        "8.4", "'A' rasterized again after eviction differs from its first rasterization")
+        "8.4", "'A' rasterized again after eviction differs from its first rasterization")?;
+    scratch_after_device_reset()
+}
+
+/// Exercise cbc801b4 with real lost targets in both scratch slots, then compare only
+/// device readback with the independent CPU rasterizer. No retry accepts stale pixels.
+fn scratch_after_device_reset() -> CaseResult {
+    use libbreenix::gpu::{self, abi as ga};
+    let font = parse_font(MONO_PATH).cite("8.5")?;
+    let glyph = font.glyph_index('Q');
+    let file = read_file(MONO_PATH).cite("8.5")?;
+    let reference = libgfx_ref::ttf_font::Font::parse(&file).cite("8.5")?;
+    let gray = reference.rasterize_glyph(glyph, 18.0).map_err(|e| e.to_string())?;
+    let lcd = reference.rasterize_glyph_subpixel(glyph, 18.0).map_err(|e| e.to_string())?;
+    font.rasterize_glyph(glyph, 18.0).map_err(|e| e.to_string())?;
+    font.rasterize_glyph_subpixel(glyph, 18.0).map_err(|e| e.to_string())?;
+    let mut a = bgl::Context::new().map_err(|e| format!("reset context A: {e}"))?;
+    let mut b = bgl::Context::new().map_err(|e| format!("reset context B: {e}"))?;
+    let target = gpu::target_create(ga::format::B8G8R8A8, 8, 8).map_err(|e| format!("reset target: {e}"))?;
+    struct Cleanup(u64);
+    impl Drop for Cleanup {
+        fn drop(&mut self) { let _ = gpu::tc_disarm_all(); gpu::resource_destroy(self.0); }
+    }
+    let _cleanup = Cleanup(target);
+    ensure(gpu::tc_arm(ga::test_point::WITHHOLD_FENCE, 0, ga::test_point::WITHHOLD_ALL) == 0,
+        "8.4", "could not arm the device-reset control")?;
+    a.begin(target, 8, 8); a.clear(0xff112233);
+    let first = a.submit().map_err(|e| format!("reset submission A: {e}"))?;
+    let (r, waited) = gpu::wait(a.handle(), first.handle(), 3_000_000_000);
+    ensure(r == -ga::errno::EIO && waited.status == ga::fence_status::DEVICE_HUNG,
+        "8.4", format!("reset A: WAIT {r}, status {}", waited.status))?;
+    b.begin(target, 8, 8); b.clear(0xff445566);
+    let second = b.submit().map_err(|e| format!("reset submission B: {e}"))?;
+    let (r, waited) = gpu::wait(b.handle(), second.handle(), 3_000_000_000);
+    ensure(r == -ga::errno::EIO && waited.status == ga::fence_status::DEVICE_RESET,
+        "8.4", format!("reset B: WAIT {r}, status {}", waited.status))?;
+    let (r, state) = gpu::counters(b.handle());
+    ensure(r == 0 && state.state == ga::context_state::RESET
+        && gpu::tc_fired(ga::test_point::WITHHOLD_FENCE) == Ok(1),
+        "8.4", "the device-reset control did not reset the context exactly once")?;
+    ensure(gpu::tc_disarm_all() == 0, "8.4", "could not disarm reset control")?;
+    ensure(matches!(font.rasterize_glyph(glyph, 18.0), Err(libfont::FontError::Device(e)) if e == -ga::errno::EIO),
+        "8.4", "the old glyph scratch target did not report its lost context")?;
+    let recovered = font.rasterize_glyph(glyph, 18.0).map_err(|e| format!("grayscale scratch after reset: {e}"))?;
+    ensure((recovered.width, recovered.height, recovered.x_offset, recovered.y_offset, recovered.coverage)
+        == (gray.width, gray.height, gray.x_offset, gray.y_offset, gray.coverage),
+        "8.3, 8.4", "replacement grayscale scratch differs from the independent reference")?;
+    let recovered = font.rasterize_glyph_subpixel(glyph, 18.0).map_err(|e| format!("LCD scratch after reset: {e}"))?;
+    ensure((recovered.width, recovered.height, recovered.x_offset, recovered.y_offset, recovered.coverage)
+        == (lcd.width, lcd.height, lcd.x_offset, lcd.y_offset, lcd.coverage),
+        "8.3, 8.4", "replacement LCD scratch differs from the independent reference")?;
+    value("scratch-reset-replacements", 2, "targets", Some((2, 2)));
+    Ok(())
 }
 
 const MONO_METRICS: [(u32, u16, u16, i16, i16, i16, i16, i16); 50] = [
