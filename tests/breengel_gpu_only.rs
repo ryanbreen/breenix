@@ -8,11 +8,11 @@ impl Uploads {
     fn function(&mut self,name:&str,signature:&syn::Signature,body:&syn::Block){
         let old=self.permitted;
         let typed=|wanted:&str|signature.inputs.iter().any(|arg|matches!(arg,syn::FnArg::Typed(t) if matches!(&*t.ty,syn::Type::Path(p) if p.path.segments.last().is_some_and(|s|s.ident==wanted))));
-        self.permitted=self.bgl && ((self.texture && name=="from_decoded" && typed("Decoded")) || (name=="fixture_upload" && typed("DeclaredFixture")));
+        self.permitted=self.bgl && ((self.texture && name=="from_decoded" && typed("Decoded")) || (name=="fixture_upload" && typed("DeclaredFixture")) || (name=="geometry_upload" && typed("CrossingTable")));
         visit::visit_block(self,body);self.permitted=old;
     }
     fn upload(&mut self,name:&str){
-        if matches!(name,"upload"|"upload_raw") && !self.permitted {self.violations.push(format!("{name}: outside Texture::from_decoded(Decoded) or fixture_upload(DeclaredFixture)"));}
+        if matches!(name,"upload"|"upload_raw") && !self.permitted {self.violations.push(format!("{name}: outside decoded image, declared fixture or typed crossing geometry upload"));}
     }
 }
 impl<'ast> Visit<'ast> for Uploads {
@@ -147,4 +147,12 @@ fn installed_program_cannot_hide_reference_behind_a_package_alias() {
     assert!(reference_uses("fn main() { cpu::shapes::fill_rect(); }", &names));
     assert!(reference_uses("use cpu as raster; fn main() { raster::shapes::fill_rect(); }", &names));
     assert!(!reference_uses("fn main() { libgfx::shapes::fill_rect(); }", &names));
+}
+
+#[test]
+fn crossing_geometry_upload_is_narrowly_typed_and_bgl_owned() {
+    assert!(refuse("fn geometry_upload(table: libfont::crossings::CrossingTable) { gpu::upload(table.bytes()); }", true).is_empty());
+    assert!(!refuse("fn geometry_upload(table: libfont::crossings::CrossingTable) { gpu::upload(table.bytes()); }", false).is_empty());
+    assert!(!refuse("fn geometry_upload(pixels: &[u8]) { gpu::upload(pixels); }", true).is_empty());
+    assert!(!refuse("fn other(table: libfont::crossings::CrossingTable) { gpu::upload(table.bytes()); }", true).is_empty());
 }

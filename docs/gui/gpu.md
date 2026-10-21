@@ -1547,9 +1547,11 @@ driver runs, and nowhere else (ruling R7); after the driver starts, the console 
 - **Static.** A structure test in `tests/` refuses any dependency on `libgfx-ref` from the kernel or from
   `libs/breengel`, `libbui`, `libicon`, `libfont`'s non-test code, `bgl` or any installed program; suite
   binaries may depend on it only from their expectation modules. It refuses direct use of syscall 416 outside
-  `bgl`, and any call of BGL's `upload` outside its two sanctioned sites: `Texture::from_decoded`, which takes
+  `bgl`, and any call of BGL's `upload` outside its sanctioned sites: `Texture::from_decoded`, which takes
   a `libimg::Decoded` that only libimg constructs, and the fixture path, which takes only the built-in font
-  tables or a suite's declared fixtures.
+  tables or a suite's declared fixtures. Under ruling B21 a third, narrowly typed site,
+  BGL's `geometry_upload(CrossingTable)`, uploads generated libfont crossing geometry into a Buffer;
+  it accepts no pixel slice. The runtime content audit continues to refuse CPU-drawn pixels.
 - <!-- claim-lint:ok: Operator ruling B9 in docs/gui/breengel-gpu-rulings.md and #2177 specify the required identity check. -->
   **Runtime.** `COUNTERS` reports upload bytes by purpose and instances per draw. In every raster case
   (`raster/*`), the only legal Fixture uploads are declared static source tables
