@@ -1350,9 +1350,9 @@ implementation. This amendment states those interfaces, in its own PR before the
   copy of the replay set; committed-buffer immutability becomes the validator refusing any submission that
   writes a front or retired buffer, with the render-completion handoff of section 1.4.1 covering submissions
   accepted before `COMMIT`; `CAPTURE` becomes a device readback of the committed target; remnants hold the
-  target. The commit protocol, damage log, authority table, events and metadata are otherwise unchanged.
+  target. B13 defines accepted versus published commits and late-failure delivery below; the damage log, event layout and exact pixel rules remain.
 - **Composition.** The userspace compositor composes every visible window by GPU draws sampling the clients' <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
-  front targets into the scanout target (the §18 formula: topmost window's pixel or black, damage only), with
+  published fronts into a persistent scene target C (the §18 formula: topmost window's pixel or black, damage only), then copies C to alternating scanout A/B, with
   the cursor drawn as a top layer so readback sees it. The software compositor
   (`kernel/src/graphics/display.rs`'s backends for virtio-gpu 2D, GOP and the SVGA3 MOB) is deleted, as are
   `fb_mmap` (412), `fb_draw` (411, including `FLUSH` and `FLUSH_BATCH`), `fb_info` (410), `MAP_COMMITTED`
@@ -1386,12 +1386,12 @@ implementation. This amendment states those interfaces, in its own PR before the
 | `text-entry` | 19 | 18 | 0 | 0 | 1 | 0 | 0 | 0 | 19 |
 | `icons` | 12 | 12 | 0 | 0 | 0 | 0 | 0 | 0 | 12 |
 | `windows` | 39 | 30 | 9 | 0 | 0 | 0 | 1 | 0 | 40 |
-| `isolation` | 38 | 33 | 5 | 0 | 0 | 0 | 0 | 0 | 38 |
+| `isolation` | 38 | 29 | 9 | 0 | 0 | 0 | 0 | 0 | 38 |
 | `composition` | 27 | 8 | 17 | 2 | 0 | 0 | 2 | 1 | 28 |
 | `events` | 32 | 31 | 1 | 0 | 0 | 0 | 0 | 0 | 32 |
 | `scanout` | 15 | 0 | 15 | 0 | 0 | 0 | 1 | 1 | 17 |
 | `panel` | 21 | 5 | 6 | 0 | 7 | 3 | 0 | 1 | 19 |
-| **Total** | **393** | **310** | **63** | **2** | **15** | **3** | **6** | **5** | **399** |
+| **Total** | **393** | **306** | **67** | **2** | **15** | **3** | **6** | **5** | **399** |
 
 <!-- claim-lint:ok: Normative classification defined by docs/gui/breengel-gpu-cases.md and docs/gui/breengel-gpu-rulings.md. -->
 **Keep** means the check, its contract section and its expected values stand; only the implementation under
@@ -1443,10 +1443,10 @@ never a new expectation.
 
 **B6/B7/B8 reconciliation.** The [coordinator rulings](breengel-gpu-rulings.md) and
 [case document](breengel-gpu-cases.md) record the mechanism and screen migrations, including
-the eight core mechanism migrations classified changed. The partition is **310 kept and
-78 changed**, with five removals and eleven additions: 399 cases. The case document
+the eight core mechanism migrations classified changed. The partition is **306 kept and
+82 changed**, with five removals and eleven additions: 399 cases. The case document
 lists the B8 cases individually; buffers and screen indexing use MODES, and first composite
-counts are the full reported mode. The table above is generated from those case identities.
+counts are the full reported mode. B13 additionally reclassifies the four isolation cases listed in the case document. The table above is generated from those case identities.
 
 <!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 | Reclassified case | Replacement and retained property |
@@ -1499,7 +1499,8 @@ The GPU-only rule alone gives 393 − 2 + 6 = 397 cases; with R3 and R4 the rebu
 
 | Section | Becomes |
 |---|---|
-| §1, §6, §9–§13, §15, §16, §19, §22, §25 | unchanged |
+| §1, §6, §9–§13, §15, §16, §22 | unchanged |
+| §19, §25 | WindowEvent stays 320 bytes; processed metadata is published only; errno list adds ENODEV and EDQUOT for the B13 core path |
 | §2 Pixels and alpha | formulas unchanged; formats become target formats; 3-byte only as upload and readback formats |
 | §3 Surfaces | rewritten: GPU targets, their limits and errors |
 | §4 Clipping, §5 Primitives | pixel sets unchanged; each names its pipeline; §5.5 gains the closed form and its proof; §5.9's `copy_row_from` removed |
@@ -1509,9 +1510,9 @@ The GPU-only rule alone gives 393 − 2 + 6 = 397 cases; with R3 and R4 the rebu
 | §8.4 Glyph cache | a GPU atlas, same capacity rules |
 | §8.6 Reviewed references | unchanged |
 | §14 Widgets | text in DejaVu Sans at the theme's size (R3); geometry in logical units × scale (R4) |
-| §17 Window interface | buffers are GPU targets; ops 14 and 21 retired; immutability by refused submission plus the render-completion handoff; accounting split between `RLIMIT_AS` and the GPU quota |
+| §17 Window interface | buffers are GPU targets; ops 14 and 21 retired; immutability by refused submission plus the render-completion handoff; accounting split between `RLIMIT_AS` and the GPU quota; B13 pending/publication and one-shot ACQUIRE EIO, metadata-only op 29, 112-byte op 19 |
 | §18 Compositor and display | GPU composition and hold sets; modes 1280×800 and 2560×1600; `fb_info`, `fb_mmap`, `FLUSH` and the CPU display copy gone; the IRQ bound kept over the GPU path |
-| §20 Scanout observation | record version 2 (section 1.8); boundary code 4 |
+| §20 Scanout observation | record version 2 (section 1.8); boundary code 4; B13 op 22 grows to 48 bytes, reasons 11/12 |
 | §21 Test controls | points 19–31 added (the GPU contract's); point 2 `irq-hold` kept |
 | §23 Panel and stage | §23.1 removed and DejaVu Sans text (R3); §23.2–§23.8 at display scale (R4) |
 | §24 Helpers | unchanged; `kiosk_test` composes on the GPU |
@@ -1619,9 +1620,95 @@ and `bcheck` and bind Super+Super to `blauncher` keep working throughout.
    `gpu-display`, `gpu-apps`; IMAGES and WIDGETS logic need no lane), each writing its changed checks first,
    in their own commits, failing for a specific reason, before the implementation (BreenGL's existing lane
    rules stand). The contract and manifest change in one DISPLAY-owned PR, carrying the GPU-only changes and
-   R3's and R4's.
+   R3's and R4's. B13 is a subsequent DISPLAY-owned contract PR under this same step, before front-handoff implementation, preserving the 399 identities.
 6. **ARM64 QEMU green (399), then the catch-up** on Parallels and VMware.
 7. **#1625 lands** as the GPU-based BreenGL, retitled, with the three-target evidence and attestations.
+
+### 2.8 B13: front handoff before implementation
+
+B13 adopts metadata-only frame snapshots and userspace-built composition streams.
+The normative layouts and exhaustive error effects are [gpu-abi.md's window handoff](gpu-abi.md#window-front-handoff-b13-syscall-414-version-2);
+[breengel.md sections 17–20](breengel.md#17-the-window-interface-version-2) define publication,
+authority, pool exclusion, damage, display custody and observation. This is a contract,
+not evidence that any lane has implemented it.
+
+- **Wire.** 414/29 COMPOSITE_SNAPSHOT is 96 bytes plus 80-byte SceneWindow entries;
+  it reserves metadata only, with no pixel/tree pins or device attachment between calls.
+  414/19 COMPOSITE becomes the 112-byte CompositeSubmit, including scene_target at 104;
+  it resolves exact source generations atomically, validates the caller's BGL stream and
+  waits for render and completed present. Stale sources give EAGAIN before sending.
+  Cancel (flags 1, live snapshot, other inputs zero) issues no work or serial.
+  414/22 becomes 48 bytes with reason at 40; its record remains core v2, 1,024 bytes.
+  COMPOSITE_RECORD has a 24-byte header and unrestricted entries; observation alone
+  is limited to 16, returning EIO/11 composite-overflow with no partial output.
+- **Authority.** Only the current display owner holding the current compositor claim may <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+  snapshot or submit foreign fronts. Process incarnation, context, claim epoch,
+  ownership sequence and reset epoch scope the non-address-shaped sample aliases.
+  They resolve only in op-19 source positions, never ordinary writable resources;
+  ordinary 416 SUBMIT refuses aliases with EINVAL/code 4. The kernel never generates
+  window composition draws. Privileged root/current-claimant observation uses the
+  core's pinned binding; ordinary 416 target-0 READBACK stays display-owner-only.
+- **Publication.** COMMIT seals against all writing entry points and captures every <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+  last-accepted writer, including accepted work not sent yet. Pending acceptance reserves
+  a never-reused commit id but leaves the previous published front/tree/Meta intact.
+  Publication waits for all writers to finish OK, independently of composition. A late
+  failure retains the previous front and queues one EIO on the next ACQUIRE; WAIT also
+  reports the native failure. LIST/READ_META/CAPTURE identify published generations only.
+  ACQUIRE's full errors are EINVAL/EFAULT/EPERM/ENOENT/ETIMEDOUT/EINTR plus ENOMEM for
+  replay resources, ENODEV for unavailable core, EIO for failed replay/render/reset or
+  one-shot late failure. No failure hands out a buffer; timeout zero without a free one
+  remains ETIMEDOUT. Observation of a render not completed OK before sampling is reason
+  12 window-render-not-ready, distinct from normal pending EAGAIN.
+- **Work and custody.** Userspace updates normalized damage in persistent C, then emits
+  the full GPU COPY into unused scanout A/B. All three have completed clears before the
+  measured interval. Scene composite/per-window pixels count actual clipped scene-write
+  union once, excluding overdraw and transport; ordinary GPU draws/instances/fragment
+  area/work estimate include the full transport cost. Snapshot metadata joins private
+  composition storage in COUNTERS.copy_bytes and is charged to the compositor. Client
+  backing is charged once to its client through final holds and device unref (B12).
+  GIVE_DISPLAY 414/27 uses the core stack, with four userspace owners, incarnation-based
+  custody, completed restore flush, and no claim transfer. A delegated uid-1000 owner
+  may present its own resources and return custody, but cannot claim or sample foreign fronts.
+- **Failure.** Op 19 preflights outputs. A concurrent unmap after send returns EFAULT <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+  without successful acknowledgement, keeps DMA holds and damage, and forces repair;
+  pre-existing inaccessible/read-only outputs still send no work or consumed frame.
+  Genuine completion plus fence publication or confirmed successful reset ends sampling
+  holds, never a synthesized error or unsuccessful reset. Claim/display loss revokes
+  aliases immediately, drains issued work safely, and wakes ACQUIRE within 250 ms,
+  returning EIO if safe recycling is not possible. The pre-send compositor-death case
+  still acquires successfully within its existing bound. Reset loses contents: recreate
+  windows/contexts, fully redraw, and report EIO/target-lost until ready.
+
+B1 keeps section 2.7 as the plan of record. B13 supersedes the recon's kernel-compositor and bwm-retirement assignments with these seams:
+
+| Lane | Builds | Does not build |
+|---|---|---|
+| **gpu-window** | Window registry/pending-publication protocol; last-accepted-writer seal handoff in `gpu/window_targets.rs` and core admission; buffer UID/write-incarnation checks; pool/replay/capture/remnant lifetimes and accounting; op-29 scene snapshot/alias metadata and the window half of op-19 pin/admission/finish; ABI layouts and libbreenix wrappers agreed in contract PR; window/event/raw-client kit migration. Owns windows 40, isolation 38, events 32. | A compositor that generates draws in the kernel, a resurrected op 14/21, or production bwm drawing. |
+| **gpu-display**, after targets and raster surface | The owner/context-restricted sample binding view and attach/hold completion path in the GPU core; op-19 reuse of core validation/submission/present; immutable composition provenance, record v2 and op 22; core GIVE_DISPLAY and stack integration; userspace scene encoder/service used by kiosk and the stage; cursor, C/A/B flipping, damage work; suite-stage/show and console boot ribbon; composition 28, scanout 17, panel 19. | The recon's proposed `gpu/compose.rs` kernel context generating window composition commands. If that filename is used, it is validation/hold/provenance plumbing only. |
+| **gpu-apps**, last | Port bwm and the other installed graphical applications to v2/BreenGL GPU surfaces; retain bwm as userspace compositor, consume the display lane's scene source API, draw decorations/text/cursor with BreenGL/BGL. Remove bwm's READ_WINDOW_BUFFER/CPU snapshot/upload path. Retire the six named demos with their issues. With the last consumer migration, remove 410/411/412, v1 operations, obsolete graphics references and software compositor. | Retiring bwm's userspace compositor, or deleting op 14 before its remaining real consumer has migrated. |
+
+The DISPLAY-owned contract PR assigns these seams before both lanes edit them; gpu-window owns its module registration and window-target lifecycle, gpu-display owns GPU sample/provenance/display integration. Add only the narrow shared helpers needed for temporary source resolution, sealed admission and pin transfer. Do not let both lanes independently define an import ABI or replace core ownership.
+
+The stage suspends during measured window/composition/scanout cases. It explicitly gives
+the display to kiosk_test, which acquires its own claim and owns context/C/A/B before
+announcing ready. Kiosk's composite and auto paths use snapshot → userspace scene encoder
+→ op 19; no bwm daemon is needed in a suite boot. Auto detection uses pixel generation
+and geometry/visibility/registration/cursor damage, so NO_CHANGE creates no extra frame.
+The raw window kit migrates to client GPU targets in gpu-window, with no CPU shadow.
+
+Full-device observation judges every B,G,R byte (X normalized FF per B11), actual binding, <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+composite identity and genuine native fences; no snapshot, requested target, CPU reconstruction,
+or partial band certifies it. The stage displays the verified judged artifact after the
+measured interval. Local thumbnails retain GPU copies; cross-process artifacts use the
+sanctioned decoded-image Image path, never a new raw upload or passing expected image.
+The existing stage-lie/substitution/draw/ribbon/cursor controls and exact restoration stand.
+
+B13 changes checks before lane implementations, in separate commits. The reconciliation
+in [breengel-gpu-cases.md](breengel-gpu-cases.md) names the affected cases and missing lanes;
+pixel formulas, time bounds, fault identities, authorities and the 399 manifest identities
+remain. The 60 Hz present-rate check, 300 commits with first 30 discarded, 500 µs IRQ bound,
+2 s watchdog, 100 ms reset and 250 ms kill/wakeup bounds remain implementation gates.
+The input-ring defect #2163 goes to main separately, outside these effort lanes.
 
 ## 3. The path, the entries and the harvest
 

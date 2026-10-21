@@ -850,29 +850,30 @@ architecture only.
 | 3 | `REGISTER` | `Title` (24) | 0 | EINVAL title; ENOENT |
 | 4 | `SET_TITLE` | `Title` (24) | 0 | EINVAL title; ENOENT |
 | 5 | `LIST` | `List` (16) | entries in the registry | — |
-| 6 | `ACQUIRE` | `Acquire` (296) | 0 | ETIMEDOUT, EINTR, ENOENT |
-| 7 | `COMMIT` | `Commit` (304) | 0 | EBUSY double commit; EINVAL buffer or damage; ENOENT |
-| 8 | `COMMIT_NO_CHANGE` | `NoChange` (32) | 0 | ENOENT |
+| 6 | `ACQUIRE` | `Acquire` (296) | 0 | EINVAL, ETIMEDOUT, EINTR, ENOENT, ENOMEM replay resources, ENODEV unavailable core, EIO replay/render/reset or one-shot late failure |
+| 7 | `COMMIT` | `Commit` (304) | 0 | EBUSY double commit; EINVAL buffer or damage; ENOENT; EIO already-failed render; EINTR publication-order wait |
+| 8 | `COMMIT_NO_CHANGE` | `NoChange` (32) | 0 | ENOENT; EINTR pending-publication wait |
 | 9 | `RESIZE` | `Resize` (48) | 0 | EINVAL size; ENOMEM; ENOENT |
 | 10 | `READ_EVENTS` | `ReadEvents` (40) | events copied | ETIMEDOUT, EINTR, ENOENT |
 | 11 | `WRITE_EVENTS` | `WriteEvents` (24) | events queued | EINVAL type or length; ENOENT |
 | 12 | `EVENT_FD` | `WinId` (8) | a descriptor | ENOENT, EMFILE |
 | 13 | `SET_GEOMETRY` | `Geometry` (24) | 0 | ENOENT |
 | 14 | retired `MAP_COMMITTED` | `MapBuffers` (40) | ENOSYS | after size validation, including a stale id |
-| 15 | `CAPTURE` | `Capture` (56) | 0 | EINVAL short destination; ENOENT |
+| 15 | `CAPTURE` | `Capture` (56) | 0 | EINVAL short destination; ENOENT; EINTR pending-publication wait; EIO failed pending publication |
 | 16 | `MAP_TREE` | `MapTree` (24) | 0 | ENOENT |
 | 17 | `CLAIM_COMPOSITOR` | `Claim` (16) | 0 | EBUSY while a claim lives |
 | 18 | `RELEASE_COMPOSITOR` | none (0) | 0 | — |
-| 19 | `COMPOSITE` | `Composite` (24) | 0 | EIO backend failure, with the record's reason |
-| 20 | `COMPOSITE_RECORD` | `RecordQuery` (24) | 0 | ENOENT serial no longer kept |
+| 19 | `COMPOSITE` | `CompositeSubmit` (112) | 0 | EPERM, ENOENT, EINTR, EIO, EAGAIN, ENOMEM, EBUSY, ENODEV, EINVAL, EDQUOT; detailed effects in gpu-abi.md B13 |
+| 20 | `COMPOSITE_RECORD` | `RecordQuery` (24) | 0 | ENOENT serial no longer kept; EINVAL short length |
 | 21 | retired `MAP_COMPOSITOR_TEXTURE` | `MapTree` (24) | ENOSYS | after size validation |
-| 22 | `SCANOUT_READBACK` | `Readback` (40) | 0 | EIO with the core observation reason; EAGAIN while composition is pending; EINVAL short destination |
+| 22 | `SCANOUT_READBACK` | `Readback` (48) | 0 | EPERM, EINVAL, ENOMEM, ENODEV, EINTR, EAGAIN pending composition, EIO reason 1–12 |
 | 23 | `SET_CURSOR` | `Cursor` (16) | 0 | EINVAL shape |
 | 24 | `HOLD_EVIDENCE` | `WinId` (8) | 0 | EBUSY another holder; ENOENT |
 | 25 | `READ_REMNANT` | `Capture` (56) | 0 | ENOENT |
 | 26 | `RELEASE_REMNANT` | `WinId` (8) | 0 | ENOENT |
-| 27 | `GIVE_DISPLAY` | `Give` (8) | 0 | ESRCH no such process |
+| 27 | `GIVE_DISPLAY` | `Give` (8) | 0 | EPERM, EINVAL, ESRCH, EBUSY, ENODEV, ENOMEM, EINTR, EIO; core custody rules in section 18 |
 | 28 | `READ_META` | `MetaQuery` (24) | 0 | ENOENT |
+| 29 | `COMPOSITE_SNAPSHOT` | `SceneSnapshot` (96) | 0 | EPERM, EINVAL, EBUSY, EAGAIN pending render, ENOMEM, ENODEV, EIO |
 
 Argument structures (offsets in bytes):
 
@@ -911,10 +912,27 @@ Argument structures (offsets in bytes):
   copied as BGRX rows of `width × 4` bytes.
 - `MapTree`: `id: u64 @0`, *out* `addr: u64 @8`, *out* `len: u64 @16`.
 - `Claim`: `flags: u32 @0`, reserved `@4`, *out* `epoch: u64 @8`.
-- `Composite`: `flags: u32 @0`, reserved `@4`, *out* `serial: u64 @8`, *out* `pixels: u64 @16`.
+- `SceneSnapshot` (96): in `context:u64 @0`, `windows:u64 @8`, `window_capacity:u32 @16`,
+  out `window_count:u32 @20`; in `damage:u64 @24`, `damage_capacity:u32 @32`, out `damage_count:u32 @36`,
+  `snapshot:u64 @40`, `width:u32 @48`, `height:u32 @52`, `scale:u32 @56`, `flags:u32 @60`,
+  `Cursor @64`, `claim_epoch:u64 @80`, `owner_sequence:u64 @88`. Flags bit 0 means full initial/recovery scene.
+- `SceneWindow` (80): `id:u64 @0`, `sample:u64 @8` (0 for never-published opaque black),
+  `commit_id:u64 @16`, `pixel_gen:u64 @24`, `render_fence:u64 @32` (native, no WAIT authority),
+  `target_generation:u64 @40`, `x:i32 @48`, `y:i32 @52`, `width:u32 @56`, `height:u32 @60`,
+  `z:u32 @64`, `stride:u32 @68`, `format:u32 @72` (0 B8G8R8A8), reserved u32 @76.
+- `CompositeSubmit` (112): in `snapshot:u64 @0`, `target:u64 @8`, `stream:u64 @16`, `length:u64 @24`, <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+  `flags:u32 @32` (0 submit, 1 cancel), reserved u32 @36; out `serial:u64 @40`, `pixels:u64 @48`,
+  `render_fence:u64 @56`, `present_fence:u64 @64`, `estimate:u64 @72`, `error_index:u32 @80`,
+  `error:u32 @84`, `reason:u32 @88`, `fence_status:u32 @92`, `answer:u32 @96`, `phase:u32 @100`
+  (0 admission, 1 render, 2 present); in `scene_target:u64 @104`.
+  Render/present are context fences accepted by WAIT; per-window native fences are different identities.
+  All output/reserved fields start zero. The full argument/error/consumption rules are normative in
+  [gpu-abi.md, Window front handoff](gpu-abi.md#window-front-handoff-b13-syscall-414-version-2).
+  Window VERSION remains 2 for this coordinated unlanded-v2 change: old op-19 length 24 is EINVAL,
+  never a compatibility request; ops above 29 are EINVAL. Syscall 416 stays VERSION 1, ops 0–13 unchanged.
 - `RecordQuery`: `serial: u64 @0`, `ptr: u64 @8` (a `CompositeRecord`), `len: u32 @16`, reserved `@20`.
 - `Readback`: `dst: u64 @0`, `dst_len: u64 @8`, `record: u64 @16` (an `ObservationRecord`),
-  `record_len: u32 @24`, reserved `@28`, *out* `serial: u64 @32`.
+  `record_len: u32 @24` (1,024), reserved `@28`, *out* `serial: u64 @32`, *out* `reason:u32 @40`, reserved u32 `@44`.
 - `Cursor`: `shape: u32 @0` (0 arrow, 1 to 4 the resize shapes, 5 hidden), `visible: u32 @4`, `x: i32 @8`,
   `y: i32 @12`.
 - `Give`: `pid: u32 @0`, reserved `@4`.
@@ -948,21 +966,31 @@ Argument structures (offsets in bytes):
 Plan §3.1 is the contract, transcribed here.
 
 <!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
-- A window owns a buffer set of two buffers, or three on request, each `width × height × 4` bytes of BGRX.
-  Each buffer is *free* (owned by the client), *front* (committed, immutable) or *retired* (replaced but still
-  read by a composite or a capture copy).
-- `COMMIT(buffer, damage, meta)` publishes, in one transaction, the buffer's pixels, its tree page,
-  `processed_serial`, `epoch` and `damage` (at most 16 rectangles covering every pixel that differs from the
-  previous front). It returns a `commit_id` that increases by exactly 1 per commit of the window. A commit with
-  non-empty damage starts a new pixel generation (`pixel_gen`, strictly increasing).
-- After COMMIT the validator refuses any submission writing that front or retired target; <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
-  its separately mapped committed tree page remains read-only and writes raise SIGSEGV.
-  A composition attempt while that fence is pending must wait or return EAGAIN without
-  publishing a new binding; after the fence completes, composition must show its render.
-  COMMIT records the last accepted render fence. A submission accepted before COMMIT may
-  finish, but the compositor samples it only after that fence completes OK. A failed render
-  is refused with EIO and leaves the previous published front unchanged. The previous front becomes retired, and returns to free only when every composite that used it has
-  finished, no capture is copying it and no `ACQUIRE` is replaying from it.
+A window has two buffers, or three on request, each width × height × 4 BGRX bytes.
+A buffer is free, acquired, pending (sealed candidate), published front (immutable), or retired
+(replaced but still read by sampling/capture/replay). Published and accepted commits are distinct. Non-empty damage starts a strictly increasing
+pixel_gen; damage is at most 16 rectangles covering every differing pixel. The validator
+refuses later writes to pending/front/retired targets, and committed tree pages are read-only
+(writes raise SIGSEGV).
+
+Keep the existing 304-byte COMMIT layout. The client supplies a buffer index, damage and Meta, **not a fence value it could forge**. Under the same GPU admission lock that seals writes, capture that target's last **accepted** write and its internal outstanding-writer dependencies. This includes an admitted submission whose translation/send is not finished; assign its fence/identity at admission and retain it until published. Looking only at `Resource.last`, or at an empty completed-writer list, is incorrect.
+
+The window layer needs a pending candidate alongside the last successfully published front:
+
+1. Validate/acquire the commit gate, retain the candidate and previous front, seal the candidate against every writing entry point, protect its tree page, and snapshot damage/Meta and accepted render dependencies atomically with that seal. An already accepted writer may finish. No later writer may enter. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+2. If the render has already failed, return EIO without changing the published front, Meta, damage log or successful publication. The owner must fully redraw an invalid target before trying again. The core's ordinary failed-target recovery rule remains. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+3. If the render is pending, COMMIT returns acceptance with its reserved commit_id/pixel_gen. It does not wait for the compositor. The candidate is pending and immutable; the previous published front remains held. A presentation attempt including that window returns EAGAIN without changing the binding. This is required by `windows/commit-waits-render`: its depth-four fault cannot be released until after COMMIT has returned.
+4. When all accepted writer dependencies are complete and the candidate is valid with its recorded final render successful, publish its front/tree/Meta/damage in one window transaction. Now retire the previous front. Different device contexts have no implied order; the kernel must establish readiness on the CPU before sending sampling commands. WAIT on just one foreign context's last fence is insufficient when other accepted writers remain. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+5. On a late render failure, reject the pending publication, retain the previous front/tree/Meta, queue EIO for the client's next ACQUIRE, and wake it. The client can also observe the genuine EIO through WAIT on its own render fence. There is no asynchronous success event invented in WindowEvent's 320-byte layout. ACQUIRE delivers the failure once without handing out a buffer; a retry can acquire a safely reusable buffer. A failed or hung candidate is not reusable until actual access ends.
+
+Maintain a monotonic **accepted-commit** sequence: each accepted COMMIT/NO_CHANGE increments it by one; a late-rejected number is never reused. LIST/READ_META expose only successfully published metadata, so may skip a rejected reservation. CAPTURE identifies only a successfully published generation. A synchronous refusal consumes no accepted id. An earlier acceptance return is never retroactively changed to EIO. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+Serialize publication order while one candidate is pending. Another COMMIT or NO_CHANGE can wait, killably, for that render decision; it does not overtake it or wait for display composition. Ordinary successful commits retain their exact +1 behavior. No compositor, including no display owner, is needed for publication or recycling. The no-compositor 250 ms case remains measured as written; rendering stalls are governed by the existing render watchdog, not used as an excuse to wait for composition.
+
+NO_CHANGE retains its 32-byte layout, pixel generation and empty damage. It updates published metadata without new drawing or a sampling hold. A completed frame of the same pixel generation satisfies that later metadata commit's presentation requirement; observation records remain honest about the actual commit sampled, rather than rewriting history.
+
+A CAPTURE begun while a candidate is pending waits killably for that render decision, then captures the newly published generation or returns EIO for its failed publication; a later CAPTURE after rejection sees the retained previous front. It never copies pending/partially rendered pixels. Existing CAPTURE/tree-output validation, authority, ENOENT-at-start and pinned whole-generation behavior remain in force. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
 - **Bases and the damage log.** A buffer's base is the commit id whose pixels it holds: the id it was last
   committed under, the commit `ACQUIRE` last replayed it to, or none (new, or reallocated by a resize). The
   kernel keeps the damage of each window's last 8 commits.
@@ -985,15 +1013,21 @@ Plan §3.1 is the contract, transcribed here.
   composed once a compositor claims.
 - `COMMIT_NO_CHANGE(meta)` publishes metadata against the current front's pixels: a new `commit_id`, the same
   `pixel_gen`, empty damage, and no composite of its own.
-- **Captures** (`CAPTURE`, `SCANOUT_READBACK`) device-read back the pinned committed target,
+- **Captures** (`CAPTURE`) device-read back the pinned published client target,
   retaining it through the transfer fence and the call's copies. A
   resize or destroy during a capture retires the buffer and frees it after the copy, so a capture returns a
   whole committed generation, or ENOENT when the window was destroyed before the copy began. With a tree
   destination, `CAPTURE` copies the same buffer's tree page under the same pin and returns the one commit id
   both belong to; until that copy ends, `ACQUIRE` does not hand out the buffer at that tree page's index, even
-  when a resize has replaced the buffer the capture pinned.
-- **No pins between system calls.** With two buffers, the longest a client ever waits in `ACQUIRE` is one
-  composite plus one capture copy in progress.
+  when a resize has replaced the buffer the capture pinned. SCANOUT_READBACK instead
+  pins the completed composed scanout binding (section 20).
+- **No pins between system calls.** Snapshot metadata holds no pixel/tree backing and never prevents <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+  ACQUIRE. Sampling, replay and capture pins exist only inside their synchronous calls and the
+  device work they submit. With two buffers ACQUIRE may wait for one admitted composite and capture;
+  it never returns an in-use buffer, adds a third, or falls back to a CPU copy. Timeout zero with no
+  free buffer is ETIMEDOUT. The complete ACQUIRE errors are EINVAL, EFAULT, EPERM, ENOENT,
+  ETIMEDOUT, EINTR, ENOMEM (replay resources), ENODEV (core unavailable), EIO (failed replay,
+  render/reset, or the one-shot late failure). No failure publishes an output buffer.
 - **Remnants.** A root process registered with `HOLD_EVIDENCE` as a window's evidence holder keeps, when the
   owner exits or crashes, the window's last front and tree page as a read-only remnant: outside the dead
   owner's pool, counted against the holder's `RLIMIT_AS`, at most 16 per holder, read with `READ_REMNANT` and
@@ -1013,16 +1047,20 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 | `WRITE_EVENTS`, `SET_GEOMETRY` | EPERM | yes | EPERM | EPERM |
 | retired `MAP_COMMITTED`, `MAP_COMPOSITOR_TEXTURE` | ENOSYS | ENOSYS | ENOSYS | ENOSYS |
 | `CAPTURE`, `MAP_TREE`, `READ_META` | yes | yes | yes | EPERM |
-| `COMPOSITE`, `COMPOSITE_RECORD`, `SET_CURSOR` | — | yes | EPERM | EPERM |
+| `COMPOSITE_SNAPSHOT`, `COMPOSITE` | — | only while also current display owner | EPERM | EPERM |
+| `COMPOSITE_RECORD`, `SET_CURSOR` | — | yes | EPERM | EPERM |
 | `CLAIM_COMPOSITOR` | — | — | yes if no live claim, else EBUSY | EPERM |
 | `SCANOUT_READBACK` | — | yes | yes | EPERM |
 | `HOLD_EVIDENCE`, `READ_REMNANT`, `RELEASE_REMNANT` | EPERM | EPERM | yes (EBUSY if another holder) | EPERM |
 
 ### 17.5 Pointers, errors and quiet failure
 
-- Every op copies through `copy_from_user` and `copy_to_user`. A range that overflows, is unmapped, crosses
+- Every op copies through `copy_from_user` and `copy_to_user`. A range that overflows, is unmapped, crosses <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
   into an unmapped page or is read-only for output is EFAULT, and an op that fails with EFAULT has no side
-  effect: copies in finish before any state changes, copies out before the commit point. A read of events
+  effect for preflight failures: copies in finish before state changes, output ranges are preflighted.
+  For COMPOSITE, a concurrent unmap after sending GPU work is the explicit exception: return EFAULT
+  without successful acknowledgement, retain DMA holds and damage, and force full next-frame repair.
+  A pre-existing unmapped/read-only descriptor or output still sends no work and consumes no frame. A read of events
   into a bad buffer consumes no event. An output landing in a copy-on-write page after `fork` lands only in
   the caller's copy.
 - No window op writes to the serial log or any kernel output on any path (section 22).
@@ -1049,12 +1087,12 @@ The compositor's keyboard state, once version 1's ops 26 (modifiers) and 31
   every claim; a second claim while one lives is EBUSY; uid 1000 is EPERM. When the holder dies or releases,
   the role can be claimed again with a higher epoch. Windows outlive the compositor with their last geometry,
   stacking and visibility. Each claim delivers `CompositorChanged { epoch }` to every window (section 19).
-- **Composition.** `COMPOSITE` composes every visible window at its geometry, in increasing `z` (later over <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
-  earlier), over black, by userspace `bwm` on the GPU core onto the active mode's target, clipped at its edges, exactly: each output pixel
+- **Composition.** `COMPOSITE` composes every visible window at its geometry, in increasing `(z, window_id)` (later over <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
+  earlier), over black, by the current owner+claimant in userspace on the GPU core onto the persistent scene target, clipped at its edges, exactly: each output pixel
   is the topmost visible window's committed pixel there, or black. It processes exactly the pixels of the
   damage union since the previous composite, and the full screen the first time; the frame equals a full
   recomposition. At most one composite per window is in flight.
-- **Composite records.** `COMPOSITE_RECORD(serial)` reads `CompositeRecord` (16-byte header `serial: u64 @0`,
+- **Composite records.** `COMPOSITE_RECORD(serial)` reads `CompositeRecord` (24-byte header `serial: u64 @0`, <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
   `pixels: u64 @8`, then `count: u32 @16`, `flags: u32 @20`, then `count` entries of 32 bytes: `id: u64`,
   `commit_id: u64`, `pixel_gen: u64`, `pixels: u64`). Every presentation-required window (registered,
   visible, not minimized) is listed with the generation the frame is correct for, a wholly occluded one with
@@ -1095,9 +1133,75 @@ The compositor's keyboard state, once version 1's ops 26 (modifiers) and 31
   proves device access ended. The last hold and device unref return the charge exactly.
 - **Numbers** (plan §12.2): one 256 × 256 window committing as fast as its buffers are released is composed at
   least 60 times a second (300 commits, the first 30 discarded); the longest IRQ-masked interval in the
-  GPU path (validation, translation, submission, fence completion and readback copies) during full-screen damage is at most 500 µs. The counters: trace counters `composites`,
+  GPU path (validation, translation, submission, fence completion and readback copies) during full-screen damage is at most 500 µs. `composite_pixels` and record/per-window pixels count the union of actual clipped scene writes
+  in persistent C once per destination pixel, excluding overdraw and the full C-to-A/B scanout
+  transport copy. Per-window pixels intersect that union with the topmost visible region.
+  Ordinary GPU COUNTERS draws, instances, fragment area and work estimate include the transport
+  and its quota charges. The counters: trace counters `composites`,
   `composite_pixels`, `damage_rects`, `window_buffer_allocs`, and the gauge `gpu_irq_masked_max_us`, in
   `/proc/trace/counters`.
+
+### 18.1 Snapshot authority and source aliases (B13)
+
+There are three independent identities: window client, compositor claimant, and display owner. They are kernel process-incarnation identities, never a numeric PID comparison. A frame also names the claim epoch, display ownership sequence and device reset epoch. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+Only a caller which is **both** current display owner **and** current compositor claimant may snapshot or submit foreign window fronts. Root alone cannot. A root claimant below the top of the display stack cannot. Merely receiving GIVE_DISPLAY cannot. The ordinary GPU validator continues to refuse explicit foreign resources with EINVAL, code 4.
+
+A snapshot contains every presentation-required window: registered, visible, not minimized, including wholly occluded windows. Order is `(z, window_id)` ascending, matching the registry tie break. Each source alias names `(snapshot, window incarnation, buffer UID, committed pixel generation, resource epoch, write incarnation)`. The write incarnation advances whenever ACQUIRE permits modification, even before a render completes; reusing one of the client's two handles can never resurrect an alias. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+Aliases use the non-address-shaped handle encoding, are private to the snapshot's process and named context, and are never inserted as ordinary writable resources in `Proc.resources`. Allocate them from the same non-reusing handle sequence, checking the context/resource/snapshot/alias tables for collisions; context/resource allocation must also check outstanding alias values. A cancelled value never later resolves to an unrelated resource. They can appear only in source positions in the op-19 stream: COPY source, DRAW_SAMPLED texture, or a supported parameterized pipeline's source texture. They cannot be BEGIN targets, COPY destinations, geometry buffers, UPLOAD destinations, PRESENT targets, READBACK handles, or handles re-exported to another process. Ordinary 416 SUBMIT does not resolve them. Its refusal is EINVAL/code 4, even for the owner. RESOURCE_DESTROY on an alias is EINVAL; cancellation uses op 19. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+Device attachment is temporary and specific to the importing context. The translator resolves the authorized source alias to its internal resource ID, attaches it before use, and supplies a sample-only binding. Attachment itself is not authority: the validator must refuse every other route, including “the resource happens to be attached.” Never attach all clients' resources to all contexts of the owner. Clients retain backing ownership and quota charges. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+### 18.2 Admission, holds, scene damage and transport (B13)
+
+The snapshot contains no strong pixel/tree reference. On op 19, use the window commit protocol to compare source UID, write incarnation, resource/reset epoch and published generation, require that it is still the window's current published front, then pin those exact buffers before dropping the lock. If an intervening pixel commit replaced a source, the snapshot is stale: EAGAIN, never a free buffer pinned while ACQUIRE can hand it out, or a new generation sampled under an old record. A metadata-only NO_CHANGE does not change the sampled buffer or invalidate its pixel authority; retain the snapshot's honest sampled commit metadata. Scene snapshots are retried; it does not block clients during userspace command construction. Cache/prepare command geometry before snapshot acquisition where possible. Achieving the existing 60 Hz case is an implementation gate, not an assumed consequence of retries or a reason to loosen that bound. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+For an admitted frame, transfer these call-local pins to submission-owned holds before any attach/draw can access them. Pending client rendering causes EAGAIN before device composition. A wholly occluded window remains in the manifest; a never-committed window contributes opaque black. Pins for sources not actually sampled can end after validation/admission; entries and generation provenance are immutable metadata. A source that is sampled stays held through actual sampling completion **and fence publication**. Detach safely after outstanding requests, and release the pool pin at the same completion boundary. Do not hold client fronts until scanout replacement: scanout holds the owner's composed target, not the clients. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+With two client buffers:
+
+* F is front, B is free. ACQUIRE may hand out B after replaying from F with a replay pin/fence. F remains sealed; a compositor can concurrently read F.
+* B commits. If rendering is pending, F remains the last published front and B is an immutable candidate. Once B publishes, F is retired if a sampling/capture/replay hold still reads it; otherwise F becomes free.
+* With F still sampled and B front, there is no free buffer. ACQUIRE waits; it must not unseal F, return the front B, allocate a surprise third buffer or copy pixels into CPU memory. When F's final pool hold ends, ACQUIRE replays B into F on the GPU, waits for that copy, sets base to B's commit and only then unseals F and its tree page.
+
+With three buffers the third can be acquired while an earlier front is retired, but the same rules apply when all three are front/pending/held/acquired. At most one composite is admitted at once, a stronger implementation of the existing per-window bound, and every wait is interruptible. With timeout zero and no free buffer, existing ACQUIRE returns ETIMEDOUT, not an invented EAGAIN. Its complete errors are the existing EINVAL/EFAULT/EPERM/ENOENT/ETIMEDOUT/EINTR plus ENOMEM for replay resources, ENODEV for unavailable GPU, and EIO for failed replay/render/reset or the late-failure delivery above. No output buffer is published on any failure. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+Cancellation before send, signal before send and the pre-device `composite-stall` death case release pool pins immediately. After send, an EINTR, EIO, kill, dropped handle or synthesized watchdog status does not prove DMA ended. Keep backing and pool exclusion until device completion and fence publication or **confirmed successful reset**. A failed reset retains them. On owner loss wake blocked ACQUIREs within 250 ms; if safe recycling is still impossible because device work has not drained, return EIO instead of granting a writable target under DMA. The existing compositor-dies case stalls before sending, so it must still acquire successfully within its written 250 ms bound. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+Replay and CAPTURE retain their independent pins, including tree-index exclusion during capture across resize. The damage log of eight commits, stale-base widening, 16-rectangle replay limit and full-replay fallback remain unchanged. Keep buffer UIDs independent of array indices; a resize can install a new set while old buffers remain in flight.
+
+### Damage, flipping and accounting
+
+Use a persistent GPU scene target C and two display-sized scanout targets A/B. Initialize all three with completed GPU clears before the measured composition interval, so the alternate scanout is a real, readable target for point 26 even on the first flip. Userspace updates only the normalized scene damage in C, restoring black/windows and the cursor there, then emits a GPU COPY of C into the unused A/B and presents it. The persistent scene avoids assuming that the other flip target already has the previous frame's unchanged pixels. It also avoids CPU snapshots or a full window recomposition on every flip. There are still exactly two **scanout** targets; C is an ordinary render target within the owner's quota. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+Op 19 validates that alias-sampling scene draws write C, that the displayed destination is made from that completed scene by the submitted full GPU copy, and that other writes cannot race those resources. It reuses the BGL stream validator/translator; it does not draw either the scene or copy on behalf of userspace. The full scene-to-scanout COPY is presentation transport. `composite_pixels`/per-window pixels count the union of actual scene writes in C, once per destination pixel, not overdraw or the transport copy. All GPU work including the transport is counted in ordinary COUNTERS draws/instances/fragment area/work estimate and charged normally. State this distinction in §18's counter definition; do not conceal the copy's GPU cost. An implementation can later avoid the extra target/copy only if it preserves the same damage and flip properties. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+The first scene processes the full reported mode: 4,096,000 pixels at 2560×1600. Later record pixels derive from the validated stream's actual clipped scene write union, not the requested damage or a caller's claimed total. Per-window pixels are that union intersected with each window's topmost visible region; fully occluded windows have zero. The ignore-damage fault must cause actual excess scene work and an excess counter, not a falsified counter. It must not be “optimized away” by an admission check comparing work against the intended damage. Kernel validation is not a pixel oracle: suppress-draw/corrupt-pixel faults can complete with apparently valid provenance and must still be caught by device-pixel comparison. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+Retain snapshot damage/publication watermarks until successful completion; acknowledge only the covered revisions, never clear damage committed during the in-flight frame. Cursor motion damages old and new footprints; stationary repaint redraws the cursor above new content. Failure retains damage and forces full scene repair. Direct writes outside this composition path invalidate the target's composition provenance. Scanout readback serializes against writers and pins a known binding throughout both poison transfers, so it cannot pair old metadata with newly overwritten pixels. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+Client backing is charged once to the client (or its retained accounting identity after exit), not again for aliases or sampling. Compositor targets, commands, private submission copies and observation staging are charged to the compositor/observer under normal core rules. Charges return only after the final hold and completed device unref, or confirmed reset. B12's exact VmSize expectation and bounded wait for unrefs stand.
+
+### 18.3 Teardown and core display custody (B13)
+
+| Event | Required result |
+|---|---|
+| Client RESOURCE_DESTROY | Revoke its public handle. The window's retained target still supports committed-front sampling, replay and CAPTURE. A snapshot resolves the window's internal identity, not the dropped handle. |
+| DESTROY | Remove registry visibility, invalidate unadmitted snapshots naming the window (op 19 ENOENT), revoke client handles and unmap tree pages. An already pinned frame/capture may complete its whole old generation. Damage the uncovered area for the next frame; free backing only after all holds/unref. |
+| Client last-thread exit or exec | Run window cleanup and GPU handle cleanup exactly once per process incarnation. Same invalidation/draining rules as DESTROY; events/readers wake. On exit/crash only, an authorized evidence holder can retain the last successfully published front/tree as a remnant, up to the existing 16-holder bound. Pending failed data is never evidence. Exec creates no remnant. | <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+| Evidence holder exit/release | Drop remnant holds; charges follow existing holder RLIMIT_AS semantics. A remnant is not a sampleable live window or a route around compositor authority. |
+| Compositor claim release/death | Invalidate its snapshots/aliases and wake window waiters. Windows retain geometry, visibility, stacking and last published fronts. Pre-send pins drain immediately; sent GPU work drains safely. A later root claim gets a strictly higher epoch and CompositorChanged to every window. | <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+| Display owner giveback/death/exec | Revoke that owner's foreign-sampling authority immediately, including its snapshots. Remove its stack entry, restore the previous live giver's mode and retained GPU target through a completed flush, or the kernel screen if none. A surviving claim does not bypass lost display ownership. Do not restore a CPU framebuffer copy. | <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+| Device reset | Invalidate snapshots by reset epoch; fail pending renders and submissions with the core's genuine reset status. Confirmed reset releases DMA access holds, loses old resource contents/bindings, and requires recreation/full redraw. Unconfirmed reset frees no DMA backing. Client operations against lost targets return EIO; clients destroy/recreate their windows/contexts, register the new monotonically allocated window IDs and fully redraw. The window-target context cache must discard reset/quarantined entries before creating new targets. No resize/replay can recover lost pixels. Owner recreates C/A/B/context and re-enumerates new windows. A lost retained screen cannot be restored “exactly”; report EIO/target-lost and redraw after recovery, never fabricate old pixels. | <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+Locks must not nest registry/core/process-manager/device waits. Use retained identity objects and a validate/reserve/recheck protocol; drop Pin objects outside the registry lock as the lock protocol requires. Display transition sequencing must prevent a delayed old-owner present from binding after a new owner takes custody. Once bind/flush is sent, it is serialized with takeover/pop; device-access holds survive changes of owner.
+
+**GIVE_DISPLAY is 414/27**, existing 8-byte `pid:u32 @0, reserved:u32 @4`. Implement it in `gpu/display.rs` using the core ownership stack, not the removed display backend or v1 DISPLAY_OWNER_PID. Only the current owner may give; resolve the target PID once to its live incarnation, push it directly above the giver, retain giver mode/binding/backing. Root is required for direct 431 takeover, not for explicitly delegated custody. A delegated uid-1000 owner can draw/present its own resources and give back; it cannot claim the root-only compositor role or sample foreign fronts. No claim transfers implicitly with GIVE_DISPLAY.
+
+GIVE errors: EPERM non-current-owner; EINVAL malformed size/reserved; EFAULT argument copy; ESRCH absent/exiting target; EBUSY self-give/cycle/already-in-stack target or depth five; ENODEV unavailable core; ENOMEM if fallible bookkeeping cannot be allocated; EINTR while waiting for a transition before push; EIO failed device transition. Validate before mutating custody. Four userspace owners maximum, excluding the kernel. Direct TAKE by the current owner remains idempotent; TAKE by a lower owner remains EBUSY. GIVE does not collapse the stack to the runner. Pop waits for a genuine restore flush; if restore fails keep binding unknown and follow the core's restore-retry/rollback rules. Repeated PID values do not revive expired authority.
+
+The claim is singleton, not an ownership-stack entry. The stage normally needs no claim to render its own stage. It releases any claim before delegating a window test to kiosk; kiosk claims and takes delegated display ownership before announcing ready. A root stage that itself composes client windows must hold the claim while active and use the same APIs. Restoring display custody never silently restores a departed claim epoch. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
 
 ## 19. Window events, version 2
 
@@ -1151,7 +1255,7 @@ The compositor assigns each event a serial that increases strictly per composito
 
 ### 19.4 Dispatch and the processed watermark
 
-Plan §6.4 is the contract. Breengel apps take events with `window.dispatch(handler)`; the handler returns
+Plan §6.4 is the contract. Breengel apps take events with `window.dispatch(handler)`; the handler returns <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
 `Redraw` or `NoChange`, and a serial counts as handled once its handler has returned. For `commit(buffer)`,
 `processed_serial` is the highest serial whose handler had returned when that buffer was acquired: an event
 whose handler returns after frame N was acquired is acknowledged by frame N + 1, never by N, and an event
@@ -1159,15 +1263,17 @@ polled but not yet handled is never acknowledged. For `commit_no_change`, it is 
 that every serial up to *s* handled since the last pixel commit returned `NoChange`: a `Redraw` stops it until
 a frame acquired after its handler returned is committed. Serials Breengel refused at dispatch are listed in
 `Meta.rejected` and count as finished. Raw clients set the watermark themselves. `READ_META` reads back the
-metadata the newest commit published, with that commit's id.
+metadata the newest successfully published commit owns, with that commit's id. Pending acceptance
+does not advance this watermark; a rejected accepted id can be skipped. There is no asynchronous
+render-failure event: late EIO is delivered once by ACQUIRE, with WindowEvent still exactly 320 bytes.
 
 ## 20. Scanout observation
 
 ### 20.1 `SCANOUT_READBACK`
 
 <!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
-Root or the compositor observes the whole composed destination through the userspace GPU
-compositor, as canonical BGRX rows and the same **1,024-byte record version 2** as GPU READBACK.
+Root or the current claimant observes the whole composed destination produced by the userspace GPU
+compositor through the core's pinned-binding observation service, as canonical BGRX rows and the same **1,024-byte record version 2** as GPU READBACK.
 The complete little-endian offset table is normative in `gpu.md` §1.8 and `gpu-abi.md`.
 It includes version/size, backend 4 or 5, boundary 4, scanout/composite flags, physical rectangle,
 stride/format, actual resource identity, generation, native render/readback/present fences
@@ -1181,7 +1287,24 @@ READBACK writes only its argument's reason, with destination and record untouche
 Window capture normalizes opaque X to FF. The observation of a flip names that flip's
 actual bound resource, completed present fence and composite, rather than assuming a fixed
 resource across frames. Device readback of target 0 remains display-owner-only; a root
-window-protocol request is serviced by the compositor, without exposing a foreign handle.
+window-protocol request is authorized by the window observer check and serviced by the core,
+without importing a foreign handle, a daemon request/response protocol, or another process
+accessing the observer's user pointers. The helper's gpu-scanout command is an alternative
+transport of the display owner's genuine 416 observation.
+
+The 48-byte argument returns an observation serial, distinct from the composite serial. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+Errors: EPERM unauthorized observer; EINVAL layout/reserved/record length/short destination;
+EFAULT inaccessible outputs; ENOMEM charged staging; ENODEV unavailable core; EINTR interruption;
+EAGAIN pending composition; EIO with reason 1–12. Unknown binding without a pending composition
+is EIO/10. On EIO write only reason: descriptor serial, pixels and record remain untouched.
+Core preflight/concurrent-unmap guarantees apply. A destroyed client does not cause ENOENT
+when its retained composed destination is still observable.
+Reason 11 is composite-overflow; reason 12 is window-render-not-ready (render not complete OK
+before the sampling send), never normal pending EAGAIN. Reasons 1–10 retain their core meanings.
+Record target is 0; window entries hold native render fences and sampled core target generations,
+not window pixel_gen (which remains in COMPOSITE_RECORD). Unused entries and bytes 776–1023
+are zero. Only successful device observation listing a sufficient pixel generation acknowledges
+presentation; snapshot/provenance metadata or an op-19 success alone cannot certify pixels.
 
 ### 20.2 GPU backend rows
 
@@ -1467,4 +1590,4 @@ overlay, verdict, category headings and boot ribbon, with individual pixel subst
 ## 25. Error numbers
 
 The kernel returns Linux's errno values on both architectures: EPERM 1, ENOENT 2, ESRCH 3, EINTR 4, EIO 5,
-EAGAIN 11, ENOMEM 12, EACCES 13, EFAULT 14, EBUSY 16, EINVAL 22, EMFILE 24, ENOSYS 38, ETIMEDOUT 110.
+EAGAIN 11, ENOMEM 12, EACCES 13, EFAULT 14, EBUSY 16, ENODEV 19, EINVAL 22, EMFILE 24, ENOSYS 38, ETIMEDOUT 110, EDQUOT 122.
