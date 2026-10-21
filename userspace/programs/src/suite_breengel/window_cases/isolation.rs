@@ -136,8 +136,8 @@ fn release() -> i64 {
 }
 
 fn composite() -> i64 {
-    let mut c = abi::Composite::ZERO;
-    call(op::COMPOSITE, &mut c)
+    let mut c = [0u64; 14];
+    super::handoff::wire(op::COMPOSITE, &mut c)
 }
 
 /// The listing of window `id`, which must be there.
@@ -232,6 +232,7 @@ fn isolation_other_read() -> CaseResult {
 
 // gpu-window: §2.2 replaces retired mapping authority with validator ownership of GPU handles (EINVAL).
 fn isolation_other_map() -> CaseResult {
+    super::handoff::snapshot_lifetime(true)?;
 interface()?;
     let w=W::new(16,16,2)?;let target=w.c.buffer[0];
     let mut px=vec![0;1024];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
@@ -324,7 +325,25 @@ interface()?;
 }
 
 fn isolation_composite_denied() -> CaseResult {
+    step("17.4", child("gpu-window: root without owner or claim",3_000,None,|| {
+        let context=bgl::Context::new().map_err(|r|format!("gpu-display: context {}",outcome(r)))?;
+        let mut snapshot=[0u64;12];snapshot[0]=context.handle();
+        errno_is(super::handoff::wire(29,&mut snapshot),EPERM,"root without owner or claim","gpu-window: snapshot")
+    }))?;
     interface()?;
+    step("17.4", child("B13 claimant without display", 3_000, None, || {
+        claim().map_err(|r| format!("gpu-window: claim {}",outcome(r)))?;
+        let mut snapshot=[0u64;12];
+        let result=super::handoff::wire(29,&mut snapshot);
+        let submit=composite();
+        release();
+        errno_is(result,EPERM,"root claimant without display","gpu-window: COMPOSITE_SNAPSHOT")?;
+        errno_is(submit,EPERM,"root claimant without display","gpu-display: COMPOSITE")
+    }))?;
+    // SAFETY: TAKE has no argument; current-owner TAKE is idempotent.
+    want_ok(unsafe { raw::syscall0(431) as i64 },"18","gpu-display: display owner fixture")?;
+    let mut snapshot=[0u64;12];
+    want_errno(super::handoff::wire(29,&mut snapshot),EPERM,"17.4","gpu-window: display owner without claim snapshot")?;
     let _w = shown(16, 16, 12, b"composite-denied")?;
     let r = composite();
     ensure(r == -(EPERM as i64), "17.4", format!("COMPOSITE by root that is not the compositor {}; the contract gives EPERM", outcome(r)))?;
@@ -407,8 +426,7 @@ fn isolation_compositor_authorized() -> CaseResult {
     }
     let got = read_events(mine.id()).map_err(|r| format!("READ_EVENTS {}", outcome(r))).cite("19.2")?;
     ensure(got.iter().any(|e| e.kind == abi::event_kind::KEY_PRESS && e.keycode == 30), "17.4", "the event the compositor wrote did not reach the owner")?;
-    let composed = k.ask("composite").cite("24")?;
-    ensure(composed.starts_with("ok "), "17.4", format!("the compositor's COMPOSITE answered `{composed}`"))
+    super::composition::compose(&mut k).map(|_| ())
 }
 
 fn isolation_pid_reuse() -> CaseResult {
@@ -581,11 +599,7 @@ fn isolation_efault_inject() -> CaseResult {
 
 fn isolation_efault_composite() -> CaseResult {
     interface()?;
-    let (mut k, _) = kiosk().cite("24")?;
-    let _ = k.ask("auto 0").cite("24")?;
-    let bad = k.ask("badcomposite").cite("24")?;
-    ensure(bad == "err 14 err 14", "17.5", format!(
-        "the compositor's COMPOSITE with an unmapped and then a read-only descriptor answered `{bad}`; the contract gives EFAULT for both (`err 14 err 14`)"))
+    super::handoff::descriptor_faults()
 }
 
 // gpu-display: B7 preserves bad-user-copy protection through GPU CAPS, RESOURCE_CREATE and SUBMIT.
@@ -656,17 +670,17 @@ fn isolation_efault_commit() -> CaseResult {
 
 fn isolation_efault_readback() -> CaseResult {
     interface()?;
-    let mut record = vec![0u8; core::mem::size_of::<abi::ObservationRecord>()];
+    let mut record = vec![0u8; 1024];
     let (width,height)=super::composition::screen_size()?;
     let screen = (width*height*4) as u64;
-    let mut rb = abi::Readback::ZERO;
+    let mut rb = super::handoff::Readback::ZERO;
     rb.dst = unmapped();
     rb.dst_len = screen;
     rb.record = record.as_mut_ptr() as u64;
     rb.record_len = record.len() as u32;
     want_errno(call(op::SCANOUT_READBACK, &mut rb), EFAULT, "17.5", "SCANOUT_READBACK into an unmapped destination")?;
     let mut dst = vec![0u8; screen as usize];
-    let mut rb = abi::Readback::ZERO;
+    let mut rb = super::handoff::Readback::ZERO;
     rb.dst = dst.as_mut_ptr() as u64;
     rb.dst_len = screen;
     rb.record = unmapped();
@@ -1088,7 +1102,7 @@ fn isolation_retired_ops() -> CaseResult {
 fn isolation_unknown_op() -> CaseResult {
     match window_version() {
         2 => {
-            for unknown in [abi::op::LAST as u64 + 1, 0xFFFF, u32::MAX as u64] {
+            for unknown in [30, 0xFFFF, u32::MAX as u64] {
                 // SAFETY: an unknown op is refused before any argument is read.
                 let r = unsafe { raw::syscall3(SYS_WINDOW, unknown, 0, 0) as i64 };
                 ensure(r == -22, "17.1", format!("window(op {unknown:#x}) {}; an unknown op fails with EINVAL", outcome(r)))?;
