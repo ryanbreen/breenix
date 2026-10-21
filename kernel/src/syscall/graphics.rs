@@ -3046,7 +3046,18 @@ pub fn sys_get_mouse_pos(out_ptr: u64) -> SyscallResult {
         return SyscallResult::Err(super::ErrorCode::Fault as u64);
     }
 
-    let (mx, my, buttons) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
+    let tablet = crate::drivers::virtio::input_mmio::is_tablet_initialized();
+    // Test point 17, `move-pointer`: this read finds the device at the armed position, as if
+    // it had moved there (docs/gui/breengel.md section 21).
+    if let Some(at) = crate::test_control::take(breengel_abi::tc_point::MOVE_POINTER, 0) {
+        let (x, y) = (at as u32, (at >> 32) as u32);
+        if tablet {
+            crate::drivers::virtio::input_mmio::move_to(x, y);
+        } else {
+            crate::input::pointer::move_to(x, y);
+        }
+    }
+    let (mx, my, buttons) = if tablet {
         crate::drivers::virtio::input_mmio::mouse_state()
     } else {
         crate::input::pointer::mouse_state_consume()

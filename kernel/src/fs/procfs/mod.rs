@@ -762,7 +762,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
             let caller=crate::window::Caller::current().map_err(|e|-e)?;
             if !caller.is_root(){return Err(-1);}
             let mut bits=0u32;
-            for point in 12..=14 {if crate::test_control::take(point,caller.tgid).is_some(){bits|=1<<point;}}
+            for point in [breengel_abi::tc_point::PANEL_CURSOR_NO_RESTORE,12,13,14] {if crate::test_control::take(point,caller.tgid).is_some(){bits|=1<<point;}}
             text(alloc::format!("{bits}\n"))
         }
         #[cfg(not(target_arch="aarch64"))]

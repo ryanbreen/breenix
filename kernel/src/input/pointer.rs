@@ -84,6 +84,15 @@ pub fn has_pending_scroll() -> bool {
     WHEEL.load(Ordering::Acquire) != 0
 }
 
+/// Put the pointer at `(x, y)`, clamped to the screen, as if the device had moved there,
+/// keeping its buttons (test point 17, `move-pointer`).
+pub fn move_to(x: u32, y: u32) {
+    let (width, height) = screen().unwrap_or((u32::MAX, u32::MAX));
+    let (_, _, buttons) = mouse_state();
+    let (x, y) = (x.min(width.saturating_sub(1)) & 0xff_ffff, y.min(height.saturating_sub(1)) & 0xff_ffff);
+    POINTER.store(x as u64 | (y as u64) << 24 | (buttons as u64) << 48, Ordering::Release);
+}
+
 /// Release a detached pointer's buttons without releasing another device's.
 pub fn release(port: u8) {
     BUTTONS[port as usize].store(0, Ordering::Release);
