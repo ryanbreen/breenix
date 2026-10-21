@@ -100,14 +100,12 @@ pub(crate) fn bpp3_bpp4()->CaseResult {
     ensure(r==0,"2","gpu-raster: three-byte RGB upload failed")?;
     f.context.begin(f.target,14,18);f.context.copy(f.texture,&[[0,0,14,18,0,0]]);
     f.context.submit().and_then(|s|s.wait(2_000_000_000)).map_err(|e|format!("gpu-raster: conversion fence {}",outcome(e))).cite("2")?;
-    let mut bgra=f.pixels(14,18,56).cite("2")?;
+    let bgra=f.pixels(14,18,56).cite("2")?;
     ensure(bgra.chunks_exact(4).zip(rgb.chunks_exact(3)).all(|(b,r)|b==[r[2],r[1],r[0],255]),"2","gpu-raster: three-byte upload changed channel order or alpha")?;
     // Exercise the public pixel-format conversion on the device's actual readback, with
     // a three-byte destination and row sentinels, rather than drawing a three-byte target.
-    let source=unsafe{FrameBuf::from_raw(bgra.as_mut_ptr(),14,18,56,4,true)}.cite("2")?;
     let mut rgb_out=vec![0xA5;48*18];
-    let mut dest=unsafe{FrameBuf::from_raw(rgb_out.as_mut_ptr(),14,18,48,3,false)}.cite("2")?;
-    libgfx_ref::blit::blit(&mut dest,&source,0,0);
+    libgfx::surface::convert(&bgra,56,14,18,&mut rgb_out,48,libgfx::surface::Format::RGB).cite("2")?;
     for (n,row) in rgb_out.chunks_exact(48).enumerate(){
         ensure(row[..42]==rgb[n*42..(n+1)*42] && row[42..].iter().all(|&b|b==0xA5),"2","gpu-raster: three-byte readback conversion changed a pixel or padding")?;
     }Ok(())
@@ -176,7 +174,7 @@ pub(crate) fn audit_begin()->Option<(ga::Counters,uploads::Mark)>{
     let name=libbreenix::suite::running_case()?;
     if !name.starts_with("raster/"){return None;}
     uploads::start();
-    declare_fixture(&font5x7::FONT_TABLE);
+    declare_fixture(&libgfx::font::FONT_TABLE);
     // The dependency stores coverage cells as static rows. Declare each complete size
     // table, including replacement, before rendering.
     use noto_sans_mono_bitmap::{get_raster,FontWeight,RasterHeight};
