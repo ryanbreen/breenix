@@ -276,10 +276,8 @@ impl Supervisor {
             };
         }
         if publish {
-            let stamp = libbreenix::time::now_realtime().expect("log boot clock");
-            supervisor.boot_id = format!("{:x}-{:x}-{:x}", stamp.tv_sec, stamp.tv_nsec, now);
-            std::fs::write("/run/breenix/boot-id", format!("{}\n", supervisor.boot_id)).expect("publish log boot ID");
-            print!("[init] log boot-id={}\n", supervisor.boot_id);
+            supervisor.boot_id = std::fs::read_to_string("/run/breenix/boot-id")
+                .expect("init log boot ID").trim().to_string();
         }
         supervisor
     }
