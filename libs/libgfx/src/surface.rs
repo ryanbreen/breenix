@@ -365,7 +365,7 @@ impl Surface {
         match words {
             Ok(words) => {
                 let batch = self.batch.as_mut().expect("batch checked above");
-                if !batch.last_mut().is_some_and(|last| join(last, &words)) { batch.push(words); }
+                batch.push(words);
                 if batch.len() >= BATCH_PRIMITIVES { self.flush(); }
             }
             Err(e) => { self.error.get_or_insert(e); }
@@ -375,7 +375,7 @@ impl Surface {
     /// Draw `f`'s shapes into this surface in one submission. The pixels are the ones drawing
     /// each shape alone gives: the commands keep their order, adjacent opaque shapes of one
     /// pipeline, colour and scissor share a draw, and a submission the core refuses is sent
-    /// again in halves, down to a single draw, which fails as it would alone. A sampling draw inside `f` first submits the
+    /// again in halves, down to a single shape, which fails as it would alone. A sampling draw inside `f` first submits the
     /// shapes before it. `read` and `wait` inside `f` return EAGAIN; errors appear once the
     /// batch is sent, when `batch` returns.
     pub fn batch<R>(&mut self, f: impl FnOnce(&mut Surface) -> R) -> R {
@@ -395,22 +395,17 @@ impl Surface {
 
     fn send(&mut self, segments: &[Vec<u32>]) {
         let (target, w, h) = (self.target, self.width as u32, self.height as u32);
-        let result = device::with(|d| {
-            let context = &mut d.context;
-            context.begin(target, w, h);
-            for words in segments { context.append(words); }
-            context.submit().inspect_err(|_| context.discard())
+        let result = send_batch(segments, &mut |words| {
+            let result = device::with(|d| {
+                let context = &mut d.context;
+                context.begin(target, w, h);
+                context.append(words);
+                context.submit().inspect_err(|_| context.discard())
+            });
+            GENERATION.fetch_add(1, Relaxed);
+            result.map(|fence| self.render = Some(fence))
         });
-        GENERATION.fetch_add(1, Relaxed);
-        match result {
-            Ok(fence) => self.render = Some(fence),
-            Err(e) if segments.len() == 1 => { self.error.get_or_insert(e); }
-            Err(_) => {
-                let (first, second) = segments.split_at(segments.len() / 2);
-                self.send(first);
-                self.send(second);
-            }
-        }
+        if let Err(e) = result { self.error.get_or_insert(e); }
     }
 
     /// Record a failure to prepare a draw (a table upload) as this surface's error.
@@ -480,6 +475,30 @@ impl Drop for Surface {
         // A forked child holds no GPU handles of its parent's (section 17.2).
         if self.owns_handle && self.owner == device::pid() {
             gpu::resource_destroy(self.target);
+        }
+    }
+}
+
+/// Join only the submitted copy; quota retries retain the original shape boundaries.
+fn send_batch(segments: &[Vec<u32>], submit: &mut impl FnMut(&[u32]) -> Result<(), i64>) -> Result<(), i64> {
+    let mut words = Vec::new();
+    let mut pending = Vec::new();
+    for segment in segments {
+        if !join(&mut pending, segment) {
+            words.extend_from_slice(&pending);
+            pending.clear();
+            pending.extend_from_slice(segment);
+        }
+    }
+    words.extend_from_slice(&pending);
+    match submit(&words) {
+        Ok(()) => Ok(()),
+        Err(e) if segments.len() <= 1 => Err(e),
+        Err(_) => {
+            let (first, second) = segments.split_at(segments.len() / 2);
+            let first = send_batch(first, submit);
+            let second = send_batch(second, submit);
+            first.and(second)
         }
     }
 }
