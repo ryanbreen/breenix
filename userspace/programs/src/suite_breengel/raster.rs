@@ -2975,10 +2975,10 @@ fn text_hidpi_sizes() -> CaseResult {
     let modes=bgl::modes().map_err(|e|format!("gpu-display: MODES {}",outcome(e))).cite("8.3")?;
     let scale=modes.modes[modes.current as usize].scale;
     ensure(scale==2,"8.3","gpu-display: HiDPI text requires scale 2")?;
-    let file=read_file(SANS_PATH).cite("8.3")?;let font=Font::parse(&file).cite("8.3")?;
+    let file=read_file(SANS_PATH).cite("8.3")?;let font=libgfx_ref::ttf_font::Font::parse(&file).cite("8.3")?;
     let glyph=font.glyph_index('H');
-    let large=font.rasterize_glyph(glyph,32.0).cite("8.3")?;
-    let small=font.rasterize_glyph(glyph,16.0).cite("8.3")?;
+    let large=reference_bitmap(font.rasterize_glyph(glyph,32.0).cite("8.3")?);
+    let small=reference_bitmap(font.rasterize_glyph(glyph,16.0).cite("8.3")?);
     let theme=Theme::dark();
     let before=crate::gpu_checks::counters().cite("8.3")?;
     // The production UI text entry point takes logical coordinates and the theme's
@@ -2996,4 +2996,8 @@ fn text_hidpi_sizes() -> CaseResult {
         "gpu-text: twice-size text is only replicated scale-1 coverage")?;
     let after=crate::gpu_checks::counters().cite("8.3")?;
     ensure(after.draws>before.draws && after.uploads_image==before.uploads_image,"8.3","gpu-text: HiDPI text did not execute GPU coverage draws")
+}
+
+fn reference_bitmap(b:libgfx_ref::rasterizer::GlyphBitmap)->libfont::Bitmap {
+    libfont::Bitmap {width:b.width,height:b.height,x_offset:b.x_offset,y_offset:b.y_offset,coverage:b.coverage}
 }
