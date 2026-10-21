@@ -2046,7 +2046,7 @@ fn load_elf_from_ext2(
         return Err(EACCES);
     }
 
-    let identity = cred.may_exec(inode.attrs(), crate::fs::vfs::mount::flags_at(&resolved))?;
+    let identity = cred.may_exec(fs.exec_attrs(inode_num, &inode), crate::fs::vfs::mount::flags_at(&resolved))?;
 
     let data = fs
         .read_file_content_coherent_unless(inode_num, &inode, super::exec::caller_killed)?

@@ -65,7 +65,7 @@ pub fn read_program_image(
         return Err(EISDIR);
     }
     // A privileged caller still needs at least one execute bit (`may`).
-    let identity = cred.may_exec(inode.attrs(), crate::fs::vfs::mount::flags_at(&resolved))?;
+    let identity = cred.may_exec(fs.exec_attrs(inode_num, &inode), crate::fs::vfs::mount::flags_at(&resolved))?;
 
     let elf_data = fs
         .read_file_content_coherent_unless(inode_num, &inode, crate::syscall::exec::caller_killed)?

@@ -1666,7 +1666,7 @@ fn load_elf_from_ext2(
         return Err(EACCES);
     }
 
-    let identity = cred.may_exec(inode.attrs(), crate::fs::vfs::mount::flags_at(&resolved)).map_err(|errno| {
+    let identity = cred.may_exec(fs.exec_attrs(inode_num, &inode), crate::fs::vfs::mount::flags_at(&resolved)).map_err(|errno| {
         super::trace::trace_exec(b'$');
         errno
     })?;

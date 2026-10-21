@@ -1595,6 +1595,15 @@ pub(crate) fn unmap(
     Ok(())
 }
 
+/// The file of `vma` when it is a shared mapping that may be made writable.
+/// PROCESS_MANAGER held.
+pub(crate) fn shared_writer(vma: &Vma) -> Option<FileHandle> {
+    let binding = vma.backing.as_ref()?;
+    let inner = binding.handle.object.map.inner.lock();
+    let rec = inner.bindings.iter().find(|rec| rec.id == binding.id)?;
+    (rec.shared && rec.may_write).then(|| binding.handle.clone())
+}
+
 /// mprotect of `[start, end)`, which must lie within one file VMA; returns
 /// `Ok(false)` when `start` is not in a file VMA. The range is split out and
 /// every entry in it removed, and faults install them again under the new
