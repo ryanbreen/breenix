@@ -1,7 +1,8 @@
 //! Deterministic run showcase, BreenGL contract section 23.
 //! Inputs are immutable result snapshots. The caller owns the UI clock and display handoff.
-use crate::{color::Color, font, framebuf::FrameBuf, shapes};
+use crate::{color::Color, font, framebuf::FrameBuf, shapes, ttf_font};
 use core::fmt::Write;
+use libfont::{CachedFont, Font};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stamp {
@@ -119,6 +120,8 @@ impl Observation {
 #[derive(Debug, PartialEq, Eq)]
 pub enum StageError {
     Size,
+    /// The pinned DejaVu Sans did not parse.
+    Font,
     Manifest,
     Image,
     Timing,
@@ -149,6 +152,15 @@ impl Text {
     fn bytes(&self) -> &[u8] {
         &self.bytes[..self.len]
     }
+    fn push(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            if self.len == self.bytes.len() {
+                break;
+            }
+            self.bytes[self.len] = b;
+            self.len += 1;
+        }
+    }
 }
 impl core::fmt::Write for Text {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
@@ -162,27 +174,91 @@ impl core::fmt::Write for Text {
         Ok(())
     }
 }
-fn fill(fb: &mut FrameBuf, x: usize, y: usize, w: usize, h: usize, c: Color) {
-    if w != 0 && h != 0 {
-        shapes::fill_rect(fb, x as i32, y as i32, w as i32, h as i32, c);
+/// The pinned DejaVu Sans the stage draws its text in above display scale 1 (section 23.2),
+/// parsed on first use; a holder keeps it, and its glyph cache, across frames.
+pub struct StageFont(Option<CachedFont>);
+impl StageFont {
+    pub const fn new() -> Self {
+        Self(None)
+    }
+    /// Parse the font now, so its memory is in place before the first frame.
+    pub fn ready(&mut self) -> Result<(), StageError> {
+        self.get().map(drop)
+    }
+    fn get(&mut self) -> Result<&mut CachedFont, StageError> {
+        if self.0.is_none() {
+            let font = Font::parse(include_bytes!("../../../fonts/DejaVuSans.ttf")).map_err(|_| StageError::Font)?;
+            self.0 = Some(CachedFont::with_default_cache(font));
+        }
+        self.0.as_mut().ok_or(StageError::Font)
     }
 }
-fn text(
-    fb: &mut FrameBuf,
-    bytes: &[u8],
-    x: usize,
-    y: usize,
-    width: usize,
-    scale: usize,
-    color: Color,
-) {
-    if width == 0 { return; }
-    fb.push_clip(crate::framebuf::Rect::new(x as i32,y as i32,width as i32,(7*scale) as i32));
-    for (i, &ch) in bytes.iter().enumerate() {
-        if i * 6 * scale >= width { break; }
-        font::draw_char(fb, ch, x + i * 6 * scale, y, color, scale);
+impl Default for StageFont {
+    fn default() -> Self {
+        Self::new()
     }
-    fb.pop_clip();
+}
+/// The display scale a stage surface is drawn at: its size is the logical 1280x800 layout
+/// at a whole scale (section 23.2, R4).
+fn scale_of(fb: &FrameBuf) -> Result<usize, StageError> {
+    let n = fb.width / 1280;
+    if n == 0 || n > 8 || fb.width != 1280 * n || fb.height != 800 * n {
+        return Err(StageError::Size);
+    }
+    Ok(n)
+}
+fn fill(fb: &mut FrameBuf, n: usize, x: usize, y: usize, w: usize, h: usize, c: Color) {
+    if w != 0 && h != 0 {
+        shapes::fill_rect(fb, (x * n) as i32, (y * n) as i32, (w * n) as i32, (h * n) as i32, c);
+    }
+}
+/// The stage's surface. Coordinates, extents, gaps and borders are in the logical space and
+/// multiplied by the display scale `n`; text at legacy scale s is 7s logical pixels per em,
+/// drawn at 7sn pixels per em in DejaVu Sans with section 8.3's layout, or with the 5x7 font at
+/// scale 1.
+struct Canvas<'a> {
+    fb: &'a mut FrameBuf,
+    n: usize,
+    font: Option<&'a mut CachedFont>,
+}
+impl Canvas<'_> {
+    fn fill(&mut self, x: usize, y: usize, w: usize, h: usize, c: Color) {
+        fill(self.fb, self.n, x, y, w, h, c);
+    }
+    fn put(&mut self, x: usize, y: usize, c: Color) {
+        if self.n == 1 {
+            self.fb.put_pixel(x, y, c);
+        } else {
+            self.fill(x, y, 1, 1, c);
+        }
+    }
+    /// A one-pixel logical line, drawn n pixels thick.
+    fn line(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, c: Color) {
+        let n = self.n as i32;
+        for dy in 0..n {
+            for dx in 0..n {
+                shapes::draw_line(self.fb, x0 * n + dx, y0 * n + dy, x1 * n + dx, y1 * n + dy, c);
+            }
+        }
+    }
+    /// Text with its pen at (x, y), clipped at the element's right edge, `width` from x.
+    fn text(&mut self, bytes: &[u8], x: usize, y: usize, width: usize, scale: usize, color: Color) {
+        if width == 0 { return; }
+        let n = self.n;
+        let Some(font) = self.font.as_deref_mut() else {
+            self.fb.push_clip(crate::framebuf::Rect::new(x as i32,y as i32,width as i32,(7*scale) as i32));
+            for (i, &ch) in bytes.iter().enumerate() {
+                if i * 6 * scale >= width { break; }
+                font::draw_char(self.fb, ch, x + i * 6 * scale, y, color, scale);
+            }
+            self.fb.pop_clip();
+            return;
+        };
+        let height = self.fb.height as i32;
+        self.fb.push_clip(crate::framebuf::Rect::new(0, 0, ((x + width) * n) as i32, height));
+        ttf_font::draw_text_bytes(self.fb, font, bytes, (x * n) as i32, (y * n) as i32, (7 * scale * n) as f32, color);
+        self.fb.pop_clip();
+    }
 }
 impl Image<'_> {
     fn valid(&self) -> bool {
@@ -232,9 +308,7 @@ fn counts(run: &Run<'_>) -> Text {
     out
 }
 fn validate(fb: &FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
-    if fb.width != 1280 || fb.height != 800 {
-        return Err(StageError::Size);
-    }
+    scale_of(fb)?;
     if run.tiles.is_empty()
         || run.selected >= run.tiles.len()
         || run.case_number == 0
@@ -312,14 +386,22 @@ fn validate(fb: &FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
     run.boundary.notice()?;
     Ok(())
 }
-/// Draw between cases only. Validation happens before any pixel changes.
+/// Draw between cases only, at the display scale the surface's size gives. Validation
+/// happens before any pixel changes.
 pub fn draw(fb: &mut FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
+    draw_with(fb, run, &mut StageFont::new())
+}
+/// `draw`, with the stage's font kept in `font` across frames.
+pub fn draw_with(fb: &mut FrameBuf, run: &Run<'_>, font: &mut StageFont) -> Result<(), StageError> {
     validate(fb, run)?;
-    fill(fb, 0, 0, 1280, 800, BG);
-    fill(fb, 0, 0, 1280, 96, HEADER);
+    let n = scale_of(fb)?;
+    let font = if n == 1 { None } else { Some(font.get()?) };
+    let cv = &mut Canvas { fb, n, font };
+    cv.fill(0, 0, 1280, 800, BG);
+    cv.fill(0, 0, 1280, 96, HEADER);
     let mut title = Text::new();
     let _ = write!(title, "BREENIX / {}", run.suite);
-    text(fb, title.bytes(), 24, 16, 1256, 3, Color::WHITE);
+    cv.text(title.bytes(), 24, 16, 1256, 3, Color::WHITE);
     let mut progress = Text::new();
     let _ = write!(
         progress,
@@ -330,8 +412,8 @@ pub fn draw(fb: &mut FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
         run.ui_time_ms,
         run.fps
     );
-    text(fb, progress.bytes(), 24, 48, 1256, 1, Color::WHITE);
-    text(fb, counts(run).bytes(), 24, 68, 1256, 2, Color::WHITE);
+    cv.text(progress.bytes(), 24, 48, 1256, 1, Color::WHITE);
+    cv.text(counts(run).bytes(), 24, 68, 1256, 2, Color::WHITE);
     let wall = Wall::for_tiles(run.tiles)?;
     let scale = wall.scale;
     for (i, tile) in run.tiles.iter().enumerate() {
@@ -340,26 +422,26 @@ pub fn draw(fb: &mut FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
             let (x,y)=wall.origin(slot-2);
             let end=run.tiles[i..].iter().position(|t|category(t.id)!=category(tile.id)).map_or(run.tiles.len(),|n|i+n);
             let passed=run.tiles[i..end].iter().filter(|t|t.stamp==Stamp::Pass).count();
-            fill(fb,x,y,78*scale,24*scale,HEADER);
-            text(fb,category(tile.id).as_bytes(),x+2,y+2,76*scale,scale,Color::WHITE);
+            cv.fill(x,y,78*scale,24*scale,HEADER);
+            cv.text(category(tile.id).as_bytes(),x+2,y+2,76*scale,scale,Color::WHITE);
             let mut count=Text::new(); let _=write!(count,"{passed}/{} pass",end-i);
-            text(fb,count.bytes(),x+2,y+14*scale,76*scale,scale,Color::WHITE);
+            cv.text(count.bytes(),x+2,y+14*scale,76*scale,scale,Color::WHITE);
         }
         let (x,y)=wall.origin(slot);
         let c=stamp(tile.stamp,run.ui_time_ms);
-        fill(fb,x,y,38*scale,1,c);fill(fb,x,y+24*scale-1,38*scale,1,c);
-        fill(fb,x,y,1,24*scale,c);fill(fb,x+38*scale-1,y,1,24*scale,c);
-        fill(fb,x+2*scale,y+2*scale,16*scale,12*scale,INSET);
-        if let Some(image)=tile.thumbnail { thumbnail(fb,image,x+2*scale,y+2*scale,scale); }
+        cv.fill(x,y,38*scale,1,c);cv.fill(x,y+24*scale-1,38*scale,1,c);
+        cv.fill(x,y,1,24*scale,c);cv.fill(x+38*scale-1,y,1,24*scale,c);
+        cv.fill(x+2*scale,y+2*scale,16*scale,12*scale,INSET);
+        if let Some(image)=tile.thumbnail { thumbnail(cv,image,x+2*scale,y+2*scale,scale); }
         let mut ordinal=Text::new();let _=write!(ordinal,"{}",i+1);
-        text(fb,ordinal.bytes(),x+20*scale,y+2*scale,18*scale,scale,Color::WHITE);
+        cv.text(ordinal.bytes(),x+20*scale,y+2*scale,18*scale,scale,Color::WHITE);
         if tile.stamp!=Stamp::Pending {
-            fill(fb,x+1,y+15*scale,38*scale-2,9*scale-1,c);
+            cv.fill(x+1,y+15*scale,38*scale-2,9*scale-1,c);
             let mut key=Text::new();if tile.key>99999{let _=write!(key,">");}else{let _=write!(key,"{}",tile.key);}
-            text(fb,key.bytes(),x+2*scale,y+16*scale,34*scale,scale,Color::WHITE);
+            cv.text(key.bytes(),x+2*scale,y+16*scale,34*scale,scale,Color::WHITE);
         }
     }
-    draw_spotlight(fb, run);
+    draw_spotlight(cv, run);
     for (i, m) in run.milestones.iter().enumerate() {
         let left = 16 + 1248 * i / run.milestones.len();
         let right = 16 + 1248 * (i + 1) / run.milestones.len();
@@ -371,10 +453,8 @@ pub fn draw(fb: &mut FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
         } else {
             OUTLINE
         };
-        fill(fb, left, 728, right - left - 2, 24, c);
-        text(
-            fb,
-            m.id.as_bytes(),
+        cv.fill(left, 728, right - left - 2, 24, c);
+        cv.text(m.id.as_bytes(),
             left + 4,
             736,
             right - left - 6,
@@ -382,22 +462,22 @@ pub fn draw(fb: &mut FrameBuf, run: &Run<'_>) -> Result<(), StageError> {
             Color::WHITE,
         );
     }
-    text(fb, run.boundary.notice()?.as_bytes(), 24, 776, 1256, 1, DIM);
+    cv.text(run.boundary.notice()?.as_bytes(), 24, 776, 1256, 1, DIM);
     if let Some(finale) = run.finale {
-        fill(fb, 48, 240, 720, 240, HEADER);
-        text(fb, b"RUN COMPLETE", 72, 264, 696, 3, Color::WHITE);
-        text(fb, counts(run).bytes(), 72, 312, 696, 2, Color::WHITE);
+        cv.fill(48, 240, 720, 240, HEADER);
+        cv.text(b"RUN COMPLETE", 72, 264, 696, 3, Color::WHITE);
+        cv.text(counts(run).bytes(), 72, 312, 696, 2, Color::WHITE);
         let mut slowest = Text::new();
         let _ = write!(
             slowest,
             "slowest {} {} ms",
             finale.slowest, finale.slowest_ms
         );
-        text(fb, slowest.bytes(), 72, 352, 696, 1, Color::WHITE);
+        cv.text(slowest.bytes(), 72, 352, 696, 1, Color::WHITE);
     }
     Ok(())
 }
-fn thumbnail(fb: &mut FrameBuf, image: Image<'_>, left: usize, top: usize, scale: usize) {
+fn thumbnail(cv: &mut Canvas<'_>, image: Image<'_>, left: usize, top: usize, scale: usize) {
     let (w, h) = (image.width.min(16), image.height.min(12));
     for y in 0..h {
         for x in 0..w {
@@ -419,11 +499,13 @@ fn thumbnail(fb: &mut FrameBuf, image: Image<'_>, left: usize, top: usize, scale
                 ((sum[2] + n / 2) / n) as u8,
                 255,
             ];
-            fill(fb,left+x*scale,top+y*scale,scale,scale,color(p));
+            cv.fill(left+x*scale,top+y*scale,scale,scale,color(p));
         }
     }
 }
-fn wrapped(fb:&mut FrameBuf,bytes:&[u8],x:usize,y:usize,width:usize,scale:usize) {
+/// Words kept whole on up to five lines of `width / 6s` character cells, the fifth ending in
+/// an ellipsis when the text does not fit.
+fn wrapped(cv:&mut Canvas<'_>,bytes:&[u8],x:usize,y:usize,width:usize,scale:usize) {
     let count=width/(6*scale);
     if count < 3 { return; }
     let mut rest = bytes;
@@ -433,48 +515,50 @@ fn wrapped(fb:&mut FrameBuf,bytes:&[u8],x:usize,y:usize,width:usize,scale:usize)
         if line == 4 && rest.len() > count {
             let mut end = count - 3;
             if let Some(space) = rest[..end].iter().rposition(u8::is_ascii_whitespace) { end = space; }
-            text(fb,&rest[..end],x,y+line*9*scale,width,scale,Color::WHITE);
-            text(fb,b"...",x+end*6*scale,y+line*9*scale,width-end*6*scale,scale,Color::WHITE);
+            let mut last = Text::new();
+            last.push(&rest[..end]);
+            last.push(b"...");
+            cv.text(last.bytes(),x,y+line*9*scale,width,scale,Color::WHITE);
             break;
         }
         let end = if rest.len() <= count { rest.len() } else {
             rest[..=count].iter().rposition(u8::is_ascii_whitespace).filter(|n| *n > 0).unwrap_or(count)
         };
-        text(fb,&rest[..end],x,y+line*9*scale,width,scale,Color::WHITE);
+        cv.text(&rest[..end],x,y+line*9*scale,width,scale,Color::WHITE);
         rest = &rest[end..];
     }
 }
-fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
-    fill(fb, 832, 112, 432, 588, INSET);
+fn draw_spotlight(cv: &mut Canvas<'_>, run: &Run<'_>) {
+    cv.fill(832, 112, 432, 588, INSET);
     let selected = &run.tiles[run.selected];
     let (group, id) = selected.id.split_once('/').unwrap_or(("", selected.id));
     let mut heading = Text::new();
     let _ = write!(heading, "CASE {} / {}", run.selected + 1, group);
-    text(fb, heading.bytes(), 840, 120, 424, 1, Color::WHITE);
-    text(fb, id.as_bytes(), 840, 132, 424, 1, Color::WHITE);
+    cv.text(heading.bytes(), 840, 120, 424, 1, Color::WHITE);
+    cv.text(id.as_bytes(), 840, 132, 424, 1, Color::WHITE);
     let mut key = Text::new();
     let _ = write!(key, "key {}", selected.key);
-    text(fb, key.bytes(), 840, 144, 424, 1, Color::WHITE);
-    text(fb,match selected.stamp {Stamp::Pass=>b"PASS",Stamp::Fail=>b"FAIL",Stamp::NotReached=>b"NOT REACHED",_=>b"RUNNING"},848,640,400,3,stamp(selected.stamp,run.ui_time_ms));
+    cv.text(key.bytes(), 840, 144, 424, 1, Color::WHITE);
+    cv.text(match selected.stamp {Stamp::Pass=>b"PASS",Stamp::Fail=>b"FAIL",Stamp::NotReached=>b"NOT REACHED",_=>b"RUNNING"},848,640,400,3,stamp(selected.stamp,run.ui_time_ms));
     match run.spotlight {
         Spotlight::None => {
-            text(fb,if selected.stamp == Stamp::NotReached {b"Case did not run"} else {b"Awaiting case result"},848,360,400,2,DIM);
+            cv.text(if selected.stamp == Stamp::NotReached {b"Case did not run"} else {b"Awaiting case result"},848,360,400,2,DIM);
         }
         Spotlight::Measurement { name, number, unit, bound } => {
-            wrapped(fb,name.as_bytes(),848,208,400,2);
+            wrapped(cv,name.as_bytes(),848,208,400,2);
             let mut value=Text::new(); let _=write!(value,"{number} {unit}");
-            wrapped(fb,value.bytes(),848,280,400,3);
+            wrapped(cv,value.bytes(),848,280,400,3);
             let mut label=Text::new();
             match bound {
                 Some((lo,hi)) if lo==hi => {let _=write!(label,"Expected exactly {lo} {unit}");}
                 Some((lo,hi)) => {let _=write!(label,"Bound: {lo} to {hi} {unit}");}
                 None => {let _=write!(label,"No numeric bound supplied");}
             }
-            wrapped(fb,label.bytes(),848,392,400,2);
+            wrapped(cv,label.bytes(),848,392,400,2);
         }
         Spotlight::Input { points, hit } => {
-            text(fb,if points.is_empty(){b"INPUT / events"}else{b"INPUT / pointer trail"},848,184,400,2,Color::WHITE);
-            wrapped(fb,hit.as_bytes(),848,216,400,2);
+            cv.text(if points.is_empty(){b"INPUT / events"}else{b"INPUT / pointer trail"},848,184,400,2,Color::WHITE);
+            wrapped(cv,hit.as_bytes(),848,216,400,2);
             let min_x=points.iter().map(|p|p.x).min().unwrap_or(0) as i64;
             let min_y=points.iter().map(|p|p.y).min().unwrap_or(0) as i64;
             let dx=(points.iter().map(|p|p.x).max().unwrap_or(1) as i64-min_x).max(1);
@@ -482,15 +566,15 @@ fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
             let mapped=|p:&InputPoint|(864+((p.x as i64-min_x)*352/dx) as usize,336+((p.y as i64-min_y)*192/dy) as usize);
             for pair in points.windows(2) {
                 let (x,y)=mapped(&pair[0]);let (xx,yy)=mapped(&pair[1]);
-                shapes::draw_line(fb,x as i32,y as i32,xx as i32,yy as i32,BAR);
+                cv.line(x as i32,y as i32,xx as i32,yy as i32,BAR);
             }
-            for p in points {let (x,y)=mapped(p);fill(fb,x-2,y-2,5,5,if p.pressed{PASS}else{Color::WHITE});}
-            if points.is_empty(){text(fb,b"Events (no pointer)",848,360,400,2,Color::WHITE);}
-            if !points.is_empty(){text(fb,b"green: pointer down / white: up",848,568,400,1,DIM);}
+            for p in points {let (x,y)=mapped(p);cv.fill(x-2,y-2,5,5,if p.pressed{PASS}else{Color::WHITE});}
+            if points.is_empty(){cv.text(b"Events (no pointer)",848,360,400,2,Color::WHITE);}
+            if !points.is_empty(){cv.text(b"green: pointer down / white: up",848,568,400,1,DIM);}
         }
         Spotlight::Actual(image) => {
-            text(fb,b"actual (reference not supplied)",840,152,424,1,Color::WHITE);
-            for y in 0..250 {for x in 0..400 {fb.put_pixel(848+x,168+y,color(image.pixel(x*image.width/400,y*image.height/250)));}}
+            cv.text(b"actual (reference not supplied)",840,152,424,1,Color::WHITE);
+            for y in 0..250 {for x in 0..400 {cv.put(848+x,168+y,color(image.pixel(x*image.width/400,y*image.height/250)));}}
         }
         Spotlight::Picture {
             expected,
@@ -503,16 +587,16 @@ fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
                 .iter()
                 .enumerate()
             {
-                text(fb, label, 840 + i * 144, 152, 128, 1, Color::WHITE);
+                cv.text(label, 840 + i * 144, 152, 128, 1, Color::WHITE);
             }
             for y in 0..128 {
                 for x in 0..128 {
                     let (sx, sy) = (x * actual.width / 128, y * actual.height / 128);
                     let (a, b) = (expected.pixel(sx, sy), actual.pixel(sx, sy));
                     let d = (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap();
-                    fb.put_pixel(840 + x, 168 + y, color(a));
-                    fb.put_pixel(984 + x, 168 + y, color(b));
-                    fb.put_pixel(
+                    cv.put(840 + x, 168 + y, color(a));
+                    cv.put(984 + x, 168 + y, color(b));
+                    cv.put(
                         1128 + x,
                         168 + y,
                         if d == 0 {
@@ -526,15 +610,15 @@ fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
             if let Some((x, y)) = first {
                 let (cx, cy) = (x * 128 / actual.width, y * 128 / actual.height);
                 for xx in cx.saturating_sub(2)..=(cx + 2).min(127) {
-                    fb.put_pixel(1128 + xx, 168 + cy, Color::WHITE);
+                    cv.put(1128 + xx, 168 + cy, Color::WHITE);
                 }
                 for yy in cy.saturating_sub(2)..=(cy + 2).min(127) {
-                    fb.put_pixel(1128 + cx, 168 + yy, Color::WHITE);
+                    cv.put(1128 + cx, 168 + yy, Color::WHITE);
                 }
             }
             let mut label = Text::new();
             let _ = write!(label, "{differing} pixels differ; bound {bound}");
-            text(fb, label.bytes(), 840, 312, 424, 1, Color::WHITE);
+            cv.text(label.bytes(), 840, 312, 424, 1, Color::WHITE);
         }
         Spotlight::Timing {
             frame_us,
@@ -547,24 +631,22 @@ fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
                     848 + 400 * (i + 1) / frame_us.len(),
                 );
                 let height = (192 * (us as u64).min(max) / max) as usize;
-                fill(
-                    fb,
-                    left,
+                cv.fill(left,
                     528 - height,
                     right - left - 1,
                     height,
                     if us > budget_us { FAIL } else { BAR },
                 );
             }
-            fill(fb, 848, 432, 400, 1, Color::WHITE);
+            cv.fill(848, 432, 400, 1, Color::WHITE);
             let mut label = Text::new();
             let _ = write!(label, "frame times us; budget {budget_us}");
-            text(fb, label.bytes(), 840, 312, 424, 1, Color::WHITE);
+            cv.text(label.bytes(), 840, 312, 424, 1, Color::WHITE);
         }
     }
     if let Some((points,hit))=run.input {
-        text(fb,if points.is_empty(){b"INPUT / events and handler result"}else{b"INPUT / pointer trail and handler result"},848,432,400,1,Color::WHITE);
-        wrapped(fb,hit.as_bytes(),848,448,400,1);
+        cv.text(if points.is_empty(){b"INPUT / events and handler result"}else{b"INPUT / pointer trail and handler result"},848,432,400,1,Color::WHITE);
+        wrapped(cv,hit.as_bytes(),848,448,400,1);
         let min_x=points.iter().map(|p|p.x).min().unwrap_or(0) as i64;
         let min_y=points.iter().map(|p|p.y).min().unwrap_or(0) as i64;
         let dx=(points.iter().map(|p|p.x).max().unwrap_or(1) as i64-min_x).max(1);
@@ -572,10 +654,10 @@ fn draw_spotlight(fb: &mut FrameBuf, run: &Run<'_>) {
         let mapped=|p:&InputPoint|(864+((p.x as i64-min_x)*352/dx) as usize,516+((p.y as i64-min_y)*80/dy) as usize);
         for pair in points.windows(2) {
             let (x,y)=mapped(&pair[0]);let (xx,yy)=mapped(&pair[1]);
-            shapes::draw_line(fb,x as i32,y as i32,xx as i32,yy as i32,BAR);
+            cv.line(x as i32,y as i32,xx as i32,yy as i32,BAR);
         }
-        for p in points {let (x,y)=mapped(p);fill(fb,x-2,y-2,5,5,if p.pressed{PASS}else{Color::WHITE});}
-        if points.is_empty(){text(fb,b"Events (no pointer)",848,536,400,2,Color::WHITE);}
+        for p in points {let (x,y)=mapped(p);cv.fill(x-2,y-2,5,5,if p.pressed{PASS}else{Color::WHITE});}
+        if points.is_empty(){cv.text(b"Events (no pointer)",848,536,400,2,Color::WHITE);}
     }
 }
 /// Decode precisely the observation strength the record supports.
@@ -596,21 +678,17 @@ pub fn boundary_notice(
 }
 /// One segment per producer-reached stage; callers must supply the manifest order.
 pub fn draw_boot_ribbon(fb: &mut FrameBuf, reached: &[bool]) -> Result<(), StageError> {
-    if fb.width != 1280 || fb.height != 800 {
-        return Err(StageError::Size);
-    }
+    let n = scale_of(fb)?;
     if reached.is_empty() || reached.len() > 416 {
         return Err(StageError::Manifest);
     }
-    fill(fb, 16, 752, 1248, 16, BG);
+    fill(fb, n, 16, 752, 1248, 16, BG);
     for (i, &lit) in reached.iter().enumerate() {
         let (left, right) = (
             16 + 1248 * i / reached.len(),
             16 + 1248 * (i + 1) / reached.len(),
         );
-        fill(
-            fb,
-            left,
+        fill(fb, n, left,
             752,
             right - left - 2,
             16,

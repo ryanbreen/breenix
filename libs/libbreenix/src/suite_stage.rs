@@ -8,7 +8,7 @@ use crate::{
 use abi::{op, Plain};
 use libgfx_ref::{
     framebuf::{Format, FrameBuf},
-    stage::{self, Finale, Image, Milestone, Observation, Spotlight, Stamp, Tile},
+    stage::{self, Finale, Image, Milestone, Observation, Spotlight, StageFont, Stamp, Tile},
 };
 use std::{
     string::String,
@@ -18,6 +18,8 @@ use std::{
 
 use crate::ui_clock as clock;
 static SHOW: Mutex<Option<Show>> = Mutex::new(None);
+/// The stage's DejaVu Sans and its glyph cache, kept across frames.
+static FONT: Mutex<StageFont> = Mutex::new(StageFont::new());
 #[derive(Clone)]
 struct Picture {
     pixels: Vec<u8>,
@@ -133,8 +135,8 @@ fn snapshot() -> Result<(Vec<u8>, Seen), String> {
     Ok((pixels, seen))
 }
 /// The stage check: the scanout is bound by the stage's own PRESENT (its context fence),
-/// and each physical pixel is the stage frame's logical pixel enlarged by the display
-/// scale, compared on B, G and R (X normalized, ruling B11).
+/// and each physical pixel is the stage frame's pixel, rendered at the display's physical
+/// size, compared on B, G and R (X normalized, ruling B11).
 fn shown(fb: &FrameBuf, present: Option<u64>, pixels: &[u8], seen: &Seen) -> Result<(), String> {
     let fence = present.ok_or("the stage frame was not presented by a GPU PRESENT")?;
     if seen.present_fence != fence {
@@ -143,31 +145,27 @@ fn shown(fb: &FrameBuf, present: Option<u64>, pixels: &[u8], seen: &Seen) -> Res
             seen.present_fence
         ));
     }
-    let s = seen.width / fb.width;
-    if s == 0 || seen.width != fb.width * s || seen.height != fb.height * s {
+    if (seen.width, seen.height) != (fb.width, fb.height) {
         return Err(std::format!(
-            "the {}x{} scanout is not the stage's {}x{} layout at a whole display scale",
+            "the {}x{} scanout is not the stage's {}x{} frame",
             seen.width, seen.height, fb.width, fb.height
         ));
     }
     for y in 0..fb.height {
         for x in 0..fb.width {
             let p = fb.get_pixel(x, y);
-            for py in y * s..(y + 1) * s {
-                for px in x * s..(x + 1) * s {
-                    let o = (py * seen.width + px) * 4;
-                    if pixels[o..o + 3] != [p.b, p.g, p.r] {
-                        return Err(std::format!("the scanout differs from the stage frame at physical ({px}, {py})"));
-                    }
-                }
+            let o = (y * seen.width + x) * 4;
+            if pixels[o..o + 3] != [p.b, p.g, p.r] {
+                return Err(std::format!("the scanout differs from the stage frame at physical ({x}, {y})"));
             }
         }
     }
     Ok(())
 }
-/// The run stage's GPU objects, kept for the run: its context, a texture holding the
-/// logical 1280x800 frame, the mode-sized scanout target it presents, and the buffers each
-/// draw reuses. A forked case gets its own, since GPU handles are not inherited.
+/// The run stage's GPU objects, kept for the run: its context, a mode-sized texture holding
+/// the frame rendered at the display's physical size, the mode-sized scanout target it
+/// presents, and the buffers each draw reuses. A forked case gets its own, since GPU handles
+/// are not inherited.
 struct Gpu {
     pid: u64,
     context: u64,
@@ -175,7 +173,6 @@ struct Gpu {
     scanout: u64,
     width: u32,
     height: u32,
-    scale: u32,
     frame: Vec<u8>,
     seen: Vec<u8>,
 }
@@ -200,12 +197,11 @@ impl Gpu {
             scanout: 0,
             width: m.width,
             height: m.height,
-            scale: m.scale,
             frame: Vec::new(),
             seen: Vec::new(),
         };
         let format = gpu::abi::format::B8G8R8A8;
-        match gpu::texture_create(format, 1280, 800) {
+        match gpu::texture_create(format, m.width, m.height) {
             Ok(t) => g.texture = t,
             Err(e) => {
                 g.destroy();
@@ -220,7 +216,7 @@ impl Gpu {
             }
         }
         // Written now, so the memory record's first sample already counts their pages.
-        g.frame.resize(1280 * 800 * 4, 0);
+        g.frame.resize(m.width as usize * m.height as usize * 4, 0);
         g.seen.resize(m.width as usize * m.height as usize * 4, 0);
         // The device warms one context at a time, lowest handle first: a stage context
         // still warming would hold the next case's contexts behind it inside its limit.
@@ -242,11 +238,14 @@ impl Gpu {
         let _ = gpu::context_destroy(self.context);
     }
 
-    /// Upload the logical frame, enlarge it by the display scale into the scanout on the
-    /// GPU, present it, and observe the scanout. Returns the observation and the present's
-    /// context fence.
+    /// Upload the frame, rendered at the display's physical size, copy it into the scanout
+    /// on the GPU, present it, and observe the scanout. Returns the observation and the
+    /// present's context fence.
     fn show(&mut self, fb: &FrameBuf) -> Result<(Seen, u64), String> {
         use gpu::abi::{draw, pipeline, purpose, stream::encode};
+        if (fb.width, fb.height) != (self.width as usize, self.height as usize) {
+            return Err(std::format!("the stage frame is {}x{}, not the {}x{} mode", fb.width, fb.height, self.width, self.height));
+        }
         self.frame.clear();
         for y in 0..fb.height {
             for x in 0..fb.width {
@@ -254,34 +253,23 @@ impl Gpu {
                 self.frame.extend_from_slice(&[p.b, p.g, p.r, 255]);
             }
         }
-        let (r, _) = gpu::upload(self.context, self.texture, [0, 0, 1280, 800], &self.frame, 1280 * 4, 0, purpose::IMAGE);
+        // The one CPU-drawn upload the structure test admits, until gpu-display draws the
+        // stage with BreenGL (ruling B24, #2221).
+        let (r, _) = gpu::upload(self.context, self.texture, [0, 0, self.width, self.height], &self.frame, self.width * 4, 0, purpose::IMAGE);
         if r != 0 {
             return Err(std::format!("stage upload: errno {}", -r));
         }
-        // One submission may estimate at most the work cap, which copy_scaled's per-fragment
-        // weight reaches well inside a full display: enlarge the frame in row bands, each a
-        // submission of its own, in this context's order.
-        let steps = draw::steps(pipeline::COPY_SCALED).ok_or("copy_scaled has no work weight")?;
-        let rows = (gpu::abi::limits::WORK / steps / u64::from(self.width)).min(u64::from(self.height)) as u32;
-        if rows == 0 {
-            return Err(String::from("a row of the scanout exceeds the submission work cap"));
-        }
         let mut params = [0u32; 16];
-        params[4] = self.scale;
-        let mut fence = 0;
-        for top in (0..self.height).step_by(rows as usize) {
-            let bottom = (top + rows).min(self.height);
-            let mut stream = Vec::new();
-            encode::begin(&mut stream, self.scanout);
-            draw::encode(&mut stream, pipeline::COPY_SCALED, draw::SOURCE_OPAQUE, self.texture, 0, 0,
-                &[draw::Instance { rect: [0, top as i32, self.width as i32, bottom as i32], params }]);
-            let (r, submitted) = gpu::submit(self.context, &stream);
-            if r != 0 {
-                return Err(std::format!("stage submit of rows {top}..{bottom}: errno {}", -r));
-            }
-            fence = submitted.fence;
+        params[2] = 1;
+        let mut stream = Vec::new();
+        encode::begin(&mut stream, self.scanout);
+        draw::encode(&mut stream, pipeline::COPY, 0, self.texture, 0, 0,
+            &[draw::Instance { rect: [0, 0, self.width as i32, self.height as i32], params }]);
+        let (r, submitted) = gpu::submit(self.context, &stream);
+        if r != 0 {
+            return Err(std::format!("stage submit: errno {}", -r));
         }
-        let (r, waited) = gpu::wait(self.context, fence, 2_000_000_000);
+        let (r, waited) = gpu::wait(self.context, submitted.fence, 2_000_000_000);
         if r != 0 {
             return Err(std::format!("stage render: errno {}, status {}", -r, waited.status));
         }
@@ -312,6 +300,8 @@ pub(super) fn prepare() -> Result<(), String> {
         let g = guard.as_mut().ok_or("stage GPU objects missing")?;
         observe(&mut g.seen)?
     };
+    // The font, too, is in both samples.
+    FONT.lock().unwrap().ready().map_err(|e| std::format!("stage font: {e:?}"))?;
     if let Some(s) = SHOW.lock().unwrap().as_mut() {
         s.observation = Observation { backend: seen.backend, flags: seen.flags, boundary: seen.boundary };
     }
@@ -491,7 +481,9 @@ impl Show {
         stage::draw_boot_ribbon(fb, &reached).map_err(|e| std::format!("stage boot ribbon: {e:?}"))
     }
     fn draw(&mut self, bits: u32) -> Result<(), String> {
-        let mut fb = FrameBuf::new(1280, 800, Format::BGRX).map_err(|e| e.to_string())?;
+        // Rendered at the display's physical size (contract section 23.2, ruling B24).
+        let m = mode()?;
+        let mut fb = FrameBuf::new(m.width as usize, m.height as usize, Format::BGRX).map_err(|e| e.to_string())?;
         // Before the stage's first frame, learn the actual backend from the scanout, so the
         // notice on this same frame decodes a real record.
         if self.observation.backend == 0 {
@@ -727,5 +719,5 @@ pub use checks::showcase_check;
 /// Render a fixture using the same clock boundary as the live stage.
 pub fn render_at_ui_time(fb: &mut FrameBuf, run: &mut stage::Run<'_>, started_ms: u64) -> Result<(), stage::StageError> {
     run.ui_time_ms = (clock::now_ns() / 1_000_000).saturating_sub(started_ms);
-    stage::draw(fb, run)
+    stage::draw_with(fb, run, &mut FONT.lock().unwrap())
 }
