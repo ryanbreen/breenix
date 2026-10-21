@@ -137,18 +137,21 @@ static SUITE: Suite = suite(
         case("sudo-env-reset", "The command gets a reset environment, the secure PATH and umask 022", sudo_env_reset),
         case("sudo-bad-policy-mode-refused", "sudo refuses to run under a policy with the wrong mode or one that does not parse", sudo_bad_policy_mode),
         case("sudo-cache-session", "An authentication is remembered for the session and terminal only", sudo_cache_session),
-        case("sudo-policy-rules", "A rule's target, command and nopass decide, first match wins", sudo_policy_rules),
+        case("sudo-policy-rules", "A rule's target and command decide", sudo_policy_rules),
+        case("sudo-first-match", "Of two rules that both permit the call, the first decides, in each order", sudo_first_match),
+        case("sudo-argv-no-shell", "The permitted command runs with its arguments as given, never through a shell, with and without -i", sudo_argv_no_shell),
         case("sudo-logged", "sudo successes and refusals are recorded with the command and without passwords", sudo_logged),
     ]),
     category("login", "Console login as any account, tty ownership and umask", &[
         case("login-user", "A fixture account logs in through getty and login with its IDs, groups, environment, home and login shell", login_user),
         case("login-bad-password-refused", "A wrong password is refused with Login incorrect and the right one then logs in", login_bad_password),
-        case("login-root-refused", "login refuses root under ROOT_LOGIN no, and the same password logs in under ROOT_LOGIN yes", login_root_refused),
+        case("login-root-refused", "On a pseudo-terminal line login refuses root under the shipped ROOT_LOGIN no, and the same password logs in there under ROOT_LOGIN yes", login_root_refused),
         case("login-locked-refused", "A locked password is refused at login and the unlocked one logs in", login_locked_refused),
         case("login-expired-refused", "An expired account is refused at login, and logs in once its expiry is cleared", login_expired_refused),
         case("login-tty-owned", "The session's terminal belongs to the account, group tty, mode 0620", login_tty_owned),
         case("login-umask", "A session starts with the umask from /etc/login.defs", login_umask),
         case("logout-tty-restored", "After logout getty returns the terminal to root at 0620 and records the logout", logout_tty_restored),
+        case("logout-revokes-terminal", "A descriptor the old session kept on the line reads end of file, cannot write and cannot reopen it once getty serves the next login", logout_revokes_terminal),
     ]),
     category("ssh", "SSH sessions as the account: identity, groups, PTY owner and key-file modes", &[
         case("ssh-identity", "An SSH command runs as the account with its IDs, groups, environment and home", ssh_identity),
@@ -354,7 +357,7 @@ fn sc(n: u64, args: &[u64]) -> i64 {
 
 fn errname(errno: i64) -> String {
     let name = match errno {
-        1 => "EPERM", 2 => "ENOENT", 3 => "ESRCH", 9 => "EBADF", 13 => "EACCES", 17 => "EEXIST",
+        1 => "EPERM", 2 => "ENOENT", 3 => "ESRCH", 5 => "EIO", 9 => "EBADF", 13 => "EACCES", 17 => "EEXIST",
         20 => "ENOTDIR", 22 => "EINVAL", 38 => "ENOSYS", 98 => "EADDRINUSE",
         _ => return format!("errno {errno}"),
     };

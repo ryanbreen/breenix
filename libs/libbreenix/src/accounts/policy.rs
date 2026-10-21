@@ -106,6 +106,11 @@ mod tests {
     fn first_matching_rule_decides() {
         let rules = parse_policy("permit ua as root cmd /usr/bin/id nopass\npermit %wheel\n").unwrap();
         let wheel = vec!["wheel".to_string()];
+        // A caller both rules permit: the first decides, in either order, so
+        // neither last-match nor any-match evaluation passes.
+        assert!(decide(&rules, "ua", &wheel, "root", "/usr/bin/id").is_some_and(|r| r.nopass));
+        let reversed = parse_policy("permit %wheel\npermit ua as root cmd /usr/bin/id nopass\n").unwrap();
+        assert!(decide(&reversed, "ua", &wheel, "root", "/usr/bin/id").is_some_and(|r| !r.nopass));
         assert!(decide(&rules, "ua", &[], "root", "/usr/bin/id").is_some_and(|r| r.nopass));
         assert!(decide(&rules, "ua", &[], "root", "/bin/sh").is_none());
         assert!(decide(&rules, "uw", &wheel, "root", "/bin/sh").is_some_and(|r| !r.nopass));

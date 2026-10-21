@@ -10,7 +10,8 @@ fn vt_ioctl(fd: libbreenix::types::Fd, request: u64, arg: u64) -> Verdict<u64> {
     Error::from_syscall(ret as i64).map_err(|e| format!("ioctl {request:x}: {e}"))
 }
 // Login invokes this entry point as the staged account's shell (the console
-// suite's `vtuser`, an ordinary account, so only its own VT opens below).
+// suite's `vtuser`, an ordinary account, so only its own VT opens below, or
+// root).
 fn login_shell() -> Verdict {
     use libbreenix::{process, termios, types::Fd};
     let pid = process::getpid().map_err(|e| e.to_string())?.raw();
@@ -33,9 +34,16 @@ fn login_shell() -> Verdict {
         let _ = io::close(fd);
         matches
     }).ok_or("login terminal is not a numbered VT")?;
-    require(std::env::var("TERM").as_deref() == Ok("breenix")
-        && std::env::var("USER").as_deref() == Ok("vtuser"), "login environment differs")?;
-    println!("VTLOGIN tty{number} sid={sid} pgid={pgid}");
+    let user = std::env::var("USER").map_err(|_| "login environment has no USER")?;
+    let mut ids = [u32::MAX; 3];
+    let ret = unsafe {
+        raw::syscall3(nr::GETRESUID, &mut ids[0] as *mut u32 as u64, &mut ids[1] as *mut u32 as u64, &mut ids[2] as *mut u32 as u64)
+    };
+    Error::from_syscall(ret as i64).map_err(|e| format!("getresuid: {e}"))?;
+    let uid = ids[0];
+    let expected = match user.as_str() { "vtuser" => 2010, "root" => 0, _ => u32::MAX };
+    require(std::env::var("TERM").as_deref() == Ok("breenix") && uid == expected, "login environment differs")?;
+    println!("VTLOGIN tty{number} sid={sid} pgid={pgid} user={user} uid={uid}");
     let mut line = String::new();
     let count = std::io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
     require(count == 0 && line.is_empty(), "login shell expected terminal EOF")?;

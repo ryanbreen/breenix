@@ -432,7 +432,15 @@
         },
         {
           "id": "sudo-policy-rules",
-          "title": "A rule's target, command and nopass decide, first match wins"
+          "title": "A rule's target and command decide"
+        },
+        {
+          "id": "sudo-first-match",
+          "title": "Of two rules that both permit the call, the first decides, in each order"
+        },
+        {
+          "id": "sudo-argv-no-shell",
+          "title": "The permitted command runs with its arguments as given, never through a shell, with and without -i"
         },
         {
           "id": "sudo-logged",
@@ -454,7 +462,7 @@
         },
         {
           "id": "login-root-refused",
-          "title": "login refuses root under ROOT_LOGIN no, and the same password logs in under ROOT_LOGIN yes"
+          "title": "On a pseudo-terminal line login refuses root under the shipped ROOT_LOGIN no, and the same password logs in there under ROOT_LOGIN yes"
         },
         {
           "id": "login-locked-refused",
@@ -475,6 +483,10 @@
         {
           "id": "logout-tty-restored",
           "title": "After logout getty returns the terminal to root at 0620 and records the logout"
+        },
+        {
+          "id": "logout-revokes-terminal",
+          "title": "A descriptor the old session kept on the line reads end of file, cannot write and cannot reopen it once getty serves the next login"
         }
       ]
     },

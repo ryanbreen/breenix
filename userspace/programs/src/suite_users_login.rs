@@ -329,12 +329,15 @@ fn login_root_refused() -> CaseResult {
     let password = random_word(14)?;
     root_password(&password)?;
     ac::usermod(Path::new("/"), "root", &ac::UserMod { shell: Some(PROBE.into()), ..Default::default() })?;
+    // A pseudo-terminal line is a remote login's: root is refused there under the
+    // shipped default, and logs in only on the local console and virtual terminals
+    // (ruling S14; the console suite's getty/root-login-on-vt).
     let pty = Pty::open()?;
     let run = getty_login(&pty, "root", &password)?;
     run.says("Login incorrect")?;
-    want(run.probe().is_err(), "root logged in under ROOT_LOGIN no")?;
+    want(run.probe().is_err(), "root logged in on a pseudo-terminal under ROOT_LOGIN no")?;
     logged("login", "root", "root", "refused:root-login")?;
-    // The same password and shell log in once login.defs permits root.
+    // The same password and shell log in on that line once login.defs permits root.
     let defs = fs::read_to_string("/etc/login.defs").map_err(|e| e.to_string())?;
     want(defs.lines().any(|l| l.split_whitespace().collect::<Vec<_>>() == ["ROOT_LOGIN", "no"]), "login.defs does not say ROOT_LOGIN no")?;
     fs::write("/etc/login.defs", defs.replace("ROOT_LOGIN no", "ROOT_LOGIN yes")).map_err(|e| e.to_string())?;
@@ -407,6 +410,89 @@ fn logout_tty_restored() -> CaseResult {
     let (uid, gid, mode) = pty.owner()?;
     want((uid, gid, mode) == (0, TTY_GID, 0o620), format!("after logout the line is {uid}:{gid} {mode:o}, expected 0:5 620"))?;
     Ok(logged("getty", &user.name, &user.name, "ok")?)
+}
+
+/// A process the first session leaves behind keeps the line open for reading and
+/// writing; getty serving the line for the next login revokes it from that
+/// descriptor, so the next login's input does not reach the old session.
+fn logout_revokes_terminal() -> CaseResult {
+    let _shells = probe_shells()?;
+    let first = User::probe("lgv", &[])?;
+    let second = User::probe("lgw", &[])?;
+    let pty = Pty::open()?;
+    getty_login(&pty, &first.name, &first.password)?.probe()?;
+    want(pty.owner()?.0 == first.uid, "the first session did not own its line")?;
+    let (r, w) = io::pipe().map_err(|e| format!("pipe: {e}"))?;
+    let holder = match process::fork().map_err(|e| format!("fork: {e}"))? {
+        ForkResult::Child => {
+            let _ = io::close(r);
+            let report = (|| -> Result<String, String> {
+                first.become_it()?;
+                let fd = libbreenix::fs::open(&pty.path, libbreenix::fs::O_RDWR | O_NOCTTY)
+                    .map_err(|e| format!("open line as {}: {e}", first.name))?;
+                io::write(w, b"ready\n").map_err(|e| e.to_string())?;
+                let mut buf = [0u8; 256];
+                let read = match io::read(fd, &mut buf) {
+                    Ok(n) => format!("{n}:{}", String::from_utf8_lossy(&buf[..n]).trim()),
+                    Err(e) => format!("error:{e}"),
+                };
+                let wrote = write_fd(fd.raw() as i64, b"spoofed login: ");
+                let reopened = open(&pty.path, 2 | u64::from(O_NOCTTY), 0);
+                Ok(format!("read={read} write={} reopen={}", shown(wrote), shown(reopened.min(0))))
+            })();
+            let line = report.unwrap_or_else(|why| format!("failed {why}"));
+            let _ = io::write(w, format!("{line}\n").as_bytes());
+            process::exit(0)
+        }
+        ForkResult::Parent(child) => child.raw() as i32,
+    };
+    let _ = io::close(w);
+    let lines = Lines::new(r);
+    let outcome = (|| -> Checked {
+        want(lines.next(2000)?.as_deref() == Some("ready"), "the left-behind process did not open the line")?;
+        // getty serves the line again; the next account logs in on it.
+        let run = getty_login(&pty, &second.name, &second.password)?;
+        report_has(&run.probe()?, &identity(&second))?;
+        let report = lines.next(2000)?.ok_or("the left-behind process did not report")?;
+        want(report == "read=0: write=EIO reopen=EACCES",
+            format!("the old session's descriptor still reached the line: {report}"))
+    })();
+    if outcome.is_err() { kill(holder, SIGKILL); }
+    let _ = wait(holder);
+    let _ = io::close(r);
+    Ok(outcome?)
+}
+
+/// Lines from a pipe, each waited for up to a deadline.
+struct Lines { fd: Fd, pending: std::cell::RefCell<Vec<u8>> }
+
+impl Lines {
+    fn new(fd: Fd) -> Lines { Lines { fd, pending: std::cell::RefCell::new(Vec::new()) } }
+
+    /// The next line, or no line once the writer closed; an error after `ms`.
+    fn next(&self, ms: u64) -> Result<Option<String>, String> {
+        let until = libbreenix::suite::case_ms_left().saturating_sub(ms);
+        loop {
+            let mut pending = self.pending.borrow_mut();
+            if let Some(at) = pending.iter().position(|b| *b == b'\n') {
+                let line: Vec<u8> = pending.drain(..=at).collect();
+                return Ok(Some(String::from_utf8_lossy(&line[..at]).into_owned()));
+            }
+            let left = libbreenix::suite::case_ms_left();
+            if left <= until || left < 300 {
+                return Err("timed out waiting for a line from the pipe".into());
+            }
+            let mut fds = [io::PollFd::new(self.fd, io::poll_events::POLLIN)];
+            if io::poll(&mut fds, 20).unwrap_or(0) > 0 {
+                let mut buf = [0u8; 256];
+                match io::read(self.fd, &mut buf) {
+                    Ok(0) => return Ok(None),
+                    Ok(n) => pending.extend_from_slice(&buf[..n]),
+                    Err(e) => return Err(format!("read pipe: {e}")),
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -741,6 +827,52 @@ fn sudo_policy_rules() -> CaseResult {
     let run = as_caller(&caller, &["/usr/bin/sudo", "-n", PROBE], &[], "/", &[])?;
     run.exited(1)?;
     Ok(run.says("may not run")?)
+}
+
+/// Two rules both permit the caller to run the probe as root, one without a
+/// password: the first decides, in each order.
+fn sudo_first_match() -> CaseResult {
+    let _shells = probe_shells()?;
+    let _etc = EtcGuard::save(&["/etc/sudo.policy"])?;
+    let caller = User::probe("sdf", &["wheel"])?;
+    let prompt = sudo_prompt(&caller);
+    let nopass = format!("permit {} as root cmd {PROBE} nopass", caller.name);
+    let wheel = "permit %wheel as root";
+    fs::write("/etc/sudo.policy", format!("{nopass}\n{wheel}\n")).map_err(|e| e.to_string())?;
+    let run = as_caller(&caller, &["/usr/bin/sudo", "-n", PROBE], &[], "/", &[])?;
+    report_has(&run.probe()?, &[("uid", "0,0,0".into())])?;
+    fs::write("/etc/sudo.policy", format!("{wheel}\n{nopass}\n")).map_err(|e| e.to_string())?;
+    let run = as_caller(&caller, &["/usr/bin/sudo", "-n", PROBE], &[], "/", &[])?;
+    run.exited(1)?;
+    run.says("a password is required")?;
+    want(run.probe().is_err(), "a later nopass rule overrode the first matching rule")?;
+    // The same order runs the probe once the caller's password is typed.
+    let run = as_caller(&caller, &["/usr/bin/sudo", PROBE], &[], "/", &[(&prompt, &caller.password)])?;
+    Ok(report_has(&run.probe()?, &[("uid", "0,0,0".into())])?)
+}
+
+/// The permitted command gets its arguments as they were given, with -i too: words
+/// a shell would read as another command or a substitution start no other program.
+fn sudo_argv_no_shell() -> CaseResult {
+    let _shells = probe_shells()?;
+    let _etc = EtcGuard::save(&["/etc/sudo.policy"])?;
+    let caller = User::probe("sda", &[])?;
+    fs::write("/etc/sudo.policy", format!("permit {} as root cmd {PROBE} nopass\n", caller.name)).map_err(|e| e.to_string())?;
+    let substitution = format!("$({PROBE})");
+    let words = [";", PROBE, "injected", substitution.as_str(), "&&", "id"];
+    let args: String = words.join(" ").chars().map(|c| if c == ' ' || c == '=' { '_' } else { c }).collect();
+    for (login, cwd) in [(true, "/root"), (false, "/")] {
+        let mut argv = vec!["/usr/bin/sudo", "-n"];
+        if login { argv.push("-i"); }
+        argv.push(PROBE);
+        argv.extend(words);
+        let run = as_caller(&caller, &argv, &[], "/", &[])?;
+        run.exited(0)?;
+        let reports = run.output.matches("PROBE uid=").count();
+        want(reports == 1, format!("sudo{} ran {reports} probes from one command; output: {}", if login { " -i" } else { "" }, run.tail()))?;
+        report_has(&run.probe()?, &[("uid", "0,0,0".into()), ("argv0", PROBE.into()), ("args", args.clone()), ("cwd", cwd.into())])?;
+    }
+    Ok(logged("sudo", &caller.name, "root", "ok")?)
 }
 
 fn sudo_logged() -> CaseResult {
