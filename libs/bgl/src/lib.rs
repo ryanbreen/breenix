@@ -160,6 +160,10 @@ impl Context {
         if r != 0 { return Err(r); }
         Ok(Fence { context: self.handle, handle: a.fence })
     }
+    /// Drop commands encoded since the last successful `submit`, after a refused submission.
+    pub fn discard(&mut self) {
+        self.words.clear();
+    }
     pub fn encoded(&self) -> &[u32] {
         &self.words
     }
@@ -167,6 +171,51 @@ impl Context {
 impl Drop for Context {
     fn drop(&mut self) {
         let _ = gpu::context_destroy(self.handle);
+    }
+}
+/// A static source table: a built-in font table or a suite's declared fixture, stored whole
+/// or as separate static rows (docs/gui/gpu.md section 2.4). The only CPU bytes BGL uploads
+/// as `Fixture`; a computed image cannot be one, because it is not `'static` data.
+pub struct DeclaredFixture {
+    rows: Vec<&'static [u8]>,
+}
+impl DeclaredFixture {
+    /// A table held in one static slice.
+    pub fn table(bytes: &'static [u8]) -> Self {
+        Self { rows: alloc::vec![bytes] }
+    }
+    /// A table held as static rows, uploaded in order as one contiguous table.
+    pub fn rows(rows: Vec<&'static [u8]>) -> Self {
+        Self { rows }
+    }
+    /// The table's size in bytes.
+    pub fn len(&self) -> usize {
+        self.rows.iter().map(|r| r.len()).sum()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+/// Upload a declared table whole into `resource` at `rect` as `Fixture`, rows `stride`
+/// bytes apart in `source` layout; one of section 2.4's two sanctioned upload sites.
+pub fn fixture_upload(
+    fixture: DeclaredFixture,
+    context: &Context,
+    resource: u64,
+    rect: [u32; 4],
+    stride: u32,
+    source: u32,
+) -> Result<(), i64> {
+    let joined;
+    let bytes: &[u8] = if let [one] = fixture.rows.as_slice() {
+        one
+    } else {
+        joined = fixture.rows.concat();
+        &joined
+    };
+    match gpu::upload(context.handle, resource, rect, bytes, stride, source, gpu::abi::purpose::FIXTURE).0 {
+        0 => Ok(()),
+        e => Err(e),
     }
 }
 /// Display modes and their physical pixel scale.
