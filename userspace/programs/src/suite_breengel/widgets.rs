@@ -13,7 +13,7 @@ use crate::*;
 #[path="icon_pixels/icon_pixels_are_identical_for_every_time_partition.rs"] mod pixel_step_invariance_icon;
 
 use crate::raster::Drawn;
-use libgfx_ref::{shapes, ttf_font};
+use libgfx_ref::ttf_font;
 use libgfx_ref::ttf_font::{Font,CachedFont};
 use breengel::font::{FontChange, FontWatchError, FontWatcher};
 use libbui::focus::FocusChain;
@@ -2682,10 +2682,25 @@ fn sans_width(text:&[u8])->i32 {
     let pen:i32=glyphs.iter().enumerate().map(|(i,&g)|font.advance26(g,1024)+glyphs.get(i+1).map_or(0,|&next|font.kern26(g,next,1024))).sum();
     (pen+32)/64
 }
+fn ui_scale() -> usize {
+    let modes = bgl::modes().expect("widget fixture display mode");
+    modes.modes[modes.current as usize].scale as usize
+}
+fn ui_frame(w:usize,h:usize)->Drawn { let s=ui_scale(); Drawn::bgrx(w*s,h*s) }
+fn ui_rect(x:i32,y:i32,w:i32,h:i32)->libgfx_ref::framebuf::Rect {
+    let s=ui_scale() as i32;libgfx_ref::framebuf::Rect::new(x*s,y*s,w*s,h*s)
+}
+mod shapes {
+    use super::*;
+    pub fn fill_rect(f:&mut FrameBuf,x:i32,y:i32,w:i32,h:i32,c:Color) {let s=ui_scale() as i32;libgfx_ref::shapes::fill_rect(f,x*s,y*s,w*s,h*s,c);}
+    pub fn draw_rect(f:&mut FrameBuf,x:i32,y:i32,w:i32,h:i32,c:Color) {let s=ui_scale() as i32;for i in 0..s {libgfx_ref::shapes::draw_rect(f,x*s+i,y*s+i,w*s-2*i,h*s-2*i,c);}}
+    pub fn draw_line(f:&mut FrameBuf,x:i32,y:i32,xx:i32,yy:i32,c:Color) {let s=ui_scale() as i32;libgfx_ref::shapes::draw_line(f,x*s,y*s,xx*s,yy*s,c);}
+}
 fn sans_draw(fb:&mut FrameBuf,text:&[u8],x:i32,y:i32,colour:Color) {
-    let bytes=std::fs::read("/usr/share/fonts/DejaVuSans.ttf").expect("gpu-text: pinned DejaVu Sans is missing");
-    let mut font=CachedFont::new(Font::parse(&bytes).expect("gpu-text: pinned DejaVu Sans is invalid"),256);
-    ttf_font::draw_text_bytes(fb,&mut font,text,x,y,16.0,colour);
+    let bytes=std::fs::read("/usr/share/fonts/DejaVuSans.ttf").expect("pinned DejaVu Sans is missing");
+    let mut font=CachedFont::new(Font::parse(&bytes).expect("pinned DejaVu Sans is invalid"),256);
+    let s=ui_scale() as i32;
+    ttf_font::draw_text_bytes(fb,&mut font,text,x*s,y*s,16.0*s as f32,colour);
 }
 fn sans_center(fb:&mut FrameBuf,text:&[u8],rect:Rect,colour:Color) {
     sans_draw(fb,text,rect.x+(rect.w-sans_width(text))/2,rect.y+(rect.h-16)/2,colour)
@@ -2702,8 +2717,8 @@ fn widgets_scale_2()->CaseResult {
     let mut font=CachedFont::new(Font::parse(&bytes).cite("14")?,256);
     let width=ttf_font::text_width(&mut font,"OK",32.0);
     same_as(&g,PAPER,"scale-2 TrueType button","14",|fb|{
-        shapes::fill_rect(fb,40,32,240,80,theme.widget_bg);
-        for inset in 0..2 {shapes::draw_rect(fb,40+inset,32+inset,240-2*inset,80-2*inset,theme.border);}
+        libgfx_ref::shapes::fill_rect(fb,40,32,240,80,theme.widget_bg);
+        for inset in 0..2 {libgfx_ref::shapes::draw_rect(fb,40+inset,32+inset,240-2*inset,80-2*inset,theme.border);}
         ttf_font::draw_text(fb,&mut font,"OK",40+(240-width)/2,56,32.0,theme.text_primary);
     })
 }
