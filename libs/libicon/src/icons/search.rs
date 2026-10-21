@@ -113,90 +113,93 @@ impl Icon for SearchIcon {
     }
 
     fn draw(&self, fb: &mut FrameBuf, cx: i32, cy: i32, size: i32) {
-        let sc = self.scale.value;
-        // Idle pulse: lens slightly breathes.
-        let breathe = 1.0 + sin_approx(self.base.idle_time as f32 / 1_000_000.0 * 1.8) * 0.015;
-        let s = (size as f32 * sc * breathe) as i32;
-        if s < 4 {
-            return;
-        }
-
-        // Lens centre is offset slightly up-left; handle goes bottom-right.
-        let lens_cx = cx - s / 8;
-        let lens_cy = cy - s / 8;
-        let radius = s * 35 / 100;
-
-        // Draw lens (circle outline, glass blue).
-        let lens_color = Color::rgb(180, 210, 240);
-        shapes::draw_circle(fb, lens_cx, lens_cy, radius, lens_color);
-        // Inner highlight ring.
-        if radius > 4 {
-            shapes::draw_circle(fb, lens_cx, lens_cy, radius - 2, Color::rgb(140, 180, 220));
-        }
-
-        // Handle (diagonal line, bottom-right of lens).
-        let handle_start_x = lens_cx + radius * 7 / 10;
-        let handle_start_y = lens_cy + radius * 7 / 10;
-        let handle_end_x = cx + s * 42 / 100;
-        let handle_end_y = cy + s * 42 / 100;
-        let handle_color = Color::rgb(160, 140, 120);
-        shapes::draw_line(
-            fb,
-            handle_start_x,
-            handle_start_y,
-            handle_end_x,
-            handle_end_y,
-            handle_color,
-        );
-        // Handle thickness: second parallel line.
-        shapes::draw_line(
-            fb,
-            handle_start_x + 1,
-            handle_start_y + 1,
-            handle_end_x + 1,
-            handle_end_y + 1,
-            handle_color,
-        );
-
-        // Shimmer highlight: a bright 2×2 dot orbiting inside the lens.
-        if matches!(
-            self.base.state,
-            IconState::HoverIn | IconState::Hovering | IconState::Clicked
-        ) {
-            let orbit_r = (radius as f32 * 0.5) as i32;
-            let sh_x = lens_cx + (cos_approx(self.shimmer_angle) * orbit_r as f32) as i32;
-            let sh_y = lens_cy + (sin_approx(self.shimmer_angle) * orbit_r as f32) as i32;
-            shapes::fill_rect(fb, sh_x, sh_y, 2, 2, Color::rgb(255, 255, 255));
-        }
-
-        // Sonar rings: expanding circles with fading colour.
-        // Each ring born at `birth_ms` after click, expands for 400ms.
-        if self.base.state == IconState::Clicked {
-            let elapsed = self.click_time;
-            for &(birth_ms, alive) in &self.sonar_rings {
-                if !alive {
-                    continue;
-                }
-                if elapsed < birth_ms {
-                    continue;
-                }
-                let ring_age_ms = elapsed - birth_ms;
-                if ring_age_ms > 450_000 {
-                    continue;
-                }
-                let t = ring_age_ms as f32 / 450_000.0;
-                // Expand from radius to radius + 60px.
-                let ring_r = radius + (t * 60.0) as i32;
-                // Fade from bright cyan to transparent.
-                let intensity = ((1.0 - t) * 200.0) as u8;
-                let ring_color =
-                    Color::rgb((intensity as u32 * 80 / 200) as u8, intensity, intensity);
-                shapes::draw_circle(fb, lens_cx, lens_cy, ring_r, ring_color);
+        // One submission per frame (libgfx Surface::batch), the same pixels as one per shape.
+        fb.batch(|fb| {
+            let sc = self.scale.value;
+            // Idle pulse: lens slightly breathes.
+            let breathe = 1.0 + sin_approx(self.base.idle_time as f32 / 1_000_000.0 * 1.8) * 0.015;
+            let s = (size as f32 * sc * breathe) as i32;
+            if s < 4 {
+                return;
             }
-        }
 
-        // Also draw lingering rings during HoverOut right after click.
-        // (They fade naturally as click_time advances.)
+            // Lens centre is offset slightly up-left; handle goes bottom-right.
+            let lens_cx = cx - s / 8;
+            let lens_cy = cy - s / 8;
+            let radius = s * 35 / 100;
+
+            // Draw lens (circle outline, glass blue).
+            let lens_color = Color::rgb(180, 210, 240);
+            shapes::draw_circle(fb, lens_cx, lens_cy, radius, lens_color);
+            // Inner highlight ring.
+            if radius > 4 {
+                shapes::draw_circle(fb, lens_cx, lens_cy, radius - 2, Color::rgb(140, 180, 220));
+            }
+
+            // Handle (diagonal line, bottom-right of lens).
+            let handle_start_x = lens_cx + radius * 7 / 10;
+            let handle_start_y = lens_cy + radius * 7 / 10;
+            let handle_end_x = cx + s * 42 / 100;
+            let handle_end_y = cy + s * 42 / 100;
+            let handle_color = Color::rgb(160, 140, 120);
+            shapes::draw_line(
+                fb,
+                handle_start_x,
+                handle_start_y,
+                handle_end_x,
+                handle_end_y,
+                handle_color,
+            );
+            // Handle thickness: second parallel line.
+            shapes::draw_line(
+                fb,
+                handle_start_x + 1,
+                handle_start_y + 1,
+                handle_end_x + 1,
+                handle_end_y + 1,
+                handle_color,
+            );
+
+            // Shimmer highlight: a bright 2×2 dot orbiting inside the lens.
+            if matches!(
+                self.base.state,
+                IconState::HoverIn | IconState::Hovering | IconState::Clicked
+            ) {
+                let orbit_r = (radius as f32 * 0.5) as i32;
+                let sh_x = lens_cx + (cos_approx(self.shimmer_angle) * orbit_r as f32) as i32;
+                let sh_y = lens_cy + (sin_approx(self.shimmer_angle) * orbit_r as f32) as i32;
+                shapes::fill_rect(fb, sh_x, sh_y, 2, 2, Color::rgb(255, 255, 255));
+            }
+
+            // Sonar rings: expanding circles with fading colour.
+            // Each ring born at `birth_ms` after click, expands for 400ms.
+            if self.base.state == IconState::Clicked {
+                let elapsed = self.click_time;
+                for &(birth_ms, alive) in &self.sonar_rings {
+                    if !alive {
+                        continue;
+                    }
+                    if elapsed < birth_ms {
+                        continue;
+                    }
+                    let ring_age_ms = elapsed - birth_ms;
+                    if ring_age_ms > 450_000 {
+                        continue;
+                    }
+                    let t = ring_age_ms as f32 / 450_000.0;
+                    // Expand from radius to radius + 60px.
+                    let ring_r = radius + (t * 60.0) as i32;
+                    // Fade from bright cyan to transparent.
+                    let intensity = ((1.0 - t) * 200.0) as u8;
+                    let ring_color =
+                        Color::rgb((intensity as u32 * 80 / 200) as u8, intensity, intensity);
+                    shapes::draw_circle(fb, lens_cx, lens_cy, ring_r, ring_color);
+                }
+            }
+
+            // Also draw lingering rings during HoverOut right after click.
+            // (They fade naturally as click_time advances.)
+        });
     }
 
     fn bounds_overflow(&self) -> i32 {

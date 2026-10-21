@@ -3,7 +3,8 @@
 //!
 //! A surface owns a target made by `RESOURCE_CREATE`; no pixel pointer is accepted and a
 //! handle is not an address. Drawing submits BGL commands to the process's context, each
-//! primitive at once; `read` waits for them through `READBACK`.
+//! primitive at once, or the shapes drawn inside `batch` in one submission; `read` waits for
+//! them through `READBACK`.
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -175,7 +176,12 @@ pub struct Surface {
     error: Option<i64>,
     ui_scale: u32,
     render: Option<bgl::Fence>,
+    /// Inside `batch`: each deferred primitive's own `BEGIN`, scissor and draw commands.
+    batch: Option<Vec<Vec<u32>>>,
 }
+
+/// The most primitives one batched submission carries, far below SUBMIT's draw cap.
+const BATCH_PRIMITIVES: usize = 64;
 
 impl Surface {
     /// Check a readback or conversion layout of `width × height` pixels at `stride` (section 3).
@@ -213,7 +219,7 @@ impl Surface {
         let ui_scale = Self::display_scale()?;
         let target = gpu::target_create(device_format, width as u32, height as u32).map_err(SurfaceError::Device)?;
         let whole = Box64 { x0: 0, y0: 0, x1: width as i64, y1: height as i64 };
-        Ok(Surface { target, width, height, format, clip: whole, clips: Vec::new(), dirty: None, owner: device::pid(), owns_handle: true, error: None, render: None, ui_scale })
+        Ok(Surface { target, width, height, format, clip: whole, clips: Vec::new(), dirty: None, owner: device::pid(), owns_handle: true, error: None, render: None, ui_scale, batch: None })
     }
 
     /// A non-owning view of a target returned by window CREATE/RESIZE. The window
@@ -224,7 +230,7 @@ impl Surface {
         if target==0 { return Err(SurfaceError::Device(-abi::errno::EINVAL)); }
         Ok(Self { target,width,height,format:Format::BGRX,
             clip:Box64 {x0:0,y0:0,x1:width as i64,y1:height as i64},clips:Vec::new(),dirty:None,
-            owner:device::pid(),owns_handle:false,error:None,render:None,ui_scale:Self::display_scale()? })
+            owner:device::pid(),owns_handle:false,error:None,render:None,ui_scale:Self::display_scale()?,batch:None })
 
     }
 
@@ -311,8 +317,10 @@ impl Surface {
 
     /// Encode `draw` for this target under the current clip and submit it. Callers pass only
     /// geometry already clipped to something visible: a primitive clipped to an empty box
-    /// submits no command (section 7).
+    /// submits no command (section 7). A batch drawn so far is submitted first, so this draw
+    /// follows it.
     pub(crate) fn submit(&mut self, draw: impl FnOnce(&mut bgl::Context)) {
+        self.flush();
         let (target, w, h, clip) = (self.target, self.width as u32, self.height as u32, self.clip);
         let whole = clip == Box64 { x0: 0, y0: 0, x1: w as i64, y1: h as i64 };
         let result = device::with(|d| {
@@ -331,6 +339,72 @@ impl Surface {
         }
     }
 
+    /// As `submit`, for a draw that samples no texture or target: inside `batch` its commands
+    /// are kept, with their own `BEGIN` and scissor, and sent with the batch's others.
+    pub(crate) fn submit_shape(&mut self, draw: impl FnOnce(&mut bgl::Context)) {
+        if self.batch.is_none() { return self.submit(draw); }
+        let (target, w, h, clip) = (self.target, self.width as u32, self.height as u32, self.clip);
+        let whole = clip == Box64 { x0: 0, y0: 0, x1: w as i64, y1: h as i64 };
+        let words = device::with(|d| {
+            let context = &mut d.context;
+            context.begin(target, w, h);
+            if !whole {
+                context.set_clip(clip.corners());
+            }
+            draw(context);
+            let words = context.encoded().to_vec();
+            context.discard();
+            Ok(words)
+        });
+        match words {
+            Ok(words) => {
+                let batch = self.batch.as_mut().expect("batch checked above");
+                batch.push(words);
+                if batch.len() >= BATCH_PRIMITIVES { self.flush(); }
+            }
+            Err(e) => { self.error.get_or_insert(e); }
+        }
+    }
+
+    /// Draw `f`'s shapes into this surface in as few submissions as SUBMIT admits. The pixels
+    /// are the ones drawing each shape alone gives: the commands and their order are the
+    /// same, and a submission the core refuses is sent again in halves, down to a single
+    /// shape, which fails as it would alone. A sampling draw inside `f` first submits the
+    /// shapes before it. `read` and `wait` inside `f` return EAGAIN; errors appear once the
+    /// batch is sent, when `batch` returns.
+    pub fn batch<R>(&mut self, f: impl FnOnce(&mut Surface) -> R) -> R {
+        if self.batch.is_some() { return f(self); }
+        self.batch = Some(Vec::new());
+        let result = f(self);
+        self.flush();
+        self.batch = None;
+        result
+    }
+
+    /// Send the batched shapes drawn so far, keeping the batch open.
+    fn flush(&mut self) {
+        let Some(segments) = self.batch.as_mut().map(core::mem::take) else { return; };
+        if !segments.is_empty() { self.send(&segments); }
+    }
+
+    fn send(&mut self, segments: &[Vec<u32>]) {
+        let result = device::with(|d| {
+            let context = &mut d.context;
+            for words in segments { context.append(words); }
+            context.submit().inspect_err(|_| context.discard())
+        });
+        GENERATION.fetch_add(1, Relaxed);
+        match result {
+            Ok(fence) => self.render = Some(fence),
+            Err(e) if segments.len() == 1 => { self.error.get_or_insert(e); }
+            Err(_) => {
+                let (first, second) = segments.split_at(segments.len() / 2);
+                self.send(first);
+                self.send(second);
+            }
+        }
+    }
+
     /// Record a failure to prepare a draw (a table upload) as this surface's error.
     pub(crate) fn fail(&mut self, e: i64) {
         self.error.get_or_insert(e);
@@ -339,6 +413,7 @@ impl Surface {
     /// Wait for the most recent draw on this surface. The process context orders the
     /// surface's draws; window COMMIT separately seals writers from other contexts.
     pub fn wait(&self) -> Result<(), i64> {
+        if self.batch.is_some() { return Err(-abi::errno::EAGAIN); }
         if let Some(error) = self.error { return Err(error); }
         self.render.map_or(Ok(()), |fence| fence.wait(u64::MAX))
     }
@@ -355,7 +430,7 @@ impl Surface {
             return;
         }
         crate::work::add(1);
-        self.submit(|c| c.solid(word(color), &[b.corners()]));
+        self.submit_shape(|c| c.solid(word(color), &[b.corners()]));
         self.mark(b);
     }
 
@@ -368,13 +443,14 @@ impl Surface {
         }
         crate::work::add(1);
         let whole = c == Box64 { x0: 0, y0: 0, x1: self.width as i64, y1: self.height as i64 };
-        self.submit(|ctx| if whole { ctx.clear(word(color)) } else { ctx.solid(word(color), &[c.corners()]) });
+        self.submit_shape(|ctx| if whole { ctx.clear(word(color)) } else { ctx.solid(word(color), &[c.corners()]) });
         self.mark(c);
     }
 
     /// Read the whole surface back as canonical BGRA rows `stride` bytes apart, after the
     /// submissions that write it; the row padding is left as it was (section 3).
     pub fn read(&self, pixels: &mut [u8], stride: usize) -> Result<(), i64> {
+        if self.batch.is_some() { return Err(-abi::errno::EAGAIN); }
         let stride = u32::try_from(stride).map_err(|_| -abi::errno::EINVAL)?;
         let mut record = [0u8; abi::record::SIZE];
         match gpu::readback(self.target, [0, 0, self.width as u32, self.height as u32], pixels, stride, &mut record) {

@@ -167,6 +167,11 @@ impl Context {
     pub fn encoded(&self) -> &[u32] {
         &self.words
     }
+    /// Append commands this context encoded earlier (taken from `encoded`), to send them
+    /// in the next `submit`.
+    pub fn append(&mut self, words: &[u32]) {
+        self.words.extend_from_slice(words);
+    }
 }
 impl Drop for Context {
     fn drop(&mut self) {
