@@ -132,7 +132,7 @@ impl Core {
     fn settle(&mut self, _: u32) {}
     fn fault(&mut self) { panic!("unexpected fault") }
     fn sync_ended(&mut self, serial: u64, _: Option<Done>) { self.syncs.remove(&serial); }
-    fn submit_returned(&mut self, _: u64, _: bool, _: u32, _: u64) {}
+    fn submit_returned(&mut self, _: u64, _: bool, _: Done) {}
     fn warm_returned(&mut self, _: Option<bool>) { panic!("unexpected warm refusal") }
     // PRODUCTION_METHODS
 }
