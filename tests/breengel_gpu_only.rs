@@ -55,19 +55,57 @@ fn planted_raw_pixel_library_and_renamed_upload_are_refused(){
     assert!(refuse("impl Texture {fn from_decoded(image: libimg::Decoded) {gpu::upload(image);}}",true).is_empty());
     assert!(!refuse("fn from_decoded(raw: &mut [u8]) {gpu::upload(raw);}",true).is_empty());
 }
+/// Production dependencies on the CPU reference, under any key: a direct key, a `package` rename,
+/// or a dotted `[dependencies.<key>]` table, in normal, build and target-specific sections.
+/// Development dependencies (host tests) may use it.
+fn reference_dependencies(manifest:&str)->Vec<String>{
+    let reference=|name:&str|name.trim().trim_matches('"').replace('_',"-")=="libgfx-ref";
+    let mut out=Vec::new();let mut section=String::new();
+    for line in manifest.lines().map(|l|l.split('#').next().unwrap_or("").trim()) {
+        if line.starts_with('[') {section=line.trim_matches(|c|c=='['||c==']').trim().to_string();
+            if let Some(key)=section.rsplit_once('.').map(|(_,k)|k) {if production(&section) && reference(key) {out.push(format!("[{section}]"));}}
+            continue;}
+        if !production(&section) || line.is_empty() {continue;}
+        let Some((key,value))=line.split_once('=') else {continue;};
+        let renamed=value.split(',').chain(core::iter::once(value)).any(|part|part.split_once('=').is_some_and(|(k,v)|k.trim().trim_start_matches('{').trim()=="package" && reference(v.trim().trim_end_matches('}'))));
+        if reference(key) || (key.trim()=="package" && reference(value)) || renamed {out.push(format!("[{section}] {line}"));}
+    }out
+}
+/// A normal, build or target-specific dependency section, or one of its dotted tables.
+fn production(section:&str)->bool{
+    let parts:Vec<_>=section.split('.').collect();
+    let kind=match parts.as_slice() {["target",_,kind,..]=>*kind,[kind,..]=>*kind,[]=>""};
+    matches!(kind,"dependencies"|"build-dependencies")
+}
+#[test]
+fn renamed_or_dotted_reference_dependencies_are_refused(){
+    assert!(!reference_dependencies("[dependencies]\nlibgfx-ref = { path = \"../libgfx-ref\" }\n").is_empty());
+    assert!(!reference_dependencies("[dependencies]\ncpu = { package = \"libgfx-ref\", path = \"../libgfx-ref\" }\n").is_empty());
+    assert!(!reference_dependencies("[dependencies.cpu]\npackage = \"libgfx-ref\"\npath = \"../libgfx-ref\"\n").is_empty());
+    assert!(!reference_dependencies("[dependencies.libgfx_ref]\npath = \"../libgfx-ref\"\n").is_empty());
+    assert!(!reference_dependencies("[target.'cfg(target_os = \"none\")'.build-dependencies]\nlibgfx-ref = \"*\"\n").is_empty());
+    assert!(reference_dependencies("[dev-dependencies]\nlibgfx-ref = { path = \"../libgfx-ref\" }\n").is_empty());
+    assert!(reference_dependencies("[dependencies]\nlibgfx = { path = \"../libgfx\" }\n").is_empty());
+}
 #[test]
 fn production_dependencies_and_upload_sites_are_gpu_only(){
     let root=Path::new(env!("CARGO_MANIFEST_DIR"));let mut bad=Vec::new();
-    for krate in ["kernel","libs/breengel","libs/libbui","libs/libicon","libs/libfont","libs/bgl","userspace/programs"] {
+    // Installed programs and suites share one crate; its sources are checked below instead.
+    for krate in ["kernel","libs/breengel","libs/libbui","libs/libicon","libs/libfont","libs/bgl","libs/libgfx","libs/libbreenix"] {
         let manifest=fs::read_to_string(root.join(krate).join("Cargo.toml")).unwrap();
-        if manifest.lines().any(|l|l.trim_start().starts_with("libgfx-ref")){bad.push(format!("{krate}: production dependency on libgfx-ref"));}
-        // The core's own device implementation and libbreenix's syscall wrapper are not API consumers.
-        if krate=="kernel" {continue;}
+        for line in reference_dependencies(&manifest) {bad.push(format!("{krate}: production dependency on libgfx-ref: {line}"));}
+    }
+    for krate in ["libs/breengel","libs/libbui","libs/libicon","libs/libfont","libs/bgl","libs/libgfx","userspace/programs"] {
         let mut paths=Vec::new();files(&root.join(krate).join("src"),&mut paths);
         for path in paths {
             let relative=path.strip_prefix(root).unwrap().to_string_lossy();
-            if relative.contains("/suite_") || relative.contains("_test") || relative.ends_with("/gpu_exec_probe.rs") || relative.ends_with("/gpu_fault_acceptance.rs"){continue;}
-            for reason in refuse(&fs::read_to_string(&path).unwrap(),krate=="libs/bgl") {bad.push(format!("{relative}: {reason}"));}
+            if relative.contains("/suite_") {continue;}
+            let source=fs::read_to_string(&path).unwrap();
+            // Only suite binaries' expectation code may name the CPU reference.
+            if source.contains("libgfx_ref") {bad.push(format!("{relative}: uses libgfx_ref outside a suite"));}
+            // The core's own device implementation and libbreenix's syscall wrapper are not API consumers.
+            if relative.contains("_test") || relative.ends_with("/gpu_exec_probe.rs") || relative.ends_with("/gpu_fault_acceptance.rs"){continue;}
+            for reason in refuse(&source,krate=="libs/bgl") {bad.push(format!("{relative}: {reason}"));}
         }
     }
     assert!(bad.is_empty(),"gpu-raster enforcement; gpu-apps/gpu-display consumers still require migration:\n{}",bad.join("\n"));
