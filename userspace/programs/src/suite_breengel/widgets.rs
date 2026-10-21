@@ -1630,6 +1630,7 @@ fn text_entry_maxlen() -> CaseResult {
 }
 // gpu-text: R3 derives visible cursor position from DejaVu Sans advances, preserving Home and clipping checks.
 fn text_entry_scroll_to_cursor() -> CaseResult {
+    let scale=ui_scale();
     let mut f = entry_field(100);
     f.insert_str("abcdefghijklmnopqrstuvwxyz");
     let visible:String=f.text().chars().enumerate().filter_map(|(i,c)| (i>=f.scroll_offset()).then_some(c)).collect();
@@ -1645,16 +1646,16 @@ fn text_entry_scroll_to_cursor() -> CaseResult {
         "15",
         "Home did not reveal the first column",
     )?;
-    let mut g = Drawn::bgrx(100, 50);
+    let mut g = ui_frame(100, 50);
     g.reset(PAPER);
     f.draw(&mut g.fb(), &Theme::dark());
     snapshot(&g)?;
-    ensure(g.color(10, 10) == Theme::dark().border
-        && g.color(14, 16) == Color::WHITE
-        && g.color(65, 12) == Theme::dark().widget_bg, "15", "focused field border or interior drawing missing")?;
-    for y in 0..50 {
-        for x in 0..100 {
-            if !in_rect(x as i64, y as i64, 8, 8, 64, 24) {
+    ensure(g.color(10*scale, 10*scale) == Theme::dark().border
+        && g.color(14*scale, 16*scale) == Color::WHITE
+        && g.color(65*scale, 12*scale) == Theme::dark().widget_bg, "15", "focused field border or interior drawing missing")?;
+    for y in 0..50*scale {
+        for x in 0..100*scale {
+            if !in_rect(x as i64, y as i64, 8*scale as i64, 8*scale as i64, 64*scale as i64, 24*scale as i64) {
                 ensure(
                     g.color(x, y) == PAPER,
                     "15",
