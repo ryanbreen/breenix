@@ -61,10 +61,11 @@ fn region(which: usize, width: usize, height: usize) -> Result<Region, Error> {
     if inherited { unsafe { SCRATCH.targets.get().write([None, None]); } }
     // SAFETY: the PID-tagged lock is held for the rest of this call.
     let slot = unsafe { &mut (*SCRATCH.targets.get())[which] };
-    let fits = slot.as_ref().is_some_and(|s| s.target.owned_here() && width <= s.target.width()
+    let context = device::with(|d| Ok(d.context.handle())).map_err(Error::Device)?;
+    let fits = slot.as_ref().is_some_and(|s| s.context == context && s.target.owned_here() && width <= s.target.width()
         && s.next_row + height <= s.target.height());
     if !fits {
-        *slot = Some(Scratch { target: Arc::new(target(width.max(SCRATCH_SIDE), height.max(SCRATCH_SIDE))?), next_row: 0 });
+        *slot = Some(Scratch { target: Arc::new(target(width.max(SCRATCH_SIDE), height.max(SCRATCH_SIDE))?), context, next_row: 0 });
     }
     let s = slot.as_mut().expect("scratch made above");
     let y = s.next_row;
@@ -136,7 +137,8 @@ fn render_lcd(segments: &[LineSegment], width: usize, height: usize,
 
 /// A scratch target's side when no glyph needs more; its rows are handed out once each.
 const SCRATCH_SIDE: usize = 256;
-struct Scratch { target: Arc<Surface>, next_row: usize }
+// Context handles change when device::with replaces a reset context after EIO.
+struct Scratch { target: Arc<Surface>, context: u64, next_row: usize }
 
 /// A glyph-sized rectangle of a target, at (x, y).
 struct Region { target: Arc<Surface>, x: usize, y: usize }
