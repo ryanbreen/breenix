@@ -242,6 +242,17 @@ impl<'a> ServerSession<'a> {
         }
     }
 
+    /// Bytes that can be sent without waiting for peer window credit.
+    pub fn send_capacity(&self) -> usize {
+        self.channel.as_ref().map(|ch| ch.send_window.min(ch.max_packet) as usize).unwrap_or(0)
+    }
+
+    /// Replenish input credit only after the consumer has delivered or discarded it.
+    pub fn consume_input(&mut self, bytes: usize) -> Result<(), SshError> {
+        let ch = self.channel.as_mut().ok_or(SshError::ChannelNotFound)?;
+        channel::send_window_adjust(&mut self.io, ch, bytes as u32)
+    }
+
     /// Take the command supplied by an SSH "exec" request, if any.
     pub fn take_exec_command(&mut self) -> Option<String> {
         self.channel
@@ -269,6 +280,16 @@ impl<'a> ServerSession<'a> {
     /// Returns Some(data) for channel data, None for non-data messages
     /// (window adjust, etc.), or Err for disconnect/errors.
     pub fn recv_data(&mut self) -> Result<Option<Vec<u8>>, SshError> {
+        self.recv_data_inner(true)
+    }
+
+    /// Read control packets even while command stdin is backed up. The caller
+    /// returns input credit with consume_input after delivering the data.
+    pub fn recv_data_uncredited(&mut self) -> Result<Option<Vec<u8>>, SshError> {
+        self.recv_data_inner(false)
+    }
+
+    fn recv_data_inner(&mut self, replenish: bool) -> Result<Option<Vec<u8>>, SshError> {
         let msg = self.io.recv_packet().map_err(|_| SshError::Io)?;
         if msg.is_empty() {
             return Err(SshError::Disconnected);
@@ -283,8 +304,9 @@ impl<'a> ServerSession<'a> {
 
                 // Adjust receive window
                 if let Some(ref mut ch) = self.channel {
-                    ch.recv_window = ch.recv_window.saturating_sub(data.len() as u32);
-                    if ch.recv_window < 512 * 1024 {
+                    ch.recv_window = ch.recv_window.checked_sub(data.len() as u32)
+                        .ok_or(SshError::Protocol("channel receive window exceeded"))?;
+                    if replenish && ch.recv_window < 512 * 1024 {
                         channel::send_window_adjust(&mut self.io, ch, 1024 * 1024)?;
                     }
                 }
@@ -499,10 +521,9 @@ impl ClientSession {
 
         // Install cipher
         let session_id = self.kex.session_id.as_ref().unwrap();
+        let (send_cipher, recv_cipher) = kex::negotiate_ciphers(&self.kex.my_kexinit, &self.kex.peer_kexinit)?;
         let (cipher_c2s, cipher_s2c) = kex::derive_keys(
-            &shared_secret, &exchange_hash, session_id, false,
-            kex::negotiate_ciphers(&self.kex.my_kexinit, &self.kex.peer_kexinit)?.0,
-            kex::negotiate_ciphers(&self.kex.my_kexinit, &self.kex.peer_kexinit)?.1,
+            &shared_secret, &exchange_hash, session_id, false, send_cipher, recv_cipher,
         );
 
         self.io.set_cipher_send(cipher_c2s); // client→server = our send

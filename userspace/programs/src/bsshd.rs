@@ -397,7 +397,7 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
 }
 
 fn run_exec_command(session: &mut ServerSession, account: &Account, command: &str) -> i32 {
-    println!("bsshd: exec request '{}'", command);
+    println!("bsshd: exec request");
 
     let (read_fd, write_fd) = match io::pipe() {
         Ok(pipe) => pipe,
@@ -484,16 +484,17 @@ fn exec_shuttle(session: &mut ServerSession, output: Fd, input: Fd) {
     let mut offset = 0;
     let mut input_open = true;
     loop {
+        let capacity = session.send_capacity().min(4096);
         let mut fds = [
-            io::PollFd::new(output, POLLIN),
-            io::PollFd::new(session.io().fd(), if pending.is_empty() { POLLIN } else { 0 }),
+            io::PollFd::new(output, if capacity > 0 { POLLIN } else { 0 }),
+            io::PollFd::new(session.io().fd(), POLLIN),
             io::PollFd::new(if input_open { input } else { Fd::from_raw(u64::MAX) },
                            if pending.is_empty() { 0 } else { POLLOUT }),
         ];
         if io::poll(&mut fds, 100).is_err() { break; }
-        if fds[0].revents & (POLLIN | POLLHUP) != 0 {
+        if capacity > 0 && fds[0].revents & (POLLIN | POLLHUP) != 0 {
             let mut buf = [0u8; 4096];
-            match io::read(output, &mut buf) {
+            match io::read(output, &mut buf[..capacity]) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => if session.send_data(&buf[..n]).is_err() { break; },
             }
@@ -502,6 +503,7 @@ fn exec_shuttle(session: &mut ServerSession, output: Fd, input: Fd) {
             match io::write(input, &pending[offset..]) {
                 Ok(0) => break,
                 Ok(n) => {
+                    if session.consume_input(n).is_err() { break; }
                     offset += n;
                     if offset == pending.len() { pending.clear(); offset = 0; }
                 }
@@ -509,6 +511,7 @@ fn exec_shuttle(session: &mut ServerSession, output: Fd, input: Fd) {
                 Err(_) => {
                     let _ = io::close(input);
                     input_open = false;
+                    if session.consume_input(pending.len() - offset).is_err() { break; }
                     pending.clear();
                     offset = 0;
                 }
@@ -517,20 +520,25 @@ fn exec_shuttle(session: &mut ServerSession, output: Fd, input: Fd) {
         if fds[2].revents & (POLLERR | POLLHUP) != 0 && input_open {
             let _ = io::close(input);
             input_open = false;
+            if session.consume_input(pending.len() - offset).is_err() { break; }
             pending.clear();
             offset = 0;
         }
         if fds[1].revents & POLLIN != 0 {
-            match session.recv_data() {
-                Ok(Some(data)) if input_open => pending = data,
-                Ok(_) => {
-                    if session.input_eof() && input_open {
-                        let _ = io::close(input);
-                        input_open = false;
-                    }
+            match session.recv_data_uncredited() {
+                Ok(Some(data)) if input_open => {
+                    pending.drain(..offset);
+                    offset = 0;
+                    pending.extend_from_slice(&data);
                 }
+                Ok(Some(data)) => if session.consume_input(data.len()).is_err() { break; },
+                Ok(None) => {}
                 Err(_) => break,
             }
+        }
+        if session.input_eof() && pending.is_empty() && input_open {
+            let _ = io::close(input);
+            input_open = false;
         }
         if fds[1].revents & (POLLERR | POLLHUP) != 0 { break; }
     }
@@ -557,9 +565,10 @@ fn data_shuttle(session: &mut ServerSession, master_fd: Fd, input_fd: Fd, has_pt
     let ssh_fd = session.io().fd();
 
     loop {
-        // Poll both the PTY master and SSH socket for readable data
+        // Keep processing window adjustments while peer output credit is exhausted.
+        let capacity = session.send_capacity().min(4096);
         let mut fds = [
-            io::PollFd::new(master_fd, io::poll_events::POLLIN),
+            io::PollFd::new(master_fd, if capacity > 0 { io::poll_events::POLLIN } else { 0 }),
             io::PollFd::new(ssh_fd, io::poll_events::POLLIN),
         ];
 
@@ -571,9 +580,9 @@ fn data_shuttle(session: &mut ServerSession, master_fd: Fd, input_fd: Fd, has_pt
         }
 
         // Check PTY master for shell output
-        if fds[0].revents & io::poll_events::POLLIN != 0 {
+        if capacity > 0 && fds[0].revents & io::poll_events::POLLIN != 0 {
             let mut pty_buf = [0u8; 4096];
-            match io::read(master_fd, &mut pty_buf) {
+            match io::read(master_fd, &mut pty_buf[..capacity]) {
                 Ok(n) if n > 0 => {
                     if session.send_data(&pty_buf[..n]).is_err() {
                         break;
@@ -606,7 +615,7 @@ fn data_shuttle(session: &mut ServerSession, master_fd: Fd, input_fd: Fd, has_pt
         }
 
         // Check for hangup/error on either fd
-        if (fds[0].revents & io::poll_events::POLLHUP != 0
+        if (capacity > 0 && fds[0].revents & io::poll_events::POLLHUP != 0
             && fds[0].revents & io::poll_events::POLLIN == 0)
             || fds[1].revents & io::poll_events::POLLHUP != 0
         {

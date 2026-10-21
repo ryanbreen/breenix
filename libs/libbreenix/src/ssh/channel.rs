@@ -178,18 +178,15 @@ pub fn send_channel_data(
     channel: &mut Channel,
     data: &[u8],
 ) -> Result<(), SshError> {
+    if data.len() > channel.send_window as usize || channel.max_packet == 0 {
+        return Err(SshError::Protocol("channel send window exhausted"));
+    }
     let mut offset = 0;
     while offset < data.len() {
         let chunk_size = core::cmp::min(
             data.len() - offset,
             core::cmp::min(channel.send_window as usize, channel.max_packet as usize),
         );
-
-        if chunk_size == 0 {
-            // Window exhausted — in a full implementation we'd wait for
-            // WINDOW_ADJUST. For now, send anyway (most clients have large windows).
-            break;
-        }
 
         let mut msg = Vec::with_capacity(9 + chunk_size);
         msg.push(SSH_MSG_CHANNEL_DATA);
