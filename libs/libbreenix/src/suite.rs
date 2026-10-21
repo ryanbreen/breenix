@@ -604,6 +604,10 @@ fn memory_sample(id: &str, when: &str) -> Option<memory_record::Sample> {
         Ok(sample) => {
             emit(&sample.record(id, when));
             diag_dump(when);
+            if when == "after" {
+                let _ = time::sleep_ms(3000);
+                diag_dump("after3s");
+            }
             Some(sample)
         }
         Err(why) => {
@@ -619,7 +623,7 @@ fn diag_case(name: &str) {
     let frames = std::fs::read_to_string("/proc/breenix/frames").unwrap_or_default();
     let mut parts: Vec<String> = Vec::new();
     for line in frames.lines() {
-        if line.starts_with("kstack") || line.starts_with("terminated_unreclaimed") {
+        if line.starts_with("kstack") || line.starts_with("terminated_unreclaimed") || line.starts_with("index ") {
             parts.push(String::from(line));
         } else if line.starts_with("owner user") || line.starts_with("owner page_tables") || line.starts_with("owner kernel_stacks") {
             parts.push(String::from(&line[6..]));

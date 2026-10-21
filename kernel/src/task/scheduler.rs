@@ -8323,6 +8323,27 @@ static TERMINATED_UNRECLAIMED: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "x86_64")]
 static IDLE_RECLAIM_TICK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(u64::MAX) }; MAX_CPUS];
 
+/// Scratch diagnostic: reclaim skips by reason, and live index entries.
+#[cfg(target_arch = "x86_64")]
+pub fn diag_reclaim(text: &mut alloc::string::String) {
+    use core::fmt::Write;
+    let skips: alloc::vec::Vec<u64> = rq::DIAG_SKIPS.iter().map(|c| c.load(Ordering::Relaxed)).collect();
+    let _ = writeln!(text, "reclaim_skips grace={} leaving={} no_owner={} lock={} current={} no_thread={} not_terminated={} stack_live={} no_box={}",
+        skips[0], skips[1], skips[2], skips[3], skips[4], skips[5], skips[6], skips[7], skips[8]);
+    let (mut live, mut dead, mut user) = (0, 0, 0);
+    let mut listed = alloc::vec::Vec::new();
+    rq::diag_index(|tid, pid, flags, owner| {
+        live += 1;
+        if flags & 2 != 0 { dead += 1; }
+        if flags & 1 != 0 { user += 1; }
+        if flags != 0 { listed.push((tid, pid, flags, owner)); }
+    });
+    let _ = writeln!(text, "index live={} dead={} user={}", live, dead, user);
+    for (tid, pid, flags, owner) in listed {
+        let _ = writeln!(text, "index_entry tid={} pid={} flags={} owner={}", tid, pid, flags, owner);
+    }
+}
+
 /// Scratch diagnostic: the unreclaimed terminated-thread count.
 #[cfg(target_arch = "x86_64")]
 pub fn diag_terminated_unreclaimed() -> u64 {
