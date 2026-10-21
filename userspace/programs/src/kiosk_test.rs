@@ -22,6 +22,9 @@
 //!                                    <first answer>, <second answer>
 //!   record <serial>                  COMPOSITE_RECORD -> ok <serial> <pixels> <count> <flags>
 //!                                    followed by <id>:<commit_id>:<pixel_gen>:<pixels> per entry
+//!   gpu-scanout <file>               SCANOUT_READBACK of the composed display into <file>: its width
+//!                                    and height, record version 2 and pixels -> ok, or
+//!                                    err <errno> reason <reason>
 //!   cursor <shape> <visible> <x> <y> SET_CURSOR
 //!   give <pid>                       GIVE_DISPLAY
 //!   auto <0|1>                       compose when the scene has damage (on at start)
@@ -254,6 +257,9 @@ impl Kiosk {
                 else {say(&format!("err {}",-ret));}
             }
             Some("gpu-scanout") => {
+                // The composed scanout observed through SCANOUT_READBACK as the claimant: record
+                // version 2 and the whole binding's pixels, or, on EIO, only the reason (section
+                // 20.1); the outputs it leaves untouched keep their 0xA5 fill.
                 let mut observed=(0i64,0u32);
                 let result=(||->Result<(),String>{
                     let path=*words.get(1).ok_or("missing output file")?;
@@ -261,8 +267,11 @@ impl Kiosk {
                     let mode=m.modes[m.current as usize];
                     let mut pixels=vec![0xA5u8;mode.width as usize*mode.height as usize*4];
                     let mut record=[0xA5u8;libbreenix::gpu::abi::record::SIZE];
-                    let (ret,arg)=libbreenix::gpu::readback_why(0,[0,0,mode.width,mode.height],&mut pixels,mode.width*4,&mut record);
-                    observed=(ret,arg.reason);
+                    let mut rb=abi::Readback::ZERO;
+                    rb.dst=pixels.as_mut_ptr() as u64;rb.dst_len=pixels.len() as u64;
+                    rb.record=record.as_mut_ptr() as u64;rb.record_len=record.len() as u32;
+                    let ret=raw(op::SCANOUT_READBACK,&mut rb as *mut abi::Readback as u64,core::mem::size_of::<abi::Readback>());
+                    observed=(ret,rb.reason);
                     let mut out=Vec::with_capacity(8+record.len()+pixels.len());
                     out.extend_from_slice(&mode.width.to_le_bytes());out.extend_from_slice(&mode.height.to_le_bytes());out.extend_from_slice(&record);out.extend_from_slice(&pixels);
                     std::fs::write(path,out).map_err(|e|e.to_string())

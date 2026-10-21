@@ -257,6 +257,12 @@ impl Compositor {
                 EAGAIN if now_ns() < deadline => {
                     let _ = crate::time::sleep_ms(1);
                 }
+                // The destination is still the scanout's binding (a present bound the other
+                // target, as test point 26 does): compose into the other one.
+                EBUSY if now_ns() < deadline => {
+                    self.next ^= 1;
+                    let _ = crate::time::sleep_ms(1);
+                }
                 EIO => {
                     // The failed render left C and the destination without valid contents.
                     let scene = gpu::target_create(0, self.width, self.height)?;
