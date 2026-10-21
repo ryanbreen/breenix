@@ -602,11 +602,28 @@ fn memory_sample(id: &str, when: &str) -> Option<memory_record::Sample> {
     match memory_record::settled() {
         Ok(sample) => {
             emit(&sample.record(id, when));
+            diag_dump(when);
             Some(sample)
         }
         Err(why) => {
             emit(&std::format!("SUITE {id} ERROR memory {when}: {}", plain(&why)));
             None
+        }
+    }
+}
+
+fn diag_dump(when: &str) {
+    if let Ok(text) = std::fs::read_to_string("/proc/breenix/frames") {
+        for line in text.lines() { emit(&std::format!("DIAG {when} {line}")); }
+    }
+    if let Ok(dir) = std::fs::read_dir("/proc") {
+        for entry in dir.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.bytes().all(|b| b.is_ascii_digit()) { continue; }
+            let status = std::fs::read_to_string(std::format!("/proc/{name}/status")).unwrap_or_default();
+            let keep: Vec<&str> = status.lines().filter(|l| l.starts_with("Name") || l.starts_with("State") || l.starts_with("PPid") || l.starts_with("Vm") || l.starts_with("Threads")).collect();
+            let tasks: Vec<String> = std::fs::read_dir(std::format!("/proc/{name}/task")).map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+            emit(&std::format!("DIAG {when} proc {name} {} tasks={}", keep.join(" | "), tasks.join(",")));
         }
     }
 }
