@@ -1006,6 +1006,10 @@ impl Port {
             } else if previous_failures != 0 {
                 log::info!("[bcm5720] PHY reads recovered after {previous_failures} failures; address={a}.{b}.{c}.{d}");
             }
+            if sample == Ok(false) {
+                log::warn!("[bcm5720] carrier sample down: address={a}.{b}.{c}.{d} debounced-carrier={}",
+                    if carrier.up { "up" } else { "down" });
+            }
             dhcp::maintain(mac, carrier.up);
             if !connectivity_reported {
                 if let Some(lease) = dhcp::lease() {
