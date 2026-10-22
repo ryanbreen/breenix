@@ -894,6 +894,7 @@ impl Suite {
         // full-suite evidence, and a suite run from a shell does not reap others.
         let recording = only.is_none() && process::getpid().is_ok_and(|pid| pid.raw() == 1);
         screen.prepare();
+        if recording && self.gui { crate::suite_stage::memory_owners("before"); }
         let before = if recording { memory_sample(self.id, "before") } else { None };
         let mut done = 0;
         for (c, category) in self.categories.iter().enumerate() {
@@ -956,6 +957,13 @@ impl Suite {
         let reclaimed = !recording || {
             // Each case's processes were swept after it; any left since go now.
             let _ = sweep();
+            if self.gui {
+                crate::suite_stage::memory_owners("finale");
+                if let Err(error) = crate::suite_stage::retire() {
+                    emit(&std::format!("SUITE {} ERROR memory stage retirement: {}", self.id, error));
+                }
+                crate::suite_stage::memory_owners("retired");
+            }
             let display = if self.id == "gpu" { gpu_screen::await_console() } else { Ok(()) };
             let after = match display {
                 Ok(()) => memory_sample(self.id, "after"),
@@ -964,6 +972,7 @@ impl Suite {
                     None
                 }
             };
+            if self.gui { crate::suite_stage::memory_owners("after"); }
             let (line, reclaimed) = memory_record::verdict(self.id, before.as_ref(), after.as_ref());
             emit(&line);
             reclaimed
@@ -1023,7 +1032,7 @@ fn memory_sample(id: &str, when: &str) -> Option<memory_record::Sample> {
 
 /// Write one serial line with a single write, so it is never split, starting with
 /// a newline so it always begins a line of its own.
-fn emit(line: &str) { emit_to(Fd::STDOUT, line) }
+pub(super) fn emit(line: &str) { emit_to(Fd::STDOUT, line) }
 
 fn emit_to(fd: Fd, line: &str) {
     let mut bytes = Vec::with_capacity(line.len() + 2);

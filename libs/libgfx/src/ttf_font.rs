@@ -78,6 +78,17 @@ fn scratch_lock() -> Result<ScratchHeld, Error> {
     Ok(ScratchHeld(me))
 }
 
+/// Release process-local uncached glyph targets and crossing storage at renderer shutdown.
+pub(crate) fn retire_scratch() -> Result<(), Error> {
+    let _held = scratch_lock()?;
+    // SAFETY: scratch_lock owns both slots, and discards inherited handles first.
+    unsafe {
+        *SCRATCH.targets.get() = [None, None];
+        *SCRATCH.geometry.get() = None;
+    }
+    Ok(())
+}
+
 /// A `width × height` region of scratch target `which`, its rows handed out once each.
 fn region(which: usize, width: usize, height: usize) -> Result<Region, Error> {
     let _held = scratch_lock()?;

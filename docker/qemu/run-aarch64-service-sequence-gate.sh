@@ -921,6 +921,7 @@ TOTAL_GREEN=0
 TOTAL_UNATTRIBUTED=0
 TOTAL_DIVERGENCE_BOOTS=0
 TOTAL_DIVERGENCE_LINES=0
+TOTAL_DIVERGENCE_UNAVAILABLE=0
 TOTAL_REFUSAL_BOOTS=0
 TOTAL_REFUSAL_LINES=0
 TOTAL_RESUME_PC_REFUSAL_BOOTS=0
@@ -974,6 +975,7 @@ print_census() {
     # renumbering them all in place to insert this in bucket order would be a
     # one-mistake-and-every-count-is-off edit for a purely cosmetic gain.
     local count_690="${32}"
+    local divergence_unavailable="${33}"
     local green_rate
 
     green_rate=$(awk -v green="$count_green" -v boots="$count_boots" \
@@ -1001,7 +1003,8 @@ print_census() {
     # count with bucket 596 at zero is the production evidence that an
     # inline-saved context really is ERET-dispatched carrying a stale ELR and
     # that the repair neutralises it (coordinator ruling R20).
-    echo "  CTX596 divergence: $divergence_lines marker line(s) across $divergence_boots/$count_boots boot(s) — reported, not gated"
+    echo "  CTX596 counter snapshot unavailable: $divergence_unavailable/$count_boots boot(s)"
+    echo "  CTX596 INLINE_ELR_DIVERGENCE: $divergence_lines event(s) in the latest counter snapshots across $divergence_boots/$count_boots boot(s) — reported, not gated"
     # Reported, never gated: a refusal is the resume-PC validation doing its
     # job. Nonzero refusals together with zero #576-shape boots are production
     # confirmation of that guard and name a producer to chase, not a regression.
@@ -1093,6 +1096,7 @@ run_profile() {
     local count_unattributed=0
     local divergence_boots=0
     local divergence_lines=0
+    local divergence_unavailable=0
     local refusal_boots=0
     local refusal_lines=0
     local resume_pc_refusal_boots=0
@@ -1130,7 +1134,7 @@ run_profile() {
     # per boot, which is what this census did until round 4 (every boot emitted a
     # phantom row whose bucket field was empty, and the failure report printed
     # one bogus line per boot because of it).
-    printf 'boot\tbucket\tend\tseconds\tctx596_divergence\treason\tserial\tret_dispatch_refusals\tresume_pc_refusals\tpercpu_stack_aliens\tcpu_identity_splits\tret_stage_refusals\tlr_nontext\n' > "$census_file"
+    printf 'boot\tbucket\tend\tseconds\tinline_elr_divergence\treason\tserial\tret_dispatch_refusals\tresume_pc_refusals\tpercpu_stack_aliens\tcpu_identity_splits\tret_stage_refusals\tlr_nontext\n' > "$census_file"
     echo ""
     echo "Profile $cpu_profile: running $BOOTS sequential boots"
 
@@ -1244,11 +1248,15 @@ run_profile() {
             echo "  Boot $boot/$BOOTS: futex handoff oracle marker missing or failed"
         fi
 
-        boot_divergence=$(grep -cF "[CTX596_ELR_DIVERGENCE]" "$serial_file" 2>/dev/null | tr -d ' ')
-        boot_divergence=${boot_divergence:-0}
-        divergence_lines=$((divergence_lines + boot_divergence))
-        if [ "$boot_divergence" -ne 0 ]; then
-            divergence_boots=$((divergence_boots + 1))
+        boot_divergence=$(sed -n 's/.*\[CTX596_COUNTER:INLINE_ELR_DIVERGENCE=\([0-9][0-9]*\)\].*/\1/p' "$serial_file" | tail -1)
+        if [ -n "$boot_divergence" ]; then
+            divergence_lines=$((divergence_lines + boot_divergence))
+            if [ "$boot_divergence" -ne 0 ]; then
+                divergence_boots=$((divergence_boots + 1))
+            fi
+        else
+            boot_divergence=unavailable
+            divergence_unavailable=$((divergence_unavailable + 1))
         fi
         boot_refusals=$(grep -cF "[RET_DISPATCH_REFUSED:" "$serial_file" 2>/dev/null | tr -d ' ')
         boot_refusals=${boot_refusals:-0}
@@ -1325,7 +1333,7 @@ run_profile() {
         printf '%s\t%s\t%s\t%s\t%s\t%s (qemu_status=%s)\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
             "$boot" "$CLASS_BUCKET" "$boot_end" "$boot_seconds" "$boot_divergence" \
             "$CLASS_REASON" "$qemu_status" "$serial_file" "$boot_refusals" "$boot_resume_pc_refusals" "$boot_stack_aliens" "$boot_identity_splits" "$boot_stage_refusals" "$boot_lr_nontext" >> "$census_file"
-        echo "  Boot $boot/$BOOTS: $CLASS_BUCKET — $CLASS_REASON [$boot_end, ${boot_seconds}s, ctx596_divergence=$boot_divergence, ret_dispatch_refusals=$boot_refusals, resume_pc_refusals=$boot_resume_pc_refusals, percpu_stack_aliens=$boot_stack_aliens, cpu_identity_splits=$boot_identity_splits, ret_stage_refusals=$boot_stage_refusals, lr_nontext=$boot_lr_nontext]"
+        echo "  Boot $boot/$BOOTS: $CLASS_BUCKET — $CLASS_REASON [$boot_end, ${boot_seconds}s, inline_elr_divergence=$boot_divergence, ret_dispatch_refusals=$boot_refusals, resume_pc_refusals=$boot_resume_pc_refusals, percpu_stack_aliens=$boot_stack_aliens, cpu_identity_splits=$boot_identity_splits, ret_stage_refusals=$boot_stage_refusals, lr_nontext=$boot_lr_nontext]"
     done
 
     census_sum=$((count_575 + count_576 + count_626 + count_635 + count_641 + count_690 + count_data_abort + count_clone_exec + count_strand + count_boot_test_fail + count_596 + count_612 + count_609 + count_p5b + count_green + count_unattributed))
@@ -1342,7 +1350,7 @@ run_profile() {
         "$stage_refusal_boots" "$stage_refusal_lines" \
         "$lr_nontext_boots" "$lr_nontext_lines" \
         "$identity_split_boots" "$identity_split_lines" \
-        "$count_690"
+        "$count_690" "$divergence_unavailable"
 
     # #589 is closed; its CLONE_EXEC and STRAND shapes now fail this gate. The
     # GREEN rate stays census-only reporting; open #576 and #626 remain named
@@ -1400,6 +1408,7 @@ run_profile() {
     TOTAL_P5B=$((TOTAL_P5B + count_p5b))
     TOTAL_DIVERGENCE_BOOTS=$((TOTAL_DIVERGENCE_BOOTS + divergence_boots))
     TOTAL_DIVERGENCE_LINES=$((TOTAL_DIVERGENCE_LINES + divergence_lines))
+    TOTAL_DIVERGENCE_UNAVAILABLE=$((TOTAL_DIVERGENCE_UNAVAILABLE + divergence_unavailable))
     TOTAL_REFUSAL_BOOTS=$((TOTAL_REFUSAL_BOOTS + refusal_boots))
     TOTAL_REFUSAL_LINES=$((TOTAL_REFUSAL_LINES + refusal_lines))
     TOTAL_RESUME_PC_REFUSAL_BOOTS=$((TOTAL_RESUME_PC_REFUSAL_BOOTS + resume_pc_refusal_boots))
@@ -1453,7 +1462,7 @@ print_census "Total" "$TOTAL_575" "$TOTAL_576" "$TOTAL_626" "$TOTAL_635" "$TOTAL
     "$TOTAL_STAGE_REFUSAL_BOOTS" "$TOTAL_STAGE_REFUSAL_LINES" \
     "$TOTAL_LR_NONTEXT_BOOTS" "$TOTAL_LR_NONTEXT_LINES" \
     "$TOTAL_IDENTITY_SPLIT_BOOTS" "$TOTAL_IDENTITY_SPLIT_LINES" \
-    "$TOTAL_690"
+    "$TOTAL_690" "$TOTAL_DIVERGENCE_UNAVAILABLE"
 
 # The #609 run-wide rate ceiling that used to live here is DELETED (R33) and
 # stays deleted (R37). A rate ceiling is a tolerance: it let up to

@@ -4,8 +4,8 @@
 //! 2.5); `libgfx-ref`'s CPU stage draws the same frame as the oracle each presented frame is
 //! compared against. The stage's pictures are GPU samples of the cases' own frames (ruling
 //! B36): tile thumbnails in an atlas and the spotlight's panes. It uploads only a failing
-//! case's expected and difference panes, tagged Fixture as failure artifacts (gpu.md section
-//! 2.4). A forked case's live checks have the runner draw the stage for them (`remote`), since
+//! case's expected and difference panes, tagged Fixture as failure artifacts, plus B40's
+//! separately reported reset recovery (gpu.md section 2.4). A forked case's live checks have the runner draw the stage for them (`remote`), since
 //! GPU handles are not inherited across fork.
 use super::suite::{check, CaseResult, FrameTiming, JudgedFrame, Outcome, State, Suite};
 use crate::{
@@ -88,6 +88,8 @@ pub trait Painter: Send {
     fn paint(&mut self, frame: &Frame<'_>) -> Result<(), String>;
     /// Wait until the painter's submissions are complete.
     fn settle(&mut self) -> Result<(), String>;
+    /// Release the painter's targets, caches and context after the finale is retained.
+    fn retire(&mut self) -> Result<(), String>;
 }
 
 static PAINTER: Mutex<Option<Box<dyn Painter>>> = Mutex::new(None);
@@ -328,16 +330,18 @@ struct Kept {
 static KEPT: Mutex<Option<Kept>> = Mutex::new(None);
 
 /// What the stage contexts let go during the run uploaded, for the finale's accounting:
-/// Image bytes, Fixture bytes, the Fixture bytes they accounted for as failure artifacts, and
+/// Image bytes, Fixture bytes, failure artifacts, B40 recovery and reset counts, and
 /// how many had counters that could not be read.
 #[derive(Clone, Copy)]
 struct Retired {
     image: u64,
     fixture: u64,
     artifacts: u64,
+    recovery: u64,
+    resets: u64,
     unread: u32,
 }
-static RETIRED: Mutex<Retired> = Mutex::new(Retired { image: 0, fixture: 0, artifacts: 0, unread: 0 });
+static RETIRED: Mutex<Retired> = Mutex::new(Retired { image: 0, fixture: 0, artifacts: 0, recovery: 0, resets: 0, unread: 0 });
 
 /// Horizontal runs of `pick(x, y)`, an ARGB colour, over the `w` x `h` pixels at `at` in
 /// `target`, as `(target, colour, rect)`.
@@ -355,11 +359,6 @@ fn runs(out: &mut Vec<(u64, u32, [i32; 4])>, target: u64, at: (usize, usize), w:
             x = end;
         }
     }
-}
-
-/// The ARGB colour of the BGRX pixel at the start of `p`.
-fn argb(p: &[u8]) -> u32 {
-    0xFF00_0000 | (p[2] as u32) << 16 | (p[1] as u32) << 8 | p[0] as u32
 }
 
 /// The run stage's GPU objects, kept for the run in the runner's process: its context, the
@@ -388,6 +387,7 @@ struct Gpu {
     spare: Vec<(u64, u64)>,
     /// The Fixture bytes the stage's context uploaded as failure artifacts.
     artifact_bytes: u64,
+    recovery_bytes: u64,
     /// The panel cursor, which the stage's compositor draws (ruling B35): where the pointer
     /// was when these objects were made, where the cursor is drawn once the pointer has moved
     /// from there, and whether test point 10 stopped it restoring what it covered, until the
@@ -458,6 +458,7 @@ impl Gpu {
             panes: Vec::new(),
             spare: Vec::new(),
             artifact_bytes: 0,
+            recovery_bytes: 0,
             pointer_start: graphics::mouse_pos().ok(),
             cursor: None,
             no_restore: false,
@@ -535,79 +536,60 @@ impl Gpu {
         }
     }
 
-    /// Draw the pictures in `kept` into these new objects: each thumbnail into its atlas cell
-    /// and each frame's panes by the nearest-scaled formula of section 23.4, as solid
-    /// rectangles from the verified pixels the runner holds, since the cases that published
-    /// them have exited and a reset lost their GPU copies. These draws upload no pixels.
-    fn restore(&mut self, kept: &Kept) -> Result<(), String> {
-        use gpu::abi::{limits, pipeline, stream::encode};
-        let mut out = Vec::new();
+    /// B40: only a confirmed device reset permits reconstruction from CPU pixels.
+    /// Uploads remain Fixture at the wire boundary, but are accounted as recovery,
+    /// separately from a passing picture source and from failure artifacts.
+    fn restore_pictures(&mut self, kept: &Kept, _reset: ResetRecovery) -> Result<(), String> {
+        use gpu::abi::{pipeline, stream::encode};
+        let mut stream = Vec::new();
         for (tile, c) in kept.cells.iter().enumerate() {
             if let Some(c) = c {
-                runs(&mut out, self.atlas, cell(tile), c.width, c.height, |x, y| argb(&c.pixels[(y * c.width + x) * 4..]));
+                let texture = self.upload_fixture(c.width, c.height, &c.pixels)?;
+                self.recovery_bytes += c.pixels.len() as u64;
+                encode::begin(&mut stream, self.atlas);
+                let (x, y) = cell(tile);
+                sampled(&mut stream, pipeline::NEAREST_SCALED, texture, [x, y, c.width, c.height], [0, 0, c.width, c.height]);
+                let copied = self.run(&stream, "recovered thumbnail");
+                let _ = gpu::resource_destroy(texture);
+                copied?;
+                stream.clear();
             }
-        }
-        let mut made: Vec<Panes> = Vec::new();
-        let format = gpu::abi::format::B8G8R8A8;
-        for (f, failing) in &kept.frames {
-            let expected = f.expected.as_ref().filter(|_| *failing);
-            let sizes = [(WIDE.0, WIDE.1), (SQUARE, SQUARE), (SQUARE, SQUARE), (SQUARE, SQUARE)];
-            let targets: Vec<_> = sizes[..if expected.is_some() { 4 } else { 2 }]
-                .iter()
-                .map(|&(w, h)| gpu::target_create(format, w as u32, h as u32))
-                .collect();
-            if targets.iter().any(Result::is_err) {
-                for t in targets.into_iter().flatten() {
-                    let _ = gpu::resource_destroy(t);
-                }
-                made.iter().for_each(Panes::destroy);
-                return Err(String::from("stage pane: no target for a kept picture"));
-            }
-            let t: Vec<u64> = targets.into_iter().flatten().collect();
-            let index = |x: usize, y: usize, w: usize, h: usize| ((y * f.height / h) * f.width + x * f.width / w) * 4;
-            runs(&mut out, t[0], (0, 0), WIDE.0, WIDE.1, |x, y| argb(&f.pixels[index(x, y, WIDE.0, WIDE.1)..]));
-            runs(&mut out, t[1], (0, 0), SQUARE, SQUARE, |x, y| argb(&f.pixels[index(x, y, SQUARE, SQUARE)..]));
-            // A failing case's expected pane and its difference pane's heat map (section 23.4),
-            // drawn rather than uploaded again.
-            if let Some(e) = expected {
-                runs(&mut out, t[2], (0, 0), SQUARE, SQUARE, |x, y| argb(&e[index(x, y, SQUARE, SQUARE)..]));
-                runs(&mut out, t[3], (0, 0), SQUARE, SQUARE, |x, y| {
-                    let i = index(x, y, SQUARE, SQUARE);
-                    let delta = (0..3).map(|c| e[i + c].abs_diff(f.pixels[i + c])).max().unwrap_or(0);
-                    if delta == 0 { 0xFF00_0000 } else { 0xFFFF_0000 | ((255 - delta) as u32) << 8 }
-                });
-            }
-            let artifacts = expected.map(|_| (t[2], t[3]));
-            made.push(Panes { hash: f.sha256, wide: t[0], square: t[1], artifacts, sampled: true, frame: Some(f.clone()) });
-        }
-        // One draw per colour and target, in as many submissions as the limits need.
-        out.sort_unstable_by_key(|r| (r.0, r.1));
-        let mut drawn = Ok(());
-        let (mut stream, mut draws, mut instances, mut target) = (Vec::new(), 0, 0, 0);
-        for group in out.chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)) {
-            for part in group.chunks(65_536) {
-                if draws + 1 > limits::DRAWS || instances + part.len() as u64 > limits::INSTANCES {
-                    drawn = drawn.and_then(|()| self.run(&stream, "kept pictures"));
-                    (stream, draws, instances, target) = (Vec::new(), 0, 0, 0);
-                }
-                if part[0].0 != target {
-                    target = part[0].0;
-                    encode::begin(&mut stream, target);
-                }
-                let rects: Vec<[i32; 4]> = part.iter().map(|r| r.2).collect();
-                encode::draw(&mut stream, pipeline::SOLID, part[0].1, &rects);
-                (draws, instances) = (draws + 1, instances + part.len() as u64);
-            }
-        }
-        if !stream.is_empty() {
-            drawn = drawn.and_then(|()| self.run(&stream, "kept pictures"));
-        }
-        if let Err(e) = drawn {
-            made.iter().for_each(Panes::destroy);
-            return Err(e);
         }
         self.cells = kept.cells.clone();
-        for panes in made {
+        for (f, failing) in &kept.frames {
+            let nearest = |w: usize, h: usize| -> Vec<u8> {
+                let mut p = Vec::with_capacity(w * h * 4);
+                for y in 0..h { for x in 0..w {
+                    let i = ((y * f.height / h) * f.width + x * f.width / w) * 4;
+                    p.extend_from_slice(&f.pixels[i..i + 4]);
+                }}
+                p
+            };
+            let wide_pixels = nearest(WIDE.0, WIDE.1);
+            let wide = self.upload_fixture(WIDE.0, WIDE.1, &wide_pixels)?;
+            self.recovery_bytes += wide_pixels.len() as u64;
+            let square_pixels = nearest(SQUARE, SQUARE);
+            let square = match self.upload_fixture(SQUARE, SQUARE, &square_pixels) {
+                Ok(t) => t,
+                Err(e) => { let _ = gpu::resource_destroy(wide); return Err(e); }
+            };
+            self.recovery_bytes += square_pixels.len() as u64;
+            let mut panes = Panes { hash: f.sha256, wide, square, artifacts: None, sampled: false, frame: Some(f.clone()) };
+            if let Some(e) = f.expected.as_ref().filter(|_| *failing) {
+                let (e, d) = artifact_panes(f, e);
+                let artifacts = (|| {
+                    let et = self.upload_fixture(SQUARE, SQUARE, &e)?;
+                    self.recovery_bytes += e.len() as u64;
+                    match self.upload_fixture(SQUARE, SQUARE, &d) {
+                        Ok(dt) => { self.recovery_bytes += d.len() as u64; Ok((et, dt)) }
+                        Err(error) => { let _ = gpu::resource_destroy(et); Err(error) }
+                    }
+                })();
+                match artifacts {
+                    Ok(a) => panes.artifacts = Some(a),
+                    Err(e) => { panes.destroy(); return Err(e); }
+                }
+            }
             self.keep(panes);
         }
         Ok(())
@@ -833,7 +815,7 @@ impl Gpu {
     }
 
     /// Upload `pixels` (`w` x `h`, canonical BGRX) into a new texture, tagged Fixture: the
-    /// stage's only upload, for a failing case's failure artifacts.
+    /// stage's upload boundary for failure artifacts and B40's reset recovery.
     fn upload_fixture(&mut self, w: usize, h: usize, pixels: &[u8]) -> Result<u64, String> {
         use gpu::abi::purpose;
         let texture = gpu::texture_create(gpu::abi::format::B8G8R8A8, w as u32, h as u32).map_err(|e| std::format!("stage fixture texture: errno {}", -e))?;
@@ -894,7 +876,7 @@ impl Gpu {
                 Some(_) => Some((target(SQUARE, SQUARE)?, target(SQUARE, SQUARE)?)),
                 None => None,
             };
-            Ok(Panes { hash: f.sha256, wide, square, artifacts, sampled: false, frame: None })
+            Ok(Panes { hash: f.sha256, wide, square, artifacts, sampled: false, frame: Some(Arc::new(f.clone())) })
         })();
         let panes = match panes {
             Ok(p) => p,
@@ -911,13 +893,14 @@ impl Gpu {
         let mut stream = Vec::new();
         let fill = |stream: &mut Vec<u32>, target: u64, w: usize, h: usize, pick: &dyn Fn(usize) -> u32| {
             encode::begin(stream, target);
-            for sy in 0..f.height {
-                for sx in 0..f.width {
-                    let (x0, x1) = block(sx, f.width, w);
-                    let (y0, y1) = block(sy, f.height, h);
-                    if x0 < x1 && y0 < y1 {
-                        encode::draw(stream, pipeline::SOLID, pick((sy * f.width + sx) * 4), &[[x0 as i32, y0 as i32, x1 as i32, y1 as i32]]);
-                    }
+            let mut source_runs = Vec::new();
+            runs(&mut source_runs, target, (0, 0), f.width, f.height, |x, y| pick((y * f.width + x) * 4));
+            for (_, colour, rect) in source_runs {
+                let (x0, _) = block(rect[0] as usize, f.width, w);
+                let (_, x1) = block(rect[2] as usize - 1, f.width, w);
+                let (y0, y1) = block(rect[1] as usize, f.height, h);
+                if x0 < x1 && y0 < y1 {
+                    encode::draw(stream, pipeline::SOLID, colour, &[[x0 as i32, y0 as i32, x1 as i32, y1 as i32]]);
                 }
             }
         };
@@ -1087,11 +1070,12 @@ fn stage_mode() -> Result<gpu::abi::Mode, String> {
     Ok(m)
 }
 
+struct ResetRecovery;
+
 /// The stage's GPU objects for this process. After a mode change or a failed frame the
-/// scanout targets are made again. After a quarantine or a reset, which loses the context's
-/// objects, the context, atlas and panes are made again too, and the pictures the cases
-/// published are drawn into the new ones rather than dropped. A forked case abandons the
-/// runner's handles, which it does not hold.
+/// scanout targets are made again. A confirmed reset authorizes B40 recovery of
+/// pictures into replacement GPU objects; other context loss is reported without
+/// reconstructing CPU pixels. A forked case cannot use the runner's handles.
 fn gpu_here(guard: &mut Option<Gpu>, runner: u64) -> Result<&mut Gpu, String> {
     let pid = process::getpid().map_err(|e| e.to_string())?.raw() as u64;
     if pid != runner {
@@ -1102,9 +1086,16 @@ fn gpu_here(guard: &mut Option<Gpu>, runner: u64) -> Result<&mut Gpu, String> {
         let live = r == 0 && matches!(c.state, gpu::abi::context_state::LIVE | gpu::abi::context_state::WARMING);
         let moved = mode().is_ok_and(|m| (m.width, m.height) != (g.width, g.height));
         if !live || ((g.stale || moved) && g.redisplay().is_err()) {
+            let reset = r == 0 && c.state == gpu::abi::context_state::RESET;
+            if !reset {
+                return Err(String::from("stage objects lost without a confirmed device reset; CPU picture recovery refused"));
+            }
             *KEPT.lock().unwrap() = Some(g.keep_pictures());
             let mut t = RETIRED.lock().unwrap();
             t.artifacts += g.artifact_bytes;
+            t.recovery += g.recovery_bytes;
+            t.resets += 1;
+            super::suite::emit("BREENGEL RECOVERY device-reset=1");
             if r == 0 {
                 (t.image, t.fixture) = (t.image + c.uploads_image, t.fixture + c.uploads_fixture);
             } else {
@@ -1118,7 +1109,7 @@ fn gpu_here(guard: &mut Option<Gpu>, runner: u64) -> Result<&mut Gpu, String> {
         let mut g = Gpu::new(pid)?;
         let mut kept = KEPT.lock().unwrap();
         if let Some(k) = kept.as_ref() {
-            if let Err(e) = g.restore(k) {
+            if let Err(e) = g.restore_pictures(k, ResetRecovery) {
                 g.destroy();
                 return Err(e);
             }
@@ -1763,8 +1754,8 @@ pub(super) fn finale() -> Result<(), String> {
         s.finale = Some(start);
         s.draw(0)?;
         // Ruling B36: a passing run uploads no picture. Each context the stage draws with is
-        // counted: its own uploads only failure artifacts, and the painter's only declared
-        // tables and crossing geometry; neither uploads an Image. The stage's count includes
+        // counted: the stage uploads failure artifacts and B40 recovery, and the painter
+        // uploads declared tables and crossing geometry; Image remains forbidden. The stage's count includes
         // the contexts it let go when its objects were made again.
         let guard = GPU.lock().unwrap();
         let g = guard.as_ref().filter(|g| g.pid == s.runner).ok_or("the stage holds no GPU objects at the finale")?;
@@ -1773,7 +1764,8 @@ pub(super) fn finale() -> Result<(), String> {
         if t.unread != 0 {
             return Err(std::format!("the counters of {} stage contexts let go could not be read", t.unread));
         }
-        for (context, what, earlier, allowed) in [(g.context, "stage", t, g.artifact_bytes + t.artifacts), (painted, "stage painter", Retired { image: 0, fixture: 0, artifacts: 0, unread: 0 }, declared)] {
+        super::suite::emit(&std::format!("BREENGEL UPLOADS recovery_bytes={} device_resets={} failure_artifact_bytes={}", g.recovery_bytes + t.recovery, t.resets, g.artifact_bytes + t.artifacts));
+        for (context, what, earlier, allowed) in [(g.context, "stage", t, g.artifact_bytes + t.artifacts + g.recovery_bytes + t.recovery), (painted, "stage painter", Retired { image: 0, fixture: 0, artifacts: 0, recovery: 0, resets: 0, unread: 0 }, declared)] {
             let (r, c) = gpu::counters(context);
             check(r == 0, "the stage's COUNTERS failed").map_err(|e| std::format!("{e:?}"))?;
             let (image, fixture) = (c.uploads_image + earlier.image, c.uploads_fixture + earlier.fixture);
@@ -1804,6 +1796,49 @@ pub(crate) use remote::serve;
 pub fn render_at_ui_time(fb: &mut FrameBuf, run: &mut stage::Run<'_>, started_ms: u64) -> Result<(), stage::StageError> {
     run.ui_time_ms = (clock::now_ns() / 1_000_000).saturating_sub(started_ms);
     stage::draw_with(fb, run, &mut FONT.lock().unwrap())
+}
+
+/// Retire the stage's owners after its five-second finale. The display core retains
+/// the currently bound scanout independently of its public handle and context.
+pub(super) fn retire() -> Result<(), String> {
+    FOLLOW.store(false, core::sync::atomic::Ordering::Relaxed);
+    painter(|p| p.settle())?;
+    if let Some(g) = GPU.lock().unwrap().take() { g.destroy(); }
+    painter(|p| p.retire())?;
+    *PAINTER.lock().unwrap() = None;
+    *SHOW.lock().unwrap() = None;
+    *KEPT.lock().unwrap() = None;
+    *FONT.lock().unwrap() = StageFont::new();
+    // Destroy revokes handles immediately; charges end only when device unrefs
+    // complete. Wait for that owner boundary, not for a guessed sleep interval.
+    let start = time::now_monotonic().map_err(|e| e.to_string())?.as_nanos();
+    loop {
+        let (r, c) = gpu::counters(0);
+        if r != 0 { return Err(std::format!("stage retirement counters: errno {}", -r)); }
+        if c.contexts == 0 && c.device_contexts == 0 && c.resources == 0 && c.copy_bytes == 0 {
+            break;
+        }
+        if time::now_monotonic().map_err(|e| e.to_string())?.as_nanos().saturating_sub(start) >= 5_000_000_000 {
+            return Err(std::format!("stage retirement still holds {} contexts, {} device contexts, {} resources and {} copy bytes", c.contexts, c.device_contexts, c.resources, c.copy_bytes));
+        }
+        time::sleep_ms(5).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Ownership at the memory-record boundary, including the runner's CPU pictures.
+pub(super) fn memory_owners(when: &str) {
+    let (r, c) = gpu::counters(0);
+    let threads = std::fs::read_dir("/proc/1/task").map(|d| d.count()).map_err(|e| e.to_string());
+    let show = SHOW.lock().unwrap();
+    let picture_bytes = show.as_ref().map_or(0, |s| {
+        let frames = [s.last.as_ref(), s.first_failure.as_ref().and_then(|v| v.1.as_ref())];
+        frames.into_iter().flatten().map(|f| f.pixels.len() + f.expected.as_ref().map_or(0, Vec::len)).sum::<usize>()
+            + s.entries.iter().filter_map(|e| e.picture.as_ref()).map(|p| p.pixels.len()).sum::<usize>()
+    });
+    let guard = GPU.lock().unwrap();
+    let (seen, panes, cells) = guard.as_ref().map_or((0, 0, 0), |g| (g.seen.len(), g.panes.len(), g.cells.iter().flatten().count()));
+    super::suite::emit(&std::format!("BREENGEL OWNERS {when} gpu_status={r} contexts={} device_contexts={} resources={} resource_bytes={} copy_bytes={} picture_bytes={picture_bytes} readback_bytes={seen} panes={panes} thumbnails={cells} runner_threads={threads:?}", c.contexts, c.device_contexts, c.resources, c.resource_bytes, c.copy_bytes));
 }
 
 #[cfg(test)]

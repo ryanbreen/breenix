@@ -77,6 +77,14 @@ pub(crate) fn with<R>(f: impl FnOnce(&mut Device) -> Result<R, i64>) -> Result<R
     result
 }
 
+impl Drop for Device {
+    fn drop(&mut self) {
+        for table in self.tables.iter_mut().filter_map(Option::take) {
+            let _ = libbreenix::gpu::resource_destroy(table.texture);
+        }
+    }
+}
+
 impl Device {
     /// The texture of table `index`, made by `make` (which uploads it) the first time.
     pub(crate) fn table(
@@ -151,4 +159,16 @@ mod tests {
         owner.store(42 << 1, Ordering::Release);
         assert!(acquire(&owner, 43));
     }
+}
+
+/// End this process's renderer lifetime after its surfaces and caches are dropped.
+pub(crate) fn retire() {
+    let me = pid();
+    let inherited = acquire(&SLOT.owner, me);
+    // SAFETY: the PID-tagged slot lock is held.
+    unsafe {
+        if inherited { SLOT.device.get().write(None); }
+        drop((&mut *SLOT.device.get()).take());
+    }
+    SLOT.owner.store(me << 1, Ordering::Release);
 }

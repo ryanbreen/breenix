@@ -93,6 +93,11 @@ use core::sync::atomic::AtomicU64;
 /// markers in `ExecSchedCommit::apply`, which every build emits and both gate scripts treat as fatal.
 #[cfg(target_arch = "aarch64")]
 pub fn emit_exec_lock_order_counters() -> bool {
+    // Keep the counter snapshot on this cold reporting path (B39).
+    serial_println!(
+        "[CTX596_COUNTER:INLINE_ELR_DIVERGENCE={}]",
+        crate::arch_impl::aarch64::context_switch::INLINE_ELR_DIVERGENCE.aggregate()
+    );
     use crate::task::scheduler::{
         EXEC_COMMIT_MISSING_THREAD, EXEC_COMMIT_UNPINNED, EXEC_SCHED_COMMITS,
         SCHED_AFTER_PM_VIOLATIONS,
