@@ -64,15 +64,13 @@ pub enum SpotRef {
 }
 
 /// One stage frame for the painter: the oracle's run (text, stamps, numbers and spotlight
-/// kind), with the pictures as GPU references, the boundary notice and the boot ribbon.
+/// kind), with the pictures as GPU references.
 pub struct Frame<'a> {
     pub width: u32,
     pub height: u32,
     pub run: &'a stage::Run<'a>,
     pub thumbs: &'a [Option<ThumbRef>],
     pub spot: &'a SpotRef,
-    pub notice: &'a str,
-    pub ribbon: &'a [bool],
 }
 
 /// The stage's GPU renderer, which the suite binary that shows the stage registers.
@@ -1360,15 +1358,9 @@ impl Show {
             Some(fb) => render_at_ui_time(fb, &mut run, self.started_ms).map_err(|e| std::format!("stage render: {e:?}"))?,
             None => run.ui_time_ms = (clock::now_ns() / 1_000_000).saturating_sub(self.started_ms),
         }
-        let records =
-            std::fs::read_to_string("/proc/breenix/boot-ribbon").map_err(|e| e.to_string())?;
-        let reached: Vec<_> = records.lines().map(|l| l.starts_with("1|")).collect();
-        if let Some(fb) = fb {
-            stage::draw_boot_ribbon(fb, &reached).map_err(|e| std::format!("stage boot ribbon: {e:?}"))?;
-        }
-        let notice = self.observation.notice().map_err(|e| std::format!("stage notice: {e:?}"))?;
+        self.observation.notice().map_err(|e| std::format!("stage observation: {e:?}"))?;
         let Some((width, height)) = paint else { return Ok(()) };
-        let frame = Frame { width, height, run: &run, thumbs: &thumbs, spot: &spot, notice, ribbon: &reached };
+        let frame = Frame { width, height, run: &run, thumbs: &thumbs, spot: &spot };
         painter(|p| p.paint(&frame))
     }
 

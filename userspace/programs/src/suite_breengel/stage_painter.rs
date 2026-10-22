@@ -177,8 +177,6 @@ impl libbreenix::suite::Painter for StagePainter {
             spotlight,
             input: f.run.input.zip(input_points.as_deref()).map(|((_, hit), p)| (p, hit)),
             finale: f.run.finale.map(|v| gpu::Finale { slowest: v.slowest, slowest_ms: v.slowest_ms }),
-            notice: f.notice,
-            ribbon: f.ribbon,
         };
         let painted = self.stage.draw(canvas, &run)
             .map_err(|e| format!("stage paint: {e:?}"))
