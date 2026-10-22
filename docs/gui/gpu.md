@@ -1576,6 +1576,14 @@ driver runs, and nowhere else (ruling R7); after the driver starts, the console 
   suite binary presenting a CPU-rendered expected image in a passing case. `raster/cpu-render-planted` runs the
   runtime ones and the structure test's own fixtures cover the static one.
 
+B40 adds one reset-recovery exception to the stage's B36 upload rule: only a
+confirmed RESET context authorizes reconstruction of kept thumbnails and panes
+from the runner's verified CPU pixels. Those Fixture uploads are reported and
+reconciled as recovery separately from failure artifacts and passing-picture
+provenance; normal composition, mode changes and quarantine do not authorize them.
+The stage retires unused resources after its finale while the core retains the
+bound scanout for display.
+
 ### 2.5 What of `breengel/suite` is kept
 
 | Kept as is | Kept, re-based | Removed |

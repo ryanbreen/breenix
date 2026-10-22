@@ -100,6 +100,14 @@ impl libbreenix::suite::Painter for StagePainter {
         self.canvas.as_ref().map_or(Ok(()), Surface::wait).map_err(|e| format!("stage canvas: {e}"))
     }
 
+    fn retire(&mut self) -> Result<(), String> {
+        self.settle()?;
+        self.canvas = None;
+        self.stage = gpu::Stage::new();
+        gpu::retire_context().map_err(|e| format!("stage renderer retirement: {e:?}"))?;
+        Ok(())
+    }
+
     fn paint(&mut self, f: &StageFrame<'_>) -> Result<(), String> {
         self.canvas(f.width, f.height)?;
         let canvas = self.canvas.as_mut().ok_or("stage canvas missing")?;

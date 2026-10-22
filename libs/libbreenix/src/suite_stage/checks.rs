@@ -135,7 +135,7 @@ pub fn showcase_check(name: &str) -> CaseResult {
                         let shown = e.published;
                         check(!shown || held.cell(i) == Some(p.source_hash),
                             "the runner lost a published tile's GPU source")?;
-                        n += 1;
+                        n += usize::from(shown);
                         let hash: String = p
                             .source_hash
                             .iter()
@@ -156,7 +156,7 @@ pub fn showcase_check(name: &str) -> CaseResult {
                         mismatch |= expected.compare(d,&pixels).is_err();
                     }
                 }
-                check(n > 0, "no earlier judged picture to check")?;
+                check(n > 0, "no published GPU picture to check")?;
                 // Independently compute every displayed source pixel, heat-map channel,
                 // first-mismatch cross and caption; a correct tile cannot conceal a false spotlight.
                 let spotlight_mismatch = check_spotlight(&s,&pixels,d,&held).is_err();

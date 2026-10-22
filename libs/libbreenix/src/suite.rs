@@ -894,7 +894,23 @@ impl Suite {
         // full-suite evidence, and a suite run from a shell does not reap others.
         let recording = only.is_none() && process::getpid().is_ok_and(|pid| pid.raw() == 1);
         screen.prepare();
-        let before = if recording { memory_sample(self.id, "before") } else { None };
+        // Match the retired ownership boundary at the end. The warm-up leaves
+        // only the bound scanout; no stage owner freed later can subsidize a leak.
+        let baseline_ready = if recording && self.gui {
+            match crate::suite_stage::retire() {
+                Ok(()) => true,
+                Err(error) => {
+                    emit(&std::format!("SUITE {} ERROR memory baseline retirement: {}", self.id, error));
+                    false
+                }
+            }
+        } else { true };
+        if recording && self.gui { crate::suite_stage::memory_owners("before"); }
+        let before = if recording && baseline_ready { memory_sample(self.id, "before") } else { None };
+        if recording && self.gui {
+            crate::suite_stage::init(self);
+            screen.prepare();
+        }
         let mut done = 0;
         for (c, category) in self.categories.iter().enumerate() {
             if only.is_none() && category.idle_before_ms > 0 {
@@ -953,10 +969,19 @@ impl Suite {
         }
         emit(&std::format!("SUITE {} DONE passed={} failed={} skipped={} total={}{}",
             self.id, counts.passed, counts.failed, counts.skipped, total, suffix));
+        // The graphical finale owns its readings. The runner's live transport
+        // has no consumer after the last case; release its buffers at their owner.
+        if self.gui { feed = Feed::default(); }
         let reclaimed = !recording || {
             // Each case's processes were swept after it; any left since go now.
             let _ = sweep();
-            let display = if self.id == "gpu" { gpu_screen::await_console() } else { Ok(()) };
+            let retired = if self.gui {
+                crate::suite_stage::memory_owners("finale");
+                let result = crate::suite_stage::retire();
+                crate::suite_stage::memory_owners("retired");
+                result
+            } else { Ok(()) };
+            let display = retired.and_then(|()| if self.id == "gpu" { gpu_screen::await_console() } else { Ok(()) });
             let after = match display {
                 Ok(()) => memory_sample(self.id, "after"),
                 Err(error) => {
@@ -964,6 +989,7 @@ impl Suite {
                     None
                 }
             };
+            if self.gui { crate::suite_stage::memory_owners("after"); }
             let (line, reclaimed) = memory_record::verdict(self.id, before.as_ref(), after.as_ref());
             emit(&line);
             reclaimed
@@ -1023,7 +1049,7 @@ fn memory_sample(id: &str, when: &str) -> Option<memory_record::Sample> {
 
 /// Write one serial line with a single write, so it is never split, starting with
 /// a newline so it always begins a line of its own.
-fn emit(line: &str) { emit_to(Fd::STDOUT, line) }
+pub(super) fn emit(line: &str) { emit_to(Fd::STDOUT, line) }
 
 fn emit_to(fd: Fd, line: &str) {
     let mut bytes = Vec::with_capacity(line.len() + 2);

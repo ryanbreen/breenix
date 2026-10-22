@@ -889,3 +889,10 @@ fn draw_spotlight(cv: &mut Canvas<'_>, run: &Run<'_>, trails: &mut Vec<Trail>) {
         }
     }
 }
+
+/// Release the process renderer after the stage and its surfaces have been dropped.
+pub fn retire_context() -> Result<(), StageError> {
+    crate::ttf_font::retire_scratch().map_err(|_| StageError::Font)?;
+    crate::device::retire();
+    Ok(())
+}
