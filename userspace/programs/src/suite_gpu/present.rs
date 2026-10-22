@@ -310,16 +310,19 @@ pub fn ownership_stack() -> CaseResult {
     Ok(())
 }
 /// Show the whole screen in `colour`: a scanout target of the current mode, cleared and
-/// presented. The process keeps it until it exits.
+/// presented, as a framebuffer owner's flush showed its pane. The process keeps it until it
+/// exits.
 fn pane_frame(colour: u32) -> CaseResult {
     let m = modes()?;
     let mode = u32_at(&m, 12) as usize;
     let (w, h) = (u32_at(&m, 32 + mode * 16), u32_at(&m, 36 + mode * 16));
-    let c = context()?;
+    let c = gpu::context_create().map_err(|e| fail_msg(format!("CONTEXT_CREATE: {}", errno(e))))?;
     let t = scanout_target(format::B8G8R8A8, w, h)?;
     frame(c, &scene(t, colour, &[]))?;
-    present(c, t)?;
-    Ok(())
+    let (r, p) = gpu::present(c, t);
+    ensure(r == 0 && p.fence != 0 && p.answer == native_success()?,
+        || format!("PRESENT: {} fence={} answer={:#x}", errno(r), p.fence, p.answer))?;
+    wait_ok(c, p.fence, 2_000)
 }
 fn pane_pixel(colour: u32) -> R<u64> {
     let mut px = [0; 4];
