@@ -75,19 +75,3 @@ pub fn records() -> alloc::string::String {
     }
     out
 }
-// TODO(gpu-display): `draw` lost its callers when main's boot screen and console replaced the
-// software compositor's; it moves onto `console::splash` and the GPU compositor's display.
-pub fn draw(pixels: &mut [u8]) {
-    let Ok(mut fb) = (unsafe {
-        libgfx_ref::framebuf::FrameBuf::from_raw(pixels.as_mut_ptr(), 1280, 800, 5120, 4, true)
-    }) else {
-        return;
-    };
-    let mut stages = reached();
-    if crate::test_control::take(breengel_abi::tc_point::RIBBON_DROP_STAGE, 0).is_some() {
-        if let Some(s) = stages.iter_mut().find(|s| **s) {
-            *s = false;
-        }
-    }
-    let _ = libgfx_ref::stage::draw_boot_ribbon(&mut fb, &stages);
-}

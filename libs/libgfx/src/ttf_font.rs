@@ -284,6 +284,7 @@ impl Run {
                         let mut geometry = Vec::with_capacity(bytes);
                         for &t in &members { geometry.extend_from_slice(self.tables[t].bytes()); }
                         upload_geometry(d.context.handle(), buffer, &geometry)?;
+                        d.declared += geometry.len() as u64;
                     }
                     d.context.submit()
                 })();
@@ -747,6 +748,113 @@ pub fn draw_text(fb: &mut Surface, font: &mut CachedFont, text: &str, x: i32, y:
 pub fn draw_text_bytes(fb: &mut Surface, font: &mut CachedFont, bytes: &[u8], x: i32, y: i32, size: f32, fg: Color) -> i32 {
     let glyphs = glyphs_of(font, decode_utf8(bytes)).collect();
     draw_glyphs(fb, font, glyphs, x, y, size, fg)
+}
+
+/// One run of text for [`draw_runs`]: UTF-8 `bytes` with the pen at (x, y), at `size`, in
+/// `fg`, under `clip`.
+pub(crate) struct TextRun<'a> {
+    pub bytes: &'a [u8],
+    pub x: i32,
+    pub y: i32,
+    pub size: f32,
+    pub fg: Color,
+    pub clip: crate::surface::Rect,
+}
+
+/// Draw `runs`, each as `draw_text_bytes` draws it under its clip, for runs whose glyph boxes
+/// do not meet one another's (the run stage's text): a glyph goes in the layer after the last
+/// earlier glyph of its run that it meets, and a layer's glyphs share draws, by atlas page
+/// and colour, so glyphs that meet still blend in their run's order and no draw holds two
+/// glyphs that meet. When gathering the runs' glyphs evicted an atlas entry, an earlier run's
+/// glyph may name a reused slot, so the runs are drawn one by one instead.
+pub(crate) fn draw_runs(fb: &mut Surface, font: &mut CachedFont, runs: &[TextRun<'_>]) {
+    type Placed = (Arc<AtlasGlyph>, i64, i64, Box64, Color);
+    let before = font.cache_stats();
+    let mut layers: Vec<Vec<Placed>> = Vec::new();
+    for r in runs {
+        fb.push_clip(r.clip);
+        let glyphs = glyphs_of(font, decode_utf8(r.bytes)).collect();
+        let (placed, _) = visible(fb, font, glyphs, r.x, r.y, r.size);
+        let clip = fb.clip_box();
+        // Each earlier glyph of this run that draws: its box and layer.
+        let mut drawn: Vec<(Box64, usize)> = Vec::new();
+        let mut failed = None;
+        font.run(&placed, Font::size26(r.size).unwrap_or(0), |got| match got {
+            Ok((image, dx)) => {
+                let (x, y) = (r.x as i64 + dx, r.y as i64);
+                let b = Box64::wide(x + image.x_offset as i64, y + image.y_offset as i64, image.width as i64, image.height as i64).intersect(&clip);
+                let layer = drawn.iter().filter(|(o, _)| !o.intersect(&b).is_empty()).map(|(_, l)| l + 1).max().unwrap_or(0);
+                if !b.is_empty() {
+                    drawn.push((b, layer));
+                }
+                if layers.len() <= layer {
+                    layers.resize_with(layer + 1, Vec::new);
+                }
+                layers[layer].push((image, x, y, clip, r.fg));
+            }
+            Err(Error::Device(e)) => failed = Some(e),
+            Err(_) => {}
+        });
+        if let Some(e) = failed {
+            fb.fail(e);
+        }
+        fb.pop_clip();
+    }
+    let after = font.cache_stats();
+    if before.entries + (after.misses - before.misses) as usize > after.entries {
+        for r in runs {
+            fb.push_clip(r.clip);
+            draw_text_bytes(fb, font, r.bytes, r.x, r.y, r.size, r.fg);
+            fb.pop_clip();
+        }
+        return;
+    }
+    for layer in &layers {
+        // One draw per atlas page and colour, each within half the work cap.
+        let mut done = vec![false; layer.len()];
+        for first in 0..layer.len() {
+            if done[first] {
+                continue;
+            }
+            let Some(page) = layer[first].0.region.as_ref().map(|r| r.target.handle()) else {
+                done[first] = true;
+                continue;
+            };
+            let fg = layer[first].4;
+            let mut instances = Vec::new();
+            let mut work = 0u64;
+            for (i, (image, x, y, clip, colour)) in layer.iter().enumerate().skip(first) {
+                let Some(atlas) = &image.region else {
+                    done[i] = true;
+                    continue;
+                };
+                if done[i] || atlas.target.handle() != page || *colour != fg {
+                    continue;
+                }
+                let whole = Box64::wide(x + image.x_offset as i64, y + image.y_offset as i64, image.width as i64, image.height as i64);
+                let visible = whole.intersect(clip);
+                done[i] = true;
+                if visible.is_empty() {
+                    continue;
+                }
+                let [x0, y0, x1, y1] = visible.corners();
+                let cost = 257 * ((x1 - x0) as u64) * ((y1 - y0) as u64);
+                if !instances.is_empty() && work + cost > abi::limits::WORK / 2 {
+                    let batch = core::mem::take(&mut instances);
+                    fb.submit(|c| c.draw(pipeline::COVERAGE, word(fg), page, 0, 0, &batch));
+                    work = 0;
+                }
+                work::add(1);
+                let params = [x0, y0, atlas.x as i32 + (visible.x0 - whole.x0) as i32, atlas.y as i32 + (visible.y0 - whole.y0) as i32, 1];
+                instances.push(instance([x0, y0, x1, y1], &params));
+                work += cost;
+                fb.mark(whole);
+            }
+            if !instances.is_empty() {
+                fb.submit(|c| c.draw(pipeline::COVERAGE, word(fg), page, 0, 0, &instances));
+            }
+        }
+    }
 }
 
 /// The width `draw_text` returns, without drawing.

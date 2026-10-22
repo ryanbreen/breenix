@@ -349,8 +349,13 @@ fn gpu_fault(point:u32,seed:u32)->Result<(i64,u32,super::composition::GpuSnapsho
     let (mut k,w,mut p,_)=one_window(seed)?;
     let fired=libbreenix::test_control::fired(point).cite("21")?;
     p.seed=seed+1;w.frame(p.seed).cite("17.3")?;
-    libbreenix::test_control::arm(point,0,0).cite("21")?;
+    // Point 20 is taken by the next submission's answer, and a composite is itself a
+    // submission (B13), so it is armed after composing, immediately before the readback it
+    // faults (ruling B35). The other points are armed before the composite they act on.
+    let after=point==libbreenix::gpu::abi::test_point::STALE_FENCE;
+    if !after {libbreenix::test_control::arm(point,0,0).cite("21")?;}
     let (fault_serial,_)=compose(&mut k)?;
+    if after {libbreenix::test_control::arm(point,0,0).cite("21")?;}
     let result=super::composition::gpu_observe(&mut k);
     libbreenix::test_control::disarm_all().cite("21")?;
     ensure(libbreenix::test_control::fired(point).cite("21")?==fired+1,"21",format!("gpu-display: core fault point {point} did not fire exactly once"))?;

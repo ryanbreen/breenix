@@ -354,11 +354,11 @@ impl Surface {
         let words = device::with(|d| {
             let context = &mut d.context;
             context.begin(target, w, h);
-            let start = context.encoded().len();
+            let start = context.commands().len();
             // The whole target's scissor too, so that each kept shape sets its own clip.
             context.set_clip(clip.corners());
             draw(context);
-            let words = context.encoded()[start..].to_vec();
+            let words = context.commands()[start..].to_vec();
             context.discard();
             Ok(words)
         });

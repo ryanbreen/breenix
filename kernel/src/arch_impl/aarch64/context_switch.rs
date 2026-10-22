@@ -96,7 +96,6 @@ crate::define_trace_counter!(
 );
 
 static CTX596_ORACLE_EMISSIONS: AtomicU32 = AtomicU32::new(0);
-static CTX596_DIVERGENCE_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 static RET_DISPATCH_REFUSAL_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 static RESUME_PC_REFUSAL_EMISSIONS: AtomicU32 = AtomicU32::new(0);
 static RESUME_PC_CUSTODY_EMISSIONS: AtomicU32 = AtomicU32::new(0);
@@ -3529,27 +3528,9 @@ fn check_inline_eret_resume_pc(thread: &Thread, frame_elr: u64) {
 
 #[inline(always)]
 fn record_inline_elr_divergence(thread: &Thread) {
-    let mut line = crate::serial_line::Line::new();
-    if !thread.saved_by_inline_schedule || thread.inline_schedule_prev_elr == thread.context.x30 {
-        return;
+    if thread.saved_by_inline_schedule && thread.inline_schedule_prev_elr != thread.context.x30 {
+        crate::trace_count!(INLINE_ELR_DIVERGENCE);
     }
-
-    crate::trace_count!(INLINE_ELR_DIVERGENCE);
-    if CTX596_DIVERGENCE_EMISSIONS.fetch_add(1, Ordering::Relaxed) >= 8 {
-        return;
-    }
-
-    line.text("\n[CTX596_ELR_DIVERGENCE] tid=");
-    line.dec(thread.id());
-    line.text(" cpu=");
-    line.dec(Aarch64PerCpu::cpu_id() as u64);
-    line.text(" prev_elr=");
-    line.hex(thread.inline_schedule_prev_elr);
-    line.text(" x30=");
-    line.hex(thread.context.x30);
-    line.text(" ctx_elr=");
-    line.hex(thread.context.elr_el1);
-    line.text("\n");
 }
 
 /// Everything a ret-based kernel dispatch needs, all of it read under the

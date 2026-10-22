@@ -127,6 +127,11 @@ pub struct State {
     pub composed_once: bool,
     /// Whether the next composite must compose the whole screen (after a failure).
     pub force_full: bool,
+    /// How many times a whole-screen composite was asked for: a composite clears
+    /// `force_full` only when no request came after its snapshot.
+    pub full_requests: u64,
+    /// Scene changes noted (`scene::changed`), which a scene descriptor counts.
+    pub changes: u64,
     /// Screen regions uncovered by windows destroyed, resized, moved or hidden.
     pub uncovered: Vec<Rect>,
     /// Whether a composite is running.
@@ -143,19 +148,28 @@ impl State {
             serial: 0,
             composed_once: false,
             force_full: false,
+            full_requests: 0,
+            changes: 0,
             uncovered: Vec::new(),
             busy: false,
             records: VecDeque::new(),
         }
     }
 
-    /// Note that `rect` of the screen no longer shows what it did.
+    /// Ask for the next composite to compose the whole screen.
+    pub fn request_full(&mut self) {
+        self.force_full = true;
+        self.full_requests = self.full_requests.wrapping_add(1);
+    }
+
+    /// Note that `rect` of the screen no longer shows what it did. More than the list
+    /// holds asks for a whole-screen composite instead.
     pub fn uncover(&mut self, rect: Option<Rect>) {
         let Some(r) = rect.filter(|r| !r.is_empty()) else {
             return;
         };
         if self.uncovered.try_reserve(1).is_err() || self.uncovered.len() >= 64 {
-            self.force_full = true;
+            self.request_full();
             self.uncovered.clear();
             return;
         }

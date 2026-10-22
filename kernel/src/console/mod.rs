@@ -61,6 +61,8 @@ pub use records::{console_session, write_tty};
 pub mod keymap;
 pub mod keys;
 pub mod raster;
+#[cfg(target_arch = "aarch64")]
+mod ribbon;
 pub mod splash;
 pub mod vcs;
 pub mod vt;
@@ -833,6 +835,15 @@ struct Screen {
     frames: u64,
     /// The last pass wrote and flushed each row it drew, and left no row undrawn.
     complete: bool,
+    /// The boot stage ribbon the rows under its band show (section 23.7 of the BreenGL
+    /// contract), once worked out, and whether the full repaint that started it took test
+    /// point 15 (`ribbon-drop-stage`).
+    #[cfg(target_arch = "aarch64")]
+    ribbon: Option<ribbon::Ribbon>,
+    #[cfg(target_arch = "aarch64")]
+    ribbon_known: bool,
+    #[cfg(target_arch = "aarch64")]
+    ribbon_drop: bool,
 }
 
 /// The foreground terminal's view as the render thread last copied it.
@@ -917,6 +928,12 @@ fn render_thread(display: &'static Display, attached: Attached) {
         cleared: false,
         frames: 0,
         complete: false,
+        #[cfg(target_arch = "aarch64")]
+        ribbon: None,
+        #[cfg(target_arch = "aarch64")]
+        ribbon_known: false,
+        #[cfg(target_arch = "aarch64")]
+        ribbon_drop: false,
     };
 
     let mut announced = false;
@@ -981,7 +998,16 @@ fn render_thread(display: &'static Display, attached: Attached) {
             screen.cleared = false;
             screen.complete = false;
             screen.shown.fill(None);
+            // A full repaint, such as the one after a display give-back, draws the ribbon
+            // afresh: test point 15 drops a stage from it until the next one.
+            #[cfg(target_arch = "aarch64")]
+            {
+                screen.ribbon_drop = crate::test_control::take(breengel_abi::tc_point::RIBBON_DROP_STAGE, 0).is_some();
+                screen.ribbon_known = false;
+            }
         }
+        #[cfg(target_arch = "aarch64")]
+        screen.refresh_ribbon();
         if changed || !screen.complete {
             let started = crate::time::get_monotonic_time_ns();
             let drawn = screen.update(&snapshot);
@@ -1241,6 +1267,30 @@ fn sleep_ms(ms: u64) {
 }
 
 impl Screen {
+    /// Work out the ribbon again when a stage was reached or a full repaint began, and mark
+    /// the text rows under its band for drawing when it changed.
+    #[cfg(target_arch = "aarch64")]
+    fn refresh_ribbon(&mut self) {
+        crate::graphics::boot_ribbon::drain();
+        let reached = crate::graphics::boot_ribbon::take_dirty();
+        if self.ribbon_known && !reached {
+            return;
+        }
+        self.ribbon_known = true;
+        let wanted = ribbon::Ribbon::now(&self.layout, self.ribbon_drop);
+        if wanted == self.ribbon {
+            return;
+        }
+        let line_height = self.layout.font.line_height();
+        for band in [&self.ribbon, &wanted].into_iter().flatten().map(ribbon::Ribbon::rows) {
+            let rows = band.start / line_height..band.end.div_ceil(line_height).min(self.shown.len());
+            for shown in &mut self.shown[rows] {
+                *shown = None;
+            }
+        }
+        self.ribbon = wanted;
+    }
+
     /// Draw the rows that differ from what the screen shows, then flush them.
     /// Returns how many rows were written.
     fn update(&mut self, snapshot: &Snapshot) -> usize {
@@ -1268,6 +1318,10 @@ impl Screen {
             }
             raster::draw_row(&mut self.shadow, &self.layout, row, &wanted.text, wanted.cursor);
             let band = self.layout.band(row);
+            #[cfg(target_arch = "aarch64")]
+            if let Some(ribbon) = &self.ribbon {
+                ribbon.paint(&mut self.shadow, &self.layout, band.clone());
+            }
             if self.display.write(&self.shadow, band.clone(), may_draw) {
                 self.shown[row] = Some(wanted);
                 drawn += 1;
@@ -1328,6 +1382,12 @@ impl Screen {
                             raster::expected_colour(font, &shown.text, shown.cursor, x, y % font.line_height())
                         }
                         None => raster::PALETTE[0],
+                    };
+                    // A drawn row shows the boot stage ribbon over its text in the ribbon's band.
+                    #[cfg(target_arch = "aarch64")]
+                    let expected = match (&self.ribbon, shown) {
+                        (Some(ribbon), Some(_)) => ribbon.colour(x, y).unwrap_or(expected),
+                        _ => expected,
                     };
                     if !layout.pixel_is(pixel, expected) {
                         font_mismatches += 1;

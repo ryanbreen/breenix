@@ -863,7 +863,7 @@ architecture only.
 | 9 | `RESIZE` | `Resize` (48) | 0 | EINVAL size; ENOMEM; ENOENT |
 | 10 | `READ_EVENTS` | `ReadEvents` (40) | events copied | ETIMEDOUT, EINTR, ENOENT |
 | 11 | `WRITE_EVENTS` | `WriteEvents` (24) | events queued | EINVAL type or length; ENOENT |
-| 12 | `EVENT_FD` | `WinId` (8) | a descriptor | ENOENT, EMFILE |
+| 12 | `EVENT_FD` | `WinId` (8) | a descriptor; window 0, for the compositor, the scene descriptor (section 19.2) | ENOENT, EMFILE |
 | 13 | `SET_GEOMETRY` | `Geometry` (24) | 0 | ENOENT |
 | 14 | retired `MAP_COMMITTED` | `MapBuffers` (40) | ENOSYS | after size validation, including a stale id |
 | 15 | `CAPTURE` | `Capture` (56) | 0 | EINVAL short destination; ENOENT; EINTR pending-publication wait; EIO failed pending publication |
@@ -1050,7 +1050,7 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 | `CREATE`, `REGISTER`, `SET_TITLE` | yes | — | — | — |
 | `ACQUIRE`, `COMMIT`, `COMMIT_NO_CHANGE`, `DESTROY` | yes | EPERM | EPERM | EPERM |
 | `RESIZE` | yes | EPERM (requests go through events) | EPERM | EPERM |
-| `READ_EVENTS`, `EVENT_FD` | yes | — | — | EPERM |
+| `READ_EVENTS`, `EVENT_FD` | yes | `EVENT_FD` of window 0 only | — | EPERM |
 | `WRITE_EVENTS`, `SET_GEOMETRY` | EPERM | yes | EPERM | EPERM |
 | retired `MAP_COMMITTED`, `MAP_COMPOSITOR_TEXTURE` | ENOSYS | ENOSYS | ENOSYS | ENOSYS |
 | `CAPTURE`, `MAP_TREE`, `READ_META` | yes | yes | yes | EPERM |
@@ -1253,6 +1253,14 @@ meaning. Breengel maps an unknown kind to `Event::Unknown { kind }`, never to a 
   queue, and delivers an `Overflow` event with the count before the next event; nothing is lost silently.
 - An event for one window wakes only that window's readers. `EVENT_FD` is pollable and reports POLLIN when an
   event is queued.
+- `EVENT_FD` of window 0 gives the compositor its scene descriptor (ENOENT to any other caller, as for an id
+  that names no window). It is pollable and reports POLLIN while the scene has changed since the descriptor
+  was made or last read: a window op that can change what the next composite shows (the ops other than `LIST`, `ACQUIRE`,
+  `READ_EVENTS`, `WRITE_EVENTS`, `EVENT_FD`, `CAPTURE`, `MAP_TREE`, `COMPOSITE_SNAPSHOT`, `COMPOSITE_RECORD`,
+  `SCANOUT_READBACK`, `READ_META`, `READ_REMNANT` and the retired ops), a commit's publication or rejection,
+  and an owner's exit. A read of at least 8 bytes returns the running total of changes as a `u64` and marks that total read;
+  a shorter read is EINVAL. A compositor sleeps on it and uses `COMPOSITE_SNAPSHOT`'s sizing query to learn
+  whether there is damage, rather than polling.
 - `Resized` arrives only after the buffers have the new size and carries it; a refused resize delivers
   `ResizeFailed` with the old size and never `Resized`.
 
@@ -1362,11 +1370,11 @@ negative control: the device reports no resource identity and it is observed as 
 - Points: 1 `ignore-damage` (the next composite processes the whole window), 2 `irq-hold` (the next GPU <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   SUBMIT validation holds IRQs masked for 2 ms), 3 `emit-diagnostic` (param: the writer path, section 22), 4
   `acquire-stall` (target: a window; the next `ACQUIRE` pauses after copying half its replay rows until
-  released or 1 s), 5 `backend-error`; old scanout points 6–9 are retired in favour of core points 19,26,20,22; 10 `panel-cursor-no-restore`, 11 `release-stall` (resumes a paused point),
+  released or 1 s), 5 `backend-error`; old scanout points 6–9 are retired in favour of core points 19,26,20,22; 10 `panel-cursor-no-restore` (the run stage's panel cursor stops restoring the pixels it covered, from its next move until the stage's next frame, §23.9), 11 `release-stall` (resumes a paused point),
   16 `composite-stall` (target: a window; the next composite that includes it pauses before the backend
   composes, with every window's front pinned, until released, a signal reaches the compositor, or 1 s), 17
   `move-pointer` (param: x in bits 0 to 31, y in bits 32 to 63; the next time the kernel reads the pointing
-  device's position, for the panel cursor, the position is (x, y), as if the device had moved there), 18
+  device's position, for the panel cursor (system call 413, which the run stage reads), the position is (x, y), as if the device had moved there), 18
   `capture-stall` (target: a window; the next `CAPTURE` of it pauses after copying half its rows, with its pins
   held, until released or 1 s). Points 12 to 15 are the run stage's (section 23). Faults are branches in the
   real code paths, disarmed at case end by the suite. GPU points 19–31 have the exact
@@ -1376,7 +1384,8 @@ negative control: the device reports no resource identity and it is observed as 
   as a child (in a suite boot) it prints `[init] not PID 1: test-control check skipped` and makes no absence
   claim.
 
-The userspace run stage consumes its one-shot points 12–14 by reading
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B35 specifies these requirements. -->
+The userspace run stage consumes its one-shot points 10 and 12–14 by reading
 `/proc/breenix/stage-control`: a decimal bitset, bit `point` set when that point fired for
 this caller's process id (or target 0). Each open snapshots and consumes the points once.
 It is ENOSYS outside suite boots and EPERM for non-root; it never changes the latch.
@@ -1527,11 +1536,16 @@ is a stage failure at the runner deadline, never a successful hold or a lost DON
 
 ### 23.7 Boot stage ribbon
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B35 specifies these requirements. -->
 The kernel draws one segment per architecture-applicable stage in `docs/boot-path.json`, in that file's
 order, across (16,752,1248,16), using the same integer segment partition as §23.5 and a two-pixel gap.
 Reached is pass green, unreached is pending outline colour. A stage lights only when its actual producer
 prints the stage marker; loader announcements never light a segment. The serial stage lines remain the record.
 The ribbon is restored with the kernel screen after display giveback.
+On the GPU core the console draws it over its text, in this band at the display's scale, and its
+read-back check expects it there (docs/console/contract.md section 2, ruling B35). Each segment's last
+two pixels are the background colour. A full repaint of the kernel screen (after a give-back) takes
+point 15, which then shows the first reached stage unreached until the next full repaint.
 
 ### 23.8 Agreement
 
@@ -1553,7 +1567,8 @@ shows its measured execution time; a skipped case has no fabricated zero-time re
 A picture takes priority over timing data, so its input overlay cannot overlap the timing plot.
 Input headings and legends describe a pointer trail only when pointer samples are present; event-only
 cases use a neutral events label. Wrapped labels keep words intact and show an ellipsis when truncated. The stage composes only between cases, never in a
-measured case window. Each result is drawn immediately after collection and verification, before
+measured case window, except for its panel cursor while a case runs with the display left to the stage, and the frames a live
+check asks it to draw (§23.9). Each result is drawn immediately after collection and verification, before
 starting another case. `opt/breenix/pace` is an optional unsigned 32-bit millisecond boot value;
 `scripts/boot-interactive.sh --mode suite --suite breengel --pace MS` supplies it through fw_cfg
 and `run.sh --parallels|--vmware --suite breengel --pace MS` supplies `/etc/breenix/pace` on its
@@ -1577,11 +1592,54 @@ Input and measurement spotlights independently detect point-13 substitution, as 
 a changed thumbnail cannot satisfy their detection checks. Live checks also inspect the picture input
 overlay, verdict, category headings and boot ribbon, with individual pixel substitutions in each region.
 
+### 23.9 Display custody during a run (B29)
+
+The stage holds the display from the first case to the last. It does not give the display
+back before a case: the case's own takeover nests above the stage on the ownership stack, so
+the stage's frame stays on the screen until the case presents, and when the case's process
+ends the stack restores the stage's frame. An owner that took the display without presenting
+was shown the frame below it, so that frame is what the restore binds. The console does not
+show between cases. Three cases start above the kernel's screen instead, and for them alone
+the stage gives the display back before the case: `composition/ownership-stack`, whose
+property is the stack's four-owner depth, and `panel/kernel-screens` and `panel/boot-ribbon`,
+whose property is the kernel's screen itself. A case that presents a full-screen scanout (the
+composition and scanout cases, whose readback judges the device pixels of the whole mode,
+section 20) shows it while it owns the display, and the stage's next frame follows when it
+ends. After the three cases above the kernel's screen the stage takes the display back and
+shows its last frame as soon as the case's process ends, before collecting its result.
+
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B35 specifies these requirements. -->
+The stage's compositor draws the panel cursor (ruling B35): the compositor's arrow sprite
+(§18) at the pointer, read with system call 413, once the pointer has moved from where it
+was when the stage made its GPU objects. Every stage frame shows it there. While
+`panel/cursor-restore` or `panel/cursor-trail-detected` runs, the display stays with the
+stage (the case's process does not take it over), and the stage follows the pointer on its
+live-strip ticks: it restores the old footprint from the stage frame, draws the cursor at the
+pointer and presents. Point 10 stops the restores from the cursor's next move until the
+stage's next frame. These presents, only when the pointer moved, and the live checks' frames
+below are the only presents the stage makes inside a measured window.
+
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B36 and B38 specify these requirements. -->
+The live checks `panel/judged-frame-shown`, `panel/serial-agreement`, `panel/quiet-window` and
+`panel/boundary-notice` judge the stage's own frames. GPU handles are not inherited across
+fork, so the case's process does not draw the stage: the display stays with the stage, the
+case sends the runner the variant it judges (the finale, whether the first failure is kept,
+the judged frame and the selected entry's stamp, record, timing, input and reading) over a
+pipe, the runner draws and presents it with its own context, canvas, atlas and panes, and the
+case reads the scanout back with `SCANOUT_READBACK`. A frame the check makes itself has at
+most 16 pixels; the runner draws its panes as one solid rectangle per source pixel, and, for
+a failing entry, its expected and difference panes the same way. No picture is uploaded for
+a live check, and the case's process holds no stage context, so its timed window contains no
+context warm-up and no redraw of the run's history.
+
 ## 24. Helpers and boots
 
 - `/usr/local/test/bin/kiosk_test` is a test compositor: it claims the compositor, places windows where its
   command pipe tells it, composes on the GPU core after render completion and writes events
-  through `WRITE_EVENTS`. `gpu-counters` returns the helper's actual GPU counters;
+  through `WRITE_EVENTS`. Composing automatically, it sleeps on its commands and its scene descriptor
+  (section 19.2). `composed <id>` returns the window's commit in its latest successful composite's record,
+  and `warm <ms>` makes its compositor and waits for each context of its process to finish its catalogue
+  warm-up. `gpu-counters` returns the helper's actual GPU counters;
   `gpu-private-scanout` retains and presents a real private target for the foreign-sample
   negative control; its handle and device binding are distinct identities.
   `gpu-scanout <guest-file>` performs target-0 device readback as its display owner and
@@ -1591,7 +1649,9 @@ overlay, verdict, category headings and boot ribbon, with individual pixel subst
   `libbreenix::suite::spawn`.
 - Each case's limit is the runner's 10 s, except `font-parser/corpus`, `inflate/byte-split`,
   `png-decode/independent-fixtures`, `windows/churn` and `composition/present-rate`, which have 20 s
-  (plan §19).
+  (plan §19). `composition/irq-bound` arms irq-hold only once its own contexts and the compositor's
+  have finished their catalogue warm-up (ruling B38), and its 10 s starts then, as gpu's
+  `textures/upload-visibility` does (gpu.md ruling 52); the runner and host bound the warm-up.
 - The suite's gate timeout on every target is 900 s.
 
 ## 25. Error numbers

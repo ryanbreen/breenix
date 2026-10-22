@@ -94,13 +94,26 @@ fn window(op: u64, arg: u64, len: u64) -> Result<u64, i32> {
         None if arg != 0 || len != 0 => return Err(EINVAL),
         None => {}
     }
-    // TODO(gpu-display): the retired software compositor registered its `present::Backend`
-    // here; until the GPU compositor registers one, ops that compose or read the display
-    // answer EIO.
     if op == op::VERSION {
         return Ok(INTERFACE_VERSION as u64);
     }
     let caller = Caller::current()?;
+    let result = dispatch(&caller, op, arg);
+    // An op that can change what the next composite shows wakes the compositor's scene
+    // descriptor, whatever it returned.
+    if !matches!(
+        op,
+        op::LIST | op::ACQUIRE | op::READ_EVENTS | op::WRITE_EVENTS | op::EVENT_FD | op::CAPTURE | op::MAP_TREE
+            | op::COMPOSITE_SNAPSHOT | op::COMPOSITE_RECORD | op::SCANOUT_READBACK | op::READ_META | op::READ_REMNANT
+            | op::MAP_COMMITTED | op::MAP_COMPOSITOR_TEXTURE
+    ) {
+        crate::window::scene::changed();
+    }
+    result
+}
+
+fn dispatch(caller: &Caller, op: u32, arg: u64) -> Result<u64, i32> {
+    let caller = *caller;
     match op {
         op::CREATE => {
             let mut a = input::<Create>(arg)?;
@@ -165,7 +178,12 @@ fn window(op: u64, arg: u64, len: u64) -> Result<u64, i32> {
                 return Err(EINVAL);
             }
             let mut reg = REGISTRY.lock();
-            reg.present.force_full |= reg.cursor != c;
+            // The next composite repairs the sprite's old and new footprints, not the screen.
+            if reg.cursor != c {
+                let (old, new) = (reg.cursor.footprint(), c.footprint());
+                reg.present.uncover(old);
+                reg.present.uncover(new);
+            }
             reg.cursor = c;
             Ok(0)
         }

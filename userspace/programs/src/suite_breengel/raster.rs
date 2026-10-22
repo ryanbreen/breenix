@@ -229,7 +229,7 @@ fn padded(width: usize, height: usize) -> Drawn {
 /// device left the row padding alone; other layouts go through `libgfx::surface::convert`.
 pub(crate) struct Drawn {
     mem: Guarded,
-    surface: RefCell<Surface>,
+    surface: core::mem::ManuallyDrop<RefCell<Surface>>,
     target: u64,
     read_at: Cell<Option<u64>>,
     failure: RefCell<Option<String>>,
@@ -244,7 +244,7 @@ impl Drawn {
         let surface = Surface::new(width, height, format)
             .unwrap_or_else(|e| panic!("gpu-raster: a {width} x {height} GPU target for a raster case: {e}"));
         let target = surface.handle();
-        let mut d = Drawn { mem: Guarded::new(width, height, stride, bpp, bgr), surface: RefCell::new(surface), target,
+        let mut d = Drawn { mem: Guarded::new(width, height, stride, bpp, bgr), surface: core::mem::ManuallyDrop::new(RefCell::new(surface)), target,
             read_at: Cell::new(None), failure: RefCell::new(None) };
         d.reset(Color::rgb(0, 0, 0));
         d
@@ -348,9 +348,16 @@ impl core::ops::Deref for Drawn {
 
 impl Drop for Drawn {
     /// The mapping's own drop records a judged frame; give it the target's latest pixels.
+    /// A target a check read is kept past its case's scope, as the possible GPU source of the
+    /// frame handed to the stage (ruling B36); any other is destroyed.
     fn drop(&mut self) {
         if self.mem.read.get() {
             self.refresh();
+        }
+        // SAFETY: the surface is taken once, here, and the field is not used again.
+        let surface = unsafe { core::mem::ManuallyDrop::take(&mut self.surface) }.into_inner();
+        if self.mem.read.get() {
+            crate::keep_judged_surface(surface);
         }
     }
 }

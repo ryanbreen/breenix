@@ -347,8 +347,13 @@ impl log::Log for KernelLogger {
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
             use core::fmt::Write;
-            let _ = writeln!(crate::serial_line::TeeLine::with_level(record.level()),
-                "{:>5}: {}", record.level(), record.args());
+            if record.level() <= log::Level::Warn {
+                let _ = writeln!(crate::serial_line::TeeLine::with_level(record.level()),
+                    "[{:>5}] {}: {}", record.level(), record.target(), record.args());
+            } else {
+                let _ = writeln!(crate::serial_line::TeeLine::with_level(record.level()),
+                    "{:>5}: {}", record.level(), record.args());
+            }
         }
     }
 

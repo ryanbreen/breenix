@@ -44,6 +44,7 @@ mod observation;
 mod quota;
 mod staging;
 mod vertex_arena;
+mod compose;
 use quota::{Charge, Quota, QuotaCharge};
 use staging::Staging;
 pub mod dma;
@@ -405,6 +406,9 @@ struct Res {
     /// The kernel screen's context this resource is attached to for observing it as a
     /// retained binding (`screen::observation_context`), or 0.
     observed_in: u32,
+    /// The window composition whose transport wrote this scanout target, with the
+    /// generation that write produced; a later write of the target ends it.
+    composition: Option<Arc<compose::Provenance>>,
 }
 
 struct Core {
@@ -527,6 +531,7 @@ pub fn init() {
     unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) counter, options(nomem, nostack)) };
     core.key = counter ^ 0x9E37_79B9_7F4A_7C15;
     *CORE.lock() = Some(core);
+    compose::register();
     #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     panic::initialized();
 }
@@ -579,6 +584,7 @@ pub fn init_vmware() {
     unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) counter, options(nomem, nostack)) };
     core.key = counter ^ 0x9E37_79B9_7F4A_7C15;
     *CORE.lock() = Some(core);
+    compose::register();
 }
 
 impl Core {
@@ -2559,6 +2565,7 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
         progress_context: None,
         window_sealed: false,
         observed_in: 0,
+        composition: None,
     }
 }
 
@@ -3013,6 +3020,9 @@ struct Entry {
     invalid: bool,
     /// A buffer's backing, read once into the submission's snapshot.
     backing: Option<Arc<Pages>>,
+    /// A window composition source alias (414 op 19): the resolvers accept it as a source
+    /// and refuse it as a target, a copy destination or a buffer.
+    sample_only: bool,
 }
 
 /// The process's resources as the validator and translator see them.
@@ -3037,12 +3047,36 @@ impl View {
                             size: r.size,
                             invalid: r.invalid,
                             backing: (r.kind == kind::BUFFER).then(|| r.backing.clone()),
+                            sample_only: false,
                         });
                     }
                 }
             }
         }
         View { entries }
+    }
+
+    /// Add a composition's source aliases, each a sample-only entry for the target it names.
+    /// Handles come from the core's one handle sequence, so no alias equals a handle the
+    /// process has; the entries stay in handle order.
+    fn add_aliases(&mut self, aliases: &[Alias]) -> Result<(), i64> {
+        if aliases.is_empty() {
+            return Ok(());
+        }
+        self.entries.try_reserve(aliases.len()).map_err(|_| ENOMEM)?;
+        let found: Vec<Entry> = with_core(|c| {
+            aliases.iter().filter_map(|x| {
+                let r = c.resources.get(&x.id).filter(|r| !r.lost && r.kind == kind::TARGET)?;
+                Some(Entry { handle: x.handle, id: x.id, kind: r.kind, format: r.format, width: r.width,
+                    height: r.height, size: r.size, invalid: r.invalid, backing: None, sample_only: true })
+            }).collect()
+        }).ok_or(ENODEV)?;
+        if found.len() != aliases.len() || found.iter().any(|e| self.get(e.handle).is_some()) {
+            return Err(EINVAL);
+        }
+        self.entries.extend(found);
+        self.entries.sort_unstable_by_key(|e| e.handle);
+        Ok(())
     }
 
     /// The entries are in handle order (the process's map is), so a lookup is a binary search.
@@ -3203,7 +3237,7 @@ fn virgl_format(f: u32) -> u32 {
 
 impl Resolver for Resolved<'_> {
     fn target(&self, handle: u64) -> Option<TargetInfo> {
-        let e = self.view.get(handle)?;
+        let e = self.view.get(handle).filter(|e| !e.sample_only)?;
         (e.kind == kind::TARGET).then_some(TargetInfo { width: e.width, height: e.height, invalid: e.invalid, format: e.format })
     }
 
@@ -3227,7 +3261,7 @@ impl Resolver for Resolved<'_> {
 
 impl encode::Bindings for Resolved<'_> {
     fn target(&self, handle: u64) -> Option<encode::TargetRes> {
-        let e = self.view.get(handle)?;
+        let e = self.view.get(handle).filter(|e| !e.sample_only)?;
         if e.kind != kind::TARGET {
             return None;
         }
@@ -3381,14 +3415,42 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EINVAL);
     }
     let tgid = caller()?;
+    submit_stream(tgid, &mut a, None, &|a| write_arg(arg, a))
+}
+
+/// A source alias of window composition (414 op 19, ruling B13): a handle private to one
+/// submission, naming another process's committed window target only as a source.
+#[derive(Clone, Copy)]
+struct Alias {
+    handle: u64,
+    id: u32,
+}
+
+/// What window composition adds to a submission: its source aliases, a check of the
+/// validated stream that runs before anything is admitted or sent, whether the submission
+/// carries test point 27's undefined command (`backend-error`'s device failure), and its
+/// displayed destination, the target test point 22 plants on when armed for any target.
+struct Extra<'a> {
+    aliases: &'a [Alias],
+    check: &'a mut dyn FnMut(&WordBuf, &View) -> Result<(), i64>,
+    device_error: bool,
+    destination: u32,
+}
+
+/// `SUBMIT` of the stream `a` names for `tgid`: validate, translate and queue it. `out`
+/// publishes `a` to the caller: its validation diagnostics before a refusal, and its fence
+/// and estimate after queueing.
+fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, out: &dyn Fn(&abi::Submit) -> Result<(), i64>) -> Result<u64, i64> {
+    let aliases: &[Alias] = extra.as_ref().map_or(&[], |e| e.aliases);
+    let alias = |rid: &u32| aliases.iter().any(|x| x.id == *rid);
     let refuse = |a: &mut abi::Submit, index: u32, error: u32, errno: i64| -> Result<u64, i64> {
         a.error_index = index;
         a.error = error;
-        write_arg(arg, a)?;
+        out(a)?;
         Err(errno)
     };
     if a.length == 0 || a.length % 4 != 0 || a.length > limits::STREAM_BYTES {
-        return refuse(&mut a, 0, stream::error::STREAM_LENGTH, EINVAL);
+        return refuse(a, 0, stream::error::STREAM_LENGTH, EINVAL);
     }
     let id = with_core(|c| match c.ctx_of(tgid, a.context).and_then(|id| c.contexts.get(&id)) {
         None => Err(EINVAL),
@@ -3401,14 +3463,15 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     let pages = |bytes: u64| bytes.div_ceil(PAGE as u64) * PAGE as u64;
     let _stream_charge = match Charge::new(tgid, pages(a.length), true) {
         Ok(c) => c,
-        Err(ENOMEM) => return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM),
+        Err(ENOMEM) => return refuse(a, 0, stream::error::NO_MEMORY, ENOMEM),
         Err(e) => return Err(e),
     };
     let words = WordBuf::from_user(a.stream, a.length as usize)?;
-    let view = with_core(|c| View::of(c, tgid)).ok_or(ENODEV)?;
+    let mut view = with_core(|c| View::of(c, tgid)).ok_or(ENODEV)?;
+    view.add_aliases(aliases)?;
     let snap = match Snapshot::take(&words, &view, tgid) {
         Ok(snap) => snap,
-        Err(ENOMEM) => return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM),
+        Err(ENOMEM) => return refuse(a, 0, stream::error::NO_MEMORY, ENOMEM),
         Err(e) => return Err(e),
     };
     let resolved = Resolved {
@@ -3434,14 +3497,18 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
                 }
             }
             let errno = if r.is_work_limit() { EDQUOT } else if r.error == stream::error::NO_MEMORY { ENOMEM } else { EINVAL };
-            return refuse(&mut a, r.index, r.error, errno);
+            return refuse(a, r.index, r.error, errno);
         }
     };
+    if let Some(extra) = extra.as_mut() {
+        (extra.check)(&words, &view)?;
+    }
     let (written, mut named_ids, whole) = named(&words, &view);
     // Take the context's submission slot: one sender at a time, at most four in flight.
     let mut waited = false;
     let admitted = wait_for(None, true, |c| {
-        if named_ids.iter().any(|rid| !c.resources.get(rid).is_some_and(|r| !r.dropped && !r.lost)) { return Some(Err(EINVAL)); }
+        // An alias's window keeps its target after the client destroyed the handle.
+        if named_ids.iter().any(|rid| !c.resources.get(rid).is_some_and(|r| (!r.dropped || alias(rid)) && !r.lost)) { return Some(Err(EINVAL)); }
         let Some(ctx) = c.contexts.get_mut(&id) else {
             return Some(Err(EIO));
         };
@@ -3533,10 +3600,12 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     // Each submission reserves a distinct range in the context's reusable vertex arena.
     // The batched upload precedes drawing; completion and fence publication release ranges.
     // Test point 22, `corrupt-pixel`, armed for one of the targets this submission writes
-    // (or for any): that target gets one extra draw.
+    // (or for any): that target gets one extra draw. A window composition's is its displayed
+    // destination, not the persistent scene the next frames copy from.
     let mut corruption = None;
+    let destination = extra.as_ref().map(|e| e.destination);
     let corrupt = view.entries.iter()
-        .filter(|e| written.contains(&e.id))
+        .filter(|e| written.contains(&e.id) && destination.is_none_or(|d| d == e.id))
         .map(|e| e.handle)
         .find(|&handle| {
             corruption = crate::test_control::reserve(test_point::CORRUPT_PIXEL, handle);
@@ -3548,7 +3617,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         Ok(vb) => vb,
         Err(e) => {
             release_slot(false);
-            return if e == ENOMEM { refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
+            return if e == ENOMEM { refuse(a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
         }
     };
     let vertex_buffer = vertex_range.map(|(rid, _, _)| rid);
@@ -3674,7 +3743,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         let sized = svga::encode::translate(&mut dx_objects.clone(), &stale, &words, &resolved, dx_extras(), None, None);
         let Some((sized, _)) = sized else {
             release_slot(false);
-            return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM);
+            return refuse(a, 0, stream::error::NO_MEMORY, ENOMEM);
         };
         // Surface sizes are known now. Recount with their definitions, uploads and
         // destruction present, so chunk boundaries match the allocation pass.
@@ -3682,20 +3751,20 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             dx_extras(), None, Some(sized.sizes));
         let Some((sized, _)) = sized else {
             release_slot(false);
-            return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM);
+            return refuse(a, 0, stream::error::NO_MEMORY, ENOMEM);
         };
         let charge = match Charge::new(tgid, sized.sizes.bytes(), true) {
             Ok(charge) => charge,
             Err(e) => {
                 release_slot(false);
-                return if e == ENOMEM { refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
+                return if e == ENOMEM { refuse(a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
             }
         };
         let translated = svga::encode::Backing::allocate(&sized.sizes)
             .and_then(|backing| svga::encode::translate(&mut dx_objects, &stale, &words, &resolved, dx_extras(), Some(backing), None));
         let Some((out, _)) = translated else {
             release_slot(false);
-            return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM);
+            return refuse(a, 0, stream::error::NO_MEMORY, ENOMEM);
         };
         (alloc::sync::Arc::new(charge), Some(Chunks::Svga(out.chunks)))
     } else {
@@ -3726,7 +3795,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             Err(e) => {
                 drop_vertex_buffer();
                 release_slot(false);
-                return if e == ENOMEM { refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
+                return if e == ENOMEM { refuse(a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
             }
         };
         // Warm each pair separately; command backing retains the reservation even if the
@@ -3774,7 +3843,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             None => {
                 drop_vertex_buffer();
                 release_slot(false);
-                return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM);
+                return refuse(a, 0, stream::error::NO_MEMORY, ENOMEM);
             }
         };
         (chunk_charge, chunks)
@@ -3837,7 +3906,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         }
         for rid in &named_ids {
             match c.resources.get(rid) {
-                Some(r) if !r.dropped && !r.lost => {}
+                Some(r) if (!r.dropped || alias(rid)) && !r.lost => {}
                 _ => return Err(EINVAL),
             }
         }
@@ -3851,7 +3920,8 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         // Test point 27, `device-error`: the chunks are followed by a fenced command of a
         // type VirtIO does not define, which the device can only refuse, and that command
         // carries the fence. Taken only once the submission is certain to be sent.
-        let forced = crate::test_control::take(test_point::DEVICE_ERROR, 0).is_some();
+        let forced = extra.as_ref().is_some_and(|e| e.device_error)
+            || crate::test_control::take(test_point::DEVICE_ERROR, 0).is_some();
         let serial = writer.serial;
         let fence = writer.fence;
         let ctx = c.contexts.get_mut(&id).ok_or(EINVAL)?;
@@ -3956,7 +4026,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     };
     a.fence = bgl_fence;
     a.estimate = plan.estimate;
-    write_arg(arg, &a)?;
+    out(a)?;
     Ok(0)
 }
 
@@ -4536,9 +4606,10 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
             return None;
         }
         r.reading = true;
-        Some(Ok((r.invalid, r.invalidated_by, r.generation, r.last)))
+        let composition = r.composition.clone().filter(|p| p.generation == r.generation);
+        Some(Ok((r.invalid, r.invalidated_by, r.generation, r.last, composition)))
     });
-    let (invalid, invalidated_by, generation, last) = match taken {
+    let (invalid, invalidated_by, generation, last, composition) = match taken {
         Ok(Ok(t)) => t,
         Ok(Err(reason)) => return refuse(reason, 0),
         Err(_) => return Err(Refused::Errno(EINTR)),
@@ -4560,6 +4631,11 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     if invalid {
         release();
         return refuse(readback_reason::TARGET_INVALID, invalidated_by);
+    }
+    // Record v2 holds 16 window entries: a composite of more has no partial record.
+    if composition.as_ref().is_some_and(|p| p.windows.len() > 16) {
+        release();
+        return refuse(readback_reason::COMPOSITE_OVERFLOW, 0);
     }
     let observation = match observe(tgid, id, last, &backing, pitch, fmt, *a, &staging.pages, None) {
         Ok(o) => o,
@@ -4613,6 +4689,17 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         put32(&mut rec, record::FLAGS, 1);
         put64(&mut rec, record::PRESENT_FENCE, b.fence);
         put32(&mut rec, record::PRESENT_STATUS, b.answer);
+    }
+    // A window composition's provenance, for the generation observed (414 op 19).
+    if let Some(p) = &composition {
+        put32(&mut rec, record::FLAGS, u32::from(binding.is_some()) | 2);
+        put64(&mut rec, record::COMPOSITE_SERIAL, p.serial);
+        put32(&mut rec, record::WINDOW_COUNT, p.windows.len() as u32);
+        for (i, w) in p.windows.iter().enumerate() {
+            for (k, v) in w.iter().enumerate() {
+                put64(&mut rec, record::WINDOWS + 32 * i + 8 * k, *v);
+            }
+        }
     }
     put32(&mut rec, record::FORMAT, fmt);
     if fmt == format::R8 {
@@ -5102,6 +5189,10 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
             if let Some(p) = proc_live {
                 fill(&mut out, &p.totals);
                 out.contexts = p.contexts.len() as u64;
+                // For the process: its live contexts whose catalogue warm-up has completed.
+                out.warmed = p.contexts.values()
+                    .filter(|id| c.contexts.get(*id).is_some_and(|x| x.state == CtxState::Live && x.warm == encode::ALL_WARM))
+                    .count() as u64;
                 out.resources = p.resources.len() as u64;
                 let (held, copies) = (p.quota.held.load(Ordering::Acquire), p.quota.copies.load(Ordering::Acquire));
                 out.resource_bytes = held.saturating_sub(copies);

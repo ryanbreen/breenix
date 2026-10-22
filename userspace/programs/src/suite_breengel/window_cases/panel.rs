@@ -44,6 +44,8 @@ fn panel_handoff() -> CaseResult {
     let ended = child_end(5_000, || f()).cite("23")?;
     ensure(matches!(ended, Ended::Exit(0)), "23", "the display-taking child did not take, paint and give back the display")?;
     let (after, _) = screen()?;
+    // The judged frame is the stage's own, which it samples itself (ruling B36).
+    libbreenix::suite::judged_picture_stage();
     match first_difference(&before, &after)? {
         None => Ok(()),
         Some((x, y)) => at("23", format!("after the child gave the display back, the panel differs at ({x}, {y})")),
@@ -55,6 +57,7 @@ fn panel_between_cases() -> CaseResult {
     let (a, _) = screen()?;
     let _ = time::sleep_ms(300);
     let (b, _) = screen()?;
+    libbreenix::suite::judged_picture_stage();
     match first_difference(&a, &b)? {
         None => Ok(()),
         Some((x, y)) => at("23", format!("the screen changed at ({x}, {y}) while this case ran; the panel is drawn only between cases")),
@@ -99,6 +102,7 @@ fn trail(no_restore: bool) -> Result<Vec<(u32, u32)>, libbreenix::suite::CaseErr
     crossed?;
     let (back, _) = screen()?;
     crate::remember_frame(&back,width,height,if no_restore{None}else{Some(rest.clone())});
+    libbreenix::suite::judged_picture_stage();
     Ok((0..(width * height) as u32)
         .filter(|&i| rest[i as usize * 4..i as usize * 4 + 4] != back[i as usize * 4..i as usize * 4 + 4])
         .map(|i| (i % width as u32, i / width as u32))

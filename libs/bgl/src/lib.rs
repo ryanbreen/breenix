@@ -9,6 +9,9 @@ use libbreenix::gpu;
 pub struct Context {
     handle: u64,
     words: Vec<u32>,
+    /// `encoded` handed `words` to a caller that submits them itself, so the next command
+    /// starts a new stream rather than resending them.
+    handed: core::cell::Cell<bool>,
     clips: Vec<[i32; 4]>,
     bounds: [i32; 4],
 }
@@ -35,6 +38,7 @@ impl Context {
         Ok(Self {
             handle: gpu::context_create()?,
             words: Vec::new(),
+            handed: core::cell::Cell::new(false),
             clips: Vec::new(),
             bounds: [0; 4],
         })
@@ -43,18 +47,18 @@ impl Context {
         self.handle
     }
     pub fn begin(&mut self, target: u64, width: u32, height: u32) {
-        encode::begin(&mut self.words, target);
+        encode::begin(self.out(), target);
         self.bounds = [0, 0, width as i32, height as i32];
         self.clips.clear();
     }
     pub fn clear(&mut self, colour: u32) {
-        encode::clear(&mut self.words, colour);
+        encode::clear(self.out(), colour);
     }
     pub fn solid(&mut self, colour: u32, rectangles: &[[i32; 4]]) {
-        encode::draw(&mut self.words, pipeline::SOLID, colour, rectangles);
+        encode::draw(self.out(), pipeline::SOLID, colour, rectangles);
     }
     pub fn copy(&mut self, texture: u64, instances: &[[i32; 6]]) {
-        encode::draw_sampled(&mut self.words, pipeline::COPY, texture, instances);
+        encode::draw_sampled(self.out(), pipeline::COPY, texture, instances);
     }
     pub fn set_clip(&mut self, rect: [i32; 4]) {
         self.clips.clear();
@@ -74,8 +78,9 @@ impl Context {
     }
     fn scissor(&mut self) {
         let r = self.clips.last().copied().unwrap_or(self.bounds);
-        self.words.extend([8, 6]);
-        self.words.extend(r.map(|v| v as u32));
+        let out = self.out();
+        out.extend([8, 6]);
+        out.extend(r.map(|v| v as u32));
     }
     /// Preserve primitive order. The first overlap ends the current draw; the next
     /// command therefore receives a destination snapshot after that draw completes.
@@ -90,7 +95,7 @@ impl Context {
     ) {
         if !draw::blended(pipeline) {
             draw::encode(
-                &mut self.words,
+                self.out(),
                 pipeline,
                 colour,
                 texture,
@@ -127,13 +132,13 @@ impl Context {
                 if disjoint(mid) { good=mid; } else { bad=mid; }
             }
             let split=rects[good].0;
-            draw::encode(&mut self.words,pipeline,colour,texture,buffer,data_bytes,&instances[first..split]);
+            draw::encode(self.out(),pipeline,colour,texture,buffer,data_bytes,&instances[first..split]);
             first=split;
             start=good;
         }
         if first < instances.len() {
             draw::encode(
-                &mut self.words,
+                self.out(),
                 pipeline,
                 colour,
                 texture,
@@ -149,6 +154,7 @@ impl Context {
             return Err(r);
         }
         self.words.clear();
+        self.handed.set(false);
         Ok(Fence {
             context: self.handle,
             handle: a.fence,
@@ -163,14 +169,29 @@ impl Context {
     /// Drop commands encoded since the last successful `submit`, after a refused submission.
     pub fn discard(&mut self) {
         self.words.clear();
+        self.handed.set(false);
     }
+    /// Hand out the commands encoded since the last submission, for a caller that submits
+    /// them itself: they count as submitted, and the next command starts a new stream.
     pub fn encoded(&self) -> &[u32] {
+        self.handed.set(true);
+        &self.words
+    }
+    /// The commands encoded since the last submission, without handing them out.
+    pub fn commands(&self) -> &[u32] {
         &self.words
     }
     /// Append commands this context encoded earlier (taken from `encoded`), to send them
     /// in the next `submit`.
     pub fn append(&mut self, words: &[u32]) {
-        self.words.extend_from_slice(words);
+        self.out().extend_from_slice(words);
+    }
+    /// The stream new commands go into: a stream handed out by `encoded` is not sent again.
+    fn out(&mut self) -> &mut Vec<u32> {
+        if self.handed.replace(false) {
+            self.words.clear();
+        }
+        &mut self.words
     }
 }
 impl Drop for Context {

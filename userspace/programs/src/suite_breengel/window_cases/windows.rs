@@ -1237,23 +1237,70 @@ fn windows_churn() -> CaseResult {
         }
     };
     drain()?;
+    // The frames by allocation site beside each free-memory sample, as its owners: read
+    // into buffers made before the baseline, so the reads do not allocate between them.
+    let mut sites = [vec![0u8; 1 << 16], vec![0u8; 1 << 16]];
+    frames_into(&mut sites[1]).cite("17.2")?;
     let _ = (list(), counter("window_buffer_allocs"), vm_size(), mem_free_kb());
     let listed_before = list().cite("17.2")?.len();
     let allocs_before = counter("window_buffer_allocs").cite("18")?;
     let vm_before = vm_size().cite("17.2")?;
     let free_before = mem_free_kb().cite("17.2")?;
+    let read_before = frames_into(&mut sites[0]).cite("17.2")?;
     for _ in 0..100 {
         cycle()?;
     }
     drain()?;
     let free_after = mem_free_kb().cite("17.2")?;
+    let read_after = frames_into(&mut sites[1]).cite("17.2")?;
+    let vm_after = vm_size().cite("17.2")?;
+    let moved = moved_sites(&frame_sites(&sites[0][..read_before]), &frame_sites(&sites[1][..read_after]));
     let allocs = counter("window_buffer_allocs").cite("18")? - allocs_before;
     value("buffer-allocs", allocs as i64, "", Some((200, 200)));
     ensure(allocs == 200, "18", format!("100 two-buffer windows counted {allocs} buffer allocations; each counts 2"))?;
     ensure(list().cite("17.2")?.len() == listed_before, "17.2", "after 100 create and destroy cycles the registry lists a different number of windows")?;
-    ensure(vm_size().cite("17.2")? == vm_before, "17.2", "after 100 create and destroy cycles VmSize differs from its baseline")?;
+    ensure(vm_after == vm_before, "17.2", "after 100 create and destroy cycles VmSize differs from its baseline")?;
     value("mem-free-change", free_after as i64 - free_before as i64, "kb", None);
-    ensure(free_after + 16 >= free_before, "17.2", format!("after 100 cycles {} kB fewer are free", free_before.saturating_sub(free_after)))
+    let held: Vec<String> = moved.iter().filter(|(_, pages)| *pages > 0).map(|(site, pages)| format!("{pages} at {site}")).collect();
+    ensure(free_after + 16 >= free_before, "17.2", format!("after 100 cycles {} kB fewer are free; frames gained by allocation site: {}",
+        free_before.saturating_sub(free_after), if held.is_empty() { String::from("none") } else { held.join(", ") }))
+}
+
+/// `/proc/breenix/frames` read into `buf`, which is not grown: the bytes read.
+fn frames_into(buf: &mut [u8]) -> Result<usize, String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open("/proc/breenix/frames").map_err(|e| format!("open /proc/breenix/frames: {e}"))?;
+    let mut n = 0;
+    loop {
+        if n == buf.len() {
+            return Err(String::from("/proc/breenix/frames is larger than its buffer"));
+        }
+        match file.read(&mut buf[n..]) {
+            Ok(0) => return Ok(n),
+            Ok(k) => n += k,
+            Err(e) => return Err(format!("read /proc/breenix/frames: {e}")),
+        }
+    }
+}
+
+/// The frames allocated at each kernel allocation site (the frames report's site rows).
+fn frame_sites(report: &[u8]) -> Vec<(String, i64)> {
+    let text = String::from_utf8_lossy(report);
+    text.lines().filter_map(|line| {
+        let mut words = line.split_whitespace();
+        (words.next() == Some("site")).then_some(())?;
+        let pages = words.next()?.parse().ok()?;
+        Some((words.last()?.to_string(), pages))
+    }).collect()
+}
+
+/// The sites whose frame count changed from `before` to `after`, and by how many.
+fn moved_sites(before: &[(String, i64)], after: &[(String, i64)]) -> Vec<(String, i64)> {
+    let count = |rows: &[(String, i64)], site: &str| rows.iter().find(|(s, _)| s == site).map_or(0, |(_, n)| *n);
+    let mut sites: Vec<&String> = before.iter().chain(after).map(|(s, _)| s).collect();
+    sites.sort();
+    sites.dedup();
+    sites.into_iter().map(|s| (s.clone(), count(after, s) - count(before, s))).filter(|(_, d)| *d != 0).collect()
 }
 
 fn windows_distinct_content() -> CaseResult {

@@ -62,8 +62,12 @@ impl Texture {
         let texture = Texture { handle, width, height, owner: device::pid(), format: layout };
         let rect = [0, 0, width as u32, height as u32];
         let stride = (width * layout.bpp) as u32;
-        device::with(|d| bgl::fixture_upload(table, &d.context, handle, rect, stride, layout.upload_source()))
-            .map_err(SurfaceError::Device)?;
+        device::with(|d| {
+            bgl::fixture_upload(table, &d.context, handle, rect, stride, layout.upload_source())?;
+            d.declared += (width * height * layout.bpp) as u64;
+            Ok(())
+        })
+        .map_err(SurfaceError::Device)?;
         Ok(texture)
     }
 }

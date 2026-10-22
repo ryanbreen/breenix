@@ -516,6 +516,20 @@ pub struct Cursor {
     pub y: i32,
 }
 
+impl Cursor {
+    /// The sprite's offset from the pointer to its box's top-left corner, and the box's side.
+    pub const BOX_OFFSET: i32 = 12;
+    pub const BOX: i32 = 36;
+
+    /// The screen rectangle the sprite can cover, which moving, reshaping or hiding it
+    /// damages (section 18): `BOX` pixels square from `BOX_OFFSET` above and left of the
+    /// pointer; while hidden there is no footprint.
+    pub fn footprint(&self) -> Option<Rect> {
+        (self.visible != 0 && self.shape < cursor_shape::HIDDEN)
+            .then(|| Rect::new(self.x - Self::BOX_OFFSET, self.y - Self::BOX_OFFSET, Self::BOX, Self::BOX))
+    }
+}
+
 /// Argument of `GIVE_DISPLAY`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

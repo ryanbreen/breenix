@@ -190,6 +190,23 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EINVAL);
     }
     let tgid = caller()?;
+    // The fence is the caller's from the send on, even if the wait is interrupted.
+    let (fence, status, answer) = present_as(tgid, a.context, a.target, &|fence| write_arg(arg, &abi::Present { fence, ..a }))?;
+    a.fence = fence;
+    a.answer = answer;
+    write_arg(arg, &a)?;
+    if status == fence_status::OK {
+        Ok(0)
+    } else {
+        Err(EIO)
+    }
+}
+
+/// Bind `target` of `tgid` to the scanout in `context` and wait for its flush: the fence,
+/// its status and the device's answer. `on_sent` receives the fence once the bind is queued;
+/// its error, or an interrupted wait, leaves the queued present to complete on its own.
+pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(u64) -> Result<(), i64>) -> Result<(u64, u32, u32), i64> {
+    let a = abi::Present { context, target, ..abi::Present::ZERO };
     if !owner(tgid) {
         return Err(EPERM);
     }
@@ -352,8 +369,6 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
         Ok(Err(e)) => return Err(e),
         Err(_) => return Err(EINTR),
     };
-    // The fence is the caller's from here on, even if the wait below is interrupted.
-    a.fence = bgl_fence;
     let forget = || {
         with_core(|c| {
             if let Some(ctx) = c.contexts.get_mut(&ctx_id) {
@@ -361,7 +376,7 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
             }
         });
     };
-    if let Err(e) = write_arg(arg, &a) {
+    if let Err(e) = on_sent(bgl_fence) {
         forget();
         return Err(e);
     }
@@ -390,19 +405,19 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
             return Err(EINTR);
         }
     };
-    a.answer = outcome.1;
-    write_arg(arg, &a)?;
-    if outcome.0 == fence_status::OK {
-        Ok(0)
-    } else {
-        Err(EIO)
-    }
+    Ok((bgl_fence, outcome.0, outcome.1))
 }
 
 pub(super) fn modes(arg: u64, len: u64) -> Result<u64, i64> {
     let input: abi::Modes = read_arg(arg, len)?;
     if input != abi::Modes::ZERO {
         return Err(EINVAL);
+    }
+    // A display hand-back the render thread has yet to restore reports the restored binding,
+    // as an observation does; a restore still owed after 1 s reports the binding as it is.
+    let deadline = now_ns().saturating_add(1_000_000_000);
+    if let Err(Stop::Interrupted) = wait_for(Some(deadline), true, |c| (!super::console::restoring(c.display.owner_sequence)).then_some(())) {
+        return Err(EINTR);
     }
     let mut a = with_core(|c| {
         let mut a = abi::Modes::ZERO;
@@ -549,6 +564,54 @@ pub(super) fn take(group: u64, pid: u64, vt: usize) -> Result<(), i64> {
     Ok(())
 }
 
+/// `GIVE_DISPLAY` (414 op 27, breengel.md section 18.3): the current owner `giver` hands the
+/// display to process `pid`, which becomes owner directly above it. The giver's mode,
+/// binding and backing stay on the stack; no compositor claim moves with the display. The
+/// target is resolved once to its live thread group, so a later process given the same
+/// number is not the owner.
+pub(super) fn give(giver: u64, pid: u32) -> Result<(), i64> {
+    const ESRCH: i64 = 3;
+    let target = crate::process::with_process_manager(|m| {
+        let p = m.get_process(crate::process::ProcessId::new(pid as u64))?;
+        (!p.is_terminated()).then(|| p.thread_group_id.unwrap_or(pid as u64))
+    })
+    .flatten()
+    .ok_or(ESRCH)?;
+    // Refuse before changing VT custody; hold a transition while installing the owner.
+    wait_for(None, true, |c| {
+        if !owner(giver) {
+            return Some(Err(EPERM));
+        }
+        if target == giver || c.display.stack.iter().any(|o| o.group == target) || c.display.stack.len() >= 4 {
+            return Some(Err(EBUSY));
+        }
+        if c.display.changing || c.display.outstanding != 0 {
+            return None;
+        }
+        if c.display.stack.try_reserve(1).is_err() {
+            return Some(Err(ENOMEM));
+        }
+        c.display.changing = true;
+        Some(Ok(()))
+    })
+    .map_err(|_| EINTR)??;
+    let _transition = Transition;
+    // The display goes with the giver's terminal.
+    let vt = crate::console::vt::display_owner().map_or(1, |(_, vt)| vt);
+    crate::console::vt::take_display_nested(target, vt).map_err(|e| e as i64)?;
+    with_core(|c| {
+        let mode = c.display.mode;
+        c.display.stack.push(Owner { group: target, pid: pid as u64, mode, last: None, pane: None });
+        publish_owner(c);
+    });
+    crate::process::with_process_manager(|m| {
+        if let Some(p) = m.get_process_mut(crate::process::ProcessId::new(pid as u64)) {
+            p.has_display_ownership = true;
+        }
+    });
+    Ok(())
+}
+
 pub(super) fn back(group: u64) -> Result<(), i64> {
     let _transition = Transition::acquire()?;
     let removed = with_core(|c| {
@@ -606,9 +669,11 @@ pub(super) fn ended(c: &mut Core, group: u64) {
 }
 
 pub(super) fn restore() -> Result<(), i64> {
+    // An owner that has not presented yet was shown what was on the screen when it took
+    // custody: the frame of the nearest owner below it that presented.
     let (saved, current, owned) = with_core(|c| {
         let current = c.display.binding.filter(|_| c.display.known);
-        (c.display.stack.last().and_then(|o| o.last), current, !c.display.stack.is_empty())
+        (c.display.stack.iter().rev().find_map(|o| o.last), current, !c.display.stack.is_empty())
     })
     .unwrap_or((None, None, false));
     match saved {
@@ -617,7 +682,7 @@ pub(super) fn restore() -> Result<(), i64> {
         // binding unknown meanwhile, refusing the owner's readbacks with reason 10.
         Some(b) if current.is_some_and(|c| c.id == b.id) => Ok(()),
         Some(b) => super::screen::bind_saved(b),
-        // An owner that has not presented yet sees the kernel's screen as it was left.
+        // No owner on the stack has presented: the kernel's screen as it was left.
         None if owned => super::screen::show(),
         // No owner: the screen console has the display again (ruling F25).
         None => super::screen::restore(),

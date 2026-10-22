@@ -689,6 +689,7 @@ pub fn publish_ready() {
          reg.windows.values().flat_map(|w| w.buffers.iter().filter(|b| b.draining)
             .map(move |b| (w.id, b.uid, b.mem.clone()))).collect())
     };
+    let mut decided = false;
     for (id, pending, target) in pending {
         let Some(outcome) = pending.seal.outcome() else { continue; };
         let outcome = outcome.and_then(|()| target.identity().map(|_| ()));
@@ -726,8 +727,12 @@ pub fn publish_ready() {
             }
             w.waits.clone()
         };
+        decided = true;
         waits.gate.wake_up();
         waits.acquire.wake_up();
+    }
+    if decided {
+        super::scene::changed();
     }
     for (id, uid, target) in draining {
         if !target.idle() { continue; }
@@ -1079,14 +1084,20 @@ fn all_waits(reg: &super::Registry) -> Vec<Arc<Waits>> {
 }
 
 /// `EVENT_FD` (the owner): a new descriptor that polls readable while the window has an event.
+/// Window 0, for the compositor claimant: the scene descriptor, readable while the scene has
+/// changed since it was last read.
 pub fn event_fd(caller: &Caller, id: u64) -> Result<u64, i32> {
     use crate::ipc::fd::{FdKind, FileDescriptor};
-    let queue = {
-        let mut reg = REGISTRY.lock();
-        reg.window(id, caller, who::owner)?.waits.events.clone()
+    let file: Arc<dyn crate::ipc::object::IpcFile> = if id == 0 {
+        let queue = super::scene::changes_queue(caller)?;
+        Arc::try_new(super::events::SceneFile::new(queue)).map_err(|_| ENOMEM)?
+    } else {
+        let queue = {
+            let mut reg = REGISTRY.lock();
+            reg.window(id, caller, who::owner)?.waits.events.clone()
+        };
+        Arc::try_new(super::events::EventFile::new(id, queue)).map_err(|_| ENOMEM)?
     };
-    let file: Arc<dyn crate::ipc::object::IpcFile> =
-        Arc::try_new(super::events::EventFile::new(id, queue)).map_err(|_| ENOMEM)?;
     let entry = FileDescriptor::try_opened(FdKind::Ipc(file), 0).map_err(|_| ENOMEM)?;
     crate::process::with_process_manager(|manager| {
         let (_, process) = manager.find_process_by_thread_mut(caller.tid).ok_or(breengel_abi::errno::ESRCH)?;
@@ -1205,7 +1216,7 @@ pub fn claim(caller: &Caller, c: &mut Claim, out: u64) -> Result<u64, i32> {
         let mut reg = REGISTRY.lock();
         // The new compositor's first composite covers the whole screen: what is on it now
         // was not composed by this claim.
-        reg.present.force_full = true;
+        reg.present.request_full();
         let mut woken = Vec::new();
         let _ = woken.try_reserve_exact(reg.windows.len());
         for w in reg.windows.values_mut() {
@@ -1380,6 +1391,7 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
     crate::gpu::window_targets::release_context(tgid);
     drop(gone);
     drop(freed);
+    super::scene::changed();
     // TODO(gpu-display): the retired software compositor restored the display here when its
     // owner exited; the GPU compositor's display ownership takes this over.
 }

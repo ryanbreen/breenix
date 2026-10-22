@@ -778,6 +778,14 @@ pub fn mouse_state() -> (u32, u32, u32) {
     )
 }
 
+/// Put the pointer at `(x, y)`, clamped to the screen, as if the tablet had moved there
+/// (test point 17, `move-pointer`).
+pub fn move_to(x: u32, y: u32) {
+    let (sw, sh) = screen_dimensions();
+    MOUSE_X.store(x.min(sw.saturating_sub(1)), Ordering::Relaxed);
+    MOUSE_Y.store(y.min(sh.saturating_sub(1)), Ordering::Relaxed);
+}
+
 /// Tablet interrupt handler.
 ///
 /// Processes EV_ABS (mouse movement) and EV_KEY (mouse buttons).

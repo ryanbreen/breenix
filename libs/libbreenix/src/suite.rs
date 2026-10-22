@@ -112,6 +112,7 @@ use libgfx_ref::framebuf::FrameBuf;
 
 use crate::error::Error;
 pub use crate::suite_spawn::{spawn, Keep, Run};
+pub use crate::suite_stage::{set_painter, DiffRef, Frame as StageFrame, Painter, PictureRef, SpotRef, ThumbRef};
 pub use crate::ui_clock;
 use crate::fs;
 use crate::io::{self, poll_events, status_flags, PollFd};
@@ -157,6 +158,7 @@ pub fn check(condition: bool, msg: &str) -> CaseResult {
 
 /// Canonical pixels handed to the runner by a picture case, with their content hash.
 /// The stage consumes this snapshot, never a later redraw of the case's surface.
+#[derive(Clone)]
 pub struct JudgedFrame {
     pub width: usize,
     pub height: usize,
@@ -464,13 +466,138 @@ pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
 
 /// In a case's process, when its limit passes, in monotonic nanoseconds; 0 elsewhere.
 static CASE_DEADLINE_NS: AtomicU64 = AtomicU64::new(0);
-// Ruling 52 (gpu.md): gpu/textures/upload-visibility excludes catalogue warm-up.
-// Its private pipe starts the timed window once.
+// Ruling 52 (gpu.md): gpu/textures/upload-visibility excludes catalogue warm-up, and ruling
+// B38 has breengel's composition/irq-bound wait for its contexts' warm-up before it measures.
+// A private pipe starts each one's timed window once.
 static CASE_WINDOW_FD: AtomicI32 = AtomicI32::new(-1);
+/// The cases whose timed window starts when they say, after their contexts have warmed.
+const WARMED_WINDOWS: [(&str, &str); 2] = [("gpu", "textures/upload-visibility"), ("breengel", "composition/irq-bound")];
 
-/// Start upload-visibility's ten-second window after its contexts have warmed.
-/// This one-shot signal is available only in that named case; setup is still bounded
-/// by the runner and host progress supervision.
+/// What the case's process published with its judged frame for the stage's pictures
+/// (ruling B36): a window holding a GPU copy of the frame, `(id, width, height)`, or the
+/// stage's own frame, as the scanout shows it.
+#[derive(Clone, Copy)]
+enum Published { Window(u64, u32, u32), Stage }
+static PUBLISHED: std::sync::Mutex<Option<Published>> = std::sync::Mutex::new(None);
+/// In a case's process: the pipe it tells the runner on, and the one the runner answers on
+/// once it has sampled the frame.
+static PUBLISHED_FD: AtomicI32 = AtomicI32::new(-1);
+static SAMPLED_FD: AtomicI32 = AtomicI32::new(-1);
+/// In a GUI suite's case process: the pipe it asks the runner to draw the stage on, and the
+/// one the runner answers on (`suite_stage::remote`).
+static STAGE_REQUEST_FD: AtomicI32 = AtomicI32::new(-1);
+static STAGE_ANSWER_FD: AtomicI32 = AtomicI32::new(-1);
+
+fn write_all(fd: Fd, mut bytes: &[u8]) -> bool {
+    while !bytes.is_empty() {
+        match io::write(fd, bytes) {
+            Ok(n) if n > 0 => bytes = &bytes[n..],
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Fill `buf` from `fd`, sleeping in poll until each part is readable.
+fn read_exact(fd: Fd, buf: &mut [u8]) -> bool {
+    let mut at = 0;
+    while at < buf.len() {
+        let mut fds = [PollFd::new(fd, poll_events::POLLIN)];
+        if io::poll(&mut fds, -1).is_err() {
+            return false;
+        }
+        match io::read(fd, &mut buf[at..]) {
+            Ok(n) if n > 0 => at += n,
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// A length-prefixed message on `fd`.
+fn read_message(fd: Fd) -> Option<Vec<u8>> {
+    let mut len = [0u8; 4];
+    if !read_exact(fd, &mut len) {
+        return None;
+    }
+    let mut message = std::vec![0u8; u32::from_le_bytes(len) as usize];
+    read_exact(fd, &mut message).then_some(message)
+}
+
+/// A length-prefixed message on `fd`, in one write, so its reader wakes once for the whole message.
+fn write_message(fd: Fd, message: &[u8]) -> bool {
+    let mut framed = Vec::with_capacity(4 + message.len());
+    framed.extend_from_slice(&(message.len() as u32).to_le_bytes());
+    framed.extend_from_slice(message);
+    write_all(fd, &framed)
+}
+
+/// In a GUI suite's case process: send `request` to the runner's stage and return its answer.
+pub(crate) fn stage_call(request: &[u8]) -> Result<Vec<u8>, String> {
+    let (tell, answer) = (STAGE_REQUEST_FD.load(Ordering::Relaxed), STAGE_ANSWER_FD.load(Ordering::Relaxed));
+    if tell < 0 || answer < 0 {
+        return Err(String::from("this process has no runner to draw the stage"));
+    }
+    if !write_message(Fd::from_raw(tell as u64), request) {
+        return Err(String::from("the stage request could not be sent to the runner"));
+    }
+    read_message(Fd::from_raw(answer as u64)).ok_or_else(|| String::from("the runner did not answer the stage request"))
+}
+
+/// The window `id`, `width` x `height`, holds a GPU copy of the judged frame this case hands
+/// over; the stage samples it once the case's measured window has ended, before this
+/// process exits.
+pub fn judged_picture_window(id: u64, width: u32, height: u32) {
+    *PUBLISHED.lock().unwrap() = Some(Published::Window(id, width, height));
+}
+
+/// The judged frame this case hands over is the stage's own frame, as the scanout shows it.
+pub fn judged_picture_stage() {
+    *PUBLISHED.lock().unwrap() = Some(Published::Stage);
+}
+
+/// In the case's process, after its report: give the display back, tell the runner what was
+/// published, and wait, at most 5 s, for it to sample the frame.
+fn hand_over_picture() {
+    let Some(published) = PUBLISHED.lock().unwrap().take() else { return };
+    let (tell, answer) = (PUBLISHED_FD.load(Ordering::Relaxed), SAMPLED_FD.load(Ordering::Relaxed));
+    if tell < 0 || answer < 0 {
+        return;
+    }
+    let _ = graphics::give_back_display();
+    let mut message = [0u8; 24];
+    let (kind, id, width, height) = match published {
+        Published::Window(id, w, h) => (1u32, id, w, h),
+        Published::Stage => (2, 0, 0, 0),
+    };
+    message[..4].copy_from_slice(&kind.to_le_bytes());
+    message[4..8].copy_from_slice(&width.to_le_bytes());
+    message[8..12].copy_from_slice(&height.to_le_bytes());
+    message[16..].copy_from_slice(&id.to_le_bytes());
+    if io::write(Fd::from_raw(tell as u64), &message).ok() != Some(24) {
+        return;
+    }
+    let mut fds = [PollFd::new(Fd::from_raw(answer as u64), poll_events::POLLIN)];
+    if io::poll(&mut fds, 5_000).is_ok_and(|n| n > 0) {
+        let mut byte = [0u8; 1];
+        let _ = io::read(Fd::from_raw(answer as u64), &mut byte);
+    }
+}
+
+/// The runner's side: what a case's 24-byte message says it published.
+fn published(message: &[u8; 24]) -> Option<crate::suite_stage::Published> {
+    let word = |at: usize| u32::from_le_bytes(message[at..at + 4].try_into().unwrap());
+    let id = u64::from_le_bytes(message[16..].try_into().unwrap());
+    match word(0) {
+        1 => Some(crate::suite_stage::Published::Window { id, width: word(4) as usize, height: word(8) as usize }),
+        2 => Some(crate::suite_stage::Published::Stage),
+        _ => None,
+    }
+}
+
+/// Start the case's ten-second window after its contexts have warmed.
+/// This one-shot signal is available only in the `WARMED_WINDOWS` cases; setup is still
+/// bounded by the runner and host progress supervision.
 pub fn start_case_window() -> CaseResult {
     let fd = CASE_WINDOW_FD.swap(-1, Ordering::Relaxed);
     if fd < 0 { return fail("this case has no pending timed window"); }
@@ -987,10 +1114,10 @@ fn read_report(reader: Fd) -> Option<Outcome> {
     parse_report(std::str::from_utf8(&buf[..n]).ok()?)
 }
 
-/// Polls in a row that may see the monotonic clock stand still before the suite
-/// decides it has stopped. A poll is a waitpid, a clock read and a yield, so a
-/// working clock moves long before this many.
-const CLOCK_STALL_POLLS: u32 = 1_000_000;
+/// Timed-out waits in a row that may see the monotonic clock stand still before the
+/// suite decides it has stopped. Each lasts at least a millisecond of a working clock,
+/// so a clock that moves does not reach this many.
+const CLOCK_STALL_WAKES: u32 = 1_000;
 
 /// How a wait for a child ended.
 enum Waited {
@@ -1002,21 +1129,28 @@ enum Waited {
     ClockStopped(u64),
     /// waitpid failed.
     Failed(Error),
+    /// It reported and published its judged frame for the stage's pictures: this message.
+    Published([u8; 24]),
 }
 
 /// How often the live strip is redrawn while the runner waits for a case.
 const FRAME_MS: i128 = 66;
 
-/// Wait up to `limit_ms` after `start` for `pid` to exit, calling `frame` about every
-/// `FRAME_MS` meanwhile. Polls and yields rather than sleeping: a sleep's wake-up is
-/// timed by the monotonic clock, so if that clock stopped the suite would never wake
-/// to report it. Instead, polls that see the clock stand still are counted, and
-/// `CLOCK_STALL_POLLS` of them end the wait.
-fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut(), window: Option<Fd>) -> Waited {
+/// Wait up to `limit_ms` after `start` for `pid` to exit, calling `frame` at intervals of
+/// about `FRAME_MS` meanwhile. The runner sleeps in `poll` between checks rather than spinning:
+/// on `report`, the case's report pipe, which is readable once the case has reported and
+/// hung up once it has exited; on `window`, `published` and `stage`, whose requests to
+/// draw the stage it serves; and otherwise until the next frame or the limit, or for 1 ms
+/// once the case has reported.
+/// A wait that timed out with the monotonic clock standing still counts towards
+/// `CLOCK_STALL_WAKES`, which ends the wait as a stopped clock. (A poll's timeout runs on
+/// that clock, so a stopped clock wakes the runner only through the pipes.)
+fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut(), window: Option<Fd>, published: Option<Fd>, mut report: Option<Fd>, mut stage: Option<(Fd, Fd)>) -> Waited {
     let mut awaiting_window = window.is_some();
     let mut last = monotonic_ns();
     let mut still = 0;
     let mut drawn = last;
+    let mut timed_out = false;
     loop {
         if awaiting_window {
             let mut bytes = [0u8; 8];
@@ -1025,6 +1159,12 @@ fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn F
                     start = Some(u64::from_le_bytes(bytes) as i128);
                     awaiting_window = false;
                 }
+            }
+        }
+        if let Some(fd) = published {
+            let mut message = [0u8; 24];
+            if io::read(fd, &mut message).ok() == Some(24) {
+                return Waited::Published(message);
             }
         }
         let mut status = 0;
@@ -1041,22 +1181,50 @@ fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn F
         if ms >= active_limit {
             return Waited::TimedOut(ms);
         }
-        if now.is_none() || now == last {
+        if now.is_none() || (timed_out && now == last) {
             still += 1;
-            if still >= CLOCK_STALL_POLLS {
+            if still >= CLOCK_STALL_WAKES {
                 return Waited::ClockStopped(ms);
             }
         } else {
             still = 0;
             last = now;
         }
+        let mut next_frame = FRAME_MS;
         if let (Some(now), Some(then)) = (now, drawn) {
             if now - then >= FRAME_MS * 1_000_000 {
                 frame();
                 drawn = Some(now);
+            } else {
+                next_frame = FRAME_MS - (now - then) / 1_000_000;
             }
         }
-        let _ = process::yield_now();
+        let mut fds = [PollFd::new(Fd::from_raw(0), poll_events::POLLIN); 4];
+        let mut n = 0;
+        for fd in [report, published, window.filter(|_| awaiting_window), stage.map(|(r, _)| r)].into_iter().flatten() {
+            fds[n] = PollFd::new(fd, poll_events::POLLIN);
+            n += 1;
+        }
+        let timeout = if report.is_some() {
+            (next_frame as u64).min(active_limit - ms).max(1)
+        } else {
+            1
+        };
+        let ready = io::poll(&mut fds[..n], timeout as i32).unwrap_or(0);
+        timed_out = ready == 0;
+        let woke = |fd: Fd| fds[..n].iter().any(|p| p.fd == fd.raw() as i32 && p.revents != 0);
+        // Once the case has reported or exited, its report pipe stays readable: from then
+        // on the exit is a waitpid away.
+        if report.is_some_and(woke) {
+            report = None;
+        }
+        // The case's live checks ask the runner to draw the stage; a closed pipe ends that.
+        if let Some((requests, answers)) = stage.filter(|(r, _)| woke(*r)) {
+            let served = read_message(requests).is_some_and(|m| write_message(answers, &crate::suite_stage::serve(&m)));
+            if !served {
+                stage = None;
+            }
+        }
     }
 }
 
@@ -1066,10 +1234,10 @@ fn stop_child(pid: i32) -> &'static str {
     if signal::kill(pid, SIGKILL).is_err() {
         return "; SIGKILL failed, the case may still be running";
     }
-    match wait_exit(pid, monotonic_ns(), 1000, &mut || {}, None) {
+    match wait_exit(pid, monotonic_ns(), 1000, &mut || {}, None, None, None, None) {
         Waited::Exited(_) => "",
         Waited::Failed(_) => "; waitpid failed after SIGKILL",
-        Waited::TimedOut(_) | Waited::ClockStopped(_) => "; still running after SIGKILL",
+        Waited::TimedOut(_) | Waited::ClockStopped(_) | Waited::Published(_) => "; still running after SIGKILL",
     }
 }
 
@@ -1205,15 +1373,31 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
     }
     if screen.gui {
         screen.stage_result(crate::suite_stage::begin());
-        screen.stage_result(crate::suite_stage::release());
+        screen.stage_result(crate::suite_stage::release_for(name));
     }
-    let window = if suite == "gpu" && name == "textures/upload-visibility" {
+    let window = if WARMED_WINDOWS.contains(&(suite, name)) {
         match io::pipe2(status_flags::O_CLOEXEC | status_flags::O_NONBLOCK) {
             Ok(ends) => Some(ends),
             Err(error) => {
                 let _ = (io::close(reader), io::close(writer));
                 if let Some((r, w)) = live { let _ = (io::close(r), io::close(w)); }
                 return Outcome::Fail { ms: 0, msg: plain(&std::format!("timed-window pipe failed: {error}")) };
+            }
+        }
+    } else { None };
+    // A GUI suite's case tells the runner what it published for the stage's pictures, and
+    // waits for the runner to sample it (ruling B36); its live checks ask the runner to draw
+    // the stage on the other two pipes.
+    let pictures = if screen.gui {
+        match (io::pipe2(status_flags::O_CLOEXEC | status_flags::O_NONBLOCK), io::pipe2(status_flags::O_CLOEXEC),
+               io::pipe2(status_flags::O_CLOEXEC), io::pipe2(status_flags::O_CLOEXEC)) {
+            (Ok(tell), Ok(answer), Ok(request), Ok(drawn)) => Some((tell, answer, request, drawn)),
+            (tell, answer, request, drawn) => {
+                for (r, w) in [tell, answer, request, drawn].into_iter().flatten() { let _ = (io::close(r), io::close(w)); }
+                let _ = (io::close(reader), io::close(writer));
+                if let Some((r, w)) = live { let _ = (io::close(r), io::close(w)); }
+                if let Some((r, w)) = window { let _ = (io::close(r), io::close(w)); }
+                return Outcome::Fail { ms: 0, msg: String::from("could not start the case: the picture pipes failed") };
             }
         }
     } else { None };
@@ -1231,12 +1415,19 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                 let _ = io::close(live_reader);
                 LIVE_FD.store(live_writer.raw() as i32, Ordering::Relaxed);
             }
+            if let Some(((tell_r, tell_w), (answer_r, answer_w), (request_r, request_w), (drawn_r, drawn_w))) = pictures {
+                let _ = (io::close(tell_r), io::close(answer_w), io::close(request_r), io::close(drawn_w));
+                PUBLISHED_FD.store(tell_w.raw() as i32, Ordering::Relaxed);
+                SAMPLED_FD.store(answer_r.raw() as i32, Ordering::Relaxed);
+                STAGE_REQUEST_FD.store(request_w.raw() as i32, Ordering::Relaxed);
+                STAGE_ANSWER_FD.store(drawn_r.raw() as i32, Ordering::Relaxed);
+            }
             let initial_limit = if window.is_some() { 120_000 } else { limit_ms };
             let deadline = start.map_or(0, |start| (start + initial_limit as i128 * 1_000_000) as u64);
             CASE_DEADLINE_NS.store(deadline, Ordering::Relaxed);
             let _ = CASE_NAME.set(String::from(name));
             keep_record_output(suite, name);
-            let ready = if screen.gui { graphics::take_over_display() } else { Ok(()) };
+            let ready = if screen.gui && crate::suite_stage::case_takes_display(name) { graphics::take_over_display() } else { Ok(()) };
             let outcome = match ready.and_then(|()| silence_output()) {
                 Ok(()) => run_inline(case),
                 Err(error) => Outcome::Fail {
@@ -1246,6 +1437,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
             };
             let line = report(&outcome);
             let _ = io::write(writer, line.as_bytes());
+            hand_over_picture();
             process::exit(0)
         }
         Ok(ForkResult::Parent(pid)) => {
@@ -1256,12 +1448,37 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                 let _ = io::close(live_writer);
                 live_reader
             });
-            let mut frame = || {
-                if let Some(fd) = live_reader { feed.drain(fd); }
-                screen.frame(feed);
+            let (tell, answer, stage) = match pictures {
+                Some(((tell_r, tell_w), (answer_r, answer_w), (request_r, request_w), (drawn_r, drawn_w))) => {
+                    let _ = (io::close(tell_w), io::close(answer_r), io::close(request_w), io::close(drawn_r));
+                    (Some(tell_r), Some(answer_w), Some((request_r, drawn_w)))
+                }
+                None => (None, None, None),
             };
-            let outcome = match wait_exit(pid, start, limit_ms, &mut frame, window.map(|(r, _)| r)) {
+            let mut waited = {
+                let mut frame = || {
+                    if let Some(fd) = live_reader { feed.drain(fd); }
+                    screen.frame(feed);
+                };
+                wait_exit(pid, start, limit_ms, &mut frame, window.map(|(r, _)| r), tell, Some(reader), stage)
+            };
+            if let Waited::Published(message) = waited {
+                // The case has reported: its measured window ends before the stage composes.
+                let ms = ms_since(start);
+                screen.stage_result(crate::suite_stage::end());
+                if let Some(p) = published(&message) {
+                    screen.stage_result(crate::suite_stage::sample(p));
+                }
+                if let Some(fd) = answer { let _ = io::write(fd, &[1]); }
+                waited = match wait_exit(pid, monotonic_ns(), 5_000, &mut || {}, None, None, None, None) {
+                    Waited::TimedOut(_) => Waited::TimedOut(ms),
+                    other => other,
+                };
+            }
+            for fd in [tell, answer].into_iter().chain(stage.into_iter().flat_map(|(r, w)| [Some(r), Some(w)])).flatten() { let _ = io::close(fd); }
+            let outcome = match waited {
                 Waited::Exited(status) => exited(status, reader, ms_since(start)),
+                Waited::Published(_) => Outcome::Fail { ms: ms_since(start), msg: String::from("the case published two pictures") },
                 Waited::TimedOut(ms) => {
                     let note = stop_child(pid);
                     Outcome::Fail { ms, msg: plain(&std::format!("timed out after {limit_ms} ms{note}")) }
@@ -1278,7 +1495,10 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                     Outcome::Fail { ms: ms_since(start), msg: plain(&std::format!("waitpid failed: {error}{note}")) }
                 }
             };
-            if screen.gui {screen.stage_result(crate::suite_stage::end());}
+            if screen.gui {
+                screen.stage_result(crate::suite_stage::end());
+                screen.stage_result(crate::suite_stage::restore_after(name));
+            }
             let _ = io::close(reader);
             if let Some((r, _)) = window { let _ = io::close(r); }
             if let Some(fd) = live_reader {
@@ -1304,6 +1524,9 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
             let _ = io::close(writer);
             if let Some((r, w)) = window { let _ = (io::close(r), io::close(w)); }
             if let Some((r, w)) = live { let _ = (io::close(r), io::close(w)); }
+            if let Some((a, b, c, d)) = pictures {
+                for (r, w) in [a, b, c, d] { let _ = (io::close(r), io::close(w)); }
+            }
             Outcome::Fail { ms: 0, msg: plain(&std::format!("could not start the case: fork failed: {error}")) }
         }
     }

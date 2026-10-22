@@ -8,6 +8,7 @@ use super::{
     Caller, REGISTRY,
 };
 use crate::gpu::window_targets::{self, MetadataCharge, SceneEpoch};
+use crate::task::waitqueue::WaitQueueHead;
 use alloc::{sync::Arc, vec::Vec};
 use breengel_abi::errno::{EAGAIN, EBUSY, EINVAL, EIO, ENOENT, ENOMEM, EPERM};
 use breengel_abi::{Composite, CompositeEntry, Cursor, Plain, Rect, SceneSnapshot, SceneWindow};
@@ -37,7 +38,37 @@ pub struct Reservation {
     damage: Vec<Rect>,
     full: bool,
     uncovered: usize,
+    /// The whole-screen requests made before this snapshot.
+    full_requests: u64,
     _charge: MetadataCharge,
+}
+
+/// The queue the compositor's scene descriptor sleeps on.
+static CHANGES: spin::Once<Arc<WaitQueueHead>> = spin::Once::new();
+
+/// Note that the scene may have changed (a window op, a publication or an owner's exit) and
+/// wake the compositor's scene descriptor. Called without the registry lock.
+pub fn changed() {
+    {
+        let mut reg = REGISTRY.lock();
+        reg.present.changes = reg.present.changes.wrapping_add(1);
+    }
+    if let Some(queue) = CHANGES.get() {
+        queue.wake_up();
+    }
+}
+
+/// The scene descriptor's queue, for `EVENT_FD` of window 0 by the compositor claimant;
+/// ENOENT for anyone else, as for any id that names no window.
+pub fn changes_queue(caller: &Caller) -> Result<Arc<WaitQueueHead>, i32> {
+    if !REGISTRY.lock().is_compositor(caller) {
+        return Err(ENOENT);
+    }
+    if let Some(queue) = CHANGES.get() {
+        return Ok(queue.clone());
+    }
+    let queue = Arc::try_new(WaitQueueHead::new()).map_err(|_| ENOMEM)?;
+    Ok(CHANGES.call_once(|| queue).clone())
 }
 
 fn authority(caller: &Caller) -> Result<u64, i32> {
@@ -143,7 +174,12 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
         let old = REGISTRY.lock().snapshot.take();
         drop(old);
     }
-    let (scene_keys, targets, cursor, full, damage, uncovered) = {
+    let sizing =
+        a.window_capacity == 0 && a.damage_capacity == 0 && a.windows == 0 && a.damage == 0;
+    // Test point 1, `ignore-damage`: a reservation takes the whole of an armed window
+    // with new pixels as its damage, so its composite does the excess work.
+    let mut ignored = Vec::new();
+    let (scene_keys, targets, cursor, full, damage, uncovered, full_requests) = {
         let reg = REGISTRY.lock();
         if reg.snapshot.is_some() || reg.present.busy {
             return Err(EBUSY);
@@ -177,6 +213,14 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
                 damage.extend(w.present.shown);
                 damage.extend(now);
             } else if let Some(r) = now {
+                let point = (!sizing && !w.present.pending.is_empty() && ignored.try_reserve(1).is_ok())
+                    .then(|| crate::test_control::reserve(breengel_abi::tc_point::IGNORE_DAMAGE, w.id))
+                    .flatten();
+                if let Some(point) = point {
+                    ignored.push(point);
+                    damage.push(r);
+                    continue;
+                }
                 match &w.present.pending {
                     super::Damage::Full => damage.push(r),
                     super::Damage::Rects(rects) => damage.extend(
@@ -194,6 +238,7 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
             full,
             damage,
             reg.present.uncovered.len(),
+            reg.present.full_requests,
         )
     };
     let screen = Rect::new(0, 0, epoch.width as i32, epoch.height as i32);
@@ -210,8 +255,6 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
     sources
         .try_reserve_exact(scene_keys.len())
         .map_err(|_| ENOMEM)?;
-    let sizing =
-        a.window_capacity == 0 && a.damage_capacity == 0 && a.windows == 0 && a.damage == 0;
     if !sizing
         && ((a.window_capacity as usize) < scene_keys.len()
             || (a.damage_capacity as usize) < damage.len())
@@ -306,6 +349,7 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
         damage,
         full,
         uncovered,
+        full_requests,
         _charge: charge,
     };
     let mut reg = REGISTRY.lock();
@@ -320,6 +364,10 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
         return Err(EAGAIN);
     }
     reg.snapshot = Some(reservation);
+    drop(reg);
+    for point in ignored {
+        point.fire();
+    }
     Ok(0)
 }
 
@@ -370,7 +418,7 @@ impl Drop for Admission {
         let mut reg = REGISTRY.lock();
         reg.present.busy = false;
         if self.serial != 0 {
-            reg.present.force_full = true;
+            reg.present.request_full();
         }
     }
 }
@@ -509,6 +557,11 @@ pub fn submit(caller: &Caller, a: &mut Composite, out: u64) -> Result<u64, i32> 
         serial: 0,
         entries,
     };
+    // Test point 16, `composite-stall`: a composite that includes the armed window pauses
+    // here, with the sources' fronts pinned, before the backend composes.
+    if frame.sources.iter().any(|s| crate::test_control::take(breengel_abi::tc_point::COMPOSITE_STALL, s.window.id).is_some()) {
+        super::ops::stall();
+    }
     let result = present::backend()
         .ok_or(EIO)
         .and_then(|b| b.submit_scene(caller, &mut frame, a));
@@ -549,13 +602,17 @@ fn finish(frame: &mut Admission, result: Result<Composed, i32>, reason: u32) -> 
             let n = frame.reservation.uncovered.min(reg.present.uncovered.len());
             reg.present.uncovered.drain(..n);
             reg.present.composed_once = true;
-            reg.present.force_full = reg.cursor != frame.reservation.cursor;
+            // A cursor change during the frame left its footprints in `uncovered`, unless they
+            // overflowed it: that asked for a whole screen this frame did not compose.
+            if reg.present.full_requests == frame.reservation.full_requests {
+                reg.present.force_full = false;
+            }
             crate::tracing::providers::window::count_composite(c.pixels);
             (c.pixels, 0)
         }
         _ => {
             frame.entries.clear();
-            reg.present.force_full = true;
+            reg.present.request_full();
             (
                 0,
                 breengel_abi::record_flags::FAILED

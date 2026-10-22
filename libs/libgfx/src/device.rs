@@ -14,6 +14,9 @@ pub(crate) struct Device {
     pub(crate) context: Context,
     /// Textures holding a declared table, by `Table`.
     tables: [Option<Table>; TABLES],
+    /// The bytes this context uploaded from declared tables and crossing geometry, its only
+    /// uploads (gpu.md section 2.4), as the core counts them.
+    pub(crate) declared: u64,
 }
 
 /// A static table's texture and its glyph cell size.
@@ -22,6 +25,8 @@ pub(crate) struct Table {
     pub(crate) texture: u64,
     pub(crate) cell_w: u32,
     pub(crate) cell_h: u32,
+    /// The bytes its upload read.
+    pub(crate) uploaded: u64,
 }
 
 pub(crate) const TABLES: usize = 3;
@@ -62,7 +67,7 @@ pub(crate) fn with<R>(f: impl FnOnce(&mut Device) -> Result<R, i64>) -> Result<R
     // SAFETY: the PID-tagged lock is held for the rest of this call.
     let slot = unsafe { &mut *SLOT.device.get() };
     if slot.is_none() {
-        *slot = Some(Device { context: Context::new()?, tables: [None; TABLES] });
+        *slot = Some(Device { context: Context::new()?, tables: [None; TABLES], declared: 0 });
     }
     let device = slot.as_mut().expect("device created above");
     let result = f(device);
@@ -84,6 +89,7 @@ impl Device {
         }
         let t = make(&self.context)?;
         self.tables[index] = Some(t);
+        self.declared += t.uploaded;
         Ok(t)
     }
 }
