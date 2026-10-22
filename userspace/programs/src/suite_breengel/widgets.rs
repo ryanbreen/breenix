@@ -2237,24 +2237,29 @@ fn icons_bounded() -> CaseResult {
                     g.reset(PAPER);
                     let mut rng = Seeded(0x1C0_5EED ^ name.len() as u64);
                     let mut held = false;
-                    for _ in 0..10_000 {
-                        let hovering = rng.next() % 4 != 0;
-                        let press = !held && rng.next() % 9 == 0;
-                        let release = held && rng.next() % 5 == 0;
-                        held = (held || press) && !release;
-                        icon.update(
-                            1_000 + (rng.next() % 32_000) as u32,
-                            IconMouse {
-                                hovering,
-                                pressed: held,
-                                just_clicked: press,
-                                just_released: release,
-                                rel_x: (rng.next() % 200) as f32 / 100.0 - 1.0,
-                                rel_y: (rng.next() % 200) as f32 / 100.0 - 1.0,
-                            },
-                        );
-                        icon.draw(&mut g.fb(), 128, 128, size);
-                    }
+                    // Each of the 10,000 steps draws its frame, in one batch: the batch sends its shapes
+                    // many frames to a submission, with the pixels each frame drawn alone
+                    // gives, so the steps are not paced by a GPU round trip each (#2286).
+                    g.fb().batch(|fb| {
+                        for _ in 0..10_000 {
+                            let hovering = rng.next() % 4 != 0;
+                            let press = !held && rng.next() % 9 == 0;
+                            let release = held && rng.next() % 5 == 0;
+                            held = (held || press) && !release;
+                            icon.update(
+                                1_000 + (rng.next() % 32_000) as u32,
+                                IconMouse {
+                                    hovering,
+                                    pressed: held,
+                                    just_clicked: press,
+                                    just_released: release,
+                                    rel_x: (rng.next() % 200) as f32 / 100.0 - 1.0,
+                                    rel_y: (rng.next() % 200) as f32 / 100.0 - 1.0,
+                                },
+                            );
+                            icon.draw(fb, 128, 128, size);
+                        }
+                    });
                     snapshot(&g).map_err(|e| format!("judged icon: {e:?}"))?;
                     if drawn_pixels(&g, PAPER) == 0 {
                         return Err(format!("{name} drew nothing in 10,000 steps"));
