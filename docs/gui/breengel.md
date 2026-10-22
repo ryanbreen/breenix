@@ -1258,7 +1258,7 @@ meaning. Breengel maps an unknown kind to `Event::Unknown { kind }`, never to a 
   was made or last read: a window op that can change what the next composite shows (the ops other than `LIST`, `ACQUIRE`,
   `READ_EVENTS`, `WRITE_EVENTS`, `EVENT_FD`, `CAPTURE`, `MAP_TREE`, `COMPOSITE_SNAPSHOT`, `COMPOSITE_RECORD`,
   `SCANOUT_READBACK`, `READ_META`, `READ_REMNANT` and the retired ops), a commit's publication or rejection,
-  and an owner's exit. A read of at least 8 bytes returns the count of changes as a `u64` and marks them read;
+  and an owner's exit. A read of at least 8 bytes returns the running total of changes as a `u64` and marks that total read;
   a shorter read is EINVAL. A compositor sleeps on it and uses `COMPOSITE_SNAPSHOT`'s sizing query to learn
   whether there is damage, rather than polling.
 - `Resized` arrives only after the buffers have the new size and carries it; a refused resize delivers
