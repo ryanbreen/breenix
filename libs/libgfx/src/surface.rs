@@ -208,6 +208,20 @@ impl Surface {
 
     /// A new `width × height` target in a four-byte `format`, zeroed by the core.
     pub fn new(width: usize, height: usize, format: Format) -> Result<Surface, SurfaceError> {
+        Self::check_target(width, height, format)?;
+        let ui_scale = Self::display_scale()?;
+        Self::create(width, height, format, ui_scale)
+    }
+
+    /// A target the library keeps for its own storage (glyph scratch rows and atlas pages):
+    /// the library draws it in device pixels and reads it back or samples it, and no UI
+    /// coordinates reach it, so it does not ask the display for a UI scale and reports 1.
+    pub(crate) fn storage(width: usize, height: usize, format: Format) -> Result<Surface, SurfaceError> {
+        Self::check_target(width, height, format)?;
+        Self::create(width, height, format, 1)
+    }
+
+    fn check_target(width: usize, height: usize, format: Format) -> Result<(), SurfaceError> {
         if width == 0 || height == 0 {
             return Err(SurfaceError::Empty);
         }
@@ -217,8 +231,11 @@ impl Surface {
         if format.bpp != 4 {
             return Err(SurfaceError::Format);
         }
+        Ok(())
+    }
+
+    fn create(width: usize, height: usize, format: Format, ui_scale: u32) -> Result<Surface, SurfaceError> {
         let device_format = if format.is_bgr { abi::format::B8G8R8A8 } else { abi::format::R8G8B8A8 };
-        let ui_scale = Self::display_scale()?;
         let target = gpu::target_create(device_format, width as u32, height as u32).map_err(SurfaceError::Device)?;
         let whole = Box64 { x0: 0, y0: 0, x1: width as i64, y1: height as i64 };
         Ok(Surface { target, width, height, format, clip: whole, clips: Vec::new(), dirty: None, owner: device::pid(), owns_handle: true, error: None, render: None, ui_scale, batch: None })
