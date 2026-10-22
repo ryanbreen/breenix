@@ -895,6 +895,8 @@ pub(super) fn prepare() -> Result<(), String> {
     FONT.lock().unwrap().ready().map_err(|e| std::format!("stage font: {e:?}"))?;
     if let Some(s) = SHOW.lock().unwrap().as_mut() {
         s.observation = Observation { backend: seen.backend, flags: seen.flags, boundary: seen.boundary };
+        // And the painter's wall, glyph atlas and context: the first frame makes them.
+        s.draw(0)?;
     }
     Ok(())
 }
