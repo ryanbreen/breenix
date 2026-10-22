@@ -350,33 +350,35 @@ fn read_fixtures(source: &Path) -> Result<Fixtures, String> {
     Ok(fixtures)
 }
 
-/// Leave the test image's fixture records out of the account files in `etc`:
-/// each record that is exactly a fixture's, and a fixture membership of a
-/// system group where that account's own fixture record was there. A record the
-/// machine made or changed differs from the fixture's and stays, whatever its name.
-fn drop_test_account(copier: &mut Copier, etc: &Path, fixtures: &Fixtures) -> Result<(), String> {
-    let passwd = read_or_empty(&etc.join("passwd"))?;
-    let removed: Vec<&str> = fixtures
-        .records
-        .iter()
+/// Filter the baseline before overlaying machine records. A retained passwd
+/// entry protects its companion records even if their bytes match a fixture.
+fn without_test_records(file: &str, text: &str, passwd: &str, fixtures: &Fixtures) -> String {
+    let removed: Vec<&str> = fixtures.records.iter()
         .filter(|(file, record)| file == "passwd" && passwd.lines().any(|line| line == record))
         .filter_map(|(_, record)| record.split(':').next())
         .collect();
+    let kept: Vec<String> = text.lines().filter(|line| {
+        let name = line.split(':').next().unwrap_or_default();
+        let retained_account = !removed.contains(&name)
+            && passwd.lines().any(|entry| entry.split(':').next() == Some(name));
+        (file != "passwd" && retained_account)
+            || !fixtures.records.iter().any(|(f, record)| f == file && record == line)
+    }).map(|line| without_test_members(file, line, fixtures, &removed)).collect();
+    if kept.iter().map(String::as_str).eq(text.lines()) { return text.to_string(); }
+    if kept.is_empty() { String::new() } else { format!("{}\n", kept.join("\n")) }
+}
+
+/// Leave fixture records out of factory defaults, using the same baseline
+/// filter as the first shared-store seed.
+fn drop_test_account(copier: &mut Copier, etc: &Path, fixtures: &Fixtures) -> Result<(), String> {
+    let passwd = read_or_empty(&etc.join("passwd"))?;
     for file in ["passwd", "group", "shadow"] {
         let path = etc.join(file);
-        if !present(&path)? {
-            continue;
-        }
+        if !present(&path)? { continue; }
         let text = fs::read_to_string(&path).map_err(|error| fail("read", &path, error))?;
-        let kept: Vec<String> = text
-            .lines()
-            .filter(|line| !fixtures.records.iter().any(|(f, record)| f == file && record == line))
-            .map(|line| without_test_members(file, line, fixtures, &removed))
-            .collect();
-        if kept.iter().map(String::as_str).ne(text.lines()) {
+        let kept = without_test_records(file, &text, &passwd, fixtures);
+        if kept != text {
             let mode = fs::symlink_metadata(&path).map_err(|error| fail("stat", &path, error))?.mode() & 0o7777;
-            let mut kept = kept.join("\n");
-            kept.push('\n');
             copier.write_file(&path, &kept, mode)?;
             println!("[persistent] left out the test fixtures' records from /etc/{}", file);
         }
@@ -457,18 +459,18 @@ fn seed_shared(copier: &mut Copier, source: &Path, target: &Path, previous: Opti
         // Merge them over the running generation's full databases before binding /etc.
         if name == "etc" {
             copier.ensure_directory(&to, 0o755)?;
+            let passwd = read_or_empty(&from.join("passwd"))?;
             for (file, mode) in [("passwd", 0o644), ("group", 0o644), ("shadow", 0o600)] {
-                let baseline = read_or_empty(&from.join(file))?;
+                let baseline = without_test_records(file, &read_or_empty(&from.join(file))?, &passwd, fixtures);
                 let existing = read_or_empty(&to.join(file))?;
                 let mut merged = baseline;
                 for line in existing.lines() { merged = merge_line(&merged, line); }
-                if merged != existing { copier.write_file(&to.join(file), &merged, mode)?; }
+                if merged != existing || !present(&to.join(file))? { copier.write_file(&to.join(file), &merged, mode)?; }
             }
         }
         if present(&from)? { seed_missing(copier, &from, &to)?; }
         else { copier.ensure_directory(&to, if name == "tmp" { 0o1777 } else { 0o755 })?; }
     }
-    drop_test_account(copier, &store.join("etc"), fixtures)?;
     copier.write_file(&marker, "BREENIX-SHARED 2\n", 0o600)
 }
 
@@ -949,6 +951,58 @@ mod tests {
         assert_eq!(fs::read_to_string(factory.join("passwd")).unwrap(), "root:x:0:0:root:/root:/bin/sh\n");
         assert_eq!(fs::read_to_string(factory.join("group")).unwrap(), "root:x:0:\nwheel:x:10:\n");
         assert_eq!(fs::read_to_string(factory.join("shadow")).unwrap(), "root:!:::::::\n");
+    }
+
+    #[test]
+    fn fixture_collisions_preserve_locked_accounts_and_machine_groups() {
+        for staged_operator in [false, true] {
+            let fixture = Fixture::new();
+            let source = fixture.source("new");
+            fs::create_dir_all(source.join("etc/breenix")).unwrap();
+            let passwd = "ua:x:2001:2001:Users suite fixture:/etc/breenix/test-users/ua:/bin/bsh\n";
+            fs::write(source.join("etc/passwd"), passwd).unwrap();
+            fs::write(source.join("etc/group"), "ua:x:2001:\nug:x:2100:\n").unwrap();
+            fs::write(source.join("etc/shadow"), "ua:!:::::::\n").unwrap();
+            fs::write(source.join(FIXTURES), format!("passwd {passwd}group ua:x:2001:\ngroup ug:x:2100:\nshadow ua:!:::::::\n")).unwrap();
+            let system = fixture.0.join("fresh");
+            let etc = system.join(STORE).join("etc");
+            fs::create_dir_all(&etc).unwrap();
+            if staged_operator {
+                fs::write(source.join(OPERATOR), format!("user ua\nkey {KEY}\n")).unwrap();
+            } else {
+                fs::write(etc.join("passwd"), "ua:x:2001:2001:machine account:/home/ua:/bin/bsh\n").unwrap();
+                fs::write(etc.join("group"), "ua:x:2001:\nug:x:2100:\n").unwrap();
+                fs::write(etc.join("shadow"), "ua:!:::::::\n").unwrap();
+            }
+            install_tree(&source, &system, "first", &mut || Ok(())).unwrap();
+            assert_eq!(fs::read_to_string(etc.join("shadow")).unwrap(), "ua:!:::::::\n");
+            let expected = if staged_operator { "ua:x:1000:1000:ua:/home/ua:/bin/bsh\n" }
+                else { "ua:x:2001:2001:machine account:/home/ua:/bin/bsh\n" };
+            assert_eq!(fs::read_to_string(etc.join("passwd")).unwrap(), expected);
+            let groups = if staged_operator { "ua:x:1000:\n" } else { "ua:x:2001:\nug:x:2100:\n" };
+            assert_eq!(fs::read_to_string(etc.join("group")).unwrap(), groups);
+        }
+    }
+
+    #[test]
+    fn fixture_only_baseline_stays_empty_when_seeding_other_etc_files() {
+        let fixture = Fixture::new();
+        let source = fixture.source("new");
+        fs::create_dir_all(source.join("etc/breenix")).unwrap();
+        let records = [("passwd", "ua:x:2001:2001:fixture:/etc/breenix/test-users/ua:/bin/bsh"),
+            ("group", "ua:x:2001:"), ("shadow", "ua:!:::::::")];
+        let mut marker = String::new();
+        for (file, record) in records {
+            fs::write(source.join("etc").join(file), format!("{record}\n")).unwrap();
+            marker.push_str(&format!("{file} {record}\n"));
+        }
+        fs::write(source.join(FIXTURES), marker).unwrap();
+        let system = fixture.0.join("fresh");
+        fs::create_dir(&system).unwrap();
+        install_tree(&source, &system, "first", &mut || Ok(())).unwrap();
+        for (file, _) in records {
+            assert_eq!(fs::read(system.join(STORE).join("etc").join(file)).unwrap(), b"");
+        }
     }
 
     #[test]
