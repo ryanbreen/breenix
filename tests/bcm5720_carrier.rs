@@ -1,6 +1,6 @@
 #[path = "../kernel/src/drivers/bcm5720/carrier.rs"]
 mod carrier;
-use carrier::{Carrier, DOWN_SAMPLES};
+use carrier::Carrier;
 
 #[test]
 fn errors_are_unknown_and_break_the_down_sequence() {
@@ -10,13 +10,13 @@ fn errors_are_unknown_and_break_the_down_sequence() {
         assert!(link.up);
     }
     assert_eq!(link.failures, 20);
-    for _ in 1..DOWN_SAMPLES {
+    for _ in 1..3 {
         link.sample(Ok(false));
         assert!(link.up);
     }
     assert_eq!(link.failures, 0);
     link.sample(Err("PHY read failed"));
-    for _ in 1..DOWN_SAMPLES {
+    for _ in 1..3 {
         link.sample(Ok(false));
         assert!(link.up);
     }
@@ -38,7 +38,7 @@ fn an_up_sample_cancels_transient_down_and_recovers_immediately() {
         link.sample(Ok(true));
         assert!(link.up);
     }
-    for _ in 0..DOWN_SAMPLES {
+    for _ in 0..3 {
         link.sample(Ok(false));
     }
     assert!(!link.up);
