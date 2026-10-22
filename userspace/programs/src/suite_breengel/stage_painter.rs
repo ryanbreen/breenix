@@ -154,7 +154,15 @@ impl libbreenix::suite::Painter for StagePainter {
             notice: f.notice,
             ribbon: f.ribbon,
         };
-        gpu::draw(canvas, &run, &mut self.font).map_err(|e| format!("stage paint: {e:?}"))?;
-        canvas.wait().map_err(|e| format!("stage paint render: {e}"))
+        let painted = gpu::draw(canvas, &run, &mut self.font)
+            .map_err(|e| format!("stage paint: {e:?}"))
+            .and_then(|()| canvas.wait().map_err(|e| format!("stage paint render: {e}")));
+        if painted.is_err() {
+            // A lost context (a device reset, or a quarantine) takes the canvas and the glyph
+            // atlas with it: the next frame makes both again.
+            self.canvas = None;
+            self.font = gpu::StageFont::new();
+        }
+        painted
     }
 }

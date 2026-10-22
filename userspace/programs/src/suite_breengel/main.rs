@@ -311,6 +311,8 @@ fn publish_picture(width: usize, height: usize, pixels: &[u8]) {
     if (kept.width(), kept.height()) != (width, height) {
         return;
     }
+    // A test point the case left armed is not for this hand-off's GPU work.
+    let _ = libbreenix::gpu::tc_disarm_all();
     let mut back = vec![0u8; width * height * 4];
     if kept.read(&mut back, width * 4).is_err() || back.chunks_exact(4).zip(pixels.chunks_exact(4)).any(|(a, b)| a[..3] != b[..3]) {
         return;

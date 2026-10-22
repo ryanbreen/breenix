@@ -306,38 +306,35 @@ impl Canvas<'_> {
         self.fb.pop_clip();
     }
     /// Picture `p` with its top left at logical (x, y), each picture pixel `scale` logical
-    /// pixels square.
+    /// pixels square. `copy_scaled` weighs 8192 steps a fragment, so a large picture goes in
+    /// bands of rows, each a submission of at most 2^17 fragments (2^30 steps), within the
+    /// core's 2^31 work cap.
     fn picture(&mut self, p: &Picture<'_>, x: usize, y: usize, scale: usize) {
         let s = (scale * self.n) as i64;
         let (dx, dy) = ((x * self.n) as i64, (y * self.n) as i64);
         let whole = Box64::wide(dx, dy, p.width as i64 * s, p.height as i64 * s);
-        let visible = whole.intersect(&self.fb.clip_box());
-        if !visible.is_empty() {
-            crate::work::add(1);
-            // The first covered source pixel and where its square starts, as `blit_scaled`.
-            let (kx, ky) = ((visible.x0 - dx) / s, (visible.y0 - dy) / s);
-            let (ox, oy) = (dx + kx * s, dy + ky * s);
-            let mut params = [0u32; 16];
-            for (slot, v) in params.iter_mut().zip([ox, oy, kx + p.x as i64, ky + p.y as i64, s]) {
-                *slot = v as i32 as u32;
+        let band = ((1i64 << 17) / (p.width as i64 * s * s).max(1)).max(1) as usize;
+        let flags = gpu_abi_opaque(p.source);
+        let texture = p.source.resource();
+        let mut row = 0;
+        while row < p.height {
+            let rows = band.min(p.height - row);
+            let top = dy + row as i64 * s;
+            let visible = Box64::wide(dx, top, p.width as i64 * s, rows as i64 * s).intersect(&self.fb.clip_box());
+            if !visible.is_empty() {
+                crate::work::add(1);
+                // The first covered source pixel and where its square starts, as `blit_scaled`.
+                let (kx, ky) = ((visible.x0 - dx) / s, (visible.y0 - top) / s);
+                let (ox, oy) = (dx + kx * s, top + ky * s);
+                let mut params = [0u32; 16];
+                for (slot, v) in params.iter_mut().zip([ox, oy, kx + p.x as i64, ky + (p.y + row) as i64, s]) {
+                    *slot = v as i32 as u32;
+                }
+                self.fb.submit(|c| c.draw(pipeline::COPY_SCALED, flags, texture, 0, 0, &[Instance { rect: visible.corners(), params }]));
             }
-            let flags = gpu_abi_opaque(p.source);
-            let texture = p.source.resource();
-            self.fb.submit(|c| {
-                c.draw(
-                    pipeline::COPY_SCALED,
-                    flags,
-                    texture,
-                    0,
-                    0,
-                    &[Instance {
-                        rect: visible.corners(),
-                        params,
-                    }],
-                )
-            });
-            self.fb.mark(whole);
+            row += rows;
         }
+        self.fb.mark(whole);
         if let Some((r, c)) = p.cover {
             self.fill(x + r[0] * scale, y + r[1] * scale, r[2] * scale, r[3] * scale, c);
         }

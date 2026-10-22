@@ -1072,6 +1072,22 @@ impl Show {
         painter(|p| p.paint(&frame))
     }
 
+    /// Draw, present and check one stage frame; on failure the next attempt starts from new
+    /// objects.
+    fn attempt(&self, fb: &mut FrameBuf, bits: u32) -> Result<Seen, String> {
+        let mut guard = GPU.lock().unwrap();
+        let g = gpu_here(&mut guard)?;
+        let shown_frame = (if g.pid != self.runner { g.restore(self) } else { Ok(()) })
+            .and_then(|()| self.render(fb, bits, g, true))
+            .and_then(|()| g.show())
+            .and_then(|(seen, fence, cursor)| shown(fb, Some(fence), &g.seen, &seen, cursor).map(|()| seen));
+        if shown_frame.is_err() {
+            g.destroy();
+            *guard = None;
+        }
+        shown_frame
+    }
+
     /// The oracle's frame alone, with the pictures this process holds or restores.
     fn oracle(&self, fb: &mut FrameBuf) -> Result<(), String> {
         let mut guard = GPU.lock().unwrap();
@@ -1094,24 +1110,21 @@ impl Show {
         // As the GPU suite's view does: no test-control point left armed by a case can alter
         // the stage or be spent by it.
         let _ = gpu::tc_disarm_all();
-        let mut guard = GPU.lock().unwrap();
-        let g = gpu_here(&mut guard)?;
-        if g.pid != self.runner {
-            g.restore(self)?;
-        }
-        let shown_frame = self
-            .render(&mut fb, bits, g, true)
-            .and_then(|()| g.show())
-            .and_then(|(seen, fence, cursor)| shown(&fb, Some(fence), &g.seen, &seen, cursor).map(|()| seen));
-        let rec = match shown_frame {
-            Ok(rec) => rec,
-            Err(e) => {
-                // The next draw starts from new objects.
-                g.destroy();
-                *guard = None;
-                return Err(e);
+        // A case may reset the device (section 8.4's scratch reset does), which loses the
+        // stage's and the painter's GPU objects: a failed frame is drawn again from new
+        // objects, for at most three attempts.
+        let mut failed = String::new();
+        let mut rec = None;
+        for _ in 0..3 {
+            match self.attempt(&mut fb, bits) {
+                Ok(seen) => {
+                    rec = Some(seen);
+                    break;
+                }
+                Err(e) => failed = e,
             }
-        };
+        }
+        let rec = rec.ok_or(failed)?;
         self.observation = Observation {
             backend: rec.backend,
             flags: rec.flags,
@@ -1270,6 +1283,8 @@ pub(super) enum Published {
 /// pictures, after the case's measured window and while its process still holds the frame.
 pub(super) fn sample(published: Published) -> Result<(), String> {
     let tile = SHOW.lock().unwrap().as_ref().ok_or("stage is not initialized")?.current;
+    // As the stage's draw does: no test point a case left armed alters the sampling.
+    let _ = gpu::tc_disarm_all();
     let mut guard = GPU.lock().unwrap();
     let g = gpu_here(&mut guard)?;
     match published {
