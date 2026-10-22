@@ -1658,3 +1658,21 @@ context warm-up and no redraw of the run's history.
 
 The kernel returns Linux's errno values on both architectures: EPERM 1, ENOENT 2, ESRCH 3, EINTR 4, EIO 5,
 EAGAIN 11, ENOMEM 12, EACCES 13, EFAULT 14, EBUSY 16, ENODEV 19, EINVAL 22, EMFILE 24, ENOSYS 38, ETIMEDOUT 110, EDQUOT 122.
+
+<!-- claim-lint:ok: Normative reset recovery and provenance rule adopted by coordinator B40 item 2 and #2287. -->
+B40 reset recovery: a device reset loses the stage's GPU pictures. Only after its
+context reports RESET may the runner reconstruct retained thumbnails and panes from
+its verified CPU pixels. These uploads are recovery, never new picture provenance;
+UPLOADS reports recovery_bytes, device_resets and failure_artifact_bytes separately,
+and the finale reconciles all Fixture bytes against those categories. A quarantine
+or mode change does not authorize CPU picture reconstruction. The live
+judged-frame-shown check must compare at least one published GPU entry, including
+in a panel-only run. A pane retains its verified frame from drawn() through display
+publication, so a reset in that interval cannot silently omit it.
+
+After the finale's five-second hold the runner releases its picture snapshots,
+readback buffer, painter, caches, contexts and unused targets before recording
+reclamation. The display core retains the bound scanout, preserving the finale.
+The memory record and its 48-page allowance remain unchanged; OWNERS lines report
+the stage's CPU pictures and GPU context/resource/backing/copy totals at the
+before, finale and retired boundaries.

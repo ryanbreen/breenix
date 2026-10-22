@@ -6,8 +6,9 @@ use syn::{visit::{self,Visit},Expr,ExprCall,ExprMethodCall,ItemFn,ImplItemFn,Ite
 /// that may make one upload call, and the ruling that bounds it. Ruling B36: the run stage,
 /// drawn on the GPU, uploads only a failing case's expected and difference panes, tagged
 /// Fixture (§2.4's failure artifacts), so a passing run makes no upload; `stage_upload_reach`
-/// holds its one upload function to that path.
-const EXCEPTIONS: &[(&str, &str, &str)] = &[("libs/libbreenix/src/suite_stage.rs", "upload_fixture", "B36")];
+/// holds its one upload function to that path. B40 additionally permits reset recovery,
+/// reached only by gpu_here after the existing context reports RESET.
+const EXCEPTIONS: &[(&str, &str, &str)] = &[("libs/libbreenix/src/suite_stage.rs", "upload_fixture", "B36/B40")];
 
 #[derive(Default)]
 struct Uploads { bgl:bool, texture:bool, permitted:bool, exception:Option<&'static str>, excepted:bool, used:usize, aliases:HashSet<String>, violations:Vec<String> }
@@ -88,7 +89,8 @@ fn planted_raw_pixel_library_and_renamed_upload_are_refused(){
 }
 /// The stage's upload function is reached only as a failing case's failure artifacts:
 /// `upload_fixture` is called only by `artifacts`, and `artifacts` only by `record`, inside a
-/// condition on a failing `Outcome`. Returns each call that breaks that, by caller.
+/// condition on a failing `Outcome`, or by restore on the B40 reset-recovery path.
+/// Returns each call that breaks those call boundaries, by caller.
 fn stage_upload_reach(source: &str) -> Vec<String> {
     use quote::ToTokens;
     #[derive(Default)]
@@ -97,7 +99,8 @@ fn stage_upload_reach(source: &str) -> Vec<String> {
         fn called(&mut self, name: &str) {
             let caller = self.function.last().map_or("", String::as_str);
             let allowed = match name {
-                "upload_fixture" => caller == "artifacts",
+                "upload_fixture" => matches!(caller, "artifacts" | "restore_pictures"),
+                "restore_pictures" => caller == "gpu_here",
                 "artifacts" => caller == "record" && self.failing > 0,
                 _ => true,
             };
@@ -134,7 +137,7 @@ fn stage_upload_reach(source: &str) -> Vec<String> {
         fn visit_expr_path(&mut self, e: &'ast syn::ExprPath) {
             // A method named as a value (`Gpu::artifacts`) could be called anywhere.
             if let Some(last) = e.path.segments.last().filter(|_| e.path.segments.len() > 1) {
-                if matches!(last.ident.to_string().as_str(), "upload_fixture" | "artifacts") { self.violations.push(format!("{} is used as a value", last.ident)); }
+                if matches!(last.ident.to_string().as_str(), "upload_fixture" | "artifacts" | "restore_pictures") { self.violations.push(format!("{} is used as a value", last.ident)); }
             }
             visit::visit_expr_path(self, e);
         }
@@ -147,7 +150,9 @@ fn stage_upload_reach(source: &str) -> Vec<String> {
 #[test]
 fn stage_uploads_only_failure_artifacts() {
     // Planted: a forked case restoring pictures by upload, and artifacts outside a failing outcome.
-    assert!(!stage_upload_reach("impl Gpu { fn restore(&mut self) { self.upload_fixture(1, 1, &p); } }").is_empty());
+    assert!(!stage_upload_reach("fn sample() { g.restore_pictures(k, ResetRecovery); }").is_empty());
+    assert!(!stage_upload_reach("fn sample() { let f = Gpu::restore_pictures; }").is_empty());
+    assert!(stage_upload_reach("impl Gpu { fn restore_pictures(&mut self) { self.upload_fixture(1, 1, &p); } }").is_empty());
     assert!(!stage_upload_reach("fn record() { g.artifacts(f); }").is_empty());
     assert!(!stage_upload_reach("fn record() { if matches!(outcome, Outcome::Fail { .. }) {} else { g.artifacts(f); } }").is_empty());
     assert!(!stage_upload_reach("fn record() { let f = Gpu::upload_fixture; }").is_empty());

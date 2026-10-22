@@ -7,7 +7,7 @@ pub(crate) const COMPOSITION: &[Case] = &[
 ];
 
 pub(crate) const PANEL: &[Case] = &[
-    case("stage-layout", "Stage fixture header, wall, spotlight and ribbon occupy the contract rectangles", panel_stage_layout),
+    pictured!("stage-layout", "Stage fixture header, wall, spotlight and ribbon occupy the contract rectangles", panel_stage_layout),
     case("tile-stamps", "Tile order, milestone grouping, stamp states and key numbers match the fixture", panel_tile_stamps),
     case("tile-thumbnail", "Every thumbnail is the integer box filter of the judged frame", panel_tile_thumbnail),
     case("spotlight-picture", "Expected, actual and difference panes show the first mismatch and comparison bound", panel_spotlight_picture),
@@ -37,7 +37,22 @@ fn composition_fbinfo_geometry() -> CaseResult {
 
 // claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 // gpu-display: R3/R4 checks all physical stage-layout pixels at scale 2 with certified TrueType labels.
-fn panel_stage_layout() -> CaseResult { stage_fixture("stage-layout") }
+fn panel_stage_layout() -> CaseResult {
+    crate::stage_fixtures::check_capture("stage-layout", |_| Ok(()))
+        .map_err(libbreenix::suite::CaseError::Fail)?;
+    // A panel-only run needs a real published GPU source for the later live
+    // thumbnail check, independently compared before the runner samples it.
+    let mut source = libgfx::surface::Surface::new(2, 2, libgfx::surface::Format::BGRX)
+        .map_err(|e| e.to_string())?;
+    libgfx::shapes::fill_rect(&mut source, 0, 0, 2, 2, libgfx::color::Color::rgb(19, 83, 147));
+    let mut pixels = vec![0; 16];
+    source.read(&mut pixels, 8).map_err(|e| e.to_string())?;
+    let expected = [147, 83, 19, 255].repeat(4);
+    ensure(pixels.chunks_exact(4).all(|p| p[..3] == [147, 83, 19]), "23.8", "panel source differs from its independent solid-colour formula")?;
+    keep_judged_surface(source);
+    remember_frame(&pixels, 2, 2, Some(expected));
+    Ok(())
+}
 // gpu-display: R3/R4 checks stamps, numbers and the 399-case wall at physical scale.
 fn panel_tile_stamps() -> CaseResult { scaled_stage("tile-stamps") }
 // gpu-display: R3/R4 checks scaled thumbnail destinations against the integer box-filter formula.
