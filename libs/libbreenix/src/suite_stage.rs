@@ -274,6 +274,8 @@ struct Panes {
     wide: u64,
     square: u64,
     artifacts: Option<(u64, u64)>,
+    /// Sampled targets, kept for the next frame's panes when these are let go.
+    sampled: bool,
 }
 impl Panes {
     fn destroy(&self) {
@@ -304,6 +306,9 @@ struct Gpu {
     /// Per tile, the judged frame whose thumbnail its atlas cell holds.
     cells: Vec<Option<[u8; 32]>>,
     panes: Vec<Panes>,
+    /// Pane targets let go, made again into the next sample's panes rather than destroyed
+    /// and created for each case.
+    spare: Vec<(u64, u64)>,
     /// The Fixture bytes the stage's context uploaded as failure artifacts.
     artifact_bytes: u64,
     /// The panel cursor, which the stage's compositor draws (ruling B35): where the pointer
@@ -379,6 +384,7 @@ impl Gpu {
             atlas: 0,
             cells: Vec::new(),
             panes: Vec::new(),
+            spare: Vec::new(),
             artifact_bytes: 0,
             pointer_start: graphics::mouse_pos().ok(),
             cursor: None,
@@ -418,6 +424,10 @@ impl Gpu {
         for p in &self.panes {
             p.destroy();
         }
+        for &(wide, square) in &self.spare {
+            let _ = gpu::resource_destroy(wide);
+            let _ = gpu::resource_destroy(square);
+        }
         for handle in [self.scanout[0], self.scanout[1], self.atlas] {
             if handle != 0 {
                 let _ = gpu::resource_destroy(handle);
@@ -448,7 +458,10 @@ impl Gpu {
         if let Some(i) = self.panes.iter().position(|p| p.hash == PENDING) {
             match hash {
                 Some(h) => self.panes[i].hash = h,
-                None => self.panes.swap_remove(i).destroy(),
+                None => {
+                    let p = self.panes.swap_remove(i);
+                    self.retire(p);
+                }
             }
         }
     }
@@ -458,10 +471,23 @@ impl Gpu {
         self.panes.iter().find(|p| &p.hash == hash)
     }
 
+    /// Let `p` go: its failure artifacts are destroyed, its sampled targets kept for reuse.
+    fn retire(&mut self, p: Panes) {
+        if !p.sampled {
+            return p.destroy();
+        }
+        if let Some((e, d)) = p.artifacts {
+            let _ = gpu::resource_destroy(e);
+            let _ = gpu::resource_destroy(d);
+        }
+        self.spare.push((p.wide, p.square));
+    }
+
     /// Keep `panes`, replacing any held for the same frame.
     fn keep(&mut self, panes: Panes) {
         if let Some(i) = self.panes.iter().position(|p| p.hash == panes.hash) {
-            self.panes.swap_remove(i).destroy();
+            let old = self.panes.swap_remove(i);
+            self.retire(old);
         }
         self.panes.push(panes);
     }
@@ -469,10 +495,10 @@ impl Gpu {
     /// Keep only the panes of the frames with hashes in `wanted`.
     fn prune(&mut self, wanted: &[[u8; 32]]) {
         let (keep, drop): (Vec<_>, Vec<_>) = core::mem::take(&mut self.panes).into_iter().partition(|p| wanted.contains(&p.hash));
-        for p in drop {
-            p.destroy();
-        }
         self.panes = keep;
+        for p in drop {
+            self.retire(p);
+        }
     }
 
     fn set_cell(&mut self, tile: usize, hash: Option<[u8; 32]>) {
@@ -498,17 +524,21 @@ impl Gpu {
         sampled(&mut stream, pipeline::BOX_FILTER, source, [cx, cy, w.min(16), h.min(12)], [at.0, at.1, w, h]);
         self.set_cell(tile, None);
         self.run(&stream, "stage thumbnail")?;
-        let format = gpu::abi::format::B8G8R8A8;
-        let wide = gpu::target_create(format, WIDE.0 as u32, WIDE.1 as u32).map_err(|e| std::format!("stage pane: errno {}", -e))?;
-        let panes = Panes { hash, wide, square: 0, artifacts: None };
-        let square = match gpu::target_create(format, SQUARE as u32, SQUARE as u32) {
-            Ok(t) => t,
-            Err(e) => {
-                panes.destroy();
-                return Err(std::format!("stage pane: errno {}", -e));
+        let (wide, square) = match self.spare.pop() {
+            Some(targets) => targets,
+            None => {
+                let format = gpu::abi::format::B8G8R8A8;
+                let wide = gpu::target_create(format, WIDE.0 as u32, WIDE.1 as u32).map_err(|e| std::format!("stage pane: errno {}", -e))?;
+                match gpu::target_create(format, SQUARE as u32, SQUARE as u32) {
+                    Ok(square) => (wide, square),
+                    Err(e) => {
+                        let _ = gpu::resource_destroy(wide);
+                        return Err(std::format!("stage pane: errno {}", -e));
+                    }
+                }
             }
         };
-        let panes = Panes { square, ..panes };
+        let panes = Panes { hash, wide, square, artifacts: None, sampled: true };
         let mut stream = Vec::new();
         encode::begin(&mut stream, panes.wide);
         sampled(&mut stream, pipeline::NEAREST_SCALED, source, [0, 0, WIDE.0, WIDE.1], [at.0, at.1, w, h]);
@@ -706,7 +736,7 @@ impl Gpu {
                         return Err(e);
                     }
                 };
-                self.keep(Panes { hash: f.sha256, wide, square, artifacts: None });
+                self.keep(Panes { hash: f.sha256, wide, square, artifacts: None, sampled: false });
             }
             if s.entries.get(*entry).is_some_and(|e| e.stamp == Stamp::Fail) {
                 self.artifacts(f)?;

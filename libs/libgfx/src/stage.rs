@@ -7,11 +7,12 @@ use core::fmt::Write;
 
 use bgl::{pipeline, Instance};
 
-use crate::blit::Source;
+use crate::blit::{self, Source};
 use crate::color::Color;
 use crate::font;
 use crate::shapes;
-use crate::surface::{Box64, Rect, Surface};
+use crate::surface::{Box64, Format, Rect, Surface};
+use alloc::vec::Vec;
 use crate::ttf_font::{self, CachedFont, Font};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -257,31 +258,48 @@ fn scale_of(fb: &Surface) -> Result<usize, StageError> {
 
 /// The stage's surface. Coordinates, extents, gaps and borders are logical and multiplied by
 /// the display scale `n`; text at legacy scale s is 7s logical pixels per em, drawn at 7sn
-/// pixels per em in DejaVu Sans, or with the 5x7 font at scale 1.
+/// pixels per em in DejaVu Sans, or with the 5x7 font at scale 1. The surface's top left is
+/// logical `origin`: the frame's, or the wall's.
 struct Canvas<'a> {
     fb: &'a mut Surface,
     n: usize,
     font: Option<&'a mut CachedFont>,
+    origin: (usize, usize),
 }
 impl Canvas<'_> {
     fn fill(&mut self, x: usize, y: usize, w: usize, h: usize, c: Color) {
-        let n = self.n;
+        let (n, (x, y)) = (self.n, (x - self.origin.0, y - self.origin.1));
         if w != 0 && h != 0 {
             shapes::fill_rect(self.fb, (x * n) as i32, (y * n) as i32, (w * n) as i32, (h * n) as i32, c);
         }
     }
-    /// A one-pixel logical line, drawn n pixels thick.
+    /// A one-pixel logical line, drawn n pixels thick. `line` weighs 8192 steps a fragment of
+    /// its box, so each of the n x n lines is drawn in bands of rows, each a submission of at
+    /// most 2^17 fragments; a clip leaves the pixels of the line it crosses unchanged (the
+    /// pipeline starts from the line's first step inside it). Drawn outside a batch.
     fn line(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, c: Color) {
         let n = self.n as i32;
+        let (ox, oy) = (self.origin.0 as i32, self.origin.1 as i32);
         for dy in 0..n {
             for dx in 0..n {
-                shapes::draw_line(self.fb, x0 * n + dx, y0 * n + dy, x1 * n + dx, y1 * n + dy, c);
+                let (ax, ay, bx, by) = ((x0 - ox) * n + dx, (y0 - oy) * n + dy, (x1 - ox) * n + dx, (y1 - oy) * n + dy);
+                let (left, top) = (ax.min(bx), ay.min(by));
+                let (width, height) = (ax.abs_diff(bx) as i32 + 1, ay.abs_diff(by) as i32 + 1);
+                let band = ((1i32 << 17) / width).max(1);
+                let mut row = 0;
+                while row < height {
+                    let rows = band.min(height - row);
+                    self.fb.push_clip(Rect::new(left, top + row, width, rows));
+                    shapes::draw_line(self.fb, ax, ay, bx, by, c);
+                    self.fb.pop_clip();
+                    row += rows;
+                }
             }
         }
     }
     /// Text with its pen at (x, y), clipped at the element's right edge, `width` from x.
     fn text(&mut self, bytes: &[u8], x: usize, y: usize, width: usize, scale: usize, color: Color) {
-        let height = self.fb.height() / self.n;
+        let height = self.fb.height() / self.n + self.origin.1;
         self.text_in(bytes, x, y, width, height - y, scale, color);
     }
     /// `text`, also clipped at the element's bottom edge, `height` below y.
@@ -289,7 +307,7 @@ impl Canvas<'_> {
         if width == 0 {
             return;
         }
-        let n = self.n;
+        let (n, (x, y)) = (self.n, (x - self.origin.0, y - self.origin.1));
         let Some(font) = self.font.as_deref_mut() else {
             self.fb.push_clip(Rect::new(x as i32, y as i32, width as i32, (7 * scale) as i32));
             for (i, &ch) in bytes.iter().enumerate() {
@@ -301,7 +319,8 @@ impl Canvas<'_> {
             self.fb.pop_clip();
             return;
         };
-        self.fb.push_clip(Rect::new(0, (y * n) as i32, ((x + width) * n) as i32, (height * n) as i32));
+        let left = -((self.origin.0 * n) as i32);
+        self.fb.push_clip(Rect::new(left, (y * n) as i32, ((x + width) * n) as i32 - left, (height * n) as i32));
         ttf_font::draw_text_bytes(self.fb, font, bytes, (x * n) as i32, (y * n) as i32, (7 * scale * n) as f32, color);
         self.fb.pop_clip();
     }
@@ -311,7 +330,7 @@ impl Canvas<'_> {
     /// core's 2^31 work cap.
     fn picture(&mut self, p: &Picture<'_>, x: usize, y: usize, scale: usize) {
         let s = (scale * self.n) as i64;
-        let (dx, dy) = ((x * self.n) as i64, (y * self.n) as i64);
+        let (dx, dy) = (((x - self.origin.0) * self.n) as i64, ((y - self.origin.1) * self.n) as i64);
         let whole = Box64::wide(dx, dy, p.width as i64 * s, p.height as i64 * s);
         let band = ((1i64 << 17) / (p.width as i64 * s * s).max(1)).max(1) as usize;
         let flags = gpu_abi_opaque(p.source);
@@ -372,65 +391,120 @@ fn counts(run: &Run<'_>) -> Text {
     out
 }
 
-/// Draw the stage at the display scale the surface's size gives. The caller validated the
-/// run against the oracle's rules.
-pub fn draw(fb: &mut Surface, run: &Run<'_>, font: &mut StageFont) -> Result<(), StageError> {
-    let n = scale_of(fb)?;
-    if run.tiles.is_empty() || run.selected >= run.tiles.len() || run.milestones.is_empty() {
-        return Err(StageError::Manifest);
+/// What a tile was drawn from: its stamp and the stamp's colour (a running tile's pulses with
+/// UI time), its key and its thumbnail.
+#[derive(Clone, Copy, PartialEq)]
+struct TileKey {
+    stamp: Stamp,
+    colour: Color,
+    key: u64,
+    thumbnail: ThumbKey,
+}
+#[derive(Clone, Copy, PartialEq)]
+enum ThumbKey {
+    None,
+    Picture { source: u64, at: [usize; 4], cover: Option<([usize; 4], Color)> },
+    Solid { width: usize, height: usize, colour: Color },
+}
+impl ThumbKey {
+    fn of(t: &Option<Thumbnail<'_>>) -> ThumbKey {
+        match t {
+            None => ThumbKey::None,
+            Some(Thumbnail::Picture(p)) => ThumbKey::Picture { source: p.source.resource(), at: [p.x, p.y, p.width, p.height], cover: p.cover },
+            Some(Thumbnail::Solid { width, height, colour }) => ThumbKey::Solid { width: *width, height: *height, colour: *colour },
+        }
     }
-    let wall = Wall::for_tiles(run.tiles)?;
-    let mut font = if n == 1 { None } else { Some(font.get()?) };
-    fb.batch(|fb| {
-        paint(
-            &mut Canvas {
-                fb,
-                n,
-                font: font.as_deref_mut(),
-            },
-            run,
-            wall,
-        )
-    });
-    fb.error().map_or(Ok(()), |e| Err(StageError::Device(e)))
 }
 
-fn paint(cv: &mut Canvas<'_>, run: &Run<'_>, wall: Wall) {
-    cv.fill(0, 0, 1280, 800, BG);
-    cv.fill(0, 0, 1280, 96, HEADER);
-    let mut title = Text::new();
-    let _ = write!(title, "BREENIX / {}", run.suite);
-    cv.text(title.bytes(), 24, 16, 1256, 3, Color::WHITE);
-    let mut progress = Text::new();
-    let _ = write!(
-        progress,
-        "{}  case {} of {}  elapsed {} ms  fps {}",
-        run.target,
-        run.case_number,
-        run.tiles.len(),
-        run.ui_time_ms,
-        run.fps
-    );
-    cv.text(progress.bytes(), 24, 48, 1256, 1, Color::WHITE);
-    cv.text(counts(run).bytes(), 24, 68, 1256, 2, Color::WHITE);
+/// The wall's logical rectangle, which holds the tiles and the category headings that
+/// `Wall::origin` places.
+const WALL: (usize, usize, usize, usize) = (16, 112, 800, 588);
+
+/// The stage's renderer, kept across frames: the font and its glyph atlas, and the wall of
+/// tiles drawn into a target of its own, where only a tile or a heading whose state changed
+/// since the last frame is drawn again. Each frame copies the wall into the frame.
+pub struct Stage {
+    font: StageFont,
+    wall: Option<Surface>,
+    /// Tiles, columns, wall scale and display scale the wall was laid out for.
+    layout: Option<(usize, usize, usize, usize)>,
+    tiles: Vec<Option<TileKey>>,
+    /// Per tile that starts a category: its heading's passed and total counts.
+    heads: Vec<Option<(usize, usize)>>,
+}
+impl Stage {
+    pub const fn new() -> Stage {
+        Stage { font: StageFont::new(), wall: None, layout: None, tiles: Vec::new(), heads: Vec::new() }
+    }
+
+    /// Draw the stage at the display scale the surface's size gives. The caller validated
+    /// the run against the oracle's rules.
+    pub fn draw(&mut self, fb: &mut Surface, run: &Run<'_>) -> Result<(), StageError> {
+        let n = scale_of(fb)?;
+        if run.tiles.is_empty() || run.selected >= run.tiles.len() || run.milestones.is_empty() {
+            return Err(StageError::Manifest);
+        }
+        let wall = Wall::for_tiles(run.tiles)?;
+        let layout = (run.tiles.len(), wall.columns, wall.scale, n);
+        let Stage { font, wall: target, layout: laid, tiles, heads } = self;
+        if *laid != Some(layout) || target.as_ref().is_none_or(|w| w.error().is_some()) {
+            *target = None;
+            *laid = None;
+            let mut w = Surface::new(WALL.2 * n, WALL.3 * n, Format::BGRX).map_err(|_| StageError::Size)?;
+            w.clear(BG);
+            *target = Some(w);
+            *tiles = alloc::vec![None; run.tiles.len()];
+            *heads = alloc::vec![None; run.tiles.len()];
+            *laid = Some(layout);
+        }
+        let mut font = if n == 1 { None } else { Some(font.get()?) };
+        let target = target.as_mut().ok_or(StageError::Size)?;
+        target.batch(|w| update_wall(&mut Canvas { fb: w, n, font: font.as_deref_mut(), origin: (WALL.0, WALL.1) }, run, wall, tiles, heads));
+        if let Some(e) = target.error() {
+            *laid = None;
+            return Err(StageError::Device(e));
+        }
+        let mut trails = Vec::new();
+        fb.batch(|fb| paint(&mut Canvas { fb, n, font: font.as_deref_mut(), origin: (0, 0) }, run, target, &mut trails));
+        let cv = &mut Canvas { fb, n, font: font.as_deref_mut(), origin: (0, 0) };
+        for (points, x, y, w, h) in &trails {
+            trail(cv, points, *x, *y, *w, *h);
+        }
+        fb.error().map_or(Ok(()), |e| Err(StageError::Device(e)))
+    }
+}
+impl Default for Stage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Draw again each tile and category heading whose state changed since the wall was last
+/// drawn: a tile's box is cleared to the background first, as the whole frame's is.
+fn update_wall(cv: &mut Canvas<'_>, run: &Run<'_>, wall: Wall, tiles: &mut [Option<TileKey>], heads: &mut [Option<(usize, usize)>]) {
     let scale = wall.scale;
     for (i, tile) in run.tiles.iter().enumerate() {
         let slot = wall.slot(run.tiles, i);
         if i == 0 || category(tile.id) != category(run.tiles[i - 1].id) {
-            let (x, y) = wall.origin(slot - 2);
-            let end = run.tiles[i..]
-                .iter()
-                .position(|t| category(t.id) != category(tile.id))
-                .map_or(run.tiles.len(), |n| i + n);
+            let end = run.tiles[i..].iter().position(|t| category(t.id) != category(tile.id)).map_or(run.tiles.len(), |n| i + n);
             let passed = run.tiles[i..end].iter().filter(|t| t.stamp == Stamp::Pass).count();
-            cv.fill(x, y, 78 * scale, 24 * scale, HEADER);
-            cv.text(category(tile.id).as_bytes(), x + 2, y + 2, 76 * scale, scale, Color::WHITE);
-            let mut count = Text::new();
-            let _ = write!(count, "{passed}/{} pass", end - i);
-            cv.text(count.bytes(), x + 2, y + 14 * scale, 76 * scale, scale, Color::WHITE);
+            if heads[i] != Some((passed, end - i)) {
+                let (x, y) = wall.origin(slot - 2);
+                cv.fill(x, y, 78 * scale, 24 * scale, HEADER);
+                cv.text(category(tile.id).as_bytes(), x + 2, y + 2, 76 * scale, scale, Color::WHITE);
+                let mut count = Text::new();
+                let _ = write!(count, "{passed}/{} pass", end - i);
+                cv.text(count.bytes(), x + 2, y + 14 * scale, 76 * scale, scale, Color::WHITE);
+                heads[i] = Some((passed, end - i));
+            }
+        }
+        let c = stamp(tile.stamp, run.ui_time_ms);
+        let key = TileKey { stamp: tile.stamp, colour: c, key: tile.key, thumbnail: ThumbKey::of(&tile.thumbnail) };
+        if tiles[i] == Some(key) {
+            continue;
         }
         let (x, y) = wall.origin(slot);
-        let c = stamp(tile.stamp, run.ui_time_ms);
+        cv.fill(x, y, 38 * scale, 24 * scale, BG);
         cv.fill(x, y, 38 * scale, 1, c);
         cv.fill(x, y + 24 * scale - 1, 38 * scale, 1, c);
         cv.fill(x, y, 1, 24 * scale, c);
@@ -454,16 +528,29 @@ fn paint(cv: &mut Canvas<'_>, run: &Run<'_>, wall: Wall) {
             }
             cv.text(key.bytes(), x + 2 * scale, y + 16 * scale, 34 * scale, scale, Color::WHITE);
         }
+        tiles[i] = Some(key);
     }
-    draw_spotlight(cv, run);
+}
+
+/// An input trail to draw after the frame's batch: its points and its box.
+type Trail = (Vec<InputPoint>, usize, usize, i64, i64);
+
+fn paint(cv: &mut Canvas<'_>, run: &Run<'_>, wall: &Surface, trails: &mut Vec<Trail>) {
+    cv.fill(0, 0, 1280, 800, BG);
+    cv.fill(0, 0, 1280, 96, HEADER);
+    let mut title = Text::new();
+    let _ = write!(title, "BREENIX / {}", run.suite);
+    cv.text(title.bytes(), 24, 16, 1256, 3, Color::WHITE);
+    let mut progress = Text::new();
+    let _ = write!(progress, "{}  case {} of {}  elapsed {} ms  fps {}", run.target, run.case_number, run.tiles.len(), run.ui_time_ms, run.fps);
+    cv.text(progress.bytes(), 24, 48, 1256, 1, Color::WHITE);
+    cv.text(counts(run).bytes(), 24, 68, 1256, 2, Color::WHITE);
+    blit::blit(cv.fb, wall, (WALL.0 * cv.n) as i32, (WALL.1 * cv.n) as i32);
+    draw_spotlight(cv, run, trails);
     for (i, m) in run.milestones.iter().enumerate() {
         let left = 16 + 1248 * i / run.milestones.len();
         let right = 16 + 1248 * (i + 1) / run.milestones.len();
-        let c = if run.tiles[m.first..m.end].iter().all(|t| t.stamp == Stamp::Pass) {
-            PASS
-        } else {
-            OUTLINE
-        };
+        let c = if run.tiles[m.first..m.end].iter().all(|t| t.stamp == Stamp::Pass) { PASS } else { OUTLINE };
         cv.fill(left, 728, right - left - 2, 24, c);
         // The label's own box, between the ribbon's top and bottom bands (ruling B25).
         cv.text_in(m.id.as_bytes(), left + 4, 736, right - left - 6, 7, 1, Color::WHITE);
@@ -545,7 +632,10 @@ fn trail(cv: &mut Canvas<'_>, points: &[InputPoint], x: usize, y: usize, width: 
     }
 }
 
-fn draw_spotlight(cv: &mut Canvas<'_>, run: &Run<'_>) {
+/// The spotlight; its input trails go to `trails`, drawn after the frame's batch, since a
+/// trail's lines are drawn in bands of their own submissions. The milestones, notice, finale
+/// and ribbon drawn after them lie outside the trail boxes.
+fn draw_spotlight(cv: &mut Canvas<'_>, run: &Run<'_>, trails: &mut Vec<Trail>) {
     cv.fill(832, 112, 432, 588, INSET);
     let selected = &run.tiles[run.selected];
     let (group, id) = selected.id.split_once('/').unwrap_or(("", selected.id));
@@ -595,7 +685,7 @@ fn draw_spotlight(cv: &mut Canvas<'_>, run: &Run<'_>) {
             let heading: &[u8] = if points.is_empty() { b"INPUT / events" } else { b"INPUT / pointer trail" };
             cv.text(heading, 848, 184, 400, 2, Color::WHITE);
             wrapped(cv, hit.as_bytes(), 848, 216, 400, 2);
-            trail(cv, points, 864, 336, 352, 192);
+            trails.push((points.to_vec(), 864, 336, 352, 192));
             if points.is_empty() {
                 cv.text(b"Events (no pointer)", 848, 360, 400, 2, Color::WHITE);
             } else {
@@ -656,7 +746,7 @@ fn draw_spotlight(cv: &mut Canvas<'_>, run: &Run<'_>) {
         };
         cv.text(heading, 848, 432, 400, 1, Color::WHITE);
         wrapped(cv, hit.as_bytes(), 848, 448, 400, 1);
-        trail(cv, points, 864, 516, 352, 80);
+        trails.push((points.to_vec(), 864, 516, 352, 80));
         if points.is_empty() {
             cv.text(b"Events (no pointer)", 848, 536, 400, 2, Color::WHITE);
         }

@@ -37,9 +37,10 @@ pub struct Frame {
     pub pixels: u64,
 }
 
-/// How one composite went through the kernel, on the monotonic clock: when its last
-/// COMPOSITE call began and returned, and how many snapshots, the first when, the kernel
-/// refused EBUSY because another composite was in flight.
+/// How one composite went through the kernel, on the monotonic clock: from just before it
+/// asked for the snapshot its composite used to just after that COMPOSITE returned (the span
+/// the kernel admitted it), and how many snapshots, the first when, the kernel refused EBUSY
+/// because another composite was in flight.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Trace {
     pub began_ns: i128,
@@ -224,8 +225,8 @@ impl Compositor {
         self.compose_traced(&mut Trace::default())
     }
 
-    /// `compose`, recording in `trace` when its last COMPOSITE call began and returned and
-    /// each time the kernel refused a snapshot EBUSY because another composite was in flight.
+    /// `compose`, recording in `trace` the span the kernel admitted it and each time the
+    /// kernel refused a snapshot EBUSY because another composite was in flight.
     pub fn compose_traced(&mut self, trace: &mut Trace) -> Result<Frame, i64> {
         const EAGAIN: i64 = -(abi::errno::EAGAIN as i64);
         const EBUSY: i64 = -(abi::errno::EBUSY as i64);
@@ -255,6 +256,7 @@ impl Compositor {
                     s.windows = windows.as_mut_ptr() as u64;
                     s.window_capacity = 1;
                 }
+                trace.began_ns = now_ns();
                 r = call(op::COMPOSITE_SNAPSHOT, &mut s);
             }
             if r == EBUSY {
@@ -278,7 +280,6 @@ impl Compositor {
             c.stream = words.as_ptr() as u64;
             c.length = (words.len() * 4) as u64;
             c.scene_target = self.scene;
-            trace.began_ns = now_ns();
             let r = call(op::COMPOSITE, &mut c);
             trace.returned_ns = now_ns();
             match r {

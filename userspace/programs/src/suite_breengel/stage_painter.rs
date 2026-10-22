@@ -51,16 +51,17 @@ fn points(p: &[oracle::InputPoint]) -> Vec<gpu::InputPoint> {
     p.iter().map(|p| gpu::InputPoint { x: p.x, y: p.y, pressed: p.pressed }).collect()
 }
 
-/// This process's canvas and the stage's DejaVu Sans; a forked case makes its own.
+/// This process's canvas and the stage's renderer (its font and wall); a forked case makes
+/// its own.
 pub(crate) struct StagePainter {
     pid: u64,
     canvas: Option<Surface>,
-    font: gpu::StageFont,
+    stage: gpu::Stage,
 }
 
 impl StagePainter {
     pub(crate) fn new() -> StagePainter {
-        StagePainter { pid: 0, canvas: None, font: gpu::StageFont::new() }
+        StagePainter { pid: 0, canvas: None, stage: gpu::Stage::new() }
     }
 }
 
@@ -69,10 +70,10 @@ impl libbreenix::suite::Painter for StagePainter {
         let pid = libbreenix::process::getpid().map_err(|e| e.to_string())?.raw() as u64;
         let (w, h) = (width as usize, height as usize);
         if pid != self.pid {
-            // The parent's canvas and glyph atlas are not this process's to use, nor to
+            // The parent's canvas, glyph atlas and wall are not this process's to use, nor to
             // destroy: their handle numbers may name this process's own resources.
             core::mem::forget(self.canvas.take());
-            core::mem::forget(core::mem::replace(&mut self.font, gpu::StageFont::new()));
+            core::mem::forget(core::mem::replace(&mut self.stage, gpu::Stage::new()));
             self.pid = pid;
         }
         if self.canvas.as_ref().is_none_or(|c| (c.width(), c.height()) != (w, h) || c.error().is_some()) {
@@ -154,14 +155,14 @@ impl libbreenix::suite::Painter for StagePainter {
             notice: f.notice,
             ribbon: f.ribbon,
         };
-        let painted = gpu::draw(canvas, &run, &mut self.font)
+        let painted = self.stage.draw(canvas, &run)
             .map_err(|e| format!("stage paint: {e:?}"))
             .and_then(|()| canvas.wait().map_err(|e| format!("stage paint render: {e}")));
         if painted.is_err() {
-            // A lost context (a device reset, or a quarantine) takes the canvas and the glyph
-            // atlas with it: the next frame makes both again.
+            // A lost context (a device reset, or a quarantine) takes the canvas, the glyph
+            // atlas and the wall with it: the next frame makes them again.
             self.canvas = None;
-            self.font = gpu::StageFont::new();
+            self.stage = gpu::Stage::new();
         }
         painted
     }
