@@ -969,6 +969,9 @@ impl Suite {
         }
         emit(&std::format!("SUITE {} DONE passed={} failed={} skipped={} total={}{}",
             self.id, counts.passed, counts.failed, counts.skipped, total, suffix));
+        // The graphical finale owns its readings. The runner's live transport
+        // has no consumer after the last case; release its buffers at their owner.
+        if self.gui { feed = Feed::default(); }
         let reclaimed = !recording || {
             // Each case's processes were swept after it; any left since go now.
             let _ = sweep();
