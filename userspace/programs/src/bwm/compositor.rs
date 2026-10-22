@@ -202,9 +202,8 @@ impl Compositor {
         Ok(())
     }
 
-    /// Whether the windows have damage to compose: the snapshot's sizing query, which reserves
-    /// nothing. The scene descriptor also wakes for changes that leave nothing to compose,
-    /// bwm's own COMPOSITE among them.
+    /// Query window damage without reserving a scene snapshot. The scene descriptor also
+    /// wakes for changes without damage, including bwm's own COMPOSITE.
     pub fn pending(&self) -> bool {
         let mut q = wabi::SceneSnapshot::ZERO;
         q.context = self.context;
@@ -406,28 +405,25 @@ impl Compositor {
     }
 
     /// Read the displayed frame back from the device and compare each pixel with what the
-    /// last frame composed from `layers` must show, for the client window `subject` (0 for
-    /// none). Returns the number of pixels compared.
+    /// last frame composed from `layers` must show, prioritizing the client window `subject`
+    /// (0 for the desktop). Returns the number of pixels compared.
     pub fn check(&self, subject: u64, layers: &[Layer], pointer: Option<Pointer>) -> Result<u64, CheckError> {
         self.check_area(subject, layers, pointer, [0, 0, self.width, self.height])
     }
 
     /// `check`, for the part of the frame inside `area` (x0, y0, x1, y1) only.
     ///
-    /// Each client the area shows is read back by CAPTURE. The subject must still publish
-    /// the commit the composite sampled, or the check is made again on a later frame
-    /// (`CheckError::Moved`). Another client that has committed since no longer holds the
-    /// pixels the frame shows of it, so the pixels where it is topmost are left out of this
-    /// comparison; its own first frame has a check of its own.
+    /// CAPTURE reads the clients shown in the area. A captured commit differing from the
+    /// composite's sample requires retrying the check on a later frame. The comparison
+    /// covers the requested rectangle, including other clients' content.
     pub fn check_area(&self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4]) -> Result<u64, CheckError> {
         let [x0, y_top, x1, y1] = area;
         let w = x1.saturating_sub(x0);
         if w == 0 || y_top >= y1 {
             return Err(CheckError::Failed(format!("the area ({}, {})..({}, {}) is empty", x0, y_top, x1, y1)));
         }
-        // The clients this area shows, the subject first: each with its content rectangle and,
-        // when it still publishes the commit the composite sampled, its pixels.
-        let mut clients: Vec<(u64, [i32; 4], u32, Option<Vec<u8>>)> = Vec::new();
+        // The clients this area shows, the subject first, with their sampled pixels.
+        let mut clients: Vec<(u64, [i32; 4], u32, Vec<u8>)> = Vec::new();
         let shown = layers.iter().filter_map(|l| self.sampled_content(l).map(|r| (l.window_id, r)))
             .filter(|(_, r)| intersect(*r, [x0 as i32, y_top as i32, x1 as i32, y1 as i32]).is_some());
         let (mine, others): (Vec<_>, Vec<_>) = shown.partition(|(id, _)| *id == subject);
@@ -436,12 +432,12 @@ impl Compositor {
             let mut px = prefaulted_bytes(s.width as usize * s.height as usize * 4);
             let c = window::capture(s.id, &mut px, None)
                 .map_err(|e| CheckError::Failed(format!("CAPTURE of window {}: {}", s.id, e)))?;
-            if c.commit_id != s.commit_id && id == subject {
+            if c.commit_id != s.commit_id {
                 return Err(CheckError::Moved(format!(
                     "window {} published commit {} after the composite sampled commit {}", s.id, c.commit_id, s.commit_id
                 )));
             }
-            clients.push((id, r, s.width, (c.commit_id == s.commit_id).then_some(px)));
+            clients.push((id, r, s.width, px));
         }
         let mut band = prefaulted_bytes((w * CHECK_BAND_ROWS * 4) as usize);
         let mut desk = prefaulted_bytes((w * CHECK_BAND_ROWS * 4) as usize);
@@ -466,7 +462,7 @@ impl Compositor {
                     let o = ((row * w) as usize + (x as u32 - x0) as usize) * 4;
                     let got = u32::from_le_bytes([band[o], band[o + 1], band[o + 2], band[o + 3]]);
                     let from_desktop = u32::from_le_bytes([desk[o], desk[o + 1], desk[o + 2], desk[o + 3]]);
-                    let Some(want) = self.expected(from_desktop, layers, &clients, pointer, x, y) else { continue };
+                    let want = self.expected(from_desktop, layers, &clients, pointer, x, y);
                     // The X byte is not compared (breengel.md section 2).
                     if got & 0x00FF_FFFF != want & 0x00FF_FFFF {
                         return Err(CheckError::Failed(format!(
@@ -526,10 +522,9 @@ impl Compositor {
 
     /// The pixel the frame must show at `(x, y)`: the pointer's, else the topmost layer's
     /// (its client's committed pixel over its content, the desktop's over its frame), else
-    /// the desktop's; the app bar's above the windows. None where the topmost layer's client
-    /// has committed again since the frame sampled it.
-    fn expected(&self, from_desktop: u32, layers: &[Layer], clients: &[(u64, [i32; 4], u32, Option<Vec<u8>>)],
-        pointer: Option<(Pointer, &[&[u8]])>, x: i32, y: i32) -> Option<u32> {
+    /// the desktop's; the app bar's above the windows.
+    fn expected(&self, from_desktop: u32, layers: &[Layer], clients: &[(u64, [i32; 4], u32, Vec<u8>)],
+        pointer: Option<(Pointer, &[&[u8]])>, x: i32, y: i32) -> u32 {
         if let Some((p, bitmap)) = pointer {
             let (hx, hy) = hotspot(p.shape);
             let s = self.scale;
@@ -537,27 +532,27 @@ impl Compositor {
             let (cx, cy) = (dx.div_euclid(s), dy.div_euclid(s));
             if cy >= 0 && (cy as usize) < bitmap.len() && cx >= 0 && (cx as usize) < bitmap[cy as usize].len() {
                 match bitmap[cy as usize][cx as usize] {
-                    b'#' => return Some(CURSOR_BLACK),
-                    b'o' => return Some(CURSOR_WHITE),
+                    b'#' => return CURSOR_BLACK,
+                    b'o' => return CURSOR_WHITE,
                     _ => {}
                 }
             }
         }
         if y >= self.appbar_top {
-            return Some(from_desktop);
+            return from_desktop;
         }
         for layer in layers.iter().rev() {
             if let Some((_, r, width, px)) = clients.iter().find(|c| c.0 == layer.window_id) {
                 if x >= r[0] && x < r[2] && y >= r[1] && y < r[3] {
                     let o = ((y - r[1]) as usize * *width as usize + (x - r[0]) as usize) * 4;
-                    return px.as_ref().map(|px| u32::from_le_bytes([px[o], px[o + 1], px[o + 2], px[o + 3]]));
+                    return u32::from_le_bytes([px[o], px[o + 1], px[o + 2], px[o + 3]]);
                 }
             }
             if layer.frame[..layer.frame_len].iter().any(|r| x >= r[0] && x < r[2] && y >= r[1] && y < r[3]) {
-                return Some(from_desktop);
+                return from_desktop;
             }
         }
-        Some(from_desktop)
+        from_desktop
     }
 }
 
