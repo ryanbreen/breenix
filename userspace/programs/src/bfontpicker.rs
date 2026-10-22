@@ -13,15 +13,14 @@
 
 use std::process;
 
-use breengel::{Window, Event, Color, FrameBuf, FontConfig};
+use breengel::{Window, Event, Color, Surface, FontConfig};
 use libbreenix::fs;
 use libbreenix::io;
 use libbreenix::time;
 
-use libfont::{Font, CachedFont};
-use libgfx_ref::bitmap_font;
-use libgfx_ref::ttf_font;
-use libgfx_ref::shapes;
+use libgfx::bitmap_font;
+use libgfx::shapes;
+use libgfx::ttf_font::{self, CachedFont, Font};
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -318,7 +317,7 @@ fn ensure_cached_font(entry: &mut FontEntry) {
 // ─── Rendering ──────────────────────────────────────────────────────────────
 
 fn render(
-    fb: &mut FrameBuf,
+    fb: &mut Surface,
     fonts: &mut [FontEntry],
     list: &[ListItem],
     selected: usize,
@@ -423,14 +422,15 @@ fn render(
             let metrics = cached.metrics(preview_size);
             let line_h = (metrics.ascender + 0.99) as i32
                 + ((-metrics.descender) + 0.99) as i32;
-            ttf_font::draw_text(
-                fb, cached, PREVIEW_SAMPLE,
-                10, preview_y + 24, preview_size, PREVIEW_TEXT,
-            );
-            ttf_font::draw_text(
-                fb, cached, PREVIEW_SAMPLE_2,
-                10, preview_y + 24 + line_h + 4, preview_size, PREVIEW_TEXT,
-            );
+            // Both sample lines, each as `ttf_font::draw_text` draws it, sharing draws.
+            let clip = libgfx::surface::Rect::new(0, 0, fb.width() as i32, fb.height() as i32);
+            let runs = [
+                ttf_font::TextRun { bytes: PREVIEW_SAMPLE.as_bytes(), x: 10, y: preview_y + 24,
+                    size: preview_size, fg: PREVIEW_TEXT, clip },
+                ttf_font::TextRun { bytes: PREVIEW_SAMPLE_2.as_bytes(), x: 10, y: preview_y + 24 + line_h + 4,
+                    size: preview_size, fg: PREVIEW_TEXT, clip },
+            ];
+            ttf_font::draw_runs(fb, cached, &runs);
         }
     }
 
@@ -503,15 +503,21 @@ fn main() {
         scroll = selected - visible + 1;
     }
 
-    {
-        let fb = win.framebuf();
-        render(
+    match win.surface() {
+        Ok(fb) => render(
             fb, &mut fonts, &list, selected,
             &current_mono, &current_display, scroll, &status_msg,
             &[mono_size, display_size],
-        );
+        ),
+        Err(e) => {
+            println!("[bfontpicker] ERROR: no window surface: {}", e);
+            process::exit(1);
+        }
     }
-    let _ = win.present();
+    match win.present() {
+        Ok(()) => println!("[bfontpicker] first frame presented: {}x{}", win.width(), win.height()),
+        Err(e) => println!("[bfontpicker] first frame present failed: {}", e),
+    }
 
     loop {
         let events = win.poll_events();
@@ -629,13 +635,14 @@ fn main() {
         }
 
         if needs_redraw {
-            let fb = win.framebuf();
-            render(
-                fb, &mut fonts, &list, selected,
-                &current_mono, &current_display, scroll, &status_msg,
-                &[mono_size, display_size],
-            );
-            let _ = win.present();
+            if let Ok(fb) = win.surface() {
+                render(
+                    fb, &mut fonts, &list, selected,
+                    &current_mono, &current_display, scroll, &status_msg,
+                    &[mono_size, display_size],
+                );
+                let _ = win.present();
+            }
         }
 
         let _ = time::sleep_ms(50);
