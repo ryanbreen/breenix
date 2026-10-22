@@ -868,13 +868,13 @@ class Logs:
 
     def claim(self, name):
         """Reserve an empty log family; a header alone never establishes ownership."""
-        owner = '.' + name + '.' + FIXTURE_MARK
-        self.root_check('cd /var/log; if test -e ' + owner + ' || test -L ' + owner + '; then '
-                        'test -f ' + owner + ' && test ! -L ' + owner + ' && '
-                        'test "$(cat ' + owner + ')" = ' + FIXTURE_MARK + '; else '
-                        'for p in ' + name + '.log' + ''.join(' ' + name + '.log.' + str(i) for i in range(1, LOG_ARCHIVES + 1)) + '; do '
+        self.root_check('cd /var/log; n=' + name + '; owner=.$n.' + FIXTURE_MARK + '; '
+                        'if test -e $owner || test -L $owner; then '
+                        'test -f $owner && test ! -L $owner && '
+                        'test "$(cat $owner)" = ' + FIXTURE_MARK + '; else '
+                        'for p in $n.log' + ''.join(' $n.log.' + str(i) for i in range(1, LOG_ARCHIVES + 1)) + '; do '
                         'test ! -e $p && test ! -L $p || exit 3; done; '
-                        'set -C; printf "%s\\n" ' + FIXTURE_MARK + ' > ' + owner + '; fi')
+                        'set -C; printf "%s\\n" ' + FIXTURE_MARK + ' > $owner; fi')
 
     def setup(self):
         if self.ready is None:
