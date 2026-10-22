@@ -1,20 +1,28 @@
-//! bwm's composition on the GPU core (syscall 416, `docs/gui/gpu.md`).
+//! bwm's composition on the GPU core (`docs/gui/breengel.md` section 18, ruling B13).
 //!
-//! bwm draws the desktop (background, taskbar, window frames and app bar) on the CPU into
-//! one screen-sized buffer. Each frame uploads the changed part of that
-//! buffer to a texture, uploads the client frames the kernel hands over
-//! (`READ_WINDOW_BUFFER`, which also releases the client waiting on it), draws both into
-//! one of two scanout targets in stacking order, draws the pointer, and presents the target.
+//! bwm draws the desktop (background, taskbar, window frames and app bar) with BreenGL into
+//! its own GPU target D. Each frame it reserves a scene snapshot (window op 29), which names
+//! each shown window's published front by a sample-only alias, and encodes the scene in
+//! userspace: within each damaged rectangle of its persistent scene target C, the desktop,
+//! then each window bottom to top (its frame and shadow from D, its content from the alias),
+//! the app bar from D and the pointer on top. The stream ends with the copy of C into
+//! whichever of the two scanout targets A and B is not shown. COMPOSITE (window op 19)
+//! validates and submits that stream, waits for it and presents the target. No client pixel
+//! passes through the CPU.
 //!
-//! The first frame and the first frame that shows a client's pixels are read back from the
-//! scanout and compared, pixel for pixel, with the frame bwm meant to show. Each later
-//! window's first frame is compared the same way over the area that window covers. `check_fills`
-//! reads the scanout itself back (target 0) to show that the frame bwm composed is what the
-//! display shows, whole.
+//! The first frame, and each client window's first shown frame, are read back from the
+//! scanout and compared pixel for pixel with what the frame must show, built from sources
+//! independent of the composition: D read back, each client's committed front read back by
+//! CAPTURE (the commit the composite sampled), and the pointer's bitmap. `check_fills` reads
+//! single scanout pixels and compares them with the desktop's colours.
 
-use bgl::Context;
 use libbreenix::gpu::{self, abi};
-use libbreenix::graphics;
+use libbreenix::window::{self, abi as wabi};
+use abi::stream::{cmd, encode};
+use libgfx::surface::{Format, Surface};
+use wabi::{op, Plain};
+
+use super::session::cursor_shape;
 
 /// How long bwm waits for the GPU core to admit its device before giving up.
 const ADMISSION_WAIT_MS: u32 = 5000;
@@ -22,13 +30,17 @@ const ADMISSION_WAIT_MS: u32 = 5000;
 /// Rows per readback call when a frame is checked.
 const CHECK_BAND_ROWS: u32 = 32;
 
+/// How long one composite retries a snapshot that went stale or busy.
+const RETRY_MS: u64 = 2000;
+
 const CURSOR_WHITE: u32 = 0xFFFF_FFFF;
 const CURSOR_BLACK: u32 = 0xFF00_0000;
+const BLACK: u32 = 0xFF00_0000;
 
 /// One client window as the frame shows it, bottom to top.
 pub struct Layer {
-    pub window_id: u32,
-    /// The window's decorations and shadow, drawn from the desktop texture beneath its
+    pub window_id: u64,
+    /// The window's decorations and shadow, drawn from the desktop target beneath its
     /// content. Empty for chromeless windows.
     pub frame: [[i32; 4]; 3],
     pub frame_len: usize,
@@ -52,254 +64,276 @@ pub struct Scanout {
     pub height: u32,
 }
 
-struct Surface {
-    window_id: u32,
-    texture: u64,
-    width: u32,
-    height: u32,
-    pixels: Vec<u32>,
-    /// The CPU snapshot holds a complete client frame, even if its upload failed.
-    valid: bool,
-    /// The texture holds the CPU snapshot.
-    shown: bool,
+/// Why a frame check did not pass.
+pub enum CheckError {
+    /// A client committed again after the composite sampled it, so its front no longer
+    /// holds the pixels the frame shows; the check is made again on a later frame.
+    Moved(String),
+    Failed(String),
 }
 
-impl Surface {
-    fn upload(&mut self, context: u64) -> Result<(), String> {
-        if self.texture == 0 {
-            self.texture = gpu::texture_create(abi::format::B8G8R8A8, self.width, self.height)
-                .map_err(|e| format!("window {} texture: errno {}", self.window_id, -e))?;
-        }
-        let (r, _) = gpu::upload(
-            context,
-            self.texture,
-            [0, 0, self.width, self.height],
-            as_bytes(&self.pixels),
-            self.width * 4,
-            abi::upload_source::B8G8R8A8,
-            abi::purpose::IMAGE,
-        );
-        if r != 0 {
-            return Err(format!("window {} upload: errno {}", self.window_id, -r));
-        }
-        self.shown = true;
-        Ok(())
-    }
+/// A window the last composite sampled: its id, the published commit and client size.
+#[derive(Clone, Copy)]
+struct Sampled {
+    id: u64,
+    sample: u64,
+    commit_id: u64,
+    width: u32,
+    height: u32,
 }
 
 pub struct Compositor {
-    ctx: Context,
+    context: u64,
     width: u32,
     height: u32,
-    targets: [u64; 2],
+    scene: u64,
+    scanout: [u64; 2],
+    /// The scanout target the next frame writes: the one not shown.
     next: usize,
-    desktop: u64,
-    surfaces: Vec<Surface>,
-    read_pixels: Vec<u32>,
+    /// The desktop: background, taskbar, window frames and app bar.
+    pub desktop: Surface,
+    /// The background alone, which each repaint of the desktop copies.
+    pub background: Surface,
+    sampled: Vec<Sampled>,
     appbar_top: i32,
     /// Pointer pixels per bitmap cell: the UI scale.
     scale: i32,
+    /// The next frame repaints the whole of C: after opening, and after a failed frame.
+    full: bool,
+}
+
+impl Drop for Compositor {
+    fn drop(&mut self) {
+        self.destroy_targets();
+        gpu::context_destroy(self.context);
+    }
 }
 
 impl Compositor {
-    /// Open the GPU core for a `width` x `height` screen: a context, two scanout targets and
-    /// the desktop texture. The pointer is drawn at `scale` pixels per bitmap cell.
+    /// Open the GPU core for a `width` x `height` screen: a context, the scene target and two
+    /// scanout targets, each cleared by a completed GPU clear, and the desktop and background
+    /// targets, which the caller draws. The pointer is drawn at `scale` pixels per bitmap cell.
     pub fn open(width: u32, height: u32, appbar_height: u32, scale: u32) -> Result<Self, String> {
         wait_for_admission()?;
-        let ctx = Context::new().map_err(|e| format!("context: errno {}", -e))?;
-        let mut targets = [0u64; 2];
-        for t in &mut targets {
-            *t = gpu::scanout_target_create(abi::format::B8G8R8A8, width, height)
-                .map_err(|e| format!("scanout target: errno {}", -e))?;
-        }
-        let desktop = gpu::texture_create(abi::format::B8G8R8A8, width, height)
-            .map_err(|e| format!("desktop texture: errno {}", -e))?;
-        Ok(Self {
-            ctx,
+        let context = gpu::context_create().map_err(|e| format!("context: errno {}", -e))?;
+        let (desktop, background) = match (Surface::new(width as usize, height as usize, Format::BGRX),
+            Surface::new(width as usize, height as usize, Format::BGRX)) {
+            (Ok(d), Ok(b)) => (d, b),
+            (d, b) => {
+                gpu::context_destroy(context);
+                return Err(format!("desktop targets: {:?}", d.err().or(b.err())));
+            }
+        };
+        let mut c = Self {
+            context,
             width,
             height,
-            targets,
+            scene: 0,
+            scanout: [0; 2],
             next: 0,
             desktop,
-            surfaces: Vec::new(),
-            read_pixels: Vec::new(),
+            background,
+            sampled: Vec::new(),
             appbar_top: height.saturating_sub(appbar_height) as i32,
             scale: scale as i32,
-        })
+            full: true,
+        };
+        c.make_targets()?;
+        Ok(c)
     }
 
-    /// Replace the context and its resources after a failed frame (a quarantined context
-    /// or a device reset), and upload again the client frames already taken. The caller
-    /// uploads the desktop again.
-    pub fn reopen(&mut self) -> Result<(), String> {
-        for t in self.targets.into_iter().chain([self.desktop]).chain(self.surfaces.iter().map(|s| s.texture)) {
+    fn destroy_targets(&mut self) {
+        for t in [self.scene, self.scanout[0], self.scanout[1]] {
             if t != 0 {
-                let _ = gpu::resource_destroy(t);
+                gpu::resource_destroy(t);
             }
         }
-        let mut fresh = Self::open(self.width, self.height, self.height - self.appbar_top as u32, self.scale as u32)?;
-        fresh.surfaces = core::mem::take(&mut self.surfaces);
-        fresh.read_pixels = core::mem::take(&mut self.read_pixels);
-        for s in &mut fresh.surfaces {
-            s.texture = 0;
-            s.shown = false;
-        }
-        // Install first: a failed restoration must retain the snapshots for another retry.
-        *self = fresh;
-        for s in &mut self.surfaces {
-            if s.valid {
-                s.upload(self.ctx.handle())?;
-            }
-        }
-        Ok(())
+        (self.scene, self.scanout) = (0, [0; 2]);
     }
 
-    /// Upload the rectangle `(x, y, w, h)` of the desktop buffer.
-    pub fn upload_desktop(&mut self, desktop: &[u32], rect: [u32; 4]) -> Result<(), String> {
-        let [x, y, w, h] = rect;
-        let x1 = (x + w).min(self.width);
-        let y1 = (y + h).min(self.height);
-        if x >= x1 || y >= y1 {
-            return Ok(());
+    fn make_targets(&mut self) -> Result<(), String> {
+        self.destroy_targets();
+        // The scanout targets first: test point 26 binds the process's lowest other scanout.
+        for slot in 0..2 {
+            self.scanout[slot] = gpu::scanout_target_create(abi::format::B8G8R8A8, self.width, self.height)
+                .map_err(|e| format!("scanout target: errno {}", -e))?;
         }
-        let stride = self.width * 4;
-        let start = (y * self.width + x) as usize;
-        let end = ((y1 - 1) * self.width + x1) as usize;
-        let bytes = as_bytes(&desktop[start..end]);
-        let (r, _) = gpu::upload(
-            self.ctx.handle(),
-            self.desktop,
-            [x, y, x1 - x, y1 - y],
-            bytes,
-            stride,
-            abi::upload_source::B8G8R8A8,
-            abi::purpose::IMAGE,
-        );
+        self.scene = gpu::target_create(abi::format::B8G8R8A8, self.width, self.height)
+            .map_err(|e| format!("scene target: errno {}", -e))?;
+        self.next = 0;
+        self.full = true;
+        let mut words = Vec::new();
+        for t in [self.scanout[0], self.scanout[1], self.scene] {
+            encode::begin(&mut words, t);
+            encode::clear(&mut words, BLACK);
+        }
+        let (r, s) = gpu::submit(self.context, &words);
         if r != 0 {
-            return Err(format!("desktop upload: errno {}", -r));
+            return Err(format!("clear: errno {}", -r));
         }
+        match gpu::wait(self.context, s.fence, 2_000_000_000) {
+            (0, _) => Ok(()),
+            (r, w) => Err(format!("clear: errno {}, status {}", -r, w.status)),
+        }
+    }
+
+    /// Replace the context and its targets after a failed frame (a quarantined context or
+    /// a device reset). The caller draws the background and the desktop again.
+    pub fn reopen(&mut self) -> Result<(), String> {
+        let appbar = self.height - self.appbar_top as u32;
+        *self = Self::open(self.width, self.height, appbar, self.scale as u32)?;
         Ok(())
     }
 
-    /// Take the client frames the kernel has for the registered windows and upload them.
-    /// Returns whether any window's texture changed.
-    pub fn refresh_windows(&mut self) -> Result<bool, String> {
-        let mut infos = [graphics::WindowInfo::default(); 16];
-        let count = graphics::list_windows(&mut infos).map_err(|e| format!("list windows: {}", e))?;
-        let infos = &infos[..count];
-        let mut gone = Vec::new();
-        for s in &self.surfaces {
-            if !infos.iter().any(|i| i.buffer_id == s.window_id) {
-                gone.push(s.texture);
+    /// Compose a frame: redraw `damage` (screen rectangles `(x0, y0, x1, y1)`), and whatever
+    /// the scene snapshot names as damaged, in C from the desktop, the windows in `layers`
+    /// and the pointer, then show it. The whole of C is redrawn after opening or a failure.
+    pub fn compose(&mut self, layers: &[Layer], pointer: Option<Pointer>, damage: &[[i32; 4]]) -> Result<(), String> {
+        const EAGAIN: i64 = -(wabi::errno::EAGAIN as i64);
+        const EBUSY: i64 = -(wabi::errno::EBUSY as i64);
+        const EINVAL: i64 = -(wabi::errno::EINVAL as i64);
+        const EIO: i64 = -(wabi::errno::EIO as i64);
+        self.desktop.wait().map_err(|e| format!("desktop drawing: errno {}", -e))?;
+        let deadline = monotonic_ms() + RETRY_MS;
+        loop {
+            let mut q = wabi::SceneSnapshot::ZERO;
+            q.context = self.context;
+            let mut r = call(op::COMPOSITE_SNAPSHOT, &mut q);
+            let mut windows = vec![wabi::SceneWindow::ZERO; q.window_count as usize];
+            let mut kernel_damage = vec![wabi::Rect::ZERO; q.damage_count as usize];
+            let mut s = wabi::SceneSnapshot::ZERO;
+            if r == 0 {
+                if (q.width, q.height) != (self.width, self.height) {
+                    return Err(format!("the display changed to {}x{} under bwm's {}x{} desktop", q.width, q.height, self.width, self.height));
+                }
+                // A request without room for any window or damage would be a sizing query.
+                if windows.is_empty() && kernel_damage.is_empty() {
+                    windows.push(wabi::SceneWindow::ZERO);
+                }
+                s.context = self.context;
+                s.windows = windows.as_mut_ptr() as u64;
+                s.window_capacity = windows.len() as u32;
+                s.damage = kernel_damage.as_mut_ptr() as u64;
+                s.damage_capacity = kernel_damage.len() as u32;
+                r = call(op::COMPOSITE_SNAPSHOT, &mut s);
             }
-        }
-        for texture in gone {
-            let _ = gpu::resource_destroy(texture);
-        }
-        self.surfaces.retain(|s| infos.iter().any(|i| i.buffer_id == s.window_id));
-
-        let mut changed = false;
-        for info in infos {
-            if info.buffer_id == 0 || info.width == 0 || info.height == 0 {
+            // Stale or busy metadata, or a count that grew since the sizing query.
+            if matches!(r, EAGAIN | EBUSY | EINVAL) && monotonic_ms() < deadline {
+                let _ = libbreenix::time::sleep_ms(1);
                 continue;
             }
-            let index = match self.surfaces.iter().position(|s| s.window_id == info.buffer_id) {
-                Some(i) => i,
-                None => {
-                    self.surfaces.push(Surface {
-                        window_id: info.buffer_id,
-                        texture: 0,
-                        width: 0,
-                        height: 0,
-                        pixels: Vec::new(),
-                        valid: false,
-                        shown: false,
-                    });
-                    self.surfaces.len() - 1
-                }
-            };
-            let s = &mut self.surfaces[index];
-            let wanted = info.width as usize * info.height as usize;
-            if self.read_pixels.len() < wanted {
-                self.read_pixels = prefaulted(wanted);
+            if r != 0 {
+                return Err(format!("scene snapshot: errno {}", -r));
             }
-            let mut frame = None;
-            for _ in 0..3 {
-                let (w, h) = match graphics::read_window_buffer(s.window_id, as_bytes_mut(&mut self.read_pixels)) {
-                    Ok(dims) => dims,
-                    Err(_) => break,
-                };
-                if w == 0 && h == 0 {
-                    break; // no new frame; keep the previous snapshot
+            windows.truncate(s.window_count as usize);
+            kernel_damage.truncate(s.damage_count as usize);
+            let full = self.full || s.flags & 1 != 0;
+            let rects = self.damage_rects(full, damage, &kernel_damage);
+            let mut words = Vec::new();
+            self.encode(&mut words, &rects, layers, &windows, pointer);
+            let mut c = wabi::Composite::ZERO;
+            c.snapshot = s.snapshot;
+            c.target = self.scanout[self.next];
+            c.stream = words.as_ptr() as u64;
+            c.length = (words.len() * 4) as u64;
+            c.scene_target = self.scene;
+            let r = call(op::COMPOSITE, &mut c);
+            match r {
+                0 => {
+                    self.next ^= 1;
+                    self.full = false;
+                    self.sampled = windows.iter().map(|w| Sampled {
+                        id: w.id, sample: w.sample, commit_id: w.commit_id, width: w.width, height: w.height,
+                    }).collect();
+                    return Ok(());
                 }
-                let needed = w as usize * h as usize;
-                if needed > self.read_pixels.len() {
-                    // The kernel retained the generation and the blocked presenter.
-                    self.read_pixels = prefaulted(needed);
-                    continue;
+                EAGAIN if monotonic_ms() < deadline => {
+                    let _ = libbreenix::time::sleep_ms(1);
                 }
-                self.read_pixels.truncate(needed);
-                frame = Some((w, h));
-                break;
-            }
-            let Some((w, h)) = frame else { continue };
-            if s.width != w || s.height != h {
-                if s.texture != 0 {
-                    let _ = gpu::resource_destroy(s.texture);
-                    s.texture = 0;
+                // The destination is still the scanout's binding: compose into the other one.
+                EBUSY if monotonic_ms() < deadline => {
+                    self.next ^= 1;
+                    let _ = libbreenix::time::sleep_ms(1);
+                }
+                EIO => {
+                    self.full = true;
+                    return Err(format!("composite: EIO, reason {}, phase {}", c.reason, c.phase));
+                }
+                r => {
+                    self.full = true;
+                    return Err(format!("composite: errno {}, stream error {} at {}", -r, c.error, c.error_index));
                 }
             }
-            core::mem::swap(&mut s.pixels, &mut self.read_pixels);
-            s.width = w;
-            s.height = h;
-            s.valid = true;
-            s.shown = false;
-            s.upload(self.ctx.handle())?;
-            changed = true;
         }
-        Ok(changed)
     }
 
-    /// Draw the frame and present it.
-    pub fn compose(&mut self, layers: &[Layer], pointer: Option<Pointer>) -> Result<(), String> {
+    /// The rectangles to redraw: the whole screen, or bwm's own damage and the snapshot's,
+    /// clipped to the screen. More than 16 become their bounding box.
+    fn damage_rects(&self, full: bool, own: &[[i32; 4]], kernel: &[wabi::Rect]) -> Vec<[i32; 4]> {
         let (w, h) = (self.width as i32, self.height as i32);
-        let target = self.targets[self.next];
-        self.ctx.begin(target, self.width, self.height);
-        self.ctx.copy(self.desktop, &[[0, 0, w, h, 0, 0]]);
-        for layer in layers {
-            let frame: Vec<[i32; 6]> = layer.frame[..layer.frame_len]
-                .iter()
-                .map(|r| [r[0], r[1], r[2], r[3], r[0], r[1]])
-                .collect();
-            if !frame.is_empty() {
-                self.ctx.copy(self.desktop, &frame);
+        if full {
+            return vec![[0, 0, w, h]];
+        }
+        let kernel = kernel.iter().map(|r| [r.x, r.y, r.x.saturating_add(r.w), r.y.saturating_add(r.h)]);
+        let mut rects: Vec<[i32; 4]> = own.iter().copied().chain(kernel)
+            .map(|r| [r[0].max(0), r[1].max(0), r[2].min(w), r[3].min(h)])
+            .filter(|r| r[0] < r[2] && r[1] < r[3])
+            .collect();
+        if rects.len() > 16 {
+            let b = rects.iter().fold([w, h, 0, 0], |a, r| [a[0].min(r[0]), a[1].min(r[1]), a[2].max(r[2]), a[3].max(r[3])]);
+            rects = vec![b];
+        }
+        rects
+    }
+
+    /// The stream of one frame: within each of `rects` in C, the desktop, the layers bottom to
+    /// top, the app bar and the pointer; then the whole of C into the next scanout target.
+    fn encode(&self, out: &mut Vec<u32>, rects: &[[i32; 4]], layers: &[Layer], windows: &[wabi::SceneWindow], pointer: Option<Pointer>) {
+        let desktop = self.desktop.handle();
+        let (w, h) = (self.width as i32, self.height as i32);
+        let copy = |out: &mut Vec<u32>, source: u64, origin: [i32; 2], area: [i32; 4], d: [i32; 4]| {
+            if let Some(i) = intersect(area, d) {
+                let src = [(i[0] - origin[0]) as u32, (i[1] - origin[1]) as u32, (i[2] - i[0]) as u32, (i[3] - i[1]) as u32];
+                encode::copy(out, source, src, self.scene, [i[0] as u32, i[1] as u32]);
             }
-            if let Some((texture, rect)) = self.content_rect(layer) {
-                self.ctx.copy(texture, &[[rect[0], rect[1], rect[2], rect[3], 0, 0]]);
+        };
+        if !rects.is_empty() {
+            encode::begin(out, self.scene);
+        }
+        for &d in rects {
+            out.extend([cmd::SCISSOR, 6, d[0] as u32, d[1] as u32, d[2] as u32, d[3] as u32]);
+            copy(out, desktop, [0, 0], [0, 0, w, h], d);
+            for layer in layers {
+                for &r in &layer.frame[..layer.frame_len] {
+                    copy(out, desktop, [0, 0], r, d);
+                }
+                if let Some((sample, r)) = content_rect(layer, windows) {
+                    copy(out, sample, [r[0], r[1]], r, d);
+                }
+            }
+            // The app bar stays above the windows.
+            copy(out, desktop, [0, 0], [0, self.appbar_top, w, h], d);
+            if let Some(p) = pointer {
+                let (white, black) = pointer_rects(p, self.scale);
+                let white: Vec<[i32; 4]> = white.into_iter().filter_map(|r| intersect(r, d)).collect();
+                let black: Vec<[i32; 4]> = black.into_iter().filter_map(|r| intersect(r, d)).collect();
+                if !white.is_empty() {
+                    encode::draw(out, abi::pipeline::SOLID, CURSOR_WHITE, &white);
+                }
+                if !black.is_empty() {
+                    encode::draw(out, abi::pipeline::SOLID, CURSOR_BLACK, &black);
+                }
             }
         }
-        // The app bar stays above the windows.
-        self.ctx.copy(self.desktop, &[[0, self.appbar_top, w, h, 0, self.appbar_top]]);
-        if let Some(p) = pointer {
-            let (white, black) = pointer_rects(p, self.scale);
-            if !white.is_empty() {
-                self.ctx.solid(CURSOR_WHITE, &white);
-            }
-            if !black.is_empty() {
-                self.ctx.solid(CURSOR_BLACK, &black);
-            }
-        }
-        self.ctx.submit().map_err(|e| format!("submit: errno {}", -e))?;
-        self.ctx.present(target).map_err(|e| format!("present: errno {}", -e))?;
-        self.next ^= 1;
-        Ok(())
+        encode::begin(out, self.scanout[self.next]);
+        encode::copy(out, self.scene, [0, 0, self.width, self.height], self.scanout[self.next], [0, 0]);
     }
 
     /// The client windows a frame composed from `layers` shows, top first: each window's id
     /// and the screen area its decorations and content cover (x0, y0, x1, y1).
-    pub fn shown_clients(&self, layers: &[Layer], pointer: Option<Pointer>) -> Vec<(u32, [u32; 4])> {
+    pub fn shown_clients(&self, layers: &[Layer], pointer: Option<Pointer>) -> Vec<(u64, [u32; 4])> {
         layers.iter().enumerate().rev().filter_map(|(index, l)| {
-            let (_, content) = self.content_rect(l)?;
+            let content = self.sampled_content(l)?;
             let area = l.frame[..l.frame_len].iter().fold(content, |a, r| {
                 [a[0].min(r[0]), a[1].min(r[1]), a[2].max(r[2]), a[3].max(r[3])]
             });
@@ -314,7 +348,7 @@ impl Compositor {
                 for rect in &above.frame[..above.frame_len] {
                     subtract_rect(&mut exposed, *rect);
                 }
-                if let Some((_, rect)) = self.content_rect(above) {
+                if let Some(rect) = self.sampled_content(above) {
                     subtract_rect(&mut exposed, rect);
                 }
             }
@@ -328,22 +362,49 @@ impl Compositor {
         }).collect()
     }
 
-    /// Read the displayed frame back from the device and compare each pixel with the frame
-    /// `compose` drew from the same inputs. Returns the number of pixels compared.
-    pub fn check(&self, desktop: &[u32], layers: &[Layer], pointer: Option<Pointer>) -> Result<u64, String> {
-        self.check_area(desktop, layers, pointer, [0, 0, self.width, self.height])
+    /// The content rectangle the last composite drew from a layer's window, when it sampled
+    /// a published front: the content area, no larger than the client's frame.
+    fn sampled_content(&self, layer: &Layer) -> Option<[i32; 4]> {
+        let s = self.sampled.iter().find(|s| s.id == layer.window_id && s.sample != 0)?;
+        let [x, y, cw, ch] = layer.content;
+        let (w, h) = (cw.min(s.width as i32), ch.min(s.height as i32));
+        (w > 0 && h > 0).then_some([x, y, x + w, y + h])
+    }
+
+    /// Read the displayed frame back from the device and compare each pixel with what the
+    /// last frame composed from `layers` must show. Returns the number of pixels compared.
+    pub fn check(&self, layers: &[Layer], pointer: Option<Pointer>) -> Result<u64, CheckError> {
+        self.check_area(layers, pointer, [0, 0, self.width, self.height])
     }
 
     /// `check`, for the part of the frame inside `area` (x0, y0, x1, y1) only.
-    pub fn check_area(&self, desktop: &[u32], layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4]) -> Result<u64, String> {
+    pub fn check_area(&self, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4]) -> Result<u64, CheckError> {
         let [x0, y_top, x1, y1] = area;
         let w = x1.saturating_sub(x0);
         if w == 0 || y_top >= y1 {
-            return Err(format!("the area ({}, {})..({}, {}) is empty", x0, y_top, x1, y1));
+            return Err(CheckError::Failed(format!("the area ({}, {})..({}, {}) is empty", x0, y_top, x1, y1)));
         }
-        // READBACK refuses pages that are not yet mapped, so both buffers are touched first.
-        let mut band = prefaulted((w * CHECK_BAND_ROWS) as usize);
-        let band = as_bytes_mut(&mut band);
+        // The clients this area shows, read back first: each must still publish the commit
+        // the composite sampled.
+        let mut clients: Vec<(u64, [i32; 4], u32, Vec<u8>)> = Vec::new();
+        for layer in layers {
+            let Some(r) = self.sampled_content(layer) else { continue };
+            if intersect(r, [x0 as i32, y_top as i32, x1 as i32, y1 as i32]).is_none() {
+                continue;
+            }
+            let s = self.sampled.iter().find(|s| s.id == layer.window_id).expect("sampled_content found it");
+            let mut px = prefaulted_bytes(s.width as usize * s.height as usize * 4);
+            let c = window::capture(s.id, &mut px, None)
+                .map_err(|e| CheckError::Failed(format!("CAPTURE of window {}: {}", s.id, e)))?;
+            if c.commit_id != s.commit_id {
+                return Err(CheckError::Moved(format!(
+                    "window {} published commit {} after the composite sampled commit {}", s.id, c.commit_id, s.commit_id
+                )));
+            }
+            clients.push((s.id, r, s.width, px));
+        }
+        let mut band = prefaulted_bytes((w * CHECK_BAND_ROWS * 4) as usize);
+        let mut desk = prefaulted_bytes((w * CHECK_BAND_ROWS * 4) as usize);
         let mut record = Box::new([0u8; abi::record::SIZE]);
         // SAFETY: the record is one live allocation.
         unsafe { core::ptr::write_volatile(record.as_mut_ptr(), 0) };
@@ -355,19 +416,23 @@ impl Compositor {
             let len = (w * rows * 4) as usize;
             let (r, a) = gpu::readback_why(0, [x0, y0, w, rows], &mut band[..len], w * 4, &mut *record);
             if r != 0 {
-                return Err(format!("readback of rows {}..{}: errno {}, reason {}", y0, y0 + rows, -r, a.reason));
+                return Err(CheckError::Failed(format!("readback of rows {}..{}: errno {}, reason {}", y0, y0 + rows, -r, a.reason)));
             }
+            self.desktop.read_rect([x0 as usize, y0 as usize, w as usize, rows as usize], &mut desk[..len], w as usize * 4)
+                .map_err(|e| CheckError::Failed(format!("desktop readback of rows {}..{}: errno {}", y0, y0 + rows, -e)))?;
             for row in 0..rows {
                 let y = (y0 + row) as i32;
                 for x in x0 as i32..x1 as i32 {
                     let o = ((row * w) as usize + (x as u32 - x0) as usize) * 4;
                     let got = u32::from_le_bytes([band[o], band[o + 1], band[o + 2], band[o + 3]]);
-                    let want = self.expected(desktop, layers, pointer, x, y);
-                    if got != want {
-                        return Err(format!(
-                            "pixel ({}, {}) is {:#010x}, the composed frame has {:#010x} ({} pixels matched before it)",
+                    let from_desktop = u32::from_le_bytes([desk[o], desk[o + 1], desk[o + 2], desk[o + 3]]);
+                    let want = self.expected(from_desktop, layers, &clients, pointer, x, y);
+                    // The X byte is not compared (breengel.md section 2).
+                    if got & 0x00FF_FFFF != want & 0x00FF_FFFF {
+                        return Err(CheckError::Failed(format!(
+                            "pixel ({}, {}) is {:#010x}, the frame must show {:#010x} ({} pixels matched before it)",
                             x, y, got, want, compared
-                        ));
+                        )));
                     }
                     compared += 1;
                 }
@@ -382,13 +447,13 @@ impl Compositor {
     /// binding: the scanout flag set, a `width` x `height` resource, the same resource each
     /// time. Returns that resource and its size.
     pub fn check_fills(&self, samples: &[(u32, u32, u32)]) -> Result<Scanout, String> {
-        let mut pixel = prefaulted(1);
+        let mut pixel = prefaulted_bytes(4);
         let mut record = Box::new([0u8; abi::record::SIZE]);
         // SAFETY: the record is one live allocation.
         unsafe { core::ptr::write_volatile(record.as_mut_ptr(), 0) };
         let mut shown: Option<Scanout> = None;
         for &(x, y, want) in samples {
-            let (r, a) = gpu::readback_why(0, [x, y, 1, 1], as_bytes_mut(&mut pixel), 4, &mut *record);
+            let (r, a) = gpu::readback_why(0, [x, y, 1, 1], &mut pixel, 4, &mut *record);
             if r != 0 {
                 return Err(format!("scanout readback of ({}, {}): errno {}, reason {}", x, y, -r, a.reason));
             }
@@ -410,16 +475,20 @@ impl Compositor {
                     return Err(format!("the scanout changed from resource {} to {} during the check", s.resource, resource));
                 }
             }
-            if pixel[0] != want {
-                return Err(format!("scanout pixel ({}, {}) is {:#010x}, bwm composed {:#010x}", x, y, pixel[0], want));
+            let got = u32::from_le_bytes([pixel[0], pixel[1], pixel[2], pixel[3]]);
+            if got & 0x00FF_FFFF != want & 0x00FF_FFFF {
+                return Err(format!("scanout pixel ({}, {}) is {:#010x}, the desktop has {:#010x}", x, y, got, want));
             }
             shown = Some(Scanout { resource, width, height });
         }
         shown.ok_or_else(|| String::from("no samples"))
     }
 
-    /// The pixel `compose` draws at `(x, y)`, worked out on the CPU from the same inputs.
-    fn expected(&self, desktop: &[u32], layers: &[Layer], pointer: Option<(Pointer, &[&[u8]])>, x: i32, y: i32) -> u32 {
+    /// The pixel the frame must show at `(x, y)`: the pointer's, else the topmost layer's
+    /// (its client's committed pixel over its content, the desktop's over its frame), else
+    /// the desktop's; the app bar's above the windows.
+    fn expected(&self, from_desktop: u32, layers: &[Layer], clients: &[(u64, [i32; 4], u32, Vec<u8>)],
+        pointer: Option<(Pointer, &[&[u8]])>, x: i32, y: i32) -> u32 {
         if let Some((p, bitmap)) = pointer {
             let (hx, hy) = hotspot(p.shape);
             let s = self.scale;
@@ -433,15 +502,14 @@ impl Compositor {
                 }
             }
         }
-        let from_desktop = desktop[y as usize * self.width as usize + x as usize];
         if y >= self.appbar_top {
             return from_desktop;
         }
         for layer in layers.iter().rev() {
-            if let Some((_, r)) = self.content_rect(layer) {
+            if let Some((_, r, width, px)) = clients.iter().find(|c| c.0 == layer.window_id) {
                 if x >= r[0] && x < r[2] && y >= r[1] && y < r[3] {
-                    let s = self.surfaces.iter().find(|s| s.window_id == layer.window_id).unwrap();
-                    return s.pixels[(y - r[1]) as usize * s.width as usize + (x - r[0]) as usize];
+                    let o = ((y - r[1]) as usize * *width as usize + (x - r[0]) as usize) * 4;
+                    return u32::from_le_bytes([px[o], px[o + 1], px[o + 2], px[o + 3]]);
                 }
             }
             if layer.frame[..layer.frame_len].iter().any(|r| x >= r[0] && x < r[2] && y >= r[1] && y < r[3]) {
@@ -450,15 +518,30 @@ impl Compositor {
         }
         from_desktop
     }
+}
 
-    /// The texture and destination rectangle of a layer's content, when its window has a
-    /// frame to show: the content area, no larger than the client's frame.
-    fn content_rect(&self, layer: &Layer) -> Option<(u64, [i32; 4])> {
-        let s = self.surfaces.iter().find(|s| s.window_id == layer.window_id && s.shown)?;
-        let [x, y, cw, ch] = layer.content;
-        let (w, h) = (cw.min(s.width as i32), ch.min(s.height as i32));
-        (w > 0 && h > 0).then_some((s.texture, [x, y, x + w, y + h]))
-    }
+/// The alias and destination rectangle of a layer's content, when the snapshot names a
+/// published front for its window: the content area, no larger than the client's frame.
+fn content_rect(layer: &Layer, windows: &[wabi::SceneWindow]) -> Option<(u64, [i32; 4])> {
+    let s = windows.iter().find(|w| w.id == layer.window_id && w.sample != 0)?;
+    let [x, y, cw, ch] = layer.content;
+    let (w, h) = (cw.min(s.width as i32), ch.min(s.height as i32));
+    (w > 0 && h > 0).then_some((s.sample, [x, y, x + w, y + h]))
+}
+
+fn intersect(a: [i32; 4], b: [i32; 4]) -> Option<[i32; 4]> {
+    let r = [a[0].max(b[0]), a[1].max(b[1]), a[2].min(b[2]), a[3].min(b[3])];
+    (r[2] > r[0] && r[3] > r[1]).then_some(r)
+}
+
+/// The window op `op` on `value`: the kernel's raw return.
+fn call<T: Plain>(op: u32, value: &mut T) -> i64 {
+    // SAFETY: `value` is a live plain structure of its own size.
+    unsafe { window::raw_call(op, value as *mut T as *mut u8, core::mem::size_of::<T>()) }
+}
+
+fn monotonic_ms() -> u64 {
+    libbreenix::time::now_monotonic().map_or(0, |t| (t.as_nanos() / 1_000_000) as u64)
 }
 
 /// Remove the part of each rectangle covered by an opaque rectangle.
@@ -526,24 +609,14 @@ fn wait_for_admission() -> Result<(), String> {
     }
 }
 
-/// A zeroed pixel buffer whose pages are mapped, for the kernel's copy into it.
-fn prefaulted(len: usize) -> Vec<u32> {
-    let mut v = vec![0u32; len];
-    for i in (0..len).step_by(1024) {
+/// A zeroed buffer whose pages are mapped, for the kernel's copy into it.
+fn prefaulted_bytes(len: usize) -> Vec<u8> {
+    let mut v = vec![0u8; len];
+    for i in (0..len).step_by(4096) {
         // SAFETY: `i` is inside the vector.
         unsafe { core::ptr::write_volatile(v.as_mut_ptr().add(i), 0) };
     }
     v
-}
-
-fn as_bytes(p: &[u32]) -> &[u8] {
-    // SAFETY: u32 has no padding and u8 has alignment 1.
-    unsafe { core::slice::from_raw_parts(p.as_ptr() as *const u8, p.len() * 4) }
-}
-
-fn as_bytes_mut(p: &mut [u32]) -> &mut [u8] {
-    // SAFETY: as `as_bytes`; u32 has no invalid bit patterns.
-    unsafe { core::slice::from_raw_parts_mut(p.as_mut_ptr() as *mut u8, p.len() * 4) }
 }
 
 // ─── Pointer ────────────────────────────────────────────────────────────────
@@ -637,10 +710,10 @@ const RESIZE_NESW: &[&[u8]] = &[
 
 fn pointer_bitmap(shape: u32) -> &'static [&'static [u8]] {
     match shape {
-        graphics::cursor_shape::RESIZE_NS => RESIZE_NS,
-        graphics::cursor_shape::RESIZE_EW => RESIZE_EW,
-        graphics::cursor_shape::RESIZE_NWSE => RESIZE_NWSE,
-        graphics::cursor_shape::RESIZE_NESW => RESIZE_NESW,
+        cursor_shape::RESIZE_NS => RESIZE_NS,
+        cursor_shape::RESIZE_EW => RESIZE_EW,
+        cursor_shape::RESIZE_NWSE => RESIZE_NWSE,
+        cursor_shape::RESIZE_NESW => RESIZE_NESW,
         _ => ARROW,
     }
 }
@@ -648,11 +721,20 @@ fn pointer_bitmap(shape: u32) -> &'static [&'static [u8]] {
 /// The bitmap cell that sits at the pointer's position.
 fn hotspot(shape: u32) -> (i32, i32) {
     match shape {
-        graphics::cursor_shape::RESIZE_NS => (4, 8),
-        graphics::cursor_shape::RESIZE_EW => (7, 4),
-        graphics::cursor_shape::RESIZE_NWSE | graphics::cursor_shape::RESIZE_NESW => (7, 7),
+        cursor_shape::RESIZE_NS => (4, 8),
+        cursor_shape::RESIZE_EW => (7, 4),
+        cursor_shape::RESIZE_NWSE | cursor_shape::RESIZE_NESW => (7, 7),
         _ => (0, 0),
     }
+}
+
+/// The screen area the pointer covers at `p` (x0, y0, x1, y1).
+pub fn pointer_footprint(p: Pointer, scale: i32) -> [i32; 4] {
+    let (hx, hy) = hotspot(p.shape);
+    let bitmap = pointer_bitmap(p.shape);
+    let cols = bitmap.iter().map(|r| r.len()).max().unwrap_or(0) as i32;
+    let (ox, oy) = (p.x - hx * scale, p.y - hy * scale);
+    [ox, oy, ox + cols * scale, oy + bitmap.len() as i32 * scale]
 }
 
 /// The pointer's fill and outline as horizontal runs of rectangles, `scale` pixels per cell.

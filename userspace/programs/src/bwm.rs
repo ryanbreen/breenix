@@ -1,37 +1,40 @@
 //! Breenix Window Manager (bwm) — Pure Compositor + Input Router
 //!
-//! Discovers Breengel client windows registered via the kernel window buffer API,
-//! composites them onto the screen through the GPU core (`compositor`), and routes
-//! keyboard/mouse input to the focused window via kernel ring buffers.
+//! Discovers Breengel client windows registered on the window interface (version 2,
+//! `docs/gui/breengel.md` section 17), composes them with its own desktop on the GPU core
+//! (`compositor`, ruling B13), and routes keyboard and pointer input to the focused window
+//! as window events (section 19).
 //!
-//! BWM does NOT spawn child processes or emulate terminals. Those responsibilities
-//! belong to init (process spawning) and bterm (terminal emulation).
+//! BWM does not emulate terminals; init starts the session's programs, and bwm starts only
+//! the ones its hotkeys name.
 
 #[path = "bwm/compositor.rs"]
 mod compositor;
 #[path = "bwm/placement.rs"]
 mod placement;
+#[path = "bwm/session.rs"]
+mod session;
 
 use std::process;
 
-use compositor::{Compositor, Layer, Pointer};
+use compositor::{CheckError, Compositor, Layer, Pointer};
+use session::{cursor_shape, Input};
 
 #[cfg(not(target_arch = "aarch64"))]
 use libbreenix::fs;
-use libbreenix::graphics::{self, WindowInputEvent, input_event_type};
 use libbreenix::io;
 use libbreenix::signal;
 use libbreenix::types::Fd;
 
 #[cfg(not(target_arch = "aarch64"))]
 use breengel::FontConfig;
-use libgfx_ref::ttf_font::CachedFont;
+use libgfx::ttf_font::CachedFont;
 #[cfg(not(target_arch = "aarch64"))]
-use libgfx_ref::ttf_font::Font;
-use libgfx_ref::bitmap_font;
-use libgfx_ref::ttf_font;
-use libgfx_ref::color::Color;
-use libgfx_ref::framebuf::FrameBuf;
+use libgfx::ttf_font::Font;
+use libgfx::bitmap_font;
+use libgfx::ttf_font;
+use libgfx::color::Color;
+use libgfx::surface::{Rect as Clip, Surface};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 // Chrome sizes are logical units: `px` multiplies them by the UI scale. Client windows
@@ -152,7 +155,7 @@ const MINIMIZE_BTN_TEXT: Color = Color::rgb(255, 255, 255);
 // ─── Input Parser ────────────────────────────────────────────────────────────
 // Parses stdin bytes (keyboard input) into InputEvents that BWM can either
 // handle internally (F-key focus switching) or route to the focused client
-// window as WindowInputEvents.
+// window as window events.
 
 const ESCAPE_TIMEOUT_MS: u64 = 30;
 
@@ -312,7 +315,7 @@ impl InputParser {
 // own bytes carry; multi-tap sequences (e.g. Super+Super) use the kernel's Super
 // tap latch and the modifier state BWM polls each frame.
 
-/// Modifier bitmask constants (matches kernel HID poll_modifier_state)
+/// Modifier bitmask constants (syscall 413's key state, breengel.md section 17.6)
 mod modifier {
     pub const SHIFT: u8 = 1;
     pub const CTRL: u8  = 2;
@@ -679,38 +682,6 @@ fn trim(s: &[u8]) -> &[u8] {
     &s[start..end]
 }
 
-/// Read-and-clear the kernel's latched count of Super press-edges (FBDRAW op=31).
-///
-/// The kernel HID path increments a lock-free atomic on every 0→1 SUPER
-/// transition the instant the report arrives, so a tap whose high window fell
-/// entirely between two compositor-wait polls is still counted. This drains
-/// that latch so missed taps reach the double-tap detector.
-#[cfg(target_arch = "aarch64")]
-fn take_super_tap_count() -> u32 {
-    use libbreenix::graphics::FbDrawCmd;
-    use libbreenix::syscall::nr;
-    let cmd = FbDrawCmd {
-        op: 31,
-        p1: 0,
-        p2: 0,
-        p3: 0,
-        p4: 0,
-        color: 0,
-    };
-    let ret =
-        unsafe { libbreenix::raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
-    if ret < 0 {
-        0
-    } else {
-        ret as u32
-    }
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-fn take_super_tap_count() -> u32 {
-    0
-}
-
 // ─── Resize Edge ────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
@@ -787,11 +758,14 @@ struct Window {
     height: usize,
     title: [u8; 32],
     title_len: usize,
-    window_id: u32,
+    window_id: u64,
     owner_pid: u32,
     minimized: bool,
     /// The first composed frame showing this client has been checked.
     frame_checked: bool,
+    /// Composed frames whose check found this client had committed again since the frame
+    /// sampled it.
+    check_moved: u32,
     /// Stable ordering for appbar (assigned at discovery time, never changes)
     creation_order: u32,
     /// Chromeless windows have no title bar, border, or chrome buttons.
@@ -899,29 +873,33 @@ impl Window {
 
 // ─── Drawing Helpers ─────────────────────────────────────────────────────────
 
-fn fill_rect(fb: &mut FrameBuf, x: i32, y: i32, w: usize, h: usize, color: Color) {
-    libgfx_ref::shapes::fill_rect(fb, x, y, w as i32, h as i32, color);
+fn fill_rect(fb: &mut Surface, x: i32, y: i32, w: usize, h: usize, color: Color) {
+    libgfx::shapes::fill_rect(fb, x, y, w as i32, h as i32, color);
 }
 
-fn draw_text_at(fb: &mut FrameBuf, text: &[u8], x: i32, y: i32, color: Color,
+fn draw_text_at(fb: &mut Surface, text: &[u8], x: i32, y: i32, color: Color,
                 ttf: Option<&mut CachedFont>) {
-    if y < 0 || y >= fb.height as i32 { return; }
+    if y < 0 || y >= fb.height() as i32 { return; }
     if let Some(font) = ttf {
         // Use LCD subpixel rendering for crisp window chrome text
         let s = unsafe { core::str::from_utf8_unchecked(text) };
         ttf_font::draw_text_subpixel(fb, font, s, x, y, TTF_FONT_SIZE * ui().scale as f32, color);
     } else {
-        let (cell_w, font) = (ui().cell_w as i32, ui().font);
-        for (i, &ch) in text.iter().enumerate() {
+        // Only the characters whose whole cell lies across the surface's width are drawn.
+        let cell_w = ui().cell_w as i32;
+        let shown = |i: usize| {
             let cx = x + i as i32 * cell_w;
-            if cx < 0 || cx + cell_w > fb.width as i32 { continue; }
-            bitmap_font::draw_char_at(fb, ch as char, cx as usize, y as usize, color, font);
-        }
+            cx >= 0 && cx + cell_w <= fb.width() as i32
+        };
+        let Some(first) = (0..text.len()).find(|&i| shown(i)) else { return };
+        let last = (first..text.len()).take_while(|&i| shown(i)).last().unwrap_or(first);
+        let cx = x + first as i32 * cell_w;
+        bitmap_font::draw_text_at(fb, &text[first..=last], cx as usize, y as usize, color, ui().font);
     }
 }
 
 /// Draw a floating window frame (border + title bar + chrome buttons + content bg)
-fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool,
+fn draw_window_frame(fb: &mut Surface, win: &Window, focused: bool,
                      ui_font: &mut Option<CachedFont>) {
     let border_color = if focused { WIN_BORDER_FOCUSED } else { WIN_BORDER_COLOR };
     let title_bg = if focused { TITLE_FOCUSED_BG } else { TITLE_UNFOCUSED_BG };
@@ -958,25 +936,48 @@ fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool,
     draw_text_at(fb, b"-", mx, my, MINIMIZE_BTN_TEXT, ui_font.as_mut());
 }
 
-
-/// Paint the decorative desktop background — gradient with grid
-fn paint_background(fb: &mut FrameBuf) {
-    let w = fb.width;
-    let h = fb.height;
+/// The decorative desktop background at `(x, y)` of a `w` x `h` screen: a vertical gradient
+/// whose colour steps with the row, with a grid line each 64 logical units.
+fn background_pixel(x: usize, y: usize, h: usize) -> Color {
+    let (r, g, b) = background_row(y, h);
     let step = px(64);
-    for y in 0..h {
-        for x in 0..w {
-            let t = (y * 255 / h) as u8;
-            let r = 12u8.saturating_add(t / 12);
-            let g = 16u8.saturating_add(t / 20);
-            let b = 38u8.saturating_add(t / 6);
-            let grid = (x % step == 0 || y % step == 0) as u8;
-            let r2 = r.saturating_add(grid * 6);
-            let g2 = g.saturating_add(grid * 8);
-            let b2 = b.saturating_add(grid * 12);
-            fb.put_pixel(x, y, Color::rgb(r2, g2, b2));
+    let grid = (x % step == 0 || y % step == 0) as u8;
+    Color::rgb(r.saturating_add(grid * 6), g.saturating_add(grid * 8), b.saturating_add(grid * 12))
+}
+
+/// The gradient's colour on row `y`, before the grid.
+fn background_row(y: usize, h: usize) -> (u8, u8, u8) {
+    let t = (y * 255 / h) as u8;
+    (12u8.saturating_add(t / 12), 16u8.saturating_add(t / 20), 38u8.saturating_add(t / 6))
+}
+
+/// Paint the decorative desktop background — gradient with grid — into `fb`, the compositor's
+/// background target, which each desktop repaint copies. Rows of one gradient colour form a
+/// band: each band is one rectangle, its vertical grid lines another draw, and each grid row
+/// a full-width line, so the GPU draws `background_pixel`'s colours exactly.
+fn paint_background(fb: &mut Surface) {
+    let (w, h) = (fb.width(), fb.height());
+    let step = px(64);
+    fb.batch(|fb| {
+        let mut y0 = 0;
+        while y0 < h {
+            let colour = background_row(y0, h);
+            let mut y1 = y0 + 1;
+            while y1 < h && background_row(y1, h) == colour {
+                y1 += 1;
+            }
+            let (r, g, b) = colour;
+            fill_rect(fb, 0, y0 as i32, w, y1 - y0, Color::rgb(r, g, b));
+            let line = Color::rgb(r.saturating_add(6), g.saturating_add(8), b.saturating_add(12));
+            for x in (0..w).step_by(step) {
+                fill_rect(fb, x as i32, y0 as i32, 1, y1 - y0, line);
+            }
+            for y in (y0..y1).filter(|y| y % step == 0) {
+                fill_rect(fb, 0, y as i32, w, 1, line);
+            }
+            y0 = y1;
         }
-    }
+    });
 }
 
 // ─── Taskbar & App Bar ──────────────────────────────────────────────────────
@@ -1063,8 +1064,8 @@ fn format_clock(utc_secs: i64, buf: &mut [u8; 11]) {
     buf[10] = b'T';
 }
 
-fn draw_taskbar(fb: &mut FrameBuf, clock_text: &[u8], ui_font: &mut Option<CachedFont>) {
-    let w = fb.width;
+fn draw_taskbar(fb: &mut Surface, clock_text: &[u8], ui_font: &mut Option<CachedFont>) {
+    let w = fb.width();
     fill_rect(fb, 0, 0, w, px(TASKBAR_HEIGHT), TASKBAR_BG);
     let label_y = ((px(TASKBAR_HEIGHT) - ui().cell_h) / 2 + px(1)) as i32;
     draw_text_at(fb, b"Breenix", pxi(8), label_y, TASKBAR_TEXT, ui_font.as_mut());
@@ -1095,10 +1096,10 @@ fn sorted_by_creation(windows: &[Window]) -> ([usize; 16], usize) {
     (idx, n)
 }
 
-fn draw_appbar(fb: &mut FrameBuf, windows: &[Window], focused_win: usize,
+fn draw_appbar(fb: &mut Surface, windows: &[Window], focused_win: usize,
                ui_font: &mut Option<CachedFont>) {
-    let screen_h = fb.height;
-    let screen_w = fb.width;
+    let screen_h = fb.height();
+    let screen_w = fb.width();
     let bar_y = (screen_h - px(APPBAR_HEIGHT)) as i32;
 
     fill_rect(fb, 0, bar_y, screen_w, px(APPBAR_HEIGHT), APPBAR_BG);
@@ -1171,69 +1172,14 @@ fn next_visible_window(windows: &[Window], current: usize) -> usize {
 
 // ─── Input Routing ──────────────────────────────────────────────────────────
 
-fn route_keyboard_to_focused(windows: &[Window], focused_win: usize, event: &WindowInputEvent) {
-    if focused_win < windows.len() && windows[focused_win].window_id != 0 {
-        let _ = graphics::write_window_input(windows[focused_win].window_id, event);
-    }
-}
-
-fn send_focus_event(windows: &[Window], win_idx: usize, event_type: u16) {
+fn send_to(windows: &[Window], win_idx: usize, input: Input) {
     if win_idx < windows.len() && windows[win_idx].window_id != 0 {
-        let event = WindowInputEvent {
-            event_type,
-            keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, scroll_y: 0,
-        };
-        let _ = graphics::write_window_input(windows[win_idx].window_id, &event);
+        let _ = session::send(windows[win_idx].window_id, input);
     }
 }
 
-fn route_mouse_button_to_focused(
-    windows: &[Window], focused_win: usize,
-    button: u16, pressed: bool, win_local_x: i16, win_local_y: i16,
-) {
-    if focused_win < windows.len() && windows[focused_win].window_id != 0 {
-        let event = WindowInputEvent {
-            event_type: input_event_type::MOUSE_BUTTON,
-            keycode: button,
-            mouse_x: win_local_x,
-            mouse_y: win_local_y,
-            modifiers: 0,
-            scroll_y: if pressed { 1 } else { 0 },
-        };
-        let _ = graphics::write_window_input(windows[focused_win].window_id, &event);
-    }
-}
-
-fn route_mouse_move_to_focused(
-    windows: &[Window], focused_win: usize,
-    win_local_x: i16, win_local_y: i16,
-) {
-    if focused_win < windows.len() && windows[focused_win].window_id != 0 {
-        let event = WindowInputEvent {
-            event_type: input_event_type::MOUSE_MOVE,
-            keycode: 0,
-            mouse_x: win_local_x, mouse_y: win_local_y,
-            modifiers: 0, scroll_y: 0,
-        };
-        let _ = graphics::write_window_input(windows[focused_win].window_id, &event);
-    }
-}
-
-fn route_mouse_scroll_to_focused(
-    windows: &[Window], focused_win: usize,
-    win_local_x: i16, win_local_y: i16, scroll_delta: i16,
-) {
-    if focused_win < windows.len() && windows[focused_win].window_id != 0 {
-        let event = WindowInputEvent {
-            event_type: input_event_type::MOUSE_SCROLL,
-            keycode: 0,
-            mouse_x: win_local_x,
-            mouse_y: win_local_y,
-            modifiers: 0,
-            scroll_y: scroll_delta,
-        };
-        let _ = graphics::write_window_input(windows[focused_win].window_id, &event);
-    }
+fn send_focus_event(windows: &[Window], win_idx: usize, gained: bool) {
+    send_to(windows, win_idx, if gained { Input::FocusGained } else { Input::FocusLost });
 }
 
 // ─── Window Discovery ───────────────────────────────────────────────────────
@@ -1242,33 +1188,25 @@ fn discover_windows(
     windows: &mut Vec<Window>, screen_w: usize, screen_h: usize,
     next_order: &mut u32, win_defaults: &mut [WindowDefaults; MAX_DEFAULTS],
 ) -> bool {
-    let mut win_infos = [graphics::WindowInfo {
-        buffer_id: 0, owner_pid: 0, width: 0, height: 0,
-        x: 0, y: 0, title_len: 0, title: [0; 64],
-    }; 16];
-    let count = match graphics::list_windows(&mut win_infos) {
-        Ok(c) => c as usize,
-        Err(_) => return false,
-    };
+    let mut win_infos = Vec::new();
+    if session::list_windows(&mut win_infos).is_err() {
+        return false;
+    }
 
     // Save defaults for windows about to be removed
     for w in windows.iter() {
-        if !win_infos[..count].iter().any(|info| info.buffer_id == w.window_id) {
+        if !win_infos.iter().any(|info| info.id == w.window_id) {
             save_window_defaults(w, win_defaults);
         }
     }
 
     let before = windows.len();
-    windows.retain(|w| {
-        win_infos[..count].iter().any(|info| info.buffer_id == w.window_id)
-    });
+    windows.retain(|w| win_infos.iter().any(|info| info.id == w.window_id));
     let removed = before > windows.len();
 
     let mut added = false;
-    for i in 0..count {
-        let info = &win_infos[i];
-        if info.buffer_id == 0 { continue; }
-        if windows.iter().any(|w| w.window_id == info.buffer_id) { continue; }
+    for info in &win_infos {
+        if windows.iter().any(|w| w.window_id == info.id) { continue; }
 
         let n = windows.len();
         let mut title = [0u8; 32];
@@ -1315,7 +1253,7 @@ fn discover_windows(
 
         print!("[bwm] Discovered window '{}' (id={}, {}x{}{}) at ({},{})\n",
             core::str::from_utf8(&title[..title_len]).unwrap_or("?"),
-            info.buffer_id, info.width, info.height,
+            info.id, info.width, info.height,
             if chromeless { " chromeless" } else { "" },
             win_x, win_y);
 
@@ -1325,33 +1263,17 @@ fn discover_windows(
             (win_x + px(BORDER_WIDTH) as i32, win_y + px(TITLE_BAR_HEIGHT) as i32 + px(BORDER_WIDTH) as i32)
         };
         let z_order = windows.len() as u32;
-        let _ = graphics::set_window_position(info.buffer_id, content_x, content_y, z_order);
-
-        // If saved defaults give different content dimensions, notify client
-        if !chromeless {
-            let default_cw = win_w.saturating_sub(px(BORDER_WIDTH) * 2);
-            let default_ch = win_h.saturating_sub(px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2);
-            if default_cw != info.width as usize || default_ch != info.height as usize {
-                let resize_event = WindowInputEvent {
-                    event_type: input_event_type::WINDOW_RESIZED,
-                    keycode: default_cw as u16,
-                    mouse_x: default_ch as i16,
-                    mouse_y: 0,
-                    modifiers: 0,
-                    scroll_y: 0,
-                };
-                let _ = graphics::write_window_input(info.buffer_id, &resize_event);
-            }
-        }
+        let _ = session::set_geometry(info.id, content_x, content_y, z_order, true);
 
         let order = *next_order;
         *next_order += 1;
         windows.push(Window {
             x: win_x, y: win_y, width: win_w, height: win_h,
-            title, title_len, window_id: info.buffer_id,
+            title, title_len, window_id: info.id,
             owner_pid: info.owner_pid,
             minimized: false,
             frame_checked: false,
+            check_moved: 0,
             creation_order: order,
             chromeless,
         });
@@ -1361,21 +1283,20 @@ fn discover_windows(
     removed || added
 }
 
-/// Update kernel z-order for all windows. Called after any z-order change
-/// (raise-to-front, new window, etc.) so the GPU compositor draws quads
-/// in correct back-to-front order.
+/// Publish each window's place: its content position, its stacking (z from the bottom) and
+/// whether it is shown or minimized. Called after any change to them.
 fn update_kernel_z_order(windows: &[Window]) {
     for (i, win) in windows.iter().enumerate() {
         if win.window_id != 0 {
-            let _ = graphics::set_window_position(win.window_id, win.content_x(), win.content_y(), i as u32);
+            let _ = session::set_geometry(win.window_id, win.content_x(), win.content_y(), i as u32, !win.minimized);
         }
     }
 }
 
-/// Redraw all windows in z-order (index 0 = bottom), plus taskbar and app bar.
-/// Window frames and decorations go into the compositor buffer; GPU compositing
-/// handles client content via per-window textured quads.
-fn redraw_all_windows(fb: &mut FrameBuf, windows: &[Window], focused_win: usize,
+/// Redraw the windows in z-order (index 0 = bottom), plus taskbar and app bar.
+/// Window frames and decorations go into the desktop target; the compositor draws client
+/// content above them from the windows' committed fronts.
+fn redraw_all_windows(fb: &mut Surface, windows: &[Window], focused_win: usize,
                       clock_text: &[u8], ui_font: &mut Option<CachedFont>) {
     draw_taskbar(fb, clock_text, ui_font);
     for i in 0..windows.len() {
@@ -1385,119 +1306,49 @@ fn redraw_all_windows(fb: &mut FrameBuf, windows: &[Window], focused_win: usize,
     draw_appbar(fb, windows, focused_win, ui_font);
 }
 
-fn restore_full_background(vram: &mut [u32], fb: &mut FrameBuf, bg: &[u32]) {
-    if bg.is_empty() {
-        paint_background(fb);
-    } else {
-        vram.copy_from_slice(bg);
-    }
+/// Repaint the whole desktop target: the background, then the chrome.
+fn compose_full_redraw(gpu: &mut Compositor, windows: &[Window], focused: usize, clock: &[u8],
+                       ui_font: &mut Option<CachedFont>) {
+    let Compositor { desktop, background, .. } = gpu;
+    libgfx::blit::blit(desktop, background, 0, 0);
+    redraw_all_windows(desktop, windows, focused, clock, ui_font);
 }
 
-/// Compose a full-redraw into `vram` without flashing.
-///
-/// When a shadow buffer is available (SVGA3 direct-mapped VRAM), composes into
-/// the shadow first, then bulk-copies to VRAM so the display update is atomic.
-/// Otherwise, composes directly into the primary buffer.
-fn compose_full_redraw(
-    vram: &mut [u32],
-    fb: &mut FrameBuf,
-    shadow: &mut Option<(&mut [u32], FrameBuf)>,
-    bg: &[u32],
-    windows: &[Window],
-    focused: usize,
-    clock: &[u8],
-    ui_font: &mut Option<CachedFont>,
-) {
-    if let Some((ref mut sbuf, ref mut sfb)) = shadow {
-        restore_full_background(sbuf, sfb, bg);
-        redraw_all_windows(sfb, windows, focused, clock, ui_font);
-        vram.copy_from_slice(sbuf);
-    } else {
-        restore_full_background(vram, fb, bg);
-        redraw_all_windows(fb, windows, focused, clock, ui_font);
-    }
-}
-
-/// Partial redraw: only update a dirty sub-region of the screen.
-///
-/// Used during drag to avoid full-screen VRAM copies. On SVGA3 (VMware),
-/// VRAM is uncacheable so writing 9.2MB per frame kills drag performance.
-/// Partial redraw limits VRAM writes to just the union of old+new window bounds.
+/// Partial redraw: repaint only the dirty sub-region `(dx0, dy0)..(dx1, dy1)` of the desktop
+/// target, under a clip, with the bars and the frames that meet it.
 fn compose_partial_redraw(
-    vram: &mut [u32],
-    fb: &mut FrameBuf,
-    shadow: &mut Option<(&mut [u32], FrameBuf)>,
-    bg: &[u32],
+    gpu: &mut Compositor,
     windows: &[Window],
     focused: usize,
     clock: &[u8],
     dx0: usize, dy0: usize, dx1: usize, dy1: usize,
     ui_font: &mut Option<CachedFont>,
 ) {
-    let screen_w = fb.width;
-    let screen_h = fb.height;
+    let Compositor { desktop: fb, background, .. } = gpu;
+    let screen_w = fb.width();
+    let screen_h = fb.height();
     let dx1 = dx1.min(screen_w);
     let dy1 = dy1.min(screen_h);
     if dx0 >= dx1 || dy0 >= dy1 { return; }
-    if bg.is_empty() {
-        compose_full_redraw(vram, fb, shadow, bg, windows, focused, clock, ui_font);
-        return;
+    fb.push_clip(Clip::new(dx0 as i32, dy0 as i32, (dx1 - dx0) as i32, (dy1 - dy0) as i32));
+    libgfx::blit::blit(fb, background, 0, 0);
+    if dy0 < px(TASKBAR_HEIGHT) {
+        draw_taskbar(fb, clock, ui_font);
     }
-
-    if let Some((ref mut sbuf, ref mut sfb)) = shadow {
-        for row in dy0..dy1 {
-            let start = row * screen_w + dx0;
-            let end = row * screen_w + dx1;
-            sbuf[start..end].copy_from_slice(&bg[start..end]);
-        }
-        if dy0 < px(TASKBAR_HEIGHT) {
-            draw_taskbar(sfb, clock, ui_font);
-        }
-        for i in 0..windows.len() {
-            if windows[i].minimized || windows[i].chromeless { continue; }
-            let (wx0, wy0, wx1, wy1) = windows[i].bounds();
-            if (wx1 as usize) > dx0 && (wx0 as usize) < dx1
-                && (wy1 as usize) > dy0 && (wy0 as usize) < dy1
-            {
-                draw_window_frame(sfb, &windows[i], i == focused, ui_font);
-            }
-        }
-        if dy1 > screen_h - px(APPBAR_HEIGHT) {
-            draw_appbar(sfb, windows, focused, ui_font);
-        }
-        for row in dy0..dy1 {
-            let start = row * screen_w + dx0;
-            let end = row * screen_w + dx1;
-            vram[start..end].copy_from_slice(&sbuf[start..end]);
-        }
-    } else {
-        for row in dy0..dy1 {
-            let start = row * screen_w + dx0;
-            let end = row * screen_w + dx1;
-            vram[start..end].copy_from_slice(&bg[start..end]);
-        }
-        if dy0 < px(TASKBAR_HEIGHT) {
-            draw_taskbar(fb, clock, ui_font);
-        }
-        for i in 0..windows.len() {
-            if windows[i].minimized || windows[i].chromeless { continue; }
-            let (wx0, wy0, wx1, wy1) = windows[i].bounds();
-            if (wx1 as usize) > dx0 && (wx0 as usize) < dx1
-                && (wy1 as usize) > dy0 && (wy0 as usize) < dy1
-            {
-                draw_window_frame(fb, &windows[i], i == focused, ui_font);
-            }
-        }
-        if dy1 > screen_h - px(APPBAR_HEIGHT) {
-            draw_appbar(fb, windows, focused, ui_font);
+    for i in 0..windows.len() {
+        if windows[i].minimized || windows[i].chromeless { continue; }
+        let (wx0, wy0, wx1, wy1) = windows[i].bounds();
+        if (wx1 as usize) > dx0 && (wx0 as usize) < dx1
+            && (wy1 as usize) > dy0 && (wy0 as usize) < dy1
+        {
+            draw_window_frame(fb, &windows[i], i == focused, ui_font);
         }
     }
+    if dy1 > screen_h - px(APPBAR_HEIGHT) {
+        draw_appbar(fb, windows, focused, ui_font);
+    }
+    fb.pop_clip();
 }
-
-
-
-
-
 
 /// The visible client windows as the compositor stacks them, bottom to top: each one's
 /// frame and drop shadow (as `draw_window_frame` paints them) beneath its content.
@@ -1535,11 +1386,7 @@ fn execute_hotkey_action(action: &HotkeyAction, windows: &mut Vec<Window>, focus
                     w.chromeless && w.title_len > 1 && w.title[0] == 1
                 );
                 if let Some(idx) = launcher_idx {
-                    let event = WindowInputEvent {
-                        event_type: input_event_type::CLOSE_REQUESTED,
-                        keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, scroll_y: 0,
-                    };
-                    let _ = graphics::write_window_input(windows[idx].window_id, &event);
+                    send_to(windows, idx, Input::Close);
                     return;
                 }
             }
@@ -1552,11 +1399,7 @@ fn execute_hotkey_action(action: &HotkeyAction, windows: &mut Vec<Window>, focus
         }
         HotkeyAction::Close => {
             if !windows.is_empty() && focused_win < windows.len() {
-                let event = WindowInputEvent {
-                    event_type: input_event_type::CLOSE_REQUESTED,
-                    keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, scroll_y: 0,
-                };
-                let _ = graphics::write_window_input(windows[focused_win].window_id, &event);
+                send_to(windows, focused_win, Input::Close);
             }
         }
         HotkeyAction::FocusNext | HotkeyAction::FocusPrev => {
@@ -1567,36 +1410,28 @@ fn execute_hotkey_action(action: &HotkeyAction, windows: &mut Vec<Window>, focus
     }
 }
 
-/// Show that the desktop covers the whole scanout at the chosen scale. bwm draws the
+/// Show that the desktop covers the whole scanout at the chosen scale. bwm composes the
 /// desktop alone (no windows yet, and no pointer over the sampled pixels), then reads the
 /// scanout itself back where the scale puts the edges of the taskbar and the app bar: the
 /// top-left and bottom-right pixels of each bar, and the background pixel just past each.
-/// The read-back's record must name a scanout of the composed size, the one MODES reports
-/// bound, and the GPU core's current mode must have that size.
-fn check_desktop_fills(gpu: &mut Compositor, desktop: &[u32], fb: &FrameBuf, mode_index: u32) -> Result<String, String> {
-    gpu.compose(&[], None)?;
-    let (w, h) = (fb.width as u32, fb.height as u32);
+/// Each must be the colour the desktop's definition gives there (the bar colours, and
+/// `background_pixel`'s formula). The read-back's record must name a scanout of the composed
+/// size, the one MODES reports bound, and the GPU core's current mode must have that size.
+fn check_desktop_fills(gpu: &mut Compositor, screen_w: usize, screen_h: usize, mode_index: u32) -> Result<String, String> {
+    gpu.compose(&[], None, &[])?;
+    let (w, h) = (screen_w as u32, screen_h as u32);
     let (tb, ab) = (px(TASKBAR_HEIGHT) as u32, px(APPBAR_HEIGHT) as u32);
-    // (x, y, what the desktop buffer must hold there)
-    let taskbar = |c: Color| c == TASKBAR_BG;
-    let border = |c: Color| c == APPBAR_BORDER;
-    let appbar = |c: Color| c == APPBAR_BG;
-    let background = |c: Color| c != TASKBAR_BG && c != APPBAR_BORDER && c != APPBAR_BG;
-    let points: [(u32, u32, &dyn Fn(Color) -> bool, &str); 6] = [
-        (0, 0, &taskbar, "taskbar"),
-        (w - 1, tb - 1, &taskbar, "taskbar"),
-        (w - 1, tb, &background, "background"),
-        (w - 1, h - ab - 1, &background, "background"),
-        (0, h - ab, &border, "app bar border"),
-        (w - 1, h - 1, &appbar, "app bar"),
+    let word = |c: Color| 0xFF00_0000 | (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32;
+    let background = |x: u32, y: u32| word(background_pixel(x as usize, y as usize, screen_h));
+    // (x, y, the desktop's colour there)
+    let samples = [
+        (0, 0, word(TASKBAR_BG)),
+        (w - 1, tb - 1, word(TASKBAR_BG)),
+        (w - 1, tb, background(w - 1, tb)),
+        (w - 1, h - ab - 1, background(w - 1, h - ab - 1)),
+        (0, h - ab, word(APPBAR_BORDER)),
+        (w - 1, h - 1, word(APPBAR_BG)),
     ];
-    let mut samples = Vec::new();
-    for (x, y, is, what) in points {
-        if !is(fb.get_pixel(x as usize, y as usize)) {
-            return Err(format!("bwm's desktop has no {} pixel at ({}, {})", what, x, y));
-        }
-        samples.push((x, y, desktop[(y * w + x) as usize]));
-    }
     let shown = gpu.check_fills(&samples)?;
     let bound = compositor::scanout_resource()?;
     if bound != shown.resource {
@@ -1621,26 +1456,33 @@ fn monotonic_ms() -> Option<u64> {
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
+/// How long bwm sleeps for input or a scene change before it reads the pointer again: the
+/// pointer has no descriptor of its own.
+const POINTER_POLL_MS: i32 = 10;
+
+/// How many composed frames a client's first-frame check may find it had committed again
+/// before that check is reported failed.
+const CHECK_MOVED_LIMIT: u32 = 200;
+
+/// Report one client frame check: `whole` names the desktop's first client, checked over the
+/// whole frame, otherwise the window's own area.
+fn report_check(id: u64, whole: bool, area: [u32; 4], result: &Result<u64, CheckError>) {
+    match result {
+        Ok(pixels) if whole => print!("[bwm] composited client frame: window {} on screen, {} pixels exact\n", id, pixels),
+        Ok(pixels) => print!(
+            "[bwm] window {} shown: {} pixels exact in its {}x{} area\n",
+            id, pixels, area[2] - area[0], area[3] - area[1]
+        ),
+        Err(CheckError::Moved(e)) | Err(CheckError::Failed(e)) => print!("[bwm] client frame check FAILED: window {}: {}\n", id, e),
+    }
+}
+
 fn main() {
     print!("[bwm] Breenix Window Manager starting... (v2-chromeless-skip)\n");
 
-    if let Err(e) = graphics::take_over_display() {
+    if let Err(e) = session::take_over_display() {
         print!("[bwm] WARNING: take_over_display failed: {}\n", e);
     }
-
-    let info = {
-        let mut result = None;
-        for attempt in 0..10 {
-            match graphics::fbinfo() {
-                Ok(info) => { result = Some(info); break; }
-                Err(_) if attempt < 9 => {
-                    let _ = libbreenix::time::nanosleep(&libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 10_000_000 });
-                }
-                Err(e) => { print!("[bwm] ERROR: fbinfo failed: {}\n", e); process::exit(1); }
-            }
-        }
-        result.unwrap()
-    };
 
     // The desktop is the GPU core's display, whole: its current mode's size.
     let (mode_index, mode) = match compositor::display() {
@@ -1652,7 +1494,6 @@ fn main() {
     };
     let screen_w = mode.width as usize;
     let screen_h = mode.height as usize;
-    let bpp = info.bytes_per_pixel as usize;
     let _ = UI.set(Ui::for_display(screen_w, screen_h));
     print!(
         "[bwm] UI scale {}: font {} px ({}x{} cells, text grid {}x{}), taskbar {} px, app bar {} px; the GPU core's mode {} ({}x{}) publishes scale {}\n",
@@ -1660,41 +1501,31 @@ fn main() {
         px(TASKBAR_HEIGHT), px(APPBAR_HEIGHT), mode_index, mode.width, mode.height, mode.scale
     );
 
-    // The GPU core composes the desktop (`compositor`); there is no CPU-only fallback.
-    let mut gpu = match Compositor::open(screen_w as u32, screen_h as u32, px(APPBAR_HEIGHT) as u32, ui().scale as u32) {
-        Ok(c) if bpp == 4 => c,
-        Ok(_) => {
-            print!("[bwm] ERROR: GPU compositing required: the screen has {} bytes per pixel, not 4\n", bpp);
+    // bwm composes the windows as the compositor (window op 17's claim) and display owner.
+    match session::claim() {
+        Ok(epoch) => print!("[bwm] compositor claim: epoch {}\n", epoch),
+        Err(e) => {
+            print!("[bwm] ERROR: GPU compositing required: the compositor claim failed: {}\n", e);
             process::exit(1);
         }
+    }
+    let scene_fd = match session::scene_fd() {
+        Ok(fd) => fd,
+        Err(e) => {
+            print!("[bwm] ERROR: GPU compositing required: the scene descriptor failed: {}\n", e);
+            process::exit(1);
+        }
+    };
+
+    // The GPU core composes the desktop (`compositor`); there is no CPU-only fallback.
+    let mut gpu = match Compositor::open(screen_w as u32, screen_h as u32, px(APPBAR_HEIGHT) as u32, ui().scale as u32) {
+        Ok(c) => c,
         Err(e) => {
             print!("[bwm] ERROR: GPU compositing required: {}\n", e);
             process::exit(1);
         }
     };
     print!("[bwm] GPU compositing mode (GPU core), display: {}x{}\n", screen_w, screen_h);
-
-    // The desktop buffer: background, taskbar, window frames and app bar, drawn on the
-    // CPU and uploaded to the compositor's desktop texture. BWM runs for the lifetime of
-    // the OS, so the buffer is leaked into a &'static mut slice.
-    let composite_buf: &'static mut [u32] = vec![0u32; screen_w * screen_h].leak();
-
-    let mut fb = match unsafe {
-        FrameBuf::from_raw(
-            composite_buf.as_mut_ptr() as *mut u8,
-            screen_w, screen_h, screen_w * bpp, bpp, info.is_bgr(),
-        )
-    } {
-        Ok(fb) => fb,
-        Err(e) => {
-            print!("[bwm] ERROR: desktop buffer refused: {:?}\n", e);
-            process::exit(1);
-        }
-    };
-
-    // Redraws reach the screen through the compositor's upload of the desktop buffer
-    // after they finish, so no shadow buffer is needed.
-    let mut shadow_fb: Option<(&'static mut [u32], FrameBuf)> = None;
 
     // Avoid filesystem reads before the first ARM64 compositor submit. On
     // single-CPU Parallels, opening /etc/fonts.conf here can stall bwm before
@@ -1718,16 +1549,8 @@ fn main() {
         font
     };
 
-    // Paint decorative background. ARM64 keeps no full-screen cache during
-    // early boot; repainting avoids a multi-megabyte allocation before bwm's
-    // first visible frame.
-    paint_background(&mut fb);
-    #[cfg(target_arch = "aarch64")]
-    let bg_cache: &[u32] = &[];
-    #[cfg(not(target_arch = "aarch64"))]
-    let bg_cache_storage = composite_buf.to_vec();
-    #[cfg(not(target_arch = "aarch64"))]
-    let bg_cache: &[u32] = &bg_cache_storage;
+    // Paint the decorative background once; each desktop repaint copies it.
+    paint_background(&mut gpu.background);
 
     // Enter raw mode on stdin
     let mut orig_termios = libbreenix::termios::Termios::default();
@@ -1739,10 +1562,10 @@ fn main() {
     let mut windows: Vec<Window> = Vec::new();
     let mut focused_win: usize = 0;
     let mut input_parser = InputParser::new();
-    let (mut mouse_x, mut mouse_y) = graphics::mouse_pos()
+    let (mut mouse_x, mut mouse_y) = session::mouse_pos()
         .map(|(x, y)| (x as i32, y as i32))
         .unwrap_or((0, 0));
-    let mut active_cursor_shape = graphics::cursor_shape::ARROW;
+    let mut active_cursor_shape = cursor_shape::ARROW;
     let mut prev_buttons: u32 = 0;
     let mut dragging: Option<(usize, i32, i32)> = None;
     // Active resize: (win_idx, edge, anchor_x, anchor_y, orig_x, orig_y, orig_w, orig_h)
@@ -1758,7 +1581,6 @@ fn main() {
     let mut last_clock_sec: i64 = -1;
     let mut clock_text = [0u8; 11];
     format_clock(0, &mut clock_text);
-    let mut frame_counter: u32 = 0;
     let mut fps_frames_since_last: u32 = 0;
     let mut fps_last_ms = monotonic_ms().unwrap_or(0);
     let mut next_creation_order: u32 = 0;
@@ -1774,67 +1596,75 @@ fn main() {
 
     // Initial composite: the desktop alone (background, taskbar and app bar), before any
     // client window is discovered. It is read back from the scanout and compared with the
-    // desktop buffer (`compositor`).
-    redraw_all_windows(&mut fb, &windows, focused_win, &clock_text, &mut ui_font);
+    // desktop target and the pointer's bitmap (`compositor`).
+    compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
     let first_pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
     let first = gpu
-        .upload_desktop(composite_buf, [0, 0, screen_w as u32, screen_h as u32])
-        .and_then(|()| gpu.compose(&[], Some(first_pointer)))
-        .and_then(|()| gpu.check(composite_buf, &[], Some(first_pointer)));
+        .compose(&[], Some(first_pointer), &[])
+        .map_err(CheckError::Failed)
+        .and_then(|()| gpu.check(&[], Some(first_pointer)));
     match first {
         Ok(pixels) => print!("[bwm] first frame read back: {} pixels exact\n", pixels),
-        Err(e) => print!("[bwm] first frame check FAILED: {}\n", e),
+        Err(CheckError::Moved(e)) | Err(CheckError::Failed(e)) => print!("[bwm] first frame check FAILED: {}\n", e),
     }
-    match check_desktop_fills(&mut gpu, composite_buf, &fb, mode_index) {
+    match check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index) {
         Ok(line) => print!("[bwm] desktop fills the scanout: {}\n", line),
         Err(e) => print!("[bwm] desktop fill check FAILED: {}\n", e),
     }
     let mut frame_failed = false;
     let mut initial_client_checked = false;
+    // The pointer the last composed frame drew, so a move repaints where it was.
+    let mut drawn_pointer: Option<Pointer> = None;
 
     let mut read_buf = [0u8; 512];
-    let mut poll_fds = [io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 }];
-
-    // Registry generation tracking for compositor_wait
-    let mut registry_gen: u32 = 0;
+    let mut poll_fds = [
+        io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 },
+        io::PollFd { fd: scene_fd, events: io::poll_events::POLLIN as i16, revents: 0 },
+    ];
 
     // Initial window discovery (before entering event loop)
     if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults) {
         focused_win = next_visible_window(&windows, 0);
-        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+        compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
         full_redraw = true;
     }
 
     loop {
-        // ── 0. Block until something needs compositing ──
-        // compositor_wait blocks in the kernel until: window dirty, mouse moved,
-        // or registry changed. If bwm already has local work prepared (for
-        // example the initial window discovery redraw), drain and present it
-        // before entering the kernel wait.
-        let ready = if full_redraw || content_dirty || windows_dirty {
+        // ── 0. Sleep until input or a scene change ──
+        // The scene descriptor is readable when a window registered, committed, moved or
+        // went away. The pointer has no descriptor, so the sleep is bounded and the
+        // pointer is read after it. Local work already prepared (the initial discovery's
+        // redraw) is presented before sleeping.
+        let timeout = if full_redraw || content_dirty || windows_dirty {
             0
+        } else if input_parser.state == InputState::Escape {
+            (ESCAPE_TIMEOUT_MS as i32).min(POINTER_POLL_MS)
         } else {
-            let (ready, new_reg_gen) =
-                graphics::compositor_wait(
-                    if input_parser.state == InputState::Escape { ESCAPE_TIMEOUT_MS as u32 } else { 0 },
-                    registry_gen).unwrap_or((0, registry_gen));
-            registry_gen = new_reg_gen;
-            ready
+            POINTER_POLL_MS
         };
+        for fd in poll_fds.iter_mut() {
+            fd.revents = 0;
+        }
+        let _ = io::poll(&mut poll_fds, timeout);
+        let stdin_ready = poll_fds[0].revents & io::poll_events::POLLIN as i16 != 0;
+        let scene_changed = poll_fds[1].revents & io::poll_events::POLLIN as i16 != 0;
+        if scene_changed {
+            session::drain_scene(scene_fd);
+        }
 
         // ── 0b. Poll modifier state and check hotkeys ──
-        // Drain the kernel's latched Super press-edge count (op=31) every frame
-        // — including frames where compositor_wait was skipped — so a tap that
-        // completed between polls is fed into double-tap detection and the
-        // keyboard-ready latch can't busy-loop compositor_wait.
-        let super_taps = take_super_tap_count();
-        let current_mods = graphics::poll_modifier_state() as u8;
+        // Drain the kernel's latched Super press-edge count each frame (syscall 413's
+        // key state) so a tap that completed between polls is fed into double-tap
+        // detection.
+        let keys = session::key_state().unwrap_or_default();
+        let super_taps = keys.super_taps;
+        let current_mods = keys.modifiers as u8;
         hotkey_mgr.cooldown = hotkey_mgr.cooldown.saturating_sub(1);
         // The chords recognized this frame, in the order their keys arrived.
         let mut hotkey_actions = Vec::new();
 
-        // ── 1. Discover new/removed client windows (only when registry changed) ──
-        if ready & graphics::COMPOSITOR_READY_REGISTRY != 0 {
+        // ── 1. Discover new/removed client windows, and see client frames ──
+        if scene_changed {
             if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults) {
                 // Chromeless windows always float to top of z-order
                 let chromeless_idx = windows.iter().position(|w| w.chromeless);
@@ -1846,20 +1676,17 @@ fn main() {
                 }
                 update_kernel_z_order(&windows);
                 focused_win = next_visible_window(&windows, 0);
-                compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+                compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
                 full_redraw = true;
             }
-
+            // A committed client frame is composed without repainting the desktop.
+            windows_dirty = true;
         }
 
-        // ── 2. Poll stdin (non-blocking) — keyboard arrives via stdin, not kernel events ──
-        poll_fds[0].revents = 0;
-        let _ = io::poll(&mut poll_fds, 0);
-
-        // ── 3. Process keyboard input ──
+        // ── 2. Process keyboard input ──
         let now_ms = monotonic_ms().expect("bwm input requires the monotonic clock");
         let mut input_events: Vec<InputEvent> = input_parser.expire_escape(now_ms).into_iter().collect();
-        if poll_fds[0].revents & io::poll_events::POLLIN as i16 != 0 {
+        if stdin_ready {
             if let Ok(n) = io::read(Fd::from_raw(0), &mut read_buf) {
                 for i in 0..n {
                     if let Some(event) = input_parser.feed(read_buf[i], now_ms) {
@@ -1873,10 +1700,10 @@ fn main() {
                 InputEvent::FunctionKey(k) if (k as usize) <= windows.len() => {
                     let new_focus = (k - 1) as usize;
                     if new_focus < windows.len() && new_focus != focused_win {
-                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
+                        send_focus_event(&windows, focused_win, false);
                         focused_win = new_focus;
-                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
-                        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+                        send_focus_event(&windows, focused_win, true);
+                        compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
                         full_redraw = true;
                     }
                 }
@@ -1890,40 +1717,32 @@ fn main() {
                         Chord::None => {}
                     }
                     if !windows.is_empty() {
-                        let win_event = WindowInputEvent {
-                            event_type: input_event_type::KEY_PRESS,
-                            keycode,
-                            mouse_x: ascii as i16,
-                            mouse_y: 0,
-                            modifiers,
-                            scroll_y: 0,
-                        };
-                        route_keyboard_to_focused(&windows, focused_win, &win_event);
+                        send_to(&windows, focused_win, Input::Key { ascii, keycode, modifiers, repeat: repeat == Some(true) });
                     }
                 }
                 _ => {}
             }
         }
 
-        hotkey_actions.extend(hotkey_mgr.update(current_mods, super_taps));
+        hotkey_actions.extend(hotkey_mgr.update(current_mods, super_taps as u32));
         for action in &hotkey_actions {
             match action {
                 HotkeyAction::FocusNext => {
                     if !windows.is_empty() {
-                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
+                        send_focus_event(&windows, focused_win, false);
                         focused_win = next_visible_window(&windows, (focused_win + 1) % windows.len());
-                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
-                        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+                        send_focus_event(&windows, focused_win, true);
+                        compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
                         full_redraw = true;
                     }
                 }
                 HotkeyAction::FocusPrev => {
                     if !windows.is_empty() {
-                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
+                        send_focus_event(&windows, focused_win, false);
                         focused_win = if focused_win == 0 { windows.len() - 1 } else { focused_win - 1 };
                         focused_win = next_visible_window(&windows, focused_win);
-                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
-                        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+                        send_focus_event(&windows, focused_win, true);
+                        compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
                         full_redraw = true;
                     }
                 }
@@ -1932,375 +1751,320 @@ fn main() {
         }
 
         // Dirty rect tracking — initialized before mouse processing so drag
-        // can expand the dirty region. Used by section 5 (client blit) and 6 (composite).
+        // can expand the dirty region.
         let mut dirty_x0 = i32::MAX;
         let mut dirty_y0 = i32::MAX;
         let mut dirty_x1 = 0i32;
         let mut dirty_y1 = 0i32;
         let mut cursor_dirty = false;
 
-        // ── 4. Process mouse input (only when mouse changed) ──
+        // ── 3. Process mouse input ──
         let mut mouse_moved_this_frame = false;
-        if ready & graphics::COMPOSITOR_READY_MOUSE != 0 {
-            if let Ok((mx, my, buttons, scroll_delta)) = graphics::mouse_state_with_scroll() {
-                let new_mx = mx as i32;
-                let new_my = my as i32;
-                let mouse_moved = new_mx != mouse_x || new_my != mouse_y;
-                mouse_moved_this_frame = mouse_moved;
+        if let Ok((mx, my, buttons, scroll_delta)) = session::mouse_state_with_scroll() {
+            let new_mx = mx as i32;
+            let new_my = my as i32;
+            let mouse_moved = new_mx != mouse_x || new_my != mouse_y;
+            mouse_moved_this_frame = mouse_moved;
 
-                if mouse_moved {
-                    mouse_x = new_mx;
-                    mouse_y = new_my;
+            if mouse_moved {
+                mouse_x = new_mx;
+                mouse_y = new_my;
 
-                    if let Some((win_idx, off_x, off_y)) = dragging {
-                        let new_x = mouse_x - off_x;
-                        // Clamp drag to stay below taskbar
-                        let new_y = (mouse_y - off_y).max(px(TASKBAR_HEIGHT) as i32);
-                        if new_x != windows[win_idx].x || new_y != windows[win_idx].y {
-                            // Capture old bounds before moving
-                            let (ox0, oy0, ox1, oy1) = windows[win_idx].bounds();
-                            windows[win_idx].x = new_x;
-                            windows[win_idx].y = new_y;
-                            // Update kernel window position for GPU compositing
-                            if windows[win_idx].window_id != 0 {
-                                let cx = windows[win_idx].content_x();
-                                let cy = windows[win_idx].content_y();
-                                let _ = graphics::set_window_position(windows[win_idx].window_id, cx, cy, win_idx as u32);
-                            }
-                            // Dirty region = union of old and new bounds
-                            let (nx0, ny0, nx1, ny1) = windows[win_idx].bounds();
-                            let dr_x0 = ox0.min(nx0).max(0) as usize;
-                            let dr_y0 = oy0.min(ny0).max(0) as usize;
-                            let dr_x1 = ox1.max(nx1) as usize;
-                            let dr_y1 = oy1.max(ny1) as usize;
-                            compose_partial_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, dr_x0, dr_y0, dr_x1, dr_y1, &mut ui_font);
-                            // Use partial dirty rect instead of full_redraw
-                            dirty_x0 = dirty_x0.min(dr_x0 as i32);
-                            dirty_y0 = dirty_y0.min(dr_y0 as i32);
-                            dirty_x1 = dirty_x1.max(dr_x1 as i32);
-                            dirty_y1 = dirty_y1.max(dr_y1 as i32);
-                            content_dirty = true;
-                        }
-                    } else if let Some((win_idx, edge, anchor_x, anchor_y, orig_x, orig_y, orig_w, orig_h)) = resizing {
-                        let dx = mouse_x - anchor_x;
-                        let dy = mouse_y - anchor_y;
-
-                        let (mut new_x, mut new_y, mut new_w, mut new_h) =
-                            (orig_x, orig_y, orig_w as i32, orig_h as i32);
-
-                        match edge {
-                            ResizeEdge::Right => { new_w += dx; }
-                            ResizeEdge::Bottom => { new_h += dy; }
-                            ResizeEdge::Left => { new_x += dx; new_w -= dx; }
-                            ResizeEdge::Top => { new_y += dy; new_h -= dy; }
-                            ResizeEdge::TopLeft => { new_x += dx; new_w -= dx; new_y += dy; new_h -= dy; }
-                            ResizeEdge::TopRight => { new_w += dx; new_y += dy; new_h -= dy; }
-                            ResizeEdge::BottomLeft => { new_x += dx; new_w -= dx; new_h += dy; }
-                            ResizeEdge::BottomRight => { new_w += dx; new_h += dy; }
-                        }
-
-                        // Enforce minimums
-                        if (new_w as usize) < px(MIN_WIN_WIDTH) {
-                            if edge == ResizeEdge::Left || edge == ResizeEdge::TopLeft || edge == ResizeEdge::BottomLeft {
-                                new_x = orig_x + orig_w as i32 - px(MIN_WIN_WIDTH) as i32;
-                            }
-                            new_w = px(MIN_WIN_WIDTH) as i32;
-                        }
-                        if (new_h as usize) < px(MIN_WIN_HEIGHT) {
-                            if edge == ResizeEdge::Top || edge == ResizeEdge::TopLeft || edge == ResizeEdge::TopRight {
-                                new_y = orig_y + orig_h as i32 - px(MIN_WIN_HEIGHT) as i32;
-                            }
-                            new_h = px(MIN_WIN_HEIGHT) as i32;
-                        }
-
-                        // Clamp top to taskbar
-                        new_y = new_y.max(px(TASKBAR_HEIGHT) as i32);
-
+                if let Some((win_idx, off_x, off_y)) = dragging {
+                    let new_x = mouse_x - off_x;
+                    // Clamp drag to stay below taskbar
+                    let new_y = (mouse_y - off_y).max(px(TASKBAR_HEIGHT) as i32);
+                    if new_x != windows[win_idx].x || new_y != windows[win_idx].y {
+                        // Capture old bounds before moving
                         let (ox0, oy0, ox1, oy1) = windows[win_idx].bounds();
-
-                        // Update frame dimensions live (content stays at old size until release)
                         windows[win_idx].x = new_x;
                         windows[win_idx].y = new_y;
-                        windows[win_idx].width = new_w as usize;
-                        windows[win_idx].height = new_h as usize;
-
-                        // Update kernel window position
+                        // Publish the window's new place for composition
                         if windows[win_idx].window_id != 0 {
                             let cx = windows[win_idx].content_x();
                             let cy = windows[win_idx].content_y();
-                            let _ = graphics::set_window_position(
-                                windows[win_idx].window_id, cx, cy, win_idx as u32,
-                            );
+                            let _ = session::set_geometry(windows[win_idx].window_id, cx, cy, win_idx as u32, true);
                         }
-
-                        // Send live resize event to client
-                        let new_cw = windows[win_idx].content_width();
-                        let new_ch = windows[win_idx].content_height();
-                        if windows[win_idx].window_id != 0 {
-                            let resize_event = WindowInputEvent {
-                                event_type: input_event_type::WINDOW_RESIZED,
-                                keycode: new_cw as u16,
-                                mouse_x: new_ch as i16,
-                                mouse_y: 0,
-                                modifiers: 0,
-                                scroll_y: 0,
-                            };
-                            let _ = graphics::write_window_input(
-                                windows[win_idx].window_id, &resize_event,
-                            );
-                        }
-
                         // Dirty region = union of old and new bounds
                         let (nx0, ny0, nx1, ny1) = windows[win_idx].bounds();
                         let dr_x0 = ox0.min(nx0).max(0) as usize;
                         let dr_y0 = oy0.min(ny0).max(0) as usize;
                         let dr_x1 = ox1.max(nx1) as usize;
                         let dr_y1 = oy1.max(ny1) as usize;
-                        compose_partial_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache,
-                            &windows, focused_win, &clock_text, dr_x0, dr_y0, dr_x1, dr_y1, &mut ui_font);
+                        compose_partial_redraw(&mut gpu, &windows, focused_win, &clock_text, dr_x0, dr_y0, dr_x1, dr_y1, &mut ui_font);
                         dirty_x0 = dirty_x0.min(dr_x0 as i32);
                         dirty_y0 = dirty_y0.min(dr_y0 as i32);
                         dirty_x1 = dirty_x1.max(dr_x1 as i32);
                         dirty_y1 = dirty_y1.max(dr_y1 as i32);
                         content_dirty = true;
-                    } else if !windows.is_empty() && focused_win < windows.len()
-                        && !windows[focused_win].minimized
-                        && windows[focused_win].hit_content(mouse_x, mouse_y)
-                    {
-                        let local_x = (mouse_x - windows[focused_win].content_x()) as i16;
-                        let local_y = (mouse_y - windows[focused_win].content_y()) as i16;
-                        route_mouse_move_to_focused(&windows, focused_win, local_x, local_y);
+                    }
+                } else if let Some((win_idx, edge, anchor_x, anchor_y, orig_x, orig_y, orig_w, orig_h)) = resizing {
+                    let dx = mouse_x - anchor_x;
+                    let dy = mouse_y - anchor_y;
+
+                    let (mut new_x, mut new_y, mut new_w, mut new_h) =
+                        (orig_x, orig_y, orig_w as i32, orig_h as i32);
+
+                    match edge {
+                        ResizeEdge::Right => { new_w += dx; }
+                        ResizeEdge::Bottom => { new_h += dy; }
+                        ResizeEdge::Left => { new_x += dx; new_w -= dx; }
+                        ResizeEdge::Top => { new_y += dy; new_h -= dy; }
+                        ResizeEdge::TopLeft => { new_x += dx; new_w -= dx; new_y += dy; new_h -= dy; }
+                        ResizeEdge::TopRight => { new_w += dx; new_y += dy; new_h -= dy; }
+                        ResizeEdge::BottomLeft => { new_x += dx; new_w -= dx; new_h += dy; }
+                        ResizeEdge::BottomRight => { new_w += dx; new_h += dy; }
                     }
 
-                    // Update cursor shape based on resize edge hover
-                    if dragging.is_none() && resizing.is_none() {
-                        let mut hover_shape = graphics::cursor_shape::ARROW;
-                        for i in (0..windows.len()).rev() {
-                            if windows[i].minimized { continue; }
-                            if let Some(edge) = windows[i].hit_resize_edge(mouse_x, mouse_y) {
-                                hover_shape = match edge {
-                                    ResizeEdge::Top | ResizeEdge::Bottom => graphics::cursor_shape::RESIZE_NS,
-                                    ResizeEdge::Left | ResizeEdge::Right => graphics::cursor_shape::RESIZE_EW,
-                                    ResizeEdge::TopLeft | ResizeEdge::BottomRight => graphics::cursor_shape::RESIZE_NWSE,
-                                    ResizeEdge::TopRight | ResizeEdge::BottomLeft => graphics::cursor_shape::RESIZE_NESW,
-                                };
-                                break;
-                            }
-                            if windows[i].hit_any(mouse_x, mouse_y) {
-                                break; // Inside window but not on edge
-                            }
+                    // Enforce minimums
+                    if (new_w as usize) < px(MIN_WIN_WIDTH) {
+                        if edge == ResizeEdge::Left || edge == ResizeEdge::TopLeft || edge == ResizeEdge::BottomLeft {
+                            new_x = orig_x + orig_w as i32 - px(MIN_WIN_WIDTH) as i32;
                         }
-                        cursor_dirty |= active_cursor_shape != hover_shape;
-                        active_cursor_shape = hover_shape;
+                        new_w = px(MIN_WIN_WIDTH) as i32;
                     }
-                }
-
-                // Release: end drag or route release event.
-                // Per-endpoint button tracking in the kernel prevents dual USB HID
-                // endpoints from racing (one endpoint can't cancel the other's press).
-                if (buttons & 1) == 0 && (prev_buttons & 1) != 0 {
-                    if let Some((win_idx, _, _, _, _, _, orig_w, orig_h)) = resizing.take() {
-                        // Reset cursor shape back to arrow
-                        cursor_dirty |= active_cursor_shape != graphics::cursor_shape::ARROW;
-                        active_cursor_shape = graphics::cursor_shape::ARROW;
-                        // Resize ended — notify client of new content dimensions
-                        let new_cw = windows[win_idx].content_width();
-                        let new_ch = windows[win_idx].content_height();
-                        let old_cw = orig_w.saturating_sub(px(BORDER_WIDTH) * 2);
-                        let old_ch = orig_h.saturating_sub(px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2);
-                        print!("[bwm] resize end: id={} old={}x{} new={}x{} frame={}x{}\n",
-                            windows[win_idx].window_id, old_cw, old_ch, new_cw, new_ch,
-                            windows[win_idx].width, windows[win_idx].height);
-                        if (new_cw != old_cw || new_ch != old_ch)
-                            && windows[win_idx].window_id != 0
-                        {
-                            let resize_event = WindowInputEvent {
-                                event_type: input_event_type::WINDOW_RESIZED,
-                                keycode: new_cw as u16,
-                                mouse_x: new_ch as i16,
-                                mouse_y: 0,
-                                modifiers: 0,
-                                scroll_y: 0,
-                            };
-                            let _ = graphics::write_window_input(
-                                windows[win_idx].window_id, &resize_event,
-                            );
+                    if (new_h as usize) < px(MIN_WIN_HEIGHT) {
+                        if edge == ResizeEdge::Top || edge == ResizeEdge::TopLeft || edge == ResizeEdge::TopRight {
+                            new_y = orig_y + orig_h as i32 - px(MIN_WIN_HEIGHT) as i32;
                         }
-                        save_window_defaults(&windows[win_idx], &mut win_defaults);
-                    } else if dragging.is_some() {
-                        let drag_idx = dragging.unwrap().0;
-                        dragging = None;
-                        save_window_defaults(&windows[drag_idx], &mut win_defaults);
-                    } else if !windows.is_empty() && focused_win < windows.len()
-                        && !windows[focused_win].minimized
-                        && windows[focused_win].hit_content(mouse_x, mouse_y)
-                    {
-                        let local_x = (mouse_x - windows[focused_win].content_x()) as i16;
-                        let local_y = (mouse_y - windows[focused_win].content_y()) as i16;
-                        route_mouse_button_to_focused(&windows, focused_win, 1, false, local_x, local_y);
+                        new_h = px(MIN_WIN_HEIGHT) as i32;
                     }
-                }
 
-                // Scroll wheel: forward to focused window content area
-                if scroll_delta != 0 && !windows.is_empty() && focused_win < windows.len()
+                    // Clamp top to taskbar
+                    new_y = new_y.max(px(TASKBAR_HEIGHT) as i32);
+
+                    let (ox0, oy0, ox1, oy1) = windows[win_idx].bounds();
+
+                    // Update frame dimensions live. The window interface has no compositor
+                    // resize request (breengel.md section 17.4), so the client's buffers keep
+                    // their size and the frame's content area shows them at its top left.
+                    windows[win_idx].x = new_x;
+                    windows[win_idx].y = new_y;
+                    windows[win_idx].width = new_w as usize;
+                    windows[win_idx].height = new_h as usize;
+
+                    if windows[win_idx].window_id != 0 {
+                        let cx = windows[win_idx].content_x();
+                        let cy = windows[win_idx].content_y();
+                        let _ = session::set_geometry(windows[win_idx].window_id, cx, cy, win_idx as u32, true);
+                    }
+
+                    // Dirty region = union of old and new bounds
+                    let (nx0, ny0, nx1, ny1) = windows[win_idx].bounds();
+                    let dr_x0 = ox0.min(nx0).max(0) as usize;
+                    let dr_y0 = oy0.min(ny0).max(0) as usize;
+                    let dr_x1 = ox1.max(nx1) as usize;
+                    let dr_y1 = oy1.max(ny1) as usize;
+                    compose_partial_redraw(&mut gpu, &windows, focused_win, &clock_text, dr_x0, dr_y0, dr_x1, dr_y1, &mut ui_font);
+                    dirty_x0 = dirty_x0.min(dr_x0 as i32);
+                    dirty_y0 = dirty_y0.min(dr_y0 as i32);
+                    dirty_x1 = dirty_x1.max(dr_x1 as i32);
+                    dirty_y1 = dirty_y1.max(dr_y1 as i32);
+                    content_dirty = true;
+                } else if !windows.is_empty() && focused_win < windows.len()
                     && !windows[focused_win].minimized
-                    && windows[focused_win].window_id != 0
+                    && windows[focused_win].hit_content(mouse_x, mouse_y)
                 {
-                    let local_x = (mouse_x - windows[focused_win].content_x()) as i16;
-                    let local_y = (mouse_y - windows[focused_win].content_y()) as i16;
-                    route_mouse_scroll_to_focused(
-                        &windows, focused_win, local_x, local_y, scroll_delta as i16,
-                    );
+                    let local_x = mouse_x - windows[focused_win].content_x();
+                    let local_y = mouse_y - windows[focused_win].content_y();
+                    send_to(&windows, focused_win, Input::Move { x: local_x, y: local_y });
                 }
 
-                // Click: focus change + drag or route click to client
-                let new_click = (buttons & 1) != 0 && (prev_buttons & 1) == 0;
-                prev_buttons = buttons;
+                // Update cursor shape based on resize edge hover
+                if dragging.is_none() && resizing.is_none() {
+                    let mut hover_shape = cursor_shape::ARROW;
+                    for i in (0..windows.len()).rev() {
+                        if windows[i].minimized { continue; }
+                        if let Some(edge) = windows[i].hit_resize_edge(mouse_x, mouse_y) {
+                            hover_shape = match edge {
+                                ResizeEdge::Top | ResizeEdge::Bottom => cursor_shape::RESIZE_NS,
+                                ResizeEdge::Left | ResizeEdge::Right => cursor_shape::RESIZE_EW,
+                                ResizeEdge::TopLeft | ResizeEdge::BottomRight => cursor_shape::RESIZE_NWSE,
+                                ResizeEdge::TopRight | ResizeEdge::BottomLeft => cursor_shape::RESIZE_NESW,
+                            };
+                            break;
+                        }
+                        if windows[i].hit_any(mouse_x, mouse_y) {
+                            break; // Inside window but not on edge
+                        }
+                    }
+                    cursor_dirty |= active_cursor_shape != hover_shape;
+                    active_cursor_shape = hover_shape;
+                }
+            }
 
-                if new_click {
-                    // Check taskbar area — ignore clicks
-                    if mouse_y < px(TASKBAR_HEIGHT) as i32 {
-                        // Taskbar click — no action
-                    }
-                    // Check appbar area
-                    else if mouse_y >= (screen_h - px(APPBAR_HEIGHT)) as i32 {
-                        if let Some(idx) = appbar_hit_test(&windows, screen_w, screen_h, mouse_x, mouse_y) {
-                            if idx == focused_win && !windows[idx].minimized {
-                                // Click focused window button → minimize
-                                windows[idx].minimized = true;
-                                send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
-                                focused_win = next_visible_window(&windows, focused_win);
-                                send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
-                            } else {
-                                // Click unfocused/minimized → restore and focus
-                                windows[idx].minimized = false;
-                                // Bring to top of z-order
-                                if idx < windows.len() - 1 {
-                                    let win = windows.remove(idx);
-                                    windows.push(win);
-                                    update_kernel_z_order(&windows);
-                                }
-                                let top = windows.len() - 1;
-                                if top != focused_win {
-                                    send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
-                                    focused_win = top;
-                                    send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
-                                } else {
-                                    focused_win = top;
-                                }
-                            }
-                            compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
-                            full_redraw = true;
-                        }
-                    }
-                    // Check windows (existing logic with chrome button additions)
-                    else if !windows.is_empty() {
-                        let mut clicked_idx: Option<usize> = None;
-                        let mut clicked_title = false;
-                        let mut clicked_resize: Option<ResizeEdge> = None;
-                        for i in (0..windows.len()).rev() {
-                            if windows[i].minimized { continue; }
-                            // Check resize edges first (they extend slightly outside)
-                            if let Some(edge) = windows[i].hit_resize_edge(mouse_x, mouse_y) {
-                                clicked_idx = Some(i);
-                                clicked_resize = Some(edge);
-                                break;
-                            }
-                            let ht = windows[i].hit_title(mouse_x, mouse_y);
-                            let ha = windows[i].hit_any(mouse_x, mouse_y);
-                            if ht || ha {
-                                clicked_idx = Some(i);
-                                clicked_title = ht;
-                                break;
-                            }
-                        }
-                        if let Some(ci) = clicked_idx {
-                            let z_changed = ci < windows.len() - 1;
-                            if z_changed {
-                                let win = windows.remove(ci);
+            // Release: end drag or route release event.
+            // Per-endpoint button tracking in the kernel prevents dual USB HID
+            // endpoints from racing (one endpoint can't cancel the other's press).
+            if (buttons & 1) == 0 && (prev_buttons & 1) != 0 {
+                if let Some((win_idx, _, _, _, _, _, orig_w, orig_h)) = resizing.take() {
+                    // Reset cursor shape back to arrow
+                    cursor_dirty |= active_cursor_shape != cursor_shape::ARROW;
+                    active_cursor_shape = cursor_shape::ARROW;
+                    let new_cw = windows[win_idx].content_width();
+                    let new_ch = windows[win_idx].content_height();
+                    let old_cw = orig_w.saturating_sub(px(BORDER_WIDTH) * 2);
+                    let old_ch = orig_h.saturating_sub(px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2);
+                    print!("[bwm] resize end: id={} old={}x{} new={}x{} frame={}x{}\n",
+                        windows[win_idx].window_id, old_cw, old_ch, new_cw, new_ch,
+                        windows[win_idx].width, windows[win_idx].height);
+                    save_window_defaults(&windows[win_idx], &mut win_defaults);
+                } else if dragging.is_some() {
+                    let drag_idx = dragging.unwrap().0;
+                    dragging = None;
+                    save_window_defaults(&windows[drag_idx], &mut win_defaults);
+                } else if !windows.is_empty() && focused_win < windows.len()
+                    && !windows[focused_win].minimized
+                    && windows[focused_win].hit_content(mouse_x, mouse_y)
+                {
+                    let local_x = mouse_x - windows[focused_win].content_x();
+                    let local_y = mouse_y - windows[focused_win].content_y();
+                    send_to(&windows, focused_win, Input::Button { button: 1, pressed: false, x: local_x, y: local_y });
+                }
+            }
+
+            // Scroll wheel: forward to focused window content area
+            if scroll_delta != 0 && !windows.is_empty() && focused_win < windows.len()
+                && !windows[focused_win].minimized
+                && windows[focused_win].window_id != 0
+            {
+                let local_x = mouse_x - windows[focused_win].content_x();
+                let local_y = mouse_y - windows[focused_win].content_y();
+                send_to(&windows, focused_win, Input::Scroll { x: local_x, y: local_y, delta_y: scroll_delta });
+            }
+
+            // Click: focus change + drag or route click to client
+            let new_click = (buttons & 1) != 0 && (prev_buttons & 1) == 0;
+            prev_buttons = buttons;
+
+            if new_click {
+                // Check taskbar area — ignore clicks
+                if mouse_y < px(TASKBAR_HEIGHT) as i32 {
+                    // Taskbar click — no action
+                }
+                // Check appbar area
+                else if mouse_y >= (screen_h - px(APPBAR_HEIGHT)) as i32 {
+                    if let Some(idx) = appbar_hit_test(&windows, screen_w, screen_h, mouse_x, mouse_y) {
+                        if idx == focused_win && !windows[idx].minimized {
+                            // Click focused window button → minimize
+                            windows[idx].minimized = true;
+                            send_focus_event(&windows, focused_win, false);
+                            focused_win = next_visible_window(&windows, focused_win);
+                            send_focus_event(&windows, focused_win, true);
+                        } else {
+                            // Click unfocused/minimized → restore and focus
+                            windows[idx].minimized = false;
+                            // Bring to top of z-order
+                            if idx < windows.len() - 1 {
+                                let win = windows.remove(idx);
                                 windows.push(win);
-                                update_kernel_z_order(&windows);
                             }
                             let top = windows.len() - 1;
-                            let focus_changed = top != focused_win;
-
-                            if focus_changed {
-                                send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
+                            if top != focused_win {
+                                send_focus_event(&windows, focused_win, false);
                                 focused_win = top;
-                                send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
+                                send_focus_event(&windows, focused_win, true);
                             } else {
                                 focused_win = top;
                             }
+                        }
+                        update_kernel_z_order(&windows);
+                        compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
+                        full_redraw = true;
+                    }
+                }
+                // Check windows (existing logic with chrome button additions)
+                else if !windows.is_empty() {
+                    let mut clicked_idx: Option<usize> = None;
+                    let mut clicked_title = false;
+                    let mut clicked_resize: Option<ResizeEdge> = None;
+                    for i in (0..windows.len()).rev() {
+                        if windows[i].minimized { continue; }
+                        // Check resize edges first (they extend slightly outside)
+                        if let Some(edge) = windows[i].hit_resize_edge(mouse_x, mouse_y) {
+                            clicked_idx = Some(i);
+                            clicked_resize = Some(edge);
+                            break;
+                        }
+                        let ht = windows[i].hit_title(mouse_x, mouse_y);
+                        let ha = windows[i].hit_any(mouse_x, mouse_y);
+                        if ht || ha {
+                            clicked_idx = Some(i);
+                            clicked_title = ht;
+                            break;
+                        }
+                    }
+                    if let Some(ci) = clicked_idx {
+                        let z_changed = ci < windows.len() - 1;
+                        if z_changed {
+                            let win = windows.remove(ci);
+                            windows.push(win);
+                            update_kernel_z_order(&windows);
+                        }
+                        let top = windows.len() - 1;
+                        let focus_changed = top != focused_win;
 
-                            if let Some(edge) = clicked_resize {
-                                // Start resize — set cursor shape for the edge
-                                let shape = match edge {
-                                    ResizeEdge::Top | ResizeEdge::Bottom => graphics::cursor_shape::RESIZE_NS,
-                                    ResizeEdge::Left | ResizeEdge::Right => graphics::cursor_shape::RESIZE_EW,
-                                    ResizeEdge::TopLeft | ResizeEdge::BottomRight => graphics::cursor_shape::RESIZE_NWSE,
-                                    ResizeEdge::TopRight | ResizeEdge::BottomLeft => graphics::cursor_shape::RESIZE_NESW,
-                                };
-                                cursor_dirty |= active_cursor_shape != shape;
-                                active_cursor_shape = shape;
-                                resizing = Some((
-                                    top, edge,
-                                    mouse_x, mouse_y,
-                                    windows[top].x, windows[top].y,
-                                    windows[top].width, windows[top].height,
-                                ));
-                            } else if clicked_title {
-                                // Check chrome buttons before starting drag
-                                if windows[top].hit_close_button(mouse_x, mouse_y) {
-                                    let close_event = WindowInputEvent {
-                                        event_type: input_event_type::CLOSE_REQUESTED,
-                                        keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, scroll_y: 0,
-                                    };
-                                    let _ = graphics::write_window_input(windows[top].window_id, &close_event);
-                                    if windows[top].owner_pid > 0 {
-                                        let _ = signal::kill(windows[top].owner_pid as i32, signal::SIGTERM);
-                                    }
-                                } else if windows[top].hit_minimize_button(mouse_x, mouse_y) {
-                                    windows[top].minimized = true;
-                                    if focused_win == top {
-                                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
-                                        focused_win = next_visible_window(&windows, focused_win);
-                                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
-                                    }
-                                    compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
-                                    full_redraw = true;
-                                } else {
-                                    dragging = Some((top, mouse_x - windows[top].x, mouse_y - windows[top].y));
+                        if focus_changed {
+                            send_focus_event(&windows, focused_win, false);
+                            focused_win = top;
+                            send_focus_event(&windows, focused_win, true);
+                        } else {
+                            focused_win = top;
+                        }
+
+                        if let Some(edge) = clicked_resize {
+                            // Start resize — set cursor shape for the edge
+                            let shape = match edge {
+                                ResizeEdge::Top | ResizeEdge::Bottom => cursor_shape::RESIZE_NS,
+                                ResizeEdge::Left | ResizeEdge::Right => cursor_shape::RESIZE_EW,
+                                ResizeEdge::TopLeft | ResizeEdge::BottomRight => cursor_shape::RESIZE_NWSE,
+                                ResizeEdge::TopRight | ResizeEdge::BottomLeft => cursor_shape::RESIZE_NESW,
+                            };
+                            cursor_dirty |= active_cursor_shape != shape;
+                            active_cursor_shape = shape;
+                            resizing = Some((
+                                top, edge,
+                                mouse_x, mouse_y,
+                                windows[top].x, windows[top].y,
+                                windows[top].width, windows[top].height,
+                            ));
+                        } else if clicked_title {
+                            // Check chrome buttons before starting drag
+                            if windows[top].hit_close_button(mouse_x, mouse_y) {
+                                send_to(&windows, top, Input::Close);
+                                if windows[top].owner_pid > 0 {
+                                    let _ = signal::kill(windows[top].owner_pid as i32, signal::SIGTERM);
                                 }
-                            } else if windows[top].hit_content(mouse_x, mouse_y) {
-                                let local_x = (mouse_x - windows[top].content_x()) as i16;
-                                let local_y = (mouse_y - windows[top].content_y()) as i16;
-                                route_mouse_button_to_focused(&windows, focused_win, 1, true, local_x, local_y);
-                            }
-
-                            // Full redraw for z-order or focus change
-                            if !full_redraw && (z_changed || focus_changed) {
-                                compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+                            } else if windows[top].hit_minimize_button(mouse_x, mouse_y) {
+                                windows[top].minimized = true;
+                                if focused_win == top {
+                                    send_focus_event(&windows, focused_win, false);
+                                    focused_win = next_visible_window(&windows, focused_win);
+                                    send_focus_event(&windows, focused_win, true);
+                                }
+                                update_kernel_z_order(&windows);
+                                compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
                                 full_redraw = true;
+                            } else {
+                                dragging = Some((top, mouse_x - windows[top].x, mouse_y - windows[top].y));
                             }
+                        } else if windows[top].hit_content(mouse_x, mouse_y) {
+                            let local_x = mouse_x - windows[top].content_x();
+                            let local_y = mouse_y - windows[top].content_y();
+                            send_to(&windows, focused_win, Input::Button { button: 1, pressed: true, x: local_x, y: local_y });
+                        }
+
+                        // Full redraw for z-order or focus change
+                        if !full_redraw && (z_changed || focus_changed) {
+                            compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
+                            full_redraw = true;
                         }
                     }
                 }
             }
         }
 
-        // ── 5. Window content handled by GPU ──
-        // Client frames are uploaded to per-window textures and drawn above their
-        // frames in stacking order (section 6). No CPU blit needed. Mark windows_dirty
-        // so a client frame is composed without re-uploading the desktop buffer
-        // (which contains only the background and decorations).
-        if ready & graphics::COMPOSITOR_READY_DIRTY != 0 {
-            windows_dirty = true;
-        }
-
-        // ── 5b. Update clock (once per second) ──
-        // Only check realtime every 30 frames (~5-6 checks/sec at 200 FPS)
-        frame_counter = frame_counter.wrapping_add(1);
-        fps_frames_since_last = fps_frames_since_last.wrapping_add(1);
+        // ── 4. Update clock (once per second) and the frame-rate line ──
         if let Some(now_ms) = monotonic_ms() {
             let elapsed_ms = now_ms.saturating_sub(fps_last_ms);
             if elapsed_ms >= 1000 {
@@ -2314,92 +2078,87 @@ fn main() {
                 fps_last_ms = now_ms;
             }
         }
-        if frame_counter % 30 == 0 {
-            if let Ok(ts) = libbreenix::time::now_realtime() {
-                if ts.tv_sec != last_clock_sec {
-                    last_clock_sec = ts.tv_sec;
-                    format_clock(ts.tv_sec, &mut clock_text);
-                    draw_taskbar(&mut fb, &clock_text, &mut ui_font);
-                    dirty_x0 = 0;
-                    dirty_y0 = 0;
-                    dirty_x1 = dirty_x1.max(screen_w as i32);
-                    dirty_y1 = dirty_y1.max(px(TASKBAR_HEIGHT) as i32);
-                    content_dirty = true;
-                }
+        if let Ok(ts) = libbreenix::time::now_realtime() {
+            if ts.tv_sec != last_clock_sec {
+                last_clock_sec = ts.tv_sec;
+                format_clock(ts.tv_sec, &mut clock_text);
+                draw_taskbar(&mut gpu.desktop, &clock_text, &mut ui_font);
+                dirty_x0 = 0;
+                dirty_y0 = 0;
+                dirty_x1 = dirty_x1.max(screen_w as i32);
+                dirty_y1 = dirty_y1.max(px(TASKBAR_HEIGHT) as i32);
+                content_dirty = true;
             }
         }
 
-        // ── 6. Composite on the GPU (only when something changed) ──
+        // ── 5. Composite on the GPU (only when something changed) ──
         if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty {
-            let upload = if full_redraw {
-                Some([0, 0, screen_w as u32, screen_h as u32])
+            let pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
+            let mut damage = Vec::new();
+            if full_redraw {
+                damage.push([0, 0, screen_w as i32, screen_h as i32]);
             } else if content_dirty {
-                let dx = dirty_x0.max(0);
-                let dy = dirty_y0.max(0);
-                let dw = (dirty_x1.min(screen_w as i32) - dx).max(0) as u32;
-                let dh = (dirty_y1.min(screen_h as i32) - dy).max(0) as u32;
-                Some([dx as u32, dy as u32, dw, dh])
-            } else {
-                None
-            };
+                damage.push([dirty_x0.max(0), dirty_y0.max(0), dirty_x1.min(screen_w as i32), dirty_y1.min(screen_h as i32)]);
+            }
+            // The pointer where the last frame drew it and where this one draws it.
+            if drawn_pointer.is_none_or(|p| (p.x, p.y, p.shape) != (pointer.x, pointer.y, pointer.shape)) {
+                damage.extend(drawn_pointer.map(|p| compositor::pointer_footprint(p, ui().scale as i32)));
+                damage.push(compositor::pointer_footprint(pointer, ui().scale as i32));
+            }
             let layers = frame_layers(&windows);
-            let pointer = Some(Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape });
-            let frame = upload
-                .map_or(Ok(()), |rect| gpu.upload_desktop(composite_buf, rect))
-                .and_then(|()| gpu.refresh_windows())
-                .and_then(|_| gpu.compose(&layers, pointer));
+            let frame = gpu.compose(&layers, Some(pointer), &damage);
             full_redraw = false;
             content_dirty = false;
             windows_dirty = false;
             match frame {
                 Ok(()) => {
                     frame_failed = false;
+                    drawn_pointer = Some(pointer);
+                    fps_frames_since_last = fps_frames_since_last.wrapping_add(1);
                     // Each client window's first shown frame is read back and compared.
                     // The first frame that shows a client is the desktop's initial client:
                     // the whole frame is checked and only its pass prints the desktop
                     // stage's marker. A later window is checked over the area it covers,
-                    // which bounds the read-back to that window. Any failure prints the
-                    // line docs/boot-path.json lists as fatal.
-                    let unchecked: Vec<(u32, [u32; 4])> = if windows.iter().any(|win| !win.frame_checked) {
-                        gpu.shown_clients(&layers, pointer)
+                    // which bounds the read-back to that window. A client that committed
+                    // again after the frame sampled it is checked on a later frame. Any
+                    // failure prints the line docs/boot-path.json lists as fatal.
+                    let unchecked: Vec<(u64, [u32; 4])> = if windows.iter().any(|win| !win.frame_checked) {
+                        gpu.shown_clients(&layers, Some(pointer))
                             .into_iter()
                             .filter(|(id, _)| windows.iter().any(|win| win.window_id == *id && !win.frame_checked))
                             .collect()
                     } else {
                         Vec::new()
                     };
-                    if !initial_client_checked {
-                        if let Some(&(id, _)) = unchecked.first() {
-                            initial_client_checked = true;
-                            for win in windows.iter_mut().filter(|win| unchecked.iter().any(|(id, _)| *id == win.window_id)) {
-                                win.frame_checked = true;
-                            }
-                            match gpu.check(composite_buf, &layers, pointer) {
-                                Ok(pixels) => print!(
-                                    "[bwm] composited client frame: window {} on screen, {} pixels exact\n",
-                                    id, pixels
-                                ),
-                                Err(e) => print!("[bwm] client frame check FAILED: window {}: {}\n", id, e),
-                            }
-                        }
+                    let checks: Vec<(u64, bool, [u32; 4])> = if !initial_client_checked {
+                        unchecked.first().map(|&(id, _)| (id, true, [0, 0, screen_w as u32, screen_h as u32])).into_iter().collect()
                     } else {
-                        for (id, area) in unchecked {
-                            if let Some(win) = windows.iter_mut().find(|win| win.window_id == id) {
-                                win.frame_checked = true;
-                            }
-                            match gpu.check_area(composite_buf, &layers, pointer, area) {
-                                Ok(pixels) => print!(
-                                    "[bwm] window {} shown: {} pixels exact in its {}x{} area\n",
-                                    id, pixels, area[2] - area[0], area[3] - area[1]
-                                ),
-                                Err(e) => print!("[bwm] client frame check FAILED: window {}: {}\n", id, e),
+                        unchecked.iter().map(|&(id, area)| (id, false, area)).collect()
+                    };
+                    for (id, whole, area) in checks {
+                        let result = if whole { gpu.check(&layers, Some(pointer)) } else { gpu.check_area(&layers, Some(pointer), area) };
+                        let Some(win) = windows.iter_mut().find(|win| win.window_id == id) else { continue };
+                        if let Err(CheckError::Moved(_)) = &result {
+                            win.check_moved += 1;
+                            if win.check_moved < CHECK_MOVED_LIMIT {
+                                continue;
                             }
                         }
+                        win.frame_checked = true;
+                        if whole {
+                            initial_client_checked = true;
+                            for (other, _) in &unchecked {
+                                if let Some(w) = windows.iter_mut().find(|w| w.window_id == *other) {
+                                    w.frame_checked = true;
+                                }
+                            }
+                        }
+                        report_check(id, whole, area, &result);
                     }
                 }
                 Err(e) => {
-                    // Start again with a fresh context and resources; the next frame
-                    // uploads everything.
+                    // Start again with a fresh context and targets; the next frame
+                    // repaints everything.
                     if !frame_failed {
                         print!("[bwm] GPU frame failed: {}\n", e);
                     }
@@ -2408,10 +2167,12 @@ fn main() {
                         print!("[bwm] ERROR: GPU compositor could not be reopened: {}\n", e);
                         process::exit(1);
                     }
+                    paint_background(&mut gpu.background);
+                    compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
+                    drawn_pointer = None;
                     full_redraw = true;
                 }
             }
         }
-        // No sleep — compositor_wait handles blocking
     }
 }
