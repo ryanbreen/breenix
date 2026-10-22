@@ -1009,7 +1009,7 @@ pub fn compositor_wait(timeout_ms: u32, last_registry_gen: u32) -> Result<(u32, 
 /// * Err(Error) - Error (ENODEV if no pointer device)
 pub fn mouse_pos() -> Result<(u32, u32), Error> {
     let mut state: [u32; 4] = [0, 0, 0, 0];
-    let ret = unsafe { raw::syscall1(nr::GET_MOUSE_POS, &mut state as *mut [u32; 4] as u64) as i64 };
+    let ret = unsafe { raw::syscall2(nr::GET_MOUSE_POS, &mut state as *mut [u32; 4] as u64, 16) as i64 };
     Error::from_syscall(ret)?;
     Ok((state[0], state[1]))
 }
@@ -1021,7 +1021,7 @@ pub fn mouse_pos() -> Result<(u32, u32), Error> {
 /// * Err(Error) - Error (ENODEV if no pointer device)
 pub fn mouse_state() -> Result<(u32, u32, u32), Error> {
     let mut state: [u32; 4] = [0, 0, 0, 0];
-    let ret = unsafe { raw::syscall1(nr::GET_MOUSE_POS, &mut state as *mut [u32; 4] as u64) as i64 };
+    let ret = unsafe { raw::syscall2(nr::GET_MOUSE_POS, &mut state as *mut [u32; 4] as u64, 16) as i64 };
     Error::from_syscall(ret)?;
     Ok((state[0], state[1], state[2]))
 }
@@ -1036,9 +1036,27 @@ pub fn mouse_state() -> Result<(u32, u32, u32), Error> {
 /// * Err(Error) - Error (ENODEV if no pointer device)
 pub fn mouse_state_with_scroll() -> Result<(u32, u32, u32, i32), Error> {
     let mut state: [u32; 4] = [0, 0, 0, 0];
-    let ret = unsafe { raw::syscall1(nr::GET_MOUSE_POS, &mut state as *mut [u32; 4] as u64) as i64 };
+    let ret = unsafe { raw::syscall2(nr::GET_MOUSE_POS, &mut state as *mut [u32; 4] as u64, 16) as i64 };
     Error::from_syscall(ret)?;
     Ok((state[0], state[1], state[2], state[3] as i32))
+}
+
+/// The compositor's keyboard state (`docs/gui/breengel.md` section 17.6).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeyState {
+    /// The modifier keys held: bit 0 Shift, 1 Ctrl, 2 Alt, 3 Super.
+    pub modifiers: u32,
+    /// The Super presses latched since the last read.
+    pub super_taps: u32,
+}
+
+/// Read the modifier keys held and take the latched Super presses: syscall 413 asked for its
+/// 8-byte key words instead of its 16-byte pointer words, so the pointer state is untouched.
+pub fn key_state() -> Result<KeyState, Error> {
+    let mut state: [u32; 2] = [0; 2];
+    let ret = unsafe { raw::syscall2(nr::GET_MOUSE_POS, &mut state as *mut [u32; 2] as u64, 8) as i64 };
+    Error::from_syscall(ret)?;
+    Ok(KeyState { modifiers: state[0], super_taps: state[1] })
 }
 
 // ============================================================================
