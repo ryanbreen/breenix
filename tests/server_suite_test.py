@@ -217,6 +217,55 @@ class HostServerScore(unittest.TestCase):
         self.assertEqual(timeouts, [10.0])
         self.assertEqual(services.probe.transcript, [])
 
+    def test_operator_category_is_scored_against_the_users_manifest(self):
+        users = json.loads((ROOT / 'docs/suites/users.json').read_text())
+        host['validate_manifest'](users)
+        records = dict(self.records, milestone='users/operator-login',
+                       cases=[dict(id='operator/' + name, result='PASS') for name, _ in host['OPERATOR']])
+        serial = self.serial + ''.join(line + '\n' for line in host['OPERATOR_CONSOLE_LINES'])
+        def score(manifest=users, serial=serial):
+            return host['score'](manifest, self.path, records, serial, self.boot, self.sha, ['KERNEL PANIC:'])
+        self.assertTrue(score().startswith('PASS: users/operator-login categories=operator cases=6'))
+        with self.assertRaisesRegex(ValueError, 'users manifest'):
+            score(self.manifest)
+        for line in host['OPERATOR_CONSOLE_LINES']:
+            with self.subTest(line=line), self.assertRaisesRegex(ValueError, 'no line'):
+                score(serial=serial.replace(line + '\n', ''))
+        records['cases'][2]['result'] = 'FAIL'
+        with self.assertRaises(ValueError): score()
+        # A host-run category whose cases drift from the runner's table is refused.
+        drifted = copy.deepcopy(users)
+        next(c for c in drifted['categories'] if c['id'] == 'operator')['cases'].pop()
+        with self.assertRaises(ValueError): host['validate_manifest'](drifted)
+
+    def test_boot_scorer_reads_operator_records_and_leaves_other_users_files(self):
+        sys.path.insert(0, str(ROOT / 'scripts/metal'))
+        score_boot = runpy.run_path(str(ROOT / 'scripts/metal/metal_score.py'))['score']
+        with tempfile.TemporaryDirectory() as scratch:
+            directory = Path(scratch)
+            def write(name, value):
+                path = directory / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(value))
+            write('run.json', self.boot | dict(disk='persistent'))
+            write('definition/docs/metal/boot-path.json', dict(gateArch='x86_64', milestones=[]))
+            write('definition/tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json', dict(stages=[]))
+            write('definition/docs/suites/users.json', json.loads((ROOT / 'docs/suites/users.json').read_text()))
+            write('definition/docs/efforts/path.json', self.path)
+            write('definition/docs/boot-path.json', dict(fatal=[]))
+            source = directory / 'definition/scripts/metal/server-suite'
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text((ROOT / 'scripts/metal/server-suite').read_text())
+            (directory / 'serial.txt').write_text(self.serial + ''.join(line + '\n' for line in host['OPERATOR_CONSOLE_LINES']))
+            (directory / 'events.jsonl').write_text('')
+            write('users-operator.json', self.records | dict(milestone='users/operator-login',
+                  cases=[dict(id='operator/' + name, result='PASS') for name, _ in host['OPERATOR']]))
+            write('users-operator-transcript.json', [])
+            write('users-hostssh.json', dict(boot=self.boot['id'], requests=[]))
+            verdict = score_boot(directory)
+            self.assertEqual(list(verdict['milestones']), ['users/operator-login'])
+            self.assertTrue(verdict['milestones']['users/operator-login']['passed'])
+
     def test_missing_category_and_manifest_drift_block_acceptance(self):
         self.manifest['categories'][0]['cases'] = []
         with self.assertRaises(ValueError):

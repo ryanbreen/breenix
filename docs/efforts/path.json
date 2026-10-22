@@ -2205,7 +2205,7 @@
         },
         {
           "id": "operator-login",
-          "title": "The operator logs in as wrb; root SSH is off",
+          "title": "The operator logs in to their own account; root SSH is off",
           "measure": {
             "suite": "users",
             "categories": [
