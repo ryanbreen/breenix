@@ -998,8 +998,10 @@ measures the services on a persistent boot.
 init captures each table service's stdout and stderr through separate pipes,
 and writes records tagged `[stdout]` or `[stderr]` into `/var/log/NAME.log`.
 A service gets EOF on stdin; getty copies its own diagnostics to its log before
-execing login, whose terminal traffic stays on that terminal. Root daemon diagnostics also reach
-the console, preserving the boot's fingerprint and oracle records.
+execing login, whose terminal traffic stays on that terminal. Daemon output stays in
+its service log, including startup messages and the SSH host-key fingerprint; it is
+never copied onto the terminal owned by getty. The server suite reads the current
+boot's protected bsshd log over the leased SOL console before trusting its SSH key.
 
 Each file starts with `BREENIX-LOG 1 boot=ID source=NAME limit=262144 archives=4`.
 init publishes the ID in `/run/breenix/boot-id` and prints it on the console.
@@ -1027,8 +1029,12 @@ resume the same stream. The existing `/proc/kmsg` text interface is retained.
 override, and lets the manager boot the persistent entry. It keeps the machine on with no deadline until `metal-run
 stop ID` or a power-off the driver observes (the operator shutting Breenix down). The framebuffer console with six
 virtual terminals and getty, and ssh, are the interface. `--run 'CMD'` (repeatable) makes it an unattended check: the
-driver logs in over SOL with the staged console account, types each command at the shell prompt, waits for the next
-prompt, logs out and powers off.
+driver refreshes the login prompt with a newline and logs in over SOL with the staged console account.
+Each command runs through `/bin/bsh -c` with the login environment and working directory; commands
+use separate child shells. A nonce-tagged exit status must report zero before the next command
+(including the final `sync`) starts. A returned prompt without a status fails the run.
+The driver logs out and powers off after all statuses arrive; a deadline before login
+reports that the commands never ran.
 
 An operator who powers the machine on at the machine gets the same session: the manager's question finds no lease,
 so the server takes the lease for a persistent session and starts its driver, which captures the console from then

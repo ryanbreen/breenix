@@ -317,7 +317,6 @@ impl Supervisor {
                         Ok(0) => { output.lines.finish(output.stream, log); output.ended = true; break; },
                         Ok(n) => {
                             output.lines.feed(&bytes[..n], output.stream, log);
-                            if output.console { let _ = std::io::stdout().write_all(&bytes[..n]); }
                         },
                         Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                         Err(e) if e.kind() == ErrorKind::WouldBlock => break,
@@ -840,7 +839,6 @@ struct Output {
     reader: std::fs::File,
     stream: &'static str,
     lines: Lines,
-    console: bool,
     ended: bool,
 }
 
@@ -877,7 +875,7 @@ fn launch(def: &Service, account: &Account, capture: bool) -> Result<(i32, Vec<O
             let reader = unsafe { std::fs::File::from_raw_fd(read.raw() as i32) };
             libbreenix::io::fcntl(read, libbreenix::io::fcntl_cmd::F_SETFL,
                 libbreenix::io::status_flags::O_NONBLOCK as i64).map_err(|e| format!("log reader: {}", e))?;
-            outputs.push(Output { reader, stream, lines: Lines::new(), console: account.uid == 0 && login_terminal(def).is_none(), ended: false });
+            outputs.push(Output { reader, stream, lines: Lines::new(), ended: false });
             writers.push(OwnedFd::new(write));
         }
     }

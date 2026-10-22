@@ -200,6 +200,8 @@ class Driver:
         self.run_step = 0
         self.sent_at = -1
         self.run_done = False
+        self.run_nonce = os.urandom(12).hex()
+        self.run_verified = 0
         self.persist = None
         self.last_serial = None
         self.first_text = False
@@ -826,7 +828,7 @@ class Driver:
                         if decision is None or finish.status != m.EXIT_DONE:
                             decision = finish
         # getty leaves its prompt unterminated while waiting for login input.
-        if self.args.mode in ("default", "persistent") and self.line.strip("\r") == "Breenix login: ":
+        if self.args.mode in ("default", "persistent") and "Breenix login: " in self.line:
             try:
                 self.on_line(self.line, observed_at=arrived)
             except Finish as finish:
@@ -1231,33 +1233,59 @@ class Driver:
         if self.run_step >= 2 and re.search(r'\[bsh\] command failed status=[1-9][0-9]*', text):
             raise Finish(m.EXIT_SHORT, 'a persistent console command failed')
         fresh = self.line_start > self.sent_at
-        # bsh redraws its prompt and the line typed so far on each key; only a prompt with nothing after it is a
-        # fresh one, once the command before it has finished.
         prompt = re.fullmatch(r'bsh [^>\n]*>\s*', text) is not None
-        # Steps: 0 the login prompt, 1 the password prompt, then one shell prompt per command, then logout.
         last = 2 + len(commands)
-        if self.run_step == 0 and fresh and text.rstrip().endswith('login:'):
+        # A prompt can be followed by asynchronous diagnostics in the same read.
+        # Ask getty for a new one before typing credentials, without requiring an exact line.
+        if self.run_step == 0 and 'Breenix login: ' in text:
+            self.run_step, self.sent_at = -1, self.line_start
+            self.console_send('', paced=True)
+        elif self.run_step == -1 and fresh and 'Breenix login: ' in text:
             self.run_step, self.sent_at = 1, self.line_start
             self.console_send(self.site['CONSOLE_USER'], paced=True)
         elif self.run_step == 1 and fresh and 'Password: ' in text:
             self.run_step, self.sent_at = 2, self.line_start
             self.console_send(self.site['CONSOLE_PASSWORD'], paced=True)
         elif 2 <= self.run_step <= last and 'Login incorrect' in text:
-            raise Finish(m.EXIT_SHORT, 'the persistent install refused the console account')
-        elif 2 <= self.run_step < last and fresh and prompt:
+            raise Finish(m.EXIT_SHORT, 'the persistent install refused the console account; commands never ran')
+        elif 3 <= self.run_step <= last:
+            index = self.run_step - 2
+            marker = f'metal-run-{self.run_nonce}-{index}'
+            found = re.fullmatch(re.escape(marker) + r' ([0-9]+)\s*', text)
+            if found and fresh and self.run_verified < index:
+                status = int(found[1])
+                self.event('persistent-command-result', index=index, status=status)
+                if status:
+                    raise Finish(m.EXIT_SHORT, f'persistent console command {index} failed with status {status}')
+                self.run_verified = index
+            if fresh and prompt and self.run_verified != index:
+                raise Finish(m.EXIT_SHORT, f'persistent console command {index} returned without an exit status')
+        if 2 <= self.run_step <= last and fresh and prompt:
+            if self.run_step < last:
+                index = self.run_step - 1
+                marker = f'metal-run-{self.run_nonce}-{index}'
+                # bsh -c preserves the account shell's command syntax and returns
+                # ordinary nonzero statuses too. A prompt alone proves no success.
+                command = 'print("\\n' + marker + '", run("/bin/bsh", "-c", ' + json.dumps(commands[index - 1]) + '))'
+                self.event('persistent-command', index=index, of=len(commands))
+                self.console_send(command, paced=True)
+                self.run_step += 1
+            else:
+                self.run_step = last + 1
+                self.console_send('exit', paced=True)
             self.sent_at = self.line_start
-            self.event('persistent-command', index=self.run_step - 1, of=len(commands))
-            self.console_send(commands[self.run_step - 2], paced=True)
-            self.run_step += 1
-        elif self.run_step == last and fresh and prompt:
-            self.sent_at = self.line_start
-            self.run_step = last + 1
-            self.console_send('exit', paced=True)
-        elif self.run_step == last + 1 and fresh and text.rstrip().endswith('login:'):
+        elif self.run_step == last + 1 and fresh and 'Breenix login: ' in text:
             self.run_step = last + 2
             self.run_done = True
             self.event('persistent-commands-done', commands=len(commands))
             self.maybe_complete(m.now(), round(m.now() - self.t0, 1))
+
+    def persistent_missing(self):
+        if not getattr(self.args, 'run', None) or self.run_done:
+            return 'stages missing'
+        if self.run_step <= 2:
+            return 'persistent console login did not finish; commands never ran'
+        return f'persistent console commands incomplete; {self.run_verified} exit statuses verified'
 
     def on_manager_line(self, line, observed_at, seconds):
         """The boot manager's start, the lab's answer it acted on, and a probe's end (README, "The boot manager")."""
@@ -1499,7 +1527,7 @@ class Driver:
         if quiet > SILENCE_SECONDS:
             raise Finish(m.EXIT_HUNG, f'silent for {SILENCE_SECONDS} s after {self.last_stage or "the boot manager"}', hung=True)
         if self.kernel_started and m.now() - self.kernel_started > MODE_DEADLINE_SECONDS['persistent']:
-            raise Finish(m.EXIT_SHORT, 'the mode deadline passed with stages or commands missing')
+            raise Finish(m.EXIT_SHORT, 'the mode deadline passed: ' + self.persistent_missing())
 
     def check_deadlines(self):
         if persistent(self.args):
