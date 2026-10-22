@@ -8,6 +8,7 @@ use CONSOLE_USER and CONSOLE_PASSWORD, the console account, to act as root on th
 The boot stays leased until the caller stops it through metal-run.
 """
 import argparse
+from contextlib import ExitStack
 import hashlib
 import json
 import os
@@ -22,7 +23,7 @@ import time
 
 SSH_KEYS = (
     ('port-22', 'SSH identification arrives on port 22 before the client sends anything'),
-    ('host-key', 'OpenSSH keyscan matches the Ed25519 fingerprint printed by this boot'),
+    ('host-key', "OpenSSH keyscan matches the Ed25519 fingerprint in this boot's protected service log"),
     ('strict-login', 'Strict host-key checking permits the operator key and a non-root identity'),
     ('aes256-gcm', 'OpenSSH authenticates and executes with aes256-gcm forced in both directions'),
     ('aes128-ctr', 'OpenSSH authenticates and executes with aes128-ctr forced in both directions'),
@@ -103,8 +104,8 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
     if not records.get('cleanup'):
         raise ValueError('temporary authorized key cleanup did not succeed' if category == 'ssh-keys'
                          else 'temporary services were not removed')
-    if not re.search(r'bsshd: host key ED25519 SHA256:[A-Za-z0-9+/]+', serial):
-        raise ValueError('boot did not print its host-key fingerprint')
+    if not re.search(r'^\[stdout\] bsshd: host key ED25519 SHA256:[A-Za-z0-9+/]+ \((?:loaded|generated)\)\r?$', serial, re.M):
+        raise ValueError('boot captured no protected host-key record')
     if category == 'ssh-keys' and "bsshd: refused method 'password'" not in serial:
         raise ValueError('boot captured no actual password request refusal')
     if category == 'services':
@@ -186,7 +187,7 @@ class Probe:
             if result.returncode or len(lines) != 1:
                 raise ValueError('OpenSSH keyscan did not return exactly one Ed25519 key')
             fingerprint = command(['ssh-keygen', '-E', 'sha256', '-lf', '-'], input=lines[0] + '\n')
-            printed = set(re.findall(r'bsshd: host key ED25519 (SHA256:[A-Za-z0-9+/]+)', serial))
+            printed = set(re.findall(r'^\[stdout\] bsshd: host key ED25519 (SHA256:[A-Za-z0-9+/]+) \((?:loaded|generated)\)\r?$', serial, re.M))
             if fingerprint.returncode or set(fingerprint.stdout.split()[1:2]) != printed:
                 raise ValueError('scanned key fingerprint differs from this boot console')
             self.known.write_text(lines[0] + '\n')
@@ -480,6 +481,19 @@ class Console:
         if re.search(r'\[bsh\] command failed status=[1-9]', text): raise ValueError('console command failed: ' + command)
         return text
 
+    def service_log(self, name):
+        """Read this boot's protected log over SOL before trusting any SSH key."""
+        script = ('set -e; id=$(cat /run/breenix/boot-id); '
+                  'head -n 1 /var/log/' + name + '.log | '
+                  'grep -Fx "BREENIX-LOG 1 boot=$id source=' + name + ' limit=262144 archives=4"; '
+                  'grep -E ' + shlex.quote(r'^\[stdout\] bsshd: (host key ED25519 SHA256:[A-Za-z0-9+/]+ \((loaded|generated)\)|refused method .*for .*)$') +
+                  ' /var/log/' + name + '.log')
+        text = self.run('sh -c ' + shlex.quote(script))
+        if not re.search(r'^BREENIX-LOG 1 boot=[a-f0-9-]+ source=' + re.escape(name)
+                         + r' limit=262144 archives=4\r?$', text, re.M):
+            raise ValueError('no current boot header in ' + name + ' log')
+        return text
+
     def logout(self):
         if not self.logged_in: return
         offset = self.size()
@@ -761,9 +775,9 @@ class Logs:
             raise ValueError('root log assertion failed: ' + script)
         return text
 
-    def fixture(self, name, script):
+    def fixture(self, name, script, user=None):
         self.fixtures = True
-        table = '[' + name + ']\ncommand = /bin/sh -c ' + shlex.quote(script) + '\nuser = ' + self.probe.user + '\nrestart = never\n'
+        table = '[' + name + ']\ncommand = /bin/sh -c ' + shlex.quote(script) + '\nuser = ' + (user or self.probe.user) + '\nrestart = never\n'
         literal = table.replace('\\', '\\\\').replace('\n', r'\n')
         self.root_check('printf %b ' + shlex.quote(literal) + ' > /run/breenix/services.d/' + name)
         self.console.run('svc reload')
@@ -814,6 +828,16 @@ class Logs:
         self.root_check('grep -Fx "[stdout] stdout-marker" /var/log/logs-streams.log; '
                         'grep -Fx "[stderr] stderr-marker" /var/log/logs-streams.log; '
                         '! grep -F stdout-marker /var/log/bsshd.log')
+
+        # Root daemons use the same log sinks as unprivileged services. In
+        # particular, init must not tee startup output onto a getty's terminal.
+        offset = self.console.size()
+        self.fixture('logs-root', 'printf "root-startup-%s\\n" stdout; printf "root-startup-%s\\n" stderr >&2', user='root')
+        self.console.run('svc status logs-root')  # A console round trip bounds the capture.
+        if re.search(r'root-startup-(stdout|stderr)', self.console.since(offset)):
+            raise ValueError('root service output leaked onto the console')
+        self.root_check('grep -Fx "[stdout] root-startup-stdout" /var/log/logs-root.log; '
+                        'grep -Fx "[stderr] root-startup-stderr" /var/log/logs-root.log')
 
         # A directory in place of the log deterministically makes sink creation fail.
         self.root_check('mkdir /var/log/logs-unavailable.log')
@@ -943,8 +967,7 @@ def main():
     validate_manifest(manifest)
     effort = json.loads(read('definition/docs/efforts/path.json'))
     fields = ["SERVER_SSH_HOST", "OPERATOR_USER", "OPERATOR_SSH_PUBLIC_KEY"]
-    if category in ('services', 'logs'):
-        fields += ["CONSOLE_USER", "CONSOLE_PASSWORD"]
+    fields += ["CONSOLE_USER", "CONSOLE_PASSWORD"]
     site = remote('python3', '-c', 'import sys,json;sys.path.insert(0,"/opt/breenix-metal");'
                   'import metal_lib;s=metal_lib.load_site();'
                   'print(json.dumps({k:s.get(k) for k in ' + repr(tuple(fields)) + '}))')
@@ -957,20 +980,29 @@ def main():
     if identity is None: raise ValueError('boot host has no private key matching the staged operator public key')
     fatal = json.loads(read('definition/docs/boot-path.json'))['fatal'] + [r'KERNEL PANIC:']
     records = dict(boot=args.boot, commit=args.sha, milestone=args.milestone, cases=[], cleanup=False, consoleGaps=[])
-    with tempfile.TemporaryDirectory(prefix='server-' + category + '-') as scratch:
+    with tempfile.TemporaryDirectory(prefix='server-' + category + '-') as scratch, ExitStack() as cleanup:
+        def cleanup_step(step):
+            try:
+                step()
+            except Exception as error:
+                records.setdefault('cleanupErrors', []).append(type(error).__name__ + ': ' + str(error))
         probe = Probe(site['SERVER_SSH_HOST'], site['OPERATOR_USER'], identity, Path(scratch))
         target = probe
+        if not site['CONSOLE_USER'] or not site['CONSOLE_PASSWORD']:
+            raise ValueError('site needs CONSOLE_USER and CONSOLE_PASSWORD for the root steps')
+        def capture():
+            stamps = [(float(a), int(b)) for a, b in (row.split('\t') for row in read('serial.ts').splitlines() if row)]
+            return read('serial.txt'), stamps
+        console = Console(lambda *cmd, **kw: runner['in_metal'](env, *cmd, **kw), args.boot, directory,
+                          site['CONSOLE_USER'], site['CONSOLE_PASSWORD'])
+        cleanup.callback(cleanup_step, console.logout)
+        cleanup.callback(cleanup_step, probe.cleanup)
+        serial = console.service_log('bsshd')
+        # Trust the fingerprint read over the leased console, never a key learned over SSH.
         if category in ('services', 'logs'):
-            if not site['CONSOLE_USER'] or not site['CONSOLE_PASSWORD']:
-                raise ValueError('site needs CONSOLE_USER and CONSOLE_PASSWORD for the root steps')
-            def capture():
-                stamps = [(float(a), int(b)) for a, b in (row.split('\t') for row in read('serial.ts').splitlines() if row)]
-                return read('serial.txt'), stamps
-            console = Console(lambda *cmd, **kw: runner['in_metal'](env, *cmd, **kw), args.boot, directory,
-                              site['CONSOLE_USER'], site['CONSOLE_PASSWORD'])
-            # The services cases need the strict known_hosts entry the host-key case writes.
             probe.run_case('host-key', serial)
             target = Services(probe, console, capture) if category == 'services' else Logs(probe, console, previous)
+            cleanup.callback(cleanup_step, target.cleanup)
         if args.prepare_logs:
             if category != 'logs': raise ValueError('--prepare-logs needs server/logs')
             try:
@@ -999,11 +1031,10 @@ def main():
                 records['cases'].append(dict(id=category + '/' + name, result=result, ms=elapsed, reason=reason))
                 print(f'SUITE server CASE {category}/{name} {result} ms={elapsed}' + (' msg=' + reason if reason else ''), flush=True)
         finally:
-            try:
-                target.cleanup()
-                records['cleanup'] = True
-            except Exception as error:  # Any exception fails the case; cleanup still runs.
-                records['cleanupError'] = type(error).__name__ + ': ' + str(error)
+            if category == 'ssh-keys':
+                cleanup_step(lambda: console.service_log('bsshd'))
+            cleanup.close()
+            records['cleanup'] = not records.get('cleanupErrors')
         transcript = probe.transcript
     passed = sum(r['result'] == 'PASS' for r in records['cases'])
     print(f'SUITE server DONE passed={passed} failed={len(cases)-passed} skipped=0 total={len(cases)}', flush=True)

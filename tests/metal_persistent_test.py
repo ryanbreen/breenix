@@ -263,15 +263,49 @@ class DriverPersistentTest(unittest.TestCase):
             d.line_start = offset
             d.challenge_persistent(text)
             d.challenge_persistent(text)  # the same partial line again is not a new prompt
-        for text in ('Breenix login: ', 'Password: ', 'bsh /root> ', 'bsh /root> writeF', 'bsh /root> writeFile(',
-                     'bsh /root> ', 'bsh /root> ', 'bsh /root> sy', 'bsh /root> ', 'Breenix login: '):
-            # Redraws of a line being typed are prompts with text after them, not fresh ones.
-            prompt(text)
-        self.assertEqual(sent, ['root', 'fixture', 'writeFile("/root/a", "1")', 'sync', 'sync', 'exit'])
+        prompt('Breenix login: ')
+        prompt('Breenix login: ')
+        prompt('Password: ')
+        prompt('bsh /root> ')
+        for index in range(1, 4):
+            prompt('bsh /root> print(')  # a redraw is not a completed command
+            prompt(f'metal-run-{d.run_nonce}-{index} 0')
+            prompt('bsh /root> ')
+        prompt('Breenix login: ')
+        self.assertEqual(sent[:3], ['', 'root', 'fixture'])
+        for index, command in enumerate(d.args.run + ['sync'], 1):
+            self.assertEqual(sent[index + 2], 'print("\\nmetal-run-' + d.run_nonce + '-' + str(index)
+                             + '", run("/bin/bsh", "-c", ' + json.dumps(command) + '))')
+        self.assertEqual(sent[-1], 'exit')
+        self.assertEqual(d.run_verified, 3)
         self.assertTrue(d.run_done)
         d.run_done, d.run_step, d.sent_at = False, 2, -1
         with self.assertRaises(boot.Finish):
             d.challenge_persistent('Login incorrect')
+
+    def test_run_refreshes_a_login_prompt_with_daemon_output_on_the_same_line(self):
+        d = self.driver
+        d.args.payload, d.args.mode, d.args.run = 'persistent', 'persistent', ['id']
+        d.site = {'CONSOLE_USER': 'root', 'CONSOLE_PASSWORD': 'fixture'}
+        d.kernel_started, d.t0 = 1, 0
+        sent = []
+        d.console_send = lambda text, paced=False: sent.append(text)
+        d.line_start = 100
+        d.challenge_persistent('Breenix login: bsshd: starting on port 22')
+        self.assertEqual(sent, [''])
+        d.line_start = 200
+        d.challenge_persistent('Breenix login: ')
+        self.assertEqual(sent, ['', 'root'])
+
+    def test_run_rejects_a_prompt_without_a_command_status(self):
+        d = self.driver
+        d.args.payload, d.args.mode, d.args.run = 'persistent', 'persistent', ['false']
+        d.kernel_started, d.run_step, d.line_start, d.sent_at = 1, 3, 200, 100
+        with self.assertRaises(boot.Finish) as result:
+            d.challenge_persistent('bsh /root> ')
+        self.assertIn('command 1', result.exception.reason)
+        self.assertIn('status', result.exception.reason)
+        self.assertFalse(d.run_done)
 
     def test_run_refuses_a_reported_command_failure(self):
         d = self.driver
@@ -281,6 +315,45 @@ class DriverPersistentTest(unittest.TestCase):
             d.challenge_persistent('[bsh] command failed status=1')
         self.assertEqual(result.exception.status, m.EXIT_SHORT)
         self.assertFalse(d.run_done)
+
+    def test_run_rejects_nonzero_statuses_and_ignores_echoed_or_wrong_markers(self):
+        d = self.driver
+        d.args.payload, d.args.mode, d.args.run = 'persistent', 'persistent', ['false']
+        d.kernel_started, d.run_step, d.line_start, d.sent_at = 1, 3, 200, 100
+        d.challenge_persistent(f'bsh /root> print("metal-run-{d.run_nonce}-1 0")')
+        d.challenge_persistent('metal-run-wrong-1 0')
+        self.assertEqual(d.run_verified, 0)
+        for status in (1, 2, 127, 143):
+            d.run_failure = None  # each status represents a separate failed run
+            with self.subTest(status=status), self.assertRaises(boot.Finish) as result:
+                d.challenge_persistent(f'metal-run-{d.run_nonce}-1 {status}')
+            self.assertIn(f'failed with status {status}', result.exception.reason)
+            self.assertFalse(d.run_done)
+
+    def test_run_keeps_failure_reason_and_sends_nothing_after_a_failed_status_in_one_batch(self):
+        d = self.driver
+        d.args.payload, d.args.mode, d.args.run = 'persistent', 'persistent', ['false']
+        d.kernel_started, d.run_step, d.t0, d.sent_at = 1, 3, 0, -1
+        sent = []
+        d.console_send = lambda text, paced=False: sent.append(text)
+        d.dir.mkdir(parents=True, exist_ok=True)
+        (d.dir / 'serial.txt').touch()
+        (d.dir / 'serial.ts').touch()
+        (d.dir / 'serial.raw').write_text(f'metal-run-{d.run_nonce}-1 7\nbsh /root> ')
+        with self.assertRaises(boot.Finish) as result:
+            d.pump_serial()
+        self.assertIn('failed with status 7', result.exception.reason)
+        self.assertEqual(sent, [])
+        self.assertFalse(d.run_done)
+
+    def test_run_deadline_explains_that_commands_never_ran(self):
+        d = self.driver
+        d.args.payload, d.args.mode, d.args.run = 'persistent', 'persistent', ['id']
+        d.kernel_started, d.last_serial = 1, 10000
+        with patch.object(m, 'now', return_value=10000), self.assertRaises(boot.Finish) as result:
+            d.persistent_deadlines()
+        self.assertEqual(result.exception.status, m.EXIT_SHORT)
+        self.assertIn('commands never ran', result.exception.reason)
 
     def test_run_answers_a_prompt_that_a_log_line_completed(self):
         d = self.driver
@@ -296,7 +369,7 @@ class DriverPersistentTest(unittest.TestCase):
         raw = d.dir / 'serial.raw'
         raw.write_bytes(b'Breenix login: \r\n[census] cpu0=idle\r\n')
         d.pump_serial()
-        self.assertEqual(sent, ['root'])
+        self.assertEqual(sent, [''])
 
 
 class OperatorScoringTest(existing.StateTest):
