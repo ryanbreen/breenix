@@ -1387,7 +1387,8 @@ fn glyph_gpu_work(before: &libbreenix::gpu::abi::Counters, after: &libbreenix::g
 /// Each stage of rasterizing `glyph` at `size` against section 7's bounds, by
 /// libfont::work: the outline within `16 × glyph bytes + 8 × P + 4,096`, the flattening within
 /// `1,028 × P`, and the grayscale and LCD rasterizations within the raster bound. The
-/// stages together give exactly `rasterize_glyph`'s bitmap.
+/// stages together give exactly `rasterize_glyph`'s bitmap. The three rasterizations are
+/// sent before any is read back, so the glyph waits for the device once.
 fn staged_within_bounds(font: &Font, file: &[u8], glyph: u16, size: f32, what: &str) -> Result<(), String> {
     use libfont::{work as fwork, GlyphLayout};
     let (bytes, points) = independent_glyph(file, glyph)?;
@@ -1407,7 +1408,7 @@ fn staged_within_bounds(font: &Font, file: &[u8], glyph: u16, size: f32, what: &
     let GlyphLayout::Outline { segments, width, height, x_offset, y_offset } = layout else { return Ok(()) };
     let e = segments.len() as u64;
     fwork::reset();
-    let gray = ttf_font::rasterizer::rasterize(&segments, width, height, x_offset, y_offset).map_err(|e| format!("{what}: {e}"))?;
+    let gray = ttf_font::rasterizer::send(&segments, width, height, x_offset, y_offset).map_err(|e| format!("{what}: {e}"))?;
     let steps = fwork::steps();
     let bound = raster_steps_bound(e, height as u64, 0);
     if steps > bound {
@@ -1416,20 +1417,25 @@ fn staged_within_bounds(font: &Font, file: &[u8], glyph: u16, size: f32, what: &
     if steps < 8 * height as u64 {
         return Err(format!("{what}: rasterizing {height} rows counted only {steps} steps; each row samples 8 sub-scanlines"));
     }
+    // COUNTERS counts a submission's work when the core accepts it, so the bracket needs
+    // only the sending.
     let before=crate::gpu_checks::counters()?;
-    let whole = font.rasterize_glyph(glyph, size).map_err(|e| format!("{what}: {e}"))?;
+    let whole = font.send_glyph(glyph, size).map_err(|e| format!("{what}: {e}"))?;
     let after=crate::gpu_checks::counters()?;
     glyph_gpu_work(&before, &after, &segments, width, height, what)?;
-    if whole != gray {
-        return Err(format!("{what}: rasterize_glyph differs from its outline, layout and raster stages run one by one"));
-    }
     fwork::reset();
-    ttf_font::rasterizer::rasterize_subpixel(&segments, width, height, x_offset, y_offset).map_err(|e| format!("{what}: LCD: {e}"))?;
+    let lcd = ttf_font::rasterizer::send_subpixel(&segments, width, height, x_offset, y_offset).map_err(|e| format!("{what}: LCD: {e}"))?;
     let steps = fwork::steps();
     let bound = e + raster_steps_bound(e, height as u64, 0);
     if steps > bound {
         return Err(format!("{what}: the LCD rasterization took {steps} steps; section 7 allows {bound} for 3 x {width} sampled columns"));
     }
+    let gray = gray.read().map_err(|e| format!("{what}: {e}"))?;
+    let whole = whole.read().map_err(|e| format!("{what}: {e}"))?;
+    if whole != gray {
+        return Err(format!("{what}: rasterize_glyph differs from its outline, layout and raster stages run one by one"));
+    }
+    lcd.read().map_err(|e| format!("{what}: LCD: {e}"))?;
     Ok(())
 }
 
@@ -2848,38 +2854,31 @@ fn font_parser_work_bound() -> CaseResult {
     ensure(EXPECTED==145_761_501_184,"7","independent square GPU formula is wrong")?;
     ensure(gpu_after.work_estimate-gpu_before.work_estimate==EXPECTED,"7",
         format!("gpu-text: square GPU work is {}; expected exactly {EXPECTED}, split across submissions below 2^31",gpu_after.work_estimate-gpu_before.work_estimate))?;
+    let mut corpus = Vec::new();
     for entry in corpus_index().cite("10")? {
-        let path = format!("{CORPUS_DIR}/{}", entry.file);
-        let file = read_file(&path).cite("10")?;
-        let name = entry.file.clone();
-        step("7", isolated(&name.clone(), 8_000, move || {
-            libfont::work::reset();
-            let parsed = Font::parse(&file);
-            let steps = libfont::work::steps();
-            let bound = 16 * file.len() as u64 + 65_536;
-            if steps > bound {
-                return Err(format!("{name}: loading took {steps} steps; section 7 allows 16 x {} + 65,536 = {bound}", file.len()));
-            }
-            let Ok(font) = parsed else { return Ok(()) };
-            let size = entry.glyph.map_or(24.0, |(_, s)| s);
-            for g in 0..font.num_glyphs() {
-                let what = format!("{name} glyph {g} at {size} px");
-                let (bytes, points) = independent_glyph(&file, g)?;
-                libfont::work::reset();
-                match font.rasterize_glyph(g, size) {
-                    Ok(_) => staged_within_bounds(&font, &file, g, size, &what)?,
-                    Err(e) => {
-                        let steps = libfont::work::steps();
-                        let bound = 16 * bytes + 8 * points + 4_096 + 1_028 * points;
-                        if steps > bound {
-                            return Err(format!("{what}: refusing it ({e}) took {steps} steps; its outline and flattening bounds allow {bound}"));
-                        }
-                    }
-                }
-            }
-            Ok(())
-        }))?;
+        let file = read_file(&format!("{CORPUS_DIR}/{}", entry.file)).cite("10")?;
+        corpus.push((entry, file));
     }
+    // The whole corpus runs in one isolated child. Each process draws through a GPU context of
+    // its own, and a new context costs the device several hundred milliseconds, more than a
+    // file's checks (#2286). The child names the file it is checking in `progress`, so a crash
+    // or an overrun still says which file it was on.
+    let progress = format!("/dev/shm/work-bound-progress-{}", process::getpid().map_err(|e| e.to_string()).cite("7")?.raw());
+    struct Progress<'a>(&'a str);
+    impl Drop for Progress<'_> { fn drop(&mut self) { let _ = std::fs::remove_file(self.0); } }
+    let _progress = Progress(&progress);
+    const WHAT: &str = "the font corpus";
+    let checked = isolated(WHAT, 8_000, || {
+        for (entry, file) in &corpus {
+            std::fs::write(&progress, &entry.file).map_err(|e| format!("{progress}: {e}"))?;
+            corpus_file_within_bounds(&entry.file, file, entry.glyph)?;
+        }
+        Ok(())
+    });
+    step("7", checked.map_err(|msg| match std::fs::read_to_string(&progress) {
+        Ok(name) if msg.starts_with(WHAT) => format!("{msg}, while checking {name}"),
+        _ => msg,
+    }))?;
     // 4,096 Unicode cmap records all naming one 4,096-group format 12 subtable.
     let mut cmap = Vec::new();
     be16(&mut cmap, 0);
@@ -2937,6 +2936,37 @@ fn font_parser_work_bound() -> CaseResult {
             }
             Ok(())
         }))?;
+    }
+    Ok(())
+}
+
+/// One corpus file loads, or fails to, within section 7's load bound, and each of its
+/// glyphs at the index's size (24 px by default) rasterizes within its staged bounds or is
+/// refused within its outline and flattening bounds.
+fn corpus_file_within_bounds(name: &str, file: &[u8], glyph: Option<(u16, f32)>) -> Result<(), String> {
+    libfont::work::reset();
+    let parsed = Font::parse(file);
+    let steps = libfont::work::steps();
+    let bound = 16 * file.len() as u64 + 65_536;
+    if steps > bound {
+        return Err(format!("{name}: loading took {steps} steps; section 7 allows 16 x {} + 65,536 = {bound}", file.len()));
+    }
+    let Ok(font) = parsed else { return Ok(()) };
+    let size = glyph.map_or(24.0, |(_, s)| s);
+    for g in 0..font.num_glyphs() {
+        let what = format!("{name} glyph {g} at {size} px");
+        let (bytes, points) = independent_glyph(file, g)?;
+        libfont::work::reset();
+        match font.rasterize_glyph(g, size) {
+            Ok(_) => staged_within_bounds(&font, file, g, size, &what)?,
+            Err(e) => {
+                let steps = libfont::work::steps();
+                let bound = 16 * bytes + 8 * points + 4_096 + 1_028 * points;
+                if steps > bound {
+                    return Err(format!("{what}: refusing it ({e}) took {steps} steps; its outline and flattening bounds allow {bound}"));
+                }
+            }
+        }
     }
     Ok(())
 }

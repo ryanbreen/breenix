@@ -2224,63 +2224,84 @@ fn icons_reset() -> CaseResult {
 }
 
 fn icons_bounded() -> CaseResult {
-    for (name, make) in catalogue() {
-        step(
-            "16",
-            isolated(
-                &format!("{name} under 10,000 steps of seeded input"),
-                6_000,
-                || {
-                    let mut icon = make();
-                    let size = 32;
-                    let mut g = Drawn::bgrx(256, 256);
-                    g.reset(PAPER);
-                    let mut rng = Seeded(0x1C0_5EED ^ name.len() as u64);
-                    let mut held = false;
-                    for _ in 0..10_000 {
-                        let hovering = rng.next() % 4 != 0;
-                        let press = !held && rng.next() % 9 == 0;
-                        let release = held && rng.next() % 5 == 0;
-                        held = (held || press) && !release;
-                        icon.update(
-                            1_000 + (rng.next() % 32_000) as u32,
-                            IconMouse {
-                                hovering,
-                                pressed: held,
-                                just_clicked: press,
-                                just_released: release,
-                                rel_x: (rng.next() % 200) as f32 / 100.0 - 1.0,
-                                rel_y: (rng.next() % 200) as f32 / 100.0 - 1.0,
-                            },
-                        );
-                        icon.draw(&mut g.fb(), 128, 128, size);
-                    }
-                    snapshot(&g).map_err(|e| format!("judged icon: {e:?}"))?;
-                    if drawn_pixels(&g, PAPER) == 0 {
-                        return Err(format!("{name} drew nothing in 10,000 steps"));
-                    }
-                    let half = size / 2 + icon.bounds_overflow();
-                    for y in 0..256i64 {
-                        for x in 0..256i64 {
-                            if !in_rect(
-                                x,
-                                y,
-                                128 - half as i64,
-                                128 - half as i64,
-                                2 * half as i64,
-                                2 * half as i64,
-                            ) && g.color(x as usize, y as usize) != PAPER
-                            {
-                                return Err(format!("{name} drew pixel ({x},{y}), outside its box of half-width {half} around (128,128)"));
-                            }
-                        }
-                    }
-                    g.sentinels()
-                },
-            ),
-        )?;
+    let icons = catalogue();
+    // The four icons run in one isolated child. Each process draws through a GPU context of
+    // its own, and a new context draws slowly for its first second or so while the device
+    // builds its programs (#2286, #2291). Each icon keeps its own 6 s budget, measured in the
+    // child, under a guard of the four budgets together, and the child names the icon it is
+    // on in `progress`, so a crash or an overrun still names the icon.
+    let progress = format!("/dev/shm/icons-bounded-progress-{}", process::getpid().map_err(|e| e.to_string()).cite("16")?.raw());
+    struct Progress<'a>(&'a str);
+    impl Drop for Progress<'_> { fn drop(&mut self) { let _ = std::fs::remove_file(self.0); } }
+    let _progress = Progress(&progress);
+    const WHAT: &str = "the icons under 10,000 steps of seeded input";
+    const BUDGET_MS: u64 = 6_000;
+    let checked = isolated(WHAT, BUDGET_MS * icons.len() as u64, || {
+        for &(name, make) in &icons {
+            std::fs::write(&progress, name).map_err(|e| format!("{progress}: {e}"))?;
+            let start = now_ms();
+            icon_bounded(name, make)?;
+            let ms = now_ms() - start;
+            if ms > BUDGET_MS {
+                return Err(format!("{name} under 10,000 steps of seeded input did not finish within {BUDGET_MS} ms (it took {ms} ms)"));
+            }
+        }
+        Ok(())
+    });
+    step("16", checked.map_err(|msg| match std::fs::read_to_string(&progress) {
+        Ok(name) if msg.starts_with(WHAT) => format!("{msg}, while checking {name}"),
+        _ => msg,
+    }))
+}
+
+/// `name` under 10,000 steps of seeded random pointer input draws something, and only inside
+/// its box.
+fn icon_bounded(name: &str, make: fn() -> Box<dyn Icon>) -> Result<(), String> {
+    let mut icon = make();
+    let size = 32;
+    let mut g = Drawn::bgrx(256, 256);
+    g.reset(PAPER);
+    let mut rng = Seeded(0x1C0_5EED ^ name.len() as u64);
+    let mut held = false;
+    for _ in 0..10_000 {
+        let hovering = rng.next() % 4 != 0;
+        let press = !held && rng.next() % 9 == 0;
+        let release = held && rng.next() % 5 == 0;
+        held = (held || press) && !release;
+        icon.update(
+            1_000 + (rng.next() % 32_000) as u32,
+            IconMouse {
+                hovering,
+                pressed: held,
+                just_clicked: press,
+                just_released: release,
+                rel_x: (rng.next() % 200) as f32 / 100.0 - 1.0,
+                rel_y: (rng.next() % 200) as f32 / 100.0 - 1.0,
+            },
+        );
+        icon.draw(&mut g.fb(), 128, 128, size);
     }
-    Ok(())
+    snapshot(&g).map_err(|e| format!("judged icon: {e:?}"))?;
+    if drawn_pixels(&g, PAPER) == 0 {
+        return Err(format!("{name} drew nothing in 10,000 steps"));
+    }
+    let half = size / 2 + icon.bounds_overflow();
+    for y in 0..256i64 {
+        for x in 0..256i64 {
+            if !in_rect(
+                x,
+                y,
+                128 - half as i64,
+                128 - half as i64,
+                2 * half as i64,
+                2 * half as i64,
+            ) && g.color(x as usize, y as usize) != PAPER
+            {
+                return Err(format!("{name} drew pixel ({x},{y}), outside its box of half-width {half} around (128,128)"));
+            }
+        }
+    }
+    g.sentinels()
 }
 
 fn icons_easing() -> CaseResult {

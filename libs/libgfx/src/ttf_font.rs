@@ -28,7 +28,15 @@ impl Font {
         self.rasterize_glyph26(g, Self::size26(size)?)
     }
     pub fn rasterize_glyph26(&self, g: u16, size26: i32) -> Result<GlyphBitmap, Error> {
-        self.glyph(g, size26, false)?.read()
+        self.send_glyph26(g, size26)?.read()
+    }
+    /// `rasterize_glyph`'s coverage, sent to the GPU and read back later by `SentGlyph::read`,
+    /// so a caller with several rasterizations waits for the device once rather than per call.
+    pub fn send_glyph(&self, g: u16, size: f32) -> Result<SentGlyph, Error> {
+        self.send_glyph26(g, Self::size26(size)?)
+    }
+    fn send_glyph26(&self, g: u16, size26: i32) -> Result<SentGlyph, Error> {
+        self.glyph(g, size26, false).map(SentGlyph)
     }
     pub fn rasterize_glyph_subpixel(&self, g: u16, size: f32) -> Result<SubpixelBitmap, Error> {
         self.glyph(g, Self::size26(size)?, true)?.subpixel()
@@ -301,7 +309,7 @@ impl Run {
 }
 
 fn target(width: usize, height: usize) -> Result<Surface, Error> {
-    Surface::new(width, height, Format::BGRX).map_err(|e| match e {
+    Surface::storage(width, height, Format::BGRX).map_err(|e| match e {
         crate::surface::SurfaceError::Device(e) => Error::Device(e), _ => Error::Device(-abi::errno::EINVAL),
     })
 }
@@ -349,6 +357,17 @@ fn upload_geometry(context: u64, buffer: u64, bytes: &[u8]) -> Result<(), i64> {
         0 => Ok(()),
         e => Err(e),
     }
+}
+
+/// A grayscale rasterization whose submissions are sent; `read` reads its coverage back.
+pub struct SentGlyph(AtlasGlyph);
+impl SentGlyph {
+    pub fn read(self) -> Result<GlyphBitmap, Error> { self.0.read() }
+}
+/// An LCD rasterization whose submissions are sent; `read` reads its coverage back.
+pub struct SentSubpixel(AtlasGlyph);
+impl SentSubpixel {
+    pub fn read(self) -> Result<SubpixelBitmap, Error> { self.0.subpixel() }
 }
 
 /// A glyph's coverage: its `width × height` region of a target, absent for an empty glyph.
@@ -595,6 +614,10 @@ pub mod rasterizer {
     use super::*;
     pub use libfont::bounds::{raster_bound, MAX_RASTER_STEPS};
     pub fn rasterize(s: &[LineSegment], w: usize, h: usize, x: i32, y: i32) -> Result<GlyphBitmap, Error> {
+        send(s, w, h, x, y)?.read()
+    }
+    /// `rasterize`, sent to the GPU and read back later by `SentGlyph::read`.
+    pub fn send(s: &[LineSegment], w: usize, h: usize, x: i32, y: i32) -> Result<SentGlyph, Error> {
         if raster_bound(s.len(), h, w) > MAX_RASTER_STEPS { return Err(FontError::GlyphTooExpensive.into()); }
         let mut glyph = if w == 0 || h == 0 { AtlasGlyph::empty(0) } else {
             let region = region(0, w, h)?;
@@ -604,9 +627,13 @@ pub mod rasterizer {
             AtlasGlyph::at(region, w, h)
         };
         (glyph.width, glyph.height, glyph.x_offset, glyph.y_offset) = (w, h, x, y);
-        glyph.read()
+        Ok(SentGlyph(glyph))
     }
     pub fn rasterize_subpixel(s: &[LineSegment], w: usize, h: usize, x: i32, y: i32) -> Result<SubpixelBitmap, Error> {
+        send_subpixel(s, w, h, x, y)?.read()
+    }
+    /// `rasterize_subpixel`, sent to the GPU and read back later by `SentSubpixel::read`.
+    pub fn send_subpixel(s: &[LineSegment], w: usize, h: usize, x: i32, y: i32) -> Result<SentSubpixel, Error> {
         if raster_bound(s.len(), h, w*3) > MAX_RASTER_STEPS { return Err(FontError::GlyphTooExpensive.into()); }
         let mut glyph = if w == 0 || h == 0 { AtlasGlyph::empty(0) } else {
             let mut run = Run::default();
@@ -615,7 +642,7 @@ pub mod rasterizer {
             AtlasGlyph::at(packed, w, h)
         };
         (glyph.width, glyph.height, glyph.x_offset, glyph.y_offset) = (w, h, x, y);
-        glyph.subpixel()
+        Ok(SentSubpixel(glyph))
     }
 }
 /// U+FFFD REPLACEMENT CHARACTER.
