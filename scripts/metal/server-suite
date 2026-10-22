@@ -143,9 +143,11 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
     if category == 'ssh-keys' and "bsshd: refused method 'password'" not in serial:
         raise ValueError('boot captured no actual password request refusal')
     if category == 'services':
-        for line in ('[init] bsshd killed by signal 9', '[init] svc-suite-fail is crash-looping: 5 failures in a row'):
-            if line not in serial:
-                raise ValueError('boot captured no line ' + line)
+        # The crash loop stays on the console; init's routine notices are in its log (#2282).
+        if '[init] svc-suite-fail is crash-looping: 5 failures in a row' not in serial:
+            raise ValueError('boot captured no crash-loop report on the console')
+        if '[init] bsshd killed by signal 9' not in records.get('initLog', []):
+            raise ValueError("the records hold no init log record of bsshd's SIGKILL")
     if category == 'operator':
         for line in OPERATOR_CONSOLE_LINES:
             if line not in serial:
@@ -551,6 +553,7 @@ class Services:
         self.probe, self.console, self.capture = probe, console, capture
         self.fixtures = None
         self.fixture_file = '/run/breenix/services.d/svc-suite'
+        self.init_log = []
 
     def state(self):
         result = self.probe.ssh('cat /run/breenix/services')
@@ -570,12 +573,26 @@ class Services:
             if re.search(pattern, line): found.append((arrived, line))
         return found
 
-    def await_line(self, start, pattern, what, timeout=15):
-        """The console capture trails init's answers over SSH; wait for a line before judging its absence."""
+    def init_records(self):
+        """init's notices once the console getty runs (#2282): `/var/log/init.log`, root's, read on the root console.
+        Each record is (seconds on the supervisor's monotonic clock, text); kept for the scorer as `initLog`."""
+        text = self.console.run('sh -c ' + shlex.quote('cat /var/log/init.log; printf "init-log-%s\\n" read'), timeout=60)
+        if not re.search(r'^init-log-read\r?$', text, re.M):
+            raise ValueError("init's log could not be read")
+        records = [(int(ms) / 1000, line) for ms, line in re.findall(r'^([0-9]+) (\[init\] [^\r\n]*)\r?$', text, re.M)]
+        self.init_log = [line for _, line in records]
+        return records
+
+    def init_lines(self, after, pattern):
+        """init's records past the first `after` that match `pattern`."""
+        return [(at, line) for at, line in self.init_records()[after:] if re.search(pattern, line)]
+
+    def await_init_line(self, after, pattern, what, timeout=15):
         deadline = time.monotonic() + timeout
-        while not self.lines(start, pattern):
-            if time.monotonic() >= deadline: raise ValueError('the console did not show ' + what)
+        while not (found := self.init_lines(after, pattern)):
+            if time.monotonic() >= deadline: raise ValueError("init's log does not show " + what)
             time.sleep(1)
+        return found
 
     def ensure_fixtures(self):
         if self.fixtures is not None:
@@ -591,6 +608,7 @@ class Services:
                      '[svc-suite-noexec]\ncommand = /etc/passwd\nuser = ' + user + '\n\n'
                      '[svc-suite-nobody]\ncommand = /bin/true\nuser = svc-suite-absent\n')
             self.start = self.console.size()
+            self.init_start = len(self.init_records())
             # The root console writes literal data directly into its protected directory.
             # No file or directory controlled by the service account is trusted.
             literal = table.replace('\\', '\\\\').replace('\n', r'\n')
@@ -657,13 +675,12 @@ class Services:
     def case_kill_restart(self):
         _, services = self.state()
         before = services['bsshd']
-        start = self.console.size()
         self.console.login()
-        offset = self.console.size()
+        after_records = len(self.init_records())
         self.console.type_line('kill -9 ' + str(before['pid']))
         sent = time.monotonic()
-        # Count from the typed kill, and only once init has seen the old listener die.
-        self.console.wait(offset, r'\[init\] bsshd killed by signal 9', 'bsshd dying', RESTART_WINDOW_S)
+        # Count from the typed kill. A connection the old listener answered would leave its
+        # pid, start count and exit unchanged in the published state, which is checked below.
         deadline = sent + RESTART_WINDOW_S
         while True:
             remaining = deadline - time.monotonic()
@@ -683,7 +700,8 @@ class Services:
         if after['state'] != 'running' or after['pid'] in (0, before['pid']) or after['starts'] != before['starts'] + 1 \
                 or after['exit'] != 'signal:9':
             raise ValueError('the published state does not show the restart after SIGKILL')
-        self.await_line(start, r'\[init\] bsshd restarts in 1000 ms$', "init's report of the restart delay")
+        self.await_init_line(after_records, r'^\[init\] bsshd killed by signal 9$', "bsshd's SIGKILL")
+        self.await_init_line(after_records, r'^\[init\] bsshd restarts in 1000 ms$', 'the restart delay')
 
     def case_reconnect_bsh(self):
         self.probe.require(self.probe.ssh('console.log(env("SHELL"));', posix=False), '/bin/bsh')
@@ -696,8 +714,8 @@ class Services:
         while not self.lines(self.start, r'\[init\] svc-suite-fail is crash-looping'):
             if time.monotonic() >= deadline: raise ValueError('the failing service never reached its crash loop')
             time.sleep(1)
-        exits = self.lines(self.start, r'\[init\] svc-suite-fail exited \(code 1\)$')
-        delays = [line for _, line in self.lines(self.start, r'\[init\] svc-suite-fail restarts in \d+ ms$')]
+        exits = self.init_lines(self.init_start, r'^\[init\] svc-suite-fail exited \(code 1\)$')
+        delays = [line for _, line in self.init_lines(self.init_start, r'^\[init\] svc-suite-fail restarts in \d+ ms$')]
         if delays[:4] != ['[init] svc-suite-fail restarts in ' + str(ms) + ' ms' for ms in (1000, 2000, 4000, 8000)]:
             raise ValueError('init reported other restart delays than 1, 2, 4 and 8 s')
         if len(exits) < 5: raise ValueError('fewer than five failures were reported')
@@ -717,15 +735,15 @@ class Services:
         _, services = self.state()
         pids = {name: services[name]['pid'] for name in ('svc-suite-sleep', 'svc-suite-stubborn')}
         if 0 in pids.values(): raise ValueError('the temporary services are not running')
-        start = self.console.size()
+        after_records = len(self.init_records())
         result, _ = self.stop('svc-suite-sleep')
         self.probe.require(result, 'svc: stopped svc-suite-sleep (signal 15)')
         result, elapsed = self.stop('svc-suite-stubborn')
         self.probe.require(result, 'svc: stopped svc-suite-stubborn (signal 9)')
         if elapsed < 2: raise ValueError('the service that ignores SIGTERM was killed before its stop timeout')
-        self.await_line(start, r'\[init\] svc-suite-stubborn did not stop within 2 s of SIGTERM; sending SIGKILL$',
-                        'the SIGKILL report for the service that ignores SIGTERM')
-        if self.lines(start, r'\[init\] svc-suite-sleep did not stop'):
+        self.await_init_line(after_records, r'^\[init\] svc-suite-stubborn did not stop within 2 s of SIGTERM; sending SIGKILL$',
+                             'the SIGKILL report for the service that ignores SIGTERM')
+        if self.init_lines(after_records, r'\[init\] svc-suite-sleep did not stop'):
             raise ValueError('SIGKILL went to the service that SIGTERM stopped')
         time.sleep(3)
         _, services = self.state()
@@ -779,7 +797,7 @@ class Services:
             raise ValueError('svc does not report the crash loop')
         deadline = loops[0][0] + 75
         while True:
-            exits = self.lines(self.start, r'\[init\] svc-suite-fail exited \(code 1\)$')
+            exits = self.init_lines(self.init_start, r'^\[init\] svc-suite-fail exited \(code 1\)$')
             if len(exits) >= 6: break
             if time.time() >= deadline: raise ValueError('no start followed the crash loop report')
             time.sleep(2)
@@ -1222,6 +1240,9 @@ def main():
                 cleanup_step(lambda: console.service_log('bsshd'))
             cleanup.close()
             records['cleanup'] = not records.get('cleanupErrors')
+        if category == 'services':
+            # The init log records the cases read, as last read, for the scorer.
+            records['initLog'] = target.init_log
         transcript = probe.transcript
     passed = sum(r['result'] == 'PASS' for r in records['cases'])
     print(f'SUITE {suite} DONE passed={passed} failed={len(cases)-passed} skipped=0 total={len(cases)}', flush=True)

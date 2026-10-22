@@ -160,9 +160,9 @@ class HostServerScore(unittest.TestCase):
             self.assertTrue(verdict['captureComplete'])
 
     def test_services_evidence_needs_its_cases_cleanup_and_console_lines(self):
-        records = dict(self.records, milestone='server/services',
+        records = dict(self.records, milestone='server/services', initLog=['[init] bsshd killed by signal 9'],
                        cases=[dict(id='services/' + name, result='PASS') for name, _ in host['CATEGORIES']['services']])
-        serial = ('[stdout] bsshd: host key ED25519 SHA256:example (loaded)\n[init] bsshd killed by signal 9\n'
+        serial = ('[stdout] bsshd: host key ED25519 SHA256:example (loaded)\n'
                   '[init] svc-suite-fail is crash-looping: 5 failures in a row, each within 10 s of starting\n')
         def score(records=records, serial=serial):
             return host['score'](self.manifest, self.path, records, serial, self.boot, self.sha, ['KERNEL PANIC:'])
@@ -174,6 +174,8 @@ class HostServerScore(unittest.TestCase):
         with self.assertRaises(ValueError): score(dict(records, cleanup=False))
         for line in serial.splitlines()[1:]:
             with self.assertRaises(ValueError): score(serial=serial.replace(line + '\n', ''))
+        # init's SIGKILL notice is in its log (#2282), not the console.
+        with self.assertRaisesRegex(ValueError, 'init log'): score(dict(records, initLog=[]))
         failed = copy.deepcopy(records)
         failed['cases'][3]['result'] = 'FAIL'
         with self.assertRaises(ValueError): score(failed)
@@ -182,10 +184,12 @@ class HostServerScore(unittest.TestCase):
         with tempfile.TemporaryDirectory() as scratch:
             target = Path(scratch) / 'services'
             commands = []
-            def console_run(command):
+            def console_run(command, timeout=30):
                 commands.append(command)
                 self.assertNotIn('\n', command)
                 if command == 'svc reload': return 'svc: reloaded 6 added'
+                # init's log, read before the fixtures load (#2282): one earlier record.
+                if command.startswith("sh -c 'cat /var/log/init.log"): return '1234 [init] blogd started (PID 9)\ninit-log-read\n'
                 subprocess.run(['/bin/sh', '-c', command], check=True)
                 return ''
             probe = SimpleNamespace(user='service-user')
@@ -197,7 +201,10 @@ class HostServerScore(unittest.TestCase):
             self.assertEqual(table.count('user = service-user\n'), 5)
             self.assertIn('trap "" TERM; exec /bin/sleep 3600', table)
             self.assertIn('user = svc-suite-absent\n', table)
-            self.assertEqual(len(commands), 2)
+            self.assertEqual(len(commands), 3)
+            self.assertEqual(commands[2], 'svc reload')
+            self.assertEqual(services.init_start, 1)
+            self.assertEqual(services.init_log, ['[init] blogd started (PID 9)'])
 
     def test_reconnect_rejects_success_after_deadline(self):
         services = object.__new__(host['Services'])
@@ -211,6 +218,7 @@ class HostServerScore(unittest.TestCase):
             clock[0] = 11.0
             return SimpleNamespace(returncode=0, stdout='1000\n')
         services.probe = SimpleNamespace(ssh=ssh, transcript=[])
+        services.init_records = lambda: []
         with patch.object(host['time'], 'monotonic', side_effect=lambda: clock[0]):
             with self.assertRaisesRegex(ValueError, 'within 10 s'):
                 services.case_kill_restart()

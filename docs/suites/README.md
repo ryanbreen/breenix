@@ -1281,25 +1281,28 @@ typing a few bytes at a time as `boot --persistent --run` does. Its cases:
 - `entropy-first` and `network-first`: bsshd's first start follows the moment init found
   the random pool ready, each getty started within one second of the supervisor's first
   pass, and the time client's first start follows network-up.
-- `kill-restart`: root types `kill -9` of bsshd's process on the console; once the console
-  shows init reaping it, OpenSSH with strict host-key checking must log in as the operator
-  within 10 seconds of the typed kill, and the state shows a new process, one more start
-  and `exit=signal:9`.
+- `kill-restart`: root types `kill -9` of bsshd's process on the console; OpenSSH with strict
+  host-key checking must log in as the operator within 10 seconds of the typed kill, the state
+  shows a new process, one more start and `exit=signal:9`, and init's log records the SIGKILL
+  and the 1000 ms restart delay.
 - `reconnect-bsh`: exec requests run in `/bin/bsh`, and an interactive login enters bsh
   with the operator's home and runs a quoted command.
 - `backoff`, `graceful-stop`, `account` and `crash-loop` use three temporary services that
   run as the operator, which root copies into `/run/breenix/services.d` before `svc reload`
   and removes afterwards: `/bin/false` (restart on failure), `/bin/sleep 3600`, and a
-  shell that ignores SIGTERM before it execs sleep (stop timeout 2 s). The console capture's
-  arrival times (`serial.ts`) must show restarts 1, 2, 4 and 8 seconds apart (0.75 s early
-  to 2 s late), the crash-loop report after the fifth failure, and the next start 59 to
-  63 seconds later; `svc stop` must report signal 15 for sleep and signal 9 for the shell,
+  shell that ignores SIGTERM before it execs sleep (stop timeout 2 s). init's notices go to
+  `/var/log/init.log` once the console's getty runs ([the metal README](../metal/README.md),
+  "Services"), and root reads them on the console: their monotonic times must show restarts
+  1, 2, 4 and 8 seconds apart (0.75 s early to 2 s late) and the next start 59 to 63 seconds
+  after the fifth failure, whose crash-loop report the console shows; `svc stop` must report
+  signal 15 for sleep and signal 9 for the shell, with init's SIGKILL report for the shell only,
   no sooner than its timeout, and neither may restart; the sleeping service's
   `/proc/<pid>/status` shows uid and gid 1000; and the operator's `svc stop bsshd` and
   `svc reload` are refused.
 
 Its records are `server-services.json`, scored as above, and also need the temporary
-services removed and the console lines for bsshd's SIGKILL and the crash loop.
+services removed, init's log record of bsshd's SIGKILL (kept in the records as `initLog`) and
+the crash loop's console line.
 
 For `server/logs`, prepare a small service log in one persistent boot at the
 commit under test, stop that boot with `metal-run stop ID`, and start another
