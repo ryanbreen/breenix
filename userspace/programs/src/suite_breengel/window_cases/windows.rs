@@ -1238,7 +1238,7 @@ fn windows_churn() -> CaseResult {
     };
     drain()?;
     // The frames by allocation site beside each free-memory sample, as its owners: read
-    // into buffers made before the baseline, so the reads allocate nothing between them.
+    // into buffers made before the baseline, so the reads do not allocate between them.
     let mut sites = [vec![0u8; 1 << 16], vec![0u8; 1 << 16]];
     frames_into(&mut sites[1]).cite("17.2")?;
     let _ = (list(), counter("window_buffer_allocs"), vm_size(), mem_free_kb());

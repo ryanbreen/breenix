@@ -374,7 +374,7 @@ including temporary `UPLOAD` and `READBACK` staging charged to the process), war
 For a context, `warmed` counts programs whose warm-up completed, including each `probe_int` routine after its first
 PROBE; it is not the completion signal for the rendering catalogue. For the process (context 0), `warmed` counts
 its live contexts that would report state 0, those it holds for its windows included, so `warmed` equal to
-`contexts` means every context of the process is live with its catalogue warmed. A query with a nonzero context handle
+`contexts` means each context of the process is live with its catalogue warmed. A query with a nonzero context handle
 reports that context's warm-up state without waiting for warm-up. State 0 is reported only once its
 fixed rendering catalogue has warmed; state 3 permits the same operations as state 0, with the
 per-pipeline draw wait described above. A warm-up failure follows the existing quarantine/reset rules

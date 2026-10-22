@@ -26,8 +26,8 @@
 //!                                    and height, record version 2 and pixels -> ok, or
 //!                                    err <errno> reason <reason>
 //!   composed <id>                    the commit of window <id> in its latest successful composite's
-//!                                    record -> ok <commit_id>, ok 0 when none lists it
-//!   warm <ms>                        make the compositor's objects, then wait at most <ms> for every
+//!                                    record -> ok <commit_id>, ok 0 when its record omits it
+//!   warm <ms>                        make the compositor's objects, then wait at most <ms> for each
 //!                                    context of this process to finish its catalogue warm-up ->
 //!                                    ok <ms waited>, or err 110 <warmed> <contexts>
 //!   cursor <shape> <visible> <x> <y> SET_CURSOR
@@ -163,8 +163,8 @@ impl Kiosk {
         Ok(frame)
     }
 
-    /// The commit of window `id` in its latest successful composite's record, 0 when there is
-    /// none or the record does not list the window.
+    /// The commit of window `id` in its latest successful composite's record, 0 before its
+    /// first composite or when the record does not list the window.
     fn composed(&self, id: u64) -> Result<u64, libbreenix::error::Error> {
         if self.last == 0 {
             return Ok(0);

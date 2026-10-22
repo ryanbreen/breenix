@@ -5,7 +5,7 @@ use syn::{visit::{self,Visit},Expr,ExprCall,ExprMethodCall,ItemFn,ImplItemFn,Ite
 /// Named exceptions to §2.4's two sanctioned upload sites: a file, the one function in it
 /// that may make one upload call, and the ruling that bounds it. Ruling B36: the run stage,
 /// drawn on the GPU, uploads only a failing case's expected and difference panes, tagged
-/// Fixture (§2.4's failure artifacts), so a passing run uploads nothing; `stage_upload_reach`
+/// Fixture (§2.4's failure artifacts), so a passing run makes no upload; `stage_upload_reach`
 /// holds its one upload function to that path.
 const EXCEPTIONS: &[(&str, &str, &str)] = &[("libs/libbreenix/src/suite_stage.rs", "upload_fixture", "B36")];
 

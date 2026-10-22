@@ -703,7 +703,7 @@ impl Gpu {
     /// Panes for a frame of at most `remote::DRAWN_PIXELS` pixels that a live check made,
     /// drawn on the GPU as one solid rectangle per source pixel, the nearest-scaled formula of
     /// section 23.4; for a failing entry also its expected and difference panes, which for
-    /// such a frame are solid rectangles too. Nothing is uploaded.
+    /// such a frame are solid rectangles too, drawn rather than uploaded.
     fn drawn(&mut self, f: &JudgedFrame, failing: bool) -> Result<(), String> {
         use gpu::abi::{pipeline, stream::encode};
         if f.width * f.height > remote::DRAWN_PIXELS || f.pixels.len() != f.width * f.height * 4 {

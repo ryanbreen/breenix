@@ -302,7 +302,7 @@ fn composition_compositor_dies() -> CaseResult {
     place(&mut k, w.id(), &Placed::new(10, 10, 256, 256, 0, 0), abi::geometry_flags::VISIBLE)?;
     let first = w.frame(1).cite("17.3")?;
     // Ruling B38: the stall is armed once the compositor's composite of frame 1 is recorded,
-    // so that frame's buffer is no longer sampled and the case never waits out the stall.
+    // so that frame's buffer is no longer sampled and the case does not wait out the stall.
     let start = now_ms();
     loop {
         let r = k.ask(&format!("composed {}", w.id())).cite("24")?;

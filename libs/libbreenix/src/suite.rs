@@ -498,7 +498,7 @@ fn write_all(fd: Fd, mut bytes: &[u8]) -> bool {
     true
 }
 
-/// Read all of `buf` from `fd`, sleeping in poll until each part is readable.
+/// Fill `buf` from `fd`, sleeping in poll until each part is readable.
 fn read_exact(fd: Fd, buf: &mut [u8]) -> bool {
     let mut at = 0;
     while at < buf.len() {
@@ -524,7 +524,7 @@ fn read_message(fd: Fd) -> Option<Vec<u8>> {
     read_exact(fd, &mut message).then_some(message)
 }
 
-/// A length-prefixed message on `fd`, in one write, so its reader wakes once for all of it.
+/// A length-prefixed message on `fd`, in one write, so its reader wakes once for the whole message.
 fn write_message(fd: Fd, message: &[u8]) -> bool {
     let mut framed = Vec::with_capacity(4 + message.len());
     framed.extend_from_slice(&(message.len() as u32).to_le_bytes());
@@ -1116,7 +1116,7 @@ fn read_report(reader: Fd) -> Option<Outcome> {
 
 /// Timed-out waits in a row that may see the monotonic clock stand still before the
 /// suite decides it has stopped. Each lasts at least a millisecond of a working clock,
-/// so one that moves never reaches this many.
+/// so a clock that moves does not reach this many.
 const CLOCK_STALL_WAKES: u32 = 1_000;
 
 /// How a wait for a child ended.
@@ -1136,11 +1136,12 @@ enum Waited {
 /// How often the live strip is redrawn while the runner waits for a case.
 const FRAME_MS: i128 = 66;
 
-/// Wait up to `limit_ms` after `start` for `pid` to exit, calling `frame` about every
-/// `FRAME_MS` meanwhile. The runner sleeps in `poll` between checks rather than spinning:
+/// Wait up to `limit_ms` after `start` for `pid` to exit, calling `frame` at intervals of
+/// about `FRAME_MS` meanwhile. The runner sleeps in `poll` between checks rather than spinning:
 /// on `report`, the case's report pipe, which is readable once the case has reported and
-/// hung up once it has exited; on `window` and `published`; and otherwise until the next
-/// frame or the limit, or for 1 ms once nothing it watches can say the case has exited.
+/// hung up once it has exited; on `window`, `published` and `stage`, whose requests to
+/// draw the stage it serves; and otherwise until the next frame or the limit, or for 1 ms
+/// once the case has reported.
 /// A wait that timed out with the monotonic clock standing still counts towards
 /// `CLOCK_STALL_WAKES`, which ends the wait as a stopped clock. (A poll's timeout runs on
 /// that clock, so a stopped clock wakes the runner only through the pipes.)

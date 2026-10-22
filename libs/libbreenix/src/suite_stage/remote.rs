@@ -358,7 +358,7 @@ pub(crate) fn serve(request: &[u8]) -> Vec<u8> {
 }
 
 /// Draw the variant and answer with the pictures held while it was drawn. The runner's stage
-/// is made the variant in place and put back afterwards, so nothing of it is copied.
+/// is made the variant in place and put back afterwards, so it is not copied.
 fn serve_draw(rest: &[u8]) -> Result<Vec<u8>, String> {
     let mut r = Reader(rest);
     let bits = u32::from_le_bytes(r.take(4)?.try_into().unwrap());

@@ -1255,7 +1255,7 @@ meaning. Breengel maps an unknown kind to `Event::Unknown { kind }`, never to a 
   event is queued.
 - `EVENT_FD` of window 0 gives the compositor its scene descriptor (ENOENT to any other caller, as for an id
   that names no window). It is pollable and reports POLLIN while the scene has changed since the descriptor
-  was made or last read: a window op that can change what the next composite shows (every op but `LIST`, `ACQUIRE`,
+  was made or last read: a window op that can change what the next composite shows (the ops other than `LIST`, `ACQUIRE`,
   `READ_EVENTS`, `WRITE_EVENTS`, `EVENT_FD`, `CAPTURE`, `MAP_TREE`, `COMPOSITE_SNAPSHOT`, `COMPOSITE_RECORD`,
   `SCANOUT_READBACK`, `READ_META`, `READ_REMNANT` and the retired ops), a commit's publication or rejection,
   and an owner's exit. A read of at least 8 bytes returns the count of changes as a `u64` and marks them read;
@@ -1638,7 +1638,7 @@ context warm-up and no redraw of the run's history.
   command pipe tells it, composes on the GPU core after render completion and writes events
   through `WRITE_EVENTS`. Composing automatically, it sleeps on its commands and its scene descriptor
   (section 19.2). `composed <id>` returns the window's commit in its latest successful composite's record,
-  and `warm <ms>` makes its compositor and waits for every context of its process to finish its catalogue
+  and `warm <ms>` makes its compositor and waits for each context of its process to finish its catalogue
   warm-up. `gpu-counters` returns the helper's actual GPU counters;
   `gpu-private-scanout` retains and presents a real private target for the foreign-sample
   negative control; its handle and device binding are distinct identities.

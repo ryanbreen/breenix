@@ -296,7 +296,7 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
     let mut check = |words: &WordBuf, view: &View| -> Result<(), i64> {
         let s = scene_of(words, view, scene, target, width, height)?;
         // The scene's work is counted at admission, so a refusal here has no device effect
-        // and a presented frame is never failed afterwards.
+        // and a presented frame is not failed afterwards.
         let counted = work(&s.writes, &shown)?;
         // The serial is reserved after the scene is admitted and before any device effect.
         frame.begin().map_err(|e| e as i64)?;
