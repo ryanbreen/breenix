@@ -266,7 +266,7 @@ struct Canvas<'a> {
     font: Option<&'a mut CachedFont>,
     origin: (usize, usize),
     /// When set, DejaVu Sans text is kept here, `(text, x, y, size, colour, clip)` in device
-    /// pixels, and drawn after the frame's fills and pictures, none of which meets it.
+    /// pixels, and drawn after the frame's fills and pictures, which lie outside its boxes.
     deferred: Option<Vec<(Text, i32, i32, f32, Color, Rect)>>,
 }
 impl Canvas<'_> {
