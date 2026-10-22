@@ -320,7 +320,7 @@ class EffortTargetGuardTest(unittest.TestCase):
         self.assertTrue(self.binary.is_file(), 'Missing breenix-runs; run scripts/build-host-test-tools.sh from the repository root')
         self.git('switch', '-qc', 'breengel/local', 'main')
         local = self.commit('lane work pushed elsewhere')
-        self.git('push', '-q', 'origin', 'HEAD:refs/heads/wrb/tmp')
+        self.git('push', '-q', 'origin', 'HEAD:refs/heads/other/tmp')
         result = self.invoke(str(self.binary), 'run', 'x86', '--sha', local, '--dry-run')
         self.assert_refused(result, 'breengel/local')
 
