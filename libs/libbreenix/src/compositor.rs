@@ -38,9 +38,9 @@ pub struct Frame {
 }
 
 /// How one composite went through the kernel, on the monotonic clock: from just before it
-/// asked for the snapshot its composite used to just after that COMPOSITE returned (the span
-/// the kernel admitted it), and how many snapshots, the first when, the kernel refused EBUSY
-/// because another composite was in flight.
+/// first asked for a reservation, kept across retries of a stale or busy one, to just after
+/// its COMPOSITE returned (the span the kernel admitted it), and how many snapshots, the
+/// first when, the kernel refused EBUSY because another composite was in flight.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Trace {
     pub began_ns: i128,
@@ -256,7 +256,10 @@ impl Compositor {
                     s.windows = windows.as_mut_ptr() as u64;
                     s.window_capacity = 1;
                 }
-                trace.began_ns = now_ns();
+                // The span starts at the first reservation and holds across retries.
+                if trace.began_ns == 0 {
+                    trace.began_ns = now_ns();
+                }
                 r = call(op::COMPOSITE_SNAPSHOT, &mut s);
             }
             if r == EBUSY {
