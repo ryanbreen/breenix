@@ -1145,7 +1145,7 @@ fn metal_stream_is_independent_and_resolves_its_measures() {
         }).collect();
     assert_eq!(suite_markers, expected_markers.iter().map(String::as_str).collect());
     assert_eq!(boot["firsts"][7]["suite"], "networking");
-    assert_eq!(boot["firsts"].as_array().unwrap().last().unwrap()["stage"], "Logged-in computation answered");
+    assert!(!boot["firsts"].as_array().unwrap().iter().any(|first| first["id"] == "first-local-login"));
     for id in ["fb-console", "xhci", "usb-keyboard", "console-login"] {
         assert!(metal["efforts"][4]["milestones"].as_array().unwrap().iter()
             .any(|m| m["measure"]["bootPath"] == id));

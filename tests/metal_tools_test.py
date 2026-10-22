@@ -936,7 +936,7 @@ class MilestoneScoreTest(StateTest):
             if disk == 'root':
                 self.assertNotIn('ramdisk-root', verdict['milestones'])
 
-    def test_sol_console_boot_is_not_short_for_stages_only_the_keyboard_produces(self):
+    def test_sol_console_scores_every_automated_stage_and_requires_screen_readback(self):
         import metal_score
         root = TOOLS.parents[1]
         directory = m.STATE / 'boot'
@@ -951,14 +951,22 @@ class MilestoneScoreTest(StateTest):
                  '[usb] boot keyboard attached: port=2', '[init] getty on the console', 'Breenix login: root',
                  'Login incorrect', 'metal-login-ok 42', 'fbcon check: shadow and screen identical, 9 glyph cells',
                  'fbcon row: metal-login-ok 42', '[getty] console acquired']
-        for missing, short in ((None, False), ('fbcon row: metal-login-ok 42', True)):
-            (directory / 'serial.txt').write_text('\n'.join(line for line in lines if line != missing))
-            verdict = metal_score.score(directory)
-            console = {name: verdict['milestones'][name] for name in ('usb-keyboard', 'console-login')}
-            self.assertEqual({name: result['inputUnmeasured'] for name, result in console.items()},
-                             {'usb-keyboard': 2, 'console-login': 1})
-            self.assertFalse(any(result['passed'] for result in console.values()))
-            self.assertEqual(metal_score.falls_short({'captureComplete': True, 'milestones': console}), short)
+        captures = [(lines, 3, 7, False)]
+        for index in range(len(lines)):
+            captures.append((lines[:index] + lines[index + 1:],
+                             (1 if index == 0 else 2) if index < 3 else 3, 6 if index >= 3 else 7, True))
+        captures.append((lines[:7] + [lines[8], lines[7]] + lines[9:], 3, 6, True))
+        for capture, usb_reached, login_reached, short in captures:
+            with self.subTest(capture=capture):
+                (directory / 'serial.txt').write_text('\n'.join(capture))
+                verdict = metal_score.score(directory)
+                console = {name: verdict['milestones'][name] for name in ('usb-keyboard', 'console-login')}
+                self.assertEqual(console['usb-keyboard'],
+                                 {'reached': usb_reached, 'total': 3, 'passed': usb_reached == 3})
+                self.assertEqual(console['console-login'],
+                                 {'reached': login_reached, 'total': 7, 'passed': login_reached == 7})
+                self.assertEqual(metal_score.falls_short({'captureComplete': True, 'milestones': console}), short)
+
 
 
 class ModeApplicabilityTest(StateTest):

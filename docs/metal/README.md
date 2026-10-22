@@ -350,9 +350,8 @@ soon as the unit holds, or waits for, the machine lease, so the caller's ssh ses
    name the holder, queue position and deadline; `lease.json` mirrors the ordered `queue.json`, also exposed by
    `metal-run status`. Cancelled, dead and expired waiters leave the queue. A boot that waited keeps its one
    boot record and runs normally, without a refusal record. A timed-out wait or quarantined lease returns 75.
-   With `--attended`, `--wait` retains its challenge duration (default 30 minutes); queue admission still has its
-   own 240-minute bound. claim-lint:ok: tests/metal_boot_queue_test.py exercises FIFO handoff, cancellation, bounds and launch output. The powered lease carries the boot id, the driver's unit, a heartbeat refreshed
-   each 5 s and, from power-on, the attempt's absolute ceiling.
+   The powered lease carries the boot id, the driver's unit, a heartbeat refreshed each 5 s and, from power-on,
+   the attempt's absolute ceiling. claim-lint:ok: tests/metal_boot_queue_test.py exercises FIFO handoff, cancellation, bounds and launch output.
 2. **Gets its payload.** For a Breenix boot, `metal-build` runs in the build container: a private clone of the commit,
    the effort-target guard from a freshly fetched origin/main (the deployed guard for `--catchup`;
    `--target x86-metal` once origin/main's guard knows that target; until then
@@ -1044,9 +1043,7 @@ session already holds the lease when setup runs.
 
 Each persistent boot is recorded and scored like a default boot, with boot shape and mode `persistent`: the boot
 manager's milestone, the kernel's storage milestone for the system and home partitions, `fb-console`, `xhci`,
-`usb-keyboard` and the login prompt. The operator's input is `operator`: a keyboard stage the operator has not
-typed yet counts as not measured rather than missed. Once a keyboard input marker is captured, missing keyboard
-stages (including TTY delivery) count as failures.
+`usb-keyboard` and the login prompt. These stages are automated; normal operator usage adds no stages or results.
 
 ### Measured on the R240
 
@@ -1170,12 +1167,11 @@ operator resolves that difference. No restore step writes storage.
 
 The `metal-console` effort follows storage with `fb-console`, `xhci`, `usb-keyboard` and `console-login`.
 Their stage lists cover RAM-disk, install and disk-root shapes, subject to each milestone's `bootModes`.
-The `usb-keyboard` and `console-login` stages tagged `input: keyboard` are required only of an attended boot,
-so a SOL boot finishes without them. Its verdict leaves those two milestones unpassed and counts the stages
-its input cannot produce
-(`inputUnmeasured`); those alone do not make the boot short. Existing modes keep their measured stages and
-completion markers.
-Console development boots use `--mode console --input sol`. Staging selects `/sbin/init console`,
+Only automated stages are measured (operator ruling S16, 2026-10-21). `usb-keyboard` measures attach,
+detach and re-attach; `console-login` measures the seven stages driven over SOL. Every remaining marker
+and its order are unchanged. Normal keyboard usage is outside the test count and matrix; any problem
+found during that usage is a bug report. <!-- claim-lint:ok: docs/metal/boot-path.json retains the automated markers and order; tests/metal_tools_test.py exercises missing and reordered console output. -->
+Automated console boots use `--mode console --input sol`. Staging selects `/sbin/init console`,
 which detaches init's controlling terminal and respawns `/bin/getty` with the shell mode's one-second rate limit.
 Getty creates a session, opens the console, acquires it as the controlling terminal, installs descriptors 0–2,
 sets canonical termios and checks the foreground group. It executes login, which reads with echo disabled and
@@ -1203,17 +1199,7 @@ authentication, the whole answer line `metal-login-ok 42`, the root-only `/proc/
 `sudo cat /proc/fbcon/check` and the same password when the account is `uw`) showing the screen matches its shadow
 with that answer on a row,
 logout, checked controlling-terminal reacquisition and a new login prompt. Its run records `input: sol` and
-`evidenceEligible: false`.
-
-An attended boot (ruling M8, the run sheet below) scores console-login from the milestone's `attendedStages`,
-in order; the driver and the scorer read that one list. Getty starts a fresh input window on each start; login
-reports a refusal or an acceptance against it, and the next getty reports the ended session's input. The kernel
-prints these as `[console] login refused|login accepted|session ended input=keyboard|other`, from the sources it
-recorded, without keeping any byte; the request is root-only. The stages are a keyboard refusal and login's
-`Login incorrect` (any number of refused attempts may come before), a keyboard acceptance, `metal-login-ok 42`,
-the screen check and its row, logout, a keyboard-only session end, reacquisition and a new prompt. A line naming
-`input=other` ends the boot short. `first-local-login` is the attended computation stage. Text over SOL is the
-observation path; no screenshot or framebuffer capture is used.
+`evidenceEligible: true`.
 
 The recovery form `--mode console --input sol --disk install` remains available.
 Ordinary console requests install a fresh physical root with the current userspace
@@ -1267,8 +1253,7 @@ and the HID Usage Tables; their comments cite the sections.
   with port power control (HCCPARAMS1.PPC) it powers the port off and on and attaches the connection the port
   then reports; without it, it disables the port and resets it. `[usb] replug exercise: port <n>: reattached
   <k> of 10 rounds` closes the exercise. The `usb-keyboard` milestone's stages are
-  the attach, the detach and the second attach; its typed-key stages are `input: keyboard`, required only of an
-  attended boot.
+  the attach, the detach and the second attach.
 - **Hubs.** The machine's census found its keyboard device on a root port, so there is no hub class driver;
   a keyboard behind a hub is not attached.
 
@@ -1343,39 +1328,6 @@ with the machine on; the reaper's retry then powers it off and lifts the quarant
 modes deliver their boot targets as described under "Physical-disk userspace"; probe mode stages `probe`, and its storage
 boots are described under "The disks".
 Probe completion requires `PROBE DONE` and the measured kernel and fetch stages.
-
-## Attended console run sheet
-
-This boot measures `usb-keyboard` and `console-login` from keys typed at the machine. The driver sends no input; the
-kernel marks which source delivered each byte, and only USB keyboard bytes count.
-
-**Before power-on:** a monitor on the VGA port, and a plain USB keyboard plugged directly into a USB port (not
-through a hub). Have `CONSOLE_PASSWORD` from your private credentials store; the account is `root`.
-
-**Start it** (or ask the agent to), on the boot host:
-
-```sh
-python3 ~/.local/share/breenix-metal/metal-run boot --mode console --attended
-```
-
-The driver builds main, takes the machine lease and powers on. **Hands off the keyboard until `Breenix login:`
-appears.** The kernel has finished its ten keyboard detach/reattach rounds before starting getty.
-Then type, pressing **Enter** after each line:
-
-1. `uw`, then at `Password:` any wrong password. Wait for `Login incorrect` and a new `Breenix login:`.
-2. `uw`, then at `Password:` the real password. Wait for the `bsh` prompt.
-3. `print("metal-login-ok", 6*7)`, and look for `metal-login-ok 42` on its own line.
-4. `sudo cat /proc/fbcon/check`, the same password at `[sudo] password for uw:`, and look for
-   `fbcon check: shadow and screen identical`.
-5. `logout`, and wait for a new `Breenix login:`. The driver then powers the machine off.
-
-- A typo is fine: a failed login just returns to `Breenix login:`; start that step again. Any number of failed
-  attempts may come before the real one, and at least one must.
-- Do not type the password at `Breenix login:`. That prompt echoes, so it would be shown on the screen and kept in
-  the private serial record (exports mask it).
-
-You have 30 minutes from kernel handoff (`--wait MIN` changes it, up to 240). With nobody typing, the driver
-records the missing stages and powers off at the deadline. `metal-run stop ID` ends it sooner.
 
 ## Redaction
 
@@ -1577,8 +1529,7 @@ For the scoped console host checks, put e2fsprogs `debugfs` and `mke2fs` on `PAT
 
 A recovery exercise uses `--mode console --input sol --inject xhci-reset-device`
 or `--inject xhci-short-read` through `metal-run boot`, with the target branch.
-It requires a RAM-disk image and cannot be combined with a session, attended
-input or a disk action. The boot record is `fault-test`, evidence-ineligible;
+It requires a RAM-disk image and cannot be combined with a session or a disk action. The boot record is `fault-test`, evidence-ineligible;
 the milestone scorer refuses it and no milestone verdict is written.
 The boot still uses the machine lease, normal capture and power-off cleanup.
 
