@@ -18,10 +18,11 @@ use breengel::{CachedFont, Window, Event};
 use libbreenix::process::{fork, execv, ForkResult};
 use libbreenix::time;
 
-use libgfx_ref::bitmap_font;
-use libgfx_ref::color::Color;
-use libgfx_ref::framebuf::FrameBuf;
-use libgfx_ref::ttf_font;
+use libgfx::bitmap_font;
+use libgfx::color::Color;
+use libgfx::shapes;
+use libgfx::surface::{Rect as Clip, Surface};
+use libgfx::ttf_font;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -72,10 +73,8 @@ const APPS: &[AppEntry] = &[
     AppEntry { name: "System Check", description: "System health",        binary: b"/bin/bcheck\0",      is_gui: true },
     AppEntry { name: "Log Viewer",   description: "View system logs",     binary: b"/bin/bless\0",       is_gui: true },
     AppEntry { name: "Bounce",       description: "Physics demo",         binary: b"/bin/bounce\0",      is_gui: true },
-    AppEntry { name: "Gus Kit",      description: "Drawing app",          binary: b"/bin/guskit\0",      is_gui: true },
     AppEntry { name: "Breenix Log",  description: "System log viewer",    binary: b"/bin/blog\0",        is_gui: true },
     AppEntry { name: "Font Picker",  description: "Configure fonts",      binary: b"/bin/bfontpicker\0", is_gui: true },
-    AppEntry { name: "Icon Kit",     description: "Animated icon showcase", binary: b"/bin/biconkit\0", is_gui: true },
     AppEntry { name: "Shell",        description: "Breenix shell",        binary: b"bsh\0",              is_gui: false },
     AppEntry { name: "URL Fetch",    description: "Fetch URLs",           binary: b"burl\0",             is_gui: false },
     AppEntry { name: "cat",          description: "Display file contents", binary: b"cat\0",             is_gui: false },
@@ -100,25 +99,6 @@ fn floor_f32(x: f32) -> f32 {
 fn fmod_pos(x: f32, m: f32) -> f32 {
     let r = x - floor_f32(x / m) * m;
     if r < 0.0 { r + m } else { r }
-}
-
-fn sqrt_approx(x: f32) -> f32 {
-    if x <= 0.0 { return 0.0; }
-    let bits = x.to_bits();
-    let guess = f32::from_bits((bits >> 1) + 0x1FBB4F2E);
-    let s = (guess + x / guess) * 0.5;
-    (s + x / s) * 0.5
-}
-
-fn sdf_rounded_rect(px: f32, py: f32, cx: f32, cy: f32, hw: f32, hh: f32, r: f32) -> f32 {
-    let dx = abs_f32(px - cx) - (hw - r);
-    let dy = abs_f32(py - cy) - (hh - r);
-    let dx_pos = if dx > 0.0 { dx } else { 0.0 };
-    let dy_pos = if dy > 0.0 { dy } else { 0.0 };
-    let corner_dist = sqrt_approx(dx_pos * dx_pos + dy_pos * dy_pos) - r;
-    let inside_max = if dx > dy { dx } else { dy };
-    let inside = if inside_max < 0.0 { inside_max } else { 0.0 };
-    corner_dist + inside
 }
 
 // ---------------------------------------------------------------------------
@@ -172,15 +152,8 @@ fn get_filtered_apps(query: &[u8], query_len: usize) -> ([usize; 16], usize) {
 }
 
 // ---------------------------------------------------------------------------
-// Raw u32 pixel helpers (BGRA format)
+// Border gradient
 // ---------------------------------------------------------------------------
-
-#[inline]
-fn plot_pixel_u32(buf: &mut [u32], bw: usize, bh: usize, x: i32, y: i32, color: u32) {
-    if x >= 0 && y >= 0 && (x as usize) < bw && (y as usize) < bh {
-        buf[y as usize * bw + x as usize] = color;
-    }
-}
 
 fn lerp_color(a: u32, b: u32, t: u32) -> u32 {
     let t = if t > 256 { 256 } else { t };
@@ -193,7 +166,7 @@ fn lerp_color(a: u32, b: u32, t: u32) -> u32 {
 
 /// Symmetric conic gradient: white at position 0, medium blue at 0.5.
 /// The darkest stop is still a clearly-visible blue so the border
-/// never disappears against the dark panel/background.
+/// does not disappear against the dark panel/background.
 fn gradient_color(pos: f32) -> u32 {
     // u32 layout: 0xAARRGGBB (alpha high byte, blue low byte)
     const STOPS: [u32; 5] = [
@@ -201,7 +174,7 @@ fn gradient_color(pos: f32) -> u32 {
         0xFFA0C8F0, // pale blue   #a0c8f0
         0xFF6090D8, // light blue  #6090d8
         0xFF4070C0, // med blue    #4070c0
-        0xFF3060B0, // blue        #3060b0 — always visible vs black & gray
+        0xFF3060B0, // blue        #3060b0 — visible against black & gray
     ];
     // Mirror around 0.5 for symmetry
     let p = if pos > 0.5 { 1.0 - pos } else { pos };
@@ -238,126 +211,47 @@ fn border_perimeter_pos(px: f32, py: f32, lx: i32, ly: i32, lw: i32, lh: i32) ->
     fmod_pos(distance / perimeter, 1.0)
 }
 
-fn color_to_bgra(c: Color) -> u32 {
-    c.b as u32 | ((c.g as u32) << 8) | ((c.r as u32) << 16) | 0xFF000000
+fn color_of(word: u32) -> Color {
+    Color::rgb((word >> 16) as u8, (word >> 8) as u8, word as u8)
 }
 
-/// Draw a filled rounded rectangle into a u32 BGRA buffer.
-fn draw_rounded_rect_u32(
-    buf: &mut [u32], buf_w: usize, buf_h: usize,
-    x: i32, y: i32, w: i32, h: i32, color: u32, radius: i32,
-) {
-    for row in 0..h {
-        for col in 0..w {
-            let px = x + col;
-            let py = y + row;
-            if px < 0 || py < 0 || px >= buf_w as i32 || py >= buf_h as i32 { continue; }
+/// Length of one border segment along the window's edge, in pixels.
+const BORDER_SEGMENT: i32 = 8;
 
-            let in_corner = (col < radius && row < radius)
-                || (col >= w - radius && row < radius)
-                || (col < radius && row >= h - radius)
-                || (col >= w - radius && row >= h - radius);
-
-            if in_corner {
-                let cx = if col < radius { radius } else { w - radius };
-                let cy = if row < radius { radius } else { h - radius };
-                let dx = col - cx;
-                let dy = row - cy;
-                if dx * dx + dy * dy > radius * radius { continue; }
-            }
-
-            buf[py as usize * buf_w + px as usize] = color;
-        }
-    }
-}
-
-/// Draw a small filled circle (badge dot).
-fn draw_circle_u32(
-    buf: &mut [u32], buf_w: usize, buf_h: usize,
-    cx: i32, cy: i32, radius: i32, color: u32,
-) {
-    for dy in -radius..=radius {
-        for dx in -radius..=radius {
-            if dx * dx + dy * dy <= radius * radius {
-                plot_pixel_u32(buf, buf_w, buf_h, cx + dx, cy + dy, color);
-            }
-        }
-    }
-}
-
-/// Animated SDF-based rounded-rectangle border with a dark-blue-to-white
-/// conic gradient that rotates clockwise like a progress spinner.
-///
-/// Uses dual-SDF: outer rounded rect (r=12) and inner rounded rect (r=9)
-/// to create a clean 3px border ring at the exact window edge.
-/// One full revolution every 360 frames (~6 seconds at 60 fps).
-fn draw_sinuous_border(
-    buf: &mut [u32], buf_w: usize, buf_h: usize,
-    lx: i32, ly: i32, lw: i32, lh: i32, frame: u32,
-) {
-    let bw = BORDER_WIDTH;
-    let outer_r = CORNER_RADIUS;
-    let inner_r = INNER_RADIUS;
-
-    let cx = lx as f32 + lw as f32 * 0.5;
-    let cy = ly as f32 + lh as f32 * 0.5;
-    let outer_hw = lw as f32 * 0.5;
-    let outer_hh = lh as f32 * 0.5;
-    let inner_hw = outer_hw - bw;
-    let inner_hh = outer_hh - bw;
-
-    // One revolution per 360 frames (~6 sec at 60 fps)
+/// Animated rounded-rectangle border with a dark-blue-to-white conic gradient that
+/// rotates clockwise like a progress spinner, one full revolution every 360 frames (~6
+/// seconds at 60 fps). The ring between the window's edge (radius 12) and the panel body
+/// (inset 8, radius 4) is drawn in segments of `BORDER_SEGMENT` pixels along the edge, each
+/// in the gradient's colour at its centre: the window's rounded rectangle clipped to the
+/// segment, which the panel body then covers on the inside.
+fn draw_sinuous_border(fb: &mut Surface, lw: i32, lh: i32, frame: u32) {
     let rotation = frame as f32 / 360.0;
-
-    // Iterate only the border region. The margin must cover the full corner
-    // radius so the rounded corners are fully rendered (not just bw+2).
-    let margin = (outer_r as i32) + 1;
-    let strips: [(i32, i32, i32, i32); 4] = [
-        (lx, ly, lx + lw, ly + margin),                        // top (incl. corners)
-        (lx, ly + lh - margin, lx + lw, ly + lh),              // bottom (incl. corners)
-        (lx, ly + margin, lx + margin, ly + lh - margin),      // left side
-        (lx + lw - margin, ly + margin, lx + lw, ly + lh - margin), // right side
-    ];
-
-    for &(sx0, sy0, sx1, sy1) in &strips {
-        let y0 = sy0.max(0);
-        let y1 = sy1.min(buf_h as i32);
-        let x0 = sx0.max(0);
-        let x1 = sx1.min(buf_w as i32);
-        for py in y0..y1 {
-            for px in x0..x1 {
-                let fpx = px as f32 + 0.5;
-                let fpy = py as f32 + 0.5;
-
-                // Dual SDF: inside outer rect AND outside inner rect
-                let d_outer = sdf_rounded_rect(fpx, fpy, cx, cy, outer_hw, outer_hh, outer_r);
-                let d_inner = sdf_rounded_rect(fpx, fpy, cx, cy, inner_hw, inner_hh, inner_r);
-
-                // Anti-aliased alpha from both edges
-                let outer_a = (0.5 - d_outer).min(1.0).max(0.0);
-                let inner_a = (d_inner + 0.5).min(1.0).max(0.0);
-                let alpha = outer_a * inner_a;
-                if alpha <= 0.0 { continue; }
-
-                let pos = border_perimeter_pos(fpx, fpy, lx, ly, lw, lh);
-                let phase = fmod_pos(pos - rotation, 1.0);
-                let color = gradient_color(phase);
-
-                let idx = py as usize * buf_w + px as usize;
-                if alpha >= 0.99 {
-                    buf[idx] = color;
-                } else {
-                    let a = (alpha * 256.0) as u32;
-                    let dst = buf[idx];
-                    let inv = 256 - a;
-                    let rb = ((color & 0xFF) * a + (dst & 0xFF) * inv) / 256;
-                    let rg = (((color >> 8) & 0xFF) * a + ((dst >> 8) & 0xFF) * inv) / 256;
-                    let rr = (((color >> 16) & 0xFF) * a + ((dst >> 16) & 0xFF) * inv) / 256;
-                    buf[idx] = rb | (rg << 8) | (rr << 16) | 0xFF000000;
-                }
-            }
-        }
+    let depth = CORNER_RADIUS as i32;
+    let seg = BORDER_SEGMENT;
+    // (x, y, w, h) of each segment, clockwise from the top left.
+    let mut segments = Vec::new();
+    for x in (0..lw).step_by(seg as usize) {
+        segments.push((x, 0, seg.min(lw - x), depth));
     }
+    for y in (depth..lh - depth).step_by(seg as usize) {
+        segments.push((lw - depth, y, depth, seg.min(lh - depth - y)));
+    }
+    for x in (0..lw).step_by(seg as usize).rev() {
+        segments.push((x, lh - depth, seg.min(lw - x), depth));
+    }
+    for y in (depth..lh - depth).step_by(seg as usize).rev() {
+        segments.push((0, y, depth, seg.min(lh - depth - y)));
+    }
+    fb.batch(|fb| {
+        for (x, y, w, h) in segments {
+            let (cx, cy) = (x as f32 + w as f32 * 0.5, y as f32 + h as f32 * 0.5);
+            let pos = border_perimeter_pos(cx, cy, 0, 0, lw, lh);
+            let colour = color_of(gradient_color(fmod_pos(pos - rotation, 1.0)));
+            fb.push_clip(Clip::new(x, y, w, h));
+            shapes::rounded_rect(fb, 0, 0, lw, lh, CORNER_RADIUS as i32, colour);
+            fb.pop_clip();
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -431,14 +325,11 @@ fn compute_layout(win_w: usize, _win_h: usize, filtered_count: usize) -> PanelLa
 }
 
 // ---------------------------------------------------------------------------
-// Rendering — split into two phases to avoid mutable aliasing between the
-// raw u32 slice and the FrameBuf (both point to the same pixel memory).
-// Phase 1 (render_pixels) does all raw u32 writes.
-// Phase 2 (render_text) does all FrameBuf-based text rendering.
+// Rendering: the shapes, then the text, which the shapes do not overlap.
 // ---------------------------------------------------------------------------
 
-fn render_pixels(
-    raw: &mut [u32], w: usize, h: usize,
+fn render(
+    fb: &mut Surface, w: usize, h: usize,
     state: &LauncherState,
     ttf: &mut Option<CachedFont>,
     font_size: f32,
@@ -446,29 +337,21 @@ fn render_pixels(
     let (filtered, filtered_count) = get_filtered_apps(&state.query, state.query_len);
     let layout = compute_layout(w, h, filtered_count);
 
-    // Translucent background (corners outside rounded border show through)
-    render_background(raw, w, h, state.frame_count);
+    // Panel background color everywhere, so the animated border ring pops as a bright
+    // contrasting element at the window edge.
+    fb.clear(PANEL_BG);
 
-    // Panel body (inside the border, with matching inner corner radius)
+    // Animated border at the window edge, then the panel body (inside the border, with
+    // matching inner corner radius) over its inner side.
+    draw_sinuous_border(fb, w as i32, h as i32, state.frame_count);
     let bw = BORDER_WIDTH as i32;
-    let panel_bg = color_to_bgra(PANEL_BG);
-    draw_rounded_rect_u32(raw, w, h,
-        bw, bw, w as i32 - 2 * bw, h as i32 - 2 * bw, panel_bg, INNER_RADIUS as i32);
+    shapes::rounded_rect(fb, bw, bw, w as i32 - 2 * bw, h as i32 - 2 * bw, INNER_RADIUS as i32, PANEL_BG);
 
-    // Animated border at the exact window edge. Draw after the body so the
-    // moving highlight is not covered by the inner panel fill.
-    draw_sinuous_border(raw, w, h, 0, 0, w as i32, h as i32, state.frame_count);
-
-    // Search field border (1px)
-    let search_border = color_to_bgra(SEARCH_BORDER);
-    draw_rounded_rect_u32(raw, w, h,
-        layout.search_x - 1, layout.search_y - 1,
-        layout.search_w + 2, SEARCH_H + 2, search_border, 8);
-    // Search field background
-    let search_bg = color_to_bgra(SEARCH_BG);
-    draw_rounded_rect_u32(raw, w, h,
-        layout.search_x, layout.search_y,
-        layout.search_w, SEARCH_H, search_bg, 7);
+    // Search field border (1px) and background
+    shapes::rounded_rect(fb, layout.search_x - 1, layout.search_y - 1,
+        layout.search_w + 2, SEARCH_H + 2, 8, SEARCH_BORDER);
+    shapes::rounded_rect(fb, layout.search_x, layout.search_y,
+        layout.search_w, SEARCH_H, 7, SEARCH_BG);
 
     // Blinking cursor in search field — compute text height and query width
     let char_h = font_line_height(ttf.as_ref(), font_size);
@@ -477,11 +360,7 @@ fn render_pixels(
     let text_y = layout.search_y + (SEARCH_H - char_h) / 2;
     if (state.cursor_blink / 25) % 2 == 0 {
         let cursor_x = layout.search_x + 12 + query_w;
-        let cursor_bgra = color_to_bgra(CURSOR_COLOR);
-        for dy in 0..char_h {
-            plot_pixel_u32(raw, w, h, cursor_x, text_y + dy, cursor_bgra);
-            plot_pixel_u32(raw, w, h, cursor_x + 1, text_y + dy, cursor_bgra);
-        }
+        shapes::fill_rect(fb, cursor_x, text_y, 2, char_h, CURSOR_COLOR);
     }
 
     // App list: row highlights and badge dots
@@ -489,52 +368,24 @@ fn render_pixels(
         let app = &APPS[filtered[idx]];
         let row_y = layout.list_y + idx as i32 * ITEM_H;
 
-        // Selected highlight
         if idx == state.selected {
-            let sel_bg = color_to_bgra(SELECTED_BG_COLOR);
-            draw_rounded_rect_u32(raw, w, h,
-                layout.x + 8, row_y, layout.w - 16, ITEM_H - 2, sel_bg, 6);
+            shapes::rounded_rect(fb, layout.x + 8, row_y, layout.w - 16, ITEM_H - 2, 6, SELECTED_BG_COLOR);
         } else if state.hovered == Some(idx) {
-            // Hover highlight
-            let hov_bg = color_to_bgra(HOVER_BG);
-            draw_rounded_rect_u32(raw, w, h,
-                layout.x + 8, row_y, layout.w - 16, ITEM_H - 2, hov_bg, 6);
+            shapes::rounded_rect(fb, layout.x + 8, row_y, layout.w - 16, ITEM_H - 2, 6, HOVER_BG);
         }
 
         // App type badge dot
-        let badge_color = if app.is_gui {
-            color_to_bgra(GUI_BADGE)
-        } else {
-            color_to_bgra(CLI_BADGE)
-        };
-        draw_circle_u32(raw, w, h,
-            layout.x + 22, row_y + ITEM_H / 2, 4, badge_color);
+        let badge = if app.is_gui { GUI_BADGE } else { CLI_BADGE };
+        shapes::fill_circle(fb, layout.x + 22, row_y + ITEM_H / 2, 4, badge);
     }
-}
 
-fn render_text(
-    fb: &mut FrameBuf, w: usize, h: usize, state: &LauncherState,
-    ttf: &mut Option<CachedFont>, font_size: f32,
-) {
-    let (filtered, filtered_count) = get_filtered_apps(&state.query, state.query_len);
-    let layout = compute_layout(w, h, filtered_count);
-    let char_h = font_line_height(ttf.as_ref(), font_size);
-    let text_y = layout.search_y + (SEARCH_H - char_h) / 2;
+    let mut text = Text::default();
 
     // Search text or placeholder
     if state.query_len == 0 {
-        draw_text_ttf(
-            fb, ttf.as_mut(), "Search applications...",
-            layout.search_x + 12, text_y,
-            font_size, PLACEHOLDER_COLOR,
-        );
+        text.push("Search applications...", layout.search_x + 12, text_y, font_size, PLACEHOLDER_COLOR);
     } else {
-        let query_str = core::str::from_utf8(&state.query[..state.query_len]).unwrap_or("");
-        draw_text_ttf(
-            fb, ttf.as_mut(), query_str,
-            layout.search_x + 12, text_y,
-            font_size, TEXT_COLOR,
-        );
+        text.push(query_str, layout.search_x + 12, text_y, font_size, TEXT_COLOR);
     }
 
     // Smaller size for description text
@@ -544,61 +395,44 @@ fn render_text(
     for idx in 0..layout.visible_count {
         let app = &APPS[filtered[idx]];
         let row_y = layout.list_y + idx as i32 * ITEM_H;
-
-        // App name
-        draw_text_ttf(
-            fb, ttf.as_mut(), app.name,
-            layout.x + 36, row_y + 4,
-            font_size, TEXT_COLOR,
-        );
-
-        // Description (slightly smaller)
-        draw_text_ttf(
-            fb, ttf.as_mut(), app.description,
-            layout.x + 36, row_y + 20,
-            desc_size, DIM_COLOR,
-        );
+        text.push(app.name, layout.x + 36, row_y + 4, font_size, TEXT_COLOR);
+        text.push(app.description, layout.x + 36, row_y + 20, desc_size, DIM_COLOR);
     }
 
     // Footer hint
     let footer_y = layout.list_y + layout.visible_count as i32 * ITEM_H + 4;
-    draw_text_ttf(
-        fb, ttf.as_mut(), "Enter to launch | Esc to close",
-        layout.x + PADDING, footer_y,
-        desc_size, HINT_COLOR,
-    );
-}
-
-/// Fill window with translucent black — corners outside the rounded border
-/// will show through to the dimmed desktop beneath via GPU alpha compositing.
-fn render_background(buf: &mut [u32], w: usize, h: usize, _frame: u32) {
-    // Fill with panel background color so the animated border ring pops
-    // as a bright contrasting element at the window edge. (B8G8R8X8_UNORM
-    // ignores alpha, so translucent fills appear as solid black — no good.)
-    let bg = color_to_bgra(PANEL_BG); // #2a2d35
-    for px in buf[..w * h].iter_mut() {
-        *px = bg;
-    }
+    text.push("Enter to launch | Esc to close", layout.x + PADDING, footer_y, desc_size, HINT_COLOR);
+    text.finish(fb, ttf.as_mut());
 }
 
 // ---------------------------------------------------------------------------
 // TTF text helpers (bitmap fallback)
 // ---------------------------------------------------------------------------
 
-/// Draw text using TTF font if available, falling back to bitmap.
-fn draw_text_ttf(
-    fb: &mut FrameBuf,
-    ttf: Option<&mut CachedFont>,
-    text: &str,
-    x: i32,
-    y: i32,
-    size: f32,
-    color: Color,
-) {
-    if let Some(f) = ttf {
-        ttf_font::draw_text(fb, f, text, x, y, size, color);
-    } else {
-        bitmap_font::draw_text(fb, text.as_bytes(), x as usize, y as usize, color);
+/// A frame's text: each string as `ttf_font::draw_text` draws it (or the bitmap font without
+/// TrueType), with the strings' glyphs sharing draws.
+#[derive(Default)]
+struct Text<'a> {
+    strings: Vec<(&'a str, i32, i32, f32, Color)>,
+}
+
+impl<'a> Text<'a> {
+    fn push(&mut self, text: &'a str, x: i32, y: i32, size: f32, color: Color) {
+        self.strings.push((text, x, y, size, color));
+    }
+
+    fn finish(self, fb: &mut Surface, ttf: Option<&mut CachedFont>) {
+        if let Some(f) = ttf {
+            let clip = Clip::new(0, 0, fb.width() as i32, fb.height() as i32);
+            let runs: Vec<ttf_font::TextRun<'_>> = self.strings.iter().map(|(text, x, y, size, fg)| ttf_font::TextRun {
+                bytes: text.as_bytes(), x: *x, y: *y, size: *size, fg: *fg, clip,
+            }).collect();
+            ttf_font::draw_runs(fb, f, &runs);
+        } else {
+            for (text, x, y, _, fg) in self.strings {
+                bitmap_font::draw_text(fb, text.as_bytes(), x as usize, y as usize, fg);
+            }
+        }
     }
 }
 
@@ -716,17 +550,7 @@ fn main() {
 
     let mut state = LauncherState::new();
     let start_ms = clock_ms();
-    let mut frame_pixels = vec![0u32; w * h];
-    let mut frame_fb = unsafe {
-        FrameBuf::from_raw(
-            frame_pixels.as_mut_ptr() as *mut u8,
-            w,
-            h,
-            w * 4,
-            4,
-            true,
-        ).expect("the framebuffer is a valid surface")
-    };
+    let mut first_frame = true;
 
     loop {
         // Poll events
@@ -850,20 +674,22 @@ fn main() {
         state.frame_count = (elapsed_ms.saturating_mul(60) / 1000) as u32;
         state.cursor_blink = (elapsed_ms / 16) as u32;
 
-        // Render into private memory, then publish one complete frame.
-        {
-            let ptr = frame_fb.raw_ptr() as *mut u32;
-            let raw = unsafe { core::slice::from_raw_parts_mut(ptr, w * h) };
-            render_pixels(raw, w, h, &state, &mut ttf_font, font_size);
+        // Draw the whole frame into the acquired buffer, then publish it.
+        match win.surface() {
+            Ok(fb) => render(fb, w, h, &state, &mut ttf_font, font_size),
+            Err(e) => {
+                println!("[blauncher] ERROR: no window surface: {}", e);
+                process::exit(1);
+            }
         }
-        render_text(&mut frame_fb, w, h, &state, &mut ttf_font, font_size);
-        {
-            let fb = win.framebuf();
-            let ptr = fb.raw_ptr() as *mut u32;
-            let dst = unsafe { core::slice::from_raw_parts_mut(ptr, w * h) };
-            dst.copy_from_slice(&frame_pixels);
+        let presented = win.present();
+        if first_frame {
+            first_frame = false;
+            match presented {
+                Ok(()) => println!("[blauncher] first frame presented: {}x{}", w, h),
+                Err(e) => println!("[blauncher] first frame present failed: {}", e),
+            }
         }
-        let _ = win.present();
 
         // ~60 FPS
         let _ = time::sleep_ms(16);
