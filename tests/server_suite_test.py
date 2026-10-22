@@ -185,6 +185,22 @@ class HostServerScore(unittest.TestCase):
             console.run("sh -c 'exit 3'", done=r'(?m)^logs-check-ok$')
         self.assertEqual(len(typed), 1)
 
+    def test_console_recognizes_prompt_followed_by_async_service_output(self):
+        # A prompt has no newline; init can write directly after it on SOL.
+        console = object.__new__(host['Console'])
+        console.step = 0
+        console.login = lambda: None
+        console.size = lambda: 0
+        console.type_line = lambda text: None
+        capture = 'child output\nsvc-suite-step-1 0\nbsh root> [init] logs-rotate exited (code 0)\n'
+        console.since = lambda offset: capture[offset:]
+        clock = [0.0]
+        def sleep(seconds):
+            clock[0] += seconds
+        with patch.object(host['time'], 'monotonic', side_effect=lambda: clock[0]), \
+             patch.object(host['time'], 'sleep', side_effect=sleep):
+            self.assertEqual(console.run('svc reload', timeout=1), 'child output\n')
+
     def test_kernel_gap_requires_this_boot_nonce_and_exact_cursor_across_rotation(self):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)

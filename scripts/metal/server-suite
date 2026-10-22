@@ -565,8 +565,9 @@ class Console:
                                 'the exit status of ' + command, timeout)
         # The child restored canonical mode. Wait until bsh has re-entered
         # raw mode and printed its new prompt before another call can type.
+        # init may append output to that newline-free prompt on the shared UART.
         self.wait(offset + len(text[:found.end()].encode()),
-                  r'(?m)^' + self.PROMPT + r' *$', 'the shell prompt after the command', timeout)
+                  r'(?m)^' + self.PROMPT + r' ', 'the shell prompt after the command', timeout)
         if int(found[1]) != 0:
             raise ValueError('console command exited ' + found[1] + ': ' + command)
         text = text[:found.start()]
