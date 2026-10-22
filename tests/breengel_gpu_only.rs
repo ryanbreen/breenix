@@ -94,7 +94,7 @@ fn planted_raw_pixel_library_and_renamed_upload_are_refused(){
 fn stage_upload_reach(source: &str) -> Vec<String> {
     use quote::ToTokens;
     #[derive(Default)]
-    struct Calls { function: Vec<String>, failing: usize, violations: Vec<String> }
+    struct Calls { function: Vec<String>, failing: usize, resetting: usize, violations: Vec<String> }
     impl Calls {
         fn called(&mut self, name: &str) {
             let caller = self.function.last().map_or("", String::as_str);
@@ -102,6 +102,7 @@ fn stage_upload_reach(source: &str) -> Vec<String> {
                 "upload_fixture" => matches!(caller, "artifacts" | "restore_pictures"),
                 "restore_pictures" => caller == "gpu_here",
                 "artifacts" => caller == "record" && self.failing > 0,
+                "ResetRecovery" => caller == "confirmed" && self.resetting > 0,
                 _ => true,
             };
             if !allowed { self.violations.push(format!("{caller} calls {name}")); }
@@ -117,8 +118,11 @@ fn stage_upload_reach(source: &str) -> Vec<String> {
         fn visit_expr_if(&mut self, e: &'ast syn::ExprIf) {
             self.visit_expr(&e.cond);
             let failing = e.cond.to_token_stream().to_string().contains("Outcome :: Fail");
+            let resetting = e.cond.to_token_stream().to_string() == "status == 0 && counters . state == gpu :: abi :: context_state :: RESET";
             self.failing += failing as usize;
+            self.resetting += resetting as usize;
             self.visit_block(&e.then_branch);
+            self.resetting -= resetting as usize;
             self.failing -= failing as usize;
             if let Some((_, other)) = &e.else_branch { self.visit_expr(other); }
         }
@@ -137,7 +141,7 @@ fn stage_upload_reach(source: &str) -> Vec<String> {
         fn visit_expr_path(&mut self, e: &'ast syn::ExprPath) {
             // A method named as a value (`Gpu::artifacts`) could be called anywhere.
             if let Some(last) = e.path.segments.last().filter(|_| e.path.segments.len() > 1) {
-                if matches!(last.ident.to_string().as_str(), "upload_fixture" | "artifacts" | "restore_pictures") { self.violations.push(format!("{} is used as a value", last.ident)); }
+                if matches!(last.ident.to_string().as_str(), "upload_fixture" | "artifacts" | "restore_pictures" | "ResetRecovery") { self.violations.push(format!("{} is used as a value", last.ident)); }
             }
             visit::visit_expr_path(self, e);
         }
@@ -160,6 +164,13 @@ fn stage_uploads_only_failure_artifacts() {
     assert!(stage_upload_reach("impl Gpu { fn artifacts(&mut self) { self.upload_fixture(1, 1, &p); } }
         fn record() { if let Some(f) = last.filter(|f| matches!(outcome, Outcome::Fail { .. })) { g.artifacts(f); } }").is_empty());
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let stage = fs::read_to_string(root.join("libs/libbreenix/src/suite_stage.rs")).unwrap();
+    // Removing RESET authorization must fail the same guard that judges production.
+    let unguarded = stage.replace("status == 0 && counters.state == gpu::abi::context_state::RESET", "true");
+    assert_ne!(stage, unguarded, "RESET authorization predicate missing");
+    assert!(!stage_upload_reach(&unguarded).is_empty(), "recovery without RESET escaped");
+    assert!(!stage_upload_reach("fn confirmed() { ResetRecovery(()) }").is_empty());
+    assert!(stage_upload_reach("fn confirmed() { if status == 0 && counters.state == gpu::abi::context_state::RESET { Some(ResetRecovery(())) } else { None } }").is_empty());
     let mut paths = vec![root.join("libs/libbreenix/src/suite_stage.rs")];
     files(&root.join("libs/libbreenix/src/suite_stage"), &mut paths);
     for path in paths {

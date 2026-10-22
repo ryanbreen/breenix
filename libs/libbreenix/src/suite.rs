@@ -894,8 +894,23 @@ impl Suite {
         // full-suite evidence, and a suite run from a shell does not reap others.
         let recording = only.is_none() && process::getpid().is_ok_and(|pid| pid.raw() == 1);
         screen.prepare();
+        // Match the retired ownership boundary at the end. The warm-up leaves
+        // only the bound scanout; no stage owner freed later can subsidize a leak.
+        let baseline_ready = if recording && self.gui {
+            match crate::suite_stage::retire() {
+                Ok(()) => true,
+                Err(error) => {
+                    emit(&std::format!("SUITE {} ERROR memory baseline retirement: {}", self.id, error));
+                    false
+                }
+            }
+        } else { true };
         if recording && self.gui { crate::suite_stage::memory_owners("before"); }
-        let before = if recording { memory_sample(self.id, "before") } else { None };
+        let before = if recording && baseline_ready { memory_sample(self.id, "before") } else { None };
+        if recording && self.gui {
+            crate::suite_stage::init(self);
+            screen.prepare();
+        }
         let mut done = 0;
         for (c, category) in self.categories.iter().enumerate() {
             if only.is_none() && category.idle_before_ms > 0 {
@@ -957,14 +972,13 @@ impl Suite {
         let reclaimed = !recording || {
             // Each case's processes were swept after it; any left since go now.
             let _ = sweep();
-            if self.gui {
+            let retired = if self.gui {
                 crate::suite_stage::memory_owners("finale");
-                if let Err(error) = crate::suite_stage::retire() {
-                    emit(&std::format!("SUITE {} ERROR memory stage retirement: {}", self.id, error));
-                }
+                let result = crate::suite_stage::retire();
                 crate::suite_stage::memory_owners("retired");
-            }
-            let display = if self.id == "gpu" { gpu_screen::await_console() } else { Ok(()) };
+                result
+            } else { Ok(()) };
+            let display = retired.and_then(|()| if self.id == "gpu" { gpu_screen::await_console() } else { Ok(()) });
             let after = match display {
                 Ok(()) => memory_sample(self.id, "after"),
                 Err(error) => {

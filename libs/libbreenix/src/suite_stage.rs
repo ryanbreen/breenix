@@ -327,7 +327,7 @@ struct Kept {
     frames: Vec<(Arc<JudgedFrame>, bool)>,
 }
 /// Pictures whose objects were let go and are not drawn again yet.
-static KEPT: Mutex<Option<Kept>> = Mutex::new(None);
+static KEPT: Mutex<Option<(Kept, recovery::ResetRecovery)>> = Mutex::new(None);
 
 /// What the stage contexts let go during the run uploaded, for the finale's accounting:
 /// Image bytes, Fixture bytes, failure artifacts, B40 recovery and reset counts, and
@@ -539,7 +539,7 @@ impl Gpu {
     /// B40: only a confirmed device reset permits reconstruction from CPU pixels.
     /// Uploads remain Fixture at the wire boundary, but are accounted as recovery,
     /// separately from a passing picture source and from failure artifacts.
-    fn restore_pictures(&mut self, kept: &Kept, _reset: ResetRecovery) -> Result<(), String> {
+    fn restore_pictures(&mut self, kept: &Kept, _reset: &recovery::ResetRecovery) -> Result<(), String> {
         use gpu::abi::{pipeline, stream::encode};
         let mut stream = Vec::new();
         for (tile, c) in kept.cells.iter().enumerate() {
@@ -1070,12 +1070,26 @@ fn stage_mode() -> Result<gpu::abi::Mode, String> {
     Ok(m)
 }
 
-struct ResetRecovery;
+mod recovery {
+    use crate::gpu;
+
+    // Only this module can construct the authorization held with retained pictures.
+    pub(super) struct ResetRecovery(());
+
+    pub(super) fn confirmed(context: u64) -> Option<ResetRecovery> {
+        let (status, counters) = gpu::counters(context);
+        if status == 0 && counters.state == gpu::abi::context_state::RESET {
+            Some(ResetRecovery(()))
+        } else {
+            None
+        }
+    }
+}
 
 /// The stage's GPU objects for this process. After a mode change or a failed frame the
 /// scanout targets are made again. A confirmed reset authorizes B40 recovery of
-/// pictures into replacement GPU objects; other context loss is reported without
-/// reconstructing CPU pixels. A forked case cannot use the runner's handles.
+/// pictures into replacement GPU objects; other context loss replaces the submission
+/// context while retaining GPU picture resources. A forked case cannot use the runner's handles.
 fn gpu_here(guard: &mut Option<Gpu>, runner: u64) -> Result<&mut Gpu, String> {
     let pid = process::getpid().map_err(|e| e.to_string())?.raw() as u64;
     if pid != runner {
@@ -1086,30 +1100,40 @@ fn gpu_here(guard: &mut Option<Gpu>, runner: u64) -> Result<&mut Gpu, String> {
         let live = r == 0 && matches!(c.state, gpu::abi::context_state::LIVE | gpu::abi::context_state::WARMING);
         let moved = mode().is_ok_and(|m| (m.width, m.height) != (g.width, g.height));
         if !live || ((g.stale || moved) && g.redisplay().is_err()) {
-            let reset = r == 0 && c.state == gpu::abi::context_state::RESET;
-            if !reset {
-                return Err(String::from("stage objects lost without a confirmed device reset; CPU picture recovery refused"));
-            }
-            *KEPT.lock().unwrap() = Some(g.keep_pictures());
+            let reset = recovery::confirmed(g.context);
+            let replacement = if reset.is_none() {
+                Some(gpu::context_create().map_err(|e| std::format!("stage replacement context: errno {}", -e))?)
+            } else { None };
             let mut t = RETIRED.lock().unwrap();
             t.artifacts += g.artifact_bytes;
             t.recovery += g.recovery_bytes;
-            t.resets += 1;
-            super::suite::emit("BREENGEL RECOVERY device-reset=1");
             if r == 0 {
                 (t.image, t.fixture) = (t.image + c.uploads_image, t.fixture + c.uploads_fixture);
             } else {
                 t.unread += 1;
             }
-            g.destroy();
-            *guard = None;
+            if let Some(reset) = reset {
+                *KEPT.lock().unwrap() = Some((g.keep_pictures(), reset));
+                t.resets += 1;
+                g.destroy();
+                *guard = None;
+            } else {
+                // Resource handles belong to the process, not its submission
+                // context. Keep the GPU pictures and replace only the dead context.
+                let context = replacement.ok_or("stage replacement context missing")?;
+                let _ = gpu::context_destroy(core::mem::replace(&mut g.context, context));
+                g.artifact_bytes = 0;
+                g.recovery_bytes = 0;
+                g.stale = true;
+                g.redisplay()?;
+            }
         }
     }
     if guard.as_ref().is_none_or(|g| g.pid != pid) {
         let mut g = Gpu::new(pid)?;
         let mut kept = KEPT.lock().unwrap();
-        if let Some(k) = kept.as_ref() {
-            if let Err(e) = g.restore_pictures(k, ResetRecovery) {
+        if let Some((k, reset)) = kept.as_ref() {
+            if let Err(e) = g.restore_pictures(k, reset) {
                 g.destroy();
                 return Err(e);
             }
@@ -1764,6 +1788,7 @@ pub(super) fn finale() -> Result<(), String> {
         if t.unread != 0 {
             return Err(std::format!("the counters of {} stage contexts let go could not be read", t.unread));
         }
+        check(g.recovery_bytes + t.recovery == 0 || t.resets > 0, "stage recovery uploads have no confirmed device reset").map_err(|e| std::format!("{e:?}"))?;
         super::suite::emit(&std::format!("BREENGEL UPLOADS recovery_bytes={} device_resets={} failure_artifact_bytes={}", g.recovery_bytes + t.recovery, t.resets, g.artifact_bytes + t.artifacts));
         for (context, what, earlier, allowed) in [(g.context, "stage", t, g.artifact_bytes + t.artifacts + g.recovery_bytes + t.recovery), (painted, "stage painter", Retired { image: 0, fixture: 0, artifacts: 0, recovery: 0, resets: 0, unread: 0 }, declared)] {
             let (r, c) = gpu::counters(context);
@@ -1805,7 +1830,6 @@ pub(super) fn retire() -> Result<(), String> {
     painter(|p| p.settle())?;
     if let Some(g) = GPU.lock().unwrap().take() { g.destroy(); }
     painter(|p| p.retire())?;
-    *PAINTER.lock().unwrap() = None;
     *SHOW.lock().unwrap() = None;
     *KEPT.lock().unwrap() = None;
     *FONT.lock().unwrap() = StageFont::new();
@@ -1829,7 +1853,9 @@ pub(super) fn retire() -> Result<(), String> {
 /// Ownership at the memory-record boundary, including the runner's CPU pictures.
 pub(super) fn memory_owners(when: &str) {
     let (r, c) = gpu::counters(0);
-    let threads = std::fs::read_dir("/proc/1/task").map(|d| d.count()).map_err(|e| e.to_string());
+    let threads = process::getpid().map_err(|e| e.to_string())
+        .and_then(|pid| std::fs::read_dir(std::format!("/proc/{}/task", pid.raw())).map(|d| d.count()).map_err(|e| e.to_string()))
+        .map_or_else(|e| std::format!("unavailable:{e}"), |n| n.to_string());
     let show = SHOW.lock().unwrap();
     let picture_bytes = show.as_ref().map_or(0, |s| {
         let frames = [s.last.as_ref(), s.first_failure.as_ref().and_then(|v| v.1.as_ref())];
@@ -1838,7 +1864,7 @@ pub(super) fn memory_owners(when: &str) {
     });
     let guard = GPU.lock().unwrap();
     let (seen, panes, cells) = guard.as_ref().map_or((0, 0, 0), |g| (g.seen.len(), g.panes.len(), g.cells.iter().flatten().count()));
-    super::suite::emit(&std::format!("BREENGEL OWNERS {when} gpu_status={r} contexts={} device_contexts={} resources={} resource_bytes={} copy_bytes={} picture_bytes={picture_bytes} readback_bytes={seen} panes={panes} thumbnails={cells} runner_threads={threads:?}", c.contexts, c.device_contexts, c.resources, c.resource_bytes, c.copy_bytes));
+    super::suite::emit(&std::format!("BREENGEL OWNERS {when} gpu_status={r} contexts={} device_contexts={} resources={} resource_bytes={} copy_bytes={} picture_bytes={picture_bytes} readback_bytes={seen} panes={panes} thumbnails={cells} runner_threads={threads}", c.contexts, c.device_contexts, c.resources, c.resource_bytes, c.copy_bytes));
 }
 
 #[cfg(test)]
