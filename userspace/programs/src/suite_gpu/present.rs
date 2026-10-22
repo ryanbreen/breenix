@@ -272,10 +272,10 @@ fn nested() -> CaseResult {
 pub fn ownership_stack() -> CaseResult {
     let _case = begin()?;
     nested()?;
-    // Framebuffer owners also stack, with independent pixels behind each binding.
+    // Whole-screen owners also stack, with independent pixels behind each binding, and an
+    // owner that exits without giving back is popped as one that gives back is.
     for exits in [false, true] {
-        // A process has one fb_mmap pane for its lifetime. Give each scenario
-        // its own outer owner, releasing that mapping when the process exits.
+        // Give each scenario its own outer owner, releasing its targets when the process exits.
         let owner = spawn(move |_| {
             (|| -> CaseResult {
                 take()?;
@@ -309,13 +309,17 @@ pub fn ownership_stack() -> CaseResult {
     }
     Ok(())
 }
+/// Show the whole screen in `colour`: a scanout target of the current mode, cleared and
+/// presented. The process keeps it until it exits.
 fn pane_frame(colour: u32) -> CaseResult {
-    let info = graphics::fbinfo().map_err(|e| fail_msg(format!("fbinfo: {e:?}")))?;
-    let (pane, width) = graphics::fb_mmap_pane().map_err(|e| fail_msg(format!("fb_mmap: {e:?}")))?;
-    ensure(width == info.width && info.bytes_per_pixel == 4, || "framebuffer pane geometry".to_string())?;
-    let pixels = unsafe { core::slice::from_raw_parts_mut(pane.cast::<u32>(), (width * info.height) as usize) };
-    pixels.fill(colour);
-    graphics::fb_flush().map_err(|e| fail_msg(format!("fb_flush: {e:?}")))
+    let m = modes()?;
+    let mode = u32_at(&m, 12) as usize;
+    let (w, h) = (u32_at(&m, 32 + mode * 16), u32_at(&m, 36 + mode * 16));
+    let c = context()?;
+    let t = scanout_target(format::B8G8R8A8, w, h)?;
+    frame(c, &scene(t, colour, &[]))?;
+    present(c, t)?;
+    Ok(())
 }
 fn pane_pixel(colour: u32) -> R<u64> {
     let mut px = [0; 4];
