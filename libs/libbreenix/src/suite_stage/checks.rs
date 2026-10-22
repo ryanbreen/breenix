@@ -86,6 +86,7 @@ pub fn showcase_check(name: &str) -> CaseResult {
         // A frame that differs from its reference is a failing case's (ruling B36: only then
         // are its expected and difference panes shown, as failure artifacts).
         probe.entries[probe.selected].stamp=Stamp::Fail;
+        probe.entries[probe.selected].published=true;
         probe.entries[probe.selected].line=std::format!(" sha256={}",f.sha256.iter().map(|b|std::format!("{b:02x}")).collect::<String>());
         let probe_hash=f.sha256;
         probe.last=Some(Arc::new(f));probe.draw(0).map_err(crate::suite::CaseError::Fail)?;
@@ -122,8 +123,8 @@ pub fn showcase_check(name: &str) -> CaseResult {
             .map_err(crate::suite::CaseError::Fail)?;
         let (pixels, rec) = snapshot().map_err(crate::suite::CaseError::Fail)?;
         let d = Dims::of(&rec);
-        // The runner's frame shows a tile's thumbnail where it holds the GPU sample of its
-        // judged frame, and an empty inset elsewhere (B36, #2274).
+        // Publication recorded at the case boundary determines which pictures are required.
+        // Missing GPU holdings must not turn a published picture into an empty expectation.
         let held = remote::drawn().map_err(crate::suite::CaseError::Fail)?;
         let mut mismatch = false;
         match name {
@@ -131,8 +132,10 @@ pub fn showcase_check(name: &str) -> CaseResult {
                 let mut n = 0;
                 for (i, e) in s.entries.iter().enumerate() {
                     if let Some(p) = &e.picture {
-                        let shown = held.cell(i) == Some(p.source_hash);
-                        n += shown as usize;
+                        let shown = e.published;
+                        check(!shown || held.cell(i) == Some(p.source_hash),
+                            "the runner lost a published tile's GPU source")?;
+                        n += 1;
                         let hash: String = p
                             .source_hash
                             .iter()
@@ -153,7 +156,7 @@ pub fn showcase_check(name: &str) -> CaseResult {
                         mismatch |= expected.compare(d,&pixels).is_err();
                     }
                 }
-                check(n > 0, "no earlier judged picture the stage holds to check")?;
+                check(n > 0, "no earlier judged picture to check")?;
                 // Independently compute every displayed source pixel, heat-map channel,
                 // first-mismatch cross and caption; a correct tile cannot conceal a false spotlight.
                 let spotlight_mismatch = check_spotlight(&s,&pixels,d,&held).is_err();
@@ -202,7 +205,9 @@ pub fn showcase_check(name: &str) -> CaseResult {
                     let mut expected = Region::new(d, left, top, 38*scale, 24*scale, Color::rgb(12, 19, 31))?;
                     expected.border(38*scale, 24*scale, colour);
                     expected.fill(2*scale, 2*scale, 16*scale, 12*scale, Color::rgb(18, 29, 44));
-                    if let Some(p) = e.picture.as_ref().filter(|p| held.cell(i) == Some(p.source_hash)) {
+                    if let Some(p) = e.picture.as_ref().filter(|_| e.published) {
+                        check(held.cell(i) == Some(p.source_hash),
+                            "the runner lost a published tile's GPU source")?;
                         thumbnail(&mut expected, p, 2*scale, 2*scale, scale);
                     }
                     expected.text(&mut font, std::format!("{}", i + 1).as_bytes(), 20*scale, 2*scale, 18*scale, scale, Color::WHITE);
@@ -392,12 +397,14 @@ fn fb_bytes(fb:&FrameBuf)->Vec<u8> {
     for y in 0..fb.height {for x in 0..fb.width {let p=fb.get_pixel(x,y);bytes.extend_from_slice(&[p.b,p.g,p.r,255]);}}
     bytes
 }
-/// Literal spotlight formulas from section 23, applied to the verified retained frame, which
-/// the spotlight shows when `held` has its panes (B36, #2274).
+/// Literal spotlight formulas from section 23, required for a published GPU source.
+/// CPU-only cases have no GPU panes (B36, #2274).
 fn check_spotlight(s:&Show,bytes:&[u8],d:Dims,held:&dyn Holds)->Result<(),String> {
     let chosen=s.first_failure.as_ref().filter(|_|s.finale.is_some()).map_or(s.selected,|v|v.0);
     let frame=if s.finale.is_some() && s.first_failure.is_some(){s.first_failure.as_ref().and_then(|v|v.1.as_deref())}else{s.last.as_deref()};
-    let Some((frame,panes)) = frame.and_then(|f|held.panes(&f.sha256).map(|p|(f,p))) else { return check_nonpicture(s, chosen, bytes, d); };
+    let Some(frame) = frame else { return check_nonpicture(s, chosen, bytes, d); };
+    if !s.entries[chosen].published { return check_nonpicture(s, chosen, bytes, d); }
+    let panes = held.panes(&frame.sha256).ok_or("the runner lost the published spotlight's GPU source")?;
     verify_source(&s.entries[chosen].line,frame)?;
     let colour=|p:&[u8]|Color::rgb(p[2],p[1],p[0]);
     // Ruling B36: expected and difference panes for a frame that matches its reference, or
@@ -594,6 +601,7 @@ fn exercise_details(s: &Show) -> CaseResult {
     let pixels=std::vec![10,20,30,255];let hash=libpixcheck::sha256(&pixels);
     probe.entries[selected].line=std::format!("sha256={}",hash.iter().map(|b|std::format!("{b:02x}")).collect::<String>());
     probe.last=Some(Arc::new(JudgedFrame{width:1,height:1,pixels,sha256:hash,expected:Some(std::vec![10,20,30,255]),bound:0}));
+    probe.entries[selected].published=true;
     probe.entries[selected].timing=Some(FrameTiming{frame_us:std::vec![1000],budget_us:1000});
     probe.draw(0).map_err(crate::suite::CaseError::Fail)?;
     let (mut bytes,seen)=snapshot().map_err(crate::suite::CaseError::Fail)?;

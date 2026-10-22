@@ -130,6 +130,8 @@ struct Entry {
     key: u64,
     line: String,
     picture: Option<Picture>,
+    /// The case published a GPU source; independent of the runner's current holdings.
+    published: bool,
     timing: Option<FrameTiming>,
     input: Option<super::suite::InputTrace>,
     reading: Option<super::suite::Value>,
@@ -1243,7 +1245,6 @@ impl Show {
         Ok(())
     }
 }
-/// No composite by the runner completed inside any of these measured windows.
 /// No composite by the runner completed inside any of these measured windows but those the
 /// case asked for.
 fn quiet(windows: &[(u64, u64, u64)]) -> bool {
@@ -1261,6 +1262,7 @@ pub(super) fn init(suite: &Suite) -> u64 {
                 key: 0,
                 line: String::new(),
                 picture: None,
+                published: false,
                 timing: None,
                 input: None,
                 reading: None,
@@ -1395,7 +1397,12 @@ pub(super) enum Published {
 /// Sample the frame the running case published into its tile's and the spotlight's
 /// pictures, after the case's measured window and while its process still holds the frame.
 pub(super) fn sample(published: Published) -> Result<(), String> {
-    let (tile, runner) = SHOW.lock().unwrap().as_ref().map(|s| (s.current, s.runner)).ok_or("stage is not initialized")?;
+    let (tile, runner) = {
+        let mut guard = SHOW.lock().unwrap();
+        let s = guard.as_mut().ok_or("stage is not initialized")?;
+        s.entries[s.current].published = true;
+        (s.current, s.runner)
+    };
     // As the stage's draw does: no test point a case left armed alters the sampling.
     let _ = gpu::tc_disarm_all();
     let mut guard = GPU.lock().unwrap();
