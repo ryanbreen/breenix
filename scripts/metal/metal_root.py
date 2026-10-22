@@ -95,19 +95,40 @@ def console_identity(site):
     return hmac.new(bytes.fromhex(key), (user + '\0' + password).encode(), hashlib.sha256).hexdigest()
 
 
-# The site fields naming the operator's account and SSH public key, staged by install-persistent only
-# (docs/metal/README.md, "Install and upgrade"): a public key line; a private key is refused.
+# The site fields naming the operator's account, uid, password hash and SSH public key, staged by install-persistent
+# only (docs/metal/README.md, "SSH and the machine state store"): a public key line (a private key is refused) and a
+# SHA-512-crypt hash (a password is refused).
 OPERATOR_USER_FIELD = 'OPERATOR_USER'
+OPERATOR_UID_FIELD = 'OPERATOR_UID'
+OPERATOR_HASH_FIELD = 'OPERATOR_PASSWORD_HASH'
 OPERATOR_KEY_FIELD = 'OPERATOR_SSH_PUBLIC_KEY'
 OPERATOR_ACCOUNT = '/etc/breenix/operator-account'
-# The same two lines on a users suite boot's test root, for the ssh category's cases that the boot host's OpenSSH
-# answers (scripts/metal/users-hostssh). persistent-install leaves /etc/breenix/test-ssh behind.
+# The account name and key on a users suite boot's test root, for the ssh category's cases that the boot host's
+# OpenSSH answers (scripts/metal/users-hostssh). persistent-install leaves /etc/breenix/test-ssh behind.
 OPERATOR_FIXTURE = '/etc/breenix/test-ssh/operator-account'
+# An ordinary account's uid (docs/users/design.md, section 3: system IDs are 0-999).
+OPERATOR_UIDS = range(1000, 60001)
+# SHA-512-crypt: `$6$`, an optional `rounds=N$`, a salt of up to 16 characters, then 86 characters of hash.
+SHA512_CRYPT = re.compile(r'\$6\$(?:rounds=[0-9]+\$)?[./0-9A-Za-z]{1,16}\$[./0-9A-Za-z]{86}')
 
 
 def operator_account(site):
-    """The installer's operator file: `user <name>` and `key <line>`, from the site's account name and one checked
-    ssh-ed25519 or ssh-rsa public key line."""
+    """The installer's operator file: `user <name>`, `uid <number>`, `password <hash>` and `key <line>`, from the
+    site's account name, uid, SHA-512-crypt password hash and one checked ssh-ed25519 or ssh-rsa public key line."""
+    fixture = operator_fixture(site)
+    uid = site.get(OPERATOR_UID_FIELD, '').strip()
+    if not re.fullmatch(r'[1-9][0-9]*', uid) or int(uid) not in OPERATOR_UIDS:
+        raise ValueError(f'install-persistent needs {OPERATOR_UID_FIELD}: a uid from 1000 to 60000')
+    hashed = site.get(OPERATOR_HASH_FIELD, '').strip()
+    if not SHA512_CRYPT.fullmatch(hashed):
+        raise ValueError(f'install-persistent needs {OPERATOR_HASH_FIELD}: a SHA-512-crypt hash, not a password')
+    user, key = fixture.splitlines()
+    return f'{user}\nuid {uid}\npassword {hashed}\n{key}\n'
+
+
+def operator_fixture(site):
+    """`user <name>` and `key <line>`: the operator's account name and one checked ssh-ed25519 or ssh-rsa public key
+    line, for a users suite boot's ssh cases."""
     user = site.get(OPERATOR_USER_FIELD, '').strip()
     if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', user) or user == 'root':
         raise ValueError(f'install-persistent needs {OPERATOR_USER_FIELD}: a lowercase account name other than root')
@@ -241,7 +262,7 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         commands.append('rm ' + OPERATOR_FIXTURE)
         fixture = None
         if mode == 'suite' and 'users' in suite.split(',') and site.get(OPERATOR_USER_FIELD) and site.get(OPERATOR_KEY_FIELD):
-            fixture = operator_account(site)
+            fixture = operator_fixture(site)
             source = scratch / 'operator-fixture'
             source.touch(mode=0o600)
             source.write_text(fixture)

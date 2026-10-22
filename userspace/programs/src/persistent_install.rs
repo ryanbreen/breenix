@@ -24,11 +24,18 @@ const GENERATIONS: &str = ".breenix-generations";
 const READY: &str = ".complete";
 /// The machine state store each generation binds (kernel/src/fs/ext2/generation.rs).
 const STORE: &str = ".breenix-shared";
-/// The operator account the boot host stages on the test root for this program:
-/// a `user <name>` line and a `key <public key line>` line.
+/// The operator account the boot host stages on the test root for this program,
+/// from the site (docs/users/design.md, section 5): a `user <name>` line, a
+/// `uid <number>` line, a `password <sha512-crypt hash>` line and a
+/// `key <public key line>` line.
 const OPERATOR: &str = "etc/breenix/operator-account";
-/// The operator account's uid and gid: the first ordinary account's.
-const OPERATOR_ID: u32 = 1000;
+/// The range of an ordinary account's uid: system IDs are 0-999.
+const ACCOUNT_UIDS: std::ops::RangeInclusive<u32> = 1000..=60000;
+/// The administrators' group, which reaches root through sudo and su.
+const WHEEL: &str = "wheel";
+const WHEEL_GID: u32 = 10;
+/// The password field of an account whose password an install locked and no one has set since.
+const LOCKED: &str = "!";
 /// The account records a test image's fixtures added (scripts/install-layout.sh):
 /// `passwd|group|shadow <record>` for each record, verbatim, and
 /// `member <group> <account>` for each fixture membership of a system group.
@@ -214,6 +221,9 @@ fn require_directory(path: &Path) -> Result<(), String> {
 /// The operator account staged on the test root.
 struct Operator {
     name: String,
+    uid: u32,
+    /// The site's password hash; it replaces only a password an install locked.
+    hash: String,
     key: String,
 }
 
@@ -234,25 +244,49 @@ fn valid_public_key(line: &str) -> bool {
         && line.bytes().all(|b| (0x20..0x7f).contains(&b))
 }
 
+/// A SHA-512-crypt hash (the SHA-crypt specification): `$6$`, an optional
+/// `rounds=N$`, a salt of 1 to 16 characters and 86 characters of hash, each
+/// from `./0-9A-Za-z`.
+fn valid_hash(hash: &str) -> bool {
+    let crypt = |text: &str| text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'/');
+    let Some(rest) = hash.strip_prefix("$6$") else { return false };
+    let rest = match rest.strip_prefix("rounds=").and_then(|tail| tail.split_once('$')) {
+        Some((rounds, tail)) if !rounds.is_empty() && rounds.bytes().all(|b| b.is_ascii_digit()) => tail,
+        Some(_) => return false,
+        None => rest,
+    };
+    matches!(rest.split_once('$'), Some((salt, digest))
+        if (1..=16).contains(&salt.len()) && crypt(salt) && digest.len() == 86 && crypt(digest))
+}
+
 fn read_operator(source: &Path) -> Result<Option<Operator>, String> {
     let path = source.join(OPERATOR);
     if !present(&path)? {
         return Ok(None);
     }
     let text = fs::read_to_string(&path).map_err(|error| fail("read", &path, error))?;
-    let (mut name, mut key) = (None, None);
+    let (mut name, mut uid, mut hash, mut key) = (None, None, None, None);
     for line in text.lines() {
         match line.split_once(' ') {
             Some(("user", value)) if name.is_none() => name = Some(value.to_string()),
+            Some(("uid", value)) if uid.is_none() => uid = Some(value.to_string()),
+            Some(("password", value)) if hash.is_none() => hash = Some(value.to_string()),
             Some(("key", value)) if key.is_none() => key = Some(value.to_string()),
             _ => return Err(format!("{}: unexpected line", path.display())),
         }
     }
-    match (name, key) {
-        (Some(name), Some(key)) if valid_account_name(&name) && name != "root" && valid_public_key(&key) => {
-            Ok(Some(Operator { name, key }))
+    // Decimal digits only, as passwd writes a uid: without a sign or a leading 0.
+    let uid = uid.and_then(|text| text.parse::<u32>().ok().filter(|uid| ACCOUNT_UIDS.contains(uid) && uid.to_string() == text));
+    match (name, uid, hash, key) {
+        (Some(name), Some(uid), Some(hash), Some(key))
+            if valid_account_name(&name) && name != "root" && valid_hash(&hash) && valid_public_key(&key) =>
+        {
+            Ok(Some(Operator { name, uid, hash, key }))
         }
-        _ => Err(format!("{} must name a non-root account and hold one public key line", path.display())),
+        _ => Err(format!(
+            "{} must name a non-root account, a uid from {} to {}, a SHA-512-crypt password hash and one public key line",
+            path.display(), ACCOUNT_UIDS.start(), ACCOUNT_UIDS.end()
+        )),
     }
 }
 
@@ -276,6 +310,65 @@ fn read_or_empty(path: &Path) -> Result<String, String> {
     fs::read_to_string(path).map_err(|error| fail("read", path, error))
 }
 
+/// The fields of the colon-separated line in `text` that names `name`, if any.
+fn named<'a>(text: &'a str, name: &str) -> Option<Vec<&'a str>> {
+    text.lines().find(|line| line.split(':').next() == Some(name)).map(|line| line.split(':').collect())
+}
+
+/// The operator's passwd, group and shadow lines in the store, and what it
+/// already holds of them. An existing account keeps its line (comment and home
+/// included) apart from the login shell, /bin/bsh (S12), and must already have
+/// the site's uid and gid; its group keeps its members; `wheel` gains the
+/// account. A password set on the machine is kept: the site's hash replaces
+/// only one an install locked, or fills a missing shadow line.
+fn operator_entries(operator: &Operator, passwd: &str, group: &str, shadow: &str) -> Result<[String; 4], String> {
+    let (name, uid) = (operator.name.as_str(), operator.uid.to_string());
+    let field = |fields: &[&str], index: usize| fields.get(index).copied().unwrap_or("").to_string();
+    for (file, text, id) in [("passwd", passwd, 2), ("group", group, 2)] {
+        if text.lines().map(|line| line.split(':').collect::<Vec<_>>())
+            .any(|fields| fields.len() > id && fields[0] != name && fields[id] == uid) {
+            return Err(format!("the store's {} already gives id {} to another name", file, uid));
+        }
+    }
+    let account = match named(passwd, name) {
+        Some(fields) if fields.len() == 7 && fields[2] == uid && fields[3] == uid => {
+            format!("{}:/bin/bsh", fields[..6].join(":"))
+        }
+        Some(fields) => {
+            return Err(format!("the store's account {} has uid and gid {}:{}, not the site's {}", name,
+                field(&fields, 2), field(&fields, 3), uid));
+        }
+        None => format!("{0}:x:{1}:{1}:{0}:/home/{0}:/bin/bsh", name, uid),
+    };
+    let own = match named(group, name) {
+        Some(fields) if fields.len() == 4 && fields[2] == uid => fields.join(":"),
+        Some(fields) => return Err(format!("the store's group {} has gid {}, not the site's {}", name, field(&fields, 2), uid)),
+        None => format!("{}:x:{}:", name, uid),
+    };
+    let wheel = match named(group, WHEEL) {
+        Some(fields) if fields.len() == 4 && fields[2] == WHEEL_GID.to_string() => {
+            let mut members: Vec<&str> = fields[3].split(',').filter(|member| !member.is_empty()).collect();
+            if !members.contains(&name) {
+                members.push(name);
+            }
+            format!("{}:{}:{}:{}", fields[0], fields[1], fields[2], members.join(","))
+        }
+        Some(_) => return Err(format!("the store's {} group line is malformed", WHEEL)),
+        None => format!("{}:x:{}:{}", WHEEL, WHEEL_GID, name),
+    };
+    let password = match named(shadow, name) {
+        Some(mut fields) if fields.len() == 9 => {
+            if fields[1] == LOCKED {
+                fields[1] = &operator.hash;
+            }
+            fields.join(":")
+        }
+        Some(_) => return Err(format!("the store's shadow line for {} is malformed", name)),
+        None => format!("{}:{}:::::::", name, operator.hash),
+    };
+    Ok([account, own, wheel, password])
+}
+
 /// Create the machine state store, private to root, and put the operator's
 /// account lines and staged key in it (machine_state.rs in libbreenix's ssh module reads them).
 fn stage_store(copier: &mut Copier, target: &Path, operator: Option<&Operator>) -> Result<(), String> {
@@ -283,26 +376,20 @@ fn stage_store(copier: &mut Copier, target: &Path, operator: Option<&Operator>) 
     copier.ensure_directory(&store, 0o700)?;
     let Some(operator) = operator else { return Ok(()) };
     let etc = store.join("etc");
-    copier.ensure_directory(&etc, 0o755)?;
     let name = &operator.name;
-    let passwd = read_or_empty(&etc.join("passwd"))?;
-    if passwd.lines().any(|line| {
-        let fields: Vec<&str> = line.split(':').collect();
-        fields.len() == 7 && fields[0] != name && fields[2] == OPERATOR_ID.to_string()
-    }) {
-        return Err(format!("the store already gives uid {} to another account", OPERATOR_ID));
-    }
-    let entries = [
-        ("passwd", passwd, format!("{0}:x:{1}:{1}:{0}:/home/{0}:/bin/bsh", name, OPERATOR_ID), 0o644),
-        ("group", read_or_empty(&etc.join("group"))?, format!("{}:x:{}:", name, OPERATOR_ID), 0o644),
-        // A locked password: the account logs in with its SSH key.
-        ("shadow", read_or_empty(&etc.join("shadow"))?, format!("{}:!:::::::", name), 0o600),
-    ];
-    for (file, existing, entry, mode) in entries {
-        let has_line = existing.lines().any(|line| line.split(':').next() == Some(name.as_str()));
-        // Existing machine entries may have been edited since installation.
-        let merged = if file == "shadow" && has_line { existing.clone() } else { merge_line(&existing, &entry) };
-        if merged != existing {
+    let (passwd, group, shadow) = (read_or_empty(&etc.join("passwd"))?, read_or_empty(&etc.join("group"))?,
+                                   read_or_empty(&etc.join("shadow"))?);
+    // Each refusal comes before any account file is written.
+    let [account, own, wheel, password] = operator_entries(operator, &passwd, &group, &shadow)?;
+    let kept = named(&shadow, name).is_some_and(|fields| fields.get(1).is_some_and(|hash| *hash != LOCKED));
+    copier.ensure_directory(&etc, 0o755)?;
+    let group_merged = merge_line(&merge_line(&group, &own), &wheel);
+    for (file, existing, merged, mode) in [
+        ("passwd", &passwd, merge_line(&passwd, &account), 0o644),
+        ("group", &group, group_merged, 0o644),
+        ("shadow", &shadow, merge_line(&shadow, &password), 0o600),
+    ] {
+        if merged != *existing {
             copier.write_file(&etc.join(file), &merged, mode)?;
         }
     }
@@ -312,7 +399,8 @@ fn stage_store(copier: &mut Copier, target: &Path, operator: Option<&Operator>) 
         copier.ensure_directory(&pending, mode)?;
     }
     copier.write_file(&pending.join(name), &format!("{}\n", operator.key), 0o600)?;
-    println!("[persistent] staged account {} (uid {}) and its SSH public key in /{}", name, OPERATOR_ID, STORE);
+    println!("[persistent] staged account {} (uid {}, in {}, {}) and its SSH public key in /{}", name, operator.uid, WHEEL,
+             if kept { "the machine's password kept" } else { "the site's password" }, STORE);
     Ok(())
 }
 
@@ -838,6 +926,12 @@ mod tests {
     }
 
     const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOperatorPublicKeyBytesForTheHostTestOnly0 operator@boot-host";
+    /// A hash of the SHA-512-crypt shape; these tests do not verify a password against it.
+    const HASH: &str = "$6$rounds=100000$fixturesalt$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    fn staged(name: &str) -> String {
+        format!("user {name}\nuid 1000\npassword {HASH}\nkey {KEY}\n")
+    }
 
     #[test]
     fn retry_repairs_store_mode_after_interrupted_mkdir() {
@@ -863,7 +957,7 @@ mod tests {
         let source = fixture.source("new");
         fs::create_dir_all(source.join("etc/breenix/test-ssh/home")).unwrap();
         fs::write(source.join("etc/breenix/test-ssh/id_ed25519"), b"test-only private key").unwrap();
-        fs::write(source.join(OPERATOR), format!("user operator\nkey {}\n", KEY)).unwrap();
+        fs::write(source.join(OPERATOR), staged("operator")).unwrap();
         fs::create_dir_all(source.join("etc/breenix/test-users/ua")).unwrap();
         fs::write(source.join("etc/passwd"), "root:x:0:0:root:/root:/bin/sh\nsshtest:x:2000:2000:sshtest:/etc/breenix/test-ssh/home:/bin/sh\nua:x:2001:2001:Users suite fixture:/etc/breenix/test-users/ua:/bin/bsh\n").unwrap();
         fs::write(source.join("etc/group"), "root:x:0:ua\nsshtest:x:2000:\nua:x:2001:\nug:x:2100:ua\n").unwrap();
@@ -882,15 +976,15 @@ mod tests {
         assert!(!root.join(FIXTURES).exists());
         assert!(!root.join(OPERATOR).exists());
         assert_eq!(fs::read_to_string(system.join(STORE).join("etc/passwd")).unwrap(), "root:x:0:0:root:/root:/bin/sh\noperator:x:1000:1000:operator:/home/operator:/bin/bsh\n");
-        assert_eq!(fs::read_to_string(system.join(STORE).join("etc/group")).unwrap(), "root:x:0:\noperator:x:1000:\n");
+        assert_eq!(fs::read_to_string(system.join(STORE).join("etc/group")).unwrap(), "root:x:0:\noperator:x:1000:\nwheel:x:10:operator\n");
         assert_eq!(fs::read(system.join("root/data")).unwrap(), b"source data");
         assert!(!system.join("root/.ssh").exists());
         let store = system.join(STORE);
         let mode = |path: &Path| fs::metadata(path).unwrap().mode() & 0o7777;
         assert_eq!(mode(&store), 0o700);
         assert_eq!(fs::read_to_string(store.join("etc/passwd")).unwrap(), "root:x:0:0:root:/root:/bin/sh\noperator:x:1000:1000:operator:/home/operator:/bin/bsh\n");
-        assert_eq!(fs::read_to_string(store.join("etc/group")).unwrap(), "root:x:0:\noperator:x:1000:\n");
-        assert_eq!(fs::read_to_string(store.join("etc/shadow")).unwrap(), "operator:!:::::::\n");
+        assert_eq!(fs::read_to_string(store.join("etc/group")).unwrap(), "root:x:0:\noperator:x:1000:\nwheel:x:10:operator\n");
+        assert_eq!(fs::read_to_string(store.join("etc/shadow")).unwrap(), format!("operator:{HASH}:::::::\n"));
         assert_eq!(mode(&store.join("etc/shadow")), 0o600);
         let pending = store.join("var/lib/accounts/pending/operator");
         assert_eq!(fs::read_to_string(&pending).unwrap(), format!("{}\n", KEY));
@@ -904,7 +998,7 @@ mod tests {
         fs::write(store.join("etc/passwd"), "operator:x:1000:1000:operator:/home/operator:/bin/sh\n").unwrap();
         let second = fixture.source("second");
         fs::create_dir(second.join("etc/breenix")).unwrap();
-        fs::write(second.join(OPERATOR), format!("user operator\nkey {}\n", KEY)).unwrap();
+        fs::write(second.join(OPERATOR), staged("operator")).unwrap();
         install_tree(&second, &system, "second", &mut || Ok(())).unwrap();
         assert_eq!(fs::read_to_string(store.join("etc/passwd")).unwrap(), "operator:x:1000:1000:operator:/home/operator:/bin/bsh\n");
         assert_eq!(fs::read_to_string(store.join("etc/shadow")).unwrap(), "operator:$6$set-on-the-box:::::::\n");
@@ -968,18 +1062,19 @@ mod tests {
             let etc = system.join(STORE).join("etc");
             fs::create_dir_all(&etc).unwrap();
             if staged_operator {
-                fs::write(source.join(OPERATOR), format!("user ua\nkey {KEY}\n")).unwrap();
+                fs::write(source.join(OPERATOR), staged("ua")).unwrap();
             } else {
                 fs::write(etc.join("passwd"), "ua:x:2001:2001:machine account:/home/ua:/bin/bsh\n").unwrap();
                 fs::write(etc.join("group"), "ua:x:2001:\nug:x:2100:\n").unwrap();
                 fs::write(etc.join("shadow"), "ua:!:::::::\n").unwrap();
             }
             install_tree(&source, &system, "first", &mut || Ok(())).unwrap();
-            assert_eq!(fs::read_to_string(etc.join("shadow")).unwrap(), "ua:!:::::::\n");
+            let shadow = if staged_operator { format!("ua:{HASH}:::::::\n") } else { "ua:!:::::::\n".to_string() };
+            assert_eq!(fs::read_to_string(etc.join("shadow")).unwrap(), shadow);
             let expected = if staged_operator { "ua:x:1000:1000:ua:/home/ua:/bin/bsh\n" }
                 else { "ua:x:2001:2001:machine account:/home/ua:/bin/bsh\n" };
             assert_eq!(fs::read_to_string(etc.join("passwd")).unwrap(), expected);
-            let groups = if staged_operator { "ua:x:1000:\n" } else { "ua:x:2001:\nug:x:2100:\n" };
+            let groups = if staged_operator { "ua:x:1000:\nwheel:x:10:ua\n" } else { "ua:x:2001:\nug:x:2100:\n" };
             assert_eq!(fs::read_to_string(etc.join("group")).unwrap(), groups);
         }
     }
@@ -1007,9 +1102,16 @@ mod tests {
 
     #[test]
     fn operator_that_is_root_unparsable_or_colliding_is_refused_before_any_write() {
-        for text in ["user root\nkey KEY\n".replace("KEY", KEY), "user operator\nkey -----BEGIN OPENSSH PRIVATE KEY-----\n".into(),
-                     "user Operator\nkey KEY\n".replace("KEY", KEY), "user operator\n".into(),
-                     "user operator\nkey KEY\nuser other\n".replace("KEY", KEY)] {
+        let full = staged("operator");
+        let without = |prefix: &str| full.lines().filter(|line| !line.starts_with(prefix)).map(|line| format!("{line}\n")).collect::<String>();
+        let with = |from: &str, to: &str| full.replace(from, to);
+        for text in [staged("root"), with(KEY, "-----BEGIN OPENSSH PRIVATE KEY-----"), staged("Operator"),
+                     "user operator\n".into(), format!("{full}user other\n"),
+                     // The old two-line form, and each field missing or malformed.
+                     format!("user operator\nkey {KEY}\n"), without("uid "), without("password "), without("key "),
+                     with("uid 1000", "uid 999"), with("uid 1000", "uid 01000"), with("uid 1000", "uid +1000"),
+                     with("uid 1000", "uid 60001"), with(HASH, "!"), with(HASH, "$1$salt$hash"),
+                     with(HASH, &HASH.replace("fixturesalt", "a salt"))] {
             let fixture = Fixture::new();
             let source = fixture.source("refused");
             fs::create_dir(source.join("etc/breenix")).unwrap();
@@ -1018,15 +1120,60 @@ mod tests {
             assert!(install_tree(&source, &system, "new", &mut || Ok(())).is_err(), "{text:?}");
             assert!(!system.join(STORE).exists() && !system.join(GENERATIONS).exists(), "{text:?}");
         }
+        // Another account with the uid, the account with another uid or gid, its group with another gid.
+        for (file, text) in [("passwd", "someone:x:1000:1000::/home/someone:/bin/sh\n"),
+                             ("passwd", "operator:x:1001:1001:operator:/home/operator:/bin/bsh\n"),
+                             ("passwd", "operator:x:1000:1001:operator:/home/operator:/bin/bsh\n"),
+                             ("group", "operator:x:1001:\n"), ("group", "someone:x:1000:\n"),
+                             ("group", "wheel:x:11:\n"), ("shadow", "operator:!:::\n")] {
+            let fixture = Fixture::new();
+            let source = fixture.source("collide");
+            fs::create_dir(source.join("etc/breenix")).unwrap();
+            fs::write(source.join(OPERATOR), staged("operator")).unwrap();
+            let system = fixture.system();
+            let etc = system.join(STORE).join("etc");
+            fs::create_dir_all(&etc).unwrap();
+            fs::write(etc.join(file), text).unwrap();
+            assert!(install_tree(&source, &system, "new", &mut || Ok(())).is_err(), "{file}: {text:?}");
+            assert!(!system.join(GENERATIONS).exists());
+            assert_eq!(fs::read_to_string(etc.join(file)).unwrap(), text);
+            for other in ["passwd", "group", "shadow"].into_iter().filter(|other| *other != file) {
+                assert!(!etc.join(other).exists(), "{file}: {text:?} wrote {other}");
+            }
+        }
+    }
+
+    #[test]
+    fn existing_operator_account_keeps_its_lines_and_a_password_set_on_the_box() {
         let fixture = Fixture::new();
-        let source = fixture.source("collide");
+        let source = fixture.source("upgrade");
         fs::create_dir(source.join("etc/breenix")).unwrap();
-        fs::write(source.join(OPERATOR), format!("user operator\nkey {}\n", KEY)).unwrap();
+        fs::write(source.join(OPERATOR), staged("operator")).unwrap();
         let system = fixture.system();
-        fs::create_dir_all(system.join(STORE).join("etc")).unwrap();
-        fs::write(system.join(STORE).join("etc/passwd"), "someone:x:1000:1000::/home/someone:/bin/sh\n").unwrap();
-        assert!(install_tree(&source, &system, "new", &mut || Ok(())).is_err());
-        assert!(!system.join(GENERATIONS).exists());
+        let etc = system.join(STORE).join("etc");
+        fs::create_dir_all(&etc).unwrap();
+        // An account made by an earlier install and kept by hand since: its comment, home, group members,
+        // wheel's other members and another account's lines are kept; only the shell becomes /bin/bsh.
+        let passwd = "root:x:0:0:root:/root:/bin/bsh\noperator:x:1000:1000:The Operator:/home/operator:/bin/sh\n\
+            other:x:1001:1001:other:/home/other:/bin/bsh\n";
+        let group = "root:x:0:\noperator:x:1000:other\nwheel:x:10:admin\nother:x:1001:\n";
+        let shadow = "root:$6$root-hash:20747:0:99999:7:::\noperator:!:20747::::::\nother:!:::::::\n";
+        for (file, text) in [("passwd", passwd), ("group", group), ("shadow", shadow)] {
+            fs::write(etc.join(file), text).unwrap();
+        }
+        install_tree(&source, &system, "new", &mut || Ok(())).unwrap();
+        assert_eq!(fs::read_to_string(etc.join("passwd")).unwrap(), passwd.replace("operator:/bin/sh", "operator:/bin/bsh"));
+        assert_eq!(fs::read_to_string(etc.join("group")).unwrap(), group.replace("wheel:x:10:admin", "wheel:x:10:admin,operator"));
+        // The install-made lock gives way to the site's password, keeping the line's other fields.
+        let set = shadow.replace("operator:!:", &format!("operator:{HASH}:"));
+        assert_eq!(fs::read_to_string(etc.join("shadow")).unwrap(), set);
+        // A password set on the machine since is kept, and a second install leaves passwd and group as they were.
+        let mine = shadow.replace("operator:!:", "operator:$6$set-on-the-box:");
+        fs::write(etc.join("shadow"), &mine).unwrap();
+        let before = ["passwd", "group"].map(|file| fs::read_to_string(etc.join(file)).unwrap());
+        install_tree(&source, &system, "again", &mut || Ok(())).unwrap();
+        assert_eq!(fs::read_to_string(etc.join("shadow")).unwrap(), mine);
+        assert_eq!(["passwd", "group"].map(|file| fs::read_to_string(etc.join(file)).unwrap()), before);
     }
 
     #[test]
