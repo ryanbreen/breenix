@@ -39,7 +39,7 @@ const DETAILS: [&str; 16] = [
     "mkdir/list/rmdir succeeded", "isatty and tcgetattr succeeded",
     "datagram echoed on 127.0.0.1", FRAMEBUFFER_DETAIL,
 ];
-/// What the display check proves: on x86-64 the firmware framebuffer's drawing contract,
+/// What the display check exercises: on x86-64 the firmware framebuffer's drawing contract,
 /// on ARM64 the GPU core's scanout.
 #[cfg(target_arch = "x86_64")]
 const FRAMEBUFFER_DETAIL: &str = "fb info and draw succeeded";

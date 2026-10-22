@@ -1738,7 +1738,7 @@ struct Screen {
 }
 
 impl Screen {
-    /// Take the display and map all of it. Without a framebuffer the suite still
+    /// Take the display and map the whole of it. Without a framebuffer the suite still
     /// runs and prints its serial lines; on a small one the panel draws what fits. On ARM64
     /// the GPU core is the display, and a suite without the run stage shows the GPU view
     /// (`docs/gui/gpu.md` section 2.5 retires the CPU panel there).
@@ -1871,7 +1871,7 @@ impl Screen {
     }
 }
 
-/// The x86-64 panel's framebuffer: the display taken and all of it mapped.
+/// The x86-64 panel's framebuffer: the display taken and the whole of it mapped.
 #[cfg(target_arch = "x86_64")]
 fn map_panel() -> Option<FrameBuf> {
     let info = graphics::fbinfo().ok()?;

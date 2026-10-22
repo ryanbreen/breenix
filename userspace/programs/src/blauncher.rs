@@ -219,7 +219,7 @@ fn color_of(word: u32) -> Color {
 const BORDER_SEGMENT: i32 = 8;
 
 /// Animated rounded-rectangle border with a dark-blue-to-white conic gradient that
-/// rotates clockwise like a progress spinner, one full revolution every 360 frames (~6
+/// rotates clockwise like a progress spinner, one full revolution each 360 frames (~6
 /// seconds at 60 fps). The ring between the window's edge (radius 12) and the panel body
 /// (inset 8, radius 4) is drawn in segments of `BORDER_SEGMENT` pixels along the edge, each
 /// in the gradient's colour at its centre: the window's rounded rectangle clipped to the

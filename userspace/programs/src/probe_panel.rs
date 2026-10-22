@@ -29,7 +29,7 @@ pub enum Verdict<'a> {
     Failed(&'a str),
 }
 
-/// All strings are borrowed; callers may redraw with updated checks and recent output.
+/// The strings are borrowed; callers may redraw with updated checks and recent output.
 pub struct Panel<'a> {
     pub title: &'a str,
     pub subtitle: &'a str,
