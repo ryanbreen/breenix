@@ -472,6 +472,8 @@ struct Screen {
     target: u64,
     ctx: bgl::Context,
     lost: bool,
+    /// The screen has been presented once.
+    shown: bool,
 }
 
 /// Take the display and map it: the whole screen, as the display owner, where the
@@ -502,7 +504,7 @@ fn open_screen() -> Option<Screen> {
     let fb = libgfx::surface::Surface::new(mode.width as usize, mode.height as usize, libgfx::surface::Format::BGRX).ok()?;
     let target = gpu::scanout_target_create(abi::format::B8G8R8A8, mode.width, mode.height).ok()?;
     let ctx = bgl::Context::new().ok()?;
-    Some(Screen { fb, target, ctx, lost: false })
+    Some(Screen { fb, target, ctx, lost: false, shown: false })
 }
 
 /// Probe's screen, if it has one and still holds the display.
@@ -537,8 +539,13 @@ fn flush_screen(screen: &mut Screen) {
         Ok(()) => {}
         Err(_) => { screen.ctx.discard(); return; }
     }
-    if let Err(EPERM) = screen.ctx.present(screen.target) {
-        screen.lost = true;
+    match screen.ctx.present(screen.target) {
+        Err(EPERM) => screen.lost = true,
+        Ok(_) if !screen.shown => {
+            screen.shown = true;
+            println!("PROBE screen shown {}x{} on the GPU core", w, h);
+        }
+        _ => {}
     }
 }
 
