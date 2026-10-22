@@ -471,6 +471,9 @@ pub struct Status {
     pub quick_failures: u32,
     /// How the last run ended: `-`, `code:N` or `signal:N`.
     pub last_exit: String,
+    /// Whether a captured stream is still open. Once false, the supervisor has
+    /// read the service's stdout and stderr to end of file into its log.
+    pub output_open: bool,
 }
 
 /// The supervisor's own facts: when it began and when each condition first held (0: not yet).
@@ -498,7 +501,7 @@ pub fn render(supervisor: &Supervisor, statuses: &[Status]) -> String {
     );
     for s in statuses {
         text.push_str(&format!(
-            "service {} state={} user={} restart={} needs={} pid={} starts={} first={} since={} next={} quick-failures={} exit={}\n",
+            "service {} state={} user={} restart={} needs={} pid={} starts={} first={} since={} next={} quick-failures={} exit={} output={}\n",
             s.name,
             token(&s.state),
             token(&s.user),
@@ -510,7 +513,8 @@ pub fn render(supervisor: &Supervisor, statuses: &[Status]) -> String {
             s.since_ms,
             s.next_ms,
             s.quick_failures,
-            token(&s.last_exit)
+            token(&s.last_exit),
+            if s.output_open { "open" } else { "drained" }
         ));
     }
     text
@@ -560,6 +564,11 @@ pub fn parse_state(text: &str) -> Result<(Supervisor, Vec<Status>), String> {
                 next_ms: number("next")?,
                 quick_failures: number("quick-failures")? as u32,
                 last_exit: text_field("exit"),
+                output_open: match fields.get("output") {
+                    Some(&"open") => true,
+                    Some(&"drained") => false,
+                    _ => return Err("state line lacks output".into()),
+                },
             }),
             "" => {}
             other => return Err(format!("unknown state line '{}'", other)),
@@ -671,9 +680,11 @@ mod tests {
             next_ms: 0,
             quick_failures: 0,
             last_exit: "signal:9".into(),
+            output_open: true,
         }];
         let text = render(&supervisor, &statuses);
         assert_eq!(parse_state(&text).unwrap(), (supervisor, statuses));
+        assert!(parse_state(&text.replace(" output=open", "")).is_err());
         assert!(parse_state("service x state\n").is_err());
         assert!(parse_state("").is_err());
     }
