@@ -863,7 +863,7 @@ architecture only.
 | 9 | `RESIZE` | `Resize` (48) | 0 | EINVAL size; ENOMEM; ENOENT |
 | 10 | `READ_EVENTS` | `ReadEvents` (40) | events copied | ETIMEDOUT, EINTR, ENOENT |
 | 11 | `WRITE_EVENTS` | `WriteEvents` (24) | events queued | EINVAL type or length; ENOENT |
-| 12 | `EVENT_FD` | `WinId` (8) | a descriptor | ENOENT, EMFILE |
+| 12 | `EVENT_FD` | `WinId` (8) | a descriptor; window 0, for the compositor, the scene descriptor (section 19.2) | ENOENT, EMFILE |
 | 13 | `SET_GEOMETRY` | `Geometry` (24) | 0 | ENOENT |
 | 14 | retired `MAP_COMMITTED` | `MapBuffers` (40) | ENOSYS | after size validation, including a stale id |
 | 15 | `CAPTURE` | `Capture` (56) | 0 | EINVAL short destination; ENOENT; EINTR pending-publication wait; EIO failed pending publication |
@@ -1050,7 +1050,7 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 | `CREATE`, `REGISTER`, `SET_TITLE` | yes | — | — | — |
 | `ACQUIRE`, `COMMIT`, `COMMIT_NO_CHANGE`, `DESTROY` | yes | EPERM | EPERM | EPERM |
 | `RESIZE` | yes | EPERM (requests go through events) | EPERM | EPERM |
-| `READ_EVENTS`, `EVENT_FD` | yes | — | — | EPERM |
+| `READ_EVENTS`, `EVENT_FD` | yes | `EVENT_FD` of window 0 only | — | EPERM |
 | `WRITE_EVENTS`, `SET_GEOMETRY` | EPERM | yes | EPERM | EPERM |
 | retired `MAP_COMMITTED`, `MAP_COMPOSITOR_TEXTURE` | ENOSYS | ENOSYS | ENOSYS | ENOSYS |
 | `CAPTURE`, `MAP_TREE`, `READ_META` | yes | yes | yes | EPERM |
@@ -1253,6 +1253,14 @@ meaning. Breengel maps an unknown kind to `Event::Unknown { kind }`, never to a 
   queue, and delivers an `Overflow` event with the count before the next event; nothing is lost silently.
 - An event for one window wakes only that window's readers. `EVENT_FD` is pollable and reports POLLIN when an
   event is queued.
+- `EVENT_FD` of window 0 gives the compositor its scene descriptor (ENOENT to any other caller, as for an id
+  that names no window). It is pollable and reports POLLIN while the scene has changed since the descriptor
+  was made or last read: a window op that can change what the next composite shows (every op but `LIST`, `ACQUIRE`,
+  `READ_EVENTS`, `WRITE_EVENTS`, `EVENT_FD`, `CAPTURE`, `MAP_TREE`, `COMPOSITE_SNAPSHOT`, `COMPOSITE_RECORD`,
+  `SCANOUT_READBACK`, `READ_META`, `READ_REMNANT` and the retired ops), a commit's publication or rejection,
+  and an owner's exit. A read of at least 8 bytes returns the count of changes as a `u64` and marks them read;
+  a shorter read is EINVAL. A compositor sleeps on it and uses `COMPOSITE_SNAPSHOT`'s sizing query to learn
+  whether there is damage, rather than polling.
 - `Resized` arrives only after the buffers have the new size and carries it; a refused resize delivers
   `ResizeFailed` with the old size and never `Resized`.
 

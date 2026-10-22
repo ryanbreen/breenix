@@ -141,6 +141,63 @@ impl EventFile {
     }
 }
 
+/// The compositor's scene descriptor (`EVENT_FD` of window 0): readable for poll, select and
+/// epoll while the scene has changed since it was made or last read; a read of at least 8
+/// bytes returns the count of changes as a `u64` and marks them read.
+pub struct SceneFile {
+    queue: Arc<WaitQueueHead>,
+    /// The change count when it was made or last read.
+    read: core::sync::atomic::AtomicU64,
+}
+
+impl core::fmt::Debug for SceneFile {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SceneFile").finish()
+    }
+}
+
+impl SceneFile {
+    pub fn new(queue: Arc<WaitQueueHead>) -> SceneFile {
+        let read = core::sync::atomic::AtomicU64::new(super::REGISTRY.lock().present.changes);
+        SceneFile { queue, read }
+    }
+}
+
+impl crate::ipc::object::IpcFile for SceneFile {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn fill_stat(&self, st: &mut crate::syscall::fs::Stat) {
+        st.st_mode = 0o600;
+        st.st_nlink = 1;
+        st.st_blksize = 4096;
+    }
+
+    fn poll_events(&self) -> i16 {
+        if super::REGISTRY.lock().present.changes != self.read.load(core::sync::atomic::Ordering::Acquire) {
+            crate::ipc::poll::events::POLLIN
+        } else {
+            0
+        }
+    }
+
+    fn poll_queue(&self) -> Option<Arc<WaitQueueHead>> {
+        Some(self.queue.clone())
+    }
+
+    fn read(&self, buf: u64, count: usize) -> Result<u64, u64> {
+        if count < 8 {
+            return Err(breengel_abi::errno::EINVAL as u64);
+        }
+        let changes = super::REGISTRY.lock().present.changes;
+        crate::syscall::userptr::copy_to_user(buf as *mut u64, &changes)
+            .map_err(|_| breengel_abi::errno::EFAULT as u64)?;
+        self.read.store(changes, core::sync::atomic::Ordering::Release);
+        Ok(8)
+    }
+}
+
 impl crate::ipc::object::IpcFile for EventFile {
     fn as_any(&self) -> &dyn core::any::Any {
         self

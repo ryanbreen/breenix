@@ -130,6 +130,8 @@ pub struct State {
     /// How many times a whole-screen composite was asked for: a composite clears
     /// `force_full` only when no request came after its snapshot.
     pub full_requests: u64,
+    /// Scene changes noted (`scene::changed`), which a scene descriptor counts.
+    pub changes: u64,
     /// Screen regions uncovered by windows destroyed, resized, moved or hidden.
     pub uncovered: Vec<Rect>,
     /// Whether a composite is running.
@@ -147,6 +149,7 @@ impl State {
             composed_once: false,
             force_full: false,
             full_requests: 0,
+            changes: 0,
             uncovered: Vec::new(),
             busy: false,
             records: VecDeque::new(),

@@ -8,6 +8,7 @@ use super::{
     Caller, REGISTRY,
 };
 use crate::gpu::window_targets::{self, MetadataCharge, SceneEpoch};
+use crate::task::waitqueue::WaitQueueHead;
 use alloc::{sync::Arc, vec::Vec};
 use breengel_abi::errno::{EAGAIN, EBUSY, EINVAL, EIO, ENOENT, ENOMEM, EPERM};
 use breengel_abi::{Composite, CompositeEntry, Cursor, Plain, Rect, SceneSnapshot, SceneWindow};
@@ -37,9 +38,37 @@ pub struct Reservation {
     damage: Vec<Rect>,
     full: bool,
     uncovered: usize,
-    _charge: MetadataCharge,
     /// The whole-screen requests made before this snapshot.
     full_requests: u64,
+    _charge: MetadataCharge,
+}
+
+/// The queue the compositor's scene descriptor sleeps on.
+static CHANGES: spin::Once<Arc<WaitQueueHead>> = spin::Once::new();
+
+/// Note that the scene may have changed (a window op, a publication or an owner's exit) and
+/// wake the compositor's scene descriptor. Called without the registry lock.
+pub fn changed() {
+    {
+        let mut reg = REGISTRY.lock();
+        reg.present.changes = reg.present.changes.wrapping_add(1);
+    }
+    if let Some(queue) = CHANGES.get() {
+        queue.wake_up();
+    }
+}
+
+/// The scene descriptor's queue, for `EVENT_FD` of window 0 by the compositor claimant;
+/// ENOENT for anyone else, as for any id that names no window.
+pub fn changes_queue(caller: &Caller) -> Result<Arc<WaitQueueHead>, i32> {
+    if !REGISTRY.lock().is_compositor(caller) {
+        return Err(ENOENT);
+    }
+    if let Some(queue) = CHANGES.get() {
+        return Ok(queue.clone());
+    }
+    let queue = Arc::try_new(WaitQueueHead::new()).map_err(|_| ENOMEM)?;
+    Ok(CHANGES.call_once(|| queue).clone())
 }
 
 fn authority(caller: &Caller) -> Result<u64, i32> {
@@ -209,6 +238,7 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
             full,
             damage,
             reg.present.uncovered.len(),
+            reg.present.full_requests,
         )
     };
     let screen = Rect::new(0, 0, epoch.width as i32, epoch.height as i32);
@@ -238,7 +268,6 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
         )?;
         mem::probe_writable(
             a.damage,
-            reg.present.full_requests,
             (a.damage_capacity as u64).checked_mul(16).ok_or(EINVAL)?,
         )?;
     }
@@ -320,6 +349,7 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
         damage,
         full,
         uncovered,
+        full_requests,
         _charge: charge,
     };
     let mut reg = REGISTRY.lock();
@@ -349,7 +379,6 @@ pub struct AdmittedSource {
 }
 pub struct Admission {
     reservation: Reservation,
-        full_requests,
     pub sources: Vec<AdmittedSource>,
     pub serial: u64,
     entries: Vec<CompositeEntry>,
