@@ -8,14 +8,13 @@
 use std::process;
 
 use breengel::{CachedFont, Window, Event};
-use libbreenix::graphics;
 use libbreenix::time;
 
-use libgfx_ref::color::Color;
-use libgfx_ref::font;
-use libgfx_ref::framebuf::FrameBuf;
-use libgfx_ref::ttf_font;
-use libgfx_ref::math::isqrt_i64;
+use libgfx::color::Color;
+use libgfx::font;
+use libgfx::shapes;
+use libgfx::surface::Surface;
+use libgfx::ttf_font;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -30,92 +29,76 @@ fn clock_monotonic_ns() -> u64 {
 // Sphere rendering
 // ---------------------------------------------------------------------------
 
-/// Draw a 3D-looking sphere with specular highlight and shading.
-///
-/// The light source is at upper-left. Each pixel's brightness is computed from
-/// the dot product of the surface normal with the light direction, plus a
-/// specular highlight for the glossy spot.
-fn draw_sphere(fb: &mut FrameBuf, cx: i32, cy: i32, radius: i32, base_color: Color) {
-    let r2 = (radius as i64) * (radius as i64);
-    let w = fb.width as i32;
-    let h = fb.height as i32;
+/// Light direction (upper-left, normalized ×1024 for fixed-point):
+/// (-0.5, -0.5, 0.707) normalized ≈ (-512, -512, 724).
+const LIGHT_X: i64 = -512;
+const LIGHT_Y: i64 = -512;
+const LIGHT_Z: i64 = 724;
 
-    // Light direction (upper-left, normalized ×1024 for fixed-point)
-    // (-0.5, -0.5, 0.707) normalized ≈ (-512, -512, 724)
-    const LIGHT_X: i64 = -512;
-    const LIGHT_Y: i64 = -512;
-    const LIGHT_Z: i64 = 724;
-
-    let ptr = fb.raw_ptr();
-    let stride = fb.stride;
-    let bpp = fb.bpp;
-    let is_bgr = fb.is_bgr;
-
-    for dy in -radius..=radius {
-        let y = cy + dy;
-        if y < 0 || y >= h { continue; }
-
-        let dy64 = dy as i64;
-        let row_r2 = r2 - dy64 * dy64;
-        if row_r2 < 0 { continue; }
-        let dx_max = isqrt_i64(row_r2) as i32;
-
-        let x_start = (cx - dx_max).max(0);
-        let x_end = (cx + dx_max).min(w - 1);
-        if x_start > x_end { continue; }
-
-        let row_off = (y as usize) * stride;
-
-        for x in x_start..=x_end {
-            let dx = (x - cx) as i64;
-
-            // Surface normal z component (sphere equation: nx=dx, ny=dy, nz=sqrt(r²-dx²-dy²))
-            let nz_sq = r2 - dx * dx - dy64 * dy64;
-            if nz_sq < 0 { continue; }
-            let nz = isqrt_i64(nz_sq);
-
-            // Diffuse: dot(normal, light) / (|normal| * 1024)
-            // |normal| = radius (since nx²+ny²+nz²=r²)
-            let dot = dx * LIGHT_X + dy64 * LIGHT_Y + nz * LIGHT_Z;
-            let diffuse = (dot * 1024 / (radius as i64 * 1024)).max(0).min(1024);
-
-            // Specular: reflected light dot view direction (0,0,1), raised to power
-            // reflect = 2 * dot(n,l) * n - l, we want reflect.z
-            // Simplified: specular based on how close the reflection is to viewer
-            let reflect_z = (2 * dot * nz / (r2) - LIGHT_Z).max(0);
-            // Approximate pow(reflect_z/1024, 8) for shininess
-            let spec_norm = reflect_z * 1024 / 1024; // already in 0..1024 range
-            let spec2 = spec_norm * spec_norm / 1024;
-            let spec4 = spec2 * spec2 / 1024;
-            let spec8 = spec4 * spec4 / 1024;
-
-            // Ambient + diffuse + specular
-            let ambient: i64 = 80; // out of 1024
-            let intensity = (ambient + diffuse * 700 / 1024).min(1024);
-
-            let cr = ((base_color.r as i64 * intensity / 1024) + spec8 * 255 / 1024).min(255) as u8;
-            let cg = ((base_color.g as i64 * intensity / 1024) + spec8 * 255 / 1024).min(255) as u8;
-            let cb = ((base_color.b as i64 * intensity / 1024) + spec8 * 255 / 1024).min(255) as u8;
-
-            let (c0, c1, c2) = if is_bgr { (cb, cg, cr) } else { (cr, cg, cb) };
-
-            let o = row_off + (x as usize) * bpp;
-            unsafe {
-                *ptr.add(o) = c0;
-                *ptr.add(o + 1) = c1;
-                *ptr.add(o + 2) = c2;
-                if bpp == 4 {
-                    *ptr.add(o + 3) = 0;
-                }
-            }
-        }
+/// The integer square root of `n`: the largest `r` with `r * r <= n`.
+fn isqrt_i64(n: i64) -> i64 {
+    if n <= 0 {
+        return 0;
     }
+    let mut r = (n as f64).sqrt() as i64;
+    while r * r > n {
+        r -= 1;
+    }
+    while (r + 1) * (r + 1) <= n {
+        r += 1;
+    }
+    r
+}
 
-    let bx = (cx - radius).max(0);
-    let by = (cy - radius).max(0);
-    let bw = ((cx + radius + 1).min(w) - bx).max(0);
-    let bh = ((cy + radius + 1).min(h) - by).max(0);
-    fb.mark_dirty(bx, by, bw, bh);
+/// The sphere's colour at `(dx, dy)` from its centre: the dot product of the surface normal
+/// with the light direction, plus a specular highlight for the glossy spot.
+fn shade(dx: i64, dy: i64, radius: i32, base_color: Color) -> Color {
+    let r2 = (radius as i64) * (radius as i64);
+    // Surface normal z component (sphere equation: nx=dx, ny=dy, nz=sqrt(r²-dx²-dy²))
+    let nz = isqrt_i64((r2 - dx * dx - dy * dy).max(0));
+
+    // Diffuse: dot(normal, light) / (|normal| * 1024)
+    // |normal| = radius (since nx²+ny²+nz²=r²)
+    let dot = dx * LIGHT_X + dy * LIGHT_Y + nz * LIGHT_Z;
+    let diffuse = (dot * 1024 / (radius as i64 * 1024)).max(0).min(1024);
+
+    // Specular: reflect = 2 * dot(n,l) * n - l, how close its z is to the viewer,
+    // raised to the 8th power for shininess.
+    let reflect_z = (2 * dot * nz / r2 - LIGHT_Z).max(0);
+    let spec2 = reflect_z * reflect_z / 1024;
+    let spec4 = spec2 * spec2 / 1024;
+    let spec8 = spec4 * spec4 / 1024;
+
+    // Ambient + diffuse + specular
+    let ambient: i64 = 80; // out of 1024
+    let intensity = (ambient + diffuse * 700 / 1024).min(1024);
+
+    let channel = |c: u8| ((c as i64 * intensity / 1024) + spec8 * 255 / 1024).min(255) as u8;
+    Color::rgb(channel(base_color.r), channel(base_color.g), channel(base_color.b))
+}
+
+/// How many nested circles draw one sphere.
+const SHADE_STEPS: i32 = 14;
+
+/// Draw a 3D-looking sphere with specular highlight and shading, light at upper-left.
+///
+/// The sphere is a stack of filled circles on the GPU: the whole disc, then circles that
+/// shrink toward the specular highlight as they step from the far limb to the highlight,
+/// each in the shading at its step's point. Each circle lies inside the one before it.
+fn draw_sphere(fb: &mut Surface, cx: i32, cy: i32, radius: i32, base_color: Color) {
+    let r = radius as f32;
+    // The highlight, where the normal is halfway between the light and the viewer.
+    let (hx, hy) = (-0.27 * r, -0.27 * r);
+    // The far limb, opposite the highlight.
+    let (ex, ey) = (0.67 * r, 0.67 * r);
+    for i in 0..SHADE_STEPS {
+        let t = i as f32 / (SHADE_STEPS - 1) as f32;
+        let ring = (r * (1.0 - 0.85 * t)) as i32;
+        let (ox, oy) = ((hx * t) as i32, (hy * t) as i32);
+        let (qx, qy) = (ex + (hx - ex) * t, ey + (hy - ey) * t);
+        let colour = shade(qx as i64, qy as i64, radius, base_color);
+        shapes::fill_circle(fb, cx + ox, cy + oy, ring.max(1), colour);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -177,7 +160,7 @@ impl Sphere {
         }
     }
 
-    fn draw(&self, fb: &mut FrameBuf) {
+    fn draw(&self, fb: &mut Surface) {
         draw_sphere(fb, self.px(), self.py(), self.radius, self.color);
     }
 
@@ -299,8 +282,8 @@ impl FpsCounter {
         }
     }
 
-    fn draw(&mut self, fb: &mut FrameBuf) {
-        let y = fb.height.saturating_sub(20);
+    fn draw(&mut self, fb: &mut Surface) {
+        let y = fb.height().saturating_sub(20);
         let mut buf = [b' '; 12];
         buf[0] = b'F'; buf[1] = b'P'; buf[2] = b'S'; buf[3] = b':'; buf[4] = b' ';
 
@@ -331,11 +314,11 @@ impl FpsCounter {
         if let Some(ref mut f) = self.ttf_font {
             let text = core::str::from_utf8(&sbuf[..slen]).unwrap_or("?%");
             let tw = ttf_font::text_width(f, text, self.font_size * 2.0);
-            let sx = (fb.width as i32 - tw - 8).max(0);
+            let sx = (fb.width() as i32 - tw - 8).max(0);
             ttf_font::draw_text(fb, f, text, sx, y as i32, self.font_size * 2.0, Color::GRAY);
         } else {
             let tw = font::text_width(&sbuf[..slen], 2);
-            let sx = fb.width.saturating_sub(tw + 8);
+            let sx = fb.width().saturating_sub(tw + 8);
             font::draw_text(fb, &sbuf[..slen], sx, y, Color::GRAY, 2);
         }
     }
@@ -384,39 +367,10 @@ fn main() {
             return;
         }
         Err(e) => {
-            println!("[bounce] Window::new failed: {} — falling back to mmap", e);
+            println!("[bounce] Window::new failed: {}", e);
+            process::exit(1);
         }
     }
-
-    let info = match graphics::fbinfo() {
-        Ok(info) => info,
-        Err(_e) => { println!("Error: Could not get framebuffer info"); process::exit(1); }
-    };
-
-    let height = info.height as i32;
-    let width = info.left_pane_width() as i32;
-
-    let mut spheres = make_spheres(width, height);
-
-    let fb_ptr = match graphics::fb_mmap() {
-        Ok(ptr) => ptr,
-        Err(e) => { println!("Error: Could not mmap framebuffer ({})", e); process::exit(1); }
-    };
-
-    let bpp = info.bytes_per_pixel as usize;
-    let mut fb = unsafe {
-        FrameBuf::from_raw(
-            fb_ptr,
-            width as usize,
-            height as usize,
-            (width as usize) * bpp,
-            bpp,
-            info.is_bgr(),
-        ).expect("the framebuffer is a valid surface")
-    };
-
-    println!("Starting bounce spheres demo ({} spheres, {}x{}, mmap)", NUM_SPHERES, width, height);
-    run_mmap_loop(&mut fb, &mut spheres, width, height);
 }
 
 fn make_spheres(w: i32, h: i32) -> [Sphere; NUM_SPHERES] {
@@ -448,6 +402,7 @@ fn run_window_loop(win: &mut Window, spheres: &mut [Sphere; NUM_SPHERES]) {
     let mut last_ns = clock_monotonic_ns();
 
     const TARGET_DT_NS: u64 = 16_666_667; // 60 FPS target
+    let mut first_frame = true;
 
     loop {
         let now = clock_monotonic_ns();
@@ -526,75 +481,28 @@ fn run_window_loop(win: &mut Window, spheres: &mut [Sphere; NUM_SPHERES]) {
 
         physics_step(spheres, width, height, dt_scale);
 
-        let fb = win.framebuf();
-        fb.clear(bg);
-        for sphere in spheres.iter() { sphere.draw(fb); }
-        fps.tick();
-        fps.draw(fb);
-
-        let _ = win.present();
-    }
-}
-
-/// Mmap software rendering loop.
-fn run_mmap_loop(fb: &mut FrameBuf, spheres: &mut [Sphere; NUM_SPHERES], width: i32, height: i32) {
-    let bg = Color::rgb(10, 10, 25);
-    let mut fps = FpsCounter::new();
-    let mut last_ns = clock_monotonic_ns();
-    let mut prev_buttons: u32 = 0;
-
-    const TARGET_DT_NS: u64 = 16_666_667;
-
-    loop {
-        let now = clock_monotonic_ns();
-        let elapsed_ns = now.saturating_sub(last_ns);
-        last_ns = now;
-
-        let dt_scale = if elapsed_ns > 0 {
-            ((elapsed_ns * 1024) / TARGET_DT_NS) as i64
-        } else {
-            1024
-        }.min(4096);
-
-        // Poll mouse for click detection (mmap uses left pane at origin)
-        if let Ok((mx, my, buttons)) = graphics::mouse_state() {
-            let left_pressed = (buttons & 1) != 0;
-            let left_was_pressed = (prev_buttons & 1) != 0;
-
-            if left_pressed && !left_was_pressed {
-                let lx = mx as i32;
-                let ly = my as i32;
-                if lx >= 0 && lx < width && ly >= 0 && ly < height {
-                    let mut hit = false;
-                    for sphere in spheres.iter_mut() {
-                        if sphere.hit_test(lx, ly) {
-                            sphere.impel();
-                            hit = true;
-                            break;
-                        }
-                    }
-                    if !hit {
-                        for sphere in spheres.iter_mut() {
-                            sphere.impel();
-                        }
-                    }
-                }
+        let fb = match win.surface() {
+            Ok(fb) => fb,
+            Err(e) => {
+                println!("[bounce] ERROR: no window surface: {}", e);
+                process::exit(1);
             }
-            prev_buttons = buttons;
-        }
-
-        physics_step(spheres, width, height, dt_scale);
-
-        fb.clear(bg);
-        for sphere in spheres.iter() { sphere.draw(fb); }
+        };
+        fb.batch(|fb| {
+            fb.clear(bg);
+            for sphere in spheres.iter() { sphere.draw(fb); }
+        });
         fps.tick();
         fps.draw(fb);
 
-        if let Some(dirty) = fb.take_dirty() {
-            let _ = graphics::fb_flush_rect(dirty.x, dirty.y, dirty.w, dirty.h);
+        let presented = win.present();
+        if first_frame {
+            first_frame = false;
+            match presented {
+                Ok(()) => println!("[bounce] first frame presented: {}x{}", win.width(), win.height()),
+                Err(e) => println!("[bounce] first frame present failed: {}", e),
+            }
         }
-
-        let _ = time::sleep_ms(1);
     }
 }
 
