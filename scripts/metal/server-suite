@@ -379,6 +379,9 @@ class Probe:
             send(b"sh -c 'printf \"TYPE-AHEAD-%s\\n\" ready; sleep 2'\n")
             until(re.compile(rb'(?:^|\n)TYPE-AHEAD-ready\r?\n'))
             send(prefix)
+            # Canonical echo must precede the next prompt: a late raw-mode
+            # redraw alone cannot establish input received during the child.
+            until(re.compile(rb'(?:^|\n)' + re.escape(prefix) + rb'(?=bsh [^>\r\n]*> )'))
             until(re.compile(rb'\rbsh [^>\r\n]*> ' + re.escape(prefix) + rb'\x1b\[K'))
             seen = b''
             send(b'\n')
@@ -512,7 +515,7 @@ class Console:
                 for start in range(0, len(text), self.ECHO_BLOCK):
                     end = min(start + self.ECHO_BLOCK, len(text))
                     self.send(text[start:end], enter=False)
-                    echoed = r'(?m)^' + self.PROMPT + ' ' + re.escape(text[:end]) + r'[ \t]*$'
+                    echoed = r'(?m)^' + self.PROMPT + ' ' + re.escape(text[:end]) + r'[ \t]*(?=\[init\]|\n|$)'
                     self.wait(offset, echoed, 'the complete console echo', timeout=30)
                 self.send('')
                 return
@@ -521,7 +524,7 @@ class Console:
                 # that clear before retrying rather than adding to queued input.
                 offset = self.size()
                 self.send('\x15', enter=False)
-                self.wait(offset, r'(?m)^' + self.PROMPT + r' *$', 'the cleared console line')
+                self.wait(offset, r'(?m)^' + self.PROMPT + r' *(?=\[init\]|\n|$)', 'the cleared console line')
                 if attempt + 1 == attempts:
                     raise ValueError('the console did not acknowledge the complete input line')
 

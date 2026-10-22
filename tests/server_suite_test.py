@@ -163,6 +163,28 @@ class HostServerScore(unittest.TestCase):
         self.assertEqual(entered, [text.encode()])
         self.assertEqual(pending[0], b'')
 
+    def test_console_echo_and_clear_allow_async_init_output(self):
+        console = object.__new__(host['Console'])
+        clock, capture, cleared, entered = [0.0], [''], [False], []
+        def send(text, enter=True):
+            if text == '\x15':
+                cleared[0] = True
+                capture[0] += '\nbsh root> [init] fixture exited (code 0)\n'
+            elif enter:
+                entered.append(text)
+            elif cleared[0]:
+                capture[0] += '\nbsh root> ' + text + '[init] fixture exited (code 0)\n'
+        console.send = send
+        console.size = lambda: len(capture[0])
+        console.since = lambda offset: capture[0][offset:]
+        def sleep(seconds):
+            clock[0] += seconds
+        with patch.object(host['time'], 'monotonic', side_effect=lambda: clock[0]), \
+             patch.object(host['time'], 'sleep', side_effect=sleep):
+            console.type_line('printf ok', attempts=2)
+        self.assertTrue(cleared[0])
+        self.assertEqual(entered, [''])
+
     def test_console_refuses_oversized_or_editing_input_before_typing(self):
         console = object.__new__(host['Console'])
         console.send = lambda *a, **kw: self.fail('invalid line reached the console')
