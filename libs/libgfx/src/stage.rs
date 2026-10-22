@@ -265,6 +265,9 @@ struct Canvas<'a> {
     n: usize,
     font: Option<&'a mut CachedFont>,
     origin: (usize, usize),
+    /// When set, DejaVu Sans text is kept here, `(text, x, y, size, colour, clip)` in device
+    /// pixels, and drawn after the frame's fills and pictures, none of which meets it.
+    deferred: Option<Vec<(Text, i32, i32, f32, Color, Rect)>>,
 }
 impl Canvas<'_> {
     fn fill(&mut self, x: usize, y: usize, w: usize, h: usize, c: Color) {
@@ -320,7 +323,14 @@ impl Canvas<'_> {
             return;
         };
         let left = -((self.origin.0 * n) as i32);
-        self.fb.push_clip(Rect::new(left, (y * n) as i32, ((x + width) * n) as i32 - left, (height * n) as i32));
+        let clip = Rect::new(left, (y * n) as i32, ((x + width) * n) as i32 - left, (height * n) as i32);
+        if let Some(deferred) = self.deferred.as_mut() {
+            let mut text = Text::new();
+            text.push(bytes);
+            deferred.push((text, (x * n) as i32, (y * n) as i32, (7 * scale * n) as f32, color, clip));
+            return;
+        }
+        self.fb.push_clip(clip);
         ttf_font::draw_text_bytes(self.fb, font, bytes, (x * n) as i32, (y * n) as i32, (7 * scale * n) as f32, color);
         self.fb.pop_clip();
     }
@@ -534,14 +544,26 @@ impl Stage {
         }
         let mut font = if n == 1 { None } else { Some(font.get()?) };
         let target = target.as_mut().ok_or(StageError::Size)?;
-        target.batch(|w| update_wall(&mut Canvas { fb: w, n, font: font.as_deref_mut(), origin: (WALL.0, WALL.1) }, run, wall, tiles, heads));
+        target.batch(|w| update_wall(&mut Canvas { fb: w, n, font: font.as_deref_mut(), origin: (WALL.0, WALL.1), deferred: None }, run, wall, tiles, heads));
         if let Some(e) = target.error() {
             *laid = None;
             return Err(StageError::Device(e));
         }
         let mut trails = Vec::new();
-        fb.batch(|fb| paint(&mut Canvas { fb, n, font: font.as_deref_mut(), origin: (0, 0) }, run, target, &mut trails));
-        let cv = &mut Canvas { fb, n, font: font.as_deref_mut(), origin: (0, 0) };
+        let mut texts = Vec::new();
+        fb.batch(|fb| {
+            let cv = &mut Canvas { fb, n, font: font.as_deref_mut(), origin: (0, 0), deferred: Some(Vec::new()) };
+            paint(cv, run, target, &mut trails);
+            texts = cv.deferred.take().unwrap_or_default();
+        });
+        if let Some(f) = font.as_deref_mut() {
+            let runs: Vec<ttf_font::TextRun<'_>> = texts
+                .iter()
+                .map(|(t, x, y, size, fg, clip)| ttf_font::TextRun { bytes: t.bytes(), x: *x, y: *y, size: *size, fg: *fg, clip: *clip })
+                .collect();
+            ttf_font::draw_runs(fb, f, &runs);
+        }
+        let cv = &mut Canvas { fb, n, font: font.as_deref_mut(), origin: (0, 0), deferred: None };
         for (points, x, y, w, h) in &trails {
             trail(cv, points, *x, *y, *w, *h);
         }

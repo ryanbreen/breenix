@@ -761,11 +761,11 @@ pub(crate) struct TextRun<'a> {
 }
 
 /// Draw `runs`, each as `draw_text_bytes` draws it under its clip, for runs whose glyph boxes
-/// do not meet one another's (the run stage's tiles and headings): the k-th glyphs of the
-/// runs share draws, by atlas page and colour, so each run's own glyphs still blend one after
-/// another and no draw holds two glyphs that meet. When gathering the runs' glyphs evicted an
-/// atlas entry, an earlier run's glyph may name a reused slot, so the runs are drawn one by
-/// one instead.
+/// do not meet one another's (the run stage's text): a glyph goes in the layer after the last
+/// earlier glyph of its run that it meets, and a layer's glyphs share draws, by atlas page
+/// and colour, so glyphs that meet still blend in their run's order and no draw holds two
+/// glyphs that meet. When gathering the runs' glyphs evicted an atlas entry, an earlier run's
+/// glyph may name a reused slot, so the runs are drawn one by one instead.
 pub(crate) fn draw_runs(fb: &mut Surface, font: &mut CachedFont, runs: &[TextRun<'_>]) {
     type Placed = (Arc<AtlasGlyph>, i64, i64, Box64, Color);
     let before = font.cache_stats();
@@ -775,15 +775,21 @@ pub(crate) fn draw_runs(fb: &mut Surface, font: &mut CachedFont, runs: &[TextRun
         let glyphs = glyphs_of(font, decode_utf8(r.bytes)).collect();
         let (placed, _) = visible(fb, font, glyphs, r.x, r.y, r.size);
         let clip = fb.clip_box();
-        let mut k = 0;
+        // Each earlier glyph of this run that draws: its box and layer.
+        let mut drawn: Vec<(Box64, usize)> = Vec::new();
         let mut failed = None;
         font.run(&placed, Font::size26(r.size).unwrap_or(0), |got| match got {
             Ok((image, dx)) => {
-                if layers.len() <= k {
-                    layers.push(Vec::new());
+                let (x, y) = (r.x as i64 + dx, r.y as i64);
+                let b = Box64::wide(x + image.x_offset as i64, y + image.y_offset as i64, image.width as i64, image.height as i64).intersect(&clip);
+                let layer = drawn.iter().filter(|(o, _)| !o.intersect(&b).is_empty()).map(|(_, l)| l + 1).max().unwrap_or(0);
+                if !b.is_empty() {
+                    drawn.push((b, layer));
                 }
-                layers[k].push((image, r.x as i64 + dx, r.y as i64, clip, r.fg));
-                k += 1;
+                if layers.len() <= layer {
+                    layers.resize_with(layer + 1, Vec::new);
+                }
+                layers[layer].push((image, x, y, clip, r.fg));
             }
             Err(Error::Device(e)) => failed = Some(e),
             Err(_) => {}
