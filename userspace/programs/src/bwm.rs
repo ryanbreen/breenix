@@ -1418,7 +1418,8 @@ fn execute_hotkey_action(action: &HotkeyAction, windows: &mut Vec<Window>, focus
 /// `background_pixel`'s formula). The read-back's record must name a scanout of the composed
 /// size, the one MODES reports bound, and the GPU core's current mode must have that size.
 fn check_desktop_fills(gpu: &mut Compositor, screen_w: usize, screen_h: usize, mode_index: u32) -> Result<String, String> {
-    gpu.compose(&[], None, &[]).map_err(|e| e.to_string())?;
+    // The whole frame, so no pointer the last frame drew remains in it.
+    gpu.compose(&[], None, &[[0, 0, screen_w as i32, screen_h as i32]]).map_err(|e| e.to_string())?;
     let (w, h) = (screen_w as u32, screen_h as u32);
     let (tb, ab) = (px(TASKBAR_HEIGHT) as u32, px(APPBAR_HEIGHT) as u32);
     let word = |c: Color| 0xFF00_0000 | (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32;
@@ -1605,7 +1606,7 @@ fn main() {
     let first = gpu
         .compose(&[], Some(first_pointer), &[])
         .map_err(|e| CheckError::Failed(e.to_string()))
-        .and_then(|()| gpu.check(&[], Some(first_pointer)));
+        .and_then(|()| gpu.check(0, &[], Some(first_pointer)));
     match first {
         Ok(pixels) => print!("[bwm] first frame read back: {} pixels exact\n", pixels),
         Err(CheckError::Moved(e)) | Err(CheckError::Failed(e)) => print!("[bwm] first frame check FAILED: {}\n", e),
@@ -1687,7 +1688,7 @@ fn main() {
                 full_redraw = true;
             }
             // A committed client frame is composed without repainting the desktop.
-            windows_dirty = true;
+            windows_dirty |= gpu.pending();
         }
 
         // ── 2. Process keyboard input ──
@@ -2141,30 +2142,30 @@ fn main() {
                     } else {
                         Vec::new()
                     };
-                    let checks: Vec<(u64, bool, [u32; 4])> = if !initial_client_checked {
-                        unchecked.first().map(|&(id, _)| (id, true, [0, 0, screen_w as u32, screen_h as u32])).into_iter().collect()
-                    } else {
-                        unchecked.iter().map(|&(id, area)| (id, false, area)).collect()
-                    };
-                    for (id, whole, area) in checks {
-                        let result = if whole { gpu.check(&layers, Some(pointer)) } else { gpu.check_area(&layers, Some(pointer), area) };
-                        let Some(win) = windows.iter_mut().find(|win| win.window_id == id) else { continue };
-                        if let Err(CheckError::Moved(_)) = &result {
-                            win.check_moved += 1;
-                            if win.check_moved < CHECK_MOVED_LIMIT {
-                                continue;
+                    // One check a frame: the unchecked window tried the fewest times.
+                    let next = unchecked.iter()
+                        .min_by_key(|(id, _)| windows.iter().find(|w| w.window_id == *id).map_or(0, |w| w.check_moved))
+                        .copied();
+                    if let Some((id, area)) = next {
+                        let whole = !initial_client_checked;
+                        let area = if whole { [0, 0, screen_w as u32, screen_h as u32] } else { area };
+                        let result = if whole { gpu.check(id, &layers, Some(pointer)) } else { gpu.check_area(id, &layers, Some(pointer), area) };
+                        let retry = match (&result, windows.iter_mut().find(|win| win.window_id == id)) {
+                            (Err(CheckError::Moved(_)), Some(win)) => {
+                                win.check_moved += 1;
+                                win.check_moved < CHECK_MOVED_LIMIT
                             }
-                        }
-                        win.frame_checked = true;
-                        if whole {
-                            initial_client_checked = true;
-                            for (other, _) in &unchecked {
-                                if let Some(w) = windows.iter_mut().find(|w| w.window_id == *other) {
-                                    w.frame_checked = true;
-                                }
+                            _ => false,
+                        };
+                        if !retry {
+                            if let Some(win) = windows.iter_mut().find(|win| win.window_id == id) {
+                                win.frame_checked = true;
                             }
+                            if whole {
+                                initial_client_checked = true;
+                            }
+                            report_check(id, whole, area, &result);
                         }
-                        report_check(id, whole, area, &result);
                     }
                 }
                 Err(FrameError::NotOwner) => {
