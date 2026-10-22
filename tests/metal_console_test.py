@@ -181,7 +181,7 @@ class ConsoleTest(unittest.TestCase):
         runner = existing.load_script('metal-run')
         for mode, input_kind in [('console', None), ('default', 'sol')]:
             with self.assertRaisesRegex(SystemExit, 'console mode requires'):
-                runner.boot(SimpleNamespace(mode=mode, input=input_kind))
+                runner.boot(SimpleNamespace(mode=mode, input=input_kind, suite=None))
 
     def test_password_is_sent_on_stdin_and_redacted(self):
         driver = self.driver()
