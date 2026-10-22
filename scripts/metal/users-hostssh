@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Answer a users suite boot's HOSTSSH records from the boot host's OpenSSH.
+
+    python3 ~/.local/share/breenix-metal/users-hostssh --boot ID
+
+Run on the boot host beside an R240 boot of `--mode suite --suite users`
+(docs/suites/README.md, "Users & permissions"). The ssh category's OpenSSH
+cases start bsshd on port 22 and print one record each:
+
+    SUITE users HOSTSSH ssh/<case> seq=N try=account|root addr=A.B.C.D port=22 user=NAME fp=SHA256:...
+
+For each record this runner scans the host key and requires its fingerprint
+to be the one the boot printed over the serial console, then pins it in an
+isolated known_hosts file with strict host-key checking. `try=account` first
+requires a deliberately wrong pinned key to fail host-key verification;
+`try=root` first requires root to be refused with the operator's key. Either
+way it then logs in as the staged operator account with the operator's key and
+runs `report <what it saw>`, which the case reads on the machine. Its
+transcript goes to `users-hostssh.json` in the boot's private store.
+"""
+import argparse
+import json
+import re
+import runpy
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+
+REQUEST = re.compile(r'SUITE users HOSTSSH (ssh/[a-z0-9-]+) seq=(\d+) try=(account|root) addr=(\d{1,3}(?:\.\d{1,3}){3})'
+                     r' port=(\d{1,5}) user=([a-z_][a-z0-9_-]{0,31}) fp=(SHA256:[A-Za-z0-9+/]+)\r?')
+DONE = re.compile(r'SUITE users DONE passed=\d+ failed=\d+ skipped=\d+ total=\d+\r?')
+
+
+def command(args, **kwargs):
+    kwargs.setdefault('timeout', 45)
+    kwargs.setdefault('text', True)
+    return subprocess.run(args, capture_output=True, **kwargs)
+
+
+def seen(result, refusal):
+    """What one OpenSSH attempt shows: `refused` when it failed for `refusal`, `accepted` when it ran, else `error`."""
+    if result.returncode == 255 and refusal in result.stderr:
+        return 'refused'
+    return 'accepted' if result.returncode == 0 else 'error'
+
+
+class Client:
+    def __init__(self, identity, directory):
+        self.identity, self.directory = identity, Path(directory)
+        self.wrong = self.directory / 'wrong'
+        if command(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(self.wrong)]).returncode:
+            raise ValueError('cannot generate the wrong host key')
+
+    def ssh(self, user, addr, port, known, remote):
+        args = ['ssh', '-F', '/dev/null', '-p', str(port), '-o', 'ConnectTimeout=10', '-o', 'ConnectionAttempts=1',
+                '-o', 'StrictHostKeyChecking=yes', '-o', 'UserKnownHostsFile=' + str(known),
+                '-o', 'GlobalKnownHostsFile=/dev/null', '-o', 'HostKeyAlgorithms=ssh-ed25519',
+                '-o', 'IdentitiesOnly=yes', '-o', 'IdentityAgent=none', '-o', 'BatchMode=yes',
+                '-i', str(self.identity), user + '@' + addr, remote]
+        result = command(args)
+        return result, dict(user=user, command=remote, exit=result.returncode, stderr=result.stderr.strip()[-400:])
+
+    def answer(self, case, seq, attempt, addr, port, user, fingerprint):
+        record = dict(case=case, seq=int(seq), attempt=attempt, steps=[])
+        known = self.directory / ('known-%s-%s' % (case.replace('/', '-'), seq))
+        scan = command(['ssh-keyscan', '-T', '10', '-p', port, '-t', 'ed25519', addr])
+        lines = [line for line in scan.stdout.splitlines() if line and not line.startswith('#')]
+        if scan.returncode or len(lines) != 1:
+            record['error'] = 'OpenSSH keyscan did not return exactly one Ed25519 key'
+            return record
+        scanned = command(['ssh-keygen', '-E', 'sha256', '-lf', '-'], input=lines[0] + '\n')
+        record['scanned'] = scanned.stdout.split()[1] if scanned.returncode == 0 and len(scanned.stdout.split()) > 1 else None
+        if record['scanned'] != fingerprint:
+            record['error'] = 'the scanned host key is not the one this boot printed'
+            return record
+        if attempt == 'account':
+            # A deliberately different pinned key must fail strict checking.
+            wrong = (self.wrong.with_suffix('.pub')).read_text().split()
+            known.write_text(lines[0].split()[0] + ' ' + ' '.join(wrong[:2]) + '\n')
+            result, step = self.ssh(user, addr, port, known, 'true')
+            statement = 'wrong-host-key=' + seen(result, 'Host key verification failed')
+        else:
+            known.write_text(lines[0] + '\n')
+            result, step = self.ssh('root', addr, port, known, 'true')
+            statement = 'root=' + seen(result, 'Permission denied (publickey)')
+        record['steps'].append(step)
+        known.write_text(lines[0] + '\n')
+        result, step = self.ssh(user, addr, port, known, 'report ' + statement)
+        record['steps'].append(step)
+        record['statement'] = statement
+        return record
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--boot', required=True)
+    parser.add_argument('--minutes', type=float, default=45, help='stop after this long (default 45)')
+    args = parser.parse_args()
+    if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot):
+        parser.error('--boot ID required')
+    runner = runpy.run_path(str(Path(__file__).with_name('metal-run')))
+    env = runner['host_env']()
+    remote = lambda *cmd, **kw: runner['in_metal'](env, *cmd, capture_output=True, **kw)
+    directory = '/var/lib/breenix-metal/boots/' + args.boot
+    fields = ('OPERATOR_USER', 'OPERATOR_SSH_PUBLIC_KEY')
+    site = remote('python3', '-c', 'import sys,json;sys.path.insert(0,"/opt/breenix-metal");'
+                  'import metal_lib;s=metal_lib.load_site();'
+                  'print(json.dumps({k:s.get(k) for k in ' + repr(fields) + '}))', text=True)
+    if site.returncode:
+        raise SystemExit('users-hostssh: cannot read the site fields')
+    site = json.loads(site.stdout)
+    if not site['OPERATOR_USER'] or not site['OPERATOR_SSH_PUBLIC_KEY']:
+        raise SystemExit('users-hostssh: the site names no operator account and key')
+    identity = next((p.with_suffix('') for p in (Path.home() / '.ssh').glob('*.pub')
+                     if p.read_text().split()[:2] == site['OPERATOR_SSH_PUBLIC_KEY'].split()[:2]
+                     and p.with_suffix('').is_file()), None)
+    if identity is None:
+        raise SystemExit('users-hostssh: the boot host has no private key matching the operator public key')
+    records = dict(boot=args.boot, requests=[])
+    answered, offset, pending = set(), 0, b''
+    deadline = time.monotonic() + args.minutes * 60
+    with tempfile.TemporaryDirectory(prefix='users-hostssh-') as scratch:
+        client = Client(identity, scratch)
+        while time.monotonic() < deadline:
+            chunk = remote('tail', '-c', '+%d' % (offset + 1), directory + '/serial.txt')
+            if chunk.returncode == 0:
+                offset += len(chunk.stdout)
+                pending += chunk.stdout
+            *lines, pending = pending.split(b'\n')
+            finished = False
+            for line in (raw.decode('utf-8', errors='replace') for raw in lines):
+                if DONE.fullmatch(line):
+                    finished = True
+                request = REQUEST.fullmatch(line)
+                if not request or request.group(1, 2) in answered:
+                    continue
+                answered.add(request.group(1, 2))
+                case, seq, attempt, addr, port, user, fingerprint = request.groups()
+                if user != site['OPERATOR_USER']:
+                    record = dict(case=case, seq=int(seq), attempt=attempt, error='the record names another account')
+                else:
+                    record = client.answer(case, seq, attempt, addr, port, user, fingerprint)
+                print('users-hostssh: %s seq=%s %s' % (case, seq, record.get('statement') or record.get('error')), flush=True)
+                records['requests'].append(record)
+                result = runner['in_metal'](env, 'tee', directory + '/users-hostssh.json', stdin=None,
+                                            input=json.dumps(records) + '\n', capture_output=True, text=True)
+                if result.returncode:
+                    raise SystemExit('users-hostssh: cannot store the transcript')
+            if finished or remote('test', '-e', directory + '/ended').returncode == 0:
+                break
+            time.sleep(0.5)
+    print('users-hostssh: answered %d record(s)' % len(records['requests']), flush=True)
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

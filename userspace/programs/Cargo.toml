@@ -807,6 +807,22 @@ name = "login"
 path = "src/login.rs"
 
 [[bin]]
+name = "su"
+path = "src/su.rs"
+
+[[bin]]
+name = "sudo"
+path = "src/sudo.rs"
+
+[[bin]]
+name = "passwd"
+path = "src/passwd.rs"
+
+[[bin]]
+name = "users-login-probe_test"
+path = "src/users_login_probe.rs"
+
+[[bin]]
 name = "console-login-shell"
 path = "src/console_login_shell.rs"
 

@@ -239,6 +239,7 @@ class Driver:
         self.hostkey_watcher = None
         self.console_step = 0
         self.console_done = False
+        self.console_sudo_answered = False
         self.delivery = {}
         self.console_intent = None
         self.payload_facts = None
@@ -974,6 +975,12 @@ class Driver:
             if paced:
                 time.sleep(0.04)
 
+    def console_account(self):
+        """The account staging gave the console password to (metal_root.console_account): the users suite's wheel
+        fixture, which reads the root-only screen check through sudo, or root on images from before it."""
+        staged = self.delivery.get('diskRoot') or self.delivery.get('root') or {}
+        return staged.get('consoleAccount', 'root')
+
     def challenge_console(self, text, complete=False):
         if xhci_fault(self.args):
             return
@@ -993,9 +1000,10 @@ class Driver:
                 raise Finish(m.EXIT_DONE, 'USB keyboard challenge completed')
             return
         step = self.console_step
+        account = self.console_account()
         if step in (0, 3) and 'login: ' in text:
             self.console_step += 1
-            self.console_send(self.site['CONSOLE_USER'], paced=True)
+            self.console_send(self.site['CONSOLE_USER'] if account == 'root' else account, paced=True)
         elif step in (1, 4) and 'Password: ' in text:
             self.console_step += 1
             self.console_send('deliberately-wrong-password' if step == 1 else self.site['CONSOLE_PASSWORD'], paced=True)
@@ -1008,7 +1016,11 @@ class Driver:
         elif step == 6 and text.strip() == 'metal-login-ok 42':
             self.console_step = 7
             self.event('console-computation-answered')
-            self.console_send('cat /proc/fbcon/check', paced=True)
+            self.console_send('cat /proc/fbcon/check' if account == 'root' else 'sudo cat /proc/fbcon/check', paced=True)
+        elif step == 7 and account != 'root' and not self.console_sudo_answered and f'[sudo] password for {account}: ' in text:
+            self.console_sudo_answered = True
+            self.event('console-sudo-password')
+            self.console_send(self.site['CONSOLE_PASSWORD'], paced=True)
         elif step == 7 and complete and text.startswith('fbcon check: '):
             self.console_step = 8
         elif step == 8 and re.match(r'bsh [^\n]*>', text):

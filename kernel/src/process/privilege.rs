@@ -41,6 +41,9 @@ pub enum Operation {
     /// The sound device. Until a login session owns its devices (the main
     /// path's graphical login), only root plays sound.
     Audio,
+    /// Revoking the controlling terminal from the descriptions open on it
+    /// (vhangup), which getty does before each login.
+    TerminalHangup,
 }
 
 impl Operation {

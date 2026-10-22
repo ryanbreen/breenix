@@ -23,6 +23,16 @@ const EACCES: u64 = 13;
 /// EINVAL - Invalid argument
 const EINVAL: u64 = 22;
 
+/// vhangup() - revoke the controlling terminal from the descriptions open on
+/// it (`tty::ctty::vhangup`). Root only (EPERM); ENOTTY without a
+/// controlling terminal.
+pub fn sys_vhangup() -> SyscallResult {
+    match crate::tty::ctty::vhangup() {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(errno) => SyscallResult::Err(errno as u64),
+    }
+}
+
 /// setsid() - Create a new session
 ///
 /// Creates a new session if the calling process is not a process group leader.

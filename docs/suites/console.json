@@ -344,6 +344,10 @@
           "title": "The per-run account logs in on a numbered terminal"
         },
         {
+          "id": "root-login-on-vt",
+          "title": "Root logs in with its own password on a numbered terminal under the shipped ROOT_LOGIN no"
+        },
+        {
           "id": "logout-reacquires",
           "title": "After logout the terminal's getty is respawned and prompts again"
         },

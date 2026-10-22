@@ -122,9 +122,11 @@ fn progress_or_error(offset: usize, error: i32) -> SyscallResult {
 }
 
 /// Generic Console/Tty reads use the live input ring and descriptor status flags.
-pub(crate) fn read_console(buf: &mut [u8], is_nonblocking: bool) -> Result<usize, i32> {
+/// Once `live` turns false (the terminal was revoked from the descriptor), the
+/// read takes no more input and returns end of file.
+pub(crate) fn read_console(buf: &mut [u8], is_nonblocking: bool, live: &dyn Fn() -> bool) -> Result<usize, i32> {
     loop {
-        let outcome = match crate::ipc::stdin::read_or_prepare(buf, is_nonblocking) {
+        let outcome = match crate::ipc::stdin::read_or_prepare(buf, is_nonblocking, live) {
             Ok(n) => return Ok(n),
             Err(outcome) => outcome,
         };
@@ -141,14 +143,15 @@ pub(crate) fn read_terminal(
     device: crate::fs::devfs::DeviceType,
     buf: &mut [u8],
     is_nonblocking: bool,
+    live: &dyn Fn() -> bool,
 ) -> Result<usize, i32> {
     let input = match device.terminal() {
-        Some(1) => return read_console(buf, is_nonblocking),
+        Some(1) => return read_console(buf, is_nonblocking, live),
         Some(number) => crate::ipc::stdin::vt_input(number - 1).ok_or(errno::ENXIO)?,
         None => return Err(errno::ENXIO),
     };
     loop {
-        let outcome = match input.read_or_prepare(buf, is_nonblocking) {
+        let outcome = match input.read_or_prepare(buf, is_nonblocking, live) {
             Ok(n) => return Ok(n),
             Err(outcome) => outcome,
         };

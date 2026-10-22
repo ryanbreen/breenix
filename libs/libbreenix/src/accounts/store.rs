@@ -846,6 +846,24 @@ fn random_bytes(bytes: &mut [u8]) -> Result<()> {
 /// Append a bounded audit record, omitting passwords and hashes. Site-specific
 /// target names are runtime data only. The file is created by layout at 0640.
 pub fn audit(root: &Path, program: &str, target: &str, success: bool) -> Result<()> {
+    let user = unsafe { getuid() }.to_string();
+    log(
+        root,
+        &super::session::Record {
+            program,
+            user: &user,
+            target,
+            tty: "-",
+            refused: (!success).then_some("operation"),
+            cmd: "",
+        },
+    )
+}
+
+/// Append `record` to `/var/log/auth.log` (fsynced) and send it to the
+/// root-only `/dev/kmsg` audit sink. Each field keeps only printable ASCII
+/// without `=`, so a record stays one line that cannot forge another field.
+pub fn log(root: &Path, record: &super::session::Record<'_>) -> Result<()> {
     let path = root.join("var/log/auth.log");
     let m = io(fs::symlink_metadata(&path))?;
     if !m.is_file() || m.uid() != owner() || m.mode() & 0o7777 != 0o640 {
@@ -867,14 +885,37 @@ pub fn audit(root: &Path, program: &str, target: &str, success: bool) -> Result<
     let d = doy - (153 * mp + 2) / 5 + 1;
     let month = mp + if mp < 10 { 3 } else { -9 };
     y += i64::from(month <= 2);
-    let safe = |s: &str| -> String {
-        s.chars()
-            .filter(|c| c.is_ascii_alphanumeric() || "_-/".contains(*c))
-            .take(64)
-            .collect()
+    let word = |s: &str, n: usize| -> String {
+        let w: String = s
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || "_-/.:".contains(*c))
+            .take(n)
+            .collect();
+        if w.is_empty() { "-".into() } else { w }
     };
-    let line = format!("{y:04}-{month:02}-{d:02}T{:02}:{:02}:{:02}Z {}[{}] user={} target={} tty=- result={} cmd=\n",
-        now%86400/3600, now%3600/60, now%60, safe(program), unsafe { getpid() }, unsafe { getuid() }, safe(target), if success { "ok" } else { "refused:operation" });
+    let cmd: String = record
+        .cmd
+        .chars()
+        .map(|c| if c.is_ascii_graphic() && c != '=' { c } else { ' ' })
+        .take(256)
+        .collect();
+    let result = match record.refused {
+        None => "ok".to_string(),
+        Some(reason) => format!("refused:{}", word(reason, 48)),
+    };
+    let line = format!(
+        "{y:04}-{month:02}-{d:02}T{:02}:{:02}:{:02}Z {}[{}] user={} target={} tty={} result={} cmd={}\n",
+        now % 86400 / 3600,
+        now % 3600 / 60,
+        now % 60,
+        word(record.program, 32),
+        unsafe { getpid() },
+        word(record.user, 64),
+        word(record.target, 64),
+        word(record.tty, 16),
+        result,
+        cmd.trim_end()
+    );
     let mut f = io(OpenOptions::new().append(true).open(&path))?;
     io(f.write_all(line.as_bytes()))?;
     io(f.sync_all())?;

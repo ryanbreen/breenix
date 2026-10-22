@@ -114,9 +114,9 @@ operations below call it or the parent policy built on it:
 | kill, priority, affinity | kill as today. Raising priority, real-time policies and changing another user's affinity need root. |
 | ptrace (K11) | The tracer's real uid and gid must equal each of the target's uids and gids, and the target must not have gained an identity at exec. Otherwise root. |
 | /proc | Pid directories stay listable. `exe`, `kernel_output` and any later `fd`, `environ` or `mem` use the ptrace-read rule (K9). `kmsg` and `trace/*` are root-only. Owners shown are the process's euid and egid. |
-| devfs | Real owners and modes, checked at open (K7). `null`, `zero` (device names in `kernel/src/fs/devfs/mod.rs`<!-- claim-lint:ok: kernel/src/fs/devfs/mod.rs -->), `tty` and `ptmx` 0666; `console` 0600 root; `tty1`–`tty6` 0620 root:tty, given to the user at login and returned at logout; `vcs*` 0600 root; `rtc0` 0444. An ext2 device inode opens its device by its own owner and mode on a mount without `nodev`, and is refused (EACCES) on a `nodev` mount such as `/home`. Making one is device mknod, which only root may do, so an account cannot mint a device (ruling S13). |
+| devfs | Real owners and modes, checked at open (K7). `null`, `zero` (device names in `kernel/src/fs/devfs/mod.rs`<!-- claim-lint:ok: kernel/src/fs/devfs/mod.rs -->), `tty` and `ptmx` 0666; `console` 0600 root; `tty1`–`tty6` 0620 root:tty, given to the user at login and returned at logout, when getty also revokes the terminal from the descriptors still open on it (vhangup); `vcs*` 0600 root; `rtc0` 0444. An ext2 device inode opens its device by its own owner and mode on a mount without `nodev`, and is refused (EACCES) on a `nodev` mount such as `/home`. Making one is device mknod, which only root may do, so an account cannot mint a device (ruling S13). |
 | fd passing | SCM_RIGHTS moves an open description with its access mode and no recheck, as POSIX intends. |
-| Privileged operations | One list in `kernel/src/process/privilege.rs`: clock_settime, sethostname, chroot, raising hard rlimits, TCP and UDP ports below 1024 (K8), device mknod, framebuffer, audio and GPU calls outside the session's devices (a window's operations are its owner's, and the display's holder or root may act on another process's window), reboot, and the trace controls. Refusals are EPERM, or EACCES for ports. |
+| Privileged operations | One list in `kernel/src/process/privilege.rs`: clock_settime, sethostname, chroot, raising hard rlimits, TCP and UDP ports below 1024 (K8), device mknod, framebuffer, audio and GPU calls outside the session's devices (a window's operations are its owner's, and the display's holder or root may act on another process's window), revoking a terminal (vhangup), reboot, and the trace controls. Refusals are EPERM, or EACCES for ports. |
 
 **Storage.** ext2 keeps its mode and split 32-bit owners, with no ACLs. The filesystem effort's `fs-interface` exposes
 `InodeAttrs { mode, uid, gid, nlink, times }` with the checks staying in the VFS; the CoW filesystem stores the same
@@ -165,7 +165,8 @@ no sudoers compatibility.
   `permit %wheel as root`.
 - **Authentication:** the caller's own password, cached 5 minutes in `/run/sudo/<uid>/<session>` for that session
   and terminal. `-n` does not prompt.
-- **Execution:** the command resolves to an absolute path before the policy check. The environment is reset:
+- **Execution:** the command resolves to an absolute path before the policy check and runs as that path with its
+  arguments as an argument vector, not through a shell. The environment is reset:
   PATH=/usr/sbin:/usr/bin:/sbin:/bin, the target's HOME and USER, TERM kept, SUDO_USER and SUDO_COMMAND set.
   umask is 022.
 
@@ -183,7 +184,9 @@ root:adm, O_APPEND, fsync) and to `/dev/kmsg`. No password or hash is written.
 6. Install a clean environment and chdir to the home.
 7. Exec the login shell.
 
-`/etc/login.defs` also holds `ROOT_LOGIN no` (login and bsshd refuse uid 0) and `FAIL_DELAY 2`.
+`/etc/login.defs` also holds `ROOT_LOGIN no` and `FAIL_DELAY 2`. `ROOT_LOGIN` governs remote logins only (ruling
+S14): login refuses uid 0 on a pseudo-terminal line unless it says `yes`, root logs in on the local console and
+virtual terminals with its own password (S9), and bsshd refuses uid 0 whatever it says (D4).
 
 On the ssh-doors base, bsshd's `Authorizer` resolves accounts through the library. It reads `~/.ssh/authorized_keys`
 only when the file, `~/.ssh` and the home are owned by the account and not group- or world-writable, calls
@@ -259,7 +262,7 @@ Example only: `operator:x:1000:1000:Operator:/home/operator:/bin/bsh` (S12), gro
   and `~/.ssh/authorized_keys` (0600) from it, then deletes it.
 
 **Logging in.**
-- **Console:** getty and login as `operator` with its password; root is refused.
+- **Console:** getty and login as `operator` with its password; root logs in there with its own password (S9, S14).
 - **SSH:** port 22, keys only, as `operator`. Root's staged `authorized_keys` from ssh-doors is removed after the first
   successful operator login over SSH (D4).
 - **Root:** reached through `sudo` (operator's password) or `su -` (root's password, wheel only).
@@ -273,11 +276,17 @@ graphical login is later main-path work.
 
 `docs/suites/users.json`, `/sbin/suite-users`, running as PID 1 on the test root.
 - **Fixtures:** test images only get `ua` 2001, `ub` 2002, `uw` 2003 (in wheel) and group `ug` 2100 (member
-  `ua`), with a hash generated at image build. It is not committed and not staged on the persistent install.
+  `ua`), with locked passwords; the persistent install leaves them out. The login and admin cases make their own
+  accounts through the library with passwords set at run time, and R240 console boots stage the private console
+  password for `uw` ([logins and administration](login.md)). No password or hash is committed. The image records
+  each fixture-created account record verbatim in `/etc/breenix/test-fixtures`, and the persistent install leaves
+  out exactly those records, not an account matched by its name.
 - **Cases:** each forks a child that becomes a fixture account through `become`, performs the operation and
   reports through a pipe.
 - **Targets:** ARM64 QEMU for iteration (S2); acceptance is `metal-run boot --suite users --milestone users/<milestone-id>` on the R240. The `ssh`
-  category uses loopback bssh on QEMU and the boot host's OpenSSH on the R240.
+  category's acceptance on the R240 is the boot host's OpenSSH (strict host key, the operator's key, root refused),
+  answered by `scripts/metal/users-hostssh` beside the boot; loopback bsshd and bssh cases run beside it on each
+  target (ruling S14). The catch-up gives the VMs their host client.
 
 | Category | Representative cases |
 |---|---|
@@ -291,9 +300,9 @@ graphical login is later main-path work.
 | `layout` | `fhs-paths` (each table row's owner and mode), `shadow-0600`, `sudo-policy-0440`, `setuid-set` (no set-ID inode outside the design table), `run-cleared` |
 | `accounts` | `useradd-entries`, `useradd-home-0700`, `useradd-duplicate-refused`, `userdel-removes`, `usermod-groups`, `lock-serializes` (two concurrent useradds keep both), `interrupted-write-intact`, `passwd-own`, `passwd-other-refused`, `id-output` |
 | `su` | `setuid-set` (exactly su, passwd and sudo set-user-ID root; S11), `su-wrong-password-refused`, `su-root-ok`, `su-nonwheel-refused`, `su-dash-env`, `su-logged` |
-| `sudo` | `sudo-wheel-ok`, `sudo-nonwheel-refused`, `sudo-wrong-password`, `sudo-env-reset`, `sudo-bad-policy-mode-refused`, `sudo-logged` |
-| `login` | `login-user` (IDs, groups, HOME, cwd, shell), `login-root-refused`, `login-locked-refused`, `login-expired-refused`, `login-tty-owned`, `login-umask`, `logout-tty-restored` |
-| `ssh` | `ssh-identity`, `ssh-root-refused`, `ssh-groups`, `ssh-pty-owner`, `ssh-bad-key-mode-refused` |
+| `sudo` | `sudo-wheel-ok`, `sudo-nonwheel-refused`, `sudo-wrong-password`, `sudo-env-reset`, `sudo-bad-policy-mode-refused`, `sudo-first-match` (two overlapping rules, each order), `sudo-argv-no-shell`, `sudo-logged` |
+| `login` | `login-user` (IDs, groups, HOME, cwd, shell), `login-root-refused`, `login-locked-refused`, `login-expired-refused`, `login-tty-owned`, `login-umask`, `logout-tty-restored`, `logout-revokes-terminal` |
+| `ssh` | `openssh-operator`, `openssh-root-refused` (the boot host's OpenSSH on the R240), `ssh-identity`, `ssh-root-refused`, `ssh-groups`, `ssh-pty-owner`, `ssh-bad-key-mode-refused` |
 
 The failure delays are fixed waits, not timing assertions. The suite is still `timingSensitive`, because each case
 forks and some start threads, which the suite manifests classify as concurrency (`tests/suite_manifests.rs`).

@@ -53,6 +53,16 @@ pub unsafe extern "C" fn malloc(size: usize) -> *mut u8 {
     base.add(HEADER)
 }
 
+/// Unmap the blocks the allocation cache keeps for reuse; returns how many.
+/// The cache holds free memory: a process that measures what it still uses (the
+/// suite runner's memory record) releases it first. Breenix-specific.
+#[no_mangle]
+pub unsafe extern "C" fn __breenix_malloc_release_cached() -> usize {
+    alloc_cache::drain(|class, ptr| {
+        munmap(header(ptr) as *mut u8, alloc_cache::capacity(class) + HEADER);
+    })
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn free(ptr: *mut u8) {
     if ptr.is_null() {

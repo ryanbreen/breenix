@@ -204,6 +204,9 @@ pub struct FileDescriptor {
     pub(crate) native_inode: Option<crate::fs::ext2::live_inode::FileHandle>,
     /// The options of the mount the file was opened through (fstatvfs `f_flag`).
     pub(crate) mount_flags: crate::fs::attrs::MountFlags,
+    /// The open clock when the description was created; a terminal revoked
+    /// later (`tty::revoke`) no longer serves it.
+    opened: u64,
 }
 
 impl core::fmt::Debug for FileDescriptor {
@@ -254,6 +257,7 @@ impl FileDescriptor {
             description: Arc::new(AtomicU32::new(word)),
             native_inode: None,
             mount_flags: Default::default(),
+            opened: crate::tty::revoke::now(),
         }
     }
 
@@ -267,6 +271,7 @@ impl FileDescriptor {
             description: Arc::try_new(AtomicU32::new(word)).map_err(|_| 12)?,
             native_inode: None,
             mount_flags: Default::default(),
+            opened: crate::tty::revoke::now(),
         })
     }
 
@@ -288,7 +293,25 @@ impl FileDescriptor {
     pub fn try_opened(kind: FdKind, open_flags: u32) -> Result<Self, u64> {
         let flags = if open_flags & status_flags::O_CLOEXEC != 0 { flags::FD_CLOEXEC } else { 0 };
         let word = (open_flags & status_flags::O_ACCMODE) | (open_flags & SETTABLE_STATUS_FLAGS);
-        Ok(Self { kind, flags, description: Arc::try_new(AtomicU32::new(word)).map_err(|_| 12u64)?, native_inode: None, mount_flags: Default::default() })
+        Ok(Self { kind, flags, description: Arc::try_new(AtomicU32::new(word)).map_err(|_| 12u64)?, native_inode: None, mount_flags: Default::default(), opened: crate::tty::revoke::now() })
+    }
+
+    /// The open clock when the description was created.
+    pub fn opened(&self) -> u64 {
+        self.opened
+    }
+
+    /// Whether this is a terminal description whose terminal was revoked
+    /// after it was created (`tty::revoke`). /dev/tty0 answers for the
+    /// terminal in the foreground now, as each of its operations does.
+    pub fn terminal_revoked(&self) -> bool {
+        match &self.kind {
+            FdKind::PtySlave(pair) => pair.revoked_since(self.opened),
+            FdKind::Device(device) => device
+                .terminal()
+                .is_some_and(|number| crate::tty::revoke::vt_revoked_since(number, self.opened)),
+            _ => false,
+        }
     }
 
     /// Record the options of the mount the file was opened through.

@@ -15,6 +15,7 @@ pub mod input_source;
 pub mod jobctl;
 pub mod line_discipline;
 pub mod pty;
+pub mod revoke;
 pub mod slave_read;
 pub mod termios;
 pub mod vt_ioctl;
