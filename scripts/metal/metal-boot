@@ -37,7 +37,6 @@ import metal_image  # noqa: E402
 import metal_census  # noqa: E402
 import metal_root  # noqa: E402
 import metal_score  # noqa: E402
-import metal_attended  # noqa: E402
 import metal_disk  # noqa: E402
 import metal_persist  # noqa: E402
 from metal_score import boot_shape  # noqa: E402
@@ -79,17 +78,12 @@ def check(args):
     return bool(getattr(args, 'run', None)) or bool(getattr(args, 'verify', False))
 
 
-def attended(args):
-    return bool(getattr(args, 'attended', False))
-
-
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 def input_kind(args):
-    """Who types: the operator on the USB keyboard (attended), SOL, the operator at a persistent session (whose
-    keyboard stages count when typed), or nobody."""
+    """Record the console input source for automated boots and operator sessions."""
     if persistent(args):
         return 'sol' if getattr(args, 'run', None) else 'operator'
-    return 'keyboard' if attended(args) else getattr(args, 'input', None)
+    return getattr(args, 'input', None)
 
 
 def xhci_fault(args):
@@ -100,7 +94,7 @@ def xhci_fault(args):
 def validate_xhci_fault(args):
     if xhci_fault(args) and (args.payload != 'image' or args.mode != 'console'
                             or getattr(args, 'input', None) != 'sol'
-                            or session(args) or attended(args) or getattr(args, 'disk', None)):
+                            or session(args) or getattr(args, 'disk', None)):
         raise ValueError('xHCI faults need a RAM-disk console boot with --input sol')
 
 
@@ -110,9 +104,6 @@ def suites(args):
 
 
 def ceiling_seconds(args):
-    if attended(args):
-        # Delivery/start-up budget plus the entire operator wait from handoff.
-        return CEILING_SECONDS['console'] + args.wait * 60
     if args.mode == 'suite':
         # Each further suite of a multi-suite boot brings its own DONE deadline.
         return CEILING_SECONDS['suite'] + MODE_DEADLINE_SECONDS['suite'] * (len(suites(args)) - 1)
@@ -234,7 +225,6 @@ class Driver:
         self.required_stages = []
         self.shell_ready = False
         self.shell_sent = False
-        self.attended_challenge = None
         # A suite boot answers its cases' HOSTKEY records over the serial console (on_hostkey_line).
         self.hostkey_watcher = None
         self.console_step = 0
@@ -290,11 +280,9 @@ class Driver:
                'adopted': bool(getattr(self.args, 'adopt', False)),
                'run': getattr(self.args, 'run', None) or None,
                'input': input_kind(self.args),
-               'attended': attended(self.args),
-               'waitMinutes': self.args.wait if attended(self.args) else None,
                'session': session(self.args),
                'idleMinutes': getattr(self.args, 'idle_minutes', 30) if session(self.args) else None,
-               'evidenceEligible': not fault and (persistent(self.args) or (not session(self.args) and (self.args.mode != 'console' or attended(self.args))))}
+               'evidenceEligible': not fault and (persistent(self.args) or not session(self.args))}
         m.write_json(self.dir / 'run.json', run)
         m.write_text(self.dir / 'commit', (self.args.commit or 'none') + '\n')
         m.write_text(self.dir / 'dirty', '0\n')
@@ -323,7 +311,7 @@ class Driver:
             self.phase(text)
 
         wait = getattr(self.args, 'wait', None)
-        queue_minutes = 240 if attended(self.args) or wait is None else wait
+        queue_minutes = 240 if wait is None else wait
         try:
             m.claim_lease(holder, wait=True, checkpoint=self.checkpoint,
                           wait_seconds=queue_minutes * 60, on_wait=waiting)
@@ -647,15 +635,11 @@ class Driver:
         main = m.read_json(definition / 'docs/boot-path.json', {})
         source = metal or main
         self.fatal_patterns = [re.compile(p) for p in (source or {}).get('fatal', [])]
-        if metal and attended(self.args):
-            self.attended_challenge = metal_attended.Challenge(metal_attended.stages(metal))
-            metal = metal_score.attended_definition(metal)
         if metal and not session(self.args):
             catalog = m.read_json(definition / 'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json', {})
             shape = boot_shape('persistent' if persistent(self.args) else getattr(self.args, 'disk', None))
-            kind = input_kind(self.args)
-            self.final_marker = final_marker(metal, self.args.mode, catalog, shape, kind)
-            self.required_stages = measured_stages(metal, self.args.mode, catalog, shape, kind)
+            self.final_marker = final_marker(metal, self.args.mode, catalog, shape)
+            self.required_stages = measured_stages(metal, self.args.mode, catalog, shape)
         if xhci_fault(self.args):
             marker = '[xhci-fault] ' + xhci_fault(self.args) + ' PASS:'
             self.final_marker = (marker, 'contains')
@@ -935,7 +919,7 @@ class Driver:
             time.sleep(1)
             boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
         args = argparse.Namespace(**(vars(self.args) | dict(id=boot_id, mode='default', suite=None,
-            payload='disk-readback', disk=None, source_boot=self.id, session=False, attended=False, input=None)))
+            payload='disk-readback', disk=None, source_boot=self.id, session=False, input=None)))
         child = Driver(args)
         # The same live transient unit owns both boots; the reaper follows the active record's id.
         child.unit = self.unit
@@ -964,8 +948,6 @@ class Driver:
     def console_send(self, text, paced=False):
         """One line to the SOL console; paced sends it a few bytes at a time, since a burst can lose a byte while
         the shell echoes (#2105)."""
-        if attended(self.args):
-            raise RuntimeError('attended boots must never send console input')
         # stdin transport keeps a password out of process argv, events and logs.
         data = (text + '\r').encode()
         step = 4 if paced else len(data)
@@ -985,19 +967,6 @@ class Driver:
         if xhci_fault(self.args):
             return
         if self.args.mode != 'console' or session(self.args) or self.fatal_at is not None:
-            return
-        if attended(self.args):
-            if not complete and not text.startswith('Breenix login: '):
-                return
-            self.console_done = self.attended_challenge.feed(text)
-            if self.attended_challenge.invalid and not self.completion_reported:
-                self.completion_reported = True
-                raise Finish(m.EXIT_SHORT, 'input other than the USB keyboard reached the console; the challenge cannot pass')
-            if (self.console_done and self.final_seen and not any(self.required_stages)
-                    and not self.completion_reported):
-                self.completion_reported = True
-                self.event('attended-challenge-complete')
-                raise Finish(m.EXIT_DONE, 'USB keyboard challenge completed')
             return
         step = self.console_step
         account = self.console_account()
@@ -1040,7 +1009,7 @@ class Driver:
             if (self.final_seen and not any(self.required_stages) and self.fatal_at is None
                     and self.disk_evidence_seen()):
                 self.completion_reported = True
-                raise Finish(m.EXIT_DONE, 'SOL login refused, accepted, computed and logged out; keyboard proof waiting')
+                raise Finish(m.EXIT_DONE, 'SOL login refused, accepted, computed and logged out')
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def on_line(self, line, *, observed_at=None):
@@ -1127,9 +1096,6 @@ class Driver:
             idle = getattr(self.args, 'idle_minutes', 30)
             if line == f'[console] input idle {idle} min':
                 raise Finish(m.EXIT_DONE, f'console input idle for {idle} minutes')
-        if attended(self.args) and self.kernel_started and line.startswith('[console] input idle '):
-            # The idle clock has stopped its pulse; nobody is typing.
-            raise Finish(m.EXIT_SHORT, 'console input idle; challenge not reached')
         self.on_disk_line(line, observed_at)
         self.on_intent_line(line, observed_at)
         self.on_hostkey_line(line)
@@ -1138,12 +1104,12 @@ class Driver:
         # A prompt is often completed by the next kernel log line before the driver reads it unterminated.
         self.challenge_persistent(line)
         for stages in self.required_stages:
-            if stages and marker_matches(stages[0], line, input_kind(self.args)):
+            if stages and marker_matches(stages[0], line):
                 stages.pop(0)
         suite_done = (re.fullmatch(r'SUITE_SEQUENCE DONE suites=\d+', line) if len(suites(self.args)) > 1
                       else re.fullmatch(r'SUITE_SEQUENCE READY ' + re.escape(self.args.suite or ''), line)
                       ) if self.args.mode == 'suite' else True
-        if (suite_done and self.final_marker and marker_matches(self.final_marker, line, input_kind(self.args))
+        if (suite_done and self.final_marker and marker_matches(self.final_marker, line)
                 and (self.args.mode != 'shell' or self.shell_sent)):
             self.final_seen = True
         self.maybe_complete(observed_at, seconds)
@@ -1560,9 +1526,6 @@ class Driver:
                          hung=not session(self.args))
         if self.fatal_at and m.now() - self.fatal_at >= FATAL_GRACE_SECONDS:
             raise Finish(m.EXIT_SHORT, 'a fatal line')
-        if attended(self.args) and self.kernel_started is not None and self.fatal_at is None:
-            if m.now() >= self.kernel_started + self.args.wait * 60:
-                raise Finish(m.EXIT_SHORT, 'attended wait expired; challenge not reached')
         if self.request_at is None:
             if elapsed > self.post_budget:
                 raise Finish(m.EXIT_HUNG, f'POST over budget at code {self.post_code}')
@@ -1598,13 +1561,6 @@ class Driver:
         quiet = m.now() - max(self.last_serial or 0, self.kernel_started)
         if quiet > SILENCE_SECONDS:
             raise Finish(m.EXIT_HUNG, f'silent for {SILENCE_SECONDS} s after {self.last_stage}', hung=True)
-        if attended(self.args):
-            # The operator types the challenge; the stages nobody types keep the mode deadline.
-            untyped = any(stages and len(stages[0]) == 2 for stages in self.required_stages)
-            prompt = self.attended_challenge is None or self.attended_challenge.reached >= 2
-            if m.now() - self.kernel_started > MODE_DEADLINE_SECONDS['console'] and (untyped or not prompt):
-                raise Finish(m.EXIT_SHORT, 'the mode deadline passed with the login prompt or an untyped stage missing')
-            return
         # Each suite has a DONE deadline independent of progress and the fixed attempt ceiling.
         if m.now() - (self.suite_started or self.kernel_started) > MODE_DEADLINE_SECONDS[self.args.mode]:
             raise Finish(m.EXIT_SHORT, 'the mode deadline passed with stages missing')
@@ -1859,7 +1815,7 @@ class Driver:
             time.sleep(1)
             boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
         args = argparse.Namespace(**(vars(self.args) | dict(
-            id=boot_id, mode='persistent', payload='persistent', suite=None, disk=None, session=False, attended=False,
+            id=boot_id, mode='persistent', payload='persistent', suite=None, disk=None, session=False,
             input=None, inject=None, entry='current', slot_action='commit', verify=True, run=None, adopt=False,
             commit='')))
         child = Driver(args)
@@ -1873,14 +1829,9 @@ def progress_key(progress):
     return (progress.get('LastState'), progress.get('OemLastState') or '', progress.get('LastStateTime'))
 
 
-def marker_matches(spec, line, input_kind=None):
+def marker_matches(spec, line):
     """Pipe-separated literal alternatives; line matching requires the entire serial line."""
-    if isinstance(spec, tuple) and len(spec) == 3:
-        marker, match, required_input = spec
-        if required_input != input_kind:
-            return False
-    else:
-        marker, match = spec if isinstance(spec, tuple) else (spec, 'contains')
+    marker, match = spec if isinstance(spec, tuple) else (spec, 'contains')
     alternatives = marker.split('|')
     if match == 'line':
         return line in alternatives
@@ -1890,10 +1841,9 @@ def marker_matches(spec, line, input_kind=None):
 
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-def measured_stages(metal, mode, catalog, shape='ramdisk', input_kind=None):
-    """Track each measured milestone in its own print order, including delayed kernel producers. Milestones in
-    the definition select which boot shapes and modes can measure them. A stage tagged with an input (the USB keyboard)
-    is required only of a boot whose input is that one; the scorer still counts it, unreached, for any other."""
+def measured_stages(metal, mode, catalog, shape='ramdisk'):
+    """Track each measured milestone in its own print order, including delayed kernel producers.
+    The definition selects which boot shapes and modes can measure each milestone."""
     markers = {stage['name']: stage for stage in catalog.get('stages', [])}
     groups = []
     for milestone in metal.get('milestones', []):
@@ -1906,18 +1856,15 @@ def measured_stages(metal, mode, catalog, shape='ramdisk', input_kind=None):
             spec = markers.get(stage, {}) if isinstance(stage, str) else stage
             if 'host' in spec:
                 continue  # These are checked by preflight, delivery and console setup.
-            if spec.get('input') and spec['input'] != input_kind:
-                continue
             if not spec.get('marker'):
                 raise ValueError('unresolved measured serial stage')
-            group.append((spec['marker'], spec.get('match', 'contains')) +
-                         ((spec['input'],) if spec.get('input') else ()))
+            group.append((spec['marker'], spec.get('match', 'contains')))
         if group:
             groups.append(group)
     return groups
 
 
-def final_marker(metal, mode, catalog, shape='ramdisk', input_kind=None):
+def final_marker(metal, mode, catalog, shape='ramdisk'):
     """Resolve the final measured serial stage and preserve its matching contract. A stub milestone's markers are
     proposals its producing lane has not landed (docs/metal/boot-path.json), so no boot measures it yet, and a
     milestone excluded by `bootShapes` or `bootModes` cannot be measured by this boot."""
@@ -1933,11 +1880,11 @@ def final_marker(metal, mode, catalog, shape='ramdisk', input_kind=None):
         if not listed:
             continue
         for stage in reversed(listed):
-            if isinstance(stage, dict) and ('host' in stage or stage.get('input', input_kind) != input_kind):
+            if isinstance(stage, dict) and 'host' in stage:
                 continue
             stage = stage if isinstance(stage, dict) else markers.get(stage, {})
             if stage.get('marker'):
-                return (stage['marker'], stage.get('match', 'contains')) + ((stage['input'],) if stage.get('input') else ())
+                return (stage['marker'], stage.get('match', 'contains'))
             return None
     return None
 
@@ -1990,8 +1937,7 @@ def main():
         p.add_argument('--payload', choices=PAYLOADS, default='image')
         p.add_argument('--mode', choices=MODES, default='default')
         p.add_argument('--input', choices=('sol',))
-        p.add_argument('--attended', action='store_true', help='score the operator challenge without sending input')
-        p.add_argument('--wait', type=float, default=None, metavar='MIN', help='queue wait (default 240); with --attended, challenge wait (default 30)')
+        p.add_argument('--wait', type=float, default=None, metavar='MIN', help='queue wait (default 240 minutes)')
         p.add_argument('--session', action='store_true', help='hold the console for operator input, without scoring')
         p.add_argument('--idle-minutes', type=int, default=30, help='session input idle limit (1 through 240; default 30)')
         p.add_argument('--suite')
@@ -2057,14 +2003,12 @@ def main():
             parser.error('--session needs console mode, operator input and no disk install')
         if not 1 <= args.idle_minutes <= 240 or (args.idle_minutes != 30 and not args.session):
             parser.error('--idle-minutes needs a console session and 1 through 240 minutes')
-        if args.attended and (args.session or args.mode != 'console' or args.input or args.payload != 'image' or args.disk == 'install'):
-            parser.error('--attended needs a console boot, without --session or --input')
         if args.wait is None:
-            args.wait = 30 if args.attended else 240
+            args.wait = 240
         if not 0 < args.wait <= 240:
             parser.error('--wait needs more than 0 through 240 minutes')
-        if args.mode == 'console' and not args.session and not args.attended and args.input != 'sol':
-            parser.error('console typing waits for the injector; development boots require --input sol')
+        if args.mode == 'console' and not args.session and args.input != 'sol':
+            parser.error('console mode requires --input sol')
         if args.input and args.mode != 'console':
             parser.error('--input needs console mode')
     if args.command in ('launch', 'run') and args.payload == 'image' and not args.disk and not xhci_fault(args):

@@ -13,7 +13,7 @@ class FaultTest(StateTest):
     def args(self, **changes):
         values = dict(id='20261018T000001Z-metal', mode='console', payload='image',
                       target='branch:fixture', task='', suite=None, inject='xhci-short-read',
-                      disk=None, input='sol', session=False, attended=False, wait=30, nmi=False,
+                      disk=None, input='sol', session=False, wait=30, nmi=False,
                       commit='a' * 40)
         return SimpleNamespace(**dict(values, **changes))
 
@@ -40,7 +40,7 @@ class FaultTest(StateTest):
             self.assertFalse(any(d.required_stages))
 
     def test_rejects_incompatible_fault_options(self):
-        for changes in [dict(mode='probe'), dict(session=True), dict(attended=True),
+        for changes in [dict(mode='probe'), dict(session=True),
                         dict(disk='root'), dict(payload='none'), dict(input=None)]:
             with self.assertRaises(ValueError):
                 boot.validate_xhci_fault(self.args(**changes))
@@ -78,7 +78,7 @@ class FaultBuildTest(unittest.TestCase):
         run = load_script('metal-run')
         for inject, features in [('xhci-reset-device', ['--features', 'xhci_fault_inject']),
                                  ('xhci-short-read', ['--features', 'xhci_fault_inject']), (None, [])]:
-            args = SimpleNamespace(session=False, attended=False, wait=30, idle_minutes=30, mode='console',
+            args = SimpleNamespace(session=False, wait=30, idle_minutes=30, mode='console',
                                    input='sol', payload='image', disk=None, inject=inject, sha=None,
                                    branch='fixture', suite=None, no_wait=False, nmi=False, linux_directory=None,
                                    serve_as=None, content_type=None, ramdisk=True)
