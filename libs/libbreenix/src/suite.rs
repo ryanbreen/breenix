@@ -981,7 +981,7 @@ impl Suite {
                 crate::suite_stage::memory_owners("retired");
                 result
             } else { Ok(()) };
-            let display = retired.and_then(|()| if self.id == "gpu" { gpu_screen::await_console() } else { Ok(()) });
+            let display = retired.and_then(|()| if screen.gpu.is_some() { gpu_screen::await_console() } else { Ok(()) });
             let after = match display {
                 Ok(()) => memory_sample(self.id, "after"),
                 Err(error) => {
@@ -1739,7 +1739,9 @@ struct Screen {
 
 impl Screen {
     /// Take the display and map all of it. Without a framebuffer the suite still
-    /// runs and prints its serial lines; on a small one the panel draws what fits.
+    /// runs and prints its serial lines; on a small one the panel draws what fits. On ARM64
+    /// the GPU core is the display, and a suite without the run stage shows the GPU view
+    /// (`docs/gui/gpu.md` section 2.5 retires the CPU panel there).
     fn open(gui: bool, gpu: bool) -> Screen {
         if gui {
             // The run stage presents on the GPU core and holds the display between cases;
@@ -1747,22 +1749,10 @@ impl Screen {
             let stage_error = graphics::take_over_display().err().map(|e| std::format!("initialize GUI display: {e}"));
             return Screen { gui, stage_error, ..Screen::empty() };
         }
-        if gpu {
+        if gpu || cfg!(target_arch = "aarch64") {
             return Screen { gpu: Some(gpu_screen::GpuScreen::new()), ..Screen::empty() };
         }
-        let fb = (|| {
-            let info = graphics::fbinfo().ok()?;
-            if !(3..=4).contains(&info.bytes_per_pixel) {
-                return None;
-            }
-            graphics::take_over_display().ok()?;
-            let (ptr, width) = graphics::fb_mmap_pane().ok()?;
-            if width == 0 { return None; }
-            Some(unsafe {
-                FrameBuf::from_raw(ptr, width as usize, info.height as usize,
-                    (width * info.bytes_per_pixel) as usize, info.bytes_per_pixel as usize, info.is_bgr()).ok()?
-            })
-        })();
+        let fb = map_panel();
         let off = std::fs::read_to_string("/etc/breenix/suite-live").is_ok_and(|text| text.trim() == "off");
         Screen { live: fb.is_some() && !off, fb, ..Screen::empty() }
     }
@@ -1822,8 +1812,7 @@ impl Screen {
         if self.gui {self.stage_result(crate::suite_stage::tick());return;}
         let (Some(fb), Some(area), true) = (self.fb.as_mut(), self.area, self.live) else { return };
         Self::with_live(feed, |live| diagnostics::draw_live(fb, area, live));
-        let _ = graphics::take_over_display();
-        let _ = graphics::fb_flush_rect(area.x, area.y, area.w, area.h);
+        flush_panel(Some(area));
     }
 
     fn draw(&mut self, suite: &Suite, title: &str, subtitle: &str, states: &[Vec<State>], verdict: Verdict<'_>,
@@ -1878,12 +1867,46 @@ impl Screen {
         self.area = Self::with_live(feed, |live| diagnostics::draw(fb, &Panel {
             title, subtitle, groups: &groups, output: &[], verdict, scored: true, live: live_on.then_some(live),
         }));
-        // A case may have taken the display (its own take_over_display); take it
-        // back, or the flush is refused and the panel stops updating.
-        let _ = graphics::take_over_display();
-        let _ = graphics::fb_flush();
+        flush_panel(None);
     }
 }
+
+/// The x86-64 panel's framebuffer: the display taken and all of it mapped.
+#[cfg(target_arch = "x86_64")]
+fn map_panel() -> Option<FrameBuf> {
+    let info = graphics::fbinfo().ok()?;
+    if !(3..=4).contains(&info.bytes_per_pixel) {
+        return None;
+    }
+    graphics::take_over_display().ok()?;
+    let (ptr, width) = graphics::fb_mmap_pane().ok()?;
+    if width == 0 { return None; }
+    Some(unsafe {
+        FrameBuf::from_raw(ptr, width as usize, info.height as usize,
+            (width * info.bytes_per_pixel) as usize, info.bytes_per_pixel as usize, info.is_bgr()).ok()?
+    })
+}
+
+/// There is no framebuffer panel without x86-64's framebuffer.
+#[cfg(not(target_arch = "x86_64"))]
+fn map_panel() -> Option<FrameBuf> {
+    None
+}
+
+/// Flush the panel's `area`, or the whole panel. A case may have taken the display (its
+/// own take_over_display); take it back, or the flush is refused and the panel stops
+/// updating.
+#[cfg(target_arch = "x86_64")]
+fn flush_panel(area: Option<LiveArea>) {
+    let _ = graphics::take_over_display();
+    let _ = match area {
+        Some(area) => graphics::fb_flush_rect(area.x, area.y, area.w, area.h),
+        None => graphics::fb_flush(),
+    };
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn flush_panel(_: Option<LiveArea>) {}
 
 #[cfg(test)]
 mod judged_transport_tests {
