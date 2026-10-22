@@ -59,6 +59,7 @@ static REPLY: Mutex<Option<Reply>> = Mutex::new(None);
 static LEASE: Mutex<Option<Lease>> = Mutex::new(None);
 static NEXT_ATTEMPT: AtomicU64 = AtomicU64::new(0);
 static CARRIER: AtomicBool = AtomicBool::new(true);
+static REVALIDATE: AtomicBool = AtomicBool::new(false);
 static PROBING: AtomicBool = AtomicBool::new(false);
 static PROBE_IP: AtomicU32 = AtomicU32::new(0);
 static CONFLICT: AtomicBool = AtomicBool::new(false);
@@ -118,16 +119,34 @@ pub fn acquire(mac: [u8; 6]) -> Option<Lease> {
         .iter()
         .find_map(|&timeout_ms| attempt(mac, timeout_ms));
     AWAITED.store(0, Ordering::Release);
-    let _guard = super::net_lock_guard();
-    *LEASE.lock() = lease;
+    {
+        let _guard = super::net_lock_guard();
+        *LEASE.lock() = lease;
+    }
+    if let Some(lease) = lease {
+        lease_event("lease acquired", lease);
+    } else {
+        log::warn!("[dhcp] acquisition unanswered or refused; address=0.0.0.0");
+    }
     lease
+}
+
+fn lease_event(event: &str, lease: Lease) {
+    let [a, b, c, d] = lease.ip_addr;
+    log::info!(
+        "[dhcp] {event}: address={a}.{b}.{c}.{d} t1={} t2={} expires={} now={} ns",
+        lease.renew_at,
+        lease.rebind_at,
+        lease.expires_at,
+        now()
+    );
 }
 
 /// The lease the boot-time exchange obtained, if any.
 pub fn lease() -> Option<Lease> {
     let _guard = super::net_lock_guard();
     let lease = *LEASE.lock();
-    lease.filter(|l| now() < l.expires_at && CARRIER.load(Ordering::Acquire))
+    lease.filter(|l| now() < l.expires_at)
 }
 
 fn mac_to_u64(mac: [u8; 6]) -> u64 {
@@ -140,6 +159,10 @@ fn attempt(mac: [u8; 6], timeout_ms: u64) -> Option<Lease> {
     let offer = exchange(mac, DHCPDISCOVER, None, DHCPOFFER, timeout_ms)?;
     let server = offer.server?;
     if !valid_address(server) || !valid_address(offer.yiaddr) {
+        log::warn!(
+            "[dhcp] offer refused: invalid server or address={:?}",
+            offer.yiaddr
+        );
         return None;
     }
     let ack = exchange(
@@ -150,11 +173,17 @@ fn attempt(mac: [u8; 6], timeout_ms: u64) -> Option<Lease> {
         timeout_ms,
     );
     let Some(lease) = ack.and_then(|ack| lease_from_ack(ack, offer.yiaddr, Some(server))) else {
+        let [a, b, c, d] = offer.yiaddr;
+        log::warn!(
+            "[dhcp] acquisition request unanswered or refused: address={a}.{b}.{c}.{d} reply={:?}",
+            ack.map(|r| r.kind)
+        );
         // A new transaction cannot accept a delayed ACK from this one.
         XID.fetch_add(1, Ordering::Relaxed);
         return None;
     };
     if !probe(mac, lease.ip_addr) {
+        lease_event("lease refused: address probe failed; DECLINE", lease);
         let message = build_message(
             DHCPDECLINE,
             XID.load(Ordering::Relaxed),
@@ -167,7 +196,12 @@ fn attempt(mac: [u8; 6], timeout_ms: u64) -> Option<Lease> {
         wait_until(now().saturating_add(10_000_000_000));
         return None;
     }
-    (now() < lease.expires_at).then_some(lease)
+    if now() >= lease.expires_at {
+        lease_event("lease dropped: expired during probe", lease);
+        None
+    } else {
+        Some(lease)
+    }
 }
 
 fn valid_address(ip: [u8; 4]) -> bool {
@@ -240,66 +274,180 @@ fn send_message(message: &[u8], src: [u8; 4], dst: [u8; 4]) -> Option<()> {
     Some(())
 }
 
-/// Called in thread context, never in the interrupt or syscall entry paths.
-/// Renew unicast at T1, rebind broadcast at T2, and discard on carrier loss,
-/// NAK or expiry. A failed exchange waits before retrying rather than spinning.
+/// Called by network maintenance workers in thread context.
+/// RFC 2131 sections 3.7, 4.4.2 and 4.4.5: carrier loss keeps an unexpired
+/// lease; return requests the cached address in INIT-REBOOT. T1 renews unicast,
+/// T2 rebinds broadcast. Only NAK or expiry invalidates a held address.
 pub fn maintain(mac: [u8; 6], carrier: bool) {
     let changed = CARRIER.swap(carrier, Ordering::AcqRel) != carrier;
-    if changed || !carrier {
+    let mut current = {
         let _guard = super::net_lock_guard();
-        *LEASE.lock() = None;
-        super::arp::clear();
-        NEXT_ATTEMPT.store(0, Ordering::Release);
+        let saved = *LEASE.lock();
+        saved
+    };
+    if changed {
+        if let Some(lease) = current {
+            lease_event(
+                if carrier {
+                    "carrier up; lease retained"
+                } else {
+                    "carrier down; lease retained"
+                },
+                lease,
+            );
+        } else {
+            log::info!(
+                "[dhcp] carrier {}; address=0.0.0.0",
+                if carrier { "up" } else { "down" }
+            );
+        }
+        if carrier {
+            REVALIDATE.store(current.is_some(), Ordering::Release);
+            NEXT_ATTEMPT.store(0, Ordering::Release);
+        }
+    }
+    // Expiry is checked before carrier and retry deadlines, including while down.
+    if let Some(lease) = current.filter(|l| now() >= l.expires_at) {
+        drop_lease("lease dropped: expired", lease);
+        current = None;
     }
     if !carrier || now() < NEXT_ATTEMPT.load(Ordering::Acquire) {
         return;
     }
-    let current = lease();
-    if let Some(current) = current {
-        if now() < current.renew_at {
-            return;
-        }
-        let rebind = now() >= current.rebind_at;
-        // A new transaction cannot accept a delayed ACK from an earlier one.
-        XID.fetch_add(1, Ordering::Relaxed);
-        let _ = take_reply();
-        REQUEST_SENT.store(now(), Ordering::Relaxed);
-        AWAITED.store(DHCPACK, Ordering::Release);
-        let mut message = build_message(DHCPREQUEST, XID.load(Ordering::Relaxed), mac, None);
+    let Some(current) = current else {
+        let next = acquire(mac)
+            .map(|l| l.renew_at)
+            .unwrap_or_else(|| now().saturating_add(10_000_000_000));
+        NEXT_ATTEMPT.store(next, Ordering::Release);
+        return;
+    };
+    let reboot = REVALIDATE.load(Ordering::Acquire) && (changed || now() < current.renew_at);
+    if !reboot {
+        REVALIDATE.store(false, Ordering::Release);
+    }
+    if !reboot && now() < current.renew_at {
+        return;
+    }
+    let rebind = !reboot && now() >= current.rebind_at;
+    let event = if reboot {
+        "INIT-REBOOT request"
+    } else if rebind {
+        "rebind request"
+    } else {
+        "renew request"
+    };
+    lease_event(event, current);
+    XID.fetch_add(1, Ordering::Relaxed);
+    let _ = take_reply();
+    let request_at = now();
+    REQUEST_SENT.store(request_at, Ordering::Relaxed);
+    AWAITED.store(DHCPACK, Ordering::Release);
+    let mut message = build_message(DHCPREQUEST, XID.load(Ordering::Relaxed), mac, None);
+    if reboot {
+        // RFC 2131 Table 4: option 50, omit server identifier, ciaddr/source=0.
+        message[243..249].copy_from_slice(&[
+            OPT_REQUESTED_IP,
+            4,
+            current.ip_addr[0],
+            current.ip_addr[1],
+            current.ip_addr[2],
+            current.ip_addr[3],
+        ]);
+        message[249..258].copy_from_slice(&[
+            OPT_PARAMETER_LIST,
+            6,
+            OPT_SUBNET_MASK,
+            OPT_ROUTER,
+            OPT_DNS,
+            OPT_LEASE_TIME,
+            OPT_RENEWAL,
+            OPT_REBINDING,
+            OPT_END,
+        ]);
+    } else {
         message[12..16].copy_from_slice(&current.ip_addr);
         if !rebind {
             message[10..12].fill(0);
         }
-        let dst = if rebind { [255; 4] } else { current.server };
-        let reply = send_message(&message, current.ip_addr, dst).and_then(|()| wait_reply(1_000));
-        AWAITED.store(0, Ordering::Release);
-        if let Some(reply) = reply.filter(|_| now() < current.expires_at) {
-            let server = if rebind { None } else { Some(current.server) };
-            if reply.kind == DHCPNAK && reply.server.is_some_and(|s| rebind || s == current.server)
+    }
+    let src = if reboot { [0; 4] } else { current.ip_addr };
+    let dst = if reboot || rebind {
+        [255; 4]
+    } else {
+        current.server
+    };
+    let reply = send_message(&message, src, dst).and_then(|()| wait_reply(1_000));
+    AWAITED.store(0, Ordering::Release);
+    if now() >= current.expires_at {
+        drop_lease("lease dropped: expired during request", current);
+        return;
+    }
+    let server = if reboot || rebind {
+        None
+    } else {
+        Some(current.server)
+    };
+    if let Some(reply) = reply {
+        if reply.kind == DHCPNAK
+            && reply
+                .server
+                .is_some_and(|s| valid_address(s) && server.is_none_or(|wanted| wanted == s))
+        {
+            lease_event("request refused: NAK", current);
+            drop_lease("lease dropped: NAK", current);
+            return;
+        }
+        if let Some(renewed) =
+            lease_from_ack(reply, current.ip_addr, server).filter(|l| now() < l.expires_at)
+        {
             {
-                let _guard = super::net_lock_guard();
-                *LEASE.lock() = None;
-                super::arp::clear();
-            } else if let Some(renewed) = lease_from_ack(reply, current.ip_addr, server) {
                 let _guard = super::net_lock_guard();
                 *LEASE.lock() = Some(renewed);
             }
+            REVALIDATE.store(false, Ordering::Release);
+            NEXT_ATTEMPT.store(renewed.renew_at, Ordering::Release);
+            lease_event(
+                if reboot {
+                    "lease revalidated"
+                } else {
+                    "lease renewed"
+                },
+                renewed,
+            );
+            return;
         }
-        let remaining = current.expires_at.saturating_sub(now());
-        NEXT_ATTEMPT.store(
-            now().saturating_add((remaining / 2).clamp(100_000_000, 60_000_000_000)),
-            Ordering::Release,
-        );
+        lease_event("reply refused: invalid address, server or lease", current);
     } else {
-        // Readers already see no address even while discovery is running.
-        {
-            let _guard = super::net_lock_guard();
-            *LEASE.lock() = None;
-        }
-        super::arp::clear();
-        let _ = acquire(mac);
-        NEXT_ATTEMPT.store(now().saturating_add(10_000_000_000), Ordering::Release);
+        lease_event("request unanswered; lease retained", current);
     }
+    // RFC 2131 4.4.5: half the time to T2/expiry, minimum 60 s, but
+    // bound retries by the state deadline. INIT-REBOOT retries after four seconds
+    // (4.1); the existing lease remains usable until ACK, NAK or expiry.
+    let at = now();
+    let boundary = if reboot && request_at < current.renew_at {
+        current.renew_at
+    } else if !rebind && (!reboot || request_at < current.rebind_at) {
+        current.rebind_at
+    } else {
+        current.expires_at
+    };
+    let delay = if reboot {
+        4_000_000_000
+    } else {
+        (boundary.saturating_sub(at) / 2).max(60_000_000_000)
+    };
+    NEXT_ATTEMPT.store(at.saturating_add(delay).min(boundary), Ordering::Release);
+}
+
+fn drop_lease(reason: &str, lease: Lease) {
+    {
+        let _guard = super::net_lock_guard();
+        *LEASE.lock() = None;
+    }
+    super::arp::clear();
+    REVALIDATE.store(false, Ordering::Release);
+    NEXT_ATTEMPT.store(0, Ordering::Release);
+    lease_event(reason, lease);
 }
 
 /// Observe ARP conflicts, including another host's simultaneous probe.

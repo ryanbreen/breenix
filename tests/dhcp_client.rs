@@ -243,6 +243,8 @@ fn setup() -> MutexGuard<'static, ()> {
     static SERIAL: Mutex<()> = Mutex::new(());
     let guard = SERIAL.lock().unwrap();
     *PEER.lock().unwrap() = Peer::default();
+    CLOCK.store(u64::MAX, Ordering::Relaxed);
+    dhcp::maintain(MAC, false);
     CLOCK.store(1_000_000_000, Ordering::Relaxed);
     CLOCK_STEP.store(100_000_000, Ordering::Relaxed);
     ACK_DELAY.store(0, Ordering::Relaxed);
@@ -317,8 +319,30 @@ fn renew_rebind_expire_and_carrier_handoff() {
     PEER.lock().unwrap().silent = false;
     let _ = dhcp::acquire(MAC).unwrap();
     dhcp::maintain(MAC, false);
-    assert!(dhcp::lease().is_none());
+    assert_eq!(dhcp::lease().unwrap().ip_addr, ADDRESS);
 }
+#[test]
+fn unexpired_link_bounce_keeps_address_and_requests_without_discovery_or_probe() {
+    let _guard = setup();
+    let original = dhcp::acquire(MAC).unwrap();
+    PEER.lock().unwrap().sent.clear();
+    dhcp::maintain(MAC, false);
+    assert_eq!(dhcp::lease().unwrap().ip_addr, original.ip_addr);
+    let start = CLOCK.load(Ordering::Relaxed);
+    dhcp::maintain(MAC, true);
+    assert_eq!(dhcp::lease().unwrap().ip_addr, original.ip_addr);
+    let peer = PEER.lock().unwrap();
+    assert_eq!(peer.sent.len(), 1);
+    let (dst, msg) = &peer.sent[0];
+    assert_eq!(*dst, [255; 4]);
+    assert_eq!(msg[242], 3);
+    assert_eq!(&msg[12..16], &[0; 4]);
+    assert_eq!(&msg[243..249], &[50, 4, 192, 0, 2, 10]);
+    assert_eq!(msg[249], 55, "INIT-REBOOT omits server identifier");
+    assert!(CLOCK.load(Ordering::Relaxed) - start < 1_000_000_000,
+        "an existing lease does not run a fresh address probe");
+}
+
 #[test]
 fn renewal_nak_removes_address() {
     let _guard = setup();
@@ -527,6 +551,78 @@ fn lost_first_discover_retransmits_after_four_seconds_and_acquires_lease() {
 fn procfs_marks_dhcp_policy_while_no_lease_is_usable() {
     let _guard = setup();
     dhcp::require_configuration();
+    CLOCK.store(u64::MAX, Ordering::Relaxed);
     dhcp::maintain(MAC, false);
     assert_eq!(proc_net::generate_pnp().unwrap(), "#PROTO: DHCP\n");
+}
+
+#[test]
+fn unanswered_renewal_reaches_t2_and_expiry_without_losing_address_early() {
+    let _guard = setup();
+    let lease = dhcp::acquire(MAC).unwrap();
+    PEER.lock().unwrap().silent = true;
+    CLOCK.store(lease.renew_at, Ordering::Relaxed);
+    dhcp::maintain(MAC, true);
+    assert_eq!(dhcp::lease().unwrap().expires_at, lease.expires_at);
+    assert_eq!(PEER.lock().unwrap().sent.last().unwrap().0, SERVER);
+    CLOCK.store(lease.rebind_at, Ordering::Relaxed);
+    dhcp::maintain(MAC, true);
+    assert_eq!(PEER.lock().unwrap().sent.last().unwrap().0, [255; 4]);
+    assert_eq!(dhcp::lease().unwrap().ip_addr, ADDRESS);
+    CLOCK.store(lease.expires_at - 1, Ordering::Relaxed);
+    assert_eq!(dhcp::lease().unwrap().ip_addr, ADDRESS);
+    CLOCK.store(lease.expires_at, Ordering::Relaxed);
+    assert!(dhcp::lease().is_none());
+    dhcp::maintain(MAC, false);
+    assert!(dhcp::lease().is_none());
+}
+
+#[test]
+fn unanswered_reboot_retains_original_expiry_and_nak_invalidates_it() {
+    let _guard = setup();
+    let original = dhcp::acquire(MAC).unwrap();
+    dhcp::maintain(MAC, false);
+    PEER.lock().unwrap().silent = true;
+    dhcp::maintain(MAC, true);
+    assert_eq!(dhcp::lease().unwrap().expires_at, original.expires_at);
+    {
+        let mut peer = PEER.lock().unwrap();
+        peer.silent = false;
+        peer.nak = true;
+    }
+    CLOCK.fetch_add(4_000_000_000, Ordering::Relaxed);
+    dhcp::maintain(MAC, true);
+    assert!(dhcp::lease().is_none());
+}
+
+#[test]
+fn request_wait_crossing_t2_does_not_postpone_broadcast_rebind() {
+    let _guard = setup();
+    let lease = dhcp::acquire(MAC).unwrap();
+    PEER.lock().unwrap().silent = true;
+    CLOCK.store(lease.rebind_at - 500_000_000, Ordering::Relaxed);
+    CLOCK_STEP.store(2_000_000_000, Ordering::Relaxed);
+    dhcp::maintain(MAC, true);
+    assert_eq!(PEER.lock().unwrap().sent.last().unwrap().0, SERVER);
+    assert_eq!(dhcp::lease().unwrap().ip_addr, ADDRESS);
+    dhcp::maintain(MAC, true);
+    assert_eq!(PEER.lock().unwrap().sent.last().unwrap().0, [255; 4]);
+    assert_eq!(dhcp::lease().unwrap().ip_addr, ADDRESS);
+}
+
+#[test]
+fn lease_expired_while_down_discovers_instead_of_rebooting_the_old_address() {
+    let _guard = setup();
+    let lease = dhcp::acquire(MAC).unwrap();
+    dhcp::maintain(MAC, false);
+    CLOCK.store(lease.expires_at, Ordering::Relaxed);
+    dhcp::maintain(MAC, false);
+    assert!(dhcp::lease().is_none());
+    PEER.lock().unwrap().sent.clear();
+    dhcp::maintain(MAC, true);
+    assert_eq!(dhcp::lease().unwrap().ip_addr, ADDRESS);
+    let peer = PEER.lock().unwrap();
+    assert_eq!(peer.sent.len(), 2);
+    assert_eq!(peer.sent[0].1[242], 1);
+    assert_eq!(peer.sent[1].1[242], 3);
 }

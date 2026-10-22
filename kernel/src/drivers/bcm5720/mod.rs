@@ -38,6 +38,7 @@
 //! APE access is excluded by this driver's register definitions and reset path.
 
 mod phy;
+mod carrier;
 mod regs;
 
 use alloc::vec::Vec;
@@ -984,14 +985,28 @@ impl Port {
                 log::warn!("[bcm5720] DHCP failure: MSI={irqs} status={status:#x} indices={indices:#x} return={consumer} posted={producer} errors={errors} flags={flags:#x} rx_octets={octets} discards={discards} rbdi={rbdi:#x} rx_mode={rx_mode:#x} carrier={carrier:?}");
             }
         }
+        let mut carrier = carrier::Carrier::linked();
+        let [a, b, c, d] = dhcp::lease().map(|l| l.ip_addr).unwrap_or([0; 4]);
+        log::info!("[bcm5720] carrier up; address={a}.{b}.{c}.{d} down debounce={} successful samples", carrier::DOWN_SAMPLES);
         loop {
-            let carrier = {
+            let sample = {
                 let _guard = crate::net::net_lock_guard();
                 let ports = ATTACHED.lock();
                 ports.iter().find(|p| p.mac == mac)
-                    .is_some_and(|p| p.f.phy_link().unwrap_or(false))
+                    .ok_or("attached port missing").and_then(|p| p.f.phy_link())
             };
-            dhcp::maintain(mac, carrier);
+            let [a, b, c, d] = dhcp::lease().map(|l| l.ip_addr).unwrap_or([0; 4]);
+            let previous_failures = carrier.failures;
+            carrier.sample(sample);
+            // The MDIO and port/BH guards are gone before logging in this worker.
+            if let Err(error) = sample {
+                crate::tracing::providers::net_rx::BCM5720_PHY_READ_FAILED.increment();
+                log::warn!("[bcm5720] carrier unknown: address={a}.{b}.{c}.{d} PHY read failed streak={} last-carrier={} error={error}",
+                    carrier.failures, if carrier.up { "up" } else { "down" });
+            } else if previous_failures != 0 {
+                log::info!("[bcm5720] PHY reads recovered after {previous_failures} failures; address={a}.{b}.{c}.{d}");
+            }
+            dhcp::maintain(mac, carrier.up);
             if !connectivity_reported {
                 if let Some(lease) = dhcp::lease() {
                     connectivity_reported = true;
