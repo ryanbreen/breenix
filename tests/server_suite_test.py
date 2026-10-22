@@ -136,7 +136,7 @@ class HostServerScore(unittest.TestCase):
         console.boot_id = None
         header = 'BREENIX-LOG 1 boot={} source=bsshd limit=262144 archives=4\n'
         replies = ['boot-id=1-2-3\n' + header.format('9-9-9'), 'boot-id=1-2-3\n' + header.format('1-2-3')]
-        console.run = lambda command: replies.pop(0)
+        console.run = lambda command, done=None: replies.pop(0)
         with self.assertRaisesRegex(ValueError, 'boot ID read over SOL'):
             console.service_log('bsshd')
         console.service_log('bsshd')

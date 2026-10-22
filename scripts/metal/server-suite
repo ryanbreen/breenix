@@ -507,13 +507,17 @@ class Console:
             self.wait(offset + len(text[:found.end()].encode()), re.escape(self.LOGIN), 'a login prompt after a refusal')
         raise ValueError('the console account was refused ' + str(attempts) + ' times')
 
-    def run(self, command, timeout=30):
-        """Type one command, then a marker computation; return the console text up to the marker's answer."""
+    def run(self, command, timeout=30, done=None):
+        """Type one command, then a marker computation; return the console text up to the marker's answer.
+        Input typed while a command runs is echoed into its output and can split one of its lines, so for a
+        command that prints its own last line (`done`), the marker is typed only once that line shows."""
         self.login()
         self.step += 1
         marker = 'svc-suite-step-' + str(self.step)
         offset = self.size()
         self.type_line(command)
+        if done:
+            self.wait(offset, done + r'|\[bsh\] command failed status=[1-9]', 'the end of ' + command, timeout)
         self.type_line('print("' + marker + '", 6*7)')
         text, found = self.wait(offset, re.escape(marker) + ' 42', 'the answer to ' + command, timeout)
         text = text[:found.start()]
@@ -527,8 +531,8 @@ class Console:
                   'head -n 1 /var/log/' + name + '.log | '
                   'grep -Fx "BREENIX-LOG 1 boot=$id source=' + name + ' limit=262144 archives=4"; '
                   'grep -E ' + shlex.quote(r'^\[stdout\] bsshd: (host key ED25519 SHA256:[A-Za-z0-9+/]+ \((loaded|generated)\)|refused method .*for .*)$') +
-                  ' /var/log/' + name + '.log')
-        text = self.run('sh -c ' + shlex.quote(script))
+                  ' /var/log/' + name + '.log; printf "\\nservice-log-%s\\n" end')
+        text = self.run('sh -c ' + shlex.quote(script), done=r'(?m)^service-log-end\r?$')
         ids = re.findall(r'^boot-id=([a-f0-9-]+)\r?$', text, re.M)
         if len(ids) != 1: raise ValueError('the console did not show exactly one boot ID')
         headers = re.findall(r'^BREENIX-LOG 1 boot=([a-f0-9-]+) source=' + re.escape(name)
@@ -826,7 +830,8 @@ class Logs:
             raise ValueError('the boot ID over SSH differs from the one read over SOL')
 
     def root_check(self, script):
-        text = self.console.run('sh -c ' + shlex.quote('set -e; ' + script + '; printf "\\nlogs-check-%s\\n" ok'), timeout=60)
+        text = self.console.run('sh -c ' + shlex.quote('set -e; ' + script + '; printf "\\nlogs-check-%s\\n" ok'), timeout=60,
+                                done=r'(?m)^logs-check-ok\r?$')
         if not re.search(r'^logs-check-ok\r?$', text, re.M):
             raise ValueError('root log assertion failed: ' + script)
         return text
@@ -888,7 +893,7 @@ class Logs:
         self.fixture('logs-retained', 'printf "retained-stdout\\n"; printf "retained-stderr\\n" >&2')
         self.root_check('grep -Fx "[stdout] retained-stdout" /var/log/logs-retained.log; '
                         'grep -Fx "[stderr] retained-stderr" /var/log/logs-retained.log')
-        text = self.console.run('sha256sum /var/log/logs-retained.log')
+        text = self.root_check('sha256sum /var/log/logs-retained.log')
         found = re.search(r'^([a-f0-9]{64}) +/var/log/logs-retained.log\r?$', text, re.M)
         if not found: raise ValueError('no persisted service log checksum')
         return dict(logBoot=self.boot_id, sha256=found[1])
@@ -905,7 +910,7 @@ class Logs:
             self.root_check('test "$(head -n 1 /var/log/' + name + '.log)" = ' + shlex.quote(header))
             if name.startswith('getty-'):
                 self.root_check('grep -Fx "[stdout] [getty] console acquired" /var/log/' + name + '.log')
-        text = self.console.run('ls -ln ' + ' '.join('/var/log/' + name + '.log' for name in names))
+        text = self.root_check('ls -ln ' + ' '.join('/var/log/' + name + '.log' for name in names))
         for name in names:
             if not re.search(r'^-rw-r----- +\d+ +0 +4 +\d+ .* /var/log/' + re.escape(name) + r'\.log\r?$', text, re.M):
                 raise ValueError(name + ' log is not 0640 root:adm')
