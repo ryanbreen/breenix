@@ -375,23 +375,154 @@
         {
           "id": "setuid-set",
           "title": "Exactly su, passwd and sudo are installed set-user-ID root"
+        },
+        {
+          "id": "su-wrong-password-refused",
+          "title": "su refuses a wrong target password and accepts the right one"
+        },
+        {
+          "id": "su-root-ok",
+          "title": "A wheel member becomes root with root's password"
+        },
+        {
+          "id": "su-nonwheel-refused",
+          "title": "su refuses root to a caller outside wheel without asking for a password"
+        },
+        {
+          "id": "su-dash-env",
+          "title": "su - gives the target's clean login environment and home; plain su keeps the caller's"
+        },
+        {
+          "id": "su-logged",
+          "title": "su successes and refusals are recorded in the protected auth log without passwords"
+        },
+        {
+          "id": "passwd-command",
+          "title": "The set-user-ID passwd command changes the caller's own password and no other account's"
         }
       ]
     },
     {
       "id": "sudo",
       "title": "sudo-style administration: policy, password cache, environment and the auth log",
-      "cases": []
+      "cases": [
+        {
+          "id": "sudo-wheel-ok",
+          "title": "A wheel member runs a command as root with their own password"
+        },
+        {
+          "id": "sudo-nonwheel-refused",
+          "title": "sudo refuses a caller no rule permits without asking for a password"
+        },
+        {
+          "id": "sudo-wrong-password",
+          "title": "sudo refuses a wrong password"
+        },
+        {
+          "id": "sudo-env-reset",
+          "title": "The command gets a reset environment, the secure PATH and umask 022"
+        },
+        {
+          "id": "sudo-bad-policy-mode-refused",
+          "title": "sudo refuses to run under a policy with the wrong mode or one that does not parse"
+        },
+        {
+          "id": "sudo-cache-session",
+          "title": "An authentication is remembered for the session and terminal only"
+        },
+        {
+          "id": "sudo-policy-rules",
+          "title": "A rule's target and command decide"
+        },
+        {
+          "id": "sudo-first-match",
+          "title": "Of two rules that both permit the call, the first decides, in each order"
+        },
+        {
+          "id": "sudo-argv-no-shell",
+          "title": "The permitted command runs with its arguments as given, never through a shell, with and without -i"
+        },
+        {
+          "id": "sudo-logged",
+          "title": "sudo successes and refusals are recorded with the command and without passwords"
+        }
+      ]
     },
     {
       "id": "login",
       "title": "Console login as any account, tty ownership and umask",
-      "cases": []
+      "cases": [
+        {
+          "id": "login-user",
+          "title": "A fixture account logs in through getty and login with its IDs, groups, environment, home and login shell"
+        },
+        {
+          "id": "login-bad-password-refused",
+          "title": "A wrong password is refused with Login incorrect and the right one then logs in"
+        },
+        {
+          "id": "login-root-refused",
+          "title": "On a pseudo-terminal line login refuses root under the shipped ROOT_LOGIN no, and the same password logs in there under ROOT_LOGIN yes"
+        },
+        {
+          "id": "login-locked-refused",
+          "title": "A locked password is refused at login and the unlocked one logs in"
+        },
+        {
+          "id": "login-expired-refused",
+          "title": "An expired account is refused at login, and logs in once its expiry is cleared"
+        },
+        {
+          "id": "login-tty-owned",
+          "title": "The session's terminal belongs to the account, group tty, mode 0620"
+        },
+        {
+          "id": "login-umask",
+          "title": "A session starts with the umask from /etc/login.defs"
+        },
+        {
+          "id": "logout-tty-restored",
+          "title": "After logout getty returns the terminal to root at 0620 and records the logout"
+        },
+        {
+          "id": "logout-revokes-terminal",
+          "title": "A descriptor the old session kept on the line reads end of file, cannot write and cannot reopen it once getty serves the next login"
+        }
+      ]
     },
     {
       "id": "ssh",
-      "title": "SSH sessions as the account: identity, groups, PTY owner and key-file modes",
-      "cases": []
+      "title": "SSH sessions as the account: the boot host's OpenSSH with the operator's key, and loopback bssh",
+      "cases": [
+        {
+          "id": "openssh-operator",
+          "title": "The boot host's OpenSSH, pinning this boot's host key strictly, logs in as the operator account with the operator's key"
+        },
+        {
+          "id": "openssh-root-refused",
+          "title": "The boot host's OpenSSH is refused root with the operator's key, and the same key logs in as the operator account"
+        },
+        {
+          "id": "ssh-identity",
+          "title": "An SSH command runs as the account with its IDs, groups, environment and home"
+        },
+        {
+          "id": "ssh-root-refused",
+          "title": "bsshd refuses root's key, and the same key logs in as an ordinary account"
+        },
+        {
+          "id": "ssh-groups",
+          "title": "An SSH session holds the account's supplementary groups"
+        },
+        {
+          "id": "ssh-pty-owner",
+          "title": "An interactive SSH session's PTY belongs to the account, group tty, mode 0620"
+        },
+        {
+          "id": "ssh-bad-key-mode-refused",
+          "title": "A group-writable authorized_keys grants no login until its mode is 0600"
+        }
+      ]
     },
     {
       "id": "operator",

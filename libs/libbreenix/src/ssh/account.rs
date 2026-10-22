@@ -1,8 +1,10 @@
 //! Accounts for SSH logins.
 //!
-//! - The account database: `/etc/passwd` and `/etc/group` (POSIX `getpwnam`,
-//!   `getgrouplist` semantics, read directly). bsshd refuses root (uid 0); it is
-//!   administered from an account that logs in.
+//! - The account database: the accounts library's strict passwd and group
+//!   records (`crate::accounts`). A login also needs the session checks of
+//!   `crate::accounts::session::validate`: a shadow line, no expiry and a shell
+//!   listed in `/etc/shells`. bsshd refuses root (uid 0); it is administered
+//!   from an account that logs in.
 //! - Authorized keys: `~/.ssh/authorized_keys` of the account, used only when
 //!   the file, `~/.ssh`, the home directory and each directory above it are
 //!   owned by root or the account, writable by no one else, and not symbolic
@@ -24,17 +26,7 @@ use super::keys;
 /// The largest authorized_keys file read.
 const MAX_AUTHORIZED_KEYS: u64 = 64 * 1024;
 
-/// One account from the passwd database, with its groups.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Account {
-    pub name: String,
-    pub uid: u32,
-    pub gid: u32,
-    pub home: String,
-    pub shell: String,
-    /// The primary group first, then each group that lists the account.
-    pub groups: Vec<u32>,
-}
+pub use crate::accounts::Account;
 
 /// Why a login or a file was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,40 +52,10 @@ pub fn valid_name(name: &str) -> bool {
         && bytes.iter().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(b))
 }
 
-/// The account `name` from passwd and group text; an unknown or malformed
-/// entry gives no account.
+/// The account `name` from passwd and group text, through the accounts
+/// library's strict parser; an unknown or malformed entry gives no account.
 pub fn lookup(passwd: &str, group: &str, name: &str) -> Option<Account> {
-    if !valid_name(name) {
-        return None;
-    }
-    let fields: Vec<&str> = passwd
-        .lines()
-        .map(|line| line.split(':').collect::<Vec<&str>>())
-        .find(|fields| fields.first() == Some(&name))?;
-    if fields.len() != 7 || !fields[5].starts_with('/') || !fields[6].starts_with('/') {
-        return None;
-    }
-    let uid: u32 = fields[2].parse().ok()?;
-    let gid: u32 = fields[3].parse().ok()?;
-    let mut groups = vec![gid];
-    for line in group.lines() {
-        let entry: Vec<&str> = line.split(':').collect();
-        if entry.len() != 4 {
-            continue;
-        }
-        let Ok(id) = entry[2].parse::<u32>() else { continue };
-        if entry[3].split(',').any(|member| member == name) && !groups.contains(&id) {
-            groups.push(id);
-        }
-    }
-    Some(Account {
-        name: name.to_string(),
-        uid,
-        gid,
-        home: fields[5].to_string(),
-        shell: fields[6].to_string(),
-        groups,
-    })
+    crate::accounts::lookup(passwd, group, name)
 }
 
 /// Read the account `name` from `root`'s passwd and group files.
@@ -219,7 +181,8 @@ impl FileAuthorizer {
 
 impl Authorizer for FileAuthorizer {
     fn authorized(&mut self, user: &str, key_blob: &[u8]) -> bool {
-        let account = match read_account(&self.root, user).and_then(|account| may_log_in(&account).map(|_| account)) {
+        let entry = crate::accounts::session::validate(&self.root, user).map_err(Refusal);
+        let account = match entry.and_then(|entry| may_log_in(&entry.account).map(|_| entry.account)) {
             Ok(account) => account,
             Err(why) => {
                 println!("bsshd: login refused: {}", why);
@@ -348,22 +311,6 @@ pub fn become_account(account: &Account, credentials: &mut dyn Credentials) -> R
     Ok(())
 }
 
-/// The session's environment, replacing bsshd's own.
-pub fn login_environment(account: &Account, term: Option<&str>) -> Vec<String> {
-    let path = if account.uid == 0 { "/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin" } else { "/usr/bin:/bin:/usr/local/bin" };
-    let mut environment = vec![
-        format!("HOME={}", account.home),
-        format!("USER={}", account.name),
-        format!("LOGNAME={}", account.name),
-        format!("SHELL={}", account.shell),
-        format!("PATH={}", path),
-    ];
-    if let Some(term) = term.filter(|term| !term.is_empty() && term.bytes().all(|b| b.is_ascii_graphic())) {
-        environment.push(format!("TERM={}", term));
-    }
-    environment
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,6 +344,13 @@ mod tests {
             let passwd = PASSWD.replace(":1000:1000:", &format!(":{}:{}:", uid, gid));
             fs::write(root.join("etc/passwd"), passwd).unwrap();
             fs::write(root.join("etc/group"), GROUP).unwrap();
+            // Session checks: a shadow line (a locked password still permits
+            // a key) and a listed shell.
+            fs::write(root.join("etc/shadow"), "root:!:::::::\noperator:!:::::::\n").unwrap();
+            fs::write(root.join("etc/shells"), "/bin/sh\n/bin/bsh\n").unwrap();
+            for (file, mode) in [("passwd", 0o644), ("group", 0o644), ("shadow", 0o600)] {
+                fs::set_permissions(root.join("etc").join(file), fs::Permissions::from_mode(mode)).unwrap();
+            }
             for dir in [root.clone(), root.join("etc"), root.join("etc/breenix")] {
                 fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
             }
@@ -610,16 +564,5 @@ mod tests {
         // Already unprivileged as another user: no id can be switched.
         let mut credentials = Fake { uid: 2000, gid: 2000, ..Fake::default() };
         assert!(become_account(&operator, &mut credentials).is_err());
-    }
-
-    #[test]
-    fn login_environment_names_the_account() {
-        let operator = lookup(PASSWD, GROUP, "operator").unwrap();
-        let environment = login_environment(&operator, Some("xterm-256color"));
-        assert!(environment.contains(&"HOME=/home/operator".to_string()));
-        assert!(environment.contains(&"USER=operator".to_string()));
-        assert!(environment.contains(&"TERM=xterm-256color".to_string()));
-        assert!(!environment.iter().any(|entry| entry.starts_with("PATH=") && entry.contains("/sbin")));
-        assert!(!login_environment(&operator, Some("bad term")).iter().any(|e| e.starts_with("TERM=")));
     }
 }

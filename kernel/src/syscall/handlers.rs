@@ -482,9 +482,12 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         PtySlave {
             hold: crate::tty::pty::PtyHold,
             is_nonblocking: bool,
+            opened: u64,
         },
         Ebadf,
         Eisdir,     // Is a directory
+        /// A terminal revoked from this description (`tty::revoke`): EIO.
+        Revoked,
     }
 
     let mut fifo_to_touch = None;
@@ -496,6 +499,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
      -> Option<WriteOperation> {
         Some(
             match &fd_entry.kind {
+                _ if fd_entry.terminal_revoked() => WriteOperation::Revoked,
                 FdKind::Ipc(_) if !fd_entry.writable() => WriteOperation::Ebadf,
                 FdKind::Ipc(file) => {
                     WriteOperation::Ipc {
@@ -556,6 +560,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                     is_nonblocking: (fd_entry.status_flags()
                         & crate::ipc::fd::status_flags::O_NONBLOCK)
                         != 0,
+                    opened: fd_entry.opened(),
                 },
                 FdKind::ProcfsFile { .. } => WriteOperation::Ebadf,
                 FdKind::ProcfsDirectory { .. } => WriteOperation::Eisdir,
@@ -617,11 +622,12 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         WriteOperation::StdIo => write_to_stdio(fd, &buffer),
         WriteOperation::Ebadf => SyscallResult::Err(9), // EBADF
         WriteOperation::Eisdir => SyscallResult::Err(super::errno::EISDIR as u64),
+        WriteOperation::Revoked => SyscallResult::Err(super::errno::EIO as u64),
         WriteOperation::PtyMaster { hold, is_nonblocking } => {
             crate::tty::pty::io::write_master(hold.pair(), &buffer, is_nonblocking)
         }
-        WriteOperation::PtySlave { hold, is_nonblocking } => {
-            crate::tty::pty::io::write_slave(hold.pair(), &buffer, is_nonblocking)
+        WriteOperation::PtySlave { hold, is_nonblocking, opened } => {
+            crate::tty::pty::io::write_slave(hold.pair(), &buffer, is_nonblocking, opened)
         }
         WriteOperation::Pipe {
             pipe_buffer,
@@ -1574,8 +1580,19 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             let device_type = *device_type;
             let is_nonblocking =
                 (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+            let opened = fd_entry.opened();
             drop(manager_guard);
             if device_type == crate::fs::devfs::DeviceType::Null {
+                return SyscallResult::Ok(0);
+            }
+            // A revoked terminal reads as end of file, also once a blocked
+            // read is woken by the revocation (`tty::revoke`).
+            let live = || {
+                !device_type
+                    .terminal()
+                    .is_some_and(|number| crate::tty::revoke::vt_revoked_since(number, opened))
+            };
+            if !live() {
                 return SyscallResult::Ok(0);
             }
             let mut user_buf = alloc::vec![];
@@ -1585,12 +1602,12 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             user_buf.resize(count as usize, 0);
             let result = match device_type {
                 crate::fs::devfs::DeviceType::Console | crate::fs::devfs::DeviceType::Tty => {
-                    super::blocking_io::read_console(&mut user_buf, is_nonblocking).map_err(|e| -e)
+                    super::blocking_io::read_console(&mut user_buf, is_nonblocking, &live).map_err(|e| -e)
                 }
                 // A virtual terminal reads its own input queue; /dev/tty0 the
                 // foreground terminal's at the time of the read.
                 crate::fs::devfs::DeviceType::Tty0 | crate::fs::devfs::DeviceType::Vt(_) => {
-                    super::blocking_io::read_terminal(device_type, &mut user_buf, is_nonblocking).map_err(|e| -e)
+                    super::blocking_io::read_terminal(device_type, &mut user_buf, is_nonblocking, &live).map_err(|e| -e)
                 }
                 _ => crate::fs::devfs::device_read(device_type, &mut user_buf),
             };
@@ -1633,11 +1650,12 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             } else {
                 crate::tty::pty::PtyHold::slave(pair)
             };
+            let opened = fd_entry.opened();
             drop(manager_guard);
             if hold.is_master() {
                 crate::tty::pty::io::read_master(hold.pair(), buf_ptr, count, is_nonblocking)
             } else {
-                crate::tty::slave_read::read(hold.pair(), buf_ptr, count, is_nonblocking)
+                crate::tty::slave_read::read(hold.pair(), buf_ptr, count, is_nonblocking, opened)
             }
         }
         FdKind::ProcfsFile {

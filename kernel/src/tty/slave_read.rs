@@ -13,11 +13,13 @@ fn now_ns() -> u64 {
     s.saturating_mul(1_000_000_000).saturating_add(ns)
 }
 
-pub fn read(pair: &Arc<PtyPair>, buf_ptr: u64, count: u64, nonblocking: bool) -> SyscallResult {
+/// `opened` is the description's open-clock stamp: once the slave is revoked
+/// from it (`tty::revoke`), the read takes no more input and returns end of file.
+pub fn read(pair: &Arc<PtyPair>, buf_ptr: u64, count: u64, nonblocking: bool, opened: u64) -> SyscallResult {
     if count == 0 {
         return SyscallResult::Ok(0);
     }
-    if pair.master_closed() { return SyscallResult::Ok(0); }
+    if pair.master_closed() || pair.revoked_since(opened) { return SyscallResult::Ok(0); }
     let terminal = TtyRef::Pty(pair.clone());
     if let Err(e) = jobctl::check(&terminal, JobOp::Read) {
         return SyscallResult::Err(e as u64);
@@ -33,7 +35,7 @@ pub fn read(pair: &Arc<PtyPair>, buf_ptr: u64, count: u64, nonblocking: bool) ->
             return SyscallResult::Err(e as u64);
         }
         let mut ldisc = pair.ldisc.lock();
-        if pair.master_closed() { return SyscallResult::Ok(0); }
+        if pair.master_closed() || pair.revoked_since(opened) { return SyscallResult::Ok(0); }
         let attrs = ldisc.termios();
         let canonical = attrs.is_canonical();
         let minimum = usize::from(attrs.vmin()).min(count);
@@ -89,7 +91,7 @@ pub fn read(pair: &Arc<PtyPair>, buf_ptr: u64, count: u64, nonblocking: bool) ->
         // the waitqueue lock. An intervening input/settings change prevents
         // sleep; producers release their object lock before waking this queue.
         match wait_on(&pair.slave_readers, &deadline, || {
-            !pair.master_closed() && input_epoch.load(Ordering::Acquire) == observed
+            !pair.master_closed() && !pair.revoked_since(opened) && input_epoch.load(Ordering::Acquire) == observed
         }) {
             WaitEnd::Woken => {}
             WaitEnd::TimedOut => expired = true,

@@ -11,9 +11,13 @@
 //!   each later generation's `/etc/ssh` (`libbreenix::ssh::machine_state`).
 //! - Logins are publickey only, against the account's `~/.ssh/authorized_keys`
 //!   (`libbreenix::ssh::account`). There is no password login, unknown users
-//!   are refused, and root does not log in.
-//! - Before a session runs, its process takes the account's groups, gid and
-//!   uid, home directory, shell and environment, as `login` does.
+//!   are refused, and root does not log in. The account must pass the accounts
+//!   library's session checks (`libbreenix::accounts::session::validate`).
+//! - Before a session runs, its process becomes the account through
+//!   `session::become_account`, as login does: a PTY is given to the account
+//!   (mode 0620, group tty) and returned to root when the session ends, then the
+//!   groups, gid and uid, the umask from `/etc/login.defs`, the home directory,
+//!   shell and environment. Each session start is recorded in `/var/log/auth.log`.
 //!
 //! Usage: bsshd [port]
 //!   Default port: 22
@@ -25,7 +29,8 @@ use libbreenix::io;
 use libbreenix::process;
 use libbreenix::pty;
 use libbreenix::socket::{self, SockAddrIn, AF_INET, SOCK_STREAM};
-use libbreenix::ssh::account::{self, Account, Credentials};
+use libbreenix::accounts::{self, session};
+use libbreenix::ssh::account::{self, Account};
 use libbreenix::ssh::host_keys;
 use libbreenix::ssh::machine_state;
 use libbreenix::ssh::keys::{fingerprint_text, HostKey};
@@ -35,45 +40,7 @@ use libbreenix::types::Fd;
 const DEFAULT_PORT: u16 = 22;
 
 extern "C" {
-    fn setgroups(count: usize, groups: *const u32) -> i32;
-    fn getgroups(count: i32, groups: *mut u32) -> i32;
-    fn setgid(gid: u32) -> i32;
-    fn setuid(uid: u32) -> i32;
-    fn getuid() -> u32;
-    fn geteuid() -> u32;
-    fn getgid() -> u32;
-    fn getegid() -> u32;
-    fn fchown(fd: i32, uid: u32, gid: u32) -> i32;
-    fn fchmod(fd: i32, mode: u32) -> i32;
     fn setsockopt(fd: i32, level: i32, name: i32, value: *const u8, length: u32) -> i32;
-}
-
-/// The process's own credentials, through the C library's system calls.
-struct System;
-
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(-1)
-}
-
-impl Credentials for System {
-    fn set_groups(&mut self, groups: &[u32]) -> Result<(), i32> {
-        if unsafe { setgroups(groups.len(), groups.as_ptr()) } == 0 { Ok(()) } else { Err(errno()) }
-    }
-    fn set_gid(&mut self, gid: u32) -> Result<(), i32> {
-        if unsafe { setgid(gid) } == 0 { Ok(()) } else { Err(errno()) }
-    }
-    fn set_uid(&mut self, uid: u32) -> Result<(), i32> {
-        if unsafe { setuid(uid) } == 0 { Ok(()) } else { Err(errno()) }
-    }
-    fn ids(&self) -> (u32, u32, u32, u32) {
-        unsafe { (getuid(), geteuid(), getgid(), getegid()) }
-    }
-    fn groups(&self) -> Vec<u32> {
-        let mut groups = vec![0u32; 64];
-        let count = unsafe { getgroups(groups.len() as i32, groups.as_mut_ptr()) };
-        groups.truncate(count.max(0) as usize);
-        groups
-    }
 }
 
 /// Fill `buffer` from the kernel's random pool; getrandom without flags waits
@@ -119,13 +86,13 @@ fn prepare() -> HostKey {
 /// return its environment. The caller exits instead of running anything when
 /// this fails.
 fn enter_account(account: &Account, term: Option<&str>) -> Result<Vec<CString>, String> {
-    account::become_account(account, &mut System).map_err(|why| why.to_string())?;
+    session::become_account(account, &session::LoginDefs::read(Path::new("/")), None)?;
     let home = CString::new(account.home.as_str()).map_err(|_| "invalid home directory".to_string())?;
     if process::chdir(home.as_bytes_with_nul()).is_err() {
         eprintln!("bsshd: home directory {} is not available; starting in /", account.home);
         let _ = process::chdir(b"/\0");
     }
-    account::login_environment(account, term)
+    session::login_environment(account, term)
         .into_iter()
         .map(|entry| CString::new(entry).map_err(|_| "invalid environment".to_string()))
         .collect()
@@ -228,8 +195,9 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
             return;
         }
     };
-    let account = match account::read_account(Path::new("/"), &username)
-        .and_then(|account| account::may_log_in(&account).map(|_| account))
+    let account = match session::validate(Path::new("/"), &username)
+        .map_err(account::Refusal)
+        .and_then(|entry| account::may_log_in(&entry.account).map(|_| entry.account))
     {
         Ok(account) => account,
         Err(why) => {
@@ -238,6 +206,11 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
             return;
         }
     };
+
+    let record = session::Record { program: "bsshd", user: &account.name, target: &account.name, tty: "-", refused: None, cmd: "" };
+    if let Err(why) = accounts::log(Path::new("/"), &record) {
+        eprintln!("bsshd: auth log: {}", why);
+    }
 
     // Wait for channel open + shell request
     let pty_requested = match session.wait_for_channel() {
@@ -314,8 +287,7 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
 
                 if libbreenix::termios::set_controlling_terminal(slave_fd).is_err()
                     || libbreenix::termios::tcsetpgrp(slave_fd, process::getpid().unwrap().raw() as i32).is_err()
-                    || unsafe { fchown(slave_fd.raw() as i32, account.uid, account.gid) } != 0
-                    || unsafe { fchmod(slave_fd.raw() as i32, 0o620) } != 0
+                    || session::grant_terminal(slave_fd.raw() as i32, &account).is_err()
                 { process::exit(1); }
 
                 // Set PTY to translate \n → \r\n (ONLCR) for SSH terminals
@@ -371,8 +343,7 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
             if pty_requested {
                 let name = core::str::from_utf8(pty::slave_path_bytes(&slave_path)).unwrap();
                 if let Ok(slave) = libbreenix::fs::open(name, libbreenix::fs::O_RDWR | pty::O_NOCTTY as u32) {
-                    let restored = unsafe { fchown(slave.raw() as i32, 0, 0) == 0 && fchmod(slave.raw() as i32, 0o620) == 0 };
-                    if !restored { eprintln!("bsshd: cannot restore PTY ownership"); }
+                    if session::return_terminal(slave.raw() as i32).is_err() { eprintln!("bsshd: cannot restore PTY ownership"); }
                     let _ = io::close(slave);
                 }
             }

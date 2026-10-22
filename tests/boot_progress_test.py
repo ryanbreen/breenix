@@ -141,7 +141,9 @@ class ProgressTest(unittest.TestCase):
         monitor = runpy.run_path(str(ROOT / 'scripts/boot_progress.py'))
         self.assertEqual(allowances, {('time', 'clocks/rate-counter'): 25_000,
                                      ('console', 'getty/logout-reacquires'): 30_000,
-                                     ('console', 'getty/independent-sessions'): 30_000})
+                                     ('console', 'getty/independent-sessions'): 30_000,
+                                     ('users', 'ssh/openssh-operator'): 30_000,
+                                     ('users', 'ssh/openssh-root-refused'): 30_000})
         for (suite, case), limit in allowances.items():
             manifest = json.loads((ROOT / f'docs/suites/{suite}.json').read_text())
             names = {f"{category['id']}/{item['id']}" for category in manifest['categories']

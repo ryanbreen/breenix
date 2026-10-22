@@ -21,6 +21,8 @@ class ConsoleTest(unittest.TestCase):
         driver.args = SimpleNamespace(mode='console')
         driver.site = {'CONSOLE_USER': 'root', 'CONSOLE_PASSWORD': 'fixture_password_only_12345', 'CONSOLE_IDENTITY_KEY': 'ab' * 32}
         driver.fatal_at = None
+        driver.delivery = {}
+        driver.console_sudo_answered = False
         driver.console_step = 0
         driver.console_done = False
         driver.final_seen = True
@@ -54,6 +56,44 @@ class ConsoleTest(unittest.TestCase):
         self.assertEqual([call.args[0] for call in driver.console_send.call_args_list],
                          ['root', 'deliberately-wrong-password', 'root', driver.site['CONSOLE_PASSWORD'],
                           'print("metal-login-ok", 6*7)', 'cat /proc/fbcon/check', 'exit'])
+
+    def test_fixture_account_logs_in_and_reads_the_screen_check_through_sudo(self):
+        driver = self.driver()
+        driver.delivery = {'diskRoot': {'consoleAccount': 'uw'}}
+        password = driver.site['CONSOLE_PASSWORD']
+        for text in ['Breenix login: ', 'Password: ', 'Login incorrect', 'Breenix login: ', 'Password: ',
+                     'bsh /etc/breenix/test-users/uw>', 'metal-login-ok 42']:
+            driver.challenge_console(text)
+        self.assertEqual(driver.console_send.call_args.args[0], 'sudo cat /proc/fbcon/check')
+        # sudo's prompt is answered once, however often SOL repeats the partial line.
+        driver.challenge_console('[sudo] password for uw: ')
+        driver.challenge_console('[sudo] password for uw: ')
+        driver.challenge_console('fbcon check: shadow and screen identical, 7 glyph cells match the font', complete=True)
+        self.assertEqual(driver.console_step, 8)
+        self.assertEqual([call.args[0] for call in driver.console_send.call_args_list],
+                         ['uw', 'deliberately-wrong-password', 'uw', password,
+                          'print("metal-login-ok", 6*7)', 'sudo cat /proc/fbcon/check', password])
+
+    def test_console_account_is_the_fixture_only_when_the_image_carries_it(self):
+        fixture = 'uw:x:2003:2003:Users suite fixture:/etc/breenix/test-users/uw:/bin/bsh\n'
+        self.assertEqual(metal_root.console_account('root:x:0:0:root:/root:/bin/bsh\n' + fixture), 'uw')
+        self.assertEqual(metal_root.console_account('root:x:0:0:root:/root:/bin/bsh\n'), 'root')
+        self.assertEqual(metal_root.console_account('uw:x:2003:2003::/home/uw:/bin/bsh\n'), 'root')
+
+    def test_console_shadow_sets_root_and_the_account_and_keeps_other_lines(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            hasher = Path(scratch) / 'hasher'
+            hasher.write_text('#!/usr/bin/env python3\nimport sys\nsalt = sys.stdin.buffer.read().split(b\'\\0\')[1].decode()\n'
+                              'sys.stdout.write(salt + \'$\' + \'A\' * 86)\n')
+            hasher.chmod(0o755)
+            site = {'CONSOLE_USER': 'root', 'CONSOLE_PASSWORD': 'fixture_password_only_12345', 'CONSOLE_IDENTITY_KEY': 'ab' * 32}
+            text = metal_root.console_shadow(site, hasher, 'root:!:::::::\nnobody:*:::::::\nuw:!:::::::\n', 'uw')
+        lines = text.splitlines()
+        self.assertEqual([line.split(':')[0] for line in lines], ['root', 'nobody', 'uw'])
+        self.assertEqual(lines[1], 'nobody:*:::::::')
+        for line in (lines[0], lines[2]):
+            self.assertRegex(line, r'^(root|uw):\$6\$[./A-Za-z0-9]{16}\$A{86}:\d+:0:99999:7:::$')
+        self.assertNotEqual(lines[0].split(':')[1], lines[2].split(':')[1])
 
     def test_console_completion_requires_disk_evidence(self):
         driver = self.driver()

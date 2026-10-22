@@ -2983,8 +2983,7 @@ fn handle_devfs_open(
         };
         return match (id, tty) {
             (TtyId::Pty(_), TtyRef::Pty(pair)) => {
-                drop(manager_guard);
-                return open_tty_slave(&pair, flags, native_inode, reserved);
+                return open_tty_slave(process, &pair, flags, native_inode, reserved);
             }
             // A virtual terminal: its own device, so reads, writes and the
             // open count are that terminal's (`docs/console/contract.md` 1.1).
@@ -3244,8 +3243,11 @@ fn open_vcs(
 
 /// Open the slave of `pair`, the caller's controlling terminal, for
 /// /dev/tty. The descriptor is installed in a slot held before the slave
-/// reference is taken; EIO once the master has closed.
+/// reference is taken; EIO once the master has closed. The caller holds the
+/// process manager from controlling-terminal lookup through installation, so
+/// vhangup cannot clear membership and revoke between lookup and stamping.
 fn open_tty_slave(
+    process: &mut crate::process::Process,
     pair: &alloc::sync::Arc<crate::tty::pty::PtyPair>,
     flags: u32,
     native_inode: Option<crate::ipc::fd::NativeInode>,
@@ -3257,16 +3259,6 @@ fn open_tty_slave(
     let entry = match FileDescriptor::try_opened(FdKind::PtySlave(pair.clone()), flags) {
         Ok(entry) => entry.with_inode(native_inode),
         Err(e) => return SyscallResult::Err(e),
-    };
-    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
-        return SyscallResult::Err(3); // ESRCH
-    };
-    let mut manager_guard = crate::process::manager();
-    let Some((_, process)) = manager_guard
-        .as_mut()
-        .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
-    else {
-        return SyscallResult::Err(3); // ESRCH
     };
     let slot = match reserved {
         Some(slot) => Slot::Held(slot),

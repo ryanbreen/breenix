@@ -29,3 +29,7 @@ impl PasswordLock {
 mod store;
 #[cfg(feature = "std")]
 pub use store::*;
+#[cfg(feature = "std")]
+pub mod session;
+#[cfg(feature = "std")]
+pub mod policy;

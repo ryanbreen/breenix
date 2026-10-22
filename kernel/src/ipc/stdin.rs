@@ -560,11 +560,16 @@ pub extern "C" fn debug_inject_stdin_char(byte: u64) {
 pub(crate) fn read_or_prepare(
     buf: &mut [u8],
     is_nonblocking: bool,
+    live: &dyn Fn() -> bool,
 ) -> Result<usize, PrepareOutcome> {
     // A process reading the console ends the boot splash.
     crate::console::splash::reader();
     crate::arch_without_interrupts(|| {
         let mut buffer = STDIN_BUFFER.lock();
+        // A revoked reader takes no input: end of file (`tty::revoke`).
+        if !live() {
+            return Ok(0);
+        }
         if !buffer.is_empty() || buf.is_empty() {
             return Ok(buffer.read_bytes(buf));
         }
@@ -574,7 +579,7 @@ pub(crate) fn read_or_prepare(
         Err(INPUT_READERS.prepare_to_wait_checked(
             crate::task::thread::ThreadState::BlockedOnIO,
             None,
-            || buffer.is_empty(),
+            || buffer.is_empty() && live(),
         ))
     })
 }
@@ -615,9 +620,12 @@ impl VtInput {
 
     /// As `read_or_prepare`: copy what is queued, or publish the caller as a
     /// waiter under the same guard.
-    pub(crate) fn read_or_prepare(&self, buf: &mut [u8], is_nonblocking: bool) -> Result<usize, PrepareOutcome> {
+    pub(crate) fn read_or_prepare(&self, buf: &mut [u8], is_nonblocking: bool, live: &dyn Fn() -> bool) -> Result<usize, PrepareOutcome> {
         crate::arch_without_interrupts(|| {
             let mut buffer = self.buffer.lock();
+            if !live() {
+                return Ok(0);
+            }
             if !buffer.is_empty() || buf.is_empty() {
                 return Ok(buffer.read_bytes(buf));
             }
@@ -627,7 +635,7 @@ impl VtInput {
             Err(self.readers.prepare_to_wait_checked(
                 crate::task::thread::ThreadState::BlockedOnIO,
                 None,
-                || buffer.is_empty(),
+                || buffer.is_empty() && live(),
             ))
         })
     }

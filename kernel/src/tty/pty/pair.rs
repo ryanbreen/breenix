@@ -131,6 +131,10 @@ pub struct PtyPair {
     /// Set once the last master reference is gone.
     master_gone: AtomicBool,
 
+    /// The open clock's value when the slave was last revoked
+    /// (`tty::revoke`); 0 until then.
+    revoked_at: core::sync::atomic::AtomicU64,
+
     /// The last master close's hangup has not finished; the pair keeps its
     /// number until it has.
     pub(super) hangup_pending: AtomicBool,
@@ -181,6 +185,7 @@ impl PtyPair {
             slave_refcount: AtomicU32::new(0), // No slave FDs open initially
             slave_was_opened: AtomicBool::new(false),
             master_gone: AtomicBool::new(false),
+            revoked_at: core::sync::atomic::AtomicU64::new(0),
             hangup_pending: AtomicBool::new(false),
             output_stopped: AtomicBool::new(false),
             input_flow_stopped: AtomicBool::new(false),
@@ -283,6 +288,17 @@ impl PtyPair {
     pub(super) fn wake_slave_side(&self) {
         self.slave_readers.wake_up_deferred();
         self.slave_writers.wake_up_deferred();
+    }
+
+    /// Record a revocation of the slave at open-clock value `at`.
+    pub(crate) fn revoke(&self, at: u64) {
+        self.revoked_at.fetch_max(at, Ordering::SeqCst);
+    }
+
+    /// Whether the slave was revoked after a description stamped `opened`
+    /// was created.
+    pub fn revoked_since(&self, opened: u64) -> bool {
+        self.revoked_at.load(Ordering::SeqCst) > opened
     }
 
     /// True once every master reference has been closed.

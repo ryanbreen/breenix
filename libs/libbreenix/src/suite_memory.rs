@@ -97,15 +97,31 @@ fn read() -> Result<Sample, String> {
     Ok(Sample { free, heap_free_kb, owners, receipts, settle_ms: 0 })
 }
 
+/// Give back the free blocks the C library's allocation cache keeps, so a sample
+/// counts the memory the runner uses and not free blocks it holds for reuse (up to
+/// 128 pages: 16 one-page blocks in each of 8 size classes).
+fn release_allocation_cache() {
+    #[cfg(target_os = "breenix")]
+    {
+        extern "C" {
+            fn __breenix_malloc_release_cached() -> usize;
+        }
+        // SAFETY: the cache holds only freed blocks; no live allocation is touched.
+        unsafe { __breenix_malloc_release_cached() };
+    }
+}
+
 /// A reading once boot's own work is over (or after [`BOOT_SETTLE_MS`]) and
 /// reclamation has settled (or after a further [`SETTLE_MS`] of waiting).
-/// `settle_ms` counts both waits.
+/// `settle_ms` counts both waits. Each reading first releases the runner's
+/// allocation cache.
 pub fn settled() -> Result<Sample, String> {
     let begun = monotonic_ms();
     while !boot_settled() && monotonic_ms().saturating_sub(begun) < BOOT_SETTLE_MS {
         let _ = time::sleep_ms(SETTLE_STEP_MS);
     }
     let start = monotonic_ms();
+    release_allocation_cache();
     let mut last = read()?;
     loop {
         let waited = monotonic_ms().saturating_sub(start);
@@ -114,6 +130,7 @@ pub fn settled() -> Result<Sample, String> {
             return Ok(last);
         }
         let _ = time::sleep_ms(SETTLE_STEP_MS);
+        release_allocation_cache();
         let now = read()?;
         let still = now.receipts == 0 && last.receipts == 0 && now.free == last.free;
         last = now;
