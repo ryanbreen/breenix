@@ -37,7 +37,7 @@ const FONT_SIZE_STEP: f32 = 1.0;
 const BITMAP_CELL_W: usize = 7;
 const BITMAP_CELL_H: usize = 18;
 
-/// Tab bar height in pixels.
+/// Tab bar height in logical UI units.
 const TAB_BAR_HEIGHT: i32 = 24;
 
 // Terminal colors
@@ -495,9 +495,12 @@ fn main() {
         (BITMAP_CELL_W, BITMAP_CELL_H)
     };
 
+    // Widgets use logical UI coordinates; the terminal grid uses device pixels.
+    let ui_scale = win.surface().expect("terminal surface").ui_scale() as i32;
+    let tab_bar_pixels = (TAB_BAR_HEIGHT * ui_scale) as u32;
     // Calculate content area (below tab bar)
     let mut content_w = WIN_WIDTH;
-    let mut content_h = WIN_HEIGHT - TAB_BAR_HEIGHT as u32;
+    let mut content_h = WIN_HEIGHT.saturating_sub(tab_bar_pixels);
     let mut cols = (content_w as usize / cell_w).max(1);
     let mut rows = (content_h as usize / cell_h).max(1);
 
@@ -505,7 +508,7 @@ fn main() {
     let theme = Theme::dark();
     let btop_label = make_static_label("btop");
     let mut tab_bar = TabBar::new(
-        Rect::new(0, 0, WIN_WIDTH as i32, TAB_BAR_HEIGHT),
+        Rect::new(0, 0, WIN_WIDTH as i32 / ui_scale, TAB_BAR_HEIGHT),
         vec![btop_label], &theme);
 
     // Spawn initial tabs: btop (default visible) + shell
@@ -657,7 +660,7 @@ fn main() {
                 }
                 Event::Resized { width, height } => {
                     content_w = *width;
-                    content_h = height.saturating_sub(TAB_BAR_HEIGHT as u32);
+                    content_h = height.saturating_sub(tab_bar_pixels);
                     let new_cols = (content_w as usize / cell_w).max(1);
                     let new_rows = (content_h as usize / cell_h).max(1);
                     if new_cols != cols || new_rows != rows {
@@ -667,7 +670,7 @@ fn main() {
                             tab.emu.resize(cols, rows);
                         }
                     }
-                    tab_bar.set_rect(Rect::new(0, 0, *width as i32, TAB_BAR_HEIGHT));
+                    tab_bar.set_rect(Rect::new(0, 0, *width as i32 / ui_scale, TAB_BAR_HEIGHT));
                     for tab in tabs.iter_mut() {
                         tab.emu.dirty = true;
                     }
@@ -701,7 +704,7 @@ fn main() {
         }
 
         // Pass mouse state to TabBar for tab switching
-        let input = InputState::from_raw(mouse_x, mouse_y, buttons, prev_buttons, breengel::clock::now_ns() / 1_000_000);
+        let input = InputState::from_raw(mouse_x.div_euclid(ui_scale), mouse_y.div_euclid(ui_scale), buttons, prev_buttons, breengel::clock::now_ns() / 1_000_000);
         if let WidgetEvent::ValueChanged(_) = tab_bar.update(&input) {
             let sel = tab_bar.selected();
             if let Some(tab) = tabs.get_mut(sel) {
@@ -749,7 +752,7 @@ fn main() {
                 tab.emu.render(
                     fb,
                     0,
-                    TAB_BAR_HEIGHT as usize,
+                    tab_bar_pixels as usize,
                     content_w as usize,
                     content_h as usize,
                     cell_w,

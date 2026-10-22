@@ -498,9 +498,12 @@ fn main() {
     let total_h = content_height(&tests);
     let sleep_ts = libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 50_000_000 }; // 50ms
 
+    // Widget rectangles use logical coordinates, while scroll offsets and content
+    // dimensions remain in the device pixels used by render().
+    let ui_scale = win.surface().expect("self-check surface").ui_scale() as i32;
     // Scrollbar positioned along the right edge of the content area
     let bar_w = ScrollBar::DEFAULT_WIDTH;
-    let bar_rect = Rect::new(WIN_W as i32 - bar_w, LIST_START_Y, bar_w, visible_h);
+    let bar_rect = Rect::new(WIN_W as i32 / ui_scale - bar_w, LIST_START_Y / ui_scale, bar_w, visible_h / ui_scale);
     let mut scroll_bar = ScrollBar::new(bar_rect, total_h, visible_h);
     let theme = libbui::Theme::dark();
 
@@ -522,7 +525,7 @@ fn main() {
                 Event::Resized { width: w, height: h } => {
                     let new_visible_h = h as i32 - LIST_START_Y - FOOTER_H;
                     let new_bar_rect = Rect::new(
-                        w as i32 - bar_w, LIST_START_Y, bar_w, new_visible_h,
+                        w as i32 / ui_scale - bar_w, LIST_START_Y / ui_scale, bar_w, new_visible_h / ui_scale,
                     );
                     scroll_bar.set_rect(new_bar_rect);
                     scroll_bar.set_dimensions(total_h, new_visible_h);
