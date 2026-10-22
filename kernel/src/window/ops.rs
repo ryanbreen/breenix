@@ -1205,7 +1205,7 @@ pub fn claim(caller: &Caller, c: &mut Claim, out: u64) -> Result<u64, i32> {
         let mut reg = REGISTRY.lock();
         // The new compositor's first composite covers the whole screen: what is on it now
         // was not composed by this claim.
-        reg.present.force_full = true;
+        reg.present.request_full();
         let mut woken = Vec::new();
         let _ = woken.try_reserve_exact(reg.windows.len());
         for w in reg.windows.values_mut() {

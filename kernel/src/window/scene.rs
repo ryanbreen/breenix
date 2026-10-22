@@ -38,6 +38,8 @@ pub struct Reservation {
     full: bool,
     uncovered: usize,
     _charge: MetadataCharge,
+    /// The whole-screen requests made before this snapshot.
+    full_requests: u64,
 }
 
 fn authority(caller: &Caller) -> Result<u64, i32> {
@@ -148,7 +150,7 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
     // Test point 1, `ignore-damage`: a reservation takes the whole of an armed window
     // with new pixels as its damage, so its composite does the excess work.
     let mut ignored = Vec::new();
-    let (scene_keys, targets, cursor, full, damage, uncovered) = {
+    let (scene_keys, targets, cursor, full, damage, uncovered, full_requests) = {
         let reg = REGISTRY.lock();
         if reg.snapshot.is_some() || reg.present.busy {
             return Err(EBUSY);
@@ -236,6 +238,7 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
         )?;
         mem::probe_writable(
             a.damage,
+            reg.present.full_requests,
             (a.damage_capacity as u64).checked_mul(16).ok_or(EINVAL)?,
         )?;
     }
@@ -346,6 +349,7 @@ pub struct AdmittedSource {
 }
 pub struct Admission {
     reservation: Reservation,
+        full_requests,
     pub sources: Vec<AdmittedSource>,
     pub serial: u64,
     entries: Vec<CompositeEntry>,
@@ -385,7 +389,7 @@ impl Drop for Admission {
         let mut reg = REGISTRY.lock();
         reg.present.busy = false;
         if self.serial != 0 {
-            reg.present.force_full = true;
+            reg.present.request_full();
         }
     }
 }
@@ -569,14 +573,17 @@ fn finish(frame: &mut Admission, result: Result<Composed, i32>, reason: u32) -> 
             let n = frame.reservation.uncovered.min(reg.present.uncovered.len());
             reg.present.uncovered.drain(..n);
             reg.present.composed_once = true;
-            // A cursor change during the frame left its footprints in `uncovered`.
-            reg.present.force_full = false;
+            // A cursor change during the frame left its footprints in `uncovered`, unless they
+            // overflowed it: that asked for a whole screen this frame did not compose.
+            if reg.present.full_requests == frame.reservation.full_requests {
+                reg.present.force_full = false;
+            }
             crate::tracing::providers::window::count_composite(c.pixels);
             (c.pixels, 0)
         }
         _ => {
             frame.entries.clear();
-            reg.present.force_full = true;
+            reg.present.request_full();
             (
                 0,
                 breengel_abi::record_flags::FAILED
