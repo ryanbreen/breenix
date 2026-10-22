@@ -1045,9 +1045,17 @@ fn composition_scale_2()->CaseResult {
 
 // gpu-display: §2.2 retained fronts feed composition, capture and replay after handle drop; scanout holds backing too.
 fn composition_target_lifetime()->CaseResult {
+    // The baseline comes before the case allocates anything: the fixture's own destroyed
+    // targets keep their backing until the device answers their release (ruling B38). The
+    // window fixture keeps its renderer and one decoded input pattern for the process's life;
+    // they are made first, with the pattern the case ends on, so the baseline holds them.
+    let warm=libbreenix::gpu::target_create(0,1,1).map_err(|r|format!("fixture warm-up target {}",outcome(r))).cite("18")?;
+    let warmed=fill(FixtureTarget{handle:warm,width:1,height:1},1,1,17);
+    libbreenix::gpu::resource_destroy(warm);
+    warmed.cite("18")?;
+    let before=crate::gpu_checks::counters().cite("18")?;
     super::handoff::snapshot_lifetime(false)?;
     interface()?;
-    let before=crate::gpu_checks::counters().cite("18")?;
     let mut k=compositor()?;let mut w=W::new(64,48,3)?;
     let p=Placed::new(30,40,64,48,0,17);show(&mut k,&w,&p)?;
     let front=listed(w.id()).cite("17.1")?.ok_or("window not listed")?;
@@ -1068,8 +1076,11 @@ fn composition_target_lifetime()->CaseResult {
     want_ok(libbreenix::gpu::readback(w.c.buffer[replay.buffer as usize],[0,0,64,48],&mut pixels,256,&mut record),"18","gpu-display: replayed target readback")?;
     same(&pixels,64,48,false,"replay from retained target","18",|x,y|pattern(17,x,y))?;
     want_ok(w.destroy(),"17.2","DESTROY")?;k.kill_checked().cite("24")?;
-    let start=now_ms();while crate::gpu_checks::counters().cite("18")?.resource_bytes!=before.resource_bytes {
-        ensure(since(start)<1_000,"18","gpu-display: released window/capture/replay/compositor holds leaked backing")?;let _=time::sleep_ms(5);
+    let start=now_ms();loop {
+        let now=crate::gpu_checks::counters().cite("18")?.resource_bytes;
+        if now==before.resource_bytes { break; }
+        if since(start)>=1_000 { return at("18",format!("gpu-display: released window/capture/replay/compositor holds leaked backing: {now} resource bytes 1 s after release, {} before the case",before.resource_bytes)); }
+        let _=time::sleep_ms(5);
     }
     // A scanout binding retains its resource independently of its destroyed user handle.
     ensure(take_over()>=0,"18","gpu-display: take display for scanout lifetime")?;
