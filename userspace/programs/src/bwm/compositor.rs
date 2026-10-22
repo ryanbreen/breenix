@@ -64,6 +64,23 @@ pub struct Scanout {
     pub height: u32,
 }
 
+/// Why a frame was not composed.
+pub enum FrameError {
+    /// bwm is not the display owner holding the compositor claim (EPERM): another process
+    /// took the display, and gives it back by giving it back or exiting.
+    NotOwner,
+    Failed(String),
+}
+
+impl core::fmt::Display for FrameError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            FrameError::NotOwner => f.write_str("bwm does not own the display"),
+            FrameError::Failed(e) => f.write_str(e),
+        }
+    }
+}
+
 /// Why a frame check did not pass.
 pub enum CheckError {
     /// A client committed again after the composite sampled it, so its front no longer
@@ -188,12 +205,13 @@ impl Compositor {
     /// Compose a frame: redraw `damage` (screen rectangles `(x0, y0, x1, y1)`), and whatever
     /// the scene snapshot names as damaged, in C from the desktop, the windows in `layers`
     /// and the pointer, then show it. The whole of C is redrawn after opening or a failure.
-    pub fn compose(&mut self, layers: &[Layer], pointer: Option<Pointer>, damage: &[[i32; 4]]) -> Result<(), String> {
+    pub fn compose(&mut self, layers: &[Layer], pointer: Option<Pointer>, damage: &[[i32; 4]]) -> Result<(), FrameError> {
+        const EPERM: i64 = -(wabi::errno::EPERM as i64);
         const EAGAIN: i64 = -(wabi::errno::EAGAIN as i64);
         const EBUSY: i64 = -(wabi::errno::EBUSY as i64);
         const EINVAL: i64 = -(wabi::errno::EINVAL as i64);
         const EIO: i64 = -(wabi::errno::EIO as i64);
-        self.desktop.wait().map_err(|e| format!("desktop drawing: errno {}", -e))?;
+        self.desktop.wait().map_err(|e| FrameError::Failed(format!("desktop drawing: errno {}", -e)))?;
         let deadline = monotonic_ms() + RETRY_MS;
         loop {
             let mut q = wabi::SceneSnapshot::ZERO;
@@ -204,7 +222,7 @@ impl Compositor {
             let mut s = wabi::SceneSnapshot::ZERO;
             if r == 0 {
                 if (q.width, q.height) != (self.width, self.height) {
-                    return Err(format!("the display changed to {}x{} under bwm's {}x{} desktop", q.width, q.height, self.width, self.height));
+                    return Err(FrameError::Failed(format!("the display changed to {}x{} under bwm's {}x{} desktop", q.width, q.height, self.width, self.height)));
                 }
                 // A request without room for any window or damage would be a sizing query.
                 if windows.is_empty() && kernel_damage.is_empty() {
@@ -222,8 +240,11 @@ impl Compositor {
                 let _ = libbreenix::time::sleep_ms(1);
                 continue;
             }
+            if r == EPERM {
+                return Err(FrameError::NotOwner);
+            }
             if r != 0 {
-                return Err(format!("scene snapshot: errno {}", -r));
+                return Err(FrameError::Failed(format!("scene snapshot: errno {}", -r)));
             }
             windows.truncate(s.window_count as usize);
             kernel_damage.truncate(s.damage_count as usize);
@@ -255,13 +276,17 @@ impl Compositor {
                     self.next ^= 1;
                     let _ = libbreenix::time::sleep_ms(1);
                 }
+                EPERM => {
+                    self.full = true;
+                    return Err(FrameError::NotOwner);
+                }
                 EIO => {
                     self.full = true;
-                    return Err(format!("composite: EIO, reason {}, phase {}", c.reason, c.phase));
+                    return Err(FrameError::Failed(format!("composite: EIO, reason {}, phase {}", c.reason, c.phase)));
                 }
                 r => {
                     self.full = true;
-                    return Err(format!("composite: errno {}, stream error {} at {}", -r, c.error, c.error_index));
+                    return Err(FrameError::Failed(format!("composite: errno {}, stream error {} at {}", -r, c.error, c.error_index)));
                 }
             }
         }

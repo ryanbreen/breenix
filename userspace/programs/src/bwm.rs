@@ -17,7 +17,7 @@ mod session;
 
 use std::process;
 
-use compositor::{CheckError, Compositor, Layer, Pointer};
+use compositor::{CheckError, Compositor, FrameError, Layer, Pointer};
 use session::{cursor_shape, Input};
 
 #[cfg(not(target_arch = "aarch64"))]
@@ -1418,7 +1418,7 @@ fn execute_hotkey_action(action: &HotkeyAction, windows: &mut Vec<Window>, focus
 /// `background_pixel`'s formula). The read-back's record must name a scanout of the composed
 /// size, the one MODES reports bound, and the GPU core's current mode must have that size.
 fn check_desktop_fills(gpu: &mut Compositor, screen_w: usize, screen_h: usize, mode_index: u32) -> Result<String, String> {
-    gpu.compose(&[], None, &[])?;
+    gpu.compose(&[], None, &[]).map_err(|e| e.to_string())?;
     let (w, h) = (screen_w as u32, screen_h as u32);
     let (tb, ab) = (px(TASKBAR_HEIGHT) as u32, px(APPBAR_HEIGHT) as u32);
     let word = |c: Color| 0xFF00_0000 | (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32;
@@ -1459,6 +1459,9 @@ fn monotonic_ms() -> Option<u64> {
 /// How long bwm sleeps for input or a scene change before it reads the pointer again: the
 /// pointer has no descriptor of its own.
 const POINTER_POLL_MS: i32 = 10;
+
+/// How long bwm sleeps between attempts to compose while another process holds the display.
+const DISPLAY_WAIT_MS: i32 = 100;
 
 /// How many composed frames a client's first-frame check may find it had committed again
 /// before that check is reported failed.
@@ -1601,7 +1604,7 @@ fn main() {
     let first_pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
     let first = gpu
         .compose(&[], Some(first_pointer), &[])
-        .map_err(CheckError::Failed)
+        .map_err(|e| CheckError::Failed(e.to_string()))
         .and_then(|()| gpu.check(&[], Some(first_pointer)));
     match first {
         Ok(pixels) => print!("[bwm] first frame read back: {} pixels exact\n", pixels),
@@ -1612,6 +1615,8 @@ fn main() {
         Err(e) => print!("[bwm] desktop fill check FAILED: {}\n", e),
     }
     let mut frame_failed = false;
+    // Another process holds the display: bwm composes again when it has it back.
+    let mut display_lost = false;
     let mut initial_client_checked = false;
     // The pointer the last composed frame drew, so a move repaints where it was.
     let mut drawn_pointer: Option<Pointer> = None;
@@ -1635,7 +1640,9 @@ fn main() {
         // went away. The pointer has no descriptor, so the sleep is bounded and the
         // pointer is read after it. Local work already prepared (the initial discovery's
         // redraw) is presented before sleeping.
-        let timeout = if full_redraw || content_dirty || windows_dirty {
+        let timeout = if display_lost {
+            DISPLAY_WAIT_MS
+        } else if full_redraw || content_dirty || windows_dirty {
             0
         } else if input_parser.state == InputState::Escape {
             (ESCAPE_TIMEOUT_MS as i32).min(POINTER_POLL_MS)
@@ -2113,6 +2120,10 @@ fn main() {
             match frame {
                 Ok(()) => {
                     frame_failed = false;
+                    if display_lost {
+                        display_lost = false;
+                        print!("[bwm] display back: composing again\n");
+                    }
                     drawn_pointer = Some(pointer);
                     fps_frames_since_last = fps_frames_since_last.wrapping_add(1);
                     // Each client window's first shown frame is read back and compared.
@@ -2156,7 +2167,17 @@ fn main() {
                         report_check(id, whole, area, &result);
                     }
                 }
-                Err(e) => {
+                Err(FrameError::NotOwner) => {
+                    // Another process took the display (probe, say): wait for it to give the
+                    // display back, or exit, and then repaint everything.
+                    if !display_lost {
+                        print!("[bwm] display held by another process: waiting for it\n");
+                    }
+                    display_lost = true;
+                    drawn_pointer = None;
+                    full_redraw = true;
+                }
+                Err(FrameError::Failed(e)) => {
                     // Start again with a fresh context and targets; the next frame
                     // repaints everything.
                     if !frame_failed {
