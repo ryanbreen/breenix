@@ -138,6 +138,11 @@ pub fn draw_text(fb: &mut Surface, text: &[u8], x: usize, y: usize, fg: Color) {
     run(fb, text.len(), |i| text[i] as char, x, y, fg, RasterHeight::Size16);
 }
 
+/// Draw a string of ASCII bytes from the raster of size `height`, as `draw_text` does at 16 px.
+pub fn draw_text_at(fb: &mut Surface, text: &[u8], x: usize, y: usize, fg: Color, height: RasterHeight) {
+    run(fb, text.len(), |i| text[i] as char, x, y, fg, height);
+}
+
 /// Measure the pixel width of a byte string.
 pub fn text_width(text: &[u8]) -> usize {
     let m = metrics();
