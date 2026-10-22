@@ -158,6 +158,7 @@ pub fn check(condition: bool, msg: &str) -> CaseResult {
 
 /// Canonical pixels handed to the runner by a picture case, with their content hash.
 /// The stage consumes this snapshot, never a later redraw of the case's surface.
+#[derive(Clone)]
 pub struct JudgedFrame {
     pub width: usize,
     pub height: usize,
@@ -469,9 +470,9 @@ static CASE_DEADLINE_NS: AtomicU64 = AtomicU64::new(0);
 // B38 has breengel's composition/irq-bound wait for its contexts' warm-up before it measures.
 // A private pipe starts each one's timed window once.
 static CASE_WINDOW_FD: AtomicI32 = AtomicI32::new(-1);
-
 /// The cases whose timed window starts when they say, after their contexts have warmed.
 const WARMED_WINDOWS: [(&str, &str); 2] = [("gpu", "textures/upload-visibility"), ("breengel", "composition/irq-bound")];
+
 /// What the case's process published with its judged frame for the stage's pictures
 /// (ruling B36): a window holding a GPU copy of the frame, `(id, width, height)`, or the
 /// stage's own frame, as the scanout shows it.
@@ -482,6 +483,66 @@ static PUBLISHED: std::sync::Mutex<Option<Published>> = std::sync::Mutex::new(No
 /// once it has sampled the frame.
 static PUBLISHED_FD: AtomicI32 = AtomicI32::new(-1);
 static SAMPLED_FD: AtomicI32 = AtomicI32::new(-1);
+/// In a GUI suite's case process: the pipe it asks the runner to draw the stage on, and the
+/// one the runner answers on (`suite_stage::remote`).
+static STAGE_REQUEST_FD: AtomicI32 = AtomicI32::new(-1);
+static STAGE_ANSWER_FD: AtomicI32 = AtomicI32::new(-1);
+
+fn write_all(fd: Fd, mut bytes: &[u8]) -> bool {
+    while !bytes.is_empty() {
+        match io::write(fd, bytes) {
+            Ok(n) if n > 0 => bytes = &bytes[n..],
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Read all of `buf` from `fd`, sleeping in poll until each part is readable.
+fn read_exact(fd: Fd, buf: &mut [u8]) -> bool {
+    let mut at = 0;
+    while at < buf.len() {
+        let mut fds = [PollFd::new(fd, poll_events::POLLIN)];
+        if io::poll(&mut fds, -1).is_err() {
+            return false;
+        }
+        match io::read(fd, &mut buf[at..]) {
+            Ok(n) if n > 0 => at += n,
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// A length-prefixed message on `fd`.
+fn read_message(fd: Fd) -> Option<Vec<u8>> {
+    let mut len = [0u8; 4];
+    if !read_exact(fd, &mut len) {
+        return None;
+    }
+    let mut message = std::vec![0u8; u32::from_le_bytes(len) as usize];
+    read_exact(fd, &mut message).then_some(message)
+}
+
+/// A length-prefixed message on `fd`, in one write, so its reader wakes once for all of it.
+fn write_message(fd: Fd, message: &[u8]) -> bool {
+    let mut framed = Vec::with_capacity(4 + message.len());
+    framed.extend_from_slice(&(message.len() as u32).to_le_bytes());
+    framed.extend_from_slice(message);
+    write_all(fd, &framed)
+}
+
+/// In a GUI suite's case process: send `request` to the runner's stage and return its answer.
+pub(crate) fn stage_call(request: &[u8]) -> Result<Vec<u8>, String> {
+    let (tell, answer) = (STAGE_REQUEST_FD.load(Ordering::Relaxed), STAGE_ANSWER_FD.load(Ordering::Relaxed));
+    if tell < 0 || answer < 0 {
+        return Err(String::from("this process has no runner to draw the stage"));
+    }
+    if !write_message(Fd::from_raw(tell as u64), request) {
+        return Err(String::from("the stage request could not be sent to the runner"));
+    }
+    read_message(Fd::from_raw(answer as u64)).ok_or_else(|| String::from("the runner did not answer the stage request"))
+}
 
 /// The window `id`, `width` x `height`, holds a GPU copy of the judged frame this case hands
 /// over; the stage samples it once the case's measured window has ended, before this
@@ -1083,7 +1144,7 @@ const FRAME_MS: i128 = 66;
 /// A wait that timed out with the monotonic clock standing still counts towards
 /// `CLOCK_STALL_WAKES`, which ends the wait as a stopped clock. (A poll's timeout runs on
 /// that clock, so a stopped clock wakes the runner only through the pipes.)
-fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut(), window: Option<Fd>, published: Option<Fd>, mut report: Option<Fd>) -> Waited {
+fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut(), window: Option<Fd>, published: Option<Fd>, mut report: Option<Fd>, mut stage: Option<(Fd, Fd)>) -> Waited {
     let mut awaiting_window = window.is_some();
     let mut last = monotonic_ns();
     let mut still = 0;
@@ -1137,9 +1198,9 @@ fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn F
                 next_frame = FRAME_MS - (now - then) / 1_000_000;
             }
         }
-        let mut fds = [PollFd::new(Fd::from_raw(0), poll_events::POLLIN); 3];
+        let mut fds = [PollFd::new(Fd::from_raw(0), poll_events::POLLIN); 4];
         let mut n = 0;
-        for fd in [report, published, window.filter(|_| awaiting_window)].into_iter().flatten() {
+        for fd in [report, published, window.filter(|_| awaiting_window), stage.map(|(r, _)| r)].into_iter().flatten() {
             fds[n] = PollFd::new(fd, poll_events::POLLIN);
             n += 1;
         }
@@ -1156,6 +1217,13 @@ fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn F
         if report.is_some_and(woke) {
             report = None;
         }
+        // The case's live checks ask the runner to draw the stage; a closed pipe ends that.
+        if let Some((requests, answers)) = stage.filter(|(r, _)| woke(*r)) {
+            let served = read_message(requests).is_some_and(|m| write_message(answers, &crate::suite_stage::serve(&m)));
+            if !served {
+                stage = None;
+            }
+        }
     }
 }
 
@@ -1165,7 +1233,7 @@ fn stop_child(pid: i32) -> &'static str {
     if signal::kill(pid, SIGKILL).is_err() {
         return "; SIGKILL failed, the case may still be running";
     }
-    match wait_exit(pid, monotonic_ns(), 1000, &mut || {}, None, None, None) {
+    match wait_exit(pid, monotonic_ns(), 1000, &mut || {}, None, None, None, None) {
         Waited::Exited(_) => "",
         Waited::Failed(_) => "; waitpid failed after SIGKILL",
         Waited::TimedOut(_) | Waited::ClockStopped(_) | Waited::Published(_) => "; still running after SIGKILL",
@@ -1317,12 +1385,14 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
         }
     } else { None };
     // A GUI suite's case tells the runner what it published for the stage's pictures, and
-    // waits for the runner to sample it (ruling B36).
+    // waits for the runner to sample it (ruling B36); its live checks ask the runner to draw
+    // the stage on the other two pipes.
     let pictures = if screen.gui {
-        match (io::pipe2(status_flags::O_CLOEXEC | status_flags::O_NONBLOCK), io::pipe2(status_flags::O_CLOEXEC)) {
-            (Ok(tell), Ok(answer)) => Some((tell, answer)),
-            (tell, answer) => {
-                for (r, w) in [tell, answer].into_iter().flatten() { let _ = (io::close(r), io::close(w)); }
+        match (io::pipe2(status_flags::O_CLOEXEC | status_flags::O_NONBLOCK), io::pipe2(status_flags::O_CLOEXEC),
+               io::pipe2(status_flags::O_CLOEXEC), io::pipe2(status_flags::O_CLOEXEC)) {
+            (Ok(tell), Ok(answer), Ok(request), Ok(drawn)) => Some((tell, answer, request, drawn)),
+            (tell, answer, request, drawn) => {
+                for (r, w) in [tell, answer, request, drawn].into_iter().flatten() { let _ = (io::close(r), io::close(w)); }
                 let _ = (io::close(reader), io::close(writer));
                 if let Some((r, w)) = live { let _ = (io::close(r), io::close(w)); }
                 if let Some((r, w)) = window { let _ = (io::close(r), io::close(w)); }
@@ -1344,10 +1414,12 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                 let _ = io::close(live_reader);
                 LIVE_FD.store(live_writer.raw() as i32, Ordering::Relaxed);
             }
-            if let Some(((tell_r, tell_w), (answer_r, answer_w))) = pictures {
-                let _ = (io::close(tell_r), io::close(answer_w));
+            if let Some(((tell_r, tell_w), (answer_r, answer_w), (request_r, request_w), (drawn_r, drawn_w))) = pictures {
+                let _ = (io::close(tell_r), io::close(answer_w), io::close(request_r), io::close(drawn_w));
                 PUBLISHED_FD.store(tell_w.raw() as i32, Ordering::Relaxed);
                 SAMPLED_FD.store(answer_r.raw() as i32, Ordering::Relaxed);
+                STAGE_REQUEST_FD.store(request_w.raw() as i32, Ordering::Relaxed);
+                STAGE_ANSWER_FD.store(drawn_r.raw() as i32, Ordering::Relaxed);
             }
             let initial_limit = if window.is_some() { 120_000 } else { limit_ms };
             let deadline = start.map_or(0, |start| (start + initial_limit as i128 * 1_000_000) as u64);
@@ -1375,19 +1447,19 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                 let _ = io::close(live_writer);
                 live_reader
             });
-            let (tell, answer) = match pictures {
-                Some(((tell_r, tell_w), (answer_r, answer_w))) => {
-                    let _ = (io::close(tell_w), io::close(answer_r));
-                    (Some(tell_r), Some(answer_w))
+            let (tell, answer, stage) = match pictures {
+                Some(((tell_r, tell_w), (answer_r, answer_w), (request_r, request_w), (drawn_r, drawn_w))) => {
+                    let _ = (io::close(tell_w), io::close(answer_r), io::close(request_w), io::close(drawn_r));
+                    (Some(tell_r), Some(answer_w), Some((request_r, drawn_w)))
                 }
-                None => (None, None),
+                None => (None, None, None),
             };
             let mut waited = {
                 let mut frame = || {
                     if let Some(fd) = live_reader { feed.drain(fd); }
                     screen.frame(feed);
                 };
-                wait_exit(pid, start, limit_ms, &mut frame, window.map(|(r, _)| r), tell, Some(reader))
+                wait_exit(pid, start, limit_ms, &mut frame, window.map(|(r, _)| r), tell, Some(reader), stage)
             };
             if let Waited::Published(message) = waited {
                 // The case has reported: its measured window ends before the stage composes.
@@ -1397,12 +1469,12 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                     screen.stage_result(crate::suite_stage::sample(p));
                 }
                 if let Some(fd) = answer { let _ = io::write(fd, &[1]); }
-                waited = match wait_exit(pid, monotonic_ns(), 5_000, &mut || {}, None, None, None) {
+                waited = match wait_exit(pid, monotonic_ns(), 5_000, &mut || {}, None, None, None, None) {
                     Waited::TimedOut(_) => Waited::TimedOut(ms),
                     other => other,
                 };
             }
-            for fd in [tell, answer].into_iter().flatten() { let _ = io::close(fd); }
+            for fd in [tell, answer].into_iter().chain(stage.into_iter().flat_map(|(r, w)| [Some(r), Some(w)])).flatten() { let _ = io::close(fd); }
             let outcome = match waited {
                 Waited::Exited(status) => exited(status, reader, ms_since(start)),
                 Waited::Published(_) => Outcome::Fail { ms: ms_since(start), msg: String::from("the case published two pictures") },
@@ -1451,6 +1523,9 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
             let _ = io::close(writer);
             if let Some((r, w)) = window { let _ = (io::close(r), io::close(w)); }
             if let Some((r, w)) = live { let _ = (io::close(r), io::close(w)); }
+            if let Some((a, b, c, d)) = pictures {
+                for (r, w) in [a, b, c, d] { let _ = (io::close(r), io::close(w)); }
+            }
             Outcome::Fail { ms: 0, msg: plain(&std::format!("could not start the case: fork failed: {error}")) }
         }
     }

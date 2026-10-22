@@ -4,9 +4,9 @@ use syn::{visit::{self,Visit},Expr,ExprCall,ExprMethodCall,ItemFn,ImplItemFn,Ite
 
 /// Named exceptions to §2.4's two sanctioned upload sites: a file, the one function in it
 /// that may make one upload call, and the ruling that bounds it. Ruling B36: the run stage,
-/// drawn on the GPU, uploads only Fixture-tagged pictures that exist on the CPU alone: a
-/// failing case's expected and difference panes (§2.4's failure artifacts) and, in a forked
-/// case's live checks, the earlier tiles' verified pictures.
+/// drawn on the GPU, uploads only a failing case's expected and difference panes, tagged
+/// Fixture (§2.4's failure artifacts), so a passing run uploads nothing; `stage_upload_reach`
+/// holds its one upload function to that path.
 const EXCEPTIONS: &[(&str, &str, &str)] = &[("libs/libbreenix/src/suite_stage.rs", "upload_fixture", "B36")];
 
 #[derive(Default)]
@@ -86,6 +86,83 @@ fn planted_raw_pixel_library_and_renamed_upload_are_refused(){
     assert!(!refuse_except("impl Gpu {fn show(&mut self) {gpu::upload(f);gpu::upload(g);}}",false,Some("show")).is_empty());
     assert!(!refuse_except("fn present() {gpu::upload(f);}",false,Some("show")).is_empty());
 }
+/// The stage's upload function is reached only as a failing case's failure artifacts:
+/// `upload_fixture` is called only by `artifacts`, and `artifacts` only by `record`, inside a
+/// condition on a failing `Outcome`. Returns each call that breaks that, by caller.
+fn stage_upload_reach(source: &str) -> Vec<String> {
+    use quote::ToTokens;
+    #[derive(Default)]
+    struct Calls { function: Vec<String>, failing: usize, violations: Vec<String> }
+    impl Calls {
+        fn called(&mut self, name: &str) {
+            let caller = self.function.last().map_or("", String::as_str);
+            let allowed = match name {
+                "upload_fixture" => caller == "artifacts",
+                "artifacts" => caller == "record" && self.failing > 0,
+                _ => true,
+            };
+            if !allowed { self.violations.push(format!("{caller} calls {name}")); }
+        }
+    }
+    impl<'ast> Visit<'ast> for Calls {
+        fn visit_item_fn(&mut self, f: &'ast ItemFn) {
+            self.function.push(f.sig.ident.to_string()); visit::visit_item_fn(self, f); self.function.pop();
+        }
+        fn visit_impl_item_fn(&mut self, f: &'ast ImplItemFn) {
+            self.function.push(f.sig.ident.to_string()); visit::visit_impl_item_fn(self, f); self.function.pop();
+        }
+        fn visit_expr_if(&mut self, e: &'ast syn::ExprIf) {
+            self.visit_expr(&e.cond);
+            let failing = e.cond.to_token_stream().to_string().contains("Outcome :: Fail");
+            self.failing += failing as usize;
+            self.visit_block(&e.then_branch);
+            self.failing -= failing as usize;
+            if let Some((_, other)) = &e.else_branch { self.visit_expr(other); }
+        }
+        fn visit_expr_method_call(&mut self, e: &'ast ExprMethodCall) {
+            self.called(&e.method.to_string()); visit::visit_expr_method_call(self, e);
+        }
+        fn visit_expr_call(&mut self, e: &'ast ExprCall) {
+            match &*e.func {
+                Expr::Path(p) => {
+                    if let Some(last) = p.path.segments.last() { self.called(&last.ident.to_string()); }
+                    for arg in &e.args { self.visit_expr(arg); }
+                }
+                _ => visit::visit_expr_call(self, e),
+            }
+        }
+        fn visit_expr_path(&mut self, e: &'ast syn::ExprPath) {
+            // A method named as a value (`Gpu::artifacts`) could be called anywhere.
+            if let Some(last) = e.path.segments.last().filter(|_| e.path.segments.len() > 1) {
+                if matches!(last.ident.to_string().as_str(), "upload_fixture" | "artifacts") { self.violations.push(format!("{} is used as a value", last.ident)); }
+            }
+            visit::visit_expr_path(self, e);
+        }
+    }
+    let mut calls = Calls::default();
+    calls.visit_file(&syn::parse_file(source).expect("owned Rust source must parse"));
+    calls.violations
+}
+
+#[test]
+fn stage_uploads_only_failure_artifacts() {
+    // Planted: a forked case restoring pictures by upload, and artifacts outside a failing outcome.
+    assert!(!stage_upload_reach("impl Gpu { fn restore(&mut self) { self.upload_fixture(1, 1, &p); } }").is_empty());
+    assert!(!stage_upload_reach("fn record() { g.artifacts(f); }").is_empty());
+    assert!(!stage_upload_reach("fn record() { if matches!(outcome, Outcome::Fail { .. }) {} else { g.artifacts(f); } }").is_empty());
+    assert!(!stage_upload_reach("fn record() { let f = Gpu::upload_fixture; }").is_empty());
+    assert!(!stage_upload_reach("fn sample() { Gpu::upload_fixture(g, 1, 1, &p); }").is_empty());
+    assert!(stage_upload_reach("impl Gpu { fn artifacts(&mut self) { self.upload_fixture(1, 1, &p); } }
+        fn record() { if let Some(f) = last.filter(|f| matches!(outcome, Outcome::Fail { .. })) { g.artifacts(f); } }").is_empty());
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut paths = vec![root.join("libs/libbreenix/src/suite_stage.rs")];
+    files(&root.join("libs/libbreenix/src/suite_stage"), &mut paths);
+    for path in paths {
+        let found = stage_upload_reach(&fs::read_to_string(&path).unwrap());
+        assert!(found.is_empty(), "{}: the stage's upload is reached other than as a failing case's artifacts: {}", path.display(), found.join(", "));
+    }
+}
+
 /// Production reference dependencies and their local crate names. Installed programs
 /// share a manifest with the suites, so their source inspection uses these names too.
 fn reference_names(manifest: &str) -> Vec<String> { package_names(manifest, "libgfx-ref") }

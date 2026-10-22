@@ -76,8 +76,9 @@ pub fn showcase_check(name: &str) -> CaseResult {
         // Rendered at the display's physical size, as the live stage is (ruling B8).
         let d=Dims::of_mode().map_err(crate::suite::CaseError::Fail)?;
         let mut fb=FrameBuf::new(1280*d.n,800*d.n,Format::BGRX).map_err(|e|e.to_string())?;
-        final_show.oracle(&mut fb).map_err(crate::suite::CaseError::Fail)?;
-        check_spotlight(&final_show,&fb_bytes(&fb),Dims{n:d.n,width:fb.width}).map_err(crate::suite::CaseError::Fail)?;
+        let held=remote::holdings().map_err(crate::suite::CaseError::Fail)?;
+        final_show.oracle(&mut fb,&held).map_err(crate::suite::CaseError::Fail)?;
+        check_spotlight(&final_show,&fb_bytes(&fb),Dims{n:d.n,width:fb.width},&held).map_err(crate::suite::CaseError::Fail)?;
         let mut f=JudgedFrame{width:1,height:1,pixels:std::vec![10,20,30,255],sha256:[0;32],expected:Some(std::vec![10,25,30,255]),bound:0};
         f.sha256=libpixcheck::sha256(&f.pixels);
         let mut probe=s.clone();probe.first_failure=None;probe.finale=None;
@@ -86,13 +87,17 @@ pub fn showcase_check(name: &str) -> CaseResult {
         // are its expected and difference panes shown, as failure artifacts).
         probe.entries[probe.selected].stamp=Stamp::Fail;
         probe.entries[probe.selected].line=std::format!(" sha256={}",f.sha256.iter().map(|b|std::format!("{b:02x}")).collect::<String>());
+        let probe_hash=f.sha256;
         probe.last=Some(Arc::new(f));probe.draw(0).map_err(crate::suite::CaseError::Fail)?;
-        let (px,seen)=snapshot().map_err(crate::suite::CaseError::Fail)?;
+        let (mut px,seen)=snapshot().map_err(crate::suite::CaseError::Fail)?;
         let d=Dims::of(&seen);
-        check_spotlight(&probe,&px,d).map_err(crate::suite::CaseError::Fail)?;
+        let held=remote::drawn().map_err(crate::suite::CaseError::Fail)?;
+        check(held.panes(&probe_hash).is_some_and(|p|p.artifacts.is_some()),"the runner did not draw the check's failing picture with its expected and difference panes")?;
+        check_spotlight(&probe,&px,d,&held).map_err(crate::suite::CaseError::Fail)?;
         for (x,y) in [(840,168),(984,168),(1128,168),(1136,176),(840,312)] {
-            let mut wrong=px.clone();wrong[d.at(x,y)]^=255;
-            check(check_spotlight(&probe,&wrong,d).is_err(),"spotlight accepted a substituted pane, heat map, cross or bound")?;
+            // Each substitution is one changed byte, put back once checked.
+            px[d.at(x,y)]^=255;let caught=check_spotlight(&probe,&px,d,&held).is_err();px[d.at(x,y)]^=255;
+            check(caught,"spotlight accepted a substituted pane, heat map, cross or bound")?;
         }
     }
     if name == "judged-frame-shown" { exercise_details(&s)?; }
@@ -117,13 +122,17 @@ pub fn showcase_check(name: &str) -> CaseResult {
             .map_err(crate::suite::CaseError::Fail)?;
         let (pixels, rec) = snapshot().map_err(crate::suite::CaseError::Fail)?;
         let d = Dims::of(&rec);
+        // The runner's frame shows a tile's thumbnail where it holds the GPU sample of its
+        // judged frame, and an empty inset elsewhere (B36, #2274).
+        let held = remote::drawn().map_err(crate::suite::CaseError::Fail)?;
         let mut mismatch = false;
         match name {
             "judged-frame-shown" => {
                 let mut n = 0;
                 for (i, e) in s.entries.iter().enumerate() {
                     if let Some(p) = &e.picture {
-                        n += 1;
+                        let shown = held.cell(i) == Some(p.source_hash);
+                        n += shown as usize;
                         let hash: String = p
                             .source_hash
                             .iter()
@@ -140,14 +149,14 @@ pub fn showcase_check(name: &str) -> CaseResult {
                         let (x0,y0)=wall.origin(wall.slot(&tiles,i));
                         let scale=wall.scale;
                         let mut expected=Region::new(d,x0+2*scale,y0+2*scale,p.width*scale,p.height*scale,Color::rgb(18,29,44))?;
-                        thumbnail(&mut expected,p,0,0,scale);
+                        if shown { thumbnail(&mut expected,p,0,0,scale); }
                         mismatch |= expected.compare(d,&pixels).is_err();
                     }
                 }
-                check(n > 0, "no earlier judged pictures to check")?;
+                check(n > 0, "no earlier judged picture the stage holds to check")?;
                 // Independently compute every displayed source pixel, heat-map channel,
                 // first-mismatch cross and caption; a correct tile cannot conceal a false spotlight.
-                let spotlight_mismatch = check_spotlight(&s,&pixels,d).is_err();
+                let spotlight_mismatch = check_spotlight(&s,&pixels,d,&held).is_err();
                 check(spotlight_mismatch == *faulty, "spotlight fault was concealed by thumbnail detection")?;
                 mismatch |= spotlight_mismatch;
             }
@@ -193,7 +202,7 @@ pub fn showcase_check(name: &str) -> CaseResult {
                     let mut expected = Region::new(d, left, top, 38*scale, 24*scale, Color::rgb(12, 19, 31))?;
                     expected.border(38*scale, 24*scale, colour);
                     expected.fill(2*scale, 2*scale, 16*scale, 12*scale, Color::rgb(18, 29, 44));
-                    if let Some(p) = &e.picture {
+                    if let Some(p) = e.picture.as_ref().filter(|p| held.cell(i) == Some(p.source_hash)) {
                         thumbnail(&mut expected, p, 2*scale, 2*scale, scale);
                     }
                     expected.text(&mut font, std::format!("{}", i + 1).as_bytes(), 20*scale, 2*scale, 18*scale, scale, Color::WHITE);
@@ -267,10 +276,21 @@ impl Dims {
 
 /// The reference text layer the expectations are drawn with: section 8.3's DejaVu Sans at
 /// 7 x legacy scale x display scale pixels per em above display scale 1, the 5x7 font at 1.
+/// The parsed font and its glyphs are kept for the process's next expectation.
 struct Oracle(Option<libgfx_ref::ttf_font::CachedFont>);
+std::thread_local! {
+    static KEPT_FONT: core::cell::RefCell<Option<libgfx_ref::ttf_font::CachedFont>> = const { core::cell::RefCell::new(None) };
+}
+impl Drop for Oracle {
+    fn drop(&mut self) {
+        if let Some(font) = self.0.take() {
+            KEPT_FONT.with(|k| *k.borrow_mut() = Some(font));
+        }
+    }
+}
 impl Oracle {
     fn new() -> Oracle {
-        Oracle(None)
+        Oracle(KEPT_FONT.with(|k| k.borrow_mut().take()))
     }
     fn font(&mut self) -> &mut libgfx_ref::ttf_font::CachedFont {
         self.0.get_or_insert_with(|| {
@@ -372,16 +392,17 @@ fn fb_bytes(fb:&FrameBuf)->Vec<u8> {
     for y in 0..fb.height {for x in 0..fb.width {let p=fb.get_pixel(x,y);bytes.extend_from_slice(&[p.b,p.g,p.r,255]);}}
     bytes
 }
-/// Literal spotlight formulas from section 23, applied to the verified retained frame.
-fn check_spotlight(s:&Show,bytes:&[u8],d:Dims)->Result<(),String> {
+/// Literal spotlight formulas from section 23, applied to the verified retained frame, which
+/// the spotlight shows when `held` has its panes (B36, #2274).
+fn check_spotlight(s:&Show,bytes:&[u8],d:Dims,held:&dyn Holds)->Result<(),String> {
     let chosen=s.first_failure.as_ref().filter(|_|s.finale.is_some()).map_or(s.selected,|v|v.0);
     let frame=if s.finale.is_some() && s.first_failure.is_some(){s.first_failure.as_ref().and_then(|v|v.1.as_deref())}else{s.last.as_deref()};
-    let Some(frame) = frame else { return check_nonpicture(s, chosen, bytes, d); };
+    let Some((frame,panes)) = frame.and_then(|f|held.panes(&f.sha256).map(|p|(f,p))) else { return check_nonpicture(s, chosen, bytes, d); };
     verify_source(&s.entries[chosen].line,frame)?;
     let colour=|p:&[u8]|Color::rgb(p[2],p[1],p[0]);
     // Ruling B36: expected and difference panes for a frame that matches its reference, or
-    // for a failing case; otherwise the actual pane alone.
-    let shows_reference=|e:&[u8]|s.entries[chosen].stamp==Stamp::Fail || e.chunks_exact(4).zip(frame.pixels.chunks_exact(4)).all(|(a,b)|a[..3]==b[..3]);
+    // for a failing case with its failure artifacts; otherwise the actual pane alone.
+    let shows_reference=|e:&[u8]|(s.entries[chosen].stamp==Stamp::Fail && panes.artifacts.is_some()) || e.chunks_exact(4).zip(frame.pixels.chunks_exact(4)).all(|(a,b)|a[..3]==b[..3]);
     if let Some(expected)=frame.expected.as_ref().filter(|e|shows_reference(e)) {
         let mut first=None;let mut differing=0;
         for (i,(a,b)) in frame.pixels.chunks_exact(4).zip(expected.chunks_exact(4)).enumerate(){if a!=b{differing+=1;first.get_or_insert((i%frame.width,i/frame.width));}}
@@ -550,9 +571,10 @@ fn exercise_details(s: &Show) -> CaseResult {
         for faulty in [true,false] {
             if faulty {crate::test_control::arm(13,process::getpid()?.raw() as u64,0)?;}
             probe.draw(fault_bits()).map_err(crate::suite::CaseError::Fail)?;
-            let (bytes,seen)=snapshot().map_err(crate::suite::CaseError::Fail)?;
+            let (mut bytes,seen)=snapshot().map_err(crate::suite::CaseError::Fail)?;
             let d=Dims::of(&seen);
-            check(check_spotlight(&probe,&bytes,d).is_err()==faulty,"input/measurement substitution escaped its own check")?;
+            let held=remote::drawn().map_err(crate::suite::CaseError::Fail)?;
+            check(check_spotlight(&probe,&bytes,d,&held).is_err()==faulty,"input/measurement substitution escaped its own check")?;
             if faulty {check(crate::test_control::fired(13)?>0,"spotlight fault did not fire")?;}
             crate::test_control::disarm_all()?;
             if !faulty {
@@ -561,8 +583,8 @@ fn exercise_details(s: &Show) -> CaseResult {
                 let wall=stage::Wall::for_tiles(&tiles).map_err(|e|std::format!("wall: {e:?}"))?;
                 let (x,y)=wall.origin(wall.slot(&tiles,0)-2);
                 for (x,y) in [(x,y),(848,640),(16,728),(16,752)] {
-                    let mut wrong=bytes.clone();wrong[d.at(x,y)]^=255;
-                    check(check_labels(&probe,&wrong,d).is_err(),"heading, verdict or ribbon substitution escaped detection")?;
+                    bytes[d.at(x,y)]^=255;let caught=check_labels(&probe,&bytes,d).is_err();bytes[d.at(x,y)]^=255;
+                    check(caught,"heading, verdict or ribbon substitution escaped detection")?;
                 }
             }
         }
@@ -574,12 +596,14 @@ fn exercise_details(s: &Show) -> CaseResult {
     probe.last=Some(Arc::new(JudgedFrame{width:1,height:1,pixels,sha256:hash,expected:Some(std::vec![10,20,30,255]),bound:0}));
     probe.entries[selected].timing=Some(FrameTiming{frame_us:std::vec![1000],budget_us:1000});
     probe.draw(0).map_err(crate::suite::CaseError::Fail)?;
-    let (bytes,seen)=snapshot().map_err(crate::suite::CaseError::Fail)?;
+    let (mut bytes,seen)=snapshot().map_err(crate::suite::CaseError::Fail)?;
     let d=Dims::of(&seen);
-    check_spotlight(&probe,&bytes,d).map_err(crate::suite::CaseError::Fail)?;
+    let held=remote::drawn().map_err(crate::suite::CaseError::Fail)?;
+    check(held.panes(&libpixcheck::sha256(&[10,20,30,255])).is_some(),"the runner did not draw the check's own picture")?;
+    check_spotlight(&probe,&bytes,d,&held).map_err(crate::suite::CaseError::Fail)?;
     for (x,y) in [(848,448),(862,514),(1040,556)] {
-        let mut wrong=bytes.clone();wrong[d.at(x,y)]^=255;
-        check(check_spotlight(&probe,&wrong,d).is_err(),"picture input overlay substitution escaped detection")?;
+        bytes[d.at(x,y)]^=255;let caught=check_spotlight(&probe,&bytes,d,&held).is_err();bytes[d.at(x,y)]^=255;
+        check(caught,"picture input overlay substitution escaped detection")?;
     }
     Ok(())
 }

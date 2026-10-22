@@ -5,8 +5,8 @@
 //! compared against. The stage's pictures are GPU samples of the cases' own frames (ruling
 //! B36): tile thumbnails in an atlas and the spotlight's panes. It uploads only a failing
 //! case's expected and difference panes, tagged Fixture as failure artifacts (gpu.md section
-//! 2.4), and, inside a forked case's live checks, the earlier tiles' pictures from the
-//! snapshots the runner verified, since GPU handles are not inherited across fork.
+//! 2.4). A forked case's live checks have the runner draw the stage for them (`remote`), since
+//! GPU handles are not inherited across fork.
 use super::suite::{check, CaseResult, FrameTiming, JudgedFrame, Outcome, State, Suite};
 use crate::{
     gpu::{self, abi::record},
@@ -148,8 +148,14 @@ struct Show {
     finale: Option<u64>,
     fps: u32,
 
-    windows: Vec<(u64, u64)>,
-    measured: Option<u64>,
+    /// Each measured case window: the runner's kernel present count at its start and end,
+    /// and how many of those presents the case's live checks asked the runner for.
+    windows: Vec<(u64, u64, u64)>,
+    /// The open window's start: the runner's present count and `requested`.
+    measured: Option<(u64, u64)>,
+    /// The runner's presents its live-check requests made (`remote`), counted from the
+    /// kernel's present records around each one.
+    requested: u64,
     pace_ms: u64,
     /// The runner's process: pictures there are only GPU samples of the cases' frames.
     runner: u64,
@@ -295,16 +301,14 @@ impl Panes {
     }
 }
 
-/// The run stage's GPU objects, kept for the run: its context, the painter's canvas (the
-/// frame drawn at the display's physical size, and a sampling composite's scene target),
-/// the two scanout targets it presents, the thumbnail atlas and the panes. A forked case
-/// gets its own, since GPU handles are not inherited.
+/// The run stage's GPU objects, kept for the run in the runner's process: its context, the
+/// painter's canvas (the frame drawn at the display's physical size, and a sampling
+/// composite's scene target), the two scanout targets it presents, the thumbnail atlas and
+/// the panes. The context is apart from the painter's, so its uploads are the failure
+/// artifacts alone.
 struct Gpu {
     pid: u64,
     context: u64,
-    /// Whether the context is the painter's, shared in a forked case so that it warms one
-    /// context, not two; the runner's own keeps its uploads apart from the painter's.
-    shared: bool,
     canvas: u64,
     scanout: [u64; 2],
     /// The scanout target the stage presented last.
@@ -372,7 +376,7 @@ fn raw<T: Plain>(op: u32, value: &mut T) -> i64 {
 impl Gpu {
     /// Create the stage's objects for the current mode, which must be the stage's logical
     /// layout at a whole display scale, and wait, bounded, for the context's warm-up.
-    fn new(pid: u64, shared: bool) -> Result<Gpu, String> {
+    fn new(pid: u64) -> Result<Gpu, String> {
         let m = mode()?;
         if m.scale == 0 || (m.width, m.height) != (1280 * m.scale, 800 * m.scale) {
             return Err(std::format!(
@@ -381,15 +385,10 @@ impl Gpu {
             ));
         }
         let canvas = painter(|p| p.canvas(m.width, m.height))?;
-        let context = if shared {
-            painter(|p| p.context())?
-        } else {
-            gpu::context_create().map_err(|e| std::format!("stage context: errno {}", -e))?
-        };
+        let context = gpu::context_create().map_err(|e| std::format!("stage context: errno {}", -e))?;
         let mut g = Gpu {
             pid,
             context,
-            shared,
             canvas,
             scanout: [0; 2],
             shown: 0,
@@ -448,9 +447,7 @@ impl Gpu {
                 let _ = gpu::resource_destroy(handle);
             }
         }
-        if !self.shared {
-            let _ = gpu::context_destroy(self.context);
-        }
+        let _ = gpu::context_destroy(self.context);
     }
 
     /// Submit `stream` in the stage's context and wait for its render.
@@ -666,7 +663,7 @@ impl Gpu {
     }
 
     /// Upload `pixels` (`w` x `h`, canonical BGRX) into a new texture, tagged Fixture: the
-    /// stage's only upload, for failure artifacts and a forked case's restored pictures.
+    /// stage's only upload, for a failing case's failure artifacts.
     fn upload_fixture(&mut self, w: usize, h: usize, pixels: &[u8]) -> Result<u64, String> {
         use gpu::abi::purpose;
         let texture = gpu::texture_create(gpu::abi::format::B8G8R8A8, w as u32, h as u32).map_err(|e| std::format!("stage fixture texture: errno {}", -e))?;
@@ -703,62 +700,73 @@ impl Gpu {
         Ok(())
     }
 
-    /// In a forked case's live checks: hold the pictures of `s` that this process lacks,
-    /// made from the snapshots the runner verified (each thumbnail's CASE SHA-256, each
-    /// frame's own), uploaded tagged Fixture.
-    fn restore(&mut self, s: &Show) -> Result<(), String> {
-        use gpu::abi::stream::encode;
-        let mut atlas = std::vec![0u8; ATLAS.0 as usize * ATLAS.1 as usize * 4];
-        let mut restored = Vec::new();
-        for (i, e) in s.entries.iter().enumerate() {
-            let Some(p) = &e.picture else { continue };
-            if self.cells.get(i).copied().flatten() == Some(p.source_hash) || i >= 1024 {
-                continue;
-            }
-            let (cx, cy) = cell(i);
-            for y in 0..p.height {
-                let o = ((cy + y) * ATLAS.0 as usize + cx) * 4;
-                atlas[o..o + p.width * 4].copy_from_slice(&p.pixels[y * p.width * 4..(y + 1) * p.width * 4]);
-            }
-            restored.push((i, p.source_hash));
+    /// Panes for a frame of at most `remote::DRAWN_PIXELS` pixels that a live check made,
+    /// drawn on the GPU as one solid rectangle per source pixel, the nearest-scaled formula of
+    /// section 23.4; for a failing entry also its expected and difference panes, which for
+    /// such a frame are solid rectangles too. Nothing is uploaded.
+    fn drawn(&mut self, f: &JudgedFrame, failing: bool) -> Result<(), String> {
+        use gpu::abi::{pipeline, stream::encode};
+        if f.width * f.height > remote::DRAWN_PIXELS || f.pixels.len() != f.width * f.height * 4 {
+            return Err(std::format!("a {}x{} frame is not one the stage draws", f.width, f.height));
         }
-        if !restored.is_empty() {
-            let texture = self.upload_fixture(ATLAS.0 as usize, ATLAS.1 as usize, &atlas)?;
-            let mut stream = Vec::new();
-            encode::begin(&mut stream, self.atlas);
-            for &(i, _) in &restored {
-                let (cx, cy) = cell(i);
-                encode::copy(&mut stream, texture, [cx as u32, cy as u32, 16, 12], self.atlas, [cx as u32, cy as u32]);
+        let format = gpu::abi::format::B8G8R8A8;
+        let mut made = Vec::new();
+        let mut target = |w: usize, h: usize| -> Result<u64, String> {
+            let t = gpu::target_create(format, w as u32, h as u32).map_err(|e| std::format!("stage pane: errno {}", -e))?;
+            made.push(t);
+            Ok(t)
+        };
+        let expected = f.expected.as_ref().filter(|e| failing && e.chunks_exact(4).zip(f.pixels.chunks_exact(4)).any(|(a, b)| a[..3] != b[..3]));
+        let panes = (|| -> Result<Panes, String> {
+            let wide = target(WIDE.0, WIDE.1)?;
+            let square = target(SQUARE, SQUARE)?;
+            let artifacts = match expected {
+                Some(_) => Some((target(SQUARE, SQUARE)?, target(SQUARE, SQUARE)?)),
+                None => None,
+            };
+            Ok(Panes { hash: f.sha256, wide, square, artifacts, sampled: false })
+        })();
+        let panes = match panes {
+            Ok(p) => p,
+            Err(e) => {
+                for t in made {
+                    let _ = gpu::resource_destroy(t);
+                }
+                return Err(e);
             }
-            let copied = self.run(&stream, "restored thumbnails");
-            let _ = gpu::resource_destroy(texture);
-            copied?;
-            for (i, hash) in restored {
-                self.set_cell(i, Some(hash));
-            }
-        }
-        let frames = [
-            (s.selected, s.last.clone()),
-            s.first_failure.as_ref().map_or((0, None), |v| (v.0, v.1.clone())),
-        ];
-        for (entry, f) in &frames {
-            let Some(f) = f else { continue };
-            if self.panes_for(&f.sha256).is_none() {
-                let (wide, square) = sampled_panes(f);
-                let wide = self.upload_fixture(WIDE.0, WIDE.1, &wide)?;
-                let square = match self.upload_fixture(SQUARE, SQUARE, &square) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        let _ = gpu::resource_destroy(wide);
-                        return Err(e);
+        };
+        // Source column (or row) `s` of `n` covers pane columns ceil(s w / n) to ceil((s+1) w / n).
+        let block = |s: usize, n: usize, w: usize| ((s * w).div_ceil(n), ((s + 1) * w).div_ceil(n));
+        let colour = |p: &[u8]| 0xFF00_0000 | (p[2] as u32) << 16 | (p[1] as u32) << 8 | p[0] as u32;
+        let mut stream = Vec::new();
+        let fill = |stream: &mut Vec<u32>, target: u64, w: usize, h: usize, pick: &dyn Fn(usize) -> u32| {
+            encode::begin(stream, target);
+            for sy in 0..f.height {
+                for sx in 0..f.width {
+                    let (x0, x1) = block(sx, f.width, w);
+                    let (y0, y1) = block(sy, f.height, h);
+                    if x0 < x1 && y0 < y1 {
+                        encode::draw(stream, pipeline::SOLID, pick((sy * f.width + sx) * 4), &[[x0 as i32, y0 as i32, x1 as i32, y1 as i32]]);
                     }
-                };
-                self.keep(Panes { hash: f.sha256, wide, square, artifacts: None, sampled: false });
+                }
             }
-            if s.entries.get(*entry).is_some_and(|e| e.stamp == Stamp::Fail) {
-                self.artifacts(f)?;
-            }
+        };
+        let actual = |i: usize| colour(&f.pixels[i..i + 4]);
+        fill(&mut stream, panes.wide, WIDE.0, WIDE.1, &actual);
+        fill(&mut stream, panes.square, SQUARE, SQUARE, &actual);
+        if let (Some(e), Some((et, dt))) = (expected, panes.artifacts) {
+            fill(&mut stream, et, SQUARE, SQUARE, &|i| colour(&e[i..i + 4]));
+            // The heat map of section 23.4: black where equal, else (255, 255 - delta, 0).
+            fill(&mut stream, dt, SQUARE, SQUARE, &|i| {
+                let delta = (0..3).map(|c| e[i + c].abs_diff(f.pixels[i + c])).max().unwrap_or(0);
+                if delta == 0 { 0xFF00_0000 } else { 0xFFFF_0000 | ((255 - delta) as u32) << 8 }
+            });
         }
+        if let Err(e) = self.run(&stream, "drawn panes") {
+            panes.destroy();
+            return Err(e);
+        }
+        self.keep(panes);
         Ok(())
     }
 
@@ -817,10 +825,18 @@ impl Gpu {
         Ok(())
     }
 
-    /// Copy the painted canvas into the scanout target not shown, on the GPU with the panel
-    /// cursor over it, present it, and observe the scanout. Returns the observation, the
-    /// present's context fence and the cursor's pointer.
+    /// Present the painted canvas with the panel cursor and observe the scanout. Returns the
+    /// observation, the present's context fence and the cursor's pointer.
     fn show(&mut self) -> Result<(Seen, u64, Option<(i32, i32)>), String> {
+        let (fence, cursor) = self.present(true)?;
+        let seen = observe(&mut self.seen)?;
+        Ok((seen, fence, cursor))
+    }
+
+    /// Copy the painted canvas into the scanout target not shown, on the GPU with the panel
+    /// cursor over it when `cursor`, and present it. Returns the present's context fence and
+    /// the cursor's pointer.
+    fn present(&mut self, cursor: bool) -> Result<(u64, Option<(i32, i32)>), String> {
         use gpu::abi::{draw, pipeline, stream::encode};
         let next = self.shown ^ 1;
         let mut params = [0u32; 16];
@@ -829,7 +845,7 @@ impl Gpu {
         encode::begin(&mut stream, self.scanout[next]);
         draw::encode(&mut stream, pipeline::COPY, 0, self.canvas, 0, 0,
             &[draw::Instance { rect: [0, 0, self.width as i32, self.height as i32], params }]);
-        let cursor = self.pointer();
+        let cursor = self.pointer().filter(|_| cursor);
         if let Some(at) = cursor {
             encode_cursor(&mut stream, at, self.width, self.height);
         }
@@ -846,25 +862,8 @@ impl Gpu {
         self.shown = next;
         self.cursor = cursor;
         self.no_restore = false;
-        let seen = observe(&mut self.seen)?;
-        Ok((seen, presented.fence, cursor))
+        Ok((presented.fence, cursor))
     }
-}
-
-/// The nearest-scaled 400 x 250 and 128 x 128 samples of `f` (section 23.4), as canonical
-/// BGRX, from its verified snapshot.
-fn sampled_panes(f: &JudgedFrame) -> (Vec<u8>, Vec<u8>) {
-    let sample = |w: usize, h: usize| {
-        let mut out = Vec::with_capacity(w * h * 4);
-        for y in 0..h {
-            for x in 0..w {
-                let i = ((y * f.height / h) * f.width + x * f.width / w) * 4;
-                out.extend_from_slice(&[f.pixels[i], f.pixels[i + 1], f.pixels[i + 2], 255]);
-            }
-        }
-        out
-    };
-    (sample(WIDE.0, WIDE.1), sample(SQUARE, SQUARE))
 }
 
 /// A failing frame's expected pane and its difference pane's heat map, without the first
@@ -891,7 +890,7 @@ pub(super) fn prepare() -> Result<(), String> {
     let seen = {
         let mut guard = GPU.lock().unwrap();
         if guard.as_ref().is_none_or(|g| g.pid != pid) {
-            *guard = Some(Gpu::new(pid, false)?);
+            *guard = Some(Gpu::new(pid)?);
         }
         let g = guard.as_mut().ok_or("stage GPU objects missing")?;
         observe(&mut g.seen)?
@@ -910,6 +909,9 @@ pub(super) fn prepare() -> Result<(), String> {
 /// mode change. A forked case abandons the runner's handles, which it does not hold.
 fn gpu_here(guard: &mut Option<Gpu>, runner: u64) -> Result<&mut Gpu, String> {
     let pid = process::getpid().map_err(|e| e.to_string())?.raw() as u64;
+    if pid != runner {
+        return Err(String::from("a forked case's stage frames are the runner's to draw"));
+    }
     if let Some(g) = guard.as_ref().filter(|g| g.pid == pid) {
         let (r, c) = gpu::counters(g.context);
         let live = r == 0 && matches!(c.state, gpu::abi::context_state::LIVE | gpu::abi::context_state::WARMING);
@@ -919,18 +921,46 @@ fn gpu_here(guard: &mut Option<Gpu>, runner: u64) -> Result<&mut Gpu, String> {
         }
     }
     if guard.as_ref().is_none_or(|g| g.pid != pid) {
-        *guard = Some(Gpu::new(pid, runner != pid)?);
+        *guard = Some(Gpu::new(pid)?);
     }
     guard.as_mut().ok_or_else(|| String::from("stage GPU objects missing"))
 }
 
+/// One judged frame's panes as a stage frame names them.
+#[derive(Clone, Copy)]
+struct PaneSet {
+    wide: u64,
+    square: u64,
+    artifacts: Option<(u64, u64)>,
+}
+
+/// The pictures a stage frame can show: the thumbnails in the atlas, by tile, and the panes
+/// held for each judged frame. The runner's GPU objects hold them; a forked case's oracle
+/// reads what the runner holds (`remote::holdings`).
+trait Holds {
+    fn cell(&self, tile: usize) -> Option<[u8; 32]>;
+    fn atlas(&self) -> u64;
+    fn panes(&self, hash: &[u8; 32]) -> Option<PaneSet>;
+}
+impl Holds for Gpu {
+    fn cell(&self, tile: usize) -> Option<[u8; 32]> {
+        self.cells.get(tile).copied().flatten()
+    }
+    fn atlas(&self) -> u64 {
+        self.atlas
+    }
+    fn panes(&self, hash: &[u8; 32]) -> Option<PaneSet> {
+        self.panes_for(hash).map(|p| PaneSet { wide: p.wide, square: p.square, artifacts: p.artifacts })
+    }
+}
+
 impl Show {
-    /// Draw this stage frame into `fb` with the CPU oracle and, when `paint`, into the
-    /// painter's canvas on the GPU, from one model. Tiles and the spotlight show pictures
-    /// only where `g` holds their GPU samples, in both.
-    fn render(&self, fb: &mut FrameBuf, bits: u32, g: &Gpu, paint: bool) -> Result<(), String> {
+    /// Draw this stage frame into `fb`, when given, with the CPU oracle and, when `paint`
+    /// gives the canvas's size, into the painter's canvas on the GPU, from one model. Tiles
+    /// and the spotlight show pictures only where `g` holds their GPU samples, in both.
+    fn render(&self, mut fb: Option<&mut FrameBuf>, bits: u32, g: &dyn Holds, paint: Option<(u32, u32)>) -> Result<(), String> {
         let held = |i: usize| {
-            self.entries[i].picture.as_ref().filter(|p| g.cells.get(i).copied().flatten() == Some(p.source_hash))
+            self.entries[i].picture.as_ref().filter(|p| g.cell(i) == Some(p.source_hash))
         };
         let mut tiles: Vec<Tile<'_>> = self
             .entries
@@ -947,7 +977,7 @@ impl Show {
             .map(|i| {
                 held(i).map(|p| {
                     let (x, y) = cell(i);
-                    ThumbRef::Picture(PictureRef { handle: g.atlas, x, y, width: p.width, height: p.height, cover: None })
+                    ThumbRef::Picture(PictureRef { handle: g.atlas(), x, y, width: p.width, height: p.height, cover: None })
                 })
             })
             .collect();
@@ -991,7 +1021,7 @@ impl Show {
             self.last.as_deref()
         };
         // A frame whose panes this process does not hold is shown as no picture.
-        let panes = picture.and_then(|p| g.panes_for(&p.sha256));
+        let panes = picture.and_then(|p| g.panes(&p.sha256));
         let picture = picture.filter(|_| panes.is_some());
         let mut substituted=picture.map(|p|p.pixels.clone()).unwrap_or_default();
         if bits & (1<<13)!=0 && !substituted.is_empty() { substituted[0]^=255; }
@@ -1108,16 +1138,19 @@ impl Show {
             }),
             boundary: self.observation,
         };
-        render_at_ui_time(fb, &mut run, self.started_ms).map_err(|e| std::format!("stage render: {e:?}"))?;
+        match fb.as_deref_mut() {
+            Some(fb) => render_at_ui_time(fb, &mut run, self.started_ms).map_err(|e| std::format!("stage render: {e:?}"))?,
+            None => run.ui_time_ms = (clock::now_ns() / 1_000_000).saturating_sub(self.started_ms),
+        }
         let records =
             std::fs::read_to_string("/proc/breenix/boot-ribbon").map_err(|e| e.to_string())?;
         let reached: Vec<_> = records.lines().map(|l| l.starts_with("1|")).collect();
-        stage::draw_boot_ribbon(fb, &reached).map_err(|e| std::format!("stage boot ribbon: {e:?}"))?;
-        let notice = self.observation.notice().map_err(|e| std::format!("stage notice: {e:?}"))?;
-        if !paint {
-            return Ok(());
+        if let Some(fb) = fb {
+            stage::draw_boot_ribbon(fb, &reached).map_err(|e| std::format!("stage boot ribbon: {e:?}"))?;
         }
-        let frame = Frame { width: g.width, height: g.height, run: &run, thumbs: &thumbs, spot: &spot, notice, ribbon: &reached };
+        let notice = self.observation.notice().map_err(|e| std::format!("stage notice: {e:?}"))?;
+        let Some((width, height)) = paint else { return Ok(()) };
+        let frame = Frame { width, height, run: &run, thumbs: &thumbs, spot: &spot, notice, ribbon: &reached };
         painter(|p| p.paint(&frame))
     }
 
@@ -1126,8 +1159,7 @@ impl Show {
     fn attempt(&self, fb: &mut FrameBuf, bits: u32) -> Result<Seen, String> {
         let mut guard = GPU.lock().unwrap();
         let g = gpu_here(&mut guard, self.runner)?;
-        let shown_frame = (if g.pid != self.runner { g.restore(self) } else { Ok(()) })
-            .and_then(|()| self.render(fb, bits, g, true))
+        let shown_frame = self.render(Some(&mut *fb), bits, g, Some((g.width, g.height)))
             .and_then(|()| g.show())
             .and_then(|(seen, fence, cursor)| shown(fb, Some(fence), &g.seen, &seen, cursor).map(|()| seen));
         if shown_frame.is_err() {
@@ -1137,16 +1169,48 @@ impl Show {
         shown_frame
     }
 
-    /// The oracle's frame alone, with the pictures this process holds or restores.
-    fn oracle(&self, fb: &mut FrameBuf) -> Result<(), String> {
-        let mut guard = GPU.lock().unwrap();
-        let g = gpu_here(&mut guard, self.runner)?;
-        if g.pid != self.runner {
-            g.restore(self)?;
-        }
-        self.render(fb, 0, g, false)
+    /// The oracle's frame alone, with the pictures `held`.
+    fn oracle(&self, fb: &mut FrameBuf, held: &dyn Holds) -> Result<(), String> {
+        self.render(Some(fb), 0, held, None)
     }
+
+    /// Draw and present this stage frame for a forked case's live check, which judges the
+    /// scanout itself: no CPU frame, readback or comparison here, and no panel cursor.
+    fn paint_served(&self, bits: u32) -> Result<(), String> {
+        let mut failed = String::new();
+        for _ in 0..3 {
+            let mut guard = GPU.lock().unwrap();
+            let g = gpu_here(&mut guard, self.runner)?;
+            let drawn = self.render(None, bits, g, Some((g.width, g.height))).and_then(|()| g.present(false)).map(|_| ());
+            match drawn {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    g.destroy();
+                    *guard = None;
+                    failed = e;
+                }
+            }
+        }
+        Err(failed)
+    }
+
+    fn in_runner(&self) -> Result<bool, String> {
+        Ok(process::getpid().map_err(|e| e.to_string())?.raw() as u64 == self.runner)
+    }
+
+    /// Draw and show this stage frame. In a forked case the runner draws it (`remote`).
     fn draw(&mut self, bits: u32) -> Result<(), String> {
+        if !self.in_runner()? {
+            return remote::draw(self, bits);
+        }
+        // As the GPU suite's view does: no test-control point left armed by a case can alter
+        // the stage or be spent by it.
+        let _ = gpu::tc_disarm_all();
+        self.paint(bits)
+    }
+
+    /// Draw, present and check this stage frame with the runner's GPU objects.
+    fn paint(&mut self, bits: u32) -> Result<(), String> {
         // Rendered at the display's physical size (contract section 23.2, ruling B24).
         let m = mode()?;
         let mut fb = FrameBuf::new(m.width as usize, m.height as usize, Format::BGRX).map_err(|e| e.to_string())?;
@@ -1156,9 +1220,6 @@ impl Show {
             let (_, rec) = snapshot()?;
             self.observation = Observation { backend: rec.backend, flags: rec.flags, boundary: rec.boundary };
         }
-        // As the GPU suite's view does: no test-control point left armed by a case can alter
-        // the stage or be spent by it.
-        let _ = gpu::tc_disarm_all();
         // A case may reset the device (section 8.4's scratch reset does), which loses the
         // stage's and the painter's GPU objects: a failed frame is drawn again from new
         // objects, for at most three attempts.
@@ -1183,8 +1244,10 @@ impl Show {
     }
 }
 /// No composite by the runner completed inside any of these measured windows.
-fn quiet(windows: &[(u64, u64)]) -> bool {
-    windows.iter().all(|&(before, after)| before == after)
+/// No composite by the runner completed inside any of these measured windows but those the
+/// case asked for.
+fn quiet(windows: &[(u64, u64, u64)]) -> bool {
+    windows.iter().all(|&(before, after, asked)| after.checked_sub(before) == Some(asked))
 }
 pub(super) fn init(suite: &Suite) -> u64 {
     let mut entries = Vec::new();
@@ -1227,6 +1290,7 @@ pub(super) fn init(suite: &Suite) -> u64 {
         fps: 0,
         windows: Vec::new(),
         measured: None,
+        requested: 0,
         pace_ms,
         runner: process::getpid().map_or(0, |p| p.raw() as u64),
     });
@@ -1377,8 +1441,10 @@ pub(super) fn begin() -> Result<(), String> {
             let _ = time::sleep_ms(1);
         }
     }
-    let serial = kernel_serial(process::getpid().map_err(|e| e.to_string())?.raw() as u64)?;
-    if let Some(s) = SHOW.lock().unwrap().as_mut() { s.measured = Some(serial); }
+    // The runner's presents, also when a forked case's live check runs this bracket.
+    let runner = SHOW.lock().unwrap().as_ref().map_or(0, |s| s.runner);
+    let serial = kernel_serial(runner)?;
+    if let Some(s) = SHOW.lock().unwrap().as_mut() { s.measured = Some((serial, s.requested)); }
     Ok(())
 }
 /// The cases whose property is the kernel's screen itself, or the depth of the ownership
@@ -1388,10 +1454,14 @@ const ABOVE_KERNEL_SCREEN: [&str; 3] = ["composition/ownership-stack", "panel/ke
 /// B35): the display stays with the stage while they run.
 const STAGE_CUSTODY: [&str; 2] = ["panel/cursor-restore", "panel/cursor-trail-detected"];
 
+/// The cases whose property is the run stage's own frames, which the runner draws for them
+/// (`remote`): the display stays with the stage while they run.
+const LIVE_CHECKS: [&str; 4] = ["panel/judged-frame-shown", "panel/serial-agreement", "panel/quiet-window", "panel/boundary-notice"];
+
 /// Whether case `name`'s process takes the display over when it starts, nesting above the
 /// stage.
 pub(super) fn case_takes_display(name: &str) -> bool {
-    !STAGE_CUSTODY.contains(&name)
+    !STAGE_CUSTODY.contains(&name) && !LIVE_CHECKS.contains(&name)
 }
 
 /// Before a case runs (ruling B29): the stage keeps the display, and the case's own
@@ -1431,21 +1501,24 @@ fn release() -> Result<(), String> {
 }
 pub(super) fn end() -> Result<(), String> {
     FOLLOW.store(false, core::sync::atomic::Ordering::Relaxed);
-    let serial = kernel_serial(process::getpid().map_err(|e| e.to_string())?.raw() as u64)?;
+    let runner = SHOW.lock().unwrap().as_ref().map_or(0, |s| s.runner);
+    let serial = kernel_serial(runner)?;
     if let Some(s) = SHOW.lock().unwrap().as_mut() {
-        if let Some(a) = s.measured.take() { s.windows.push((a, serial)); }
-    }
-    Ok(())
-}
-fn tick_show(s: &mut Show, bits: u32) -> Result<(), String> {
-    if bits & (1 << 14) != 0 {
-        s.draw(bits)?;
+        if let Some((a, asked)) = s.measured.take() { s.windows.push((a, serial, s.requested - asked)); }
     }
     Ok(())
 }
 pub(super) fn tick() -> Result<(), String> {
     let bits = fault_bits();
-    tick_show(SHOW.lock().unwrap().as_mut().ok_or("stage missing")?, bits)?;
+    // Test point 14 plants a stage draw inside the measured window. It is drawn from a copy:
+    // in a forked case the runner draws it, reading the stage itself.
+    if bits & (1 << 14) != 0 {
+        let mut s = SHOW.lock().unwrap().clone().ok_or("stage missing")?;
+        s.draw(bits)?;
+        if let Some(show) = SHOW.lock().unwrap().as_mut() {
+            show.observation = s.observation;
+        }
+    }
     if FOLLOW.load(core::sync::atomic::Ordering::Relaxed) {
         let pid = process::getpid().map_err(|e| e.to_string())?.raw() as u64;
         if let Some(g) = GPU.lock().unwrap().as_mut().filter(|g| g.pid == pid) {
@@ -1513,7 +1586,9 @@ pub(super) fn finale() -> Result<(), String> {
 }
 
 mod checks;
+mod remote;
 pub use checks::showcase_check;
+pub(crate) use remote::serve;
 
 /// Render a fixture using the same clock boundary as the live stage.
 pub fn render_at_ui_time(fb: &mut FrameBuf, run: &mut stage::Run<'_>, started_ms: u64) -> Result<(), stage::StageError> {

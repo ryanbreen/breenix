@@ -1567,7 +1567,8 @@ shows its measured execution time; a skipped case has no fabricated zero-time re
 A picture takes priority over timing data, so its input overlay cannot overlap the timing plot.
 Input headings and legends describe a pointer trail only when pointer samples are present; event-only
 cases use a neutral events label. Wrapped labels keep words intact and show an ellipsis when truncated. The stage composes only between cases, never in a
-measured case window, except for its panel cursor while a case runs with the display left to the stage (§23.9). Each result is drawn immediately after collection and verification, before
+measured case window, except for its panel cursor while a case runs with the display left to the stage, and the frames a live
+check asks it to draw (§23.9). Each result is drawn immediately after collection and verification, before
 starting another case. `opt/breenix/pace` is an optional unsigned 32-bit millisecond boot value;
 `scripts/boot-interactive.sh --mode suite --suite breengel --pace MS` supplies it through fw_cfg
 and `run.sh --parallels|--vmware --suite breengel --pace MS` supplies `/etc/breenix/pace` on its
@@ -1615,8 +1616,21 @@ was when the stage made its GPU objects. Every stage frame shows it there. While
 stage (the case's process does not take it over), and the stage follows the pointer on its
 live-strip ticks: it restores the old footprint from the stage frame, draws the cursor at the
 pointer and presents. Point 10 stops the restores from the cursor's next move until the
-stage's next frame. These are the only presents the stage makes inside a measured window,
-and only when the pointer moved.
+stage's next frame. These presents, only when the pointer moved, and the live checks' frames
+below are the only presents the stage makes inside a measured window.
+
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B36 and B38 specify these requirements. -->
+The live checks `panel/judged-frame-shown`, `panel/serial-agreement`, `panel/quiet-window` and
+`panel/boundary-notice` judge the stage's own frames. GPU handles are not inherited across
+fork, so the case's process does not draw the stage: the display stays with the stage, the
+case sends the runner the variant it judges (the finale, whether the first failure is kept,
+the judged frame and the selected entry's stamp, record, timing, input and reading) over a
+pipe, the runner draws and presents it with its own context, canvas, atlas and panes, and the
+case reads the scanout back with `SCANOUT_READBACK`. A frame the check makes itself has at
+most 16 pixels; the runner draws its panes as one solid rectangle per source pixel, and, for
+a failing entry, its expected and difference panes the same way. No picture is uploaded for
+a live check, and the case's process holds no stage context, so its timed window contains no
+context warm-up and no redraw of the run's history.
 
 ## 24. Helpers and boots
 
