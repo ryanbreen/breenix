@@ -282,7 +282,7 @@ class Driver:
                'input': input_kind(self.args),
                'session': session(self.args),
                'idleMinutes': getattr(self.args, 'idle_minutes', 30) if session(self.args) else None,
-               'evidenceEligible': not fault and not session(self.args)}
+               'evidenceEligible': not fault and (persistent(self.args) or not session(self.args))}
         m.write_json(self.dir / 'run.json', run)
         m.write_text(self.dir / 'commit', (self.args.commit or 'none') + '\n')
         m.write_text(self.dir / 'dirty', '0\n')

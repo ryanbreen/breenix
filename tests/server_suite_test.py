@@ -12,8 +12,32 @@ import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import metal_tools_test as existing
+
 ROOT = Path(__file__).resolve().parents[1]
 host = runpy.run_path(str(ROOT / 'scripts/metal/server-suite'))
+
+
+class PersistentServerRecord(existing.StateTest):
+    def test_persistent_session_record_can_supply_server_evidence(self):
+        sha = 'a' * 40
+        args = SimpleNamespace(id='20261021T000000Z-metal', mode='persistent', payload='persistent',
+                               session=False, target='main', task='', commit=sha, inject=None, nmi=False)
+        with patch.object(existing.m, 'load_site', return_value={}):
+            driver = existing.boot.Driver(args)
+        driver.create_record()
+        record = existing.m.read_json(driver.dir / 'run.json')
+        self.assertTrue(record['session'])
+        self.assertTrue(record['evidenceEligible'])
+        self.assertEqual(record['kind'], 'persistent')
+        record.update(bootedCommit=sha, toolsCommit=sha)
+        manifest = json.loads((ROOT / 'docs/suites/server.json').read_text())
+        path = json.loads((ROOT / 'docs/efforts/path.json').read_text())
+        records = dict(boot=record['id'], commit=sha, milestone='server/ssh-keys', cleanup=True,
+                       cases=[dict(id='ssh-keys/' + name, result='PASS') for name, _ in host['CATEGORIES']['ssh-keys']])
+        serial = "[stdout] bsshd: host key ED25519 SHA256:example (loaded)\nbsshd: refused method 'password'\n"
+        self.assertTrue(host['score'](manifest, path, records, serial, record, sha, []).startswith('PASS: server/ssh-keys'))
 
 
 class HostServerScore(unittest.TestCase):
