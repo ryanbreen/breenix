@@ -1307,6 +1307,24 @@ after archive rotation. Temporary services run as the site account and are
 removed afterwards. Root reads protected logs on the leased SOL console.
 Results go to `server-logs.json`; preparation is not a passing category run.
 
+The category repeats on the same install. Each run writes fresh nonce markers into
+its service output and kernel records, so it cannot pass on records an earlier run
+left. A fixture's table file starts with the `breenix-server-suite-fixture` marker
+comment, and the unavailable sink's directory holds a marker file. A fixture log
+is one whose first line is the supervisor's header for that fixture's source. Before
+its first fixture, a run removes leftovers recognized by those marks and stops
+without touching anything else at a fixture's path. Cleanup removes the fixtures.
+A preparation keeps only the log that the next boot checks, and that boot's run
+removes it. To repeat the category, run `--prepare-logs` on the boot that just ran
+it, stop that boot and pass it as `--previous-boot` to the next one. A fixture counts as finished only once `/run/breenix/services` reports
+`state=done` and `output=drained`: the supervisor has read both of its streams to
+end of file and recorded them. Root's console-leak check ends at a sentinel typed
+on the console after that report, so anything init wrote onto the console for the
+service comes before the sentinel. The ssh-keys category marks its temporary
+authorized key with the same marker as its comment. It pins bssh's host key in a
+`/tmp` file of the run's own, whose entry carries the marker, and cleanup removes
+both.
+
 ## Developer SDK
 
 `sdk` measures the Developer SDK effort in `docs/efforts/path.json`: our own applications

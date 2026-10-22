@@ -98,6 +98,7 @@ class HostServerScore(unittest.TestCase):
                 (binaries / name).symlink_to(shutil.which(name))
             probe = object.__new__(host['Probe'])
             probe.original = original
+            probe.known_guest = None
             probe.ssh = lambda script: subprocess.run(
                 ['/bin/sh', '-c', script], capture_output=True, text=True,
                 env=dict(os.environ, HOME=str(root), PATH=str(binaries)))
@@ -105,6 +106,41 @@ class HostServerScore(unittest.TestCase):
             self.assertEqual(target.read_text(), original)
             self.assertEqual(target.stat().st_mode & 0o777, 0o600)
             self.assertEqual(list(ssh.iterdir()), [target])
+
+    def test_temporary_key_leftover_is_removed_by_marker_only(self):
+        mark = host['FIXTURE_MARK']
+        quote = host['shlex'].quote
+        kept = 'primary key\nkey with ' + mark + ' inside its comment\n'
+        for stored, original, appended in [
+                (kept + 'ssh-ed25519 OLD ' + mark + '\n', kept, 'ssh-ed25519 NEW ' + mark + '\n'),
+                ('last key', 'last key', '\nssh-ed25519 NEW ' + mark + '\n')]:
+            scripts = []
+            probe = object.__new__(host['Probe'])
+            probe.edkey = Path('/nonexistent/ed25519')
+            def ssh(script, identity=None):
+                scripts.append(script)
+                if script == 'cat "$HOME/.ssh/authorized_keys"':
+                    return SimpleNamespace(returncode=0, stdout=stored)
+                return SimpleNamespace(returncode=0, stdout='1000\n' if identity else '')
+            probe.ssh = ssh
+            with patch.object(Path, 'read_text', lambda self: 'ssh-ed25519 NEW ' + mark + '\n'):
+                probe.run_case('ed25519-user', '')
+            self.assertEqual(probe.original, original)
+            rewrites = [script for script in scripts if '> "$tmp"' in script]
+            self.assertEqual(len(rewrites), 0 if stored == original else 1)
+            if rewrites: self.assertIn('printf %s ' + quote(original) + ' > "$tmp"', rewrites[0])
+            self.assertIn('printf %s ' + quote(appended) + ' >> "$HOME/.ssh/authorized_keys"', scripts)
+
+    def test_service_log_header_must_name_the_boot_id_read_over_sol(self):
+        console = object.__new__(host['Console'])
+        console.boot_id = None
+        header = 'BREENIX-LOG 1 boot={} source=bsshd limit=262144 archives=4\n'
+        replies = ['boot-id=1-2-3\n' + header.format('9-9-9'), 'boot-id=1-2-3\n' + header.format('1-2-3')]
+        console.run = lambda command: replies.pop(0)
+        with self.assertRaisesRegex(ValueError, 'boot ID read over SOL'):
+            console.service_log('bsshd')
+        console.service_log('bsshd')
+        self.assertEqual(console.boot_id, '1-2-3')
 
     def test_malformed_records_fail_this_milestone_without_crashing_the_boot_scorer(self):
         sys.path.insert(0, str(ROOT / 'scripts/metal'))

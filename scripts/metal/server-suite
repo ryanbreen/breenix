@@ -62,6 +62,13 @@ LOGS = (
 # The populated categories in manifest order, and the milestone each one measures.
 CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS}
 MILESTONES = {'server/ssh-keys': 'ssh-keys', 'server/services': 'services', 'server/logs': 'logs'}
+# Every guest file the ssh-keys and logs categories create carries this marker, so a
+# leftover from an older run is recognized by its own content and nothing else is removed.
+FIXTURE_MARK = 'breenix-server-suite-fixture'
+# The fixtures the logs category runs, and the archives their logs may have.
+LOG_FIXTURES = ('logs-retained', 'logs-streams', 'logs-root', 'logs-unavailable', 'logs-rotate', 'logs-loss')
+LOG_ARCHIVES = 4
+
 # bsshd restarts 1 s after a run that lasted 10 s exits (libs/libbreenix/src/services.rs); the window
 # allows for the console's typing of the kill and for bsshd's start-up.
 RESTART_WINDOW_S = 10
@@ -139,10 +146,12 @@ class Probe:
                        '-o', 'IdentityAgent=none', '-o', 'BatchMode=yes']
         self.transcript = []
         self.original = None
+        self.known_guest = None
         self.edkey = directory / 'ed25519'
         self.wrong = directory / 'wrong'
         for key in (self.edkey, self.wrong):
-            result = command(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(key)])
+            # The comment marks the temporary authorized key, so a leftover line is recognizable.
+            result = command(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', FIXTURE_MARK, '-f', str(key)])
             if result.returncode: raise ValueError('cannot generate temporary Ed25519 keys')
 
     def ssh(self, script, cipher=None, user=None, identity=None, options=(), input=None, posix=True, env=None, timeout=45, binary=False):
@@ -209,9 +218,16 @@ class Probe:
         elif name == 'ed25519-user':
             original = self.ssh('cat "$HOME/.ssh/authorized_keys"')
             self.require(original)
-            self.original = original.stdout
+            # A temporary key an interrupted older run left behind is recognized by its marker comment.
+            lines = original.stdout.splitlines(keepends=True)
+            kept = ''.join(line for line in lines if line.rstrip('\r\n').split(' ')[-1] != FIXTURE_MARK)
+            if kept != original.stdout:
+                self.write_keys(kept)
+            self.original = kept
             public = self.edkey.with_suffix('.pub').read_text().strip()
-            self.require(self.ssh('printf "\\n%s\\n" ' + shlex.quote(public) + ' >> "$HOME/.ssh/authorized_keys"'))
+            # Append exactly one line, ending the file's last line first if it has no newline.
+            line = ('\n' if kept and not kept.endswith('\n') else '') + public + '\n'
+            self.require(self.ssh('printf %s ' + shlex.quote(line) + ' >> "$HOME/.ssh/authorized_keys"'))
             self.require(self.ssh('id -u', identity=self.edkey), '1000')
         elif name == 'password-refused':
             askpass = self.directory / 'askpass'
@@ -229,8 +245,13 @@ class Probe:
                 self.common = original
             # OpenSSH will not try an unadvertised method. Our RFC 4252 client
             # sends password directly, regardless of the server's method list.
+            # It pins the host key in a file of this run's own, whose entry names the marker.
+            self.sweep_known_hosts()
+            alias = FIXTURE_MARK + '-' + os.urandom(8).hex()
+            self.known_guest = (alias, '/tmp/' + alias + '.known_hosts')
             result = self.ssh('/usr/bin/bssh ' + shlex.quote(self.host) + ' 22 ' + shlex.quote(self.user)
-                              + ' synthetic-refused-password --smoke', posix=False)
+                              + ' synthetic-refused-password --smoke --known-hosts ' + self.known_guest[1]
+                              + ' --host-key-alias ' + alias, posix=False)
             if result.returncode != 77 or 'bssh: authentication failed' not in result.stdout:
                 raise ValueError('actual password request did not receive USERAUTH_FAILURE')
         elif name == 'wrong-key-refused':
@@ -353,17 +374,34 @@ class Probe:
                 process.terminate()  # Only this exact child, started above.
                 process.wait(timeout=5)
 
+    def write_keys(self, text):
+        # POSIX noclobber creates the staging file exclusively; the guest
+        # needs only sh, printf and mv, not an optional mktemp executable.
+        # A staging file that cannot replace the keys is removed; one that
+        # existed already is never touched.
+        name = os.urandom(16).hex()
+        self.require(self.ssh('umask 077; set -C; tmp="$HOME/.ssh/authorized_keys.' + name + '"; '
+                              'printf %s ' + shlex.quote(text) + ' > "$tmp" || exit 1; '
+                              'mv "$tmp" "$HOME/.ssh/authorized_keys" || { rm -f "$tmp"; exit 1; }'))
+
+    def sweep_known_hosts(self):
+        """Remove pin files of earlier runs in this boot (/tmp is emptied at boot): only files
+        whose every entry names a host-key alias carrying the marker."""
+        self.require(self.ssh('for f in /tmp/' + FIXTURE_MARK + '-*.known_hosts; do test -s "$f" || continue; '
+                              'if grep -qv "^' + FIXTURE_MARK + '-[0-9a-f]* " "$f"; then continue; fi; rm -f "$f"; done'))
+
     def cleanup(self):
         if self.original is not None:
-            # POSIX noclobber creates the staging file exclusively; the guest
-            # needs only sh, printf and mv, not an optional mktemp executable.
-            name = os.urandom(16).hex()
-            self.require(self.ssh('umask 077; set -C; tmp="$HOME/.ssh/authorized_keys.' + name + '"; '
-                                  'printf %s ' + shlex.quote(self.original) + ' > "$tmp" && '
-                                  'mv "$tmp" "$HOME/.ssh/authorized_keys"'))
+            self.write_keys(self.original)
             result = self.ssh('cat "$HOME/.ssh/authorized_keys"')
             self.require(result)
             if result.stdout != self.original: raise ValueError('authorized_keys restoration differs')
+        if self.known_guest is not None:
+            alias, path = self.known_guest
+            # Only this run's file, recognized by its own entry.
+            self.require(self.ssh('test ! -e ' + path + ' || { grep -q "^' + alias + ' " ' + path
+                                  + ' && rm -f ' + path + '; }'))
+            self.require(self.ssh('test ! -e ' + path))
 
 
 def parse_state(text):
@@ -399,6 +437,7 @@ class Console:
         self.serial = directory + '/serial.txt'
         self.user, self.password = user, password
         self.step, self.logged_in = 0, False
+        self.boot_id = None
 
     def size(self):
         result = self.in_metal('stat', '-c', '%s', self.serial, capture_output=True, text=True)
@@ -482,16 +521,22 @@ class Console:
         return text
 
     def service_log(self, name):
-        """Read this boot's protected log over SOL before trusting any SSH key."""
-        script = ('set -e; id=$(cat /run/breenix/boot-id); '
+        """Read this boot's protected log over SOL before trusting any SSH key. The boot ID read
+        over SOL is kept as `boot_id`, and the log's header must name exactly that boot."""
+        script = ('set -e; id=$(cat /run/breenix/boot-id); printf "boot-id=%s\\n" "$id"; '
                   'head -n 1 /var/log/' + name + '.log | '
                   'grep -Fx "BREENIX-LOG 1 boot=$id source=' + name + ' limit=262144 archives=4"; '
                   'grep -E ' + shlex.quote(r'^\[stdout\] bsshd: (host key ED25519 SHA256:[A-Za-z0-9+/]+ \((loaded|generated)\)|refused method .*for .*)$') +
                   ' /var/log/' + name + '.log')
         text = self.run('sh -c ' + shlex.quote(script))
-        if not re.search(r'^BREENIX-LOG 1 boot=[a-f0-9-]+ source=' + re.escape(name)
-                         + r' limit=262144 archives=4\r?$', text, re.M):
-            raise ValueError('no current boot header in ' + name + ' log')
+        ids = re.findall(r'^boot-id=([a-f0-9-]+)\r?$', text, re.M)
+        if len(ids) != 1: raise ValueError('the console did not show exactly one boot ID')
+        headers = re.findall(r'^BREENIX-LOG 1 boot=([a-f0-9-]+) source=' + re.escape(name)
+                             + r' limit=262144 archives=4\r?$', text, re.M)
+        if headers != ids:
+            raise ValueError('the ' + name + ' log header does not name the boot ID read over SOL')
+        if self.boot_id not in (None, ids[0]): raise ValueError('the boot ID changed during the run')
+        self.boot_id = ids[0]
         return text
 
     def logout(self):
@@ -760,14 +805,25 @@ class Services:
 
 
 class Logs:
-    """Actual service output and cross-boot files; root reads through the leased SOL console."""
-    def __init__(self, probe, console, previous):
+    """Actual service output and cross-boot files; root reads through the leased SOL console.
+
+    Each fixture is a temporary service. Its table file under /run starts with the marker comment,
+    its log is one the supervisor headed for that fixture's source, and the unavailable sink's
+    directory holds a marker file. Leftovers of older runs are recognized by those marks and removed
+    before the first fixture starts; anything else at a fixture's path stops the run untouched.
+    Cleanup removes every fixture, except that a preparation keeps the log the next boot checks."""
+
+    def __init__(self, probe, console, previous, prepare=False):
         self.probe, self.console, self.previous = probe, console, previous
-        self.fixtures = False
+        self.preparing = prepare
+        # Fresh markers: a repeat run cannot pass on records an earlier run left.
+        self.nonce = os.urandom(8).hex()
+        self.ready = None
         result = probe.ssh('cat /run/breenix/boot-id')
         probe.require(result)
-        self.boot_id = result.stdout.strip()
-        if not re.fullmatch(r'[a-f0-9-]+', self.boot_id): raise ValueError('missing log boot ID')
+        self.boot_id = console.boot_id
+        if not self.boot_id or result.stdout.strip() != self.boot_id:
+            raise ValueError('the boot ID over SSH differs from the one read over SOL')
 
     def root_check(self, script):
         text = self.console.run('sh -c ' + shlex.quote('set -e; ' + script + '; printf "\\nlogs-check-%s\\n" ok'), timeout=60)
@@ -775,23 +831,58 @@ class Logs:
             raise ValueError('root log assertion failed: ' + script)
         return text
 
+    def state(self):
+        result = self.probe.ssh('cat /run/breenix/services')
+        self.probe.require(result)
+        return parse_state(result.stdout)[1]
+
+    def sweep(self, logs):
+        """Remove marked fixture table files, then the named fixtures' logs and archives."""
+        text = self.root_check('for f in /run/breenix/services.d/*; do test -f "$f" || continue; '
+                               'test "$(head -n 1 "$f")" = "# ' + FIXTURE_MARK + '" || continue; '
+                               'rm "$f"; printf "removed-table %s\\n" "$f"; done')
+        if 'removed-table /' in text:
+            self.console.run('svc reload')
+        deadline = time.monotonic() + 15
+        while any(name in self.state() for name in LOG_FIXTURES):
+            if time.monotonic() >= deadline: raise ValueError('temporary log services remain')
+            time.sleep(1)
+        if not logs: return
+        mark = '.' + FIXTURE_MARK
+        self.root_check('cd /var/log; for n in ' + ' '.join(logs) + '; do '
+                        'for p in $n.log' + ''.join(' $n.log.' + str(i) for i in range(1, LOG_ARCHIVES + 1)) + '; do '
+                        'if test -d $p; then if test "$(ls -A $p)" = ' + mark + '; then rm $p/' + mark + '; rmdir $p; continue; fi; '
+                        'elif test -e $p; then if head -n 1 $p | grep -qxE "BREENIX-LOG 1 boot=[0-9a-f-]+ source=$n '
+                        'limit=262144 archives=' + str(LOG_ARCHIVES) + '"; then rm $p; continue; fi; '
+                        'else continue; fi; printf "not-a-fixture %s\\n" $p; exit 3; done; done')
+
+    def setup(self):
+        if self.ready is None:
+            try:
+                # A run keeps the prepared log for its persistent case; a preparation replaces it.
+                self.sweep([n for n in LOG_FIXTURES if self.preparing or n != 'logs-retained'])
+                self.ready = True
+            except ValueError as error:
+                self.ready = 'leftover log fixtures were not removed: ' + str(error)
+        if self.ready is not True: raise ValueError(self.ready)
+
     def fixture(self, name, script, user=None):
-        self.fixtures = True
-        table = '[' + name + ']\ncommand = /bin/sh -c ' + shlex.quote(script) + '\nuser = ' + (user or self.probe.user) + '\nrestart = never\n'
+        """Run one temporary service to completion; return once the supervisor reports that it has
+        drained the service's output to end of file, so its log holds everything it wrote."""
+        self.setup()
+        table = ('# ' + FIXTURE_MARK + '\n[' + name + ']\ncommand = /bin/sh -c ' + shlex.quote(script)
+                 + '\nuser = ' + (user or self.probe.user) + '\nrestart = never\n')
         literal = table.replace('\\', '\\\\').replace('\n', r'\n')
-        self.root_check('printf %b ' + shlex.quote(literal) + ' > /run/breenix/services.d/' + name)
+        # noclobber: a table file that is not this run's is never overwritten.
+        self.root_check('set -C; printf %b ' + shlex.quote(literal) + ' > /run/breenix/services.d/' + name)
         self.console.run('svc reload')
         deadline = time.monotonic() + 45
         while True:
-            result = self.probe.ssh('cat /run/breenix/services')
-            self.probe.require(result)
-            service = parse_state(result.stdout)[1].get(name)
-            if service and service['state'] == 'done': break
+            service = self.state().get(name)
+            if service and service['state'] == 'done' and service['output'] == 'drained': break
             if service and service['state'] == 'failed': raise ValueError(name + ' failed: ' + str(service))
-            if time.monotonic() >= deadline: raise ValueError(name + ' did not finish')
+            if time.monotonic() >= deadline: raise ValueError(name + ' did not finish and drain its output')
             time.sleep(0.5)
-        # The final pipe bytes are consumed on the next supervisor pass.
-        time.sleep(0.2)
 
     def prepare(self):
         self.fixture('logs-retained', 'printf "retained-stdout\\n"; printf "retained-stderr\\n" >&2')
@@ -824,28 +915,38 @@ class Logs:
                 raise ValueError('an account outside adm can read ' + path)
 
     def case_streams(self):
-        self.fixture('logs-streams', 'printf "stdout-marker\\n"; printf "stderr-marker\\n" >&2')
-        self.root_check('grep -Fx "[stdout] stdout-marker" /var/log/logs-streams.log; '
-                        'grep -Fx "[stderr] stderr-marker" /var/log/logs-streams.log; '
-                        '! grep -F stdout-marker /var/log/bsshd.log')
+        n = self.nonce
+        self.fixture('logs-streams', f'printf "stdout-{n}\\n"; printf "stderr-{n}\\n" >&2')
+        self.root_check(f'grep -Fx "[stdout] stdout-{n}" /var/log/logs-streams.log; '
+                        f'grep -Fx "[stderr] stderr-{n}" /var/log/logs-streams.log; '
+                        f'! grep -F stdout-{n} /var/log/bsshd.log')
 
         # Root daemons use the same log sinks as unprivileged services. In
         # particular, init must not tee startup output onto a getty's terminal.
+        # No typed command contains the output lines themselves, only their parts.
         offset = self.console.size()
-        self.fixture('logs-root', 'printf "root-startup-%s\\n" stdout; printf "root-startup-%s\\n" stderr >&2', user='root')
-        self.console.run('svc status logs-root')  # A console round trip bounds the capture.
-        if re.search(r'root-startup-(stdout|stderr)', self.console.since(offset)):
+        self.fixture('logs-root', f'printf "root-startup-{n}-%s\\n" stdout; printf "root-startup-{n}-%s\\n" stderr >&2', user='root')
+        # init has drained both streams to end of file, so anything it wrote onto the console for
+        # them precedes the sentinel, which root types on that console only after the report.
+        self.root_check('printf "%s-%s\\n" logs-drained ' + n)
+        text = self.console.since(offset)
+        sentinel = re.search(r'^logs-drained-' + n + r'\r?$', text, re.M)
+        if not sentinel: raise ValueError('the console did not show the drain sentinel')
+        if re.search(r'root-startup-' + n + r'-(stdout|stderr)', text[:sentinel.start()]):
             raise ValueError('root service output leaked onto the console')
-        self.root_check('grep -Fx "[stdout] root-startup-stdout" /var/log/logs-root.log; '
-                        'grep -Fx "[stderr] root-startup-stderr" /var/log/logs-root.log')
+        self.root_check(f'grep -Fx "[stdout] root-startup-{n}-stdout" /var/log/logs-root.log; '
+                        f'grep -Fx "[stderr] root-startup-{n}-stderr" /var/log/logs-root.log')
 
         # A directory in place of the log deterministically makes sink creation fail.
-        self.root_check('mkdir /var/log/logs-unavailable.log')
+        # Its marker file identifies it as this fixture's.
+        path, mark = '/var/log/logs-unavailable.log', '/.' + FIXTURE_MARK
+        self.setup()
+        self.root_check('mkdir ' + path + '; printf "%s\\n" ' + FIXTURE_MARK + ' > ' + path + mark)
         try:
             self.fixture('logs-unavailable', 'printf "unavailable-output\\n"')
         finally:
-            self.root_check('rmdir /var/log/logs-unavailable.log')
-        self.root_check('sleep 1; grep -Fx "[log] lost lines=1 reason=write-error" /var/log/logs-unavailable.log')
+            self.root_check('rm ' + path + mark + '; rmdir ' + path)
+        self.root_check('sleep 1; grep -Fx "[log] lost lines=1 reason=write-error" ' + path)
 
     def case_rotation(self):
         # 600 complete 600-byte lines: the active file and .1 must both hold
@@ -864,13 +965,14 @@ class Logs:
                         'test "$actual" = "$expected"')
 
     def case_loss(self):
-        self.fixture('logs-loss', 'printf "%05000d\\nafter-loss\\n" 0')
+        n = self.nonce
+        self.fixture('logs-loss', f'printf "%05000d\\nafter-loss-{n}\\n" 0')
         self.root_check('grep -Fx "[log] lost lines=1 stream=stdout reason=line-too-long" /var/log/logs-loss.log; '
-                        'grep -Fx "[stdout] after-loss" /var/log/logs-loss.log')
+                        f'grep -Fx "[stdout] after-loss-{n}" /var/log/logs-loss.log')
 
     def case_kernel(self):
         # A restart without an overrun must neither replay bytes nor invent loss.
-        marker = 'kernel-restart-' + self.boot_id
+        marker = 'kernel-restart-' + self.nonce
         self.root_check('printf "%s\\n" ' + shlex.quote(marker) + ' > /dev/kmsg; sleep 1')
         self.console.run('svc stop blogd')
         before = self.root_check(r'grep -c "^\[log\] lost .* reason=ring-overrun" /var/log/kernel.log || true')
@@ -887,8 +989,9 @@ class Logs:
                             'printf "kernel-gap-%04d %090d\\n" "$i" 0 > /dev/kmsg; i=$((i+1)); done')
         finally:
             self.console.run('svc start blogd')
-        text = self.root_check('printf "kernel-live-marker\\n" > /dev/kmsg; sleep 1; '
-                        'grep -F "kernel-live-marker" /var/log/kernel.log >/dev/null; '
+        live = 'kernel-live-' + self.nonce
+        text = self.root_check('printf "%s\\n" ' + live + ' > /dev/kmsg; sleep 1; '
+                        'grep -F ' + live + ' /var/log/kernel.log >/dev/null; '
                         'grep -E "lost lines=unknown bytes=[1-9][0-9]* reason=ring-overrun" /var/log/kernel.log; '
                         'head -n 1 /var/log/kernel.log | grep -F ' + shlex.quote('boot=' + self.boot_id + ' source=kernel ') + ' >/dev/null')
         gaps = re.findall(r'lost lines=unknown bytes=(\d+) reason=ring-overrun from=(\d+) to=(\d+)\r?$', text, re.M)
@@ -909,13 +1012,9 @@ class Logs:
 
     def cleanup(self):
         try:
-            if self.fixtures:
-                self.console.run('sh -c ' + shlex.quote('rm -f /run/breenix/services.d/logs-*'))
-                self.console.run('svc reload')
-                result = self.probe.ssh('cat /run/breenix/services')
-                self.probe.require(result)
-                if any(name.startswith('logs-') for name in parse_state(result.stdout)[1]):
-                    raise ValueError('temporary log services remain')
+            if self.ready is not None:
+                self.sweep([n for n in LOG_FIXTURES if not self.preparing or n != 'logs-retained'])
+                self.ready = None
         finally:
             self.console.logout()
 
@@ -1001,7 +1100,8 @@ def main():
         # Trust the fingerprint read over the leased console, never a key learned over SSH.
         if category in ('services', 'logs'):
             probe.run_case('host-key', serial)
-            target = Services(probe, console, capture) if category == 'services' else Logs(probe, console, previous)
+            target = Services(probe, console, capture) if category == 'services' \
+                else Logs(probe, console, previous, prepare=args.prepare_logs)
             cleanup.callback(cleanup_step, target.cleanup)
         if args.prepare_logs:
             if category != 'logs': raise ValueError('--prepare-logs needs server/logs')
