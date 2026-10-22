@@ -324,10 +324,27 @@ class DriverPersistentTest(unittest.TestCase):
         d.challenge_persistent('metal-run-wrong-1 0')
         self.assertEqual(d.run_verified, 0)
         for status in (1, 2, 127, 143):
+            d.run_failure = None  # each status represents a separate failed run
             with self.subTest(status=status), self.assertRaises(boot.Finish) as result:
                 d.challenge_persistent(f'metal-run-{d.run_nonce}-1 {status}')
             self.assertIn(f'failed with status {status}', result.exception.reason)
             self.assertFalse(d.run_done)
+
+    def test_run_keeps_failure_reason_and_sends_nothing_after_a_failed_status_in_one_batch(self):
+        d = self.driver
+        d.args.payload, d.args.mode, d.args.run = 'persistent', 'persistent', ['false']
+        d.kernel_started, d.run_step, d.t0, d.sent_at = 1, 3, 0, -1
+        sent = []
+        d.console_send = lambda text, paced=False: sent.append(text)
+        d.dir.mkdir(parents=True, exist_ok=True)
+        (d.dir / 'serial.txt').touch()
+        (d.dir / 'serial.ts').touch()
+        (d.dir / 'serial.raw').write_text(f'metal-run-{d.run_nonce}-1 7\nbsh /root> ')
+        with self.assertRaises(boot.Finish) as result:
+            d.pump_serial()
+        self.assertIn('failed with status 7', result.exception.reason)
+        self.assertEqual(sent, [])
+        self.assertFalse(d.run_done)
 
     def test_run_deadline_explains_that_commands_never_ran(self):
         d = self.driver

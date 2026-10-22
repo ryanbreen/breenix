@@ -202,6 +202,7 @@ class Driver:
         self.run_done = False
         self.run_nonce = os.urandom(12).hex()
         self.run_verified = 0
+        self.run_failure = None
         self.persist = None
         self.last_serial = None
         self.first_text = False
@@ -1230,8 +1231,10 @@ class Driver:
         commands = (getattr(self.args, 'run', None) or []) + ['sync']
         if not persistent(self.args) or len(commands) == 1 or self.kernel_started is None or self.fatal_at is not None:
             return
+        if self.run_failure:
+            raise Finish(m.EXIT_SHORT, self.run_failure)
         if self.run_step >= 2 and re.search(r'\[bsh\] command failed status=[1-9][0-9]*', text):
-            raise Finish(m.EXIT_SHORT, 'a persistent console command failed')
+            self.fail_persistent('a persistent console command failed')
         fresh = self.line_start > self.sent_at
         prompt = re.fullmatch(r'bsh [^>\n]*>\s*', text) is not None
         last = 2 + len(commands)
@@ -1247,7 +1250,7 @@ class Driver:
             self.run_step, self.sent_at = 2, self.line_start
             self.console_send(self.site['CONSOLE_PASSWORD'], paced=True)
         elif 2 <= self.run_step <= last and 'Login incorrect' in text:
-            raise Finish(m.EXIT_SHORT, 'the persistent install refused the console account; commands never ran')
+            self.fail_persistent('the persistent install refused the console account; commands never ran')
         elif 3 <= self.run_step <= last:
             index = self.run_step - 2
             marker = f'metal-run-{self.run_nonce}-{index}'
@@ -1256,10 +1259,10 @@ class Driver:
                 status = int(found[1])
                 self.event('persistent-command-result', index=index, status=status)
                 if status:
-                    raise Finish(m.EXIT_SHORT, f'persistent console command {index} failed with status {status}')
+                    self.fail_persistent(f'persistent console command {index} failed with status {status}')
                 self.run_verified = index
             if fresh and prompt and self.run_verified != index:
-                raise Finish(m.EXIT_SHORT, f'persistent console command {index} returned without an exit status')
+                self.fail_persistent(f'persistent console command {index} returned without an exit status')
         if 2 <= self.run_step <= last and fresh and prompt:
             if self.run_step < last:
                 index = self.run_step - 1
@@ -1279,6 +1282,12 @@ class Driver:
             self.run_done = True
             self.event('persistent-commands-done', commands=len(commands))
             self.maybe_complete(m.now(), round(m.now() - self.t0, 1))
+
+    def fail_persistent(self, reason):
+        # pump_serial finishes the captured batch after a decision. Later
+        # prompts must neither replace this reason nor start another command.
+        self.run_failure = reason
+        raise Finish(m.EXIT_SHORT, reason)
 
     def persistent_missing(self):
         if not getattr(self.args, 'run', None) or self.run_done:
