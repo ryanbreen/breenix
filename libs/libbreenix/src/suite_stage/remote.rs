@@ -405,7 +405,7 @@ fn serve_holdings() -> Result<Vec<u8>, String> {
     let mut w = Writer(Vec::new());
     w.u64(g.cells.len() as u64);
     for c in &g.cells {
-        w.opt(c.as_ref(), |w, h| w.raw(h));
+        w.opt(c.as_ref().map(|c| &c.hash), |w, h| w.raw(h));
     }
     w.u64(g.panes.len() as u64);
     for p in &g.panes {

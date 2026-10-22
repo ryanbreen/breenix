@@ -291,6 +291,9 @@ struct Panes {
     artifacts: Option<(u64, u64)>,
     /// Sampled targets, kept for the next frame's panes when these are let go.
     sampled: bool,
+    /// The verified judged frame a case published these panes from, once it is bound: the
+    /// runner draws its panes again from it when its objects are made again.
+    frame: Option<Arc<JudgedFrame>>,
 }
 impl Panes {
     fn destroy(&self) {
@@ -301,6 +304,62 @@ impl Panes {
             }
         }
     }
+}
+
+/// A tile's atlas cell: the SHA-256 of the judged frame its thumbnail is of, and the verified
+/// thumbnail's pixels, `width` x `height` BGRX, which the runner draws into a new atlas when
+/// its objects are made again (empty while the hash is `PENDING`).
+#[derive(Clone)]
+struct Cell {
+    hash: [u8; 32],
+    pixels: Vec<u8>,
+    width: usize,
+    height: usize,
+}
+
+/// The pictures a case published, kept across the stage's objects being made again: each
+/// tile's cell and each bound frame whose panes are held, with whether a failing case's
+/// artifacts went with them.
+struct Kept {
+    cells: Vec<Option<Cell>>,
+    frames: Vec<(Arc<JudgedFrame>, bool)>,
+}
+/// Pictures whose objects were let go and are not drawn again yet.
+static KEPT: Mutex<Option<Kept>> = Mutex::new(None);
+
+/// What the stage contexts let go during the run uploaded, for the finale's accounting:
+/// Image bytes, Fixture bytes, the Fixture bytes they accounted for as failure artifacts, and
+/// how many had counters that could not be read.
+#[derive(Clone, Copy)]
+struct Retired {
+    image: u64,
+    fixture: u64,
+    artifacts: u64,
+    unread: u32,
+}
+static RETIRED: Mutex<Retired> = Mutex::new(Retired { image: 0, fixture: 0, artifacts: 0, unread: 0 });
+
+/// Horizontal runs of `pick(x, y)`, an ARGB colour, over the `w` x `h` pixels at `at` in
+/// `target`, as `(target, colour, rect)`.
+fn runs(out: &mut Vec<(u64, u32, [i32; 4])>, target: u64, at: (usize, usize), w: usize, h: usize, pick: impl Fn(usize, usize) -> u32) {
+    for y in 0..h {
+        let mut x = 0;
+        while x < w {
+            let colour = pick(x, y);
+            let mut end = x + 1;
+            while end < w && pick(end, y) == colour {
+                end += 1;
+            }
+            let (x0, y0) = ((at.0 + x) as i32, (at.1 + y) as i32);
+            out.push((target, colour, [x0, y0, (at.0 + end) as i32, y0 + 1]));
+            x = end;
+        }
+    }
+}
+
+/// The ARGB colour of the BGRX pixel at the start of `p`.
+fn argb(p: &[u8]) -> u32 {
+    0xFF00_0000 | (p[2] as u32) << 16 | (p[1] as u32) << 8 | p[0] as u32
 }
 
 /// The run stage's GPU objects, kept for the run in the runner's process: its context, the
@@ -320,7 +379,9 @@ struct Gpu {
     seen: Vec<u8>,
     atlas: u64,
     /// Per tile, the judged frame whose thumbnail its atlas cell holds.
-    cells: Vec<Option<[u8; 32]>>,
+    cells: Vec<Option<Cell>>,
+    /// A stage frame failed: the scanout targets are made again before the next one.
+    stale: bool,
     panes: Vec<Panes>,
     /// Pane targets let go, made again into the next sample's panes rather than destroyed
     /// and created for each case.
@@ -379,13 +440,7 @@ impl Gpu {
     /// Create the stage's objects for the current mode, which must be the stage's logical
     /// layout at a whole display scale, and wait, bounded, for the context's warm-up.
     fn new(pid: u64) -> Result<Gpu, String> {
-        let m = mode()?;
-        if m.scale == 0 || (m.width, m.height) != (1280 * m.scale, 800 * m.scale) {
-            return Err(std::format!(
-                "the {}x{} mode is not the stage's 1280x800 layout at scale {}",
-                m.width, m.height, m.scale
-            ));
-        }
+        let m = stage_mode()?;
         let canvas = painter(|p| p.canvas(m.width, m.height))?;
         let context = gpu::context_create().map_err(|e| std::format!("stage context: errno {}", -e))?;
         let mut g = Gpu {
@@ -399,6 +454,7 @@ impl Gpu {
             seen: Vec::new(),
             atlas: 0,
             cells: Vec::new(),
+            stale: false,
             panes: Vec::new(),
             spare: Vec::new(),
             artifact_bytes: 0,
@@ -406,17 +462,11 @@ impl Gpu {
             cursor: None,
             no_restore: false,
         };
-        let format = gpu::abi::format::B8G8R8A8;
-        for slot in 0..2 {
-            match gpu::scanout_target_create(format, m.width, m.height) {
-                Ok(t) => g.scanout[slot] = t,
-                Err(e) => {
-                    g.destroy();
-                    return Err(std::format!("stage scanout target: errno {}", -e));
-                }
-            }
+        if let Err(e) = g.make_scanouts(m.width, m.height) {
+            g.destroy();
+            return Err(e);
         }
-        match gpu::target_create(format, ATLAS.0, ATLAS.1) {
+        match gpu::target_create(gpu::abi::format::B8G8R8A8, ATLAS.0, ATLAS.1) {
             Ok(t) => g.atlas = t,
             Err(e) => {
                 g.destroy();
@@ -452,6 +502,117 @@ impl Gpu {
         let _ = gpu::context_destroy(self.context);
     }
 
+    /// Make the two `width` x `height` scanout targets, in place of any held.
+    fn make_scanouts(&mut self, width: u32, height: u32) -> Result<(), String> {
+        for slot in 0..2 {
+            if self.scanout[slot] != 0 {
+                let _ = gpu::resource_destroy(core::mem::take(&mut self.scanout[slot]));
+            }
+        }
+        for slot in 0..2 {
+            self.scanout[slot] = gpu::scanout_target_create(gpu::abi::format::B8G8R8A8, width, height)
+                .map_err(|e| std::format!("stage scanout target: errno {}", -e))?;
+        }
+        Ok(())
+    }
+
+    /// After a mode change or a failed frame, while the context is live: make the scanout
+    /// targets again at the current mode and take the painter's canvas for it, keeping the
+    /// atlas and the panes.
+    fn redisplay(&mut self) -> Result<(), String> {
+        let m = stage_mode()?;
+        self.make_scanouts(m.width, m.height)?;
+        self.canvas = painter(|p| p.canvas(m.width, m.height))?;
+        (self.width, self.height, self.shown, self.cursor, self.stale) = (m.width, m.height, 0, None, false);
+        Ok(())
+    }
+
+    /// The pictures these objects hold for the cases that published them.
+    fn keep_pictures(&self) -> Kept {
+        Kept {
+            cells: self.cells.iter().map(|c| c.clone().filter(|c| c.hash != PENDING)).collect(),
+            frames: self.panes.iter().filter_map(|p| p.frame.clone().map(|f| (f, p.artifacts.is_some()))).collect(),
+        }
+    }
+
+    /// Draw the pictures in `kept` into these new objects: each thumbnail into its atlas cell
+    /// and each frame's panes by the nearest-scaled formula of section 23.4, as solid
+    /// rectangles from the verified pixels the runner holds, since the cases that published
+    /// them have exited and a reset lost their GPU copies. These draws upload no pixels.
+    fn restore(&mut self, kept: &Kept) -> Result<(), String> {
+        use gpu::abi::{limits, pipeline, stream::encode};
+        let mut out = Vec::new();
+        for (tile, c) in kept.cells.iter().enumerate() {
+            if let Some(c) = c {
+                runs(&mut out, self.atlas, cell(tile), c.width, c.height, |x, y| argb(&c.pixels[(y * c.width + x) * 4..]));
+            }
+        }
+        let mut made: Vec<Panes> = Vec::new();
+        let format = gpu::abi::format::B8G8R8A8;
+        for (f, failing) in &kept.frames {
+            let expected = f.expected.as_ref().filter(|_| *failing);
+            let sizes = [(WIDE.0, WIDE.1), (SQUARE, SQUARE), (SQUARE, SQUARE), (SQUARE, SQUARE)];
+            let targets: Vec<_> = sizes[..if expected.is_some() { 4 } else { 2 }]
+                .iter()
+                .map(|&(w, h)| gpu::target_create(format, w as u32, h as u32))
+                .collect();
+            if targets.iter().any(Result::is_err) {
+                for t in targets.into_iter().flatten() {
+                    let _ = gpu::resource_destroy(t);
+                }
+                made.iter().for_each(Panes::destroy);
+                return Err(String::from("stage pane: no target for a kept picture"));
+            }
+            let t: Vec<u64> = targets.into_iter().flatten().collect();
+            let index = |x: usize, y: usize, w: usize, h: usize| ((y * f.height / h) * f.width + x * f.width / w) * 4;
+            runs(&mut out, t[0], (0, 0), WIDE.0, WIDE.1, |x, y| argb(&f.pixels[index(x, y, WIDE.0, WIDE.1)..]));
+            runs(&mut out, t[1], (0, 0), SQUARE, SQUARE, |x, y| argb(&f.pixels[index(x, y, SQUARE, SQUARE)..]));
+            // A failing case's expected pane and its difference pane's heat map (section 23.4),
+            // drawn rather than uploaded again.
+            if let Some(e) = expected {
+                runs(&mut out, t[2], (0, 0), SQUARE, SQUARE, |x, y| argb(&e[index(x, y, SQUARE, SQUARE)..]));
+                runs(&mut out, t[3], (0, 0), SQUARE, SQUARE, |x, y| {
+                    let i = index(x, y, SQUARE, SQUARE);
+                    let delta = (0..3).map(|c| e[i + c].abs_diff(f.pixels[i + c])).max().unwrap_or(0);
+                    if delta == 0 { 0xFF00_0000 } else { 0xFFFF_0000 | ((255 - delta) as u32) << 8 }
+                });
+            }
+            let artifacts = expected.map(|_| (t[2], t[3]));
+            made.push(Panes { hash: f.sha256, wide: t[0], square: t[1], artifacts, sampled: true, frame: Some(f.clone()) });
+        }
+        // One draw per colour and target, in as many submissions as the limits need.
+        out.sort_unstable_by_key(|r| (r.0, r.1));
+        let mut drawn = Ok(());
+        let (mut stream, mut draws, mut instances, mut target) = (Vec::new(), 0, 0, 0);
+        for group in out.chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)) {
+            for part in group.chunks(65_536) {
+                if draws + 1 > limits::DRAWS || instances + part.len() as u64 > limits::INSTANCES {
+                    drawn = drawn.and_then(|()| self.run(&stream, "kept pictures"));
+                    (stream, draws, instances, target) = (Vec::new(), 0, 0, 0);
+                }
+                if part[0].0 != target {
+                    target = part[0].0;
+                    encode::begin(&mut stream, target);
+                }
+                let rects: Vec<[i32; 4]> = part.iter().map(|r| r.2).collect();
+                encode::draw(&mut stream, pipeline::SOLID, part[0].1, &rects);
+                (draws, instances) = (draws + 1, instances + part.len() as u64);
+            }
+        }
+        if !stream.is_empty() {
+            drawn = drawn.and_then(|()| self.run(&stream, "kept pictures"));
+        }
+        if let Err(e) = drawn {
+            made.iter().for_each(Panes::destroy);
+            return Err(e);
+        }
+        self.cells = kept.cells.clone();
+        for panes in made {
+            self.keep(panes);
+        }
+        Ok(())
+    }
+
     /// Submit `stream` in the stage's context and wait for its render.
     fn run(&self, stream: &[u32], what: &str) -> Result<(), String> {
         let (r, submitted) = gpu::submit(self.context, stream);
@@ -465,15 +626,18 @@ impl Gpu {
         Ok(())
     }
 
-    /// Give the pictures sampled for tile `tile` before its frame was collected that frame's
-    /// SHA-256, or drop them when the case handed over no frame.
-    fn bind(&mut self, tile: usize, hash: Option<[u8; 32]>) {
-        if self.cells.get(tile).copied().flatten() == Some(PENDING) {
-            self.set_cell(tile, hash);
+    /// Give the pictures sampled for tile `tile` before its frame was collected that frame,
+    /// with its verified thumbnail, or drop them when the case handed over no frame.
+    fn bind(&mut self, tile: usize, judged: Option<(&Picture, &Arc<JudgedFrame>)>) {
+        if self.cell_hash(tile) == Some(PENDING) {
+            self.set_cell(tile, judged.map(|(p, _)| Cell { hash: p.source_hash, pixels: p.pixels.clone(), width: p.width, height: p.height }));
         }
         if let Some(i) = self.panes.iter().position(|p| p.hash == PENDING) {
-            match hash {
-                Some(h) => self.panes[i].hash = h,
+            match judged {
+                Some((_, f)) => {
+                    self.panes[i].hash = f.sha256;
+                    self.panes[i].frame = Some(f.clone());
+                }
                 None => {
                     let p = self.panes.swap_remove(i);
                     self.retire(p);
@@ -517,11 +681,15 @@ impl Gpu {
         }
     }
 
-    fn set_cell(&mut self, tile: usize, hash: Option<[u8; 32]>) {
+    fn set_cell(&mut self, tile: usize, cell: Option<Cell>) {
         if self.cells.len() <= tile {
             self.cells.resize(tile + 1, None);
         }
-        self.cells[tile] = hash;
+        self.cells[tile] = cell;
+    }
+
+    fn cell_hash(&self, tile: usize) -> Option<[u8; 32]> {
+        self.cells.get(tile).and_then(|c| c.as_ref()).map(|c| c.hash)
     }
 
     /// Sample the `w` x `h` frame at `at` in `source`, a resource of this process, into tile
@@ -554,7 +722,7 @@ impl Gpu {
                 }
             }
         };
-        let panes = Panes { hash, wide, square, artifacts: None, sampled: true };
+        let panes = Panes { hash, wide, square, artifacts: None, sampled: true, frame: None };
         let mut stream = Vec::new();
         encode::begin(&mut stream, panes.wide);
         sampled(&mut stream, pipeline::NEAREST_SCALED, source, [0, 0, WIDE.0, WIDE.1], [at.0, at.1, w, h]);
@@ -564,7 +732,7 @@ impl Gpu {
             panes.destroy();
             return Err(e);
         }
-        self.set_cell(tile, Some(hash));
+        self.set_cell(tile, Some(Cell { hash, pixels: Vec::new(), width: 0, height: 0 }));
         self.keep(panes);
         Ok(())
     }
@@ -726,7 +894,7 @@ impl Gpu {
                 Some(_) => Some((target(SQUARE, SQUARE)?, target(SQUARE, SQUARE)?)),
                 None => None,
             };
-            Ok(Panes { hash: f.sha256, wide, square, artifacts, sampled: false })
+            Ok(Panes { hash: f.sha256, wide, square, artifacts, sampled: false, frame: None })
         })();
         let panes = match panes {
             Ok(p) => p,
@@ -907,23 +1075,56 @@ pub(super) fn prepare() -> Result<(), String> {
     Ok(())
 }
 
-/// The stage's GPU objects for this process, made again after a quarantine, a reset or a
-/// mode change. A forked case abandons the runner's handles, which it does not hold.
+/// The current mode, which must be the stage's logical layout at a whole display scale.
+fn stage_mode() -> Result<gpu::abi::Mode, String> {
+    let m = mode()?;
+    if m.scale == 0 || (m.width, m.height) != (1280 * m.scale, 800 * m.scale) {
+        return Err(std::format!(
+            "the {}x{} mode is not the stage's 1280x800 layout at scale {}",
+            m.width, m.height, m.scale
+        ));
+    }
+    Ok(m)
+}
+
+/// The stage's GPU objects for this process. After a mode change or a failed frame the
+/// scanout targets are made again. After a quarantine or a reset, which loses the context's
+/// objects, the context, atlas and panes are made again too, and the pictures the cases
+/// published are drawn into the new ones rather than dropped. A forked case abandons the
+/// runner's handles, which it does not hold.
 fn gpu_here(guard: &mut Option<Gpu>, runner: u64) -> Result<&mut Gpu, String> {
     let pid = process::getpid().map_err(|e| e.to_string())?.raw() as u64;
     if pid != runner {
         return Err(String::from("a forked case's stage frames are the runner's to draw"));
     }
-    if let Some(g) = guard.as_ref().filter(|g| g.pid == pid) {
+    if let Some(g) = guard.as_mut().filter(|g| g.pid == pid) {
         let (r, c) = gpu::counters(g.context);
         let live = r == 0 && matches!(c.state, gpu::abi::context_state::LIVE | gpu::abi::context_state::WARMING);
-        if !live || mode().is_ok_and(|m| (m.width, m.height) != (g.width, g.height)) {
+        let moved = mode().is_ok_and(|m| (m.width, m.height) != (g.width, g.height));
+        if !live || ((g.stale || moved) && g.redisplay().is_err()) {
+            *KEPT.lock().unwrap() = Some(g.keep_pictures());
+            let mut t = RETIRED.lock().unwrap();
+            t.artifacts += g.artifact_bytes;
+            if r == 0 {
+                (t.image, t.fixture) = (t.image + c.uploads_image, t.fixture + c.uploads_fixture);
+            } else {
+                t.unread += 1;
+            }
             g.destroy();
             *guard = None;
         }
     }
     if guard.as_ref().is_none_or(|g| g.pid != pid) {
-        *guard = Some(Gpu::new(pid)?);
+        let mut g = Gpu::new(pid)?;
+        let mut kept = KEPT.lock().unwrap();
+        if let Some(k) = kept.as_ref() {
+            if let Err(e) = g.restore(k) {
+                g.destroy();
+                return Err(e);
+            }
+        }
+        *kept = None;
+        *guard = Some(g);
     }
     guard.as_mut().ok_or_else(|| String::from("stage GPU objects missing"))
 }
@@ -946,7 +1147,7 @@ trait Holds {
 }
 impl Holds for Gpu {
     fn cell(&self, tile: usize) -> Option<[u8; 32]> {
-        self.cells.get(tile).copied().flatten()
+        self.cell_hash(tile)
     }
     fn atlas(&self) -> u64 {
         self.atlas
@@ -1157,17 +1358,14 @@ impl Show {
     }
 
     /// Draw, present and check one stage frame; on failure the next attempt starts from new
-    /// objects.
+    /// scanout targets, or from a new context and objects if the context was lost.
     fn attempt(&self, fb: &mut FrameBuf, bits: u32) -> Result<Seen, String> {
         let mut guard = GPU.lock().unwrap();
         let g = gpu_here(&mut guard, self.runner)?;
         let shown_frame = self.render(Some(&mut *fb), bits, g, Some((g.width, g.height)))
             .and_then(|()| g.show())
             .and_then(|(seen, fence, cursor)| shown(fb, Some(fence), &g.seen, &seen, cursor).map(|()| seen));
-        if shown_frame.is_err() {
-            g.destroy();
-            *guard = None;
-        }
+        g.stale = shown_frame.is_err();
         shown_frame
     }
 
@@ -1187,8 +1385,7 @@ impl Show {
             match drawn {
                 Ok(()) => return Ok(()),
                 Err(e) => {
-                    g.destroy();
-                    *guard = None;
+                    g.stale = true;
                     failed = e;
                 }
             }
@@ -1373,7 +1570,8 @@ pub(super) fn record(
     // over; a failing frame's expected and difference panes go up as failure artifacts.
     let pid = process::getpid().map_err(|e| e.to_string())?.raw() as u64;
     if let Some(g) = GPU.lock().unwrap().as_mut().filter(|g| g.pid == pid) {
-        g.bind(s.current, judged);
+        let picture = s.entries[s.current].picture.as_ref();
+        g.bind(s.current, judged.and(picture.zip(s.last.as_ref())));
         if let Some(f) = s.last.as_deref().filter(|f| matches!(outcome, Outcome::Fail { .. }) && Some(f.sha256) == judged) {
             g.artifacts(f)?;
         }
@@ -1566,18 +1764,23 @@ pub(super) fn finale() -> Result<(), String> {
         s.draw(0)?;
         // Ruling B36: a passing run uploads no picture. Each context the stage draws with is
         // counted: its own uploads only failure artifacts, and the painter's only declared
-        // tables and crossing geometry; neither uploads an Image.
-        if let Some(g) = GPU.lock().unwrap().as_ref().filter(|g| g.pid == s.runner) {
-            let (painted, declared) = painter(|p| Ok((p.context()?, p.declared_bytes())))?;
-            for (context, what, allowed) in [(g.context, "stage", g.artifact_bytes), (painted, "stage painter", declared)] {
-                let (r, c) = gpu::counters(context);
-                check(r == 0, "the stage's COUNTERS failed").map_err(|e| std::format!("{e:?}"))?;
-                if c.uploads_image != 0 || c.uploads_fixture != allowed {
-                    return Err(std::format!(
-                        "the {what} context uploaded {} Image and {} Fixture bytes; it accounts for {allowed} Fixture bytes",
-                        c.uploads_image, c.uploads_fixture
-                    ));
-                }
+        // tables and crossing geometry; neither uploads an Image. The stage's count includes
+        // the contexts it let go when its objects were made again.
+        let guard = GPU.lock().unwrap();
+        let g = guard.as_ref().filter(|g| g.pid == s.runner).ok_or("the stage holds no GPU objects at the finale")?;
+        let (painted, declared) = painter(|p| Ok((p.context()?, p.declared_bytes())))?;
+        let t = *RETIRED.lock().unwrap();
+        if t.unread != 0 {
+            return Err(std::format!("the counters of {} stage contexts let go could not be read", t.unread));
+        }
+        for (context, what, earlier, allowed) in [(g.context, "stage", t, g.artifact_bytes + t.artifacts), (painted, "stage painter", Retired { image: 0, fixture: 0, artifacts: 0, unread: 0 }, declared)] {
+            let (r, c) = gpu::counters(context);
+            check(r == 0, "the stage's COUNTERS failed").map_err(|e| std::format!("{e:?}"))?;
+            let (image, fixture) = (c.uploads_image + earlier.image, c.uploads_fixture + earlier.fixture);
+            if image != 0 || fixture != allowed {
+                return Err(std::format!(
+                    "the {what} contexts uploaded {image} Image and {fixture} Fixture bytes; they account for {allowed} Fixture bytes"
+                ));
             }
         }
     }
@@ -1601,4 +1804,32 @@ pub(crate) use remote::serve;
 pub fn render_at_ui_time(fb: &mut FrameBuf, run: &mut stage::Run<'_>, started_ms: u64) -> Result<(), stage::StageError> {
     run.ui_time_ms = (clock::now_ns() / 1_000_000).saturating_sub(started_ms);
     stage::draw_with(fb, run, &mut FONT.lock().unwrap())
+}
+
+#[cfg(test)]
+mod kept_picture_tests {
+    use super::*;
+
+    #[test]
+    fn runs_paint_every_pixel_once_in_its_colour() {
+        let (w, h) = (5, 3);
+        let colour = |x: usize, y: usize| if (x + y) % 3 == 0 { 0xFF00_00FF } else { 0xFF10_2030 + y as u32 };
+        let mut out = Vec::new();
+        runs(&mut out, 9, (32, 12), w, h, colour);
+        let mut painted = std::vec![None; w * h];
+        for (target, c, r) in out {
+            assert_eq!(target, 9);
+            for y in r[1]..r[3] {
+                for x in r[0]..r[2] {
+                    let at = (y as usize - 12) * w + (x as usize - 32);
+                    assert!(painted[at].replace(c).is_none(), "a pixel is painted twice");
+                }
+            }
+        }
+        for y in 0..h {
+            for x in 0..w {
+                assert_eq!(painted[y * w + x], Some(colour(x, y)));
+            }
+        }
+    }
 }
