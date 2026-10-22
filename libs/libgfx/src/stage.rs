@@ -570,6 +570,12 @@ impl Stage {
         fb.error().map_or(Ok(()), |e| Err(StageError::Device(e)))
     }
 }
+impl Stage {
+    /// Wait for the wall's submissions; the frame's are the canvas's.
+    pub fn wait(&self) -> Result<(), i64> {
+        self.wall.as_ref().map_or(Ok(()), Surface::wait)
+    }
+}
 impl Default for Stage {
     fn default() -> Self {
         Self::new()

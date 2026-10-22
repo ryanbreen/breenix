@@ -87,6 +87,15 @@ impl libbreenix::suite::Painter for StagePainter {
         gpu::context().map_err(|e| format!("stage painter context: {e:?}"))
     }
 
+    fn settle(&mut self) -> Result<(), String> {
+        let pid = libbreenix::process::getpid().map_err(|e| e.to_string())?.raw() as u64;
+        if pid != self.pid {
+            return Ok(());
+        }
+        self.stage.wait().map_err(|e| format!("stage wall: {e}"))?;
+        self.canvas.as_ref().map_or(Ok(()), Surface::wait).map_err(|e| format!("stage canvas: {e}"))
+    }
+
     fn paint(&mut self, f: &StageFrame<'_>) -> Result<(), String> {
         self.canvas(f.width, f.height)?;
         let canvas = self.canvas.as_mut().ok_or("stage canvas missing")?;

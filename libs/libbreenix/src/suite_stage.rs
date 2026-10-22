@@ -83,6 +83,8 @@ pub trait Painter: Send {
     fn context(&mut self) -> Result<u64, String>;
     /// Draw `frame` into the canvas and wait for its render.
     fn paint(&mut self, frame: &Frame<'_>) -> Result<(), String>;
+    /// Wait until the painter's submissions are complete.
+    fn settle(&mut self) -> Result<(), String>;
 }
 
 static PAINTER: Mutex<Option<Box<dyn Painter>>> = Mutex::new(None);
@@ -1356,6 +1358,22 @@ fn verify_source(line: &str, f: &JudgedFrame) -> Result<(), String> {
     Ok(())
 }
 pub(super) fn begin() -> Result<(), String> {
+    // Ruling B37: the stage paints only between cases, and a case starts once the stage's
+    // GPU work is fence-complete, its destroyed contexts' work included (at most 1 s).
+    if GPU.lock().unwrap().is_some() {
+        painter(|p| p.settle())?;
+        let start = time::now_monotonic().map_or(0, |t| t.as_nanos());
+        loop {
+            let (r, c) = gpu::counters(0);
+            if r != 0 || c.device_contexts <= c.contexts {
+                break;
+            }
+            if time::now_monotonic().map_or(0, |t| t.as_nanos()).saturating_sub(start) >= 1_000_000_000 {
+                return Err(std::format!("the stage's {} destroyed contexts still had work 1 s before the case", c.device_contexts - c.contexts));
+            }
+            let _ = time::sleep_ms(1);
+        }
+    }
     let serial = kernel_serial(process::getpid().map_err(|e| e.to_string())?.raw() as u64)?;
     if let Some(s) = SHOW.lock().unwrap().as_mut() { s.measured = Some(serial); }
     Ok(())
