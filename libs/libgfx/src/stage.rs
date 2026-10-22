@@ -358,6 +358,45 @@ impl Canvas<'_> {
             self.fill(x + r[0] * scale, y + r[1] * scale, r[2] * scale, r[3] * scale, c);
         }
     }
+    /// Several small pictures at once, each `(picture, x, y)` drawn as `picture` draws it:
+    /// those from one source share draws, each of at most 2^17 fragments. A picture with a
+    /// cover, or one the clip cuts, is drawn on its own.
+    fn pictures(&mut self, list: &[(Picture<'_>, usize, usize)], scale: usize) {
+        let s = (scale * self.n) as i64;
+        let clip = self.fb.clip_box();
+        let mut pending: Vec<Instance> = Vec::new();
+        let (mut source, mut area) = (0u64, 0i64);
+        let mut flags = 0;
+        for (p, x, y) in list {
+            let (dx, dy) = (((x - self.origin.0) * self.n) as i64, ((y - self.origin.1) * self.n) as i64);
+            let whole = Box64::wide(dx, dy, p.width as i64 * s, p.height as i64 * s);
+            let fragments = (p.width * p.height) as i64 * s * s;
+            if p.cover.is_some() || whole.intersect(&clip) != whole || fragments > 1 << 17 {
+                self.picture(p, *x, *y, scale);
+                continue;
+            }
+            if p.source.resource() != source || area + fragments > 1 << 17 {
+                self.flush_pictures(&mut pending, source, flags);
+                (source, area, flags) = (p.source.resource(), 0, gpu_abi_opaque(p.source));
+            }
+            let mut params = [0u32; 16];
+            for (slot, v) in params.iter_mut().zip([dx, dy, p.x as i64, p.y as i64, s]) {
+                *slot = v as i32 as u32;
+            }
+            crate::work::add(1);
+            pending.push(Instance { rect: whole.corners(), params });
+            area += fragments;
+            self.fb.mark(whole);
+        }
+        self.flush_pictures(&mut pending, source, flags);
+    }
+    fn flush_pictures(&mut self, pending: &mut Vec<Instance>, texture: u64, flags: u32) {
+        if pending.is_empty() {
+            return;
+        }
+        let instances = core::mem::take(pending);
+        self.fb.submit(|c| c.draw(pipeline::COPY_SCALED, flags, texture, 0, 0, &instances));
+    }
 }
 
 /// The stage's pictures are opaque BGRX samples of judged frames.
@@ -480,9 +519,15 @@ impl Default for Stage {
 }
 
 /// Draw again each tile and category heading whose state changed since the wall was last
-/// drawn: a tile's box is cleared to the background first, as the whole frame's is.
+/// drawn: a tile's box is cleared to the background first, as the whole frame's is. The
+/// changed elements go in three passes, fills, then thumbnails, then text, since no fill
+/// of one element meets another's thumbnail or text: the fills share batches, and the
+/// thumbnails from the atlas share draws.
 fn update_wall(cv: &mut Canvas<'_>, run: &Run<'_>, wall: Wall, tiles: &mut [Option<TileKey>], heads: &mut [Option<(usize, usize)>]) {
     let scale = wall.scale;
+    // The changed headings, (tile, passed, total, x, y), and tiles, (tile, colour, x, y).
+    let mut headings = Vec::new();
+    let mut changed = Vec::new();
     for (i, tile) in run.tiles.iter().enumerate() {
         let slot = wall.slot(run.tiles, i);
         if i == 0 || category(tile.id) != category(run.tiles[i - 1].id) {
@@ -490,36 +535,55 @@ fn update_wall(cv: &mut Canvas<'_>, run: &Run<'_>, wall: Wall, tiles: &mut [Opti
             let passed = run.tiles[i..end].iter().filter(|t| t.stamp == Stamp::Pass).count();
             if heads[i] != Some((passed, end - i)) {
                 let (x, y) = wall.origin(slot - 2);
-                cv.fill(x, y, 78 * scale, 24 * scale, HEADER);
-                cv.text(category(tile.id).as_bytes(), x + 2, y + 2, 76 * scale, scale, Color::WHITE);
-                let mut count = Text::new();
-                let _ = write!(count, "{passed}/{} pass", end - i);
-                cv.text(count.bytes(), x + 2, y + 14 * scale, 76 * scale, scale, Color::WHITE);
+                headings.push((i, passed, end - i, x, y));
                 heads[i] = Some((passed, end - i));
             }
         }
         let c = stamp(tile.stamp, run.ui_time_ms);
         let key = TileKey { stamp: tile.stamp, colour: c, key: tile.key, thumbnail: ThumbKey::of(&tile.thumbnail) };
-        if tiles[i] == Some(key) {
-            continue;
+        if tiles[i] != Some(key) {
+            let (x, y) = wall.origin(slot);
+            changed.push((i, c, x, y));
+            tiles[i] = Some(key);
         }
-        let (x, y) = wall.origin(slot);
+    }
+    for &(_, _, _, x, y) in &headings {
+        cv.fill(x, y, 78 * scale, 24 * scale, HEADER);
+    }
+    for &(i, c, x, y) in &changed {
         cv.fill(x, y, 38 * scale, 24 * scale, BG);
         cv.fill(x, y, 38 * scale, 1, c);
         cv.fill(x, y + 24 * scale - 1, 38 * scale, 1, c);
         cv.fill(x, y, 1, 24 * scale, c);
         cv.fill(x + 38 * scale - 1, y, 1, 24 * scale, c);
         cv.fill(x + 2 * scale, y + 2 * scale, 16 * scale, 12 * scale, INSET);
-        match &tile.thumbnail {
-            Some(Thumbnail::Picture(p)) => cv.picture(p, x + 2 * scale, y + 2 * scale, scale),
-            Some(Thumbnail::Solid { width, height, colour }) => cv.fill(x + 2 * scale, y + 2 * scale, width * scale, height * scale, *colour),
-            None => {}
+        if let Some(Thumbnail::Solid { width, height, colour }) = &run.tiles[i].thumbnail {
+            cv.fill(x + 2 * scale, y + 2 * scale, width * scale, height * scale, *colour);
         }
+        if run.tiles[i].stamp != Stamp::Pending {
+            cv.fill(x + 1, y + 15 * scale, 38 * scale - 2, 9 * scale - 1, c);
+        }
+    }
+    let pictures: Vec<(Picture<'_>, usize, usize)> = changed
+        .iter()
+        .filter_map(|&(i, _, x, y)| match &run.tiles[i].thumbnail {
+            Some(Thumbnail::Picture(p)) => Some((*p, x + 2 * scale, y + 2 * scale)),
+            _ => None,
+        })
+        .collect();
+    cv.pictures(&pictures, scale);
+    for &(i, passed, total, x, y) in &headings {
+        cv.text(category(run.tiles[i].id).as_bytes(), x + 2, y + 2, 76 * scale, scale, Color::WHITE);
+        let mut count = Text::new();
+        let _ = write!(count, "{passed}/{total} pass");
+        cv.text(count.bytes(), x + 2, y + 14 * scale, 76 * scale, scale, Color::WHITE);
+    }
+    for &(i, _, x, y) in &changed {
         let mut ordinal = Text::new();
         let _ = write!(ordinal, "{}", i + 1);
         cv.text(ordinal.bytes(), x + 20 * scale, y + 2 * scale, 18 * scale, scale, Color::WHITE);
+        let tile = &run.tiles[i];
         if tile.stamp != Stamp::Pending {
-            cv.fill(x + 1, y + 15 * scale, 38 * scale - 2, 9 * scale - 1, c);
             let mut key = Text::new();
             if tile.key > 99999 {
                 let _ = write!(key, ">");
@@ -528,7 +592,6 @@ fn update_wall(cv: &mut Canvas<'_>, run: &Run<'_>, wall: Wall, tiles: &mut [Opti
             }
             cv.text(key.bytes(), x + 2 * scale, y + 16 * scale, 34 * scale, scale, Color::WHITE);
         }
-        tiles[i] = Some(key);
     }
 }
 
