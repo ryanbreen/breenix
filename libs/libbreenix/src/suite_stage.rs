@@ -1358,6 +1358,9 @@ impl Show {
             Some(fb) => render_at_ui_time(fb, &mut run, self.started_ms).map_err(|e| std::format!("stage render: {e:?}"))?,
             None => run.ui_time_ms = (clock::now_ns() / 1_000_000).saturating_sub(self.started_ms),
         }
+        // Reading also drains the kernel's producer matcher while the stage owns
+        // the display and the console cannot refresh its boot ribbon.
+        std::fs::read_to_string("/proc/breenix/boot-ribbon").map_err(|e| e.to_string())?;
         self.observation.notice().map_err(|e| std::format!("stage observation: {e:?}"))?;
         let Some((width, height)) = paint else { return Ok(()) };
         let frame = Frame { width, height, run: &run, thumbs: &thumbs, spot: &spot };
