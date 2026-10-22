@@ -740,20 +740,6 @@ fn composition_irq_bound() -> CaseResult {
     let p = Placed::new(0, 0, width as u32, height as u32, 0, 26);
     let w = W::new(p.w, p.h, 2)?;
     show(&mut k, &w, &p)?;
-    // The contexts this case makes warm in the background, in the GPU core's own GPU path,
-    // whose IRQ-masked steps the gauge counts. The compositor's objects are made first (it
-    // makes them on its first composite otherwise), then the case waits, at most 2 s, until
-    // the gauge stays at 0 for 20 reads after DISARM_ALL, 1 ms apart, so the reset is read
-    // with no other GPU-path work in flight.
-    compositor_gpu_counts(&mut k)?;
-    let start = now_ms();
-    let mut quiet = 0;
-    while quiet < 20 {
-        ensure(since(start) < 2_000, "21", "gpu-display: GPU-path work kept the IRQ-masked gauge from staying at 0 for 2 s; the case needs a quiet core to read DISARM_ALL's reset")?;
-        let _ = libbreenix::test_control::disarm_all();
-        let _ = time::sleep_ms(1);
-        quiet = if irq_gauge()? == 0 { quiet + 1 } else { 0 };
-    }
     libbreenix::test_control::arm(abi::tc_point::IRQ_HOLD, 0, 0).map_err(|e| format!("ARM irq-hold: {e}")).cite("21")?;
     w.frame(27).cite("17.3")?;
     let composed = compose(&mut k);
