@@ -538,6 +538,10 @@ class Console:
         self.type_line('print("\\n' + marker + '", run("/bin/bsh", "-c", ' + json.dumps(command) + '))')
         text, found = self.wait(offset, r'(?m)^' + re.escape(marker) + r' ([0-9]+)\r?$',
                                 'the exit status of ' + command, timeout)
+        # The child restored canonical mode. Wait until bsh has re-entered
+        # raw mode and printed its new prompt before another call can type.
+        self.wait(offset + len(text[:found.end()].encode()),
+                  r'(?m)^' + self.PROMPT + r' *$', 'the shell prompt after the command', timeout)
         if int(found[1]) != 0:
             raise ValueError('console command exited ' + found[1] + ': ' + command)
         text = text[:found.start()]
