@@ -76,7 +76,7 @@ pub fn showcase_check(name: &str) -> CaseResult {
         // Rendered at the display's physical size, as the live stage is (ruling B8).
         let d=Dims::of_mode().map_err(crate::suite::CaseError::Fail)?;
         let mut fb=FrameBuf::new(1280*d.n,800*d.n,Format::BGRX).map_err(|e|e.to_string())?;
-        final_show.render(&mut fb,0).map_err(crate::suite::CaseError::Fail)?;
+        final_show.oracle(&mut fb).map_err(crate::suite::CaseError::Fail)?;
         check_spotlight(&final_show,&fb_bytes(&fb),Dims{n:d.n,width:fb.width}).map_err(crate::suite::CaseError::Fail)?;
         let mut f=JudgedFrame{width:1,height:1,pixels:std::vec![10,20,30,255],sha256:[0;32],expected:Some(std::vec![10,25,30,255]),bound:0};
         f.sha256=libpixcheck::sha256(&f.pixels);

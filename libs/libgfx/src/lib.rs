@@ -16,6 +16,7 @@ pub mod blit;
 mod device;
 pub mod font;
 pub mod shapes;
+pub mod stage;
 pub mod surface;
 pub mod work;
 

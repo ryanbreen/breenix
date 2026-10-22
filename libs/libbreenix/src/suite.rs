@@ -112,6 +112,7 @@ use libgfx_ref::framebuf::FrameBuf;
 
 use crate::error::Error;
 pub use crate::suite_spawn::{spawn, Keep, Run};
+pub use crate::suite_stage::{set_painter, DiffRef, Frame as StageFrame, Painter, PictureRef, SpotRef, ThumbRef};
 pub use crate::ui_clock;
 use crate::fs;
 use crate::io::{self, poll_events, status_flags, PollFd};
@@ -467,6 +468,68 @@ static CASE_DEADLINE_NS: AtomicU64 = AtomicU64::new(0);
 // Ruling 52 (gpu.md): gpu/textures/upload-visibility excludes catalogue warm-up.
 // Its private pipe starts the timed window once.
 static CASE_WINDOW_FD: AtomicI32 = AtomicI32::new(-1);
+
+/// What the case's process published with its judged frame for the stage's pictures
+/// (ruling B36): a window holding a GPU copy of the frame, `(id, width, height)`, or the
+/// stage's own frame, as the scanout shows it.
+#[derive(Clone, Copy)]
+enum Published { Window(u64, u32, u32), Stage }
+static PUBLISHED: std::sync::Mutex<Option<Published>> = std::sync::Mutex::new(None);
+/// In a case's process: the pipe it tells the runner on, and the one the runner answers on
+/// once it has sampled the frame.
+static PUBLISHED_FD: AtomicI32 = AtomicI32::new(-1);
+static SAMPLED_FD: AtomicI32 = AtomicI32::new(-1);
+
+/// The window `id`, `width` x `height`, holds a GPU copy of the judged frame this case hands
+/// over; the stage samples it once the case's measured window has ended, before this
+/// process exits.
+pub fn judged_picture_window(id: u64, width: u32, height: u32) {
+    *PUBLISHED.lock().unwrap() = Some(Published::Window(id, width, height));
+}
+
+/// The judged frame this case hands over is the stage's own frame, as the scanout shows it.
+pub fn judged_picture_stage() {
+    *PUBLISHED.lock().unwrap() = Some(Published::Stage);
+}
+
+/// In the case's process, after its report: give the display back, tell the runner what was
+/// published, and wait, at most 5 s, for it to sample the frame.
+fn hand_over_picture() {
+    let Some(published) = PUBLISHED.lock().unwrap().take() else { return };
+    let (tell, answer) = (PUBLISHED_FD.load(Ordering::Relaxed), SAMPLED_FD.load(Ordering::Relaxed));
+    if tell < 0 || answer < 0 {
+        return;
+    }
+    let _ = graphics::give_back_display();
+    let mut message = [0u8; 24];
+    let (kind, id, width, height) = match published {
+        Published::Window(id, w, h) => (1u32, id, w, h),
+        Published::Stage => (2, 0, 0, 0),
+    };
+    message[..4].copy_from_slice(&kind.to_le_bytes());
+    message[4..8].copy_from_slice(&width.to_le_bytes());
+    message[8..12].copy_from_slice(&height.to_le_bytes());
+    message[16..].copy_from_slice(&id.to_le_bytes());
+    if io::write(Fd::from_raw(tell as u64), &message).ok() != Some(24) {
+        return;
+    }
+    let mut fds = [PollFd::new(Fd::from_raw(answer as u64), poll_events::POLLIN)];
+    if io::poll(&mut fds, 5_000).is_ok_and(|n| n > 0) {
+        let mut byte = [0u8; 1];
+        let _ = io::read(Fd::from_raw(answer as u64), &mut byte);
+    }
+}
+
+/// The runner's side: what a case's 24-byte message says it published.
+fn published(message: &[u8; 24]) -> Option<crate::suite_stage::Published> {
+    let word = |at: usize| u32::from_le_bytes(message[at..at + 4].try_into().unwrap());
+    let id = u64::from_le_bytes(message[16..].try_into().unwrap());
+    match word(0) {
+        1 => Some(crate::suite_stage::Published::Window { id, width: word(4) as usize, height: word(8) as usize }),
+        2 => Some(crate::suite_stage::Published::Stage),
+        _ => None,
+    }
+}
 
 /// Start upload-visibility's ten-second window after its contexts have warmed.
 /// This one-shot signal is available only in that named case; setup is still bounded
@@ -1002,6 +1065,8 @@ enum Waited {
     ClockStopped(u64),
     /// waitpid failed.
     Failed(Error),
+    /// It reported and published its judged frame for the stage's pictures: this message.
+    Published([u8; 24]),
 }
 
 /// How often the live strip is redrawn while the runner waits for a case.
@@ -1012,7 +1077,7 @@ const FRAME_MS: i128 = 66;
 /// timed by the monotonic clock, so if that clock stopped the suite would never wake
 /// to report it. Instead, polls that see the clock stand still are counted, and
 /// `CLOCK_STALL_POLLS` of them end the wait.
-fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut(), window: Option<Fd>) -> Waited {
+fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut(), window: Option<Fd>, published: Option<Fd>) -> Waited {
     let mut awaiting_window = window.is_some();
     let mut last = monotonic_ns();
     let mut still = 0;
@@ -1025,6 +1090,12 @@ fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn F
                     start = Some(u64::from_le_bytes(bytes) as i128);
                     awaiting_window = false;
                 }
+            }
+        }
+        if let Some(fd) = published {
+            let mut message = [0u8; 24];
+            if io::read(fd, &mut message).ok() == Some(24) {
+                return Waited::Published(message);
             }
         }
         let mut status = 0;
@@ -1066,10 +1137,10 @@ fn stop_child(pid: i32) -> &'static str {
     if signal::kill(pid, SIGKILL).is_err() {
         return "; SIGKILL failed, the case may still be running";
     }
-    match wait_exit(pid, monotonic_ns(), 1000, &mut || {}, None) {
+    match wait_exit(pid, monotonic_ns(), 1000, &mut || {}, None, None) {
         Waited::Exited(_) => "",
         Waited::Failed(_) => "; waitpid failed after SIGKILL",
-        Waited::TimedOut(_) | Waited::ClockStopped(_) => "; still running after SIGKILL",
+        Waited::TimedOut(_) | Waited::ClockStopped(_) | Waited::Published(_) => "; still running after SIGKILL",
     }
 }
 
@@ -1217,6 +1288,20 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
             }
         }
     } else { None };
+    // A GUI suite's case tells the runner what it published for the stage's pictures, and
+    // waits for the runner to sample it (ruling B36).
+    let pictures = if screen.gui {
+        match (io::pipe2(status_flags::O_CLOEXEC | status_flags::O_NONBLOCK), io::pipe2(status_flags::O_CLOEXEC)) {
+            (Ok(tell), Ok(answer)) => Some((tell, answer)),
+            (tell, answer) => {
+                for (r, w) in [tell, answer].into_iter().flatten() { let _ = (io::close(r), io::close(w)); }
+                let _ = (io::close(reader), io::close(writer));
+                if let Some((r, w)) = live { let _ = (io::close(r), io::close(w)); }
+                if let Some((r, w)) = window { let _ = (io::close(r), io::close(w)); }
+                return Outcome::Fail { ms: 0, msg: String::from("could not start the case: the picture pipes failed") };
+            }
+        }
+    } else { None };
     let start = monotonic_ns();
     HOSTKEY_SEQ.fetch_add(RECORDS_PER_CASE as u64, Ordering::Relaxed);
     match process::fork() {
@@ -1230,6 +1315,11 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
             if let Some((live_reader, live_writer)) = live {
                 let _ = io::close(live_reader);
                 LIVE_FD.store(live_writer.raw() as i32, Ordering::Relaxed);
+            }
+            if let Some(((tell_r, tell_w), (answer_r, answer_w))) = pictures {
+                let _ = (io::close(tell_r), io::close(answer_w));
+                PUBLISHED_FD.store(tell_w.raw() as i32, Ordering::Relaxed);
+                SAMPLED_FD.store(answer_r.raw() as i32, Ordering::Relaxed);
             }
             let initial_limit = if window.is_some() { 120_000 } else { limit_ms };
             let deadline = start.map_or(0, |start| (start + initial_limit as i128 * 1_000_000) as u64);
@@ -1246,6 +1336,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
             };
             let line = report(&outcome);
             let _ = io::write(writer, line.as_bytes());
+            hand_over_picture();
             process::exit(0)
         }
         Ok(ForkResult::Parent(pid)) => {
@@ -1256,12 +1347,37 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                 let _ = io::close(live_writer);
                 live_reader
             });
-            let mut frame = || {
-                if let Some(fd) = live_reader { feed.drain(fd); }
-                screen.frame(feed);
+            let (tell, answer) = match pictures {
+                Some(((tell_r, tell_w), (answer_r, answer_w))) => {
+                    let _ = (io::close(tell_w), io::close(answer_r));
+                    (Some(tell_r), Some(answer_w))
+                }
+                None => (None, None),
             };
-            let outcome = match wait_exit(pid, start, limit_ms, &mut frame, window.map(|(r, _)| r)) {
+            let mut waited = {
+                let mut frame = || {
+                    if let Some(fd) = live_reader { feed.drain(fd); }
+                    screen.frame(feed);
+                };
+                wait_exit(pid, start, limit_ms, &mut frame, window.map(|(r, _)| r), tell)
+            };
+            if let Waited::Published(message) = waited {
+                // The case has reported: its measured window ends before the stage composes.
+                let ms = ms_since(start);
+                screen.stage_result(crate::suite_stage::end());
+                if let Some(p) = published(&message) {
+                    screen.stage_result(crate::suite_stage::sample(p));
+                }
+                if let Some(fd) = answer { let _ = io::write(fd, &[1]); }
+                waited = match wait_exit(pid, monotonic_ns(), 5_000, &mut || {}, None, None) {
+                    Waited::TimedOut(_) => Waited::TimedOut(ms),
+                    other => other,
+                };
+            }
+            for fd in [tell, answer].into_iter().flatten() { let _ = io::close(fd); }
+            let outcome = match waited {
                 Waited::Exited(status) => exited(status, reader, ms_since(start)),
+                Waited::Published(_) => Outcome::Fail { ms: ms_since(start), msg: String::from("the case published two pictures") },
                 Waited::TimedOut(ms) => {
                     let note = stop_child(pid);
                     Outcome::Fail { ms, msg: plain(&std::format!("timed out after {limit_ms} ms{note}")) }

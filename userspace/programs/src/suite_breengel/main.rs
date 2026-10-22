@@ -99,6 +99,7 @@ mod raster;
 mod gpu_checks;
 mod show;
 mod stage_fixtures;
+mod stage_painter;
 mod stage_serial;
 #[cfg(target_arch = "aarch64")]
 mod display_regressions;
@@ -174,6 +175,7 @@ static SUITE: Suite = suite("breengel", "BreenGL graphics library", &[
 ]).gui();
 
 fn main() {
+    libbreenix::suite::set_painter(Box::new(stage_painter::StagePainter::new()));
     if let Err(error) = prepare_raster_audit() {
         std::env::set_var("BREENIX_RASTER_AUDIT_ERROR",error);
     }
@@ -289,6 +291,48 @@ fn judged_case(run: fn() -> CaseResult) -> CaseResult {
     }
 }
 
+thread_local! {
+    /// The target of the latest surface a check read, kept past its case's scope: when it
+    /// holds exactly the frame handed to the runner, the stage samples it (ruling B36).
+    static KEPT: std::cell::RefCell<Option<libgfx::surface::Surface>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Keep `surface` as the candidate GPU source of the judged frame.
+pub(crate) fn keep_judged_surface(surface: libgfx::surface::Surface) {
+    KEPT.with(|k| *k.borrow_mut() = Some(surface));
+}
+
+/// Publish the kept surface as a window for the stage's pictures when it holds exactly the
+/// `width` x `height` judged `pixels`. Its window lives until this process exits, after the
+/// runner has sampled it; any failure here only leaves the frame without a GPU picture.
+fn publish_picture(width: usize, height: usize, pixels: &[u8]) {
+    use window_cases::kit::{full, W};
+    let Some(kept) = KEPT.with(|k| k.borrow_mut().take()) else { return };
+    if (kept.width(), kept.height()) != (width, height) {
+        return;
+    }
+    let mut back = vec![0u8; width * height * 4];
+    if kept.read(&mut back, width * 4).is_err() || back.chunks_exact(4).zip(pixels.chunks_exact(4)).any(|(a, b)| a[..3] != b[..3]) {
+        return;
+    }
+    let published = (|| -> Option<W> {
+        let w = W::new(width as u32, height as u32, 2).ok()?;
+        if w.register(b"judged frame") < 0 {
+            return None;
+        }
+        let a = w.acquire(2_000_000_000).ok()?;
+        let mut front = libgfx::surface::Surface::from_window_target(w.c.buffer[a.buffer as usize], width, height).ok()?;
+        libgfx::blit::blit(&mut front, &kept, 0, 0);
+        front.wait().ok()?;
+        w.commit(a.buffer, &[full(&w.c)]).ok()?;
+        Some(w)
+    })();
+    if let Some(w) = published {
+        libbreenix::suite::judged_picture_window(w.id(), width as u32, height as u32);
+        std::mem::forget(w);
+    }
+}
+
 /// Hand the last judged frame, if any, to the runner; whether one was handed.
 fn hand_off_judged() -> Result<bool, String> {
     let Some((width, height, mut pixels, mut expected)) = LAST_JUDGED.lock().unwrap_or_else(|e| e.into_inner()).take() else {
@@ -299,6 +343,7 @@ fn hand_off_judged() -> Result<bool, String> {
         .map_err(|e| format!("the judged {width} x {height} frame is not a valid surface: {e}"))?;
     let reference=expected.as_mut().map(|bytes|unsafe{FrameBuf::from_raw(bytes.as_mut_ptr(),width,height,width*4,4,true).unwrap()});
     libbreenix::suite::judged_with_reference(&frame,reference.as_ref()).map_err(|e| format!("handing the judged frame to the runner failed: {e:?}"))?;
+    publish_picture(width, height, &pixels);
     Ok(true)
 }
 
