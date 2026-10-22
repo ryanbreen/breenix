@@ -316,6 +316,13 @@ class Probe:
 
     def interactive_job_control(self, quoted=False):
         import select
+        # Coordinator S18: the session grants the PTY to the account, group tty.
+        ownership = self.ssh('id -u; awk -F: \'$1 == "tty" { print $3 }\' /etc/group')
+        self.require(ownership)
+        ids = ownership.stdout.splitlines()
+        if len(ids) != 2 or any(not re.fullmatch(r'[0-9]+', value) for value in ids) or int(ids[0]) == 0:
+            raise ValueError('cannot resolve the account uid and tty group gid')
+        owner = rb'crw--w----\s+\d+\s+' + ids[0].encode() + rb'\s+' + ids[1].encode() + rb'\s+'
         args = self.common + ['-i', str(self.identity), '-tt', self.user + '@' + self.host]
         process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         seen = b''
@@ -352,8 +359,8 @@ class Probe:
                 return
             send(b"sh -c 'ls -ln $(tty); printf \"PTY-%s\\n\" END'\n")
             at_prompt(b'PTY-END\r\n')
-            if not re.search(rb'crw--w----\s+\d+\s+1000\s+1000\s+', seen):
-                raise ValueError('PTY slave owner, group or mode differs from the account and 0620')
+            if not re.search(owner, seen):
+                raise ValueError('PTY slave owner, tty group or mode differs from the account and 0620')
             seen = b''
             started = time.monotonic()
             send(b'console.log("INTERRUPT-" + run("sleep", "30"));\n')
