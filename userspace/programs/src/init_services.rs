@@ -316,7 +316,21 @@ impl Supervisor {
                     match output.reader.read(&mut bytes) {
                         Ok(0) => { output.lines.finish(output.stream, log); output.ended = true; break; },
                         Ok(n) => {
-                            output.lines.feed(&bytes[..n], output.stream, log);
+                            output.lines.feed_observed(&bytes[..n], output.stream, log, |line| {
+                                // Explicit boot receipts still feed serial gates. Ordinary daemon
+                                // output stays in the log and cannot overwrite a getty prompt.
+                                let readiness = entry.def.name == "bsshd"
+                                    && line == b"bsshd: listening on 0.0.0.0:22";
+                                let oracle = entry.def.name == "bssh-oracle"
+                                    && (line.starts_with(b"[BSSH_PUBKEY_ORACLE:")
+                                        || line.starts_with(b"[BSSH_ACCOUNT_ORACLE:"))
+                                    && line.ends_with(b"]");
+                                if output.stream == "stdout" && (readiness || oracle) {
+                                    if let Ok(text) = core::str::from_utf8(line) {
+                                        print!("{}\n", text);
+                                    }
+                                }
+                            });
                         },
                         Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                         Err(e) if e.kind() == ErrorKind::WouldBlock => break,

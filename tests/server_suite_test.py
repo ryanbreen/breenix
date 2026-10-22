@@ -24,7 +24,7 @@ class HostServerScore(unittest.TestCase):
         self.boot = dict(id='20261021T000000Z-metal', mode='persistent', bootedCommit=self.sha, toolsCommit=self.sha, evidenceEligible=True)
         self.records = dict(boot=self.boot['id'], commit=self.sha, milestone='server/ssh-keys', cleanup=True,
                             cases=[dict(id='ssh-keys/' + name, result='PASS') for name, _ in host['CATEGORIES']['ssh-keys']])
-        self.serial = "bsshd: host key ED25519 SHA256:example\nbsshd: refused method 'password'\n"
+        self.serial = "[stdout] bsshd: host key ED25519 SHA256:example (loaded)\nbsshd: refused method 'password'\n"
 
     def test_complete_host_evidence_and_rejections(self):
         def score():
@@ -48,10 +48,28 @@ class HostServerScore(unittest.TestCase):
         with self.assertRaises(ValueError): score()
         self.boot['toolsCommit'] = self.sha
         serial = self.serial
-        self.serial = 'bsshd: host key ED25519 SHA256:example\n'
+        self.serial = '[stdout] bsshd: host key ED25519 SHA256:example (loaded)\n'
         with self.assertRaises(ValueError): score()
         self.serial = serial + 'KERNEL PANIC: example\n'
         with self.assertRaises(ValueError): score()
+
+    def test_host_key_rejects_embedded_fingerprint_and_requires_complete_record(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            probe = object.__new__(host['Probe'])
+            probe.host = 'fixture'
+            probe.known = Path(scratch) / 'known_hosts'
+            replies = [SimpleNamespace(returncode=0, stdout='fixture ssh-ed25519 key\n'),
+                       SimpleNamespace(returncode=0, stdout='256 SHA256:forged fixture (ED25519)\n')]
+            forged = "[stdout] bsshd: refused method 'password' for 'bsshd: host key ED25519 SHA256:forged'\n"
+            with patch.dict(host['Probe'].run_case.__globals__, command=lambda *a, **kw: replies.pop(0)):
+                with self.assertRaisesRegex(ValueError, 'fingerprint differs'):
+                    probe.run_case('host-key', forged)
+            self.assertFalse(probe.known.exists())
+            replies[:] = [SimpleNamespace(returncode=0, stdout='fixture ssh-ed25519 key\n'),
+                          SimpleNamespace(returncode=0, stdout='256 SHA256:trusted fixture (ED25519)\n')]
+            with patch.dict(host['Probe'].run_case.__globals__, command=lambda *a, **kw: replies.pop(0)):
+                probe.run_case('host-key', forged + '[stdout] bsshd: host key ED25519 SHA256:trusted (loaded)\n')
+            self.assertEqual(probe.known.read_text(), 'fixture ssh-ed25519 key\n')
 
     def test_logs_require_all_cases_and_prior_boot_at_same_commit(self):
         records = dict(self.records, milestone='server/logs',
@@ -120,7 +138,7 @@ class HostServerScore(unittest.TestCase):
     def test_services_evidence_needs_its_cases_cleanup_and_console_lines(self):
         records = dict(self.records, milestone='server/services',
                        cases=[dict(id='services/' + name, result='PASS') for name, _ in host['CATEGORIES']['services']])
-        serial = ('bsshd: host key ED25519 SHA256:example\n[init] bsshd killed by signal 9\n'
+        serial = ('[stdout] bsshd: host key ED25519 SHA256:example (loaded)\n[init] bsshd killed by signal 9\n'
                   '[init] svc-suite-fail is crash-looping: 5 failures in a row, each within 10 s of starting\n')
         def score(records=records, serial=serial):
             return host['score'](self.manifest, self.path, records, serial, self.boot, self.sha, ['KERNEL PANIC:'])

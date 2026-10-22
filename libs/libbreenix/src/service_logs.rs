@@ -104,12 +104,17 @@ impl Lines {
         Some(Self { pending: pending.to_vec(), discarded: discarded == 1 })
     }
     pub fn feed(&mut self, bytes: &[u8], stream: &str, log: &mut Log) {
+        self.feed_observed(bytes, stream, log, |_| {});
+    }
+    /// Observe complete, bounded lines before recording them. Partial or lost lines produce no receipt.
+    pub fn feed_observed(&mut self, bytes: &[u8], stream: &str, log: &mut Log, mut observe: impl FnMut(&[u8])) {
         let mut output = Vec::new();
         for &byte in bytes {
             if byte == b'\n' {
                 if self.discarded {
                     output.extend_from_slice(format!("[log] lost lines=1 stream={} reason=line-too-long\n", stream).as_bytes());
                 } else {
+                    observe(&self.pending);
                     output.extend_from_slice(format!("[{}] ", stream).as_bytes());
                     output.extend_from_slice(&self.pending);
                     output.push(b'\n');
