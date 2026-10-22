@@ -1622,7 +1622,10 @@ and only when the pointer moved.
 
 - `/usr/local/test/bin/kiosk_test` is a test compositor: it claims the compositor, places windows where its
   command pipe tells it, composes on the GPU core after render completion and writes events
-  through `WRITE_EVENTS`. `gpu-counters` returns the helper's actual GPU counters;
+  through `WRITE_EVENTS`. Composing automatically, it sleeps on its commands and its scene descriptor
+  (section 19.2). `composed <id>` returns the window's commit in its latest successful composite's record,
+  and `warm <ms>` makes its compositor and waits for every context of its process to finish its catalogue
+  warm-up. `gpu-counters` returns the helper's actual GPU counters;
   `gpu-private-scanout` retains and presents a real private target for the foreign-sample
   negative control; its handle and device binding are distinct identities.
   `gpu-scanout <guest-file>` performs target-0 device readback as its display owner and
@@ -1632,7 +1635,9 @@ and only when the pointer moved.
   `libbreenix::suite::spawn`.
 - Each case's limit is the runner's 10 s, except `font-parser/corpus`, `inflate/byte-split`,
   `png-decode/independent-fixtures`, `windows/churn` and `composition/present-rate`, which have 20 s
-  (plan §19).
+  (plan §19). `composition/irq-bound` arms irq-hold only once its own contexts and the compositor's
+  have finished their catalogue warm-up (ruling B38), and its 10 s starts then, as gpu's
+  `textures/upload-visibility` does (gpu.md ruling 52); the runner and host bound the warm-up.
 - The suite's gate timeout on every target is 900 s.
 
 ## 25. Error numbers

@@ -300,8 +300,18 @@ fn composition_compositor_dies() -> CaseResult {
     let w = std::sync::Arc::new(W::new(256, 256, 2)?);
     want_ok(w.register(b"compositor-dies"), "17.1", "REGISTER")?;
     place(&mut k, w.id(), &Placed::new(10, 10, 256, 256, 0, 0), abi::geometry_flags::VISIBLE)?;
-    w.frame(1).cite("17.3")?;
-    let _ = time::sleep_ms(50);
+    let first = w.frame(1).cite("17.3")?;
+    // Ruling B38: the stall is armed once the compositor's composite of frame 1 is recorded,
+    // so that frame's buffer is no longer sampled and the case never waits out the stall.
+    let start = now_ms();
+    loop {
+        let r = k.ask(&format!("composed {}", w.id())).cite("24")?;
+        match r.strip_prefix("ok ").and_then(|v| v.parse::<u64>().ok()) {
+            Some(c) if c >= first.commit_id => break,
+            Some(_) if since(start) < 2_000 => { let _ = time::sleep_ms(2); }
+            _ => return at("18", format!("the compositor's composite of the window's first commit was not recorded within 2 s: kiosk_test answered `{r}`")),
+        }
+    }
     // The compositor's next composite of this window pauses with the window's front pinned.
     let fired = |point| libbreenix::test_control::fired(point).map_err(|e| format!("FIRED: {e}"));
     let stalls = fired(abi::tc_point::COMPOSITE_STALL).cite("21")?;
@@ -740,6 +750,22 @@ fn composition_irq_bound() -> CaseResult {
     let p = Placed::new(0, 0, width as u32, height as u32, 0, 26);
     let w = W::new(p.w, p.h, 2)?;
     show(&mut k, &w, &p)?;
+    // Ruling B38: irq-hold is armed once this case's contexts and the compositor's are live,
+    // their catalogue warm-up complete, so no warm-up step the device held back meanwhile
+    // runs inside the measured intervals. As for gpu's textures/upload-visibility (ruling
+    // 52), the case's 10 s window starts once they are; the runner bounds the warm-up.
+    let start = now_ms();
+    loop {
+        let c = crate::gpu_checks::counters().cite("18")?;
+        if c.warmed == c.contexts { break; }
+        if since(start) >= 30_000 {
+            return at("18", format!("gpu-display: {} of this case's {} GPU contexts finished their catalogue warm-up within 30 s", c.warmed, c.contexts));
+        }
+        let _ = time::sleep_ms(5);
+    }
+    let warm = k.ask_within("warm 30000", 31_000).cite("24")?;
+    ensure(warm.starts_with("ok "), "18", format!("gpu-display: the compositor's GPU contexts did not finish their catalogue warm-up: kiosk_test answered `{warm}`"))?;
+    libbreenix::suite::start_case_window()?;
     libbreenix::test_control::arm(abi::tc_point::IRQ_HOLD, 0, 0).map_err(|e| format!("ARM irq-hold: {e}")).cite("21")?;
     w.frame(27).cite("17.3")?;
     let composed = compose(&mut k);

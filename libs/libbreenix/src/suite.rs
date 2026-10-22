@@ -465,10 +465,13 @@ pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
 
 /// In a case's process, when its limit passes, in monotonic nanoseconds; 0 elsewhere.
 static CASE_DEADLINE_NS: AtomicU64 = AtomicU64::new(0);
-// Ruling 52 (gpu.md): gpu/textures/upload-visibility excludes catalogue warm-up.
-// Its private pipe starts the timed window once.
+// Ruling 52 (gpu.md): gpu/textures/upload-visibility excludes catalogue warm-up, and ruling
+// B38 has breengel's composition/irq-bound wait for its contexts' warm-up before it measures.
+// A private pipe starts each one's timed window once.
 static CASE_WINDOW_FD: AtomicI32 = AtomicI32::new(-1);
 
+/// The cases whose timed window starts when they say, after their contexts have warmed.
+const WARMED_WINDOWS: [(&str, &str); 2] = [("gpu", "textures/upload-visibility"), ("breengel", "composition/irq-bound")];
 /// What the case's process published with its judged frame for the stage's pictures
 /// (ruling B36): a window holding a GPU copy of the frame, `(id, width, height)`, or the
 /// stage's own frame, as the scanout shows it.
@@ -531,9 +534,9 @@ fn published(message: &[u8; 24]) -> Option<crate::suite_stage::Published> {
     }
 }
 
-/// Start upload-visibility's ten-second window after its contexts have warmed.
-/// This one-shot signal is available only in that named case; setup is still bounded
-/// by the runner and host progress supervision.
+/// Start the case's ten-second window after its contexts have warmed.
+/// This one-shot signal is available only in the `WARMED_WINDOWS` cases; setup is still
+/// bounded by the runner and host progress supervision.
 pub fn start_case_window() -> CaseResult {
     let fd = CASE_WINDOW_FD.swap(-1, Ordering::Relaxed);
     if fd < 0 { return fail("this case has no pending timed window"); }
@@ -1278,7 +1281,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
         screen.stage_result(crate::suite_stage::begin());
         screen.stage_result(crate::suite_stage::release_for(name));
     }
-    let window = if suite == "gpu" && name == "textures/upload-visibility" {
+    let window = if WARMED_WINDOWS.contains(&(suite, name)) {
         match io::pipe2(status_flags::O_CLOEXEC | status_flags::O_NONBLOCK) {
             Ok(ends) => Some(ends),
             Err(error) => {

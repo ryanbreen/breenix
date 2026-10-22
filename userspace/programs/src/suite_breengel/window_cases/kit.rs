@@ -562,8 +562,13 @@ impl Helper {
 
     /// Send one command line and return its answer line.
     pub(crate) fn ask(&mut self, cmd: &str) -> Result<String, String> {
+        self.ask_within(cmd, 5_000)
+    }
+
+    /// `ask`, for a command that may take up to `limit_ms` to answer.
+    pub(crate) fn ask_within(&mut self, cmd: &str, limit_ms: u64) -> Result<String, String> {
         io::write(self.to, format!("{cmd}\n").as_bytes()).map_err(|e| format!("write to the helper: {e}"))?;
-        self.line(5_000)
+        self.line(limit_ms)
     }
 
     /// Kill and reap it, whatever state it is in (cleanup).
