@@ -13,7 +13,6 @@ noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = 
 bgl = { path = "../../libs/bgl" }
 libbreenix = { path = "../../libs/libbreenix", features = ["std", "suite"] }
 breengel = { path = "../../libs/breengel" }
-libcollab = { path = "../../libs/libcollab" }
 libfont = { path = "../../libs/libfont" }
 libgfx = { path = "../../libs/libgfx" }
 libgfx-ref = { path = "../../libs/libgfx-ref" }
@@ -337,10 +336,6 @@ name = "bounce"
 path = "src/bounce.rs"
 
 [[bin]]
-name = "rectangles"
-path = "src/rectangles.rs"
-
-[[bin]]
 name = "cat_test"
 path = "src/cat_test.rs"
 
@@ -363,10 +358,6 @@ path = "src/cow_oom_test.rs"
 [[bin]]
 name = "cp_mv_argv_test"
 path = "src/cp_mv_argv_test.rs"
-
-[[bin]]
-name = "demo"
-path = "src/demo.rs"
 
 [[bin]]
 name = "dns_test"
@@ -466,10 +457,6 @@ path = "src/mkdir_argv_test.rs"
 [[bin]]
 name = "nonblock_eagain_test"
 path = "src/nonblock_eagain_test.rs"
-
-[[bin]]
-name = "particles"
-path = "src/particles.rs"
 
 [[bin]]
 name = "pipe_concurrent_test"
@@ -584,10 +571,6 @@ name = "which_test"
 path = "src/which_test.rs"
 
 [[bin]]
-name = "confetti"
-path = "src/confetti.rs"
-
-[[bin]]
 name = "tones"
 path = "src/tones.rs"
 
@@ -648,20 +631,12 @@ name = "blauncher"
 path = "src/blauncher.rs"
 
 [[bin]]
-name = "guskit"
-path = "src/guskit.rs"
-
-[[bin]]
 name = "bsshd"
 path = "src/bsshd.rs"
 
 [[bin]]
 name = "bssh"
 path = "src/bssh.rs"
-
-[[bin]]
-name = "biconkit"
-path = "src/biconkit.rs"
 
 [[bin]]
 name = "usb_pointer_check"
