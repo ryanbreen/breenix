@@ -284,6 +284,7 @@ impl Run {
                         let mut geometry = Vec::with_capacity(bytes);
                         for &t in &members { geometry.extend_from_slice(self.tables[t].bytes()); }
                         upload_geometry(d.context.handle(), buffer, &geometry)?;
+                        d.declared += geometry.len() as u64;
                     }
                     d.context.submit()
                 })();

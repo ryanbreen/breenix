@@ -81,6 +81,9 @@ pub trait Painter: Send {
     fn canvas(&mut self, width: u32, height: u32) -> Result<u64, String>;
     /// The context the painter draws in, which it keeps.
     fn context(&mut self) -> Result<u64, String>;
+    /// The bytes its context uploaded from declared tables and crossing geometry, the only
+    /// uploads it makes (gpu.md section 2.4).
+    fn declared_bytes(&mut self) -> u64;
     /// Draw `frame` into the canvas and wait for its render.
     fn paint(&mut self, frame: &Frame<'_>) -> Result<(), String>;
     /// Wait until the painter's submissions are complete.
@@ -1481,16 +1484,20 @@ pub(super) fn finale() -> Result<(), String> {
         let s = g.as_mut().ok_or("stage missing")?;
         s.finale = Some(start);
         s.draw(0)?;
-        // Ruling B36: the stage's context uploads only failure artifacts, so a passing run
-        // uploads no bytes.
+        // Ruling B36: a passing run uploads no picture. Each context the stage draws with is
+        // counted: its own uploads only failure artifacts, and the painter's only declared
+        // tables and crossing geometry; neither uploads an Image.
         if let Some(g) = GPU.lock().unwrap().as_ref().filter(|g| g.pid == s.runner) {
-            let (r, c) = gpu::counters(g.context);
-            check(r == 0, "the stage's COUNTERS failed").map_err(|e| std::format!("{e:?}"))?;
-            if c.uploads_image != 0 || c.uploads_fixture != g.artifact_bytes {
-                return Err(std::format!(
-                    "the stage uploaded {} Image and {} Fixture bytes; its failure artifacts are {} bytes",
-                    c.uploads_image, c.uploads_fixture, g.artifact_bytes
-                ));
+            let (painted, declared) = painter(|p| Ok((p.context()?, p.declared_bytes())))?;
+            for (context, what, allowed) in [(g.context, "stage", g.artifact_bytes), (painted, "stage painter", declared)] {
+                let (r, c) = gpu::counters(context);
+                check(r == 0, "the stage's COUNTERS failed").map_err(|e| std::format!("{e:?}"))?;
+                if c.uploads_image != 0 || c.uploads_fixture != allowed {
+                    return Err(std::format!(
+                        "the {what} context uploaded {} Image and {} Fixture bytes; it accounts for {allowed} Fixture bytes",
+                        c.uploads_image, c.uploads_fixture
+                    ));
+                }
             }
         }
     }

@@ -142,7 +142,7 @@ fn texture() -> Result<Table, i64> {
             let texture = gpu::texture_create(abi::format::R8, 1, FONT_TABLE.len() as u32)?;
             let rect = [0, 0, 1, FONT_TABLE.len() as u32];
             match bgl::fixture_upload(DeclaredFixture::table(&FONT_TABLE), context, texture, rect, 1, abi::upload_source::R8) {
-                Ok(()) => Ok(Table { texture, cell_w: GLYPH_W as u32, cell_h: GLYPH_H as u32 }),
+                Ok(()) => Ok(Table { texture, cell_w: GLYPH_W as u32, cell_h: GLYPH_H as u32, uploaded: rect[2] as u64 * rect[3] as u64 }),
                 Err(e) => {
                     gpu::resource_destroy(texture);
                     Err(e)

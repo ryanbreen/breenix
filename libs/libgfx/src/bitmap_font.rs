@@ -97,7 +97,7 @@ fn texture(height: RasterHeight) -> Result<Table, i64> {
             let rect = [0, 0, w, 96 * h];
             let texture = gpu::texture_create(abi::format::R8, w, 96 * h)?;
             match bgl::fixture_upload(DeclaredFixture::rows(rows), context, texture, rect, w, abi::upload_source::R8) {
-                Ok(()) => Ok(Table { texture, cell_w: w, cell_h: h }),
+                Ok(()) => Ok(Table { texture, cell_w: w, cell_h: h, uploaded: rect[2] as u64 * rect[3] as u64 }),
                 Err(e) => {
                     gpu::resource_destroy(texture);
                     Err(e)

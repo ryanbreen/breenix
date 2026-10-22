@@ -87,6 +87,10 @@ impl libbreenix::suite::Painter for StagePainter {
         gpu::context().map_err(|e| format!("stage painter context: {e:?}"))
     }
 
+    fn declared_bytes(&mut self) -> u64 {
+        gpu::declared_bytes().unwrap_or(u64::MAX)
+    }
+
     fn settle(&mut self) -> Result<(), String> {
         let pid = libbreenix::process::getpid().map_err(|e| e.to_string())?.raw() as u64;
         if pid != self.pid {
