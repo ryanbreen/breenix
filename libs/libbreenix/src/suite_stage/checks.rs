@@ -82,6 +82,9 @@ pub fn showcase_check(name: &str) -> CaseResult {
         f.sha256=libpixcheck::sha256(&f.pixels);
         let mut probe=s.clone();probe.first_failure=None;probe.finale=None;
         probe.entries[probe.selected].timing=None;probe.entries[probe.selected].input=None;
+        // A frame that differs from its reference is a failing case's (ruling B36: only then
+        // are its expected and difference panes shown, as failure artifacts).
+        probe.entries[probe.selected].stamp=Stamp::Fail;
         probe.entries[probe.selected].line=std::format!(" sha256={}",f.sha256.iter().map(|b|std::format!("{b:02x}")).collect::<String>());
         probe.last=Some(Arc::new(f));probe.draw(0).map_err(crate::suite::CaseError::Fail)?;
         let (px,seen)=snapshot().map_err(crate::suite::CaseError::Fail)?;
@@ -376,7 +379,10 @@ fn check_spotlight(s:&Show,bytes:&[u8],d:Dims)->Result<(),String> {
     let Some(frame) = frame else { return check_nonpicture(s, chosen, bytes, d); };
     verify_source(&s.entries[chosen].line,frame)?;
     let colour=|p:&[u8]|Color::rgb(p[2],p[1],p[0]);
-    if let Some(expected)=&frame.expected {
+    // Ruling B36: expected and difference panes for a frame that matches its reference, or
+    // for a failing case; otherwise the actual pane alone.
+    let shows_reference=|e:&[u8]|s.entries[chosen].stamp==Stamp::Fail || e.chunks_exact(4).zip(frame.pixels.chunks_exact(4)).all(|(a,b)|a[..3]==b[..3]);
+    if let Some(expected)=frame.expected.as_ref().filter(|e|shows_reference(e)) {
         let mut first=None;let mut differing=0;
         for (i,(a,b)) in frame.pixels.chunks_exact(4).zip(expected.chunks_exact(4)).enumerate(){if a!=b{differing+=1;first.get_or_insert((i%frame.width,i/frame.width));}}
         // The expected, actual and difference panes, each nearest-scaled from the whole source.

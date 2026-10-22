@@ -3,9 +3,11 @@ use std::{collections::HashSet,fs,path::{Path,PathBuf}};
 use syn::{visit::{self,Visit},Expr,ExprCall,ExprMethodCall,ItemFn,ImplItemFn,ItemImpl,UseTree};
 
 /// Named exceptions to §2.4's two sanctioned upload sites: a file, the one function in it
-/// that may make one upload call, and the issue whose fix removes it. Ruling B24: the run
-/// stage presents its CPU-drawn frame until gpu-display draws it with BreenGL.
-const EXCEPTIONS: &[(&str, &str, &str)] = &[("libs/libbreenix/src/suite_stage.rs", "show", "#2221")];
+/// that may make one upload call, and the ruling that bounds it. Ruling B36: the run stage,
+/// drawn on the GPU, uploads only Fixture-tagged pictures that exist on the CPU alone: a
+/// failing case's expected and difference panes (§2.4's failure artifacts) and, in a forked
+/// case's live checks, the earlier tiles' verified pictures.
+const EXCEPTIONS: &[(&str, &str, &str)] = &[("libs/libbreenix/src/suite_stage.rs", "upload_fixture", "B36")];
 
 #[derive(Default)]
 struct Uploads { bgl:bool, texture:bool, permitted:bool, exception:Option<&'static str>, excepted:bool, used:usize, aliases:HashSet<String>, violations:Vec<String> }
