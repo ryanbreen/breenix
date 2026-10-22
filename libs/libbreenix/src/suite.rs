@@ -1053,10 +1053,10 @@ fn read_report(reader: Fd) -> Option<Outcome> {
     parse_report(std::str::from_utf8(&buf[..n]).ok()?)
 }
 
-/// Polls in a row that may see the monotonic clock stand still before the suite
-/// decides it has stopped. A poll is a waitpid, a clock read and a yield, so a
-/// working clock moves long before this many.
-const CLOCK_STALL_POLLS: u32 = 1_000_000;
+/// Timed-out waits in a row that may see the monotonic clock stand still before the
+/// suite decides it has stopped. Each lasts at least a millisecond of a working clock,
+/// so one that moves never reaches this many.
+const CLOCK_STALL_WAKES: u32 = 1_000;
 
 /// How a wait for a child ended.
 enum Waited {
@@ -1076,15 +1076,19 @@ enum Waited {
 const FRAME_MS: i128 = 66;
 
 /// Wait up to `limit_ms` after `start` for `pid` to exit, calling `frame` about every
-/// `FRAME_MS` meanwhile. Polls and yields rather than sleeping: a sleep's wake-up is
-/// timed by the monotonic clock, so if that clock stopped the suite would never wake
-/// to report it. Instead, polls that see the clock stand still are counted, and
-/// `CLOCK_STALL_POLLS` of them end the wait.
-fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut(), window: Option<Fd>, published: Option<Fd>) -> Waited {
+/// `FRAME_MS` meanwhile. The runner sleeps in `poll` between checks rather than spinning:
+/// on `report`, the case's report pipe, which is readable once the case has reported and
+/// hung up once it has exited; on `window` and `published`; and otherwise until the next
+/// frame or the limit, or for 1 ms once nothing it watches can say the case has exited.
+/// A wait that timed out with the monotonic clock standing still counts towards
+/// `CLOCK_STALL_WAKES`, which ends the wait as a stopped clock. (A poll's timeout runs on
+/// that clock, so a stopped clock wakes the runner only through the pipes.)
+fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut(), window: Option<Fd>, published: Option<Fd>, mut report: Option<Fd>) -> Waited {
     let mut awaiting_window = window.is_some();
     let mut last = monotonic_ns();
     let mut still = 0;
     let mut drawn = last;
+    let mut timed_out = false;
     loop {
         if awaiting_window {
             let mut bytes = [0u8; 8];
@@ -1115,22 +1119,43 @@ fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn F
         if ms >= active_limit {
             return Waited::TimedOut(ms);
         }
-        if now.is_none() || now == last {
+        if now.is_none() || (timed_out && now == last) {
             still += 1;
-            if still >= CLOCK_STALL_POLLS {
+            if still >= CLOCK_STALL_WAKES {
                 return Waited::ClockStopped(ms);
             }
         } else {
             still = 0;
             last = now;
         }
+        let mut next_frame = FRAME_MS;
         if let (Some(now), Some(then)) = (now, drawn) {
             if now - then >= FRAME_MS * 1_000_000 {
                 frame();
                 drawn = Some(now);
+            } else {
+                next_frame = FRAME_MS - (now - then) / 1_000_000;
             }
         }
-        let _ = process::yield_now();
+        let mut fds = [PollFd::new(Fd::from_raw(0), poll_events::POLLIN); 3];
+        let mut n = 0;
+        for fd in [report, published, window.filter(|_| awaiting_window)].into_iter().flatten() {
+            fds[n] = PollFd::new(fd, poll_events::POLLIN);
+            n += 1;
+        }
+        let timeout = if report.is_some() {
+            (next_frame as u64).min(active_limit - ms).max(1)
+        } else {
+            1
+        };
+        let ready = io::poll(&mut fds[..n], timeout as i32).unwrap_or(0);
+        timed_out = ready == 0;
+        let woke = |fd: Fd| fds[..n].iter().any(|p| p.fd == fd.raw() as i32 && p.revents != 0);
+        // Once the case has reported or exited, its report pipe stays readable: from then
+        // on the exit is a waitpid away.
+        if report.is_some_and(woke) {
+            report = None;
+        }
     }
 }
 
@@ -1140,7 +1165,7 @@ fn stop_child(pid: i32) -> &'static str {
     if signal::kill(pid, SIGKILL).is_err() {
         return "; SIGKILL failed, the case may still be running";
     }
-    match wait_exit(pid, monotonic_ns(), 1000, &mut || {}, None, None) {
+    match wait_exit(pid, monotonic_ns(), 1000, &mut || {}, None, None, None) {
         Waited::Exited(_) => "",
         Waited::Failed(_) => "; waitpid failed after SIGKILL",
         Waited::TimedOut(_) | Waited::ClockStopped(_) | Waited::Published(_) => "; still running after SIGKILL",
@@ -1362,7 +1387,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                     if let Some(fd) = live_reader { feed.drain(fd); }
                     screen.frame(feed);
                 };
-                wait_exit(pid, start, limit_ms, &mut frame, window.map(|(r, _)| r), tell)
+                wait_exit(pid, start, limit_ms, &mut frame, window.map(|(r, _)| r), tell, Some(reader))
             };
             if let Waited::Published(message) = waited {
                 // The case has reported: its measured window ends before the stage composes.
@@ -1372,7 +1397,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                     screen.stage_result(crate::suite_stage::sample(p));
                 }
                 if let Some(fd) = answer { let _ = io::write(fd, &[1]); }
-                waited = match wait_exit(pid, monotonic_ns(), 5_000, &mut || {}, None, None) {
+                waited = match wait_exit(pid, monotonic_ns(), 5_000, &mut || {}, None, None, None) {
                     Waited::TimedOut(_) => Waited::TimedOut(ms),
                     other => other,
                 };
