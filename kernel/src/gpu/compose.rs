@@ -66,9 +66,11 @@ fn handle_at(words: &WordBuf, at: usize) -> u64 {
     words.word(at) as u64 | (words.word(at + 1) as u64) << 32
 }
 
-/// Check the two parts of a validated stream and collect its scene writes. Any other shape
-/// (a write of anything but C in the scene part, an alias anywhere but a source position,
-/// geometry read from a buffer, or a transport other than the one whole copy) is EINVAL.
+/// Check the two parts of a validated stream and collect its scene writes. The scene part
+/// may use SCISSOR, CLEAR, DRAW, COPY, DRAW_SAMPLED and the parameterized draw (whose
+/// pipelines may read their geometry from a buffer). Any other shape (a write of anything
+/// but C in the scene part, an alias anywhere but a source position, DRAW_BUFFER's buffer
+/// rectangles or a PROBE, or a transport other than the one whole copy) is EINVAL.
 fn scene_of(words: &WordBuf, view: &View, scene: u64, target: u64, width: u32, height: u32) -> Result<Scene, i64> {
     use stream::cmd;
     let mut out = Scene { writes: Vec::new(), sampled: Vec::new() };
@@ -161,7 +163,7 @@ fn scene_of(words: &WordBuf, view: &View, scene: u64, target: u64, width: u32, h
                         push(&mut out, clip)?;
                     }
                 }
-                // Geometry read from a buffer, and integer probes, are not scene drawing here.
+                // DRAW_BUFFER's rectangles from a buffer, and integer probes, are not scene drawing.
                 _ => return Err(EINVAL),
             }
         }
@@ -173,49 +175,58 @@ fn scene_of(words: &WordBuf, view: &View, scene: u64, target: u64, width: u32, h
     Ok(out)
 }
 
-/// The union of `writes`, and its intersection with each window's topmost visible region
-/// (`windows` bottom to top, each `[x0, y0, x1, y1]` on the screen), by coordinate
-/// compression: a cell between consecutive edges lies inside or outside each rectangle
-/// as a whole.
+/// Apply `f` to each word of `row` that bits `a..b` touch, with the mask of those bits.
+fn span(row: &mut [u64], a: usize, b: usize, mut f: impl FnMut(&mut u64, u64)) {
+    let (first, last) = (a / 64, (b - 1) / 64);
+    for (i, word) in row.iter_mut().enumerate().take(last + 1).skip(first) {
+        let lo = if i == first { a % 64 } else { 0 };
+        let hi = if i == last { (b - 1) % 64 + 1 } else { 64 };
+        let mask = if hi - lo == 64 { u64::MAX } else { ((1u64 << (hi - lo)) - 1) << lo };
+        f(word, mask);
+    }
+}
+
+/// The union of `writes` (each `[x0, y0, x1, y1]`, clipped to the screen), and its
+/// intersection with each window's topmost visible region (`windows` bottom to top, on the
+/// screen): a coverage bitmap of the writes' bounding box, one bit per pixel, marked by each
+/// write and then counted and cleared window by window from the top. The cost is linear in
+/// the writes and windows, each bounded by its rows and 64-pixel words, and the bitmap by one
+/// screen.
 fn work(writes: &[[u32; 4]], windows: &[[i64; 4]]) -> Result<(u64, Vec<u64>), i64> {
     let mut per_window = Vec::new();
     per_window.try_reserve_exact(windows.len()).map_err(|_| ENOMEM)?;
     per_window.resize(windows.len(), 0u64);
-    if writes.is_empty() {
+    let writes = writes.iter().filter(|r| r[0] < r[2] && r[1] < r[3]);
+    let Some(bounds) = writes.clone().copied().reduce(|a, b| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]) else {
         return Ok((0, per_window));
-    }
-    let mut xs: Vec<i64> = Vec::new();
-    let mut ys: Vec<i64> = Vec::new();
-    let edges = 2 * (writes.len() + windows.len());
-    xs.try_reserve_exact(edges).map_err(|_| ENOMEM)?;
-    ys.try_reserve_exact(edges).map_err(|_| ENOMEM)?;
+    };
+    let (x0, y0) = (bounds[0] as usize, bounds[1] as usize);
+    let stride = (bounds[2] as usize - x0).div_ceil(64);
+    let rows = bounds[3] as usize - y0;
+    let mut bits: Vec<u64> = Vec::new();
+    bits.try_reserve_exact(stride * rows).map_err(|_| ENOMEM)?;
+    bits.resize(stride * rows, 0);
     for r in writes {
-        xs.extend([r[0] as i64, r[2] as i64]);
-        ys.extend([r[1] as i64, r[3] as i64]);
-    }
-    for r in windows {
-        xs.extend([r[0], r[2]]);
-        ys.extend([r[1], r[3]]);
-    }
-    xs.sort_unstable();
-    xs.dedup();
-    ys.sort_unstable();
-    ys.dedup();
-    let mut total = 0u64;
-    for xw in xs.windows(2) {
-        let (x0, x1) = (xw[0], xw[1]);
-        for yw in ys.windows(2) {
-            let (y0, y1) = (yw[0], yw[1]);
-            let inside = |r: [i64; 4]| r[0] <= x0 && x1 <= r[2] && r[1] <= y0 && y1 <= r[3];
-            if !writes.iter().any(|r| inside(r.map(i64::from))) {
-                continue;
-            }
-            let area = ((x1 - x0) * (y1 - y0)) as u64;
-            total += area;
-            if let Some(top) = windows.iter().rposition(|r| inside(*r)) {
-                per_window[top] += area;
-            }
+        for y in r[1] as usize..r[3] as usize {
+            let row = &mut bits[(y - y0) * stride..(y - y0 + 1) * stride];
+            span(row, r[0] as usize - x0, r[2] as usize - x0, |w, m| *w |= m);
         }
+    }
+    let total = bits.iter().map(|w| w.count_ones() as u64).sum();
+    for (k, w) in windows.iter().enumerate().rev() {
+        let clip = [w[0].max(bounds[0] as i64), w[1].max(bounds[1] as i64), w[2].min(bounds[2] as i64), w[3].min(bounds[3] as i64)];
+        if clip[0] >= clip[2] || clip[1] >= clip[3] {
+            continue;
+        }
+        let mut covered = 0u64;
+        for y in clip[1] as usize..clip[3] as usize {
+            let row = &mut bits[(y - y0) * stride..(y - y0 + 1) * stride];
+            span(row, clip[0] as usize - x0, clip[2] as usize - x0, |word, m| {
+                covered += (*word & m).count_ones() as u64;
+                *word &= !m;
+            });
+        }
+        per_window[k] = covered;
     }
     Ok((total, per_window))
 }
@@ -240,7 +251,7 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
     let (width, height) = (epoch.width, epoch.height);
     let (scene, target) = (a.scene_target, a.target);
     // The destination and the persistent scene are the caller's own mode-sized targets, and a
-    // bound or saved scanout is refused as the destination.
+    // bound or saved scanout is refused as either: the composite writes both.
     let (ctx_id, target_id, before) = with_core(|c| {
         let ctx = c.ctx_of(tgid, context).ok_or(EINVAL)?;
         let check = |handle: u64, scanout: bool| -> Result<u32, i64> {
@@ -255,12 +266,13 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
             Ok(id)
         };
         let target_id = check(target, true)?;
-        if check(scene, false)? == target_id {
+        let scene_id = check(scene, false)?;
+        if scene_id == target_id {
             return Err(EINVAL);
         }
         let shown = |id: u32| c.display.binding.is_some_and(|b| b.id == id)
             || c.display.stack.iter().any(|o| o.last.is_some_and(|b| b.id == id));
-        if shown(target_id) {
+        if shown(target_id) || shown(scene_id) {
             return Err(breengel_abi::errno::EBUSY as i64);
         }
         Ok((ctx, target_id, c.resources.get(&target_id).map_or(0, |r| r.generation)))
@@ -274,9 +286,18 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
             aliases.push(Alias { handle: s.window.sample, id: pin.mem().id() });
         }
     }
+    let mut shown = Vec::new();
+    shown.try_reserve_exact(frame.sources.len()).map_err(|_| ENOMEM)?;
+    for s in &frame.sources {
+        let w = &s.window;
+        shown.push([w.x as i64, w.y as i64, w.x as i64 + w.width as i64, w.y as i64 + w.height as i64]);
+    }
     let mut scene_work = None;
     let mut check = |words: &WordBuf, view: &View| -> Result<(), i64> {
         let s = scene_of(words, view, scene, target, width, height)?;
+        // The scene's work is counted at admission, so a refusal here has no device effect
+        // and a presented frame is never failed afterwards.
+        let counted = work(&s.writes, &shown)?;
         // The serial is reserved after the scene is admitted and before any device effect.
         frame.begin().map_err(|e| e as i64)?;
         let pairs: Vec<(u32, u32)> = {
@@ -297,7 +318,7 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
             done?;
             ATTACHED.lock().insert(*pair);
         }
-        scene_work = Some(s);
+        scene_work = Some(counted);
         Ok(())
     };
     // Test point 5, `backend-error`: this composite's render carries test point 27's
@@ -365,11 +386,7 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
         return Err(EIO);
     }
     a.answer = answer;
-    let shown: Vec<[i64; 4]> = frame.sources.iter().map(|s| {
-        let w = &s.window;
-        [w.x as i64, w.y as i64, w.x as i64 + w.width as i64, w.y as i64 + w.height as i64]
-    }).collect();
-    let (pixels, per_window) = work(&scene_work.writes, &shown)?;
+    let (pixels, per_window) = scene_work;
     a.pixels = pixels;
     Ok(Composed { pixels, per_window })
 }
