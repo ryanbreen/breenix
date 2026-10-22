@@ -79,6 +79,8 @@ pub struct Frame<'a> {
 pub trait Painter: Send {
     /// This process's `width` x `height` canvas target, made on first use and kept.
     fn canvas(&mut self, width: u32, height: u32) -> Result<u64, String>;
+    /// The context the painter draws in, which it keeps.
+    fn context(&mut self) -> Result<u64, String>;
     /// Draw `frame` into the canvas and wait for its render.
     fn paint(&mut self, frame: &Frame<'_>) -> Result<(), String>;
 }
@@ -295,6 +297,9 @@ impl Panes {
 struct Gpu {
     pid: u64,
     context: u64,
+    /// Whether the context is the painter's, shared in a forked case so that it warms one
+    /// context, not two; the runner's own keeps its uploads apart from the painter's.
+    shared: bool,
     canvas: u64,
     scanout: [u64; 2],
     /// The scanout target the stage presented last.
@@ -362,7 +367,7 @@ fn raw<T: Plain>(op: u32, value: &mut T) -> i64 {
 impl Gpu {
     /// Create the stage's objects for the current mode, which must be the stage's logical
     /// layout at a whole display scale, and wait, bounded, for the context's warm-up.
-    fn new(pid: u64) -> Result<Gpu, String> {
+    fn new(pid: u64, shared: bool) -> Result<Gpu, String> {
         let m = mode()?;
         if m.scale == 0 || (m.width, m.height) != (1280 * m.scale, 800 * m.scale) {
             return Err(std::format!(
@@ -371,10 +376,15 @@ impl Gpu {
             ));
         }
         let canvas = painter(|p| p.canvas(m.width, m.height))?;
-        let context = gpu::context_create().map_err(|e| std::format!("stage context: errno {}", -e))?;
+        let context = if shared {
+            painter(|p| p.context())?
+        } else {
+            gpu::context_create().map_err(|e| std::format!("stage context: errno {}", -e))?
+        };
         let mut g = Gpu {
             pid,
             context,
+            shared,
             canvas,
             scanout: [0; 2],
             shown: 0,
@@ -433,7 +443,9 @@ impl Gpu {
                 let _ = gpu::resource_destroy(handle);
             }
         }
-        let _ = gpu::context_destroy(self.context);
+        if !self.shared {
+            let _ = gpu::context_destroy(self.context);
+        }
     }
 
     /// Submit `stream` in the stage's context and wait for its render.
@@ -874,7 +886,7 @@ pub(super) fn prepare() -> Result<(), String> {
     let seen = {
         let mut guard = GPU.lock().unwrap();
         if guard.as_ref().is_none_or(|g| g.pid != pid) {
-            *guard = Some(Gpu::new(pid)?);
+            *guard = Some(Gpu::new(pid, false)?);
         }
         let g = guard.as_mut().ok_or("stage GPU objects missing")?;
         observe(&mut g.seen)?
@@ -889,7 +901,7 @@ pub(super) fn prepare() -> Result<(), String> {
 
 /// The stage's GPU objects for this process, made again after a quarantine, a reset or a
 /// mode change. A forked case abandons the runner's handles, which it does not hold.
-fn gpu_here(guard: &mut Option<Gpu>) -> Result<&mut Gpu, String> {
+fn gpu_here(guard: &mut Option<Gpu>, runner: u64) -> Result<&mut Gpu, String> {
     let pid = process::getpid().map_err(|e| e.to_string())?.raw() as u64;
     if let Some(g) = guard.as_ref().filter(|g| g.pid == pid) {
         let (r, c) = gpu::counters(g.context);
@@ -900,7 +912,7 @@ fn gpu_here(guard: &mut Option<Gpu>) -> Result<&mut Gpu, String> {
         }
     }
     if guard.as_ref().is_none_or(|g| g.pid != pid) {
-        *guard = Some(Gpu::new(pid)?);
+        *guard = Some(Gpu::new(pid, runner != pid)?);
     }
     guard.as_mut().ok_or_else(|| String::from("stage GPU objects missing"))
 }
@@ -1106,7 +1118,7 @@ impl Show {
     /// objects.
     fn attempt(&self, fb: &mut FrameBuf, bits: u32) -> Result<Seen, String> {
         let mut guard = GPU.lock().unwrap();
-        let g = gpu_here(&mut guard)?;
+        let g = gpu_here(&mut guard, self.runner)?;
         let shown_frame = (if g.pid != self.runner { g.restore(self) } else { Ok(()) })
             .and_then(|()| self.render(fb, bits, g, true))
             .and_then(|()| g.show())
@@ -1121,7 +1133,7 @@ impl Show {
     /// The oracle's frame alone, with the pictures this process holds or restores.
     fn oracle(&self, fb: &mut FrameBuf) -> Result<(), String> {
         let mut guard = GPU.lock().unwrap();
-        let g = gpu_here(&mut guard)?;
+        let g = gpu_here(&mut guard, self.runner)?;
         if g.pid != self.runner {
             g.restore(self)?;
         }
@@ -1312,11 +1324,11 @@ pub(super) enum Published {
 /// Sample the frame the running case published into its tile's and the spotlight's
 /// pictures, after the case's measured window and while its process still holds the frame.
 pub(super) fn sample(published: Published) -> Result<(), String> {
-    let tile = SHOW.lock().unwrap().as_ref().ok_or("stage is not initialized")?.current;
+    let (tile, runner) = SHOW.lock().unwrap().as_ref().map(|s| (s.current, s.runner)).ok_or("stage is not initialized")?;
     // As the stage's draw does: no test point a case left armed alters the sampling.
     let _ = gpu::tc_disarm_all();
     let mut guard = GPU.lock().unwrap();
-    let g = gpu_here(&mut guard)?;
+    let g = gpu_here(&mut guard, runner)?;
     match published {
         Published::Window { id, width, height } => g.sample_window(id, width, height, tile),
         Published::Stage => g.sample_stage(tile),

@@ -455,6 +455,11 @@ impl ThumbKey {
     }
 }
 
+/// The context this process's libgfx draws in, made on first use.
+pub fn context() -> Result<u64, StageError> {
+    crate::device::with(|d| Ok(d.context.handle())).map_err(StageError::Device)
+}
+
 /// The wall's logical rectangle, which holds the tiles and the category headings that
 /// `Wall::origin` places.
 const WALL: (usize, usize, usize, usize) = (16, 112, 800, 588);

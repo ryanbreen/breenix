@@ -83,6 +83,10 @@ impl libbreenix::suite::Painter for StagePainter {
         Ok(self.canvas.as_ref().map_or(0, Surface::handle))
     }
 
+    fn context(&mut self) -> Result<u64, String> {
+        gpu::context().map_err(|e| format!("stage painter context: {e:?}"))
+    }
+
     fn paint(&mut self, f: &StageFrame<'_>) -> Result<(), String> {
         self.canvas(f.width, f.height)?;
         let canvas = self.canvas.as_mut().ok_or("stage canvas missing")?;
