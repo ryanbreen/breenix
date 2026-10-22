@@ -446,22 +446,6 @@ pub fn draw_with(fb: &mut FrameBuf, run: &Run<'_>, font: &mut StageFont) -> Resu
         }
     }
     draw_spotlight(cv, run);
-    for (i, m) in run.milestones.iter().enumerate() {
-        let left = 16 + 1248 * i / run.milestones.len();
-        let right = 16 + 1248 * (i + 1) / run.milestones.len();
-        let c = if run.tiles[m.first..m.end]
-            .iter()
-            .all(|t| t.stamp == Stamp::Pass)
-        {
-            PASS
-        } else {
-            OUTLINE
-        };
-        cv.fill(left, 728, right - left - 2, 24, c);
-        // The label's own box, between the ribbon's top and bottom bands (ruling B25).
-        cv.text_in(m.id.as_bytes(), left + 4, 736, right - left - 6, 7, 1, Color::WHITE);
-    }
-    cv.text(run.boundary.notice()?.as_bytes(), 24, 776, 1256, 1, DIM);
     if let Some(finale) = run.finale {
         cv.fill(48, 240, 720, 240, HEADER);
         cv.text(b"RUN COMPLETE", 72, 264, 696, 3, Color::WHITE);

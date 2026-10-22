@@ -124,17 +124,7 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
             text(&fb,18,218,"beta",4,(24,39,59))?;
             text(&fb,18,272,"0/3 pass",4,(24,39,59))?;
             rect(&fb,16,320,800,380,(12,19,31))?;
-            let mut ef=surface();
-            for y in 776..783 {for x in 24..1280 {put(&mut ef,x,y,Color::rgb(12,19,31));}}
-            oracle_text(&mut ef,b"host renderer and window outside guest view",24,776,Color::rgb(161,183,204),1);
-            for y in 776..783 {for x in 24..1280 {expected_pixels(&fb,&ef,x,y)?;}}
-            let reached=[true,false,true];
-            stage::draw_boot_ribbon(&mut fb,&reached).map_err(|e|format!("{e:?}"))?;
-            for (i,lit) in reached.iter().enumerate() {
-                let a=16+1248*i/3;let b=16+1248*(i+1)/3;
-                rect(&fb,a,752,b-a-2,16,if *lit{(26,112,77)}else{(48,67,96)})?;
-                rect(&fb,b-2,752,2,16,(12,19,31))?;
-            }
+            rect(&fb,0,700,1280,100,(12,19,31))?;
             Ok(())
         }
         "tile-stamps" => {
@@ -290,11 +280,11 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
         "milestone-ribbon" => {
             cases[1].stamp=Stamp::Pass;
             let model=run(&cases,&MILESTONES);render(&mut fb,&model)?;
-            rect(&fb,16,728,622,8,(26,112,77))?;rect(&fb,640,728,622,8,(48,67,96))?;
-            rect(&fb,638,728,2,24,(12,19,31))?;
-            rect(&fb,16,743,622,9,(26,112,77))?;
-            rect(&fb,640,743,622,9,(48,67,96))?;
-            text_in_box(&fb,20,736,"alpha",1,743,(26,112,77))?;text_in_box(&fb,644,736,"beta",1,743,(48,67,96))
+            // Operator specification change (2026-10-22): category progress lives in
+            // the matrix; completing a category must leave the entire footer empty.
+            text(&fb,18,168,"2/2 pass",4,(24,39,59))?;
+            text(&fb,18,272,"0/3 pass",4,(24,39,59))?;
+            rect(&fb,0,700,1280,100,(12,19,31))
         }
         "finale" => {
             let finale=Finale{started_ms:250,slowest:"alpha/fail",slowest_ms:9};
