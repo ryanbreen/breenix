@@ -1,8 +1,8 @@
 {
   "id": "server",
-  "title": "Unattended server",
+  "title": "Persistent server",
   "area": "Server",
-  "summary": "A persistent install serves the LAN unattended: SSH by keys only, binary-safe transfers, supervised services with logs, synchronized time, clean reboots, watchdog recovery, the resting state and remote upgrades with automatic rollback.",
+  "summary": "A persistent install serves the LAN: SSH by keys only, binary-safe transfers, supervised services with logs, synchronized time, clean reboots, watchdog recovery, the resting state and remote upgrades with automatic rollback.",
   "binary": "scripts/metal/server-suite",
   "categories": [
     {

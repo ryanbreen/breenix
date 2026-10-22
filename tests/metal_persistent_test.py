@@ -372,34 +372,5 @@ class DriverPersistentTest(unittest.TestCase):
         self.assertEqual(sent, [''])
 
 
-class OperatorScoringTest(existing.StateTest):
-    def test_keyboard_stages_count_once_typed_and_are_unmeasured_until_then(self):
-        directory = m.STATE / 'boot'
-        definition = directory / 'definition'
-        stages = [{'name': 'attached', 'marker': '[usb] boot keyboard attached: '},
-                  {'name': 'typed', 'marker': '[hid] first key report', 'input': 'keyboard'},
-                  {'name': 'delivered', 'marker': '[tty] first key delivered', 'input': 'keyboard'}]
-        m.write_json(definition / 'docs/metal/boot-path.json', {'gateArch': 'x86_64', 'milestones': [
-            {'id': 'usb-keyboard', 'bootShapes': ['persistent'], 'stages': {'persistent': stages}}]})
-        m.write_json(definition / 'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json',
-                     {'stages': []})
-        (directory / 'events.jsonl').write_text('')
-        m.write_json(directory / 'run.json', {'disk': 'persistent', 'mode': 'persistent', 'input': 'operator',
-                                              'kind': 'persistent'})
-        (directory / 'serial.txt').write_text('[usb] boot keyboard attached: port 1\n')
-        verdict = metal_score.score(directory)
-        self.assertEqual(verdict['milestones']['usb-keyboard'],
-                         {'reached': 1, 'total': 3, 'passed': False, 'inputUnmeasured': 2})
-        self.assertFalse(metal_score.falls_short(verdict))
-        (directory / 'serial.txt').write_text('[usb] boot keyboard attached: port 1\n[hid] first key report\n')
-        verdict = metal_score.score(directory)
-        self.assertEqual(verdict['milestones']['usb-keyboard'], {'reached': 2, 'total': 3, 'passed': False})
-        self.assertTrue(metal_score.falls_short(verdict))
-        with (directory / 'serial.txt').open('a') as serial:
-            serial.write('[tty] first key delivered\n')
-        verdict = metal_score.score(directory)
-        self.assertEqual(verdict['milestones']['usb-keyboard'], {'reached': 3, 'total': 3, 'passed': True})
-
-
 if __name__ == '__main__':
     unittest.main()

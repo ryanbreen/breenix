@@ -166,23 +166,16 @@ class ConsoleTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             metal_root.console_identity(dict(site, CONSOLE_IDENTITY_KEY=''))
 
-    def test_keyboard_stage_rejects_sol_input(self):
-        stage = ('metal-login-ok 42', 'line', 'keyboard')
-        self.assertFalse(boot.marker_matches(stage, 'metal-login-ok 42', 'sol'))
-        self.assertTrue(boot.marker_matches(stage, 'metal-login-ok 42', 'keyboard'))
+    def test_console_stages_keep_screen_readback_and_exact_line_matching(self):
+        self.assertFalse(boot.marker_matches(('answer', 'line'), 'echo answer'))
+        self.assertTrue(boot.marker_matches(('answer', 'line'), 'answer'))
         definition = existing.json.loads((existing.TOOLS.parents[1] / 'docs/metal/boot-path.json').read_text())
-        login = next(m for m in definition['milestones'] if m['id'] == 'console-login')
-        self.assertIn('The answer is on the screen', [s['name'] for s in login['stages']['console']])
-        # A SOL boot waits for no keyboard-tagged stage, so it can finish; it still waits for the screen check.
         catalog = existing.json.loads((existing.TOOLS.parents[1] /
                                        'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json').read_text())
-        groups = boot.measured_stages(definition, 'console', catalog, 'ramdisk', 'sol')
-        self.assertFalse([stage for group in groups for stage in group if len(stage) == 3])
+        groups = boot.measured_stages(definition, 'console', catalog, 'ramdisk')
         self.assertIn(('fbcon row: metal-login-ok 42', 'contains'), [stage for group in groups for stage in group])
-        self.assertEqual(len(boot.final_marker(definition, 'console', catalog, 'ramdisk', 'sol')), 2)
-        keyboard = boot.measured_stages(definition, 'console', catalog, 'ramdisk', 'keyboard')
-        self.assertIn(('[console] first input byte input=keyboard', 'line', 'keyboard'),
-                      [stage for group in keyboard for stage in group])
+        self.assertEqual(boot.final_marker(definition, 'console', catalog, 'ramdisk'),
+                         ('[getty] console acquired', 'line'))
 
     def test_console_input_options_are_validated_before_host_access(self):
         runner = existing.load_script('metal-run')
@@ -263,9 +256,8 @@ class ConsoleTest(unittest.TestCase):
             (inputs / 'ready').touch()
             existing.m.write_json(inputs / 'build.json', {'commit': d.args.commit,
                                   'profile': 'production', 'features': []})
-            for is_session, is_attended, input_kind in [(False, False, 'sol'), (False, True, None),
-                                                        (True, False, None)]:
-                d.args.session, d.args.attended, d.args.input = is_session, is_attended, input_kind
+            for is_session, input_kind in [(False, 'sol'), (True, None)]:
+                d.args.session, d.args.input = is_session, input_kind
                 d.args.idle_minutes = 30
                 with patch.object(boot.metal_root, 'stage_root', side_effect=RuntimeError('staging captured')) as stage:
                     with self.assertRaisesRegex(RuntimeError, 'staging captured'):

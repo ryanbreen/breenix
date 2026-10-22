@@ -29,7 +29,7 @@ def copy_contracts(definition):
 
 
 def run_args(**changes):
-    values = dict(session=False, attended=False, wait=30, idle_minutes=30, mode='tests', input=None, payload='image',
+    values = dict(session=False, wait=30, idle_minutes=30, mode='tests', input=None, payload='image',
                   disk=None, inject=None, sha=None, branch='fixture', suite=None, no_wait=False, nmi=False,
                   linux_directory=None, serve_as=None, content_type=None, ramdisk=True)
     return SimpleNamespace(**dict(values, **changes))
@@ -119,7 +119,7 @@ class TestsBuildTest(unittest.TestCase):
 class TestsDriverTest(StateTest):
     def driver(self, n=0, mode='tests'):
         args = SimpleNamespace(id=f'20261018T00004{n}Z-metal', mode=mode, payload='image', target='main', task='',
-                               suite=None, inject=None, disk='root', input=None, session=False, attended=False,
+                               suite=None, inject=None, disk='root', input=None, session=False,
                                wait=30, nmi=False, commit='a' * 40, ramdisk=True, idle_minutes=30, no_wait=False)
         with patch.object(m, 'load_site', return_value={}):
             d = boot.Driver(args)
