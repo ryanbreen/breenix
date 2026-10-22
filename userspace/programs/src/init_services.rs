@@ -212,6 +212,38 @@ impl Entry {
     }
 }
 
+/// Where init's routine supervisor notices go (#2282): the console until the
+/// console's getty starts, then init's own log, `/var/log/init.log`, each
+/// record headed with the supervisor's monotonic clock in milliseconds. From
+/// then on the console carries only what a person there must see: its own
+/// session's start and end, a crash loop, and the boot receipts serial gates
+/// read. Without a log (an init that does not publish), notices stay on the
+/// console.
+struct Notices {
+    console_owned: bool,
+    log: Option<Log>,
+}
+
+impl Notices {
+    /// A routine notice: a service started, exited, restarted or stopped.
+    fn say(&mut self, text: &str) {
+        match &mut self.log {
+            Some(log) if self.console_owned => log.record(format!("{} {}\n", now_ms(), text).as_bytes()),
+            _ => print!("{}\n", text),
+        }
+    }
+
+    /// A notice a person at the console must see; also kept in the log.
+    fn alert(&mut self, text: &str) {
+        print!("{}\n", text);
+        if let Some(log) = &mut self.log {
+            if self.console_owned {
+                log.record(format!("{} {}\n", now_ms(), text).as_bytes());
+            }
+        }
+    }
+}
+
 struct Connection {
     stream: UnixStream,
     uid: u32,
@@ -230,6 +262,7 @@ pub struct Supervisor {
     network_checked_ms: u64,
     changed: bool,
     boot_id: String,
+    notices: Notices,
 }
 
 fn exit_text(status: i32) -> String {
@@ -265,6 +298,7 @@ impl Supervisor {
             network_checked_ms: 0,
             changed: true,
             boot_id: String::new(),
+            notices: Notices { console_owned: false, log: None },
         };
         if publish {
             supervisor.listener = match open_control() {
@@ -278,6 +312,11 @@ impl Supervisor {
         if publish {
             supervisor.boot_id = std::fs::read_to_string("/run/breenix/boot-id")
                 .expect("init log boot ID").trim().to_string();
+            supervisor.notices.log = Some(Log::new(Path::new("/var/log"), "init", &supervisor.boot_id)
+                .unwrap_or_else(|e| {
+                    print!("[init] init: log unavailable; its notices are counted as lost until it is: {}\n", e);
+                    Log::deferred(Path::new("/var/log"), "init", &supervisor.boot_id)
+                }));
         }
         supervisor
     }
@@ -350,7 +389,7 @@ impl Supervisor {
         };
         if self.facts.entropy_ms == 0 && waiting(&Need::Entropy) && entropy_ready() {
             self.facts.entropy_ms = now;
-            print!("[init] random pool ready; starting the services that need entropy\n");
+            self.notices.say("[init] random pool ready; starting the services that need entropy");
             self.changed = true;
         }
         if self.facts.network_ms == 0
@@ -360,7 +399,7 @@ impl Supervisor {
             self.network_checked_ms = now;
             if network_up() {
                 self.facts.network_ms = now;
-                print!("[init] network up; starting the services that need it\n");
+                self.notices.say("[init] network up; starting the services that need it");
                 self.changed = true;
             }
         }
@@ -402,14 +441,18 @@ impl Supervisor {
                     Log::deferred(Path::new("/var/log"), &entry.def.name, &self.boot_id)
                 }));
         }
+        let notices = &mut self.notices;
         let result = account::read_account(Path::new("/"), &entry.def.user)
             .map_err(|why| why.to_string())
             .and_then(|account| {
                 // Complete the announcement before fork: the child may write its
                 // login prompt as soon as it runs (#2270).
                 match login_terminal(&entry.def) {
-                    Some(None) => print!("[init] getty on the console\n"),
-                    Some(Some(tty)) => print!("[init] getty on {}\n", tty),
+                    Some(None) => {
+                        print!("[init] getty on the console\n");
+                        notices.console_owned = true;
+                    }
+                    Some(Some(tty)) => notices.say(&format!("[init] getty on {}", tty)),
                     None => {},
                 }
                 launch(&entry.def, &account, self.publish)
@@ -428,22 +471,22 @@ impl Supervisor {
                 entry.killed = false;
                 entry.set(State::Running, now);
                 if login_terminal(&entry.def).is_none() {
-                    print!("[init] {} started (PID {})\n", entry.def.name, pid);
+                    self.notices.say(&format!("[init] {} started (PID {})", entry.def.name, pid));
                 }
                 entry.answer(true, &format!("ok started {} pid {}", entry.def.name, pid));
             }
             Err(why) => {
-                print!("[init] {}: cannot start: {}\n", entry.def.name, why);
+                self.notices.say(&format!("[init] {}: cannot start: {}", entry.def.name, why));
                 entry.last_exit = "start-failed".into();
                 let decision = services::after_exit(entry.def.restart, 0, true, entry.quick_failures);
                 entry.answer(true, &format!("error {} did not start: {}", entry.def.name, why));
-                Self::schedule(entry, decision, now);
+                Self::schedule(entry, decision, now, &mut self.notices);
             }
         }
     }
 
     /// Put an ended run into its next state by the policy's decision.
-    fn schedule(entry: &mut Entry, decision: AfterExit, now: u64) {
+    fn schedule(entry: &mut Entry, decision: AfterExit, now: u64, notices: &mut Notices) {
         entry.quick_failures = decision.quick_failures;
         if decision.quick_failures == 0 {
             entry.crash_loop_reported = false;
@@ -458,13 +501,13 @@ impl Supervisor {
             entry.set(State::CrashLoop, now);
             if !entry.crash_loop_reported {
                 entry.crash_loop_reported = true;
-                print!(
-                    "[init] {} is crash-looping: {} failures in a row, each within {} s of starting; restarting every {} s\n",
+                notices.alert(&format!(
+                    "[init] {} is crash-looping: {} failures in a row, each within {} s of starting; restarting every {} s",
                     entry.def.name,
                     decision.quick_failures,
                     services::STABLE_MS / 1000,
                     services::MAX_DELAY_MS / 1000
-                );
+                ));
             }
         } else {
             entry.set(State::Backoff, now);
@@ -481,9 +524,9 @@ impl Supervisor {
             let now = now_ms();
             let Some(index) = self.entries.iter().position(|e| e.pid == pid && e.state.is_live()) else {
                 if process::wifsignaled(status) {
-                    print!("[init] Process {} killed by signal {}\n", pid, process::wtermsig(status));
+                    self.notices.say(&format!("[init] Process {} killed by signal {}", pid, process::wtermsig(status)));
                 } else {
-                    print!("[init] Process {} exited (code {})\n", pid, process::wexitstatus(status));
+                    self.notices.say(&format!("[init] Process {} exited (code {})", pid, process::wexitstatus(status)));
                 }
                 continue;
             };
@@ -496,7 +539,7 @@ impl Supervisor {
             let terminal = login_terminal(&entry.def);
             if entry.state == State::Stopping {
                 let text = format!("ok stopped {} ({})", entry.def.name, entry.last_exit.replace(':', " "));
-                print!("[init] {} stopped ({})\n", entry.def.name, entry.last_exit.replace(':', " "));
+                self.notices.say(&format!("[init] {} stopped ({})", entry.def.name, entry.last_exit.replace(':', " ")));
                 entry.quick_failures = 0;
                 entry.crash_loop_reported = false;
                 entry.set(State::Stopped, now);
@@ -514,19 +557,20 @@ impl Supervisor {
                 continue;
             }
             let decision = services::after_exit(entry.def.restart, run_ms, failed, entry.quick_failures);
+            let notices = &mut self.notices;
             match terminal {
                 Some(None) if decision.restart => print!("[init] console session ended; restarting getty\n"),
                 Some(None) => print!("[init] console session ended\n"),
-                Some(Some(tty)) => print!("[init] {} session ended\n", tty),
+                Some(Some(tty)) => notices.say(&format!("[init] {} session ended", tty)),
                 None if process::wifsignaled(status) => {
-                    print!("[init] {} killed by signal {}\n", entry.def.name, process::wtermsig(status))
+                    notices.say(&format!("[init] {} killed by signal {}", entry.def.name, process::wtermsig(status)))
                 }
-                None => print!("[init] {} exited (code {})\n", entry.def.name, process::wexitstatus(status)),
+                None => notices.say(&format!("[init] {} exited (code {})", entry.def.name, process::wexitstatus(status))),
             }
             if terminal.is_none() && decision.restart && !decision.crash_loop {
-                print!("[init] {} restarts in {} ms\n", entry.def.name, decision.delay_ms);
+                notices.say(&format!("[init] {} restarts in {} ms", entry.def.name, decision.delay_ms));
             }
-            Self::schedule(entry, decision, now);
+            Self::schedule(entry, decision, now, notices);
         }
     }
 
@@ -534,11 +578,11 @@ impl Supervisor {
         for entry in &mut self.entries {
             if entry.state == State::Stopping && !entry.killed && now >= entry.stop_deadline_ms {
                 entry.killed = true;
-                print!(
-                    "[init] {} did not stop within {} s of SIGTERM; sending SIGKILL\n",
+                self.notices.say(&format!(
+                    "[init] {} did not stop within {} s of SIGTERM; sending SIGKILL",
                     entry.def.name,
                     entry.def.stop_timeout_ms / 1000
-                );
+                ));
                 let _ = signal::kill(entry.pid, signal::SIGKILL);
             }
         }
@@ -554,7 +598,7 @@ impl Supervisor {
                 entry.quick_failures = 0;
                 if entry.crash_loop_reported {
                     entry.crash_loop_reported = false;
-                    print!("[init] {} recovered: running for {} s\n", entry.def.name, services::STABLE_MS / 1000);
+                    self.notices.say(&format!("[init] {} recovered: running for {} s", entry.def.name, services::STABLE_MS / 1000));
                 }
                 self.changed = true;
             }
@@ -694,7 +738,7 @@ impl Supervisor {
                     entry.quick_failures = 0;
                     entry.crash_loop_reported = false;
                     entry.set(State::Stopped, now);
-                    print!("[init] {} stopped before its next start\n", name);
+                    self.notices.say(&format!("[init] {} stopped before its next start", name));
                     entry.answer(true, &format!("error {} was stopped before it started", name));
                     Ok(Some(format!("stopped {} (not running)", name)))
                 }
@@ -731,7 +775,7 @@ impl Supervisor {
     fn reload(&mut self, now: u64) -> String {
         let (definitions, problems) = services::load(Path::new("/"));
         for problem in &problems {
-            print!("[init] service table: {}\n", problem);
+            self.notices.say(&format!("[init] service table: {}", problem));
         }
         let definitions: Vec<Service> = definitions.into_iter().filter(|s| in_scope(self.scope, s)).collect();
         let (mut added, mut changed, mut removed) = (0, 0, 0);
@@ -772,7 +816,7 @@ impl Supervisor {
                 }
             }
         }
-        print!("[init] service table reloaded: {} added, {} changed, {} removed\n", added, changed, removed);
+        self.notices.say(&format!("[init] service table reloaded: {} added, {} changed, {} removed", added, changed, removed));
         format!(
             "reloaded {} services: {} added, {} changed, {} removed, {} problems",
             self.entries.len(),
@@ -783,7 +827,7 @@ impl Supervisor {
         )
     }
 
-    fn write_state(&self) {
+    fn write_state(&mut self) {
         if !self.publish {
             return;
         }
@@ -811,7 +855,7 @@ impl Supervisor {
             .and_then(|_| std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o644)))
             .and_then(|_| std::fs::rename(&staged, services::STATE));
         if let Err(e) = written {
-            print!("[init] cannot publish service state: {}\n", e);
+            self.notices.say(&format!("[init] cannot publish service state: {}", e));
         }
     }
 }

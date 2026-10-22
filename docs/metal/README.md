@@ -993,6 +993,14 @@ factory file: `etc-reconcile` installs it on persistent installs and keeps a loc
   state to any account; `svc start|stop|restart NAME` is allowed to root and to the account the
   service runs as (checked with SO_PEERCRED), and `svc reload`, which reads the table and
   `/run/breenix/services.d/*` again, to root. Definitions under `/run` last until the next boot.
+- **Notices.** Until the console's getty starts, init prints its supervisor notices on the console,
+  so the boot's ordered markers stay there. From then on the routine ones (a service started,
+  exited, killed, restarting, stopped or recovered, a terminal session on a virtual terminal, the
+  random pool or the network becoming ready, a table reload) go to `/var/log/init.log`, each record
+  headed with the supervisor's monotonic clock in milliseconds, so they never land in a console
+  session. The console keeps its own session's start and end, the crash-loop report (also logged)
+  and the bsshd and SSH oracle receipts. An init that publishes no state (`init console`) keeps
+  every notice on the console. claim-lint:ok: `Notices` in `userspace/programs/src/init_services.rs` (#2282).
 
 `init console` supervises only the table's gettys. The [server suite](../suites/README.md#server-host-driven-persistent-categories)
 measures the services on a persistent boot.
