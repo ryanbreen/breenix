@@ -123,10 +123,6 @@ pub struct Run<'a> {
     pub spotlight: Spotlight<'a>,
     pub input: Option<(&'a [InputPoint], &'a str)>,
     pub finale: Option<Finale<'a>>,
-    /// The boundary notice, decoded by the caller from the observation record.
-    pub notice: &'a str,
-    /// The boot ribbon's segments, in manifest order: whether each stage was reached.
-    pub ribbon: &'a [bool],
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -684,15 +680,6 @@ fn paint(cv: &mut Canvas<'_>, run: &Run<'_>, wall: &Surface, trails: &mut Vec<Tr
     cv.text(counts(run).bytes(), 24, 68, 1256, 2, Color::WHITE);
     blit::blit(cv.fb, wall, (WALL.0 * cv.n) as i32, (WALL.1 * cv.n) as i32);
     draw_spotlight(cv, run, trails);
-    for (i, m) in run.milestones.iter().enumerate() {
-        let left = 16 + 1248 * i / run.milestones.len();
-        let right = 16 + 1248 * (i + 1) / run.milestones.len();
-        let c = if run.tiles[m.first..m.end].iter().all(|t| t.stamp == Stamp::Pass) { PASS } else { OUTLINE };
-        cv.fill(left, 728, right - left - 2, 24, c);
-        // The label's own box, between the ribbon's top and bottom bands (ruling B25).
-        cv.text_in(m.id.as_bytes(), left + 4, 736, right - left - 6, 7, 1, Color::WHITE);
-    }
-    cv.text(run.notice.as_bytes(), 24, 776, 1256, 1, DIM);
     if let Some(finale) = run.finale {
         cv.fill(48, 240, 720, 240, HEADER);
         cv.text(b"RUN COMPLETE", 72, 264, 696, 3, Color::WHITE);
@@ -700,12 +687,6 @@ fn paint(cv: &mut Canvas<'_>, run: &Run<'_>, wall: &Surface, trails: &mut Vec<Tr
         let mut slowest = Text::new();
         let _ = write!(slowest, "slowest {} {} ms", finale.slowest, finale.slowest_ms);
         cv.text(slowest.bytes(), 72, 352, 696, 1, Color::WHITE);
-    }
-    // One segment per producer-reached stage (section 23.7), in manifest order.
-    cv.fill(16, 752, 1248, 16, BG);
-    for (i, &lit) in run.ribbon.iter().enumerate() {
-        let (left, right) = (16 + 1248 * i / run.ribbon.len(), 16 + 1248 * (i + 1) / run.ribbon.len());
-        cv.fill(left, 752, right - left - 2, 16, if lit { PASS } else { OUTLINE });
     }
 }
 
@@ -770,8 +751,8 @@ fn trail(cv: &mut Canvas<'_>, points: &[InputPoint], x: usize, y: usize, width: 
 }
 
 /// The spotlight; its input trails go to `trails`, drawn after the frame's batch, since a
-/// trail's lines are drawn in bands of their own submissions. The milestones, notice, finale
-/// and ribbon drawn after them lie outside the trail boxes.
+/// trail's lines are drawn in bands of their own submissions. The finale lies outside
+/// the trail boxes.
 fn draw_spotlight(cv: &mut Canvas<'_>, run: &Run<'_>, trails: &mut Vec<Trail>) {
     cv.fill(832, 112, 432, 588, INSET);
     let selected = &run.tiles[run.selected];

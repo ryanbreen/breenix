@@ -1445,9 +1445,7 @@ fail (145,50,58), not reached (57,67,80), pending outline (48,67,96), and timing
 | counts | (24,68), scale 2 | `<P> passed  <F> failed  <R> not reached` |
 | tile wall | (16,112,800,588) | adaptive category groups, as §23.3 |
 | spotlight | (832,112,432,588) | inset; §23.4 |
-| milestone ribbon | (16,728,1248,24) | §23.5 |
-| boot stage ribbon | (16,752,1248,16) | §23.7 |
-| observation boundary | (24,776), scale 1, dim | the record's boundary notice (§23.8) |
+| empty footer | (0,700,1280,100) | background; §23.5 |
 
 `n` is one-based while a case runs and N at completion. Not reached counts only cases explicitly not reached;
 pending and running cases are not counted as failures or not reached. Text is clipped at its element's right
@@ -1518,12 +1516,14 @@ last VALUE. Without a supplied reading, show the measured case execution time ag
 runner deadline, labelled `Case execution time`; never invent a picture or comparison bound.
 The selected case's verdict appears at (848,640), scale 3, in its stamp colour.
 
-### 23.5 Milestone ribbon
+### 23.5 Empty footer
 
-The run ribbon has one completion segment per manifest category, including separate BMP, PNG decode
-and PNG encode segments within the images effort milestone. For category i of m, its segment is `(16+floor(1248i/m),728,floor(1248(i+1)/m)-floor(1248i/m)-2,24)`.
-It is pass green exactly when all its cases have passed, otherwise pending outline colour. Its id is
-at segment+(4,8), scale 1, white, clipped at the segment's right edge. Empty milestones are invalid.
+Operator specification change, 2026-10-22: remove the run stage's category ribbon,
+its tick band and the observation caption beneath them. Category names, pass counts
+and individual verdicts remain in the matrix. Leave the freed footer as background;
+the header, matrix, spotlight and display-custody rules are unchanged.
+`panel/milestone-ribbon` retains its case identity and now checks the empty footer
+and the matrix's category counts after a category completes.
 
 ### 23.6 Finale
 
@@ -1538,10 +1538,12 @@ is a stage failure at the runner deadline, never a successful hold or a lost DON
 
 <!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B35 specifies these requirements. -->
 The kernel draws one segment per architecture-applicable stage in `docs/boot-path.json`, in that file's
-order, across (16,752,1248,16), using the same integer segment partition as §23.5 and a two-pixel gap.
+order, across (16,752,1248,16). For stage i of m, its segment starts at
+x=16+floor(1248i/m) and ends at x=16+floor(1248(i+1)/m)-2, leaving a two-pixel gap.
 Reached is pass green, unreached is pending outline colour. A stage lights only when its actual producer
 prints the stage marker; loader announcements never light a segment. The serial stage lines remain the record.
-The ribbon is restored with the kernel screen after display giveback.
+This boot ribbon belongs only to the kernel console, not the run stage.
+It is restored with the kernel screen after display giveback.
 On the GPU core the console draws it over its text, in this band at the display's scale, and its
 read-back check expects it there (docs/console/contract.md section 2, ruling B35). Each segment's last
 two pixels are the background colour. A full repaint of the kernel screen (after a give-back) takes
@@ -1583,14 +1585,15 @@ The finale preserves the last judged picture on an all-pass run as well as the f
 on a failed run. A stage error fails the affected case and preserves the serial DONE record.
 
 <!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
-The stage's boundary notice is `host renderer and window outside guest view` for boundary 4
-on GPU backends 4 and 5.
+The stage validates boundary 4 on GPU backends 4 and 5 without drawing a caption.
+`panel/boundary-notice` retains its case identity and checks that observation combination
+and the empty footer.
 An unknown or inconsistent backend/flags/boundary combination is an error, never a stronger observation.
 The live showcase checks arm the matching fault, require its detection, disarm it and require the clean result:
 12 `stage-lie`, 13 `stage-substitute-frame`, 14 `stage-draw-in-window`, 15 `ribbon-drop-stage`.
 Input and measurement spotlights independently detect point-13 substitution, as do picture panes;
 a changed thumbnail cannot satisfy their detection checks. Live checks also inspect the picture input
-overlay, verdict, category headings and boot ribbon, with individual pixel substitutions in each region.
+overlay, verdict, category headings and empty footer, with individual pixel substitutions in each region.
 
 ### 23.9 Display custody during a run (B29)
 
