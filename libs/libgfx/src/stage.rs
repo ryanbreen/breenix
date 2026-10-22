@@ -324,6 +324,37 @@ impl Canvas<'_> {
         ttf_font::draw_text_bytes(self.fb, font, bytes, (x * n) as i32, (y * n) as i32, (7 * scale * n) as f32, color);
         self.fb.pop_clip();
     }
+    /// Several texts, each `(bytes, x, y, width, scale)` drawn in white as `text` draws it,
+    /// for texts whose glyphs do not meet one another's: in DejaVu Sans they share draws.
+    fn texts(&mut self, list: &[(Text, usize, usize, usize, usize)]) {
+        let n = self.n;
+        if self.font.is_none() {
+            for (t, x, y, width, scale) in list {
+                self.text(t.bytes(), *x, *y, *width, *scale, Color::WHITE);
+            }
+            return;
+        }
+        let bottom = self.fb.height() / n + self.origin.1;
+        let left = -((self.origin.0 * n) as i32);
+        let runs: Vec<ttf_font::TextRun<'_>> = list
+            .iter()
+            .filter(|(_, _, _, width, _)| *width != 0)
+            .map(|(t, x, y, width, scale)| {
+                let (lx, ly) = (x - self.origin.0, y - self.origin.1);
+                ttf_font::TextRun {
+                    bytes: t.bytes(),
+                    x: (lx * n) as i32,
+                    y: (ly * n) as i32,
+                    size: (7 * scale * n) as f32,
+                    fg: Color::WHITE,
+                    clip: Rect::new(left, (ly * n) as i32, ((lx + width) * n) as i32 - left, ((bottom - y) * n) as i32),
+                }
+            })
+            .collect();
+        if let Some(font) = self.font.as_deref_mut() {
+            ttf_font::draw_runs(self.fb, font, &runs);
+        }
+    }
     /// Picture `p` with its top left at logical (x, y), each picture pixel `scale` logical
     /// pixels square. `copy_scaled` weighs 8192 steps a fragment, so a large picture goes in
     /// bands of rows, each a submission of at most 2^17 fragments (2^30 steps), within the
@@ -577,16 +608,19 @@ fn update_wall(cv: &mut Canvas<'_>, run: &Run<'_>, wall: Wall, tiles: &mut [Opti
         })
         .collect();
     cv.pictures(&pictures, scale);
+    let mut texts = Vec::new();
     for &(i, passed, total, x, y) in &headings {
-        cv.text(category(run.tiles[i].id).as_bytes(), x + 2, y + 2, 76 * scale, scale, Color::WHITE);
+        let mut name = Text::new();
+        name.push(category(run.tiles[i].id).as_bytes());
+        texts.push((name, x + 2, y + 2, 76 * scale, scale));
         let mut count = Text::new();
         let _ = write!(count, "{passed}/{total} pass");
-        cv.text(count.bytes(), x + 2, y + 14 * scale, 76 * scale, scale, Color::WHITE);
+        texts.push((count, x + 2, y + 14 * scale, 76 * scale, scale));
     }
     for &(i, _, x, y) in &changed {
         let mut ordinal = Text::new();
         let _ = write!(ordinal, "{}", i + 1);
-        cv.text(ordinal.bytes(), x + 20 * scale, y + 2 * scale, 18 * scale, scale, Color::WHITE);
+        texts.push((ordinal, x + 20 * scale, y + 2 * scale, 18 * scale, scale));
         let tile = &run.tiles[i];
         if tile.stamp != Stamp::Pending {
             let mut key = Text::new();
@@ -595,9 +629,10 @@ fn update_wall(cv: &mut Canvas<'_>, run: &Run<'_>, wall: Wall, tiles: &mut [Opti
             } else {
                 let _ = write!(key, "{}", tile.key);
             }
-            cv.text(key.bytes(), x + 2 * scale, y + 16 * scale, 34 * scale, scale, Color::WHITE);
+            texts.push((key, x + 2 * scale, y + 16 * scale, 34 * scale, scale));
         }
     }
+    cv.texts(&texts);
 }
 
 /// An input trail to draw after the frame's batch: its points and its box.
