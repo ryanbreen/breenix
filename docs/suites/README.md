@@ -1240,7 +1240,14 @@ the scorer requires those records as evidence.
 A deliberately wrong host key must fail strict checking. It forces both ciphers,
 stages a temporary Ed25519 authorized user key and restores the original file,
 checks authentication refusals, checks port 22 and both telnet ports, exercises PTY
-job control and executes a quoted script through bsh's interactive shorthand. The login must enter bsh;
+job control and executes a quoted script through bsh's interactive shorthand. The PTY
+check requires the account's uid, the tty group's gid from `/etc/group`, and mode
+0620 (coordinator S18, 2026-10-22). It also types a partial next command while a
+foreground child runs and another behind Enter in the same write, then requires
+the complete redraw and exact output of each. bsh changes editor modes with
+TCSADRAIN to retain this queued input; TCSAFLUSH would discard it
+([POSIX tcsetattr](https://pubs.opengroup.org/onlinepubs/9799919799/functions/tcsetattr.html)).
+The login must enter bsh;
 exec cases require `/bin/bsh` in SHELL, exact command exit statuses, and piped input plus EOF.
 The input case keeps its large text round trip and also requires 10,485,760 binary bytes
 (including NUL, high bytes and CRLF) to return unchanged with status 0 within 180 seconds.

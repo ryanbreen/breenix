@@ -1567,19 +1567,20 @@ impl LineEditor {
             raw.c_cc[libbreenix::termios::cc::VTIME] = 0;
             let _ = libbreenix::termios::tcsetattr(
                 fd,
-                libbreenix::termios::TCSAFLUSH,
+                libbreenix::termios::TCSADRAIN,
                 &raw,
             );
         }
     }
 
     /// Restore the original terminal attributes saved by `enable_raw_mode`.
+    /// Keep input queued behind Enter or typed while a foreground child runs.
     fn disable_raw_mode(&mut self) {
         if let Some(ref orig) = self.orig_termios {
             let fd = libbreenix::types::Fd::STDIN;
             let _ = libbreenix::termios::tcsetattr(
                 fd,
-                libbreenix::termios::TCSAFLUSH,
+                libbreenix::termios::TCSADRAIN,
                 orig,
             );
         }

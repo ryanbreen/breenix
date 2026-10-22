@@ -372,6 +372,24 @@ class Probe:
             seen = b''
             send(b"printf 'AFTER-%s\\n' interrupt\n")
             at_prompt(b'AFTER-interrupt\r\n')
+            # Keep partial next commands across both editor mode transitions:
+            # input received during a child, and input queued behind Enter.
+            prefix = b'console.log("TYPE-AHEAD-" + "during", "aB09 /: _-+=")'
+            seen = b''
+            send(b"sh -c 'printf \"TYPE-AHEAD-%s\\n\" ready; sleep 2'\n")
+            until(re.compile(rb'(?:^|\n)TYPE-AHEAD-ready\r?\n'))
+            send(prefix)
+            until(re.compile(rb'\rbsh [^>\r\n]*> ' + re.escape(prefix) + rb'\x1b\[K'))
+            seen = b''
+            send(b'\n')
+            at_prompt(b'TYPE-AHEAD-during aB09 /: _-+=\r\n')
+            prefix = b'console.log("TYPE-AHEAD-" + "queued", "Zy87 /: _-+=")'
+            seen = b''
+            send(b'console.log("TYPE-AHEAD-" + "first");\n' + prefix)
+            until(re.compile(rb'\rbsh [^>\r\n]*> ' + re.escape(prefix) + rb'\x1b\[K'))
+            seen = b''
+            send(b'\n')
+            at_prompt(b'TYPE-AHEAD-queued Zy87 /: _-+=\r\n')
             send(b'exit\n')
             process.wait(timeout=10)
             if process.returncode != 0: raise ValueError('interactive shell exit failed')
