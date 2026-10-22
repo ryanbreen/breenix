@@ -1251,7 +1251,14 @@ the scorer requires those records as evidence.
 A deliberately wrong host key must fail strict checking. It forces both ciphers,
 stages a temporary Ed25519 authorized user key and restores the original file,
 checks authentication refusals, checks port 22 and both telnet ports, exercises PTY
-job control and executes a quoted script through bsh's interactive shorthand. The login must enter bsh;
+job control and executes a quoted script through bsh's interactive shorthand. The PTY
+check requires the account's uid, the tty group's gid from `/etc/group`, and mode
+0620 (coordinator S18, 2026-10-22). It also types a partial next command while a
+foreground child runs and another behind Enter in the same write, then requires
+the complete redraw and exact output of each. bsh changes editor modes with
+TCSADRAIN to retain this queued input; TCSAFLUSH would discard it
+([POSIX tcsetattr](https://pubs.opengroup.org/onlinepubs/9799919799/functions/tcsetattr.html)).
+The login must enter bsh;
 exec cases require `/bin/bsh` in SHELL, exact command exit statuses, and piped input plus EOF.
 The input case keeps its large text round trip and also requires 10,485,760 binary bytes
 (including NUL, high bytes and CRLF) to return unchanged with status 0 within 180 seconds.
@@ -1273,7 +1280,14 @@ For `server/services`, run the same sequence with `--milestone server/services`.
 The runner checks the shipped table and the published state over SSH as the operator,
 and acts as root by logging in on the boot's SOL console with the site's console
 account (`CONSOLE_USER`, `CONSOLE_PASSWORD`) through the driver's own console pane,
-typing a few bytes at a time as `boot --persistent --run` does. Its cases:
+typing in blocks of 16 printable ASCII bytes and waiting for bsh to echo each
+complete prefix before sending another block or Enter. The runner refuses a typed
+line over 4095 bytes (the console TTY input bound excluding its terminator), or a
+line containing editing/control bytes, before sending any of it. bsh edits in raw
+mode; fixed-rate typing can still outrun its whole-line redraws over SOL. Each
+command and its computed exit-status receipt share one submission; no following
+input is sent while the child runs. A nonzero status fails the command even when
+bsh's interactive shorthand would silently return to its prompt. Its cases:
 
 - `table`: `/etc/breenix/services` lists bsshd, blogd, `ntp` (the time client) and the
   six gettys; each but `ntp` is running in `/run/breenix/services` (root's, 0644) and in
@@ -1323,6 +1337,36 @@ records and ring-overrun report, and the previous boot's exact bytes before and
 after archive rotation. Temporary services run as the site account and are
 removed afterwards. Root reads protected logs on the leased SOL console.
 Results go to `server-logs.json`; preparation is not a passing category run.
+Coordinator ruling S17 (2026-10-22) requires the kernel case to find its boot's
+records across the active log and its four size-rotation archives. Each selected
+file must carry the exact boot header. The live nonce must occur once, and the
+overrun must start at the saved cursor with a positive byte count equal to the
+end minus start; a record absent from the family fails. The runner pauses and
+resumes blogd within the guest read command so rotation cannot race that read;
+console typing does not hold the logger paused. Restart checks use that same
+boot-filtered family and still reject replay or invented overruns.
+
+
+The category repeats on the same install. Each run writes fresh nonce markers into
+its service output and kernel records, so it cannot pass on records an earlier run
+left. A fixture's table file starts with the `breenix-server-suite-fixture` marker
+comment, and the unavailable sink's directory holds a marker file. A fixture log
+requires both the supervisor's header for that fixture's source and a persistent
+`.NAME.breenix-server-suite-fixture` ownership file in `/var/log`. The runner reserves
+that file only when the active log and its archives are absent. It retains the
+ownership file across preparation boots and removes it after the log family. Before
+its first fixture, a run removes leftovers recognized by those marks and stops
+without touching anything else at a fixture's path. Cleanup removes the fixtures.
+A preparation keeps only the log that the next boot checks, and that boot's run
+removes it. To repeat the category, run `--prepare-logs` on the boot that just ran
+it, stop that boot and pass it as `--previous-boot` to the next one. A fixture counts as finished only once `/run/breenix/services` reports
+`state=done` and `output=drained`: the supervisor has read both of its streams to
+end of file and recorded them. Root's console-leak check ends at a sentinel typed
+on the console after that report, so anything init wrote onto the console for the
+service comes before the sentinel. The ssh-keys category marks its temporary
+authorized key with the same marker as its comment. It pins bssh's host key in a
+`/tmp` file of the run's own, whose entry carries the marker, and cleanup removes
+both.
 
 ## Developer SDK
 

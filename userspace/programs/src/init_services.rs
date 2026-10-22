@@ -347,6 +347,7 @@ impl Supervisor {
     fn drain_logs(&mut self) {
         for entry in &mut self.entries {
             let Some(log) = &mut entry.log else { continue };
+            let open = !entry.outputs.is_empty();
             log.retry();
             for output in &mut entry.outputs {
                 if output.ended { continue; }
@@ -378,6 +379,8 @@ impl Supervisor {
                 }
             }
             entry.outputs.retain(|o| !o.ended);
+            // Publish the end of the drain: everything the service wrote is in its log.
+            if open && entry.outputs.is_empty() { self.changed = true; }
         }
     }
 
@@ -847,6 +850,7 @@ impl Supervisor {
                 next_ms: e.next_ms,
                 quick_failures: e.quick_failures,
                 last_exit: e.last_exit.clone(),
+                output_open: !e.outputs.is_empty(),
             })
             .collect();
         let text = services::render(&self.facts, &statuses);
