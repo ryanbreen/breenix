@@ -1622,7 +1622,7 @@
       "cases": [
         {
           "id": "stage-layout",
-          "title": "Stage fixture header, wall, spotlight and ribbon occupy the contract rectangles"
+          "title": "Stage fixture header, wall and spotlight occupy the contract rectangles; the footer is empty"
         },
         {
           "id": "tile-stamps",
@@ -1642,7 +1642,7 @@
         },
         {
           "id": "milestone-ribbon",
-          "title": "Milestone segments light exactly when their cases have passed"
+          "title": "Category counts stay in the matrix and the removed ribbon leaves an empty footer"
         },
         {
           "id": "finale",
@@ -1670,7 +1670,7 @@
         },
         {
           "id": "boundary-notice",
-          "title": "The stage observation notice agrees with the backend flags and boundary code"
+          "title": "The stage validates observation flags and boundary code and leaves the removed caption blank"
         },
         {
           "id": "stage-hidpi",

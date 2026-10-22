@@ -227,14 +227,12 @@ pub fn showcase_check(name: &str) -> CaseResult {
             "boundary-notice" => {
                 // Section 23.8: the GPU backends' record version 2 rows; the legacy CPU
                 // backends and boundary codes are retired (section 20.2).
-                let notice = match (rec.backend, rec.flags, rec.boundary) {
-                    (4 | 5, 1 | 3, 4) => "host renderer and window outside guest view",
+                match (rec.backend, rec.flags, rec.boundary) {
+                    (4 | 5, 1 | 3, 4) => {},
                     _ => return Err("invalid observation boundary combination".into()),
-                };
-                let mut font = Oracle::new();
-                let rows = font.rows(d.n, 1);
-                let mut expected = Region::new(d, 24, 776, 1256, rows, Color::rgb(12, 19, 31))?;
-                expected.text(&mut font, notice.as_bytes(), 0, 0, 1256, 1, Color::rgb(161, 183, 204));
+                }
+                // The operator removed the caption and both footer bands.
+                let expected = Region::new(d, 0, 700, 1280, 100, Color::rgb(12, 19, 31))?;
                 mismatch |= expected.compare(d, &pixels).is_err();
             }
             _ => unreachable!(),
@@ -536,14 +534,6 @@ fn check_labels(s: &Show, bytes: &[u8], d: Dims) -> Result<(), String> {
         expected.text(&mut font,std::format!("{passed}/{} pass",end-first).as_bytes(),2,14*wall.scale,76*wall.scale,wall.scale,Color::WHITE);
         expected.compare(d,bytes)?;
     }
-    for (i,(id,first,end)) in s.groups.iter().enumerate() {
-        let left=16+1248*i/s.groups.len();let right=16+1248*(i+1)/s.groups.len();
-        let colour=if s.entries[*first..*end].iter().all(|e|e.stamp==Stamp::Pass) {Color::rgb(26,112,77)}else{Color::rgb(48,67,96)};
-        // The label is clipped to its own box, logical rows 736 to 742 (ruling B25).
-        let mut expected=Region::new(d,left,728,right-left-2,24,colour)?;
-        expected.text_in(&mut font,id.as_bytes(),4,8,right-left-6,7,1,Color::WHITE);
-        expected.compare(d,bytes)?;
-    }
     let entry=&s.entries[s.selected];
     let (label,colour)=match entry.stamp {
         Stamp::Pass=>("PASS",Color::rgb(26,112,77)),
@@ -555,13 +545,7 @@ fn check_labels(s: &Show, bytes: &[u8], d: Dims) -> Result<(), String> {
     let mut expected=Region::new(d,848,640,400,rows,Color::rgb(18,29,44))?;
     expected.text(&mut font,label.as_bytes(),0,0,400,3,colour);
     expected.compare(d,bytes)?;
-    let reached=std::fs::read_to_string("/proc/breenix/boot-ribbon").map_err(|e|e.to_string())?;
-    let reached:Vec<_>=reached.lines().map(|l|l.starts_with("1|")).collect();
-    for (i,lit) in reached.iter().enumerate() {
-        let left=16+1248*i/reached.len();let right=16+1248*(i+1)/reached.len();
-        let expected=Region::new(d,left,752,right-left-2,16,if *lit{Color::rgb(26,112,77)}else{Color::rgb(48,67,96)})?;
-        expected.compare(d,bytes)?;
-    }
+    Region::new(d,0,700,1280,100,Color::rgb(12,19,31))?.compare(d,bytes)?;
     Ok(())
 }
 fn exercise_details(s: &Show) -> CaseResult {
@@ -591,7 +575,7 @@ fn exercise_details(s: &Show) -> CaseResult {
                 let (x,y)=wall.origin(wall.slot(&tiles,0)-2);
                 for (x,y) in [(x,y),(848,640),(16,728),(16,752)] {
                     bytes[d.at(x,y)]^=255;let caught=check_labels(&probe,&bytes,d).is_err();bytes[d.at(x,y)]^=255;
-                    check(caught,"heading, verdict or ribbon substitution escaped detection")?;
+                    check(caught,"heading, verdict or empty-footer substitution escaped detection")?;
                 }
             }
         }
