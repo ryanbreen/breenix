@@ -812,8 +812,8 @@ class Logs:
     """Actual service output and cross-boot files; root reads through the leased SOL console.
 
     Each fixture is a temporary service. Its table file under /run starts with the marker comment,
-    its log is one the supervisor headed for that fixture's source, and the unavailable sink's
-    directory holds a marker file. Leftovers of older runs are recognized by those marks and removed
+    its log family has a persistent ownership marker reserved before any log exists, and the
+    unavailable sink's directory holds a marker file. Leftovers are recognized by those marks and removed
     before the first fixture starts; anything else at a fixture's path stops the run untouched.
     Cleanup removes every fixture, except that a preparation keeps the log the next boot checks."""
 
@@ -855,11 +855,26 @@ class Logs:
         if not logs: return
         mark = '.' + FIXTURE_MARK
         self.root_check('cd /var/log; for n in ' + ' '.join(logs) + '; do '
+                        'owner=.$n' + mark + '; '
+                        'if test -e $owner || test -L $owner; then '
+                        'test -f $owner && test ! -L $owner && test "$(cat $owner)" = ' + FIXTURE_MARK + ' || exit 3; fi; '
                         'for p in $n.log' + ''.join(' $n.log.' + str(i) for i in range(1, LOG_ARCHIVES + 1)) + '; do '
                         'if test -d $p; then if test "$(ls -A $p)" = ' + mark + '; then rm $p/' + mark + '; rmdir $p; continue; fi; '
-                        'elif test -e $p; then if head -n 1 $p | grep -qxE "BREENIX-LOG 1 boot=[0-9a-f-]+ source=$n '
+                        'elif test -e $p || test -L $p; then if test -f $owner && '
+                        'head -n 1 $p | grep -qxE "BREENIX-LOG 1 boot=[0-9a-f-]+ source=$n '
                         'limit=262144 archives=' + str(LOG_ARCHIVES) + '"; then rm $p; continue; fi; '
-                        'else continue; fi; printf "not-a-fixture %s\\n" $p; exit 3; done; done')
+                        'else continue; fi; printf "not-a-fixture %s\\n" $p; exit 3; done; '
+                        'if test -f $owner; then rm $owner; fi; done')
+
+    def claim(self, name):
+        """Reserve an empty log family; a header alone never establishes ownership."""
+        owner = '.' + name + '.' + FIXTURE_MARK
+        self.root_check('cd /var/log; if test -e ' + owner + ' || test -L ' + owner + '; then '
+                        'test -f ' + owner + ' && test ! -L ' + owner + ' && '
+                        'test "$(cat ' + owner + ')" = ' + FIXTURE_MARK + '; else '
+                        'for p in ' + name + '.log' + ''.join(' ' + name + '.log.' + str(i) for i in range(1, LOG_ARCHIVES + 1)) + '; do '
+                        'test ! -e $p && test ! -L $p || exit 3; done; '
+                        'set -C; printf "%s\\n" ' + FIXTURE_MARK + ' > ' + owner + '; fi')
 
     def setup(self):
         if self.ready is None:
@@ -875,6 +890,7 @@ class Logs:
         """Run one temporary service to completion; return once the supervisor reports that it has
         drained the service's output to end of file, so its log holds everything it wrote."""
         self.setup()
+        self.claim(name)
         table = ('# ' + FIXTURE_MARK + '\n[' + name + ']\ncommand = /bin/sh -c ' + shlex.quote(script)
                  + '\nuser = ' + (user or self.probe.user) + '\nrestart = never\n')
         literal = table.replace('\\', '\\\\').replace('\n', r'\n')
@@ -946,6 +962,7 @@ class Logs:
         # Its marker file identifies it as this fixture's.
         path, mark = '/var/log/logs-unavailable.log', '/.' + FIXTURE_MARK
         self.setup()
+        self.claim('logs-unavailable')
         self.root_check('mkdir ' + path + '; printf "%s\\n" ' + FIXTURE_MARK + ' > ' + path + mark)
         try:
             self.fixture('logs-unavailable', 'printf "unavailable-output\\n"')

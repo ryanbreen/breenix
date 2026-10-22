@@ -1314,7 +1314,10 @@ The category repeats on the same install. Each run writes fresh nonce markers in
 its service output and kernel records, so it cannot pass on records an earlier run
 left. A fixture's table file starts with the `breenix-server-suite-fixture` marker
 comment, and the unavailable sink's directory holds a marker file. A fixture log
-is one whose first line is the supervisor's header for that fixture's source. Before
+requires both the supervisor's header for that fixture's source and a persistent
+`.NAME.breenix-server-suite-fixture` ownership file in `/var/log`. The runner reserves
+that file only when the active log and its archives are absent. It retains the
+ownership file across preparation boots and removes it after the log family. Before
 its first fixture, a run removes leftovers recognized by those marks and stops
 without touching anything else at a fixture's path. Cleanup removes the fixtures.
 A preparation keeps only the log that the next boot checks, and that boot's run

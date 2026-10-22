@@ -142,6 +142,56 @@ class HostServerScore(unittest.TestCase):
         console.service_log('bsshd')
         self.assertEqual(console.boot_id, '1-2-3')
 
+    def test_log_sweep_requires_ownership_besides_supervisor_header(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            tables, logs_dir = root / 'tables', root / 'logs'
+            tables.mkdir()
+            logs_dir.mkdir()
+            def run(command, **kwargs):
+                command = command.replace('/run/breenix/services.d', str(tables)).replace('/var/log', str(logs_dir))
+                return subprocess.run(['/bin/sh', '-c', command], capture_output=True, text=True).stdout
+            logs = object.__new__(host['Logs'])
+            logs.console = SimpleNamespace(run=run)
+            logs.state = lambda: {}
+            mark = host['FIXTURE_MARK']
+            owner = logs_dir / ('.logs-root.' + mark)
+            paths = [logs_dir / ('logs-root.log' + suffix) for suffix in ('', '.1', '.4')]
+            header = 'BREENIX-LOG 1 boot=1-2-3 source=logs-root limit=262144 archives=4\n'
+            for path in paths: path.write_text(header + 'administrator record\n')
+            with self.assertRaisesRegex(ValueError, 'root log assertion failed'):
+                logs.sweep(['logs-root'])
+            for path in paths: self.assertEqual(path.read_text(), header + 'administrator record\n')
+            with self.assertRaises(ValueError): logs.claim('logs-root')
+            self.assertFalse(owner.exists())
+            for path in paths: path.unlink()
+            logs.claim('logs-root')
+            self.assertEqual(owner.read_text(), mark + '\n')
+            for path in paths: path.write_text(header + 'fixture record\n')
+            # Ownership survives a preparation boot and permits its retained log.
+            logs.claim('logs-root')
+            logs.sweep(['logs-root'])
+            self.assertEqual(list(logs_dir.iterdir()), [])
+
+    def test_log_claim_rejects_foreign_marker_and_dangling_archive(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            def run(command, **kwargs):
+                return subprocess.run(['/bin/sh', '-c', command.replace('/var/log', str(root))],
+                                      capture_output=True, text=True).stdout
+            logs = object.__new__(host['Logs'])
+            logs.console = SimpleNamespace(run=run)
+            owner = root / ('.logs-root.' + host['FIXTURE_MARK'])
+            owner.write_text('administrator file\n')
+            with self.assertRaises(ValueError): logs.claim('logs-root')
+            self.assertEqual(owner.read_text(), 'administrator file\n')
+            owner.unlink()
+            archive = root / 'logs-root.log.4'
+            archive.symlink_to(root / 'absent')
+            with self.assertRaises(ValueError): logs.claim('logs-root')
+            self.assertTrue(archive.is_symlink())
+            self.assertFalse(owner.exists())
+
     def test_malformed_records_fail_this_milestone_without_crashing_the_boot_scorer(self):
         sys.path.insert(0, str(ROOT / 'scripts/metal'))
         score_boot = runpy.run_path(str(ROOT / 'scripts/metal/metal_score.py'))['score']
