@@ -79,7 +79,10 @@ impl Context {
             drop(old);
         }
         let (handle, _) = create_context(owner)?;
-        let id = with_core(|c| c.ctx_of(owner, handle)).flatten().ok_or(EIO)?;
+        let Some(id) = with_core(|c| c.ctx_of(owner, handle)).flatten() else {
+            destroy_context(owner, handle);
+            return Err(EIO);
+        };
         let made = Arc::new(Self { owner, handle, id });
         let mut contexts = CONTEXTS.lock();
         if let Some(context) = contexts.get(&owner).cloned() {
@@ -88,6 +91,37 @@ impl Context {
         }
         contexts.insert(owner, made.clone());
         Ok(made)
+    }
+
+    /// Finish target setup before exposing a window. Otherwise the cached context's
+    /// asynchronous catalogue commands can allocate DMA pages after its windows are
+    /// gone. The last warm bit is published only after native completion has retired
+    /// the command payload, so returning here leaves no startup DMA behind.
+    fn for_targets(owner: u64) -> Result<Arc<Self>, i64> {
+        let context = Self::get(owner)?;
+        let initialized = wait_for(None, true, |c| {
+            let Some(ctx) = c.contexts.get(&context.id) else { return Some(Err(EIO)); };
+            if ctx.state != CtxState::Live || ctx.dropped || !ctx.device_alive {
+                return Some(Err(EIO));
+            }
+            if ctx.warm_oom { return Some(Err(ENOMEM)); }
+            (ctx.warm == encode::ALL_WARM).then_some(Ok(()))
+        }).map_err(|_| EINTR).and_then(|result| result);
+        if let Err(error) = initialized {
+            // Do not strand a failed initializer in the process's cache or evict a
+            // replacement another caller installed. Issued DMA keeps its core holds.
+            let old = {
+                let mut contexts = CONTEXTS.lock();
+                if contexts.get(&owner).is_some_and(|cached| Arc::ptr_eq(cached, &context)) {
+                    contexts.remove(&owner)
+                } else {
+                    None
+                }
+            };
+            drop(old);
+            return Err(error);
+        }
+        Ok(context)
     }
 }
 
@@ -119,7 +153,7 @@ impl Target {
     }
 
     fn make(owner: u64, width: u32, height: u32) -> Result<Arc<Self>, i64> {
-        let context = Context::get(owner)?;
+        let context = Context::for_targets(owner)?;
         let _creation = CreationGuard::acquire(owner)?;
         if !with_core(|c| c.proc_mut(owner).resources.len() < RESOURCE_QUOTA).unwrap_or(false) {
             return Err(EAGAIN);

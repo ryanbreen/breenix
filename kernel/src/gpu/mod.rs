@@ -270,6 +270,9 @@ struct Ctx {
     warm_after: u64,
     /// Warm-up steps the device refused in a row; two quarantine the context.
     warm_failures: u32,
+    /// The latest catalogue encoding ran out of storage; a private initializer may
+    /// fail ENOMEM instead of waiting for work that could not be queued.
+    warm_oom: bool,
     /// Device errors in a row, in fence order.
     errors_in_row: u32,
     /// Test point 31's fence-depth mode on this context.
@@ -2315,6 +2318,7 @@ fn warm_next() -> Option<u64> {
     };
     with_core(|c| {
         let live = c.contexts.get(&id).is_some_and(|x| x.state == CtxState::Live && x.device_alive && !x.dropped);
+        if let Some(ctx) = c.contexts.get_mut(&id) { ctx.warm_oom = chunks.is_none(); }
         if let Some(chunks) = chunks.filter(|_| live && ready(c)) {
             let too_big = matches!(&chunks, Chunks::Virgl(v) if v.iter().any(|w| w.page_count() + 2 > c.queue_size));
             if too_big {
@@ -2677,6 +2681,7 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
                 warm: 0,
                 warm_after: 0,
                 warm_failures: 0,
+                warm_oom: false,
                 errors_in_row: 0,
                 depth: None,
                 flushes: present_answers::Answers::new(),
