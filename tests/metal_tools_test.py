@@ -951,14 +951,11 @@ class MilestoneScoreTest(StateTest):
                  '[usb] boot keyboard attached: port=2', '[init] getty on the console', 'Breenix login: root',
                  'Login incorrect', 'metal-login-ok 42', 'fbcon check: shadow and screen identical, 9 glyph cells',
                  'fbcon row: metal-login-ok 42', '[getty] console acquired']
-        captures = [(lines, 3, 6, False)]
+        captures = [(lines, 3, 7, False)]
         for index in range(len(lines)):
-            # The calculation line is still consumed by the SOL driver; the screen row measures its output.
-            if index == 6:
-                continue
             captures.append((lines[:index] + lines[index + 1:],
-                             (1 if index == 0 else 2) if index < 3 else 3, 5 if index >= 3 else 6, True))
-        captures.append((lines[:7] + [lines[8], lines[7]] + lines[9:], 3, 5, True))
+                             (1 if index == 0 else 2) if index < 3 else 3, 6 if index >= 3 else 7, True))
+        captures.append((lines[:7] + [lines[8], lines[7]] + lines[9:], 3, 6, True))
         for capture, usb_reached, login_reached, short in captures:
             with self.subTest(capture=capture):
                 (directory / 'serial.txt').write_text('\n'.join(capture))
@@ -967,7 +964,7 @@ class MilestoneScoreTest(StateTest):
                 self.assertEqual(console['usb-keyboard'],
                                  {'reached': usb_reached, 'total': 3, 'passed': usb_reached == 3})
                 self.assertEqual(console['console-login'],
-                                 {'reached': login_reached, 'total': 6, 'passed': login_reached == 6})
+                                 {'reached': login_reached, 'total': 7, 'passed': login_reached == 7})
                 self.assertEqual(metal_score.falls_short({'captureComplete': True, 'milestones': console}), short)
 
 

@@ -541,7 +541,7 @@
     },
     {
       "id": "usb-keyboard",
-      "title": "USB keyboard into the console",
+      "title": "USB keyboard attach, detach and re-attach",
       "summary": "Clean-room HID boot keyboard attach, detach and re-attach, driven by the automated replug exercise.",
       "bootShapes": [
         "ramdisk",
@@ -602,6 +602,11 @@
           {
             "name": "Wrong password refused",
             "marker": "Login incorrect"
+          },
+          {
+            "name": "Logged-in computation answered",
+            "marker": "metal-login-ok 42",
+            "match": "line"
           },
           {
             "name": "The session is on the screen",
@@ -712,11 +717,6 @@
       "title": "Networking suite passes on real hardware",
       "stage": "Suite finished",
       "suite": "networking"
-    },
-    {
-      "id": "first-local-login",
-      "title": "First login at the machine's own console",
-      "stage": "Logged-in computation answered"
     }
   ]
 }

@@ -1168,7 +1168,7 @@ operator resolves that difference. No restore step writes storage.
 The `metal-console` effort follows storage with `fb-console`, `xhci`, `usb-keyboard` and `console-login`.
 Their stage lists cover RAM-disk, install and disk-root shapes, subject to each milestone's `bootModes`.
 Only automated stages are measured (operator ruling S16, 2026-10-21). `usb-keyboard` measures attach,
-detach and re-attach; `console-login` measures the six stages driven over SOL. Every remaining marker
+detach and re-attach; `console-login` measures the seven stages driven over SOL. Every remaining marker
 and its order are unchanged. Normal keyboard usage is outside the test count and matrix; any problem
 found during that usage is a bug report. <!-- claim-lint:ok: docs/metal/boot-path.json retains the automated markers and order; tests/metal_tools_test.py exercises missing and reordered console output. -->
 Automated console boots use `--mode console --input sol`. Staging selects `/sbin/init console`,

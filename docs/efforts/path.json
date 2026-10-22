@@ -2046,8 +2046,8 @@
     },
     {
       "id": "server",
-      "title": "Persistent server",
-      "outcome": "A persistent Breenix install runs as a LAN server: SSH on port 22 by keys only, supervised services with their own logs, time kept in sync, a clean reboot, a watchdog that brings a hung machine back, and remote upgrades that roll back by themselves when the new install does not answer.",
+      "title": "Unattended server",
+      "outcome": "A persistent Breenix install runs unattended as a LAN server: SSH on port 22 by keys only, supervised services with their own logs, time kept in sync, a clean reboot, a watchdog that brings a hung machine back, and remote upgrades that roll back by themselves when the new install does not answer.",
       "suite": "server",
       "milestones": [
         {
