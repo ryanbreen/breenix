@@ -1262,7 +1262,14 @@ For `server/services`, run the same sequence with `--milestone server/services`.
 The runner checks the shipped table and the published state over SSH as the operator,
 and acts as root by logging in on the boot's SOL console with the site's console
 account (`CONSOLE_USER`, `CONSOLE_PASSWORD`) through the driver's own console pane,
-typing a few bytes at a time as `boot --persistent --run` does. Its cases:
+typing in blocks of 16 printable ASCII bytes and waiting for bsh to echo each
+complete prefix before sending another block or Enter. The runner refuses a typed
+line over 4095 bytes (the console TTY input bound excluding its terminator), or a
+line containing editing/control bytes, before sending any of it. bsh edits in raw
+mode; fixed-rate typing can still outrun its whole-line redraws over SOL. Each
+command and its computed exit-status receipt share one submission; no following
+input is sent while the child runs. A nonzero status fails the command even when
+bsh's interactive shorthand would silently return to its prompt. Its cases:
 
 - `table`: `/etc/breenix/services` lists bsshd, blogd, `ntp` (the time client) and the
   six gettys; each but `ntp` is running in `/run/breenix/services` (root's, 0644) and in

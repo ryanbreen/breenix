@@ -131,6 +131,60 @@ class HostServerScore(unittest.TestCase):
             if rewrites: self.assertIn('printf %s ' + quote(original) + ' > "$tmp"', rewrites[0])
             self.assertIn('printf %s ' + quote(appended) + ' >> "$HOME/.ssh/authorized_keys"', scripts)
 
+    def test_console_waits_for_slow_redraws_before_sending_more_or_enter(self):
+        # A slow console finishes a redraw seven seconds after the sender
+        # pauses. A bounded receive queue loses anything sent beyond it.
+        console = object.__new__(host['Console'])
+        clock, pending, visible, capture, entered = [0.0], [b''], [b''], [''], []
+        due = [None]
+        def sleep(seconds):
+            clock[0] += seconds
+            if due[0] is not None and clock[0] >= due[0]:
+                visible[0] += pending[0]
+                pending[0] = b''
+                capture[0] += '\nbsh root> ' + visible[0].decode()
+                due[0] = None
+        def send(text, enter=True):
+            if text == '\x15':
+                visible[0] = pending[0] = b''
+                capture[0] += '\nbsh root> '
+                return
+            pending[0] += text.encode()[:max(0, 32 - len(pending[0]))]
+            if text: due[0] = clock[0] + 7
+            if enter:
+                entered.append(visible[0])
+        console.send = send
+        console.size = lambda: len(capture[0])
+        console.since = lambda offset: capture[0][offset:]
+        text = 'printf ' + 'x' * 673
+        with patch.object(host['time'], 'monotonic', side_effect=lambda: clock[0]), \
+             patch.object(host['time'], 'sleep', side_effect=sleep):
+            console.type_line(text)
+        self.assertEqual(entered, [text.encode()])
+        self.assertEqual(pending[0], b'')
+
+    def test_console_refuses_oversized_or_editing_input_before_typing(self):
+        console = object.__new__(host['Console'])
+        console.send = lambda *a, **kw: self.fail('invalid line reached the console')
+        console.size = lambda: 0
+        for text in ('x' * 4096, 'echo a\necho b', 'echo \x15', 'é' * 2048):
+            with self.subTest(text=text[:20]), self.assertRaises(ValueError):
+                console.type_line(text)
+
+    def test_console_collects_status_without_typing_into_a_running_command(self):
+        console = object.__new__(host['Console'])
+        console.step = 0
+        console.login = lambda: None
+        console.size = lambda: 0
+        typed = []
+        console.type_line = typed.append
+        output = 'child output\nsvc-suite-step-1 3\nbsh root> '
+        import re
+        console.wait = lambda offset, pattern, what, timeout: (output, re.search(pattern, output))
+        with self.assertRaisesRegex(ValueError, 'exited 3'):
+            console.run("sh -c 'exit 3'", done=r'(?m)^logs-check-ok$')
+        self.assertEqual(len(typed), 1)
+
     def test_service_log_header_must_name_the_boot_id_read_over_sol(self):
         console = object.__new__(host['Console'])
         console.boot_id = None

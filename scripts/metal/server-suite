@@ -424,10 +424,13 @@ def parse_state(text):
 
 
 class Console:
-    """Root's commands, typed on the persistent boot's SOL console through the driver's tmux pane a few
-    bytes at a time, as the driver's own --run typing is. SOL can still drop an input byte while the console
-    is busy (#2105), so each line is pressed only once its echo shows exactly what was typed; a damaged line
-    is cleared with Ctrl-U and typed again. The console capture shows each result."""
+    """Root commands on the leased SOL console, with echo-driven backpressure."""
+
+    # The console TTY admits MAX_CANON - 1 bytes before its line terminator
+    # (kernel/src/tty/line_discipline.rs). bsh edits in raw mode, but keep
+    # submissions within that bound even across a terminal mode transition.
+    MAX_LINE_BYTES = 4095
+    ECHO_BLOCK = 16
 
     PROMPT = r'bsh [^>\n]*>'
     LOGIN = 'Breenix login: '
@@ -468,20 +471,34 @@ class Console:
             time.sleep(0.5)
 
     def type_line(self, text, attempts=4):
-        """Type `text` at bsh's prompt, and press Enter once bsh's redrawn line matches it."""
-        echoed = re.compile(r'(?m)^' + self.PROMPT + ' ' + re.escape(text) + r'[ \t]*$')
-        for _ in range(attempts):
+        """Acknowledge each block's complete redraw before sending more input.
+
+        bsh redraws the entire line for each byte. Fixed input pacing therefore
+        builds a quadratic output backlog on SOL; a short final echo wait can
+        expire while every input byte is still arriving intact.
+        """
+        if len(text.encode()) > self.MAX_LINE_BYTES:
+            raise ValueError('console line exceeds the 4095-byte input limit')
+        if any(not 32 <= ord(c) <= 126 for c in text):
+            raise ValueError('console command must be one printable ASCII line')
+        for attempt in range(attempts):
             offset = self.size()
-            self.send(text, enter=False)
-            deadline = time.monotonic() + 6
-            while time.monotonic() < deadline:
-                if echoed.search(self.since(offset)):
-                    self.send('')
-                    return
-                time.sleep(0.3)
-            self.send('\x15', enter=False)
-            time.sleep(0.5)
-        raise ValueError('the console kept losing typed input: ' + text)
+            try:
+                for start in range(0, len(text), self.ECHO_BLOCK):
+                    end = min(start + self.ECHO_BLOCK, len(text))
+                    self.send(text[start:end], enter=False)
+                    echoed = r'(?m)^' + self.PROMPT + ' ' + re.escape(text[:end]) + r'[ \t]*$'
+                    self.wait(offset, echoed, 'the complete console echo', timeout=30)
+                self.send('')
+                return
+            except ValueError:
+                # No Enter was sent. Clear the refused line, and acknowledge
+                # that clear before retrying rather than adding to queued input.
+                offset = self.size()
+                self.send('\x15', enter=False)
+                self.wait(offset, r'(?m)^' + self.PROMPT + r' *$', 'the cleared console line')
+                if attempt + 1 == attempts:
+                    raise ValueError('the console did not acknowledge the complete input line')
 
     def login(self, attempts=3):
         if self.logged_in: return
@@ -508,20 +525,24 @@ class Console:
         raise ValueError('the console account was refused ' + str(attempts) + ' times')
 
     def run(self, command, timeout=30, done=None):
-        """Type one command, then a marker computation; return the console text up to the marker's answer.
-        Input typed while a command runs is echoed into its output and can split one of its lines, so for a
-        command that prints its own last line (`done`), the marker is typed only once that line shows."""
+        """Run one command and require its exit status before typing again.
+
+        bsh's interactive shorthand only reports signal deaths, not ordinary
+        nonzero exits. `run` returns all statuses; the marker is computed after
+        the child ends, in the same submission, without concurrent input.
+        """
         self.login()
         self.step += 1
         marker = 'svc-suite-step-' + str(self.step)
         offset = self.size()
-        self.type_line(command)
-        if done:
-            self.wait(offset, done + r'|\[bsh\] command failed status=[1-9]', 'the end of ' + command, timeout)
-        self.type_line('print("' + marker + '", 6*7)')
-        text, found = self.wait(offset, re.escape(marker) + ' 42', 'the answer to ' + command, timeout)
+        self.type_line('print("\\n' + marker + '", run("/bin/bsh", "-c", ' + json.dumps(command) + '))')
+        text, found = self.wait(offset, r'(?m)^' + re.escape(marker) + r' ([0-9]+)\r?$',
+                                'the exit status of ' + command, timeout)
+        if int(found[1]) != 0:
+            raise ValueError('console command exited ' + found[1] + ': ' + command)
         text = text[:found.start()]
-        if re.search(r'\[bsh\] command failed status=[1-9]', text): raise ValueError('console command failed: ' + command)
+        if done and not re.search(done, text):
+            raise ValueError('console command omitted its completion sentinel: ' + command)
         return text
 
     def service_log(self, name):
@@ -868,13 +889,13 @@ class Logs:
 
     def claim(self, name):
         """Reserve an empty log family; a header alone never establishes ownership."""
-        self.root_check('cd /var/log; n=' + name + '; owner=.$n.' + FIXTURE_MARK + '; '
-                        'if test -e $owner || test -L $owner; then '
-                        'test -f $owner && test ! -L $owner && '
-                        'test "$(cat $owner)" = ' + FIXTURE_MARK + '; else '
-                        'for p in $n.log' + ''.join(' $n.log.' + str(i) for i in range(1, LOG_ARCHIVES + 1)) + '; do '
+        owner = '.' + name + '.' + FIXTURE_MARK
+        self.root_check('cd /var/log; if test -e ' + owner + ' || test -L ' + owner + '; then '
+                        'test -f ' + owner + ' && test ! -L ' + owner + ' && '
+                        'test "$(cat ' + owner + ')" = ' + FIXTURE_MARK + '; else '
+                        'for p in ' + name + '.log' + ''.join(' ' + name + '.log.' + str(i) for i in range(1, LOG_ARCHIVES + 1)) + '; do '
                         'test ! -e $p && test ! -L $p || exit 3; done; '
-                        'set -C; printf "%s\\n" ' + FIXTURE_MARK + ' > $owner; fi')
+                        'set -C; printf "%s\\n" ' + FIXTURE_MARK + ' > ' + owner + '; fi')
 
     def setup(self):
         if self.ready is None:
