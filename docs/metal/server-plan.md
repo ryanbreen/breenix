@@ -123,7 +123,7 @@ root.
    into `/.breenix-shared` (S8), an upgrade replaces the host key, so no upgrade may rely on a pinned key before
    then.
    *R240 acceptance:* `install-persistent` of the commit; an OpenSSH login from the boot host with strict host-key
-   checking against the fingerprint the first boot prints; the password and a wrong key refused; no listener on
+   checking against the fingerprint in the first boot's protected bsshd log; the password and a wrong key refused; no listener on
    the telnet port.
 2. **The users effort** (`kernel-checks` through `operator-login`), in [its design](../users/design.md).
 3. **`services` (`server/services`).** init reads a service table (`/etc/breenix/services`: command, user, restart

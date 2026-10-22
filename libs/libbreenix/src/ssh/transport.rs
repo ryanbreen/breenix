@@ -64,7 +64,7 @@ impl<'a> ServerSession<'a> {
                 return Err(err);
             }
         };
-        println!("bsshd: client version: '{}'", self.client_version);
+        println!("bsshd: client version: '{}'", self.client_version.escape_debug());
 
         if !self.client_version.starts_with("SSH-2.0-") {
             return Err(SshError::Protocol("unsupported SSH version"));

@@ -1227,11 +1227,16 @@ python3 ~/.local/share/breenix-metal/metal-run stop ID
 
 Wait for each boot through `metal-run follow ID` before starting the next. The
 persistent session used by the host runner stays up until `stop`; start the runner
-once its console has printed bsshd's fingerprint and network readiness. The private
+once its console has reached the login prompt, network readiness and the
+`bsshd: listening on 0.0.0.0:22` receipt. The private
 site field `SERVER_SSH_HOST` supplies its destination; the existing operator fields
 supply the account and public key. The boot host must hold the matching private key.
 The runner uses OpenSSH with an isolated known_hosts file: keyscan must match the
-fingerprint printed by that specific boot before strict host-key logins proceed.
+fingerprint in that boot's protected bsshd log before strict host-key logins proceed.
+The runner reads the log through a root login over the leased SOL console, requiring
+its header to match `/run/breenix/boot-id`; the trusted key comes from SOL rather than SSH.
+Only host-key and authentication-refusal records are copied into the boot capture;
+the scorer requires those records as evidence.
 A deliberately wrong host key must fail strict checking. It forces both ciphers,
 stages a temporary Ed25519 authorized user key and restores the original file,
 checks authentication refusals, checks port 22 and both telnet ports, exercises PTY
@@ -1298,7 +1303,7 @@ server-suite --boot SECOND --sha SHA --milestone server/logs --previous-boot FIR
 The preparation stores the service log's SHA-256 and guest boot ID in the first
 boot's private store. The runner refuses a previous boot that is still live or
 booted a different commit. Its six cases check the shipped table services' log headers
-and root:adm 0640 ownership, separate stdout/stderr records, rotation at 256 KiB,
+and root:adm 0640 ownership, separate stdout/stderr records (including root daemon output kept off the console), rotation at 256 KiB,
 a counted oversized-line loss followed by intact output, blogd's live kernel
 records and ring-overrun report, and the previous boot's exact bytes before and
 after archive rotation. Temporary services run as the site account and are

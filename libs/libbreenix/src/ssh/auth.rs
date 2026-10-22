@@ -113,8 +113,8 @@ pub fn decide_request(msg: &[u8], session_id: &[u8], authorizer: &mut dyn Author
     if method != b"publickey" {
         println!(
             "bsshd: refused method '{}' for '{}'",
-            String::from_utf8_lossy(method),
-            username_str
+            String::from_utf8_lossy(method).escape_debug(),
+            username_str.escape_debug()
         );
         return Ok(Decision::Failure);
     }
@@ -129,8 +129,8 @@ pub fn decide_request(msg: &[u8], session_id: &[u8], authorizer: &mut dyn Author
     if !algorithm_fits_key(algo, key_blob) || !authorizer.authorized(username_str, key_blob) {
         println!(
             "bsshd: key refused for '{}' algo={} fingerprint={}",
-            username_str,
-            String::from_utf8_lossy(algo),
+            username_str.escape_debug(),
+            String::from_utf8_lossy(algo).escape_debug(),
             keys::fingerprint_text(key_blob)
         );
         return Ok(Decision::Failure);
@@ -163,7 +163,7 @@ pub fn decide_request(msg: &[u8], session_id: &[u8], authorizer: &mut dyn Author
         return Ok(Decision::Success(username_str.to_string()));
     }
 
-    println!("bsshd: signature refused for '{}'", username_str);
+    println!("bsshd: signature refused for '{}'", username_str.escape_debug());
     Ok(Decision::Failure)
 }
 

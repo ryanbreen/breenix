@@ -15,7 +15,7 @@
         },
         {
           "id": "host-key",
-          "title": "OpenSSH keyscan matches the Ed25519 fingerprint printed by this boot"
+          "title": "OpenSSH keyscan matches the Ed25519 fingerprint in this boot's protected service log"
         },
         {
           "id": "strict-login",

@@ -316,8 +316,21 @@ impl Supervisor {
                     match output.reader.read(&mut bytes) {
                         Ok(0) => { output.lines.finish(output.stream, log); output.ended = true; break; },
                         Ok(n) => {
-                            output.lines.feed(&bytes[..n], output.stream, log);
-                            if output.console { let _ = std::io::stdout().write_all(&bytes[..n]); }
+                            output.lines.feed_observed(&bytes[..n], output.stream, log, |line| {
+                                // Explicit boot receipts still feed serial gates. Ordinary daemon
+                                // output stays in the log and cannot overwrite a getty prompt.
+                                let readiness = entry.def.name == "bsshd"
+                                    && line == b"bsshd: listening on 0.0.0.0:22";
+                                let oracle = entry.def.name == "bssh-oracle"
+                                    && (line.starts_with(b"[BSSH_PUBKEY_ORACLE:")
+                                        || line.starts_with(b"[BSSH_ACCOUNT_ORACLE:"))
+                                    && line.ends_with(b"]");
+                                if output.stream == "stdout" && (readiness || oracle) {
+                                    if let Ok(text) = core::str::from_utf8(line) {
+                                        print!("{}\n", text);
+                                    }
+                                }
+                            });
                         },
                         Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                         Err(e) if e.kind() == ErrorKind::WouldBlock => break,
@@ -391,7 +404,16 @@ impl Supervisor {
         }
         let result = account::read_account(Path::new("/"), &entry.def.user)
             .map_err(|why| why.to_string())
-            .and_then(|account| launch(&entry.def, &account, self.publish));
+            .and_then(|account| {
+                // Complete the announcement before fork: the child may write its
+                // login prompt as soon as it runs (#2270).
+                match login_terminal(&entry.def) {
+                    Some(None) => print!("[init] getty on the console\n"),
+                    Some(Some(tty)) => print!("[init] getty on {}\n", tty),
+                    None => {},
+                }
+                launch(&entry.def, &account, self.publish)
+            });
         self.changed = true;
         match result {
             Ok((pid, outputs)) => {
@@ -405,10 +427,8 @@ impl Supervisor {
                 entry.next_ms = 0;
                 entry.killed = false;
                 entry.set(State::Running, now);
-                match login_terminal(&entry.def) {
-                    Some(None) => print!("[init] getty on the console\n"),
-                    Some(Some(tty)) => print!("[init] getty on {}\n", tty),
-                    None => print!("[init] {} started (PID {})\n", entry.def.name, pid),
+                if login_terminal(&entry.def).is_none() {
+                    print!("[init] {} started (PID {})\n", entry.def.name, pid);
                 }
                 entry.answer(true, &format!("ok started {} pid {}", entry.def.name, pid));
             }
@@ -840,7 +860,6 @@ struct Output {
     reader: std::fs::File,
     stream: &'static str,
     lines: Lines,
-    console: bool,
     ended: bool,
 }
 
@@ -877,7 +896,7 @@ fn launch(def: &Service, account: &Account, capture: bool) -> Result<(i32, Vec<O
             let reader = unsafe { std::fs::File::from_raw_fd(read.raw() as i32) };
             libbreenix::io::fcntl(read, libbreenix::io::fcntl_cmd::F_SETFL,
                 libbreenix::io::status_flags::O_NONBLOCK as i64).map_err(|e| format!("log reader: {}", e))?;
-            outputs.push(Output { reader, stream, lines: Lines::new(), console: account.uid == 0 && login_terminal(def).is_none(), ended: false });
+            outputs.push(Output { reader, stream, lines: Lines::new(), ended: false });
             writers.push(OwnedFd::new(write));
         }
     }
