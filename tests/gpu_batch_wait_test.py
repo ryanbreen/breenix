@@ -52,7 +52,9 @@ mod virgl {
     pub mod encode {
         pub const ALL_WARM: u32 = 0xffff;
         pub struct Enc;
-        impl Enc { pub fn new() -> Self { Self } pub fn finish(self) -> Option<Vec<super::Words>> { Some(vec![super::Words]) } }
+        impl Enc { pub fn new() -> Self { Self } pub fn finish(self) -> Option<Vec<super::Words>> {
+            (!crate::OOM.with(std::cell::Cell::get)).then(|| vec![super::Words])
+        } }
         pub fn warm_pipeline(_: &mut Enc, _: &mut (), _: u32, _: u32, _: u32, _: u32, _: bool, _: u32) {}
         pub struct TargetRes { pub id: u32, pub format: u32, pub info: super::super::TargetInfo }
         pub struct SourceRes { pub id: u32, pub format: u32, pub width: u32, pub height: u32 }
@@ -107,9 +109,10 @@ type WordBuf = Words;
 impl Words { fn page_count(&self) -> usize { 1 } }
 struct WarmStep { ctx: u32, pipeline: u32, left: u32, refused: bool, lost: bool }
 struct Ctx { state: CtxState, dropped: bool, owner: u64, device_alive: bool, warm: u32,
-    warm_after: u64, busy: bool, id: u32, objects: (), dx: (), vb: u32, scratch: u32, scratch_texture: u32 }
+    warm_after: u64, warm_oom: bool, busy: bool, id: u32, objects: (), dx: (), vb: u32, scratch: u32, scratch_texture: u32 }
 fn ctx() -> Ctx { Ctx { state: CtxState::Creating, dropped: false, owner: 1, device_alive: true,
-    warm: 0, warm_after: 0, busy: false, id: 1, objects: (), dx: (), vb: 1, scratch: 2, scratch_texture: 3 } }
+    warm: 0, warm_after: 0, warm_oom: false, busy: false, id: 1, objects: (), dx: (), vb: 1, scratch: 2, scratch_texture: 3 } }
+thread_local! { static OOM: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 thread_local! { static CLOCK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
 fn now_ns() -> u64 { CLOCK.with(|c| c.get()) }
 fn notify() {}
@@ -191,6 +194,24 @@ fn stalled_batch(svga: bool) {
         assert_eq!(c.syncs.values().filter(|s| !s.abandoned).count(), 0);
         // Production abandon preserves outstanding rows despite caller-visible EIO.
         assert_eq!(c.syncs.len(), 256);
+    });
+}
+#[test]
+fn a_failed_warm_encoding_is_visible_and_a_successful_retry_clears_it() {
+    with_core(|c| c.contexts.get_mut(&1).unwrap().state = CtxState::Live);
+    CLOCK.with(|t|t.set(2_000_000));
+    OOM.with(|oom|oom.set(true));
+    assert_eq!(warm_next(),None);
+    with_core(|c| {
+        assert!(c.contexts[&1].warm_oom);
+        assert!(c.warm_step.is_none());
+        assert!(c.syncs.is_empty());
+    });
+    OOM.with(|oom|oom.set(false));
+    assert_eq!(warm_next(),None);
+    with_core(|c| {
+        assert!(!c.contexts[&1].warm_oom);
+        assert!(c.warm_step.is_some());
     });
 }
 #[test]
