@@ -1017,33 +1017,54 @@ class Logs:
         self.root_check('grep -Fx "[log] lost lines=1 stream=stdout reason=line-too-long" /var/log/logs-loss.log; '
                         f'grep -Fx "[stdout] after-loss-{n}" /var/log/logs-loss.log')
 
+    def kernel_records(self, marker, prefix=''):
+        """Read a stable family of this boot's kernel logs (coordinator S17).
+
+        Pause and resume in the guest command, so no console typing delay holds
+        the logger stopped and no rename can duplicate or hide a record mid-read.
+        Every selected file is checked against its own complete boot header.
+        """
+        header = 'BREENIX-LOG 1 boot=' + self.boot_id + ' source=kernel limit=262144 archives=4'
+        paths = ' '.join('/var/log/kernel.log' + suffix for suffix in ('', '.1', '.2', '.3', '.4'))
+        select = ('FNR == 1 { same = ($0 == header); next } '
+                  'same && (index($0, "[log] lost ") == 1 || $0 == marker) { print }')
+        return self.root_check(prefix + 'svc stop blogd >/dev/null; '
+            'trap ' + shlex.quote('svc start blogd >/dev/null || exit 1') + ' 0; '
+            'head -n 1 /var/log/kernel.log | grep -Fx ' + shlex.quote(header) + '; '
+            'for p in ' + paths + '; do test -f "$p" || continue; '
+            'awk -v header=' + shlex.quote(header) + ' -v marker=' + shlex.quote(marker) + ' '
+            + shlex.quote(select) + ' "$p"; done')
+
+    def kernel_gap(self, live, cursor):
+        marker = '[kernel] [ INFO] audit: ' + live
+        text = self.kernel_records(marker, 'printf "%s\\n" ' + shlex.quote(live) + ' > /dev/kmsg; sleep 1; ')
+        if len(re.findall(r'^' + re.escape(marker) + r'\r?$', text, re.M)) != 1:
+            raise ValueError('no unique live kernel record in this boot log family')
+        gaps = re.findall(r'^\[log\] lost lines=unknown bytes=(\d+) reason=ring-overrun from=(\d+) to=(\d+)\r?$', text, re.M)
+        if not any(int(start) == cursor and int(end) - int(start) == int(size) > 0 for size, start, end in gaps):
+            raise ValueError('no new byte-exact ring overrun from the saved restart cursor')
+
     def case_kernel(self):
         # A restart without an overrun must neither replay bytes nor invent loss.
         marker = 'kernel-restart-' + self.nonce
         self.root_check('printf "%s\\n" ' + shlex.quote(marker) + ' > /dev/kmsg; sleep 1')
-        self.console.run('svc stop blogd')
-        before = self.root_check(r'grep -c "^\[log\] lost .* reason=ring-overrun" /var/log/kernel.log || true')
-        self.console.run('svc start blogd')
-        self.root_check('sleep 1; test "$(grep -Fxc ' + shlex.quote('[kernel] [ INFO] audit: ' + marker) + ' /var/log/kernel.log)" = 1')
-        after = self.root_check(r'grep -c "^\[log\] lost .* reason=ring-overrun" /var/log/kernel.log || true')
-        count = lambda text: re.findall(r'^([0-9]+)\r?$', text, re.M)[-1]
-        if count(before) != count(after): raise ValueError('restart invented a ring overrun')
+        record = '[kernel] [ INFO] audit: ' + marker
+        # Each snapshot resumes blogd, so the second observes the first restart.
+        before = self.kernel_records(record)
+        after = self.kernel_records(record)
+        if len(re.findall(r'^' + re.escape(record) + r'\r?$', after, re.M)) != 1:
+            raise ValueError('restart replayed or lost the kernel record')
+        losses = lambda text: re.findall(r'^\[log\] lost .* reason=ring-overrun.*$', text, re.M)
+        if losses(before) != losses(after): raise ValueError('restart invented a ring overrun')
         self.console.run('svc stop blogd')
         cursor_text = self.root_check('head -n 1 /run/breenix/kmsg-' + self.boot_id)
-        cursor = int(count(cursor_text))
+        cursor = int(re.findall(r'^([0-9]+)\r?$', cursor_text, re.M)[-1])
         try:
             self.root_check('i=0; while test "$i" -lt 400; do '
                             'printf "kernel-gap-%04d %090d\\n" "$i" 0 > /dev/kmsg; i=$((i+1)); done')
         finally:
             self.console.run('svc start blogd')
-        live = 'kernel-live-' + self.nonce
-        text = self.root_check('printf "%s\\n" ' + live + ' > /dev/kmsg; sleep 1; '
-                        'grep -F ' + live + ' /var/log/kernel.log >/dev/null; '
-                        'grep -E "lost lines=unknown bytes=[1-9][0-9]* reason=ring-overrun" /var/log/kernel.log; '
-                        'head -n 1 /var/log/kernel.log | grep -F ' + shlex.quote('boot=' + self.boot_id + ' source=kernel ') + ' >/dev/null')
-        gaps = re.findall(r'lost lines=unknown bytes=(\d+) reason=ring-overrun from=(\d+) to=(\d+)\r?$', text, re.M)
-        if not any(int(start) == cursor and int(end) - int(start) == int(size) > 0 for size, start, end in gaps):
-            raise ValueError('no new byte-exact ring overrun from the saved restart cursor')
+        self.kernel_gap('kernel-live-' + self.nonce, cursor)
 
     def case_persistent(self):
         if not self.previous: raise ValueError('--previous-boot preparation required')

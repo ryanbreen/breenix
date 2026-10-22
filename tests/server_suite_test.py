@@ -185,6 +185,45 @@ class HostServerScore(unittest.TestCase):
             console.run("sh -c 'exit 3'", done=r'(?m)^logs-check-ok$')
         self.assertEqual(len(typed), 1)
 
+    def test_kernel_gap_requires_this_boot_nonce_and_exact_cursor_across_rotation(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            bindir = root / 'bin'
+            bindir.mkdir()
+            svc = bindir / 'svc'
+            svc.write_text('#!/bin/sh\necho "$*" >> "' + str(root / 'controls') + '"\n')
+            svc.chmod(0o755)
+            logs = object.__new__(host['Logs'])
+            logs.boot_id = '1-2-3'
+            def run(command, **kwargs):
+                command = command.replace('/var/log/', str(root) + '/').replace('/dev/kmsg', str(root / 'kmsg'))
+                command = command.replace('sleep 1', ':')
+                return subprocess.run(['/bin/sh', '-c', command], capture_output=True, text=True,
+                    env=dict(os.environ, PATH=str(bindir) + ':' + os.environ['PATH'])).stdout
+            logs.console = SimpleNamespace(run=run)
+            def header(boot='1-2-3'):
+                return 'BREENIX-LOG 1 boot=' + boot + ' source=kernel limit=262144 archives=4\n'
+            live = 'kernel-live-fresh'
+            marker = '[kernel] [ INFO] audit: ' + live + '\n'
+            gap = '[log] lost lines=unknown bytes=20000 reason=ring-overrun from=260647 to=280647\n'
+            (root / 'kernel.log').write_text(header() + marker)
+            archive = root / 'kernel.log.1'
+            archive.write_text(header() + gap)
+            logs.kernel_gap(live, 260647)
+            self.assertEqual((root / 'controls').read_text().splitlines(), ['stop blogd', 'start blogd'])
+            for content in (header('old-boot') + gap, header() + gap.replace('20000', '19999'),
+                            header() + gap.replace('260647', '260648').replace('280647', '280648'), header()):
+                archive.write_text(content)
+                with self.assertRaisesRegex(ValueError, 'byte-exact ring overrun'):
+                    logs.kernel_gap(live, 260647)
+            archive.write_text(header() + gap)
+            (root / 'kernel.log').write_text(header() + marker.replace('fresh', 'stale'))
+            with self.assertRaisesRegex(ValueError, 'live kernel record'):
+                logs.kernel_gap(live, 260647)
+            (root / 'kernel.log').write_text(header('old-boot') + marker)
+            with self.assertRaisesRegex(ValueError, 'root log assertion failed'):
+                logs.kernel_gap(live, 260647)
+
     def test_service_log_header_must_name_the_boot_id_read_over_sol(self):
         console = object.__new__(host['Console'])
         console.boot_id = None

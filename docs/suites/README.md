@@ -1316,6 +1316,15 @@ records and ring-overrun report, and the previous boot's exact bytes before and
 after archive rotation. Temporary services run as the site account and are
 removed afterwards. Root reads protected logs on the leased SOL console.
 Results go to `server-logs.json`; preparation is not a passing category run.
+Coordinator ruling S17 (2026-10-22) requires the kernel case to find its boot's
+records across the active log and its four size-rotation archives. Each selected
+file must carry the exact boot header. The live nonce must occur once, and the
+overrun must start at the saved cursor with a positive byte count equal to the
+end minus start; a record absent from the family fails. The runner pauses and
+resumes blogd within the guest read command so rotation cannot race that read;
+console typing does not hold the logger paused. Restart checks use that same
+boot-filtered family and still reject replay or invented overruns.
+
 
 The category repeats on the same install. Each run writes fresh nonce markers into
 its service output and kernel records, so it cannot pass on records an earlier run
