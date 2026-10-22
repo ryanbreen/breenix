@@ -24,6 +24,10 @@ case. A one-case run (`only`) has no memory record.
 A manifest with diskChecks also requires --disk: debugfs reads the stopped
 VM image directly and compares the persisted bytes, bypassing the guest cache.
 
+A category marked "hostRunner" is run from the boot host against a persistent
+boot (scripts/metal/server-suite), not by the suite binary: the boot's records
+leave it out, and a milestone that measures it is scored on that persistent boot.
+
 With --milestone, the commit's effort path supplies the required category set.
 Missing or planned measured categories block acceptance. The full boot's records,
 memory and fatal-output checks still apply; only the measured categories' cases
@@ -68,6 +72,7 @@ def milestone_categories(path, milestone, suite):
 def verdict(manifest, records_log, logs, only=None, categories=None):
     suite = manifest["id"]
     planned = [category["id"] for category in manifest["categories"] if not category["cases"]]
+    hosted = [category["id"] for category in manifest["categories"] if category.get("hostRunner")]
     if categories is not None:
         if only or not categories:
             return False, "milestone acceptance needs categories and a full boot"
@@ -75,10 +80,15 @@ def verdict(manifest, records_log, logs, only=None, categories=None):
         missing = set(categories) - known
         if missing:
             return False, f"missing measured categories: {', '.join(sorted(missing))}"
+        elsewhere = [category for category in categories if category in hosted]
+        if elsewhere:
+            return False, (f"host-run categories are scored on their persistent boot, not this one: {', '.join(elsewhere)}"
+                           "; run scripts/metal/server-suite against it")
         planned = [category for category in planned if category in categories]
     if not only and planned:
         return False, f"planned categories have no cases: {', '.join(planned)}; acceptance is blocked"
-    cases = [f"{category['id']}/{case['id']}" for category in manifest["categories"] for case in category["cases"]]
+    cases = [f"{category['id']}/{case['id']}" for category in manifest["categories"]
+             if category["id"] not in hosted for case in category["cases"]]
     if only:
         selected = [case for case in cases if case == only or case.split("/", 1)[0] == only]
         if not selected:
@@ -172,6 +182,8 @@ def verdict(manifest, records_log, logs, only=None, categories=None):
     skipped = sum(kind == "SKIP" for kind, _ in accepted)
     if categories is not None:
         line = f"milestone categories={','.join(categories)} passed={sum(k == 'PASS' for k, _ in accepted)} total={len(accepted)}"
+    elif hosted:
+        line = f"{line}; host-run categories {','.join(hosted)} are scored on their persistent boot"
     if failed:
         failures = "; ".join(l[len(prefix):] for k, m, l in records if k == "FAIL" and (categories is None or m.group(1).split("/", 1)[0] in categories))
         return False, f"{line}: {failures[:400]}{also}"

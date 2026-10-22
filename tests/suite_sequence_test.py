@@ -55,6 +55,15 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual(skipped, [("users", "planned categories have no cases")])
         self.assertEqual(SEQUENCE["resolve"]("users", "x86-metal", False, read)[0], ["users"])
 
+    def test_all_leaves_out_suites_with_host_run_categories(self):
+        mixed = json.loads(manifest("users"))
+        mixed["categories"].append(dict(id="operator", hostRunner=True, cases=[dict(id="persistent")]))
+        read = self.reader({"plain": manifest("plain"), "users": json.dumps(mixed)}, efforts=("plain", "users"))
+        ids, skipped = SEQUENCE["resolve"]("all", "x86-metal", False, read)
+        self.assertEqual(ids, ["plain"])
+        self.assertEqual(skipped, [("users", "host-run categories need a persistent boot; run it with its milestone selectors")])
+        self.assertEqual(SEQUENCE["resolve"]("users", "x86-metal", False, read)[0], ["users"])
+
     def test_a_list_runs_in_the_given_order_and_is_refused_where_isolation_needs_another_place(self):
         read = self.reader({"disk": manifest("disk", sequence="last"), "plain": manifest("plain"),
                             "screen": manifest("screen", sequence="first"), "gpu": manifest("gpu", needs3dGpu=True),

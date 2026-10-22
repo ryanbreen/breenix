@@ -81,6 +81,19 @@ class SuiteVerdictTests(unittest.TestCase):
         self.assertFalse(SCORER.verdict(mixed, serial, [serial], categories=["first"])[0])
         self.assertFalse(SCORER.verdict(mixed, serial, [serial], only="first/one", categories=["first"])[0])
 
+    def test_host_run_category_is_left_to_its_persistent_boot(self):
+        hosted = dict(id="host", hostRunner=True, cases=[dict(id="persistent", title="Runs from the boot host")])
+        mixed = dict(MANIFEST, categories=MANIFEST["categories"] + [hosted])
+        serial = FIXTURES / "all-pass.txt"
+        ok, reason = SCORER.verdict(mixed, serial, [serial])
+        self.assertTrue(ok)
+        self.assertIn("host-run categories host are scored on their persistent boot", reason)
+        self.assertTrue(SCORER.verdict(mixed, serial, [serial], categories=["first", "second"])[0])
+        ok, reason = SCORER.verdict(mixed, serial, [serial], categories=["host"])
+        self.assertFalse(ok)
+        self.assertIn("scored on their persistent boot", reason)
+        self.assertFalse(SCORER.verdict(mixed, serial, [serial], only="host/persistent")[0])
+
     def test_milestone_resolution_requires_the_named_suite_measure(self):
         path = json.loads((ROOT / "docs/efforts/path.json").read_text())
         self.assertEqual(SCORER.milestone_categories(path, "users/kernel-checks", "users"),
