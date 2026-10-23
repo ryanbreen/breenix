@@ -179,7 +179,8 @@ class UpgradeSuite:
                 if value.returncode: raise ValueError('cannot read exact-head installer source')
                 call('mkdir', '-p', str(Path(base + '/' + name).parent), check=True)
                 call('tee', base + '/' + name, stdin=None, input=value.stdout, check=True)
-            built = call('env', 'CARGO_BUILD_JOBS=4', 'rustc', '--edition=2021', '--test',
+            compiler = call('python3', '-c', 'from pathlib import Path;print(Path.home()/".cargo/bin/rustc")', check=True).stdout.strip()
+            built = call('env', 'CARGO_BUILD_JOBS=4', compiler, '--edition=2021', '--test',
                          base + '/' + files[0], '-o', base + '/installer-tests')
             if built.returncode or re.search(r'(?m)^(warning|error)', built.stderr):
                 raise ValueError('installer host harness did not compile cleanly: ' + built.stderr)
@@ -233,7 +234,6 @@ class UpgradeSuite:
 
 def run(args, host):
     target = UpgradeSuite(args, host)
-    boot = json.loads(target.read(args.boot, 'run.json'))
     manifest = json.loads(target.read(args.boot, 'definition/docs/suites/server.json'))
     effort = json.loads(target.read(args.boot, 'definition/docs/efforts/path.json'))
     fatal = json.loads(target.read(args.boot, 'definition/docs/boot-path.json'))['fatal'] + ['KERNEL PANIC:']
@@ -278,6 +278,7 @@ def run(args, host):
     passed = sum(case['result'] == 'PASS' for case in records['cases'])
     print(f'SUITE server DONE passed={passed} failed={4-passed} skipped=0 total=4', flush=True)
     serial = '\n'.join(captures)
+    boot = json.loads(target.read(args.boot, 'run.json'))
     verdict = host['score'](manifest, effort, records, serial, boot, args.sha, fatal)
     print(verdict, flush=True)
     return 0
