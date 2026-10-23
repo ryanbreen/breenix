@@ -2837,7 +2837,7 @@ fn w_console_writer_kill() -> CaseResult {
         if setmask(0).is_err() || ignore(SIGTERM).is_err() { return 11; }
         let fd = Fd::from_raw(file.as_raw_fd() as u64);
         loop {
-            if io::write(fd, b"\r").is_err() { return 12; }
+            if !matches!(io::write(fd, b"\r"), Ok(1)) { return 12; }
             progress.set(0, progress.get(0) + 1);
         }
     })?;
