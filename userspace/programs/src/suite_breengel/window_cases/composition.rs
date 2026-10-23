@@ -1051,19 +1051,19 @@ fn composition_target_lifetime()->CaseResult {
     // they are made first, with the pattern the case ends on, so the baseline holds them.
     let warm=libbreenix::gpu::target_create(0,1,1).map_err(|r|format!("fixture warm-up target {}",outcome(r))).cite("18")?;
     let warmed=fill(FixtureTarget{handle:warm,width:1,height:1},1,1,17);
+    let charged=crate::gpu_checks::counters();
     libbreenix::gpu::resource_destroy(warm);
     warmed.cite("18")?;
-    // B47: destruction keeps its charge until the device completes the unref.
-    // Sample only after two readings agree, with a bounded setup wait.
+    let charged=charged.cite("18")?;
+    // B48 item 4: observe the warm-up target's charge before destruction, then
+    // require its retirement to lower the charge before taking the baseline.
     let start=now_ms();
-    let mut before=crate::gpu_checks::counters().cite("18")?;
-    loop {
-        let _=time::sleep_ms(5);
+    let before=loop {
         let settled=crate::gpu_checks::counters().cite("18")?;
         ensure(since(start)<1_000,"18","gpu-display: warm-up target retirement did not settle")?;
-        if settled.resource_bytes==before.resource_bytes { break; }
-        before=settled;
-    }
+        if settled.resource_bytes<charged.resource_bytes { break settled; }
+        let _=time::sleep_ms(5);
+    };
     super::handoff::snapshot_lifetime(false)?;
     interface()?;
     let mut k=compositor()?;let mut w=W::new(64,48,3)?;
