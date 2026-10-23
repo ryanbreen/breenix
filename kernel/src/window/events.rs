@@ -26,7 +26,14 @@ impl Ring {
         limits::EVENT_RING.saturating_sub(self.queue.len())
     }
 
-    /// Queue `event`. False when it was counted as lost instead.
+    /// Admit compositor input without charging refused events as lost (B48).
+    pub fn try_push(&mut self, event: WindowEvent) -> bool {
+        // A pending kernel Overflow must keep its place before later input.
+        if self.lost > 0 { return false; }
+        super::event_admission::push(&mut self.queue, limits::EVENT_RING, event)
+    }
+
+    /// Queue a kernel event. False when it was counted as lost instead.
     pub fn push(&mut self, event: WindowEvent) -> bool {
         if self.lost > 0 {
             if self.free() >= 2 {
@@ -111,14 +118,14 @@ fn overflow(lost: u64) -> WindowEvent {
 
 // claim-lint:ok: Event validation is normative in docs/gui/breengel.md section 19.2 and B41 (#2312).
 /// Whether a compositor may write `event` (section 19.2): a kind of 1 to 15 other than
-/// `FontChanged`, which Breengel makes, and the four the kernel makes: `Resized` and
+/// `FontChanged`, which Breengel makes, and the three the kernel makes: `Resized` and
 /// `ResizeFailed` (only a `RESIZE` of the window's buffers reports them, so a size in one is
-/// the buffers' actual size), `CompositorChanged` (each claim's epoch) and `Overflow`; text of
+/// the buffers' actual size), `CompositorChanged` (each claim's epoch); the compositor reports its own `Overflow`; text of
 /// at most 240 bytes; the reserved field zero.
 pub fn writable(event: &WindowEvent) -> bool {
-    use event_kind::{COMPOSITOR_CHANGED, FONT_CHANGED, OVERFLOW, RESIZED, RESIZE_FAILED, RESIZE_REQUESTED};
+    use event_kind::{COMPOSITOR_CHANGED, FONT_CHANGED, RESIZED, RESIZE_FAILED, RESIZE_REQUESTED};
     (1..=RESIZE_REQUESTED).contains(&event.kind)
-        && ![FONT_CHANGED, RESIZED, RESIZE_FAILED, COMPOSITOR_CHANGED, OVERFLOW].contains(&event.kind)
+        && ![FONT_CHANGED, RESIZED, RESIZE_FAILED, COMPOSITOR_CHANGED].contains(&event.kind)
         && (event.kind != RESIZE_REQUESTED
             || ((1..=limits::MAX_DIMENSION).contains(&event.width) && (1..=limits::MAX_DIMENSION).contains(&event.height)))
         && event.text_len as usize <= limits::EVENT_TEXT

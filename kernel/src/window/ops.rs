@@ -1126,7 +1126,7 @@ pub fn event_fd(caller: &Caller, id: u64) -> Result<u64, i32> {
     .map(|fd| fd as u64)
 }
 
-/// `WRITE_EVENTS` (compositor only): all of the events, or none when one is malformed.
+/// `WRITE_EVENTS` (compositor only): validate the batch, then admit the prefix that fits (B48).
 pub fn write_events(caller: &Caller, wr: &WriteEvents) -> Result<u64, i32> {
     if wr.reserved != 0 {
         return Err(EINVAL);
@@ -1151,7 +1151,7 @@ pub fn write_events(caller: &Caller, wr: &WriteEvents) -> Result<u64, i32> {
     let (queued, waits) = {
         let mut reg = REGISTRY.lock();
         let w = reg.window(wr.id, caller, who::compositor)?;
-        let queued = events.into_iter().filter(|e| w.ring.push(*e)).count();
+        let queued = events.into_iter().take_while(|e| w.ring.try_push(*e)).count();
         (queued, w.waits.clone())
     };
     waits.events.wake_up();

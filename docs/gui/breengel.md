@@ -1257,12 +1257,16 @@ meaning. Breengel maps an unknown kind to `Event::Unknown { kind }`, never to a 
 
 <!-- claim-lint:ok: Normative request validation specified by coordinator B41 and #2312. -->
 - `WRITE_EVENTS` (compositor only) queues events on one window's ring of 64. A kind outside 1 to 15, the kind
-  Breengel makes (`FontChanged`), a kind the kernel makes (`Resized`, `ResizeFailed`, `CompositorChanged`,
-  `Overflow`), a `ResizeRequested` whose width or height is outside 1 to 4,096 (section 17.2) or a
+  Breengel makes (`FontChanged`), a kind the kernel makes (`Resized`, `ResizeFailed`, `CompositorChanged`), a `ResizeRequested` whose width or height is outside 1 to 4,096 (section 17.2) or a
   `text_len` above 240 is EINVAL, and nothing in that call is delivered.
   Writing to a destroyed window is ENOENT.
-- Events arrive in the order written. A full ring keeps the events it holds, counts the ones it could not
-  queue, and delivers an `Overflow` event with the count before the next event; nothing is lost silently.
+<!-- claim-lint:ok: Normative input admission and overflow contract adopted by B48 for #2339. -->
+- Events arrive in the order written. `WRITE_EVENTS` returns the queued prefix's count. A full ring returns
+  zero without changing its contents or counting the refused events as lost. The compositor retains the
+  unqueued remainder, including keys, pastes and Close requests, in a bounded per-client backlog and retries
+  as the client drains. Only exceeding that bound drops the oldest events; the compositor then writes
+  `Overflow { lost: N }` to tell the client how many it dropped. A compositor-written Overflow is writable
+  and reaches the client like other events.
 - An event for one window wakes only that window's readers. `EVENT_FD` is pollable and reports POLLIN when an
   event is queued.
 - `EVENT_FD` of window 0 gives the compositor its scene descriptor (ENOENT to any other caller, as for an id

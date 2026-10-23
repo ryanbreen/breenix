@@ -26,7 +26,7 @@ pub(crate) const EVENTS: &[Case] = &[
     pictured!("processed-at-acquire", "An event whose handler returns after frame N was acquired is acknowledged by frame N + 1, not by frame N", events_processed_at_acquire),
     pictured!("no-change-after-redraw", "commit_no_change does not acknowledge an event whose handler returned Redraw until a frame acquired after it is committed", events_no_change_after_redraw),
     pictured!("processed-ack", "commit_no_change publishes the processed serial without changing pixels", events_processed_ack),
-    pictured!("overflow", "A full ring reports how many events were lost instead of dropping them silently", events_overflow),
+    pictured!("overflow", "A full ring refuses input without loss and delivers compositor-written Overflow", events_overflow),
     pictured!("wait-timeout", "wait_event with a timeout returns no earlier than the timeout and within 100 ms after it when nothing arrives", events_wait_timeout),
     pictured!("wait-eintr", "A signal interrupts a blocked wait_event with EINTR", events_wait_eintr),
     pictured!("wait-targeted", "An event for one window does not wake a reader blocked on another", events_wait_targeted),
@@ -594,15 +594,21 @@ fn events_overflow() -> CaseResult {
     let codes: Vec<u32> = got.iter().take(64).map(|e| e.keycode).collect();
     ensure(codes == (1..=64).collect::<Vec<u32>>() && got[..64.min(got.len())].iter().all(|e| e.kind == kind::KEY_PRESS), "19.2",
         format!("the full ring delivered {} events, keycodes {:?}...; it keeps the 64 it holds", got.len(), codes.iter().take(8).collect::<Vec<_>>()))?;
-    let over = got.get(64).copied();
-    ensure(got.len() == 65 && over.is_some_and(|e| e.kind == kind::OVERFLOW && e.lost == 10), "19.2", format!(
-        "after the 64 kept events the ring delivered {:?}; the contract gives Overflow with lost = 10", over.map(|e| (e.kind, e.lost))))?;
+    // B48: refusal is backpressure, not loss. Only the compositor reports drops.
+    ensure(got.len() == 64, "19.2", format!("refused writes produced extra events: {}", got.len()))?;
+    let mut over = abi::WindowEvent::ZERO;
+    over.kind = kind::OVERFLOW;
+    over.lost = 10;
+    send(&mut k, w.id(), &[over]).cite("19.2")?;
+    let reported = read_events(w.id()).map_err(|e| format!("READ_EVENTS {}", outcome(e))).cite("19.2")?;
+    ensure(reported.len() == 1 && reported[0].kind == kind::OVERFLOW && reported[0].lost == 10,
+        "19.2", "the compositor-written Overflow did not reach its client")?;
     let next = send(&mut k, w.id(), &[key(kind::KEY_PRESS, 99)]).cite("19.2")?;
     let got = read_events(w.id()).map_err(|e| format!("READ_EVENTS {}", outcome(e))).cite("19.2")?;
     ensure(got.len() == 1 && got[0].keycode == 99 && got[0].serial == next, "19.2", format!(
         "after the overflow was read, the next event arrived as {:?}", got.iter().map(|e| (e.kind, e.keycode)).collect::<Vec<_>>()))?;
     ensure(first >= 1, "19.3", "serials start at 1")?;
-    ensure(Event::from_raw(&over.unwrap()) == Event::Overflow { lost: 10 }, "19.1", "Breengel does not decode Overflow with its count")
+    ensure(Event::from_raw(&reported[0]) == Event::Overflow { lost: 10 }, "19.1", "Breengel does not decode Overflow with its count")
 }
 
 fn read_blocking(id: u64, timeout_ns: u64) -> i64 {
@@ -867,7 +873,7 @@ fn events_malformed_write() -> CaseResult {
         ("resize width 0", zero_width), ("resize height 0", zero_height),
         ("resize width 4097", too_wide), ("resize height 4097", too_tall),
         ("kind 0", ev(0)), ("kind 16", ev(16)), ("FontChanged, which Breengel makes", ev(kind::FONT_CHANGED)),
-        ("Overflow, which the kernel makes", ev(kind::OVERFLOW)), ("Resized, which the kernel makes", ev(kind::RESIZED)),
+        ("Resized, which the kernel makes", ev(kind::RESIZED)),
         ("ResizeFailed, which the kernel makes", ev(kind::RESIZE_FAILED)), ("CompositorChanged, which the kernel makes", ev(kind::COMPOSITOR_CHANGED)),
         ("text_len 241", long), ("a nonzero reserved field", reserved),
     ];
