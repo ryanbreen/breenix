@@ -47,6 +47,10 @@
           "title": "In canonical mode a read returns nothing until the line ends, then the whole line"
         },
         {
+          "id": "canonical-limit",
+          "title": "Canonical lines through 4095 bytes arrive whole and overflow retains editing and the delimiter"
+        },
+        {
           "id": "canonical-one-line",
           "title": "A canonical read returns at most one line"
         },
