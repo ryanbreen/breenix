@@ -257,9 +257,6 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
         if r.last.is_none() {
             return Some(Err(EINVAL));
         }
-        if c.queue_size < 2 {
-            return Some(Err(ENOMEM));
-        }
         // Count admitted display work across the device wait. A VT switch waits
         // for these presentations before drawing its foreground console.
         let Some(presentation) = crate::console::vt::Presentation::begin(true) else {
@@ -270,8 +267,13 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
                 c.resources.get_mut(&id)?.holds += 1;
                 if let Some(old) = previous { c.unhold(old.id); }
             }
+            crate::tracing::providers::gpu::GPU_PRESENTS_SUSPENDED.increment();
+            // No device present was sent, so the completed-presents counter stays.
             return Some(Ok(None));
         };
+        if c.queue_size < 2 {
+            return Some(Err(ENOMEM));
+        }
         let other = c.procs.get(&tgid).and_then(|p| {
             p.resources
                 .values()

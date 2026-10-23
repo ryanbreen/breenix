@@ -4496,6 +4496,16 @@ impl From<i64> for Refused {
 /// checked writable before any device work.
 fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u64>) -> Result<u64, Refused> {
     let window = observer == Observer::Window;
+    // Count owner observation with presentation so a VT release cannot expose the
+    // next foreground terminal while readback holds the current binding.
+    let _presentation = if a.target == 0 && !window {
+        if !display::owner(tgid) {
+            return Err(Refused::Errno(abi::errno::EPERM));
+        }
+        Some(crate::console::vt::Presentation::begin(true).ok_or(abi::errno::EPERM)?)
+    } else {
+        None
+    };
     let _scanout = if a.target == 0 {
         if !window && !display::owner(tgid) {
             return Err(Refused::Errno(abi::errno::EPERM));
@@ -4533,9 +4543,8 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         Ok((id, r.format, r.width, r.height, r.pitch, r.backing.clone()))
     })
     .ok_or(ENODEV)??;
-    // A suspended display owner observes the foreground console too. Protect its
-    // backing while the observation poisons and transfers it, just as for the
-    // privileged window observer.
+    // Privileged window observation can read the foreground console. Protect its
+    // backing throughout the poison/transfer observation.
     let canvas = core::cell::Cell::new(screen::is_target(id).then(crate::console::hold_canvas));
     if window {
         // The whole bound target, in canonical rows.

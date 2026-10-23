@@ -36,11 +36,16 @@ pub static GPU_RESOURCE_BYTES: TraceCounter =
 pub static GPU_IRQ_MASKED_MAX_US: TraceCounter =
     TraceCounter::new("gpu_irq_masked_max_us", "Longest IRQ-masked interval in the GPU paths, microseconds");
 
+/// Valid PRESENT calls retained offscreen while their terminal is in the background.
+#[no_mangle]
+pub static GPU_PRESENTS_SUSPENDED: TraceCounter =
+    TraceCounter::new("gpu_presents_suspended", "PRESENT calls retained without a device bind or flush");
+
 /// Threads holding a [`GpuPath`]: the masking primitives look no further while it is 0.
 static GPU_PATH_THREADS: AtomicU32 = AtomicU32::new(0);
 
 pub fn init() {
-    for counter in [&GPU_CONTEXTS, &GPU_RESOURCES, &GPU_RESOURCE_BYTES, &GPU_IRQ_MASKED_MAX_US] {
+    for counter in [&GPU_CONTEXTS, &GPU_RESOURCES, &GPU_RESOURCE_BYTES, &GPU_IRQ_MASKED_MAX_US, &GPU_PRESENTS_SUSPENDED] {
         assert!(register_counter(counter).is_some(), "trace counter registry overflow while registering the GPU gauges");
     }
 }
