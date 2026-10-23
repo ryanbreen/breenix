@@ -878,13 +878,22 @@ class Services:
         before = services['bsshd']
         self.console.login()
         after_records = len(self.init_records())
-        self.console.type_line('kill -9 ' + str(before['pid']))
+        kill_offset = self.console.size()
+        kill_command = 'kill -9 ' + str(before['pid'])
+        self.console.type_line(kill_command)
         sent = time.monotonic()
-        # Reap the old listener before connecting: one of its surviving children can
-        # otherwise answer while the new listener is still starting.
         deadline = sent + RESTART_WINDOW_S
-        self.await_init_line(after_records, r'^\[init\] bsshd killed by signal 9$', "bsshd's SIGKILL",
-                             timeout=max(0, deadline - time.monotonic()))
+        # A Ctrl-U retry can leave a bare prompt before the kill ran. Start
+        # the completion wait only after the submitted command's newline.
+        text, echoed = self.console.wait(
+            kill_offset, r'(?m)^' + Console.PROMPT + ' ' + re.escape(kill_command)
+            + r'[ \t]*(?:\[init\][^\n]*)?\n', 'the submitted SIGKILL command',
+            timeout=max(0, deadline - time.monotonic()))
+        self.console.wait(kill_offset + len(text[:echoed.end()].encode()),
+                          r'(?m)^' + Console.PROMPT + r'[ \t]*(?=\[init\]|\n|$)',
+                          'the shell prompt after SIGKILL', timeout=max(0, deadline - time.monotonic()))
+        # Keep slow protected-log input outside the restart window. The state
+        # check below requires the new listener, not a surviving old child.
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -895,17 +904,18 @@ class Services:
                 raise ValueError('no strict-host-key reconnect within ' + str(RESTART_WINDOW_S) + ' s of the kill')
             if time.monotonic() > deadline:
                 raise ValueError('no strict-host-key reconnect within ' + str(RESTART_WINDOW_S) + ' s of the kill')
-            if result.returncode == 0 and result.stdout.strip() == '1000': break
+            if result.returncode == 0 and result.stdout.strip() == '1000':
+                remaining = deadline - time.monotonic()
+                if remaining <= 0: raise ValueError('restart state was not verified within 10 s of the kill')
+                _, services = self.state(timeout=remaining)
+                if time.monotonic() > deadline: raise ValueError('restart state was not verified within 10 s of the kill')
+                after = services['bsshd']
+                if after['state'] == 'running' and after['pid'] not in (0, before['pid']) \
+                        and after['starts'] == before['starts'] + 1 and after['exit'] == 'signal:9':
+                    break
             time.sleep(min(0.25, max(0, deadline - time.monotonic())))
         self.probe.transcript.append(dict(reconnectSeconds=round(time.monotonic() - sent, 3)))
-        remaining = deadline - time.monotonic()
-        if remaining <= 0: raise ValueError('restart state was not verified within 10 s of the kill')
-        _, services = self.state(timeout=remaining)
-        if time.monotonic() > deadline: raise ValueError('restart state was not verified within 10 s of the kill')
-        after = services['bsshd']
-        if after['state'] != 'running' or after['pid'] in (0, before['pid']) or after['starts'] != before['starts'] + 1 \
-                or after['exit'] != 'signal:9':
-            raise ValueError('the published state does not show the restart after SIGKILL')
+        self.await_init_line(after_records, r'^\[init\] bsshd killed by signal 9$', "bsshd's SIGKILL")
         self.await_init_line(after_records, r'^\[init\] bsshd restarts in 1000 ms$', 'the restart delay')
 
     def case_reconnect_bsh(self):
