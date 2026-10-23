@@ -363,12 +363,10 @@ const FLOOR_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/syscall/mmap.rs", "sys_mmap", 1),
     ("kernel/src/syscall/memory_common.rs", "place_below", 1),
 ];
+// B42/B43 retire the four v1 window/compositor mapping handlers. The
+// surviving x86-64 fbmmap producer stays pinned alongside ordinary mmap.
 const DESCENT_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/syscall/mmap.rs", "sys_mmap", 1),
-    ("kernel/src/syscall/graphics.rs", "handle_create_window_buffer", 1),
-    ("kernel/src/syscall/graphics.rs", "handle_resize_window_buffer", 1),
-    ("kernel/src/syscall/graphics.rs", "handle_map_window_buffer", 1),
-    ("kernel/src/syscall/graphics.rs", "handle_map_compositor_texture", 1),
     ("kernel/src/syscall/graphics.rs", "fbmmap", 1),
 ];
 const PRODUCER_FILES: &[&str] = &[

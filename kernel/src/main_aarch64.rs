@@ -1065,7 +1065,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         && kernel::drivers::virtio::gpu_pci::is_virgl_enabled()
     {
         serial_println!("[boot] VirGL active — skipping GOP framebuffer init (2D resource already set up in gpu_pci::init)");
-        // Populate FB_INFO_CACHE so fbinfo syscall works for userspace programs.
+        // Populate the geometry cache for the pre-core console path.
         // VirGL owns the display but userspace still needs dimensions for layout.
         if let Some((w, h)) = kernel::drivers::virtio::gpu_pci::dimensions() {
             let _ = arm64_fb::FB_INFO_CACHE.try_init_once(|| arm64_fb::FbInfoCache {

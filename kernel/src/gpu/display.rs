@@ -30,8 +30,6 @@ pub(super) struct Owner {
     pub pid: u64,
     pub mode: u32,
     pub last: Option<Binding>,
-    /// Private CPU framebuffer target, retained across nested owners.
-    pub pane: Option<u32>,
 }
 
 pub(super) struct State {
@@ -82,7 +80,7 @@ pub(super) struct Presenting {
 /// Whether thread group `tgid` owns the display now. Ownership is recorded per thread
 /// group with the take-over, so this reads one word and takes no lock.
 pub(super) fn owner(tgid: u64) -> bool {
-    crate::syscall::graphics::DISPLAY_OWNER_GROUP.load(Ordering::Acquire) == tgid
+    crate::syscall::display::DISPLAY_OWNER_GROUP.load(Ordering::Acquire) == tgid
 }
 
 /// Whether `tgid` may observe target `id`: a possible scanout is the display owner's, or a
@@ -259,6 +257,20 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
         if r.last.is_none() {
             return Some(Err(EINVAL));
         }
+        // Count admitted display work across the device wait. A VT switch waits
+        // for these presentations before drawing its foreground console.
+        let Some(presentation) = crate::console::vt::Presentation::begin(true) else {
+            // Rendering continues offscreen. Retain only the latest completed
+            // frame for the terminal's return, without inventing a flush fence.
+            let previous = c.display.stack.last_mut()?.last.replace(Binding { id, fence: 0, answer: 0 });
+            if previous.map(|b| b.id) != Some(id) {
+                c.resources.get_mut(&id)?.holds += 1;
+                if let Some(old) = previous { c.unhold(old.id); }
+            }
+            crate::tracing::providers::gpu::GPU_PRESENTS_SUSPENDED.increment();
+            // No device present was sent, so the completed-presents counter stays.
+            return Some(Ok(None));
+        };
         if c.queue_size < 2 {
             return Some(Err(ENOMEM));
         }
@@ -362,10 +374,11 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
         c.backlog.push_back((epoch, bind));
         c.backlog.push_back((epoch, flush));
         c.flush();
-        Some(Ok((ctx_id, n, bgl_fence)))
+        Some(Ok(Some((ctx_id, n, bgl_fence, presentation))))
     });
-    let (ctx_id, n, bgl_fence) = match sent {
-        Ok(Ok(s)) => s,
+    let (ctx_id, n, bgl_fence, _presentation) = match sent {
+        Ok(Ok(Some(s))) => s,
+        Ok(Ok(None)) => return Ok((0, fence_status::OK, 0)),
         Ok(Err(e)) => return Err(e),
         Err(_) => return Err(EINTR),
     };
@@ -476,8 +489,8 @@ fn publish_owner(c: &mut Core) {
         .last()
         .map_or((u64::MAX, u64::MAX, KERNEL_MODE as u32), |o| (o.group, o.pid, o.mode));
     c.display.mode = mode;
-    crate::syscall::graphics::DISPLAY_OWNER_GROUP.store(group, Ordering::Release);
-    crate::syscall::graphics::DISPLAY_OWNER_PID.store(pid, Ordering::Release);
+    crate::syscall::display::DISPLAY_OWNER_GROUP.store(group, Ordering::Release);
+    crate::syscall::display::DISPLAY_OWNER_PID.store(pid, Ordering::Release);
 }
 
 pub(super) struct Transition;
@@ -557,7 +570,6 @@ pub(super) fn take(group: u64, pid: u64, vt: usize) -> Result<(), i64> {
             pid,
             mode: c.display.mode,
             last: None,
-            pane: None,
         });
         publish_owner(c);
     });
@@ -601,7 +613,7 @@ pub(super) fn give(giver: u64, pid: u32) -> Result<(), i64> {
     crate::console::vt::take_display_nested(target, vt).map_err(|e| e as i64)?;
     with_core(|c| {
         let mode = c.display.mode;
-        c.display.stack.push(Owner { group: target, pid: pid as u64, mode, last: None, pane: None });
+        c.display.stack.push(Owner { group: target, pid: pid as u64, mode, last: None });
         publish_owner(c);
     });
     crate::process::with_process_manager(|m| {
@@ -629,9 +641,6 @@ pub(super) fn back(group: u64) -> Result<(), i64> {
             }
             with_core(|c| {
                 publish_owner(c);
-                if let Some(id) = removed.pane {
-                    c.unhold(id);
-                }
                 if let Some(b) = removed.last {
                     c.unhold(b.id);
                 }
@@ -654,9 +663,6 @@ pub(super) fn ended(c: &mut Core, group: u64) {
     let was_top = c.display.stack.last().is_some_and(|o| o.group == group);
     if let Some(i) = c.display.stack.iter().position(|o| o.group == group) {
         let o = c.display.stack.remove(i);
-        if let Some(id) = o.pane {
-            c.unhold(id);
-        }
         if let Some(b) = o.last {
             c.unhold(b.id);
         }
@@ -669,6 +675,11 @@ pub(super) fn ended(c: &mut Core, group: u64) {
 }
 
 pub(super) fn restore() -> Result<(), i64> {
+    let owned = with_core(|c| !c.display.stack.is_empty()).unwrap_or(false);
+    let Some(_presentation) = crate::console::vt::Presentation::begin(owned) else {
+        // The foreground console retains scanout until the graphics VT returns.
+        return Ok(());
+    };
     // An owner that has not presented yet was shown what was on the screen when it took
     // custody: the frame of the nearest owner below it that presented.
     let (saved, current, owned) = with_core(|c| {

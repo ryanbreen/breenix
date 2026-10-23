@@ -936,13 +936,39 @@ fn owner_on_tty3(ready: &Gate, body: impl FnOnce(&Term) -> Verdict) -> Verdict<C
     Ok(child)
 }
 
+/// Root's window observation reads the complete device binding without owner authority.
+#[cfg(target_arch = "aarch64")]
+fn observe_foreground() -> Verdict<Vec<u8>> {
+    use libbreenix::window::{self, abi::{self, Plain}};
+    let (width, height) = super::display_size()?;
+    let mut pixels = vec![0u8; width as usize * height as usize * 4];
+    let mut record = [0u8; libbreenix::gpu::abi::record::SIZE];
+    let mut arg = abi::Readback::ZERO;
+    arg.dst = pixels.as_mut_ptr() as u64;
+    arg.dst_len = pixels.len() as u64;
+    arg.record = record.as_mut_ptr() as u64;
+    arg.record_len = record.len() as u32;
+    window::call(abi::op::SCANOUT_READBACK, &mut arg).map_err(|e| format!("foreground observation: {e}"))?;
+    for p in pixels.chunks_exact_mut(4) { p[3] = 0xFF; }
+    Ok(pixels)
+}
+
 pub fn vt_switch_vt_process_release() -> CaseResult {
     measured(|| {
         let _back = BackToTty1;
         let witness = mark("suspended-compositor");
-        Term::vt(2)?.write(format!("\x1bc{witness}\r\n").as_bytes())?;
+        struct RestoreCursor;
+        impl Drop for RestoreCursor {
+            fn drop(&mut self) {
+                if let Ok(tty2) = Term::vt(2) { let _ = tty2.write(b"\x1b[?25h"); }
+            }
+        }
+        let _cursor = RestoreCursor;
+        Term::vt(2)?.write(format!("\x1bc{witness}\r\n\x1b[?25l").as_bytes())?;
         let (ready, asked) = (Gate::new()?, Gate::new()?);
         let (presented, checked) = (Gate::new()?, Gate::new()?);
+        #[cfg(target_arch = "aarch64")]
+        let (baseline_ready, baseline) = (Gate::new()?, Gate::new()?);
         let mut owner = owner_on_tty3(&ready, |tty3| {
             require(signalled(&RELEASES, 1, 3000), "no release signal")?;
             require(tty3.state()?[0] == 3, "the foreground moved before the owner answered")?;
@@ -953,16 +979,45 @@ pub fn vt_switch_vt_process_release() -> CaseResult {
             sleep(200);
             tty3.ok("VT_RELDISP(1)", VT_RELDISP, 1)?;
             require(within(3000, || foreground().ok() == Some(2)), "owner did not leave foreground")?;
+            // Foreground state is published before its screen is drawn. Establish
+            // the foreground pixels before testing whether GPU work overwrites them.
+            wait_active(2)?;
+            shows(2, &witness)?;
             #[cfg(target_arch = "aarch64")]
-            for op in [10, 16] {
-                // A suspended owner's command succeeds without reaching the
-                // compositor, even with a pointer it would otherwise reject.
-                let cmd = libbreenix::graphics::FbDrawCmd { op, p1: 0, p2: 0, p3: 0, p4: 0, color: 0 };
-                let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const _ as u64) } as i64;
-                require(ret == 0, &format!("suspended compositor op {op} returned {ret}"))?;
-            }
+            let _painted = {
+                // Only the privileged observer may read the foreground terminal.
+                let mut pixels = [0xA5u8; 4];
+                let mut record = [0x5Au8; libbreenix::gpu::abi::record::SIZE];
+                let ret = libbreenix::gpu::readback(0, [0, 0, 1, 1], &mut pixels, 4, &mut record);
+                require(ret == -EPERM && pixels == [0xA5; 4] && record.iter().all(|b| *b == 0x5A),
+                    "suspended owner read the foreground or changed refused outputs")?;
+                baseline_ready.open();
+                baseline.wait(3000, "the privileged foreground baseline")?;
+                let skipped = || -> Verdict<u64> {
+                    let counters = std::fs::read_to_string("/proc/trace/counters").map_err(|e| e.to_string())?;
+                    counters.lines().find_map(|line| {
+                        let mut words = line.split_whitespace();
+                        (words.next()? == "gpu_presents_suspended:").then(|| words.next()?.parse().ok()).flatten()
+                    }).ok_or_else(|| "missing suspended PRESENT counter".to_string())
+                };
+                let before = skipped()?;
+                let painted = super::paint_owner()?;
+                let (ret, present) = libbreenix::gpu::present(painted.context, painted.target);
+                require(ret == 0 && present.fence == 0 && present.answer == 0,
+                    "suspended PRESENT did not report successful offscreen completion")?;
+                require(skipped()? == before + 2, "suspended PRESENT counter did not count both retained calls")?;
+                painted
+            };
             presented.open();
             checked.wait(3000, "the foreground read-back")?;
+            #[cfg(target_arch = "aarch64")]
+            {
+                require(signalled(&ACQUIRES, 1, 3000), "no acquire signal on graphics VT return")?;
+                tty3.ok("VT_RELDISP(VT_ACKACQ)", VT_RELDISP, VT_ACKACQ)?;
+                require(within(3000, || {
+                    super::read_screen().is_ok_and(|(pixels, _)| pixels.iter().all(|p| *p == 0x3c3c3c))
+                }), "returning graphics terminal did not restore its latest GPU frame")?;
+            }
             drop(display);
             Ok(())
         })?;
@@ -970,9 +1025,23 @@ pub fn vt_switch_vt_process_release() -> CaseResult {
         asked.wait(3000, "the owner's release signal")?;
         require(foreground()? == 3, "the switch did not wait for VT_RELDISP")?;
         wait_active(2)?;
-        presented.wait(3000, "the suspended compositor commands")?;
+        #[cfg(target_arch = "aarch64")]
+        let before = {
+            baseline_ready.wait(3000, "the suspended owner's readback refusal")?;
+            let pixels = observe_foreground()?;
+            baseline.open();
+            pixels
+        };
+        if let Err(timeout) = presented.wait(3000, "the suspended compositor commands") {
+            owner.finish(0)?;
+            return Err(timeout);
+        }
+        #[cfg(target_arch = "aarch64")]
+        require(before == observe_foreground()?, "background GPU owner overwrote the foreground terminal")?;
         shows(2, &witness)?;
         checked.open();
+        #[cfg(target_arch = "aarch64")]
+        { activate(3)?; wait_active(3)?; }
         owner.finish(3000)
     })
 }

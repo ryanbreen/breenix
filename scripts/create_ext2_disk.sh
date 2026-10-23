@@ -280,7 +280,7 @@ BSHRC
             # Create /tmp for filesystem write tests
             mkdir -p /mnt/ext2/tmp
 
-            if [ "${BREENIX_WAIT_STRESS:-0}" = "1" ]; then
+            if [ "$BREENIX_ARCH" = "x86_64" ] && [ "${BREENIX_WAIT_STRESS:-0}" = "1" ]; then
                 touch /mnt/ext2/etc/wait_stress.enabled
                 echo "  Enabled wait_stress init gate"
             fi
@@ -576,7 +576,7 @@ BSHRC
     # Create /tmp for filesystem write tests
     mkdir -p "$MOUNT_DIR/tmp"
 
-    if [ "${BREENIX_WAIT_STRESS:-0}" = "1" ]; then
+    if [ "$ARCH" = "x86_64" ] && [ "${BREENIX_WAIT_STRESS:-0}" = "1" ]; then
         touch "$MOUNT_DIR/etc/wait_stress.enabled"
         echo "  Enabled wait_stress init gate"
     fi

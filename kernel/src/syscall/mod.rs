@@ -9,6 +9,7 @@
 
 // Architecture-independent modules (compile for both x86_64 and ARM64)
 pub mod errno;
+pub(crate) mod display;
 pub(crate) mod exec;
 pub mod memory;
 pub mod memory_advice;
@@ -43,7 +44,10 @@ pub mod futex;
 #[cfg(feature = "boot_tests")]
 pub mod futex_oracle;
 pub mod futex_timeout_record;
+#[cfg(target_arch = "x86_64")]
 pub mod graphics;
+#[cfg(target_arch = "aarch64")]
+pub mod pointer;
 #[cfg(target_arch = "aarch64")]
 pub mod window;
 pub mod handlers;
@@ -198,8 +202,11 @@ pub enum SyscallNumber {
     Unlockpt,
     Ptsname,
     // Graphics syscalls (Breenix-specific)
+    #[cfg(target_arch = "x86_64")]
     FbInfo,
+    #[cfg(target_arch = "x86_64")]
     FbDraw,
+    #[cfg(target_arch = "x86_64")]
     FbMmap,
     GetMousePos,
     // Audio syscalls (Breenix-specific)
@@ -562,9 +569,6 @@ impl SyscallNumber {
             402 => Some(Self::Unlockpt),
             403 => Some(Self::Ptsname),
             // Graphics syscalls (Breenix-specific)
-            410 => Some(Self::FbInfo),
-            411 => Some(Self::FbDraw),
-            412 => Some(Self::FbMmap),
             413 => Some(Self::GetMousePos),
             // Audio syscalls (Breenix-specific)
             420 => Some(Self::AudioInit),
@@ -913,6 +917,8 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
         return Some(crate::gpu_fault_acceptance::dispatch(a[0]));
     }
     Some(match number {
+        #[cfg(target_arch = "aarch64")]
+        410..=412 => SyscallResult::Err(ErrorCode::NoSys as u64),
         MLOCK_SYSCALL_NUMBER => memory_advice::sys_mlock(a[0], a[1]),
         MUNLOCK_SYSCALL_NUMBER => memory_advice::sys_munlock(a[0], a[1]),
         MLOCKALL_SYSCALL_NUMBER => memory_advice::sys_mlockall(a[0]),

@@ -3568,9 +3568,9 @@ pub fn sys_take_over_display() -> SyscallResult {
                 if let Some((pid, process)) = mgr.find_process_by_thread_mut(tid) {
                     process.has_display_ownership = true;
                     let group = process.thread_group_id.unwrap_or(pid.as_u64());
-                    crate::syscall::graphics::DISPLAY_OWNER_GROUP
+                    crate::syscall::display::DISPLAY_OWNER_GROUP
                         .store(group, core::sync::atomic::Ordering::Release);
-                    crate::syscall::graphics::DISPLAY_OWNER_PID
+                    crate::syscall::display::DISPLAY_OWNER_PID
                         .store(pid.as_u64(), core::sync::atomic::Ordering::Release);
                 }
             }
@@ -3596,7 +3596,7 @@ pub fn sys_give_back_display() -> SyscallResult {
         let Some((pid, process)) = guard.as_mut().and_then(|manager| manager.find_process_by_thread_mut(tid)) else {
             return SyscallResult::Err(3);
         };
-        let owner = &crate::syscall::graphics::DISPLAY_OWNER_PID;
+        let owner = &crate::syscall::display::DISPLAY_OWNER_PID;
         if owner.load(core::sync::atomic::Ordering::Acquire) != pid.as_u64() && process.cred.euid != 0 {
             return SyscallResult::Err(1);
         }
@@ -3617,7 +3617,7 @@ pub(crate) fn console_owner_exited(group: u64) {
         if crate::gpu::display_active() {
             return;
         }
-        crate::syscall::graphics::DISPLAY_OWNER_PID.store(u64::MAX, core::sync::atomic::Ordering::Release);
+        crate::syscall::display::DISPLAY_OWNER_PID.store(u64::MAX, core::sync::atomic::Ordering::Release);
         crate::console::give_back_display();
     }
 }

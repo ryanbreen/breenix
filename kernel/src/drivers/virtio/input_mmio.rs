@@ -835,5 +835,4 @@ pub fn handle_tablet_interrupt() {
             _ => {} // EV_SYN and others — ignore
         }
     }
-    crate::syscall::graphics::wake_compositor_if_waiting();
 }

@@ -1359,11 +1359,12 @@ implementation. This amendment states those interfaces, in its own PR before the
   target. B13 defines accepted versus published commits and late-failure delivery below; the damage log, event layout and exact pixel rules remain.
 - **Composition.** The userspace compositor composes every visible window by GPU draws sampling the clients' <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   published fronts into a persistent scene target C (the §18 formula: topmost window's pixel or black, damage only), then copies C to alternating scanout A/B, with
-  the cursor drawn as a top layer so readback sees it. The software compositor
-  (`kernel/src/graphics/display.rs`'s backends for virtio-gpu 2D, GOP and the SVGA3 MOB) is deleted, as are
-  `fb_mmap` (412), `fb_draw` (411, including `FLUSH` and `FLUSH_BATCH`), `fb_info` (410), `MAP_COMMITTED`
-  (op 14) and `MAP_COMPOSITOR_TEXTURE` (op 21), which become ENOSYS, in the same PR as the last program
-  migration (section 2.6).
+  the cursor drawn as a top layer so readback sees it. Under B42, ARM64 retires the
+  software compositor and `fb_mmap` (412), `fb_draw` (411, including `FLUSH` and
+  `FLUSH_BATCH`), `fb_info` (410) and the v1 graphics operations with the last program
+  migration (section 2.6). Those syscalls return ENOSYS on ARM64; x86-64 keeps its
+  framebuffer console path until it has a GPU core. V2 `MAP_COMMITTED` (op 14) and
+  `MAP_COMPOSITOR_TEXTURE` (op 21) remain retired ENOSYS.
 - **Text keeps its contract.** `libfont` keeps parsing, hardening, flattening and §8.3's coverage definition,
   which is binary32 arithmetic in `rasterizer.rs`. The split: the CPU computes, for each row's 8
   sub-scanlines, the crossings and their winding directions exactly as `accumulate` does (the same code, in
@@ -1599,14 +1600,15 @@ bound scanout for display.
 
 ### 2.6 The graphical programs
 
-Fourteen installed programs use `FrameBuf`, `fb_mmap` or `libgfx` today, on main and on `breengel/suite`
-(found by search on 2026-10-16). Between `gpu`'s landing and BreenGL's they keep running on the existing
-display path, which on ARM64 QEMU stays on the MMIO `virtio-gpu-device` until G7. In the BreenGL rebuild each is either ported to
-BreenGL on BGL, in a new `breengel/gpu-apps` lane, or retired from the tree and the image:
+The fourteen graphical programs identified on 2026-10-16 are migrated or retired by
+`breengel/gpu-apps`. The retained ARM64 programs use BreenGL GPU surfaces and the GPU
+core; bwm composes their published fronts in userspace under B13. The six demos leave
+the tree and image under R8. B42 preserves x86-64's framebuffer console interface until
+an x86 GPU core exists.
 
 | Program | What it is | Disposition |
 |---|---|---|
-| `bwm` | the window manager | ported (decorations, frames and its own drawing through BreenGL; its composition model is the `window-manager` effort's) |
+| `bwm` | the window manager | ported (BreenGL decorations, text and cursor; userspace GPU composition under B13) |
 | `bterm` | the terminal | ported |
 | `blauncher` | the quick launcher (Super+Super) | ported |
 | `bfontpicker` | the font picker | ported |
@@ -1616,10 +1618,15 @@ BreenGL on BGL, in a new `breengel/gpu-apps` lane, or retired from the tree and 
 | `bounce` | the bouncing-spheres demo, spawned at session start | ported |
 | `particles`, `confetti`, `rectangles`, `demo`, `biconkit`, `guskit` | demos and showcase apps | retired, with an issue each to rebuild in `gui-apps` on BreenGL (ruling R8) |
 
-The PR that removes `fb_info`, `fb_mmap`, `fb_draw`, ops 14 and 21 and the software compositor is the
-`gpu-apps` lane's last: it lands the last port and the retirements in the same change, and the image build
-and a boot smoke that starts every installed graphical program are its gate. No program ever builds against
-a removed API or runs into ENOSYS. The session scripts in `scripts/create_ext2_disk.sh` that spawn `bounce`
+<!-- claim-lint:ok: Normative retirement and serial acceptance requirements under B42/B43, PR #2323. -->
+The ARM64 retirement of `fb_info`, `fb_mmap`, `fb_draw`, the v1 operations and the
+software compositor is the `gpu-apps` lane's last change (B42). V2 ops 14 and 21 are
+already retired. x86-64 keeps syscalls 410–412 and its framebuffer console path.
+The gate is the image build and a desktop boot whose migrated programs prove their
+frames through the guest's GPU checks reported on serial (S16), without judging the
+host window. ARM64 `fbinfo_test` queries GPU MODES; `wait_stress` retires with its v1
+subject and is neither installed nor offered as an init gate there. No retained
+program builds against a removed API or runs into ENOSYS. The session scripts in `scripts/create_ext2_disk.sh` that spawn `bounce`
 and `bcheck` and bind Super+Super to `blauncher` keep working throughout.
 
 ### 2.7 Carrying the branch forward

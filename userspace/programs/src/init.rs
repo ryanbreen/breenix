@@ -154,8 +154,6 @@ fn main() {
     #[cfg(target_arch = "aarch64")]
     run_clonevm_exec_test();
     #[cfg(target_arch = "aarch64")]
-    run_wait_stress_if_enabled();
-    #[cfg(target_arch = "aarch64")]
     run_trace_diag_probe_if_enabled();
     #[cfg(target_arch = "x86_64")]
     run_spawn_smoke();
@@ -532,35 +530,6 @@ fn run_trace_diag_probe_if_enabled() {
         }
         Err(e) => {
             print!("[init] Warning: failed to start trace diag probe: {}\n", e);
-        }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn run_wait_stress_if_enabled() {
-    if fs::access("/etc/wait_stress.enabled", fs::F_OK).is_err() {
-        return;
-    }
-
-    print!("[init] wait_stress enabled; starting 60s waitqueue stress\n");
-    let path = b"/bin/wait_stress\0";
-    let arg0 = b"wait_stress\0";
-    let arg1 = b"60\0";
-    let argv = [arg0.as_ptr(), arg1.as_ptr(), core::ptr::null()];
-
-    match spawnv(path, argv.as_ptr()) {
-        Ok(child_pid) => {
-            let mut status = 0i32;
-            let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
-            let exit_code = (status >> 8) & 0xFF;
-            print!(
-                "[init] wait_stress exited pid={} code={}\n",
-                child_pid.raw(),
-                exit_code
-            );
-        }
-        Err(e) => {
-            print!("[init] Warning: failed to start wait_stress: {}\n", e);
         }
     }
 }

@@ -4,10 +4,7 @@
 //! The screen console draws on the CPU into its shadow and copies the rows that changed into
 //! this target's guest backing (`write`); `present` uploads those rows (TRANSFER_TO_HOST_3D on
 //! VirGL; SVGA updates the surface from its backing), binds the target to scanout 0 when it is
-//! not the binding, and flushes them. A process that
-//! owns the display through the framebuffer interface (`fb_mmap` and its flushes) has its pane
-//! copied into a private target and presented as its own frame (`present_pane`), so the
-//! kernel does not write the firmware framebuffer after the core has shown a frame.
+//! not the binding, and flushes them. Display owners render their own GPU targets.
 //!
 //! A read-back (`settle`) presents the whole screen, requires the target to be the completed
 //! binding of scanout 0, then reads the target back from the device into the backing, so what
@@ -351,97 +348,6 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
         y += rows;
     }
     Ok((dev::resource_id(target.id).ok_or("the screen has no device resource")?, flush))
-}
-
-/// A framebuffer owner has its own resource and backing: nested owners must not
-/// overwrite the pixels a previous binding will restore. The owner's hold survives
-/// this temporary view; the ordinary resource retirement path releases it on pop.
-fn pane_target(console: &Target, group: u64) -> Result<Target, i64> {
-    let existing = with_core(|c| {
-        let id = c.display.stack.last()?.pane?;
-        let r = c.resources.get_mut(&id)?;
-        if r.lost { return None; }
-        r.holds += 1;
-        Some((id, r.backing.clone()))
-    }).flatten();
-    let (id, pages) = if let Some(found) = existing {
-        found
-    } else {
-        let pages = Arc::new(Pages::new((PITCH * HEIGHT as usize).div_ceil(PAGE)).ok_or(ENOMEM)?);
-        // A first partial flush retains the screen as the owner first saw it.
-        let mut row = vec![0; PITCH];
-        for y in 0..HEIGHT as usize {
-            console.pages.read(y * PITCH, &mut row);
-            pages.write(y * PITCH, &row);
-        }
-        let id = console::resource_with(console.context, kind::TARGET, format::B8G8R8A8, WIDTH, HEIGHT, true, pages.clone())?;
-        with_core(|c| {
-            let o = c.display.stack.last_mut().filter(|o| o.group == group).expect("display transition retains owner");
-            let old = o.pane.replace(id);
-            c.resources.get_mut(&id).expect("new pane resource").holds += 1;
-            if let Some(old) = old { c.unhold(old); }
-        });
-        (id, pages)
-    };
-    Ok(Target { epoch: console.epoch, context: console.context, handle: 0, id, pages })
-}
-
-/// Draw the calling process's framebuffer pane, at `pane` with `stride` bytes per row, onto
-/// its retained target: rows `rows`, bytes `columns` of each, then present it as the
-/// caller's frame. EPERM unless the caller owns the display.
-///
-/// # Safety
-/// `pane` must map `rows.end` rows of `stride` bytes the caller may read.
-pub unsafe fn present_pane(pane: *const u8, stride: usize, rows: Range<usize>, columns: Range<usize>) -> Result<(), i64> {
-    let _path = GpuPath::enter();
-    let tgid = caller()?;
-    let _transition = display::Transition::for_observation(tgid)?;
-    let mut lease = Lease::take();
-    let target = pane_target(lease.ensure()?, tgid)?;
-    let rows = rows_of(rows);
-    let columns = columns.start.min(PITCH)..columns.end.min(PITCH);
-    if rows.is_empty() || columns.is_empty() {
-        return Ok(());
-    }
-    for y in rows.clone() {
-        // SAFETY: the caller's contract; row `y` is inside the pane.
-        let row = unsafe { core::slice::from_raw_parts(pane.add(y as usize * stride + columns.start), columns.len()) };
-        target.pages.write(y as usize * PITCH + columns.start, row);
-    }
-    let uploaded = with_core(|c| c.resources.get(&target.id).is_some_and(|r| r.last.is_some())).unwrap_or(false);
-    target.upload(if uploaded { rows.clone() } else { 0..HEIGHT })?;
-    let current = with_core(|c| {
-        c.display.known
-            && c.display.binding.is_some_and(|b| b.id == target.id)
-            && c.display.stack.last().is_some_and(|o| o.group == tgid && o.last.is_some_and(|b| b.id == target.id))
-    })
-    .unwrap_or(false);
-    if current {
-        return target.flush(rows);
-    }
-    // The owner's first frame on this target: a present of its own, so the ownership stack
-    // keeps it as the owner's last frame and restores it when a later owner gives back.
-    let seq = with_core(|c| {
-        let d = &mut c.display;
-        d.sent += 1;
-        d.outstanding += 1;
-        d.known = false;
-        if d.holds.insert(target.id) {
-            if let Some(r) = c.resources.get_mut(&target.id) {
-                r.holds += 1;
-            }
-        }
-        c.display.sent
-    })
-    .ok_or(ENODEV)?;
-    let presenting = display::Presenting { id: target.id, seq, owner: tgid };
-    let (id, context) = (target.id, target.context);
-    let sent = exec_ok(|t| dev::set_scanout(t, context, id, WIDTH, HEIGHT), context, &[id])
-        .and_then(|_| target.fenced(|t, fence| dev::flush_resource(t, context, fence, id, WIDTH, HEIGHT)));
-    let answer = sent.as_ref().map_or(0, |d| d.answer);
-    with_core(|c| c.presented(presenting, sent.is_ok(), 0, answer));
-    notify();
-    sent.map(drop)
 }
 
 /// Show the kernel's screen as it was left, inside a transition.

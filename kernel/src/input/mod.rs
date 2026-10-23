@@ -87,10 +87,6 @@ pub fn report_key(device: Device, code: u16, value: i32) -> usize {
     slot.store(next, Ordering::Relaxed);
     if !Modifiers(previous).meta() && Modifiers(next).meta() {
         SUPER_TAPS.fetch_add(1, Ordering::Release);
-        // The compositor is ready while a tap is latched. Bytes wake it where they are
-        // admitted to its stdin (`ipc::stdin`), including those a busy TTY admits later.
-        #[cfg(target_arch = "aarch64")]
-        crate::syscall::graphics::wake_compositor_for_input();
     }
     let modifiers = Modifiers(
         HELD.iter()

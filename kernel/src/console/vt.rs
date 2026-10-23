@@ -208,6 +208,9 @@ pub(super) struct Effects {
     pub(super) redraw: bool,
     /// The foreground changed, and with it the lock state keyboards show.
     leds: bool,
+    /// Restore the display owner after its terminal returns to the foreground.
+    #[cfg(target_arch = "aarch64")]
+    restore_display: bool,
 }
 
 impl Effects {
@@ -245,6 +248,8 @@ impl Effects {
                 Note::OwnerGone { vt } => log::info!("[console] tty{} owner gone: mode reset", vt + 1),
             }
         }
+        #[cfg(target_arch = "aarch64")]
+        if self.restore_display { crate::gpu::vt_resumed(); }
         if self.redraw {
             super::REDRAW.store(true, Ordering::Release);
         }
@@ -386,6 +391,8 @@ impl Terminals<'_> {
         });
         self.sw.fg = to;
         effects.leds = true;
+        #[cfg(target_arch = "aarch64")]
+        { effects.restore_display = !text && self.sw.display_owner.is_some_and(|(_, vt)| vt == to); }
         // The screen goes to `to`: a process drawing on it is no longer shown.
         if text {
             super::DISPLAY_TAKEN.store(false, Ordering::SeqCst);
@@ -883,8 +890,8 @@ impl Presentation {
             let (owner, vt) = terminals.sw.display_owner?;
             // Syscall ownership is published only after the console and boot
             // screen have quiesced; VT ownership alone precedes that barrier.
-            if crate::syscall::graphics::DISPLAY_OWNER_PID.load(Ordering::Acquire) == u64::MAX
-                || crate::syscall::graphics::DISPLAY_OWNER_GROUP.load(Ordering::Acquire) != owner
+            if crate::syscall::display::DISPLAY_OWNER_PID.load(Ordering::Acquire) == u64::MAX
+                || crate::syscall::display::DISPLAY_OWNER_GROUP.load(Ordering::Acquire) != owner
                 || vt != terminals.sw.fg {
                 return None;
             }
