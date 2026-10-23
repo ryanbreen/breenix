@@ -1091,10 +1091,11 @@ class Driver:
             self.phase('Test payload running: interrupts masked, halted')
             self.last_stage = 'metal-hang started'
         suite_record = self.args.mode == 'suite' and line.startswith(('SUITE ', 'SUITE_SEQUENCE '))
-        dead_suite = self.args.mode == 'suite' and re.search(r'KERNEL PANIC[:!]|memory allocation of \d+ bytes failed|allocation error:', line)
+        panic_line = re.search(r'KERNEL PANIC[:!]', line)
+        dead_suite = self.args.mode == 'suite' and re.search(r'memory allocation of \d+ bytes failed|allocation error:', line)
         if (self.kernel_started and self.fatal_at is None
                 and (not suite_record or re.search(r'KERNEL PANIC[:!]', line))
-                and (dead_suite or any(p.search(line) for p in self.fatal_patterns))):
+                and (panic_line or dead_suite or any(p.search(line) for p in self.fatal_patterns))):
             self.fatal_at = observed_at
             self.event('fatal', observed_at=observed_at, seconds=seconds)
         if len(suites(self.args)) > 1 and re.fullmatch(r'SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED \S+ cases=\d+/\d+', line):

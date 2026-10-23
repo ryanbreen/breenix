@@ -63,6 +63,17 @@ class ShutdownTest(sessions.existing.StateTest):
         d.on_reset(113)
         d.event.assert_not_called()
 
+    def test_fault_panic_is_fatal_without_the_old_rust_location_format(self):
+        d = self.driver
+        d.kernel_started = 110
+        d.args.inject = 'panic-reboot'
+        d.on_line('KERNEL PANIC: reboot fault test', observed_at=111)
+        self.assertEqual(d.fatal_at, 111)
+        with self.assertRaises(boot.Finish) as end:
+            d.on_reset(120)
+        self.assertEqual(end.exception.status, m.EXIT_SHORT)
+        d.event.assert_any_call('panic-reset-observed', observed_at=120)
+
 
 if __name__ == '__main__':
     unittest.main()
