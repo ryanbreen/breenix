@@ -231,6 +231,8 @@ struct Proc {
     /// staging, and `SUBMIT`'s copies and vertex storage while they are held.
     quota: Quota,
     creating: bool,
+    /// One context initialized by window/claim setup for the next CONTEXT_CREATE.
+    prepared_context: Option<u64>,
     /// `PRESENT`s whose flush completed OK (`/proc/breenix/stage-composites`).
     presents: u64,
 }
@@ -898,6 +900,7 @@ impl Core {
             totals: Totals::default(),
             quota: Quota::default(),
             creating: false,
+            prepared_context: None,
             presents: 0,
         })
     }
@@ -2576,7 +2579,56 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
 }
 
 fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
+    let prepared = with_core(|c| {
+        let handle = c.procs.get_mut(&tgid)?.prepared_context.take()?;
+        let warmed = c.ctx_of(tgid, handle).and_then(|id| c.contexts.get(&id))
+            .filter(|ctx| ctx.state == CtxState::Live && !ctx.dropped && ctx.device_alive)
+            .map(|ctx| ctx.warmed());
+        Some((handle, warmed))
+    }).flatten();
+    if let Some((handle, ready)) = prepared {
+        if let Some(warmed) = ready { return Ok((handle, warmed)); }
+        destroy_context(tgid, handle);
+    }
     create_context_with_catalogue(tgid, true)
+}
+
+/// Initialize the renderer during window/display setup so catalogue compilation is out
+/// of the first frame's path. The prepared context is counted as an ordinary process context;
+/// CONTEXT_CREATE transfers its existing handle to the caller, and exit retires it normally.
+pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32> {
+    if !crate::platform_config::is_parallels() { return Ok(()); }
+    let needs_context = with_core(|c| {
+        let Some(p) = c.procs.get(&tgid) else { return true; };
+        p.contexts.len() < limits::CONTEXTS && p.prepared_context.is_none() && (reserve_next || !p.contexts.values().any(|id|
+            c.contexts.get(id).is_some_and(|ctx| ctx.warm_catalogue && ctx.state == CtxState::Live && !ctx.dropped)))
+    }).ok_or(ENODEV as i32)?;
+    let made = if needs_context {
+        let (handle, _) = create_context_with_catalogue(tgid, true).map_err(|e| e as i32)?;
+        let kept = with_core(|c| {
+            let p = c.proc_mut(tgid);
+            if p.prepared_context.is_some() { false } else { p.prepared_context = Some(handle); true }
+        }).unwrap_or(false);
+        if kept { Some(handle) } else { destroy_context(tgid, handle); None }
+    } else { None };
+    let ready = wait_for(None, true, |c| {
+        let Some(p) = c.procs.get(&tgid) else { return Some(Err(ENODEV)); };
+        if let Some(handle) = p.prepared_context {
+            let live = p.contexts.get(&handle).and_then(|id| c.contexts.get(id))
+                .is_some_and(|ctx| ctx.state == CtxState::Live && !ctx.dropped);
+            if !live { return Some(Err(EIO)); }
+        }
+        for id in p.contexts.values() {
+            let Some(ctx) = c.contexts.get(id) else { continue; };
+            if !ctx.warm_catalogue || ctx.dropped || ctx.state != CtxState::Live { continue; }
+            if ctx.warm != encode::ALL_WARM { return None; }
+        }
+        Some(Ok(()))
+    }).map_err(|_| EINTR).and_then(|r| r);
+    if ready.is_err() {
+        if let Some(handle) = made { destroy_context(tgid, handle); }
+    }
+    ready.map_err(|e| e as i32)
 }
 
 fn create_context_with_catalogue(tgid: u64, warm_catalogue: bool) -> Result<(u64, u32), i64> {
@@ -2837,7 +2889,9 @@ fn op_context_destroy(arg: u64, len: u64) -> Result<u64, i64> {
 /// Drop a context handle; the device context goes once its submitted work completes.
 fn destroy_context(tgid: u64, handle: u64) -> bool {
     with_core(|c| {
-        let Some(id) = c.procs.get_mut(&tgid).and_then(|p| p.contexts.remove(&handle)) else { return false };
+        let Some(p) = c.procs.get_mut(&tgid) else { return false; };
+        if p.prepared_context == Some(handle) { p.prepared_context = None; }
+        let Some(id) = p.contexts.remove(&handle) else { return false; };
         if let Some(ctx) = c.contexts.get_mut(&id) {
             ctx.dropped = true;
         }

@@ -1471,14 +1471,16 @@ The full HiDPI failure in B23 likewise recorded a pipeline-8 warm-up ahead of
 two readback transfers when the unchanged watchdog fired.
 
 Raw CONTEXT_CREATE intentionally returns while the catalogue warms (gpu-abi.md).
-BGL and the production userspace compositor now initialize through
-`context_create_ready`: they wait for the context's actual COUNTERS state 0
+In the intermediate implementation at `79f8ea2b`, BGL and the production
+userspace compositor initialized through
+`context_create_ready`: they waited for the context's actual COUNTERS state 0
 before returning their constructors. A counter error, quarantine, reset or
-interrupted sleep destroys the new context and returns an error. Raw context
-creation and every warm-up completion check are unchanged. This adds a startup
-wait to these drawing libraries, so unrelated background shader initialization
-cannot intrude into their later frame operations. It waits for device
-initialization, without inspecting or waiting for host load.
+interrupted sleep destroyed the new context and returned an error. Raw context
+creation and every warm-up completion check stayed unchanged. This added a startup
+wait to these drawing libraries to keep background shader initialization out of
+later frame operations. It waited for device initialization, without inspecting
+or waiting for host load. B27 replaces this constructor wait after the full run
+exposed its cost to other callers.
 
 Each Parallels catalogue step also ends with B23's one-pixel in-stream read of
 its private scratch target before its native fence. Its successful completion
@@ -1532,3 +1534,46 @@ The focused Parallels case passed all original pixels and ordering checks in
 3,138 ms in Vigil diagnostic `20261023T203858Z-parallels-mixed-pinned`. The new
 host check also passed unchanged. These are focused results, not full-suite
 acceptance.
+
+
+## B27: Prepare window renderers during setup
+
+The full Parallels run `20261023T195650Z-parallels-92959` at `79f8ea2b` finished
+BreenGL at 394/401, with memory reclaimed. Waiting in every BGL constructor made
+`raster/extreme-work-bound`, `font-parser/coords-extreme`, `font-parser/corpus`,
+`windows/commit-waits-render` and `isolation/other-map` exceed their case deadlines.
+`composition/no-compositor` included that first initialization in its measured
+frame (1,207 ms, limit 250 ms), while `scanout/atomic-record` could not observe its
+first composite within one second. The checks and their deadlines are unchanged.
+
+BGL and the userspace compositor use ordinary asynchronous CONTEXT_CREATE again;
+the intermediate `context_create_ready` helper is removed. On Parallels, window
+creation instead prepares a renderer during setup, and compositor claim prepares
+one for its next context creation. The cache holds at most one fresh context per
+process. It uses the normal context allocator, counts against the same context
+limit, and transfers its existing handle to the next CONTEXT_CREATE. It does not
+alias an exposed context. Process exit retires it by the ordinary path.
+
+Setup waits for actual catalogue completion of the process's live rendering
+contexts, outside the window registry lock. Catalogue steps retain B25's native
+completion read. Allocation or interruption of this optional preparation leaves
+the successful window/claim result intact; normal context creation remains the
+fallback. Window notifications are published before claim waits. Existing
+contexts are not replaced, and offscreen and fork-heavy users keep asynchronous
+creation. QEMU and SVGA do not use this preparation.
+
+Source declaration: Breenix's context lifecycle, window setup and unchanged suite
+measurements; no external implementation source was read or used.
+
+Focused Parallels results with the normal userspace image:
+
+| Category | Result | Vigil diagnostic |
+|---|---|---|
+| composition | 28/28 PASS; no-compositor frame 6 ms; both death waits 0 ms | `20261023T203935Z-parallels-cache-composition` |
+| font-parser | 22/22 PASS; extreme coordinates 5,211 ms; corpus 9,877 ms | `20261023T204140Z-parallels-cache-font` |
+| scanout | 17/17 PASS; atomic record observed 19 distinct commits; HiDPI 2,429 ms | `20261023T204252Z-parallels-cache-scanout` |
+
+The HiDPI hash remains
+`3f2879422970f9f0ba7e673af4ae4df540701a457c9c124912488f32cad4cc20`.
+These category runs are focused evidence, not full-suite acceptance. No case,
+deadline, expected pixel or memory allowance changed.

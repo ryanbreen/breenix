@@ -38,7 +38,7 @@ impl Fence {
 impl Context {
     pub fn new() -> Result<Self, i64> {
         Ok(Self {
-            handle: gpu::context_create_ready()?,
+            handle: gpu::context_create()?,
             words: Vec::new(),
             handed: core::cell::Cell::new(false),
             clips: Vec::new(),
