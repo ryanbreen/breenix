@@ -1297,8 +1297,12 @@ The **host file** (on the boot host): `METAL_INSTANCE`, `METAL_IMAGE`, `METAL_CP
 
 ## In-band hardware watchdog
 
-On x86 metal, a checksum-validated ACPI SPMI table supplies a fixed KCS interface
-in system I/O. A CPU-pinned kthread is its sole owner. The transport sends Get
+On x86 metal, SMBIOS Type 38 supplies the KCS data port and register spacing.
+The delivery stub and installed manager carry UEFI's SMBIOS entry-point pointer
+to the kernel in a GUID-identified ACPI UEFI data table (UEFI 2.10 Appendix O).
+The kernel validates the ACPI and SMBIOS entry-point checksums, table extents
+and structure lengths before decoding Type 38 (DMTF DSP0134, IPMI Appendix C1).
+A fixed KCS SPMI table is also supported when firmware provides one. A CPU-pinned kthread is its sole owner. The transport sends Get
 Device ID, Get Watchdog Timer, Set Watchdog Timer and Reset Watchdog Timer only
 ([IPMI 2.0](https://www.intel.com/content/dam/www/public/us/en/documents/product-specifications/ipmi-v2-rev1-1-spec-errata-6-markup.pdf),
 sections 9 and 27, Appendix C3). The SMS/OS timer is 120 seconds, action hard

@@ -1563,6 +1563,14 @@ def main():
     result = runner['in_metal'](env, 'tee', directory + '/' + records_name(category)[:-len('.json')] + '-transcript.json',
                                 stdin=None, input=json.dumps(transcript) + '\n', capture_output=True, text=True)
     if result.returncode: raise ValueError('cannot save host transcript')
+    if category == 'watchdog':
+        # Its baseline capture closed before the fault boots. Fold the retained
+        # category records into that archive without executing cases again.
+        code = ('import sys;sys.path.insert(0,"/opt/breenix-metal");'
+                'from pathlib import Path;import metal_lib,metal_score;'
+                'p=Path(sys.argv[1]);metal_lib.write_json(p/"milestone-verdict.json",metal_score.score(p))')
+        result = remote('python3', '-c', code, directory)
+        if result.returncode: raise ValueError('cannot score the archived watchdog category')
     print(verdict)
     return status
 

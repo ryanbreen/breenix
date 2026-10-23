@@ -3,23 +3,23 @@
 //! must return from uncached root metadata I/O and validate the root inode
 //! before Reset Watchdog Timer is sent; a blocked round lets hardware expire.
 //! The transport accepts only S19's four application commands.
-use core::sync::atomic::{AtomicU16, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 use x86_64::instructions::port::Port;
 
-static PORT: AtomicU16 = AtomicU16::new(0);
+static PORT: AtomicU32 = AtomicU32::new(0);
 const TIMEOUT_MS: u64 = 5_000;
 const PERIOD_MS: u64 = 20_000;
 const TIMER: [u8; 6] = [4, 1, 0, 0x10, 0xb0, 4]; // SMS/OS, reset, no pretimeout, 1200 deciseconds
 
 pub fn discover(rsdp: Option<u64>, offset: u64) {
-    if let Some(port) = crate::arch_impl::x86_64::acpi::read_kcs_port(rsdp, offset) {
-        PORT.store(port, Ordering::Release);
+    if let Some((data, status)) = crate::arch_impl::x86_64::acpi::read_kcs_ports(rsdp, offset) {
+        PORT.store(u32::from(data) | (u32::from(status) << 16), Ordering::Release);
     }
 }
 
 struct Kcs { data: Port<u8>, status: Port<u8> }
 impl Kcs {
-    fn new(port: u16) -> Self { Self { data: Port::new(port), status: Port::new(port + 1) } }
+    fn new(ports: u32) -> Self { Self { data: Port::new(ports as u16), status: Port::new((ports >> 16) as u16) } }
     fn status(&mut self) -> u8 { unsafe { self.status.read() } }
     fn ready(&mut self, deadline: u64) -> Result<u8, &'static str> {
         loop {
@@ -110,7 +110,7 @@ fn health() -> Result<(), &'static str> {
     }
     Ok(())
 }
-fn run(port: u16) -> Result<(), &'static str> {
+fn run(port: u32) -> Result<(), &'static str> {
     let mut kcs = Kcs::new(port);
     let (_, length) = kcs.request(1, &[])?;
     if length < 14 { return Err("device ID length"); }
