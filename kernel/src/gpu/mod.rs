@@ -2626,7 +2626,14 @@ pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32>
         Some(Ok(()))
     }).map_err(|_| EINTR).and_then(|r| r);
     if ready.is_err() {
-        if let Some(handle) = made { destroy_context(tgid, handle); }
+        if let Some(handle) = made {
+            // Claim the spare under the same lock as CONTEXT_CREATE before retiring it.
+            let unused = with_core(|c| {
+                let p = c.procs.get_mut(&tgid)?;
+                if p.prepared_context == Some(handle) { p.prepared_context.take() } else { None }
+            }).flatten();
+            if let Some(handle) = unused { destroy_context(tgid, handle); }
+        }
     }
     ready.map_err(|e| e as i32)
 }
@@ -2884,7 +2891,10 @@ fn op_context_destroy(arg: u64, len: u64) -> Result<u64, i64> {
         // across window churn; a window can disappear before its process starts rendering.
         let unused = with_core(|c| {
             let p = c.procs.get_mut(&tgid)?;
-            if p.contexts.len() == 1 { p.prepared_context.take() } else { None }
+            let prepared = p.prepared_context?;
+            let has_renderer = p.contexts.iter().any(|(&handle, id)| handle != prepared
+                && c.contexts.get(id).is_some_and(|ctx| ctx.warm_catalogue && !ctx.dropped));
+            if has_renderer { None } else { p.prepared_context.take() }
         }).flatten();
         if let Some(handle) = unused { destroy_context(tgid, handle); }
         Ok(0)
