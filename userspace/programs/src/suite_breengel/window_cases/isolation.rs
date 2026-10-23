@@ -3,6 +3,7 @@
 use crate::*;
 
 pub(crate) const ISOLATION: &[Case] = &[
+    pictured!("list-by-user", "LIST filters entries and counts by owner uid while root and the compositor see the registry", isolation_list_by_user),
     pictured!("other-register", "An unrelated process registering another's window fails with EPERM", isolation_other_register),
     pictured!("other-commit", "An unrelated process committing another's window fails with EPERM", isolation_other_commit),
     pictured!("other-position", "A non-compositor setting a window's position fails with EPERM", isolation_other_position),
@@ -144,6 +145,49 @@ fn composite() -> i64 {
 fn info(id: u64) -> Result<abi::WinInfo, breenix_suite::suite::CaseError> {
     listed(id).cite("17.1")?.ok_or_else(|| breenix_suite::suite::CaseError::Fail(format!(
         "window {id} is no longer listed ({CONTRACT} section 17.2)")))
+}
+
+fn isolation_list_by_user() -> CaseResult {
+    interface()?;
+    let root = shown(16, 16, 46, b"list-root")?;
+    let mut body = || {
+        let result = (|| -> Result<(), String> {
+            let w = W::new(4, 4, 2).map_err(|e| format!("CREATE: {e:?}"))?;
+            if w.register(b"list-user") < 0 { return Err(String::from("REGISTER failed")); }
+            // LIST follows the owner's current uid, including a credential change.
+            if setuid(1000) != 0 { return Err(String::from("setuid(1000) failed")); }
+            io::write(Fd::STDOUT, format!("{}\n", w.id()).as_bytes()).map_err(|e| format!("ready: {e}"))?;
+            let mut command = [0u8; 1];
+            io::read(Fd::STDIN, &mut command).map_err(|e| format!("hold: {e}"))?;
+            Ok(())
+        })();
+        if result.is_ok() { 0 } else { 1 }
+    };
+    let mut owner = Helper::call(&mut body).cite("17.4")?;
+    let id: u64 = owner.line(3_000).cite("17.4")?.parse().map_err(|_| String::from("owner did not report a window ID")).cite("17.4")?;
+    ensure(listed(root.id()).cite("17.4")?.is_some() && listed(id).cite("17.4")?.is_some(), "17.4", "root did not see both users' windows")?;
+    step("17.4", child("same-user LIST", 3_000, Some(1000), || {
+        let entries = list()?;
+        if entries.len() != 1 || entries[0].id != id { return Err(String::from("same-user LIST did not contain exactly the other process's window")); }
+        if list_at(0, 0) != 1 { return Err(String::from("same-user sizing count was not one")); }
+        Ok(())
+    }))?;
+    step("17.4", child("different-user LIST", 3_000, Some(1001), || {
+        if !list()?.is_empty() || list_at(0, 0) != 0 { return Err(String::from("different-user LIST disclosed an entry or count")); }
+        Ok(())
+    }))?;
+    step("17.4", child("non-root compositor LIST", 3_000, None, || {
+        claim().map_err(|e| format!("CLAIM {}", outcome(e)))?;
+        if setuid(1002) != 0 { return Err(String::from("compositor setuid failed")); }
+        let entries = list()?;
+        if !entries.iter().any(|w| w.id == root.id()) || !entries.iter().any(|w| w.id == id) {
+            return Err(String::from("non-root compositor did not see both users' windows"));
+        }
+        if list_at(0, 0) != entries.len() as i64 { return Err(String::from("compositor sizing count differs from entries")); }
+        Ok(())
+    }))?;
+    let (_, pixels) = capture(root.id(), 16, 16, None).map_err(|e| format!("CAPTURE {}", outcome(e))).cite("17.4")?;
+    same(&pixels, 16, 16, false, "the listed root window", "17.4", |x, y| pattern(46, x, y))
 }
 
 fn isolation_other_register() -> CaseResult {

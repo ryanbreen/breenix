@@ -1137,6 +1137,10 @@
       "title": "window authority & EFAULT safety",
       "cases": [
         {
+          "id": "list-by-user",
+          "title": "LIST filters entries and counts by owner uid while root and the compositor see the registry"
+        },
+        {
           "id": "other-register",
           "title": "An unrelated process registering another's window fails with EPERM"
         },

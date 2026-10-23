@@ -1048,6 +1048,7 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 
 | Operation | Owner | Compositor | Root, not compositor | Unrelated |
 |---|---|---|---|---|
+| `LIST` | windows whose owner has the caller's effective uid | registered registry | registered registry | windows whose owner has the caller's effective uid |
 | `CREATE`, `REGISTER`, `SET_TITLE` | yes | — | — | — |
 | `ACQUIRE`, `COMMIT`, `COMMIT_NO_CHANGE`, `DESTROY` | yes | EPERM | EPERM | EPERM |
 | `RESIZE` | yes | EPERM (it asks with a `ResizeRequested` event, section 19.2) | EPERM | EPERM |
@@ -1060,6 +1061,12 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 | `CLAIM_COMPOSITOR` | — | — | yes if no live claim, else EBUSY | EPERM |
 | `SCANOUT_READBACK` | — | yes | yes | EPERM |
 | `HOLD_EVIDENCE`, `READ_REMNANT`, `RELEASE_REMNANT` | EPERM | EPERM | yes (EBUSY if another holder) | EPERM |
+
+`LIST` filters both its output and its returned count by the window owner's current effective uid.
+The holder of the compositor claim and root see the registered registry. A different user sees neither
+the window's entry nor its contribution to the count, including a zero-capacity sizing query (B46).
+This grants no authority to write events, set geometry or send a resize request: those remain compositor
+operations, and the owner answers a compositor's `ResizeRequested` event through `RESIZE` (B41).
 
 ### 17.5 Pointers, errors and quiet failure
 

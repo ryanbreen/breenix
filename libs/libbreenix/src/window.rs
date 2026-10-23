@@ -74,7 +74,9 @@ pub fn set_title(id: u64, title: &[u8]) -> Result<u64, Error> {
     title_op(op::SET_TITLE, id, title)
 }
 
-/// `LIST` into `out`: returns how many windows are registered (possibly more than `out` holds).
+/// `LIST` into `out`: the registered windows whose owners share the caller's effective uid.
+/// Root and the compositor see the registered registry. The returned count is filtered too
+/// and may exceed the output capacity (section 17.4, B46).
 pub fn list(out: &mut [abi::WinInfo]) -> Result<usize, Error> {
     let mut l = abi::List::ZERO;
     l.ptr = out.as_mut_ptr() as u64;

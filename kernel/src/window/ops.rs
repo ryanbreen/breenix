@@ -319,22 +319,37 @@ fn info(w: &Window, backend: u32) -> WinInfo {
     i
 }
 
-/// `LIST`: every registered window, up to `capacity` copied out; returns how many there are.
+/// `LIST`: registered windows visible to the caller, and the count after filtering (B46).
 /// The whole array of `capacity` entries is the output range, checked before anything else,
 /// however many windows there are (section 17.5).
-pub fn list(_caller: &Caller, l: &List) -> Result<u64, i32> {
+pub fn list(caller: &Caller, l: &List) -> Result<u64, i32> {
     publish_ready();
     if l.reserved != 0 {
         return Err(EINVAL);
     }
     mem::probe_writable(l.ptr, (l.capacity as u64).saturating_mul(core::mem::size_of::<WinInfo>() as u64))?;
     sweep_dead_owners();
+    // Read current credentials outside the registry lock; a window does not retain the
+    // uid its owner had at creation. Credential commits cover the thread group.
+    let same_uid: Vec<u64> = if caller.is_root() {
+        Vec::new()
+    } else {
+        crate::process::with_process_manager(|m| {
+            m.all_processes().iter()
+                .filter(|p| !p.is_terminated() && p.cred.euid == caller.euid)
+                .map(|p| p.thread_group_id.unwrap_or(p.id.as_u64()))
+                .collect()
+        }).unwrap_or_default()
+    };
     let backend = crate::gpu::window_targets::backend_code();
     let entries: Vec<WinInfo> = {
         let reg = REGISTRY.lock();
         let mut v = Vec::new();
         v.try_reserve_exact(reg.windows.len()).map_err(|_| ENOMEM)?;
-        v.extend(reg.windows.values().filter(|w| w.registered).map(|w| info(w, backend)));
+        let any = caller.is_root() || reg.claim.is_some_and(|c| c.holder == caller.tgid);
+        v.extend(reg.windows.values()
+            .filter(|w| w.registered && (any || same_uid.contains(&w.owner)))
+            .map(|w| info(w, backend)));
         v
     };
     let n = entries.len().min(l.capacity as usize);
