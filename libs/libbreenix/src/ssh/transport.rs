@@ -242,6 +242,15 @@ impl<'a> ServerSession<'a> {
         }
     }
 
+    /// Send the command's stderr as RFC 4254 extended data type 1.
+    pub fn send_stderr(&mut self, data: &[u8]) -> Result<(), SshError> {
+        if let Some(ref mut ch) = self.channel {
+            channel::send_channel_stderr(&mut self.io, ch, data)
+        } else {
+            Err(SshError::ChannelNotFound)
+        }
+    }
+
     /// Bytes that can be sent without waiting for peer window credit.
     pub fn send_capacity(&self) -> usize {
         self.channel.as_ref().map(|ch| ch.send_window.min(ch.max_packet) as usize).unwrap_or(0)
