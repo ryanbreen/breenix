@@ -789,11 +789,15 @@ pub fn translate_at(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized
                         continue;
                     }
                     bind_vertices(enc, &mut bound, vertex_buffer);
-                    offset = write_vertices(enc, vertex_buffer, offset, &verts);
-                    let first = (offset - 48 * batch.len() as u32) / 8;
+                    if !enc.fixed_quad { offset = write_vertices(enc, vertex_buffer, offset, &verts); }
+                    let first = if enc.fixed_quad { 0 } else { (offset - 48 * batch.len() as u32) / 8 };
                     for (n, (ox, oy)) in batch.into_iter().enumerate() {
                         enc.cmd(ccmd::SET_CONSTANT_BUFFER, 0, &[pipe::SHADER_FRAGMENT, 0, ox, oy, 0, 0]);
-                        draw_range(enc, first + 6 * n as u32, 6);
+                        if enc.fixed_quad {
+                            offset = draw_vertices(enc, vertex_buffer, offset, &verts[n*12..(n+1)*12], 1);
+                        } else {
+                            draw_range(enc, first + 6 * n as u32, 6);
+                        }
                     }
                 }
             }

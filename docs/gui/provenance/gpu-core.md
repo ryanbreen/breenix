@@ -1503,3 +1503,32 @@ was changed.
 Source declaration: Breenix's queue diagnostics, published context-state
 contract and existing initialization paths, plus the pinned protocol layout in
 B23; no external implementation source was used.
+
+
+## B26: Keep sampled draws inside the fixed-quad path
+
+The full Parallels run at `79f8ea2b` passed 169 of 170 GPU cases and returned
+memory within the unchanged allowance. `textures/immutable-while-pinned` failed:
+the sampled image was present, but its buffer-sourced red rectangle was missing.
+The native fence publication checks passed; the pixel oracle did not. Adding a
+completion read alone did not repair the same pixel in diagnostic
+`20261023T203528Z-parallels-cache-pinned`.
+
+The sampled-draw translator bypassed B24's fixed-quad emitter: it packed dynamic
+vertices directly into the shared fixed region. A later solid or buffer draw
+then reused those dynamic words as though they were the unit quad. Sampled draws
+now use the same immutable quad and per-rectangle viewport as other short draws,
+while retaining each instance's texel-offset constants. The dynamic path is
+unchanged. A host check reproduces mixed sampled/buffer/sampled draws and requires
+one identical 48-byte upload and the three exact viewports; it failed against the
+old encoder's 96-byte upload. No fence-publication control, expected pixel or
+ordering check changes.
+
+Source declaration: Breenix's unchanged GPU suite oracle and existing translator;
+no external implementation source was read or used.
+
+
+The focused Parallels case passed all original pixels and ordering checks in
+3,138 ms in Vigil diagnostic `20261023T203858Z-parallels-mixed-pinned`. The new
+host check also passed unchanged. These are focused results, not full-suite
+acceptance.
