@@ -218,6 +218,7 @@ class Driver:
         self.gap = False
         self.shutdown_token = m.power_token()
         self.shutdown_action = None
+        self.requested_reset_at = None
         self.clean_mounts = set()
         self.fatal_at = None
         self.fatal_patterns = []
@@ -1065,6 +1066,10 @@ class Driver:
                 self.event('requested-shutdown', observed_at=observed_at, action=request[1])
                 if request[1] == 'poweroff':
                     raise Finish(m.EXIT_DONE, 'the kernel requested power-off after clean shutdown')
+        if (self.requested_reset_at is not None and 'bsshd: listening on ' in line
+                and self.kernel_started and 'manager-slot' in self.seen and self.fatal_at is None):
+            self.event('requested-reboot-ready', observed_at=observed_at, commit=self.args.commit)
+            self.requested_reset_at = None
         self.on_persist_line(line, observed_at)
         if BOOTLOADER_LINE in line and self.kernel_started is not None:
             self.on_reset(observed_at)
@@ -1291,6 +1296,10 @@ class Driver:
 
     def on_manager_line(self, line, observed_at, seconds):
         """The boot manager's start, the lab's answer it acted on, and a probe's end (README, "The boot manager")."""
+        if MANAGER_STARTED in line and self.kernel_started is not None and session(self.args) and persistent(self.args):
+            self.on_reset(observed_at)
+            self.event('persistent-restart', observed_at=observed_at)
+            self.kernel_started = None
         self.on_slot_line(line, observed_at)
         self.on_slot_boot(line, observed_at)
         if MANAGER_STARTED in line:
@@ -1516,7 +1525,13 @@ class Driver:
     def on_reset(self, observed_at):
         if self.shutdown_action == 'reboot' and self.fatal_at is None:
             self.event('requested-reset-observed', observed_at=observed_at)
-            raise Finish(m.EXIT_DONE, 'requested ACPI reset observed')
+            if not (session(self.args) and persistent(self.args)):
+                raise Finish(m.EXIT_SHORT, 'requested reset needs a persistent session')
+            self.requested_reset_at = observed_at
+            self.shutdown_action = None
+            self.clean_mounts.clear()
+            self.seen.discard('manager-slot')
+            self.seen.discard('bootloader')
         if self.args.inject == 'panic-reboot' and self.fatal_at is not None:
             self.event('panic-reset-observed', observed_at=observed_at)
             raise Finish(m.EXIT_SHORT, 'fault-test panic reset observed')
@@ -1524,6 +1539,8 @@ class Driver:
     def persistent_deadlines(self):
         """A persistent boot: POST until the manager starts, then silence bounds until the kernel; a session has no
         deadline after that, a check boot its mode deadline."""
+        if self.requested_reset_at is not None and m.now() - self.requested_reset_at > 600:
+            raise Finish(m.EXIT_HUNG, 'requested reboot did not return to SSH', hung=True)
         if self.lease_ceiling and m.now() >= self.lease_ceiling:
             raise Finish(m.EXIT_HUNG, 'the attempt ceiling passed', hung=True)
         if self.fatal_at and m.now() - self.fatal_at >= (120 if self.args.inject == 'panic-reboot' else FATAL_GRACE_SECONDS):

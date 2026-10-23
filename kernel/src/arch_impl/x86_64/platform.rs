@@ -7,10 +7,11 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use super::acpi::{self, GenericAddress};
 
-/// The PM timer's system I/O port, or 0 when the FADT names no timer in I/O
-/// space.
+/// The validated firmware reset register and value.
 static RESET: spin::Once<(GenericAddress, u8)> = spin::Once::new();
 
+/// The PM timer's system I/O port, or 0 when the FADT names no timer in I/O
+/// space.
 static PM_TIMER_PORT: AtomicU32 = AtomicU32::new(0);
 static PM_TIMER_32BIT: AtomicBool = AtomicBool::new(false);
 /// Cleared when the FADT's IA-PC boot flags say MSI is not supported.

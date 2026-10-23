@@ -1389,8 +1389,11 @@ using the site's operator password, then an autonomous reset in a panic fault ke
 The two orderly transitions start dependent fixture services, require dirty disk
 superblocks while mounted, and write nonce data on the root and home filesystems
 without calling sync. They require the dependent's exit record before its provider's,
-clean read-only shutdown receipts, an ordinary boot-loop exit, and clean superblocks
-and exact data on the following boot. The reboot case also requires a reset observation.
+clean read-only shutdown receipts, and clean superblocks and exact data on the
+following boot. Power-off requires an ordinary boot-loop exit. Reboot keeps the
+same lease and session and requires an observed reset followed by SSH listening
+on the same commit, without a lab power-on. The supervisor must also report
+stopping the dependent before its provider.
 The panic case uses `--inject panic-reboot`: the panic message and an observed reset
 must come from that fault boot; it remains fatal and supplies no ordinary boot verdict.
 The final persistent boot holds `server-reboot.json` with the transition captures and

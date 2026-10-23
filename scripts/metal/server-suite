@@ -188,17 +188,20 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
                 run = transition[field]
                 if (run.get('bootedCommit'), run.get('toolsCommit'), run.get('mode'), run.get('evidenceEligible')) != (sha, sha, 'persistent', True):
                     raise ValueError('transition needs this kernel and tools on both boots')
-            if transition['exit'] != '0' or not any(e['event'] == 'requested-shutdown' and e.get('action') == transition['action'] for e in transition['events']):
+            if (transition['action'] != 'reboot' and transition['exit'] != '0') or not any(e['event'] == 'requested-shutdown' and e.get('action') == transition['action'] for e in transition['events']):
                 raise ValueError('requested shutdown did not end ordinarily')
             if transition['action'] == 'reboot' and not any(e['event'] == 'requested-reset-observed' for e in transition['events']):
                 raise ValueError('the ACPI reset was not observed')
+            if transition['action'] == 'reboot' and (transition['before'] != transition['after'] or not any(
+                    e['event'] == 'requested-reboot-ready' and e.get('commit') == sha for e in transition['events'])):
+                raise ValueError('reboot did not return to this persistent session autonomously')
             for mount in ('home', 'root'):
                 if '[shutdown] ' + mount + ' clean read-only' not in transition['beforeSerial'] or '[storage] ' + mount + ' prior state=clean' not in transition['afterSerial']:
                     raise ValueError('transition has no durable clean filesystem evidence')
             if any(re.search(pattern, transition[field]) for pattern in fatal_patterns + [r'KERNEL PANIC:'] for field in ('beforeSerial', 'afterSerial')):
                 raise ValueError('fatal output in a clean shutdown transition')
         panic = records.get('panicBoot', {})
-        if panic.get('run', {}).get('toolsCommit') != sha or panic.get('run', {}).get('kind') != 'fault-test' or 'KERNEL PANIC: reboot fault test' not in panic.get('serial', '') or not any(e['event'] == 'panic-reset-observed' for e in panic.get('events', [])):
+        if panic.get('run', {}).get('commit') != sha or panic.get('run', {}).get('toolsCommit') != sha or panic.get('run', {}).get('kind') != 'fault-test' or 'KERNEL PANIC: reboot fault test' not in panic.get('serial', '') or not any(e['event'] == 'panic-reset-observed' for e in panic.get('events', [])):
             raise ValueError('panic reset has no matching fault-test boot evidence')
     if category == 'time' and (not records.get('previous') or records['previous'].get('commit') != sha):
         raise ValueError('time needs a completed synchronization boot at this commit')
@@ -1670,7 +1673,7 @@ def main():
     parser.add_argument('--previous-boot', help='Completed logs preparation boot at this same commit')
     parser.add_argument('--prepare-time', action='store_true', help='Record a synchronized boot before the RTC reboot case')
     parser.add_argument('--prepare-logs', action='store_true', help='Write the log whose bytes the next boot must retain')
-    parser.add_argument('--branch', default='metal-server/reboot')
+    parser.add_argument('--branch', help='Pushed source branch for the panic build (default: main)')
     parser.add_argument('--boot')
     parser.add_argument('--sha')
     parser.add_argument('--milestone', default='server/ssh-keys', choices=list(MILESTONES))

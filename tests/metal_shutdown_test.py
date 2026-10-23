@@ -1,4 +1,4 @@
-"""Requested transitions end a boot without masking a fatal or an unexpected reset."""
+"""Requested reboot retains the persistent session through autonomous return."""
 from pathlib import Path
 import sys
 import unittest
@@ -26,15 +26,24 @@ class ShutdownTest(sessions.existing.StateTest):
 
     def test_clean_request_waits_for_a_real_reset(self):
         d = self.driver
+        d.args.mode = 'persistent'
+        d.args.payload = 'persistent'
         d.kernel_started = 110
         d.on_line('[shutdown] home clean read-only', observed_at=111)
         d.on_line('[shutdown] root clean read-only', observed_at=112)
         d.on_line('[shutdown] requested reboot token=' + d.shutdown_token, observed_at=113)
         self.assertEqual(d.shutdown_action, 'reboot')
-        with self.assertRaises(boot.Finish) as end:
-            d.on_reset(120)
-        self.assertEqual(end.exception.status, m.EXIT_DONE)
+        d.on_reset(120)
+        self.assertEqual(d.requested_reset_at, 120)
+        self.assertIsNone(d.shutdown_action)
         d.event.assert_any_call('requested-reset-observed', observed_at=120)
+        d.kernel_started = 130
+        d.on_line('bsshd: listening on 0.0.0.0:22', observed_at=131)
+        self.assertEqual(d.requested_reset_at, 120)
+        d.seen.add('manager-slot')
+        d.on_line('bsshd: listening on 0.0.0.0:22', observed_at=132)
+        self.assertIsNone(d.requested_reset_at)
+        d.event.assert_any_call('requested-reboot-ready', observed_at=132, commit=d.args.commit)
 
     def test_poweroff_needs_clean_mounts_and_no_fatal(self):
         d = self.driver

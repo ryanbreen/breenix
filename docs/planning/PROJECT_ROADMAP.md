@@ -2,8 +2,8 @@
 
 The server effort's clean reboot and power-off milestone is in progress on
 `metal-server/reboot` (PR #2321), following [the server plan](../metal/server-plan.md).
-Its automated host cases precede the shutdown implementation; hardware acceptance
-will be recorded in the PR.
+Shutdown and host cases are implemented; hardware acceptance is tracked in the PR.
+The panic reset fault currently exercises early boot, before SMP and storage start.
 
 This is the master project roadmap for Breenix OS: current development status,
 completed phases, in-progress work, and planned work. Update after each PR

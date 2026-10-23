@@ -108,19 +108,20 @@ def run(api, args):
                     console.logout()
                     subprocess.run(['python3', str(Path(api['__file__']).with_name('metal-run')), 'stop', current], check=True)
                     await_end(current)
-                    fault = boot_command('boot', '--branch', args.branch, '--sha', args.sha, '--inject', 'panic-reboot')
+                    fault = boot_command('boot', '--branch', args.branch or 'main', '--sha', args.sha, '--inject', 'panic-reboot')
                     await_end(fault, 1200)
                     serial = read(fault, 'serial.txt')
                     events = [json.loads(line) for line in read(fault, 'events.jsonl').splitlines()]
                     if 'KERNEL PANIC: reboot fault test' not in serial or not any(e['event'] == 'panic-reset-observed' for e in events):
                         raise ValueError('panic did not print and reset autonomously')
                     fault_run = json.loads(read(fault, 'run.json'))
-                    if fault_run.get('toolsCommit') != args.sha or fault_run.get('kind') != 'fault-test':
+                    if fault_run.get('commit') != args.sha or fault_run.get('toolsCommit') != args.sha or fault_run.get('kind') != 'fault-test':
                         raise ValueError('panic fault boot has the wrong tools or boot kind')
                     records['panicBoot'] = dict(id=fault, run=fault_run, serial=serial, events=events)
                     current = boot_command('boot', '--persistent')
                     console = connect()
                 else:
+                    transition_offset = len(read(current, 'serial.txt'))
                     token = uuid.uuid4().hex
                     home = '/home/' + site['OPERATOR_USER'] + '/.reboot-suite-' + token
                     root = '/var/lib/reboot-suite-' + token
@@ -160,22 +161,39 @@ def run(api, args):
                                 if not chunk: raise ValueError('sudo ended before authentication')
                                 output += chunk
                         process.stdin.write(site['OPERATOR_PASSWORD'].encode() + b'\n'); process.stdin.flush()
-                        await_end(current)
+                        if name == 'reboot':
+                            deadline = time.monotonic() + 650
+                            while True:
+                                events = [json.loads(line) for line in read(current, 'events.jsonl').splitlines()]
+                                if any(e['event'] == 'requested-reboot-ready' and e.get('commit') == args.sha for e in events): break
+                                if ended(current) or time.monotonic() >= deadline:
+                                    raise ValueError('requested reboot did not return autonomously to SSH')
+                                time.sleep(2)
+                        else:
+                            await_end(current)
                     finally:
                         if process.poll() is None: process.terminate()
                         process.wait(timeout=10)
                     previous = current
-                    old = read(previous, 'serial.txt')
+                    old = read(previous, 'serial.txt')[transition_offset:]
                     events = [json.loads(line) for line in read(previous, 'events.jsonl').splitlines()]
-                    if read(previous, 'exit-status').strip() != '0' or not any(e['event'] == 'requested-shutdown' and e.get('action') == name for e in events):
+                    if (name != 'reboot' and read(previous, 'exit-status').strip() != '0') or not any(e['event'] == 'requested-shutdown' and e.get('action') == name for e in events):
                         raise ValueError('boot loop did not record the request as an ordinary boot end')
                     if name == 'reboot' and not any(e['event'] == 'requested-reset-observed' for e in events):
                         raise ValueError('no reset observed after the ACPI request')
                     if not all('[shutdown] ' + m + ' clean read-only' in old for m in ('home', 'root')):
                         raise ValueError('shutdown did not flush and remount both filesystems read-only')
-                    current = boot_command('boot', '--persistent')
+                    if name != 'reboot':
+                        current = boot_command('boot', '--persistent')
                     console = connect()
                     fresh = read(current, 'serial.txt')
+                    if name == 'reboot':
+                        # Only the autonomous return's serial can supply clean readback.
+                        fresh = fresh[fresh.rfind('UEFI bootloader started'):]
+                        old = old[:old.rfind('UEFI bootloader started')]
+                    stops = [old.find('[shutdown] stopping ' + service) for service in ('reboot-child', 'reboot-base')]
+                    if not (0 <= stops[0] < stops[1]):
+                        raise ValueError('supervisor did not stop the dependent before its provider')
                     if not all('[storage] ' + m + ' prior state=clean' in fresh for m in ('root', 'home')):
                         raise ValueError('next boot did not find both filesystems clean')
                     text = console.run('sha256sum ' + root + '/order ' + root + '/data')
@@ -186,7 +204,7 @@ def run(api, args):
                     records['transitions'].append(dict(action=name, before=previous, after=current, token=token,
                                                        beforeSerial=old, afterSerial=fresh, events=events,
                                                        beforeRun=json.loads(read(previous, 'run.json')),
-                                                       afterRun=json.loads(read(current, 'run.json')), exit=read(previous, 'exit-status').strip(),
+                                                       afterRun=json.loads(read(current, 'run.json')), exit=None if name == 'reboot' else read(previous, 'exit-status').strip(),
                                                        rootReadback=text))
                 result, reason = 'PASS', ''
             except Exception as error:
@@ -196,7 +214,7 @@ def run(api, args):
                     console = connect()
                 for root, home, fixture in resources:
                     console.run('sh -c ' + shlex.quote('rm -f ' + fixture + '; svc reload'))
-                    # Stop only the two fixture services this runner started.
+                    # Inspect the two fixture services after reload requested their removal.
                     for service in ('reboot-child', 'reboot-base'):
                         probe.ssh('svc status ' + service)
                 # svc reload waits asynchronously; allow fixture exit before deleting its output directory.
