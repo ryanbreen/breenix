@@ -659,7 +659,7 @@ class ConsoleInput:
         c = self.console
         c.login()
         # Exercise bsh's per-byte read/redraw path past the reported stall.
-        for length in (288, 1024):
+        for length in (288, 1024, 4095):
             payload = 'x' * (length - len('print("")'))
             offset = c.size()
             c.type_line('print("' + payload + '")', attempts=1)

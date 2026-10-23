@@ -1584,7 +1584,7 @@ the capture.
 
 The console suite's host-run `input/long-line` case measures the live SOL
 receiver on a persistent boot with `server-suite --milestone console/input`.
-It submits 288- and 1024-byte commands to bsh, then a canonical reader checks
+It submits 288-, 1024- and 4095-byte commands to bsh, then a canonical reader checks
 SHA-256 of a 4095-byte payload. Overflow discards further ordinary input while
 retaining erase, kill-line and the newline; the case checks each recovery.
 The shared discipline is also measured by terminals `termios/canonical-limit`,
