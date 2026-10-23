@@ -1,10 +1,6 @@
 //! Slow-client delivery under #2163 and B48, through the live admission paths.
 #[path = "../userspace/programs/src/bwm/input_backlog.rs"]
 mod input_backlog;
-#[cfg(target_arch = "x86_64")]
-#[path = "../kernel/src/syscall/graphics/input_ring.rs"]
-mod input_ring;
-#[cfg(target_arch = "aarch64")]
 #[path = "../kernel/src/window/event_admission.rs"]
 mod event_admission;
 use input_backlog::{Admission, Backlog, Delivery, MAX_PENDING};
@@ -17,38 +13,23 @@ fn motion(old: &Event, new: &Event) -> bool {
 fn overflow(lost: u32) -> Event { Event { kind: 14, value: lost as u16, scroll: 0 } }
 fn event(kind: u16, value: u16) -> Event { Event { kind, value, scroll: 0 } }
 
-// Exercise v2's admission on ARM64 and main's retained input_ring on x86.
+// Exercise v2 admission on ARM64 and x86-64 hosts (B49).
 struct Ring {
-    #[cfg(target_arch = "x86_64")] values: [Event; 64],
-    #[cfg(target_arch = "x86_64")] head: usize,
-    #[cfg(target_arch = "x86_64")] tail: usize,
-    #[cfg(target_arch = "aarch64")] values: std::collections::VecDeque<Event>,
+    values: std::collections::VecDeque<Event>,
 }
 impl Ring {
     fn new() -> Self {
-        Self {
-            #[cfg(target_arch = "x86_64")] values: [Event::default(); 64],
-            #[cfg(target_arch = "x86_64")] head: 0,
-            #[cfg(target_arch = "x86_64")] tail: 0,
-            #[cfg(target_arch = "aarch64")] values: std::collections::VecDeque::new(),
-        }
+        let events = include_str!("../kernel/src/window/events.rs");
+        let ops = include_str!("../kernel/src/window/ops.rs");
+        assert!(events.contains("super::event_admission::push(&mut self.queue, limits::EVENT_RING, event)"));
+        assert!(ops.contains("take_while(|e| w.ring.try_push(*e))"));
+        Self { values: std::collections::VecDeque::new() }
     }
     fn push(&mut self, event: Event) -> bool {
-        #[cfg(target_arch = "x86_64")]
-        { input_ring::push(&mut self.values, &mut self.head, self.tail, event) }
-        #[cfg(target_arch = "aarch64")]
-        { event_admission::push(&mut self.values, 64, event) }
+        event_admission::push(&mut self.values, 64, event)
     }
     fn pop(&mut self) -> Option<Event> {
-        #[cfg(target_arch = "x86_64")]
-        {
-            if self.head == self.tail { return None; }
-            let value = self.values[self.tail];
-            self.tail = (self.tail + 1) % self.values.len();
-            Some(value)
-        }
-        #[cfg(target_arch = "aarch64")]
-        { self.values.pop_front() }
+        self.values.pop_front()
     }
 }
 
