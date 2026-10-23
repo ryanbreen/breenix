@@ -1,4 +1,5 @@
 """Machine-event cases for server/reboot; called by server-suite on the boot host."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,14 @@ import tempfile
 import time
 import uuid
 
+
+def verify_root_readback(root, token, output):
+    """Compare complete checksum records; kernel output may separate records."""
+    for name, expected in [('order', b'reboot-child\nreboot-base\n'), ('data', token.encode())]:
+        digest = hashlib.sha256(expected).hexdigest()
+        record = digest + '  ' + root + '/' + name
+        if not re.search(r'^' + re.escape(record) + r'\r?$', output, re.M):
+            raise ValueError('dependent did not stop first or root data was lost')
 
 
 
@@ -169,9 +178,8 @@ def run(api, args):
                     fresh = read(current, 'serial.txt')
                     if not all('[storage] ' + m + ' prior state=clean' in fresh for m in ('root', 'home')):
                         raise ValueError('next boot did not find both filesystems clean')
-                    text = console.run('sh -c ' + shlex.quote('set -e; cat ' + root + '/order; printf "data="; cat ' + root + '/data; printf "\\n"'))
-                    if not re.search(r'^reboot-child\r?\nreboot-base\r?\n', text, re.M) or 'data=' + token not in text:
-                        raise ValueError('dependent did not stop first or root data was lost')
+                    text = console.run('sha256sum ' + root + '/order ' + root + '/data')
+                    verify_root_readback(root, token, text)
                     probe.require(probe.ssh('cat ' + home + '/data'), token)
                     probe.require(probe.ssh('rm -r ' + home))
                     console.run('rm -r ' + root)

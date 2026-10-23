@@ -1,5 +1,6 @@
 """The host server scorer refuses incomplete or mismatched machine evidence."""
 import copy
+import hashlib
 import json
 from pathlib import Path
 import runpy
@@ -20,6 +21,20 @@ import metal_tools_test as existing
 
 ROOT = Path(__file__).resolve().parents[1]
 host = runpy.run_path(str(ROOT / 'scripts/metal/server-suite'))
+
+
+class RebootReadback(unittest.TestCase):
+    def test_interleaved_console_keeps_exact_order_and_data_checks(self):
+        verify = runpy.run_path(str(ROOT / 'scripts/metal/server_reboot.py'))['verify_root_readback']
+        root, token = '/var/lib/reboot-fixture', 'fresh-nonce'
+        def capture(order=b'reboot-child\nreboot-base\n', data=token.encode()):
+            return ('[ INFO] exec\n' + hashlib.sha256(order).hexdigest() + '  ' + root + '/order\n'
+                    '[ INFO] another exec\n' + hashlib.sha256(data).hexdigest() + '  ' + root + '/data\n')
+        verify(root, token, capture())
+        for output in [capture(order=b'reboot-base\nreboot-child\n'), capture(data=b'old-nonce'),
+                       capture(data=token.encode() + b'\n'), capture().replace(root, '/var/lib/other-fixture')]:
+            with self.assertRaises(ValueError):
+                verify(root, token, output)
 
 
 class TimeFixture(unittest.TestCase):
