@@ -1080,11 +1080,11 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 
 ### 17.6 Retired operations
 
-System calls 410 (`fb_info`), 411 (`fb_draw`, including FLUSH and FLUSH_BATCH) and
-412 (`fb_mmap`), version-1 drawing/window operations, and v2 MAP_COMMITTED/MAP_COMPOSITOR_TEXTURE
-return ENOSYS on ARM64. x86-64 retains syscalls 410–412 for its framebuffer console
-(B42); it has no GPU core. Their final ARM64 retirement belongs to gpu-apps with the last consumer migration.
-The old wait-stress operations are absent from the production interface too.
+On ARM64, system calls 410 (`fb_info`), 411 (`fb_draw`, including FLUSH and
+FLUSH_BATCH), 412 (`fb_mmap`) and the version-1 drawing/window operations are retired
+under B42 and return ENOSYS. x86-64 keeps syscalls 410–412 and its framebuffer console
+path until it has a GPU core. V2 MAP_COMMITTED/MAP_COMPOSITOR_TEXTURE remain retired
+ENOSYS. The ARM64 wait-stress program and init gate retire with their v1 subject.
 The compositor's keyboard state, once version 1's ops 26 (modifiers) and 31
 (the latched Super presses), is the 8-byte form of `get_mouse_pos` (413): `[modifiers, super_taps]` as
 `u32`s, where the 16-byte form is the pointer's `[x, y, buttons, scroll]`; any other length is EINVAL.

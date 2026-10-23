@@ -71,8 +71,8 @@ pub struct FbDrawCmd {
 
 /// sys_fbdraw - x86_64 form. Flush (op 6) copies the display owner's
 /// whole-screen fb_mmap pane (or the rectangle p1-p4 of it, when p3 and p4 are
-/// positive) onto the screen. The kernel-side drawing ops are ARM64's; an x86
-/// display owner draws in its pane.
+/// positive) onto the screen. A display owner draws in its x86-64 pane;
+/// ARM64 uses the GPU core.
 /// ReadPixel (op 32) returns the hardware pixel at (p1, p2) as 0x00RRGGBB,
 /// allowing a root display owner to verify that a flush reached the framebuffer.
 ///
@@ -157,7 +157,7 @@ pub fn sys_get_mouse_pos(_out_ptr: u64) -> SyscallResult {
     SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
 }
 
-/// sys_fbmmap - x86_64 form; see the aarch64 form above.
+/// Map the x86-64 framebuffer pane, returning its width through width_out.
 #[cfg(target_arch = "x86_64")]
 pub fn sys_fbmmap(width_out: u64) -> SyscallResult {
     fbmmap(width_out)
