@@ -56,6 +56,20 @@ fn rejects_bad_wire_and_unfit_clock_instead_of_accepting_transmit_alone() {
 }
 
 #[test]
+fn first_sync_repairs_multi_year_rtc_error_but_later_sync_refuses_it() {
+    let actual = 1_790_000_000 * sntp::NS;
+    for skew in [-10 * 365 * 86400, -172800, 172800, 10 * 365 * 86400] {
+        let local = actual + skew * sntp::NS;
+        let (mut p, _) = packet(actual);
+        let origin = sntp::timestamp(local);
+        p[24..32].copy_from_slice(&origin);
+        let reply = sntp::response(&p, origin, local, 50_000_000, false).unwrap();
+        assert!(matches!(reply, sntp::Reply::Offset(v) if (i128::from(v) + skew * sntp::NS).abs() <= 1));
+        assert!(sntp::response(&p, origin, local, 50_000_000, true).is_err());
+    }
+}
+
+#[test]
 fn kiss_of_death_is_not_a_clock_sample() {
     let t = 1_790_000_000 * sntp::NS;
     let (mut p, origin) = packet(t);

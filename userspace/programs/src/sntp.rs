@@ -72,9 +72,8 @@ pub fn response(
         return Err("synchronization distance");
     }
     let offset = ((receive - sent_ns) + (transmit - sent_ns - i128::from(elapsed_ns))) / 2;
-    let limit = if synchronized { 1000 * NS } else { 86400 * NS };
-    if offset.abs() > limit {
+    if synchronized && offset.abs() > 1000 * NS {
         return Err("panic offset");
     }
-    Ok(Reply::Offset(offset as i64))
+    Ok(Reply::Offset(i64::try_from(offset).map_err(|_| "offset out of range")?))
 }

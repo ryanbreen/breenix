@@ -1055,8 +1055,8 @@ from 16 seconds to an hour on failure. Endpoint polling bounds survive daemon
 restarts within the boot. RATE extends the server's backoff; DENY and RSTR
 suppress it for that boot. It checks response source and origin, timestamps,
 leap state, version, stratum and synchronization distance before applying a
-sample. The first correction permits a bounded initial RTC error (one day);
-later corrections over 1000 seconds are refused. Unauthenticated SNTP trusts
+sample. The first correction steps without an offset limit; later corrections over
+1000 seconds are refused. Unauthenticated SNTP trusts
 the configured LAN time source; it supplies no cryptographic authentication.
 
 A marker in `/run` permits a step only on the first synchronization of a boot,
