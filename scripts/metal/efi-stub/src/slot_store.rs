@@ -14,7 +14,9 @@ fn path<'a>(name: &str, out: &'a mut [u8; 96]) -> &'a str {
 impl crate::slot_transaction::Store for SlotStore<'_> {
     type Error = Status;
     fn exists(&self, name: &str) -> bool {
-        unsafe { self.0.exists(path(name, &mut [0; 96])) }
+        // Uncertainty must enter the read/rename path and propagate its error,
+        // rather than turn a journal or retained slot into apparent absence.
+        unsafe { self.0.size(path(name, &mut [0; 96])) != Err(NOT_FOUND) }
     }
     fn read(&self, name: &str, bytes: &mut [u8]) -> Result<usize, Status> {
         unsafe { self.0.read(path(name, &mut [0; 96]), bytes) }

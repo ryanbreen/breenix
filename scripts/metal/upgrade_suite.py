@@ -162,9 +162,11 @@ class UpgradeSuite:
         base = self.env['BUILD_ROOT'] + '/upgrade-cases-' + self.anchor
         call = lambda *cmd, **kw: self.runner['in_build'](self.env, *cmd, capture_output=True, text=True, **kw)
         proof = {}
+        owned = False
         try:
             made = call('mkdir', base)
             if made.returncode: raise ValueError('private generation test directory already exists')
+            owned = True
             for name in files:
                 value = call('git', '-C', self.env['BUILD_REPO'], 'show', self.args.sha + ':' + name)
                 if value.returncode: raise ValueError('cannot read exact-head installer source')
@@ -183,7 +185,7 @@ class UpgradeSuite:
                                stdout=result.stdout, stderr=result.stderr, commit=self.args.sha)
                 for name in names: proof[name] = receipt
         finally:
-            call('rm', '-rf', base)
+            if owned: call('rm', '-rf', base)
         self.results['generationProof'] = proof
 
     def run_case(self, name):
@@ -194,12 +196,20 @@ class UpgradeSuite:
             self.host['upgrade_cases']['generations'](self.results['generationProof'], name == 'reclamation')
 
     def cleanup(self):
-        if self.active and self.console:
-            self.console.run('rm ' + self.root_file)
-            self.probe.require(self.probe.ssh('rm "$HOME/' + self.home_file + '"'))
-            self.console.run('sync')
-        self.stop()
-        self.scratch.cleanup()
+        try:
+            if self.active and self.console:
+                root = ('if [ -e ' + self.root_file + ' ]; then test "$(cat ' + self.root_file + ')" = '
+                        + self.token + ' && rm ' + self.root_file + '; fi')
+                self.console.run('sh -c ' + shlex.quote(root))
+                home = ('f="$HOME/' + self.home_file + '"; if [ -e "$f" ]; then '
+                        'test "$(cat "$f")" = ' + self.token + ' && rm "$f"; fi')
+                self.probe.require(self.probe.ssh(home))
+                self.console.run('sync')
+        finally:
+            try:
+                self.stop()
+            finally:
+                self.scratch.cleanup()
 
 
 def run(args, host):
