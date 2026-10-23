@@ -1180,8 +1180,10 @@ class Operator:
     def __init__(self, probe, root, console, uid, password, key):
         self.probe, self.root, self.console = probe, root, console
         self.name, self.uid, self.password = probe.user, uid, password
-        kind, blob = key.split()[:2]
-        self.key_digest = hashlib.sha256((kind + ' ' + blob + '\n').encode()).hexdigest()
+        self.key_digests = []
+        for line in key.splitlines():
+            kind, blob = line.split()[:2]
+            self.key_digests.append(hashlib.sha256((kind + ' ' + blob + '\n').encode()).hexdigest())
 
     def run_case(self, name):
         getattr(self, 'case_' + name.replace('-', '_'))()
@@ -1206,8 +1208,9 @@ class Operator:
         for mode, path in (('drwx------', home), ('drwx------', home + '/.ssh'), ('-rw-------', home + '/.ssh/authorized_keys')):
             if not re.search(r'^' + mode + r' +\d+ +' + uid + ' +' + uid + r' .* ' + re.escape(path) + '$', out, re.M):
                 raise ValueError(path + ' is not the operator\'s with mode ' + mode)
-        if self.key_digest not in re.findall(r'^([0-9a-f]{64}) ', out, re.M):
-            raise ValueError("the site's public key is not in the operator's authorized_keys")
+        present = re.findall(r'^([0-9a-f]{64}) ', out, re.M)
+        if not self.key_digests or any(digest not in present for digest in self.key_digests):
+            raise ValueError("a site public key is missing from the operator's authorized_keys")
 
     def case_ssh_id(self):
         result = self.probe.ssh('id')
@@ -1361,8 +1364,9 @@ def main():
     if category == 'operator':
         fields += ["OPERATOR_UID", "OPERATOR_PASSWORD"]
     site = remote('python3', '-c', 'import sys,json;sys.path.insert(0,"/opt/breenix-metal");'
-                  'import metal_lib;s=metal_lib.load_site();'
-                  'print(json.dumps({k:s.get(k) for k in ' + repr(tuple(fields)) + '}))')
+                  'import metal_lib,metal_root;s=metal_lib.load_site();'
+                  'v={k:s.get(k) for k in ' + repr(tuple(fields)) + '};'
+                  'v["operatorKeys"]=metal_root.operator_keys(s);print(json.dumps(v))')
     if site.returncode: raise ValueError('cannot read suite site fields')
     site = json.loads(site.stdout)
     if not site['SERVER_SSH_HOST']: raise ValueError('site needs SERVER_SSH_HOST for the persistent server')
@@ -1400,7 +1404,7 @@ def main():
                 own = Console(lambda *cmd, **kw: runner['in_metal'](env, *cmd, **kw), args.boot, directory,
                               site['OPERATOR_USER'], site['OPERATOR_PASSWORD'])
                 target = Operator(probe, console, own, int(site['OPERATOR_UID']), site['OPERATOR_PASSWORD'],
-                                  site['OPERATOR_SSH_PUBLIC_KEY'])
+                                  '\n'.join(site['operatorKeys']))
             else:
                 target = Services(probe, console, capture) if category == 'services' \
                     else Logs(probe, console, previous, prepare=args.prepare_logs)

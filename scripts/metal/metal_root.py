@@ -114,7 +114,7 @@ SHA512_CRYPT = re.compile(r'\$6\$(?:rounds=[0-9]+\$)?[./0-9A-Za-z]{1,16}\$[./0-9
 
 def operator_account(site):
     """The installer's operator file: `user <name>`, `uid <number>`, `password <hash>` and `key <line>`, from the
-    site's account name, uid, SHA-512-crypt password hash and one checked ssh-ed25519 or ssh-rsa public key line."""
+    site's account name, uid, SHA-512-crypt password hash and checked public key lines."""
     fixture = operator_fixture(site)
     uid = site.get(OPERATOR_UID_FIELD, '').strip()
     if not re.fullmatch(r'[1-9][0-9]*', uid) or int(uid) not in OPERATOR_UIDS:
@@ -122,8 +122,36 @@ def operator_account(site):
     hashed = site.get(OPERATOR_HASH_FIELD, '').strip()
     if not SHA512_CRYPT.fullmatch(hashed):
         raise ValueError(f'install-persistent needs {OPERATOR_HASH_FIELD}: a SHA-512-crypt hash, not a password')
-    user, key = fixture.splitlines()
-    return f'{user}\nuid {uid}\npassword {hashed}\n{key}\n'
+    user = fixture.splitlines()[0]
+    return f'{user}\nuid {uid}\npassword {hashed}\n' + ''.join(f'key {key}\n' for key in operator_keys(site))
+
+
+def operator_keys(site):
+    """The current key field, then optional numbered fields in numeric order (one key per site line)."""
+    fields = []
+    for field in site:
+        if field.startswith(OPERATOR_KEY_FIELD + '_'):
+            suffix = field[len(OPERATOR_KEY_FIELD) + 1:]
+            if not re.fullmatch(r'[1-9][0-9]*', suffix):
+                raise ValueError('operator public key fields need positive decimal suffixes')
+            fields.append((int(suffix), field))
+    return [checked_operator_key(site, field) for field in
+            [OPERATOR_KEY_FIELD] + [field for _, field in sorted(fields)]]
+
+
+def checked_operator_key(site, field):
+    line = site.get(field, '').strip()
+    match = re.fullmatch(r'(ssh-ed25519|ssh-rsa) ([A-Za-z0-9+/]+={0,2})(?: ([\x21-\x7e][\x20-\x7e]*))?', line)
+    if not match:
+        raise ValueError(f'install-persistent needs {field}: one ssh-ed25519 or ssh-rsa public key line')
+    try:
+        blob = base64.b64decode(match.group(2), validate=True)
+    except ValueError:
+        raise ValueError(f'{field} is not valid base64') from None
+    kind = match.group(1).encode()
+    if blob[:4] != struct.pack('>I', len(kind)) or blob[4:4 + len(kind)] != kind:
+        raise ValueError(f'{field} names {match.group(1)} but holds another key type')
+    return line
 
 
 def operator_fixture(site):
@@ -132,17 +160,7 @@ def operator_fixture(site):
     user = site.get(OPERATOR_USER_FIELD, '').strip()
     if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', user) or user == 'root':
         raise ValueError(f'install-persistent needs {OPERATOR_USER_FIELD}: a lowercase account name other than root')
-    line = site.get(OPERATOR_KEY_FIELD, '').strip()
-    match = re.fullmatch(r'(ssh-ed25519|ssh-rsa) ([A-Za-z0-9+/]+={0,2})(?: ([\x21-\x7e][\x20-\x7e]*))?', line)
-    if not match:
-        raise ValueError(f'install-persistent needs {OPERATOR_KEY_FIELD}: one ssh-ed25519 or ssh-rsa public key line')
-    try:
-        blob = base64.b64decode(match.group(2), validate=True)
-    except ValueError:
-        raise ValueError(f'{OPERATOR_KEY_FIELD} is not valid base64') from None
-    kind = match.group(1).encode()
-    if blob[:4] != struct.pack('>I', len(kind)) or blob[4:4 + len(kind)] != kind:
-        raise ValueError(f'{OPERATOR_KEY_FIELD} names {match.group(1)} but holds another key type')
+    line = checked_operator_key(site, OPERATOR_KEY_FIELD)
     return f'user {user}\nkey {line}\n'
 
 

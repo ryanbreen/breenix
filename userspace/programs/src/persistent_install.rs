@@ -27,7 +27,7 @@ const STORE: &str = ".breenix-shared";
 /// The operator account the boot host stages on the test root for this program,
 /// from the site (docs/users/design.md, section 5): a `user <name>` line, a
 /// `uid <number>` line, a `password <sha512-crypt hash>` line and a
-/// `key <public key line>` line.
+/// one or more `key <public key line>` lines.
 const OPERATOR: &str = "etc/breenix/operator-account";
 /// The range of an ordinary account's uid: system IDs are 0-999.
 const ACCOUNT_UIDS: std::ops::RangeInclusive<u32> = 1000..=60000;
@@ -224,7 +224,7 @@ struct Operator {
     uid: u32,
     /// The site's password hash; it replaces only a password an install locked.
     hash: String,
-    key: String,
+    keys: Vec<String>,
 }
 
 /// An account name: a lowercase letter or `_`, then up to 31 lowercase letters, digits, `_` or `-`.
@@ -265,26 +265,28 @@ fn read_operator(source: &Path) -> Result<Option<Operator>, String> {
         return Ok(None);
     }
     let text = fs::read_to_string(&path).map_err(|error| fail("read", &path, error))?;
-    let (mut name, mut uid, mut hash, mut key) = (None, None, None, None);
+    let (mut name, mut uid, mut hash) = (None, None, None);
+    let mut keys = Vec::new();
     for line in text.lines() {
         match line.split_once(' ') {
             Some(("user", value)) if name.is_none() => name = Some(value.to_string()),
             Some(("uid", value)) if uid.is_none() => uid = Some(value.to_string()),
             Some(("password", value)) if hash.is_none() => hash = Some(value.to_string()),
-            Some(("key", value)) if key.is_none() => key = Some(value.to_string()),
+            Some(("key", value)) => keys.push(value.to_string()),
             _ => return Err(format!("{}: unexpected line", path.display())),
         }
     }
     // Decimal digits only, as passwd writes a uid: without a sign or a leading 0.
     let uid = uid.and_then(|text| text.parse::<u32>().ok().filter(|uid| ACCOUNT_UIDS.contains(uid) && uid.to_string() == text));
-    match (name, uid, hash, key) {
-        (Some(name), Some(uid), Some(hash), Some(key))
-            if valid_account_name(&name) && name != "root" && valid_hash(&hash) && valid_public_key(&key) =>
+    match (name, uid, hash) {
+        (Some(name), Some(uid), Some(hash))
+            if valid_account_name(&name) && name != "root" && valid_hash(&hash)
+                && !keys.is_empty() && keys.iter().all(|key| valid_public_key(key)) =>
         {
-            Ok(Some(Operator { name, uid, hash, key }))
+            Ok(Some(Operator { name, uid, hash, keys }))
         }
         _ => Err(format!(
-            "{} must name a non-root account, a uid from {} to {}, a SHA-512-crypt password hash and one public key line",
+            "{} must name a non-root account, a uid from {} to {}, a SHA-512-crypt password hash and public key lines",
             path.display(), ACCOUNT_UIDS.start(), ACCOUNT_UIDS.end()
         )),
     }
@@ -398,8 +400,8 @@ fn stage_store(copier: &mut Copier, target: &Path, operator: Option<&Operator>) 
         pending.push(part);
         copier.ensure_directory(&pending, mode)?;
     }
-    copier.write_file(&pending.join(name), &format!("{}\n", operator.key), 0o600)?;
-    println!("[persistent] staged account {} (uid {}, in {}, {}) and its SSH public key in /{}", name, operator.uid, WHEEL,
+    copier.write_file(&pending.join(name), &format!("{}\n", operator.keys.join("\n")), 0o600)?;
+    println!("[persistent] staged account {} (uid {}, in {}, {}) and its SSH public keys in /{}", name, operator.uid, WHEEL,
              if kept { "the machine's password kept" } else { "the site's password" }, STORE);
     Ok(())
 }
@@ -931,6 +933,24 @@ mod tests {
 
     fn staged(name: &str) -> String {
         format!("user {name}\nuid 1000\npassword {HASH}\nkey {KEY}\n")
+    }
+
+    #[test]
+    fn every_operator_key_is_pending_and_an_invalid_additional_key_refuses_the_install() {
+        let fixture = Fixture::new();
+        let source = fixture.source("multi-key");
+        let system = fixture.0.join("system");
+        fs::create_dir(&system).unwrap();
+        fs::create_dir(source.join("etc/breenix")).unwrap();
+        let second = KEY.replace("HostTestOnly0", "HostTestOnly1");
+        fs::write(source.join(OPERATOR), format!("{}key {}\n", staged("operator"), second)).unwrap();
+        install_tree(&source, &system, "multi-key", &mut || Ok(())).unwrap();
+        assert_eq!(fs::read_to_string(system.join(STORE).join("var/lib/accounts/pending/operator")).unwrap(),
+                   format!("{KEY}\n{second}\n"));
+        let before = snapshot(&system);
+        fs::write(source.join(OPERATOR), format!("{}key invalid\n", staged("operator"))).unwrap();
+        assert!(install_tree(&source, &system, "invalid-key", &mut || Ok(())).is_err());
+        assert_eq!(snapshot(&system), before);
     }
 
     #[test]

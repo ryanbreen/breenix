@@ -774,6 +774,25 @@ class MissingStagingToolCleanupTest(StateTest):
 
 
 class RootStagingTest(unittest.TestCase):
+    def test_numbered_operator_keys_are_validated_and_staged_in_order(self):
+        import base64
+        import metal_root
+        def key(seed):
+            blob = struct.pack('>I', 11) + b'ssh-ed25519' + struct.pack('>I', 32) + bytes([seed]) * 32
+            return 'ssh-ed25519 ' + base64.b64encode(blob).decode() + ' fixture'
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / 'site.env'
+            path.write_text("OPERATOR_USER=operator\nOPERATOR_UID=1000\nOPERATOR_PASSWORD_HASH='$6$salt$" + 'A' * 86
+                            + "'\nOPERATOR_SSH_PUBLIC_KEY='" + key(1) + "'\nOPERATOR_SSH_PUBLIC_KEY_10='" + key(3)
+                            + "'\nOPERATOR_SSH_PUBLIC_KEY_2='" + key(2) + "'\n")
+            site = m.load_site(path)
+        staged = metal_root.operator_account(site)
+        self.assertEqual([line[4:] for line in staged.splitlines() if line.startswith('key ')],
+                         [key(1), key(2), key(3)])
+        for bad in ['', '-----BEGIN OPENSSH PRIVATE KEY-----', key(3).replace('ssh-ed25519 ', 'ssh-rsa ', 1)]:
+            with self.assertRaises(ValueError):
+                metal_root.operator_account(dict(site, OPERATOR_SSH_PUBLIC_KEY_10=bad))
+
     @classmethod
     def setUpClass(cls):
         import metal_root

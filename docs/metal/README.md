@@ -948,17 +948,22 @@ and leaves `/etc` as it was. init reports what it applied as `[init] machine sta
 **The operator account.** `metal-run install-persistent` reads four private site fields: `OPERATOR_USER`, the
 account name; `OPERATOR_UID`, its uid (1000 to 60000); `OPERATOR_PASSWORD_HASH`, a SHA-512-crypt hash of its
 password (quoted in the site file, which `sh` sources; a password is refused); and `OPERATOR_SSH_PUBLIC_KEY`, one
-`ssh-ed25519` or `ssh-rsa` public key line (quoted; a private key is refused). It stages them as
+`ssh-ed25519` or `ssh-rsa` public key line (quoted; a private key is refused). Additional keys use
+`OPERATOR_SSH_PUBLIC_KEY_2`, `_3`, and further positive numbered fields, one quoted key per line; they are
+validated and staged in numeric order after the current field. The current field remains the boot host's key
+for host-driven runners. It stages them as
 `/etc/breenix/operator-account` (root's, 0600) on the install boot's test root, and the installer writes the account
 into the store: the uid as uid and gid, a group of the same name, home `/home/<name>`, shell `/bin/bsh` (S12),
-membership of `wheel` and the hash, with the key as its pending authorized key. An account the store already holds
+membership of `wheel` and the hash, with every key in its pending authorized-key file. An account the store already holds
 keeps its line, comment and home included, and must already have the site's uid and gid, or the install is refused
 before it writes; its group keeps its members. The site's hash replaces only a password an install locked (`!`), so a
 password set on the machine is kept. Each upgrade stages them again and updates the operator shell; a key already
-listed is not added twice and existing authorized_keys lines are retained. The users suite's `operator` category
+listed is not added twice and existing authorized_keys bytes are retained. First-boot reconciliation validates the
+entire pending file before adding any key and removes it only after every key succeeds; a retry keeps keys already
+added. The users suite's `operator` category checks every configured key and
 measures the result on a persistent boot ([the suites README](../suites/README.md#users--permissions)).
 SSH exec requests run through `/bin/bsh -c COMMAND` and return the command status; POSIX scripts use explicit `sh -c`.
-Channel data feeds command stdin, and channel EOF closes stdin while output drains (RFC 4254 section 5.3).
+Channel data feeds command stdin, and channel EOF closes stdin while output drains (RFC 4254 section 5.3). <!-- claim-lint:ok: scripts/metal/metal_root.py operator_keys validates and stages the configured key list; libs/libbreenix/src/ssh/machine_state.rs reconcile validates the list before authorize_key appends missing keys. -->
 
 Test images carry a test-only key pair generated at image build (not committed), authorized for the `sshtest`
 account (uid 2000, home `/etc/breenix/test-ssh/home`, since `/home` is a separate disk) and for root. init's loopback

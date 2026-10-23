@@ -1564,7 +1564,8 @@ host key from it, as the server suite does. Its cases:
 
 - `account`: over OpenSSH as the operator, `/etc/passwd` names the site's uid as uid and gid, `/home/<name>` and
   `/bin/bsh`; the account's own group has that gid; `wheel` lists it; the home and `~/.ssh` are the account's at
-  0700 and `authorized_keys` at 0600, holding the site's key (compared by SHA-256, so no key reaches the transcript).
+  0700 and `authorized_keys` at 0600, holding every site key, including numbered public-key fields
+  (compared by SHA-256, so no key reaches the transcript). <!-- claim-lint:ok: #2280 scripts/metal/server-suite Operator.case_account requires the digest of each configured key. -->
 - `ssh-id`: `id` shows the site's uid with the account's name as uid and gid, and the groups are exactly the
   account's own and `10(wheel)`.
 - `sudo-n-refused`: `sudo -n true` exits 1 with `a password is required`.
