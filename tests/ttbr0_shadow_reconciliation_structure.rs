@@ -1662,11 +1662,11 @@ fn every_blocking_resume_restore_uses_the_guarded_helper() {
     // per-syscall copies of one helper; a walk that stopped reaching them would
     // leave this check passing on an empty list, which is what the floor
     // rejects.
-    // claim-lint:ok: 5 of 5 copies are reached at this head, in 5 of 5 distinct
-    // files, and the mutation that reddens this check is run 03 in
-    // docs/planning/green-program/aarch64-testing/serials/slice1b/r157/anti-vacuity/
+    // B42/B43 delete graphics.rs::ensure_current_address_space. The remaining
+    // sleep, futex, wait and handlers sites all use restore_process_ttbr0;
+    // both floors drop by exactly that one deleted site.
     assert!(
-        reached.len() >= 5,
+        reached.len() >= 4,
         "the blocking-resume census reached only {} sites, so it is not covering the code it claims to: {reached:?}",
         reached.len()
     );
@@ -1675,7 +1675,7 @@ fn every_blocking_resume_restore_uses_the_guarded_helper() {
         .filter_map(|site| site.split("::").next())
         .collect();
     assert!(
-        files.len() >= 5,
+        files.len() >= 4,
         "the blocking-resume census reached {} files, so it is not seeing the whole family: {reached:?}",
         files.len()
     );
