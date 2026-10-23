@@ -6,6 +6,10 @@ The 393-case baseline becomes 399: **306 kept, 82 changed, 5 removed, 11 added**
 The changed cases comprise 67 GPU-only and 15 R3/R4 changes; the table below assigns their lanes.
 No row asserts GPU acceptance; lane implementations and final proof are recorded by the contract PR.
 
+Ruling B41 (resize requests, #2312) adds `events/resize-request`, making 400 cases, and changes
+`events/unknown-type` and `events/malformed-write`: kind 15 is now `ResizeRequested`, so the first kind
+they hold unknown is 16.
+
 B1 keeps the merge-forward route; B2 selects userspace GPU composition; B3 keeps the core and pure libraries; B4 excludes the obsolete x86 lane; B5 limits this effort to ARM64 QEMU with `--gpu-gl`. B6 and B7 reclassify mechanisms; B8 also reclassifies retired screen dimensions.
 The coordinator decisions B1–B8 are recorded in [the rulings file](breengel-gpu-rulings.md);
 that record is the authority for the migration and the reclassifications below.
@@ -516,9 +520,10 @@ source/runner integrity only; this contract-only PR has no boot or GPU acceptanc
 | `events/close-requested` | kept | unchanged | gpu.md 2.2 events Keep row |
 | `events/resized` | changed | gpu-window | B7: MAP_COMMITTED retired; RESIZE target readback must have the delivered size and stride. |
 | `events/resize-failed` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/resize-request` | added | gpu-apps | B41: a window that answers a `ResizeRequested` has the asked size in `LIST` and `CAPTURE`; one that ignores it keeps its own. |
 | `events/font-changed` | kept | unchanged | gpu.md 2.2 events Keep row |
 | `events/compositor-changed` | kept | unchanged | gpu.md 2.2 events Keep row |
-| `events/unknown-type` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/unknown-type` | changed | gpu-apps | B41: kind 15 is `ResizeRequested`; kind 16 is the first unknown kind. |
 | `events/order` | kept | unchanged | gpu.md 2.2 events Keep row |
 | `events/serial` | kept | unchanged | gpu.md 2.2 events Keep row |
 | `events/processed-serial` | kept | unchanged | gpu.md 2.2 events Keep row |
@@ -535,7 +540,7 @@ source/runner integrity only; this contract-only PR has no boot or GPU acceptanc
 | `events/after-destroy` | kept | unchanged | gpu.md 2.2 events Keep row |
 | `events/abi-layout` | kept | unchanged | gpu.md 2.2 events Keep row |
 | `events/no-overloaded-fields` | kept | unchanged | gpu.md 2.2 events Keep row |
-| `events/malformed-write` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/malformed-write` | changed | gpu-apps | B41: kind 16 replaces 15 as the unknown kind; a `ResizeRequested` outside 1 to 4,096 is EINVAL. |
 | `scanout/mode-set` | changed | gpu-display | gpu.md 2.2 scanout GPU-only row |
 | `scanout/device-path` | changed | gpu-display | gpu.md 2.2 scanout GPU-only row |
 | `scanout/changing-scene` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |

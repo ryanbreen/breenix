@@ -9,7 +9,8 @@ bounds, the window interface's semantics and the error each operation returns. T
 `docs/gui/plan.md`; section numbers written "plan §N" refer to it. Where the plan already fixes a rule, this
 document transcribes it and gives it a section number; where it leaves a detail to this contract, the detail
 is fixed here. The GPU rebuild follows `gpu.md` section 2 and rulings B1–B8; its
-[case reconciliation](breengel-gpu-cases.md) assigns all 399 cases and the five retired identities.
+[case reconciliation](breengel-gpu-cases.md) assigns all 399 cases and the five retired identities;
+ruling B41 adds `events/resize-request`, the 400th.
 
 Each case's failure message names the section it checks. A case whose layer is not present fails with a
 message naming the missing piece and its section, never skips, and never passes because a layer is missing.
@@ -1049,7 +1050,7 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 |---|---|---|---|---|
 | `CREATE`, `REGISTER`, `SET_TITLE` | yes | — | — | — |
 | `ACQUIRE`, `COMMIT`, `COMMIT_NO_CHANGE`, `DESTROY` | yes | EPERM | EPERM | EPERM |
-| `RESIZE` | yes | EPERM (requests go through events) | EPERM | EPERM |
+| `RESIZE` | yes | EPERM (it asks with a `ResizeRequested` event, section 19.2) | EPERM | EPERM |
 | `READ_EVENTS`, `EVENT_FD` | yes | `EVENT_FD` of window 0 only | — | EPERM |
 | `WRITE_EVENTS`, `SET_GEOMETRY` | EPERM | yes | EPERM | EPERM |
 | retired `MAP_COMMITTED`, `MAP_COMPOSITOR_TEXTURE` | ENOSYS | ENOSYS | ENOSYS | ENOSYS |
@@ -1230,24 +1231,27 @@ The claim is singleton, not an ownership-stack entry. The stage normally needs n
 | 44 | `y: i32` | window-local pointer y |
 | 48 | `scroll_x: i32` | signed horizontal steps |
 | 52 | `scroll_y: i32` | signed vertical steps, positive up |
-| 56 | `width: u32` | new width, `Resized` and `ResizeFailed` |
-| 60 | `height: u32` | new height |
+| 56 | `width: u32` | new width, `Resized` and `ResizeFailed`; the width asked for, `ResizeRequested` |
+| 60 | `height: u32` | new height, as `width` |
 | 64 | `pressed: u32` | 1 press, 0 release, `PointerButton` only |
 | 68 | `text_len: u32` | bytes of `text`, at most 240 |
 | 72 | `lost: u32` | events lost before this one, `Overflow` only |
 | 76 | reserved | zero |
 | 80 | `text: [u8; 240]` | UTF-8, `KeyPress` (the text the compositor attached) and `Text` |
 
+<!-- claim-lint:ok: Normative event kinds specified by coordinator B41 and #2312. -->
 Kinds: 1 `KeyPress`, 2 `KeyRelease`, 3 `Text`, 4 `PointerMove`, 5 `PointerButton`, 6 `Scroll`,
 7 `FocusGained`, 8 `FocusLost`, 9 `CloseRequested`, 10 `Resized`, 11 `ResizeFailed`, 12 `FontChanged`
-(made by Breengel, section 9.3), 13 `CompositorChanged`, 14 `Overflow`. No field carries another field's
+(made by Breengel, section 9.3), 13 `CompositorChanged`, 14 `Overflow`, 15 `ResizeRequested`. No field carries another field's
 meaning. Breengel maps an unknown kind to `Event::Unknown { kind }`, never to a key press.
 
 ### 19.2 Delivery
 
-- `WRITE_EVENTS` (compositor only) queues events on one window's ring of 64. A kind outside 1 to 14, the kind
+<!-- claim-lint:ok: Normative request validation specified by coordinator B41 and #2312. -->
+- `WRITE_EVENTS` (compositor only) queues events on one window's ring of 64. A kind outside 1 to 15, the kind
   Breengel makes (`FontChanged`), a kind the kernel makes (`Resized`, `ResizeFailed`, `CompositorChanged`,
-  `Overflow`) or a `text_len` above 240 is EINVAL, and nothing in that call is delivered.
+  `Overflow`), a `ResizeRequested` whose width or height is outside 1 to 4,096 (section 17.2) or a
+  `text_len` above 240 is EINVAL, and nothing in that call is delivered.
   Writing to a destroyed window is ENOENT.
 - Events arrive in the order written. A full ring keeps the events it holds, counts the ones it could not
   queue, and delivers an `Overflow` event with the count before the next event; nothing is lost silently.
@@ -1263,6 +1267,15 @@ meaning. Breengel maps an unknown kind to `Event::Unknown { kind }`, never to a 
   whether there is damage, rather than polling.
 - `Resized` arrives only after the buffers have the new size and carries it; a refused resize delivers
   `ResizeFailed` with the old size and never `Resized`.
+<!-- claim-lint:ok: Normative owner-mediated resize behavior specified by B41 and #2312. -->
+- `ResizeRequested` (ruling B41) is how the compositor resizes a window, for example when the user drags its
+  frame's edge: it asks the owner for content of `width` by `height`. Delivering it changes nothing in the
+  kernel. The owner answers by resizing its own buffers with `RESIZE` and redrawing; the size it gives
+  reaches the compositor as the window's size in `LIST`, and `RESIZE` marks the scene changed. An owner that
+  does not answer keeps its buffers and its size. The compositor frames every window at the size `LIST`
+  reports, so a client that does not answer is shown whole at its own size, never cropped to the size asked
+  for. Breengel delivers the request as `Event::ResizeRequested { width, height }` and never resizes on its
+  own; a later request replaces an earlier one, so an owner may answer only the newest it has read.
 
 ### 19.3 Serials
 

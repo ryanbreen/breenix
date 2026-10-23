@@ -76,6 +76,8 @@ pub enum Event {
     FocusLost,
     /// The compositor asked this window to close.
     CloseRequested,
+    /// The compositor asks the owner to resize its buffers and redraw.
+    ResizeRequested { width: u32, height: u32 },
     /// The window's buffers now have this size.
     Resized { width: u32, height: u32 },
     /// A resize was refused; the window keeps this (old) size.
@@ -128,6 +130,7 @@ impl Event {
             event_kind::FOCUS_GAINED => Event::FocusGained,
             event_kind::FOCUS_LOST => Event::FocusLost,
             event_kind::CLOSE_REQUESTED => Event::CloseRequested,
+            event_kind::RESIZE_REQUESTED => Event::ResizeRequested { width: raw.width, height: raw.height },
             event_kind::RESIZED => Event::Resized { width: raw.width, height: raw.height },
             event_kind::RESIZE_FAILED => Event::ResizeFailed { width: raw.width, height: raw.height },
             event_kind::FONT_CHANGED => Event::FontChanged,

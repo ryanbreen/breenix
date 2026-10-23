@@ -790,7 +790,7 @@ pub fn draw_text_bytes(fb: &mut Surface, font: &mut CachedFont, bytes: &[u8], x:
 
 /// One run of text for [`draw_runs`]: UTF-8 `bytes` with the pen at (x, y), at `size`, in
 /// `fg`, under `clip`.
-pub(crate) struct TextRun<'a> {
+pub struct TextRun<'a> {
     pub bytes: &'a [u8],
     pub x: i32,
     pub y: i32,
@@ -805,7 +805,7 @@ pub(crate) struct TextRun<'a> {
 /// and colour, so glyphs that meet still blend in their run's order and no draw holds two
 /// glyphs that meet. When gathering the runs' glyphs evicted an atlas entry, an earlier run's
 /// glyph may name a reused slot, so the runs are drawn one by one instead.
-pub(crate) fn draw_runs(fb: &mut Surface, font: &mut CachedFont, runs: &[TextRun<'_>]) {
+pub fn draw_runs(fb: &mut Surface, font: &mut CachedFont, runs: &[TextRun<'_>]) {
     type Placed = (Arc<AtlasGlyph>, i64, i64, Box64, Color);
     let before = font.cache_stats();
     let mut layers: Vec<Vec<Placed>> = Vec::new();

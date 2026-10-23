@@ -1461,6 +1461,10 @@
           "title": "A failed resize delivers ResizeFailed with the old size, never Resized"
         },
         {
+          "id": "resize-request",
+          "title": "A window that answers a compositor's resize request takes the asked size; one that ignores it keeps its own"
+        },
+        {
           "id": "font-changed",
           "title": "FontChanged arrives when the configured font changes"
         },

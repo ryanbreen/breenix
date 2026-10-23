@@ -904,7 +904,7 @@ fn dispatch_syscall_enum(
         SyscallNumber::FbDraw => result_to_u64(crate::syscall::graphics::sys_fbdraw(arg1)),
         SyscallNumber::FbMmap => result_to_u64(crate::syscall::graphics::sys_fbmmap(arg1)),
         SyscallNumber::GetMousePos => {
-            result_to_u64(crate::syscall::graphics::sys_get_mouse_pos(arg1))
+            result_to_u64(crate::syscall::graphics::sys_get_mouse_pos(arg1, arg2))
         }
 
         // Audio syscalls

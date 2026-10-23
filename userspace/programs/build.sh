@@ -188,43 +188,13 @@ else
 fi
 STD_RUSTFLAGS+=" -C metadata=breenix_std_$FORK_COMMIT"
 
-# B17 keeps the omitted applications in one tracked list until gpu-apps ports them.
-PENDING_APPS="$(python3 - "$PROJECT_ROOT/docs/gui/gpu-apps-pending.md" <<'PYAPPS'
-from pathlib import Path
-import re, sys
-rows = []
-for line in Path(sys.argv[1]).read_text().splitlines():
-    columns = line.split('|')
-    if len(columns) >= 4:
-        name = columns[1].strip().strip('`')
-        if re.fullmatch(r'[a-z][a-z0-9_-]*', name) and re.search(r'#\d+', columns[2]):
-            rows.append(name)
-print(' '.join(rows))
-PYAPPS
-)"
-CURRENT_TARGETS="$(cd "$SCRIPT_DIR" && cargo metadata --no-deps --format-version 1)"
-BUILD_NAMES="$(printf '%s' "$CURRENT_TARGETS" | python3 -c '
-import json, os, sys
-metadata = json.load(sys.stdin)
-manifest = os.path.realpath(sys.argv[1])
-pending = set(sys.argv[2].split())
-names = {target["name"] for package in metadata["packages"]
-         if os.path.realpath(package["manifest_path"]) == manifest
-         for target in package["targets"] if "bin" in target["kind"]}
-if pending - names:
-    sys.exit("ERROR: pending GPU app has no Cargo target: " + ", ".join(sorted(pending - names)))
-print("\n".join(sorted(names - pending)))
-' "$SCRIPT_DIR/Cargo.toml" "$PENDING_APPS")"
-CARGO_BINS=()
-while IFS= read -r name; do CARGO_BINS+=(--bin "$name"); done <<< "$BUILD_NAMES"
-
 if ! (
     set -o pipefail
     cd "$SCRIPT_DIR" && \
     unset CARGO_ENCODED_RUSTFLAGS && \
     __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_FORK_LIBRARY" \
     RUSTFLAGS="$STD_RUSTFLAGS" \
-    cargo build --release --target "$TARGET_JSON" "${CARGO_BINS[@]}" 2>&1 | while read line; do
+    cargo build --release --target "$TARGET_JSON" 2>&1 | while read line; do
         echo "  $line"
     done
 ); then
@@ -378,11 +348,7 @@ STD_BINARIES=(
     "heartbeat"
     "xhci_counters"
     "fbinfo_test"
-    "demo"
     "bounce"
-    "rectangles"
-    "particles"
-    "confetti"
     "tones"
     "fart"
     "http_test"
@@ -489,8 +455,6 @@ STD_BINARIES=(
     "bcheck"
 
     # Apps
-    "biconkit"
-    "guskit"
     "bterm"
     "blog"
     "bfontpicker"
@@ -501,12 +465,7 @@ STD_BINARIES=(
 
 # A retained target may contain an executable whose Cargo target was removed.
 # Validate against this invocation's manifest, not the persistent output pool.
-KEPT_BINARIES=()
-for entry in "${STD_BINARIES[@]}"; do
-    case " $PENDING_APPS " in *" ${entry%%:*} "*) continue ;; esac
-    KEPT_BINARIES+=("$entry")
-done
-STD_BINARIES=("${KEPT_BINARIES[@]}")
+CURRENT_TARGETS="$(cd "$SCRIPT_DIR" && cargo metadata --no-deps --format-version 1)"
 printf '%s' "$CURRENT_TARGETS" | python3 -c '
 import json, os, sys
 metadata = json.load(sys.stdin)

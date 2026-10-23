@@ -2930,25 +2930,39 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     }
 }
 
-/// sys_get_mouse_pos - Get current mouse cursor position, button state, and scroll delta
+/// sys_get_mouse_pos - The pointer's state, or the compositor's keyboard state
+/// (`docs/gui/breengel.md` section 17.6)
 ///
 /// # Arguments
-/// * `out_ptr` - Pointer to a [u32; 4] array in userspace: [x, y, buttons, scroll_delta]
-///   buttons: bit 0 = left button pressed
-///   scroll_delta: accumulated scroll wheel ticks since last call (positive = up)
+/// * `out_ptr` - The userspace buffer
+/// * `len` - 16: `[x, y, buttons, scroll_delta]` as `u32`s (buttons: bit 0 = left button
+///   pressed; scroll_delta: accumulated wheel ticks since the last read, positive = up).
+///   8: `[modifiers, super_taps]` (modifiers: bit 0 Shift, 1 Ctrl, 2 Alt, 3 Super;
+///   super_taps: the Super presses latched since the last read)
 ///
 /// # Returns
 /// * 0 on success
-/// * -EFAULT if out_ptr is invalid
+/// * -EINVAL for any other length
+/// * -EFAULT if the buffer cannot be written; the state stays unread then
 #[cfg(target_arch = "aarch64")]
-pub fn sys_get_mouse_pos(out_ptr: u64) -> SyscallResult {
-    if out_ptr == 0 || out_ptr >= USER_SPACE_MAX {
+pub fn sys_get_mouse_pos(out_ptr: u64, len: u64) -> SyscallResult {
+    if len != 16 && len != 8 {
+        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+    }
+    // The state below is consumed as it is read: check the buffer first, so a bad one
+    // leaves it unread.
+    if crate::window::mem::probe_writable(out_ptr, len).is_err() {
         return SyscallResult::Err(super::ErrorCode::Fault as u64);
     }
-
-    let end_ptr = out_ptr.saturating_add(16); // 4 * u32
-    if end_ptr > USER_SPACE_MAX {
-        return SyscallResult::Err(super::ErrorCode::Fault as u64);
+    if len == 8 {
+        let keys = [
+            crate::input::poll_modifier_state() as u32,
+            crate::input::take_super_tap_count().min(u32::MAX as u64) as u32,
+        ];
+        return match crate::syscall::userptr::copy_to_user(out_ptr as *mut [u32; 2], &keys) {
+            Ok(()) => SyscallResult::Ok(0),
+            Err(_) => SyscallResult::Err(super::ErrorCode::Fault as u64),
+        };
     }
 
     let tablet = crate::drivers::virtio::input_mmio::is_tablet_initialized();
