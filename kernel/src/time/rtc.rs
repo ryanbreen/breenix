@@ -455,7 +455,7 @@ pub fn write_rtc_time(dt: DateTime) -> Result<(), &'static str> {
                 data.write(value);
             }
             index.write((saved & 0x80) | 0x0b);
-            data.write(status);
+            data.write(cmos::utc_status(status));
             index.write(saved);
         }
         *cache = None;
