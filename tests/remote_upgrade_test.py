@@ -1,5 +1,6 @@
 """Exercise the actual install driver's S21 verification and rollback control flow."""
 from pathlib import Path
+import runpy
 import sys
 from types import SimpleNamespace
 import unittest
@@ -7,6 +8,23 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metal_tools_test as existing
+
+
+class UpgradeSuiteStop(unittest.TestCase):
+    def test_requested_stop_waits_for_finalization_and_other_failures_remain_errors(self):
+        module = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/metal/upgrade_suite.py'))
+        suite = module['UpgradeSuite'].__new__(module['UpgradeSuite'])
+        suite.active = 'own-boot'
+        suite.console = None
+        suite.host = {'command': lambda _: SimpleNamespace(returncode=0), '__file__': '/tmp/server-suite'}
+        reads = iter(['', '143', 'finished'])
+        suite.read = lambda *args, **kwargs: next(reads)
+        with patch.object(module['time'], 'sleep'):
+            suite.stop()
+        self.assertIsNone(suite.active)
+        suite.read = lambda boot, name, **kwargs: '124' if name == 'exit-status' else ''
+        with self.assertRaisesRegex(ValueError, '124'):
+            suite.wait('own-boot', 'ended', allowed_status=('0', '143'))
 
 
 class UpgradeDriver(existing.StateTest):

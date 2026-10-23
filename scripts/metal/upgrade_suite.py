@@ -56,13 +56,13 @@ class UpgradeSuite:
                 return value['id']
         raise ValueError('metal-run returned no boot ID')
 
-    def wait(self, boot, name, timeout=15000):
+    def wait(self, boot, name, timeout=15000, allowed_status=('0',)):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             value = self.read(boot, name, optional=True)
             if value: return value
             status = self.read(boot, 'exit-status', optional=True).strip()
-            if status and status != '0': raise ValueError('boot failed before ' + name + ': ' + status)
+            if status and status not in allowed_status: raise ValueError('boot failed before ' + name + ': ' + status)
             time.sleep(2)
         raise ValueError('boot did not produce ' + name)
 
@@ -125,7 +125,7 @@ class UpgradeSuite:
         result = self.host['command']([__import__('sys').executable,
                                       str(Path(self.host['__file__']).with_name('metal-run')), 'stop', self.active])
         if result.returncode: raise ValueError('cannot stop this category boot')
-        self.wait(self.active, 'ended', timeout=180)
+        self.wait(self.active, 'ended', timeout=180, allowed_status=('0', '143'))
         self.active = None
 
     def attempt(self, broken):
