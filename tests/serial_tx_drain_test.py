@@ -21,6 +21,78 @@ def function(source, name):
 
 
 class Regression(unittest.TestCase):
+    def test_skipped_sender_keeps_next_record_queued(self):
+        source = (ROOT / "kernel/src/serial_line.rs").read_text()
+        ring = source[source.index("struct TxRing {"):source.index("/// Held only around copies")]
+        functions = "\n".join(function(source, name) for name in
+                              ("with_ring", "send_queued", "send_queued_owned"))
+        harness = r'''
+use std::sync::{Mutex, MutexGuard, mpsc};
+use std::time::Duration;
+const CAPACITY: usize = 1024;
+const TX_BYTES: usize = 8192;
+const TX_HEADER: usize = 2;
+struct Lock<T>(Mutex<T>);
+impl<T> Lock<T> {
+    const fn new(t: T) -> Self { Self(Mutex::new(t)) }
+    fn lock(&self) -> MutexGuard<'_, T> { self.0.lock().unwrap() }
+}
+static TX: Lock<TxRing> = Lock::new(TxRing::new());
+static WIRE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+static STALLED: Mutex<Option<mpsc::Sender<()>>> = Mutex::new(None);
+static RESUME: Mutex<Option<mpsc::Receiver<()>>> = Mutex::new(None);
+// Model ownership after the stalled ticket has been skipped: the second
+// sender may acquire it, but the ring must still exclude a second pop.
+struct Ownership;
+impl Ownership { fn acquire() -> Self { Self } }
+struct Uart;
+impl Uart { fn mask_interrupts() -> u64 { 0 } fn restore_interrupts(_: u64) {} }
+enum Writer { Tty }
+enum Kind { Plain }
+mod uart_owner {
+    pub fn write<P, const T: bool>(_: super::Writer, bytes: &[u8], _: super::Kind, _: &mut super::Ownership) {
+        let _: std::marker::PhantomData<P> = std::marker::PhantomData;
+        for &byte in bytes {
+            super::WIRE.lock().unwrap().push(byte);
+            if bytes == b"\r\n" && byte == b'\r' {
+                super::STALLED.lock().unwrap().take().unwrap().send(()).unwrap();
+                super::RESUME.lock().unwrap().take().unwrap()
+                    .recv_timeout(super::Duration::from_secs(5)).unwrap();
+            }
+        }
+    }
+}
+fn main() {
+    assert!(TX.lock().push(b"\r\n"));
+    assert!(TX.lock().push(b"SUITE breengel VALUE cache-eviction 1\r\n"));
+    let (stalled_tx, stalled_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    *STALLED.lock().unwrap() = Some(stalled_tx);
+    *RESUME.lock().unwrap() = Some(resume_rx);
+    let first = std::thread::spawn(send_queued);
+    stalled_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let queued = TX.lock().len;
+    // Kernel logging drains the ring after skipping the stalled UART owner.
+    let second = std::thread::spawn(send_queued).join().unwrap();
+    assert_eq!(second, 0, "second sender overtook the in-flight CR-LF");
+    assert_eq!(TX.lock().len, queued, "second sender consumed the next record");
+    WIRE.lock().unwrap().extend_from_slice(b"[syscall] exit\r\n");
+    resume_tx.send(()).unwrap();
+    assert_eq!(first.join().unwrap(), TX_HEADER + 2);
+    assert_eq!(TX.lock().in_flight, 0);
+    assert!(send_queued() > 0);
+    assert_eq!(&*WIRE.lock().unwrap(),
+        b"\r[syscall] exit\r\n\nSUITE breengel VALUE cache-eviction 1\r\n");
+    assert_eq!(send_queued(), 0);
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / "race.rs").write_text(ring + "\n" + functions + "\n" + harness)
+            subprocess.run(["rustc", "--edition=2021", "-D", "warnings",
+                            str(path / "race.rs"), "-o", str(path / "race")], check=True)
+            subprocess.run([str(path / "race")], check=True, timeout=20)
+
     def test_race(self):
         source = (ROOT / "kernel/src/serial_line.rs").read_text()
         ring = source[source.index("struct TxRing {"):source.index("/// Held only around copies")]

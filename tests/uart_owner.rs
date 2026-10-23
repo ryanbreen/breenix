@@ -179,8 +179,19 @@ fn race(
     wake_after: usize,
     hold_at: usize,
 ) -> Vec<String> {
+    race_with_open(first, stall_at, second, wake_after, hold_at, 0)
+}
+
+fn race_with_open(
+    first: (&'static [u8], Kind),
+    stall_at: usize,
+    second: (&'static [u8], Kind),
+    wake_after: usize,
+    hold_at: usize,
+    open: u8,
+) -> Vec<String> {
     WIRE.lock().unwrap().clear();
-    OPEN.store(0, Ordering::Relaxed);
+    OPEN.store(open, Ordering::Relaxed);
     SECOND_WROTE.store(0, Ordering::Release);
     WAKE_AFTER.store(wake_after, Ordering::Release);
     HOLD_AT.store(hold_at, Ordering::Release);
@@ -210,6 +221,26 @@ fn race(
 
 fn stage_line() -> &'static [u8] {
     Box::leak(format!("[ INFO] kernel: {STAGE}\n").into_bytes().into_boxed_slice())
+}
+
+#[test]
+fn a_late_carriage_return_in_the_lead_does_not_prefix_a_suite_record() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let suite = b"SUITE breengel VALUE text/cache-evict-correct replacements=2targets\r\n";
+    // The TTY needs CR-LF after the kernel's open line. Stall before that CR
+    // reaches the UART, then let the kernel skip the owner and finish its
+    // notices. The late CR must not count as a successfully written lead.
+    let lines = race_with_open(
+        (suite, Kind::Plain),
+        1,
+        (b"watchdog notice\n", Kind::Line),
+        b"watchdog notice\n".len() + 2,
+        0,
+        2,
+    );
+    let records: Vec<_> = lines.iter().filter(|line| line.contains("SUITE ")).collect();
+    assert_eq!(records.len(), 1, "unexpected records: {lines:?}");
+    assert_eq!(records[0].as_bytes(), &suite[..suite.len() - 2]);
 }
 
 #[test]
