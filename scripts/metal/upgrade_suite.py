@@ -17,6 +17,7 @@ class UpgradeSuite:
         self.root = self.runner['STATE'] + '/boots/'
         self.active = args.boot
         self.anchor = args.boot
+        self.boots = [args.boot]
         self.baseline = None
         self.results = {}
         self.console = None
@@ -50,7 +51,9 @@ class UpgradeSuite:
         for line in result.stdout.splitlines():
             try: value = json.loads(line)
             except ValueError: continue
-            if 'id' in value: return value['id']
+            if 'id' in value:
+                self.boots.append(value['id'])
+                return value['id']
         raise ValueError('metal-run returned no boot ID')
 
     def wait(self, boot, name, timeout=15000):
@@ -140,6 +143,7 @@ class UpgradeSuite:
         for name in ('verification', 'rollback'):
             if not result.get(name): continue
             child = result[name]['boot']
+            self.boots.append(child)
             run = json.loads(self.read(child, 'run.json'))
             if run.get('toolsCommit') != self.args.sha or run.get('upgradeParent') != boot:
                 raise ValueError('verification used another tool commit or install')
@@ -230,7 +234,9 @@ def run(args, host):
     boot = json.loads(target.read(args.boot, 'run.json'))
     manifest = json.loads(target.read(args.boot, 'definition/docs/suites/server.json'))
     effort = json.loads(target.read(args.boot, 'definition/docs/efforts/path.json'))
-    records = dict(boot=args.boot, commit=args.sha, milestone='server/remote-upgrade', cases=[], cleanup=False)
+    fatal = json.loads(target.read(args.boot, 'definition/docs/boot-path.json'))['fatal'] + ['KERNEL PANIC:']
+    records = dict(boot=args.boot, commit=args.sha, milestone='server/remote-upgrade', cases=[], cleanup=False, consoleGaps=[])
+    captures = []
     try:
         target.prepare()
         records['baseline'] = target.baseline
@@ -252,11 +258,24 @@ def run(args, host):
         except Exception as error:
             records['cleanupError'] = str(error)
         records.update(target.results)
+        try:
+            for boot_id in target.boots:
+                run = json.loads(target.read(boot_id, 'run.json'))
+                if run.get('toolsCommit') != args.sha or not run.get('evidenceEligible'):
+                    raise ValueError('category boot is ineligible or used another tools commit')
+                events = [json.loads(line) for line in target.read(boot_id, 'events.jsonl').splitlines()]
+                records['consoleGaps'].extend(dict(event, boot=boot_id) for event in events if event.get('event') == 'console-gap')
+                capture = target.read(boot_id, 'serial.txt')
+                if any(re.search(pattern, capture) for pattern in fatal):
+                    raise ValueError('fatal output in category boot ' + boot_id)
+                captures.append(capture)
+        except Exception as error:
+            records.update(cleanup=False, auditError=str(error))
         target.remote('tee', target.root + args.boot + '/server-remote-upgrade.json', stdin=None,
                       input=json.dumps(records)+'\n')
     passed = sum(case['result'] == 'PASS' for case in records['cases'])
     print(f'SUITE server DONE passed={passed} failed={4-passed} skipped=0 total=4', flush=True)
-    serial = target.read(args.boot, 'serial.txt')
-    verdict = host['score'](manifest, effort, records, serial, boot, args.sha, ['KERNEL PANIC:', 'KERNEL PANIC!'])
+    serial = '\n'.join(captures)
+    verdict = host['score'](manifest, effort, records, serial, boot, args.sha, fatal)
     print(verdict, flush=True)
     return 0
