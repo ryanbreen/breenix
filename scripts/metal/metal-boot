@@ -611,7 +611,8 @@ class Driver:
         # the request is done.
         facts, suite_files = metal_disk.stage(self.dir, inputs, self.id, self.args.commit, self.site, build,
                                               mode='default', the_layout=the_layout,
-                                              operator=metal_root.operator_account(self.site))
+                                              operator=metal_root.operator_account(self.site),
+                                              no_ssh=self.args.inject == 'upgrade-service-down')
         self.delivery['diskRoot'] = facts
         files = dict(esp_files)
         files.update(suite_files)
@@ -2026,7 +2027,7 @@ def main():
         p.add_argument('--task', default='')
         p.add_argument('--no-wait', action='store_true')
         p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount',
-                                            FENCE_FAULT, 'upgrade-no-ssh'))
+                                            FENCE_FAULT, 'upgrade-no-ssh', 'upgrade-service-down'))
         p.add_argument('--entry', choices=('current', 'previous'), help='the kernel slot a persistent boot runs')
         p.add_argument('--slot-action', choices=('commit', 'rollback'), help='what the manager does to the slots first')
         p.add_argument('--run', action='append', help='a persistent boot logs in over SOL and runs this; repeatable')

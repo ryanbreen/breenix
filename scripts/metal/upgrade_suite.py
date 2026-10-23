@@ -128,11 +128,11 @@ class UpgradeSuite:
         self.wait(self.active, 'ended', timeout=180, allowed_status=('0', '143'))
         self.active = None
 
-    def attempt(self, broken):
+    def attempt(self, broken, bootable=False):
         before = self.snapshot()
         self.stop()
         arguments = ['install-persistent', '--branch', self.args.branch, '--sha', self.args.sha]
-        if broken: arguments += ['--inject', 'upgrade-no-ssh']
+        if broken: arguments += ['--inject', 'upgrade-service-down' if bootable else 'upgrade-no-ssh']
         boot = self.launch(arguments)
         result = json.loads(self.wait(boot, 'upgrade-result.json'))
         install = json.loads(self.read(boot, 'run.json'))
@@ -151,14 +151,17 @@ class UpgradeSuite:
             powers = [e['t'] for e in events if e.get('event') == 'power-on']
             if result[name].get('passed') and powers != [result[name].get('powerOn')]:
                 raise ValueError('probe does not refer to the recorded power-on')
+        if bootable:
+            capture = self.read(result['verification']['boot'], 'serial.txt')
+            result['candidateBooted'] = 'Jumping to kernel entry point at' in capture and 'Breenix login: ' in capture
         self.active = self.launch(['boot', '--persistent'])
         self.connect()
         after = self.snapshot()
         expected = result['previousGeneration'] if broken else result['candidateGeneration']
         if after['generation'] != expected: raise ValueError('default slot did not select its paired userland')
         result['observations'] = [before, after]
-        self.results['broken' if broken else 'good'] = result
-        self.host['upgrade_cases']['upgrade'](result, broken, self.baseline)
+        self.results['probe-failure' if bootable else 'broken' if broken else 'good'] = result
+        self.host['upgrade_cases']['upgrade'](result, broken, self.baseline, bootable=bootable)
 
     def generation_proofs(self):
         """Compile and execute production installer fault cases on the boot host's build container."""
@@ -199,8 +202,8 @@ class UpgradeSuite:
         self.results['generationProof'] = proof
 
     def run_case(self, name):
-        if name in ('good', 'broken'):
-            self.attempt(name == 'broken')
+        if name in ('good', 'broken', 'probe-failure'):
+            self.attempt(name != 'good', bootable=name == 'probe-failure')
         else:
             self.generation_proofs()
             self.host['upgrade_cases']['generations'](self.results['generationProof'], name == 'reclamation')
@@ -213,7 +216,6 @@ class UpgradeSuite:
                 if not re.search(r'(?m)^\[persistent\] reclaimed: ' + re.escape(old) + r'\r?$', serial):
                     raise ValueError('physical installer did not reclaim the unreferenced generation')
                 self.results['physicalReclamation'] = dict(generation=old, install=broken['install'])
-
 
     def cleanup(self):
         try:
@@ -242,7 +244,8 @@ def run(args, host):
     try:
         target.prepare()
         records['baseline'] = target.baseline
-        print('SUITE server START cases=4', flush=True)
+        count = len(host['REMOTE_UPGRADE'])
+        print(f'SUITE server START cases={count}', flush=True)
         for name, _ in host['REMOTE_UPGRADE']:
             start = time.monotonic()
             try:
@@ -276,7 +279,7 @@ def run(args, host):
         target.remote('tee', target.root + args.boot + '/server-remote-upgrade.json', stdin=None,
                       input=json.dumps(records)+'\n')
     passed = sum(case['result'] == 'PASS' for case in records['cases'])
-    print(f'SUITE server DONE passed={passed} failed={4-passed} skipped=0 total=4', flush=True)
+    print(f'SUITE server DONE passed={passed} failed={count-passed} skipped=0 total={count}', flush=True)
     serial = '\n'.join(captures)
     boot = json.loads(target.read(args.boot, 'run.json'))
     verdict = host['score'](manifest, effort, records, serial, boot, args.sha, fatal)

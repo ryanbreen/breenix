@@ -27,6 +27,85 @@ class UpgradeSuiteStop(unittest.TestCase):
             suite.wait('own-boot', 'ended', allowed_status=('0', '143'))
 
 
+class UpgradeAssertions(unittest.TestCase):
+    def test_bootable_fault_requires_booted_console_and_actual_ssh_failure(self):
+        cases = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/metal/upgrade_cases.py'))
+        baseline = dict(commit='a'*40, fingerprint='pin', rootSentinel='root', homeSentinel='home')
+        result = dict(outcome='rolled-back', toolsCommit=baseline['commit'], candidateGeneration='new',
+                      previousGeneration='old', candidateBooted=True,
+                      verification=dict(sshAttempts=3, authenticated=False),
+                      rollback=dict(generation='old', fingerprint='pin', authenticated=True, strictHostKey=True,
+                                    servicesStarted=True, powerOn=1000, completedAt=1100),
+                      observations=[baseline, baseline])
+        cases['upgrade'](result, True, baseline, bootable=True)
+        for changes, message in ((dict(candidateBooted=False), 'never booted'),
+                                 (dict(verification=dict(sshAttempts=0)), 'no actual SSH')):
+            with self.assertRaisesRegex(ValueError, message):
+                cases['upgrade'](dict(result, **changes), True, baseline, bootable=True)
+
+
+class UpgradePinRecovery(unittest.TestCase):
+    def test_stale_pin_recovers_only_through_console_and_strict_authenticated_probe(self):
+        import hashlib
+        import json
+        import tempfile
+        module = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/metal/server-suite'))
+        fn = module['probe_upgrade_attempt']
+        with tempfile.TemporaryDirectory() as scratch:
+            home = Path(scratch)
+            (home / '.ssh').mkdir()
+            (home / '.ssh/operator.pub').write_text('ssh-ed25519 public')
+            (home / '.ssh/operator').touch()
+            state = home / '.local/state/breenix-metal'
+            state.mkdir(parents=True)
+            cache = state / ('pinned-hostkey-' + hashlib.sha256(b'system:host').hexdigest() + '.json')
+            cache.write_text(json.dumps(dict(known='old', fingerprint='old')))
+            calls = []
+            now = module['time'].time()
+            boot_id = '20261023T000000Z-metal'
+            def remote(env, *cmd, **kw):
+                text = ' '.join(cmd)
+                if cmd[0] == 'python3':
+                    value = (dict(partitions=dict(system=dict(guid='system'))) if 'read_disk' in text else
+                             dict(SERVER_SSH_HOST='host', OPERATOR_USER='operator', OPERATOR_UID='1000',
+                                  OPERATOR_SSH_PUBLIC_KEY='ssh-ed25519 public', CONSOLE_USER='root', CONSOLE_PASSWORD='secret'))
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(value))
+                name = Path(cmd[-1]).name
+                values = {'run.json': json.dumps(dict(upgradeParent='parent')),
+                          'lease.json': json.dumps(dict(id=boot_id)),
+                          'events.jsonl': json.dumps(dict(event='power-on', t=now-1)),
+                          'serial.txt': 'Jumping to kernel entry point at\nBreenix login: '}
+                return SimpleNamespace(returncode=0, stdout=values[name])
+            class FakeProbe:
+                def __init__(self, host, user, identity, directory):
+                    self.known = directory / 'known_hosts'
+                def ssh(self, command, **kw):
+                    calls.append((command, self.known.read_text()))
+                    return SimpleNamespace(returncode=int(self.known.read_text() != 'new'),
+                                           stdout={'id -u':'1000', 'cat /usr/share/factory/generation':'generation',
+                                                   'cat /run/breenix/services':'services'}[command])
+                def run_case(self, name, log):
+                    if log != 'trusted': raise ValueError('untrusted console')
+                    self.known.write_text('new')
+                def require(self, result, expected=None):
+                    if result.returncode: raise ValueError('strict SSH failed')
+            class FakeConsole:
+                def __init__(self, *args): pass
+                def service_log(self, name): return 'trusted'
+                def logout(self): pass
+            runner = dict(host_env=lambda: {}, in_metal=remote, STATE='/state')
+            with patch.dict(fn.__globals__, Probe=FakeProbe, Console=FakeConsole,
+                            parse_state=lambda _: ({}, {name: dict(starts=1, state='running', pid=1)
+                                                       for name in module['Services'].REQUIRED})), \
+                 patch.object(module['runpy'], 'run_path', return_value=runner), \
+                 patch.object(Path, 'home', return_value=home), \
+                 patch.object(module['re'], 'search', return_value=['', 'SHA256:new']):
+                result = fn(SimpleNamespace(boot=boot_id))
+            self.assertTrue(result['passed'], result)
+            self.assertEqual(calls[:2], [('id -u', 'old'), ('id -u', 'new')])
+            self.assertEqual(json.loads(cache.read_text())['known'], 'new')
+
+
 class UpgradeDriver(existing.StateTest):
     def driver(self):
         args = SimpleNamespace(id='20261023T000000Z-metal', mode='persistent', payload='persistent',

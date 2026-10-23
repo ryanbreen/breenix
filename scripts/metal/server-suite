@@ -71,6 +71,7 @@ TIME = (('source', 'The supervised time client synchronizes from site or DHCP se
 REMOTE_UPGRADE = (
     ('good', 'A good upgrade passes strict operator SSH and service verification within 600 seconds of power-on, preserving host key and root and home sentinels'),
     ('broken', 'A deliberately broken upgrade fails verification and automatically boots the previous paired generation, passing the same probe within another 600 seconds with unchanged machine data'),
+    ('probe-failure', 'A bootable candidate reaches init and its console but fails SSH, then automatically restores and verifies the previous generation'),
     ('generation-repairs', 'Installer ENOSPC, I/O and interrupted-publication recovery retain the selected generation and byte-exact rollback'),
     ('reclamation', 'Reclamation uses recovered on-disk slot userlands and preserves current, previous, in-flight and shared data across failures and rollback'),
 )
@@ -187,6 +188,7 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
         baseline = records['baseline']
         upgrade_cases['upgrade'](records.get('good', {}), False, baseline)
         upgrade_cases['upgrade'](records.get('broken', {}), True, baseline)
+        upgrade_cases['upgrade'](records.get('probe-failure', {}), True, baseline, bootable=True)
         upgrade_cases['generations'](records.get('generationProof', {}))
         upgrade_cases['generations'](records.get('generationProof', {}), True)
         if not records.get('physicalReclamation'):
@@ -1674,25 +1676,34 @@ def probe_upgrade_attempt(args):
             state_dir = Path.home() / '.local/state/breenix-metal'
             state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             state_dir.chmod(0o700)
-            key_id = hashlib.sha256(site['SERVER_SSH_HOST'].encode()).hexdigest()
+            disk = remote('python3', '-c', 'import sys,json;sys.path.insert(0,"/opt/breenix-metal");'
+                          'import metal_persist;print(json.dumps(metal_persist.read_disk()["layout"]))', check=True)
+            shared_id = json.loads(disk.stdout)['partitions']['system']['guid']
+            key_id = hashlib.sha256((shared_id + ':' + site['SERVER_SSH_HOST']).encode()).hexdigest()
             cache = state_dir / ('pinned-hostkey-' + key_id + '.json')
             console = None
             try:
+                uid = None
                 if cache.exists():
                     pinned = json.loads(cache.read_text())
                     probe.known.write_text(pinned['known'])
                     fingerprint = pinned['fingerprint']
-                else:
-                    # Do not type while POST or the firmware menu is running.
-                    if 'Jumping to kernel entry point at' not in read('serial.txt') or 'Breenix login: ' not in read('serial.txt'):
-                        raise ValueError('waiting for the trusted console host-key record')
+                    receipt['sshAttempts'] += 1
+                    uid = probe.ssh('id -u', timeout=min(15, max(1, power + 600 - time.time())))
+                # A cached pin permits attempts during POST. Once the protected
+                # console is available it is authoritative, including key rotation.
+                serial = read('serial.txt')
+                if (uid is None or uid.returncode) and 'Jumping to kernel entry point at' in serial and 'Breenix login: ' in serial:
                     console = Console(lambda *cmd, **kw: runner['in_metal'](env, *cmd, **kw), args.boot, directory,
                                       site['CONSOLE_USER'], site['CONSOLE_PASSWORD'])
                     log = console.service_log('bsshd')
                     probe.run_case('host-key', log)
                     fingerprint = re.search(r'host key ED25519 (SHA256:[A-Za-z0-9+/]+)', log)[1]
-                receipt['sshAttempts'] += 1
-                uid = probe.ssh('id -u', timeout=min(15, max(1, power + 600 - time.time())))
+                elif not cache.exists():
+                    raise ValueError('waiting for the trusted console host-key record')
+                if uid is None or uid.returncode:
+                    receipt['sshAttempts'] += 1
+                    uid = probe.ssh('id -u', timeout=min(15, max(1, power + 600 - time.time())))
                 probe.require(uid, site['OPERATOR_UID'])
                 receipt['sshAttempts'] += 1
                 generation = probe.ssh('cat /usr/share/factory/generation')
@@ -1707,7 +1718,7 @@ def probe_upgrade_attempt(args):
                         raise ValueError('service not started: ' + name)
                 receipt.update(authenticated=True, strictHostKey=True, servicesStarted=True,
                                generation=generation.stdout.strip(), fingerprint=fingerprint, serviceState=state.stdout)
-                if not cache.exists():
+                if console or not cache.exists():
                     # Publish only a key whose strict authenticated probe succeeded.
                     staged = cache.with_suffix('.new-' + args.boot)
                     with open(staged, 'x', opener=lambda path, flags: os.open(path, flags, 0o600)) as out:
@@ -1754,7 +1765,7 @@ def main():
     parser.add_argument('--prepare-logs', action='store_true', help='Write the log whose bytes the next boot must retain')
     parser.add_argument('--boot')
     parser.add_argument('--sha')
-    parser.add_argument('--branch', default='metal-server/remote-upgrade', help='pushed branch containing the upgrade candidate')
+    parser.add_argument('--branch', default='main', help='pushed branch containing the upgrade candidate')
     parser.add_argument('--milestone', default='server/ssh-keys', choices=list(MILESTONES))
     args = parser.parse_args()
     if args.probe_upgrade:

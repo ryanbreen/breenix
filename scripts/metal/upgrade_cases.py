@@ -12,7 +12,7 @@ def probe(receipt, generation):
         raise ValueError('S21 needs strict operator SSH and started services within 600 s of power-on')
 
 
-def upgrade(result, broken, baseline):
+def upgrade(result, broken, baseline, bootable=False):
     if result.get('outcome') != ('rolled-back' if broken else 'verified'):
         raise ValueError('install-persistent did not complete the required automatic outcome')
     if result.get('toolsCommit') != baseline['commit']:
@@ -20,6 +20,8 @@ def upgrade(result, broken, baseline):
     receipt = result.get('rollback' if broken else 'verification', {})
     if receipt.get('fingerprint') != baseline['fingerprint']:
         raise ValueError('S21 probe observed a changed host key')
+    if bootable and result.get('candidateBooted') is not True:
+        raise ValueError('the SSH failure candidate never booted to its console')
     if broken:
         if result.get('verification', {}).get('sshAttempts', 0) < 1:
             raise ValueError('the broken candidate received no actual SSH probe attempt')

@@ -202,6 +202,10 @@
           "title": "A deliberately broken upgrade fails verification and automatically boots the previous paired generation, passing the same probe within another 600 seconds with unchanged machine data"
         },
         {
+          "id": "probe-failure",
+          "title": "A bootable candidate reaches init and its console but fails SSH, then automatically restores and verifies the previous generation"
+        },
+        {
           "id": "generation-repairs",
           "title": "Installer ENOSPC, I/O and interrupted-publication recovery retain the selected generation and byte-exact rollback"
         },

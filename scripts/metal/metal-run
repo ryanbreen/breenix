@@ -424,7 +424,7 @@ def main():
     p.add_argument('--sha')
     p.add_argument('--branch')
     p.add_argument('--rollback', action='store_true', help='swap the current and previous kernel slots')
-    p.add_argument('--inject', choices=('upgrade-no-ssh',), help='stage an unbootable candidate to exercise automatic rollback')
+    p.add_argument('--inject', choices=('upgrade-no-ssh', 'upgrade-service-down'), help='stage an unbootable or bootable SSH-less candidate to exercise automatic rollback')
     for name in ('stop', 'follow'):
         sub.add_parser(name).add_argument('id')
     sub.add_parser('status')

@@ -1410,7 +1410,9 @@ server-suite --boot BASELINE --sha SHA --branch BRANCH --milestone server/remote
 
 The runner owns the boots it creates through `metal-run`, under the caller's branch-tools lock. It creates
 nonce-named sentinels in `/root` and the operator's home, records their SHA-256 values and the protected host-key
-fingerprint, then performs a good upgrade and an upgrade with a deliberately invalid NEXT loader. Both cases
+fingerprint, then performs a good upgrade, an upgrade with a deliberately invalid NEXT loader, and a bootable upgrade
+with the candidate bsshd removed. The latter requires captured kernel entry and a console login prompt
+as well as actual failed SSH attempts before automatic rollback. Each case
 require the install flow's own S21 result; the broken case requires automatic rollback, not a runner-issued
 rollback command. Each final default boot must select the expected paired userland and retain the pinned key and
 sentinel bytes. The category's other two cases compile the exact-head production installer on the boot host and
@@ -1419,7 +1421,7 @@ real duplicate directory identities in a private Linux mount namespace and requi
 preservation and ordinary orphan/scratch deletion. Reclamation also requires the
 physical installer to report removal of the completed generation that falls out of the recovered slot references.
 A missing or unexecuted case
-fails. The four ordered case records and install/probe receipts are retained as `server-remote-upgrade.json` in
+fails. The five ordered case records and install/probe receipts are retained as `server-remote-upgrade.json` in
 the baseline boot's store. The runner removes its sentinels and stops its final boot through `metal-run`.
 These are automated host cases; they require no attended steps and do not establish torn-write durability on ext2.
 

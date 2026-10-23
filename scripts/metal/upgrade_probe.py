@@ -5,7 +5,6 @@ answers each verification boot with an authenticated receipt.
 """
 import json
 from pathlib import Path
-import runpy
 import subprocess
 import sys
 import time
@@ -45,11 +44,13 @@ def watch(runner, install):
                                     '--probe-upgrade', '--boot', boot], timeout=left, check=False)
                 except subprocess.TimeoutExpired:
                     pass
-                break
+                if read(boot, 'ssh-verification.json'):
+                    break
+                time.sleep(1)
             seen.add(boot)
         if read(install, 'upgrade-result.json'):
             return 0
-        if read(install, 'ended') and not events:
+        if read(install, 'ended'):
             return 1
         if read(install, 'exit-status').strip() not in ('', '0'):
             return 1
