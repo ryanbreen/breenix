@@ -386,7 +386,7 @@ impl Supervisor {
         if phase == 2 {
             let mut status = 0;
             match process::waitpid(-1, &mut status, process::WNOHANG) {
-                Err(libbreenix::Error::Os(libbreenix::Errno::ECHILD)) => {}
+                Err(libbreenix::error::Error::Os(libbreenix::Errno::ECHILD)) => {}
                 _ if now < deadline => return,
                 _ => {
                     self.notices.alert("[shutdown] processes did not exit; refusing reset");
