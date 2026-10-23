@@ -296,7 +296,6 @@ fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
 
     // Track if signal termination happened (for parent notification after lock release)
     let mut signal_termination_info: Option<crate::signal::delivery::ParentNotification> = None;
-    let mut terminated_child_pid: Option<u64> = None;
     // A signal death ends the whole thread group (pid and exit status).
     let mut group_death: Option<(crate::process::ProcessId, i32)> = None;
 
@@ -373,7 +372,6 @@ fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
             {
                 // Process was terminated by signal - switch to idle
                 crate::task::scheduler::set_need_resched();
-                terminated_child_pid = Some(notification.child_pid.as_u64());
                 // Save notification to notify parent after releasing lock
                 signal_termination_info = Some(notification);
             }
@@ -396,10 +394,6 @@ fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
         crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
     }
 
-    // Clean up window buffers so compositor stops reading freed pages
-    if let Some(pid) = terminated_child_pid {
-        crate::syscall::graphics::cleanup_windows_for_pid(pid);
-    }
 
     if let Some((pid, exit_code)) = group_death {
         crate::signal::delivery::terminate_thread_group_peers(pid, exit_code);
@@ -900,11 +894,8 @@ fn dispatch_syscall_enum(
         )),
 
         // Graphics syscalls
-        SyscallNumber::FbInfo => result_to_u64(crate::syscall::graphics::sys_fbinfo(arg1)),
-        SyscallNumber::FbDraw => result_to_u64(crate::syscall::graphics::sys_fbdraw(arg1)),
-        SyscallNumber::FbMmap => result_to_u64(crate::syscall::graphics::sys_fbmmap(arg1)),
         SyscallNumber::GetMousePos => {
-            result_to_u64(crate::syscall::graphics::sys_get_mouse_pos(arg1, arg2))
+            result_to_u64(crate::syscall::pointer::sys_get_mouse_pos(arg1, arg2))
         }
 
         // Audio syscalls
