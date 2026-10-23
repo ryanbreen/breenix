@@ -1458,3 +1458,48 @@ acceptance.
 Source declaration: this optimization derives from Breenix's existing quad,
 vertex program and viewport encoder, its integer geometry contract, and IEEE-754.
 No external implementation source was read or used.
+
+
+## B25: Finish catalogue initialization before serving frames
+
+The compositor-death diagnostic released the retired buffer's pin immediately,
+but its replay still waited 327 ms in CTX_ATTACH_RESOURCE (0x202). The native
+queue's oldest request was SUBMIT_3D (0x207), and its active warm-up was the
+client's catalogue pipeline 8. Vigil diagnostic
+`20261023T193201Z-parallels-death-request-diag` retains the request timings.
+The full HiDPI failure in B23 likewise recorded a pipeline-8 warm-up ahead of
+two readback transfers when the unchanged watchdog fired.
+
+Raw CONTEXT_CREATE intentionally returns while the catalogue warms (gpu-abi.md).
+BGL and the production userspace compositor now initialize through
+`context_create_ready`: they wait for the context's actual COUNTERS state 0
+before returning their constructors. A counter error, quarantine, reset or
+interrupted sleep destroys the new context and returns an error. Raw context
+creation and every warm-up completion check are unchanged. This adds a startup
+wait to these drawing libraries, so unrelated background shader initialization
+cannot intrude into their later frame operations. It waits for device
+initialization, without inspecting or waiting for host load.
+
+Each Parallels catalogue step also ends with B23's one-pixel in-stream read of
+its private scratch target before its native fence. Its successful completion
+therefore includes that device operation. The warm-up still compiles and draws
+every catalogue pipeline and checks its native fence; no early marker or counter
+substitution reports it ready. The completion pixels have no CPU consumer.
+
+With the normal userspace image and no diagnostic logging, the unchanged focused
+cases passed:
+
+| Case | Result | Measurement | Vigil diagnostic |
+|---|---|---|---|
+| composition/compositor-dies | PASS | both waits returned by reaping; each measured gap 0 ms, limit 250 ms; case 2,314 ms | `20261023T194859Z-parallels-ready-death` |
+| scanout/hidpi-mode | PASS | complete 2560x1600 observations including the changed last row; case 2,224 ms | `20261023T195001Z-parallels-ready-hidpi` |
+
+The HiDPI stage hash was
+`3f2879422970f9f0ba7e673af4ae4df540701a457c9c124912488f32cad4cc20`;
+recovery uploads and device resets were zero. These are focused-case results,
+not full-suite acceptance. No case, deadline, expected pixel or memory allowance
+was changed.
+
+Source declaration: Breenix's queue diagnostics, published context-state
+contract and existing initialization paths, plus the pinned protocol layout in
+B23; no external implementation source was used.

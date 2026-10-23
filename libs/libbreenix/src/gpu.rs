@@ -52,6 +52,29 @@ pub fn context_create() -> Result<u64, i64> {
     }
 }
 
+/// Create a context for a synchronous drawing library. Finish catalogue initialization
+/// before the library starts serving frames; raw CONTEXT_CREATE remains asynchronous.
+pub fn context_create_ready() -> Result<u64, i64> {
+    let context = context_create()?;
+    loop {
+        let (ret, state) = counters(context);
+        let error = if ret != 0 { ret } else {
+            match state.state {
+                abi::context_state::LIVE => return Ok(context),
+                abi::context_state::WARMING => {
+                    match crate::time::sleep_ms(1) {
+                        Ok(()) => continue,
+                        Err(crate::error::Error::Os(errno)) => -(errno as i64),
+                    }
+                }
+                _ => -abi::errno::EIO,
+            }
+        };
+        context_destroy(context);
+        return Err(error);
+    }
+}
+
 /// `CONTEXT_DESTROY`.
 pub fn context_destroy(handle: u64) -> i64 {
     let mut a = abi::Handle { handle, reserved: 0 };

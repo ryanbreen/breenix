@@ -2299,6 +2299,7 @@ fn warm_next() -> Option<u64> {
     } else {
         let mut enc = encode::Enc::new();
         encode::warm_pipeline(&mut enc, &mut objects, vb, scratch, scratch_texture, wire::format::B8G8R8A8_UNORM, FLIP_Y, pipeline);
+        if crate::platform_config::is_parallels() { enc.completion_read(scratch, 256); }
         enc.finish().filter(|v| !v.is_empty()).map(Chunks::Virgl)
     };
     with_core(|c| {

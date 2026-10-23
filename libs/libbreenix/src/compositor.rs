@@ -156,7 +156,7 @@ impl Compositor {
     /// A context and the three targets at the current mode, each cleared to black by a
     /// completed GPU clear.
     pub fn new() -> Result<Compositor, i64> {
-        let context = gpu::context_create()?;
+        let context = gpu::context_create_ready()?;
         let mut c = Compositor { context, scene: 0, scanout: [0; 2], next: 0, width: 0, height: 0 };
         c.make_targets()?;
         Ok(c)
