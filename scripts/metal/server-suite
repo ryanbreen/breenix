@@ -1346,9 +1346,10 @@ class Operator:
 
 class Watchdog:
     """Destructive cases own their fault boots; the driver observes, never recovers them."""
-    def __init__(self, probe, console, remote, runner, env, boot, sha):
+    def __init__(self, probe, console, remote, runner, env, boot, sha, branch):
         self.probe, self.console, self.remote = probe, console, remote
         self.runner, self.env, self.base, self.sha = runner, env, boot, sha
+        self.branch = branch
         self.boots = []
         self.stopped = False
 
@@ -1370,7 +1371,8 @@ class Watchdog:
             self.stop(self.base)
             self.stopped = True
         result = command(['python3', str(Path(__file__).with_name('metal-run')), 'boot',
-                          '--sha', self.sha, '--inject', 'watchdog-' + name, '--no-wait'])
+                          '--sha', self.sha, '--branch', self.branch,
+                          '--inject', 'watchdog-' + name, '--no-wait'])
         if result.returncode: raise ValueError('watchdog fault boot could not launch')
         ids = re.findall(r'"id":\s*"(\d{8}T\d{6}Z-metal)"', result.stdout)
         if not ids: raise ValueError('fault launch returned no boot ID')
@@ -1424,6 +1426,7 @@ def main():
     parser.add_argument('--prepare-logs', action='store_true', help='Write the log whose bytes the next boot must retain')
     parser.add_argument('--boot')
     parser.add_argument('--sha')
+    parser.add_argument('--branch', default='main', help='Source branch for watchdog fault images (default: main)')
     parser.add_argument('--milestone', default='server/ssh-keys', choices=list(MILESTONES))
     args = parser.parse_args()
     if args.check_manifest:
@@ -1507,7 +1510,7 @@ def main():
         if category in ('services', 'logs', 'operator', 'watchdog'):
             probe.run_case('host-key', serial)
             if category == 'watchdog':
-                target = Watchdog(probe, console, remote, runner, env, args.boot, args.sha)
+                target = Watchdog(probe, console, remote, runner, env, args.boot, args.sha, args.branch)
             elif category == 'operator':
                 own = Console(lambda *cmd, **kw: runner['in_metal'](env, *cmd, **kw), args.boot, directory,
                               site['OPERATOR_USER'], site['OPERATOR_PASSWORD'])

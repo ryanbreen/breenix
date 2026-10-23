@@ -1379,7 +1379,8 @@ both.
 
 `server/watchdog` runs from the boot host after `install-persistent` at the same
 commit and a leased persistent boot, using the command above with
-`--milestone server/watchdog`. It pins that install's SSH key from SOL, ends that
+`--milestone server/watchdog --branch BRANCH` (use the install's source branch).
+It pins that install's SSH key from SOL, ends that
 baseline boot, and owns two sequential watchdog fault boots. The cases halt the
 feeder CPU and wedge the root filesystem writer respectively. Neither fault
 calls a reset routine. The health-check wedge leaves scheduling running while
