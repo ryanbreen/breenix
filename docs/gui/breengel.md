@@ -1272,9 +1272,11 @@ meaning. Breengel maps an unknown kind to `Event::Unknown { kind }`, never to a 
 - The kernel also generates `Overflow { lost: N }` when its own `Resized`, `ResizeFailed` or
   `CompositorChanged` events cannot enter the ring. It retains the queued events and counts the lost
   kernel events, delivering that count after the retained events and before later input. Pending kernel
-  loss also makes `WRITE_EVENTS` return zero until its Overflow has been queued or read; refused
-  compositor events do not add to that count. Thus a kernel-generated Overflow reports lost kernel
-  notifications, while a compositor-written Overflow reports the compositor backlog's dropped input.
+  loss also makes `WRITE_EVENTS` return zero until its Overflow has been queued or read; compositor
+  events refused by `WRITE_EVENTS` do not add to that count. Failure to allocate while restoring events
+  after an unsuccessful read can also count already-queued input as lost. Both sources use kind 14 and
+  the same `lost` field: clients cannot distinguish them. On any Overflow, clients re-read their window
+  size and compositor state and recover from potentially missing input.
 - An event for one window wakes only that window's readers. `EVENT_FD` is pollable and reports POLLIN when an
   event is queued.
 - `EVENT_FD` of window 0 gives the compositor its scene descriptor (ENOENT to any other caller, as for an id
