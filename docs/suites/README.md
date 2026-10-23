@@ -129,13 +129,14 @@ periodic timer fired, each in microseconds after the case armed it, the programm
 `every` and how late an expiry may come, `limit`; it carries at most 32 times. None of the
 records is a result: the CASE line that follows decides the case.
 
+<!-- claim-lint:ok: libs/libbreenix/src/suite.rs sets RECORDS_PER_CASE to 12 and emit_record drops records after that cap. -->
 They are written like the other records, one write starting with a newline. A case prints
 them through `value(name, number, unit, expect)`, `wait_for(ms, result)` and
 `pulses(every_us, limit_us, at_us)` in `breenix_suite::suite`,
 which write to a close-on-exec copy of the suite's stdout the case keeps before its own
 output goes to `/dev/null`; a program the case execs cannot print them. They name the
 running case, appear between its suite's START and DONE, and are bounded: a case reports
-the few quantities it asserts on, rather than one per loop iteration, and the runner drops any
+the few quantities it asserts on, never one per loop iteration, and the runner drops any
 past `RECORDS_PER_CASE` (12) in one case process. Readers that know only START, CASE and
 DONE skip them; `scripts/suite-verdict.py` accepts them when they are well formed and name
 a manifest case, and does not count them.

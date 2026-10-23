@@ -766,13 +766,13 @@ A case that needs a real key from outside the guest asks for it on serial, the l
 case reads its effect back in the guest. The host key is the input; the in-guest read-back is the evidence.
 
 - **The request** is a suite record, written like VALUE and WAIT (one write starting with a newline, through
-  a `libbreenix::suite` helper, between the suite's START and DONE):
+  a `breenix_suite::suite` helper, between the suite's START and DONE):
 
   ```text
   SUITE console HOSTKEY <category>/<case> seq=<n> keys=<chord>[,<chord>...]
   ```
 
-  `libbreenix::suite::hostkeys(chords)` emits the record and returns its sequence;
+  `breenix_suite::suite::hostkeys(chords)` emits the record and returns its sequence;
   `hostkey_method()` exposes the declaration. The helper rejects an absent method
   or a chord containing a declared missing key. Sequence ranges are reserved in
   the parent before each case forks, and `--hostkeys` is retained across a suite sequence.

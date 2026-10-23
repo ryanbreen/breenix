@@ -63,7 +63,7 @@ pub fn is_initialized() -> bool {
 /// The driver's progress for `/proc/xhci/trace`: no controller, enumerating the
 /// root ports and attaching their class drivers, attached, or stopped by a failure.
 /// PID 1 starts while the worker enumerates, so a program that needs a USB keyboard
-/// (a suite's host keys) waits for `ready` (`libbreenix::suite::hostkeys`).
+/// (a suite's host keys) waits for `ready` (`breenix_suite::suite::hostkeys`).
 static STATE: AtomicU8 = AtomicU8::new(STATE_ABSENT);
 const STATE_ABSENT: u8 = 0;
 const STATE_ENUMERATING: u8 = 1;

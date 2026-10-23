@@ -1795,7 +1795,7 @@ is authored: bwm composes through BGL, and every app draws through BreenGL on th
 1. Test controls: syscall 415, the PID-1 latch, `init`'s absence check, on ARM64, dispatched through
    `dispatch_numbered` (no Tier-1 file changes); x86-64's dispatch arrives when x86-64 joins (section 1.6.4).
 2. Kernel output accounting (§22) and its structure test.
-3. `libs/libpixcheck`'s comparison core over byte slices, and `libbreenix::suite::judged_readback`. Not
+3. `libs/libpixcheck`'s comparison core over byte slices, and `breenix_suite::suite::judged_readback`. Not
    `suite::judged(&FrameBuf)`, `Suite::gui()` or `suite_stage`, which stay on `breengel/suite` until BreenGL
    converts them.
 4. The VMware driver corrections (`kernel_va_to_ipa` addresses for command buffers and DMA pages, SVGA3D

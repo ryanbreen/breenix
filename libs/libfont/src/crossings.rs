@@ -85,7 +85,8 @@ impl Crossings {
     }
 }
 
-/// A validated geometry table. Only the crossing builder can construct its bytes.
+/// Validated geometry tables, stored singly or packed back to back.
+/// Only the crossing builder can construct their bytes.
 /// Offsets count entries, not bytes, as gpu-abi.md specifies.
 pub struct CrossingTable { bytes: Vec<u8>, entries: usize }
 impl CrossingTable {

@@ -8,7 +8,8 @@ license = "MIT"
 [workspace]
 
 # Keep the existing harness source paths so the structural guards continue to
-# inspect the same implementation. This package is linked by suite binaries only.
+# inspect the same implementation. The userspace programs package depends on this
+# harness, so Cargo feature unification enables libbreenix suite auditing there.
 [lib]
 path = "../src/suite_lib.rs"
 
