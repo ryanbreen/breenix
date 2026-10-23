@@ -52,7 +52,7 @@ const NETWORK_POLL_MS: u64 = 250;
 /// Which of the table's services this init supervises.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
-    /// The whole table: the system's init.
+    /// The whole table (the default x86 init).
     All,
     /// Services without login terminals (the ARM64 desktop boot).
     Daemons,
