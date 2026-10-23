@@ -225,6 +225,7 @@ ARM64; x86-64's dispatch arrives when x86-64 joins (section 1.6.4).
 | 10, 11 | `MODES`, `SET_MODE` | display owner only for `SET_MODE` |
 | 12 | `PRESENT` | display owner only; EINVAL for a never-written target or one created without the scanout flag; returns a fence of the context it names, never a raw device fence number (section 1.7) |
 | 13 | `COUNTERS` | per-context submissions, draws, instances, fragment area, work estimate, uploads by purpose, readbacks, catalogue warm-up state |
+| 14 | `CURRENT_MODE` | current physical dimensions and UI scale in a 16-byte `Mode`, without MODES' firmware diagnostics |
 
 **Dispatch without a Tier-1 edit.** 416 is not added to `SyscallNumber`; it is dispatched in
 `dispatch_numbered` (`kernel/src/syscall/mod.rs`, about line 889), which both architectures' entry paths

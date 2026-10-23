@@ -231,6 +231,8 @@ struct Proc {
     /// staging, and `SUBMIT`'s copies and vertex storage while they are held.
     quota: Quota,
     creating: bool,
+    /// One context initialized by window/claim setup for the next CONTEXT_CREATE.
+    prepared_context: Option<u64>,
     /// `PRESENT`s whose flush completed OK (`/proc/breenix/stage-composites`).
     presents: u64,
 }
@@ -323,13 +325,13 @@ struct Sub {
     /// When `SUBMIT` handed it to the device's queue; the watchdog's clock.
     sent_ns: Option<u64>,
     error: Option<u32>,
-    mismatch: bool,
+    mismatch: Option<u32>,
     /// Its requests the device or the backlog still holds.
     requests: u32,
     /// Its result has reached callers.
     published: bool,
-    /// A submission kept by test point 31's fence-depth mode: its result, until it is
-    /// published.
+    /// The render result, retained until its requests end and any fence-depth hold is
+    /// released. The native producer fence identifies the render request.
     result: Option<(u32, u32)>,
     writer: Option<Arc<window_targets::Writer>>,
     written: Vec<u32>,
@@ -898,6 +900,7 @@ impl Core {
             totals: Totals::default(),
             quota: Quota::default(),
             creating: false,
+            prepared_context: None,
             presents: 0,
         })
     }
@@ -1263,61 +1266,47 @@ impl Core {
         notify();
     }
 
-    /// One SUBMIT_3D of submission `serial` came back.
+    /// One request of submission `serial` came back. Keep the render fence's identity,
+    /// but publish only after its requests, including the Parallels completion read, end.
     fn submit_returned(&mut self, serial: u64, last: bool, mut done: Done) {
         let answer = done.answer;
         let Some(sub) = self.subs.get_mut(&serial) else { return };
         sub.requests = sub.requests.saturating_sub(1);
-        if !dev::ok(answer) {
-            sub.error.get_or_insert(answer);
-        }
+        if !dev::ok(answer) { sub.error.get_or_insert(answer); }
         if last {
             let submitted = sub.present.is_none();
-            // Test point 20, `stale-fence`: the answer claims another submission's fence.
+            // Test point 20 belongs to the actual render completion, not its completion read.
             if submitted && crate::test_control::take(test_point::STALE_FENCE, 0).is_some() {
                 done.echoed = done.native_fence.unwrap_or(0).wrapping_add(1);
             }
-            if sub.error.is_none() && !done.matches_fence(sub.fence) {
-                sub.mismatch = true;
-            }
             sub.native_fence = done.native_fence.unwrap_or(0);
-            let result = match (sub.error, sub.mismatch) {
-                (Some(a), _) => (fence_status::DEVICE_ERROR, a),
-                (None, true) => (fence_status::FENCE_MISMATCH, done.echoed as u32),
-                (None, false) => (fence_status::OK, answer),
-            };
-            let ctx = sub.ctx;
-            // Test point 31, `withhold-fence`, parameters 0 and 1: ignore this completion,
-            // or every completion from now until the device is reset.
             let withheld = if submitted {
                 crate::test_control::take_if(test_point::WITHHOLD_FENCE, 0, |p| p != test_point::WITHHOLD_DEPTH)
-            } else {
-                None
-            };
+            } else { None };
             match withheld {
-                Some(p) => {
-                    if p == test_point::WITHHOLD_ALL {
-                        self.stalled = true;
-                    }
-                }
-                None => {
-                    // Fence depth keeps the answer until a fifth SUBMIT waits for room. Only
-                    // the depth that kept this submission holds it: an answer that comes after
-                    // that depth ended is published, even if a later depth has begun.
-                    let keep = self
-                        .contexts
-                        .get(&ctx)
-                        .and_then(|c| c.depth.as_ref())
-                        .is_some_and(|d| d.kept.contains(&serial));
-                    if keep {
-                        if let Some(sub) = self.subs.get_mut(&serial) {
-                            sub.result = Some(result);
-                        }
-                    } else {
-                        self.publish(serial, result.0, result.1);
-                    }
-                }
+                Some(p) => { if p == test_point::WITHHOLD_ALL { self.stalled = true; } }
+                None => sub.result = Some((fence_status::OK, answer)),
             }
+        }
+        if (last || done.fence.is_some()) && !done.matches_fence(sub.fence) {
+            sub.mismatch.get_or_insert(done.echoed as u32);
+        }
+        let ready = if sub.requests == 0 {
+            sub.result.map(|(_, render_answer)| {
+                let result = match (sub.error, sub.mismatch) {
+                    (Some(error), _) => (fence_status::DEVICE_ERROR, error),
+                    (None, Some(echoed)) => (fence_status::FENCE_MISMATCH, echoed),
+                    (None, None) => (fence_status::OK, render_answer),
+                };
+                sub.result = Some(result);
+                (sub.ctx, result)
+            })
+        } else { None };
+        if let Some((ctx, result)) = ready {
+            // A depth that ended while the completion read was pending no longer holds it.
+            let keep = self.contexts.get(&ctx).and_then(|c| c.depth.as_ref())
+                .is_some_and(|d| d.kept.contains(&serial));
+            if !keep { self.publish(serial, result.0, result.1); }
         }
         self.retire_if_done(serial);
     }
@@ -1415,7 +1404,7 @@ impl Core {
         let mut kept: Vec<(u32, u64)> = depth.kept.iter().filter_map(|s| self.subs.get(s).map(|x| (x.n, *s))).collect();
         kept.sort_unstable();
         for (_, serial) in kept {
-            if let Some((status, answer)) = self.subs.get_mut(&serial).and_then(|s| s.result.take()) {
+            if let Some((status, answer)) = self.subs.get_mut(&serial).filter(|s| s.requests == 0).and_then(|s| s.result.take()) {
                 self.publish(serial, status, answer);
             }
         }
@@ -2313,6 +2302,7 @@ fn warm_next() -> Option<u64> {
     } else {
         let mut enc = encode::Enc::new();
         encode::warm_pipeline(&mut enc, &mut objects, vb, scratch, scratch_texture, wire::format::B8G8R8A8_UNORM, FLIP_Y, pipeline);
+        if crate::platform_config::is_parallels() { enc.completion_read(scratch, 256); }
         enc.finish().filter(|v| !v.is_empty()).map(Chunks::Virgl)
     };
     with_core(|c| {
@@ -2494,6 +2484,7 @@ pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
                 abi::op::COUNTERS => op_counters(arg, len),
                 abi::op::SET_MODE => display::set_mode(arg, len),
                 abi::op::MODES => display::modes(arg, len),
+                abi::op::CURRENT_MODE => display::current_mode(arg, len),
                 _ => Err(ENOSYS),
             },
         },
@@ -2588,7 +2579,63 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
 }
 
 fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
+    let prepared = with_core(|c| {
+        let handle = c.procs.get_mut(&tgid)?.prepared_context.take()?;
+        let warmed = c.ctx_of(tgid, handle).and_then(|id| c.contexts.get(&id))
+            .filter(|ctx| ctx.state == CtxState::Live && !ctx.dropped && ctx.device_alive)
+            .map(|ctx| ctx.warmed());
+        Some((handle, warmed))
+    }).flatten();
+    if let Some((handle, ready)) = prepared {
+        if let Some(warmed) = ready { return Ok((handle, warmed)); }
+        destroy_context(tgid, handle);
+    }
     create_context_with_catalogue(tgid, true)
+}
+
+/// Initialize the renderer during window/display setup so catalogue compilation is out
+/// of the first frame's path. The prepared context is counted as an ordinary process context;
+/// CONTEXT_CREATE transfers its existing handle to the caller, and exit retires it normally.
+pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32> {
+    if !crate::platform_config::is_parallels() { return Ok(()); }
+    let needs_context = with_core(|c| {
+        let Some(p) = c.procs.get(&tgid) else { return true; };
+        p.contexts.len() < limits::CONTEXTS && p.prepared_context.is_none() && (reserve_next || !p.contexts.values().any(|id|
+            c.contexts.get(id).is_some_and(|ctx| ctx.warm_catalogue && ctx.state == CtxState::Live && !ctx.dropped)))
+    }).ok_or(ENODEV as i32)?;
+    let made = if needs_context {
+        let (handle, _) = create_context_with_catalogue(tgid, true).map_err(|e| e as i32)?;
+        let kept = with_core(|c| {
+            let p = c.proc_mut(tgid);
+            if p.prepared_context.is_some() { false } else { p.prepared_context = Some(handle); true }
+        }).unwrap_or(false);
+        if kept { Some(handle) } else { destroy_context(tgid, handle); None }
+    } else { None };
+    let ready = wait_for(None, true, |c| {
+        let Some(p) = c.procs.get(&tgid) else { return Some(Err(ENODEV)); };
+        if let Some(handle) = p.prepared_context {
+            let live = p.contexts.get(&handle).and_then(|id| c.contexts.get(id))
+                .is_some_and(|ctx| ctx.state == CtxState::Live && !ctx.dropped);
+            if !live { return Some(Err(EIO)); }
+        }
+        for id in p.contexts.values() {
+            let Some(ctx) = c.contexts.get(id) else { continue; };
+            if !ctx.warm_catalogue || ctx.dropped || ctx.state != CtxState::Live { continue; }
+            if ctx.warm != encode::ALL_WARM { return None; }
+        }
+        Some(Ok(()))
+    }).map_err(|_| EINTR).and_then(|r| r);
+    if ready.is_err() {
+        if let Some(handle) = made {
+            // Claim the spare under the same lock as CONTEXT_CREATE before retiring it.
+            let unused = with_core(|c| {
+                let p = c.procs.get_mut(&tgid)?;
+                if p.prepared_context == Some(handle) { p.prepared_context.take() } else { None }
+            }).flatten();
+            if let Some(handle) = unused { destroy_context(tgid, handle); }
+        }
+    }
+    ready.map_err(|e| e as i32)
 }
 
 fn create_context_with_catalogue(tgid: u64, warm_catalogue: bool) -> Result<(u64, u32), i64> {
@@ -2840,6 +2887,16 @@ fn op_context_destroy(arg: u64, len: u64) -> Result<u64, i64> {
     }
     let tgid = caller()?;
     if destroy_context(tgid, a.handle) {
+        // Explicit renderer teardown also gives back its unused preparation. Keep a spare
+        // across window churn; a window can disappear before its process starts rendering.
+        let unused = with_core(|c| {
+            let p = c.procs.get_mut(&tgid)?;
+            let prepared = p.prepared_context?;
+            let has_renderer = p.contexts.iter().any(|(&handle, id)| handle != prepared
+                && c.contexts.get(id).is_some_and(|ctx| ctx.warm_catalogue && !ctx.dropped));
+            if has_renderer { None } else { p.prepared_context.take() }
+        }).flatten();
+        if let Some(handle) = unused { destroy_context(tgid, handle); }
         Ok(0)
     } else {
         Err(EINVAL)
@@ -2849,7 +2906,9 @@ fn op_context_destroy(arg: u64, len: u64) -> Result<u64, i64> {
 /// Drop a context handle; the device context goes once its submitted work completes.
 fn destroy_context(tgid: u64, handle: u64) -> bool {
     with_core(|c| {
-        let Some(id) = c.procs.get_mut(&tgid).and_then(|p| p.contexts.remove(&handle)) else { return false };
+        let Some(p) = c.procs.get_mut(&tgid) else { return false; };
+        if p.prepared_context == Some(handle) { p.prepared_context = None; }
+        let Some(id) = p.contexts.remove(&handle) else { return false; };
         if let Some(ctx) = c.contexts.get_mut(&id) {
             ctx.dropped = true;
         }
@@ -3290,10 +3349,11 @@ impl encode::Bindings for Resolved<'_> {
 }
 
 /// The resources a validated stream names: written targets, every resource, full clears.
-fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>, Option<u32>) {
     let mut written = Vec::new();
     let mut all = Vec::new();
     let mut whole = Vec::new();
+    let mut last_written = None;
     let mut target = None;
     let mut whole_clip = true;
     let mut size = [0u32; 2];
@@ -3336,6 +3396,7 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
             // A copy writes its destination, the whole of it when its clipped rectangle is.
             if let (Some(src), Some(dst)) = (view.get(handle(2)), view.get(handle(8))) {
                 add(&mut written, dst.id);
+                last_written = Some(dst.id);
                 add(&mut all, dst.id);
                 let r = [4, 5, 6, 7, 10, 11].map(|k| words.word(at + k));
                 if let Some([_, _, w, h, dx, dy]) = stream::copy_clip(r, [src.width, src.height], [dst.width, dst.height]) {
@@ -3359,6 +3420,7 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
         if writes {
             if let Some(id) = target {
                 add(&mut written, id);
+                last_written = Some(id);
             }
         }
         if let Some(id) = found {
@@ -3366,7 +3428,7 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
         }
         at += len.max(2);
     }
-    (written, all, whole)
+    (written, all, whole, last_written)
 }
 
 /// Read-only validator view for point 24's planted pipeline modifier.
@@ -3510,7 +3572,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
     if let Some(extra) = extra.as_mut() {
         (extra.check)(&words, &view)?;
     }
-    let (written, mut named_ids, whole) = named(&words, &view);
+    let (written, mut named_ids, whole, last_written) = named(&words, &view);
     // Take the context's submission slot: one sender at a time, at most four in flight.
     let mut waited = false;
     let admitted = wait_for(None, true, |c| {
@@ -3619,8 +3681,11 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             corruption.is_some()
         });
     let svga = dev::is_svga();
+    // A viewport per rectangle costs more commands on large streams. Short Parallels
+    // streams use immutable vertices; mutable data/copy scratch still needs completion.
+    let fixed_quads = crate::platform_config::is_parallels() && !svga && !FLIP_Y && plan.drawn <= 64;
     // The SVGA3D DX translation makes its own vertex, constant, data and scratch surfaces.
-    let vertex_range = match if svga { Ok(None) } else { vertex_buffer_for(tgid, id, writer.serial, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) } {
+    let vertex_range = match if svga || fixed_quads { Ok(None) } else { vertex_buffer_for(tgid, id, writer.serial, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) } {
         Ok(vb) => vb,
         Err(e) => {
             release_slot(false);
@@ -3731,6 +3796,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         at += words.word(at + 1) as usize;
     }
     let translate = |enc: &mut encode::Enc, objects: &mut encode::Objects| {
+        if fixed_quads { enc.fixed_quads(); }
         encode::forget_surfaces(enc, objects, &stale);
         encode::translate_at(enc, objects, &words, &resolved, encode::Extras {
             vertex_buffer: vertex_buffer.unwrap_or(default_vb),
@@ -3741,7 +3807,14 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             corrupt,
             suppress,
             swap,
-        }, vertex_range.map_or(0, |(_, offset, _)| offset));
+        }, if fixed_quads { encode::FIXED_QUAD_OFFSET } else { vertex_range.map_or(0, |(_, offset, _)| offset) });
+        // Immutable geometry does not protect the reused coverage and copy textures.
+        if crate::platform_config::is_parallels()
+            && (!fixed_quads || data_texture != 0 || copy_scratch.iter().any(|&rid| rid != 0)) {
+            if let Some(target) = last_written.and_then(|id| view.entries.iter().find(|e| e.id == id)) {
+                enc.completion_read(target.id, (target.width * 4).next_multiple_of(256));
+            }
+        }
     };
     let dx_extras = || svga::encode::Extras { scratch: plan.scratch, data_width, corrupt, suppress, swap };
     // Count surface bytes, then size the complete device buffers including the surfaces'
@@ -4003,7 +4076,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             native_fence: 0,
             sent_ns: None,
             error: None,
-            mismatch: false,
+            mismatch: None,
             requests: reqs.len() as u32,
             published: false,
             result: None,
@@ -5266,6 +5339,13 @@ pub fn present_records() -> alloc::string::String {
 pub fn display_active() -> bool {
     display::active()
 }
+
+/// Whether the admitted device's boot-owned console allocations have finished.
+pub(crate) fn boot_settled() -> bool {
+    with_core(|c| c.status != abi::status::ADMITTED || console::preparation_settled(c.epoch))
+        .unwrap_or(true)
+}
+
 pub fn take_display(vt: usize) -> SyscallResult {
     let _path = GpuPath::enter();
     let tid = match crate::task::scheduler::current_thread_id() {

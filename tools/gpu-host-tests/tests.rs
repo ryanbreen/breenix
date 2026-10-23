@@ -67,6 +67,8 @@ fn frame_uploads_vertices_before_draws_in_one_bounded_batch_per_chunk() {
                 assert!(at + 1 + len <= chunk.len());
                 if command == wire::ccmd::RESOURCE_INLINE_WRITE && chunk.word(at + 1) == 27 {
                     assert_eq!(draws, 0, "a vertex upload followed a draw");
+                    assert_eq!(chunk.word(at + 3), wire::transfer::WRITE | wire::transfer::DISCARD_RANGE,
+                        "reused vertex storage needs a range-discard write");
                     assert_eq!(chunk.word(at + 6), 96 + vertices * 8);
                     let bytes = chunk.word(at + 9);
                     assert_eq!(len, 11 + bytes as usize / 4);
@@ -113,4 +115,98 @@ fn clear_only_stream_preserves_its_command_storage() {
     let first = chunks[0].word(0) & 255;
     assert_ne!(first, wire::ccmd::RESOURCE_INLINE_WRITE);
     assert_eq!(gpu::dma::take_pages(), 1, "clear-only translation allocated extra command storage");
+}
+
+#[test]
+fn fixed_quads_keep_vertices_identical_and_place_each_rectangle() {
+    use gpu_abi::stream::encode as bgl;
+    let mut words = Vec::new();
+    bgl::begin(&mut words, 1);
+    bgl::draw(&mut words, gpu_abi::pipeline::SOLID, 0xff123456,
+        &[[1, 2, 7, 9], [17, 13, 35, 37]]);
+    let mut sizing = encode::Enc::size_only();
+    sizing.fixed_quads();
+    encode::translate_at(&mut sizing, &mut encode::Objects::new(), words.as_slice(), &View, extras(), encode::FIXED_QUAD_OFFSET);
+    let mut enc = encode::Enc::new();
+    enc.fixed_quads();
+    encode::translate_at(&mut enc, &mut encode::Objects::new(), words.as_slice(), &View, extras(), encode::FIXED_QUAD_OFFSET);
+    let chunks = enc.finish().unwrap();
+    let allocated: usize = chunks.iter().map(|c| (c.len()*4).div_ceil(PAGE)*PAGE).sum();
+    assert_eq!(sizing.backing_bytes(), Some(allocated as u64));
+    let (mut uploads, mut draws, mut viewports) = (0, 0, Vec::new());
+    for c in chunks {
+        let mut at = 0;
+        while at < c.len() {
+            let code = c.word(at)&255;
+            let len = (c.word(at)>>16) as usize;
+            if code == wire::ccmd::RESOURCE_INLINE_WRITE {
+                assert_eq!(draws, 0);
+                assert_eq!(c.word(at+6), encode::FIXED_QUAD_OFFSET);
+                assert_eq!(c.word(at+9), 48);
+                let unit:Vec<_>=(at+12..at+24).map(|i|f32::from_bits(c.word(i))).collect();
+                assert_eq!(unit, [-1.,-1.,1.,-1.,-1.,1.,1.,-1.,1.,1.,-1.,1.]);
+                uploads += 1;
+            }
+            if code == wire::ccmd::SET_VIEWPORT_STATE {
+                viewports.push((at+2..at+8).map(|i|f32::from_bits(c.word(i))).collect::<Vec<_>>());
+            }
+            if code == wire::ccmd::DRAW_VBO {
+                assert_eq!(c.word(at+1), encode::FIXED_QUAD_OFFSET/8);
+                assert_eq!(c.word(at+2), 6);
+                draws += 1;
+            }
+            at += 1+len;
+        }
+    }
+    assert_eq!((uploads, draws), (1, 2));
+    assert_eq!(&viewports[1..], &[vec![3.,3.5,0.5,4.,5.5,0.5], vec![9.,12.,0.5,26.,25.,0.5]]);
+}
+
+#[test]
+fn fixed_quads_share_one_unit_upload_across_sampled_and_buffer_draws() {
+    struct Mixed;
+    impl encode::Bindings for Mixed {
+        fn target(&self, h: u64) -> Option<encode::TargetRes> { View.target(h) }
+        fn source(&self, h: u64) -> Option<encode::SourceRes> {
+            (h == 2).then_some(encode::SourceRes {id: 11, format: wire::format::B8G8R8A8_UNORM, width: 12, height: 6})
+        }
+        fn buffer_rect(&self, _: u64, _: u64) -> [i32;4] { [1,1,4,4] }
+        fn buffer_word(&self, _: u64, _: u64) -> u32 { panic!("no crossing table") }
+    }
+    use gpu_abi::stream::encode as bgl;
+    let mut words = Vec::new();
+    bgl::begin(&mut words, 1);
+    bgl::draw_sampled(&mut words, gpu_abi::pipeline::COPY, 2, &[[0,0,12,6,0,0]]);
+    bgl::draw_buffer(&mut words, gpu_abi::pipeline::SOLID, 0xff0000ff, 3, 0, 1);
+    bgl::draw_sampled(&mut words, gpu_abi::pipeline::COPY, 2, &[[4,2,8,5,1,1]]);
+    let mut enc = encode::Enc::new();
+    enc.fixed_quads();
+    encode::translate_at(&mut enc, &mut encode::Objects::new(), words.as_slice(), &Mixed, extras(), encode::FIXED_QUAD_OFFSET);
+    let (mut uploads, mut draws, mut viewports) = (0, 0, Vec::new());
+    for c in enc.finish().unwrap() {
+        let mut at=0;
+        while at<c.len() {
+            let code=c.word(at)&255;
+            let len=(c.word(at)>>16) as usize;
+            if code==wire::ccmd::RESOURCE_INLINE_WRITE {
+                assert_eq!(draws,0);
+                assert_eq!(c.word(at+6),encode::FIXED_QUAD_OFFSET);
+                assert_eq!(c.word(at+9),48);
+                let unit:Vec<_>=(at+12..at+24).map(|i|f32::from_bits(c.word(i))).collect();
+                assert_eq!(unit,[-1.,-1.,1.,-1.,-1.,1.,1.,-1.,1.,1.,-1.,1.]);
+                uploads+=1;
+            }
+            if code==wire::ccmd::SET_VIEWPORT_STATE {
+                viewports.push((at+2..at+8).map(|i|f32::from_bits(c.word(i))).collect::<Vec<_>>());
+            }
+            if code==wire::ccmd::DRAW_VBO {
+                assert_eq!(c.word(at+1),encode::FIXED_QUAD_OFFSET/8);
+                assert_eq!(c.word(at+2),6);
+                draws+=1;
+            }
+            at+=1+len;
+        }
+    }
+    assert_eq!((uploads,draws),(1,3));
+    assert_eq!(&viewports[1..],&[vec![6.,3.,0.5,6.,3.,0.5],vec![1.5,1.5,0.5,2.5,2.5,0.5],vec![2.,1.5,0.5,6.,3.5,0.5]]);
 }
