@@ -173,7 +173,7 @@ mod fault {
                 // A real filesystem wedge: hold its writer forever. The feeder's
                 // next ordinary read health round blocks on this same lock.
                 let _guard = crate::fs::ext2::root_fs_write().expect("fault root lock");
-                crate::serial_println!("[watchdog-fault] trigger health-hang");
+                crate::serial_println!("\n[watchdog-fault] trigger health-hang");
                 loop { crate::arch_halt_with_interrupts(); }
             }, "watchdog-fault").map_err(|_| "fault thread could not start")?;
         }
@@ -181,7 +181,7 @@ mod fault {
     }
     pub fn feeder() {
         if MODE.load(Ordering::Acquire) == 1 && now() >= AT.load(Ordering::Acquire) {
-            crate::serial_println!("[watchdog-fault] trigger feeder-hang");
+            crate::serial_println!("\n[watchdog-fault] trigger feeder-hang");
             x86_64::instructions::interrupts::disable();
             loop { x86_64::instructions::hlt(); }
         }
