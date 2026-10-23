@@ -1224,7 +1224,7 @@ pub const CHECKS: &[(&str, fn() -> Check)] = &[
 
 fn fixture_root() -> std::path::PathBuf {
     if std::env::consts::OS == "breenix" {
-        std::path::PathBuf::from("/usr/local/test/share/breengel")
+        std::path::PathBuf::from("/usr/libexec/breenix/share/breengel")
     } else {
         std::path::PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
