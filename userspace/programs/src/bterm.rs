@@ -681,8 +681,6 @@ fn main() {
                             }
                         }
                     }
-                    print!("[bterm] resized: {}x{} grid={}x{} tabs={}x{} scale={}\n",
-                        width, height, cols, rows, width, tab_bar_pixels, ui_scale);
                     tab_bar.set_rect(Rect::new(0, 0, *width as i32 / ui_scale, TAB_BAR_HEIGHT));
                     for tab in tabs.iter_mut() {
                         tab.emu.dirty = true;
