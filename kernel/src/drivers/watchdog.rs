@@ -97,9 +97,22 @@ fn now() -> u64 {
     let (seconds, ns) = crate::time::get_monotonic_time_ns();
     seconds.saturating_mul(1000).saturating_add(ns / 1_000_000)
 }
-fn wait(ms: u64) {
-    let until = now().saturating_add(ms);
-    while now() < until { crate::arch_halt_with_interrupts(); }
+fn wait(ms: u64) -> Result<(), &'static str> {
+    use crate::task::{scheduler, thread::ThreadState};
+    let tid = scheduler::current_thread_id().ok_or("watchdog has no thread context")?;
+    let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+    let until = seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
+        .saturating_add(ms.saturating_mul(1_000_000));
+    scheduler::with_current(|scheduler| scheduler.block_current_for_timer(until));
+    scheduler::yield_current();
+    loop {
+        crate::arch_halt_with_interrupts();
+        match scheduler::thread_state(tid) {
+            Some(ThreadState::BlockedOnTimer) => {},
+            Some(_) => return Ok(()),
+            None => return Err("watchdog thread disappeared"),
+        }
+    }
 }
 fn health() -> Result<(), &'static str> {
     let guard = crate::fs::ext2::root_fs_read()?;
@@ -126,7 +139,7 @@ fn run(port: u32) -> Result<(), &'static str> {
     crate::serial_println!("[watchdog] armed seconds=120 action=hard-reset health=root-io,root-inode");
     let mut rounds = 0u64;
     loop {
-        wait(PERIOD_MS);
+        wait(PERIOD_MS)?;
         health()?;
         kcs.request(0x22, &[])?;
         rounds += 1;
@@ -170,7 +183,7 @@ mod fault {
         };
         // Run independently of KCS initialization: a missing watchdog must
         // still face a real hang. Leave time for six ordinary feed rounds.
-        wait(180_000);
+        wait(180_000)?;
         if mode == 2 {
             // A real filesystem wedge: hold its writer forever while timer
             // interrupts and scheduling continue. The ordinary health read blocks.
