@@ -994,6 +994,52 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reclamation_preserves_directory_aliases_and_reclaims_plain_scratch() {
+        // A private mount namespace supplies real duplicate directory identities.
+        // Recursing through a bind alias deletes the source's files too, so a
+        // reclaimer that simply calls remove_dir_all fails this case.
+        struct Binding(PathBuf);
+        impl Drop for Binding {
+            fn drop(&mut self) {
+                assert!(std::process::Command::new("umount").arg(&self.0).status().unwrap().success());
+            }
+        }
+        let fixture = Fixture::new();
+        let source = fixture.source("source");
+        let system = fixture.system();
+        for id in ["current", "previous", "orphan"] {
+            install_tree(&source, &system, id, &mut || Ok(())).unwrap();
+        }
+        let generations = system.join(GENERATIONS);
+        let scratch = generations.join("failed.new");
+        fs::create_dir(&scratch).unwrap();
+        fs::write(scratch.join("partial"), b"incomplete copy").unwrap();
+        let root = system.join("root");
+        let current = generations.join("current");
+        let root_before = snapshot(&root);
+        let current_before = snapshot(&current);
+        let mut bindings = Vec::new();
+        for (name, from) in [("stale.shared-root", &root), ("stale.new", &current)] {
+            let to = generations.join(name);
+            fs::create_dir(&to).unwrap();
+            assert!(std::process::Command::new("mount").arg("--bind").arg(from).arg(&to).status().unwrap().success());
+            bindings.push(Binding(to.clone()));
+            let a = fs::metadata(from).unwrap();
+            let b = fs::metadata(&to).unwrap();
+            assert_eq!((a.dev(), a.ino()), (b.dev(), b.ino()));
+        }
+        reclaim(&system, &["current", "previous", "next"], &mut || Ok(())).unwrap();
+        assert_eq!(snapshot(&root), root_before);
+        assert_eq!(snapshot(&current), current_before);
+        assert_eq!(fs::read(generations.join("stale.shared-root/data")).unwrap(), b"operator data\0\xff");
+        assert_eq!(fs::read(generations.join("stale.new/bin/payload")).unwrap(), b"source");
+        assert!(!generations.join("orphan").exists());
+        assert!(!scratch.exists());
+        drop(bindings);
+    }
+
     #[test]
     fn v2_seeds_the_named_v1_generation_and_keeps_v1_frozen() {
         let fixture = Fixture::new();

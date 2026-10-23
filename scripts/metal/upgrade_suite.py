@@ -186,8 +186,10 @@ class UpgradeSuite:
             for test, names in (
                 ('interruption_enospc_and_io_error_at_each_operation_keep_current_bootable', ('enospc', 'io', 'interruption')),
                 ('promotion_and_rollback_recover_paired_trees_byte_for_byte', ('paired-rollback',)),
-                ('reclamation_retains_recovered_slots_and_shared_data_after_each_failure', ('reclamation',))):
-                result = call(base + '/installer-tests', '--exact', 'tests::' + test, '--nocapture')
+                ('reclamation_retains_recovered_slots_and_shared_data_after_each_failure', ('reclamation',)),
+                ('reclamation_preserves_directory_aliases_and_reclaims_plain_scratch', ('directory-aliases',))):
+                namespace = ['unshare', '--mount', '--propagation', 'private', '--'] if names == ('directory-aliases',) else []
+                result = call(*namespace, base + '/installer-tests', '--exact', 'tests::' + test, '--nocapture')
                 receipt = dict(exit=result.returncode, executed='1 passed' in result.stdout,
                                stdout=result.stdout, stderr=result.stderr, commit=self.args.sha)
                 for name in names: proof[name] = receipt

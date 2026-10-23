@@ -1414,7 +1414,9 @@ fingerprint, then performs a good upgrade and an upgrade with a deliberately inv
 require the install flow's own S21 result; the broken case requires automatic rollback, not a runner-issued
 rollback command. Each final default boot must select the expected paired userland and retain the pinned key and
 sentinel bytes. The category's other two cases compile the exact-head production installer on the boot host and
-execute its ENOSPC, I/O, interruption, paired-rollback and reclamation fault cases. Reclamation also requires the
+execute its ENOSPC, I/O, interruption, paired-rollback and reclamation fault cases. The alias fixture uses
+real duplicate directory identities in a private Linux mount namespace and requires both retained data
+preservation and ordinary orphan/scratch deletion. Reclamation also requires the
 physical installer to report removal of the completed generation that falls out of the recovered slot references.
 A missing or unexecuted case
 fails. The four ordered case records and install/probe receipts are retained as `server-remote-upgrade.json` in

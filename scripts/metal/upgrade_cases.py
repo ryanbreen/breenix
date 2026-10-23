@@ -38,7 +38,7 @@ def upgrade(result, broken, baseline):
 
 
 def generations(proof, reclamation=False):
-    names = ('reclamation',) if reclamation else ('enospc', 'io', 'interruption', 'paired-rollback')
+    names = ('reclamation', 'directory-aliases') if reclamation else ('enospc', 'io', 'interruption', 'paired-rollback')
     for name in names:
         if proof.get(name, {}).get('exit') != 0 or not proof[name].get('executed'):
             raise ValueError('missing executed generation proof: ' + name)
