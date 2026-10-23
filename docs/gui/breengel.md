@@ -1082,7 +1082,8 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 
 System calls 410 (`fb_info`), 411 (`fb_draw`, including FLUSH and FLUSH_BATCH) and
 412 (`fb_mmap`), version-1 drawing/window operations, and v2 MAP_COMMITTED/MAP_COMPOSITOR_TEXTURE
-return ENOSYS. Their final retirement belongs to gpu-apps with the last consumer migration.
+return ENOSYS on ARM64. x86-64 retains syscalls 410–412 for its framebuffer console
+(B42); it has no GPU core. Their final ARM64 retirement belongs to gpu-apps with the last consumer migration.
 The old wait-stress operations are absent from the production interface too.
 The compositor's keyboard state, once version 1's ops 26 (modifiers) and 31
 (the latched Super presses), is the 8-byte form of `get_mouse_pos` (413): `[modifiers, super_taps]` as

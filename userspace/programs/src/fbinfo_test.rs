@@ -4,8 +4,10 @@
 
 use std::process;
 
+#[cfg(target_arch = "x86_64")]
 use libbreenix::graphics;
 
+#[cfg(target_arch = "x86_64")]
 fn test_fbinfo_returns_valid_data() -> bool {
     print!("FBINFO_TEST: testing fbinfo syscall... ");
 
@@ -58,14 +60,13 @@ fn test_fbinfo_returns_valid_data() -> bool {
     true
 }
 
+#[cfg(target_arch = "x86_64")]
 fn test_fbinfo_null_pointer_rejected() -> bool {
     print!("FBINFO_TEST: testing null pointer rejection... ");
 
-    // We can't directly test null pointer from safe Rust,
-    // but we can verify the syscall works with a valid pointer
-    // The kernel-side null check is tested by the previous test passing
-    print!("OK (validated by kernel implementation)\n");
-    true
+    let ret = unsafe { libbreenix::syscall::raw::syscall1(libbreenix::syscall::nr::FBINFO, 0) } as i64;
+    println!("{}", if ret == -14 { "OK" } else { "FAIL" });
+    ret == -14
 }
 
 fn main() {
@@ -96,4 +97,21 @@ fn main() {
         print!("FBINFO_TEST: some tests FAILED\n");
         process::exit(1);
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn test_fbinfo_returns_valid_data() -> bool {
+    let (ret, modes) = libbreenix::gpu::modes();
+    let valid = ret == 0 && modes.count > 0 && modes.count as usize <= modes.modes.len()
+        && (modes.current as usize) < modes.count as usize
+        && modes.modes[..modes.count as usize].iter().all(|m| m.width > 0 && m.height > 0 && m.scale > 0);
+    println!("FBINFO_TEST: GPU display modes {}", if valid { "OK" } else { "FAIL" });
+    valid
+}
+
+#[cfg(target_arch = "aarch64")]
+fn test_fbinfo_null_pointer_rejected() -> bool {
+    let ret = unsafe { libbreenix::gpu::call(libbreenix::gpu::abi::op::MODES, core::ptr::null_mut(), core::mem::size_of::<libbreenix::gpu::abi::Modes>()) };
+    println!("FBINFO_TEST: GPU null output {}", if ret == -14 { "OK" } else { "FAIL" });
+    ret == -14
 }

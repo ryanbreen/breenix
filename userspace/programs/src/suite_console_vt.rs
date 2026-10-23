@@ -940,7 +940,7 @@ pub fn vt_switch_vt_process_release() -> CaseResult {
     measured(|| {
         let _back = BackToTty1;
         let witness = mark("suspended-compositor");
-        Term::vt(2)?.write(format!("\x1bc{witness}\r\n").as_bytes())?;
+        Term::vt(2)?.write(format!("\x1bc{witness}\r\n\x1b[?25l").as_bytes())?;
         let (ready, asked) = (Gate::new()?, Gate::new()?);
         let (presented, checked) = (Gate::new()?, Gate::new()?);
         let mut owner = owner_on_tty3(&ready, |tty3| {
@@ -953,16 +953,33 @@ pub fn vt_switch_vt_process_release() -> CaseResult {
             sleep(200);
             tty3.ok("VT_RELDISP(1)", VT_RELDISP, 1)?;
             require(within(3000, || foreground().ok() == Some(2)), "owner did not leave foreground")?;
+            // Foreground state is published before its screen is drawn. Establish
+            // the foreground pixels before testing whether GPU work overwrites them.
+            wait_active(2)?;
+            shows(2, &witness)?;
             #[cfg(target_arch = "aarch64")]
-            for op in [10, 16] {
-                // A suspended owner's command succeeds without reaching the
-                // compositor, even with a pointer it would otherwise reject.
-                let cmd = libbreenix::graphics::FbDrawCmd { op, p1: 0, p2: 0, p3: 0, p4: 0, color: 0 };
-                let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const _ as u64) } as i64;
-                require(ret == 0, &format!("suspended compositor op {op} returned {ret}"))?;
-            }
+            let _painted = {
+                // Observe the foreground terminal before and after genuine GPU
+                // drawing. Readback must not repaint the console to hide a bind.
+                let before = super::read_screen()?;
+                let painted = super::paint_owner()?;
+                let (ret, present) = libbreenix::gpu::present(painted.context, painted.target);
+                require(ret == 0 && present.fence == 0 && present.answer == 0,
+                    "suspended PRESENT did not report successful offscreen completion")?;
+                let after = super::read_screen()?;
+                require(before == after, "background GPU owner overwrote the foreground terminal")?;
+                painted
+            };
             presented.open();
             checked.wait(3000, "the foreground read-back")?;
+            #[cfg(target_arch = "aarch64")]
+            {
+                require(signalled(&ACQUIRES, 1, 3000), "no acquire signal on graphics VT return")?;
+                tty3.ok("VT_RELDISP(VT_ACKACQ)", VT_RELDISP, VT_ACKACQ)?;
+                require(within(3000, || {
+                    super::read_screen().is_ok_and(|(pixels, _)| pixels.iter().all(|p| *p == 0x3c3c3c))
+                }), "returning graphics terminal did not restore its latest GPU frame")?;
+            }
             drop(display);
             Ok(())
         })?;
@@ -970,9 +987,14 @@ pub fn vt_switch_vt_process_release() -> CaseResult {
         asked.wait(3000, "the owner's release signal")?;
         require(foreground()? == 3, "the switch did not wait for VT_RELDISP")?;
         wait_active(2)?;
-        presented.wait(3000, "the suspended compositor commands")?;
+        if let Err(timeout) = presented.wait(3000, "the suspended compositor commands") {
+            owner.finish(0)?;
+            return Err(timeout);
+        }
         shows(2, &witness)?;
         checked.open();
+        #[cfg(target_arch = "aarch64")]
+        { activate(3)?; wait_active(3)?; }
         owner.finish(3000)
     })
 }
