@@ -2089,12 +2089,12 @@ fn main() {
         }
 
         // Keep complete pixel validation off the interactive drag path. A settled
-        // resize still gets the same whole-scanout comparison, even if no client
-        // commits again after release.
+        // resize still gets the same whole-scanout comparison on the next redraw
+        // (the clock also redraws each second if no client commits after release).
         let check_ready = resizing.is_none() && windows.iter().any(|w|
             !w.frame_checked && monotonic_ms().unwrap_or(0) >= w.check_after_ms);
         // ── 5. Composite on the GPU (only when something changed) ──
-        if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty || check_ready {
+        if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty {
             let pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
             let mut damage = Vec::new();
             if full_redraw {
