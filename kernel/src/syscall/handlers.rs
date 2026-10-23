@@ -482,9 +482,12 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         PtySlave {
             hold: crate::tty::pty::PtyHold,
             is_nonblocking: bool,
+            opened: u64,
         },
         Ebadf,
         Eisdir,     // Is a directory
+        /// A terminal revoked from this description (`tty::revoke`): EIO.
+        Revoked,
     }
 
     let mut fifo_to_touch = None;
@@ -496,6 +499,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
      -> Option<WriteOperation> {
         Some(
             match &fd_entry.kind {
+                _ if fd_entry.terminal_revoked() => WriteOperation::Revoked,
                 FdKind::Ipc(_) if !fd_entry.writable() => WriteOperation::Ebadf,
                 FdKind::Ipc(file) => {
                     WriteOperation::Ipc {
@@ -556,6 +560,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                     is_nonblocking: (fd_entry.status_flags()
                         & crate::ipc::fd::status_flags::O_NONBLOCK)
                         != 0,
+                    opened: fd_entry.opened(),
                 },
                 FdKind::ProcfsFile { .. } => WriteOperation::Ebadf,
                 FdKind::ProcfsDirectory { .. } => WriteOperation::Eisdir,
@@ -617,11 +622,12 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         WriteOperation::StdIo => write_to_stdio(fd, &buffer),
         WriteOperation::Ebadf => SyscallResult::Err(9), // EBADF
         WriteOperation::Eisdir => SyscallResult::Err(super::errno::EISDIR as u64),
+        WriteOperation::Revoked => SyscallResult::Err(super::errno::EIO as u64),
         WriteOperation::PtyMaster { hold, is_nonblocking } => {
             crate::tty::pty::io::write_master(hold.pair(), &buffer, is_nonblocking)
         }
-        WriteOperation::PtySlave { hold, is_nonblocking } => {
-            crate::tty::pty::io::write_slave(hold.pair(), &buffer, is_nonblocking)
+        WriteOperation::PtySlave { hold, is_nonblocking, opened } => {
+            crate::tty::pty::io::write_slave(hold.pair(), &buffer, is_nonblocking, opened)
         }
         WriteOperation::Pipe {
             pipe_buffer,
@@ -638,6 +644,10 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         WriteOperation::Device { device_type } => {
             use crate::fs::devfs::DeviceType;
             match device_type {
+                DeviceType::Kmsg => match crate::fs::devfs::audit_write(&buffer) {
+                    Ok(n) => SyscallResult::Ok(n as u64),
+                    Err(e) => SyscallResult::Err(e as u64),
+                },
                 DeviceType::Rtc => SyscallResult::Err(13),
                 DeviceType::Ptmx => SyscallResult::Err(6), // ENXIO: open gives a master.
                 DeviceType::Null | DeviceType::Zero => {
@@ -1570,8 +1580,19 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             let device_type = *device_type;
             let is_nonblocking =
                 (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+            let opened = fd_entry.opened();
             drop(manager_guard);
             if device_type == crate::fs::devfs::DeviceType::Null {
+                return SyscallResult::Ok(0);
+            }
+            // A revoked terminal reads as end of file, also once a blocked
+            // read is woken by the revocation (`tty::revoke`).
+            let live = || {
+                !device_type
+                    .terminal()
+                    .is_some_and(|number| crate::tty::revoke::vt_revoked_since(number, opened))
+            };
+            if !live() {
                 return SyscallResult::Ok(0);
             }
             let mut user_buf = alloc::vec![];
@@ -1581,12 +1602,12 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             user_buf.resize(count as usize, 0);
             let result = match device_type {
                 crate::fs::devfs::DeviceType::Console | crate::fs::devfs::DeviceType::Tty => {
-                    super::blocking_io::read_console(&mut user_buf, is_nonblocking).map_err(|e| -e)
+                    super::blocking_io::read_console(&mut user_buf, is_nonblocking, &live).map_err(|e| -e)
                 }
                 // A virtual terminal reads its own input queue; /dev/tty0 the
                 // foreground terminal's at the time of the read.
                 crate::fs::devfs::DeviceType::Tty0 | crate::fs::devfs::DeviceType::Vt(_) => {
-                    super::blocking_io::read_terminal(device_type, &mut user_buf, is_nonblocking).map_err(|e| -e)
+                    super::blocking_io::read_terminal(device_type, &mut user_buf, is_nonblocking, &live).map_err(|e| -e)
                 }
                 _ => crate::fs::devfs::device_read(device_type, &mut user_buf),
             };
@@ -1629,11 +1650,12 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             } else {
                 crate::tty::pty::PtyHold::slave(pair)
             };
+            let opened = fd_entry.opened();
             drop(manager_guard);
             if hold.is_master() {
                 crate::tty::pty::io::read_master(hold.pair(), buf_ptr, count, is_nonblocking)
             } else {
-                crate::tty::slave_read::read(hold.pair(), buf_ptr, count, is_nonblocking)
+                crate::tty::slave_read::read(hold.pair(), buf_ptr, count, is_nonblocking, opened)
             }
         }
         FdKind::ProcfsFile {
@@ -2032,13 +2054,14 @@ fn load_elf_from_ext2(
     use super::errno::{EACCES, EIO};
 
     // Taken before the filesystem lock: who may execute the file.
-    let cred = crate::fs::permissions::Credentials::current(false);
+    let cred = crate::fs::permissions::Credentials::current(false).map_err(|errno| errno as i32)?;
 
-    // The handle holds the inode until its content is read.
+    // Exclude new mapping bindings until the image and its identity are copied.
+    // Existing shared write authority is checked by exec_attrs.
     let (mount, inode_num, _held, resolved) =
         crate::fs::namei::resolve_file_bytes(path.as_ref()).map_err(|errno| errno as i32)?;
-    let fs_guard = mount.read().map_err(|errno| errno as i32)?;
-    let fs = fs_guard.as_ref().ok_or(EIO)?;
+    let mut fs_guard = mount.read_exclusive().map_err(|errno| errno as i32)?;
+    let fs = fs_guard.as_mut().ok_or(EIO)?;
 
     let inode = fs.read_inode(inode_num).map_err(|_| EIO)?;
 
@@ -2046,14 +2069,12 @@ fn load_elf_from_ext2(
         return Err(EACCES);
     }
 
-    if !cred.permits(&inode, 1) {
-        return Err(EACCES);
-    }
+    let identity = cred.may_exec(fs.exec_attrs(inode_num, &inode), crate::fs::vfs::mount::flags_at(&resolved))?;
 
     let data = fs
         .read_file_content_coherent_unless(inode_num, &inode, super::exec::caller_killed)?
         .ok_or(super::errno::EINTR)?;
-    Ok((data, crate::process::credentials::ExecIdentity::of(&inode), resolved))
+    Ok((data, identity, resolved))
 }
 
 /// sys_execv_with_frame - Replace the current process with a new program (with argv support)
@@ -3535,12 +3556,18 @@ pub fn sys_take_over_display() -> SyscallResult {
                 Some(crate::tty::ctty::TtyId::Vt(n)) => usize::from(n),
                 _ => 1,
             };
-            Some((group, vt))
+            Some((group, vt, row.cred.euid))
         })
     };
-    let Some((group, vt)) = owner else {
+    let Some((group, vt, euid)) = owner else {
         return SyscallResult::Err(3);
     };
+    // Display ownership grants cross-window access, including other
+    // accounts' pixels and input. Apply the GPU core's root rule to the legacy
+    // framebuffer/VirGL path as well, before any ownership or screen change.
+    if euid != 0 {
+        return SyscallResult::Err(super::errno::EPERM as u64);
+    }
     // The boot splash gives way before the new owner's first frame (bounded).
     #[cfg(target_arch = "aarch64")]
     crate::console::await_splash();
@@ -3786,8 +3813,9 @@ pub fn sys_prlimit64(pid: u64, resource: u64, new_ptr: u64, old_ptr: u64) -> Sys
         }
         let old = process.limits.get(resource as usize);
         if let Some(new) = new {
+            let raise = crate::process::privilege::Operation::RaiseHardLimit;
             if new.hard > old.hard && euid != 0 {
-                return SyscallResult::Err(EPERM as u64);
+                return SyscallResult::Err(raise.errno());
             }
             process.limits.set(resource as usize, new);
             if resource as usize == NOFILE {
@@ -3855,60 +3883,34 @@ pub fn sys_uname(buf_ptr: u64) -> SyscallResult {
 // Identity syscalls (getuid, geteuid, getgid, getegid, setuid, setgid)
 // =============================================================================
 
+/// One of the caller's IDs: kernel credentials (0) for a kernel thread, and
+/// ESRCH for a user thread without a process, which has no identity to
+/// report and must not read as root to a check built on these calls.
+fn current_id(pick: impl FnOnce(&crate::process::credentials::ProcessCredentials) -> u32) -> SyscallResult {
+    match crate::process::privilege::current_identity() {
+        Ok(cred) => SyscallResult::Ok(pick(&cred) as u64),
+        Err(errno) => SyscallResult::Err(errno),
+    }
+}
+
 /// getuid - Get real user ID
 pub fn sys_getuid() -> SyscallResult {
-    crate::arch_without_interrupts(|| {
-        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
-            if let Some(ref manager) = *crate::process::manager() {
-                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-                    return SyscallResult::Ok(process.cred.uid as u64);
-                }
-            }
-        }
-        SyscallResult::Ok(0)
-    })
+    current_id(|cred| cred.uid)
 }
 
 /// geteuid - Get effective user ID
 pub fn sys_geteuid() -> SyscallResult {
-    crate::arch_without_interrupts(|| {
-        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
-            if let Some(ref manager) = *crate::process::manager() {
-                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-                    return SyscallResult::Ok(process.cred.euid as u64);
-                }
-            }
-        }
-        SyscallResult::Ok(0)
-    })
+    current_id(|cred| cred.euid)
 }
 
 /// getgid - Get real group ID
 pub fn sys_getgid() -> SyscallResult {
-    crate::arch_without_interrupts(|| {
-        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
-            if let Some(ref manager) = *crate::process::manager() {
-                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-                    return SyscallResult::Ok(process.cred.gid as u64);
-                }
-            }
-        }
-        SyscallResult::Ok(0)
-    })
+    current_id(|cred| cred.gid)
 }
 
 /// getegid - Get effective group ID
 pub fn sys_getegid() -> SyscallResult {
-    crate::arch_without_interrupts(|| {
-        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
-            if let Some(ref manager) = *crate::process::manager() {
-                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-                    return SyscallResult::Ok(process.cred.egid as u64);
-                }
-            }
-        }
-        SyscallResult::Ok(0)
-    })
+    current_id(|cred| cred.egid)
 }
 
 /// Apply `change` to the calling process's credentials under the process
@@ -3964,6 +3966,50 @@ pub fn sys_setregid(real: u32, effective: u32) -> SyscallResult {
     change_credentials(|cred| cred.setregid(real, effective))
 }
 
+/// setresuid - set the real, effective and saved user IDs; -1 keeps one
+pub fn sys_setresuid(real: u32, effective: u32, saved: u32) -> SyscallResult {
+    change_credentials(|cred| cred.setresuid(real, effective, saved))
+}
+
+/// setresgid - set the real, effective and saved group IDs; -1 keeps one
+pub fn sys_setresgid(real: u32, effective: u32, saved: u32) -> SyscallResult {
+    change_credentials(|cred| cred.setresgid(real, effective, saved))
+}
+
+/// getresuid - report the real, effective and saved user IDs
+pub fn sys_getresuid(real: u64, effective: u64, saved: u64) -> SyscallResult {
+    report_ids(|cred| [cred.uid, cred.euid, cred.suid], [real, effective, saved])
+}
+
+/// getresgid - report the real, effective and saved group IDs
+pub fn sys_getresgid(real: u64, effective: u64, saved: u64) -> SyscallResult {
+    report_ids(|cred| [cred.gid, cred.egid, cred.sgid], [real, effective, saved])
+}
+
+/// Read three IDs under the process manager, then copy each to its user
+/// pointer once the manager is released.
+fn report_ids(
+    pick: impl FnOnce(&crate::process::credentials::ProcessCredentials) -> [u32; 3],
+    pointers: [u64; 3],
+) -> SyscallResult {
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(super::errno::ESRCH as u64);
+    };
+    let ids = {
+        let guard = crate::process::manager();
+        match guard.as_ref().and_then(|m| m.find_process_by_thread(tid)) {
+            Some((_, process)) => pick(&process.cred),
+            None => return SyscallResult::Err(super::errno::ESRCH as u64),
+        }
+    };
+    for (id, pointer) in ids.into_iter().zip(pointers) {
+        if let Err(errno) = super::userptr::copy_to_user(pointer as *mut u32, &id) {
+            return SyscallResult::Err(errno);
+        }
+    }
+    SyscallResult::Ok(0)
+}
+
 /// Report supplementary groups without holding PM across a faultable user copy.
 pub fn sys_getgroups(size: i32, list: u64) -> SyscallResult {
     use super::errno::{EINVAL, ESRCH};
@@ -3996,15 +4042,14 @@ pub fn sys_getgroups(size: i32, list: u64) -> SyscallResult {
     }
 }
 
-/// Replace supplementary groups atomically after copying the complete user list.
-/// Only root may change the list, including clearing it with setgroups(0, NULL).
+/// Replace supplementary groups after copying the complete user list. Only
+/// root may change the list, including clearing it with setgroups(0, NULL),
+/// and the new list is committed to the process's threads at once, as
+/// the set-ID calls commit theirs.
 pub fn sys_setgroups(count: u64, list: u64) -> SyscallResult {
-    use super::errno::{EINVAL, EPERM, ESRCH};
-    if count > 65536 {
+    use super::errno::EINVAL;
+    if count > crate::process::credentials::NGROUPS_MAX as u64 {
         return SyscallResult::Err(EINVAL as u64);
-    }
-    if crate::fs::permissions::Credentials::current(false).euid != 0 {
-        return SyscallResult::Err(EPERM as u64);
     }
     let mut groups = alloc::vec![0u32; count as usize];
     if let Err(errno) = super::userptr::read_user_bytes(
@@ -4015,21 +4060,7 @@ pub fn sys_setgroups(count: u64, list: u64) -> SyscallResult {
         return SyscallResult::Err(errno);
     }
     let groups = alloc::sync::Arc::new(groups);
-    let Some(tid) = crate::task::scheduler::current_thread_id() else {
-        return SyscallResult::Err(ESRCH as u64);
-    };
-    let mut guard = crate::process::manager();
-    let Some((_, process)) = guard
-        .as_mut()
-        .and_then(|m| m.find_process_by_thread_mut(tid))
-    else {
-        return SyscallResult::Err(ESRCH as u64);
-    };
-    if !process.cred.privileged() {
-        return SyscallResult::Err(EPERM as u64);
-    }
-    process.cred.groups = groups;
-    SyscallResult::Ok(0)
+    change_credentials(|cred| cred.setgroups(groups))
 }
 
 // =============================================================================
@@ -4038,16 +4069,16 @@ pub fn sys_setgroups(count: u64, list: u64) -> SyscallResult {
 
 /// umask - Set file creation mask
 ///
-/// Sets the process's file creation mask to `mask & 0o777` and returns the old mask.
+/// Sets the file creation mask to `mask & 0o777` and returns the old mask. The
+/// mask lives with the working directory, so the threads that share it
+/// (`CLONE_FS`, which includes the threads of one process) see the change.
 pub fn sys_umask(mask: u32) -> SyscallResult {
     crate::arch_without_interrupts(|| {
         if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
-            let mut manager_guard = crate::process::manager();
-            if let Some(ref mut manager) = *manager_guard {
-                if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
-                    let old = process.umask;
-                    process.umask = mask & 0o777;
-                    return SyscallResult::Ok(old as u64);
+            let manager_guard = crate::process::manager();
+            if let Some(ref manager) = *manager_guard {
+                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+                    return SyscallResult::Ok(process.cwd.set_umask(mask & 0o777) as u64);
                 }
             }
         }

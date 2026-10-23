@@ -1,8 +1,11 @@
 //! Breenix init process (/sbin/init) - std version
 //!
-//! PID 1 - starts services and boot checks, then the desktop on ARM64 or gettys on x86.
+//! PID 1 - runs the boot checks and the boot script, then supervises the services in
+//! `/etc/breenix/services` (`init_services.rs`): bsshd, the gettys on x86 and the rest.
 //! Init confers the init-shell role by passing `--init-shell`; no PID value is part of that
 //! contract.
+
+mod init_services;
 
 #[cfg(target_arch = "aarch64")]
 use libbreenix::fs;
@@ -122,13 +125,52 @@ fn check_test_controls(pid: u64) {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("service-io-check") {
+        init_services::check_service_io();
+        return;
+    }
+    // The service table runs the loopback SSH check as `init bssh-oracle`, a child that
+    // must not repeat PID 1's boot work or its start-up line.
+    if std::env::args().nth(1).as_deref() == Some("bssh-oracle") {
+        run_bssh_pubkey_oracle();
+        return;
+    }
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
     print!("[init] Breenix init starting (PID {})\n", pid);
+    // Emptying /tmp and /run and reconciling /etc is boot work, done by the system's init
+    // alone. An init started as a child (the console suite runs `init console`) shares the
+    // running system's /tmp, /run and /etc, so it leaves them as they are.
+    if pid == 1 {
+        match libbreenix::etc_reconcile::prepare(std::path::Path::new("/")) {
+            Ok(conflicts) => for name in conflicts {
+                println!("[etc-reconcile] kept local /etc/{}; wrote .factory sibling", name);
+            },
+            Err(why) => println!("[init] layout preparation failed; continuing boot: {}", why),
+        }
+    }
+
+    if pid == 1 {
+        // Boot scripts may start blogd before the service supervisor exists.
+        // Publish once, after /run is cleared, for each init mode and architecture.
+        std::fs::create_dir_all("/run/breenix").expect("log state directory");
+        let stamp = libbreenix::time::now_realtime().expect("log boot clock");
+        let uptime = libbreenix::time::now_monotonic().expect("log boot uptime");
+        let boot_id = format!("{:x}-{:x}-{:x}", stamp.tv_sec, stamp.tv_nsec, uptime.tv_nsec);
+        std::fs::write("/run/breenix/boot-id", format!("{}\n", boot_id)).expect("publish log boot ID");
+        print!("[init] log boot-id={}\n", boot_id);
+    }
     check_test_controls(pid);
 
     // Explicit shell, console and desktop modes bypass the full startup below.
     // No argument or `default` keeps the services and boot checks.
     match std::env::args().nth(1).as_deref() {
+        Some("suite") => {
+            use std::os::unix::process::CommandExt;
+            let mut args = std::env::args().skip(2);
+            let path = args.next().expect("suite path required");
+            let error = std::process::Command::new(path).args(args).exec();
+            panic!("[init] suite exec failed: {}", error);
+        }
         Some("shell") => run_shell_mode(),
         Some("console") => run_console_mode(),
         Some("desktop") => run_desktop_mode(),
@@ -166,38 +208,19 @@ fn main() {
     // Detach before starting daemons so the getty handoff cannot hang them up.
     #[cfg(target_arch = "x86_64")]
     detach_console();
-    start_bsshd();
-    run_bssh_pubkey_oracle();
+    reconcile_machine_state();
     run_boot_script();
+    // The services start on the supervisor's first pass; the rest of the ARM64 start-up
+    // follows it and does not wait on a service.
+    let mut supervisor = init_services::Supervisor::load(init_services::Scope::All, pid == 1);
+    supervisor.tick();
     #[cfg(target_arch = "aarch64")]
     start_bounce();
     #[cfg(target_arch = "aarch64")]
     run_bssh_autorun_if_enabled();
     #[cfg(target_arch = "aarch64")]
     run_init_group_refusal_probe("quiesce");
-
-    // Reap zombies forever
-    let mut status: i32 = 0;
-    loop {
-        match waitpid(-1, &mut status as *mut i32, 0) {
-            Ok(pid) => {
-                let sig = status & 0x7F;
-                let exit_code = (status >> 8) & 0xFF;
-                if sig != 0 {
-                    print!("[init] Process {} killed by signal {}\n", pid.raw(), sig);
-                } else {
-                    print!("[init] Process {} exited (code {})\n", pid.raw(), exit_code);
-                }
-            }
-            Err(_) => {
-                let ts = libbreenix::types::Timespec {
-                    tv_sec: 1,
-                    tv_nsec: 0,
-                };
-                let _ = libbreenix::time::nanosleep(&ts);
-            }
-        }
-    }
+    supervisor.run()
 }
 
 /// Boot modes (`init shell`, `init desktop`): reap one child, blocking. Returns its PID,
@@ -257,11 +280,14 @@ fn run_shell_mode() -> ! {
     }
 }
 
-/// Explicit console mode skips the default boot script and boot checks.
+/// Explicit console mode skips the default boot script and boot checks, and supervises
+/// only the table's login terminals.
 fn run_console_mode() -> ! {
     #[cfg(target_arch = "x86_64")]
     console_text_mode();
-    run_console_gettys()
+    detach_console();
+    let pid = getpid().map(|p| p.raw()).unwrap_or(0);
+    init_services::Supervisor::load(init_services::Scope::Logins, pid == 1).run()
 }
 
 /// Release init's terminal before starting daemons or independent login sessions.
@@ -279,50 +305,6 @@ fn detach_console() {
     }
 }
 
-fn run_console_gettys() -> ! {
-    detach_console();
-    let mut children = [None; 6];
-    let mut retry_at = [0i128; 6];
-    loop {
-        let now = libbreenix::time::now_monotonic().expect("console clock").as_nanos();
-        // Start tty1 last so launch messages precede its login prompt.
-        for index in (1..6).chain(0..1) {
-            if children[index].is_some() || now < retry_at[index] { continue; }
-            let tty = format!("tty{}\0", index + 1);
-            let argv = [b"getty\0".as_ptr(), tty.as_ptr(), core::ptr::null()];
-            // tty1 retains getty's default /dev/console path.
-            if index == 0 { print!("[init] getty on the console\n"); }
-            else { print!("[init] getty on tty{}\n", index + 1); }
-            let result = if index == 0 { spawn(b"/bin/getty\0") }
-                else { spawnv(b"/bin/getty\0", argv.as_ptr()) };
-            match result {
-                Ok(child) => {
-                    children[index] = Some(child.raw() as i32);
-                }
-                Err(error) => print!("[init] getty tty{}: {}\n", index + 1, error),
-            }
-            retry_at[index] = now + 1_000_000_000;
-        }
-        // Reap without waiting on one particular VT: another session may exit
-        // while a fast-failing getty is rate limited.
-        loop {
-            let mut status = 0;
-            match waitpid(-1, &mut status, libbreenix::process::WNOHANG) {
-                Ok(pid) if pid.raw() != 0 => {
-                    if let Some(index) = children.iter().position(|p| *p == Some(pid.raw() as i32)) {
-                        children[index] = None;
-                        retry_at[index] = libbreenix::time::now_monotonic().expect("console clock").as_nanos() + 1_000_000_000;
-                        if index == 0 { print!("[init] console session ended; restarting getty\n"); }
-                        else { print!("[init] tty{} session ended\n", index + 1); }
-                    }
-                }
-                _ => break,
-            }
-        }
-        let _ = libbreenix::time::sleep_ms(50);
-    }
-}
-
 /// `init desktop`: ARM64 starts the desktop; x86 falls back to console gettys.
 /// Neither explicit mode runs boot checks.
 #[cfg(target_arch = "x86_64")]
@@ -334,7 +316,7 @@ fn run_desktop_mode() -> ! {
 #[cfg(target_arch = "aarch64")]
 fn run_desktop_mode() -> ! {
     print!("[init] mode desktop\n");
-    const DESKTOP: &[&[u8]] = &[b"/bin/bwm\0", b"/bin/bterm\0"];
+    const DESKTOP: &[&[u8]] = &[b"/usr/bin/bwm\0", b"/usr/bin/bterm\0"];
     let mut started = 0;
     for path in DESKTOP {
         match spawn(path) {
@@ -356,7 +338,7 @@ fn run_desktop_mode() -> ! {
 /// already-filed may preempt it.
 #[cfg(target_arch = "aarch64")]
 fn run_block_eintr_oracle() {
-    match spawn(b"/bin/block_eintr_oracle\0") {
+    match spawn(b"/usr/bin/block_eintr_oracle\0") {
         Ok(child_pid) => {
             let mut status = 0i32;
             let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
@@ -382,7 +364,7 @@ fn run_block_eintr_oracle() {
 /// verdict marker; this launcher records the exit for boot-log debuggability.
 #[cfg(target_arch = "aarch64")]
 fn run_poll_tcp_oracle() {
-    match spawn(b"/bin/poll_tcp_oracle\0") {
+    match spawn(b"/usr/bin/poll_tcp_oracle\0") {
         Ok(child_pid) => {
             let mut status = 0i32;
             let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
@@ -414,7 +396,7 @@ fn run_poll_tcp_oracle() {
 /// finding B3: this launcher used to discard the `Result` with `let _ =`).
 #[cfg(target_arch = "aarch64")]
 fn run_tty_oracle() {
-    match spawn(b"/bin/tty_oracle\0") {
+    match spawn(b"/usr/bin/tty_oracle\0") {
         Ok(child_pid) => {
             let mut status: i32 = 0;
             match waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0) {
@@ -441,7 +423,7 @@ fn run_tty_oracle() {
 /// this launcher only records the child exit for boot-log debuggability.
 #[cfg(target_arch = "aarch64")]
 fn run_futex_handoff_oracle() {
-    match spawn(b"/bin/futex_handoff_oracle\0") {
+    match spawn(b"/usr/bin/futex_handoff_oracle\0") {
         Ok(child_pid) => {
             let mut status = 0i32;
             let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
@@ -467,7 +449,7 @@ fn run_futex_handoff_oracle() {
 /// commit marker; the x86_64 prod-profile gate asserts the same four userspace markers plus
 /// the kernel-side EXEC_LOCK_ORDER receipt oracles (#721 K7).
 fn run_exec_smoke() {
-    match spawn(b"/bin/exec_smoke\0") {
+    match spawn(b"/usr/bin/exec_smoke\0") {
         Ok(child_pid) => {
             let mut status = 0i32;
             let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
@@ -486,7 +468,7 @@ fn run_exec_smoke() {
 /// `CLONEVM_EXEC_TEST: PASS` marker.
 #[cfg(target_arch = "aarch64")]
 fn run_clonevm_exec_test() {
-    match spawn(b"/usr/local/test/bin/clonevm_exec_test\0") {
+    match spawn(b"/usr/libexec/breenix/clonevm_exec_test\0") {
         Ok(child_pid) => {
             let mut status = 0i32;
             let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
@@ -513,7 +495,7 @@ fn run_trace_diag_probe_if_enabled() {
     }
 
     print!("[init] trace diag early probe enabled; running btrace\n");
-    let path = b"/bin/btrace\0";
+    let path = b"/usr/bin/btrace\0";
     let arg0 = b"btrace\0";
     let argv = [arg0.as_ptr(), core::ptr::null()];
 
@@ -555,7 +537,7 @@ fn run_bssh_autorun_if_enabled() {
 
 #[cfg(target_arch = "aarch64")]
 fn run_bssh_exec_autorun(host: &str) {
-    let path = b"/bin/bssh\0";
+    let path = b"/usr/bin/bssh\0";
     let arg0 = b"bssh\0";
     let port = b"22\0";
     let user = b"wrb\0";
@@ -612,7 +594,7 @@ fn run_boot_script() {
     #[cfg(target_arch = "aarch64")]
     {
         // Start background services before handing the splash to the console.
-        const SERVICES: &[&[u8]] = &[b"/bin/xhci_counters\0", b"/sbin/telnetd\0"];
+        const SERVICES: &[&[u8]] = &[b"/usr/bin/xhci_counters\0", b"/usr/sbin/telnetd\0"];
         for path in SERVICES {
             if let Err(e) = spawn(path) {
                 print!("[init] Warning: failed to spawn service: {}\n", e);
@@ -622,7 +604,7 @@ fn run_boot_script() {
         // On ARM64 this stage marks services and KD_TEXT, before bwm is spawned.
         print!("[init] Boot script completed\n");
         // A graphical child may take the display after init's text-mode request.
-        if let Err(e) = spawn(b"/bin/bwm\0") {
+        if let Err(e) = spawn(b"/usr/bin/bwm\0") {
             print!("[init] Warning: failed to spawn service: {}\n", e);
         }
         return;
@@ -655,13 +637,11 @@ fn run_boot_script() {
             print!("[init] Failed to spawn boot script: {}\n", e);
         }
     }
-    #[cfg(target_arch = "x86_64")]
-    run_console_gettys();
 }
 
 #[cfg(target_arch = "aarch64")]
 fn start_bounce() {
-    match spawn(b"/bin/bounce\0") {
+    match spawn(b"/usr/bin/bounce\0") {
         Ok(child_pid) => {
             print!("[init] bounce started (PID {})\n", child_pid.raw());
         }
@@ -672,7 +652,7 @@ fn start_bounce() {
 }
 
 /// #713: exercise x86 spawn, execution, exit and reap before the boot-script chain.
-/// The dedicated /bin/spawn_smoke_target exits 0; it does not depend on BusyBox.
+/// The dedicated /usr/bin/spawn_smoke_target exits 0; it does not depend on BusyBox.
 /// Wait for this child directly: the default x86 boot script enters the getty
 /// supervisor, so it does not return to main's general reap loop.
 ///
@@ -686,7 +666,7 @@ fn start_bounce() {
 /// pre-zeroed `status` to fabricate "exited (code 0)".
 #[cfg(target_arch = "x86_64")]
 fn run_spawn_smoke() {
-    match spawn(b"/bin/spawn_smoke_target\0") {
+    match spawn(b"/usr/bin/spawn_smoke_target\0") {
         Ok(child_pid) => {
             let mut status: i32 = 0;
             match waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0) {
@@ -737,7 +717,7 @@ fn run_spawn_smoke() {
 /// `code=0` (review finding B3).
 #[cfg(target_arch = "x86_64")]
 fn run_tty_oracle() {
-    match spawn(b"/bin/tty_oracle\0") {
+    match spawn(b"/usr/bin/tty_oracle\0") {
         Ok(child_pid) => {
             let mut status: i32 = 0;
             match waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0) {
@@ -773,7 +753,7 @@ fn run_tty_oracle() {
 /// chain completes, #722).
 #[cfg(target_arch = "x86_64")]
 fn run_fork_smoke() {
-    match spawn(b"/bin/fork_smoke\0") {
+    match spawn(b"/usr/bin/fork_smoke\0") {
         Ok(child_pid) => {
             let mut status = 0i32;
             let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
@@ -786,62 +766,133 @@ fn run_fork_smoke() {
     }
 }
 
-// Run the actual CLI arms and require a dedicated USERAUTH_FAILURE status.
-fn run_bssh_pubkey_oracle() {
-    let _ = libbreenix::time::sleep_ms(1000);
-    fn arm(auth: &[u8]) -> i32 {
-        let argv = [
-            b"bssh\0".as_ptr(),
-            b"127.0.0.1\0".as_ptr(),
-            b"2222\0".as_ptr(),
-            b"root\0".as_ptr(),
-            auth.as_ptr(),
-            b"--smoke\0".as_ptr(),
-            core::ptr::null(),
-        ];
-        let pid = match spawnv(b"/bin/bssh\0", argv.as_ptr()) {
-            Ok(pid) => pid,
-            Err(_) => return -1,
-        };
-        let mut status = 0;
-        match waitpid(pid.raw() as i32, &mut status, 0) {
-            Ok(_) if libbreenix::process::wifexited(status) => {
-                libbreenix::process::wexitstatus(status)
-            }
-            _ => -1,
+/// The loopback SSH oracle's client key: a test-only key pair generated when the
+/// test image is built, authorized in that image only, for its test account and for
+/// root. The persistent install carries neither half.
+const TEST_IDENTITY: &str = "/etc/breenix/test-ssh/id_ed25519";
+/// The test image's SSH account (scripts/create_ext2_disk.sh) and the start of the
+/// `id` line its session prints.
+const TEST_ACCOUNT: &[u8] = b"sshtest\0";
+const TEST_ID: &str = "uid=2000(sshtest) gid=2000(sshtest)";
+
+/// Run bssh against the local bsshd as `user`. Returns its exit status and its
+/// standard output, which is also passed on to init's.
+fn bssh_arm(user: &[u8], extra: &[&[u8]]) -> (i32, String) {
+    use libbreenix::io;
+    use libbreenix::types::Fd;
+    let mut argv: Vec<*const u8> = vec![
+        b"bssh\0".as_ptr(),
+        b"127.0.0.1\0".as_ptr(),
+        b"22\0".as_ptr(),
+        user.as_ptr(),
+        b"--identity\0".as_ptr(),
+        b"/etc/breenix/test-ssh/id_ed25519\0".as_ptr(),
+    ];
+    argv.extend(extra.iter().map(|arg| arg.as_ptr()));
+    argv.push(core::ptr::null());
+    let Ok((read_end, write_end)) = io::pipe() else { return (-1, String::new()) };
+    let pid = match libbreenix::process::fork() {
+        Ok(libbreenix::process::ForkResult::Child) => {
+            let _ = io::close(read_end);
+            let _ = io::dup2(write_end, Fd::STDOUT);
+            let _ = io::close(write_end);
+            let _ = libbreenix::process::execv(b"/usr/bin/bssh\0", argv.as_ptr());
+            libbreenix::process::exit(127);
         }
+        Ok(libbreenix::process::ForkResult::Parent(pid)) => pid,
+        Err(_) => {
+            let _ = io::close(read_end);
+            let _ = io::close(write_end);
+            return (-1, String::new());
+        }
+    };
+    let _ = io::close(write_end);
+    let mut output = Vec::new();
+    let mut buffer = [0u8; 512];
+    while let Ok(n) = io::read(read_end, &mut buffer) {
+        if n == 0 || output.len() > 64 * 1024 {
+            break;
+        }
+        output.extend_from_slice(&buffer[..n]);
     }
-    let right = arm(b"--publickey\0");
-    let wrong = arm(b"--publickey-wrong\0");
+    let _ = io::close(read_end);
+    let _ = io::write(Fd::STDOUT, &output);
+    let mut status = 0;
+    let code = match waitpid(pid.raw() as i32, &mut status, 0) {
+        Ok(_) if libbreenix::process::wifexited(status) => libbreenix::process::wexitstatus(status),
+        _ => -1,
+    };
+    (code, String::from_utf8_lossy(&output).into_owned())
+}
+
+// Run the actual CLI arms and require a dedicated USERAUTH_FAILURE status (77)
+// for each refusal: a forged signature, and root, whose authorized keys list the
+// test key but whom bsshd refuses. The account arm's session prints `id`.
+fn run_bssh_pubkey_oracle() {
+    if !std::path::Path::new(TEST_IDENTITY).exists() {
+        print!("[BSSH_PUBKEY_ORACLE:not-run:no test identity]\n");
+        return;
+    }
+    let _ = libbreenix::time::sleep_ms(1000);
+    let (right, _) = bssh_arm(TEST_ACCOUNT, &[b"--smoke\0"]);
+    let (wrong, _) = bssh_arm(TEST_ACCOUNT, &[b"--publickey-wrong\0", b"--smoke\0"]);
+    let (root, _) = bssh_arm(b"root\0", &[b"--smoke\0"]);
+    let (id_status, id_output) = bssh_arm(TEST_ACCOUNT, &[b"--exec\0", b"id\0"]);
     let marker = if right == 0 && wrong == 77 {
         "[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]".to_string()
     } else {
         format!("[BSSH_PUBKEY_ORACLE:FAIL:right={}:wrong={}]", right, wrong)
     };
-    // The refused arm leaves bsshd reporting its handshake failure, which can
-    // reach the console as a partial line. Flush init's own output, then
-    // write the marker in one write that starts and ends a line, so it is a
-    // whole line whatever bsshd has written so far (#1849).
+    let id_matches = id_output.lines().any(|line| line.trim_start().starts_with(TEST_ID));
+    let account = if root == 77 && id_status == 0 && id_matches {
+        "[BSSH_ACCOUNT_ORACLE:root=refused:id=sshtest:PASS]".to_string()
+    } else {
+        format!("[BSSH_ACCOUNT_ORACLE:FAIL:root={}:id-status={}:id-matches={}]", root, id_status, id_matches)
+    };
+    // The refused arms leave bsshd reporting their handshake failures, which can
+    // interleave with ordinary stdout. Flush first, then write the markers with one
+    // system call each, so the serial transcript carries each whole line whatever
+    // bsshd has written so far (#1849).
     use std::io::Write;
     let mut stdout = std::io::stdout().lock();
     let _ = stdout.flush();
     let _ = libbreenix::io::write(libbreenix::types::Fd::STDOUT, format!("\n{}\n", marker).as_bytes());
+    let _ = libbreenix::io::write(libbreenix::types::Fd::STDOUT, format!("\n{}\n", account).as_bytes());
 }
 
-fn start_bsshd() {
-    match spawn(b"/bin/bsshd\0") {
-        Ok(child_pid) => {
-            print!("[init] bsshd started (PID {})\n", child_pid.raw());
+/// On a persistent install, bring the machine state store (SSH host keys,
+/// account lines and staged authorized keys) into this generation's `/etc`
+/// before bsshd starts. Images without a store skip this.
+fn reconcile_machine_state() {
+    use std::os::unix::fs::MetadataExt;
+    use libbreenix::ssh::machine_state;
+    let root = std::path::Path::new("/");
+    let home_mounted = match (std::fs::metadata("/"), std::fs::metadata("/home")) {
+        (Ok(root), Ok(home)) => root.dev() != home.dev(),
+        _ => false,
+    };
+    match machine_state::reconcile(root, home_mounted) {
+        Ok(None) => {}
+        Ok(Some(report)) => {
+            print!(
+                "[init] machine state: accounts [{}], host key files [{}]\n",
+                report.accounts.join(", "),
+                report.host_keys.join(", ")
+            );
+            for (account, fingerprint) in &report.authorized {
+                print!("[init] machine state: staged key {} authorized for {}\n", fingerprint, account);
+            }
+            for problem in &report.problems {
+                print!("[init] machine state: {}\n", problem);
+            }
         }
-        Err(_) => {
-            print!("[init] Warning: failed to start bsshd\n");
-        }
+        Err(why) => print!("[init] machine state refused: {}\n", why),
     }
 }
 
 #[cfg(target_arch = "aarch64")]
 fn start_liveness_service() {
-    match spawn(b"/bin/heartbeat\0") {
+    match spawn(b"/usr/bin/heartbeat\0") {
         Ok(child_pid) => {
             print!("[init] heartbeat started (PID {})\n", child_pid.raw());
         }

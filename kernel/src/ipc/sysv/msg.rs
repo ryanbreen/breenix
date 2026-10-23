@@ -25,7 +25,10 @@ fn err(e: i32) -> SyscallResult {
 
 /// msgget: the queue `key` names, made when IPC_CREAT asks for it.
 pub fn sys_msgget(key: i32, flags: u32) -> SyscallResult {
-    let me = caller();
+    let me = match caller() {
+        Ok(me) => me,
+        Err(e) => return err(e as i32),
+    };
     let t = now();
     let mut ids = SYSV_MSG.lock();
     match ids.resolve(key, flags) {
@@ -68,7 +71,10 @@ pub fn sys_msgsnd(id: i32, msgp: u64, msgsz: u64, flags: u32) -> SyscallResult {
     if read_user_bytes(text.as_mut_ptr(), msgp.wrapping_add(8), text.len()).is_err() {
         return err(EFAULT);
     }
-    let me = caller();
+    let me = match caller() {
+        Ok(me) => me,
+        Err(e) => return err(e as i32),
+    };
     let mut msg = Some(Message { mtype, text });
     let mut slept: Option<Arc<Waiters>> = None;
     loop {
@@ -133,7 +139,10 @@ pub fn sys_msgrcv(id: i32, msgp: u64, msgsz: u64, msgtyp: i64, flags: u32) -> Sy
             at += n;
         }
     }
-    let me = caller();
+    let me = match caller() {
+        Ok(me) => me,
+        Err(e) => return err(e as i32),
+    };
     let mut slept: Option<Arc<Waiters>> = None;
     let msg = loop {
         let t = now();
@@ -180,7 +189,10 @@ pub fn sys_msgctl(id: i32, cmd: u32, buf: u64) -> SyscallResult {
     if id < 0 {
         return err(EINVAL);
     }
-    let me = caller();
+    let me = match caller() {
+        Ok(me) => me,
+        Err(e) => return err(e as i32),
+    };
     let cmd = cmd & !IPC_64;
     match cmd {
         IPC_STAT | MSG_STAT | MSG_STAT_ANY => {

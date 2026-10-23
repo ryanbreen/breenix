@@ -1588,13 +1588,7 @@ fn proc_answer() -> Result<Option<Answer>, i32> {
     const EACCES: i32 = 13;
     const EBUSY: i32 = 16;
     const EIO: i32 = 5;
-    let privileged = crate::task::scheduler::current_thread_id().is_some_and(|tid| {
-        let guard = crate::process::manager();
-        guard.as_ref().is_some_and(|manager| {
-            manager.find_process_by_thread(tid).is_some_and(|(_, process)| process.cred.euid == 0)
-        })
-    });
-    if !privileged {
+    if crate::process::privilege::require(crate::process::privilege::Operation::KernelLog).is_err() {
         return Err(EACCES);
     }
     if !RUNNING.load(Ordering::Acquire) {

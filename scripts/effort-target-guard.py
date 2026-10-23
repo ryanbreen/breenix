@@ -3,9 +3,11 @@
 
 Main-path effort history runs on x86-64, Parallels and VMware only for the catch-up
 (--catchup or BREENIX_CATCHUP=1). Metal effort history may also run there for landing
-checks. On x86-metal, main-path effort history is refused even during catch-up, and
-commits outside origin/main must be first-parent reachable from metal-* lanes on
-origin. Origin is read live; unavailable origin means unknown policy and refusal.
+checks. On x86-metal, main-path effort history is refused even during catch-up unless
+its effort lists x86-metal (x86-64 leads it on bare metal), and commits outside
+origin/main must be first-parent reachable from metal-* lanes, or lanes of an effort
+listing x86-metal, on origin. Origin is read live; unavailable origin means unknown
+policy and refusal.
 
 A launcher that has already checked a commit exports BREENIX_TARGET_POLICY_CHECKED=<target>:<sha>;
 nested launchers of the same target and commit (host-slot re-exec, the beast gate) skip the check.
@@ -141,9 +143,11 @@ def check(root, commit, target, catchup):
             name, tip = line.split(' ')
             if lane_home(name):
                 lanes[name] = (tip, lane_home(name))
-        # Includes the definition lane (metal-stream/...), which is not an effort id.
+        # Includes the definition lane (metal-stream/...), which is not an effort id, and the lanes of
+        # main-path efforts that x86-64 leads on bare metal (their targets list x86-metal).
         metal_tips = {tip for name, tip in heads.items()
-                      if name.removeprefix('origin/').startswith('metal-') and name.count('/') >= 2}
+                      if (name.removeprefix('origin/').startswith('metal-') and name.count('/') >= 2)
+                      or 'x86-metal' in (lane_home(name.removeprefix('origin/')) or ('', ()))[1]}
         main = heads['origin/main']
         wanted = sorted({main, *(tip for tip, home in lanes.values()), *metal_tips})
         missing = sorted(set(wanted) - present(root, wanted))
@@ -183,9 +187,9 @@ def check(root, commit, target, catchup):
         missing = [found for found in own if found not in first_parent]
         if missing:
             raise ValueError('Refusing x86-metal for ' + sha[:12] + ': commit ' + missing[0][:12]
-                             + ' is not first-parent reachable from a metal-* lane on origin; '
-                             'push the metal lane and keep its ref until its work reaches main. '
-                             'Catch-up does not override metal ancestry.')
+                             + ' is not first-parent reachable from a metal-* lane, or a lane of an '
+                             'effort listing x86-metal, on origin; push the lane and keep its ref until '
+                             'its work reaches main. Catch-up does not override metal ancestry.')
     return sha
 
 

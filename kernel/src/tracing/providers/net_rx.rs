@@ -91,6 +91,12 @@ pub static NET_RX_REARM_ARMED_TOTAL: TraceCounter = TraceCounter::new(
     "VirtIO-net RX re-arm checks leaving callbacks enabled",
 );
 
+/// Failed runtime BCM5720 carrier reads, including each read in a streak.
+#[no_mangle]
+pub static BCM5720_PHY_READ_FAILED: TraceCounter = TraceCounter::new(
+    "BCM5720_PHY_READ_FAILED", "BCM5720 runtime PHY carrier sample failures",
+);
+
 /// Register network RX provider and counters.
 pub fn init() {
     register_provider(&NET_RX_PROVIDER);
@@ -106,6 +112,7 @@ pub fn init() {
     register_counter(&NET_RX_REARM_CHECK_TOTAL);
     register_counter(&NET_RX_REARM_RACE_TOTAL);
     register_counter(&NET_RX_REARM_ARMED_TOTAL);
+    register_counter(&BCM5720_PHY_READ_FAILED);
 }
 
 #[inline(always)]

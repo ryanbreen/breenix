@@ -95,10 +95,11 @@ pub fn write_master(pair: &Arc<PtyPair>, data: &[u8], nonblocking: bool) -> Sysc
 
 /// write(2) on a slave: output to the master. A blocking write waits for
 /// room in the master's buffer, and while output is stopped (TCXONC), until
-/// all of `data` is written.
-pub fn write_slave(pair: &Arc<PtyPair>, data: &[u8], nonblocking: bool) -> SyscallResult {
+/// the whole of `data` is written. A description the slave was revoked from
+/// (`opened`, `tty::revoke`) writes no further bytes: EIO.
+pub fn write_slave(pair: &Arc<PtyPair>, data: &[u8], nonblocking: bool, opened: u64) -> SyscallResult {
     // A hung-up slave fails writes with EIO before any job-control check.
-    if pair.master_closed() {
+    if pair.master_closed() || pair.revoked_since(opened) {
         return SyscallResult::Err(EIO as u64);
     }
     if let Err(e) = jobctl::check(&TtyRef::Pty(pair.clone()), JobOp::Write) {
@@ -107,7 +108,7 @@ pub fn write_slave(pair: &Arc<PtyPair>, data: &[u8], nonblocking: bool) -> Sysca
     pair.drain_echo();
     let mut done = 0;
     while done < data.len() {
-        if pair.master_closed() {
+        if pair.master_closed() || pair.revoked_since(opened) {
             return progress_or(done, EIO);
         }
         // The output settings are read on every pass, so a writer that
@@ -132,7 +133,7 @@ pub fn write_slave(pair: &Arc<PtyPair>, data: &[u8], nonblocking: bool) -> Sysca
             // (two for a translated newline), or output is stopped.
             pair.slave_writers
                 .prepare_to_wait_checked(ThreadState::BlockedOnIO, None, || {
-                    (pair.output_stopped() || ring.space() < 2) && !pair.master_closed()
+                    (pair.output_stopped() || ring.space() < 2) && !pair.master_closed() && !pair.revoked_since(opened)
                 })
         };
         if let Err(error) = wait_prepared(&pair.slave_writers, outcome) {

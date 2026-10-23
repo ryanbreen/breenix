@@ -37,7 +37,6 @@ import metal_image  # noqa: E402
 import metal_census  # noqa: E402
 import metal_root  # noqa: E402
 import metal_score  # noqa: E402
-import metal_attended  # noqa: E402
 import metal_disk  # noqa: E402
 import metal_persist  # noqa: E402
 from metal_score import boot_shape  # noqa: E402
@@ -79,17 +78,12 @@ def check(args):
     return bool(getattr(args, 'run', None)) or bool(getattr(args, 'verify', False))
 
 
-def attended(args):
-    return bool(getattr(args, 'attended', False))
-
-
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 def input_kind(args):
-    """Who types: the operator on the USB keyboard (attended), SOL, the operator at a persistent session (whose
-    keyboard stages count when typed), or nobody."""
+    """Record the console input source for automated boots and operator sessions."""
     if persistent(args):
         return 'sol' if getattr(args, 'run', None) else 'operator'
-    return 'keyboard' if attended(args) else getattr(args, 'input', None)
+    return getattr(args, 'input', None)
 
 
 def xhci_fault(args):
@@ -100,7 +94,7 @@ def xhci_fault(args):
 def validate_xhci_fault(args):
     if xhci_fault(args) and (args.payload != 'image' or args.mode != 'console'
                             or getattr(args, 'input', None) != 'sol'
-                            or session(args) or attended(args) or getattr(args, 'disk', None)):
+                            or session(args) or getattr(args, 'disk', None)):
         raise ValueError('xHCI faults need a RAM-disk console boot with --input sol')
 
 
@@ -110,9 +104,6 @@ def suites(args):
 
 
 def ceiling_seconds(args):
-    if attended(args):
-        # Delivery/start-up budget plus the entire operator wait from handoff.
-        return CEILING_SECONDS['console'] + args.wait * 60
     if args.mode == 'suite':
         # Each further suite of a multi-suite boot brings its own DONE deadline.
         return CEILING_SECONDS['suite'] + MODE_DEADLINE_SECONDS['suite'] * (len(suites(args)) - 1)
@@ -200,6 +191,9 @@ class Driver:
         self.run_step = 0
         self.sent_at = -1
         self.run_done = False
+        self.run_nonce = os.urandom(12).hex()
+        self.run_verified = 0
+        self.run_failure = None
         self.persist = None
         self.last_serial = None
         self.first_text = False
@@ -231,11 +225,11 @@ class Driver:
         self.required_stages = []
         self.shell_ready = False
         self.shell_sent = False
-        self.attended_challenge = None
         # A suite boot answers its cases' HOSTKEY records over the serial console (on_hostkey_line).
         self.hostkey_watcher = None
         self.console_step = 0
         self.console_done = False
+        self.console_sudo_answered = False
         self.delivery = {}
         self.console_intent = None
         self.payload_facts = None
@@ -277,6 +271,7 @@ class Driver:
                'payload': self.args.payload, 'kind': kind, 'inject': self.args.inject or None,
                # `suite` names the one suite of a single-suite boot; `suites` every suite the boot runs, in order.
                'suite': suites(self.args)[0] if len(suites(self.args)) == 1 else None, 'suites': suites(self.args) or None,
+               'milestone': getattr(self.args, 'milestone', None),
                'sourceBoot': getattr(self.args, 'source_boot', None),
                'disk': 'persistent' if persistent(self.args) else getattr(self.args, 'disk', None),
                'toolsCommit': tools_commit(),
@@ -285,11 +280,9 @@ class Driver:
                'adopted': bool(getattr(self.args, 'adopt', False)),
                'run': getattr(self.args, 'run', None) or None,
                'input': input_kind(self.args),
-               'attended': attended(self.args),
-               'waitMinutes': self.args.wait if attended(self.args) else None,
                'session': session(self.args),
                'idleMinutes': getattr(self.args, 'idle_minutes', 30) if session(self.args) else None,
-               'evidenceEligible': not fault and (persistent(self.args) or (not session(self.args) and (self.args.mode != 'console' or attended(self.args))))}
+               'evidenceEligible': not fault and (persistent(self.args) or not session(self.args))}
         m.write_json(self.dir / 'run.json', run)
         m.write_text(self.dir / 'commit', (self.args.commit or 'none') + '\n')
         m.write_text(self.dir / 'dirty', '0\n')
@@ -318,7 +311,7 @@ class Driver:
             self.phase(text)
 
         wait = getattr(self.args, 'wait', None)
-        queue_minutes = 240 if attended(self.args) or wait is None else wait
+        queue_minutes = 240 if wait is None else wait
         try:
             m.claim_lease(holder, wait=True, checkpoint=self.checkpoint,
                           wait_seconds=queue_minutes * 60, on_wait=waiting)
@@ -602,17 +595,20 @@ class Driver:
         note = scratch / 'next.txt'
         note.write_text(metal_persist.slot_note(self.args.commit, self.id))
         manager_files = {'efi/breenix/bootmgr.efi': manager, 'efi/boot/bootx64.efi': manager}
-        # The new userland, staged as a default boot's root (console account included), for the stub to write onto
-        # the test root once the request is done.
+        # The new userland, staged as a default boot's root (console account included) with the operator's account
+        # and SSH public key for the installer's machine state store, for the stub to write onto the test root once
+        # the request is done.
         facts, suite_files = metal_disk.stage(self.dir, inputs, self.id, self.args.commit, self.site, build,
-                                              mode='default', the_layout=the_layout)
+                                              mode='default', the_layout=the_layout,
+                                              operator=metal_root.operator_account(self.site))
         self.delivery['diskRoot'] = facts
         files = dict(esp_files)
         files.update(suite_files)
         parts = the_layout['partitions']
         intent = self.stage / 'boot-intent'
         intent.write_bytes(metal_persist.intent('persistent-install', root=parts['test']['guid'],
-                                                home=parts['system']['guid'], userland=self.id))
+                                                home=parts['system']['guid'], userland=self.id,
+                                                previous_userland=(metal_persist.read_disk().get('slots', {}).get('current') or {}).get('installedBy')))
         files['ramdisk'] = intent
         if action == 'install':
             config, request = metal_persist.install_request(scratch, the_layout, expect, manager_files, slot, note,
@@ -639,15 +635,11 @@ class Driver:
         main = m.read_json(definition / 'docs/boot-path.json', {})
         source = metal or main
         self.fatal_patterns = [re.compile(p) for p in (source or {}).get('fatal', [])]
-        if metal and attended(self.args):
-            self.attended_challenge = metal_attended.Challenge(metal_attended.stages(metal))
-            metal = metal_score.attended_definition(metal)
         if metal and not session(self.args):
             catalog = m.read_json(definition / 'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json', {})
             shape = boot_shape('persistent' if persistent(self.args) else getattr(self.args, 'disk', None))
-            kind = input_kind(self.args)
-            self.final_marker = final_marker(metal, self.args.mode, catalog, shape, kind)
-            self.required_stages = measured_stages(metal, self.args.mode, catalog, shape, kind)
+            self.final_marker = final_marker(metal, self.args.mode, catalog, shape)
+            self.required_stages = measured_stages(metal, self.args.mode, catalog, shape)
         if xhci_fault(self.args):
             marker = '[xhci-fault] ' + xhci_fault(self.args) + ' PASS:'
             self.final_marker = (marker, 'contains')
@@ -822,7 +814,7 @@ class Driver:
                         if decision is None or finish.status != m.EXIT_DONE:
                             decision = finish
         # getty leaves its prompt unterminated while waiting for login input.
-        if self.args.mode in ("default", "persistent") and self.line.strip("\r") == "Breenix login: ":
+        if self.args.mode in ("default", "persistent") and "Breenix login: " in self.line:
             try:
                 self.on_line(self.line, observed_at=arrived)
             except Finish as finish:
@@ -848,6 +840,8 @@ class Driver:
             root.chmod(0o755)
             several = len(suites(self.args)) > 1
             names = ['scripts/suite-verdict.py', 'docs/boot-path.json'] + ['docs/suites/' + s + '.json' for s in suites(self.args)]
+            if getattr(self.args, 'milestone', None):
+                names.append('docs/efforts/path.json')
             for name in names + (['scripts/suite-sequence.py'] if several else []):
                 target = root / name
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -875,6 +869,8 @@ class Driver:
             else:
                 command += [str(sandbox / 'scripts/suite-verdict.py'),
                             str(sandbox / 'docs/suites' / (self.args.suite + '.json')), str(sandbox / 'serial.txt')]
+            if getattr(self.args, 'milestone', None):
+                command += ['--milestone', self.args.milestone]
             if disk is not None:
                 command += ['--disk', str(sandbox / 'disk.img')]
             try:
@@ -901,7 +897,7 @@ class Driver:
             raise ValueError('cold raw disk evidence differs from the completed suite boot')
         run = m.read_json(source / 'run.json')
         args = argparse.Namespace(id=readback['source'], mode='suite', suite=','.join(run.get('suites') or [run['suite']]), payload='image',
-                                  inject=None)
+                                  inject=None, milestone=run.get('milestone'))
         scorer = Driver(args)
         passed = scorer.score_suite(disk=image)
         milestone = m.read_json(source / 'milestone-verdict.json', {})
@@ -923,7 +919,7 @@ class Driver:
             time.sleep(1)
             boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
         args = argparse.Namespace(**(vars(self.args) | dict(id=boot_id, mode='default', suite=None,
-            payload='disk-readback', disk=None, source_boot=self.id, session=False, attended=False, input=None)))
+            payload='disk-readback', disk=None, source_boot=self.id, session=False, input=None)))
         child = Driver(args)
         # The same live transient unit owns both boots; the reaper follows the active record's id.
         child.unit = self.unit
@@ -952,8 +948,6 @@ class Driver:
     def console_send(self, text, paced=False):
         """One line to the SOL console; paced sends it a few bytes at a time, since a burst can lose a byte while
         the shell echoes (#2105)."""
-        if attended(self.args):
-            raise RuntimeError('attended boots must never send console input')
         # stdin transport keeps a password out of process argv, events and logs.
         data = (text + '\r').encode()
         step = 4 if paced else len(data)
@@ -963,28 +957,22 @@ class Driver:
             if paced:
                 time.sleep(0.04)
 
+    def console_account(self):
+        """The account staging gave the console password to (metal_root.console_account): the users suite's wheel
+        fixture, which reads the root-only screen check through sudo, or root on images from before it."""
+        staged = self.delivery.get('diskRoot') or self.delivery.get('root') or {}
+        return staged.get('consoleAccount', 'root')
+
     def challenge_console(self, text, complete=False):
         if xhci_fault(self.args):
             return
         if self.args.mode != 'console' or session(self.args) or self.fatal_at is not None:
             return
-        if attended(self.args):
-            if not complete and not text.startswith('Breenix login: '):
-                return
-            self.console_done = self.attended_challenge.feed(text)
-            if self.attended_challenge.invalid and not self.completion_reported:
-                self.completion_reported = True
-                raise Finish(m.EXIT_SHORT, 'input other than the USB keyboard reached the console; the challenge cannot pass')
-            if (self.console_done and self.final_seen and not any(self.required_stages)
-                    and not self.completion_reported):
-                self.completion_reported = True
-                self.event('attended-challenge-complete')
-                raise Finish(m.EXIT_DONE, 'USB keyboard challenge completed')
-            return
         step = self.console_step
+        account = self.console_account()
         if step in (0, 3) and 'login: ' in text:
             self.console_step += 1
-            self.console_send(self.site['CONSOLE_USER'], paced=True)
+            self.console_send(self.site['CONSOLE_USER'] if account == 'root' else account, paced=True)
         elif step in (1, 4) and 'Password: ' in text:
             self.console_step += 1
             self.console_send('deliberately-wrong-password' if step == 1 else self.site['CONSOLE_PASSWORD'], paced=True)
@@ -997,7 +985,11 @@ class Driver:
         elif step == 6 and text.strip() == 'metal-login-ok 42':
             self.console_step = 7
             self.event('console-computation-answered')
-            self.console_send('cat /proc/fbcon/check', paced=True)
+            self.console_send('cat /proc/fbcon/check' if account == 'root' else 'sudo cat /proc/fbcon/check', paced=True)
+        elif step == 7 and account != 'root' and not self.console_sudo_answered and f'[sudo] password for {account}: ' in text:
+            self.console_sudo_answered = True
+            self.event('console-sudo-password')
+            self.console_send(self.site['CONSOLE_PASSWORD'], paced=True)
         elif step == 7 and complete and text.startswith('fbcon check: '):
             self.console_step = 8
         elif step == 8 and re.match(r'bsh [^\n]*>', text):
@@ -1017,7 +1009,7 @@ class Driver:
             if (self.final_seen and not any(self.required_stages) and self.fatal_at is None
                     and self.disk_evidence_seen()):
                 self.completion_reported = True
-                raise Finish(m.EXIT_DONE, 'SOL login refused, accepted, computed and logged out; keyboard proof waiting')
+                raise Finish(m.EXIT_DONE, 'SOL login refused, accepted, computed and logged out')
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def on_line(self, line, *, observed_at=None):
@@ -1104,9 +1096,6 @@ class Driver:
             idle = getattr(self.args, 'idle_minutes', 30)
             if line == f'[console] input idle {idle} min':
                 raise Finish(m.EXIT_DONE, f'console input idle for {idle} minutes')
-        if attended(self.args) and self.kernel_started and line.startswith('[console] input idle '):
-            # The idle clock has stopped its pulse; nobody is typing.
-            raise Finish(m.EXIT_SHORT, 'console input idle; challenge not reached')
         self.on_disk_line(line, observed_at)
         self.on_intent_line(line, observed_at)
         self.on_hostkey_line(line)
@@ -1115,12 +1104,12 @@ class Driver:
         # A prompt is often completed by the next kernel log line before the driver reads it unterminated.
         self.challenge_persistent(line)
         for stages in self.required_stages:
-            if stages and marker_matches(stages[0], line, input_kind(self.args)):
+            if stages and marker_matches(stages[0], line):
                 stages.pop(0)
         suite_done = (re.fullmatch(r'SUITE_SEQUENCE DONE suites=\d+', line) if len(suites(self.args)) > 1
                       else re.fullmatch(r'SUITE_SEQUENCE READY ' + re.escape(self.args.suite or ''), line)
                       ) if self.args.mode == 'suite' else True
-        if (suite_done and self.final_marker and marker_matches(self.final_marker, line, input_kind(self.args))
+        if (suite_done and self.final_marker and marker_matches(self.final_marker, line)
                 and (self.args.mode != 'shell' or self.shell_sent)):
             self.final_seen = True
         self.maybe_complete(observed_at, seconds)
@@ -1220,34 +1209,70 @@ class Driver:
         commands = (getattr(self.args, 'run', None) or []) + ['sync']
         if not persistent(self.args) or len(commands) == 1 or self.kernel_started is None or self.fatal_at is not None:
             return
+        if self.run_failure:
+            raise Finish(m.EXIT_SHORT, self.run_failure)
+        if self.run_step >= 2 and re.search(r'\[bsh\] command failed status=[1-9][0-9]*', text):
+            self.fail_persistent('a persistent console command failed')
         fresh = self.line_start > self.sent_at
-        # bsh redraws its prompt and the line typed so far on each key; only a prompt with nothing after it is a
-        # fresh one, once the command before it has finished.
         prompt = re.fullmatch(r'bsh [^>\n]*>\s*', text) is not None
-        # Steps: 0 the login prompt, 1 the password prompt, then one shell prompt per command, then logout.
         last = 2 + len(commands)
-        if self.run_step == 0 and fresh and text.rstrip().endswith('login:'):
+        # A prompt can be followed by asynchronous diagnostics in the same read.
+        # Ask getty for a new one before typing credentials, without requiring an exact line.
+        if self.run_step == 0 and 'Breenix login: ' in text:
+            self.run_step, self.sent_at = -1, self.line_start
+            self.console_send('', paced=True)
+        elif self.run_step == -1 and fresh and 'Breenix login: ' in text:
             self.run_step, self.sent_at = 1, self.line_start
             self.console_send(self.site['CONSOLE_USER'], paced=True)
         elif self.run_step == 1 and fresh and 'Password: ' in text:
             self.run_step, self.sent_at = 2, self.line_start
             self.console_send(self.site['CONSOLE_PASSWORD'], paced=True)
         elif 2 <= self.run_step <= last and 'Login incorrect' in text:
-            raise Finish(m.EXIT_SHORT, 'the persistent install refused the console account')
-        elif 2 <= self.run_step < last and fresh and prompt:
+            self.fail_persistent('the persistent install refused the console account; commands never ran')
+        elif 3 <= self.run_step <= last:
+            index = self.run_step - 2
+            marker = f'metal-run-{self.run_nonce}-{index}'
+            found = re.fullmatch(re.escape(marker) + r' ([0-9]+)\s*', text)
+            if found and fresh and self.run_verified < index:
+                status = int(found[1])
+                self.event('persistent-command-result', index=index, status=status)
+                if status:
+                    self.fail_persistent(f'persistent console command {index} failed with status {status}')
+                self.run_verified = index
+            if fresh and prompt and self.run_verified != index:
+                self.fail_persistent(f'persistent console command {index} returned without an exit status')
+        if 2 <= self.run_step <= last and fresh and prompt:
+            if self.run_step < last:
+                index = self.run_step - 1
+                marker = f'metal-run-{self.run_nonce}-{index}'
+                # bsh -c preserves the account shell's command syntax and returns
+                # ordinary nonzero statuses too. A prompt alone proves no success.
+                command = 'print("\\n' + marker + '", run("/bin/bsh", "-c", ' + json.dumps(commands[index - 1]) + '))'
+                self.event('persistent-command', index=index, of=len(commands))
+                self.console_send(command, paced=True)
+                self.run_step += 1
+            else:
+                self.run_step = last + 1
+                self.console_send('exit', paced=True)
             self.sent_at = self.line_start
-            self.event('persistent-command', index=self.run_step - 1, of=len(commands))
-            self.console_send(commands[self.run_step - 2], paced=True)
-            self.run_step += 1
-        elif self.run_step == last and fresh and prompt:
-            self.sent_at = self.line_start
-            self.run_step = last + 1
-            self.console_send('exit', paced=True)
-        elif self.run_step == last + 1 and fresh and text.rstrip().endswith('login:'):
+        elif self.run_step == last + 1 and fresh and 'Breenix login: ' in text:
             self.run_step = last + 2
             self.run_done = True
             self.event('persistent-commands-done', commands=len(commands))
             self.maybe_complete(m.now(), round(m.now() - self.t0, 1))
+
+    def fail_persistent(self, reason):
+        # pump_serial finishes the captured batch after a decision. Later
+        # prompts must neither replace this reason nor start another command.
+        self.run_failure = reason
+        raise Finish(m.EXIT_SHORT, reason)
+
+    def persistent_missing(self):
+        if not getattr(self.args, 'run', None) or self.run_done:
+            return 'stages missing'
+        if self.run_step <= 2:
+            return 'persistent console login did not finish; commands never ran'
+        return f'persistent console commands incomplete; {self.run_verified} exit statuses verified'
 
     def on_manager_line(self, line, observed_at, seconds):
         """The boot manager's start, the lab's answer it acted on, and a probe's end (README, "The boot manager")."""
@@ -1489,7 +1514,7 @@ class Driver:
         if quiet > SILENCE_SECONDS:
             raise Finish(m.EXIT_HUNG, f'silent for {SILENCE_SECONDS} s after {self.last_stage or "the boot manager"}', hung=True)
         if self.kernel_started and m.now() - self.kernel_started > MODE_DEADLINE_SECONDS['persistent']:
-            raise Finish(m.EXIT_SHORT, 'the mode deadline passed with stages or commands missing')
+            raise Finish(m.EXIT_SHORT, 'the mode deadline passed: ' + self.persistent_missing())
 
     def check_deadlines(self):
         if persistent(self.args):
@@ -1501,9 +1526,6 @@ class Driver:
                          hung=not session(self.args))
         if self.fatal_at and m.now() - self.fatal_at >= FATAL_GRACE_SECONDS:
             raise Finish(m.EXIT_SHORT, 'a fatal line')
-        if attended(self.args) and self.kernel_started is not None and self.fatal_at is None:
-            if m.now() >= self.kernel_started + self.args.wait * 60:
-                raise Finish(m.EXIT_SHORT, 'attended wait expired; challenge not reached')
         if self.request_at is None:
             if elapsed > self.post_budget:
                 raise Finish(m.EXIT_HUNG, f'POST over budget at code {self.post_code}')
@@ -1539,13 +1561,6 @@ class Driver:
         quiet = m.now() - max(self.last_serial or 0, self.kernel_started)
         if quiet > SILENCE_SECONDS:
             raise Finish(m.EXIT_HUNG, f'silent for {SILENCE_SECONDS} s after {self.last_stage}', hung=True)
-        if attended(self.args):
-            # The operator types the challenge; the stages nobody types keep the mode deadline.
-            untyped = any(stages and len(stages[0]) == 2 for stages in self.required_stages)
-            prompt = self.attended_challenge is None or self.attended_challenge.reached >= 2
-            if m.now() - self.kernel_started > MODE_DEADLINE_SECONDS['console'] and (untyped or not prompt):
-                raise Finish(m.EXIT_SHORT, 'the mode deadline passed with the login prompt or an untyped stage missing')
-            return
         # Each suite has a DONE deadline independent of progress and the fixed attempt ceiling.
         if m.now() - (self.suite_started or self.kernel_started) > MODE_DEADLINE_SECONDS[self.args.mode]:
             raise Finish(m.EXIT_SHORT, 'the mode deadline passed with stages missing')
@@ -1800,7 +1815,7 @@ class Driver:
             time.sleep(1)
             boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
         args = argparse.Namespace(**(vars(self.args) | dict(
-            id=boot_id, mode='persistent', payload='persistent', suite=None, disk=None, session=False, attended=False,
+            id=boot_id, mode='persistent', payload='persistent', suite=None, disk=None, session=False,
             input=None, inject=None, entry='current', slot_action='commit', verify=True, run=None, adopt=False,
             commit='')))
         child = Driver(args)
@@ -1814,14 +1829,9 @@ def progress_key(progress):
     return (progress.get('LastState'), progress.get('OemLastState') or '', progress.get('LastStateTime'))
 
 
-def marker_matches(spec, line, input_kind=None):
+def marker_matches(spec, line):
     """Pipe-separated literal alternatives; line matching requires the entire serial line."""
-    if isinstance(spec, tuple) and len(spec) == 3:
-        marker, match, required_input = spec
-        if required_input != input_kind:
-            return False
-    else:
-        marker, match = spec if isinstance(spec, tuple) else (spec, 'contains')
+    marker, match = spec if isinstance(spec, tuple) else (spec, 'contains')
     alternatives = marker.split('|')
     if match == 'line':
         return line in alternatives
@@ -1831,10 +1841,9 @@ def marker_matches(spec, line, input_kind=None):
 
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-def measured_stages(metal, mode, catalog, shape='ramdisk', input_kind=None):
-    """Track each measured milestone in its own print order, including delayed kernel producers. Milestones in
-    the definition select which boot shapes and modes can measure them. A stage tagged with an input (the USB keyboard)
-    is required only of a boot whose input is that one; the scorer still counts it, unreached, for any other."""
+def measured_stages(metal, mode, catalog, shape='ramdisk'):
+    """Track each measured milestone in its own print order, including delayed kernel producers.
+    The definition selects which boot shapes and modes can measure each milestone."""
     markers = {stage['name']: stage for stage in catalog.get('stages', [])}
     groups = []
     for milestone in metal.get('milestones', []):
@@ -1847,18 +1856,15 @@ def measured_stages(metal, mode, catalog, shape='ramdisk', input_kind=None):
             spec = markers.get(stage, {}) if isinstance(stage, str) else stage
             if 'host' in spec:
                 continue  # These are checked by preflight, delivery and console setup.
-            if spec.get('input') and spec['input'] != input_kind:
-                continue
             if not spec.get('marker'):
                 raise ValueError('unresolved measured serial stage')
-            group.append((spec['marker'], spec.get('match', 'contains')) +
-                         ((spec['input'],) if spec.get('input') else ()))
+            group.append((spec['marker'], spec.get('match', 'contains')))
         if group:
             groups.append(group)
     return groups
 
 
-def final_marker(metal, mode, catalog, shape='ramdisk', input_kind=None):
+def final_marker(metal, mode, catalog, shape='ramdisk'):
     """Resolve the final measured serial stage and preserve its matching contract. A stub milestone's markers are
     proposals its producing lane has not landed (docs/metal/boot-path.json), so no boot measures it yet, and a
     milestone excluded by `bootShapes` or `bootModes` cannot be measured by this boot."""
@@ -1874,11 +1880,11 @@ def final_marker(metal, mode, catalog, shape='ramdisk', input_kind=None):
         if not listed:
             continue
         for stage in reversed(listed):
-            if isinstance(stage, dict) and ('host' in stage or stage.get('input', input_kind) != input_kind):
+            if isinstance(stage, dict) and 'host' in stage:
                 continue
             stage = stage if isinstance(stage, dict) else markers.get(stage, {})
             if stage.get('marker'):
-                return (stage['marker'], stage.get('match', 'contains')) + ((stage['input'],) if stage.get('input') else ())
+                return (stage['marker'], stage.get('match', 'contains'))
             return None
     return None
 
@@ -1931,11 +1937,11 @@ def main():
         p.add_argument('--payload', choices=PAYLOADS, default='image')
         p.add_argument('--mode', choices=MODES, default='default')
         p.add_argument('--input', choices=('sol',))
-        p.add_argument('--attended', action='store_true', help='score the operator challenge without sending input')
-        p.add_argument('--wait', type=float, default=None, metavar='MIN', help='queue wait (default 240); with --attended, challenge wait (default 30)')
+        p.add_argument('--wait', type=float, default=None, metavar='MIN', help='queue wait (default 240 minutes)')
         p.add_argument('--session', action='store_true', help='hold the console for operator input, without scoring')
         p.add_argument('--idle-minutes', type=int, default=30, help='session input idle limit (1 through 240; default 30)')
         p.add_argument('--suite')
+        p.add_argument('--milestone')
         p.add_argument('--source-boot')
         p.add_argument('--commit', default='')
         p.add_argument('--target', default='main')
@@ -1979,6 +1985,8 @@ def main():
                 parser.error('suite mode needs --suite ID, or distinct ids joined by commas')
         elif args.suite:
             parser.error('--suite needs suite mode')
+        if args.milestone and (args.mode != 'suite' or len(suites(args)) != 1):
+            parser.error('--milestone needs one suite')
         if (args.payload == 'persistent') != (args.mode == 'persistent'):
             parser.error('a persistent boot needs the persistent payload and mode together')
         if args.payload not in ('image', 'persistent') and args.mode != 'default':
@@ -1995,14 +2003,12 @@ def main():
             parser.error('--session needs console mode, operator input and no disk install')
         if not 1 <= args.idle_minutes <= 240 or (args.idle_minutes != 30 and not args.session):
             parser.error('--idle-minutes needs a console session and 1 through 240 minutes')
-        if args.attended and (args.session or args.mode != 'console' or args.input or args.payload != 'image' or args.disk == 'install'):
-            parser.error('--attended needs a console boot, without --session or --input')
         if args.wait is None:
-            args.wait = 30 if args.attended else 240
+            args.wait = 240
         if not 0 < args.wait <= 240:
             parser.error('--wait needs more than 0 through 240 minutes')
-        if args.mode == 'console' and not args.session and not args.attended and args.input != 'sol':
-            parser.error('console typing waits for the injector; development boots require --input sol')
+        if args.mode == 'console' and not args.session and args.input != 'sol':
+            parser.error('console mode requires --input sol')
         if args.input and args.mode != 'console':
             parser.error('--input needs console mode')
     if args.command in ('launch', 'run') and args.payload == 'image' and not args.disk and not xhci_fault(args):

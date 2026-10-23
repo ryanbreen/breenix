@@ -120,7 +120,7 @@ fn abstract_key(bytes: &[u8]) -> Result<Key, i32> {
     })
 }
 fn path_key(bytes: &[u8]) -> Result<Key, i32> {
-    let cred = Credentials::current(false);
+    let cred = Credentials::current(false).map_err(|errno| errno as i32)?;
     let resolved =
         crate::fs::namei::resolve_socket_path(bytes, false, &cred).map_err(|e| e as i32)?;
     if matches!(resolved.target, Target::Absent { .. }) || resolved.virtual_absent {
@@ -140,7 +140,7 @@ fn path_key(bytes: &[u8]) -> Result<Key, i32> {
     let inode = fs
         .read_inode(handle.verify(fs).map_err(|_| ENOENT)?)
         .map_err(|e| crate::fs::namei::fs_errno(e) as i32)?;
-    if !cred.permits(&inode, 2) {
+    if !cred.may(inode.attrs(), 2) {
         return Err(EACCES);
     }
     Ok(Key::Path(handle))
@@ -149,7 +149,7 @@ fn create_path(bytes: &[u8]) -> Result<Key, i32> {
     if bytes.is_empty() || bytes.len() > NAME_BYTES {
         return Err(EINVAL);
     }
-    let cred = Credentials::current(false);
+    let cred = Credentials::current(false).map_err(|errno| errno as i32)?;
     let resolved =
         crate::fs::namei::resolve_socket_path(bytes, true, &cred).map_err(|e| e as i32)?;
     if resolved.last != Last::Name || matches!(resolved.target, Target::Inode { .. }) {
@@ -192,7 +192,7 @@ pub fn bind_name(name: &UnixName, socket: Weak<Socket>) -> Result<(), i32> {
     // Allocate the complete binding before creating any on-disk node. Publication
     // cannot fail for a freshly created inode and does not allocate.
     let mut binding = Box::try_new(Binding {
-        _owner: OwnerLease::reserve(Credentials::current(false).euid)?,
+        _owner: OwnerLease::reserve(Credentials::current(false).map_err(|errno| errno as i32)?.euid)?,
         key: abstract_key(&[])?,
         socket,
         next: None,

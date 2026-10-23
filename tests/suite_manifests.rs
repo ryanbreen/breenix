@@ -1,11 +1,16 @@
 //! Effort-suite manifests (`docs/suites/<id>.json`, see `docs/suites/README.md`).
 //!
-//! Every manifest has the shape Vigil reads, with ids that are lowercase words joined by
-//! '-'. Each manifest's suite binary exists and is built and installed, and the
+//! Each manifest has the shape Vigil reads, with ids that are lowercase words joined by
+//! '-'. A manifest with cases has a suite binary that is built and installed, and the
 //! categories and cases in the table its `main` runs (the `static` Suite in
 //! `userspace/programs/src/suite_<id>.rs`, or in `suite_<id>/main.rs` with case tables in
 //! its modules, read from the parsed source) are the
-//! manifest's, in the same order with the same titles. Every suite source has a manifest.
+//! manifest's categories that have cases, in the same order with the same titles. Each suite source has
+//! a manifest. A category with no cases yet is planned: the binary leaves it out, and a
+//! manifest in which each category is planned is a skeleton with no suite source
+//! (docs/suites/README.md, "Planned categories"). A category marked `"hostRunner": true` is run
+//! from the boot host against a persistent boot by `scripts/metal/server-suite`, which checks
+//! that category's cases; the binary leaves it out.
 //!
 //! The efforts in `docs/efforts/path.json` that name their targets name known ones (`targets`,
 //! docs/efforts/README.md).
@@ -45,6 +50,22 @@ struct Manifest {
     id: String,
     title: String,
     categories: Vec<Category>,
+    host_runner: Option<String>,
+    /// Categories the boot host runs against a persistent boot (`"hostRunner": true` on the category).
+    host_categories: Vec<String>,
+}
+
+impl Manifest {
+    /// Each category is planned: the suite has no cases, no source and no binary yet.
+    fn is_skeleton(&self) -> bool {
+        self.categories.iter().all(|category| category.cases.is_empty())
+    }
+}
+
+/// A manifest value in which each category has an empty case list (`Manifest::is_skeleton`).
+fn is_skeleton_value(manifest: &Value) -> bool {
+    manifest["categories"].as_array().into_iter().flatten()
+        .all(|category| category["cases"].as_array().is_some_and(|cases| cases.is_empty()))
 }
 
 fn text<'a>(object: &'a Map<String, Value>, key: &str, at: &str, errors: &mut Vec<String>) -> &'a str {
@@ -89,6 +110,9 @@ fn entry(value: &Value, at: &str, extra: &[&str], errors: &mut Vec<String>) -> O
     let title = text(object, "title", at, errors);
     Some(Entry { id: id.to_string(), title: title.to_string() })
 }
+
+/// The runner of host-run categories in a suite whose binary runs the others.
+const CATEGORY_HOST_RUNNER: &str = "scripts/metal/server-suite";
 
 /// Check one manifest's shape, returning what it lists.
 fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
@@ -156,6 +180,12 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
             errors.push(format!("{at}: needs3dGpu is true when present"));
         }
     }
+    if let Some(host) = object.get("hostRunner") {
+        expected.push("hostRunner");
+        if host != &Value::Bool(true) {
+            errors.push(format!("{at}: hostRunner is true when present"));
+        }
+    }
     keys(object, &expected, &at, errors);
     let id = text(object, "id", &at, errors).to_string();
     if !id.is_empty() && !is_id(&id) {
@@ -168,22 +198,44 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
     text(object, "area", &at, errors);
     text(object, "summary", &at, errors);
     let binary = text(object, "binary", &at, errors);
-    if binary != format!("/sbin/suite-{id}") {
+    let host_runner = (object.get("hostRunner") == Some(&Value::Bool(true))).then(|| binary.to_string());
+    if host_runner.is_some() {
+        if binary != "scripts/metal/server-suite" || id != "server" {
+            errors.push(format!("{at}: unrecognized host runner {binary:?}"));
+        }
+    } else if binary != format!("/sbin/suite-{id}") {
         errors.push(format!("{at}: binary is {binary:?}, expected \"/sbin/suite-{id}\""));
     }
     let mut categories = Vec::new();
+    let mut host_categories = Vec::new();
     match object.get("categories") {
         Some(Value::Array(list)) if !list.is_empty() => {
             let mut category_ids = HashSet::new();
             for (c, value) in list.iter().enumerate() {
                 let cat_at = format!("{at} categories[{c}]");
-                let Some(category) = entry(value, &cat_at, &["cases"], errors) else { continue };
+                // A host-run category: the boot host runs its cases against a persistent boot.
+                let host = value.get("hostRunner").is_some();
+                let extra: &[&str] = if host { &["cases", "hostRunner"] } else { &["cases"] };
+                let Some(category) = entry(value, &cat_at, extra, errors) else { continue };
+                if host {
+                    if value.get("hostRunner") != Some(&Value::Bool(true)) {
+                        errors.push(format!("{cat_at}: hostRunner is true when present"));
+                    }
+                    if host_runner.is_some() {
+                        errors.push(format!("{cat_at}: a host-driven suite's categories are all host-run; hostRunner belongs to the suite"));
+                    }
+                    if value.get("cases").and_then(Value::as_array).is_none_or(|cases| cases.is_empty()) {
+                        errors.push(format!("{cat_at}: a host-run category lists its cases"));
+                    }
+                    host_categories.push(category.id.clone());
+                }
                 if !category_ids.insert(category.id.clone()) {
                     errors.push(format!("{cat_at}: category id {:?} appears twice", category.id));
                 }
                 let mut cases = Vec::new();
+                // An empty list is a planned category: its cases arrive with the lane that implements it.
                 match value.get("cases") {
-                    Some(Value::Array(case_list)) if !case_list.is_empty() => {
+                    Some(Value::Array(case_list)) => {
                         let mut case_ids = HashSet::new();
                         for (k, case_value) in case_list.iter().enumerate() {
                             let case_at = format!("{cat_at} cases[{k}]");
@@ -195,14 +247,14 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
                             }
                         }
                     }
-                    _ => errors.push(format!("{cat_at}: \"cases\" must be a non-empty array")),
+                    _ => errors.push(format!("{cat_at}: \"cases\" must be an array")),
                 }
                 categories.push(Category { entry: category, cases });
             }
         }
         _ => errors.push(format!("{at}: \"categories\" must be a non-empty array")),
     }
-    Some(Manifest { id, title, categories })
+    Some(Manifest { id, title, categories, host_runner, host_categories })
 }
 
 /// Why a suite source's table could not be read.
@@ -632,6 +684,22 @@ fn suite_manifests_match_their_binaries() {
         manifest_ids.insert(manifest.id.clone());
         let id = &manifest.id;
         let module = id.replace('-', "_");
+        let source_rel = format!("userspace/programs/src/suite_{module}.rs");
+        if manifest.is_skeleton() {
+            // A suite with no cases cannot run, so it has no source, binary or install entry yet.
+            if root.join(&source_rel).exists() || bins.iter().any(|(name, _)| *name == format!("suite-{id}")) {
+                errors.push(format!("{id}: each category is planned, but {source_rel} or its binary exists; list its cases"));
+            }
+            continue;
+        }
+        if let Some(runner) = &manifest.host_runner {
+            let checked = std::process::Command::new("python3").arg(root.join(runner))
+                .arg("--check-manifest").arg(path).output().expect("host runner starts");
+            if !checked.status.success() {
+                errors.push(format!("{id}: host case table differs: {}", String::from_utf8_lossy(&checked.stderr)));
+            }
+            continue;
+        }
         let Some((source_rel, files)) = suite_files(&root, &module) else {
             errors.push(format!("{id}: no suite source at userspace/programs/src/suite_{module}.rs or suite_{module}/main.rs"));
             continue;
@@ -661,12 +729,26 @@ fn suite_manifests_match_their_binaries() {
                 suite.id, suite.title, manifest.title
             ));
         }
-        if categories != manifest.categories {
+        // The binary runs populated categories for incremental development. This is not
+        // completion: suite-verdict.py blocks full-suite acceptance while any category
+        // is planned; a milestone must have cases in each category it measures.
+        if !manifest.host_categories.is_empty() {
+            let checked = std::process::Command::new("python3").arg(root.join(CATEGORY_HOST_RUNNER))
+                .arg("--check-manifest").arg(path).output().expect("host runner starts");
+            if !checked.status.success() {
+                errors.push(format!("{id}: host-run category table differs: {}", String::from_utf8_lossy(&checked.stderr)));
+            }
+        }
+        let host_categories = manifest.host_categories;
+        let populated: Vec<Category> = manifest.categories.into_iter()
+            .filter(|category| !category.cases.is_empty() && !host_categories.contains(&category.entry.id))
+            .collect();
+        if categories != populated {
             errors.push(format!(
                 "{id}: the categories and cases in {source_rel} differ from docs/suites/{id}.json\n\
                  binary:\n{}\nmanifest:\n{}",
                 describe(&categories),
-                describe(&manifest.categories)
+                describe(&populated)
             ));
         }
     }
@@ -797,6 +879,29 @@ fn sdk_record_tables_are_read_exactly() {
     assert_eq!(sdk_harness_cases(harness), ["a/b", "c/d", "e/f"]);
     let guest = "static S: Suite = suite(\"s\", \"S\", &[\n    category(\"one\", \"One\", &[\n        case(\"x\", \"X\", host_case),\n        case(\"y\", \"Y\", y),\n    ]),\n]);\nfn y() { host(\"two/z\"); let _ = \"not/a/record\"; let _ = \"Not/This\"; }\n";
     assert_eq!(sdk_guest_reads(guest), ["one/x", "two/z"]);
+}
+
+#[test]
+fn planned_categories_have_empty_case_lists_only() {
+    let dir = std::env::temp_dir().join(format!("suite-manifests-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let read = |categories: &str| {
+        let path = dir.join("s.json");
+        fs::write(&path, format!(r#"{{"id": "s", "title": "S", "area": "A", "summary": "S.", "binary": "/sbin/suite-s", "categories": {categories}}}"#)).unwrap();
+        let mut errors = Vec::new();
+        let manifest = read_manifest(&path, &mut errors);
+        (manifest, errors)
+    };
+    let (manifest, errors) = read(r#"[{"id": "later", "title": "Later", "cases": []}]"#);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(manifest.unwrap().is_skeleton());
+    let (manifest, errors) = read(r#"[{"id": "now", "title": "Now", "cases": [{"id": "a", "title": "A"}]}, {"id": "later", "title": "Later", "cases": []}]"#);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(!manifest.unwrap().is_skeleton());
+    for bad in [r#"[{"id": "later", "title": "Later"}]"#, r#"[{"id": "later", "title": "Later", "cases": {}}]"#, "[]"] {
+        assert!(!read(bad).1.is_empty(), "{bad}");
+    }
+    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -932,6 +1037,13 @@ fn suites_using_time_or_concurrency_require_timing_metadata() {
         let path = entry.unwrap().path();
         if path.extension().is_none_or(|ext| ext != "json") { continue; }
         let manifest: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        if is_skeleton_value(&manifest) { continue; }
+        if manifest.get("hostRunner") == Some(&Value::Bool(true)) {
+            checked += 1;
+            assert_eq!(manifest.get("timingSensitive"), Some(&Value::Bool(true)),
+                "{}: host runner timeouts and concurrency require timingSensitive=true", path.display());
+            continue;
+        }
         let id = manifest["id"].as_str().unwrap();
         let source = suite_text(&root, id).unwrap();
         let tokens = source.parse::<proc_macro2::TokenStream>().unwrap();
@@ -995,8 +1107,9 @@ fn skip_calls_are_found_exactly() {
 }
 
 /// The target ids an effort in `docs/efforts/path.json` may list, in the order a list gives them: the ids
-/// `scripts/effort-target-guard.py` uses (docs/efforts/README.md, "Targets").
-const TARGETS: [&str; 4] = ["arm64-qemu", "parallels", "vmware", "x86"];
+/// `scripts/effort-target-guard.py` uses (docs/efforts/README.md, "Targets"). `x86-metal` marks an effort that
+/// x86-64 leads on bare metal; alone it belongs in `metal.json`.
+const TARGETS: [&str; 5] = ["arm64-qemu", "parallels", "vmware", "x86", "x86-metal"];
 
 /// Problems with the efforts' optional `targets` and `targetsNote`: a list must be non-empty, known ids in
 /// `TARGETS` order without repeats; a note is one line of text and only sits beside a list.
@@ -1031,6 +1144,8 @@ fn effort_target_errors(path: &Value) -> Vec<String> {
         let known: Vec<usize> = positions.into_iter().flatten().collect();
         if known.windows(2).any(|pair| pair[0] >= pair[1]) {
             errors.push(format!("{id}: targets {names:?} repeat or are out of the order {TARGETS:?}"));
+        } else if names == ["x86-metal"] {
+            errors.push(format!("{id}: an effort measured on x86-metal alone belongs in docs/efforts/metal.json"));
         }
         match note {
             None => {}
@@ -1049,7 +1164,6 @@ fn effort_targets_are_known_and_ordered() {
     let mut guarded: Vec<&str> = line.split('\'').skip(1).step_by(2).collect();
     guarded.sort_unstable();
     let mut ours = TARGETS.to_vec();
-    ours.push("x86-metal");
     ours.sort_unstable();
     assert_eq!(guarded, ours, "the guard's TARGETS and this test's differ");
 
@@ -1073,6 +1187,7 @@ fn effort_target_lists_are_checked() {
     assert!(check(serde_json::json!({ "id": "a", "targets": ["arm64-qemu", "vmware"], "targetsNote": "later" }))
         .is_empty());
     assert!(check(serde_json::json!({ "id": "a", "targets": ["arm64-qemu", "parallels", "vmware"], "milestones": profiles })).is_empty());
+    assert!(check(serde_json::json!({ "id": "a", "targets": ["arm64-qemu", "parallels", "vmware", "x86-metal"] })).is_empty());
     for bad in [
         serde_json::json!({ "id": "a", "targetsNote": "no list" }),
         serde_json::json!({ "id": "a", "targets": [] }),
@@ -1081,6 +1196,7 @@ fn effort_target_lists_are_checked() {
         serde_json::json!({ "id": "a", "targets": ["x86-64"] }),
         serde_json::json!({ "id": "a", "targets": ["x86-metal"] }),
         serde_json::json!({ "id": "a", "targets": ["vmware", "parallels"] }),
+        serde_json::json!({ "id": "a", "targets": ["x86-metal", "arm64-qemu"] }),
         serde_json::json!({ "id": "a", "targets": ["vmware", "vmware"] }),
         serde_json::json!({ "id": "a", "targets": ["vmware"], "targetsNote": "" }),
         serde_json::json!({ "id": "a", "targets": ["vmware"], "targetsNote": "two\nlines" }),
@@ -1283,7 +1399,7 @@ fn metal_stream_is_independent_and_resolves_its_measures() {
         }).collect();
     assert_eq!(suite_markers, expected_markers.iter().map(String::as_str).collect());
     assert_eq!(boot["firsts"][7]["suite"], "networking");
-    assert_eq!(boot["firsts"].as_array().unwrap().last().unwrap()["stage"], "Logged-in computation answered");
+    assert!(!boot["firsts"].as_array().unwrap().iter().any(|first| first["id"] == "first-local-login"));
     for id in ["fb-console", "xhci", "usb-keyboard", "console-login"] {
         assert!(metal["efforts"][4]["milestones"].as_array().unwrap().iter()
             .any(|m| m["measure"]["bootPath"] == id));

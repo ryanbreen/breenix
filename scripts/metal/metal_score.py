@@ -1,14 +1,14 @@
 """Score the milestones measurable by one boot shape and mode, using that boot's definition."""
-import copy
 import json
 import re
 import runpy
-import metal_attended
 from pathlib import Path
 
 
 # The test runner names the marker each test will print before the test runs; that promise reaches no stage.
 ANNOUNCEMENT = 'kernel::test_exec:'
+# Host records whose milestone is not <suite>/<category> (scripts/metal/server-suite, MILESTONES).
+HOST_MILESTONES = {'users-operator.json': 'users/operator-login'}
 
 
 def boot_shape(disk):
@@ -19,16 +19,6 @@ def measures(milestone, shape, mode):
     # Commits preceding shape metadata describe the original RAM-disk boots.
     return (shape in milestone.get('bootShapes', ['ramdisk'])
             and ('bootModes' not in milestone or mode in milestone['bootModes']))
-
-
-def attended_definition(definition):
-    """Stage lists wait for kernel and USB producers; console-login is the attended Challenge's, which also reads
-    a prompt still waiting for its newline."""
-    definition = copy.deepcopy(definition)
-    for milestone in definition['milestones']:
-        if milestone['id'] == 'console-login':
-            milestone['stages']['console'] = []
-    return definition
 
 
 def score(directory):
@@ -42,9 +32,6 @@ def score(directory):
     if run.get('mode') == 'tests':
         return score_tests(directory, run, read)
     definition = read('definition/docs/metal/boot-path.json')
-    attended = run.get('attended', False)
-    if attended:
-        definition = attended_definition(definition)
     catalog = {stage['name']: stage for stage in read(
         'definition/tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json')['stages']}
     shape = boot_shape(run.get('disk'))
@@ -52,40 +39,17 @@ def score(directory):
     events = {json.loads(line)['event'] for line in (directory / 'events.jsonl').read_text().splitlines()}
     host = {'console-ready': 'console-ready', 'power-on': 'power-on', 'firmware-text': 'firmware-text',
             'post': 'post-code', 'image-complete': 'image-complete', 'handoff': 'handoff'}
-    # Once the capture shows input from a source, missing delivery stages for that source are failures.
-    observed_input = set()
-    if run.get('input') == 'operator':
-        for milestone in definition['milestones']:
-            for items in milestone['stages'].values():
-                for stage in items:
-                    spec = catalog[stage] if isinstance(stage, str) else stage
-                    if spec.get('input') and any(
-                            line in spec['marker'].split('|') if spec.get('match') == 'line' else
-                            any(marker in line for marker in spec['marker'].split('|')) for line in lines):
-                        observed_input.add(spec['input'])
     results = {}
     for milestone in definition['milestones']:
         if milestone.get('stub') or not measures(milestone, shape, run['mode']):
-            continue
-        if attended and milestone['id'] == 'console-login':
-            challenge = metal_attended.Challenge(metal_attended.stages(definition))
-            for line in lines:
-                challenge.feed(line)
-            results[milestone['id']] = challenge.verdict()
             continue
         lists = milestone['stages']
         stages = lists.get(run['mode'], lists.get(definition['gateArch'], []) if milestone.get('kernel') else [])
         if not stages:
             continue
-        cursor, reached, unmeasured = 0, 0, 0
-        # A persistent session's operator types when they choose: a typed stage counts once it is there, and until
-        # then it is not measured rather than missed (docs/metal/README.md, "Persistent sessions").
-        operator = run.get('input') == 'operator'
+        cursor, reached = 0, 0
         for stage in stages:
             spec = catalog[stage] if isinstance(stage, str) else stage
-            if spec.get('input') and spec['input'] != run.get('input') and not operator:
-                unmeasured += 1  # This boot's input cannot produce it; it stays unreached.
-                continue
             if 'host' in spec:
                 reached += host[spec['host']] in events
                 continue
@@ -96,12 +60,31 @@ def score(directory):
                     reached += 1
                     cursor = index + 1
                     break
-            else:
-                if operator and spec.get('input') and spec['input'] not in observed_input:
-                    unmeasured += 1
         results[milestone['id']] = {'reached': reached, 'total': len(stages), 'passed': reached == len(stages)}
-        if unmeasured:
-            results[milestone['id']]['inputUnmeasured'] = unmeasured
+    # Host-driven cases are captured while the persistent boot holds its lease, then
+    # scored again from the completed capture without rerunning them. Each measured
+    # category's records are server-<category>.json, or users-operator.json for the
+    # users suite's host-run category, beside its transcript.
+    found = sorted(directory.glob('server-*.json')) + sorted(directory.glob('users-operator.json'))
+    for host_records in found:
+        suite, category = host_records.name[:-len('.json')].split('-', 1)
+        if category.endswith('-transcript'):
+            continue
+        milestone = HOST_MILESTONES.get(host_records.name, suite + '/' + category)
+        root = directory / 'definition'
+        try:
+            host = runpy.run_path(str(root / 'scripts/metal/server-suite'))
+            manifest = read('definition/docs/suites/' + suite + '.json')
+            records = read(host_records.name)
+            if records.get('milestone') != milestone:
+                raise ValueError(host_records.name + ' records another milestone')
+            fatal = read('definition/docs/boot-path.json')['fatal'] + [r'KERNEL PANIC:']
+            reason = host['score'](manifest, read('definition/docs/efforts/path.json'), records,
+                                   (directory / 'serial.txt').read_text(), run, run.get('bootedCommit'), fatal)
+            total = len(host['CATEGORIES'][category])
+            results[milestone] = dict(reached=total, total=total, passed=True, reason=reason)
+        except (OSError, ValueError, KeyError, StopIteration, TypeError, AttributeError) as error:
+            results[milestone] = dict(reached=0, total=1, passed=False, reason=str(error))
     return {'bootShape': shape, 'milestones': results, 'captureComplete': 'console-gap' not in events}
 
 
@@ -147,9 +130,7 @@ def score_tests(directory, run, read):
 
 
 def falls_short(verdict):
-    """A finished boot falls short on a capture gap, or on a milestone missing a stage its input could produce.
-    A SOL console boot cannot produce the keyboard stages: those milestones stay unpassed without failing it."""
+    """A finished boot falls short on incomplete capture, a failed report or any missing measured stage."""
     return (not verdict.get('testReport', {}).get('passed', True)
-            or not verdict['captureComplete']) or any(
-        not result['passed'] and result['reached'] + result.get('inputUnmeasured', 0) < result['total']
-        for result in verdict['milestones'].values())
+            or not verdict['captureComplete']
+            or any(not result['passed'] for result in verdict['milestones'].values()))

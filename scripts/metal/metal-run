@@ -162,7 +162,7 @@ def catchup_from_env():
 def install_persistent(args):
     """An install or upgrade boot of a commit, verified by a persistent boot under the same lease; or a rollback."""
     common = dict(sha=None, branch=None, no_wait=False, inject=None, nmi=False, ramdisk=True, disk=None, suite=None,
-                  input=None, attended=False, wait=None, session=False, idle_minutes=30, source_boot=None,
+                  input=None, wait=None, session=False, idle_minutes=30, source_boot=None,
                   serve_as=None, content_type=None, linux_directory=None, catchup=False, run=None, verify=False,
                   entry=None, slot_action=None, persistent=False)
     if args.rollback:
@@ -175,6 +175,8 @@ def install_persistent(args):
 
 
 def boot(args):
+    if args.suite and args.mode == 'default':
+        args.mode = 'suite'
     if getattr(args, 'persistent', False):
         args.payload, args.mode = 'persistent', 'persistent'
     if (getattr(args, 'run', None) or getattr(args, 'verify', False) or getattr(args, 'entry', None)) and args.payload != 'persistent':
@@ -183,12 +185,9 @@ def boot(args):
         raise SystemExit('the fence fault needs a default disk-root image boot')
     catchup = bool(getattr(args, 'catchup', False)) or catchup_from_env()
     is_session = bool(getattr(args, 'session', False))
-    attended = bool(getattr(args, 'attended', False))
     wait = getattr(args, 'wait', None)
     if wait is None:
-        wait = 30 if attended else 240
-    if attended and (is_session or args.mode != 'console' or args.input or args.payload != 'image' or args.disk == 'install'):
-        raise SystemExit('--attended needs a console boot, without --session or --input')
+        wait = 240
     if not 0 < wait <= 240:
         raise SystemExit('--wait needs more than 0 through 240 minutes')
     idle = getattr(args, 'idle_minutes', 30)
@@ -196,11 +195,11 @@ def boot(args):
         raise SystemExit('--session needs console mode, operator input and no disk install')
     if not 1 <= idle <= 240 or (idle != 30 and not is_session):
         raise SystemExit('--idle-minutes needs a console session and 1 through 240 minutes')
-    if not is_session and not attended and (args.mode == 'console') != (args.input == 'sol'):
+    if not is_session and (args.mode == 'console') != (args.input == 'sol'):
         raise SystemExit('console mode requires --input sol; --input requires console mode')
     if args.inject in XHCI_FAULTS and (
             args.payload != 'image' or args.mode != 'console' or args.input != 'sol'
-            or is_session or attended or args.disk):
+            or is_session or args.disk):
         raise SystemExit('xHCI faults need a RAM-disk console boot with --input sol')
     if args.mode == 'tests' and (args.payload != 'image' or args.inject or args.suite or args.disk == 'install'):
         raise SystemExit('tests mode needs a disk-root image boot without --inject or --suite')
@@ -208,6 +207,9 @@ def boot(args):
         args.disk = 'root'
     if args.inject == 'disk-before-mount' and (args.payload != 'image' or args.disk != 'root'):
         raise SystemExit('disk-before-mount needs a disk-root image boot')
+    milestone = getattr(args, 'milestone', None)
+    if milestone and (args.payload != 'image' or args.mode != 'suite' or not args.suite or args.suite == 'all' or ',' in args.suite):
+        raise SystemExit('--milestone needs one explicit --suite on an image boot')
     env = host_env()
     payload = args.payload
     sha = target = ''
@@ -227,9 +229,7 @@ def boot(args):
     command += ['--mode', args.mode, '--wait', str(wait)]
     if catchup:
         command.append('--catchup')
-    if attended:
-        command += ['--attended']
-    elif is_session:
+    if is_session:
         command += ['--session', '--idle-minutes', str(idle)]
     elif args.mode == 'console':
         command += ['--input', args.input]
@@ -237,6 +237,8 @@ def boot(args):
         command += ['--source-boot', args.source_boot]
     if args.suite:
         command += ['--suite', args.suite]
+    if milestone:
+        command += ['--milestone', milestone]
     if sha:
         command += ['--commit', sha, '--target', target]
     if args.no_wait:
@@ -392,13 +394,13 @@ def main():
     p.add_argument('--run', action='append', metavar='CMD', help='a persistent boot logs in over SOL and runs CMD')
     p.add_argument('--verify', action='store_true', help='a persistent boot that ends at the login prompt')
     p.add_argument('--input', choices=('sol',))
-    p.add_argument('--attended', action='store_true', help='score the fixed challenge typed by the operator; send no input')
-    p.add_argument('--wait', type=float, default=None, metavar='MIN', help='queue wait (default 240); with --attended, challenge wait (default 30)')
+    p.add_argument('--wait', type=float, default=None, metavar='MIN', help='queue wait (default 240 minutes)')
     p.add_argument('--session', action='store_true', help='hold console input for the operator without scoring')
     p.add_argument('--idle-minutes', type=int, default=30, help='console session input idle limit; default 30')
     p.add_argument('--disk', choices=('install', 'root'),
                    help='physical disk root (default), or an explicit recovery install')
     p.add_argument('--suite')
+    p.add_argument('--milestone', help='score the effort/milestone category set from the boot commit')
     p.add_argument('--source-boot', help='completed disk suite boot to read after a cold power cycle')
     p.add_argument('--sha')
     p.add_argument('--branch')

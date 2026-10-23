@@ -35,6 +35,7 @@ pub use errno::Errno;
 pub use syscall::raw;
 pub use types::*;
 
+pub mod accounts;
 pub mod argv;
 pub mod audio;
 #[cfg(feature = "std")]
@@ -49,11 +50,19 @@ pub mod graphics;
 pub mod http;
 pub mod image;
 pub mod io;
+#[cfg(feature = "std")]
+pub mod layout;
+#[cfg(feature = "std")]
+pub mod etc_reconcile;
 pub mod memory;
 pub mod process;
 pub mod pty;
 #[cfg(feature = "runtime")]
 pub mod runtime;
+#[cfg(feature = "std")]
+pub mod services;
+#[cfg(feature = "std")]
+pub mod service_logs;
 pub mod signal;
 pub mod socket;
 pub mod synth;

@@ -478,11 +478,11 @@ pub fn copy_process_state(
     }
     crate::tty::ctty::inherit(child_process, parent_process);
 
-    // 4. Copy the credentials, nice value and umask. CPU time is not
-    // inherited: the child's account and its children's time start at zero.
+    // 4. Copy the credentials and nice value (the umask travels with the
+    // working directory). CPU time is not inherited: the child's account and
+    // its children's time start from 0.
     child_process.cred = parent_process.cred.clone();
     child_process.nice = parent_process.nice;
-    child_process.umask = parent_process.umask;
 
     // 5. The scheduling policy (#1320). Under SCHED_RESET_ON_FORK the child
     // starts with SCHED_OTHER in place of a real-time policy and with no

@@ -143,7 +143,10 @@ fn pathname(fd: i32, pathname: u64, follow: bool, empty: bool, change: Change) -
     if empty && path.is_empty() {
         return if fd == AT_FDCWD { by_cwd(change) } else { by_fd(fd, change) };
     }
-    let cred = Credentials::current(false);
+    let cred = match Credentials::current(false) {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     let resolved = match resolve_at(fd, &path, follow, &cred) {
         Ok(r) => r,
         Err(errno) => return SyscallResult::Err(errno),
@@ -162,7 +165,10 @@ fn pathname(fd: i32, pathname: u64, follow: bool, empty: bool, change: Change) -
 
 // AT_EMPTY_PATH selects the held object, without searching a pathname.
 fn by_cwd(change: Change) -> SyscallResult {
-    let cred = Credentials::current(false);
+    let cred = match Credentials::current(false) {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     let (mount, handle) = match namei::current_working_dir() {
         namei::WorkingDir::Root => (namei::Mount::Root, None),
         namei::WorkingDir::Ext2 { mount, dir } => (mount, Some(dir)),
@@ -183,8 +189,15 @@ fn by_cwd(change: Change) -> SyscallResult {
 }
 
 fn by_fd(fd: i32, change: Change) -> SyscallResult {
-    let cred = Credentials::current(false);
+    let cred = match Credentials::current(false) {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     let entry = match descriptor_entry(fd) { Ok(entry) => entry, Err(e) => return SyscallResult::Err(e) };
+    // A terminal revoked from this description changes through it no more.
+    if entry.terminal_revoked() {
+        return SyscallResult::Err(EIO as u64);
+    }
     if let Some(handle) = &entry.native_inode {
         let mut guard = match ext2::write_mount(handle.object.mount) { Ok(g) => g, Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)) };
         let Some(fs) = guard.as_mut() else { return SyscallResult::Err(EIO as u64); };
@@ -193,6 +206,20 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
     }
     let kind = entry.kind;
     match kind {
+        FdKind::PtySlave(pair) => {
+            let result = match change {
+                Change::Mode(mode) => pair.change_slave_metadata(Some(mode), None, &cred),
+                Change::Owner(uid, gid) => pair.change_slave_metadata(None, Some((uid, gid)), &cred),
+            };
+            match result { Ok(()) => SyscallResult::Ok(0), Err(error) => SyscallResult::Err(error) }
+        }
+        FdKind::Device(crate::fs::devfs::DeviceType::Vt(n)) => {
+            let result = match change {
+                Change::Mode(mode) => crate::fs::devfs::change_vt_metadata(n, Some(mode), None, &cred),
+                Change::Owner(uid, gid) => crate::fs::devfs::change_vt_metadata(n, None, Some((uid, gid)), &cred),
+            };
+            match result { Ok(()) => SyscallResult::Ok(0), Err(error) => SyscallResult::Err(error) }
+        }
         FdKind::Ipc(object) => {
             let result = match change {
                 Change::Mode(mode) => object.chmod(mode, &cred),

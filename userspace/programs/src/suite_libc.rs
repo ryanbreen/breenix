@@ -2,17 +2,17 @@
 //! C programs compiled against it, as ISO C17 and POSIX.1-2024 specify it, with Linux's
 //! ABI where POSIX leaves a choice open.
 //!
-//! Every case but the busybox ones is a C function in userspace/libc-suite/<category>.c.
-//! Each category builds into one program, /usr/local/test/bin/libc-<category>_test, that
+//! A non-BusyBox case is a C function in userspace/libc-suite/<category>.c.
+//! Each category builds into one program, /usr/libexec/breenix/libc-<category>_test, that
 //! this suite runs once per case as `libc-<category>_test <case> <fd>` in a scratch
-//! directory of its own, with the environment PATH=/usr/local/libc/bin, HOME=/tmp,
+//! directory of its own, with the environment PATH=/usr/libexec/breenix/libc/bin, HOME=/tmp,
 //! LIBC_SUITE=1. The program writes `PASS`, `FAIL <why>` or `SKIP <why>` to descriptor
 //! <fd>; case.h describes the contract. Until a category's program is built against
 //! Breenix's libc and installed, each of its cases fails saying so.
 //!
 //! The busybox cases run applets of a BusyBox built against Breenix's libc, installed as
-//! /usr/local/libc/bin/busybox with its applets linked beside it. The musl-built BusyBox
-//! in /bin is a stand-in this suite never runs: PATH names only /usr/local/libc/bin.
+//! /usr/libexec/breenix/libc/bin/busybox with its applets linked beside it. The /bin BusyBox is the same
+//! clean-room-libc build; the suite uses its own applet-link directory on PATH.
 //! Until that BusyBox is installed, each busybox case fails saying so; an applet the
 //! build left out fails with what BusyBox printed.
 //!
@@ -31,11 +31,11 @@ use libbreenix::Errno;
 use std::ffi::CString;
 
 /// Where the C case programs are installed.
-const CASE_DIR: &str = "/usr/local/test/bin";
+const CASE_DIR: &str = "/usr/libexec/breenix";
 /// BusyBox built against Breenix's libc.
-const BUSYBOX: &str = "/usr/local/libc/bin/busybox";
+const BUSYBOX: &str = "/usr/libexec/breenix/libc/bin/busybox";
 /// The whole environment every program the suite starts receives.
-const ENV: &[&str] = &["PATH=/usr/local/libc/bin", "HOME=/tmp", "LIBC_SUITE=1"];
+const ENV: &[&str] = &["PATH=/usr/libexec/breenix/libc/bin", "HOME=/tmp", "LIBC_SUITE=1"];
 /// An argument replaced by the number of the descriptor the C program reports on.
 const RESULT_FD: &str = "{result-fd}";
 /// How much of the case's limit is kept back for killing and reporting a program that hangs.

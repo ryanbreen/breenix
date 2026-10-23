@@ -139,6 +139,11 @@ class RedactorTest(unittest.TestCase):
         event = {'event': 'power-on', 'seconds': 3, 'commit': '3abc8240def12345'}
         self.assertEqual(json.loads(self.redact(json.dumps(event))), event)
 
+    def test_operator_uid_names_nothing_but_the_operator_still_masks(self):
+        redact = m.Redactor({'OPERATOR_UID': '1000', 'OPERATOR_USER': 'fixtureop', 'OPERATOR_PASSWORD': 'Fx9kQ2mPz7Lr4Wt8'})
+        self.assertEqual(redact('uid=1000(fixtureop) restarts in 1000 ms password Fx9kQ2mPz7Lr4Wt8'),
+                         'uid=1000(<site>) restarts in 1000 ms password <site>')
+
     def test_identifiers_match_whole_tokens(self):
         for name in ('fixturehost', 'fixture-container', 'FX12345', 'fixtureauto',
                      self.site['IDRAC_PASSWORD']):
@@ -769,6 +774,25 @@ class MissingStagingToolCleanupTest(StateTest):
 
 
 class RootStagingTest(unittest.TestCase):
+    def test_numbered_operator_keys_are_validated_and_staged_in_order(self):
+        import base64
+        import metal_root
+        def key(seed):
+            blob = struct.pack('>I', 11) + b'ssh-ed25519' + struct.pack('>I', 32) + bytes([seed]) * 32
+            return 'ssh-ed25519 ' + base64.b64encode(blob).decode() + ' fixture'
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / 'site.env'
+            path.write_text("OPERATOR_USER=operator\nOPERATOR_UID=1000\nOPERATOR_PASSWORD_HASH='$6$salt$" + 'A' * 86
+                            + "'\nOPERATOR_SSH_PUBLIC_KEY='" + key(1) + "'\nOPERATOR_SSH_PUBLIC_KEY_10='" + key(3)
+                            + "'\nOPERATOR_SSH_PUBLIC_KEY_2='" + key(2) + "'\n")
+            site = m.load_site(path)
+        staged = metal_root.operator_account(site)
+        self.assertEqual([line[4:] for line in staged.splitlines() if line.startswith('key ')],
+                         [key(1), key(2), key(3)])
+        for bad in ['', '-----BEGIN OPENSSH PRIVATE KEY-----', key(3).replace('ssh-ed25519 ', 'ssh-rsa ', 1)]:
+            with self.assertRaises(ValueError):
+                metal_root.operator_account(dict(site, OPERATOR_SSH_PUBLIC_KEY_10=bad))
+
     @classmethod
     def setUpClass(cls):
         import metal_root
@@ -852,6 +876,41 @@ class RootStagingTest(unittest.TestCase):
             metal_root.stage_root(image, 'suite', 'time', site)
             self.assertEqual(read('boot-target'), 'suite time hostkeys xhci-replay\n')
             self.assertEqual(read('suite-sequence'), '')
+            # install-persistent's userland carries the operator's account; ordinary staging removes it.
+            import base64
+            blob = struct.pack('>I', 11) + b'ssh-ed25519' + struct.pack('>I', 32) + bytes(range(32))
+            line = 'ssh-ed25519 ' + base64.b64encode(blob).decode() + ' operator@boot-host'
+            hashed = '$6$rounds=100000$fixturesalt$' + 'A' * 86
+            account = dict(site, OPERATOR_USER='operator', OPERATOR_SSH_PUBLIC_KEY=line, OPERATOR_UID='1000',
+                           OPERATOR_PASSWORD_HASH=hashed)
+            operator = metal_root.operator_account(account)
+            self.assertEqual(operator, 'user operator\nuid 1000\npassword ' + hashed + '\nkey ' + line + '\n')
+            # A users suite boot's fixture names the account and key only.
+            self.assertEqual(metal_root.operator_fixture(account), 'user operator\nkey ' + line + '\n')
+            facts = metal_root.stage_root(image, 'default', None, site, hasher=hasher, operator=operator)
+            self.assertEqual(read('operator-account'), operator)
+            self.assertEqual(facts['operatorAccountSha256'], hashlib.sha256(operator.encode()).hexdigest())
+            stat = subprocess.run([debugfs, '-R', 'stat /etc/breenix/operator-account', str(image)],
+                                  check=True, capture_output=True).stdout.decode()
+            self.assertIn('Mode:  0600', stat)
+            metal_root.stage_root(image, 'default', None, site, hasher=hasher)
+            self.assertEqual(read('operator-account'), '')
+            for bad in ['', '-----BEGIN OPENSSH PRIVATE KEY-----', 'command="true" ' + line,
+                        line.replace('ssh-ed25519 ', 'ssh-rsa ', 1), 'ssh-ed25519 !!notbase64']:
+                with self.assertRaises(ValueError):
+                    metal_root.operator_account(dict(account, OPERATOR_SSH_PUBLIC_KEY=bad))
+            for bad in ['', 'root', 'Operator', 'a:b', 'x' * 33]:
+                with self.assertRaises(ValueError):
+                    metal_root.operator_account(dict(account, OPERATOR_USER=bad))
+            for bad in ['', '999', '01000', '+1000', '60001', 'x']:
+                with self.assertRaises(ValueError):
+                    metal_root.operator_account(dict(account, OPERATOR_UID=bad))
+            # A password, or a hash of another scheme or shape, is refused: the site holds a SHA-512-crypt hash.
+            for bad in ['', 'a-password', '$1$salt$hash', '!', hashed[:-1], hashed.replace('fixturesalt', 'a salt')]:
+                with self.assertRaises(ValueError):
+                    metal_root.operator_account(dict(account, OPERATOR_PASSWORD_HASH=bad))
+            with self.assertRaises(ValueError):
+                metal_root.operator_account(site)
 
     def test_install_boot_stages_probe_and_the_install_record_and_names_what_will_be_written(self):
         import metal_root
@@ -912,7 +971,7 @@ class MilestoneScoreTest(StateTest):
             if disk == 'root':
                 self.assertNotIn('ramdisk-root', verdict['milestones'])
 
-    def test_sol_console_boot_is_not_short_for_stages_only_the_keyboard_produces(self):
+    def test_sol_console_scores_every_automated_stage_and_requires_screen_readback(self):
         import metal_score
         root = TOOLS.parents[1]
         directory = m.STATE / 'boot'
@@ -927,14 +986,22 @@ class MilestoneScoreTest(StateTest):
                  '[usb] boot keyboard attached: port=2', '[init] getty on the console', 'Breenix login: root',
                  'Login incorrect', 'metal-login-ok 42', 'fbcon check: shadow and screen identical, 9 glyph cells',
                  'fbcon row: metal-login-ok 42', '[getty] console acquired']
-        for missing, short in ((None, False), ('fbcon row: metal-login-ok 42', True)):
-            (directory / 'serial.txt').write_text('\n'.join(line for line in lines if line != missing))
-            verdict = metal_score.score(directory)
-            console = {name: verdict['milestones'][name] for name in ('usb-keyboard', 'console-login')}
-            self.assertEqual({name: result['inputUnmeasured'] for name, result in console.items()},
-                             {'usb-keyboard': 2, 'console-login': 1})
-            self.assertFalse(any(result['passed'] for result in console.values()))
-            self.assertEqual(metal_score.falls_short({'captureComplete': True, 'milestones': console}), short)
+        captures = [(lines, 3, 7, False)]
+        for index in range(len(lines)):
+            captures.append((lines[:index] + lines[index + 1:],
+                             (1 if index == 0 else 2) if index < 3 else 3, 6 if index >= 3 else 7, True))
+        captures.append((lines[:7] + [lines[8], lines[7]] + lines[9:], 3, 6, True))
+        for capture, usb_reached, login_reached, short in captures:
+            with self.subTest(capture=capture):
+                (directory / 'serial.txt').write_text('\n'.join(capture))
+                verdict = metal_score.score(directory)
+                console = {name: verdict['milestones'][name] for name in ('usb-keyboard', 'console-login')}
+                self.assertEqual(console['usb-keyboard'],
+                                 {'reached': usb_reached, 'total': 3, 'passed': usb_reached == 3})
+                self.assertEqual(console['console-login'],
+                                 {'reached': login_reached, 'total': 7, 'passed': login_reached == 7})
+                self.assertEqual(metal_score.falls_short({'captureComplete': True, 'milestones': console}), short)
+
 
 
 class ModeApplicabilityTest(StateTest):
@@ -1209,6 +1276,34 @@ class DriverTest(StateTest):
         with patch.object(boot.subprocess, 'run', side_effect=scorer):
             self.assertFalse(d.score_suite())
         self.assertIn('timed out', (d.dir / 'suite-verdict.txt').read_text())
+
+    def test_milestone_scoring_receives_the_boot_commits_path(self):
+        d = self.driver
+        d.args.mode, d.args.suite, d.args.milestone = 'suite', 'fixture', 'fixture/first'
+        repo = TOOLS.parents[1]
+        definition = d.dir / 'definition'
+        for source, target in ((repo / 'scripts/suite-verdict.py', 'scripts/suite-verdict.py'),
+                               (repo / 'docs/boot-path.json', 'docs/boot-path.json'),
+                               (repo / 'tests/fixtures/suite-verdict/manifest.json', 'docs/suites/fixture.json')):
+            path = definition / target
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, path)
+        path = definition / 'docs/efforts/path.json'
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(dict(efforts=[dict(id='fixture', milestones=[
+            dict(id='first', measure=dict(suite='fixture', categories=['first']))])])))
+        shutil.copyfile(repo / 'tests/fixtures/suite-verdict/all-pass.txt', d.dir / 'serial.txt')
+        real_run = subprocess.run
+        def scorer(command, **options):
+            binding = next(arg.split('=', 2)[2] for arg in command if arg.startswith('--property=BindReadOnlyPaths='))
+            root, sandbox = binding.split(':')
+            start = command.index(sys.executable)
+            args = [arg.replace(sandbox, root) for arg in command[start:]]
+            self.assertEqual(args[-2:], ['--milestone', 'fixture/first'])
+            return real_run(args, **options)
+        with patch.object(boot.subprocess, 'run', side_effect=scorer):
+            self.assertTrue(d.score_suite())
+        self.assertIn('milestone categories=first passed=2 total=2', (d.dir / 'suite-verdict.txt').read_text())
 
     def test_suite_scoring_only_runs_after_confirmed_power_off(self):
         d = self.driver
@@ -1755,6 +1850,9 @@ class BuildSlotTest(unittest.TestCase):
             for path in (image, stub, stub.with_name('metal-boot-manager.efi'), clone / 'testdata/ext2.img'):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b'bytes')
+            path = clone / 'docs/efforts/path.json'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('fixture effort path')
             order = []
             def run(command, **options):
                 order.append(command[2:])
@@ -1771,6 +1869,7 @@ class BuildSlotTest(unittest.TestCase):
                  patch.object(build.subprocess, 'call', side_effect=call):
                 self.assertEqual(build.inner(args), 0)
             built = json.loads((out / 'build.json').read_text())
+            self.assertEqual((out / 'definition/docs/efforts/path.json').read_text(), 'fixture effort path')
             built['builtRoot'] = (clone / 'testdata/ext2.img').read_bytes()
             built['clone'] = str(clone)
             return build, clone, tmp, order, (out / 'ext2.img').read_bytes(), built

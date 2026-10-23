@@ -14,7 +14,7 @@
 ///
 /// value = limbs[0] + limbs[1]*2^51 + limbs[2]*2^102 + limbs[3]*2^153 + limbs[4]*2^204
 #[derive(Clone, Copy, Debug)]
-struct Fe([u64; 5]);
+pub(crate) struct Fe(pub(crate) [u64; 5]);
 
 /// Mask for the lower 51 bits.
 const MASK51: u64 = (1u64 << 51) - 1;
@@ -25,12 +25,12 @@ const A24: u64 = 121665;
 
 impl Fe {
     /// The zero element.
-    fn zero() -> Fe {
+    pub(crate) fn zero() -> Fe {
         Fe([0u64; 5])
     }
 
     /// The one element.
-    fn one() -> Fe {
+    pub(crate) fn one() -> Fe {
         Fe([1, 0, 0, 0, 0])
     }
 }
@@ -80,7 +80,7 @@ fn fe_reduce(a: &Fe) -> Fe {
 }
 
 /// Field addition: a + b (mod p).
-fn fe_add(a: &Fe, b: &Fe) -> Fe {
+pub(crate) fn fe_add(a: &Fe, b: &Fe) -> Fe {
     let h = Fe([
         a.0[0] + b.0[0],
         a.0[1] + b.0[1],
@@ -99,7 +99,7 @@ fn fe_add(a: &Fe, b: &Fe) -> Fe {
 /// 2*p in 5-limb representation:
 ///   limb 0: 2*(2^51 - 19) = 2^52 - 38 = 0xFFFFFFFFFFFDA
 ///   limb i (1..4): 2*(2^51 - 1) = 2^52 - 2 = 0xFFFFFFFFFFFFE
-fn fe_sub(a: &Fe, b: &Fe) -> Fe {
+pub(crate) fn fe_sub(a: &Fe, b: &Fe) -> Fe {
     let h = Fe([
         (a.0[0] + 0xFFFFFFFFFFFDA) - b.0[0],
         (a.0[1] + 0xFFFFFFFFFFFFE) - b.0[1],
@@ -115,7 +115,7 @@ fn fe_sub(a: &Fe, b: &Fe) -> Fe {
 /// Schoolbook 5x5 multiplication using u128 intermediates. The reduction
 /// uses the identity 2^255 = 19 (mod p): any overflow past limb 4 is
 /// multiplied by 19 and folded back into the lower limbs.
-fn fe_mul(a: &Fe, b: &Fe) -> Fe {
+pub(crate) fn fe_mul(a: &Fe, b: &Fe) -> Fe {
     let a0 = a.0[0] as u128;
     let a1 = a.0[1] as u128;
     let a2 = a.0[2] as u128;
@@ -181,7 +181,7 @@ fn fe_mul(a: &Fe, b: &Fe) -> Fe {
 /// Optimized version of fe_mul(a, a) that takes advantage of the symmetry
 /// in squaring: cross terms appear twice, so we double them instead of
 /// computing both i*j and j*i.
-fn fe_sq(a: &Fe) -> Fe {
+pub(crate) fn fe_sq(a: &Fe) -> Fe {
     let a0 = a.0[0] as u128;
     let a1 = a.0[1] as u128;
     let a2 = a.0[2] as u128;
@@ -240,7 +240,7 @@ fn fe_sq(a: &Fe) -> Fe {
 }
 
 /// Repeated squaring: compute a^(2^n) by squaring n times.
-fn fe_sq_n(a: &Fe, n: u32) -> Fe {
+pub(crate) fn fe_sq_n(a: &Fe, n: u32) -> Fe {
     let mut result = fe_sq(a);
     for _ in 1..n {
         result = fe_sq(&result);
@@ -266,7 +266,7 @@ fn fe_sq_n(a: &Fe, n: u32) -> Fe {
 /// z_200_0 = z_100_0^(2^100) * z_100_0 => a^(2^200 - 1)
 /// z_250_0 = z_200_0^(2^50) * z_50_0 => a^(2^250 - 1)
 /// result = z_250_0^(2^5) * z11 => a^(2^255 - 21)
-fn fe_inv(a: &Fe) -> Fe {
+pub(crate) fn fe_inv(a: &Fe) -> Fe {
     let a1 = *a;
 
     // z2 = a^2
@@ -328,7 +328,7 @@ fn fe_inv(a: &Fe) -> Fe {
 /// Decode 32 little-endian bytes into a field element.
 ///
 /// The top bit (bit 255) is masked off per RFC 7748.
-fn fe_from_bytes(bytes: &[u8; 32]) -> Fe {
+pub(crate) fn fe_from_bytes(bytes: &[u8; 32]) -> Fe {
     let mut s = *bytes;
     // Mask the top bit (bit 255 = bit 7 of byte 31)
     s[31] &= 0x7f;
@@ -356,7 +356,7 @@ fn fe_from_bytes(bytes: &[u8; 32]) -> Fe {
 /// Fully reduce a field element and encode as 32 little-endian bytes.
 ///
 /// Performs a full canonical reduction to ensure the output is in [0, p).
-fn fe_to_bytes(f: &Fe) -> [u8; 32] {
+pub(crate) fn fe_to_bytes(f: &Fe) -> [u8; 32] {
     // First, reduce carries
     let mut h = fe_reduce(f).0;
 

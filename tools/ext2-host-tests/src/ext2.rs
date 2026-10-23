@@ -582,13 +582,35 @@ mod reclaim_checks {
                 // namespace branch is exercised using real ext2 records.
                 let root = fs.read_inode(2).unwrap();
                 fs.write_inode(100, &root).unwrap();
-                fs.namespace = generation::Namespace { root: 100, etc: 101, data: 102 };
+                fs.namespace = generation::Namespace { root: 100, etc: 101, data: 102, shared: 0 };
             }
             assert_eq!(fs.resolve_path("/file/."), Err("Not a directory in path"));
             assert_eq!(fs.resolve_path_no_follow("/file/."), Err("Not a directory in path"));
             assert_eq!(fs.resolve_path("/./."), Ok(fs.namespace.root));
             assert_eq!(fs.resolve_path("/../."), Ok(fs.namespace.root));
         }
+    }
+
+    #[test]
+    fn generation_root_binds_the_shared_store() {
+        let (mut fs, _, _) = directory_fixture();
+        // A generation tree, and the partition's store, as real ext2 records.
+        let generation = fs.create_node(2, "generation", 0o40755, 0, 0, 0).unwrap();
+        let etc = fs.create_node(generation, "etc", 0o40755, 0, 0, 0).unwrap();
+        let own = fs.create_node(generation, generation::SHARED, 0o40700, 0, 0, 0).unwrap();
+        let data = fs.create_node(2, "root", 0o40700, 0, 0, 0).unwrap();
+        let store = fs.create_node(2, generation::SHARED, 0o40700, 0, 0, 0).unwrap();
+        let store_etc = fs.create_node(store, "etc", 0o40755, 0, 0, 0).unwrap();
+        let key = fs.create_node(store_etc, "ssh_host_ed25519_key", 0o100600, 0, 0, 0).unwrap();
+        fs.namespace = generation::Namespace { root: generation, etc, data, shared: store };
+        assert_eq!(fs.resolve_path("/.breenix-shared"), Ok(store));
+        assert_eq!(fs.resolve_path("/.breenix-shared/etc/ssh_host_ed25519_key"), Ok(key));
+        assert_eq!(fs.resolve_path("/.breenix-shared/.."), Ok(generation));
+        assert_eq!(fs.resolve_path("/.breenix-shared/../etc"), Ok(etc));
+        // Without the store, an entry of the generation's own is what the name finds.
+        fs.namespace = generation::Namespace { shared: 0, ..fs.namespace };
+        assert_eq!(fs.resolve_path("/.breenix-shared"), Ok(own));
+        assert!(fs.resolve_path("/.breenix-shared/etc").is_err());
     }
 
     #[test]

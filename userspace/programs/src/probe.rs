@@ -96,10 +96,10 @@ fn check(index: usize) -> Result<(), &'static str> {
                 else { Err("child did not exit 7") }
             }
         },
-        6 => exec_check(b"/bin/spawn_smoke_target\0", None),
+        6 => exec_check(b"/usr/bin/spawn_smoke_target\0", None),
         7 => {
             let argv = [b"exec_smoke_target\0".as_ptr(), b"smoke\0".as_ptr(), std::ptr::null()];
-            exec_check(b"/bin/exec_smoke_target\0", Some(&argv))
+            exec_check(b"/usr/bin/exec_smoke_target\0", Some(&argv))
         }
         8 => {
             let (reader, writer) = io::pipe().map_err(|_| "pipe failed")?;

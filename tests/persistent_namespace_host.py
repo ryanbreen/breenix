@@ -43,7 +43,7 @@ fn fs_errno(_: &'static str) -> u64 { 5 }
 mod ext2 {
     use super::*;
     pub fn root_inode() -> u32 { root_namespace().root }
-    pub fn root_namespace() -> generation::Namespace { generation::Namespace { root: 100, etc: 10, data: 11 } }
+    pub fn root_namespace() -> generation::Namespace { generation::Namespace { root: 100, etc: 10, data: 11, shared: 90, mutable: [10, 20, 0, 0, 0, 21] } }
     pub struct Ext2Inode { pub ino: u32, pub i_links_count: u16 }
     impl Ext2Inode { pub fn is_dir(&self) -> bool { true } }
     pub struct Ext2Fs(pub BTreeMap<u32, Vec<u8>>);
@@ -77,6 +77,8 @@ fn fixture() -> ext2::Ext2Fs {
     let directories = [
         (2, vec![(2, ".."), (10, "etc"), (11, "root"), (100, "physical-generation")]),
         (100, vec![(2, ".."), (200, "bin")]),
+        (20, vec![(90, "..")]),
+        (21, vec![(90, "..")]),
         (200, vec![(100, ".."), (201, "deep")]),
         (201, vec![(200, "..")]),
         (10, vec![(2, ".."), (12, "config")]),
@@ -101,12 +103,14 @@ fn generation_and_shared_directory_ancestry_stay_in_the_selected_namespace() {
     assert_eq!(join(&ancestry(&fs, Mount::Root, 201).unwrap()).unwrap(), b"/bin/deep");
     assert_eq!(join(&ancestry(&fs, Mount::Root, 12).unwrap()).unwrap(), b"/etc/config");
     assert_eq!(join(&ancestry(&fs, Mount::Root, 13).unwrap()).unwrap(), b"/root/data");
+    assert_eq!(join(&ancestry(&fs, Mount::Root, 20).unwrap()).unwrap(), b"/var");
+    assert_eq!(join(&ancestry(&fs, Mount::Root, 21).unwrap()).unwrap(), b"/run");
     assert_eq!(join(&ancestry(&fs, Mount::Home, 2).unwrap()).unwrap(), b"/home");
 }
 #[test]
 fn shared_roots_are_mount_points_and_cannot_be_renamed_as_placeholders() {
     for (mount, ino, expected) in [(Mount::Root, 100, true), (Mount::Root, 10, true),
-        (Mount::Root, 11, true), (Mount::Root, 200, false), (Mount::Home, 2, true), (Mount::Home, 10, false)] {
+        (Mount::Root, 11, true), (Mount::Root, 20, true), (Mount::Root, 21, true), (Mount::Root, 200, false), (Mount::Home, 2, true), (Mount::Home, 10, false)] {
         assert_eq!(Resolved { target: Target::Inode { mount, ino }, path: Box::new([]) }.is_mount_point(), expected);
     }
     assert!(Resolved { target: Target::Virtual, path: b"/proc".as_slice().into() }.is_mount_point());

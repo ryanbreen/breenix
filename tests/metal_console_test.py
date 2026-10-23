@@ -21,6 +21,8 @@ class ConsoleTest(unittest.TestCase):
         driver.args = SimpleNamespace(mode='console')
         driver.site = {'CONSOLE_USER': 'root', 'CONSOLE_PASSWORD': 'fixture_password_only_12345', 'CONSOLE_IDENTITY_KEY': 'ab' * 32}
         driver.fatal_at = None
+        driver.delivery = {}
+        driver.console_sudo_answered = False
         driver.console_step = 0
         driver.console_done = False
         driver.final_seen = True
@@ -54,6 +56,44 @@ class ConsoleTest(unittest.TestCase):
         self.assertEqual([call.args[0] for call in driver.console_send.call_args_list],
                          ['root', 'deliberately-wrong-password', 'root', driver.site['CONSOLE_PASSWORD'],
                           'print("metal-login-ok", 6*7)', 'cat /proc/fbcon/check', 'exit'])
+
+    def test_fixture_account_logs_in_and_reads_the_screen_check_through_sudo(self):
+        driver = self.driver()
+        driver.delivery = {'diskRoot': {'consoleAccount': 'uw'}}
+        password = driver.site['CONSOLE_PASSWORD']
+        for text in ['Breenix login: ', 'Password: ', 'Login incorrect', 'Breenix login: ', 'Password: ',
+                     'bsh /etc/breenix/test-users/uw>', 'metal-login-ok 42']:
+            driver.challenge_console(text)
+        self.assertEqual(driver.console_send.call_args.args[0], 'sudo cat /proc/fbcon/check')
+        # sudo's prompt is answered once, however often SOL repeats the partial line.
+        driver.challenge_console('[sudo] password for uw: ')
+        driver.challenge_console('[sudo] password for uw: ')
+        driver.challenge_console('fbcon check: shadow and screen identical, 7 glyph cells match the font', complete=True)
+        self.assertEqual(driver.console_step, 8)
+        self.assertEqual([call.args[0] for call in driver.console_send.call_args_list],
+                         ['uw', 'deliberately-wrong-password', 'uw', password,
+                          'print("metal-login-ok", 6*7)', 'sudo cat /proc/fbcon/check', password])
+
+    def test_console_account_is_the_fixture_only_when_the_image_carries_it(self):
+        fixture = 'uw:x:2003:2003:Users suite fixture:/etc/breenix/test-users/uw:/bin/bsh\n'
+        self.assertEqual(metal_root.console_account('root:x:0:0:root:/root:/bin/bsh\n' + fixture), 'uw')
+        self.assertEqual(metal_root.console_account('root:x:0:0:root:/root:/bin/bsh\n'), 'root')
+        self.assertEqual(metal_root.console_account('uw:x:2003:2003::/home/uw:/bin/bsh\n'), 'root')
+
+    def test_console_shadow_sets_root_and_the_account_and_keeps_other_lines(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            hasher = Path(scratch) / 'hasher'
+            hasher.write_text('#!/usr/bin/env python3\nimport sys\nsalt = sys.stdin.buffer.read().split(b\'\\0\')[1].decode()\n'
+                              'sys.stdout.write(salt + \'$\' + \'A\' * 86)\n')
+            hasher.chmod(0o755)
+            site = {'CONSOLE_USER': 'root', 'CONSOLE_PASSWORD': 'fixture_password_only_12345', 'CONSOLE_IDENTITY_KEY': 'ab' * 32}
+            text = metal_root.console_shadow(site, hasher, 'root:!:::::::\nnobody:*:::::::\nuw:!:::::::\n', 'uw')
+        lines = text.splitlines()
+        self.assertEqual([line.split(':')[0] for line in lines], ['root', 'nobody', 'uw'])
+        self.assertEqual(lines[1], 'nobody:*:::::::')
+        for line in (lines[0], lines[2]):
+            self.assertRegex(line, r'^(root|uw):\$6\$[./A-Za-z0-9]{16}\$A{86}:\d+:0:99999:7:::$')
+        self.assertNotEqual(lines[0].split(':')[1], lines[2].split(':')[1])
 
     def test_console_completion_requires_disk_evidence(self):
         driver = self.driver()
@@ -126,29 +166,22 @@ class ConsoleTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             metal_root.console_identity(dict(site, CONSOLE_IDENTITY_KEY=''))
 
-    def test_keyboard_stage_rejects_sol_input(self):
-        stage = ('metal-login-ok 42', 'line', 'keyboard')
-        self.assertFalse(boot.marker_matches(stage, 'metal-login-ok 42', 'sol'))
-        self.assertTrue(boot.marker_matches(stage, 'metal-login-ok 42', 'keyboard'))
+    def test_console_stages_keep_screen_readback_and_exact_line_matching(self):
+        self.assertFalse(boot.marker_matches(('answer', 'line'), 'echo answer'))
+        self.assertTrue(boot.marker_matches(('answer', 'line'), 'answer'))
         definition = existing.json.loads((existing.TOOLS.parents[1] / 'docs/metal/boot-path.json').read_text())
-        login = next(m for m in definition['milestones'] if m['id'] == 'console-login')
-        self.assertIn('The answer is on the screen', [s['name'] for s in login['stages']['console']])
-        # A SOL boot waits for no keyboard-tagged stage, so it can finish; it still waits for the screen check.
         catalog = existing.json.loads((existing.TOOLS.parents[1] /
                                        'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json').read_text())
-        groups = boot.measured_stages(definition, 'console', catalog, 'ramdisk', 'sol')
-        self.assertFalse([stage for group in groups for stage in group if len(stage) == 3])
+        groups = boot.measured_stages(definition, 'console', catalog, 'ramdisk')
         self.assertIn(('fbcon row: metal-login-ok 42', 'contains'), [stage for group in groups for stage in group])
-        self.assertEqual(len(boot.final_marker(definition, 'console', catalog, 'ramdisk', 'sol')), 2)
-        keyboard = boot.measured_stages(definition, 'console', catalog, 'ramdisk', 'keyboard')
-        self.assertIn(('[console] first input byte input=keyboard', 'line', 'keyboard'),
-                      [stage for group in keyboard for stage in group])
+        self.assertEqual(boot.final_marker(definition, 'console', catalog, 'ramdisk'),
+                         ('[getty] console acquired', 'line'))
 
     def test_console_input_options_are_validated_before_host_access(self):
         runner = existing.load_script('metal-run')
         for mode, input_kind in [('console', None), ('default', 'sol')]:
             with self.assertRaisesRegex(SystemExit, 'console mode requires'):
-                runner.boot(SimpleNamespace(mode=mode, input=input_kind))
+                runner.boot(SimpleNamespace(mode=mode, input=input_kind, suite=None))
 
     def test_password_is_sent_on_stdin_and_redacted(self):
         driver = self.driver()
@@ -223,9 +256,8 @@ class ConsoleTest(unittest.TestCase):
             (inputs / 'ready').touch()
             existing.m.write_json(inputs / 'build.json', {'commit': d.args.commit,
                                   'profile': 'production', 'features': []})
-            for is_session, is_attended, input_kind in [(False, False, 'sol'), (False, True, None),
-                                                        (True, False, None)]:
-                d.args.session, d.args.attended, d.args.input = is_session, is_attended, input_kind
+            for is_session, input_kind in [(False, 'sol'), (True, None)]:
+                d.args.session, d.args.input = is_session, input_kind
                 d.args.idle_minutes = 30
                 with patch.object(boot.metal_root, 'stage_root', side_effect=RuntimeError('staging captured')) as stage:
                     with self.assertRaisesRegex(RuntimeError, 'staging captured'):

@@ -22,6 +22,7 @@ false
 find
 free
 grep
+groups
 head
 hexdump
 hostname

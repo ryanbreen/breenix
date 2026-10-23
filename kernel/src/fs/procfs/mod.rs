@@ -106,6 +106,8 @@ pub enum ProcEntryType {
     Pids,
     /// /proc/kmsg - kernel log messages
     Kmsg,
+    /// /proc/kmsg-sequence - snapshot with absolute byte offsets
+    KmsgSequence,
     /// /proc/xhci - xHCI directory
     XhciDir,
     /// /proc/xhci/trace - xHCI trace buffer
@@ -188,6 +190,7 @@ impl ProcEntryType {
             ProcEntryType::Frames => "frames",
             ProcEntryType::Pids => "pids",
             ProcEntryType::Kmsg => "kmsg",
+            ProcEntryType::KmsgSequence => "kmsg-sequence",
             ProcEntryType::XhciDir => "xhci",
             ProcEntryType::XhciTrace => "trace",
             ProcEntryType::XhciCounters => "counters",
@@ -246,6 +249,7 @@ impl ProcEntryType {
             ProcEntryType::Frames => "/proc/breenix/frames",
             ProcEntryType::Pids => "/proc/pids",
             ProcEntryType::Kmsg => "/proc/kmsg",
+            ProcEntryType::KmsgSequence => "/proc/kmsg-sequence",
             ProcEntryType::XhciDir => "/proc/xhci",
             ProcEntryType::XhciTrace => "/proc/xhci/trace",
             ProcEntryType::XhciCounters => "/proc/xhci/counters",
@@ -305,6 +309,7 @@ impl ProcEntryType {
             ProcEntryType::Frames => 203,
             ProcEntryType::Pids => 9,
             ProcEntryType::Kmsg => 10,
+            ProcEntryType::KmsgSequence => 31,
             ProcEntryType::XhciDir => 300,
             ProcEntryType::XhciTrace => 301,
             ProcEntryType::XhciCounters => 302,
@@ -441,6 +446,7 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::Frames));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Pids));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Kmsg));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::KmsgSequence));
     procfs.entries.push(ProcEntry::new(ProcEntryType::SelfLink));
 
     // Register /proc/xhci directory and entries
@@ -790,35 +796,34 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::Version => text(generate_version()),
         ProcEntryType::MemInfo => text(generate_meminfo()),
         ProcEntryType::CpuInfo => text(generate_cpuinfo()),
+        // The tracing framework sees other users' processes: root only.
         ProcEntryType::TraceDir => {
+            require(Operation::Trace)?;
             // Directory listing
             let entries = list_trace_entries();
             text(entries.join("\n") + "\n")
         }
-        ProcEntryType::TraceEnable => text(trace::generate_enable()),
-        ProcEntryType::TraceEvents => text(trace::generate_events()),
-        ProcEntryType::TraceBuffer => text(trace::generate_buffer()),
-        ProcEntryType::TraceCounters => text(trace::generate_counters()),
-        ProcEntryType::TraceProviders => text(trace::generate_providers()),
-        ProcEntryType::TraceTeardownDir => text(String::from("<pid>\n")),
-        ProcEntryType::TraceTeardownPid(pid) => text(trace::generate_teardown_pid(pid)),
+        ProcEntryType::TraceEnable => require(Operation::Trace).and_then(|()| text(trace::generate_enable())),
+        ProcEntryType::TraceEvents => require(Operation::Trace).and_then(|()| text(trace::generate_events())),
+        ProcEntryType::TraceBuffer => require(Operation::Trace).and_then(|()| text(trace::generate_buffer())),
+        ProcEntryType::TraceCounters => require(Operation::Trace).and_then(|()| text(trace::generate_counters())),
+        ProcEntryType::TraceProviders => require(Operation::Trace).and_then(|()| text(trace::generate_providers())),
+        ProcEntryType::TraceTeardownDir => require(Operation::Trace).and_then(|()| text(String::from("<pid>\n"))),
+        ProcEntryType::TraceTeardownPid(pid) => {
+            require(Operation::Trace).and_then(|()| text(trace::generate_teardown_pid(pid)))
+        }
         ProcEntryType::SlabInfo => text(generate_slabinfo()),
         ProcEntryType::Stat => text(generate_stat()),
         ProcEntryType::CowInfo => text(generate_cowinfo()),
         ProcEntryType::Pids => text(generate_pids()),
+        ProcEntryType::KmsgSequence => {
+            require(Operation::KernelLog)?;
+            text(crate::log_buffer::sequenced_snapshot())
+        },
         ProcEntryType::Kmsg => {
             // The serial ring can contain privileged TTY output. Authorize
             // before generating the open-time snapshot, as for console/check.
-            let root = crate::task::scheduler::current_thread_id().is_some_and(|tid| {
-                let guard = crate::process::manager();
-                guard.as_ref().is_some_and(|manager| {
-                    manager.find_process_by_thread(tid)
-                        .is_some_and(|(_, process)| process.cred.euid == 0)
-                })
-            });
-            if !root {
-                return Err(-13);
-            }
+            require(Operation::KernelLog)?;
             text(generate_kmsg())
         },
         ProcEntryType::Mounts => text(generate_mounts()),
@@ -881,11 +886,19 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         }
         ProcEntryType::PidTask(_, _) => text(String::from("kernel_output\n")),
         ProcEntryType::PidTaskKernelOutput(pid, tid) => {
+            crate::process::privilege::require_inspect(pid).map_err(|errno| -(errno as i32))?;
             text(alloc::format!("{}\n", thread_kernel_output(pid, tid).ok_or(-2)?))
         }
         // Opening a link without following it (O_NOFOLLOW), as on Linux.
         ProcEntryType::PidExe(_) | ProcEntryType::SelfLink => Err(-40),
     }
+}
+
+use crate::process::privilege::Operation;
+
+/// `privilege::require`, with procfs's negative errno.
+fn require(operation: Operation) -> Result<(), i32> {
+    crate::process::privilege::require(operation).map_err(|errno| -(errno as i32))
 }
 
 /// A text entry's content as bytes.
@@ -969,7 +982,8 @@ fn generate_version() -> String {
 }
 
 /// Generate /proc/breenix/frames: the frame census, then what became of process
-/// page tables (`teardown` counters) and the reclaim receipts still queued.
+/// page tables (`teardown` counters), the reclaim receipts still queued, and
+/// whether boot's own work is over (`boot::settled`).
 fn generate_frames() -> Result<String, i32> {
     use crate::tracing::providers::teardown;
     use core::fmt::Write;
@@ -980,7 +994,8 @@ fn generate_frames() -> Result<String, i32> {
         text,
         "tables recorded={} returned={} lost={}\n\
          roots retired={} no_proof={} no_arch={} terminated={} undecided={} mid_retire={}\n\
-         receipts pending={} parked={}\n",
+         receipts pending={} parked={}\n\
+         boot settled={}\n",
         teardown::PT_TABLE_FRAMES_RECORDED.aggregate(),
         teardown::PT_TABLE_FRAMES_RETURNED.aggregate(),
         teardown::PT_RETIRE_FRAMES_LOST.aggregate(),
@@ -991,7 +1006,8 @@ fn generate_frames() -> Result<String, i32> {
         teardown::PT_ROOT_DROPPED_UNDECIDED.aggregate(),
         teardown::PT_ROOT_DROPPED_MID_RETIRE.aggregate(),
         pending,
-        parked
+        parked,
+        crate::boot::settled::settled() as u8
     );
     Ok(text)
 }
@@ -1353,8 +1369,8 @@ fn generate_mounts() -> String {
     let mounts = crate::fs::vfs::mount::list_mounts();
     let mut out = String::new();
 
-    for (_mount_id, mount_path, fs_type) in &mounts {
-        out.push_str(&format!("none {} {} rw 0 0\n", mount_path, fs_type));
+    for (_mount_id, mount_path, fs_type, flags) in &mounts {
+        out.push_str(&format!("none {} {} {} 0 0\n", mount_path, fs_type, flags.options()));
     }
 
     // If no mounts are registered yet, return an empty string
@@ -1894,11 +1910,12 @@ fn current_pid() -> Option<u64> {
         .map(|(pid, process)| process.thread_group_id.unwrap_or(pid.as_u64()))
 }
 
-/// The pathname `/proc/<pid>/exe` names, for a caller with `cred`: ENOENT
-/// once the process has exited, and EACCES unless the caller may read the
-/// process's memory (Linux's PTRACE_MODE_READ_FSCREDS check).
-fn exe_target(pid: u64, cred: &crate::fs::permissions::Credentials) -> Result<Vec<u8>, u64> {
+/// The pathname `/proc/<pid>/exe` names: ENOENT once the process has
+/// exited, and EACCES unless the caller may inspect the process
+/// (`process::privilege::may_inspect`).
+fn exe_target(pid: u64) -> Result<Vec<u8>, u64> {
     use crate::syscall::errno::{EACCES, ENOENT};
+    let inspector = crate::process::privilege::current_identity()?;
     let exe_path = {
         let guard = crate::process::manager();
         let process = guard
@@ -1908,12 +1925,7 @@ fn exe_target(pid: u64, cred: &crate::fs::permissions::Credentials) -> Result<Ve
         if process.is_terminated() {
             return Err(ENOENT as u64);
         }
-        let ids = &process.cred;
-        if !pid_path::may_read(
-            (cred.euid, cred.egid),
-            [ids.uid, ids.euid, ids.suid],
-            [ids.gid, ids.egid, ids.sgid],
-        ) {
+        if !crate::process::privilege::may_inspect(&inspector, &process.cred) {
             return Err(EACCES as u64);
         }
         process.exe_path.clone().ok_or(ENOENT as u64)?
@@ -1938,12 +1950,9 @@ fn self_target() -> Result<Vec<u8>, u64> {
     Ok(target.into_bytes())
 }
 
-/// The target of the procfs link at `path` for a walk with `cred`, or None
-/// when `path` is not a link. Pathname resolution follows these as symlinks.
-pub fn link_target(
-    path: &str,
-    cred: &crate::fs::permissions::Credentials,
-) -> Option<Result<Vec<u8>, u64>> {
+/// The target of the procfs link at `path` for the calling process, or no
+/// target when `path` is not a link. Pathname resolution follows these as symlinks.
+pub fn link_target(path: &str) -> Option<Result<Vec<u8>, u64>> {
     if path == "/proc/self" {
         return Some(self_target());
     }
@@ -1953,7 +1962,7 @@ pub fn link_target(
                 pid_path::Pid::Caller => current_pid(),
                 pid_path::Pid::Number(pid) => Some(pid),
             };
-            Some(pid.ok_or(crate::syscall::errno::ENOENT as u64).and_then(|pid| exe_target(pid, cred)))
+            Some(pid.ok_or(crate::syscall::errno::ENOENT as u64).and_then(exe_target))
         }
         _ => None,
     }
@@ -1962,8 +1971,7 @@ pub fn link_target(
 /// readlink of a procfs pathname: EINVAL unless it names a link.
 pub fn readlink(path: &str) -> Result<Vec<u8>, u64> {
     use crate::syscall::errno::{EINVAL, ENOENT};
-    let cred = crate::fs::permissions::Credentials::current(false);
-    match link_target(path, &cred) {
+    match link_target(path) {
         Some(target) => target,
         None if lookup_by_path(path).is_some() => Err(EINVAL as u64),
         None => Err(ENOENT as u64),

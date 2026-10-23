@@ -30,6 +30,12 @@ x86 hardware-profile milestones remain defined but are outside measurement on th
 
 x86-64 requires evidence from x86-metal using the [metal boot loop](../metal/README.md),
 measured by `metal.json`. Vigil's platform is `metal` ("x86-64 metal").
+
+A `path.json` effort that x86-64 leads on bare metal adds `x86-metal` at the end of its list
+(operator decision D6, 2026-10-20): `server`, `users`, `filesystem` and `toolchain`
+([the server plan](../metal/server-plan.md)). Their lanes are accepted on the R240 first, then the
+catch-up brings ARM64 QEMU, Parallels and VMware to the same bar. An effort measured on
+`x86-metal` alone belongs in `metal.json`.
 The main and metal paths advance independently. [S23's execution policy](../x86-execution-policy.md)
 supersedes earlier x86 QEMU gate and landing requirements.
 
@@ -65,8 +71,9 @@ metal efforts. The kernel reads both boot paths only to protect serial marker li
 
 ARM64 QEMU remains available for development. Main-path lane history on `x86`, `parallels` or `vmware`
 requires catch-up; metal lanes may use those targets for landing checks. Main-path lane history is
-refused on `x86-metal` even with catch-up. For a metal boot, commits outside `origin/main` must also
-be first-parent reachable from a `metal-*` lane on origin (including `metal-stream/definition`). Keep
+refused on `x86-metal` even with catch-up, except a lane of an effort whose targets list `x86-metal`.
+For a metal boot, commits outside `origin/main` must also be first-parent reachable from a `metal-*`
+lane on origin (including `metal-stream/definition`) or from such an effort's lane on origin. Keep
 those refs until the work reaches main: a second-parent merge from an unrelated branch is refused
 even if that branch is later renamed or deleted. A main or metal second parent is allowed when its
 commits meet that ancestry rule. The guard reads origin live and refuses when origin is unavailable.
@@ -84,7 +91,15 @@ A milestone has exactly one measure:
   outside measurement on the main path under S23.
 - `{"suite": "<id>", "categories": ["<category id>", ...]}`: the cases in those categories of that suite
   must pass. It is done when it passes on the targets listed by the effort (ARM64 QEMU, Parallels and VMware); until the suite
-  has those categories the milestone is shown as not measured yet, which is the work of writing its cases.
+  has cases in each named category the milestone is not measured yet, even if the populated categories pass.
+  A planned category with no cases blocks completion on each target and therefore blocks the milestone.
+  Scorers and tools must check category presence and non-empty case lists before summing case results;
+  missing or empty categories cannot be omitted from completion requirements. This rule applies to both effort paths.
+  Full-suite acceptance also requires cases in each manifest category (`scripts/suite-verdict.py`, shared by
+  `scripts/suite-sequence.py` and the boot watchers). A selected case or category run is incremental evidence,
+  not full-suite or milestone completion. Metal milestone acceptance uses
+  `metal-run boot --suite <suite> --milestone <effort>/<milestone>` to score the named measure's category set
+  from the boot commit while retaining the full boot's record, memory, disk and fatal-output checks.
 - `{"interfaces": "<area>"}` or `{"interfaces": ["name", ...]}`: those POSIX system interfaces are backed by a
   dispatched syscall on the architectures in the effort's target list.
 

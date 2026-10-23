@@ -14,8 +14,11 @@ mod compositor;
 mod placement;
 #[path = "bwm/session.rs"]
 mod session;
+#[path = "bwm/input_backlog.rs"]
+mod input_backlog;
 
 use std::process;
+use std::io::Write;
 
 use compositor::{CheckError, Compositor, FrameError, Layer, Pointer};
 use session::{cursor_shape, Input};
@@ -440,11 +443,11 @@ impl HotkeyManager {
         self.bindings.clear();
         self.bindings.push(Hotkey {
             modifiers: modifier::SUPER, key: 0, taps: 2,
-            action: HotkeyAction::Exec(b"/bin/blauncher".to_vec()),
+            action: HotkeyAction::Exec(b"/usr/bin/blauncher".to_vec()),
         });
         self.bindings.push(Hotkey {
             modifiers: modifier::SUPER, key: b'\r', taps: 1,
-            action: HotkeyAction::Exec(b"/bin/bterm".to_vec()),
+            action: HotkeyAction::Exec(b"/usr/bin/bterm".to_vec()),
         });
         self.bindings.push(Hotkey {
             modifiers: modifier::ALT, key: b'q', taps: 1,
@@ -1177,10 +1180,39 @@ fn next_visible_window(windows: &[Window], current: usize) -> usize {
 
 // ─── Input Routing ──────────────────────────────────────────────────────────
 
+static INPUT_BACKLOG: std::sync::Mutex<input_backlog::Backlog<Input>> =
+    std::sync::Mutex::new(input_backlog::Backlog::new());
+
+fn flush_input() {
+    use input_backlog::Delivery;
+    INPUT_BACKLOG.lock().unwrap().flush(|id, event| {
+        match session::send(id, *event) {
+            Ok(()) => Delivery::Accepted,
+            Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EAGAIN)) => Delivery::Full,
+            Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENOENT)) => Delivery::Gone,
+            Err(error) => {
+                let _ = writeln!(std::io::stderr(), "bwm: window {id} input disabled: {error}");
+                Delivery::Failed
+            }
+        }
+    });
+}
+
 fn send_to(windows: &[Window], win_idx: usize, input: Input) {
-    if win_idx < windows.len() && windows[win_idx].window_id != 0 {
-        let _ = session::send(windows[win_idx].window_id, input);
+    if win_idx >= windows.len() || windows[win_idx].window_id == 0 { return; }
+    let id = windows[win_idx].window_id;
+    let mut backlog = INPUT_BACKLOG.lock().unwrap();
+    let admission = backlog.push(id, input, |old, new| {
+        matches!((old, new), (Input::Move { .. }, Input::Move { .. }))
+    });
+    if admission != input_backlog::Admission::Queued && matches!(input, Input::Close) {
+        backlog.request_close(id, input);
     }
+    drop(backlog);
+    if admission == input_backlog::Admission::Overflow {
+        let _ = writeln!(std::io::stderr(), "bwm: window {id} input disabled: backlog limit reached; close remains available");
+    }
+    flush_input();
 }
 
 fn send_focus_event(windows: &[Window], win_idx: usize, gained: bool) {
@@ -1197,6 +1229,8 @@ fn discover_windows(
     if session::list_windows(&mut win_infos).is_err() {
         return false;
     }
+
+    INPUT_BACKLOG.lock().unwrap().retain_windows(|id| win_infos.iter().any(|info| info.id == id));
 
     // Save defaults for windows about to be removed
     for w in windows.iter() {
@@ -1405,7 +1439,7 @@ fn execute_hotkey_action(action: &HotkeyAction, windows: &mut Vec<Window>, focus
     match action {
         HotkeyAction::Exec(path) => {
             // For blauncher, toggle: if already open, close it; otherwise spawn
-            if path == b"/bin/blauncher" {
+            if path == b"/usr/bin/blauncher" {
                 let launcher_idx = windows.iter().position(|w|
                     w.chromeless && w.title_len > 1 && w.title[0] == 1
                 );
@@ -1654,6 +1688,7 @@ fn main() {
     }
 
     loop {
+        flush_input();
         // ── 0. Sleep until input or a scene change ──
         // The scene descriptor is readable when a window registered, committed, moved or
         // went away. The pointer has no descriptor, so the sleep is bounded and the

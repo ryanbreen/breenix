@@ -531,13 +531,18 @@ def _ipv4(match):
     return '<ip>'
 
 
+# Site fields kept out of the literals: the console account (root) and the operator's uid (the first ordinary
+# account's number), which would otherwise mask ordinary text such as "1000 ms".
+NAMES_NOTHING = ('CONSOLE_USER', 'OPERATOR_UID')
+
+
 class Redactor:
     def __init__(self, site):
         self.identifiers = sorted(identifier_list(site), key=len, reverse=True)
         # Short configuration values (slots, switches, counters) do not name
         # a private entity. Explicit identifiers and credentials still count.
         literals = {value for key, value in site.items()
-                    if key != 'CONSOLE_USER' and value and (len(value) >= 4 or SECRET_KEYS.search(key) or value in self.identifiers)}
+                    if key not in NAMES_NOTHING and value and (len(value) >= 4 or SECRET_KEYS.search(key) or value in self.identifiers)}
         for value in list(literals):
             # The complete URL, host and path are site literals independently.
             if '://' in value:

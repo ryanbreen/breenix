@@ -41,6 +41,8 @@ use spin::Mutex;
 pub enum DeviceType {
     /// /dev/null - discards writes, reads return EOF
     Null,
+    /// /dev/kmsg - bounded, root-only audit messages to the kernel log
+    Kmsg,
     /// /dev/zero - discards writes, reads return zero bytes
     Zero,
     /// /dev/console - system console (serial port)
@@ -61,6 +63,58 @@ pub enum DeviceType {
     Vcsa(u8),
 }
 
+/// The tty group, which owns the virtual terminals.
+pub const TTY_GID: u32 = 5;
+
+/// Each virtual terminal's owner, group and permission bits. A terminal is
+/// root's and the tty group's at 0620 until login gives it to an account; getty
+/// returns it when it next serves the terminal (`docs/users/design.md`, section 2).
+static VT_METADATA: Mutex<[(u32, u32, u32); 6]> = Mutex::new([(0, TTY_GID, 0o620); 6]);
+
+/// Change virtual terminal `n`'s (1-based) permission bits or owner by the
+/// rules for any file: its owner or root may change the mode, only root may
+/// give it away, and its owner may give it a group they belong to.
+pub fn change_vt_metadata(
+    n: u8,
+    mode: Option<u32>,
+    owner: Option<(u32, u32)>,
+    cred: &crate::fs::permissions::Credentials,
+) -> Result<(), u64> {
+    use crate::syscall::errno::{EINVAL, EPERM};
+    let mut table = VT_METADATA.lock();
+    let entry = table.get_mut(usize::from(n).wrapping_sub(1)).ok_or(EINVAL as u64)?;
+    let (uid, gid, old_mode) = *entry;
+    if cred.euid != 0 && cred.euid != uid {
+        return Err(EPERM as u64);
+    }
+    if let Some(mode) = mode {
+        let mut bits = mode & 0o7777;
+        if cred.euid != 0 && !cred.in_group(gid) {
+            bits &= !0o2000;
+        }
+        entry.2 = bits;
+    }
+    if let Some((new_uid, new_gid)) = owner {
+        if cred.euid != 0
+            && ((new_uid != u32::MAX && new_uid != uid)
+                || (new_gid != u32::MAX && new_gid != gid && !cred.in_group(new_gid)))
+        {
+            return Err(EPERM as u64);
+        }
+        *entry = (
+            if new_uid == u32::MAX { uid } else { new_uid },
+            if new_gid == u32::MAX { gid } else { new_gid },
+            old_mode & !0o6000,
+        );
+    }
+    Ok(())
+}
+
+fn vt_attrs(n: usize) -> crate::fs::attrs::InodeAttrs {
+    let (uid, gid, mode) = VT_METADATA.lock().get(n.wrapping_sub(1)).copied().unwrap_or((0, TTY_GID, 0o620));
+    crate::fs::attrs::InodeAttrs::new(0o020000 | mode, uid, gid)
+}
+
 const VT_NAMES: [&str; 7] = ["tty0", "tty1", "tty2", "tty3", "tty4", "tty5", "tty6"];
 const VCS_NAMES: [&str; 7] = ["vcs", "vcs1", "vcs2", "vcs3", "vcs4", "vcs5", "vcs6"];
 const VCSA_NAMES: [&str; 7] = ["vcsa", "vcsa1", "vcsa2", "vcsa3", "vcsa4", "vcsa5", "vcsa6"];
@@ -70,6 +124,7 @@ impl DeviceType {
     pub fn name(&self) -> &'static str {
         match self {
             DeviceType::Null => "null",
+            DeviceType::Kmsg => "kmsg",
             DeviceType::Zero => "zero",
             DeviceType::Console => "console",
             DeviceType::Tty => "tty",
@@ -87,6 +142,7 @@ impl DeviceType {
     pub fn inode(&self) -> u64 {
         match self {
             DeviceType::Null => 2,
+            DeviceType::Kmsg => 9,
             DeviceType::Zero => 3,
             DeviceType::Console => 4,
             DeviceType::Tty => 5,
@@ -110,9 +166,27 @@ impl DeviceType {
         }
     }
 
+    /// The node's type, permission bits, owner and group, which open, stat
+    /// and access checks read (`docs/users/design.md`, section 2). The
+    /// data sinks and sources, the controlling terminal and the multiplexor
+    /// are for everyone; the console and the screens are root's; a virtual
+    /// terminal is root's and writable by the tty group until a login gives it
+    /// to an account, and `/dev/tty0` reports the foreground terminal's; the
+    /// clock is read-only.
+    pub fn attrs(&self) -> crate::fs::attrs::InodeAttrs {
+        let (permissions, gid) = match self {
+            DeviceType::Null | DeviceType::Zero | DeviceType::Tty | DeviceType::Ptmx => (0o666, 0),
+            DeviceType::Console | DeviceType::Vcs(_) | DeviceType::Vcsa(_) => (0o600, 0),
+            DeviceType::Kmsg => (0o200, 0),
+            DeviceType::Tty0 | DeviceType::Vt(_) => return vt_attrs(self.terminal().unwrap_or(0)),
+            DeviceType::Rtc => (0o444, 0),
+        };
+        crate::fs::attrs::InodeAttrs::new(0o020000 | permissions, 0, gid)
+    }
+
     /// Check if this device is readable
     pub fn is_readable(&self) -> bool {
-        true // All devices are readable
+        *self != DeviceType::Kmsg
     }
 
     /// Check if this device is writable
@@ -178,6 +252,7 @@ pub fn init() {
     // Register standard devices
     // Major 1 = memory devices (null, zero, etc.)
     devfs.devices.push(DeviceNode::new(DeviceType::Null, 1, 3)); // /dev/null
+    devfs.devices.push(DeviceNode::new(DeviceType::Kmsg, 1, 11));
     devfs.devices.push(DeviceNode::new(DeviceType::Zero, 1, 5)); // /dev/zero
 
     // Major 5 = TTY devices
@@ -276,6 +351,7 @@ pub fn is_initialized() -> bool {
 /// Device file operations - read from device
 pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32> {
     match device_type {
+        DeviceType::Kmsg => Err(-13), // Audit sink is write-only.
         DeviceType::Rtc => Err(-22), // RTC data is read through RTC_RD_TIME.
         DeviceType::Ptmx => Err(-6), // Opening /dev/ptmx gives a master, never this device.
         DeviceType::Null => {
@@ -296,7 +372,7 @@ pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32
         DeviceType::Tty0 | DeviceType::Vt(_) => match device_type.terminal() {
             Some(1) => crate::ipc::stdin::read_bytes(buf).map_err(|e| -e),
             Some(number) => match crate::ipc::stdin::vt_input(number - 1) {
-                Some(input) => input.read_or_prepare(buf, true).map_err(|_| -11),
+                Some(input) => input.read_or_prepare(buf, true, &|| true).map_err(|_| -11),
                 None => Err(-6),
             },
             None => Err(-6),
@@ -309,6 +385,7 @@ pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32
 /// Device file operations - write to device
 pub fn device_write(device_type: DeviceType, buf: &[u8]) -> Result<usize, i32> {
     match device_type {
+        DeviceType::Kmsg => audit_write(buf),
         DeviceType::Rtc => Err(13), // EACCES: no clock writes through this device.
         DeviceType::Ptmx => Err(6), // ENXIO: opening /dev/ptmx gives a master.
         DeviceType::Null | DeviceType::Zero => {
@@ -329,4 +406,15 @@ pub fn device_write(device_type: DeviceType, buf: &[u8]) -> Result<usize, i32> {
         },
         DeviceType::Vcs(_) | DeviceType::Vcsa(_) => Err(22),
     }
+}
+
+/// This is a user-requested log write, not syscall instrumentation. Bound one
+/// record and refuse controls that could forge additional kernel log records.
+pub fn audit_write(buf: &[u8]) -> Result<usize, i32> {
+    if buf.len() > 1024 { return Err(22); }
+    let text = core::str::from_utf8(buf).map_err(|_| 22)?;
+    let message = text.strip_suffix('\n').unwrap_or(text);
+    if message.bytes().any(|b| b.is_ascii_control()) { return Err(22); }
+    log::info!(target: "audit", "{}", message);
+    Ok(buf.len())
 }

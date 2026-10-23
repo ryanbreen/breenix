@@ -249,6 +249,8 @@ struct NetDeviceState {
     base: u64,
     mac: [u8; 6],
     rx_last_used_idx: u16,
+    /// Completed descriptors held until the stack finishes borrowing their frames.
+    rx_recycle: u8,
     tx_last_used_idx: u16,
 }
 
@@ -347,6 +349,7 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static 
             base,
             mac,
             rx_last_used_idx: 0,
+            rx_recycle: 0,
             tx_last_used_idx: 0,
         });
     }
@@ -679,7 +682,9 @@ pub fn receive() -> Option<&'static [u8]> {
     }
 
     let data_len = packet_len - hdr_size;
-    rx_buffer_data(desc_idx).map(|buf| &buf[..data_len])
+    let buf = rx_buffer_data(desc_idx)?;
+    state.rx_recycle |= 1 << desc_idx;
+    Some(&buf[..data_len])
 }
 
 /// Re-post all consumed RX buffers back to the device.
@@ -700,16 +705,20 @@ pub fn recycle_rx_buffers() {
         None => return,
     };
 
-    // Re-post all 4 buffers unconditionally — the descriptors are still
-    // set up correctly from post_rx_buffers(), we just need to add them
-    // back to the available ring.
+    // VirtIO 1.2 section 2.7: only a used descriptor has returned to the
+    // driver. Reposting device-owned descriptors exposes the same DMA buffer
+    // twice, allowing another frame to overwrite one still being consumed.
+    let recycled = core::mem::take(&mut state.rx_recycle);
+    if recycled == 0 { return; }
     unsafe {
         let queue_ptr = &raw mut RX_QUEUE;
         let mut avail_idx = (*queue_ptr).avail.idx;
 
         for i in 0..4u16 {
-            (*queue_ptr).avail.ring[(avail_idx % 16) as usize] = i;
-            avail_idx = avail_idx.wrapping_add(1);
+            if recycled & (1 << i) != 0 {
+                (*queue_ptr).avail.ring[(avail_idx % 16) as usize] = i;
+                avail_idx = avail_idx.wrapping_add(1);
+            }
         }
 
         fence(Ordering::SeqCst);

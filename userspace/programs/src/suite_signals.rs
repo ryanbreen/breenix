@@ -186,7 +186,7 @@ const REPORT_MS: u64 = 300;
 /// How long a case watches for something that must not happen.
 const QUIET_MS: u64 = 300;
 /// The helper the exec cases run (`signals_exec.rs`).
-const HELPER: &str = "/usr/local/test/bin/signals-exec_test";
+const HELPER: &str = "/usr/libexec/breenix/signals-exec_test";
 /// In an exec case's argument list, replaced by the descriptor the program reports on.
 const FD_ARG: &str = "{fd}";
 

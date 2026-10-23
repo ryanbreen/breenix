@@ -58,7 +58,7 @@ pub fn new_master(flags: u32) -> Result<(Arc<PtyPair>, FileDescriptor), i32> {
     // A master's last close may need the hangup thread; make no master
     // without it.
     ensure_hangup_daemon()?;
-    let cred = crate::fs::permissions::Credentials::current(false);
+    let cred = crate::fs::permissions::Credentials::current(false).map_err(|errno| errno as i32)?;
     let pair = allocate_for(cred.euid, cred.egid)?;
     match FileDescriptor::try_opened(FdKind::PtyMaster(pair.clone()), flags) {
         Ok(entry) => Ok((pair, entry)),
@@ -192,7 +192,7 @@ pub fn open_slave(
         _ => 0o6,
     };
     let (uid, gid, mode) = pair.slave_owner();
-    if !cred.permits_mode(uid, gid, mode, wanted) {
+    if !cred.may(crate::fs::attrs::InodeAttrs::new(mode, uid, gid), wanted) {
         return Err(EACCES);
     }
     // Under the table lock the closed mark and the master count agree, and
@@ -235,6 +235,14 @@ static HANGUP_DAEMON_STATE: AtomicU8 = AtomicU8::new(DAEMON_STOPPED);
 
 /// How long the idle hangup thread sleeps before looking again unprompted.
 const HANGUP_DAEMON_IDLE_NS: u64 = 10_000_000_000;
+
+/// Start the hangup thread at boot, once kernel threads can be made. It lives
+/// for the rest of the boot; the first master starts it only if this failed.
+pub fn init_hangup_daemon() {
+    if ensure_hangup_daemon().is_err() {
+        log::error!("failed to start kptyhup; the first PTY master retries");
+    }
+}
 
 /// Make sure the hangup thread runs, starting it if need be. Called with no
 /// locks held, before a master descriptor is made. A start that fails is

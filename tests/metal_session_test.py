@@ -143,7 +143,7 @@ class SessionTest(existing.StateTest):
         runner = existing.load_script('metal-run')
         for changes in [dict(mode='shell'), dict(input='sol'), dict(disk='install'),
                         dict(idle_minutes=-1), dict(idle_minutes=0), dict(idle_minutes=241)]:
-            args = SimpleNamespace(**(vars(self.args) | changes))
+            args = SimpleNamespace(**(vars(self.args) | dict(suite=None) | changes))
             with self.assertRaises(SystemExit), patch.object(runner, 'host_env') as host:
                 runner.boot(args)
             host.assert_not_called()

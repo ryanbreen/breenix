@@ -324,7 +324,7 @@ pub fn open_path(path: &str, flags: u32, mode: u32) -> Option<SyscallResult> {
         if flags & 3 == 3 {
             return Err(errno::EINVAL as u64);
         }
-        let cred = crate::fs::permissions::Credentials::current(false);
+        let cred = crate::fs::permissions::Credentials::current(false)?;
         let slot = Slot::reserve()?;
         if name.is_empty() {
             if flags & 0x400000 != 0 {
@@ -383,7 +383,7 @@ pub fn open_path(path: &str, flags: u32, mode: u32) -> Option<SyscallResult> {
                     _ => 6,
                 } | if flags & O_TRUNC != 0 { 2 } else { 0 };
                 let (mode, uid, gid, _) = object.metadata();
-                if !cred.permits_mode(uid, gid, mode, wanted) {
+                if !cred.may(crate::fs::attrs::InodeAttrs::new(mode, uid, gid), wanted) {
                     return Err(errno::EACCES as u64);
                 }
                 let file = Arc::try_new(ShmFile {
@@ -436,7 +436,7 @@ pub fn unlink_path(path: &str) -> Option<SyscallResult> {
         if name.is_empty() {
             return Err(errno::EISDIR as u64);
         }
-        let cred = crate::fs::permissions::Credentials::current(false);
+        let cred = crate::fs::permissions::Credentials::current(false)?;
         let removed = {
             let mut names = SHM_NAMES.lock();
             let index = names
@@ -598,7 +598,7 @@ pub fn access_path(
             .map(|e| e.object.clone())
             .ok_or(errno::ENOENT as u64)?;
         let (bits, uid, gid, _) = object.metadata();
-        if cred.permits_mode(uid, gid, bits, mode) {
+        if cred.may(crate::fs::attrs::InodeAttrs::new(bits, uid, gid), mode) {
             Ok(0)
         } else {
             Err(errno::EACCES as u64)
@@ -676,7 +676,7 @@ pub fn link_path(old: &str, new: &str) -> Option<SyscallResult> {
         if old.is_empty() || new.is_empty() {
             return Err(errno::EPERM as u64);
         }
-        let cred = crate::fs::permissions::Credentials::current(false);
+        let cred = crate::fs::permissions::Credentials::current(false)?;
         let mut key = String::new();
         key.try_reserve_exact(new.len())
             .map_err(|_| errno::ENOMEM as u64)?;
@@ -691,7 +691,7 @@ pub fn link_path(old: &str, new: &str) -> Option<SyscallResult> {
         let (mode, uid, gid, _) = object.metadata();
         if cred.euid != 0
             && cred.euid != uid
-            && (!cred.permits_mode(uid, gid, mode, 6) || mode & 0o6000 != 0)
+            && (!cred.may(crate::fs::attrs::InodeAttrs::new(mode, uid, gid), 6) || mode & 0o6000 != 0)
         {
             return Err(errno::EPERM as u64);
         }
@@ -724,7 +724,7 @@ pub fn rename_path(old: &str, new: &str) -> Option<SyscallResult> {
         key.try_reserve_exact(new.len())
             .map_err(|_| errno::ENOMEM as u64)?;
         key.push_str(new);
-        let cred = crate::fs::permissions::Credentials::current(false);
+        let cred = crate::fs::permissions::Credentials::current(false)?;
         let removed = {
             let mut names = SHM_NAMES.lock();
             let from = names

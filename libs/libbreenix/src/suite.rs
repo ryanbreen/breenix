@@ -462,6 +462,10 @@ pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
     // Two authenticated logins, host-injected keys and init's respawn delay.
     ("console", "getty/logout-reacquires", 30_000),
     ("console", "getty/independent-sessions", 30_000),
+    // The boot host's OpenSSH answers over the serial console: a host key scan
+    // and two logins, each a full key exchange with this machine.
+    ("users", "ssh/openssh-operator", 30_000),
+    ("users", "ssh/openssh-root-refused", 30_000),
 ];
 
 /// In a case's process, when its limit passes, in monotonic nanoseconds; 0 elsewhere.
@@ -699,6 +703,34 @@ pub fn hostkeys(chords: &str) -> Result<u64, String> {
     usb_input_attached()?;
     let seq = HOSTKEY_SEQ.fetch_add(1, Ordering::Relaxed);
     record("HOSTKEY", &std::format!("seq={seq} keys={chords}"));
+    Ok(seq)
+}
+
+static HOSTSSH_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Ask the boot host to log in to this machine with its own OpenSSH client and
+/// the operator's key (docs/suites/README.md, "Users & permissions"). The host
+/// pins the host key `fingerprint`, which reaches it in this record over the
+/// serial console, with strict host-key checking. `attempt` is `account` (a
+/// deliberately wrong pinned key must be refused first) or `root` (root must be
+/// refused first); either way the host then logs in as `user` and runs
+/// `report <what it saw>` there. The case must check the guest state that
+/// login leaves before it reports success.
+pub fn hostssh(attempt: &str, addr: [u8; 4], port: u16, user: &str, fingerprint: &str) -> Result<u64, String> {
+    let name_ok = user.bytes().next().is_some_and(|b| b.is_ascii_lowercase() || b == b'_')
+        && user.len() <= 32
+        && user.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
+    let fingerprint_ok = fingerprint.strip_prefix("SHA256:")
+        .is_some_and(|b64| !b64.is_empty() && b64.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/'));
+    if !matches!(attempt, "account" | "root") || !name_ok || !fingerprint_ok {
+        return Err(String::from("invalid host SSH request"));
+    }
+    if RECORD_FD.load(Ordering::Relaxed) < 0 || RECORDS.load(Ordering::Relaxed) >= RECORDS_PER_CASE {
+        return Err(String::from("host SSH record unavailable"));
+    }
+    let seq = HOSTSSH_SEQ.fetch_add(1, Ordering::Relaxed);
+    let [a, b, c, d] = addr;
+    record("HOSTSSH", &std::format!("seq={seq} try={attempt} addr={a}.{b}.{c}.{d} port={port} user={user} fp={fingerprint}"));
     Ok(seq)
 }
 

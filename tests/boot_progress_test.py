@@ -148,6 +148,8 @@ class ProgressTest(unittest.TestCase):
             ('breengel', 'composition/present-rate'): 20_000,
             ('console', 'getty/logout-reacquires'): 30_000,
             ('console', 'getty/independent-sessions'): 30_000,
+            ('users', 'ssh/openssh-operator'): 30_000,
+            ('users', 'ssh/openssh-root-refused'): 30_000,
         })
         for (suite, case), limit in allowances.items():
             manifest = json.loads((ROOT / f'docs/suites/{suite}.json').read_text())

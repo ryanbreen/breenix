@@ -1,5 +1,5 @@
 //! USB pointer measurement for Parallels and VMware (ARM64), run by
-//! `./run.sh --parallels|--vmware --program /bin/usb_pointer_check --program-arg MODE`
+//! `./run.sh --parallels|--vmware --program /usr/bin/usb_pointer_check --program-arg MODE`
 //! with a kernel built with the `usb_pointer_replay` feature.
 //!
 //! The observations come from the production graphics syscall that bwm

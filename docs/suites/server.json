@@ -1,0 +1,175 @@
+{
+  "id": "server",
+  "title": "Unattended server",
+  "area": "Server",
+  "summary": "A persistent install serves the LAN unattended: SSH by keys only, binary-safe transfers, supervised services with logs, synchronized time, clean reboots, watchdog recovery, the resting state and remote upgrades with automatic rollback.",
+  "binary": "scripts/metal/server-suite",
+  "categories": [
+    {
+      "id": "ssh-keys",
+      "title": "Keys-only SSH: per-install host keys, per-account authorized keys, no password or telnet",
+      "cases": [
+        {
+          "id": "port-22",
+          "title": "SSH identification arrives on port 22 before the client sends anything"
+        },
+        {
+          "id": "host-key",
+          "title": "OpenSSH keyscan matches the Ed25519 fingerprint in this boot's protected service log"
+        },
+        {
+          "id": "strict-login",
+          "title": "Strict host-key checking permits the operator key and a non-root identity"
+        },
+        {
+          "id": "aes256-gcm",
+          "title": "OpenSSH authenticates and executes with aes256-gcm forced in both directions"
+        },
+        {
+          "id": "aes128-ctr",
+          "title": "OpenSSH authenticates and executes with aes128-ctr forced in both directions"
+        },
+        {
+          "id": "ed25519-user",
+          "title": "An authorized Ed25519 user key authenticates and executes"
+        },
+        {
+          "id": "password-refused",
+          "title": "OpenSSH password-only login and a real bssh password request are refused, with serial evidence"
+        },
+        {
+          "id": "wrong-key-refused",
+          "title": "An unauthorized Ed25519 key is refused by publickey authentication"
+        },
+        {
+          "id": "root-refused",
+          "title": "The authorized operator key cannot log in as root"
+        },
+        {
+          "id": "telnet-closed",
+          "title": "Neither the standard nor the former development telnet port has a listener"
+        },
+        {
+          "id": "job-control",
+          "title": "An interactive SSH PTY supports foreground jobs, terminal signals and owned slave"
+        },
+        {
+          "id": "exec-status",
+          "title": "SSH exec runs through bsh -c and returns the command exit status"
+        },
+        {
+          "id": "exec-stdin",
+          "title": "SSH exec delivers piped input byte for byte and closes stdin on channel EOF"
+        },
+        {
+          "id": "quoted-command",
+          "title": "Quoted sh -c scripts retain spaces, quotes and backslashes through bsh"
+        }
+      ]
+    },
+    {
+      "id": "transfer",
+      "title": "Binary-safe exec stdin and verified uploads over SSH",
+      "cases": []
+    },
+    {
+      "id": "services",
+      "title": "Service supervision: dependencies, restart with backoff, crash-loop reporting, graceful stop",
+      "cases": [
+        {
+          "id": "table",
+          "title": "svc reports bsshd, blogd, the time client and the six gettys from /etc/breenix/services, with their state under /run"
+        },
+        {
+          "id": "entropy-first",
+          "title": "bsshd starts once the random pool is ready, and the gettys start on the first pass without waiting for it"
+        },
+        {
+          "id": "network-first",
+          "title": "The time client starts only once the network is up"
+        },
+        {
+          "id": "kill-restart",
+          "title": "After kill -9 of bsshd, OpenSSH reconnects with strict host-key checking within the restart window"
+        },
+        {
+          "id": "reconnect-bsh",
+          "title": "After the restart the operator key logs in to bsh again"
+        },
+        {
+          "id": "backoff",
+          "title": "A service that keeps failing quickly restarts after doubling delays of 1, 2, 4 and 8 seconds"
+        },
+        {
+          "id": "graceful-stop",
+          "title": "svc stop ends a service with SIGTERM, kills one that ignores it at its stop timeout, and neither restarts"
+        },
+        {
+          "id": "account",
+          "title": "A service runs as the account its entry names, and only that account or root may control it"
+        },
+        {
+          "id": "crash-loop",
+          "title": "Five quick failures are reported as a crash loop on the console and in svc, and the next start follows 60 seconds later"
+        }
+      ]
+    },
+    {
+      "id": "logs",
+      "title": "Per-service and kernel logs with boot IDs and size-bounded rotation",
+      "cases": [
+        {
+          "id": "table",
+          "title": "Every table service has a protected size-bounded log headed with this boot ID"
+        },
+        {
+          "id": "streams",
+          "title": "A supervised service records stdout and stderr in its own file"
+        },
+        {
+          "id": "rotation",
+          "title": "A service log rotates at its size bound and retains complete records"
+        },
+        {
+          "id": "loss",
+          "title": "An oversized line is counted as lost and the following line is retained"
+        },
+        {
+          "id": "kernel",
+          "title": "blogd records new kernel output and reports ring overruns"
+        },
+        {
+          "id": "persistent",
+          "title": "The previous persistent boot service log survives reboot with its original boot ID and bytes"
+        }
+      ]
+    },
+    {
+      "id": "time",
+      "title": "SNTP synchronization, slewing after the first step, RTC kept in UTC",
+      "cases": []
+    },
+    {
+      "id": "reboot",
+      "title": "Reboot and power-off after sync and a read-only remount; a panic reboots",
+      "cases": []
+    },
+    {
+      "id": "watchdog",
+      "title": "A hang is reset by the watchdog back into the persistent install",
+      "cases": []
+    },
+    {
+      "id": "resting-state",
+      "title": "Test boots preempt the persistent install and the machine returns to it",
+      "cases": []
+    },
+    {
+      "id": "remote-upgrade",
+      "title": "Remote upgrades verified over SSH and rolled back automatically",
+      "cases": []
+    }
+  ],
+  "timingSensitive": true,
+  "hostRunner": true
+}

@@ -23,8 +23,11 @@ pub mod block;
 pub mod ext2;
 #[path = "../../../kernel/src/fs/permissions.rs"]
 pub mod permissions;
+#[path = "../../../kernel/src/fs/attrs.rs"]
+pub mod attrs;
 pub mod fs {
     pub use crate::permissions;
+    pub use crate::attrs;
     pub mod ext2 {
         pub use crate::ext2::*;
         pub mod live_inode {
@@ -157,6 +160,7 @@ pub mod ipc {
 }
 pub mod syscall {
     pub mod errno {
+        pub const EPERM: i32 = 1;
         pub const EINVAL: i32 = 22;
         pub const EFAULT: i32 = 14;
         pub const EAGAIN: i32 = 11;
@@ -216,6 +220,8 @@ pub mod time {
         1
     }
 }
+#[path = "../../../kernel/src/process/credentials.rs"]
+pub mod credentials;
 pub mod process {
     use alloc::sync::Arc;
     #[derive(Clone, Copy, Debug)]
@@ -235,10 +241,20 @@ pub mod process {
         pub egid: u32,
         pub groups: Arc<alloc::vec::Vec<u32>>,
     }
-    pub struct Process {
-        pub cred: Ids,
+    /// The host's working-directory context holds only the file creation mask.
+    pub struct Dirs {
         pub umask: u32,
     }
+    impl Dirs {
+        pub fn umask(&self) -> u32 {
+            self.umask
+        }
+    }
+    pub struct Process {
+        pub cred: Ids,
+        pub cwd: Dirs,
+    }
+    pub use crate::credentials;
     pub struct Manager;
     impl Manager {
         pub fn find_process_by_thread(&self, _tid: u64) -> Option<(ProcessId, &Process)> {
@@ -246,6 +262,13 @@ pub mod process {
         }
     }
     pub fn manager() -> Option<Manager> {
+        None
+    }
+}
+/// No suite boot on the host: no test point is ever armed.
+pub mod test_control {
+    pub const CRED_ORPHAN: u32 = 32;
+    pub fn take(_point: u32, _target: u64) -> Option<u64> {
         None
     }
 }
@@ -268,6 +291,10 @@ pub mod task {
         }
         pub fn current_thread_id() -> Option<u64> {
             Some(1)
+        }
+        /// The host's one thread is not a user thread: checks act as the kernel.
+        pub fn thread_is_user(_tid: u64) -> bool {
+            false
         }
     }
     pub mod waitqueue {
@@ -434,7 +461,7 @@ fn ipc_file_defaults_and_downcast() {
     assert_eq!(stat.st_size, 32);
     assert_eq!(object.truncate(8), Err(22));
     assert_eq!(object.poll_events(), 0);
-    let cred = permissions::Credentials::current(false);
+    let cred = permissions::Credentials::kernel();
     assert_eq!(object.chmod(0o600, &cred), Err(22));
     assert_eq!(object.chown(1, 2, &cred), Err(22));
     assert_eq!(object.getdents(0, 4096), Err(20));

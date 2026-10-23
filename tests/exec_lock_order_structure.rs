@@ -1312,18 +1312,19 @@ fn validate_exec_smoke_is_wired(
     {
         return Err("init must run both arches' exec smoke before the remaining boot services".to_owned());
     }
-    let reap_loops = code_offsets(main, &main_mask, "loop {");
+    // The service supervisor's loop reaps init's children; it replaced main's reap loop.
+    let reap_loops = code_offsets(main, &main_mask, "supervisor.run()");
     if reap_loops.len() != 1 || aarch64_smoke >= reap_loops[0] || x86_smoke >= reap_loops[0] {
         return Err("init must run both arches' exec smoke before the reap loop".to_owned());
     }
 
     let liveness = function_body(init_rs, "start_liveness_service");
-    if !liveness.contains("spawn(b\"/bin/heartbeat\\0\")") {
-        return Err("start_liveness_service must spawn /bin/heartbeat".to_owned());
+    if !liveness.contains("spawn(b\"/usr/bin/heartbeat\\0\")") {
+        return Err("start_liveness_service must spawn /usr/bin/heartbeat".to_owned());
     }
     let boot_script = function_body(init_rs, "run_boot_script");
-    if boot_script.contains("b\"/bin/heartbeat\\0\"") {
-        return Err("run_boot_script must not spawn /bin/heartbeat".to_owned());
+    if boot_script.contains("b\"/usr/bin/heartbeat\\0\"") {
+        return Err("run_boot_script must not spawn /usr/bin/heartbeat".to_owned());
     }
 
     // #721 K2: run_exec_smoke's definition must now be arch-neutral — both arches call it
@@ -1343,7 +1344,7 @@ fn validate_exec_smoke_is_wired(
     }
     let smoke = function_body(init_rs, "run_exec_smoke");
     for required in [
-        "spawn(b\"/bin/exec_smoke\\0\")",
+        "spawn(b\"/usr/bin/exec_smoke\\0\")",
         "waitpid(",
         "[EXEC_SMOKE:LAUNCHER_EXIT code={}]",
         "[EXEC_SMOKE:SPAWN_FAILED {}]",
@@ -1366,7 +1367,7 @@ fn validate_exec_smoke_is_wired(
 
     let launcher = function_body(launcher_rs, "main");
     if !launcher.contains("execv(path, argv.as_ptr())")
-        || !launcher.contains("b\"/bin/exec_smoke_target\\0\"")
+        || !launcher.contains("b\"/usr/bin/exec_smoke_target\\0\"")
         || !launcher.contains("[EXEC_SMOKE:EXEC_FAILED]")
     {
         return Err("exec smoke launcher is not wired to execv the target".to_owned());
@@ -2119,7 +2120,7 @@ fn negative_exec_smoke_init_spawn_deletion_is_rejected() {
     let target_rs = repo_text("userspace/programs/src/exec_smoke_target.rs");
     let syscall_entry = repo_text("kernel/src/arch_impl/aarch64/syscall_entry.rs");
     let mutated = init_rs.replacen(
-        "spawn(b\"/bin/exec_smoke\\0\")",
+        "spawn(b\"/usr/bin/exec_smoke\\0\")",
         "spawn(b\"/bin/removed_exec_smoke\\0\")",
         1,
     );

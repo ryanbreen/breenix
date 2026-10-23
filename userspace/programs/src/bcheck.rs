@@ -46,39 +46,39 @@ struct TestDef {
 /// The curated test suite — exercises core subsystems without requiring
 /// network, stdin, or interactive TTY.
 fn make_tests() -> Vec<TestDef> {
-    // Test binaries matching *_test or test_* are installed to /usr/local/test/bin/
+    // Test binaries matching *_test or test_* are installed to /usr/libexec/breenix/
     // by create_ext2_disk.sh.  Everything else goes to /bin/.
     let tests: &[(&[u8], &str, &str)] = &[
         // Core / syscall
-        (b"/usr/local/test/bin/clock_gettime_test\0", "clock_gettime",   "core"),
-        (b"/usr/local/test/bin/brk_test\0",           "brk",             "core"),
-        (b"/usr/local/test/bin/test_mmap\0",          "mmap",            "core"),
-        (b"/bin/syscall_enosys\0",                    "syscall_enosys",  "core"),
+        (b"/usr/libexec/breenix/clock_gettime_test\0", "clock_gettime",   "core"),
+        (b"/usr/libexec/breenix/brk_test\0",           "brk",             "core"),
+        (b"/usr/libexec/breenix/test_mmap\0",          "mmap",            "core"),
+        (b"/usr/bin/syscall_enosys\0",                    "syscall_enosys",  "core"),
         // Filesystem
-        (b"/usr/local/test/bin/file_read_test\0",     "file_read",       "fs"),
-        (b"/usr/local/test/bin/lseek_test\0",         "lseek",           "fs"),
-        (b"/usr/local/test/bin/getdents_test\0",      "getdents",        "fs"),
-        (b"/usr/local/test/bin/access_test\0",        "access",          "fs"),
-        (b"/usr/local/test/bin/cwd_test\0",           "cwd",             "fs"),
-        (b"/usr/local/test/bin/devfs_test\0",         "devfs",           "fs"),
-        (b"/usr/local/test/bin/fs_write_test\0",      "fs_write",        "fs"),
-        (b"/usr/local/test/bin/fs_directory_test\0",  "fs_directory",    "fs"),
+        (b"/usr/libexec/breenix/file_read_test\0",     "file_read",       "fs"),
+        (b"/usr/libexec/breenix/lseek_test\0",         "lseek",           "fs"),
+        (b"/usr/libexec/breenix/getdents_test\0",      "getdents",        "fs"),
+        (b"/usr/libexec/breenix/access_test\0",        "access",          "fs"),
+        (b"/usr/libexec/breenix/cwd_test\0",           "cwd",             "fs"),
+        (b"/usr/libexec/breenix/devfs_test\0",         "devfs",           "fs"),
+        (b"/usr/libexec/breenix/fs_write_test\0",      "fs_write",        "fs"),
+        (b"/usr/libexec/breenix/fs_directory_test\0",  "fs_directory",    "fs"),
         // IPC
-        (b"/usr/local/test/bin/pipe_test\0",         "pipe",             "ipc"),
-        (b"/usr/local/test/bin/pipe2_test\0",        "pipe2",            "ipc"),
-        (b"/usr/local/test/bin/dup_test\0",          "dup",              "ipc"),
-        (b"/usr/local/test/bin/fcntl_test\0",        "fcntl",            "ipc"),
-        (b"/usr/local/test/bin/epoll_test\0",        "epoll",            "ipc"),
+        (b"/usr/libexec/breenix/pipe_test\0",         "pipe",             "ipc"),
+        (b"/usr/libexec/breenix/pipe2_test\0",        "pipe2",            "ipc"),
+        (b"/usr/libexec/breenix/dup_test\0",          "dup",              "ipc"),
+        (b"/usr/libexec/breenix/fcntl_test\0",        "fcntl",            "ipc"),
+        (b"/usr/libexec/breenix/epoll_test\0",        "epoll",            "ipc"),
         // Process
-        (b"/usr/local/test/bin/fork_test\0",         "fork",             "proc"),
-        (b"/usr/local/test/bin/waitpid_test\0",      "waitpid",          "proc"),
-        (b"/usr/local/test/bin/fork_memory_test\0",  "fork_memory",      "proc"),
+        (b"/usr/libexec/breenix/fork_test\0",         "fork",             "proc"),
+        (b"/usr/libexec/breenix/waitpid_test\0",      "waitpid",          "proc"),
+        (b"/usr/libexec/breenix/fork_memory_test\0",  "fork_memory",      "proc"),
         // Signals
-        (b"/usr/local/test/bin/signal_handler_test\0", "signal_handler",  "sig"),
-        (b"/usr/local/test/bin/signal_return_test\0",  "signal_return",   "sig"),
+        (b"/usr/libexec/breenix/signal_handler_test\0", "signal_handler",  "sig"),
+        (b"/usr/libexec/breenix/signal_return_test\0",  "signal_return",   "sig"),
         // Network
-        (b"/usr/local/test/bin/net_test\0",            "dns_resolve",     "net"),
-        (b"/usr/local/test/bin/http_fetch_test\0",     "http_fetch",      "net"),
+        (b"/usr/libexec/breenix/net_test\0",            "dns_resolve",     "net"),
+        (b"/usr/libexec/breenix/http_fetch_test\0",     "http_fetch",      "net"),
     ];
 
     tests.iter().map(|&(path, name, cat)| TestDef {

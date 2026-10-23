@@ -35,7 +35,7 @@ const FUTEX_WAKE: u64 = 1;
 // A fresh image resets this word; every old sharer must retain its value.
 static IMAGE_GENERATION: AtomicU32 = AtomicU32::new(0);
 
-const PROGRAM: &[u8] = b"/usr/local/test/bin/clonevm_exec_test\0";
+const PROGRAM: &[u8] = b"/usr/libexec/breenix/clonevm_exec_test\0";
 const ARG0: &[u8] = b"clonevm_exec_test\0";
 const SECOND_STAGE_ARG: &[u8] = b"--second-stage\0";
 

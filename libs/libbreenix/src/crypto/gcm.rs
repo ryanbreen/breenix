@@ -1,9 +1,23 @@
 //! AES-GCM Authenticated Encryption with Associated Data (NIST SP 800-38D)
 //!
-//! Provides AES-128-GCM encryption and decryption using the GHASH universal
+//! Provides AES-128-GCM and AES-256-GCM encryption and decryption using the GHASH universal
 //! hash function over GF(2^128) and AES in CTR mode.
 
-use super::aes::Aes128;
+use super::aes::{Aes128, Aes256};
+
+enum BlockCipher {
+    Aes128(Aes128),
+    Aes256(Aes256),
+}
+
+impl BlockCipher {
+    fn encrypt_block(&self, block: &mut [u8; 16]) {
+        match self {
+            Self::Aes128(cipher) => cipher.encrypt_block(block),
+            Self::Aes256(cipher) => cipher.encrypt_block(block),
+        }
+    }
+}
 
 /// Reduction polynomial for GF(2^128): x^128 + x^7 + x^2 + x + 1.
 /// Represented as the high byte 0xe1 in big-endian (MSB-first) format.
@@ -120,15 +134,20 @@ fn increment_counter(counter: &mut [u8; 16]) {
 
 /// AES-128-GCM authenticated encryption and decryption.
 pub struct AesGcm {
-    cipher: Aes128,
+    cipher: BlockCipher,
 }
 
 impl AesGcm {
     /// Create a new AES-GCM instance with the given 128-bit key.
     pub fn new(key: &[u8; 16]) -> Self {
         AesGcm {
-            cipher: Aes128::new(key),
+            cipher: BlockCipher::Aes128(Aes128::new(key)),
         }
+    }
+
+    /// Create AES-256-GCM with a 32-byte key (NIST SP 800-38D).
+    pub fn new256(key: &[u8; 32]) -> Self {
+        Self { cipher: BlockCipher::Aes256(Aes256::new(key)) }
     }
 
     /// Encrypt plaintext with associated data, producing ciphertext and an authentication tag.
@@ -273,6 +292,20 @@ impl AesGcm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // NIST GCM AES-256 known-answer case: key, IV and plaintext bytes are 0x00.
+    #[test]
+    fn aes256_gcm_known_answer() {
+        let cipher = AesGcm::new256(&[0; 32]);
+        let mut encrypted = [0; 16];
+        let mut tag = [0; 16];
+        cipher.encrypt(&[0; 12], &[], &[0; 16], &mut encrypted, &mut tag);
+        assert_eq!(encrypted.to_vec(), hex_to_bytes("cea7403d4d606b6e074ec5d3baf39d18"));
+        assert_eq!(tag.to_vec(), hex_to_bytes("d0d1c8a799996bf0265b98b5d48ab919"));
+        let mut plain = [1; 16];
+        assert!(cipher.decrypt(&[0; 12], &[], &encrypted, &tag, &mut plain));
+        assert_eq!(plain, [0; 16]);
+    }
 
     /// Helper: parse a hex string into a Vec<u8>.
     fn hex_to_bytes(hex: &str) -> Vec<u8> {

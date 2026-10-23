@@ -9,7 +9,7 @@
 //!
 //! The points defined here are the GPU effort's, 19 to 31, and BreenGL's, 1 to 18
 //! (`breengel_abi::tc_point`); the GPU core builds BreenGL's 2 `irq-hold` and 3
-//! `emit-diagnostic` too (`docs/gui/gpu-abi.md`). Each is a branch in the real
+//! `emit-diagnostic` too (`docs/gui/gpu-abi.md`), plus users point 32 `cred-orphan`. Each is a branch in the real
 //! code path that asks `take` (or `take_if`) whether its point is armed; both read the
 //! latch first, so outside a suite boot a point costs one load and cannot fire while
 //! disabled. A point is one-shot: it affects the next occurrence of its event, counts one firing and
@@ -48,14 +48,16 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Acquire)
 }
 
-const POINTS: usize = test_point::LAST as usize + 1;
+/// The users effort's point, armed with a thread ID: that thread's next credential
+/// lookup (`fs::permissions::Credentials::current`) finds no process.
+pub const CRED_ORPHAN: u32 = test_point::CRED_ORPHAN;
 
-/// Whether `point` is one this kernel defines: BreenGL's 1 to 18, and the GPU effort's
-/// 19 to 31.
+/// Whether `point` is defined by BreenGL, the GPU effort or the users effort.
 fn defined(point: u32) -> bool {
     breengel_abi::tc_point::defined(point)
-        || (test_point::FIRST..=test_point::LAST).contains(&point)
+        || test_point::defined(point)
 }
+const POINTS: usize = CRED_ORPHAN as usize + 1;
 
 mod point;
 use point::Point;
@@ -171,6 +173,7 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
             for p in POINT_TABLE.iter() {
                 p.disarm();
             }
+            #[cfg(target_arch = "aarch64")]
             // A case's measurements start clean: the IRQ-masked gauges restart at 0.
             crate::tracing::providers::gpu::reset_irq_masked();
             crate::tracing::providers::window::reset_irq_masked();

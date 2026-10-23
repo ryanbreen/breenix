@@ -2043,6 +2043,470 @@
         }
       ],
       "needsGpu": true
+    },
+    {
+      "id": "server",
+      "title": "Unattended server",
+      "outcome": "A persistent Breenix install runs unattended as a LAN server: SSH on port 22 by keys only, supervised services with their own logs, time kept in sync, a clean reboot, a watchdog that brings a hung machine back, and remote upgrades that roll back by themselves when the new install does not answer.",
+      "suite": "server",
+      "milestones": [
+        {
+          "id": "ssh-keys",
+          "title": "SSH by keys only, with per-install host keys",
+          "measure": {
+            "suite": "server",
+            "categories": [
+              "ssh-keys"
+            ]
+          }
+        },
+        {
+          "id": "services",
+          "title": "Supervised services restart with backoff",
+          "measure": {
+            "suite": "server",
+            "categories": [
+              "services"
+            ]
+          }
+        },
+        {
+          "id": "logs",
+          "title": "Per-service logs with rotation and boot IDs",
+          "measure": {
+            "suite": "server",
+            "categories": [
+              "logs"
+            ]
+          }
+        },
+        {
+          "id": "time",
+          "title": "Time synchronized over SNTP, RTC kept in UTC",
+          "measure": {
+            "suite": "server",
+            "categories": [
+              "time"
+            ]
+          }
+        },
+        {
+          "id": "reboot",
+          "title": "Clean reboot and power-off",
+          "measure": {
+            "suite": "server",
+            "categories": [
+              "reboot"
+            ]
+          }
+        },
+        {
+          "id": "watchdog",
+          "title": "A hung machine comes back by itself",
+          "measure": {
+            "suite": "server",
+            "categories": [
+              "watchdog"
+            ]
+          }
+        },
+        {
+          "id": "resting-state",
+          "title": "The persistent install is the resting state",
+          "measure": {
+            "suite": "server",
+            "categories": [
+              "resting-state"
+            ]
+          }
+        },
+        {
+          "id": "remote-upgrade",
+          "title": "Remote upgrades with automatic rollback",
+          "measure": {
+            "suite": "server",
+            "categories": [
+              "remote-upgrade"
+            ]
+          }
+        }
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware",
+        "x86-metal"
+      ],
+      "targetsNote": "x86-64 leads on bare metal (the R240): lanes prove there first, then the catch-up brings ARM64 QEMU, Parallels and VMware to the same bar (operator decision D6, 2026-10-20)."
+    },
+    {
+      "id": "users",
+      "title": "Users and permissions",
+      "outcome": "Breenix is a multi-user Unix: full credentials and access checks on every path, accounts in /etc/passwd, group and shadow with their own tools, su and a sudo-style admin path, the standard filesystem layout with owners and modes, and the operator logging in to a personal account on the console and over SSH, never as root.",
+      "suite": "users",
+      "milestones": [
+        {
+          "id": "kernel-checks",
+          "title": "Credentials and access checks on every path",
+          "measure": {
+            "suite": "users",
+            "categories": [
+              "credentials",
+              "files",
+              "sticky",
+              "setid-exec",
+              "signals",
+              "proc-dev",
+              "umask"
+            ]
+          }
+        },
+        {
+          "id": "layout",
+          "title": "Standard layout and machine state that survives upgrades",
+          "measure": {
+            "suite": "users",
+            "categories": [
+              "layout"
+            ]
+          }
+        },
+        {
+          "id": "accounts",
+          "title": "Accounts and their tools",
+          "measure": {
+            "suite": "users",
+            "categories": [
+              "accounts"
+            ]
+          }
+        },
+        {
+          "id": "login",
+          "title": "Any account logs in on the console and over SSH",
+          "measure": {
+            "suite": "users",
+            "categories": [
+              "login",
+              "ssh"
+            ]
+          }
+        },
+        {
+          "id": "admin",
+          "title": "su and sudo-style administration, logged",
+          "measure": {
+            "suite": "users",
+            "categories": [
+              "su",
+              "sudo"
+            ]
+          }
+        },
+        {
+          "id": "operator-login",
+          "title": "The operator logs in to their own account; root SSH is off",
+          "measure": {
+            "suite": "users",
+            "categories": [
+              "operator"
+            ]
+          }
+        }
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware",
+        "x86-metal"
+      ],
+      "targetsNote": "x86-64 leads on bare metal (the R240): lanes prove there first, then the catch-up brings ARM64 QEMU, Parallels and VMware to the same bar (operator decision D6, 2026-10-20)."
+    },
+    {
+      "id": "filesystem",
+      "title": "Copy-on-write filesystem",
+      "outcome": "Breenix's own copy-on-write B-tree filesystem holds the root and home: atomic commits, checksums on metadata and data with scrub, and snapshots, recovered from power cuts without losing an acknowledged write, with the persistent install migrated onto it from ext2.",
+      "suite": "filesystem",
+      "milestones": [
+        {
+          "id": "fs-interface",
+          "title": "ext2 behind the filesystem interface",
+          "measure": {
+            "suite": "filesystem",
+            "categories": [
+              "interface"
+            ]
+          }
+        },
+        {
+          "id": "buffer-cache",
+          "title": "A shared buffer cache with ordered writeback",
+          "measure": {
+            "suite": "filesystem",
+            "categories": [
+              "buffer-cache"
+            ]
+          }
+        },
+        {
+          "id": "format",
+          "title": "The on-disk format, formatter and independent checker",
+          "measure": {
+            "suite": "filesystem",
+            "categories": [
+              "format"
+            ]
+          }
+        },
+        {
+          "id": "read",
+          "title": "Reading a host-built filesystem",
+          "measure": {
+            "suite": "filesystem",
+            "categories": [
+              "read"
+            ]
+          }
+        },
+        {
+          "id": "write",
+          "title": "Writing through transactions",
+          "measure": {
+            "suite": "filesystem",
+            "categories": [
+              "write"
+            ]
+          }
+        },
+        {
+          "id": "enospc",
+          "title": "Running out of space safely",
+          "measure": {
+            "suite": "filesystem",
+            "categories": [
+              "enospc"
+            ]
+          }
+        },
+        {
+          "id": "crash-host",
+          "title": "Every enumerated crash image recovers",
+          "measure": {
+            "suite": "filesystem",
+            "categories": [
+              "crash-images"
+            ]
+          }
+        },
+        {
+          "id": "checksums-scrub",
+          "title": "Checksums and scrub",
+          "measure": {
+            "suite": "filesystem",
+            "categories": [
+              "checksum",
+              "scrub"
+            ]
+          }
+        },
+        {
+          "id": "snapshots",
+          "title": "Snapshots and writable clones",
+          "measure": {
+            "suite": "filesystem",
+            "categories": [
+              "snapshots"
+            ]
+          }
+        },
+        {
+          "id": "test-root",
+          "title": "Every suite on a copy-on-write test root",
+          "measure": {
+            "suite": "filesystem",
+            "categories": [
+              "test-root"
+            ]
+          }
+        },
+        {
+          "id": "power-cut",
+          "title": "Power cuts lose no acknowledged write",
+          "measure": {
+            "suite": "filesystem",
+            "categories": [
+              "power-cut"
+            ]
+          }
+        },
+        {
+          "id": "persistent-root",
+          "title": "The persistent install migrated from ext2",
+          "measure": {
+            "suite": "filesystem",
+            "categories": [
+              "persistent-root"
+            ]
+          }
+        },
+        {
+          "id": "ext2-retired",
+          "title": "The ext2 partitions reclaimed",
+          "measure": {
+            "suite": "filesystem",
+            "categories": [
+              "ext2-retired"
+            ]
+          }
+        }
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware",
+        "x86-metal"
+      ],
+      "targetsNote": "x86-64 leads on bare metal (the R240): lanes prove there first, then the catch-up brings ARM64 QEMU, Parallels and VMware to the same bar (operator decision D6, 2026-10-20)."
+    },
+    {
+      "id": "toolchain",
+      "title": "Building on the box",
+      "outcome": "Breenix builds its own programs: our clean-room C compiler, assembler, static linker and make run on Breenix, rebuild themselves to identical bytes, compile the libc suite and BusyBox, and until then programs cross-built on the Mac are delivered over SSH.",
+      "suite": "toolchain",
+      "milestones": [
+        {
+          "id": "deliver",
+          "title": "Programs cross-built on the Mac delivered over SSH",
+          "measure": {
+            "suite": "server",
+            "categories": [
+              "transfer"
+            ]
+          }
+        },
+        {
+          "id": "sysroot-oracle",
+          "title": "The sysroot inventory and a reference corpus",
+          "measure": {
+            "suite": "toolchain",
+            "categories": [
+              "inputs"
+            ]
+          }
+        },
+        {
+          "id": "assembler-object",
+          "title": "Our assembler writes runnable objects",
+          "measure": {
+            "suite": "toolchain",
+            "categories": [
+              "assembler"
+            ]
+          }
+        },
+        {
+          "id": "static-link",
+          "title": "Our static linker links our libc",
+          "measure": {
+            "suite": "toolchain",
+            "categories": [
+              "linker"
+            ]
+          }
+        },
+        {
+          "id": "cc-hello",
+          "title": "cc hello.c builds and runs on the box",
+          "measure": {
+            "suite": "toolchain",
+            "categories": [
+              "c-core"
+            ]
+          }
+        },
+        {
+          "id": "make-project",
+          "title": "A multi-file project builds with our make",
+          "measure": {
+            "suite": "toolchain",
+            "categories": [
+              "make",
+              "project"
+            ]
+          }
+        },
+        {
+          "id": "bootstrap-language-abi",
+          "title": "The language, ABI and TLS our sources need",
+          "measure": {
+            "suite": "toolchain",
+            "categories": [
+              "bootstrap",
+              "abi",
+              "tls"
+            ]
+          }
+        },
+        {
+          "id": "self-host",
+          "title": "The tools rebuild themselves to identical bytes",
+          "measure": {
+            "suite": "toolchain",
+            "categories": [
+              "self-host"
+            ]
+          }
+        },
+        {
+          "id": "c11",
+          "title": "C11 coverage",
+          "measure": {
+            "suite": "toolchain",
+            "categories": [
+              "c11"
+            ]
+          }
+        },
+        {
+          "id": "c17-libc-suite",
+          "title": "C17 and the libc suite compiled on the box",
+          "measure": {
+            "suite": "toolchain",
+            "categories": [
+              "c17",
+              "libc-suite"
+            ]
+          }
+        },
+        {
+          "id": "busybox-on-box",
+          "title": "BusyBox built on the box",
+          "measure": {
+            "suite": "toolchain",
+            "categories": [
+              "gnu-workloads",
+              "busybox"
+            ]
+          }
+        },
+        {
+          "id": "kernel-assembly",
+          "title": "The kernel's assembly through our assembler",
+          "measure": {
+            "suite": "toolchain",
+            "categories": [
+              "kernel-asm"
+            ]
+          }
+        }
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware",
+        "x86-metal"
+      ],
+      "targetsNote": "x86-64 leads on bare metal (the R240): lanes prove there first, then the catch-up brings ARM64 QEMU, Parallels and VMware to the same bar (operator decision D6, 2026-10-20)."
     }
   ]
 }

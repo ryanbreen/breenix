@@ -59,14 +59,6 @@ pub(super) fn parse(path: &str) -> Option<(Pid, Entry)> {
     Some((pid, entry))
 }
 
-/// Whether a caller with effective IDs `caller` (uid, gid) may read a
-/// process's executable link: root, or a caller whose user matches the
-/// process's real, effective and saved user IDs and whose group matches all
-/// three of its group IDs.
-pub(super) fn may_read(caller: (u32, u32), uids: [u32; 3], gids: [u32; 3]) -> bool {
-    caller.0 == 0 || (uids.iter().all(|&id| id == caller.0) && gids.iter().all(|&id| id == caller.1))
-}
-
 /// The name /proc/<pid>/status reports: the program's final pathname
 /// component, cut to Linux's 15-byte command name on a character boundary.
 pub(super) fn command_name(name: &str) -> &str {
@@ -109,16 +101,6 @@ mod tests {
             "/proc/1/statm"] {
             assert_eq!(parse(path), None, "{path}");
         }
-    }
-
-    #[test]
-    fn executable_link_needs_matching_ids_or_root() {
-        assert!(may_read((0, 7), [5, 5, 5], [6, 6, 6]));
-        assert!(may_read((5, 6), [5, 5, 5], [6, 6, 6]));
-        assert!(!may_read((5, 6), [5, 0, 5], [6, 6, 6]));
-        assert!(!may_read((5, 6), [5, 5, 0], [6, 6, 6]));
-        assert!(!may_read((5, 6), [5, 5, 5], [6, 6, 0]));
-        assert!(!may_read((5, 6), [0, 0, 0], [0, 0, 0]));
     }
 
     #[test]

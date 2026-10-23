@@ -5,7 +5,7 @@
 #   - Test files for filesystem testing
 #   - Breenix-libc BusyBox in /bin/busybox with hard links for its applets
 #   - hello_world binary for exec testing
-#   - Test binaries in /usr/local/test/bin
+#   - Test binaries in /usr/libexec/breenix
 #
 # Requires Docker on macOS (or mke2fs on Linux).
 #
@@ -143,6 +143,31 @@ fi
 mkdir -p "$TARGET_DIR"
 mkdir -p "$PROJECT_ROOT/testdata"
 
+# A test-only SSH key pair for the loopback SSH oracle (init's run_bssh_pubkey_oracle):
+# made for each image build (or taken from BREENIX_TEST_SSH_KEY_DIR, so two builds that
+# must be byte-identical share one), authorized in this image only, for its test account
+# sshtest and for root (whose login bsshd refuses). It is not committed, and the
+# persistent install leaves the key, the account and root's authorized keys behind.
+TEST_SSH_DIR="${BREENIX_TEST_SSH_KEY_DIR:-}"
+TEST_SSH_TEMP=
+if [[ -z "$TEST_SSH_DIR" ]]; then
+    TEST_SSH_DIR=$(mktemp -d "${TMPDIR:-/tmp}/breenix-test-ssh.XXXXXX")
+    TEST_SSH_TEMP=$TEST_SSH_DIR
+fi
+remove_test_ssh_temp() {
+    if [[ -n "$TEST_SSH_TEMP" ]]; then
+        rm -rf "$TEST_SSH_TEMP"
+    fi
+}
+trap remove_test_ssh_temp EXIT
+if [[ ! -f "$TEST_SSH_DIR/id_ed25519" ]]; then
+    if ! command -v ssh-keygen &> /dev/null; then
+        echo "Error: ssh-keygen (OpenSSH) is required to make the image's test-only SSH key"
+        exit 1
+    fi
+    ssh-keygen -q -t ed25519 -N '' -C breenix-test-image -f "$TEST_SSH_DIR/id_ed25519"
+fi
+
 # Check if we're on macOS or Linux
 if [[ "$(uname)" == "Darwin" ]]; then
     # macOS - use Docker
@@ -173,7 +198,11 @@ if [[ "$(uname)" == "Darwin" ]]; then
         -v "$PROJECT_ROOT/fonts:/fonts:ro" \
         "${BREENGEL_MOUNTS[@]}" \
         -v "$SCRIPT_DIR/install-libc-busybox.sh:/install-libc-busybox.sh:ro" \
+        -v "$SCRIPT_DIR/install-layout.sh:/install-layout.sh:ro" \
+        -v "$PROJECT_ROOT/libs/libbreenix/src/layout.tsv:/layout.tsv:ro" \
+        -v "$PROJECT_ROOT/libs/libbreenix/src/service-tables:/service-tables:ro" \
         -v "$PROJECT_ROOT/vendor/busybox/required-applets:/required-applets:ro" \
+        -v "$TEST_SSH_DIR:/test-ssh:ro" \
         -e "OUTPUT_FILENAME=$OUTPUT_FILENAME" \
         -e "BREENIX_WAIT_STRESS=${BREENIX_WAIT_STRESS:-0}" \
         -e "BREENIX_BSSH_AUTORUN=${BREENIX_BSSH_AUTORUN:-0}" \
@@ -194,53 +223,13 @@ if [[ "$(uname)" == "Darwin" ]]; then
             mkdir -p /mnt/ext2
             mount /work/$OUTPUT_FILENAME /mnt/ext2
 
-            # Create /bin, /sbin, /usr/local/test/bin, and /usr/local/cbin directories
+            # Create /bin, /sbin, /usr/libexec/breenix, and /usr/local/cbin directories
             mkdir -p /mnt/ext2/bin
             mkdir -p /mnt/ext2/sbin
-            mkdir -p /mnt/ext2/usr/local/test/bin
-            mkdir -p /mnt/ext2/usr/local/cbin
+            mkdir -p /mnt/ext2/usr/libexec/breenix
+            mkdir -p /mnt/ext2/usr/bin
 
             sh /install-libc-busybox.sh /binaries /required-applets /mnt/ext2
-
-            # Copy remaining binaries from /binaries directory
-            #          test binaries (*_test, test_*) -> /usr/local/test/bin
-            #          system binaries (telnetd, init, probe, persistent-install, blogd, suite-*) -> /sbin
-            #          everything else -> /bin
-            echo "Installing other binaries..."
-            bin_count=0
-            sbin_count=0
-            test_count=0
-
-            for elf_file in /binaries/*.elf; do
-                if [ -f "$elf_file" ]; then
-                    bin_name=$(basename "$elf_file" .elf)
-                    # Skip BusyBox (already installed above)
-                    [ "$bin_name" = "libc-busybox" ] && continue
-                    if echo "$bin_name" | grep -qE "_test$|^test_"; then
-                        cp "$elf_file" /mnt/ext2/usr/local/test/bin/${bin_name}
-                        chmod 755 /mnt/ext2/usr/local/test/bin/${bin_name}
-                        test_count=$((test_count + 1))
-                    elif [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ] || [ "$bin_name" = "probe" ] || [ "$bin_name" = "persistent-install" ] || [ "$bin_name" = "blogd" ] || echo "$bin_name" | grep -qE "^suite-"; then
-                        cp "$elf_file" /mnt/ext2/sbin/${bin_name}
-                        chmod 755 /mnt/ext2/sbin/${bin_name}
-                        sbin_count=$((sbin_count + 1))
-                    else
-                        cp "$elf_file" /mnt/ext2/bin/${bin_name}
-                        chmod 755 /mnt/ext2/bin/${bin_name}
-                        bin_count=$((bin_count + 1))
-                    fi
-                fi
-            done
-            echo "  Installed $bin_count binaries in /bin"
-            echo "  Installed $sbin_count binaries in /sbin"
-
-            echo "  Installed $test_count test binaries in /usr/local/test/bin"
-
-            # The Rust std suite starts its helper through a name that is not UTF-8.
-            if [ -f /mnt/ext2/usr/local/test/bin/rust-std-child_test ]; then
-                ln /mnt/ext2/usr/local/test/bin/rust-std-child_test "/mnt/ext2/usr/local/test/bin/rust-std-child_test$(printf "\377")"
-            fi
-
 
             # Create /etc with passwd and group for libc getpwuid/getgrgid
             mkdir -p /mnt/ext2/etc
@@ -250,11 +239,27 @@ if [[ "$(uname)" == "Darwin" ]]; then
             cat > /mnt/ext2/etc/passwd << PASSWD
 root:x:0:0:root:/root:/bin/bsh
 nobody:x:65534:65534:nobody:/nonexistent:/bin/false
+sshtest:x:2000:2000:sshtest:/etc/breenix/test-ssh/home:/bin/sh
 PASSWD
             cat > /mnt/ext2/etc/group << GROUP
 root:x:0:
 nobody:x:65534:
+sshtest:x:2000:
 GROUP
+
+            # SSH: bsshd generates the host key into /etc/ssh on its first start. The
+            # test-only client key logs in as sshtest, whose home is beside the key (/home
+            # is a separate disk), and is listed for root so the oracle sees root refused.
+            T=/mnt/ext2/etc/breenix/test-ssh
+            mkdir -p /mnt/ext2/etc/ssh $T/home/.ssh /mnt/ext2/root/.ssh
+            cp /test-ssh/id_ed25519 $T/id_ed25519
+            cp /test-ssh/id_ed25519.pub $T/home/.ssh/authorized_keys
+            cp /test-ssh/id_ed25519.pub /mnt/ext2/root/.ssh/authorized_keys
+            chown -R 0:0 /mnt/ext2/etc/ssh $T /mnt/ext2/root
+            chown -R 2000:2000 $T/home
+            chmod 755 /mnt/ext2/etc/ssh $T
+            chmod 700 $T/home $T/home/.ssh /mnt/ext2/root /mnt/ext2/root/.ssh
+            chmod 600 $T/id_ed25519 $T/home/.ssh/authorized_keys /mnt/ext2/root/.ssh/authorized_keys
 
             # Create /etc/bshrc - startup config for the bsh ECMAScript shell
             cat > /mnt/ext2/etc/bshrc << 'BSHRC'
@@ -262,10 +267,10 @@ GROUP
 // This file is evaluated as ECMAScript by bsh on startup.
 
 // Global PATH - all standard binary directories
-env("PATH", "/bin:/sbin:/usr/local/bin:/usr/local/cbin");
+if (!env("PATH")) { env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin"); }
 
 // Home directory
-env("HOME", "/root");
+if (!env("HOME")) { env("HOME", "/root"); }
 
 // Shell identification
 env("SHELL", "/bin/bsh");
@@ -277,8 +282,9 @@ env("HOSTNAME", "breenix");
 console.log("Welcome to Breenix OS");
 BSHRC
 
-            # Create /tmp for filesystem write tests
+            # /tmp: owned by root, sticky and writable by other users (docs/users/design.md, section 4)
             mkdir -p /mnt/ext2/tmp
+            chmod 1777 /mnt/ext2/tmp
 
             if [ "$BREENIX_ARCH" = "x86_64" ] && [ "${BREENIX_WAIT_STRESS:-0}" = "1" ]; then
                 touch /mnt/ext2/etc/wait_stress.enabled
@@ -393,10 +399,10 @@ FONTSCONF
 # Format: modifier+key = action
 # Modifiers: Super (Cmd), Alt, Ctrl, Shift
 # Actions: exec <path>, close, focus_next, focus_prev
-# Double-tap: Super+Super = exec /bin/blauncher
+# Double-tap: Super+Super = exec /usr/bin/blauncher
 
-Super+Super  = exec /bin/blauncher
-Super+Return = exec /bin/bterm
+Super+Super  = exec /usr/bin/blauncher
+Super+Return = exec /usr/bin/bterm
 Alt+q        = close
 Alt+Tab      = focus_next
 Alt+Shift+Tab = focus_prev
@@ -412,36 +418,44 @@ HOTKEYS
 // can delay the visible desktop behind background tasks.
 
 // Network service
-spawn("/sbin/telnetd");
+spawn("/usr/sbin/telnetd");
 
 // Window compositor (must start before GUI apps)
-spawn("/bin/bwm");
+spawn("/usr/bin/bwm");
 
 // GUI applications
-spawn("/bin/bterm");
-spawn("/bin/blog");
-spawn("/bin/bounce");
-spawn("/bin/bcheck");
+spawn("/usr/bin/bterm");
+spawn("/usr/bin/blog");
+spawn("/usr/bin/bounce");
+spawn("/usr/bin/bcheck");
 
 // Log daemon starts after the visible desktop. On single-CPU Parallels, blogd
 // initial /proc/kmsg drain can otherwise starve the boot script before GUI apps
 // get scheduled.
-spawn("/sbin/blogd");
+spawn("/usr/sbin/blogd");
 INITJS
             else
-                echo "spawn(\"/sbin/telnetd\");" > /mnt/ext2/etc/init.js
+                echo "// The x86 boot script starts no network service: telnetd is not run on x86." > /mnt/ext2/etc/init.js
             fi
             echo "  Created /etc/init.js"
+
+            # The service table init supervises (libs/libbreenix/src/services.rs).
+            mkdir -p /mnt/ext2/etc/breenix
+            cp "/service-tables/$BREENIX_ARCH" /mnt/ext2/etc/breenix/services
+            chmod 0644 /mnt/ext2/etc/breenix/services
+            echo "  Created /etc/breenix/services"
+
+            sh /install-layout.sh /mnt/ext2 /binaries /layout.tsv
 
             # Show what was created
             echo ""
             echo "ext2 filesystem contents:"
             echo "  Binaries in /bin:"
             ls -la /mnt/ext2/bin/ 2>/dev/null || echo "    (none)"
-            echo "  Test binaries in /usr/local/test/bin:"
-            ls -la /mnt/ext2/usr/local/test/bin/ 2>/dev/null || echo "    (none)"
+            echo "  Test binaries in /usr/libexec/breenix:"
+            ls -la /mnt/ext2/usr/libexec/breenix/ 2>/dev/null || echo "    (none)"
             echo "  Test files:"
-            find /mnt/ext2 -type f -not -path "/mnt/ext2/bin/*" -not -path "/mnt/ext2/usr/local/test/bin/*" -exec ls -la {} \;
+            find /mnt/ext2 -type f -not -path "/mnt/ext2/bin/*" -not -path "/mnt/ext2/usr/libexec/breenix/*" -exec ls -la {} \;
 
             # Unmount
             umount /mnt/ext2
@@ -477,6 +491,7 @@ else
     MOUNT_DIR=$(mktemp -d)
     MOUNTED=0
     cleanup_mount() {
+        remove_test_ssh_temp
         if [[ "$MOUNTED" == 1 ]]; then
             umount "$MOUNT_DIR" || return
         fi
@@ -490,53 +505,13 @@ else
         MOUNTED=1
     fi
 
-    # Create /bin, /sbin, /usr/local/test/bin, and /usr/local/cbin directories
+    # Create /bin, /sbin, /usr/libexec/breenix, and /usr/local/cbin directories
     mkdir -p "$MOUNT_DIR/bin"
     mkdir -p "$MOUNT_DIR/sbin"
-    mkdir -p "$MOUNT_DIR/usr/local/test/bin"
-    mkdir -p "$MOUNT_DIR/usr/local/cbin"
+    mkdir -p "$MOUNT_DIR/usr/libexec/breenix"
+    mkdir -p "$MOUNT_DIR/usr/bin"
 
     "$SCRIPT_DIR/install-libc-busybox.sh" "$USERSPACE_DIR" "$PROJECT_ROOT/vendor/busybox/required-applets" "$MOUNT_DIR"
-
-    # Copy remaining binaries from userspace directory
-    #          test binaries (*_test, test_*) -> /usr/local/test/bin
-    #          system binaries (telnetd, init, probe, persistent-install, blogd, suite-*) -> /sbin
-    #          everything else -> /bin
-    echo "Installing other binaries..."
-    bin_count=0
-    sbin_count=0
-    test_count=0
-
-    for elf_file in "$USERSPACE_DIR"/*.elf; do
-        if [ -f "$elf_file" ]; then
-            bin_name=$(basename "$elf_file" .elf)
-            # Skip BusyBox (already installed above)
-            [ "$bin_name" = "libc-busybox" ] && continue
-            if echo "$bin_name" | grep -qE '_test$|^test_'; then
-                cp "$elf_file" "$MOUNT_DIR/usr/local/test/bin/${bin_name}"
-                chmod 755 "$MOUNT_DIR/usr/local/test/bin/${bin_name}"
-                test_count=$((test_count + 1))
-            elif [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ] || [ "$bin_name" = "probe" ] || [ "$bin_name" = "persistent-install" ] || [ "$bin_name" = "blogd" ] || echo "$bin_name" | grep -qE '^suite-'; then
-                cp "$elf_file" "$MOUNT_DIR/sbin/${bin_name}"
-                chmod 755 "$MOUNT_DIR/sbin/${bin_name}"
-                sbin_count=$((sbin_count + 1))
-            else
-                cp "$elf_file" "$MOUNT_DIR/bin/${bin_name}"
-                chmod 755 "$MOUNT_DIR/bin/${bin_name}"
-                bin_count=$((bin_count + 1))
-            fi
-        fi
-    done
-    echo "  Installed $bin_count binaries in /bin"
-    echo "  Installed $sbin_count binaries in /sbin"
-
-    echo "  Installed $test_count test binaries in /usr/local/test/bin"
-
-    # The Rust std suite starts its helper through a name that is not UTF-8.
-    if [ -f "$MOUNT_DIR/usr/local/test/bin/rust-std-child_test" ]; then
-        ln "$MOUNT_DIR/usr/local/test/bin/rust-std-child_test" "$MOUNT_DIR/usr/local/test/bin/rust-std-child_test$(printf '\377')"
-    fi
-
 
     # Create /etc with passwd and group for libc getpwuid/getgrgid
     mkdir -p "$MOUNT_DIR/etc"
@@ -546,11 +521,27 @@ else
     cat > "$MOUNT_DIR/etc/passwd" << PASSWD
 root:x:0:0:root:/root:/bin/bsh
 nobody:x:65534:65534:nobody:/nonexistent:/bin/false
+sshtest:x:2000:2000:sshtest:/etc/breenix/test-ssh/home:/bin/sh
 PASSWD
     cat > "$MOUNT_DIR/etc/group" << GROUP
 root:x:0:
 nobody:x:65534:
+sshtest:x:2000:
 GROUP
+
+    # SSH: bsshd generates the host key into /etc/ssh on its first start. The
+    # test-only client key logs in as sshtest, whose home is beside the key (/home
+    # is a separate disk), and is listed for root so the oracle sees root refused.
+    TEST_SSH_ROOT="$MOUNT_DIR/etc/breenix/test-ssh"
+    mkdir -p "$MOUNT_DIR/etc/ssh" "$TEST_SSH_ROOT/home/.ssh" "$MOUNT_DIR/root/.ssh"
+    cp "$TEST_SSH_DIR/id_ed25519" "$TEST_SSH_ROOT/id_ed25519"
+    cp "$TEST_SSH_DIR/id_ed25519.pub" "$TEST_SSH_ROOT/home/.ssh/authorized_keys"
+    cp "$TEST_SSH_DIR/id_ed25519.pub" "$MOUNT_DIR/root/.ssh/authorized_keys"
+    chown -R 0:0 "$MOUNT_DIR/etc/ssh" "$TEST_SSH_ROOT" "$MOUNT_DIR/root"
+    chown -R 2000:2000 "$TEST_SSH_ROOT/home"
+    chmod 755 "$MOUNT_DIR/etc/ssh" "$TEST_SSH_ROOT"
+    chmod 700 "$TEST_SSH_ROOT/home" "$TEST_SSH_ROOT/home/.ssh" "$MOUNT_DIR/root" "$MOUNT_DIR/root/.ssh"
+    chmod 600 "$TEST_SSH_ROOT/id_ed25519" "$TEST_SSH_ROOT/home/.ssh/authorized_keys" "$MOUNT_DIR/root/.ssh/authorized_keys"
 
     # Create /etc/bshrc - startup config for the bsh ECMAScript shell
     cat > "$MOUNT_DIR/etc/bshrc" << 'BSHRC'
@@ -558,10 +549,10 @@ GROUP
 // This file is evaluated as ECMAScript by bsh on startup.
 
 // Global PATH - all standard binary directories
-env("PATH", "/bin:/sbin:/usr/local/bin:/usr/local/cbin");
+if (!env("PATH")) { env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin"); }
 
 // Home directory
-env("HOME", "/root");
+if (!env("HOME")) { env("HOME", "/root"); }
 
 // Shell identification
 env("SHELL", "/bin/bsh");
@@ -573,8 +564,9 @@ env("HOSTNAME", "breenix");
 console.log("Welcome to Breenix OS");
 BSHRC
 
-    # Create /tmp for filesystem write tests
+    # /tmp: owned by root, sticky and writable by other users (docs/users/design.md, section 4)
     mkdir -p "$MOUNT_DIR/tmp"
+    chmod 1777 "$MOUNT_DIR/tmp"
 
     if [ "$ARCH" = "x86_64" ] && [ "${BREENIX_WAIT_STRESS:-0}" = "1" ]; then
         touch "$MOUNT_DIR/etc/wait_stress.enabled"
@@ -689,10 +681,10 @@ FONTSCONF
 # Format: modifier+key = action
 # Modifiers: Super (Cmd), Alt, Ctrl, Shift
 # Actions: exec <path>, close, focus_next, focus_prev
-# Double-tap: Super+Super = exec /bin/blauncher
+# Double-tap: Super+Super = exec /usr/bin/blauncher
 
-Super+Super  = exec /bin/blauncher
-Super+Return = exec /bin/bterm
+Super+Super  = exec /usr/bin/blauncher
+Super+Return = exec /usr/bin/bterm
 Alt+q        = close
 Alt+Tab      = focus_next
 Alt+Shift+Tab = focus_prev
@@ -708,40 +700,48 @@ HOTKEYS
 // can delay the visible desktop behind background tasks.
 
 // Network service
-spawn("/sbin/telnetd");
+spawn("/usr/sbin/telnetd");
 
 // Window compositor (must start before GUI apps)
-spawn("/bin/bwm");
+spawn("/usr/bin/bwm");
 
 // GUI applications
-spawn("/bin/bterm");
-spawn("/bin/blog");
-spawn("/bin/bounce");
-spawn("/bin/bcheck");
+spawn("/usr/bin/bterm");
+spawn("/usr/bin/blog");
+spawn("/usr/bin/bounce");
+spawn("/usr/bin/bcheck");
 
 // Log daemon starts after the visible desktop. On single-CPU Parallels, blogd
 // initial /proc/kmsg drain can otherwise starve the boot script before GUI apps
 // get scheduled.
-spawn("/sbin/blogd");
+spawn("/usr/sbin/blogd");
 INITJS
     else
-        echo 'spawn("/sbin/telnetd");' > "$MOUNT_DIR/etc/init.js"
+        echo '// The x86 boot script starts no network service: telnetd is not run on x86.' > "$MOUNT_DIR/etc/init.js"
     fi
     echo "  Created /etc/init.js"
+
+    # The service table init supervises (libs/libbreenix/src/services.rs).
+    mkdir -p "$MOUNT_DIR/etc/breenix"
+    cp "$PROJECT_ROOT/libs/libbreenix/src/service-tables/$ARCH" "$MOUNT_DIR/etc/breenix/services"
+    chmod 0644 "$MOUNT_DIR/etc/breenix/services"
+    echo "  Created /etc/breenix/services"
+
+    sh "$SCRIPT_DIR/install-layout.sh" "$MOUNT_DIR" "$USERSPACE_DIR" "$PROJECT_ROOT/libs/libbreenix/src/layout.tsv"
 
     # Show what was created
     echo ""
     echo "ext2 filesystem contents:"
     ls -la "$MOUNT_DIR/bin/"
-    echo "  Test binaries in /usr/local/test/bin:"
-    ls -la "$MOUNT_DIR/usr/local/test/bin/" 2>/dev/null || echo "    (none)"
-    find "$MOUNT_DIR" -type f -not -path "$MOUNT_DIR/bin/*" -not -path "$MOUNT_DIR/usr/local/test/bin/*" -exec ls -la {} \;
+    echo "  Test binaries in /usr/libexec/breenix:"
+    ls -la "$MOUNT_DIR/usr/libexec/breenix/" 2>/dev/null || echo "    (none)"
+    find "$MOUNT_DIR" -type f -not -path "$MOUNT_DIR/bin/*" -not -path "$MOUNT_DIR/usr/libexec/breenix/*" -exec ls -la {} \;
 
     # Unmount and cleanup
     if [[ "${BREENIX_REPRODUCIBLE_EXT2:-0}" == 1 ]]; then
         E2FSPROGS_FAKE_TIME=946684800 mke2fs -t ext2 -b "${BREENIX_EXT2_BLOCK_SIZE:-4096}" -U 7fabead6-ba12-4c3b-835b-e076230994d9 -E hash_seed=00000000-0000-0000-0000-000000000000 -F -d "$MOUNT_DIR" "$OUTPUT_FILE" >/dev/null 2>&1
         rm -rf "$MOUNT_DIR"
-        trap - EXIT
+        trap remove_test_ssh_temp EXIT
     else
         umount "$MOUNT_DIR"
         MOUNTED=0
@@ -753,6 +753,7 @@ fi
 
 # Copy to testdata/ for version control
 if [[ -f "$OUTPUT_FILE" ]]; then
+    python3 "$SCRIPT_DIR/check-layout.py" "$OUTPUT_FILE"
     cp "$OUTPUT_FILE" "$TESTDATA_FILE"
     SIZE=$(ls -lh "$OUTPUT_FILE" | awk '{print $5}')
     echo ""
@@ -767,8 +768,9 @@ if [[ -f "$OUTPUT_FILE" ]]; then
     echo "  /bin/{cat,head,tail,...} - BusyBox hardlinks"
     echo "  /sbin/{true,false} - BusyBox hardlinks"
     echo "  /bin/* - Other userspace binaries (demos)"
-    echo "  /usr/local/test/bin/* - Test binaries (*_test, test_*)"
-    echo "  /sbin/telnetd - telnet daemon"
+    echo "  /usr/libexec/breenix/* - Test binaries (*_test, test_*)"
+    echo "  /usr/sbin/telnetd - telnet daemon (started on ARM64 only)"
+    echo "  /etc/breenix/test-ssh/id_ed25519 - this image's test-only SSH key"
     echo "  /hello.txt - test file (1 line)"
     echo "  /lines.txt - multi-line test file (15 lines) for head/tail/wc"
     echo "  /test/nested.txt - nested test file"

@@ -24,8 +24,11 @@ pub const KEX_ALGORITHMS: &str = "mlkem768x25519-sha256,curve25519-sha256,ext-in
 /// client currently implements Curve25519 only; advertising ML-KEM here causes
 /// OpenSSH servers to negotiate a hybrid exchange that the client cannot speak.
 pub const CLIENT_KEX_ALGORITHMS: &str = "curve25519-sha256,ext-info-c";
-pub const HOST_KEY_ALGORITHMS: &str = "rsa-sha2-256,ssh-rsa";
-pub const CIPHERS: &str = "aes128-ctr";
+/// The server's host key is Ed25519 (RFC 8709).
+pub const HOST_KEY_ALGORITHMS: &str = "ssh-ed25519";
+/// Host-key algorithms the client can verify.
+pub const CLIENT_HOST_KEY_ALGORITHMS: &str = "ssh-ed25519,rsa-sha2-256,rsa-sha2-512";
+pub const CIPHERS: &str = "aes256-gcm@openssh.com,aes128-ctr";
 pub const MACS: &str = "hmac-sha2-256";
 pub const COMPRESSION: &str = "none";
 
@@ -51,15 +54,15 @@ impl KexState {
 
 /// Build a KEXINIT message payload.
 pub fn build_kexinit(rng: &mut Csprng) -> Vec<u8> {
-    build_kexinit_with_algorithms(rng, KEX_ALGORITHMS)
+    build_kexinit_with_algorithms(rng, KEX_ALGORITHMS, HOST_KEY_ALGORITHMS)
 }
 
 /// Build a client-side KEXINIT message payload.
 pub fn build_client_kexinit(rng: &mut Csprng) -> Vec<u8> {
-    build_kexinit_with_algorithms(rng, CLIENT_KEX_ALGORITHMS)
+    build_kexinit_with_algorithms(rng, CLIENT_KEX_ALGORITHMS, CLIENT_HOST_KEY_ALGORITHMS)
 }
 
-fn build_kexinit_with_algorithms(rng: &mut Csprng, kex_algorithms: &str) -> Vec<u8> {
+fn build_kexinit_with_algorithms(rng: &mut Csprng, kex_algorithms: &str, host_key_algorithms: &str) -> Vec<u8> {
     let mut payload = Vec::with_capacity(256);
 
     // Message type
@@ -72,7 +75,7 @@ fn build_kexinit_with_algorithms(rng: &mut Csprng, kex_algorithms: &str) -> Vec<
 
     // Algorithm name-lists (10 of them)
     SshBuf::put_string(&mut payload, kex_algorithms.as_bytes());
-    SshBuf::put_string(&mut payload, HOST_KEY_ALGORITHMS.as_bytes());
+    SshBuf::put_string(&mut payload, host_key_algorithms.as_bytes());
     SshBuf::put_string(&mut payload, CIPHERS.as_bytes()); // encryption C->S
     SshBuf::put_string(&mut payload, CIPHERS.as_bytes()); // encryption S->C
     SshBuf::put_string(&mut payload, MACS.as_bytes()); // MAC C->S
@@ -219,16 +222,6 @@ pub fn server_kex_hybrid(
 
     let host_key_blob = host_key.public_key_blob();
 
-    // Debug: dump field sizes for exchange hash comparison
-    println!("bsshd: [hybrid-hash] V_C={} V_S={} I_C={} I_S={} K_S={} C_INIT={} S_REPLY={} K={}",
-        client_version.len(), server_version.len(),
-        kex.peer_kexinit.len(), kex.my_kexinit.len(),
-        host_key_blob.len(), c_init.len(), s_reply.len(), shared_secret.len());
-    // Dump first/last bytes of shared secret for comparison
-    println!("bsshd: [hybrid-hash] K={:02x}{:02x}{:02x}{:02x}...{:02x}{:02x}{:02x}{:02x}",
-        shared_secret[0], shared_secret[1], shared_secret[2], shared_secret[3],
-        shared_secret[28], shared_secret[29], shared_secret[30], shared_secret[31]);
-
     let h = compute_exchange_hash_hybrid(
         client_version, server_version,
         &kex.peer_kexinit, &kex.my_kexinit,
@@ -317,8 +310,9 @@ pub fn client_kex_ecdh(
         kex.session_id = Some(h.clone());
     }
 
-    // Verify the server's signature over the exchange hash
-    if !super::keys::verify_rsa_signature(&host_key_blob, signature, &h) {
+    // Verify the server's signature over the exchange hash, by the algorithm it names.
+    let algorithm = super::keys::signature_algorithm(signature).unwrap_or_default();
+    if !super::keys::verify_signature(algorithm.as_bytes(), &host_key_blob, signature, &h) {
         return Err(SshError::Protocol("host key signature verification failed"));
     }
 
@@ -387,60 +381,57 @@ fn compute_exchange_hash_inner(
         SshBuf::put_mpint(&mut data, k);
     }
 
-    if k_as_string {
-        // Dump offsets and first bytes of each field for debugging
-        let vc_len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
-        let mut off = 4 + vc_len;
-        let vs_len = u32::from_be_bytes([data[off], data[off+1], data[off+2], data[off+3]]);
-        off += 4 + vs_len as usize;
-        let ic_off = off;
-        let ic_len = u32::from_be_bytes([data[off], data[off+1], data[off+2], data[off+3]]);
-        off += 4 + ic_len as usize;
-        let is_off = off;
-        let is_len = u32::from_be_bytes([data[off], data[off+1], data[off+2], data[off+3]]);
-        println!("bsshd: [H] total={} V_C@0={} V_S@{}={} I_C@{}={} I_S@{}={}",
-            data.len(), vc_len, 4+vc_len, vs_len, ic_off, ic_len, is_off, is_len);
-        // Dump last 40 bytes (K encoding)
-        let kstart = data.len() - 36; // string K = 4 + 32 = 36
-        println!("bsshd: [H] K@{}: {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x}...",
-            kstart, data[kstart], data[kstart+1], data[kstart+2], data[kstart+3],
-            data[kstart+4], data[kstart+5], data[kstart+6], data[kstart+7]);
-    }
 
     sha256(&data).to_vec()
 }
 
-/// Derive session keys from the shared secret and exchange hash (RFC 4253 §7.2).
-///
-/// Derives:
-/// - IV for client→server (16 bytes, letter 'A')
-/// - IV for server→client (16 bytes, letter 'B')
-/// - Encryption key client→server (16 bytes, letter 'C')
-/// - Encryption key server→client (16 bytes, letter 'D')
-/// - Integrity key client→server (32 bytes, letter 'E')
-/// - Integrity key server→client (32 bytes, letter 'F')
+/// Select each direction independently, in client preference order (RFC 4253).
+/// GCM's integrity is implicit (draft-miller-sshm-aes-gcm); CTR needs HMAC.
+pub fn negotiate_ciphers(client: &[u8], server: &[u8]) -> Result<(bool, bool), SshError> {
+    fn lists(packet: &[u8]) -> Result<Vec<&str>, SshError> {
+        if packet.len() < 17 || packet[0] != SSH_MSG_KEXINIT {
+            return Err(SshError::Protocol("bad KEXINIT"));
+        }
+        let mut pos = 17;
+        (0..10).map(|_| {
+            let bytes = SshBuf::get_string(packet, &mut pos)
+                .ok_or(SshError::Protocol("bad algorithm list"))?;
+            core::str::from_utf8(bytes).map_err(|_| SshError::Protocol("bad algorithm name"))
+        }).collect()
+    }
+    let c = lists(client)?;
+    let s = lists(server)?;
+    let choose = |index: usize| {
+        c[index].split(',').find(|name| !name.is_empty() && s[index].split(',').any(|other| other == *name))
+            .ok_or(SshError::Protocol("no common algorithm"))
+    };
+    let mut gcm = [false; 2];
+    for direction in 0..2 {
+        gcm[direction] = match choose(2 + direction)? {
+            "aes256-gcm@openssh.com" => true,
+            "aes128-ctr" => {
+                if choose(4 + direction)? != "hmac-sha2-256" {
+                    return Err(SshError::Protocol("unsupported MAC"));
+                }
+                false
+            }
+            _ => return Err(SshError::Protocol("unsupported cipher")),
+        };
+        if choose(6 + direction)? != "none" {
+            return Err(SshError::Protocol("unsupported compression"));
+        }
+    }
+    Ok((gcm[0], gcm[1]))
+}
+
+/// RFC 4253 section 7.2 KDF; RFC 5647 uses a 32-byte key and 12-byte IV.
 pub fn derive_keys(
     shared_secret: &[u8],
     exchange_hash: &[u8],
     session_id: &[u8],
-) -> (SshCipher, SshCipher) {
-    derive_keys_inner(shared_secret, exchange_hash, session_id, false)
-}
-
-/// Derive session keys for hybrid KEX (K encoded as string, not mpint).
-pub fn derive_keys_hybrid(
-    shared_secret: &[u8],
-    exchange_hash: &[u8],
-    session_id: &[u8],
-) -> (SshCipher, SshCipher) {
-    derive_keys_inner(shared_secret, exchange_hash, session_id, true)
-}
-
-fn derive_keys_inner(
-    shared_secret: &[u8],
-    exchange_hash: &[u8],
-    session_id: &[u8],
     k_as_string: bool,
+    gcm_c2s: bool,
+    gcm_s2c: bool,
 ) -> (SshCipher, SshCipher) {
     let derive = |letter: u8, len: usize| -> Vec<u8> {
         let mut data = Vec::with_capacity(256);
@@ -476,30 +467,19 @@ fn derive_keys_inner(
         }
     };
 
-    // Derive all keys
-    let iv_c2s = derive(b'A', 16);
-    let iv_s2c = derive(b'B', 16);
-    let enc_c2s = derive(b'C', 16);
-    let enc_s2c = derive(b'D', 16);
-    let mac_c2s = derive(b'E', 32);
-    let mac_s2c = derive(b'F', 32);
-
-    let mut iv_c2s_arr = [0u8; 16];
-    let mut iv_s2c_arr = [0u8; 16];
-    let mut enc_c2s_arr = [0u8; 16];
-    let mut enc_s2c_arr = [0u8; 16];
-    let mut mac_c2s_arr = [0u8; 32];
-    let mut mac_s2c_arr = [0u8; 32];
-
-    iv_c2s_arr.copy_from_slice(&iv_c2s);
-    iv_s2c_arr.copy_from_slice(&iv_s2c);
-    enc_c2s_arr.copy_from_slice(&enc_c2s);
-    enc_s2c_arr.copy_from_slice(&enc_s2c);
-    mac_c2s_arr.copy_from_slice(&mac_c2s);
-    mac_s2c_arr.copy_from_slice(&mac_s2c);
-
-    let cipher_c2s = SshCipher::new(&enc_c2s_arr, &iv_c2s_arr, &mac_c2s_arr);
-    let cipher_s2c = SshCipher::new(&enc_s2c_arr, &iv_s2c_arr, &mac_s2c_arr);
-
-    (cipher_c2s, cipher_s2c)
+    let direction = |iv_letter, key_letter, mac_letter, gcm| {
+        if gcm {
+            SshCipher::new_gcm(
+                &derive(key_letter, 32).try_into().unwrap(),
+                &derive(iv_letter, 12).try_into().unwrap(),
+            )
+        } else {
+            SshCipher::new(
+                &derive(key_letter, 16).try_into().unwrap(),
+                &derive(iv_letter, 16).try_into().unwrap(),
+                &derive(mac_letter, 32).try_into().unwrap(),
+            )
+        }
+    };
+    (direction(b'A', b'C', b'E', gcm_c2s), direction(b'B', b'D', b'F', gcm_s2c))
 }

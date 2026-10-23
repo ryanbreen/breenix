@@ -15,35 +15,70 @@ def manifest(suite, **fields):
     return json.dumps(dict(id=suite, categories=[dict(id="case", cases=[dict(id="one"), dict(id="two")])], **fields))
 
 
+def skeleton(suite):
+    """A manifest whose every category is planned: no cases, so no binary."""
+    return json.dumps(dict(id=suite, categories=[dict(id="later", cases=[])]))
+
+
 class ResolveTests(unittest.TestCase):
     def reader(self, manifests, efforts=()):
         files = {f"docs/suites/{suite}.json": text for suite, text in manifests.items()}
         files["docs/efforts/path.json"] = json.dumps(dict(efforts=[dict(id=e, suite=e, targets=["arm64-qemu"]) for e in efforts]))
         return files.get
 
+    def test_host_runners_need_their_persistent_host_path(self):
+        read = self.reader({"remote": manifest("remote", hostRunner=True, binary="scripts/metal/server-suite"),
+                            "local": manifest("local")}, efforts=("remote", "local"))
+        ids, skipped = SEQUENCE["resolve"]("all", "arm64-qemu", read=read)
+        self.assertEqual(ids, ["local"])
+        self.assertEqual(skipped, [("remote", "host-driven persistent suite")])
+        with self.assertRaisesRegex(ValueError, "host-driven"):
+            SEQUENCE["resolve"]("remote", "arm64-qemu", read=read)
+
     def test_all_orders_first_and_last_and_leaves_out_what_the_target_cannot_run(self):
         read = self.reader({"disk": manifest("disk", sequence="last"), "plain": manifest("plain"),
-                            "screen": manifest("screen", sequence="first"), "gpu": manifest("gpu", needs3dGpu=True)},
-                           efforts=("disk", "plain", "nomanifest", "gpu", "screen"))
+                            "screen": manifest("screen", sequence="first"), "gpu": manifest("gpu", needs3dGpu=True),
+                            "later": skeleton("later")},
+                           efforts=("disk", "plain", "nomanifest", "gpu", "screen", "later"))
         ids, skipped = SEQUENCE["resolve"]("all", "x86-metal", False, read)
         self.assertEqual(ids, ["screen", "plain", "disk"])
-        self.assertEqual(dict(skipped), {"nomanifest": "no manifest", "gpu": "needs a 3D GPU"})
+        self.assertEqual(dict(skipped), {"nomanifest": "no manifest", "gpu": "needs a 3D GPU", "later": "no cases yet"})
         ids, _ = SEQUENCE["resolve"]("all", "arm64-qemu", True, read)
         self.assertEqual(ids, ["screen", "plain", "gpu", "disk"])
 
+    def test_all_skips_partially_populated_suites_but_explicit_runs_remain_available(self):
+        partial = json.loads(manifest("users"))
+        partial["categories"].append(dict(id="later", cases=[]))
+        read = self.reader({"plain": manifest("plain"), "users": json.dumps(partial)}, efforts=("plain", "users"))
+        ids, skipped = SEQUENCE["resolve"]("all", "x86-metal", False, read)
+        self.assertEqual(ids, ["plain"])
+        self.assertEqual(skipped, [("users", "planned categories have no cases")])
+        self.assertEqual(SEQUENCE["resolve"]("users", "x86-metal", False, read)[0], ["users"])
+
+    def test_all_leaves_out_suites_with_host_run_categories(self):
+        mixed = json.loads(manifest("users"))
+        mixed["categories"].append(dict(id="operator", hostRunner=True, cases=[dict(id="persistent")]))
+        read = self.reader({"plain": manifest("plain"), "users": json.dumps(mixed)}, efforts=("plain", "users"))
+        ids, skipped = SEQUENCE["resolve"]("all", "x86-metal", False, read)
+        self.assertEqual(ids, ["plain"])
+        self.assertEqual(skipped, [("users", "host-run categories need a persistent boot; run it with its milestone selectors")])
+        self.assertEqual(SEQUENCE["resolve"]("users", "x86-metal", False, read)[0], ["users"])
+
     def test_a_list_runs_in_the_given_order_and_is_refused_where_isolation_needs_another_place(self):
         read = self.reader({"disk": manifest("disk", sequence="last"), "plain": manifest("plain"),
-                            "screen": manifest("screen", sequence="first"), "gpu": manifest("gpu", needs3dGpu=True)})
+                            "screen": manifest("screen", sequence="first"), "gpu": manifest("gpu", needs3dGpu=True),
+                            "later": skeleton("later")})
         self.assertEqual(SEQUENCE["resolve"]("screen,plain,disk", "vmware", True, read)[0], ["screen", "plain", "disk"])
         self.assertEqual(SEQUENCE["resolve"]("disk", "vmware", True, read)[0], ["disk"])
         for spec, why in (("plain,screen", "runs first"), ("disk,plain", "runs last"), ("plain,plain", "twice"),
-                          ("plain,missing", "no manifest"), ("plain,gpu", "3D GPU"), ("Plain", "not a suite id")):
+                          ("plain,missing", "no manifest"), ("plain,gpu", "3D GPU"), ("Plain", "not a suite id"),
+                          ("later", "no cases yet")):
             with self.subTest(spec=spec), self.assertRaisesRegex(ValueError, why):
                 SEQUENCE["resolve"](spec, "x86-metal", False, read)
 
 
 class ScoreTests(unittest.TestCase):
-    def score(self, serial, suites):
+    def score(self, serial, suites, manifests=None):
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
             (repo / "scripts").mkdir()
@@ -51,7 +86,8 @@ class ScoreTests(unittest.TestCase):
             (repo / "docs/suites").mkdir(parents=True)
             shutil.copy(ROOT / "docs/boot-path.json", repo / "docs")
             for suite in suites:
-                (repo / "docs/suites" / f"{suite}.json").write_text(manifest(suite))
+                (repo / "docs/suites" / f"{suite}.json").write_text(
+                    manifests[suite] if manifests and suite in manifests else manifest(suite))
             log = repo / "serial.txt"
             log.write_text(serial)
             return SEQUENCE["score"](suites, log, [log], repo=repo)
@@ -65,6 +101,16 @@ class ScoreTests(unittest.TestCase):
                 f"SUITE {suite} MEMORY after free=990 heap_free_kb=496 {owners}\n"
                 f"SUITE {suite} MEMORY reclaimed=PASS free_before=1000 free_after=990 allowance=64\n"
                 f"SUITE_SEQUENCE READY {suite}\n")
+
+    def test_passing_populated_categories_cannot_complete_a_planned_suite(self):
+        mixed = json.loads(manifest("users"))
+        mixed["categories"].extend(dict(id=f"planned-{i}", cases=[]) for i in range(6))
+        ok, rows = self.score(self.passing("users"), ["users"], {"users": json.dumps(mixed)})
+        self.assertFalse(ok)
+        self.assertEqual(rows[0][1], "FAIL")
+        self.assertIn("planned categories have no cases", rows[0][2])
+        for i in range(6):
+            self.assertIn(f"planned-{i}", rows[0][2])
 
     def test_each_suite_is_scored_from_its_own_part_of_the_serial(self):
         serial = ("SUITE_SEQUENCE BEGIN suites=a,b,c,d,e baseline=9\n" + self.passing("a")

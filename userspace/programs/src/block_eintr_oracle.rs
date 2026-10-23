@@ -45,9 +45,9 @@ use libbreenix::types::{Fd, Pid};
 use libbreenix::{sigaction, Sigaction};
 
 /// First large file: the ELF whose load is where #575 was originally observed.
-const FILE_A: &str = "/bin/bwm";
+const FILE_A: &str = "/usr/bin/bwm";
 /// Second, distinct large file — the leaked-gate probe.
-const FILE_B: &str = "/bin/bsshd";
+const FILE_B: &str = "/usr/sbin/bsshd";
 /// Minimum payload size; overlap with the child's exit is not implied by it.
 const MIN_BYTES: u64 = 256 * 1024;
 /// Stage 1's child sleep before exit.

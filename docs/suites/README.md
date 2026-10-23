@@ -35,6 +35,35 @@ parses the suite's source, `userspace/programs/src/suite_<id>.rs` with `-` in th
 as `_`, and reads the `static` that `main` calls `.run()` on, so comments, disabled code and
 calls outside that table do not count.
 
+### Planned categories
+
+A category whose `cases` list is empty is planned: an effort names it before its cases exist,
+and its cases arrive with the lane that implements it. The binary leaves planned categories out
+and runs the others exactly as above, so a boot does not report an empty category. A manifest
+in which each category is planned is a skeleton (`server`, `filesystem` and `toolchain`
+today; `users` has cases for its `kernel-checks` categories only): it has no suite source, binary or install entry yet, `scripts/suite-sequence.py`
+refuses it in a `--suite` list, and `all` leaves it out with "no cases yet". An effort
+milestone measured by a planned category is not complete, including when its other categories pass.
+Full-suite scoring refuses acceptance while a manifest category has no cases; targeted runs of populated
+categories remain available for development. A milestone acceptance boot uses
+`metal-run boot --suite users --milestone users/kernel-checks`: the scorer resolves the category set from
+that boot commit's `docs/efforts/path.json` and refuses missing or empty measured categories. It checks the full
+boot record order, counts, memory and fatal output, then requires the measured cases to pass. Other categories'
+case failures remain in the serial evidence and do not complete their milestones. This is a milestone verdict,
+not a full-suite PASS. `all` leaves partially populated suites out with "planned categories have no cases";
+run those suites explicitly with their milestone selector. See [effort measures](../efforts/README.md#measures). <!-- claim-lint:ok: `all` is the flag's name; scripts/suite-sequence.py (resolve) implements this paragraph and tests/suite_sequence_test.py exercises it. -->
+
+### Host-run categories
+
+A category marked `"hostRunner": true` in a suite the binary runs is measured from the boot host
+against a persistent boot instead, by `scripts/metal/server-suite` (the users suite's `operator`
+category, "Users & permissions" below). The binary leaves it out, as it does a planned category;
+`tests/suite_manifests.rs` compares the binary's table with the other populated categories and asks
+the runner to check the host-run category's cases (`--check-manifest`). A suite boot's verdict
+expects no record for it and says it is scored elsewhere, `--milestone` refuses a milestone that
+measures it, and `all` leaves the suite out. The runner's records go to that persistent boot's
+store and into its `milestone-verdict.json`, as the server suite's do (below). <!-- claim-lint:ok: `all` is the flag's name; scripts/suite-sequence.py (resolve) and tests/suite_sequence_test.py (test_all_leaves_out_suites_with_host_run_categories). -->
+
 A suite whose cases read clocks, measure time or exercise concurrency adds
 `"timingSensitive": true`, including smoke for its monotonic-clock case.
 `tests/suite_manifests.rs` checks this classification as well as manifest shape.
@@ -195,11 +224,17 @@ SUITE <id> MEMORY reclaimed=PASS|FAIL free_before=<pages> free_after=<pages> all
   page tables, `page_cache` the file pages the per-inode cache holds (`memory::file_map`),
   `kernel_stacks` kernel and per-CPU stacks, `buffers` device, DMA and display buffers, and
   `other` the rest, the kernel heap's growth among it.
+- Boot's own work is not the suite's. On x86-64 the boot thread goes on after the first
+  program starts: it starts the console executor and, on bare metal, the tick census, which runs
+  a 0.5-second window on one CPU after another (5.6 seconds together for the R240's 4 CPUs in boot
+  20261021T024142Z-metal), so a suite that starts at once would count their kernel stacks. Each sample first waits, up to 30 seconds, until `/proc/breenix/frames`
+  reports `boot settled=1` (`kernel/src/boot/settled.rs`; ARM64's boot thread enters the first
+  program itself, so it reports 1 from the start).
 - Reclamation is deferred: an exited process's tables and the image an exec replaced go back
   through reclaim receipts, and an exited thread's kernel stack from an idle CPU. So each
-  sample waits, up to 5 seconds, until no receipt is queued or parked and MemFree has held
+  sample then waits, up to 5 seconds, until no receipt is queued or parked and MemFree has held
   still for 100 ms. `receipts` is what was still queued when it stopped waiting, and
-  `settle_ms` how long it waited.
+  `settle_ms` how long the sample waited, both waits together.
 - The verdict is PASS when `free_after` is at most `allowance` pages below `free_before`.
   The allowance is `MEMORY_RECLAIM_ALLOWANCE_PAGES` in `libs/libbreenix/src/suite_memory.rs`,
   set from the measurement below; only the operator loosens it.
@@ -217,13 +252,26 @@ suite alone (2026-10-19):
 |---|---|---|
 | ARM64 QEMU, 4 CPUs, 512 MiB, fifteen suites | 15 of 15 by 5 to 7 pages | The runner's own pages: its heap, and copies of its pages that a forked case wrote |
 | R240 (a diagnostic build of this branch), fifteen suites | 12 of 15 by 5 to 7 pages | As above |
-| | terminals and networking by 37 pages | Each starts a kernel worker on first use (`kptyhup` for PTY hangups, `ktcptimerd` for TCP timers), whose 32-page stack stays for the rest of the boot |
+| | terminals and networking by 37 pages | Each started a kernel worker on first use (`kptyhup` for PTY hangups, `ktcptimerd` for TCP timers), whose 32-page stack stays for the rest of the boot |
 | | console 42 pages over | Kernel stacks freed during it came back |
 | ARM64 QEMU, memory suite alone | 38 pages | The runner's own pages: booted alone it draws its live panel, and its heap grows with it |
 
 ARM64's kernel stacks are not taken from the frame ledger, so its workers do not show. The
 allowance, 48 pages, is the largest deficit, 38 pages, with headroom; a process image left
 behind is 300 pages or more.
+
+Both workers now start with boot, beside the other kernel threads, so no suite counts their
+stacks (#2233). On the R240, `ktcptimerd`'s stack on top of the runner's own pages had put
+the sdk suite, whose C and Rust apps open TCP sockets, 63 pages short. On x86-64 a thread that
+terminated while a reclaim pass was running could also lose its place in the count the idle
+loop reclaims by, and keep its 32-page kernel stack past the second sample; a pass now adds
+back what it leaves instead of overwriting the count.
+The runner's own pages included its allocation cache: Breenix's `malloc` maps each block and
+keeps up to 16 freed blocks of each size class up to 2 KiB (at most 128 pages), so they grew as
+the runner drew its panel and formatted its records. Each sample now first unmaps that cache
+(`__breenix_malloc_release_cached` in the C library), so both samples count what the runner
+uses and not free blocks it holds for reuse. The users suite at 105 cases had been 53 pages
+short with the cache counted and was 9 pages short with it released (ARM64 QEMU, 2026-10-21).
 
 ## Writing a suite
 
@@ -311,7 +359,7 @@ tests/suite_sequence_test.py exercises it. -->
 `scripts/suite-sequence.py resolve` turns the argument into the list, checked before the
 boot: known, distinct suite ids, each with a manifest. `all` is every suite of
 `docs/efforts/path.json` the target runs (on x86-metal every main-path effort's), in path order,
-leaving out those with no manifest yet and, on a target without a 3D GPU (x86-metal; ARM64
+leaving out those with no manifest yet or planned categories and, on a target without a 3D GPU (x86-metal; ARM64
 QEMU without `--gpu-gl`), those whose manifest says `"needs3dGpu": true`. Two suites cannot
 share a boot anywhere but at one end, and their manifests say so with `"sequence"`:
 `console` (`"first"`) needs the kernel's own console on screen, and nothing gives the
@@ -466,10 +514,9 @@ swift run breenix-runs run x86 --boots 1 --suite files-io --gate-timeout 1800 --
 ```
 
 Suite helpers are ordinary userspace binaries named with the `_test` suffix, built via
-`STD_BINARIES` and installed in `/usr/local/test/bin`. They ship alongside the suite in
-all images, including default boot images, so changing boot mode does not require a
-second userspace image; default boot does not execute them. Files & I/O uses
-`/usr/local/test/bin/files-io-exec_test` for descriptor lifetime across exec. Helpers
+`STD_BINARIES` and installed in `/usr/libexec/breenix`. Image creation installs them for default
+and suite boots, so changing boot mode does not require a second userspace image; default boot does not execute them. Files & I/O uses
+`/usr/libexec/breenix/files-io-exec_test` for descriptor lifetime across exec. Helpers
 must return their result to the case and must not print suite serial records.
 
 ## Directories & links
@@ -524,7 +571,7 @@ only be a live system process. The three `exec/script*` cases measure `#!` inter
 scripts, an extension every Unix system provides but POSIX execve does not require (it may
 fail with ENOEXEC); their titles say so.
 
-The exec cases run `/usr/local/test/bin/processes-exec_test`, which reports its argv,
+The exec cases run `/usr/libexec/breenix/processes-exec_test`, which reports its argv,
 environment and the process state exec kept (IDs, process group, signal dispositions,
 mask, pending set, descriptors, limits, nice value, working directory, umask, alarm)
 on a descriptor named on its command line. Set-ID cases run a copy of it chowned and
@@ -582,7 +629,7 @@ read, and emit a suite-rejecting SKIP below two (#1615). Before measuring, each 
 that its two workers run on different processors at once: a thousand handoffs through shared memory, which two that
 take turns on one processor cannot make in the time allowed. None assumes more than two.
 
-The exec cases run `/usr/local/test/bin/signals-exec_test`, which reports the mask,
+The exec cases run `/usr/libexec/breenix/signals-exec_test`, which reports the mask,
 pending set, ignored and caught signals and alternate stack exec kept on a descriptor named
 on its command line, or says there that it runs and then unblocks a signal.
 
@@ -656,7 +703,7 @@ bounded at 3 seconds (6 for an exec) and stop 1.5 seconds before the deadline. C
 that must be asleep before they are stopped or before the clock is set are observed through
 `/proc/<pid>/status`.
 
-The exec cases run `/usr/local/test/bin/time-exec_test`, which reports the interval
+The exec cases run `/usr/libexec/breenix/time-exec_test`, which reports the interval
 timers exec kept and whether a timer ID still names a timer, on a descriptor named on its
 command line, and can then stay alive a given time.
 
@@ -1076,12 +1123,12 @@ unlinkat. build.rs reports which the library has, so those cases start measuring
 gains them. Under the targets' panic=abort, a panic in a thread ends the process with
 SIGABRT; `thread-sync/panic-aborts` and `panic-hook` measure that in a child process.
 
-The cases that start programs run `/usr/local/test/bin/rust-std-child_test`, a std-only
+The cases that start programs run `/usr/libexec/breenix/rust-std-child_test`, a std-only
 helper that reports its arguments, environment, directory, IDs and executable path on
 stdout, copies stdin to stdout, exits with a given code, or aborts. Each case uses the
 runner's default 10-second deadline. Waits for another process or thread are bounded at 3
 seconds and say what was still running; socket reads time out after 2 seconds. Sleeps and
-timeouts may never end early and may end at most 30 ms late, two of x86-64's 5 ms ticks and
+timeouts must end at or after their deadlines and at most 30 ms late, two of x86-64's 5 ms ticks and
 20 ms. Files live in a directory of the case's own, `/tmp/rust-std-<pid>`; TCP and UDP use
 127.0.0.1 and ports 20000-29999 numbered from the case's process ID.
 
@@ -1102,13 +1149,13 @@ one per milestone: `stdio` (35), `string-stdlib` (33), `math` (35), `locale-wcha
 C17 and POSIX.1-2024, with Linux's ABI where POSIX leaves a choice open; each title names the
 rule its case checks, and titles that measure a Linux choice say so.
 
-Every case but the busybox ones is a C function in `userspace/libc-suite/<category>.c`.
+The non-BusyBox cases are C functions in `userspace/libc-suite/<category>.c`.
 Each category is one program, `harness.c` plus the category's file, compiled against
 Breenix's libc headers and `libc.a` with `-std=c17 -fno-builtin -frounding-math` (so calls
 reach the library rather than the compiler, and the floating-point environment is honoured)
-and installed as `/usr/local/test/bin/libc-<category>_test`. The suite runs it once per case
+and installed as `/usr/libexec/breenix/libc-<category>_test`. The suite runs it once per case
 as `libc-<category>_test <case> <fd>` in a scratch directory of its own under `/tmp`, with
-the environment `PATH=/usr/local/libc/bin`, `HOME=/tmp`, `LIBC_SUITE=1` and nothing else.
+an environment consisting of `PATH=/usr/libexec/breenix/libc/bin`, `HOME=/tmp` and `LIBC_SUITE=1`.
 The program writes `PASS`, `FAIL <message>` or `SKIP <message>` to descriptor `<fd>` and
 exits 0. Its harness builds that message with `write()` alone, so a broken stdio or
 `string.h` cannot garble the report of what broke; `userspace/libc-suite/case.h` gives the
@@ -1116,8 +1163,8 @@ contract. `tests/suite_manifests.rs` checks that each C file's `libc_cases[]` ta
 the manifest's cases in order.
 
 The busybox cases run applets of a BusyBox built against Breenix's libc, installed as
-`/usr/local/libc/bin/busybox` with its applet links beside it, and compare what the applet
-prints and its exit status with the expected values. `PATH` names only `/usr/local/libc/bin`,
+`/usr/libexec/breenix/libc/bin/busybox` with its applet links beside it, and compare what the applet
+prints and its exit status with the expected values. `PATH` names only `/usr/libexec/breenix/libc/bin`,
 and `/bin` contains the same Breenix-libc BusyBox. Each applet has a case of its own
 (the shell has five), so one that does not behave is a recorded failure of its own. The
 builder records each configured applet's compile and link result in `applets.json` and
@@ -1176,6 +1223,157 @@ scripts/boot-interactive.sh --mode suite --suite utilities
 # From tools/breenix-runs:
 swift run breenix-runs run x86 --mode suite --boots 1 --suite utilities --sha <pushed-sha>
 ```
+
+## Server: host-driven persistent categories
+
+The `server` manifest declares `hostRunner: true` and names its Python runner in
+`binary`. Its populated cases run from the boot host against a leased persistent
+install. They do not replace PID 1, sweep the persistent server's processes or
+claim guest memory reclamation. Guest suite boot selection refuses host runners;
+the suite-list resolver leaves them out. `tests/suite_manifests.rs` checks a host runner's executable
+case table against the manifest, including order and titles.
+
+For `server/ssh-keys`, install the pushed commit, start one persistent boot and
+run the matching runner on the boot host while that boot holds the lease:
+
+```sh
+python3 ~/.local/share/breenix-metal/metal-run install-persistent --branch BRANCH --sha SHA
+python3 ~/.local/share/breenix-metal/metal-run boot --persistent
+python3 ~/.local/share/breenix-metal/server-suite --boot ID --sha SHA --milestone server/ssh-keys
+python3 ~/.local/share/breenix-metal/metal-run stop ID
+```
+
+Wait for each boot through `metal-run follow ID` before starting the next. The
+persistent session used by the host runner stays up until `stop`; start the runner
+once its console has reached the login prompt, network readiness and the
+`bsshd: listening on 0.0.0.0:22` receipt. The private
+site field `SERVER_SSH_HOST` supplies its destination; the existing operator fields
+supply the account and public key. The boot host must hold the matching private key.
+The runner uses OpenSSH with an isolated known_hosts file: keyscan must match the
+fingerprint in that boot's protected bsshd log before strict host-key logins proceed.
+The runner reads the log through a root login over the leased SOL console, requiring
+its header to match `/run/breenix/boot-id`; the trusted key comes from SOL rather than SSH.
+Only host-key and authentication-refusal records are copied into the boot capture;
+the scorer requires those records as evidence.
+A deliberately wrong host key must fail strict checking. It forces both ciphers,
+stages a temporary Ed25519 authorized user key and restores the original file,
+checks authentication refusals, checks port 22 and both telnet ports, exercises PTY
+job control and executes a quoted script through bsh's interactive shorthand. The PTY
+check requires the account's uid, the tty group's gid from `/etc/group`, and mode
+0620 (coordinator S18, 2026-10-22). It also types a partial next command while a
+foreground child runs and another behind Enter in the same write, then requires
+the complete redraw and exact output of each. bsh changes editor modes with
+TCSADRAIN to retain this queued input; TCSAFLUSH would discard it
+([POSIX tcsetattr](https://pubs.opengroup.org/onlinepubs/9799919799/functions/tcsetattr.html)).
+The login must enter bsh;
+exec cases require `/bin/bsh` in SHELL, exact command exit statuses, and piped input plus EOF.
+The input case keeps its large text round trip and also requires 10,485,760 binary bytes
+(including NUL, high bytes and CRLF) to return unchanged with status 0 within 180 seconds.
+POSIX scripts use explicit `sh -c`; temporary-key cleanup requires a byte-for-byte match to the original authorized_keys file.
+
+The runner emits START, ordered CASE and DONE lines and stores
+`server-ssh-keys.json` in that boot's private store. After the boot ends, the metal scorer also includes its recorded case results in `milestone-verdict.json`, using the completed capture without executing the cases again. Its host verdict requires the
+requested commit actually booted in persistent mode, evidence eligibility, the
+live machine lease, the manifest's exact case list, a populated category set
+matching `docs/efforts/path.json`, passing results for that set, key cleanup and
+no fatal kernel output in the capture. A missing prerequisite fails its case;
+connection failures do not count as authentication refusals. It reports a milestone
+verdict, not full-suite acceptance: the server's other planned categories remain
+unmeasured. This host contract is separate from the guest runner's PID-1 memory
+contract, whose scorer remains unchanged. ARM64 persistent coverage follows in
+this effort's catch-up (D6).
+
+For `server/services`, run the same sequence with `--milestone server/services`.
+The runner checks the shipped table and the published state over SSH as the operator,
+and acts as root by logging in on the boot's SOL console with the site's console
+account (`CONSOLE_USER`, `CONSOLE_PASSWORD`) through the driver's own console pane,
+typing in blocks of 16 printable ASCII bytes and waiting for bsh to echo each
+complete prefix before sending another block or Enter. The runner refuses a typed
+line over 4095 bytes (the console TTY input bound excluding its terminator), or a
+line containing editing/control bytes, before sending any of it. bsh edits in raw
+mode; fixed-rate typing can still outrun its whole-line redraws over SOL. Each
+command and its computed exit-status receipt share one submission; no following
+input is sent while the child runs. A nonzero status fails the command even when
+bsh's interactive shorthand would silently return to its prompt. Its cases:
+
+- `table`: `/etc/breenix/services` lists bsshd, blogd, `ntp` (the time client) and the
+  six gettys; each but `ntp` is running in `/run/breenix/services` (root's, 0644) and in
+  `svc status`; `ntp` has started at least once; the control socket is root's and 0666.
+- `entropy-first` and `network-first`: bsshd's first start follows the moment init found
+  the random pool ready, each getty started within one second of the supervisor's first
+  pass, and the time client's first start follows network-up.
+- `kill-restart`: root types `kill -9` of bsshd's process on the console; OpenSSH with strict
+  host-key checking must log in as the operator within 10 seconds of the typed kill, the state
+  shows a new process, one more start and `exit=signal:9`, and init's log records the SIGKILL
+  and the 1000 ms restart delay.
+- `reconnect-bsh`: exec requests run in `/bin/bsh`, and an interactive login enters bsh
+  with the operator's home and runs a quoted command.
+- `backoff`, `graceful-stop`, `account` and `crash-loop` use three temporary services that
+  run as the operator, which root copies into `/run/breenix/services.d` before `svc reload`
+  and removes afterwards: `/bin/false` (restart on failure), `/bin/sleep 3600`, and a
+  shell that ignores SIGTERM before it execs sleep (stop timeout 2 s). init's notices go to
+  `/var/log/init.log` once the console's getty runs ([the metal README](../metal/README.md),
+  "Services"), and root reads them on the console: their monotonic times must show restarts
+  1, 2, 4 and 8 seconds apart (0.75 s early to 2 s late) and the next start 59 to 63 seconds
+  after the fifth failure, whose crash-loop report the console shows; `svc stop` must report
+  signal 15 for sleep and signal 9 for the shell, with init's SIGKILL report for the shell only,
+  no sooner than its timeout, and neither may restart; the sleeping service's
+  `/proc/<pid>/status` shows uid and gid 1000; and the operator's `svc stop bsshd` and
+  `svc reload` are refused.
+
+Its records are `server-services.json`, scored as above, and also need the temporary
+services removed, init's log record of bsshd's SIGKILL (kept in the records as `initLog`) and
+the crash loop's console line.
+
+For `server/logs`, prepare a small service log in one persistent boot at the
+commit under test, stop that boot with `metal-run stop ID`, and start another
+persistent boot at that same commit. Run the category once on the second boot:
+
+```sh
+server-suite --boot FIRST --sha SHA --milestone server/logs --prepare-logs
+# Stop FIRST through metal-run, follow it to completion, then boot persistent again.
+server-suite --boot SECOND --sha SHA --milestone server/logs --previous-boot FIRST
+```
+
+The preparation stores the service log's SHA-256 and guest boot ID in the first
+boot's private store. The runner refuses a previous boot that is still live or
+booted a different commit. Its six cases check the shipped table services' log headers
+and root:adm 0640 ownership, separate stdout/stderr records (including root daemon output kept off the console), rotation at 256 KiB,
+a counted oversized-line loss followed by intact output, blogd's live kernel
+records and ring-overrun report, and the previous boot's exact bytes before and
+after archive rotation. Temporary services run as the site account and are
+removed afterwards. Root reads protected logs on the leased SOL console.
+Results go to `server-logs.json`; preparation is not a passing category run.
+Coordinator ruling S17 (2026-10-22) requires the kernel case to find its boot's
+records across the active log and its four size-rotation archives. Each selected
+file must carry the exact boot header. The live nonce must occur once, and the
+overrun must start at the saved cursor with a positive byte count equal to the
+end minus start; a record absent from the family fails. The runner pauses and
+resumes blogd within the guest read command so rotation cannot race that read;
+console typing does not hold the logger paused. Restart checks use that same
+boot-filtered family and still reject replay or invented overruns.
+
+
+The category repeats on the same install. Each run writes fresh nonce markers into
+its service output and kernel records, so it cannot pass on records an earlier run
+left. A fixture's table file starts with the `breenix-server-suite-fixture` marker
+comment, and the unavailable sink's directory holds a marker file. A fixture log
+requires both the supervisor's header for that fixture's source and a persistent
+`.NAME.breenix-server-suite-fixture` ownership file in `/var/log`. The runner reserves
+that file only when the active log and its archives are absent. It retains the
+ownership file across preparation boots and removes it after the log family. Before
+its first fixture, a run removes leftovers recognized by those marks and stops
+without touching anything else at a fixture's path. Cleanup removes the fixtures.
+A preparation keeps only the log that the next boot checks, and that boot's run
+removes it. To repeat the category, run `--prepare-logs` on the boot that just ran
+it, stop that boot and pass it as `--previous-boot` to the next one. A fixture counts as finished only once `/run/breenix/services` reports
+`state=done` and `output=drained`: the supervisor has read both of its streams to
+end of file and recorded them. Root's console-leak check ends at a sentinel typed
+on the console after that report, so anything init wrote onto the console for the
+service comes before the sentinel. The ssh-keys category marks its temporary
+authorized key with the same marker as its comment. It pins bssh's host key in a
+`/tmp` file of the run's own, whose entry carries the marker, and cleanup removes
+both.
 
 ## Developer SDK
 
@@ -1337,3 +1535,91 @@ scripts/boot-interactive.sh --mode suite --suite gpu --gpu-gl --gate-timeout 900
 ./run.sh --parallels --suite gpu --gate-timeout 900
 ./run.sh --vmware --suite gpu --gate-timeout 900
 ```
+
+## Users & permissions
+
+`users` measures the users effort in `docs/efforts/path.json` against `docs/users/design.md`.
+Its `kernel-checks` milestone's categories have cases: `credentials` (7), `files` (15),
+`sticky` (7), `setid-exec` (8), `signals` (5), `proc-dev` (8) and `umask` (4), 54 cases. The
+layout category has 5 cases, and accounts has 18 cases covering the library and
+installed administration tools ([account protocol](../users/accounts.md)).
+The login milestone's `login` (9) and `ssh` (7) and the admin milestone's `su` (7) and `sudo`
+(10) categories run the installed getty, login, su, sudo, passwd, bsshd and bssh as per-case
+accounts ([logins and administration](../users/login.md), "The users suite's categories").
+The operator-login milestone's `operator` category (6) is host-run on the persistent install
+(design section 5); its cases are below.
+
+On the R240 the `ssh` category's `openssh-operator` and `openssh-root-refused` cases are answered by
+the boot host's OpenSSH. The boot loop stages the operator's account name and public key on a users
+suite boot's test root; run the answering runner on the boot host while that boot runs:
+
+```sh
+python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite users --milestone users/login --branch BRANCH --sha SHA
+python3 ~/.local/share/breenix-metal/users-hostssh --boot ID
+```
+
+Each case prints `SUITE users HOSTSSH ssh/<case> seq=<n> try=account|root addr=<address> port=22
+user=<account> fp=SHA256:<fingerprint>`. The runner scans the host key, requires the fingerprint
+this boot printed, and pins it with strict host-key checking; it then requires a deliberately wrong
+pinned key to fail verification (`try=account`) or root to be refused with the operator's key
+(`try=root`), and logs in as the account to run `report <what it saw>`. Its transcript is
+`users-hostssh.json` in the boot's private store. Each case has 30 seconds (a named allowance) and
+fails when no login arrives; a target whose boot loop stages no operator account fails both until
+the catch-up gives it a host client.
+
+The suite runs as root. A case that needs another identity forks a child that becomes a
+fixture account (its supplementary groups, then setresgid and setresuid, then a refused
+setuid(0)) and reports through a pipe. The fixture accounts are ua 2001 (in group ug 2100),
+ub 2002 and uw 2003 (in wheel, 10); test images list them with locked passwords and homes under
+`/etc/breenix/test-users`, and the kernel-checks cases use their IDs. Set-ID cases copy `/usr/local/test/bin/users-exec_test`
+(`userspace/programs/src/users_exec.rs`), which has no Rust `main`, so the standard library's
+start-up does not reopen closed descriptors before the program reports them. A refusal case
+whose refusal could have an unrelated cause (a missing file, device or network stack, or a
+search check in the path) also shows the operation succeeding for an identity the rule allows. `credentials/orphan-thread-not-root` arms the
+kernel's `cred-orphan` test point (32) for its own thread. `setid-exec/nosuid-home-ignored`
+writes under `/home`, which is the home filesystem where one is mounted and the root
+filesystem's directory otherwise; the kernel gives `/home` its `nosuid,nodev` options in both
+cases, and `proc-dev/home-nodev-device-eacces` makes its device node there.
+`proc-dev/window-other-eperm` uses the window operations, which only ARM64 has; on x86-64 it
+shows a user's window operations refused (EINVAL): the x86-64 framebuffer call accepts only
+operations 6 and 32.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite users
+python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite users --milestone users/kernel-checks
+python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite users --milestone users/admin
+```
+
+A users suite boot runs the binary's 110 cases; its verdict leaves `operator` to the persistent boot. Each
+milestone's selector scores its own categories, and `users/operator-login` is scored on the persistent boot:
+
+```sh
+python3 ~/.local/share/breenix-metal/metal-run install-persistent --branch BRANCH --sha SHA
+python3 ~/.local/share/breenix-metal/metal-run boot --persistent
+python3 ~/.local/share/breenix-metal/server-suite --boot ID --sha SHA --milestone users/operator-login
+python3 ~/.local/share/breenix-metal/metal-run stop ID
+```
+
+The runner reads the site's `OPERATOR_USER`, `OPERATOR_UID`, `OPERATOR_SSH_PUBLIC_KEY` and `OPERATOR_PASSWORD`
+(the operator's own password, host-only, whose hash `install-persistent` stages as `OPERATOR_PASSWORD_HASH`), and the
+console account for root's steps. As root on the SOL console it reads this boot's protected bsshd log and pins the
+host key from it, as the server suite does. Its cases:
+
+- `account`: over OpenSSH as the operator, `/etc/passwd` names the site's uid as uid and gid, `/home/<name>` and
+  `/bin/bsh`; the account's own group has that gid; `wheel` lists it; the home and `~/.ssh` are the account's at
+  0700 and `authorized_keys` at 0600, holding every site key, including numbered public-key fields
+  (compared by SHA-256, so no key reaches the transcript). <!-- claim-lint:ok: #2280 scripts/metal/server-suite Operator.case_account requires the digest of each configured key. -->
+- `ssh-id`: `id` shows the site's uid with the account's name as uid and gid, and the groups are exactly the
+  account's own and `10(wheel)`.
+- `sudo-n-refused`: `sudo -n true` exits 1 with `a password is required`.
+- `sudo-password-root`: in an interactive OpenSSH session, `sudo id` asks for the operator's password; typed, it
+  shows `uid=0(root) gid=0(root)`.
+- `root-ssh-refused`: OpenSSH as root with the operator's key fails publickey authentication, and root's console
+  listing of `/root/.ssh` shows no `authorized_keys`.
+- `console-challenge`: once root has logged out, the operator logs in on the SOL console after a refused wrong
+  password, `print("metal-login-ok", 6*7)` answers `metal-login-ok 42`, `sudo cat /proc/fbcon/check` with the
+  password shows `fbcon check: shadow and screen identical` and `fbcon row: metal-login-ok 42`, and logging out
+  brings back a login prompt.
+
+Its records are `users-operator.json`; the score also needs the bsshd host-key record and the challenge's lines in
+the capture.

@@ -15,6 +15,9 @@ const USER_SPACE_MAX: u64 = crate::memory::layout::USER_STACK_REGION_END;
 /// * 0 on success
 /// * -EIO on failure
 pub fn sys_audio_init() -> SyscallResult {
+    if let Err(errno) = crate::process::privilege::require(crate::process::privilege::Operation::Audio) {
+        return SyscallResult::Err(errno);
+    }
     #[cfg(target_arch = "aarch64")]
     let result = crate::drivers::virtio::sound_mmio::setup_stream();
 
@@ -38,6 +41,9 @@ pub fn sys_audio_init() -> SyscallResult {
 /// * -EFAULT if pointer is invalid
 /// * -EIO on device error
 pub fn sys_audio_write(buf_ptr: u64, buf_len: u64) -> SyscallResult {
+    if let Err(errno) = crate::process::privilege::require(crate::process::privilege::Operation::Audio) {
+        return SyscallResult::Err(errno);
+    }
     if buf_ptr == 0 {
         return SyscallResult::Err(super::ErrorCode::Fault as u64);
     }

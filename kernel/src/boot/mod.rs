@@ -21,6 +21,7 @@ pub mod init_image;
 // suite as PID 1. Read by both architectures' production init launch.
 pub mod target;
 pub mod intent;
+pub mod settled;
 
 #[cfg(target_arch = "x86_64")]
 pub mod console_start;

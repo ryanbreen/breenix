@@ -103,7 +103,9 @@ pub fn unlink_path(path: &str) -> Option<SyscallResult> {
     Some(result(match entry(path)? {
         Entry::Directory => Err(EISDIR as u64),
         Entry::Name(name) => {
-            store::check_name(name).and_then(|()| super::unlink(name, &Credentials::current(false)).map(|()| 0))
+            store::check_name(name)
+                .and_then(|()| Credentials::current(false))
+                .and_then(|cred| super::unlink(name, &cred).map(|()| 0))
         }
         Entry::Nothing => Err(ENOENT as u64),
     }))
@@ -141,7 +143,7 @@ pub fn access_path(path: &str, mode: u32, cred: &Credentials) -> Option<SyscallR
         },
         Entry::Nothing => return Some(SyscallResult::Err(ENOENT as u64)),
     };
-    Some(if cred.permits_mode(uid, gid, bits, mode) { SyscallResult::Ok(0) } else { SyscallResult::Err(EACCES as u64) })
+    Some(if cred.may(crate::fs::attrs::InodeAttrs::new(bits, uid, gid), mode) { SyscallResult::Ok(0) } else { SyscallResult::Err(EACCES as u64) })
 }
 
 /// An open /dev/mqueue directory and its position. Entry positions are

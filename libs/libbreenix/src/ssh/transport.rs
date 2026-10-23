@@ -11,7 +11,7 @@ use crate::types::Fd;
 use super::auth;
 use super::channel::{self, Channel};
 use super::kex::{self, KexState};
-use super::keys::{HostKey, RsaIdentity, ServerHostKeyInfo};
+use super::keys::{HostKey, Identity, ServerHostKeyInfo};
 use super::packet::PacketIo;
 use super::{SshBuf, SshError, BSSH_VERSION};
 use super::{
@@ -22,38 +22,26 @@ use super::{
 };
 
 /// An SSH server session on an accepted TCP connection.
-pub struct ServerSession {
+pub struct ServerSession<'a> {
     io: PacketIo,
-    host_key: HostKey,
+    host_key: &'a HostKey,
+    authorizer: &'a mut dyn auth::Authorizer,
     kex: KexState,
     client_version: String,
     channel: Option<Channel>,
     username: String,
 }
 
-impl ServerSession {
-    /// Create a new server session from an accepted TCP connection fd.
-    pub fn new(fd: Fd) -> Self {
+impl<'a> ServerSession<'a> {
+    /// A server session on an accepted TCP connection, signing with
+    /// `host_key` and deciding publickey logins with `authorizer`.
+    pub fn new(fd: Fd, host_key: &'a HostKey, authorizer: &'a mut dyn auth::Authorizer) -> Self {
         Self {
             io: PacketIo::new(fd),
-            host_key: HostKey::load(),
+            host_key,
+            authorizer,
             kex: KexState::new(),
             client_version: String::new(),
-            channel: None,
-            username: String::new(),
-        }
-    }
-
-    /// Create a server session with the version exchange already done.
-    ///
-    /// Used when bsshd handles the version exchange manually (e.g. for
-    /// diagnostics) before creating the session.
-    pub fn new_after_version(fd: Fd, client_version: &str) -> Self {
-        Self {
-            io: PacketIo::new(fd),
-            host_key: HostKey::load(),
-            kex: KexState::new(),
-            client_version: client_version.to_string(),
             channel: None,
             username: String::new(),
         }
@@ -65,10 +53,9 @@ impl ServerSession {
     /// Returns the authenticated username on success.
     pub fn handshake(&mut self) -> Result<String, SshError> {
         // 1. Version exchange
-        // Read client version FIRST — this blocks until the TCP 3-way handshake
-        // completes (the client's ACK + version string arrive together). Sending
-        // our version first would fail because the connection may still be in
-        // SynReceived state after accept().
+        // RFC 4253 section 4.2: send identification once TCP is established.
+        // sendmsg waits for the accepted connection to leave SynReceived.
+        self.io.write_line(BSSH_VERSION).map_err(|_| SshError::Io)?;
         self.client_version = match self.io.read_line() {
             Ok(v) => v,
             Err(e) => {
@@ -77,12 +64,7 @@ impl ServerSession {
                 return Err(err);
             }
         };
-        println!("bsshd: client version: '{}'", self.client_version);
-        if let Err(e) = self.io.write_line(BSSH_VERSION) {
-            println!("bsshd: write_line FAILED: {:?}", e);
-            return Err(SshError::Io);
-        }
-        println!("bsshd: server version sent");
+        println!("bsshd: client version: '{}'", self.client_version.escape_debug());
 
         if !self.client_version.starts_with("SSH-2.0-") {
             return Err(SshError::Protocol("unsupported SSH version"));
@@ -126,7 +108,7 @@ impl ServerSession {
             println!("bsshd: KEX mlkem768x25519-sha256 (post-quantum)");
             kex::server_kex_hybrid(
                 &mut self.io,
-                &self.host_key,
+                self.host_key,
                 &mut self.kex,
                 &self.client_version,
                 BSSH_VERSION,
@@ -136,7 +118,7 @@ impl ServerSession {
             println!("bsshd: KEX curve25519-sha256");
             kex::server_kex_ecdh(
                 &mut self.io,
-                &self.host_key,
+                self.host_key,
                 &mut self.kex,
                 &self.client_version,
                 BSSH_VERSION,
@@ -152,12 +134,10 @@ impl ServerSession {
 
         // Derive and install session keys
         let session_id = self.kex.session_id.as_ref().unwrap();
-        let is_hybrid = c_init_len == 1216;
-        let (cipher_c2s, cipher_s2c) = if is_hybrid {
-            kex::derive_keys_hybrid(&shared_secret, &exchange_hash, session_id)
-        } else {
-            kex::derive_keys(&shared_secret, &exchange_hash, session_id)
-        };
+        let (c2s, s2c) = kex::negotiate_ciphers(&self.kex.peer_kexinit, &self.kex.my_kexinit)?;
+        let (cipher_c2s, cipher_s2c) = kex::derive_keys(
+            &shared_secret, &exchange_hash, session_id, c_init_len == 1216, c2s, s2c,
+        );
 
         self.io.set_cipher_recv(cipher_c2s); // client→server = our recv
         self.io.set_cipher_send(cipher_s2c); // server→client = our send
@@ -165,19 +145,19 @@ impl ServerSession {
         // Send EXT_INFO (RFC 8308) to advertise supported pubkey algorithms.
         // Without this, modern OpenSSH (which disables ssh-rsa SHA-1 by default)
         // won't offer RSA keys for publickey auth — it needs to know we support
-        // rsa-sha2-256 for signature verification.
+        // rsa-sha2-256 for signature verification. Ed25519 keys need no SHA-1.
         {
             let mut ext_info = Vec::with_capacity(64);
             ext_info.push(7); // SSH_MSG_EXT_INFO
             SshBuf::put_u32(&mut ext_info, 1); // nr-extensions = 1
             SshBuf::put_string(&mut ext_info, b"server-sig-algs");
-            SshBuf::put_string(&mut ext_info, b"rsa-sha2-256,rsa-sha2-512,ssh-rsa");
+            SshBuf::put_string(&mut ext_info, b"ssh-ed25519,rsa-sha2-256,rsa-sha2-512");
             self.io.send_packet(&ext_info).map_err(|_| SshError::Io)?;
         }
 
         // 3. Authentication
         auth::server_accept_service(&mut self.io)?;
-        self.username = auth::server_authenticate(&mut self.io, session_id)?;
+        self.username = auth::server_authenticate(&mut self.io, session_id, self.authorizer)?;
 
         Ok(self.username.clone())
     }
@@ -240,6 +220,11 @@ impl ServerSession {
         Ok(pty_requested)
     }
 
+    /// The terminal type the client's pty-req named, if any.
+    pub fn pty_term(&self) -> Option<String> {
+        self.channel.as_ref().and_then(|ch| ch.pty_term.clone())
+    }
+
     /// Get the channel's PTY dimensions.
     pub fn pty_size(&self) -> (u32, u32) {
         self.channel
@@ -255,6 +240,17 @@ impl ServerSession {
         } else {
             Err(SshError::ChannelNotFound)
         }
+    }
+
+    /// Bytes that can be sent without waiting for peer window credit.
+    pub fn send_capacity(&self) -> usize {
+        self.channel.as_ref().map(|ch| ch.send_window.min(ch.max_packet) as usize).unwrap_or(0)
+    }
+
+    /// Replenish input credit only after the consumer has delivered or discarded it.
+    pub fn consume_input(&mut self, bytes: usize) -> Result<(), SshError> {
+        let ch = self.channel.as_mut().ok_or(SshError::ChannelNotFound)?;
+        channel::send_window_adjust(&mut self.io, ch, bytes as u32)
     }
 
     /// Take the command supplied by an SSH "exec" request, if any.
@@ -285,6 +281,18 @@ impl ServerSession {
     /// (window adjust, etc.), or Err for disconnect/errors.
     pub fn recv_data(&mut self) -> Result<Option<Vec<u8>>, SshError> {
         let msg = self.io.recv_packet().map_err(|_| SshError::Io)?;
+        self.handle_channel_packet(&msg, true)
+    }
+
+    /// Nonblocking receive for a process relay. A fragmented packet stays in
+    /// PacketIo; an incomplete packet or control message yields no channel data. The caller
+    /// returns input credit with consume_input after delivering the data.
+    pub fn try_recv_data_uncredited(&mut self) -> Result<Option<Vec<u8>>, SshError> {
+        let Some(msg) = self.io.try_recv_packet().map_err(|_| SshError::Io)? else { return Ok(None) };
+        self.handle_channel_packet(&msg, false)
+    }
+
+    fn handle_channel_packet(&mut self, msg: &[u8], replenish: bool) -> Result<Option<Vec<u8>>, SshError> {
         if msg.is_empty() {
             return Err(SshError::Disconnected);
         }
@@ -292,14 +300,15 @@ impl ServerSession {
         match msg[0] {
             SSH_MSG_CHANNEL_DATA => {
                 let mut pos = 1;
-                let _channel_id = SshBuf::get_u32(&msg, &mut pos);
-                let data = SshBuf::get_string(&msg, &mut pos)
+                let _channel_id = SshBuf::get_u32(msg, &mut pos);
+                let data = SshBuf::get_string(msg, &mut pos)
                     .ok_or(SshError::Protocol("bad channel data"))?;
 
                 // Adjust receive window
                 if let Some(ref mut ch) = self.channel {
-                    ch.recv_window = ch.recv_window.saturating_sub(data.len() as u32);
-                    if ch.recv_window < 512 * 1024 {
+                    ch.recv_window = ch.recv_window.checked_sub(data.len() as u32)
+                        .ok_or(SshError::Protocol("channel receive window exceeded"))?;
+                    if replenish && ch.recv_window < 512 * 1024 {
                         channel::send_window_adjust(&mut self.io, ch, 1024 * 1024)?;
                     }
                 }
@@ -309,8 +318,8 @@ impl ServerSession {
             SSH_MSG_CHANNEL_WINDOW_ADJUST => {
                 if let Some(ref mut ch) = self.channel {
                     let mut pos = 1;
-                    let _id = SshBuf::get_u32(&msg, &mut pos);
-                    let bytes = SshBuf::get_u32(&msg, &mut pos).unwrap_or(0);
+                    let _id = SshBuf::get_u32(msg, &mut pos);
+                    let bytes = SshBuf::get_u32(msg, &mut pos).unwrap_or(0);
                     ch.send_window = ch.send_window.saturating_add(bytes);
                 }
                 Ok(None)
@@ -324,7 +333,7 @@ impl ServerSession {
             }
             SSH_MSG_CHANNEL_CLOSE => {
                 let mut pos = 1;
-                let recipient = SshBuf::get_u32(&msg, &mut pos)
+                let recipient = SshBuf::get_u32(msg, &mut pos)
                     .ok_or(SshError::Protocol("bad channel close"))?;
                 if pos != msg.len() {
                     return Err(SshError::Protocol("bad channel close length"));
@@ -431,8 +440,8 @@ pub struct ClientSession {
 /// Authentication method for SSH client handshakes.
 pub enum ClientAuthMethod<'a> {
     Password(&'a str),
-    PublicKey { wrong_key: bool },
-    PublicKeyIdentity(&'a RsaIdentity),
+    /// Publickey with `identity`; `wrong_signer` signs with a fresh random key instead.
+    PublicKey { identity: &'a Identity, wrong_signer: bool },
 }
 
 impl ClientSession {
@@ -514,7 +523,10 @@ impl ClientSession {
 
         // Install cipher
         let session_id = self.kex.session_id.as_ref().unwrap();
-        let (cipher_c2s, cipher_s2c) = kex::derive_keys(&shared_secret, &exchange_hash, session_id);
+        let (send_cipher, recv_cipher) = kex::negotiate_ciphers(&self.kex.my_kexinit, &self.kex.peer_kexinit)?;
+        let (cipher_c2s, cipher_s2c) = kex::derive_keys(
+            &shared_secret, &exchange_hash, session_id, false, send_cipher, recv_cipher,
+        );
 
         self.io.set_cipher_send(cipher_c2s); // client→server = our send
         self.io.set_cipher_recv(cipher_s2c); // server→client = our recv
@@ -525,11 +537,8 @@ impl ClientSession {
             ClientAuthMethod::Password(password) => {
                 auth::client_auth_password(&mut self.io, username, password)?;
             }
-            ClientAuthMethod::PublicKey { wrong_key } => {
-                auth::client_auth_publickey(&mut self.io, username, session_id, wrong_key)?;
-            }
-            ClientAuthMethod::PublicKeyIdentity(identity) => {
-                auth::client_auth_publickey_identity(&mut self.io, username, session_id, identity)?;
+            ClientAuthMethod::PublicKey { identity, wrong_signer } => {
+                auth::client_auth_publickey(&mut self.io, username, session_id, identity, wrong_signer)?;
             }
         }
 

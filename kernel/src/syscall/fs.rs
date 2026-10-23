@@ -217,8 +217,19 @@ impl Stat {
 
 use crate::fs::permissions::Credentials as FileCredentials;
 
-fn current_file_credentials() -> FileCredentials {
+fn current_file_credentials() -> Result<FileCredentials, u64> {
     FileCredentials::current(false)
+}
+
+/// A devfs node's status: its number, device and its owner, group and mode.
+fn fill_device_stat(stat: &mut Stat, inode: u64, rdev: u64, attrs: crate::fs::attrs::InodeAttrs) {
+    stat.st_dev = 0xffff0002;
+    stat.st_ino = inode;
+    stat.st_mode = attrs.mode;
+    stat.st_uid = attrs.uid;
+    stat.st_gid = attrs.gid;
+    stat.st_nlink = 1;
+    stat.st_rdev = rdev;
 }
 
 /// POSIX open access check: the access mode (and O_TRUNC) must be granted by
@@ -242,7 +253,7 @@ fn check_open_access(
     if flags & O_TRUNC != 0 {
         wanted |= 0o2;
     }
-    if cred.permits(inode, wanted) {
+    if cred.may(inode.attrs(), wanted) {
         Ok(())
     } else {
         Err(SyscallResult::Err(EACCES as u64))
@@ -267,7 +278,7 @@ fn resolve_user_at(
     follow: bool,
 ) -> Result<crate::fs::namei::Resolved<alloc::vec::Vec<u8>>, SyscallResult> {
     let path = super::userptr::copy_path_bytes_from_user(pathname).map_err(SyscallResult::Err)?;
-    super::metadata::resolve_at(dirfd, &path, follow, &current_file_credentials())
+    super::metadata::resolve_at(dirfd, &path, follow, &current_file_credentials().map_err(SyscallResult::Err)?)
         .map_err(SyscallResult::Err)
 }
 
@@ -282,7 +293,7 @@ fn resolve_user_entry_at(
     let start =
         super::at_path::directory_start(dirfd, raw.starts_with(b"/"), super::metadata::directory)
             .map_err(SyscallResult::Err)?;
-    crate::fs::namei::resolve_entry_from(&raw, start, &current_file_credentials())
+    crate::fs::namei::resolve_entry_from(&raw, start, &current_file_credentials().map_err(SyscallResult::Err)?)
         .map_err(SyscallResult::Err)
 }
 
@@ -296,7 +307,7 @@ fn resolve_user_rename_at(
     let start =
         super::at_path::directory_start(dirfd, path.starts_with(b"/"), super::metadata::directory)
             .map_err(SyscallResult::Err)?;
-    crate::fs::namei::resolve_rename_from(&path, start, &current_file_credentials())
+    crate::fs::namei::resolve_rename_from(&path, start, &current_file_credentials().map_err(SyscallResult::Err)?)
         .map_err(SyscallResult::Err)
 }
 
@@ -307,7 +318,7 @@ fn resolve_user_create_at(
     pathname: u64,
 ) -> Result<crate::fs::namei::Resolved<alloc::vec::Vec<u8>>, SyscallResult> {
     let path = super::userptr::copy_path_bytes_from_user(pathname).map_err(SyscallResult::Err)?;
-    super::metadata::resolve_create_at(dirfd, &path, &current_file_credentials())
+    super::metadata::resolve_create_at(dirfd, &path, &current_file_credentials().map_err(SyscallResult::Err)?)
         .map_err(SyscallResult::Err)
 }
 
@@ -602,12 +613,16 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
         Ok(path) => path,
         Err(e) => return SyscallResult::Err(e),
     };
-    let cred = current_file_credentials();
+    let cred = match current_file_credentials() {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     let resolved = match super::metadata::resolve_at(dirfd, &raw, follow, &cred) {
         Ok(r) => r,
         Err(e) => return SyscallResult::Err(e),
     };
     let path = resolved.virtual_path().unwrap_or("");
+    let mount_flags = crate::fs::vfs::mount::flags_at(&resolved.path);
 
     log::debug!(
         "sys_open: path={:?}, flags={:#x}, mode={:#o}",
@@ -668,7 +683,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
             Ok(entry) => entry,
             Err(e) => return SyscallResult::Err(e as u64),
         };
-        return handle_fifo_open(path, flags, entry);
+        return handle_fifo_open(path, flags, entry, mount_flags);
     }
 
     let mount = match resolved.target {
@@ -701,7 +716,10 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
     let needs_write = (want_creat && matches!(resolved.target, Target::Absent { .. })) || want_trunc;
     // Read before taking a filesystem lock; the process manager is not
     // acquired under one.
-    let cred = current_file_credentials();
+    let cred = match current_file_credentials() {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
 
     // An open that creates or truncates must not change the disk and then
     // fail with EMFILE. A slot is held now, growing the table if need be, so
@@ -798,7 +816,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
                 Err(_) => return SyscallResult::Err(12),
             };
             let fd_entry = match FileDescriptor::try_opened(FdKind::Directory(file), flags) {
-                Ok(entry) => entry,
+                Ok(entry) => entry.on_mount(mount_flags),
                 Err(_) => return SyscallResult::Err(12),
             };
             match install_descriptor(&mut process.fd_table, reserved, fd_entry) {
@@ -846,11 +864,15 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
         if matches!(file_type, Ext2FileType::Socket | Ext2FileType::BlockDevice) {
             return SyscallResult::Err(6);
         }
+        // A device node on a nodev mount opens no device.
+        if mount_flags.nodev {
+            return SyscallResult::Err(EACCES as u64);
+        }
         let rdev = crate::fs::ext2::create_node::node_device(&inode);
         let device = crate::fs::devfs::lookup_by_rdev(rdev).map(|device| device.device_type.name());
         drop(guard);
         match device {
-            Some(name) => handle_devfs_open(name, flags, resolved.handle().cloned(), reserved),
+            Some(name) => handle_devfs_open(name, flags, resolved.handle().cloned().map(|h| (h, mount_flags)), reserved),
             None => SyscallResult::Err(6),
         }
     } else if !matches!(file_type, Ext2FileType::Regular) {
@@ -896,7 +918,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
             Err(_) => return SyscallResult::Err(12),
         };
         let fd_entry = match FileDescriptor::try_opened(FdKind::RegularFile(file), flags) {
-            Ok(entry) => entry,
+            Ok(entry) => entry.on_mount(mount_flags),
             Err(_) => return SyscallResult::Err(12),
         };
         match install_descriptor(&mut process.fd_table, reserved, fd_entry) {
@@ -1138,6 +1160,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         Device {
             inode: u64,
             rdev: u64,
+            attrs: crate::fs::attrs::InodeAttrs,
         },
         DevfsDirectory,
         DevptsDirectory,
@@ -1206,6 +1229,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                     FstatKind::Device {
                         inode: device_type.inode(),
                         rdev: device_node.map(|d| d.rdev()).unwrap_or(0),
+                        attrs: device_type.attrs(),
                     }
                 }
                 FdKind::DevfsDirectory { .. } => FstatKind::DevfsDirectory,
@@ -1219,6 +1243,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                         rdev: crate::fs::devfs::lookup_by_inode(ptmx.inode())
                             .map(|d| d.rdev())
                             .unwrap_or(0),
+                        attrs: ptmx.attrs(),
                     }
                 }
                 FdKind::PtySlave(pair) => FstatKind::PtySlave(pair.clone()),
@@ -1320,13 +1345,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 stat.st_rdev = inode_stat.rdev;
             }
         }
-        FstatKind::Device { inode, rdev } => {
-            stat.st_dev = 0xffff0002;
-            stat.st_ino = inode;
-            stat.st_mode = S_IFCHR | 0o666;
-            stat.st_nlink = 1;
-            stat.st_rdev = rdev;
-        }
+        FstatKind::Device { inode, rdev, attrs } => fill_device_stat(&mut stat, inode, rdev, attrs),
         FstatKind::DevfsDirectory => {
             stat.st_dev = 0xffff0002;
             stat.st_ino = 1;
@@ -1835,7 +1854,10 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
         Target::Inode { mount, .. } => mount,
     };
 
-    let cred = current_file_credentials();
+    let cred = match current_file_credentials() {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     let unlink_result = {
         let Some(parent) = resolved.entry_dir() else {
             return SyscallResult::Err(EIO as u64);
@@ -1976,7 +1998,10 @@ fn sys_rename_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> 
     // A pathname ending in `/` names a directory.
     let want_dir = old.trailing_slash || new.trailing_slash;
 
-    let cred = current_file_credentials();
+    let cred = match current_file_credentials() {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     let result = {
         let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
         match fs_guard.as_mut() {
@@ -2006,7 +2031,7 @@ fn sys_rename_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> 
                                 if required
                                     && old_parent != new_parent
                                     && inode.is_dir()
-                                    && !cred.permits(&inode, 2)
+                                    && !cred.may(inode.attrs(), 2)
                                 {
                                     return SyscallResult::Err(13);
                                 }
@@ -2101,7 +2126,10 @@ fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
         Target::Inode { mount, .. } => mount,
     };
 
-    let cred = current_file_credentials();
+    let cred = match current_file_credentials() {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     let rmdir_result = {
         let Some(parent) = resolved.entry_dir() else {
             return SyscallResult::Err(EIO as u64);
@@ -2238,7 +2266,10 @@ fn sys_link_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> Sy
         }
     }
 
-    let cred = current_file_credentials();
+    let cred = match current_file_credentials() {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     let link_result = {
         let (Some(source), Some(parent)) = (old.handle(), new.entry_dir()) else {
             return SyscallResult::Err(EIO as u64);
@@ -2261,6 +2292,11 @@ fn sys_link_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> Sy
         };
         if let Err(e) = super::fifo_policy::check_parent_access(&inode, &cred, None) {
             return SyscallResult::Err(e);
+        }
+        match fs.read_inode(source) {
+            Ok(target) if !may_link(&cred, target.attrs()) => return SyscallResult::Err(EPERM as u64),
+            Ok(_) => {}
+            Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
         }
         fs.link_in_dir(source, parent, new.final_name())
     };
@@ -2299,6 +2335,14 @@ fn sys_link_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> Sy
             SyscallResult::Err(errno as u64)
         }
     }
+}
+
+/// Whether `cred` may make a new name for a file with `target` attributes:
+/// root, its owner, or a caller who may both read and write it. A user cannot
+/// pin another user's file under a name of their own, in `/tmp` or anywhere
+/// else, where a later chmod, rename or set-ID update would not reach it.
+fn may_link(cred: &FileCredentials, target: crate::fs::attrs::InodeAttrs) -> bool {
+    cred.privileged() || cred.euid == target.uid || cred.may(target, 6)
 }
 
 fn creation_parent(
@@ -2364,7 +2408,10 @@ fn sys_mkdir_from(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
     };
 
     // Create the directory on the correct filesystem
-    let cred = current_file_credentials();
+    let cred = match current_file_credentials() {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     let mkdir_result = {
         let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
         match fs_guard.as_mut() {
@@ -2373,7 +2420,9 @@ fn sys_mkdir_from(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
                     Ok(p) => p,
                     Err(e) => return e,
                 };
-                let dir_mode = super::fifo_policy::creation_mode(mode, &cred, parent.1, parent.2);
+                // The caller's mode gives the permission and sticky bits; a new
+                // directory is set-group-ID only when its parent is.
+                let dir_mode = super::fifo_policy::creation_mode(mode & 0o1777, &cred, parent.1, parent.2);
                 fs.create_directory_in(
                     parent.0,
                     resolved.final_name(),
@@ -2483,7 +2532,10 @@ fn sys_symlink_from(target: u64, dirfd: i32, linkpath: u64) -> SyscallResult {
         Target::Absent { mount, .. } => mount,
     };
 
-    let cred = current_file_credentials();
+    let cred = match current_file_credentials() {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     // Create the symbolic link on the correct filesystem
     let symlink_result = {
         let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
@@ -2693,10 +2745,10 @@ fn access_resolved(
                 return SyscallResult::Ok(0);
             }
             if let Some(device) = resolved.virtual_path().unwrap_or("").strip_prefix("/dev/") {
-                if crate::fs::devfs::lookup(device).is_none() {
+                let Some(device) = crate::fs::devfs::lookup(device) else {
                     return SyscallResult::Err(ENOENT as u64);
-                }
-                return if mode & 1 == 0 {
+                };
+                return if cred.may(device.device_type.attrs(), mode) {
                     SyscallResult::Ok(0)
                 } else {
                     SyscallResult::Err(EACCES as u64)
@@ -2717,7 +2769,7 @@ fn access_resolved(
         Ok(inode) => inode,
         Err(_) => return SyscallResult::Err(EIO as u64),
     };
-    if cred.permits(&inode, mode) {
+    if cred.may(inode.attrs(), mode) {
         SyscallResult::Ok(0)
     } else {
         SyscallResult::Err(EACCES as u64)
@@ -2841,7 +2893,7 @@ fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
 fn handle_devfs_open(
     device_name: &str,
     flags: u32,
-    native_inode: Option<crate::fs::ext2::live_inode::FileHandle>,
+    native_inode: Option<crate::ipc::fd::NativeInode>,
     reserved: Option<ReservedSlot>,
 ) -> SyscallResult {
     use super::errno::{EMFILE, ENOENT};
@@ -2872,6 +2924,17 @@ fn handle_devfs_open(
 
     if !device.device_type.is_writable() && flags & 3 != 0 {
         return SyscallResult::Err(13); // EACCES
+    }
+    // The node's owner, group and mode decide who may open it.
+    let wanted = match flags & 3 {
+        O_RDONLY => 4,
+        O_WRONLY => 2,
+        _ => 6,
+    };
+    match current_file_credentials() {
+        Ok(cred) if cred.may(device.device_type.attrs(), wanted) => {}
+        Ok(_) => return SyscallResult::Err(13), // EACCES
+        Err(errno) => return SyscallResult::Err(errno),
     }
     if device.device_type == devfs::DeviceType::Ptmx {
         return open_ptmx(flags, native_inode, reserved);
@@ -2920,8 +2983,7 @@ fn handle_devfs_open(
         };
         return match (id, tty) {
             (TtyId::Pty(_), TtyRef::Pty(pair)) => {
-                drop(manager_guard);
-                return open_tty_slave(&pair, flags, native_inode, reserved);
+                return open_tty_slave(process, &pair, flags, native_inode, reserved);
             }
             // A virtual terminal: its own device, so reads, writes and the
             // open count are that terminal's (`docs/console/contract.md` 1.1).
@@ -3018,7 +3080,10 @@ fn handle_devpts_open(pty_name: &str, flags: u32, reserved: Option<ReservedSlot>
         }
     };
     // Read before the process manager is taken: Credentials::current takes it.
-    let cred = current_file_credentials();
+    let cred = match current_file_credentials() {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
         return SyscallResult::Err(3); // ESRCH
     };
@@ -3111,7 +3176,7 @@ impl Slot {
 /// /dev/ptmx.
 fn open_ptmx(
     flags: u32,
-    native_inode: Option<crate::fs::ext2::live_inode::FileHandle>,
+    native_inode: Option<crate::ipc::fd::NativeInode>,
     reserved: Option<ReservedSlot>,
 ) -> SyscallResult {
     let (pair, entry) = match crate::tty::pty::new_master(flags) {
@@ -3148,13 +3213,15 @@ fn open_vcs(
     vt: usize,
     attributes: bool,
     flags: u32,
-    native_inode: Option<crate::fs::ext2::live_inode::FileHandle>,
+    native_inode: Option<crate::ipc::fd::NativeInode>,
     reserved: Option<ReservedSlot>,
 ) -> SyscallResult {
     use super::errno::EACCES;
     use crate::ipc::fd::FileDescriptor;
-    if current_file_credentials().euid != 0 {
-        return SyscallResult::Err(EACCES as u64);
+    match current_file_credentials() {
+        Ok(cred) if cred.privileged() => {}
+        Ok(_) => return SyscallResult::Err(EACCES as u64),
+        Err(errno) => return SyscallResult::Err(errno),
     }
     let object = alloc::sync::Arc::new(crate::console::vcs::VcsFile::new(vt, attributes));
     let entry = match FileDescriptor::try_opened(FdKind::Ipc(object), flags) {
@@ -3176,11 +3243,14 @@ fn open_vcs(
 
 /// Open the slave of `pair`, the caller's controlling terminal, for
 /// /dev/tty. The descriptor is installed in a slot held before the slave
-/// reference is taken; EIO once the master has closed.
+/// reference is taken; EIO once the master has closed. The caller holds the
+/// process manager from controlling-terminal lookup through installation, so
+/// vhangup cannot clear membership and revoke between lookup and stamping.
 fn open_tty_slave(
+    process: &mut crate::process::Process,
     pair: &alloc::sync::Arc<crate::tty::pty::PtyPair>,
     flags: u32,
-    native_inode: Option<crate::fs::ext2::live_inode::FileHandle>,
+    native_inode: Option<crate::ipc::fd::NativeInode>,
     reserved: Option<ReservedSlot>,
 ) -> SyscallResult {
     use super::errno::EMFILE;
@@ -3189,16 +3259,6 @@ fn open_tty_slave(
     let entry = match FileDescriptor::try_opened(FdKind::PtySlave(pair.clone()), flags) {
         Ok(entry) => entry.with_inode(native_inode),
         Err(e) => return SyscallResult::Err(e),
-    };
-    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
-        return SyscallResult::Err(3); // ESRCH
-    };
-    let mut manager_guard = crate::process::manager();
-    let Some((_, process)) = manager_guard
-        .as_mut()
-        .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
-    else {
-        return SyscallResult::Err(3); // ESRCH
     };
     let slot = match reserved {
         Some(slot) => Slot::Held(slot),
@@ -3783,7 +3843,7 @@ pub fn sys_fchdir(fd: u64) -> SyscallResult {
 /// do once they hold it: the caller must be able to search it. Every thread
 /// that shares the working directory moves with it.
 fn enter_working_dir(dir: crate::fs::namei::WorkingDir) -> SyscallResult {
-    if let Err(errno) = crate::fs::namei::may_search(&dir, &current_file_credentials()) {
+    if let Err(errno) = current_file_credentials().and_then(|cred| crate::fs::namei::may_search(&dir, &cred)) {
         return SyscallResult::Err(errno);
     }
 
@@ -3830,6 +3890,7 @@ fn handle_fifo_open(
     path: &str,
     flags: u32,
     entry: alloc::sync::Arc<spin::Mutex<crate::ipc::fifo::FifoEntry>>,
+    mount_flags: crate::fs::attrs::MountFlags,
 ) -> SyscallResult {
     use super::errno::EINTR;
     use crate::ipc::fd::status_flags;
@@ -3884,7 +3945,7 @@ fn handle_fifo_open(
                 entry,
                 for_write,
             };
-            let result = install_fifo_descriptor(path, flags, open, buffer, false);
+            let result = install_fifo_descriptor(path, flags, open, buffer, false, mount_flags);
             drop(custody);
             result
         }
@@ -4055,7 +4116,7 @@ fn handle_fifo_open(
                 entry,
                 for_write,
             };
-            install_fifo_descriptor(path, flags, open, buffer, true)
+            install_fifo_descriptor(path, flags, open, buffer, true, mount_flags)
         }
         FifoOpenResult::Error(errno) => {
             // Refused before taking a reference.
@@ -4117,6 +4178,7 @@ fn install_fifo_descriptor(
     open: crate::ipc::fifo::PendingFifoOpen,
     buffer: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>,
     recorded: bool,
+    mount_flags: crate::fs::attrs::MountFlags,
 ) -> SyscallResult {
     use super::errno::EINTR;
     use crate::ipc::fd::{FdKind, FileDescriptor};
@@ -4150,7 +4212,7 @@ fn install_fifo_descriptor(
         FdKind::FifoRead(String::new(), buffer, open.entry.clone())
     };
     let fd_entry = match FileDescriptor::try_opened(kind, flags) {
-        Ok(entry) => entry,
+        Ok(entry) => entry.on_mount(mount_flags),
         Err(e) => {
             if recorded {
                 return fail_pending_fifo_open(open.tid, &open.entry, e);
@@ -4220,12 +4282,12 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
         Err(e) => return SyscallResult::Err(e as u64),
     };
 
-    let resolved = match super::metadata::resolve_at(
+    let resolved = match current_file_credentials().and_then(|cred| super::metadata::resolve_at(
         dirfd,
         &path,
         flags & AT_SYMLINK_NOFOLLOW == 0,
-        &current_file_credentials(),
-    ) {
+        &cred,
+    )) {
         Ok(r) => r,
         Err(errno) => return SyscallResult::Err(errno),
     };
@@ -4267,6 +4329,18 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
                 stat.st_uid = uid;
                 stat.st_gid = gid;
                 stat.st_blksize = 4096;
+                return match copy_to_user(statbuf as *mut Stat, &stat) {
+                    Ok(()) => SyscallResult::Ok(0),
+                    Err(errno) => SyscallResult::Err(errno),
+                };
+            }
+            // A device is stat'ed from its node: opening it would need the
+            // access its mode grants, and could acquire a controlling terminal.
+            if let Some(device) = full_path.strip_prefix("/dev/").and_then(crate::fs::devfs::lookup) {
+                let mut stat = Stat::zeroed();
+                stat.st_blksize = 4096;
+                let attrs = device.device_type.attrs();
+                fill_device_stat(&mut stat, device.device_type.inode(), device.rdev(), attrs);
                 return match copy_to_user(statbuf as *mut Stat, &stat) {
                     Ok(()) => SyscallResult::Ok(0),
                     Err(errno) => SyscallResult::Err(errno),
@@ -4348,7 +4422,10 @@ pub fn sys_faccessat(dirfd: i32, pathname: u64, mode: u32, flags: u32) -> Syscal
         Ok(path) => path,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let cred = FileCredentials::current(flags & AT_EACCESS == 0);
+    let cred = match FileCredentials::current(flags & AT_EACCESS == 0) {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     let resolved =
         match super::metadata::resolve_at(dirfd, &path, flags & AT_SYMLINK_NOFOLLOW == 0, &cred) {
             Ok(r) => r,
@@ -4455,6 +4532,10 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }
     let now = crate::time::current_unix_time() as u32;
+    // Who may change the times (POSIX utimensat): setting both to the current
+    // time needs ownership, write permission or privilege; any other change
+    // needs ownership or privilege.
+    let mut access = TimesAccess::OwnerOrWrite;
 
     // Determine what atime/mtime to set
     let (set_atime, set_mtime) = if times_ptr == 0 {
@@ -4476,6 +4557,9 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
         };
         if !valid(times[0].tv_nsec) || !valid(times[1].tv_nsec) {
             return SyscallResult::Err(super::errno::EINVAL as u64);
+        }
+        if times.iter().any(|t| t.tv_nsec != UTIME_NOW) {
+            access = TimesAccess::Owner;
         }
 
         let atime = if times[0].tv_nsec == UTIME_NOW {
@@ -4501,6 +4585,10 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
     if set_atime.is_none() && set_mtime.is_none() {
         return SyscallResult::Ok(0);
     }
+    let cred = match current_file_credentials() {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
 
     // Determine the target inode
     if path_ptr == 0 {
@@ -4537,7 +4625,7 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
             None => return SyscallResult::Err(super::errno::EBADF as u64),
         };
 
-        return update_inode_timestamps(&handle, set_atime, set_mtime);
+        return update_inode_timestamps(&handle, set_atime, set_mtime, &cred, access);
     }
 
     // Path-based: resolve path
@@ -4547,23 +4635,35 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
     };
 
     let no_follow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
-    let resolved =
-        match super::metadata::resolve_at(dirfd, &path, !no_follow, &current_file_credentials()) {
-            Ok(resolved) => resolved,
-            Err(errno) => return SyscallResult::Err(errno),
-        };
+    let resolved = match super::metadata::resolve_at(dirfd, &path, !no_follow, &cred) {
+        Ok(resolved) => resolved,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     // The resolution holds the inode it found; the update acts on that one.
     match resolved.handle() {
-        Some(handle) => update_inode_timestamps(handle, set_atime, set_mtime),
+        Some(handle) => update_inode_timestamps(handle, set_atime, set_mtime, &cred, access),
         None => SyscallResult::Err(super::errno::ENOENT as u64),
     }
 }
 
-/// Helper: update an inode's atime/mtime on the ext2 filesystem
+/// Who may change a file's times, by the change asked for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TimesAccess {
+    /// Both times to the current time: the owner, a caller with write
+    /// permission, or root; otherwise EACCES.
+    OwnerOrWrite,
+    /// Any explicit time: the owner or root; otherwise EPERM.
+    Owner,
+}
+
+/// Helper: update an inode's atime/mtime on the ext2 filesystem, once the
+/// caller is found to be allowed to (`TimesAccess`).
 fn update_inode_timestamps(
     handle: &crate::fs::ext2::live_inode::FileHandle,
     set_atime: Option<u32>,
     set_mtime: Option<u32>,
+    cred: &FileCredentials,
+    access: TimesAccess,
 ) -> SyscallResult {
     use crate::fs::ext2;
 
@@ -4579,6 +4679,15 @@ fn update_inode_timestamps(
             Ok(i) => i,
             Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
         };
+        if !cred.privileged() && cred.euid != inode.uid() {
+            match access {
+                TimesAccess::Owner => return SyscallResult::Err(super::errno::EPERM as u64),
+                TimesAccess::OwnerOrWrite if !cred.may(inode.attrs(), 2) => {
+                    return SyscallResult::Err(super::errno::EACCES as u64)
+                }
+                TimesAccess::OwnerOrWrite => {}
+            }
+        }
 
         if let Some(atime) = set_atime {
             inode.i_atime = atime;
@@ -4737,7 +4846,11 @@ fn virtual_statfs(kind: u64) -> Statfs {
 fn resolved_statfs(resolved: &crate::fs::namei::Resolved<alloc::vec::Vec<u8>>) -> Result<Statfs, u64> {
     use crate::fs::namei::Target;
     match resolved.target {
-        Target::Inode { mount, .. } => ext2_statfs(mount),
+        // The mount's options join the filesystem's own read-only flag.
+        Target::Inode { mount, .. } => ext2_statfs(mount).map(|mut stat| {
+            stat.flags |= crate::fs::vfs::mount::flags_at(&resolved.path).statvfs_bits();
+            stat
+        }),
         Target::Absent { .. } => Err(super::errno::ENOENT as u64),
         Target::Virtual if resolved.virtual_absent => Err(super::errno::ENOENT as u64),
         Target::Virtual => Ok(virtual_statfs(
@@ -4775,7 +4888,7 @@ pub fn sys_statfs(pathname: u64, buf: u64) -> SyscallResult {
 
 pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
     // Validate and snapshot before filesystem I/O, even for a non-file fd.
-    let (native, kind) = {
+    let (native, kind, mount_flags) = {
         let tid = match crate::task::scheduler::current_thread_id() {
             Some(t) => t,
             None => return SyscallResult::Err(9),
@@ -4786,28 +4899,35 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
             .and_then(|m| m.find_process_by_thread(tid))
             .and_then(|(_, p)| p.fd_table.get(fd));
         match entry {
-            Some(e) => (e.native_inode.clone(), e.kind.clone()),
+            Some(e) => (e.native_inode.clone(), e.kind.clone(), e.mount_flags),
             None => return SyscallResult::Err(9),
         }
     };
+    // A mounted file's statistics carry its mount's options, as statvfs's do.
+    let mounted = |pin: &crate::fs::ext2::live_inode::FileHandle| {
+        statfs_pin(pin).map(|mut stat| {
+            stat.flags |= mount_flags.statvfs_bits();
+            stat
+        })
+    };
     let stat = if let Some(handle) = native {
-        statfs_pin(&handle)
+        mounted(&handle)
     } else {
         match kind {
             FdKind::Ipc(object) => Ok(virtual_statfs(object.statfs_magic())),
             FdKind::RegularFile(file) => {
                 let pin = file.lock().handle.clone();
-                statfs_pin(&pin)
+                mounted(&pin)
             }
             FdKind::Directory(dir) => {
                 let pin = dir.lock().handle.clone();
-                statfs_pin(&pin)
+                mounted(&pin)
             }
             FdKind::FifoRead(_, _, entry)
             | FdKind::FifoWrite(_, _, entry)
             | FdKind::FifoReadWrite(_, _, entry) => {
                 let pin = entry.lock().handle.clone();
-                pin.as_ref().ok_or(5u64).and_then(statfs_pin)
+                pin.as_ref().ok_or(5u64).and_then(mounted)
             }
             FdKind::ProcfsFile { .. } | FdKind::ProcfsDirectory { .. } => {
                 Ok(virtual_statfs(0x9fa0))
@@ -4961,7 +5081,10 @@ pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
     };
     let size_limit = super::resource::current_fsize();
     let mut exceeded = false;
-    let unprivileged = current_file_credentials().euid != 0;
+    let unprivileged = match current_file_credentials() {
+        Ok(cred) => !cred.privileged(),
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     let mut guard = match ext2::write_mount(handle.object.mount) {
         Ok(guard) => guard,
         Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
@@ -5018,7 +5141,10 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
             return SyscallResult::Err(EINVAL as u64);
         }
     };
-    let cred = current_file_credentials();
+    let cred = match current_file_credentials() {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
     let size_limit = super::resource::current_fsize();
     let mut exceeded = false;
     let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };

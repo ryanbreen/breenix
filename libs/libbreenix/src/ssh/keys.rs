@@ -1,12 +1,20 @@
-//! SSH host key management and authorized key verification
+//! SSH keys: the server's Ed25519 host key, client identities, public-key
+//! blobs and signature verification.
 //!
-//! Provides:
-//! - The server's RSA host key for SSH key exchange
-//! - Authorized public keys for public key authentication
-//! - RSA signature verification for client key proofs
-//! - Host key fingerprint for client-side known_hosts verification
+//! Formats:
+//! - Ed25519 public-key and signature blobs (RFC 8709 section 4 and 6):
+//!   `string "ssh-ed25519" || string key(32)` and `string "ssh-ed25519" || string signature(64)`.
+//! - RSA public-key blobs and rsa-sha2-256/512 signatures (RFC 4253 section 6.6, RFC 8332).
+//! - Public-key lines, as in `.pub` and `authorized_keys` files: `type base64(blob) [comment]`.
+//! - Private keys in the OpenSSH key format (`openssh-key-v1`, unencrypted), and
+//!   unencrypted PKCS#1 PEM for RSA client identities.
+//! - Fingerprints: `SHA256:` and the unpadded base64 of the blob's SHA-256.
+//!
+//! This module holds no compiled-in key material: host keys are generated per
+//! machine (`HostKey::generate`) and identities are read from files.
 
 use crate::crypto::bignum::BigNum;
+use crate::crypto::ed25519::{self, SigningKey};
 use crate::crypto::rsa::{
     rsa_sign_pkcs1_sha256, rsa_verify_pkcs1_sha256, rsa_verify_pkcs1_sha512, RsaPrivateKey,
     RsaPublicKey,
@@ -16,160 +24,175 @@ use crate::crypto::sha512::sha512;
 
 use super::SshBuf;
 
-// ==========================================================================
-// Server host key (RSA-2048, pre-generated)
-// Generated with: openssl genrsa 2048
-// Extracted via Python cryptography library (DER parsing for exact bytes)
-// ==========================================================================
+pub const ED25519: &str = "ssh-ed25519";
+pub const RSA: &str = "ssh-rsa";
 
-#[rustfmt::skip]
-const HOST_KEY_N: [u8; 256] = [
-    0x98, 0xaf, 0xc9, 0x9d, 0x3c, 0x1b, 0x72, 0x78, 0x4a, 0x45, 0x80, 0x25,
-    0x5e, 0xd7, 0x09, 0x5d, 0xbc, 0xbe, 0x37, 0xe2, 0x7a, 0xba, 0xd8, 0x03,
-    0x47, 0x5c, 0xe0, 0x8d, 0x38, 0xcd, 0xb2, 0x08, 0x31, 0x50, 0x28, 0x05,
-    0x95, 0x14, 0x99, 0x10, 0xe5, 0xf1, 0x8c, 0xbd, 0x9a, 0x7d, 0xe2, 0x56,
-    0x47, 0x01, 0xc6, 0x63, 0x9e, 0xc8, 0x4d, 0x54, 0x24, 0x2b, 0x5d, 0x57,
-    0xbc, 0xff, 0xcd, 0x72, 0xd1, 0x2f, 0x63, 0x11, 0x1d, 0xac, 0xda, 0xfd,
-    0x9f, 0xab, 0xf1, 0x01, 0xd0, 0xa7, 0xde, 0x0c, 0x28, 0xdd, 0x0a, 0x53,
-    0x37, 0x2c, 0x42, 0x84, 0xb1, 0x47, 0x21, 0x6c, 0xd0, 0x13, 0x5d, 0x0c,
-    0xde, 0xb1, 0x90, 0xbc, 0xb0, 0x6b, 0xf5, 0x47, 0xd3, 0xfc, 0x8a, 0x68,
-    0x2b, 0x6a, 0xb4, 0x8a, 0xf5, 0xde, 0x6d, 0xed, 0x41, 0x55, 0xed, 0xf6,
-    0xde, 0xcb, 0x6e, 0x3f, 0x37, 0x1c, 0x30, 0x2f, 0x0e, 0x42, 0x46, 0x43,
-    0x4b, 0x03, 0x20, 0x5d, 0xd8, 0x05, 0x23, 0x40, 0xa0, 0x52, 0x1b, 0x61,
-    0x91, 0x86, 0x60, 0x13, 0x52, 0xc1, 0x72, 0xbf, 0xcf, 0x8a, 0xa3, 0x10,
-    0x51, 0x2e, 0x9a, 0xf7, 0x95, 0x46, 0x04, 0x2c, 0xb7, 0x51, 0xb5, 0xa0,
-    0x9d, 0x7f, 0xae, 0x81, 0xae, 0x32, 0xc1, 0x07, 0xe1, 0xce, 0xb5, 0x86,
-    0x39, 0x01, 0xae, 0x12, 0xf5, 0x36, 0xb1, 0xda, 0xe7, 0x58, 0xc2, 0x4a,
-    0x2f, 0xb5, 0xc0, 0x90, 0xe3, 0xda, 0xc9, 0x67, 0x32, 0x0d, 0x74, 0x01,
-    0x20, 0xec, 0x3d, 0xcb, 0x4a, 0x13, 0xfa, 0x68, 0x10, 0xe3, 0x0c, 0xe1,
-    0x03, 0x49, 0xfb, 0xb0, 0x13, 0x8e, 0xc2, 0x69, 0xc3, 0x08, 0x67, 0x08,
-    0xf2, 0xe9, 0xe0, 0xdb, 0x7a, 0xb3, 0x16, 0x0b, 0x19, 0x91, 0x1e, 0x3d,
-    0x1d, 0x6f, 0x1c, 0xb4, 0xa5, 0xf8, 0xf2, 0xcd, 0x9c, 0x75, 0x1f, 0xbe,
-    0x12, 0xe5, 0x5e, 0xbb,
-];
-
-#[rustfmt::skip]
-const HOST_KEY_D: [u8; 256] = [
-    0x08, 0x22, 0x0c, 0x11, 0x38, 0xb2, 0xa3, 0xcd, 0x31, 0x65, 0xd0, 0xff,
-    0x9e, 0x5f, 0xa5, 0x7b, 0x68, 0x14, 0x58, 0xe7, 0x0b, 0xa8, 0x4f, 0xc0,
-    0xdb, 0x2d, 0xd2, 0xa7, 0x56, 0xa4, 0xce, 0x47, 0x1c, 0x8c, 0xe4, 0x43,
-    0x14, 0x4e, 0x0b, 0xe8, 0x50, 0xf7, 0x42, 0x6e, 0x5d, 0x47, 0x37, 0xc2,
-    0x11, 0x30, 0x6d, 0x03, 0xc0, 0xfd, 0xab, 0xb7, 0xea, 0x8b, 0x85, 0xad,
-    0x1a, 0x86, 0x96, 0x8f, 0x30, 0x3b, 0x18, 0xd7, 0x23, 0xe3, 0xf6, 0xc5,
-    0x5d, 0xef, 0xbd, 0x26, 0x7a, 0xef, 0x07, 0xee, 0x6d, 0x6f, 0xaf, 0xd7,
-    0xff, 0x59, 0xe9, 0x4c, 0xb5, 0x05, 0x97, 0xd2, 0xdd, 0xfa, 0x82, 0xf4,
-    0xca, 0xfc, 0x5d, 0x75, 0x16, 0xac, 0x34, 0x24, 0x4a, 0x37, 0x15, 0xb9,
-    0x28, 0xfc, 0x37, 0xa2, 0x29, 0x0c, 0x5a, 0xf3, 0x86, 0xc5, 0xda, 0x8a,
-    0xdf, 0xa0, 0xfe, 0xda, 0x95, 0xd5, 0x94, 0x1a, 0x7f, 0x87, 0xaf, 0x7c,
-    0x8b, 0x62, 0xf5, 0x25, 0x25, 0x7c, 0xc3, 0xd4, 0xa1, 0x18, 0x5f, 0xa2,
-    0x3e, 0xc5, 0x01, 0xdb, 0x8a, 0x4b, 0x16, 0x7e, 0xca, 0xb1, 0x9f, 0x5a,
-    0xc6, 0x5b, 0x36, 0x76, 0x65, 0x28, 0xb8, 0xf4, 0xef, 0x87, 0x00, 0xce,
-    0x36, 0xf7, 0x29, 0x43, 0x11, 0x90, 0x53, 0xf5, 0x4b, 0x95, 0x28, 0x77,
-    0xab, 0x75, 0xda, 0x04, 0xaa, 0x21, 0x37, 0x65, 0x7b, 0x2d, 0x04, 0x3b,
-    0x3c, 0x64, 0xbd, 0xe1, 0xd0, 0x76, 0x91, 0xf7, 0xc4, 0x1d, 0x03, 0x6b,
-    0xdd, 0xba, 0x80, 0x87, 0x4e, 0x9b, 0x28, 0xa7, 0x34, 0x7e, 0x5d, 0x16,
-    0xbd, 0xae, 0x9d, 0xd9, 0x8c, 0x56, 0x21, 0xe6, 0xe6, 0x1b, 0xe4, 0x00,
-    0x4b, 0x04, 0x4a, 0x33, 0x0d, 0xb9, 0x55, 0x9a, 0xf9, 0xe1, 0x4b, 0x21,
-    0xf8, 0x1f, 0x4c, 0x8a, 0xb5, 0x24, 0x6c, 0xa1, 0x23, 0x81, 0x9d, 0xfc,
-    0xf7, 0xfa, 0x81, 0x11,
-];
-
-const HOST_KEY_E: u32 = 65537;
+const OPENSSH_BEGIN: &str = "-----BEGIN OPENSSH PRIVATE KEY-----";
+const OPENSSH_END: &str = "-----END OPENSSH PRIVATE KEY-----";
+const OPENSSH_MAGIC: &[u8] = b"openssh-key-v1\0";
 
 // ==========================================================================
-// Authorized public key: wrb@M3 MBP (RSA-3072)
-//
-// This is the SSH public key blob from ~/.ssh/id_rsa.pub, baked in so that
-// the owner can SSH in without a password. The blob is in SSH wire format:
-//   string "ssh-rsa" || mpint e || mpint n
+// Ed25519 keys
 // ==========================================================================
 
-#[rustfmt::skip]
-const AUTHORIZED_KEY_BLOB: [u8; 407] = [
-    0x00, 0x00, 0x00, 0x07, 0x73, 0x73, 0x68, 0x2d, 0x72, 0x73, 0x61, 0x00, 0x00, 0x00, 0x03, 0x01,
-    0x00, 0x01, 0x00, 0x00, 0x01, 0x81, 0x00, 0xb4, 0x72, 0xd7, 0x69, 0x50, 0x5e, 0x7b, 0xdf, 0x56,
-    0xfd, 0x86, 0xb7, 0x4c, 0xc0, 0x0e, 0x3e, 0x54, 0xa9, 0x7c, 0xaa, 0x3d, 0x33, 0xa3, 0xb5, 0x4f,
-    0xcd, 0xef, 0xff, 0x2a, 0x2e, 0x8b, 0x84, 0x5f, 0x05, 0x21, 0x50, 0x94, 0x38, 0xa2, 0x4a, 0xb2,
-    0x11, 0x07, 0x21, 0x8c, 0x31, 0x86, 0xe5, 0xeb, 0x99, 0x3f, 0x8d, 0xaa, 0x00, 0x7d, 0xd4, 0x22,
-    0x02, 0x26, 0x7c, 0x60, 0x4d, 0x81, 0x21, 0x46, 0xa0, 0x49, 0xc2, 0x9d, 0xaa, 0xf8, 0x8a, 0x74,
-    0x51, 0xec, 0x08, 0x19, 0x82, 0xd1, 0x63, 0x7a, 0x51, 0xfe, 0x88, 0xaa, 0xa2, 0x22, 0xe4, 0x03,
-    0x25, 0x5f, 0xf6, 0xb8, 0x8b, 0x26, 0x38, 0x49, 0x40, 0xd6, 0x66, 0x38, 0x84, 0xba, 0xd3, 0xef,
-    0x97, 0x49, 0x98, 0x44, 0x73, 0x5f, 0xc9, 0xd0, 0xaa, 0x09, 0x00, 0xce, 0x00, 0xcb, 0x37, 0x1f,
-    0x1d, 0x18, 0xc3, 0x2a, 0x84, 0x98, 0xd7, 0xa3, 0x2e, 0x5b, 0xd1, 0x7d, 0x1f, 0xef, 0x41, 0xba,
-    0xec, 0x0e, 0x39, 0x80, 0x84, 0x2a, 0x5a, 0xaf, 0x00, 0xa4, 0x78, 0x82, 0x32, 0xc1, 0x31, 0xe0,
-    0x89, 0x05, 0x7e, 0x2f, 0x67, 0x3b, 0x1c, 0x88, 0xf9, 0xc4, 0x15, 0x22, 0x04, 0x9e, 0x14, 0x8d,
-    0xde, 0xba, 0x41, 0x59, 0x8d, 0xb3, 0xab, 0x76, 0x87, 0xd7, 0x4d, 0x59, 0xfb, 0x1b, 0x94, 0x1e,
-    0xbe, 0xc4, 0x6e, 0x7d, 0xc6, 0xe1, 0x71, 0xa1, 0x7a, 0xa7, 0xf7, 0x63, 0x57, 0x81, 0xe3, 0xe9,
-    0x2a, 0x8a, 0x24, 0xe6, 0xd4, 0x09, 0x67, 0xe3, 0xda, 0x6a, 0xdc, 0xd1, 0x4c, 0x3d, 0x90, 0x52,
-    0xd3, 0x11, 0x13, 0x9d, 0x54, 0xa5, 0x49, 0xa1, 0x31, 0x2e, 0x6a, 0xdb, 0xfe, 0x77, 0x32, 0xb8,
-    0xdc, 0x15, 0xeb, 0xa0, 0xe8, 0x4f, 0x3b, 0x64, 0x2d, 0xd8, 0x5d, 0xa8, 0x2d, 0xbf, 0x11, 0x7b,
-    0xa2, 0x81, 0x84, 0xc0, 0xec, 0xd7, 0xb0, 0x0c, 0xc5, 0xc6, 0x71, 0xd3, 0x4b, 0xb8, 0xd6, 0xca,
-    0x02, 0x8b, 0x52, 0x89, 0x03, 0x8c, 0xfc, 0xfb, 0x27, 0x28, 0xa9, 0xa4, 0xc9, 0x59, 0xa2, 0x61,
-    0x16, 0x99, 0xf6, 0x54, 0x91, 0xdc, 0x95, 0x16, 0xab, 0x08, 0x51, 0x2e, 0x51, 0x5c, 0x63, 0x26,
-    0x33, 0xa9, 0x88, 0x79, 0xc2, 0x95, 0x6b, 0xd1, 0x2c, 0xe2, 0xe7, 0xbe, 0x16, 0xe1, 0xa3, 0x76,
-    0x71, 0x64, 0x8d, 0x83, 0xea, 0x06, 0x3b, 0x23, 0x93, 0x42, 0xc1, 0x85, 0xb0, 0x6b, 0xca, 0xa3,
-    0x89, 0x34, 0x6e, 0x67, 0x9e, 0x5e, 0xe3, 0x18, 0x9e, 0x64, 0xd7, 0xec, 0xbd, 0x09, 0x26, 0xba,
-    0x7a, 0x86, 0x7f, 0xfc, 0xcd, 0x0c, 0x71, 0x84, 0xa0, 0x73, 0x59, 0x4c, 0x85, 0x5e, 0x36, 0x4f,
-    0xa0, 0x6e, 0x8f, 0xa5, 0x15, 0x67, 0xd6, 0x66, 0xdf, 0xec, 0xdc, 0xd0, 0x13, 0xb0, 0x68, 0xec,
-    0xe1, 0xe1, 0x36, 0x31, 0xad, 0x00, 0xad,
-];
-
-// ==========================================================================
-// Host key operations
-// ==========================================================================
-
-/// The server's RSA host key.
-pub struct HostKey {
-    key: RsaPrivateKey,
+/// Encode an Ed25519 public key as an SSH public-key blob.
+pub fn ed25519_public_blob(public: &[u8; ed25519::PUBLIC_KEY_LEN]) -> Vec<u8> {
+    let mut blob = Vec::with_capacity(4 + ED25519.len() + 4 + public.len());
+    SshBuf::put_string(&mut blob, ED25519.as_bytes());
+    SshBuf::put_string(&mut blob, public);
+    blob
 }
 
-impl HostKey {
-    /// Load the embedded host key.
-    pub fn load() -> Self {
-        let e_bytes = HOST_KEY_E.to_be_bytes();
-        Self {
-            key: RsaPrivateKey {
-                n: BigNum::from_be_bytes(&HOST_KEY_N),
-                d: BigNum::from_be_bytes(&HOST_KEY_D),
-                e: BigNum::from_be_bytes(&e_bytes),
-            },
-        }
+/// An Ed25519 private key with SSH encodings: the server's host key, or a client identity.
+pub struct Ed25519Key {
+    key: SigningKey,
+}
+
+impl Ed25519Key {
+    pub fn from_seed(seed: &[u8; ed25519::SEED_LEN]) -> Self {
+        Self { key: SigningKey::from_seed(seed) }
     }
 
-    /// Encode the public key in SSH wire format.
-    ///
-    /// Format: string "ssh-rsa" || mpint e || mpint n
-    ///
-    /// Note: The key blob always uses the "ssh-rsa" key type identifier
-    /// even when the signature algorithm is rsa-sha2-256 (RFC 8332 §3).
+    /// A new key from `random`, which must fill the buffer from a credited source.
+    pub fn generate(random: impl FnOnce(&mut [u8]) -> Result<(), &'static str>) -> Result<Self, &'static str> {
+        let mut seed = [0u8; ed25519::SEED_LEN];
+        random(&mut seed)?;
+        let key = Self::from_seed(&seed);
+        for byte in seed.iter_mut() {
+            unsafe { core::ptr::write_volatile(byte, 0) };
+        }
+        Ok(key)
+    }
+
     pub fn public_key_blob(&self) -> Vec<u8> {
-        let e_bytes = HOST_KEY_E.to_be_bytes();
-        let mut blob = Vec::with_capacity(4 + 7 + 4 + 4 + 4 + 256);
-        SshBuf::put_string(&mut blob, b"ssh-rsa");
-        SshBuf::put_mpint(&mut blob, &e_bytes);
-        SshBuf::put_mpint(&mut blob, &HOST_KEY_N);
+        ed25519_public_blob(&self.key.public_key())
+    }
+
+    /// Sign `data`, returning an SSH signature blob.
+    pub fn sign(&self, data: &[u8]) -> Vec<u8> {
+        let signature = self.key.sign(data);
+        let mut blob = Vec::with_capacity(4 + ED25519.len() + 4 + signature.len());
+        SshBuf::put_string(&mut blob, ED25519.as_bytes());
+        SshBuf::put_string(&mut blob, &signature);
         blob
     }
 
-    /// Sign data with the host key using rsa-sha2-256.
-    ///
-    /// Returns the signature in SSH wire format:
-    /// string "rsa-sha2-256" || string signature_blob
-    pub fn sign(&self, data: &[u8]) -> Vec<u8> {
-        let hash = sha256(data);
-        let sig_bytes = rsa_sign_pkcs1_sha256(&self.key, &hash);
-
-        let mut sig = Vec::with_capacity(4 + 12 + 4 + sig_bytes.len());
-        SshBuf::put_string(&mut sig, b"rsa-sha2-256");
-        SshBuf::put_string(&mut sig, &sig_bytes);
-        sig
-    }
-
-    /// Get the SHA-256 fingerprint of the host key (for known_hosts).
     pub fn fingerprint(&self) -> [u8; 32] {
         sha256(&self.public_key_blob())
     }
+
+    /// The `ssh-ed25519 <base64> <comment>` line of a `.pub` file.
+    pub fn public_line(&self, comment: &str) -> String {
+        public_line(&self.public_key_blob(), comment)
+    }
+
+    /// The key in the OpenSSH private-key format, unencrypted. `check` is the
+    /// format's random check value.
+    pub fn to_openssh(&self, comment: &str, check: u32) -> String {
+        let public = self.key.public_key();
+        let mut private = Vec::with_capacity(160 + comment.len());
+        SshBuf::put_u32(&mut private, check);
+        SshBuf::put_u32(&mut private, check);
+        SshBuf::put_string(&mut private, ED25519.as_bytes());
+        SshBuf::put_string(&mut private, &public);
+        let mut secret = [0u8; 64];
+        secret[..32].copy_from_slice(self.key.seed());
+        secret[32..].copy_from_slice(&public);
+        SshBuf::put_string(&mut private, &secret);
+        for byte in secret.iter_mut() {
+            unsafe { core::ptr::write_volatile(byte, 0) };
+        }
+        SshBuf::put_string(&mut private, comment.as_bytes());
+        let mut pad = 1u8;
+        while private.len() % 8 != 0 {
+            private.push(pad);
+            pad += 1;
+        }
+
+        let mut body = Vec::with_capacity(64 + private.len());
+        body.extend_from_slice(OPENSSH_MAGIC);
+        SshBuf::put_string(&mut body, b"none");
+        SshBuf::put_string(&mut body, b"none");
+        SshBuf::put_string(&mut body, b"");
+        SshBuf::put_u32(&mut body, 1);
+        SshBuf::put_string(&mut body, &self.public_key_blob());
+        SshBuf::put_string(&mut body, &private);
+        for byte in private.iter_mut() {
+            unsafe { core::ptr::write_volatile(byte, 0) };
+        }
+
+        let encoded = base64_encode(&body, true);
+        let mut text = String::with_capacity(encoded.len() + 80);
+        text.push_str(OPENSSH_BEGIN);
+        text.push('\n');
+        for line in encoded.as_bytes().chunks(70) {
+            text.push_str(core::str::from_utf8(line).unwrap_or(""));
+            text.push('\n');
+        }
+        text.push_str(OPENSSH_END);
+        text.push('\n');
+        text
+    }
+
+    /// Read an unencrypted OpenSSH-format Ed25519 private key.
+    pub fn from_openssh(text: &str) -> Result<Self, &'static str> {
+        let body = decode_pem_block(text, OPENSSH_BEGIN, OPENSSH_END)?;
+        if !body.starts_with(OPENSSH_MAGIC) {
+            return Err("not an openssh-key-v1 private key");
+        }
+        let mut pos = OPENSSH_MAGIC.len();
+        let field = |pos: &mut usize| SshBuf::get_string(&body, pos).ok_or("truncated private key");
+        if field(&mut pos)? != b"none" || field(&mut pos)? != b"none" || !field(&mut pos)?.is_empty() {
+            return Err("encrypted private keys are not supported");
+        }
+        if SshBuf::get_u32(&body, &mut pos) != Some(1) {
+            return Err("a private key file must hold one key");
+        }
+        let public_blob = field(&mut pos)?;
+        let private = field(&mut pos)?;
+        if pos != body.len() {
+            return Err("trailing data after the private key");
+        }
+
+        let mut at = 0;
+        let check1 = SshBuf::get_u32(private, &mut at).ok_or("truncated private section")?;
+        let check2 = SshBuf::get_u32(private, &mut at).ok_or("truncated private section")?;
+        if check1 != check2 {
+            return Err("private key check values differ");
+        }
+        let get = |at: &mut usize| SshBuf::get_string(private, at).ok_or("truncated private section");
+        if get(&mut at)? != ED25519.as_bytes() {
+            return Err("only ssh-ed25519 OpenSSH private keys are supported");
+        }
+        let public = get(&mut at)?;
+        let secret = get(&mut at)?;
+        let _comment = get(&mut at)?;
+        let padding = &private[at..];
+        if padding.len() >= 8 || padding.iter().enumerate().any(|(i, byte)| *byte as usize != i + 1) {
+            return Err("bad private key padding");
+        }
+        if public.len() != 32 || secret.len() != 64 || &secret[32..] != public {
+            return Err("bad ssh-ed25519 private key");
+        }
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&secret[..32]);
+        let key = Self::from_seed(&seed);
+        for byte in seed.iter_mut() {
+            unsafe { core::ptr::write_volatile(byte, 0) };
+        }
+        if key.key.public_key() != public || key.public_key_blob() != public_blob {
+            return Err("the private key does not match its public key");
+        }
+        Ok(key)
+    }
 }
+
+/// The server's host key.
+pub type HostKey = Ed25519Key;
+
+// ==========================================================================
+// Client identities
+// ==========================================================================
 
 /// Caller-supplied RSA identity for SSH publickey client authentication.
 pub struct RsaIdentity {
@@ -197,7 +220,7 @@ impl RsaIdentity {
     /// Encode this identity's public key in SSH wire format.
     pub fn public_key_blob(&self) -> Vec<u8> {
         let mut blob = Vec::with_capacity(4 + 7 + 4 + 4 + 4 + 384);
-        SshBuf::put_string(&mut blob, b"ssh-rsa");
+        SshBuf::put_string(&mut blob, RSA.as_bytes());
         SshBuf::put_mpint(&mut blob, &self.key.e.to_be_bytes());
         SshBuf::put_mpint(&mut blob, &self.key.n.to_be_bytes());
         blob
@@ -215,14 +238,53 @@ impl RsaIdentity {
     }
 }
 
+/// A client's private key for publickey authentication.
+pub enum Identity {
+    Ed25519(Ed25519Key),
+    Rsa(RsaIdentity),
+}
+
+impl Identity {
+    /// Read an unencrypted private key file: OpenSSH format (Ed25519) or PKCS#1 PEM (RSA).
+    pub fn from_file_text(text: &str) -> Result<Self, &'static str> {
+        if text.contains(OPENSSH_BEGIN) {
+            Ed25519Key::from_openssh(text).map(Identity::Ed25519)
+        } else {
+            RsaIdentity::from_pkcs1_pem(text).map(Identity::Rsa)
+        }
+    }
+
+    /// The publickey method's algorithm name for this identity.
+    pub fn algorithm(&self) -> &'static str {
+        match self {
+            Identity::Ed25519(_) => ED25519,
+            Identity::Rsa(_) => "rsa-sha2-256",
+        }
+    }
+
+    pub fn public_key_blob(&self) -> Vec<u8> {
+        match self {
+            Identity::Ed25519(key) => key.public_key_blob(),
+            Identity::Rsa(key) => key.public_key_blob(),
+        }
+    }
+
+    pub fn sign(&self, data: &[u8]) -> Vec<u8> {
+        match self {
+            Identity::Ed25519(key) => key.sign(data),
+            Identity::Rsa(key) => key.sign(data),
+        }
+    }
+}
+
 /// Server host-key identity observed during client key exchange.
 #[derive(Debug, Clone)]
 pub struct ServerHostKeyInfo {
     /// Raw SSH public-key blob from KEX_ECDH_REPLY.
     pub key_blob: Vec<u8>,
-    /// Key type stored inside the key blob, e.g. "ssh-rsa".
+    /// Key type stored inside the key blob, e.g. "ssh-ed25519".
     pub key_type: String,
-    /// Signature/host-key algorithm used in KEX, e.g. "rsa-sha2-256".
+    /// Signature/host-key algorithm used in KEX, e.g. "ssh-ed25519".
     pub algorithm: String,
     /// SHA-256 fingerprint of `key_blob`.
     pub fingerprint: [u8; 32],
@@ -258,32 +320,45 @@ pub fn signature_algorithm(signature_blob: &[u8]) -> Option<String> {
 }
 
 // ==========================================================================
-// Authorized key operations
+// Public-key lines and fingerprints
 // ==========================================================================
 
-/// Get the expected authorized key blob length (for diagnostics).
-pub fn authorized_key_blob_len() -> usize {
-    AUTHORIZED_KEY_BLOB.len()
-}
-
-/// Check if a public key blob matches any authorized key.
-///
-/// Compares the raw SSH key blob byte-for-byte against the embedded
-/// authorized keys list.
-pub fn is_authorized_key(key_blob: &[u8]) -> bool {
-    if ct_eq(key_blob, &AUTHORIZED_KEY_BLOB) {
-        return true;
+/// `type base64(blob) comment`, the line `.pub` and `authorized_keys` files hold.
+pub fn public_line(blob: &[u8], comment: &str) -> String {
+    let key_type = key_type_from_blob(blob).unwrap_or_default();
+    let mut line = format!("{} {}", key_type, base64_encode(blob, true));
+    if !comment.is_empty() {
+        line.push(' ');
+        line.push_str(comment);
     }
-
-    let client_key_blob = embedded_client_public_key_blob();
-    ct_eq(key_blob, &client_key_blob)
+    line
 }
 
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+/// Parse `type base64 [comment]`: the blob, when its embedded type is `type`.
+/// A line starting with anything but a key type (such as options) is refused.
+pub fn parse_public_line(line: &str) -> Option<Vec<u8>> {
+    let mut words = line.split_ascii_whitespace();
+    let key_type = words.next()?;
+    if key_type != ED25519 && key_type != RSA {
+        return None;
+    }
+    let blob = base64_decode(words.next()?.as_bytes()).ok()?;
+    if key_type_from_blob(&blob)? != key_type {
+        return None;
+    }
+    Some(blob)
+}
+
+/// `SHA256:<unpadded base64>`, as OpenSSH prints fingerprints.
+pub fn fingerprint_text(blob: &[u8]) -> String {
+    format!("SHA256:{}", base64_encode(&sha256(blob), false))
+}
+
+/// Compare two byte strings without stopping at the first difference.
+pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-
     let mut diff = 0u8;
     for i in 0..a.len() {
         diff |= a[i] ^ b[i];
@@ -291,15 +366,107 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// Public key blob for the embedded bssh client identity.
-pub fn embedded_client_public_key_blob() -> Vec<u8> {
-    HostKey::load().public_key_blob()
+// ==========================================================================
+// Signature verification
+// ==========================================================================
+
+/// Verify `signature_blob` over `data` by the public key `key_blob`, for the
+/// signature algorithm `algorithm`: ssh-ed25519 with an Ed25519 key, or
+/// rsa-sha2-256/512 with an RSA key. The blob's own algorithm must match.
+pub fn verify_signature(algorithm: &[u8], key_blob: &[u8], signature_blob: &[u8], data: &[u8]) -> bool {
+    let mut pos = 0;
+    if SshBuf::get_string(signature_blob, &mut pos) != Some(algorithm) {
+        return false;
+    }
+    match algorithm {
+        b"ssh-ed25519" => verify_ed25519_signature(key_blob, signature_blob, data),
+        b"rsa-sha2-256" | b"rsa-sha2-512" => verify_rsa_signature(key_blob, signature_blob, data),
+        _ => false,
+    }
 }
 
-/// Sign publickey-auth data with the embedded bssh client identity.
-pub fn sign_with_embedded_client_key(data: &[u8]) -> Vec<u8> {
-    HostKey::load().sign(data)
+/// Verify an ssh-ed25519 signature blob with an ssh-ed25519 public-key blob.
+pub fn verify_ed25519_signature(key_blob: &[u8], signature_blob: &[u8], data: &[u8]) -> bool {
+    let mut pos = 0;
+    if SshBuf::get_string(key_blob, &mut pos) != Some(ED25519.as_bytes()) {
+        return false;
+    }
+    let Some(public) = SshBuf::get_string(key_blob, &mut pos) else { return false };
+    if pos != key_blob.len() {
+        return false;
+    }
+    let mut pos = 0;
+    if SshBuf::get_string(signature_blob, &mut pos) != Some(ED25519.as_bytes()) {
+        return false;
+    }
+    let Some(signature) = SshBuf::get_string(signature_blob, &mut pos) else { return false };
+    if pos != signature_blob.len() {
+        return false;
+    }
+    let (Ok(public), Ok(signature)) = (<[u8; 32]>::try_from(public), <[u8; 64]>::try_from(signature)) else {
+        return false;
+    };
+    ed25519::verify(&public, data, &signature)
 }
+
+/// Parse an SSH RSA public key blob and extract the public key components.
+///
+/// Parses: string "ssh-rsa" || mpint e || mpint n
+pub fn parse_rsa_pubkey_blob(blob: &[u8]) -> Option<RsaPublicKey> {
+    let mut pos = 0;
+    let key_type = SshBuf::get_string(blob, &mut pos)?;
+
+    if key_type != RSA.as_bytes() {
+        return None;
+    }
+
+    let e_bytes = SshBuf::get_string(blob, &mut pos)?;
+    let n_bytes = SshBuf::get_string(blob, &mut pos)?;
+
+    Some(RsaPublicKey {
+        e: BigNum::from_be_bytes(e_bytes),
+        n: BigNum::from_be_bytes(n_bytes),
+    })
+}
+
+/// Verify an RSA signature over data using a parsed SSH public key blob.
+///
+/// The signature is in SSH wire format: string algorithm || string sig_blob,
+/// with algorithm rsa-sha2-256 or rsa-sha2-512.
+pub fn verify_rsa_signature(pubkey_blob: &[u8], signature_blob: &[u8], data: &[u8]) -> bool {
+    let pubkey = match parse_rsa_pubkey_blob(pubkey_blob) {
+        Some(k) => k,
+        None => return false,
+    };
+
+    let mut pos = 0;
+    let algo = match SshBuf::get_string(signature_blob, &mut pos) {
+        Some(a) => a,
+        None => return false,
+    };
+    let raw_sig = match SshBuf::get_string(signature_blob, &mut pos) {
+        Some(s) => s,
+        None => return false,
+    };
+
+    if pos != signature_blob.len() {
+        return false;
+    }
+
+    if algo == b"rsa-sha2-256" {
+        let hash = sha256(data);
+        rsa_verify_pkcs1_sha256(&pubkey, raw_sig, &hash)
+    } else if algo == b"rsa-sha2-512" {
+        let hash = sha512(data);
+        rsa_verify_pkcs1_sha512(&pubkey, raw_sig, &hash)
+    } else {
+        false
+    }
+}
+
+// ==========================================================================
+// PEM, base64 and DER
+// ==========================================================================
 
 fn decode_pem_block(
     pem: &str,
@@ -324,10 +491,32 @@ fn decode_pem_block(
     base64_decode(&b64)
 }
 
-fn base64_decode(input: &[u8]) -> Result<Vec<u8>, &'static str> {
+const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Base64 (RFC 4648 section 4), padded or not.
+pub fn base64_encode(input: &[u8], pad: bool) -> String {
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let value = (chunk[0] as u32) << 16
+            | (*chunk.get(1).unwrap_or(&0) as u32) << 8
+            | *chunk.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(BASE64[(value >> (18 - 6 * i)) as usize & 63] as char);
+            } else if pad {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// Decode padded base64 (RFC 4648 section 4).
+pub fn base64_decode(input: &[u8]) -> Result<Vec<u8>, &'static str> {
     let mut out = Vec::with_capacity(input.len() * 3 / 4);
     let mut chunk = [0u8; 4];
     let mut chunk_len = 0usize;
+    let mut ended = false;
 
     for &byte in input {
         let value = match byte {
@@ -339,6 +528,9 @@ fn base64_decode(input: &[u8]) -> Result<Vec<u8>, &'static str> {
             b'=' => 64,
             _ => return Err("invalid base64 character"),
         };
+        if ended {
+            return Err("data after base64 padding");
+        }
 
         chunk[chunk_len] = value;
         chunk_len += 1;
@@ -346,7 +538,7 @@ fn base64_decode(input: &[u8]) -> Result<Vec<u8>, &'static str> {
             continue;
         }
 
-        if chunk[0] == 64 || chunk[1] == 64 {
+        if chunk[0] == 64 || chunk[1] == 64 || (chunk[2] == 64 && chunk[3] != 64) {
             return Err("invalid base64 padding");
         }
 
@@ -357,6 +549,7 @@ fn base64_decode(input: &[u8]) -> Result<Vec<u8>, &'static str> {
         if chunk[3] != 64 {
             out.push((chunk[2] << 6) | chunk[3]);
         }
+        ended = chunk[3] == 64;
 
         chunk_len = 0;
     }
@@ -459,70 +652,106 @@ fn strip_der_integer_prefix(value: &[u8]) -> &[u8] {
     }
 }
 
-/// Parse an SSH RSA public key blob and extract the public key components.
-///
-/// Parses: string "ssh-rsa" || mpint e || mpint n
-/// Returns (e, n) as BigNum values suitable for RSA signature verification.
-pub fn parse_rsa_pubkey_blob(blob: &[u8]) -> Option<RsaPublicKey> {
-    let mut pos = 0;
-    let key_type = SshBuf::get_string(blob, &mut pos)?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::process::Command;
 
-    if key_type != b"ssh-rsa" {
-        return None;
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("bssh-keys-{}-{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
-    let e_bytes = SshBuf::get_string(blob, &mut pos)?;
-    let n_bytes = SshBuf::get_string(blob, &mut pos)?;
-
-    Some(RsaPublicKey {
-        e: BigNum::from_be_bytes(e_bytes),
-        n: BigNum::from_be_bytes(n_bytes),
-    })
-}
-
-/// Verify an RSA signature over data using a parsed SSH public key blob.
-///
-/// The signature is in SSH wire format: string algorithm || string sig_blob
-/// The data is hashed with SHA-256 before PKCS#1 v1.5 verification.
-pub fn verify_rsa_signature(pubkey_blob: &[u8], signature_blob: &[u8], data: &[u8]) -> bool {
-    // Parse the public key
-    let pubkey = match parse_rsa_pubkey_blob(pubkey_blob) {
-        Some(k) => k,
-        None => return false,
-    };
-
-    // Parse the signature: string algorithm || string raw_signature
-    let mut pos = 0;
-    let algo = match SshBuf::get_string(signature_blob, &mut pos) {
-        Some(a) => a,
-        None => return false,
-    };
-    let raw_sig = match SshBuf::get_string(signature_blob, &mut pos) {
-        Some(s) => s,
-        None => return false,
-    };
-
-    if pos != signature_blob.len() {
-        return false;
+    fn ssh_keygen(args: &[&str]) -> std::process::Output {
+        let output = Command::new("ssh-keygen").args(args).output()
+            .expect("ssh-keygen (OpenSSH) is a host-test prerequisite");
+        assert!(output.status.success(), "ssh-keygen {:?}: {}", args, String::from_utf8_lossy(&output.stderr));
+        output
     }
 
-    // Verify based on algorithm
-    if algo == b"rsa-sha2-256" {
-        let hash = sha256(data);
-        rsa_verify_pkcs1_sha256(&pubkey, raw_sig, &hash)
-    } else if algo == b"rsa-sha2-512" {
-        let hash = sha512(data);
-        rsa_verify_pkcs1_sha512(&pubkey, raw_sig, &hash)
-    } else {
-        false
+    #[test]
+    fn written_host_key_is_read_back_by_openssh_and_by_us() {
+        let dir = scratch("write");
+        let key = Ed25519Key::from_seed(&[7u8; 32]);
+        let path = dir.join("ssh_host_ed25519_key");
+        std::fs::write(&path, key.to_openssh("breenix host key", 0x1234_5678)).unwrap();
+        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+        let derived = ssh_keygen(&["-y", "-f", path.to_str().unwrap()]);
+        let line = String::from_utf8(derived.stdout).unwrap();
+        assert_eq!(parse_public_line(line.trim()).unwrap(), key.public_key_blob());
+        let reread = Ed25519Key::from_openssh(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(reread.public_key_blob(), key.public_key_blob());
+        let fingerprint = ssh_keygen(&["-l", "-E", "sha256", "-f", path.to_str().unwrap()]);
+        let fingerprint = String::from_utf8(fingerprint.stdout).unwrap();
+        assert!(fingerprint.contains(&fingerprint_text(&key.public_key_blob())), "{fingerprint}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
-}
 
-/// Compute the SHA-256 fingerprint of the bsshd host key.
-///
-/// Used by the bssh client for known_hosts verification. Returns the
-/// expected SHA-256 hash of the server's host key blob.
-pub fn expected_host_fingerprint() -> [u8; 32] {
-    let host_key = HostKey::load();
-    host_key.fingerprint()
+    #[test]
+    fn openssh_generated_identity_loads_and_signs_verifiably() {
+        let dir = scratch("load");
+        let path = dir.join("id_ed25519");
+        ssh_keygen(&["-q", "-t", "ed25519", "-N", "", "-C", "test", "-f", path.to_str().unwrap()]);
+        let identity = Identity::from_file_text(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let public = std::fs::read_to_string(dir.join("id_ed25519.pub")).unwrap();
+        assert_eq!(parse_public_line(public.trim()).unwrap(), identity.public_key_blob());
+        let signature = identity.sign(b"session data");
+        assert!(verify_signature(b"ssh-ed25519", &identity.public_key_blob(), &signature, b"session data"));
+        assert!(!verify_signature(b"ssh-ed25519", &identity.public_key_blob(), &signature, b"other data"));
+        assert!(!verify_signature(b"rsa-sha2-256", &identity.public_key_blob(), &signature, b"session data"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn openssl_signed_rsa_4096_user_key_verifies_with_sha2_512_and_256() {
+        let dir = scratch("rsa");
+        let path = dir.join("id_rsa");
+        ssh_keygen(&["-q", "-t", "rsa", "-b", "4096", "-m", "PEM", "-N", "", "-f", path.to_str().unwrap()]);
+        let blob = parse_public_line(std::fs::read_to_string(dir.join("id_rsa.pub")).unwrap().trim()).unwrap();
+        let data = dir.join("data");
+        std::fs::write(&data, b"publickey request data").unwrap();
+        for (digest, algorithm) in [("-sha512", "rsa-sha2-512"), ("-sha256", "rsa-sha2-256")] {
+            let output = Command::new("openssl").args(["dgst", digest, "-sign", path.to_str().unwrap(), data.to_str().unwrap()])
+                .output().expect("openssl is a host-test prerequisite");
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            let mut signature = Vec::new();
+            SshBuf::put_string(&mut signature, algorithm.as_bytes());
+            SshBuf::put_string(&mut signature, &output.stdout);
+            assert!(verify_signature(algorithm.as_bytes(), &blob, &signature, b"publickey request data"), "{algorithm}");
+            assert!(!verify_signature(algorithm.as_bytes(), &blob, &signature, b"other data"), "{algorithm}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn encrypted_or_altered_private_keys_are_refused() {
+        let dir = scratch("refuse");
+        let path = dir.join("id_ed25519");
+        ssh_keygen(&["-q", "-t", "ed25519", "-N", "a passphrase", "-f", path.to_str().unwrap()]);
+        assert!(Identity::from_file_text(&std::fs::read_to_string(&path).unwrap()).is_err());
+        let text = Ed25519Key::from_seed(&[9u8; 32]).to_openssh("", 1);
+        let mut body = decode_pem_block(&text, OPENSSH_BEGIN, OPENSSH_END).unwrap();
+        let last = body.len() - 20;
+        body[last] ^= 1;
+        let altered = format!("{}\n{}\n{}\n", OPENSSH_BEGIN, base64_encode(&body, true), OPENSSH_END);
+        assert!(Ed25519Key::from_openssh(&altered).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn public_lines_need_a_known_type_that_matches_the_blob() {
+        let blob = Ed25519Key::from_seed(&[1u8; 32]).public_key_blob();
+        let line = public_line(&blob, "operator@host");
+        assert_eq!(parse_public_line(&line), Some(blob.clone()));
+        assert_eq!(parse_public_line(&line.replacen("ssh-ed25519", "ssh-rsa", 1)), None);
+        assert_eq!(parse_public_line(&format!("command=\"true\" {}", line)), None);
+        assert_eq!(parse_public_line("ssh-ed25519 !!!!"), None);
+        for size in 0..6 {
+            let data: Vec<u8> = (0..size as u8).collect();
+            assert_eq!(base64_decode(base64_encode(&data, true).as_bytes()).unwrap(), data);
+        }
+    }
 }

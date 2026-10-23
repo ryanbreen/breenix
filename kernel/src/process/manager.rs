@@ -1003,7 +1003,7 @@ impl ProcessManager {
             .map(alloc::sync::Arc::try_new)
             .transpose()
             .map_err(|_| "spawn allocation failed")?;
-        let (parent_pgid, parent_cwd, (cred, nice), umask, limits) = {
+        let (parent_pgid, parent_cwd, (cred, nice), limits) = {
             let parent = self
                 .processes
                 .live_row(&parent_pid)
@@ -1012,7 +1012,6 @@ impl ProcessManager {
                 parent.pgid,
                 parent.cwd.copy(),
                 (parent.cred.clone(), parent.nice),
-                parent.umask,
                 parent.limits.inherit(),
             )
         };
@@ -1027,7 +1026,6 @@ impl ProcessManager {
             child.pgid = parent_pgid;
             child.cwd = parent_cwd;
             child.nice = nice;
-            child.umask = umask;
             child.limits = limits;
             child
                 .fd_table
@@ -1516,7 +1514,7 @@ impl ProcessManager {
             .map(alloc::sync::Arc::try_new)
             .transpose()
             .map_err(|_| "spawn allocation failed")?;
-        let (parent_pgid, parent_cwd, (cred, nice), umask, limits) = {
+        let (parent_pgid, parent_cwd, (cred, nice), limits) = {
             let parent = self
                 .processes
                 .live_row(&parent_pid)
@@ -1525,7 +1523,6 @@ impl ProcessManager {
                 parent.pgid,
                 parent.cwd.copy(),
                 (parent.cred.clone(), parent.nice),
-                parent.umask,
                 parent.limits.inherit(),
             )
         };
@@ -1540,7 +1537,6 @@ impl ProcessManager {
             child.pgid = parent_pgid;
             child.cwd = parent_cwd;
             child.nice = nice;
-            child.umask = umask;
             child.limits = limits;
             child
                 .fd_table
@@ -4545,6 +4541,13 @@ impl ProcessManager {
             }
             cred
         };
+        // A program running with an identity its caller lacks starts with
+        // descriptors 0 to 2 open (`NullStdio`).
+        let null_stdio = if cred.secure() {
+            crate::ipc::fd::NullStdio::try_new().map_err(|_| "exec allocation failed")?
+        } else {
+            crate::ipc::fd::NullStdio::none()
+        };
 
         if self.exec_blocked_by_group(pid) {
             return Err(EXEC_GROUP_RUNNING);
@@ -4647,6 +4650,7 @@ impl ProcessManager {
         // Close FD_CLOEXEC file descriptors per POSIX
         let ipc_close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
         process.fd_table.close_cloexec(ipc_close_pid, closes);
+        process.fd_table.open_closed_stdio(null_stdio);
         closes.release_record_locks(process.lock_owner.id());
 
         // Replace the page table with the new one
@@ -4947,6 +4951,13 @@ impl ProcessManager {
             }
             cred
         };
+        // A program running with an identity its caller lacks starts with
+        // descriptors 0 to 2 open (`NullStdio`).
+        let null_stdio = if cred.secure() {
+            crate::ipc::fd::NullStdio::try_new().map_err(|_| "exec allocation failed")?
+        } else {
+            crate::ipc::fd::NullStdio::none()
+        };
 
         if self.exec_blocked_by_group(pid) {
             return Err(EXEC_GROUP_RUNNING);
@@ -5047,6 +5058,7 @@ impl ProcessManager {
         // Close FD_CLOEXEC file descriptors per POSIX
         let ipc_close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
         process.fd_table.close_cloexec(ipc_close_pid, closes);
+        process.fd_table.open_closed_stdio(null_stdio);
         closes.release_record_locks(process.lock_owner.id());
 
         process.page_table = Some(new_page_table.publish());

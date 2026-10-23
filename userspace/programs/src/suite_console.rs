@@ -105,6 +105,7 @@ static SUITE: Suite = suite("console", "Screen console & virtual terminals", &[
         case("prompt-each-vt", "Each of tty1 to tty6 shows the login prompt, read back from its own screen", getty_prompt_each_vt),
         case("wrong-password-refused", "A wrong password is refused on a numbered terminal", getty_wrong_password_refused),
         case("login-on-vt", "The per-run account logs in on a numbered terminal", getty_login_on_vt),
+        case("root-login-on-vt", "Root logs in with its own password on a numbered terminal under the shipped ROOT_LOGIN no", getty_root_login_on_vt),
         case("logout-reacquires", "After logout the terminal's getty is respawned and prompts again", getty_logout_reacquires),
         case("independent-sessions", "Sessions on two terminals have their own controlling terminals and process groups", getty_independent_sessions),
     ]),
@@ -989,7 +990,7 @@ fn chvt_chvt_switches() -> CaseResult {
                     #[cfg(target_arch = "aarch64")]
                     const SETUID: u64 = 146;
                     require(unsafe { raw::syscall1(SETUID, 1000) } as i64 == 0, "setuid(1000)")?;
-                    let mut command = VtChild::spawn("/bin/chvt", &["chvt", "3"])?;
+                    let mut command = VtChild::spawn("/usr/bin/chvt", &["chvt", "3"])?;
                     require(command.wait()? == 0, "non-root chvt 3 failed")
                 })();
                 if let Err(reason) = &result { eprintln!("chvt credential probe: {reason}"); }
@@ -1012,7 +1013,7 @@ fn chvt_chvt_bad_number() -> CaseResult {
     measured(|| {
         let before = foreground()?;
         for number in ["0", "7", "18446744073709551615", "abc"] {
-            let mut child = VtChild::spawn("/bin/chvt", &["chvt", number])?;
+            let mut child = VtChild::spawn("/usr/bin/chvt", &["chvt", number])?;
             require(child.wait()? == 256, "invalid chvt did not exit 1")?;
             require(foreground()? == before, "invalid chvt changed the foreground")?;
         }
@@ -1053,7 +1054,7 @@ fn chvt_chvt_waits() -> CaseResult {
         io::close(release_r).map_err(|e| e.to_string())?;
         let mut byte = [0];
         require(io::read(ready_r, &mut byte).map_err(|e| e.to_string())? == 1 && byte == *b"R", "VT owner failed")?;
-        let mut child = VtChild::spawn("/bin/chvt", &["chvt", "3"])?;
+        let mut child = VtChild::spawn("/usr/bin/chvt", &["chvt", "3"])?;
         pause()?;
         require(child.poll()?.is_none(), "chvt returned before VT_PROCESS released")?;
         require(foreground()? == 2, "VT_PROCESS did not hold tty2")?;
@@ -1106,9 +1107,21 @@ fn login_credentials() -> Verdict<LoginCredentials> {
     Ok(LoginCredentials { password, hash: std::str::from_utf8(&hash[..n]).map_err(|e| e.to_string())?.into() })
 }
 
-struct LoginAccount { passwd: Vec<u8>, shadow: Option<Vec<u8>>, password: String }
+/// The getty cases' account: an ordinary user whose shell is the login-shell
+/// oracle, listed in /etc/shells.
+const LOGIN_NAME: &str = "vtuser";
+struct LoginAccount { passwd: Vec<u8>, shadow: Option<Vec<u8>>, shells: Vec<u8>, password: String }
 impl LoginAccount {
     fn create() -> Verdict<Self> {
+        Self::stage(false)
+    }
+    /// Root with the run's password and the login-shell oracle as its shell,
+    /// under the image's shipped login.defs (root logs in on the local
+    /// console and virtual terminals, ruling S14).
+    fn root() -> Verdict<Self> {
+        Self::stage(true)
+    }
+    fn stage(root: bool) -> Verdict<Self> {
         let credentials = LOGIN_CREDENTIALS.get().ok_or("run credentials were not prepared")?
             .as_ref().map_err(Clone::clone)?;
         let passwd = std::fs::read("/etc/passwd").map_err(|e| e.to_string())?;
@@ -1117,10 +1130,17 @@ impl LoginAccount {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(format!("read shadow: {error}")),
         };
-        let account = Self { passwd, shadow, password: credentials.password.clone() };
-        std::fs::write("/etc/passwd", b"root:x:0:0:Console suite:/:/bin/console-login-shell\n").map_err(|e| e.to_string())?;
-        std::fs::write("/etc/shadow", format!("root:{}:0:0:99999:7:::\n", credentials.hash))
-            .map_err(|e| e.to_string())?;
+        let shells = std::fs::read("/etc/shells").map_err(|e| format!("read shells: {e}"))?;
+        let account = Self { passwd, shadow, shells, password: credentials.password.clone() };
+        let (passwd, shadow) = if root {
+            ("root:x:0:0:root:/root:/usr/bin/console-login-shell\n".to_string(), format!("root:{}:0:0:99999:7:::\n", credentials.hash))
+        } else {
+            (format!("root:x:0:0:root:/root:/bin/bsh\n{LOGIN_NAME}:x:2010:2010:Console suite:/:/usr/bin/console-login-shell\n"),
+                format!("root:!:::::::\n{LOGIN_NAME}:{}:0:0:99999:7:::\n", credentials.hash))
+        };
+        std::fs::write("/etc/passwd", passwd).map_err(|e| e.to_string())?;
+        std::fs::write("/etc/shadow", shadow).map_err(|e| e.to_string())?;
+        std::fs::write("/etc/shells", b"/bin/bsh\n/usr/bin/console-login-shell\n").map_err(|e| e.to_string())?;
         Ok(account)
     }
     fn restore(&self) -> Verdict {
@@ -1133,12 +1153,14 @@ impl LoginAccount {
             },
         }
         std::fs::write("/etc/passwd", &self.passwd).map_err(|e| e.to_string())?;
+        std::fs::write("/etc/shells", &self.shells).map_err(|e| e.to_string())?;
         let shadow_restored = match (std::fs::read("/etc/shadow"), &self.shadow) {
             (Ok(actual), Some(expected)) => actual == *expected,
             (Err(error), None) => error.kind() == std::io::ErrorKind::NotFound,
             _ => false,
         };
-        require(shadow_restored && std::fs::read("/etc/passwd").map_err(|e| e.to_string())? == self.passwd,
+        require(shadow_restored && std::fs::read("/etc/passwd").map_err(|e| e.to_string())? == self.passwd
+            && std::fs::read("/etc/shells").map_err(|e| e.to_string())? == self.shells,
             "account files were not restored")
     }
 }
@@ -1201,10 +1223,14 @@ fn screen_ends(number: usize) -> String {
 }
 
 fn login_vt(number: usize, password: &str) -> Verdict<String> {
+    login_vt_as(number, LOGIN_NAME, password)
+}
+
+fn login_vt_as(number: usize, name: &str, password: &str) -> Verdict<String> {
     let began = breenix_suite::suite::case_ms_left();
     wait_vt(number, "Breenix login: ")?;
     activate(number)?;
-    type_line("root")?;
+    type_line(name)?;
     wait_vt(number, "Password: ").map_err(|e| format!("{e}; screen ends: {}", screen_ends(number)))?;
     let password_at = breenix_suite::suite::case_ms_left();
     type_line(password)?;
@@ -1236,7 +1262,7 @@ fn getty_wrong_password_refused() -> CaseResult {
         let _init = start_gettys()?;
         wait_vt(2, "Breenix login: ")?;
         activate(2)?;
-        type_line("root")?;
+        type_line(LOGIN_NAME)?;
         wait_vt(2, "Password: ")?;
         type_line("wrong")?;
         let text = wait_vt(2, "Login incorrect")?;
@@ -1251,6 +1277,20 @@ fn getty_login_on_vt() -> CaseResult {
         let account = LoginAccount::create()?;
         let _init = start_gettys()?;
         login_vt(3, &account.password)?;
+        account.restore()?;
+        activate(1)
+    })
+}
+
+fn getty_root_login_on_vt() -> CaseResult {
+    measured(|| {
+        let defs = std::fs::read_to_string("/etc/login.defs").map_err(|e| format!("read login.defs: {e}"))?;
+        require(defs.lines().any(|l| l.split_whitespace().eq(["ROOT_LOGIN", "no"])), "login.defs does not ship ROOT_LOGIN no")?;
+        let account = LoginAccount::root()?;
+        let _init = start_gettys()?;
+        let proof = login_vt_as(6, "root", &account.password)?;
+        require(proof.split_whitespace().any(|w| w == "user=root") && proof.split_whitespace().any(|w| w == "uid=0"),
+            &format!("root's session differs: {proof}"))?;
         account.restore()?;
         activate(1)
     })

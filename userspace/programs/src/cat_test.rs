@@ -128,7 +128,7 @@ fn main() {
     {
         let program = b"/bin/cat\0";
         let arg0 = b"cat\0".as_ptr();
-        let arg1 = b"/test/nested.txt\0".as_ptr();
+        let arg1 = b"/usr/libexec/breenix/test/nested.txt\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
         let (exit_code, output) = run_and_capture(program, &argv);
@@ -148,7 +148,7 @@ fn main() {
     {
         let program = b"/bin/cat\0";
         let arg0 = b"cat\0".as_ptr();
-        let arg1 = b"/deep/path/to/file/data.txt\0".as_ptr();
+        let arg1 = b"/usr/libexec/breenix/deep/path/to/file/data.txt\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
         let (exit_code, output) = run_and_capture(program, &argv);
@@ -188,7 +188,7 @@ fn main() {
         let program = b"/bin/cat\0";
         let arg0 = b"cat\0".as_ptr();
         let arg1 = b"/hello.txt\0".as_ptr();
-        let arg2 = b"/test/nested.txt\0".as_ptr();
+        let arg2 = b"/usr/libexec/breenix/test/nested.txt\0".as_ptr();
         let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
 
         let (exit_code, output) = run_and_capture(program, &argv);

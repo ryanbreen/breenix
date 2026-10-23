@@ -21,7 +21,7 @@ pub(crate) fn check_parent_access(
     if parent.i_links_count == 0 {
         return Err(2);
     }
-    if !cred.permits(parent, 3) {
+    if !cred.may(parent.attrs(), 3) {
         return Err(13);
     }
     if let Some(owner) = owner {
@@ -53,7 +53,7 @@ pub(crate) fn creation_mode(mode: u32, cred: &Credentials, gid: u32, inherit_set
 mod tests {
     use super::*;
     fn cred(uid: u32, gid: u32) -> Credentials {
-        let mut cred = Credentials::current(false);
+        let mut cred = Credentials::kernel();
         cred.euid = uid;
         cred.egid = gid;
         cred

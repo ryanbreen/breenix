@@ -534,6 +534,9 @@ fn map_file(
     may_write: bool,
 ) -> Result<(u64, bool), u64> {
     use crate::memory::file_map::{self, MapError};
+    if vma.flags.bits() & 3 != 2 && vma.prot.contains(Protection::WRITE) {
+        drop_writer_privilege(&handle)?;
+    }
     let guard =
         crate::fs::ext2::read_mount(handle.object.mount).map_err(|_| ErrorCode::IoError as u64)?;
     let fs = guard.as_ref().ok_or(ErrorCode::IoError as u64)?;
@@ -597,6 +600,21 @@ fn map_file(
         start,
         process.memory_locks.future && !process.memory_locks.onfault,
     ))
+}
+
+/// A non-root caller's shared writable mapping of a file clears its set-ID
+/// bits as that caller's write would (K4), before any store can reach it.
+fn drop_writer_privilege(handle: &crate::fs::ext2::live_inode::FileHandle) -> Result<(), u64> {
+    let cred = crate::fs::permissions::Credentials::current(false)?;
+    if cred.privileged() {
+        return Ok(());
+    }
+    let mut guard = crate::fs::ext2::write_mount(handle.object.mount)
+        .map_err(crate::fs::namei::fs_errno)?;
+    let fs = guard.as_mut().ok_or(ErrorCode::IoError as u64)?;
+    let ino = handle.verify(fs).map_err(|_| ErrorCode::IoError as u64)?;
+    fs.drop_content_privilege(ino)
+        .map_err(crate::fs::namei::fs_errno)
 }
 
 /// errno for a failed munmap or mprotect of a file VMA: a range that does not
@@ -663,6 +681,38 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
             return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
         }
     };
+
+    // Shared file mappings that may become writable clear their files' set-ID
+    // bits first, under the filesystem lock, which PROCESS_MANAGER may not hold.
+    if new_prot.contains(Protection::WRITE) {
+        let writers = {
+            let mut manager_guard = crate::process::manager_for_address_space(current_thread_id);
+            let Some((_, process)) = manager_guard
+                .as_mut()
+                .and_then(|manager| manager.find_address_space_by_thread_mut(current_thread_id))
+            else {
+                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+            };
+            let mut writers = alloc::vec::Vec::new();
+            for vma in process.vmas.iter().filter(|v| v.start.as_u64() < end_addr && addr < v.end.as_u64()) {
+                if vma.prot.contains(Protection::WRITE) {
+                    continue;
+                }
+                if let Some(handle) = crate::memory::file_map::shared_writer(vma) {
+                    if writers.try_reserve(1).is_err() {
+                        return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+                    }
+                    writers.push(handle);
+                }
+            }
+            writers
+        };
+        for handle in &writers {
+            if let Err(errno) = drop_writer_privilege(handle) {
+                return SyscallResult::Err(errno);
+            }
+        }
+    }
 
     let mut manager_guard = crate::process::manager_for_address_space(current_thread_id);
     let manager = match *manager_guard {

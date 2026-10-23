@@ -87,6 +87,22 @@ pub unsafe fn put(class: usize, ptr: *mut u8) -> bool {
     true
 }
 
+/// Take the cached blocks, class by class, for the caller to unmap.
+pub unsafe fn drain(mut each: impl FnMut(usize, *mut u8)) -> usize {
+    let mut count = 0;
+    for class in 0..CLASSES {
+        loop {
+            let block = take(class);
+            if block.is_null() {
+                break;
+            }
+            each(class, block);
+            count += 1;
+        }
+    }
+    count
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,6 +132,13 @@ mod tests {
             assert!(seen.insert(block as usize));
             unsafe { block.add(16).write(0xa5) };
         }
+        assert!(unsafe { take(class) }.is_null());
+        for block in &mut blocks[..3] {
+            assert!(unsafe { put(class, block.as_mut_ptr().cast()) });
+        }
+        let mut drained = Vec::new();
+        assert_eq!(unsafe { drain(|c, b| drained.push((c, b as usize))) }, 3);
+        assert!(drained.iter().all(|(c, _)| *c == class));
         assert!(unsafe { take(class) }.is_null());
         assert!(blocks[..LIMIT]
             .iter()

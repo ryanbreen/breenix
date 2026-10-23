@@ -350,9 +350,8 @@ soon as the unit holds, or waits for, the machine lease, so the caller's ssh ses
    name the holder, queue position and deadline; `lease.json` mirrors the ordered `queue.json`, also exposed by
    `metal-run status`. Cancelled, dead and expired waiters leave the queue. A boot that waited keeps its one
    boot record and runs normally, without a refusal record. A timed-out wait or quarantined lease returns 75.
-   With `--attended`, `--wait` retains its challenge duration (default 30 minutes); queue admission still has its
-   own 240-minute bound. claim-lint:ok: tests/metal_boot_queue_test.py exercises FIFO handoff, cancellation, bounds and launch output. The powered lease carries the boot id, the driver's unit, a heartbeat refreshed
-   each 5 s and, from power-on, the attempt's absolute ceiling.
+   The powered lease carries the boot id, the driver's unit, a heartbeat refreshed each 5 s and, from power-on,
+   the attempt's absolute ceiling. claim-lint:ok: tests/metal_boot_queue_test.py exercises FIFO handoff, cancellation, bounds and launch output.
 2. **Gets its payload.** For a Breenix boot, `metal-build` runs in the build container: a private clone of the commit,
    the effort-target guard from a freshly fetched origin/main (the deployed guard for `--catchup`;
    `--target x86-metal` once origin/main's guard knows that target; until then
@@ -861,7 +860,11 @@ ID (the install boot's ID), recorded as `userland <id>` in the slot's format-2 i
    installer's first argument. `/sbin/persistent-install` copies the new userland into
    `/.breenix-generations/<id>.new` on the system partition. It preserves file bytes, ownership, modes, symlinks
    and hard links within the copied tree. It copies `/etc` into each generation and keeps existing `/root`; when absent, it copies `/root` into
-   private scratch space outside the generation, flushes it, and publishes it with a rename. The generation has empty directory mount
+   private scratch space outside the generation, flushes it, and publishes it with a rename. It also creates the
+   machine state store `/.breenix-shared` (root's, mode 0700) when absent and stages the operator's account in it
+   ("SSH and the machine state store", below). It leaves the test image's SSH credentials behind: the test-only client
+   key and the `sshtest` account's home in `/etc/breenix/test-ssh`, that account's lines in `/etc/passwd` and
+   `/etc/group`, a copied `/root/.ssh`, and the staged `/etc/breenix/operator-account`. The generation has empty directory mount
    points for `/root`, `/home` and the virtual filesystems. The installer writes and flushes a completion
    record (`.complete`, containing the ID), flushes the staging directory, renames the tree once to
    `/.breenix-generations/<id>`, then flushes its parent. Only then does it print
@@ -894,10 +897,149 @@ current tree. Reclamation must account for the manager's recovered slots before 
 `metal-run install-persistent --rollback` is one persistent boot whose answer carries `rollback`: the manager swaps
 the current and previous slots and boots the new current. `metal-run boot --persistent --entry previous` boots the
 previous slot once without swapping. Rollback restores the previous kernel and selects its unchanged userland
-tree. `/etc` follows the selected userland generation; operator data in `/root` and the separate home filesystem stay shared across promotion and rollback.
+tree. `/etc` follows the selected userland generation; operator data in `/root`, the machine state store and the
+separate home filesystem stay shared across promotion and rollback.
 Host transaction tests in `persistent_install.rs` interrupt filesystem operations and the manager's slot actions;
 they check retained bytes and metadata, shared data and selection of the paired tree. Hardware validation of this
 generation protocol is pending review and a later hardware window (#2114).
+
+### SSH and the machine state store
+
+The persistent install runs bsshd on port 22 and no telnetd: x86 images start no telnet service.
+
+- **Logins** are publickey only (ssh-ed25519, rsa-sha2-256 and rsa-sha2-512 user keys), against the account's
+  `~/.ssh/authorized_keys`. The file, `~/.ssh`, the home directory and each directory above it must be owned by root
+  or the account and not writable by group or others, and a symbolic link is refused. Key options are not
+  implemented, so a line that carries them is ignored. There is no password login, an unknown user is refused,
+  and bsshd refuses root (an account with uid 0).
+- **Sessions** run as the account: bsshd sets its supplementary groups, gid and uid, confirms that root cannot be
+  regained, then starts the account's shell as a login shell in its home with `HOME`, `USER`, `LOGNAME`, `SHELL`,
+  `PATH` and the client's `TERM`.
+- **The host key** is `/etc/ssh/ssh_host_ed25519_key` (RFC 8709), generated from the kernel's random pool on the
+  first start that finds no key, root's and mode 0600. bsshd prints `bsshd: host key ED25519 SHA256:...` on each
+  start, on the console and the serial port; compare it with `ssh-keygen -lf` output before trusting the key. A key
+  file that others can read, that is not root's, that is a symbolic link or that does not parse stops bsshd rather
+  than being replaced.
+
+bsshd sends its SSH identification before reading the client's (RFC 4253 section
+4.2), including for `ssh-keyscan`. It offers `aes256-gcm@openssh.com` (RFC 5647's
+packet format with the negotiation in draft-miller-sshm-aes-gcm) and `aes128-ctr`
+with HMAC-SHA256. A PTY session creates a session, acquires the slave as its
+controlling terminal, sets its foreground group and gives the slave to the
+account with mode 0620; the server restores ownership when the session ends.
+The [server suite](../suites/README.md#server-host-driven-persistent-categories)
+measures these properties from the boot host on a persistent boot.
+
+**The machine state store.** An upgrade copies the new image's `/etc`, so the state the machine owns lives in
+`/.breenix-shared` on the system partition, outside the generations. The kernel binds it at `/.breenix-shared` in
+each generation, as it binds `/root`. Before bsshd starts, init reconciles it into the running generation's `/etc`
+(`libs/libbreenix/src/ssh/machine_state.rs`):
+
+| In the store | Reconciled as |
+|---|---|
+| `etc/passwd`, `etc/group`, `etc/shadow` | Each line replaces the generation's line for the same name or is added; a passwd line with uid 0, or with a uid another account has, is refused |
+| `etc/ssh/*` | Copied into `/etc/ssh` with its mode; bsshd adds a key it generates here |
+| `var/lib/accounts/pending/<account>` | Once the home partition is mounted, added to the account's `~/.ssh/authorized_keys` (home and `~/.ssh` 0700, the file 0600, created when absent), then removed |
+
+The store must be root's and mode 0700, and each file read from it root's and not group- or world-writable (the
+shadow file and private keys also unreadable by others); otherwise init prints `[init] machine state refused: ...`
+and leaves `/etc` as it was. init reports what it applied as `[init] machine state: ...` lines.
+
+**The operator account.** `metal-run install-persistent` reads four private site fields: `OPERATOR_USER`, the
+account name; `OPERATOR_UID`, its uid (1000 to 60000); `OPERATOR_PASSWORD_HASH`, a SHA-512-crypt hash of its
+password (quoted in the site file, which `sh` sources; a password is refused); and `OPERATOR_SSH_PUBLIC_KEY`, one
+`ssh-ed25519` or `ssh-rsa` public key line (quoted; a private key is refused). Additional keys use
+`OPERATOR_SSH_PUBLIC_KEY_2`, `_3`, and further positive numbered fields, one quoted key per line; they are
+validated and staged in numeric order after the current field. The current field remains the boot host's key
+for host-driven runners. It stages them as
+`/etc/breenix/operator-account` (root's, 0600) on the install boot's test root, and the installer writes the account
+into the store: the uid as uid and gid, a group of the same name, home `/home/<name>`, shell `/bin/bsh` (S12),
+membership of `wheel` and the hash, with every key in its pending authorized-key file. An account the store already holds
+keeps its line, comment and home included, and must already have the site's uid and gid, or the install is refused
+before it writes; its group keeps its members. The site's hash replaces only a password an install locked (`!`), so a
+password set on the machine is kept. Each upgrade stages them again and updates the operator shell; a key already
+listed is not added twice and existing authorized_keys bytes are retained. To revoke a site-managed key, remove
+it from both the site file and the account's authorized_keys; a key retained in the site file is added again on upgrade. First-boot reconciliation validates the
+entire pending file before adding any key and removes it only after every key succeeds; a retry keeps keys already
+added. The users suite's `operator` category checks every configured key and
+measures the result on a persistent boot ([the suites README](../suites/README.md#users--permissions)).
+SSH exec requests run through `/bin/bsh -c COMMAND` and return the command status; POSIX scripts use explicit `sh -c`.
+Channel data feeds command stdin, and channel EOF closes stdin while output drains (RFC 4254 section 5.3). <!-- claim-lint:ok: scripts/metal/metal_root.py operator_keys validates and stages the configured key list; libs/libbreenix/src/ssh/machine_state.rs reconcile validates the list before authorize_key appends missing keys. -->
+
+Test images carry a test-only key pair generated at image build (not committed), authorized for the `sshtest`
+account (uid 2000, home `/etc/breenix/test-ssh/home`, since `/home` is a separate disk) and for root. init's loopback
+oracle logs in with it: `[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]` for the key and a forged signature, and
+`[BSSH_ACCOUNT_ORACLE:root=refused:id=sshtest:PASS]` for root's refusal and the session's `id`.
+
+### Services
+
+After its boot checks and boot script, init supervises the services in `/etc/breenix/services`
+(format and restart policy in `libs/libbreenix/src/services.rs`; the shipped tables are
+`libs/libbreenix/src/service-tables/`). On x86 the table holds bsshd, the loopback SSH check,
+blogd, `ntp` (the time client) and the gettys on tty2 to tty6 and the console. The table is a
+factory file: `etc-reconcile` installs it on persistent installs and keeps a local edit with a
+`.factory` sibling.
+
+- **Needs.** bsshd needs `entropy`: init starts it once a non-blocking `getrandom` succeeds, and
+  prints `[init] random pool ready; ...`. The time client needs `network-up`: `/proc/net/pnp`
+  shows a DHCP lease or a manual configuration. A waiting service holds up nothing else, so the
+  gettys start on the first pass whatever the pool's state (#2086); the loopback SSH check runs
+  as a separate `init bssh-oracle` process once bsshd runs. claim-lint:ok: `start_due` and `conditions` in
+  `userspace/programs/src/init_services.rs`.
+- **Restarts.** A service restarts by its policy (`always`, `on-failure`, `never`) 1 s after it
+  exits. Each further failure within 10 s of starting doubles the wait (2, 4, 8 s); the fifth in a
+  row prints `[init] NAME is crash-looping: ...` and the service then restarts every 60 s until a
+  run lasts 10 s. bsshd sets SO_REUSEADDR, so a restarted bsshd binds port 22 while its
+  predecessor's sessions remain. claim-lint:ok: `after_exit` and its host tests in
+  `libs/libbreenix/src/services.rs`.
+- **Stopping.** `svc stop` sends SIGTERM and, after the service's stop timeout (5 s unless the
+  table says otherwise), SIGKILL; a stopped service stays stopped until `svc start`.
+- **State and control.** init publishes `/run/breenix/services` (one line per service: state,
+  pid, starts, first start, last exit) and serves `/run/breenix/svc.sock`. `svc` reports the
+  state to any account; `svc start|stop|restart NAME` is allowed to root and to the account the
+  service runs as (checked with SO_PEERCRED), and `svc reload`, which reads the table and
+  `/run/breenix/services.d/*` again, to root. Definitions under `/run` last until the next boot.
+- **Notices.** Until the console's getty starts, init prints its supervisor notices on the console,
+  so the boot's ordered markers stay there. From then on the routine ones (a service started,
+  exited, killed, restarting, stopped or recovered, a terminal session on a virtual terminal, the
+  random pool or the network becoming ready, a table reload) go to `/var/log/init.log`, each record
+  headed with the supervisor's monotonic clock in milliseconds, so they never land in a console
+  session. The console keeps its own session's start and end, the crash-loop report (also logged)
+  and the bsshd and SSH oracle receipts. An init that publishes no state (`init console`) keeps
+  every notice on the console. claim-lint:ok: `Notices` in `userspace/programs/src/init_services.rs` (#2282).
+
+`init console` supervises only the table's gettys. The [server suite](../suites/README.md#server-host-driven-persistent-categories)
+measures the services on a persistent boot.
+
+### Persistent logs
+
+init captures each table service's stdout and stderr through separate pipes,
+and writes records tagged `[stdout]` or `[stderr]` into `/var/log/NAME.log`.
+A service gets EOF on stdin; getty copies its own diagnostics to its log before
+execing login, whose terminal traffic stays on that terminal. Daemon output stays in
+its service log, including the SSH host-key fingerprint. The supervisor emits
+only complete bsshd listening and BSSH oracle receipts for serial boot gates. The server suite reads the current
+boot's protected bsshd log over the leased SOL console before trusting its SSH key.
+
+Each file starts with `BREENIX-LOG 1 boot=ID source=NAME limit=262144 archives=4`.
+init publishes the ID in `/run/breenix/boot-id` and prints it on the console.
+Files are 0640 root:adm, synced after each batch, and rotated before a batch
+would exceed 256 KiB. The active file and four numbered archives are retained;
+a new boot archives the previous boot's active file before writing its header.
+`/var` is shared machine state, so the files survive a reboot and an upgrade.
+
+A stream line over 4096 bytes is discarded through its newline and records
+`lost lines=1` with the stream and reason. A failed file write is counted and
+reported on the next successful write. An unavailable log sink does not block
+service startup: init drains the pipes, counts discarded lines and retries the sink.
+blogd uses `/proc/kmsg-sequence`, a
+root-only snapshot carrying absolute raw-byte offsets and a hex payload, to
+append new kernel records to `kernel.log` with the same format and rotation.
+When the ring has overwritten unread bytes it records the exact missing byte
+count and `lost lines=unknown`, because the overwritten newlines are unavailable.
+blogd checkpoints its byte offset and partial line under `/run/breenix`, keyed by
+the boot ID, and finishes a batch before honouring SIGTERM so service restarts
+resume the same stream. The existing `/proc/kmsg` text interface is retained.
 
 ### Persistent sessions
 
@@ -905,8 +1047,12 @@ generation protocol is pending review and a later hardware window (#2114).
 override, and lets the manager boot the persistent entry. It keeps the machine on with no deadline until `metal-run
 stop ID` or a power-off the driver observes (the operator shutting Breenix down). The framebuffer console with six
 virtual terminals and getty, and ssh, are the interface. `--run 'CMD'` (repeatable) makes it an unattended check: the
-driver logs in over SOL with the staged console account, types each command at the shell prompt, waits for the next
-prompt, logs out and powers off.
+driver refreshes the login prompt with a newline and logs in over SOL with the staged console account.
+Each command runs through `/bin/bsh -c` with the login environment and working directory; commands
+use separate child shells. A nonce-tagged exit status must report status 0 before the next command
+(including the final `sync`) starts. A returned prompt without a status fails the run.
+The driver logs out and powers off after all statuses arrive; a deadline before login
+reports that commands did not run.
 
 An operator who powers the machine on at the machine gets the same session: the manager's question finds no lease,
 so the server takes the lease for a persistent session and starts its driver, which captures the console from then
@@ -916,9 +1062,7 @@ session already holds the lease when setup runs.
 
 Each persistent boot is recorded and scored like a default boot, with boot shape and mode `persistent`: the boot
 manager's milestone, the kernel's storage milestone for the system and home partitions, `fb-console`, `xhci`,
-`usb-keyboard` and the login prompt. The operator's input is `operator`: a keyboard stage the operator has not
-typed yet counts as not measured rather than missed. Once a keyboard input marker is captured, missing keyboard
-stages (including TTY delivery) count as failures.
+`usb-keyboard` and the login prompt. These stages are automated; normal operator usage adds no stages or results.
 
 ### Measured on the R240
 
@@ -1042,41 +1186,39 @@ operator resolves that difference. No restore step writes storage.
 
 The `metal-console` effort follows storage with `fb-console`, `xhci`, `usb-keyboard` and `console-login`.
 Their stage lists cover RAM-disk, install and disk-root shapes, subject to each milestone's `bootModes`.
-The `usb-keyboard` and `console-login` stages tagged `input: keyboard` are required only of an attended boot,
-so a SOL boot finishes without them. Its verdict leaves those two milestones unpassed and counts the stages
-its input cannot produce
-(`inputUnmeasured`); those alone do not make the boot short. Existing modes keep their measured stages and
-completion markers.
-Console development boots use `--mode console --input sol`. Staging selects `/sbin/init console`,
+Only automated stages are measured (operator ruling S16, 2026-10-21). `usb-keyboard` measures attach,
+detach and re-attach; `console-login` measures the seven stages driven over SOL. Every remaining marker
+and its order are unchanged. Normal keyboard usage is outside the test count and matrix; any problem
+found during that usage is a bug report. <!-- claim-lint:ok: docs/metal/boot-path.json retains the automated markers and order; tests/metal_tools_test.py exercises missing and reordered console output. -->
+Automated console boots use `--mode console --input sol`. Staging selects `/sbin/init console`,
 which detaches init's controlling terminal and respawns `/bin/getty` with the shell mode's one-second rate limit.
 Getty creates a session, opens the console, acquires it as the controlling terminal, installs descriptors 0–2,
-sets canonical termios and checks the foreground group. It executes login, which reads with echo disabled,
-verifies the staged SHA-512-crypt hash, clears supplementary groups, sets the account's group and user IDs,
-changes to its home and executes the shell with a login argv[0] and a fresh environment.
-Missing, locked or unsupported shadow entries refuse authentication.
+sets canonical termios and checks the foreground group. It executes login, which reads with echo disabled and
+starts the session through the accounts library ([logins and administration](../users/login.md)): the staged
+SHA-512-crypt hash, the account's groups and IDs, the terminal, the umask, its home and the shell with a login
+argv[0] and a fresh environment. Missing, locked, expired or unsupported shadow entries refuse authentication.
+Root logs in on the console with its own password; `ROOT_LOGIN` governs only root's logins on other lines
+(ruling S14). Before each prompt getty revokes the console from the descriptors the last session left open on
+it (`vhangup`).
 
 The private site file supplies `CONSOLE_USER=root` and a generated `CONSOLE_PASSWORD`; the operator's
 copy belongs in their private credentials store. `CONSOLE_IDENTITY_KEY` is a separate random 32-byte key
 encoded as 64 lowercase hex digits. The kept credential identity is an HMAC-SHA256 under that key,
 so records alone do not provide a password verifier. These fields are host-only. Staging builds a fresh random
 salt and hashes through a host helper compiled from the same Breenix SHA-512-crypt code used by login.
-It writes and reads back `/etc/shadow` with root ownership and mode 0600. The cached image has no password.
+It writes and reads back `/etc/shadow` with root ownership and mode 0600, setting that password for root (su's
+target) and for the users suite's wheel fixture `uw`, each with its own salt, and keeping the image's other lines.
+The cached image has no password. On an image that carries `uw`, the console account is `uw`, so the challenge
+exercises an ordinary account's login, and root is reached with `sudo` or `su -`. An image from before the users
+effort's login milestone has no `uw`, and the console account is root.
 Passwords reach the helper and SOL input over stdin, without command arguments or event text.
 
-The SOL challenge requires a wrong password refusal before the successful authentication, the whole answer line
-`metal-login-ok 42`, `cat /proc/fbcon/check` showing the screen matches its shadow with that answer on a row,
+The SOL challenge logs in as the console account. It requires a wrong password refusal before the successful
+authentication, the whole answer line `metal-login-ok 42`, the root-only `/proc/fbcon/check` (through
+`sudo cat /proc/fbcon/check` and the same password when the account is `uw`) showing the screen matches its shadow
+with that answer on a row,
 logout, checked controlling-terminal reacquisition and a new login prompt. Its run records `input: sol` and
-`evidenceEligible: false`.
-
-An attended boot (ruling M8, the run sheet below) scores console-login from the milestone's `attendedStages`,
-in order; the driver and the scorer read that one list. Getty starts a fresh input window on each start; login
-reports a refusal or an acceptance against it, and the next getty reports the ended session's input. The kernel
-prints these as `[console] login refused|login accepted|session ended input=keyboard|other`, from the sources it
-recorded, without keeping any byte; the request is root-only. The stages are a keyboard refusal and login's
-`Login incorrect` (any number of refused attempts may come before), a keyboard acceptance, `metal-login-ok 42`,
-the screen check and its row, logout, a keyboard-only session end, reacquisition and a new prompt. A line naming
-`input=other` ends the boot short. `first-local-login` is the attended computation stage. Text over SOL is the
-observation path; no screenshot or framebuffer capture is used.
+`evidenceEligible: true`.
 
 The recovery form `--mode console --input sol --disk install` remains available.
 Ordinary console requests install a fresh physical root with the current userspace
@@ -1130,8 +1272,7 @@ and the HID Usage Tables; their comments cite the sections.
   with port power control (HCCPARAMS1.PPC) it powers the port off and on and attaches the connection the port
   then reports; without it, it disables the port and resets it. `[usb] replug exercise: port <n>: reattached
   <k> of 10 rounds` closes the exercise. The `usb-keyboard` milestone's stages are
-  the attach, the detach and the second attach; its typed-key stages are `input: keyboard`, required only of an
-  attended boot.
+  the attach, the detach and the second attach.
 - **Hubs.** The machine's census found its keyboard device on a root port, so there is no hub class driver;
   a keyboard behind a hub is not attached.
 
@@ -1142,8 +1283,13 @@ The pure parts have host tests in their own files, run with `rustc --edition=202
 
 The **site file** (inside the service container, 0600): `IDRAC_HOST`, `IDRAC_USER`, `IDRAC_PASSWORD`,
 `IDRAC_ACCOUNT_SLOT`, `INTERNAL_USB`, `USB_MANAGED_PORT` (fresh as-found BIOS values), `SATA_MODE` (`AhciMode` under the current disk policy), `BOOT_URL`, `HTTP_LISTEN_PORT`, `HTTP_DEV_INTERFACE`, `HTTP_DEV_ADDRESSING` (`dhcp`, or
-`static` with `HTTP_DEV_IP`, `HTTP_DEV_MASK`, `HTTP_DEV_GATEWAY`) and `REDACT_IDENTIFIERS`. It must also be valid
-`sh`, because `metal-sol` sources it.
+`static` with `HTTP_DEV_IP`, `HTTP_DEV_MASK`, `HTTP_DEV_GATEWAY`), `REDACT_IDENTIFIERS`, and for
+`install-persistent` and for users suite boots (staged as the test root's `/etc/breenix/test-ssh/operator-account`, which
+`users-hostssh` answers from the boot host) `OPERATOR_USER` and `OPERATOR_SSH_PUBLIC_KEY` ("SSH and the machine state store"),
+with `OPERATOR_UID` and `OPERATOR_PASSWORD_HASH` for `install-persistent` only. It must also
+be valid `sh`, because `metal-sol` sources it. `SERVER_SSH_HOST` names the persistent server for host-driven server suite checks,
+and `OPERATOR_PASSWORD`, the operator's own password (host-only, like `CONSOLE_PASSWORD`; the operator's copy belongs
+in their private credentials store), lets the users suite's host-run `operator` cases type it for `sudo` and the console.
 
 The **host file** (on the boot host): `METAL_INSTANCE`, `METAL_IMAGE`, `METAL_CPUS`, `METAL_MEMORY`, `METAL_LISTEN`
 (the published address and port), and the build container's `BUILD_INSTANCE`, `BUILD_REPO`, `BUILD_RUST_FORK`,
@@ -1204,38 +1350,6 @@ with the machine on; the reaper's retry then powers it off and lifts the quarant
 modes deliver their boot targets as described under "Physical-disk userspace"; probe mode stages `probe`, and its storage
 boots are described under "The disks".
 Probe completion requires `PROBE DONE` and the measured kernel and fetch stages.
-
-## Attended console run sheet
-
-This boot measures `usb-keyboard` and `console-login` from keys typed at the machine. The driver sends no input; the
-kernel marks which source delivered each byte, and only USB keyboard bytes count.
-
-**Before power-on:** a monitor on the VGA port, and a plain USB keyboard plugged directly into a USB port (not
-through a hub). Have `CONSOLE_PASSWORD` from your private credentials store; the account is `root`.
-
-**Start it** (or ask the agent to), on the boot host:
-
-```sh
-python3 ~/.local/share/breenix-metal/metal-run boot --mode console --attended
-```
-
-The driver builds main, takes the machine lease and powers on. **Hands off the keyboard until `Breenix login:`
-appears.** The kernel has finished its ten keyboard detach/reattach rounds before starting getty.
-Then type, pressing **Enter** after each line:
-
-1. `root`, then at `Password:` any wrong password. Wait for `Login incorrect` and a new `Breenix login:`.
-2. `root`, then at `Password:` the real password. Wait for the `bsh` prompt.
-3. `print("metal-login-ok", 6*7)`, and look for `metal-login-ok 42` on its own line.
-4. `cat /proc/fbcon/check`, and look for `fbcon check: shadow and screen identical`.
-5. `logout`, and wait for a new `Breenix login:`. The driver then powers the machine off.
-
-- A typo is fine: a failed login just returns to `Breenix login:`; start that step again. Any number of failed
-  attempts may come before the real one, and at least one must.
-- Do not type the password at `Breenix login:`. That prompt echoes, so it would be shown on the screen and kept in
-  the private serial record (exports mask it).
-
-You have 30 minutes from kernel handoff (`--wait MIN` changes it, up to 240). With nobody typing, the driver
-records the missing stages and powers off at the deadline. `metal-run stop ID` ends it sooner.
 
 ## Redaction
 
@@ -1437,8 +1551,7 @@ For the scoped console host checks, put e2fsprogs `debugfs` and `mke2fs` on `PAT
 
 A recovery exercise uses `--mode console --input sol --inject xhci-reset-device`
 or `--inject xhci-short-read` through `metal-run boot`, with the target branch.
-It requires a RAM-disk image and cannot be combined with a session, attended
-input or a disk action. The boot record is `fault-test`, evidence-ineligible;
+It requires a RAM-disk image and cannot be combined with a session or a disk action. The boot record is `fault-test`, evidence-ineligible;
 the milestone scorer refuses it and no milestone verdict is written.
 The boot still uses the machine lease, normal capture and power-off cleanup.
 

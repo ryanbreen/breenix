@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Score one effort-suite boot against its manifest (docs/suites/README.md).
 
-    scripts/suite-verdict.py MANIFEST RECORDS_LOG [OTHER_LOG ...] [--disk IMAGE]
+    scripts/suite-verdict.py MANIFEST RECORDS_LOG [OTHER_LOG ...] [--disk IMAGE] [--milestone EFFORT/ID]
 
 RECORDS_LOG is the serial the suite's stdout went to; every log given is also
 searched for fatal kernel output. The boot passes when the suite's records, each
@@ -10,7 +10,7 @@ per manifest case in manifest order, and one DONE whose counts match those CASE
 lines with failed=0, skipped=0 and passed=total=the manifest's case count;
 the suite's memory record shows its memory reclaimed; and no log shows a kernel
 panic, soft lockup or EL1 abort (`fatal` in docs/boot-path.json, plus x86-64's
-"KERNEL PANIC:"). VALUE, WAIT, PULSES and HOSTKEY records, which a case may print
+"KERNEL PANIC:"). VALUE, WAIT, PULSES, HOSTKEY and HOSTSSH records, which a case may print
 while it runs, are accepted between START and DONE when they are well formed and
 name a manifest case; they do not count.
 
@@ -23,6 +23,15 @@ case. A one-case run (`only`) has no memory record.
 
 A manifest with diskChecks also requires --disk: debugfs reads the stopped
 VM image directly and compares the persisted bytes, bypassing the guest cache.
+
+A category marked "hostRunner" is run from the boot host against a persistent
+boot (scripts/metal/server-suite), not by the suite binary: the boot's records
+leave it out, and a milestone that measures it is scored on that persistent boot.
+
+With --milestone, the commit's effort path supplies the required category set.
+Missing or planned measured categories block acceptance. The full boot's records,
+memory and fatal-output checks still apply; only the measured categories' cases
+must pass. The verdict names the category set and does not claim a full-suite PASS.
 
 Prints "PASS: <DONE line>" or "FAIL: <reason>" and exits 0 or 1.
 """
@@ -38,7 +47,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 # The records a case prints while it runs, which do not count.
-LIVE = ("VALUE", "WAIT", "PULSES", "HOSTKEY")
+LIVE = ("VALUE", "WAIT", "PULSES", "HOSTKEY", "HOSTSSH")
 # The runner's memory record, around the cases.
 MEMORY = ("MEMORY", "RECLAIMED")
 
@@ -48,9 +57,38 @@ def read_lines(path):
     return [line.rstrip("\r") for line in text.split("\n")]
 
 
-def verdict(manifest, records_log, logs, only=None):
+def milestone_categories(path, milestone, suite):
+    """Resolve a suite measure from the boot commit's effort path."""
+    for effort in path["efforts"]:
+        for item in effort["milestones"]:
+            if effort["id"] + "/" + item["id"] == milestone:
+                measure = item["measure"]
+                if measure.get("suite") != suite or not measure.get("categories"):
+                    raise ValueError(f"{milestone} does not measure categories of suite {suite}")
+                return measure["categories"]
+    raise ValueError(f"unknown milestone {milestone}")
+
+
+def verdict(manifest, records_log, logs, only=None, categories=None):
     suite = manifest["id"]
-    cases = [f"{category['id']}/{case['id']}" for category in manifest["categories"] for case in category["cases"]]
+    planned = [category["id"] for category in manifest["categories"] if not category["cases"]]
+    hosted = [category["id"] for category in manifest["categories"] if category.get("hostRunner")]
+    if categories is not None:
+        if only or not categories:
+            return False, "milestone acceptance needs categories and a full boot"
+        known = {category["id"] for category in manifest["categories"]}
+        missing = set(categories) - known
+        if missing:
+            return False, f"missing measured categories: {', '.join(sorted(missing))}"
+        elsewhere = [category for category in categories if category in hosted]
+        if elsewhere:
+            return False, (f"host-run categories are scored on their persistent boot, not this one: {', '.join(elsewhere)}"
+                           "; run scripts/metal/server-suite against it")
+        planned = [category for category in planned if category in categories]
+    if not only and planned:
+        return False, f"planned categories have no cases: {', '.join(planned)}; acceptance is blocked"
+    cases = [f"{category['id']}/{case['id']}" for category in manifest["categories"]
+             if category["id"] not in hosted for case in category["cases"]]
     if only:
         selected = [case for case in cases if case == only or case.split("/", 1)[0] == only]
         if not selected:
@@ -78,6 +116,8 @@ def verdict(manifest, records_log, logs, only=None):
                             r"(?: expect=(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)([a-z]*))?$"),
         "WAIT": re.compile(rf"^SUITE {suite} WAIT {name} until=\d+ for=\d+ result=[a-z0-9]+(?:-[a-z0-9]+)*$"),
         "HOSTKEY": re.compile(rf"^SUITE {suite} HOSTKEY {name} seq=\d+ keys=[a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*$"),
+        "HOSTSSH": re.compile(rf"^SUITE {suite} HOSTSSH {name} seq=\d+ try=(?:account|root) addr=\d+\.\d+\.\d+\.\d+"
+                              rf" port=\d+ user=[a-z_][a-z0-9_-]* fp=SHA256:[A-Za-z0-9+/]+$"),
         "PULSES": re.compile(rf"^SUITE {suite} PULSES {name} every=\d+ limit=\d+ at=(?:-?\d+(?:,-?\d+)*)?$"),
         "MEMORY": re.compile(rf"^SUITE {suite} MEMORY (before|after) free=(\d+) heap_free_kb=\d+(?: [a-z_]+=\d+)+$"),
         "RECLAIMED": re.compile(rf"^SUITE {suite} MEMORY reclaimed=(PASS|FAIL) free_before=(\d+) free_after=(\d+) allowance=(\d+)$"),
@@ -141,12 +181,19 @@ def verdict(manifest, records_log, logs, only=None):
     if (passed, failed, skipped) != tally or total != len(cases):
         return False, f"{line} disagrees with its CASE lines ({tally[0]} passed, {tally[1]} failed, {tally[2]} skipped of {len(cases)})"
     also = f"; {memory[1]}" if memory and not memory[0] else ""
+    accepted = [(kind, name) for kind, name in ran if categories is None or name.split("/", 1)[0] in categories]
+    failed = sum(kind == "FAIL" for kind, _ in accepted)
+    skipped = sum(kind == "SKIP" for kind, _ in accepted)
+    if categories is not None:
+        line = f"milestone categories={','.join(categories)} passed={sum(k == 'PASS' for k, _ in accepted)} total={len(accepted)}"
+    elif hosted:
+        line = f"{line}; host-run categories {','.join(hosted)} are scored on their persistent boot"
     if failed:
-        failures = "; ".join(l[len(prefix):] for k, _, l in records if k == "FAIL")
+        failures = "; ".join(l[len(prefix):] for k, m, l in records if k == "FAIL" and (categories is None or m.group(1).split("/", 1)[0] in categories))
         return False, f"{line}: {failures[:400]}{also}"
     if skipped:
-        skips = "; ".join(l[len(prefix):] for k, _, l in records if k == "SKIP")
-        return False, f"{line}: suite acceptance requires skipped=0 and passed=total={len(cases)}; {skips[:400]}{also}"
+        skips = "; ".join(l[len(prefix):] for k, m, l in records if k == "SKIP" and (categories is None or m.group(1).split("/", 1)[0] in categories))
+        return False, f"{line}: suite acceptance requires skipped=0 and passed=total={len(accepted)}; {skips[:400]}{also}"
     if memory is None:
         return True, line
     return memory[0], f"{line}; {memory[1]}" if memory[0] else f"{line}: {memory[1]}"
@@ -217,9 +264,15 @@ def main():
     parser.add_argument("manifest")
     parser.add_argument("logs", nargs="+")
     parser.add_argument("--disk", help="stopped VM's raw ext2 image for manifest diskChecks")
+    parser.add_argument("--milestone", help="effort/milestone whose category set this full boot must pass")
     args = parser.parse_args()
     manifest = json.loads(Path(args.manifest).read_text())
-    ok, reason = verdict(manifest, args.logs[0], args.logs)
+    try:
+        categories = milestone_categories(json.loads((REPO / "docs/efforts/path.json").read_text()),
+                                          args.milestone, manifest["id"]) if args.milestone else None
+    except ValueError as error:
+        parser.error(str(error))
+    ok, reason = verdict(manifest, args.logs[0], args.logs, categories=categories)
     if ok:
         ok, disk_reason = disk_verdict(manifest.get("diskChecks", []), args.disk)
         if disk_reason:

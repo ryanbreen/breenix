@@ -36,6 +36,7 @@ mod setjmp;
 mod grp;
 mod libgen;
 mod pwd;
+mod pwd_lock;
 mod unistd;
 mod process;
 mod spawn;
@@ -1247,17 +1248,18 @@ pub extern "C" fn sysconf(name: i32) -> i64 {
     conf::system_value(name)
 }
 
-/// getauxval - get auxiliary vector value (stub)
+/// getauxval - the value of the auxiliary vector entry `type_` the kernel passed at exec
+/// (AT_PAGESZ, AT_SECURE, AT_UID and the rest), or 0 with errno ENOENT when it passed no such entry.
 #[no_mangle]
 pub extern "C" fn getauxval(type_: u64) -> u64 {
-    const AT_PAGESZ: u64 = 6;
-    const AT_HWCAP: u64 = 16;
-    const AT_HWCAP2: u64 = 26;
-
-    match type_ {
-        AT_PAGESZ => 4096,
-        AT_HWCAP | AT_HWCAP2 => 0,
-        _ => 0,
+    match crt::auxv_entry(type_) {
+        Some(value) => value,
+        None => {
+            unsafe {
+                *__errno_location() = ENOENT;
+            }
+            0
+        }
     }
 }
 
@@ -1949,6 +1951,50 @@ pub unsafe extern "C" fn readv(fd: i32, iov: *const Iovec, iovcnt: i32) -> isize
 #[no_mangle]
 pub unsafe extern "C" fn setgroups(size: usize, list: *const u32) -> i32 {
     syscall_result_to_c_int(libbreenix::raw::syscall2(libbreenix::syscall::nr::SETGROUPS, size as u64, list as u64) as i64)
+}
+
+/// setreuid - set the real and effective user IDs; -1 leaves one unchanged
+#[no_mangle]
+pub unsafe extern "C" fn setreuid(real: u32, effective: u32) -> i32 {
+    syscall_result_to_c_int(libbreenix::raw::syscall2(libbreenix::syscall::nr::SETREUID, real as u64, effective as u64) as i64)
+}
+
+/// setregid - set the real and effective group IDs; -1 leaves one unchanged
+#[no_mangle]
+pub unsafe extern "C" fn setregid(real: u32, effective: u32) -> i32 {
+    syscall_result_to_c_int(libbreenix::raw::syscall2(libbreenix::syscall::nr::SETREGID, real as u64, effective as u64) as i64)
+}
+
+/// setresuid - set the real, effective and saved user IDs; -1 leaves one unchanged
+#[no_mangle]
+pub unsafe extern "C" fn setresuid(real: u32, effective: u32, saved: u32) -> i32 {
+    syscall_result_to_c_int(
+        libbreenix::raw::syscall3(libbreenix::syscall::nr::SETRESUID, real as u64, effective as u64, saved as u64) as i64,
+    )
+}
+
+/// setresgid - set the real, effective and saved group IDs; -1 leaves one unchanged
+#[no_mangle]
+pub unsafe extern "C" fn setresgid(real: u32, effective: u32, saved: u32) -> i32 {
+    syscall_result_to_c_int(
+        libbreenix::raw::syscall3(libbreenix::syscall::nr::SETRESGID, real as u64, effective as u64, saved as u64) as i64,
+    )
+}
+
+/// getresuid - report the real, effective and saved user IDs
+#[no_mangle]
+pub unsafe extern "C" fn getresuid(real: *mut u32, effective: *mut u32, saved: *mut u32) -> i32 {
+    syscall_result_to_c_int(
+        libbreenix::raw::syscall3(libbreenix::syscall::nr::GETRESUID, real as u64, effective as u64, saved as u64) as i64,
+    )
+}
+
+/// getresgid - report the real, effective and saved group IDs
+#[no_mangle]
+pub unsafe extern "C" fn getresgid(real: *mut u32, effective: *mut u32, saved: *mut u32) -> i32 {
+    syscall_result_to_c_int(
+        libbreenix::raw::syscall3(libbreenix::syscall::nr::GETRESGID, real as u64, effective as u64, saved as u64) as i64,
+    )
 }
 
 /// getgroups - return the process's supplementary group list

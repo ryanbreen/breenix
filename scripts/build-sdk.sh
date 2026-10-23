@@ -248,13 +248,20 @@ STD_RLIB = re.compile(r'lib/rust/lib/rustlib/[^/]+/lib/[^/]+\.rlib')
 DOC_LINE = re.compile(rb'^[ \t]*//[/!].*$', re.MULTILINE)
 needles = sorted({n.encode() for n in sys.argv[4:] if n not in ('', '/')})
 PATH_BYTES = set(b'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~+@%=/-')
+HOME_ROOTS = {b'~', b'/root', b'/Users', b'/home'}
 
 def named(data):
     # Each needle found, with the whole path around it.
     found = set()
     for needle in needles:
+        home_path = re.compile(re.escape(needle.rstrip(b'/')) + rb'''/[^/\s\x00"'`<>:]''') if needle.rstrip(b'/') in HOME_ROOTS else None
         at = data.find(needle)
         while at >= 0:
+            # A home root alone is also guest data (for example passwd's /root).
+            # Require a path below it; a bare tilde is prose, not a local path.
+            if home_path is not None and not home_path.match(data, at):
+                at = data.find(needle, at + 1)
+                continue
             start, end = at, at + len(needle)
             while start > 0 and data[start - 1] in PATH_BYTES:
                 start -= 1

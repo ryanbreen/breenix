@@ -1635,16 +1635,17 @@ fn load_elf_from_ext2(
     super::trace::trace_exec(b'1');
 
     // Taken before the filesystem lock: who may execute the file.
-    let cred = crate::fs::permissions::Credentials::current(false);
+    let cred = crate::fs::permissions::Credentials::current(false).map_err(|errno| errno as i32)?;
 
-    // The handle holds the inode until its content is read.
+    // Exclude new mapping bindings until the image and its identity are copied.
+    // Existing shared write authority is checked by exec_attrs.
     let (mount, inode_num, _held, resolved) = crate::fs::namei::resolve_file_bytes(path.as_ref()).map_err(|errno| {
         super::trace::trace_exec(b'!');
         errno as i32
     })?;
-    let fs_guard = mount.read().map_err(|errno| errno as i32)?;
+    let mut fs_guard = mount.read_exclusive().map_err(|errno| errno as i32)?;
     super::trace::trace_exec(b'2');
-    let fs = fs_guard.as_ref().ok_or(EIO)?;
+    let fs = fs_guard.as_mut().ok_or(EIO)?;
     super::trace::trace_exec(b'3');
     super::trace::trace_exec(b'4');
 
@@ -1659,10 +1660,10 @@ fn load_elf_from_ext2(
         return Err(EACCES);
     }
 
-    if !cred.permits(&inode, 1) {
+    let identity = cred.may_exec(fs.exec_attrs(inode_num, &inode), crate::fs::vfs::mount::flags_at(&resolved)).map_err(|errno| {
         super::trace::trace_exec(b'$');
-        return Err(EACCES);
-    }
+        errno
+    })?;
     super::trace::trace_exec(b'6');
 
     let data = fs
@@ -1674,7 +1675,7 @@ fn load_elf_from_ext2(
         .ok_or(crate::syscall::errno::EINTR)?;
     super::trace::trace_exec(b'7');
 
-    Ok((data, crate::process::credentials::ExecIdentity::of(&inode), resolved))
+    Ok((data, identity, resolved))
 }
 
 // =============================================================================

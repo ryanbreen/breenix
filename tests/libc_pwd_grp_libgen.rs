@@ -6,6 +6,10 @@
 //! read, close, lstat, readlink, getcwd, setgroups and the allocator) are served by a
 //! small in-memory filesystem, and errno is per thread, as in the library.
 
+extern crate self as libbreenix;
+#[path = "../libs/libbreenix/src/accounts/parse.rs"]
+pub mod account_parse;
+pub mod accounts { pub use crate::account_parse as parse; }
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
@@ -199,13 +203,13 @@ static PASSWD_STORAGE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 const PASSWD: &[u8] = b"root:x:0:0:root:/root:/bin/sh\n\
 broken line without fields\n\
 toolong:x:99999999999:0::/:/bin/sh\n\
-wrb:x:1000:100:Ryan:/home/wrb:/bin/ash\n\
+bob:x:1000:100:Bert:/home/bob:/bin/ash\n\
 nobody:x:65534:65534:nobody:/nonexistent:/bin/false";
 
 const GROUP: &[u8] = b"root:x:0:\n\
-users:x:100:wrb,alice\n\
+users:x:100:bob,alice\n\
 :bad\n\
-wheel:x:10:alice,wrb\n";
+wheel:x:10:alice,bob\n";
 
 fn databases() {
     reset(&[
@@ -224,15 +228,15 @@ fn getpwnam_and_getpwuid_find_entries_and_skip_malformed_lines() {
     let _storage = PASSWD_STORAGE.lock().unwrap_or_else(|e| e.into_inner());
     databases();
     unsafe {
-        let name = CString::new("wrb").unwrap();
+        let name = CString::new("bob").unwrap();
         let pw = &*(pwd::getpwnam(name.as_ptr() as *const u8) as *const [usize; 7]);
         let pw = pw.as_ptr() as *const u8;
         let field = |i: usize| text(*(pw.add(i * 8) as *const *const u8));
-        assert_eq!(field(0), "wrb");
+        assert_eq!(field(0), "bob");
         assert_eq!(*(pw.add(16) as *const u32), 1000);
         assert_eq!(*(pw.add(20) as *const u32), 100);
-        assert_eq!(field(3), "Ryan");
-        assert_eq!(field(4), "/home/wrb");
+        assert_eq!(field(3), "Bert");
+        assert_eq!(field(4), "/home/bob");
         assert_eq!(field(5), "/bin/ash");
 
         let pw = pwd::getpwuid(65534) as *const u8;
@@ -280,7 +284,7 @@ fn getpwent_walks_every_well_formed_entry() {
             }
             names.push(text(*(pw as *const *const u8)));
         }
-        assert_eq!(names, ["root", "wrb", "nobody"]);
+        assert_eq!(names, ["root", "bob", "nobody"]);
         pwd::setpwent();
         assert_eq!(text(*(pwd::getpwent() as *const *const u8)), "root");
         pwd::endpwent();
@@ -295,14 +299,14 @@ fn getgrgid_lists_members_and_getgrouplist_collects_groups() {
         assert!(!gr.is_null());
         assert_eq!(text(*(gr as *const *const u8)), "users");
         let mem = *(gr.add(24) as *const *const *const u8);
-        assert_eq!(text(*mem), "wrb");
+        assert_eq!(text(*mem), "bob");
         assert_eq!(text(*mem.add(1)), "alice");
         assert!((*mem.add(2)).is_null());
 
         let root = grp::getgrgid(0) as *const u8;
         assert!((*(*(root.add(24) as *const *const *const u8))).is_null(), "no members");
 
-        let user = CString::new("wrb").unwrap();
+        let user = CString::new("bob").unwrap();
         let mut groups = [0u32; 8];
         let mut n = 8;
         assert_eq!(grp::getgrouplist(user.as_ptr() as *const u8, 100, groups.as_mut_ptr(), &mut n), 2);
@@ -426,7 +430,7 @@ fn group_database_failure_preserves_supplementary_groups() {
     reset(&[]);
     GROUPS.with(|g| *g.borrow_mut() = vec![42]);
     unsafe {
-        let user = CString::new("wrb").unwrap();
+        let user = CString::new("bob").unwrap();
         assert_eq!(grp::initgroups(user.as_ptr() as *const u8, 5), -1);
         assert_eq!(pthread::errno(), ENOENT);
         assert_eq!(GROUPS.with(|g| g.borrow().clone()), vec![42]);
@@ -437,7 +441,7 @@ fn group_database_failure_preserves_supplementary_groups() {
 fn group_database_read_and_allocation_failures_are_reported() {
     databases();
     unsafe {
-        let user = CString::new("wrb").unwrap();
+        let user = CString::new("bob").unwrap();
         let mut list = [0u32; 8];
         let mut n = 8;
         FAIL_READ.with(|f| f.set(true));
@@ -454,10 +458,10 @@ fn group_database_read_and_allocation_failures_are_reported() {
 #[test]
 fn initgroups_grows_past_sixty_four_entries() {
     let mut data = Vec::new();
-    for gid in 1..100 { data.extend_from_slice(format!("g{gid}:x:{gid}:wrb\n").as_bytes()); }
+    for gid in 1..100 { data.extend_from_slice(format!("g{gid}:x:{gid}:bob\n").as_bytes()); }
     reset(&[("/etc/group", Node::File(data))]);
     unsafe {
-        let user = CString::new("wrb").unwrap();
+        let user = CString::new("bob").unwrap();
         assert_eq!(grp::initgroups(user.as_ptr() as *const u8, 0), 0);
         assert_eq!(GROUPS.with(|g| g.borrow().clone()), (0..100).collect::<Vec<u32>>());
     }

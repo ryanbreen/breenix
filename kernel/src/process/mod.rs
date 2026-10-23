@@ -11,6 +11,7 @@ pub mod credentials;
 pub mod fork;
 pub mod limits;
 pub mod manager;
+pub mod privilege;
 pub mod process;
 pub(crate) mod unpublished;
 mod wait_epoch;

@@ -107,6 +107,8 @@ struct Peer {
     pending: Option<Vec<u8>>,
     sent: Vec<([u8; 4], Vec<u8>)>,
     declines: usize,
+    sources: Vec<[u8; 4]>,
+    sent_at: Vec<u64>,
 }
 static PEER: Mutex<Peer> = Mutex::new(Peer {
     lease_seconds: None,
@@ -122,6 +124,8 @@ static PEER: Mutex<Peer> = Mutex::new(Peer {
     pending: None,
     sent: Vec::new(),
     declines: 0,
+    sources: Vec::new(),
+    sent_at: Vec::new(),
 });
 fn options(p: &Peer, kind: u8) -> Vec<u8> {
     let server = if p.bad_ack == 1 && kind == 5 {
@@ -153,11 +157,16 @@ fn send(src: [u8; 4], dst: [u8; 4], data: &[u8]) -> Result<(), &'static str> {
         REQUEST_TIME.store(CLOCK.load(Ordering::Relaxed), Ordering::Relaxed);
     }
     p.sent.push((dst, msg.to_vec()));
+    p.sources.push(src);
+    p.sent_at.push(CLOCK.load(Ordering::Relaxed));
     if kind == 4 {
         p.declines += 1;
         return Ok(());
     }
-    if p.drop_first_discover && kind == 1 && p.sent.iter().filter(|(_, msg)| msg[242] == 1).count() == 1 {
+    if p.drop_first_discover
+        && kind == 1
+        && p.sent.iter().filter(|(_, msg)| msg[242] == 1).count() == 1
+    {
         return Ok(());
     }
     if p.silent {
@@ -205,7 +214,6 @@ fn send(src: [u8; 4], dst: [u8; 4], data: &[u8]) -> Result<(), &'static str> {
         _ => {}
     }
     p.pending = Some(ip);
-    let _ = src;
     Ok(())
 }
 pub fn send_ethernet(_: &[u8; 6], protocol: u16, data: &[u8]) -> Result<(), &'static str> {
@@ -243,6 +251,8 @@ fn setup() -> MutexGuard<'static, ()> {
     static SERIAL: Mutex<()> = Mutex::new(());
     let guard = SERIAL.lock().unwrap();
     *PEER.lock().unwrap() = Peer::default();
+    CLOCK.store(u64::MAX, Ordering::Relaxed);
+    dhcp::maintain(MAC, false);
     CLOCK.store(1_000_000_000, Ordering::Relaxed);
     CLOCK_STEP.store(100_000_000, Ordering::Relaxed);
     ACK_DELAY.store(0, Ordering::Relaxed);
@@ -307,7 +317,12 @@ fn renew_rebind_expire_and_carrier_handoff() {
     let l = dhcp::lease().unwrap();
     CLOCK.store(l.rebind_at, Ordering::Relaxed);
     dhcp::maintain(MAC, true);
-    assert_eq!(PEER.lock().unwrap().sent.last().unwrap().0, [255; 4]);
+    {
+        let peer = PEER.lock().unwrap();
+        let (dst, msg) = peer.sent.last().unwrap();
+        assert_eq!(*dst, [255; 4]);
+        assert_eq!(&msg[10..12], &[0, 0]);
+    }
     let l = dhcp::lease().unwrap();
     CLOCK.store(l.expires_at, Ordering::Relaxed);
     assert!(dhcp::lease().is_none());
@@ -317,8 +332,33 @@ fn renew_rebind_expire_and_carrier_handoff() {
     PEER.lock().unwrap().silent = false;
     let _ = dhcp::acquire(MAC).unwrap();
     dhcp::maintain(MAC, false);
-    assert!(dhcp::lease().is_none());
+    assert_eq!(dhcp::lease().unwrap().ip_addr, ADDRESS);
 }
+#[test]
+fn unexpired_link_bounce_keeps_address_and_requests_without_discovery_or_probe() {
+    let _guard = setup();
+    let original = dhcp::acquire(MAC).unwrap();
+    PEER.lock().unwrap().sent.clear();
+    dhcp::maintain(MAC, false);
+    assert_eq!(dhcp::lease().unwrap().ip_addr, original.ip_addr);
+    let start = CLOCK.load(Ordering::Relaxed);
+    dhcp::maintain(MAC, true);
+    assert_eq!(dhcp::lease().unwrap().ip_addr, original.ip_addr);
+    let peer = PEER.lock().unwrap();
+    assert_eq!(peer.sent.len(), 1);
+    let (dst, msg) = &peer.sent[0];
+    assert_eq!(*peer.sources.last().unwrap(), [0; 4]);
+    assert_eq!(*dst, [255; 4]);
+    assert_eq!(msg[242], 3);
+    assert_eq!(&msg[12..16], &[0; 4]);
+    assert_eq!(&msg[243..249], &[50, 4, 192, 0, 2, 10]);
+    assert_eq!(msg[249], 55, "INIT-REBOOT omits server identifier");
+    assert!(
+        CLOCK.load(Ordering::Relaxed) - start < 1_000_000_000,
+        "an existing lease does not run a fresh address probe"
+    );
+}
+
 #[test]
 fn renewal_nak_removes_address() {
     let _guard = setup();
@@ -494,15 +534,25 @@ fn a_bring_up_discover_is_answered_only_by_its_own_offer() {
     assert_eq!(discover[0], 1, "BOOTREQUEST");
     assert_eq!(&discover[4..8], &xid.to_be_bytes());
     assert_eq!(&discover[28..34], &mac);
-    assert_eq!(&discover[236..243], &[99, 130, 83, 99, 53, 1, 1], "cookie, then DHCPDISCOVER");
-    assert!(!dhcp::is_offer(&discover, xid, mac), "a request is not a reply");
+    assert_eq!(
+        &discover[236..243],
+        &[99, 130, 83, 99, 53, 1, 1],
+        "cookie, then DHCPDISCOVER"
+    );
+    assert!(
+        !dhcp::is_offer(&discover, xid, mac),
+        "a request is not a reply"
+    );
 
     let mut offer = discover;
     offer[0] = 2;
     offer[242] = 2;
     assert!(dhcp::is_offer(&offer, xid, mac));
     assert!(!dhcp::is_offer(&offer, xid ^ 1, mac), "another transaction");
-    assert!(!dhcp::is_offer(&offer, xid, [0x02, 0, 0, 0, 0, 0x5b]), "another client");
+    assert!(
+        !dhcp::is_offer(&offer, xid, [0x02, 0, 0, 0, 0, 0x5b]),
+        "another client"
+    );
     let mut ack = offer;
     ack[242] = 5;
     assert!(!dhcp::is_offer(&ack, xid, mac), "an ACK is not an offer");
@@ -515,7 +565,11 @@ fn lost_first_discover_retransmits_after_four_seconds_and_acquires_lease() {
     let start = CLOCK.load(Ordering::Relaxed);
     let lease = dhcp::acquire(MAC).expect("the second DISCOVER must complete DORA");
     let peer = PEER.lock().unwrap();
-    let discovers: Vec<_> = peer.sent.iter().filter(|(_, message)| message[242] == 1).collect();
+    let discovers: Vec<_> = peer
+        .sent
+        .iter()
+        .filter(|(_, message)| message[242] == 1)
+        .collect();
     assert_eq!(discovers.len(), 2);
     assert_eq!(&discovers[0].1[4..8], &discovers[1].1[4..8]);
     assert!(REQUEST_TIME.load(Ordering::Relaxed) - start >= 4_000_000_000);
@@ -527,6 +581,162 @@ fn lost_first_discover_retransmits_after_four_seconds_and_acquires_lease() {
 fn procfs_marks_dhcp_policy_while_no_lease_is_usable() {
     let _guard = setup();
     dhcp::require_configuration();
+    CLOCK.store(u64::MAX, Ordering::Relaxed);
     dhcp::maintain(MAC, false);
     assert_eq!(proc_net::generate_pnp().unwrap(), "#PROTO: DHCP\n");
+}
+
+#[test]
+fn unanswered_renewal_reaches_t2_and_expiry_without_losing_address_early() {
+    let _guard = setup();
+    let lease = dhcp::acquire(MAC).unwrap();
+    PEER.lock().unwrap().silent = true;
+    CLOCK.store(lease.renew_at, Ordering::Relaxed);
+    dhcp::maintain(MAC, true);
+    assert_eq!(dhcp::lease().unwrap().expires_at, lease.expires_at);
+    assert_eq!(PEER.lock().unwrap().sent.last().unwrap().0, SERVER);
+    CLOCK.store(lease.rebind_at, Ordering::Relaxed);
+    dhcp::maintain(MAC, true);
+    assert_eq!(PEER.lock().unwrap().sent.last().unwrap().0, [255; 4]);
+    assert_eq!(dhcp::lease().unwrap().ip_addr, ADDRESS);
+    CLOCK.store(lease.expires_at - 1, Ordering::Relaxed);
+    assert_eq!(dhcp::lease().unwrap().ip_addr, ADDRESS);
+    CLOCK.store(lease.expires_at, Ordering::Relaxed);
+    assert!(dhcp::lease().is_none());
+    dhcp::maintain(MAC, false);
+    assert!(dhcp::lease().is_none());
+}
+
+#[test]
+fn unanswered_reboot_retains_original_expiry_and_nak_invalidates_it() {
+    let _guard = setup();
+    let original = dhcp::acquire(MAC).unwrap();
+    dhcp::maintain(MAC, false);
+    PEER.lock().unwrap().silent = true;
+    dhcp::maintain(MAC, true);
+    assert_eq!(dhcp::lease().unwrap().expires_at, original.expires_at);
+    {
+        let mut peer = PEER.lock().unwrap();
+        peer.silent = false;
+        peer.nak = true;
+    }
+    CLOCK.fetch_add(5_000_000_000, Ordering::Relaxed);
+    dhcp::maintain(MAC, true);
+    assert!(dhcp::lease().is_none());
+}
+
+#[test]
+fn request_wait_crossing_t2_does_not_postpone_broadcast_rebind() {
+    let _guard = setup();
+    let lease = dhcp::acquire(MAC).unwrap();
+    PEER.lock().unwrap().silent = true;
+    CLOCK.store(lease.rebind_at - 500_000_000, Ordering::Relaxed);
+    CLOCK_STEP.store(2_000_000_000, Ordering::Relaxed);
+    dhcp::maintain(MAC, true);
+    assert_eq!(PEER.lock().unwrap().sent.last().unwrap().0, SERVER);
+    assert_eq!(dhcp::lease().unwrap().ip_addr, ADDRESS);
+    dhcp::maintain(MAC, true);
+    assert_eq!(PEER.lock().unwrap().sent.last().unwrap().0, [255; 4]);
+    assert_eq!(dhcp::lease().unwrap().ip_addr, ADDRESS);
+}
+
+#[test]
+fn lease_expired_while_down_discovers_instead_of_rebooting_the_old_address() {
+    let _guard = setup();
+    let lease = dhcp::acquire(MAC).unwrap();
+    dhcp::maintain(MAC, false);
+    CLOCK.store(lease.expires_at, Ordering::Relaxed);
+    dhcp::maintain(MAC, false);
+    assert!(dhcp::lease().is_none());
+    PEER.lock().unwrap().sent.clear();
+    dhcp::maintain(MAC, true);
+    assert_eq!(dhcp::lease().unwrap().ip_addr, ADDRESS);
+    let peer = PEER.lock().unwrap();
+    assert_eq!(peer.sent.len(), 2);
+    assert_eq!(peer.sent[0].1[242], 1);
+    assert_eq!(peer.sent[1].1[242], 3);
+}
+
+#[test]
+fn reboot_retries_back_off_to_cap_then_wait_for_normal_renewal() {
+    let _guard = setup();
+    PEER.lock().unwrap().lease_seconds = Some(86_400);
+    let lease = dhcp::acquire(MAC).unwrap();
+    dhcp::maintain(MAC, false);
+    PEER.lock().unwrap().silent = true;
+    let first = PEER.lock().unwrap().sent.len();
+    dhcp::maintain(MAC, true);
+    let mut jitters = Vec::new();
+    for base_seconds in [4, 8, 16, 32, 64, 64] {
+        let count = PEER.lock().unwrap().sent.len();
+        let previous = *PEER.lock().unwrap().sent_at.last().unwrap();
+        let earliest = previous + (base_seconds - 1) * 1_000_000_000;
+        CLOCK.store(earliest - 1, Ordering::Relaxed);
+        dhcp::maintain(MAC, true);
+        assert_eq!(PEER.lock().unwrap().sent.len(), count);
+        // Poll a deterministic clock through the allowed jitter window.
+        for _ in 0..=21 {
+            let latest = previous + (base_seconds + 1).min(64) * 1_000_000_000;
+            CLOCK.store(
+                (CLOCK.load(Ordering::Relaxed) + 100_000_000).min(latest),
+                Ordering::Relaxed,
+            );
+            dhcp::maintain(MAC, true);
+            if PEER.lock().unwrap().sent.len() != count {
+                break;
+            }
+        }
+        let peer = PEER.lock().unwrap();
+        assert_eq!(peer.sent.len(), count + 1);
+        let spacing = peer.sent_at.last().unwrap() - previous;
+        assert!(spacing >= (base_seconds - 1) * 1_000_000_000);
+        assert!(spacing <= (base_seconds + 1).min(64) * 1_000_000_000);
+        if base_seconds < 64 {
+            jitters.push(spacing as i64 - base_seconds as i64 * 1_000_000_000);
+        }
+        assert_eq!(*peer.sources.last().unwrap(), [0; 4]);
+    }
+    assert!(
+        jitters.windows(2).any(|pair| pair[0] != pair[1]),
+        "retry jitter varies"
+    );
+    assert_eq!(PEER.lock().unwrap().sent.len(), first + 7);
+    let retained = dhcp::lease().unwrap();
+    assert_eq!(retained.expires_at, lease.expires_at);
+    CLOCK.store(lease.renew_at - 1, Ordering::Relaxed);
+    dhcp::maintain(MAC, true);
+    assert_eq!(PEER.lock().unwrap().sent.len(), first + 7);
+    CLOCK.store(lease.renew_at, Ordering::Relaxed);
+    dhcp::maintain(MAC, true);
+    let peer = PEER.lock().unwrap();
+    assert_eq!(peer.sent.last().unwrap().0, SERVER);
+    assert_eq!(*peer.sources.last().unwrap(), ADDRESS);
+}
+
+#[test]
+fn renew_and_rebind_retry_wait_at_least_sixty_seconds() {
+    let _guard = setup();
+    // With less than 120 seconds to T2/expiry, half the remaining
+    // time must be rounded up to the 60-second retry minimum.
+    PEER.lock().unwrap().lease_seconds = Some(800);
+    let lease = dhcp::acquire(MAC).unwrap();
+    PEER.lock().unwrap().silent = true;
+    CLOCK.store(lease.rebind_at - 100_000_000_000, Ordering::Relaxed);
+    dhcp::maintain(MAC, true);
+    for state_start in [
+        CLOCK.load(Ordering::Relaxed),
+        lease.rebind_at + 1_000_000_000,
+    ] {
+        CLOCK.store(state_start + 59_000_000_000, Ordering::Relaxed);
+        let count = PEER.lock().unwrap().sent.len();
+        dhcp::maintain(MAC, true);
+        assert_eq!(PEER.lock().unwrap().sent.len(), count);
+        CLOCK.store(state_start + 60_000_000_000, Ordering::Relaxed);
+        dhcp::maintain(MAC, true);
+        assert_eq!(PEER.lock().unwrap().sent.len(), count + 1);
+        if state_start < lease.rebind_at {
+            CLOCK.store(lease.rebind_at, Ordering::Relaxed);
+            dhcp::maintain(MAC, true);
+        }
+    }
 }

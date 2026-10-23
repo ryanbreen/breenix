@@ -242,8 +242,8 @@ fn main() {
     // ============================================
     println!("\nTest 2: Multi-file corruption regression test");
     {
-        // Step 1: Record /bin/hello_world's inode before any operations
-        let hello_world_inode_before = find_inode_in_dir("/bin\0", b"hello_world");
+        // Step 1: Record /usr/bin/hello_world's inode before any operations
+        let hello_world_inode_before = find_inode_in_dir("/usr/bin\0", b"hello_world");
 
         if let Some(inode_before) = hello_world_inode_before {
             println!("  Before: hello_world inode={}", inode_before);
@@ -268,26 +268,26 @@ fn main() {
                         }
                     }
 
-                    // Step 4: Verify /bin/hello_world still exists with same inode
-                    let hello_world_inode_after = find_inode_in_dir("/bin\0", b"hello_world");
+                    // Step 4: Verify /usr/bin/hello_world still exists with same inode
+                    let hello_world_inode_after = find_inode_in_dir("/usr/bin\0", b"hello_world");
 
                     if let Some(inode_after) = hello_world_inode_after {
                         println!("  After: hello_world inode={}", inode_after);
 
                         if inode_after != inode_before {
-                            println!("FAILED: /bin/hello_world inode changed!");
+                            println!("FAILED: /usr/bin/hello_world inode changed!");
                             println!("  Before: {}, After: {}", inode_before, inode_after);
                             tests_failed += 1;
                         } else {
                             println!("  Directory entry intact");
                         }
 
-                        // Step 5: exec /bin/hello_world to verify the binary still works
-                        println!("  Executing /bin/hello_world to verify binary intact...");
+                        // Step 5: exec /usr/bin/hello_world to verify the binary still works
+                        println!("  Executing /usr/bin/hello_world to verify binary intact...");
                         match fork() {
                             Ok(ForkResult::Child) => {
-                                let program = b"/bin/hello_world\0";
-                                let arg0 = b"/bin/hello_world\0".as_ptr();
+                                let program = b"/usr/bin/hello_world\0";
+                                let arg0 = b"/usr/bin/hello_world\0".as_ptr();
                                 let argv: [*const u8; 2] = [arg0, std::ptr::null()];
                                 let _ = execv(program, argv.as_ptr());
                                 std::process::exit(1);
@@ -297,12 +297,12 @@ fn main() {
                                 let waited = waitpid(child_pid.raw() as i32, &mut status, 0);
 
                                 if !matches!(waited, Ok(pid) if pid.raw() == child_pid.raw()) {
-                                    println!("FAILED: waitpid for /bin/hello_world did not return its child");
+                                    println!("FAILED: waitpid for /usr/bin/hello_world did not return its child");
                                     tests_failed += 1;
                                 } else if wifexited(status) && wexitstatus(status) == 0 {
-                                    println!("  PASSED: /bin/hello_world executes correctly (exit 0)");
+                                    println!("  PASSED: /usr/bin/hello_world executes correctly (exit 0)");
                                 } else {
-                                    println!("FAILED: /bin/hello_world did not execute correctly!");
+                                    println!("FAILED: /usr/bin/hello_world did not execute correctly!");
                                     println!("  Exit status: {}, wifexited: {}", wexitstatus(status), wifexited(status));
                                     tests_failed += 1;
                                 }
@@ -313,7 +313,7 @@ fn main() {
                             }
                         }
                     } else {
-                        println!("FAILED: /bin/hello_world directory entry corrupted/missing!");
+                        println!("FAILED: /usr/bin/hello_world directory entry corrupted/missing!");
                         println!("  This indicates the bug where truncate+allocate overwrote /bin's data");
                         tests_failed += 1;
                     }
@@ -324,7 +324,7 @@ fn main() {
                 }
             }
         } else {
-            println!("FAILED: Could not find /bin/hello_world before test");
+            println!("FAILED: Could not find /usr/bin/hello_world before test");
             tests_failed += 1;
         }
     }

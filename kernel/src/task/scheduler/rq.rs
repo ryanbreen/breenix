@@ -2403,6 +2403,9 @@ pub(super) fn reclaim(scheduler: &mut Scheduler) -> alloc::vec::Vec<Box<Thread>>
     if !scheduler.unpinned_free.is_empty() && unpinned() {
         freed.append(&mut scheduler.unpinned_free);
     }
+    // Taken before the index is read, and what is left added back below: a
+    // thread that terminates meanwhile keeps its count (`TERMINATED_UNRECLAIMED`).
+    super::TERMINATED_UNRECLAIMED.swap(0, Ordering::AcqRel);
     let dead: alloc::vec::Vec<u64> = INDEX
         .iter()
         .filter_map(|slot| {
@@ -2474,7 +2477,7 @@ pub(super) fn reclaim(scheduler: &mut Scheduler) -> alloc::vec::Vec<Box<Thread>>
     // What is left to do: terminated threads still indexed, and threads
     // waiting for the last pin to go.
     let left = dead.len() - reclaimed_count + scheduler.unpinned_free.len();
-    super::TERMINATED_UNRECLAIMED.store(left as u64, Ordering::Release);
+    super::TERMINATED_UNRECLAIMED.fetch_add(left as u64, Ordering::Release);
     freed
 }
 

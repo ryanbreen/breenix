@@ -90,8 +90,8 @@ fn main() {
         let has_bin = contains_line(&output, b"bin/");
         let has_sbin = contains_line(&output, b"sbin/");
         let has_hello = contains_line(&output, b"hello.txt");
-        let has_test = contains_line(&output, b"test/");
-        let has_deep = contains_line(&output, b"deep/");
+        let has_test = contains_line(&output, b"usr/");
+        let has_deep = contains_line(&output, b"var/");
 
         if exit_code == 0 && has_bin && has_sbin && has_hello && has_test && has_deep {
             println!("LS_ROOT_OK");
@@ -103,13 +103,14 @@ fn main() {
         }
     }
 
-    // Test 2: ls /bin should list all binaries
-    println!("Test 2: ls /bin (binaries)");
+    // Test 2: list the essential applets and relocated user programs
+    println!("Test 2: ls /bin /usr/bin (binaries)");
     {
         let program = b"/bin/ls\0";
         let arg0 = b"ls\0".as_ptr();
         let arg1 = b"/bin\0".as_ptr();
-        let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
+        let arg2 = b"/usr/bin\0".as_ptr();
+        let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
 
         let (exit_code, output) = run_and_capture(program, &argv);
 
@@ -154,12 +155,12 @@ fn main() {
         }
     }
 
-    // Test 4: ls /test should show nested.txt
-    println!("Test 4: ls /test (nested directory)");
+    // Test 4: ls /usr/libexec/breenix/test should show nested.txt
+    println!("Test 4: ls /usr/libexec/breenix/test (nested directory)");
     {
         let program = b"/bin/ls\0";
         let arg0 = b"ls\0".as_ptr();
-        let arg1 = b"/test\0".as_ptr();
+        let arg1 = b"/usr/libexec/breenix/test\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
         let (exit_code, output) = run_and_capture(program, &argv);
@@ -174,12 +175,12 @@ fn main() {
         }
     }
 
-    // Test 5: ls /deep/path/to/file should show data.txt
-    println!("Test 5: ls /deep/path/to/file (deep path)");
+    // Test 5: ls /usr/libexec/breenix/deep/path/to/file should show data.txt
+    println!("Test 5: ls /usr/libexec/breenix/deep/path/to/file (deep path)");
     {
         let program = b"/bin/ls\0";
         let arg0 = b"ls\0".as_ptr();
-        let arg1 = b"/deep/path/to/file\0".as_ptr();
+        let arg1 = b"/usr/libexec/breenix/deep/path/to/file\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
         let (exit_code, output) = run_and_capture(program, &argv);
@@ -213,14 +214,14 @@ fn main() {
         }
     }
 
-    // Test 7: ls -p /deep marks the path/ subdirectory; POSIX ls without -p
+    // Test 7: ls -p /usr/libexec/breenix/deep marks the path/ subdirectory; POSIX ls without -p
     // or -F writes the bare name
-    println!("Test 7: ls -p /deep (directory markers)");
+    println!("Test 7: ls -p /usr/libexec/breenix/deep (directory markers)");
     {
         let program = b"/bin/ls\0";
         let arg0 = b"ls\0".as_ptr();
         let arg1 = b"-p\0".as_ptr();
-        let arg2 = b"/deep\0".as_ptr();
+        let arg2 = b"/usr/libexec/breenix/deep\0".as_ptr();
         let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
 
         let (exit_code, output) = run_and_capture(program, &argv);

@@ -185,6 +185,9 @@ impl core::fmt::Debug for FdKind {
     }
 }
 
+/// A device node's inode and the options of the mount it was opened through.
+pub type NativeInode = (crate::fs::ext2::live_inode::FileHandle, crate::fs::attrs::MountFlags);
+
 /// A file descriptor entry in the per-process table
 #[derive(Clone)]
 pub struct FileDescriptor {
@@ -199,6 +202,11 @@ pub struct FileDescriptor {
     description: Arc<AtomicU32>,
     /// Mounted inode metadata retained when the stream is served by a driver.
     pub(crate) native_inode: Option<crate::fs::ext2::live_inode::FileHandle>,
+    /// The options of the mount the file was opened through (fstatvfs `f_flag`).
+    pub(crate) mount_flags: crate::fs::attrs::MountFlags,
+    /// The open clock when the description was created; a terminal revoked
+    /// later (`tty::revoke`) no longer serves it.
+    opened: u64,
 }
 
 impl core::fmt::Debug for FileDescriptor {
@@ -248,6 +256,8 @@ impl FileDescriptor {
             flags,
             description: Arc::new(AtomicU32::new(word)),
             native_inode: None,
+            mount_flags: Default::default(),
+            opened: crate::tty::revoke::now(),
         }
     }
 
@@ -260,6 +270,8 @@ impl FileDescriptor {
             flags,
             description: Arc::try_new(AtomicU32::new(word)).map_err(|_| 12)?,
             native_inode: None,
+            mount_flags: Default::default(),
+            opened: crate::tty::revoke::now(),
         })
     }
 
@@ -281,12 +293,39 @@ impl FileDescriptor {
     pub fn try_opened(kind: FdKind, open_flags: u32) -> Result<Self, u64> {
         let flags = if open_flags & status_flags::O_CLOEXEC != 0 { flags::FD_CLOEXEC } else { 0 };
         let word = (open_flags & status_flags::O_ACCMODE) | (open_flags & SETTABLE_STATUS_FLAGS);
-        Ok(Self { kind, flags, description: Arc::try_new(AtomicU32::new(word)).map_err(|_| 12u64)?, native_inode: None })
+        Ok(Self { kind, flags, description: Arc::try_new(AtomicU32::new(word)).map_err(|_| 12u64)?, native_inode: None, mount_flags: Default::default(), opened: crate::tty::revoke::now() })
+    }
+
+    /// The open clock when the description was created.
+    pub fn opened(&self) -> u64 {
+        self.opened
+    }
+
+    /// Whether this is a terminal description whose terminal was revoked
+    /// after it was created (`tty::revoke`). /dev/tty0 answers for the
+    /// terminal in the foreground now, as each of its operations does.
+    pub fn terminal_revoked(&self) -> bool {
+        match &self.kind {
+            FdKind::PtySlave(pair) => pair.revoked_since(self.opened),
+            FdKind::Device(device) => device
+                .terminal()
+                .is_some_and(|number| crate::tty::revoke::vt_revoked_since(number, self.opened)),
+            _ => false,
+        }
+    }
+
+    /// Record the options of the mount the file was opened through.
+    pub fn on_mount(mut self, mount_flags: crate::fs::attrs::MountFlags) -> Self {
+        self.mount_flags = mount_flags;
+        self
     }
 
     /// Attach the native namespace inode without changing driver operations.
-    pub fn with_inode(mut self, inode: Option<crate::fs::ext2::live_inode::FileHandle>) -> Self {
-        self.native_inode = inode;
+    pub fn with_inode(mut self, inode: Option<NativeInode>) -> Self {
+        if let Some((handle, mount_flags)) = inode {
+            self.native_inode = Some(handle);
+            self.mount_flags = mount_flags;
+        }
         self
     }
 
@@ -383,6 +422,27 @@ impl FdSlots {
             }
         }
         Ok(())
+    }
+}
+
+/// `/dev/null` opened for reading and writing, three times, made before an
+/// exec that runs a program with an identity its caller lacks commits. A
+/// set-ID program must not find its standard input, output or error closed:
+/// its first open would take that number, and output meant for the terminal
+/// would land in a file the caller chose. The commit, which cannot fail,
+/// gives each closed one of descriptors 0, 1 and 2 one of these
+/// (`FdTableInner::open_closed_stdio`).
+pub struct NullStdio([Option<FileDescriptor>; 3]);
+
+impl NullStdio {
+    /// No descriptors to open: the exec gains no identity.
+    pub fn none() -> Self {
+        Self([None, None, None])
+    }
+
+    pub fn try_new() -> Result<Self, u64> {
+        let null = || FileDescriptor::try_opened(FdKind::Device(crate::fs::devfs::DeviceType::Null), status_flags::O_RDWR);
+        Ok(Self([Some(null()?), Some(null()?), Some(null()?)]))
     }
 }
 
@@ -710,6 +770,16 @@ impl FdTableInner {
             }
         }
         entries
+    }
+
+    /// Give each of descriptors 0, 1 and 2 that is closed, and not held by
+    /// `reserve_slot`, one of `stdio`'s `/dev/null` descriptors.
+    pub fn open_closed_stdio(&mut self, stdio: NullStdio) {
+        for (fd, entry) in stdio.0.into_iter().enumerate() {
+            if fd < self.fds.len() && self.fds[fd].is_none() && !self.reserved.contains(&fd) {
+                self.fds[fd] = entry;
+            }
+        }
     }
 
     /// Allocate a new file descriptor with the given kind

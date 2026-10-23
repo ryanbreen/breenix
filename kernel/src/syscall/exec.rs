@@ -1,6 +1,6 @@
 //! Copy exec inputs and resolve interpreters before publishing a new image.
 
-use super::errno::{E2BIG, EACCES, EFAULT, EISDIR, ELOOP, ENOEXEC, ENOMEM};
+use super::errno::{E2BIG, EACCES, EFAULT, EISDIR, ELOOP, ENOENT, ENOEXEC, ENOMEM};
 use alloc::{boxed::Box, string::String, vec::Vec};
 use core::ops::Range;
 
@@ -285,8 +285,8 @@ pub(crate) fn display_path(mut path: &[u8]) -> Result<String, u64> {
     Ok(text)
 }
 
-/// The exec convenience ABI searches /bin for a bare name: the pathname
-/// `path` names.
+/// Build the first convenience-ABI candidate: /bin for a bare name,
+/// or the working directory for a relative pathname containing a slash.
 fn convenience_path(path: Vec<u8>) -> Result<Vec<u8>, u64> {
     if path.starts_with(b"/") {
         return Ok(path);
@@ -318,8 +318,20 @@ pub(crate) fn read_image<I>(
     path.try_reserve_exact(input.len()).map_err(|_| ENOMEM as u64)?;
     path.extend_from_slice(input);
     for depth in 0..=5 {
+        let bare = !path.contains(&b'/');
         path = convenience_path(path)?;
-        let (data, identity) = read(&path).map_err(|errno| if errno == EISDIR { EACCES as u64 } else { errno as u64 })?;
+        let mut image = read(&path);
+        // User programs moved to /usr/bin; essential /bin commands keep priority.
+        // Advance the convenience search on ENOENT; return other errors directly.
+        if bare && matches!(&image, Err(errno) if *errno == ENOENT) {
+            let mut candidate = Vec::new();
+            candidate.try_reserve_exact(4 + path.len()).map_err(|_| ENOMEM as u64)?;
+            candidate.extend_from_slice(b"/usr");
+            candidate.extend_from_slice(&path);
+            path = candidate;
+            image = read(&path);
+        }
+        let (data, identity) = image.map_err(|errno| if errno == EISDIR { EACCES as u64 } else { errno as u64 })?;
         if !data.starts_with(b"#!") {
             validate_elf(&data)?;
             return Ok((data, identity));

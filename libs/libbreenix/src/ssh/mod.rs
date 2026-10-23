@@ -1,17 +1,22 @@
 //! Breenix SSH (BSSH) — clean-room SSH-2 protocol implementation
 //!
 //! Implements the SSH-2 protocol (RFC 4253, 4252, 4254) with:
-//! - Key exchange: curve25519-sha256 (RFC 8731)
-//! - Host key: rsa-sha2-256 (RFC 8332)
+//! - Key exchange: mlkem768x25519-sha256 and curve25519-sha256 (RFC 8731)
+//! - Host key: ssh-ed25519 (RFC 8709), generated per machine
+//! - User authentication: publickey only, ssh-ed25519 or rsa-sha2-256/512 keys
+//!   from the account's `~/.ssh/authorized_keys`
 //! - Cipher: aes128-ctr (RFC 4344)
 //! - MAC: hmac-sha2-256 (RFC 6668)
 //! - Compression: none
 
+pub mod account;
 pub mod auth;
 pub mod channel;
 pub mod cipher;
+pub mod host_keys;
 pub mod kex;
 pub mod keys;
+pub mod machine_state;
 pub mod packet;
 pub mod transport;
 

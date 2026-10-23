@@ -13,7 +13,7 @@
 //! library lacks is compiled out and fails saying which, so the suite still links and the
 //! case starts measuring once the library has it.
 //!
-//! Programs the process cases start are `/usr/local/test/bin/rust-std-child_test`, a
+//! Programs the process cases start are `/usr/libexec/breenix/rust-std-child_test`, a
 //! std-only helper that reports what it saw on its stdout or in its exit status.
 //!
 //! Each case runs in its own forked child under the runner's default 10-second limit.
@@ -362,11 +362,11 @@ spawn_items! {
     use std::os::unix::process::{CommandExt, ExitStatusExt};
 
     /// The helper program the process cases start.
-    const CHILD: &str = "/usr/local/test/bin/rust-std-child_test";
-    const CHILD_DIR: &str = "/usr/local/test/bin";
+    const CHILD: &str = "/usr/libexec/breenix/rust-std-child_test";
+    const CHILD_DIR: &str = "/usr/libexec/breenix";
     const CHILD_NAME: &str = "rust-std-child_test";
     /// The helper's hard link whose final name ends in a byte that is not UTF-8.
-    const NON_UTF8_CHILD: &[u8] = b"/usr/local/test/bin/rust-std-child_test\xff";
+    const NON_UTF8_CHILD: &[u8] = b"/usr/libexec/breenix/rust-std-child_test\xff";
     const SIGKILL: i32 = 9;
     const SIGABRT: i32 = 6;
 
@@ -927,7 +927,7 @@ fn current_dir_missing() -> CaseResult {
 
 fn spawn_not_found() -> CaseResult {
     spawning!({
-        want_spawn_kind("spawn of a missing path", &mut Command::new("/usr/local/test/bin/rust-std-no-such-program"),
+        want_spawn_kind("spawn of a missing path", &mut Command::new("/usr/libexec/breenix/rust-std-no-such-program"),
             ErrorKind::NotFound)
     })
 }

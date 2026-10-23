@@ -24,7 +24,7 @@ class BootQueueTest(existing.StateTest):
         def start(command, **options):
             boot_id = command[command.index('--id') + 1]
             args = SimpleNamespace(id=boot_id, mode='default', payload='hang', session=False,
-                                   attended=False, wait=1, input=None, disk=None, target='main',
+                                   wait=1, input=None, disk=None, target='main',
                                    task='', commit='', inject=None, nmi=False, no_wait=True)
             with patch.object(m, 'load_site', return_value={}):
                 driver = boot.Driver(args)

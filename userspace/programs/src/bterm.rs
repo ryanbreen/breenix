@@ -513,7 +513,7 @@ fn main() {
         vec![btop_label], &theme);
 
     // Spawn initial tabs: btop (default visible) + shell
-    let mut tabs: Vec<Tab> = vec![spawn_tab_cmd(cols, rows, b"/bin/btop\0")];
+    let mut tabs: Vec<Tab> = vec![spawn_tab_cmd(cols, rows, b"/usr/bin/btop\0")];
 
     // Add shell in a second tab
     let shell_label = make_tab_label();

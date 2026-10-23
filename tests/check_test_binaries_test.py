@@ -15,18 +15,18 @@ spec.loader.exec_module(check)
 class CheckTestBinariesTest(unittest.TestCase):
     def test_lists_come_from_the_kernel_sources(self):
         self.assertIn('fifo_fs_test', check.required_binaries())
-        self.assertIn('/usr/local/test/bin', check.search_dirs())
+        self.assertIn('/usr/libexec/breenix', check.search_dirs())
 
     def test_follows_symlinks_and_refuses_what_the_loader_cannot_load(self):
         debugfs = check.debugfs_path()
         mke2fs = str(Path(debugfs).with_name('mke2fs'))
         with tempfile.TemporaryDirectory() as scratch:
             tree = Path(scratch) / 'tree'
-            for directory in ('bin', 'usr/lib', 'usr/local/test/real-bin'):
+            for directory in ('bin', 'usr/lib', 'usr/libexec/real-bin'):
                 (tree / directory).mkdir(parents=True)
-            (tree / 'usr/local/test/bin').symlink_to('real-bin')
+            (tree / 'usr/libexec/breenix').symlink_to('real-bin')
             (tree / 'bin/in_bin').write_bytes(b'\x7fELF')
-            (tree / 'usr/local/test/bin/in_test_bin').write_bytes(b'\x7fELF')
+            (tree / 'usr/libexec/breenix/in_test_bin').write_bytes(b'\x7fELF')
             (tree / 'usr/lib/real').write_bytes(b'\x7fELF')
             (tree / 'bin/empty').write_bytes(b'')
             (tree / 'bin/relative').symlink_to('../usr/lib/real')
@@ -39,12 +39,12 @@ class CheckTestBinariesTest(unittest.TestCase):
             (tree / 'bin/directory').mkdir()
             (tree / 'bin/empty_link').symlink_to('empty')
             for name in ('empty', 'directory', 'empty_link', 'dangling', 'loop'):
-                (tree / 'usr/local/test/real-bin' / name).write_bytes(b'\x7fELF')
+                (tree / 'usr/libexec/real-bin' / name).write_bytes(b'\x7fELF')
             disk = Path(scratch) / 'disk.img'
             subprocess.run([mke2fs, '-q', '-t', 'ext2', '-d', str(tree), str(disk), '4M'], check=True)
             names = ['in_bin', 'in_test_bin', 'relative', 'absolute', 'slow', 'empty', 'directory',
                      'empty_link', 'dangling', 'loop', 'missing_parent', 'file_parent', 'absent']
-            dirs = ['/bin', '/usr/local/cbin', '/usr/local/test/bin']
+            dirs = ['/bin', '/usr/local/cbin', '/usr/libexec/breenix']
             self.assertEqual(check.missing_binaries(disk, names, dirs, debugfs),
                              ['empty', 'directory', 'empty_link', 'missing_parent', 'file_parent', 'absent'])
 
@@ -60,9 +60,9 @@ class CheckTestBinariesTest(unittest.TestCase):
             tree = Path(scratch) / 'tree'
             (tree / 'bin').mkdir(parents=True)
             (tree / 'usr/real-bin').mkdir(parents=True)
-            (tree / 'usr/local').symlink_to('locations')
-            (tree / 'usr/locations/test').mkdir(parents=True)
-            (tree / 'usr/locations/test/bin').symlink_to('../../real-bin')
+            (tree / 'usr/libexec').symlink_to('locations')
+            (tree / 'usr/locations').mkdir(parents=True)
+            (tree / 'usr/locations/breenix').symlink_to('../real-bin')
             for name in names:
                 (tree / 'usr/real-bin' / name).write_bytes(b'\x7fELF')
             disk = Path(scratch) / 'disk.img'

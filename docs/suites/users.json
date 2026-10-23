@@ -1,0 +1,559 @@
+{
+  "id": "users",
+  "title": "Users & permissions",
+  "area": "Users & permissions",
+  "summary": "Credentials, access checks, set-ID execution, accounts, su and sudo-style administration, the standard filesystem layout and non-root logins on the console and over SSH behave as POSIX and the users design specify.",
+  "binary": "/sbin/suite-users",
+  "timingSensitive": true,
+  "categories": [
+    {
+      "id": "credentials",
+      "title": "Real, effective and saved IDs, supplementary groups and their thread-group commit",
+      "cases": [
+        {
+          "id": "ids-after-drop",
+          "title": "A root process that becomes a user holds that user's real, effective and saved IDs and groups"
+        },
+        {
+          "id": "no-regain-root",
+          "title": "A user cannot take user ID 0 back through setuid, setreuid or setresuid"
+        },
+        {
+          "id": "saved-toggle",
+          "title": "A process whose saved user ID differs from its real one switches its effective ID between them"
+        },
+        {
+          "id": "setres-rules",
+          "title": "Unprivileged setresuid and setresgid accept only the current three IDs, and a refusal changes nothing"
+        },
+        {
+          "id": "setgroups-user-eperm",
+          "title": "setgroups by a user fails with EPERM and leaves the groups as they were"
+        },
+        {
+          "id": "threads-share-groups",
+          "title": "setgroups in one thread changes the supplementary groups of every thread of the process"
+        },
+        {
+          "id": "orphan-thread-not-root",
+          "title": "A thread whose process cannot be found is refused, never checked as root (forcing point)"
+        }
+      ]
+    },
+    {
+      "id": "files",
+      "title": "File access classes, ownership, chmod, chown and set-ID clearing",
+      "cases": [
+        {
+          "id": "other-0600-read-eacces",
+          "title": "Another user's 0600 file cannot be opened for reading (EACCES)"
+        },
+        {
+          "id": "other-0600-write-eacces",
+          "title": "Another user's 0600 file cannot be opened for writing (EACCES)"
+        },
+        {
+          "id": "group-0640-member",
+          "title": "A member of a 0640 file's group may read it and may not write it"
+        },
+        {
+          "id": "group-0640-nonmember",
+          "title": "A user outside a 0640 file's group gets the other class: no read"
+        },
+        {
+          "id": "supplementary-access",
+          "title": "A supplementary group grants its group class"
+        },
+        {
+          "id": "root-exec-needs-x",
+          "title": "Root may not execute a file with no execute bit, and may with one in any class"
+        },
+        {
+          "id": "search-denied",
+          "title": "A directory without search permission blocks the path through it and chdir into it"
+        },
+        {
+          "id": "create-owner",
+          "title": "A new file takes the creator's effective user and group IDs and the mode less the umask"
+        },
+        {
+          "id": "sgid-dir-group",
+          "title": "In a set-group-ID directory new files take its group and new directories its set-group-ID bit"
+        },
+        {
+          "id": "chmod-not-owner-eperm",
+          "title": "chmod of another user's file fails with EPERM"
+        },
+        {
+          "id": "chown-giveaway-eperm",
+          "title": "A user cannot give a file to another user (EPERM)"
+        },
+        {
+          "id": "chgrp-nonmember-eperm",
+          "title": "The owner may change a file's group only to a group they belong to"
+        },
+        {
+          "id": "write-clears-setid",
+          "title": "A user's write or truncate clears a file's set-user-ID and set-group-ID bits"
+        },
+        {
+          "id": "mmap-shared-clears-setid",
+          "title": "A user's shared writable mapping clears a file's set-ID bits, and its pending stores confer no identity at exec"
+        },
+        {
+          "id": "utimes-explicit-nonowner-eperm",
+          "title": "Explicit times need ownership (EPERM); setting both to now needs ownership or write (EACCES)"
+        }
+      ]
+    },
+    {
+      "id": "sticky",
+      "title": "Sticky world-writable directories: removal, rename, symlinks and hard links",
+      "cases": [
+        {
+          "id": "tmp-1777",
+          "title": "/tmp is a root-owned sticky directory every user may write: mode 1777"
+        },
+        {
+          "id": "unlink-other-eperm",
+          "title": "In a sticky directory a user cannot remove another user's file (EPERM)"
+        },
+        {
+          "id": "rename-other-eperm",
+          "title": "In a sticky directory a user cannot rename another user's file (EPERM)"
+        },
+        {
+          "id": "replace-other-eperm",
+          "title": "In a sticky directory a user cannot rename over another user's file (EPERM)"
+        },
+        {
+          "id": "dir-owner-may-remove",
+          "title": "The owner of a sticky directory may remove another user's file in it"
+        },
+        {
+          "id": "symlink-follow-refused",
+          "title": "A symlink in a sticky directory is followed only by its owner or the directory's owner (EACCES)"
+        },
+        {
+          "id": "hardlink-other-refused",
+          "title": "A user cannot hard-link a file they neither own nor may read and write (EPERM)"
+        }
+      ]
+    },
+    {
+      "id": "setid-exec",
+      "title": "Set-user-ID and set-group-ID execution, nosuid and AT_SECURE",
+      "cases": [
+        {
+          "id": "setuid-euid",
+          "title": "A set-user-ID program runs with its owner as the effective user ID and the caller's real one"
+        },
+        {
+          "id": "setuid-saved",
+          "title": "A set-user-ID program switches between its real and saved user IDs"
+        },
+        {
+          "id": "setgid-egid",
+          "title": "A set-group-ID program runs with its group as the effective group ID"
+        },
+        {
+          "id": "setgid-no-gx-ignored",
+          "title": "A set-group-ID bit without group execute confers no group"
+        },
+        {
+          "id": "nosuid-home-ignored",
+          "title": "Set-ID bits confer nothing under /home, which is mounted nosuid,nodev"
+        },
+        {
+          "id": "shared-fs-no-gain",
+          "title": "An exec while another process shares the working directory gains no identity"
+        },
+        {
+          "id": "at-secure",
+          "title": "A set-ID program starts with AT_SECURE set, and an ordinary one without it"
+        },
+        {
+          "id": "closed-stdio-opened",
+          "title": "A set-ID program started with descriptors 0 to 2 closed finds them open on /dev/null"
+        }
+      ]
+    },
+    {
+      "id": "signals",
+      "title": "Signal and priority permission between users",
+      "cases": [
+        {
+          "id": "kill-other-eperm",
+          "title": "A user cannot signal another user's process (EPERM), which keeps running"
+        },
+        {
+          "id": "kill-probe-eperm",
+          "title": "kill(pid, 0) on another user's process fails with EPERM"
+        },
+        {
+          "id": "kill-setuid-child",
+          "title": "A user may signal a set-user-ID program they started"
+        },
+        {
+          "id": "root-kills-any",
+          "title": "Root may signal any user's process"
+        },
+        {
+          "id": "renice-other-eperm",
+          "title": "A user cannot change another user's priority (EPERM)"
+        }
+      ]
+    },
+    {
+      "id": "proc-dev",
+      "title": "/proc, device nodes and privileged ports by owner and mode",
+      "cases": [
+        {
+          "id": "proc-exe-other-eacces",
+          "title": "A user cannot read another user's /proc/<pid>/exe (EACCES) and may read their own"
+        },
+        {
+          "id": "kernel-output-other-eacces",
+          "title": "A user cannot read another user's thread kernel_output (EACCES) and may read their own"
+        },
+        {
+          "id": "kmsg-user-eacces",
+          "title": "/proc/kmsg is root's alone (EACCES)"
+        },
+        {
+          "id": "trace-user-eacces",
+          "title": "/proc/trace is root's alone (EACCES)"
+        },
+        {
+          "id": "vcs-user-eacces",
+          "title": "The console and the screen devices are root's 0600 nodes a user cannot open (EACCES)"
+        },
+        {
+          "id": "tcp-low-port-eacces",
+          "title": "A user cannot bind a TCP port below 1024 (EACCES); root can"
+        },
+        {
+          "id": "home-nodev-device-eacces",
+          "title": "A device node under /home, mounted nodev, opens no device (EACCES), and only root may make one"
+        },
+        {
+          "id": "window-other-eperm",
+          "title": "A user cannot list, read, map or exchange input with another user's window (EPERM)"
+        }
+      ]
+    },
+    {
+      "id": "umask",
+      "title": "File creation mask across files, directories, fork and threads",
+      "cases": [
+        {
+          "id": "umask-file",
+          "title": "A new file's mode is the requested mode less the umask"
+        },
+        {
+          "id": "umask-dir",
+          "title": "A new directory's mode is the requested mode less the umask"
+        },
+        {
+          "id": "umask-fork",
+          "title": "A forked child inherits the umask"
+        },
+        {
+          "id": "umask-threads",
+          "title": "umask in one thread sets the mask of every thread of the process"
+        }
+      ]
+    },
+    {
+      "id": "layout",
+      "title": "The standard filesystem layout with its owners and modes",
+      "cases": [
+        {
+          "id": "fhs-paths",
+          "title": "Standard layout paths have their specified owners and modes"
+        },
+        {
+          "id": "shadow-0600",
+          "title": "The shadow database is a root-owned regular file at mode 0600"
+        },
+        {
+          "id": "sudo-policy-0440",
+          "title": "The admin policy is a root-owned regular file at mode 0440"
+        },
+        {
+          "id": "setuid-set",
+          "title": "Image set-ID files are limited to the design table"
+        },
+        {
+          "id": "run-cleared",
+          "title": "Startup removes stale runtime and temporary state"
+        }
+      ]
+    },
+    {
+      "id": "accounts",
+      "title": "passwd, group and shadow files and the account tools",
+      "cases": [
+        {
+          "id": "useradd-entries",
+          "title": "useradd creates matching passwd, group and locked shadow entries"
+        },
+        {
+          "id": "useradd-home-0700",
+          "title": "useradd -m copies the skeleton into a user-owned 0700 home"
+        },
+        {
+          "id": "useradd-duplicate-refused",
+          "title": "Duplicate names and IDs are refused without changing any database"
+        },
+        {
+          "id": "useradd-options",
+          "title": "Explicit IDs, groups, shell and home are stored and non-root useradd is refused"
+        },
+        {
+          "id": "userdel-removes",
+          "title": "userdel removes account entries, memberships and an owned home"
+        },
+        {
+          "id": "userdel-busy-refused",
+          "title": "userdel refuses a user with running processes"
+        },
+        {
+          "id": "userdel-home-owner-refused",
+          "title": "userdel -r refuses a home owned by another identity"
+        },
+        {
+          "id": "usermod-groups",
+          "title": "usermod replaces or appends supplementary groups and preserves other members"
+        },
+        {
+          "id": "usermod-lock-expire",
+          "title": "usermod locks and unlocks a password, changes shell and sets account expiration"
+        },
+        {
+          "id": "groupadd-groupdel",
+          "title": "Group tools allocate IDs, refuse duplicates and retain primary groups"
+        },
+        {
+          "id": "lock-serializes",
+          "title": "Concurrent useradds wait for the password lock and retain both new accounts"
+        },
+        {
+          "id": "libc-lock-shared",
+          "title": "libc lckpwdf and the library contend on the same POSIX record lock"
+        },
+        {
+          "id": "interrupted-write-intact",
+          "title": "Exit at every write boundary leaves complete old or new files and publishes shadow before passwd"
+        },
+        {
+          "id": "passwd-own",
+          "title": "passwd library verifies the old password and writes a fresh 100000-round hash for the caller"
+        },
+        {
+          "id": "passwd-other-refused",
+          "title": "passwd library refuses another account, a wrong old password and a short replacement"
+        },
+        {
+          "id": "id-output",
+          "title": "id and groups resolve a newly created account through libc"
+        },
+        {
+          "id": "malformed-isolated",
+          "title": "A malformed account is disabled while a valid neighbour remains usable"
+        },
+        {
+          "id": "audit-log",
+          "title": "Account tools append a successful change to the protected authentication log"
+        }
+      ]
+    },
+    {
+      "id": "su",
+      "title": "su: passwords, wheel, login environment and the auth log",
+      "cases": [
+        {
+          "id": "setuid-set",
+          "title": "Exactly su, passwd and sudo are installed set-user-ID root"
+        },
+        {
+          "id": "su-wrong-password-refused",
+          "title": "su refuses a wrong target password and accepts the right one"
+        },
+        {
+          "id": "su-root-ok",
+          "title": "A wheel member becomes root with root's password"
+        },
+        {
+          "id": "su-nonwheel-refused",
+          "title": "su refuses root to a caller outside wheel without asking for a password"
+        },
+        {
+          "id": "su-dash-env",
+          "title": "su - gives the target's clean login environment and home; plain su keeps the caller's"
+        },
+        {
+          "id": "su-logged",
+          "title": "su successes and refusals are recorded in the protected auth log without passwords"
+        },
+        {
+          "id": "passwd-command",
+          "title": "The set-user-ID passwd command changes the caller's own password and no other account's"
+        }
+      ]
+    },
+    {
+      "id": "sudo",
+      "title": "sudo-style administration: policy, password cache, environment and the auth log",
+      "cases": [
+        {
+          "id": "sudo-wheel-ok",
+          "title": "A wheel member runs a command as root with their own password"
+        },
+        {
+          "id": "sudo-nonwheel-refused",
+          "title": "sudo refuses a caller no rule permits without asking for a password"
+        },
+        {
+          "id": "sudo-wrong-password",
+          "title": "sudo refuses a wrong password"
+        },
+        {
+          "id": "sudo-env-reset",
+          "title": "The command gets a reset environment, the secure PATH and umask 022"
+        },
+        {
+          "id": "sudo-bad-policy-mode-refused",
+          "title": "sudo refuses to run under a policy with the wrong mode or one that does not parse"
+        },
+        {
+          "id": "sudo-cache-session",
+          "title": "An authentication is remembered for the session and terminal only"
+        },
+        {
+          "id": "sudo-policy-rules",
+          "title": "A rule's target and command decide"
+        },
+        {
+          "id": "sudo-first-match",
+          "title": "Of two rules that both permit the call, the first decides, in each order"
+        },
+        {
+          "id": "sudo-argv-no-shell",
+          "title": "The permitted command runs with its arguments as given, never through a shell, with and without -i"
+        },
+        {
+          "id": "sudo-logged",
+          "title": "sudo successes and refusals are recorded with the command and without passwords"
+        }
+      ]
+    },
+    {
+      "id": "login",
+      "title": "Console login as any account, tty ownership and umask",
+      "cases": [
+        {
+          "id": "login-user",
+          "title": "A fixture account logs in through getty and login with its IDs, groups, environment, home and login shell"
+        },
+        {
+          "id": "login-bad-password-refused",
+          "title": "A wrong password is refused with Login incorrect and the right one then logs in"
+        },
+        {
+          "id": "login-root-refused",
+          "title": "On a pseudo-terminal line login refuses root under the shipped ROOT_LOGIN no, and the same password logs in there under ROOT_LOGIN yes"
+        },
+        {
+          "id": "login-locked-refused",
+          "title": "A locked password is refused at login and the unlocked one logs in"
+        },
+        {
+          "id": "login-expired-refused",
+          "title": "An expired account is refused at login, and logs in once its expiry is cleared"
+        },
+        {
+          "id": "login-tty-owned",
+          "title": "The session's terminal belongs to the account, group tty, mode 0620"
+        },
+        {
+          "id": "login-umask",
+          "title": "A session starts with the umask from /etc/login.defs"
+        },
+        {
+          "id": "logout-tty-restored",
+          "title": "After logout getty returns the terminal to root at 0620 and records the logout"
+        },
+        {
+          "id": "logout-revokes-terminal",
+          "title": "A descriptor the old session kept on the line reads end of file, cannot write and cannot reopen it once getty serves the next login"
+        }
+      ]
+    },
+    {
+      "id": "ssh",
+      "title": "SSH sessions as the account: the boot host's OpenSSH with the operator's key, and loopback bssh",
+      "cases": [
+        {
+          "id": "openssh-operator",
+          "title": "The boot host's OpenSSH, pinning this boot's host key strictly, logs in as the operator account with the operator's key"
+        },
+        {
+          "id": "openssh-root-refused",
+          "title": "The boot host's OpenSSH is refused root with the operator's key, and the same key logs in as the operator account"
+        },
+        {
+          "id": "ssh-identity",
+          "title": "An SSH command runs as the account with its IDs, groups, environment and home"
+        },
+        {
+          "id": "ssh-root-refused",
+          "title": "bsshd refuses root's key, and the same key logs in as an ordinary account"
+        },
+        {
+          "id": "ssh-groups",
+          "title": "An SSH session holds the account's supplementary groups"
+        },
+        {
+          "id": "ssh-pty-owner",
+          "title": "An interactive SSH session's PTY belongs to the account, group tty, mode 0620"
+        },
+        {
+          "id": "ssh-bad-key-mode-refused",
+          "title": "A group-writable authorized_keys grants no login until its mode is 0600"
+        }
+      ]
+    },
+    {
+      "id": "operator",
+      "title": "The operator account logs in over SSH and at the console; root SSH is refused",
+      "hostRunner": true,
+      "cases": [
+        {
+          "id": "account",
+          "title": "The persistent install's operator account has the site's name and uid, its own group, home and /bin/bsh, and the site key"
+        },
+        {
+          "id": "ssh-id",
+          "title": "OpenSSH pinning this boot's host key logs in as the operator, and id shows its uid, its group and wheel"
+        },
+        {
+          "id": "sudo-n-refused",
+          "title": "sudo -n true is refused because the operator's own password is required"
+        },
+        {
+          "id": "sudo-password-root",
+          "title": "sudo id with the operator's password runs as uid 0"
+        },
+        {
+          "id": "root-ssh-refused",
+          "title": "OpenSSH as root is refused with the operator's key, and root has no authorized keys"
+        },
+        {
+          "id": "console-challenge",
+          "title": "The SOL console challenge passes as the operator: a wrong password refused, the answer computed and read back from the screen through sudo, and getty back after logout"
+        }
+      ]
+    }
+  ]
+}

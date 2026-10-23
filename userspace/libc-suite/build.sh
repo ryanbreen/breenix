@@ -6,7 +6,7 @@
 # For each category listed in userspace/libc-suite/categories, compiles harness.c and
 # <category>.c (with '-' in the id as '_') with scripts/breenix-cc and links
 # userspace/programs/{,aarch64/}libc-<category>_test.elf, which the disk installs in
-# /usr/local/test/bin. abi_check.c is compiled for the arch every time.
+# /usr/libexec/breenix. abi_check.c is compiled for the arch during this build.
 #
 # A function the category's code calls that libc.a does not define yet gets a stand-in
 # in build/<arch>/missing-<category>.c that calls libc_case_missing("<name>"), so each
