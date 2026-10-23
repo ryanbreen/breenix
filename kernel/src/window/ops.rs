@@ -707,7 +707,11 @@ pub fn publish_ready() {
             } else {
                 if let Some(f) = w.front.filter(|&f| f != index) {
                     let old = &mut w.buffers[f];
-                    old.state = if old.pins == 0 { BufState::Free } else { BufState::Retired };
+                    if old.pins == 0 {
+                        old.state = BufState::Free;
+                    } else {
+                        old.state = BufState::Retired;
+                    }
                 }
                 let b = &mut w.buffers[index];
                 b.state = BufState::Front;
