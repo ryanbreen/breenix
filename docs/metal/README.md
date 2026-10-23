@@ -980,6 +980,11 @@ blogd, `ntp` (the time client) and the gettys on tty2 to tty6 and the console. T
 factory file: `etc-reconcile` installs it on persistent installs and keeps a local edit with a
 `.factory` sibling.
 
+The ARM64 table also holds six gettys. Default ARM64 init selects only services
+without login terminals so its desktop startup leaves those gettys out; explicit
+`init console` selects the login terminals instead. These scope choices also apply
+to `svc reload`, including definitions added under `/run/breenix/services.d/`.
+
 - **Needs.** bsshd needs `entropy`: init starts it once a non-blocking `getrandom` succeeds, and
   prints `[init] random pool ready; ...`. The time client needs `network-up`: `/proc/net/pnp`
   shows a DHCP lease or a manual configuration. A waiting service holds up nothing else, so the
@@ -1010,6 +1015,9 @@ factory file: `etc-reconcile` installs it on persistent installs and keeps a loc
 
 `init console` supervises only the table's gettys. The [server suite](../suites/README.md#server-host-driven-persistent-categories)
 measures the services on a persistent boot.
+On an ARM64 persistent install with a locally edited services table, reconcile the
+new getty definitions from its `.factory` sibling into the local table before
+using `init console`; preserving the edit also preserves a table without gettys.
 
 ### Persistent logs
 
