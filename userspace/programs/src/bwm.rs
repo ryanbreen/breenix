@@ -763,6 +763,11 @@ struct Window {
     minimized: bool,
     /// The first composed frame showing this client has been checked.
     frame_checked: bool,
+    /// Delay resize validation until input and the owner have settled.
+    check_after_ms: u64,
+    /// Fixed far edges for owner-mediated left/top resizes.
+    resize_right: Option<i32>,
+    resize_bottom: Option<i32>,
     /// Composed frames whose check found this client had committed again since the frame
     /// sampled it.
     check_moved: u32,
@@ -1207,15 +1212,18 @@ fn discover_windows(
     let mut added = false;
     let mut resized = false;
     for info in &win_infos {
-        if let Some(w) = windows.iter_mut().find(|w| w.window_id == info.id) {
+        if let Some((index, w)) = windows.iter_mut().enumerate().find(|(_, w)| w.window_id == info.id) {
             let width = info.width as usize + if w.chromeless { 0 } else { px(BORDER_WIDTH) * 2 };
             let height = info.height as usize + if w.chromeless { 0 } else { px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2 };
             if (w.width, w.height) != (width, height) {
+                if let Some(right) = w.resize_right { w.x = right - width as i32; }
+                if let Some(bottom) = w.resize_bottom { w.y = bottom - height as i32; }
                 w.width = width;
                 w.height = height;
                 w.frame_checked = false;
                 w.check_moved = 0;
-                print!("[bwm] client resized: id={} content={}x{} frame={}x{}\n", w.window_id, info.width, info.height, width, height);
+                w.check_after_ms = monotonic_ms().unwrap_or(0) + 150;
+                let _ = session::set_geometry(w.window_id, w.content_x(), w.content_y(), index as u32, true);
                 resized = true;
             }
             continue;
@@ -1286,6 +1294,9 @@ fn discover_windows(
             owner_pid: info.owner_pid,
             minimized: false,
             frame_checked: false,
+            check_after_ms: 0,
+            resize_right: None,
+            resize_bottom: None,
             check_moved: 0,
             creation_order: order,
             chromeless,
@@ -1792,6 +1803,8 @@ fn main() {
                     if new_x != windows[win_idx].x || new_y != windows[win_idx].y {
                         // Capture old bounds before moving
                         let (ox0, oy0, ox1, oy1) = windows[win_idx].bounds();
+                        windows[win_idx].resize_right = None;
+                        windows[win_idx].resize_bottom = None;
                         windows[win_idx].x = new_x;
                         windows[win_idx].y = new_y;
                         // Publish the window's new place for composition
@@ -1813,69 +1826,32 @@ fn main() {
                         dirty_y1 = dirty_y1.max(dr_y1 as i32);
                         content_dirty = true;
                     }
-                } else if let Some((win_idx, edge, anchor_x, anchor_y, orig_x, orig_y, orig_w, orig_h)) = resizing {
+                } else if let Some((win_idx, edge, anchor_x, anchor_y, _, orig_y, orig_w, orig_h)) = resizing {
                     let dx = mouse_x - anchor_x;
                     let dy = mouse_y - anchor_y;
 
-                    let (mut new_x, mut new_y, mut new_w, mut new_h) =
-                        (orig_x, orig_y, orig_w as i32, orig_h as i32);
-
+                    let mut new_w = orig_w as i32;
+                    let mut new_h = orig_h as i32;
                     match edge {
                         ResizeEdge::Right => { new_w += dx; }
                         ResizeEdge::Bottom => { new_h += dy; }
-                        ResizeEdge::Left => { new_x += dx; new_w -= dx; }
-                        ResizeEdge::Top => { new_y += dy; new_h -= dy; }
-                        ResizeEdge::TopLeft => { new_x += dx; new_w -= dx; new_y += dy; new_h -= dy; }
-                        ResizeEdge::TopRight => { new_w += dx; new_y += dy; new_h -= dy; }
-                        ResizeEdge::BottomLeft => { new_x += dx; new_w -= dx; new_h += dy; }
+                        ResizeEdge::Left => { new_w -= dx; }
+                        ResizeEdge::Top => { new_h -= dy; }
+                        ResizeEdge::TopLeft => { new_w -= dx; new_h -= dy; }
+                        ResizeEdge::TopRight => { new_w += dx; new_h -= dy; }
+                        ResizeEdge::BottomLeft => { new_w -= dx; new_h += dy; }
                         ResizeEdge::BottomRight => { new_w += dx; new_h += dy; }
                     }
-
-                    // Enforce minimums
-                    if new_w < px(MIN_WIN_WIDTH) as i32 {
-                        if edge == ResizeEdge::Left || edge == ResizeEdge::TopLeft || edge == ResizeEdge::BottomLeft {
-                            new_x = orig_x + orig_w as i32 - px(MIN_WIN_WIDTH) as i32;
-                        }
-                        new_w = px(MIN_WIN_WIDTH) as i32;
+                    new_w = new_w.max(px(MIN_WIN_WIDTH) as i32);
+                    new_h = new_h.max(px(MIN_WIN_HEIGHT) as i32);
+                    if windows[win_idx].resize_bottom.is_some() {
+                        new_h = new_h.min(orig_y + orig_h as i32 - px(TASKBAR_HEIGHT) as i32);
                     }
-                    if new_h < px(MIN_WIN_HEIGHT) as i32 {
-                        if edge == ResizeEdge::Top || edge == ResizeEdge::TopLeft || edge == ResizeEdge::TopRight {
-                            new_y = orig_y + orig_h as i32 - px(MIN_WIN_HEIGHT) as i32;
-                        }
-                        new_h = px(MIN_WIN_HEIGHT) as i32;
-                    }
-
-                    // Clamp top to taskbar
-                    new_y = new_y.max(px(TASKBAR_HEIGHT) as i32);
-
-                    let (ox0, oy0, ox1, oy1) = windows[win_idx].bounds();
-
-                    // B41: the frame stays at the owner's LIST size until it answers.
-                    // Bound the physical client size before sending the request.
+                    // B41: neither position nor dimensions change until LIST reports
+                    // the owner's answer. LIST preserves the opposite edge atomically.
                     let width = new_w.saturating_sub((px(BORDER_WIDTH) * 2) as i32).clamp(1, 4096) as u32;
                     let height = new_h.saturating_sub((px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2) as i32).clamp(1, 4096) as u32;
                     send_to(&windows, win_idx, Input::Resize { width, height });
-                    windows[win_idx].x = new_x;
-                    windows[win_idx].y = new_y;
-
-                    if windows[win_idx].window_id != 0 {
-                        let cx = windows[win_idx].content_x();
-                        let cy = windows[win_idx].content_y();
-                        let _ = session::set_geometry(windows[win_idx].window_id, cx, cy, win_idx as u32, true);
-                    }
-
-                    // Dirty region = union of old and new bounds
-                    let (nx0, ny0, nx1, ny1) = windows[win_idx].bounds();
-                    let dr_x0 = ox0.min(nx0).max(0) as usize;
-                    let dr_y0 = oy0.min(ny0).max(0) as usize;
-                    let dr_x1 = ox1.max(nx1) as usize;
-                    let dr_y1 = oy1.max(ny1) as usize;
-                    compose_partial_redraw(&mut gpu, &windows, focused_win, &clock_text, dr_x0, dr_y0, dr_x1, dr_y1, &mut ui_font);
-                    dirty_x0 = dirty_x0.min(dr_x0 as i32);
-                    dirty_y0 = dirty_y0.min(dr_y0 as i32);
-                    dirty_x1 = dirty_x1.max(dr_x1 as i32);
-                    dirty_y1 = dirty_y1.max(dr_y1 as i32);
-                    content_dirty = true;
                 } else if !windows.is_empty() && focused_win < windows.len()
                     && !windows[focused_win].minimized
                     && windows[focused_win].hit_content(mouse_x, mouse_y)
@@ -2037,6 +2013,12 @@ fn main() {
                             };
                             cursor_dirty |= active_cursor_shape != shape;
                             active_cursor_shape = shape;
+                            windows[top].resize_right = matches!(edge,
+                                ResizeEdge::Left | ResizeEdge::TopLeft | ResizeEdge::BottomLeft)
+                                .then_some(windows[top].x + windows[top].width as i32);
+                            windows[top].resize_bottom = matches!(edge,
+                                ResizeEdge::Top | ResizeEdge::TopLeft | ResizeEdge::TopRight)
+                                .then_some(windows[top].y + windows[top].height as i32);
                             resizing = Some((
                                 top, edge,
                                 mouse_x, mouse_y,
@@ -2106,8 +2088,13 @@ fn main() {
             }
         }
 
+        // Keep complete pixel validation off the interactive drag path. A settled
+        // resize still gets the same whole-scanout comparison, even if no client
+        // commits again after release.
+        let check_ready = resizing.is_none() && windows.iter().any(|w|
+            !w.frame_checked && monotonic_ms().unwrap_or(0) >= w.check_after_ms);
         // ── 5. Composite on the GPU (only when something changed) ──
-        if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty {
+        if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty || check_ready {
             let pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
             let mut damage = Vec::new();
             if full_redraw {
@@ -2140,10 +2127,11 @@ fn main() {
                     // A client that committed
                     // again after the frame sampled it is checked on a later frame. Any
                     // failure prints the line docs/boot-path.json lists as fatal.
-                    let unchecked: Vec<(u64, [u32; 4])> = if windows.iter().any(|win| !win.frame_checked) {
+                    let unchecked: Vec<(u64, [u32; 4])> = if check_ready {
                         gpu.shown_clients(&layers, Some(pointer))
                             .into_iter()
-                            .filter(|(id, _)| windows.iter().any(|win| win.window_id == *id && !win.frame_checked))
+                            .filter(|(id, _)| windows.iter().any(|win| win.window_id == *id && !win.frame_checked
+                                && monotonic_ms().unwrap_or(0) >= win.check_after_ms))
                             .collect()
                     } else {
                         Vec::new()
