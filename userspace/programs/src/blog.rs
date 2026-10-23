@@ -278,8 +278,8 @@ fn render(
     let line_h = fonts.line_h;
     let char_w = fonts.char_w;
 
-    let content_y = TAB_BAR_H;
-    let content_h = h - TAB_BAR_H - STATUS_BAR_H;
+    let content_y = TAB_BAR_H * fb.ui_scale() as i32;
+    let content_h = h - content_y - STATUS_BAR_H;
     let visible_lines = if content_h > 0 {
         content_h as usize / line_h
     } else {
@@ -440,7 +440,9 @@ fn main() {
     let mut theme = Theme::dark();
     theme.use_bitmap_font = true;
 
-    let tab_rect = Rect::new(0, 0, WIN_W as i32, TAB_BAR_H);
+    let ui_scale = win.surface().expect("log surface").ui_scale() as i32;
+    let tab_pixels = TAB_BAR_H * ui_scale;
+    let tab_rect = Rect::new(0, 0, WIN_W as i32 / ui_scale, TAB_BAR_H);
     let mut tab_bar = TabBar::new(tab_rect, vec![b"Kernel", b"Serial"], &theme);
 
     let mut tabs = vec![
@@ -458,7 +460,7 @@ fn main() {
                  i, tab.path, tab.is_open(), tab.line_count(), tab.content.len());
     }
 
-    let content_h = WIN_H as i32 - TAB_BAR_H - STATUS_BAR_H;
+    let content_h = WIN_H as i32 - tab_pixels - STATUS_BAR_H;
     let mut visible_lines = if content_h > 0 && fonts.line_h > 0 {
         content_h as usize / fonts.line_h
     } else {
@@ -584,8 +586,8 @@ fn main() {
                         mouse_buttons &= !1;
                     }
                     let input = InputState::from_raw(
-                        mouse_x,
-                        mouse_y,
+                        mouse_x / ui_scale,
+                        mouse_y / ui_scale,
                         mouse_buttons,
                         old_buttons,
                         breengel::clock::now_ns() / 1_000_000,
@@ -598,13 +600,13 @@ fn main() {
                     }
                 }
                 Event::Resized { width: w, height: h } => {
-                    let new_content_h = h as i32 - TAB_BAR_H - STATUS_BAR_H;
+                    let new_content_h = h as i32 - tab_pixels - STATUS_BAR_H;
                     visible_lines = if new_content_h > 0 && fonts.line_h > 0 {
                         new_content_h as usize / fonts.line_h
                     } else {
                         1
                     };
-                    tab_bar.set_rect(Rect::new(0, 0, w as i32, TAB_BAR_H));
+                    tab_bar.set_rect(Rect::new(0, 0, w as i32 / ui_scale, TAB_BAR_H));
                     needs_redraw = true;
                 }
                 Event::CloseRequested => {
