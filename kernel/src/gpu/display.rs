@@ -421,6 +421,18 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
     Ok((bgl_fence, outcome.0, outcome.1))
 }
 
+/// The current mode's geometry, without reading the firmware framebuffer. Surface
+/// construction needs the UI scale, not MODES' full device diagnostics.
+pub(super) fn current_mode(arg: u64, len: u64) -> Result<u64, i64> {
+    let input: abi::Mode = read_arg(arg, len)?;
+    if input != abi::Mode::ZERO {
+        return Err(EINVAL);
+    }
+    let mode = with_core(|c| MODES[c.display.mode as usize]).ok_or(ENODEV)?;
+    write_arg(arg, &mode)?;
+    Ok(0)
+}
+
 pub(super) fn modes(arg: u64, len: u64) -> Result<u64, i64> {
     let input: abi::Modes = read_arg(arg, len)?;
     if input != abi::Modes::ZERO {

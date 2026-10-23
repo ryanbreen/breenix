@@ -2494,6 +2494,7 @@ pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
                 abi::op::COUNTERS => op_counters(arg, len),
                 abi::op::SET_MODE => display::set_mode(arg, len),
                 abi::op::MODES => display::modes(arg, len),
+                abi::op::CURRENT_MODE => display::current_mode(arg, len),
                 _ => Err(ENOSYS),
             },
         },

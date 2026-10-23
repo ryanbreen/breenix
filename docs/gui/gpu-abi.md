@@ -261,6 +261,14 @@ belongs to an observation that passed both poisons.
 
 ## G7 display interface
 
+`CURRENT_MODE` (op 14) takes a zero-initialized 16-byte `Mode` record and returns
+the current physical `width`, `height`, UI `scale` and zero `reserved`, all u32.
+It samples the current mode under the display lock without reading firmware memory
+or waiting for scanout restoration. Nonzero input or an incorrect size is EINVAL;
+normal GPU admission and user-pointer validation apply. Surface construction uses
+this geometry query so allocating a small target does not scan the firmware
+framebuffer. `MODES` retains its complete diagnostic sampling below.
+
 <!-- claim-lint:ok: Proposed G7 interface requirements implementing gpu.md section 1.7, not measured results. -->
 `MODES` takes a 256-byte output record, initially zero. Fields are little-endian:
 
