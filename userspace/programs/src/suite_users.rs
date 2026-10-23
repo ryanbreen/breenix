@@ -1596,6 +1596,16 @@ fn window_other() -> CaseResult {
         let own = make_window("ua's")?;
         let listed = listed_windows()?;
         want(listed.len() == 1 && listed[0].id == own, "ua's window list does not show exactly ua's own window")?;
+        // B48 item 5: v2 preserves the owner's positive read authorities.
+        capture.id = own;
+        ok("the owner capturing its own pixels", window_call(op::CAPTURE, &mut capture))?;
+        want((capture.width, capture.height) == (4, 4), "the owner's capture has the wrong size")?;
+        tree.id = own;
+        ok("the owner mapping its own tree", window_call(op::MAP_TREE, &mut tree))?;
+        want(tree.addr != 0 && tree.len > 0, "the owner's tree mapping is empty")?;
+        ok("unmapping the owner's tree view", sc(libbreenix::syscall::nr::MUNMAP, &[tree.addr, tree.len]))?;
+        meta.id = own;
+        ok("the owner reading its own metadata", window_call(op::READ_META, &mut meta))?;
         // B46 preserves compositor-only input and placement even for the owner.
         write.id = own;
         refused("the owner sending its own resize event", window_call(op::WRITE_EVENTS, &mut write), EPERM)?;
