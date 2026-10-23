@@ -3682,8 +3682,8 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         });
     let svga = dev::is_svga();
     // A viewport per rectangle costs more commands on large streams. Short Parallels
-    // streams use immutable vertices and avoid a synchronous completion read per frame.
-    let fixed_quads = crate::platform_config::is_parallels() && !svga && plan.drawn <= 64;
+    // streams use immutable vertices; mutable data/copy scratch still needs completion.
+    let fixed_quads = crate::platform_config::is_parallels() && !svga && !FLIP_Y && plan.drawn <= 64;
     // The SVGA3D DX translation makes its own vertex, constant, data and scratch surfaces.
     let vertex_range = match if svga || fixed_quads { Ok(None) } else { vertex_buffer_for(tgid, id, writer.serial, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) } {
         Ok(vb) => vb,
@@ -3808,7 +3808,9 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             suppress,
             swap,
         }, if fixed_quads { encode::FIXED_QUAD_OFFSET } else { vertex_range.map_or(0, |(_, offset, _)| offset) });
-        if crate::platform_config::is_parallels() && !fixed_quads {
+        // Immutable geometry does not protect the reused coverage and copy textures.
+        if crate::platform_config::is_parallels()
+            && (!fixed_quads || data_texture != 0 || copy_scratch.iter().any(|&rid| rid != 0)) {
             if let Some(target) = last_written.and_then(|id| view.entries.iter().find(|e| e.id == id)) {
                 enc.completion_read(target.id, (target.width * 4).next_multiple_of(256));
             }
