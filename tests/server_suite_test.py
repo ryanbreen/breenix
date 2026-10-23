@@ -3,6 +3,8 @@ import copy
 import json
 from pathlib import Path
 import runpy
+import socket
+import struct
 import os
 import shutil
 import subprocess
@@ -17,6 +19,22 @@ import metal_tools_test as existing
 
 ROOT = Path(__file__).resolve().parents[1]
 host = runpy.run_path(str(ROOT / 'scripts/metal/server-suite'))
+
+
+class TimeFixture(unittest.TestCase):
+    def test_shifted_clock_keeps_reference_fresh(self):
+        for offset in (0, 172800, -172800):
+            fixture = host['SntpFixture'](offset=offset)
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+                    client.settimeout(2)
+                    client.sendto(bytes(48), ('127.0.0.1', fixture.port))
+                    reply = client.recv(48)
+                reference = struct.unpack('!Q', reply[16:24])[0]
+                transmit = struct.unpack('!Q', reply[40:48])[0]
+                self.assertLess(abs((transmit - reference) / (1 << 32) - 1), .1)
+            finally:
+                fixture.close()
 
 
 class PersistentServerRecord(existing.StateTest):

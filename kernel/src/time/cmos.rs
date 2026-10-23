@@ -90,6 +90,12 @@ pub(crate) fn decode_hour(raw: u8, status_b: u8) -> u8 {
     }
 }
 
+/// A UTC calendar runs with update inhibition and daylight-saving disabled.
+/// Preserve the selected data/hour formats and the interrupt enables.
+pub(crate) fn utc_status(status: u8) -> u8 {
+    status & !0x81
+}
+
 /// A deschedule after one rejected sample should leave room to retry.
 pub(crate) fn retry_exhausted(elapsed: u64, timeout: u64, attempts: u32) -> bool {
     elapsed >= timeout && attempts >= 8
@@ -114,6 +120,18 @@ mod tests {
             STATUS_A => 0,
             _ => panic!("unexpected CMOS register"),
         }
+    }
+
+    #[test]
+    fn utc_calendar_runs_without_hardware_daylight_saving() {
+        // Firmware can leave both SET and the legacy daylight adjustment set.
+        // Keep binary/24-hour mode and the three interrupt enables intact.
+        let status = utc_status(0xf7);
+        assert_eq!(status & 0x80, 0);
+        assert_eq!(status & 0x01, 0);
+        assert_eq!(status & 0x06, 0x06);
+        assert_eq!(status & 0x70, 0x70);
+        assert_eq!(utc_status(0), 0); // BCD and 12-hour configuration stays selected.
     }
 
     #[test]

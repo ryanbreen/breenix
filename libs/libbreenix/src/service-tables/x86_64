@@ -17,7 +17,7 @@ needs = entropy, bsshd
 [blogd]
 command = /usr/sbin/blogd
 
-# The time client sets the clock once and exits; a failed query is retried.
+# SNTP stays supervised, polls hourly and slews after its first synchronization.
 [ntp]
 command = /usr/sbin/ntp_client
 restart = on-failure

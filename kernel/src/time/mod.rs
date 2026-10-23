@@ -10,6 +10,7 @@ use core::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 #[cfg(target_arch = "aarch64")]
 pub mod firmware_rtc;
 pub mod rtc;
+mod slew;
 pub mod time;
 pub mod timer;
 pub mod tsc;
@@ -65,6 +66,8 @@ pub fn get_real_time_ns() -> (i64, i64) {
         }
         let offset_secs = WALL_OFFSET_SECS.load(Ordering::Relaxed);
         let offset_nanos = WALL_OFFSET_NANOS.load(Ordering::Relaxed);
+        let slew_start = SLEW_START.load(Ordering::Relaxed);
+        let slew_delta = SLEW_DELTA.load(Ordering::Relaxed);
         let (mono_secs, mono_nanos) = get_monotonic_time_ns();
         core::sync::atomic::fence(Ordering::Acquire);
         if WALL_SEQUENCE.load(Ordering::Relaxed) != seq {
@@ -75,7 +78,11 @@ pub fn get_real_time_ns() -> (i64, i64) {
             + i128::from(mono_secs)
             + i128::from(offset_secs)
             + i128::from(nanos / 1_000_000_000);
-        return (secs as i64, (nanos % 1_000_000_000) as i64);
+        let mono = mono_secs.saturating_mul(1_000_000_000).saturating_add(mono_nanos);
+        let corrected = secs * 1_000_000_000 + i128::from(nanos % 1_000_000_000)
+            + i128::from(slew::applied(slew_delta, mono.saturating_sub(slew_start)));
+        return (corrected.div_euclid(1_000_000_000) as i64,
+                corrected.rem_euclid(1_000_000_000) as i64);
     }
 }
 
@@ -98,21 +105,24 @@ pub fn current_unix_time_coarse() -> i64 {
         }
         let offset_secs = WALL_OFFSET_SECS.load(Ordering::Relaxed);
         let offset_nanos = WALL_OFFSET_NANOS.load(Ordering::Relaxed);
+        let slew_start = SLEW_START.load(Ordering::Relaxed);
+        let slew_delta = SLEW_DELTA.load(Ordering::Relaxed);
         let ms = get_monotonic_time();
         let boot = rtc::get_boot_wall_time();
         core::sync::atomic::fence(Ordering::Acquire);
         if WALL_SEQUENCE.load(Ordering::Relaxed) == seq {
-            return (i128::from(boot)
-                + i128::from(ms / 1000)
-                + i128::from(offset_secs)
-                + i128::from(((ms % 1000) * 1_000_000 + offset_nanos) / 1_000_000_000))
-                as i64;
+            let correction = slew::applied(slew_delta, ms.saturating_mul(1_000_000).saturating_sub(slew_start));
+            let base = (i128::from(boot) + i128::from(ms / 1000) + i128::from(offset_secs)) * 1_000_000_000
+                + i128::from((ms % 1000) * 1_000_000 + offset_nanos) + i128::from(correction);
+            return base.div_euclid(1_000_000_000) as i64;
         }
     }
 }
 
 // Readers include interrupt context. Writers mask local interrupts while the
 // sequence is odd, so an interrupt cannot wait on its own interrupted writer.
+static SLEW_START: AtomicU64 = AtomicU64::new(0);
+static SLEW_DELTA: AtomicI64 = AtomicI64::new(0);
 static WALL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static WALL_OFFSET_SECS: AtomicI64 = AtomicI64::new(0);
 static WALL_OFFSET_NANOS: AtomicU64 = AtomicU64::new(0);
@@ -138,8 +148,49 @@ pub fn set_real_time_ns(secs: i64, nanos: i64) {
             - i128::from(mono_secs)
             - i128::from(borrow);
         let offset_nanos = nanos as u64 + borrow * 1_000_000_000 - mono_nanos;
+        SLEW_DELTA.store(0, Ordering::Relaxed);
         WALL_OFFSET_SECS.store(offset_secs as i64, Ordering::Relaxed);
         WALL_OFFSET_NANOS.store(offset_nanos, Ordering::Relaxed);
         WALL_SEQUENCE.store(seq.wrapping_add(2), Ordering::Release);
     });
+}
+
+/// Replace a finite slew, folding the correction already applied into the base.
+/// The same sequence protects base and slew so concurrent readers see one clock.
+pub fn adjust_real_time_ns(delta: i64) {
+    crate::arch_without_interrupts(|| {
+        let seq = loop {
+            let seq = WALL_SEQUENCE.load(Ordering::Acquire);
+            if seq & 1 == 0 && WALL_SEQUENCE.compare_exchange(
+                seq, seq.wrapping_add(1), Ordering::AcqRel, Ordering::Relaxed).is_ok() { break seq; }
+            core::hint::spin_loop();
+        };
+        core::sync::atomic::fence(Ordering::Release);
+        let (seconds, nanos) = get_monotonic_time_ns();
+        let mono = seconds.saturating_mul(1_000_000_000).saturating_add(nanos);
+        let done = slew::applied(SLEW_DELTA.load(Ordering::Relaxed),
+            mono.saturating_sub(SLEW_START.load(Ordering::Relaxed)));
+        let base = i128::from(WALL_OFFSET_SECS.load(Ordering::Relaxed)) * 1_000_000_000
+            + i128::from(WALL_OFFSET_NANOS.load(Ordering::Relaxed)) + i128::from(done);
+        WALL_OFFSET_SECS.store(base.div_euclid(1_000_000_000) as i64, Ordering::Relaxed);
+        WALL_OFFSET_NANOS.store(base.rem_euclid(1_000_000_000) as u64, Ordering::Relaxed);
+        SLEW_START.store(mono, Ordering::Relaxed);
+        SLEW_DELTA.store(delta, Ordering::Relaxed);
+        WALL_SEQUENCE.store(seq.wrapping_add(2), Ordering::Release);
+    });
+}
+
+pub fn remaining_adjustment_ns() -> i64 {
+    loop {
+        let seq = WALL_SEQUENCE.load(Ordering::Acquire);
+        if seq & 1 != 0 { core::hint::spin_loop(); continue; }
+        let start = SLEW_START.load(Ordering::Relaxed);
+        let delta = SLEW_DELTA.load(Ordering::Relaxed);
+        let (seconds, nanos) = get_monotonic_time_ns();
+        let mono = seconds.saturating_mul(1_000_000_000).saturating_add(nanos);
+        core::sync::atomic::fence(Ordering::Acquire);
+        if WALL_SEQUENCE.load(Ordering::Relaxed) == seq {
+            return delta - slew::applied(delta, mono.saturating_sub(start));
+        }
+    }
 }

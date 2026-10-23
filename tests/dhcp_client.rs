@@ -143,7 +143,7 @@ fn options(p: &Peer, kind: u8) -> Vec<u8> {
     if !p.no_router {
         o.extend([3, 4, 192, 0, 2, 1]);
     }
-    o.extend([6, 8, 192, 0, 2, 53, 192, 0, 2, 54, 255]);
+    o.extend([6, 8, 192, 0, 2, 53, 192, 0, 2, 54, 42, 8, 192, 0, 2, 123, 192, 0, 2, 124, 255]);
     o
 }
 fn send(src: [u8; 4], dst: [u8; 4], data: &[u8]) -> Result<(), &'static str> {
@@ -418,6 +418,8 @@ fn procfs_secondary_dns_and_enomem() {
     dhcp::acquire(MAC).unwrap();
     let text = proc_net::generate_pnp().unwrap();
     assert!(text.contains("nameserver 192.0.2.53\nnameserver 192.0.2.54\n"));
+    assert!(text.contains("ntpserver 192.0.2.123\nntpserver 192.0.2.124\n"));
+    assert_eq!(dhcp::lease().unwrap().ntp_servers, [Some([192, 0, 2, 123]), Some([192, 0, 2, 124]), None]);
     assert_eq!(proc_net::list_entries().unwrap(), ["pnp", "tcp"]);
     FAIL_ALLOC.with(|f| f.set(true));
     let pnp = proc_net::generate_pnp();

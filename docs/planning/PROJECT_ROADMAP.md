@@ -18,6 +18,14 @@ on the R240 first and the catch-up brings the VMs to the same bar (D6). Their su
 are skeleton manifests whose cases arrive with the lanes; the plan and the
 operator decisions are in `docs/metal/server-plan.md`.
 
+The server `time` milestone is in progress in #2320 on `metal-server/time`:
+configured SNTP sources, hourly polling, a first-sync step followed by slewing,
+and a UTC hardware RTC with daylight adjustment disabled. Its six host-driven
+cases cover source selection, host clock offset, the real hourly poll, reply
+sanity, a live negative slew and the RTC after reboot
+([suite contract](../suites/README.md#server-host-driven-persistent-categories)).
+Acceptance requires the persistent install and its measured cases at the lane head.
+
 The users `accounts` milestone landed in #2247: the shared account library,
 administration tools and 18 accounts cases ([protocol](../users/accounts.md)).
 The `login` and `admin` milestones are in progress on `metal-users/login-admin`:

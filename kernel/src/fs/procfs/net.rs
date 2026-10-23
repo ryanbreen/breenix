@@ -17,13 +17,16 @@ pub(super) fn list_entries() -> Result<Vec<String>, i32> {
 pub(super) fn generate_pnp() -> Result<String, i32> {
     use core::fmt::Write;
     let mut text = String::new();
-    // Three resolver addresses and one server need at most 128 bytes.
-    text.try_reserve_exact(128).map_err(|_| -12)?;
+    // Three resolver addresses, three time sources and one server fit in 256 bytes.
+    text.try_reserve_exact(256).map_err(|_| -12)?;
     match crate::net::dhcp::lease() {
         Some(lease) => {
             text.push_str("#PROTO: DHCP\n");
             for [a, b, c, d] in lease.nameservers.into_iter().flatten() {
                 let _ = writeln!(text, "nameserver {}.{}.{}.{}", a, b, c, d);
+            }
+            for [a, b, c, d] in lease.ntp_servers.into_iter().flatten() {
+                let _ = writeln!(text, "ntpserver {}.{}.{}.{}", a, b, c, d);
             }
             let [a, b, c, d] = lease.server;
             let _ = writeln!(text, "bootserver {}.{}.{}.{}", a, b, c, d);
