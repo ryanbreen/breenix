@@ -121,6 +121,11 @@ fn backlog_limit_drops_oldest_and_reports_loss_without_disabling_other_windows()
     backlog.retain_windows(|id| id != 1);
     assert!(backlog.is_empty());
     assert_eq!(backlog.push(1, event(1, 100), motion), Admission::Queued);
+    backlog.flush(|id, e| {
+        assert_eq!((id, *e), (1, event(1, 100)));
+        Delivery::Accepted
+    }, overflow);
+    assert!(backlog.is_empty());
 }
 
 #[test]
@@ -168,6 +173,26 @@ fn close_survives_overflow_and_retries_until_the_client_drains() {
     assert_eq!(*received.last().unwrap(), event(7, 0));
     assert_eq!(received.iter().filter(|e| e.kind == 7).count(), 1);
     backlog.flush(|_, _| panic!("close was duplicated"), overflow);
+    // Preserve the reserved Close retry/deduplication property for a failed stream.
+    backlog.push(1, event(1, 1), motion);
+    backlog.flush(|_, _| Delivery::Failed, overflow);
+    for _ in 0..20 { backlog.request_close(1, event(7, 0)); }
+    let mut attempts = 0;
+    backlog.flush(|id, e| {
+        assert_eq!((id, *e), (1, event(7, 0)));
+        attempts += 1;
+        Delivery::Full
+    }, overflow);
+    assert_eq!(attempts, 1);
+    assert!(!backlog.is_empty());
+    backlog.flush(|id, e| {
+        assert_eq!((id, *e), (1, event(7, 0)));
+        attempts += 1;
+        Delivery::Accepted
+    }, overflow);
+    assert_eq!(attempts, 2);
+    assert!(backlog.is_empty());
+    backlog.flush(|_, _| panic!("reserved close was duplicated"), overflow);
     backlog.request_close(1, event(7, 0));
     backlog.retain_windows(|_| false);
     assert!(backlog.is_empty());
