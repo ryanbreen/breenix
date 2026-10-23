@@ -1064,8 +1064,9 @@ including across service restarts. Later corrections use the kernel's finite
 500 ppm slew through the native `adjtimex` single-shot ABI; monotonic time is
 unchanged. The UTC calendar is written at a seconds edge through the root-only
 RTC_SET_TIME ioctl, preserving CMOS format and 12/24-hour mode while clearing hardware daylight
-adjustment and update inhibition. The CMOS read
-cache is invalidated after a write. ARM64 QEMU uses the PL031 load register;
+adjustment and update inhibition. This calendar write does not reset the CMOS
+divider; its phase uncertainty can approach one second. The CMOS read cache is
+invalidated after a write. ARM64 QEMU uses the PL031 load register;
 firmware RTC writing on the persistent VMs belongs to the D6 catch-up.
 `ntp_client --status` reports live clocks and synchronization state as JSON;
 `--watch SECONDS` samples them, and root may request an administrative
