@@ -61,6 +61,11 @@ LOGS = (
     ('persistent', 'The previous persistent boot service log survives reboot with its original boot ID and bytes'),
 )
 
+WATCHDOG = (
+    ('feeder-hang', 'A halted feeder CPU expires the 120-second KCS watchdog and returns to persistent SSH unaided within 600 seconds'),
+    ('health-hang', 'A wedged filesystem health check stops feeding and returns to persistent SSH unaided within 600 seconds'),
+)
+
 # The users suite's host-run category (docs/users/design.md, section 5): the persistent install's operator account.
 OPERATOR = (
     ('account', "The persistent install's operator account has the site's name and uid, its own group, home and /bin/bsh, and the site key"),
@@ -73,10 +78,10 @@ OPERATOR = (
 )
 
 # The populated categories in manifest order, the suite each belongs to, and the milestone each one measures.
-CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'operator': OPERATOR}
-SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'operator': 'users'}
+CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'watchdog': WATCHDOG, 'operator': OPERATOR}
+SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'watchdog': 'server', 'operator': 'users'}
 MILESTONES = {'server/ssh-keys': 'ssh-keys', 'server/services': 'services', 'server/logs': 'logs',
-              'users/operator-login': 'operator'}
+              'server/watchdog': 'watchdog', 'users/operator-login': 'operator'}
 # The console lines the operator's console challenge leaves in the capture (docs/metal/boot-path.json, console-login).
 OPERATOR_CONSOLE_LINES = ('Login incorrect', 'metal-login-ok 42', 'fbcon check: shadow and screen identical',
                           'fbcon row: metal-login-ok 42')
@@ -161,6 +166,10 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
                 raise ValueError('boot captured no line ' + line)
     if category == 'logs' and (not records.get('previous') or records['previous'].get('commit') != sha):
         raise ValueError('logs need prior persistent boot evidence at this commit')
+    if category == 'watchdog':
+        evidence = records.get('faultBoots', [])
+        if len(evidence) != len(WATCHDOG) or any(v.get('passed') is not True or v.get('commit') != sha for v in evidence):
+            raise ValueError('missing unaided watchdog recovery evidence')
     if records.get('consoleGaps'):
         raise ValueError('console capture has a gap')
     if any(re.search(pattern, serial) for pattern in fatal_patterns):
@@ -1320,6 +1329,79 @@ class Operator:
         if errors: raise ValueError('; '.join(errors))
 
 
+class Watchdog:
+    """Destructive cases own their fault boots; the driver observes, never recovers them."""
+    def __init__(self, probe, console, remote, runner, env, boot, sha):
+        self.probe, self.console, self.remote = probe, console, remote
+        self.runner, self.env, self.base, self.sha = runner, env, boot, sha
+        self.boots = []
+        self.stopped = False
+
+    def read(self, boot, name):
+        result = self.remote('cat', '/var/lib/breenix-metal/boots/' + boot + '/' + name)
+        return result.stdout if result.returncode == 0 else ''
+
+    def stop(self, boot):
+        result = command(['python3', str(Path(__file__).with_name('metal-run')), 'stop', boot])
+        if result.returncode: raise ValueError('cannot stop owned boot')
+        deadline = time.monotonic() + 120
+        while not self.read(boot, 'ended'):
+            if time.monotonic() > deadline: raise ValueError('owned boot did not stop')
+            time.sleep(2)
+
+    def run_case(self, name):
+        if not self.stopped:
+            self.console.logout()
+            self.stop(self.base)
+            self.stopped = True
+        result = command(['python3', str(Path(__file__).with_name('metal-run')), 'boot',
+                          '--sha', self.sha, '--inject', 'watchdog-' + name, '--no-wait'])
+        if result.returncode: raise ValueError('watchdog fault boot could not launch')
+        ids = re.findall(r'"id":\s*"(\d{8}T\d{6}Z-metal)"', result.stdout)
+        if not ids: raise ValueError('fault launch returned no boot ID')
+        boot = ids[0]
+        self.boots.append(boot)
+        directory = '/var/lib/breenix-metal/boots/' + boot
+        # Builds and lease waits are outside S19's trigger-to-SSH deadline.
+        deadline = time.monotonic() + 4 * 3600
+        trigger = None
+        receipt = None
+        while time.monotonic() < deadline:
+            events = [json.loads(row) for row in self.read(boot, 'events.jsonl').splitlines()]
+            triggers = [e for e in events if e.get('event') == 'watchdog-trigger']
+            if triggers and trigger is None:
+                if len(triggers) != 1: raise ValueError('duplicate hang trigger')
+                trigger = triggers[0]['t']
+                deadline = time.monotonic() + max(0, 600 - (time.time() - trigger))
+            if self.read(boot, 'ended'): raise ValueError('fault boot ended before unaided SSH recovery')
+            if trigger is not None:
+                serial = self.read(boot, 'serial.txt')
+                run = json.loads(self.read(boot, 'run.json'))
+                if ('[watchdog] previous-expired=1' in serial and
+                        run.get('watchdogRecoveredCommit') == self.sha):
+                    # A fresh boot identity and an actual exec, using the persistent key pinned on SOL.
+                    result = self.probe.ssh('cat /run/breenix/boot-id')
+                    if result.returncode == 0 and re.fullmatch(r'[0-9a-f]+-[0-9a-f]+-[0-9a-f]+\s*', result.stdout):
+                        receipt = dict(boot=boot, commit=self.sha, case=name, trigger=trigger,
+                                       sshAt=time.time(), bootId=result.stdout.strip())
+                        break
+            time.sleep(3)
+        if receipt is None: raise ValueError('no unaided persistent SSH within 600 seconds of trigger')
+        # The driver checks this receipt before any power-off; the archived events independently prove the ordering.
+        result = self.remote('tee', directory + '/watchdog-ssh.json', input=json.dumps(receipt) + '\n', stdin=None)
+        if result.returncode: raise ValueError('cannot retain SSH recovery receipt')
+        until = time.monotonic() + 120
+        while not self.read(boot, 'ended'):
+            if time.monotonic() > until: raise ValueError('fault observation did not close')
+            time.sleep(2)
+        verdict = json.loads(self.read(boot, 'watchdog-verdict.json') or '{}')
+        if verdict.get('passed') is not True: raise ValueError('watchdog recovery evidence failed: ' + str(verdict))
+
+    def cleanup(self):
+        for boot in self.boots:
+            if not self.read(boot, 'ended'): self.stop(boot)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check-manifest', type=Path)
@@ -1407,9 +1489,11 @@ def main():
         cleanup.callback(cleanup_step, probe.cleanup)
         serial = console.service_log('bsshd')
         # Trust the fingerprint read over the leased console, never a key learned over SSH.
-        if category in ('services', 'logs', 'operator'):
+        if category in ('services', 'logs', 'operator', 'watchdog'):
             probe.run_case('host-key', serial)
-            if category == 'operator':
+            if category == 'watchdog':
+                target = Watchdog(probe, console, remote, runner, env, args.boot, args.sha)
+            elif category == 'operator':
                 own = Console(lambda *cmd, **kw: runner['in_metal'](env, *cmd, **kw), args.boot, directory,
                               site['OPERATOR_USER'], site['OPERATOR_PASSWORD'])
                 target = Operator(probe, console, own, int(site['OPERATOR_UID']), site['OPERATOR_PASSWORD'],
@@ -1462,9 +1546,11 @@ def main():
                               if json.loads(line).get('event') == 'console-gap']
     try:
         lease = remote('cat', '/var/lib/breenix-metal/lease.json')
-        if lease.returncode or json.loads(lease.stdout).get('id') != args.boot:
+        if category != 'watchdog' and (lease.returncode or json.loads(lease.stdout).get('id') != args.boot):
             raise ValueError('boot lost the machine lease during the suite')
         if category == 'logs': records['previous'] = previous
+        if category == 'watchdog':
+            records['faultBoots'] = [json.loads(target.read(b, 'watchdog-verdict.json') or '{}') for b in target.boots]
         verdict = score(manifest, effort, records, serial, boot, args.sha, fatal)
         status = 0
     except ValueError as error:
