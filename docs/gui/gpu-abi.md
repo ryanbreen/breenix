@@ -323,7 +323,9 @@ userspace handles until their stack entry is replaced or removed.
 
 <!-- claim-lint:ok: Proposed G7 observation requirements implementing gpu.md sections 1.7 and 1.8. -->
 READBACK with target 0 means the current scanout, available only to the current display
-owner. A live process that is not the current owner gets EPERM for target 0. When a child
+owner while its terminal is in the foreground. A suspended owner gets EPERM
+for target 0 before device observation; its pixel and record outputs remain unchanged.
+A live process that is not the current owner gets EPERM for target 0. When a child
 owner exits, the previous live parent owner is restored and can read back target 0.
 It uses the completed binding's actual resource and rendering context, including the
 kernel console's; no foreign resource handle is exposed. Unknown binding returns EIO,
