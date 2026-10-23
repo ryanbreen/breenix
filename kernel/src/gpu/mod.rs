@@ -270,6 +270,8 @@ struct Ctx {
     warm_after: u64,
     /// Warm-up steps the device refused in a row; two quarantine the context.
     warm_failures: u32,
+    /// Private clear/copy contexts do not use the rendering catalogue.
+    warm_catalogue: bool,
     /// Device errors in a row, in fence order.
     errors_in_row: u32,
     /// Test point 31's fence-depth mode on this context.
@@ -1624,7 +1626,7 @@ impl Core {
             .then(|| now + POLL_NS);
         // Grace deadlines are independent across processes.
         let grace = self.contexts.values()
-            .filter(|x| x.state == CtxState::Live && !x.dropped && x.warm != encode::ALL_WARM)
+            .filter(|x| x.warm_catalogue && x.state == CtxState::Live && !x.dropped && x.warm != encode::ALL_WARM)
             .map(|x| x.warm_after).filter(|&g| g > now).min();
         let watchdog = hangs.chain(waits).chain(progress).min().map(|at| (at + limits::WATCHDOG_NS).min(now + EXAMINE_NS));
         watchdog.into_iter().chain(grace).chain(poll).min()
@@ -2264,7 +2266,7 @@ fn warm_next() -> Option<u64> {
             && !c.stalled
             && c.quarantined_at.is_none()
     };
-    let warming = |x: &Ctx| x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM && now_ns() >= x.warm_after;
+    let warming = |x: &Ctx| x.warm_catalogue && x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM && now_ns() >= x.warm_after;
     let due = with_core(|c| {
         if !(ready(c) && c.contexts.values().any(warming)) {
             c.warm_held = None;
@@ -2586,6 +2588,10 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
 }
 
 fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
+    create_context_with_catalogue(tgid, true)
+}
+
+fn create_context_with_catalogue(tgid: u64, warm_catalogue: bool) -> Result<(u64, u32), i64> {
     let _creation = CreationGuard::acquire(tgid)?;
     sweep();
     if !ensure_reaper() {
@@ -2677,6 +2683,7 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
                 warm: 0,
                 warm_after: 0,
                 warm_failures: 0,
+                warm_catalogue,
                 errors_in_row: 0,
                 depth: None,
                 flushes: present_answers::Answers::new(),
@@ -5189,9 +5196,10 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
             if let Some(p) = proc_live {
                 fill(&mut out, &p.totals);
                 out.contexts = p.contexts.len() as u64;
-                // For the process: its live contexts whose catalogue warm-up has completed.
+                // Contexts ready after catalogue setup: private clear/copy contexts have no
+                // catalogue work; rendering contexts require native completion of each step.
                 out.warmed = p.contexts.values()
-                    .filter(|id| c.contexts.get(*id).is_some_and(|x| x.state == CtxState::Live && x.warm == encode::ALL_WARM))
+                    .filter(|id| c.contexts.get(*id).is_some_and(|x| x.state == CtxState::Live && (!x.warm_catalogue || x.warm == encode::ALL_WARM)))
                     .count() as u64;
                 out.resources = p.resources.len() as u64;
                 let (held, copies) = (p.quota.held.load(Ordering::Acquire), p.quota.copies.load(Ordering::Acquire));
@@ -5205,7 +5213,7 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
             out.state = match ctx.state {
                 CtxState::Quarantined => abi::context_state::QUARANTINED,
                 CtxState::Reset => abi::context_state::RESET,
-                _ if ctx.warm == encode::ALL_WARM => abi::context_state::LIVE,
+                _ if !ctx.warm_catalogue || ctx.warm == encode::ALL_WARM => abi::context_state::LIVE,
                 _ => abi::context_state::WARMING,
             };
             out.warmed = ctx.warmed() as u64;
