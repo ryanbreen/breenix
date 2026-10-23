@@ -533,10 +533,12 @@ class Console:
             if result.returncode: raise ValueError('cannot type on the SOL console')
             time.sleep(0.04)
 
-    def wait(self, offset, pattern, what, timeout=30):
+    def wait(self, offset, pattern, what, timeout=30, transform=None):
         deadline = time.monotonic() + timeout
         while True:
             text = self.since(offset)
+            if transform is not None:
+                text = transform(text)
             found = re.search(pattern, text)
             if found: return text, found
             if time.monotonic() >= deadline: raise ValueError('the console did not show ' + what)
@@ -649,6 +651,13 @@ class Console:
         self.logged_in = False
 
 
+def canonical_echo(text):
+    # Kernel records start their own bracket-led row. Exclude those rows,
+    # including a still-arriving record, without counting any of their bytes
+    # as echo. Line wraps do not change the accepted input bytes.
+    return re.sub(r'(?m)^\[[^\r\n]*(?:\r?\n|$)', '', text).replace('\r', '').replace('\n', '')
+
+
 class ConsoleInput:
     """The console suite's host-run input case, through the live SOL receiver."""
     def __init__(self, console):
@@ -684,7 +693,7 @@ class ConsoleInput:
                 block = typed[at:min(at + 64, 4095)]
                 echo_at = c.size()
                 c.send(block, enter=False)
-                c.wait(echo_at, r'[\r\n]*'.join(map(re.escape, block)), 'echo of this canonical block')
+                c.wait(echo_at, re.escape(block), 'echo of this canonical block', transform=canonical_echo)
             tail = typed[4095:]
             if tail:
                 cooked = c.serial

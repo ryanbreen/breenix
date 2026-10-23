@@ -534,5 +534,16 @@ class HostServerScore(unittest.TestCase):
             host['score'](self.manifest, self.path, self.records, self.serial, self.boot, self.sha, ['KERNEL PANIC:'])
 
 
+class ConsoleEchoTests(unittest.TestCase):
+    def test_kernel_records_between_echo_fragments_preserve_the_block(self):
+        text = 'a' * 32 + '\n[DISPATCH_STRAND_CENSUS:tick=1]\n' + 'a' * 32
+        self.assertEqual(host['canonical_echo'](text), 'a' * 64)
+
+    def test_kernel_text_cannot_replace_missing_echo(self):
+        text = 'a' * 32 + '\n[INFO] ' + 'a' * 64 + '\n'
+        self.assertEqual(host['canonical_echo'](text), 'a' * 32)
+        self.assertEqual(host['canonical_echo']('a\n[INFO] aaaa'), 'a')
+
+
 if __name__ == '__main__':
     unittest.main()
