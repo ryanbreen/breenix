@@ -5267,6 +5267,13 @@ pub fn present_records() -> alloc::string::String {
 pub fn display_active() -> bool {
     display::active()
 }
+
+/// Whether the admitted device's boot-owned console allocations have finished.
+pub(crate) fn boot_settled() -> bool {
+    with_core(|c| c.status != abi::status::ADMITTED || console::preparation_settled(c.epoch))
+        .unwrap_or(true)
+}
+
 pub fn take_display(vt: usize) -> SyscallResult {
     let _path = GpuPath::enter();
     let tid = match crate::task::scheduler::current_thread_id() {
