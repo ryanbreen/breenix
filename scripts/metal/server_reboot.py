@@ -62,7 +62,8 @@ def run(api, args):
             while True:
                 boot = json.loads(read(current, 'run.json'))
                 if ended(current): raise ValueError('boot ended before the reboot case could connect')
-                if 'bsshd: listening on 0.0.0.0:22' in read(current, 'serial.txt'): break
+                capture = remote('cat', '/var/lib/breenix-metal/boots/' + current + '/serial.txt')
+                if capture.returncode == 0 and 'bsshd: listening on 0.0.0.0:22' in capture.stdout: break
                 if time.monotonic() >= deadline: raise ValueError('persistent boot never reached SSH')
                 time.sleep(2)
             if (boot.get('bootedCommit'), boot.get('toolsCommit'), boot.get('mode'), boot.get('evidenceEligible')) != (args.sha, args.sha, 'persistent', True):
