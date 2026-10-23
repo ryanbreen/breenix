@@ -612,7 +612,7 @@ impl Drop for Helper {
 
 /// `kiosk_test`, claimed: its epoch.
 pub(crate) fn kiosk() -> Result<(Helper, u64), String> {
-    let mut k = Helper::exec(b"/usr/local/test/bin/kiosk_test\0", &[b"kiosk_test\0"])?;
+    let mut k = Helper::exec(b"/usr/libexec/breenix/kiosk_test\0", &[b"kiosk_test\0"])?;
     let line = k.line(5_000)?;
     match line.strip_prefix("ready ").and_then(|e| e.parse().ok()) {
         Some(epoch) => Ok((k, epoch)),
@@ -622,7 +622,7 @@ pub(crate) fn kiosk() -> Result<(Helper, u64), String> {
 
 /// `raw-window_test`, started.
 pub(crate) fn raw_client() -> Result<Helper, String> {
-    let mut r = Helper::exec(b"/usr/local/test/bin/raw-window_test\0", &[b"raw-window_test\0"])?;
+    let mut r = Helper::exec(b"/usr/libexec/breenix/raw-window_test\0", &[b"raw-window_test\0"])?;
     match r.line(5_000)?.as_str() {
         "ready" => Ok(r),
         other => Err(format!("raw-window_test said `{other}` instead of ready")),

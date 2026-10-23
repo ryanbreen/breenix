@@ -362,7 +362,7 @@ fn windows_exec_cleanup() -> CaseResult {
         let _ = io::write(libbreenix::types::Fd::STDOUT, format!("{}\n", w.id()).as_bytes());
         core::mem::forget(w);
         let argv = [b"raw-window_test\0".as_ptr(), core::ptr::null()];
-        let _ = process::execv(b"/usr/local/test/bin/raw-window_test\0", argv.as_ptr());
+        let _ = process::execv(b"/usr/libexec/breenix/raw-window_test\0", argv.as_ptr());
         4
     };
     let mut h = Helper::call(&mut body).cite("17.2")?;
