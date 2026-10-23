@@ -1588,7 +1588,7 @@ def probe_upgrade_attempt(args):
     boot = json.loads(read('run.json'))
     events = [json.loads(line) for line in read('events.jsonl').splitlines()]
     power = next(e['t'] for e in events if e.get('event') == 'power-on')
-    receipt = dict(boot=args.boot, powerOn=power, passed=False)
+    receipt = dict(boot=args.boot, powerOn=power, passed=False, sshAttempts=0)
     try:
         lease = json.loads(remote('cat', runner['STATE'] + '/lease.json').stdout)
         if lease.get('id') != args.boot or not boot.get('upgradeParent'):
@@ -1604,15 +1604,33 @@ def probe_upgrade_attempt(args):
         if identity is None: raise ValueError('no private key for the operator')
         with tempfile.TemporaryDirectory(prefix='upgrade-probe-') as scratch:
             probe = Probe(site['SERVER_SSH_HOST'], site['OPERATOR_USER'], identity, Path(scratch))
-            console = Console(lambda *cmd, **kw: runner['in_metal'](env, *cmd, **kw), args.boot, directory,
-                              site['CONSOLE_USER'], site['CONSOLE_PASSWORD'])
+            state_dir = Path.home() / '.local/state/breenix-metal'
+            state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            state_dir.chmod(0o700)
+            key_id = hashlib.sha256(site['SERVER_SSH_HOST'].encode()).hexdigest()
+            cache = state_dir / ('pinned-hostkey-' + key_id + '.json')
+            console = None
             try:
-                log = console.service_log('bsshd')
-                probe.run_case('host-key', log)
-                uid = probe.ssh('id -u')
+                if cache.exists():
+                    pinned = json.loads(cache.read_text())
+                    probe.known.write_text(pinned['known'])
+                    fingerprint = pinned['fingerprint']
+                else:
+                    # Do not type while POST or the firmware menu is running.
+                    if 'Jumping to kernel entry point at' not in read('serial.txt') or 'Breenix login: ' not in read('serial.txt'):
+                        raise ValueError('waiting for the trusted console host-key record')
+                    console = Console(lambda *cmd, **kw: runner['in_metal'](env, *cmd, **kw), args.boot, directory,
+                                      site['CONSOLE_USER'], site['CONSOLE_PASSWORD'])
+                    log = console.service_log('bsshd')
+                    probe.run_case('host-key', log)
+                    fingerprint = re.search(r'host key ED25519 (SHA256:[A-Za-z0-9+/]+)', log)[1]
+                receipt['sshAttempts'] += 1
+                uid = probe.ssh('id -u', timeout=min(15, max(1, power + 600 - time.time())))
                 probe.require(uid, site['OPERATOR_UID'])
+                receipt['sshAttempts'] += 1
                 generation = probe.ssh('cat /usr/share/factory/generation')
                 probe.require(generation)
+                receipt['sshAttempts'] += 1
                 state = probe.ssh('cat /run/breenix/services')
                 probe.require(state)
                 _, services = parse_state(state.stdout)
@@ -1621,11 +1639,15 @@ def probe_upgrade_attempt(args):
                     if row.get('starts', 0) < 1 or (name != 'ntp' and (row.get('state') != 'running' or not row.get('pid'))):
                         raise ValueError('service not started: ' + name)
                 receipt.update(authenticated=True, strictHostKey=True, servicesStarted=True,
-                               generation=generation.stdout.strip(),
-                               fingerprint=re.search(r'host key ED25519 (SHA256:[A-Za-z0-9+/]+)', log)[1],
-                               serviceState=state.stdout)
+                               generation=generation.stdout.strip(), fingerprint=fingerprint, serviceState=state.stdout)
+                if not cache.exists():
+                    # Publish only a key whose strict authenticated probe succeeded.
+                    staged = cache.with_suffix('.new-' + args.boot)
+                    with open(staged, 'x', opener=lambda path, flags: os.open(path, flags, 0o600)) as out:
+                        json.dump(dict(known=probe.known.read_text(), fingerprint=fingerprint), out)
+                    staged.replace(cache)
             finally:
-                console.logout()
+                if console: console.logout()
         receipt['completedAt'] = time.time()
         receipt['passed'] = power < receipt['completedAt'] <= power + 600
     except Exception as error:
@@ -1634,15 +1656,25 @@ def probe_upgrade_attempt(args):
 
 
 def probe_upgrade(args):
+    runner = runpy.run_path(str(Path(__file__).with_name('metal-run')))
+    env = runner['host_env']()
+    directory = runner['STATE'] + '/boots/' + args.boot
+    def save(name, receipt):
+        return runner['in_metal'](env, 'python3', '-c',
+            'import sys,json;sys.path.insert(0,"/opt/breenix-metal");import metal_lib;'
+            'metal_lib.write_json(sys.argv[1],json.load(sys.stdin))', directory + '/' + name,
+            stdin=None, input=json.dumps(receipt), capture_output=True, text=True, check=True)
+    attempts = 0
     while True:
         receipt = probe_upgrade_attempt(args)
-        if receipt['passed'] or time.time() >= receipt['powerOn'] + 600:
+        attempts += receipt.get('sshAttempts', 0)
+        receipt['sshAttempts'] = attempts
+        save('ssh-verification-progress.json', receipt)
+        ended = runner['in_metal'](env, 'test', '-e', directory + '/ended').returncode == 0
+        if receipt['passed'] or ended or time.time() >= receipt['powerOn'] + 600:
             break
         time.sleep(min(2, max(0, receipt['powerOn'] + 600 - time.time())))
-    runner = runpy.run_path(str(Path(__file__).with_name('metal-run')))
-    directory = runner['STATE'] + '/boots/' + args.boot
-    result = runner['in_metal'](runner['host_env'](), 'tee', directory + '/ssh-verification.json', stdin=None,
-                                input=json.dumps(receipt) + '\n', capture_output=True, text=True)
+    result = save('ssh-verification.json', receipt)
     return 0 if result.returncode == 0 and receipt['passed'] else 1
 
 

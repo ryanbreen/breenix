@@ -1877,7 +1877,8 @@ class Driver:
                 status = child.run(inherited=last)
                 last = boot_id
                 key = 'verification' if action == 'commit' else 'rollback'
-                result[key] = m.read_json(child.dir / 'ssh-verification.json', {}) or {}
+                result[key] = (m.read_json(child.dir / 'ssh-verification.json', {})
+                               or m.read_json(child.dir / 'ssh-verification-progress.json', {}) or {})
                 result[key].update(boot=boot_id, exit=status)
                 if status == m.EXIT_DONE:
                     result['outcome'] = 'verified' if action == 'commit' else 'rolled-back'

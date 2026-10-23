@@ -38,12 +38,8 @@ def watch(runner, install):
                 t0 = power[-1]['t']
                 # observed_at is the queue's power-on dispatch time, recorded as t.
                 left = t0 + 600 - time.time()
-                serial = read(boot, 'serial.txt')
                 if left <= 0:
                     break
-                if 'Breenix login: ' not in serial:
-                    time.sleep(1)
-                    continue
                 try:
                     subprocess.run([sys.executable, str(Path(__file__).with_name('server-suite')),
                                     '--probe-upgrade', '--boot', boot], timeout=left, check=False)

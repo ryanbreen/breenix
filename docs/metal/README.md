@@ -902,8 +902,10 @@ directory aliases are retained and reported rather than traversed. Flat paths re
 partially deleted unreferenced tree. Lack of space still fails the upgrade while keeping the selected trees.
 
 The boot host's detached probe worker uses its private operator key; that key stays on the boot host. It pins the
-Ed25519 key against the verification boot's protected bsshd log read over the leased SOL console, then requires an
-authenticated operator login and started services. The driver waits for that receipt instead of accepting a login
+Ed25519 key against a protected bsshd log read over the leased SOL console for its first successful probe, then
+retains that authenticated pin in its private state directory. Later verification boots use that pin to attempt
+SSH during POST as well as after kernel startup, including when the candidate cannot reach a console prompt. The
+probe requires an authenticated operator login and started services. The driver waits for that receipt instead of accepting a login
 prompt. A failed verification automatically swaps CURRENT and PREVIOUS and verifies the restored generation with
 the same probe and a fresh 600-second power-on deadline, under the inherited machine lease. Cancellation stops
 the flow. `upgrade-result.json` in the install boot's private store names the outcome and both probe receipts;

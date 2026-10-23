@@ -52,11 +52,14 @@ class UpgradeDriver(existing.StateTest):
             child.dir.mkdir(parents=True, exist_ok=True)
             child.on_slot_line('breenix-manager: slot ' + child.args.slot_action + ': current ' + 'a' * 40 + ', previous ' + 'a' * 40, existing.m.now())
             attempts.append((child.args.slot_action, inherited))
+            if len(attempts) == 1:
+                existing.m.write_json(child.dir / 'ssh-verification-progress.json', dict(sshAttempts=9))
             return 1 if len(attempts) == 1 else 0
         with patch.object(existing.boot.Driver, 'run', run), patch.object(existing.m, 'load_site', return_value={}):
             self.assertEqual(driver.continue_verification(), 0)
         self.assertEqual([action for action, _ in attempts], ['commit', 'rollback'])
         self.assertEqual(attempts[0][1], driver.id)
+        self.assertEqual(existing.m.read_json(driver.dir / 'upgrade-result.json')['verification']['sshAttempts'], 9)
         self.assertTrue(attempts[1][1])
         self.assertEqual(existing.m.read_json(existing.m.STATE / 'disk.json')['slots']['current']['installedBy'], 'old')
 

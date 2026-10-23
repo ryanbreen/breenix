@@ -21,6 +21,8 @@ def upgrade(result, broken, baseline):
     if receipt.get('fingerprint') != baseline['fingerprint']:
         raise ValueError('S21 probe observed a changed host key')
     if broken:
+        if result.get('verification', {}).get('sshAttempts', 0) < 1:
+            raise ValueError('the broken candidate received no actual SSH probe attempt')
         if result.get('verification', {}).get('authenticated'):
             raise ValueError('the deliberately broken generation answered SSH')
         if result['candidateGeneration'] == result['previousGeneration']:
