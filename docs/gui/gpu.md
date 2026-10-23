@@ -1618,6 +1618,7 @@ an x86 GPU core exists.
 | `bounce` | the bouncing-spheres demo, spawned at session start | ported |
 | `particles`, `confetti`, `rectangles`, `demo`, `biconkit`, `guskit` | demos and showcase apps | retired, with an issue each to rebuild in `gui-apps` on BreenGL (ruling R8) |
 
+<!-- claim-lint:ok: Normative retirement and serial acceptance requirements under B42/B43, PR #2323. -->
 The ARM64 retirement of `fb_info`, `fb_mmap`, `fb_draw`, the v1 operations and the
 software compositor is the `gpu-apps` lane's last change (B42). V2 ops 14 and 21 are
 already retired. x86-64 keeps syscalls 410–412 and its framebuffer console path.
