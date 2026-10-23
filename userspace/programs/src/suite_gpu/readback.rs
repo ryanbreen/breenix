@@ -1,6 +1,6 @@
 //! G2 checks, derived from gpu.md sections 1.4.1, 1.8 and 1.10.
 use libbreenix::gpu::{self, abi, abi::Plain};
-use libbreenix::suite::{CaseResult, value};
+use breenix_suite::suite::{CaseResult, value};
 use libbreenix::{graphics, io, memory, process::{self, ForkResult}};
 use super::common::*;
 use abi::readback_reason as reason;
@@ -9,7 +9,7 @@ const A: u32 = bgra(0xC3, 0xA5, 0x5A, 0x3C); // Equals the first poison, deliber
 const B: u32 = bgra(17, 83, 209, 127);
 const C: u32 = bgra(241, 7, 61, 0);
 
-fn setup(fmt: u32, w: u32, h: u32) -> Result<(u64, u64), libbreenix::suite::CaseError> {
+fn setup(fmt: u32, w: u32, h: u32) -> Result<(u64, u64), breenix_suite::suite::CaseError> {
     Ok((context()?, scanout_target(fmt, w, h)?))
 }
 fn observe(t: u64, rect: [u32; 4], px: &mut [u8], stride: u32, rec: &mut [u8; record::SIZE]) -> (i64, abi::Readback) {
@@ -20,7 +20,7 @@ fn observe(t: u64, rect: [u32; 4], px: &mut [u8], stride: u32, rec: &mut [u8; re
     (r, a)
 }
 /// Present a judged source through the display-sized viewing path (ruling 53).
-fn present_fence(ctx: u64, t: u64) -> Result<u64, libbreenix::suite::CaseError> {
+fn present_fence(ctx: u64, t: u64) -> Result<u64, breenix_suite::suite::CaseError> {
     let p = present_view(ctx, t)?.ok_or_else(|| fail_msg("present fence requested for oversized source".to_string()))?;
     Ok(p.fence)
 }
@@ -28,7 +28,7 @@ fn present_fence(ctx: u64, t: u64) -> Result<u64, libbreenix::suite::CaseError> 
 fn present(ctx: u64, t: u64) -> CaseResult {
     present_fence(ctx, t).map(|_| ())
 }
-fn draw(ctx: u64, t: u64, bg: u32) -> Result<u64, libbreenix::suite::CaseError> {
+fn draw(ctx: u64, t: u64, bg: u32) -> Result<u64, breenix_suite::suite::CaseError> {
     let f = frame(ctx, &scene(t, bg, &[([1, 1, 4, 3], B), ([3, 2, 7, 5], C)]))?;
     present(ctx, t)?;
     Ok(f)

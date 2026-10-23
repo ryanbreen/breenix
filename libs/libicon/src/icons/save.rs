@@ -6,7 +6,7 @@
 //! The disk is drawn as a single solid shape — no tilt, no shear, no splitting.
 
 use libgfx::color::Color;
-use libgfx::framebuf::FrameBuf;
+use libgfx::surface::Surface as FrameBuf;
 use libgfx::shapes;
 
 use crate::easing::sin_approx;
@@ -16,6 +16,9 @@ use crate::physics::Spring;
 
 pub struct SaveIcon {
     base: IconBase,
+    remainder_us: u32,
+    pending_click: bool,
+    pending_release: bool,
     /// Overall scale spring. stiffness=320, damping=22.
     scale: Spring,
     /// Vertical lift for hover (negative = up). stiffness=200, damping=14.
@@ -39,6 +42,9 @@ impl SaveIcon {
     pub fn new() -> Self {
         Self {
             base: IconBase::new(),
+            remainder_us: 0,
+            pending_click: false,
+            pending_release: false,
             scale: Spring::new(1.0, 320.0, 22.0),
             lift_y: Spring::new(0.0, 200.0, 14.0),
             insert_y: Spring::new(0.0, 350.0, 18.0),
@@ -82,8 +88,9 @@ impl SaveIcon {
     }
 }
 
-impl Icon for SaveIcon {
-    fn update(&mut self, dt_us: u32, mouse: IconMouse) {
+impl SaveIcon {
+    fn tick(&mut self, mouse: IconMouse) {
+        let dt_us = 1000;
         let state_changed = self.base.update(dt_us, &mouse);
         let dt = dt_us as f32 / 1_000_000.0;
 
@@ -129,15 +136,14 @@ impl Icon for SaveIcon {
         // lift_y target: hover lifts the disk -3 px with a gentle ±2 px bob.
         let target_lift = match self.base.state {
             IconState::HoverIn | IconState::Hovering => {
-                let bob = sin_approx(self.base.state_time as f32 / 1_000_000.0 * 3.5) * 2.0;
+                let bob =
+                    sin_approx(self.base.state_time.min(500_000) as f32 / 1_000_000.0 * 3.5) * 2.0;
                 -3.0 + bob
             }
             // Pressed: nudge toward slot.
             IconState::Pressed => 2.0,
             // Idle: subtle breathing ~1 px.
-            IconState::Idle => {
-                sin_approx(self.base.idle_time as f32 / 1_000_000.0 * 1.8) * 1.0
-            }
+            IconState::Idle => sin_approx(self.base.idle_time.min(500_000) as f32 / 1_000_000.0 * 2.0),
             _ => 0.0,
         };
 
@@ -159,150 +165,184 @@ impl Icon for SaveIcon {
         self.insert_y.update(dt);
         self.particles.update(dt);
     }
+}
+
+impl Icon for SaveIcon {
+    fn update(&mut self, dt_us: u32, mut mouse: IconMouse) {
+        self.remainder_us += dt_us % 1000;
+        let quanta = dt_us / 1000 + self.remainder_us / 1000;
+        self.remainder_us %= 1000;
+        self.pending_click |= mouse.just_clicked;
+        self.pending_release |= mouse.just_released;
+        for _ in 0..quanta {
+            mouse.just_clicked = self.pending_click;
+            mouse.just_released = self.pending_release;
+            self.pending_click = false;
+            self.pending_release = false;
+            self.tick(mouse);
+        }
+    }
 
     fn draw(&self, fb: &mut FrameBuf, cx: i32, cy: i32, size: i32) {
-        let sc = self.scale.value;
-        let s = ((size as f32 * sc) as i32).max(4);
+        // One submission per frame (libgfx Surface::batch), the same pixels as one per shape.
+        fb.batch(|fb| {
+            let sc = self.scale.value;
+            let s = ((size as f32 * sc) as i32).max(4);
 
-        // Disk dimensions.
-        let disk_w = s * 7 / 8;
-        let disk_h = s * 7 / 8;
+            // Disk dimensions.
+            let disk_w = s * 7 / 8;
+            let disk_h = s * 7 / 8;
 
-        // lift_y offsets the entire disk vertically (negative = up).
-        let lift_px = self.lift_y.value as i32;
+            // lift_y offsets the entire disk vertically (negative = up).
+            let lift_px = self.lift_y.value as i32;
 
-        // The disk rests centered slightly above cy so the slot fits below it.
-        // disk top-y at rest (no insertion).
-        let disk_rest_top_y = cy - disk_h / 2 - s / 10 + lift_px;
+            // The disk rests centered slightly above cy so the slot fits below it.
+            // disk top-y at rest (no insertion).
+            let disk_rest_top_y = cy - disk_h / 2 - s / 10 + lift_px;
 
-        // Insertion pushes the disk DOWN.
-        let insert_px = (self.insert_y.value * disk_h as f32) as i32;
-        let disk_top_y = disk_rest_top_y + insert_px;
+            // Insertion pushes the disk DOWN.
+            let insert_px = (self.insert_y.value * disk_h as f32) as i32;
+            let disk_top_y = disk_rest_top_y + insert_px;
 
-        // Visible height: clip bottom of disk as it enters the slot.
-        // The "clip plane" is at disk_rest_top_y + disk_h (the slot top).
-        // As insert_px grows, visible_h shrinks from disk_h toward 0.
-        let visible_h = (disk_h - insert_px).max(0);
+            // Visible height: clip bottom of disk as it enters the slot.
+            // The "clip plane" is at disk_rest_top_y + disk_h (the slot top).
+            // As insert_px grows, visible_h shrinks from disk_h toward 0.
+            let visible_h = (disk_h - insert_px).max(0);
 
-        let disk_x = cx - disk_w / 2;
-        let body_color = Color::rgb(80, 100, 140);
+            let disk_x = cx - disk_w / 2;
+            let body_color = Color::rgb(80, 100, 140);
 
-        // ---------------------------------------------------------------
-        // Floppy disk body (clipped)
-        // ---------------------------------------------------------------
-        if visible_h > 0 {
-            shapes::fill_rect(fb, disk_x, disk_top_y, disk_w, visible_h, body_color);
+            // ---------------------------------------------------------------
+            // Floppy disk body (clipped)
+            // ---------------------------------------------------------------
+            if visible_h > 0 {
+                shapes::fill_rect(fb, disk_x, disk_top_y, disk_w, visible_h, body_color);
 
-            // --- Label: upper ~30% of disk, rgb(220,220,220) ---
-            let label_w = disk_w * 6 / 10;
-            let label_h = disk_h * 3 / 10;
-            let label_x = cx - label_w / 2;
-            let label_y_in_disk = disk_h / 10; // offset from disk top
-            let label_abs_y = disk_top_y + label_y_in_disk;
-            // Only draw if label starts within the visible region.
-            if label_y_in_disk < visible_h {
-                let lh = (label_h).min(visible_h - label_y_in_disk).max(0);
-                if lh > 0 {
+                // --- Label: upper ~30% of disk, rgb(220,220,220) ---
+                let label_w = disk_w * 6 / 10;
+                let label_h = disk_h * 3 / 10;
+                let label_x = cx - label_w / 2;
+                let label_y_in_disk = disk_h / 10; // offset from disk top
+                let label_abs_y = disk_top_y + label_y_in_disk;
+                // Only draw if label starts within the visible region.
+                if label_y_in_disk < visible_h {
+                    let lh = (label_h).min(visible_h - label_y_in_disk).max(0);
+                    if lh > 0 {
+                        shapes::fill_rect(
+                            fb,
+                            label_x,
+                            label_abs_y,
+                            label_w,
+                            lh,
+                            Color::rgb(220, 220, 220),
+                        );
+                    }
+                }
+
+                // --- Metal slider: ~bottom 20% of disk, rgb(160,165,175) ---
+                let slider_w = disk_w * 4 / 10;
+                let slider_h = (disk_h / 8).max(2);
+                let slider_x = cx - slider_w / 2;
+                let slider_y_in_disk = disk_h - disk_h / 5;
+                let slider_abs_y = disk_top_y + slider_y_in_disk;
+                if slider_y_in_disk < visible_h {
+                    let sh = slider_h.min(visible_h - slider_y_in_disk).max(0);
+                    if sh > 0 {
+                        shapes::fill_rect(
+                            fb,
+                            slider_x,
+                            slider_abs_y,
+                            slider_w,
+                            sh,
+                            Color::rgb(160, 165, 175),
+                        );
+                    }
+                }
+
+                // --- Notch: top-right corner, rgb(30,35,50) ---
+                let notch = (disk_h / 7).max(2);
+                let notch_x = disk_x + disk_w - notch;
+                if notch < visible_h {
                     shapes::fill_rect(
                         fb,
-                        label_x,
-                        label_abs_y,
-                        label_w,
-                        lh,
-                        Color::rgb(220, 220, 220),
+                        notch_x,
+                        disk_top_y,
+                        notch,
+                        notch.min(visible_h),
+                        Color::rgb(30, 35, 50),
                     );
                 }
             }
 
-            // --- Metal slider: ~bottom 20% of disk, rgb(160,165,175) ---
-            let slider_w = disk_w * 4 / 10;
-            let slider_h = (disk_h / 8).max(2);
-            let slider_x = cx - slider_w / 2;
-            let slider_y_in_disk = disk_h - disk_h / 5;
-            let slider_abs_y = disk_top_y + slider_y_in_disk;
-            if slider_y_in_disk < visible_h {
-                let sh = slider_h.min(visible_h - slider_y_in_disk).max(0);
-                if sh > 0 {
-                    shapes::fill_rect(
-                        fb,
-                        slider_x,
-                        slider_abs_y,
-                        slider_w,
-                        sh,
-                        Color::rgb(160, 165, 175),
-                    );
-                }
-            }
+            // ---------------------------------------------------------------
+            // Drive slot — drawn AFTER disk so its face occludes the disk edge
+            // ---------------------------------------------------------------
+            // Slot sits exactly at the bottom of where the disk rests (ignoring lift).
+            let slot_h = ((s / 14).max(2)).min(4);
+            let slot_w = disk_w + s / 6; // slightly wider than the disk
+            let slot_x = cx - slot_w / 2;
+            // Anchor at the rest position of the disk bottom (independent of lift/insert).
+            let slot_y = cy - disk_h / 2 - s / 10 + disk_h;
 
-            // --- Notch: top-right corner, rgb(30,35,50) ---
-            let notch = (disk_h / 7).max(2);
-            let notch_x = disk_x + disk_w - notch;
-            if notch < visible_h {
-                shapes::fill_rect(
-                    fb,
-                    notch_x,
-                    disk_top_y,
-                    notch,
-                    notch.min(visible_h),
-                    Color::rgb(30, 35, 50),
-                );
-            }
-        }
-
-        // ---------------------------------------------------------------
-        // Drive slot — drawn AFTER disk so its face occludes the disk edge
-        // ---------------------------------------------------------------
-        // Slot sits exactly at the bottom of where the disk rests (ignoring lift).
-        let slot_h = ((s / 14).max(2)).min(4);
-        let slot_w = disk_w + s / 6; // slightly wider than the disk
-        let slot_x = cx - slot_w / 2;
-        // Anchor at the rest position of the disk bottom (independent of lift/insert).
-        let slot_y = cy - disk_h / 2 - s / 10 + disk_h;
-
-        // Blend slot color toward glow color.
-        let glow = self.slot_glow;
-        let slot_color = Color::rgb(
-            lerp_u8(50, 100, glow),
-            lerp_u8(55, 130, glow),
-            lerp_u8(65, 180, glow),
-        );
-        shapes::fill_rect(fb, slot_x, slot_y, slot_w, slot_h, slot_color);
-
-        // Bright highlight lines above/below slot when glow > 0.7.
-        if glow > 0.7 {
-            let t = (glow - 0.7) / 0.3;
-            let hi_color = Color::rgb(
-                lerp_u8(100, 255, t),
-                lerp_u8(130, 240, t),
-                lerp_u8(180, 180, t),
+            // Blend slot color toward glow color.
+            let glow = self.slot_glow;
+            let slot_color = Color::rgb(
+                lerp_u8(50, 100, glow),
+                lerp_u8(55, 130, glow),
+                lerp_u8(65, 180, glow),
             );
-            shapes::fill_rect(fb, slot_x, slot_y - 1, slot_w, 1, hi_color);
-            shapes::fill_rect(fb, slot_x, slot_y + slot_h, slot_w, 1, hi_color);
-        }
+            shapes::fill_rect(fb, slot_x, slot_y, slot_w, slot_h, slot_color);
 
-        // ---------------------------------------------------------------
-        // Sparkle particles — anchored at (cx, slot_y)
-        // ---------------------------------------------------------------
-        for p in &self.particles.particles {
-            if !p.alive() {
-                continue;
+            // Bright highlight lines above/below slot when glow > 0.7.
+            if glow > 0.7 {
+                let t = (glow - 0.7) / 0.3;
+                let hi_color = Color::rgb(
+                    lerp_u8(100, 255, t),
+                    lerp_u8(130, 240, t),
+                    lerp_u8(180, 180, t),
+                );
+                shapes::fill_rect(fb, slot_x, slot_y - 1, slot_w, 1, hi_color);
+                shapes::fill_rect(fb, slot_x, slot_y + slot_h, slot_w, 1, hi_color);
             }
-            let alpha = p.life;
-            let r = (p.color.r as f32 * alpha) as u8;
-            let g = (p.color.g as f32 * alpha) as u8;
-            let b = (p.color.b as f32 * alpha) as u8;
-            let pc = Color::rgb(r, g, b);
-            // Particle x/y are in units (fractions of size); anchor at slot center.
-            let px = (p.x * size as f32) as i32 + cx;
-            let py = (p.y * size as f32) as i32 + slot_y;
-            let sz = ((p.size * (0.5 + 0.5 * p.life)) as i32).max(1);
-            shapes::fill_rect(fb, px - sz / 2, py - sz / 2, sz, sz, pc);
-        }
+
+            // ---------------------------------------------------------------
+            // Sparkle particles — anchored at (cx, slot_y)
+            // ---------------------------------------------------------------
+            for p in self.particles.particles() {
+                if !p.alive() {
+                    continue;
+                }
+                let alpha = p.life;
+                let r = (p.color.r as f32 * alpha) as u8;
+                let g = (p.color.g as f32 * alpha) as u8;
+                let b = (p.color.b as f32 * alpha) as u8;
+                let pc = Color::rgb(r, g, b);
+                // Particle x/y are in units (fractions of size); anchor at slot center.
+                let px = (p.x * size as f32) as i32 + cx;
+                let py = (p.y * size as f32) as i32 + slot_y;
+                let sz = ((p.size * (0.5 + 0.5 * p.life)) as i32).max(1);
+                shapes::fill_rect(fb, px - sz / 2, py - sz / 2, sz, sz, pc);
+            }
+        });
     }
 
     fn bounds_overflow(&self) -> i32 {
         // Sparkles can travel ~24 px outside the icon bounds.
         24
+    }
+
+    fn hover_amount(&self) -> f32 {
+        self.base.hover_amount()
+    }
+    fn settled(&self) -> bool {
+        self.base.settled()
+            && self.base.idle_time >= 500_000
+            && (self.base.state != IconState::Hovering || self.base.state_time >= 500_000)
+            && self.scale.settled()
+            && self.lift_y.settled()
+            && self.insert_y.settled()
+            && self.particles.active_count() == 0
+            && self.slot_glow == 0.0
     }
 
     fn state(&self) -> IconState {
@@ -311,6 +351,9 @@ impl Icon for SaveIcon {
 
     fn reset(&mut self) {
         self.base.reset();
+        self.remainder_us = 0;
+        self.pending_click = false;
+        self.pending_release = false;
         self.scale.impulse(1.0, 0.0);
         self.scale.set_target(1.0);
         self.lift_y.impulse(0.0, 0.0);
@@ -322,6 +365,7 @@ impl Icon for SaveIcon {
         self.ejecting = false;
         self.sparkles_emitted = false;
         self.particles.clear();
+        self.rng = Rng::new(0xD15C_FABB);
     }
 
     fn name(&self) -> &'static str {

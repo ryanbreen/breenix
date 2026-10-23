@@ -489,43 +489,6 @@ pub(crate) fn release_external_leaf_frame(frame: PhysFrame) -> ReturnOutcome {
     return_lease(current_lease_for_frame(frame))
 }
 
-/// Register a kernel/device-owned physical span before it is exposed through a
-/// process page table. Allocator-backed pages also receive the per-frame marker;
-/// device apertures remain authoritative through this fixed-capacity registry.
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn register_external_leaf_span(
-    start: PhysAddr,
-    byte_len: u64,
-) -> Result<(), &'static str> {
-    let start = start.as_u64();
-    if start & 0xfff != 0 || byte_len == 0 || byte_len & 0xfff != 0 {
-        return Err("external leaf span must be nonempty and page-aligned");
-    }
-    let end = start
-        .checked_add(byte_len)
-        .ok_or("external leaf span overflow")?;
-
-    let mut address = start;
-    while address < end {
-        let frame = PhysFrame::containing_address(PhysAddr::new(address));
-        mark_external_leaf_slot(frame)?;
-        address += 4096;
-    }
-
-    let mut spans = EXTERNAL_LEAF_SPANS.lock();
-    if spans
-        .iter()
-        .any(|span| span.start == start && span.end == end)
-    {
-        return Ok(());
-    }
-    let Some(slot) = spans.iter_mut().find(|span| span.start == span.end) else {
-        return Err("external leaf span registry full");
-    };
-    *slot = ExternalLeafSpan { start, end };
-    Ok(())
-}
-
 /// Derive one mapping reference from allocator state before its descriptor is
 /// published. The caller must roll the reference back if mapping fails.
 pub(crate) fn acquire_leaf_mapping(frame: PhysFrame) -> Result<LeafMappingClass, &'static str> {
@@ -1281,11 +1244,10 @@ pub fn memory_stats() -> MemoryStats {
 
     let allocated_frames = NEXT_FREE_FRAME.load(Ordering::Relaxed);
 
-    let free_list_frames = if let Some(free_list) = FREE_FRAMES.try_lock() {
-        free_list.len()
-    } else {
-        0
-    };
+    let free_list_frames = with_free_frames(|free_list| match free_list {
+        Some(list) => list.len(),
+        None => 0,
+    });
 
     MemoryStats {
         total_bytes,

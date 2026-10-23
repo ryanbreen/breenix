@@ -96,6 +96,18 @@ for f in "$USERSPACE_DIR"/*.elf "$PROJECT_ROOT/fonts"/*.ttf; do
     payload_bytes=$(( payload_bytes + $(file_size_bytes "$f") ))
 done
 
+# The breengel suite's test data (docs/gui/breengel.md sections 8.6, 10, 11 and 13):
+# testdata/breengel/ and the reviewed references under docs/suites/frames/breengel/ are
+# installed at /usr/local/test/share/breengel/ and /usr/local/test/share/breengel/frames/.
+BREENGEL_DATA="$PROJECT_ROOT/testdata/breengel"
+BREENGEL_FRAMES="$PROJECT_ROOT/docs/suites/frames/breengel"
+for dir in "$BREENGEL_DATA" "$BREENGEL_FRAMES"; do
+    [[ -d "$dir" ]] || continue
+    while IFS= read -r -d '' f; do
+        payload_bytes=$(( payload_bytes + $(file_size_bytes "$f") ))
+    done < <(find "$dir" -type f -print0)
+done
+
 # Headroom arithmetic (measured empirically against a real Docker mke2fs
 # build of the actual aarch64 payload -- see docs/planning/green-program/
 # gates/ for the round that derived this):
@@ -176,10 +188,15 @@ if [[ "$(uname)" == "Darwin" ]]; then
     # Extract just the filename from OUTPUT_FILE for use in Docker
     OUTPUT_FILENAME=$(basename "$OUTPUT_FILE")
 
+    BREENGEL_MOUNTS=()
+    [[ -d "$BREENGEL_DATA" ]] && BREENGEL_MOUNTS+=(-v "$BREENGEL_DATA:/breengel-data:ro")
+    [[ -d "$BREENGEL_FRAMES" ]] && BREENGEL_MOUNTS+=(-v "$BREENGEL_FRAMES:/breengel-frames:ro")
+
     docker run --rm --privileged \
         -v "$TARGET_DIR:/work" \
         -v "$USERSPACE_DIR:/binaries:ro" \
         -v "$PROJECT_ROOT/fonts:/fonts:ro" \
+        "${BREENGEL_MOUNTS[@]}" \
         -v "$SCRIPT_DIR/install-libc-busybox.sh:/install-libc-busybox.sh:ro" \
         -v "$SCRIPT_DIR/install-layout.sh:/install-layout.sh:ro" \
         -v "$PROJECT_ROOT/libs/libbreenix/src/layout.tsv:/layout.tsv:ro" \
@@ -269,7 +286,7 @@ BSHRC
             mkdir -p /mnt/ext2/tmp
             chmod 1777 /mnt/ext2/tmp
 
-            if [ "${BREENIX_WAIT_STRESS:-0}" = "1" ]; then
+            if [ "$BREENIX_ARCH" = "x86_64" ] && [ "${BREENIX_WAIT_STRESS:-0}" = "1" ]; then
                 touch /mnt/ext2/etc/wait_stress.enabled
                 echo "  Enabled wait_stress init gate"
             fi
@@ -345,6 +362,17 @@ EOF
                 fi
             done
             echo "  Installed $font_count fonts in /usr/share/fonts"
+
+            # Install the breengel suite test data and reviewed reference frames
+            if [ -d /breengel-data ] || [ -d /breengel-frames ]; then
+                mkdir -p /mnt/ext2/usr/local/test/share/breengel
+                [ -d /breengel-data ] && cp -R /breengel-data/. /mnt/ext2/usr/local/test/share/breengel/
+                if [ -d /breengel-frames ]; then
+                    mkdir -p /mnt/ext2/usr/local/test/share/breengel/frames
+                    cp -R /breengel-frames/. /mnt/ext2/usr/local/test/share/breengel/frames/
+                fi
+                echo "  Installed $(find /mnt/ext2/usr/local/test/share/breengel -type f | wc -l) breengel test data files in /usr/local/test/share/breengel"
+            fi
 
             # Create default system font configuration
             cat > /mnt/ext2/etc/fonts.conf << FONTSCONF
@@ -540,7 +568,7 @@ BSHRC
     mkdir -p "$MOUNT_DIR/tmp"
     chmod 1777 "$MOUNT_DIR/tmp"
 
-    if [ "${BREENIX_WAIT_STRESS:-0}" = "1" ]; then
+    if [ "$ARCH" = "x86_64" ] && [ "${BREENIX_WAIT_STRESS:-0}" = "1" ]; then
         touch "$MOUNT_DIR/etc/wait_stress.enabled"
         echo "  Enabled wait_stress init gate"
     fi
@@ -616,6 +644,17 @@ EOF
         fi
     done
     echo "  Installed $font_count fonts in /usr/share/fonts"
+
+    # Install the breengel suite test data and reviewed reference frames
+    if [[ -d "$BREENGEL_DATA" || -d "$BREENGEL_FRAMES" ]]; then
+        mkdir -p "$MOUNT_DIR/usr/local/test/share/breengel"
+        [[ -d "$BREENGEL_DATA" ]] && cp -R "$BREENGEL_DATA/." "$MOUNT_DIR/usr/local/test/share/breengel/"
+        if [[ -d "$BREENGEL_FRAMES" ]]; then
+            mkdir -p "$MOUNT_DIR/usr/local/test/share/breengel/frames"
+            cp -R "$BREENGEL_FRAMES/." "$MOUNT_DIR/usr/local/test/share/breengel/frames/"
+        fi
+        echo "  Installed $(find "$MOUNT_DIR/usr/local/test/share/breengel" -type f | wc -l) breengel test data files in /usr/local/test/share/breengel"
+    fi
 
     # Create default system font configuration
     cat > "$MOUNT_DIR/etc/fonts.conf" << FONTSCONF

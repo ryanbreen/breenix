@@ -1,46 +1,41 @@
-//! `loca` table: glyph data offset table (short/long format).
+//! `loca`: where each glyph's record lies in `glyf`.
 
-use crate::reader::{read_u16_at, read_u32_at};
+use crate::error::FontError;
+use crate::reader::{u16_at, u32_at};
+use crate::work;
 
+#[derive(Debug, Clone, Copy)]
 pub struct LocaTable<'a> {
     data: &'a [u8],
-    is_long: bool,
+    long: bool,
 }
 
 impl<'a> LocaTable<'a> {
-    pub fn new(data: &'a [u8], index_to_loc_format: i16) -> Self {
-        Self {
-            data,
-            is_long: index_to_loc_format != 0,
-        }
+    pub fn new(data: &'a [u8], index_to_loc_format: i16) -> LocaTable<'a> {
+        LocaTable { data, long: index_to_loc_format == 1 }
     }
 
-    pub fn glyph_offset(&self, glyph_index: u16) -> Option<u32> {
-        let idx = glyph_index as usize;
-        if self.is_long {
-            let byte_offset = idx * 4;
-            if byte_offset + 8 > self.data.len() {
-                return None;
-            }
-            let offset = read_u32_at(self.data, byte_offset);
-            let next = read_u32_at(self.data, byte_offset + 4);
-            if offset == next {
-                None // empty glyph (e.g., space)
-            } else {
-                Some(offset)
-            }
-        } else {
-            let byte_offset = idx * 2;
-            if byte_offset + 4 > self.data.len() {
-                return None;
-            }
-            let offset = read_u16_at(self.data, byte_offset) as u32 * 2;
-            let next = read_u16_at(self.data, byte_offset + 2) as u32 * 2;
-            if offset == next {
-                None
-            } else {
-                Some(offset)
-            }
+    /// Check the table holds exactly `num_glyphs + 1` entries (`GlyphCountMismatch`) and
+    /// that they never decrease (`BadLoca`).
+    pub fn validate(&self, num_glyphs: u16) -> Result<(), FontError> {
+        let entries = num_glyphs as usize + 1;
+        if self.data.len() != entries * if self.long { 4 } else { 2 } {
+            return Err(FontError::GlyphCountMismatch);
         }
+        let mut prev = 0u32;
+        for i in 0..entries {
+            work::add(1);
+            let o = self.entry(i).ok_or(FontError::Truncated)?;
+            if o < prev {
+                return Err(FontError::BadLoca);
+            }
+            prev = o;
+        }
+        Ok(())
+    }
+
+    /// Entry `i` as a byte offset into `glyf`.
+    pub fn entry(&self, i: usize) -> Option<u32> {
+        if self.long { u32_at(self.data, 4 * i) } else { u16_at(self.data, 2 * i).map(|v| v as u32 * 2) }
     }
 }

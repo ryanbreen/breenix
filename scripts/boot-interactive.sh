@@ -19,6 +19,7 @@
 #                        "Several suites in one boot"); the word all names the ARM64 QEMU effort suites (the GPU suite
 #                        with --gpu-gl); --gate-timeout bounds each suite's wait for DONE
 #                        claim-lint:ok: scripts/suite-sequence.py (resolve) expands the word.
+#   --pace MS            hold each completed case on screen, outside its measured window (default 0)
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
 #   --serial-log FILE    also write everything the guest prints to FILE (default: a unique file under $TMPDIR/breenix-boot/)
@@ -62,13 +63,14 @@ MODE=tests
 PROGRAM=
 SUITE=
 ONLY=
+PACE=
 QMP_SOCKET=
 QMP_REQUESTED=0
 GPU_GL=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--program|--suite|--case|--serial-log|--idle-exit|--gate-timeout|--qmp|--accel|--cpus|--cpu)
+        --mode|--program|--suite|--case|--pace|--serial-log|--idle-exit|--gate-timeout|--qmp|--accel|--cpus|--cpu)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
@@ -78,6 +80,7 @@ while [ "$#" -gt 0 ]; do
         --program) PROGRAM="$2"; shift 2 ;;
         --suite) SUITE="$2"; shift 2 ;;
         --case) [ -n "$2" ] || { echo "--case needs a category or category/case id" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
+        --pace) [ -n "$2" ] || { echo "--pace needs milliseconds" >&2; exit 2; }; PACE="$2"; shift 2 ;;
         --qmp) QMP_SOCKET="$2"; QMP_REQUESTED=1; shift 2 ;;
         --serial-log) SERIAL_LOG="$2"; shift 2 ;;
         --idle-exit) IDLE_EXIT="$2"; shift 2 ;;
@@ -123,6 +126,13 @@ if [ -n "$ONLY" ]; then
     [ "$MODE" = suite ] && [[ "$ONLY" =~ ^[a-zA-Z0-9_./-]+$ ]] || {
         echo "--case needs --mode suite and a category or category/case id" >&2; exit 2;
     }
+fi
+if [ -n "$PACE" ]; then
+    [ "$MODE" = suite ] && [[ "$PACE" =~ ^[0-9]+$ ]] && [ "${#PACE}" -le 10 ] && [ "$PACE" -le 4294967295 ] || {
+        echo "--pace needs --mode suite and milliseconds from 0 to 4294967295" >&2; exit 2;
+    }
+    python3 "$ROOT/scripts/showcase-pace.py" --suite "$SUITE" --pace "$PACE" \
+        --cases "${ONLY:+1}" --gate-timeout "$GATE_TIMEOUT" --idle-exit "$IDLE_EXIT"
 fi
 if [ -z "$DISPLAY_MODE" ]; then
     # On the operator's Mac every boot opens QEMU's window, as Parallels and VMware boots do, so a boot can be watched.
@@ -187,6 +197,9 @@ if [ "$MODE" = suite ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/suite,string=${SUITE%%,*}")
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/hostkeys,string=qmp")
     [ -z "$ONLY" ] || MODE_ARGS+=(-fw_cfg "name=opt/breenix/case,string=$ONLY")
+fi
+if [ -n "$PACE" ]; then
+    MODE_ARGS+=(-fw_cfg "name=opt/breenix/pace,string=$PACE")
 fi
 if [ -n "$QMP_SOCKET" ]; then
     case "$QMP_SOCKET" in /*) ;; *) QMP_SOCKET="$PWD/$QMP_SOCKET" ;; esac
@@ -275,6 +288,14 @@ if [[ "$SUITE" == *,* ]]; then
     "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" "${SUITE%%,*}" \
         "$ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$SUITE"
 fi
+# The users suite's external-client cases need the boot host's real OpenSSH.
+NETDEV="user,id=net0"
+USERS_SSH_STATE=
+if [ "$MODE" = suite ] && [[ ",$SUITE," == *,users,* ]] && { [ -z "$ONLY" ] || [[ "$ONLY" == ssh || "$ONLY" == ssh/* ]]; }; then
+    USERS_SSH_STATE="$SERIAL_LOG.users-hostssh-state.json"
+    USERS_SSH_PORT=$(python3 "$ROOT/scripts/users-hostssh.py" stage --image "$WRITABLE" --state "$USERS_SSH_STATE")
+    NETDEV+=",hostfwd=tcp:127.0.0.1:$USERS_SSH_PORT-:22"
+fi
 ROOT_DRIVE="if=none,id=ext2,format=raw,file=$WRITABLE"
 FIXTURE_ARGS=()
 if [ "$MODE" = tests ]; then
@@ -309,6 +330,8 @@ fi
 # A one-case run is not registered: Vigil would score it as a suite boot.
 QEMU_PROFILE_ARGS=(-M virt,gic-version=3 -cpu "$CPU")
 QEMU_PROFILE=$(python3 "$ROOT/scripts/qemu-arm64.py" --print-profile "$QEMU" "${QEMU_PROFILE_ARGS[@]}")
+# A watched run is a distinct profile in Vigil's run.json.
+if [ "${PACE:-0}" -gt 0 ]; then QEMU_PROFILE="$QEMU_PROFILE-pace-${PACE}ms"; fi
 VIGIL_ID=
 # A boot with other than the default 4 processors is recorded with its count, so it never stands for main.
 VIGIL_CPUS=
@@ -318,6 +341,15 @@ VIGIL_CPUS=
 export BREENIX_VIGIL_DISPLAY=false
 [ "$DISPLAY_MODE" != none ] && export BREENIX_VIGIL_DISPLAY=true
 [ -n "$ONLY" ] || VIGIL_ID=$(BREENIX_VIGIL_CPUS="$VIGIL_CPUS" "$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG" "" "$QEMU_PROFILE")
+# Vigil currently discards --profile for non-beast platforms. Preserve the actual
+# watch configuration on the same record, without registering a second boot.
+if [ -n "$VIGIL_ID" ] && [ "${PACE:-0}" -gt 0 ]; then
+    VIGIL_HOME=${VIGIL_TEST_HOME:-$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')}
+    python3 "$ROOT/scripts/showcase-pace.py" --suite "$SUITE" --pace "$PACE" \
+        --cases "${ONLY:+1}" --gate-timeout "$GATE_TIMEOUT" --idle-exit "$IDLE_EXIT" \
+        --record "$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID/run.json" \
+        --profile "$QEMU_PROFILE"
+fi
 # Vigil's BreenixScreen looks for qmp.sock in the registered boot's folder, which vigil-cli makes under the
 # account's home as macOS reports it (VIGIL_TEST_HOME in Vigil's tests), not under $HOME.
 # Vigil's capture takes socket paths of at most 103 bytes, counted in UTF-8 (macOS itself allows 104).
@@ -385,13 +417,25 @@ python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$WATCH_MODE
     -drive "$ROOT_DRIVE" \
     -device virtio-rng-device \
     -device virtio-net-device,netdev=net0 \
-    -netdev user,id=net0 \
+    -netdev "$NETDEV" \
     -chardev stdio,id=con,mux=on,signal=off,logfile="$SERIAL_LOG" \
     -serial chardev:con -mon chardev=con,mode=readline <&3 &
 WATCHER_PID=$!
 qemu_host_lock_track_pid "$WATCHER_PID"
+USERS_SSH_PID=
+if [ -n "$USERS_SSH_STATE" ]; then
+    python3 "$ROOT/scripts/users-hostssh.py" watch --state "$USERS_SSH_STATE" --serial "$SERIAL_LOG" \
+        --parent "$WATCHER_PID" > "$(dirname "$SERIAL_LOG")/users-hostssh.log" 2>&1 &
+    USERS_SSH_PID=$!
+    qemu_host_lock_track_pid "$USERS_SSH_PID"
+fi
 wait "$WATCHER_PID"
 code=$?
+if [ -n "$USERS_SSH_PID" ]; then
+    wait "$USERS_SSH_PID"
+    ssh_code=$?
+    [ "$code" -ne 0 ] || code=$ssh_code
+fi
 set -e
 [ -z "$HOSTKEYS_PID" ] || kill "$HOSTKEYS_PID" 2>/dev/null || true
 [ -z "$HOSTKEYS_SOCKET" ] || rm -f "$HOSTKEYS_SOCKET"

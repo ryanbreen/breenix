@@ -131,12 +131,13 @@ done
 # =============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-SERIAL_LOG="/tmp/breenix-parallels-serial.log"
 INJECT="$SCRIPT_DIR/inject.sh"
 CAPTURE="$SCRIPT_DIR/capture-display.sh"
 RUN_SH="$BREENIX_ROOT/run.sh"
 
 RUN_TS="$(date +%Y%m%d-%H%M%S)"
+# run.sh writes the guest serial where --serial-log says; this run owns its own path.
+SERIAL_LOG="/tmp/breenix-parallels-smoke-$RUN_TS-$$.log"
 EVIDENCE_DIR="$BREENIX_ROOT/logs/parallels-launcher-test/run-$RUN_TS"
 mkdir -p "$EVIDENCE_DIR"
 RESULT_FILE="$EVIDENCE_DIR/result.txt"
@@ -463,7 +464,7 @@ if [[ -n "$STALE_SERIAL_INODE" ]]; then
     log "stale serial log present (inode $STALE_SERIAL_INODE); will wait for run.sh to recreate it"
 fi
 
-RUN_ARGS=(--parallels)
+RUN_ARGS=(--parallels --serial-log "$SERIAL_LOG")
 [[ "$NO_BUILD" -eq 1 ]] && RUN_ARGS+=(--no-build)
 log "launching: $RUN_SH ${RUN_ARGS[*]} (background)"
 nohup "$RUN_SH" "${RUN_ARGS[@]}" >"$RUN_LOG" 2>&1 &

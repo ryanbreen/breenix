@@ -1,7 +1,7 @@
-//! `hhea` table: horizontal header — ascender, descender, line_gap, num_h_metrics.
+//! `hhea`: the horizontal header.
 
-use alloc::string::String;
-use crate::reader::Reader;
+use crate::error::FontError;
+use crate::reader::{i16_at, u16_at};
 
 #[derive(Debug, Clone, Copy)]
 pub struct HheaTable {
@@ -12,28 +12,16 @@ pub struct HheaTable {
 }
 
 impl HheaTable {
-    pub fn parse(data: &[u8]) -> Result<Self, String> {
-        let mut r = Reader::new(data);
-        r.skip(4)?; // majorVersion, minorVersion
-        let ascender = r.read_i16()?;
-        let descender = r.read_i16()?;
-        let line_gap = r.read_i16()?;
-        r.skip(2)?; // advanceWidthMax
-        r.skip(2)?; // minLeftSideBearing
-        r.skip(2)?; // minRightSideBearing
-        r.skip(2)?; // xMaxExtent
-        r.skip(2)?; // caretSlopeRise
-        r.skip(2)?; // caretSlopeRun
-        r.skip(2)?; // caretOffset
-        r.skip(8)?; // 4 reserved i16s
-        r.skip(2)?; // metricDataFormat
-        let num_h_metrics = r.read_u16()?;
-
-        Ok(Self {
-            ascender,
-            descender,
-            line_gap,
-            num_h_metrics,
+    pub fn parse(d: &[u8]) -> Result<HheaTable, FontError> {
+        if d.len() < 36 {
+            return Err(FontError::Truncated);
+        }
+        let t = FontError::Truncated;
+        Ok(HheaTable {
+            ascender: i16_at(d, 4).ok_or(t)?,
+            descender: i16_at(d, 6).ok_or(t)?,
+            line_gap: i16_at(d, 8).ok_or(t)?,
+            num_h_metrics: u16_at(d, 34).ok_or(t)?,
         })
     }
 }

@@ -24,8 +24,8 @@ use libbreenix::io;
 use libbreenix::memory::{self, MAP_ANONYMOUS, MAP_SHARED, PROT_READ, PROT_WRITE};
 use libbreenix::process::{self, ForkResult};
 use libbreenix::signal::Sigaction;
-use libbreenix::suite::prerequisites;
-use libbreenix::suite::{case, case_ms_left, category, check, fail, pulses, suite, value, wait_for, CaseError, CaseResult, Suite};
+use breenix_suite::suite::prerequisites;
+use breenix_suite::suite::{case, case_ms_left, category, check, fail, pulses, suite, value, wait_for, CaseError, CaseResult, Suite};
 #[cfg(target_arch = "aarch64")]
 use libbreenix::syscall::raw;
 use libbreenix::types::Fd;

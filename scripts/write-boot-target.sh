@@ -2,7 +2,7 @@
 # Write the boot-target file onto an ext2 disk image, so a production kernel booted
 # from it selects a suite or probe as PID 1 (docs/boot-path.md, "Boot modes"):
 #
-#   scripts/write-boot-target.sh IMAGE SUITE_ID|--probe|--default|--shell|--console|--desktop [PID1_ELF] [SEQUENCE] [CATEGORY/CASE]
+#   scripts/write-boot-target.sh IMAGE SUITE_ID|--probe|--default|--shell|--console|--desktop [PID1_ELF] [SEQUENCE] [CATEGORY/CASE] [PACE_MS]
 #   scripts/write-boot-target.sh IMAGE --program GUEST_PATH [WORD]
 #
 # IMAGE gets /etc/breenix/boot-target containing "suite SUITE_ID", "probe" or
@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-if [ "$#" -lt 2 ] || [ "$#" -gt 5 ]; then
+if [ "$#" -lt 2 ] || [ "$#" -gt 6 ]; then
     sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 fi
@@ -29,6 +29,7 @@ SUITE="$2"
 SUITE_ELF="${3:-}"
 SEQUENCE="${4:-}"
 ONLY="${5:-}"
+PACE="${6:-}"
 BOOT_TARGET="suite $SUITE"
 BINARY="/sbin/suite-$SUITE"
 if [ "$SUITE" = --program ]; then
@@ -76,6 +77,11 @@ if [ -n "$ONLY" ]; then
     fi
     BOOT_TARGET+=" case $ONLY"
 fi
+if [ -n "$PACE" ]; then
+    [[ "$SUITE" != --* ]] && [[ "$PACE" =~ ^[0-9]+$ ]] && [ "${#PACE}" -le 10 ] && [ "$PACE" -le 4294967295 ] || {
+        echo "write-boot-target: invalid pace milliseconds" >&2; exit 2;
+    }
+fi
 if [ -n "${BREENIX_HOSTKEYS:-}" ] && [[ "$SUITE" != --* ]]; then
     [[ "$BREENIX_HOSTKEYS" =~ ^[a-z0-9=\;,\-]+$ ]] || { echo "invalid hostkeys declaration" >&2; exit 2; }
     BOOT_TARGET+=" hostkeys $BREENIX_HOSTKEYS"
@@ -99,9 +105,15 @@ printf '%s\n' "$BOOT_TARGET" > "$WORK/boot-target"
 cat > "$WORK/commands" <<'EOF'
 mkdir /etc/breenix
 rm /etc/breenix/boot-target
+rm /etc/breenix/pace
 rm /etc/breenix/suite-sequence
 write /work/boot-target /etc/breenix/boot-target
 EOF
+
+if [ -n "$PACE" ]; then
+    printf '%s\n' "$PACE" > "$WORK/pace"
+    printf 'write /work/pace /etc/breenix/pace\n' >> "$WORK/commands"
+fi
 
 if [ -n "$SEQUENCE" ] && [ "$SEQUENCE" != "$SUITE" ]; then
     python3 - "$SEQUENCE" "$SUITE" <<'PYIDS'
@@ -126,6 +138,10 @@ if [ -n "$DEBUGFS" ]; then
             cmp -s "$WORK/$id.elf" "$(dirname "$SUITE_ELF")/suite-$id.elf" || { echo "write-boot-target: stale sequence binary $id" >&2; exit 1; }
         done
     fi
+    if [ -n "$PACE" ]; then
+        pace_written="$("$DEBUGFS" -R 'cat /etc/breenix/pace' "$IMAGE" 2>/dev/null || true)"
+        [ "$pace_written" = "$PACE" ] || { echo "write-boot-target: pace readback differs" >&2; exit 1; }
+    fi
     written="$("$DEBUGFS" -R 'cat /etc/breenix/boot-target' "$IMAGE" 2>/dev/null || true)"
     "$DEBUGFS" -R "dump $BINARY $WORK/installed.elf" "$IMAGE" >/dev/null 2>&1 || true
 else
@@ -141,10 +157,14 @@ else
     written="$(docker run --rm -v "$image_dir:/disk" -v "$WORK:/work" alpine:latest sh -c "
         apk add --no-cache e2fsprogs-extra >/dev/null 2>&1 || exit 1
         debugfs -w -f /work/commands /disk/$image_name >/dev/null 2>&1
+        debugfs -R 'cat /etc/breenix/pace' /disk/$image_name 2>/dev/null > /work/pace-readback
         debugfs -R 'dump $BINARY /work/installed.elf' /disk/$image_name >/dev/null 2>&1
         debugfs -R 'cat /etc/breenix/boot-target' /disk/$image_name 2>/dev/null")" || true
 fi
 
+if [ -n "$PACE" ] && [ -z "$DEBUGFS" ] && [ "$(cat "$WORK/pace-readback")" != "$PACE" ]; then
+    echo "write-boot-target: pace readback differs" >&2; exit 1
+fi
 if [ "$written" != "$BOOT_TARGET" ]; then
     echo "write-boot-target: /etc/breenix/boot-target on $IMAGE reads back as '$written', not '$BOOT_TARGET'" >&2
     exit 1

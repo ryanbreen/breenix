@@ -1575,11 +1575,9 @@ fn the_asid_check_rejects_a_disagreeing_tag() {
 // and with it the inner-shareable broadcast invalidation, when TTBR0 already
 // holds exactly that root under that ASID. Calling the adopt path from one of
 // these sites instead issues a broadcast TLBI on a blocking return whose root
-// has not changed. The census is by shape, so a sixth copy of the helper cannot
-// be added past it.
-// claim-lint:ok: 5 of 5 copies of the helper are the census this check prints;
-// the run is recorded in
-// docs/planning/green-program/aarch64-testing/serials/slice1b/r157/anti-vacuity/00-branch-green.txt
+// has not changed. The census is by shape, so an additional copy of the helper
+// is checked too. B42/B43 remove the graphics copy; the coverage floors below
+// retain the remaining sleep, futex, wait and handlers sites.
 
 /// aarch64-scoped functions that resolve the current thread's own process root
 /// and install it. Returns (the sites reached, the sites not using the guarded
@@ -1601,10 +1599,8 @@ fn the_asid_check_rejects_a_disagreeing_tag() {
 ///     (`commit.new_page_table_root()`) -- a new address space it chose rather
 ///     than the one its own thread already owns -- so its install is an adopt
 ///     and must stay one.
-/// claim-lint:ok: 5 of 5 sites satisfy all three conjuncts at this head and 1
-/// (`sys_exec_aarch64`) satisfies the first two and is asserted excluded; the
-/// census is printed by the test below and recorded in
-/// docs/planning/green-program/aarch64-testing/serials/slice1b/r157/anti-vacuity/00-branch-green.txt
+/// The test below prints the current census and asserts that
+/// `sys_exec_aarch64` is excluded despite satisfying the first two conjuncts.
 fn blocking_resume_restore_census(sources: &[(String, String)]) -> (Vec<String>, Vec<String>) {
     const INSTALLS: [&str; 2] = ["restore_process_ttbr0", "adopt_process_ttbr0"];
 
@@ -1662,11 +1658,11 @@ fn every_blocking_resume_restore_uses_the_guarded_helper() {
     // per-syscall copies of one helper; a walk that stopped reaching them would
     // leave this check passing on an empty list, which is what the floor
     // rejects.
-    // claim-lint:ok: 5 of 5 copies are reached at this head, in 5 of 5 distinct
-    // files, and the mutation that reddens this check is run 03 in
-    // docs/planning/green-program/aarch64-testing/serials/slice1b/r157/anti-vacuity/
+    // B42/B43 delete graphics.rs::ensure_current_address_space. The remaining
+    // sleep, futex, wait and handlers sites (4 of 4) use restore_process_ttbr0;
+    // both floors drop by exactly that one deleted site.
     assert!(
-        reached.len() >= 5,
+        reached.len() >= 4,
         "the blocking-resume census reached only {} sites, so it is not covering the code it claims to: {reached:?}",
         reached.len()
     );
@@ -1675,7 +1671,7 @@ fn every_blocking_resume_restore_uses_the_guarded_helper() {
         .filter_map(|site| site.split("::").next())
         .collect();
     assert!(
-        files.len() >= 5,
+        files.len() >= 4,
         "the blocking-resume census reached {} files, so it is not seeing the whole family: {reached:?}",
         files.len()
     );

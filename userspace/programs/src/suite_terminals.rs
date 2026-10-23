@@ -29,7 +29,7 @@
 //! own session, so no case touches the runner's session or process group.
 use libbreenix::process::{self, ForkResult};
 use libbreenix::signal::{self as signal, Sigaction, SIGHUP, SIGINT, SIGQUIT, SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU, SIGWINCH};
-use libbreenix::suite::{case, case_ms_left, category, check, fail, suite, value, CaseError, CaseResult, Suite};
+use breenix_suite::suite::{case, case_ms_left, category, check, fail, suite, value, CaseError, CaseResult, Suite};
 #[cfg(target_arch = "aarch64")]
 use libbreenix::syscall::raw;
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU8, Ordering::Relaxed, Ordering::SeqCst};

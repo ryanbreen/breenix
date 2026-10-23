@@ -6,6 +6,9 @@
 
 pub use gpu_abi as abi;
 
+#[cfg(feature = "suite")]
+pub mod upload_audit;
+
 use abi::{op, test_control as tc, Plain, TcArm, TcFired, SYS_GPU, SYS_TEST_CONTROL};
 
 use crate::syscall::raw;
@@ -15,7 +18,10 @@ use crate::syscall::raw;
 /// # Safety
 /// `arg` must be null or point to `len` bytes the kernel may read and write.
 pub unsafe fn call(op: u32, arg: *mut u8, len: usize) -> i64 {
-    raw::syscall3(SYS_GPU, op as u64, arg as u64, len as u64) as i64
+    let result = raw::syscall3(SYS_GPU, op as u64, arg as u64, len as u64) as i64;
+    #[cfg(feature = "suite")]
+    if result == 0 { upload_audit::observe(op, arg, len); }
+    result
 }
 
 /// `gpu(op, &mut arg, size_of(arg))`.

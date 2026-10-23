@@ -60,6 +60,9 @@ pub mod syscall;
 pub mod random;
 // Kernel output accounting per thread (docs/gui/breengel.md section 22)
 pub mod output_accounting;
+// The BreenGL window interface (system call 414), on ARM64 until x86-64 joins the GPU era
+#[cfg(target_arch = "aarch64")]
+pub mod window;
 // Socket module - enabled for both architectures
 // Unix domain sockets are fully arch-independent
 pub mod net;

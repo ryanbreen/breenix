@@ -351,6 +351,10 @@ pub struct Process {
     #[allow(dead_code)]
     pub mmap_hint: u64,
 
+    /// Ranges mmap placement handed out whose VMAs are not published yet
+    /// (`memory_common::place_below_hint`).
+    pub mmap_pending: alloc::vec::Vec<(u64, u64)>,
+
     /// Signal handling state (pending, blocked, handlers)
     pub signals: SignalState,
 
@@ -532,6 +536,7 @@ impl Process {
             heap_end: 0,
             vmas: alloc::vec::Vec::new(),
             mmap_hint: crate::memory::vma::MMAP_REGION_END,
+            mmap_pending: alloc::vec::Vec::new(),
             signals: SignalState::default(),
             fd_table: FdTable::new(),
             pending_fifo_opens: Vec::new(),

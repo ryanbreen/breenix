@@ -9,6 +9,9 @@ use libbreenix::gpu;
 pub struct Context {
     handle: u64,
     words: Vec<u32>,
+    /// `encoded` handed `words` to a caller that submits them itself, so the next command
+    /// starts a new stream rather than resending them.
+    handed: core::cell::Cell<bool>,
     clips: Vec<[i32; 4]>,
     bounds: [i32; 4],
 }
@@ -19,6 +22,8 @@ pub struct Fence {
 }
 impl Fence {
     pub fn wait(self, timeout_ns: u64) -> Result<(), i64> {
+        // A suspended terminal's PRESENT sends no work and returns fence 0 (#2296).
+        if self.handle == 0 { return Ok(()); }
         let (r, _) = gpu::wait(self.context, self.handle, timeout_ns);
         if r == 0 {
             Ok(())
@@ -35,6 +40,7 @@ impl Context {
         Ok(Self {
             handle: gpu::context_create()?,
             words: Vec::new(),
+            handed: core::cell::Cell::new(false),
             clips: Vec::new(),
             bounds: [0; 4],
         })
@@ -43,18 +49,18 @@ impl Context {
         self.handle
     }
     pub fn begin(&mut self, target: u64, width: u32, height: u32) {
-        encode::begin(&mut self.words, target);
+        encode::begin(self.out(), target);
         self.bounds = [0, 0, width as i32, height as i32];
         self.clips.clear();
     }
     pub fn clear(&mut self, colour: u32) {
-        encode::clear(&mut self.words, colour);
+        encode::clear(self.out(), colour);
     }
     pub fn solid(&mut self, colour: u32, rectangles: &[[i32; 4]]) {
-        encode::draw(&mut self.words, pipeline::SOLID, colour, rectangles);
+        encode::draw(self.out(), pipeline::SOLID, colour, rectangles);
     }
     pub fn copy(&mut self, texture: u64, instances: &[[i32; 6]]) {
-        encode::draw_sampled(&mut self.words, pipeline::COPY, texture, instances);
+        encode::draw_sampled(self.out(), pipeline::COPY, texture, instances);
     }
     pub fn set_clip(&mut self, rect: [i32; 4]) {
         self.clips.clear();
@@ -74,8 +80,9 @@ impl Context {
     }
     fn scissor(&mut self) {
         let r = self.clips.last().copied().unwrap_or(self.bounds);
-        self.words.extend([8, 6]);
-        self.words.extend(r.map(|v| v as u32));
+        let out = self.out();
+        out.extend([8, 6]);
+        out.extend(r.map(|v| v as u32));
     }
     /// Preserve primitive order. The first overlap ends the current draw; the next
     /// command therefore receives a destination snapshot after that draw completes.
@@ -90,7 +97,7 @@ impl Context {
     ) {
         if !draw::blended(pipeline) {
             draw::encode(
-                &mut self.words,
+                self.out(),
                 pipeline,
                 colour,
                 texture,
@@ -127,13 +134,13 @@ impl Context {
                 if disjoint(mid) { good=mid; } else { bad=mid; }
             }
             let split=rects[good].0;
-            draw::encode(&mut self.words,pipeline,colour,texture,buffer,data_bytes,&instances[first..split]);
+            draw::encode(self.out(),pipeline,colour,texture,buffer,data_bytes,&instances[first..split]);
             first=split;
             start=good;
         }
         if first < instances.len() {
             draw::encode(
-                &mut self.words,
+                self.out(),
                 pipeline,
                 colour,
                 texture,
@@ -149,6 +156,7 @@ impl Context {
             return Err(r);
         }
         self.words.clear();
+        self.handed.set(false);
         Ok(Fence {
             context: self.handle,
             handle: a.fence,
@@ -160,13 +168,125 @@ impl Context {
         if r != 0 { return Err(r); }
         Ok(Fence { context: self.handle, handle: a.fence })
     }
+    /// Drop commands encoded since the last successful `submit`, after a refused submission.
+    pub fn discard(&mut self) {
+        self.words.clear();
+        self.handed.set(false);
+    }
+    /// Hand out the commands encoded since the last submission, for a caller that submits
+    /// them itself: they count as submitted, and the next command starts a new stream.
     pub fn encoded(&self) -> &[u32] {
+        self.handed.set(true);
         &self.words
+    }
+    /// The commands encoded since the last submission, without handing them out.
+    pub fn commands(&self) -> &[u32] {
+        &self.words
+    }
+    /// Append commands this context encoded earlier (taken from `encoded`), to send them
+    /// in the next `submit`.
+    pub fn append(&mut self, words: &[u32]) {
+        self.out().extend_from_slice(words);
+    }
+    /// The stream new commands go into: a stream handed out by `encoded` is not sent again.
+    fn out(&mut self) -> &mut Vec<u32> {
+        if self.handed.replace(false) {
+            self.words.clear();
+        }
+        &mut self.words
     }
 }
 impl Drop for Context {
     fn drop(&mut self) {
         let _ = gpu::context_destroy(self.handle);
+    }
+}
+/// A GPU texture holding decoded image content. CPU pixels are discarded after upload.
+pub struct Texture {
+    handle: u64,
+    owner: u64,
+    width: u32,
+    height: u32,
+}
+impl Texture {
+    /// The Image upload boundary in gpu.md section 2.4: the image library constructs Decoded.
+    pub fn from_decoded(context: &Context, image: libimg::Decoded) -> Result<Self, i64> {
+        let owner = libbreenix::process::getpid().map_err(|e| match e {
+            libbreenix::error::Error::Os(errno) => -(errno as i64),
+        })?.raw();
+        let handle = gpu::texture_create(gpu::abi::format::B8G8R8A8, image.width(), image.height())?;
+        let texture = Self { handle, owner, width: image.width(), height: image.height() };
+        let (result, _) = gpu::upload(context.handle, handle,
+            [0, 0, image.width(), image.height()], image.pixels(), image.width() * 4,
+            gpu::abi::upload_source::B8G8R8A8, gpu::abi::purpose::IMAGE);
+        if result != 0 { return Err(result); }
+        Ok(texture)
+    }
+    pub fn handle(&self) -> u64 { self.handle }
+    pub fn into_resource(self) -> (u64,u32,u32) {
+        let out=(self.handle,self.width,self.height);core::mem::forget(self);out
+    }
+}
+impl Drop for Texture {
+    fn drop(&mut self) {
+        if libbreenix::process::getpid().is_ok_and(|pid| pid.raw() == self.owner) {
+            gpu::resource_destroy(self.handle);
+        }
+    }
+}
+
+/// A static source table: a built-in font table or a suite's declared fixture, stored whole
+/// or as separate static rows (docs/gui/gpu.md section 2.4). The only CPU bytes BGL uploads
+/// as `Fixture`; uploads verify both the bytes and row descriptors are read-only image data.
+pub struct DeclaredFixture {
+    rows: FixtureRows,
+}
+enum FixtureRows {
+    Table(&'static [u8]),
+    Rows(&'static [&'static [u8]]),
+}
+impl DeclaredFixture {
+    /// A table held in one static slice.
+    pub fn table(bytes: &'static [u8]) -> Self {
+        Self { rows: FixtureRows::Table(bytes) }
+    }
+    /// A table held as static rows, uploaded in order as one contiguous table.
+    pub fn rows(rows: &'static [&'static [u8]]) -> Self {
+        Self { rows: FixtureRows::Rows(rows) }
+    }
+    /// The table's size in bytes.
+    pub fn len(&self) -> usize {
+        match &self.rows {
+            FixtureRows::Table(bytes) => bytes.len(),
+            FixtureRows::Rows(rows) => rows.iter().map(|r| r.len()).sum(),
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+/// Upload a declared table whole into `resource` at `rect` as `Fixture`, rows `stride`
+/// bytes apart in `source` layout; one of section 2.4's two sanctioned upload sites.
+pub fn fixture_upload(
+    fixture: DeclaredFixture,
+    context: &Context,
+    resource: u64,
+    rect: [u32; 4],
+    stride: u32,
+    source: u32,
+) -> Result<(), i64> {
+    let joined;
+    let bytes: &[u8] = match fixture.rows {
+        FixtureRows::Table(bytes) if libbreenix::image::read_only(bytes) => bytes,
+        FixtureRows::Rows(rows) if libbreenix::image::static_rows(rows) => {
+            joined = rows.concat();
+            &joined
+        }
+        _ => return Err(-gpu::abi::errno::EINVAL),
+    };
+    match gpu::upload(context.handle, resource, rect, bytes, stride, source, gpu::abi::purpose::FIXTURE).0 {
+        0 => Ok(()),
+        e => Err(e),
     }
 }
 /// Display modes and their physical pixel scale.
@@ -189,6 +309,17 @@ mod tests {
     use super::*;
     use core::mem::ManuallyDrop;
     #[test]
+    fn leaked_cpu_image_and_selected_palette_rows_are_refused_before_upload() {
+        let context = ManuallyDrop::new(Context { handle: 0, words: Vec::new(), clips: Vec::new(), bounds: [0; 4] });
+        let rendered = alloc::vec![17, 34, 51, 255].leak();
+        assert_eq!(fixture_upload(DeclaredFixture::table(rendered), &context, 0, [0, 0, 1, 1], 4,
+            gpu::abi::upload_source::B8G8R8A8), Err(-gpu::abi::errno::EINVAL));
+        static PALETTE: [[u8; 4]; 2] = [[0, 0, 0, 255], [255; 4]];
+        let rows = alloc::vec![&PALETTE[1][..], &PALETTE[0][..]].leak();
+        assert_eq!(fixture_upload(DeclaredFixture::rows(rows), &context, 0, [0, 0, 1, 2], 4,
+            gpu::abi::upload_source::B8G8R8A8), Err(-gpu::abi::errno::EINVAL));
+    }
+    #[test]
     fn split_preserves_overlap_order_and_half_open_edges() {
         let mut c=ManuallyDrop::new(Context { handle:0,words:Vec::new(),clips:Vec::new(),bounds:[0,0,16,16] });
         let instances:Vec<_>=[[0,0,4,4],[4,0,8,4],[3,0,5,4],[8,0,10,4]].into_iter()
@@ -208,5 +339,18 @@ mod tests {
         c.draw(pipeline::OVER,0,1,0,0,&instances);
         assert_eq!(c.words[9],65536);
         assert_eq!(c.words.len(),c.words[1] as usize);
+    }
+}
+
+/// Upload generated crossing geometry into a Buffer, never CPU pixels (ruling B21).
+/// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
+/// The table's private representation can only be produced by libfont's crossing builder.
+pub fn geometry_upload(table: libfont::crossings::CrossingTable, context: &Context, buffer: u64) -> Result<(), i64> {
+    let bytes = table.bytes();
+    // A buffer upload is one row of bytes: x the first byte, width the byte count, height 1, R8 source.
+    let len = u32::try_from(bytes.len()).map_err(|_| -gpu::abi::errno::EINVAL)?;
+    match gpu::upload(context.handle(), buffer, [0, 0, len, 1], bytes, len, gpu::abi::upload_source::R8,
+        gpu::abi::purpose::FIXTURE).0 {
+        0 => Ok(()), e => Err(e),
     }
 }

@@ -1,10 +1,8 @@
-//! Graphics syscall wrappers
+//! Pointer and display-custody wrappers on both architectures.
 //!
-//! Provides userspace API for querying framebuffer information and drawing.
-//!
-//! Also provides the [`Framebuffer`] RAII wrapper for direct pixel writes
-//! via memory-mapped access.
+//! The framebuffer and v1 drawing API is available only on x86-64 (B42).
 
+#[cfg(target_arch = "x86_64")]
 use crate::errno::Errno;
 use crate::error::Error;
 use crate::syscall::{nr, raw};
@@ -12,6 +10,7 @@ use crate::syscall::{nr, raw};
 /// Framebuffer information structure.
 /// Must match kernel's FbInfo in syscall/graphics.rs.
 #[repr(C)]
+#[cfg(target_arch = "x86_64")]
 pub struct FbInfo {
     /// Width in pixels
     pub width: u64,
@@ -25,6 +24,7 @@ pub struct FbInfo {
     pub pixel_format: u64,
 }
 
+#[cfg(target_arch = "x86_64")]
 impl FbInfo {
     /// Create a zeroed FbInfo for syscall output
     pub const fn zeroed() -> Self {
@@ -63,6 +63,7 @@ impl FbInfo {
 /// # Returns
 /// * Ok(FbInfo) - Framebuffer information
 /// * Err(Error) - Error (ENODEV if no framebuffer)
+#[cfg(target_arch = "x86_64")]
 pub fn fbinfo() -> Result<FbInfo, Error> {
     let mut info = FbInfo::zeroed();
     let ret = unsafe { raw::syscall1(nr::FBINFO, &mut info as *mut FbInfo as u64) as i64 };
@@ -73,6 +74,7 @@ pub fn fbinfo() -> Result<FbInfo, Error> {
 /// Draw command structure for sys_fbdraw.
 /// Must match kernel's FbDrawCmd in syscall/graphics.rs.
 #[repr(C)]
+#[cfg(target_arch = "x86_64")]
 pub struct FbDrawCmd {
     /// Operation code
     pub op: u32,
@@ -89,6 +91,7 @@ pub struct FbDrawCmd {
 }
 
 /// Draw operation codes
+#[cfg(target_arch = "x86_64")]
 pub mod draw_op {
     /// Clear the left pane with a color
     pub const CLEAR: u32 = 0;
@@ -158,6 +161,7 @@ pub mod draw_op {
 /// Must match kernel's VirglBall in drivers/virtio/gpu_pci.rs.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
+#[cfg(target_arch = "x86_64")]
 pub struct VirglBall {
     pub x: f32,
     pub y: f32,
@@ -167,6 +171,7 @@ pub struct VirglBall {
 
 /// Frame descriptor passed to the VirglSubmitFrame syscall.
 #[repr(C)]
+#[cfg(target_arch = "x86_64")]
 pub struct VirglFrameDesc {
     pub ball_count: u32,
     pub _pad: u32,
@@ -180,6 +185,7 @@ pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
 }
 
 /// Execute a draw command
+#[cfg(target_arch = "x86_64")]
 fn fbdraw(cmd: &FbDrawCmd) -> Result<(), Error> {
     let ret = unsafe { raw::syscall1(nr::FBDRAW, cmd as *const FbDrawCmd as u64) as i64 };
     Error::from_syscall(ret)?;
@@ -187,6 +193,7 @@ fn fbdraw(cmd: &FbDrawCmd) -> Result<(), Error> {
 }
 
 /// Clear the left pane with a color
+#[cfg(target_arch = "x86_64")]
 pub fn fb_clear(color: u32) -> Result<(), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::CLEAR,
@@ -200,6 +207,7 @@ pub fn fb_clear(color: u32) -> Result<(), Error> {
 }
 
 /// Reset the F32c waitqueue stress counters and wake any stale waiter.
+#[cfg(target_arch = "x86_64")]
 pub fn wait_stress_reset() -> Result<(), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::WAIT_STRESS_RESET,
@@ -213,6 +221,7 @@ pub fn wait_stress_reset() -> Result<(), Error> {
 }
 
 /// Block once on the F32c waitqueue stress queue.
+#[cfg(target_arch = "x86_64")]
 pub fn wait_stress_wait() -> Result<u64, Error> {
     let cmd = FbDrawCmd {
         op: draw_op::WAIT_STRESS_WAIT,
@@ -227,6 +236,7 @@ pub fn wait_stress_wait() -> Result<u64, Error> {
 }
 
 /// Wake the F32c waitqueue stress queue once.
+#[cfg(target_arch = "x86_64")]
 pub fn wait_stress_wake() -> Result<u64, Error> {
     let cmd = FbDrawCmd {
         op: draw_op::WAIT_STRESS_WAKE,
@@ -241,6 +251,7 @@ pub fn wait_stress_wake() -> Result<u64, Error> {
 }
 
 /// Read F32c waitqueue stress counters: entered, returned, wakes, has_waiters.
+#[cfg(target_arch = "x86_64")]
 pub fn wait_stress_stats(out: &mut [u64; 4]) -> Result<(), Error> {
     let ptr = out.as_mut_ptr() as u64;
     let cmd = FbDrawCmd {
@@ -255,6 +266,7 @@ pub fn wait_stress_stats(out: &mut [u64; 4]) -> Result<(), Error> {
 }
 
 /// Fill a rectangle on the left pane
+#[cfg(target_arch = "x86_64")]
 pub fn fb_fill_rect(x: i32, y: i32, width: i32, height: i32, color: u32) -> Result<(), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::FILL_RECT,
@@ -268,6 +280,7 @@ pub fn fb_fill_rect(x: i32, y: i32, width: i32, height: i32, color: u32) -> Resu
 }
 
 /// Draw a rectangle outline on the left pane
+#[cfg(target_arch = "x86_64")]
 pub fn fb_draw_rect(x: i32, y: i32, width: i32, height: i32, color: u32) -> Result<(), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::DRAW_RECT,
@@ -281,6 +294,7 @@ pub fn fb_draw_rect(x: i32, y: i32, width: i32, height: i32, color: u32) -> Resu
 }
 
 /// Fill a circle on the left pane
+#[cfg(target_arch = "x86_64")]
 pub fn fb_fill_circle(cx: i32, cy: i32, radius: i32, color: u32) -> Result<(), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::FILL_CIRCLE,
@@ -294,6 +308,7 @@ pub fn fb_fill_circle(cx: i32, cy: i32, radius: i32, color: u32) -> Result<(), E
 }
 
 /// Draw a circle outline on the left pane
+#[cfg(target_arch = "x86_64")]
 pub fn fb_draw_circle(cx: i32, cy: i32, radius: i32, color: u32) -> Result<(), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::DRAW_CIRCLE,
@@ -307,6 +322,7 @@ pub fn fb_draw_circle(cx: i32, cy: i32, radius: i32, color: u32) -> Result<(), E
 }
 
 /// Draw a line on the left pane
+#[cfg(target_arch = "x86_64")]
 pub fn fb_draw_line(x1: i32, y1: i32, x2: i32, y2: i32, color: u32) -> Result<(), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::DRAW_LINE,
@@ -330,11 +346,13 @@ pub fn fb_draw_line(x1: i32, y1: i32, x2: i32, y2: i32, color: u32) -> Result<()
 /// get the left half (`left_pane_width()` pixels). The layout is
 /// compact: `stride = pane width * bytes_per_pixel`. Use `fb_mmap_pane()` to
 /// learn which width was mapped, and `fbinfo()` for the pixel format.
+#[cfg(target_arch = "x86_64")]
 pub fn fb_mmap() -> Result<*mut u8, Error> {
     fb_mmap_pane().map(|(ptr, _)| ptr)
 }
 
 /// Like `fb_mmap()`, and also returns the width in pixels of the mapped pane.
+#[cfg(target_arch = "x86_64")]
 pub fn fb_mmap_pane() -> Result<(*mut u8, u64), Error> {
     let mut width: u64 = 0;
     let ret = unsafe { raw::syscall1(nr::FBMMAP, &mut width as *mut u64 as u64) as i64 };
@@ -349,6 +367,7 @@ pub fn fb_mmap_pane() -> Result<(*mut u8, u64), Error> {
 /// Read a display pixel as 0x00RRGGBB. The caller must have effective UID 0
 /// and own the display (on x86, a whole-screen mapping is also required).
 /// Reads scanout memory or the attached GPU backing, not the drawing buffer.
+#[cfg(target_arch = "x86_64")]
 pub fn fb_read_pixel(x: i32, y: i32) -> Result<u32, Error> {
     let cmd = FbDrawCmd {
         op: draw_op::READ_PIXEL,
@@ -363,6 +382,7 @@ pub fn fb_read_pixel(x: i32, y: i32) -> Result<u32, Error> {
 }
 
 /// Flush the framebuffer (sync double buffer to screen)
+#[cfg(target_arch = "x86_64")]
 pub fn fb_flush() -> Result<(), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::FLUSH,
@@ -379,6 +399,7 @@ pub fn fb_flush() -> Result<(), Error> {
 ///
 /// Only the specified rect (x, y, w, h) is transferred to the display.
 /// Falls back to full flush in the kernel if the rect covers the entire screen.
+#[cfg(target_arch = "x86_64")]
 pub fn fb_flush_rect(x: i32, y: i32, w: i32, h: i32) -> Result<(), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::FLUSH,
@@ -394,6 +415,7 @@ pub fn fb_flush_rect(x: i32, y: i32, w: i32, h: i32) -> Result<(), Error> {
 /// A dirty rectangle for batch flushing.
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(target_arch = "x86_64")]
 pub struct FlushRect {
     pub x: i32,
     pub y: i32,
@@ -406,6 +428,7 @@ pub struct FlushRect {
 /// Instead of calling `fb_flush_rect()` N times (N syscalls, N DSB barriers),
 /// this sends all dirty rects at once: 1 syscall, 1 DSB. Each rect is copied
 /// from the mmap buffer to BAR0 in sequence.
+#[cfg(target_arch = "x86_64")]
 pub fn fb_flush_rects(rects: &[FlushRect]) -> Result<(), Error> {
     if rects.is_empty() {
         return Ok(());
@@ -426,6 +449,7 @@ pub fn fb_flush_rects(rects: &[FlushRect]) -> Result<(), Error> {
 /// Must match kernel's VirglRect in drivers/virtio/gpu_pci.rs.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
+#[cfg(target_arch = "x86_64")]
 pub struct VirglRect {
     pub x: f32,
     pub y: f32,
@@ -439,6 +463,7 @@ pub struct VirglRect {
 
 /// Frame descriptor passed to the VirglSubmitRects syscall.
 #[repr(C)]
+#[cfg(target_arch = "x86_64")]
 pub struct VirglRectDesc {
     pub rect_count: u32,
     pub _pad: u32,
@@ -449,6 +474,7 @@ pub struct VirglRectDesc {
 ///
 /// Each rect is drawn as a colored quad on the GPU. Background is cleared
 /// to bg_color first. Zero guest CPU pixel writes.
+#[cfg(target_arch = "x86_64")]
 pub fn virgl_submit_rects(rects: &[VirglRect], bg_color: u32) -> Result<(), Error> {
     let mut desc = VirglRectDesc {
         rect_count: rects.len().min(60) as u32,
@@ -474,6 +500,7 @@ pub fn virgl_submit_rects(rects: &[VirglRect], bg_color: u32) -> Result<(), Erro
 ///
 /// Sends ball positions/colors to the kernel, which renders them via the host
 /// GPU and DMA-copies the result to display memory. Zero guest CPU pixel writes.
+#[cfg(target_arch = "x86_64")]
 pub fn virgl_submit_frame(balls: &[VirglBall], bg_color: u32) -> Result<(), Error> {
     let mut desc = VirglFrameDesc {
         ball_count: balls.len().min(16) as u32,
@@ -500,6 +527,7 @@ pub fn virgl_submit_frame(balls: &[VirglBall], bg_color: u32) -> Result<(), Erro
 // =============================================================================
 
 /// A window buffer backed by MAP_SHARED physical pages.
+#[cfg(target_arch = "x86_64")]
 pub struct WindowBuffer {
     /// Unique buffer ID (used for registration and IPC)
     pub id: u32,
@@ -514,6 +542,7 @@ pub struct WindowBuffer {
 /// Info about a registered window (returned by list_windows).
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(target_arch = "x86_64")]
 pub struct WindowInfo {
     pub buffer_id: u32,
     pub owner_pid: u32,
@@ -525,6 +554,7 @@ pub struct WindowInfo {
     pub title: [u8; 64],
 }
 
+#[cfg(target_arch = "x86_64")]
 impl Default for WindowInfo {
     fn default() -> Self {
         Self {
@@ -544,6 +574,7 @@ impl Default for WindowInfo {
 ///
 /// Returns a WindowBuffer with a mapped pixel pointer and buffer ID.
 /// The buffer can be registered with the compositor via `register_window()`.
+#[cfg(target_arch = "x86_64")]
 pub fn create_window(width: u32, height: u32) -> Result<WindowBuffer, Error> {
     let mut mmap_addr: u64 = 0;
     let out_ptr = &mut mmap_addr as *mut u64 as u64;
@@ -573,6 +604,7 @@ pub fn create_window(width: u32, height: u32) -> Result<WindowBuffer, Error> {
 /// The kernel allocates new backing pages, copies the intersection of old
 /// content, frees old pages, and returns a new mmap pointer. Only the buffer
 /// owner (creating process) can resize.
+#[cfg(target_arch = "x86_64")]
 pub fn resize_window(buffer_id: u32, new_width: u32, new_height: u32) -> Result<WindowBuffer, Error> {
     let mut mmap_addr: u64 = 0;
     let out_ptr = &mut mmap_addr as *mut u64 as u64;
@@ -597,6 +629,7 @@ pub fn resize_window(buffer_id: u32, new_width: u32, new_height: u32) -> Result<
 }
 
 /// Register a window buffer with the compositor, making it visible.
+#[cfg(target_arch = "x86_64")]
 pub fn register_window(buffer_id: u32, title: &[u8]) -> Result<(), Error> {
     let title_ptr = title.as_ptr() as u64;
     let cmd = FbDrawCmd {
@@ -611,6 +644,7 @@ pub fn register_window(buffer_id: u32, title: &[u8]) -> Result<(), Error> {
 }
 
 /// List all registered windows. Returns the number of windows found.
+#[cfg(target_arch = "x86_64")]
 pub fn list_windows(out: &mut [WindowInfo]) -> Result<usize, Error> {
     let out_ptr = out.as_ptr() as u64;
     let cmd = FbDrawCmd {
@@ -635,6 +669,7 @@ pub fn list_windows(out: &mut [WindowInfo]) -> Result<usize, Error> {
 /// client waiting in `mark_window_dirty` for that frame is released. If `dst` is
 /// smaller than width * height * 4, only the dimensions are returned; the frame
 /// remains pending and the caller must retry with enough space.
+#[cfg(target_arch = "x86_64")]
 pub fn read_window_buffer(buffer_id: u32, dst: &mut [u8]) -> Result<(u32, u32), Error> {
     let dst_ptr = dst.as_ptr() as u64;
     let cmd = FbDrawCmd {
@@ -659,6 +694,7 @@ pub fn read_window_buffer(buffer_id: u32, dst: &mut [u8]) -> Result<(u32, u32), 
 ///
 /// Call this after writing pixels to the window buffer to signal the compositor
 /// that the window's texture needs re-uploading.
+#[cfg(target_arch = "x86_64")]
 pub fn mark_window_dirty(buffer_id: u32) -> Result<(), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::MARK_WINDOW_DIRTY,
@@ -675,6 +711,7 @@ pub fn mark_window_dirty(buffer_id: u32) -> Result<(), Error> {
 ///
 /// Tells the kernel where to place this window during compositing.
 /// If position is never set, windows are auto-positioned.
+#[cfg(target_arch = "x86_64")]
 pub fn set_window_position(buffer_id: u32, x: i32, y: i32, z_order: u32) -> Result<(), Error> {
     let packed_xy = ((x as u16 as u32) | ((y as u16 as u32) << 16)) as i32;
     let cmd = FbDrawCmd {
@@ -696,6 +733,7 @@ pub fn set_window_position(buffer_id: u32, x: i32, y: i32, z_order: u32) -> Resu
 /// Read by client apps via `read_window_input()`.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
+#[cfg(target_arch = "x86_64")]
 pub struct WindowInputEvent {
     /// Event type (see `input_event_type` constants)
     pub event_type: u16,
@@ -731,6 +769,7 @@ pub mod cursor_shape {
 ///
 /// Changes the cursor displayed by the GPU compositor.
 /// Shape constants are defined in [`cursor_shape`].
+#[cfg(target_arch = "x86_64")]
 pub fn set_cursor_shape(shape: u32) -> Result<(), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::SET_CURSOR_SHAPE,
@@ -750,6 +789,7 @@ pub fn set_cursor_shape(shape: u32) -> Result<(), Error> {
 ///   bit 1: Ctrl
 ///   bit 2: Alt
 ///   bit 3: Super (Command on macOS / Ctrl on Parallels)
+#[cfg(target_arch = "x86_64")]
 pub fn poll_modifier_state() -> u32 {
     let cmd = FbDrawCmd {
         op: draw_op::POLL_MODIFIER_STATE,
@@ -764,6 +804,7 @@ pub fn poll_modifier_state() -> u32 {
 }
 
 /// Input event type constants
+#[cfg(target_arch = "x86_64")]
 pub mod input_event_type {
     pub const KEY_PRESS: u16 = 1;
     pub const KEY_RELEASE: u16 = 2;
@@ -781,9 +822,7 @@ pub mod input_event_type {
 ///
 /// Called by BWM to route keyboard/mouse events to the focused window.
 /// If the client is blocked on `read_window_input`, it will be woken.
-/// Returns `EAGAIN` when the ring is full; nothing is queued in that case.
-/// Retain the event and retry after the client reads to avoid losing input.
-/// claim-lint:ok: kernel/src/syscall/graphics/input_ring.rs refuses admission before mutating a full ring (#2163).
+#[cfg(target_arch = "x86_64")]
 pub fn write_window_input(buffer_id: u32, event: &WindowInputEvent) -> Result<(), Error> {
     let event_ptr = event as *const WindowInputEvent as u64;
     let cmd = FbDrawCmd {
@@ -802,6 +841,7 @@ pub fn write_window_input(buffer_id: u32, event: &WindowInputEvent) -> Result<()
 /// Returns the number of events read. If `blocking` is true, blocks until
 /// at least one event is available. If false, returns immediately with 0 if
 /// no events are pending.
+#[cfg(target_arch = "x86_64")]
 pub fn read_window_input(buffer_id: u32, out: &mut [WindowInputEvent], blocking: bool) -> Result<usize, Error> {
     let out_ptr = out.as_ptr() as u64;
     let cmd = FbDrawCmd {
@@ -830,6 +870,7 @@ pub fn read_window_input(buffer_id: u32, out: &mut [WindowInputEvent], blocking:
 ///   1 = full background upload (entire buffer changed)
 ///   2 = partial background upload (only dirty_rect region changed)
 #[repr(C)]
+#[cfg(target_arch = "x86_64")]
 pub struct CompositeWindowsDesc {
     pub bg_pixels_ptr: u64,
     pub bg_width: u32,
@@ -847,12 +888,14 @@ pub struct CompositeWindowsDesc {
 /// bg_dirty=0: no background change (cursor/frame-pacing only)
 /// bg_dirty=1: full background upload
 /// bg_dirty=2: partial upload — only the (dirty_x, dirty_y, dirty_w, dirty_h) region
+#[cfg(target_arch = "x86_64")]
 pub fn virgl_composite_windows(bg_pixels: &[u32], bg_w: u32, bg_h: u32, bg_dirty: bool) -> Result<(), Error> {
     virgl_composite_windows_rect(bg_pixels, bg_w, bg_h, if bg_dirty { 1 } else { 0 }, 0, 0, bg_w, bg_h)
 }
 
 /// Composite with a partial dirty rect. Only the specified sub-region of the
 /// background buffer is copied and uploaded to the GPU texture.
+#[cfg(target_arch = "x86_64")]
 pub fn virgl_composite_windows_rect(
     bg_pixels: &[u32], bg_w: u32, bg_h: u32,
     dirty_mode: u32, dirty_x: u32, dirty_y: u32, dirty_w: u32, dirty_h: u32,
@@ -889,6 +932,7 @@ pub fn virgl_composite_windows_rect(
 /// # Returns
 /// * Ok((ptr, width, height)) - Mapped pointer + dimensions
 /// * Err(Error) - Error if compositor texture is not initialized
+#[cfg(target_arch = "x86_64")]
 pub fn map_compositor_texture() -> Result<(*mut u32, u32, u32), Error> {
     let mut mapped_addr: u64 = 0;
     let out_ptr = &mut mapped_addr as *mut u64 as u64;
@@ -919,6 +963,7 @@ pub fn map_compositor_texture() -> Result<(*mut u32, u32, u32), Error> {
 /// # Returns
 /// * Ok((ptr, width, height)) - Mapped pointer + dimensions
 /// * Err(Error) - Error if window buffer not found
+#[cfg(target_arch = "x86_64")]
 pub fn map_window_buffer(buffer_id: u32) -> Result<(*const u32, u32, u32), Error> {
     let mut mapped_addr: u64 = 0;
     let out_ptr = &mut mapped_addr as *mut u64 as u64;
@@ -949,6 +994,7 @@ pub fn map_window_buffer(buffer_id: u32) -> Result<(*const u32, u32, u32), Error
 /// * Ok(true) - Window has new pixels since last check
 /// * Ok(false) - Window hasn't changed
 /// * Err(Error) - Error if window buffer not found
+#[cfg(target_arch = "x86_64")]
 pub fn check_window_dirty(buffer_id: u32) -> Result<bool, Error> {
     let cmd = FbDrawCmd {
         op: draw_op::CHECK_WINDOW_DIRTY,
@@ -966,10 +1012,13 @@ pub fn check_window_dirty(buffer_id: u32) -> Result<bool, Error> {
 }
 
 /// Bitmask: at least one window has dirty pixels
+#[cfg(target_arch = "x86_64")]
 pub const COMPOSITOR_READY_DIRTY: u32 = 1;
 /// Bitmask: mouse position or buttons changed
+#[cfg(target_arch = "x86_64")]
 pub const COMPOSITOR_READY_MOUSE: u32 = 2;
 /// Bitmask: window registry changed (new/removed windows)
+#[cfg(target_arch = "x86_64")]
 pub const COMPOSITOR_READY_REGISTRY: u32 = 4;
 
 /// Block until the compositor has work to do.
@@ -986,6 +1035,7 @@ pub const COMPOSITOR_READY_REGISTRY: u32 = 4;
 /// previous call (bits 8-31 of the result).
 ///
 /// Returns (ready_bitmask, registry_generation).
+#[cfg(target_arch = "x86_64")]
 pub fn compositor_wait(timeout_ms: u32, last_registry_gen: u32) -> Result<(u32, u32), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::COMPOSITOR_WAIT,
@@ -1012,7 +1062,7 @@ pub fn compositor_wait(timeout_ms: u32, last_registry_gen: u32) -> Result<(u32, 
 /// * Err(Error) - Error (ENODEV if no pointer device)
 pub fn mouse_pos() -> Result<(u32, u32), Error> {
     let mut state: [u32; 4] = [0, 0, 0, 0];
-    let ret = unsafe { raw::syscall1(nr::GET_MOUSE_POS, &mut state as *mut [u32; 4] as u64) as i64 };
+    let ret = unsafe { raw::syscall2(nr::GET_MOUSE_POS, &mut state as *mut [u32; 4] as u64, 16) as i64 };
     Error::from_syscall(ret)?;
     Ok((state[0], state[1]))
 }
@@ -1024,7 +1074,7 @@ pub fn mouse_pos() -> Result<(u32, u32), Error> {
 /// * Err(Error) - Error (ENODEV if no pointer device)
 pub fn mouse_state() -> Result<(u32, u32, u32), Error> {
     let mut state: [u32; 4] = [0, 0, 0, 0];
-    let ret = unsafe { raw::syscall1(nr::GET_MOUSE_POS, &mut state as *mut [u32; 4] as u64) as i64 };
+    let ret = unsafe { raw::syscall2(nr::GET_MOUSE_POS, &mut state as *mut [u32; 4] as u64, 16) as i64 };
     Error::from_syscall(ret)?;
     Ok((state[0], state[1], state[2]))
 }
@@ -1039,9 +1089,27 @@ pub fn mouse_state() -> Result<(u32, u32, u32), Error> {
 /// * Err(Error) - Error (ENODEV if no pointer device)
 pub fn mouse_state_with_scroll() -> Result<(u32, u32, u32, i32), Error> {
     let mut state: [u32; 4] = [0, 0, 0, 0];
-    let ret = unsafe { raw::syscall1(nr::GET_MOUSE_POS, &mut state as *mut [u32; 4] as u64) as i64 };
+    let ret = unsafe { raw::syscall2(nr::GET_MOUSE_POS, &mut state as *mut [u32; 4] as u64, 16) as i64 };
     Error::from_syscall(ret)?;
     Ok((state[0], state[1], state[2], state[3] as i32))
+}
+
+/// The compositor's keyboard state (`docs/gui/breengel.md` section 17.6).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeyState {
+    /// The modifier keys held: bit 0 Shift, 1 Ctrl, 2 Alt, 3 Super.
+    pub modifiers: u32,
+    /// The Super presses latched since the last read.
+    pub super_taps: u32,
+}
+
+/// Read the modifier keys held and take the latched Super presses: syscall 413 asked for its
+/// 8-byte key words instead of its 16-byte pointer words, so the pointer state is untouched.
+pub fn key_state() -> Result<KeyState, Error> {
+    let mut state: [u32; 2] = [0; 2];
+    let ret = unsafe { raw::syscall2(nr::GET_MOUSE_POS, &mut state as *mut [u32; 2] as u64, 8) as i64 };
+    Error::from_syscall(ret)?;
+    Ok(KeyState { modifiers: state[0], super_taps: state[1] })
 }
 
 // ============================================================================
@@ -1053,6 +1121,7 @@ pub fn mouse_state_with_scroll() -> Result<(u32, u32, u32, i32), Error> {
 /// Maps the framebuffer into userspace memory. All drawing operations write
 /// directly to the buffer with no syscall overhead. Call `flush()` to sync
 /// to the display (1 syscall per frame).
+#[cfg(target_arch = "x86_64")]
 pub struct Framebuffer {
     ptr: *mut u8,
     width: u32,
@@ -1062,6 +1131,7 @@ pub struct Framebuffer {
     bgr: bool,
 }
 
+#[cfg(target_arch = "x86_64")]
 impl Framebuffer {
     /// Map the framebuffer and return a safe handle: the whole screen for the
     /// display owner, else the left half (see `fb_mmap`).
@@ -1172,10 +1242,8 @@ impl Framebuffer {
 
 /// Deactivate the kernel's terminal manager so userspace can take over the display.
 ///
-/// After this call the kernel stops drawing its own screen, and a later `fb_mmap()`
-/// by this process maps the whole screen (aarch64). The calling process is
-/// responsible for drawing the display. A later call by another process moves the
-/// display to it; this process's whole-screen draws then fail with `EPERM`.
+/// The caller draws through GPU targets on ARM64 and its framebuffer pane on
+/// x86-64. Custody nests on the display stack; giving back restores the giver.
 pub fn take_over_display() -> Result<(), Error> {
     let result = unsafe { raw::syscall0(nr::TAKE_OVER_DISPLAY) };
     Error::from_syscall(result as i64).map(|_| ())

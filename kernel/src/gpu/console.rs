@@ -275,7 +275,7 @@ impl Console {
             ctx,
             &[atlas],
         )?;
-        if d.echoed != fence || !d.fenced {
+        if !d.matches_fence(fence) {
             return Err(EIO);
         }
         FIXTURE.fetch_add((gw * 95 * 16) as u64, Ordering::Release);
@@ -404,7 +404,7 @@ impl Console {
                 &[self.target, self.atlas, self.scratch, self.vertices],
                 &[],
             )?;
-            if !dev::ok(d.answer) || Some(d.echoed) != fence || !d.fenced {
+            if !dev::ok(d.answer) || !fence.is_some_and(|f| d.matches_fence(f)) {
                 return Err(EIO);
             }
             last = Some(LastWrite {

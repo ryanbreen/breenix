@@ -139,11 +139,18 @@ class ProgressTest(unittest.TestCase):
                       in entries}
         self.assertEqual(len(entries), len(allowances), 'allowance names must be unique')
         monitor = runpy.run_path(str(ROOT / 'scripts/boot_progress.py'))
-        self.assertEqual(allowances, {('time', 'clocks/rate-counter'): 25_000,
-                                     ('console', 'getty/logout-reacquires'): 30_000,
-                                     ('console', 'getty/independent-sessions'): 30_000,
-                                     ('users', 'ssh/openssh-operator'): 30_000,
-                                     ('users', 'ssh/openssh-root-refused'): 30_000})
+        self.assertEqual(allowances, {
+            ('time', 'clocks/rate-counter'): 25_000,
+            ('breengel', 'font-parser/corpus'): 20_000,
+            ('breengel', 'inflate/byte-split'): 20_000,
+            ('breengel', 'png-decode/independent-fixtures'): 20_000,
+            ('breengel', 'windows/churn'): 20_000,
+            ('breengel', 'composition/present-rate'): 20_000,
+            ('console', 'getty/logout-reacquires'): 30_000,
+            ('console', 'getty/independent-sessions'): 30_000,
+            ('users', 'ssh/openssh-operator'): 30_000,
+            ('users', 'ssh/openssh-root-refused'): 30_000,
+        })
         for (suite, case), limit in allowances.items():
             manifest = json.loads((ROOT / f'docs/suites/{suite}.json').read_text())
             names = {f"{category['id']}/{item['id']}" for category in manifest['categories']

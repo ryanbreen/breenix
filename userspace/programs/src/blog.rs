@@ -31,6 +31,7 @@ use libgfx::bitmap_font;
 use libgfx::ttf_font;
 use libgfx::color::Color;
 use libgfx::shapes;
+use libgfx::surface::Surface;
 
 
 // ---------------------------------------------------------------------------
@@ -53,13 +54,13 @@ const STATUS_FG: Color = Color::rgb(180, 180, 200);
 const FOLLOW_COLOR: Color = Color::rgb(100, 200, 100);
 const NOT_FOUND_COLOR: Color = Color::rgb(200, 100, 100);
 
-// USB HID keycodes for arrow keys and navigation
-const KEY_UP: u16 = 0x52;
-const KEY_DOWN: u16 = 0x51;
-const KEY_PAGE_UP: u16 = 0x4B;
-const KEY_PAGE_DOWN: u16 = 0x4E;
-const KEY_HOME: u16 = 0x4A;
-const KEY_END: u16 = 0x4D;
+// Linux key codes for arrow keys and navigation
+const KEY_UP: u32 = breengel::keys::UP;
+const KEY_DOWN: u32 = breengel::keys::DOWN;
+const KEY_PAGE_UP: u32 = breengel::keys::PAGE_UP;
+const KEY_PAGE_DOWN: u32 = breengel::keys::PAGE_DOWN;
+const KEY_HOME: u32 = breengel::keys::HOME;
+const KEY_END: u32 = breengel::keys::END;
 
 // ---------------------------------------------------------------------------
 // Log tab state
@@ -221,13 +222,30 @@ struct FontState {
     line_h: usize,
 }
 
-impl FontState {
-    fn draw_text(&mut self, fb: &mut breengel::FrameBuf, text: &[u8], x: usize, y: usize, color: Color) {
-        if let Some(ref mut font) = self.ttf {
-            let s = core::str::from_utf8(text).unwrap_or("?");
-            ttf_font::draw_text(fb, font, s, x as i32, y as i32, self.size, color);
+/// A frame's text, drawn after its fills, which it does not overlap: each line as
+/// `ttf_font::draw_text` draws it, with the lines' glyphs sharing draws.
+struct Text {
+    lines: Vec<(Vec<u8>, usize, usize, Color)>,
+}
+
+impl Text {
+    fn draw_text(&mut self, text: &[u8], x: usize, y: usize, color: Color) {
+        // TrueType draws invalid UTF-8 as "?", as it did line by line.
+        let bytes = if core::str::from_utf8(text).is_ok() { text.to_vec() } else { b"?".to_vec() };
+        self.lines.push((bytes, x, y, color));
+    }
+
+    fn finish(self, fb: &mut Surface, fonts: &mut FontState) {
+        if let Some(ref mut font) = fonts.ttf {
+            let clip = libgfx::surface::Rect::new(0, 0, fb.width() as i32, fb.height() as i32);
+            let runs: Vec<ttf_font::TextRun<'_>> = self.lines.iter().map(|(bytes, x, y, fg)| ttf_font::TextRun {
+                bytes, x: *x as i32, y: *y as i32, size: fonts.size, fg: *fg, clip,
+            }).collect();
+            ttf_font::draw_runs(fb, font, &runs);
         } else {
-            bitmap_font::draw_text(fb, text, x, y, color);
+            for (bytes, x, y, fg) in &self.lines {
+                bitmap_font::draw_text(fb, bytes, *x, *y, *fg);
+            }
         }
     }
 }
@@ -243,9 +261,16 @@ fn render(
     theme: &Theme,
     fonts: &mut FontState,
 ) {
-    let fb = win.framebuf();
-    let w = fb.width as i32;
-    let h = fb.height as i32;
+    let fb = match win.surface() {
+        Ok(fb) => fb,
+        Err(e) => {
+            println!("[blog] ERROR: no window surface: {} -- exiting", e);
+            process::exit(1);
+        }
+    };
+    let w = fb.width() as i32;
+    let h = fb.height() as i32;
+    let mut text = Text { lines: Vec::new() };
 
     fb.clear(BG);
     tab_bar.draw(fb, theme);
@@ -253,8 +278,8 @@ fn render(
     let line_h = fonts.line_h;
     let char_w = fonts.char_w;
 
-    let content_y = TAB_BAR_H;
-    let content_h = h - TAB_BAR_H - STATUS_BAR_H;
+    let content_y = TAB_BAR_H * fb.ui_scale() as i32;
+    let content_h = h - content_y - STATUS_BAR_H;
     let visible_lines = if content_h > 0 {
         content_h as usize / line_h
     } else {
@@ -271,12 +296,12 @@ fn render(
         let msg = b"File not found";
         let msg_x = (w as usize - msg.len() * char_w) / 2;
         let msg_y = content_y as usize + content_h as usize / 2;
-        fonts.draw_text(fb, msg, msg_x, msg_y, NOT_FOUND_COLOR);
+        text.draw_text(msg, msg_x, msg_y, NOT_FOUND_COLOR);
     } else if tab.line_count() == 0 {
         let msg = b"(empty)";
         let msg_x = (w as usize - msg.len() * char_w) / 2;
         let msg_y = content_y as usize + content_h as usize / 2;
-        fonts.draw_text(fb, msg, msg_x, msg_y, TEXT_LINE_NUM);
+        text.draw_text(msg, msg_x, msg_y, TEXT_LINE_NUM);
     } else {
         for i in 0..visible_lines {
             let line_idx = tab.scroll_offset + i;
@@ -288,14 +313,14 @@ fn render(
             // Line number
             let mut num_buf = [b' '; 5];
             format_line_number(&mut num_buf, line_idx + 1);
-            fonts.draw_text(fb, &num_buf, 2, y, TEXT_LINE_NUM);
+            text.draw_text(&num_buf, 2, y, TEXT_LINE_NUM);
 
             // Line content, truncated to fit
             let line = tab.line_bytes(line_idx);
             let max_chars = ((w as usize).saturating_sub(gutter_w)) / char_w;
             let display_len = line.len().min(max_chars);
             if display_len > 0 {
-                fonts.draw_text(fb, &line[..display_len], gutter_w, y, TEXT_NORMAL);
+                text.draw_text(&line[..display_len], gutter_w, y, TEXT_NORMAL);
             }
         }
     }
@@ -305,7 +330,7 @@ fn render(
     shapes::fill_rect(fb, 0, status_y, w, STATUS_BAR_H, STATUS_BG);
 
     let path_bytes = tab.path.as_bytes();
-    fonts.draw_text(fb, path_bytes, 4, status_y as usize + 2, STATUS_FG);
+    text.draw_text(path_bytes, 4, status_y as usize + 2, STATUS_FG);
 
     let mut info_buf = [0u8; 40];
     let info_len = format_line_info(
@@ -314,13 +339,14 @@ fn render(
         tab.line_count(),
     );
     let info_x = (w as usize / 2).saturating_sub(info_len * char_w / 2);
-    fonts.draw_text(fb, &info_buf[..info_len], info_x, status_y as usize + 2, STATUS_FG);
+    text.draw_text(&info_buf[..info_len], info_x, status_y as usize + 2, STATUS_FG);
 
     if tab.follow {
         let label = b"[FOLLOW]";
         let label_x = w as usize - label.len() * char_w - 4;
-        fonts.draw_text(fb, label, label_x, status_y as usize + 2, FOLLOW_COLOR);
+        text.draw_text(label, label_x, status_y as usize + 2, FOLLOW_COLOR);
     }
+    text.finish(fb, fonts);
 }
 
 fn format_line_number(buf: &mut [u8; 5], n: usize) {
@@ -384,7 +410,7 @@ fn main() {
     let font_size = if win.mono_size() >= 6.0 { win.mono_size() } else { 14.0 };
     println!("[blog] config: mono_size={} font_size={} path='{}'", win.mono_size(), font_size, win.mono_path());
 
-    // Take font for local use (needed alongside &mut FrameBuf for rendering)
+    // Take font for local use (needed alongside the window's surface for rendering)
     let ttf_font: Option<CachedFont> = win.take_mono_font();
 
     let mut fonts = if let Some(font) = ttf_font {
@@ -414,8 +440,10 @@ fn main() {
     let mut theme = Theme::dark();
     theme.use_bitmap_font = true;
 
-    let tab_rect = Rect::new(0, 0, WIN_W as i32, TAB_BAR_H);
-    let mut tab_bar = TabBar::new(tab_rect, vec![b"Kernel", b"Serial"]);
+    let ui_scale = win.surface().expect("log surface").ui_scale() as i32;
+    let tab_pixels = TAB_BAR_H * ui_scale;
+    let tab_rect = Rect::new(0, 0, WIN_W as i32 / ui_scale, TAB_BAR_H);
+    let mut tab_bar = TabBar::new(tab_rect, vec![b"Kernel", b"Serial"], &theme);
 
     let mut tabs = vec![
         LogTab::new("/var/log/kernel.log"),
@@ -432,7 +460,7 @@ fn main() {
                  i, tab.path, tab.is_open(), tab.line_count(), tab.content.len());
     }
 
-    let content_h = WIN_H as i32 - TAB_BAR_H - STATUS_BAR_H;
+    let content_h = WIN_H as i32 - tab_pixels - STATUS_BAR_H;
     let mut visible_lines = if content_h > 0 && fonts.line_h > 0 {
         content_h as usize / fonts.line_h
     } else {
@@ -451,7 +479,10 @@ fn main() {
     let mut poll_counter: u32 = 0;
 
     render(&mut win, &tabs, &tab_bar, &theme, &mut fonts);
-    let _ = win.present();
+    match win.present() {
+        Ok(()) => println!("[blog] first frame presented: {}x{}", win.width(), win.height()),
+        Err(e) => println!("[blog] first frame present failed: {}", e),
+    }
 
     loop {
         let events = win.poll_events();
@@ -547,7 +578,7 @@ fn main() {
                     mouse_x = x;
                     mouse_y = y;
                 }
-                Event::MouseButton { button: 1, pressed, .. } => {
+                Event::MouseButton { button: breengel::buttons::LEFT, pressed, .. } => {
                     let old_buttons = mouse_buttons;
                     if pressed {
                         mouse_buttons |= 1;
@@ -555,21 +586,27 @@ fn main() {
                         mouse_buttons &= !1;
                     }
                     let input = InputState::from_raw(
-                        mouse_x,
-                        mouse_y,
+                        mouse_x / ui_scale,
+                        mouse_y / ui_scale,
                         mouse_buttons,
                         old_buttons,
+                        breengel::clock::now_ns() / 1_000_000,
                     );
                     tab_bar.update(&input);
                 }
+                Event::ResizeRequested { width, height } => {
+                    if let Err(e) = win.apply_resize(width, height) {
+                        println!("[blog] resize refused: {}x{}: {}", width, height, e);
+                    }
+                }
                 Event::Resized { width: w, height: h } => {
-                    let new_content_h = h as i32 - TAB_BAR_H - STATUS_BAR_H;
+                    let new_content_h = h as i32 - tab_pixels - STATUS_BAR_H;
                     visible_lines = if new_content_h > 0 && fonts.line_h > 0 {
                         new_content_h as usize / fonts.line_h
                     } else {
                         1
                     };
-                    tab_bar.set_rect(Rect::new(0, 0, w as i32, TAB_BAR_H));
+                    tab_bar.set_rect(Rect::new(0, 0, w as i32 / ui_scale, TAB_BAR_H));
                     needs_redraw = true;
                 }
                 Event::CloseRequested => {

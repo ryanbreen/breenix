@@ -38,7 +38,7 @@ const EIO: i64 = -5;
 const EINTR: i64 = -4;
 #[derive(Clone, Copy)] enum Tag { Sync(u64), Submit { serial: u64, last: bool }, Background }
 struct Request;
-struct Done { tag: Tag, answer: u32, echoed: u64 }
+struct Done { tag: Tag, answer: u32 }
 mod virgl {
     use super::*;
     pub fn ctx_attach(tag: Tag, ctx: u32, id: u32) -> Request {
@@ -52,7 +52,9 @@ mod virgl {
     pub mod encode {
         pub const ALL_WARM: u32 = 0xffff;
         pub struct Enc;
-        impl Enc { pub fn new() -> Self { Self } pub fn finish(self) -> Option<Vec<super::Words>> { Some(vec![super::Words]) } }
+        impl Enc { pub fn new() -> Self { Self } pub fn finish(self) -> Option<Vec<super::Words>> {
+            (!crate::OOM.with(std::cell::Cell::get)).then(|| vec![super::Words])
+        } }
         pub fn warm_pipeline(_: &mut Enc, _: &mut (), _: u32, _: u32, _: u32, _: u32, _: bool, _: u32) {}
         pub struct TargetRes { pub id: u32, pub format: u32, pub info: super::super::TargetInfo }
         pub struct SourceRes { pub id: u32, pub format: u32, pub width: u32, pub height: u32 }
@@ -107,9 +109,10 @@ type WordBuf = Words;
 impl Words { fn page_count(&self) -> usize { 1 } }
 struct WarmStep { ctx: u32, pipeline: u32, left: u32, refused: bool, lost: bool }
 struct Ctx { state: CtxState, dropped: bool, owner: u64, device_alive: bool, warm: u32,
-    warm_after: u64, busy: bool, id: u32, objects: (), dx: (), vb: u32, scratch: u32, scratch_texture: u32 }
+    warm_after: u64, warm_catalogue: bool, busy: bool, id: u32, objects: (), dx: (), vb: u32, scratch: u32, scratch_texture: u32 }
 fn ctx() -> Ctx { Ctx { state: CtxState::Creating, dropped: false, owner: 1, device_alive: true,
-    warm: 0, warm_after: 0, busy: false, id: 1, objects: (), dx: (), vb: 1, scratch: 2, scratch_texture: 3 } }
+    warm: 0, warm_after: 0, warm_catalogue: true, busy: false, id: 1, objects: (), dx: (), vb: 1, scratch: 2, scratch_texture: 3 } }
+thread_local! { static OOM: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 thread_local! { static CLOCK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
 fn now_ns() -> u64 { CLOCK.with(|c| c.get()) }
 fn notify() {}
@@ -132,7 +135,7 @@ impl Core {
     fn settle(&mut self, _: u32) {}
     fn fault(&mut self) { panic!("unexpected fault") }
     fn sync_ended(&mut self, serial: u64, _: Option<Done>) { self.syncs.remove(&serial); }
-    fn submit_returned(&mut self, _: u64, _: bool, _: u32, _: u64) {}
+    fn submit_returned(&mut self, _: u64, _: bool, _: Done) {}
     fn warm_returned(&mut self, _: Option<bool>) { panic!("unexpected warm refusal") }
     // PRODUCTION_METHODS
 }
@@ -172,7 +175,34 @@ fn wait_for<T>(_: Option<u64>, interruptible: bool, mut f: impl FnMut(&mut Core)
         if chunks is None:
             raise AssertionError("production enum Chunks is missing")
         harness += interval + chunks.group(0) + function("attach_all") + function("warm_next")
+        readiness = re.search(r"out\.warmed = p\.contexts\.values\(\).*?\.count\(\) as u64;", CORE, re.S)
+        self.assertIsNotNone(readiness, "missing process catalogue readiness count")
+        harness += """
+struct Process { contexts: BTreeMap<u64,u32> }
+struct Counters { warmed: u64 }
+fn ready_count(c: &Core, p: &Process) -> u64 {
+    let mut out = Counters { warmed: u64::MAX };
+    assert_eq!(out.warmed,u64::MAX);
+""" + readiness.group(0) + "\n out.warmed }\n"
         harness += r'''
+#[test]
+fn readiness_distinguishes_empty_private_catalogue_from_unfinished_rendering() {
+    let p = Process { contexts: BTreeMap::from([(7,1)]) };
+    with_core(|c| {
+        assert_eq!(ready_count(c,&p),0);
+        c.contexts.get_mut(&1).unwrap().state = CtxState::Live;
+        assert_eq!(ready_count(c,&p),0);
+        c.contexts.get_mut(&1).unwrap().warm_catalogue = false;
+        assert_eq!(ready_count(c,&p),1);
+        assert_eq!(c.contexts[&1].warm,0,"readiness must not invent completed pipelines");
+        c.contexts.get_mut(&1).unwrap().warm_catalogue = true;
+        assert_eq!(ready_count(c,&p),0);
+        c.contexts.get_mut(&1).unwrap().warm = encode::ALL_WARM;
+        assert_eq!(ready_count(c,&p),1);
+        c.contexts.get_mut(&1).unwrap().state = CtxState::Quarantined;
+        assert_eq!(ready_count(c,&p),0);
+    });
+}
 #[test]
 fn stalled_batched_context_creation_observes_quarantine_without_waiters() {
     stalled_batch(false);
@@ -194,6 +224,41 @@ fn stalled_batch(svga: bool) {
     });
 }
 #[test]
+fn a_failed_warm_encoding_is_retried_without_publishing_completion() {
+    with_core(|c| c.contexts.get_mut(&1).unwrap().state = CtxState::Live);
+    CLOCK.with(|t|t.set(2_000_000));
+    OOM.with(|oom|oom.set(true));
+    assert_eq!(warm_next(),None);
+    with_core(|c| {
+        assert_eq!(c.contexts[&1].warm, 0);
+        assert!(c.warm_step.is_none());
+        assert!(c.syncs.is_empty());
+    });
+    OOM.with(|oom|oom.set(false));
+    assert_eq!(warm_next(),None);
+    with_core(|c| {
+        assert!(c.warm_step.is_some());
+    });
+}
+#[test]
+fn private_context_does_not_queue_catalogue_dma() {
+    with_core(|c| {
+        let ctx = c.contexts.get_mut(&1).unwrap();
+        ctx.state = CtxState::Live;
+        ctx.warm_catalogue = false;
+    });
+    CLOCK.with(|t|t.set(2_000_000));
+    assert_eq!(warm_next(), None);
+    with_core(|c| {
+        assert!(c.warm_step.is_none());
+        assert!(c.syncs.is_empty());
+        assert_eq!(c.contexts[&1].warm, 0);
+        c.contexts.get_mut(&1).unwrap().warm_catalogue = true;
+    });
+    assert_eq!(warm_next(), None);
+    with_core(|c| assert!(c.warm_step.is_some()));
+}
+#[test]
 fn late_sync_and_submit_answers_space_real_warm_steps() {
     warm_spacing(false);
 }
@@ -212,20 +277,20 @@ fn warm_spacing(svga: bool) {
         let step = c.warm_step.take().unwrap();
         assert_eq!((step.ctx, step.pipeline, step.left, step.refused, step.lost), (1, 0, 1, false, false));
         let serial = *c.syncs.keys().next().unwrap();
-        c.returned(Done { tag: Tag::Sync(serial), answer, echoed: 0 });
+        c.returned(Done { tag: Tag::Sync(serial), answer });
         assert_eq!(c.traffic_ns, 0, "warm answer is not competing traffic");
         c.start_sync(99, Request, 1, &[], &[], None).unwrap();
     });
     CLOCK.with(|t| t.set(4_000_000));
     with_core(|c| {
-        c.returned(Done { tag: Tag::Sync(99), answer, echoed: 0 });
+        c.returned(Done { tag: Tag::Sync(99), answer });
         assert!(!c.syncs.contains_key(&99));
         assert_eq!(c.traffic_ns, 4_000_000);
     });
     assert_eq!(warm_next(), Some(22_000_000));
     CLOCK.with(|t| t.set(5_000_000));
     with_core(|c| {
-        c.returned(Done { tag: Tag::Submit { serial: 100, last: true }, answer, echoed: 0 });
+        c.returned(Done { tag: Tag::Submit { serial: 100, last: true }, answer });
         assert_eq!(c.traffic_ns, 5_000_000);
     });
     assert_eq!(warm_next(), Some(22_000_000));
@@ -248,7 +313,7 @@ fn sixteen_steps_with_sixteen_ms_present_answers() {
                     now = due.min(present);
                     if now == present {
                         CLOCK.with(|t| t.set(now));
-                        with_core(|c| c.returned(Done { tag: Tag::Submit { serial: 100, last: true }, answer: 0, echoed: 0 }));
+                        with_core(|c| c.returned(Done { tag: Tag::Submit { serial: 100, last: true }, answer: 0 }));
                         present += 16_000_000;
                     }
                 }
@@ -262,7 +327,7 @@ fn sixteen_steps_with_sixteen_ms_present_answers() {
         // Model a 3 ms device step and a competing answer during each step.
         now += 1_000_000;
         CLOCK.with(|t| t.set(now));
-        with_core(|c| c.returned(Done { tag: Tag::Background, answer: 0, echoed: 0 }));
+        with_core(|c| c.returned(Done { tag: Tag::Background, answer: 0 }));
         now += 2_000_000;
     }
     assert_eq!(now - first, 303_000_000);

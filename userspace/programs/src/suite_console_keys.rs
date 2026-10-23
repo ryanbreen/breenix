@@ -14,13 +14,13 @@ const TIOCSPGRP: u64 = 0x5410;
 
 /// The launcher's path, for a failure that names it.
 fn method() -> String {
-    let declared = libbreenix::suite::hostkey_method().unwrap_or("");
+    let declared = breenix_suite::suite::hostkey_method().unwrap_or("");
     declared.split(';').next().filter(|path| !path.is_empty()).unwrap_or("none").to_string()
 }
 
 /// Inject `chords`; its sequence number.
 fn keys(chords: &str) -> Verdict<u64> {
-    libbreenix::suite::hostkeys(chords)
+    breenix_suite::suite::hostkeys(chords)
 }
 
 fn late(seq: u64) -> String {

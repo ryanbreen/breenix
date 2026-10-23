@@ -38,6 +38,8 @@ pub use types::*;
 pub mod accounts;
 pub mod argv;
 pub mod audio;
+#[cfg(feature = "std")]
+pub mod compositor;
 pub mod crypto;
 pub mod dns;
 pub mod errno;
@@ -46,6 +48,7 @@ pub mod fs;
 pub mod gpu;
 pub mod graphics;
 pub mod http;
+pub mod image;
 pub mod io;
 #[cfg(feature = "std")]
 pub mod layout;
@@ -62,17 +65,19 @@ pub mod services;
 pub mod service_logs;
 pub mod signal;
 pub mod socket;
-#[cfg(feature = "suite")]
-pub mod suite;
 pub mod synth;
 pub mod syscall;
 pub mod termios;
+pub mod test_control;
 #[cfg(feature = "std")]
 pub mod ssh;
 #[cfg(feature = "std")]
 pub mod tls;
 pub mod time;
+#[cfg(feature = "std")]
+pub mod ui_clock;
 pub mod types;
+pub mod window;
 #[cfg(feature = "std")]
 pub mod x509;
 

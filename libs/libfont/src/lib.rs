@@ -1,41 +1,53 @@
-//! TrueType font parser and anti-aliased rasterizer.
+//! TrueType font parser and anti-aliased rasterizer (docs/gui/breengel.md sections 7, 8
+//! and 10), written from the OpenType specification.
 //!
 //! `#![no_std]` + `extern crate alloc`. Zero external dependencies.
 //!
-//! Parses .ttf files, extracts glyph outlines, and rasterizes them into
-//! coverage bitmaps suitable for alpha-blended text rendering.
+//! `Font::parse` validates every table it reads, so a malformed font is refused whole with a
+//! `FontError`; a defect confined to one glyph is reported when that glyph is read, and every
+//! other glyph still works. Every loop counts its iterations on `libfont::work`.
 
 #![no_std]
 extern crate alloc;
 
-pub mod reader;
-pub mod tables;
-pub mod outline;
-pub mod rasterizer;
 pub mod cache;
+pub mod crossings;
+pub mod error;
 mod float;
+pub mod outline;
+pub mod bitmap;
+pub mod bounds;
+mod reader;
+pub mod tables;
+pub mod work;
 
 use alloc::boxed::Box;
-use alloc::string::String;
+use alloc::vec::Vec;
 use core::ops::Range;
-use crate::tables::TableDirectory;
+
+use crate::float::{ceil, floor};
+use crate::outline::{flatten, Outline, OutlinePoint, MAX_DEPTH};
+use crate::tables::cmap::CmapTable;
+use crate::tables::glyf::{self, Glyph, ARGS_ARE_XY_VALUES, SCALED_COMPONENT_OFFSET, UNSCALED_COMPONENT_OFFSET};
 use crate::tables::head::HeadTable;
 use crate::tables::hhea::HheaTable;
 use crate::tables::hmtx::HmtxTable;
-use crate::tables::maxp;
-use crate::tables::cmap::CmapTable;
-use crate::tables::loca::LocaTable;
 use crate::tables::kern::KernTable;
-use crate::tables::glyf;
-use crate::outline::flatten_glyph;
-use crate::rasterizer::{rasterize, rasterize_subpixel, GlyphBitmap};
-use crate::cache::GlyphCache;
-use crate::float::{floor, ceil};
+use crate::tables::loca::LocaTable;
+use crate::tables::maxp::MaxpTable;
+use crate::tables::TableDirectory;
 
-pub use crate::rasterizer::GlyphBitmap as Bitmap;
-pub use crate::rasterizer::SubpixelBitmap;
+pub use crate::cache::CacheStats;
+pub use crate::error::FontError;
+pub use crate::bitmap::{GlyphBitmap, SubpixelBitmap};
+pub use crate::bitmap::GlyphBitmap as Bitmap;
 
-/// Scaled font metrics in pixel coordinates.
+/// Sizes accepted, in pixels per em.
+pub const MIN_SIZE: f32 = 1.0;
+pub const MAX_SIZE: f32 = 1024.0;
+
+/// Line metrics at one size, in pixels: each is the 26.6 value
+/// `round_half_away(hhea_value × size26 / unitsPerEm)` divided by 64.
 #[derive(Debug, Clone, Copy)]
 pub struct ScaledMetrics {
     pub ascender: f32,
@@ -44,590 +56,375 @@ pub struct ScaledMetrics {
     pub line_height: f32,
 }
 
-/// Parsed TrueType font. Owns its data — no lifetime parameter.
-pub struct Font {
-    data: Box<[u8]>,
-    head: HeadTable,
-    hhea: HheaTable,
-    cmap: CmapTable,
-    hmtx_range: Range<usize>,
-    loca_range: Range<usize>,
-    glyf_range: Range<usize>,
-    kern: Option<KernTable>,
-    num_h_metrics: u16,
-    index_to_loc_format: i16,
-}
-
-impl Font {
-    /// Parse a TrueType font from raw .ttf data. Takes ownership via copy.
-    pub fn parse(data: &[u8]) -> Result<Self, String> {
-        let dir = TableDirectory::parse(data)?;
-
-        let head_data = dir.table_data(data, b"head")
-            .ok_or_else(|| String::from("missing head table"))?;
-        let head = HeadTable::parse(head_data)?;
-
-        let hhea_data = dir.table_data(data, b"hhea")
-            .ok_or_else(|| String::from("missing hhea table"))?;
-        let hhea = HheaTable::parse(hhea_data)?;
-
-        let maxp_data = dir.table_data(data, b"maxp")
-            .ok_or_else(|| String::from("missing maxp table"))?;
-        let _ = maxp::MaxpTable::parse(maxp_data)?;
-
-        let cmap_data = dir.table_data(data, b"cmap")
-            .ok_or_else(|| String::from("missing cmap table"))?;
-        let cmap = CmapTable::parse(cmap_data)?;
-
-        let hmtx_range = dir.table_range(data.len(), b"hmtx")
-            .ok_or_else(|| String::from("missing hmtx table"))?;
-
-        let loca_range = dir.table_range(data.len(), b"loca")
-            .ok_or_else(|| String::from("missing loca table"))?;
-
-        let glyf_range = dir.table_range(data.len(), b"glyf")
-            .ok_or_else(|| String::from("missing glyf table"))?;
-
-        let kern = dir.table_data(data, b"kern").and_then(KernTable::parse);
-
-        Ok(Self {
-            data: Box::from(data),
-            head,
-            hhea,
-            cmap,
-            hmtx_range,
-            loca_range,
-            glyf_range,
-            kern,
-            num_h_metrics: hhea.num_h_metrics,
-            index_to_loc_format: head.index_to_loc_format,
-        })
-    }
-
-    fn hmtx_data(&self) -> &[u8] { &self.data[self.hmtx_range.clone()] }
-    fn loca_data(&self) -> &[u8] { &self.data[self.loca_range.clone()] }
-    fn glyf_data(&self) -> &[u8] { &self.data[self.glyf_range.clone()] }
-
-    /// Get scaled metrics for a given pixel size.
-    pub fn metrics(&self, pixel_size: f32) -> ScaledMetrics {
-        let scale = pixel_size / self.head.units_per_em as f32;
-        let ascender = self.hhea.ascender as f32 * scale;
-        let descender = self.hhea.descender as f32 * scale;
-        let line_gap = self.hhea.line_gap as f32 * scale;
-        ScaledMetrics {
-            ascender,
-            descender,
-            line_gap,
-            line_height: ascender - descender + line_gap,
-        }
-    }
-
-    /// Map a Unicode codepoint to a glyph index.
-    pub fn glyph_index(&self, ch: char) -> u16 {
-        self.cmap.glyph_index(ch as u32)
-    }
-
-    /// Get the advance width of a glyph in pixels.
-    pub fn advance_width(&self, glyph_index: u16, pixel_size: f32) -> f32 {
-        let hmtx = HmtxTable::new(self.hmtx_data(), self.num_h_metrics);
-        let scale = pixel_size / self.head.units_per_em as f32;
-        hmtx.advance_width(glyph_index) as f32 * scale
-    }
-
-    /// Get the kerning value between two glyphs in pixels.
-    pub fn kern(&self, left: u16, right: u16, pixel_size: f32) -> f32 {
-        match &self.kern {
-            Some(kern) => {
-                let scale = pixel_size / self.head.units_per_em as f32;
-                kern.kern_value(left, right) as f32 * scale
-            }
-            None => 0.0,
-        }
-    }
-
-    /// Geometry only for GPU text: flattened segments and their bitmap bounds.
-    /// This does not allocate or calculate coverage pixels.
-    pub fn glyph_segments(&self, glyph_index:u16, pixel_size:f32) -> Result<(usize,usize,alloc::vec::Vec<outline::LineSegment>),String> {
-        if !(1.0..=1024.0).contains(&pixel_size) {return Err(alloc::string::String::from("invalid pixel size"));}
-        let scale=pixel_size/self.head.units_per_em as f32;
-        let loca=LocaTable::new(self.loca_data(),self.index_to_loc_format);
-        let Some(offset)=loca.glyph_offset(glyph_index) else {return Ok((0,0,alloc::vec::Vec::new()));};
-        let glyph=self.resolve_glyph(offset)?;
-        let x_min=glyph.x_min as f32*scale;let x_max=glyph.x_max as f32*scale;
-        let y_min=glyph.y_min as f32*scale;let y_max=glyph.y_max as f32*scale;
-        let width=ceil(x_max-x_min) as usize+2;let height=ceil(y_max-y_min) as usize+2;
-        Ok((width,height,flatten_glyph(&glyph,scale,-floor(x_min),ceil(y_max))))
-    }
-
-    /// Rasterize a single glyph at the given pixel size.
-    pub fn rasterize_glyph(
-        &self,
-        glyph_index: u16,
-        pixel_size: f32,
-    ) -> Result<GlyphBitmap, String> {
-        let scale = pixel_size / self.head.units_per_em as f32;
-        let loca = LocaTable::new(self.loca_data(), self.index_to_loc_format);
-        let hmtx = HmtxTable::new(self.hmtx_data(), self.num_h_metrics);
-
-        // Get glyph offset — None means empty glyph (e.g., space)
-        let glyph_offset = match loca.glyph_offset(glyph_index) {
-            Some(off) => off,
-            None => {
-                // Empty glyph — return a zero-size bitmap
-                let advance = hmtx.advance_width(glyph_index) as f32 * scale;
-                return Ok(GlyphBitmap {
-                    width: ceil(advance) as usize,
-                    height: 0,
-                    x_offset: 0,
-                    y_offset: 0,
-                    coverage: alloc::vec::Vec::new(),
-                });
-            }
-        };
-
-        let simple_glyph = self.resolve_glyph(glyph_offset)?;
-
-        let ascender = self.hhea.ascender as f32 * scale;
-        // Fixed baseline position in cell — same for ALL glyphs at this size.
-        // Using round ensures the baseline doesn't shift per-glyph.
-        let baseline = (ascender + 0.5) as i32;
-
-        // Calculate bitmap bounds from glyph bounds
-        let x_min = simple_glyph.x_min as f32 * scale;
-        let y_min = simple_glyph.y_min as f32 * scale;
-        let x_max = simple_glyph.x_max as f32 * scale;
-        let y_max = simple_glyph.y_max as f32 * scale;
-
-        let bmp_x_offset = floor(x_min) as i32;
-        // Position bitmap so its internal baseline (at row ceil(y_max))
-        // aligns with the fixed cell baseline. This guarantees all glyphs
-        // share the same baseline regardless of their individual y_max.
-        let bmp_y_offset = baseline - ceil(y_max) as i32;
-
-        let bmp_width = ceil(x_max - x_min) as usize + 2; // +2 for safety margin
-        let bmp_height = ceil(y_max - y_min) as usize + 2;
-
-        if bmp_width == 0 || bmp_height == 0 {
-            return Ok(GlyphBitmap {
-                width: 0,
-                height: 0,
-                x_offset: 0,
-                y_offset: 0,
-                coverage: alloc::vec::Vec::new(),
-            });
-        }
-
-        // Flatten the glyph outline into line segments
-        let x_off = -floor(x_min);
-        let y_off = ceil(y_max); // top of bitmap in font coords (y-flipped)
-        let segments = flatten_glyph(&simple_glyph, scale, x_off, y_off);
-
-        Ok(rasterize(&segments, bmp_width, bmp_height, bmp_x_offset, bmp_y_offset))
-    }
-
-    /// Rasterize a glyph with LCD subpixel rendering (3x horizontal resolution).
-    pub fn rasterize_glyph_subpixel(
-        &self,
-        glyph_index: u16,
-        pixel_size: f32,
-    ) -> Result<SubpixelBitmap, String> {
-        let scale = pixel_size / self.head.units_per_em as f32;
-        let loca = LocaTable::new(self.loca_data(), self.index_to_loc_format);
-        let hmtx = HmtxTable::new(self.hmtx_data(), self.num_h_metrics);
-
-        let glyph_offset = match loca.glyph_offset(glyph_index) {
-            Some(off) => off,
-            None => {
-                let advance = hmtx.advance_width(glyph_index) as f32 * scale;
-                return Ok(SubpixelBitmap {
-                    width: ceil(advance) as usize,
-                    height: 0,
-                    x_offset: 0,
-                    y_offset: 0,
-                    coverage: alloc::vec::Vec::new(),
-                });
-            }
-        };
-
-        let simple_glyph = self.resolve_glyph(glyph_offset)?;
-
-        let ascender = self.hhea.ascender as f32 * scale;
-        let baseline = (ascender + 0.5) as i32;
-
-        let x_min = simple_glyph.x_min as f32 * scale;
-        let y_min = simple_glyph.y_min as f32 * scale;
-        let x_max = simple_glyph.x_max as f32 * scale;
-        let y_max = simple_glyph.y_max as f32 * scale;
-
-        let bmp_x_offset = floor(x_min) as i32;
-        let bmp_y_offset = baseline - ceil(y_max) as i32;
-
-        let bmp_width = ceil(x_max - x_min) as usize + 2;
-        let bmp_height = ceil(y_max - y_min) as usize + 2;
-
-        if bmp_width == 0 || bmp_height == 0 {
-            return Ok(SubpixelBitmap {
-                width: 0,
-                height: 0,
-                x_offset: 0,
-                y_offset: 0,
-                coverage: alloc::vec::Vec::new(),
-            });
-        }
-
-        let x_off = -floor(x_min);
-        let y_off = ceil(y_max);
-        let segments = flatten_glyph(&simple_glyph, scale, x_off, y_off);
-
-        Ok(rasterize_subpixel(&segments, bmp_width, bmp_height, bmp_x_offset, bmp_y_offset))
-    }
-
-    fn resolve_glyph(
-        &self,
-        offset: u32,
-    ) -> Result<glyf::SimpleGlyph, String> {
-        let glyf_data = self.glyf_data();
-        // First try simple parse
-        if let Some(glyph) = glyf::parse_glyph(glyf_data, offset)? {
-            if !glyph.contours.is_empty() {
-                return Ok(glyph);
-            }
-            // Might be compound — try compound resolution
-            let loca_data = self.loca_data();
-            let index_to_loc_format = self.index_to_loc_format;
-
-            let result = glyf::resolve_compound(glyf_data, offset, &|comp_idx| {
-                let comp_loca = LocaTable::new(loca_data, index_to_loc_format);
-                let comp_off = comp_loca.glyph_offset(comp_idx)?;
-                glyf::parse_glyph(glyf_data, comp_off).ok().flatten()
-            })?;
-            match result {
-                Some(g) if !g.contours.is_empty() => Ok(g),
-                _ => Ok(glyph),
-            }
-        } else {
-            Err(String::from("failed to parse glyph"))
-        }
-    }
-}
-
-/// Diagnostic info for a glyph (for debugging rasterization issues).
-pub struct GlyphDebugInfo {
-    pub loca_offset: Option<u32>,
-    pub num_contours: i16,
+/// One glyph's metrics in font units: hmtx's advance and left side bearing, and the
+/// glyph record's bounding box (all zero for an empty glyph).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlyphMetrics {
+    pub advance: u16,
+    pub lsb: i16,
     pub x_min: i16,
     pub y_min: i16,
     pub x_max: i16,
     pub y_max: i16,
-    pub total_points: usize,
-    pub units_per_em: u16,
 }
 
-/// Detailed rasterization diagnostics — shows all intermediate values.
-pub struct RasterDebugInfo {
-    pub pixel_size: f32,
-    pub units_per_em: u16,
-    pub scale: f32,
-    pub glyph_x_min: i16,
-    pub glyph_y_min: i16,
-    pub glyph_x_max: i16,
-    pub glyph_y_max: i16,
-    pub x_min_scaled: f32,
-    pub y_min_scaled: f32,
-    pub x_max_scaled: f32,
-    pub y_max_scaled: f32,
-    pub bmp_width: usize,
-    pub bmp_height: usize,
-    pub bmp_x_offset: i32,
-    pub bmp_y_offset: i32,
-    pub baseline: i32,
-    pub num_contours: usize,
-    pub num_points: usize,
-    pub num_segments: usize,
-    pub nonzero_coverage: usize,
+/// `round_half_away(n / d)` for `d > 0`, exactly.
+pub fn round_half_away(n: i64, d: i64) -> i64 {
+    if n >= 0 { (2 * n + d) / (2 * d) } else { -((-2 * n + d) / (2 * d)) }
+}
+
+/// A parsed TrueType font. Owns a copy of its file.
+pub struct Font {
+    data: Box<[u8]>,
+    head: HeadTable,
+    hhea: HheaTable,
+    maxp: MaxpTable,
+    cmap: CmapTable,
+    hmtx: Range<usize>,
+    loca: Range<usize>,
+    glyf: Range<usize>,
+    kern: Option<KernTable>,
 }
 
 impl Font {
-    /// Full rasterization diagnostic — returns all intermediate values.
-    pub fn debug_rasterize(&self, glyph_index: u16, pixel_size: f32) -> Result<RasterDebugInfo, String> {
-        let scale = pixel_size / self.head.units_per_em as f32;
-        let loca = LocaTable::new(self.loca_data(), self.index_to_loc_format);
-
-        let glyph_offset = loca.glyph_offset(glyph_index)
-            .ok_or_else(|| String::from("no glyph offset"))?;
-
-        let simple_glyph = self.resolve_glyph(glyph_offset)?;
-
-        let ascender = self.hhea.ascender as f32 * scale;
-        let baseline = (ascender + 0.5) as i32;
-
-        let x_min_s = simple_glyph.x_min as f32 * scale;
-        let y_min_s = simple_glyph.y_min as f32 * scale;
-        let x_max_s = simple_glyph.x_max as f32 * scale;
-        let y_max_s = simple_glyph.y_max as f32 * scale;
-
-        let bmp_x_offset = floor(x_min_s) as i32;
-        let bmp_y_offset = baseline - ceil(y_max_s) as i32;
-        let bmp_width = ceil(x_max_s - x_min_s) as usize + 2;
-        let bmp_height = ceil(y_max_s - y_min_s) as usize + 2;
-
-        let x_off = -floor(x_min_s);
-        let y_off = ceil(y_max_s);
-        let segments = flatten_glyph(&simple_glyph, scale, x_off, y_off);
-
-        let num_contours = simple_glyph.contours.len();
-        let num_points: usize = simple_glyph.contours.iter().map(|c| c.len()).sum();
-
-        let bitmap = if bmp_width > 0 && bmp_height > 0 && !segments.is_empty() {
-            rasterize(&segments, bmp_width, bmp_height, bmp_x_offset, bmp_y_offset)
-        } else {
-            rasterizer::GlyphBitmap {
-                width: bmp_width, height: bmp_height,
-                x_offset: bmp_x_offset, y_offset: bmp_y_offset,
-                coverage: alloc::vec![0; bmp_width * bmp_height],
-            }
+    /// Parse and validate a TrueType font (section 10's font-scoped rules).
+    pub fn parse(data: &[u8]) -> Result<Font, FontError> {
+        let dir = TableDirectory::parse(data)?;
+        let head = HeadTable::parse(&data[dir.require(b"head")?])?;
+        let hhea = HheaTable::parse(&data[dir.require(b"hhea")?])?;
+        let maxp = MaxpTable::parse(&data[dir.require(b"maxp")?])?;
+        let cmap_range = dir.require(b"cmap")?;
+        let hmtx = dir.require(b"hmtx")?;
+        let loca = dir.require(b"loca")?;
+        let glyf = dir.require(b"glyf")?;
+        LocaTable::new(&data[loca.clone()], head.index_to_loc_format).validate(maxp.num_glyphs)?;
+        HmtxTable::new(&data[hmtx.clone()], hhea.num_h_metrics).validate(maxp.num_glyphs)?;
+        let cmap = CmapTable::parse(data, cmap_range)?;
+        let kern = match dir.find(b"kern") {
+            Some(range) => KernTable::parse(data, range)?,
+            None => None,
         };
-        let nonzero_coverage = bitmap.coverage.iter().filter(|&&v| v > 0).count();
-
-        Ok(RasterDebugInfo {
-            pixel_size,
-            units_per_em: self.head.units_per_em,
-            scale,
-            glyph_x_min: simple_glyph.x_min,
-            glyph_y_min: simple_glyph.y_min,
-            glyph_x_max: simple_glyph.x_max,
-            glyph_y_max: simple_glyph.y_max,
-            x_min_scaled: x_min_s,
-            y_min_scaled: y_min_s,
-            x_max_scaled: x_max_s,
-            y_max_scaled: y_max_s,
-            bmp_width,
-            bmp_height,
-            bmp_x_offset,
-            bmp_y_offset,
-            baseline,
-            num_contours,
-            num_points,
-            num_segments: segments.len(),
-            nonzero_coverage,
-        })
+        Ok(Font { data: Box::from(data), head, hhea, maxp, cmap, hmtx, loca, glyf, kern })
     }
 
-    /// Get raw glyph diagnostic info without rasterizing.
-    pub fn debug_glyph(&self, glyph_index: u16) -> GlyphDebugInfo {
-        let loca = LocaTable::new(self.loca_data(), self.index_to_loc_format);
-        let loca_offset = loca.glyph_offset(glyph_index);
-
-        let glyf_data = self.glyf_data();
-        let (num_contours, x_min, y_min, x_max, y_max, total_points) = match loca_offset {
-            Some(off) => {
-                let off = off as usize;
-                if off + 10 <= glyf_data.len() {
-                    let mut r = reader::Reader::at(glyf_data, off);
-                    let nc = r.read_i16().unwrap_or(0);
-                    let xn = r.read_i16().unwrap_or(0);
-                    let yn = r.read_i16().unwrap_or(0);
-                    let xx = r.read_i16().unwrap_or(0);
-                    let yx = r.read_i16().unwrap_or(0);
-                    // Try to count points by parsing
-                    let pts = match self.resolve_glyph(off as u32) {
-                        Ok(g) => g.contours.iter().map(|c| c.len()).sum(),
-                        Err(_) => 0,
-                    };
-                    (nc, xn, yn, xx, yx, pts)
-                } else {
-                    (0, 0, 0, 0, 0, 0)
-                }
-            }
-            None => (0, 0, 0, 0, 0, 0),
-        };
-
-        GlyphDebugInfo {
-            loca_offset,
-            num_contours,
-            x_min,
-            y_min,
-            x_max,
-            y_max,
-            total_points,
-            units_per_em: self.head.units_per_em,
-        }
-    }
-}
-
-/// Font wrapper with built-in glyph bitmap cache.
-pub struct CachedFont {
-    font: Font,
-    cache: GlyphCache,
-}
-
-impl CachedFont {
-    pub fn new(font: Font, max_cache_entries: usize) -> Self {
-        Self {
-            font,
-            cache: GlyphCache::new(max_cache_entries),
-        }
+    pub fn units_per_em(&self) -> u16 {
+        self.head.units_per_em
     }
 
-    pub fn metrics(&self, pixel_size: f32) -> ScaledMetrics {
-        self.font.metrics(pixel_size)
+    pub fn num_glyphs(&self) -> u16 {
+        self.maxp.num_glyphs
+    }
+
+    fn hmtx_table(&self) -> HmtxTable<'_> {
+        HmtxTable::new(&self.data[self.hmtx.clone()], self.hhea.num_h_metrics)
+    }
+
+    /// The glyph for a codepoint; 0 (`.notdef`) when the font does not map it.
+    pub fn glyph_for(&self, cp: u32) -> u16 {
+        let g = self.cmap.lookup(&self.data, cp);
+        if g < self.maxp.num_glyphs { g } else { 0 }
     }
 
     pub fn glyph_index(&self, ch: char) -> u16 {
-        self.font.glyph_index(ch)
+        self.glyph_for(ch as u32)
     }
 
-    pub fn advance_width(&self, glyph_index: u16, pixel_size: f32) -> f32 {
-        self.font.advance_width(glyph_index, pixel_size)
+    pub fn advance_units(&self, glyph: u16) -> u16 {
+        self.hmtx_table().advance_width(glyph)
     }
 
+    /// The kerning of a pair in font units, from the legacy `kern` table: the sum over its
+    /// horizontal format 0 subtables, where an override subtable replaces the sum so far.
+    pub fn kern_units(&self, left: u16, right: u16) -> i32 {
+        self.kern.as_ref().map_or(0, |k| k.value(&self.data, left, right))
+    }
+
+    /// A glyph's advance in pixels at `pixel_size`.
+    pub fn advance_width(&self, glyph: u16, pixel_size: f32) -> f32 {
+        self.advance_units(glyph) as f32 * (pixel_size / self.head.units_per_em as f32)
+    }
+
+    /// A pair's kerning in pixels at `pixel_size`.
     pub fn kern(&self, left: u16, right: u16, pixel_size: f32) -> f32 {
-        self.font.kern(left, right, pixel_size)
+        self.kern_units(left, right) as f32 * (pixel_size / self.head.units_per_em as f32)
     }
 
-    pub fn rasterize_glyph(
-        &mut self,
-        glyph_index: u16,
-        pixel_size: f32,
-    ) -> Result<&GlyphBitmap, String> {
-        if self.cache.get(glyph_index, pixel_size).is_none() {
-            let bitmap = self.font.rasterize_glyph(glyph_index, pixel_size)?;
-            self.cache.insert(glyph_index, pixel_size, bitmap);
+    /// `round_half_away(size × 64)`; `BadSize` outside 1 to 1,024.
+    pub fn size26(size: f32) -> Result<i32, FontError> {
+        if !(MIN_SIZE..=MAX_SIZE).contains(&size) {
+            return Err(FontError::BadSize);
         }
-        self.cache.get(glyph_index, pixel_size)
-            .ok_or_else(|| alloc::string::String::from("cache lookup failed after insert"))
+        Ok(floor(size * 64.0 + 0.5) as i32)
     }
 
-    pub fn font(&self) -> &Font {
-        &self.font
+    /// `round_half_away(advance_units × size26 / unitsPerEm)`.
+    pub fn advance26(&self, glyph: u16, size26: i32) -> i32 {
+        round_half_away(self.advance_units(glyph) as i64 * size26 as i64, self.head.units_per_em as i64) as i32
     }
 
-    pub fn clear_cache(&mut self) {
-        self.cache.clear();
+    /// `round_half_away(kern_units × size26 / unitsPerEm)`.
+    pub fn kern26(&self, left: u16, right: u16, size26: i32) -> i32 {
+        round_half_away(self.kern_units(left, right) as i64 * size26 as i64, self.head.units_per_em as i64) as i32
+    }
+
+    /// The hhea line metrics at `pixel_size`, through 26.6 (section 8.3). A size outside
+    /// 1 to 1,024 scales directly.
+    pub fn metrics(&self, pixel_size: f32) -> ScaledMetrics {
+        let upem = self.head.units_per_em as i64;
+        let v = |units: i16| match Font::size26(pixel_size) {
+            Ok(s26) => round_half_away(units as i64 * s26 as i64, upem) as f32 / 64.0,
+            Err(_) => units as f32 * (pixel_size / upem as f32),
+        };
+        let (ascender, descender, line_gap) = (v(self.hhea.ascender), v(self.hhea.descender), v(self.hhea.line_gap));
+        ScaledMetrics { ascender, descender, line_gap, line_height: ascender - descender + line_gap }
+    }
+
+    /// The bytes of glyph `glyph`'s record; `None` for an empty glyph.
+    fn record(&self, glyph: u16) -> Result<Option<&[u8]>, FontError> {
+        if glyph >= self.maxp.num_glyphs {
+            return Err(FontError::GlyphOutOfRange);
+        }
+        let loca = LocaTable::new(&self.data[self.loca.clone()], self.head.index_to_loc_format);
+        let (start, end) = match (loca.entry(glyph as usize), loca.entry(glyph as usize + 1)) {
+            (Some(s), Some(e)) => (s as usize, e as usize),
+            _ => return Err(FontError::GlyphOutOfRange),
+        };
+        // A glyph's own loca entry places it: one starting past the glyf table is out of
+        // range, even when the next entry equals it, and a record the next entry would run
+        // past the table ends at the table's end (section 10 scopes a bad loca entry to its
+        // own glyph).
+        let glyf = &self.data[self.glyf.clone()];
+        if start > glyf.len() || start > end {
+            return Err(FontError::GlyphOutOfRange);
+        }
+        if start == end {
+            return Ok(None);
+        }
+        if start == glyf.len() {
+            return Err(FontError::GlyphOutOfRange);
+        }
+        Ok(Some(&glyf[start..end.min(glyf.len())]))
+    }
+
+    fn parse_glyph(&self, glyph: u16) -> Result<Option<Glyph>, FontError> {
+        match self.record(glyph)? {
+            None => Ok(None),
+            Some(bytes) => glyf::parse(bytes, self.maxp.max_points as usize, self.maxp.num_glyphs).map(Some),
+        }
+    }
+
+    /// The advance, left side bearing and record bounding box of a glyph, in font units.
+    pub fn glyph_metrics(&self, glyph: u16) -> Result<GlyphMetrics, FontError> {
+        let hmtx = self.hmtx_table();
+        let (advance, lsb) = (hmtx.advance_width(glyph), hmtx.left_side_bearing(glyph));
+        let rec = self.record(glyph)?;
+        let b = |o: usize| rec.and_then(|r| r.get(o..o + 2)).map_or(0, |v| i16::from_be_bytes([v[0], v[1]]));
+        Ok(GlyphMetrics { advance, lsb, x_min: b(2), y_min: b(4), x_max: b(6), y_max: b(8) })
+    }
+
+    /// A glyph's outline with every compound expanded (section 10's glyph-scoped rules:
+    /// cycles, nesting deeper than 8, more than 256 components, bad component ids, and point
+    /// counts above 65,535 or what `maxp` declares: `maxPoints` for a simple glyph,
+    /// `maxCompositePoints` for a compound after expansion).
+    pub fn glyph_outline(&self, glyph: u16) -> Result<Outline, FontError> {
+        let m = self.glyph_metrics(glyph)?;
+        let (x_min, y_min, x_max, y_max) = (m.x_min, m.y_min, m.x_max, m.y_max);
+        let mut budget = Budget { points: 0, components: 0, limit: 0 };
+        let mut out = Outline { x_min, y_min, x_max, y_max, points: Vec::new(), ends: Vec::new() };
+        self.expand(glyph, IDENTITY, &mut Vec::new(), &mut budget, &mut out)?;
+        Ok(out)
+    }
+
+    /// Append the contours of `glyph`, mapped by `t`, to `out`. `stack` holds the compounds
+    /// being expanded, outermost first. Each point is stored once, in the outermost
+    /// glyph's coordinates, whatever the nesting.
+    fn expand(&self, glyph: u16, t: Affine, stack: &mut Vec<u16>, budget: &mut Budget, out: &mut Outline) -> Result<(), FontError> {
+        work::add(1);
+        let parsed = self.parse_glyph(glyph)?;
+        if stack.is_empty() {
+            // The outermost glyph sets the point limit maxp declares for its kind.
+            let declared = match parsed {
+                Some(Glyph::Compound { .. }) => self.maxp.max_composite_points,
+                _ => self.maxp.max_points,
+            };
+            budget.limit = (declared as usize).min(65_535);
+        }
+        match parsed {
+            None => Ok(()),
+            Some(Glyph::Simple(s)) => {
+                budget.add_points(s.points.len())?;
+                let base = out.points.len() as u32;
+                work::add(s.points.len() as u64 + s.end_points.len() as u64);
+                out.points.extend(s.points.iter().map(|p| {
+                    let (x, y) = t.apply(p.x as f32, p.y as f32);
+                    OutlinePoint { x, y, on_curve: p.on_curve }
+                }));
+                out.ends.extend(s.end_points.iter().map(|&e| base + e as u32 + 1));
+                Ok(())
+            }
+            Some(Glyph::Compound { components, .. }) => {
+                stack.push(glyph);
+                if stack.len() > MAX_DEPTH {
+                    return Err(FontError::CompoundTooDeep);
+                }
+                let first = out.points.len();
+                for c in components {
+                    work::add(1);
+                    budget.components += 1;
+                    if budget.components > glyf::MAX_COMPONENTS {
+                        return Err(FontError::CompoundTooDeep);
+                    }
+                    if stack.contains(&c.glyph) {
+                        return Err(FontError::CompoundCycle);
+                    }
+                    let local = Affine([c.xx, c.xy, c.yx, c.yy, 0.0, 0.0]);
+                    if c.flags & ARGS_ARE_XY_VALUES != 0 {
+                        // The offset is in the compound's units, unless SCALED_COMPONENT_OFFSET
+                        // alone puts it in the component's, where the component's transform
+                        // applies to it too (both flags set is invalid: the default holds).
+                        let (dx, dy) = (c.arg1 as f32, c.arg2 as f32);
+                        let scaled = c.flags & (SCALED_COMPONENT_OFFSET | UNSCALED_COMPONENT_OFFSET) == SCALED_COMPONENT_OFFSET;
+                        let (dx, dy) = if scaled { local.apply(dx, dy) } else { (dx, dy) };
+                        let moved = Affine([c.xx, c.xy, c.yx, c.yy, dx, dy]);
+                        self.expand(c.glyph, t.then(moved), stack, budget, out)?;
+                    } else {
+                        // Point matching: the component's point arg2 lands on this compound's
+                        // point arg1 (both counted from the start of their own points).
+                        let start = out.points.len();
+                        self.expand(c.glyph, t.then(local), stack, budget, out)?;
+                        let target = *out.points[first..start].get(c.arg1 as usize).ok_or(FontError::BadGlyph)?;
+                        let own = *out.points[start..].get(c.arg2 as usize).ok_or(FontError::BadGlyph)?;
+                        let (dx, dy) = (target.x - own.x, target.y - own.y);
+                        work::add((out.points.len() - start) as u64);
+                        for p in &mut out.points[start..] {
+                            p.x += dx;
+                            p.y += dy;
+                        }
+                    }
+                }
+                stack.pop();
+                Ok(())
+            }
+        }
+    }
+
+    /// A glyph's bitmap placement at `size26` and the segments it flattens to: the bitmap
+    /// is the header box scaled, plus a two-pixel margin, with the baseline at the rounded
+    /// scaled ascender. A bitmap past `4s × 4s` is `GlyphTooExpensive` before flattening.
+    pub fn layout_glyph(&self, outline: &Outline, glyph: u16, size26: i32) -> Result<GlyphLayout, FontError> {
+        if !(64..=64 * 1024).contains(&size26) {
+            return Err(FontError::BadSize);
+        }
+        let size = size26 as f32 / 64.0;
+        let scale = size / self.head.units_per_em as f32;
+        if outline.ends.is_empty() {
+            let advance = self.advance_units(glyph) as f32 * scale;
+            return Ok(GlyphLayout::Empty { advance: ceil(advance) as usize });
+        }
+        let b = self.placement([outline.x_min, outline.y_min, outline.x_max, outline.y_max], scale);
+        if b.width as f32 > 4.0 * size || b.height as f32 > 4.0 * size {
+            return Err(FontError::GlyphTooExpensive);
+        }
+        let (x_min, y_max) = (outline.x_min as f32 * scale, outline.y_max as f32 * scale);
+        let segments = flatten(outline, scale, -floor(x_min), ceil(y_max))?;
+        Ok(GlyphLayout::Outline { segments, width: b.width, height: b.height, x_offset: b.x_offset, y_offset: b.y_offset })
+    }
+
+    /// The bitmap rectangle of a glyph whose header box is `[x_min, y_min, x_max, y_max]`, at
+    /// `scale` pixels per unit.
+    fn placement(&self, [x_min, y_min, x_max, y_max]: [i16; 4], scale: f32) -> GlyphBox {
+        let baseline = (self.hhea.ascender as f32 * scale + 0.5) as i32;
+        let (x_min, y_min) = (x_min as f32 * scale, y_min as f32 * scale);
+        let (x_max, y_max) = (x_max as f32 * scale, y_max as f32 * scale);
+        GlyphBox {
+            x_offset: floor(x_min) as i32,
+            y_offset: baseline - ceil(y_max) as i32,
+            width: ceil(x_max - x_min) as usize + 2,
+            height: ceil(y_max - y_min) as usize + 2,
+        }
+    }
+
+    /// Where a glyph's bitmap would lie at `size26`, from its record header alone (no
+    /// outline, no loop): the rectangle `layout_glyph` gives a glyph with contours. `None`
+    /// for a glyph without contours, which draws nothing.
+    pub fn glyph_box(&self, glyph: u16, size26: i32) -> Result<Option<GlyphBox>, FontError> {
+        if !(64..=64 * 1024).contains(&size26) {
+            return Err(FontError::BadSize);
+        }
+        let Some(rec) = self.record(glyph)? else { return Ok(None) };
+        let h = |o: usize| rec.get(o..o + 2).map(|v| i16::from_be_bytes([v[0], v[1]])).ok_or(FontError::BadGlyph);
+        if h(0)? == 0 {
+            return Ok(None);
+        }
+        let scale = size26 as f32 / 64.0 / self.head.units_per_em as f32;
+        Ok(Some(self.placement([h(2)?, h(4)?, h(6)?, h(8)?], scale)))
+    }
+
+    /// Geometry for GPU text: a glyph's bitmap width and height at `pixel_size` and the segments
+    /// it flattens to (`layout_glyph`'s), without rasterizing them; (0, 0) and an empty list for
+    /// a glyph without contours.
+    pub fn glyph_segments(&self, glyph: u16, pixel_size: f32) -> Result<(usize, usize, Vec<outline::LineSegment>), FontError> {
+        let outline = self.glyph_outline(glyph)?;
+        match self.layout_glyph(&outline, glyph, Font::size26(pixel_size)?)? {
+            GlyphLayout::Empty { .. } => Ok((0, 0, Vec::new())),
+            GlyphLayout::Outline { segments, width, height, .. } => Ok((width, height, segments)),
+        }
+    }
+
+
+}
+
+/// A glyph bitmap's offset from the pen position and its size, in pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlyphBox {
+    pub x_offset: i32,
+    pub y_offset: i32,
+    pub width: usize,
+    pub height: usize,
+}
+
+/// Where a glyph's bitmap goes and what it is drawn from (`Font::layout_glyph`).
+#[derive(Debug, Clone)]
+pub enum GlyphLayout {
+    /// No outline: a zero-height bitmap as wide as the advance.
+    Empty { advance: usize },
+    Outline { segments: Vec<outline::LineSegment>, width: usize, height: usize, x_offset: i32, y_offset: i32 },
+}
+
+/// An affine map `[a, b, c, d, e, f]`: x' = a·x + c·y + e, y' = b·x + d·y + f.
+#[derive(Clone, Copy)]
+struct Affine([f32; 6]);
+
+const IDENTITY: Affine = Affine([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+
+impl Affine {
+    fn apply(&self, x: f32, y: f32) -> (f32, f32) {
+        let [a, b, c, d, e, f] = self.0;
+        (a * x + c * y + e, b * x + d * y + f)
+    }
+
+    /// `self` after `inner`: a point is mapped by `inner`, then by `self`.
+    fn then(&self, inner: Affine) -> Affine {
+        let [a, b, c, d, e, f] = self.0;
+        let [p, q, r, s, u, v] = inner.0;
+        Affine([a * p + c * q, b * p + d * q, a * r + c * s, b * r + d * s, a * u + c * v + e, b * u + d * v + f])
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Points and components counted across one glyph's expansion, and the point limit for
+/// the outermost glyph's kind.
+struct Budget {
+    points: usize,
+    components: usize,
+    limit: usize,
+}
 
-    static FONT_DATA: &[u8] = include_bytes!("../../../fonts/DejaVuSansMono.ttf");
-
-    #[test]
-    fn parse_font() {
-        Font::parse(FONT_DATA).expect("failed to parse DejaVuSansMono.ttf");
-    }
-
-    #[test]
-    fn cmap_lookup() {
-        let font = Font::parse(FONT_DATA).unwrap();
-        let a_idx = font.glyph_index('A');
-        assert!(a_idx > 0, "glyph index for 'A' should be nonzero, got {}", a_idx);
-        let space_idx = font.glyph_index(' ');
-        assert!(space_idx > 0, "glyph index for space should be nonzero, got {}", space_idx);
-    }
-
-    #[test]
-    fn rasterize_a_16px() {
-        let font = Font::parse(FONT_DATA).unwrap();
-        let glyph_idx = font.glyph_index('A');
-        let bitmap = font.rasterize_glyph(glyph_idx, 16.0).expect("rasterize 'A' failed");
-        assert!(bitmap.width > 0, "bitmap width should be > 0");
-        assert!(bitmap.height > 0, "bitmap height should be > 0");
-        let nonzero_count = bitmap.coverage.iter().filter(|&&c| c > 0).count();
-        assert!(nonzero_count > 0, "bitmap should have nonzero coverage pixels");
-    }
-
-    #[test]
-    fn rasterize_space() {
-        let font = Font::parse(FONT_DATA).unwrap();
-        let glyph_idx = font.glyph_index(' ');
-        let bitmap = font.rasterize_glyph(glyph_idx, 16.0).expect("rasterize space failed");
-        assert_eq!(bitmap.height, 0, "space glyph should have zero height");
-    }
-
-    #[test]
-    fn metrics_16px() {
-        let font = Font::parse(FONT_DATA).unwrap();
-        let m = font.metrics(16.0);
-        assert!(m.ascender > 0.0, "ascender should be > 0, got {}", m.ascender);
-        assert!(m.line_height > 0.0, "line_height should be > 0, got {}", m.line_height);
-        assert!(m.descender < 0.0, "descender should be negative, got {}", m.descender);
-    }
-
-    #[test]
-    fn advance_width_m_16px() {
-        let font = Font::parse(FONT_DATA).unwrap();
-        let glyph_idx = font.glyph_index('M');
-        let advance = font.advance_width(glyph_idx, 16.0);
-        assert!(advance >= 6.0 && advance <= 14.0,
-            "advance width of 'M' at 16px should be reasonable (6-14px), got {}", advance);
-    }
-
-    #[test]
-    fn cached_font_basic() {
-        let font = Font::parse(FONT_DATA).unwrap();
-        let mut cached = CachedFont::new(font, 128);
-        let glyph_idx = cached.glyph_index('A');
-        // First call populates cache
-        let bmp1 = cached.rasterize_glyph(glyph_idx, 16.0).unwrap();
-        let w1 = bmp1.width;
-        let h1 = bmp1.height;
-        // Second call hits cache
-        let bmp2 = cached.rasterize_glyph(glyph_idx, 16.0).unwrap();
-        assert_eq!(bmp2.width, w1);
-        assert_eq!(bmp2.height, h1);
-    }
-
-    // JetBrainsMono tests — exercise the second font to catch reload issues
-    static JBM_DATA: &[u8] = include_bytes!("../../../fonts/JetBrainsMono-Regular.ttf");
-
-    #[test]
-    fn jetbrains_parse_and_metrics() {
-        let font = Font::parse(JBM_DATA).unwrap();
-        let m = font.metrics(14.0);
-        assert!(m.ascender > 0.0, "JBM ascender should be > 0, got {}", m.ascender);
-        assert!(m.descender < 0.0, "JBM descender should be negative, got {}", m.descender);
-        assert!(m.line_height > 0.0, "JBM line_height should be > 0, got {}", m.line_height);
-
-        // Compute char_w and line_h the same way blog.rs does
-        let glyph_m = font.glyph_index('M');
-        assert!(glyph_m > 0, "JBM glyph index for 'M' should be nonzero");
-        let advance = font.advance_width(glyph_m, 14.0);
-        let char_w = (advance + 0.5) as usize;
-        let line_h = (m.ascender + 0.99) as usize + ((-m.descender) + 0.99) as usize;
-
-        assert!(char_w >= 4 && char_w <= 20,
-            "JBM char_w at 14px should be 4-20, got {} (advance={})", char_w, advance);
-        assert!(line_h >= 10 && line_h <= 30,
-            "JBM line_h at 14px should be 10-30, got {} (asc={} desc={})",
-            line_h, m.ascender, m.descender);
-    }
-
-    #[test]
-    fn jetbrains_cmap_ascii_range() {
-        // Verify JBM maps all printable ASCII to nonzero glyph indices
-        let font = Font::parse(JBM_DATA).unwrap();
-        for c in 32u8..=126 {
-            let ch = c as char;
-            let gi = font.glyph_index(ch);
-            assert!(gi > 0, "JBM glyph index for '{}' (0x{:02x}) is 0", ch, c);
+impl Budget {
+    fn add_points(&mut self, n: usize) -> Result<(), FontError> {
+        self.points += n;
+        if self.points > self.limit {
+            return Err(FontError::TooManyPoints);
         }
-    }
-
-    #[test]
-    fn jetbrains_rasterize_chars() {
-        let font = Font::parse(JBM_DATA).unwrap();
-        let mut cached = CachedFont::new(font, 128);
-        // Rasterize several characters and verify they have coverage
-        for ch in ['A', 'M', 'g', '0', '/'].iter() {
-            let gi = cached.glyph_index(*ch);
-            assert!(gi > 0, "JBM glyph index for '{}' should be nonzero", ch);
-            let bmp = cached.rasterize_glyph(gi, 14.0)
-                .unwrap_or_else(|e| panic!("JBM rasterize '{}' failed: {}", ch, e));
-            let nz = bmp.coverage.iter().filter(|&&v| v > 0).count();
-            assert!(nz > 0, "JBM '{}' should have nonzero coverage, got 0 ({}x{})",
-                ch, bmp.width, bmp.height);
-        }
+        Ok(())
     }
 }

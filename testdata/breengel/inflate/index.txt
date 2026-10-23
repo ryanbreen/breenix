@@ -1,0 +1,12 @@
+01.deflate 01.raw
+02.deflate 02.raw
+03.deflate 03.raw
+04.deflate 04.raw
+05.deflate 05.raw
+06.deflate 06.raw
+07.deflate 07.raw
+08.deflate 08.raw
+09.deflate 09.raw
+10.deflate 10.raw
+11.deflate 11.raw
+12.deflate 12.raw

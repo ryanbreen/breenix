@@ -3,7 +3,7 @@
 //! expectations are computed here, never taken from the kernel).
 
 use libbreenix::gpu::{self, abi, abi::Plain};
-use libbreenix::suite::{CaseError, CaseResult};
+use breenix_suite::suite::{CaseError, CaseResult};
 
 pub use abi::errno::{EAGAIN, EDQUOT, EFAULT, EINTR, EINVAL, EIO, ENODEV, ENOSYS, ETIMEDOUT};
 pub use abi::stream::encode;
@@ -119,7 +119,7 @@ pub fn warmed(ctx: u64) -> Result<(), CaseError> {
             context_state::WARMING => {}
             s => return Err(fail_msg(format!("the context's state became {s} while its catalogue warmed"))),
         }
-        ensure(libbreenix::suite::case_ms_left() > 100, || {
+        ensure(breenix_suite::suite::case_ms_left() > 100, || {
             format!("the context's catalogue warm-up had not completed ({} programs warmed) before the case's deadline", k.warmed)
         })?;
         let _ = libbreenix::time::sleep_ms(5);
