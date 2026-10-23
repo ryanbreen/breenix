@@ -1,5 +1,5 @@
 //! Emit Breenix's glyph/sampling sequence for the Linux DRM black-box probe.
-//! Usage: vertex-reuse OUTPUT_DIR FONT [VERTEX_USAGE: 0, 2 or 258]
+//! Usage: vertex-reuse OUTPUT_DIR FONT [VERTEX_USAGE] [--completion-read | --fixed-quads]
 //! The directory's `ids` comes from tools/gpu-experiments/vertex-reuse.c.
 //! Usage 0 reproduces the old upload; the default uses the production encoder policy.
 extern crate alloc;
@@ -61,7 +61,7 @@ impl e::Bindings for Bind {
         u32::from_le_bytes(self.bytes[o as usize..o as usize + 4].try_into().unwrap())
     }
 }
-fn save(enc: e::Enc, name: &str, vb: u32, usage: u32) {
+fn save(enc: e::Enc, name: &str, vb: u32, usage: Option<u32>) {
     let chunks = enc.finish().unwrap();
     let mut bytes = Vec::new();
     bytes.extend((chunks.len() as u32).to_le_bytes());
@@ -71,7 +71,7 @@ fn save(enc: e::Enc, name: &str, vb: u32, usage: u32) {
         while at < words.len() {
             let len = (words[at] >> 16) as usize;
             if words[at] & 255 == 9 && words[at + 1] == vb {
-                words[at + 3] = usage;
+                if let Some(usage) = usage { words[at + 3] = usage; }
             }
             at += 1 + len;
         }
@@ -85,13 +85,19 @@ fn save(enc: e::Enc, name: &str, vb: u32, usage: u32) {
 fn main() {
     let args: Vec<_> = std::env::args().collect();
     assert!(
-        (3..=4).contains(&args.len()),
-        "usage: vertex-reuse OUTPUT_DIR FONT [VERTEX_USAGE: 0, 2 or 258]"
+        (3..=5).contains(&args.len()),
+        "usage: vertex-reuse OUTPUT_DIR FONT [VERTEX_USAGE] [--completion-read | --fixed-quads]"
     );
-    let usage = args.get(3).map_or(
-        virgl::wire::transfer::WRITE | virgl::wire::transfer::DISCARD_RANGE,
-        |s| s.parse::<u32>().unwrap(),
-    );
+    let mut usage = None;
+    let (mut completion_read, mut fixed_quads) = (false, false);
+    for arg in &args[3..] {
+        match arg.as_str() {
+            "--completion-read" => completion_read = true,
+            "--fixed-quads" => fixed_quads = true,
+            value => { assert!(usage.is_none(), "duplicate vertex usage"); usage = Some(value.parse::<u32>().unwrap()); }
+        }
+    }
+    assert!(!(completion_read && fixed_quads), "choose one completion policy");
     let dir = &args[1];
     let ids: Vec<u32> = fs::read_to_string(format!("{dir}/ids"))
         .unwrap()
@@ -180,7 +186,8 @@ fn main() {
             expected.extend(pixels);
         }
         let mut enc = e::Enc::new();
-        e::translate(
+        if fixed_quads { enc.fixed_quads(); }
+        e::translate_at(
             &mut enc,
             &mut o,
             words.as_slice(),
@@ -195,7 +202,9 @@ fn main() {
                 suppress: None,
                 swap: None,
             },
+            if fixed_quads { e::FIXED_QUAD_OFFSET } else { 0 },
         );
+        if completion_read { enc.completion_read(ids[10], 256); }
         save(
             enc,
             &format!("{dir}/frame-{frame}-glyph.bin"),
@@ -234,7 +243,8 @@ fn main() {
         }
         fs::write(format!("{dir}/frame-{frame}-sampled.bin"), sample_expected).unwrap();
         let mut enc = e::Enc::new();
-        e::translate(
+        if fixed_quads { enc.fixed_quads(); }
+        e::translate_at(
             &mut enc,
             &mut o,
             samples.as_slice(),
@@ -249,7 +259,9 @@ fn main() {
                 suppress: None,
                 swap: None,
             },
+            if fixed_quads { e::FIXED_QUAD_OFFSET } else { 0 },
         );
+        if completion_read { enc.completion_read(ids[11], 512); }
         save(
             enc,
             &format!("{dir}/frame-{frame}-sample.bin"),

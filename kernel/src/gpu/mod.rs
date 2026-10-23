@@ -3277,10 +3277,11 @@ impl encode::Bindings for Resolved<'_> {
 }
 
 /// The resources a validated stream names: written targets, every resource, full clears.
-fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>, Option<u32>) {
     let mut written = Vec::new();
     let mut all = Vec::new();
     let mut whole = Vec::new();
+    let mut last_written = None;
     let mut target = None;
     let mut whole_clip = true;
     let mut size = [0u32; 2];
@@ -3323,6 +3324,7 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
             // A copy writes its destination, the whole of it when its clipped rectangle is.
             if let (Some(src), Some(dst)) = (view.get(handle(2)), view.get(handle(8))) {
                 add(&mut written, dst.id);
+                last_written = Some(dst.id);
                 add(&mut all, dst.id);
                 let r = [4, 5, 6, 7, 10, 11].map(|k| words.word(at + k));
                 if let Some([_, _, w, h, dx, dy]) = stream::copy_clip(r, [src.width, src.height], [dst.width, dst.height]) {
@@ -3346,6 +3348,7 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
         if writes {
             if let Some(id) = target {
                 add(&mut written, id);
+                last_written = Some(id);
             }
         }
         if let Some(id) = found {
@@ -3353,7 +3356,7 @@ fn named(words: &WordBuf, view: &View) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
         }
         at += len.max(2);
     }
-    (written, all, whole)
+    (written, all, whole, last_written)
 }
 
 /// Read-only validator view for point 24's planted pipeline modifier.
@@ -3497,7 +3500,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
     if let Some(extra) = extra.as_mut() {
         (extra.check)(&words, &view)?;
     }
-    let (written, mut named_ids, whole) = named(&words, &view);
+    let (written, mut named_ids, whole, last_written) = named(&words, &view);
     // Take the context's submission slot: one sender at a time, at most four in flight.
     let mut waited = false;
     let admitted = wait_for(None, true, |c| {
@@ -3606,8 +3609,11 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             corruption.is_some()
         });
     let svga = dev::is_svga();
+    // A viewport per rectangle costs more commands on large streams. Short Parallels
+    // streams use immutable vertices and avoid a synchronous completion read per frame.
+    let fixed_quads = crate::platform_config::is_parallels() && !svga && plan.drawn <= 64;
     // The SVGA3D DX translation makes its own vertex, constant, data and scratch surfaces.
-    let vertex_range = match if svga { Ok(None) } else { vertex_buffer_for(tgid, id, writer.serial, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) } {
+    let vertex_range = match if svga || fixed_quads { Ok(None) } else { vertex_buffer_for(tgid, id, writer.serial, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) } {
         Ok(vb) => vb,
         Err(e) => {
             release_slot(false);
@@ -3718,6 +3724,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         at += words.word(at + 1) as usize;
     }
     let translate = |enc: &mut encode::Enc, objects: &mut encode::Objects| {
+        if fixed_quads { enc.fixed_quads(); }
         encode::forget_surfaces(enc, objects, &stale);
         encode::translate_at(enc, objects, &words, &resolved, encode::Extras {
             vertex_buffer: vertex_buffer.unwrap_or(default_vb),
@@ -3728,7 +3735,12 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             corrupt,
             suppress,
             swap,
-        }, vertex_range.map_or(0, |(_, offset, _)| offset));
+        }, if fixed_quads { encode::FIXED_QUAD_OFFSET } else { vertex_range.map_or(0, |(_, offset, _)| offset) });
+        if crate::platform_config::is_parallels() && !fixed_quads {
+            if let Some(target) = last_written.and_then(|id| view.entries.iter().find(|e| e.id == id)) {
+                enc.completion_read(target.id, (target.width * 4).next_multiple_of(256));
+            }
+        }
     };
     let dx_extras = || svga::encode::Extras { scratch: plan.scratch, data_width, corrupt, suppress, swap };
     // Count surface bytes, then size the complete device buffers including the surfaces'
@@ -3955,20 +3967,6 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         }
         if forced {
             reqs.push(dev::undefined_command(Tag::Submit { ctx: id, serial, last: true }, id, fence).ok_or(EIO)?);
-        }
-        if crate::platform_config::is_parallels() && !svga {
-            // On Parallels a fenced render can still read vertices that a following inline
-            // upload rewrites. A device read completes those reads before arena reuse. Its
-            // fence is checked separately; the recorded producer remains the render above.
-            if let Some((rid, backing, pitch)) = written.iter().find_map(|rid| {
-                let r = c.resources.get(rid)?;
-                (r.kind == kind::TARGET).then(|| (*rid, r.backing.clone(), r.pitch))
-            }) {
-                reqs.push(Request::Virgl(virgl::transfer_from_host(
-                    Tag::Submit { ctx: id, serial, last: false }, id, fence, rid, backing,
-                    0, 0, 1, 1, 0, pitch,
-                )));
-            }
         }
         let ctx = c.contexts.get_mut(&id).ok_or(EINVAL)?;
         if svga {

@@ -1372,3 +1372,89 @@ This is a diagnostic case, not full-suite acceptance evidence.
 Source declaration: only Breenix's own encoder, geometry and CPU oracle, the public
 DRM interface, and the existing VirtIO transfer/fence interface were used. No
 external implementation source or externally captured command stream was used.
+
+
+## B23: Complete Parallels rendering within its command buffer
+
+B22's separate completion request made `icons/bounded` exceed its unchanged
+10-second case guard. The full Parallels boot at `4f8ef6d8`, Vigil record
+`20261023T184205Z-parallels-82617`, passed GPU 170/170 and BreenGL 398/401,
+including both memory records; the other failures were compositor-death latency
+and HiDPI readback. That boot is failure evidence, not acceptance.
+
+The pinned public protocol header P defines `TRANSFER3D` 43 and `END_TRANSFERS`
+44 (lines 123-124). Its transfer payload has the first eleven inline-write fields,
+then backing offset at word 12 and direction at word 13 (lines 630-637).
+Direction FROM_HOST is 2; usage READ is bit 0 in D's `pipe_transfer_usage`.
+Breenix encodes a one-pixel read at offset zero and ends the transfers, after all
+rendering, in the existing command buffer. Its normal fenced SUBMIT_3D therefore
+covers the completion operation as well as the draws, without another queue
+request. Both sizing and emission include these commands.
+
+Vigil diagnostic boot `20261023T185558Z-parallels-linux-probe` records the same
+20-frame, nonzero-atlas-row glyph and sampling comparison as B22:
+
+| In-stream completion read | Mismatched RGB components | Result |
+|---|---:|---|
+| First glyph target, in a following command buffer | 5,316 | FAIL |
+| Last glyph target, in a following command buffer | 0 | PASS |
+| Production encoder, last target in each render command buffer | 0 | PASS |
+
+The first two probes used the same handwritten packet from P's field layout;
+only the target changed. The third uses `Enc::completion_read` and the original
+DRM helper without its optional external completion read. The CPU oracle and
+failure exit status are unchanged. The producer option is:
+
+```sh
+vertex-reuse "$OUT" fonts/DejaVuSans.ttf 258 --completion-read
+```
+
+The last target matters: reading an earlier target did not complete the later
+draws in this device experiment. The core therefore tracks the actual last write
+in stream order, including COPY destinations, rather than choosing the first
+resource or the last distinct resource. It retains every submission resource
+through all native chunks as before. The observation pixels are not consumed by
+the CPU and do not change caller upload/readback accounting.
+
+Source declaration: only the pinned public protocol/enum headers, Breenix's own
+encoder, geometry and CPU oracle, and the public DRM interface were used.
+
+
+## B24: Immutable vertices for short Parallels frames
+
+An embedded completion read alone still exceeded `icons/bounded`'s unchanged
+10-second guard (diagnostic `20261023T190235Z-parallels-inline-icons`). A separate
+program replaying its 10,000 seeded inputs per icon measured about 12.1 seconds
+in drawing and only 41 ms in animation updates. This is diagnostic timing, not
+suite acceptance.
+
+For Parallels streams of at most 64 rectangles, the encoder now draws one fixed
+clip-space quad and places each rectangle with the existing viewport state.
+The fixed region is bytes 768..816 of the context's vertex buffer, immediately
+after the sixteen catalogue regions. Every upload to it has the identical twelve
+binary32 words, with WRITE and no discard; neither the catalogue nor the probe
+writes that region. Reuse therefore cannot change geometry a preceding GPU draw
+is still reading. Larger streams retain the bounded vertex arena and B23's
+in-stream read of the last written target. QEMU and SVGA retain their paths.
+
+The current vertex program already copies its input to clip-space output. A
+rectangle's viewport scales are half its width and height, and its translations
+are the half sums of its edges. These half-integers are exactly representable in
+the 16,384-pixel target domain. The conversion from the existing normalized
+vertex words back to integer edges decodes IEEE-754 sign, exponent and significand;
+it runs no floating-point instruction in the kernel. The fixed quad keeps the
+original triangle order. Fragment programs and their pixel coordinates, clips,
+colors, sampling and blend operations are unchanged.
+
+Host checks cover all 16,385 integer coordinates and two differently placed
+rectangles sharing exactly one twelve-word upload. The existing dynamic-upload,
+chunk sizing, allocation-failure and arena checks are unchanged. The focused
+Parallels `icons/bounded` case passed in 5,140 ms with its expected stage hash
+`150018441a3e0a7524e436f28dae6a223485b78e5b2dfa5cddacd71d9bbf38ef`
+and zero recovery uploads or device resets, in Vigil diagnostic
+`20261023T192536Z-parallels-fixed-icons`. This is one-case evidence, not full-suite
+acceptance.
+
+Source declaration: this optimization derives from Breenix's existing quad,
+vertex program and viewport encoder, its integer geometry contract, and IEEE-754.
+No external implementation source was read or used.
