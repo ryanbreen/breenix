@@ -972,7 +972,6 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
         VHANGUP_SYSCALL_NUMBER => session::sys_vhangup(),
         #[cfg(target_arch = "aarch64")]
         breengel_abi::SYS_WINDOW => window::sys_window(a[0], a[1], a[2]),
-        #[cfg(target_arch = "aarch64")]
         gpu_abi::SYS_TEST_CONTROL => crate::test_control::sys_test_control(a[0], a[1], a[2]),
         #[cfg(target_arch = "aarch64")]
         gpu_abi::SYS_GPU => crate::gpu::sys_gpu(a[0], a[1], a[2]),
