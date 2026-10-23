@@ -109,9 +109,9 @@ type WordBuf = Words;
 impl Words { fn page_count(&self) -> usize { 1 } }
 struct WarmStep { ctx: u32, pipeline: u32, left: u32, refused: bool, lost: bool }
 struct Ctx { state: CtxState, dropped: bool, owner: u64, device_alive: bool, warm: u32,
-    warm_after: u64, warm_oom: bool, busy: bool, id: u32, objects: (), dx: (), vb: u32, scratch: u32, scratch_texture: u32 }
+    warm_after: u64, warm_catalogue: bool, busy: bool, id: u32, objects: (), dx: (), vb: u32, scratch: u32, scratch_texture: u32 }
 fn ctx() -> Ctx { Ctx { state: CtxState::Creating, dropped: false, owner: 1, device_alive: true,
-    warm: 0, warm_after: 0, warm_oom: false, busy: false, id: 1, objects: (), dx: (), vb: 1, scratch: 2, scratch_texture: 3 } }
+    warm: 0, warm_after: 0, warm_catalogue: true, busy: false, id: 1, objects: (), dx: (), vb: 1, scratch: 2, scratch_texture: 3 } }
 thread_local! { static OOM: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 thread_local! { static CLOCK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
 fn now_ns() -> u64 { CLOCK.with(|c| c.get()) }
@@ -197,22 +197,39 @@ fn stalled_batch(svga: bool) {
     });
 }
 #[test]
-fn a_failed_warm_encoding_is_visible_and_a_successful_retry_clears_it() {
+fn a_failed_warm_encoding_is_retried_without_publishing_completion() {
     with_core(|c| c.contexts.get_mut(&1).unwrap().state = CtxState::Live);
     CLOCK.with(|t|t.set(2_000_000));
     OOM.with(|oom|oom.set(true));
     assert_eq!(warm_next(),None);
     with_core(|c| {
-        assert!(c.contexts[&1].warm_oom);
+        assert_eq!(c.contexts[&1].warm, 0);
         assert!(c.warm_step.is_none());
         assert!(c.syncs.is_empty());
     });
     OOM.with(|oom|oom.set(false));
     assert_eq!(warm_next(),None);
     with_core(|c| {
-        assert!(!c.contexts[&1].warm_oom);
         assert!(c.warm_step.is_some());
     });
+}
+#[test]
+fn private_context_does_not_queue_catalogue_dma() {
+    with_core(|c| {
+        let ctx = c.contexts.get_mut(&1).unwrap();
+        ctx.state = CtxState::Live;
+        ctx.warm_catalogue = false;
+    });
+    CLOCK.with(|t|t.set(2_000_000));
+    assert_eq!(warm_next(), None);
+    with_core(|c| {
+        assert!(c.warm_step.is_none());
+        assert!(c.syncs.is_empty());
+        assert_eq!(c.contexts[&1].warm, 0);
+        c.contexts.get_mut(&1).unwrap().warm_catalogue = true;
+    });
+    assert_eq!(warm_next(), None);
+    with_core(|c| assert!(c.warm_step.is_some()));
 }
 #[test]
 fn late_sync_and_submit_answers_space_real_warm_steps() {

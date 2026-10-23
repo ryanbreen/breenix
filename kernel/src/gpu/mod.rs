@@ -270,9 +270,8 @@ struct Ctx {
     warm_after: u64,
     /// Warm-up steps the device refused in a row; two quarantine the context.
     warm_failures: u32,
-    /// The latest catalogue encoding ran out of storage; a private initializer may
-    /// fail ENOMEM instead of waiting for work that could not be queued.
-    warm_oom: bool,
+    /// Private clear/copy contexts do not use the rendering catalogue.
+    warm_catalogue: bool,
     /// Device errors in a row, in fence order.
     errors_in_row: u32,
     /// Test point 31's fence-depth mode on this context.
@@ -1627,7 +1626,7 @@ impl Core {
             .then(|| now + POLL_NS);
         // Grace deadlines are independent across processes.
         let grace = self.contexts.values()
-            .filter(|x| x.state == CtxState::Live && !x.dropped && x.warm != encode::ALL_WARM)
+            .filter(|x| x.warm_catalogue && x.state == CtxState::Live && !x.dropped && x.warm != encode::ALL_WARM)
             .map(|x| x.warm_after).filter(|&g| g > now).min();
         let watchdog = hangs.chain(waits).chain(progress).min().map(|at| (at + limits::WATCHDOG_NS).min(now + EXAMINE_NS));
         watchdog.into_iter().chain(grace).chain(poll).min()
@@ -2267,7 +2266,7 @@ fn warm_next() -> Option<u64> {
             && !c.stalled
             && c.quarantined_at.is_none()
     };
-    let warming = |x: &Ctx| x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM && now_ns() >= x.warm_after;
+    let warming = |x: &Ctx| x.warm_catalogue && x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM && now_ns() >= x.warm_after;
     let due = with_core(|c| {
         if !(ready(c) && c.contexts.values().any(warming)) {
             c.warm_held = None;
@@ -2318,7 +2317,6 @@ fn warm_next() -> Option<u64> {
     };
     with_core(|c| {
         let live = c.contexts.get(&id).is_some_and(|x| x.state == CtxState::Live && x.device_alive && !x.dropped);
-        if let Some(ctx) = c.contexts.get_mut(&id) { ctx.warm_oom = chunks.is_none(); }
         if let Some(chunks) = chunks.filter(|_| live && ready(c)) {
             let too_big = matches!(&chunks, Chunks::Virgl(v) if v.iter().any(|w| w.page_count() + 2 > c.queue_size));
             if too_big {
@@ -2590,6 +2588,10 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
 }
 
 fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
+    create_context_with_catalogue(tgid, true)
+}
+
+fn create_context_with_catalogue(tgid: u64, warm_catalogue: bool) -> Result<(u64, u32), i64> {
     let _creation = CreationGuard::acquire(tgid)?;
     sweep();
     if !ensure_reaper() {
@@ -2681,7 +2683,7 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
                 warm: 0,
                 warm_after: 0,
                 warm_failures: 0,
-                warm_oom: false,
+                warm_catalogue,
                 errors_in_row: 0,
                 depth: None,
                 flushes: present_answers::Answers::new(),
