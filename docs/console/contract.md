@@ -474,6 +474,21 @@ key that sends `ESC [ p X` or `ESC O X` sends `ESC [ p ; m X`, with `p` 1 for a 
 sends `ESC [ 1 ; 9 A`, Super+F1 `ESC [ 1 ; 9 P`, Super+F5 `ESC [ 15 ; 9 ~`). Alt adds 2 to `m` rather than an
 `ESC`. A repeat has `m:2` in place of `m`. Ctrl is not Super: Ctrl+Enter and Ctrl+M send CR.
 
+### 5.6 Terminal input limits and signals
+
+The canonical line discipline has `MAX_CANON = 4096`, including its delimiter
+(`kernel/src/tty/line_discipline.rs`): an incomplete line accepts 4095 ordinary
+bytes. Further ordinary bytes are discarded, preserving room for the delimiter.
+Erase, kill-line and EOF still work at the limit: erase permits a replacement
+byte, kill-line permits a fresh line, and newline delivers the retained line.
+The next line starts normally. This is Breenix's canonical overflow policy;
+it does not impose a line length on an application reading a noncanonical byte stream.
+
+A console read waiting for input is interruptible. SIGKILL terminates its process;
+SIGTERM follows the process's disposition: default termination, ignore, a handler
+ending the read with EINTR, or a handler with SA_RESTART resuming it. These follow
+[POSIX signal actions](https://pubs.opengroup.org/onlinepubs/9799919799/functions/V2_chap02.html).
+
 ---
 
 ## 6. The boot logo
