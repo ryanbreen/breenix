@@ -1663,7 +1663,7 @@ fn every_blocking_resume_restore_uses_the_guarded_helper() {
     // leave this check passing on an empty list, which is what the floor
     // rejects.
     // B42/B43 delete graphics.rs::ensure_current_address_space. The remaining
-    // sleep, futex, wait and handlers sites all use restore_process_ttbr0;
+    // sleep, futex, wait and handlers sites (4 of 4) use restore_process_ttbr0;
     // both floors drop by exactly that one deleted site.
     assert!(
         reached.len() >= 4,
