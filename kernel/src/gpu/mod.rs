@@ -4533,10 +4533,10 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         Ok((id, r.format, r.width, r.height, r.pitch, r.backing.clone()))
     })
     .ok_or(ENODEV)??;
-    // The console writes the kernel screen's backing, which a VirGL observation poisons and
-    // transfers into. READBACK's display owner does not meet the console there: the console
-    // stops drawing while a process holds the display.
-    let canvas = core::cell::Cell::new((window && screen::is_target(id)).then(crate::console::hold_canvas));
+    // A suspended display owner observes the foreground console too. Protect its
+    // backing while the observation poisons and transfers it, just as for the
+    // privileged window observer.
+    let canvas = core::cell::Cell::new(screen::is_target(id).then(crate::console::hold_canvas));
     if window {
         // The whole bound target, in canonical rows.
         a.x = 0;
@@ -5294,4 +5294,10 @@ pub fn take_display(vt: usize) -> SyscallResult {
 pub fn give_display() -> SyscallResult {
     let _path = GpuPath::enter();
     result(caller().and_then(display::back).map(|()| 0))
+}
+
+/// A graphics terminal returned to the foreground: restore its latest retained GPU frame.
+pub fn vt_resumed() {
+    with_core(|c| console::request_restore(c.display.owner_sequence));
+    notify();
 }

@@ -22,6 +22,8 @@ pub struct Fence {
 }
 impl Fence {
     pub fn wait(self, timeout_ns: u64) -> Result<(), i64> {
+        // A suspended terminal's PRESENT sends no work and returns fence 0 (#2296).
+        if self.handle == 0 { return Ok(()); }
         let (r, _) = gpu::wait(self.context, self.handle, timeout_ns);
         if r == 0 {
             Ok(())

@@ -338,7 +338,6 @@ STD_BINARIES=(
     "nonblock_eagain_test"
     "blocking_recv_test"
     "tcp_client_test"
-    "wait_stress"
     "simple_exit"
     "simple_exit0"
     "spawn_smoke_target"
@@ -462,6 +461,12 @@ STD_BINARIES=(
     "bsshd"
     "bssh"
 )
+
+if [[ "$ARCH" == "x86_64" ]]; then
+    STD_BINARIES+=("wait_stress")
+else
+    rm -f "$TESTS_DIR/wait_stress.elf"
+fi
 
 # A retained target may contain an executable whose Cargo target was removed.
 # Validate against this invocation's manifest, not the persistent output pool.

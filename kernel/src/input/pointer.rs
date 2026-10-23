@@ -51,7 +51,6 @@ pub fn report(port: u8, motion: Motion) {
         x as u64 | (y as u64) << 24 | (new_buttons as u64) << 48,
         Ordering::Release,
     );
-    crate::syscall::graphics::wake_compositor_if_waiting();
 }
 
 fn unpack(value: u64) -> (u32, u32, u32) {

@@ -572,7 +572,7 @@ fn may_draw() -> bool {
     // foreground: the core shows that process's frames, not the kernel's.
     #[cfg(target_arch = "aarch64")]
     if matches!(DISPLAY.get(), Some(Display::GpuCore(_)))
-        && crate::syscall::graphics::DISPLAY_OWNER_GROUP.load(Ordering::Acquire) != u64::MAX
+        && crate::syscall::display::DISPLAY_OWNER_GROUP.load(Ordering::Acquire) != u64::MAX
         && !vt::presentation_suspended()
     {
         return false;
