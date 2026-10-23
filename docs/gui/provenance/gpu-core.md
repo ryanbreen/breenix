@@ -1263,8 +1263,9 @@ and PR #2111's review findings. No external implementation source was used.
 
 ## B21: Reusing inline vertex storage on Parallels
 
-`tools/gpu-host-tests/vertex_reuse.rs` and
-`tools/gpu-experiments/vertex-reuse.c` are the reproducer. The Rust producer uses the
+The versions of `tools/gpu-host-tests/vertex_reuse.rs` and
+`tools/gpu-experiments/vertex-reuse.c` at `407bcd73` are this experiment's reproducer.
+The current versions extend it as described in B22. The Rust producer uses the
 production Breenix VirGL encoder with a Vec-backed replacement for DMA storage,
 libfont's geometry, and the unchanged CPU rasterizer as its pixel oracle. The C
 helper uses Linux's public DRM ioctls to allocate resources, submit those commands,
@@ -1324,3 +1325,50 @@ To reproduce on a windowed ARM64 Linux guest with Parallels VirGL enabled:
 The distinct-range diagnostic changed only each vertex inline write's byte offset
 and its draws' vertex indices, using `(2 * frame + pass + 1) * 1024` bytes for the
 range. It left the data texture, programs, rectangles, colors and comparison alone.
+
+## B22: Parallels render completion before vertex-storage reuse
+
+B21's range-discard result did not suffice for BreenGL's stage. The extended
+reproducer places glyphs at nonzero atlas rows and compares both the six glyph
+targets and their sampled output, with the same CPU oracle and strict failure
+exit status. It retains B21's inline WRITE plus DISCARD_RANGE policy.
+
+On the same ARM64 Parallels device, Vigil boot record
+`20261023T181757Z-parallels-linux-probe` contains these 20-frame results:
+
+| Completion between glyph and sampling passes | Mismatched RGB components | Result |
+|---|---:|---|
+| DRM WAIT for every named buffer object | 1,782 | FAIL |
+| The same waits plus a fenced one-pixel device readback before the next pass | 0 | PASS |
+
+Both variants wait for every native submission. The only additional operation in
+the passing variant is a transfer from the device, whose completion is also waited
+for; its pixel value is not used to produce any image. Run the current C helper
+without arguments for the first variant, or with `--completion-read` for the
+second, using the producer invocation from B21 without the final usage override.
+Transfer the producer's `frame-*-sampled.bin` files along with the other streams.
+
+The inference from the disappearing glyphs, B21's distinct vertex ranges, and this
+readback control is that the native render completion alone is insufficient to
+make subsequent reuse of inline vertex storage safe on this device. The core
+therefore appends a fenced one-pixel completion read to Parallels render submissions
+that write a target. It publishes only after all requests have returned, and keeps
+all submission resources and arena ranges until then. No CPU code consumes the
+completion read's pixels, and it adds no caller upload or readback accounting.
+
+The completion read has its own checked native fence. The render record continues
+to name the actual SUBMIT_3D fence and answer, never the transfer's fence. Errors
+from any request and mismatched render or completion-read fences fail the
+submission. Fence withholding and depth tests still hold publication and storage;
+a depth released before the last request returns cannot release storage early.
+The shared completion path also waits for every native chunk before publication,
+including on SVGA, so a late chunk error cannot be lost after a success publication.
+
+The focused BreenGL `raster/clip-empty` case, whose stage failed with B21 alone,
+passed with this change in Vigil diagnostic boot
+`20261023T183531Z-parallels-drain-case`, with zero recovery uploads and device resets.
+This is a diagnostic case, not full-suite acceptance evidence.
+
+Source declaration: only Breenix's own encoder, geometry and CPU oracle, the public
+DRM interface, and the existing VirtIO transfer/fence interface were used. No
+external implementation source or externally captured command stream was used.

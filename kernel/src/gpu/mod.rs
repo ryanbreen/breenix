@@ -323,13 +323,13 @@ struct Sub {
     /// When `SUBMIT` handed it to the device's queue; the watchdog's clock.
     sent_ns: Option<u64>,
     error: Option<u32>,
-    mismatch: bool,
+    mismatch: Option<u32>,
     /// Its requests the device or the backlog still holds.
     requests: u32,
     /// Its result has reached callers.
     published: bool,
-    /// A submission kept by test point 31's fence-depth mode: its result, until it is
-    /// published.
+    /// The render result, retained until all requests end and any fence-depth hold is
+    /// released. Its native producer fence is never replaced by a completion-read fence.
     result: Option<(u32, u32)>,
     writer: Option<Arc<window_targets::Writer>>,
     written: Vec<u32>,
@@ -1263,61 +1263,47 @@ impl Core {
         notify();
     }
 
-    /// One SUBMIT_3D of submission `serial` came back.
+    /// One request of submission `serial` came back. Keep the render fence's identity,
+    /// but publish only after every request, including the Parallels completion read, ends.
     fn submit_returned(&mut self, serial: u64, last: bool, mut done: Done) {
         let answer = done.answer;
         let Some(sub) = self.subs.get_mut(&serial) else { return };
         sub.requests = sub.requests.saturating_sub(1);
-        if !dev::ok(answer) {
-            sub.error.get_or_insert(answer);
-        }
+        if !dev::ok(answer) { sub.error.get_or_insert(answer); }
         if last {
             let submitted = sub.present.is_none();
-            // Test point 20, `stale-fence`: the answer claims another submission's fence.
+            // Test point 20 belongs to the actual render completion, not its completion read.
             if submitted && crate::test_control::take(test_point::STALE_FENCE, 0).is_some() {
                 done.echoed = done.native_fence.unwrap_or(0).wrapping_add(1);
             }
-            if sub.error.is_none() && !done.matches_fence(sub.fence) {
-                sub.mismatch = true;
-            }
             sub.native_fence = done.native_fence.unwrap_or(0);
-            let result = match (sub.error, sub.mismatch) {
-                (Some(a), _) => (fence_status::DEVICE_ERROR, a),
-                (None, true) => (fence_status::FENCE_MISMATCH, done.echoed as u32),
-                (None, false) => (fence_status::OK, answer),
-            };
-            let ctx = sub.ctx;
-            // Test point 31, `withhold-fence`, parameters 0 and 1: ignore this completion,
-            // or every completion from now until the device is reset.
             let withheld = if submitted {
                 crate::test_control::take_if(test_point::WITHHOLD_FENCE, 0, |p| p != test_point::WITHHOLD_DEPTH)
-            } else {
-                None
-            };
+            } else { None };
             match withheld {
-                Some(p) => {
-                    if p == test_point::WITHHOLD_ALL {
-                        self.stalled = true;
-                    }
-                }
-                None => {
-                    // Fence depth keeps the answer until a fifth SUBMIT waits for room. Only
-                    // the depth that kept this submission holds it: an answer that comes after
-                    // that depth ended is published, even if a later depth has begun.
-                    let keep = self
-                        .contexts
-                        .get(&ctx)
-                        .and_then(|c| c.depth.as_ref())
-                        .is_some_and(|d| d.kept.contains(&serial));
-                    if keep {
-                        if let Some(sub) = self.subs.get_mut(&serial) {
-                            sub.result = Some(result);
-                        }
-                    } else {
-                        self.publish(serial, result.0, result.1);
-                    }
-                }
+                Some(p) => { if p == test_point::WITHHOLD_ALL { self.stalled = true; } }
+                None => sub.result = Some((fence_status::OK, answer)),
             }
+        }
+        if (last || done.fence.is_some()) && !done.matches_fence(sub.fence) {
+            sub.mismatch.get_or_insert(done.echoed as u32);
+        }
+        let ready = if sub.requests == 0 {
+            sub.result.map(|(_, render_answer)| {
+                let result = match (sub.error, sub.mismatch) {
+                    (Some(error), _) => (fence_status::DEVICE_ERROR, error),
+                    (None, Some(echoed)) => (fence_status::FENCE_MISMATCH, echoed),
+                    (None, None) => (fence_status::OK, render_answer),
+                };
+                sub.result = Some(result);
+                (sub.ctx, result)
+            })
+        } else { None };
+        if let Some((ctx, result)) = ready {
+            // A depth that ended while the completion read was pending no longer holds it.
+            let keep = self.contexts.get(&ctx).and_then(|c| c.depth.as_ref())
+                .is_some_and(|d| d.kept.contains(&serial));
+            if !keep { self.publish(serial, result.0, result.1); }
         }
         self.retire_if_done(serial);
     }
@@ -1415,7 +1401,7 @@ impl Core {
         let mut kept: Vec<(u32, u64)> = depth.kept.iter().filter_map(|s| self.subs.get(s).map(|x| (x.n, *s))).collect();
         kept.sort_unstable();
         for (_, serial) in kept {
-            if let Some((status, answer)) = self.subs.get_mut(&serial).and_then(|s| s.result.take()) {
+            if let Some((status, answer)) = self.subs.get_mut(&serial).filter(|s| s.requests == 0).and_then(|s| s.result.take()) {
                 self.publish(serial, status, answer);
             }
         }
@@ -3970,6 +3956,20 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         if forced {
             reqs.push(dev::undefined_command(Tag::Submit { ctx: id, serial, last: true }, id, fence).ok_or(EIO)?);
         }
+        if crate::platform_config::is_parallels() && !svga {
+            // On Parallels a fenced render can still read vertices that a following inline
+            // upload rewrites. A device read completes those reads before arena reuse. Its
+            // fence is checked separately; the recorded producer remains the render above.
+            if let Some((rid, backing, pitch)) = written.iter().find_map(|rid| {
+                let r = c.resources.get(rid)?;
+                (r.kind == kind::TARGET).then(|| (*rid, r.backing.clone(), r.pitch))
+            }) {
+                reqs.push(Request::Virgl(virgl::transfer_from_host(
+                    Tag::Submit { ctx: id, serial, last: false }, id, fence, rid, backing,
+                    0, 0, 1, 1, 0, pitch,
+                )));
+            }
+        }
         let ctx = c.contexts.get_mut(&id).ok_or(EINVAL)?;
         if svga {
             ctx.dx = dx_objects;
@@ -4004,7 +4004,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             native_fence: 0,
             sent_ns: None,
             error: None,
-            mismatch: false,
+            mismatch: None,
             requests: reqs.len() as u32,
             published: false,
             result: None,

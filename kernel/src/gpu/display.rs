@@ -355,7 +355,7 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
                 native_fence: 0,
                 sent_ns: None,
                 error: None,
-                mismatch: false,
+                mismatch: None,
                 requests: 2,
                 published: false,
                 result: None,

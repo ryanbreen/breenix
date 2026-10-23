@@ -151,11 +151,12 @@ fn main() {
         gpu_abi::stream::encode::clear(&mut words, 0xff000000);
         gpu_abi::stream::encode::draw(&mut words, 0, 0xff123456, &[[0, 0, 16, 16]]);
         for (n, (_, w, h, at, reference)) in glyphs.iter().enumerate() {
-            b.targets.insert(n as u64 + 10, (ids[n + 5], 64, *h as u32));
+            let oy = (n + 1) * 8;
+            b.targets.insert(n as u64 + 10, (ids[n + 5], 64, 128));
             gpu_abi::stream::encode::begin(&mut words, n as u64 + 10);
             gpu_abi::stream::encode::clear(&mut words, 0);
             let mut params = [0; 16];
-            params[..5].copy_from_slice(&[0, 0, *w as u32, *h as u32, *at as u32]);
+            params[..5].copy_from_slice(&[0, oy as u32, *w as u32, *h as u32, *at as u32]);
             gpu_abi::draw::encode(
                 &mut words,
                 8,
@@ -164,7 +165,7 @@ fn main() {
                 1,
                 off as u32,
                 &[gpu_abi::draw::Instance {
-                    rect: [0, 0, *w as i32, *h as i32],
+                    rect: [0, oy as i32, *w as i32, (oy + h) as i32],
                     params,
                 }],
             );
@@ -172,7 +173,7 @@ fn main() {
             for y in 0..*h {
                 for x in 0..*w {
                     for c in 0..4 {
-                        pixels[(y * 64 + x) * 4 + c] = reference.coverage[y * w + x];
+                        pixels[((y + oy) * 64 + x) * 4 + c] = reference.coverage[y * w + x];
                     }
                 }
             }
@@ -205,10 +206,11 @@ fn main() {
         let mut samples = Vec::new();
         gpu_abi::stream::encode::begin(&mut samples, 99);
         gpu_abi::stream::encode::clear(&mut samples, 0);
-        for (n, (_, w, h, _, _)) in glyphs.iter().enumerate() {
+        let mut sample_expected = vec![0u8; 128 * 128 * 4];
+        for (n, (_, w, h, _, reference)) in glyphs.iter().enumerate() {
             let (x, y) = ((n % 3) * 40, (n / 3) * 64);
             let mut params = [0; 16];
-            params[..5].copy_from_slice(&[x as u32, y as u32, 0, 0, 1]);
+            params[..5].copy_from_slice(&[x as u32, y as u32, 0, ((n + 1) * 8) as u32, 1]);
             gpu_abi::draw::encode(
                 &mut samples,
                 7,
@@ -221,7 +223,16 @@ fn main() {
                     params,
                 }],
             );
+            for yy in 0..*h {
+                for xx in 0..*w {
+                    for c in 0..3 {
+                        sample_expected[((yy + y) * 128 + xx + x) * 4 + c] =
+                            reference.coverage[yy * w + xx];
+                    }
+                }
+            }
         }
+        fs::write(format!("{dir}/frame-{frame}-sampled.bin"), sample_expected).unwrap();
         let mut enc = e::Enc::new();
         e::translate(
             &mut enc,

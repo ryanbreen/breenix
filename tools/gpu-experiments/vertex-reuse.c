@@ -2,7 +2,7 @@
  * Build:
  *   cc -O2 -Wall -Wextra -Werror $(pkg-config --cflags libdrm) \
  *     vertex-reuse.c -o vertex-reuse
- * Run from a directory containing the generated streams; see provenance B21.
+ * Run from a directory containing the generated streams; see provenance B22.
  * No external implementation, captured external stream or driver algorithm is used.
  */
 #include <drm.h>
@@ -73,7 +73,12 @@ static void submit(const char *file) {
   wait_all();
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+  if (argc > 2 || (argc == 2 && strcmp(argv[1], "--completion-read") != 0)) {
+    fprintf(stderr, "usage: vertex-reuse [--completion-read]\n");
+    return 2;
+  }
+  int completion_read = argc == 2;
   setbuf(stdout, NULL);
   fd = open("/dev/dri/renderD128", O_RDWR);
   ck(fd, "OPEN");
@@ -98,6 +103,13 @@ int main(void) {
     char file[80];
     snprintf(file, sizeof file, "frame-%u-glyph.bin", frame);
     submit(file);
+    if (completion_read) {
+      struct drm_virtgpu_3d_transfer_from_host before = {
+          .bo_handle = bos[10], .box = {.w = 1, .h = 1, .d = 1}};
+      ck(ioctl(fd, DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST, &before),
+         "BEFORE_TRANSFER");
+      wait_all();
+    }
     snprintf(file, sizeof file, "frame-%u-sample.bin", frame);
     submit(file);
     snprintf(file, sizeof file, "frame-%u-expected.bin", frame);
@@ -132,6 +144,31 @@ int main(void) {
       wrong += count;
     }
     fclose(expected);
+    snprintf(file, sizeof file, "frame-%u-sampled.bin", frame);
+    expected = fopen(file, "rb");
+    if (!expected)
+      exit(2);
+    struct drm_virtgpu_3d_transfer_from_host st = {
+        .bo_handle = bos[11], .box = {.w = 128, .h = 128, .d = 1}};
+    ck(ioctl(fd, DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST, &st), "SAMPLE_TRANSFER");
+    wait_all();
+    struct drm_virtgpu_map sm = {.handle = bos[11]};
+    ck(ioctl(fd, DRM_IOCTL_VIRTGPU_MAP, &sm), "SAMPLE_MAP");
+    unsigned char *sv = mmap(NULL, 65536, PROT_READ, MAP_SHARED, fd, sm.offset);
+    if (sv == MAP_FAILED)
+      exit(2);
+    unsigned sampled = 0;
+    for (unsigned j = 0; j < 65536; j++) {
+      int e = fgetc(expected);
+      if (e == EOF)
+        exit(2);
+      if (j % 4 < 3 && sv[j] != e)
+        sampled++;
+    }
+    munmap(sv, 65536);
+    fclose(expected);
+    printf("SAMPLED %u mismatches=%u\n", frame, sampled);
+    wrong += sampled;
     printf("FRAME %u mismatches=%u\n", frame, wrong);
     total += wrong;
   }
