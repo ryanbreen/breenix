@@ -920,13 +920,13 @@ pub const MINCORE_SYSCALL_NUMBER: u64 = 27;
 #[cfg(target_arch = "aarch64")]
 pub const MINCORE_SYSCALL_NUMBER: u64 = 232;
 
-/// The calls dispatched by number above that are not dispatched by enum, on
-/// both architectures: None for any other number.
 #[cfg(target_arch = "x86_64")]
 pub const ADJTIMEX_SYSCALL_NUMBER: u64 = 159;
 #[cfg(target_arch = "aarch64")]
 pub const ADJTIMEX_SYSCALL_NUMBER: u64 = 171;
 
+/// The calls dispatched by number above that are not dispatched by enum, on
+/// both architectures: None for any other number.
 pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
     if let Some(r) = ipc::dispatch(number, a) {
         return Some(r);

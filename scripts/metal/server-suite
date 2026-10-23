@@ -10,6 +10,7 @@ for sudo and the operator's console login. The boot stays leased until the calle
 through metal-run.
 """
 import argparse
+import calendar
 from contextlib import ExitStack
 import hashlib
 import json
@@ -1264,9 +1265,43 @@ class TimeCases:
         print('SUITE server VALUE time/offset offset-ms=' + str((state['realtime_ns'] - (before + after)//2)//1_000_000) + 'ms expect=-1000..1000ms', flush=True)
         return state
 
+    @staticmethod
+    def rtc_epoch(state):
+        tm = state['rtc']
+        return calendar.timegm((tm[5] + 1900, tm[4] + 1, tm[3], tm[2], tm[1], tm[0]))
+
+    def fresh_sync(self):
+        # Simulate the first sync of a boot, after stopping the supervised client.
+        self.console.run('rm -f /run/breenix/ntp-stepped /run/breenix/ntp-state')
+
     def prepare(self):
+        self.stop()
+        self.fresh_sync()
+        fixture = SntpFixture(offset=172800)
+        try:
+            self.query(fixture)
+            injected = self.status()
+            host = time.time_ns()
+            if abs(injected['realtime_ns'] - host - 172800_000_000_000) > 1_000_000_000:
+                raise ValueError('two-day wall-clock error was not injected')
+            if abs(self.rtc_epoch(injected) - host//1_000_000_000 - 172800) > 2:
+                raise ValueError('two-day hardware RTC error was not injected')
+        finally:
+            fixture.close()
+            # Restore authoritative time even when injection verification fails.
+            self.fresh_sync()
+            self.cleanup()
+            self.synced()
         state = self.offset()
-        return dict(syncs=state['syncs'], hostUtcNs=time.time_ns(), rtc=state['rtc'])
+        if abs(self.rtc_epoch(state) - time.time_ns()//1_000_000_000) > 2:
+            raise ValueError('synchronization did not correct the skewed hardware RTC')
+        return dict(syncs=state['syncs'], hostUtcNs=time.time_ns(), rtc=state['rtc'],
+                    injectedHostUtcNs=host, injectedRealtimeNs=injected['realtime_ns'],
+                    injectedRtc=injected['rtc'], skewSeconds=172800, corrected=True)
+
+    def require_preparation(self):
+        if not self.previous or not self.previous.get('corrected') or self.previous.get('skewSeconds') != 172800:
+            raise ValueError('no verified two-day clock and RTC correction before reboot')
 
     def stop(self):
         if not self.stopped:
@@ -1309,7 +1344,9 @@ class TimeCases:
                 raise ValueError('sync did not use configured sources after network-up')
             if state['poll_seconds'] != 3600 or state['rtc_utc'] is not True:
                 raise ValueError('client policy is not hourly with a UTC RTC')
-        elif name == 'offset': self.offset()
+        elif name == 'offset':
+            self.require_preparation()
+            self.offset()
         elif name == 'hourly':
             first = self.synced()
             result = self.probe.ssh('cat /run/breenix/services')
@@ -1367,7 +1404,7 @@ class TimeCases:
                 if self.status()['steps'] != 1: raise ValueError('clock stepped again after first sync')
             finally: fixture.close()
         elif name == 'rtc-reboot':
-            if not self.previous or not self.previous.get('syncs'): raise ValueError('no prior synchronized boot')
+            self.require_preparation()
             serial, stamps = self.capture()
             match = re.search(r'^\[clock\] UTC epoch=([0-9]+) source=CMOS\r?$', serial, re.M)
             if not match: raise ValueError('no hardware RTC sample in reboot capture')

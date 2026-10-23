@@ -17,7 +17,7 @@ pub(super) fn list_entries() -> Result<Vec<String>, i32> {
 pub(super) fn generate_pnp() -> Result<String, i32> {
     use core::fmt::Write;
     let mut text = String::new();
-    // Three resolver addresses and one server need at most 128 bytes.
+    // Three resolver addresses, three time sources and one server fit in 256 bytes.
     text.try_reserve_exact(256).map_err(|_| -12)?;
     match crate::net::dhcp::lease() {
         Some(lease) => {
