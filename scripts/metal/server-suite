@@ -1214,7 +1214,7 @@ class SntpFixture:
             reply = bytearray(48)
             reply[0], reply[1] = 0x24, 2
             reply[2], reply[3] = 12, 0xec
-            reply[16:24] = self.stamp(time.time() - 1)
+            reply[16:24] = self.stamp(time.time() + self.offset - 1)
             reply[24:32] = request[40:48]
             reply[32:40] = self.stamp(time.time() + self.offset)
             reply[40:48] = self.stamp(time.time() + self.offset)
