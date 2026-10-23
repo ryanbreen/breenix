@@ -169,6 +169,27 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
                 raise ValueError('boot captured no line ' + line)
     if category == 'logs' and (not records.get('previous') or records['previous'].get('commit') != sha):
         raise ValueError('logs need prior persistent boot evidence at this commit')
+    if category == 'reboot':
+        transitions = records.get('transitions', [])
+        if [t['action'] for t in transitions] != ['reboot', 'poweroff']:
+            raise ValueError('reboot needs both completed shutdown transitions')
+        for transition in transitions:
+            for field in ('beforeRun', 'afterRun'):
+                run = transition[field]
+                if (run.get('bootedCommit'), run.get('toolsCommit'), run.get('mode'), run.get('evidenceEligible')) != (sha, sha, 'persistent', True):
+                    raise ValueError('transition needs this kernel and tools on both boots')
+            if transition['exit'] != '0' or not any(e['event'] == 'requested-shutdown' and e.get('action') == transition['action'] for e in transition['events']):
+                raise ValueError('requested shutdown did not end ordinarily')
+            if transition['action'] == 'reboot' and not any(e['event'] == 'requested-reset-observed' for e in transition['events']):
+                raise ValueError('the ACPI reset was not observed')
+            for mount in ('home', 'root'):
+                if '[shutdown] ' + mount + ' clean read-only' not in transition['beforeSerial'] or '[storage] ' + mount + ' prior state=clean' not in transition['afterSerial']:
+                    raise ValueError('transition has no durable clean filesystem evidence')
+            if any(re.search(pattern, transition[field]) for pattern in fatal_patterns + [r'KERNEL PANIC:'] for field in ('beforeSerial', 'afterSerial')):
+                raise ValueError('fatal output in a clean shutdown transition')
+        panic = records.get('panicBoot', {})
+        if panic.get('run', {}).get('toolsCommit') != sha or panic.get('run', {}).get('kind') != 'fault-test' or 'KERNEL PANIC: reboot fault test' not in panic.get('serial', '') or not any(e['event'] == 'panic-reset-observed' for e in panic.get('events', [])):
+            raise ValueError('panic reset has no matching fault-test boot evidence')
     if records.get('consoleGaps'):
         raise ValueError('console capture has a gap')
     if any(re.search(pattern, serial) for pattern in fatal_patterns):

@@ -76,6 +76,7 @@ def run(api, args):
             probe.run_case('host-key', console.service_log('bsshd'))
             return console
         console = connect()
+        resources = []
         for name, _ in cases:
             started = time.monotonic()
             print('Running server/reboot ' + name, flush=True)
@@ -85,8 +86,14 @@ def run(api, args):
                     result = probe.ssh('/sbin/' + action)
                     if result.returncode != 1 or 'permission denied' not in result.stderr:
                         raise ValueError('unprivileged command did not report permission denied')
+                    kernel = probe.ssh('/sbin/' + action + ' --kernel-check')
+                    if kernel.returncode != 1 or 'permission denied' not in kernel.stderr:
+                        raise ValueError('kernel did not refuse the unprivileged reboot call with EPERM')
                     probe.require(probe.ssh('echo still-running'), 'still-running')
                 elif name == 'panic-reset':
+                    help_text = subprocess.run(['python3', str(Path(api['__file__']).with_name('metal-run')), 'boot', '--help'], capture_output=True, text=True, check=True).stdout
+                    if 'panic-reboot' not in help_text:
+                        raise ValueError('boot loop has no panic-reboot fault-test mode')
                     # The fault boot is deliberately fatal, and cannot supply ordinary milestone evidence.
                     console.logout()
                     subprocess.run(['python3', str(Path(api['__file__']).with_name('metal-run')), 'stop', current], check=True)
@@ -97,13 +104,17 @@ def run(api, args):
                     events = [json.loads(line) for line in read(fault, 'events.jsonl').splitlines()]
                     if 'KERNEL PANIC: reboot fault test' not in serial or not any(e['event'] == 'panic-reset-observed' for e in events):
                         raise ValueError('panic did not print and reset autonomously')
-                    records['panicBoot'] = fault
+                    fault_run = json.loads(read(fault, 'run.json'))
+                    if fault_run.get('toolsCommit') != args.sha or fault_run.get('kind') != 'fault-test':
+                        raise ValueError('panic fault boot has the wrong tools or boot kind')
+                    records['panicBoot'] = dict(id=fault, run=fault_run, serial=serial, events=events)
                     current = boot_command('boot', '--persistent')
                     console = connect()
                 else:
                     token = uuid.uuid4().hex
                     home = '/home/' + site['OPERATOR_USER'] + '/.reboot-suite-' + token
                     root = '/var/lib/reboot-suite-' + token
+                    resources.append((root, home, '/run/breenix/services.d/reboot-' + token))
                     # The nonce names this case's fixture directories.
                     console.run('sh -c ' + shlex.quote('set -e; mkdir ' + root + '; printf %s ' + token + ' > ' + root + '/data'))
                     probe.require(probe.ssh('set -e; mkdir ' + home + '; printf %s ' + token + ' > ' + home + '/data'))
@@ -163,16 +174,46 @@ def run(api, args):
                     probe.require(probe.ssh('cat ' + home + '/data'), token)
                     probe.require(probe.ssh('rm -r ' + home))
                     console.run('rm -r ' + root)
-                    records['transitions'].append(dict(action=name, before=previous, after=current, token=token))
+                    records['transitions'].append(dict(action=name, before=previous, after=current, token=token,
+                                                       beforeSerial=old, afterSerial=fresh, events=events,
+                                                       beforeRun=json.loads(read(previous, 'run.json')),
+                                                       afterRun=json.loads(read(current, 'run.json')), exit=read(previous, 'exit-status').strip(),
+                                                       rootReadback=text))
                 result, reason = 'PASS', ''
             except Exception as error:
                 result, reason = 'FAIL', type(error).__name__ + ': ' + str(error)
+                if ended(current):
+                    current = boot_command('boot', '--persistent')
+                    console = connect()
+                for root, home, fixture in resources:
+                    console.run('sh -c ' + shlex.quote('rm -f ' + fixture + '; svc reload'))
+                    # Stop only the two fixture services this runner started.
+                    for service in ('reboot-child', 'reboot-base'):
+                        probe.ssh('svc status ' + service)
+                # svc reload waits asynchronously; allow fixture exit before deleting its output directory.
+                time.sleep(3)
+
             elapsed = int((time.monotonic() - started) * 1000)
             records['cases'].append(dict(id='reboot/' + name, result=result, reason=reason, ms=elapsed))
             print(f'SUITE server CASE reboot/{name} {result} ms={elapsed} msg={reason}', flush=True)
+        for root, home, fixture in resources:
+            console.run('sh -c ' + shlex.quote('set -e; rm -f ' + fixture + '; svc reload; rm -rf ' + root))
+            probe.require(probe.ssh('rm -rf ' + home))
         records['boot'] = current
+        boot = json.loads(read(current, 'run.json'))
+        serial = read(current, 'serial.txt')
+        records['consoleGaps'] = [json.loads(line) for line in read(current, 'events.jsonl').splitlines()
+                                  if json.loads(line)['event'] == 'console-gap']
+        try:
+            verdict = api['score'](json.loads(read(current, 'definition/docs/suites/server.json')),
+                                   json.loads(read(current, 'definition/docs/efforts/path.json')), records, serial,
+                                   boot, args.sha, json.loads(read(current, 'definition/docs/boot-path.json'))['fatal'])
+        except ValueError as error:
+            verdict = 'FAIL: ' + str(error)
+        records['verdict'] = verdict
         save(current, 'server-reboot.json', records)
         console.logout()
+        print(verdict, flush=True)
     passed = sum(case['result'] == 'PASS' for case in records['cases'])
     print(f'SUITE server DONE passed={passed} failed={len(cases)-passed} skipped=0 total={len(cases)}', flush=True)
     print('Final reboot evidence boot: ' + current, flush=True)
