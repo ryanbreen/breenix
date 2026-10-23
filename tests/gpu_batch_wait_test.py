@@ -175,7 +175,34 @@ fn wait_for<T>(_: Option<u64>, interruptible: bool, mut f: impl FnMut(&mut Core)
         if chunks is None:
             raise AssertionError("production enum Chunks is missing")
         harness += interval + chunks.group(0) + function("attach_all") + function("warm_next")
+        readiness = re.search(r"out\.warmed = p\.contexts\.values\(\).*?\.count\(\) as u64;", CORE, re.S)
+        self.assertIsNotNone(readiness, "missing process catalogue readiness count")
+        harness += """
+struct Process { contexts: BTreeMap<u64,u32> }
+struct Counters { warmed: u64 }
+fn ready_count(c: &Core, p: &Process) -> u64 {
+    let mut out = Counters { warmed: u64::MAX };
+    assert_eq!(out.warmed,u64::MAX);
+""" + readiness.group(0) + "\n out.warmed }\n"
         harness += r'''
+#[test]
+fn readiness_distinguishes_empty_private_catalogue_from_unfinished_rendering() {
+    let p = Process { contexts: BTreeMap::from([(7,1)]) };
+    with_core(|c| {
+        assert_eq!(ready_count(c,&p),0);
+        c.contexts.get_mut(&1).unwrap().state = CtxState::Live;
+        assert_eq!(ready_count(c,&p),0);
+        c.contexts.get_mut(&1).unwrap().warm_catalogue = false;
+        assert_eq!(ready_count(c,&p),1);
+        assert_eq!(c.contexts[&1].warm,0,"readiness must not invent completed pipelines");
+        c.contexts.get_mut(&1).unwrap().warm_catalogue = true;
+        assert_eq!(ready_count(c,&p),0);
+        c.contexts.get_mut(&1).unwrap().warm = encode::ALL_WARM;
+        assert_eq!(ready_count(c,&p),1);
+        c.contexts.get_mut(&1).unwrap().state = CtxState::Quarantined;
+        assert_eq!(ready_count(c,&p),0);
+    });
+}
 #[test]
 fn stalled_batched_context_creation_observes_quarantine_without_waiters() {
     stalled_batch(false);

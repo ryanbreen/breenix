@@ -5196,9 +5196,10 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
             if let Some(p) = proc_live {
                 fill(&mut out, &p.totals);
                 out.contexts = p.contexts.len() as u64;
-                // For the process: its live contexts whose catalogue warm-up has completed.
+                // Contexts ready after catalogue setup: private clear/copy contexts have no
+                // catalogue work; rendering contexts require native completion of each step.
                 out.warmed = p.contexts.values()
-                    .filter(|id| c.contexts.get(*id).is_some_and(|x| x.state == CtxState::Live && x.warm == encode::ALL_WARM))
+                    .filter(|id| c.contexts.get(*id).is_some_and(|x| x.state == CtxState::Live && (!x.warm_catalogue || x.warm == encode::ALL_WARM)))
                     .count() as u64;
                 out.resources = p.resources.len() as u64;
                 let (held, copies) = (p.quota.held.load(Ordering::Acquire), p.quota.copies.load(Ordering::Acquire));
@@ -5212,7 +5213,7 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
             out.state = match ctx.state {
                 CtxState::Quarantined => abi::context_state::QUARANTINED,
                 CtxState::Reset => abi::context_state::RESET,
-                _ if ctx.warm == encode::ALL_WARM => abi::context_state::LIVE,
+                _ if !ctx.warm_catalogue || ctx.warm == encode::ALL_WARM => abi::context_state::LIVE,
                 _ => abi::context_state::WARMING,
             };
             out.warmed = ctx.warmed() as u64;
