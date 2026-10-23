@@ -17,6 +17,7 @@ use libbreenix::io;
 use libbreenix::fs;
 use libbreenix::process::{fork, exec, setsid, ForkResult};
 use libbreenix::pty;
+use libbreenix::termios;
 use libbreenix::types::Fd;
 use libbreenix::time;
 
@@ -658,6 +659,11 @@ fn main() {
                     print!("[bterm] font changed: {} size={}\n", win.mono_path(), font_size);
                     font_changed = true;
                 }
+                Event::ResizeRequested { width, height } => {
+                    if let Err(e) = win.apply_resize(*width, *height) {
+                        print!("[bterm] resize refused: {}x{}: {}\n", width, height, e);
+                    }
+                }
                 Event::Resized { width, height } => {
                     content_w = *width;
                     content_h = height.saturating_sub(tab_bar_pixels);
@@ -668,8 +674,15 @@ fn main() {
                         rows = new_rows;
                         for tab in tabs.iter_mut() {
                             tab.emu.resize(cols, rows);
+                            let size = termios::Winsize { ws_row: rows as u16, ws_col: cols as u16,
+                                ws_xpixel: content_w as u16, ws_ypixel: content_h as u16 };
+                            if let Err(e) = termios::set_winsize(tab.master_fd, &size) {
+                                print!("[bterm] PTY resize failed: {}\n", e);
+                            }
                         }
                     }
+                    print!("[bterm] resized: {}x{} grid={}x{} tabs={}x{} scale={}\n",
+                        width, height, cols, rows, width, tab_bar_pixels, ui_scale);
                     tab_bar.set_rect(Rect::new(0, 0, *width as i32 / ui_scale, TAB_BAR_HEIGHT));
                     for tab in tabs.iter_mut() {
                         tab.emu.dirty = true;

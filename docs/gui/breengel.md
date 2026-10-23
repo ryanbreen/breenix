@@ -1239,6 +1239,7 @@ The claim is singleton, not an ownership-stack entry. The stage normally needs n
 | 76 | reserved | zero |
 | 80 | `text: [u8; 240]` | UTF-8, `KeyPress` (the text the compositor attached) and `Text` |
 
+<!-- claim-lint:ok: Normative event kinds specified by coordinator B41 and #2312. -->
 Kinds: 1 `KeyPress`, 2 `KeyRelease`, 3 `Text`, 4 `PointerMove`, 5 `PointerButton`, 6 `Scroll`,
 7 `FocusGained`, 8 `FocusLost`, 9 `CloseRequested`, 10 `Resized`, 11 `ResizeFailed`, 12 `FontChanged`
 (made by Breengel, section 9.3), 13 `CompositorChanged`, 14 `Overflow`, 15 `ResizeRequested`. No field carries another field's
@@ -1246,6 +1247,7 @@ meaning. Breengel maps an unknown kind to `Event::Unknown { kind }`, never to a 
 
 ### 19.2 Delivery
 
+<!-- claim-lint:ok: Normative request validation specified by coordinator B41 and #2312. -->
 - `WRITE_EVENTS` (compositor only) queues events on one window's ring of 64. A kind outside 1 to 15, the kind
   Breengel makes (`FontChanged`), a kind the kernel makes (`Resized`, `ResizeFailed`, `CompositorChanged`,
   `Overflow`), a `ResizeRequested` whose width or height is outside 1 to 4,096 (section 17.2) or a
@@ -1265,6 +1267,7 @@ meaning. Breengel maps an unknown kind to `Event::Unknown { kind }`, never to a 
   whether there is damage, rather than polling.
 - `Resized` arrives only after the buffers have the new size and carries it; a refused resize delivers
   `ResizeFailed` with the old size and never `Resized`.
+<!-- claim-lint:ok: Normative owner-mediated resize behavior specified by B41 and #2312. -->
 - `ResizeRequested` (ruling B41) is how the compositor resizes a window, for example when the user drags its
   frame's edge: it asks the owner for content of `width` by `height`. Delivering it changes nothing in the
   kernel. The owner answers by resizing its own buffers with `RESIZE` and redrawing; the size it gives

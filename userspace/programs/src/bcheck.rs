@@ -522,6 +522,11 @@ fn main() {
                     scroll_bar.scroll(delta_y);
                     need_redraw = true;
                 }
+                Event::ResizeRequested { width, height } => {
+                    if let Err(e) = win.apply_resize(width, height) {
+                        println!("[bcheck] resize refused: {}x{}: {}", width, height, e);
+                    }
+                }
                 Event::Resized { width: w, height: h } => {
                     let new_visible_h = h as i32 - LIST_START_Y - FOOTER_H;
                     let new_bar_rect = Rect::new(

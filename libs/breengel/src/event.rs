@@ -130,6 +130,7 @@ impl Event {
             event_kind::FOCUS_GAINED => Event::FocusGained,
             event_kind::FOCUS_LOST => Event::FocusLost,
             event_kind::CLOSE_REQUESTED => Event::CloseRequested,
+            event_kind::RESIZE_REQUESTED => Event::ResizeRequested { width: raw.width, height: raw.height },
             event_kind::RESIZED => Event::Resized { width: raw.width, height: raw.height },
             event_kind::RESIZE_FAILED => Event::ResizeFailed { width: raw.width, height: raw.height },
             event_kind::FONT_CHANGED => Event::FontChanged,

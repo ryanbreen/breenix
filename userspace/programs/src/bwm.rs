@@ -1205,8 +1205,21 @@ fn discover_windows(
     let removed = before > windows.len();
 
     let mut added = false;
+    let mut resized = false;
     for info in &win_infos {
-        if windows.iter().any(|w| w.window_id == info.id) { continue; }
+        if let Some(w) = windows.iter_mut().find(|w| w.window_id == info.id) {
+            let width = info.width as usize + if w.chromeless { 0 } else { px(BORDER_WIDTH) * 2 };
+            let height = info.height as usize + if w.chromeless { 0 } else { px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2 };
+            if (w.width, w.height) != (width, height) {
+                w.width = width;
+                w.height = height;
+                w.frame_checked = false;
+                w.check_moved = 0;
+                print!("[bwm] client resized: id={} content={}x{} frame={}x{}\n", w.window_id, info.width, info.height, width, height);
+                resized = true;
+            }
+            continue;
+        }
 
         let n = windows.len();
         let mut title = [0u8; 32];
@@ -1231,7 +1244,7 @@ fn discover_windows(
         let (win_x, win_y, win_w, win_h) = match find_window_defaults(
             &title[..title_len], title_len, win_defaults,
         ) {
-            Some((dx, dy, dw, dh)) => (dx, dy, dw, dh),
+            Some((dx, dy, _, _)) => (dx, dy, total_w, total_h),
             None => {
                 if chromeless && total_w >= screen_w && total_h >= screen_h {
                     (0i32, 0i32, total_w, total_h)
@@ -1280,7 +1293,7 @@ fn discover_windows(
         added = true;
     }
 
-    removed || added
+    removed || added || resized
 }
 
 /// Publish each window's place: its content position, its stacking (z from the bottom) and
@@ -1618,7 +1631,6 @@ fn main() {
     let mut frame_failed = false;
     // Another process holds the display: bwm composes again when it has it back.
     let mut display_lost = false;
-    let mut initial_client_checked = false;
     // The pointer the last composed frame drew, so a move repaints where it was.
     let mut drawn_pointer: Option<Pointer> = None;
 
@@ -1825,13 +1837,13 @@ fn main() {
                     }
 
                     // Enforce minimums
-                    if (new_w as usize) < px(MIN_WIN_WIDTH) {
+                    if new_w < px(MIN_WIN_WIDTH) as i32 {
                         if edge == ResizeEdge::Left || edge == ResizeEdge::TopLeft || edge == ResizeEdge::BottomLeft {
                             new_x = orig_x + orig_w as i32 - px(MIN_WIN_WIDTH) as i32;
                         }
                         new_w = px(MIN_WIN_WIDTH) as i32;
                     }
-                    if (new_h as usize) < px(MIN_WIN_HEIGHT) {
+                    if new_h < px(MIN_WIN_HEIGHT) as i32 {
                         if edge == ResizeEdge::Top || edge == ResizeEdge::TopLeft || edge == ResizeEdge::TopRight {
                             new_y = orig_y + orig_h as i32 - px(MIN_WIN_HEIGHT) as i32;
                         }
@@ -1843,13 +1855,13 @@ fn main() {
 
                     let (ox0, oy0, ox1, oy1) = windows[win_idx].bounds();
 
-                    // Update frame dimensions live. The window interface has no compositor
-                    // resize request (breengel.md section 17.4), so the client's buffers keep
-                    // their size and the frame's content area shows them at its top left.
+                    // B41: the frame stays at the owner's LIST size until it answers.
+                    // Bound the physical client size before sending the request.
+                    let width = new_w.saturating_sub((px(BORDER_WIDTH) * 2) as i32).clamp(1, 4096) as u32;
+                    let height = new_h.saturating_sub((px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2) as i32).clamp(1, 4096) as u32;
+                    send_to(&windows, win_idx, Input::Resize { width, height });
                     windows[win_idx].x = new_x;
                     windows[win_idx].y = new_y;
-                    windows[win_idx].width = new_w as usize;
-                    windows[win_idx].height = new_h as usize;
 
                     if windows[win_idx].window_id != 0 {
                         let cx = windows[win_idx].content_x();
@@ -2128,10 +2140,9 @@ fn main() {
                     drawn_pointer = Some(pointer);
                     fps_frames_since_last = fps_frames_since_last.wrapping_add(1);
                     // Each client window's first shown frame is read back and compared.
-                    // The first frame that shows a client is the desktop's initial client:
-                    // the whole frame is checked and only its pass prints the desktop
-                    // stage's marker. A later window is checked over the area it covers,
-                    // which bounds the read-back to that window. A client that committed
+                    // Check the whole scanout for each newly shown or resized client,
+                    // including other clients that keep animating beside it.
+                    // A client that committed
                     // again after the frame sampled it is checked on a later frame. Any
                     // failure prints the line docs/boot-path.json lists as fatal.
                     let unchecked: Vec<(u64, [u32; 4])> = if windows.iter().any(|win| !win.frame_checked) {
@@ -2147,7 +2158,7 @@ fn main() {
                         .min_by_key(|(id, _)| windows.iter().find(|w| w.window_id == *id).map_or(0, |w| w.check_moved))
                         .copied();
                     if let Some((id, area)) = next {
-                        let whole = !initial_client_checked;
+                        let whole = true;
                         let area = if whole { [0, 0, screen_w as u32, screen_h as u32] } else { area };
                         let result = if whole { gpu.check(id, &layers, Some(pointer)) } else { gpu.check_area(id, &layers, Some(pointer), area) };
                         let retry = match (&result, windows.iter_mut().find(|win| win.window_id == id)) {
@@ -2160,9 +2171,6 @@ fn main() {
                         if !retry {
                             if let Some(win) = windows.iter_mut().find(|win| win.window_id == id) {
                                 win.frame_checked = true;
-                            }
-                            if whole {
-                                initial_client_checked = true;
                             }
                             report_check(id, whole, area, &result);
                         }

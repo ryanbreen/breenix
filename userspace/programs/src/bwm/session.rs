@@ -86,6 +86,7 @@ pub enum Input {
     FocusGained,
     FocusLost,
     Close,
+    Resize { width: u32, height: u32 },
 }
 
 /// Write one event to window `id`, with the next input serial.
@@ -133,6 +134,11 @@ pub fn send(id: u64, input: Input) -> Result<(), Error> {
         Input::FocusGained => event.kind = kind::FOCUS_GAINED,
         Input::FocusLost => event.kind = kind::FOCUS_LOST,
         Input::Close => event.kind = kind::CLOSE_REQUESTED,
+        Input::Resize { width, height } => {
+            event.kind = kind::RESIZE_REQUESTED;
+            event.width = width;
+            event.height = height;
+        }
     }
     event.serial = EVENT_SERIAL.fetch_add(1, Ordering::Relaxed) + 1;
     event.time_ns = libbreenix::time::now_monotonic().map_or(0, |t| t.as_nanos() as u64);

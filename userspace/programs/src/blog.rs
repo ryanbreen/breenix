@@ -592,6 +592,11 @@ fn main() {
                     );
                     tab_bar.update(&input);
                 }
+                Event::ResizeRequested { width, height } => {
+                    if let Err(e) = win.apply_resize(width, height) {
+                        println!("[blog] resize refused: {}x{}: {}", width, height, e);
+                    }
+                }
                 Event::Resized { width: w, height: h } => {
                     let new_content_h = h as i32 - TAB_BAR_H - STATUS_BAR_H;
                     visible_lines = if new_content_h > 0 && fonts.line_h > 0 {

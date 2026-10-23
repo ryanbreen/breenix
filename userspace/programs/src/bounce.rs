@@ -471,6 +471,11 @@ fn run_window_loop(win: &mut Window, spheres: &mut [Sphere; NUM_SPHERES]) {
                         }
                     }
                 }
+                Event::ResizeRequested { width, height } => {
+                    if let Err(e) = win.apply_resize(width, height) {
+                        println!("[bounce] resize refused: {}x{}: {}", width, height, e);
+                    }
+                }
                 Event::Resized { width: w, height: h } => {
                     width = w as i32;
                     height = h as i32;
