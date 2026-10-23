@@ -2,9 +2,9 @@
 
 /// Whether `bytes`, one serial line, is a producer line for `marker`: one of its `|`
 /// alternatives appears in it, the line is not one of the loader's announcements, and the
-/// alternative does not appear only inside a longer marker of `all` that contains it, so
-/// `EXEC_STACK_ARGV_TEST_PASSED` never lights `ARGV_TEST_PASSED`. This is the canonical boot
-/// stage scorer's rule (xtask's `marker_alternative_present`).
+/// alternative does not appear only inside a longer catalogue marker that contains it, so
+/// a longer exec-stack marker does not light its shorter argument-check suffix. This is the
+/// canonical boot stage scorer's rule (xtask's `marker_alternative_present`).
 pub fn matches(bytes: &[u8], marker: &str, all: &[&str]) -> bool {
     if [b"test_exec".as_slice(), b"will emit", b"->", b"marker if"]
         .iter()
