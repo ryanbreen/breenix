@@ -2831,7 +2831,7 @@ fn w_console_writer_kill() -> CaseResult {
     let progress = Shared::new()?;
     let mut child = Child::start(|| {
         use std::os::fd::AsRawFd;
-        let file = match std::fs::OpenOptions::new().write(true).open("/dev/console") {
+        let file = match std::fs::OpenOptions::new().write(true).open("/dev/tty1") {
             Ok(file) => file, Err(_) => return 10,
         };
         if setmask(0).is_err() || ignore(SIGTERM).is_err() { return 11; }
