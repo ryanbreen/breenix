@@ -2,7 +2,7 @@
 //! The shared runner forks each case and enforces its default 10-second deadline.
 //! Unsupported operations fail their cases; ext2 and Linux ABI checks are named.
 use libbreenix::error::Error;
-use libbreenix::suite::{case, category, check, fail, suite, CaseResult, Suite};
+use breenix_suite::suite::{case, category, check, fail, suite, CaseResult, Suite};
 use libbreenix::syscall::{nr, raw};
 use libbreenix::types::Fd;
 use libbreenix::{
@@ -325,7 +325,7 @@ struct Tree {
     paths: RefCell<Vec<String>>,
 }
 impl Tree {
-    fn new() -> Result<Self, libbreenix::suite::CaseError> {
+    fn new() -> Result<Self, breenix_suite::suite::CaseError> {
         umask(0)?;
         let root = format!("/tmp/directories-{}", process::getpid()?.raw());
         fs::mkdir(&root, 0o777)?;
@@ -339,12 +339,12 @@ impl Tree {
         self.paths.borrow_mut().push(p.clone());
         p
     }
-    fn dir(&self, name: &str) -> Result<String, libbreenix::suite::CaseError> {
+    fn dir(&self, name: &str) -> Result<String, breenix_suite::suite::CaseError> {
         let p = self.path(name);
         fs::mkdir(&p, 0o777)?;
         Ok(p)
     }
-    fn file(&self, name: &str, data: &[u8]) -> Result<String, libbreenix::suite::CaseError> {
+    fn file(&self, name: &str, data: &[u8]) -> Result<String, breenix_suite::suite::CaseError> {
         let p = self.path(name);
         let fd = fs::open_with_mode(&p, O_CREAT | O_EXCL | O_RDWR, 0o666)?;
         let written = write_all(fd, data);
@@ -353,7 +353,7 @@ impl Tree {
         closed?;
         Ok(p)
     }
-    fn sym(&self, name: &str, target: &str) -> Result<String, libbreenix::suite::CaseError> {
+    fn sym(&self, name: &str, target: &str) -> Result<String, breenix_suite::suite::CaseError> {
         let p = self.path(name);
         fs::symlink(target, &p)?;
         Ok(p)
@@ -402,7 +402,7 @@ fn bytes(p: &str, expected: &[u8]) -> CaseResult {
     let fd = File::open(p, O_RDONLY)?;
     contents(fd.fd(), expected)
 }
-fn cwd() -> Result<String, libbreenix::suite::CaseError> {
+fn cwd() -> Result<String, breenix_suite::suite::CaseError> {
     let mut b = [0xa5; 256];
     process::getcwd(&mut b)?;
     let end = b.iter().position(|v| *v == 0).ok_or("getcwd lacks NUL")?;
@@ -427,7 +427,7 @@ impl Directory {
             file: File::open(p, O_RDONLY | O_DIRECTORY)?,
         })
     }
-    fn readdir(&mut self) -> Result<Option<Entry>, libbreenix::suite::CaseError> {
+    fn readdir(&mut self) -> Result<Option<Entry>, breenix_suite::suite::CaseError> {
         let mut b = [0u8; 32];
         let n = fs::getdents64(self.file.fd(), &mut b)?;
         if n == 0 {
@@ -447,7 +447,7 @@ impl Directory {
             ino: u64::from_ne_bytes(b[..8].try_into().unwrap()),
         }))
     }
-    fn all(&mut self) -> Result<Vec<Entry>, libbreenix::suite::CaseError> {
+    fn all(&mut self) -> Result<Vec<Entry>, breenix_suite::suite::CaseError> {
         let mut entries = Vec::new();
         while let Some(e) = self.readdir()? {
             check(entries.len() < 32, "directory stream did not terminate")?;
@@ -470,7 +470,7 @@ impl Directory {
 }
 /// Every record one getdents64 call returns, each with its d_off: the cookie
 /// for the position after it. The buffer admits names of any length.
-fn dirents(fd: Fd) -> Result<Vec<(Entry, u64)>, libbreenix::suite::CaseError> {
+fn dirents(fd: Fd) -> Result<Vec<(Entry, u64)>, breenix_suite::suite::CaseError> {
     let mut b = [0u8; 4096];
     let n = fs::getdents64(fd, &mut b)?;
     check(n <= b.len(), "invalid getdents64 length")?;
@@ -496,7 +496,7 @@ fn dirents(fd: Fd) -> Result<Vec<(Entry, u64)>, libbreenix::suite::CaseError> {
     Ok(records)
 }
 /// The first entry at a cookie, read by seeking a descriptor to it.
-fn entry_at(fd: Fd, cookie: u64) -> Result<Option<Entry>, libbreenix::suite::CaseError> {
+fn entry_at(fd: Fd, cookie: u64) -> Result<Option<Entry>, breenix_suite::suite::CaseError> {
     check(
         fs::lseek(fd, cookie as i64, SEEK_SET)? == cookie,
         "directory seek returned a different cookie",
@@ -510,7 +510,7 @@ fn free_counts(fd: Fd) -> Result<(u64, u64), Error> {
 }
 /// Settle the captured orphan cohort before taking this case's baseline.
 /// An unchanged count for a short interval does not establish completion.
-fn settled_counts(fd: Fd) -> Result<(u64, u64), libbreenix::suite::CaseError> {
+fn settled_counts(fd: Fd) -> Result<(u64, u64), breenix_suite::suite::CaseError> {
     let counters = fs::open("/proc/breenix/ext2", O_RDONLY)?;
     let mut buf = [0u8; 512];
     let read = io::read(counters, &mut buf);
@@ -518,7 +518,7 @@ fn settled_counts(fd: Fd) -> Result<(u64, u64), libbreenix::suite::CaseError> {
     check(read? != 0, "missing ext2 allocation counters")?;
     Ok(free_counts(fd)?)
 }
-fn listing() -> Result<Tree, libbreenix::suite::CaseError> {
+fn listing() -> Result<Tree, breenix_suite::suite::CaseError> {
     let f = Tree::new()?;
     f.file("beta", b"b")?;
     f.file("alpha", b"a")?;
@@ -1778,7 +1778,7 @@ mod sibling {
         core::ptr::null_mut()
     }
 
-    pub fn spawn(shared: &Shared) -> Result<usize, libbreenix::suite::CaseError> {
+    pub fn spawn(shared: &Shared) -> Result<usize, breenix_suite::suite::CaseError> {
         let mut thread = 0usize;
         // SAFETY: `shared` outlives the thread, which the caller joins.
         let r = unsafe {
@@ -2412,7 +2412,7 @@ fn cwd_count_abi() -> CaseResult {
     check(&buf[..f.root.len()] == f.root.as_bytes(), "getcwd pathname differs")?;
     check(buf[size..].iter().all(|v| *v == 0xa5), "getcwd wrote past its buffer")
 }
-fn symlink_tree() -> Result<(Tree, String, String), libbreenix::suite::CaseError> {
+fn symlink_tree() -> Result<(Tree, String, String), breenix_suite::suite::CaseError> {
     let f = Tree::new()?;
     let parent = f.dir("real")?;
     let target = f.dir("real/child")?;

@@ -16,17 +16,11 @@ crate-type = ["rlib"]
 default = []
 std = []
 runtime = []
-# The effort-suite runner (src/suite.rs): needs std, and libgfx-ref for its CPU diagnostics
-# panel and the run stage's oracle; the stage itself is drawn on the GPU by the painter the
-# suite binary registers (ruling B36).
-suite = ["std", "dep:libgfx-ref", "dep:libpixcheck"]
+# Suite-mode upload auditing; the harness lives in the breenix-suite package.
+suite = ["std"]
 
 [dependencies]
 breengel-abi = { path = "../breengel-abi" }
-# A pure no_std library: gpu-abi's layouts and the window ABI unconditionally, libgfx-ref
-# only with the suite feature.
-libgfx-ref = { path = "../libgfx-ref", optional = true }
-libpixcheck = { path = "../libpixcheck", optional = true }
 # Syscall 416's layouts and the BGL command stream, shared with the kernel.
 gpu-abi = { path = "../gpu-abi" }
 

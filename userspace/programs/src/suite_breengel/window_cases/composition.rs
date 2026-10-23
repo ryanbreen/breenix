@@ -82,7 +82,7 @@ pub(crate) fn formula(scene: &[Placed]) -> impl Fn(u32, u32) -> [u8; 4] + '_ {
 }
 
 /// kiosk_test, claimed, composing only when told, with the cursor hidden.
-pub(crate) fn compositor() -> Result<Helper, libbreenix::suite::CaseError> {
+pub(crate) fn compositor() -> Result<Helper, breenix_suite::suite::CaseError> {
     let (mut k, _) = kiosk().cite("24")?;
     let auto = k.ask("auto 0").cite("24")?;
     ensure(auto == "ok", "24", format!("kiosk_test auto 0 answered `{auto}`"))?;
@@ -104,18 +104,18 @@ pub(crate) fn place(k: &mut Helper, id: u64, p: &Placed, flags: u32) -> CaseResu
 }
 
 /// The compositor composes once: its serial and pixel count.
-pub(crate) fn compose(k: &mut Helper) -> Result<(u64, u64), libbreenix::suite::CaseError> {
+pub(crate) fn compose(k: &mut Helper) -> Result<(u64, u64), breenix_suite::suite::CaseError> {
     let r = k.ask("composite").cite("24")?;
     let mut w = r.split(' ');
     match (w.next(), w.next().and_then(|s| s.parse().ok()), w.next().and_then(|s| s.parse().ok())) {
         (Some("ok"), Some(serial), Some(pixels)) => Ok((serial, pixels)),
-        _ => Err(libbreenix::suite::CaseError::Fail(format!("gpu-display: B13 userspace snapshot/stream COMPOSITE answered `{r}` ({CONTRACT} section 18)"))),
+        _ => Err(breenix_suite::suite::CaseError::Fail(format!("gpu-display: B13 userspace snapshot/stream COMPOSITE answered `{r}` ({CONTRACT} section 18)"))),
     }
 }
 
 // claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 /// The active physical mode owns every screen allocation and row index (B8).
-pub(crate) fn screen_size() -> Result<(usize,usize), libbreenix::suite::CaseError> {
+pub(crate) fn screen_size() -> Result<(usize,usize), breenix_suite::suite::CaseError> {
     let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("18")?;
     ensure((modes.current as usize)<modes.modes.len(),"18","gpu-display: invalid current mode")?;
     let mode=&modes.modes[modes.current as usize];
@@ -124,7 +124,7 @@ pub(crate) fn screen_size() -> Result<(usize,usize), libbreenix::suite::CaseErro
 }
 
 /// The whole composed screen and its observation record (`SCANOUT_READBACK`, as root).
-pub(crate) fn screen() -> Result<(Vec<u8>, [u8; 1024]), libbreenix::suite::CaseError> {
+pub(crate) fn screen() -> Result<(Vec<u8>, [u8; 1024]), breenix_suite::suite::CaseError> {
     let (width,height) = screen_size()?;
     let mut px = vec![0u8; width * height * 4];
     let mut rec = [0u8; 1024];
@@ -135,7 +135,7 @@ pub(crate) fn screen() -> Result<(Vec<u8>, [u8; 1024]), libbreenix::suite::CaseE
     rb.record_len = 1024;
     let r = call(op::SCANOUT_READBACK, &mut rb);
     if r < 0 {
-        return Err(libbreenix::suite::CaseError::Fail(format!("gpu-display: B13 48-byte SCANOUT_READBACK {} reason {} ({CONTRACT} section 20.1)", outcome(r), rb.reason)));
+        return Err(breenix_suite::suite::CaseError::Fail(format!("gpu-display: B13 48-byte SCANOUT_READBACK {} reason {} ({CONTRACT} section 20.1)", outcome(r), rb.reason)));
     }
     ensure(super::handoff::word(&rec,0)==2 && super::handoff::word(&rec,4)==1024,
         "20.1", "gpu-display: B13 window observation must decode core record v2")?;
@@ -149,15 +149,15 @@ pub(crate) fn screen_is(px: &[u8], scene: &[Placed], what: &str) -> CaseResult {
 }
 
 /// A composite's record entries, `(id, commit_id, pixel_gen, pixels)`, with its header pixels.
-pub(crate) fn record(k: &mut Helper, serial: u64) -> Result<(u64, Vec<(u64, u64, u64, u64)>), libbreenix::suite::CaseError> {
+pub(crate) fn record(k: &mut Helper, serial: u64) -> Result<(u64, Vec<(u64, u64, u64, u64)>), breenix_suite::suite::CaseError> {
     let r = k.ask(&format!("record {serial}")).cite("24")?;
     let mut words = r.split(' ');
     if words.next() != Some("ok") {
-        return Err(libbreenix::suite::CaseError::Fail(format!("COMPOSITE_RECORD({serial}) answered `{r}` ({CONTRACT} section 18)")));
+        return Err(breenix_suite::suite::CaseError::Fail(format!("COMPOSITE_RECORD({serial}) answered `{r}` ({CONTRACT} section 18)")));
     }
     let head: Vec<u64> = words.by_ref().take(4).filter_map(|w| w.parse().ok()).collect();
     if head.len() != 4 || head[0] != serial {
-        return Err(libbreenix::suite::CaseError::Fail(format!("COMPOSITE_RECORD({serial}) answered `{r}` ({CONTRACT} section 18)")));
+        return Err(breenix_suite::suite::CaseError::Fail(format!("COMPOSITE_RECORD({serial}) answered `{r}` ({CONTRACT} section 18)")));
     }
     let entries = words.filter_map(|e| {
         let v: Vec<u64> = e.split(':').filter_map(|n| n.parse().ok()).collect();
@@ -425,7 +425,7 @@ fn composition_damage_metadata() -> CaseResult {
 }
 
 /// The trace counter `composite_pixels`.
-fn composed_pixels() -> Result<u64, libbreenix::suite::CaseError> {
+fn composed_pixels() -> Result<u64, breenix_suite::suite::CaseError> {
     counter("composite_pixels").cite("18")
 }
 
@@ -621,7 +621,7 @@ fn composition_no_change_commit() -> CaseResult {
 }
 
 /// The pixels of `px` that differ from the formula, as (x, y).
-fn differing(px: &[u8], scene: &[Placed]) -> Result<Vec<(u32, u32)>,libbreenix::suite::CaseError> {
+fn differing(px: &[u8], scene: &[Placed]) -> Result<Vec<(u32, u32)>,breenix_suite::suite::CaseError> {
     let (width,height)=screen_size()?;
     let f = formula(scene);
     let mut reference=Vec::with_capacity(width*height*4);
@@ -738,7 +738,7 @@ fn composition_cursor_stationary_repaint() -> CaseResult {
 }
 
 /// The GPU path gauge, including validation, translation, fences and readback copies.
-fn irq_gauge() -> Result<u64, libbreenix::suite::CaseError> {
+fn irq_gauge() -> Result<u64, breenix_suite::suite::CaseError> {
     counter("gpu_irq_masked_max_us").cite("18")
 }
 
@@ -765,7 +765,7 @@ fn composition_irq_bound() -> CaseResult {
     }
     let warm = k.ask_within("warm 30000", 31_000).cite("24")?;
     ensure(warm.starts_with("ok "), "18", format!("gpu-display: the compositor's GPU contexts did not finish their catalogue warm-up: kiosk_test answered `{warm}`"))?;
-    libbreenix::suite::start_case_window()?;
+    breenix_suite::suite::start_case_window()?;
     libbreenix::test_control::arm(abi::tc_point::IRQ_HOLD, 0, 0).map_err(|e| format!("ARM irq-hold: {e}")).cite("21")?;
     w.frame(27).cite("17.3")?;
     let composed = compose(&mut k);
@@ -810,7 +810,7 @@ fn composition_present_rate() -> CaseResult {
     let elapsed = since(start).max(1);
     let composed = counter("composites").cite("18")? - composites0;
     let rate = composed * 1_000 / elapsed;
-    libbreenix::suite::timing(&frame_times,16_667)?;
+    breenix_suite::suite::timing(&frame_times,16_667)?;
     value("composites-per-second", rate as i64, "fps", Some((60, i64::MAX)));
     ensure(rate >= 60, "18", format!("one 256x256 window committing as fast as its buffers are released was composed {composed} times in {elapsed} ms, {rate} a second; the contract requires at least 60"))
 }
@@ -889,7 +889,7 @@ fn nested_takeover(depth: u32) -> i32 {
     if depth == 4 { return if ret == -(EBUSY as i64) { 0 } else { 1 }; }
     if ret != 0 { return 2; }
     let mut body = || nested_takeover(depth + 1);
-    let Ok(pid) = libbreenix::suite::spawn(&[], libbreenix::suite::Run::Call(&mut body)) else { return 3; };
+    let Ok(pid) = breenix_suite::suite::spawn(&[], breenix_suite::suite::Run::Call(&mut body)) else { return 3; };
     let mut status = 0;
     if process::waitpid(pid.raw() as i32, &mut status, 0).is_err() { return 4; }
     if !process::wifexited(status) || process::wexitstatus(status) != 0 { return 5; }
@@ -899,7 +899,7 @@ fn nested_takeover(depth: u32) -> i32 {
 
 fn ownership_refusals() -> CaseResult {
     let mut body = || nested_takeover(1);
-    let pid = libbreenix::suite::spawn(&[], libbreenix::suite::Run::Call(&mut body))?;
+    let pid = breenix_suite::suite::spawn(&[], breenix_suite::suite::Run::Call(&mut body))?;
     let mut status = 0;
     process::waitpid(pid.raw() as i32, &mut status, 0)?;
     ensure(process::wifexited(status) && process::wexitstatus(status) == 0,
@@ -961,7 +961,7 @@ fn composition_ownership_stack() -> CaseResult {
 }
 
 
-fn compositor_gpu_counts(k:&mut Helper)->Result<Vec<u64>,libbreenix::suite::CaseError>{
+fn compositor_gpu_counts(k:&mut Helper)->Result<Vec<u64>,breenix_suite::suite::CaseError>{
     let line=k.ask("gpu-counters").cite("24")?;
     let nums=line.strip_prefix("ok ").ok_or_else(||format!("gpu-display: compositor COUNTERS: {line}"))?
         .split_whitespace().map(str::parse).collect::<Result<Vec<u64>,_>>().map_err(|e|e.to_string())?;
@@ -983,7 +983,7 @@ impl GpuSnapshot {
     pub(crate) fn quad(&self,o:usize)->u64 {u64::from_le_bytes(self.record[o..o+8].try_into().unwrap())}
 }
 /// Ask the actual display-owning helper to observe target 0; no foreign handle or CPU image is substituted.
-pub(crate) fn gpu_observe(k:&mut Helper)->Result<(i64,u32,GpuSnapshot),libbreenix::suite::CaseError>{
+pub(crate) fn gpu_observe(k:&mut Helper)->Result<(i64,u32,GpuSnapshot),breenix_suite::suite::CaseError>{
     static NEXT:AtomicU64=AtomicU64::new(0);
     let path=format!("/dev/shm/breengel-gpu-{}-{}",process::getpid()?.raw(),NEXT.fetch_add(1,Relaxed));
     struct Remove<'a>(&'a str);impl Drop for Remove<'_>{fn drop(&mut self){let _=std::fs::remove_file(self.0);}}
@@ -1102,7 +1102,7 @@ fn composition_target_lifetime()->CaseResult {
     }Ok(())
 }
 
-pub(crate) fn gpu_snapshot(k:&mut Helper)->Result<GpuSnapshot,libbreenix::suite::CaseError>{
+pub(crate) fn gpu_snapshot(k:&mut Helper)->Result<GpuSnapshot,breenix_suite::suite::CaseError>{
     let (status,reason,s)=gpu_observe(k)?;
     ensure(status==0,"20",format!("gpu-display: GPU readback {} reason {reason}",outcome(status)))?;
     ensure(s.word(0)==2 && s.word(4)==1024,"20","gpu-display: scanout did not return record v2")?;Ok(s)

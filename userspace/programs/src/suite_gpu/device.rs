@@ -2,7 +2,7 @@
 //! 1.5 item 8 and 1.6; the CAPS record's layout in `docs/gui/gpu-abi.md`).
 
 use libbreenix::gpu::{self, abi};
-use libbreenix::suite::{value, CaseError, CaseResult};
+use breenix_suite::suite::{value, CaseError, CaseResult};
 
 use super::common::*;
 

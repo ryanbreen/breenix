@@ -11,7 +11,7 @@
 use libbreenix::gpu::{self, abi, abi::Plain};
 use libbreenix::process::{self, ForkResult};
 use libbreenix::signal::{self, SIGKILL};
-use libbreenix::suite::{value, CaseError, CaseResult};
+use breenix_suite::suite::{value, CaseError, CaseResult};
 use libbreenix::types::Fd;
 use libbreenix::{graphics, io, memory, time};
 

@@ -2,8 +2,8 @@
 use super::common::*;
 use gpu::abi::{draw::{self, Instance}, Plain};
 use libbreenix::gpu;
-use libbreenix::suite::{value, CaseResult};
-type R<T> = Result<T, libbreenix::suite::CaseError>;
+use breenix_suite::suite::{value, CaseResult};
+type R<T> = Result<T, breenix_suite::suite::CaseError>;
 const BG: u32 = 0xff312719;
 const FG: u32 = 0xffb76321;
 fn instance(rect: [i32; 4], params: &[i32]) -> Instance {

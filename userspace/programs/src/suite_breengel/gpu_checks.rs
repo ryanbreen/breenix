@@ -183,7 +183,7 @@ static RGB_TABLE:[u8;14*18*3]={
 };
 pub(crate) fn declare_fixture(table:&'static [u8]){uploads::declare(table);}
 pub(crate) fn audit_begin()->Option<(ga::Counters,uploads::Mark)>{
-    let name=libbreenix::suite::running_case()?;
+    let name=breenix_suite::suite::running_case()?;
     if !name.starts_with("raster/"){return None;}
     uploads::start();
     declare_fixture(&libgfx::font::FONT_TABLE);
@@ -197,7 +197,7 @@ pub(crate) fn audit_begin()->Option<(ga::Counters,uploads::Mark)>{
 }
 /// Record each case/isolated child before stage transport and failure artifacts.
 pub(crate) fn audit_finish(before:Option<(ga::Counters,uploads::Mark)>){
-    let Some(name)=libbreenix::suite::running_case() else{return;};
+    let Some(name)=breenix_suite::suite::running_case() else{return;};
     if !name.starts_with("raster/"){return;}
     uploads::stop();
     let Ok(directory)=audit_directory()else{return;};

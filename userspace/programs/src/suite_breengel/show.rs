@@ -39,7 +39,7 @@ fn composition_fbinfo_geometry() -> CaseResult {
 // gpu-display: R3/R4 checks all physical stage-layout pixels at scale 2 with certified TrueType labels.
 fn panel_stage_layout() -> CaseResult {
     crate::stage_fixtures::check_capture("stage-layout", |_| Ok(()))
-        .map_err(libbreenix::suite::CaseError::Fail)?;
+        .map_err(breenix_suite::suite::CaseError::Fail)?;
     // A panel-only run needs a real published GPU source for the later live
     // thumbnail check, independently compared before the runner samples it.
     let mut source = libgfx::surface::Surface::new(2, 2, libgfx::surface::Format::BGRX)
@@ -64,7 +64,7 @@ fn panel_spotlight_timing() -> CaseResult {
     // Retain the timing assertions and also cover the non-picture spotlight forms
     // without adding or removing a manifest case.
     for name in ["spotlight-timing","spotlight-input","spotlight-measurement"] {
-        crate::stage_fixtures::check_capture(name,|_|Ok(())).map_err(libbreenix::suite::CaseError::Fail)?;
+        crate::stage_fixtures::check_capture(name,|_|Ok(())).map_err(breenix_suite::suite::CaseError::Fail)?;
     }
     scaled_stage("spotlight-timing")
 }
@@ -86,7 +86,7 @@ fn panel_deterministic() -> CaseResult {
         let mut a=FrameBuf::new(1280,800,libgfx_ref::framebuf::Format::BGRX).map_err(|e|e.to_string())?;
         let mut b=FrameBuf::new(1280,800,libgfx_ref::framebuf::Format::BGRX).map_err(|e|e.to_string())?;
         for fb in [&mut a,&mut b] {
-            libbreenix::suite::render_stage_at_ui_time(fb,&mut run).map_err(|e|format!("{e:?}"))?;
+            breenix_suite::suite::render_stage_at_ui_time(fb,&mut run).map_err(|e|format!("{e:?}"))?;
             if run.ui_time_ms!=250 {return Err("stage ignored the shared UI page".into());}
         }
         for y in 0..800 {for x in 0..1280 {
@@ -94,20 +94,20 @@ fn panel_deterministic() -> CaseResult {
         }}
         page[16..24].copy_from_slice(&500_000_000u64.to_le_bytes());
         std::fs::write(&path,page).map_err(|e|e.to_string())?;
-        libbreenix::suite::render_stage_at_ui_time(&mut b,&mut run).map_err(|e|format!("{e:?}"))?;
+        breenix_suite::suite::render_stage_at_ui_time(&mut b,&mut run).map_err(|e|format!("{e:?}"))?;
         if run.ui_time_ms!=500 || a.get_pixel(336,112)==b.get_pixel(336,112) {return Err("stepping UI time did not change the stage pulse".into());}
         if breengel::clock::now_ns()!=500_000_000 {return Err("stage and Breengel use different clock providers".into());}
-        libbreenix::suite::judged(&b).map_err(|e|format!("{e:?}"))
+        breenix_suite::suite::judged(&b).map_err(|e|format!("{e:?}"))
     })();
-    let reads=libbreenix::suite::ui_clock::real_clock_reads();
+    let reads=breenix_suite::suite::ui_clock::real_clock_reads();
     if let Some(v)=old{std::env::set_var("BREENIX_UI_CLOCK",v);}else{std::env::remove_var("BREENIX_UI_CLOCK");}
     let _=std::fs::remove_file(path);
-    result.map_err(libbreenix::suite::CaseError::Fail)?;
+    result.map_err(breenix_suite::suite::CaseError::Fail)?;
     ensure(reads==0,"23.2",format!("deterministic render read the real clock {reads} times"))
 }
-fn panel_judged_frame_shown() -> CaseResult { libbreenix::suite::showcase_check("judged-frame-shown") }
-fn panel_serial_agreement() -> CaseResult { libbreenix::suite::showcase_check("serial-agreement") }
-fn panel_quiet_window() -> CaseResult { libbreenix::suite::showcase_check("quiet-window") }
+fn panel_judged_frame_shown() -> CaseResult { breenix_suite::suite::showcase_check("judged-frame-shown") }
+fn panel_serial_agreement() -> CaseResult { breenix_suite::suite::showcase_check("serial-agreement") }
+fn panel_quiet_window() -> CaseResult { breenix_suite::suite::showcase_check("quiet-window") }
 fn panel_boot_ribbon() -> CaseResult {
     let (width,_)=crate::window_cases::composition::screen_size()?;
     let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("23.7")?;
@@ -141,10 +141,10 @@ fn panel_boot_ribbon() -> CaseResult {
         if faulty {ensure(fired>0,"21","ribbon-drop-stage never fired")?;}
     }Ok(())
 }
-fn panel_boundary_notice() -> CaseResult { libbreenix::suite::showcase_check("boundary-notice") }
+fn panel_boundary_notice() -> CaseResult { breenix_suite::suite::showcase_check("boundary-notice") }
 
 fn stage_fixture(name:&str)->CaseResult {
-    crate::stage_fixtures::check_capture(name,|fb|libbreenix::suite::judged(fb).map_err(|e|format!("{e:?}"))).map_err(libbreenix::suite::CaseError::Fail)
+    crate::stage_fixtures::check_capture(name,|fb|breenix_suite::suite::judged(fb).map_err(|e|format!("{e:?}"))).map_err(breenix_suite::suite::CaseError::Fail)
 }
 
 fn scaled_stage(name:&str)->CaseResult {

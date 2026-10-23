@@ -32,7 +32,7 @@ use abi::{op, Plain};
 use super::handoff::{word, quad, entries};
 
 /// A one-window scene, composed: the compositor, the window and its composite serial.
-fn one_window(seed: u32) -> Result<(Helper, W, Placed, u64), libbreenix::suite::CaseError> {
+fn one_window(seed: u32) -> Result<(Helper, W, Placed, u64), breenix_suite::suite::CaseError> {
     let mut k = compositor()?;
     let p = Placed::new(320, 200, 200, 120, 0, seed);
     let w = W::new(p.w, p.h, 2)?;
@@ -345,7 +345,7 @@ interface()?;let (mut k,_w,_p,_)=one_window(26)?;
     ensure([4,5].contains(&s.word(16)) && s.word(20)==4,"20.2","gpu-display: record must state that the host renderer and host window lie outside guest observation")?;
     ensure(s.word(24)==3,"20.2","gpu-display: composed scanout must set exactly the scanout and composite bits")
 }
-fn gpu_fault(point:u32,seed:u32)->Result<(i64,u32,super::composition::GpuSnapshot,u64),libbreenix::suite::CaseError>{
+fn gpu_fault(point:u32,seed:u32)->Result<(i64,u32,super::composition::GpuSnapshot,u64),breenix_suite::suite::CaseError>{
     let (mut k,w,mut p,_)=one_window(seed)?;
     let fired=libbreenix::test_control::fired(point).cite("21")?;
     p.seed=seed+1;w.frame(p.seed).cite("17.3")?;

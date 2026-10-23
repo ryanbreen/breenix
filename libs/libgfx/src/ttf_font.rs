@@ -300,10 +300,9 @@ impl Run {
                         }
                     }
                     if bytes > 0 {
-                        let mut geometry = Vec::with_capacity(bytes);
-                        for &t in &members { geometry.extend_from_slice(self.tables[t].bytes()); }
-                        upload_geometry(d.context.handle(), buffer, &geometry)?;
-                        d.declared += geometry.len() as u64;
+                        let tables: Vec<_> = members.iter().map(|&t| &self.tables[t]).collect();
+                        bgl::geometry_upload(CrossingTable::pack(&tables), &d.context, buffer)?;
+                        d.declared += bytes as u64;
                     }
                     d.context.submit()
                 })();
@@ -358,16 +357,6 @@ fn geometry_buffer(context: u64, bytes: u64) -> Result<u64, i64> {
         *slot = Some(Geometry { context, handle, bytes: capacity });
     }
     Ok(slot.as_ref().expect("geometry created above").handle)
-}
-
-/// Upload a submission's packed crossing tables to the start of `buffer`: a buffer upload
-/// is one row of bytes, x the first byte, width the byte count, height 1, from an R8 source.
-fn upload_geometry(context: u64, buffer: u64, bytes: &[u8]) -> Result<(), i64> {
-    let len = u32::try_from(bytes.len()).map_err(|_| -abi::errno::EINVAL)?;
-    match gpu::upload(context, buffer, [0, 0, len, 1], bytes, len, abi::upload_source::R8, abi::purpose::FIXTURE).0 {
-        0 => Ok(()),
-        e => Err(e),
-    }
 }
 
 /// A grayscale rasterization whose submissions are sent; `read` reads its coverage back.

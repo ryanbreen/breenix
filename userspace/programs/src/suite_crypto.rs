@@ -1,7 +1,7 @@
 //! libbreenix CSPRNG checks requiring Breenix's getrandom syscall.
 
 use libbreenix::crypto::rand::Csprng;
-use libbreenix::suite::{case, category, check, suite, CaseResult, Suite};
+use breenix_suite::suite::{case, category, check, suite, CaseResult, Suite};
 
 static SUITE: Suite = suite("crypto", "Cryptographic randomness", &[
     category("csprng", "CSPRNG", &[

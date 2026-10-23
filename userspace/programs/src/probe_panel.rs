@@ -3,7 +3,11 @@
 //! layout is the one the CPU diagnostics panel gave probe, which the GPU-only rule retires
 //! from programs (`docs/gui/gpu.md` section 2.4).
 
-use libgfx::{color::Color, font, shapes, surface::Surface};
+use libgfx::color::Color;
+#[cfg(target_arch = "aarch64")]
+use libgfx::{font, shapes, surface::Surface};
+#[cfg(target_arch = "x86_64")]
+use super::probe_framebuffer::{font, shapes, FrameBuf as Surface};
 
 /// A check's current state and the detail or failure reason to display.
 pub enum CheckState<'a> {

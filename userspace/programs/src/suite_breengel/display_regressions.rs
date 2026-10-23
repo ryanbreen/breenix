@@ -23,7 +23,7 @@ pub fn many_windows() -> CaseResult {
         let _ = time::sleep_ms(30_000);
         0
     };
-    let pid = libbreenix::suite::spawn(&[(wr, wr)], libbreenix::suite::Run::Call(&mut child))?;
+    let pid = breenix_suite::suite::spawn(&[(wr, wr)], breenix_suite::suite::Run::Call(&mut child))?;
     let _ = io::close(wr);
     let mut ready = [0u8; 5];
     ensure(

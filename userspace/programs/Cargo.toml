@@ -15,7 +15,8 @@ framebuffer-v1 = []
 # The 16 px bitmap font libgfx draws; suite-breengel reads its rasters as the reference cells.
 noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "size_32", "regular", "unicode-basic-latin", "unicode-specials"] }
 bgl = { path = "../../libs/bgl" }
-libbreenix = { path = "../../libs/libbreenix", features = ["std", "suite"] }
+libbreenix = { path = "../../libs/libbreenix", features = ["std"] }
+breenix-suite = { path = "../../libs/libbreenix/suite" }
 breengel = { path = "../../libs/breengel" }
 libfont = { path = "../../libs/libfont" }
 libgfx = { path = "../../libs/libgfx" }

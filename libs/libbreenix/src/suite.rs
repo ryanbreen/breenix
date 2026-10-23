@@ -78,7 +78,7 @@
 //! This example is compile-checked on the host; running a suite requires Breenix.
 //!
 //! ```rust,no_run
-//! use libbreenix::suite::{case, category, check, suite, CaseResult, Suite};
+//! use breenix_suite::suite::{case, category, check, suite, CaseResult, Suite};
 //!
 //! static SUITE: Suite = suite("smoke", "Smoke", &[
 //!     category("process", "Process", &[
@@ -113,7 +113,7 @@ use libgfx_ref::framebuf::FrameBuf;
 use crate::error::Error;
 pub use crate::suite_spawn::{spawn, Keep, Run};
 pub use crate::suite_stage::{set_painter, DiffRef, Frame as StageFrame, Painter, PictureRef, SpotRef, ThumbRef};
-pub use crate::ui_clock;
+pub use libbreenix::ui_clock;
 use crate::fs;
 use crate::io::{self, poll_events, status_flags, PollFd};
 use crate::process::{self, ForkResult, WNOHANG};

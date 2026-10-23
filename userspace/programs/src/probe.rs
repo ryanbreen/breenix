@@ -2,8 +2,9 @@
 
 mod probe_signal;
 mod probe_metal;
-#[cfg(target_arch = "aarch64")]
 mod probe_panel;
+#[cfg(target_arch = "x86_64")]
+mod probe_framebuffer;
 
 use libbreenix::fs::{self, DirentIter, O_CREAT, O_DIRECTORY, O_RDONLY, O_TRUNC, O_WRONLY};
 use libbreenix::graphics;
@@ -15,10 +16,9 @@ use libbreenix::socket::{self, SockAddrIn, AF_INET, SOCK_DGRAM};
 use libbreenix::termios::{self, Termios};
 use libbreenix::time;
 use libbreenix::types::Fd;
-#[cfg(target_arch = "aarch64")]
 use probe_panel::{self as diagnostics, Check, CheckState, Group, Panel, Verdict};
 #[cfg(target_arch = "x86_64")]
-use libgfx_ref::{diagnostics::{self, Check, CheckState, Group, Panel, Verdict}, framebuf::FrameBuf};
+use probe_framebuffer::FrameBuf;
 
 const IDS: [&str; 16] = [
     "console", "getpid", "clock", "brk", "mmap", "fork-wait", "exec", "argv",
@@ -229,7 +229,7 @@ fn framebuffer_check(info: &graphics::FbInfo) -> Result<(), &'static str> {
             for col in 0..w {
                 let rgb = pattern(col as u32, row as u32, mask);
                 fb.put_pixel(x + col, y + row,
-                    libgfx_ref::color::Color::rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8));
+                    libgfx::color::Color::rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8));
             }
         }
         graphics::fb_flush_rect(x as i32, y as i32, w as i32, h as i32)
@@ -559,16 +559,7 @@ fn reclaim_screen(screen: &mut Option<Screen>) {
     }
 }
 
-/// Draw `panel` on probe's screen.
-#[cfg(target_arch = "x86_64")]
-fn show(screen: &mut Screen, title: &str, subtitle: &str, groups: &[Group<'_>], output: &[&str], verdict: Verdict<'_>) {
-    diagnostics::draw(&mut screen.fb, &Panel {
-        title, subtitle, groups, output, verdict, scored: false, live: None,
-    });
-}
-
-/// Draw `panel` on probe's screen.
-#[cfg(target_arch = "aarch64")]
+/// Draw the status panel on this architecture's production display path.
 fn show(screen: &mut Screen, title: &str, subtitle: &str, groups: &[Group<'_>], output: &[&str], verdict: Verdict<'_>) {
     diagnostics::draw(&mut screen.fb, &Panel { title, subtitle, groups, output, verdict });
 }

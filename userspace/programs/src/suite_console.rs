@@ -10,7 +10,7 @@
 use libbreenix::error::Error;
 use libbreenix::fs;
 use libbreenix::io;
-use libbreenix::suite::{case, category, suite, CaseResult, Suite};
+use breenix_suite::suite::{case, category, suite, CaseResult, Suite};
 use libbreenix::syscall::{nr, raw};
 
 #[path = "suite_console_vt.rs"]
@@ -133,7 +133,7 @@ const O_NOCTTY: u32 = 0o400;
 type Verdict<T = ()> = Result<T, String>;
 
 fn measured(run: impl FnOnce() -> Verdict) -> CaseResult {
-    run().map_err(libbreenix::suite::CaseError::Fail)
+    run().map_err(breenix_suite::suite::CaseError::Fail)
 }
 
 fn require(ok: bool, message: &str) -> Verdict {
@@ -958,7 +958,7 @@ impl VtChild {
         Ok(Some(status))
     }
     fn wait(&mut self) -> Verdict<i32> {
-        while libbreenix::suite::case_ms_left() > 300 {
+        while breenix_suite::suite::case_ms_left() > 300 {
             if let Some(status) = self.poll()? { return Ok(status); }
             libbreenix::time::sleep_ms(20).map_err(|e| e.to_string())?;
         }
@@ -1176,7 +1176,7 @@ fn vt_text(number: usize) -> Verdict<String> {
 }
 
 fn wait_vt(number: usize, needle: &str) -> Verdict<String> {
-    while libbreenix::suite::case_ms_left() > 500 {
+    while breenix_suite::suite::case_ms_left() > 500 {
         let text = vt_text(number)?;
         if text.contains(needle) { return Ok(text); }
         libbreenix::time::sleep_ms(20).map_err(|e| e.to_string())?;
@@ -1188,7 +1188,7 @@ fn type_line(text: &str) -> Verdict {
     require(text.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()), "unsupported keyboard text")?;
     let mut keys: Vec<_> = text.chars().map(|c| c.to_string()).collect();
     keys.push("enter".into());
-    libbreenix::suite::hostkeys(&keys.join(",")).map(|_| ())
+    breenix_suite::suite::hostkeys(&keys.join(",")).map(|_| ())
 }
 
 // The terminal's last three non-blank rows. Getty echoes the login name and
@@ -1201,12 +1201,12 @@ fn screen_ends(number: usize) -> String {
 }
 
 fn login_vt(number: usize, password: &str) -> Verdict<String> {
-    let began = libbreenix::suite::case_ms_left();
+    let began = breenix_suite::suite::case_ms_left();
     wait_vt(number, "Breenix login: ")?;
     activate(number)?;
     type_line("root")?;
     wait_vt(number, "Password: ").map_err(|e| format!("{e}; screen ends: {}", screen_ends(number)))?;
-    let password_at = libbreenix::suite::case_ms_left();
+    let password_at = breenix_suite::suite::case_ms_left();
     type_line(password)?;
     let text = wait_vt(number, &format!("VTLOGIN tty{number} ")).map_err(|e| {
         format!("{e}; login began with {began}ms, password with {password_at}ms left; screen ends: {}", screen_ends(number))
@@ -1265,7 +1265,7 @@ fn getty_logout_reacquires() -> CaseResult {
         let fd = VtFd::open(4)?;
         io::write(fd.0, b"\x1bc").map_err(|e| e.to_string())?;
         let sid = before.split_whitespace().find(|word| word.starts_with("sid=")).ok_or("missing session")?;
-        libbreenix::suite::hostkeys("ctrl-d")?;
+        breenix_suite::suite::hostkeys("ctrl-d")?;
         wait_vt(4, &format!("VTLOGOUT tty4 {sid}"))?;
         wait_vt(4, "Breenix login: ")?;
         let proof = login_vt(4, &account.password)?;

@@ -4,7 +4,7 @@
 //! pixel here, not taken from the kernel or from the shared ABI crate's helpers.
 
 use libbreenix::gpu::{self, abi, abi::Plain};
-use libbreenix::suite::{case_ms_left, value, wait_for, CaseError, CaseResult};
+use breenix_suite::suite::{case_ms_left, value, wait_for, CaseError, CaseResult};
 use libbreenix::{memory, time};
 use libbreenix::signal::{self, Itimerval, Sigaction, Timeval, ITIMER_REAL, SIGALRM};
 use super::common::*;
@@ -443,7 +443,7 @@ pub fn upload_visibility() -> CaseResult {
     let ctx = context()?;
     let second = context()?;
     let checker = context()?;
-    libbreenix::suite::start_case_window()?;
+    breenix_suite::suite::start_case_window()?;
     let tex = texture(format::B8G8R8A8, 16, 8)?;
     let x = scanout_target(format::B8G8R8A8, 24, 12)?;
     for (round, seed) in [70u32, 71].into_iter().enumerate() {

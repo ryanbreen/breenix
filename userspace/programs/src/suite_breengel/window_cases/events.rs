@@ -78,14 +78,14 @@ fn send(k: &mut Helper, id: u64, events: &[abi::WindowEvent]) -> Result<u64, Str
 
 /// A Breengel window and a compositor that claimed before it was made, so the window's queue
 /// starts empty.
-fn setup(title: &[u8]) -> Result<(Helper, breengel::Window), libbreenix::suite::CaseError> {
+fn setup(title: &[u8]) -> Result<(Helper, breengel::Window), breenix_suite::suite::CaseError> {
     let (k, _) = kiosk().cite("24")?;
     let w = breengel::Window::new_without_fonts(title, 32, 24).cite("17.1")?;
     Ok((k, w))
 }
 
 /// Dispatch until `n` events have been handled (within 2 s), every handler answering `answer`.
-fn collect(w: &mut breengel::Window, n: usize, answer: Handled) -> Result<Vec<Delivered>, libbreenix::suite::CaseError> {
+fn collect(w: &mut breengel::Window, n: usize, answer: Handled) -> Result<Vec<Delivered>, breenix_suite::suite::CaseError> {
     let w_id=w.id();
     let mut buttons=0u32;
     let mut got = Vec::new();
@@ -93,15 +93,15 @@ fn collect(w: &mut breengel::Window, n: usize, answer: Handled) -> Result<Vec<De
     while got.len() < n && since(start) < 2_000 {
         w.wait_dispatch(100_000_000, |d| {
             match &d.event {
-                Event::MouseMove{x,y,..} => libbreenix::suite::input_step(*x,*y,buttons!=0,&format!("window {}: {:?}",w_id,d.event)),
+                Event::MouseMove{x,y,..} => breenix_suite::suite::input_step(*x,*y,buttons!=0,&format!("window {}: {:?}",w_id,d.event)),
                 Event::MouseButton{x,y,pressed,button} => {
                     if (breengel::buttons::LEFT..=breengel::buttons::MIDDLE).contains(button) {
                         let bit=1u32 << (*button-breengel::buttons::LEFT);
                         if *pressed {buttons|=bit;}else{buttons&=!bit;}
                     }
-                    libbreenix::suite::input_step(*x,*y,buttons!=0,&format!("window {}: {:?}",w_id,d.event));
+                    breenix_suite::suite::input_step(*x,*y,buttons!=0,&format!("window {}: {:?}",w_id,d.event));
                 }
-                _ => libbreenix::suite::input_key(&format!("window {}: {:?}",w_id,d.event)),
+                _ => breenix_suite::suite::input_key(&format!("window {}: {:?}",w_id,d.event)),
             }
             got.push(d.clone());
             answer
@@ -476,7 +476,7 @@ fn events_serial() -> CaseResult {
 }
 
 /// The processed serial the window's newest commit published, read back with READ_META.
-fn processed(id: u64) -> Result<u64, libbreenix::suite::CaseError> {
+fn processed(id: u64) -> Result<u64, breenix_suite::suite::CaseError> {
     Ok(read_meta(id).cite("19.4")?.1.processed_serial)
 }
 
@@ -578,8 +578,8 @@ fn events_processed_ack() -> CaseResult {
     same(&px, 32, 24, false, "the frame after commit_no_change", "17.3", |_, _| [9, 8, 7, 0])
 }
 
-fn info_of(id: u64) -> Result<abi::WinInfo, libbreenix::suite::CaseError> {
-    listed(id).cite("17.1")?.ok_or_else(|| libbreenix::suite::CaseError::Fail(format!("window {id} is not listed ({CONTRACT} section 17.2)")))
+fn info_of(id: u64) -> Result<abi::WinInfo, breenix_suite::suite::CaseError> {
+    listed(id).cite("17.1")?.ok_or_else(|| breenix_suite::suite::CaseError::Fail(format!("window {id} is not listed ({CONTRACT} section 17.2)")))
 }
 
 fn events_overflow() -> CaseResult {

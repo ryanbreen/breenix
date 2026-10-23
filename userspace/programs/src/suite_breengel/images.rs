@@ -63,7 +63,7 @@ fn handoff_images(images: Vec<checks::JudgedImage>) -> CaseResult {
             } }
         }
     }
-    libbreenix::suite::judged(&frame)
+    breenix_suite::suite::judged(&frame)
 }
 
 pub(crate) const INFLATE: &[Case] = &[

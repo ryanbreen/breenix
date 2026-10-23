@@ -1,0 +1,18 @@
+[package]
+name = "breenix-suite"
+version = "0.1.0"
+edition = "2021"
+description = "Guest effort-suite harness and independent display expectations"
+license = "MIT"
+
+[workspace]
+
+# Keep the existing harness source paths so the structural guards continue to
+# inspect the same implementation. This package is linked by suite binaries only.
+[lib]
+path = "../src/suite_lib.rs"
+
+[dependencies]
+libbreenix = { path = "..", features = ["std", "suite"] }
+libgfx-ref = { path = "../../libgfx-ref" }
+libpixcheck = { path = "../../libpixcheck" }

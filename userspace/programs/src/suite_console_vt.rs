@@ -15,7 +15,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use libbreenix::fs;
 use libbreenix::io;
 use libbreenix::signal;
-use libbreenix::suite::CaseResult;
+use breenix_suite::suite::CaseResult;
 use libbreenix::syscall::{nr, raw};
 use libbreenix::types::Fd;
 
@@ -696,12 +696,12 @@ pub fn vt_devices_background_read_waits() -> CaseResult {
             })?;
             sleep(200);
             require(child.running(), "the read on tty3 returned before any input")?;
-            libbreenix::suite::hostkeys("x")?;
+            breenix_suite::suite::hostkeys("x")?;
             require(within(3000, || tty2.available() >= 1), "host key x did not reach tty2, the foreground")?;
             require(child.running(), "the key for tty2 ended the read on background tty3")?;
             switch_to(3)?;
             require(child.running(), "switching to tty3 ended its read without input")?;
-            libbreenix::suite::hostkeys("y")?;
+            breenix_suite::suite::hostkeys("y")?;
             child.finish(4000)
         })();
         restore();
@@ -1428,7 +1428,7 @@ pub fn scrollback_key_returns_live() -> CaseResult {
         switch_to(2)?;
         tty2.scroll(rows as i64)?;
         view(2, &format!("{label}-{:03}", 150 - rows))?;
-        libbreenix::suite::hostkeys("a")?;
+        breenix_suite::suite::hostkeys("a")?;
         let live = within(3000, || tty2.scroll(0).is_ok_and(|back| back == 0));
         let _ = tty2.ok("TCFLSH", TCFLSH, 0);
         require(live, "a key did not return the view to the live screen")?;

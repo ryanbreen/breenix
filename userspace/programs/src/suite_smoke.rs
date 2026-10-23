@@ -4,7 +4,7 @@
 use libbreenix::memory::{self, MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
 use libbreenix::io;
 use libbreenix::process;
-use libbreenix::suite::{case, category, check, fail, suite, CaseResult, Suite};
+use breenix_suite::suite::{case, category, check, fail, suite, CaseResult, Suite};
 use libbreenix::types::Fd;
 use libbreenix::time;
 
