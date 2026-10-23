@@ -48,7 +48,7 @@ impl Target {
             let seed = seed as u8;
             if renderer.input.as_ref().is_none_or(|(old, _)| *old != seed) {
                 renderer.input = None;
-                let bytes = std::fs::read(format!("/usr/local/test/share/breengel/window-patterns/{seed:02x}.png"))
+                let bytes = std::fs::read(format!("/usr/libexec/breenix/share/breengel/window-patterns/{seed:02x}.png"))
                     .map_err(|e| format!("read declared window input {seed}: {e}"))?;
                 let image = libimg::Decoded::png(&bytes).map_err(|e| format!("decode declared window input: {e:?}"))?;
                 let texture = bgl::Texture::from_decoded(&renderer.context, image)

@@ -683,7 +683,7 @@ impl Seeded {
 }
 
 /// Where the guest reads the reviewed references (section 8.6).
-const FRAMES: &str = "/usr/local/test/share/breengel/frames";
+const FRAMES: &str = "/usr/libexec/breenix/share/breengel/frames";
 
 /// Require `g` to equal the reviewed reference `name` pixel for pixel. The reference is a
 /// PNG decoded by libimg (section 13, certified by the png-decode cases); it must show

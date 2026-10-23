@@ -483,11 +483,12 @@ The tables below were extracted at authoring time with fontTools 4.62.1, a parse
 
 ### 8.6 Reviewed references
 
+<!-- claim-lint:ok: Normative reviewed-reference rule in section 8.6 and plan section 7.3; the placement follows the users shared test layout. -->
 Cases whose expectation is a whole rendered scene with no practical formula (`text/raster-identical`,
 `ttf-glyph`, `ttf-sizes`, `ttf-subpixel`, `compound-transform`, `icons/assets`) compare against a reviewed PNG
 under `docs/suites/frames/breengel/`, rendered by `tools/gfx-refgen` from the same `no_std` code at
 authoring time and recorded in `docs/suites/frames/PROVENANCE.json` with the generator commit, reviewer,
-date and what was checked (plan §7.3). The guest reads them from `/usr/local/test/share/breengel/frames/`.
+date and what was checked (plan §7.3). The guest reads them from `/usr/libexec/breenix/share/breengel/frames/`.
 Frames saved from runs never become references.
 
 ## 9. The UI clock and the font watcher
@@ -574,7 +575,7 @@ example has 39), maps exactly as the specification describes. A compressed `hmtx
 last long metric the last advance and their own left side bearings. The individual `font-parser` cases
 build their fonts in the suite from literal tables and require rejection (any `FontError`) of each defect
 and correct parsing of each valid variant; `corpus` requires each of its 64 files to give its documented
-error. The corpus lives at `/usr/local/test/share/breengel/fonts-corpus/`, with `index.txt` naming each
+error. The corpus lives at `/usr/libexec/breenix/share/breengel/fonts-corpus/`, with `index.txt` naming each
 file's error.
 
 ## 11. Inflate and zlib (`libimg::inflate`)
@@ -600,7 +601,7 @@ file's error.
   (CINFO > 7) are `BadZlibHeader`, `PresetDictionary`, `BadMethod` and `WindowTooLarge`; a wrong Adler-32 is
   `Adler32Mismatch`.
 - **Fixtures** (`inflate/independent-fixtures`): twelve streams made at authoring time by an independent
-  encoder, with the bytes it recorded, under `/usr/local/test/share/breengel/inflate/`.
+  encoder, with the bytes it recorded, under `/usr/libexec/breenix/share/breengel/inflate/`.
 
 ## 12. BMP (`libimg::bmp`)
 
@@ -655,7 +656,7 @@ file's error.
   CRCs. Encoding the same image twice gives identical bytes. Images past the dimension limits are refused
   with `TooLarge`.
 - **Fixtures**: the public PngSuite images, with the pixels an independent decoder recorded at authoring
-  time, under `/usr/local/test/share/breengel/png/`; `png-decode/from-disk` reads `pinned.png` there.
+  time, under `/usr/libexec/breenix/share/breengel/png/`; `png-decode/from-disk` reads `pinned.png` there.
 
 The image error clarifications follow the operator's 2026-10-15 review-fix brief:
 `Vec<u8>` cannot express the required `TooLarge`, hence the `Result` encoding signature;

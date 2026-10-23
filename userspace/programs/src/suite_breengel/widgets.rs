@@ -2453,7 +2453,7 @@ fn icons_particles_bounded() -> CaseResult {
 }
 
 fn icons_assets() -> CaseResult {
-    let path = "/usr/local/test/share/breengel/frames/icons/assets.png";
+    let path = "/usr/libexec/breenix/share/breengel/frames/icons/assets.png";
     let bytes = std::fs::read(path)
         .map_err(|e| format!("reviewed icon reference is absent: {e}"))
         .cite("8.6,16")?;

@@ -1912,7 +1912,7 @@ fn text_compound_glyph() -> CaseResult {
 }
 
 fn text_compound_transform() -> CaseResult {
-    let mut font = cached("/usr/local/test/share/breengel/fonts/compound-transform.ttf").cite("8.6")?;
+    let mut font = cached("/usr/libexec/breenix/share/breengel/fonts/compound-transform.ttf").cite("8.6")?;
     let g = white_on_black(200, 64, |fb| { ttf_font::draw_text(fb, &mut font, "BA", 4, 8, 48.0, WHITE); });
     matches_reference(&g, "text/compound-transform.png", "8.6")
 }
@@ -2415,7 +2415,7 @@ impl Ttf {
     }
 }
 
-const CORPUS_DIR: &str = "/usr/local/test/share/breengel/fonts-corpus";
+const CORPUS_DIR: &str = "/usr/libexec/breenix/share/breengel/fonts-corpus";
 
 /// One line of the corpus index: the file, the glyph and size a glyph-scoped defect is
 /// read at, and the documented error.
