@@ -20,8 +20,8 @@ pub enum Admission {
 // A failed-window tombstone stays until registry removal so later
 // keys cannot overtake the event whose delivery failed.
 pub struct Backlog<T> {
-    windows: BTreeMap<u32, Option<VecDeque<T>>>,
-    close_requests: BTreeMap<u32, T>,
+    windows: BTreeMap<u64, Option<VecDeque<T>>>,
+    close_requests: BTreeMap<u64, T>,
 }
 
 impl<T> Backlog<T> {
@@ -38,7 +38,7 @@ impl<T> Backlog<T> {
             && self.windows.values().all(|queue| queue.as_ref().map_or(true, |q| q.is_empty()))
     }
 
-    pub fn retain_windows(&mut self, mut exists: impl FnMut(u32) -> bool) {
+    pub fn retain_windows(&mut self, mut exists: impl FnMut(u64) -> bool) {
         self.windows.retain(|&id, _| exists(id));
         self.close_requests.retain(|&id, _| exists(id));
     }
@@ -48,7 +48,7 @@ impl<T> Backlog<T> {
     /// caller reports it once. Keep a failed stream disabled to preserve barriers.
     pub fn push(
         &mut self,
-        window: u32,
+        window: u64,
         event: T,
         coalesce: impl FnOnce(&T, &T) -> bool,
     ) -> Admission {
@@ -72,13 +72,13 @@ impl<T> Backlog<T> {
 
     /// Reserve one close request outside a disabled input stream. Repeated close
     /// hotkeys replace the same request, so a stalled client cannot grow it.
-    pub fn request_close(&mut self, window: u32, event: T) {
+    pub fn request_close(&mut self, window: u64, event: T) {
         self.close_requests.insert(window, event);
     }
 
     /// A full window does not prevent another window's delivery. Retry EAGAIN
     /// heads only; a permanent error disables delivery until registry removal.
-    pub fn flush(&mut self, mut send: impl FnMut(u32, &T) -> Delivery) {
+    pub fn flush(&mut self, mut send: impl FnMut(u64, &T) -> Delivery) {
         self.windows.retain(|&id, entry| {
             let Some(queue) = entry else {
                 return true;
