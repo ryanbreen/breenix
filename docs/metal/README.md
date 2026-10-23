@@ -875,7 +875,7 @@ ID (the install boot's ID), recorded as `userland <id>` in the slot's format-2 i
    the root image's one such name is the rust-std suite's second link to a file the migration copies.
 2. **The verification boot**, under the same lease: a persistent session whose answer is `persistent <boot> current
    commit`. The manager commits `NEXT` to `CURRENT` (the old current becomes `PREVIOUS`) and boots it; the boot
-   passes at the login prompt with the persistent stages below. Before publishing its root filesystem, the kernel
+   passes after the boot host authenticates over SSH as the site operator with strict host-key checking and reads init's started services, within 600 seconds of power-on (S21). Before publishing its root filesystem, the kernel
    requires the selected generation's matching completion record and directory mount points. It uses that tree's
    inode as `/`, including its `/etc`, with `/root` bound from the partition root and `/home` mounted from the separate home
    partition. Path lookup, relative paths and working-directory reconstruction use the selected namespace.
@@ -888,11 +888,28 @@ transaction before choosing a kernel; the embedded userland identity moves with 
 previous-slot boot. There is no second current-userland pointer to update across the two partitions. A legacy slot
 without a userland item still uses the flat partition root, which migration leaves intact.
 
-Published generations are retained, including those left by an interrupted verification boot. The installer removes
-unpublished `<id>.new` scratch directories whose IDs have no published generation on a retry and accepts a retry of a completed published ID without rewriting it. An incomplete published ID is refused. It does
-not guess which completed tree is safe to reclaim from the boot host's potentially stale slot record. Thus this
-version needs space for the retained trees plus the new tree; lack of space fails the upgrade while keeping the
-current tree. Reclamation must account for the manager's recovered slots before deleting a generation (#2117).
+Before copying an upgrade, the stub recovers the ESP slot transaction and reads the embedded boot intents of
+CURRENT, PREVIOUS and NEXT from the physical disk. An unreadable slot or malformed identity stops the install.
+The stub prints these recovered identities; the leased driver supplies them to the installer's console request,
+`BREENIX-SLOTS-1 <current> <previous> <next>`. The installer validates retained completion records and protects
+those generations and the in-flight generation. The host's `disk.json` does not authorize deletion.
+
+Reclamation discovers directory identities before changing paths. It removes unreferenced published trees and
+unpublished scratch, with checked directory barriers, while retaining trees that share directory identities with
+another candidate, a retained generation, or shared machine data. It does not follow symbolic links. Ambiguous
+directory aliases are retained and reported rather than traversed. Flat paths remain intact for legacy slots;
+`/root`, `/.breenix-shared` and the home partition remain outside generation reclamation. A retry can resume a
+partially deleted unreferenced tree. Lack of space still fails the upgrade while keeping the selected trees.
+
+The boot host's detached probe worker uses its private operator key; that key stays on the boot host. It pins the
+Ed25519 key against the verification boot's protected bsshd log read over the leased SOL console, then requires an
+authenticated operator login and started services. The driver waits for that receipt instead of accepting a login
+prompt. A failed verification automatically swaps CURRENT and PREVIOUS and verifies the restored generation with
+the same probe and a fresh 600-second power-on deadline, under the inherited machine lease. Cancellation stops
+the flow. `upgrade-result.json` in the install boot's private store names the outcome and both probe receipts;
+`ssh-verification.json` belongs to each verification boot. The install boot's own exit status describes its copy
+phase, while the aggregate result describes the upgrade. `--inject upgrade-no-ssh` stages an invalid EFI loader
+only in NEXT to exercise the failed-candidate path; it leaves the installation boot and previous slot intact.
 
 `metal-run install-persistent --rollback` is one persistent boot whose answer carries `rollback`: the manager swaps
 the current and previous slots and boots the new current. `metal-run boot --persistent --entry previous` boots the

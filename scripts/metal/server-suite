@@ -25,6 +25,7 @@ import tempfile
 import time
 import struct
 import threading
+
 from urllib.parse import urlsplit
 
 SSH_KEYS = (
@@ -67,6 +68,13 @@ LOGS = (
 
 TIME = (('source', 'The supervised time client synchronizes from site or DHCP servers after network-up'), ('offset', 'The synchronized machine clock agrees with the boot host UTC within one second'), ('hourly', 'The running client polls again after one hour without restarting'), ('sanity', 'Invalid, unsynchronized, mismatched, stale and excessive-offset SNTP replies cannot change the clock'), ('slew', 'A negative correction after first synchronization slews at bounded rate without stepping backwards'), ('rtc-reboot', 'After synchronization and reboot the hardware RTC agrees with the boot host UTC within one second'))
 
+REMOTE_UPGRADE = (
+    ('good', 'A good upgrade passes strict operator SSH and service verification within 600 seconds of power-on, preserving host key and root and home sentinels'),
+    ('broken', 'A deliberately broken upgrade fails verification and automatically boots the previous paired generation, passing the same probe within another 600 seconds with unchanged machine data'),
+    ('generation-repairs', 'Installer ENOSPC, I/O and interrupted-publication recovery retain the selected generation and byte-exact rollback'),
+    ('reclamation', 'Reclamation uses recovered on-disk slot userlands and preserves current, previous, in-flight and shared data across failures and rollback'),
+)
+
 # The users suite's host-run category (docs/users/design.md, section 5): the persistent install's operator account.
 OPERATOR = (
     ('account', "The persistent install's operator account has the site's name and uid, its own group, home and /bin/bsh, and the site key"),
@@ -79,10 +87,10 @@ OPERATOR = (
 )
 
 # The populated categories in manifest order, the suite each belongs to, and the milestone each one measures.
-CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'time': TIME, 'operator': OPERATOR}
-SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'time': 'server', 'operator': 'users'}
+CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'time': TIME, 'remote-upgrade': REMOTE_UPGRADE, 'operator': OPERATOR}
+SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'time': 'server', 'remote-upgrade': 'server', 'operator': 'users'}
 MILESTONES = {'server/ssh-keys': 'ssh-keys', 'server/services': 'services', 'server/logs': 'logs',
-              'server/time': 'time', 'users/operator-login': 'operator'}
+              'server/time': 'time', 'server/remote-upgrade': 'remote-upgrade', 'users/operator-login': 'operator'}
 # The console lines the operator's console challenge leaves in the capture (docs/metal/boot-path.json, console-login).
 OPERATOR_CONSOLE_LINES = ('Login incorrect', 'metal-login-ok 42', 'fbcon check: shadow and screen identical',
                           'fbcon row: metal-login-ok 42')
@@ -169,6 +177,13 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
         raise ValueError('logs need prior persistent boot evidence at this commit')
     if category == 'time' and (not records.get('previous') or records['previous'].get('commit') != sha):
         raise ValueError('time needs a completed synchronization boot at this commit')
+    if category == 'remote-upgrade':
+        upgrade_cases = runpy.run_path(str(Path(__file__).with_name('upgrade_cases.py')))
+        baseline = records['baseline']
+        upgrade_cases['upgrade'](records.get('good', {}), False, baseline)
+        upgrade_cases['upgrade'](records.get('broken', {}), True, baseline)
+        upgrade_cases['generations'](records.get('generationProof', {}))
+        upgrade_cases['generations'](records.get('generationProof', {}), True)
     if records.get('consoleGaps'):
         raise ValueError('console capture has a gap')
     if any(re.search(pattern, serial) for pattern in fatal_patterns):
@@ -1559,22 +1574,100 @@ class Operator:
         if errors: raise ValueError('; '.join(errors))
 
 
+def probe_upgrade_attempt(args):
+    runner = runpy.run_path(str(Path(__file__).with_name('metal-run')))
+    env = runner['host_env']()
+    remote = lambda *cmd, **kw: runner['in_metal'](env, *cmd, capture_output=True, text=True, **kw)
+    directory = runner['STATE'] + '/boots/' + args.boot
+    def read(name):
+        result = remote('cat', directory + '/' + name)
+        if result.returncode: raise ValueError('probe artifact unavailable: ' + name)
+        return result.stdout
+    boot = json.loads(read('run.json'))
+    events = [json.loads(line) for line in read('events.jsonl').splitlines()]
+    power = next(e['t'] for e in events if e.get('event') == 'power-on')
+    receipt = dict(boot=args.boot, powerOn=power, passed=False)
+    try:
+        lease = json.loads(remote('cat', runner['STATE'] + '/lease.json').stdout)
+        if lease.get('id') != args.boot or not boot.get('upgradeParent'):
+            raise ValueError('S21 probe requires its live verification lease')
+        site = remote('python3', '-c', 'import sys,json;sys.path.insert(0,"/opt/breenix-metal");'
+                      'import metal_lib;s=metal_lib.load_site();'
+                      'print(json.dumps({k:s.get(k) for k in '
+                      + repr(('SERVER_SSH_HOST','OPERATOR_USER','OPERATOR_UID','OPERATOR_SSH_PUBLIC_KEY','CONSOLE_USER','CONSOLE_PASSWORD')) + '}))')
+        site = json.loads(site.stdout)
+        identity = next((p.with_suffix('') for p in (Path.home() / '.ssh').glob('*.pub')
+                         if p.read_text().split()[:2] == site['OPERATOR_SSH_PUBLIC_KEY'].split()[:2]
+                         and p.with_suffix('').is_file()), None)
+        if identity is None: raise ValueError('no private key for the operator')
+        with tempfile.TemporaryDirectory(prefix='upgrade-probe-') as scratch:
+            probe = Probe(site['SERVER_SSH_HOST'], site['OPERATOR_USER'], identity, Path(scratch))
+            console = Console(lambda *cmd, **kw: runner['in_metal'](env, *cmd, **kw), args.boot, directory,
+                              site['CONSOLE_USER'], site['CONSOLE_PASSWORD'])
+            try:
+                log = console.service_log('bsshd')
+                probe.run_case('host-key', log)
+                uid = probe.ssh('id -u')
+                probe.require(uid, site['OPERATOR_UID'])
+                generation = probe.ssh('cat /usr/share/factory/generation')
+                probe.require(generation)
+                state = probe.ssh('cat /run/breenix/services')
+                probe.require(state)
+                _, services = parse_state(state.stdout)
+                for name in Services.REQUIRED:
+                    row = services.get(name, {})
+                    if row.get('starts', 0) < 1 or (name != 'ntp' and (row.get('state') != 'running' or not row.get('pid'))):
+                        raise ValueError('service not started: ' + name)
+                receipt.update(authenticated=True, strictHostKey=True, servicesStarted=True,
+                               generation=generation.stdout.strip(),
+                               fingerprint=re.search(r'host key ED25519 (SHA256:[A-Za-z0-9+/]+)', log)[1],
+                               serviceState=state.stdout)
+            finally:
+                console.logout()
+        receipt['completedAt'] = time.time()
+        receipt['passed'] = power < receipt['completedAt'] <= power + 600
+    except Exception as error:
+        receipt.update(error=type(error).__name__ + ': ' + str(error), completedAt=time.time())
+    return receipt
+
+
+def probe_upgrade(args):
+    while True:
+        receipt = probe_upgrade_attempt(args)
+        if receipt['passed'] or time.time() >= receipt['powerOn'] + 600:
+            break
+        time.sleep(min(2, max(0, receipt['powerOn'] + 600 - time.time())))
+    runner = runpy.run_path(str(Path(__file__).with_name('metal-run')))
+    directory = runner['STATE'] + '/boots/' + args.boot
+    result = runner['in_metal'](runner['host_env'](), 'tee', directory + '/ssh-verification.json', stdin=None,
+                                input=json.dumps(receipt) + '\n', capture_output=True, text=True)
+    return 0 if result.returncode == 0 and receipt['passed'] else 1
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--probe-upgrade', action='store_true')
     parser.add_argument('--check-manifest', type=Path)
     parser.add_argument('--previous-boot', help='Completed logs preparation boot at this same commit')
     parser.add_argument('--prepare-time', action='store_true', help='Record a synchronized boot before the RTC reboot case')
     parser.add_argument('--prepare-logs', action='store_true', help='Write the log whose bytes the next boot must retain')
     parser.add_argument('--boot')
     parser.add_argument('--sha')
+    parser.add_argument('--branch', default='metal-server/remote-upgrade', help='pushed branch containing the upgrade candidate')
     parser.add_argument('--milestone', default='server/ssh-keys', choices=list(MILESTONES))
     args = parser.parse_args()
+    if args.probe_upgrade:
+        if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot or ''): parser.error('invalid verification boot')
+        return probe_upgrade(args)
     if args.check_manifest:
         validate_manifest(json.loads(args.check_manifest.read_text()))
         return 0
     if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot or '') or not re.fullmatch(r'[a-f0-9]{40}', args.sha or ''):
         parser.error('--boot ID and --sha full commit required')
     category = MILESTONES[args.milestone]
+    if category == 'remote-upgrade':
+        globals()['upgrade_cases'] = runpy.run_path(str(Path(__file__).with_name('upgrade_cases.py')))
+        return runpy.run_path(str(Path(__file__).with_name('upgrade_suite.py')))['run'](args, globals())
     suite = SUITES[category]
     cases = CATEGORIES[category]
     runner = runpy.run_path(str(Path(__file__).with_name('metal-run')))

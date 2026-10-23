@@ -193,38 +193,7 @@ pub unsafe fn boot(boot: &BootServices, image: Handle, root: &Root, entry: Entry
     bootdisk::start_bootloader(boot, image, volume, "kernel slot")
 }
 
-struct SlotStore<'a>(&'a Root);
-
-impl metal_efi::slot_transaction::Store for SlotStore<'_> {
-    type Error = Status;
-    fn exists(&self, name: &str) -> bool {
-        let mut path = [0u8; 96];
-        unsafe { self.0.exists(slot_path(name, &mut path)) }
-    }
-    fn read(&self, name: &str, bytes: &mut [u8]) -> Result<usize, Status> {
-        let mut path = [0u8; 96];
-        unsafe { self.0.read(slot_path(name, &mut path), bytes) }
-    }
-    fn write(&self, name: &str, bytes: &[u8]) -> Result<(), Status> {
-        let mut path = [0u8; 96];
-        unsafe { self.0.write(slot_path(name, &mut path), bytes) }
-    }
-    fn delete(&self, name: &str) -> Result<(), Status> {
-        let mut path = [0u8; 96];
-        unsafe { self.0.delete(slot_path(name, &mut path)) }
-    }
-    fn rename(&self, from: &str, to: &str) -> Result<(), Status> {
-        let mut path = [0u8; 96];
-        unsafe { self.0.rename(slot_path(from, &mut path), to) }
-    }
-    fn invalid(&self) -> Status { VOLUME_CORRUPTED }
-}
-
-fn slot_path<'a>(name: &str, out: &'a mut [u8; 96]) -> &'a str {
-    out[..DIR.len()].copy_from_slice(DIR.as_bytes());
-    out[DIR.len()..DIR.len() + name.len()].copy_from_slice(name.as_bytes());
-    core::str::from_utf8(&out[..DIR.len() + name.len()]).unwrap_or("")
-}
+use metal_efi::slot_store::SlotStore;
 
 /// Recover an interrupted slot action before reading or booting a slot.
 ///
