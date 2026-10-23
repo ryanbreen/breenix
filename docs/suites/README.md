@@ -1567,6 +1567,13 @@ pinned key to fail verification (`try=account`) or root to be refused with the o
 fails when no login arrives; a target whose boot loop stages no operator account fails both until
 the catch-up gives it a host client.
 
+On ARM64 QEMU, `scripts/boot-interactive.sh` stages the same public-key fixture and runs the answering
+client automatically for users suite boots and the ssh category. Set `BREENIX_USERS_SSH_IDENTITY` to the
+boot host's noninteractive Ed25519 private key; `BREENIX_USERS_SSH_USER` optionally supplies its non-root
+account name. The private key stays on the host. A localhost-only QEMU forward reaches the guest's
+port 22; the client retains the serial fingerprint pin, deliberately wrong key and root-refusal checks.
+The boot's private output directory contains `users-hostssh.json` with the real OpenSSH transcript.
+
 The suite runs as root. A case that needs another identity forks a child that becomes a
 fixture account (its supplementary groups, then setresgid and setresuid, then a refused
 setuid(0)) and reports through a pipe. The fixture accounts are ua 2001 (in group ug 2100),

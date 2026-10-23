@@ -288,6 +288,14 @@ if [[ "$SUITE" == *,* ]]; then
     "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" "${SUITE%%,*}" \
         "$ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$SUITE"
 fi
+# The users suite's external-client cases need the boot host's real OpenSSH.
+NETDEV="user,id=net0"
+USERS_SSH_STATE=
+if [ "$MODE" = suite ] && [[ ",$SUITE," == *,users,* ]] && { [ -z "$ONLY" ] || [[ "$ONLY" == ssh || "$ONLY" == ssh/* ]]; }; then
+    USERS_SSH_STATE="$(dirname "$SERIAL_LOG")/users-hostssh-state.json"
+    USERS_SSH_PORT=$(python3 "$ROOT/scripts/users-hostssh.py" stage --image "$WRITABLE" --state "$USERS_SSH_STATE")
+    NETDEV+=",hostfwd=tcp:127.0.0.1:$USERS_SSH_PORT-:22"
+fi
 ROOT_DRIVE="if=none,id=ext2,format=raw,file=$WRITABLE"
 FIXTURE_ARGS=()
 if [ "$MODE" = tests ]; then
@@ -409,13 +417,25 @@ python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$WATCH_MODE
     -drive "$ROOT_DRIVE" \
     -device virtio-rng-device \
     -device virtio-net-device,netdev=net0 \
-    -netdev user,id=net0 \
+    -netdev "$NETDEV" \
     -chardev stdio,id=con,mux=on,signal=off,logfile="$SERIAL_LOG" \
     -serial chardev:con -mon chardev=con,mode=readline <&3 &
 WATCHER_PID=$!
 qemu_host_lock_track_pid "$WATCHER_PID"
+USERS_SSH_PID=
+if [ -n "$USERS_SSH_STATE" ]; then
+    python3 "$ROOT/scripts/users-hostssh.py" watch --state "$USERS_SSH_STATE" --serial "$SERIAL_LOG" \
+        --parent "$WATCHER_PID" > "$(dirname "$SERIAL_LOG")/users-hostssh.log" 2>&1 &
+    USERS_SSH_PID=$!
+    qemu_host_lock_track_pid "$USERS_SSH_PID"
+fi
 wait "$WATCHER_PID"
 code=$?
+if [ -n "$USERS_SSH_PID" ]; then
+    wait "$USERS_SSH_PID"
+    ssh_code=$?
+    [ "$code" -ne 0 ] || code=$ssh_code
+fi
 set -e
 [ -z "$HOSTKEYS_PID" ] || kill "$HOSTKEYS_PID" 2>/dev/null || true
 [ -z "$HOSTKEYS_SOCKET" ] || rm -f "$HOSTKEYS_SOCKET"
