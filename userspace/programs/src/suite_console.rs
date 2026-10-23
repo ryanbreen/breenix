@@ -10,7 +10,7 @@
 use libbreenix::error::Error;
 use libbreenix::fs;
 use libbreenix::io;
-use libbreenix::suite::{case, category, suite, CaseResult, Suite};
+use breenix_suite::suite::{case, category, suite, CaseResult, Suite};
 use libbreenix::syscall::{nr, raw};
 
 #[path = "suite_console_vt.rs"]
@@ -134,7 +134,7 @@ const O_NOCTTY: u32 = 0o400;
 type Verdict<T = ()> = Result<T, String>;
 
 fn measured(run: impl FnOnce() -> Verdict) -> CaseResult {
-    run().map_err(libbreenix::suite::CaseError::Fail)
+    run().map_err(breenix_suite::suite::CaseError::Fail)
 }
 
 fn require(ok: bool, message: &str) -> Verdict {
@@ -457,7 +457,15 @@ impl Drop for DisplayOwner {
     fn drop(&mut self) { let _ = libbreenix::graphics::give_back_display(); }
 }
 
-fn paint_owner() -> Verdict<libbreenix::graphics::FbInfo> {
+/// What the display owner painted: the whole screen in 0x3c3c3c.
+#[cfg(target_arch = "x86_64")]
+struct Painted {
+    width: u32,
+    height: u32,
+}
+
+#[cfg(target_arch = "x86_64")]
+fn paint_owner() -> Verdict<Painted> {
     let info = libbreenix::graphics::fbinfo().map_err(|e| format!("fbinfo: {e}"))?;
     let (pixels, width) = libbreenix::graphics::fb_mmap_pane().map_err(|e| format!("fb_mmap: {e}"))?;
     require(width == info.width, "display owner did not map the whole screen")?;
@@ -465,25 +473,104 @@ fn paint_owner() -> Verdict<libbreenix::graphics::FbInfo> {
     // The mapping holds the whole screen, using the reported pane stride.
     unsafe { core::ptr::write_bytes(pixels, 0x3c, bytes); }
     libbreenix::graphics::fb_flush().map_err(|e| format!("fb_flush: {e}"))?;
-    Ok(info)
+    Ok(Painted { width: info.width as u32, height: info.height as u32 })
+}
+
+/// What the display owner painted on the GPU core: a scanout target of the display's mode,
+/// cleared to 0x3c3c3c and presented, kept while the owner holds the display.
+#[cfg(target_arch = "aarch64")]
+struct Painted {
+    width: u32,
+    height: u32,
+    context: u64,
+    target: u64,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl Drop for Painted {
+    fn drop(&mut self) {
+        let _ = libbreenix::gpu::resource_destroy(self.target);
+        let _ = libbreenix::gpu::context_destroy(self.context);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn paint_owner() -> Verdict<Painted> {
+    use libbreenix::gpu::{self, abi::{self, stream::encode}};
+    let (width, height) = display_size()?;
+    let context = gpu::context_create().map_err(|e| format!("GPU context: errno {}", -e))?;
+    let target = match gpu::scanout_target_create(abi::format::B8G8R8A8, width, height) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = gpu::context_destroy(context);
+            return Err(format!("scanout target: errno {}", -e));
+        }
+    };
+    let painted = Painted { width, height, context, target };
+    let mut words = Vec::new();
+    encode::begin(&mut words, target);
+    encode::clear(&mut words, 0xFF3c_3c3c);
+    let (r, sub) = gpu::submit(context, &words);
+    require(r == 0, &format!("GPU clear: errno {}", -r))?;
+    let (r, w) = gpu::wait(context, sub.fence, 2_000_000_000);
+    require(r == 0, &format!("GPU clear wait: errno {}, status {}", -r, w.status))?;
+    let (r, _) = gpu::present(context, target);
+    require(r == 0, &format!("GPU present: errno {}", -r))?;
+    Ok(painted)
+}
+
+/// The GPU core's current display mode.
+#[cfg(target_arch = "aarch64")]
+fn display_size() -> Verdict<(u32, u32)> {
+    let (r, modes) = libbreenix::gpu::modes();
+    require(r == 0, &format!("MODES: errno {}", -r))?;
+    modes.modes.get(modes.current as usize).map(|m| (m.width, m.height)).ok_or_else(|| "MODES has no current mode".to_string())
+}
+
+/// The displayed screen, read back from the device by the display owner: the scanout's
+/// pixels as 0xRRGGBB words, row after row.
+#[cfg(target_arch = "aarch64")]
+fn read_screen() -> Verdict<(Vec<u32>, usize)> {
+    use libbreenix::gpu::{self, abi};
+    let (width, height) = display_size()?;
+    let mut bytes = vec![0u8; width as usize * height as usize * 4];
+    let mut record = Box::new([0u8; abi::record::SIZE]);
+    let r = gpu::readback(0, [0, 0, width, height], &mut bytes, width * 4, &mut record);
+    require(r == 0, &format!("scanout readback: errno {}", -r))?;
+    let words = bytes.chunks_exact(4).map(|p| u32::from_le_bytes([p[0], p[1], p[2], p[3]]) & 0x00ff_ffff).collect();
+    Ok((words, width as usize))
+}
+
+/// The displayed pixels at each `(x, y)`, as 0xRRGGBB, read from the display's memory or
+/// backing rather than the owner's staging mapping.
+#[cfg(target_arch = "x86_64")]
+fn displayed(points: &[(i32, i32)]) -> Verdict<Vec<u32>> {
+    points.iter().map(|&(x, y)| libbreenix::graphics::fb_read_pixel(x, y).map_err(|e| format!("read pixel: {e}"))).collect()
+}
+
+/// The displayed pixels at each `(x, y)`, as 0xRRGGBB, read back from the device's scanout.
+#[cfg(target_arch = "aarch64")]
+fn displayed(points: &[(i32, i32)]) -> Verdict<Vec<u32>> {
+    let (screen, width) = read_screen()?;
+    Ok(points.iter().map(|&(x, y)| screen[y as usize * width + x as usize]).collect())
 }
 
 fn screen_display_taken_stops_drawing() -> CaseResult {
     measured(|| {
         let owner = DisplayOwner::take()?;
-        let info = paint_owner()?;
+        let painted = paint_owner()?;
         tty_write("\r\nconsole must retain this without drawing\r\n")?;
         pause()?;
         require(screen_check()?.contains("console check: a process has the display"), "console did not yield display")?;
-        // Sample the text area, including cursor bands, from the display's
-        // memory/backing rather than the owner's staging mapping.
-        for y in (0..info.height as i32).step_by(13) {
-            for x in (0..info.width as i32).step_by(29) {
-                let pixel = libbreenix::graphics::fb_read_pixel(x, y).map_err(|e| format!("read pixel: {e}"))?;
-                require(pixel == 0x3c3c3c, "console overwrote the display owner's pixels")?;
-            }
+        // Sample the text area, including cursor bands, from the display itself.
+        let points: Vec<(i32, i32)> = (0..painted.height as i32).step_by(13)
+            .flat_map(|y| (0..painted.width as i32).step_by(29).map(move |x| (x, y)))
+            .collect();
+        for pixel in displayed(&points)? {
+            require(pixel == 0x3c3c3c, "console overwrote the display owner's pixels")?;
         }
         drop(owner);
+        drop(painted);
         Ok(())
     })
 }
@@ -494,10 +581,11 @@ fn screen_display_released_redraws() -> CaseResult {
         tty_write(&format!("\r\n{before}\r\n"))?;
         wait_for_row(&before)?;
         let owner = DisplayOwner::take()?;
-        paint_owner()?;
+        let painted = paint_owner()?;
         let retained = marker("while-taken")?;
         tty_write(&format!("\r\n{retained}\r\n"))?;
         drop(owner);
+        drop(painted);
         let text = wait_for_row(&retained)?;
         require(text.lines().any(|line| line.starts_with("console row: ") && line.contains(&before)),
             "release did not redraw the terminal's earlier text")?;
@@ -514,6 +602,9 @@ struct Terminal {
     cols: usize,
     cw: usize,
     ch: usize,
+    /// The screen as the display owner last read it back, until the next write.
+    #[cfg(target_arch = "aarch64")]
+    screen: core::cell::RefCell<Option<(Vec<u32>, usize)>>,
 }
 
 impl Terminal {
@@ -538,12 +629,18 @@ impl Terminal {
         let (cell, grid) = rest.split_once(" pixel cells), grid ").ok_or("missing grid size")?;
         let (cw, ch) = pair(cell)?;
         let (cols, _) = pair(grid)?;
-        let terminal = Self { fd, original, cols, cw, ch };
+        let terminal = Self {
+            fd, original, cols, cw, ch,
+            #[cfg(target_arch = "aarch64")]
+            screen: core::cell::RefCell::new(None),
+        };
         terminal.write(b"\x1bc")?;
         Ok(terminal)
     }
 
     fn write(&self, mut bytes: &[u8]) -> Verdict {
+        #[cfg(target_arch = "aarch64")]
+        self.screen.replace(None);
         while !bytes.is_empty() {
             let n = io::write(self.fd, bytes).map_err(|e| format!("console write: {e}"))?;
             require(n > 0, "console write made no progress")?;
@@ -567,9 +664,27 @@ impl Terminal {
     }
 
     fn pixel(&self, col: usize, row: usize, x: usize, y: usize, rgb: u32) -> Verdict {
-        let actual = libbreenix::graphics::fb_read_pixel((col * self.cw + x) as i32, (row * self.ch + y) as i32)
-            .map_err(|e| format!("pixel read: {e}"))?;
+        let actual = self.displayed((col * self.cw + x) as i32, (row * self.ch + y) as i32)?;
         require(actual == rgb, &format!("cell {row},{col} pixel {x},{y}: {actual:06x}, expected {rgb:06x}"))
+    }
+
+    /// The displayed pixel at `(x, y)` (the cases read pixels after taking the display,
+    /// which keeps the console's completed frame on the screen).
+    #[cfg(target_arch = "x86_64")]
+    fn displayed(&self, x: i32, y: i32) -> Verdict<u32> {
+        libbreenix::graphics::fb_read_pixel(x, y).map_err(|e| format!("pixel read: {e}"))
+    }
+
+    /// The displayed pixel at `(x, y)`: the device's scanout, read back once by the display
+    /// owner the cases became and kept until the terminal is written again.
+    #[cfg(target_arch = "aarch64")]
+    fn displayed(&self, x: i32, y: i32) -> Verdict<u32> {
+        if self.screen.borrow().is_none() {
+            self.screen.replace(Some(read_screen()?));
+        }
+        let screen = self.screen.borrow();
+        let (pixels, width) = screen.as_ref().expect("read above");
+        pixels.get(y as usize * width + x as usize).copied().ok_or_else(|| format!("pixel ({x}, {y}) is outside the screen"))
     }
 }
 
@@ -844,7 +959,7 @@ impl VtChild {
         Ok(Some(status))
     }
     fn wait(&mut self) -> Verdict<i32> {
-        while libbreenix::suite::case_ms_left() > 300 {
+        while breenix_suite::suite::case_ms_left() > 300 {
             if let Some(status) = self.poll()? { return Ok(status); }
             libbreenix::time::sleep_ms(20).map_err(|e| e.to_string())?;
         }
@@ -1083,7 +1198,7 @@ fn vt_text(number: usize) -> Verdict<String> {
 }
 
 fn wait_vt(number: usize, needle: &str) -> Verdict<String> {
-    while libbreenix::suite::case_ms_left() > 500 {
+    while breenix_suite::suite::case_ms_left() > 500 {
         let text = vt_text(number)?;
         if text.contains(needle) { return Ok(text); }
         libbreenix::time::sleep_ms(20).map_err(|e| e.to_string())?;
@@ -1095,7 +1210,7 @@ fn type_line(text: &str) -> Verdict {
     require(text.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()), "unsupported keyboard text")?;
     let mut keys: Vec<_> = text.chars().map(|c| c.to_string()).collect();
     keys.push("enter".into());
-    libbreenix::suite::hostkeys(&keys.join(",")).map(|_| ())
+    breenix_suite::suite::hostkeys(&keys.join(",")).map(|_| ())
 }
 
 // The terminal's last three non-blank rows. Getty echoes the login name and
@@ -1112,12 +1227,12 @@ fn login_vt(number: usize, password: &str) -> Verdict<String> {
 }
 
 fn login_vt_as(number: usize, name: &str, password: &str) -> Verdict<String> {
-    let began = libbreenix::suite::case_ms_left();
+    let began = breenix_suite::suite::case_ms_left();
     wait_vt(number, "Breenix login: ")?;
     activate(number)?;
     type_line(name)?;
     wait_vt(number, "Password: ").map_err(|e| format!("{e}; screen ends: {}", screen_ends(number)))?;
-    let password_at = libbreenix::suite::case_ms_left();
+    let password_at = breenix_suite::suite::case_ms_left();
     type_line(password)?;
     let text = wait_vt(number, &format!("VTLOGIN tty{number} ")).map_err(|e| {
         format!("{e}; login began with {began}ms, password with {password_at}ms left; screen ends: {}", screen_ends(number))
@@ -1190,7 +1305,7 @@ fn getty_logout_reacquires() -> CaseResult {
         let fd = VtFd::open(4)?;
         io::write(fd.0, b"\x1bc").map_err(|e| e.to_string())?;
         let sid = before.split_whitespace().find(|word| word.starts_with("sid=")).ok_or("missing session")?;
-        libbreenix::suite::hostkeys("ctrl-d")?;
+        breenix_suite::suite::hostkeys("ctrl-d")?;
         wait_vt(4, &format!("VTLOGOUT tty4 {sid}"))?;
         wait_vt(4, "Breenix login: ")?;
         let proof = login_vt(4, &account.password)?;

@@ -20,8 +20,8 @@ use libbreenix::io;
 use libbreenix::memory::{self, MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, PROT_READ, PROT_WRITE};
 use libbreenix::process::{self, ForkResult};
 use libbreenix::signal::{Sigaction, StackT};
-use libbreenix::suite::prerequisites;
-use libbreenix::suite::{case, case_ms_left, category, check, fail, suite, CaseError, CaseResult, Suite};
+use breenix_suite::suite::prerequisites;
+use breenix_suite::suite::{case, case_ms_left, category, check, fail, suite, CaseError, CaseResult, Suite};
 #[cfg(target_arch = "aarch64")]
 use libbreenix::syscall::raw;
 use libbreenix::time;

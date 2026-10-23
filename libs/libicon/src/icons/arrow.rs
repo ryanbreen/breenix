@@ -1,7 +1,7 @@
 //! Arrow icon — animated forward/back arrow with motion-blur trail on click.
 
 use libgfx::color::Color;
-use libgfx::framebuf::FrameBuf;
+use libgfx::surface::Surface as FrameBuf;
 use libgfx::shapes;
 
 use crate::easing::sin_approx;
@@ -11,6 +11,9 @@ use crate::physics::Spring;
 
 pub struct ArrowIcon {
     base: IconBase,
+    remainder_us: u32,
+    pending_click: bool,
+    pending_release: bool,
     /// If true the arrow points right (forward); if false, left (back).
     pub forward: bool,
     /// X stretch spring — positive = lean forward, negative = pull back.
@@ -27,6 +30,9 @@ impl ArrowIcon {
     pub fn new(forward: bool) -> Self {
         Self {
             base: IconBase::new(),
+            remainder_us: 0,
+            pending_click: false,
+            pending_release: false,
             forward,
             stretch_x: Spring::new(0.0, 350.0, 18.0),
             scale: Spring::new(1.0, 300.0, 20.0),
@@ -36,7 +42,11 @@ impl ArrowIcon {
     }
 
     fn dir(&self) -> f32 {
-        if self.forward { 1.0 } else { -1.0 }
+        if self.forward {
+            1.0
+        } else {
+            -1.0
+        }
     }
 
     fn emit_speed_lines(&mut self, count: usize) {
@@ -64,8 +74,9 @@ impl ArrowIcon {
     }
 }
 
-impl Icon for ArrowIcon {
-    fn update(&mut self, dt_us: u32, mouse: IconMouse) {
+impl ArrowIcon {
+    fn tick(&mut self, mouse: IconMouse) {
+        let dt_us = 1000;
         let state_changed = self.base.update(dt_us, &mouse);
         let dt = dt_us as f32 / 1_000_000.0;
         let dir = self.dir();
@@ -86,7 +97,9 @@ impl Icon for ArrowIcon {
             IconState::HoverIn => (1.05, dir * 0.08),
             IconState::Hovering => {
                 // Oscillate slightly in idle hover.
-                let osc = sin_approx(self.base.state_time as f32 / 500_000.0 * 3.14159265) * 0.03;
+                let osc =
+                    sin_approx(self.base.state_time.min(1_000_000) as f32 / 500_000.0 * 3.14159265)
+                        * 0.03;
                 (1.05, dir * (0.08 + osc))
             }
             IconState::Clicked => (1.12, dir * 0.18),
@@ -99,91 +112,122 @@ impl Icon for ArrowIcon {
         self.stretch_x.update(dt);
         self.particles.update(dt);
     }
+}
+
+impl Icon for ArrowIcon {
+    fn update(&mut self, dt_us: u32, mut mouse: IconMouse) {
+        self.remainder_us += dt_us % 1000;
+        let quanta = dt_us / 1000 + self.remainder_us / 1000;
+        self.remainder_us %= 1000;
+        self.pending_click |= mouse.just_clicked;
+        self.pending_release |= mouse.just_released;
+        for _ in 0..quanta {
+            mouse.just_clicked = self.pending_click;
+            mouse.just_released = self.pending_release;
+            self.pending_click = false;
+            self.pending_release = false;
+            self.tick(mouse);
+        }
+    }
 
     fn draw(&self, fb: &mut FrameBuf, cx: i32, cy: i32, size: i32) {
-        let sc = self.scale.value;
-        let s = (size as f32 * sc) as i32;
-        if s < 4 {
-            return;
-        }
+        // One submission per frame (libgfx Surface::batch), the same pixels as one per shape.
+        fb.batch(|fb| {
+            let sc = self.scale.value;
+            let s = (size as f32 * sc) as i32;
+            if s < 4 {
+                return;
+            }
 
-        // Stretch offset in pixels.
-        let ox = (self.stretch_x.value * size as f32) as i32;
-        let dir = if self.forward { 1 } else { -1 };
+            // Stretch offset in pixels.
+            let ox = (self.stretch_x.value * size as f32) as i32;
+            let dir = if self.forward { 1 } else { -1 };
 
-        // Arrow shaft: horizontal line from left edge to right edge, centred vertically.
-        let shaft_y = cy;
-        let left_x = cx - s * 45 / 100 + ox;
-        let right_x = cx + s * 45 / 100 + ox;
+            // Arrow shaft: horizontal line from left edge to right edge, centred vertically.
+            let shaft_y = cy;
+            let left_x = cx - s * 45 / 100 + ox;
+            let right_x = cx + s * 45 / 100 + ox;
 
-        // For motion blur on click: draw 3 fading ghost copies behind the arrow.
-        if self.base.state == IconState::Clicked || self.base.state == IconState::HoverOut {
-            let progress = self.base.state_time as f32 / 500_000.0;
-            if progress < 0.6 {
-                for i in 1..=3_i32 {
-                    let trail_alpha = (1.0 - progress) * (1.0 - i as f32 / 4.0);
-                    let ta = (trail_alpha * 120.0) as u8;
-                    let trail_c = Color::rgb(ta / 2, ta, ta);
-                    let trail_ox = -dir * i * s / 8;
-                    shapes::draw_line(
-                        fb,
-                        left_x + trail_ox,
-                        shaft_y,
-                        right_x + trail_ox,
-                        shaft_y,
-                        trail_c,
-                    );
+            // For motion blur on click: draw 3 fading ghost copies behind the arrow.
+            if self.base.state == IconState::Clicked || self.base.state == IconState::HoverOut {
+                let progress = self.base.state_time as f32 / 500_000.0;
+                if progress < 0.6 {
+                    for i in 1..=3_i32 {
+                        let trail_alpha = (1.0 - progress) * (1.0 - i as f32 / 4.0);
+                        let ta = (trail_alpha * 120.0) as u8;
+                        let trail_c = Color::rgb(ta / 2, ta, ta);
+                        let trail_ox = -dir * i * s / 8;
+                        shapes::draw_line(
+                            fb,
+                            left_x + trail_ox,
+                            shaft_y,
+                            right_x + trail_ox,
+                            shaft_y,
+                            trail_c,
+                        );
+                    }
                 }
             }
-        }
 
-        let arrow_color = Color::rgb(220, 220, 230);
+            let arrow_color = Color::rgb(220, 220, 230);
 
-        // Draw shaft (2px thick via two lines).
-        shapes::draw_line(fb, left_x, shaft_y, right_x, shaft_y, arrow_color);
-        shapes::draw_line(fb, left_x, shaft_y + 1, right_x, shaft_y + 1, arrow_color);
+            // Draw shaft (2px thick via two lines).
+            shapes::draw_line(fb, left_x, shaft_y, right_x, shaft_y, arrow_color);
+            shapes::draw_line(fb, left_x, shaft_y + 1, right_x, shaft_y + 1, arrow_color);
 
-        // Arrowhead: two angled lines forming a chevron at the tip.
-        let tip_x = if self.forward { right_x } else { left_x };
-        let head_len = s / 5;
-        // Upper arm of chevron.
-        shapes::draw_line(
-            fb,
-            tip_x,
-            shaft_y,
-            tip_x - dir * head_len,
-            shaft_y - head_len,
-            arrow_color,
-        );
-        // Lower arm of chevron.
-        shapes::draw_line(
-            fb,
-            tip_x,
-            shaft_y + 1,
-            tip_x - dir * head_len,
-            shaft_y + 1 + head_len,
-            arrow_color,
-        );
+            // Arrowhead: two angled lines forming a chevron at the tip.
+            let tip_x = if self.forward { right_x } else { left_x };
+            let head_len = s / 5;
+            // Upper arm of chevron.
+            shapes::draw_line(
+                fb,
+                tip_x,
+                shaft_y,
+                tip_x - dir * head_len,
+                shaft_y - head_len,
+                arrow_color,
+            );
+            // Lower arm of chevron.
+            shapes::draw_line(
+                fb,
+                tip_x,
+                shaft_y + 1,
+                tip_x - dir * head_len,
+                shaft_y + 1 + head_len,
+                arrow_color,
+            );
 
-        // Draw speed-line particles (unit-normalised coords → scale by size).
-        let scale = size as f32;
-        for p in &self.particles.particles {
-            if !p.alive() {
-                continue;
+            // Draw speed-line particles (unit-normalised coords → scale by size).
+            let scale = size as f32;
+            for p in self.particles.particles() {
+                if !p.alive() {
+                    continue;
+                }
+                let alpha = p.life;
+                let r = (p.color.r as f32 * alpha) as u8;
+                let g = (p.color.g as f32 * alpha) as u8;
+                let b = (p.color.b as f32 * alpha) as u8;
+                let pc = Color::rgb(r, g, b);
+                let px = (p.x * scale) as i32 + cx;
+                let py = (p.y * scale) as i32 + cy;
+                shapes::fill_rect(fb, px, py, 1, 1, pc);
             }
-            let alpha = p.life;
-            let r = (p.color.r as f32 * alpha) as u8;
-            let g = (p.color.g as f32 * alpha) as u8;
-            let b = (p.color.b as f32 * alpha) as u8;
-            let pc = Color::rgb(r, g, b);
-            let px = (p.x * scale) as i32 + cx;
-            let py = (p.y * scale) as i32 + cy;
-            shapes::fill_rect(fb, px, py, 1, 1, pc);
-        }
+        });
     }
 
     fn bounds_overflow(&self) -> i32 {
         18
+    }
+
+    fn hover_amount(&self) -> f32 {
+        self.base.hover_amount()
+    }
+    fn settled(&self) -> bool {
+        self.base.settled()
+            && (self.base.state != IconState::Hovering || self.base.state_time >= 1_000_000)
+            && self.scale.settled()
+            && self.stretch_x.settled()
+            && self.particles.active_count() == 0
     }
 
     fn state(&self) -> IconState {
@@ -192,11 +236,15 @@ impl Icon for ArrowIcon {
 
     fn reset(&mut self) {
         self.base.reset();
+        self.remainder_us = 0;
+        self.pending_click = false;
+        self.pending_release = false;
         self.scale.impulse(1.0, 0.0);
         self.scale.set_target(1.0);
         self.stretch_x.impulse(0.0, 0.0);
         self.stretch_x.set_target(0.0);
         self.particles.clear();
+        self.rng = Rng::new(if self.forward { 0xF0_1234 } else { 0xBA_CEDC });
     }
 
     fn name(&self) -> &'static str {

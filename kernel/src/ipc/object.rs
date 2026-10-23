@@ -15,6 +15,11 @@ pub trait IpcFile: Send + Sync + core::fmt::Debug {
     fn poll_events(&self) -> i16 {
         0
     }
+    /// The queue woken when `poll_events` may have changed, for poll, select and epoll to
+    /// sleep on; None makes them rescan the descriptor every millisecond.
+    fn poll_queue(&self) -> Option<alloc::sync::Arc<crate::task::waitqueue::WaitQueueHead>> {
+        None
+    }
     fn chmod(&self, _mode: u32, _cred: &crate::fs::permissions::Credentials) -> Result<(), u64> {
         Err(EINVAL as u64)
     }

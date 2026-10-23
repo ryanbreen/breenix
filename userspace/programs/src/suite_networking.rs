@@ -34,7 +34,7 @@
 //! /etc/hosts puts it back; the next resolve case restores it if a killed case could not.
 use libbreenix::process::{self, ForkResult};
 use libbreenix::signal::{self as signal, Sigaction};
-use libbreenix::suite::{case, case_ms_left, category, check, fail, suite, value, CaseError, CaseResult, Suite};
+use breenix_suite::suite::{case, case_ms_left, category, check, fail, suite, value, CaseError, CaseResult, Suite};
 #[cfg(target_arch = "aarch64")]
 use libbreenix::syscall::raw;
 use std::ptr::{null, null_mut};

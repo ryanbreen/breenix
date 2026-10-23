@@ -132,3 +132,25 @@ fn concurrent_upload_staging_cannot_escape_the_process_budget() {
     drop(replacement);
     assert_eq!(held(), (UPLOAD as u64, 0));
 }
+
+#[test]
+fn copy_release_cannot_inflate_the_resource_baseline() {
+    let quota = quota::Quota::default();
+    let resource = quota::QuotaCharge::try_new(&quota, 262_144, false).unwrap();
+    let copy = quota::QuotaCharge::try_new(&quota, 4096, true).unwrap();
+    // Reproduce COUNTERS' old interleaving: its first load precedes a concurrent
+    // copy release and its second follows it. No resource was created or freed.
+    let held_before_release = quota.held.load(Ordering::Acquire);
+    drop(copy);
+    let copies_after_release = quota.copies.load(Ordering::Acquire);
+    assert_eq!(held_before_release - copies_after_release, 266_240);
+    assert_eq!(quota.resource_bytes(), 262_144);
+    // Non-copy staging and target charges still count, and drop releases them.
+    let staging = quota::QuotaCharge::try_new(&quota, 4096, false).unwrap();
+    assert_eq!(quota.resource_bytes(), 266_240);
+    drop(staging);
+    assert_eq!(quota.resource_bytes(), 262_144);
+    drop(resource);
+    assert_eq!(quota.resource_bytes(), 0);
+    assert_eq!(quota.held.load(Ordering::Acquire), 0);
+}

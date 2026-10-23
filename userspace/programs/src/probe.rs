@@ -2,6 +2,9 @@
 
 mod probe_signal;
 mod probe_metal;
+mod probe_panel;
+#[cfg(target_arch = "x86_64")]
+mod probe_framebuffer;
 
 use libbreenix::fs::{self, DirentIter, O_CREAT, O_DIRECTORY, O_RDONLY, O_TRUNC, O_WRONLY};
 use libbreenix::graphics;
@@ -13,7 +16,9 @@ use libbreenix::socket::{self, SockAddrIn, AF_INET, SOCK_DGRAM};
 use libbreenix::termios::{self, Termios};
 use libbreenix::time;
 use libbreenix::types::Fd;
-use libgfx::{diagnostics::{self, Check, CheckState, Group, Panel, Verdict}, framebuf::FrameBuf};
+use probe_panel::{self as diagnostics, Check, CheckState, Group, Panel, Verdict};
+#[cfg(target_arch = "x86_64")]
+use probe_framebuffer::FrameBuf;
 
 const IDS: [&str; 16] = [
     "console", "getpid", "clock", "brk", "mmap", "fork-wait", "exec", "argv",
@@ -32,8 +37,14 @@ const DETAILS: [&str; 16] = [
     "exec child exited 0", "target validated argv", "child sent bytes to parent",
     "ignored, blocked and caught signal waits passed", "POLLIN reported", "write/read/unlink succeeded",
     "mkdir/list/rmdir succeeded", "isatty and tcgetattr succeeded",
-    "datagram echoed on 127.0.0.1", "fb info and draw succeeded",
+    "datagram echoed on 127.0.0.1", FRAMEBUFFER_DETAIL,
 ];
+/// What the display check exercises: on x86-64 the firmware framebuffer's drawing contract,
+/// on ARM64 the GPU core's scanout.
+#[cfg(target_arch = "x86_64")]
+const FRAMEBUFFER_DETAIL: &str = "fb info and draw succeeded";
+#[cfg(target_arch = "aarch64")]
+const FRAMEBUFFER_DETAIL: &str = "GPU scanout drawn and read back";
 const GROUPS: [(&str, usize, usize); 7] = [
     ("FIRST USERSPACE", 0, 5), ("PROCESS LIFECYCLE", 5, 8),
     ("SIGNALS + IPC", 8, 11), ("USERSPACE FS", 11, 13),
@@ -180,13 +191,14 @@ fn check(index: usize) -> Result<(), &'static str> {
             else { Err("loopback payload mismatch") }
         }
         15 => {
-            let info = graphics::fbinfo().map_err(|_| "fbinfo failed")?;
-            if info.width == 0 || info.height == 0 { return Err("empty framebuffer"); }
             #[cfg(target_arch = "x86_64")]
-            framebuffer_check(&info)?;
+            {
+                let info = graphics::fbinfo().map_err(|_| "fbinfo failed")?;
+                if info.width == 0 || info.height == 0 { return Err("empty framebuffer"); }
+                framebuffer_check(&info)?;
+            }
             #[cfg(target_arch = "aarch64")]
-            graphics::fb_fill_rect(0, 0, 1, 1, graphics::rgb(36, 48, 70))
-                .map_err(|_| "framebuffer draw failed")?;
+            scanout_check()?;
             Ok(())
         }
         16 => probe_metal::fetch(),
@@ -205,7 +217,8 @@ fn framebuffer_check(info: &graphics::FbInfo) -> Result<(), &'static str> {
     if width != info.width { return Err("framebuffer pane is not whole screen"); }
     // SAFETY: fb_mmap_pane provides height rows of width * bytes_per_pixel bytes.
     let mut fb = unsafe { FrameBuf::from_raw(ptr, width as usize, info.height as usize,
-        (width * info.bytes_per_pixel) as usize, info.bytes_per_pixel as usize, info.is_bgr()) };
+        (width * info.bytes_per_pixel) as usize, info.bytes_per_pixel as usize, info.is_bgr()) }
+        .map_err(|_| "framebuffer geometry refused")?;
     let w = fb.width.min(2);
     let h = fb.height.min(2);
     let x = fb.width - w;
@@ -214,7 +227,7 @@ fn framebuffer_check(info: &graphics::FbInfo) -> Result<(), &'static str> {
     for mask in [0, 0x00ff_ffff] {
         for row in 0..h {
             for col in 0..w {
-                let rgb = (0x0024_3046u32 + (row as u32 * 2 + col as u32) * 0x0011_2317) ^ mask;
+                let rgb = pattern(col as u32, row as u32, mask);
                 fb.put_pixel(x + col, y + row,
                     libgfx::color::Color::rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8));
             }
@@ -223,7 +236,7 @@ fn framebuffer_check(info: &graphics::FbInfo) -> Result<(), &'static str> {
             .map_err(|_| "framebuffer flush failed")?;
         for row in 0..h {
             for col in 0..w {
-                let expected = (0x0024_3046u32 + (row as u32 * 2 + col as u32) * 0x0011_2317) ^ mask;
+                let expected = pattern(col as u32, row as u32, mask);
                 let actual = graphics::fb_read_pixel((x + col) as i32, (y + row) as i32)
                     .map_err(|_| "framebuffer readback failed")?;
                 if actual != expected { return Err("framebuffer pixels did not reach display"); }
@@ -238,6 +251,55 @@ fn framebuffer_check(info: &graphics::FbInfo) -> Result<(), &'static str> {
         Err(libbreenix::error::Error::Os(libbreenix::Errno::EPERM)) => Ok(()),
         _ => Err("unprivileged framebuffer readback was not denied"),
     }
+}
+
+/// The 2x2 pattern the display checks draw in the screen's bottom-right corner: its colour
+/// at `(col, row)`, complemented by `mask` for the second pass, which shows the first pass's
+/// pixels are not what the second reads back.
+fn pattern(col: u32, row: u32, mask: u32) -> u32 {
+    (0x0024_3046u32 + (row * 2 + col) * 0x0011_2317) ^ mask
+}
+
+/// Draw the pattern on the GPU core into a scanout target of the display's mode, present it,
+/// and read the scanout itself back from the device (READBACK of target 0): each pass's
+/// pixels must be the ones the display shows.
+#[cfg(target_arch = "aarch64")]
+fn scanout_check() -> Result<(), &'static str> {
+    use libbreenix::gpu::{self, abi};
+    let modes = bgl::modes().map_err(|_| "GPU MODES failed")?;
+    let mode = modes.modes.get(modes.current as usize).copied().ok_or("GPU MODES has no current mode")?;
+    if mode.width == 0 || mode.height == 0 { return Err("empty display mode"); }
+    graphics::take_over_display().map_err(|_| "display takeover failed")?;
+    let target = gpu::scanout_target_create(abi::format::B8G8R8A8, mode.width, mode.height)
+        .map_err(|_| "scanout target creation failed")?;
+    let mut ctx = bgl::Context::new().map_err(|_| "GPU context creation failed")?;
+    let (w, h) = (mode.width.min(2), mode.height.min(2));
+    let (x, y) = (mode.width - w, mode.height - h);
+    let mut pixels = [0u8; 16];
+    let mut record = Box::new([0u8; abi::record::SIZE]);
+    for mask in [0, 0x00ff_ffff] {
+        ctx.begin(target, mode.width, mode.height);
+        for row in 0..h {
+            for col in 0..w {
+                let (px, py) = ((x + col) as i32, (y + row) as i32);
+                ctx.solid(0xFF00_0000 | pattern(col, row, mask), &[[px, py, px + 1, py + 1]]);
+            }
+        }
+        ctx.submit().and_then(|f| f.wait(2_000_000_000)).map_err(|_| "GPU draw failed")?;
+        ctx.present(target).and_then(|f| f.wait(2_000_000_000)).map_err(|_| "GPU present failed")?;
+        if gpu::readback(0, [x, y, w, h], &mut pixels[..(w * h * 4) as usize], w * 4, &mut record) != 0 {
+            return Err("scanout readback failed");
+        }
+        for row in 0..h {
+            for col in 0..w {
+                let o = ((row * w + col) * 4) as usize;
+                let got = u32::from_le_bytes([pixels[o], pixels[o + 1], pixels[o + 2], pixels[o + 3]]);
+                if got & 0x00ff_ffff != pattern(col, row, mask) { return Err("drawn pixels did not reach the scanout"); }
+            }
+        }
+    }
+    let _ = gpu::resource_destroy(target);
+    Ok(())
 }
 
 fn exec_check(path: &[u8], argv: Option<&[*const u8; 3]>) -> Result<(), &'static str> {
@@ -395,13 +457,28 @@ fn supervised_check(index: usize) -> (Result<(), String>, bool) {
 
 /// Probe's screen mapping, and whether a program `probe --run` started has taken
 /// the display from it.
+#[cfg(target_arch = "x86_64")]
 struct Screen {
     fb: FrameBuf,
     lost: bool,
 }
 
+/// Probe's screen on the GPU core: the panel's surface, the scanout target it is copied
+/// into and presented, the context that presents it, and whether a program `probe --run`
+/// started has taken the display from it.
+#[cfg(target_arch = "aarch64")]
+struct Screen {
+    fb: libgfx::surface::Surface,
+    target: u64,
+    ctx: bgl::Context,
+    lost: bool,
+    /// The screen has been presented once.
+    shown: bool,
+}
+
 /// Take the display and map it: the whole screen, as the display owner, where the
 /// kernel supports that.
+#[cfg(target_arch = "x86_64")]
 fn open_screen() -> Option<Screen> {
     let info = graphics::fbinfo().ok()?;
     if info.width < 480 || info.height < 400
@@ -411,8 +488,23 @@ fn open_screen() -> Option<Screen> {
     if width < 240 { return None; }
     let fb = unsafe { FrameBuf::from_raw(ptr, width as usize, info.height as usize,
         (width * info.bytes_per_pixel) as usize, info.bytes_per_pixel as usize,
-        info.is_bgr()) };
+        info.is_bgr()).ok()? };
     Some(Screen { fb, lost: false })
+}
+
+/// Take the display and make the screen at the GPU core's current mode, when the core has
+/// admitted a device.
+#[cfg(target_arch = "aarch64")]
+fn open_screen() -> Option<Screen> {
+    use libbreenix::gpu::{self, abi};
+    let modes = bgl::modes().ok()?;
+    let mode = modes.modes.get(modes.current as usize).copied()?;
+    if mode.width < 480 || mode.height < 400 { return None; }
+    graphics::take_over_display().ok()?;
+    let fb = libgfx::surface::Surface::new(mode.width as usize, mode.height as usize, libgfx::surface::Format::BGRX).ok()?;
+    let target = gpu::scanout_target_create(abi::format::B8G8R8A8, mode.width, mode.height).ok()?;
+    let ctx = bgl::Context::new().ok()?;
+    Some(Screen { fb, target, ctx, lost: false, shown: false })
 }
 
 /// Probe's screen, if it has one and still holds the display.
@@ -424,9 +516,36 @@ fn drawable(screen: &mut Option<Screen>) -> Option<&mut Screen> {
 /// display itself (bwm, say) moves it away from probe, whose flushes are then
 /// refused with EPERM: probe stops drawing and leaves the screen to that program
 /// until it exits (`reclaim_screen`). Output still goes to serial.
+#[cfg(target_arch = "x86_64")]
 fn flush_screen(screen: &mut Screen) {
     if let Err(libbreenix::error::Error::Os(libbreenix::Errno::EPERM)) = graphics::fb_flush() {
         screen.lost = true;
+    }
+}
+
+/// Put probe's screen on the display: the panel's surface, once drawn, copied into the
+/// scanout target, which is presented. A program run by `probe --run` that takes the
+/// display itself (bwm, say) moves it away from probe, whose presents are then refused
+/// with EPERM: probe stops drawing and leaves the screen to that program until it exits
+/// (`reclaim_screen`). Output still goes to serial.
+#[cfg(target_arch = "aarch64")]
+fn flush_screen(screen: &mut Screen) {
+    const EPERM: i64 = -libbreenix::gpu::abi::errno::EPERM;
+    if screen.fb.wait().is_err() { return; }
+    let (w, h) = (screen.fb.width() as i32, screen.fb.height() as i32);
+    screen.ctx.begin(screen.target, w as u32, h as u32);
+    screen.ctx.copy(screen.fb.handle(), &[[0, 0, w, h, 0, 0]]);
+    match screen.ctx.submit().and_then(|f| f.wait(2_000_000_000)) {
+        Ok(()) => {}
+        Err(_) => { screen.ctx.discard(); return; }
+    }
+    match screen.ctx.present(screen.target) {
+        Err(EPERM) => screen.lost = true,
+        Ok(_) if !screen.shown => {
+            screen.shown = true;
+            println!("PROBE screen shown {}x{} on the GPU core", w, h);
+        }
+        _ => {}
     }
 }
 
@@ -438,6 +557,11 @@ fn reclaim_screen(screen: &mut Option<Screen>) {
             screen.lost = false;
         }
     }
+}
+
+/// Draw the status panel on this architecture's production display path.
+fn show(screen: &mut Screen, title: &str, subtitle: &str, groups: &[Group<'_>], output: &[&str], verdict: Verdict<'_>) {
+    diagnostics::draw(&mut screen.fb, &Panel { title, subtitle, groups, output, verdict });
 }
 
 fn draw_probe(screen: &mut Option<Screen>, states: &[Option<bool>; 16], details: &[String; 16],
@@ -455,15 +579,10 @@ fn draw_probe(screen: &mut Option<Screen>, states: &[Option<bool>; 16], details:
         title, checks: &checks[*first..*end],
     }).collect();
     let verdict = format!("{} passed / {} failed", passed, states.iter().filter(|s| **s == Some(false)).count());
-    diagnostics::draw(&mut screen.fb, &Panel {
-        title: "BREENIX / BOOT PROBE", subtitle: "Live subsystem status",
-        groups: &groups, output: &[],
-        verdict: if finished {
+    show(screen, "BREENIX / BOOT PROBE", "Live subsystem status", &groups, &[],
+        if finished {
             if passed == IDS.len() { Verdict::Passed(&verdict) } else { Verdict::Failed(&verdict) }
-        } else { Verdict::Running(&verdict) },
-        scored: false,
-        live: None,
-    });
+        } else { Verdict::Running(&verdict) });
     flush_screen(screen);
 }
 
@@ -485,9 +604,8 @@ fn probe() {
     let mut passed = 0;
     for index in 0..IDS.len() {
         let (result, inline) = supervised_check(index);
-        #[cfg(target_arch = "x86_64")]
         if index == 15 {
-            // The framebuffer check child took ownership to flush its own pane.
+            // The display check child took ownership to show its own pattern.
             if let Some(screen) = fb.as_mut() { screen.lost = true; }
             reclaim_screen(&mut fb);
         }
@@ -536,10 +654,7 @@ fn draw_run(screen: &mut Option<Screen>, path: &str, elapsed: i128,
     let partial = String::from_utf8_lossy(partial);
     let mut lines: Vec<_> = output.iter().map(String::as_str).collect();
     if !partial.is_empty() { lines.push(&partial); }
-    diagnostics::draw(&mut screen.fb, &Panel {
-        title: "BREENIX / PROGRAM RUN", subtitle: &subtitle,
-        groups: &groups, output: &lines, verdict, scored: false, live: None,
-    });
+    show(screen, "BREENIX / PROGRAM RUN", &subtitle, &groups, &lines, verdict);
     flush_screen(screen);
 }
 

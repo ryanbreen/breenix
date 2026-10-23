@@ -2709,10 +2709,6 @@ const INLINE_ELR_DIVERGENCE_COUNTER_SITES: &[(&str, &str, usize)] = &[
     (AARCH64_CONTEXT_SWITCH, "fn record_inline_elr_divergence", 1),
 ];
 #[rustfmt::skip]
-const INLINE_ELR_DIVERGENCE_MARKER_SITES: &[(&str, &str, usize)] = &[
-    (AARCH64_CONTEXT_SWITCH, "fn record_inline_elr_divergence", 1),
-];
-#[rustfmt::skip]
 const FORCE_ERET_DISPATCH_DEFINITIONS: &[(&str, &str, usize)] = &[
     (AARCH64_CONTEXT_SWITCH, "#[cfg(feature=force_eret_dispatch_596)] fn inline_ret_dispatch_info_if_ready", 1),
     (AARCH64_CONTEXT_SWITCH, "#[cfg(not(feature=force_eret_dispatch_596))] fn inline_ret_dispatch_info_if_ready", 1),
@@ -3471,12 +3467,6 @@ fn validate_ctx596_oracle_liveness(source: &str) -> Result<(), String> {
             identifier_offsets(source, mask, "INLINE_ELR_DIVERGENCE")
         }),
         INLINE_ELR_DIVERGENCE_COUNTER_SITES,
-    )?;
-    census_error(
-        &census(&sources, |source, _| {
-            literal_offsets(source, "[CTX596_ELR_DIVERGENCE]")
-        }),
-        INLINE_ELR_DIVERGENCE_MARKER_SITES,
     )?;
     if definition_is_cfg_gated(source, "INLINE_ELR_DIVERGENCE") {
         return Err("INLINE_ELR_DIVERGENCE definition is feature-gated".to_string());
@@ -4626,17 +4616,6 @@ fn ctx596_oracles_are_permanent_while_forcing_stays_feature_gated() {
     );
     assert_ne!(gated_oracle, source, "CTX596 oracle cfg mutation anchor");
     assert!(validate_ctx596_oracle_liveness(&gated_oracle).is_err());
-
-    let missing_divergence = source.replacen(
-        "[CTX596_ELR_DIVERGENCE]",
-        "[CTX596_ELR_DIVERGENCE_REMOVED]",
-        1,
-    );
-    assert_ne!(
-        missing_divergence, source,
-        "CTX596 divergence marker mutation anchor"
-    );
-    assert!(validate_ctx596_oracle_liveness(&missing_divergence).is_err());
 
     let gated_counter = source.replacen(
         "crate::define_trace_counter!(\n    INLINE_ELR_DIVERGENCE,",

@@ -16,12 +16,11 @@ crate-type = ["rlib"]
 default = []
 std = []
 runtime = []
-# The effort-suite runner (src/suite.rs): needs std, and libgfx for its panel.
-suite = ["std", "dep:libgfx"]
+# Suite-mode upload auditing; the harness lives in the breenix-suite package.
+suite = ["std"]
 
 [dependencies]
-# A pure no_std library: gpu-abi's layouts always, libgfx only with the suite feature.
-libgfx = { path = "../libgfx", optional = true }
+breengel-abi = { path = "../breengel-abi" }
 # Syscall 416's layouts and the BGL command stream, shared with the kernel.
 gpu-abi = { path = "../gpu-abi" }
 

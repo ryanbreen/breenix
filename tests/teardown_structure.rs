@@ -7871,7 +7871,6 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
     let interrupts = source(sources, "kernel/src/interrupts.rs");
     let arm_exception = source(sources, "kernel/src/arch_impl/aarch64/exception.rs");
     let stack = source(sources, "kernel/src/memory/stack.rs");
-    let graphics = source(sources, "kernel/src/syscall/graphics.rs");
     let manager = source(sources, "kernel/src/process/manager.rs");
     let arm_elf = source(sources, "kernel/src/arch_impl/aarch64/elf.rs");
 
@@ -7965,9 +7964,9 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
             return Err(());
         }
     }
-    if stack.matches("register_external_leaf_frame(frame)?;").count() != 2
-        || !graphics.contains("register_external_leaf_span(")
-    {
+    // B42/B43 delete the v1 window/compositor external-span registrar.
+    // x86-64 fbmmap uses the ordinary map_page custody checked above.
+    if stack.matches("register_external_leaf_frame(frame)?;").count() != 2 {
         return Err(());
     }
 

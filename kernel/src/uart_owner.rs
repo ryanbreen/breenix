@@ -462,6 +462,10 @@ pub fn write<P: Port, const TEE: bool>(
         };
         if !put_all::<P, TEE>(writer, lead, ownership) {
             ownership.regain();
+            // A late CR from the lost lead can leave our own line open.
+            // Rebuild the line boundary instead of treating it as payload
+            // continuation and omitting the missing LF on the next attempt.
+            fresh = true;
             continue 'attempt;
         }
         let mut index = 0;

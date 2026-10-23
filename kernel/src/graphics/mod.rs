@@ -45,3 +45,9 @@ pub mod primitives;
 pub mod render_task;
 
 pub use double_buffer::DoubleBufferedFrameBuffer;
+
+#[cfg(target_arch = "aarch64")]
+pub mod boot_ribbon;
+
+#[cfg(target_arch = "aarch64")]
+mod boot_producer;

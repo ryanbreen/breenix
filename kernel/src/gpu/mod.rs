@@ -33,6 +33,7 @@
 //! while holding it, and the reset itself runs on `kgpu` outside it; no path here prints
 //! (section 1.4: no kernel output on any path).
 
+pub mod window_targets;
 mod completion;
 mod present_answers;
 mod display;
@@ -42,6 +43,8 @@ pub mod screen;
 mod observation;
 mod quota;
 mod staging;
+mod vertex_arena;
+mod compose;
 use quota::{Charge, Quota, QuotaCharge};
 use staging::Staging;
 pub mod dma;
@@ -104,9 +107,10 @@ static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
 /// is unchanged.
 static EVENTS: AtomicU64 = AtomicU64::new(0);
 static WAITERS: WaitQueueHead = WaitQueueHead::new();
-/// Counts sends to the device. `kgpu` blocks only while it is unchanged since kgpu chose its
-/// deadline: a send made after that would otherwise wait for that deadline, because an
-/// SVGA3 device raises no interrupt and only kgpu polls it for the answers.
+/// Counts sends to the device, and progress transfers queued for `kgpu` to send. `kgpu`
+/// blocks only while it is unchanged since kgpu chose its deadline: a send made after that
+/// would otherwise wait for that deadline, because an SVGA3 device raises no interrupt and
+/// only kgpu polls it for the answers; a queued transfer would wait for it too.
 static SENT: AtomicU64 = AtomicU64::new(0);
 static ISR: AtomicU64 = AtomicU64::new(0);
 /// The control queue's notification address, and whether requests were queued since it
@@ -227,6 +231,8 @@ struct Proc {
     /// staging, and `SUBMIT`'s copies and vertex storage while they are held.
     quota: Quota,
     creating: bool,
+    /// `PRESENT`s whose flush completed OK (`/proc/breenix/stage-composites`).
+    presents: u64,
 }
 
 struct Ctx {
@@ -252,6 +258,8 @@ struct Ctx {
     /// The SVGA3D DX backend's objects of this context.
     dx: svga::encode::Objects,
     vb: u32,
+    vertex_arena: Option<VertexArena>,
+    private_scratch: Vec<PrivateScratch>,
     scratch: u32,
     /// The 1x1 texture the warm-up's sampling draws read.
     scratch_texture: u32,
@@ -262,6 +270,8 @@ struct Ctx {
     warm_after: u64,
     /// Warm-up steps the device refused in a row; two quarantine the context.
     warm_failures: u32,
+    /// Private clear/copy contexts do not use the rendering catalogue.
+    warm_catalogue: bool,
     /// Device errors in a row, in fence order.
     errors_in_row: u32,
     /// Test point 31's fence-depth mode on this context.
@@ -269,6 +279,15 @@ struct Ctx {
     /// The flush answers of completed `PRESENT`s by fence number, until their callers take
     /// them. Pending callers register before sending; interrupted callers unregister.
     flushes: present_answers::Answers,
+}
+
+struct PrivateScratch { id: u32, class: u32, accepted: bool }
+
+struct VertexArena {
+    id: u32,
+    ready: bool,
+    accepted: bool,
+    ranges: vertex_arena::Ranges,
 }
 
 impl Ctx {
@@ -299,6 +318,8 @@ struct Sub {
     ctx: u32,
     n: u32,
     fence: u64,
+    /// Actual native fence, set by its verified completion before publication.
+    native_fence: u64,
     /// When `SUBMIT` handed it to the device's queue; the watchdog's clock.
     sent_ns: Option<u64>,
     error: Option<u32>,
@@ -310,6 +331,7 @@ struct Sub {
     /// A submission kept by test point 31's fence-depth mode: its result, until it is
     /// published.
     result: Option<(u32, u32)>,
+    writer: Option<Arc<window_targets::Writer>>,
     written: Vec<u32>,
     whole: Vec<u32>,
     /// Resources it holds until the device has returned its requests and its result has
@@ -370,6 +392,8 @@ struct Res {
     epoch: u64,
     generation: u64,
     last: Option<LastWrite>,
+    /// Admission identities survive translation, completion publication and sealing.
+    accepted: Vec<Arc<window_targets::Writer>>,
     writers: u32,
     invalid: bool,
     invalidated_by: u64,
@@ -377,6 +401,16 @@ struct Res {
     holds: u32,
     lost: bool,
     reading: bool,
+    /// The context of a queued progress transfer reading this target. It excludes CPU
+    /// access only; GPU writes of any context may follow it.
+    progress_context: Option<u32>,
+    window_sealed: bool,
+    /// The kernel screen's context this resource is attached to for observing it as a
+    /// retained binding (`screen::observation_context`), or 0.
+    observed_in: u32,
+    /// The window composition whose transport wrote this scanout target, with the
+    /// generation that write produced; a later write of the target ends it.
+    composition: Option<Arc<compose::Provenance>>,
 }
 
 struct Core {
@@ -429,6 +463,10 @@ struct Core {
     /// many found no room.
     hung: [Option<Hung>; HUNG_KEPT],
     hung_dropped: u32,
+    /// The console's holds off the kernel screen's backing that interrupted observations
+    /// left, each with its resource, kept until no transfer reads that resource: the device
+    /// answered each, or a confirmed reset ended them (`end_reading`).
+    canvas: Vec<(u32, crate::console::CanvasHold)>,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -495,6 +533,7 @@ pub fn init() {
     unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) counter, options(nomem, nostack)) };
     core.key = counter ^ 0x9E37_79B9_7F4A_7C15;
     *CORE.lock() = Some(core);
+    compose::register();
     #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     panic::initialized();
 }
@@ -547,6 +586,7 @@ pub fn init_vmware() {
     unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) counter, options(nomem, nostack)) };
     core.key = counter ^ 0x9E37_79B9_7F4A_7C15;
     *CORE.lock() = Some(core);
+    compose::register();
 }
 
 impl Core {
@@ -591,6 +631,7 @@ impl Core {
             warm_held: None,
             hung: [None; HUNG_KEPT],
             hung_dropped: 0,
+            canvas: Vec::new(),
         }
     }
 
@@ -806,6 +847,8 @@ impl Core {
         s
     }
 
+    /// Reserve a completion identity before preparation. VirGL assigns its native
+    /// wire fence separately when the request enters the device queue.
     fn device_fence(&mut self) -> u64 {
         let f = self.next_fence;
         self.next_fence += 1;
@@ -816,18 +859,21 @@ impl Core {
     /// 0x00 nor 0xFF: no handle has the form of an address (section 1.16). The sequence it is
     /// drawn from is the core's, so a process's handles after an exec, which starts its GPU
     /// state again, are not the ones it held before.
-    fn handle(&mut self, tgid: u64) -> u64 {
+    fn handle(&mut self) -> u64 {
         let key = self.key;
         loop {
             self.handle_seq += 1;
             let seq = self.handle_seq;
-            let p = self.proc_mut(tgid);
-            let mut z = key ^ tgid.rotate_left(29) ^ seq.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            // Odd multiplication and the xor/multiply mix form a permutation.
+            // One global sequence makes resource/context/snapshot/alias values unique
+            // across processes without retaining an unbounded tombstone table.
+
+            let mut z = key ^ seq.wrapping_mul(0x9E37_79B9_7F4A_7C15);
             z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
             z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
             z ^= z >> 31;
             let top = z >> 56;
-            if top != 0 && top != 0xFF && !p.contexts.contains_key(&z) && !p.resources.contains_key(&z) {
+            if top != 0 && top != 0xFF {
                 return z;
             }
         }
@@ -852,6 +898,7 @@ impl Core {
             totals: Totals::default(),
             quota: Quota::default(),
             creating: false,
+            presents: 0,
         })
     }
 
@@ -956,6 +1003,13 @@ impl Core {
     /// Register synchronous request `serial`, take its holds and queue it. A request of the
     /// warm-up step carries the step's fence in `warm`; nobody waits for it.
     fn start_sync(&mut self, serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32], warm: Option<u64>) -> Result<(), i64> {
+        self.queue_sync(serial, req, ctx, holds, reading, warm)?;
+        self.flush();
+        Ok(())
+    }
+
+    /// Enroll DMA holds without notifying the device from a waiting caller.
+    fn queue_sync(&mut self, serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32], warm: Option<u64>) -> Result<(), i64> {
         if !self.can_queue(&req) {
             return Err(EIO);
         }
@@ -974,8 +1028,39 @@ impl Core {
             why: 0, warm,
         });
         self.backlog.push_back((self.epoch, req));
-        self.flush();
         Ok(())
+    }
+
+    /// Drain queued QEMU rendering through a fenced one-pixel transfer of the drawn target.
+    /// Publication still waits for the native render fences. kgpu sends the transfer, keeping
+    /// device notification out of the waiter's CPU time; its own fence retains the DMA hold.
+    fn progress_readback(&mut self) {
+        let reaper = REAPER.load(Ordering::Acquire);
+        if reaper == 0 || crate::per_cpu::current_thread().is_none_or(|t| t.id == reaper) { return; }
+        if !crate::platform_config::is_qemu() || dev::is_svga() || self.reset_wanted || self.resetting || self.stalled
+            || !self.backlog.is_empty() { return; }
+        let target = self.subs.values().filter(|s| !s.published && s.requests > 0 && s.sent_ns.is_some())
+            .find_map(|s| s.written.iter().find_map(|rid| {
+                let r = self.resources.get(rid)?;
+                let active = r.accepted.iter().filter(|w| !w.ended()).count();
+                (r.kind == kind::TARGET && r.writers > 0 && active == r.writers as usize
+                    && r.accepted.iter().filter(|w| !w.ended()).all(|w| w.ctx == s.ctx)
+                    && !r.reading && !r.invalid && !r.lost)
+                    .then(|| (s.ctx, *rid, r.backing.clone(), r.pitch))
+            }));
+        let Some((ctx, rid, backing, pitch)) = target else { return; };
+        let serial = self.serial();
+        let fence = self.device_fence();
+        let req = Request::Virgl(virgl::transfer_from_host(Tag::Sync(serial), ctx, fence, rid, backing, 0, 0, 1, 1, 0, pitch));
+        if !self.dev.as_ref().is_some_and(|d| d.has_room(req.segment_count())) { return; }
+        if let Some(r) = self.resources.get_mut(&rid) { r.reading = true; r.progress_context = Some(ctx); }
+        if self.queue_sync(serial, req, ctx, &[rid], &[rid], None).is_ok() {
+            self.abandon(serial);
+            // Only kgpu acts on the queued transfer; waking the waiters would only make
+            // them scan again. The count reaches a kgpu that has not blocked yet.
+            SENT.fetch_add(1, Ordering::AcqRel);
+            wake_reaper();
+        } else { self.end_reading(rid); }
     }
 
     /// The waiter of `serial` left: drop its answer if it came, or when it comes.
@@ -1100,7 +1185,7 @@ impl Core {
         }
         match d.tag {
             Tag::Sync(serial) => self.sync_ended(serial, Some(d)),
-            Tag::Submit { serial, last, .. } => self.submit_returned(serial, last, d.answer, d.echoed),
+            Tag::Submit { serial, last, .. } => self.submit_returned(serial, last, d),
             Tag::Background => {
                 if !dev::ok(d.answer) {
                     self.fault();
@@ -1134,12 +1219,12 @@ impl Core {
             self.fault();
         }
         if let Some(fence) = s.warm {
-            self.warm_returned(d.as_ref().map(|d| dev::ok(d.answer) && d.echoed == fence));
+            self.warm_returned(d.as_ref().map(|d| dev::ok(d.answer) && d.matches_fence(fence)));
         }
         if let Some((id, fence)) = s.upload {
             if let Some(d) = &d {
                 let device_error = !dev::ok(d.answer);
-                let ok = !device_error && d.echoed == fence && d.fenced;
+                let ok = !device_error && d.matches_fence(fence);
                 if !ok {
                     if let Some(r) = self.resources.get_mut(&id) {
                         completion::finish_write(&mut r.invalid, &mut r.invalidated_by, serial, false, false);
@@ -1166,12 +1251,7 @@ impl Core {
         }
         if s.abandoned {
             for id in s.reading {
-                if !self.syncs.values().any(|o| o.reading.contains(&id)) {
-                    if let Some(r) = self.resources.get_mut(&id) {
-                        r.reading = false;
-                    }
-                    self.free_if_unused(id);
-                }
+                self.end_reading(id);
             }
         } else {
             let d = d.unwrap_or_else(|| Done::none(Tag::Sync(serial)));
@@ -1184,25 +1264,26 @@ impl Core {
     }
 
     /// One SUBMIT_3D of submission `serial` came back.
-    fn submit_returned(&mut self, serial: u64, last: bool, answer: u32, echoed: u64) {
+    fn submit_returned(&mut self, serial: u64, last: bool, mut done: Done) {
+        let answer = done.answer;
         let Some(sub) = self.subs.get_mut(&serial) else { return };
         sub.requests = sub.requests.saturating_sub(1);
         if !dev::ok(answer) {
             sub.error.get_or_insert(answer);
         }
         if last {
-            let mut echoed = echoed;
             let submitted = sub.present.is_none();
             // Test point 20, `stale-fence`: the answer claims another submission's fence.
             if submitted && crate::test_control::take(test_point::STALE_FENCE, 0).is_some() {
-                echoed = sub.fence + 1;
+                done.echoed = done.native_fence.unwrap_or(0).wrapping_add(1);
             }
-            if sub.error.is_none() && echoed != sub.fence {
+            if sub.error.is_none() && !done.matches_fence(sub.fence) {
                 sub.mismatch = true;
             }
+            sub.native_fence = done.native_fence.unwrap_or(0);
             let result = match (sub.error, sub.mismatch) {
                 (Some(a), _) => (fence_status::DEVICE_ERROR, a),
-                (None, true) => (fence_status::FENCE_MISMATCH, echoed as u32),
+                (None, true) => (fence_status::FENCE_MISMATCH, done.echoed as u32),
                 (None, false) => (fence_status::OK, answer),
             };
             let ctx = sub.ctx;
@@ -1250,7 +1331,8 @@ impl Core {
             return;
         }
         sub.published = true;
-        let (ctx_id, n, fence, presenting) = (sub.ctx, sub.n, sub.fence, sub.present);
+        if let Some(writer) = &sub.writer { writer.publish(status); }
+        let (ctx_id, n, fence, presenting) = (sub.ctx, sub.n, sub.native_fence, sub.present);
         let written = core::mem::take(&mut sub.written);
         let whole = core::mem::take(&mut sub.whole);
         let ok = status == fence_status::OK;
@@ -1315,6 +1397,10 @@ impl Core {
             return;
         }
         let held = core::mem::take(&mut sub.held);
+        if let Some(arena) = self.contexts.get_mut(&sub.ctx).and_then(|ctx| ctx.vertex_arena.as_mut()) {
+            arena.ranges.release(serial);
+        }
+        if let Some(writer) = &sub.writer { writer.end_access(); }
         self.subs.remove(&serial);
         for id in held {
             self.unhold(id);
@@ -1339,6 +1425,20 @@ impl Core {
         if let Some(r) = self.resources.get_mut(&id) {
             r.holds = r.holds.saturating_sub(1);
         }
+        self.free_if_unused(id);
+    }
+
+    /// Once no request reads resource `id`, clear its `reading` mark, end the console hold
+    /// an interrupted observation of it left, and free it when it is otherwise unused.
+    fn end_reading(&mut self, id: u32) {
+        if self.syncs.values().any(|s| s.reading.contains(&id)) {
+            return;
+        }
+        if let Some(r) = self.resources.get_mut(&id) {
+            r.reading = false;
+            r.progress_context = None;
+        }
+        self.canvas.retain(|(held, _)| *held != id);
         self.free_if_unused(id);
     }
 
@@ -1385,6 +1485,8 @@ impl Core {
         if dropped {
             if let Some(c) = self.contexts.remove(&id) {
                 gauge(&GPU_CONTEXTS, -1);
+                if let Some(arena) = c.vertex_arena { self.unhold(arena.id); }
+                for scratch in c.private_scratch { self.unhold(scratch.id); }
                 for internal in [c.vb, c.scratch, c.scratch_texture] {
                     if let Some(r) = self.resources.get_mut(&internal) {
                         r.dropped = true;
@@ -1524,7 +1626,7 @@ impl Core {
             .then(|| now + POLL_NS);
         // Grace deadlines are independent across processes.
         let grace = self.contexts.values()
-            .filter(|x| x.state == CtxState::Live && !x.dropped && x.warm != encode::ALL_WARM)
+            .filter(|x| x.warm_catalogue && x.state == CtxState::Live && !x.dropped && x.warm != encode::ALL_WARM)
             .map(|x| x.warm_after).filter(|&g| g > now).min();
         let watchdog = hangs.chain(waits).chain(progress).min().map(|at| (at + limits::WATCHDOG_NS).min(now + EXAMINE_NS));
         watchdog.into_iter().chain(grace).chain(poll).min()
@@ -1780,7 +1882,9 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
             c.poll();
             // The device's answers reach this waiter only when someone looks for them.
             let polled = dev::is_svga() && !c.stalled && c.dev.as_ref().is_some_and(|d| d.outstanding() > 0);
-            (f(c), polled)
+            let found = f(c);
+            if found.is_none() { c.progress_readback(); }
+            (found, polled)
         })
         .unwrap_or((None, false));
         if let Some(v) = found {
@@ -2093,6 +2197,8 @@ fn reaper() {
             (c.next_deadline(now), !c.procs.is_empty(), c.reset_wanted, c.take_hung(), SENT.load(Ordering::Acquire))
         })
         .unwrap_or((None, false, false, ([None; HUNG_KEPT], 0), SENT.load(Ordering::Acquire)));
+        crate::window::scene::invalidate_stale();
+        crate::window::ops::publish_ready();
         post_hung(&hung.0, hung.1, &mut hung_losses);
         if reset {
             reset_device(tid);
@@ -2160,7 +2266,7 @@ fn warm_next() -> Option<u64> {
             && !c.stalled
             && c.quarantined_at.is_none()
     };
-    let warming = |x: &Ctx| x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM && now_ns() >= x.warm_after;
+    let warming = |x: &Ctx| x.warm_catalogue && x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM && now_ns() >= x.warm_after;
     let due = with_core(|c| {
         if !(ready(c) && c.contexts.values().any(warming)) {
             c.warm_held = None;
@@ -2450,6 +2556,7 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
         epoch,
         generation: 0,
         last: None,
+        accepted: Vec::new(),
         writers: 0,
         invalid: false,
         invalidated_by: 0,
@@ -2457,6 +2564,10 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
         holds: 0,
         lost: false,
         reading: false,
+        progress_context: None,
+        window_sealed: false,
+        observed_in: 0,
+        composition: None,
     }
 }
 
@@ -2477,6 +2588,10 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
 }
 
 fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
+    create_context_with_catalogue(tgid, true)
+}
+
+fn create_context_with_catalogue(tgid: u64, warm_catalogue: bool) -> Result<(u64, u32), i64> {
     let _creation = CreationGuard::acquire(tgid)?;
     sweep();
     if !ensure_reaper() {
@@ -2561,11 +2676,14 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
                 objects: encode::Objects::new(),
                 dx: svga::encode::Objects::new(0),
                 vb,
+                vertex_arena: None,
+                private_scratch: Vec::new(),
                 scratch,
                 scratch_texture,
                 warm: 0,
                 warm_after: 0,
                 warm_failures: 0,
+                warm_catalogue,
                 errors_in_row: 0,
                 depth: None,
                 flushes: present_answers::Answers::new(),
@@ -2591,7 +2709,7 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
             {
                 return Err(EIO);
             }
-            let h = c.handle(tgid);
+            let h = c.handle();
             c.proc_mut(tgid).contexts.insert(h, id);
             let ctx = c.contexts.get_mut(&id).ok_or(EIO)?;
             ctx.state = CtxState::Live;
@@ -2708,7 +2826,7 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
             return Err(EIO);
         }
         let d = exec_req(serial, req, id, &[vb, scratch, scratch_texture], &[])?;
-        if !dev::ok(d.answer) || Some(d.echoed) != fence {
+        if !dev::ok(d.answer) || !fence.is_some_and(|f| d.matches_fence(f)) {
             return Err(EIO);
         }
     }
@@ -2843,7 +2961,7 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
             r.dropped = outcome.is_err();
         }
         if outcome.is_ok() {
-            let h = c.handle(tgid);
+            let h = c.handle();
             c.proc_mut(tgid).resources.insert(h, id);
             Some(h)
         } else {
@@ -2909,6 +3027,9 @@ struct Entry {
     invalid: bool,
     /// A buffer's backing, read once into the submission's snapshot.
     backing: Option<Arc<Pages>>,
+    /// A window composition source alias (414 op 19): the resolvers accept it as a source
+    /// and refuse it as a target, a copy destination or a buffer.
+    sample_only: bool,
 }
 
 /// The process's resources as the validator and translator see them.
@@ -2933,12 +3054,36 @@ impl View {
                             size: r.size,
                             invalid: r.invalid,
                             backing: (r.kind == kind::BUFFER).then(|| r.backing.clone()),
+                            sample_only: false,
                         });
                     }
                 }
             }
         }
         View { entries }
+    }
+
+    /// Add a composition's source aliases, each a sample-only entry for the target it names.
+    /// Handles come from the core's one handle sequence, so no alias equals a handle the
+    /// process has; the entries stay in handle order.
+    fn add_aliases(&mut self, aliases: &[Alias]) -> Result<(), i64> {
+        if aliases.is_empty() {
+            return Ok(());
+        }
+        self.entries.try_reserve(aliases.len()).map_err(|_| ENOMEM)?;
+        let found: Vec<Entry> = with_core(|c| {
+            aliases.iter().filter_map(|x| {
+                let r = c.resources.get(&x.id).filter(|r| !r.lost && r.kind == kind::TARGET)?;
+                Some(Entry { handle: x.handle, id: x.id, kind: r.kind, format: r.format, width: r.width,
+                    height: r.height, size: r.size, invalid: r.invalid, backing: None, sample_only: true })
+            }).collect()
+        }).ok_or(ENODEV)?;
+        if found.len() != aliases.len() || found.iter().any(|e| self.get(e.handle).is_some()) {
+            return Err(EINVAL);
+        }
+        self.entries.extend(found);
+        self.entries.sort_unstable_by_key(|e| e.handle);
+        Ok(())
     }
 
     /// The entries are in handle order (the process's map is), so a lookup is a binary search.
@@ -3099,7 +3244,7 @@ fn virgl_format(f: u32) -> u32 {
 
 impl Resolver for Resolved<'_> {
     fn target(&self, handle: u64) -> Option<TargetInfo> {
-        let e = self.view.get(handle)?;
+        let e = self.view.get(handle).filter(|e| !e.sample_only)?;
         (e.kind == kind::TARGET).then_some(TargetInfo { width: e.width, height: e.height, invalid: e.invalid, format: e.format })
     }
 
@@ -3123,7 +3268,7 @@ impl Resolver for Resolved<'_> {
 
 impl encode::Bindings for Resolved<'_> {
     fn target(&self, handle: u64) -> Option<encode::TargetRes> {
-        let e = self.view.get(handle)?;
+        let e = self.view.get(handle).filter(|e| !e.sample_only)?;
         if e.kind != kind::TARGET {
             return None;
         }
@@ -3277,14 +3422,42 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EINVAL);
     }
     let tgid = caller()?;
+    submit_stream(tgid, &mut a, None, &|a| write_arg(arg, a))
+}
+
+/// A source alias of window composition (414 op 19, ruling B13): a handle private to one
+/// submission, naming another process's committed window target only as a source.
+#[derive(Clone, Copy)]
+struct Alias {
+    handle: u64,
+    id: u32,
+}
+
+/// What window composition adds to a submission: its source aliases, a check of the
+/// validated stream that runs before anything is admitted or sent, whether the submission
+/// carries test point 27's undefined command (`backend-error`'s device failure), and its
+/// displayed destination, the target test point 22 plants on when armed for any target.
+struct Extra<'a> {
+    aliases: &'a [Alias],
+    check: &'a mut dyn FnMut(&WordBuf, &View) -> Result<(), i64>,
+    device_error: bool,
+    destination: u32,
+}
+
+/// `SUBMIT` of the stream `a` names for `tgid`: validate, translate and queue it. `out`
+/// publishes `a` to the caller: its validation diagnostics before a refusal, and its fence
+/// and estimate after queueing.
+fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, out: &dyn Fn(&abi::Submit) -> Result<(), i64>) -> Result<u64, i64> {
+    let aliases: &[Alias] = extra.as_ref().map_or(&[], |e| e.aliases);
+    let alias = |rid: &u32| aliases.iter().any(|x| x.id == *rid);
     let refuse = |a: &mut abi::Submit, index: u32, error: u32, errno: i64| -> Result<u64, i64> {
         a.error_index = index;
         a.error = error;
-        write_arg(arg, a)?;
+        out(a)?;
         Err(errno)
     };
     if a.length == 0 || a.length % 4 != 0 || a.length > limits::STREAM_BYTES {
-        return refuse(&mut a, 0, stream::error::STREAM_LENGTH, EINVAL);
+        return refuse(a, 0, stream::error::STREAM_LENGTH, EINVAL);
     }
     let id = with_core(|c| match c.ctx_of(tgid, a.context).and_then(|id| c.contexts.get(&id)) {
         None => Err(EINVAL),
@@ -3297,14 +3470,15 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     let pages = |bytes: u64| bytes.div_ceil(PAGE as u64) * PAGE as u64;
     let _stream_charge = match Charge::new(tgid, pages(a.length), true) {
         Ok(c) => c,
-        Err(ENOMEM) => return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM),
+        Err(ENOMEM) => return refuse(a, 0, stream::error::NO_MEMORY, ENOMEM),
         Err(e) => return Err(e),
     };
     let words = WordBuf::from_user(a.stream, a.length as usize)?;
-    let view = with_core(|c| View::of(c, tgid)).ok_or(ENODEV)?;
+    let mut view = with_core(|c| View::of(c, tgid)).ok_or(ENODEV)?;
+    view.add_aliases(aliases)?;
     let snap = match Snapshot::take(&words, &view, tgid) {
         Ok(snap) => snap,
-        Err(ENOMEM) => return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM),
+        Err(ENOMEM) => return refuse(a, 0, stream::error::NO_MEMORY, ENOMEM),
         Err(e) => return Err(e),
     };
     let resolved = Resolved {
@@ -3330,20 +3504,30 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
                 }
             }
             let errno = if r.is_work_limit() { EDQUOT } else if r.error == stream::error::NO_MEMORY { ENOMEM } else { EINVAL };
-            return refuse(&mut a, r.index, r.error, errno);
+            return refuse(a, r.index, r.error, errno);
         }
     };
+    if let Some(extra) = extra.as_mut() {
+        (extra.check)(&words, &view)?;
+    }
     let (written, mut named_ids, whole) = named(&words, &view);
     // Take the context's submission slot: one sender at a time, at most four in flight.
     let mut waited = false;
     let admitted = wait_for(None, true, |c| {
+        // An alias's window keeps its target after the client destroyed the handle.
+        if named_ids.iter().any(|rid| !c.resources.get(rid).is_some_and(|r| (!r.dropped || alias(rid)) && !r.lost)) { return Some(Err(EINVAL)); }
         let Some(ctx) = c.contexts.get_mut(&id) else {
             return Some(Err(EIO));
         };
         if ctx.state != CtxState::Live || ctx.dropped {
             return Some(Err(EIO));
         }
-        if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.reading)) {
+        if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.window_sealed)) {
+            return Some(Err(breengel_abi::errno::EBUSY as i64));
+        }
+        // Progress DMA has no CPU consumer. Later GPU writes can follow it;
+        // ordinary CPU readbacks still exclude writes until observation finishes.
+        if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.reading && r.progress_context.is_none())) {
             return None;
         }
         if ctx.inflight.len() >= limits::IN_FLIGHT {
@@ -3357,27 +3541,61 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             return None;
         }
         ctx.busy = true;
+        ctx.issued += 1;
+        let n = ctx.issued;
+        let serial = c.serial();
+        let fence = c.device_fence();
+        let writer = Arc::new(window_targets::Writer::new(id, n, serial, fence));
+        for rid in &named_ids {
+            let Some(r) = c.resources.get_mut(rid) else { return Some(Err(EINVAL)); };
+            r.holds += 1;
+        }
         for rid in &written {
             if let Some(r) = c.resources.get_mut(rid) {
                 r.writers += 1;
+                r.accepted.retain(|w| !w.ended());
+                r.accepted.push(writer.clone());
             }
         }
-        Some(Ok(()))
+        Some(Ok(writer))
     });
-    match admitted {
-        Ok(Ok(())) => {}
+    let writer = match admitted {
+        Ok(Ok(writer)) => writer,
         Ok(Err(e)) => return Err(e),
         Err(_) => return Err(EINTR),
-    }
+    };
+    let admitted_ids = named_ids.clone();
     let release_slot = |accepted: bool| {
         with_core(|c| {
             if !accepted {
+                // This admission sent no device work: a seal that already captured it must
+                // treat it as cancelled, rather than as a failed accepted GPU write.
+                writer.cancel();
+                let abandoned = c.contexts.get_mut(&id).and_then(|ctx| {
+                    let arena = ctx.vertex_arena.as_mut()?;
+                    arena.ranges.release(writer.serial);
+                    if !arena.accepted { ctx.vertex_arena.take() } else { None }
+                });
+                if let Some(arena) = abandoned { c.unhold(arena.id); }
+                let unused = if let Some(ctx) = c.contexts.get_mut(&id) {
+                    let unused: Vec<u32> = ctx.private_scratch.iter().filter(|s| !s.accepted).map(|s| s.id).collect();
+                    ctx.private_scratch.retain(|s| s.accepted);
+                    unused
+                } else { Vec::new() };
+                for rid in unused { c.unhold(rid); }
+                if let Some(ctx) = c.contexts.get_mut(&id) {
+                    ctx.outcomes.insert(writer.n, (fence_status::DEVICE_ERROR, 0));
+                    ctx.early.insert(writer.n);
+                    while ctx.early.remove(&(ctx.done_upto + 1)) { ctx.done_upto += 1; }
+                }
                 for rid in &written {
                     if let Some(r) = c.resources.get_mut(rid) {
                         r.writers = r.writers.saturating_sub(1);
+                        r.accepted.retain(|w| !Arc::ptr_eq(w, &writer));
                     }
                     c.free_if_unused(*rid);
                 }
+                for rid in &admitted_ids { c.unhold(*rid); }
             }
             if let Some(ctx) = c.contexts.get_mut(&id) {
                 ctx.busy = false;
@@ -3386,13 +3604,15 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         });
         notify();
     };
-    // The submission's own vertex buffer: no other submission writes it, and it is
-    // freed when the submission no longer holds it.
+    // Each submission reserves a distinct range in the context's reusable vertex arena.
+    // The batched upload precedes drawing; completion and fence publication release ranges.
     // Test point 22, `corrupt-pixel`, armed for one of the targets this submission writes
-    // (or for any): that target gets one extra draw.
+    // (or for any): that target gets one extra draw. A window composition's is its displayed
+    // destination, not the persistent scene the next frames copy from.
     let mut corruption = None;
+    let destination = extra.as_ref().map(|e| e.destination);
     let corrupt = view.entries.iter()
-        .filter(|e| written.contains(&e.id))
+        .filter(|e| written.contains(&e.id) && destination.is_none_or(|d| d == e.id))
         .map(|e| e.handle)
         .find(|&handle| {
             corruption = crate::test_control::reserve(test_point::CORRUPT_PIXEL, handle);
@@ -3400,13 +3620,14 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         });
     let svga = dev::is_svga();
     // The SVGA3D DX translation makes its own vertex, constant, data and scratch surfaces.
-    let vertex_buffer = match if svga { Ok(None) } else { vertex_buffer_for(tgid, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) } {
+    let vertex_range = match if svga { Ok(None) } else { vertex_buffer_for(tgid, id, writer.serial, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) } {
         Ok(vb) => vb,
         Err(e) => {
             release_slot(false);
-            return if e == ENOMEM { refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
+            return if e == ENOMEM { refuse(a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
         }
     };
+    let vertex_buffer = vertex_range.map(|(rid, _, _)| rid);
     // The submission's scratch textures for copies within one target that overlap
     // (`docs/gui/gpu.md` section 1.3), one per target format, sized for its largest.
     let mut copy_scratch = [0u32; 2];
@@ -3414,7 +3635,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         if w == 0 || h == 0 || svga {
             continue;
         }
-        match scratch_for(w, h) {
+        match scratch_for(tgid, id, slot as u32, w, h) {
             Ok(rid) => copy_scratch[slot] = rid,
             Err(e) => {
                 with_core(|c| {
@@ -3430,7 +3651,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     let data_width = with_core(|c| c.caps.max_width).unwrap_or(0).min(16384);
     let data_width = 1u32 << (31-data_width.leading_zeros());
     let data_texture = if plan.data_bytes > 0 && !svga {
-        match scratch_for(data_width, (plan.data_bytes/4).div_ceil(data_width)) {
+        match scratch_for(tgid, id, 2, data_width, (plan.data_bytes/4).div_ceil(data_width)) {
             Ok(rid)=>rid,
             Err(e)=>{
                 with_core(|c|for rid in vertex_buffer.into_iter().chain(copy_scratch.into_iter().filter(|&r|r!=0)){c.unhold(rid);});
@@ -3465,7 +3686,8 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         release_slot(false);
         return Err(EIO);
     };
-    let keeps = |rid: &u32| *rid != scratch && *rid != scratch_texture && !view.has_id(*rid);
+    let private_ids: Vec<u32> = with_core(|c| c.contexts.get(&id).map(|ctx| ctx.private_scratch.iter().map(|s| s.id).collect())).flatten().unwrap_or_default();
+    let keeps = |rid: &u32| *rid != scratch && *rid != scratch_texture && !view.has_id(*rid) && !private_ids.contains(rid);
     let stale: Vec<u32> = if svga {
         dx_objects.resources().filter(keeps).collect()
     } else {
@@ -3510,7 +3732,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     }
     let translate = |enc: &mut encode::Enc, objects: &mut encode::Objects| {
         encode::forget_surfaces(enc, objects, &stale);
-        encode::translate(enc, objects, &words, &resolved, encode::Extras {
+        encode::translate_at(enc, objects, &words, &resolved, encode::Extras {
             vertex_buffer: vertex_buffer.unwrap_or(default_vb),
             scratch: copy_scratch,
             data: data_texture,
@@ -3519,7 +3741,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             corrupt,
             suppress,
             swap,
-        });
+        }, vertex_range.map_or(0, |(_, offset, _)| offset));
     };
     let dx_extras = || svga::encode::Extras { scratch: plan.scratch, data_width, corrupt, suppress, swap };
     // Count surface bytes, then size the complete device buffers including the surfaces'
@@ -3528,7 +3750,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         let sized = svga::encode::translate(&mut dx_objects.clone(), &stale, &words, &resolved, dx_extras(), None, None);
         let Some((sized, _)) = sized else {
             release_slot(false);
-            return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM);
+            return refuse(a, 0, stream::error::NO_MEMORY, ENOMEM);
         };
         // Surface sizes are known now. Recount with their definitions, uploads and
         // destruction present, so chunk boundaries match the allocation pass.
@@ -3536,20 +3758,20 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             dx_extras(), None, Some(sized.sizes));
         let Some((sized, _)) = sized else {
             release_slot(false);
-            return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM);
+            return refuse(a, 0, stream::error::NO_MEMORY, ENOMEM);
         };
         let charge = match Charge::new(tgid, sized.sizes.bytes(), true) {
             Ok(charge) => charge,
             Err(e) => {
                 release_slot(false);
-                return if e == ENOMEM { refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
+                return if e == ENOMEM { refuse(a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
             }
         };
         let translated = svga::encode::Backing::allocate(&sized.sizes)
             .and_then(|backing| svga::encode::translate(&mut dx_objects, &stale, &words, &resolved, dx_extras(), Some(backing), None));
         let Some((out, _)) = translated else {
             release_slot(false);
-            return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM);
+            return refuse(a, 0, stream::error::NO_MEMORY, ENOMEM);
         };
         (alloc::sync::Arc::new(charge), Some(Chunks::Svga(out.chunks)))
     } else {
@@ -3573,13 +3795,14 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         let mut sizing = encode::Enc::size_only();
         translate(&mut sizing, &mut sized_objects);
         let chunk_charge = match warm_bytes.and_then(|warm| {
-            sizing.backing_bytes().and_then(|bytes| bytes.checked_add(warm)).ok_or(ENOMEM)
+            sizing.backing_bytes().and_then(|bytes| bytes.checked_add(warm))
+                .and_then(|bytes| bytes.checked_add(pages(encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))))).ok_or(ENOMEM)
         }).and_then(|bytes| Charge::new(tgid, bytes, true)) {
             Ok(charge) => alloc::sync::Arc::new(charge),
             Err(e) => {
                 drop_vertex_buffer();
                 release_slot(false);
-                return if e == ENOMEM { refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
+                return if e == ENOMEM { refuse(a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
             }
         };
         // Warm each pair separately; command backing retains the reservation even if the
@@ -3599,7 +3822,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
                         let req = virgl::submit(Tag::Sync(serial), id, Some(fence), chunk);
                         warm_sent = true;
                         let done = exec_req(serial, Request::Virgl(req), id, &[default_vb, scratch, scratch_texture], &[])?;
-                        if !virgl::ok(done.answer) || done.echoed != fence {
+                        if !virgl::ok(done.answer) || !done.matches_fence(fence) {
                             return Err(EIO);
                         }
                     }
@@ -3627,7 +3850,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             None => {
                 drop_vertex_buffer();
                 release_slot(false);
-                return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM);
+                return refuse(a, 0, stream::error::NO_MEMORY, ENOMEM);
             }
         };
         (chunk_charge, chunks)
@@ -3636,23 +3859,38 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         if svga {
             return Ok(());
         }
-        if let Some(rid) = vertex_buffer {
+        if let Some((rid, _, capacity)) = vertex_range.filter(|&(_, _, capacity)| capacity != 0) {
             create_private(id, rid, wire::target::BUFFER, wire::format::R8_UNORM,
-                wire::bind::VERTEX_BUFFER, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some())) as u32, 1)?;
+                wire::bind::VERTEX_BUFFER, capacity, 1)?;
+            with_core(|c| {
+                if let Some(arena) = c.contexts.get_mut(&id).and_then(|ctx| ctx.vertex_arena.as_mut()) {
+                    if arena.id == rid { arena.ready = true; }
+                }
+            });
         }
-        for ((rid, f), [w, h]) in copy_scratch.into_iter().zip([format::B8G8R8A8, format::R8G8B8A8]).zip(plan.scratch) {
-            if rid != 0 {
+        // A new scratch texture is made at its record's size, which may exceed this
+        // submission's request (`scratch_for` grows a class to its largest).
+        let unmade = |rid: u32| with_core(|c| c.resources.get(&rid).filter(|r| r.lost).map(|r| (r.width, r.height))).flatten();
+        for (rid, f) in copy_scratch.into_iter().zip([format::B8G8R8A8, format::R8G8B8A8]) {
+            if let Some((w, h)) = (rid != 0).then(|| unmade(rid)).flatten() {
                 create_private(id, rid, wire::target::TEXTURE_2D, virgl_format(f),
                     wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW, w, h)?;
             }
         }
-        if data_texture != 0 {
+        if let Some((w, h)) = (data_texture != 0).then(|| unmade(data_texture)).flatten() {
             create_private(id, data_texture, wire::target::TEXTURE_2D, wire::format::R8G8B8A8_UNORM,
-                wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW, data_width, (plan.data_bytes / 4).div_ceil(data_width))?;
+                wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW, w, h)?;
         }
         Ok::<(), i64>(())
     })();
     if let Err(e) = made {
+        with_core(|c| {
+            let ctx = c.contexts.get_mut(&id);
+            let failed = ctx.and_then(|ctx| {
+                if ctx.vertex_arena.as_ref().is_some_and(|a| !a.ready) { ctx.vertex_arena.take() } else { None }
+            });
+            if let Some(arena) = failed { c.unhold(arena.id); }
+        });
         drop_vertex_buffer();
         release_slot(false);
         return Err(e);
@@ -3675,7 +3913,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         }
         for rid in &named_ids {
             match c.resources.get(rid) {
-                Some(r) if !r.dropped && !r.lost => {}
+                Some(r) if (!r.dropped || alias(rid)) && !r.lost => {}
                 _ => return Err(EINVAL),
             }
         }
@@ -3689,9 +3927,10 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         // Test point 27, `device-error`: the chunks are followed by a fenced command of a
         // type VirtIO does not define, which the device can only refuse, and that command
         // carries the fence. Taken only once the submission is certain to be sent.
-        let forced = crate::test_control::take(test_point::DEVICE_ERROR, 0).is_some();
-        let serial = c.serial();
-        let fence = c.device_fence();
+        let forced = extra.as_ref().is_some_and(|e| e.device_error)
+            || crate::test_control::take(test_point::DEVICE_ERROR, 0).is_some();
+        let serial = writer.serial;
+        let fence = writer.fence;
         let ctx = c.contexts.get_mut(&id).ok_or(EINVAL)?;
         // Test point 31's fence-depth mode: this context's next four answers are kept.
         if ctx.depth.is_none()
@@ -3736,10 +3975,11 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         } else {
             ctx.objects = objects;
         }
-        ctx.issued += 1;
-        let n = ctx.issued;
+        let n = writer.n;
         let ns = ctx.ns;
         ctx.inflight.push_back(serial);
+        if let Some(arena) = ctx.vertex_arena.as_mut() { arena.accepted = true; }
+        for scratch in &mut ctx.private_scratch { scratch.accepted = true; }
         let count_in = |t: &mut Totals| {
             t.submissions += 1;
             t.draws += plan.draws;
@@ -3752,15 +3992,15 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         };
         count_in(&mut ctx.totals);
         count_in(&mut c.proc_mut(tgid).totals);
-        for rid in &named_ids {
-            if let Some(r) = c.resources.get_mut(rid) {
-                r.holds += 1;
-            }
+        for rid in named_ids.iter().filter(|rid| !admitted_ids.contains(rid)) {
+            if let Some(r) = c.resources.get_mut(rid) { r.holds += 1; }
         }
         c.subs.insert(serial, Sub {
+            writer: Some(writer.clone()),
             ctx: id,
             n,
             fence,
+            native_fence: 0,
             sent_ns: None,
             error: None,
             mismatch: false,
@@ -3793,52 +4033,148 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     };
     a.fence = bgl_fence;
     a.estimate = plan.estimate;
-    write_arg(arg, &a)?;
+    out(a)?;
     Ok(0)
 }
 
-/// A device buffer of `bytes` for one submission's vertices, attached to context `ctx`
-/// and held for the submission; `None` when the submission draws nothing. It has no guest
-/// backing (the vertices reach it by inline writes) and is freed once the submission no
-/// longer holds it.
-fn vertex_buffer_for(tgid: u64, bytes: u64) -> Result<Option<u32>, i64> {
-    if bytes == 0 {
-        return Ok(None);
+/// Reserve vertices in the context's arena. The context holds its resource until
+/// destruction/replacement; each submission adds a hold through genuine completion.
+/// Ruling B32 sizes the arena at [`limits::IN_FLIGHT`] times the largest recent submission:
+/// it is replaced at that size when a run of small submissions shrinks it, or when a
+/// submission does not fit and the arena is smaller than that; a replacement keeps the old
+/// arena charged and alive for its outstanding submissions. A submission gets exact storage
+/// of its own, freed when it retires, only when growing would pass the owner's quota. When
+/// the arena is large enough but in-flight submissions hold its space, the submission waits
+/// for one to retire (EINTR on a signal).
+/// Return (resource, byte offset, capacity needing device creation, or 0 if ready).
+fn vertex_buffer_for(tgid: u64, ctx: u32, serial: u64, bytes: u64) -> Result<Option<(u32, u32, u32)>, i64> {
+    if bytes == 0 { return Ok(None); }
+    let requested = u32::try_from(bytes).map_err(|_| ENOMEM)?;
+    // Take a range of the current arena when it has room for this submission.
+    let take = |c: &mut Core| -> Option<Result<(u32, u32, u32), i64>> {
+        let context = c.contexts.get_mut(&ctx)?;
+        if context.state != CtxState::Live || context.dropped { return Some(Err(EIO)); }
+        let arena = context.vertex_arena.as_mut()?;
+        let offset = arena.ranges.reserve(serial, requested)?;
+        let (rid, capacity) = (arena.id, if arena.ready { 0 } else { arena.ranges.capacity });
+        let Some(r) = c.resources.get_mut(&rid) else {
+            arena.ranges.release(serial);
+            return Some(Err(EIO));
+        };
+        r.holds += 1;
+        Some(Ok((rid, offset, capacity)))
+    };
+    let replace = |recent: u32| -> Result<(u32, u32, u32), i64> {
+        let mut ranges = vertex_arena::Ranges::new(recent.into()).ok_or(ENOMEM)?;
+        let offset = ranges.reserve(serial, requested).ok_or(ENOMEM)?;
+        let capacity = ranges.capacity;
+        // Context ownership and this submission's access.
+        private_vertex_storage(tgid, ctx, capacity, 2, Some(ranges)).map(|rid| (rid, offset, capacity))
+    };
+    let (recent, current) = with_core(|c| {
+        let Some(arena) = c.contexts.get_mut(&ctx).and_then(|x| x.vertex_arena.as_mut()) else { return (requested, 0) };
+        (arena.ranges.note(requested), arena.ranges.capacity)
+    }).unwrap_or((requested, 0));
+    let wanted = vertex_arena::capacity_for(recent);
+    if wanted < current {
+        match replace(recent) {
+            Ok(range) => return Ok(Some(range)),
+            Err(e) if e != ENOMEM => return Err(e),
+            // A smaller arena the quota cannot hold beside the current one: keep the current.
+            Err(_) => {}
+        }
     }
-    u32::try_from(bytes).map_err(|_| ENOMEM)?;
-    // The device's vertex storage is charged to the process until the buffer is freed.
-    let charge = Charge::new(tgid, bytes, true)?;
-    let mut backing = Pages::none();
-    backing.charge_copy(charge);
-    let id = with_core(|c| {
-        let id = c.next_res;
-        c.next_res += 1;
-        let mut r = new_res(0, kind::BUFFER, format::B8G8R8A8, 0, 0, bytes, 0, Arc::new(backing), c.epoch);
-        r.dropped = true;
-        r.lost = true;
-        r.holds = 1;
-        c.insert_res(id, r);
-        id
-    })
-    .ok_or(ENODEV)?;
-    Ok(Some(id))
+    if let Some(range) = with_core(take).flatten() { return range.map(Some); }
+    if wanted > current {
+        match replace(recent) {
+            Ok(range) => return Ok(Some(range)),
+            Err(e) if e != ENOMEM => return Err(e),
+            Err(_) => {
+                let capacity = vertex_arena::exact(bytes).ok_or(ENOMEM)?;
+                let rid = private_vertex_storage(tgid, ctx, capacity, 1, None)?; // this submission's access only
+                return Ok(Some((rid, 0, capacity)));
+            }
+        }
+    }
+    let reserved = wait_for(None, true, |c| {
+        if let Some(range) = take(c) { return Some(range); }
+        let Some(context) = c.contexts.get(&ctx) else { return Some(Err(EIO)) };
+        if context.vertex_arena.is_none() { return Some(Err(EIO)); }
+        // Test point 31's kept answers would hold their ranges for good.
+        if context.depth.is_some() { c.release_depth(ctx); }
+        None
+    });
+    match reserved {
+        Ok(range) => range.map(Some),
+        Err(_) => Err(EINTR),
+    }
 }
 
-/// Reserve a private scratch-texture record; device creation follows quota admission.
-/// It has no guest backing and remains held until the submission retires.
-fn scratch_for(w: u32, h: u32) -> Result<u32, i64> {
-    let id = with_core(|c| {
-        let id = c.next_res;
+/// Charge and register `capacity` bytes of context-private vertex storage with `holds`.
+/// With `ranges` it becomes the context's arena, replacing (and unholding) the old one.
+fn private_vertex_storage(tgid: u64, ctx: u32, capacity: u32, holds: u32, ranges: Option<vertex_arena::Ranges>) -> Result<u32, i64> {
+    let charge = Charge::new(tgid, capacity as u64, true)?;
+    let mut backing = Pages::none();
+    backing.charge_copy(charge);
+    with_core(|c| {
+        if !c.contexts.get(&ctx).is_some_and(|x| x.state == CtxState::Live && !x.dropped) { return Err(EIO); }
+        let rid = c.next_res;
         c.next_res += 1;
-        let mut r = new_res(0, kind::TEXTURE, format::B8G8R8A8, w, h, 0, 0, Arc::new(Pages::none()), c.epoch);
+        let mut r = new_res(0, kind::BUFFER, format::B8G8R8A8, 0, 0, capacity as u64, 0, Arc::new(backing), c.epoch);
         r.dropped = true;
         r.lost = true;
-        r.holds = 1;
-        c.insert_res(id, r);
-        id
-    })
-    .ok_or(ENODEV)?;
-    Ok(id)
+        r.holds = holds;
+        c.insert_res(rid, r);
+        if let Some(ranges) = ranges {
+            let old = c.contexts.get_mut(&ctx).ok_or(EIO)?.vertex_arena.replace(VertexArena { id: rid, ready: false, accepted: false, ranges });
+            if let Some(old) = old { c.unhold(old.id); }
+        }
+        Ok(rid)
+    }).ok_or(ENODEV)?
+}
+
+/// Reuse an idle context-private copy/data texture. At most four per class can be
+/// needed by the four in-flight submissions; the owner pays their page-rounded storage.
+/// A submission's hold prevents reuse until device access and fence publication end.
+fn scratch_for(tgid: u64, ctx: u32, class: u32, w: u32, h: u32) -> Result<u32, i64> {
+    let reused = with_core(|c| {
+        let context = c.contexts.get(&ctx)?;
+        let rid = context.private_scratch.iter().find_map(|s| {
+            let r = c.resources.get(&s.id)?;
+            (s.class == class && !r.lost && r.holds == 1 && r.width >= w && r.height >= h).then_some(s.id)
+        })?;
+        c.resources.get_mut(&rid)?.holds += 1;
+        Some(rid)
+    }).flatten();
+    if let Some(rid) = reused { return Ok(rid); }
+    // Retire idle entries that cannot fit before growing the class. Busy entries keep
+    // their submission holds and remain in the cache until they become idle. The new
+    // entry takes the largest width and height the class has held, so requests whose
+    // sizes vary (a run of glyphs) fit it rather than each replacing the last.
+    let (w, h) = with_core(|c| {
+        let Some(context) = c.contexts.get(&ctx) else { return (w, h) };
+        let class_ids = || context.private_scratch.iter().filter(|s| s.class == class).map(|s| s.id);
+        let (w, h) = class_ids().filter_map(|id| c.resources.get(&id))
+            .fold((w, h), |(w, h), r| (w.max(r.width), h.max(r.height)));
+        let idle: Vec<u32> = class_ids().filter(|id| c.resources.get(id).is_some_and(|r| r.holds == 1)).collect();
+        if let Some(context) = c.contexts.get_mut(&ctx) { context.private_scratch.retain(|s| !idle.contains(&s.id)); }
+        for rid in idle { c.unhold(rid); }
+        (w, h)
+    }).unwrap_or((w, h));
+    let bytes = (w as u64 * 4).next_multiple_of(256).checked_mul(h as u64).ok_or(ENOMEM)?;
+    let charge = Charge::new(tgid, bytes.div_ceil(PAGE as u64) * PAGE as u64, true)?;
+    let mut backing = Pages::none(); backing.charge_copy(charge);
+    with_core(|c| {
+        let context = c.contexts.get(&ctx).ok_or(EIO)?;
+        if context.state != CtxState::Live || context.dropped { return Err(EIO); }
+        if context.private_scratch.iter().filter(|s| s.class == class).count() >= limits::IN_FLIGHT { return Err(ENOMEM); }
+        let rid = c.next_res; c.next_res += 1;
+        let mut r = new_res(0, kind::TEXTURE, format::B8G8R8A8, w, h, 0, 0, Arc::new(backing), c.epoch);
+        r.dropped = true; r.lost = true; r.holds = 2;
+        c.insert_res(rid, r);
+        c.contexts.get_mut(&ctx).ok_or(EIO)?.private_scratch.push(PrivateScratch { id: rid, class, accepted: false });
+        Ok(rid)
+    }).ok_or(ENODEV)?
 }
 
 /// Start a private resource only after the submission's full quota is reserved.
@@ -3983,6 +4319,7 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
             if !c.syncs.values().any(|s| s.reading.contains(&id)) {
                 if let Some(r) = c.resources.get_mut(&id) {
                     r.reading = false;
+                    r.progress_context = None;
                 }
                 c.free_if_unused(id);
             }
@@ -4040,8 +4377,8 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
                 match dev::transfer_to_host(Tag::Sync(serial), ctx, fence, id, backing.clone(), x as u32, y as u32, cw as u32, ch as u32, offset, pitch as u32) {
                     None => Err((EIO, 0)),
                     Some(req) => match exec_req_why(serial, req, ctx, &[id], &[id]) {
-                        Ok(d) if dev::ok(d.answer) && d.echoed == fence && d.fenced => {
-                            Ok((serial, fence, d.answer))
+                        Ok(d) if dev::ok(d.answer) && d.matches_fence(fence) => {
+                            Ok((serial, d.echoed, d.answer))
                         }
                         Ok(_) => Err((EIO, serial)),
                         Err((e @ (EIO | EINTR), _)) => Err((e, serial)),
@@ -4089,28 +4426,110 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EINVAL);
     }
     let tgid = caller()?;
-    let _scanout = if a.target == 0 {
+    match read_back(tgid, &mut a, Observer::Owner, Some(arg)) {
+        Ok(_) => Ok(0),
+        Err(Refused::Errno(e)) => Err(e),
+        Err(Refused::Eio(reason, failed)) => {
+            a.reason = reason;
+            a.failed_submission = failed;
+            write_arg(arg, &a)?;
+            Err(EIO)
+        }
+    }
+}
+
+/// `SCANOUT_READBACK` (syscall 414, op 22) for an observer the window layer authorized, root
+/// or the compositor claimant: the whole bound scanout into `dst`, with record version 2 at
+/// `record`, through the pinned-binding observation READBACK of target 0 uses, without
+/// display ownership (gpu-abi.md, the window front handoff). `dst_len` holds at least the
+/// current mode. Returns the observation serial, or the errno and, for EIO, its reason.
+pub fn observe_scanout(dst: u64, dst_len: u64, record: u64) -> Result<u64, (i64, u32)> {
+    // A kernel screen the console still owes a repaint is observed once it is drawn.
+    crate::console::await_repaint();
+    let _path = GpuPath::enter();
+    if !matches!(with_core(|c| c.admission()), Some(Ok(()))) {
+        return Err((ENODEV, readback_reason::NONE));
+    }
+    let tgid = caller().map_err(|e| (e, readback_reason::NONE))?;
+    let mode = with_core(|c| display::MODES[c.display.mode as usize])
+        .ok_or((ENODEV, readback_reason::NONE))?;
+    if dst_len < mode.width as u64 * mode.height as u64 * 4 {
+        return Err((EINVAL, readback_reason::NONE));
+    }
+    let mut a = abi::Readback::ZERO;
+    a.pixels = dst;
+    a.pixels_len = dst_len;
+    a.record = record;
+    match read_back(tgid, &mut a, Observer::Window, None) {
+        Ok(serial) => Ok(serial),
+        Err(Refused::Errno(e)) => Err((e, readback_reason::NONE)),
+        Err(Refused::Eio(reason, _)) => Err((EIO, reason)),
+    }
+}
+
+/// Who observes target 0, the scanout.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Observer {
+    /// READBACK: the current display owner, of a rectangle it names.
+    Owner,
+    /// SCANOUT_READBACK: an observer the window layer authorized, of the whole bound
+    /// target. It neither owns the display nor names the target, and an EIO leaves its
+    /// record untouched.
+    Window,
+}
+
+/// Why an observation was refused: an errno, or EIO with its reason and, for reason 4,
+/// the invalidating submission.
+enum Refused {
+    Errno(i64),
+    Eio(u32, u64),
+}
+
+impl From<i64> for Refused {
+    fn from(e: i64) -> Self {
+        Refused::Errno(e)
+    }
+}
+
+/// Observe `a`'s rectangle of `a.target` (0, the scanout) for `tgid`, write the pixels and
+/// the record, and return the observation serial. `arg`, when given, is READBACK's argument,
+/// checked writable before any device work.
+fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u64>) -> Result<u64, Refused> {
+    let window = observer == Observer::Window;
+    // Count owner observation with presentation so a VT release cannot expose the
+    // next foreground terminal while readback holds the current binding.
+    let _presentation = if a.target == 0 && !window {
         if !display::owner(tgid) {
-            return Err(abi::errno::EPERM);
+            return Err(Refused::Errno(abi::errno::EPERM));
+        }
+        Some(crate::console::vt::Presentation::begin(true).ok_or(abi::errno::EPERM)?)
+    } else {
+        None
+    };
+    let _scanout = if a.target == 0 {
+        if !window && !display::owner(tgid) {
+            return Err(Refused::Errno(abi::errno::EPERM));
         }
         wait_for(None, true, |c| {
             (!console::restoring(c.display.owner_sequence)).then_some(c.display.known)
         })
         .map_err(|_| EINTR)?;
-        Some(display::Transition::for_observation(tgid)?)
+        Some(if window {
+            display::Transition::for_window_observer()?
+        } else {
+            display::Transition::for_observation(tgid)?
+        })
     } else {
         None
     };
     if a.target == 0
         && !with_core(|c| c.display.known && c.display.binding.is_some()).unwrap_or(false)
     {
-        a.reason = readback_reason::BINDING_UNKNOWN;
-        write_arg(arg, &a)?;
-        return Err(EIO);
+        return Err(Refused::Eio(readback_reason::BINDING_UNKNOWN, 0));
     }
     let (id, fmt, tw, th, pitch, backing) = with_core(|c| {
         let id = if a.target == 0 {
-            if !display::owner(tgid) {
+            if !window && !display::owner(tgid) {
                 return Err(abi::errno::EPERM);
             }
             c.display.binding.ok_or(EIO)?.id
@@ -4124,18 +4543,31 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         Ok((id, r.format, r.width, r.height, r.pitch, r.backing.clone()))
     })
     .ok_or(ENODEV)??;
+    // Privileged window observation can read the foreground console. Protect its
+    // backing throughout the poison/transfer observation.
+    let canvas = core::cell::Cell::new(screen::is_target(id).then(crate::console::hold_canvas));
+    if window {
+        // The whole bound target, in canonical rows.
+        a.x = 0;
+        a.y = 0;
+        a.width = tw;
+        a.height = th;
+        a.stride = tw * format::bytes(fmt);
+    }
     let (x, y, w, h) = (a.x as u64, a.y as u64, a.width as u64, a.height as u64);
     if w == 0 || h == 0 || x + w > tw as u64 || y + h > th as u64 {
-        return Err(EINVAL);
+        return Err(Refused::Errno(EINVAL));
     }
     // Canonical BGRA, or one byte per pixel of an R8 texture (record `canonical` 1).
     let row = w * format::bytes(fmt) as u64;
     if (a.stride as u64) < row || a.pixels_len < (h - 1) * a.stride as u64 + row {
-        return Err(EINVAL);
+        return Err(Refused::Errno(EINVAL));
     }
     // The argument, record and pixel-row pages are checked for mapping and writability
     // before any device work, serial or count (gpu-abi.md, READBACK's EFAULT).
-    probe_writable(arg, core::mem::size_of::<abi::Readback>())?;
+    if let Some(arg) = arg {
+        probe_writable(arg, core::mem::size_of::<abi::Readback>())?;
+    }
     probe_writable(a.record, record::SIZE)?;
     // The rows' span is a user range, so the row arithmetic below cannot overflow; only the
     // rows' own pages are probed, excluding the gaps a wider stride leaves between them.
@@ -4143,7 +4575,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         a.pixels,
         ((h - 1) * a.stride as u64 + row) as usize,
     ) {
-        return Err(EFAULT);
+        return Err(Refused::Errno(EFAULT));
     }
     let mut probed = u64::MAX;
     for ry in 0..h {
@@ -4159,23 +4591,18 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         }
         probed = (start + row - 1) / PAGE as u64;
     }
-    let refuse = |a: &mut abi::Readback, reason: u32, failed: u64| -> Result<u64, i64> {
-        a.reason = reason;
-        a.failed_submission = failed;
-        write_arg(arg, a)?;
-        Err(EIO)
-    };
-    match with_core(|c| display::readable(c, tgid, id)).ok_or(ENODEV)? {
+    let refuse = |reason: u32, failed: u64| -> Result<u64, Refused> { Err(Refused::Eio(reason, failed)) };
+    match with_core(|c| display::readable(c, tgid, id, window)).ok_or(ENODEV)? {
         Ok(()) => {}
-        Err(EIO) => return refuse(&mut a, readback_reason::BINDING_UNKNOWN, 0),
-        Err(e) => return Err(e),
+        Err(EIO) => return refuse(readback_reason::BINDING_UNKNOWN, 0),
+        Err(e) => return Err(Refused::Errno(e)),
     }
     let staging = Staging::new(tgid, (row * h) as usize)?;
     // Wait for the target's accepted writes to complete, then take it for reading.
     // The handle is looked up each time: one destroyed meanwhile is target-dropped.
     let taken = wait_for(None, true, |c| {
         if a.target == 0 {
-            if !display::owner(tgid)
+            if (!window && !display::owner(tgid))
                 || !c.display.known
                 || c.display.binding.is_none_or(|b| b.id != id)
             {
@@ -4195,38 +4622,45 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
             return None;
         }
         r.reading = true;
-        Some(Ok((r.invalid, r.invalidated_by, r.generation, r.last)))
+        let composition = r.composition.clone().filter(|p| p.generation == r.generation);
+        Some(Ok((r.invalid, r.invalidated_by, r.generation, r.last, composition)))
     });
-    let (invalid, invalidated_by, generation, last) = match taken {
+    let (invalid, invalidated_by, generation, last, composition) = match taken {
         Ok(Ok(t)) => t,
-        Ok(Err(reason)) => return refuse(&mut a, reason, 0),
-        Err(_) => return Err(EINTR),
+        Ok(Err(reason)) => return refuse(reason, 0),
+        Err(_) => return Err(Refused::Errno(EINTR)),
     };
-    // The target is ours to poison and read until every transfer into it has ended; a
-    // transfer whose waiter left keeps the mark until the device returns it.
+    // The target is ours to poison and read until its transfers have ended; a transfer
+    // whose waiter left keeps the mark until the device returns it, and with it the
+    // console's hold, since the device may still write the backing the console draws in.
     let release = || {
         with_core(|c| {
-            if !c.syncs.values().any(|s| s.reading.contains(&id)) {
-                if let Some(r) = c.resources.get_mut(&id) {
-                    r.reading = false;
+            if let Some(hold) = canvas.take() {
+                if c.syncs.values().any(|s| s.reading.contains(&id)) {
+                    c.canvas.push((id, hold));
                 }
-                c.free_if_unused(id);
             }
+            c.end_reading(id);
         });
         notify();
     };
     if invalid {
         release();
-        return refuse(&mut a, readback_reason::TARGET_INVALID, invalidated_by);
+        return refuse(readback_reason::TARGET_INVALID, invalidated_by);
     }
-    let observation = match observe(tgid, id, last, &backing, pitch, fmt, a, &staging.pages) {
+    // Record v2 holds 16 window entries: a composite of more has no partial record.
+    if composition.as_ref().is_some_and(|p| p.windows.len() > 16) {
+        release();
+        return refuse(readback_reason::COMPOSITE_OVERFLOW, 0);
+    }
+    let observation = match observe(tgid, id, last, &backing, pitch, fmt, *a, &staging.pages, None) {
         Ok(o) => o,
         Err((errno, reason)) => {
             release();
             return if errno == EIO {
-                refuse(&mut a, reason, 0)
+                refuse(reason, 0)
             } else {
-                Err(errno)
+                Err(Refused::Errno(errno))
             };
         }
     };
@@ -4243,7 +4677,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     let made = with_core(|c| {
         // The binding is read with the serial: a PRESENT sent during the observation
         // leaves the scanout unknown, and the observation is refused naming that.
-        let binding = display::binding(c, tgid, id)?;
+        let binding = display::binding(c, tgid, id, window)?;
         let s = c.next_obs;
         c.next_obs += 1;
         let resource = dev::resource_id(id).ok_or(EIO)?;
@@ -4256,9 +4690,9 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         Err(e) => {
             release();
             return if e == EIO {
-                refuse(&mut a, readback_reason::BINDING_UNKNOWN, 0)
+                refuse(readback_reason::BINDING_UNKNOWN, 0)
             } else {
-                Err(e)
+                Err(Refused::Errno(e))
             };
         }
     };
@@ -4271,6 +4705,17 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         put32(&mut rec, record::FLAGS, 1);
         put64(&mut rec, record::PRESENT_FENCE, b.fence);
         put32(&mut rec, record::PRESENT_STATUS, b.answer);
+    }
+    // A window composition's provenance, for the generation observed (414 op 19).
+    if let Some(p) = &composition {
+        put32(&mut rec, record::FLAGS, u32::from(binding.is_some()) | 2);
+        put64(&mut rec, record::COMPOSITE_SERIAL, p.serial);
+        put32(&mut rec, record::WINDOW_COUNT, p.windows.len() as u32);
+        for (i, w) in p.windows.iter().enumerate() {
+            for (k, v) in w.iter().enumerate() {
+                put64(&mut rec, record::WINDOWS + 32 * i + 8 * k, *v);
+            }
+        }
     }
     put32(&mut rec, record::FORMAT, fmt);
     if fmt == format::R8 {
@@ -4321,13 +4766,18 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
                 })?;
             }
         }
+        // READBACK's record carries the unwritten count; a window observation's EIO
+        // writes only its reason.
+        if unwritten != 0 && window {
+            return Ok(());
+        }
         crate::syscall::userptr::write_user_bytes(a.record, rec.as_ptr(), record::SIZE)
             .map_err(|_| EFAULT)
     })();
     release();
     output?;
     if unwritten != 0 {
-        return refuse(&mut a, readback_reason::UNWRITTEN, 0);
+        return refuse(readback_reason::UNWRITTEN, 0);
     }
     with_core(|c| {
         if let Some(l) = last {
@@ -4337,7 +4787,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         }
         c.proc_mut(tgid).totals.readbacks += 1;
     });
-    Ok(0)
+    Ok(serial)
 }
 
 /// Fail with EFAULT unless the pages of `[addr, addr + len)` are mapped and writable by
@@ -4474,14 +4924,19 @@ fn observe(
     fmt: u32,
     a: abi::Readback,
     staging: &Pages,
+    preferred_ctx: Option<u32>,
 ) -> Result<Observation, (i64, u32)> {
     let ctx = with_core(|c| {
+        // The scanout's writer may belong to any process, but not to a context being destroyed.
         let live = |cid: &u32| {
             c.contexts.get(cid).is_some_and(|x| {
-                (a.target == 0 || x.owner == tgid) && x.state == CtxState::Live && x.device_alive
+                (if a.target == 0 { !x.dropped } else { x.owner == tgid })
+                    && x.state == CtxState::Live
+                    && x.device_alive
             })
         };
-        last.map(|l| l.ctx).filter(live).or_else(|| {
+        if let Some(ctx) = preferred_ctx { return (live(&ctx).then_some(ctx), false); }
+        let found = last.map(|l| l.ctx).filter(live).or_else(|| {
             if a.target == 0 {
                 None
             } else {
@@ -4489,14 +4944,24 @@ fn observe(
                     .get(&tgid)
                     .and_then(|p| p.contexts.values().copied().find(live))
             }
-        })
+        });
+        // A target of this epoch outlives the contexts that wrote it while the binding
+        // retains it; one from before a reset is lost.
+        let current = !c.resetting && c.resources.get(&id).is_some_and(|r| !r.lost && r.epoch == c.epoch);
+        (found, current)
     })
-    .flatten()
-    .ok_or(if a.target == 0 {
-        (EIO, readback_reason::TARGET_LOST)
-    } else {
-        (EINVAL, readback_reason::NONE)
-    })?;
+    .ok_or((ENODEV, readback_reason::NONE))?;
+    let ctx = match ctx {
+        (Some(ctx), _) => ctx,
+        // The scanout's binding retains the target after the context that last wrote it
+        // ended, and it stays observable (gpu-abi.md, op 22): the transfer runs in the
+        // kernel screen's context.
+        (None, true) if a.target == 0 => screen::observation_context(id).map_err(|e| {
+            (e, if e == EIO { readback_reason::DEVICE_ERROR } else { readback_reason::NONE })
+        })?,
+        (None, _) if a.target == 0 => return Err((EIO, readback_reason::TARGET_LOST)),
+        (None, _) => return Err((EINVAL, readback_reason::NONE)),
+    };
     let px = format::bytes(fmt) as usize;
     let row = a.width as usize * px;
     let height = a.height as usize;
@@ -4585,11 +5050,11 @@ fn observe(
         if !dev::ok(d.answer) {
             return Err((EIO, readback_reason::DEVICE_ERROR));
         }
-        if d.echoed != s.fence || !d.fenced {
+        if !d.matches_fence(s.fence) {
             return Err((EIO, readback_reason::FENCE_MISMATCH));
         }
         if first.is_none_or(|(order, _, _)| s.order < order) {
-            first = Some((s.order, s.fence, d.answer));
+            first = Some((s.order, d.echoed, d.answer));
         }
         Ok(())
     };
@@ -4704,6 +5169,7 @@ fn release_other(rid: Option<u32>) {
         if !c.syncs.values().any(|s| s.reading.contains(&rid)) {
             if let Some(r) = c.resources.get_mut(&rid) {
                 r.reading = false;
+                r.progress_context = None;
             }
             c.free_if_unused(rid);
         }
@@ -4739,10 +5205,14 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
             if let Some(p) = proc_live {
                 fill(&mut out, &p.totals);
                 out.contexts = p.contexts.len() as u64;
+                // Contexts ready after catalogue setup: private clear/copy contexts have no
+                // catalogue work; rendering contexts require native completion of each step.
+                out.warmed = p.contexts.values()
+                    .filter(|id| c.contexts.get(*id).is_some_and(|x| x.state == CtxState::Live && (!x.warm_catalogue || x.warm == encode::ALL_WARM)))
+                    .count() as u64;
                 out.resources = p.resources.len() as u64;
-                let (held, copies) = (p.quota.held.load(Ordering::Acquire), p.quota.copies.load(Ordering::Acquire));
-                out.resource_bytes = held.saturating_sub(copies);
-                out.copy_bytes = copies;
+                out.resource_bytes = p.quota.resource_bytes();
+                out.copy_bytes = p.quota.copies.load(Ordering::Acquire);
             }
         } else {
             let id = c.ctx_of(tgid, a.context)?;
@@ -4751,16 +5221,15 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
             out.state = match ctx.state {
                 CtxState::Quarantined => abi::context_state::QUARANTINED,
                 CtxState::Reset => abi::context_state::RESET,
-                _ if ctx.warm == encode::ALL_WARM => abi::context_state::LIVE,
+                _ if !ctx.warm_catalogue || ctx.warm == encode::ALL_WARM => abi::context_state::LIVE,
                 _ => abi::context_state::WARMING,
             };
             out.warmed = ctx.warmed() as u64;
             if let Some(p) = proc_live {
                 out.contexts = p.contexts.len() as u64;
                 out.resources = p.resources.len() as u64;
-                let (held, copies) = (p.quota.held.load(Ordering::Acquire), p.quota.copies.load(Ordering::Acquire));
-                out.resource_bytes = held.saturating_sub(copies);
-                out.copy_bytes = copies;
+                out.resource_bytes = p.quota.resource_bytes();
+                out.copy_bytes = p.quota.copies.load(Ordering::Acquire);
             }
         }
         out.device_contexts = c.contexts.values().filter(|x| x.owner == tgid && x.device_alive).count() as u64;
@@ -4775,6 +5244,22 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
         }
         None => Err(EINVAL),
     }
+}
+
+/// Each process's completed presents, one `<tgid> <count>` line per process that has
+/// presented (`/proc/breenix/stage-composites`): the kernel's record of when the suite's run
+/// stage changed the screen, independent of the runner's own timestamps.
+pub fn present_records() -> alloc::string::String {
+    use core::fmt::Write;
+    let owners: Vec<(u64, u64)> = with_core(|c| {
+        c.procs.iter().filter(|(_, p)| p.presents > 0).map(|(&tgid, p)| (tgid, p.presents)).collect()
+    })
+    .unwrap_or_default();
+    let mut out = alloc::string::String::new();
+    for (tgid, presents) in owners {
+        let _ = writeln!(out, "{tgid} {presents}");
+    }
+    out
 }
 
 /// Whether the clean-room device owns this ARM64 display path.
@@ -4818,4 +5303,10 @@ pub fn take_display(vt: usize) -> SyscallResult {
 pub fn give_display() -> SyscallResult {
     let _path = GpuPath::enter();
     result(caller().and_then(display::back).map(|()| 0))
+}
+
+/// A graphics terminal returned to the foreground: restore its latest retained GPU frame.
+pub fn vt_resumed() {
+    with_core(|c| console::request_restore(c.display.owner_sequence));
+    notify();
 }

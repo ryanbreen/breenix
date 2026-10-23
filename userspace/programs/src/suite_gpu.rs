@@ -24,7 +24,7 @@ extern crate alloc;
 pub mod expectations;
 pub use expectations::{error, float, outline, work};
 
-use libbreenix::suite::{case, category, check, suite, CaseResult, Suite};
+use breenix_suite::suite::{case, category, check, suite, CaseResult, Suite};
 use libbreenix::syscall::raw;
 
 #[path = "suite_gpu/common.rs"]

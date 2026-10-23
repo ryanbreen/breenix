@@ -111,6 +111,10 @@ SUITE <id> CASE <category>/<case> SKIP msg=<why>
 SUITE <id> DONE passed=<p> failed=<f> skipped=<s> total=<n>
 ```
 
+A paced BreenGL START appends ` pace_ms=<positive unsigned 32-bit milliseconds>`
+after any `only=` selection. It identifies a watch profile; CASE measurements and
+DONE acceptance stay the same. Other suites do not accept or apply this field.
+
 A full run booted as PID 1 also prints its memory record around the cases ("Memory record",
 below).
 
@@ -154,9 +158,10 @@ periodic timer fired, each in microseconds after the case armed it, the programm
 `every` and how late an expiry may come, `limit`; it carries at most 32 times. None of the
 records is a result: the CASE line that follows decides the case.
 
+<!-- claim-lint:ok: libs/libbreenix/src/suite.rs sets RECORDS_PER_CASE to 12 and emit_record drops records after that cap. -->
 They are written like the other records, one write starting with a newline. A case prints
 them through `value(name, number, unit, expect)`, `wait_for(ms, result)` and
-`pulses(every_us, limit_us, at_us)` in `libbreenix::suite`,
+`pulses(every_us, limit_us, at_us)` in `breenix_suite::suite`,
 which write to a close-on-exec copy of the suite's stdout the case keeps before its own
 output goes to `/dev/null`; a program the case execs cannot print them. They name the
 running case, appear between its suite's START and DONE, and are bounded: a case reports
@@ -197,7 +202,7 @@ so no case sees another's processes. A case whose processes outlive SIGKILL is a
 A suite has to give back the memory it used: a suite that leaves memory allocated once its
 processes are gone fails like one with a failing case. A full run booted as PID 1 (a boot of
 one suite, or each suite of a sequence) prints its memory record
-(`libbreenix::suite::memory_record`):
+(`breenix_suite::suite::memory_record`):
 
 ```text
 SUITE <id> MEMORY before free=<pages> heap_free_kb=<kB> <owner>=<pages> ... receipts=<n> settle_ms=<ms>
@@ -270,10 +275,12 @@ short with the cache counted and was 9 pages short with it released (ARM64 QEMU,
 
 ## Writing a suite
 
-A suite is a static table and a `main` that runs it, using `libbreenix::suite`:
+A suite is a static table and a `main` that runs it, using `breenix_suite::suite`.
+The `breenix-suite` package holds the harness and its independent graphics expectations;
+`libbreenix` supplies syscalls without depending on the CPU reference renderer (ruling B44):
 
 ```rust
-use libbreenix::suite::{case, category, check, skip, suite, CaseResult, Suite};
+use breenix_suite::suite::{case, category, check, skip, suite, CaseResult, Suite};
 
 static SUITE: Suite = suite("smoke", "Smoke", &[
     category("process", "Process and time", &[
@@ -293,7 +300,7 @@ A case returns `Ok(())` to pass, and may report what it measures with `value` an
 `wait_for` (see above). `?` on a libbreenix error or a string fails it with that
 message; `fail(msg)` and `check(condition, msg)` fail it. The runner has no skip helper: a
 case whose measurement prerequisite is missing fails with the measured prerequisite, using
-the shared decisions in `libbreenix::suite::prerequisites` (processor count, priority
+the shared decisions in `breenix_suite::suite::prerequisites` (processor count, priority
 inheritance, the E2BIG argument count and stack limit, an invalid semaphore value, idle
 processor time and delayed block allocation). Their messages fit the runner's 160-byte
 limit, and cached readback does not substitute for disk evidence. The runner still reports
@@ -366,7 +373,7 @@ The launcher writes the list to `/etc/breenix/suite-sequence` on the boot's disk
 (`scripts/write-boot-target.sh IMAGE FIRST PID1_ELF LIST`) and boots the first suite as PID 1.
 Each suite prints exactly the lines it prints in a boot of its own, from its START to its
 DONE, so `scripts/suite-verdict.py`, the launchers' watchers and Vigil read each suite as
-they read a single-suite boot. The runner (`libbreenix::suite::sequence`) adds these records:
+they read a single-suite boot. The runner (`breenix_suite::suite::sequence`) adds these records:
 
 ```text
 SUITE_SEQUENCE BEGIN suites=<id>,<id>,... baseline=<entries> memfree=<kB> heapfree=<kB>
@@ -1489,6 +1496,42 @@ scripts/boot-interactive.sh --mode suite --suite sdk
 swift run breenix-runs run x86 --mode suite --boots 1 --suite sdk --sha <pushed-sha>
 ```
 
+## BreenGL graphics library
+
+`breengel` measures the BreenGL effort in `docs/efforts/path.json`, the first of the four GUI
+efforts in `docs/gui/plan.md`. Its 380 cases cover sixteen categories in fourteen milestones:
+`raster` (40), `text` (37), `font-parser` (22), `inflate` (21), `bmp` (9), `png-decode` (31) and
+`png-encode` (7) (the images milestone), `widgets` (23), `text-entry` (19), `icons` (12),
+`windows` (39), `isolation` (38), `composition` (27), `events` (32), `scanout` (15) and `panel` (8).
+The contract the cases cite is `docs/gui/breengel.md`; each failure message names the section it
+checks.
+
+Library cases run in the suite's own process. Surface cases draw into memory that has a
+`PROT_NONE` guard page after the last row and a sentinel in front of the first row and in every
+row's padding, and check them. A call that can crash or run away (extreme coordinates, malformed
+fonts and images) runs in a forked child with a deadline, so the case names the call and how it
+failed. Expected pixels come from the contract's literal tables and formulas, typed into the
+suite by hand; from fixtures the suite builds from those tables (TrueType fonts, BMP files); from
+tables extracted from the pinned DejaVu fonts at authoring time by an independent parser
+(fontTools); or from a lower layer whose own cases certify it (the 5×7 font, drawing expected
+labels). A global allocator wrapper counts allocations, so "rejected before any allocation" is
+measured in the guest.
+
+A case whose layer does not exist fails naming the missing piece, and none skips; the GUI suites
+may not call `skip` (`tests/suite_manifests.rs`). The kernel window interface is system call 414
+and the suite-mode test controls 415 (contract sections 17 and 21): window, isolation,
+composition, event and scanout cases probe `window(VERSION)` and fail naming the interface while
+it is absent, and once it answers, any case whose checks are not yet written fails saying so, so
+no case passes because a layer is missing. Five cases have the 20-second allowances plan section
+19 names: `font-parser/corpus`, `inflate/byte-split`, `png-decode/independent-fixtures`,
+`windows/churn` and `composition/present-rate`. The gate timeout is the plan's 900 seconds.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite breengel
+./run.sh --parallels --suite breengel
+./run.sh --vmware --suite breengel
+```
+
 ## GPU rendering
 
 `gpu` measures the GPU rendering effort in `docs/efforts/path.json` against its contract,
@@ -1549,6 +1592,13 @@ pinned key to fail verification (`try=account`) or root to be refused with the o
 `users-hostssh.json` in the boot's private store. Each case has 30 seconds (a named allowance) and
 fails when no login arrives; a target whose boot loop stages no operator account fails both until
 the catch-up gives it a host client.
+
+On ARM64 QEMU, `scripts/boot-interactive.sh` stages the same public-key fixture and runs the answering
+client automatically for users suite boots and the ssh category. Set `BREENIX_USERS_SSH_IDENTITY` to the
+boot host's noninteractive Ed25519 private key; `BREENIX_USERS_SSH_USER` optionally supplies its non-root
+account name. The private key stays on the host. A localhost-only QEMU forward reaches the guest's
+port 22; the client retains the serial fingerprint pin, deliberately wrong key and root-refusal checks.
+The boot's private output directory contains `users-hostssh.json` with the real OpenSSH transcript.
 
 The suite runs as root. A case that needs another identity forks a child that becomes a
 fixture account (its supplementary groups, then setresgid and setresuid, then a refused
