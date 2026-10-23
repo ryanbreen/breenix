@@ -804,6 +804,12 @@ fn install() -> Result<Totals, String> {
             }
         }
     }
+    // Refuse account collisions before reclamation changes the system partition.
+    if let Some(operator) = read_operator(source)? {
+        let etc = target.join(STORE).join("etc");
+        drop(operator_entries(&operator, &read_or_empty(&etc.join("passwd"))?,
+                              &read_or_empty(&etc.join("group"))?, &read_or_empty(&etc.join("shadow"))?)?);
+    }
     let mut retained = words[1..].to_vec();
     retained.push(&id);
     reclaim(target, &retained, &mut || Ok(()))?;

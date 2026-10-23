@@ -18,6 +18,11 @@ on the R240 first and the catch-up brings the VMs to the same bar (D6). Their su
 are skeleton manifests whose cases arrive with the lanes; the plan and the
 operator decisions are in `docs/metal/server-plan.md`.
 
+The server `remote-upgrade` milestone is in progress in #2351 on `metal-server/remote-upgrade`:
+strict operator SSH and started services within S21's 600-second power-on bound, automatic paired rollback,
+and generation failure recovery and reclamation. Its four automated host cases require final-head R240
+evidence; acceptance is pending while the lane completes that sequence.
+
 The server `time` milestone is in progress in #2320 on `metal-server/time`:
 configured SNTP sources, hourly polling, a first-sync step followed by slewing,
 and a UTC hardware RTC with daylight adjustment disabled. Its six host-driven
