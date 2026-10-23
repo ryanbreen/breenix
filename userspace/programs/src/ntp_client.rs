@@ -9,7 +9,6 @@ use libbreenix::syscall::{nr, raw};
 use libbreenix::types::Timespec;
 use libbreenix::{dns, time};
 use std::fs::{self, OpenOptions};
-use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::Duration;
@@ -212,9 +211,11 @@ fn query(name: &str, port: u16) -> Result<i64, String> {
         let mut origin = sntp::timestamp(sent);
         // Low fractional bits carry a fresh random nonce, with <16 us error.
         let mut entropy = [0u8; 2];
-        fs::File::open("/dev/urandom")
-            .and_then(|mut f| f.read_exact(&mut entropy))
-            .map_err(|e| e.to_string())?;
+        let filled = libbreenix::crypto::rand::getrandom_bytes(&mut entropy)
+            .map_err(|errno| format!("getrandom: {}", -errno))?;
+        if filled != entropy.len() {
+            return Err("short getrandom result".into());
+        }
         origin[6..].copy_from_slice(&entropy);
         let mut request = [0u8; 48];
         request[0] = 0x23;

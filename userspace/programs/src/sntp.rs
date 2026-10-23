@@ -16,7 +16,7 @@ fn decode(bytes: &[u8], pivot: i128) -> Result<i128, &'static str> {
     }
     let seconds = i128::from(value >> 32);
     let era = (pivot / NS + EPOCH - seconds + (1i128 << 31)).div_euclid(1i128 << 32);
-    Ok((seconds + era * (1i128 << 32) - EPOCH) * NS + (i128::from(value as u32) * NS >> 32))
+    Ok((seconds + era * (1i128 << 32) - EPOCH) * NS + ((i128::from(value as u32) * NS) >> 32))
 }
 
 #[derive(Debug, PartialEq)]
