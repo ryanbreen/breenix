@@ -667,7 +667,8 @@ impl Operator {
 }
 
 /// This machine's address on the boot host's network: the source a UDP socket
-/// connected toward the DHCP server is given.
+/// connected toward a configured network peer is given. DHCP boots use their
+/// server; ARM64 manual-address boots use the configured resolver as a route probe.
 fn lan_address() -> Result<[u8; 4], String> {
     let server = loop {
         let pnp = fs::read_to_string("/proc/net/pnp").map_err(|e| format!("/proc/net/pnp: {e}"))?;
@@ -675,6 +676,17 @@ fn lan_address() -> Result<[u8; 4], String> {
             let parts: Vec<u8> = a.split('.').filter_map(|p| p.parse().ok()).collect();
             <[u8; 4]>::try_from(parts).ok()
         });
+        // QEMU's ARM64 network is deliberately static. Its #MANUAL record has
+        // no bootserver; resolve the socket's real source through the image's
+        // configured resolver instead. A DHCP interface still requires its lease.
+        #[cfg(target_arch = "aarch64")]
+        let found = if found.is_none() && pnp.lines().any(|line| line == "#MANUAL") {
+            let resolv = fs::read_to_string("/etc/resolv.conf").map_err(|e| format!("/etc/resolv.conf: {e}"))?;
+            resolv.lines().find_map(|line| line.strip_prefix("nameserver ")).and_then(|address| {
+                let parts: Vec<u8> = address.trim().split('.').filter_map(|part| part.parse().ok()).collect();
+                <[u8; 4]>::try_from(parts).ok()
+            })
+        } else { found };
         if let Some(server) = found.filter(|a| *a != [0; 4]) { break server; }
         if breenix_suite::suite::case_ms_left() < 25_000 { return Err("no DHCP lease".into()); }
         let _ = libbreenix::time::sleep_ms(100);
@@ -683,7 +695,7 @@ fn lan_address() -> Result<[u8; 4], String> {
         .map_err(|e| format!("socket: {e}"))?;
     let result = (|| -> Result<[u8; 4], String> {
         libbreenix::socket::connect_inet(fd, &libbreenix::socket::SockAddrIn::new(server, 67))
-            .map_err(|e| format!("connect toward the DHCP server: {e}"))?;
+            .map_err(|e| format!("connect toward the network peer: {e}"))?;
         let mut name = [0u8; 16];
         let mut length = name.len() as u32;
         ok("getsockname", sc(nr::GETSOCKNAME, &[fd.raw(), name.as_mut_ptr() as u64, &mut length as *mut u32 as u64]))?;
