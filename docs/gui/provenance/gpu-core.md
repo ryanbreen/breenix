@@ -1699,3 +1699,43 @@ Claim-lint final notes (temporary inputs shown by basename):
 - `python3 scripts/claim-lint.py --base 3c897ba8`: exit 0.
 - `python3 scripts/claim-lint.py --files pr2357-body.md pr2357-comment.md`: exit 1 (wording of incomplete validation), then exit 0.
 - `python3 scripts/claim-lint.py --commit-msg pr2357-evidence-msg.txt`: exit 0.
+
+
+## B32: Complete landing validation after the non-GL handoff repair
+
+PR #2362 brought #2360's device-status handoff repair to main. A conflict-free
+merge of origin/main into the catch-up produced executable head `3841f513`.
+No rebase or force push was used. The requested landing runs at that head were:
+
+| Target | Suite | Cases | Memory deficit, allowance 48 pages | Vigil record |
+|---|---|---|---|---|
+| ARM64 QEMU without GL | smoke | 5/5 | 10 pages, PASS | `20261023T232342Z-qemu-17016` |
+| ARM64 QEMU without GL | files-io | 219/219 | 10 pages, PASS | `20261023T232342Z-qemu-17016` |
+| ARM64 QEMU GL | gpu | 170/170 | 9 pages, PASS | `20261023T232414Z-qemu-18085` |
+| Parallels | gpu; breengel | 170/170; 401/401 | 9; 38 pages, PASS | `20261023T232909Z-parallels-29875` |
+| VMware | gpu; breengel | 170/170; 401/401 | 9; 39 pages, PASS | `20261023T234257Z-vmware-70807` |
+
+The 4/4 boots exited 0; their suite DONE records report failed=0 and skipped=0. The files-io disk verdict reports five passing checks. Both non-GL suites
+have before, after and reclaimed=PASS memory records, supplying review M3's
+missing evidence. The QEMU GL renderer and Parallels host GPU-time attestations
+were accepted. Parallels `icons/bounded` retained its expected hash and took
+5,400 ms. The 4/4 Vigil records retain commit `3841f513`, dirty=0 and display=true;
+their frozen serials match the corresponding launcher logs byte for byte.
+
+The ARM64 userspace rebuild completed without warnings; the production kernel
+emitted only the pinned core-library future-compatibility notice tracked in #945.
+The UEFI loader build completed without warnings. Cargo used four jobs and Mac
+builds used background policy. Boots opened their windows and serialized through
+the mac-boot slot. The later evidence and roadmap edit changes documentation only;
+no suite is repeated for a push or landing merge.
+
+The diff against origin/main leaves x86-64's executable settled path unchanged:
+`kernel/src/boot/settled.rs` changes behavior only under aarch64. The changed
+`kernel/src/gpu/` and `kernel/src/window/ops.rs` modules are aarch64-only.
+Shared library changes are `libs/gpu-abi/src/lib.rs`,
+`libs/libbreenix/src/gpu.rs`, `libs/libbreenix/src/suite_stage.rs`, and
+`libs/libgfx/src/surface.rs`; the other changed files are documentation and host
+tools. The landing brief explicitly requires no R240 boot, persistent install or
+branch-tools lock for this catch-up; execution used the requested Mac targets. No Tier 1, Tier 2 or
+workflow file changed. Review follow-ups remain in #2358. Claim-lint invocation
+statuses are recorded in the landing coordination ledger.
