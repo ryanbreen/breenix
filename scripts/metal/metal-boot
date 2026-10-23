@@ -1856,7 +1856,7 @@ class Driver:
     def continue_verification(self):
         """Promote, probe over SSH, and restore the previous paired slot on failure (S21)."""
         slots = metal_persist.read_disk().get('slots', {})
-        result = dict(install=self.id, toolsCommit=tools_commit(),
+        result = dict(install=self.id, toolsCommit=tools_commit(), recoveredReferences=self.slot_userlands,
                       candidateGeneration=(slots.get('next') or {}).get('installedBy'),
                       previousGeneration=(slots.get('current') or {}).get('installedBy'))
         last = self.id

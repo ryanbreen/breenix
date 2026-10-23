@@ -132,6 +132,9 @@ class UpgradeSuite:
         if broken: arguments += ['--inject', 'upgrade-no-ssh']
         boot = self.launch(arguments)
         result = json.loads(self.wait(boot, 'upgrade-result.json'))
+        install = json.loads(self.read(boot, 'run.json'))
+        if install.get('toolsCommit') != self.args.sha or self.read(boot, 'commit').strip() != self.args.sha:
+            raise ValueError('install kernel and deployed tools differ from the category head')
         if result.get('previousGeneration') != before['generation']:
             raise ValueError('upgrade did not retain the original paired generation')
         for name in ('verification', 'rollback'):
@@ -194,6 +197,16 @@ class UpgradeSuite:
         else:
             self.generation_proofs()
             self.host['upgrade_cases']['generations'](self.results['generationProof'], name == 'reclamation')
+            if name == 'reclamation':
+                old = self.results['good']['recoveredReferences']['PREVIOUS']
+                broken = self.results['broken']
+                if old in ('flat', 'empty') or old in broken['recoveredReferences'].values():
+                    raise ValueError('physical reclamation needs an unreferenced completed generation')
+                serial = self.read(broken['install'], 'serial.txt')
+                if not re.search(r'(?m)^\[persistent\] reclaimed: ' + re.escape(old) + r'\r?$', serial):
+                    raise ValueError('physical installer did not reclaim the unreferenced generation')
+                self.results['physicalReclamation'] = dict(generation=old, install=broken['install'])
+
 
     def cleanup(self):
         try:

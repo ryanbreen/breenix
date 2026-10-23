@@ -184,6 +184,8 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
         upgrade_cases['upgrade'](records.get('broken', {}), True, baseline)
         upgrade_cases['generations'](records.get('generationProof', {}))
         upgrade_cases['generations'](records.get('generationProof', {}), True)
+        if not records.get('physicalReclamation'):
+            raise ValueError('no completed physical reclamation receipt')
     if records.get('consoleGaps'):
         raise ValueError('console capture has a gap')
     if any(re.search(pattern, serial) for pattern in fatal_patterns):
