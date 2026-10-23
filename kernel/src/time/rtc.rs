@@ -155,7 +155,7 @@ fn is_leap_year(year: u16) -> bool {
 }
 
 #[cfg(test)]
-pub(super) fn days_in_month(month: u8, year: u16) -> u8 {
+pub(crate) fn days_in_month(month: u8, year: u16) -> u8 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
@@ -171,7 +171,7 @@ pub(super) fn days_in_month(month: u8, year: u16) -> u8 {
 }
 
 #[cfg(not(test))]
-pub(super) fn days_in_month(month: u8, year: u16) -> u8 {
+pub(crate) fn days_in_month(month: u8, year: u16) -> u8 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
@@ -429,4 +429,45 @@ pub fn init() {
 /// Get the cached boot wall time
 pub fn get_boot_wall_time() -> u64 {
     BOOT_WALL_TIME.load(Ordering::Relaxed)
+}
+
+/// MC146818-compatible CMOS: SET inhibits calendar updates, then releasing SET
+/// resumes calendar updates. Preserve data format, 12/24-hour mode and NMI masking.
+#[cfg(target_arch = "x86_64")]
+pub fn write_rtc_time(dt: DateTime) -> Result<(), &'static str> {
+    crate::arch_without_interrupts(|| {
+        let mut cache = CMOS_LOCK.lock();
+        unsafe {
+            let mut index: Port<u8> = Port::new(RTC_ADDR_PORT);
+            let mut data: Port<u8> = Port::new(RTC_DATA_PORT);
+            let saved = index.read();
+            index.write((saved & 0x80) | 0x0b);
+            let status = data.read();
+            data.write(status | 0x80);
+            let encode = |n: u8| if status & 4 != 0 { n } else { (n / 10) << 4 | (n % 10) };
+            let hour = if status & 2 != 0 { encode(dt.hour) } else {
+                encode(if dt.hour % 12 == 0 { 12 } else { dt.hour % 12 })
+                    | if dt.hour >= 12 { 0x80 } else { 0 }
+            };
+            for (reg, value) in [(0, encode(dt.second)), (2, encode(dt.minute)),
+                (4, hour), (7, encode(dt.day)), (8, encode(dt.month)), (9, encode((dt.year % 100) as u8))] {
+                index.write((saved & 0x80) | reg);
+                data.write(value);
+            }
+            index.write((saved & 0x80) | 0x0b);
+            data.write(status);
+            index.write(saved);
+        }
+        *cache = None;
+    });
+    Ok(())
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn write_rtc_time(dt: DateTime) -> Result<(), &'static str> {
+    if !crate::platform_config::is_qemu() { return Err("Firmware RTC writing awaits persistent VM catch-up"); }
+    use crate::arch_impl::aarch64::constants::HHDM_BASE;
+    let addr = (HHDM_BASE + PL031_BASE_PHYS + 0x008) as *mut u32;
+    unsafe { core::ptr::write_volatile(addr, dt.to_unix_timestamp() as u32); }
+    Ok(())
 }

@@ -1259,7 +1259,7 @@ class TimeCases:
         state = self.synced()
         after = time.time_ns()
         # The reading must lie in the host interval expanded by exactly one second.
-        if not before - 1_000_000_000 <= state['realtime_ns'] <= after + 1_000_000_000:
+        if abs(state['realtime_ns'] - (before + after)//2) + (after-before)//2 > 1_000_000_000:
             raise ValueError('machine UTC is more than one second from the boot host')
         print('SUITE server VALUE time/offset offset-ms=' + str((state['realtime_ns'] - (before + after)//2)//1_000_000) + 'ms expect=-1000..1000ms', flush=True)
         return state
@@ -1290,9 +1290,21 @@ class TimeCases:
     def run_case(self, name):
         if name == 'source':
             state = self.synced()
-            result = self.probe.ssh('cat /run/breenix/services; cat /proc/net/pnp; cat /etc/breenix/sntp-servers')
+            result = self.probe.ssh('cat /run/breenix/services')
             self.probe.require(result)
-            _, services = parse_state(result.stdout.split('#PROTO:')[0].split('#MANUAL')[0])
+            _, services = parse_state(result.stdout)
+            result = self.probe.ssh('cat /etc/breenix/sntp-servers')
+            self.probe.require(result)
+            configured = result.stdout.split()
+            if configured != (self.site.get('SNTP_SERVERS') or '').split():
+                raise ValueError('installed SNTP sources differ from the private site configuration')
+            if configured and state['source'] != 'site':
+                raise ValueError('site sources were not selected')
+            if not configured:
+                result = self.probe.ssh('cat /proc/net/pnp')
+                self.probe.require(result)
+                if state['source'] != 'dhcp' or not re.search(r'^ntpserver ', result.stdout, re.M):
+                    raise ValueError('no DHCP time source was selected')
             if state['first_ms'] < services['ntp']['first'] or state['source'] not in ('site', 'dhcp'):
                 raise ValueError('sync did not use configured sources after network-up')
             if state['poll_seconds'] != 3600 or state['rtc_utc'] is not True:
@@ -1359,8 +1371,8 @@ class TimeCases:
             serial, stamps = self.capture()
             match = re.search(r'^\[clock\] UTC epoch=([0-9]+) source=CMOS\r?$', serial, re.M)
             if not match: raise ValueError('no hardware RTC sample in reboot capture')
-            byte = len(serial[:match.end()].encode())
-            arrived = next((stamp for stamp, end in stamps if end >= byte), None)
+            byte = len(serial[:match.start()].encode())
+            arrived = max((stamp for stamp, start in stamps if start <= byte), default=None)
             if arrived is None or abs(int(match[1]) - arrived) > 1:
                 raise ValueError('reboot RTC differs from boot host UTC by more than one second')
 

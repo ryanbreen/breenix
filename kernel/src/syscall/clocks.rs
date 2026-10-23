@@ -72,3 +72,26 @@ pub fn sys_time(ptr: u64) -> SyscallResult {
     }
     SyscallResult::Ok(secs as u64)
 }
+
+/// Native 64-bit timex ABI. Implement finite adjtime correction, not a PLL.
+/// modes=0 queries the remaining correction; ADJ_OFFSET_SINGLESHOT replaces it.
+pub fn sys_adjtimex(ptr: u64) -> SyscallResult {
+    let mut tx: [i64; 26] = match userptr::copy_from_user(ptr as *const [i64; 26]) {
+        Ok(tx) => tx, Err(e) => return SyscallResult::Err(e),
+    };
+    let modes = tx[0] as u32;
+    if modes != 0 && modes != 0x8001 { return SyscallResult::Err(22); }
+    let previous = crate::time::remaining_adjustment_ns() / 1000;
+    if modes != 0 {
+        if !matches!(super::handlers::sys_geteuid(), SyscallResult::Ok(0)) {
+            return SyscallResult::Err(1);
+        }
+        if tx[1].unsigned_abs() > 1_000_000_000 { return SyscallResult::Err(22); }
+        crate::time::adjust_real_time_ns(tx[1] * 1000);
+    }
+    tx[1] = previous;
+    tx[5] = 0; // TIME_OK; the caller owns SNTP synchronization state.
+    match userptr::copy_to_user(ptr as *mut [i64; 26], &tx) {
+        Ok(()) => SyscallResult::Ok(0), Err(e) => SyscallResult::Err(e),
+    }
+}
