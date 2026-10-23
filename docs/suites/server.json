@@ -193,6 +193,16 @@
       "id": "remote-upgrade",
       "title": "Remote upgrades verified over SSH and rolled back automatically",
       "cases": []
+    },
+    {
+      "id": "console-input",
+      "title": "Console input",
+      "cases": [
+        {
+          "id": "long-line",
+          "title": "SOL delivers long shell and canonical lines whole, and canonical overflow retains editing and the delimiter"
+        }
+      ]
     }
   ],
   "timingSensitive": true,

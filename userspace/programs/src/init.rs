@@ -212,7 +212,14 @@ fn main() {
     run_boot_script();
     // The services start on the supervisor's first pass; the rest of the ARM64 start-up
     // follows it and does not wait on a service.
-    let mut supervisor = init_services::Supervisor::load(init_services::Scope::All, pid == 1);
+    // The ARM64 boot script starts the desktop; its login terminals belong to
+    // explicit console mode. x86 starts the whole service table as before.
+    let scope = if cfg!(target_arch = "aarch64") {
+        init_services::Scope::Daemons
+    } else {
+        init_services::Scope::All
+    };
+    let mut supervisor = init_services::Supervisor::load(scope, pid == 1);
     supervisor.tick();
     #[cfg(target_arch = "aarch64")]
     start_bounce();

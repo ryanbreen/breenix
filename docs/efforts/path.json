@@ -2129,6 +2129,16 @@
               "remote-upgrade"
             ]
           }
+        },
+        {
+          "id": "console-input",
+          "title": "Console input without stalls",
+          "measure": {
+            "suite": "server",
+            "categories": [
+              "console-input"
+            ]
+          }
         }
       ],
       "targets": [

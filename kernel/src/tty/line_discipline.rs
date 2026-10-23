@@ -311,6 +311,10 @@ impl LineDiscipline {
                     }
                 }
             }
+        } else {
+            // Rejected canonical input must be distinguishable from a stall,
+            // including when normal echo is disabled.
+            echo_fn(0x07);
         }
     }
 

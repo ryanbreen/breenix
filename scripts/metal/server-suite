@@ -78,11 +78,15 @@ OPERATOR = (
                           'read back from the screen through sudo, and getty back after logout'),
 )
 
+CONSOLE_INPUT = (
+    ('long-line', 'SOL delivers long shell and canonical lines whole, and canonical overflow retains editing and the delimiter'),
+)
+
 # The populated categories in manifest order, the suite each belongs to, and the milestone each one measures.
-CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'time': TIME, 'operator': OPERATOR}
-SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'time': 'server', 'operator': 'users'}
+CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'time': TIME, 'operator': OPERATOR, 'console-input': CONSOLE_INPUT}
+SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'time': 'server', 'operator': 'users', 'console-input': 'server'}
 MILESTONES = {'server/ssh-keys': 'ssh-keys', 'server/services': 'services', 'server/logs': 'logs',
-              'server/time': 'time', 'users/operator-login': 'operator'}
+              'server/time': 'time', 'users/operator-login': 'operator', 'server/console-input': 'console-input'}
 # The console lines the operator's console challenge leaves in the capture (docs/metal/boot-path.json, console-login).
 OPERATOR_CONSOLE_LINES = ('Login incorrect', 'metal-login-ok 42', 'fbcon check: shadow and screen identical',
                           'fbcon row: metal-login-ok 42')
@@ -151,7 +155,7 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
     if not records.get('cleanup'):
         raise ValueError({'ssh-keys': 'temporary authorized key cleanup did not succeed',
                           'operator': 'the console sessions did not end'}.get(category, 'temporary services were not removed'))
-    if not re.search(r'^\[stdout\] bsshd: host key ED25519 SHA256:[A-Za-z0-9+/]+ \((?:loaded|generated)\)\r?$', serial, re.M):
+    if category != 'console-input' and not re.search(r'^\[stdout\] bsshd: host key ED25519 SHA256:[A-Za-z0-9+/]+ \((?:loaded|generated)\)\r?$', serial, re.M):
         raise ValueError('boot captured no protected host-key record')
     if category == 'ssh-keys' and "bsshd: refused method 'password'" not in serial:
         raise ValueError('boot captured no actual password request refusal')
@@ -537,10 +541,12 @@ class Console:
             if result.returncode: raise ValueError('cannot type on the SOL console')
             time.sleep(0.04)
 
-    def wait(self, offset, pattern, what, timeout=30):
+    def wait(self, offset, pattern, what, timeout=30, transform=None):
         deadline = time.monotonic() + timeout
         while True:
             text = self.since(offset)
+            if transform is not None:
+                text = transform(text)
             found = re.search(pattern, text)
             if found: return text, found
             if time.monotonic() >= deadline: raise ValueError('the console did not show ' + what)
@@ -651,6 +657,66 @@ class Console:
         self.type_line('exit')
         self.wait(offset, r'\[init\] console session ended', 'the console session ending')
         self.logged_in = False
+
+
+def canonical_echo(text):
+    # Kernel records start their own bracket-led row. Exclude those rows,
+    # including a still-arriving record, without counting any of their bytes
+    # as echo. Line wraps do not change the accepted input bytes.
+    return re.sub(r'(?m)^\[[^\r\n]*(?:\r?\n|$)', '', text).replace('\r', '').replace('\n', '')
+
+
+class ConsoleInput:
+    """The console suite's host-run input case, through the live SOL receiver."""
+    def __init__(self, console):
+        self.console = console
+
+    def run_case(self, name):
+        if name != 'long-line': raise ValueError('unknown console input case')
+        c = self.console
+        c.login()
+        # Exercise bsh's per-byte read/redraw path past the reported stall.
+        for length in (288, 1024, 4095):
+            payload = 'x' * (length - len('print("")'))
+            offset = c.size()
+            c.type_line('print("' + payload + '")', attempts=1)
+            text, done = c.wait(offset, r'(?m)^' + payload + r'\r?$', 'the complete shell result', timeout=90)
+            c.wait(offset + len(text[:done.end()].encode()), r'(?m)^' + c.PROMPT + r' ', 'the next shell prompt')
+        # A canonical reader exercises the documented 4095-byte payload bound
+        # without bsh's raw editor imposing its own buffering semantics.
+        trials = [('a' * 4095, 'a' * 4095),
+                  ('b' * 4095 + 'discarded', 'b' * 4095),
+                  ('c' * 4095 + 'discarded\x7fd', 'c' * 4094 + 'd'),
+                  ('e' * 4095 + 'discarded\x15recovered', 'recovered')]
+        for number, (typed, expected) in enumerate(trials):
+            tag = 'console-input-' + str(number)
+            script = ('printf "\\n' + tag + '-ready\\n"; IFS= read -r line; '
+                      'printf "%s" "$line" | sha256sum')
+            offset = c.size()
+            c.type_line('print("' + tag + '-status", run("/bin/sh", "-c", ' + json.dumps(script) + '))', attempts=1)
+            text, ready = c.wait(offset, r'(?m)^' + tag + r'-ready\r?$', 'the canonical reader')
+            offset += len(text[:ready.end()].encode())
+            # Each accepted block must echo before more input arrives.
+            for at in range(0, 4095, 64):
+                block = typed[at:min(at + 64, 4095)]
+                echo_at = c.size()
+                c.send(block, enter=False)
+                c.wait(echo_at, re.escape(block), 'echo of this canonical block', transform=canonical_echo)
+            tail = typed[4095:]
+            if tail:
+                cooked = c.serial
+                try:
+                    c.serial = cooked.removesuffix('serial.txt') + 'serial.raw'
+                    echo_at = c.size()
+                    c.send(tail, enter=False)
+                    c.wait(echo_at, r'\x07', 'the canonical overflow bell')
+                finally:
+                    c.serial = cooked
+            c.send('')
+            digest = hashlib.sha256(expected.encode()).hexdigest()
+            c.wait(offset, r'(?m)^' + digest + r'  -\r?$', 'the hash of the complete canonical line', timeout=90)
+            text, done = c.wait(offset, r'(?m)^' + tag + r'-status 0\r?$', 'the reader exit status')
+            c.wait(offset + len(text[:done.end()].encode()), r'(?m)^' + c.PROMPT + r' ', 'the next shell prompt')
 
 
 class Services:
@@ -792,13 +858,22 @@ class Services:
         before = services['bsshd']
         self.console.login()
         after_records = len(self.init_records())
-        self.console.type_line('kill -9 ' + str(before['pid']))
+        kill_offset = self.console.size()
+        kill_command = 'kill -9 ' + str(before['pid'])
+        self.console.type_line(kill_command)
         sent = time.monotonic()
-        # Reap the old listener before connecting: one of its surviving children can
-        # otherwise answer while the new listener is still starting.
         deadline = sent + RESTART_WINDOW_S
-        self.await_init_line(after_records, r'^\[init\] bsshd killed by signal 9$', "bsshd's SIGKILL",
-                             timeout=max(0, deadline - time.monotonic()))
+        # A Ctrl-U retry can leave a bare prompt before the kill ran. Start
+        # the completion wait only after the submitted command's newline.
+        text, echoed = self.console.wait(
+            kill_offset, r'(?m)^' + Console.PROMPT + ' ' + re.escape(kill_command)
+            + r'[ \t]*(?:\[init\][^\n]*)?\n', 'the submitted SIGKILL command',
+            timeout=max(0, deadline - time.monotonic()))
+        self.console.wait(kill_offset + len(text[:echoed.end()].encode()),
+                          r'(?m)^' + Console.PROMPT + r'[ \t]*(?=\[init\]|\n|$)',
+                          'the shell prompt after SIGKILL', timeout=max(0, deadline - time.monotonic()))
+        # Keep slow protected-log input outside the restart window. The state
+        # check below requires the new listener, not a surviving old child.
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -809,17 +884,18 @@ class Services:
                 raise ValueError('no strict-host-key reconnect within ' + str(RESTART_WINDOW_S) + ' s of the kill')
             if time.monotonic() > deadline:
                 raise ValueError('no strict-host-key reconnect within ' + str(RESTART_WINDOW_S) + ' s of the kill')
-            if result.returncode == 0 and result.stdout.strip() == '1000': break
+            if result.returncode == 0 and result.stdout.strip() == '1000':
+                remaining = deadline - time.monotonic()
+                if remaining <= 0: raise ValueError('restart state was not verified within 10 s of the kill')
+                _, services = self.state(timeout=remaining)
+                if time.monotonic() > deadline: raise ValueError('restart state was not verified within 10 s of the kill')
+                after = services['bsshd']
+                if after['state'] == 'running' and after['pid'] not in (0, before['pid']) \
+                        and after['starts'] == before['starts'] + 1 and after['exit'] == 'signal:9':
+                    break
             time.sleep(min(0.25, max(0, deadline - time.monotonic())))
         self.probe.transcript.append(dict(reconnectSeconds=round(time.monotonic() - sent, 3)))
-        remaining = deadline - time.monotonic()
-        if remaining <= 0: raise ValueError('restart state was not verified within 10 s of the kill')
-        _, services = self.state(timeout=remaining)
-        if time.monotonic() > deadline: raise ValueError('restart state was not verified within 10 s of the kill')
-        after = services['bsshd']
-        if after['state'] != 'running' or after['pid'] in (0, before['pid']) or after['starts'] != before['starts'] + 1 \
-                or after['exit'] != 'signal:9':
-            raise ValueError('the published state does not show the restart after SIGKILL')
+        self.await_init_line(after_records, r'^\[init\] bsshd killed by signal 9$', "bsshd's SIGKILL")
         self.await_init_line(after_records, r'^\[init\] bsshd restarts in 1000 ms$', 'the restart delay')
 
     def case_reconnect_bsh(self):
@@ -1607,25 +1683,25 @@ def main():
     manifest = json.loads(read('definition/docs/suites/' + suite + '.json'))
     validate_manifest(manifest)
     effort = json.loads(read('definition/docs/efforts/path.json'))
-    fields = ["SERVER_SSH_HOST", "OPERATOR_USER", "OPERATOR_SSH_PUBLIC_KEY"]
+    fields = [] if category == 'console-input' else ["SERVER_SSH_HOST", "OPERATOR_USER", "OPERATOR_SSH_PUBLIC_KEY"]
     fields += ["CONSOLE_USER", "CONSOLE_PASSWORD", "BOOT_URL", "SNTP_SERVERS"]
     if category == 'operator':
         fields += ["OPERATOR_UID", "OPERATOR_PASSWORD"]
     site = remote('python3', '-c', 'import sys,json;sys.path.insert(0,"/opt/breenix-metal");'
                   'import metal_lib,metal_root;s=metal_lib.load_site();'
                   'v={k:s.get(k) for k in ' + repr(tuple(fields)) + '};'
-                  'v["operatorKeys"]=metal_root.operator_keys(s);print(json.dumps(v))')
+                  'v["operatorKeys"]=metal_root.operator_keys(s) if "OPERATOR_USER" in v else [];print(json.dumps(v))')
     if site.returncode: raise ValueError('cannot read suite site fields')
     site = json.loads(site.stdout)
-    if not site['SERVER_SSH_HOST']: raise ValueError('site needs SERVER_SSH_HOST for the persistent server')
+    if category != 'console-input' and not site['SERVER_SSH_HOST']: raise ValueError('site needs SERVER_SSH_HOST for the persistent server')
     if category == 'operator' and (not (re.fullmatch(r'[1-9][0-9]{3,4}', site['OPERATOR_UID'] or '')
                                        and 1000 <= int(site['OPERATOR_UID']) <= 60000)
                                    or not site['OPERATOR_PASSWORD']):
         raise ValueError('site needs OPERATOR_UID and OPERATOR_PASSWORD for the operator category')
-    identity = next((p.with_suffix('') for p in (Path.home() / '.ssh').glob('*.pub')
+    identity = None if category == 'console-input' else next((p.with_suffix('') for p in (Path.home() / '.ssh').glob('*.pub')
                      if p.read_text().split()[:2] == site['OPERATOR_SSH_PUBLIC_KEY'].split()[:2]
                      and p.with_suffix('').is_file()), None)
-    if identity is None: raise ValueError('boot host has no private key matching the staged operator public key')
+    if category != 'console-input' and identity is None: raise ValueError('boot host has no private key matching the staged operator public key')
     fatal = json.loads(read('definition/docs/boot-path.json'))['fatal'] + [r'KERNEL PANIC:']
     records = dict(boot=args.boot, commit=args.sha, milestone=args.milestone, cases=[], cleanup=False, consoleGaps=[])
     with tempfile.TemporaryDirectory(prefix=suite + '-' + category + '-') as scratch, ExitStack() as cleanup:
@@ -1634,7 +1710,7 @@ def main():
                 step()
             except Exception as error:
                 records.setdefault('cleanupErrors', []).append(type(error).__name__ + ': ' + str(error))
-        probe = Probe(site['SERVER_SSH_HOST'], site['OPERATOR_USER'], identity, Path(scratch))
+        probe = None if category == 'console-input' else Probe(site['SERVER_SSH_HOST'], site['OPERATOR_USER'], identity, Path(scratch))
         target = probe
         if not site['CONSOLE_USER'] or not site['CONSOLE_PASSWORD']:
             raise ValueError('site needs CONSOLE_USER and CONSOLE_PASSWORD for the root steps')
@@ -1644,8 +1720,12 @@ def main():
         console = Console(lambda *cmd, **kw: runner['in_metal'](env, *cmd, **kw), args.boot, directory,
                           site['CONSOLE_USER'], site['CONSOLE_PASSWORD'])
         cleanup.callback(cleanup_step, console.logout)
-        cleanup.callback(cleanup_step, probe.cleanup)
-        serial = console.service_log('bsshd')
+        if probe is not None:
+            cleanup.callback(cleanup_step, probe.cleanup)
+        if category == 'console-input':
+            target = ConsoleInput(console)
+        else:
+            serial = console.service_log('bsshd')
         # Trust the fingerprint read over the leased console, never a key learned over SSH.
         if category in ('services', 'logs', 'time', 'operator'):
             probe.run_case('host-key', serial)
@@ -1703,7 +1783,7 @@ def main():
         if category == 'services':
             # The init log records the cases read, as last read, for the scorer.
             records['initLog'] = target.init_log
-        transcript = probe.transcript
+        transcript = [] if probe is None else probe.transcript
     passed = sum(r['result'] == 'PASS' for r in records['cases'])
     print(f'SUITE {suite} DONE passed={passed} failed={len(cases)-passed} skipped=0 total={len(cases)}', flush=True)
     # Re-read the live capture after the last operation; authentication errors never mask a kernel failure.
