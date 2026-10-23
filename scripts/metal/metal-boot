@@ -20,6 +20,7 @@ retain a RAM-disk root (README, "The disks").
 """
 import argparse
 import contextlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -215,6 +216,7 @@ class Driver:
         self.post_code = None
         self.post_seen = False
         self.gap = False
+        self.shutdown_token = m.power_token()
         self.shutdown_action = None
         self.clean_mounts = set()
         self.fatal_at = None
@@ -473,7 +475,7 @@ class Driver:
                 install_partition=the_layout['partitions']['test']['guid'] if the_layout and disk == 'install' else None,
                 idle_minutes=getattr(self.args, 'idle_minutes', 30) if session(self.args) else None,
                 replug=self.args.mode == 'console' and not session(self.args) and not xhci_fault(self.args),
-                xhci_fault=xhci_fault(self.args))
+                xhci_fault=xhci_fault(self.args), power_token=self.shutdown_token)
             if disk == 'install':
                 write = self.delivery['root']['diskWrite']
                 m.write_json(self.dir / 'disk-write.json', write)
@@ -1057,8 +1059,8 @@ class Driver:
         if self.kernel_started and self.fatal_at is None:
             clean = re.fullmatch(r'\[shutdown\] (home|root) clean read-only', line)
             if clean: self.clean_mounts.add(clean[1])
-            request = re.fullmatch(r'\[shutdown\] requested (reboot|poweroff)', line)
-            if request and self.clean_mounts == {'home', 'root'}:
+            request = re.fullmatch(r'\[shutdown\] requested (reboot|poweroff) token=([a-f0-9]{64})', line)
+            if request and hmac.compare_digest(request[2], self.shutdown_token) and self.clean_mounts == {'home', 'root'}:
                 self.shutdown_action = request[1]
                 self.event('requested-shutdown', observed_at=observed_at, action=request[1])
                 if request[1] == 'poweroff':
@@ -1786,7 +1788,7 @@ class Driver:
                 self.power_off(False)
             status = m.EXIT_INCOMPLETE if self.t0 is not None else m.EXIT_CANCELLED
         # Persistent sessions are scored like default boots; console sessions and fault tests never are.
-        scored = (not session(self.args) or persistent(self.args)) and not xhci_fault(self.args) and self.args.inject != FENCE_FAULT
+        scored = (not session(self.args) or persistent(self.args)) and not xhci_fault(self.args) and self.args.inject not in (FENCE_FAULT, 'panic-reboot')
         if scored and (self.dir / 'definition/docs/metal/boot-path.json').is_file():
             try:
                 verdict = metal_score.score(self.dir)

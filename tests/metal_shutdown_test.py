@@ -29,7 +29,7 @@ class ShutdownTest(sessions.existing.StateTest):
         d.kernel_started = 110
         d.on_line('[shutdown] home clean read-only', observed_at=111)
         d.on_line('[shutdown] root clean read-only', observed_at=112)
-        d.on_line('[shutdown] requested reboot', observed_at=113)
+        d.on_line('[shutdown] requested reboot token=' + d.shutdown_token, observed_at=113)
         self.assertEqual(d.shutdown_action, 'reboot')
         with self.assertRaises(boot.Finish) as end:
             d.on_reset(120)
@@ -39,16 +39,18 @@ class ShutdownTest(sessions.existing.StateTest):
     def test_poweroff_needs_clean_mounts_and_no_fatal(self):
         d = self.driver
         d.kernel_started = 110
-        d.on_line('[shutdown] requested poweroff', observed_at=111)
+        d.on_line('[shutdown] requested poweroff token=' + d.shutdown_token, observed_at=111)
         self.assertIsNone(d.shutdown_action)
         for mount in ('home', 'root'):
             d.on_line('[shutdown] ' + mount + ' clean read-only', observed_at=112)
+        d.on_line('[shutdown] requested poweroff token=' + '0' * 64, observed_at=112)
+        self.assertIsNone(d.shutdown_action)
         d.fatal_at = 113
-        d.on_line('[shutdown] requested poweroff', observed_at=114)
+        d.on_line('[shutdown] requested poweroff token=' + d.shutdown_token, observed_at=114)
         self.assertIsNone(d.shutdown_action)
         d.fatal_at = None
         with self.assertRaises(boot.Finish) as end:
-            d.on_line('[shutdown] requested poweroff', observed_at=115)
+            d.on_line('[shutdown] requested poweroff token=' + d.shutdown_token, observed_at=115)
         self.assertEqual(end.exception.status, m.EXIT_DONE)
 
     def test_unrequested_reset_and_post_request_panic_still_fail(self):

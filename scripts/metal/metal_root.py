@@ -204,7 +204,7 @@ def console_shadow(site, hasher, image_shadow='', account='root'):
 
 
 def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None, idle_minutes=None, replug=False, xhci_fault=None,
-               install_partition=None, operator=None):
+               install_partition=None, operator=None, power_token=None):
     """`operator`, the operator file (operator_account), is written for install-persistent's userland only."""
     if xhci_fault is not None and (xhci_fault not in ('reset-device', 'short-read')
                                    or mode != 'console' or install or idle_minutes is not None or replug):
@@ -301,6 +301,16 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
                              'rm /etc/shadow', f'write {source} /etc/shadow',
                              'set_inode_field /etc/shadow mode 0100600',
                              'set_inode_field /etc/shadow uid 0', 'set_inode_field /etc/shadow gid 0'])
+        if power_token is not None:
+            if not re.fullmatch(r'[a-f0-9]{64}', power_token):
+                raise ValueError('invalid power-control token')
+            source = scratch / 'power-token'
+            source.touch(mode=0o600)
+            source.write_text(power_token)
+            commands.extend(['rm /etc/breenix/power-token', f'write {source} /etc/breenix/power-token',
+                             'set_inode_field /etc/breenix/power-token mode 0100400',
+                             'set_inode_field /etc/breenix/power-token uid 0',
+                             'set_inode_field /etc/breenix/power-token gid 0'])
         script = scratch / 'commands'
         script.write_text('\n'.join(commands) + '\n')
         subprocess.run([debugfs, '-w', '-f', str(script), str(image)], check=True, capture_output=True)

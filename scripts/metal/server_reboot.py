@@ -217,4 +217,4 @@ def run(api, args):
     passed = sum(case['result'] == 'PASS' for case in records['cases'])
     print(f'SUITE server DONE passed={passed} failed={len(cases)-passed} skipped=0 total={len(cases)}', flush=True)
     print('Final reboot evidence boot: ' + current, flush=True)
-    return int(passed != len(cases))
+    return int(passed != len(cases) or not verdict.startswith('PASS:'))

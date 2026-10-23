@@ -1057,6 +1057,12 @@ writes with a read-only remount. Writable mounts first persist a dirty superbloc
 `/proc/breenix/filesystems` reads that state directly from the devices. The next
 boot reports the state it read before marking each writable mount dirty again.
 
+The lab authenticates the final receipt with a host-generated capability in
+`/etc/breenix/power-token` (0400 root). The installer refreshes it from the private
+staging file; it is not a factory default or a site value in the repository.
+The token is emitted on the private serial channel after the logger and sessions
+have stopped. Ordinary terminal text cannot supply a valid receipt.
+
 The x86 reset uses the validated FADT RESET_REG and RESET_VALUE (ACPI 6.5 section
 4.8.3.6). Power-off follows the server plan: the halted kernel emits its clean
 shutdown receipt and the leased lab driver powers it off; ACPI S5 AML evaluation

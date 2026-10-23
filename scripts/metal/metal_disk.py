@@ -66,7 +66,7 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
     # A reused mutable root can preserve the exact bytes diskChecks must check
     # this boot wrote, as well as consume fixtures needed by other suites.
     staged = metal_root.stage_root(image, mode, suite, site, hasher=inputs / 'sha512-crypt', writer=writer,
-                                   idle_minutes=idle_minutes, replug=replug, operator=operator)
+                                   idle_minutes=idle_minutes, replug=replug, operator=operator, power_token=m.power_token())
     facts = metal_root.write_install_record(image, boot_id)
     if 'consoleAccount' in staged:
         facts['consoleAccount'] = staged['consoleAccount']
