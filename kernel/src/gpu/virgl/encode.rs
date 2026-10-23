@@ -116,6 +116,8 @@ impl Enc {
 
     /// Collect a submission's vertices and upload them before any of its draws. Commands
     /// cannot consume a region while a later inline write is still changing that region.
+    /// Range discard also separates a reused region from the renderer's prior vertex reads;
+    /// on Parallels, usage 0 can overwrite those reads even after its native fence.
     fn begin_vertices(&mut self) {
         self.vertices = Some(WordBuf::new());
         self.vertex_words = 0;
@@ -128,7 +130,7 @@ impl Enc {
         let mut first = 0;
         while first < self.vertex_words {
             let count = (self.vertex_words - first).min(RECTS_PER_WRITE * 12);
-            let head = [resource, 0, 0, 0, 0, offset + first as u32 * 4, 0, 0, count as u32 * 4, 1, 1];
+            let head = [resource, 0, wire::transfer::WRITE | wire::transfer::DISCARD_RANGE, 0, 0, offset + first as u32 * 4, 0, 0, count as u32 * 4, 1, 1];
             prefix.cmd_iter(ccmd::RESOURCE_INLINE_WRITE, 0, head.len() + count,
                 head.into_iter().chain((first..first + count).map(|i| vertices.word(i))));
             first += count;
@@ -1001,7 +1003,7 @@ fn write_vertices(enc: &mut Enc, vertex_buffer: u32, offset: u32, verts: &[u32])
     enc.cmd_with(
         ccmd::RESOURCE_INLINE_WRITE,
         0,
-        &[vertex_buffer, 0, 0, 0, 0, offset, 0, 0, bytes, 1, 1],
+        &[vertex_buffer, 0, wire::transfer::WRITE | wire::transfer::DISCARD_RANGE, 0, 0, offset, 0, 0, bytes, 1, 1],
         verts,
     );
     offset + bytes

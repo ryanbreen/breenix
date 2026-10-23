@@ -67,6 +67,8 @@ fn frame_uploads_vertices_before_draws_in_one_bounded_batch_per_chunk() {
                 assert!(at + 1 + len <= chunk.len());
                 if command == wire::ccmd::RESOURCE_INLINE_WRITE && chunk.word(at + 1) == 27 {
                     assert_eq!(draws, 0, "a vertex upload followed a draw");
+                    assert_eq!(chunk.word(at + 3), wire::transfer::WRITE | wire::transfer::DISCARD_RANGE,
+                        "reused vertex storage needs a range-discard write");
                     assert_eq!(chunk.word(at + 6), 96 + vertices * 8);
                     let bytes = chunk.word(at + 9);
                     assert_eq!(len, 11 + bytes as usize / 4);

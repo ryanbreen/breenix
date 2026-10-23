@@ -91,6 +91,12 @@ pub mod bind {
     pub const SCANOUT: u32 = 1 << 18;
 }
 
+/// Inline upload usage (`enum pipe_transfer_usage` in the pinned protocol header).
+pub mod transfer {
+    pub const WRITE: u32 = 1 << 1;
+    pub const DISCARD_RANGE: u32 = 1 << 8;
+}
+
 /// Gallium texture targets as the wire carries them (`enum pipe_texture_target`).
 pub mod target {
     pub const BUFFER: u32 = 0;

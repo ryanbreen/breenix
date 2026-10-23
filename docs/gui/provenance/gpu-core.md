@@ -154,6 +154,7 @@ the target.
 | DRAW_VBO: 12 words: start, count, mode, indexed, instance count, index bias, start instance, primitive restart, restart index, minimum index, maximum index, count from stream output | P:342–356 |
 | Surface object: handle, resource, format, texture level, texture layers | P:369–376 |
 | RESOURCE_INLINE_WRITE: resource, level, usage, stride, layer stride, box x, y, z, w, h, d, then the data | P:521–532 |
+| Inline vertex upload usage WRITE `1 << 1` and DISCARD_RANGE `1 << 8` | D:247, 265–273; the uploaded range's old bytes are discarded, without discarding other arena ranges; B21 below |
 | BIND_SHADER: handle, type | P:550–552 |
 | Formats B8G8R8A8_UNORM 1, R32G32_FLOAT 29, R8_UNORM 64, R8G8B8A8_UNORM 67 | H:36, 64, 105, 108 |
 | Bind flags RENDER_TARGET bit 1, SAMPLER_VIEW bit 3, VERTEX_BUFFER bit 4 | H:636–638 |
@@ -1259,3 +1260,67 @@ traffic from starving warm-up.
 
 Source declaration: this change derives from Breenix's own GPU core, its contract,
 and PR #2111's review findings. No external implementation source was used.
+
+## B21: Reusing inline vertex storage on Parallels
+
+`tools/gpu-host-tests/vertex_reuse.rs` and
+`tools/gpu-experiments/vertex-reuse.c` are the reproducer. The Rust producer uses the
+production Breenix VirGL encoder with a Vec-backed replacement for DMA storage,
+libfont's geometry, and the unchanged CPU rasterizer as its pixel oracle. The C
+helper uses Linux's public DRM ioctls to allocate resources, submit those commands,
+wait for every buffer object, and read the six glyph targets. Neither tool uses an
+external implementation or an externally captured command stream.
+
+The sequence keeps one context, a 64 KiB vertex buffer, its views, and its data and
+copy textures across 20 frames. Each frame renders `Brenix` at one of 8, 12, 16,
+24 and 48 pixels, then samples those six glyphs onto a separate target. Both passes
+upload their complete vertices at offset zero. A solid control precedes the glyphs,
+so the last glyph's vertices lie beyond the following sampling upload. The helper
+compares every RGB byte of every glyph target, including its zero background, and
+returns failure for any mismatch. Each native submission is followed by DRM WAIT
+for all named buffer objects.
+
+On Parallels 27.0.3 with an ARM64 Alpine 3.21 guest (Linux 6.12.67), Vigil boot
+record `20261023T173125Z-parallels-linux-probe` contains these results:
+
+| Inline vertex usage or storage | Frames | Mismatched RGB components | Result |
+|---|---:|---:|---|
+| 0, reusing offset zero | 20 | 2,916 | FAIL |
+| WRITE only, reusing offset zero | 20 | 1,755 | FAIL |
+| 0, distinct 1 KiB vertex ranges for every pass | 20 | 0 | PASS |
+| WRITE plus DISCARD_RANGE, reusing offset zero | 20 | 0 | PASS |
+
+The failing frames lost whole glyphs whose vertex ranges the following pass
+rewrote; the last glyph's untouched range remained correct. The producer, programs,
+geometry, pixel oracle and DRM transport were identical across the variants. This
+isolates vertex-storage reuse from geometry generation and from Breenix's VirtIO
+transport.
+The inference is that usage zero permits the renderer's prior vertex reads to see
+rewritten storage. WRITE plus DISCARD_RANGE describes the actual overwrite and
+keeps those reads separate without growing or delaying reuse of the bounded arena.
+The data-texture upload policy and all suite expectations are unchanged.
+
+To reproduce on a windowed ARM64 Linux guest with Parallels VirGL enabled:
+
+1. Install the distribution's C compiler, pkg-config and libdrm development headers.
+   Build the C helper with the command in its file header. Start it in a fresh
+   directory, with no `commands-ready` file, and redirect its output to a log.
+   It writes `ids`, prints `RESOURCES READY`, and waits for the command files.
+2. Copy `ids` into a host output directory. From the repository root, run:
+
+   ```sh
+   export CARGO_BUILD_JOBS=4
+   scripts/build-background.sh cargo run --release \
+     --manifest-path tools/gpu-host-tests/Cargo.toml --bin vertex-reuse -- \
+     "$OUT" fonts/DejaVuSans.ttf 0
+   ```
+
+3. Copy `warm.bin` and the `frame-*.bin` files into the guest helper's directory,
+   then create `commands-ready`. Its final line and exit status report the result.
+4. Repeat with a fresh helper context and omit the final `0` from the producer
+   command to use the production WRITE plus DISCARD_RANGE policy. Optional usage
+   `2` isolates WRITE alone. The comparison is identical in every variant.
+
+The distinct-range diagnostic changed only each vertex inline write's byte offset
+and its draws' vertex indices, using `(2 * frame + pass + 1) * 1024` bytes for the
+range. It left the data texture, programs, rectangles, colors and comparison alone.
