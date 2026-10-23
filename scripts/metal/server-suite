@@ -73,9 +73,17 @@ OPERATOR = (
 )
 
 # The populated categories in manifest order, the suite each belongs to, and the milestone each one measures.
-CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'operator': OPERATOR}
-SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'operator': 'users'}
-MILESTONES = {'server/ssh-keys': 'ssh-keys', 'server/services': 'services', 'server/logs': 'logs',
+REBOOT = (
+    ('reboot-refused', 'An unprivileged reboot is refused without ending the boot'),
+    ('poweroff-refused', 'An unprivileged poweroff is refused without ending the boot'),
+    ('reboot', 'sudo reboot stops dependents first, preserves writes, resets through ACPI and boots clean'),
+    ('poweroff', 'sudo poweroff stops dependents first, preserves writes and ends the boot normally with clean filesystems'),
+    ('panic-reset', 'A fault-test kernel prints its panic and resets without a host reset'),
+)
+
+CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'reboot': REBOOT, 'operator': OPERATOR}
+SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'reboot': 'server', 'operator': 'users'}
+MILESTONES = {'server/ssh-keys': 'ssh-keys', 'server/services': 'services', 'server/logs': 'logs', 'server/reboot': 'reboot',
               'users/operator-login': 'operator'}
 # The console lines the operator's console challenge leaves in the capture (docs/metal/boot-path.json, console-login).
 OPERATOR_CONSOLE_LINES = ('Login incorrect', 'metal-login-ok 42', 'fbcon check: shadow and screen identical',
@@ -1325,6 +1333,7 @@ def main():
     parser.add_argument('--check-manifest', type=Path)
     parser.add_argument('--previous-boot', help='Completed logs preparation boot at this same commit')
     parser.add_argument('--prepare-logs', action='store_true', help='Write the log whose bytes the next boot must retain')
+    parser.add_argument('--branch', default='metal-server/reboot')
     parser.add_argument('--boot')
     parser.add_argument('--sha')
     parser.add_argument('--milestone', default='server/ssh-keys', choices=list(MILESTONES))
@@ -1334,6 +1343,8 @@ def main():
         return 0
     if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot or '') or not re.fullmatch(r'[a-f0-9]{40}', args.sha or ''):
         parser.error('--boot ID and --sha full commit required')
+    if args.milestone == 'server/reboot':
+        return runpy.run_path(str(Path(__file__).with_name('server_reboot.py')))['run'](globals(), args)
     category = MILESTONES[args.milestone]
     suite = SUITES[category]
     cases = CATEGORIES[category]

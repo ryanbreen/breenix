@@ -152,7 +152,28 @@
     {
       "id": "reboot",
       "title": "Reboot and power-off after sync and a read-only remount; a panic reboots",
-      "cases": []
+      "cases": [
+        {
+          "id": "reboot-refused",
+          "title": "An unprivileged reboot is refused without ending the boot"
+        },
+        {
+          "id": "poweroff-refused",
+          "title": "An unprivileged poweroff is refused without ending the boot"
+        },
+        {
+          "id": "reboot",
+          "title": "sudo reboot stops dependents first, preserves writes, resets through ACPI and boots clean"
+        },
+        {
+          "id": "poweroff",
+          "title": "sudo poweroff stops dependents first, preserves writes and ends the boot normally with clean filesystems"
+        },
+        {
+          "id": "panic-reset",
+          "title": "A fault-test kernel prints its panic and resets without a host reset"
+        }
+      ]
     },
     {
       "id": "watchdog",
