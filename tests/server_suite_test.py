@@ -553,6 +553,20 @@ class HostServerScore(unittest.TestCase):
 
 
 class WatchdogRecovery(existing.StateTest):
+    def test_fault_launch_remains_ram_root_in_detached_driver(self):
+        for fault in existing.boot.WATCHDOG_FAULTS:
+            def launch(args, extra):
+                with patch.object(sys, 'argv', ['metal-boot', 'run', '--id', '20261023T000000Z-metal'] + extra), \
+                     patch.object(existing.boot, 'Driver') as driver:
+                    driver.return_value.run.return_value = 0
+                    self.assertEqual(existing.boot.main(), 0)
+                    self.assertIsNone(driver.call_args.args[0].disk)
+                return 0
+            with self.subTest(fault=fault), \
+                 patch.object(sys, 'argv', ['metal-boot', 'launch', '--payload', 'image', '--inject', fault]), \
+                 patch.object(existing.boot, 'launch', side_effect=launch):
+                self.assertEqual(existing.boot.main(), 0)
+
     def setUp(self):
         super().setUp()
         self.sha = 'a' * 40

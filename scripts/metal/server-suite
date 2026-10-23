@@ -1612,7 +1612,8 @@ class Watchdog:
         result = command(['python3', str(Path(__file__).with_name('metal-run')), 'boot',
                           '--sha', self.sha, '--branch', self.branch,
                           '--inject', 'watchdog-' + name, '--no-wait'])
-        if result.returncode: raise ValueError('watchdog fault boot could not launch')
+        if result.returncode:
+            raise ValueError('watchdog fault boot could not launch: ' + (result.stderr or result.stdout).strip())
         ids = re.findall(r'"id":\s*"(\d{8}T\d{6}Z-metal)"', result.stdout)
         if not ids: raise ValueError('fault launch returned no boot ID')
         boot = ids[0]

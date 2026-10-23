@@ -2077,7 +2077,8 @@ def main():
             parser.error('console mode requires --input sol')
         if args.input and args.mode != 'console':
             parser.error('--input needs console mode')
-    if args.command in ('launch', 'run') and args.payload == 'image' and not args.disk and not xhci_fault(args):
+    if (args.command in ('launch', 'run') and args.payload == 'image' and not args.disk
+            and not xhci_fault(args) and args.inject not in WATCHDOG_FAULTS):
         args.disk = 'root'
     if args.command in ('launch', 'run') and args.inject == 'disk-before-mount' and (args.payload != 'image' or args.disk != 'root'):
         parser.error('disk-before-mount needs a disk-root image boot')
