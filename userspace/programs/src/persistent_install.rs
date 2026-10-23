@@ -1016,6 +1016,9 @@ mod tests {
         let scratch = generations.join("failed.new");
         fs::create_dir(&scratch).unwrap();
         fs::write(scratch.join("partial"), b"incomplete copy").unwrap();
+        let in_flight = generations.join("next.new");
+        fs::create_dir(&in_flight).unwrap();
+        fs::write(in_flight.join("partial"), b"live publication").unwrap();
         let root = system.join("root");
         let current = generations.join("current");
         let root_before = snapshot(&root);
@@ -1037,6 +1040,7 @@ mod tests {
         assert_eq!(fs::read(generations.join("stale.new/bin/payload")).unwrap(), b"source");
         assert!(!generations.join("orphan").exists());
         assert!(!scratch.exists());
+        assert_eq!(fs::read(in_flight.join("partial")).unwrap(), b"live publication");
         drop(bindings);
     }
 
