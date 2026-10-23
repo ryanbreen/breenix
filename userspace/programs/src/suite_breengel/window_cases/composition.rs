@@ -1055,13 +1055,13 @@ fn composition_target_lifetime()->CaseResult {
     libbreenix::gpu::resource_destroy(warm);
     warmed.cite("18")?;
     let charged=charged.cite("18")?;
-    // B48 item 4: observe the warm-up target's charge before destruction, then
-    // require its retirement to lower the charge before taking the baseline.
+    // B49 item 3: observe the warm-up target's charge before destruction, then
+    // wait for its full 4096-byte charge to leave before taking the baseline.
     let start=now_ms();
     let before=loop {
         let settled=crate::gpu_checks::counters().cite("18")?;
         ensure(since(start)<1_000,"18","gpu-display: warm-up target retirement did not settle")?;
-        if settled.resource_bytes<charged.resource_bytes { break settled; }
+        if charged.resource_bytes.checked_sub(settled.resource_bytes).is_some_and(|released|released>=4096) { break settled; }
         let _=time::sleep_ms(5);
     };
     super::handoff::snapshot_lifetime(false)?;
