@@ -792,11 +792,16 @@ class Services:
         before = services['bsshd']
         self.console.login()
         after_records = len(self.init_records())
+        kill_offset = self.console.size()
         self.console.type_line('kill -9 ' + str(before['pid']))
         sent = time.monotonic()
         # Reap the old listener before connecting: one of its surviving children can
         # otherwise answer while the new listener is still starting.
         deadline = sent + RESTART_WINDOW_S
+        # type_line submits asynchronously. The next command must wait for
+        # bsh to finish the kill and return to input, within the same deadline.
+        self.console.wait(kill_offset, r'(?m)^' + Console.PROMPT + r'[ \t]*\r?$',
+                          'the shell prompt after SIGKILL', timeout=max(0, deadline - time.monotonic()))
         self.await_init_line(after_records, r'^\[init\] bsshd killed by signal 9$', "bsshd's SIGKILL",
                              timeout=max(0, deadline - time.monotonic()))
         while True:

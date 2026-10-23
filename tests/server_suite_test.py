@@ -444,11 +444,43 @@ class HostServerScore(unittest.TestCase):
             self.assertEqual(services.init_start, 1)
             self.assertEqual(services.init_log, ['[init] blogd started (PID 9)'])
 
+    def test_restart_finishes_kill_submission_before_log_read_inside_deadline(self):
+        for prompt_delay in (1, 11):
+            with self.subTest(prompt_delay=prompt_delay):
+                services = object.__new__(host['Services'])
+                clock, pending, states = [0.0], [False], [0]
+                def state(timeout=45):
+                    states[0] += 1
+                    return {}, {'bsshd': (dict(pid=42, starts=1) if states[0] == 1 else
+                                          dict(pid=43, starts=2, state='running', exit='signal:9'))}
+                def submit(line): pending[0] = True
+                def finish(*args, **kwargs):
+                    pending[0] = False
+                    clock[0] += prompt_delay
+                def notice(*args, timeout=15, **kwargs):
+                    self.assertFalse(pending[0], 'log input was sent before the kill command finished')
+                    if timeout <= 0: raise ValueError('init log deadline elapsed')
+                def ssh(script, timeout):
+                    self.assertEqual(timeout, 9)
+                    return SimpleNamespace(returncode=0, stdout='1000\n')
+                services.state = state
+                services.init_records = lambda: []
+                services.await_init_line = notice
+                services.console = SimpleNamespace(login=lambda: None, size=lambda: 0,
+                                                   type_line=submit, wait=finish)
+                services.probe = SimpleNamespace(ssh=ssh, transcript=[])
+                with patch.object(host['time'], 'monotonic', side_effect=lambda: clock[0]):
+                    if prompt_delay > 10:
+                        with self.assertRaisesRegex(ValueError, 'deadline'):
+                            services.case_kill_restart()
+                    else:
+                        services.case_kill_restart()
+
     def test_reconnect_rejects_success_after_deadline(self):
         services = object.__new__(host['Services'])
         services.state = lambda: ({}, {'bsshd': {'pid': 42}})
         services.console = SimpleNamespace(size=lambda: 0, login=lambda: None,
-                                          type_line=lambda line: None, wait=lambda *args: None)
+                                          type_line=lambda line: None, wait=lambda *args, **kwargs: None)
         clock = [0.0]
         timeouts = []
         def ssh(script, timeout):
@@ -487,7 +519,8 @@ class HostServerScore(unittest.TestCase):
                 services.state = state
                 services.init_records = lambda: []
                 services.await_init_line = notice
-                services.console = SimpleNamespace(login=lambda: None, type_line=lambda line: None)
+                services.console = SimpleNamespace(login=lambda: None, size=lambda: 0,
+                                                   type_line=lambda line: None, wait=lambda *args, **kwargs: None)
                 services.probe = SimpleNamespace(ssh=ssh, transcript=[])
                 with patch.object(host['time'], 'monotonic', side_effect=lambda: clock[0]):
                     if state_delay:
