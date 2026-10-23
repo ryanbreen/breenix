@@ -54,6 +54,8 @@ const NETWORK_POLL_MS: u64 = 250;
 pub enum Scope {
     /// The whole table: the system's init.
     All,
+    /// Services without login terminals (the ARM64 desktop boot).
+    Daemons,
     /// Only the login terminals (`init console`).
     Logins,
 }
@@ -274,7 +276,11 @@ fn exit_text(status: i32) -> String {
 }
 
 fn in_scope(scope: Scope, service: &Service) -> bool {
-    scope == Scope::All || login_terminal(service).is_some()
+    match scope {
+        Scope::All => true,
+        Scope::Daemons => login_terminal(service).is_none(),
+        Scope::Logins => login_terminal(service).is_some(),
+    }
 }
 
 impl Supervisor {
