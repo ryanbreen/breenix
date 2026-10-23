@@ -78,8 +78,11 @@ impl Context {
             let old = CONTEXTS.lock().remove(&owner);
             drop(old);
         }
-        let (handle, _) = create_context(owner)?;
-        let id = with_core(|c| c.ctx_of(owner, handle)).flatten().ok_or(EIO)?;
+        let (handle, _) = create_context_with_catalogue(owner, false)?;
+        let Some(id) = with_core(|c| c.ctx_of(owner, handle)).flatten() else {
+            destroy_context(owner, handle);
+            return Err(EIO);
+        };
         let made = Arc::new(Self { owner, handle, id });
         let mut contexts = CONTEXTS.lock();
         if let Some(context) = contexts.get(&owner).cloned() {
@@ -89,6 +92,8 @@ impl Context {
         contexts.insert(owner, made.clone());
         Ok(made)
     }
+
+
 }
 
 impl Drop for Context {
