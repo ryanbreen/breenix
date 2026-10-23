@@ -817,6 +817,7 @@ class RootStagingTest(unittest.TestCase):
             subprocess.run([mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F', str(image), '4096'],
                            check=True, capture_output=True)
             site = {'GUEST_FETCH_URL': 'fixture-value', 'IDRAC_PASSWORD': 'private-fixture',
+                    'SNTP_SERVERS': '192.0.2.123 time.example.invalid',
                     'CONSOLE_USER': 'root', 'CONSOLE_PASSWORD': 'fixture_password_only_12345',
                     'CONSOLE_IDENTITY_KEY': 'ab' * 32}
             helper = os.environ.get('CONSOLE_HASH_HELPER', str(Path(__file__).resolve().parents[1] / 'target/host-test-tools/sha512-crypt'))
@@ -839,6 +840,7 @@ class RootStagingTest(unittest.TestCase):
                                           check=True, capture_output=True).stdout.decode()
                 self.assertEqual(read('boot-target'), expected + '\n')
                 self.assertEqual(read('site.env'), 'FETCH_URL=fixture-value\n')
+                self.assertEqual(read('sntp-servers'), '192.0.2.123\ntime.example.invalid\n')
                 if mode == 'default':
                     self.assertTrue(read('../shadow').startswith('root:$6$'))
             subprocess.run(['bash', str(TOOLS.parent / 'write-boot-target.sh'), str(image), '--desktop'],

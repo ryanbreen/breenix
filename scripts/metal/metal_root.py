@@ -265,7 +265,10 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         raise ValueError('RAM-disk boot-target staging failed') from error
     with tempfile.TemporaryDirectory(prefix='metal-root-') as scratch:
         scratch = Path(scratch)
-        files = {'site.env': ''.join(lines)}
+        sntp = site.get('SNTP_SERVERS', '').split()
+        if len(sntp) > 8 or any(not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?', name) for name in sntp):
+            raise ValueError('SNTP_SERVERS needs up to eight DNS names or IPv4 addresses')
+        files = {'site.env': ''.join(lines), 'sntp-servers': ''.join(name + '\n' for name in sntp)}
         # Replace this file so ordinary staging disarms a prior fault.
         files['watchdog-fault'] = '' if watchdog_fault is None else watchdog_fault + '\n'
         files['xhci-fault'] = '' if xhci_fault is None else xhci_fault + '\n'

@@ -1375,6 +1375,32 @@ authorized key with the same marker as its comment. It pins bssh's host key in a
 `/tmp` file of the run's own, whose entry carries the marker, and cleanup removes
 both.
 
+For `server/time`, install the commit, prepare a synchronized persistent boot,
+stop it through `metal-run`, and run the category on the next persistent boot:
+
+```sh
+server-suite --boot FIRST --sha SHA --milestone server/time --prepare-time
+# Stop FIRST, follow it to completion, then boot persistent again at SHA.
+server-suite --boot SECOND --sha SHA --milestone server/time --previous-boot FIRST
+```
+
+The six cases require configured site or DHCP sources after network-up, UTC
+within one second of the boot host (including measurement uncertainty), an
+actual hourly poll by the same process, rejection of unsuitable SNTP replies,
+a negative correction observed as a bounded slew without a backward step, and
+a CMOS boot sample within one second of the host after reboot. The hourly case
+waits for the real hour; it does not accelerate the client's timer. The wire
+fixture binds an ephemeral UDP port on the boot host; the guest reaches it at
+the host in the private site's `BOOT_URL`. Invalid replies exercise length,
+leap state, version, mode, stratum, origin, null timestamps, reference age,
+dispersion, kiss-of-death and excessive offset. Root stops the supervised client
+for those fixture queries and starts it again during cleanup. Preparation and
+case records are private boot-store artifacts, `time-prepared.json` and
+`server-time.json`; the scorer requires a completed preparation boot at the
+same kernel and tools commit. No attended action is a case.
+<!-- claim-lint:ok: scripts/metal/server-suite TimeCases defines these required assertions; this paragraph specifies acceptance, not a completed hardware result. -->
+
+
 ### Watchdog recovery
 
 `server/watchdog` runs from the boot host after `install-persistent` at the same

@@ -1041,6 +1041,40 @@ blogd checkpoints its byte offset and partial line under `/run/breenix`, keyed b
 the boot ID, and finishes a batch before honouring SIGTERM so service restarts
 resume the same stream. The existing `/proc/kmsg` text interface is retained.
 
+### Synchronized time and UTC RTC
+
+The time service uses the private site's `SNTP_SERVERS` field (up to eight
+space-separated DNS names or IPv4 addresses), staged as
+`/etc/breenix/sntp-servers`. An empty field selects DHCP option 42, exposed as
+`ntpserver` lines in `/proc/net/pnp`. There is no built-in public server or
+fallback address. The installer publishes site configuration into shared `/etc`
+so upgrades can update it independently of generation factory defaults.
+
+`ntp_client` runs after network-up, polls hourly after success, and backs off
+from 16 seconds to an hour on failure. Endpoint polling bounds survive daemon
+restarts within the boot. RATE extends the server's backoff; DENY and RSTR
+suppress it for that boot. It checks response source and origin, timestamps,
+leap state, version, stratum and synchronization distance before applying a
+sample. The first correction steps without an offset limit; later corrections over
+1000 seconds are refused. Unauthenticated SNTP trusts
+the configured LAN time source; it supplies no cryptographic authentication.
+
+A marker in `/run` permits a step only on the first synchronization of a boot,
+including across service restarts. Later corrections use the kernel's finite
+500 ppm slew through the native `adjtimex` single-shot ABI; monotonic time is
+unchanged. The UTC calendar is written at a seconds edge through the root-only
+RTC_SET_TIME ioctl, preserving CMOS format and 12/24-hour mode while clearing hardware daylight
+adjustment and update inhibition. This calendar write does not reset the CMOS
+divider; its phase uncertainty can approach one second. The CMOS read cache is
+invalidated after a write. ARM64 QEMU uses the PL031 load register;
+firmware RTC writing on the persistent VMs belongs to the D6 catch-up.
+`ntp_client --status` reports live clocks and synchronization state as JSON;
+`--watch SECONDS` samples them, and root may request an administrative
+`--once --server NAME [--port PORT]` synchronization under the same step and
+slew rules. The [server suite](../suites/README.md#server-host-driven-persistent-categories)
+measures UTC offset, the real hourly poll, rejection behavior, live slewing and
+the RTC after reboot.
+
 ### Persistent sessions
 
 `metal-run boot --persistent` takes the lease (test boots queue behind it), powers the machine on without the
