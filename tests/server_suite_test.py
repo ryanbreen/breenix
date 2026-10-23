@@ -380,6 +380,7 @@ class HostServerScore(unittest.TestCase):
         records = dict(self.records, milestone='server/services', initLog=['[init] bsshd killed by signal 9'],
                        cases=[dict(id='services/' + name, result='PASS') for name, _ in host['CATEGORIES']['services']])
         serial = ('[stdout] bsshd: host key ED25519 SHA256:example (loaded)\n'
+                  '1234 [init] bsshd killed by signal 9\n'
                   '[init] svc-suite-fail is crash-looping: 5 failures in a row, each within 10 s of starting\n')
         def score(records=records, serial=serial):
             return host['score'](self.manifest, self.path, records, serial, self.boot, self.sha, ['KERNEL PANIC:'])
@@ -391,8 +392,10 @@ class HostServerScore(unittest.TestCase):
         with self.assertRaises(ValueError): score(dict(records, cleanup=False))
         for line in serial.splitlines()[1:]:
             with self.assertRaises(ValueError): score(serial=serial.replace(line + '\n', ''))
-        # init's SIGKILL notice is in its log (#2282), not the console.
-        with self.assertRaisesRegex(ValueError, 'init log'): score(dict(records, initLog=[]))
+        # The root console read must capture the record, independently of runner metadata.
+        self.assertTrue(score(dict(records, initLog=[])).startswith('PASS:'))
+        with self.assertRaisesRegex(ValueError, 'init log'):
+            score(serial=serial.replace('1234 [init] bsshd killed by signal 9\n', ''))
         failed = copy.deepcopy(records)
         failed['cases'][3]['result'] = 'FAIL'
         with self.assertRaises(ValueError): score(failed)
@@ -436,11 +439,45 @@ class HostServerScore(unittest.TestCase):
             return SimpleNamespace(returncode=0, stdout='1000\n')
         services.probe = SimpleNamespace(ssh=ssh, transcript=[])
         services.init_records = lambda: []
+        services.await_init_line = lambda *args, **kwargs: [(0, '[init] bsshd killed by signal 9')]
         with patch.object(host['time'], 'monotonic', side_effect=lambda: clock[0]):
             with self.assertRaisesRegex(ValueError, 'within 10 s'):
                 services.case_kill_restart()
         self.assertEqual(timeouts, [10.0])
         self.assertEqual(services.probe.transcript, [])
+
+    def test_restart_waits_for_reap_and_bounds_state_read(self):
+        for state_delay in (0, 9):
+            with self.subTest(state_delay=state_delay):
+                services = object.__new__(host['Services'])
+                clock, events, state_timeouts = [0.0], [], []
+                before = dict(pid=42, starts=1)
+                after = dict(pid=43, starts=2, state='running', exit='signal:9')
+                def state(timeout=45):
+                    state_timeouts.append(timeout)
+                    if len(state_timeouts) == 1: return {}, {'bsshd': before}
+                    clock[0] += state_delay
+                    return {}, {'bsshd': after}
+                def notice(*args, **kwargs):
+                    events.append('reaped')
+                    clock[0] += 2
+                def ssh(script, timeout):
+                    self.assertEqual(events, ['reaped'])
+                    self.assertEqual(timeout, 8)
+                    clock[0] += 1
+                    return SimpleNamespace(returncode=0, stdout='1000\n')
+                services.state = state
+                services.init_records = lambda: []
+                services.await_init_line = notice
+                services.console = SimpleNamespace(login=lambda: None, type_line=lambda line: None)
+                services.probe = SimpleNamespace(ssh=ssh, transcript=[])
+                with patch.object(host['time'], 'monotonic', side_effect=lambda: clock[0]):
+                    if state_delay:
+                        with self.assertRaisesRegex(ValueError, 'state.*within 10 s'):
+                            services.case_kill_restart()
+                    else:
+                        services.case_kill_restart()
+                self.assertEqual(state_timeouts, [45, 7])
 
     def test_operator_category_is_scored_against_the_users_manifest(self):
         users = json.loads((ROOT / 'docs/suites/users.json').read_text())

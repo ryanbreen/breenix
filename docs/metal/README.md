@@ -958,7 +958,8 @@ membership of `wheel` and the hash, with every key in its pending authorized-key
 keeps its line, comment and home included, and must already have the site's uid and gid, or the install is refused
 before it writes; its group keeps its members. The site's hash replaces only a password an install locked (`!`), so a
 password set on the machine is kept. Each upgrade stages them again and updates the operator shell; a key already
-listed is not added twice and existing authorized_keys bytes are retained. First-boot reconciliation validates the
+listed is not added twice and existing authorized_keys bytes are retained. To revoke a site-managed key, remove
+it from both the site file and the account's authorized_keys; a key retained in the site file is added again on upgrade. First-boot reconciliation validates the
 entire pending file before adding any key and removes it only after every key succeeds; a retry keeps keys already
 added. The users suite's `operator` category checks every configured key and
 measures the result on a persistent boot ([the suites README](../suites/README.md#users--permissions)).

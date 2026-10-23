@@ -153,8 +153,8 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
         # The crash loop stays on the console; init's routine notices are in its log (#2282).
         if '[init] svc-suite-fail is crash-looping: 5 failures in a row' not in serial:
             raise ValueError('boot captured no crash-loop report on the console')
-        if '[init] bsshd killed by signal 9' not in records.get('initLog', []):
-            raise ValueError("the records hold no init log record of bsshd's SIGKILL")
+        if not re.search(r'^[0-9]+ \[init\] bsshd killed by signal 9\r?$', serial, re.M):
+            raise ValueError("the console capture holds no init log record of bsshd's SIGKILL")
     if category == 'operator':
         for line in OPERATOR_CONSOLE_LINES:
             if line not in serial:
@@ -658,8 +658,8 @@ class Services:
         self.fixture_file = '/run/breenix/services.d/svc-suite'
         self.init_log = []
 
-    def state(self):
-        result = self.probe.ssh('cat /run/breenix/services')
+    def state(self, timeout=45):
+        result = self.probe.ssh('cat /run/breenix/services', timeout=timeout)
         self.probe.require(result)
         return parse_state(result.stdout)
 
@@ -676,26 +676,30 @@ class Services:
             if re.search(pattern, line): found.append((arrived, line))
         return found
 
-    def init_records(self):
+    def init_records(self, timeout=60):
         """init's notices once the console getty runs (#2282): `/var/log/init.log`, root's, read on the root console.
         Each record is (seconds on the supervisor's monotonic clock, text); kept for the scorer as `initLog`."""
-        text = self.console.run('sh -c ' + shlex.quote('cat /var/log/init.log; printf "init-log-%s\\n" read'), timeout=60)
+        text = self.console.run('sh -c ' + shlex.quote('cat /var/log/init.log; printf "init-log-%s\\n" read'), timeout=timeout)
         if not re.search(r'^init-log-read\r?$', text, re.M):
             raise ValueError("init's log could not be read")
         records = [(int(ms) / 1000, line) for ms, line in re.findall(r'^([0-9]+) (\[init\] [^\r\n]*)\r?$', text, re.M)]
         self.init_log = [line for _, line in records]
         return records
 
-    def init_lines(self, after, pattern):
+    def init_lines(self, after, pattern, timeout=60):
         """init's records past the first `after` that match `pattern`."""
-        return [(at, line) for at, line in self.init_records()[after:] if re.search(pattern, line)]
+        return [(at, line) for at, line in self.init_records(timeout=timeout)[after:] if re.search(pattern, line)]
 
     def await_init_line(self, after, pattern, what, timeout=15):
         deadline = time.monotonic() + timeout
-        while not (found := self.init_lines(after, pattern)):
-            if time.monotonic() >= deadline: raise ValueError("init's log does not show " + what)
-            time.sleep(1)
-        return found
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0: raise ValueError("init's log does not show " + what + " within the deadline")
+            found = self.init_lines(after, pattern, timeout=remaining)
+            if time.monotonic() > deadline:
+                raise ValueError("init's log does not show " + what + " within the deadline")
+            if found: return found
+            time.sleep(min(1, max(0, deadline - time.monotonic())))
 
     def ensure_fixtures(self):
         if self.fixtures is not None:
@@ -782,9 +786,11 @@ class Services:
         after_records = len(self.init_records())
         self.console.type_line('kill -9 ' + str(before['pid']))
         sent = time.monotonic()
-        # Count from the typed kill. A connection the old listener answered would leave its
-        # pid, start count and exit unchanged in the published state, which is checked below.
+        # Reap the old listener before connecting: one of its surviving children can
+        # otherwise answer while the new listener is still starting.
         deadline = sent + RESTART_WINDOW_S
+        self.await_init_line(after_records, r'^\[init\] bsshd killed by signal 9$', "bsshd's SIGKILL",
+                             timeout=max(0, deadline - time.monotonic()))
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -798,12 +804,14 @@ class Services:
             if result.returncode == 0 and result.stdout.strip() == '1000': break
             time.sleep(min(0.25, max(0, deadline - time.monotonic())))
         self.probe.transcript.append(dict(reconnectSeconds=round(time.monotonic() - sent, 3)))
-        _, services = self.state()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0: raise ValueError('restart state was not verified within 10 s of the kill')
+        _, services = self.state(timeout=remaining)
+        if time.monotonic() > deadline: raise ValueError('restart state was not verified within 10 s of the kill')
         after = services['bsshd']
         if after['state'] != 'running' or after['pid'] in (0, before['pid']) or after['starts'] != before['starts'] + 1 \
                 or after['exit'] != 'signal:9':
             raise ValueError('the published state does not show the restart after SIGKILL')
-        self.await_init_line(after_records, r'^\[init\] bsshd killed by signal 9$', "bsshd's SIGKILL")
         self.await_init_line(after_records, r'^\[init\] bsshd restarts in 1000 ms$', 'the restart delay')
 
     def case_reconnect_bsh(self):
@@ -1269,7 +1277,7 @@ class Operator:
         text = self.root.run('sh -c ' + shlex.quote('ls -lnA /root/.ssh 2>&1; printf "root-keys-%s\\n" checked'))
         if not re.search(r'^root-keys-checked\r?$', text, re.M):
             raise ValueError("root's SSH directory could not be listed")
-        if re.search(r' authorized_keys2?\r?$', text, re.M):
+        if re.search(r' authorized_keys2?(?: -> [^\r\n]*)?\r?$', text, re.M):
             raise ValueError('root still has an authorized_keys file')
 
     def case_console_challenge(self):
@@ -1370,7 +1378,8 @@ def main():
     if site.returncode: raise ValueError('cannot read suite site fields')
     site = json.loads(site.stdout)
     if not site['SERVER_SSH_HOST']: raise ValueError('site needs SERVER_SSH_HOST for the persistent server')
-    if category == 'operator' and (not re.fullmatch(r'[1-9][0-9]{3,4}', site['OPERATOR_UID'] or '')
+    if category == 'operator' and (not (re.fullmatch(r'[1-9][0-9]{3,4}', site['OPERATOR_UID'] or '')
+                                       and 1000 <= int(site['OPERATOR_UID']) <= 60000)
                                    or not site['OPERATOR_PASSWORD']):
         raise ValueError('site needs OPERATOR_UID and OPERATOR_PASSWORD for the operator category')
     identity = next((p.with_suffix('') for p in (Path.home() / '.ssh').glob('*.pub')
