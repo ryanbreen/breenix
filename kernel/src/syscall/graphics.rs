@@ -1,5 +1,8 @@
 //! x86-64 framebuffer console syscalls 410–412.
 extern crate alloc;
+
+#[cfg(target_arch = "x86_64")]
+pub mod input_ring;
 use super::SyscallResult;
 
 use super::display::DISPLAY_OWNER_PID;

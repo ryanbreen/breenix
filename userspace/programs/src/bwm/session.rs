@@ -86,11 +86,12 @@ pub enum Input {
     FocusGained,
     FocusLost,
     Close,
+    Overflow { lost: u32 },
     Resize { width: u32, height: u32 },
 }
 
 /// Write one event to window `id`, with the next input serial.
-pub fn send(id: u64, input: Input) -> Result<(), Error> {
+pub fn send(id: u64, input: Input) -> Result<usize, Error> {
     use abi::event_kind as kind;
     let mut event = abi::WindowEvent::ZERO;
     match input {
@@ -134,6 +135,7 @@ pub fn send(id: u64, input: Input) -> Result<(), Error> {
         Input::FocusGained => event.kind = kind::FOCUS_GAINED,
         Input::FocusLost => event.kind = kind::FOCUS_LOST,
         Input::Close => event.kind = kind::CLOSE_REQUESTED,
+        Input::Overflow { lost } => { event.kind = kind::OVERFLOW; event.lost = lost; }
         Input::Resize { width, height } => {
             event.kind = kind::RESIZE_REQUESTED;
             event.width = width;
@@ -142,7 +144,7 @@ pub fn send(id: u64, input: Input) -> Result<(), Error> {
     }
     event.serial = EVENT_SERIAL.fetch_add(1, Ordering::Relaxed) + 1;
     event.time_ns = libbreenix::time::now_monotonic().map_or(0, |t| t.as_nanos() as u64);
-    window::write_events(id, &[event]).map(|_| ())
+    window::write_events(id, &[event])
 }
 
 /// The Linux key code, whether Shift produced it, and the text of a key from bwm's stdin

@@ -1187,7 +1187,8 @@ fn flush_input() {
     use input_backlog::Delivery;
     INPUT_BACKLOG.lock().unwrap().flush(|id, event| {
         match session::send(id, *event) {
-            Ok(()) => Delivery::Accepted,
+            Ok(1) => Delivery::Accepted,
+            Ok(_) => Delivery::Full,
             Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EAGAIN)) => Delivery::Full,
             Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENOENT)) => Delivery::Gone,
             Err(error) => {
@@ -1195,7 +1196,7 @@ fn flush_input() {
                 Delivery::Failed
             }
         }
-    });
+    }, |lost| Input::Overflow { lost });
 }
 
 fn send_to(windows: &[Window], win_idx: usize, input: Input) {
@@ -1205,13 +1206,10 @@ fn send_to(windows: &[Window], win_idx: usize, input: Input) {
     let admission = backlog.push(id, input, |old, new| {
         matches!((old, new), (Input::Move { .. }, Input::Move { .. }))
     });
-    if admission != input_backlog::Admission::Queued && matches!(input, Input::Close) {
+    if admission == input_backlog::Admission::Disabled && matches!(input, Input::Close) {
         backlog.request_close(id, input);
     }
     drop(backlog);
-    if admission == input_backlog::Admission::Overflow {
-        let _ = writeln!(std::io::stderr(), "bwm: window {id} input disabled: backlog limit reached; close remains available");
-    }
     flush_input();
 }
 
