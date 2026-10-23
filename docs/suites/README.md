@@ -1385,8 +1385,8 @@ feeder CPU and wedge the root filesystem writer respectively. Neither fault
 calls a reset routine. The health-check wedge leaves scheduling running while
 blocking the feeder's ordinary filesystem check.
 
-A fault starts after 150 seconds of healthy operation. The observation requires
-six successful 20-second feed rounds, the 120-second hard-reset configuration,
+The independent fault thread waits 180 seconds from startup, even if watchdog
+initialization fails. The observation requires six successful 20-second feed rounds, the 120-second hard-reset configuration,
 the trigger, the manager selecting the same commit's current persistent slot,
 the system partition as root, the BMC's retained SMS/OS expiry flag, and an
 OpenSSH exec returning the new persistent boot ID with strict key checking within

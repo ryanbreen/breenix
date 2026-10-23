@@ -124,8 +124,6 @@ fn run(port: u32) -> Result<(), &'static str> {
         return Err("watchdog settings readback");
     }
     crate::serial_println!("[watchdog] armed seconds=120 action=hard-reset health=root-io,root-inode");
-    #[cfg(feature = "watchdog_fault_inject")]
-    fault::start()?;
     let mut rounds = 0u64;
     loop {
         wait(PERIOD_MS);
@@ -134,11 +132,17 @@ fn run(port: u32) -> Result<(), &'static str> {
         rounds += 1;
         // The fault cases require this receipt after six feed rounds.
         if rounds % 6 == 0 { crate::serial_println!("[watchdog] healthy feeds={}", rounds); }
-        #[cfg(feature = "watchdog_fault_inject")]
-        fault::feeder();
     }
 }
 pub fn start() {
+    #[cfg(feature = "watchdog_fault_inject")]
+    if crate::task::kthread::kthread_run_on_cpu(|| {
+        if let Err(reason) = fault::run() {
+            crate::serial_println!("[watchdog-fault] request failed: {}", reason);
+        }
+    }, "watchdog-fault", 0).is_err() {
+        crate::serial_println!("[watchdog-fault] thread could not start");
+    }
     let port = PORT.load(Ordering::Acquire);
     if port == 0 { return; }
     if crate::task::kthread::kthread_run_on_cpu(move || {
@@ -153,37 +157,31 @@ pub fn start() {
 
 #[cfg(feature = "watchdog_fault_inject")]
 mod fault {
-    use super::{now, wait};
-    use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
-    static MODE: AtomicU8 = AtomicU8::new(0);
-    static AT: AtomicU64 = AtomicU64::new(0);
-    pub fn start() -> Result<(), &'static str> {
-        let guard = crate::fs::ext2::root_fs_read()?;
-        let fs = guard.as_ref().ok_or("fault root absent")?;
-        let Ok(number) = fs.resolve_path("/etc/breenix/watchdog-fault") else { return Ok(()); };
-        let inode = fs.read_inode(number)?;
-        if inode.size() > 32 { return Err("fault intent too long"); }
-        let bytes = fs.read_file_content_coherent(number, &inode)?;
-        let mode = match bytes.as_slice() { b"feeder-hang\n" => 1, b"health-hang\n" => 2, b"" => return Ok(()), _ => return Err("fault intent invalid") };
-        MODE.store(mode, Ordering::Release);
-        AT.store(now() + 150_000, Ordering::Release);
+    use super::wait;
+    pub fn run() -> Result<(), &'static str> {
+        let mode = {
+            let guard = crate::fs::ext2::root_fs_read()?;
+            let fs = guard.as_ref().ok_or("fault root absent")?;
+            let number = fs.resolve_path("/etc/breenix/watchdog-fault")?;
+            let inode = fs.read_inode(number)?;
+            if inode.size() > 32 { return Err("fault intent too long"); }
+            let bytes = fs.read_file_content_coherent(number, &inode)?;
+            match bytes.as_slice() { b"feeder-hang\n" => 1, b"health-hang\n" => 2, b"" => return Ok(()), _ => return Err("fault intent invalid") }
+        };
+        // Run independently of KCS initialization: a missing watchdog must
+        // still face a real hang. Leave time for six ordinary feed rounds.
+        wait(180_000);
         if mode == 2 {
-            crate::task::kthread::kthread_run(|| {
-                wait(150_000);
-                // A real filesystem wedge: hold its writer forever. The feeder's
-                // next ordinary read health round blocks on this same lock.
-                let _guard = crate::fs::ext2::root_fs_write().expect("fault root lock");
-                crate::serial_println!("\n[watchdog-fault] trigger health-hang");
-                loop { crate::arch_halt_with_interrupts(); }
-            }, "watchdog-fault").map_err(|_| "fault thread could not start")?;
+            // A real filesystem wedge: hold its writer forever while timer
+            // interrupts and scheduling continue. The ordinary health read blocks.
+            let _guard = crate::fs::ext2::root_fs_write()?;
+            crate::serial_println!("\n[watchdog-fault] trigger health-hang");
+            loop { crate::arch_halt_with_interrupts(); }
         }
-        Ok(())
-    }
-    pub fn feeder() {
-        if MODE.load(Ordering::Acquire) == 1 && now() >= AT.load(Ordering::Acquire) {
-            crate::serial_println!("\n[watchdog-fault] trigger feeder-hang");
-            x86_64::instructions::interrupts::disable();
-            loop { x86_64::instructions::hlt(); }
-        }
+        // Both this injector and the feeder are pinned to CPU 0; halting
+        // this CPU prevents the feeder from running, independent of its state.
+        crate::serial_println!("\n[watchdog-fault] trigger feeder-hang");
+        x86_64::instructions::interrupts::disable();
+        loop { x86_64::instructions::hlt(); }
     }
 }
