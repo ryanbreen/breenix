@@ -1580,3 +1580,13 @@ host key from it, as the server suite does. Its cases:
 
 Its records are `users-operator.json`; the score also needs the bsshd host-key record and the challenge's lines in
 the capture.
+
+
+The console suite's host-run `input/long-line` case measures the live SOL
+receiver on a persistent boot with `server-suite --milestone console/input`.
+It submits 288- and 1024-byte commands to bsh, then a canonical reader checks
+SHA-256 of a 4095-byte payload. Overflow discards further ordinary input while
+retaining erase, kill-line and the newline; the case checks each recovery.
+The shared discipline is also measured by terminals `termios/canonical-limit`,
+and signals `waits/console-read-signals` observes blocked console and VT readers
+before sending TERM (default, ignored, caught and restarting) and KILL.

@@ -72,11 +72,15 @@ OPERATOR = (
                           'read back from the screen through sudo, and getty back after logout'),
 )
 
+CONSOLE_INPUT = (
+    ('long-line', 'SOL delivers long shell and canonical lines whole, and canonical overflow retains editing and the delimiter'),
+)
+
 # The populated categories in manifest order, the suite each belongs to, and the milestone each one measures.
-CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'operator': OPERATOR}
-SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'operator': 'users'}
+CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'operator': OPERATOR, 'input': CONSOLE_INPUT}
+SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'operator': 'users', 'input': 'console'}
 MILESTONES = {'server/ssh-keys': 'ssh-keys', 'server/services': 'services', 'server/logs': 'logs',
-              'users/operator-login': 'operator'}
+              'users/operator-login': 'operator', 'console/input': 'input'}
 # The console lines the operator's console challenge leaves in the capture (docs/metal/boot-path.json, console-login).
 OPERATOR_CONSOLE_LINES = ('Login incorrect', 'metal-login-ok 42', 'fbcon check: shadow and screen identical',
                           'fbcon row: metal-login-ok 42')
@@ -145,7 +149,7 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
     if not records.get('cleanup'):
         raise ValueError({'ssh-keys': 'temporary authorized key cleanup did not succeed',
                           'operator': 'the console sessions did not end'}.get(category, 'temporary services were not removed'))
-    if not re.search(r'^\[stdout\] bsshd: host key ED25519 SHA256:[A-Za-z0-9+/]+ \((?:loaded|generated)\)\r?$', serial, re.M):
+    if category != 'input' and not re.search(r'^\[stdout\] bsshd: host key ED25519 SHA256:[A-Za-z0-9+/]+ \((?:loaded|generated)\)\r?$', serial, re.M):
         raise ValueError('boot captured no protected host-key record')
     if category == 'ssh-keys' and "bsshd: refused method 'password'" not in serial:
         raise ValueError('boot captured no actual password request refusal')
@@ -643,6 +647,46 @@ class Console:
         self.type_line('exit')
         self.wait(offset, r'\[init\] console session ended', 'the console session ending')
         self.logged_in = False
+
+
+class ConsoleInput:
+    """The console suite's host-run input case, through the live SOL receiver."""
+    def __init__(self, console):
+        self.console = console
+
+    def run_case(self, name):
+        if name != 'long-line': raise ValueError('unknown console input case')
+        c = self.console
+        c.login()
+        # Exercise bsh's per-byte read/redraw path past the reported stall.
+        for length in (288, 1024):
+            payload = 'x' * (length - len('print("")'))
+            offset = c.size()
+            c.type_line('print("' + payload + '")', attempts=1)
+            text, done = c.wait(offset, r'(?m)^' + payload + r'\r?$', 'the complete shell result', timeout=90)
+            c.wait(offset + len(text[:done.end()].encode()), r'(?m)^' + c.PROMPT + r' ', 'the next shell prompt')
+        # A canonical reader exercises the documented 4095-byte payload bound
+        # without bsh's raw editor imposing its own buffering semantics.
+        trials = [('a' * 4095, 'a' * 4095),
+                  ('b' * 4095 + 'discarded', 'b' * 4095),
+                  ('c' * 4095 + 'discarded\x7fd', 'c' * 4094 + 'd'),
+                  ('e' * 4095 + 'discarded\x15recovered', 'recovered')]
+        for number, (typed, expected) in enumerate(trials):
+            tag = 'console-input-' + str(number)
+            script = ('printf "\\n' + tag + '-ready\\n"; IFS= read -r line; '
+                      'printf "%s" "$line" | sha256sum')
+            offset = c.size()
+            c.type_line('print("' + tag + '-status", run("/bin/sh", "-c", ' + json.dumps(script) + '))', attempts=1)
+            text, ready = c.wait(offset, r'(?m)^' + tag + r'-ready\r?$', 'the canonical reader')
+            offset += len(text[:ready.end()].encode())
+            c.send(typed)
+            digest = hashlib.sha256(expected.encode()).hexdigest()
+            c.wait(offset, r'(?m)^' + digest + r'  -\r?$', 'the hash of the complete canonical line', timeout=90)
+            text, done = c.wait(offset, r'(?m)^' + tag + r'-status 0\r?$', 'the reader exit status')
+            c.wait(offset + len(text[:done.end()].encode()), r'(?m)^' + c.PROMPT + r' ', 'the next shell prompt')
+
+    def cleanup(self):
+        self.console.logout()
 
 
 class Services:
@@ -1405,7 +1449,10 @@ def main():
                           site['CONSOLE_USER'], site['CONSOLE_PASSWORD'])
         cleanup.callback(cleanup_step, console.logout)
         cleanup.callback(cleanup_step, probe.cleanup)
-        serial = console.service_log('bsshd')
+        if category == 'input':
+            target = ConsoleInput(console)
+        else:
+            serial = console.service_log('bsshd')
         # Trust the fingerprint read over the leased console, never a key learned over SSH.
         if category in ('services', 'logs', 'operator'):
             probe.run_case('host-key', serial)

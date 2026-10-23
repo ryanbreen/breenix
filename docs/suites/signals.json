@@ -303,6 +303,10 @@
           "title": "A signal blocked by sigsuspend's mask does not end the wait and is delivered after it"
         },
         {
+          "id": "console-read-signals",
+          "title": "SIGKILL ends a blocked console read and SIGTERM follows its disposition"
+        },
+        {
           "id": "terminates",
           "title": "A default-action terminating signal ends a process in sigsuspend"
         },

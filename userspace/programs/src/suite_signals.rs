@@ -2779,6 +2779,52 @@ fn w_temp_mask() -> CaseResult {
     check(count(SIGUSR2) == 1, "SIGUSR2, held pending by the temporary mask, was not delivered once sigsuspend restored the old mask")
 }
 
+// Observe the read parked before signalling: a setup receipt alone cannot prove
+// that SIGKILL interrupted a terminal wait. Use the real console and a VT too.
+fn w_console_read_signals() -> CaseResult {
+    for path in ["/dev/console", "/dev/tty2"] {
+        for disposition in 0..4 {
+            let (ready_r, ready_w) = io::pipe()?;
+            let mut child = Child::start(|| {
+                let _ = io::close(ready_r);
+                let file = match std::fs::File::open(path) { Ok(f) => f, Err(_) => return 10 };
+                use std::os::fd::AsRawFd;
+                if setmask(0).is_err() { return 11; }
+                let setup = match disposition {
+                    0 => default(SIGTERM),
+                    1 => ignore(SIGTERM),
+                    2 => catch(SIGTERM),
+                    _ => catch_with(SIGTERM, on_sig as usize as u64, SA_RESTART, 0),
+                };
+                if setup.is_err() { return 12; }
+                if io::write(ready_w, b"r").is_err() { return 14; }
+                let _ = io::close(ready_w);
+                let mut byte = [0];
+                let result = read_raw(Fd::from_raw(file.as_raw_fd() as u64), &mut byte);
+                if disposition == 2 && result == -EINTR && count(SIGTERM) == 1 { 0 } else { 13 }
+            })?;
+            io::close(ready_w)?;
+            let ready = read_up_to(ready_r, 1, WAIT_MS)?;
+            io::close(ready_r)?;
+            check(ready == b"r", "the console reader did not finish setup")?;
+            check(parked(child.pid, WAIT_MS), "the console reader never blocked")?;
+            want_eq("kill(console reader, SIGTERM)", kill(child.pid, SIGTERM), 0)?;
+            match disposition {
+                0 => child.expect_death(SIGTERM, "the default TERM console reader")?,
+                2 => child.expect_exit(0, "the caught TERM console reader")?,
+                _ => {
+                    check(reports_within(child.pid, 0, QUIET_MS)?.is_none(),
+                          "ignored or restarting TERM ended the console reader")?;
+                    check(parked(child.pid, WAIT_MS), "the console reader did not remain blocked")?;
+                    want_eq("kill(console reader, SIGKILL)", kill(child.pid, SIGKILL), 0)?;
+                    child.expect_death(SIGKILL, "the blocked console reader")?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn w_terminates() -> CaseResult {
     let mut kid = Child::start(|| {
         if default(SIGTERM).is_err() { return 10; }
@@ -4099,6 +4145,7 @@ static SUITE: Suite = suite(
             case("sigsuspend", "sigsuspend returns EINTR after the handler and restores the mask", w_sigsuspend),
             case("sigsuspend-pending", "A signal already pending when sigsuspend unblocks it ends the wait at once with its handler run", w_sigsuspend_pending),
             case("temp-mask", "A signal blocked by sigsuspend's mask does not end the wait and is delivered after it", w_temp_mask),
+            case("console-read-signals", "SIGKILL ends a blocked console read and SIGTERM follows its disposition", w_console_read_signals),
             case("terminates", "A default-action terminating signal ends a process in sigsuspend", w_terminates),
             case("ignored", "An ignored signal does not end sigsuspend", w_ignored),
             case("pause", "pause returns EINTR after a handler runs", w_pause),

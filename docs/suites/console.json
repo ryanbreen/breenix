@@ -406,6 +406,17 @@
           "title": "A cursor report joins the partly typed canonical line, after its keys"
         }
       ]
+    },
+    {
+      "id": "input",
+      "title": "Console input",
+      "hostRunner": true,
+      "cases": [
+        {
+          "id": "long-line",
+          "title": "SOL delivers long shell and canonical lines whole, and canonical overflow retains editing and the delimiter"
+        }
+      ]
     }
   ]
 }

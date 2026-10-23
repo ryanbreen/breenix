@@ -1494,6 +1494,16 @@
               "keys"
             ]
           }
+        },
+        {
+          "id": "input",
+          "title": "Console input without stalls",
+          "measure": {
+            "suite": "console",
+            "categories": [
+              "input"
+            ]
+          }
         }
       ],
       "targets": [
