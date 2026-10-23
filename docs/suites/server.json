@@ -210,6 +210,16 @@
           "title": "Reclamation uses recovered on-disk slot userlands and preserves current, previous, in-flight and shared data across failures and rollback"
         }
       ]
+    },
+    {
+      "id": "console-input",
+      "title": "Console input",
+      "cases": [
+        {
+          "id": "long-line",
+          "title": "SOL delivers long shell and canonical lines whole, and canonical overflow retains editing and the delimiter"
+        }
+      ]
     }
   ],
   "timingSensitive": true,
