@@ -2631,6 +2631,13 @@ pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32>
     ready.map_err(|e| e as i32)
 }
 
+/// Retire an unused renderer when its window/display setup no longer has an owner.
+/// A context already handed to CONTEXT_CREATE is no longer in this cache.
+pub fn release_prepared_renderer(tgid: u64) {
+    let handle = with_core(|c| c.procs.get_mut(&tgid)?.prepared_context.take()).flatten();
+    if let Some(handle) = handle { destroy_context(tgid, handle); }
+}
+
 fn create_context_with_catalogue(tgid: u64, warm_catalogue: bool) -> Result<(u64, u32), i64> {
     let _creation = CreationGuard::acquire(tgid)?;
     sweep();

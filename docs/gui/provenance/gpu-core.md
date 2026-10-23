@@ -1577,3 +1577,31 @@ The HiDPI hash remains
 `3f2879422970f9f0ba7e673af4ae4df540701a457c9c124912488f32cad4cc20`.
 These category runs are focused evidence, not full-suite acceptance. No case,
 deadline, expected pixel or memory allowance changed.
+
+
+## B28: Retire unused preparation at its ownership boundary
+
+The full Parallels run at `12ba624f` passed GPU 170/170 and BreenGL 401/401,
+without skips. GPU memory reclaimed (9 pages, allowance 48), but BreenGL retirement
+correctly failed: its owner still held one context and one device context after
+its exposed renderers were destroyed. Vigil `20261023T204459Z-parallels-86515`
+retains the failure. Host GPU time attestation passed at 49 times the idle rate.
+
+The stage briefly claims the compositor to sample a judged window through the
+normal window API, then releases it. B27 prepared a spare for that claim, but the
+stage already had its renderer and never consumed the spare. Process-exit cleanup
+alone was too late for a process that releases all window/display ownership and
+continues running.
+
+An unused prepared context now retires when its owner has neither a window nor
+the compositor claim: final window destruction and compositor release check that
+boundary, outside the registry lock. Group exit/exec also retires unused
+preparation. The cache handle is taken under the GPU lock and passed to ordinary
+context destruction; an exposed context cannot be taken from this cache. Native
+unrefs and their memory release remain asynchronous and are judged by the existing
+retirement check. No context counter, retirement deadline or memory allowance
+changes.
+
+Source declaration: Breenix's window ownership, stage sampling and GPU context
+lifecycle, and the unchanged retirement oracle; no external implementation source
+was read or used.

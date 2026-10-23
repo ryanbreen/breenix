@@ -271,7 +271,18 @@ pub fn destroy(caller: &Caller, id: u64) -> Result<u64, i32> {
     unmap_all(&w.buffers, Some((&w.tree, w.tree_addr)));
     w.waits.acquire.wake_up();
     w.waits.events.wake_up();
+    release_renderer_if_idle(caller.tgid);
     Ok(0)
+}
+
+/// A preparation belongs to window or compositor setup, not to an idle process forever.
+fn release_renderer_if_idle(tgid: u64) {
+    let idle = {
+        let reg = REGISTRY.lock();
+        !reg.windows.values().any(|w| w.owner == tgid)
+            && !reg.claim.is_some_and(|c| c.holder == tgid)
+    };
+    if idle { crate::gpu::release_prepared_renderer(tgid); }
 }
 
 /// Copy a title in and check it: at most 64 bytes of UTF-8.
@@ -1271,6 +1282,7 @@ pub fn release(caller: &Caller) -> Result<u64, i32> {
     };
     super::scene::invalidate(caller.tgid);
     claim_ended(woken);
+    release_renderer_if_idle(caller.tgid);
     Ok(0)
 }
 
@@ -1414,6 +1426,7 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
         w.waits.events.wake_up();
     }
     claim_ended(readers);
+    crate::gpu::release_prepared_renderer(tgid);
     crate::gpu::window_targets::release_context(tgid);
     drop(gone);
     drop(freed);
