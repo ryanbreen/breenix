@@ -50,7 +50,7 @@ def watch(runner, install):
             seen.add(boot)
         if read(install, 'upgrade-result.json'):
             return 0
-        if read(install, 'ended'):
+        if read(install, 'ended') and not events:
             return 1
         if read(install, 'exit-status').strip() not in ('', '0'):
             return 1

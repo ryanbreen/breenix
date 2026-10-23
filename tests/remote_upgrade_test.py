@@ -27,6 +27,27 @@ class UpgradeSuiteStop(unittest.TestCase):
             suite.wait('own-boot', 'ended', allowed_status=('0', '143'))
 
 
+class UpgradeWorker(unittest.TestCase):
+    def test_install_ended_does_not_end_child_probe_and_worker_failure_retries(self):
+        import json
+        module = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/metal/upgrade_probe.py'))
+        calls = []
+        def remote(env, *cmd, **kw):
+            boot, name = Path(cmd[-1]).parts[-2:]
+            value = ''
+            if name == 'events.jsonl':
+                value = json.dumps(dict(event='persistent-verification-next', verification='child') if boot == 'install'
+                                   else dict(event='power-on', t=module['time'].time()))
+            elif name == 'ended' and boot == 'install': value = 'phase ended'
+            elif name in ('ssh-verification.json', 'upgrade-result.json') and len(calls) == 2: value = '{}'
+            return SimpleNamespace(returncode=0, stdout=value)
+        runner = dict(host_env=lambda: {}, in_metal=remote, STATE='/state')
+        def run(*args, **kwargs): calls.append(args); return SimpleNamespace(returncode=1 if len(calls)==1 else 0)
+        with patch.object(module['subprocess'], 'run', side_effect=run), patch.object(module['time'], 'sleep'):
+            self.assertEqual(module['watch'](runner, 'install'), 0)
+        self.assertEqual(len(calls), 2)
+
+
 class UpgradeAssertions(unittest.TestCase):
     def test_bootable_fault_requires_booted_console_and_actual_ssh_failure(self):
         cases = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/metal/upgrade_cases.py'))
