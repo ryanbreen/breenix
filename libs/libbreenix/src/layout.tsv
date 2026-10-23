@@ -46,6 +46,8 @@ bin login bin 0755 0
 bin su bin 4755 0
 bin passwd usr/bin 4755 0
 bin sudo usr/bin 4755 0
+bin reboot sbin 0755 0
+bin poweroff sbin 0755 0
 bin init sbin 0755 0
 bin persistent-install sbin 0755 0
 bin etc-reconcile sbin 0755 0

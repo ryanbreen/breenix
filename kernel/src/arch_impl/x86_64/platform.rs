@@ -9,6 +9,8 @@ use super::acpi::{self, GenericAddress};
 
 /// The PM timer's system I/O port, or 0 when the FADT names no timer in I/O
 /// space.
+static RESET: spin::Once<(GenericAddress, u8)> = spin::Once::new();
+
 static PM_TIMER_PORT: AtomicU32 = AtomicU32::new(0);
 static PM_TIMER_32BIT: AtomicBool = AtomicBool::new(false);
 /// Cleared when the FADT's IA-PC boot flags say MSI is not supported.
@@ -87,6 +89,17 @@ pub fn init(rsdp: Option<u64>, physical_memory_offset: u64) {
         log::info!("[acpi] fadt absent or invalid");
         return;
     };
+    if let Some((mut gas, value)) = fadt.reset.filter(|(g, _)| g.bit_width == 8 && g.bit_offset == 0 && g.access_size <= 1) {
+        let supported = match gas.space {
+            1 => gas.address <= 0xffff,
+            0 => match crate::memory::map_mmio(gas.address, 1) {
+                Ok(mapped) => { gas.address = mapped as u64; true }
+                Err(_) => false,
+            },
+            _ => false,
+        };
+        if supported { RESET.call_once(|| (gas, value)); }
+    }
     if fadt.msi_not_supported() {
         MSI_ALLOWED.store(false, Ordering::Release);
     }
@@ -126,4 +139,23 @@ pub fn pm_timer() -> Option<(u16, bool)> {
 /// Whether the FADT permits MSI (an absent FADT does not forbid it).
 pub fn msi_allowed() -> bool {
     MSI_ALLOWED.load(Ordering::Acquire)
+}
+
+/// Whether a validated FADT reset register was prepared during boot.
+pub fn reset_available() -> bool { RESET.get().is_some() }
+
+/// ACPI 6.5 section 4.8.3.6: an 8-bit access at the FADT's reset address.
+/// No locks or allocation: panic uses the same prepared register.
+pub fn reset() -> ! {
+    x86_64::instructions::interrupts::disable();
+    if let Some((gas, value)) = RESET.get() {
+        unsafe {
+            match gas.space {
+                1 => x86_64::instructions::port::Port::<u8>::new(gas.address as u16).write(*value),
+                0 => core::ptr::write_volatile(gas.address as *mut u8, *value),
+                _ => {}
+            }
+        }
+    }
+    loop { x86_64::instructions::hlt(); }
 }

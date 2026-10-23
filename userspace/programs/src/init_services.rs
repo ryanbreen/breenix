@@ -263,6 +263,7 @@ pub struct Supervisor {
     changed: bool,
     boot_id: String,
     notices: Notices,
+    shutdown: Option<(u64, u8, u64)>,
 }
 
 fn exit_text(status: i32) -> String {
@@ -299,6 +300,7 @@ impl Supervisor {
             changed: true,
             boot_id: String::new(),
             notices: Notices { console_owned: false, log: None },
+            shutdown: None,
         };
         if publish {
             supervisor.listener = match open_control() {
@@ -334,13 +336,81 @@ impl Supervisor {
         self.reap();
         self.serve();
         let now = now_ms();
-        self.conditions(now);
         self.enforce_stops(now);
-        self.start_due(now);
-        self.mark_stable(now);
+        if self.shutdown.is_some() {
+            self.shutdown_tick(now);
+        } else {
+            self.conditions(now);
+            self.start_due(now);
+            self.mark_stable(now);
+        }
         if self.changed {
             self.changed = false;
             self.write_state();
+        }
+    }
+
+    /// Stop leaves of the service dependency graph, one at a time. Keep the
+    /// kernel logger until the other services have ended; do not restart any.
+    fn shutdown_tick(&mut self, now: u64) {
+        let (command, phase, deadline) = self.shutdown.unwrap();
+        if phase == 0 {
+            if self.entries.iter().any(|e| e.state == State::Stopping) { return; }
+            let next = self.entries.iter().enumerate().rev().find(|(_, entry)| {
+                entry.state == State::Running
+                    && (entry.def.name != "blogd" || !self.entries.iter().any(|e| e.state == State::Running && e.def.name != "blogd"))
+                    && !self.entries.iter().any(|dependent| dependent.state == State::Running
+                        && dependent.def.needs.iter().any(|n| matches!(n, Need::Service(name) if name == &entry.def.name)))
+            }).map(|(index, _)| index);
+            if let Some(index) = next {
+                self.notices.alert(&format!("[shutdown] stopping {}", self.entries[index].def.name));
+                Self::stop(&mut self.entries[index], AfterStop::Stay, now);
+                self.changed = true;
+                return;
+            }
+            if self.entries.iter().any(|e| e.state == State::Running) {
+                self.notices.alert("[shutdown] dependency cycle prevents shutdown");
+                self.shutdown = Some((command, 255, 0));
+                return;
+            }
+            // SSH sessions and jobs can outlive their service's leader.
+            let _ = signal::kill(-1, signal::SIGTERM);
+            self.shutdown = Some((command, 1, now + 2_000));
+            return;
+        }
+        if phase == 1 && now >= deadline {
+            let _ = signal::kill(-1, signal::SIGKILL);
+            self.shutdown = Some((command, 2, now + 10_000));
+            return;
+        }
+        if phase == 2 {
+            let mut status = 0;
+            match process::waitpid(-1, &mut status, process::WNOHANG) {
+                Err(libbreenix::Error::Os(libbreenix::Errno::ECHILD)) => {}
+                _ if now < deadline => return,
+                _ => {
+                    self.notices.alert("[shutdown] processes did not exit; refusing reset");
+                    self.shutdown = Some((command, 255, 0));
+                    return;
+                }
+            }
+            self.drain_logs();
+            if self.entries.iter().any(|e| !e.outputs.is_empty()) {
+                if now < deadline { return; }
+                self.notices.alert("[shutdown] service output did not drain; refusing reset");
+                self.shutdown = Some((command, 255, 0));
+                return;
+            }
+            self.write_state();
+            self.notices.alert("[shutdown] services stopped and processes reaped");
+            use libbreenix::syscall::raw;
+            #[cfg(target_arch = "x86_64")]
+            let number = 169;
+            #[cfg(target_arch = "aarch64")]
+            let number = 142;
+            let result = unsafe { raw::syscall3(number, 0xfee1dead, 672274793, command) } as i64;
+            self.notices.alert(&format!("[shutdown] kernel refused transition: {}", result));
+            self.shutdown = Some((command, 255, 0));
         }
     }
 
@@ -675,6 +745,14 @@ impl Supervisor {
     fn request(&mut self, mut stream: UnixStream, uid: u32, line: &str, now: u64) {
         let words: Vec<&str> = line.split_whitespace().collect();
         let reply = match words.as_slice() {
+            ["shutdown", "reboot" | "poweroff"] if uid != 0 => Err("permission denied: shutdown needs root".to_string()),
+            _ if self.shutdown.is_some() => Err("shutdown is in progress".to_string()),
+            ["shutdown", action @ ("reboot" | "poweroff")] if self.scope == Scope::All && self.publish => {
+                let command = if *action == "reboot" { 0x01234567 } else { 0x4321fedc };
+                self.shutdown = Some((command, 0, now));
+                self.notices.alert(&format!("[init] shutdown requested: {}", action));
+                Ok(Some(format!("shutdown {} accepted", action)))
+            }
             ["reload"] if uid != 0 => Err("permission denied: reload needs root".to_string()),
             ["reload"] => Ok(Some(self.reload(now))),
             [verb @ ("start" | "stop" | "restart"), name] => self.control(&mut stream, uid, verb, name, now),

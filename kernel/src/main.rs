@@ -255,6 +255,9 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // calibration, and its boot flags say whether MSI may be used.
     kernel::arch_impl::x86_64::platform::init(rsdp_addr, physical_memory_offset.as_u64());
 
+    #[cfg(feature = "server_reboot_fault")]
+    trigger_reboot_panic();
+
     // Calibrate the TSC before device init: storage drivers measure their
     // command deadlines on it. time::init() keeps this calibration.
     time::tsc::calibrate();
@@ -2952,8 +2955,11 @@ use core::panic::PanicInfo;
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     // Try to output panic info if possible
-    serial_println!("KERNEL PANIC: {}", info);
-    log::error!("KERNEL PANIC: {}", info);
+    serial_println!("KERNEL PANIC: {}", info.message());
+    log::error!("KERNEL PANIC: {}", info.message());
+    if let Some(location) = info.location() {
+        serial_println!("panic location: {}", location);
+    }
     kernel::serial::flush_log();
 
     // Failure-capture PR-4: the bounded, lock-free BXCAP record.
@@ -2982,6 +2988,12 @@ fn panic(info: &PanicInfo) -> ! {
         kernel::exit_qemu(kernel::QemuExitCode::Failed);
     }
 
+    // A panic cannot safely flush filesystem state. Preserve the failure
+    // capture, then reset through the prepared FADT register without locks.
+    #[cfg(not(feature = "testing"))]
+    if kernel::arch_impl::x86_64::platform::reset_available() {
+        kernel::arch_impl::x86_64::platform::reset();
+    }
     // Disable interrupts and halt
     x86_64::instructions::interrupts::disable();
     loop {
@@ -3191,3 +3203,6 @@ fn test_threading() {
 // The lang items (panic_handler, global_allocator, alloc_error_handler) are
 // provided by kernel::memory::heap for the entire crate.
 // =============================================================================
+
+#[cfg(all(target_arch = "x86_64", feature = "server_reboot_fault"))]
+fn trigger_reboot_panic() { panic!("reboot fault test"); }

@@ -91,6 +91,8 @@ pub enum ProcEntryType {
     BreenixDir,
     /// /proc/breenix/testing - whether testing mode is active
     BreenixTesting,
+    /// Durable clean/dirty state of the mounted disk filesystems.
+    Filesystems,
     /// /proc/breenix/ext2 - mounted ext2 allocation counters
     Ext2,
     /// /proc/breenix/frames - allocated physical frames by allocation site
@@ -175,6 +177,7 @@ impl ProcEntryType {
             ProcEntryType::BreenixDir => "breenix",
             ProcEntryType::BreenixTesting => "testing",
             ProcEntryType::Ext2 => "ext2",
+            ProcEntryType::Filesystems => "filesystems",
             ProcEntryType::Frames => "frames",
             ProcEntryType::Pids => "pids",
             ProcEntryType::Kmsg => "kmsg",
@@ -229,6 +232,7 @@ impl ProcEntryType {
             ProcEntryType::BreenixDir => "/proc/breenix",
             ProcEntryType::BreenixTesting => "/proc/breenix/testing",
             ProcEntryType::Ext2 => "/proc/breenix/ext2",
+            ProcEntryType::Filesystems => "/proc/breenix/filesystems",
             ProcEntryType::Frames => "/proc/breenix/frames",
             ProcEntryType::Pids => "/proc/pids",
             ProcEntryType::Kmsg => "/proc/kmsg",
@@ -284,6 +288,7 @@ impl ProcEntryType {
             ProcEntryType::BreenixDir => 200,
             ProcEntryType::BreenixTesting => 201,
             ProcEntryType::Ext2 => 202,
+            ProcEntryType::Filesystems => 204,
             ProcEntryType::Frames => 203,
             ProcEntryType::Pids => 9,
             ProcEntryType::Kmsg => 10,
@@ -417,6 +422,7 @@ pub fn init() {
 
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Frames));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::Filesystems));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Pids));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Kmsg));
     procfs.entries.push(ProcEntry::new(ProcEntryType::KmsgSequence));
@@ -557,6 +563,7 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::TraceProviders
                     | ProcEntryType::TraceTeardownDir
                     | ProcEntryType::BreenixTesting
+                    | ProcEntryType::Filesystems
                     | ProcEntryType::Frames
                     | ProcEntryType::XhciTrace
                     | ProcEntryType::XhciCounters
@@ -781,6 +788,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         #[cfg(not(target_arch = "aarch64"))]
         ProcEntryType::XhciPointers => text(String::from("")),
         ProcEntryType::Ext2 => generate_ext2().map(String::into_bytes),
+        ProcEntryType::Filesystems => crate::fs::ext2::filesystem_states().map(String::into_bytes).map_err(|_| -5),
         ProcEntryType::Frames => generate_frames().map(String::into_bytes),
         ProcEntryType::NetDir => {
             let mut listing = Vec::new();
@@ -798,7 +806,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::FbconCheck => crate::console::proc_fbcon_check().map(String::into_bytes),
         ProcEntryType::BreenixDir => {
             // Directory listing
-            text(String::from("testing\next2\nframes\n"))
+            text(String::from("testing\next2\nframes\nfilesystems\n"))
         }
         ProcEntryType::BreenixTesting => {
             #[cfg(feature = "testing")]

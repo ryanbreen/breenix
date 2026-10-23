@@ -207,6 +207,18 @@ impl Ext2Fs {
         })
     }
 
+    /// s_state is durable before the mount is exposed to writers.
+    fn activate(&mut self, name: &str) -> Result<(), &'static str> {
+        let prior = if self.superblock.s_state == 1 { "clean" } else { "unclean" };
+        crate::serial_println!("[storage] {} prior state={}", name, prior);
+        if !self.is_read_only() {
+            self.superblock.s_state &= !1;
+            self.superblock.write_to(self.device.as_ref()).map_err(|_| "Failed to mark mount dirty")?;
+            self.sync()?;
+        }
+        Ok(())
+    }
+
     pub fn is_read_only(&self) -> bool { self.device.is_read_only() }
 
     pub fn ensure_writable(&self) -> Result<(), &'static str> {
@@ -2696,6 +2708,8 @@ pub fn init_root_fs() -> Result<(), &'static str> {
     {
         return Err("Root ext2 mount is pinned");
     }
+    let mut fs = fs;
+    fs.activate("root")?;
     ROOT_MOUNT_ID.store(fs.mount_id, Ordering::Release);
     *installed = Some(fs);
 
@@ -2919,6 +2933,8 @@ pub fn init_home_fs() -> Result<(), &'static str> {
     {
         return Err("Home ext2 mount is pinned");
     }
+    let mut fs = fs;
+    fs.activate("home")?;
     HOME_MOUNT_ID.store(fs.mount_id, Ordering::Release);
     *installed = Some(fs);
 
@@ -2998,4 +3014,61 @@ pub fn is_home_path(path: &str) -> bool {
 /// Safe from binding drops, which can run under the process manager.
 pub(crate) fn request_map_eviction() {
     writeback::request();
+}
+
+/// The mounted device's superblock, read past the write-through cache.
+pub fn filesystem_states() -> Result<alloc::string::String, &'static str> {
+    use core::fmt::Write;
+    let mut text = alloc::string::String::new();
+    for (home, name) in [(false, "root"), (true, "home")] {
+        let guard = if home { home_fs_read()? } else { root_fs_read()? };
+        if let Some(fs) = guard.as_ref() {
+            let sb = Ext2Superblock::read_from(fs.device.uncached()).map_err(|_| "Failed to read disk state")?;
+            let _ = writeln!(text, "{} mounted={}", name, if sb.s_state == 0 { "dirty" } else if sb.s_state == 1 { "clean" } else { "error" });
+        }
+    }
+    Ok(text)
+}
+
+/// PID 1 calls after reaping user processes: write back mappings, finish
+/// deferred inode work, flush, persist clean superblocks and fence new writes.
+/// The mount guard serializes the transition with the writeback kthread.
+pub fn shutdown_filesystems() -> Result<(), &'static str> {
+    let mut buffer = crate::memory::file_map::writeback_buffer()?;
+    for (home, name) in [(true, "home"), (false, "root")] {
+        let handles = {
+            let guard = if home { home_fs_read()? } else { root_fs_read()? };
+            match guard.as_ref() {
+                Some(fs) if !fs.is_read_only() => fs.dirty_handles()?,
+                _ => continue,
+            }
+        };
+        for handle in &handles {
+            crate::memory::file_map::sync_range_with_buffer(handle, 0, u64::MAX, &mut buffer)?;
+        }
+        loop {
+            let mut guard = fs_sync_guard(home)?;
+            let fs = guard.as_mut().ok_or("Filesystem disappeared during shutdown")?;
+            let progress = fs.finalize_writeback().merge(fs.finalize_pending_orphans());
+            match progress {
+                Finalize::Retry => return Err("Filesystem finalization failed"),
+                Finalize::More => { drop(guard); writeback::pause(1_000_000); continue; }
+                Finalize::Idle => {}
+            }
+            if fs.failed.load(Ordering::Acquire) || fs.superblock.s_state & EXT2_ERROR_FS != 0 {
+                return Err("Filesystem has errors; refusing clean shutdown");
+            }
+            fs.sync()?;
+            fs.superblock.s_state = 1;
+            fs.superblock.write_to(fs.device.as_ref()).map_err(|_| "Failed to mark filesystem clean")?;
+            fs.sync()?;
+            let sb = Ext2Superblock::read_from(fs.device.uncached()).map_err(|_| "Failed to read clean state")?;
+            if sb.s_state != 1 { return Err("Clean state did not reach disk"); }
+            fs.device.remount_read_only();
+            crate::fs::vfs::mount::remount_read_only(fs.mount_id)?;
+            crate::serial_println!("[shutdown] {} clean read-only", name);
+            break;
+        }
+    }
+    Ok(())
 }

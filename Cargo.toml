@@ -10,6 +10,7 @@ edition = "2021"
 opt-level = 3
 
 [features]
+server_reboot_fault = ["kernel/server_reboot_fault"]
 force_cpu_accounting_delay = ["kernel/force_cpu_accounting_delay"]
 testing = ["kernel/testing"]
 boot_tests = ["kernel/boot_tests"]  # Parallel boot test framework

@@ -1368,6 +1368,28 @@ authorized key with the same marker as its comment. It pins bssh's host key in a
 `/tmp` file of the run's own, whose entry carries the marker, and cleanup removes
 both.
 
+For `server/reboot`, install the pushed commit and start a persistent boot under
+that commit's deployed tools, then run:
+
+```sh
+server-suite --boot ID --sha SHA --branch BRANCH --milestone server/reboot
+```
+
+The runner owns the subsequent boots it starts through `metal-run`; keep the tools
+lock for this sequence. Its five automated cases check unprivileged reboot and
+power-off refusal (including the kernel's EPERM), then sudo reboot and sudo power-off
+using the site's operator password, then an autonomous reset in a panic fault kernel.
+The two orderly transitions start dependent fixture services, require dirty disk
+superblocks while mounted, and write nonce data on the root and home filesystems
+without calling sync. They require the dependent's exit record before its provider's,
+clean read-only shutdown receipts, an ordinary boot-loop exit, and clean superblocks
+and exact data on the following boot. The reboot case also requires a reset observation.
+The panic case uses `--inject panic-reboot`: the panic message and an observed reset
+must come from that fault boot; it remains fatal and supplies no ordinary boot verdict.
+The final persistent boot holds `server-reboot.json` with the transition captures and
+case results. The runner removes its nonce directories and service definitions; the
+caller stops its final boot through `metal-run` after the remaining categories.
+
 ## Developer SDK
 
 `sdk` measures the Developer SDK effort in `docs/efforts/path.json`: our own applications

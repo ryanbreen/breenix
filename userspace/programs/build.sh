@@ -458,6 +458,8 @@ STD_BINARIES=(
     "blogd"
     "ntp_client"
     "svc"
+    "reboot"
+    "poweroff"
 
     # Diagnostics
     "btrace"

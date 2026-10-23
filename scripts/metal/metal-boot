@@ -215,6 +215,8 @@ class Driver:
         self.post_code = None
         self.post_seen = False
         self.gap = False
+        self.shutdown_action = None
+        self.clean_mounts = set()
         self.fatal_at = None
         self.fatal_patterns = []
         self.final_marker = None
@@ -261,7 +263,7 @@ class Driver:
         target = {'main': {}}
         if self.args.target.startswith('branch:'):
             target = {'branch': {'name': self.args.target.split(':', 1)[1]}}
-        fault = xhci_fault(self.args) or self.args.inject == FENCE_FAULT
+        fault = xhci_fault(self.args) or self.args.inject in (FENCE_FAULT, 'panic-reboot')
         kind = ('fault-test' if fault else 'persistent' if persistent(self.args)
                 else 'console-session' if session(self.args)
                 else {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test'))
@@ -438,8 +440,8 @@ class Driver:
         build = m.read_json(inputs / 'build.json', {})
         # Only an xHCI fault boot takes a fault-test kernel and only a tests boot the testing kernel; neither takes another.
         features = (['xhci_fault_inject'] if xhci_fault(self.args) else ['block_fence_inject'] if self.args.inject == FENCE_FAULT
-                    else ['testing'] if self.args.mode == 'tests' else [])
-        profile = {'xhci_fault_inject': 'fault-test', 'block_fence_inject': 'fault-test',
+                    else ['server_reboot_fault'] if self.args.inject == 'panic-reboot' else ['testing'] if self.args.mode == 'tests' else [])
+        profile = {'xhci_fault_inject': 'fault-test', 'block_fence_inject': 'fault-test', 'server_reboot_fault': 'fault-test',
                    'testing': 'testing'}.get(''.join(features), 'production')
         if build.get('commit') != self.args.commit or build.get('profile') != profile or build.get('features') != features:
             raise Finish(m.EXIT_CANCELLED, f'build provenance differs from the requested {profile} commit')
@@ -1052,8 +1054,18 @@ class Driver:
                 if not upload.get('complete'):
                     raise Finish(m.EXIT_SHORT, 'the cold disk upload is missing')
                 raise Finish(m.EXIT_DONE, 'cold disk readback received')
+        if self.kernel_started and self.fatal_at is None:
+            clean = re.fullmatch(r'\[shutdown\] (home|root) clean read-only', line)
+            if clean: self.clean_mounts.add(clean[1])
+            request = re.fullmatch(r'\[shutdown\] requested (reboot|poweroff)', line)
+            if request and self.clean_mounts == {'home', 'root'}:
+                self.shutdown_action = request[1]
+                self.event('requested-shutdown', observed_at=observed_at, action=request[1])
+                if request[1] == 'poweroff':
+                    raise Finish(m.EXIT_DONE, 'the kernel requested power-off after clean shutdown')
         self.on_persist_line(line, observed_at)
         if BOOTLOADER_LINE in line and self.kernel_started is not None:
+            self.on_reset(observed_at)
             if session(self.args) and persistent(self.args):
                 # The operator restarted the persistent install; the session goes on with the new boot.
                 self.event('persistent-restart', observed_at=observed_at, seconds=seconds)
@@ -1403,6 +1415,7 @@ class Driver:
             elif self.complete_at is not None:
                 self.event('image-refused-again', observed_at=observed_at, seconds=elapsed)
                 if self.kernel_started is not None:
+                    self.on_reset(observed_at)
                     raise Finish(m.EXIT_SHORT, 'the machine reset after the kernel started')
             return
         if entry.get('id') != self.id:
@@ -1486,6 +1499,7 @@ class Driver:
                 # Once a boot option runs, the firmware reports OSBootStarted or OSRunning; any other state after
                 # that is POST again, so the machine reset.
                 if self.kernel_started is not None and key[0] not in RUNNING_STATES:
+                    self.on_reset(observed_at)
                     if session(self.args) and persistent(self.args):
                         self.event('persistent-restart', observed_at=observed_at, state=key[0])
                         self.kernel_started = None
@@ -1496,12 +1510,20 @@ class Driver:
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     # Deadlines.
+    def on_reset(self, observed_at):
+        if self.shutdown_action == 'reboot' and self.fatal_at is None:
+            self.event('requested-reset-observed', observed_at=observed_at)
+            raise Finish(m.EXIT_DONE, 'requested ACPI reset observed')
+        if self.args.inject == 'panic-reboot' and self.fatal_at is not None:
+            self.event('panic-reset-observed', observed_at=observed_at)
+            raise Finish(m.EXIT_SHORT, 'fault-test panic reset observed')
+
     def persistent_deadlines(self):
         """A persistent boot: POST until the manager starts, then silence bounds until the kernel; a session has no
         deadline after that, a check boot its mode deadline."""
         if self.lease_ceiling and m.now() >= self.lease_ceiling:
             raise Finish(m.EXIT_HUNG, 'the attempt ceiling passed', hung=True)
-        if self.fatal_at and m.now() - self.fatal_at >= FATAL_GRACE_SECONDS:
+        if self.fatal_at and m.now() - self.fatal_at >= (120 if self.args.inject == 'panic-reboot' else FATAL_GRACE_SECONDS):
             raise Finish(m.EXIT_SHORT, 'a fatal line')
         adopted = getattr(self.args, 'adopt', False)
         if self.manager_started is None and self.kernel_started is None and not adopted:
@@ -1524,7 +1546,7 @@ class Driver:
             raise Finish(m.EXIT_DONE if session(self.args) else m.EXIT_HUNG,
                          'console session ceiling passed' if session(self.args) else 'the attempt ceiling passed',
                          hung=not session(self.args))
-        if self.fatal_at and m.now() - self.fatal_at >= FATAL_GRACE_SECONDS:
+        if self.fatal_at and m.now() - self.fatal_at >= (120 if self.args.inject == 'panic-reboot' else FATAL_GRACE_SECONDS):
             raise Finish(m.EXIT_SHORT, 'a fatal line')
         if self.request_at is None:
             if elapsed > self.post_budget:
@@ -1949,7 +1971,7 @@ def main():
         p.add_argument('--task', default='')
         p.add_argument('--no-wait', action='store_true')
         p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount',
-                                            FENCE_FAULT))
+                                            FENCE_FAULT, 'panic-reboot'))
         p.add_argument('--entry', choices=('current', 'previous'), help='the kernel slot a persistent boot runs')
         p.add_argument('--slot-action', choices=('commit', 'rollback'), help='what the manager does to the slots first')
         p.add_argument('--run', action='append', help='a persistent boot logs in over SOL and runs this; repeatable')

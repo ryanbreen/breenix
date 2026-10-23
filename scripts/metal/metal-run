@@ -43,6 +43,7 @@ XHCI_FAULTS = ('xhci-reset-device', 'xhci-short-read')
 FAULT_FEATURE = 'xhci_fault_inject'
 # The write fence's fault-test feature (docs/metal/README.md, "The write fence").
 FENCE_FEATURE = 'block_fence_inject'
+PANIC_FEATURE = 'server_reboot_fault'
 FENCE_FAULT = 'fence-out-of-partition'
 # The testing kernel's feature, as run.sh --tests builds it.
 TESTING_FEATURE = 'testing'
@@ -288,6 +289,7 @@ def boot(args):
             # production one.
             features = (['--features', FAULT_FEATURE] if args.inject in XHCI_FAULTS else
                         ['--features', FENCE_FEATURE] if args.inject == FENCE_FAULT else
+                        ['--features', PANIC_FEATURE] if args.inject == 'panic-reboot' else
                         ['--features', TESTING_FEATURE] if args.mode == 'tests' else [])
             # A suite boot's build stages the suite's host-side fixtures (the SDK suite's results).
             suite = ['--suite', args.suite] if args.suite else []
@@ -407,7 +409,7 @@ def main():
     p.add_argument('--catchup', action='store_true', help='admit pushed effort history for landing')
     p.add_argument('--no-wait', action='store_true', help='return after launch; the detached driver still queues')
     p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount',
-                                        FENCE_FAULT))
+                                        FENCE_FAULT, 'panic-reboot'))
     p.add_argument('--nmi', action='store_true', help='NMI a started kernel before power-off even when it finished')
     p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'))
     p.add_argument('--content-type', choices=('application/octet-stream',))
@@ -422,7 +424,7 @@ def main():
     p = sub.add_parser('_build')
     p.add_argument('id')
     p.add_argument('sha')
-    p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, TESTING_FEATURE))
+    p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, PANIC_FEATURE, TESTING_FEATURE))
     p.add_argument('--suite')
     p.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager'))
     p.add_argument('--catchup', action='store_true')

@@ -1041,6 +1041,35 @@ blogd checkpoints its byte offset and partial line under `/run/breenix`, keyed b
 the boot ID, and finishes a batch before honouring SIGTERM so service restarts
 resume the same stream. The existing `/proc/kmsg` text interface is retained.
 
+### Orderly reboot and power-off
+
+`sudo /sbin/reboot` and `sudo /sbin/poweroff` ask init over its service control
+socket; SO_PEERCRED restricts shutdown requests to root. The operator uses the
+ordinary sudo password policy. New service starts and reloads are refused once
+shutdown starts. init stops dependents before providers, keeps blogd to the end,
+uses each service's TERM-to-KILL timeout, terminates remaining sessions and jobs,
+reaps them, and drains service output before entering the kernel's reboot call.
+A failed drain or filesystem barrier refuses the transition.
+
+The kernel writes back shared mappings and deferred inode work, flushes the home
+and root devices, persists and reads back their clean superblocks, then fences
+writes with a read-only remount. Writable mounts first persist a dirty superblock;
+`/proc/breenix/filesystems` reads that state directly from the devices. The next
+boot reports the state it read before marking each writable mount dirty again.
+
+The x86 reset uses the validated FADT RESET_REG and RESET_VALUE (ACPI 6.5 section
+4.8.3.6). Power-off follows the server plan: the halted kernel emits its clean
+shutdown receipt and the leased lab driver powers it off; ACPI S5 AML evaluation
+is not implemented. A requested reset ends its boot when the driver observes the
+reset; an unrequested reset remains a failure. The next case starts through the
+usual lease and power-on path. A panic keeps its failure capture and uses the
+prepared reset register without acquiring filesystem locks; it does not claim a
+clean shutdown. `--inject panic-reboot` builds the dedicated fault feature and
+records the panic and its autonomous reset, retaining a failed boot verdict.
+
+The host-driven [reboot category](../suites/README.md#server-host-driven-persistent-categories)
+checks both orderly transitions and the separate panic fault boot.
+
 ### Persistent sessions
 
 `metal-run boot --persistent` takes the lease (test boots queue behind it), powers the machine on without the

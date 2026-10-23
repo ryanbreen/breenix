@@ -1,5 +1,10 @@
 # Breenix OS Project Roadmap
 
+The server effort's clean reboot and power-off milestone is in progress on
+`metal-server/reboot` (PR #2321), following [the server plan](../metal/server-plan.md).
+Its automated host cases precede the shutdown implementation; hardware acceptance
+will be recorded in the PR.
+
 This is the master project roadmap for Breenix OS: current development status,
 completed phases, in-progress work, and planned work. Update after each PR
 merge and when starting new work.
