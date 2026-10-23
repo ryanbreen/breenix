@@ -120,6 +120,7 @@ xhci_fault_inject = []
 # boots only: `block::fence_fault` and its one call site are behind this feature, so a
 # production kernel has no code that writes outside its partitions on purpose.
 block_fence_inject = []
+watchdog_fault_inject = []
 # #728 gate-observable repro oracle for ext2 lock discipline. Test profile
 # only: the module and both of its call sites are behind this feature, and it
 # requires boot_tests for kthread_run_on_cpu_for_test's aarch64 CPU pinning.

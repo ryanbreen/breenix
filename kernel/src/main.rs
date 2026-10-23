@@ -168,6 +168,12 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         if mcfg.is_none() { log::info!("[acpi] MCFG absent or invalid"); }
     }
 
+    if !qemu {
+        if let Some(offset) = boot_info.physical_memory_offset.into_option() {
+            kernel::drivers::watchdog::discover(boot_info.rsdp_addr.into_option(), offset);
+        }
+    }
+
     // Get framebuffer and complete logger initialization
     log::info!("Setting up framebuffer...");
     let framebuffer = boot_info.framebuffer.as_mut().unwrap();
@@ -2775,6 +2781,7 @@ fn kernel_main_continue() -> ! {
         feature = "disable_x86_prod_init"
     )))]
     {
+        kernel::drivers::watchdog::start();
         if let Err(e) = task::kthread::kthread_run(
             || {
                 // #673 review, R3-B1: census the production bracket's

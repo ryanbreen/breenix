@@ -534,5 +534,46 @@ class HostServerScore(unittest.TestCase):
             host['score'](self.manifest, self.path, self.records, self.serial, self.boot, self.sha, ['KERNEL PANIC:'])
 
 
+class WatchdogRecovery(existing.StateTest):
+    def setUp(self):
+        super().setUp()
+        self.sha = 'a' * 40
+        args = SimpleNamespace(id='20261023T000000Z-metal', mode='default', payload='image',
+                               target='main', task='', commit=self.sha, inject='watchdog-feeder-hang', nmi=False)
+        with patch.object(existing.m, 'load_site', return_value={}):
+            self.driver = existing.boot.Driver(args)
+        d = self.driver
+        d.create_record()
+        d.watchdog_trigger = 100
+        existing.m.write_json(d.dir / 'run.json', dict(toolsCommit=self.sha, watchdogRecoveredCommit=self.sha))
+        existing.m.write_text(d.dir / 'events.jsonl', '')
+        self.serial = ('[watchdog] armed seconds=120 action=hard-reset\n[watchdog] healthy feeds=6\n'
+                       '[init] log boot-id=1-2-3\n[watchdog-fault] trigger feeder-hang\n'
+                       '[storage] root partition: system synthetic\n[watchdog] previous-expired=1\n'
+                       '[init] log boot-id=4-5-6\n')
+        existing.m.write_text(d.dir / 'serial.txt', self.serial)
+        self.receipt = dict(boot=d.id, commit=self.sha, case='feeder-hang', sshAt=450, bootId='4-5-6')
+
+    def test_expiry_and_fresh_persistent_ssh_are_required(self):
+        d = self.driver
+        self.assertTrue(d.watchdog_verdict(self.receipt))
+        for missing in ('[watchdog] previous-expired=1', '[watchdog] healthy feeds=6',
+                        '[storage] root partition: system ', '[init] log boot-id=4-5-6'):
+            existing.m.write_text(d.dir / 'serial.txt', self.serial.replace(missing, 'missing'))
+            self.assertFalse(d.watchdog_verdict(self.receipt))
+        existing.m.write_text(d.dir / 'serial.txt', self.serial)
+        self.assertFalse(d.watchdog_verdict(dict(self.receipt, sshAt=701)))
+        self.assertFalse(d.watchdog_verdict(dict(self.receipt, bootId='1-2-3')))
+
+    def test_lab_intervention_cannot_pass_and_observation_sends_no_power(self):
+        d = self.driver
+        for event in ('power-on', 'power-off', 'nmi', 'console-gap'):
+            existing.m.write_text(d.dir / 'events.jsonl', json.dumps(dict(event=event, t=200)) + '\n')
+            self.assertFalse(d.watchdog_verdict(self.receipt))
+        with patch.object(existing.m, 'rf') as power, patch.object(existing.m, 'now', return_value=300):
+            d.check_deadlines()
+            power.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

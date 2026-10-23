@@ -1295,6 +1295,27 @@ The **host file** (on the boot host): `METAL_INSTANCE`, `METAL_IMAGE`, `METAL_CP
 (the published address and port), and the build container's `BUILD_INSTANCE`, `BUILD_REPO`, `BUILD_RUST_FORK`,
 `BUILD_CACHE`, `BUILD_ROOT`.
 
+## In-band hardware watchdog
+
+On x86 metal, a checksum-validated ACPI SPMI table supplies a fixed KCS interface
+in system I/O. A CPU-pinned kthread is its sole owner. The transport sends Get
+Device ID, Get Watchdog Timer, Set Watchdog Timer and Reset Watchdog Timer only
+([IPMI 2.0](https://www.intel.com/content/dam/www/public/us/en/documents/product-specifications/ipmi-v2-rev1-1-spec-errata-6-markup.pdf),
+sections 9 and 27, Appendix C3). The SMS/OS timer is 120 seconds, action hard
+reset, no pretimeout. Configuration and running state are read back. Each
+20-second round must complete uncached root superblock/group reads and root
+inode validation before feeding; a failed or blocked round stops feeds. The
+BMC's expiry flag is reported before configuration clears it. No interrupt or
+syscall path feeds the timer.
+
+`boot --inject watchdog-feeder-hang|watchdog-health-hang` builds a watchdog
+fault-test kernel and stages its intent on a disposable RAM root. The production
+kernel has no fault-intent reader. After its trigger the driver keeps capturing
+for the 600-second SSH deadline, keeps the lease alive, and tells the manager to
+choose current persistent on the next boot. It sends no recovery power command
+or NMI during that observation. The server suite owns these boots and supplies
+the authenticated SSH receipt; see [watchdog cases](../suites/README.md#watchdog-recovery).
+
 ## Deploying and running
 
 ```

@@ -204,8 +204,10 @@ def console_shadow(site, hasher, image_shadow='', account='root'):
 
 
 def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None, idle_minutes=None, replug=False, xhci_fault=None,
-               install_partition=None, operator=None):
+               install_partition=None, operator=None, watchdog_fault=None):
     """`operator`, the operator file (operator_account), is written for install-persistent's userland only."""
+    if watchdog_fault not in (None, 'feeder-hang', 'health-hang') or (watchdog_fault and mode != 'default'):
+        raise ValueError('invalid watchdog fault-test target')
     if xhci_fault is not None and (xhci_fault not in ('reset-device', 'short-read')
                                    or mode != 'console' or install or idle_minutes is not None or replug):
         raise ValueError('invalid xHCI fault-test target')
@@ -265,6 +267,7 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         scratch = Path(scratch)
         files = {'site.env': ''.join(lines)}
         # Replace this file so ordinary staging disarms a prior fault.
+        files['watchdog-fault'] = '' if watchdog_fault is None else watchdog_fault + '\n'
         files['xhci-fault'] = '' if xhci_fault is None else xhci_fault + '\n'
         # Several suites: the list beside the boot target (the writer removed any earlier one). Written here, by the
         # driver's own staging code, so tools deployed while a boot builds cannot change how it is staged.

@@ -61,6 +61,7 @@ PERSIST_DONE = 'metal-stub: persistent install request complete'
 INSTALL_DONE = '[persistent] install complete: '
 INSTALL_FAILED = '[persistent] install failed: '
 FENCE_FAULT = 'fence-out-of-partition'
+WATCHDOG_FAULTS = ('watchdog-feeder-hang', 'watchdog-health-hang')
 SESSION_CEILING_SECONDS = 4 * 3600
 
 
@@ -176,6 +177,7 @@ class Driver:
         self.redact = m.Redactor(self.site)
         self.unit = unit_name(self.id)
         self.tmux = ['tmux', '-L', 'metal-' + self.id]
+        self.watchdog_trigger = None
         self.t0 = None
         self.claimed = False
         self.lost = False
@@ -261,7 +263,7 @@ class Driver:
         target = {'main': {}}
         if self.args.target.startswith('branch:'):
             target = {'branch': {'name': self.args.target.split(':', 1)[1]}}
-        fault = xhci_fault(self.args) or self.args.inject == FENCE_FAULT
+        fault = xhci_fault(self.args) or self.args.inject == FENCE_FAULT or self.args.inject in WATCHDOG_FAULTS
         kind = ('fault-test' if fault else 'persistent' if persistent(self.args)
                 else 'console-session' if session(self.args)
                 else {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test'))
@@ -437,9 +439,10 @@ class Driver:
             return
         build = m.read_json(inputs / 'build.json', {})
         # Only an xHCI fault boot takes a fault-test kernel and only a tests boot the testing kernel; neither takes another.
-        features = (['xhci_fault_inject'] if xhci_fault(self.args) else ['block_fence_inject'] if self.args.inject == FENCE_FAULT
+        features = (['watchdog_fault_inject'] if self.args.inject in WATCHDOG_FAULTS else
+                    ['xhci_fault_inject'] if xhci_fault(self.args) else ['block_fence_inject'] if self.args.inject == FENCE_FAULT
                     else ['testing'] if self.args.mode == 'tests' else [])
-        profile = {'xhci_fault_inject': 'fault-test', 'block_fence_inject': 'fault-test',
+        profile = {'watchdog_fault_inject': 'fault-test', 'xhci_fault_inject': 'fault-test', 'block_fence_inject': 'fault-test',
                    'testing': 'testing'}.get(''.join(features), 'production')
         if build.get('commit') != self.args.commit or build.get('profile') != profile or build.get('features') != features:
             raise Finish(m.EXIT_CANCELLED, f'build provenance differs from the requested {profile} commit')
@@ -471,7 +474,8 @@ class Driver:
                 install_partition=the_layout['partitions']['test']['guid'] if the_layout and disk == 'install' else None,
                 idle_minutes=getattr(self.args, 'idle_minutes', 30) if session(self.args) else None,
                 replug=self.args.mode == 'console' and not session(self.args) and not xhci_fault(self.args),
-                xhci_fault=xhci_fault(self.args))
+                xhci_fault=xhci_fault(self.args),
+                watchdog_fault=self.args.inject.removeprefix('watchdog-') if self.args.inject in WATCHDOG_FAULTS else None)
             if disk == 'install':
                 write = self.delivery['root']['diskWrite']
                 m.write_json(self.dir / 'disk-write.json', write)
@@ -1052,9 +1056,10 @@ class Driver:
                 if not upload.get('complete'):
                     raise Finish(m.EXIT_SHORT, 'the cold disk upload is missing')
                 raise Finish(m.EXIT_DONE, 'cold disk readback received')
+        self.on_watchdog_line(line, observed_at)
         self.on_persist_line(line, observed_at)
         if BOOTLOADER_LINE in line and self.kernel_started is not None:
-            if session(self.args) and persistent(self.args):
+            if self.watchdog_trigger is not None or (session(self.args) and persistent(self.args)):
                 # The operator restarted the persistent install; the session goes on with the new boot.
                 self.event('persistent-restart', observed_at=observed_at, seconds=seconds)
                 self.kernel_started = None
@@ -1116,6 +1121,7 @@ class Driver:
 
     def maybe_complete(self, observed_at, seconds):
         """Ends the boot once its final marker, its measured stages and its disk evidence have arrived."""
+        if self.args.inject in WATCHDOG_FAULTS: return
         if (self.final_marker and self.final_seen and not any(self.required_stages)
                 and self.disk_evidence_seen()
                 and not session(self.args)
@@ -1182,6 +1188,15 @@ class Driver:
 
     def on_slot_boot(self, line, observed_at):
         found = re.fullmatch(r'breenix-manager: booting (current|previous) ([0-9a-f]{40})', line)
+        if self.watchdog_trigger is not None and found:
+            entry, commit = found.groups()
+            if entry != 'current' or commit != self.args.commit:
+                raise Finish(m.EXIT_SHORT, 'watchdog returned to another persistent slot')
+            run = m.read_json(self.dir / 'run.json', {})
+            run['watchdogRecoveredCommit'] = commit
+            m.write_json(self.dir / 'run.json', run)
+            self.event('watchdog-persistent', observed_at=observed_at, commit=commit)
+            return
         if not persistent(self.args) or not found:
             return
         entry, commit = found.groups()
@@ -1402,7 +1417,7 @@ class Driver:
                 self.phase('No image staged: the request was refused')
             elif self.complete_at is not None:
                 self.event('image-refused-again', observed_at=observed_at, seconds=elapsed)
-                if self.kernel_started is not None:
+                if self.kernel_started is not None and self.watchdog_trigger is None:
                     raise Finish(m.EXIT_SHORT, 'the machine reset after the kernel started')
             return
         if entry.get('id') != self.id:
@@ -1486,7 +1501,7 @@ class Driver:
                 # Once a boot option runs, the firmware reports OSBootStarted or OSRunning; any other state after
                 # that is POST again, so the machine reset.
                 if self.kernel_started is not None and key[0] not in RUNNING_STATES:
-                    if session(self.args) and persistent(self.args):
+                    if self.watchdog_trigger is not None or (session(self.args) and persistent(self.args)):
                         self.event('persistent-restart', observed_at=observed_at, state=key[0])
                         self.kernel_started = None
                     else:
@@ -1516,7 +1531,56 @@ class Driver:
         if self.kernel_started and m.now() - self.kernel_started > MODE_DEADLINE_SECONDS['persistent']:
             raise Finish(m.EXIT_SHORT, 'the mode deadline passed: ' + self.persistent_missing())
 
+    def on_watchdog_line(self, line, observed_at):
+        if self.args.inject not in WATCHDOG_FAULTS: return
+        expected = '[watchdog-fault] trigger ' + self.args.inject.removeprefix('watchdog-')
+        if line != expected: return
+        if self.watchdog_trigger is not None:
+            raise Finish(m.EXIT_SHORT, 'duplicate watchdog fault')
+        self.watchdog_trigger = observed_at
+        # This only changes the manager's one-shot answer. No power operation is
+        # sent: the armed BMC must perform the reset itself.
+        m.update_lease(self.id, watchdogRecovery=True, ceilingAt=observed_at + 660)
+        self.event('watchdog-trigger', observed_at=observed_at, fault=self.args.inject)
+
+    def watchdog_verdict(self, receipt):
+        serial = (self.dir / 'serial.txt').read_text()
+        events = [json.loads(row) for row in (self.dir / 'events.jsonl').read_text().splitlines()]
+        run = m.read_json(self.dir / 'run.json', {})
+        trigger = self.watchdog_trigger
+        at = receipt.get('sshAt', 0)
+        after = serial.split('[watchdog-fault] trigger ', 1)[-1]
+        before = serial.split('[watchdog-fault] trigger ', 1)[0]
+        forbidden = {'power-on', 'power-off', 'power-off-observed', 'nmi', 'nmi-capture',
+                     'console-gap', 'driver-error', 'persistent-verification-error'}
+        assisted = any(e.get('event') in forbidden and trigger <= e['t'] <= at for e in events)
+        ids = re.findall(r'\[init\] log boot-id=([a-f0-9-]+)', serial)
+        return (receipt.get('boot') == self.id and receipt.get('commit') == self.args.commit
+                and receipt.get('case') == self.args.inject.removeprefix('watchdog-')
+                and 0 < at - trigger <= 600 and at <= m.now() + 1
+                and run.get('toolsCommit') == self.args.commit
+                and run.get('watchdogRecoveredCommit') == self.args.commit
+                and '[watchdog] armed seconds=120 action=hard-reset' in before
+                and '[watchdog] healthy feeds=6' in before
+                and '[watchdog] previous-expired=1' in after
+                and '[storage] root partition: system ' in after
+                and len(ids) >= 2 and ids[0] != ids[-1] and receipt.get('bootId') == ids[-1]
+                and not assisted and not self.gap and self.fatal_at is None)
+
     def check_deadlines(self):
+        if self.watchdog_trigger is not None:
+            receipt = m.read_json(self.dir / 'watchdog-ssh.json', {})
+            if receipt:
+                passed = self.watchdog_verdict(receipt)
+                m.write_json(self.dir / 'watchdog-verdict.json', dict(
+                    passed=passed, commit=self.args.commit, boot=self.id, receipt=receipt))
+                self.event('watchdog-verdict', passed=passed)
+                raise Finish(m.EXIT_DONE if passed else m.EXIT_SHORT, 'watchdog recovery observation complete')
+            if m.now() - self.watchdog_trigger > 600:
+                m.write_json(self.dir / 'watchdog-verdict.json', dict(passed=False, commit=self.args.commit,
+                    boot=self.id, reason='no unaided SSH within 600 seconds'))
+                raise Finish(m.EXIT_SHORT, 'watchdog recovery deadline passed')
+            return
         if persistent(self.args):
             return self.persistent_deadlines()
         elapsed = self.since_power()
@@ -1764,7 +1828,7 @@ class Driver:
                 self.power_off(False)
             status = m.EXIT_INCOMPLETE if self.t0 is not None else m.EXIT_CANCELLED
         # Persistent sessions are scored like default boots; console sessions and fault tests never are.
-        scored = (not session(self.args) or persistent(self.args)) and not xhci_fault(self.args) and self.args.inject != FENCE_FAULT
+        scored = (not session(self.args) or persistent(self.args)) and not xhci_fault(self.args) and self.args.inject != FENCE_FAULT and self.args.inject not in WATCHDOG_FAULTS
         if scored and (self.dir / 'definition/docs/metal/boot-path.json').is_file():
             try:
                 verdict = metal_score.score(self.dir)
@@ -1949,7 +2013,7 @@ def main():
         p.add_argument('--task', default='')
         p.add_argument('--no-wait', action='store_true')
         p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount',
-                                            FENCE_FAULT))
+                                            FENCE_FAULT, *WATCHDOG_FAULTS))
         p.add_argument('--entry', choices=('current', 'previous'), help='the kernel slot a persistent boot runs')
         p.add_argument('--slot-action', choices=('commit', 'rollback'), help='what the manager does to the slots first')
         p.add_argument('--run', action='append', help='a persistent boot logs in over SOL and runs this; repeatable')
@@ -1993,6 +2057,8 @@ def main():
             parser.error('boot modes need an image payload')
         if (args.entry or args.slot_action or args.run or args.verify or args.adopt) and args.payload != 'persistent':
             parser.error('--entry, --slot-action, --run, --verify and --adopt need a persistent boot')
+        if args.inject in WATCHDOG_FAULTS and (args.payload != 'image' or args.mode != 'default' or args.disk or args.nmi):
+            parser.error('watchdog fault needs a default RAM-disk image boot without --nmi')
         if args.inject == FENCE_FAULT and (args.payload != 'image' or args.mode != 'default' or args.disk not in (None, 'root')):
             parser.error('the fence fault needs a default disk-root image boot')
         if args.disk == 'install' and args.mode not in ('probe', 'console'):

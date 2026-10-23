@@ -1375,6 +1375,32 @@ authorized key with the same marker as its comment. It pins bssh's host key in a
 `/tmp` file of the run's own, whose entry carries the marker, and cleanup removes
 both.
 
+### Watchdog recovery
+
+`server/watchdog` runs from the boot host after `install-persistent` at the same
+commit and a leased persistent boot, using the command above with
+`--milestone server/watchdog`. It pins that install's SSH key from SOL, ends that
+baseline boot, and owns two sequential watchdog fault boots. The cases halt the
+feeder CPU and wedge the root filesystem writer respectively. Neither fault
+calls a reset routine. The health-check wedge leaves scheduling running while
+blocking the feeder's ordinary filesystem check.
+
+A fault starts after 150 seconds of healthy operation. The observation requires
+six successful 20-second feed rounds, the 120-second hard-reset configuration,
+the trigger, the manager selecting the same commit's current persistent slot,
+the system partition as root, the BMC's retained SMS/OS expiry flag, and an
+OpenSSH exec returning the new persistent boot ID with strict key checking within
+600 seconds of the trigger. No operator step contributes a result. A missing
+trigger, expiry, fresh identity or deadline fails. Power operations, NMI or a
+console gap before the SSH receipt fail; cleanup powers off only after the
+observation ends. A failing case still retains its private capture.
+
+The fault runs are `kind: fault-test`, built with only `watchdog_fault_inject`;
+ordinary boot-path scoring cannot accept them. Their `watchdog-verdict.json`
+records feed the baseline boot's `server-watchdog.json` category record. The
+host runner reports that populated category's milestone verdict, without claiming
+full-suite acceptance for the server's planned categories.
+
 ## Developer SDK
 
 `sdk` measures the Developer SDK effort in `docs/efforts/path.json`: our own applications

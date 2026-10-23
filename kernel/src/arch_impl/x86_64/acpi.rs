@@ -698,6 +698,22 @@ pub fn read_mcfg(
     Some(count as usize)
 }
 
+/// IPMI 2.0 Appendix C3: a fixed, byte-access KCS interface in system I/O.
+pub fn read_kcs_port(rsdp: Option<u64>, offset: u64) -> Option<u16> {
+    let reader = PhysReader::new(offset);
+    let (table, length) = find_table(&reader, rsdp?, b"SPMI")?;
+    if length < 64 || reader.u8_at(table + 36)? != 1 || reader.u8_at(table + 43)? & 1 != 0 {
+        return None;
+    }
+    let gas = generic_address(&reader, table + 48)?;
+    if gas.space != 1 || gas.bit_offset != 0 || !matches!(gas.bit_width, 8 | 16) || gas.access_size > 1 {
+        return None;
+    }
+    let port = u16::try_from(gas.address).ok()?;
+    if port == 0 || port == u16::MAX { return None; }
+    Some(port)
+}
+
 /// The first root-table entry carrying `signature` whose header and checksum
 /// are sound, with its declared length. The walk is capped by
 /// `MAX_ROOT_ENTRIES`, as `read_madt`'s is.

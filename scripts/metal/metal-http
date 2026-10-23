@@ -80,7 +80,7 @@ def manager_answer():
     holder = lease.get('id', 'unknown')
     if lease.get('state') != 'powered':
         return f'busy {holder}'
-    if lease.get('kind') == 'persistent':
+    if lease.get('kind') == 'persistent' or lease.get('watchdogRecovery'):
         action = lease.get('slotAction')
         return f"persistent {holder} {lease.get('entry', 'current')}" + (f' {action}' if action else '')
     return f'test {holder}'
