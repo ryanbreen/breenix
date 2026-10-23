@@ -1002,7 +1002,7 @@ impl TtyDevice {
     #[allow(dead_code)] // Used by input_char (conditionally compiled) and tests
     pub fn send_signal_to_foreground(&self, sig: u32) {
         note_foreground_pgrp_acquisition(true);
-        let pgrp = match *self.foreground_pgrp.lock() {
+        let pgrp = match crate::arch_without_interrupts(|| *self.foreground_pgrp.lock()) {
             Some(pgrp) => pgrp,
             None => {
                 log::debug!("TTY{}: Signal {} but no foreground pgrp", self.num, sig);
