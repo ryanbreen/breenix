@@ -168,6 +168,12 @@ for source in "$PROJECT_ROOT/userspace/utilities"/*.c; do
     UTILITY_NAMES+="$name "
 done
 
+# B42 keeps the v1 stress subject only on x86-64.
+LEGACY_GRAPHICS_FEATURES=()
+if [[ "$ARCH" == "x86_64" ]]; then
+    LEGACY_GRAPHICS_FEATURES=(--features framebuffer-v1)
+fi
+
 # Step 2: Build all userspace binaries
 echo "[2/3] Building userspace ($ARCH)..."
 
@@ -194,7 +200,7 @@ if ! (
     unset CARGO_ENCODED_RUSTFLAGS && \
     __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_FORK_LIBRARY" \
     RUSTFLAGS="$STD_RUSTFLAGS" \
-    cargo build --release --target "$TARGET_JSON" 2>&1 | while read line; do
+    cargo build --release --target "$TARGET_JSON" ${LEGACY_GRAPHICS_FEATURES[@]+"${LEGACY_GRAPHICS_FEATURES[@]}"} 2>&1 | while read line; do
         echo "  $line"
     done
 ); then

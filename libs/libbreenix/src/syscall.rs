@@ -361,9 +361,7 @@ pub mod nr {
     pub const UNLOCKPT: u64 = 402;
     pub const PTSNAME: u64 = 403;
     // Graphics syscalls (Breenix-specific)
-    pub const FBINFO: u64 = 410;
-    pub const FBDRAW: u64 = 411;
-    pub const FBMMAP: u64 = 412;
+    // 410–412 are retired on ARM64 under B42.
     pub const GET_MOUSE_POS: u64 = 413;
     // Audio syscalls (Breenix-specific)
     pub const AUDIO_INIT: u64 = 420;
