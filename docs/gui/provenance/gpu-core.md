@@ -1593,15 +1593,44 @@ stage already had its renderer and never consumed the spare. Process-exit cleanu
 alone was too late for a process that releases all window/display ownership and
 continues running.
 
-An unused prepared context now retires when its owner has neither a window nor
-the compositor claim: final window destruction and compositor release check that
-boundary, outside the registry lock. Group exit/exec also retires unused
-preparation. The cache handle is taken under the GPU lock and passed to ordinary
-context destruction; an exposed context cannot be taken from this cache. Native
-unrefs and their memory release remain asynchronous and are judged by the existing
-retirement check. No context counter, retirement deadline or memory allowance
-changes.
+The intermediate implementation at `ef35c7e6` retired unused preparation when
+its owner had neither a window nor the compositor claim: final window destruction
+and compositor release checked that boundary outside the registry lock. Group
+exit/exec also retired unused preparation. The cache handle was taken under the
+GPU lock and passed to ordinary context destruction; an exposed context could not
+be taken from this cache. Native unrefs and memory release stayed asynchronous
+and were judged by the existing retirement check. No context counter, retirement
+deadline or memory allowance changed. B29 replaces this window-lifetime boundary
+after the full run exposed repeated initialization during churn.
 
 Source declaration: Breenix's window ownership, stage sampling and GPU context
 lifecycle, and the unchanged retirement oracle; no external implementation source
 was read or used.
+
+
+## B29: Keep preparation through window churn and retire it with renderers
+
+Vigil `20261023T210222Z-parallels-29101` at `ef35c7e6` passed GPU 170/170 and
+BreenGL 399/401. Retirement reached zero contexts, zero device contexts, zero
+resources and zero copy bytes; memory reclaimed within 40 pages (allowance 48).
+But `windows/churn` exceeded 20 seconds and `isolation/destroy-during-commit`
+exceeded its eight-second child deadline. Dropping preparation after every final
+window destruction made their next CREATE compile the whole catalogue again.
+The churn case makes 110 windows without ever creating a renderer, and the race
+case repeats 20 creates/destroys in one process.
+
+Window disappearance is therefore not a renderer-lifetime boundary. Preparation
+again survives window/compositor release and retires normally at process exit.
+An explicit GPU CONTEXT_DESTROY that leaves only the unused prepared context now
+retires that spare as well, through ordinary context destruction. A stage that
+already has renderers can release its temporary compositor claim without leaving
+preparation behind after it explicitly tears those renderers down. A process
+that has not started rendering reuses its single counted preparation across
+window churn. No exposed context is removed by this cleanup, and native unrefs
+still have to complete before counters and memory return.
+
+The window-release cleanup from B28 is removed. All case loops, deadlines,
+context counters and memory allowances remain unchanged.
+
+Source declaration: Breenix's unchanged churn/race oracles and explicit GPU
+context lifecycle; no external implementation source was read or used.
