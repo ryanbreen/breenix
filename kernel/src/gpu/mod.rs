@@ -5202,9 +5202,8 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
                     .filter(|id| c.contexts.get(*id).is_some_and(|x| x.state == CtxState::Live && (!x.warm_catalogue || x.warm == encode::ALL_WARM)))
                     .count() as u64;
                 out.resources = p.resources.len() as u64;
-                let (held, copies) = (p.quota.held.load(Ordering::Acquire), p.quota.copies.load(Ordering::Acquire));
-                out.resource_bytes = held.saturating_sub(copies);
-                out.copy_bytes = copies;
+                out.resource_bytes = p.quota.resource_bytes();
+                out.copy_bytes = p.quota.copies.load(Ordering::Acquire);
             }
         } else {
             let id = c.ctx_of(tgid, a.context)?;
@@ -5220,9 +5219,8 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
             if let Some(p) = proc_live {
                 out.contexts = p.contexts.len() as u64;
                 out.resources = p.resources.len() as u64;
-                let (held, copies) = (p.quota.held.load(Ordering::Acquire), p.quota.copies.load(Ordering::Acquire));
-                out.resource_bytes = held.saturating_sub(copies);
-                out.copy_bytes = copies;
+                out.resource_bytes = p.quota.resource_bytes();
+                out.copy_bytes = p.quota.copies.load(Ordering::Acquire);
             }
         }
         out.device_contexts = c.contexts.values().filter(|x| x.owner == tgid && x.device_alive).count() as u64;

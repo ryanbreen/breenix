@@ -20,6 +20,15 @@ use super::{with_core, EINVAL, ENODEV, ENOMEM, MEMORY_QUOTA};
 pub(super) struct Counts {
     pub(super) held: AtomicU64,
     pub(super) copies: AtomicU64,
+    resources: AtomicU64,
+}
+
+impl Counts {
+    /// Read this class directly: held and copies can change independently while
+    /// a charge drops outside the core lock, so their difference is not a snapshot.
+    pub(super) fn resource_bytes(&self) -> u64 {
+        self.resources.load(Ordering::Acquire)
+    }
 }
 
 pub(super) type Quota = Arc<Counts>;
@@ -43,6 +52,8 @@ impl QuotaCharge {
             .ok()?;
         if copy {
             quota.copies.fetch_add(bytes, Ordering::AcqRel);
+        } else {
+            quota.resources.fetch_add(bytes, Ordering::AcqRel);
         }
         gauge(&GPU_RESOURCE_BYTES, bytes as i64);
         Some(QuotaCharge { quota: quota.clone(), bytes, copy })
@@ -53,6 +64,8 @@ impl Drop for QuotaCharge {
     fn drop(&mut self) {
         if self.copy {
             self.quota.copies.fetch_sub(self.bytes, Ordering::AcqRel);
+        } else {
+            self.quota.resources.fetch_sub(self.bytes, Ordering::AcqRel);
         }
         self.quota.held.fetch_sub(self.bytes, Ordering::AcqRel);
         gauge(&GPU_RESOURCE_BYTES, -(self.bytes as i64));
