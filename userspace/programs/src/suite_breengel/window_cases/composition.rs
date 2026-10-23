@@ -1053,7 +1053,17 @@ fn composition_target_lifetime()->CaseResult {
     let warmed=fill(FixtureTarget{handle:warm,width:1,height:1},1,1,17);
     libbreenix::gpu::resource_destroy(warm);
     warmed.cite("18")?;
-    let before=crate::gpu_checks::counters().cite("18")?;
+    // B47: destruction keeps its charge until the device completes the unref.
+    // Sample only after two readings agree, with a bounded setup wait.
+    let start=now_ms();
+    let mut before=crate::gpu_checks::counters().cite("18")?;
+    loop {
+        let _=time::sleep_ms(5);
+        let settled=crate::gpu_checks::counters().cite("18")?;
+        ensure(since(start)<1_000,"18","gpu-display: warm-up target retirement did not settle")?;
+        if settled.resource_bytes==before.resource_bytes { break; }
+        before=settled;
+    }
     super::handoff::snapshot_lifetime(false)?;
     interface()?;
     let mut k=compositor()?;let mut w=W::new(64,48,3)?;
