@@ -261,8 +261,8 @@ belongs to an observation that passed both poisons.
 
 ## G7 display interface
 
-`CURRENT_MODE` (op 14) takes a zero-initialized 16-byte `Mode` record and returns
-the current physical `width`, `height`, UI `scale` and zero `reserved`, all u32.
+`CURRENT_MODE` (op 14) takes a 16-byte `Mode` record initialized to 0 and returns
+the current physical `width`, `height`, UI `scale` and `reserved=0`, each u32.
 It samples the current mode under the display lock without reading firmware memory
 or waiting for scanout restoration. Nonzero input or an incorrect size is EINVAL;
 normal GPU admission and user-pointer validation apply. Surface construction uses

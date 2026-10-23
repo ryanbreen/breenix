@@ -70,8 +70,8 @@ impl Enc {
         enc
     }
 
-    /// Draw short unflipped streams with the same six vertices every time. The viewport
-    /// places each rectangle, so reuse never changes bytes a preceding draw can read.
+    /// Draw short unflipped streams with a fixed six-vertex quad. The viewport
+    /// places each rectangle while the geometry stays immutable.
     pub fn fixed_quads(&mut self) { self.fixed_quad = true; }
 
     /// Rounded frame bytes for a sizing pass, or failure for an unencodable command.
@@ -1008,7 +1008,7 @@ fn bind_vertices(enc: &mut Enc, bound: &mut bool, vertex_buffer: u32) {
 /// them; returns the offset after them.
 fn draw_vertices(enc: &mut Enc, vertex_buffer: u32, offset: u32, verts: &[u32], rects: usize) -> u32 {
     if enc.fixed_quad {
-        // Unit clip-space quad; this region never holds any other geometry.
+        // Dedicated unit clip-space quad region.
         const N: u32 = 0xBF80_0000;
         const P: u32 = 0x3F80_0000;
         if enc.vertex_words == 0 {

@@ -330,8 +330,8 @@ struct Sub {
     requests: u32,
     /// Its result has reached callers.
     published: bool,
-    /// The render result, retained until all requests end and any fence-depth hold is
-    /// released. Its native producer fence is never replaced by a completion-read fence.
+    /// The render result, retained until its requests end and any fence-depth hold is
+    /// released. The native producer fence identifies the render request.
     result: Option<(u32, u32)>,
     writer: Option<Arc<window_targets::Writer>>,
     written: Vec<u32>,
@@ -1267,7 +1267,7 @@ impl Core {
     }
 
     /// One request of submission `serial` came back. Keep the render fence's identity,
-    /// but publish only after every request, including the Parallels completion read, ends.
+    /// but publish only after its requests, including the Parallels completion read, end.
     fn submit_returned(&mut self, serial: u64, last: bool, mut done: Done) {
         let answer = done.answer;
         let Some(sub) = self.subs.get_mut(&serial) else { return };
