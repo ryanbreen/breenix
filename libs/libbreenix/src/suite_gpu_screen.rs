@@ -118,6 +118,15 @@ const SETTLE_LIMIT_NS: i128 = 10_000_000_000;
 /// target remains held until the console's restore completes, independently of
 /// process reclaim receipts and of a temporarily steady free-page count.
 pub(super) fn await_console() -> Result<(), String> {
+    // Without a 3D device there is no GPU console to restore. ENODEV from
+    // MODES alone is not enough: a present but failed device also returns it.
+    let (r, caps) = gpu::caps();
+    if r != 0 {
+        return Err(std::format!("display handoff: CAPS errno {}", -r));
+    }
+    if caps.status == abi::status::NO_DEVICE {
+        return Ok(());
+    }
     // The runner may still own its panel; give it back before waiting for the
     // console. If the cases already displaced it, give-back refuses the non-owner.
     let _ = graphics::give_back_display();
