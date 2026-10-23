@@ -97,6 +97,21 @@ LOG_ARCHIVES = 4
 RESTART_WINDOW_S = 10
 
 
+# Reannounce a closed baseline after its later fault boots supplied host evidence.
+# Consumers follow finished.jsonl's sequence, as for cold disk readback.
+WATCHDOG_ARCHIVE = """import sys,json
+sys.path.insert(0,"/opt/breenix-metal")
+from pathlib import Path
+import metal_lib as m,metal_score
+p=Path(sys.argv[1])
+m.write_json(p/"milestone-verdict.json",metal_score.score(p))
+with m.locked('finished'):
+    finished=m.STATE/'finished.jsonl'
+    entries=[json.loads(line) for line in finished.read_text().splitlines()]
+    m.append_jsonl(finished,dict(id=p.name,seq=max((e['seq'] for e in entries),default=0)+1))
+"""
+
+
 def records_name(category):
     """The boot store file holding one category's host records: server-<category>.json, users-operator.json."""
     return SUITES[category] + '-' + category + '.json'
@@ -1566,10 +1581,7 @@ def main():
     if category == 'watchdog':
         # Its baseline capture closed before the fault boots. Fold the retained
         # category records into that archive without executing cases again.
-        code = ('import sys;sys.path.insert(0,"/opt/breenix-metal");'
-                'from pathlib import Path;import metal_lib,metal_score;'
-                'p=Path(sys.argv[1]);metal_lib.write_json(p/"milestone-verdict.json",metal_score.score(p))')
-        result = remote('python3', '-c', code, directory)
+        result = remote('python3', '-c', WATCHDOG_ARCHIVE, directory)
         if result.returncode: raise ValueError('cannot score the archived watchdog category')
     print(verdict)
     return status

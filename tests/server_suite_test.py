@@ -554,6 +554,17 @@ class WatchdogRecovery(existing.StateTest):
         existing.m.write_text(d.dir / 'serial.txt', self.serial)
         self.receipt = dict(boot=d.id, commit=self.sha, case='feeder-hang', sshAt=450, bootId='4-5-6')
 
+    def test_late_watchdog_evidence_is_reannounced_to_the_importer(self):
+        directory = self.driver.dir
+        existing.m.write_text(existing.m.STATE / 'finished.jsonl', json.dumps(dict(id=directory.name, seq=8)) + '\n')
+        verdict = dict(milestones={'server/watchdog': dict(passed=True)})
+        with patch.object(sys, 'argv', ['-c', str(directory)]), \
+             patch.dict(sys.modules, {'metal_score': SimpleNamespace(score=lambda _: verdict)}):
+            exec(host['WATCHDOG_ARCHIVE'], {})
+        entries = [json.loads(line) for line in (existing.m.STATE / 'finished.jsonl').read_text().splitlines()]
+        self.assertEqual(entries[-1], dict(id=directory.name, seq=9))
+        self.assertEqual(existing.m.read_json(directory / 'milestone-verdict.json'), verdict)
+
     def test_expiry_and_fresh_persistent_ssh_are_required(self):
         d = self.driver
         self.assertTrue(d.watchdog_verdict(self.receipt))
