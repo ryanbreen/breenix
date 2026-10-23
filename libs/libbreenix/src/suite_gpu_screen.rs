@@ -118,8 +118,9 @@ const SETTLE_LIMIT_NS: i128 = 10_000_000_000;
 /// target remains held until the console's restore completes, independently of
 /// process reclaim receipts and of a temporarily steady free-page count.
 pub(super) fn await_console() -> Result<(), String> {
-    // Without a 3D device there is no GPU console to restore. ENODEV from
-    // MODES alone is not enough: a present but failed device also returns it.
+    // NO_DEVICE also covers virtio-gpu probe failures; neither case leaves a
+    // GPU context holding frames. DEVICE_FAILED, MISSING_CAPABILITY and SVGA3
+    // still require the handoff below; MODES ENODEV alone cannot bypass it.
     let (r, caps) = gpu::caps();
     if r != 0 {
         return Err(std::format!("display handoff: CAPS errno {}", -r));
