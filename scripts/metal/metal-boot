@@ -1844,7 +1844,8 @@ class Driver:
         receipt = m.read_json(self.dir / 'ssh-verification.json', {}) or {}
         if receipt.get('boot') != self.id or receipt.get('powerOn') != round(self.t0, 3):
             return False
-        if not receipt.get('passed'):
+        if receipt.get('passed') is not True or any(receipt.get(field) is not True for field in
+                                                  ('authenticated', 'strictHostKey', 'servicesStarted')):
             raise Finish(m.EXIT_SHORT, 'S21 SSH probe failed')
         if receipt.get('generation') != getattr(self.args, 'expected_generation', None):
             raise Finish(m.EXIT_SHORT, 'SSH answered from a different userland generation')

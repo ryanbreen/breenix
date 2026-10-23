@@ -29,6 +29,19 @@ class UpgradeDriver(existing.StateTest):
         driver.maybe_complete(existing.m.now(), 50)
         self.assertFalse(driver.completion_reported)
 
+    def test_receipt_requires_authentication_strict_key_and_services(self):
+        driver = self.driver()
+        driver.t0 = 1000
+        driver.args.expected_generation = 'new'
+        receipt = dict(boot=driver.id, powerOn=1000, completedAt=1100, passed=True, generation='new',
+                       authenticated=True, strictHostKey=True, servicesStarted=True)
+        existing.m.write_json(driver.dir / 'ssh-verification.json', receipt)
+        self.assertTrue(driver.ssh_verified())
+        for field in ('authenticated', 'strictHostKey', 'servicesStarted'):
+            existing.m.write_json(driver.dir / 'ssh-verification.json', dict(receipt, **{field: False}))
+            with self.subTest(field=field), self.assertRaises(existing.boot.Finish):
+                driver.ssh_verified()
+
     def test_failed_probe_boots_previous_under_inherited_lease(self):
         driver = self.driver()
         existing.m.write_json(existing.m.STATE / 'disk.json', {'slots': {
@@ -45,6 +58,7 @@ class UpgradeDriver(existing.StateTest):
         self.assertEqual([action for action, _ in attempts], ['commit', 'rollback'])
         self.assertEqual(attempts[0][1], driver.id)
         self.assertTrue(attempts[1][1])
+        self.assertEqual(existing.m.read_json(existing.m.STATE / 'disk.json')['slots']['current']['installedBy'], 'old')
 
 
 if __name__ == '__main__':
