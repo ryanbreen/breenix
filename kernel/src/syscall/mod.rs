@@ -926,6 +926,11 @@ pub const MINCORE_SYSCALL_NUMBER: u64 = 27;
 #[cfg(target_arch = "aarch64")]
 pub const MINCORE_SYSCALL_NUMBER: u64 = 232;
 
+#[cfg(target_arch = "x86_64")]
+pub const ADJTIMEX_SYSCALL_NUMBER: u64 = 159;
+#[cfg(target_arch = "aarch64")]
+pub const ADJTIMEX_SYSCALL_NUMBER: u64 = 171;
+
 /// The calls dispatched by number above that are not dispatched by enum, on
 /// both architectures: None for any other number.
 pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
@@ -937,6 +942,7 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
         return Some(crate::gpu_fault_acceptance::dispatch(a[0]));
     }
     Some(match number {
+        ADJTIMEX_SYSCALL_NUMBER => clocks::sys_adjtimex(a[0]),
         #[cfg(target_arch = "aarch64")]
         410..=412 => SyscallResult::Err(ErrorCode::NoSys as u64),
         MLOCK_SYSCALL_NUMBER => memory_advice::sys_mlock(a[0], a[1]),
