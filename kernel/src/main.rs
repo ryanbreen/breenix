@@ -1199,7 +1199,7 @@ fn launch_x86_production_init(
 ) -> Result<(), &'static str> {
     use alloc::string::String;
 
-    if console_mode.is_some() {
+    if console_mode.is_some() || name == "persistent-install" {
         serial::command::use_tty_input();
     }
     let hostkeys = if name.starts_with("suite-") {
