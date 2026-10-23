@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Stage and answer the users suite's real OpenSSH probes on ARM64 QEMU.
 
-BREENIX_USERS_SSH_IDENTITY names the boot host's Ed25519 private key;
-BREENIX_USERS_SSH_USER optionally overrides its login name. Only the public
-key is staged in the disposable guest image. The private key stays on the host.
+BREENIX_USERS_SSH_IDENTITY optionally names an Ed25519 test key. Without it,
+staging generates a throwaway key in this boot's folder (B49). It never selects
+an operator key. BREENIX_USERS_SSH_USER optionally overrides the test account.
+Only the public key enters the disposable guest image; the private key stays on the host.
 """
 import argparse
-import getpass
 import json
 import os
 from pathlib import Path
@@ -33,10 +33,18 @@ def debugfs():
 
 
 def stage(image, state):
-    identity = Path(os.environ.get('BREENIX_USERS_SSH_IDENTITY', '')).expanduser().resolve()
+    configured = os.environ.get('BREENIX_USERS_SSH_IDENTITY')
+    if configured:
+        identity = Path(configured).expanduser().resolve()
+    else:
+        state.parent.mkdir(parents=True, exist_ok=True)
+        identity = state.with_name('users-hostssh-ed25519').resolve()
+        subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '',
+                        '-C', 'breenix-users-test', '-f', str(identity)],
+                       capture_output=True, check=True, timeout=10)
     if not identity.is_file():
-        raise ValueError('set BREENIX_USERS_SSH_IDENTITY to the boot host Ed25519 private key')
-    user = os.environ.get('BREENIX_USERS_SSH_USER', getpass.getuser())
+        raise ValueError('users host SSH test identity does not exist')
+    user = os.environ.get('BREENIX_USERS_SSH_USER', 'breenix-test')
     if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', user) or user == 'root':
         raise ValueError('users host SSH needs a non-root account name')
     result = subprocess.run(['ssh-keygen', '-y', '-P', '', '-f', str(identity)],
