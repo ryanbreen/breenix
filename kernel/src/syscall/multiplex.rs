@@ -68,6 +68,12 @@ impl WaitSet {
                     self.add(Source::PipeReader(pipe.clone()));
                     watched = true;
                 }
+                FdKind::Ipc(object) => {
+                    if let Some(queue) = object.poll_queue() {
+                        self.add(Source::Queue(queue));
+                        watched = true;
+                    }
+                }
                 _ => {}
             }
         }

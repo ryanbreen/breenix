@@ -178,7 +178,7 @@ impl Layout {
         pixel[3..].fill(self.reserved);
     }
 
-    fn fill(&self, pixels: &mut [u8], colour: [u8; 3]) {
+    pub fn fill(&self, pixels: &mut [u8], colour: [u8; 3]) {
         for pixel in pixels.chunks_exact_mut(self.bytes_per_pixel) {
             self.put_pixel(pixel, colour);
         }

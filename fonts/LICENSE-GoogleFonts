@@ -36,8 +36,10 @@ Non-Google Fonts:
 
   Hack-Regular.ttf
     Source: https://github.com/source-foundry/Hack
-    License: MIT License
+    License: MIT License for the Hack project's work, and the Bitstream Vera License
+    for the glyphs derived from Bitstream Vera Sans Mono; full text in LICENSE-Hack
     Copyright (c) 2018 Source Foundry Authors
+    Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved.
 
   CascadiaCode-Regular.ttf
     Source: https://github.com/microsoft/cascadia-code

@@ -12,7 +12,7 @@
 //! errno the library does not name is still reported.
 use libbreenix::io;
 use libbreenix::process::{self, ForkResult};
-use libbreenix::suite::{case, category, check, fail, suite, CaseError, CaseResult, Suite};
+use breenix_suite::suite::{case, category, check, fail, suite, CaseError, CaseResult, Suite};
 use libbreenix::syscall::raw;
 use libbreenix::types::Fd;
 use std::collections::HashMap;
@@ -340,6 +340,7 @@ const S_IFCHR: u32 = 0o020000;
 /// /dev/null's device number, major 1 minor 3.
 const NULL_RDEV: u64 = 0x103;
 /// The framebuffer and window system call, the same number on both architectures.
+#[cfg(target_arch = "x86_64")]
 const FBDRAW: u64 = 411;
 const CLONE_FS: u64 = 0x200;
 const SIGKILL: i32 = 9;
@@ -1497,34 +1498,40 @@ fn home_nodev_device() -> CaseResult {
 }
 
 /// An FBDRAW command: the raw return.
+#[cfg(target_arch = "x86_64")]
 fn fbdraw(op: u32, p: [u64; 4], color: u32) -> i64 {
     let cmd = libbreenix::graphics::FbDrawCmd { op, p1: p[0] as i32, p2: p[1] as i32, p3: p[2] as i32, p4: p[3] as i32, color };
     sc(FBDRAW, &[&cmd as *const _ as u64])
 }
+#[cfg(target_arch = "x86_64")]
 fn lo_hi(ptr: u64) -> [u64; 2] { [ptr & 0xffff_ffff, ptr >> 32] }
 
-/// Create and register a 4x4 window titled `title`: its buffer ID.
+/// B46: the ARM64 users case uses window v2; x86 keeps the v1 checks below.
 #[cfg(target_arch = "aarch64")]
-fn make_window(title: &str) -> Result<u32, String> {
-    let mut addr = 0u64;
-    let [lo, hi] = lo_hi(&mut addr as *mut u64 as u64);
-    let id = ok("creating a window", fbdraw(11, [4, 4, lo, hi], 0))?;
-    let [lo, hi] = lo_hi(title.as_ptr() as u64);
-    ok("registering the window", fbdraw(12, [id as u64, lo, hi, title.len() as u64], 0))?;
-    Ok(id as u32)
+fn make_window(title: &str) -> Result<u64, String> {
+    let window = libbreenix::window::create(4, 4, 2, 0).map_err(|e| format!("CREATE: {e}"))?;
+    libbreenix::window::register(window.id, title.as_bytes()).map_err(|e| format!("REGISTER: {e}"))?;
+    Ok(window.id)
 }
 
-/// The buffer IDs of the windows the caller may list.
 #[cfg(target_arch = "aarch64")]
-fn listed_windows() -> Result<Vec<u32>, String> {
-    let mut out = [libbreenix::graphics::WindowInfo::default(); 16];
-    let [lo, hi] = lo_hi(out.as_mut_ptr() as u64);
-    let n = ok("listing windows", fbdraw(13, [lo, hi, out.len() as u64, 0], 0))?;
-    Ok(out[..n as usize].iter().map(|w| w.buffer_id).collect())
+fn listed_windows() -> Result<Vec<libbreenix::window::abi::WinInfo>, String> {
+    use libbreenix::window::{self, abi::{Plain, WinInfo}};
+    let mut out = [WinInfo::ZERO; 256];
+    let n = window::list(&mut out).map_err(|e| format!("LIST: {e}"))?;
+    if n > out.len() { return Err(String::from("LIST exceeded the case's output capacity")); }
+    Ok(out[..n].to_vec())
+}
+
+#[cfg(target_arch = "aarch64")]
+fn window_call<T: libbreenix::window::abi::Plain>(op: u32, arg: &mut T) -> i64 {
+    // SAFETY: arg is a live plain ABI structure with its exact length.
+    unsafe { libbreenix::window::raw_call(op, arg as *mut T as *mut u8, core::mem::size_of::<T>()) }
 }
 
 /// Each window operation a process may perform only on its own windows, on `id`: what
 /// it is and the raw return.
+#[cfg(target_arch = "x86_64")]
 fn window_ops(id: u32) -> Vec<(&'static str, i64)> {
     let id = id as u64;
     let mut pixels = [0u8; 64];
@@ -1547,23 +1554,82 @@ fn window_ops(id: u32) -> Vec<(&'static str, i64)> {
 
 #[cfg(target_arch = "aarch64")]
 fn window_other() -> CaseResult {
+    use libbreenix::window::{self, abi::{self, op, Plain}};
     let (_owner, id) = Holder::start_with(B, || make_window("ub's").map(|id| id.to_string()))?;
-    let id: u32 = id.parse().map_err(|_| format!("ub's window ID {id:?} is not a number"))?;
-    check(listed_windows()?.contains(&id), "root's window list does not show ub's window")?;
-    as_user(A, || {
+    let id: u64 = id.parse().map_err(|_| format!("ub's window ID {id:?} is not a number"))?;
+    check(listed_windows()?.iter().any(|w| w.id == id), "root's window list does not show ub's window")?;
+    let mut claim = abi::Claim::ZERO;
+    ok("claiming the compositor", window_call(op::CLAIM_COMPOSITOR, &mut claim))?;
+    struct Claim;
+    impl Drop for Claim {
+        fn drop(&mut self) { let _ = window::release_compositor(); }
+    }
+    let _claim = Claim;
+    let (mine, own_id) = Holder::start_with_cleanup(A, || {
         refused("taking over the display as a non-root user", sc(libbreenix::syscall::nr::TAKE_OVER_DISPLAY, &[]), EPERM)?;
         let listed = listed_windows()?;
-        want(!listed.contains(&id), format!("ua's window list shows ub's window {id}: {listed:?}"))?;
-        for (what, ret) in window_ops(id) {
-            refused(&format!("{what} of ub's window"), ret, EPERM)?;
-        }
-        let mine = make_window("ua's")?;
-        want(listed_windows()? == [mine], "ua's window list does not show exactly ua's own window")?;
-        for (what, ret) in window_ops(mine) {
-            ok(&format!("{what} of ua's own window"), ret)?;
-        }
-        Ok(())
-    })
+        want(!listed.iter().any(|w| w.id == id), "ua's window list shows ub's window")?;
+        let mut pixels = [0u8; 64];
+        let mut capture = abi::Capture::ZERO;
+        capture.id = id;
+        capture.dst = pixels.as_mut_ptr() as u64;
+        capture.dst_len = pixels.len() as u64;
+        refused("reading ub's pixels", window_call(op::CAPTURE, &mut capture), EPERM)?;
+        let mut events = [abi::WindowEvent::ZERO; 4];
+        let mut read = abi::ReadEvents::ZERO;
+        read.id = id; read.ptr = events.as_mut_ptr() as u64; read.capacity = events.len() as u32;
+        refused("reading ub's input", window_call(op::READ_EVENTS, &mut read), EPERM)?;
+        let mut tree = abi::MapTree::ZERO; tree.id = id;
+        refused("mapping ub's tree", window_call(op::MAP_TREE, &mut tree), EPERM)?;
+        let mut metadata = abi::Meta::ZERO;
+        let mut meta = abi::MetaQuery::ZERO; meta.id = id; meta.meta = &mut metadata as *mut _ as u64;
+        refused("checking ub's frame", window_call(op::READ_META, &mut meta), EPERM)?;
+        let mut geometry = abi::Geometry::ZERO; geometry.id = id;
+        refused("moving ub's window", window_call(op::SET_GEOMETRY, &mut geometry), EPERM)?;
+        let mut event = abi::WindowEvent::ZERO;
+        event.kind = abi::event_kind::KEY_PRESS;
+        let mut write = abi::WriteEvents::ZERO;
+        write.id = id; write.ptr = &event as *const _ as u64; write.count = 1;
+        refused("writing ub's input", window_call(op::WRITE_EVENTS, &mut write), EPERM)?;
+        event.kind = abi::event_kind::RESIZE_REQUESTED; event.width = 8; event.height = 6;
+        refused("sending ub a resize request", window_call(op::WRITE_EVENTS, &mut write), EPERM)?;
+        let own = make_window("ua's")?;
+        let listed = listed_windows()?;
+        want(listed.len() == 1 && listed[0].id == own, "ua's window list does not show exactly ua's own window")?;
+        // B48 item 5: v2 preserves the owner's positive read authorities.
+        capture.id = own;
+        ok("the owner capturing its own pixels", window_call(op::CAPTURE, &mut capture))?;
+        want((capture.width, capture.height) == (4, 4), "the owner's capture has the wrong size")?;
+        tree.id = own;
+        ok("the owner mapping its own tree", window_call(op::MAP_TREE, &mut tree))?;
+        want(tree.addr != 0 && tree.len > 0, "the owner's tree mapping is empty")?;
+        ok("unmapping the owner's tree view", sc(libbreenix::syscall::nr::MUNMAP, &[tree.addr, tree.len]))?;
+        meta.id = own;
+        ok("the owner reading its own metadata", window_call(op::READ_META, &mut meta))?;
+        // B46 preserves compositor-only input and placement even for the owner.
+        write.id = own;
+        refused("the owner sending its own resize event", window_call(op::WRITE_EVENTS, &mut write), EPERM)?;
+        geometry.id = own;
+        refused("the owner setting its own geometry", window_call(op::SET_GEOMETRY, &mut geometry), EPERM)?;
+        Ok(own.to_string())
+    }, |own| {
+        let own: u64 = own.parse().map_err(|_| String::from("invalid own window ID"))?;
+        let mut events = [abi::WindowEvent::ZERO; 8];
+        let n = window::read_events(own, &mut events, false, 0).map_err(|e| format!("READ_EVENTS: {e}"))?;
+        let request = events[..n].iter().find(|e| e.kind == abi::event_kind::RESIZE_REQUESTED)
+            .ok_or_else(|| String::from("the compositor's resize request did not reach the owner"))?;
+        want((request.width, request.height) == (8, 6), "the compositor's resize request has the wrong size")?;
+        window::resize(own, request.width, request.height).map_err(|e| format!("RESIZE: {e}"))?;
+        let listed = listed_windows()?;
+        let info = listed.iter().find(|w| w.id == own).ok_or_else(|| String::from("the resized owner window is absent"))?;
+        want((info.width, info.height, info.x, info.y) == (8, 6, 12, 18), "LIST does not show the owner-mediated resize and compositor placement")
+    })?;
+    let own_id: u64 = own_id.parse().map_err(|_| String::from("invalid owner window ID"))?;
+    let mut request = abi::WindowEvent::ZERO;
+    request.kind = abi::event_kind::RESIZE_REQUESTED; request.width = 8; request.height = 6; request.serial = 1;
+    window::write_events(own_id, &[request])?;
+    window::set_geometry(own_id, 12, 18, 1, abi::geometry_flags::VISIBLE)?;
+    mine.finish()
 }
 
 /// x86-64 has no window registry: its framebuffer call refuses the window operations (EINVAL).

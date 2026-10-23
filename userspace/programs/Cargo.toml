@@ -7,16 +7,24 @@ description = "Userspace programs and utilities for Breenix"
 # This crate builds with -Z build-std to use the real Rust standard library
 # It links against libbreenix-libc (libc.a) for system calls
 
+[features]
+# B42: the remaining v1 framebuffer stress subject is built only for x86-64.
+framebuffer-v1 = []
+
 [dependencies]
-noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "regular", "unicode-basic-latin", "unicode-specials"] }
+# The 16 px bitmap font libgfx draws; suite-breengel reads its rasters as the reference cells.
+noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "size_32", "regular", "unicode-basic-latin", "unicode-specials"] }
 bgl = { path = "../../libs/bgl" }
-libbreenix = { path = "../../libs/libbreenix", features = ["std", "suite"] }
+libbreenix = { path = "../../libs/libbreenix", features = ["std"] }
+breenix-suite = { path = "../../libs/libbreenix/suite" }
 breengel = { path = "../../libs/breengel" }
-libcollab = { path = "../../libs/libcollab" }
 libfont = { path = "../../libs/libfont" }
 libgfx = { path = "../../libs/libgfx" }
+libgfx-ref = { path = "../../libs/libgfx-ref" }
 libbui = { path = "../../libs/libbui" }
 libimg = { path = "../../libs/libimg" }
+# The PNG encoder, for the png-encode cases' expectation code only (ruling B26).
+libimg-encode = { path = "../../libs/libimg-encode" }
 breenish-js = { path = "../../libs/breenish-js" }
 libicon = { path = "../../libs/libicon" }
 
@@ -333,10 +341,6 @@ name = "bounce"
 path = "src/bounce.rs"
 
 [[bin]]
-name = "rectangles"
-path = "src/rectangles.rs"
-
-[[bin]]
 name = "cat_test"
 path = "src/cat_test.rs"
 
@@ -347,6 +351,7 @@ path = "src/concurrent_recv_stress.rs"
 [[bin]]
 name = "wait_stress"
 path = "src/wait_stress.rs"
+required-features = ["framebuffer-v1"]
 
 [[bin]]
 name = "counter"
@@ -359,10 +364,6 @@ path = "src/cow_oom_test.rs"
 [[bin]]
 name = "cp_mv_argv_test"
 path = "src/cp_mv_argv_test.rs"
-
-[[bin]]
-name = "demo"
-path = "src/demo.rs"
 
 [[bin]]
 name = "dns_test"
@@ -462,10 +463,6 @@ path = "src/mkdir_argv_test.rs"
 [[bin]]
 name = "nonblock_eagain_test"
 path = "src/nonblock_eagain_test.rs"
-
-[[bin]]
-name = "particles"
-path = "src/particles.rs"
 
 [[bin]]
 name = "pipe_concurrent_test"
@@ -580,10 +577,6 @@ name = "which_test"
 path = "src/which_test.rs"
 
 [[bin]]
-name = "confetti"
-path = "src/confetti.rs"
-
-[[bin]]
 name = "tones"
 path = "src/tones.rs"
 
@@ -644,10 +637,6 @@ name = "blauncher"
 path = "src/blauncher.rs"
 
 [[bin]]
-name = "guskit"
-path = "src/guskit.rs"
-
-[[bin]]
 name = "svc"
 path = "src/svc.rs"
 
@@ -658,10 +647,6 @@ path = "src/bsshd.rs"
 [[bin]]
 name = "bssh"
 path = "src/bssh.rs"
-
-[[bin]]
-name = "biconkit"
-path = "src/biconkit.rs"
 
 [[bin]]
 name = "usb_pointer_check"
@@ -777,6 +762,18 @@ path = "src/suite_utilities.rs"
 [[bin]]
 name = "suite-sdk"
 path = "src/suite_sdk.rs"
+
+[[bin]]
+name = "suite-breengel"
+path = "src/suite_breengel/main.rs"
+
+[[bin]]
+name = "kiosk_test"
+path = "src/kiosk_test.rs"
+
+[[bin]]
+name = "raw-window_test"
+path = "src/raw_window_test.rs"
 
 [[bin]]
 name = "suite-gpu"

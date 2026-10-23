@@ -11,7 +11,7 @@
 use libbreenix::gpu::{self, abi, abi::Plain};
 use libbreenix::process::{self, ForkResult};
 use libbreenix::signal::{self, SIGKILL};
-use libbreenix::suite::{value, CaseError, CaseResult};
+use breenix_suite::suite::{value, CaseError, CaseResult};
 use libbreenix::types::Fd;
 use libbreenix::{graphics, io, memory, time};
 
@@ -1389,7 +1389,7 @@ pub fn test_hooks_absent() -> CaseResult {
         let eperm = -abi::errno::EPERM;
         need(tc_raw(abi::test_control::STATE, core::ptr::null_mut(), 0) == eperm, || "STATE was not refused to a non-root process".to_string())?;
         need(tc_raw(abi::test_control::DISARM_ALL, core::ptr::null_mut(), 0) == eperm, || "DISARM_ALL was not refused".to_string())?;
-        for point in (0..=test_point::CRED_ORPHAN).filter(|&point| test_point::defined(point)) {
+        for point in (0..=test_point::CRED_ORPHAN).filter(|&point| test_point::defined(point) || libbreenix::window::abi::tc_point::defined(point)) {
             let r = gpu::tc_arm(point, 0, 0);
             need(r == eperm, || format!("ARM of point {point} by a non-root process returned {}", errno(r)))?;
             let r = gpu::tc_fired(point);
@@ -1407,16 +1407,20 @@ pub fn test_hooks_absent() -> CaseResult {
         need(r == eperm, || format!("op 4 by a non-root process returned {}", errno(r)))
     })?;
     kid.done()?;
-    // Use the kernel's allocation table: another effort may allocate a point after
-    // the GPU range. Root may arm and read defined points only. Use an unused
-    // target so the access probe cannot inject a fault into concurrent work.
-    for point in (0..=test_point::CRED_ORPHAN).filter(|&point| test_point::defined(point)) {
+    // B48/#2337: use the merged GPU and BreenGL allocation table. Root may arm
+    // and read defined points. Use an unused target except for IGNORE_DAMAGE's
+    // wildcard probe, which is disarmed immediately afterwards.
+    for point in (0..=test_point::CRED_ORPHAN).filter(|&point| test_point::defined(point) || libbreenix::window::abi::tc_point::defined(point)) {
         let before = fired(point);
         ensure(before != u64::MAX, || format!("FIRED of point {point} by root was refused"))?;
-        ensure(gpu::tc_arm(point, u64::MAX, 0) == 0, || format!("ARM of point {point} by root was refused"))?;
+        let target = if point == libbreenix::window::abi::tc_point::IGNORE_DAMAGE { 0 } else { u64::MAX };
+        ensure(gpu::tc_arm(point, target, 0) == 0, || format!("ARM of point {point} by root was refused"))?;
+        // Disarm before the next probe, including IGNORE_DAMAGE's wildcard target.
+        // The Case guard also disarms on a failing assertion or other early return.
+        ensure(gpu::tc_disarm_all() == 0, || format!("DISARM_ALL after point {point}"))?;
     }
     ensure(gpu::tc_disarm_all() == 0, || "DISARM_ALL by root".to_string())?;
-    for point in (0..=test_point::CRED_ORPHAN + 1).chain([u32::MAX]).filter(|&point| !test_point::defined(point)) {
+    for point in (0..=test_point::CRED_ORPHAN + 1).chain([u32::MAX]).filter(|&point| !(test_point::defined(point) || libbreenix::window::abi::tc_point::defined(point))) {
         ensure(gpu::tc_arm(point, 0, 0) == -EINVAL, || format!("ARM of undefined point {point} was accepted"))?;
         ensure(gpu::tc_fired(point) == Err(-EINVAL), || format!("FIRED of undefined point {point} was accepted"))?;
     }

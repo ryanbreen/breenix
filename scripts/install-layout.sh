@@ -42,7 +42,13 @@ if [ -d "$root/usr/local/test/bin" ]; then
         [ -e "$file" ] || continue
         mv "$file" "$root/usr/libexec/breenix/"
     done
-    rmdir "$root/usr/local/test/bin" "$root/usr/local/test"
+    rmdir "$root/usr/local/test/bin"
+fi
+if [ -d "$root/usr/local/test/share" ]; then
+    mv "$root/usr/local/test/share" "$root/usr/libexec/breenix/share"
+fi
+if [ -d "$root/usr/local/test" ]; then
+    rmdir "$root/usr/local/test"
 fi
 if [ -f "$root/usr/libexec/breenix/rust-std-child_test" ]; then
     ln "$root/usr/libexec/breenix/rust-std-child_test" "$root/usr/libexec/breenix/rust-std-child_test$(printf '\377')"

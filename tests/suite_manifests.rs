@@ -3,8 +3,9 @@
 //! Each manifest has the shape Vigil reads, with ids that are lowercase words joined by
 //! '-'. A manifest with cases has a suite binary that is built and installed, and the
 //! categories and cases in the table its `main` runs (the `static` Suite in
-//! `userspace/programs/src/suite_<id>.rs`, read from the parsed source) are the manifest's
-//! categories that have cases, in the same order with the same titles. Each suite source has
+//! `userspace/programs/src/suite_<id>.rs`, or in `suite_<id>/main.rs` with case tables in
+//! its modules, read from the parsed source) are the
+//! manifest's categories that have cases, in the same order with the same titles. Each suite source has
 //! a manifest. A category with no cases yet is planned: the binary leaves it out, and a
 //! manifest in which each category is planned is a skeleton with no suite source
 //! (docs/suites/README.md, "Planned categories"). A category marked `"hostRunner": true` is run
@@ -261,8 +262,8 @@ fn table_error(what: &str) -> String {
     format!(
         "{what}; a suite's source must run its table from main as `NAME.run()` and declare it as \
          `static NAME: Suite = suite(\"id\", \"Title\", &[category(\"id\", \"Title\", &[case(\"id\", \"Title\", function), ...]), ...])`, \
-         optionally followed by `.case_limit_ms(N)` or `.defer_display()`, each category optionally followed \
-         by `.idle_before(N)`, with no attributes inside it"
+         optionally followed by `.case_limit_ms(N)`, `.gui()` or `.defer_display()`, each category optionally \
+         followed by `.idle_before(N)`, with no attributes inside it"
     )
 }
 
@@ -378,7 +379,22 @@ impl<'ast> syn::visit::Visit<'ast> for SetupCheck<'ast> {
 /// `main` must be `NAME.run()`, and `static NAME: Suite` is read from the parsed
 /// source, so comments, disabled code and calls outside the table play no part.
 fn source_suite(source: &str) -> Result<(Entry, Vec<Category>), String> {
-    let file = syn::parse_file(source).map_err(|error| format!("does not parse as Rust: {error}"))?;
+    source_suite_files(&[(String::new(), source.to_string())])
+}
+
+/// As `source_suite`, for a suite whose crate root is `files[0]` (module path "") and whose
+/// other files are its modules, by module path ("raster", "window_cases::windows"). A
+/// category's cases may be a slice literal, a path `module::NAME` to a
+/// `const NAME: &[Case] = &[...]` in that module or one below it, or `&NAME` for a
+/// `static NAME: [Case; total(PARTS)] = join(PARTS)` whose `const PARTS: &[&[Case]]` lists
+/// such paths, joined in order.
+fn source_suite_files(files: &[(String, String)]) -> Result<(Entry, Vec<Category>), String> {
+    let mut parsed = Vec::new();
+    for (module, text) in files {
+        let file = syn::parse_file(text).map_err(|error| format!("{module:?} does not parse as Rust: {error}"))?;
+        parsed.push((module.clone(), file));
+    }
+    let file = &parsed[0].1;
     let main = file
         .items
         .iter()
@@ -417,11 +433,16 @@ fn source_suite(source: &str) -> Result<(Entry, Vec<Category>), String> {
         return Err(table_error(&format!("static {name} has attributes")));
     }
     let mut expr = &*table.expr;
+    // Builder flags that leave the table as it is: a case time limit, `gui` (the suite's
+    // cases never skip, `gui_suites_never_skip`) and `defer_display`.
+    // claim-lint:ok: tests/suite_manifests.rs gui_suites_never_skip enforces the no-skip rule.
     while let syn::Expr::MethodCall(method) = expr {
-        if !((method.method == "case_limit_ms" && method.args.len() == 1)
-            || (method.method == "defer_display" && method.args.is_empty()))
-            || !method.attrs.is_empty()
-        {
+        let arity = match method.method.to_string().as_str() {
+            "case_limit_ms" => 1,
+            "gui" | "defer_display" => 0,
+            _ => usize::MAX,
+        };
+        if method.args.len() != arity || !method.attrs.is_empty() {
             return Err(table_error(&format!("unexpected method .{}(...)", method.method)));
         }
         expr = &method.receiver;
@@ -439,14 +460,148 @@ fn source_suite(source: &str) -> Result<(Entry, Vec<Category>), String> {
         }
         let args = call(category_expr, "category")?;
         let entry = id_and_title(&args, "category", 3)?;
-        let mut cases = Vec::new();
-        for case_expr in slice(args[2])? {
-            let case_args = call(case_expr, "case")?;
-            cases.push(id_and_title(&case_args, "case", 3)?);
-        }
+        let cases = case_table(args[2], "", &parsed, 0)?;
         categories.push(Category { entry, cases });
     }
     Ok((suite, categories))
+}
+
+/// One case of a table: `case("id", "Title", f)`, or the breengel suite's
+/// `pictured!("id", "Title", f)`, which expands to a `case` with the same id and title whose
+/// body hands the case's judged frame to the runner.
+fn case_entry(expr: &syn::Expr) -> Result<Entry, String> {
+    if let syn::Expr::Macro(mac) = expr {
+        if mac.attrs.is_empty() && mac.mac.path.is_ident("pictured") {
+            let args = mac
+                .mac
+                .parse_body_with(syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated)
+                .map_err(|error| table_error(&format!("pictured!(...) does not parse: {error}")))?;
+            let args: Vec<&syn::Expr> = args.iter().collect();
+            return id_and_title(&args, "pictured!", 3);
+        }
+    }
+    let case_args = call(expr, "case")?;
+    id_and_title(&case_args, "case", 3)
+}
+
+/// The cases of a category's table expression, read in module `module`.
+fn case_table(expr: &syn::Expr, module: &str, parsed: &[(String, syn::File)], depth: usize) -> Result<Vec<Entry>, String> {
+    if depth > 4 {
+        return Err(table_error("case tables nest too deeply"));
+    }
+    if let Ok(elems) = slice(expr) {
+        let mut cases = Vec::new();
+        for case_expr in elems {
+            cases.push(case_entry(case_expr)?);
+        }
+        return Ok(cases);
+    }
+    if let syn::Expr::Path(path) = expr {
+        let segments: Vec<String> = path.path.segments.iter().map(|segment| segment.ident.to_string()).collect();
+        if path.attrs.is_empty() && path.qself.is_none() && segments.len() >= 2 {
+            let (name, inner) = segments.split_last().unwrap();
+            let target = join_module(module, &inner.join("::"));
+            let (found, item) = module_item(parsed, &target, name, true)?;
+            return case_table(item, &found, parsed, depth + 1);
+        }
+    }
+    if let syn::Expr::Reference(reference) = expr {
+        if let syn::Expr::Path(path) = &*reference.expr {
+            if let Some(name) = path.path.get_ident() {
+                let (_, item) = module_item(parsed, module, &name.to_string(), false)?;
+                let args = call(item, "join")?;
+                let [syn::Expr::Path(parts)] = args.as_slice() else {
+                    return Err(table_error(&format!("static {name} is not join(PARTS)")));
+                };
+                let parts = parts.path.get_ident().ok_or_else(|| table_error("join takes a const name"))?;
+                let (_, list) = module_item(parsed, module, &parts.to_string(), true)?;
+                let mut cases = Vec::new();
+                for part in slice(list)? {
+                    cases.extend(case_table(part, module, parsed, depth + 1)?);
+                }
+                return Ok(cases);
+            }
+        }
+    }
+    Err(table_error("expected a slice literal &[...], a path to a case table, or &NAME for a joined table"))
+}
+
+/// `inner` (a relative module path) under `module`.
+fn join_module(module: &str, inner: &str) -> String {
+    match (module.is_empty(), inner.strip_prefix("crate::").or(if inner == "crate" { Some("") } else { None })) {
+        (_, Some(rooted)) => rooted.to_string(),
+        (true, None) => inner.to_string(),
+        (false, None) => format!("{module}::{inner}"),
+    }
+}
+
+/// The value of the `const` (or, with `constant` false, `static`) item `name` in module
+/// `module` or, for a const, in a module below it (a table re-exported by `use`). The item
+/// must be unique and carry no attributes.
+fn module_item<'a>(parsed: &'a [(String, syn::File)], module: &str, name: &str, constant: bool)
+    -> Result<(String, &'a syn::Expr), String> {
+    let below = format!("{module}::");
+    let mut found = Vec::new();
+    for (path, file) in parsed {
+        if !(path == module || (constant && path.starts_with(&below))) {
+            continue;
+        }
+        for item in &file.items {
+            let (ident, attrs, expr) = match item {
+                syn::Item::Const(item) if constant => (&item.ident, &item.attrs, &item.expr),
+                syn::Item::Static(item) if !constant => (&item.ident, &item.attrs, &item.expr),
+                _ => continue,
+            };
+            if ident == name {
+                if has_attributes(attrs) {
+                    return Err(table_error(&format!("{name} in {path:?} has attributes")));
+                }
+                found.push((path.clone(), &**expr));
+            }
+        }
+    }
+    match found.len() {
+        1 => Ok(found.pop().unwrap()),
+        0 => Err(table_error(&format!("no {} {name} in module {module:?}", if constant { "const" } else { "static" }))),
+        _ => Err(table_error(&format!("{name} is defined more than once under module {module:?}"))),
+    }
+}
+
+/// A suite's source files: `src/suite_<module>.rs` alone, or the directory
+/// `src/suite_<module>/` with `main.rs` as the crate root followed by every other `.rs`
+/// file in it, by module path. Returns the root's path relative to `root` and the files.
+fn suite_files(root: &Path, module: &str) -> Option<(String, Vec<(String, String)>)> {
+    let single = format!("userspace/programs/src/suite_{module}.rs");
+    if let Ok(text) = fs::read_to_string(root.join(&single)) {
+        return Some((single, vec![(String::new(), text)]));
+    }
+    let dir = format!("userspace/programs/src/suite_{module}");
+    let main = fs::read_to_string(root.join(&dir).join("main.rs")).ok()?;
+    let mut files = vec![(String::new(), main)];
+    module_files(&root.join(&dir), "", &mut files);
+    Some((format!("{dir}/main.rs"), files))
+}
+
+fn module_files(dir: &Path, prefix: &str, files: &mut Vec<(String, String)>) {
+    let mut paths: Vec<PathBuf> = fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().path()).collect();
+    paths.sort();
+    for path in paths {
+        let name = path.file_stem().unwrap().to_string_lossy().to_string();
+        let module = if prefix.is_empty() { name.clone() } else { format!("{prefix}::{name}") };
+        if path.is_dir() {
+            if let Ok(text) = fs::read_to_string(path.join("mod.rs")) {
+                files.push((module.clone(), text));
+            }
+            module_files(&path, &module, files);
+        } else if path.extension().is_some_and(|ext| ext == "rs") && name != "mod" && !(prefix.is_empty() && name == "main") {
+            files.push((module, fs::read_to_string(&path).unwrap()));
+        }
+    }
+}
+
+/// Every source file of the suite `id`, concatenated, for token scans.
+fn suite_text(root: &Path, id: &str) -> Option<String> {
+    suite_files(root, &id.replace('-', "_")).map(|(_, files)| files.into_iter().map(|(_, text)| text).collect::<Vec<_>>().join("\n"))
 }
 
 /// The `[[bin]]` tables in a Cargo.toml, as (name, path).
@@ -545,11 +700,11 @@ fn suite_manifests_match_their_binaries() {
             }
             continue;
         }
-        let Ok(source) = fs::read_to_string(root.join(&source_rel)) else {
-            errors.push(format!("{id}: no suite source at {source_rel}"));
+        let Some((source_rel, files)) = suite_files(&root, &module) else {
+            errors.push(format!("{id}: no suite source at userspace/programs/src/suite_{module}.rs or suite_{module}/main.rs"));
             continue;
         };
-        let bin = (format!("suite-{id}"), format!("src/suite_{module}.rs"));
+        let bin = (format!("suite-{id}"), source_rel.trim_start_matches("userspace/programs/").to_string());
         if !bins.contains(&bin) {
             errors.push(format!(
                 "{id}: userspace/programs/Cargo.toml has no [[bin]] name = {:?}, path = {:?}",
@@ -561,7 +716,7 @@ fn suite_manifests_match_their_binaries() {
             errors.push(format!("{id}: \"{entry}\" is not in STD_BINARIES in userspace/programs/build.sh"));
         }
 
-        let (suite, categories) = match source_suite(&source) {
+        let (suite, categories) = match source_suite_files(&files) {
             Ok(table) => table,
             Err(error) => {
                 errors.push(format!("{id}: {source_rel}: {error}"));
@@ -799,6 +954,42 @@ fn the_table_main_runs_is_read() {
 }
 
 #[test]
+fn tables_in_modules_are_read_and_joined_in_order() {
+    let root = r#"
+        mod a;
+        mod b;
+        const T_PARTS: &[&[Case]] = &[a::T, b::T, a::T_TAIL];
+        static T: [Case; total(T_PARTS)] = join(T_PARTS);
+        static S: Suite = suite("demo", "Demo", &[
+            category("one", "One", a::ONE),
+            category("two", "Two", &T),
+            category("three", "Three", b::THREE),
+        ]);
+        fn main() { S.run() }
+    "#;
+    let a = r#"
+        const ONE: &[Case] = &[case("x", "X", x)];
+        const T: &[Case] = &[case("t1", "T1", t1)];
+        const T_TAIL: &[Case] = &[case("t3", "T3", t3)];
+    "#;
+    let b = r#"mod c; pub(crate) use c::THREE; const T: &[Case] = &[case("t2", "T2", t2)];"#;
+    let c = r#"const THREE: &[Case] = &[case("y", "Y", y), case("z", "Z", z)];"#;
+    let files: Vec<(String, String)> = [("", root), ("a", a), ("b", b), ("b::c", c)]
+        .iter().map(|(m, t)| (m.to_string(), t.to_string())).collect();
+    let (_, categories) = source_suite_files(&files).unwrap();
+    let ids: Vec<Vec<&str>> = categories.iter().map(|c| c.cases.iter().map(|k| k.id.as_str()).collect()).collect();
+    assert_eq!(ids, [vec!["x"], vec!["t1", "t2", "t3"], vec!["y", "z"]]);
+    for bad in [
+        r#"const ONE: &[Case] = &[case("x", "X", x)]; #[cfg(any())] const T: &[Case] = &[]; const T_TAIL: &[Case] = &[];"#,
+        r#"const T: &[Case] = &[]; const T_TAIL: &[Case] = &[];"#,
+    ] {
+        let mut broken = files.clone();
+        broken[1].1 = bad.to_string();
+        assert!(source_suite_files(&broken).is_err(), "{bad}");
+    }
+}
+
+#[test]
 fn tables_that_could_differ_from_what_runs_are_refused() {
     for source in [
         r#"#[cfg(any())] static S: Suite = suite("d", "D", &[]); fn main() { S.run() }"#,
@@ -854,9 +1045,7 @@ fn suites_using_time_or_concurrency_require_timing_metadata() {
             continue;
         }
         let id = manifest["id"].as_str().unwrap();
-        let source = fs::read_to_string(root.join(format!(
-            "userspace/programs/src/suite_{}.rs", id.replace('-', "_")
-        ))).unwrap();
+        let source = suite_text(&root, id).unwrap();
         let tokens = source.parse::<proc_macro2::TokenStream>().unwrap();
         if uses_time_or_concurrency(tokens) {
             checked += 1;
@@ -882,6 +1071,39 @@ fn timing_classification_ignores_comments_and_literals() {
                    "fn case() { std::thread::spawn(|| {}); }"] {
         assert!(uses_time_or_concurrency(source.parse().unwrap()));
     }
+}
+
+/// The GUI suites (docs/gui/plan.md section 2.2): every case passes or fails, so a suite
+/// source may not call `skip`, whatever it imports or says in comments.
+const GUI_SUITES: &[&str] = &["breengel", "window-manager", "ui-testing", "gui-apps"];
+
+fn calls_skip(tokens: proc_macro2::TokenStream) -> bool {
+    let tokens: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
+    tokens.iter().enumerate().any(|(i, token)| match token {
+        proc_macro2::TokenTree::Group(group) => calls_skip(group.stream()),
+        proc_macro2::TokenTree::Ident(ident) => ident == "skip" && matches!(tokens.get(i + 1),
+            Some(proc_macro2::TokenTree::Group(group)) if group.delimiter() == proc_macro2::Delimiter::Parenthesis),
+        _ => false,
+    })
+}
+
+#[test]
+fn gui_suites_never_skip() {
+    let root = repo_root();
+    let mut checked = 0;
+    for id in GUI_SUITES {
+        let Some(source) = suite_text(&root, id) else { continue };
+        checked += 1;
+        assert!(!calls_skip(source.parse().unwrap()), "{id}: a GUI suite's cases pass or fail; remove the call to skip");
+    }
+    assert!(checked > 0, "no GUI suite source was found");
+}
+
+#[test]
+fn skip_calls_are_found_exactly() {
+    assert!(calls_skip("fn c() -> CaseResult { skip(\"no device\") }".parse().unwrap()));
+    assert!(calls_skip("fn c() -> CaseResult { if x { return suite::skip(why); } Ok(()) }".parse().unwrap()));
+    assert!(!calls_skip("use libbreenix::suite::{fail, skip}; // skip(\"x\")\nfn c() { let s = \"skip(1)\"; let skipped = 0; }".parse().unwrap()));
 }
 
 /// The target ids an effort in `docs/efforts/path.json` may list, in the order a list gives them: the ids

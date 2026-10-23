@@ -2,8 +2,8 @@
 use super::common::*;
 use gpu::abi::{draw::{self, Instance}, Plain};
 use libbreenix::gpu;
-use libbreenix::suite::{value, CaseResult};
-type R<T> = Result<T, libbreenix::suite::CaseError>;
+use breenix_suite::suite::{value, CaseResult};
+type R<T> = Result<T, breenix_suite::suite::CaseError>;
 const BG: u32 = 0xff312719;
 const FG: u32 = 0xffb76321;
 fn instance(rect: [i32; 4], params: &[i32]) -> Instance {
@@ -340,7 +340,7 @@ pub fn over_overlap() -> CaseResult {
     ctx.begin(t, 12, 12);
     ctx.clear(BG);
     ctx.draw(pipeline::OVER, 0, texture, 0, 0, &instances);
-    let commands = ctx.encoded();
+    let commands = ctx.commands();
     let mut at = 0;
     let mut draws = 0;
     while at < commands.len() {
@@ -1242,12 +1242,12 @@ pub fn coverage_spans_corpus() -> CaseResult {
     for name in ["DejaVuSansMono.ttf", "DejaVuSans.ttf"] {
         let bytes = std::fs::read(format!("/usr/share/fonts/{name}"))
             .map_err(|e| fail_msg(format!("reference font: {e}")))?;
-        let font = libfont::Font::parse(&bytes).map_err(fail_msg)?;
+        let font = libfont::Font::parse(&bytes).map_err(|e| fail_msg(e.to_string()))?;
         for size in [8.0, 12.0, 16.0, 24.0, 48.0] {
             for cp in 32u8..=126 {
                 let (w, h, s) = font
                     .glyph_segments(font.glyph_index(cp as char), size)
-                    .map_err(fail_msg)?;
+                    .map_err(|e| fail_msg(e.to_string()))?;
                 if w != 0 && h != 0 {
                     spans_draw(ctx, t, buffer, w as u32, h as u32, &s)?;
                     let raster = super::expectations::rasterize(&s, w, h, 0, 0)

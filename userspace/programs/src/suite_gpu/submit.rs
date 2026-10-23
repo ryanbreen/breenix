@@ -4,7 +4,7 @@
 use libbreenix::gpu;
 use libbreenix::process::{self, ForkResult};
 use libbreenix::signal::{self, Itimerval, Sigaction, Timeval, ITIMER_REAL, SIGALRM, SIGKILL};
-use libbreenix::suite::{value, wait_for, CaseResult};
+use breenix_suite::suite::{value, wait_for, CaseResult};
 use libbreenix::{io, time};
 
 use super::common::*;
