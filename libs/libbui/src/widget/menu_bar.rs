@@ -2,8 +2,8 @@
 
 use alloc::vec::Vec;
 use libgfx::color::Color;
-use libgfx::framebuf::FrameBuf;
-use libgfx::shapes;
+use libgfx::surface::Surface as FrameBuf;
+use crate::drawing as shapes;
 
 use crate::input::InputState;
 use crate::rect::Rect;
@@ -63,11 +63,7 @@ pub struct MenuItem {
 
 impl MenuItem {
     /// Normal, enabled menu item.
-    pub const fn new(
-        label: &'static [u8],
-        action: MenuAction,
-        shortcut: Shortcut,
-    ) -> Self {
+    pub const fn new(label: &'static [u8], action: MenuAction, shortcut: Shortcut) -> Self {
         Self {
             label,
             action,
@@ -79,11 +75,7 @@ impl MenuItem {
     }
 
     /// Disabled (greyed-out) menu item.
-    pub const fn disabled(
-        label: &'static [u8],
-        action: MenuAction,
-        shortcut: Shortcut,
-    ) -> Self {
+    pub const fn disabled(label: &'static [u8], action: MenuAction, shortcut: Shortcut) -> Self {
         Self {
             label,
             action,
@@ -172,6 +164,7 @@ pub struct MenuBar {
     /// *release* that occurs while still inside a header or item counts.
     /// Until then we ignore release events (drag-to-select is not supported).
     click_mode: bool,
+    redraw: bool,
 }
 
 impl MenuBar {
@@ -189,6 +182,7 @@ impl MenuBar {
             hover_item: None,
             top_rects,
             click_mode: false,
+            redraw: false,
         }
     }
 
@@ -287,7 +281,59 @@ impl MenuBar {
     }
 
     /// Process mouse input.  Call every frame.
+    pub fn last_update_redraw(&self) -> bool {
+        self.redraw
+    }
+    pub fn highlighted(&self) -> Option<usize> {
+        self.hover_item
+    }
+    pub fn key(&mut self, input: &crate::KeyInput<'_>) -> MenuEvent {
+        self.redraw = false;
+        let Some(menu) = self.open_index else {
+            return MenuEvent::None;
+        };
+        if !self.is_open() {
+            return MenuEvent::None;
+        }
+        match input.key {
+            crate::Key::Escape => {
+                self.close();
+                self.redraw = true;
+            }
+            crate::Key::Enter => {
+                if let Some(i) = self.hover_item {
+                    self.redraw = true;
+                    return self.activate_item(menu, i);
+                }
+            }
+            crate::Key::Up | crate::Key::Down => {
+                let n = self.menus[menu].items.len();
+                for step in 1..=n {
+                    let i = match self.hover_item {
+                        Some(i) if input.key == crate::Key::Up => (i + n - step) % n,
+                        Some(i) => (i + step) % n,
+                        None if input.key == crate::Key::Up => n - step,
+                        None => step - 1,
+                    };
+                    let item = &self.menus[menu].items[i];
+                    if item.enabled && !item.separator {
+                        self.redraw = self.hover_item != Some(i);
+                        self.hover_item = Some(i);
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+        MenuEvent::None
+    }
     pub fn update(&mut self, input: &InputState, theme: &Theme) -> MenuEvent {
+        let before = (self.state, self.open_index, self.hover_item);
+        let event = self.update_inner(input, theme);
+        self.redraw = before != (self.state, self.open_index, self.hover_item);
+        event
+    }
+    fn update_inner(&mut self, input: &InputState, theme: &Theme) -> MenuEvent {
         let mx = input.mouse_x;
         let my = input.mouse_y;
 
@@ -502,7 +548,13 @@ impl MenuBar {
         let h: i32 = menu
             .items
             .iter()
-            .map(|it| if it.separator { SEPARATOR_HEIGHT } else { ITEM_HEIGHT })
+            .map(|it| {
+                if it.separator {
+                    SEPARATOR_HEIGHT
+                } else {
+                    ITEM_HEIGHT
+                }
+            })
             .sum();
 
         let anchor = if menu_index < self.top_rects.len() {
@@ -541,7 +593,11 @@ impl MenuBar {
         let menu = &self.menus[menu_index];
         let mut y = dd.y;
         for (i, item) in menu.items.iter().enumerate() {
-            let row_h = if item.separator { SEPARATOR_HEIGHT } else { ITEM_HEIGHT };
+            let row_h = if item.separator {
+                SEPARATOR_HEIGHT
+            } else {
+                ITEM_HEIGHT
+            };
             let row = Rect::new(dd.x, y, dd.w, row_h);
             if row.contains(px, py) {
                 if item.separator || !item.enabled {
@@ -557,7 +613,11 @@ impl MenuBar {
     /// Activate item at `item_idx` inside the menu at `menu_idx`. Closes the
     /// dropdown and returns the appropriate `MenuEvent`.
     fn activate_item(&mut self, menu_idx: usize, item_idx: usize) -> MenuEvent {
-        let action = self.menus[menu_idx].items[item_idx].action;
+        let item = &self.menus[menu_idx].items[item_idx];
+        if !item.enabled || item.separator {
+            return MenuEvent::None;
+        }
+        let action = item.action;
         self.close();
         if action != NO_ACTION {
             MenuEvent::Activated(action)
@@ -582,14 +642,7 @@ impl MenuBar {
             if item.separator {
                 // Draw a 1 px line vertically centred in SEPARATOR_HEIGHT.
                 let sep_y = y + SEPARATOR_HEIGHT / 2;
-                shapes::fill_rect(
-                    fb,
-                    dd.x + 1,
-                    sep_y,
-                    dd.w - 2,
-                    1,
-                    theme.border,
-                );
+                shapes::fill_rect(fb, dd.x + 1, sep_y, dd.w - 2, 1, theme.border);
                 y += SEPARATOR_HEIGHT;
                 continue;
             }

@@ -980,6 +980,11 @@ blogd, `ntp` (the time client) and the gettys on tty2 to tty6 and the console. T
 factory file: `etc-reconcile` installs it on persistent installs and keeps a local edit with a
 `.factory` sibling.
 
+The ARM64 table also holds six gettys. Default ARM64 init selects only services
+without login terminals so its desktop startup leaves those gettys out; explicit
+`init console` selects the login terminals instead. These scope choices also apply
+to `svc reload`, including definitions added under `/run/breenix/services.d/`.
+
 - **Needs.** bsshd needs `entropy`: init starts it once a non-blocking `getrandom` succeeds, and
   prints `[init] random pool ready; ...`. The time client needs `network-up`: `/proc/net/pnp`
   shows a DHCP lease or a manual configuration. A waiting service holds up nothing else, so the
@@ -1010,6 +1015,9 @@ factory file: `etc-reconcile` installs it on persistent installs and keeps a loc
 
 `init console` supervises only the table's gettys. The [server suite](../suites/README.md#server-host-driven-persistent-categories)
 measures the services on a persistent boot.
+On an ARM64 persistent install with a locally edited services table, reconcile the
+new getty definitions from its `.factory` sibling into the local table before
+using `init console`; preserving the edit also preserves a table without gettys.
 
 ### Persistent logs
 
@@ -1075,6 +1083,39 @@ records the panic and its autonomous reset, retaining a failed boot verdict.
 
 The host-driven [reboot category](../suites/README.md#server-host-driven-persistent-categories)
 checks both orderly transitions and the separate panic fault boot.
+### Synchronized time and UTC RTC
+
+The time service uses the private site's `SNTP_SERVERS` field (up to eight
+space-separated DNS names or IPv4 addresses), staged as
+`/etc/breenix/sntp-servers`. An empty field selects DHCP option 42, exposed as
+`ntpserver` lines in `/proc/net/pnp`. There is no built-in public server or
+fallback address. The installer publishes site configuration into shared `/etc`
+so upgrades can update it independently of generation factory defaults.
+
+`ntp_client` runs after network-up, polls hourly after success, and backs off
+from 16 seconds to an hour on failure. Endpoint polling bounds survive daemon
+restarts within the boot. RATE extends the server's backoff; DENY and RSTR
+suppress it for that boot. It checks response source and origin, timestamps,
+leap state, version, stratum and synchronization distance before applying a
+sample. The first correction steps without an offset limit; later corrections over
+1000 seconds are refused. Unauthenticated SNTP trusts
+the configured LAN time source; it supplies no cryptographic authentication.
+
+A marker in `/run` permits a step only on the first synchronization of a boot,
+including across service restarts. Later corrections use the kernel's finite
+500 ppm slew through the native `adjtimex` single-shot ABI; monotonic time is
+unchanged. The UTC calendar is written at a seconds edge through the root-only
+RTC_SET_TIME ioctl, preserving CMOS format and 12/24-hour mode while clearing hardware daylight
+adjustment and update inhibition. This calendar write does not reset the CMOS
+divider; its phase uncertainty can approach one second. The CMOS read cache is
+invalidated after a write. ARM64 QEMU uses the PL031 load register;
+firmware RTC writing on the persistent VMs belongs to the D6 catch-up.
+`ntp_client --status` reports live clocks and synchronization state as JSON;
+`--watch SECONDS` samples them, and root may request an administrative
+`--once --server NAME [--port PORT]` synchronization under the same step and
+slew rules. The [server suite](../suites/README.md#server-host-driven-persistent-categories)
+measures UTC offset, the real hourly poll, rejection behavior, live slewing and
+the RTC after reboot.
 
 ### Persistent sessions
 

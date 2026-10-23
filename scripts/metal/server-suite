@@ -10,6 +10,7 @@ for sudo and the operator's console login. The boot stays leased until the calle
 through metal-run.
 """
 import argparse
+import calendar
 from contextlib import ExitStack
 import hashlib
 import json
@@ -22,6 +23,9 @@ import socket
 import subprocess
 import tempfile
 import time
+import struct
+import threading
+from urllib.parse import urlsplit
 
 SSH_KEYS = (
     ('port-22', 'SSH identification arrives on port 22 before the client sends anything'),
@@ -61,6 +65,8 @@ LOGS = (
     ('persistent', 'The previous persistent boot service log survives reboot with its original boot ID and bytes'),
 )
 
+TIME = (('source', 'The supervised time client synchronizes from site or DHCP servers after network-up'), ('offset', 'The synchronized machine clock agrees with the boot host UTC within one second'), ('hourly', 'The running client polls again after one hour without restarting'), ('sanity', 'Invalid, unsynchronized, mismatched, stale and excessive-offset SNTP replies cannot change the clock'), ('slew', 'A negative correction after first synchronization slews at bounded rate without stepping backwards'), ('rtc-reboot', 'After synchronization and reboot the hardware RTC agrees with the boot host UTC within one second'))
+
 # The users suite's host-run category (docs/users/design.md, section 5): the persistent install's operator account.
 OPERATOR = (
     ('account', "The persistent install's operator account has the site's name and uid, its own group, home and /bin/bsh, and the site key"),
@@ -72,6 +78,10 @@ OPERATOR = (
                           'read back from the screen through sudo, and getty back after logout'),
 )
 
+CONSOLE_INPUT = (
+    ('long-line', 'SOL delivers long shell and canonical lines whole, and canonical overflow retains editing and the delimiter'),
+)
+
 # The populated categories in manifest order, the suite each belongs to, and the milestone each one measures.
 REBOOT = (
     ('reboot-refused', 'An unprivileged reboot is refused without ending the boot'),
@@ -81,10 +91,10 @@ REBOOT = (
     ('panic-reset', 'A fault-test kernel prints its panic and resets without a host reset'),
 )
 
-CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'reboot': REBOOT, 'operator': OPERATOR}
-SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'reboot': 'server', 'operator': 'users'}
-MILESTONES = {'server/ssh-keys': 'ssh-keys', 'server/services': 'services', 'server/logs': 'logs', 'server/reboot': 'reboot',
-              'users/operator-login': 'operator'}
+CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'time': TIME, 'reboot': REBOOT, 'operator': OPERATOR, 'console-input': CONSOLE_INPUT}
+SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'time': 'server', 'reboot': 'server', 'operator': 'users', 'console-input': 'server'}
+MILESTONES = {'server/ssh-keys': 'ssh-keys', 'server/services': 'services', 'server/logs': 'logs',
+              'server/time': 'time', 'server/reboot': 'reboot', 'users/operator-login': 'operator', 'server/console-input': 'console-input'}
 # The console lines the operator's console challenge leaves in the capture (docs/metal/boot-path.json, console-login).
 OPERATOR_CONSOLE_LINES = ('Login incorrect', 'metal-login-ok 42', 'fbcon check: shadow and screen identical',
                           'fbcon row: metal-login-ok 42')
@@ -153,7 +163,7 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
     if not records.get('cleanup'):
         raise ValueError({'ssh-keys': 'temporary authorized key cleanup did not succeed',
                           'operator': 'the console sessions did not end'}.get(category, 'temporary services were not removed'))
-    if not re.search(r'^\[stdout\] bsshd: host key ED25519 SHA256:[A-Za-z0-9+/]+ \((?:loaded|generated)\)\r?$', serial, re.M):
+    if category != 'console-input' and not re.search(r'^\[stdout\] bsshd: host key ED25519 SHA256:[A-Za-z0-9+/]+ \((?:loaded|generated)\)\r?$', serial, re.M):
         raise ValueError('boot captured no protected host-key record')
     if category == 'ssh-keys' and "bsshd: refused method 'password'" not in serial:
         raise ValueError('boot captured no actual password request refusal')
@@ -190,6 +200,8 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
         panic = records.get('panicBoot', {})
         if panic.get('run', {}).get('toolsCommit') != sha or panic.get('run', {}).get('kind') != 'fault-test' or 'KERNEL PANIC: reboot fault test' not in panic.get('serial', '') or not any(e['event'] == 'panic-reset-observed' for e in panic.get('events', [])):
             raise ValueError('panic reset has no matching fault-test boot evidence')
+    if category == 'time' and (not records.get('previous') or records['previous'].get('commit') != sha):
+        raise ValueError('time needs a completed synchronization boot at this commit')
     if records.get('consoleGaps'):
         raise ValueError('console capture has a gap')
     if any(re.search(pattern, serial) for pattern in fatal_patterns):
@@ -558,10 +570,12 @@ class Console:
             if result.returncode: raise ValueError('cannot type on the SOL console')
             time.sleep(0.04)
 
-    def wait(self, offset, pattern, what, timeout=30):
+    def wait(self, offset, pattern, what, timeout=30, transform=None):
         deadline = time.monotonic() + timeout
         while True:
             text = self.since(offset)
+            if transform is not None:
+                text = transform(text)
             found = re.search(pattern, text)
             if found: return text, found
             if time.monotonic() >= deadline: raise ValueError('the console did not show ' + what)
@@ -672,6 +686,66 @@ class Console:
         self.type_line('exit')
         self.wait(offset, r'\[init\] console session ended', 'the console session ending')
         self.logged_in = False
+
+
+def canonical_echo(text):
+    # Kernel records start their own bracket-led row. Exclude those rows,
+    # including a still-arriving record, without counting any of their bytes
+    # as echo. Line wraps do not change the accepted input bytes.
+    return re.sub(r'(?m)^\[[^\r\n]*(?:\r?\n|$)', '', text).replace('\r', '').replace('\n', '')
+
+
+class ConsoleInput:
+    """The console suite's host-run input case, through the live SOL receiver."""
+    def __init__(self, console):
+        self.console = console
+
+    def run_case(self, name):
+        if name != 'long-line': raise ValueError('unknown console input case')
+        c = self.console
+        c.login()
+        # Exercise bsh's per-byte read/redraw path past the reported stall.
+        for length in (288, 1024, 4095):
+            payload = 'x' * (length - len('print("")'))
+            offset = c.size()
+            c.type_line('print("' + payload + '")', attempts=1)
+            text, done = c.wait(offset, r'(?m)^' + payload + r'\r?$', 'the complete shell result', timeout=90)
+            c.wait(offset + len(text[:done.end()].encode()), r'(?m)^' + c.PROMPT + r' ', 'the next shell prompt')
+        # A canonical reader exercises the documented 4095-byte payload bound
+        # without bsh's raw editor imposing its own buffering semantics.
+        trials = [('a' * 4095, 'a' * 4095),
+                  ('b' * 4095 + 'discarded', 'b' * 4095),
+                  ('c' * 4095 + 'discarded\x7fd', 'c' * 4094 + 'd'),
+                  ('e' * 4095 + 'discarded\x15recovered', 'recovered')]
+        for number, (typed, expected) in enumerate(trials):
+            tag = 'console-input-' + str(number)
+            script = ('printf "\\n' + tag + '-ready\\n"; IFS= read -r line; '
+                      'printf "%s" "$line" | sha256sum')
+            offset = c.size()
+            c.type_line('print("' + tag + '-status", run("/bin/sh", "-c", ' + json.dumps(script) + '))', attempts=1)
+            text, ready = c.wait(offset, r'(?m)^' + tag + r'-ready\r?$', 'the canonical reader')
+            offset += len(text[:ready.end()].encode())
+            # Each accepted block must echo before more input arrives.
+            for at in range(0, 4095, 64):
+                block = typed[at:min(at + 64, 4095)]
+                echo_at = c.size()
+                c.send(block, enter=False)
+                c.wait(echo_at, re.escape(block), 'echo of this canonical block', transform=canonical_echo)
+            tail = typed[4095:]
+            if tail:
+                cooked = c.serial
+                try:
+                    c.serial = cooked.removesuffix('serial.txt') + 'serial.raw'
+                    echo_at = c.size()
+                    c.send(tail, enter=False)
+                    c.wait(echo_at, r'\x07', 'the canonical overflow bell')
+                finally:
+                    c.serial = cooked
+            c.send('')
+            digest = hashlib.sha256(expected.encode()).hexdigest()
+            c.wait(offset, r'(?m)^' + digest + r'  -\r?$', 'the hash of the complete canonical line', timeout=90)
+            text, done = c.wait(offset, r'(?m)^' + tag + r'-status 0\r?$', 'the reader exit status')
+            c.wait(offset + len(text[:done.end()].encode()), r'(?m)^' + c.PROMPT + r' ', 'the next shell prompt')
 
 
 class Services:
@@ -813,13 +887,22 @@ class Services:
         before = services['bsshd']
         self.console.login()
         after_records = len(self.init_records())
-        self.console.type_line('kill -9 ' + str(before['pid']))
+        kill_offset = self.console.size()
+        kill_command = 'kill -9 ' + str(before['pid'])
+        self.console.type_line(kill_command)
         sent = time.monotonic()
-        # Reap the old listener before connecting: one of its surviving children can
-        # otherwise answer while the new listener is still starting.
         deadline = sent + RESTART_WINDOW_S
-        self.await_init_line(after_records, r'^\[init\] bsshd killed by signal 9$', "bsshd's SIGKILL",
-                             timeout=max(0, deadline - time.monotonic()))
+        # A Ctrl-U retry can leave a bare prompt before the kill ran. Start
+        # the completion wait only after the submitted command's newline.
+        text, echoed = self.console.wait(
+            kill_offset, r'(?m)^' + Console.PROMPT + ' ' + re.escape(kill_command)
+            + r'[ \t]*(?:\[init\][^\n]*)?\n', 'the submitted SIGKILL command',
+            timeout=max(0, deadline - time.monotonic()))
+        self.console.wait(kill_offset + len(text[:echoed.end()].encode()),
+                          r'(?m)^' + Console.PROMPT + r'[ \t]*(?=\[init\]|\n|$)',
+                          'the shell prompt after SIGKILL', timeout=max(0, deadline - time.monotonic()))
+        # Keep slow protected-log input outside the restart window. The state
+        # check below requires the new listener, not a surviving old child.
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -830,17 +913,18 @@ class Services:
                 raise ValueError('no strict-host-key reconnect within ' + str(RESTART_WINDOW_S) + ' s of the kill')
             if time.monotonic() > deadline:
                 raise ValueError('no strict-host-key reconnect within ' + str(RESTART_WINDOW_S) + ' s of the kill')
-            if result.returncode == 0 and result.stdout.strip() == '1000': break
+            if result.returncode == 0 and result.stdout.strip() == '1000':
+                remaining = deadline - time.monotonic()
+                if remaining <= 0: raise ValueError('restart state was not verified within 10 s of the kill')
+                _, services = self.state(timeout=remaining)
+                if time.monotonic() > deadline: raise ValueError('restart state was not verified within 10 s of the kill')
+                after = services['bsshd']
+                if after['state'] == 'running' and after['pid'] not in (0, before['pid']) \
+                        and after['starts'] == before['starts'] + 1 and after['exit'] == 'signal:9':
+                    break
             time.sleep(min(0.25, max(0, deadline - time.monotonic())))
         self.probe.transcript.append(dict(reconnectSeconds=round(time.monotonic() - sent, 3)))
-        remaining = deadline - time.monotonic()
-        if remaining <= 0: raise ValueError('restart state was not verified within 10 s of the kill')
-        _, services = self.state(timeout=remaining)
-        if time.monotonic() > deadline: raise ValueError('restart state was not verified within 10 s of the kill')
-        after = services['bsshd']
-        if after['state'] != 'running' or after['pid'] in (0, before['pid']) or after['starts'] != before['starts'] + 1 \
-                or after['exit'] != 'signal:9':
-            raise ValueError('the published state does not show the restart after SIGKILL')
+        self.await_init_line(after_records, r'^\[init\] bsshd killed by signal 9$', "bsshd's SIGKILL")
         self.await_init_line(after_records, r'^\[init\] bsshd restarts in 1000 ms$', 'the restart delay')
 
     def case_reconnect_bsh(self):
@@ -1209,6 +1293,237 @@ class Logs:
             self.console.logout()
 
 
+
+class SntpFixture:
+    """A real UDP server on the boot host; faults change wire fields, not client code."""
+    def __init__(self, fault=None, offset=0):
+        self.fault, self.offset, self.requests = fault, offset, []
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.bind(('0.0.0.0', 0))
+        self.port = self.socket.getsockname()[1]
+        self.socket.settimeout(0.2)
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self.serve)
+        self.thread.start()
+
+    @staticmethod
+    def stamp(unix):
+        return struct.pack('!Q', int((unix + 2208988800) * (1 << 32)) & ((1 << 64) - 1))
+
+    def serve(self):
+        while not self.stopped.is_set():
+            try: request, peer = self.socket.recvfrom(512)
+            except socket.timeout: continue
+            self.requests.append((time.time(), request))
+            if len(request) != 48: continue
+            reply = bytearray(48)
+            reply[0], reply[1] = 0x24, 2
+            reply[2], reply[3] = 12, 0xec
+            reply[16:24] = self.stamp(time.time() + self.offset - 1)
+            reply[24:32] = request[40:48]
+            reply[32:40] = self.stamp(time.time() + self.offset)
+            reply[40:48] = self.stamp(time.time() + self.offset)
+            if self.fault == 'leap': reply[0] |= 0xc0
+            if self.fault == 'version': reply[0] = 0x0c
+            if self.fault == 'mode': reply[0] = 0x23
+            if self.fault == 'stratum': reply[1] = 16
+            if self.fault == 'origin': reply[24:32] = b'\0' * 8
+            if self.fault == 'zero': reply[40:48] = b'\0' * 8
+            if self.fault == 'stale': reply[16:24] = self.stamp(time.time() - 86400)
+            if self.fault == 'dispersion': reply[8:12] = struct.pack('!I', 20 * 65536)
+            if self.fault == 'kod': reply[1], reply[12:16] = 0, b'RATE'
+            self.socket.sendto(reply[:20] if self.fault == 'short' else reply, peer)
+
+    def close(self):
+        self.stopped.set()
+        self.thread.join()
+        self.socket.close()
+
+
+class TimeCases:
+    def __init__(self, probe, console, previous, capture, site):
+        self.probe, self.console, self.previous, self.capture = probe, console, previous, capture
+        self.site = site
+        self.fixture_host = urlsplit(site['BOOT_URL']).hostname
+        self.stopped = False
+
+    def status(self):
+        result = self.probe.ssh('/usr/sbin/ntp_client --status')
+        self.probe.require(result)
+        return json.loads(result.stdout)
+
+    def synced(self, timeout=90):
+        deadline = time.monotonic() + timeout
+        while True:
+            state = self.status()
+            if state['syncs'] > 0: return state
+            if time.monotonic() >= deadline: raise ValueError('no successful SNTP synchronization')
+            time.sleep(1)
+
+    def offset(self):
+        before = time.time_ns()
+        state = self.synced()
+        after = time.time_ns()
+        # The reading must lie in the host interval expanded by exactly one second.
+        if abs(state['realtime_ns'] - (before + after)//2) + (after-before)//2 > 1_000_000_000:
+            raise ValueError('machine UTC is more than one second from the boot host')
+        print('SUITE server VALUE time/offset offset-ms=' + str((state['realtime_ns'] - (before + after)//2)//1_000_000) + 'ms expect=-1000..1000ms', flush=True)
+        return state
+
+    @staticmethod
+    def rtc_epoch(state):
+        tm = state['rtc']
+        return calendar.timegm((tm[5] + 1900, tm[4] + 1, tm[3], tm[2], tm[1], tm[0]))
+
+    def fresh_sync(self):
+        # Simulate the first sync of a boot, after stopping the supervised client.
+        self.console.run('rm -f /run/breenix/ntp-stepped /run/breenix/ntp-state')
+
+    def prepare(self):
+        self.stop()
+        self.fresh_sync()
+        fixture = SntpFixture(offset=172800)
+        try:
+            self.query(fixture)
+            injected = self.status()
+            host = time.time_ns()
+            if abs(injected['realtime_ns'] - host - 172800_000_000_000) > 1_000_000_000:
+                raise ValueError('two-day wall-clock error was not injected')
+            if abs(self.rtc_epoch(injected) - host//1_000_000_000 - 172800) > 2:
+                raise ValueError('two-day hardware RTC error was not injected')
+        finally:
+            fixture.close()
+            # Restore authoritative time even when injection verification fails.
+            self.fresh_sync()
+            self.cleanup()
+            self.synced()
+        state = self.offset()
+        if abs(self.rtc_epoch(state) - time.time_ns()//1_000_000_000) > 2:
+            raise ValueError('synchronization did not correct the skewed hardware RTC')
+        return dict(syncs=state['syncs'], hostUtcNs=time.time_ns(), rtc=state['rtc'],
+                    injectedHostUtcNs=host, injectedRealtimeNs=injected['realtime_ns'],
+                    injectedRtc=injected['rtc'], skewSeconds=172800, corrected=True)
+
+    def require_preparation(self):
+        if not self.previous or not self.previous.get('corrected') or self.previous.get('skewSeconds') != 172800:
+            raise ValueError('no verified two-day clock and RTC correction before reboot')
+
+    def stop(self):
+        if not self.stopped:
+            self.console.run('svc stop ntp')
+            self.stopped = True
+            deadline = time.monotonic() + 10
+            while True:
+                result = self.probe.ssh('cat /run/breenix/services')
+                self.probe.require(result)
+                _, services = parse_state(result.stdout)
+                if services['ntp']['state'] == 'stopped': break
+                if time.monotonic() >= deadline: raise ValueError('time daemon did not stop')
+                time.sleep(.2)
+
+    def query(self, fixture, watch=False):
+        cmd = '/usr/sbin/ntp_client --once --server ' + shlex.quote(self.fixture_host) + ' --port ' + str(fixture.port)
+        if watch:
+            cmd = 'sh -c ' + shlex.quote('/usr/sbin/ntp_client --watch 8 > /run/breenix/time-watch & ' + cmd + '; result=$?; wait; exit $result')
+        return self.console.run(cmd)
+
+    def run_case(self, name):
+        if name == 'source':
+            state = self.synced()
+            result = self.probe.ssh('cat /run/breenix/services')
+            self.probe.require(result)
+            _, services = parse_state(result.stdout)
+            result = self.probe.ssh('cat /etc/breenix/sntp-servers')
+            self.probe.require(result)
+            configured = result.stdout.split()
+            if configured != (self.site.get('SNTP_SERVERS') or '').split():
+                raise ValueError('installed SNTP sources differ from the private site configuration')
+            if configured and state['source'] != 'site':
+                raise ValueError('site sources were not selected')
+            if not configured:
+                result = self.probe.ssh('cat /proc/net/pnp')
+                self.probe.require(result)
+                if state['source'] != 'dhcp' or not re.search(r'^ntpserver ', result.stdout, re.M):
+                    raise ValueError('no DHCP time source was selected')
+            if state['first_ms'] < services['ntp']['first'] or state['source'] not in ('site', 'dhcp'):
+                raise ValueError('sync did not use configured sources after network-up')
+            if state['poll_seconds'] != 3600 or state['rtc_utc'] is not True:
+                raise ValueError('client policy is not hourly with a UTC RTC')
+        elif name == 'offset':
+            self.require_preparation()
+            self.offset()
+        elif name == 'hourly':
+            first = self.synced()
+            result = self.probe.ssh('cat /run/breenix/services')
+            self.probe.require(result)
+            _, initial = parse_state(result.stdout)
+            deadline = time.monotonic() + 3700
+            while True:
+                state = self.status()
+                if state['syncs'] > first['syncs']:
+                    if not 3_600_000 <= state['last_ms'] - first['last_ms'] <= 3_610_000:
+                        raise ValueError('poll interval was not one hour')
+                    result = self.probe.ssh('cat /run/breenix/services')
+                    self.probe.require(result)
+                    _, current = parse_state(result.stdout)
+                    if current['ntp']['pid'] != initial['ntp']['pid'] or current['ntp']['starts'] != initial['ntp']['starts']:
+                        raise ValueError('client restarted instead of polling')
+                    self.offset()
+                    break
+                if time.monotonic() >= deadline: raise ValueError('hourly poll did not synchronize')
+                print('Waiting for the actual hourly SNTP poll', flush=True)
+                time.sleep(30)
+        elif name == 'sanity':
+            self.stop()
+            for fault in ('short', 'leap', 'version', 'mode', 'stratum', 'origin', 'zero', 'stale', 'dispersion', 'kod', 'panic'):
+                fixture = SntpFixture(fault, offset=86400 if fault == 'panic' else 0)
+                before = self.status()
+                rejected = False
+                try:
+                    try: self.query(fixture)
+                    except ValueError as error:
+                        if 'console command exited 1:' not in str(error): raise
+                        rejected = True
+                    if not fixture.requests or not rejected: raise ValueError(fault + ' reply was not refused')
+                    after = self.status()
+                    delta = (after['realtime_ns'] - before['realtime_ns']) - (after['monotonic_ns'] - before['monotonic_ns'])
+                    if abs(delta) > 50_000_000 or after['syncs'] != before['syncs']:
+                        raise ValueError(fault + ' reply changed clock or synchronization state')
+                finally: fixture.close()
+        elif name == 'slew':
+            self.stop()
+            fixture = SntpFixture(offset=-.2)
+            try:
+                self.query(fixture, watch=True)
+                result = self.probe.ssh('cat /run/breenix/time-watch')
+                self.probe.require(result)
+                samples = [json.loads(row) for row in result.stdout.splitlines()]
+                if len(samples) < 100: raise ValueError('missing live clock samples')
+                for a, b in zip(samples, samples[1:]):
+                    dr, dm = b['realtime_ns']-a['realtime_ns'], b['monotonic_ns']-a['monotonic_ns']
+                    if dr < 0 or abs(dr-dm) > dm//1000 + 100_000:
+                        raise ValueError('correction stepped or exceeded the slew rate limit')
+                correction = (samples[-1]['realtime_ns']-samples[0]['realtime_ns'])-(samples[-1]['monotonic_ns']-samples[0]['monotonic_ns'])
+                if not -10_000_000 < correction < -1_000_000:
+                    raise ValueError('negative correction was not applied by slewing')
+                if self.status()['steps'] != 1: raise ValueError('clock stepped again after first sync')
+            finally: fixture.close()
+        elif name == 'rtc-reboot':
+            self.require_preparation()
+            serial, stamps = self.capture()
+            match = re.search(r'^\[clock\] UTC epoch=([0-9]+) source=CMOS\r?$', serial, re.M)
+            if not match: raise ValueError('no hardware RTC sample in reboot capture')
+            byte = len(serial[:match.start()].encode())
+            arrived = max((stamp for stamp, start in stamps if start <= byte), default=None)
+            if arrived is None or abs(int(match[1]) - arrived) > 1:
+                raise ValueError('reboot RTC differs from boot host UTC by more than one second')
+
+    def cleanup(self):
+        if self.stopped:
+            self.console.run('svc start ntp')
+            self.stopped = False
+
+
 class Operator:
     """The users suite's operator category: the account install-persistent staged from the site, seen from the boot
     host's OpenSSH with strict host-key checking and on the SOL console (docs/users/design.md, section 5). Root
@@ -1353,6 +1668,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check-manifest', type=Path)
     parser.add_argument('--previous-boot', help='Completed logs preparation boot at this same commit')
+    parser.add_argument('--prepare-time', action='store_true', help='Record a synchronized boot before the RTC reboot case')
     parser.add_argument('--prepare-logs', action='store_true', help='Write the log whose bytes the next boot must retain')
     parser.add_argument('--branch', default='metal-server/reboot')
     parser.add_argument('--boot')
@@ -1381,7 +1697,7 @@ def main():
     if args.previous_boot:
         if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.previous_boot): parser.error('invalid previous boot')
         previous_dir = '/var/lib/breenix-metal/boots/' + args.previous_boot
-        result = remote('cat', previous_dir + '/logs-prepared.json')
+        result = remote('cat', previous_dir + ('/time-prepared.json' if category == 'time' else '/logs-prepared.json'))
         if result.returncode: raise ValueError('previous boot has no log preparation record')
         previous = json.loads(result.stdout)
         ended = remote('test', '-e', previous_dir + '/ended')
@@ -1399,25 +1715,25 @@ def main():
     manifest = json.loads(read('definition/docs/suites/' + suite + '.json'))
     validate_manifest(manifest)
     effort = json.loads(read('definition/docs/efforts/path.json'))
-    fields = ["SERVER_SSH_HOST", "OPERATOR_USER", "OPERATOR_SSH_PUBLIC_KEY"]
-    fields += ["CONSOLE_USER", "CONSOLE_PASSWORD"]
+    fields = [] if category == 'console-input' else ["SERVER_SSH_HOST", "OPERATOR_USER", "OPERATOR_SSH_PUBLIC_KEY"]
+    fields += ["CONSOLE_USER", "CONSOLE_PASSWORD", "BOOT_URL", "SNTP_SERVERS"]
     if category == 'operator':
         fields += ["OPERATOR_UID", "OPERATOR_PASSWORD"]
     site = remote('python3', '-c', 'import sys,json;sys.path.insert(0,"/opt/breenix-metal");'
                   'import metal_lib,metal_root;s=metal_lib.load_site();'
                   'v={k:s.get(k) for k in ' + repr(tuple(fields)) + '};'
-                  'v["operatorKeys"]=metal_root.operator_keys(s);print(json.dumps(v))')
+                  'v["operatorKeys"]=metal_root.operator_keys(s) if "OPERATOR_USER" in v else [];print(json.dumps(v))')
     if site.returncode: raise ValueError('cannot read suite site fields')
     site = json.loads(site.stdout)
-    if not site['SERVER_SSH_HOST']: raise ValueError('site needs SERVER_SSH_HOST for the persistent server')
+    if category != 'console-input' and not site['SERVER_SSH_HOST']: raise ValueError('site needs SERVER_SSH_HOST for the persistent server')
     if category == 'operator' and (not (re.fullmatch(r'[1-9][0-9]{3,4}', site['OPERATOR_UID'] or '')
                                        and 1000 <= int(site['OPERATOR_UID']) <= 60000)
                                    or not site['OPERATOR_PASSWORD']):
         raise ValueError('site needs OPERATOR_UID and OPERATOR_PASSWORD for the operator category')
-    identity = next((p.with_suffix('') for p in (Path.home() / '.ssh').glob('*.pub')
+    identity = None if category == 'console-input' else next((p.with_suffix('') for p in (Path.home() / '.ssh').glob('*.pub')
                      if p.read_text().split()[:2] == site['OPERATOR_SSH_PUBLIC_KEY'].split()[:2]
                      and p.with_suffix('').is_file()), None)
-    if identity is None: raise ValueError('boot host has no private key matching the staged operator public key')
+    if category != 'console-input' and identity is None: raise ValueError('boot host has no private key matching the staged operator public key')
     fatal = json.loads(read('definition/docs/boot-path.json'))['fatal'] + [r'KERNEL PANIC:']
     records = dict(boot=args.boot, commit=args.sha, milestone=args.milestone, cases=[], cleanup=False, consoleGaps=[])
     with tempfile.TemporaryDirectory(prefix=suite + '-' + category + '-') as scratch, ExitStack() as cleanup:
@@ -1426,7 +1742,7 @@ def main():
                 step()
             except Exception as error:
                 records.setdefault('cleanupErrors', []).append(type(error).__name__ + ': ' + str(error))
-        probe = Probe(site['SERVER_SSH_HOST'], site['OPERATOR_USER'], identity, Path(scratch))
+        probe = None if category == 'console-input' else Probe(site['SERVER_SSH_HOST'], site['OPERATOR_USER'], identity, Path(scratch))
         target = probe
         if not site['CONSOLE_USER'] or not site['CONSOLE_PASSWORD']:
             raise ValueError('site needs CONSOLE_USER and CONSOLE_PASSWORD for the root steps')
@@ -1436,10 +1752,14 @@ def main():
         console = Console(lambda *cmd, **kw: runner['in_metal'](env, *cmd, **kw), args.boot, directory,
                           site['CONSOLE_USER'], site['CONSOLE_PASSWORD'])
         cleanup.callback(cleanup_step, console.logout)
-        cleanup.callback(cleanup_step, probe.cleanup)
-        serial = console.service_log('bsshd')
+        if probe is not None:
+            cleanup.callback(cleanup_step, probe.cleanup)
+        if category == 'console-input':
+            target = ConsoleInput(console)
+        else:
+            serial = console.service_log('bsshd')
         # Trust the fingerprint read over the leased console, never a key learned over SSH.
-        if category in ('services', 'logs', 'operator'):
+        if category in ('services', 'logs', 'time', 'operator'):
             probe.run_case('host-key', serial)
             if category == 'operator':
                 own = Console(lambda *cmd, **kw: runner['in_metal'](env, *cmd, **kw), args.boot, directory,
@@ -1448,8 +1768,18 @@ def main():
                                   '\n'.join(site['operatorKeys']))
             else:
                 target = Services(probe, console, capture) if category == 'services' \
+                    else TimeCases(probe, console, previous, capture, site) if category == 'time' \
                     else Logs(probe, console, previous, prepare=args.prepare_logs)
             cleanup.callback(cleanup_step, target.cleanup)
+        if args.prepare_time:
+            if category != 'time': raise ValueError('--prepare-time needs server/time')
+            prepared = target.prepare()
+            prepared.update(boot=args.boot, commit=args.sha)
+            result = runner['in_metal'](env, 'tee', directory + '/time-prepared.json',
+                stdin=None, input=json.dumps(prepared) + '\n', capture_output=True, text=True)
+            if result.returncode: raise ValueError('cannot save synchronization preparation')
+            print('Prepared synchronized RTC for the next boot', flush=True)
+            return 0
         if args.prepare_logs:
             if category != 'logs': raise ValueError('--prepare-logs needs server/logs')
             try:
@@ -1485,7 +1815,7 @@ def main():
         if category == 'services':
             # The init log records the cases read, as last read, for the scorer.
             records['initLog'] = target.init_log
-        transcript = probe.transcript
+        transcript = [] if probe is None else probe.transcript
     passed = sum(r['result'] == 'PASS' for r in records['cases'])
     print(f'SUITE {suite} DONE passed={passed} failed={len(cases)-passed} skipped=0 total={len(cases)}', flush=True)
     # Re-read the live capture after the last operation; authentication errors never mask a kernel failure.
@@ -1496,12 +1826,12 @@ def main():
         lease = remote('cat', '/var/lib/breenix-metal/lease.json')
         if lease.returncode or json.loads(lease.stdout).get('id') != args.boot:
             raise ValueError('boot lost the machine lease during the suite')
-        if category == 'logs': records['previous'] = previous
+        if category in ('logs', 'time'): records['previous'] = previous
         verdict = score(manifest, effort, records, serial, boot, args.sha, fatal)
         status = 0
     except ValueError as error:
         verdict, status = 'FAIL: ' + str(error), 1
-    if category == 'logs': records['previous'] = previous
+    if category in ('logs', 'time'): records['previous'] = previous
     records['verdict'] = verdict
     result = runner['in_metal'](env, 'tee', directory + '/' + records_name(category),
                                 stdin=None, input=json.dumps(records) + '\n', capture_output=True, text=True)

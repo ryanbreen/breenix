@@ -111,6 +111,7 @@ impl Port for Uart {
     }
 
     fn wrote(writer: Writer, byte: u8) {
+        crate::graphics::boot_ribbon::byte(byte);
         crate::serial_writer::wrote(writer, byte);
     }
 
@@ -267,9 +268,11 @@ impl TxRing {
         true
     }
 
-    /// Take the oldest record into `out`; its length, or 0 with the ring empty.
+    /// Take the oldest record into `out`; 0 when empty or a sender is in flight.
+    /// UART tickets can be skipped while their sender is stalled, so UART
+    /// ownership alone cannot keep the next queued record behind that sender.
     fn pop(&mut self, out: &mut [u8; CAPACITY]) -> usize {
-        if self.len < TX_HEADER {
+        if self.in_flight != 0 || self.len < TX_HEADER {
             return 0;
         }
         let n = u16::from_le_bytes([self.take(), self.take()]) as usize;

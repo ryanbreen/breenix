@@ -24,6 +24,7 @@ class RustVendorTests(unittest.TestCase):
             self.assertNotIn("libgfx", manifest)
             self.assertNotIn("suite", manifest)
             self.assertFalse((root / "src/suite.rs").exists())
+            self.assertFalse((root / "src/suite_lib.rs").exists())
             self.assertNotIn('pub mod suite;', (root / "src/lib.rs").read_text())
             self.assertIn('gpu-abi = { version = "=0.1.0" }', manifest)
             self.assertTrue((out / "gpu-abi-0.1.0/src/lib.rs").exists())

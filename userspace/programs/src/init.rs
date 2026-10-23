@@ -97,6 +97,33 @@ fn run_init_group_refusal_probe(phase: &str) {
     );
 }
 
+/// Suite-mode test controls (system call 415) exist only in boots whose PID 1 is a suite
+/// binary (docs/gui/breengel.md section 21). As PID 1, init checks that every op is ENOSYS
+/// before it says the controls are absent. Run as a child (inside a suite boot, where the
+/// controls may legitimately be on) it makes no claim.
+fn check_test_controls(pid: u64) {
+    use libbreenix::test_control::raw_call;
+    if pid != 1 {
+        print!("[init] not PID 1: test-control check skipped\n");
+        return;
+    }
+    let mut arg = [0u8; 32];
+    let mut present = None;
+    for op in 0..=5u32 {
+        for (ptr, len) in [(core::ptr::null_mut(), 0usize), (arg.as_mut_ptr(), arg.len())] {
+            // SAFETY: the kernel reads or writes at most `len` bytes of `arg`, a live buffer.
+            let ret = unsafe { raw_call(op, ptr, len) };
+            if ret != -38 && present.is_none() {
+                present = Some((op, ret));
+            }
+        }
+    }
+    match present {
+        None => print!("[init] test controls absent\n"),
+        Some((op, ret)) => print!("[init] test controls PRESENT: test_control op {} returned {}\n", op, ret),
+    }
+}
+
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("service-io-check") {
         init_services::check_service_io();
@@ -132,6 +159,7 @@ fn main() {
         std::fs::write("/run/breenix/boot-id", format!("{}\n", boot_id)).expect("publish log boot ID");
         print!("[init] log boot-id={}\n", boot_id);
     }
+    check_test_controls(pid);
 
     // Explicit shell, console and desktop modes bypass the full startup below.
     // No argument or `default` keeps the services and boot checks.
@@ -168,8 +196,6 @@ fn main() {
     #[cfg(target_arch = "aarch64")]
     run_clonevm_exec_test();
     #[cfg(target_arch = "aarch64")]
-    run_wait_stress_if_enabled();
-    #[cfg(target_arch = "aarch64")]
     run_trace_diag_probe_if_enabled();
     #[cfg(target_arch = "x86_64")]
     run_spawn_smoke();
@@ -186,7 +212,14 @@ fn main() {
     run_boot_script();
     // The services start on the supervisor's first pass; the rest of the ARM64 start-up
     // follows it and does not wait on a service.
-    let mut supervisor = init_services::Supervisor::load(init_services::Scope::All, pid == 1);
+    // The ARM64 boot script starts the desktop; its login terminals belong to
+    // explicit console mode. x86 starts the whole service table as before.
+    let scope = if cfg!(target_arch = "aarch64") {
+        init_services::Scope::Daemons
+    } else {
+        init_services::Scope::All
+    };
+    let mut supervisor = init_services::Supervisor::load(scope, pid == 1);
     supervisor.tick();
     #[cfg(target_arch = "aarch64")]
     start_bounce();
@@ -486,35 +519,6 @@ fn run_trace_diag_probe_if_enabled() {
         }
         Err(e) => {
             print!("[init] Warning: failed to start trace diag probe: {}\n", e);
-        }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn run_wait_stress_if_enabled() {
-    if fs::access("/etc/wait_stress.enabled", fs::F_OK).is_err() {
-        return;
-    }
-
-    print!("[init] wait_stress enabled; starting 60s waitqueue stress\n");
-    let path = b"/usr/bin/wait_stress\0";
-    let arg0 = b"wait_stress\0";
-    let arg1 = b"60\0";
-    let argv = [arg0.as_ptr(), arg1.as_ptr(), core::ptr::null()];
-
-    match spawnv(path, argv.as_ptr()) {
-        Ok(child_pid) => {
-            let mut status = 0i32;
-            let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
-            let exit_code = (status >> 8) & 0xFF;
-            print!(
-                "[init] wait_stress exited pid={} code={}\n",
-                child_pid.raw(),
-                exit_code
-            );
-        }
-        Err(e) => {
-            print!("[init] Warning: failed to start wait_stress: {}\n", e);
         }
     }
 }

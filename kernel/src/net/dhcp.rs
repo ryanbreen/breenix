@@ -23,6 +23,7 @@ const OPT_PAD: u8 = 0;
 const OPT_SUBNET_MASK: u8 = 1;
 const OPT_ROUTER: u8 = 3;
 const OPT_DNS: u8 = 6;
+const OPT_NTP: u8 = 42;
 const OPT_REQUESTED_IP: u8 = 50;
 const OPT_LEASE_TIME: u8 = 51;
 const OPT_OVERLOAD: u8 = 52;
@@ -82,6 +83,7 @@ pub struct Lease {
     pub subnet_mask: [u8; 4],
     pub gateway: [u8; 4],
     pub nameservers: [Option<[u8; 4]>; 3],
+    pub ntp_servers: [Option<[u8; 4]>; 3],
     pub server: [u8; 4],
     pub expires_at: u64,
     pub renew_at: u64,
@@ -95,6 +97,7 @@ struct Reply {
     subnet_mask: Option<[u8; 4]>,
     router: Option<[u8; 4]>,
     nameservers: [Option<[u8; 4]>; 3],
+    ntp_servers: [Option<[u8; 4]>; 3],
     server: Option<[u8; 4]>,
     lease_secs: Option<u32>,
     renewal: Option<u32>,
@@ -250,6 +253,7 @@ fn lease_from_ack(ack: Reply, requested: [u8; 4], server: Option<[u8; 4]>) -> Op
         subnet_mask: ack.subnet_mask?,
         gateway: ack.router.unwrap_or([0; 4]),
         nameservers: ack.nameservers,
+        ntp_servers: ack.ntp_servers,
         server: selected,
         expires_at: if infinite {
             u64::MAX
@@ -371,12 +375,13 @@ pub fn maintain(mac: [u8; 6], carrier: bool) {
             current.ip_addr[2],
             current.ip_addr[3],
         ]);
-        message[249..258].copy_from_slice(&[
+        message[249..259].copy_from_slice(&[
             OPT_PARAMETER_LIST,
-            6,
+            7,
             OPT_SUBNET_MASK,
             OPT_ROUTER,
             OPT_DNS,
+            OPT_NTP,
             OPT_LEASE_TIME,
             OPT_RENEWAL,
             OPT_REBINDING,
@@ -619,17 +624,18 @@ fn build_message(
         message[offset + 8..offset + 12].copy_from_slice(&server);
         offset += 12;
     }
-    message[offset..offset + 8].copy_from_slice(&[
+    message[offset..offset + 9].copy_from_slice(&[
         OPT_PARAMETER_LIST,
-        6,
+        7,
         OPT_SUBNET_MASK,
         OPT_ROUTER,
         OPT_DNS,
+        OPT_NTP,
         OPT_LEASE_TIME,
         OPT_RENEWAL,
         OPT_REBINDING,
     ]);
-    message[offset + 8] = OPT_END;
+    message[offset + 9] = OPT_END;
     message
 }
 
@@ -688,6 +694,7 @@ fn parse_reply(message: &[u8], xid: u32, mac: [u8; 6]) -> Option<Reply> {
         subnet_mask: None,
         router: None,
         nameservers: [None; 3],
+        ntp_servers: [None; 3],
         server: None,
         lease_secs: None,
         renewal: None,
@@ -748,12 +755,13 @@ fn parse_options(
                     reply.router = Some([value[0], value[1], value[2], value[3]]);
                 }
             }
-            OPT_DNS => {
+            OPT_DNS | OPT_NTP => {
                 if value.is_empty() || value.len() % 4 != 0 {
                     return None;
                 }
+                let servers = if code == OPT_NTP { &mut reply.ntp_servers } else { &mut reply.nameservers };
                 for chunk in value.chunks_exact(4) {
-                    if let Some(slot) = reply.nameservers.iter_mut().find(|s| s.is_none()) {
+                    if let Some(slot) = servers.iter_mut().find(|s| s.is_none()) {
                         *slot = Some([chunk[0], chunk[1], chunk[2], chunk[3]]);
                     }
                 }

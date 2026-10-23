@@ -65,6 +65,7 @@ PARALLELS_TEST=false
 PARALLELS_TEST_WAIT=35
 VMWARE=false
 SUITE=""
+PACE=""
 ONLY=""
 GPU_CORE=false
 PROBE=false
@@ -162,6 +163,11 @@ while [[ $# -gt 0 ]]; do
             SERIAL_LOG_OVERRIDE="$2"
             shift 2
             ;;
+        --pace)
+            PACE="${2:-}"
+            [ "$#" -ge 2 ] && [ -n "$PACE" ] || { echo "--pace needs milliseconds"; exit 2; }
+            shift 2
+            ;;
         --gate-timeout)
             GATE_TIMEOUT="${2:-}"
             shift 2
@@ -235,6 +241,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --program-arg WORD         The one argument --program's PATH gets"
             echo "  --kernel-features LIST     With --program: build the kernel with these cargo features (a measurement kernel)"
             echo "  --gate-timeout N           Per-suite DONE deadline in seconds (default 1800)"
+            echo "  --pace MS                  Hold each completed suite case outside measurement (default 0)"
             echo "  --case CATEGORY[/CASE]     Run one suite category or case (not full-suite evidence)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
             echo "  --suite ID,ID,...|all      Parallels/VMware: run several suites in one boot, in order"
@@ -413,6 +420,12 @@ SUITE_MANIFESTS=()
 IFS=',' read -r -a SUITE_IDS <<< "$SUITE"
 for id in ${SUITE_IDS[@]+"${SUITE_IDS[@]}"}; do SUITE_MANIFESTS+=("$BREENIX_ROOT/docs/suites/$id.json"); done
 
+if [ -n "$PACE" ]; then
+    [ -n "$SUITE" ] && [[ "$PACE" =~ ^[0-9]+$ ]] && [ "${#PACE}" -le 10 ] && [ "$PACE" -le 4294967295 ] || {
+        echo "--pace needs --suite and milliseconds from 0 to 4294967295"; exit 2;
+    }
+fi
+
 # --tests: the testing kernel (--features testing) and its test loader, as
 # scripts/boot-interactive.sh --mode tests runs it on ARM64 QEMU.
 KERNEL_FEATURE_ARGS=()
@@ -543,7 +556,7 @@ stage_boot_ext2_disk() {
         [[ "$SUITE" != *,* ]] || sequence=$SUITE
         BREENIX_HOSTKEYS="$(python3 "$BREENIX_ROOT/scripts/hostkeys.py" declare --backend "$hostkeys_backend")" \
         "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "${SUITE%%,*}" \
-            "$BREENIX_ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$sequence" "$ONLY" || exit 1
+            "$BREENIX_ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$sequence" "$ONLY" "$PACE" || exit 1
         if [[ ",$SUITE," == *",sdk,"* ]]; then
             # The Developer SDK suite's host side stages the SDK's results onto the copy.
             python3 "$BREENIX_ROOT/scripts/sdk-suite.py" --arch aarch64 --image "$BOOT_EXT2_DISK" || exit 1

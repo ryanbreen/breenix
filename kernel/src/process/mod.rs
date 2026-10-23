@@ -566,6 +566,8 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
     // SEM_UNDO adjustments are applied, and the working directory released,
     // before the commit below makes the row a zombie its parent can reap.
     crate::ipc::sysv::row_exit(pid);
+    #[cfg(target_arch = "aarch64")]
+    crate::window::row_exit(pid);
     let released = with_process_manager(|pm| pm.get_process_mut(pid).map(|process| process.cwd.release()));
     drop(released);
     // Captured before PM, as `handle_thread_exit` does: no scheduler state is

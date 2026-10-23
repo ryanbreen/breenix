@@ -1,5 +1,5 @@
-use libgfx::framebuf::FrameBuf;
-use libgfx::shapes;
+use libgfx::surface::Surface as FrameBuf;
+use crate::drawing as shapes;
 
 use crate::rect::Rect;
 use crate::text;

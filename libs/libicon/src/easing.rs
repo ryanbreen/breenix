@@ -43,7 +43,7 @@ pub fn ease_out_elastic(t: f32) -> f32 {
     }
     // c4 = TAU / 3
     let c4 = 2.0 * 3.14159265 / 3.0;
-    let decay = exp_approx(-10.0 * t);
+    let decay = exp2_approx(-10.0 * t);
     let wave = sin_approx((t * 10.0 - 0.75) * c4);
     decay * wave + 1.0
 }
@@ -116,27 +116,14 @@ pub fn cos_approx(x: f32) -> f32 {
     sin_approx(x + 3.14159265 / 2.0)
 }
 
-/// Approximate e^x using a piecewise polynomial.
-/// Range clamped to avoid overflow; sufficient for animation decay curves.
-fn exp_approx(x: f32) -> f32 {
-    // For x in a reasonable range, use the identity e^x ≈ (1 + x/n)^n
-    // with n=8 unrolled (fast for negative x like decay curves).
-    // We clamp to avoid degenerate values.
-    let x = x.max(-20.0).min(20.0);
-
-    // Use the 2^x identity: e^x = 2^(x / ln2), approximate 2^f for f in 0..1
-    // then use integer powers for the integer part.
-    const LN2_INV: f32 = 1.4426950; // 1/ln(2)
-    let t = x * LN2_INV;
-    let int_part = t as i32;
-    let frac = t - int_part as f32;
-
-    // 2^frac approximation for frac in 0..1 (polynomial fit)
-    let p2frac = 1.0 + frac * (0.6931472 + frac * (0.2402265 + frac * 0.0555041));
-
-    // Scale by 2^int_part via repeated doubling/halving
-    let scale = int_pow2(int_part);
-    p2frac * scale
+/// 2^x by exponent decomposition and a fifth-order Taylor polynomial.
+fn exp2_approx(x: f32) -> f32 {
+    let x = x.clamp(-126.0,126.0);
+    let integer = x as i32;
+    let fraction = x - integer as f32;
+    let y = fraction * core::f32::consts::LN_2;
+    let value = 1.0+y*(1.0+y*(0.5+y*(1.0/6.0+y*(1.0/24.0+y/120.0))));
+    value * int_pow2(integer)
 }
 
 /// Compute 2^n for integer n (positive or negative).

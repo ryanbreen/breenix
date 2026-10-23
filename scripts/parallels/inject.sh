@@ -34,14 +34,12 @@
 #
 # Default timings (override per-call via the hold_ms / gap_ms args):
 #   HOLD_MS     key press-to-release dwell      (default 40)
-#   PREFIX_MS   gap around an extended prefix    (default 5)
 #   TYPE_GAP_MS inter-character gap for `type`   (default 40)
 #
 set -euo pipefail
 
 # ---- defaults (tunable via env) --------------------------------------------
 HOLD_MS="${HOLD_MS:-40}"
-PREFIX_MS="${PREFIX_MS:-5}"
 TYPE_GAP_MS="${TYPE_GAP_MS:-40}"
 
 # ---- VM resolution ----------------------------------------------------------
@@ -109,14 +107,17 @@ send_json() {
 
 # Emit the JSON event objects for one (possibly extended) tap: press, hold, release.
 #   $1 code, $2 hold_ms, $3 extended-prefix (optional, e.g. 224 for 0xE0)
+# prlctl accepts an extended key only as its prefix event immediately followed by the
+# code's event, with no delay between them ("Invalid scan code sequence" otherwise).
 tap_events() {
-    local code="$1" hold="$2" ext="${3:-}" pre="" post=""
+    local code="$1" hold="$2" ext="${3:-}"
     if [[ -n "$ext" ]]; then
-        pre="{\"scancode\":$ext,\"event\":\"press\"},{\"delay\":$PREFIX_MS},"
-        post=",{\"delay\":$PREFIX_MS},{\"scancode\":$ext,\"event\":\"release\"}"
+        printf '{"scancode":%s,"event":"press"},{"scancode":%s,"event":"press"},{"delay":%s},{"scancode":%s,"event":"release"},{"scancode":%s,"event":"release"}' \
+            "$ext" "$code" "$hold" "$ext" "$code"
+        return
     fi
-    printf '%s{"scancode":%s,"event":"press"},{"delay":%s},{"scancode":%s,"event":"release"}%s' \
-        "$pre" "$code" "$hold" "$code" "$post"
+    printf '{"scancode":%s,"event":"press"},{"delay":%s},{"scancode":%s,"event":"release"}' \
+        "$code" "$hold" "$code"
 }
 
 # Single tap.  $1 code, $2 hold_ms (optional), $3 ext-prefix (optional)

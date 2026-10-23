@@ -215,7 +215,7 @@ fn run_on(pty: &Pty, start: Start, argv: &[&str], script: &[(&str, &str)]) -> Re
     let mut status = None;
     let mut quiet_since = None;
     loop {
-        if libbreenix::suite::case_ms_left() < 400 {
+        if breenix_suite::suite::case_ms_left() < 400 {
             kill(child, SIGKILL);
             let _ = wait(child);
             return Err(format!("{} did not finish; output: {}", argv[0],
@@ -245,8 +245,8 @@ fn run_on(pty: &Pty, start: Start, argv: &[&str], script: &[(&str, &str)]) -> Re
         }
         if let Some(status) = status {
             // The process ended: keep reading until the line has been quiet for 100 ms.
-            let since = *quiet_since.get_or_insert(libbreenix::suite::case_ms_left());
-            if since.saturating_sub(libbreenix::suite::case_ms_left()) >= 100 {
+            let since = *quiet_since.get_or_insert(breenix_suite::suite::case_ms_left());
+            if since.saturating_sub(breenix_suite::suite::case_ms_left()) >= 100 {
                 return Ok(Run { output: String::from_utf8_lossy(&output).into_owned(), status });
             }
         }
@@ -476,14 +476,14 @@ impl Lines {
 
     /// The next line, or no line once the writer closed; an error after `ms`.
     fn next(&self, ms: u64) -> Result<Option<String>, String> {
-        let until = libbreenix::suite::case_ms_left().saturating_sub(ms);
+        let until = breenix_suite::suite::case_ms_left().saturating_sub(ms);
         loop {
             let mut pending = self.pending.borrow_mut();
             if let Some(at) = pending.iter().position(|b| *b == b'\n') {
                 let line: Vec<u8> = pending.drain(..=at).collect();
                 return Ok(Some(String::from_utf8_lossy(&line[..at]).into_owned()));
             }
-            let left = libbreenix::suite::case_ms_left();
+            let left = breenix_suite::suite::case_ms_left();
             if left <= until || left < 300 {
                 return Err("timed out waiting for a line from the pipe".into());
             }
@@ -519,7 +519,7 @@ impl Sshd {
             ForkResult::Parent(child) => child.raw() as i32,
         };
         let sshd = Sshd { pid };
-        while libbreenix::suite::case_ms_left() > 6000 {
+        while breenix_suite::suite::case_ms_left() > 6000 {
             let addr = libbreenix::socket::SockAddrIn::new([127, 0, 0, 1], port);
             if libbreenix::socket::TcpStream::connect(&addr).is_ok() { return Ok(sshd); }
             let _ = libbreenix::time::sleep_ms(50);
@@ -667,7 +667,8 @@ impl Operator {
 }
 
 /// This machine's address on the boot host's network: the source a UDP socket
-/// connected toward the DHCP server is given.
+/// connected toward a configured network peer is given. DHCP boots use their
+/// server; ARM64 manual-address boots use the configured resolver as a route probe.
 fn lan_address() -> Result<[u8; 4], String> {
     let server = loop {
         let pnp = fs::read_to_string("/proc/net/pnp").map_err(|e| format!("/proc/net/pnp: {e}"))?;
@@ -675,15 +676,26 @@ fn lan_address() -> Result<[u8; 4], String> {
             let parts: Vec<u8> = a.split('.').filter_map(|p| p.parse().ok()).collect();
             <[u8; 4]>::try_from(parts).ok()
         });
+        // QEMU's ARM64 network is deliberately static. Its #MANUAL record has
+        // no bootserver; resolve the socket's real source through the image's
+        // configured resolver instead. A DHCP interface still requires its lease.
+        #[cfg(target_arch = "aarch64")]
+        let found = if found.is_none() && pnp.lines().any(|line| line == "#MANUAL") {
+            let resolv = fs::read_to_string("/etc/resolv.conf").map_err(|e| format!("/etc/resolv.conf: {e}"))?;
+            resolv.lines().find_map(|line| line.strip_prefix("nameserver ")).and_then(|address| {
+                let parts: Vec<u8> = address.trim().split('.').filter_map(|part| part.parse().ok()).collect();
+                <[u8; 4]>::try_from(parts).ok()
+            })
+        } else { found };
         if let Some(server) = found.filter(|a| *a != [0; 4]) { break server; }
-        if libbreenix::suite::case_ms_left() < 25_000 { return Err("no DHCP lease".into()); }
+        if breenix_suite::suite::case_ms_left() < 25_000 { return Err("no DHCP lease".into()); }
         let _ = libbreenix::time::sleep_ms(100);
     };
     let fd = libbreenix::socket::socket(libbreenix::socket::AF_INET, libbreenix::socket::SOCK_DGRAM, 0)
         .map_err(|e| format!("socket: {e}"))?;
     let result = (|| -> Result<[u8; 4], String> {
         libbreenix::socket::connect_inet(fd, &libbreenix::socket::SockAddrIn::new(server, 67))
-            .map_err(|e| format!("connect toward the DHCP server: {e}"))?;
+            .map_err(|e| format!("connect toward the network peer: {e}"))?;
         let mut name = [0u8; 16];
         let mut length = name.len() as u32;
         ok("getsockname", sc(nr::GETSOCKNAME, &[fd.raw(), name.as_mut_ptr() as u64, &mut length as *mut u32 as u64]))?;
@@ -724,7 +736,7 @@ impl HostSshd {
 /// The report the boot host's login as `user` left in its home.
 fn host_report(user: &User) -> Result<HashMap<String, String>, String> {
     let path = format!("{}/{HOST_REPORT}", user.home);
-    while libbreenix::suite::case_ms_left() > 500 {
+    while breenix_suite::suite::case_ms_left() > 500 {
         if let Ok(text) = fs::read_to_string(&path) {
             if text.ends_with('\n') {
                 return Run { output: text, status: 0 }.probe();
@@ -737,7 +749,7 @@ fn host_report(user: &User) -> Result<HashMap<String, String>, String> {
 
 /// Wait for the account's processes (its SSH session) to end, so it can be removed.
 fn sessions_ended(uid: u32) -> Checked {
-    while libbreenix::suite::case_ms_left() > 300 {
+    while breenix_suite::suite::case_ms_left() > 300 {
         let running = fs::read_dir("/proc").map_err(|e| e.to_string())?.flatten().any(|entry| {
             entry.file_name().to_str().is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
                 && fs::read_to_string(entry.path().join("status")).is_ok_and(|status| status.lines()
@@ -755,7 +767,7 @@ fn openssh_operator() -> CaseResult {
     let user = User::named(&operator.name, &[], PROBE)?;
     authorize_key(&user, &operator.key, 0o600)?;
     let host = HostSshd::start()?;
-    libbreenix::suite::hostssh("account", host.addr, 22, &user.name, &host.fingerprint)?;
+    breenix_suite::suite::hostssh("account", host.addr, 22, &user.name, &host.fingerprint)?;
     let report = host_report(&user)?;
     let mut expected = identity(&user);
     expected.extend([("HOME", user.home.clone()), ("USER", user.name.clone()), ("cwd", user.home.clone()),
@@ -777,7 +789,7 @@ fn openssh_root_refused() -> CaseResult {
     let root_sessions = || fs::read_to_string(AUTH_LOG).map(|log| log.lines()
         .filter(|l| l.contains(" bsshd[") && l.contains(" user=root ")).count()).unwrap_or(0);
     let before = root_sessions();
-    libbreenix::suite::hostssh("root", host.addr, 22, &user.name, &host.fingerprint)?;
+    breenix_suite::suite::hostssh("root", host.addr, 22, &user.name, &host.fingerprint)?;
     // The host tried root first; the same key then logged in as the account.
     let report = host_report(&user)?;
     let mut expected = identity(&user);

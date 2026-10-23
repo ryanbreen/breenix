@@ -22,8 +22,8 @@ use libbreenix::signal::{
     self, Sigaction, StackT, SA_ONSTACK, SA_RESTART, SIGCHLD, SIGCONT, SIGHUP, SIGKILL, SIGSEGV,
     SIGQUIT, SIGSTOP, SIGTERM, SIGUSR1, SIGUSR2, SIGXCPU, SIGXFSZ, SIG_IGN,
 };
-use libbreenix::suite::prerequisites;
-use libbreenix::suite::{case, case_ms_left, category, check, fail, suite, CaseError, CaseResult, Suite};
+use breenix_suite::suite::prerequisites;
+use breenix_suite::suite::{case, case_ms_left, category, check, fail, suite, CaseError, CaseResult, Suite};
 use libbreenix::syscall::raw;
 use libbreenix::time;
 use libbreenix::types::Fd;

@@ -93,6 +93,13 @@ pub enum ProcEntryType {
     BreenixTesting,
     /// Durable clean/dirty state of the mounted disk filesystems.
     Filesystems,
+    /// Suite-only stage fault handoff to the userspace renderer.
+    StageControl,
+    /// Actual producer markers reached in boot-path order.
+    BootRibbon,
+    BootSerial,
+    StageComposites,
+    ShowcasePace,
     /// /proc/breenix/ext2 - mounted ext2 allocation counters
     Ext2,
     /// /proc/breenix/frames - allocated physical frames by allocation site
@@ -176,6 +183,11 @@ impl ProcEntryType {
             ProcEntryType::Mounts => "mounts",
             ProcEntryType::BreenixDir => "breenix",
             ProcEntryType::BreenixTesting => "testing",
+            ProcEntryType::StageControl => "stage-control",
+            ProcEntryType::ShowcasePace => "pace",
+            ProcEntryType::BootRibbon => "boot-ribbon",
+            ProcEntryType::BootSerial => "boot-serial",
+            ProcEntryType::StageComposites => "stage-composites",
             ProcEntryType::Ext2 => "ext2",
             ProcEntryType::Filesystems => "filesystems",
             ProcEntryType::Frames => "frames",
@@ -231,6 +243,11 @@ impl ProcEntryType {
             ProcEntryType::Mounts => "/proc/mounts",
             ProcEntryType::BreenixDir => "/proc/breenix",
             ProcEntryType::BreenixTesting => "/proc/breenix/testing",
+            ProcEntryType::StageControl => "/proc/breenix/stage-control",
+            ProcEntryType::ShowcasePace => "/proc/breenix/pace",
+            ProcEntryType::BootRibbon => "/proc/breenix/boot-ribbon",
+            ProcEntryType::BootSerial => "/proc/breenix/boot-serial",
+            ProcEntryType::StageComposites => "/proc/breenix/stage-composites",
             ProcEntryType::Ext2 => "/proc/breenix/ext2",
             ProcEntryType::Filesystems => "/proc/breenix/filesystems",
             ProcEntryType::Frames => "/proc/breenix/frames",
@@ -287,8 +304,13 @@ impl ProcEntryType {
             ProcEntryType::Mounts => 8,
             ProcEntryType::BreenixDir => 200,
             ProcEntryType::BreenixTesting => 201,
+            ProcEntryType::StageControl => 208,
+            ProcEntryType::ShowcasePace => 207,
+            ProcEntryType::BootRibbon => 204,
+            ProcEntryType::BootSerial => 205,
+            ProcEntryType::StageComposites => 206,
             ProcEntryType::Ext2 => 202,
-            ProcEntryType::Filesystems => 204,
+            ProcEntryType::Filesystems => 209,
             ProcEntryType::Frames => 203,
             ProcEntryType::Pids => 9,
             ProcEntryType::Kmsg => 10,
@@ -420,6 +442,11 @@ pub fn init() {
         .entries
         .push(ProcEntry::new(ProcEntryType::BreenixTesting));
 
+    procfs.entries.push(ProcEntry::new(ProcEntryType::StageControl));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::ShowcasePace));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::BootRibbon));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::BootSerial));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::StageComposites));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Frames));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Filesystems));
@@ -717,7 +744,7 @@ pub fn list_breenix_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting))
+        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::StageComposites))
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -736,6 +763,42 @@ pub fn is_initialized() -> bool {
 /// The content as a String, or an error code
 pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
     match entry_type {
+        ProcEntryType::ShowcasePace => {
+            #[cfg(target_arch="aarch64")]
+            if !crate::platform_config::is_qemu() { return text(String::from("\n")); }
+            let pace=crate::drivers::fw_cfg::read_string("opt/breenix/pace").unwrap_or_default();
+            text(alloc::format!("{}\n",pace))
+        }
+        #[cfg(target_arch="aarch64")]
+        ProcEntryType::StageControl => {
+            if !crate::test_control::enabled() {return Err(-38);}
+            let caller=crate::window::Caller::current().map_err(|e|-e)?;
+            if !caller.is_root(){return Err(-1);}
+            let mut bits=0u32;
+            for point in [breengel_abi::tc_point::PANEL_CURSOR_NO_RESTORE,12,13,14] {if crate::test_control::take(point,caller.tgid).is_some(){bits|=1<<point;}}
+            text(alloc::format!("{bits}\n"))
+        }
+        #[cfg(not(target_arch="aarch64"))]
+        ProcEntryType::StageControl => Err(-38),
+        ProcEntryType::BootRibbon => {
+            #[cfg(target_arch="aarch64")]
+            {text(crate::graphics::boot_ribbon::records())}
+            #[cfg(not(target_arch="aarch64"))]
+            {Err(-38)}
+        }
+        ProcEntryType::BootSerial => {
+            #[cfg(target_arch="aarch64")]
+            { crate::graphics::boot_ribbon::serial().map(|s| s.into_bytes()) }
+            #[cfg(not(target_arch="aarch64"))]
+            {Err(-38)}
+        }
+        // The display owners' completed GPU presents (the run stage's screen changes).
+        ProcEntryType::StageComposites => {
+            #[cfg(target_arch="aarch64")]
+            {text(crate::gpu::present_records())}
+            #[cfg(not(target_arch="aarch64"))]
+            {Err(-38)}
+        }
         ProcEntryType::Uptime => text(generate_uptime()),
         ProcEntryType::Version => text(generate_version()),
         ProcEntryType::MemInfo => text(generate_meminfo()),
@@ -1471,6 +1534,7 @@ fn generate_pid_dir(pid: u64) -> String {
 /// Gid:    0   0   0   0
 /// Children:   4 5
 /// FdCount:    6
+/// VmSize: 2048 kB
 /// VmCode: 8 kB
 /// VmHeap: 64 kB
 /// VmStack:    16 kB
@@ -1571,6 +1635,7 @@ fn generate_pid_status(pid: u64) -> String {
          Gid:\t{}\t{}\t{}\t{}\n\
          Children:\t{}\n\
          FdCount:\t{}\n\
+         VmSize:\t{} kB\n\
          VmCode:\t{} kB\n\
          VmHeap:\t{} kB\n\
          VmStack:\t{} kB\n\
@@ -1597,6 +1662,13 @@ fn generate_pid_status(pid: u64) -> String {
         process.cred.egid,
         children_str,
         fd_count,
+        // The bytes mapped as RLIMIT_AS counts them, from the address space's owner row.
+        manager
+            .find_process_by_cr3(process.inherited_cr3.unwrap_or_else(|| {
+                process.page_table.as_ref().map_or(0, |t| t.level_4_frame().start_address().as_u64())
+            }))
+            .map_or(process.mapped_bytes(), |(_, owner)| owner.mapped_bytes())
+            / 1024,
         vm_code_kb,
         vm_heap_kb,
         vm_stack_kb,

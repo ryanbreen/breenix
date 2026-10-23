@@ -1,7 +1,7 @@
 //! Breengel — Breenix Graphical Environment Library
 //!
 //! Client library for GUI applications on Breenix. Apps create windows via
-//! Breengel, render into pixel buffers, and receive input events from BWM.
+//! Breengel, draw into GPU surfaces, and receive input events from BWM.
 //!
 //! # Architecture
 //!
@@ -41,23 +41,28 @@
 //!             _ => {}
 //!         }
 //!     }
-//!     // Draw into the pixel buffer
-//!     let fb = win.framebuf();
-//!     // ... render with libgfx ...
+//!     // Draw into the acquired GPU target
+//!     let surface = win.surface().unwrap();
+//!     surface.clear(libgfx::color::Color::BLACK);
 //!     win.present().unwrap();
 //! }
 //! ```
 
 mod window;
 mod event;
+pub mod clock;
 pub mod font;
 
 pub use window::Window;
-pub use event::{Event, Modifiers};
+pub use event::{buttons, keys, Delivered, Event, Modifiers};
+pub use window::{Acquired, Committed, Handled};
 pub use font::FontConfig;
-pub use libfont::CachedFont;
+pub use libgfx::ttf_font::CachedFont;
+#[cfg(target_arch = "x86_64")]
 pub use libbreenix::graphics::{WindowInputEvent, input_event_type};
-pub use libgfx::framebuf::FrameBuf;
 pub use libgfx::color::Color;
 pub use libbui::widget::tab_bar::TabBar;
 pub use libbui::{InputState, Rect, Theme};
+
+/// GPU window drawing over opaque target handles.
+pub use libgfx::surface::Surface;

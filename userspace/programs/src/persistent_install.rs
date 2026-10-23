@@ -610,6 +610,14 @@ fn install_tree_from(source: &Path, target: &Path, id: &str, previous: Option<&s
         }
         copier.write_file(&target.join(STORE).join("etc/breenix/power-token"), &token, 0o400)?;
     }
+    // Time server names are site-owned install configuration, outside factory defaults.
+    let sntp = source.join("etc/breenix/sntp-servers");
+    if present(&sntp)? {
+        let servers = fs::read_to_string(&sntp).map_err(|error| fail("read time servers", &sntp, error))?;
+        let directory = target.join(STORE).join("etc/breenix");
+        copier.ensure_directory(&directory, 0o755)?;
+        copier.write_file(&directory.join("sntp-servers"), &servers, 0o644)?;
+    }
     for name in KEPT {
         require_directory(&source.join(name))?;
         if present(&target.join(name))? { require_directory(&target.join(name))?; }
@@ -943,6 +951,23 @@ mod tests {
 
     fn staged(name: &str) -> String {
         format!("user {name}\nuid 1000\npassword {HASH}\nkey {KEY}\n")
+    }
+
+    #[test]
+    fn site_time_servers_are_installed_and_updated_outside_generation_defaults() {
+        let fixture = Fixture::new();
+        let source = fixture.source("time");
+        let system = fixture.0.join("system");
+        fs::create_dir(&system).unwrap();
+        fs::create_dir(source.join("etc/breenix")).unwrap();
+        fs::write(source.join("etc/breenix/sntp-servers"), "192.0.2.123\n").unwrap();
+        install_tree(&source, &system, "time-a", &mut || Ok(())).unwrap();
+        let config = system.join(STORE).join("etc/breenix/sntp-servers");
+        assert_eq!(fs::read_to_string(&config).unwrap(), "192.0.2.123\n");
+        assert_eq!(fs::metadata(&config).unwrap().mode() & 0o777, 0o644);
+        fs::write(source.join("etc/breenix/sntp-servers"), "192.0.2.124\n").unwrap();
+        install_tree(&source, &system, "time-b", &mut || Ok(())).unwrap();
+        assert_eq!(fs::read_to_string(config).unwrap(), "192.0.2.124\n");
     }
 
     #[test]

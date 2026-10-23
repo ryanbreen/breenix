@@ -1,5 +1,5 @@
 use libgfx::color::Color;
-use libgfx::framebuf::FrameBuf;
+use libgfx::surface::Surface as FrameBuf;
 
 use crate::rect::Rect;
 use crate::text;
@@ -33,6 +33,21 @@ impl Label {
     /// Draw the label text at the widget's position.
     pub fn draw(&self, fb: &mut FrameBuf, theme: &Theme) {
         let color = self.color.unwrap_or(theme.text_primary);
-        text::draw_text(fb, self.text, self.rect.x, self.rect.y, color, theme);
+        crate::drawing::push_clip(fb, libgfx::surface::Rect::new(self.rect.x, self.rect.y, self.rect.w, self.rect.h));
+        if text::text_width(self.text, theme) <= self.rect.w {
+            text::draw_text(fb, self.text, self.rect.x, self.rect.y, color, theme);
+        } else {
+            let mut end = 0;
+            while end < self.text.len() {
+                let mut candidate = alloc::vec::Vec::from(&self.text[..end + 1]);
+                candidate.extend_from_slice(b"...");
+                if text::text_width(&candidate, theme) > self.rect.w { break; }
+                end += 1;
+            }
+            let mut clipped = alloc::vec::Vec::from(&self.text[..end]);
+            clipped.extend_from_slice(b"...");
+            text::draw_text(fb, &clipped, self.rect.x, self.rect.y, color, theme);
+        }
+        fb.pop_clip();
     }
 }

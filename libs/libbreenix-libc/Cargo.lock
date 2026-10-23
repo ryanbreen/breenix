@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "breengel-abi"
+version = "0.1.0"
+
+[[package]]
 name = "gpu-abi"
 version = "0.1.0"
 
@@ -10,6 +14,7 @@ version = "0.1.0"
 name = "libbreenix"
 version = "0.1.0"
 dependencies = [
+ "breengel-abi",
  "gpu-abi",
 ]
 

@@ -9,6 +9,11 @@ pub const HEADER: usize = 10;
 pub const INSTANCE: usize = 20;
 pub const OVERLAP: u32 = 20;
 pub const PARAMETERS: u32 = 21;
+/// Sampled colour flags: source X is opaque, and destination X must be opaque.
+/// OVER/OVER_STRAIGHT use both; COPY_SCALED uses SOURCE_OPAQUE to force output X.
+pub const SOURCE_OPAQUE: u32 = 1;
+pub const DESTINATION_OPAQUE: u32 = 2;
+// Parameterized COPY uses [source_offset_x, source_offset_y, force_opaque].
 
 #[derive(Clone, Copy, Debug)]
 pub struct Instance {
@@ -25,7 +30,7 @@ pub const fn blended(pipe: u32) -> bool {
 pub const fn sampled(pipe: u32) -> bool {
     matches!(
         pipe,
-        p::COPY_SCALED
+        p::COPY | p::COPY_SCALED
             | p::NEAREST_SCALED
             | p::BOX_FILTER
             | p::OVER
@@ -36,6 +41,7 @@ pub const fn sampled(pipe: u32) -> bool {
 }
 pub const fn steps(pipe: u32) -> Option<u64> {
     match pipe {
+        p::COPY => Some(1),
         p::COPY_SCALED | p::NEAREST_SCALED => Some(8192),
         p::BOX_FILTER => Some(512),
         p::OVER | p::OVER_STRAIGHT => Some(128),
@@ -55,6 +61,7 @@ pub fn overlap(a: [u32; 4], b: [u32; 4]) -> bool {
 /// for shapes: nonpositive sizes have the contract's empty-set meaning.
 pub fn valid(pipe: u32, a: &[u32; 16], tex: Option<SourceInfo>) -> bool {
     let used = match pipe {
+        p::COPY => 3,
         p::COPY_SCALED => 5,
         p::NEAREST_SCALED | p::BOX_FILTER => 8,
         p::OVER | p::OVER_STRAIGHT => 4,
@@ -72,6 +79,7 @@ pub fn valid(pipe: u32, a: &[u32; 16], tex: Option<SourceInfo>) -> bool {
         return false;
     }
     match pipe {
+        p::COPY => a[2] <= 1,
         p::COPY_SCALED => a[4] > 0 && a[4] <= i32::MAX as u32,
         p::NEAREST_SCALED | p::BOX_FILTER => {
             a[2] > 0
@@ -172,6 +180,10 @@ pub fn clip(
 pub fn source_clip(pipe: u32, mut i: Instance, source: Option<SourceInfo>) -> Option<Instance> {
     let a = i.params.map(|v| v as i32 as i128);
     let bound = match pipe {
+        p::COPY => {
+            let t = source?;
+            Some([-a[0], -a[1], t.width as i128 - a[0], t.height as i128 - a[1]])
+        }
         p::COPY_SCALED => {
             let t = source?;
             let n = a[4];
@@ -363,6 +375,21 @@ mod g5_tests {
         assert!(!disjoint(&[[0, 0, 5, 5], [4, 4, 8, 8]]).unwrap());
         let rs: Vec<_> = (0..16384).map(|x| [x, 0, x + 1, 16384]).collect();
         assert!(disjoint(&rs).unwrap());
+    }
+    #[test]
+    fn formatted_copy_preserves_clipping_and_rejects_invalid_metadata() {
+        let tex = Some(stream::SourceInfo { width: 5, height: 4, format: 0, invalid: false });
+        let mut i = Instance { rect: [0, 0, 8, 8], params: [0; 16] };
+        i.params[0] = (-2i32) as u32;
+        i.params[1] = (-1i32) as u32;
+        i.params[2] = 1;
+        assert!(valid(p::COPY, &i.params, tex));
+        assert_eq!(source_clip(p::COPY, i, tex).unwrap().rect, [2, 1, 7, 5]);
+        i.params[2] = 2;
+        assert!(!valid(p::COPY, &i.params, tex));
+        i.params[2] = 0;
+        i.params[3] = 1;
+        assert!(!valid(p::COPY, &i.params, tex));
     }
     #[test]
     fn g5_parameters_and_unused_handles_are_atomic_refusals() {

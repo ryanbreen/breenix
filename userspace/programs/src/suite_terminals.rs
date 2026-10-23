@@ -29,7 +29,7 @@
 //! own session, so no case touches the runner's session or process group.
 use libbreenix::process::{self, ForkResult};
 use libbreenix::signal::{self as signal, Sigaction, SIGHUP, SIGINT, SIGQUIT, SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU, SIGWINCH};
-use libbreenix::suite::{case, case_ms_left, category, check, fail, suite, value, CaseError, CaseResult, Suite};
+use breenix_suite::suite::{case, case_ms_left, category, check, fail, suite, value, CaseError, CaseResult, Suite};
 #[cfg(target_arch = "aarch64")]
 use libbreenix::syscall::raw;
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU8, Ordering::Relaxed, Ordering::SeqCst};
@@ -1185,6 +1185,31 @@ fn t_canonical_line() -> CaseResult {
     expect_nothing(pty.slave, 200, "the slave", "before the line ended")?;
     put(pty.master, b"c\n", "the master")?;
     expect_read(pty.slave, 64, b"abc\n", 1000, "the slave")
+}
+
+// The documented canonical bound includes the newline. Overflow discards
+// ordinary characters, retaining the terminator and editing characters.
+fn t_canonical_limit() -> CaseResult {
+    let pty = line_pty(|_| {})?;
+    for len in [288, 1024, 4095] {
+        let mut line: Vec<u8> = (0..len).map(|i| b'a' + (i % 26) as u8).collect();
+        put(pty.master, &line, "the master")?;
+        expect_nothing(pty.slave, 20, "the slave", "before the delimiter")?;
+        put(pty.master, b"\n", "the master")?;
+        line.push(b'\n');
+        expect_read(pty.slave, 8192, &line, 1000, "the complete canonical line")?;
+    }
+    let line = vec![b'x'; 4095];
+    put(pty.master, &line, "the master")?;
+    put(pty.master, b"discarded\x7fy\n", "overflow and erase")?;
+    let mut expected = vec![b'x'; 4094];
+    expected.extend_from_slice(b"y\n");
+    expect_read(pty.slave, 8192, &expected, 1000, "the overflowed line after erase")?;
+    put(pty.master, &line, "the master")?;
+    put(pty.master, b"discarded\x15ok\n", "overflow and kill-line")?;
+    expect_read(pty.slave, 8192, b"ok\n", 1000, "the line after kill-line")?;
+    put(pty.master, b"next\n", "the next line")?;
+    expect_read(pty.slave, 64, b"next\n", 1000, "the next complete line")
 }
 
 fn t_canonical_one_line() -> CaseResult {
@@ -2641,6 +2666,7 @@ static SUITE: Suite = suite("terminals", "Terminals & job control", &[
         case("tcsetattr-einval", "tcsetattr with an unknown optional_actions fails with EINVAL", t_tcsetattr_einval),
         case("tcsetattr-enotty", "tcsetattr on /dev/null fails with ENOTTY", t_tcsetattr_enotty),
         case("canonical-line", "In canonical mode a read returns nothing until the line ends, then the whole line", t_canonical_line),
+        case("canonical-limit", "Canonical lines through 4095 bytes arrive whole and overflow retains editing and the delimiter", t_canonical_limit),
         case("canonical-one-line", "A canonical read returns at most one line", t_canonical_one_line),
         case("canonical-short-read", "A canonical read asking for less than the line returns that much, and the rest comes next", t_canonical_short_read),
         case("verase", "The ERASE character deletes the character before it", t_verase),

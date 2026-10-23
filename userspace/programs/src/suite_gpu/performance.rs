@@ -10,7 +10,7 @@ use super::common::*;
 use super::pipelines::{crossings, edges};
 use gpu::abi::draw::{self, Instance};
 use libbreenix::gpu;
-use libbreenix::suite::{value, CaseError, CaseResult};
+use breenix_suite::suite::{value, CaseError, CaseResult};
 type R<T> = Result<T, CaseError>;
 
 const W: u32 = 2560;
@@ -415,7 +415,7 @@ pub fn wait_no_spin() -> CaseResult {
     // until a wait lasts 20 ms; a shorter wait is not counted.
     let cycle = [pipeline::SOLID, pipeline::LINE, pipeline::CIRCLE_FILL, pipeline::ROUNDED_RECT, pipeline::TRIANGLE];
     let mut round = 0u32;
-    while libbreenix::suite::case_ms_left() > 1_500 {
+    while breenix_suite::suite::case_ms_left() > 1_500 {
         let draws = 4096usize << round.min(4);
         let in_flight = 1 + (round.saturating_sub(4) as usize).min(3);
         round += 1;

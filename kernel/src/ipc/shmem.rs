@@ -17,6 +17,8 @@ pub use namespace::{
     virtual_entry,
 };
 pub(crate) use object::release_frame;
+#[cfg(target_arch = "aarch64")]
+pub(crate) use object::Frame;
 pub use object::{page_count, MappingOrigin, ShmMapping, ShmObject};
 #[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
@@ -41,6 +43,17 @@ pub fn map_object(
         MappingOrigin::SysV,
         prot.contains(Protection::WRITE),
     )
+}
+
+/// Map a window object (`crate::window`) into the current process: shared, read-write or
+/// read-only, never copied by fork, and counted against `RLIMIT_AS` like any mapping.
+pub fn map_window(obj: &Arc<ShmObject>, len: u64, writable: bool) -> Result<u64, u64> {
+    let prot = if writable {
+        Protection::from_bits_truncate(Protection::READ.bits() | Protection::WRITE.bits())
+    } else {
+        Protection::READ
+    };
+    map_range(obj, 0, len, prot, MmapFlags::SHARED, 0, MappingOrigin::Window, writable)
 }
 
 /// Atomically refuse an occupied fixed address, for shmat without SHM_REMAP.
@@ -295,8 +308,13 @@ fn invalidate_object(object: &ShmObject, len: u64) -> Result<(), u64> {
     }
 }
 
-/// Maximum mapping rights are captured at mmap/shmat, independent of later chmod.
+/// Maximum mapping rights are captured at mmap/shmat, independent of later chmod. A
+/// window mapping's protection belongs to the window interface (a committed buffer stays
+/// read-only until it is acquired again), so mprotect refuses it.
 pub fn mprotect_allowed(vma: &Vma, prot: Protection) -> bool {
+    if vma.shm.as_ref().is_some_and(|m| m.origin() == MappingOrigin::Window) {
+        return false;
+    }
     !prot.contains(Protection::WRITE) || vma.shm.as_ref().is_none_or(|m| m.may_write())
 }
 /// Population runs under PM, after prepare_population allocated outside PM.

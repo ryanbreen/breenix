@@ -147,7 +147,32 @@
     {
       "id": "time",
       "title": "SNTP synchronization, slewing after the first step, RTC kept in UTC",
-      "cases": []
+      "cases": [
+        {
+          "id": "source",
+          "title": "The supervised time client synchronizes from site or DHCP servers after network-up"
+        },
+        {
+          "id": "offset",
+          "title": "The synchronized machine clock agrees with the boot host UTC within one second"
+        },
+        {
+          "id": "hourly",
+          "title": "The running client polls again after one hour without restarting"
+        },
+        {
+          "id": "sanity",
+          "title": "Invalid, unsynchronized, mismatched, stale and excessive-offset SNTP replies cannot change the clock"
+        },
+        {
+          "id": "slew",
+          "title": "A negative correction after first synchronization slews at bounded rate without stepping backwards"
+        },
+        {
+          "id": "rtc-reboot",
+          "title": "After synchronization and reboot the hardware RTC agrees with the boot host UTC within one second"
+        }
+      ]
     },
     {
       "id": "reboot",
@@ -189,6 +214,16 @@
       "id": "remote-upgrade",
       "title": "Remote upgrades verified over SSH and rolled back automatically",
       "cases": []
+    },
+    {
+      "id": "console-input",
+      "title": "Console input",
+      "cases": [
+        {
+          "id": "long-line",
+          "title": "SOL delivers long shell and canonical lines whole, and canonical overflow retains editing and the delimiter"
+        }
+      ]
     }
   ],
   "timingSensitive": true,

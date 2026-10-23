@@ -1281,15 +1281,15 @@ fn validate_exec_smoke_is_wired(
         .ok_or_else(|| "x86_64 run_exec_smoke call site not found".to_owned())?
         + x86_64_gate.len();
 
-    // aarch64 ordering: after the liveness service, before wait-stress (unchanged from the
-    // original single-arch check).
+    // B44: aarch64 ordering stays after the liveness service and before the clone-vm exec
+    // test, the first startup step after the exec smoke now that B42 retired wait-stress.
     let liveness_calls = code_offsets(main, &main_mask, "start_liveness_service()");
     if liveness_calls.len() != 1 || liveness_calls[0] >= aarch64_smoke {
         return Err("init must spawn the liveness service before the aarch64 exec smoke".to_owned());
     }
-    let wait_stress = code_offsets(main, &main_mask, "run_wait_stress_if_enabled()");
-    if wait_stress.len() != 1 || aarch64_smoke >= wait_stress[0] {
-        return Err("init must run the aarch64 exec smoke before wait stress".to_owned());
+    let clonevm_exec = code_offsets(main, &main_mask, "run_clonevm_exec_test()");
+    if clonevm_exec.len() != 1 || aarch64_smoke >= clonevm_exec[0] {
+        return Err("init must run the aarch64 exec smoke before the clone-vm exec test".to_owned());
     }
 
     // x86_64 ordering: after x86's own tty oracle call (its existing last service before this

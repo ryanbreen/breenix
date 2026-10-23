@@ -10,8 +10,8 @@ use libbreenix::time;
 
 use libgfx::color::Color;
 use libgfx::font;
-use libgfx::framebuf::FrameBuf;
 use libgfx::shapes;
+use libgfx::surface::Surface;
 use libgfx::ttf_font;
 
 use libbui::Rect;
@@ -145,10 +145,33 @@ fn content_height(tests: &[TestDef]) -> i32 {
     y
 }
 
-/// Draw text using TTF font if available, falling back to bitmap.
+/// A frame's text, drawn after its fills, which it does not overlap: each string as
+/// `ttf_font::draw_text` draws it (or the 5x7 font at its scale without TrueType), with the
+/// strings' glyphs sharing draws.
+#[derive(Default)]
+struct Text {
+    strings: Vec<(String, i32, i32, f32, Color, usize)>,
+}
+
+impl Text {
+    fn finish(self, fb: &mut Surface, ttf: Option<&mut CachedFont>) {
+        if let Some(f) = ttf {
+            let clip = libgfx::surface::Rect::new(0, 0, fb.width() as i32, fb.height() as i32);
+            let runs: Vec<ttf_font::TextRun<'_>> = self.strings.iter().map(|(text, x, y, size, fg, _)| ttf_font::TextRun {
+                bytes: text.as_bytes(), x: *x, y: *y, size: *size, fg: *fg, clip,
+            }).collect();
+            ttf_font::draw_runs(fb, f, &runs);
+        } else {
+            for (text, x, y, _, fg, scale) in &self.strings {
+                font::draw_text(fb, text.as_bytes(), *x as usize, *y as usize, *fg, *scale);
+            }
+        }
+    }
+}
+
+/// Queue text in the TrueType font if available, else the bitmap font at `bitmap_scale`.
 fn draw_text_scaled(
-    fb: &mut FrameBuf,
-    ttf: Option<&mut CachedFont>,
+    text_out: &mut Text,
     text: &str,
     x: i32,
     y: i32,
@@ -156,11 +179,7 @@ fn draw_text_scaled(
     color: Color,
     bitmap_scale: usize,
 ) {
-    if let Some(f) = ttf {
-        ttf_font::draw_text(fb, f, text, x, y, size, color);
-    } else {
-        font::draw_text(fb, text.as_bytes(), x as usize, y as usize, color, bitmap_scale);
-    }
+    text_out.strings.push((String::from(text), x, y, size, color, bitmap_scale));
 }
 
 /// Measure text width using TTF font if available, falling back to bitmap.
@@ -172,9 +191,10 @@ fn measure_text(ttf: Option<&mut CachedFont>, text: &str, size: f32, bitmap_scal
     }
 }
 
-fn render(fb: &mut FrameBuf, tests: &[TestDef], scroll_offset: i32, ttf: &mut Option<CachedFont>, font_size: f32) {
-    let w = fb.width as i32;
-    let h = fb.height as i32;
+fn render(fb: &mut Surface, tests: &[TestDef], scroll_offset: i32, ttf: &mut Option<CachedFont>, font_size: f32) {
+    let w = fb.width() as i32;
+    let h = fb.height() as i32;
+    let mut text = Text::default();
 
     // Background
     fb.clear(BG);
@@ -183,7 +203,7 @@ fn render(fb: &mut FrameBuf, tests: &[TestDef], scroll_offset: i32, ttf: &mut Op
     let title = "BREENIX SELF-CHECK";
     let title_size = font_size * 2.0;
     let title_w = measure_text(ttf.as_mut(), title, title_size, 2);
-    draw_text_scaled(fb, ttf.as_mut(), title, (w - title_w) / 2, TITLE_Y, title_size, TITLE_COLOR, 2);
+    draw_text_scaled(&mut text, title, (w - title_w) / 2, TITLE_Y, title_size, TITLE_COLOR, 2);
 
     // Header line
     shapes::fill_rect(fb, MARGIN, BAR_Y - 4, w - MARGIN * 2, 1, COLOR_HEADER_LINE);
@@ -222,7 +242,7 @@ fn render(fb: &mut FrameBuf, tests: &[TestDef], scroll_offset: i32, ttf: &mut Op
     let pct_len = format_progress(&mut pct_buf, completed, total, pct);
     let pct_str = core::str::from_utf8(&pct_buf[..pct_len]).unwrap_or("");
     let pct_tw = measure_text(ttf.as_mut(), pct_str, font_size, 1);
-    draw_text_scaled(fb, ttf.as_mut(), pct_str, (w - pct_tw) / 2, BAR_Y + 4, font_size, FG, 1);
+    draw_text_scaled(&mut text, pct_str, (w - pct_tw) / 2, BAR_Y + 4, font_size, FG, 1);
 
     // Visible area for test list
     let visible_top = LIST_START_Y;
@@ -251,7 +271,7 @@ fn render(fb: &mut FrameBuf, tests: &[TestDef], scroll_offset: i32, ttf: &mut Op
             // Only draw if visible
             if y >= visible_top && y + 12 <= visible_bottom {
                 let cat_tw = measure_text(ttf.as_mut(), cat_label, font_size, 1);
-                draw_text_scaled(fb, ttf.as_mut(), cat_label, MARGIN, y, font_size, COLOR_CAT, 1);
+                draw_text_scaled(&mut text, cat_label, MARGIN, y, font_size, COLOR_CAT, 1);
                 shapes::fill_rect(fb, MARGIN + cat_tw + 4, y + 3,
                                   w - MARGIN * 2 - cat_tw - 4, 1, ACCENT);
             }
@@ -272,10 +292,10 @@ fn render(fb: &mut FrameBuf, tests: &[TestDef], scroll_offset: i32, ttf: &mut Op
                 TestStatus::Skip    => ("--", COLOR_SKIP),
                 TestStatus::Pending => ("..", COLOR_PEND),
             };
-            draw_text_scaled(fb, ttf.as_mut(), icon, MARGIN + 2, y, font_size, icon_color, 1);
+            draw_text_scaled(&mut text, icon, MARGIN + 2, y, font_size, icon_color, 1);
 
             // Test name
-            draw_text_scaled(fb, ttf.as_mut(), test.name, MARGIN + 22, y, font_size, FG, 1);
+            draw_text_scaled(&mut text, test.name, MARGIN + 22, y, font_size, FG, 1);
 
             // Status label
             let (label, label_color): (&str, Color) = match test.status {
@@ -286,7 +306,7 @@ fn render(fb: &mut FrameBuf, tests: &[TestDef], scroll_offset: i32, ttf: &mut Op
                 TestStatus::Pending => ("    ", COLOR_PEND),
             };
             let label_x = w - MARGIN - 80;
-            draw_text_scaled(fb, ttf.as_mut(), label, label_x, y, font_size, label_color, 1);
+            draw_text_scaled(&mut text, label, label_x, y, font_size, label_color, 1);
 
             // Elapsed time (for completed tests)
             if test.status == TestStatus::Pass || test.status == TestStatus::Fail {
@@ -294,7 +314,7 @@ fn render(fb: &mut FrameBuf, tests: &[TestDef], scroll_offset: i32, ttf: &mut Op
                 let time_len = format_ms(&mut time_buf, test.elapsed_ms);
                 let time_str = core::str::from_utf8(&time_buf[..time_len]).unwrap_or("");
                 let time_x = w - MARGIN - 36;
-                draw_text_scaled(fb, ttf.as_mut(), time_str, time_x, y, font_size, COLOR_TIME, 1);
+                draw_text_scaled(&mut text, time_str, time_x, y, font_size, COLOR_TIME, 1);
             }
         }
 
@@ -308,7 +328,8 @@ fn render(fb: &mut FrameBuf, tests: &[TestDef], scroll_offset: i32, ttf: &mut Op
     let mut footer_buf = [0u8; 48];
     let footer_len = format_footer(&mut footer_buf, passed, failed, total - completed);
     let footer_str = core::str::from_utf8(&footer_buf[..footer_len]).unwrap_or("");
-    draw_text_scaled(fb, ttf.as_mut(), footer_str, MARGIN, footer_y, font_size, FG, 1);
+    draw_text_scaled(&mut text, footer_str, MARGIN, footer_y, font_size, FG, 1);
+    text.finish(fb, ttf.as_mut());
 }
 
 // ---------------------------------------------------------------------------
@@ -443,14 +464,15 @@ fn main() {
     }
 
     // Initial render — all pending
-    render(win.framebuf(), &tests, 0, &mut ttf_font, font_size);
-    let _ = win.present();
+    match frame(&mut win, &tests, 0, &mut ttf_font, font_size, None) {
+        Ok(()) => println!("[bcheck] first frame presented: {}x{}", win.width(), win.height()),
+        Err(e) => println!("[bcheck] first frame present failed: {}", e),
+    }
 
     // Run each test sequentially
     for i in 0..total {
         tests[i].status = TestStatus::Running;
-        render(win.framebuf(), &tests, 0, &mut ttf_font, font_size);
-        let _ = win.present();
+        let _ = frame(&mut win, &tests, 0, &mut ttf_font, font_size, None);
 
         run_test(&mut tests[i]);
 
@@ -463,8 +485,7 @@ fn main() {
         println!("[bcheck] {:2}/{} {} {} {}ms",
                  i + 1, total, tests[i].name, status_str, tests[i].elapsed_ms);
 
-        render(win.framebuf(), &tests, 0, &mut ttf_font, font_size);
-        let _ = win.present();
+        let _ = frame(&mut win, &tests, 0, &mut ttf_font, font_size, None);
     }
 
     // Summary
@@ -477,11 +498,36 @@ fn main() {
     let total_h = content_height(&tests);
     let sleep_ts = libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 50_000_000 }; // 50ms
 
+    // Widget rectangles use logical coordinates, while scroll offsets and content
+    // dimensions remain in the device pixels used by render().
+    let ui_scale = win.surface().expect("self-check surface").ui_scale() as i32;
     // Scrollbar positioned along the right edge of the content area
     let bar_w = ScrollBar::DEFAULT_WIDTH;
-    let bar_rect = Rect::new(WIN_W as i32 - bar_w, LIST_START_Y, bar_w, visible_h);
+    let bar_rect = Rect::new(WIN_W as i32 / ui_scale - bar_w, LIST_START_Y / ui_scale, bar_w, visible_h / ui_scale);
     let mut scroll_bar = ScrollBar::new(bar_rect, total_h, visible_h);
     let theme = libbui::Theme::dark();
+    // Present the scrollbar as soon as results become scrollable.
+    if frame(&mut win, &tests, 0, &mut ttf_font, font_size, Some((&scroll_bar, &theme))).is_ok() {
+        let mut pixels = vec![0u8; win.width() as usize * win.height() as usize * 4];
+        match libbreenix::window::capture(win.id(), &mut pixels, None) {
+            Ok(_) => {
+                let x = bar_rect.x * ui_scale;
+                let y = bar_rect.y * ui_scale;
+                let samples = [(x, y, [48, 42, 40]), (x + 3 * ui_scale, y + 2 * ui_scale, [100, 85, 80])];
+                let exact = samples.iter().all(|(x, y, want)| {
+                    let at = (*y as usize * win.width() as usize + *x as usize) * 4;
+                    pixels[at..at + 3] == *want
+                });
+                if exact {
+                    println!("[bcheck] scrollbar read back: bounds={},{},{},{} window={}x{} scale={} 2 pixels exact",
+                        x, y, bar_rect.w * ui_scale, bar_rect.h * ui_scale, win.width(), win.height(), ui_scale);
+                } else {
+                    println!("[bcheck] scrollbar layout FAILED: track or thumb differs");
+                }
+            }
+            Err(e) => println!("[bcheck] scrollbar layout FAILED: capture {}", e),
+        }
+    }
 
     loop {
         let mut need_redraw = false;
@@ -489,19 +535,24 @@ fn main() {
             match event {
                 Event::KeyPress { keycode, .. } => {
                     match keycode {
-                        0x52 => { scroll_bar.scroll(1); need_redraw = true; }
-                        0x51 => { scroll_bar.scroll(-1); need_redraw = true; }
+                        breengel::keys::UP => { scroll_bar.scroll(1); need_redraw = true; }
+                        breengel::keys::DOWN => { scroll_bar.scroll(-1); need_redraw = true; }
                         _ => {}
                     }
                 }
-                Event::Scroll { delta_y } => {
+                Event::Scroll { delta_y, .. } => {
                     scroll_bar.scroll(delta_y);
                     need_redraw = true;
+                }
+                Event::ResizeRequested { width, height } => {
+                    if let Err(e) = win.apply_resize(width, height) {
+                        println!("[bcheck] resize refused: {}x{}: {}", width, height, e);
+                    }
                 }
                 Event::Resized { width: w, height: h } => {
                     let new_visible_h = h as i32 - LIST_START_Y - FOOTER_H;
                     let new_bar_rect = Rect::new(
-                        w as i32 - bar_w, LIST_START_Y, bar_w, new_visible_h,
+                        w as i32 / ui_scale - bar_w, LIST_START_Y / ui_scale, bar_w, new_visible_h / ui_scale,
                     );
                     scroll_bar.set_rect(new_bar_rect);
                     scroll_bar.set_dimensions(total_h, new_visible_h);
@@ -512,14 +563,23 @@ fn main() {
             }
         }
         if need_redraw {
-            render(win.framebuf(), &tests, scroll_bar.offset(), &mut ttf_font, font_size);
-            // Draw the scrollbar on top of the content
-            scroll_bar.draw(win.framebuf(), &theme);
-            let _ = win.present();
+            let _ = frame(&mut win, &tests, scroll_bar.offset(), &mut ttf_font, font_size, Some((&scroll_bar, &theme)));
         } else {
             let _ = time::nanosleep(&sleep_ts);
         }
     }
+}
+
+/// Draw the results into the window's surface, with the scrollbar on top when there is one,
+/// and commit the frame.
+fn frame(win: &mut Window, tests: &[TestDef], scroll_offset: i32, ttf: &mut Option<CachedFont>, font_size: f32,
+    scroll: Option<(&ScrollBar, &libbui::Theme)>) -> Result<(), libbreenix::error::Error> {
+    let fb = win.surface()?;
+    render(fb, tests, scroll_offset, ttf, font_size);
+    if let Some((bar, theme)) = scroll {
+        bar.draw(fb, theme);
+    }
+    win.present()
 }
 
 /// Headless fallback — just run tests and report to serial

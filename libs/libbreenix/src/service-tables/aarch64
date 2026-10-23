@@ -1,6 +1,7 @@
 # Breenix service table, read by init at boot and by `svc reload`.
 # Format: libs/libbreenix/src/services.rs; status and control: svc(1).
 # The desktop and its applications start from init's boot script, not here.
+# Default ARM64 init selects daemons; `init console` selects the login terminals.
 
 # SSH key exchange reads the random pool, so bsshd starts once it is ready.
 [bsshd]
@@ -12,3 +13,22 @@ needs = entropy
 command = /sbin/init bssh-oracle
 restart = never
 needs = entropy, bsshd
+
+[getty-tty2]
+command = /bin/getty tty2
+
+[getty-tty3]
+command = /bin/getty tty3
+
+[getty-tty4]
+command = /bin/getty tty4
+
+[getty-tty5]
+command = /bin/getty tty5
+
+[getty-tty6]
+command = /bin/getty tty6
+
+# The console (tty1) starts last, so launch notices precede its login prompt.
+[getty-console]
+command = /bin/getty

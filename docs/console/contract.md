@@ -132,6 +132,10 @@ pixels; the two extra pixel rows at the bottom of each cell are the cursor band.
   background colour.
 - The logo scale `k` (pixels per design unit, section 6) follows `S`: 2 for sizes 16 and 20, 3 for 24, 4 for
   32.
+- On ARM64, a display of `1280s` by `800s` pixels for a whole scale `s` also shows the boot stage ribbon
+  (docs/gui/breengel.md section 23.7) over the grid, in the band from `x = 16s` to `1264s` and `y = 752s` to
+  `768s`. The read-back check (section 8) expects the ribbon's pixels there, in the rows it has drawn; the
+  grid, `vcs` and `TIOCGWINSZ` keep the size rule's dimensions.
 
 | Display | Where | `S` | Cell | Grid | `k` |
 |---|---|---|---|---|---|
@@ -474,6 +478,23 @@ key that sends `ESC [ p X` or `ESC O X` sends `ESC [ p ; m X`, with `p` 1 for a 
 sends `ESC [ 1 ; 9 A`, Super+F1 `ESC [ 1 ; 9 P`, Super+F5 `ESC [ 15 ; 9 ~`). Alt adds 2 to `m` rather than an
 `ESC`. A repeat has `m:2` in place of `m`. Ctrl is not Super: Ctrl+Enter and Ctrl+M send CR.
 
+### 5.6 Terminal input limits and signals
+
+The canonical line discipline has `MAX_CANON = 4096`, including its delimiter
+(`kernel/src/tty/line_discipline.rs`). Its 4095-byte input budget is shared by
+the incomplete line and completed, unread input; with no unread input, a line
+accepts 4095 ordinary bytes. Further ordinary bytes are discarded with an audible
+BEL for each rejected byte, preserving room for the delimiter.
+Erase, kill-line and EOF still work at the limit: erase permits a replacement
+byte, kill-line permits a fresh line, and newline delivers the retained line.
+The next line starts normally. This is Breenix's canonical overflow policy;
+it does not impose a line length on an application reading a noncanonical byte stream.
+
+A console read waiting for input is interruptible. SIGKILL terminates its process;
+SIGTERM follows the process's disposition: default termination, ignore, a handler
+ending the read with EINTR, or a handler with SA_RESTART resuming it. These follow
+[POSIX signal actions](https://pubs.opengroup.org/onlinepubs/9799919799/functions/V2_chap02.html).
+
 ---
 
 ## 6. The boot logo
@@ -762,13 +783,13 @@ A case that needs a real key from outside the guest asks for it on serial, the l
 case reads its effect back in the guest. The host key is the input; the in-guest read-back is the evidence.
 
 - **The request** is a suite record, written like VALUE and WAIT (one write starting with a newline, through
-  a `libbreenix::suite` helper, between the suite's START and DONE):
+  a `breenix_suite::suite` helper, between the suite's START and DONE):
 
   ```text
   SUITE console HOSTKEY <category>/<case> seq=<n> keys=<chord>[,<chord>...]
   ```
 
-  `libbreenix::suite::hostkeys(chords)` emits the record and returns its sequence;
+  `breenix_suite::suite::hostkeys(chords)` emits the record and returns its sequence;
   `hostkey_method()` exposes the declaration. The helper rejects an absent method
   or a chord containing a declared missing key. Sequence ranges are reserved in
   the parent before each case forks, and `--hostkeys` is retained across a suite sequence.

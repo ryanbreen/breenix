@@ -277,6 +277,22 @@ impl Layout {
     }
 }
 
+/// The screen the pointer moves over: the firmware framebuffer on x86-64, the GPU core's
+/// current display mode on ARM64.
+#[cfg(target_arch = "x86_64")]
+fn screen_size() -> Result<(u32, u32), String> {
+    graphics::fbinfo().map(|info| (info.width as u32, info.height as u32)).map_err(|e| format!("{e:?}"))
+}
+
+#[cfg(target_arch = "aarch64")]
+fn screen_size() -> Result<(u32, u32), String> {
+    let (r, modes) = libbreenix::gpu::modes();
+    if r != 0 {
+        return Err(format!("MODES errno {}", -r));
+    }
+    modes.modes.get(modes.current as usize).map(|m| (m.width, m.height)).ok_or_else(|| String::from("MODES has no current mode"))
+}
+
 fn observe() -> (u32, u32, u32, i32) {
     match graphics::mouse_state_with_scroll() {
         Ok(state) => state,
@@ -559,14 +575,13 @@ fn main() {
         println!("USB POINTER FAIL usage: usb_pointer_check absolute|relative[-absolute|-relative][-replay]");
         std::process::exit(2);
     }
-    let info = match graphics::fbinfo() {
-        Ok(info) => info,
+    let (width, height) = match screen_size() {
+        Ok(size) => size,
         Err(error) => {
-            println!("USB POINTER FAIL framebuffer: {error:?}");
+            println!("USB POINTER FAIL framebuffer: {error}");
             std::process::exit(1);
         }
     };
-    let (width, height) = (info.width as u32, info.height as u32);
     let census = || match pointers() {
         Ok(attached) if !attached.is_empty() => attached,
         Ok(_) => {

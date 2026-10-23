@@ -205,6 +205,26 @@ fn console() -> Result<crate::tty::ctty::TtyRef, SyscallResult> {
 
 /// RTC_RD_TIME on /dev/rtc.
 fn rtc_ioctl(request: u64, arg: u64) -> SyscallResult {
+    if request == 0x4024_700a { // RTC_SET_TIME: UTC calendar, root only.
+        if !matches!(super::handlers::sys_geteuid(), SyscallResult::Ok(0)) {
+            return SyscallResult::Err(1);
+        }
+        let tm: [i32; 9] = match super::userptr::copy_from_user(arg as *const [i32; 9]) {
+            Ok(tm) => tm, Err(e) => return SyscallResult::Err(e),
+        };
+        if !(100..=199).contains(&tm[5]) || !(0..=11).contains(&tm[4])
+            || !(1..=31).contains(&tm[3]) || !(0..=23).contains(&tm[2])
+            || !(0..=59).contains(&tm[1]) || !(0..=59).contains(&tm[0]) {
+            return SyscallResult::Err(22);
+        }
+        let dt = crate::time::DateTime { year: (tm[5] + 1900) as u16,
+            month: (tm[4] + 1) as u8, day: tm[3] as u8,
+            hour: tm[2] as u8, minute: tm[1] as u8, second: tm[0] as u8 };
+        if dt.day > crate::time::rtc::days_in_month(dt.month, dt.year) { return SyscallResult::Err(22); }
+        return match crate::time::rtc::write_rtc_time(dt) {
+            Ok(()) => SyscallResult::Ok(0), Err(_) => SyscallResult::Err(5),
+        };
+    }
     if request != 0x8024_7009 { return SyscallResult::Err(ENOTTY); }
     let stamp = match crate::time::rtc::read_rtc_time() {
         Ok(stamp) => stamp,

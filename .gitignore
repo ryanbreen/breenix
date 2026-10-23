@@ -32,10 +32,16 @@ libs/*
 !libs/breenix-logo/
 !libs/bgl/
 !libs/bgl/**
+!libs/libimg-encode/
+!libs/libimg-encode/**
 !libs/libgfx-ref/
 !libs/libgfx-ref/**
+!libs/libgfx-pixel/
+!libs/libgfx-pixel/**
 !libs/arm64-boot-contract/
 !libs/arm64-boot-contract/**
+!libs/breengel-abi/
+!libs/breengel-abi/**
 !libs/gpu-abi/
 !libs/gpu-abi/**
 !libs/libbreenix/
@@ -44,6 +50,8 @@ libs/*
 !libs/breenix_std/**
 !libs/libbreenix-libc/
 !libs/libbreenix-libc/**
+!libs/libpixcheck/
+!libs/libpixcheck/**
 !libs/libgfx/
 !libs/libgfx/**
 !libs/libc/
