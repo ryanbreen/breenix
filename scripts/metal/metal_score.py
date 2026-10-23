@@ -65,7 +65,7 @@ def score(directory):
     # scored again from the completed capture without rerunning them. Each measured
     # category's records are server-<category>.json, or users-operator.json for the
     # users suite's host-run category, beside its transcript.
-    found = sorted(directory.glob('server-*.json')) + sorted(directory.glob('users-operator.json')) + sorted(directory.glob('console-input.json'))
+    found = sorted(directory.glob('server-*.json')) + sorted(directory.glob('users-operator.json'))
     for host_records in found:
         suite, category = host_records.name[:-len('.json')].split('-', 1)
         if category.endswith('-transcript'):

@@ -1494,16 +1494,6 @@
               "keys"
             ]
           }
-        },
-        {
-          "id": "input",
-          "title": "Console input without stalls",
-          "measure": {
-            "suite": "console",
-            "categories": [
-              "input"
-            ]
-          }
         }
       ],
       "targets": [
@@ -2137,6 +2127,16 @@
             "suite": "server",
             "categories": [
               "remote-upgrade"
+            ]
+          }
+        },
+        {
+          "id": "console-input",
+          "title": "Console input without stalls",
+          "measure": {
+            "suite": "server",
+            "categories": [
+              "console-input"
             ]
           }
         }

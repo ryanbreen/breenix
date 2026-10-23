@@ -304,7 +304,7 @@
         },
         {
           "id": "console-read-signals",
-          "title": "SIGKILL ends a blocked console read and SIGTERM follows its disposition"
+          "title": "SIGKILL ends blocked console reads and an executing writer, and SIGTERM follows its disposition"
         },
         {
           "id": "terminates",

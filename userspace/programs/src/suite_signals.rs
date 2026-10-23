@@ -2779,8 +2779,8 @@ fn w_temp_mask() -> CaseResult {
     check(count(SIGUSR2) == 1, "SIGUSR2, held pending by the temporary mask, was not delivered once sigsuspend restored the old mask")
 }
 
-// Observe the read parked before signalling: a setup receipt alone cannot prove
-// that SIGKILL interrupted a terminal wait. Use the real console and a VT too.
+// Observe the read parked before signalling, rather than relying on a setup
+// receipt. Exercise both the real console and a VT.
 fn w_console_read_signals() -> CaseResult {
     for path in ["/dev/console", "/dev/tty2"] {
         for disposition in 0..4 {
@@ -2822,7 +2822,32 @@ fn w_console_read_signals() -> CaseResult {
             }
         }
     }
-    Ok(())
+    w_console_writer_kill()
+}
+
+// Exercise an executing writer as well as parked readers. The shared counter
+// advances only after real console writes return; TERM is deliberately ignored.
+fn w_console_writer_kill() -> CaseResult {
+    let progress = Shared::new()?;
+    let mut child = Child::start(|| {
+        use std::os::fd::AsRawFd;
+        let file = match std::fs::OpenOptions::new().write(true).open("/dev/console") {
+            Ok(file) => file, Err(_) => return 10,
+        };
+        if setmask(0).is_err() || ignore(SIGTERM).is_err() { return 11; }
+        let fd = Fd::from_raw(file.as_raw_fd() as u64);
+        loop {
+            if io::write(fd, b"\r").is_err() { return 12; }
+            progress.set(0, progress.get(0) + 1);
+        }
+    })?;
+    check(until(WAIT_MS, || progress.get(0) >= 8), "console writer made no output progress")?;
+    want_eq("kill(console writer, SIGTERM)", kill(child.pid, SIGTERM), 0)?;
+    let before = progress.get(0);
+    check(until(WAIT_MS, || progress.get(0) >= before + 8),
+          "ignored TERM stranded the running console writer")?;
+    want_eq("kill(console writer, SIGKILL)", kill(child.pid, SIGKILL), 0)?;
+    child.expect_death(SIGKILL, "the executing console writer")
 }
 
 fn w_terminates() -> CaseResult {
@@ -4145,7 +4170,7 @@ static SUITE: Suite = suite(
             case("sigsuspend", "sigsuspend returns EINTR after the handler and restores the mask", w_sigsuspend),
             case("sigsuspend-pending", "A signal already pending when sigsuspend unblocks it ends the wait at once with its handler run", w_sigsuspend_pending),
             case("temp-mask", "A signal blocked by sigsuspend's mask does not end the wait and is delivered after it", w_temp_mask),
-            case("console-read-signals", "SIGKILL ends a blocked console read and SIGTERM follows its disposition", w_console_read_signals),
+            case("console-read-signals", "SIGKILL ends blocked console reads and an executing writer, and SIGTERM follows its disposition", w_console_read_signals),
             case("terminates", "A default-action terminating signal ends a process in sigsuspend", w_terminates),
             case("ignored", "An ignored signal does not end sigsuspend", w_ignored),
             case("pause", "pause returns EINTR after a handler runs", w_pause),

@@ -950,3 +950,20 @@ pub fn read_to_user(
     }
     panic!("user address copying is outside the host discipline tests")
 }
+
+#[test]
+fn canonical_overflow_rings_and_keeps_editing_and_delimiter() {
+    let mut d = line_discipline::LineDiscipline::new();
+    let mut echoed = Vec::new();
+    for _ in 0..4095 { d.input_char(b'x', &mut |c| echoed.push(c)); }
+    echoed.clear();
+    d.input_char(b'y', &mut |c| echoed.push(c));
+    assert_eq!(echoed, [7], "a discarded byte must have an audible response");
+    d.input_char(0x7f, &mut |_| {});
+    d.input_char(b'z', &mut |_| {});
+    d.input_char(b'\n', &mut |_| {});
+    let mut line = [0; 4096];
+    assert_eq!(d.read(&mut line), Ok(4096));
+    assert!(line[..4094].iter().all(|&c| c == b'x'));
+    assert_eq!(&line[4094..], b"z\n");
+}

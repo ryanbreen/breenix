@@ -477,8 +477,10 @@ sends `ESC [ 1 ; 9 A`, Super+F1 `ESC [ 1 ; 9 P`, Super+F5 `ESC [ 15 ; 9 ~`). Alt
 ### 5.6 Terminal input limits and signals
 
 The canonical line discipline has `MAX_CANON = 4096`, including its delimiter
-(`kernel/src/tty/line_discipline.rs`): an incomplete line accepts 4095 ordinary
-bytes. Further ordinary bytes are discarded, preserving room for the delimiter.
+(`kernel/src/tty/line_discipline.rs`). Its 4095-byte input budget is shared by
+the incomplete line and completed, unread input; with no unread input, a line
+accepts 4095 ordinary bytes. Further ordinary bytes are discarded with an audible
+BEL for each rejected byte, preserving room for the delimiter.
 Erase, kill-line and EOF still work at the limit: erase permits a replacement
 byte, kill-line permits a fresh line, and newline delivers the retained line.
 The next line starts normally. This is Breenix's canonical overflow policy;

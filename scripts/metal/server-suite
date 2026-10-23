@@ -77,10 +77,10 @@ CONSOLE_INPUT = (
 )
 
 # The populated categories in manifest order, the suite each belongs to, and the milestone each one measures.
-CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'operator': OPERATOR, 'input': CONSOLE_INPUT}
-SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'operator': 'users', 'input': 'console'}
+CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'operator': OPERATOR, 'console-input': CONSOLE_INPUT}
+SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'operator': 'users', 'console-input': 'server'}
 MILESTONES = {'server/ssh-keys': 'ssh-keys', 'server/services': 'services', 'server/logs': 'logs',
-              'users/operator-login': 'operator', 'console/input': 'input'}
+              'users/operator-login': 'operator', 'server/console-input': 'console-input'}
 # The console lines the operator's console challenge leaves in the capture (docs/metal/boot-path.json, console-login).
 OPERATOR_CONSOLE_LINES = ('Login incorrect', 'metal-login-ok 42', 'fbcon check: shadow and screen identical',
                           'fbcon row: metal-login-ok 42')
@@ -679,14 +679,27 @@ class ConsoleInput:
             c.type_line('print("' + tag + '-status", run("/bin/sh", "-c", ' + json.dumps(script) + '))', attempts=1)
             text, ready = c.wait(offset, r'(?m)^' + tag + r'-ready\r?$', 'the canonical reader')
             offset += len(text[:ready.end()].encode())
-            c.send(typed)
+            # Each accepted block must echo before more input arrives.
+            for at in range(0, 4095, 64):
+                block = typed[at:min(at + 64, 4095)]
+                echo_at = c.size()
+                c.send(block, enter=False)
+                c.wait(echo_at, r'[\r\n]*'.join(map(re.escape, block)), 'echo of this canonical block')
+            tail = typed[4095:]
+            if tail:
+                cooked = c.serial
+                try:
+                    c.serial = cooked.removesuffix('serial.txt') + 'serial.raw'
+                    echo_at = c.size()
+                    c.send(tail, enter=False)
+                    c.wait(echo_at, r'\x07', 'the canonical overflow bell')
+                finally:
+                    c.serial = cooked
+            c.send('')
             digest = hashlib.sha256(expected.encode()).hexdigest()
             c.wait(offset, r'(?m)^' + digest + r'  -\r?$', 'the hash of the complete canonical line', timeout=90)
             text, done = c.wait(offset, r'(?m)^' + tag + r'-status 0\r?$', 'the reader exit status')
             c.wait(offset + len(text[:done.end()].encode()), r'(?m)^' + c.PROMPT + r' ', 'the next shell prompt')
-
-    def cleanup(self):
-        self.console.logout()
 
 
 class Services:
@@ -1411,25 +1424,25 @@ def main():
     manifest = json.loads(read('definition/docs/suites/' + suite + '.json'))
     validate_manifest(manifest)
     effort = json.loads(read('definition/docs/efforts/path.json'))
-    fields = ["SERVER_SSH_HOST", "OPERATOR_USER", "OPERATOR_SSH_PUBLIC_KEY"]
+    fields = [] if category == 'console-input' else ["SERVER_SSH_HOST", "OPERATOR_USER", "OPERATOR_SSH_PUBLIC_KEY"]
     fields += ["CONSOLE_USER", "CONSOLE_PASSWORD"]
     if category == 'operator':
         fields += ["OPERATOR_UID", "OPERATOR_PASSWORD"]
     site = remote('python3', '-c', 'import sys,json;sys.path.insert(0,"/opt/breenix-metal");'
                   'import metal_lib,metal_root;s=metal_lib.load_site();'
                   'v={k:s.get(k) for k in ' + repr(tuple(fields)) + '};'
-                  'v["operatorKeys"]=metal_root.operator_keys(s);print(json.dumps(v))')
+                  'v["operatorKeys"]=metal_root.operator_keys(s) if "OPERATOR_USER" in v else [];print(json.dumps(v))')
     if site.returncode: raise ValueError('cannot read suite site fields')
     site = json.loads(site.stdout)
-    if not site['SERVER_SSH_HOST']: raise ValueError('site needs SERVER_SSH_HOST for the persistent server')
+    if category != 'console-input' and not site['SERVER_SSH_HOST']: raise ValueError('site needs SERVER_SSH_HOST for the persistent server')
     if category == 'operator' and (not (re.fullmatch(r'[1-9][0-9]{3,4}', site['OPERATOR_UID'] or '')
                                        and 1000 <= int(site['OPERATOR_UID']) <= 60000)
                                    or not site['OPERATOR_PASSWORD']):
         raise ValueError('site needs OPERATOR_UID and OPERATOR_PASSWORD for the operator category')
-    identity = next((p.with_suffix('') for p in (Path.home() / '.ssh').glob('*.pub')
+    identity = None if category == 'console-input' else next((p.with_suffix('') for p in (Path.home() / '.ssh').glob('*.pub')
                      if p.read_text().split()[:2] == site['OPERATOR_SSH_PUBLIC_KEY'].split()[:2]
                      and p.with_suffix('').is_file()), None)
-    if identity is None: raise ValueError('boot host has no private key matching the staged operator public key')
+    if category != 'console-input' and identity is None: raise ValueError('boot host has no private key matching the staged operator public key')
     fatal = json.loads(read('definition/docs/boot-path.json'))['fatal'] + [r'KERNEL PANIC:']
     records = dict(boot=args.boot, commit=args.sha, milestone=args.milestone, cases=[], cleanup=False, consoleGaps=[])
     with tempfile.TemporaryDirectory(prefix=suite + '-' + category + '-') as scratch, ExitStack() as cleanup:
@@ -1438,7 +1451,7 @@ def main():
                 step()
             except Exception as error:
                 records.setdefault('cleanupErrors', []).append(type(error).__name__ + ': ' + str(error))
-        probe = Probe(site['SERVER_SSH_HOST'], site['OPERATOR_USER'], identity, Path(scratch))
+        probe = None if category == 'console-input' else Probe(site['SERVER_SSH_HOST'], site['OPERATOR_USER'], identity, Path(scratch))
         target = probe
         if not site['CONSOLE_USER'] or not site['CONSOLE_PASSWORD']:
             raise ValueError('site needs CONSOLE_USER and CONSOLE_PASSWORD for the root steps')
@@ -1448,8 +1461,9 @@ def main():
         console = Console(lambda *cmd, **kw: runner['in_metal'](env, *cmd, **kw), args.boot, directory,
                           site['CONSOLE_USER'], site['CONSOLE_PASSWORD'])
         cleanup.callback(cleanup_step, console.logout)
-        cleanup.callback(cleanup_step, probe.cleanup)
-        if category == 'input':
+        if probe is not None:
+            cleanup.callback(cleanup_step, probe.cleanup)
+        if category == 'console-input':
             target = ConsoleInput(console)
         else:
             serial = console.service_log('bsshd')
