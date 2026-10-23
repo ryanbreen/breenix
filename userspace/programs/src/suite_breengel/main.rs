@@ -190,7 +190,7 @@ fn main() {
 fn prepare_raster_audit() -> Result<(), String> {
     // Filtered runs without the category auditor need no records or directory.
     let args:Vec<_>=std::env::args().collect();
-    if args.windows(2).any(|pair|pair[0]=="--case" && !matches!(pair[1].as_str(),"raster"|"raster/cpu-pixels-zero")) {
+    if args.windows(2).any(|pair|pair[0]=="--case" && pair[1] != "raster" && pair[1] != "raster/cpu-pixels-zero") {
         return Ok(());
     }
     let pid=process::getpid().map_err(|e|format!("suite pid: {e:?}"))?;
