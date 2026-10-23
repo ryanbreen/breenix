@@ -331,7 +331,8 @@ pub fn list(caller: &Caller, l: &List) -> Result<u64, i32> {
     sweep_dead_owners();
     // Read current credentials outside the registry lock; a window does not retain the
     // uid its owner had at creation. Credential commits cover the thread group.
-    let same_uid: Vec<u64> = if caller.is_root() {
+    let sees_all = caller.is_root() || REGISTRY.lock().claim.is_some_and(|c| c.holder == caller.tgid);
+    let same_uid: Vec<u64> = if sees_all {
         Vec::new()
     } else {
         crate::process::with_process_manager(|m| {

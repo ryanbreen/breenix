@@ -857,7 +857,7 @@ architecture only.
 | 2 | `DESTROY` | `WinId` (8) | 0 | ENOENT stale id |
 | 3 | `REGISTER` | `Title` (24) | 0 | EINVAL title; ENOENT |
 | 4 | `SET_TITLE` | `Title` (24) | 0 | EINVAL title; ENOENT |
-| 5 | `LIST` | `List` (16) | entries in the registry | — |
+| 5 | `LIST` | `List` (16) | registered entries visible to the caller under section 17.4 | — |
 | 6 | `ACQUIRE` | `Acquire` (296) | 0 | EINVAL, ETIMEDOUT, EINTR, ENOENT, ENOMEM replay resources, ENODEV unavailable core, EIO replay/render/reset or one-shot late failure |
 | 7 | `COMMIT` | `Commit` (304) | 0 | EBUSY double commit; EINVAL buffer or damage; ENOENT; EIO already-failed render; EINTR publication-order wait |
 | 8 | `COMMIT_NO_CHANGE` | `NoChange` (32) | 0 | ENOENT; EINTR pending-publication wait |
