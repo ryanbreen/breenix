@@ -17,7 +17,7 @@ pub(crate) const PANEL: &[Case] = &[
 use super::composition::{screen_size,give_back, paint, screen, take_over};
 use super::kit::*;
 
-fn first_difference(a: &[u8], b: &[u8]) -> Result<Option<(usize, usize)>,libbreenix::suite::CaseError> {
+fn first_difference(a: &[u8], b: &[u8]) -> Result<Option<(usize, usize)>,breenix_suite::suite::CaseError> {
     let (width,height)=screen_size()?;
     crate::remember_frame(b,width,height,Some(a.to_vec()));
     Ok((0..width * height).find(|&i| a[i * 4..i * 4 + 4] != b[i * 4..i * 4 + 4]).map(|i| (i % width, i / width)))
@@ -45,7 +45,7 @@ fn panel_handoff() -> CaseResult {
     ensure(matches!(ended, Ended::Exit(0)), "23", "the display-taking child did not take, paint and give back the display")?;
     let (after, _) = screen()?;
     // The judged frame is the stage's own, which it samples itself (ruling B36).
-    libbreenix::suite::judged_picture_stage();
+    breenix_suite::suite::judged_picture_stage();
     match first_difference(&before, &after)? {
         None => Ok(()),
         Some((x, y)) => at("23", format!("after the child gave the display back, the panel differs at ({x}, {y})")),
@@ -57,7 +57,7 @@ fn panel_between_cases() -> CaseResult {
     let (a, _) = screen()?;
     let _ = time::sleep_ms(300);
     let (b, _) = screen()?;
-    libbreenix::suite::judged_picture_stage();
+    breenix_suite::suite::judged_picture_stage();
     match first_difference(&a, &b)? {
         None => Ok(()),
         Some((x, y)) => at("23", format!("the screen changed at ({x}, {y}) while this case ran; the panel is drawn only between cases")),
@@ -89,7 +89,7 @@ const PATH: [(u32, u32); 5] = [(200, 300), (400, 320), (640, 400), (900, 500), (
 /// The pixels that differ between the screen with the pointer at rest and the screen after it
 /// crossed the panel and came back to rest, with `panel-cursor-no-restore` armed for the
 /// crossing when `no_restore`.
-fn trail(no_restore: bool) -> Result<Vec<(u32, u32)>, libbreenix::suite::CaseError> {
+fn trail(no_restore: bool) -> Result<Vec<(u32, u32)>, breenix_suite::suite::CaseError> {
     let (width,height)=screen_size()?;
     move_pointer(REST.0, REST.1)?;
     let (rest, _) = screen()?;
@@ -102,7 +102,7 @@ fn trail(no_restore: bool) -> Result<Vec<(u32, u32)>, libbreenix::suite::CaseErr
     crossed?;
     let (back, _) = screen()?;
     crate::remember_frame(&back,width,height,if no_restore{None}else{Some(rest.clone())});
-    libbreenix::suite::judged_picture_stage();
+    breenix_suite::suite::judged_picture_stage();
     Ok((0..(width * height) as u32)
         .filter(|&i| rest[i as usize * 4..i as usize * 4 + 4] != back[i as usize * 4..i as usize * 4 + 4])
         .map(|i| (i % width as u32, i / width as u32))

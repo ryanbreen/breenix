@@ -18,7 +18,7 @@
 use libbreenix::io::{self, fcntl_cmd, poll_events, status_flags, PollFd};
 use libbreenix::process;
 use libbreenix::signal;
-use libbreenix::suite::{case, case_ms_left, category, check, fail, running_case, suite, CaseError, CaseResult, Suite};
+use breenix_suite::suite::{case, case_ms_left, category, check, fail, running_case, suite, CaseError, CaseResult, Suite};
 use libbreenix::time;
 use libbreenix::types::Fd;
 use std::ffi::CString;

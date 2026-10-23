@@ -471,7 +471,7 @@ struct Front {
 /// buffer more than eight pixel commits behind in full. ACQUIRE returns the buffer's base after
 /// its replay (the newest front), so the base it had before is tracked here: `holds[b]` is the
 /// commit buffer `b` held when it was last committed or replayed, 0 for none.
-fn acquire_checked(w: &W, front: &Front, newest: u64, holds: &mut [u64; 3], seen_overflow: &mut bool) -> Result<abi::Acquire, libbreenix::suite::CaseError> {
+fn acquire_checked(w: &W, front: &Front, newest: u64, holds: &mut [u64; 3], seen_overflow: &mut bool) -> Result<abi::Acquire, breenix_suite::suite::CaseError> {
     let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
     same(&w.pixels(a.buffer)?, w.c.width, w.c.height, false, &format!("buffer {} acquired at base {} (newest commit {newest})", a.buffer, a.base), "17.3", |x, y| pattern(front.seed, x, y))?;
     ensure(a.base == newest, "17.3", format!("ACQUIRE returned buffer {} with base {}; after its replay it holds the newest commit {newest}", a.buffer, a.base))?;

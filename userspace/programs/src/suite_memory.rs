@@ -21,8 +21,8 @@
 //! report back through pipes, never through the memory under test.
 use libbreenix::process::{self, ForkResult};
 use libbreenix::signal::Sigaction;
-use libbreenix::suite::prerequisites;
-use libbreenix::suite::{case, case_ms_left, category, check, fail, suite, value, CaseError, CaseResult, Suite};
+use breenix_suite::suite::prerequisites;
+use breenix_suite::suite::{case, case_ms_left, category, check, fail, suite, value, CaseError, CaseResult, Suite};
 #[cfg(target_arch = "aarch64")]
 use libbreenix::syscall::raw;
 use std::ffi::CString;

@@ -129,9 +129,10 @@ periodic timer fired, each in microseconds after the case armed it, the programm
 `every` and how late an expiry may come, `limit`; it carries at most 32 times. None of the
 records is a result: the CASE line that follows decides the case.
 
+<!-- claim-lint:ok: libs/libbreenix/src/suite.rs sets RECORDS_PER_CASE to 12 and emit_record drops records after that cap. -->
 They are written like the other records, one write starting with a newline. A case prints
 them through `value(name, number, unit, expect)`, `wait_for(ms, result)` and
-`pulses(every_us, limit_us, at_us)` in `libbreenix::suite`,
+`pulses(every_us, limit_us, at_us)` in `breenix_suite::suite`,
 which write to a close-on-exec copy of the suite's stdout the case keeps before its own
 output goes to `/dev/null`; a program the case execs cannot print them. They name the
 running case, appear between its suite's START and DONE, and are bounded: a case reports
@@ -172,7 +173,7 @@ so no case sees another's processes. A case whose processes outlive SIGKILL is a
 A suite has to give back the memory it used: a suite that leaves memory allocated once its
 processes are gone fails like one with a failing case. A full run booted as PID 1 (a boot of
 one suite, or each suite of a sequence) prints its memory record
-(`libbreenix::suite::memory_record`):
+(`breenix_suite::suite::memory_record`):
 
 ```text
 SUITE <id> MEMORY before free=<pages> heap_free_kb=<kB> <owner>=<pages> ... receipts=<n> settle_ms=<ms>
@@ -226,10 +227,12 @@ behind is 300 pages or more.
 
 ## Writing a suite
 
-A suite is a static table and a `main` that runs it, using `libbreenix::suite`:
+A suite is a static table and a `main` that runs it, using `breenix_suite::suite`.
+The `breenix-suite` package holds the harness and its independent graphics expectations;
+`libbreenix` supplies syscalls without depending on the CPU reference renderer (ruling B44):
 
 ```rust
-use libbreenix::suite::{case, category, check, skip, suite, CaseResult, Suite};
+use breenix_suite::suite::{case, category, check, skip, suite, CaseResult, Suite};
 
 static SUITE: Suite = suite("smoke", "Smoke", &[
     category("process", "Process and time", &[
@@ -249,7 +252,7 @@ A case returns `Ok(())` to pass, and may report what it measures with `value` an
 `wait_for` (see above). `?` on a libbreenix error or a string fails it with that
 message; `fail(msg)` and `check(condition, msg)` fail it. The runner has no skip helper: a
 case whose measurement prerequisite is missing fails with the measured prerequisite, using
-the shared decisions in `libbreenix::suite::prerequisites` (processor count, priority
+the shared decisions in `breenix_suite::suite::prerequisites` (processor count, priority
 inheritance, the E2BIG argument count and stack limit, an invalid semaphore value, idle
 processor time and delayed block allocation). Their messages fit the runner's 160-byte
 limit, and cached readback does not substitute for disk evidence. The runner still reports
@@ -322,7 +325,7 @@ The launcher writes the list to `/etc/breenix/suite-sequence` on the boot's disk
 (`scripts/write-boot-target.sh IMAGE FIRST PID1_ELF LIST`) and boots the first suite as PID 1.
 Each suite prints exactly the lines it prints in a boot of its own, from its START to its
 DONE, so `scripts/suite-verdict.py`, the launchers' watchers and Vigil read each suite as
-they read a single-suite boot. The runner (`libbreenix::suite::sequence`) adds these records:
+they read a single-suite boot. The runner (`breenix_suite::suite::sequence`) adds these records:
 
 ```text
 SUITE_SEQUENCE BEGIN suites=<id>,<id>,... baseline=<entries> memfree=<kB> heapfree=<kB>

@@ -51,7 +51,7 @@ use super::kit::*;
 use abi::{op, Plain};
 
 /// A registered window of this process with one committed frame of pattern `seed`.
-fn shown(width: u32, height: u32, seed: u32, title: &[u8]) -> Result<W, libbreenix::suite::CaseError> {
+fn shown(width: u32, height: u32, seed: u32, title: &[u8]) -> Result<W, breenix_suite::suite::CaseError> {
     let w = W::new(width, height, 2)?;
     want_ok(w.register(title), "17.1", "REGISTER")?;
     w.frame(seed).cite("17.3")?;
@@ -141,8 +141,8 @@ fn composite() -> i64 {
 }
 
 /// The listing of window `id`, which must be there.
-fn info(id: u64) -> Result<abi::WinInfo, libbreenix::suite::CaseError> {
-    listed(id).cite("17.1")?.ok_or_else(|| libbreenix::suite::CaseError::Fail(format!(
+fn info(id: u64) -> Result<abi::WinInfo, breenix_suite::suite::CaseError> {
+    listed(id).cite("17.1")?.ok_or_else(|| breenix_suite::suite::CaseError::Fail(format!(
         "window {id} is no longer listed ({CONTRACT} section 17.2)")))
 }
 
@@ -1060,7 +1060,7 @@ fn isolation_test_hooks_absent() -> CaseResult {
         let _=io::write(wr,&r.to_le_bytes());
         0
     };
-    let pid=libbreenix::suite::spawn(&[(wr,wr)],libbreenix::suite::Run::Call(&mut body))?;
+    let pid=breenix_suite::suite::spawn(&[(wr,wr)],breenix_suite::suite::Run::Call(&mut body))?;
             let _ = io::close(wr);
             let _ = time::sleep_ms(100);
             let _ = fb_draw(29, 0, 0, 0, 0);

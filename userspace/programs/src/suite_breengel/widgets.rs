@@ -704,14 +704,14 @@ fn widgets_button_draw() -> CaseResult {
 
 fn pointer_event<T: std::fmt::Debug>(target: &str, input: InputState, handle: impl FnOnce(&InputState) -> T) -> T {
     let result = handle(&input);
-    let hit = format!("{} / {target}: {result:?}", libbreenix::suite::running_case().unwrap_or("widget"));
-    libbreenix::suite::input_step(input.mouse_x, input.mouse_y, input.mouse_down, &hit);
+    let hit = format!("{} / {target}: {result:?}", breenix_suite::suite::running_case().unwrap_or("widget"));
+    breenix_suite::suite::input_step(input.mouse_x, input.mouse_y, input.mouse_down, &hit);
     result
 }
 
 fn key_event<T: std::fmt::Debug>(target: &str, input: KeyInput<'_>, handle: impl FnOnce(&KeyInput<'_>) -> T) -> T {
     let result = handle(&input);
-    libbreenix::suite::input_key(&format!("{} / {target}: {:?} => {result:?}", libbreenix::suite::running_case().unwrap_or("widget"), input.key));
+    breenix_suite::suite::input_key(&format!("{} / {target}: {:?} => {result:?}", breenix_suite::suite::running_case().unwrap_or("widget"), input.key));
     result
 }
 
@@ -724,9 +724,9 @@ fn events(
         .iter()
         .map(|i| {
             let event=update(i);
-            let target=libbreenix::suite::running_case().unwrap_or("widget");
+            let target=breenix_suite::suite::running_case().unwrap_or("widget");
             let hit=if event==WidgetEvent::None {String::new()} else {format!("{target}: {event:?}")};
-            libbreenix::suite::input_step(i.mouse_x,i.mouse_y,i.mouse_down,&hit);
+            breenix_suite::suite::input_step(i.mouse_x,i.mouse_y,i.mouse_down,&hit);
             event
         })
         .filter(|e| *e != WidgetEvent::None)

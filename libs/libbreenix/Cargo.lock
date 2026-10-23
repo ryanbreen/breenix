@@ -16,33 +16,4 @@ version = "0.1.0"
 dependencies = [
  "breengel-abi",
  "gpu-abi",
- "libgfx-ref",
- "libpixcheck",
 ]
-
-[[package]]
-name = "libfont"
-version = "0.1.0"
-
-[[package]]
-name = "libgfx-pixel"
-version = "0.1.0"
-
-[[package]]
-name = "libgfx-ref"
-version = "0.1.0"
-dependencies = [
- "libfont",
- "libgfx-pixel",
- "noto-sans-mono-bitmap",
-]
-
-[[package]]
-name = "libpixcheck"
-version = "0.1.0"
-
-[[package]]
-name = "noto-sans-mono-bitmap"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f102c477fd4ec864c149803bf606ecc23bc9329602ec0f99073a728abf454abc"

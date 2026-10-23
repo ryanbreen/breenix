@@ -1,7 +1,7 @@
 //! The run stage's painter (ruling B36): libgfx's GPU stage behind libbreenix's interface,
 //! drawing each frame the runner's oracle also draws, with its pictures as GPU references.
 
-use libbreenix::suite::{PictureRef, SpotRef, StageFrame, ThumbRef};
+use breenix_suite::suite::{PictureRef, SpotRef, StageFrame, ThumbRef};
 use libgfx::blit::Source;
 use libgfx::color::Color;
 use libgfx::stage as gpu;
@@ -65,7 +65,7 @@ impl StagePainter {
     }
 }
 
-impl libbreenix::suite::Painter for StagePainter {
+impl breenix_suite::suite::Painter for StagePainter {
     fn canvas(&mut self, width: u32, height: u32) -> Result<u64, String> {
         let pid = libbreenix::process::getpid().map_err(|e| e.to_string())?.raw() as u64;
         let (w, h) = (width as usize, height as usize);

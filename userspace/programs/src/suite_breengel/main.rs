@@ -24,7 +24,7 @@ use std::sync::Mutex;
 
 use libbreenix::crypto::sha256::sha256;
 use libbreenix::process::{self, WNOHANG};
-use libbreenix::suite::{case, category, fail, suite, value, CaseResult, Suite};
+use breenix_suite::suite::{case, category, fail, suite, value, CaseResult, Suite};
 use libbreenix::syscall::raw;
 use libbreenix::{io, memory, signal, time};
 
@@ -85,8 +85,8 @@ static ALLOCATOR: Counting = Counting;
 /// A case whose judged frame goes to the runner (`judged_case`): the table entry for `$run`.
 macro_rules! pictured {
     ($id:literal, $title:literal, $run:ident $(,)?) => {
-        libbreenix::suite::case($id, $title, {
-            fn run() -> libbreenix::suite::CaseResult {
+        breenix_suite::suite::case($id, $title, {
+            fn run() -> breenix_suite::suite::CaseResult {
                 crate::judged_case($run)
             }
             run
@@ -107,7 +107,7 @@ use libgfx_ref::stage;
 mod widgets;
 mod window_cases;
 
-use libbreenix::suite::Case;
+use breenix_suite::suite::Case;
 
 // Each lane's module exports its own case tables. A category whose cases come from more
 // than one module is joined here in manifest order.
@@ -175,7 +175,7 @@ static SUITE: Suite = suite("breengel", "BreenGL graphics library", &[
 ]).gui();
 
 fn main() {
-    libbreenix::suite::set_painter(Box::new(stage_painter::StagePainter::new()));
+    breenix_suite::suite::set_painter(Box::new(stage_painter::StagePainter::new()));
     if let Err(error) = prepare_raster_audit() {
         std::env::set_var("BREENIX_RASTER_AUDIT_ERROR",error);
     }
@@ -190,7 +190,7 @@ fn main() {
 fn prepare_raster_audit() -> Result<(), String> {
     // Filtered runs without the category auditor need no records or directory.
     let args:Vec<_>=std::env::args().collect();
-    if args.windows(2).any(|pair|pair[0]=="--case" && !matches!(pair[1].as_str(),"raster"|"raster/cpu-pixels-zero")) {
+    if args.windows(2).any(|pair|pair[0]=="--case" && pair[1] != "raster" && pair[1] != "raster/cpu-pixels-zero") {
         return Ok(());
     }
     let pid=process::getpid().map_err(|e|format!("suite pid: {e:?}"))?;
@@ -330,7 +330,7 @@ fn publish_picture(width: usize, height: usize, pixels: &[u8]) {
         Some(w)
     })();
     if let Some(w) = published {
-        libbreenix::suite::judged_picture_window(w.id(), width as u32, height as u32);
+        breenix_suite::suite::judged_picture_window(w.id(), width as u32, height as u32);
         std::mem::forget(w);
     }
 }
@@ -344,7 +344,7 @@ fn hand_off_judged() -> Result<bool, String> {
     let frame = unsafe { FrameBuf::from_raw(pixels.as_mut_ptr(), width, height, width * 4, 4, true) }
         .map_err(|e| format!("the judged {width} x {height} frame is not a valid surface: {e}"))?;
     let reference=expected.as_mut().map(|bytes|unsafe{FrameBuf::from_raw(bytes.as_mut_ptr(),width,height,width*4,4,true).unwrap()});
-    libbreenix::suite::judged_with_reference(&frame,reference.as_ref()).map_err(|e| format!("handing the judged frame to the runner failed: {e:?}"))?;
+    breenix_suite::suite::judged_with_reference(&frame,reference.as_ref()).map_err(|e| format!("handing the judged frame to the runner failed: {e:?}"))?;
     publish_picture(width, height, &pixels);
     Ok(true)
 }
@@ -396,7 +396,7 @@ fn isolated(what: &str, limit_ms: u64, f: impl FnOnce() -> Result<(), String>) -
             Err(msg)=>{let _=io::write(wr,msg.as_bytes());1|frame}
         }
     };
-    let pid=libbreenix::suite::spawn(&[(wr,wr)],libbreenix::suite::Run::Call(&mut body)).map_err(|e|format!("spawn: {e}"))?;
+    let pid=breenix_suite::suite::spawn(&[(wr,wr)],breenix_suite::suite::Run::Call(&mut body)).map_err(|e|format!("spawn: {e}"))?;
             let _ = io::close(wr);
             let pid = pid.raw() as i32;
             let start = now_ms();
@@ -656,12 +656,12 @@ fn step(section: &str, r: Result<(), String>) -> CaseResult {
 
 /// Cite a contract section on a step's error.
 trait Cite<T> {
-    fn cite(self, section: &str) -> Result<T, libbreenix::suite::CaseError>;
+    fn cite(self, section: &str) -> Result<T, breenix_suite::suite::CaseError>;
 }
 
 impl<T, E: std::fmt::Display> Cite<T> for Result<T, E> {
-    fn cite(self, section: &str) -> Result<T, libbreenix::suite::CaseError> {
-        self.map_err(|e| libbreenix::suite::CaseError::Fail(format!("{e} ({CONTRACT} section {section})")))
+    fn cite(self, section: &str) -> Result<T, breenix_suite::suite::CaseError> {
+        self.map_err(|e| breenix_suite::suite::CaseError::Fail(format!("{e} ({CONTRACT} section {section})")))
     }
 }
 

@@ -2,7 +2,7 @@
 //! drawing and device readback use the public GPU interface.
 use super::common::*;
 use libbreenix::gpu::{self, abi};
-use libbreenix::suite::{CaseError, CaseResult};
+use breenix_suite::suite::{CaseError, CaseResult};
 
 type R<T> = Result<T, CaseError>;
 const BG: u32 = bgra(17, 83, 209, 127);

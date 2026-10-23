@@ -2,7 +2,7 @@
 use super::common::*;
 use super::isolation::spawn;
 use libbreenix::gpu::abi::{self, Plain};
-use libbreenix::suite::{value, CaseError, CaseResult};
+use breenix_suite::suite::{value, CaseError, CaseResult};
 use libbreenix::{gpu, graphics};
 type R<T> = Result<T, CaseError>;
 const A: u32 = 0xffd15321;

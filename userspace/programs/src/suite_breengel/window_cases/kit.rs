@@ -7,7 +7,7 @@ use crate::*;
 mod fixture;
 pub(crate) use fixture::Target as FixtureTarget;
 
-use libbreenix::suite::{spawn, Run};
+use breenix_suite::suite::{spawn, Run};
 pub(crate) use libbreenix::types::Fd;
 pub(crate) use libbreenix::window::abi;
 use abi::{op, Plain};
@@ -42,11 +42,11 @@ pub(crate) fn want_errno(ret: i64, errno: i32, section: &str, what: &str) -> Cas
 }
 
 /// `ret` must be a success.
-pub(crate) fn want_ok(ret: i64, section: &str, what: &str) -> Result<i64, libbreenix::suite::CaseError> {
+pub(crate) fn want_ok(ret: i64, section: &str, what: &str) -> Result<i64, breenix_suite::suite::CaseError> {
     if ret >= 0 {
         Ok(ret)
     } else {
-        Err(libbreenix::suite::CaseError::Fail(format!("{what} {} ({CONTRACT} section {section})", outcome(ret))))
+        Err(breenix_suite::suite::CaseError::Fail(format!("{what} {} ({CONTRACT} section {section})", outcome(ret))))
     }
 }
 
@@ -69,7 +69,7 @@ pub(crate) struct W {
 }
 
 impl W {
-    pub(crate) fn new(width: u32, height: u32, buffers: u32) -> Result<W, libbreenix::suite::CaseError> {
+    pub(crate) fn new(width: u32, height: u32, buffers: u32) -> Result<W, breenix_suite::suite::CaseError> {
         let mut c = abi::Create::ZERO;
         c.width = width;
         c.height = height;

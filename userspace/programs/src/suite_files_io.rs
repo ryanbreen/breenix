@@ -2,7 +2,7 @@
 //! Fixtures live on the writable root filesystem, not an in-memory mock. No
 //! unsupported operation is skipped: missing syscalls fail.
 use libbreenix::error::Error;
-use libbreenix::suite::{case, category, check, fail, suite, CaseError, CaseResult, Suite};
+use breenix_suite::suite::{case, category, check, fail, suite, CaseError, CaseResult, Suite};
 use libbreenix::syscall::{nr, raw};
 use libbreenix::types::Fd;
 use libbreenix::{

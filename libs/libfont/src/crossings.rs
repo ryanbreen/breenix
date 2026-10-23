@@ -85,7 +85,8 @@ impl Crossings {
     }
 }
 
-/// A validated geometry table. Only the crossing builder can construct its bytes.
+/// Validated geometry tables, stored singly or packed back to back.
+/// Only the crossing builder can construct their bytes.
 /// Offsets count entries, not bytes, as gpu-abi.md specifies.
 pub struct CrossingTable { bytes: Vec<u8>, entries: usize }
 impl CrossingTable {
@@ -112,6 +113,21 @@ impl CrossingTable {
         bytes.extend_from_slice(&entries);
         Self { bytes, entries: count }
     }
+    /// Pack already-built tables in order for one geometry buffer. Each table keeps
+    /// its own relative offsets; draw instances select its byte offset in the pack.
+    /// Only crossing-builder output can enter this representation.
+    pub fn pack(tables: &[&Self]) -> Self {
+        // Count the capacity scan and the packing pass.
+        work::add(2 * tables.len() as u64);
+        let mut bytes = Vec::with_capacity(tables.iter().map(|t| t.bytes.len()).sum());
+        let mut entries = 0;
+        for table in tables {
+            bytes.extend_from_slice(&table.bytes);
+            entries += table.entries;
+        }
+        Self { bytes, entries }
+    }
+
     pub fn bytes(&self) -> &[u8] { &self.bytes }
     pub fn entries(&self) -> usize { self.entries }
 }

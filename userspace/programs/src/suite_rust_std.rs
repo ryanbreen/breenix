@@ -24,7 +24,7 @@
 //! Files go in a directory of the case's own, /tmp/rust-std-<pid>, removed when the case
 //! ends; Unix socket paths sit beside it. TCP and UDP use 127.0.0.1 and ports 20000-29999,
 //! numbered from the case's process ID.
-use libbreenix::suite::{case, category, check, fail, suite, value, wait_for, CaseError, CaseResult, Suite};
+use breenix_suite::suite::{case, category, check, fail, suite, value, wait_for, CaseError, CaseResult, Suite};
 use std::cell::Cell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, ErrorKind, Read, Seek, SeekFrom, Write};

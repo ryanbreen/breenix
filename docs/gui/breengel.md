@@ -1663,7 +1663,7 @@ context warm-up and no redraw of the run's history.
   publishes dimensions, record v2 and pixels, with exact status/reason on failure.
   `/usr/local/test/bin/raw-window_test` is a client that uses the raw system calls without Breengel. The
   `windows`, `isolation`, `composition`, `events` and `scanout` cases create their helpers through
-  `libbreenix::suite::spawn`.
+  `breenix_suite::suite::spawn`.
 - Each case's limit is the runner's 10 s, except `font-parser/corpus`, `inflate/byte-split`,
   `png-decode/independent-fixtures`, `windows/churn` and `composition/present-rate`, which have 20 s
   (plan §19). `composition/irq-bound` arms irq-hold only once its own contexts and the compositor's

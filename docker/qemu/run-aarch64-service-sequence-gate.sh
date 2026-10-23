@@ -1004,7 +1004,7 @@ print_census() {
     # inline-saved context really is ERET-dispatched carrying a stale ELR and
     # that the repair neutralises it (coordinator ruling R20).
     echo "  CTX596 counter snapshot unavailable: $divergence_unavailable/$count_boots boot(s)"
-    echo "  CTX596 INLINE_ELR_DIVERGENCE: $divergence_lines event(s) in the latest counter snapshots across $divergence_boots/$count_boots boot(s) — reported, not gated"
+    echo "  CTX596 divergence: $divergence_lines event(s) in the latest counter snapshots across $divergence_boots/$count_boots boot(s) — reported, not gated"
     # Reported, never gated: a refusal is the resume-PC validation doing its
     # job. Nonzero refusals together with zero #576-shape boots are production
     # confirmation of that guard and name a producer to chase, not a regression.
