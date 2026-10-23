@@ -506,6 +506,28 @@ fn main() {
     let bar_rect = Rect::new(WIN_W as i32 / ui_scale - bar_w, LIST_START_Y / ui_scale, bar_w, visible_h / ui_scale);
     let mut scroll_bar = ScrollBar::new(bar_rect, total_h, visible_h);
     let theme = libbui::Theme::dark();
+    // Present the scrollbar as soon as results become scrollable.
+    if frame(&mut win, &tests, 0, &mut ttf_font, font_size, Some((&scroll_bar, &theme))).is_ok() {
+        let mut pixels = vec![0u8; win.width() as usize * win.height() as usize * 4];
+        match libbreenix::window::capture(win.id(), &mut pixels, None) {
+            Ok(_) => {
+                let x = bar_rect.x * ui_scale;
+                let y = bar_rect.y * ui_scale;
+                let samples = [(x, y, [48, 42, 40]), (x + 3 * ui_scale, y + 2 * ui_scale, [100, 85, 80])];
+                let exact = samples.iter().all(|(x, y, want)| {
+                    let at = (*y as usize * win.width() as usize + *x as usize) * 4;
+                    pixels[at..at + 3] == *want
+                });
+                if exact {
+                    println!("[bcheck] scrollbar read back: bounds={},{},{},{} window={}x{} scale={} 2 pixels exact",
+                        x, y, bar_rect.w * ui_scale, bar_rect.h * ui_scale, win.width(), win.height(), ui_scale);
+                } else {
+                    println!("[bcheck] scrollbar layout FAILED: track or thumb differs");
+                }
+            }
+            Err(e) => println!("[bcheck] scrollbar layout FAILED: capture {}", e),
+        }
+    }
 
     loop {
         let mut need_redraw = false;

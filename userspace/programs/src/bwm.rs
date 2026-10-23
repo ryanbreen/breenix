@@ -1481,15 +1481,10 @@ const DISPLAY_WAIT_MS: i32 = 100;
 /// before that check is reported failed.
 const CHECK_MOVED_LIMIT: u32 = 200;
 
-/// Report one client frame check: `whole` names the desktop's first client, checked over the
-/// whole frame, otherwise the window's own area.
-fn report_check(id: u64, whole: bool, area: [u32; 4], result: &Result<u64, CheckError>) {
+/// Report a complete scanout comparison for a newly shown or resized client.
+fn report_check(id: u64, result: &Result<u64, CheckError>) {
     match result {
-        Ok(pixels) if whole => print!("[bwm] composited client frame: window {} on screen, {} pixels exact\n", id, pixels),
-        Ok(pixels) => print!(
-            "[bwm] window {} shown: {} pixels exact in its {}x{} area\n",
-            id, pixels, area[2] - area[0], area[3] - area[1]
-        ),
+        Ok(pixels) => print!("[bwm] composited client frame: window {} on screen, {} pixels exact\n", id, pixels),
         Err(CheckError::Moved(e)) | Err(CheckError::Failed(e)) => print!("[bwm] client frame check FAILED: window {}: {}\n", id, e),
     }
 }
@@ -2157,10 +2152,8 @@ fn main() {
                     let next = unchecked.iter()
                         .min_by_key(|(id, _)| windows.iter().find(|w| w.window_id == *id).map_or(0, |w| w.check_moved))
                         .copied();
-                    if let Some((id, area)) = next {
-                        let whole = true;
-                        let area = if whole { [0, 0, screen_w as u32, screen_h as u32] } else { area };
-                        let result = if whole { gpu.check(id, &layers, Some(pointer)) } else { gpu.check_area(id, &layers, Some(pointer), area) };
+                    if let Some((id, _)) = next {
+                        let result = gpu.check(id, &layers, Some(pointer));
                         let retry = match (&result, windows.iter_mut().find(|win| win.window_id == id)) {
                             (Err(CheckError::Moved(_)), Some(win)) => {
                                 win.check_moved += 1;
@@ -2172,7 +2165,7 @@ fn main() {
                             if let Some(win) = windows.iter_mut().find(|win| win.window_id == id) {
                                 win.frame_checked = true;
                             }
-                            report_check(id, whole, area, &result);
+                            report_check(id, &result);
                         }
                     }
                 }

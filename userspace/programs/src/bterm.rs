@@ -775,12 +775,29 @@ fn main() {
                 );
             }
 
-            if let Err(e) = win.present() {
-                print!("[bterm] present failed: {}\n", e);
-            }
-            if first_present {
-                first_present = false;
-                print!("[bterm] first frame presented: {}x{}\n", win.width(), win.height());
+            match win.present() {
+                Err(e) => print!("[bterm] present failed: {}\n", e),
+                Ok(()) if first_present => {
+                    first_present = false;
+                    print!("[bterm] first frame presented: {}x{}\n", win.width(), win.height());
+                    // Observe the selected tab's lower highlight in the committed GPU
+                    // front: section 14.3's accent at the scaled logical tab height.
+                    let mut pixels = vec![0u8; win.width() as usize * win.height() as usize * 4];
+                    match libbreenix::window::capture(win.id(), &mut pixels, None) {
+                        Ok(_) => {
+                            let (x, y) = (4 * ui_scale as usize, (TAB_BAR_HEIGHT as usize - 1) * ui_scale as usize);
+                            let at = (y * win.width() as usize + x) * 4;
+                            if pixels[at..at + 3] == [220, 130, 70] {
+                                print!("[bterm] tabs read back: bounds=0,0,{},{} window={}x{} scale={} highlight exact\n",
+                                    win.width(), tab_bar_pixels, win.width(), win.height(), ui_scale);
+                            } else {
+                                print!("[bterm] tab layout FAILED: highlight at ({},{}) is {:?}\n", x, y, &pixels[at..at+3]);
+                            }
+                        }
+                        Err(e) => print!("[bterm] tab layout FAILED: capture {}\n", e),
+                    }
+                }
+                Ok(()) => {}
             }
         } else {
             // Nothing to draw — sleep briefly to avoid busy-waiting

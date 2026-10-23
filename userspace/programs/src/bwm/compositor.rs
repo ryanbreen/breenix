@@ -112,6 +112,7 @@ pub struct Compositor {
     /// The background alone, which each repaint of the desktop copies.
     pub background: Surface,
     sampled: Vec<Sampled>,
+    check_first: u64,
     appbar_top: i32,
     /// Pointer pixels per bitmap cell: the UI scale.
     scale: i32,
@@ -151,6 +152,7 @@ impl Compositor {
             desktop,
             background,
             sampled: Vec::new(),
+            check_first: 0,
             appbar_top: height.saturating_sub(appbar_height) as i32,
             scale: scale as i32,
             full: true,
@@ -407,7 +409,7 @@ impl Compositor {
     /// Read the displayed frame back from the device and compare each pixel with what the
     /// last frame composed from `layers` must show, prioritizing the client window `subject`
     /// (0 for the desktop). Returns the number of pixels compared.
-    pub fn check(&self, subject: u64, layers: &[Layer], pointer: Option<Pointer>) -> Result<u64, CheckError> {
+    pub fn check(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>) -> Result<u64, CheckError> {
         self.check_area(subject, layers, pointer, [0, 0, self.width, self.height])
     }
 
@@ -416,7 +418,7 @@ impl Compositor {
     /// CAPTURE reads the clients shown in the area. A captured commit differing from the
     /// composite's sample requires retrying the check on a later frame. The comparison
     /// covers the requested rectangle, including other clients' content.
-    pub fn check_area(&self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4]) -> Result<u64, CheckError> {
+    pub fn check_area(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4]) -> Result<u64, CheckError> {
         let [x0, y_top, x1, y1] = area;
         let w = x1.saturating_sub(x0);
         if w == 0 || y_top >= y1 {
@@ -424,17 +426,37 @@ impl Compositor {
         }
         // The clients this area shows, the subject first, with their sampled pixels.
         let mut clients: Vec<(u64, [i32; 4], u32, Vec<u8>)> = Vec::new();
-        let shown = layers.iter().filter_map(|l| self.sampled_content(l).map(|r| (l.window_id, r)))
-            .filter(|(_, r)| intersect(*r, [x0 as i32, y_top as i32, x1 as i32, y1 as i32]).is_some());
-        let (mine, others): (Vec<_>, Vec<_>) = shown.partition(|(id, _)| *id == subject);
-        for (id, r) in mine.into_iter().chain(others) {
+        let mut shown: Vec<_> = layers.iter().filter_map(|l| self.sampled_content(l).map(|r| (l.window_id, r)))
+            .filter(|(_, r)| intersect(*r, [x0 as i32, y_top as i32, x1 as i32, y1 as i32]).is_some()).collect();
+        // A source that changed during a previous capture goes first next time. Stable
+        // clients' readbacks must not systematically make an animating source stale.
+        shown.sort_by_key(|(id, _)| (*id != self.check_first, *id != subject));
+        for (id, r) in shown {
             let s = self.sampled.iter().find(|s| s.id == id).expect("sampled_content found it");
             let mut px = prefaulted_bytes(s.width as usize * s.height as usize * 4);
-            let c = window::capture(s.id, &mut px, None)
-                .map_err(|e| CheckError::Failed(format!("CAPTURE of window {}: {}", s.id, e)))?;
-            if c.commit_id != s.commit_id {
+            let c = match window::capture(s.id, &mut px, None) {
+                Ok(c) => c,
+                Err(e) => {
+                    // A concurrent enlarge can make the sampled-size output too small.
+                    // Confirm the size race through LIST; other CAPTURE errors stay fatal.
+                    if matches!(e, libbreenix::error::Error::Os(libbreenix::errno::Errno::EINVAL)) {
+                        let mut infos = vec![wabi::WinInfo::ZERO; layers.len().max(32)];
+                        if let Ok(n) = window::list(&mut infos) {
+                            if infos[..n.min(infos.len())].iter().any(|i| i.id == id
+                                && (i.width, i.height) != (s.width, s.height)) {
+                                self.check_first = id;
+                                return Err(CheckError::Moved(format!("window {} resized after the composite sampled {}x{}", id, s.width, s.height)));
+                            }
+                        }
+                    }
+                    return Err(CheckError::Failed(format!("CAPTURE of window {}: {}", s.id, e)));
+                }
+            };
+            if c.commit_id != s.commit_id || (c.width, c.height) != (s.width, s.height) {
+                self.check_first = id;
                 return Err(CheckError::Moved(format!(
-                    "window {} published commit {} after the composite sampled commit {}", s.id, c.commit_id, s.commit_id
+                    "window {} captured commit {} at {}x{} after the composite sampled commit {} at {}x{}",
+                    s.id, c.commit_id, c.width, c.height, s.commit_id, s.width, s.height
                 )));
             }
             clients.push((id, r, s.width, px));
