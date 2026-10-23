@@ -292,7 +292,7 @@ fi
 NETDEV="user,id=net0"
 USERS_SSH_STATE=
 if [ "$MODE" = suite ] && [[ ",$SUITE," == *,users,* ]] && { [ -z "$ONLY" ] || [[ "$ONLY" == ssh || "$ONLY" == ssh/* ]]; }; then
-    USERS_SSH_STATE="$(dirname "$SERIAL_LOG")/users-hostssh-state.json"
+    USERS_SSH_STATE="$SERIAL_LOG.users-hostssh-state.json"
     USERS_SSH_PORT=$(python3 "$ROOT/scripts/users-hostssh.py" stage --image "$WRITABLE" --state "$USERS_SSH_STATE")
     NETDEV+=",hostfwd=tcp:127.0.0.1:$USERS_SSH_PORT-:22"
 fi

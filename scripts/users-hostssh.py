@@ -2,7 +2,7 @@
 """Stage and answer the users suite's real OpenSSH probes on ARM64 QEMU.
 
 BREENIX_USERS_SSH_IDENTITY optionally names an Ed25519 test key. Without it,
-staging generates a throwaway key in this boot's folder (B49). It never selects
+staging generates a throwaway key in a private folder for this boot (B49). It never selects
 an operator key. BREENIX_USERS_SSH_USER optionally overrides the test account.
 Only the public key enters the disposable guest image; the private key stays on the host.
 """
@@ -38,7 +38,8 @@ def stage(image, state):
         identity = Path(configured).expanduser().resolve()
     else:
         state.parent.mkdir(parents=True, exist_ok=True)
-        identity = state.with_name('users-hostssh-ed25519').resolve()
+        key_directory = Path(tempfile.mkdtemp(prefix='users-hostssh-key-', dir=state.parent))
+        identity = (key_directory / 'ed25519').resolve()
         subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '',
                         '-C', 'breenix-users-test', '-f', str(identity)],
                        capture_output=True, check=True, timeout=10)
@@ -78,7 +79,7 @@ def stage(image, state):
 def watch(state, serial, parent):
     config = json.loads(state.read_text())
     records = dict(requests=[])
-    transcript = state.with_name('users-hostssh.json')
+    transcript = state.with_suffix('.transcript.json')
     answered, offset, pending = set(), 0, b''
     # subprocess.run cleans up its owned SSH child when this signal interrupts it.
     def interrupted(*_):
