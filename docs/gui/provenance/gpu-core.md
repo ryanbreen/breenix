@@ -1655,10 +1655,47 @@ existing completion encoder, and the final PR #2357 review. No external
 implementation source was used. The remaining boot-settle, preparation-quota,
 CURRENT_MODE refusal-coverage and stage-restore questions are tracked in #2358.
 
-Claim-lint round notes (review m1):
+Claim-lint round notes (review m1; private temporary inputs shown by basename):
 
 - `python3 scripts/claim-lint.py --base 3c897ba8`: exit 1 (28 findings), then exit 1 (2 findings), then exit 0 after wording corrections.
-- `python3 scripts/claim-lint.py --files PR2357-followup.md`: exit 1, then exit 0 after wording correction.
-- `python3 scripts/claim-lint.py --commit-msg PR2357-merge-msg.txt`: exit 0.
-- `python3 scripts/claim-lint.py --commit-msg PR2357-context-msg.txt`: exit 0.
-- `python3 scripts/claim-lint.py --commit-msg PR2357-completion-msg.txt`: exit 0.
+- `python3 scripts/claim-lint.py --files pr2357-followup.md`: exit 1, then exit 0 after wording correction.
+- `python3 scripts/claim-lint.py --commit-msg pr2357-merge-msg.txt`: exit 0.
+- `python3 scripts/claim-lint.py --commit-msg pr2357-context-msg.txt`: exit 0.
+- `python3 scripts/claim-lint.py --commit-msg pr2357-completion-msg.txt`: exit 0.
+
+
+## B31: Final review validation and remaining non-GL blocker
+
+The final executable changes were built and booted at `54797eb5` after merging
+`origin/main` without conflicts. The ARM64 release kernel build and rebuilt
+userspace/disk completed; the kernel emitted the pinned core-library NEON notice
+tracked in #945. The userspace build installed 199 binaries without a warning.
+
+| Boot | Result | Memory | Vigil record |
+|---|---|---|---|
+| ARM64 QEMU GL, GPU | 170/170, skipped=0, exit 0 | reclaimed: 9 pages, allowance 48 | `20261023T221247Z-qemu-63094` |
+| Parallels, GPU and BreenGL | 170/170 and 401/401, skipped=0, exit 0 | reclaimed: 9 and 38 pages, allowance 48 | `20261023T221851Z-parallels-4911` |
+| ARM64 QEMU without GL, smoke | 5/5 cases, skipped=0, boot exit 1 | before sample settled in 202 ms; after sample missing | `20261023T221705Z-qemu-89483` |
+
+The QEMU GL host renderer and Parallels host GPU-time attestations were accepted.
+The Parallels `icons/bounded` case took 5,156 ms and retained hash
+`150018441a3e0a7524e436f28dae6a223485b78e5b2dfa5cddacd71d9bbf38ef`.
+The 3/3 Vigil records report dirty=0 and display=true, and their frozen serials
+match the launcher logs byte for byte. Builds used background policy and four
+Cargo jobs; boots used the mac-boot slot with quiet-host waiting disabled.
+
+The non-GL boot is failure evidence. Its final memory record reports
+`display handoff: MODES errno 19`, followed by reclaimed=FAIL because the after
+sample was not taken. Main's unchanged `Screen::open` installs a GPU view on
+ARM64, and `gpu_screen::await_console` requires MODES even without a 3D device.
+The handoff implementation from `fbdcb593` is already an ancestor of main;
+`libs/libbreenix/src/suite.rs` and `suite_gpu_screen.rs` have no PR diff.
+This separate failure is #2360; the review's M3 remains open because a passing
+non-GL memory gate is unavailable. No acceptance check was relaxed and no
+unrelated handoff repair was folded into the catch-up. PR #2357 stays open.
+
+Claim-lint final notes (temporary inputs shown by basename):
+
+- `python3 scripts/claim-lint.py --base 3c897ba8`: exit 0.
+- `python3 scripts/claim-lint.py --files pr2357-body.md pr2357-comment.md`: exit 1 (wording of incomplete validation), then exit 0.
+- `python3 scripts/claim-lint.py --commit-msg pr2357-evidence-msg.txt`: exit 0.

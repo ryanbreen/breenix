@@ -15,7 +15,9 @@ BreenGL's B5 catch-up is tracked in #2348 on `breengel/catch-up-parallels-vmware
 geometry queries, settled boot accounting, Parallels vertex reuse and completed
 catalogue initialization. Acceptance covers both GPU and BreenGL on Parallels
 and VMware, plus the ARM64 QEMU GL BreenGL regression, with windowed boots and
-suite memory reclamation ([device evidence](../gui/provenance/gpu-core.md#b21-reusing-inline-vertex-storage-on-parallels)).
+suite memory reclamation. Final review #2357 repairs scratch completion and renderer
+ownership; ARM64 QEMU GL GPU and Parallels GPU/BreenGL passed, while the non-GL
+memory-handoff failure #2360 leaves landing open ([device evidence](../gui/provenance/gpu-core.md#b21-reusing-inline-vertex-storage-on-parallels)).
 
 The server program defines four x86-led efforts in `docs/efforts/path.json`:
 `server`, `users`, `filesystem` (Breenix's own copy-on-write filesystem, D1) and
