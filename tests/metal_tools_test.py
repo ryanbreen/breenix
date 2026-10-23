@@ -139,6 +139,11 @@ class RedactorTest(unittest.TestCase):
         event = {'event': 'power-on', 'seconds': 3, 'commit': '3abc8240def12345'}
         self.assertEqual(json.loads(self.redact(json.dumps(event))), event)
 
+    def test_operator_uid_names_nothing_but_the_operator_still_masks(self):
+        redact = m.Redactor({'OPERATOR_UID': '1000', 'OPERATOR_USER': 'fixtureop', 'OPERATOR_PASSWORD': 'Fx9kQ2mPz7Lr4Wt8'})
+        self.assertEqual(redact('uid=1000(fixtureop) restarts in 1000 ms password Fx9kQ2mPz7Lr4Wt8'),
+                         'uid=1000(<site>) restarts in 1000 ms password <site>')
+
     def test_identifiers_match_whole_tokens(self):
         for name in ('fixturehost', 'fixture-container', 'FX12345', 'fixtureauto',
                      self.site['IDRAC_PASSWORD']):
@@ -769,6 +774,25 @@ class MissingStagingToolCleanupTest(StateTest):
 
 
 class RootStagingTest(unittest.TestCase):
+    def test_numbered_operator_keys_are_validated_and_staged_in_order(self):
+        import base64
+        import metal_root
+        def key(seed):
+            blob = struct.pack('>I', 11) + b'ssh-ed25519' + struct.pack('>I', 32) + bytes([seed]) * 32
+            return 'ssh-ed25519 ' + base64.b64encode(blob).decode() + ' fixture'
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / 'site.env'
+            path.write_text("OPERATOR_USER=operator\nOPERATOR_UID=1000\nOPERATOR_PASSWORD_HASH='$6$salt$" + 'A' * 86
+                            + "'\nOPERATOR_SSH_PUBLIC_KEY='" + key(1) + "'\nOPERATOR_SSH_PUBLIC_KEY_10='" + key(3)
+                            + "'\nOPERATOR_SSH_PUBLIC_KEY_2='" + key(2) + "'\n")
+            site = m.load_site(path)
+        staged = metal_root.operator_account(site)
+        self.assertEqual([line[4:] for line in staged.splitlines() if line.startswith('key ')],
+                         [key(1), key(2), key(3)])
+        for bad in ['', '-----BEGIN OPENSSH PRIVATE KEY-----', key(3).replace('ssh-ed25519 ', 'ssh-rsa ', 1)]:
+            with self.assertRaises(ValueError):
+                metal_root.operator_account(dict(site, OPERATOR_SSH_PUBLIC_KEY_10=bad))
+
     @classmethod
     def setUpClass(cls):
         import metal_root
@@ -856,9 +880,13 @@ class RootStagingTest(unittest.TestCase):
             import base64
             blob = struct.pack('>I', 11) + b'ssh-ed25519' + struct.pack('>I', 32) + bytes(range(32))
             line = 'ssh-ed25519 ' + base64.b64encode(blob).decode() + ' operator@boot-host'
-            account = dict(site, OPERATOR_USER='operator', OPERATOR_SSH_PUBLIC_KEY=line)
+            hashed = '$6$rounds=100000$fixturesalt$' + 'A' * 86
+            account = dict(site, OPERATOR_USER='operator', OPERATOR_SSH_PUBLIC_KEY=line, OPERATOR_UID='1000',
+                           OPERATOR_PASSWORD_HASH=hashed)
             operator = metal_root.operator_account(account)
-            self.assertEqual(operator, 'user operator\nkey ' + line + '\n')
+            self.assertEqual(operator, 'user operator\nuid 1000\npassword ' + hashed + '\nkey ' + line + '\n')
+            # A users suite boot's fixture names the account and key only.
+            self.assertEqual(metal_root.operator_fixture(account), 'user operator\nkey ' + line + '\n')
             facts = metal_root.stage_root(image, 'default', None, site, hasher=hasher, operator=operator)
             self.assertEqual(read('operator-account'), operator)
             self.assertEqual(facts['operatorAccountSha256'], hashlib.sha256(operator.encode()).hexdigest())
@@ -874,6 +902,13 @@ class RootStagingTest(unittest.TestCase):
             for bad in ['', 'root', 'Operator', 'a:b', 'x' * 33]:
                 with self.assertRaises(ValueError):
                     metal_root.operator_account(dict(account, OPERATOR_USER=bad))
+            for bad in ['', '999', '01000', '+1000', '60001', 'x']:
+                with self.assertRaises(ValueError):
+                    metal_root.operator_account(dict(account, OPERATOR_UID=bad))
+            # A password, or a hash of another scheme or shape, is refused: the site holds a SHA-512-crypt hash.
+            for bad in ['', 'a-password', '$1$salt$hash', '!', hashed[:-1], hashed.replace('fixturesalt', 'a salt')]:
+                with self.assertRaises(ValueError):
+                    metal_root.operator_account(dict(account, OPERATOR_PASSWORD_HASH=bad))
             with self.assertRaises(ValueError):
                 metal_root.operator_account(site)
 

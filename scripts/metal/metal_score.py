@@ -7,6 +7,8 @@ from pathlib import Path
 
 # The test runner names the marker each test will print before the test runs; that promise reaches no stage.
 ANNOUNCEMENT = 'kernel::test_exec:'
+# Host records whose milestone is not <suite>/<category> (scripts/metal/server-suite, MILESTONES).
+HOST_MILESTONES = {'users-operator.json': 'users/operator-login'}
 
 
 def boot_shape(disk):
@@ -59,18 +61,20 @@ def score(directory):
                     cursor = index + 1
                     break
         results[milestone['id']] = {'reached': reached, 'total': len(stages), 'passed': reached == len(stages)}
-    # Host-driven server cases are captured while the persistent boot holds its
-    # lease, then scored again from the completed capture without rerunning them.
-    # Each measured category's records are server-<category>.json, beside its transcript.
-    for host_records in sorted(directory.glob('server-*.json')):
-        category = host_records.name[len('server-'):-len('.json')]
+    # Host-driven cases are captured while the persistent boot holds its lease, then
+    # scored again from the completed capture without rerunning them. Each measured
+    # category's records are server-<category>.json, or users-operator.json for the
+    # users suite's host-run category, beside its transcript.
+    found = sorted(directory.glob('server-*.json')) + sorted(directory.glob('users-operator.json'))
+    for host_records in found:
+        suite, category = host_records.name[:-len('.json')].split('-', 1)
         if category.endswith('-transcript'):
             continue
-        milestone = 'server/' + category
+        milestone = HOST_MILESTONES.get(host_records.name, suite + '/' + category)
         root = directory / 'definition'
         try:
             host = runpy.run_path(str(root / 'scripts/metal/server-suite'))
-            manifest = read('definition/docs/suites/server.json')
+            manifest = read('definition/docs/suites/' + suite + '.json')
             records = read(host_records.name)
             if records.get('milestone') != milestone:
                 raise ValueError(host_records.name + ' records another milestone')

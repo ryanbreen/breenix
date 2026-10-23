@@ -945,15 +945,26 @@ The store must be root's and mode 0700, and each file read from it root's and no
 shadow file and private keys also unreadable by others); otherwise init prints `[init] machine state refused: ...`
 and leaves `/etc` as it was. init reports what it applied as `[init] machine state: ...` lines.
 
-**The operator account.** `metal-run install-persistent` reads two private site fields: `OPERATOR_USER`, the
-account name, and `OPERATOR_SSH_PUBLIC_KEY`, one `ssh-ed25519` or `ssh-rsa` public key line (quoted in the site
-file; a private key is refused). It stages them as `/etc/breenix/operator-account` (root's, 0600) on the install boot's
-test root, and the installer writes the account into the store: uid and gid 1000, a group of the same name, home
-`/home/<name>`, shell `/bin/bsh` (S12) and a locked password (a shadow line already in the store is kept), with the key as
-its pending authorized key. Each upgrade stages them again, updates the operator shell and keeps its shadow line;
-a key already listed is not added twice and existing authorized_keys lines are retained.
+**The operator account.** `metal-run install-persistent` reads four private site fields: `OPERATOR_USER`, the
+account name; `OPERATOR_UID`, its uid (1000 to 60000); `OPERATOR_PASSWORD_HASH`, a SHA-512-crypt hash of its
+password (quoted in the site file, which `sh` sources; a password is refused); and `OPERATOR_SSH_PUBLIC_KEY`, one
+`ssh-ed25519` or `ssh-rsa` public key line (quoted; a private key is refused). Additional keys use
+`OPERATOR_SSH_PUBLIC_KEY_2`, `_3`, and further positive numbered fields, one quoted key per line; they are
+validated and staged in numeric order after the current field. The current field remains the boot host's key
+for host-driven runners. It stages them as
+`/etc/breenix/operator-account` (root's, 0600) on the install boot's test root, and the installer writes the account
+into the store: the uid as uid and gid, a group of the same name, home `/home/<name>`, shell `/bin/bsh` (S12),
+membership of `wheel` and the hash, with every key in its pending authorized-key file. An account the store already holds
+keeps its line, comment and home included, and must already have the site's uid and gid, or the install is refused
+before it writes; its group keeps its members. The site's hash replaces only a password an install locked (`!`), so a
+password set on the machine is kept. Each upgrade stages them again and updates the operator shell; a key already
+listed is not added twice and existing authorized_keys bytes are retained. To revoke a site-managed key, remove
+it from both the site file and the account's authorized_keys; a key retained in the site file is added again on upgrade. First-boot reconciliation validates the
+entire pending file before adding any key and removes it only after every key succeeds; a retry keeps keys already
+added. The users suite's `operator` category checks every configured key and
+measures the result on a persistent boot ([the suites README](../suites/README.md#users--permissions)).
 SSH exec requests run through `/bin/bsh -c COMMAND` and return the command status; POSIX scripts use explicit `sh -c`.
-Channel data feeds command stdin, and channel EOF closes stdin while output drains (RFC 4254 section 5.3).
+Channel data feeds command stdin, and channel EOF closes stdin while output drains (RFC 4254 section 5.3). <!-- claim-lint:ok: scripts/metal/metal_root.py operator_keys validates and stages the configured key list; libs/libbreenix/src/ssh/machine_state.rs reconcile validates the list before authorize_key appends missing keys. -->
 
 Test images carry a test-only key pair generated at image build (not committed), authorized for the `sshtest`
 account (uid 2000, home `/etc/breenix/test-ssh/home`, since `/home` is a separate disk) and for root. init's loopback
@@ -988,6 +999,14 @@ factory file: `etc-reconcile` installs it on persistent installs and keeps a loc
   state to any account; `svc start|stop|restart NAME` is allowed to root and to the account the
   service runs as (checked with SO_PEERCRED), and `svc reload`, which reads the table and
   `/run/breenix/services.d/*` again, to root. Definitions under `/run` last until the next boot.
+- **Notices.** Until the console's getty starts, init prints its supervisor notices on the console,
+  so the boot's ordered markers stay there. From then on the routine ones (a service started,
+  exited, killed, restarting, stopped or recovered, a terminal session on a virtual terminal, the
+  random pool or the network becoming ready, a table reload) go to `/var/log/init.log`, each record
+  headed with the supervisor's monotonic clock in milliseconds, so they never land in a console
+  session. The console keeps its own session's start and end, the crash-loop report (also logged)
+  and the bsshd and SSH oracle receipts. An init that publishes no state (`init console`) keeps
+  every notice on the console. claim-lint:ok: `Notices` in `userspace/programs/src/init_services.rs` (#2282).
 
 `init console` supervises only the table's gettys. The [server suite](../suites/README.md#server-host-driven-persistent-categories)
 measures the services on a persistent boot.
@@ -1266,8 +1285,11 @@ The **site file** (inside the service container, 0600): `IDRAC_HOST`, `IDRAC_USE
 `IDRAC_ACCOUNT_SLOT`, `INTERNAL_USB`, `USB_MANAGED_PORT` (fresh as-found BIOS values), `SATA_MODE` (`AhciMode` under the current disk policy), `BOOT_URL`, `HTTP_LISTEN_PORT`, `HTTP_DEV_INTERFACE`, `HTTP_DEV_ADDRESSING` (`dhcp`, or
 `static` with `HTTP_DEV_IP`, `HTTP_DEV_MASK`, `HTTP_DEV_GATEWAY`), `REDACT_IDENTIFIERS`, and for
 `install-persistent` and for users suite boots (staged as the test root's `/etc/breenix/test-ssh/operator-account`, which
-`users-hostssh` answers from the boot host) `OPERATOR_USER` and `OPERATOR_SSH_PUBLIC_KEY` ("SSH and the machine state store"). It must also
-be valid `sh`, because `metal-sol` sources it. `SERVER_SSH_HOST` names the persistent server for host-driven server suite checks.
+`users-hostssh` answers from the boot host) `OPERATOR_USER` and `OPERATOR_SSH_PUBLIC_KEY` ("SSH and the machine state store"),
+with `OPERATOR_UID` and `OPERATOR_PASSWORD_HASH` for `install-persistent` only. It must also
+be valid `sh`, because `metal-sol` sources it. `SERVER_SSH_HOST` names the persistent server for host-driven server suite checks,
+and `OPERATOR_PASSWORD`, the operator's own password (host-only, like `CONSOLE_PASSWORD`; the operator's copy belongs
+in their private credentials store), lets the users suite's host-run `operator` cases type it for `sudo` and the console.
 
 The **host file** (on the boot host): `METAL_INSTANCE`, `METAL_IMAGE`, `METAL_CPUS`, `METAL_MEMORY`, `METAL_LISTEN`
 (the published address and port), and the build container's `BUILD_INSTANCE`, `BUILD_REPO`, `BUILD_RUST_FORK`,

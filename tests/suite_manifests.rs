@@ -7,7 +7,9 @@
 //! categories that have cases, in the same order with the same titles. Each suite source has
 //! a manifest. A category with no cases yet is planned: the binary leaves it out, and a
 //! manifest in which each category is planned is a skeleton with no suite source
-//! (docs/suites/README.md, "Planned categories").
+//! (docs/suites/README.md, "Planned categories"). A category marked `"hostRunner": true` is run
+//! from the boot host against a persistent boot by `scripts/metal/server-suite`, which checks
+//! that category's cases; the binary leaves it out.
 //!
 //! The efforts in `docs/efforts/path.json` that name their targets name known ones (`targets`,
 //! docs/efforts/README.md).
@@ -48,6 +50,8 @@ struct Manifest {
     title: String,
     categories: Vec<Category>,
     host_runner: Option<String>,
+    /// Categories the boot host runs against a persistent boot (`"hostRunner": true` on the category).
+    host_categories: Vec<String>,
 }
 
 impl Manifest {
@@ -105,6 +109,9 @@ fn entry(value: &Value, at: &str, extra: &[&str], errors: &mut Vec<String>) -> O
     let title = text(object, "title", at, errors);
     Some(Entry { id: id.to_string(), title: title.to_string() })
 }
+
+/// The runner of host-run categories in a suite whose binary runs the others.
+const CATEGORY_HOST_RUNNER: &str = "scripts/metal/server-suite";
 
 /// Check one manifest's shape, returning what it lists.
 fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
@@ -199,12 +206,28 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
         errors.push(format!("{at}: binary is {binary:?}, expected \"/sbin/suite-{id}\""));
     }
     let mut categories = Vec::new();
+    let mut host_categories = Vec::new();
     match object.get("categories") {
         Some(Value::Array(list)) if !list.is_empty() => {
             let mut category_ids = HashSet::new();
             for (c, value) in list.iter().enumerate() {
                 let cat_at = format!("{at} categories[{c}]");
-                let Some(category) = entry(value, &cat_at, &["cases"], errors) else { continue };
+                // A host-run category: the boot host runs its cases against a persistent boot.
+                let host = value.get("hostRunner").is_some();
+                let extra: &[&str] = if host { &["cases", "hostRunner"] } else { &["cases"] };
+                let Some(category) = entry(value, &cat_at, extra, errors) else { continue };
+                if host {
+                    if value.get("hostRunner") != Some(&Value::Bool(true)) {
+                        errors.push(format!("{cat_at}: hostRunner is true when present"));
+                    }
+                    if host_runner.is_some() {
+                        errors.push(format!("{cat_at}: a host-driven suite's categories are all host-run; hostRunner belongs to the suite"));
+                    }
+                    if value.get("cases").and_then(Value::as_array).is_none_or(|cases| cases.is_empty()) {
+                        errors.push(format!("{cat_at}: a host-run category lists its cases"));
+                    }
+                    host_categories.push(category.id.clone());
+                }
                 if !category_ids.insert(category.id.clone()) {
                     errors.push(format!("{cat_at}: category id {:?} appears twice", category.id));
                 }
@@ -230,7 +253,7 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
         }
         _ => errors.push(format!("{at}: \"categories\" must be a non-empty array")),
     }
-    Some(Manifest { id, title, categories, host_runner })
+    Some(Manifest { id, title, categories, host_runner, host_categories })
 }
 
 /// Why a suite source's table could not be read.
@@ -554,8 +577,17 @@ fn suite_manifests_match_their_binaries() {
         // The binary runs populated categories for incremental development. This is not
         // completion: suite-verdict.py blocks full-suite acceptance while any category
         // is planned; a milestone must have cases in each category it measures.
-        let populated: Vec<Category> =
-            manifest.categories.into_iter().filter(|category| !category.cases.is_empty()).collect();
+        if !manifest.host_categories.is_empty() {
+            let checked = std::process::Command::new("python3").arg(root.join(CATEGORY_HOST_RUNNER))
+                .arg("--check-manifest").arg(path).output().expect("host runner starts");
+            if !checked.status.success() {
+                errors.push(format!("{id}: host-run category table differs: {}", String::from_utf8_lossy(&checked.stderr)));
+            }
+        }
+        let host_categories = manifest.host_categories;
+        let populated: Vec<Category> = manifest.categories.into_iter()
+            .filter(|category| !category.cases.is_empty() && !host_categories.contains(&category.entry.id))
+            .collect();
         if categories != populated {
             errors.push(format!(
                 "{id}: the categories and cases in {source_rel} differ from docs/suites/{id}.json\n\

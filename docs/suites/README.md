@@ -53,6 +53,17 @@ case failures remain in the serial evidence and do not complete their milestones
 not a full-suite PASS. `all` leaves partially populated suites out with "planned categories have no cases";
 run those suites explicitly with their milestone selector. See [effort measures](../efforts/README.md#measures). <!-- claim-lint:ok: `all` is the flag's name; scripts/suite-sequence.py (resolve) implements this paragraph and tests/suite_sequence_test.py exercises it. -->
 
+### Host-run categories
+
+A category marked `"hostRunner": true` in a suite the binary runs is measured from the boot host
+against a persistent boot instead, by `scripts/metal/server-suite` (the users suite's `operator`
+category, "Users & permissions" below). The binary leaves it out, as it does a planned category;
+`tests/suite_manifests.rs` compares the binary's table with the other populated categories and asks
+the runner to check the host-run category's cases (`--check-manifest`). A suite boot's verdict
+expects no record for it and says it is scored elsewhere, `--milestone` refuses a milestone that
+measures it, and `all` leaves the suite out. The runner's records go to that persistent boot's
+store and into its `milestone-verdict.json`, as the server suite's do (below). <!-- claim-lint:ok: `all` is the flag's name; scripts/suite-sequence.py (resolve) and tests/suite_sequence_test.py (test_all_leaves_out_suites_with_host_run_categories). -->
+
 A suite whose cases read clocks, measure time or exercise concurrency adds
 `"timingSensitive": true`, including smoke for its monotonic-clock case.
 `tests/suite_manifests.rs` checks this classification as well as manifest shape.
@@ -1284,25 +1295,28 @@ bsh's interactive shorthand would silently return to its prompt. Its cases:
 - `entropy-first` and `network-first`: bsshd's first start follows the moment init found
   the random pool ready, each getty started within one second of the supervisor's first
   pass, and the time client's first start follows network-up.
-- `kill-restart`: root types `kill -9` of bsshd's process on the console; once the console
-  shows init reaping it, OpenSSH with strict host-key checking must log in as the operator
-  within 10 seconds of the typed kill, and the state shows a new process, one more start
-  and `exit=signal:9`.
+- `kill-restart`: root types `kill -9` of bsshd's process on the console; OpenSSH with strict
+  host-key checking must log in as the operator within 10 seconds of the typed kill, the state
+  shows a new process, one more start and `exit=signal:9`, and init's log records the SIGKILL
+  and the 1000 ms restart delay.
 - `reconnect-bsh`: exec requests run in `/bin/bsh`, and an interactive login enters bsh
   with the operator's home and runs a quoted command.
 - `backoff`, `graceful-stop`, `account` and `crash-loop` use three temporary services that
   run as the operator, which root copies into `/run/breenix/services.d` before `svc reload`
   and removes afterwards: `/bin/false` (restart on failure), `/bin/sleep 3600`, and a
-  shell that ignores SIGTERM before it execs sleep (stop timeout 2 s). The console capture's
-  arrival times (`serial.ts`) must show restarts 1, 2, 4 and 8 seconds apart (0.75 s early
-  to 2 s late), the crash-loop report after the fifth failure, and the next start 59 to
-  63 seconds later; `svc stop` must report signal 15 for sleep and signal 9 for the shell,
+  shell that ignores SIGTERM before it execs sleep (stop timeout 2 s). init's notices go to
+  `/var/log/init.log` once the console's getty runs ([the metal README](../metal/README.md),
+  "Services"), and root reads them on the console: their monotonic times must show restarts
+  1, 2, 4 and 8 seconds apart (0.75 s early to 2 s late) and the next start 59 to 63 seconds
+  after the fifth failure, whose crash-loop report the console shows; `svc stop` must report
+  signal 15 for sleep and signal 9 for the shell, with init's SIGKILL report for the shell only,
   no sooner than its timeout, and neither may restart; the sleeping service's
   `/proc/<pid>/status` shows uid and gid 1000; and the operator's `svc stop bsshd` and
   `svc reload` are refused.
 
 Its records are `server-services.json`, scored as above, and also need the temporary
-services removed and the console lines for bsshd's SIGKILL and the crash loop.
+services removed, init's log record of bsshd's SIGKILL (kept in the records as `initLog`) and
+the crash loop's console line.
 
 For `server/logs`, prepare a small service log in one persistent boot at the
 commit under test, stop that boot with `metal-run stop ID`, and start another
@@ -1489,7 +1503,8 @@ installed administration tools ([account protocol](../users/accounts.md)).
 The login milestone's `login` (9) and `ssh` (7) and the admin milestone's `su` (7) and `sudo`
 (10) categories run the installed getty, login, su, sudo, passwd, bsshd and bssh as per-case
 accounts ([logins and administration](../users/login.md), "The users suite's categories").
-The `operator` category arrives with its milestone (design section 7).
+The operator-login milestone's `operator` category (6) is host-run on the persistent install
+(design section 5); its cases are below.
 
 On the R240 the `ssh` category's `openssh-operator` and `openssh-root-refused` cases are answered by
 the boot host's OpenSSH. The boot loop stages the operator's account name and public key on a users
@@ -1532,5 +1547,36 @@ python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite users -
 python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite users --milestone users/admin
 ```
 
-A full-suite verdict stays refused while `operator` has no cases; each milestone's selector scores its own
-categories.
+A users suite boot runs the binary's 110 cases; its verdict leaves `operator` to the persistent boot. Each
+milestone's selector scores its own categories, and `users/operator-login` is scored on the persistent boot:
+
+```sh
+python3 ~/.local/share/breenix-metal/metal-run install-persistent --branch BRANCH --sha SHA
+python3 ~/.local/share/breenix-metal/metal-run boot --persistent
+python3 ~/.local/share/breenix-metal/server-suite --boot ID --sha SHA --milestone users/operator-login
+python3 ~/.local/share/breenix-metal/metal-run stop ID
+```
+
+The runner reads the site's `OPERATOR_USER`, `OPERATOR_UID`, `OPERATOR_SSH_PUBLIC_KEY` and `OPERATOR_PASSWORD`
+(the operator's own password, host-only, whose hash `install-persistent` stages as `OPERATOR_PASSWORD_HASH`), and the
+console account for root's steps. As root on the SOL console it reads this boot's protected bsshd log and pins the
+host key from it, as the server suite does. Its cases:
+
+- `account`: over OpenSSH as the operator, `/etc/passwd` names the site's uid as uid and gid, `/home/<name>` and
+  `/bin/bsh`; the account's own group has that gid; `wheel` lists it; the home and `~/.ssh` are the account's at
+  0700 and `authorized_keys` at 0600, holding every site key, including numbered public-key fields
+  (compared by SHA-256, so no key reaches the transcript). <!-- claim-lint:ok: #2280 scripts/metal/server-suite Operator.case_account requires the digest of each configured key. -->
+- `ssh-id`: `id` shows the site's uid with the account's name as uid and gid, and the groups are exactly the
+  account's own and `10(wheel)`.
+- `sudo-n-refused`: `sudo -n true` exits 1 with `a password is required`.
+- `sudo-password-root`: in an interactive OpenSSH session, `sudo id` asks for the operator's password; typed, it
+  shows `uid=0(root) gid=0(root)`.
+- `root-ssh-refused`: OpenSSH as root with the operator's key fails publickey authentication, and root's console
+  listing of `/root/.ssh` shows no `authorized_keys`.
+- `console-challenge`: once root has logged out, the operator logs in on the SOL console after a refused wrong
+  password, `print("metal-login-ok", 6*7)` answers `metal-login-ok 42`, `sudo cat /proc/fbcon/check` with the
+  password shows `fbcon check: shadow and screen identical` and `fbcon row: metal-login-ok 42`, and logging out
+  brings back a login prompt.
+
+Its records are `users-operator.json`; the score also needs the bsshd host-key record and the challenge's lines in
+the capture.

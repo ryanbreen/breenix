@@ -254,23 +254,37 @@ Example only: `operator:x:1000:1000:Operator:/home/operator:/bin/bsh` (S12), gro
 
 **Staging.**
 - `install-persistent` writes the account into `/.breenix-shared/etc` from site fields: `OPERATOR_USER`,
-  `OPERATOR_UID`, `OPERATOR_PASSWORD_HASH` (sha512-crypt computed on the boot host, as `CONSOLE_PASSWORD` is now)
-  and the public-key field that ssh-doors adds.
-- `ROOT_PASSWORD_HASH` gives root a password for su.
+  `OPERATOR_UID`, `OPERATOR_PASSWORD_HASH` (sha512-crypt at `rounds=100000`, computed on the boot host with the
+  same helper that hashes `CONSOLE_PASSWORD`) and `OPERATOR_SSH_PUBLIC_KEY`, with optional additional keys in
+  `OPERATOR_SSH_PUBLIC_KEY_2`, `_3`, and further positive numbered fields, one quoted public key per line.
+  The installer validates every key and refuses a file that lacks
+  any of them, a uid outside 1000–60000, or a value that is not a SHA-512-crypt hash. <!-- claim-lint:ok: scripts/metal/metal_root.py operator_account and operator_keys validate the required fields and numbered key fields. -->
+- An account the store already holds keeps its line: its uid and gid must already be the site's (otherwise the
+  install is refused before it writes anything), its comment and home stay, and only the login shell becomes
+  `/bin/bsh` (S12). Its own group keeps its members, and `wheel` gains the account beside its other members.
+- The site's hash replaces only the `!` an earlier install locked the password with, or fills a missing shadow
+  line; a password set on the machine since is kept.
+- Root keeps the password the first install staged from the console password (S9's private site field), which
+  `su -` and the console use.
 - The home partition is not mounted during the install, so the installer leaves a root-only
   `/.breenix-shared/var/lib/accounts/pending/operator`. The first persistent boot's reconcile creates `/home/operator` (0700)
-  and `~/.ssh/authorized_keys` (0600) from it, then deletes it.
+  and `~/.ssh/authorized_keys` (0600) from it, or adds each missing key to an existing file whose other
+  lines stay as they are, then deletes it.
 
 **Logging in.**
 - **Console:** getty and login as `operator` with its password; root logs in there with its own password (S9, S14).
-- **SSH:** port 22, keys only, as `operator`. Root's staged `authorized_keys` from ssh-doors is removed after the first
-  successful operator login over SSH (D4).
+- **SSH:** port 22, keys only, as `operator`. Root has no SSH login (D4): bsshd refuses uid 0 whatever keys it has,
+  and no install gives root an `authorized_keys` (the installer leaves a test image's `/root/.ssh` behind). The
+  `operator` category's `root-ssh-refused` checks both on the persistent install.
 - **Root:** reached through `sudo` (operator's password) or `su -` (root's password, wheel only).
 - **Recovery:** a test-root boot through metal-run runs as root on the RAM disk and can repair
   `/.breenix-shared`.
 
-The metal-console `console-login` challenge moves from root to `operator`. The ARM64 desktop still runs as root; a
-graphical login is later main-path work.
+The `console-login` challenge runs as `operator` on the persistent install: the `operator` category's
+`console-challenge` case logs in on the SOL console with the operator's password after a refused wrong one, computes
+the answer, reads the root-only screen check through `sudo` and logs out to a new prompt. Console-mode test-root
+boots have no operator account and keep the wheel fixture `uw` ([logins and administration](login.md)). The ARM64
+desktop still runs as root; a graphical login is later main-path work.
 
 ## 6. The `users` suite
 
@@ -303,6 +317,7 @@ graphical login is later main-path work.
 | `sudo` | `sudo-wheel-ok`, `sudo-nonwheel-refused`, `sudo-wrong-password`, `sudo-env-reset`, `sudo-bad-policy-mode-refused`, `sudo-first-match` (two overlapping rules, each order), `sudo-argv-no-shell`, `sudo-logged` |
 | `login` | `login-user` (IDs, groups, HOME, cwd, shell), `login-root-refused`, `login-locked-refused`, `login-expired-refused`, `login-tty-owned`, `login-umask`, `logout-tty-restored`, `logout-revokes-terminal` |
 | `ssh` | `openssh-operator`, `openssh-root-refused` (the boot host's OpenSSH on the R240), `ssh-identity`, `ssh-root-refused`, `ssh-groups`, `ssh-pty-owner`, `ssh-bad-key-mode-refused` |
+| `operator` | Host-run against the persistent install (`scripts/metal/server-suite`): `account`, `ssh-id`, `sudo-n-refused`, `sudo-password-root`, `root-ssh-refused`, `console-challenge` |
 
 The failure delays are fixed waits, not timing assertions. The suite is still `timingSensitive`, because each case
 forks and some start threads, which the suite manifests classify as concurrency (`tests/suite_manifests.rs`).

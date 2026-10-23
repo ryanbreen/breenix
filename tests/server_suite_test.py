@@ -377,9 +377,10 @@ class HostServerScore(unittest.TestCase):
             self.assertTrue(verdict['captureComplete'])
 
     def test_services_evidence_needs_its_cases_cleanup_and_console_lines(self):
-        records = dict(self.records, milestone='server/services',
+        records = dict(self.records, milestone='server/services', initLog=['[init] bsshd killed by signal 9'],
                        cases=[dict(id='services/' + name, result='PASS') for name, _ in host['CATEGORIES']['services']])
-        serial = ('[stdout] bsshd: host key ED25519 SHA256:example (loaded)\n[init] bsshd killed by signal 9\n'
+        serial = ('[stdout] bsshd: host key ED25519 SHA256:example (loaded)\n'
+                  '1234 [init] bsshd killed by signal 9\n'
                   '[init] svc-suite-fail is crash-looping: 5 failures in a row, each within 10 s of starting\n')
         def score(records=records, serial=serial):
             return host['score'](self.manifest, self.path, records, serial, self.boot, self.sha, ['KERNEL PANIC:'])
@@ -391,6 +392,10 @@ class HostServerScore(unittest.TestCase):
         with self.assertRaises(ValueError): score(dict(records, cleanup=False))
         for line in serial.splitlines()[1:]:
             with self.assertRaises(ValueError): score(serial=serial.replace(line + '\n', ''))
+        # The root console read must capture the record, independently of runner metadata.
+        self.assertTrue(score(dict(records, initLog=[])).startswith('PASS:'))
+        with self.assertRaisesRegex(ValueError, 'init log'):
+            score(serial=serial.replace('1234 [init] bsshd killed by signal 9\n', ''))
         failed = copy.deepcopy(records)
         failed['cases'][3]['result'] = 'FAIL'
         with self.assertRaises(ValueError): score(failed)
@@ -399,10 +404,12 @@ class HostServerScore(unittest.TestCase):
         with tempfile.TemporaryDirectory() as scratch:
             target = Path(scratch) / 'services'
             commands = []
-            def console_run(command):
+            def console_run(command, timeout=30):
                 commands.append(command)
                 self.assertNotIn('\n', command)
                 if command == 'svc reload': return 'svc: reloaded 6 added'
+                # init's log, read before the fixtures load (#2282): one earlier record.
+                if command.startswith("sh -c 'cat /var/log/init.log"): return '1234 [init] blogd started (PID 9)\ninit-log-read\n'
                 subprocess.run(['/bin/sh', '-c', command], check=True)
                 return ''
             probe = SimpleNamespace(user='service-user')
@@ -414,7 +421,10 @@ class HostServerScore(unittest.TestCase):
             self.assertEqual(table.count('user = service-user\n'), 5)
             self.assertIn('trap "" TERM; exec /bin/sleep 3600', table)
             self.assertIn('user = svc-suite-absent\n', table)
-            self.assertEqual(len(commands), 2)
+            self.assertEqual(len(commands), 3)
+            self.assertEqual(commands[2], 'svc reload')
+            self.assertEqual(services.init_start, 1)
+            self.assertEqual(services.init_log, ['[init] blogd started (PID 9)'])
 
     def test_reconnect_rejects_success_after_deadline(self):
         services = object.__new__(host['Services'])
@@ -428,11 +438,95 @@ class HostServerScore(unittest.TestCase):
             clock[0] = 11.0
             return SimpleNamespace(returncode=0, stdout='1000\n')
         services.probe = SimpleNamespace(ssh=ssh, transcript=[])
+        services.init_records = lambda: []
+        services.await_init_line = lambda *args, **kwargs: [(0, '[init] bsshd killed by signal 9')]
         with patch.object(host['time'], 'monotonic', side_effect=lambda: clock[0]):
             with self.assertRaisesRegex(ValueError, 'within 10 s'):
                 services.case_kill_restart()
         self.assertEqual(timeouts, [10.0])
         self.assertEqual(services.probe.transcript, [])
+
+    def test_restart_waits_for_reap_and_bounds_state_read(self):
+        for state_delay in (0, 9):
+            with self.subTest(state_delay=state_delay):
+                services = object.__new__(host['Services'])
+                clock, events, state_timeouts = [0.0], [], []
+                before = dict(pid=42, starts=1)
+                after = dict(pid=43, starts=2, state='running', exit='signal:9')
+                def state(timeout=45):
+                    state_timeouts.append(timeout)
+                    if len(state_timeouts) == 1: return {}, {'bsshd': before}
+                    clock[0] += state_delay
+                    return {}, {'bsshd': after}
+                def notice(*args, **kwargs):
+                    events.append('reaped')
+                    clock[0] += 2
+                def ssh(script, timeout):
+                    self.assertEqual(events, ['reaped'])
+                    self.assertEqual(timeout, 8)
+                    clock[0] += 1
+                    return SimpleNamespace(returncode=0, stdout='1000\n')
+                services.state = state
+                services.init_records = lambda: []
+                services.await_init_line = notice
+                services.console = SimpleNamespace(login=lambda: None, type_line=lambda line: None)
+                services.probe = SimpleNamespace(ssh=ssh, transcript=[])
+                with patch.object(host['time'], 'monotonic', side_effect=lambda: clock[0]):
+                    if state_delay:
+                        with self.assertRaisesRegex(ValueError, 'state.*within 10 s'):
+                            services.case_kill_restart()
+                    else:
+                        services.case_kill_restart()
+                self.assertEqual(state_timeouts, [45, 7])
+
+    def test_operator_category_is_scored_against_the_users_manifest(self):
+        users = json.loads((ROOT / 'docs/suites/users.json').read_text())
+        host['validate_manifest'](users)
+        records = dict(self.records, milestone='users/operator-login',
+                       cases=[dict(id='operator/' + name, result='PASS') for name, _ in host['OPERATOR']])
+        serial = self.serial + ''.join(line + '\n' for line in host['OPERATOR_CONSOLE_LINES'])
+        def score(manifest=users, serial=serial):
+            return host['score'](manifest, self.path, records, serial, self.boot, self.sha, ['KERNEL PANIC:'])
+        self.assertTrue(score().startswith('PASS: users/operator-login categories=operator cases=6'))
+        with self.assertRaisesRegex(ValueError, 'users manifest'):
+            score(self.manifest)
+        for line in host['OPERATOR_CONSOLE_LINES']:
+            with self.subTest(line=line), self.assertRaisesRegex(ValueError, 'no line'):
+                score(serial=serial.replace(line + '\n', ''))
+        records['cases'][2]['result'] = 'FAIL'
+        with self.assertRaises(ValueError): score()
+        # A host-run category whose cases drift from the runner's table is refused.
+        drifted = copy.deepcopy(users)
+        next(c for c in drifted['categories'] if c['id'] == 'operator')['cases'].pop()
+        with self.assertRaises(ValueError): host['validate_manifest'](drifted)
+
+    def test_boot_scorer_reads_operator_records_and_leaves_other_users_files(self):
+        sys.path.insert(0, str(ROOT / 'scripts/metal'))
+        score_boot = runpy.run_path(str(ROOT / 'scripts/metal/metal_score.py'))['score']
+        with tempfile.TemporaryDirectory() as scratch:
+            directory = Path(scratch)
+            def write(name, value):
+                path = directory / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(value))
+            write('run.json', self.boot | dict(disk='persistent'))
+            write('definition/docs/metal/boot-path.json', dict(gateArch='x86_64', milestones=[]))
+            write('definition/tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json', dict(stages=[]))
+            write('definition/docs/suites/users.json', json.loads((ROOT / 'docs/suites/users.json').read_text()))
+            write('definition/docs/efforts/path.json', self.path)
+            write('definition/docs/boot-path.json', dict(fatal=[]))
+            source = directory / 'definition/scripts/metal/server-suite'
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text((ROOT / 'scripts/metal/server-suite').read_text())
+            (directory / 'serial.txt').write_text(self.serial + ''.join(line + '\n' for line in host['OPERATOR_CONSOLE_LINES']))
+            (directory / 'events.jsonl').write_text('')
+            write('users-operator.json', self.records | dict(milestone='users/operator-login',
+                  cases=[dict(id='operator/' + name, result='PASS') for name, _ in host['OPERATOR']]))
+            write('users-operator-transcript.json', [])
+            write('users-hostssh.json', dict(boot=self.boot['id'], requests=[]))
+            verdict = score_boot(directory)
+            self.assertEqual(list(verdict['milestones']), ['users/operator-login'])
+            self.assertTrue(verdict['milestones']['users/operator-login']['passed'])
 
     def test_missing_category_and_manifest_drift_block_acceptance(self):
         self.manifest['categories'][0]['cases'] = []

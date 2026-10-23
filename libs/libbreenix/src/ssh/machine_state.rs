@@ -7,8 +7,8 @@
 //! - `etc/passwd`, `etc/group`, `etc/shadow`: the machine's own account lines.
 //!   Each replaces the generation's line for the same name, or is added.
 //! - `etc/ssh/`: the SSH host key files, copied into `/etc/ssh`.
-//! - `var/lib/accounts/pending/<account>`: a public key line `install-persistent`
-//!   staged for the account. It is added to the account's
+//! - `var/lib/accounts/pending/<account>`: public key lines `install-persistent`
+//!   staged for the account. They are added to the account's
 //!   `~/.ssh/authorized_keys` once the home partition is mounted, then removed.
 //!
 //! init calls `reconcile` at boot, before bsshd starts; bsshd calls
@@ -272,21 +272,28 @@ pub fn reconcile(root: &Path, home_mounted: bool) -> Result<Option<Report>, Refu
             let result = read_store_file(&path, true).and_then(|text| {
                 let text = text.map(|(text, _)| text).unwrap_or_default();
                 let lines: Vec<&str> = text.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
-                let [line] = lines.as_slice() else {
-                    return refuse(format!("{} must hold one public key line", path.display()));
-                };
-                let blob = keys::parse_public_line(line)
-                    .ok_or_else(|| Refusal(format!("{} is not an ssh-ed25519 or ssh-rsa public key", path.display())))?;
+                if lines.is_empty() {
+                    return refuse(format!("{} must hold public key lines", path.display()));
+                }
+                // Validate the whole pending file before adding any key. A failed
+                // write leaves it pending; retrying does not duplicate earlier keys.
+                let blobs = lines.iter().map(|line| keys::parse_public_line(line)
+                    .ok_or_else(|| Refusal(format!("{} is not an ssh-ed25519 or ssh-rsa public key", path.display()))))
+                    .collect::<Result<Vec<_>, _>>()?;
                 let account = account::read_account(root, &name)?;
                 account::may_log_in(&account)?;
-                account::authorize_key(root, &account, &blob, line)?;
-                Ok(keys::fingerprint_text(&blob))
+                let mut fingerprints = Vec::new();
+                for (line, blob) in lines.iter().zip(&blobs) {
+                    account::authorize_key(root, &account, blob, line)?;
+                    fingerprints.push(keys::fingerprint_text(blob));
+                }
+                Ok(fingerprints)
             });
             match result {
-                Ok(fingerprint) => {
+                Ok(fingerprints) => {
                     fs::remove_file(&path).or_else(|e| refuse(format!("remove {}: {}", path.display(), e)))?;
                     sync_directory(&pending)?;
-                    report.authorized.push((name, fingerprint));
+                    report.authorized.extend(fingerprints.into_iter().map(|fingerprint| (name.clone(), fingerprint)));
                 }
                 Err(why) => report.problems.push(format!("staged key for '{}' not added: {}", name, why)),
             }
@@ -421,6 +428,42 @@ mod tests {
     }
 
     #[test]
+    fn several_staged_keys_create_a_fresh_home_and_preserve_existing_lines_on_retry() {
+        let tree = Tree::new("several-keys");
+        let first = key(21);
+        let second = key(22);
+        let third = key(23);
+        tree.stage_operator(&first);
+        let pending = format!("{}/operator", PENDING);
+        let staged = format!("{}\n{}\n", first.public_line("first"), second.public_line("second"));
+        tree.store_file(&pending, &staged, 0o600);
+        let report = reconcile(&tree.root, true).unwrap().unwrap();
+        assert!(report.problems.is_empty(), "{:?}", report.problems);
+        let path = tree.root.join("home/operator/.ssh/authorized_keys");
+        let fresh = fs::read_to_string(&path).unwrap();
+        for key in [&first, &second] {
+            assert!(account::authorized_keys(&tree.root, &account::read_account(&tree.root, "operator").unwrap())
+                .unwrap().contains(&key.public_key_blob()));
+        }
+        let original = format!("# locally maintained\n{}# final comment without newline", fresh);
+        fs::write(&path, &original).unwrap();
+        tree.store_file(&pending, &format!("{}{}\n", staged, third.public_line("third")), 0o600);
+        assert!(reconcile(&tree.root, true).unwrap().unwrap().problems.is_empty());
+        let after = fs::read_to_string(&path).unwrap();
+        assert_eq!(after, format!("{}\n{}\n", original, third.public_line("third")));
+        // Reinstalling the same keys must leave the file unchanged.
+        tree.store_file(&pending, &format!("{}{}\n", staged, third.public_line("third")), 0o600);
+        assert!(reconcile(&tree.root, true).unwrap().unwrap().problems.is_empty());
+        assert_eq!(fs::read_to_string(&path).unwrap(), after);
+        // Validate the last line before appending an earlier valid key.
+        tree.store_file(&pending, &format!("{}\ninvalid\n", key(24).public_line("fourth")), 0o600);
+        let report = reconcile(&tree.root, true).unwrap().unwrap();
+        assert_eq!(report.problems.len(), 1);
+        assert_eq!(fs::read_to_string(&path).unwrap(), after);
+        assert!(tree.root.join(STORE).join(pending).exists());
+    }
+
+    #[test]
     fn store_lines_replace_the_generations_line_for_the_same_account() {
         assert_eq!(merge_lines("root:x:0:\nwheel:x:10:\n", &["wheel:x:10:operator", "operator:x:1000:"]),
                    "root:x:0:\nwheel:x:10:operator\noperator:x:1000:\n");
@@ -494,7 +537,7 @@ mod tests {
         assert_eq!(report.problems.len(), 1);
         assert!(tree.root.join(STORE).join(PENDING).join("operator").exists());
         assert!(!tree.root.join("home/operator").exists());
-        // A private key, or two lines, are not added and stay for the operator to see.
+        // A private key, or malformed public keys, stay for the operator to see.
         for text in ["-----BEGIN OPENSSH PRIVATE KEY-----\n", "ssh-ed25519 AAAA\nssh-ed25519 BBBB\n"] {
             tree.store_file(&format!("{}/operator", PENDING), text, 0o600);
             let report = reconcile(&tree.root, true).unwrap().unwrap();

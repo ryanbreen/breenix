@@ -527,7 +527,33 @@
     {
       "id": "operator",
       "title": "The operator account logs in over SSH and at the console; root SSH is refused",
-      "cases": []
+      "hostRunner": true,
+      "cases": [
+        {
+          "id": "account",
+          "title": "The persistent install's operator account has the site's name and uid, its own group, home and /bin/bsh, and the site key"
+        },
+        {
+          "id": "ssh-id",
+          "title": "OpenSSH pinning this boot's host key logs in as the operator, and id shows its uid, its group and wheel"
+        },
+        {
+          "id": "sudo-n-refused",
+          "title": "sudo -n true is refused because the operator's own password is required"
+        },
+        {
+          "id": "sudo-password-root",
+          "title": "sudo id with the operator's password runs as uid 0"
+        },
+        {
+          "id": "root-ssh-refused",
+          "title": "OpenSSH as root is refused with the operator's key, and root has no authorized keys"
+        },
+        {
+          "id": "console-challenge",
+          "title": "The SOL console challenge passes as the operator: a wrong password refused, the answer computed and read back from the screen through sudo, and getty back after logout"
+        }
+      ]
     }
   ]
 }
