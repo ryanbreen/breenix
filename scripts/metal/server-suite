@@ -1514,7 +1514,7 @@ def main():
         if category == 'services':
             # The init log records the cases read, as last read, for the scorer.
             records['initLog'] = target.init_log
-        transcript = probe.transcript
+        transcript = [] if probe is None else probe.transcript
     passed = sum(r['result'] == 'PASS' for r in records['cases'])
     print(f'SUITE {suite} DONE passed={passed} failed={len(cases)-passed} skipped=0 total={len(cases)}', flush=True)
     # Re-read the live capture after the last operation; authentication errors never mask a kernel failure.
