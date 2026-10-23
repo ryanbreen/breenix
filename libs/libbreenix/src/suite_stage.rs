@@ -187,11 +187,7 @@ fn quad(rec: &[u8], at: usize) -> u64 {
 }
 /// The display's current mode, which sizes the stage's screen buffers (ruling B8).
 fn mode() -> Result<gpu::abi::Mode, String> {
-    let (r, modes) = gpu::modes();
-    if r != 0 {
-        return Err(std::format!("stage MODES: errno {}", -r));
-    }
-    modes.modes.get(modes.current as usize).copied().ok_or_else(|| String::from("stage MODES: no current mode"))
+    gpu::current_mode().map_err(|r| std::format!("stage CURRENT_MODE: errno {}", -r))
 }
 /// Observe the whole scanout into `pixels` by the 48-byte SCANOUT_READBACK.
 fn observe(pixels: &mut Vec<u8>) -> Result<Seen, String> {

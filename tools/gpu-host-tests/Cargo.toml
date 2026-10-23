@@ -7,7 +7,13 @@ publish = false
 [workspace]
 
 [dependencies]
-gpu-abi = { path = "../../libs/gpu-abi" }
+gpu-abi = { path = "../../libs/gpu-abi", features = ["alloc"] }
+libfont = { path = "../../libs/libfont" }
+libgfx-ref = { path = "../../libs/libgfx-ref" }
 
 [lib]
 path = "tests.rs"
+
+[[bin]]
+name = "vertex-reuse"
+path = "vertex_reuse.rs"

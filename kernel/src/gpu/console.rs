@@ -29,6 +29,14 @@ static NEXT_DRAW: AtomicU64 = AtomicU64::new(0);
 static NEXT_RESTORE: AtomicU64 = AtomicU64::new(0);
 const DRAW_INTERVAL_NS: u64 = 250_000_000;
 
+/// Initial console preparation owns persistent DMA buffers even on a device without
+/// a panic queue. It is over once preparation succeeds or its bounded attempts end.
+pub(super) fn preparation_settled(epoch: u64) -> bool {
+    PANIC_EPOCH.load(Ordering::Acquire) == epoch
+        || (PANIC_ATTEMPT_EPOCH.load(Ordering::Acquire) == epoch
+            && PANIC_ATTEMPTS.load(Ordering::Acquire) >= PANIC_MAX_ATTEMPTS)
+}
+
 pub(super) struct Console {
     pub(super) epoch: u64,
     pub(super) context: u32,
@@ -477,10 +485,11 @@ pub fn pump() {
             if PANIC_EPOCH.load(Ordering::Acquire) != epoch
                 && PANIC_ATTEMPTS.load(Ordering::Acquire) < PANIC_MAX_ATTEMPTS
             {
-                PANIC_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
                 if super::panic::prepare().is_ok() {
                     PANIC_EPOCH.store(epoch, Ordering::Release);
                 }
+                // Publish a finished attempt only after its allocations are complete.
+                PANIC_ATTEMPTS.fetch_add(1, Ordering::Release);
                 #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
                 super::panic::preparation_finished();
             }

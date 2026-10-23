@@ -247,6 +247,10 @@ pub fn create(caller: &Caller, a: &mut Create) -> Result<u64, i32> {
             present: WindowPresent::new(),
         },
     );
+    drop(reg);
+    // Warm the next renderer while its first window is being initialized. A cache miss
+    // leaves context creation to its ordinary path; CREATE's allocation result is unchanged.
+    let _ = crate::gpu::prepare_window_renderer(caller.tgid, false);
     Ok(0)
 }
 
@@ -1250,6 +1254,8 @@ pub fn claim(caller: &Caller, c: &mut Claim, out: u64) -> Result<u64, i32> {
     for waits in woken {
         waits.events.wake_up();
     }
+    // Metadata authority and notifications do not depend on a renderer cache allocation.
+    let _ = crate::gpu::prepare_window_renderer(caller.tgid, true);
     Ok(0)
 }
 

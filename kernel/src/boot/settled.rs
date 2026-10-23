@@ -1,8 +1,8 @@
 //! Whether boot's own work is over.
 //!
-//! On ARM64 the boot thread enters the first program itself, so boot's work is
-//! over before userspace runs. On x86-64 the boot thread goes on after the
-//! first program is published: it starts the console executor and, on bare
+//! On ARM64 the boot thread enters the first program itself, but USB enumeration
+//! and GPU console preparation continue on their workers. On x86-64 the boot
+//! thread goes on after the first program is published: it starts the console executor and, on bare
 //! metal, the tick census, whose per-CPU windows run for a few seconds. A
 //! suite's memory record samples once this answers true (`/proc/breenix/frames`,
 //! row `boot`; `docs/suites/README.md`, "Memory record"), so the kernel stacks
@@ -21,8 +21,8 @@ pub fn tail_done() {
     TAIL_DONE.store(true, Ordering::Release);
 }
 
-/// Whether boot's work is over: on x86-64, its tail has run and the tick
-/// census, where one runs (no fw_cfg), has reported.
+/// Whether boot's work is over: ARM64's device workers have finished their initial
+/// allocations; x86-64's tail and tick census, where one runs, have finished.
 pub fn settled() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
@@ -31,6 +31,6 @@ pub fn settled() -> bool {
     }
     #[cfg(target_arch = "aarch64")]
     {
-        true
+        crate::drivers::xhci::state() != "enumerating" && crate::gpu::boot_settled()
     }
 }
