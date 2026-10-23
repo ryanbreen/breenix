@@ -535,6 +535,18 @@ class HostServerScore(unittest.TestCase):
 
 
 class ConsoleEchoTests(unittest.TestCase):
+    def test_console_only_score_needs_no_ssh_record(self):
+        sha = 'a' * 40
+        boot = dict(id='20261023T000000Z-metal', mode='persistent', bootedCommit=sha,
+                    toolsCommit=sha, evidenceEligible=True)
+        records = dict(boot=boot['id'], commit=sha, milestone='server/console-input',
+                       cases=[dict(id='console-input/long-line', result='PASS', ms=1)],
+                       cleanup=True, consoleGaps=[])
+        manifest = json.loads((ROOT / 'docs/suites/server.json').read_text())
+        effort = json.loads((ROOT / 'docs/efforts/path.json').read_text())
+        self.assertEqual(host['score'](manifest, effort, records, '', boot, sha, []),
+                         'PASS: server/console-input categories=console-input cases=1')
+
     def test_kernel_records_between_echo_fragments_preserve_the_block(self):
         text = 'a' * 32 + '\n[DISPATCH_STRAND_CENSUS:tick=1]\n' + 'a' * 32
         self.assertEqual(host['canonical_echo'](text), 'a' * 64)

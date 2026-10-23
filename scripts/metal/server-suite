@@ -149,7 +149,7 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
     if not records.get('cleanup'):
         raise ValueError({'ssh-keys': 'temporary authorized key cleanup did not succeed',
                           'operator': 'the console sessions did not end'}.get(category, 'temporary services were not removed'))
-    if category != 'input' and not re.search(r'^\[stdout\] bsshd: host key ED25519 SHA256:[A-Za-z0-9+/]+ \((?:loaded|generated)\)\r?$', serial, re.M):
+    if category != 'console-input' and not re.search(r'^\[stdout\] bsshd: host key ED25519 SHA256:[A-Za-z0-9+/]+ \((?:loaded|generated)\)\r?$', serial, re.M):
         raise ValueError('boot captured no protected host-key record')
     if category == 'ssh-keys' and "bsshd: refused method 'password'" not in serial:
         raise ValueError('boot captured no actual password request refusal')
