@@ -23,7 +23,7 @@ pub fn sys_reboot(magic: u64, magic2: u64, command: u64) -> SyscallResult {
         }
     }
     #[cfg(target_arch = "x86_64")]
-    if !crate::arch_impl::x86_64::platform::reset_available() {
+    if command == 0x01234567 && !crate::arch_impl::x86_64::platform::reset_available() {
         return SyscallResult::Err(super::errno::ENODEV as u64);
     }
     #[cfg(target_arch = "x86_64")]

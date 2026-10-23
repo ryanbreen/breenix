@@ -266,6 +266,7 @@ pub struct Supervisor {
     boot_id: String,
     notices: Notices,
     shutdown: Option<(u64, u8, u64)>,
+    shutdown_restart: Vec<String>,
 }
 
 fn exit_text(status: i32) -> String {
@@ -307,6 +308,7 @@ impl Supervisor {
             boot_id: String::new(),
             notices: Notices { console_owned: false, log: None },
             shutdown: None,
+            shutdown_restart: Vec::new(),
         };
         if publish {
             supervisor.listener = match open_control() {
@@ -376,7 +378,7 @@ impl Supervisor {
             }
             if self.entries.iter().any(|e| e.state == State::Running) {
                 self.notices.alert("[shutdown] dependency cycle prevents shutdown");
-                self.shutdown = Some((command, 255, 0));
+                self.resume_after_refusal(now);
                 return;
             }
             // SSH sessions and jobs can outlive their service's leader.
@@ -396,7 +398,7 @@ impl Supervisor {
                 _ if now < deadline => return,
                 _ => {
                     self.notices.alert("[shutdown] processes did not exit; refusing reset");
-                    self.shutdown = Some((command, 255, 0));
+                    self.resume_after_refusal(now);
                     return;
                 }
             }
@@ -404,7 +406,7 @@ impl Supervisor {
             if self.entries.iter().any(|e| !e.outputs.is_empty()) {
                 if now < deadline { return; }
                 self.notices.alert("[shutdown] service output did not drain; refusing reset");
-                self.shutdown = Some((command, 255, 0));
+                self.resume_after_refusal(now);
                 return;
             }
             self.write_state();
@@ -416,8 +418,29 @@ impl Supervisor {
             let number = 142;
             let result = unsafe { raw::syscall3(number, 0xfee1dead, 672274793, command) } as i64;
             self.notices.alert(&format!("[shutdown] kernel refused transition: {}", result));
-            self.shutdown = Some((command, 255, 0));
+            self.resume_after_refusal(now);
         }
+    }
+
+    /// Resume the services shutdown interrupted, including login and SSH access.
+    /// A failed filesystem barrier may leave a mount read-only; services can
+    /// still start, and their deferred logs preserve access for repair.
+    fn resume_after_refusal(&mut self, now: u64) {
+        self.shutdown = None;
+        for entry in &mut self.entries {
+            if !self.shutdown_restart.contains(&entry.def.name) { continue; }
+            if entry.state == State::Stopping {
+                entry.after_stop = AfterStop::Start;
+            } else if entry.state != State::Running {
+                entry.next_ms = now;
+                entry.quick_failures = 0;
+                entry.crash_loop_reported = false;
+                entry.set(State::Waiting, now);
+            }
+        }
+        self.shutdown_restart.clear();
+        self.changed = true;
+        self.notices.alert("[shutdown] refused; resuming services");
     }
 
     fn drain_logs(&mut self) {
@@ -755,6 +778,9 @@ impl Supervisor {
             _ if self.shutdown.is_some() => Err("shutdown is in progress".to_string()),
             ["shutdown", action @ ("reboot" | "poweroff")] if self.scope == Scope::All && self.publish => {
                 let command = if *action == "reboot" { 0x01234567 } else { 0x4321fedc };
+                self.shutdown_restart = self.entries.iter()
+                    .filter(|e| matches!(e.state, State::Running | State::Waiting | State::Backoff | State::CrashLoop))
+                    .map(|e| e.def.name.clone()).collect();
                 self.shutdown = Some((command, 0, now));
                 self.notices.alert(&format!("[init] shutdown requested: {}", action));
                 Ok(Some(format!("shutdown {} accepted", action)))
