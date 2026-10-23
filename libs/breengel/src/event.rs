@@ -76,6 +76,8 @@ pub enum Event {
     FocusLost,
     /// The compositor asked this window to close.
     CloseRequested,
+    /// The compositor asks the owner to resize its buffers and redraw.
+    ResizeRequested { width: u32, height: u32 },
     /// The window's buffers now have this size.
     Resized { width: u32, height: u32 },
     /// A resize was refused; the window keeps this (old) size.

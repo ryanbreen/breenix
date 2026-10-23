@@ -649,6 +649,7 @@ pub mod event_kind {
     pub const FONT_CHANGED: u16 = 12;
     pub const COMPOSITOR_CHANGED: u16 = 13;
     pub const OVERFLOW: u16 = 14;
+    pub const RESIZE_REQUESTED: u16 = 15;
 }
 
 /// `WindowEvent.flags` bit 0: a repeat.

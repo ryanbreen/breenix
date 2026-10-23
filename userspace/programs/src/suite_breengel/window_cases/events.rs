@@ -15,6 +15,7 @@ pub(crate) const EVENTS: &[Case] = &[
     pictured!("close-requested", "CloseRequested arrives as sent", events_close_requested),
     pictured!("resized", "Resized arrives only after the buffers have the new size, and says that size", events_resized),
     pictured!("resize-failed", "A failed resize delivers ResizeFailed with the old size, never Resized", events_resize_failed),
+    pictured!("resize-request", "A window that answers a compositor's resize request takes the asked size; one that ignores it keeps its own", events_resize_request),
     pictured!("font-changed", "FontChanged arrives when the configured font changes", events_font_changed),
     pictured!("compositor-changed", "A new compositor claim delivers CompositorChanged with the new epoch", events_compositor_changed),
     pictured!("unknown-type", "An unknown event type arrives as Unknown, not as a key press", events_unknown_type),
@@ -298,6 +299,52 @@ fn events_resize_failed() -> CaseResult {
         "Breengel does not decode ResizeFailed with its size")
 }
 
+// B41: requests carry physical client sizes; only the owner changes buffers.
+fn events_resize_request() -> CaseResult {
+    interface()?;
+    let (mut k, mut answering) = setup(b"resize-answer")?;
+    let mut ignoring = breengel::Window::new_without_fonts(b"resize-ignore", 32, 24).cite("17.1")?;
+    for w in [&mut answering, &mut ignoring] {
+        w.surface().cite("17.3")?.clear(libgfx::color::Color::rgb(7, 8, 9));
+        w.present().cite("17.3")?;
+    }
+    for (width, height) in [(48, 36), (20, 16)] {
+        let mut request = ev(kind::RESIZE_REQUESTED);
+        request.width = width;
+        request.height = height;
+        for w in [&answering, &ignoring] {
+            send(&mut k, w.id(), &[request]).cite("19.2")?;
+        }
+        let got = collect(&mut answering, 1, Handled::Redraw)?;
+        ensure(got.iter().any(|d| d.event == Event::ResizeRequested { width, height }), "19.2",
+            format!("resize request decoded as [{}]", kinds(&got)))?;
+        let before = info_of(answering.id())?;
+        ensure((before.width, before.height) == (answering.width(), answering.height()), "19.2",
+            "delivering a request changed buffers before the owner answered")?;
+        // The application, not dispatch or bwm, answers through the owner-only path.
+        answering.apply_resize(width, height).cite("17.1")?;
+        answering.surface().cite("17.3")?.clear(libgfx::color::Color::rgb(11, 12, 13));
+        answering.present().cite("17.3")?;
+        let info = info_of(answering.id())?;
+        let (cap, pixels) = capture(answering.id(), width, height, None)
+            .map_err(|e| format!("CAPTURE {}", outcome(e))).cite("19.2")?;
+        ensure((info.width, info.height, cap.width, cap.height) == (width, height, width, height), "19.2",
+            "the answering owner's LIST and CAPTURE do not have the requested size")?;
+        same(&pixels, width, height, false, "the resized owner's redraw", "19.2", |_, _| [13, 12, 11, 0])?;
+        let _ = collect(&mut answering, 1, Handled::NoChange)?; // kernel Resized
+        let got = collect(&mut ignoring, 1, Handled::NoChange)?;
+        ensure(got.iter().any(|d| d.event == Event::ResizeRequested { width, height }), "19.2",
+            "the ignoring owner did not receive the request")?;
+        let info = info_of(ignoring.id())?;
+        let (cap, pixels) = capture(ignoring.id(), 32, 24, None)
+            .map_err(|e| format!("CAPTURE {}", outcome(e))).cite("19.2")?;
+        ensure((ignoring.width(), ignoring.height(), info.width, info.height, cap.width, cap.height)
+            == (32, 24, 32, 24, 32, 24), "19.2", "ignoring a request changed the client's size")?;
+        same(&pixels, 32, 24, false, "the ignoring owner's retained frame", "19.2", |_, _| [9, 8, 7, 0])?;
+    }
+    Ok(())
+}
+
 /// A font configuration directory for this process (`BREENIX_CONFIG_ROOT`), restored on drop.
 struct FontRoot {
     root: std::path::PathBuf,
@@ -370,7 +417,7 @@ fn events_compositor_changed() -> CaseResult {
 }
 
 fn events_unknown_type() -> CaseResult {
-    for k in [0u16, 15, 99, u16::MAX] {
+    for k in [0u16, 16, 99, u16::MAX] {
         let mut e = key(k, 30);
         e.text = [b'x'; 240];
         e.text_len = 1;
@@ -808,8 +855,18 @@ fn events_malformed_write() -> CaseResult {
     long.text_len = 241;
     let mut reserved = key(kind::KEY_PRESS, 30);
     reserved.reserved = 1;
+    let mut zero_width = ev(kind::RESIZE_REQUESTED);
+    zero_width.height = 24;
+    let mut zero_height = ev(kind::RESIZE_REQUESTED);
+    zero_height.width = 32;
+    let mut too_wide = zero_width;
+    too_wide.width = 4097;
+    let mut too_tall = zero_height;
+    too_tall.height = 4097;
     let cases = [
-        ("kind 0", ev(0)), ("kind 15", ev(15)), ("FontChanged, which Breengel makes", ev(kind::FONT_CHANGED)),
+        ("resize width 0", zero_width), ("resize height 0", zero_height),
+        ("resize width 4097", too_wide), ("resize height 4097", too_tall),
+        ("kind 0", ev(0)), ("kind 16", ev(16)), ("FontChanged, which Breengel makes", ev(kind::FONT_CHANGED)),
         ("Overflow, which the kernel makes", ev(kind::OVERFLOW)), ("Resized, which the kernel makes", ev(kind::RESIZED)),
         ("ResizeFailed, which the kernel makes", ev(kind::RESIZE_FAILED)), ("CompositorChanged, which the kernel makes", ev(kind::COMPOSITOR_CHANGED)),
         ("text_len 241", long), ("a nonzero reserved field", reserved),
