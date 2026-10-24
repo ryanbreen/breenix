@@ -284,7 +284,7 @@ pub fn clipboard_reset() -> CaseResult {
 }
 pub fn supervisor_gives_up() -> CaseResult {
     let mut clock = measure::Clock::new()?;
-    let d = Desktop::launch(true)?;
+    let mut d = Desktop::launch(true)?;
     for n in 0..5 {
         let pid = children(d.wm.pid, "bwm")?
             .first()
@@ -306,6 +306,10 @@ pub fn supervisor_gives_up() -> CaseResult {
     check(
         children(d.wm.pid, "bwm")?.is_empty(),
         "crash-loop supervisor kept restarting after limit",
+    )?;
+    check(
+        d.output().contains("[init] bwm gave up: 5 failures in 10 s; stopped"),
+        "supervisor stopped bwm without reporting the give-up limit",
     )
 }
 pub fn unexpected_crash_fails() -> CaseResult {

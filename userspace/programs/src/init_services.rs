@@ -56,6 +56,8 @@ pub enum Scope {
     All,
     /// Services without login terminals (the ARM64 desktop boot).
     Daemons,
+    /// The graphical session, using the production service policy.
+    Desktop,
     /// Only the login terminals (`init console`).
     Logins,
 }
@@ -163,6 +165,7 @@ struct Entry {
     starts: u32,
     quick_failures: u32,
     crash_loop_reported: bool,
+    failures: services::FailureHistory,
     last_exit: String,
     stop_deadline_ms: u64,
     killed: bool,
@@ -186,6 +189,7 @@ impl Entry {
             starts: 0,
             quick_failures: 0,
             crash_loop_reported: false,
+            failures: services::FailureHistory::default(),
             last_exit: String::new(),
             stop_deadline_ms: 0,
             killed: false,
@@ -279,11 +283,16 @@ fn in_scope(scope: Scope, service: &Service) -> bool {
     match scope {
         Scope::All => true,
         Scope::Daemons => login_terminal(service).is_none(),
+        Scope::Desktop => service.name == "bwm",
         Scope::Logins => login_terminal(service).is_some(),
     }
 }
 
 impl Supervisor {
+    pub fn running(&self, name: &str) -> bool {
+        self.entries.iter().any(|e| e.def.name == name && e.state == State::Running)
+    }
+
     /// Read the table and, for the system's init, open `/run/breenix` and the control socket.
     pub fn load(scope: Scope, publish: bool) -> Self {
         let now = now_ms();
@@ -371,7 +380,12 @@ impl Supervisor {
                                     && (line.starts_with(b"[BSSH_PUBKEY_ORACLE:")
                                         || line.starts_with(b"[BSSH_ACCOUNT_ORACLE:"))
                                     && line.ends_with(b"]");
-                                if output.stream == "stdout" && (readiness || oracle) {
+                                let desktop = entry.def.name == "bwm"
+                                    && (line.starts_with(b"[bwm] compositor claim:")
+                                        || line.starts_with(b"[bwm] first frame read back:")
+                                        || line.starts_with(b"[bwm] desktop fills the scanout:")
+                                        || line.starts_with(b"[bwm] composited client frame"));
+                                if output.stream == "stdout" && (readiness || oracle || desktop) {
                                     if let Ok(text) = core::str::from_utf8(line) {
                                         print!("{}\n", text);
                                     }
@@ -442,6 +456,7 @@ impl Supervisor {
         let entry = &mut self.entries[index];
         if let Some(def) = entry.replacement.take() {
             entry.def = def;
+            entry.failures.clear();
         }
         if self.publish && entry.log.is_none() {
             entry.log = Some(Log::new(Path::new("/var/log"), &entry.def.name, &self.boot_id)
@@ -495,7 +510,21 @@ impl Supervisor {
     }
 
     /// Put an ended run into its next state by the policy's decision.
-    fn schedule(entry: &mut Entry, decision: AfterExit, now: u64, notices: &mut Notices) {
+    fn schedule(entry: &mut Entry, mut decision: AfterExit, now: u64, notices: &mut Notices) {
+        if let Some(limit) = entry.def.give_up {
+            if entry.failures.record(limit, now, entry.last_exit != "code:0") {
+                entry.next_ms = 0;
+                entry.quick_failures = decision.quick_failures;
+                entry.set(State::Failed, now);
+                notices.alert(&format!("[init] {} gave up: {} failures in {} s; stopped",
+                    entry.def.name, limit.failures, limit.window_ms / 1000));
+                return;
+            }
+            // Exponential backoff would put five immediate failures outside
+            // bwm's ten-second window; opted-in services use the base delay.
+            decision.delay_ms = services::BASE_DELAY_MS;
+            decision.crash_loop = false;
+        }
         entry.quick_failures = decision.quick_failures;
         if decision.quick_failures == 0 {
             entry.crash_loop_reported = false;
@@ -551,6 +580,7 @@ impl Supervisor {
                 self.notices.say(&format!("[init] {} stopped ({})", entry.def.name, entry.last_exit.replace(':', " ")));
                 entry.quick_failures = 0;
                 entry.crash_loop_reported = false;
+                entry.failures.clear();
                 entry.set(State::Stopped, now);
                 entry.answer(false, &text);
                 match entry.after_stop {
@@ -746,6 +776,7 @@ impl Supervisor {
                     entry.next_ms = 0;
                     entry.quick_failures = 0;
                     entry.crash_loop_reported = false;
+                    entry.failures.clear();
                     entry.set(State::Stopped, now);
                     self.notices.say(&format!("[init] {} stopped before its next start", name));
                     entry.answer(true, &format!("error {} was stopped before it started", name));
@@ -768,6 +799,7 @@ impl Supervisor {
                     entry.next_ms = 0;
                     entry.quick_failures = 0;
                     entry.crash_loop_reported = false;
+                    entry.failures.clear();
                     entry.set(State::Waiting, now);
                     match blocked(self) {
                         Some(unmet) => Ok(Some(format!("{} waits for {}", name, unmet))),
@@ -934,6 +966,11 @@ fn launch(def: &Service, account: &Account, capture: bool) -> Result<(i32, Vec<O
     if let Ok(term) = std::env::var("TERM") {
         environment.push(format!("TERM={}", term));
     }
+    if def.name == "bwm" {
+        if let Ok(path) = std::env::var("BREENIX_UI_CLOCK") {
+            environment.push(format!("BREENIX_UI_CLOCK={}", path));
+        }
+    }
     let environment: Vec<CString> =
         environment.into_iter().map(CString::new).collect::<Result<_, _>>().map_err(|_| "environment contains NUL")?;
     let path = words[0].as_bytes_with_nul().to_vec();
@@ -972,9 +1009,9 @@ fn launch(def: &Service, account: &Account, capture: bool) -> Result<(i32, Vec<O
                 if let Err(e) = libbreenix::io::dup2(output.fd(), target) { fail(format!("log output: {}", e), 126); }
             }
             drop(writers);
-            // Getty acquires its own terminal. Other services get EOF on
-            // stdin and write their output into the captured pipes.
-            if login_terminal(def).is_none() {
+            // Getty acquires its terminal; bwm retains the console input until
+            // the input-stream lane replaces it. Other daemons get EOF on stdin.
+            if login_terminal(def).is_none() && def.name != "bwm" {
                 let redirect = || -> Result<(), String> {
                     let input = OwnedFd::new(libbreenix::fs::open("/dev/null", libbreenix::fs::O_RDONLY)
                         .map_err(|e| format!("open service stdin: {}", e))?);
