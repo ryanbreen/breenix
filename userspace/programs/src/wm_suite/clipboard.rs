@@ -268,6 +268,81 @@ pub fn unprivileged() -> CaseResult {
     })
 }
 
+// W22: independent clients under one root compositor retain separate user data.
+pub fn per_user() -> CaseResult {
+    use libbreenix::{io, types::Fd};
+    fn send(fd: Fd) -> CaseResult {
+        check(io::write(fd, &[1]).map_err(|e| e.to_string())? == 1,
+            "clipboard peer synchronization write failed")
+    }
+    fn receive(fd: Fd) -> CaseResult {
+        let mut poll = [io::PollFd { fd: fd.raw() as i32, events: 1, revents: 0 }];
+        check(io::poll(&mut poll, 2000).map_err(|e| e.to_string())? == 1,
+            "clipboard peer synchronization timed out")?;
+        let mut byte = [0];
+        check(io::read(fd, &mut byte).map_err(|e| e.to_string())? == 1 && byte == [1],
+            "clipboard peer synchronization read failed")
+    }
+    fn no_notice(c: &mut Client) -> CaseResult {
+        c.snapshot()?;
+        check(!c.events.iter().any(|e| matches!(e.kind,
+            kind::CLIPBOARD_CHANGED | kind::CLIPBOARD_LOST)),
+            "another user's SET delivered a clipboard notice")
+    }
+    let (_d, mut root) = one()?;
+    let (root_serial, _) = clip_ok(&mut root, true, b"root private text")?;
+    root.command(CLIP_SUBSCRIBE, 1, 0)?;
+    root.clear()?;
+    let (ready_r, ready_w) = io::pipe()?;
+    let (changed_r, changed_w) = io::pipe()?;
+    let mut run = || -> i32 {
+        let result = (|| -> CaseResult {
+            check(unsafe { libbreenix::syscall::raw::syscall1(
+                libbreenix::syscall::nr::SETUID, 1000) } as i64 == 0,
+                "clipboard peer could not become uid 1000")?;
+            let mut user = Client::start(88)?;
+            let (_, text) = clip_ok(&mut user, false, &[])?;
+            check(text.is_empty(), "uid 1000 read root's clipboard text")?;
+            user.command(CLIP_SUBSCRIBE, 1, 0)?;
+            user.clear()?;
+            let (serial, _) = clip_ok(&mut user, true, b"user private text")?;
+            user.await_event("uid 1000 receives its own clipboard change", |e|
+                e.kind == kind::CLIPBOARD_CHANGED)?;
+            user.clear()?;
+            send(ready_w)?;
+            receive(changed_r)?;
+            let (got, text) = clip_ok(&mut user, false, &[])?;
+            check(got == serial && text == b"user private text",
+                "root replaced uid 1000 clipboard text or serial")?;
+            no_notice(&mut user)?;
+            Ok(())
+        })();
+        if result.is_ok() { 0 } else { 1 }
+    };
+    let pid = breenix_suite::suite::spawn(
+        &[(ready_w, ready_w), (changed_r, changed_r)],
+        breenix_suite::suite::Run::Call(&mut run),
+    )?;
+    let mut child = Child::from(pid);
+    receive(ready_r)?;
+    let (got, text) = clip_ok(&mut root, false, &[])?;
+    check(got == root_serial && text == b"root private text",
+        "uid 1000 replaced root clipboard or root read uid 1000 text")?;
+    no_notice(&mut root)?;
+    let (later, _) = clip_ok(&mut root, true, b"root replacement")?;
+    check(later > root_serial, "root clipboard serial did not advance")?;
+    root.await_event("root receives its own clipboard change", |e|
+        e.kind == kind::CLIPBOARD_CHANGED)?;
+    send(changed_w)?;
+    let mut status = None;
+    until(2000, "uid 1000 checked isolation after root SET", || {
+        status = child.status()?;
+        Ok(status.is_some())
+    })?;
+    for fd in [ready_r, ready_w, changed_r, changed_w] { io::close(fd)?; }
+    check(status == Some(0), "uid 1000 clipboard isolation check failed")
+}
+
 pub fn textfield_copy() -> CaseResult {
     let (mut d, mut a, mut b) = twin()?;
     clip_ok(&mut b, true, b"old clipboard")?;

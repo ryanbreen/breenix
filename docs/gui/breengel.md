@@ -988,14 +988,19 @@ E18 argument structures (W1-W4; reserved/output fields start at zero): <!-- clai
   An empty clipboard reports length zero and its current change serial. <!-- claim-lint:ok: Normative E18 contract allocation, W1-W13 and #2367; not implementation acceptance. -->
 - `ClipboardSubscribe`: `id:u64 @0`, `flags:u32 @8` (1 subscribe, 0 remove),
   reserved @12. Clipboard operations require the caller's own registered
-  window, including for root. Their authority is not compositor authority.
+  window, including for root. SET, GET and SUBSCRIBE reach only the clipboard
+  of the caller's effective uid within the current desktop claim (W22). Root
+  reaches root's own clipboard, with no exception. Their authority is not compositor authority.
   SET retains UTF-8 including embedded NUL, up to 16 MiB. It atomically
   replaces the text, assigns a later change serial, charges storage to the
-  setter's RLIMIT_AS, tells the previous live owner and notifies subscribers.
+  setter's RLIMIT_AS, tells the previous live owner and notifies subscribers
+  within that effective uid only. Text, change serials, ownership and notices
+  are isolated between users; another user's SET does not wake a subscriber.
   Text and its retained charge outlive the setter's window/process; replacement
-  or claim termination releases them. Claim termination clears the clipboard,
-  owner and subscriptions. Unsupported mime is EINVAL; oversize SET is E2BIG,
-  preserving the old text and serial. See [bwm clipboard](bwm.md#clipboard-w4).
+  or claim termination releases them. Claim termination clears every user's
+  clipboard, owner and subscriptions in the desktop. Copying between users
+  is not offered in E18 (W22). Unsupported mime is EINVAL; oversize SET is E2BIG,
+  preserving the old text and serial. See [bwm clipboard](bwm.md#clipboard-w4). <!-- claim-lint:ok: Normative per-euid clipboard contract adopted by W22 for #2387; not measured implementation acceptance. -->
 - `HitTest`: `x:i32 @0`, `y:i32 @4`, *out* `id:u64 @8`,
   `scene_version:u64 @16`, `flags:u32 @24` (zero), reserved @28.
   Root or the claimant queries the topmost visible content window, including
