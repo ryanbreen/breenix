@@ -253,6 +253,8 @@ def run(api, args):
                 if ended(current):
                     current = boot_command('boot', '--persistent')
                     console = connect()
+                if name == 'refusal-recovery':
+                    console.run('chmod 400 /etc/breenix/power-token')
                 for root, home, fixture in resources:
                     console.run('sh -c ' + shlex.quote('rm -f ' + fixture + '; svc reload'))
                     # Inspect the two fixture services after reload requested their removal.
