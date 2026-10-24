@@ -221,7 +221,32 @@
     {
       "id": "resting-state",
       "title": "Test boots preempt the persistent install and the machine returns to it",
-      "cases": []
+      "cases": [
+        {
+          "id": "clean-preempt",
+          "title": "A queued test preempts the persistent session only after a clean shutdown"
+        },
+        {
+          "id": "idle-return",
+          "title": "An empty test queue returns to the current persistent install without a caller boot"
+        },
+        {
+          "id": "one-shot",
+          "title": "A one-shot previous entry leaves current as the next persistent default"
+        },
+        {
+          "id": "reboot-return",
+          "title": "An authenticated reboot returns unaided to the current persistent install"
+        },
+        {
+          "id": "watchdog-return",
+          "title": "A watchdog hang returns unaided to current persistent SSH within 600 seconds"
+        },
+        {
+          "id": "returned-ssh",
+          "title": "The returned current persistent install answers one strict authenticated SSH check"
+        }
+      ]
     },
     {
       "id": "remote-upgrade",

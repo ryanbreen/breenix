@@ -291,6 +291,7 @@ class Driver:
                'entry': getattr(self.args, 'entry', None) if persistent(self.args) else None,
                'slotAction': getattr(self.args, 'slot_action', None) if persistent(self.args) else None,
                'adopted': bool(getattr(self.args, 'adopt', False)),
+               'resting': bool(getattr(self.args, 'resting', False)),
                'upgradeParent': getattr(self.args, 'upgrade_parent', None),
                'run': getattr(self.args, 'run', None) or None,
                'input': input_kind(self.args),
@@ -706,6 +707,8 @@ class Driver:
         self.post_code = baseline.get('postCode')
         self.progress_key = progress_key(baseline.get('bootProgress'))
         if baseline.get('power') != 'Off':
+            if getattr(self.args, 'resting', False):
+                raise Finish(m.EXIT_CANCELLED, 'an existing power-on is left for boot manager adoption')
             self.event('stray-power-on', power=baseline.get('power'))
             if not m.force_off_and_wait():
                 m.quarantine_lease(self.id, 'pre-flight power-off failed')
@@ -1270,6 +1273,9 @@ class Driver:
         run = m.read_json(self.dir / 'run.json', {})
         run.update(entry=entry, bootedCommit=commit)
         m.write_json(self.dir / 'run.json', run)
+        # A lab-selected previous entry is one-shot within this lease too.
+        # A later reboot or watchdog reset asks for current without swapping slots.
+        m.update_lease(self.id, entry='current')
         self.seen.add('manager-slot')
         self.event('slot-boot', observed_at=observed_at, entry=entry, commit=commit)
 
@@ -1654,9 +1660,14 @@ class Driver:
             receipt = m.read_json(self.dir / 'watchdog-ssh.json', {})
             if receipt:
                 passed = self.watchdog_verdict(receipt)
-                m.write_json(self.dir / 'watchdog-verdict.json', dict(
-                    passed=passed, commit=self.args.commit, boot=self.id, receipt=receipt))
-                self.event('watchdog-verdict', passed=passed)
+                verdict = dict(passed=passed, commit=self.args.commit, boot=self.id, receipt=receipt)
+                if m.read_json(self.dir / 'watchdog-verdict.json', {}) != verdict:
+                    m.write_json(self.dir / 'watchdog-verdict.json', verdict)
+                    self.event('watchdog-verdict', passed=passed)
+                if passed and receipt.get('cleanShutdown'):
+                    if m.now() - receipt['sshAt'] > 120:
+                        raise Finish(m.EXIT_SHORT, 'watchdog clean shutdown deadline passed')
+                    return
                 raise Finish(m.EXIT_DONE if passed else m.EXIT_SHORT, 'watchdog recovery observation complete')
             if m.now() - self.watchdog_trigger > 600:
                 m.write_json(self.dir / 'watchdog-verdict.json', dict(passed=False, commit=self.args.commit,
@@ -2145,6 +2156,7 @@ def main():
         p.add_argument('--run', action='append', help='a persistent boot logs in over SOL and runs this; repeatable')
         p.add_argument('--upgrade-parent', help='install whose S21 probe owns this verification')
         p.add_argument('--verify', action='store_true', help='a persistent boot that ends at the login prompt')
+        p.add_argument('--resting', action='store_true', help=argparse.SUPPRESS)
         p.add_argument('--adopt', action='store_true', help=argparse.SUPPRESS)
         p.add_argument('--nmi', action='store_true',
                        help='send the NMI and capture for 5 s before powering off a started kernel, finished or not')

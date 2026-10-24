@@ -687,6 +687,16 @@ class WatchdogRecovery(existing.StateTest):
         existing.m.write_text(d.dir / 'serial.txt', self.serial)
         self.receipt = dict(boot=d.id, commit=self.sha, case='feeder-hang', trigger=100, sshAt=450, bootId='4-5-6')
 
+    def test_clean_return_waits_for_authenticated_shutdown_after_watchdog_proof(self):
+        d = self.driver
+        existing.m.write_json(d.dir / 'watchdog-ssh.json', dict(self.receipt, cleanShutdown=True))
+        with patch.object(existing.m, 'now', return_value=451):
+            d.check_deadlines()
+        self.assertTrue(existing.m.read_json(d.dir / 'watchdog-verdict.json')['passed'])
+        with patch.object(existing.m, 'now', return_value=571):
+            with self.assertRaisesRegex(existing.boot.Finish, 'clean shutdown deadline'):
+                d.check_deadlines()
+
     def test_trigger_round_trip_retains_exact_driver_timestamp(self):
         d = self.driver
         stamp = 100.123456
