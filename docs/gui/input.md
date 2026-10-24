@@ -98,9 +98,10 @@ replacement, including physical devices. Each ABS capability includes its
 declared min/max; event values remain raw.
 
 Information exists from creation until removal. After the synthesized
-releases, removal publishes `SYN_DEVICE_REMOVED` (kind 0, code 5, value 0),
-then SYN_REPORT, naming that device. It is a core-only notification, never
-accepted from an injector. Bwm queries the first event of each device,
+releases, removal marks the closing SYN_REPORT with value 1
+(`syn::DEVICE_REMOVED`), naming that device. Ordinary SYN_REPORT has value
+zero. This preserves the release batch shape. The removal value is core-only,
+never accepted from an injector. Bwm queries the first event of each device,
 caches its capabilities/generation and discards that cache on removal.
 Events queued before removal can outlive the queryable device; releases
 still route by their held recipient and do not require a range query.

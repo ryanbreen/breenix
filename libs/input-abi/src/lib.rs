@@ -20,7 +20,8 @@ pub mod syn {
     pub const REPORT: u16 = 0;
     pub const DROPPED: u16 = 3;
     pub const SCENE: u16 = 4;
-    pub const DEVICE_REMOVED: u16 = 5;
+    /// Core-only value on a closing SYN_REPORT (W29).
+    pub const DEVICE_REMOVED: i32 = 1;
 }
 pub mod axis {
     pub const X: u16 = 0;
