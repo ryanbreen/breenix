@@ -101,6 +101,7 @@ class Lab:
             return lease.get('id') if lease.get('id') != source and lease.get('kind') == 'persistent' else None
         self.current = self.wait(candidate, 120, 'empty queue did not start a persistent boot')
         self.wait(lambda: 'bsshd: listening on ' in self.read(self.current, 'serial.txt'), 600, 'idle SSH never started')
+        self.boot_id(wait_for_network=True)
         self.probe.require(self.probe.ssh('id -u'), self.site['OPERATOR_UID'])
         run = json.loads(self.read(self.current, 'run.json'))
         serial = self.read(self.current, 'serial.txt')

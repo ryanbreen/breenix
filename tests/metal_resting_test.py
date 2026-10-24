@@ -1,5 +1,6 @@
 """Idle admission and one-shot lease regressions; no hardware is contacted."""
 import os
+import json
 import runpy
 from pathlib import Path
 import sys
@@ -98,9 +99,11 @@ class InitialSSHTest(unittest.TestCase):
     def lab(self, replies):
         cls = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/metal/server_resting.py'))['Lab']
         lab = cls.__new__(cls)
-        def require(result):
+        def require(result, output=None):
             if result.returncode:
                 raise ValueError('SSH failed')
+            if output is not None and result.stdout.strip() != output:
+                raise ValueError('unexpected SSH output')
         lab.probe = SimpleNamespace(ssh=Mock(side_effect=replies), require=require)
         return lab
 
@@ -110,6 +113,23 @@ class InitialSSHTest(unittest.TestCase):
         with patch('time.sleep'):
             self.assertEqual(lab.boot_id(wait_for_network=True), 'abc-def-012')
         self.assertEqual(lab.probe.ssh.call_count, 2)
+
+    def test_idle_return_waits_for_network_before_the_operator_identity_check(self):
+        lab = self.lab([SimpleNamespace(returncode=255, stderr='Connection refused'),
+                        SimpleNamespace(returncode=0, stdout='abc-def-012\n'),
+                        SimpleNamespace(returncode=0, stdout='1000\n')])
+        lab.site = {'OPERATOR_UID': '1000'}
+        lab.ended = lambda boot: True
+        lab.lease = lambda: dict(id='returned', kind='persistent')
+        def read(boot, name):
+            return {'serial.txt': 'bsshd: listening on port\nbreenix-manager: booting current ' + 'a' * 40,
+                    'ended': '1', 'run.json': json.dumps(dict(startedAt=2))}[name]
+        lab.read = read
+        with patch('time.sleep'):
+            receipt = lab.idle('test')
+        self.assertEqual(receipt['boot'], 'returned')
+        self.assertTrue(receipt['authenticated'])
+        self.assertEqual(lab.probe.ssh.call_count, 3)
 
     def test_authentication_failure_is_not_treated_as_network_readiness(self):
         lab = self.lab([SimpleNamespace(returncode=255, stderr='Permission denied (publickey).')])
