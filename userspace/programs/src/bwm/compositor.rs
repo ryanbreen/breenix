@@ -201,6 +201,30 @@ impl Compositor {
         Ok(())
     }
 
+    /// Present startup chrome without a window snapshot or client presentation receipt.
+    /// Real window composition starts only after the surviving clients are discovered.
+    pub fn present_startup_desktop(&mut self, pointer: Option<Pointer>) -> Result<(), FrameError> {
+        self.desktop.wait().map_err(|e| FrameError::Failed(format!("desktop drawing: errno {}", -e)))?;
+        let mut words = Vec::new();
+        self.encode(&mut words, &[[0, 0, self.width as i32, self.height as i32]], &[], &[], pointer);
+        let (r, submitted) = gpu::submit(self.context, &words);
+        if r != 0 {
+            return Err(FrameError::Failed(format!("startup drawing: errno {}", -r)));
+        }
+        let (r, completed) = gpu::wait(self.context, submitted.fence, RETRY_MS * 1_000_000);
+        if r != 0 || completed.status != abi::fence_status::OK {
+            return Err(FrameError::Failed(format!("startup drawing: errno {}, status {}", -r, completed.status)));
+        }
+        let (r, _) = gpu::present(self.context, self.scanout[self.next]);
+        if r != 0 {
+            return Err(FrameError::Failed(format!("startup present: errno {}", -r)));
+        }
+        self.next ^= 1;
+        self.sampled.clear();
+        self.full = true;
+        Ok(())
+    }
+
     /// Query window damage without reserving a scene snapshot. The scene descriptor also
     /// wakes for changes without damage, including bwm's own COMPOSITE.
     pub fn pending(&self) -> bool {

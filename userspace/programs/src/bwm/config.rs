@@ -295,9 +295,8 @@ pub(super) fn start() -> State {
     #[cfg(not(target_arch = "aarch64"))]
     hotkey_mgr.load_config("/etc/hotkeys.conf");
 
-    // Initial composite: the desktop alone (background, taskbar and app bar), before any
-    // client window is discovered. It is read back from the scanout and compared with the
-    // desktop target and the pointer's bitmap (`compositor`).
+    // Present and check the startup desktop without a window-composite receipt.
+    // Surviving clients are discovered below, before their first real composite.
     compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
     let first_pointer = Pointer {
         x: mouse_x,
@@ -305,7 +304,7 @@ pub(super) fn start() -> State {
         shape: active_cursor_shape,
     };
     let first = gpu
-        .compose(&[], Some(first_pointer), &[])
+        .present_startup_desktop(Some(first_pointer))
         .map_err(|e| CheckError::Failed(e.to_string()))
         .and_then(|()| gpu.check(0, &[], Some(first_pointer)));
     match first {
