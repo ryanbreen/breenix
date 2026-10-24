@@ -475,6 +475,18 @@ pub(super) struct FileOverride {
 }
 impl FileOverride {
     pub(super) fn new(path: &str, contents: &[u8]) -> Result<Self, String> {
+        // A killed case cannot run Drop. Configuration therefore lives beneath
+        // the child's own root, rather than mutating another case's defaults.
+        let isolated;
+        let path = if path.starts_with("/etc/") {
+            let root = format!("/tmp/wm-suite-config-{}", std::process::id());
+            std::fs::create_dir_all(format!("{root}/etc")).map_err(|e| e.to_string())?;
+            std::env::set_var("BREENIX_CONFIG_ROOT", &root);
+            isolated = format!("{root}{path}");
+            isolated.as_str()
+        } else {
+            path
+        };
         let previous = match std::fs::read(path) {
             Ok(b) => Some(b),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -493,6 +505,14 @@ impl Drop for FileOverride {
             let _ = std::fs::write(&self.path, b);
         } else {
             let _ = std::fs::remove_file(&self.path);
+        }
+        if self.path.starts_with("/tmp/wm-suite-config-") {
+            if let Some(etc) = std::path::Path::new(&self.path).parent() {
+                let _ = std::fs::remove_dir(etc);
+                if let Some(root) = etc.parent() {
+                    let _ = std::fs::remove_dir(root);
+                }
+            }
         }
     }
 }

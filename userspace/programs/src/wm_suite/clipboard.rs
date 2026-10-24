@@ -22,7 +22,7 @@ pub fn clip_replace() -> CaseResult {
         "clipboard replacement did not advance serial and replace exact text",
     )?;
     a.await_event("prior clipboard owner notified of replacement", |e| {
-        e.kind == kind::CLIPBOARD_LOST && e.serial == second
+        e.kind == kind::CLIPBOARD_LOST
     })?;
     Ok(())
 }
@@ -77,8 +77,13 @@ pub fn change_notice() -> CaseResult {
     b.clear()?;
     let (serial, _) = clip_ok(&mut a, true, b"notify")?;
     b.await_event("kernel clipboard change notice", |e| {
-        e.kind == kind::CLIPBOARD_CHANGED && e.serial == serial
+        e.kind == kind::CLIPBOARD_CHANGED
     })?;
+    let (notified_serial, notified_text) = clip_ok(&mut b, false, &[])?;
+    check(
+        notified_serial == serial && notified_text == b"notify",
+        "clipboard notice did not identify the changed text through GET",
+    )?;
     b.command(CLIP_SUBSCRIBE, 0, 0)?;
     b.clear()?;
     clip_ok(&mut a, true, b"unsubscribed")?;

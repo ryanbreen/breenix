@@ -419,21 +419,16 @@ pub fn cursor_stationary_shape() -> CaseResult {
 }
 pub fn clock_test_config() -> CaseResult {
     let mut clock = measure::Clock::new()?;
-    let _config = FileOverride::new("/etc/bwm.conf", b"clock=frozen\nfps=off\n")?;
+    let _config = FileOverride::new(
+        "/etc/bwm.conf",
+        b"font=/usr/share/fonts/DejaVuSansMono.ttf\nclock=frozen\nfps=off\n",
+    )?;
     let (mut d, mut c) = one()?;
     clock.step(1, 1_000_000_000)?;
     c.command(STEP, 1, 0)?;
     measure::acknowledged(1)?;
     let s = d.shown(&c)?;
-    super::scene::text(
-        &s,
-        b"00:00:01 UTC",
-        d.width as i32 - 11 * 18 - 8 * d.scale,
-        14 * d.scale - 16,
-        0xffb4b9c3,
-        0xff14161e,
-        d.scale,
-    )
+    super::scene::clock(&s, &d, "00:00:01 UTC")
 }
 pub fn no_fps_overlay() -> CaseResult {
     let mut clock = measure::Clock::new()?;
@@ -470,12 +465,29 @@ pub fn scene_identical() -> CaseResult {
     )?;
     let a = Client::start(11)?;
     d.client_ready(&a)?;
-    let mut b = Client::start_mode(23, flags::CHROMELESS | flags::IGNORE_CLOSE)?;
+    let mut b = Client::start_mode(
+        23,
+        flags::CHROMELESS | flags::IGNORE_CLOSE | flags::NEVER_READ,
+    )?;
     d.client_ready(&b)?;
     b.create_window(41, d.width, d.height, 3)?;
     d.client_ready(&b)?;
+    let before = d.shown(&b)?.serial();
     d.pointer(d.width as i32 - 1, d.height as i32 - 1, 0, 0)?;
-    let s = d.shown(&b)?;
+    let mut completed = None;
+    until(2000, "fixed scene cursor commit completed", || {
+        let s = Screen::read()?;
+        if s.serial() > before
+            && s.contains(b.id, b.frame_commit)
+            && s.pixel(d.width as i32 - 1, d.height as i32 - 1)? == 0xff000000
+        {
+            completed = Some(s);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    })?;
+    let s = completed.unwrap();
     check(
         listed()?.len() == 3 && b.info()?.x == 0 && b.info()?.y == 0,
         "fixed three-window scene has incorrect registry or placement",

@@ -222,7 +222,7 @@ failure, including a missing recorded fixture or production endpoint, is still
 failure; an executable inventory does not establish E18 acceptance.
 
 The two target tablet decoder cases need captured descriptors and reports under
-`/usr/share/breenix/input-fixtures/parallels.txt` and `vmware.txt`. Those recordings
+`/usr/share/breenix/input-fixtures/parallels.txt` and `vmware.txt`. The image builder installs them from `testdata/input/`. Those recordings
 are not available in this change. Missing recordings are harness blockers; they
 must be supplied before lane acceptance, not generated from another target's
 layout or replaced by synthetic reports.
@@ -339,3 +339,11 @@ The text-field clipboard cases embed the real libbui TextField in wm-client_test
 and pass bwm-delivered Ctrl+C/Ctrl+V into its production key handler. The fixture
 supplies selection state and reads field text; it performs no clipboard operation
 on the widget's behalf. Missing production widget integration therefore fails.
+
+
+Case configuration files live in a per-process guest configuration root selected
+by BREENIX_CONFIG_ROOT. Killing a timed-out case cannot alter the next case's
+bwm.conf or hotkeys.conf. Clipboard notice delivery ids and stored change serials
+are distinct under W4: the case waits for the notice kind, then checks GET's
+change serial and bytes. The fixed scene waits for a later completed pointer
+frame before evaluating its formula and hash.

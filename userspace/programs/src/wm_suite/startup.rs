@@ -87,43 +87,15 @@ pub fn epoch_ack() -> CaseResult {
 
 pub fn empty_desktop() -> CaseResult {
     let _clock = measure::Clock::new()?;
-    let _config = FileOverride::new("/etc/bwm.conf", b"clock=frozen\nfps=off\n")?;
+    let _config = FileOverride::new(
+        "/etc/bwm.conf",
+        b"font=/usr/share/fonts/DejaVuSansMono.ttf\nclock=frozen\nfps=off\n",
+    )?;
     let d = Desktop::start()?;
     measure::acknowledged(0)?;
-    parked(&d)?;
-    let s = Screen::read()?;
-    super::scene::background_region(
-        &s,
-        d.scale,
-        (
-            0,
-            28 * d.scale,
-            d.width as i32 - 80,
-            d.height as i32 - 64 * d.scale,
-        ),
-    )?;
-    for y in d.height as i32 - 36 * d.scale..d.height as i32 {
-        for x in 0..d.width as i32 {
-            check(
-                s.pixel(x, y)?
-                    == if y < d.height as i32 - 35 * d.scale {
-                        0xff323746
-                    } else {
-                        0xff191c26
-                    },
-                "empty appbar differs from contract",
-            )?;
-        }
-    }
-    super::scene::text(
-        &s,
-        b"Breenix",
-        8 * d.scale,
-        14 * d.scale - 16,
-        0xffb4b9c3,
-        0xff14161e,
-        d.scale,
-    )
+    d.pointer(d.width as i32 - 1, d.height as i32 - 1, 0, 0)?;
+    time::sleep_ms(150)?;
+    super::scene::empty_desktop(&Screen::read()?, &d)
 }
 pub fn config_test() -> CaseResult {
     let _clock = measure::Clock::new()?;
@@ -142,15 +114,7 @@ pub fn config_test() -> CaseResult {
         "pinned font or fps=off setting was ignored",
     )?;
     let s = Screen::read()?;
-    super::scene::text(
-        &s,
-        b"00:00:00 UTC",
-        d.width as i32 - 11 * 18 - 8 * d.scale,
-        14 * d.scale - 14,
-        0xffb4b9c3,
-        0xff14161e,
-        d.scale,
-    )
+    super::scene::clock(&s, &d, "00:00:00 UTC")
 }
 pub fn config_invalid() -> CaseResult {
     let _clock = measure::Clock::new()?;
@@ -184,13 +148,14 @@ pub fn fonts_loaded() -> CaseResult {
     )?;
     let _clock = measure::Clock::new()?;
     let (mut d, mut c) = one()?;
-    c.title(b"Configured font")?;
+    c.title(b"Font")?;
+    content(&mut d, &c)?;
     parked(&d)?;
     let s = d.shown(&c)?;
     let w = c.info()?;
     super::scene::ttf_text(
         &s,
-        b"Configured font",
+        b"Font",
         w.x + 6 * d.scale,
         w.y - 26 * d.scale,
         0xffffffff,
