@@ -158,6 +158,12 @@ periodic timer fired, each in microseconds after the case armed it, the programm
 `every` and how late an expiry may come, `limit`; it carries at most 32 times. None of the
 records is a result: the CASE line that follows decides the case.
 
+Host input and SSH requests are transport, separate from the twelve measurement
+records. Their per-case budget is 64 requests; the window-manager coalescing
+fixture needs 63 for positioning, press, sixty motions and release. Host key and
+pointer sequence numbers reserve a disjoint 64-number block per case. Exhausting
+one budget does not consume the other. <!-- claim-lint:ok: Normative transport budget; libs/libbreenix/src/suite.rs keeps RECORDS_PER_CASE=12 and HOST_REQUESTS_PER_CASE=64. -->
+
 <!-- claim-lint:ok: libs/libbreenix/src/suite.rs sets RECORDS_PER_CASE to 12 and emit_record drops records after that cap. -->
 They are written like the other records, one write starting with a newline. A case prints
 them through `value(name, number, unit, expect)`, `wait_for(ms, result)` and
