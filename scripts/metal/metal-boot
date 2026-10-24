@@ -1551,12 +1551,13 @@ class Driver:
         at = receipt.get('sshAt', 0)
         after = serial.split('[watchdog-fault] trigger ', 1)[-1]
         before = serial.split('[watchdog-fault] trigger ', 1)[0]
-        forbidden = {'power-on', 'power-off', 'power-off-observed', 'nmi', 'nmi-capture',
-                     'console-gap', 'driver-error', 'persistent-verification-error'}
+        forbidden = {'power-on', 'power-off', 'power-off-observed', 'nmi', 'nmi-capture-done',
+                     'console-gap-start', 'driver-error', 'persistent-verification-error'}
         assisted = any(e.get('event') in forbidden and trigger <= e['t'] <= at for e in events)
         ids = re.findall(r'\[init\] log boot-id=([a-f0-9-]+)', serial)
         return (receipt.get('boot') == self.id and receipt.get('commit') == self.args.commit
                 and receipt.get('case') == self.args.inject.removeprefix('watchdog-')
+                and receipt.get('trigger') == trigger
                 and 0 < at - trigger <= 600 and at <= m.now() + 1
                 and run.get('toolsCommit') == self.args.commit
                 and run.get('watchdogRecoveredCommit') == self.args.commit

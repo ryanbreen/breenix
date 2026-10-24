@@ -5,11 +5,13 @@
 //! The transport accepts only S19's four application commands.
 use core::sync::atomic::{AtomicU32, Ordering};
 use x86_64::instructions::port::Port;
+#[path = "watchdog_round.rs"]
+mod policy;
 
 static PORT: AtomicU32 = AtomicU32::new(0);
 const TIMEOUT_MS: u64 = 5_000;
 const PERIOD_MS: u64 = 20_000;
-const TIMER: [u8; 6] = [4, 1, 0, 0x10, 0xb0, 4]; // SMS/OS, reset, no pretimeout, 1200 deciseconds
+use policy::TIMER;
 
 pub fn discover(rsdp: Option<u64>, offset: u64) {
     if let Some((data, status)) = crate::arch_impl::x86_64::acpi::read_kcs_ports(rsdp, offset) {
@@ -40,7 +42,8 @@ impl Kcs {
         if status & 1 != 0 { unsafe { self.data.read(); } }
     }
     fn request(&mut self, command: u8, data: &[u8]) -> Result<([u8; 32], usize), &'static str> {
-        if !matches!((command, data.len()), (1, 0) | (0x22, 0) | (0x24, 6) | (0x25, 0)) {
+        if !matches!((command, data.len()), (1, 0) | (0x22, 0) | (0x25, 0))
+            && !(command == 0x24 && data == TIMER) {
             return Err("command outside watchdog scope");
         }
         let deadline = now().saturating_add(TIMEOUT_MS);
@@ -123,31 +126,51 @@ fn health() -> Result<(), &'static str> {
     }
     Ok(())
 }
+impl policy::Transport for Kcs {
+    fn get(&mut self) -> Result<[u8; 8], &'static str> { Kcs::get(self) }
+    fn set(&mut self) -> Result<(), &'static str> { self.request(0x24, &TIMER).map(|_| ()) }
+    fn reset(&mut self) -> Result<(), &'static str> { self.request(0x22, &[]).map(|_| ()) }
+}
 fn run(port: u32) -> Result<(), &'static str> {
     let mut kcs = Kcs::new(port);
-    let (_, length) = kcs.request(1, &[])?;
-    if length < 14 { return Err("device ID length"); }
-    let previous = kcs.get()?;
-    crate::serial_println!("[watchdog] previous-expired={}", u8::from(previous[3] & 0x10 != 0));
-    health()?;
-    kcs.request(0x24, &TIMER)?;
-    kcs.request(0x22, &[])?;
-    let timer = kcs.get()?;
-    if timer[0] & 0x47 != 0x44 || timer[1] != 1 || timer[2] != 0 || timer[4..6] != [0xb0, 4] {
-        return Err("watchdog settings readback");
-    }
-    crate::serial_println!("[watchdog] armed seconds=120 action=hard-reset health=root-io,root-inode");
+    let mut identified = false;
+    let mut announced = false;
     let mut rounds = 0u64;
     loop {
+        let result = (|| {
+            if !identified {
+                let (_, length) = kcs.request(1, &[])?;
+                if length < 14 { return Err("device ID length"); }
+                let previous = kcs.get()?;
+                crate::serial_println!("[watchdog] previous-expired={}", u8::from(previous[3] & 0x10 != 0));
+                identified = true;
+            }
+            policy::feed(&mut kcs, health)
+        })();
+        match result {
+            Ok(rearmed) => {
+                if rearmed || !announced {
+                    crate::serial_println!("[watchdog] armed seconds=120 action=hard-reset health=root-io,root-inode");
+                    announced = true;
+                }
+                rounds += 1;
+                if rounds % 3 == 0 { crate::serial_println!("[watchdog] healthy feeds={}", rounds); }
+            }
+            Err(reason) => crate::serial_println!("[watchdog] round failed; retrying: {}", reason),
+        }
+        // A transient failure gets another health round; a blocked or persistently
+        // failing round still cannot keep an armed timer alive.
         wait(PERIOD_MS)?;
-        health()?;
-        kcs.request(0x22, &[])?;
-        rounds += 1;
-        // The fault cases require this receipt after six feed rounds.
-        if rounds % 6 == 0 { crate::serial_println!("[watchdog] healthy feeds={}", rounds); }
     }
 }
 pub fn start() {
+    // Supervised test boots retain the driver's silence/NMI capture path.
+    // Only the persistent target and explicit watchdog fault builds arm KCS.
+    #[cfg(not(feature = "watchdog_fault_inject"))]
+    if !crate::boot::intent::get().is_some_and(|bytes| bytes == b"persistent\n") {
+        crate::serial_println!("[watchdog] disabled: supervised boot");
+        return;
+    }
     #[cfg(feature = "watchdog_fault_inject")]
     if crate::task::kthread::kthread_run_on_cpu(|| {
         if let Err(reason) = fault::run() {
@@ -160,7 +183,7 @@ pub fn start() {
     if port == 0 { return; }
     if crate::task::kthread::kthread_run_on_cpu(move || {
         if let Err(reason) = run(port) {
-            // No retry feeding a failed health round. An already armed timer must expire.
+            // Losing the thread context prevents further rounds.
             crate::serial_println!("[watchdog] stopped: {}", reason);
         }
     }, "watchdog", 0).is_err() {

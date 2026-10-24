@@ -127,6 +127,20 @@ class HostServerScore(unittest.TestCase):
         records['cases'][-1]['result'] = 'FAIL'
         with self.assertRaises(ValueError): score()
 
+    def test_watchdog_requires_distinct_boots_for_the_named_cases(self):
+        records = dict(self.records, milestone='server/watchdog',
+                       cases=[dict(id='watchdog/' + name, result='PASS') for name, _ in host['WATCHDOG']],
+                       faultBoots=[dict(passed=True, commit=self.sha, boot=str(i), receipt=dict(case=name))
+                                   for i, (name, _) in enumerate(host['WATCHDOG'])])
+        def score():
+            return host['score'](self.manifest, self.path, records, self.serial, self.boot, self.sha, [])
+        self.assertTrue(score().startswith('PASS: server/watchdog'))
+        records['faultBoots'][1]['receipt']['case'] = 'feeder-hang'
+        with self.assertRaises(ValueError): score()
+        records['faultBoots'][1]['receipt']['case'] = 'health-hang'
+        records['faultBoots'][1]['boot'] = '0'
+        with self.assertRaises(ValueError): score()
+
     def test_cleanup_restores_exact_keys_without_guest_mktemp(self):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
@@ -635,7 +649,7 @@ class WatchdogRecovery(existing.StateTest):
                        '[storage] root partition: system synthetic\n[watchdog] previous-expired=1\n'
                        '[init] log boot-id=4-5-6\n')
         existing.m.write_text(d.dir / 'serial.txt', self.serial)
-        self.receipt = dict(boot=d.id, commit=self.sha, case='feeder-hang', sshAt=450, bootId='4-5-6')
+        self.receipt = dict(boot=d.id, commit=self.sha, case='feeder-hang', trigger=100, sshAt=450, bootId='4-5-6')
 
     def test_late_watchdog_evidence_is_reannounced_to_the_importer(self):
         directory = self.driver.dir
@@ -657,11 +671,12 @@ class WatchdogRecovery(existing.StateTest):
             self.assertFalse(d.watchdog_verdict(self.receipt))
         existing.m.write_text(d.dir / 'serial.txt', self.serial)
         self.assertFalse(d.watchdog_verdict(dict(self.receipt, sshAt=701)))
+        self.assertFalse(d.watchdog_verdict(dict(self.receipt, trigger=101)))
         self.assertFalse(d.watchdog_verdict(dict(self.receipt, bootId='1-2-3')))
 
     def test_lab_intervention_cannot_pass_and_observation_sends_no_power(self):
         d = self.driver
-        for event in ('power-on', 'power-off', 'nmi', 'console-gap'):
+        for event in ('power-on', 'power-off', 'nmi', 'console-gap-start', 'nmi-capture-done'):
             existing.m.write_text(d.dir / 'events.jsonl', json.dumps(dict(event=event, t=200)) + '\n')
             self.assertFalse(d.watchdog_verdict(self.receipt))
         with patch.object(existing.m, 'rf') as power, patch.object(existing.m, 'now', return_value=300):

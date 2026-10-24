@@ -195,7 +195,9 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
         raise ValueError('time needs a completed synchronization boot at this commit')
     if category == 'watchdog':
         evidence = records.get('faultBoots', [])
-        if len(evidence) != len(WATCHDOG) or any(v.get('passed') is not True or v.get('commit') != sha for v in evidence):
+        if ([v.get('receipt', {}).get('case') for v in evidence] != [name for name, _ in WATCHDOG]
+                or len({v.get('boot') for v in evidence}) != len(WATCHDOG)
+                or any(v.get('passed') is not True or v.get('commit') != sha for v in evidence)):
             raise ValueError('missing unaided watchdog recovery evidence')
     if records.get('consoleGaps'):
         raise ValueError('console capture has a gap')
@@ -1682,6 +1684,9 @@ class Watchdog:
 
     def run_case(self, name):
         if not self.stopped:
+            lease = self.remote('cat', '/var/lib/breenix-metal/lease.json')
+            if lease.returncode or json.loads(lease.stdout).get('id') != self.base:
+                raise ValueError('baseline lost the machine lease before watchdog handoff')
             self.console.logout()
             self.stop(self.base)
             self.stopped = True
@@ -1728,7 +1733,12 @@ class Watchdog:
             if time.monotonic() > until: raise ValueError('fault observation did not close')
             time.sleep(2)
         verdict = json.loads(self.read(boot, 'watchdog-verdict.json') or '{}')
-        if verdict.get('passed') is not True: raise ValueError('watchdog recovery evidence failed: ' + str(verdict))
+        if (verdict.get('passed') is not True or verdict.get('boot') != boot
+                or verdict.get('commit') != self.sha or verdict.get('receipt') != receipt):
+            raise ValueError('watchdog recovery evidence failed: ' + str(verdict))
+        lease = self.remote('cat', '/var/lib/breenix-metal/lease.json')
+        if lease.returncode == 0 and json.loads(lease.stdout).get('id') == boot:
+            raise ValueError('completed watchdog fault boot still holds the machine lease')
 
     def cleanup(self):
         for boot in self.boots:
@@ -1743,7 +1753,7 @@ def main():
     parser.add_argument('--prepare-logs', action='store_true', help='Write the log whose bytes the next boot must retain')
     parser.add_argument('--boot')
     parser.add_argument('--sha')
-    parser.add_argument('--branch', default='main', help='Source branch for watchdog fault images (default: main)')
+    parser.add_argument('--branch', help='Pushed source branch for watchdog fault images (required for watchdog)')
     parser.add_argument('--milestone', default='server/ssh-keys', choices=list(MILESTONES))
     args = parser.parse_args()
     if args.check_manifest:
@@ -1752,6 +1762,7 @@ def main():
     if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot or '') or not re.fullmatch(r'[a-f0-9]{40}', args.sha or ''):
         parser.error('--boot ID and --sha full commit required')
     category = MILESTONES[args.milestone]
+    if category == 'watchdog' and not args.branch: parser.error('--branch required for watchdog fault images')
     suite = SUITES[category]
     cases = CATEGORIES[category]
     runner = runpy.run_path(str(Path(__file__).with_name('metal-run')))

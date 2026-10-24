@@ -1350,7 +1350,11 @@ Device ID, Get Watchdog Timer, Set Watchdog Timer and Reset Watchdog Timer only
 sections 9 and 27, Appendix C3). The SMS/OS timer is 120 seconds, action hard
 reset, no pretimeout. Configuration and running state are read back. Each
 20-second round must complete uncached root superblock/group reads and root
-inode validation before feeding; a failed or blocked round stops feeds. The
+inode validation before feeding. A failed round retries without feeding; a blocked
+round or repeated failures let the timer expire. Timer readback detects lost
+configuration after a BMC restart and rearms only after successful health I/O.
+Ordinary supervised boots do not arm KCS, retaining the driver’s silence/NMI capture;
+the persistent target and explicit watchdog fault builds enable it. The
 BMC's expiry flag is reported before configuration clears it. No interrupt or
 syscall path feeds the timer.
 
