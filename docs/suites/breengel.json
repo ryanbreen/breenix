@@ -1674,7 +1674,7 @@
         },
         {
           "id": "boot-ribbon",
-          "title": "The boot ribbon stays retired after display give-back and reclaimed text rows match the scanout (B51)"
+          "title": "The active ribbon detects point 15, then retires above a fixed console grid (B52/B53)"
         },
         {
           "id": "boundary-notice",

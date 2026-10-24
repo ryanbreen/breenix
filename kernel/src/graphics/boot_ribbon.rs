@@ -91,6 +91,7 @@ mod tests {
     static TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn reset() {
+        select_mode("tests");
         RETIRED.store(false, Ordering::Release);
         for reached in &REACHED { reached.store(false, Ordering::Release); }
         TAIL.store(0, Ordering::Release);
@@ -108,6 +109,32 @@ mod tests {
         assert!(!is_booting());
         assert!(!REACHED[0].load(Ordering::Acquire));
         assert!(reached().last().copied().unwrap());
+        assert!(!is_booting());
+    }
+
+    #[test]
+    fn shell_prompt_retires_without_a_trailing_newline() {
+        let _guard = TEST.lock().unwrap();
+        reset();
+        select_mode("shell");
+        for b in b"[init] shell ready\nbsh /" { byte(*b); }
+        drain();
+        assert!(is_booting());
+        for b in b">" { byte(*b); }
+        drain();
+        assert!(!is_booting());
+    }
+
+    #[test]
+    fn production_mode_ends_at_its_own_final_stage() {
+        let _guard = TEST.lock().unwrap();
+        reset();
+        select_mode("probe");
+        for b in b"PROBE udp-loopback OK\n" { byte(*b); }
+        drain();
+        assert!(is_booting());
+        for b in b"PROBE framebuffer OK\n" { byte(*b); }
+        drain();
         assert!(!is_booting());
     }
 

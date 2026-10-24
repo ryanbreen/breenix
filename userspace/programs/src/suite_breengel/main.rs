@@ -175,6 +175,7 @@ static SUITE: Suite = suite("breengel", "BreenGL graphics library", &[
 ]).gui();
 
 fn main() {
+    show::prepare_boot_ribbon();
     breenix_suite::suite::set_painter(Box::new(stage_painter::StagePainter::new()));
     if let Err(error) = prepare_raster_audit() {
         std::env::set_var("BREENIX_RASTER_AUDIT_ERROR",error);

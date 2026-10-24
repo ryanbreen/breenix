@@ -132,14 +132,15 @@ pixels; the two extra pixel rows at the bottom of each cell are the cursor band.
   background colour.
 - The logo scale `k` (pixels per design unit, section 6) follows `S`: 2 for sizes 16 and 20, 3 for 24, 4 for
   32.
-<!-- claim-lint:ok: docs/gui/breengel.md section 23.7 records the normative B51 lifecycle. -->
+<!-- claim-lint:ok: Normative B52/B53 lifecycle, docs/gui/breengel.md section 23.7. -->
 - On ARM64, a display of `1280s` by `800s` pixels for a whole scale `s` shows the boot stage
   ribbon (docs/gui/breengel.md section 23.7, B51) in the band from `x = 16s` to `1264s` and
-  `y = 752s` to `768s`, only from the first console frame until the last boot-path stage is
+  `y = 752s` to `768s`, only from the first console frame until the running mode's last boot-path stage is
   reached or a display owner takes the screen. It never returns during that boot. While
-  active, the grid, `vcs` and `TIOCGWINSZ` end at the last whole text row above `752s`.
-  Retirement reclaims the full-height grid and repaints the screen. The read-back check
-  (section 8) expects the band while active and the reclaimed text rows afterward.
+  booting, the grid, `vcs` and `TIOCGWINSZ` end at the last whole text row above `752s`.
+  Under B52 the grid is sized once and stays fixed for the boot; retirement repaints the
+  band with console background, with no row reclamation, resize or SIGWINCH. The read-back
+  check (section 8) expects the ribbon while active and background afterward (B52/B53).
 
 
 | Display | Where | `S` | Cell | Grid | `k` |

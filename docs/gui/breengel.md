@@ -1579,11 +1579,17 @@ x=16+floor(1248i/m) and ends at x=16+floor(1248(i+1)/m)-2, leaving a two-pixel g
 Reached is pass green, unreached is pending outline colour. A stage lights only when its actual producer
 prints the stage marker; loader announcements never light a segment. The serial stage lines remain the record.
 This boot ribbon belongs only to the kernel console, not the run stage.
-Ruling B51: it shows from the first console frame until the last boot-path stage is reached
+Rulings B51-B53: it shows from the first console frame until the running boot mode's last
+stage in docs/boot-path.json is reached
 or a display owner takes the screen, whichever comes first. Retirement lasts for the rest of
 that boot, including console give-back after a suite or window manager. The console reserves
-whole text rows above the band's top while it shows, and reclaims them with a full repaint
-when it retires. Its read-back expects the band only while active and text afterward.
+whole text rows above the band's top once at boot and keeps that fixed grid throughout
+the boot, with no reclamation or SIGWINCH (B52). Retirement repaints the band with console
+background. Its read-back expects the ribbon while active and background afterward.
+Before the suite takes the display, panel/boot-ribbon reads the active console back,
+checks the reserved grid and every band pixel, detects point 15, then requires a clean
+read-back after disarming it. After give-back it checks the blank band and the console
+font oracle outside it (B53); live console text need not stay identical across give-back.
 Each segment's last two pixels are the background colour. Point 15 drops the first reached
 stage only while the ribbon is active; a retired ribbon does not consume that point.
 
