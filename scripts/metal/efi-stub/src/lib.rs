@@ -11,3 +11,5 @@ pub mod http;
 pub mod uefi;
 
 pub mod slot_transaction;
+
+pub mod slot_store;

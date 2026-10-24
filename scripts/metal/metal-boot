@@ -197,6 +197,10 @@ class Driver:
         self.run_verified = 0
         self.run_failure = None
         self.persist = None
+        self.slot_userlands = {}
+        self.slot_userlands_complete = False
+        self.slot_refs_sent = False
+        self.slot_confirmations = set()
         self.last_serial = None
         self.first_text = False
         self.kernel_started = None
@@ -280,6 +284,7 @@ class Driver:
                'entry': getattr(self.args, 'entry', None) if persistent(self.args) else None,
                'slotAction': getattr(self.args, 'slot_action', None) if persistent(self.args) else None,
                'adopted': bool(getattr(self.args, 'adopt', False)),
+               'upgradeParent': getattr(self.args, 'upgrade_parent', None),
                'run': getattr(self.args, 'run', None) or None,
                'input': input_kind(self.args),
                'session': session(self.args),
@@ -296,6 +301,7 @@ class Driver:
     def holder(self):
         """The lease holder record; a persistent boot's names the entry and slot action the manager is told."""
         holder = {'id': self.id, 'unit': self.unit, 'mode': self.args.mode, 'payload': self.args.payload,
+                  'upgradeParent': getattr(self.args, 'upgrade_parent', None),
                   'kind': 'persistent' if persistent(self.args) else 'console-session' if session(self.args) else 'boot'}
         if persistent(self.args):
             holder.update(entry=getattr(self.args, 'entry', None) or 'current',
@@ -595,7 +601,12 @@ class Driver:
         scratch = self.stage / 'persist'
         scratch.mkdir(parents=True, exist_ok=True)
         slot = scratch / 'next.img'
-        metal_persist.slot_image(slot, esp_files, the_layout, scratch, self.id)
+        slot_files = dict(esp_files)
+        if self.args.inject == 'upgrade-no-ssh':
+            broken = scratch / 'broken-loader.efi'
+            broken.write_bytes(b'deliberately invalid verification bootloader\n')
+            slot_files['efi/boot/bootx64.efi'] = broken
+        metal_persist.slot_image(slot, slot_files, the_layout, scratch, self.id)
         note = scratch / 'next.txt'
         note.write_text(metal_persist.slot_note(self.args.commit, self.id))
         manager_files = {'efi/breenix/bootmgr.efi': manager, 'efi/boot/bootx64.efi': manager}
@@ -604,7 +615,8 @@ class Driver:
         # the request is done.
         facts, suite_files = metal_disk.stage(self.dir, inputs, self.id, self.args.commit, self.site, build,
                                               mode='default', the_layout=the_layout,
-                                              operator=metal_root.operator_account(self.site))
+                                              operator=metal_root.operator_account(self.site),
+                                              no_ssh=self.args.inject == 'upgrade-service-down')
         self.delivery['diskRoot'] = facts
         files = dict(esp_files)
         files.update(suite_files)
@@ -1127,6 +1139,7 @@ class Driver:
                 and not session(self.args)
                 and (not getattr(self.args, 'run', None) or self.run_done)
                 and (self.args.mode != 'console' or self.console_done)
+                and (not getattr(self.args, 'upgrade_parent', None) or self.ssh_verified())
                 and self.fatal_at is None and not self.completion_reported):
             self.completion_reported = True
             self.event('final-marker', observed_at=observed_at, seconds=seconds)
@@ -1141,6 +1154,22 @@ class Driver:
 
     def on_persist_line(self, line, observed_at):
         """The install boot's request and migration (README, "Install and upgrade")."""
+        if self.args.mode == 'persistent-install':
+            if found := re.fullmatch(r'metal-stub: slot userland: (CURRENT|PREVIOUS|NEXT) ([A-Za-z0-9-]{1,64})', line):
+                if found[1] in self.slot_userlands:
+                    raise Finish(m.EXIT_SHORT, 'duplicate recovered slot reference')
+                self.slot_userlands[found[1]] = found[2]
+            if line == 'metal-stub: slot userlands complete':
+                if set(self.slot_userlands) != {'CURRENT', 'PREVIOUS', 'NEXT'}:
+                    raise Finish(m.EXIT_SHORT, 'incomplete recovered slot references')
+                self.slot_userlands_complete = True
+                self.event('recovered-userlands', references=self.slot_userlands)
+            if '[persistent] recovered slot references needed' in line and not self.slot_refs_sent:
+                if not self.slot_userlands_complete:
+                    raise Finish(m.EXIT_SHORT, 'installer has no recovered slot references')
+                refs = 'BREENIX-SLOTS-1 ' + ' '.join(self.slot_userlands[k] for k in ('CURRENT', 'PREVIOUS', 'NEXT'))
+                self.console_send(refs, paced=True)
+                self.slot_refs_sent = True
         if self.persist and PERSIST_DONE in line and 'persist-written' not in self.seen:
             self.seen.add('persist-written')
             slot = self.persist['slot']
@@ -1163,13 +1192,13 @@ class Driver:
     def on_slot_line(self, line, observed_at):
         """The manager's slot commit or rollback, read from the EFI system partition after it renamed the slots."""
         found = re.search(r'breenix-manager: slot (commit|rollback): current ([0-9a-f]{40}), previous ([0-9a-f]{40}|empty)', line)
-        if not found:
+        if not found or found.group(0) in self.slot_confirmations:
             return
         record = metal_persist.read_disk()
         slots = dict(record.get('slots') or {})
         if found.group(1) == 'commit' and slots.get('next', {}).get('commit') == found.group(2):
             slots['previous'], slots['current'] = slots.get('current'), slots.pop('next')
-        elif found.group(1) == 'rollback' and (slots.get('current') or {}).get('commit') != found.group(2):
+        elif found.group(1) == 'rollback':
             slots['current'], slots['previous'] = slots.get('previous'), slots.get('current')
         if (slots.get('current') or {}).get('commit') != found.group(2):
             self.event('slot-record-differs', observed_at=observed_at, current=found.group(2))
@@ -1178,6 +1207,7 @@ class Driver:
         if previous != found.group(3):
             raise Finish(m.EXIT_SHORT, "the manager's previous slot differs from its record")
         metal_persist.update_disk(slots={k: v for k, v in slots.items() if v})
+        self.slot_confirmations.add(found.group(0))
         # Consume a successful action before the next manager query can request another swap.
         with m.locked('lease'):
             lease = m.read_lease()
@@ -1514,6 +1544,10 @@ class Driver:
     def persistent_deadlines(self):
         """A persistent boot: POST until the manager starts, then silence bounds until the kernel; a session has no
         deadline after that, a check boot its mode deadline."""
+        if getattr(self.args, 'upgrade_parent', None):
+            self.maybe_complete(m.now(), self.since_power())
+            if self.t0 is not None and self.since_power() >= 600:
+                raise Finish(m.EXIT_SHORT, 'S21 SSH verification deadline passed')
         if self.lease_ceiling and m.now() >= self.lease_ceiling:
             raise Finish(m.EXIT_HUNG, 'the attempt ceiling passed', hung=True)
         if self.fatal_at and m.now() - self.fatal_at >= FATAL_GRACE_SECONDS:
@@ -1859,7 +1893,7 @@ class Driver:
                 self.event('persistent-verification-error', error=error.__class__.__name__)
                 m.release_lease(self.id)
                 return m.EXIT_SHORT
-        self.cleanup(status)
+        self.cleanup(status, keep_lease=bool(getattr(self.args, 'upgrade_parent', None)))
         return status
 
     def adopt(self):
@@ -1872,21 +1906,65 @@ class Driver:
         self.event('lease-adopted')
         threading.Thread(target=self.heartbeat, daemon=True).start()
 
+    def ssh_verified(self):
+        receipt = m.read_json(self.dir / 'ssh-verification.json', {}) or {}
+        if receipt.get('boot') != self.id or receipt.get('powerOn') != round(self.t0, 3):
+            return False
+        if receipt.get('passed') is not True or any(receipt.get(field) is not True for field in
+                                                  ('authenticated', 'strictHostKey', 'servicesStarted')):
+            raise Finish(m.EXIT_SHORT, 'S21 SSH probe failed')
+        if receipt.get('generation') != getattr(self.args, 'expected_generation', None):
+            raise Finish(m.EXIT_SHORT, 'SSH answered from a different userland generation')
+        if not self.t0 < receipt.get('completedAt', 0) <= self.t0 + 600:
+            raise Finish(m.EXIT_SHORT, 'S21 SSH probe finished outside its deadline')
+        return True
+
     def continue_verification(self):
-        """The install's second boot, under the same lease: the manager commits the new slot and boots it, and the
-        boot ends at the login prompt with the persistent stages (README, "Install and upgrade")."""
-        boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
-        while m.boot_dir(boot_id).exists():
-            time.sleep(1)
-            boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
-        args = argparse.Namespace(**(vars(self.args) | dict(
-            id=boot_id, mode='persistent', payload='persistent', suite=None, disk=None, session=False,
-            input=None, inject=None, entry='current', slot_action='commit', verify=True, run=None, adopt=False,
-            commit='')))
-        child = Driver(args)
-        child.unit = self.unit
-        self.event('persistent-verification-next', verification=boot_id)
-        return child.run(inherited=self.id)
+        """Promote, probe over SSH, and restore the previous paired slot on failure (S21)."""
+        slots = metal_persist.read_disk().get('slots', {})
+        result = dict(install=self.id, toolsCommit=tools_commit(), recoveredReferences=self.slot_userlands,
+                      candidateGeneration=(slots.get('next') or {}).get('installedBy'),
+                      previousGeneration=(slots.get('current') or {}).get('installedBy'))
+        last = self.id
+        try:
+            for action in ('commit', 'rollback'):
+                boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+                while m.boot_dir(boot_id).exists():
+                    time.sleep(1)
+                    boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+                args = argparse.Namespace(**(vars(self.args) | dict(
+                    id=boot_id, mode='persistent', payload='persistent', suite=None, disk=None, session=False,
+                    input=None, inject=None, entry='current', slot_action=action, verify=True, run=None, adopt=False,
+                    upgrade_parent=self.id, expected_generation=result['candidateGeneration' if action == 'commit' else 'previousGeneration'], commit='')))
+                child = Driver(args)
+                child.unit = self.unit
+                self.event('persistent-verification-next' if action == 'commit' else 'persistent-rollback-next',
+                           verification=boot_id)
+                status = child.run(inherited=last)
+                last = boot_id
+                key = 'verification' if action == 'commit' else 'rollback'
+                result[key] = (m.read_json(child.dir / 'ssh-verification.json', {})
+                               or m.read_json(child.dir / 'ssh-verification-progress.json', {}) or {})
+                result[key].update(boot=boot_id, exit=status)
+                if status == m.EXIT_DONE:
+                    result['outcome'] = 'verified' if action == 'commit' else 'rolled-back'
+                    m.write_json(self.dir / 'upgrade-result.json', result)
+                    return status
+                if status in (m.EXIT_CANCELLED, m.EXIT_STOPPED, m.EXIT_BUSY):
+                    break
+                if action == 'commit':
+                    # Never swap a slot that the manager did not actually promote.
+                    events = (child.dir / 'events.jsonl').read_text() if (child.dir / 'events.jsonl').exists() else ''
+                    if not any(json.loads(line).get('event') == 'slots' and json.loads(line).get('action') == 'commit'
+                               for line in events.splitlines()):
+                        break
+                    if not result['previousGeneration']:
+                        break
+            result['outcome'] = 'failed'
+            m.write_json(self.dir / 'upgrade-result.json', result)
+            return m.EXIT_SHORT
+        finally:
+            m.release_lease(last)
 
 
 def progress_key(progress):
@@ -2014,10 +2092,11 @@ def main():
         p.add_argument('--task', default='')
         p.add_argument('--no-wait', action='store_true')
         p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount',
-                                            FENCE_FAULT, *WATCHDOG_FAULTS))
+                                            FENCE_FAULT, 'upgrade-no-ssh', 'upgrade-service-down', *WATCHDOG_FAULTS))
         p.add_argument('--entry', choices=('current', 'previous'), help='the kernel slot a persistent boot runs')
         p.add_argument('--slot-action', choices=('commit', 'rollback'), help='what the manager does to the slots first')
         p.add_argument('--run', action='append', help='a persistent boot logs in over SOL and runs this; repeatable')
+        p.add_argument('--upgrade-parent', help='install whose S21 probe owns this verification')
         p.add_argument('--verify', action='store_true', help='a persistent boot that ends at the login prompt')
         p.add_argument('--adopt', action='store_true', help=argparse.SUPPRESS)
         p.add_argument('--nmi', action='store_true',

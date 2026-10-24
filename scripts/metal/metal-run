@@ -171,8 +171,16 @@ def install_persistent(args):
             raise SystemExit('--rollback boots the installed slots; it takes no commit')
         return boot(argparse.Namespace(**dict(common, payload='persistent', mode='persistent', persistent=True,
                                               slot_action='rollback', verify=True)))
-    return boot(argparse.Namespace(**dict(common, payload='image', mode='persistent-install', sha=args.sha,
-                                          branch=args.branch, disk='root')))
+    options = argparse.Namespace(**dict(common, payload='image', mode='persistent-install', sha=args.sha,
+                                            branch=args.branch, disk='root', inject=getattr(args, 'inject', None)))
+    status = boot(options)
+    if status == 0:
+        logs = Path.home() / '.local/state/breenix-metal'
+        logs.mkdir(parents=True, exist_ok=True)
+        with (logs / (options.boot_id + '-upgrade.log')).open('w') as log:
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_upgrade', options.boot_id],
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    return status
 
 
 def boot(args):
@@ -420,6 +428,7 @@ def main():
     p.add_argument('--sha')
     p.add_argument('--branch')
     p.add_argument('--rollback', action='store_true', help='swap the current and previous kernel slots')
+    p.add_argument('--inject', choices=('upgrade-no-ssh', 'upgrade-service-down'), help='stage an unbootable or bootable SSH-less candidate to exercise automatic rollback')
     for name in ('stop', 'follow'):
         sub.add_parser(name).add_argument('id')
     sub.add_parser('status')
@@ -430,10 +439,14 @@ def main():
     p.add_argument('--suite')
     p.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager'))
     p.add_argument('--catchup', action='store_true')
+    p = sub.add_parser('_upgrade')
+    p.add_argument('id')
     p = sub.add_parser('_resume')
     p.add_argument('options')
     p.add_argument('id')
     args = parser.parse_args()
+    if args.command == '_upgrade':
+        return runpy.run_path(str(HERE / 'upgrade_probe.py'))['watch'](globals(), validate_id(args.id))
     if args.command == '_resume':
         return resume(argparse.Namespace(**json.loads(args.options)), validate_id(args.id))
     if args.command == 'boot':

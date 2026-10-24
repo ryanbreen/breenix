@@ -201,7 +201,28 @@
     {
       "id": "remote-upgrade",
       "title": "Remote upgrades verified over SSH and rolled back automatically",
-      "cases": []
+      "cases": [
+        {
+          "id": "good",
+          "title": "A good upgrade passes strict operator SSH and service verification within 600 seconds of power-on, preserving host key and root and home sentinels"
+        },
+        {
+          "id": "broken",
+          "title": "A deliberately broken upgrade fails verification and automatically boots the previous paired generation, passing the same probe within another 600 seconds with unchanged machine data"
+        },
+        {
+          "id": "probe-failure",
+          "title": "A bootable candidate reaches init and its console but fails SSH, then automatically restores and verifies the previous generation"
+        },
+        {
+          "id": "generation-repairs",
+          "title": "Installer ENOSPC, I/O and interrupted-publication recovery retain the selected generation and byte-exact rollback"
+        },
+        {
+          "id": "reclamation",
+          "title": "Reclamation uses recovered on-disk slot userlands and preserves current, previous, in-flight and shared data across failures and rollback"
+        }
+      ]
     },
     {
       "id": "console-input",

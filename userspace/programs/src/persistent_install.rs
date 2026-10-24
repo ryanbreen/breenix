@@ -9,7 +9,7 @@
 //! client key, its test account and `/root/.ssh`) stay behind. This
 //! program mounts no home partition.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -617,20 +617,13 @@ fn install_tree_from(source: &Path, target: &Path, id: &str, previous: Option<&s
         copier.sync(target)?;
     }
     require_directory(&generations)?;
-    // Boot IDs change on retry. Reclaim scratch from any unpublished ID, but
-    // retain final generations and shared scratch: a torn shared rename can
-    // leave a second name for live operator data.
-    for entry in fs::read_dir(&generations).map_err(|error| fail("read directory", &generations, error))? {
-        let entry = entry.map_err(|error| fail("read directory", &generations, error))?;
-        let name = entry.file_name();
-        if let Some(scratch_id) = name.to_str().and_then(|name| name.strip_suffix(".new")) {
-            if !scratch_id.is_empty() && scratch_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-                && !present(&generations.join(scratch_id))? {
-                let scratch = entry.path();
-                copier.change("remove scratch", &scratch, || fs::remove_dir_all(&scratch))?;
-            }
-        }
-    }
+    // Legacy callers retain published trees; production supplies recovered slot
+    // references and reclaims unreferenced published trees before copying.
+    let retained: Vec<String> = fs::read_dir(&generations).map_err(|e| fail("read generations", &generations, e))?
+        .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned())).collect::<Result<_, _>>()
+        .map_err(|e| fail("read generations", &generations, e))?;
+    let retained: Vec<&str> = retained.iter().filter(|name| valid_id(name)).map(String::as_str).collect();
+    reclaim(target, &retained, copier.checkpoint)?;
     copier.change("mkdir", &staged, || fs::create_dir(&staged))?;
     let mut names = Vec::new();
     for entry in fs::read_dir(source).map_err(|error| fail("read directory", source, error))? {
@@ -701,6 +694,91 @@ fn install_tree_from(source: &Path, target: &Path, id: &str, previous: Option<&s
     Ok(copier.totals)
 }
 
+fn valid_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+type Identity = (u64, u64);
+
+// symlink_metadata keeps symbolic links out of directory traversal. Duplicate
+// directory identities retain a tree that may alias another published name.
+fn directory_ids(path: &Path, ids: &mut HashSet<Identity>, duplicates: &mut HashSet<Identity>) -> Result<(), String> {
+    let meta = fs::symlink_metadata(path).map_err(|e| fail("stat reclamation", path, e))?;
+    if !meta.is_dir() { return Ok(()); }
+    let id = (meta.dev(), meta.ino());
+    if !ids.insert(id) { duplicates.insert(id); return Ok(()); }
+    for entry in fs::read_dir(path).map_err(|e| fail("read reclamation", path, e))? {
+        let entry = entry.map_err(|e| fail("read reclamation", path, e))?;
+        directory_ids(&entry.path(), ids, duplicates)?;
+    }
+    Ok(())
+}
+
+fn remove_reclaimed(path: &Path, checkpoint: &mut dyn FnMut() -> std::io::Result<()>) -> Result<(), String> {
+    checkpoint().map_err(|e| fail("reclaim checkpoint", path, e))?;
+    let meta = fs::symlink_metadata(path).map_err(|e| fail("stat reclamation", path, e))?;
+    if meta.is_dir() {
+        for entry in fs::read_dir(path).map_err(|e| fail("read reclamation", path, e))? {
+            remove_reclaimed(&entry.map_err(|e| fail("read reclamation", path, e))?.path(), checkpoint)?;
+        }
+        fs::remove_dir(path).map_err(|e| fail("rmdir reclamation", path, e))?;
+    } else {
+        fs::remove_file(path).map_err(|e| fail("unlink reclamation", path, e))?;
+    }
+    checkpoint().map_err(|e| fail("reclaim checkpoint", path, e))?;
+    File::open(path.parent().ok_or("reclamation has no parent")?).and_then(|f| f.sync_all())
+        .map_err(|e| fail("sync reclamation parent", path, e))?;
+    checkpoint().map_err(|e| fail("reclaim checkpoint", path, e))
+}
+
+fn reclaim(target: &Path, retained: &[&str], checkpoint: &mut dyn FnMut() -> std::io::Result<()>) -> Result<(), String> {
+    if retained.iter().any(|id| !valid_id(id)) { return Err("invalid recovered slot reference".into()); }
+    checkpoint().map_err(|e| fail("discover reclamation", target, e))?;
+    let generations = target.join(GENERATIONS);
+    if !present(&generations)? { return Ok(()); }
+    require_directory(&generations)?;
+    let mut protected = HashSet::new();
+    let mut duplicate = HashSet::new();
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(target).map_err(|e| fail("read system", target, e))? {
+        let entry = entry.map_err(|e| fail("read system", target, e))?;
+        if entry.file_name() != GENERATIONS {
+            directory_ids(&entry.path(), &mut protected, &mut duplicate)?;
+        }
+    }
+    for entry in fs::read_dir(&generations).map_err(|e| fail("read generations", &generations, e))? {
+        let entry = entry.map_err(|e| fail("read generations", &generations, e))?;
+        let name = entry.file_name().into_string().map_err(|_| "non-text generation name")?;
+        let id = name.strip_suffix(".new").or_else(|| name.strip_suffix(".shared-root")).unwrap_or(&name);
+        if !valid_id(id) { return Err("unknown generation entry; reclamation refused".into()); }
+        if retained.contains(&id) {
+            directory_ids(&entry.path(), &mut protected, &mut duplicate)?;
+        } else {
+            let mut ids = HashSet::new();
+            let mut aliases = HashSet::new();
+            directory_ids(&entry.path(), &mut ids, &mut aliases)?;
+            candidates.push((entry.path(), ids, aliases));
+        }
+    }
+    // Complete discovery before changing any path, and include aliases between
+    // two unreferenced names as well as aliases to a protected tree.
+    let mut seen = protected.clone();
+    for (_, ids, aliases) in &candidates {
+        duplicate.extend(aliases);
+        for id in ids { if !seen.insert(*id) { duplicate.insert(*id); } }
+    }
+    checkpoint().map_err(|e| fail("select reclamation", target, e))?;
+    for (path, ids, _) in candidates {
+        if ids.iter().any(|id| protected.contains(id) || duplicate.contains(id)) {
+            println!("[persistent] retained directory alias: {}", path.display());
+            continue;
+        }
+        remove_reclaimed(&path, checkpoint)?;
+        println!("[persistent] reclaimed: {}", path.file_name().unwrap_or_default().to_string_lossy());
+    }
+    Ok(())
+}
+
 fn install() -> Result<Totals, String> {
     let source = Path::new("/");
     let target = Path::new(TARGET);
@@ -708,12 +786,42 @@ fn install() -> Result<Totals, String> {
     let target_dev = fs::metadata(target).map_err(|error| fail("stat", target, error))?.dev();
     if root_dev == target_dev { return Err(String::from("the system partition is not mounted at /home")); }
     let id = std::env::args().nth(1).ok_or("install intent names no userland generation")?;
-    let totals = if let Some(previous) = std::env::args().nth(2) {
-        install_tree_from(source, target, &id, Some(&previous), &mut || Ok(()))
+    println!("[persistent] recovered slot references needed");
+    let mut references = String::new();
+    std::io::stdin().read_line(&mut references).map_err(|e| fail("read recovered slots", source, e))?;
+    let words: Vec<&str> = references.split_whitespace().collect();
+    if words.len() != 4 || words[0] != "BREENIX-SLOTS-1" || words[1..].iter().any(|id| !valid_id(id)) {
+        return Err("missing recovered on-disk slot references".into());
+    }
+    for reference in &words[1..3] {
+        if !matches!(*reference, "flat" | "empty") {
+            let selected = target.join(GENERATIONS).join(reference);
+            require_directory(&selected)?;
+            let record = fs::read(selected.join(READY)).map_err(|e| fail("read selected generation", &selected, e))?;
+            if record != layout::record(reference).as_bytes()
+                && record != format!("BREENIX-USERLAND 1\n{}\n", reference).as_bytes() {
+                return Err("recovered slot names an incomplete generation".into());
+            }
+        }
+    }
+    // Refuse account collisions before reclamation changes the system partition.
+    if let Some(operator) = read_operator(source)? {
+        let etc = target.join(STORE).join("etc");
+        drop(operator_entries(&operator, &read_or_empty(&etc.join("passwd"))?,
+                              &read_or_empty(&etc.join("group"))?, &read_or_empty(&etc.join("shadow"))?)?);
+    }
+    let mut retained = words[1..].to_vec();
+    retained.push(&id);
+    reclaim(target, &retained, &mut || Ok(()))?;
+    let previous = (!matches!(words[1], "flat" | "empty")).then_some(words[1]);
+    let totals = if let Some(previous) = previous {
+        install_tree_from(source, target, &id, Some(previous), &mut || Ok(()))
     } else { install_tree(source, target, &id, &mut || Ok(())) }?;
     // Retained rollback trees are subject to the same allowlist as the new tree.
     for entry in fs::read_dir(target.join(GENERATIONS)).map_err(|e| fail("read generations", target, e))? {
-        let tree = entry.map_err(|e| fail("read generation", target, e))?.path();
+        let entry = entry.map_err(|e| fail("read generation", target, e))?;
+        if !entry.file_name().to_str().is_some_and(valid_id) { continue; }
+        let tree = entry.path();
         require_directory(&tree)?;
         layout::check_setid(&tree, false)?;
     }
@@ -853,6 +961,87 @@ mod tests {
         assert_eq!(namespace.shared(namespace.root, b"home"), None);
         assert!(namespace.is_mount(namespace.etc));
         tree.path(namespace.root)
+    }
+
+    #[test]
+    fn reclamation_retains_recovered_slots_and_shared_data_after_each_failure() {
+        let fixture = Fixture::new();
+        let source = fixture.source("source");
+        let mut count = 0;
+        let probe = fixture.source("probe");
+        for id in ["old", "current", "orphan"] { install_tree(&source, &probe, id, &mut || Ok(())).unwrap(); }
+        reclaim(&probe, &["old", "current", "next"], &mut || { count += 1; Ok(()) }).unwrap();
+        assert!(!probe.join(GENERATIONS).join("orphan").exists());
+        for stop in 0..count {
+            let system = fixture.source(&format!("failure-{}", stop));
+            for id in ["old", "current", "orphan"] { install_tree(&source, &system, id, &mut || Ok(())).unwrap(); }
+            let before: Vec<_> = [system.join(GENERATIONS).join("old"), system.join(GENERATIONS).join("current"),
+                                  system.join("root"), system.join("etc"), system.join("home")]
+                .iter().map(|path| (path.clone(), snapshot(path))).collect();
+            let mut step = 0;
+            let _ = reclaim(&system, &["old", "current", "next"], &mut || {
+                step += 1;
+                if step == stop + 1 { Err(std::io::Error::from_raw_os_error(5)) } else { Ok(()) }
+            });
+            // Swapping the recovered references between attempts changes no tree bytes.
+            reclaim(&system, &["current", "old", "next"], &mut || Ok(())).unwrap();
+            for id in ["old", "current"] {
+                assert_eq!(fs::read(system.join(GENERATIONS).join(id).join("bin/payload")).unwrap(), b"source");
+                assert!(generation::select(&Tree::new(&system), id).is_ok());
+            }
+            for (path, bytes) in before { assert_eq!(snapshot(&path), bytes); }
+            assert!(!system.join(GENERATIONS).join("orphan").exists());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reclamation_preserves_directory_aliases_and_reclaims_plain_scratch() {
+        // A private mount namespace supplies real duplicate directory identities.
+        // Recursing through a bind alias deletes the source's files too, so a
+        // reclaimer that simply calls remove_dir_all fails this case.
+        struct Binding(PathBuf);
+        impl Drop for Binding {
+            fn drop(&mut self) {
+                assert!(std::process::Command::new("umount").arg(&self.0).status().unwrap().success());
+            }
+        }
+        let fixture = Fixture::new();
+        let source = fixture.source("source");
+        let system = fixture.system();
+        for id in ["current", "previous", "orphan"] {
+            install_tree(&source, &system, id, &mut || Ok(())).unwrap();
+        }
+        let generations = system.join(GENERATIONS);
+        let scratch = generations.join("failed.new");
+        fs::create_dir(&scratch).unwrap();
+        fs::write(scratch.join("partial"), b"incomplete copy").unwrap();
+        let in_flight = generations.join("next.new");
+        fs::create_dir(&in_flight).unwrap();
+        fs::write(in_flight.join("partial"), b"live publication").unwrap();
+        let root = system.join("root");
+        let current = generations.join("current");
+        let root_before = snapshot(&root);
+        let current_before = snapshot(&current);
+        let mut bindings = Vec::new();
+        for (name, from) in [("stale.shared-root", &root), ("stale.new", &current)] {
+            let to = generations.join(name);
+            fs::create_dir(&to).unwrap();
+            assert!(std::process::Command::new("mount").arg("--bind").arg(from).arg(&to).status().unwrap().success());
+            bindings.push(Binding(to.clone()));
+            let a = fs::metadata(from).unwrap();
+            let b = fs::metadata(&to).unwrap();
+            assert_eq!((a.dev(), a.ino()), (b.dev(), b.ino()));
+        }
+        reclaim(&system, &["current", "previous", "next"], &mut || Ok(())).unwrap();
+        assert_eq!(snapshot(&root), root_before);
+        assert_eq!(snapshot(&current), current_before);
+        assert_eq!(fs::read(generations.join("stale.shared-root/data")).unwrap(), b"operator data\0\xff");
+        assert_eq!(fs::read(generations.join("stale.new/bin/payload")).unwrap(), b"source");
+        assert!(!generations.join("orphan").exists());
+        assert!(!scratch.exists());
+        assert_eq!(fs::read(in_flight.join("partial")).unwrap(), b"live publication");
+        drop(bindings);
     }
 
     #[test]

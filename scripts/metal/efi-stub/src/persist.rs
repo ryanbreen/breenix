@@ -626,6 +626,20 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
         status
     })?;
     let root = files::root_of(boot, esp)?;
+    // Distinguish absence from an I/O refusal before the transaction's Boolean
+    // existence interface is used. An unreadable reference cannot authorize GC.
+    for name in ["SLOT.TXN", "SLOT0.OK", "SLOT1.OK", "SLOT2.OK", "CURRENT.IMG", "CURRENT.TXT",
+                 "PREVIOUS.IMG", "PREVIOUS.TXT", "NEXT.IMG", "NEXT.TXT", "SWAP.IMG", "SWAP.TXT"] {
+        let mut path = [0u8; 96];
+        let prefix = b"\\EFI\\BREENIX\\";
+        path[..prefix.len()].copy_from_slice(prefix);
+        path[prefix.len()..prefix.len()+name.len()].copy_from_slice(name.as_bytes());
+        match root.size(core::str::from_utf8(&path[..prefix.len()+name.len()]).map_err(|_| INVALID_PARAMETER)?) {
+            Ok(_) | Err(NOT_FOUND) => (),
+            Err(status) => return Err(status),
+        }
+    }
+    metal_efi::slot_transaction::recover(&metal_efi::slot_store::SlotStore(&root))?;
     let http_option = if request.install { boot_current } else { recorded_http_option(&root) };
     let mut written = 0;
     for line in text.lines().filter(|line| line.starts_with("esp-file ")) {
@@ -649,6 +663,42 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
     if let Some(description) = request.load_option {
         load_option(boot, runtime, esp, description, http_option)?;
     }
+    // Read embedded userland identities only after recovery and NEXT publication.
+    // The host's disk.json is deliberately not an authority for reclamation.
+    for slot in ["CURRENT", "PREVIOUS", "NEXT"] {
+        let mut name = [0u8; 64];
+        let prefix = b"\\EFI\\BREENIX\\";
+        name[..prefix.len()].copy_from_slice(prefix);
+        name[prefix.len()..prefix.len()+slot.len()].copy_from_slice(slot.as_bytes());
+        name[prefix.len()+slot.len()..prefix.len()+slot.len()+4].copy_from_slice(b".IMG");
+        let path = core::str::from_utf8(&name[..prefix.len()+slot.len()+4]).map_err(|_| INVALID_PARAMETER)?;
+        match root.size(path) {
+            Err(NOT_FOUND) => { say!("slot userland: {} empty", slot); continue; }
+            Err(status) => return Err(status),
+            Ok(size) if size > 512 << 20 => return Err(OUT_OF_RESOURCES),
+            Ok(_) => (),
+        }
+        let (memory, size) = root.read_pages(boot, path)?;
+        let disk = metal_efi::bootdisk::attach(boot, memory, size, "reference slot")?;
+        let volume = metal_efi::bootdisk::connect(boot, disk, "reference slot")?;
+        let mut device = volume;
+        let mut handle = null_mut();
+        ok((boot.locate_device_path)(&SIMPLE_FILE_SYSTEM, &mut device, &mut handle))?;
+        let slot_root = files::root_of(boot, handle)?;
+        let mut intent = [0u8; 1024];
+        let len = slot_root.read("ramdisk", &mut intent)?;
+        let text = core::str::from_utf8(&intent[..len]).map_err(|_| VOLUME_CORRUPTED)?;
+        if !text.starts_with("BREENIX-BOOT 2\n") { return Err(VOLUME_CORRUPTED); }
+        let mut ids = text.lines().filter_map(|line| line.strip_prefix("userland "));
+        let id = ids.next().unwrap_or("flat");
+        if ids.next().is_some() { return Err(VOLUME_CORRUPTED); }
+        if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            return Err(VOLUME_CORRUPTED);
+        }
+        say!("slot userland: {} {}", slot, id);
+        // The firmware's attached device may retain this memory until ExitBootServices.
+    }
+    say!("slot userlands complete");
     say!("persistent install request complete");
     Ok(())
 }
