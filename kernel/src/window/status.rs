@@ -42,3 +42,11 @@ pub fn read(caller: &Caller) -> Result<CompositorStatus, i32> {
         reserved: [0; 2],
     })
 }
+
+/// The proc text view uses the same authority and atomic snapshot as op 31.
+pub fn text(caller: &Caller) -> Result<alloc::string::String, i32> {
+    let s = read(caller)?;
+    Ok(alloc::format!("claim_epoch={} epoch={} handled_serial={} presented={} scene_version={} composites={} next_deadline_ns={} owner={} flags={}\n",
+        s.claim_epoch, s.epoch, s.handled_serial, s.presented, s.scene_version,
+        s.composites, s.next_deadline_ns, s.owner, s.flags))
+}

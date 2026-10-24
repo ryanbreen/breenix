@@ -181,8 +181,11 @@ pub(super) fn start() -> State {
     );
 
     // bwm composes the windows as the compositor (window op 17's claim) and display owner.
-    match session::claim() {
-        Ok(epoch) => print!("[bwm] compositor claim: epoch {}\n", epoch),
+    let claim_epoch = match session::claim() {
+        Ok(epoch) => {
+            print!("[bwm] compositor claim: epoch {}\n", epoch);
+            epoch
+        }
         Err(e) => {
             print!(
                 "[bwm] ERROR: GPU compositing required: the compositor claim failed: {}\n",
@@ -190,7 +193,7 @@ pub(super) fn start() -> State {
             );
             process::exit(1);
         }
-    }
+    };
     let scene_fd = match session::scene_fd() {
         Ok(fd) => fd,
         Err(e) => {
@@ -220,28 +223,12 @@ pub(super) fn start() -> State {
         screen_w, screen_h
     );
 
-    // Avoid filesystem reads before the first ARM64 compositor submit. On
-    // single-CPU Parallels, opening /etc/fonts.conf here can stall bwm before
-    // it replaces the kernel startup draw. Bitmap chrome is enough for boot.
-    #[cfg(target_arch = "aarch64")]
-    let mut ui_font: Option<CachedFont> = {
-        print!("[bwm] using bitmap font fallback for early boot\n");
-        None
-    };
-    #[cfg(not(target_arch = "aarch64"))]
-    let mut ui_font: Option<CachedFont> = {
-        let config = FontConfig::load();
-        let font = std::fs::read(&config.display_path)
-            .ok()
-            .and_then(|data| Font::parse(&data).ok())
-            .map(|f| CachedFont::new(f, 256));
-        if font.is_some() {
-            print!("[bwm] display font loaded: {}\n", config.display_path);
-        } else {
-            print!("[bwm] no display font, using bitmap fallback\n");
-        }
-        font
-    };
+    let settings = Settings::load();
+    let _ = CONFIG_ERROR.set(settings.error);
+    let mut ui_font = settings.load_font();
+    // Layout and painting use independent caches of the same configured font.
+    let _ = FONT_METRICS.set(std::sync::Mutex::new(settings.load_font()));
+    let mut clock = clock::Clock::new(settings.frozen, settings.valid_test);
 
     // Paint the decorative background once; each desktop repaint copies it.
     paint_background(&mut gpu.background);
@@ -269,7 +256,7 @@ pub(super) fn start() -> State {
     let windows_dirty = false;
     let mut win_defaults: [WindowDefaults; MAX_DEFAULTS] =
         core::array::from_fn(|_| WindowDefaults {
-            title: [0; 32],
+            title: [0; 64],
             title_len: 0,
             x: 0,
             y: 0,
@@ -278,21 +265,11 @@ pub(super) fn start() -> State {
             valid: false,
         });
 
-    // Clock state
-    let last_clock_sec: i64 = -1;
-    let mut clock_text = [0u8; 11];
-    format_clock(0, &mut clock_text);
-    let fps_frames_since_last: u32 = 0;
-    let fps_last_ms = monotonic_ms().unwrap_or(0);
+    let last_clock_sec = clock.wall_sec();
+    let mut clock_text = [0u8; 12];
+    clock.format(&mut clock_text);
     let mut next_creation_order: u32 = 0;
-    // Hotkey system: load config from /etc/hotkeys.conf
     let mut hotkey_mgr = HotkeyManager::new();
-    #[cfg(target_arch = "aarch64")]
-    {
-        hotkey_mgr.load_defaults();
-        print!("[bwm] hotkeys: using built-in defaults for early boot\n");
-    }
-    #[cfg(not(target_arch = "aarch64"))]
     hotkey_mgr.load_config("/etc/hotkeys.conf");
 
     // Initial composite: the desktop alone (background, taskbar and app bar), before any
@@ -314,7 +291,10 @@ pub(super) fn start() -> State {
             print!("[bwm] first frame check FAILED: {}\n", e)
         }
     }
-    match check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index) {
+    let fills = check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index);
+    clock.presented(gpu.last_serial);
+    clock.acknowledge(claim_epoch);
+    match fills {
         Ok(line) => print!("[bwm] desktop fills the scanout: {}\n", line),
         Err(e) => print!("[bwm] desktop fill check FAILED: {}\n", e),
     }
@@ -372,8 +352,8 @@ pub(super) fn start() -> State {
         win_defaults,
         last_clock_sec,
         clock_text,
-        fps_frames_since_last,
-        fps_last_ms,
+        clock,
+        claim_epoch,
         next_creation_order,
         hotkey_mgr,
         frame_failed,
@@ -404,9 +384,9 @@ pub(super) struct State {
     pub(super) windows_dirty: bool,
     pub(super) win_defaults: [WindowDefaults; MAX_DEFAULTS],
     pub(super) last_clock_sec: i64,
-    pub(super) clock_text: [u8; 11],
-    pub(super) fps_frames_since_last: u32,
-    pub(super) fps_last_ms: u64,
+    pub(super) clock_text: [u8; 12],
+    pub(super) clock: clock::Clock,
+    pub(super) claim_epoch: u64,
     pub(super) next_creation_order: u32,
     pub(super) hotkey_mgr: HotkeyManager,
     pub(super) frame_failed: bool,
@@ -444,5 +424,253 @@ impl State {
         }
 
         (stdin_ready, scene_changed)
+    }
+}
+
+// W17: loading and parsing are shared across architectures; matching stays in route.
+impl HotkeyManager {
+    pub(super) fn load_config(&mut self, path: &str) {
+        let path = config_path(path);
+        let path = path.to_str().expect("configuration path is UTF-8");
+        let fd = match fs::open(path, fs::O_RDONLY) {
+            Ok(fd) => fd,
+            Err(_) => {
+                print!("[bwm] hotkeys: no config at {}, using defaults\n", path);
+                self.load_defaults();
+                return;
+            }
+        };
+        let mut buf = vec![0u8; 4096];
+        let n = match io::read(fd, &mut buf) {
+            Ok(n) => n,
+            Err(_) => {
+                let _ = io::close(fd);
+                print!("[bwm] hotkeys: failed to read config, using defaults\n");
+                self.load_defaults();
+                return;
+            }
+        };
+        let _ = io::close(fd);
+        buf.truncate(n);
+
+        let mut found_any = false;
+        for line in buf.split(|&b| b == b'\n') {
+            let line = trim(line);
+            if line.is_empty() || line[0] == b'#' {
+                continue;
+            }
+            if let Some(hotkey) = Self::parse_line(line) {
+                self.bindings.push(hotkey);
+                found_any = true;
+            }
+        }
+
+        if !found_any {
+            print!("[bwm] hotkeys: config empty, using defaults\n");
+            self.load_defaults();
+        }
+    }
+
+    pub(super) fn parse_line(line: &[u8]) -> Option<Hotkey> {
+        // Split on '='
+        let eq_pos = line.iter().position(|&b| b == b'=')?;
+        let lhs = trim(&line[..eq_pos]);
+        let rhs = trim(&line[eq_pos + 1..]);
+        if lhs.is_empty() || rhs.is_empty() {
+            return None;
+        }
+
+        // Parse left side: modifier+modifier+key
+        let mut modifiers = 0u8;
+        let mut key = 0u8;
+        let mut taps = 1u8;
+
+        // Count how many times each modifier appears (for multi-tap)
+        let mut super_count = 0u8;
+
+        let parts: Vec<&[u8]> = lhs.split(|&b| b == b'+').collect();
+        for part in &parts {
+            let part = trim(part);
+            if part.is_empty() {
+                continue;
+            }
+            match &part.to_ascii_lowercase()[..] {
+                b"super" | b"cmd" | b"command" | b"win" => {
+                    modifiers |= modifier::SUPER;
+                    super_count += 1;
+                }
+                b"alt" => {
+                    modifiers |= modifier::ALT;
+                }
+                b"ctrl" | b"control" => {
+                    modifiers |= modifier::CTRL;
+                }
+                b"shift" => {
+                    modifiers |= modifier::SHIFT;
+                }
+                b"return" | b"enter" => {
+                    key = b'\r';
+                }
+                b"tab" => {
+                    key = b'\t';
+                }
+                b"space" => {
+                    key = b' ';
+                }
+                b"backspace" => {
+                    key = 0x08;
+                }
+                b"escape" | b"esc" => {
+                    key = 0x1b;
+                }
+                k if k.len() == 1 => {
+                    key = k[0].to_ascii_lowercase();
+                }
+                _ => {} // Unknown token, skip
+            }
+        }
+
+        // Super+Super means double-tap Super (no key, modifier appears twice)
+        if super_count >= 2 && key == 0 {
+            taps = 2;
+        }
+
+        // Parse right side: action
+        let action = if rhs.starts_with(b"exec ") || rhs.starts_with(b"exec\t") {
+            let path = trim(&rhs[5..]);
+            if path.is_empty() {
+                return None;
+            }
+            HotkeyAction::Exec(path.to_vec())
+        } else {
+            match &rhs.to_ascii_lowercase()[..] {
+                b"close" => HotkeyAction::Close,
+                b"focus_next" => HotkeyAction::FocusNext,
+                b"focus_prev" => HotkeyAction::FocusPrev,
+                _ => return None,
+            }
+        };
+
+        Some(Hotkey {
+            modifiers,
+            key,
+            taps,
+            action,
+        })
+    }
+}
+pub(super) fn trim(s: &[u8]) -> &[u8] {
+    let start = s
+        .iter()
+        .position(|&b| b != b' ' && b != b'\t' && b != b'\r')
+        .unwrap_or(s.len());
+    let end = s
+        .iter()
+        .rposition(|&b| b != b' ' && b != b'\t' && b != b'\r')
+        .map(|i| i + 1)
+        .unwrap_or(start);
+    &s[start..end]
+}
+
+pub(super) static FONT_METRICS: std::sync::OnceLock<std::sync::Mutex<Option<CachedFont>>> =
+    std::sync::OnceLock::new();
+pub(super) static CONFIG_ERROR: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+fn config_path(path: &str) -> std::path::PathBuf {
+    std::env::var_os("BREENIX_CONFIG_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| "/".into())
+        .join(path.trim_start_matches('/'))
+}
+
+struct Settings {
+    font: Option<String>,
+    frozen: bool,
+    valid_test: bool,
+    error: bool,
+}
+impl Settings {
+    fn defaults() -> Self {
+        Self {
+            font: Some(FontConfig::load().display_path),
+            frozen: false,
+            valid_test: false,
+            error: false,
+        }
+    }
+    fn parse(bytes: &[u8]) -> Result<Self, ()> {
+        let text = std::str::from_utf8(bytes).map_err(|_| ())?;
+        let mut settings = Self::defaults();
+        let mut seen = [false; 3];
+        for line in text.lines().map(str::trim) {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (key, value) = line.split_once('=').ok_or(())?;
+            let index = match (key, value) {
+                ("font", "bitmap") => {
+                    settings.font = None;
+                    0
+                }
+                ("font", path) if path.starts_with('/') && !path.contains('\0') => {
+                    settings.font = Some(path.into());
+                    0
+                }
+                ("clock", "frozen") => {
+                    settings.frozen = true;
+                    1
+                }
+                ("fps", "off") => 2,
+                _ => return Err(()),
+            };
+            if seen[index] {
+                return Err(());
+            }
+            seen[index] = true;
+        }
+        if !seen.iter().any(|s| *s) {
+            return Err(());
+        }
+        if let Some(path) = &settings.font {
+            let bytes = std::fs::read(path).map_err(|_| ())?;
+            Font::parse(&bytes).map_err(|_| ())?;
+        }
+        settings.valid_test = true;
+        Ok(settings)
+    }
+    fn load() -> Self {
+        match std::fs::read(config_path("/etc/bwm.conf")) {
+            Ok(bytes) => match Self::parse(&bytes) {
+                Ok(s) => s,
+                Err(()) => {
+                    print!("[bwm] bwm.conf error: invalid settings; using defaults\n");
+                    Self {
+                        error: true,
+                        ..Self::defaults()
+                    }
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::defaults(),
+            Err(_) => {
+                print!("[bwm] bwm.conf error: cannot read settings; using defaults\n");
+                Self {
+                    error: true,
+                    ..Self::defaults()
+                }
+            }
+        }
+    }
+    fn load_font(&self) -> Option<CachedFont> {
+        let path = self.font.as_ref()?;
+        let font = std::fs::read(path)
+            .ok()
+            .and_then(|data| Font::parse(&data).ok())
+            .map(|font| CachedFont::new(font, 256));
+        if font.is_some() {
+            print!("[bwm] display font loaded: {}\n", path);
+        } else {
+            print!("[bwm] no display font, using bitmap fallback\n");
+        }
+        font
     }
 }

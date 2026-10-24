@@ -19,7 +19,7 @@ pub(super) fn draw_text_at(
     }
     if let Some(font) = ttf {
         // Use LCD subpixel rendering for crisp window chrome text
-        let s = unsafe { core::str::from_utf8_unchecked(text) };
+        let s = core::str::from_utf8(text).expect("window titles are UTF-8");
         ttf_font::draw_text_subpixel(fb, font, s, x, y, TTF_FONT_SIZE * ui().scale as f32, color);
     } else {
         // Only the characters whose whole cell lies across the surface's width are drawn.
@@ -110,8 +110,7 @@ pub(super) fn draw_window_frame(
     let max_title_w = win
         .width
         .saturating_sub(bw * 2 + px(8) + px(CHROME_RESERVED));
-    let max_chars = max_title_w / ui().cell_w;
-    let text_len = win.title_len.min(max_chars);
+    let text_len = clipped_title(&win.title[..win.title_len], max_title_w);
     let text_y = win.y + bw as i32 + ((px(TITLE_BAR_HEIGHT) - bw - ui().cell_h) / 2) as i32;
     draw_text_at(
         fb,
@@ -328,7 +327,7 @@ pub(super) fn draw_taskbar(fb: &mut Surface, clock_text: &[u8], ui_font: &mut Op
         ui_font.as_mut(),
     );
     if !clock_text.is_empty() {
-        let clock_x = w as i32 - (clock_text.len() as i32 * ui().cell_w as i32) - pxi(8);
+        let clock_x = w as i32 - (measured_text(clock_text) as i32) - pxi(8);
         draw_text_at(
             fb,
             clock_text,
@@ -340,8 +339,8 @@ pub(super) fn draw_taskbar(fb: &mut Surface, clock_text: &[u8], ui_font: &mut Op
     }
 }
 
-pub(super) fn appbar_button_width(title_len: usize) -> usize {
-    let text_w = title_len * ui().cell_w + px(16);
+pub(super) fn appbar_button_width(title: &[u8]) -> usize {
+    let text_w = measured_text(title) + px(16);
     text_w.max(px(60)).min(px(180))
 }
 
@@ -370,7 +369,7 @@ pub(super) fn draw_appbar(
         if win.chromeless {
             continue;
         }
-        let btn_w = appbar_button_width(win.title_len);
+        let btn_w = appbar_button_width(&win.title[..win.title_len]);
 
         let bg = if i == focused_win && !win.minimized {
             APPBAR_BTN_FOCUSED
@@ -382,8 +381,7 @@ pub(super) fn draw_appbar(
 
         fill_rect(fb, btn_x, btn_y, btn_w, btn_h, bg);
 
-        let max_chars = (btn_w.saturating_sub(px(12))) / ui().cell_w;
-        let text_len = win.title_len.min(max_chars);
+        let text_len = clipped_title(&win.title[..win.title_len], btn_w.saturating_sub(px(12)));
         let text_y = btn_y + ((btn_h - ui().cell_h) / 2 + px(1)) as i32;
         draw_text_at(
             fb,
@@ -423,7 +421,7 @@ pub(super) fn appbar_hit_test(
         if windows[i].chromeless {
             continue;
         }
-        let btn_w = appbar_button_width(windows[i].title_len) as i32;
+        let btn_w = appbar_button_width(&windows[i].title[..windows[i].title_len]) as i32;
         if mx >= btn_x && mx < btn_x + btn_w && my >= btn_y && my < btn_y + btn_h {
             return Some(i); // Returns the actual Vec index, not the sorted position
         }
@@ -450,6 +448,7 @@ pub(super) fn redraw_all_windows(
         draw_window_frame(fb, &windows[i], i == focused_win, ui_font);
     }
     draw_appbar(fb, windows, focused_win, ui_font);
+    draw_config_error(fb, ui_font);
 }
 
 /// Repaint the whole desktop target: the background, then the chrome.
@@ -612,31 +611,16 @@ pub(super) fn check_desktop_fills(
 
 impl State {
     pub(super) fn clock(&mut self, damage: &mut Damage) {
-        // ── 4. Update clock (once per second) and the frame-rate line ──
-        if let Some(now_ms) = monotonic_ms() {
-            let elapsed_ms = now_ms.saturating_sub(self.fps_last_ms);
-            if elapsed_ms >= 1000 {
-                let instantaneous_fps =
-                    self.fps_frames_since_last as u64 * 1000 / elapsed_ms.max(1);
-                print!(
-                    "[bwm-fps] frames_since_last={} elapsed_ms={} instantaneous_fps={}\n",
-                    self.fps_frames_since_last, elapsed_ms, instantaneous_fps
-                );
-                self.fps_frames_since_last = 0;
-                self.fps_last_ms = now_ms;
-            }
-        }
-        if let Ok(ts) = libbreenix::time::now_realtime() {
-            if ts.tv_sec != self.last_clock_sec {
-                self.last_clock_sec = ts.tv_sec;
-                format_clock(ts.tv_sec, &mut self.clock_text);
-                draw_taskbar(&mut self.gpu.desktop, &self.clock_text, &mut self.ui_font);
-                damage.dirty_x0 = 0;
-                damage.dirty_y0 = 0;
-                damage.dirty_x1 = damage.dirty_x1.max(self.screen_w as i32);
-                damage.dirty_y1 = damage.dirty_y1.max(px(TASKBAR_HEIGHT) as i32);
-                self.content_dirty = true;
-            }
+        let sec = self.clock.wall_sec();
+        if sec != self.last_clock_sec {
+            self.last_clock_sec = sec;
+            self.clock.format(&mut self.clock_text);
+            draw_taskbar(&mut self.gpu.desktop, &self.clock_text, &mut self.ui_font);
+            damage.dirty_x0 = 0;
+            damage.dirty_y0 = 0;
+            damage.dirty_x1 = damage.dirty_x1.max(self.screen_w as i32);
+            damage.dirty_y1 = damage.dirty_y1.max(px(TASKBAR_HEIGHT) as i32);
+            self.content_dirty = true;
         }
     }
 }
@@ -698,7 +682,7 @@ impl State {
                         print!("[bwm] display back: composing again\n");
                     }
                     self.drawn_pointer = Some(pointer);
-                    self.fps_frames_since_last = self.fps_frames_since_last.wrapping_add(1);
+                    self.clock.presented(self.gpu.last_serial);
                     // Each client window's first shown frame is read back and compared.
                     // Check the whole scanout for each newly shown or resized client,
                     // including other clients that keep animating beside it.
@@ -785,6 +769,69 @@ impl State {
                     self.full_redraw = true;
                 }
             }
+        }
+    }
+}
+
+fn measured_text(text: &[u8]) -> usize {
+    let mut font = FONT_METRICS
+        .get()
+        .expect("font metrics initialized")
+        .lock()
+        .unwrap();
+    if let Some(font) = font.as_mut() {
+        ttf_font::text_width_bytes(font, text, TTF_FONT_SIZE * ui().scale as f32).max(0) as usize
+    } else {
+        text.len() * ui().cell_w
+    }
+}
+fn clipped_title(text: &[u8], width: usize) -> usize {
+    let title = std::str::from_utf8(text).expect("window titles are UTF-8");
+    title
+        .char_indices()
+        .map(|(i, c)| i + c.len_utf8())
+        .take_while(|&end| measured_text(&text[..end]) <= width)
+        .last()
+        .unwrap_or(0)
+}
+fn draw_config_error(fb: &mut Surface, font: &mut Option<CachedFont>) {
+    if CONFIG_ERROR.get().copied().unwrap_or(false) {
+        fill_rect(fb, pxi(12), pxi(40), px(360), px(40), CLOSE_BTN_BG);
+        draw_text_at(
+            fb,
+            b"bwm.conf error: using defaults",
+            pxi(18),
+            pxi(48),
+            CLOSE_BTN_TEXT,
+            font.as_mut(),
+        );
+    }
+}
+
+impl State {
+    /// W10's display order: normal windows, then chromeless in creation order.
+    pub(super) fn chromeless_order(&mut self) {
+        let before: Vec<_> = self.windows.iter().map(|w| w.window_id).collect();
+        let focused = self.windows.get(self.focused_win).map(|w| w.window_id);
+        self.windows.sort_by_key(|w| {
+            (
+                w.chromeless,
+                if w.chromeless { w.creation_order } else { 0 },
+            )
+        });
+        if self.windows.iter().map(|w| w.window_id).ne(before) {
+            self.focused_win = focused
+                .and_then(|id| self.windows.iter().position(|w| w.window_id == id))
+                .unwrap_or(0);
+            update_kernel_z_order(&self.windows);
+            compose_full_redraw(
+                &mut self.gpu,
+                &self.windows,
+                self.focused_win,
+                &self.clock_text,
+                &mut self.ui_font,
+            );
+            self.full_redraw = true;
         }
     }
 }
