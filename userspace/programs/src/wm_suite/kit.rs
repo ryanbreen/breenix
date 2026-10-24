@@ -326,11 +326,14 @@ pub(super) fn ledger() -> Result<Vec<Vec<String>>, String> {
         .collect())
 }
 pub(super) fn disposition(serial: u64, expected: &str, reason: Option<&str>) -> CaseResult {
+    let serial = serial.to_string();
     until(1000, "terminal disposition", || {
-        let rows = ledger()?;
-        let matches: Vec<_> = rows
-            .iter()
-            .filter(|r| r.first().is_some_and(|v| v == &serial.to_string()))
+        let text = std::fs::read_to_string("/proc/breenix/input-ledger")
+            .map_err(|e| format!("input disposition ledger: {e}"))?;
+        let matches: Vec<Vec<&str>> = text
+            .lines()
+            .filter(|row| row.split_whitespace().next() == Some(serial.as_str()))
+            .map(|row| row.split_whitespace().collect())
             .collect();
         if matches.is_empty() {
             return Ok(false);
@@ -338,11 +341,11 @@ pub(super) fn disposition(serial: u64, expected: &str, reason: Option<&str>) -> 
         if matches.len() != 1 {
             return Err("source serial has duplicate terminal dispositions".into());
         }
-        if !matches[0].get(1).is_some_and(|v| v == expected) {
+        if !matches[0].get(1).is_some_and(|v| *v == expected) {
             return Err("serial has wrong terminal disposition".into());
         }
         if let Some(reason) = reason {
-            if !matches[0].get(3).is_some_and(|v| v == reason) {
+            if !matches[0].get(3).is_some_and(|v| *v == reason) {
                 return Err("serial has wrong rejection reason".into());
             }
         }
