@@ -56,7 +56,7 @@ def load_site(path=None):
 
 
 def power_token():
-    """Private host capability mirrored into the install's root-only shutdown file."""
+    """Private derivation seed mirrored into the install's root-only shutdown file."""
     STATE.mkdir(parents=True, exist_ok=True)
     path = STATE / 'power-token'
     try:

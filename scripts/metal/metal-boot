@@ -21,6 +21,7 @@ retain a RAM-disk root (README, "The disks").
 import argparse
 import contextlib
 import hmac
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -222,7 +223,8 @@ class Driver:
         self.post_code = None
         self.post_seen = False
         self.gap = False
-        self.shutdown_token = m.power_token()
+        self.shutdown_seed = m.power_token()
+        self.shutdown_token = None
         self.shutdown_action = None
         self.requested_reset_at = None
         self.clean_mounts = set()
@@ -1073,10 +1075,13 @@ class Driver:
                     raise Finish(m.EXIT_SHORT, 'the cold disk upload is missing')
                 raise Finish(m.EXIT_DONE, 'cold disk readback received')
         if self.kernel_started and self.fatal_at is None:
+            challenge = re.fullmatch(r'\[init\] log boot-id=([a-f0-9]{64})', line)
+            if challenge:
+                self.shutdown_token = hashlib.sha256((self.shutdown_seed + challenge[1]).encode()).hexdigest()
             clean = re.fullmatch(r'\[shutdown\] (home|root) clean read-only', line)
             if clean: self.clean_mounts.add(clean[1])
             request = re.fullmatch(r'\[shutdown\] requested (reboot|poweroff) token=([a-f0-9]{64})', line)
-            if request and hmac.compare_digest(request[2], self.shutdown_token) and self.clean_mounts == {'home', 'root'}:
+            if request and self.shutdown_token is not None and hmac.compare_digest(request[2], self.shutdown_token) and self.clean_mounts == {'home', 'root'}:
                 self.shutdown_action = request[1]
                 self.event('requested-shutdown', observed_at=observed_at, action=request[1])
                 if request[1] == 'poweroff':

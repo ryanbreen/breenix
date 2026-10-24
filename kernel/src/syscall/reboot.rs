@@ -71,5 +71,21 @@ fn power_token() -> Result<alloc::vec::Vec<u8>, u64> {
     }
     let bytes = fs.read_file_content_coherent(ino, &inode).map_err(|_| super::errno::EIO as u64)?;
     if !bytes.iter().all(|b| b.is_ascii_hexdigit()) { return Err(super::errno::EINVAL as u64); }
-    Ok(bytes)
+    drop(guard);
+    let (mount, ino, _pin, _) = crate::fs::namei::resolve_file("/run/breenix/boot-id")?;
+    let guard = mount.read()?;
+    let fs = guard.as_ref().ok_or(super::errno::EIO as u64)?;
+    let inode = fs.read_inode(ino).map_err(|_| super::errno::EIO as u64)?;
+    if !inode.is_file() || inode.uid() != 0 || inode.i_mode & 0o022 != 0 || inode.size() != 65 {
+        return Err(super::errno::EACCES as u64);
+    }
+    let challenge = fs.read_file_content_coherent(ino, &inode).map_err(|_| super::errno::EIO as u64)?;
+    if challenge.len() != 65 || challenge[64] != b'\n'
+        || !challenge[..64].iter().all(|b| b.is_ascii_hexdigit()) {
+        return Err(super::errno::EINVAL as u64);
+    }
+    let mut hash = crate::block::install::sha256::Sha256::new();
+    hash.update(&bytes);
+    hash.update(&challenge[..64]);
+    Ok(crate::block::install::hex(&hash.finalize()).into_bytes())
 }

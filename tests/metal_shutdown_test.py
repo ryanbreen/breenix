@@ -23,6 +23,8 @@ class ShutdownTest(sessions.existing.StateTest):
         self.driver.event, self.driver.phase = Mock(), Mock()
         self.driver.dir.mkdir(parents=True)
         self.driver.t0 = 100
+        self.driver.kernel_started = 101
+        self.driver.on_line("[init] log boot-id=" + "b" * 64, observed_at=102)
 
     def test_clean_request_waits_for_a_real_reset(self):
         d = self.driver
@@ -44,6 +46,17 @@ class ShutdownTest(sessions.existing.StateTest):
         d.on_line('bsshd: listening on 0.0.0.0:22', observed_at=132)
         self.assertIsNone(d.requested_reset_at)
         d.event.assert_any_call('requested-reboot-ready', observed_at=132, commit=d.args.commit)
+
+    def test_receipt_is_scoped_to_the_kernel_boot(self):
+        d = self.driver
+        first = d.shutdown_token
+        self.assertNotEqual(first, d.shutdown_seed)
+        d.on_line('[init] log boot-id=' + 'c' * 64, observed_at=120)
+        self.assertNotEqual(first, d.shutdown_token)
+        for mount in ('home', 'root'):
+            d.on_line('[shutdown] ' + mount + ' clean read-only', observed_at=121)
+        d.on_line('[shutdown] requested poweroff token=' + first, observed_at=122)
+        self.assertIsNone(d.shutdown_action)
 
     def test_poweroff_needs_clean_mounts_and_no_fatal(self):
         d = self.driver
