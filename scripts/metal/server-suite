@@ -386,7 +386,8 @@ class Probe:
             result = self.ssh('/usr/bin/bssh ' + shlex.quote(self.host) + ' 22 ' + shlex.quote(self.user)
                               + ' synthetic-refused-password --smoke --known-hosts ' + self.known_guest[1]
                               + ' --host-key-alias ' + alias, posix=False)
-            if result.returncode != 77 or 'bssh: authentication failed' not in result.stdout:
+            if (result.returncode != 77 or 'bssh: authentication failed' not in result.stderr
+                    or 'bssh: authentication failed' in result.stdout):
                 raise ValueError('actual password request did not receive USERAUTH_FAILURE')
         elif name == 'wrong-key-refused':
             self.refusal(self.ssh('true', identity=self.wrong))
@@ -418,7 +419,8 @@ class Probe:
                     raise ValueError('exec exit status differs: expected ' + str(status))
             for script in ['/bin/echo ' + ' '.join(['arg'] * 64), '/bin/echo ' + 'x' * 4096]:
                 result = self.ssh(script, posix=False)
-                if result.returncode == 0 or 'argument list too long' not in result.stdout:
+                if (result.returncode != 1 or 'argument list too long' not in result.stderr
+                        or 'argument list too long' in result.stdout):
                     raise ValueError('oversized argv was executed or not reported')
             for arguments, message in [
                 (["/bin/echo"] + ['arg'] * 64, 'argument list too long'),
@@ -427,7 +429,7 @@ class Probe:
             ]:
                 script = 'exec(' + ','.join(json.dumps(arg) for arg in arguments) + ');'
                 result = self.ssh(script, posix=False)
-                if result.returncode == 0 or message not in result.stdout:
+                if result.returncode != 1 or message not in result.stderr or message in result.stdout:
                     raise ValueError('native exec accepted invalid argv or omitted its error')
             script = 'let r = exec("/bin/echo", "native-argv-ok"); console.log(r.stdout); exit(r.exitCode);'
             self.require(self.ssh(script, posix=False), 'native-argv-ok')
