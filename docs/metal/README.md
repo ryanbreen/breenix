@@ -875,7 +875,7 @@ ID (the install boot's ID), recorded as `userland <id>` in the slot's format-2 i
    the root image's one such name is the rust-std suite's second link to a file the migration copies.
 2. **The verification boot**, under the same lease: a persistent session whose answer is `persistent <boot> current
    commit`. The manager commits `NEXT` to `CURRENT` (the old current becomes `PREVIOUS`) and boots it; the boot
-   passes at the login prompt with the persistent stages below. Before publishing its root filesystem, the kernel
+   passes after the boot host authenticates over SSH as the site operator with strict host-key checking and reads init's started services, within 600 seconds of power-on (S21). Before publishing its root filesystem, the kernel
    requires the selected generation's matching completion record and directory mount points. It uses that tree's
    inode as `/`, including its `/etc`, with `/root` bound from the partition root and `/home` mounted from the separate home
    partition. Path lookup, relative paths and working-directory reconstruction use the selected namespace.
@@ -888,11 +888,35 @@ transaction before choosing a kernel; the embedded userland identity moves with 
 previous-slot boot. There is no second current-userland pointer to update across the two partitions. A legacy slot
 without a userland item still uses the flat partition root, which migration leaves intact.
 
-Published generations are retained, including those left by an interrupted verification boot. The installer removes
-unpublished `<id>.new` scratch directories whose IDs have no published generation on a retry and accepts a retry of a completed published ID without rewriting it. An incomplete published ID is refused. It does
-not guess which completed tree is safe to reclaim from the boot host's potentially stale slot record. Thus this
-version needs space for the retained trees plus the new tree; lack of space fails the upgrade while keeping the
-current tree. Reclamation must account for the manager's recovered slots before deleting a generation (#2117).
+Before copying an upgrade, the stub recovers the ESP slot transaction and reads the embedded boot intents of
+CURRENT, PREVIOUS and NEXT from the physical disk. An unreadable slot or malformed identity stops the install.
+The stub prints these recovered identities; the leased driver supplies them to the installer's console request,
+`BREENIX-SLOTS-1 <current> <previous> <next>`. The installer validates retained completion records and protects
+those generations and the in-flight generation. The host's `disk.json` does not authorize deletion.
+
+Reclamation discovers directory identities before changing paths. It removes unreferenced published trees and
+unpublished scratch, with checked directory barriers, while retaining trees that share directory identities with
+another candidate, a retained generation, or shared machine data. It does not follow symbolic links. Ambiguous
+directory aliases are retained and reported rather than traversed. Flat paths remain intact for legacy slots;
+`/root`, `/.breenix-shared` and the home partition remain outside generation reclamation. A retry can resume a
+partially deleted unreferenced tree. Lack of space still fails the upgrade while keeping the selected trees.
+
+The boot host's detached probe worker uses its private operator key; that key stays on the boot host. It pins the
+Ed25519 key against a protected bsshd log read over the leased SOL console for its first successful probe, then
+retains that authenticated pin in its private state directory, keyed by the system partition GUID and address.
+Once a verification boot reaches the protected console, its service log supplies a fresh pin; only a strict
+authenticated SSH success publishes it. The rotation recovery path has mocked unit coverage; physical
+key-rotation recovery remains unverified (#2356). Later verification boots use the cached pin to attempt
+SSH during POST as well as after kernel startup, including when the candidate cannot reach a console prompt. The
+probe requires an authenticated operator login and started services. The driver waits for that receipt instead of accepting a login
+prompt. A failed verification automatically swaps CURRENT and PREVIOUS and verifies the restored generation with
+the same probe and a fresh 600-second power-on deadline, under the inherited machine lease. Cancellation stops
+the flow. `upgrade-result.json` in the install boot's private store names the outcome and both probe receipts;
+`ssh-verification.json` belongs to each verification boot. The install boot's own exit status describes its copy
+phase, while the aggregate result describes the upgrade. `--inject upgrade-no-ssh` stages an invalid EFI loader
+only in NEXT to exercise the failed-candidate path. `--inject upgrade-service-down` instead removes bsshd from
+the candidate userland: its kernel, init and console boot, but SSH verification must fail and trigger rollback.
+Both faults leave the installation boot and previous slot intact.
 
 `metal-run install-persistent --rollback` is one persistent boot whose answer carries `rollback`: the manager swaps
 the current and previous slots and boots the new current. `metal-run boot --persistent --entry previous` boots the
@@ -1372,6 +1396,35 @@ in their private credentials store), lets the users suite's host-run `operator` 
 The **host file** (on the boot host): `METAL_INSTANCE`, `METAL_IMAGE`, `METAL_CPUS`, `METAL_MEMORY`, `METAL_LISTEN`
 (the published address and port), and the build container's `BUILD_INSTANCE`, `BUILD_REPO`, `BUILD_RUST_FORK`,
 `BUILD_CACHE`, `BUILD_ROOT`.
+
+## In-band hardware watchdog
+
+On x86 metal, SMBIOS Type 38 supplies the KCS data port and register spacing.
+The delivery stub and installed manager carry UEFI's SMBIOS entry-point pointer
+to the kernel in a GUID-identified ACPI UEFI data table (UEFI 2.10 Appendix O).
+The kernel validates the ACPI and SMBIOS entry-point checksums, table extents
+and structure lengths before decoding Type 38 (DMTF DSP0134, IPMI Appendix C1).
+A fixed KCS SPMI table is also supported when firmware provides one. A CPU-pinned kthread is its sole owner. The transport sends Get
+Device ID, Get Watchdog Timer, Set Watchdog Timer and Reset Watchdog Timer only
+([IPMI 2.0](https://www.intel.com/content/dam/www/public/us/en/documents/product-specifications/ipmi-v2-rev1-1-spec-errata-6-markup.pdf),
+sections 9 and 27, Appendix C3). The SMS/OS timer is 120 seconds, action hard
+reset, no pretimeout. Configuration and running state are read back. Each
+20-second round must complete uncached root superblock/group reads and root
+inode validation before feeding. A failed round retries without feeding; a blocked
+round or repeated failures let the timer expire. Timer readback detects lost
+configuration after a BMC restart and rearms only after successful health I/O.
+Ordinary supervised boots do not arm KCS, retaining the driver’s silence/NMI capture;
+the persistent target and explicit watchdog fault builds enable it. The
+BMC's expiry flag is reported before configuration clears it. No interrupt or
+syscall path feeds the timer.
+
+`boot --inject watchdog-feeder-hang|watchdog-health-hang` builds a watchdog
+fault-test kernel and stages its intent on a disposable RAM root. The production
+kernel has no fault-intent reader. After its trigger the driver keeps capturing
+for the 600-second SSH deadline, keeps the lease alive, and tells the manager to
+choose current persistent on the next boot. It sends no recovery power command
+or NMI during that observation. The server suite owns these boots and supplies
+the authenticated SSH receipt; see [watchdog cases](../suites/README.md#watchdog-recovery).
 
 ## Deploying and running
 

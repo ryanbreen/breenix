@@ -3,6 +3,8 @@
 //! This module provides the driver infrastructure for Breenix, including
 //! PCI enumeration and device-specific drivers.
 
+#[cfg(target_arch = "x86_64")]
+pub mod watchdog;
 pub mod ahci;
 #[cfg(target_arch = "x86_64")]
 pub mod bcm5720;

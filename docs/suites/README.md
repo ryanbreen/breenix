@@ -1426,6 +1426,57 @@ same kernel and tools commit. No attended action is a case.
 <!-- claim-lint:ok: scripts/metal/server-suite TimeCases defines these required assertions; this paragraph specifies acceptance, not a completed hardware result. -->
 
 
+For `server/remote-upgrade`, install the candidate, start a persistent baseline boot at that exact kernel and
+tools commit, and run:
+
+```sh
+server-suite --boot BASELINE --sha SHA --branch BRANCH --milestone server/remote-upgrade
+```
+
+The runner owns the boots it creates through `metal-run`, under the caller's branch-tools lock. It creates
+nonce-named sentinels in `/root` and the operator's home, records their SHA-256 values and the protected host-key
+fingerprint, then performs a good upgrade, an upgrade with a deliberately invalid NEXT loader, and a bootable upgrade
+with the candidate bsshd removed. The latter requires captured kernel entry and a console login prompt
+as well as actual failed SSH attempts before automatic rollback. Each case
+requires the install flow's own S21 result; the broken case requires automatic rollback, not a runner-issued
+rollback command. Each final default boot must select the expected paired userland and retain the pinned key and
+sentinel bytes. The category's other two cases compile the exact-head production installer on the boot host and
+execute its ENOSPC, I/O, interruption, paired-rollback and reclamation fault cases. The alias fixture uses
+real duplicate directory identities in a private Linux mount namespace and requires both retained data
+preservation and ordinary orphan/scratch deletion. Reclamation also requires the
+physical installer to report removal of the completed generation that falls out of the recovered slot references.
+A missing or unexecuted case
+fails. The five ordered case records and install/probe receipts are retained as `server-remote-upgrade.json` in
+the baseline boot's store. The runner removes its sentinels and stops its final boot through `metal-run`.
+These are automated host cases; they require no attended steps and do not establish torn-write durability on ext2.
+
+### Watchdog recovery
+
+`server/watchdog` runs from the boot host after `install-persistent` at the same
+commit and a leased persistent boot, using the command above with
+`--milestone server/watchdog --branch BRANCH` (use the install's source branch).
+It pins that install's SSH key from SOL, ends that
+baseline boot, and owns two sequential watchdog fault boots. The cases halt the
+feeder CPU and wedge the root filesystem writer respectively. Neither fault
+calls a reset routine. The health-check wedge leaves scheduling running while
+blocking the feeder's ordinary filesystem check.
+
+The independent fault thread waits 180 seconds from startup, even if watchdog
+initialization fails. The observation requires six successful 20-second feed rounds, the 120-second hard-reset configuration,
+the trigger, the manager selecting the same commit's current persistent slot,
+the system partition as root, the BMC's retained SMS/OS expiry flag, and an
+OpenSSH exec returning the new persistent boot ID with strict key checking within
+600 seconds of the trigger. No operator step contributes a result. A missing
+trigger, expiry, fresh identity or deadline fails. Power operations, NMI or a
+console gap before the SSH receipt fail; cleanup powers off only after the
+observation ends. A failing case still retains its private capture.
+
+The fault runs are `kind: fault-test`, built with only `watchdog_fault_inject`;
+ordinary boot-path scoring cannot accept them. Their `watchdog-verdict.json`
+records feed the baseline boot's `server-watchdog.json` category record. The
+host runner reports that populated category's milestone verdict, without claiming
+full-suite acceptance for the server's planned categories.
+
 ## Developer SDK
 
 `sdk` measures the Developer SDK effort in `docs/efforts/path.json`: our own applications
@@ -1586,6 +1637,36 @@ scripts/boot-interactive.sh --mode suite --suite gpu --gpu-gl --gate-timeout 900
 ./run.sh --parallels --suite gpu --gate-timeout 900
 ./run.sh --vmware --suite gpu --gate-timeout 900
 ```
+
+## Window manager
+
+`window-manager` begins E18 with 82 runnable baseline cases in thirteen populated categories:
+`input-core`, `input-devices`, `startup`, `composition`, `stacking`, `focus`, `pointer`,
+`geometry`, `lifecycle`, `recovery`, `clipboard`, `liveness` and `performance`.
+Incomplete milestones also measure empty `*-remaining` categories; the
+[scope ledger](../gui/window-manager-suite.md#baseline-scope-and-incomplete-milestones)
+lists the unwritten plan cases, which block acceptance through planned categories.
+Its executable is `/sbin/suite-window-manager`; `wm-client_test` is an independent GPU
+client, installed by the normal image layout. The [observation and transport contract](../gui/window-manager-suite.md)
+describes the literal expectations, input and clipboard operations, completion receipts
+and negative controls. Missing E18 layers fail with their specific operation or endpoint.
+
+The cases start the installed bwm. The suite defers its
+score panel until the end so it cannot overwrite a measured desktop. Full physical
+scanout and native completion records judge composition; client event logs judge routing.
+Production init desktop is used for supervision cases. QMP requests are input transport,
+and a successful host send cannot pass a case. The production-completion driver cases
+remain nonpassing until their replay path, input stream and real client delivery work.
+The manifest is the normal Vigil and suite-sequence input and requires a 3D GPU.
+
+Inside E18, run ARM64 QEMU with GL and its window open:
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite window-manager --gpu-gl --display --gate-timeout 1800
+```
+
+The normal mac-boot queue and Vigil registration apply. The plan's named case allowances
+cover the fixed performance and stress workloads; other cases retain ten seconds.
 
 ## Users & permissions
 

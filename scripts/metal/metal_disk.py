@@ -48,7 +48,7 @@ def config_2(action, size, partition, expected, root, url=''):
 
 
 def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite=None, idle_minutes=None, replug=False,
-          the_layout=None, operator=None):
+          the_layout=None, operator=None, no_ssh=False):
     """Reset the writable root for each boot, including unchanged userspace builds. `the_layout` is the layout an
     install boot's request writes before the stub stages this root; otherwise the recorded one, if any."""
     the_layout = the_layout or metal_persist.layout()
@@ -67,6 +67,15 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
     # this boot wrote, as well as consume fixtures needed by other suites.
     staged = metal_root.stage_root(image, mode, suite, site, hasher=inputs / 'sha512-crypt', writer=writer,
                                    idle_minutes=idle_minutes, replug=replug, operator=operator, power_token=m.power_token())
+    if no_ssh:
+        # Damage only the candidate's private userland before recording its digest.
+        # Its kernel, init and console still boot; the previous generation is untouched.
+        import subprocess
+        debugfs, = metal_root.require_e2fsprogs('debugfs')
+        subprocess.run([debugfs, '-w', '-R', 'rm /usr/sbin/bsshd', str(image)], check=True, capture_output=True)
+        check = subprocess.run([debugfs, '-R', 'stat /usr/sbin/bsshd', str(image)], check=True, capture_output=True)
+        if b'Inode:' in check.stdout or b'File not found' not in check.stderr:
+            raise ValueError('SSH fault did not remove the candidate daemon')
     facts = metal_root.write_install_record(image, boot_id)
     if 'consoleAccount' in staged:
         facts['consoleAccount'] = staged['consoleAccount']

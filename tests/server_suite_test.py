@@ -142,6 +142,20 @@ class HostServerScore(unittest.TestCase):
         records['cases'][-1]['result'] = 'FAIL'
         with self.assertRaises(ValueError): score()
 
+    def test_watchdog_requires_distinct_boots_for_the_named_cases(self):
+        records = dict(self.records, milestone='server/watchdog',
+                       cases=[dict(id='watchdog/' + name, result='PASS') for name, _ in host['WATCHDOG']],
+                       faultBoots=[dict(passed=True, commit=self.sha, boot=str(i), receipt=dict(case=name))
+                                   for i, (name, _) in enumerate(host['WATCHDOG'])])
+        def score():
+            return host['score'](self.manifest, self.path, records, self.serial, self.boot, self.sha, [])
+        self.assertTrue(score().startswith('PASS: server/watchdog'))
+        records['faultBoots'][1]['receipt']['case'] = 'feeder-hang'
+        with self.assertRaises(ValueError): score()
+        records['faultBoots'][1]['receipt']['case'] = 'health-hang'
+        records['faultBoots'][1]['boot'] = '0'
+        with self.assertRaises(ValueError): score()
+
     def test_cleanup_restores_exact_keys_without_guest_mktemp(self):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
@@ -616,6 +630,123 @@ class HostServerScore(unittest.TestCase):
         self.manifest['categories'][0]['cases'] = []
         with self.assertRaises(ValueError):
             host['score'](self.manifest, self.path, self.records, self.serial, self.boot, self.sha, ['KERNEL PANIC:'])
+
+
+class WatchdogRecovery(existing.StateTest):
+    def test_fault_launch_remains_ram_root_in_detached_driver(self):
+        for fault in existing.boot.WATCHDOG_FAULTS:
+            def launch(args, extra):
+                with patch.object(sys, 'argv', ['metal-boot', 'run', '--id', '20261023T000000Z-metal'] + extra), \
+                     patch.object(existing.boot, 'Driver') as driver:
+                    driver.return_value.run.return_value = 0
+                    self.assertEqual(existing.boot.main(), 0)
+                    self.assertIsNone(driver.call_args.args[0].disk)
+                return 0
+            with self.subTest(fault=fault), \
+                 patch.object(sys, 'argv', ['metal-boot', 'launch', '--payload', 'image', '--inject', fault]), \
+                 patch.object(existing.boot, 'launch', side_effect=launch):
+                self.assertEqual(existing.boot.main(), 0)
+
+    def setUp(self):
+        super().setUp()
+        self.sha = 'a' * 40
+        args = SimpleNamespace(id='20261023T000000Z-metal', mode='default', payload='image',
+                               target='main', task='', commit=self.sha, inject='watchdog-feeder-hang', nmi=False)
+        with patch.object(existing.m, 'load_site', return_value={}):
+            self.driver = existing.boot.Driver(args)
+        d = self.driver
+        d.create_record()
+        d.watchdog_trigger = 100
+        existing.m.write_json(d.dir / 'run.json', dict(toolsCommit=self.sha, watchdogRecoveredCommit=self.sha))
+        existing.m.write_text(d.dir / 'events.jsonl', '')
+        self.serial = ('[watchdog] armed seconds=120 action=hard-reset\n[watchdog] healthy feeds=6\n'
+                       '[init] log boot-id=1-2-3\n[watchdog-fault] trigger feeder-hang\n'
+                       '[storage] root partition: system synthetic\n[watchdog] previous-expired=1\n'
+                       '[init] log boot-id=4-5-6\n')
+        existing.m.write_text(d.dir / 'serial.txt', self.serial)
+        self.receipt = dict(boot=d.id, commit=self.sha, case='feeder-hang', trigger=100, sshAt=450, bootId='4-5-6')
+
+    def test_trigger_round_trip_retains_exact_driver_timestamp(self):
+        d = self.driver
+        stamp = 100.123456
+        d.watchdog_trigger = None
+        with patch.object(existing.m, 'update_lease'):
+            d.on_watchdog_line('[watchdog-fault] trigger feeder-hang', stamp)
+        event = json.loads((d.dir / 'events.jsonl').read_text())
+        self.assertNotEqual(event['t'], stamp)
+        self.assertEqual(event['trigger'], stamp)
+        self.assertTrue(d.watchdog_verdict(dict(self.receipt, trigger=event['trigger'])))
+        self.assertFalse(d.watchdog_verdict(dict(self.receipt, trigger=event['t'])))
+
+    def test_baseline_lease_loss_refuses_destructive_launch(self):
+        remote = lambda *a, **k: SimpleNamespace(returncode=0, stdout=json.dumps(dict(id='other')))
+        target = host['Watchdog'](None, None, remote, None, None, 'baseline', self.sha, 'fixture')
+        with patch.dict(target.run_case.__globals__, command=lambda *a, **k: self.fail('launched after lease loss')):
+            with self.assertRaisesRegex(ValueError, 'baseline lost'):
+                target.run_case('feeder-hang')
+
+    def test_completed_fault_waits_for_its_lease_release(self):
+        boot = self.driver.id
+        trigger = 100.123456
+        receipt = dict(self.receipt, sshAt=200, trigger=trigger)
+        saved = False
+        leases = []
+        def remote(*args, **kwargs):
+            nonlocal saved
+            if args[0] == 'tee':
+                saved = True
+                self.assertEqual(json.loads(kwargs['input']), receipt)
+                return SimpleNamespace(returncode=0)
+            leases.append(1)
+            return SimpleNamespace(returncode=0 if len(leases) == 1 else 1,
+                                   stdout=json.dumps(dict(id=boot)))
+        probe = SimpleNamespace(ssh=lambda _: SimpleNamespace(returncode=0, stdout='4-5-6'))
+        target = host['Watchdog'](probe, None, remote, None, None, 'baseline', self.sha, 'fixture')
+        target.stopped = True
+        def read(_, name):
+            return {'events.jsonl': json.dumps(dict(event='watchdog-trigger', t=round(trigger, 3), trigger=trigger)),
+                    'serial.txt': '[watchdog] previous-expired=1',
+                    'run.json': json.dumps(dict(watchdogRecoveredCommit=self.sha)),
+                    'ended': 'done' if saved else '',
+                    'watchdog-verdict.json': json.dumps(dict(passed=True, boot=boot, commit=self.sha, receipt=receipt))}[name]
+        target.read = read
+        launch = lambda *a, **k: SimpleNamespace(returncode=0, stdout=json.dumps(dict(id=boot)))
+        with patch.dict(target.run_case.__globals__, command=launch), \
+             patch.object(host['time'], 'time', return_value=200), patch.object(host['time'], 'sleep'):
+            target.run_case('feeder-hang')
+        self.assertEqual(len(leases), 2)
+
+    def test_late_watchdog_evidence_is_reannounced_to_the_importer(self):
+        directory = self.driver.dir
+        existing.m.write_text(existing.m.STATE / 'finished.jsonl', json.dumps(dict(id=directory.name, seq=8)) + '\n')
+        verdict = dict(milestones={'server/watchdog': dict(passed=True)})
+        with patch.object(sys, 'argv', ['-c', str(directory)]), \
+             patch.dict(sys.modules, {'metal_score': SimpleNamespace(score=lambda _: verdict)}):
+            exec(host['WATCHDOG_ARCHIVE'], {})
+        entries = [json.loads(line) for line in (existing.m.STATE / 'finished.jsonl').read_text().splitlines()]
+        self.assertEqual(entries[-1], dict(id=directory.name, seq=9))
+        self.assertEqual(existing.m.read_json(directory / 'milestone-verdict.json'), verdict)
+
+    def test_expiry_and_fresh_persistent_ssh_are_required(self):
+        d = self.driver
+        self.assertTrue(d.watchdog_verdict(self.receipt))
+        for missing in ('[watchdog] previous-expired=1', '[watchdog] healthy feeds=6',
+                        '[storage] root partition: system ', '[init] log boot-id=4-5-6'):
+            existing.m.write_text(d.dir / 'serial.txt', self.serial.replace(missing, 'missing'))
+            self.assertFalse(d.watchdog_verdict(self.receipt))
+        existing.m.write_text(d.dir / 'serial.txt', self.serial)
+        self.assertFalse(d.watchdog_verdict(dict(self.receipt, sshAt=701)))
+        self.assertFalse(d.watchdog_verdict(dict(self.receipt, trigger=101)))
+        self.assertFalse(d.watchdog_verdict(dict(self.receipt, bootId='1-2-3')))
+
+    def test_lab_intervention_cannot_pass_and_observation_sends_no_power(self):
+        d = self.driver
+        for event in ('power-on', 'power-off', 'nmi', 'console-gap-start', 'nmi-capture-done'):
+            existing.m.write_text(d.dir / 'events.jsonl', json.dumps(dict(event=event, t=200)) + '\n')
+            self.assertFalse(d.watchdog_verdict(self.receipt))
+        with patch.object(existing.m, 'rf') as power, patch.object(existing.m, 'now', return_value=300):
+            d.check_deadlines()
+            power.assert_not_called()
 
 
 class ConsoleEchoTests(unittest.TestCase):

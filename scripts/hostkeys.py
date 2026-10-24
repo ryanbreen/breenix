@@ -75,6 +75,9 @@ REQUEST = re.compile(r'^SUITE ([a-z0-9]+(?:-[a-z0-9]+)*) HOSTKEY ([a-z0-9]+(?:-[
 POINTER_REQUEST = re.compile(r'^USB POINTER HOST seq=(\d+) axes=(absolute|relative) x=(\d+) y=(\d+) buttons=([0-7])'
                              r' wheel=(-?1|0)\r?$')
 
+SUITE_POINTER = re.compile(r'^SUITE ([a-z0-9-]+) HOSTPOINTER ([a-z0-9-]+/[a-z0-9-]+) seq=(\d+)'
+                           r' x=(\d+) y=(\d+) width=(\d+) height=(\d+) buttons=([0-7]) wheel=(-?1|0)\r?$')
+
 MODIFIERS = ('ctrl', 'alt', 'shift', 'super', 'rctrl', 'ralt')
 NAMED = ('left', 'right', 'up', 'down', 'pageup', 'pagedown', 'home', 'end', 'insert', 'delete', 'enter', 'tab',
          'backspace', 'esc', 'space', 'capslock')
@@ -135,6 +138,32 @@ class QMPKeys:
                         break
         finally:
             sock.close()
+
+    def pointer(self, x, y, buttons, wheel, axes, width=32768, height=32768):
+        if axes != 'absolute' or width < 2 or height < 2 or not (0 <= x < width and 0 <= y < height):
+            raise NoPath('QMP tablet requires absolute coordinates within its declared mode')
+        events = [{'type': 'abs', 'data': {'axis': axis, 'value': value}}
+                  for axis, value in (('x', (x * 32767 + width - 2) // (width - 1)),
+                                      ('y', (y * 32767 + height - 2) // (height - 1)))]
+        events += [{'type': 'btn', 'data': {'button': name, 'down': bool(buttons & bit)}}
+                   for name, bit in (('left', 1), ('right', 2), ('middle', 4))]
+        if wheel:
+            events += [{'type': 'btn', 'data': {'button': 'wheel-up' if wheel > 0 else 'wheel-down', 'down': down}}
+                       for down in (True, False)]
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.8)
+            sock.connect(self.path)
+            stream = sock.makefile('rw')
+            json.loads(stream.readline())
+            for command, args in (('qmp_capabilities', {}), ('input-send-event', {'events': events})):
+                stream.write(json.dumps({'execute': command, 'arguments': args}) + '\n')
+                stream.flush()
+                while True:
+                    reply = json.loads(stream.readline())
+                    if 'error' in reply:
+                        raise RuntimeError('QMP ' + command + ': ' + str(reply['error']))
+                    if 'return' in reply:
+                        break
 
 
 class ParallelsKeys:
@@ -419,6 +448,30 @@ class Watcher:
             self.line(line)
 
     def line(self, line):
+        suite_pointer = SUITE_POINTER.fullmatch(line)
+        if suite_pointer:
+            suite, case, seq, *numbers = suite_pointer.groups()
+            if self.suite and suite != self.suite:
+                return
+            identity = (suite, case, int(seq))
+            if identity in self.seen:
+                return
+            self.seen.add(identity)
+            x, y, width, height, buttons, wheel = map(int, numbers)
+            try:
+                if not (width >= 2 and height >= 2 and 0 <= x < width and 0 <= y < height):
+                    raise ValueError('pointer outside declared mode')
+                if isinstance(self.keys, QMPKeys):
+                    self.keys.pointer(x, y, buttons, wheel, 'absolute', width, height)
+                else:
+                    send = getattr(self.keys, 'pointer', None)
+                    if send is None:
+                        raise NoPath('this backend has no pointer transport')
+                    send(x, y, buttons, wheel, 'absolute')
+                self.log('[hostpointer] case=%s seq=%s sent via %s' % (case, seq, self.name))
+            except (NoPath, OSError, RuntimeError, ValueError) as error:
+                self.log('[hostpointer] case=%s seq=%s failed: %s' % (case, seq, error))
+            return
         pointer = POINTER_REQUEST.fullmatch(line)
         if pointer:
             seq, axes, x, y, buttons, wheel = pointer.groups()

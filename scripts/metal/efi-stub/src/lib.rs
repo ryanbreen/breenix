@@ -6,7 +6,10 @@
 pub mod bootdisk;
 pub mod com1;
 pub mod files;
+pub mod firmware;
 pub mod http;
 pub mod uefi;
 
 pub mod slot_transaction;
+
+pub mod slot_store;

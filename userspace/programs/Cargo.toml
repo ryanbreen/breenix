@@ -780,6 +780,14 @@ name = "suite-gpu"
 path = "src/suite_gpu.rs"
 
 [[bin]]
+name = "suite-window-manager"
+path = "src/suite_window_manager.rs"
+
+[[bin]]
+name = "wm-client_test"
+path = "src/wm_client.rs"
+
+[[bin]]
 name = "suite-console"
 path = "src/suite_console.rs"
 

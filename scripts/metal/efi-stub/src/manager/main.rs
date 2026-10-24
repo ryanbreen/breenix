@@ -280,6 +280,7 @@ impl<'a> Manager<'a> {
 }
 
 unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
+    metal_efi::firmware::publish(system);
     let boot = &*(*system).boot_services;
     let runtime = &*(*system).runtime_services;
     // The menu waits for the operator as long as it takes; the firmware's watchdog is armed again before a start.

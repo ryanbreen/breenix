@@ -794,3 +794,58 @@ fn nmi_entries_cover_the_full_processor_capacity() {
         assert!(census.local_nmi_for(cpu).is_some(), "missing NMI pin for CPU {cpu}");
     }
 }
+
+fn kcs_firmware(v3: bool, spacing: u8) -> Image {
+    let mut image = Image::new();
+    let handoff = IMAGE_BASE + 0x400;
+    let entry = IMAGE_BASE + 0x500;
+    let table = IMAGE_BASE + 0x600;
+    put_rsdp_v1(&mut image, RSDT);
+    put_rsdt(&mut image, RSDT, &[handoff]);
+    put_sdt_header(&mut image, handoff, b"UEFI", 62);
+    image.put(handoff + 36, &[0x0b,0x76,0xb1,0x32,0x04,0x68,0x9c,0x4f,0xab,0x21,0x67,0xf5,0x8f,0x56,0x42,0xe1]);
+    image.put(handoff + 52, &54u16.to_le_bytes());
+    image.put_u64(handoff + 54, entry);
+    image.seal(handoff, 62, handoff + 9);
+    if v3 {
+        image.put(entry, b"_SM3_");
+        image.put(entry + 6, &[24]);
+        image.put_u32(entry + 12, 26);
+        image.put_u64(entry + 16, table);
+        image.seal(entry, 24, entry + 5);
+    } else {
+        image.put(entry, b"_SM_");
+        image.put(entry + 5, &[31]);
+        image.put(entry + 16, b"_DMI_");
+        image.put(entry + 22, &26u16.to_le_bytes());
+        image.put_u32(entry + 24, table as u32);
+        image.seal(entry + 16, 15, entry + 21);
+        image.seal(entry, 31, entry + 4);
+    }
+    image.put(table, &[38,18,0,0,1,0x20,0x20,0xff]);
+    image.put_u64(table + 8, 0x701); // synthetic I/O base 0x700
+    image.put(table + 16, &[spacing << 6, 0]);
+    image.put(table + 20, &[127,4,0,0,0,0]);
+    image
+}
+
+#[test]
+fn kcs_uses_smbios_entry_point_and_register_spacing() {
+    for v3 in [false, true] {
+        for (spacing, stride) in [(0,1),(1,4),(2,16)] {
+            let image = kcs_firmware(v3, spacing);
+            assert_eq!(acpi::read_kcs_ports(Some(RSDP), image.physical_memory_offset()), Some((0x700, 0x700 + stride)));
+        }
+    }
+}
+
+#[test]
+fn kcs_refuses_bad_entry_checksum_and_truncated_structure() {
+    let mut image = kcs_firmware(true, 0);
+    image.put(IMAGE_BASE + 0x500 + 5, &[1]);
+    assert_eq!(acpi::read_kcs_ports(Some(RSDP), image.physical_memory_offset()), None);
+    let mut image = kcs_firmware(true, 0);
+    image.put_u32(IMAGE_BASE + 0x500 + 12, 8);
+    image.seal(IMAGE_BASE + 0x500, 24, IMAGE_BASE + 0x500 + 5);
+    assert_eq!(acpi::read_kcs_ports(Some(RSDP), image.physical_memory_offset()), None);
+}

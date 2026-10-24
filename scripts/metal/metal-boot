@@ -62,6 +62,7 @@ PERSIST_DONE = 'metal-stub: persistent install request complete'
 INSTALL_DONE = '[persistent] install complete: '
 INSTALL_FAILED = '[persistent] install failed: '
 FENCE_FAULT = 'fence-out-of-partition'
+WATCHDOG_FAULTS = ('watchdog-feeder-hang', 'watchdog-health-hang')
 SESSION_CEILING_SECONDS = 4 * 3600
 
 
@@ -177,6 +178,7 @@ class Driver:
         self.redact = m.Redactor(self.site)
         self.unit = unit_name(self.id)
         self.tmux = ['tmux', '-L', 'metal-' + self.id]
+        self.watchdog_trigger = None
         self.t0 = None
         self.claimed = False
         self.lost = False
@@ -196,6 +198,10 @@ class Driver:
         self.run_verified = 0
         self.run_failure = None
         self.persist = None
+        self.slot_userlands = {}
+        self.slot_userlands_complete = False
+        self.slot_refs_sent = False
+        self.slot_confirmations = set()
         self.last_serial = None
         self.first_text = False
         self.kernel_started = None
@@ -266,7 +272,7 @@ class Driver:
         target = {'main': {}}
         if self.args.target.startswith('branch:'):
             target = {'branch': {'name': self.args.target.split(':', 1)[1]}}
-        fault = xhci_fault(self.args) or self.args.inject in (FENCE_FAULT, 'panic-reboot')
+        fault = xhci_fault(self.args) or self.args.inject in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS)
         kind = ('fault-test' if fault else 'persistent' if persistent(self.args)
                 else 'console-session' if session(self.args)
                 else {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test'))
@@ -283,6 +289,7 @@ class Driver:
                'entry': getattr(self.args, 'entry', None) if persistent(self.args) else None,
                'slotAction': getattr(self.args, 'slot_action', None) if persistent(self.args) else None,
                'adopted': bool(getattr(self.args, 'adopt', False)),
+               'upgradeParent': getattr(self.args, 'upgrade_parent', None),
                'run': getattr(self.args, 'run', None) or None,
                'input': input_kind(self.args),
                'session': session(self.args),
@@ -299,6 +306,7 @@ class Driver:
     def holder(self):
         """The lease holder record; a persistent boot's names the entry and slot action the manager is told."""
         holder = {'id': self.id, 'unit': self.unit, 'mode': self.args.mode, 'payload': self.args.payload,
+                  'upgradeParent': getattr(self.args, 'upgrade_parent', None),
                   'kind': 'persistent' if persistent(self.args) else 'console-session' if session(self.args) else 'boot'}
         if persistent(self.args):
             holder.update(entry=getattr(self.args, 'entry', None) or 'current',
@@ -442,9 +450,9 @@ class Driver:
             return
         build = m.read_json(inputs / 'build.json', {})
         # Only an xHCI fault boot takes a fault-test kernel and only a tests boot the testing kernel; neither takes another.
-        features = (['xhci_fault_inject'] if xhci_fault(self.args) else ['block_fence_inject'] if self.args.inject == FENCE_FAULT
+        features = (['watchdog_fault_inject'] if self.args.inject in WATCHDOG_FAULTS else ['xhci_fault_inject'] if xhci_fault(self.args) else ['block_fence_inject'] if self.args.inject == FENCE_FAULT
                     else ['server_reboot_fault'] if self.args.inject == 'panic-reboot' else ['testing'] if self.args.mode == 'tests' else [])
-        profile = {'xhci_fault_inject': 'fault-test', 'block_fence_inject': 'fault-test', 'server_reboot_fault': 'fault-test',
+        profile = {'watchdog_fault_inject': 'fault-test', 'xhci_fault_inject': 'fault-test', 'block_fence_inject': 'fault-test', 'server_reboot_fault': 'fault-test',
                    'testing': 'testing'}.get(''.join(features), 'production')
         if build.get('commit') != self.args.commit or build.get('profile') != profile or build.get('features') != features:
             raise Finish(m.EXIT_CANCELLED, f'build provenance differs from the requested {profile} commit')
@@ -476,7 +484,8 @@ class Driver:
                 install_partition=the_layout['partitions']['test']['guid'] if the_layout and disk == 'install' else None,
                 idle_minutes=getattr(self.args, 'idle_minutes', 30) if session(self.args) else None,
                 replug=self.args.mode == 'console' and not session(self.args) and not xhci_fault(self.args),
-                xhci_fault=xhci_fault(self.args), power_token=self.shutdown_token)
+                xhci_fault=xhci_fault(self.args), power_token=self.shutdown_token,
+                watchdog_fault=self.args.inject.removeprefix('watchdog-') if self.args.inject in WATCHDOG_FAULTS else None)
             if disk == 'install':
                 write = self.delivery['root']['diskWrite']
                 m.write_json(self.dir / 'disk-write.json', write)
@@ -596,7 +605,12 @@ class Driver:
         scratch = self.stage / 'persist'
         scratch.mkdir(parents=True, exist_ok=True)
         slot = scratch / 'next.img'
-        metal_persist.slot_image(slot, esp_files, the_layout, scratch, self.id)
+        slot_files = dict(esp_files)
+        if self.args.inject == 'upgrade-no-ssh':
+            broken = scratch / 'broken-loader.efi'
+            broken.write_bytes(b'deliberately invalid verification bootloader\n')
+            slot_files['efi/boot/bootx64.efi'] = broken
+        metal_persist.slot_image(slot, slot_files, the_layout, scratch, self.id)
         note = scratch / 'next.txt'
         note.write_text(metal_persist.slot_note(self.args.commit, self.id))
         manager_files = {'efi/breenix/bootmgr.efi': manager, 'efi/boot/bootx64.efi': manager}
@@ -605,7 +619,8 @@ class Driver:
         # the request is done.
         facts, suite_files = metal_disk.stage(self.dir, inputs, self.id, self.args.commit, self.site, build,
                                               mode='default', the_layout=the_layout,
-                                              operator=metal_root.operator_account(self.site))
+                                              operator=metal_root.operator_account(self.site),
+                                              no_ssh=self.args.inject == 'upgrade-service-down')
         self.delivery['diskRoot'] = facts
         files = dict(esp_files)
         files.update(suite_files)
@@ -1070,10 +1085,11 @@ class Driver:
                 and self.kernel_started and 'manager-slot' in self.seen and self.fatal_at is None):
             self.event('requested-reboot-ready', observed_at=observed_at, commit=self.args.commit)
             self.requested_reset_at = None
+        self.on_watchdog_line(line, observed_at)
         self.on_persist_line(line, observed_at)
         if BOOTLOADER_LINE in line and self.kernel_started is not None:
             self.on_reset(observed_at)
-            if session(self.args) and persistent(self.args):
+            if self.watchdog_trigger is not None or (session(self.args) and persistent(self.args)):
                 # The operator restarted the persistent install; the session goes on with the new boot.
                 self.event('persistent-restart', observed_at=observed_at, seconds=seconds)
                 self.kernel_started = None
@@ -1136,11 +1152,13 @@ class Driver:
 
     def maybe_complete(self, observed_at, seconds):
         """Ends the boot once its final marker, its measured stages and its disk evidence have arrived."""
+        if self.args.inject in WATCHDOG_FAULTS: return
         if (self.final_marker and self.final_seen and not any(self.required_stages)
                 and self.disk_evidence_seen()
                 and not session(self.args)
                 and (not getattr(self.args, 'run', None) or self.run_done)
                 and (self.args.mode != 'console' or self.console_done)
+                and (not getattr(self.args, 'upgrade_parent', None) or self.ssh_verified())
                 and self.fatal_at is None and not self.completion_reported):
             self.completion_reported = True
             self.event('final-marker', observed_at=observed_at, seconds=seconds)
@@ -1155,6 +1173,22 @@ class Driver:
 
     def on_persist_line(self, line, observed_at):
         """The install boot's request and migration (README, "Install and upgrade")."""
+        if self.args.mode == 'persistent-install':
+            if found := re.fullmatch(r'metal-stub: slot userland: (CURRENT|PREVIOUS|NEXT) ([A-Za-z0-9-]{1,64})', line):
+                if found[1] in self.slot_userlands:
+                    raise Finish(m.EXIT_SHORT, 'duplicate recovered slot reference')
+                self.slot_userlands[found[1]] = found[2]
+            if line == 'metal-stub: slot userlands complete':
+                if set(self.slot_userlands) != {'CURRENT', 'PREVIOUS', 'NEXT'}:
+                    raise Finish(m.EXIT_SHORT, 'incomplete recovered slot references')
+                self.slot_userlands_complete = True
+                self.event('recovered-userlands', references=self.slot_userlands)
+            if '[persistent] recovered slot references needed' in line and not self.slot_refs_sent:
+                if not self.slot_userlands_complete:
+                    raise Finish(m.EXIT_SHORT, 'installer has no recovered slot references')
+                refs = 'BREENIX-SLOTS-1 ' + ' '.join(self.slot_userlands[k] for k in ('CURRENT', 'PREVIOUS', 'NEXT'))
+                self.console_send(refs, paced=True)
+                self.slot_refs_sent = True
         if self.persist and PERSIST_DONE in line and 'persist-written' not in self.seen:
             self.seen.add('persist-written')
             slot = self.persist['slot']
@@ -1177,13 +1211,13 @@ class Driver:
     def on_slot_line(self, line, observed_at):
         """The manager's slot commit or rollback, read from the EFI system partition after it renamed the slots."""
         found = re.search(r'breenix-manager: slot (commit|rollback): current ([0-9a-f]{40}), previous ([0-9a-f]{40}|empty)', line)
-        if not found:
+        if not found or found.group(0) in self.slot_confirmations:
             return
         record = metal_persist.read_disk()
         slots = dict(record.get('slots') or {})
         if found.group(1) == 'commit' and slots.get('next', {}).get('commit') == found.group(2):
             slots['previous'], slots['current'] = slots.get('current'), slots.pop('next')
-        elif found.group(1) == 'rollback' and (slots.get('current') or {}).get('commit') != found.group(2):
+        elif found.group(1) == 'rollback':
             slots['current'], slots['previous'] = slots.get('previous'), slots.get('current')
         if (slots.get('current') or {}).get('commit') != found.group(2):
             self.event('slot-record-differs', observed_at=observed_at, current=found.group(2))
@@ -1192,6 +1226,7 @@ class Driver:
         if previous != found.group(3):
             raise Finish(m.EXIT_SHORT, "the manager's previous slot differs from its record")
         metal_persist.update_disk(slots={k: v for k, v in slots.items() if v})
+        self.slot_confirmations.add(found.group(0))
         # Consume a successful action before the next manager query can request another swap.
         with m.locked('lease'):
             lease = m.read_lease()
@@ -1202,6 +1237,15 @@ class Driver:
 
     def on_slot_boot(self, line, observed_at):
         found = re.fullmatch(r'breenix-manager: booting (current|previous) ([0-9a-f]{40})', line)
+        if self.watchdog_trigger is not None and found:
+            entry, commit = found.groups()
+            if entry != 'current' or commit != self.args.commit:
+                raise Finish(m.EXIT_SHORT, 'watchdog returned to another persistent slot')
+            run = m.read_json(self.dir / 'run.json', {})
+            run['watchdogRecoveredCommit'] = commit
+            m.write_json(self.dir / 'run.json', run)
+            self.event('watchdog-persistent', observed_at=observed_at, commit=commit)
+            return
         if not persistent(self.args) or not found:
             return
         entry, commit = found.groups()
@@ -1426,7 +1470,7 @@ class Driver:
                 self.phase('No image staged: the request was refused')
             elif self.complete_at is not None:
                 self.event('image-refused-again', observed_at=observed_at, seconds=elapsed)
-                if self.kernel_started is not None:
+                if self.kernel_started is not None and self.watchdog_trigger is None:
                     self.on_reset(observed_at)
                     raise Finish(m.EXIT_SHORT, 'the machine reset after the kernel started')
             return
@@ -1512,7 +1556,7 @@ class Driver:
                 # that is POST again, so the machine reset.
                 if self.kernel_started is not None and key[0] not in RUNNING_STATES:
                     self.on_reset(observed_at)
-                    if session(self.args) and persistent(self.args):
+                    if self.watchdog_trigger is not None or (session(self.args) and persistent(self.args)):
                         self.event('persistent-restart', observed_at=observed_at, state=key[0])
                         self.kernel_started = None
                     else:
@@ -1541,6 +1585,10 @@ class Driver:
         deadline after that, a check boot its mode deadline."""
         if self.requested_reset_at is not None and m.now() - self.requested_reset_at > 600:
             raise Finish(m.EXIT_HUNG, 'requested reboot did not return to SSH', hung=True)
+        if getattr(self.args, 'upgrade_parent', None):
+            self.maybe_complete(m.now(), self.since_power())
+            if self.t0 is not None and self.since_power() >= 600:
+                raise Finish(m.EXIT_SHORT, 'S21 SSH verification deadline passed')
         if self.lease_ceiling and m.now() >= self.lease_ceiling:
             raise Finish(m.EXIT_HUNG, 'the attempt ceiling passed', hung=True)
         if self.fatal_at and m.now() - self.fatal_at >= (120 if self.args.inject == 'panic-reboot' else FATAL_GRACE_SECONDS):
@@ -1558,7 +1606,57 @@ class Driver:
         if self.kernel_started and m.now() - self.kernel_started > MODE_DEADLINE_SECONDS['persistent']:
             raise Finish(m.EXIT_SHORT, 'the mode deadline passed: ' + self.persistent_missing())
 
+    def on_watchdog_line(self, line, observed_at):
+        if self.args.inject not in WATCHDOG_FAULTS: return
+        expected = '[watchdog-fault] trigger ' + self.args.inject.removeprefix('watchdog-')
+        if line != expected: return
+        if self.watchdog_trigger is not None:
+            raise Finish(m.EXIT_SHORT, 'duplicate watchdog fault')
+        self.watchdog_trigger = observed_at
+        # This only changes the manager's one-shot answer. No power operation is
+        # sent: the armed BMC must perform the reset itself.
+        m.update_lease(self.id, watchdogRecovery=True, ceilingAt=observed_at + 660)
+        self.event('watchdog-trigger', observed_at=observed_at, fault=self.args.inject, trigger=observed_at)
+
+    def watchdog_verdict(self, receipt):
+        serial = (self.dir / 'serial.txt').read_text()
+        events = [json.loads(row) for row in (self.dir / 'events.jsonl').read_text().splitlines()]
+        run = m.read_json(self.dir / 'run.json', {})
+        trigger = self.watchdog_trigger
+        at = receipt.get('sshAt', 0)
+        after = serial.split('[watchdog-fault] trigger ', 1)[-1]
+        before = serial.split('[watchdog-fault] trigger ', 1)[0]
+        forbidden = {'power-on', 'power-off', 'power-off-observed', 'nmi', 'nmi-capture-done',
+                     'console-gap-start', 'driver-error', 'persistent-verification-error'}
+        assisted = any(e.get('event') in forbidden and trigger <= e['t'] <= at for e in events)
+        ids = re.findall(r'\[init\] log boot-id=([a-f0-9-]+)', serial)
+        return (receipt.get('boot') == self.id and receipt.get('commit') == self.args.commit
+                and receipt.get('case') == self.args.inject.removeprefix('watchdog-')
+                and receipt.get('trigger') == trigger
+                and 0 < at - trigger <= 600 and at <= m.now() + 1
+                and run.get('toolsCommit') == self.args.commit
+                and run.get('watchdogRecoveredCommit') == self.args.commit
+                and '[watchdog] armed seconds=120 action=hard-reset' in before
+                and '[watchdog] healthy feeds=6' in before
+                and '[watchdog] previous-expired=1' in after
+                and '[storage] root partition: system ' in after
+                and len(ids) >= 2 and ids[0] != ids[-1] and receipt.get('bootId') == ids[-1]
+                and not assisted and not self.gap and self.fatal_at is None)
+
     def check_deadlines(self):
+        if self.watchdog_trigger is not None:
+            receipt = m.read_json(self.dir / 'watchdog-ssh.json', {})
+            if receipt:
+                passed = self.watchdog_verdict(receipt)
+                m.write_json(self.dir / 'watchdog-verdict.json', dict(
+                    passed=passed, commit=self.args.commit, boot=self.id, receipt=receipt))
+                self.event('watchdog-verdict', passed=passed)
+                raise Finish(m.EXIT_DONE if passed else m.EXIT_SHORT, 'watchdog recovery observation complete')
+            if m.now() - self.watchdog_trigger > 600:
+                m.write_json(self.dir / 'watchdog-verdict.json', dict(passed=False, commit=self.args.commit,
+                    boot=self.id, reason='no unaided SSH within 600 seconds'))
+                raise Finish(m.EXIT_SHORT, 'watchdog recovery deadline passed')
+            return
         if persistent(self.args):
             return self.persistent_deadlines()
         elapsed = self.since_power()
@@ -1806,7 +1904,7 @@ class Driver:
                 self.power_off(False)
             status = m.EXIT_INCOMPLETE if self.t0 is not None else m.EXIT_CANCELLED
         # Persistent sessions are scored like default boots; console sessions and fault tests never are.
-        scored = (not session(self.args) or persistent(self.args)) and not xhci_fault(self.args) and self.args.inject not in (FENCE_FAULT, 'panic-reboot')
+        scored = (not session(self.args) or persistent(self.args)) and not xhci_fault(self.args) and self.args.inject not in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS)
         if scored and (self.dir / 'definition/docs/metal/boot-path.json').is_file():
             try:
                 verdict = metal_score.score(self.dir)
@@ -1836,7 +1934,7 @@ class Driver:
                 self.event('persistent-verification-error', error=error.__class__.__name__)
                 m.release_lease(self.id)
                 return m.EXIT_SHORT
-        self.cleanup(status)
+        self.cleanup(status, keep_lease=bool(getattr(self.args, 'upgrade_parent', None)))
         return status
 
     def adopt(self):
@@ -1849,21 +1947,65 @@ class Driver:
         self.event('lease-adopted')
         threading.Thread(target=self.heartbeat, daemon=True).start()
 
+    def ssh_verified(self):
+        receipt = m.read_json(self.dir / 'ssh-verification.json', {}) or {}
+        if receipt.get('boot') != self.id or receipt.get('powerOn') != round(self.t0, 3):
+            return False
+        if receipt.get('passed') is not True or any(receipt.get(field) is not True for field in
+                                                  ('authenticated', 'strictHostKey', 'servicesStarted')):
+            raise Finish(m.EXIT_SHORT, 'S21 SSH probe failed')
+        if receipt.get('generation') != getattr(self.args, 'expected_generation', None):
+            raise Finish(m.EXIT_SHORT, 'SSH answered from a different userland generation')
+        if not self.t0 < receipt.get('completedAt', 0) <= self.t0 + 600:
+            raise Finish(m.EXIT_SHORT, 'S21 SSH probe finished outside its deadline')
+        return True
+
     def continue_verification(self):
-        """The install's second boot, under the same lease: the manager commits the new slot and boots it, and the
-        boot ends at the login prompt with the persistent stages (README, "Install and upgrade")."""
-        boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
-        while m.boot_dir(boot_id).exists():
-            time.sleep(1)
-            boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
-        args = argparse.Namespace(**(vars(self.args) | dict(
-            id=boot_id, mode='persistent', payload='persistent', suite=None, disk=None, session=False,
-            input=None, inject=None, entry='current', slot_action='commit', verify=True, run=None, adopt=False,
-            commit='')))
-        child = Driver(args)
-        child.unit = self.unit
-        self.event('persistent-verification-next', verification=boot_id)
-        return child.run(inherited=self.id)
+        """Promote, probe over SSH, and restore the previous paired slot on failure (S21)."""
+        slots = metal_persist.read_disk().get('slots', {})
+        result = dict(install=self.id, toolsCommit=tools_commit(), recoveredReferences=self.slot_userlands,
+                      candidateGeneration=(slots.get('next') or {}).get('installedBy'),
+                      previousGeneration=(slots.get('current') or {}).get('installedBy'))
+        last = self.id
+        try:
+            for action in ('commit', 'rollback'):
+                boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+                while m.boot_dir(boot_id).exists():
+                    time.sleep(1)
+                    boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+                args = argparse.Namespace(**(vars(self.args) | dict(
+                    id=boot_id, mode='persistent', payload='persistent', suite=None, disk=None, session=False,
+                    input=None, inject=None, entry='current', slot_action=action, verify=True, run=None, adopt=False,
+                    upgrade_parent=self.id, expected_generation=result['candidateGeneration' if action == 'commit' else 'previousGeneration'], commit='')))
+                child = Driver(args)
+                child.unit = self.unit
+                self.event('persistent-verification-next' if action == 'commit' else 'persistent-rollback-next',
+                           verification=boot_id)
+                status = child.run(inherited=last)
+                last = boot_id
+                key = 'verification' if action == 'commit' else 'rollback'
+                result[key] = (m.read_json(child.dir / 'ssh-verification.json', {})
+                               or m.read_json(child.dir / 'ssh-verification-progress.json', {}) or {})
+                result[key].update(boot=boot_id, exit=status)
+                if status == m.EXIT_DONE:
+                    result['outcome'] = 'verified' if action == 'commit' else 'rolled-back'
+                    m.write_json(self.dir / 'upgrade-result.json', result)
+                    return status
+                if status in (m.EXIT_CANCELLED, m.EXIT_STOPPED, m.EXIT_BUSY):
+                    break
+                if action == 'commit':
+                    # Never swap a slot that the manager did not actually promote.
+                    events = (child.dir / 'events.jsonl').read_text() if (child.dir / 'events.jsonl').exists() else ''
+                    if not any(json.loads(line).get('event') == 'slots' and json.loads(line).get('action') == 'commit'
+                               for line in events.splitlines()):
+                        break
+                    if not result['previousGeneration']:
+                        break
+            result['outcome'] = 'failed'
+            m.write_json(self.dir / 'upgrade-result.json', result)
+            return m.EXIT_SHORT
+        finally:
+            m.release_lease(last)
 
 
 def progress_key(progress):
@@ -1991,10 +2133,11 @@ def main():
         p.add_argument('--task', default='')
         p.add_argument('--no-wait', action='store_true')
         p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount',
-                                            FENCE_FAULT, 'panic-reboot'))
+                                            FENCE_FAULT, 'panic-reboot', 'upgrade-no-ssh', 'upgrade-service-down', *WATCHDOG_FAULTS))
         p.add_argument('--entry', choices=('current', 'previous'), help='the kernel slot a persistent boot runs')
         p.add_argument('--slot-action', choices=('commit', 'rollback'), help='what the manager does to the slots first')
         p.add_argument('--run', action='append', help='a persistent boot logs in over SOL and runs this; repeatable')
+        p.add_argument('--upgrade-parent', help='install whose S21 probe owns this verification')
         p.add_argument('--verify', action='store_true', help='a persistent boot that ends at the login prompt')
         p.add_argument('--adopt', action='store_true', help=argparse.SUPPRESS)
         p.add_argument('--nmi', action='store_true',
@@ -2035,6 +2178,8 @@ def main():
             parser.error('boot modes need an image payload')
         if (args.entry or args.slot_action or args.run or args.verify or args.adopt) and args.payload != 'persistent':
             parser.error('--entry, --slot-action, --run, --verify and --adopt need a persistent boot')
+        if args.inject in WATCHDOG_FAULTS and (args.payload != 'image' or args.mode != 'default' or args.disk or args.nmi):
+            parser.error('watchdog fault needs a default RAM-disk image boot without --nmi')
         if args.inject == FENCE_FAULT and (args.payload != 'image' or args.mode != 'default' or args.disk not in (None, 'root')):
             parser.error('the fence fault needs a default disk-root image boot')
         if args.disk == 'install' and args.mode not in ('probe', 'console'):
@@ -2053,7 +2198,8 @@ def main():
             parser.error('console mode requires --input sol')
         if args.input and args.mode != 'console':
             parser.error('--input needs console mode')
-    if args.command in ('launch', 'run') and args.payload == 'image' and not args.disk and not xhci_fault(args):
+    if (args.command in ('launch', 'run') and args.payload == 'image' and not args.disk
+            and not xhci_fault(args) and args.inject not in WATCHDOG_FAULTS):
         args.disk = 'root'
     if args.command in ('launch', 'run') and args.inject == 'disk-before-mount' and (args.payload != 'image' or args.disk != 'root'):
         parser.error('disk-before-mount needs a disk-root image boot')

@@ -698,10 +698,31 @@ pub fn read_mcfg(
     Some(count as usize)
 }
 
+/// IPMI 2.0 Appendix C3: a fixed, byte-access KCS interface in system I/O.
+pub fn read_kcs_ports(rsdp: Option<u64>, offset: u64) -> Option<(u16, u16)> {
+    if let Some(ports) = smbios_kcs(rsdp, offset) { return Some(ports); }
+    let reader = PhysReader::new(offset);
+    let (table, length) = find_table(&reader, rsdp?, b"SPMI")?;
+    if length < 64 || reader.u8_at(table + 36)? != 1 || reader.u8_at(table + 43)? & 1 != 0 {
+        return None;
+    }
+    let gas = generic_address(&reader, table + 48)?;
+    if gas.space != 1 || gas.bit_offset != 0 || !matches!(gas.bit_width, 8 | 16) || gas.access_size > 1 {
+        return None;
+    }
+    let port = u16::try_from(gas.address).ok()?;
+    if port == 0 || port == u16::MAX { return None; }
+    Some((port, port + 1))
+}
+
 /// The first root-table entry carrying `signature` whose header and checksum
 /// are sound, with its declared length. The walk is capped by
 /// `MAX_ROOT_ENTRIES`, as `read_madt`'s is.
 fn find_table(reader: &PhysReader, rsdp_phys: u64, signature: &[u8; 4]) -> Option<(u64, u32)> {
+    find_table_where(reader, rsdp_phys, signature, |_, _| true)
+}
+
+fn find_table_where(reader: &PhysReader, rsdp_phys: u64, signature: &[u8; 4], accept: impl Fn(u64, u32) -> bool) -> Option<(u64, u32)> {
     let (root_phys, entry_width) = root_table(reader, rsdp_phys).ok()?;
     let root_signature: &[u8; 4] = if entry_width == 8 { b"XSDT" } else { b"RSDT" };
     let root_length = sdt_length(reader, root_phys, root_signature)?;
@@ -717,7 +738,9 @@ fn find_table(reader: &PhysReader, rsdp_phys: u64, signature: &[u8; 4]) -> Optio
             continue;
         }
         if reader.signature_is(table_phys, signature) == Some(true) {
-            return sdt_length(reader, table_phys, signature).map(|length| (table_phys, length));
+            if let Some(length) = sdt_length(reader, table_phys, signature) {
+                if accept(table_phys, length) { return Some((table_phys, length)); }
+            }
         }
     }
     None
@@ -932,4 +955,54 @@ pub fn read_fadt(rsdp_phys: Option<u64>, physical_memory_offset: u64) -> Option<
         ]),
         flags,
     })
+}
+
+// The delivery stub and installed manager preserve UEFI's SMBIOS pointer in a
+// GUID-named ACPI UEFI data table. Parse SMBIOS 2/3 and Type 38 from DMTF DSP0134
+// sections 5.2 and 7.39 / IPMI 2.0 Appendix C1, without BIOS address guesses.
+fn smbios_kcs(rsdp: Option<u64>, offset: u64) -> Option<(u16, u16)> {
+    const ID: [u8; 16] = [0x0b,0x76,0xb1,0x32,0x04,0x68,0x9c,0x4f,0xab,0x21,0x67,0xf5,0x8f,0x56,0x42,0xe1];
+    let r = PhysReader::new(offset);
+    let (handoff, length) = find_table_where(&r, rsdp?, b"UEFI", |at, len| {
+        len >= 62 && (0..16).all(|i| r.u8_at(at + 36 + i) == Some(ID[i as usize]))
+    })?;
+    let data = u16::from_le_bytes([r.u8_at(handoff + 52)?, r.u8_at(handoff + 53)?]) as u32;
+    if data < 54 || data.checked_add(8)? > length { return None; }
+    let entry = r.u64_at(handoff + u64::from(data))?;
+    let (table, size) = if r.signature_is(entry, b"_SM_")? {
+        let len = r.u8_at(entry + 5)?;
+        if len < 31 || len > 64 || !r.signature_is(entry + 16, b"_DMI")? || r.u8_at(entry + 20)? != b'_' || !r.checksum_ok(entry, u32::from(len))? || !r.checksum_ok(entry + 16, 15)? { return None; }
+        let size = u16::from_le_bytes([r.u8_at(entry + 22)?, r.u8_at(entry + 23)?]);
+        (u64::from(r.u32_at(entry + 24)?), u32::from(size))
+    } else {
+        if !r.signature_is(entry, b"_SM3")? || r.u8_at(entry + 4)? != b'_' { return None; }
+        let len = r.u8_at(entry + 6)?;
+        if len < 24 || len > 64 || !r.checksum_ok(entry, u32::from(len))? { return None; }
+        (r.u64_at(entry + 16)?, r.u32_at(entry + 12)?)
+    };
+    if size < 4 || size > 1024 * 1024 || !r.readable(table, u64::from(size)) { return None; }
+    let end = table + u64::from(size);
+    let mut at = table;
+    for _ in 0..4096 {
+        if at + 4 > end { return None; }
+        let kind = r.u8_at(at)?;
+        let len = u64::from(r.u8_at(at + 1)?);
+        if len < 4 || at + len > end || kind == 127 { return None; }
+        if kind == 38 {
+            if len < 18 || r.u8_at(at + 4)? != 1 { return None; }
+            let base = r.u64_at(at + 8)?;
+            let flags = r.u8_at(at + 16)?;
+            if base & 1 == 0 { return None; } // memory-mapped KCS is not supported here
+            let data = u16::try_from((base & !1) | u64::from((flags >> 4) & 1)).ok()?;
+            let stride = match flags >> 6 { 0 => 1, 1 => 4, 2 => 16, _ => return None };
+            if data == 0 { return None; }
+            return Some((data, data.checked_add(stride)?));
+        }
+        at += len;
+        // String sets end with a double NUL. Keep the walk within the entry point's extent.
+        while at + 1 < end && (r.u8_at(at)? != 0 || r.u8_at(at + 1)? != 0) { at += 1; }
+        if at + 1 >= end { return None; }
+        at += 2;
+    }
+    None
 }
