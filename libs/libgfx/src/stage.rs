@@ -403,7 +403,7 @@ impl Canvas<'_> {
         let mut params = [0u32;16];
         for (slot,v) in params.iter_mut().zip([x,y,w,h,p.x,p.y,p.width,p.height]) { *slot=v as u32; }
         if (p.width,p.height)==(w,h) {
-            self.fb.submit(|c|c.copy(p.source.resource(),&[[p.x as i32,p.y as i32,w as i32,h as i32,x as i32,y as i32]]));
+            self.fb.submit(|c|c.copy(p.source.resource(),&[[x as i32,y as i32,(x+w) as i32,(y+h) as i32,p.x as i32,p.y as i32]]));
         } else {
             let band=((1usize<<17)/w).max(1);
             for row in (0..h).step_by(band) {
