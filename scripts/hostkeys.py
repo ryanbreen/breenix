@@ -60,6 +60,7 @@ Usage:
     hostkeys.py selftest-parse
 """
 import argparse
+from contextlib import ExitStack
 import json
 import os
 import re
@@ -112,23 +113,19 @@ class QMPKeys:
     def __init__(self, path, hold_ms=100):
         self.path, self.hold_ms = path, hold_ms
         self.persistent = False
-        self.sock = self.stream = None
+        self.session = self.stream = None
 
     def connect(self):
         if self.stream is not None:
             return
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(0.8)
-        stream = sock.makefile('rw')
-        try:
+        with ExitStack() as opened:
+            sock = opened.enter_context(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM))
+            sock.settimeout(0.8)
             sock.connect(self.path)
+            stream = opened.enter_context(sock.makefile('rw'))
             json.loads(stream.readline())
             self.request(stream, 'qmp_capabilities', {})
-        except Exception:
-            stream.close()
-            sock.close()
-            raise
-        self.sock, self.stream = sock, stream
+            self.session, self.stream = opened.pop_all(), stream
 
     @staticmethod
     def request(stream, command, arguments):
@@ -142,13 +139,10 @@ class QMPKeys:
                 return
 
     def close(self):
-        if self.stream is not None:
-            stream, sock = self.stream, self.sock
-            self.sock = self.stream = None
-            try:
-                stream.close()
-            finally:
-                sock.close()
+        session = self.session
+        self.session = self.stream = None
+        if session is not None:
+            session.close()
 
     def execute(self, command, arguments):
         try:
