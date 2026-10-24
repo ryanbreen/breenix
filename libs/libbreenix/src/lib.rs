@@ -50,6 +50,7 @@ pub mod graphics;
 pub mod http;
 pub mod image;
 pub mod io;
+pub mod input;
 #[cfg(feature = "std")]
 pub mod layout;
 #[cfg(feature = "std")]

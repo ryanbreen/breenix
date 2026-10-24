@@ -155,6 +155,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
             match device_type {
                 DeviceType::Kmsg => { revents |= events & events::POLLOUT; }
                 DeviceType::Rtc => {} // Only RTC_RD_TIME is implemented.
+                DeviceType::InputEvents | DeviceType::Uinput => {}
                 DeviceType::Ptmx => {} // Never an open descriptor: open gives a master.
                 DeviceType::Null => {
                     // /dev/null: always readable (returns EOF), always writable

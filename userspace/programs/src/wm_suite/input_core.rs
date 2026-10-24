@@ -509,21 +509,25 @@ pub fn two_readers() -> CaseResult {
     )
 }
 pub fn syn_dropped() -> CaseResult {
+    let _claim = InputClaim::new()?;
     let mut stream = Stream::open()?;
     let mut v = Virtual::create()?;
-    for n in 1..=1100 {
+    stream.grab(&[v.id])?;
+    v.batch(&[(1, 30, 1)], 1)?;
+    let first = stream.read_from(2, &[v.id])?[0].serial;
+    for n in 2..=1101 {
         v.batch(&[(1, 30, (n & 1) as i32)], n)?;
     }
     let es = stream.read_from(1, &[v.id])?;
-    check(
-        es.iter().any(|e| e.kind == 0 && e.code == 3),
-        "overflow reader omitted SYN_DROPPED",
-    )?;
-    let rows = ledger()?;
-    check(
-        rows.iter().any(|r| r.get(1).is_some_and(|v| v == "lost")),
-        "overflow omitted lost serial ledger entries",
-    )
+    let dropped = es.iter().find(|e| e.kind == 0 && e.code == 3)
+        .ok_or("overflow reader omitted SYN_DROPPED")?;
+    for serial in first + 2..=dropped.serial {
+        check(ledger_has(serial, Some(("lost", "overflow")))?,
+            "overflow omitted this holder's dropped serial disposition")?;
+    }
+    check(!ledger_has(first, None)?, "overflow changed an already-read pending serial")?;
+    drop(stream);
+    Ok(())
 }
 pub fn poll() -> CaseResult {
     let stream = Stream::open()?;
@@ -630,7 +634,8 @@ pub fn malformed_batch() -> CaseResult {
     Ok(())
 }
 pub fn console_keymap() -> CaseResult {
-    console_bytes(&[(30, 1), (30, 0)], b"a")
+    console_bytes(&[(30, 1), (30, 0)], b"a")?;
+    console_bytes(&[(30, 1), (30, 2), (30, 0)], b"aa")
 }
 pub fn console_special_keys() -> CaseResult {
     console_bytes(
@@ -696,4 +701,278 @@ pub fn console_after_compositor() -> CaseResult {
     drop(c);
     drop(_d);
     console_bytes(&[(30, 1), (30, 0)], b"a")
+}
+
+/// The Phase A public library exercises whole payloads and transactional refusal
+/// without depending on lane 3's compositor routing.
+pub fn library_batches() -> CaseResult {
+    use libbreenix::input::{self as input, Batch, Capability, Injector, Reader};
+    let reader = Reader::open(true)?;
+    let device = Injector::create(&[
+        Capability { kind: input::kind::KEY, code: 30, minimum: 0, maximum: 1 },
+        Capability { kind: input::kind::TEXT, code: 0, minimum: 1, maximum: 256 },
+        Capability { kind: input::kind::KEY, code: input::key::BUTTON_LEFT, minimum: 0, maximum: 1 },
+    ], true)?;
+    let mut storage = [0u8; 512];
+    let mut batch = Batch::new(&mut storage);
+    batch.event(1, 30, 1, 1234)?.text("hé\0λ🙂", 1234)?
+        .event(1, 30, 0, 1234)?.finish(1234)?;
+    device.inject(&batch)?;
+    let mut short = [0u8; 32];
+    let fault = unsafe { libbreenix::syscall::raw::syscall3(libbreenix::syscall::nr::READ, reader.fd().raw(), 1, 1024) } as i64;
+    check(fault == -14, "bad read buffer did not return EFAULT")?;
+    check(matches!(reader.read(&mut short), Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EINVAL))),
+        "short read did not return EINVAL for a variable-payload batch")?;
+    let mut bytes = [0u8; 1024];
+    let events = reader.read(&mut bytes)?.collect::<Result<Vec<_>, _>>()?;
+    check(events.len() == 4 && events[1].payload == "hé\0λ🙂".as_bytes()
+        && events.iter().all(|r| r.event.device == device.id() && r.event.time_ns == 1234)
+        && events.windows(2).all(|r| r[0].event.serial < r[1].event.serial),
+        "library reader changed text bytes, injector time, identity or serial order")?;
+    let last = events[3].event.serial;
+    batch.clear();
+    let bad = &mut batch;
+    bad.event(1, 30, 1, 1233)?.finish(1233)?;
+    check(matches!(device.inject(&bad), Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EINVAL))),
+        "decreasing injector time did not return EINVAL")?;
+    bad.clear();
+    bad.event(1, 48, 1, 1235)?.finish(1235)?;
+    check(matches!(device.inject(&bad), Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EINVAL))),
+        "undeclared capability did not return EINVAL")?;
+    check(matches!(reader.read(&mut bytes), Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EAGAIN))),
+        "refused batch published a prefix")?;
+    let good = bad;
+    good.clear();
+    good.event(1, 30, 1, 1235)?.event(1, 30, 0, 1235)?.finish(1235)?;
+    device.inject(&good)?;
+    let events = reader.read(&mut bytes)?.collect::<Result<Vec<_>, _>>()?;
+    check(events.len() == 3 && events[0].event.serial == last + 1,
+        "rejected write consumed serials or damaged subsequent batch")?;
+    let second = Reader::open(true)?;
+    good.clear();
+    good.event(1, 30, 1, 1236)?.event(1, input::key::BUTTON_LEFT, 1, 1236)?.finish(1236)?;
+    device.inject(&good)?;
+    let presses = reader.read(&mut bytes)?.collect::<Result<Vec<_>, _>>()?;
+    let last = presses.last().unwrap().event.serial;
+    let id = device.id();
+    let mut other = [0u8; 1024];
+    second.read(&mut other)?;
+    drop(device);
+    until(1000, "device close publishes key/button releases and closing SYN", || {
+        match reader.read(&mut bytes) {
+            Ok(records) => {
+                let records = records.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+                check(records.len() == 3 && records.iter().all(|r| r.event.device == id)
+                    && records[0].event.code == 30 && records[0].event.value == 0
+                    && records[1].event.code == input::key::BUTTON_LEFT && records[1].event.value == 0
+                    && records[2].event.kind == 0 && records[2].event.code == 0
+                    && records.iter().enumerate().all(|(i, r)| r.event.serial == last + i as u64 + 1),
+                    "device close omitted, reordered or misidentified its release batch").map_err(|e| format!("{e:?}"))?;
+                let copy = second.read(&mut other).map_err(|e| e.to_string())?
+                    .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+                check(records == copy, "device close releases differ between readers")
+                    .map_err(|e| format!("{e:?}"))?;
+                Ok(true)
+            }
+            Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EAGAIN)) => Ok(false),
+            Err(e) => Err(e.to_string()),
+        }
+    })?;
+    Ok(())
+}
+
+fn ledger_has(serial: u64, expected: Option<(&str, &str)>) -> Result<bool, String> {
+    let text = std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
+    Ok(text.lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        if fields.next().and_then(|s| s.parse::<u64>().ok()) != Some(serial) { return false; }
+        expected.is_none_or(|(outcome, reason)| {
+            let actual = fields.next();
+            fields.next();
+            actual == Some(outcome) && fields.next() == Some(reason)
+        })
+    }))
+}
+
+pub fn reader_lifetime() -> CaseResult {
+    use libbreenix::{input::{self as input, Batch, Capability, Injector, Reader}, io};
+    // Discard only input that predates this case, before its first grab.
+    libbreenix::termios::tcflush(libbreenix::types::Fd::STDIN, libbreenix::termios::TCIFLUSH)?;
+    let _claim = InputClaim::new()?;
+    let device = Injector::create(&[Capability { kind: 1, code: 30, minimum: 0, maximum: 1 }], true)?;
+    let reader = Reader::open(true)?;
+    let contender = Reader::open(true)?;
+    reader.grab(&[device.id()])?;
+    let duplicate = io::dup(reader.fd())?;
+    // An unrelated reader and one duplicate may close without ending custody.
+    drop(Reader::open(true)?);
+    let mut storage = [0u8; 512];
+    let mut batch = Batch::new(&mut storage); batch.event(1, 30, 1, 100)?.finish(100)?;
+    device.inject(&batch)?;
+    let mut bytes = [0; 256];
+    let events = reader.read(&mut bytes)?.collect::<Result<Vec<_>, _>>()?;
+    let press = events[0].event.serial;
+    let syn = events[1].event.serial;
+    reader.dispose(&input::Disposition { serial: syn, disposition: input::disposition::WM_HANDLED, ..input::Disposition::default() })?;
+    drop(reader);
+    check(matches!(contender.grab(&[device.id()]), Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EBUSY))),
+        "closing one duplicated fd released the grab")?;
+    // The pending press ends lost only at the last reference, even though SYN
+    // already has a terminal outcome.
+    check(!ledger_has(press, None)?, "later SYN hid the pending press")?;
+    io::close(duplicate)?;
+    contender.grab(&[device.id()])?;
+    check(ledger_has(press, Some(("lost", "compositor-died")))?,
+        "last reader close omitted the pending serial's death disposition")?;
+    contender.ungrab()?;
+    drop(_claim);
+    let mut observer = Stream::open()?;
+    let mut child = || {
+        let run = || -> Result<(), libbreenix::error::Error> {
+            window::claim_compositor()?;
+            let owned = Reader::open(true)?;
+            owned.grab(&[device.id()])?;
+            let mut data = [0; 128];
+            let mut events = Batch::new(&mut data);
+            events.event(1, 30, 1, 200)?.finish(200)?;
+            device.inject(&events)?;
+            // Kernel process teardown, rather than a Rust destructor, closes
+            // this final reader reference and drops the compositor claim.
+            core::mem::forget(owned);
+            Ok(())
+        };
+        match run() { Ok(()) => 0, Err(libbreenix::error::Error::Os(errno)) => errno as i32 }
+    };
+    let pid = breenix_suite::suite::spawn(
+        &[(device.fd(), device.fd())], breenix_suite::suite::Run::Call(&mut child),
+    )?;
+    let mut status = 0;
+    libbreenix::process::waitpid(pid.raw() as i32, &mut status, 0)?;
+    check(status == 0, &format!("reader-exit helper failed with wait status {status}"))?;
+    let dead = observer.read_from(2, &[device.id()])?;
+    let _new_claim = InputClaim::new()?;
+    contender.grab(&[device.id()])?;
+    check(ledger_has(dead[0].serial, Some(("lost", "compositor-died")))?,
+        "process teardown kept the grab or lost the pending press's death disposition")?;
+
+    // Exercise W2 against an actual window ring under this isolated claimant.
+    struct LocalWindow(u64);
+    impl Drop for LocalWindow {
+        fn drop(&mut self) { let _ = window::destroy(self.0); }
+    }
+    let target = LocalWindow(window::create(64, 64, 2, 0)?.id);
+    window::register(target.0, b"input fd lifetime")?;
+    let mut delivered = [abi::WindowEvent::ZERO; 8];
+    window::read_events(target.0, &mut delivered, false, 0)?;
+    batch.clear();
+    batch.event(1, 30, 1, 300)?.finish(300)?;
+    device.inject(&batch)?;
+    let events = contender.read(&mut bytes)?.collect::<Result<Vec<_>, _>>()?;
+    contender.dispose(&input::Disposition { serial: events[0].event.serial, window: target.0,
+        disposition: input::disposition::WM_HANDLED, ..input::Disposition::default() })?;
+    contender.dispose(&input::Disposition { serial: events[1].event.serial,
+        disposition: input::disposition::WM_HANDLED, ..input::Disposition::default() })?;
+    drop(contender);
+    time::sleep_ms(100)?;
+    check(window::read_events(target.0, &mut delivered, false, 0)? == 0,
+        "a WM-handled press manufactured a client release")?;
+
+    let recipient_reader = Reader::open(true)?;
+    recipient_reader.grab(&[device.id()])?;
+    batch.clear();
+    batch.event(1, 30, 1, 400)?.finish(400)?;
+    device.inject(&batch)?;
+    let events = recipient_reader.read(&mut bytes)?.collect::<Result<Vec<_>, _>>()?;
+    let source = events[0].event;
+    let mut press_event = abi::WindowEvent::ZERO;
+    press_event.kind = kind::KEY_PRESS;
+    press_event.keycode = 30;
+    press_event.serial = source.serial;
+    press_event.time_ns = source.time_ns;
+    check(window::write_events(target.0, &[press_event])? == 1,
+        "the positive press did not enter its actual window ring")?;
+    check(window::read_events(target.0, &mut delivered, false, 0)? == 1 && delivered[0] == press_event,
+        "the original recipient did not receive its press")?;
+    recipient_reader.dispose(&input::Disposition { serial: source.serial, window: target.0,
+        disposition: input::disposition::DELIVERED, ..input::Disposition::default() })?;
+    recipient_reader.dispose(&input::Disposition { serial: events[1].event.serial,
+        disposition: input::disposition::WM_HANDLED, ..input::Disposition::default() })?;
+    {
+        use libbreenix::{termios, types::Fd};
+        struct Restore(termios::Termios);
+        impl Drop for Restore {
+            fn drop(&mut self) { let _ = termios::tcsetattr(Fd::STDIN, termios::TCSANOW, &self.0); }
+        }
+        let mut saved = termios::Termios::default();
+        termios::tcgetattr(Fd::STDIN, &mut saved)?;
+        let _restore = Restore(saved);
+        let mut raw = saved;
+        termios::cfmakeraw(&mut raw);
+        termios::tcsetattr(Fd::STDIN, termios::TCSANOW, &raw)?;
+        let mut poll = [io::PollFd { fd: 0, events: 1, revents: 0 }];
+        io::poll(&mut poll, 0)?;
+        check(poll[0].revents & 1 == 0, "console has unexpected input before grabbed repeat")?;
+        batch.clear(); batch.event(1, 30, 2, 400)?.finish(400)?;
+        device.inject(&batch)?;
+        let repeated = recipient_reader.read(&mut bytes)?.collect::<Result<Vec<_>, _>>()?;
+        check(repeated.len() == 1 && repeated[0].event.kind == 0,
+            "device repeat reached grabbed reader")?;
+        recipient_reader.dispose(&input::Disposition { serial: repeated[0].event.serial,
+            disposition: input::disposition::WM_HANDLED, ..input::Disposition::default() })?;
+        io::poll(&mut poll, 50)?;
+        check(poll[0].revents & 1 == 0, "grabbed device repeat leaked into console")?;
+    }
+    let idle = Reader::open(true)?;
+    let mut last_serial = 0;
+    for _ in 0..1100 {
+        batch.clear();
+        batch.finish(400)?;
+        device.inject(&batch)?;
+        let seen = recipient_reader.read(&mut bytes)?.collect::<Result<Vec<_>, _>>()?;
+        for r in seen {
+            last_serial = r.event.serial;
+            recipient_reader.dispose(&input::Disposition { serial: last_serial,
+                disposition: input::disposition::WM_HANDLED, ..input::Disposition::default() })?;
+        }
+    }
+    check(ledger_has(source.serial, Some(("delivered", "none")))?,
+        "observer overflow overwrote the delivered press")?;
+    drop(idle);
+    // Leave a physical release queued when custody ends. The recipient still
+    // needs its release even though the device is no longer physically held.
+    batch.clear();
+    batch.event(1, 30, 0, 401)?.finish(401)?;
+    device.inject(&batch)?;
+    let queued_release = last_serial + 1;
+    drop(recipient_reader);
+    let mut release_id = 0;
+    until(1000, "last reader close releases the original recipient", || {
+        let count = window::read_events(target.0, &mut delivered, false, 0).map_err(|e| e.to_string())?;
+        for event in &delivered[..count] {
+            check(event.kind == kind::KEY_RELEASE && event.keycode == 30 && event.serial != source.serial,
+                "final close produced the wrong release kind or reused the source id").map_err(|e| format!("{e:?}"))?;
+            let mut tag = abi::EventTag { id: target.0, serial: event.serial, ..abi::EventTag::default() };
+            window::call(abi::op::EVENT_TAG, &mut tag).map_err(|e| e.to_string())?;
+            check(tag.source_serial == source.serial && tag.derived != 0,
+                "the recipient release lost its source/derived identity").map_err(|e| format!("{e:?}"))?;
+            release_id = event.serial;
+        }
+        Ok(release_id != 0)
+    })?;
+    check(!ledger_has(release_id, None)?, "a derived release consumed a source ledger row")?;
+    check(ledger_has(queued_release, Some(("lost", "compositor-died")))?,
+        "queued release did not retain its death outcome")?;
+    batch.clear();
+    let mut observer = Stream::open()?;
+    batch.event(1, 30, 1, 402)?.event(1, 30, 0, 402)?.finish(402)?;
+    device.inject(&batch)?;
+    let after = observer.read_from(1, &[device.id()])?;
+    check(after.iter().any(|e| e.serial == queued_release + 2 && e.kind == 1 && e.value == 1),
+        "derived release consumed a source serial")?;
+    let mut meta = abi::Meta::ZERO;
+    meta.processed_serial = source.serial;
+    window::commit_no_change(target.0, Some(&meta))?;
+    check(window::read_meta(target.0)?.1.processed_serial == source.serial,
+        "the original recipient did not publish its source acknowledgment")?;
+    Ok(())
 }

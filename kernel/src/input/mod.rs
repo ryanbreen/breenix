@@ -14,6 +14,7 @@
 //! tries the others; it does not allocate and does not log.
 
 pub mod event;
+pub mod stream;
 #[cfg(target_arch = "aarch64")]
 pub mod pointer;
 

@@ -670,7 +670,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                     }
                 }
                 // The screens are read-only.
-                DeviceType::Vcs(_) | DeviceType::Vcsa(_) => SyscallResult::Err(22),
+                DeviceType::Vcs(_) | DeviceType::Vcsa(_) | DeviceType::InputEvents | DeviceType::Uinput => SyscallResult::Err(22),
             }
         }
         WriteOperation::RegularFile {
@@ -1031,7 +1031,7 @@ fn read_pipe(
 #[cfg(target_arch = "x86_64")]
 enum QuickRead {
     Pipe(alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>, bool),
-    Ipc(alloc::sync::Arc<dyn crate::ipc::object::IpcFile>),
+    Ipc(alloc::sync::Arc<dyn crate::ipc::object::IpcFile>, bool),
 }
 
 /// x86_64: the calling thread's descriptor table, from the reference its row
@@ -1084,7 +1084,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     pipe_buffer.clone(),
                     fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK != 0,
                 )),
-                FdKind::Ipc(file) if fd_entry.readable() => Some(QuickRead::Ipc(file.clone())),
+                FdKind::Ipc(file) if fd_entry.readable() => Some(QuickRead::Ipc(file.clone(), fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK != 0)),
                 _ => None,
             })
         })
@@ -1094,8 +1094,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             Some(Some(QuickRead::Pipe(pipe_buffer, is_nonblocking))) => {
                 return read_pipe(pipe_buffer, is_nonblocking, buf_ptr, count);
             }
-            Some(Some(QuickRead::Ipc(file))) => {
-                return match file.read(buf_ptr, count as usize) {
+            Some(Some(QuickRead::Ipc(file, nonblocking))) => {
+                return match file.read_with_status(buf_ptr, count as usize, nonblocking) {
                     Ok(n) => SyscallResult::Ok(n),
                     Err(e) => SyscallResult::Err(e),
                 };
@@ -1135,9 +1135,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             if !fd_entry.readable() {
                 return SyscallResult::Err(super::errno::EBADF as u64);
             }
+            let nonblocking = fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK != 0;
             let file = file.clone();
             drop(manager_guard);
-            match file.read(buf_ptr, count as usize) {
+            match file.read_with_status(buf_ptr, count as usize, nonblocking) {
                 Ok(n) => SyscallResult::Ok(n),
                 Err(e) => SyscallResult::Err(e),
             }

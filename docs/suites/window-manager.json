@@ -142,6 +142,14 @@
         {
           "id": "console-after-compositor",
           "title": "When the compositor dies, keys return to the console."
+        },
+        {
+          "id": "library-batches",
+          "title": "The public reader and injector preserve UTF-8 payloads, injector time and atomic serial allocation."
+        },
+        {
+          "id": "reader-lifetime",
+          "title": "The compositor grab survives unrelated closes and dup, and ends on the last reader reference."
         }
       ]
     },
