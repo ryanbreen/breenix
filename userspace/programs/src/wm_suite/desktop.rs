@@ -721,9 +721,11 @@ impl Desktop {
             &format!("bwm composite of client {} commit {}", c.id, commit),
             || {
                 if let Some(status) = self.wm.status()? {
+                    let log = self.output();
+                    let tail = log.char_indices().rev().nth(110).map_or(0, |(at, _)| at);
                     return Err(format!(
                         "desktop died, wait status {status}; {}",
-                        self.output()
+                        &log[tail..]
                     ));
                 }
                 match Screen::read() {
@@ -848,8 +850,17 @@ impl Desktop {
         // Release even when the prerequisite failed, so the next case cannot
         // inherit a held hardware button. Fast clicks have their own case.
         let released = self.pointer(x, y, 0, 0);
-        pressed?;
+        let pressed = pressed?;
         released?;
+        // W30: the next scenario may clear its event log immediately. Finish
+        // this setup's capture before that clear, rather than letting its
+        // asynchronous host release appear as the scenario's first release.
+        c.await_event("focus prerequisite released its pointer capture", |e| {
+            e.kind == abi::event_kind::POINTER_BUTTON
+                && e.button == 0x110
+                && e.pressed == 0
+                && e.serial > pressed.serial
+        })?;
         Ok(())
     }
 }

@@ -139,11 +139,15 @@ pub fn minimize_no_input() -> CaseResult {
             .any(|e| matches!(e.kind, kind::KEY_PRESS | kind::POINTER_BUTTON)),
         "minimized client received input",
     )?;
-    let rows = ledger()?;
+    // W30: borrow the snapshot fields; repeated per-row string allocations
+    // made this observation consume the case's unchanged execution deadline.
+    let rows = std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
+    let serial = es[0].serial.to_string();
+    let target = b.id.to_string();
     check(
-        !rows.iter().any(|r| {
-            r.first().is_some_and(|s| s == &es[0].serial.to_string())
-                && r.get(2).is_some_and(|s| s == &b.id.to_string())
+        !rows.lines().any(|r| {
+            let mut fields = r.split_whitespace();
+            fields.next() == Some(serial.as_str()) && fields.nth(1) == Some(target.as_str())
         }),
         "key disposition targeted minimized client",
     )
@@ -156,6 +160,9 @@ pub fn minimize_close() -> CaseResult {
     until(1000, "minimized owner removed", || {
         Ok(listed()?.len() + 1 == before)
     })?;
+    // W30: the surviving client is already focused. Put it in the minimized
+    // state before using its appbar entry as the restore/focus prerequisite.
+    minimize(&d, &a)?;
     appbar(&d, a.id)?;
     until(1000, "remaining appbar entry eligible", || focused(&a))?;
     content(&mut d, &a)
@@ -179,12 +186,17 @@ pub fn fkeys_skip_minimized() -> CaseResult {
 }
 pub fn chromeless_top() -> CaseResult {
     let mut d = Desktop::start()?;
-    let c = Client::start_mode(77, flags::CHROMELESS | flags::IGNORE_CLOSE)?;
-    d.client_ready(&c)?;
     let mut normal = Client::start(11)?;
     placed(&normal)?;
     d.client_ready(&normal)?;
+    // W30: prove positive normal-client delivery before opening the modal.
+    // The contract consumes an outside modal click without delivering it to
+    // the normal client, so that later click cannot be a delivery prerequisite.
     d.focus(&mut normal)?;
+    let c = Client::start_mode(77, flags::CHROMELESS | flags::IGNORE_CLOSE)?;
+    d.client_ready(&c)?;
+    let w = normal.info()?;
+    d.click(w.x + 20, w.y + 20)?;
     check(
         c.info()?.z > normal.info()?.z,
         "normal window raised above chromeless layer",

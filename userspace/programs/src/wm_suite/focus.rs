@@ -496,16 +496,14 @@ pub fn lost_then_delivered() -> CaseResult {
                 .map(|e| e.serial),
         );
     }
-    let rows = ledger()?;
-    let lost = sources
-        .iter()
-        .copied()
-        .find(|serial| {
-            rows.iter().any(|r| {
-                r.first().is_some_and(|s| s == &serial.to_string())
-                    && r.get(1).is_some_and(|s| s == "lost")
-            })
-        })
+    // W30: the observation must not allocate a serial string for every cell
+    // of a source-by-ledger cross product. Source serials are already sorted.
+    let rows = std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
+    let lost = rows.lines().find_map(|row| {
+        let mut fields = row.split_whitespace();
+        let serial = fields.next()?.parse::<u64>().ok()?;
+        (fields.next() == Some("lost") && sources.binary_search(&serial).is_ok()).then_some(serial)
+    })
         .ok_or("full client ring had no lost source disposition")?;
     c.command(SET_FLAGS, flags::IGNORE_CLOSE, 0)?;
     c.clear()?;
