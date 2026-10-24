@@ -104,3 +104,21 @@ fn completed_frame_retains_both_edges_of_a_fast_click() {
     assert_eq!(pointer.take_for(7), (500, 600, 4));
     assert_eq!(pointer.take_for(7), (500, 600, 0));
 }
+
+#[test]
+fn release_of_observed_gesture_precedes_the_next_fast_click() {
+    let mut p = TabletSnapshot::new();
+    p.take_for(1);
+    p.report(10, 20, 1);
+    assert_eq!(p.take_for(1), (10, 20, 1));
+    p.report(30, 40, 0);
+    p.frame(50, 60, [(272, 1), (272, 0)].into_iter());
+    p.report(900, 800, 0);
+    assert_eq!(p.current(), (900, 800, 0));
+    assert_eq!(p.take_for(1), (30, 40, 0));
+    assert_eq!(p.take_for(1), (50, 60, 1));
+    assert_eq!(p.take_for(1), (50, 60, 0));
+    assert_eq!(p.take_for(1), (900, 800, 0));
+    p.move_to(100, 200);
+    assert_eq!(p.take_for(1), (100, 200, 0));
+}
