@@ -53,6 +53,7 @@ extern "efiapi" fn efi_main(image: Handle, system: *const SystemTable) -> Status
 
 /// Attach the disk, find its FAT volume and start the bootloader from it. Returns only on failure.
 unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
+    metal_efi::firmware::publish(system);
     let boot = &*(*system).boot_services;
     let record = ptr::addr_of!(PAYLOAD);
     let offset = ptr::read_volatile(ptr::addr_of!((*record).offset));

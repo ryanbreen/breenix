@@ -44,6 +44,7 @@ FAULT_FEATURE = 'xhci_fault_inject'
 # The write fence's fault-test feature (docs/metal/README.md, "The write fence").
 FENCE_FEATURE = 'block_fence_inject'
 FENCE_FAULT = 'fence-out-of-partition'
+WATCHDOG_FAULTS = ('watchdog-feeder-hang', 'watchdog-health-hang')
 # The testing kernel's feature, as run.sh --tests builds it.
 TESTING_FEATURE = 'testing'
 
@@ -203,7 +204,9 @@ def boot(args):
         raise SystemExit('xHCI faults need a RAM-disk console boot with --input sol')
     if args.mode == 'tests' and (args.payload != 'image' or args.inject or args.suite or args.disk == 'install'):
         raise SystemExit('tests mode needs a disk-root image boot without --inject or --suite')
-    if args.payload == 'image' and not args.disk and args.inject not in XHCI_FAULTS:
+    if args.inject in WATCHDOG_FAULTS and (args.payload != 'image' or args.mode != 'default' or args.disk or args.nmi):
+        raise SystemExit('watchdog faults need a default image boot without --disk or --nmi')
+    if args.payload == 'image' and not args.disk and args.inject not in (*XHCI_FAULTS, *WATCHDOG_FAULTS):
         args.disk = 'root'
     if args.inject == 'disk-before-mount' and (args.payload != 'image' or args.disk != 'root'):
         raise SystemExit('disk-before-mount needs a disk-root image boot')
@@ -286,7 +289,8 @@ def boot(args):
         with (logs / f'{boot_id}.log').open('w') as log:
             # An xHCI fault boot gets a fault-test kernel, a tests boot the testing kernel; every other boot the
             # production one.
-            features = (['--features', FAULT_FEATURE] if args.inject in XHCI_FAULTS else
+            features = (['--features', 'watchdog_fault_inject'] if args.inject in WATCHDOG_FAULTS else
+                        ['--features', FAULT_FEATURE] if args.inject in XHCI_FAULTS else
                         ['--features', FENCE_FEATURE] if args.inject == FENCE_FAULT else
                         ['--features', TESTING_FEATURE] if args.mode == 'tests' else [])
             # A suite boot's build stages the suite's host-side fixtures (the SDK suite's results).
@@ -407,7 +411,7 @@ def main():
     p.add_argument('--catchup', action='store_true', help='admit pushed effort history for landing')
     p.add_argument('--no-wait', action='store_true', help='return after launch; the detached driver still queues')
     p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount',
-                                        FENCE_FAULT))
+                                        FENCE_FAULT, *WATCHDOG_FAULTS))
     p.add_argument('--nmi', action='store_true', help='NMI a started kernel before power-off even when it finished')
     p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'))
     p.add_argument('--content-type', choices=('application/octet-stream',))
@@ -422,7 +426,7 @@ def main():
     p = sub.add_parser('_build')
     p.add_argument('id')
     p.add_argument('sha')
-    p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, TESTING_FEATURE))
+    p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, TESTING_FEATURE, 'watchdog_fault_inject'))
     p.add_argument('--suite')
     p.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager'))
     p.add_argument('--catchup', action='store_true')

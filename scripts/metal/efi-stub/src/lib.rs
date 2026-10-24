@@ -6,6 +6,7 @@
 pub mod bootdisk;
 pub mod com1;
 pub mod files;
+pub mod firmware;
 pub mod http;
 pub mod uefi;
 
