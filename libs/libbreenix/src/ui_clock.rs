@@ -91,3 +91,32 @@ pub fn real_now_ns() -> u64 {
 }
 /// Number of real-clock reads made by this provider while a page was set.
 pub fn real_clock_reads() -> u64 { REAL_READS.load(Ordering::Relaxed) }
+
+/// A stepped clock's FUTEX_WAKE as a pollable pipe. The waiter performs no
+/// timed polling; the compositor can sleep on scene, input and clock together.
+pub fn epoch_notifications() -> Result<Option<crate::types::OwnedFd>, crate::error::Error> {
+    let Some(page) = page() else { return Ok(None); };
+    let (read, write) = crate::io::pipe2((crate::io::status_flags::O_CLOEXEC | crate::io::status_flags::O_NONBLOCK) as i32)?;
+    let read = crate::types::OwnedFd::new(read);
+    let write = crate::types::OwnedFd::new(write);
+    let generation = unsafe { (&*page.0.add(32).cast::<std::sync::atomic::AtomicU32>()).load(Ordering::Acquire) };
+    std::thread::spawn(move || {
+        use crate::syscall::{nr, raw};
+        use std::sync::atomic::AtomicU32;
+        let word = unsafe { &*page.0.add(32).cast::<AtomicU32>() };
+        let mut generation = generation;
+        loop {
+            let result = unsafe { raw::syscall6(nr::FUTEX, word as *const _ as u64, 0, generation as u64, 0, 0, 0) } as i64;
+            if result < 0 && result != -11 && result != -4 { break; }
+            let next = word.load(Ordering::Acquire);
+            if next != generation {
+                generation = next;
+                match crate::io::write(write.fd(), &[1]) {
+                    Ok(_) | Err(crate::error::Error::Os(crate::errno::Errno::EAGAIN)) => {},
+                    Err(_) => break,
+                }
+            }
+        }
+    });
+    Ok(Some(read))
+}

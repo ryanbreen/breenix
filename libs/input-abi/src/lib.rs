@@ -191,3 +191,21 @@ layout!(SceneTag, 32, scene_version @ 0, window @ 8, layout_version @ 16, gestur
 layout!(Disposition, 32, serial @ 0, window @ 8, disposition @ 16, reason @ 20, derived @ 24, reserved @ 28);
 
 layout!(DeviceInfo, 40, device @ 0, kind @ 4, generation @ 8, capabilities @ 16, capacity @ 24, count @ 28, reserved @ 32);
+
+/// Disjoint compositor delivery identities. Source serials occupy the low
+/// half; kernel releases occupy bit 63 alone. Refuse namespace exhaustion
+/// rather than wrapping or aliasing a source/derivation pair.
+pub fn derived_serial(source: u64, index: u32) -> Option<u64> {
+    if source == 0 || source >= 1 << 40 || index == 0 || index >= 1 << 22 {
+        return None;
+    }
+    Some((3 << 62) | (source << 22) | index as u64)
+}
+pub fn derived_source(serial: u64) -> Option<(u64, u32)> {
+    if serial >> 62 != 3 {
+        return None;
+    }
+    let source = (serial & ((1 << 62) - 1)) >> 22;
+    let index = (serial & ((1 << 22) - 1)) as u32;
+    (source != 0 && index != 0).then_some((source, index))
+}

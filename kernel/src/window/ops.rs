@@ -1158,7 +1158,8 @@ pub fn write_events(caller: &Caller, wr: &WriteEvents) -> Result<u64, i32> {
     let (queued, waits) = {
         let mut reg = REGISTRY.lock();
         let w = reg.window(wr.id, caller, who::compositor)?;
-        let queued = events.into_iter().take_while(|e| w.ring.try_push(*e)).count();
+        let queued = events.into_iter().take_while(|e| w.ring.try_push(*e))
+            .inspect(|event| crate::input::stream::tag_delivery(wr.id, event.serial)).count();
         (queued, w.waits.clone())
     };
     waits.events.wake_up();

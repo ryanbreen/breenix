@@ -178,3 +178,24 @@ fn close_survives_overflow_and_retries_until_the_client_drains() {
     backlog.retain_windows(|_| false);
     assert!(backlog.is_empty());
 }
+
+#[test]
+fn source_notifications_cover_overflow_removal_and_delivery_failure() {
+    use input_backlog::DropReason;
+    let mut backlog = Backlog::new();
+    for value in 0..=MAX_PENDING { backlog.push(1, event(1, value as u16), |_, _| false); }
+    assert_eq!(backlog.pending().next().unwrap().value, 1);
+    let dropped = backlog.take_discarded();
+    assert_eq!(dropped.len(), 1);
+    assert!(matches!(dropped[0], (1, Event { value: 0, .. }, DropReason::Overflow)));
+    assert!(backlog.take_discarded().is_empty());
+    backlog.retain_windows(|_| false);
+    let dropped = backlog.take_discarded();
+    assert_eq!(dropped.len(), MAX_PENDING);
+    assert!(dropped.iter().all(|(id, _, why)| *id == 1 && matches!(why, DropReason::Gone)));
+    backlog.push(2, event(1, 9), |_, _| false);
+    backlog.flush(|_, _| Delivery::Failed, overflow);
+    let dropped = backlog.take_discarded();
+    assert_eq!(dropped.len(), 1);
+    assert!(matches!(dropped[0], (2, Event { value: 9, .. }, DropReason::Failed)));
+}

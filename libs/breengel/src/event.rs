@@ -68,6 +68,9 @@ pub enum Event {
     /// A pointer button (Linux button code: 0x110 left, 0x111 right, 0x112 middle) was pressed
     /// or released.
     MouseButton { button: u32, pressed: bool, x: i32, y: i32 },
+    PointerEnter { x: i32, y: i32 },
+    PointerLeave { x: i32, y: i32 },
+    PointerCancel,
     /// Scroll steps: `delta_y` > 0 scrolls up, `delta_x` > 0 right.
     Scroll { delta_x: i32, delta_y: i32 },
     /// This window gained keyboard focus.
@@ -103,6 +106,8 @@ pub enum Event {
 pub struct Delivered {
     pub serial: u64,
     pub time_ns: u64,
+    /// Pointer-button click count, zero for other events.
+    pub clicks: u32,
     pub event: Event,
 }
 
@@ -131,6 +136,9 @@ impl Event {
                 x: raw.x,
                 y: raw.y,
             },
+            event_kind::POINTER_ENTER => Event::PointerEnter { x: raw.x, y: raw.y },
+            event_kind::POINTER_LEAVE => Event::PointerLeave { x: raw.x, y: raw.y },
+            event_kind::POINTER_CANCEL => Event::PointerCancel,
             event_kind::SCROLL => Event::Scroll { delta_x: raw.scroll_x, delta_y: raw.scroll_y },
             event_kind::FOCUS_GAINED => Event::FocusGained,
             event_kind::FOCUS_LOST => Event::FocusLost,
@@ -150,6 +158,6 @@ impl Event {
 
 impl Delivered {
     pub fn from_raw(raw: &WindowEvent) -> Self {
-        Delivered { serial: raw.serial, time_ns: raw.time_ns, event: Event::from_raw(raw) }
+        Delivered { serial: raw.serial, time_ns: raw.time_ns, clicks: raw.clicks, event: Event::from_raw(raw) }
     }
 }

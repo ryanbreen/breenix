@@ -10,7 +10,7 @@ use crate::{
 };
 pub use input_abi::{
     self as abi, axis, disposition, key, kind, modifier, reason, syn, Capability, Disposition,
-    Event, SceneTag,
+    Event, SceneTag, DeviceInfo,
 };
 
 fn invalid() -> Error {
@@ -42,6 +42,17 @@ impl Reader {
             reserved: 0,
         };
         control(self.fd(), abi::ioctl::GRAB, &selection as *const _ as u64)
+    }
+    /// Snapshot a physical or virtual device's declared capabilities (W29).
+    pub fn device_info(&self, device: u32, capabilities: &mut [Capability]) -> Result<DeviceInfo, Error> {
+        let mut query = DeviceInfo {
+            device,
+            capabilities: capabilities.as_mut_ptr() as u64,
+            capacity: capabilities.len().try_into().map_err(|_| invalid())?,
+            ..DeviceInfo::default()
+        };
+        control(self.fd(), abi::ioctl::INPUT_DEVICE_INFO, &mut query as *mut _ as u64)?;
+        Ok(query)
     }
     pub fn ungrab(&self) -> Result<(), Error> {
         control(self.fd(), abi::ioctl::UNGRAB, 0)

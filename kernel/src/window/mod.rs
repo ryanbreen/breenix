@@ -17,6 +17,7 @@ pub mod ops;
 pub mod present;
 pub mod scene;
 pub mod status;
+pub mod policy;
 
 use alloc::{collections::BTreeMap, collections::VecDeque, sync::Arc, vec::Vec};
 
