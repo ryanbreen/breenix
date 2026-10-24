@@ -142,11 +142,11 @@ pixels; the two extra pixel rows at the bottom of each cell are the cursor band.
 | Display | Where | `S` | Cell | Grid | `k` |
 |---|---|---|---|---|---|
 | 1024x768 | x86-metal GOP | 16 | 7x18 | 146x42 | 2 |
-| 1280x800 | ARM64 QEMU default | 20 | 9x22 | 142x34 | 2 |
+| 1280x800 | ARM64 QEMU default | 20 | 9x22 | 142x36 | 2 |
 | 1280x960 | Parallels and VMware defaults | 20 | 9x22 | 142x43 | 2 |
 | 1920x1080 | x86-64 QEMU (`virtio-vga`) | 24 | 11x26 | 174x41 | 3 |
 | 1920x1200 | VMware `--retina` | 24 | 11x26 | 174x46 | 3 |
-| 2560x1600 | Parallels `--retina`; any boot whose display the GPU core owns (its kernel mode) | 32 | 14x34 | 182x44 | 4 |
+| 2560x1600 | Parallels `--retina`; any boot whose display the GPU core owns (its kernel mode) | 32 | 14x34 | 182x47 | 4 |
 
 The console enables the font crate's `size_20`, `size_24`, `size_32`, `bold`, `unicode-latin-1-supplement`
 and `unicode-latin-extended-a` features (V1).
