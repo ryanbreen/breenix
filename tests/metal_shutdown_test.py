@@ -24,7 +24,7 @@ class ShutdownTest(sessions.existing.StateTest):
         self.driver.dir.mkdir(parents=True)
         self.driver.t0 = 100
         self.driver.kernel_started = 101
-        self.driver.on_line("[init] log boot-id=" + "b" * 64, observed_at=102)
+        self.driver.on_line("[init] shutdown nonce=" + "b" * 64, observed_at=102)
 
     def test_clean_request_waits_for_a_real_reset(self):
         d = self.driver
@@ -68,7 +68,7 @@ class ShutdownTest(sessions.existing.StateTest):
         d = self.driver
         first = d.shutdown_token
         self.assertNotEqual(first, d.shutdown_seed)
-        d.on_line('[init] log boot-id=' + 'c' * 64, observed_at=120)
+        d.on_line('[init] shutdown nonce=' + 'c' * 64, observed_at=120)
         self.assertNotEqual(first, d.shutdown_token)
         for mount in ('home', 'root'):
             d.on_line('[shutdown] ' + mount + ' clean read-only', observed_at=121)

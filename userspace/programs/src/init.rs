@@ -153,17 +153,9 @@ fn main() {
         // Boot scripts may start blogd before the service supervisor exists.
         // Publish once, after /run is cleared, for each init mode and architecture.
         std::fs::create_dir_all("/run/breenix").expect("log state directory");
-        // A fresh challenge also identifies logs, keeping the install's
-        // protected power-control seed out of serial captures.
-        let mut nonce = [0u8; 32];
-        let mut filled = 0;
-        while filled < nonce.len() {
-            let n = libbreenix::crypto::rand::getrandom_bytes(&mut nonce[filled..])
-                .expect("boot nonce entropy");
-            assert!(n != 0, "empty boot nonce entropy");
-            filled += n;
-        }
-        let boot_id: String = nonce.iter().map(|b| format!("{:02x}", b)).collect();
+        let stamp = libbreenix::time::now_realtime().expect("log boot clock");
+        let uptime = libbreenix::time::now_monotonic().expect("log boot uptime");
+        let boot_id = format!("{:x}-{:x}-{:x}", stamp.tv_sec, stamp.tv_nsec, uptime.tv_nsec);
         std::fs::write("/run/breenix/boot-id", format!("{}\n", boot_id)).expect("publish log boot ID");
         print!("[init] log boot-id={}\n", boot_id);
     }

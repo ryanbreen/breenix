@@ -264,6 +264,8 @@ pub struct Supervisor {
     network_checked_ms: u64,
     changed: bool,
     boot_id: String,
+    #[cfg(target_arch = "x86_64")]
+    shutdown_nonce_ready: bool,
     notices: Notices,
     shutdown: Option<(u64, u8, u64)>,
     shutdown_restart: Vec<String>,
@@ -306,6 +308,8 @@ impl Supervisor {
             network_checked_ms: 0,
             changed: true,
             boot_id: String::new(),
+            #[cfg(target_arch = "x86_64")]
+            shutdown_nonce_ready: false,
             notices: Notices { console_owned: false, log: None },
             shutdown: None,
             shutdown_restart: Vec::new(),
@@ -340,6 +344,8 @@ impl Supervisor {
 
     /// One pass: reap, serve requests, update conditions, stop and start.
     pub fn tick(&mut self) {
+        #[cfg(target_arch = "x86_64")]
+        self.prepare_shutdown_nonce();
         self.drain_logs();
         self.reap();
         self.serve();
@@ -356,6 +362,23 @@ impl Supervisor {
             self.changed = false;
             self.write_state();
         }
+    }
+
+    /// Shutdown receipts need entropy; console and service startup do not wait for it.
+    #[cfg(target_arch = "x86_64")]
+    fn prepare_shutdown_nonce(&mut self) {
+        if !self.publish || self.shutdown_nonce_ready { return; }
+        use libbreenix::syscall::{nr, raw};
+        let mut nonce = [0u8; 32];
+        let n = unsafe {
+            raw::syscall3(nr::GETRANDOM, nonce.as_mut_ptr() as u64, nonce.len() as u64, GRND_NONBLOCK)
+        } as i64;
+        // EAGAIN, EINTR and short reads are retried on a later supervisor pass.
+        if n != nonce.len() as i64 { return; }
+        let text: String = nonce.iter().map(|b| format!("{:02x}", b)).collect();
+        if std::fs::write("/run/breenix/shutdown-nonce", format!("{}\n", text)).is_err() { return; }
+        print!("[init] shutdown nonce={}\n", text);
+        self.shutdown_nonce_ready = true;
     }
 
     /// Stop leaves of the service dependency graph, one at a time. Keep the

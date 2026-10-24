@@ -1075,7 +1075,7 @@ class Driver:
                     raise Finish(m.EXIT_SHORT, 'the cold disk upload is missing')
                 raise Finish(m.EXIT_DONE, 'cold disk readback received')
         if self.kernel_started and self.fatal_at is None:
-            challenge = re.fullmatch(r'\[init\] log boot-id=([a-f0-9]{64})', line)
+            challenge = re.fullmatch(r'\[init\] shutdown nonce=([a-f0-9]{64})', line)
             if challenge:
                 self.shutdown_token = hashlib.sha256((self.shutdown_seed + challenge[1]).encode()).hexdigest()
             clean = re.fullmatch(r'\[shutdown\] (home|root) clean read-only', line)

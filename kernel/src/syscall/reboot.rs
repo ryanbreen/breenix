@@ -72,7 +72,7 @@ fn power_token() -> Result<alloc::vec::Vec<u8>, u64> {
     let bytes = fs.read_file_content_coherent(ino, &inode).map_err(|_| super::errno::EIO as u64)?;
     if !bytes.iter().all(|b| b.is_ascii_hexdigit()) { return Err(super::errno::EINVAL as u64); }
     drop(guard);
-    let (mount, ino, _pin, _) = crate::fs::namei::resolve_file("/run/breenix/boot-id")?;
+    let (mount, ino, _pin, _) = crate::fs::namei::resolve_file("/run/breenix/shutdown-nonce")?;
     let guard = mount.read()?;
     let fs = guard.as_ref().ok_or(super::errno::EIO as u64)?;
     let inode = fs.read_inode(ino).map_err(|_| super::errno::EIO as u64)?;
