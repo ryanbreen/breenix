@@ -117,7 +117,7 @@ fn visible_launch_error(d: &mut Desktop, needle: &str) -> CaseResult {
 pub fn launch_missing() -> CaseResult {
     let _config = FileOverride::new(
         "/etc/hotkeys.conf",
-        b"super+k = /bin/wm-suite-missing-program\n",
+        b"super+k = exec /bin/wm-suite-missing-program\n",
     )?;
     let mut d = Desktop::start()?;
     let before = children(d.wm.pid, "")?;
@@ -131,7 +131,7 @@ pub fn launch_missing() -> CaseResult {
 pub fn launch_fork_fails() -> CaseResult {
     let _config = FileOverride::new(
         "/etc/hotkeys.conf",
-        b"super+k = /usr/libexec/breenix/wm-client_test\n",
+        b"super+k = exec /usr/libexec/breenix/wm-client_test\n",
     )?;
     let mut d = Desktop::start()?;
     let before = libbreenix::test_control::fired(abi::tc_point::LAUNCH_FORK_FAIL)
@@ -160,7 +160,7 @@ pub fn launch_fork_fails() -> CaseResult {
 pub fn launch_close_50() -> CaseResult {
     let _config = FileOverride::new(
         "/etc/hotkeys.conf",
-        b"super+k = /usr/libexec/breenix/wm-client_test\n",
+        b"super+k = exec /usr/libexec/breenix/wm-client_test\n",
     )?;
     let d = Desktop::start()?;
     let baseline = listed()?;
