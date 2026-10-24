@@ -40,6 +40,8 @@ pub const READY_NS: u64 = 10_000_000;
 pub trait Port: Sized + 'static {
     /// Who a record belongs to, for starting fresh lines (`serial_writer`).
     type Writer: Copy + Send + PartialEq;
+    /// Dense CPU index; admission runs with local interrupts masked.
+    fn defer_cpu() -> usize;
     /// Userspace units apply backpressure; kernel records use non-waiting admission.
     fn may_defer(_writer: Self::Writer) -> bool {
         true
@@ -527,7 +529,7 @@ pub fn write_atomic<P: Port, const TEE: bool>(
         let saved = P::mask_interrupts();
         let admission = state
             .deferred
-            .submit(writer, bytes, TEE, fresh, P::may_defer(writer));
+            .submit(P::defer_cpu(), writer, bytes, TEE, fresh, P::may_defer(writer));
         P::restore_interrupts(saved);
         match admission {
             defer::Admission::Start => break,

@@ -78,6 +78,11 @@ enum Test {}
 impl Port for Test {
     type Writer = u8;
 
+    fn defer_cpu() -> usize {
+        // At most two simulated CPUs run together in these serialized races.
+        CPU.with(|cpu| (*cpu as usize - 1) % 8)
+    }
+
     fn state() -> &'static State {
         &STATE
     }
@@ -500,15 +505,20 @@ fn deferred_ring_overflow_is_counted_and_reported_after_retained_lines() {
         uart_owner::write_atomic::<Test, false>(1, payload, false, &mut Ownership::acquire());
     });
     wait_for(|| stalled.load(Ordering::Acquire));
-    for _ in 0..65 {
+    for _ in 0..4096 {
         uart_owner::write_atomic::<Test, true>(2, line, false, &mut Ownership::acquire());
     }
     gate.store(true, Ordering::Release);
     holder.join().unwrap();
-    let mut expected = payload.to_vec();
-    for _ in 0..64 { expected.extend_from_slice(line); }
-    expected.extend_from_slice(b"[serial] deferred record overflow: 1\n");
-    assert_eq!(&*WIRE.lock().unwrap(), &expected);
+    let expected = payload.to_vec();
+    let wire = WIRE.lock().unwrap();
+    assert!(wire.starts_with(&expected));
+    let lines: Vec<_> = wire[payload.len()..].split_inclusive(|&byte| byte == b'\n').collect();
+    let retained = lines.iter().take_while(|&&entry| entry == line).count();
+    assert!(retained > 0 && retained < 4096, "fixture must fill the actual ring");
+    assert_eq!(lines.len(), retained + 1, "exactly one overflow report");
+    let report = format!("[serial] deferred record overflow: {}\n", 4096 - retained);
+    assert_eq!(lines[retained], report.as_bytes());
 }
 
 #[test]
@@ -539,4 +549,40 @@ fn raw_fragments_do_not_exhaust_descriptors_a_signal_line_needs() {
     expected.extend_from_slice(b"\r\n");
     expected.extend_from_slice(signal);
     assert_eq!(&*WIRE.lock().unwrap(), &expected);
+}
+
+#[test]
+fn a_deferred_signal_burst_survives_the_guest_diagnostic_fragments() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    WIRE.lock().unwrap().clear();
+    OPEN.store(0, Ordering::Relaxed);
+    WAKE_AFTER.store(0, Ordering::Relaxed);
+    let stalled: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+    let gate: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+    let payload = b"record paused at UART\n";
+    let holder = thread::spawn(move || {
+        STALL_AT.with(|at| at.set(5));
+        STALLED.with(|flag| flag.set(Some(stalled)));
+        STALL_GATE.with(|flag| flag.set(Some(gate)));
+        uart_owner::write_atomic::<Test, false>(1, payload, false, &mut Ownership::acquire());
+    });
+    wait_for(|| stalled.load(Ordering::Acquire));
+    let mut expected = payload.to_vec();
+    for pid in 0..128 {
+        for byte in b"F123456789SC" {
+            uart_owner::write_atomic::<Test, false>(2, &[*byte], false, &mut Ownership::acquire());
+        }
+        let census = b"[TTBR0_ASID_CENSUS:untagged=0:tagged=127:kernel=1001:cleared=1122]\n";
+        uart_owner::write_atomic::<Test, false>(2, census, false, &mut Ownership::acquire());
+        let signal = format!("[signal] Process {pid} (serial-record_test) terminated by signal 15 (SIGTERM)\n");
+        uart_owner::write_atomic::<Test, false>(2, signal.as_bytes(), false, &mut Ownership::acquire());
+        expected.extend_from_slice(b"F123456789SC");
+        expected.extend_from_slice(census);
+        expected.extend_from_slice(signal.as_bytes());
+    }
+    gate.store(true, Ordering::Release);
+    holder.join().unwrap();
+    let wire = WIRE.lock().unwrap();
+    assert_eq!(wire.len(), expected.len(), "deferred burst lost bytes");
+    assert_eq!(&*wire, &expected);
 }

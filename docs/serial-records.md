@@ -7,10 +7,13 @@ are assembled before serial admission.
 
 Record exclusion is separate from UART ownership. While a unit is admitted,
 competing non-fatal records enter a bounded deferred ring. Its storage is
-32 KiB and 64 record descriptors. Adjacent unfinished raw diagnostic
-fragments share a descriptor; formatted lines keep their separate descriptors. Admission uses a non-waiting try operation;
-a full or contended ring counts rejected records and emits one overflow line
-after retained records. Userspace units instead apply backpressure outside
+32 KiB and 2048 record descriptors per CPU, for up to eight CPUs. Each
+CPU publishes into its own queue with local interrupts masked. The drainer
+reclaims bytes and descriptors through release/acquire cursors; its copies
+do not exclude producers. A full queue counts rejected records and emits an
+overflow line after retained records. Admission tracks in-flight producers
+and a generation, so a producer racing the final empty scan cannot strand
+a line. Userspace units instead apply backpressure outside
 masked sections. The transmitter drains deferred lines before reopening
 admission. Hardware ownership and interrupt masking cover sixteen-byte
 pieces, with the incoming IRQ state restored between pieces. Thread-side

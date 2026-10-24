@@ -28,6 +28,10 @@ static STATE: uart_owner::State<Writer> = uart_owner::State::new();
 impl Port for Uart {
     type Writer = Writer;
 
+    fn defer_cpu() -> usize {
+        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize
+    }
+
     fn may_defer(writer: Writer) -> bool {
         writer != Writer::Tty || (crate::per_cpu::is_initialized() && crate::per_cpu::in_interrupt())
     }

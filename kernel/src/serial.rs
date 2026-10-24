@@ -838,7 +838,10 @@ pub fn write_bytes_atomic(writer: Writer, bytes: &[u8]) {
         let may_defer = writer == Writer::Kernel ||
             (crate::per_cpu::is_initialized() && crate::per_cpu::in_interrupt());
         loop {
-            let admission = crate::arch_without_interrupts(|| DEFERRED.submit(writer, bytes, false, false, may_defer));
+            let admission = crate::arch_without_interrupts(|| {
+                let cpu = if crate::per_cpu::is_initialized() { crate::per_cpu::cpu_id() } else { 0 };
+                DEFERRED.submit(cpu, writer, bytes, false, false, may_defer)
+            });
             match admission {
                 Admission::Start => break,
                 Admission::Queued => return,
