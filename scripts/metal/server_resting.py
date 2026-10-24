@@ -82,17 +82,17 @@ class Lab:
         finally:
             console.logout()
 
-    def boot_id(self, wait_for_network=False):
+    def boot_id(self):
         def read():
             result = self.probe.ssh('cat /run/breenix/boot-id')
             # bsshd binds before DHCP completes. Only initial transport
             # readiness is retried; authentication and command failures fail.
-            if (wait_for_network and result.returncode == 255 and any(message in result.stderr
+            if (result.returncode == 255 and any(message in result.stderr
                     for message in ('Connection refused', 'Connection timed out', 'No route to host'))):
                 return None
             self.probe.require(result)
             return result.stdout.strip()
-        return self.wait(read, 600, 'initial persistent SSH transport never became ready') if wait_for_network else read()
+        return self.wait(read, 600, 'persistent SSH transport never became ready')
 
     def idle(self, source):
         self.wait(lambda: self.ended(source), 1800, 'test did not finish')
@@ -101,7 +101,7 @@ class Lab:
             return lease.get('id') if lease.get('id') != source and lease.get('kind') == 'persistent' else None
         self.current = self.wait(candidate, 120, 'empty queue did not start a persistent boot')
         self.wait(lambda: 'bsshd: listening on ' in self.read(self.current, 'serial.txt'), 600, 'idle SSH never started')
-        self.boot_id(wait_for_network=True)
+        self.boot_id()
         self.probe.require(self.probe.ssh('id -u'), self.site['OPERATOR_UID'])
         run = json.loads(self.read(self.current, 'run.json'))
         serial = self.read(self.current, 'serial.txt')
@@ -182,7 +182,7 @@ def run(api, args):
                     lab.current = once
                     lab.wait(lambda: 'bsshd: listening on ' in lab.read(once, 'serial.txt'), 600, 'previous slot did not reach SSH')
                     once_run = json.loads(lab.read(once, 'run.json'))
-                    old_id = lab.boot_id(wait_for_network=True)
+                    old_id = lab.boot_id()
                     lab.power('reboot')
                     lab.wait(lambda: any(e['event'] == 'requested-reboot-ready' for e in lab.events(once)),
                         600, 'one-shot reboot did not return to SSH')

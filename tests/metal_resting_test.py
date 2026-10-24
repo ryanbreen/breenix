@@ -111,7 +111,7 @@ class InitialSSHTest(unittest.TestCase):
         lab = self.lab([SimpleNamespace(returncode=255, stderr='Connection refused'),
                         SimpleNamespace(returncode=0, stdout='abc-def-012\n')])
         with patch('time.sleep'):
-            self.assertEqual(lab.boot_id(wait_for_network=True), 'abc-def-012')
+            self.assertEqual(lab.boot_id(), 'abc-def-012')
         self.assertEqual(lab.probe.ssh.call_count, 2)
 
     def test_idle_return_waits_for_network_before_the_operator_identity_check(self):
@@ -134,7 +134,7 @@ class InitialSSHTest(unittest.TestCase):
     def test_authentication_failure_is_not_treated_as_network_readiness(self):
         lab = self.lab([SimpleNamespace(returncode=255, stderr='Permission denied (publickey).')])
         with self.assertRaises(ValueError):
-            lab.boot_id(wait_for_network=True)
+            lab.boot_id()
         self.assertEqual(lab.probe.ssh.call_count, 1)
 
 if __name__ == '__main__':
