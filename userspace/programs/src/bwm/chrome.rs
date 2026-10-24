@@ -326,6 +326,7 @@ pub(super) fn draw_taskbar(fb: &mut Surface, clock_text: &[u8], ui_font: &mut Op
         TASKBAR_TEXT,
         ui_font.as_mut(),
     );
+    let clock_text = clock_text.strip_suffix(b" ").unwrap_or(clock_text);
     if !clock_text.is_empty() {
         let clock_x = w as i32 - (measured_text(clock_text) as i32) - pxi(8);
         draw_text_at(
@@ -519,6 +520,7 @@ pub(super) fn compose_partial_redraw(
     if dy1 > screen_h - px(APPBAR_HEIGHT) {
         draw_appbar(fb, windows, focused, ui_font);
     }
+    draw_config_error(fb, ui_font);
     fb.pop_clip();
 }
 

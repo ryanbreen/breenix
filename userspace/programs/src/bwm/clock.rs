@@ -68,6 +68,7 @@ impl Clock {
         let mut ack = abi::CompositorAck {
             claim_epoch,
             epoch: self.epoch,
+            // Lane 3 records and acknowledges the handled source serial.
             handled_serial: 0,
             presented: self.presented,
             next_deadline_ns: self
@@ -78,7 +79,6 @@ impl Clock {
         };
         if let Err(error) = window::call(abi::op::COMPOSITOR_ACK, &mut ack) {
             eprintln!("[bwm] compositor acknowledgment failed: {}", error);
-            process::exit(1);
         }
     }
 }
