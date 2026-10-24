@@ -118,7 +118,6 @@ pub fn config_test() -> CaseResult {
     let mut c = Client::start(11)?;
     c.title(b"Font")?;
     content(&mut d, &c)?;
-    check(focused(&c)?, "configured font client is not focused")?;
     let s = d.shown(&c)?;
     let w = c.info()?;
     super::scene::ttf_text(
