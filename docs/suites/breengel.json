@@ -1674,7 +1674,7 @@
         },
         {
           "id": "boot-ribbon",
-          "title": "The restored kernel ribbon matches producer boot-stage markers after detecting ribbon-drop-stage"
+          "title": "The boot ribbon stays retired after display give-back and reclaimed text rows match the scanout (B51)"
         },
         {
           "id": "boundary-notice",

@@ -75,3 +75,45 @@ pub fn records() -> alloc::string::String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    static TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn reset() {
+        RETIRED.store(false, Ordering::Release);
+        for reached in &REACHED { reached.store(false, Ordering::Release); }
+        TAIL.store(0, Ordering::Release);
+        *SCAN.lock() = (0, [0; 1024], 0);
+    }
+
+    #[test]
+    fn last_stage_retires_even_with_earlier_stages_missing() {
+        let _guard = TEST.lock().unwrap();
+        reset();
+        assert!(is_booting());
+        let last = MARKERS.last().unwrap().split('|').next().unwrap();
+        for b in last.bytes().chain([b'\n']) { byte(b); }
+        drain();
+        assert!(!is_booting());
+        assert!(!REACHED[0].load(Ordering::Acquire));
+        assert!(reached().last().copied().unwrap());
+        assert!(!is_booting());
+    }
+
+    #[test]
+    fn display_takeover_retires_before_completion_and_never_revives() {
+        let _guard = TEST.lock().unwrap();
+        reset();
+        assert!(is_booting());
+        retire();
+        assert!(!is_booting());
+        for marker in MARKERS {
+            for b in marker.split('|').next().unwrap().bytes().chain([b'\n']) { byte(b); }
+        }
+        while drain() {}
+        assert!(!is_booting());
+        assert!(reached().iter().all(|&v| v));
+    }
+}

@@ -18,7 +18,7 @@ pub(crate) const PANEL: &[Case] = &[
     case("judged-frame-shown", "Every picture tile shows the frame whose SHA-256 its CASE record printed, after detecting substitution", panel_judged_frame_shown),
     case("serial-agreement", "Stage scanout tile ids, stamps and numbers agree with CASE bytes after detecting stage-lie", panel_serial_agreement),
     case("quiet-window", "No runner composite occurs inside a measured case window after detecting stage-draw-in-window", panel_quiet_window),
-    case("boot-ribbon", "The restored kernel ribbon matches producer boot-stage markers after detecting ribbon-drop-stage", panel_boot_ribbon),
+    case("boot-ribbon", "The boot ribbon stays retired after display give-back and reclaimed text rows match the scanout (B51)", panel_boot_ribbon),
     case("boundary-notice", "The stage validates observation flags and boundary code and leaves the removed caption blank", panel_boundary_notice),
     case("stage-hidpi", "The full HiDPI stage has scaled geometry and independently rasterized text", panel_stage_hidpi),
 ];
@@ -109,7 +109,7 @@ fn panel_judged_frame_shown() -> CaseResult { breenix_suite::suite::showcase_che
 fn panel_serial_agreement() -> CaseResult { breenix_suite::suite::showcase_check("serial-agreement") }
 fn panel_quiet_window() -> CaseResult { breenix_suite::suite::showcase_check("quiet-window") }
 fn panel_boot_ribbon() -> CaseResult {
-    let (width,_)=crate::window_cases::composition::screen_size()?;
+    let (width,height)=crate::window_cases::composition::screen_size()?;
     let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("23.7")?;
     let scale=modes.modes[modes.current as usize].scale as usize;
     use crate::window_cases::composition::{give_back, take_over, screen};
@@ -129,16 +129,35 @@ fn panel_boot_ribbon() -> CaseResult {
         if faulty {libbreenix::test_control::arm(15,0,0)?;}
         ensure(give_back()>=0,"23.7","give back for kernel ribbon failed")?;
         let result=screen();let took=take_over();ensure(took>=0,"23.7","retake after ribbon failed")?;
-        let (px,_)=result?;let mut mismatch=false;
-        for (i,&lit) in reached.iter().enumerate() {
-            let a=16+1248*i/reached.len();let b=16+1248*(i+1)/reached.len();
-            let rgb=if lit {[77,112,26,255]}else{[96,67,48,255]};
-            for y in 752*scale..768*scale {for x in a*scale..(b-2)*scale {let o=(y*width+x)*4;mismatch|=px[o..o+4]!=rgb;}}
-            for y in 752*scale..768*scale {for x in (b-2)*scale..b*scale {let o=(y*width+x)*4;mismatch|=px[o..o+4]!=[31,19,12,255];}}
-        }
+        let (px,_)=result?;
+        let check=std::fs::read_to_string("/proc/console/check").map_err(|e|format!("console read-back: {e}"))?;
+        ensure(check.contains("console check: shadow and screen identical\n") && check.contains("mismatches=0\n"),"23.7",format!("B51 console read-back differs after give-back: {check}"))?;
+        let display=check.lines().find(|l|l.starts_with("console display:")).ok_or("missing console geometry")?;
+        let grid=display.split("grid ").nth(1).ok_or("missing console grid")?;
+        let (cols,rows)=grid.split_once('x').ok_or("invalid console grid")?;
+        let cols:usize=cols.parse().map_err(|_|"invalid columns")?;
+        let rows:usize=rows.parse().map_err(|_|"invalid rows")?;
+        let cell=display.split(" pixel cells)").next().ok_or("missing console cell")?.rsplit('(').next().ok_or("missing cell geometry")?;
+        let line_height:usize=cell.split_once('x').ok_or("invalid cell geometry")?.1.parse().map_err(|_|"invalid cell height")?;
+        ensure(rows==(height/line_height).min(255),"23.7","B51 console did not reclaim the ribbon rows")?;
+        ensure(px.len()==width*height*4,"23.7","incomplete restored console scanout")?;
         let fired=libbreenix::test_control::fired(15)?;libbreenix::test_control::disarm_all()?;
-        ensure(mismatch==faulty,"23.7","kernel ribbon disagrees with actual producer markers, or dropped-stage fault was not detected")?;
-        if faulty {ensure(fired>0,"21","ribbon-drop-stage never fired")?;}
+        ensure(fired==0,"23.7","B51 retired ribbon consumed its drawing fault after give-back")?;
+        // Fill the reclaimed rows with terminal background cells, then judge their actual pixels.
+        ensure(give_back()>=0,"23.7","give back for reclaimed text failed")?;
+        let mut tty=std::fs::OpenOptions::new().write(true).open("/dev/tty1").map_err(|e|e.to_string())?;
+        let mut text=String::from("\x1b[44m");
+        for row in 752*scale/line_height..rows {text.push_str(&format!("\x1b[{};1H{}",row+1," ".repeat(cols)));}
+        text.push_str("\x1b[0m");
+        std::io::Write::write_all(&mut tty,text.as_bytes()).map_err(|e|e.to_string())?;
+        let checked=std::fs::read_to_string("/proc/console/check").map_err(|e|e.to_string())?;
+        let captured=screen();let took=take_over();ensure(took>=0,"23.7","retake after reclaimed text failed")?;
+        ensure(checked.contains("console check: shadow and screen identical\n") && checked.contains("mismatches=0\n"),"23.7",format!("B51 reclaimed text read-back differs: {checked}"))?;
+        let (px,_)=captured?;
+        for y in 752*scale..768*scale {for x in 0..8 {
+            let o=(y*width+x)*4;
+            ensure(px[o..o+4]==[215,120,70,255],"23.7",format!("B51 reclaimed text hidden at {x},{y}"))?;
+        }}
     }Ok(())
 }
 fn panel_boundary_notice() -> CaseResult { breenix_suite::suite::showcase_check("boundary-notice") }
