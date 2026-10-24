@@ -1,10 +1,11 @@
 """Idle admission and one-shot lease regressions; no hardware is contacted."""
 import os
+import runpy
 from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metal_tools_test as existing
@@ -91,6 +92,30 @@ class OneShotTest(unittest.TestCase):
         self.assertTrue(persistent.http.manager_answer().endswith(' current'))
         self.assertEqual(metal_persist.read_disk()['slots']['current']['commit'], current)
 
+
+
+class InitialSSHTest(unittest.TestCase):
+    def lab(self, replies):
+        cls = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/metal/server_resting.py'))['Lab']
+        lab = cls.__new__(cls)
+        def require(result):
+            if result.returncode:
+                raise ValueError('SSH failed')
+        lab.probe = SimpleNamespace(ssh=Mock(side_effect=replies), require=require)
+        return lab
+
+    def test_initial_transport_waits_for_network_then_requires_authenticated_command(self):
+        lab = self.lab([SimpleNamespace(returncode=255, stderr='Connection refused'),
+                        SimpleNamespace(returncode=0, stdout='abc-def-012\n')])
+        with patch('time.sleep'):
+            self.assertEqual(lab.boot_id(wait_for_network=True), 'abc-def-012')
+        self.assertEqual(lab.probe.ssh.call_count, 2)
+
+    def test_authentication_failure_is_not_treated_as_network_readiness(self):
+        lab = self.lab([SimpleNamespace(returncode=255, stderr='Permission denied (publickey).')])
+        with self.assertRaises(ValueError):
+            lab.boot_id(wait_for_network=True)
+        self.assertEqual(lab.probe.ssh.call_count, 1)
 
 if __name__ == '__main__':
     unittest.main()

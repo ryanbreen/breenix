@@ -82,10 +82,17 @@ class Lab:
         finally:
             console.logout()
 
-    def boot_id(self):
-        result = self.probe.ssh('cat /run/breenix/boot-id')
-        self.probe.require(result)
-        return result.stdout.strip()
+    def boot_id(self, wait_for_network=False):
+        def read():
+            result = self.probe.ssh('cat /run/breenix/boot-id')
+            # bsshd binds before DHCP completes. Only initial transport
+            # readiness is retried; authentication and command failures fail.
+            if (wait_for_network and result.returncode == 255 and any(message in result.stderr
+                    for message in ('Connection refused', 'Connection timed out', 'No route to host'))):
+                return None
+            self.probe.require(result)
+            return result.stdout.strip()
+        return self.wait(read, 600, 'initial persistent SSH transport never became ready') if wait_for_network else read()
 
     def idle(self, source):
         self.wait(lambda: self.ended(source), 1800, 'test did not finish')
@@ -174,7 +181,7 @@ def run(api, args):
                     lab.current = once
                     lab.wait(lambda: 'bsshd: listening on ' in lab.read(once, 'serial.txt'), 600, 'previous slot did not reach SSH')
                     once_run = json.loads(lab.read(once, 'run.json'))
-                    old_id = lab.boot_id()
+                    old_id = lab.boot_id(wait_for_network=True)
                     lab.power('reboot')
                     lab.wait(lambda: any(e['event'] == 'requested-reboot-ready' for e in lab.events(once)),
                         600, 'one-shot reboot did not return to SSH')
