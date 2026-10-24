@@ -11,17 +11,20 @@ fn placed(c: &Client) -> Result<(), String> {
 }
 
 fn one() -> Result<(Desktop, Client), String> {
-    let d = Desktop::start()?;
+    let mut d = Desktop::start()?;
     let c = Client::start(11)?;
     placed(&c)?;
+    d.client_ready(&c)?;
     Ok((d, c))
 }
 fn twin() -> Result<(Desktop, Client, Client), String> {
-    let d = Desktop::start()?;
+    let mut d = Desktop::start()?;
     let a = Client::start(11)?;
     placed(&a)?;
+    d.client_ready(&a)?;
     let b = Client::start(23)?;
     placed(&b)?;
+    d.client_ready(&b)?;
     Ok((d, a, b))
 }
 fn key(c: &mut Client, chords: &str, code: u32) -> Result<abi::WindowEvent, String> {

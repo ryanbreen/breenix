@@ -404,6 +404,7 @@ impl Screen {
 pub struct Desktop {
     pub wm: Child,
     log: File,
+    output: String,
     pub width: u32,
     pub height: u32,
     pub scale: i32,
@@ -441,6 +442,7 @@ impl Desktop {
         let mut d = Self {
             wm: pid.into(),
             log,
+            output: String::new(),
             width: mode.width,
             height: mode.height,
             scale: mode.scale as i32,
@@ -452,29 +454,24 @@ impl Desktop {
                     d.output()
                 ));
             }
+            // The first present precedes bwm's full startup validation. Wait for
+            // that producer to finish before measuring the client's settle.
+            // init's SPAWN children use the console rather than this pipe. Its
+            // initial client's native presentation is the stronger readiness
+            // handshake for that path, under the same startup deadline.
+            if !supervised && !d.output().contains("[bwm] desktop fills the scanout:") {
+                return Ok(false);
+            }
+            let initial_clients = if supervised { listed()? } else { Vec::new() };
             Ok(Screen::read().is_ok_and(|s| {
                 s.serial() != 0
                     && quad(&s.record, 64) != previous_context
                     && s.pixel(d.width as i32 / 2, 1).ok() == Some(0xff14161e)
+                    && (!supervised || initial_clients.iter().any(|w|
+                        w.commit_id != 0 && s.contains(w.id, w.commit_id)))
             }))
         });
         ready.map_err(|e| format!("{e}; {}", d.output()))?;
-        if supervised {
-            until(
-                2000,
-                "init desktop's initial client reached scanout",
-                || {
-                    let windows = listed()?;
-                    let s = match Screen::read() {
-                        Ok(s) => s,
-                        Err(_) => return Ok(false),
-                    };
-                    Ok(windows
-                        .iter()
-                        .any(|w| w.commit_id != 0 && s.contains(w.id, w.commit_id)))
-                },
-            )?;
-        }
         Ok(d)
     }
     pub fn output(&mut self) -> String {
@@ -486,13 +483,28 @@ impl Desktop {
                 Ok(n) => out.extend_from_slice(&b[..n]),
             }
         }
-        String::from_utf8_lossy(&out).replace(['\n', '\r'], " ")
+        if self.output.len() < 65536 {
+            self.output.push_str(&String::from_utf8_lossy(&out).replace(['\n', '\r'], " "));
+        }
+        self.output.clone()
     }
     pub fn shown(&mut self, c: &Client) -> Result<Screen, String> {
         self.shown_after(c, c.commit)
     }
+    /// A newly discovered client's first-frame validation runs synchronously in
+    /// bwm. Do not start an input scenario until that startup work is finished.
+    /// The marker gates readiness; the completed device record must also name
+    /// the client's commit, within the existing settle bound.
+    pub fn client_ready(&mut self, c: &Client) -> Result<(), String> {
+        let marker = format!("[bwm] composited client frame: window {} on screen,", c.id);
+        until(2000, "bwm completed client startup validation", || {
+            if !self.output().contains(&marker) { return Ok(false); }
+            Ok(Screen::read().is_ok_and(|s| s.contains(c.id, c.commit)))
+        })
+    }
     pub fn shown_after(&mut self, c: &Client, commit: u64) -> Result<Screen, String> {
         let mut result = None;
+        let mut observed = String::from("no readback attempted");
         until(
             2000,
             &format!("bwm composite of client {} commit {}", c.id, commit),
@@ -508,11 +520,22 @@ impl Desktop {
                         result = Some(s);
                         Ok(true)
                     }
-                    _ => Ok(false),
+                    Ok(s) => {
+                        let n = word(&s.record, 196) as usize;
+                        let entries: Vec<_> = (0..n.min(16)).map(|i|
+                            (quad(&s.record, 200 + i * 32), quad(&s.record, 208 + i * 32))).collect();
+                        observed = format!("composite {} entries {:?}", s.serial(), entries);
+                        Ok(false)
+                    }
+                    Err(e) => { observed = e; Ok(false) }
                 }
             },
         )
-        .map_err(|e| format!("{e}; {}", self.output()))?;
+        .map_err(|e| {
+            let log = self.output();
+            let tail = log.char_indices().rev().nth(90).map_or(0, |(at, _)| at);
+            format!("{e}; last {observed}; {}", &log[tail..])
+        })?;
         Ok(result.unwrap())
     }
     pub fn pointer(&self, x: i32, y: i32, buttons: u32, wheel: i32) -> Result<(), String> {
@@ -538,16 +561,23 @@ impl Desktop {
         time::sleep_ms(100).map_err(|e| e.to_string())
     }
     pub fn focus(&mut self, c: &mut Client) -> Result<(), String> {
+        let marker = format!("[bwm] composited client frame: window {} on screen,", c.id);
+        if !self.output().contains(&marker) { self.client_ready(c)?; }
         until(2000, "bwm assigned client geometry", || {
             let w = c.info()?;
             Ok(w.x > 0 && w.y > 0)
         })?;
         c.clear()?;
         let w = c.info()?;
-        self.click(w.x + 20, w.y + 20)?;
-        c.await_event("positive click delivery to target client", |e| {
+        self.pointer(w.x + 20, w.y + 20, 1, 0)?;
+        let pressed = c.await_event("positive click delivery to target client", |e| {
             e.kind == abi::event_kind::POINTER_BUTTON && e.pressed == 1
-        })?;
+        });
+        // Release even when the prerequisite failed, so the next case cannot
+        // inherit a held hardware button. Fast clicks have their own case.
+        let released = self.pointer(w.x + 20, w.y + 20, 0, 0);
+        pressed?;
+        released?;
         Ok(())
     }
 }
