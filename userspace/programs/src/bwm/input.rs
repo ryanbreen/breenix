@@ -277,6 +277,9 @@ fn key_text(code: u16, mods: u32) -> Option<u8> {
 fn repeatable(code: u16) -> bool {
     !matches!(code, 1 | 29 | 42 | 54 | 56 | 97 | 100 | 125 | 126)
 }
+fn motion(e: Event) -> bool {
+    e.kind == kind::ABS || (e.kind == kind::REL && matches!(e.code, axis::X | axis::Y))
+}
 fn chord_key(code: u16) -> u8 {
     match code {
         key::ENTER => b'\r',
@@ -330,7 +333,31 @@ impl State {
                     break;
                 }
                 let mut scene = None;
-                for (event, payload) in records {
+                let mut motion_end = 0;
+                let mut position = None;
+                for (at, (event, payload)) in records.iter().cloned().enumerate() {
+                    // Axes in one contiguous part of a SYN batch describe one
+                    // position. Route their source serials at that position,
+                    // rather than requesting an intermediate one-axis resize.
+                    if motion(event) && at >= motion_end {
+                        let mut point = (self.mouse_x, self.mouse_y);
+                        motion_end = at;
+                        position = Some(point);
+                        for &(axis, _) in &records[at..] {
+                            if axis.device != event.device || !motion(axis) {
+                                break;
+                            }
+                            motion_end += 1;
+                            match self.axis_position(axis, point) {
+                                Some(next) => point = next,
+                                None => {
+                                    position = None;
+                                    break;
+                                }
+                            }
+                            position = Some(point);
+                        }
+                    }
                     self.stream.seen = self.stream.seen.max(event.serial);
                     context(event);
                     self.stream.remember(event.device);
@@ -392,9 +419,12 @@ impl State {
                         }
                         kind::KEY if event.code < key::BUTTON_LEFT => self.key_event(event),
                         kind::TEXT => self.text_event(event, &payload),
-                        kind::ABS | kind::REL | kind::KEY => {
-                            self.pointer_event(event, scene, damage)
-                        }
+                        kind::ABS | kind::REL | kind::KEY => self.pointer_event(
+                            event,
+                            scene,
+                            damage,
+                            motion(event).then_some(position).flatten(),
+                        ),
                         _ => self.rejected(event, reason::NO_FOCUS),
                     }
                     if !self
@@ -410,6 +440,9 @@ impl State {
         }
         self.repeat();
         flush_input();
+        // A registry change can move an edge away from a stationary pointer.
+        // Shape follows the current scene even without another motion event.
+        self.cursor(damage);
         context(Event::default());
     }
     fn text_event(&mut self, event: Event, bytes: &[u8]) {
@@ -610,6 +643,26 @@ impl State {
     }
 }
 impl State {
+    fn axis_position(&mut self, e: Event, (mut x, mut y): (i32, i32)) -> Option<(i32, i32)> {
+        let extent = if e.code == axis::X {
+            self.screen_w
+        } else {
+            self.screen_h
+        };
+        let value = if e.kind == kind::ABS {
+            self.stream.normalize(e, extent)?
+        } else {
+            (if e.code == axis::X { x } else { y })
+                .saturating_add(e.value)
+                .clamp(0, extent as i32 - 1)
+        };
+        if e.code == axis::X {
+            x = value;
+        } else {
+            y = value;
+        }
+        Some((x, y))
+    }
     fn hit(&self) -> Option<usize> {
         self.windows
             .iter()
@@ -659,6 +712,7 @@ impl State {
         e: Event,
         scene: Option<core_input::SceneTag>,
         damage: &mut Damage,
+        position: Option<(i32, i32)>,
     ) {
         if let Some(tag) = scene {
             let slot = (e.device, tag.gesture);
@@ -687,37 +741,15 @@ impl State {
                 return;
             }
         }
-        let pointer_motion = e.kind == kind::ABS
-            || (e.kind == kind::REL && (e.code == axis::X || e.code == axis::Y));
-        if pointer_motion {
-            let extent = if e.code == axis::X {
-                self.screen_w
-            } else {
-                self.screen_h
-            };
-            let value = if e.kind == kind::ABS {
-                self.stream.normalize(e, extent)
-            } else {
-                Some(
-                    (if e.code == axis::X {
-                        self.mouse_x
-                    } else {
-                        self.mouse_y
-                    })
-                    .saturating_add(e.value)
-                    .clamp(0, extent as i32 - 1),
-                )
-            };
-            let Some(value) = value else {
+        if motion(e) {
+            let Some(point) =
+                position.or_else(|| self.axis_position(e, (self.mouse_x, self.mouse_y)))
+            else {
                 self.rejected(e, reason::TARGET_GONE);
                 return;
             };
             let old = (self.mouse_x, self.mouse_y);
-            if e.code == axis::X {
-                self.mouse_x = value;
-            } else {
-                self.mouse_y = value;
-            }
+            (self.mouse_x, self.mouse_y) = point;
             let moved = old != (self.mouse_x, self.mouse_y);
             damage.mouse_moved_this_frame |= moved;
             damage.cursor_dirty |= moved;

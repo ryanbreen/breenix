@@ -198,12 +198,16 @@ impl State {
                         if self.windows[win_idx].window_id != 0 {
                             let cx = self.windows[win_idx].content_x();
                             let cy = self.windows[win_idx].content_y();
-                            let _ = session::set_geometry(
+                            let flags = libbreenix::window::abi::geometry_flags::VISIBLE
+                                | if win_idx == self.focused_win {
+                                    libbreenix::window::abi::geometry_flags::FOCUSED
+                                } else { 0 };
+                            let _ = libbreenix::window::set_geometry(
                                 self.windows[win_idx].window_id,
                                 cx,
                                 cy,
                                 win_idx as u32,
-                                true,
+                                flags,
                             );
                         }
                         // Dirty region = union of old and new bounds
