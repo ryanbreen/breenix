@@ -136,15 +136,57 @@ history is staged by the host or suite.
 
 ### Clipboard
 
-bwm serves `/run/bwm/clipboard` as a Unix stream socket. The peer is a real process
-owning a registered window in this desktop. A request is `BCLIP001` (8 bytes), op u32
-(1 SET, 2 GET), payload length u32, window id u64, then the length-counted bytes. GET
-has no payload. A reply is status i32 (0 or negative errno), payload length u32, change
-serial u64, then payload. SET returns an empty payload; GET returns the stored bytes.
-The serial starts nonzero and increases on replacement. UTF-8 and embedded NUL are
-length-counted, with the plan's 16 MiB bound. Closing the setting client's window does
-not clear the stored bytes. The suite's clients call the real socket; there is no
-in-suite clipboard store and no host-staged result.
+W4 replaces the proposed bwm socket with the kernel's CLIPBOARD_SET,
+CLIPBOARD_GET and CLIPBOARD_SUBSCRIBE operations on syscall 414, defined in
+[BreenGL 17.1](breengel.md#171-the-system-call). Clients call those operations
+with their own registered window. Lengths, UTF-8, embedded NUL, serial ordering,
+retained RLIMIT_AS charge and claim-end clearing follow that contract. There is
+no in-suite clipboard store or host-staged result.
+
+## W12 recount
+
+The plan's 249 identifiers become **248 E18 identifiers** after
+`input-devices/ps2-scancodes` moves to the x86 hardware suite. The five existing
+extra controls remain additional: input-core/virtual-keyboard and
+virtual-pointer, startup/desktop-control and independent-clients, and
+composition/oracle-corruption. The completed table therefore has 253 cases.
+HID decoder cases exercise recorded layouts; Parallels/VMware bound completion
+rows and boots remain the W8 catch-up, not ARM64 execution evidence.
+
+| Category | Planned after W12 | Extra controls | Runnable target |
+|---|---:|---:|---:|
+| input-core | 31 | 2 | 33 |
+| input-devices | 14 | 0 | 14 |
+| startup | 12 | 2 | 14 |
+| composition | 27 | 1 | 28 |
+| stacking | 19 | 0 | 19 |
+| focus | 30 | 0 | 30 |
+| pointer | 21 | 0 | 21 |
+| geometry | 24 | 0 | 24 |
+| lifecycle | 20 | 0 | 20 |
+| recovery | 15 | 0 | 15 |
+| clipboard | 16 | 0 | 16 |
+| liveness | 12 | 0 | 12 |
+| performance | 7 | 0 | 7 |
+| Total | 248 | 5 | 253 |
+
+Changed assertions, with their identifiers retained:
+
+- W5 geometry/configure-ack waits for LIST's owner size before the frame changes.
+- W5 geometry/coalesce allows at most one outstanding ResizeRequested until
+  LIST reports a size change.
+- W5 recovery/death-mid-configure leaves the owner's size unchanged when
+  a pending request is abandoned by compositor death.
+- W6 startup/no-gpu-required requires bwm to stay alive and compose on the
+  target GPU core, with ARM64 QEMU GL inside the effort.
+- W10 composition/chromeless, stacking/chromeless-top and
+  stacking/dimmer-only-with-chromeless require chromeless content above both
+  bars with the full-mode dimmer geometry in bwm.md.
+
+W11 gives the physical display to each case's bwm. Between cases the stage
+restores its own frame. A host send, a submission or a marker alone cannot
+pass a native scanout assertion. The remainder remains #2370 until these
+identifiers have executable assertions and terminal verdicts.
 
 ## Baseline scope and incomplete milestones
 
