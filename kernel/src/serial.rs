@@ -44,6 +44,19 @@ pub static INPUT_POLL: core::sync::atomic::AtomicU64 = core::sync::atomic::Atomi
 pub static INPUT_FORWARD: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 
+/// Cold, root-only observation for the SOL input investigation. IIR reads
+/// acknowledge a THRE reason, so this is never called from the input path.
+pub fn input_uart_snapshot() -> (u8, u8, u8, u8) {
+    use core::sync::atomic::Ordering;
+    let state = TX_STATE.load(Ordering::Acquire);
+    unsafe {
+        let ier = x86_64::instructions::port::Port::<u8>::new(COM1_PORT + 1).read();
+        let lsr = com1_status();
+        let iir = x86_64::instructions::port::Port::<u8>::new(COM1_PORT + 2).read();
+        (state, ier, lsr, iir)
+    }
+}
+
 static SERIAL1_FIFO: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static LOG_FIFO: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 

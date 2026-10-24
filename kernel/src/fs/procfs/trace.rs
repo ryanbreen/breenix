@@ -259,6 +259,8 @@ pub fn generate_counters() -> String {
         crate::serial::INPUT_RX.load(Ordering::Relaxed), crate::serial::INPUT_POLL.load(Ordering::Relaxed),
         crate::serial::INPUT_FORWARD.load(Ordering::Relaxed));
 
+    let (state, ier, lsr, iir) = crate::serial::input_uart_snapshot();
+    output.push_str(&format!("serial_tx_state: {}\nserial_uart_ier: {}\nserial_uart_lsr: {}\nserial_uart_iir: {}\n", state, ier, lsr, iir));
     let count = TRACE_COUNTER_COUNT.load(Ordering::Relaxed);
     output.push_str(&format!("# {} registered counters\n\n", count));
 
