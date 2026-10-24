@@ -17,26 +17,12 @@
 //! on the owning CPU: a fault or panic taken while this CPU owns the UART
 //! writes its own output inline instead of waiting on itself.
 //!
-//! An unpinned owner that stops making progress for [`STALL_NS`] can have its
-//! ticket skipped by a waiter, including when its vCPU was descheduled.
-//! Skipping revokes it: an owner checks its ticket before a byte, and one
-//! that finds it skipped queues again behind the CPUs now waiting, and starts
-//! a fresh line if another writer's line was left open meanwhile; its record
-//! is then split around the other CPUs' output. Pinned records retain their
-//! owner instead; a waiter must let that bounded emission finish.
-//!
-//! An owner that stalls between that check and its byte writes the byte late,
-//! into whatever another CPU is writing by then. Every byte is therefore
-//! bracketed by two counters ([`State::begun`], [`State::ended`]), and a record
-//! that must reach the UART whole sees from them whether another CPU wrote
-//! while it was being written. Two kinds of record must: one carrying a
-//! boot-path stage marker (`stage_lines`), and a [`Kind::Line`]. Such a record
-//! that loses its ownership part way, or that another CPU wrote into, is
-//! written again from its first byte, on a fresh line.
-//!
-//! Bounded terminal writes and formatted kernel records use [`write_atomic`]
-//! instead: they pin their ticket before the first byte, so a descheduled vCPU
-//! retains its turn rather than leaving a partial record on the wire (#2411).
+//! Non-fatal atomic records use a bounded deferred ring. They release UART
+//! ownership between sixteen-byte pieces, with interrupts restored between them.
+//! Fatal output therefore depends on no other CPU and on no scheduler progress.
+
+#[path = "serial_defer.rs"]
+pub mod defer;
 
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -50,17 +36,21 @@ pub const STALL_NS: u64 = 100_000_000;
 /// anyway, as Linux's 8250 console does.
 pub const READY_NS: u64 = 10_000_000;
 
-/// The bit beside a 32-bit ticket pins a bounded record against stall takeover.
-/// Ticket and pin share one CAS word, so a waiter cannot skip a newly pinned
-/// owner based on an earlier observation of its progress (#2411).
-const PINNED: u64 = 1 << 32;
-
 /// The UART and the CPU a writer runs on.
 pub trait Port: Sized + 'static {
     /// Who a record belongs to, for starting fresh lines (`serial_writer`).
-    type Writer: Copy;
+    type Writer: Copy + Send;
+    /// Userspace units apply backpressure; kernel records use non-waiting admission.
+    fn may_defer(_writer: Self::Writer) -> bool {
+        true
+    }
+    /// Keep a record owner runnable on its CPU while IRQs remain enabled.
+    fn exclude_preemption() -> bool {
+        false
+    }
+    fn restore_preemption(_excluded: bool) {}
     /// This port's ownership.
-    fn state() -> &'static State;
+    fn state() -> &'static State<Self::Writer>;
     /// A nonzero value identifying the calling CPU.
     fn cpu_tag() -> u32;
     /// A free-running counter.
@@ -87,11 +77,11 @@ pub trait Port: Sized + 'static {
 }
 
 /// A port's ownership.
-pub struct State {
+pub struct State<W: Copy = u8> {
+    deferred: defer::Deferred<W>,
     /// The next ticket to hand out.
     next: AtomicU32,
-    /// The ticket in the low 32 bits, with PINNED beside it. It advances when
-    /// the owner releases, or a waiter skips an unpinned owner that stalled.
+    /// The ticket advances when an owner releases or a waiter skips a stall.
     serving: AtomicU64,
     /// The owner's ticket (high half) and CPU tag (low half), written once it
     /// owns the UART. Only its own CPU acts on it, to recognise reentry.
@@ -108,9 +98,10 @@ pub struct State {
     capturing: AtomicU32,
 }
 
-impl State {
+impl<W: Copy> State<W> {
     pub const fn new() -> Self {
         Self {
+            deferred: defer::Deferred::new(),
             next: AtomicU32::new(0),
             serving: AtomicU64::new(0),
             holder: AtomicU64::new(0),
@@ -122,7 +113,7 @@ impl State {
     }
 }
 
-impl Default for State {
+impl<W: Copy> Default for State<W> {
     fn default() -> Self {
         Self::new()
     }
@@ -166,8 +157,7 @@ fn wait<P: Port>(ticket: u32, stall: u64) -> bool {
             watched = seen;
             since = now;
         } else if now.wrapping_sub(since) >= stall {
-            // Skip a stalled, unpinned ticket. The CAS also fails when its
-            // owner pinned it or another waiter advanced it meanwhile.
+            // Skip a stalled ticket unless another waiter already advanced it.
             let _ = state.serving.compare_exchange(
                 serving as u64,
                 serving.wrapping_add(1) as u64,
@@ -191,6 +181,7 @@ pub struct Ownership<P: Port> {
     release: bool,
     /// Bytes this guard has begun.
     puts: u64,
+    parked: bool,
     port: PhantomData<P>,
 }
 
@@ -200,7 +191,8 @@ impl<P: Port> Ownership<P> {
         let state = P::state();
         let holder = state.holder.load(Ordering::Relaxed);
         let ticket = (holder >> 32) as u32;
-        (holder as u32 == tag && state.serving.load(Ordering::SeqCst) as u32 == ticket).then_some(ticket)
+        (holder as u32 == tag && state.serving.load(Ordering::SeqCst) as u32 == ticket)
+            .then_some(ticket)
     }
 
     fn new(saved: u64, tag: u32, ticket: u32, release: bool) -> Self {
@@ -210,12 +202,28 @@ impl<P: Port> Ownership<P> {
             ticket,
             release,
             puts: 0,
+            parked: false,
             port: PhantomData,
         }
     }
 
-    /// Own the UART, waiting for the CPUs ahead.
+    /// Non-fatal writers defer immediately while a record is in progress.
     pub fn acquire() -> Self {
+        let saved = P::mask_interrupts();
+        if P::state().deferred.active() {
+            return Self::new(saved, P::cpu_tag(), 0, false).park();
+        }
+        P::restore_interrupts(saved);
+        Self::acquire_uart()
+    }
+
+    fn park(mut self) -> Self {
+        P::restore_interrupts(self.saved);
+        self.parked = true;
+        self
+    }
+
+    fn acquire_uart() -> Self {
         let saved = P::mask_interrupts();
         let tag = P::cpu_tag();
         match Self::reentered(tag) {
@@ -228,6 +236,10 @@ impl<P: Port> Ownership<P> {
     pub fn try_acquire() -> Option<Self> {
         let state = P::state();
         let saved = P::mask_interrupts();
+        if state.deferred.active() {
+            P::restore_interrupts(saved);
+            return None;
+        }
         let tag = P::cpu_tag();
         if let Some(ticket) = Self::reentered(tag) {
             return Some(Self::new(saved, tag, ticket, false));
@@ -236,7 +248,12 @@ impl<P: Port> Ownership<P> {
         let serving = state.serving.load(Ordering::SeqCst) as u32;
         if state
             .next
-            .compare_exchange(serving, serving.wrapping_add(1), Ordering::Acquire, Ordering::Relaxed)
+            .compare_exchange(
+                serving,
+                serving.wrapping_add(1),
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
             .is_ok()
         {
             state
@@ -253,19 +270,22 @@ impl<P: Port> Ownership<P> {
         P::state().serving.load(Ordering::SeqCst) as u32 == self.ticket
     }
 
-    /// Pin before the first byte of a bounded record. If takeover won the CAS
-    /// before pinning, rejoin the queue before emitting any bytes.
-    fn pin(&mut self) {
-        loop {
-            let ticket = self.ticket as u64;
-            match P::state().serving.compare_exchange(
-                ticket, ticket | PINNED, Ordering::SeqCst, Ordering::Relaxed,
-            ) {
-                Ok(_) => return,
-                Err(serving) if serving == (ticket | PINNED) => return,
-                Err(_) => self.regain(),
-            }
+    /// Release hardware ownership and restore interrupts before record transmission.
+    fn suspend(&mut self) {
+        if self.parked {
+            return;
         }
+        if self.release {
+            let _ = P::state().serving.compare_exchange(
+                self.ticket as u64,
+                self.ticket.wrapping_add(1) as u64,
+                Ordering::SeqCst,
+                Ordering::Relaxed,
+            );
+        }
+        self.release = false;
+        self.parked = true;
+        P::restore_interrupts(self.saved);
     }
 
     /// Own the UART again after losing it, behind the CPUs already waiting.
@@ -290,7 +310,9 @@ impl<P: Port> Drop for Ownership<P> {
                 );
             }
         }
-        P::restore_interrupts(self.saved);
+        if !self.parked {
+            P::restore_interrupts(self.saved);
+        }
     }
 }
 
@@ -363,7 +385,11 @@ pub fn capture_only<P: Port>(args: core::fmt::Arguments) -> bool {
 /// write, both SeqCst like the check and the skip. So a CPU that checks
 /// before a waiter skips it, and writes after, is still counted begun when the
 /// new owner opens its [`Window`], and its byte ends inside that window.
-fn put<P: Port, const TEE: bool>(writer: P::Writer, byte: u8, ownership: &mut Ownership<P>) -> bool {
+fn put<P: Port, const TEE: bool>(
+    writer: P::Writer,
+    byte: u8,
+    ownership: &mut Ownership<P>,
+) -> bool {
     let state = P::state();
     ownership.puts += 1;
     state.begun.fetch_add(1, Ordering::SeqCst);
@@ -463,31 +489,97 @@ pub enum Kind {
     Line,
 }
 
-/// Write a bounded record without stall takeover or replay. `fresh` starts a
-/// notice on its own line, including after the same writer's partial line.
-/// Unlike the recovery writer below, this path needs no stage-marker scan.
+/// Transmit a non-fatal unit without owning the UART or masking interrupts for
+/// its duration. Other non-fatal units are copied to the bounded deferred ring.
 pub fn write_atomic<P: Port, const TEE: bool>(
     writer: P::Writer,
     bytes: &[u8],
     fresh: bool,
     ownership: &mut Ownership<P>,
 ) {
-    if bytes.is_empty() { return; }
-    ownership.pin();
-    // A previously skipped raw breadcrumb may still have a byte in flight.
-    // Let it finish before starting this record. A same-CPU fatal reentry
-    // cannot wait for its own interrupted byte.
+    if bytes.is_empty() {
+        return;
+    }
+    struct Record<P: Port>(bool, PhantomData<P>);
+    impl<P: Port> Drop for Record<P> {
+        fn drop(&mut self) {
+            P::restore_preemption(self.0);
+        }
+    }
+    let _record = Record::<P>(P::exclude_preemption(), PhantomData);
+    ownership.suspend();
     let state = P::state();
-    while ownership.release
-        && state.begun.load(Ordering::SeqCst) != state.ended.load(Ordering::SeqCst)
-    {
+    loop {
+        let saved = P::mask_interrupts();
+        let admission = state
+            .deferred
+            .submit(writer, bytes, TEE, fresh, P::may_defer(writer));
+        P::restore_interrupts(saved);
+        match admission {
+            defer::Admission::Start => break,
+            defer::Admission::Queued => return,
+            defer::Admission::Busy => core::hint::spin_loop(),
+        }
+    }
+    // A skipped raw writer may have a byte already inside the hardware access.
+    // Wait with interrupts restored; fatal output uses the separate fatal entry point.
+    while state.begun.load(Ordering::SeqCst) != state.ended.load(Ordering::SeqCst) {
         core::hint::spin_loop();
     }
-    let lead = if fresh && P::line_open() { &b"\r\n"[..] } else { P::lead(writer, bytes) };
-    for &byte in lead.iter().chain(bytes) {
-        while !put::<P, TEE>(writer, byte, ownership) {
-            ownership.pin();
+    transmit::<P, TEE>(writer, bytes, fresh);
+    let mut pending = [0u8; 256];
+    loop {
+        let saved = P::mask_interrupts();
+        let next = state.deferred.next(&mut pending);
+        P::restore_interrupts(saved);
+        match next {
+            None => core::hint::spin_loop(),
+            Some(defer::Next::Record(meta, len)) => {
+                if meta.tee {
+                    transmit::<P, true>(meta.writer, &pending[..len], meta.fresh);
+                } else {
+                    transmit::<P, false>(meta.writer, &pending[..len], meta.fresh);
+                }
+            }
+            Some(defer::Next::Overflow(lost)) => {
+                let mut report = [0u8; 96];
+                transmit::<P, true>(writer, defer::overflow_line(lost, &mut report), true);
+            }
+            Some(defer::Next::Empty) => break,
         }
+    }
+}
+
+fn transmit<P: Port, const TEE: bool>(writer: P::Writer, bytes: &[u8], fresh: bool) {
+    let mut first = true;
+    for chunk in bytes.chunks(16) {
+        let mut ownership = Ownership::<P>::acquire_uart();
+        if first {
+            let lead = if fresh && P::line_open() {
+                &b"\r\n"[..]
+            } else {
+                P::lead(writer, bytes)
+            };
+            put_all::<P, TEE>(writer, lead, &mut ownership);
+            first = false;
+        }
+        put_all::<P, TEE>(writer, chunk, &mut ownership);
+    }
+}
+
+/// claim-lint:ok: #2424 W25 defines the fatal contract; tests/uart_owner.rs pauses a record at the UART and requires immediate fatal bytes.
+/// Fatal output never waits for another CPU or for record progress. It may
+/// interrupt a unit, including when the interrupted CPU will never return.
+pub fn fatal<P: Port>(bytes: &[u8]) {
+    let saved = P::mask_interrupts();
+    let state = P::state();
+    let ticket = state.next.fetch_add(1, Ordering::Relaxed);
+    state.serving.store(ticket as u64, Ordering::SeqCst);
+    let ownership = Ownership::<P>::new(saved, P::cpu_tag(), ticket, true);
+    for &byte in bytes {
+        wait_ready::<P>();
+        P::write(byte, &ownership);
+        capture::<P>(byte, ownership.tag);
     }
 }
 
@@ -499,6 +591,10 @@ pub fn write<P: Port, const TEE: bool>(
     ownership: &mut Ownership<P>,
 ) {
     if bytes.is_empty() {
+        return;
+    }
+    if ownership.parked {
+        write_atomic::<P, TEE>(writer, bytes, kind == Kind::Line, ownership);
         return;
     }
     // Decided the first time it matters: when the record loses bytes.
@@ -529,6 +625,11 @@ pub fn write<P: Port, const TEE: bool>(
             if put::<P, TEE>(writer, bytes[index], ownership) {
                 index += 1;
                 continue;
+            }
+            // Defer a raw writer's remainder behind a unit already on the wire.
+            if P::state().deferred.active() {
+                write_atomic::<P, TEE>(writer, &bytes[index..], false, ownership);
+                return;
             }
             // Other CPUs wrote while this one waited; one may have left its line open.
             ownership.regain();

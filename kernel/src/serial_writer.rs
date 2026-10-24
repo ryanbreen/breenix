@@ -15,12 +15,16 @@
 //! that may never release) neither reads nor updates this state.
 //!
 //! The TTY admits up to 4096 input bytes, after output processing, as one
-//! serial unit (#2411/W23). The port's exclusion keeps kernel output out of
-//! that unit: SERIAL1 on x86-64, pinned UART ownership on ARM64. Larger writes
+//! serial unit (#2411/W25). A deferred kernel ring keeps non-fatal lines after
+//! that unit; hardware exclusion covers short pieces. Larger writes
 //! may have kernel output between their units. [`exclusive`] keeps the
 //! console's prompt and echo out of those gaps and excludes other TTY writes;
 //! its holder runs with preemption disabled. Kernel output uses the port's
 //! exclusion directly, since it can run in interrupt and fault context.
+#[cfg(target_arch = "x86_64")]
+#[path = "serial_defer.rs"]
+pub mod deferred;
+
 use core::sync::atomic::{AtomicU8, Ordering};
 
 /// A writer to the console port.
@@ -89,4 +93,32 @@ pub fn exclusive<R>(write: impl FnOnce() -> R) -> R {
 /// Write one unit of the kernel serial console's prompt or echo.
 pub fn console(unit: &[u8]) {
     exclusive(|| crate::serial::write_bytes_atomic(Writer::Console, unit));
+}
+
+/// Console writes run in thread context with preemption excluded by their caller.
+/// Restore the incoming IRQ state after transmission, including on x86 syscall entry.
+pub fn interruptible<R>(writer: Writer, write: impl FnOnce() -> R) -> R {
+    let exclude = crate::per_cpu::is_initialized() && crate::per_cpu::preempt_count() == 0;
+    if exclude {
+        crate::per_cpu::preempt_disable();
+    }
+    let enable = writer != Writer::Kernel
+        && crate::per_cpu::is_initialized()
+        && !crate::per_cpu::in_interrupt()
+        && !crate::arch_interrupts_enabled();
+    if enable {
+        unsafe {
+            crate::arch_enable_interrupts();
+        }
+    }
+    let result = write();
+    if enable {
+        unsafe {
+            crate::arch_disable_interrupts();
+        }
+    }
+    if exclude {
+        crate::per_cpu::preempt_enable();
+    }
+    result
 }

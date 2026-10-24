@@ -1,24 +1,16 @@
 //! Aarch64 UART ownership (issue 847).
 //!
-//! Every aarch64 UART writer goes through this module. A record (a line, or a
-//! caller-defined unterminated unit such as a TTY character or a breadcrumb)
-//! is assembled on the caller's stack, then written to the UART in one piece
-//! while this CPU owns the UART (`uart_owner`, which has the ownership rules).
-//!
-//! Kernel records are synchronous: a kernel record reaches the UART before
-//! the call that completes it returns. A record longer than the assembly
-//! buffer is written in buffer-sized pieces, each one owned. The one writer
-//! that may discard its record is [`try_write`], for breadcrumbs on paths that
-//! must not wait. Terminal output is queued for the transmit thread once it
-//! runs (`TxRing`), and a kernel record first writes out the terminal output
-//! queued before it, so the UART still carries the records in the order they
-//! were written.
+//! Formatted records use `uart_owner`'s bounded deferred ring during another
+//! record. The unit owner drains them after its own bytes. Hardware ownership
+//! covers short pieces, with IRQs restored between them. Fatal output bypasses
+//! admission and writes directly to hardware. Terminal output keeps its existing
+//! transmit queue; a record that cannot fit is transmitted by its caller.
 //!
 //! Lines posted on paths that may not log (`log_notice`) are written here from
 //! thread context only: by the next logged record a thread writes, and by the idle
 //! loop ([`write_notices_from_thread`]). Each is a whole line of its own.
 use crate::serial_writer::Writer;
-use crate::uart_owner::{self, Kind, Port};
+use crate::uart_owner::{self, Port};
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
@@ -31,12 +23,26 @@ pub(crate) enum Uart {}
 /// Proof that this CPU owns the UART. Only `uart_owner` creates one.
 pub(crate) type Ownership = uart_owner::Ownership<Uart>;
 
-static STATE: uart_owner::State = uart_owner::State::new();
+static STATE: uart_owner::State<Writer> = uart_owner::State::new();
 
 impl Port for Uart {
     type Writer = Writer;
 
-    fn state() -> &'static uart_owner::State {
+    fn may_defer(writer: Writer) -> bool {
+        writer != Writer::Tty || (crate::per_cpu::is_initialized() && crate::per_cpu::in_interrupt())
+    }
+
+    fn exclude_preemption() -> bool {
+        let exclude = crate::per_cpu::is_initialized() && crate::per_cpu::preempt_count() == 0;
+        if exclude { crate::per_cpu::preempt_disable(); }
+        exclude
+    }
+
+    fn restore_preemption(excluded: bool) {
+        if excluded { crate::per_cpu::preempt_enable(); }
+    }
+
+    fn state() -> &'static uart_owner::State<Writer> {
         &STATE
     }
 
@@ -134,16 +140,21 @@ fn emit<const TEE: bool, const TERMINAL: bool>(writer: Writer, bytes: &[u8], lev
     if bytes.is_empty() {
         return;
     }
+    if crate::output_accounting::is_panicking() {
+        crate::output_accounting::count(bytes.len(), false);
+        uart_owner::fatal::<Uart>(bytes);
+        return;
+    }
     if TERMINAL && writer == Writer::Tty && queue_terminal(bytes) {
         return;
     }
     if writer == Writer::Kernel {
         crate::output_accounting::count(bytes.len(), attributed);
     }
-    // Terminal output queued before this record goes first, from thread context:
-    // raw kernel records (the timer's lockup capture among them) and interrupt
-    // handlers skip it, as they skip the notices.
-    if (TEE || TERMINAL) && in_thread_context() {
+    // A terminal fallback preserves the transmit queue's order. Kernel loggers
+    // must not drain that queue: another CPU may be transmitting a unit, and
+    // their line belongs in its deferred ring without waiting for the unit.
+    if TERMINAL && in_thread_context() {
         write_queued();
     }
     // Raw diagnostics (including the timer's lockup capture) must stay on
@@ -202,7 +213,7 @@ pub fn try_write(bytes: &[u8]) -> bool {
     match Ownership::try_acquire() {
         Some(mut ownership) => {
             crate::output_accounting::count(bytes.len(), true);
-            uart_owner::write::<Uart, false>(Writer::Diagnostic, bytes, Kind::Plain, &mut ownership);
+            uart_owner::write_atomic::<Uart, false>(Writer::Diagnostic, bytes, false, &mut ownership);
             true
         }
         None => false,

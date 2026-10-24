@@ -228,6 +228,10 @@ pub fn start_foreground_signal_thread() {
 /// Grid/ONLCR processing stays small; serial admission spans a bounded write.
 const SERIAL_ATOMIC_OUTPUT_BYTES: usize = 256;
 const SERIAL_ATOMIC_INPUT_BYTES: usize = 4096;
+
+#[path = "serial_units.rs"]
+mod serial_units;
+
 const SERIAL_RECORD_BYTES: usize = 2 * SERIAL_ATOMIC_INPUT_BYTES + crate::console::grid::HELD;
 
 fn for_each_line_segment(buf: &[u8], mut visit: impl FnMut(&[u8])) {
@@ -931,7 +935,7 @@ impl TtyDevice {
         // copy of up to 4096 input bytes as one record (#2411/W23). The extra
         // HELD bytes cover an escape sequence retained by an earlier write.
         crate::serial_writer::exclusive(|| {
-            for input in buf.chunks(SERIAL_ATOMIC_INPUT_BYTES) {
+            for input in serial_units::units(buf) {
                 let mut record = [0u8; SERIAL_RECORD_BYTES];
                 let mut record_len = 0;
                 let mut output = |bytes: &[u8]| {
@@ -1264,7 +1268,7 @@ pub fn write_unprocessed(buf: &[u8]) {
     #[cfg(target_arch = "x86_64")]
     crate::serial::sync_log_to_console();
     crate::serial_writer::exclusive(|| {
-        for chunk in buf.chunks(SERIAL_ATOMIC_INPUT_BYTES) {
+        for chunk in serial_units::units(buf) {
             crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, chunk);
         }
     });

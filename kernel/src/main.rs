@@ -2958,10 +2958,11 @@ use core::panic::PanicInfo;
 #[cfg(target_arch = "x86_64")]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    // Try to output panic info if possible
+    kernel::output_accounting::panicking();
+    // Fatal records bypass queued output and hardware ownership.
     serial_println!("KERNEL PANIC: {}", info);
     log::error!("KERNEL PANIC: {}", info);
-    kernel::serial::flush_log();
+    // Fatal printing is synchronous and does not wait for queued output.
 
     // Failure-capture PR-4: the bounded, lock-free BXCAP record.
     //
