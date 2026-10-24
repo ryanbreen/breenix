@@ -241,6 +241,7 @@ pub fn create(caller: &Caller, a: &mut Create) -> Result<u64, i32> {
             geometry: 0,
             meta: Meta::ZERO,
             ring,
+            clipboard_subscribed: false,
             waits,
             holder: None,
             gate: false,
@@ -265,6 +266,7 @@ pub fn destroy(caller: &Caller, id: u64) -> Result<u64, i32> {
         let mut reg = REGISTRY.lock();
         reg.window(id, caller, who::owner)?;
         let w = reg.windows.remove(&id).ok_or(ENOENT)?;
+        super::clipboard::window_gone(&mut reg, id);
         reg.present.uncover(w.present.shown);
         w
     };
@@ -1227,13 +1229,19 @@ pub fn claim(caller: &Caller, c: &mut Claim, out: u64) -> Result<u64, i32> {
     };
     c.epoch = epoch;
     if let Err(e) = crate::syscall::window::copy_out(out, &*c) {
-        let mut reg = REGISTRY.lock();
-        if reg.claim.is_some_and(|h| h.holder == caller.tgid && h.epoch == epoch) {
-            reg.claim = None;
-            if reg.epoch == epoch {
-                reg.epoch -= 1;
+        let clipboard = {
+            let mut reg = REGISTRY.lock();
+            if reg.claim.is_some_and(|h| h.holder == caller.tgid && h.epoch == epoch) {
+                reg.claim = None;
+                if reg.epoch == epoch {
+                    reg.epoch -= 1;
+                }
+                super::clipboard::clear(&mut reg)
+            } else {
+                None
             }
-        }
+        };
+        drop(clipboard);
         return Err(e);
     }
     let woken = {
@@ -1261,14 +1269,15 @@ pub fn claim(caller: &Caller, c: &mut Claim, out: u64) -> Result<u64, i32> {
 
 /// `RELEASE_COMPOSITOR` (the compositor).
 pub fn release(caller: &Caller) -> Result<u64, i32> {
-    let woken = {
+    let (woken, clipboard) = {
         let mut reg = REGISTRY.lock();
         if !reg.is_compositor(caller) {
             return Err(EPERM);
         }
         reg.claim = None;
-        all_waits(&reg)
+        (all_waits(&reg), super::clipboard::clear(&mut reg))
     };
+    drop(clipboard);
     super::scene::invalidate(caller.tgid);
     claim_ended(woken);
     Ok(0)
@@ -1339,6 +1348,7 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
     let mut gone: Vec<Window> = Vec::new();
     let mut freed: Vec<Remnant> = Vec::new();
     let mut readers: Vec<Arc<Waits>> = Vec::new();
+    let mut clipboard = None;
     // The room each evidence holder has under its `RLIMIT_AS`, read before the registry is
     // taken (the process manager is never taken under it). A remnant that does not fit is not
     // kept.
@@ -1360,6 +1370,7 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
         let ids: Vec<u64> = reg.windows.values().filter(|w| w.owner == tgid).map(|w| w.id).collect();
         for id in ids {
             if let Some(w) = reg.windows.remove(&id) {
+                super::clipboard::window_gone(&mut reg, id);
                 reg.present.uncover(w.present.shown);
                 if at_exit {
                     if let Some(holder) = w.holder.filter(|&h| h != tgid) {
@@ -1393,6 +1404,7 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
         }
         if reg.claim.is_some_and(|c| c.holder == tgid) {
             reg.claim = None;
+            clipboard = super::clipboard::clear(&mut reg);
             readers = all_waits(&reg);
         }
         if at_exit {
@@ -1414,6 +1426,7 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
         w.waits.events.wake_up();
     }
     claim_ended(readers);
+    drop(clipboard);
     crate::gpu::window_targets::release_context(tgid);
     drop(gone);
     drop(freed);

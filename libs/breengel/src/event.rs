@@ -86,14 +86,19 @@ pub enum Event {
     FontChanged,
     /// A compositor claimed the display, with this epoch.
     CompositorChanged { epoch: u64 },
+    /// The desktop clipboard changed; clipboard_get reads its text and change serial.
+    ClipboardChanged,
+    /// Another registered window replaced this window's clipboard ownership.
+    ClipboardLost,
     /// The ring was full: this many events were lost before the next one.
     Overflow { lost: u32 },
     /// A kind Breengel does not know.
     Unknown { kind: u16 },
 }
 
-/// An event as `Window::dispatch` delivers it: the compositor's input serial (0 for events
-/// the kernel or Breengel made), its timestamp and the decoded event.
+/// An event as `Window::dispatch` delivers it: its delivery serial, timestamp and
+/// decoded event. Clipboard notices carry kernel delivery identities rather than
+/// input serials; other kernel/Breengel events can have serial 0.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Delivered {
     pub serial: u64,
@@ -135,6 +140,8 @@ impl Event {
             event_kind::RESIZE_FAILED => Event::ResizeFailed { width: raw.width, height: raw.height },
             event_kind::FONT_CHANGED => Event::FontChanged,
             event_kind::COMPOSITOR_CHANGED => Event::CompositorChanged { epoch: raw.epoch },
+            event_kind::CLIPBOARD_CHANGED => Event::ClipboardChanged,
+            event_kind::CLIPBOARD_LOST => Event::ClipboardLost,
             event_kind::OVERFLOW => Event::Overflow { lost: raw.lost },
             kind => Event::Unknown { kind },
         }

@@ -41,13 +41,65 @@ pub fn clip_owner_exit() -> CaseResult {
 }
 
 pub fn set_get() -> CaseResult {
-    let (_d, mut c) = one()?;
-    let (set, _) = clip_ok(&mut c, true, b"same-program")?;
-    let (got, text) = clip_ok(&mut c, false, &[])?;
+    let _d = Desktop::start()?;
+    let mut c = breengel::Window::new(b"clipboard API", 32, 32)?;
+    c.clipboard_subscribe(true)?;
+    let set = c.clipboard_set("same-program\0λ")?;
+    let got = c.clipboard_get()?;
     check(
-        set == got && text == b"same-program",
+        set == got.serial && got.text == "same-program\0λ",
         "setter cannot read back its exact text and serial",
-    )
+    )?;
+    let mut notified = false;
+    c.dispatch(|e| {
+        if matches!(e.event, breengel::Event::ClipboardChanged) {
+            notified = e.serial != 0;
+        }
+        breengel::Handled::NoChange
+    })?;
+    check(notified, "Breengel did not decode the kernel clipboard notice")?;
+    let replacement = c.clipboard_set("replacement")?;
+    let mut dst = [0xa5; 32];
+    let mut stale = abi::ClipboardGet::ZERO;
+    stale.id = c.id();
+    stale.dst = dst.as_mut_ptr() as u64;
+    stale.capacity = dst.len() as u64;
+    stale.serial = set;
+    stale.mime = abi::CLIPBOARD_TEXT_UTF8;
+    let code = unsafe {
+        window::raw_call(abi::op::CLIPBOARD_GET, (&mut stale as *mut abi::ClipboardGet).cast(),
+            core::mem::size_of_val(&stale))
+    };
+    check(code == -11 && dst == [0xa5; 32], "stale clipboard copy did not return EAGAIN without a partial copy")?;
+    let invalid = [0xff];
+    let mut bad = abi::ClipboardSet::ZERO;
+    bad.id = c.id();
+    bad.ptr = invalid.as_ptr() as u64;
+    bad.len = 1;
+    bad.mime = abi::CLIPBOARD_TEXT_UTF8;
+    let code = unsafe {
+        window::raw_call(abi::op::CLIPBOARD_SET, (&mut bad as *mut abi::ClipboardSet).cast(),
+            core::mem::size_of_val(&bad))
+    };
+    check(code == -22, "invalid clipboard UTF-8 did not return EINVAL")?;
+    let got = c.clipboard_get()?;
+    check(got.serial == replacement && got.text == "replacement", "invalid UTF-8 changed clipboard")?;
+    let mut original = [0u64; 2];
+    let resource_limit = |new: u64, old: u64| unsafe {
+        libbreenix::syscall::raw::syscall4(libbreenix::syscall::nr::PRLIMIT64, 0, 9, new, old) as i64
+    };
+    check(resource_limit(0, original.as_mut_ptr() as u64) == 0, "read clipboard setter RLIMIT_AS")?;
+    let restricted = [0, original[1]];
+    check(resource_limit(restricted.as_ptr() as u64, 0) == 0, "restrict clipboard setter RLIMIT_AS")?;
+    let denied = c.clipboard_set("must be charged");
+    let restored = resource_limit(original.as_ptr() as u64, 0);
+    check(restored == 0, "restore clipboard setter RLIMIT_AS")?;
+    check(matches!(denied, Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENOMEM))),
+        "clipboard storage bypassed setter RLIMIT_AS")?;
+    let got = c.clipboard_get()?;
+    check(got.serial == replacement && got.text == "replacement", "ENOMEM changed clipboard")?;
+    c.clipboard_subscribe(false)?;
+    Ok(())
 }
 pub fn empty() -> CaseResult {
     let (_d, mut c) = one()?;

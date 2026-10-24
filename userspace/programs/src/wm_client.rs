@@ -510,7 +510,9 @@ fn run(
                             });
                         }
                     }
-                    w.processed = w.processed.max(e.serial);
+                    if !matches!(e.kind, abi::event_kind::CLIPBOARD_CHANGED | abi::event_kind::CLIPBOARD_LOST) {
+                        w.processed = w.processed.max(e.serial);
+                    }
                     if e.kind == abi::event_kind::CLOSE_REQUESTED
                         && options.flags & flags::IGNORE_CLOSE == 0
                     {

@@ -13,6 +13,7 @@ use breengel_abi::errno::{EFAULT, EINVAL, ENOSYS, EPERM};
 use breengel_abi::{
     arg_size, op, Acquire, Capture, Claim, Commit, Composite, CompositeEntry, CompositeRecordHeader,
     Create, Cursor, Geometry, Give, List, MapTree, Meta, MetaQuery, NoChange, Plain, ReadEvents,
+    ClipboardSet, ClipboardGet, ClipboardSubscribe,
     Readback, RecordQuery, Resize, SceneSnapshot, Title, WinId, WriteEvents, INTERFACE_VERSION,
 };
 
@@ -212,9 +213,9 @@ fn dispatch(caller: &Caller, op: u32, arg: u64) -> Result<u64, i32> {
         // arm. Exact sizes were validated before dispatch (breengel.md 17.1).
         op::COMPOSITOR_ACK => Err(ENOSYS),
         op::COMPOSITOR_STATUS => Err(ENOSYS),
-        op::CLIPBOARD_SET => Err(ENOSYS),
-        op::CLIPBOARD_GET => Err(ENOSYS),
-        op::CLIPBOARD_SUBSCRIBE => Err(ENOSYS),
+        op::CLIPBOARD_SET => committing::<ClipboardSet>(arg, |a, out| crate::window::clipboard::set(&caller, a, out)),
+        op::CLIPBOARD_GET => committing::<ClipboardGet>(arg, |a, out| crate::window::clipboard::get(&caller, a, out)),
+        op::CLIPBOARD_SUBSCRIBE => crate::window::clipboard::subscribe(&caller, &input::<ClipboardSubscribe>(arg)?),
         op::HIT_TEST => Err(ENOSYS),
         op::EVENT_TAG => Err(ENOSYS),
         op::GESTURE_REPORT => Err(ENOSYS),

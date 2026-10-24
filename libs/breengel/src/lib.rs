@@ -50,6 +50,8 @@
 
 mod window;
 mod event;
+mod clipboard;
+pub use clipboard::ClipboardText;
 pub mod clock;
 pub mod font;
 
