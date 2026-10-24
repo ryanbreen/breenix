@@ -421,7 +421,7 @@ fn class(width: usize, height: usize) -> (usize, usize) {
     (pitch, rows)
 }
 
-struct Entry { glyph: u16, size26: i32, image: Arc<AtlasGlyph>, used: u64, slot: Option<(u64, usize)> }
+struct Entry { glyph: u16, size26: i32, lcd: bool, image: Arc<AtlasGlyph>, used: u64, slot: Option<(u64, usize)> }
 
 /// The glyphs of one draw the atlas is rasterizing: their coverage, the images to draw in
 /// order with their pen offsets once it is sent, and the slots it fills. Entries used at
@@ -459,19 +459,24 @@ impl CachedFont {
     /// order, or its error. The glyphs the atlas lacks are rasterized into it in one run,
     /// waited for once (B33); only a draw needing more glyphs than the atlas holds sends
     /// the run early, when an entry it draws would otherwise be evicted.
-    fn run(&mut self, placed: &[(u16, i64)], size26: i32, mut out: impl FnMut(Result<(Arc<AtlasGlyph>, i64), Error>)) {
+    fn run(&mut self, placed: &[(u16, i64)], size26: i32, out: impl FnMut(Result<(Arc<AtlasGlyph>, i64), Error>)) {
+        self.run_mode(placed, size26, false, out);
+    }
+
+    // LCD coverage has three independent channels; it must never alias a grayscale entry.
+    fn run_mode(&mut self, placed: &[(u16, i64)], size26: i32, lcd: bool, mut out: impl FnMut(Result<(Arc<AtlasGlyph>, i64), Error>)) {
         if self.owner != device::pid() { self.clear(); self.owner = device::pid(); }
         let mut batch = Batch { first: self.clock + 1, ..Batch::default() };
         for &(glyph, dx) in placed {
             self.clock += 1;
-            if let Some(e) = self.entries.iter_mut().find(|e| e.glyph == glyph && e.size26 == size26) {
+            if let Some(e) = self.entries.iter_mut().find(|e| e.glyph == glyph && e.size26 == size26 && e.lcd == lcd) {
                 self.stats.hits += 1;
                 e.used = self.clock;
                 batch.draws.push((e.image.clone(), dx));
                 continue;
             }
             self.stats.misses += 1;
-            match self.queue(glyph, size26, &mut batch, &mut out) {
+            match self.queue(glyph, size26, lcd, &mut batch, &mut out) {
                 Ok(image) => batch.draws.push((image, dx)),
                 Err(e) => out(Err(e)),
             }
@@ -480,22 +485,34 @@ impl CachedFont {
     }
 
     /// Plan a missing glyph's coverage on `batch`, giving the image it will hold.
-    fn queue(&mut self, glyph: u16, size26: i32, batch: &mut Batch,
+    fn queue(&mut self, glyph: u16, size26: i32, lcd: bool, batch: &mut Batch,
         out: &mut impl FnMut(Result<(Arc<AtlasGlyph>, i64), Error>)) -> Result<Arc<AtlasGlyph>, Error> {
         let outline = self.font.glyph_outline(glyph)?;
         let (segments, width, height, x_offset, y_offset) = match self.font.layout_glyph(&outline, glyph, size26)? {
             GlyphLayout::Empty { advance } => {
                 while !self.make_room(batch.first) { self.finish(batch, out); }
-                return Ok(self.insert(glyph, size26, AtlasGlyph::empty(advance), None));
+                return Ok(self.insert(glyph, size26, lcd, AtlasGlyph::empty(advance), None));
             }
             GlyphLayout::Outline { segments, width, height, x_offset, y_offset } => (segments, width, height, x_offset, y_offset),
         };
-        admit(&segments, width, height)?;
+        if lcd {
+            if libfont::bounds::raster_bound(segments.len(), height, width * 3) > libfont::bounds::MAX_RASTER_STEPS {
+                return Err(FontError::GlyphTooExpensive);
+            }
+            admit(&libfont::crossings::lcd_segments(&segments), width * 3, height)?;
+        } else {
+            admit(&segments, width, height)?;
+        }
         let (pitch, rows) = class(width, height);
         if charge(pitch / 4, rows) > self.max_bytes {
             // Larger than the whole budget: rasterized, not kept.
-            let region = region(0, width, height)?;
-            batch.run.spans(&segments, width, height, &region);
+            let region = if lcd {
+                batch.run.lcd(&segments, width, height)?
+            } else {
+                let region = region(0, width, height)?;
+                batch.run.spans(&segments, width, height, &region);
+                region
+            };
             let mut image = AtlasGlyph::at(region, width, height);
             (image.x_offset, image.y_offset) = (x_offset, y_offset);
             return Ok(Arc::new(image));
@@ -514,11 +531,22 @@ impl CachedFont {
         if core::mem::replace(&mut p.drawn[slot], true) {
             batch.run.banded(&region, [0, region.y as i32, width as i32, (region.y + height) as i32], 1, Draw::Solid(0));
         }
-        batch.run.spans(&segments, width, height, &region);
+        if lcd {
+            let packed = match batch.run.lcd(&segments, width, height) {
+                Ok(packed) => packed,
+                Err(e) => { self.free(page, slot); return Err(e); }
+            };
+            let (x, y) = (region.x as i32, region.y as i32);
+            batch.run.banded(&region, [x, y, x + width as i32, y + height as i32], 1,
+                Draw::Sampled { pipeline: pipeline::COPY, colour: 0, texture: packed.target.handle(),
+                    params: [packed.x as i32 - x, packed.y as i32 - y, 1, 0, 0, 0, 0, 0] });
+        } else {
+            batch.run.spans(&segments, width, height, &region);
+        }
         let mut image = AtlasGlyph::at(region, width, height);
         (image.x_offset, image.y_offset) = (x_offset, y_offset);
         batch.slots.push((page, slot));
-        Ok(self.insert(glyph, size26, image, Some((page, slot))))
+        Ok(self.insert(glyph, size26, lcd, image, Some((page, slot))))
     }
 
     /// Send `batch`'s run, wait for it once, and give its images to `out` in order. A
@@ -541,9 +569,9 @@ impl CachedFont {
         }
     }
 
-    fn insert(&mut self, glyph: u16, size26: i32, image: AtlasGlyph, slot: Option<(u64, usize)>) -> Arc<AtlasGlyph> {
+    fn insert(&mut self, glyph: u16, size26: i32, lcd: bool, image: AtlasGlyph, slot: Option<(u64, usize)>) -> Arc<AtlasGlyph> {
         let image = Arc::new(image);
-        self.entries.push(Entry { glyph, size26, image: image.clone(), used: self.clock, slot });
+        self.entries.push(Entry { glyph, size26, lcd, image: image.clone(), used: self.clock, slot });
         self.stats.entries = self.entries.len();
         image
     }
@@ -896,25 +924,15 @@ pub fn text_width_bytes(font: &mut CachedFont, bytes: &[u8], size: f32) -> i32 {
     layout(font, glyphs.into_iter(), size, |_, _, _| {})
 }
 
-/// LCD glyphs are not cached: the run's glyphs are rasterized into scratch in one run and
-/// drawn after it in the same context, which runs them in order, so drawing does not wait.
+/// Reuse LCD coverage in the bounded GPU atlas, with the same eviction and accounting as
+/// grayscale glyphs. Rasterization completes before its slots can be sampled or reused.
 fn draw_glyphs_subpixel(fb: &mut Surface, font: &mut CachedFont, glyphs: Vec<u16>, x: i32, y: i32, size: f32, fg: Color) -> i32 {
     let (placed, width) = visible(fb, font, glyphs, x, y, size);
-    let size26 = Font::size26(size).unwrap_or(0);
-    let mut run = Run::default();
-    let mut draws = Vec::new();
-    for (g, dx) in placed {
-        match font.font().plan(g, size26, true, &mut run) {
-            Ok(image) => draws.push((image, dx)),
-            Err(Error::Device(e)) => fb.fail(e),
-            Err(_) => {},
-        }
-    }
-    match run.send() {
-        Ok(_) => for (image, dx) in draws { draw_atlas(fb, &image, x as i64 + dx, y as i64, fg); },
+    font.run_mode(&placed, Font::size26(size).unwrap_or(0), true, |r| match r {
+        Ok((image, dx)) => draw_atlas(fb, &image, x as i64 + dx, y as i64, fg),
         Err(Error::Device(e)) => fb.fail(e),
         Err(_) => {},
-    }
+    });
     width
 }
 
