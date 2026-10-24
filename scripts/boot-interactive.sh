@@ -365,10 +365,10 @@ if [ "$QMP_REQUESTED" -eq 0 ] && [ -n "$VIGIL_ID" ]; then
         echo "==> Vigil QMP disabled: socket path exceeds 103 bytes: $VIGIL_QMP_SOCKET"
     fi
 fi
-# Console suites and the shell take host keys through a private QMP socket,
-# including one-case runs that have no Vigil socket. Other suites have no host-key cases.
+# Console, window-manager and shell boots take host input through a private QMP
+# socket, including one-case runs that have no Vigil socket.
 HOSTKEYS_SOCKET=
-if [ "$MODE" = shell ] || { [ "$MODE" = suite ] && [[ ",$SUITE," == *,console,* ]]; }; then
+if [ "$MODE" = shell ] || { [ "$MODE" = suite ] && { [[ ",$SUITE," == *,console,* ]] || [[ ",$SUITE," == *,window-manager,* ]]; }; }; then
     HOSTKEYS_SOCKET="${TMPDIR:-/tmp}/breenix-hk-$$.sock"
     [ "$(printf '%s' "$HOSTKEYS_SOCKET" | wc -c)" -le 103 ] || HOSTKEYS_SOCKET="/tmp/breenix-hk-$$.sock"
 fi

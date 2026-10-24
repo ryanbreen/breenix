@@ -1,0 +1,477 @@
+{
+  "id": "window-manager",
+  "title": "Window manager",
+  "area": "Window manager",
+  "summary": "Independent clients share bwm composition, input, geometry, lifecycle, clipboard and recovery while the desktop remains live and meets its latency and frame-rate bounds.",
+  "binary": "/sbin/suite-window-manager",
+  "timingSensitive": true,
+  "needs3dGpu": true,
+  "categories": [
+    {
+      "id": "input-core",
+      "title": "Input core & virtual devices",
+      "cases": [
+        {
+          "id": "virtual-keyboard",
+          "title": "A virtual A press and release traverse the core and bwm to a real client"
+        },
+        {
+          "id": "serials",
+          "title": "Input serials increase across two virtual devices and bwm delivers both"
+        },
+        {
+          "id": "time-injected",
+          "title": "Injector timestamps survive routing and decreasing time is refused"
+        },
+        {
+          "id": "ctrl-super-distinct",
+          "title": "Virtual Ctrl+A reaches a client with Ctrl and without Super"
+        },
+        {
+          "id": "text-event",
+          "title": "Whole UTF-8 EV_TEXT reaches a client and invalid UTF-8 is refused"
+        },
+        {
+          "id": "device-removal",
+          "title": "Removing a held virtual keyboard sends the release to its client"
+        },
+        {
+          "id": "virtual-pointer",
+          "title": "A virtual absolute pointer and button traverse the core and bwm at exact client coordinates"
+        },
+        {
+          "id": "ledger-complete",
+          "title": "A mixed virtual script has one terminal disposition per serial and delivered keys have processing commits"
+        },
+        {
+          "id": "capabilities",
+          "title": "Undeclared keys return EINVAL between two successful declared-key deliveries"
+        }
+      ]
+    },
+    {
+      "id": "input-devices",
+      "title": "Keyboard & pointer drivers on every target",
+      "cases": [
+        {
+          "id": "keyboard-completion-path",
+          "title": "The bound keyboard completion reports, wakes bwm, delivers A and rearms"
+        },
+        {
+          "id": "pointer-completion-path",
+          "title": "The bound pointer completion reports, wakes bwm, delivers motion and rearms"
+        },
+        {
+          "id": "replay-report-fault",
+          "title": "Suppressing the production report loses the event after a positive delivery"
+        }
+      ]
+    },
+    {
+      "id": "startup",
+      "title": "bwm starts and shows clients",
+      "cases": [
+        {
+          "id": "desktop-control",
+          "title": "A completed empty desktop exposes the literal taskbar pixel"
+        },
+        {
+          "id": "claims-display",
+          "title": "A live bwm retains the compositor claim after composing a client"
+        },
+        {
+          "id": "first-client",
+          "title": "A real client pattern and commit appear in completed device scanout"
+        },
+        {
+          "id": "existing-windows",
+          "title": "bwm adopts and composes a window created before it starts"
+        },
+        {
+          "id": "independent-clients",
+          "title": "Two independent owners share the desktop and the top client is exact"
+        },
+        {
+          "id": "supervisor-starts",
+          "title": "Production init desktop starts bwm and composes an independent client"
+        }
+      ]
+    },
+    {
+      "id": "composition",
+      "title": "Composition, chrome & repaint",
+      "cases": [
+        {
+          "id": "chrome-geometry",
+          "title": "Decorations and desktop bars occupy the literal rectangles and colours"
+        },
+        {
+          "id": "overlap",
+          "title": "The higher client covers the lower client with its exact complete pattern"
+        },
+        {
+          "id": "cascade",
+          "title": "New windows cascade by 50 logical pixels on each axis"
+        },
+        {
+          "id": "client-update",
+          "title": "A new client commit replaces its pattern in completed device scanout"
+        },
+        {
+          "id": "expose-close",
+          "title": "An exited top client reveals the exact complete lower client"
+        },
+        {
+          "id": "oracle-corruption",
+          "title": "The scanout check rejects a wrong content pixel and missing commit provenance"
+        }
+      ]
+    },
+    {
+      "id": "stacking",
+      "title": "Stacking & minimize",
+      "cases": [
+        {
+          "id": "click-raises",
+          "title": "Clicking an exposed lower client raises and composes that stable window id"
+        },
+        {
+          "id": "minimize-hides",
+          "title": "Minimizing removes client content and exposes the exact lower window"
+        },
+        {
+          "id": "restore",
+          "title": "Appbar restore repaints the client and restores keyboard eligibility"
+        },
+        {
+          "id": "all-minimized",
+          "title": "All minimized windows have no published focus and receive no typed input"
+        },
+        {
+          "id": "exit-restacks",
+          "title": "Surviving clients keep their order when another owner exits"
+        }
+      ]
+    },
+    {
+      "id": "focus",
+      "title": "Focus, keyboard routing & hotkeys",
+      "cases": [
+        {
+          "id": "initial-focus",
+          "title": "The initial client receives one FocusGained and is published focused"
+        },
+        {
+          "id": "pair-click",
+          "title": "A click transition sends one correct lost and gained pair"
+        },
+        {
+          "id": "keys-to-focused",
+          "title": "A typed A reaches the focused client and no other client"
+        },
+        {
+          "id": "text-exact",
+          "title": "Typing Hello World delivers exactly those eleven bytes"
+        },
+        {
+          "id": "releases",
+          "title": "A physical A release reaches the client that received the press"
+        },
+        {
+          "id": "ctrl-c",
+          "title": "Ctrl+C arrives as Linux C with Ctrl distinct from Super"
+        },
+        {
+          "id": "navigation-keys",
+          "title": "Home End Delete Page Up Page Down and arrows retain their key identities"
+        },
+        {
+          "id": "escape",
+          "title": "A standalone Escape reaches the focused client"
+        },
+        {
+          "id": "cycle-next",
+          "title": "Alt+Tab visits both clients and wraps with correct focus notices"
+        }
+      ]
+    },
+    {
+      "id": "pointer",
+      "title": "Pointer routing",
+      "cases": [
+        {
+          "id": "local-coords",
+          "title": "Pointer motion reaches the client at exact content-local coordinates"
+        },
+        {
+          "id": "capture",
+          "title": "A pressed client receives motion and release outside its bounds"
+        },
+        {
+          "id": "right-middle",
+          "title": "Right and middle presses and releases reach their target"
+        },
+        {
+          "id": "scroll-under-pointer",
+          "title": "Wheel input wakes and reaches the pointer target rather than the focused client"
+        },
+        {
+          "id": "outside-not-delivered",
+          "title": "After positive delivery outside motion reaches no uncaptured client"
+        },
+        {
+          "id": "press-release-order",
+          "title": "Press motion and release reach the client in serial order"
+        }
+      ]
+    },
+    {
+      "id": "geometry",
+      "title": "Move & resize",
+      "cases": [
+        {
+          "id": "drag-move",
+          "title": "A titlebar drag moves the client by the exact drag delta and repaints it"
+        },
+        {
+          "id": "resize-right",
+          "title": "Right-edge drag requests owner resize changes only width and composes it"
+        },
+        {
+          "id": "resize-bottom",
+          "title": "Bottom-edge drag requests owner resize changes only height and composes it"
+        },
+        {
+          "id": "client-refuses",
+          "title": "An owner ignoring ResizeRequested keeps its whole original content and size"
+        },
+        {
+          "id": "resize-cross",
+          "title": "Crossing the opposite edge clamps to the minimum and never requests a huge width"
+        },
+        {
+          "id": "client-resize",
+          "title": "bwm reconciles and composes a client-initiated resize"
+        }
+      ]
+    },
+    {
+      "id": "lifecycle",
+      "title": "Close, crash & launch",
+      "cases": [
+        {
+          "id": "close-request",
+          "title": "The first close delivers CloseRequested without killing an ignoring owner"
+        },
+        {
+          "id": "client-exit",
+          "title": "Normal client exit removes its window and repaints the survivor"
+        },
+        {
+          "id": "client-crash",
+          "title": "SIGSEGV removes the crashed window and repaints the survivor"
+        },
+        {
+          "id": "client-exec",
+          "title": "Exec removes the old window and repaints the survivor"
+        },
+        {
+          "id": "close-unresponsive",
+          "title": "A second close sends SIGTERM to an owner that ignored the first request"
+        },
+        {
+          "id": "compositor-steal",
+          "title": "Another process cannot steal the live bwm compositor claim"
+        },
+        {
+          "id": "inject-denied",
+          "title": "A non-compositor cannot inject events while bwm owns the claim"
+        },
+        {
+          "id": "launch-ack",
+          "title": "Super+Return launches a real GUI client whose first commit reaches device scanout"
+        },
+        {
+          "id": "launch-reaped",
+          "title": "bwm reaps the GUI client its hotkey launched after that client exits"
+        }
+      ]
+    },
+    {
+      "id": "recovery",
+      "title": "WM death, restart & supervision",
+      "cases": [
+        {
+          "id": "clients-notified",
+          "title": "Killing the real bwm delivers CompositorChanged with its epoch"
+        },
+        {
+          "id": "restart-adopts",
+          "title": "A restarted real bwm composes the surviving client and its retained pixels"
+        },
+        {
+          "id": "interaction-after-restart",
+          "title": "The same surviving client receives keys and clicks under the next bwm"
+        },
+        {
+          "id": "stack-restored",
+          "title": "Restart preserves published geometry stacking and minimized state"
+        },
+        {
+          "id": "supervisor-restarts",
+          "title": "Production init desktop restarts a killed bwm and recomposes survivors"
+        }
+      ]
+    },
+    {
+      "id": "clipboard",
+      "title": "Clipboard between programs",
+      "cases": [
+        {
+          "id": "cross-process",
+          "title": "Two real window-owning clients transfer exact text and change serial through bwm"
+        },
+        {
+          "id": "utf8",
+          "title": "Cross-process clipboard transfer preserves multi-byte UTF-8 byte for byte"
+        },
+        {
+          "id": "large",
+          "title": "One MiB transfers between independent clipboard peers"
+        },
+        {
+          "id": "nul-bytes",
+          "title": "Clipboard transfer preserves embedded NUL bytes"
+        },
+        {
+          "id": "replace",
+          "title": "A second peer replaces clipboard text with a later change serial"
+        },
+        {
+          "id": "owner-exit",
+          "title": "Clipboard text and serial survive the setting client exit"
+        }
+      ]
+    },
+    {
+      "id": "liveness",
+      "title": "Idle, stalls & stress",
+      "cases": [
+        {
+          "id": "idle-no-composites",
+          "title": "One hundred acknowledged idle UI epochs produce no composites"
+        },
+        {
+          "id": "hung-client",
+          "title": "A stopped client cannot prevent another client receiving input and repainting"
+        },
+        {
+          "id": "wake-on-registry",
+          "title": "An independent new client wakes an idle bwm and reaches scanout"
+        },
+        {
+          "id": "stress-animation",
+          "title": "Eight clients advance through 300 UI epochs while input is processed"
+        },
+        {
+          "id": "memory-bounded",
+          "title": "After 60 warmup epochs 600 epochs of eight clients grow bwm RSS by at most 64 KiB"
+        }
+      ]
+    },
+    {
+      "id": "performance",
+      "title": "Latency & frame rate",
+      "cases": [
+        {
+          "id": "typing-latency",
+          "title": "One hundred measured keys reach composited handling commits within median 20 ms and max 50 ms"
+        },
+        {
+          "id": "pointer-latency",
+          "title": "One hundred measured motions reach composited handling commits within median 20 ms and max 50 ms"
+        },
+        {
+          "id": "present-latency",
+          "title": "Three hundred measured 256x256 commits reach scanout within median 16 ms and max 33 ms"
+        },
+        {
+          "id": "frame-floor",
+          "title": "A client animating as fast as released receives at least 60 composites per second over five seconds"
+        },
+        {
+          "id": "idle-cpu",
+          "title": "bwm and three static clients use at most two percent of one CPU over five seconds"
+        },
+        {
+          "id": "latency-under-animation",
+          "title": "Four animating clients retain median 33 ms and max 100 ms input latency"
+        },
+        {
+          "id": "clipboard-latency",
+          "title": "Eighteen measured 64 KiB transfers between programs each finish within 50 ms"
+        }
+      ]
+    },
+    {
+      "id": "input-core-remaining",
+      "title": "input-core planned coverage",
+      "cases": []
+    },
+    {
+      "id": "input-devices-remaining",
+      "title": "input-devices planned coverage",
+      "cases": []
+    },
+    {
+      "id": "startup-remaining",
+      "title": "startup planned coverage",
+      "cases": []
+    },
+    {
+      "id": "composition-remaining",
+      "title": "composition planned coverage",
+      "cases": []
+    },
+    {
+      "id": "stacking-remaining",
+      "title": "stacking planned coverage",
+      "cases": []
+    },
+    {
+      "id": "focus-remaining",
+      "title": "focus planned coverage",
+      "cases": []
+    },
+    {
+      "id": "pointer-remaining",
+      "title": "pointer planned coverage",
+      "cases": []
+    },
+    {
+      "id": "geometry-remaining",
+      "title": "geometry planned coverage",
+      "cases": []
+    },
+    {
+      "id": "lifecycle-remaining",
+      "title": "lifecycle planned coverage",
+      "cases": []
+    },
+    {
+      "id": "recovery-remaining",
+      "title": "recovery planned coverage",
+      "cases": []
+    },
+    {
+      "id": "clipboard-remaining",
+      "title": "clipboard planned coverage",
+      "cases": []
+    },
+    {
+      "id": "liveness-remaining",
+      "title": "liveness planned coverage",
+      "cases": []
+    }
+  ]
+}
