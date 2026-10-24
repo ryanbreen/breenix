@@ -410,3 +410,8 @@ mod tests {
         assert!(layout.decode(&[3, 0]).is_err());
     }
 }
+
+/// Union the button levels of one device's independently reporting endpoints.
+pub fn merged_buttons(endpoints: impl Iterator<Item = u32>) -> u32 {
+    endpoints.fold(0, |held, buttons| held | buttons)
+}

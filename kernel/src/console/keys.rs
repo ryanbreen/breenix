@@ -85,3 +85,12 @@ pub fn leds() -> u8 {
     let caps = CAPS[vt::foreground() - 1].load(Ordering::Relaxed);
     NUM.load(Ordering::Relaxed) as u8 | (caps as u8) << 1 | (SCROLL.load(Ordering::Relaxed) as u8) << 2
 }
+
+/// Discard consumed-key state when the input core drains a physical device.
+/// Lock toggles belong to the terminal and deliberately survive custody changes.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn reset_device(device: usize) {
+    if let Some(words) = CONSUMED.get(device) {
+        for word in words { word.store(0, Ordering::Relaxed); }
+    }
+}

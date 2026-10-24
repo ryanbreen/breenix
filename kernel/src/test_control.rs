@@ -172,12 +172,12 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
                 return err(EINVAL);
             }
             let p = &POINT_TABLE[a.point as usize];
-            p.arm(a.target, a.param);
+            crate::arch_without_interrupts(|| p.arm(a.target, a.param));
             SyscallResult::Ok(0)
         }
         tc_op::DISARM_ALL => {
             for p in POINT_TABLE.iter() {
-                p.disarm();
+                crate::arch_without_interrupts(|| p.disarm());
             }
             #[cfg(target_arch = "aarch64")]
             // A case's measurements start clean: the IRQ-masked gauges restart at 0.
@@ -193,7 +193,7 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
             if f.reserved != 0 || !defined(f.point) {
                 return err(EINVAL);
             }
-            f.count = POINT_TABLE[f.point as usize].fired();
+            f.count = crate::arch_without_interrupts(|| POINT_TABLE[f.point as usize].fired());
             match crate::syscall::userptr::copy_to_user(arg as *mut TcFired, &f) {
                 Ok(()) => SyscallResult::Ok(0),
                 Err(_) => err(EFAULT),
@@ -202,4 +202,21 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
         // There is no op that sets or clears the latch: 4 and everything above.
         _ => err(EINVAL),
     }
+}
+
+/// The replay contract's bit-8 shorthand arms the ordinary report point.
+/// The guard disarms an unconsumed arm on a failed reset; no hidden replay
+/// branch can suppress reports without the point's firing count.
+#[cfg(target_arch = "aarch64")]
+pub(crate) struct InputReportSkip;
+#[cfg(target_arch = "aarch64")]
+impl Drop for InputReportSkip {
+    fn drop(&mut self) { crate::arch_without_interrupts(|| POINT_TABLE[breengel_abi::tc_point::INPUT_REPORT_SKIPPED as usize].disarm()); }
+}
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn arm_input_report_skip() -> Result<InputReportSkip, u64> {
+    if !enabled() { return Err(ENOSYS as u64); }
+    if !caller_is_root() { return Err(EPERM as u64); }
+    crate::arch_without_interrupts(|| POINT_TABLE[breengel_abi::tc_point::INPUT_REPORT_SKIPPED as usize].arm(0, 0));
+    Ok(InputReportSkip)
 }
