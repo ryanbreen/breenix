@@ -20,6 +20,7 @@ runtime = []
 suite = ["std"]
 
 [dependencies]
+input-abi = { path = "../input-abi" }
 breengel-abi = { path = "../breengel-abi" }
 # Syscall 416's layouts and the BGL command stream, shared with the kernel.
 gpu-abi = { path = "../gpu-abi" }

@@ -51,6 +51,10 @@ pub trait IpcFile: Send + Sync + core::fmt::Debug {
     fn read(&self, _buf: u64, _count: usize) -> Result<u64, u64> {
         Err(EINVAL as u64)
     }
+    /// Read with the shared open description's current O_NONBLOCK state.
+    fn read_with_status(&self, buf: u64, count: usize, _nonblocking: bool) -> Result<u64, u64> {
+        self.read(buf, count)
+    }
     fn on_close(&self, _pid: crate::process::ProcessId) {}
 }
 

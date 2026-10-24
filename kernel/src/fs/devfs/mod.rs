@@ -30,6 +30,7 @@
 //! ```
 
 pub mod entries;
+pub mod input;
 pub use entries::{SHM_DIRECTORY_INO, SHM_DIRECTORY_MODE};
 
 use alloc::string::String;
@@ -41,6 +42,9 @@ use spin::Mutex;
 pub enum DeviceType {
     /// /dev/null - discards writes, reads return EOF
     Null,
+    /// E18 input endpoints, instantiated as shared open descriptions.
+    InputEvents,
+    Uinput,
     /// /dev/kmsg - bounded, root-only audit messages to the kernel log
     Kmsg,
     /// /dev/zero - discards writes, reads return zero bytes
@@ -124,6 +128,8 @@ impl DeviceType {
     pub fn name(&self) -> &'static str {
         match self {
             DeviceType::Null => "null",
+            DeviceType::InputEvents => "input/events",
+            DeviceType::Uinput => "uinput",
             DeviceType::Kmsg => "kmsg",
             DeviceType::Zero => "zero",
             DeviceType::Console => "console",
@@ -142,6 +148,8 @@ impl DeviceType {
     pub fn inode(&self) -> u64 {
         match self {
             DeviceType::Null => 2,
+            DeviceType::InputEvents => 40,
+            DeviceType::Uinput => 41,
             DeviceType::Kmsg => 9,
             DeviceType::Zero => 3,
             DeviceType::Console => 4,
@@ -178,6 +186,7 @@ impl DeviceType {
             DeviceType::Null | DeviceType::Zero | DeviceType::Tty | DeviceType::Ptmx => (0o666, 0),
             DeviceType::Console | DeviceType::Vcs(_) | DeviceType::Vcsa(_) => (0o600, 0),
             DeviceType::Kmsg => (0o200, 0),
+            DeviceType::InputEvents | DeviceType::Uinput => (0o600, 0),
             DeviceType::Tty0 | DeviceType::Vt(_) => return vt_attrs(self.terminal().unwrap_or(0)),
             DeviceType::Rtc => (0o444, 0),
         };
@@ -191,7 +200,7 @@ impl DeviceType {
 
     /// Check if this device is writable
     pub fn is_writable(&self) -> bool {
-        *self != DeviceType::Rtc
+        !matches!(self, DeviceType::Rtc | DeviceType::InputEvents)
     }
 }
 
@@ -254,6 +263,9 @@ pub fn init() {
     devfs.devices.push(DeviceNode::new(DeviceType::Null, 1, 3)); // /dev/null
     devfs.devices.push(DeviceNode::new(DeviceType::Kmsg, 1, 11));
     devfs.devices.push(DeviceNode::new(DeviceType::Zero, 1, 5)); // /dev/zero
+
+    devfs.devices.push(DeviceNode::new(DeviceType::InputEvents, 13, 0));
+    devfs.devices.push(DeviceNode::new(DeviceType::Uinput, 13, 1));
 
     // Major 5 = TTY devices
     devfs
@@ -325,7 +337,13 @@ pub fn list_devices() -> Vec<String> {
     let mut names: Vec<String> = devfs
         .devices
         .iter()
-        .map(|d| String::from(d.device_type.name()))
+        .map(|d| {
+            String::from(if d.device_type == DeviceType::InputEvents {
+                "input"
+            } else {
+                d.device_type.name()
+            })
+        })
         .collect();
     names.push(String::from("shm"));
     names.push(String::from("mqueue"));
@@ -351,6 +369,7 @@ pub fn is_initialized() -> bool {
 /// Device file operations - read from device
 pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32> {
     match device_type {
+        DeviceType::InputEvents | DeviceType::Uinput => Err(-22),
         DeviceType::Kmsg => Err(-13), // Audit sink is write-only.
         DeviceType::Rtc => Err(-22), // RTC data is read through RTC_RD_TIME.
         DeviceType::Ptmx => Err(-6), // Opening /dev/ptmx gives a master, never this device.
@@ -385,6 +404,7 @@ pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32
 /// Device file operations - write to device
 pub fn device_write(device_type: DeviceType, buf: &[u8]) -> Result<usize, i32> {
     match device_type {
+        DeviceType::InputEvents | DeviceType::Uinput => Err(22),
         DeviceType::Kmsg => audit_write(buf),
         DeviceType::Rtc => Err(13), // EACCES: no clock writes through this device.
         DeviceType::Ptmx => Err(6), // ENXIO: opening /dev/ptmx gives a master.
