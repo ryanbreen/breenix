@@ -666,6 +666,34 @@ fn run(
                     w.no_change()?;
                 }
             }
+            WAIT_EVENTS => {
+                let mut events = [abi::WindowEvent::ZERO; 64];
+                loop {
+                    let mut read = abi::ReadEvents::ZERO;
+                    read.id = w.c.id;
+                    read.ptr = events.as_mut_ptr() as u64;
+                    read.capacity = events.len() as u32;
+                    let count = window::call(op::READ_EVENTS, &mut read)
+                        .map_err(|e| e.to_string())? as usize;
+                    if count == 0 {
+                        break;
+                    }
+                    for event in &events[..count] {
+                        log.push(w.c.id, *event)?;
+                    }
+                }
+                let mut read = abi::ReadEvents::ZERO;
+                read.id = w.c.id;
+                read.ptr = events.as_mut_ptr() as u64;
+                read.capacity = events.len() as u32;
+                read.flags = abi::READ_EVENTS_BLOCK;
+                read.timeout_ns = u64::MAX;
+                let count =
+                    window::call(op::READ_EVENTS, &mut read).map_err(|e| e.to_string())? as usize;
+                for event in &events[..count] {
+                    log.push(w.c.id, *event)?;
+                }
+            }
             EXIT => {
                 window::destroy(w.c.id).map_err(|e| e.to_string())?;
                 windows.remove(active);

@@ -38,3 +38,4 @@ pub mod flags {
     pub const MASK: u32 = 1023;
 }
 pub const CREATE_WINDOW: u32 = 18;
+pub const WAIT_EVENTS: u32 = 19;

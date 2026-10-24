@@ -6,7 +6,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Event {
     pub serial: u64,
     pub time: u64,
@@ -15,6 +15,7 @@ pub struct Event {
     pub code: u16,
     pub value: i32,
     pub flags: u32,
+    pub payload: Vec<u8>,
 }
 impl Event {
     fn decode(b: &[u8]) -> Self {
@@ -26,6 +27,7 @@ impl Event {
             code: u16::from_le_bytes(b[22..24].try_into().unwrap()),
             value: i32::from_le_bytes(b[24..28].try_into().unwrap()),
             flags: u32::from_le_bytes(b[28..32].try_into().unwrap()),
+            payload: Vec::new(),
         }
     }
 }
@@ -35,6 +37,64 @@ impl Stream {
         File::open("/dev/input/events")
             .map(Self)
             .map_err(|e| format!("missing input-core event stream /dev/input/events: {e}"))
+    }
+    pub fn poll(&self, ms: i32) -> Result<bool, String> {
+        let mut f = [io::PollFd {
+            fd: self.0.as_raw_fd(),
+            events: 1,
+            revents: 0,
+        }];
+        io::poll(&mut f, ms).map_err(|e| e.to_string())?;
+        Ok(f[0].revents & 1 != 0)
+    }
+    pub fn grab(&self, devices: &[u32]) -> Result<(), String> {
+        let a = input_abi::Selection {
+            devices: devices.as_ptr() as u64,
+            count: devices.len() as u32,
+            reserved: 0,
+        };
+        let r = unsafe {
+            libbreenix::syscall::raw::syscall3(
+                libbreenix::syscall::nr::IOCTL,
+                self.0.as_raw_fd() as u64,
+                input_abi::ioctl::GRAB as u64,
+                &a as *const _ as u64,
+            )
+        } as i64;
+        if r < 0 {
+            Err(format!("input GRAB errno {}", -r))
+        } else {
+            Ok(())
+        }
+    }
+    pub fn dispose(
+        &self,
+        serial: u64,
+        window: u64,
+        disposition: u32,
+        reason: u32,
+    ) -> Result<(), String> {
+        let a = input_abi::Disposition {
+            serial,
+            window,
+            disposition,
+            reason,
+            derived: 0,
+            reserved: 0,
+        };
+        let r = unsafe {
+            libbreenix::syscall::raw::syscall3(
+                libbreenix::syscall::nr::IOCTL,
+                self.0.as_raw_fd() as u64,
+                input_abi::ioctl::DISPOSITION,
+                &a as *const _ as u64,
+            )
+        } as i64;
+        if r < 0 {
+            Err(format!("input DISPOSITION errno {}", -r))
+        } else {
+            Ok(())
+        }
     }
     pub fn read(&mut self, n: usize) -> Result<Vec<Event>, String> {
         self.read_from(n, &[])
@@ -52,17 +112,34 @@ impl Stream {
             if p[0].revents == 0 {
                 continue;
             }
-            let mut bytes = [0; 32 * 64];
+            let mut bytes = [0; 32768];
             let count = self.0.read(&mut bytes).map_err(|e| e.to_string())?;
-            if count == 0 || count % 32 != 0 {
+            if count == 0 {
                 return Err("input stream returned EOF or a partial 32-byte event".into());
             }
-            result.extend(
-                bytes[..count]
-                    .chunks_exact(32)
-                    .map(Event::decode)
-                    .filter(|e| devices.is_empty() || devices.contains(&e.device)),
-            );
+            let mut at = 0;
+            while at < count {
+                if count - at < 32 {
+                    return Err("partial input header".into());
+                }
+                let mut e = Event::decode(&bytes[at..at + 32]);
+                at += 32;
+                let length = if e.kind == 6 {
+                    usize::try_from(e.value).map_err(|_| "negative text length")?
+                } else if e.kind == 0 && e.code == 4 {
+                    32
+                } else {
+                    0
+                };
+                if length > count - at {
+                    return Err("partial input payload".into());
+                }
+                e.payload.extend_from_slice(&bytes[at..at + length]);
+                at += length;
+                if devices.is_empty() || devices.contains(&e.device) {
+                    result.push(e);
+                }
+            }
         }
         if result.len() < n {
             return Err(format!(
@@ -79,29 +156,30 @@ pub struct Virtual {
 }
 impl Virtual {
     pub fn create() -> Result<Self, String> {
+        Self::create_timed(1)
+    }
+    pub fn create_timed(timing: u32) -> Result<Self, String> {
         let mut f = OpenOptions::new()
             .read(true)
             .write(true)
             .open("/dev/uinput")
             .map_err(|e| format!("missing input-core virtual devices /dev/uinput: {e}"))?;
         // A clean-room Breenix creation record, followed by the declared capabilities.
-        let caps: [(u16, u16, i32, i32); 13] = [
-            (1, 30, 0, 1),
-            (1, 48, 0, 1),
-            (1, 42, 0, 1),
-            (1, 29, 0, 1),
-            (1, 56, 0, 1),
-            (1, 125, 0, 1),
+        let mut caps: Vec<(u16, u16, i32, i32)> = (1..256).map(|code| (1, code, 0, 1)).collect();
+        caps.extend([
             (1, 0x110, 0, 1),
             (1, 0x111, 0, 1),
             (1, 0x112, 0, 1),
             (3, 0, 0, 32767),
             (3, 1, 0, 32767),
-            (2, 8, -1, 1),
+            (2, 0, -32767, 32767),
+            (2, 1, -32767, 32767),
+            (2, 6, -32767, 32767),
+            (2, 8, -32767, 32767),
             (6, 0, 1, 256),
-        ];
+        ]);
         let mut header = b"BINPUT01".to_vec();
-        header.extend_from_slice(&1u32.to_le_bytes()); // time=injector
+        header.extend_from_slice(&timing.to_le_bytes());
         header.extend_from_slice(&(caps.len() as u32).to_le_bytes());
         for (kind, code, min, max) in caps {
             header.extend_from_slice(&kind.to_le_bytes());
@@ -123,6 +201,9 @@ impl Virtual {
             return Err("uinput created device id 0".into());
         }
         Ok(Self { file: f, id })
+    }
+    pub fn raw(&mut self, bytes: &[u8]) -> Result<usize, std::io::Error> {
+        self.file.write(bytes)
     }
     pub fn batch(&mut self, events: &[(u16, u16, i32)], stamp: u64) -> Result<(), String> {
         let mut bytes = Vec::new();
@@ -194,4 +275,46 @@ pub fn replay(which: u32, x: i32, y: i32) -> Result<(), String> {
     }
     pause();
     Ok(())
+}
+
+impl Virtual {
+    pub fn tagged(
+        &mut self,
+        d: &super::desktop::Desktop,
+        window: u64,
+        scene: u64,
+        layout: u64,
+        gesture: u64,
+        x: i32,
+        y: i32,
+        pressed: i32,
+        stamp: u64,
+    ) -> Result<(), String> {
+        let mut bytes = Vec::new();
+        let mut header = [0u8; 32];
+        header[8..16].copy_from_slice(&stamp.to_le_bytes());
+        header[22..24].copy_from_slice(&4u16.to_le_bytes());
+        header[24..28].copy_from_slice(&32i32.to_le_bytes());
+        bytes.extend_from_slice(&header);
+        for v in [scene, window, layout, gesture] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let ax = ((x as i64 * 32767 + d.width as i64 - 2) / (d.width as i64 - 1)) as i32;
+        let ay = ((y as i64 * 32767 + d.height as i64 - 2) / (d.height as i64 - 1)) as i32;
+        for (kind, code, value) in [(3u16, 0u16, ax), (3, 1, ay), (1, 0x110, pressed), (0, 0, 0)] {
+            let mut h = [0u8; 32];
+            h[8..16].copy_from_slice(&stamp.to_le_bytes());
+            h[20..22].copy_from_slice(&kind.to_le_bytes());
+            h[22..24].copy_from_slice(&code.to_le_bytes());
+            h[24..28].copy_from_slice(&value.to_le_bytes());
+            bytes.extend_from_slice(&h);
+        }
+        let n = self
+            .raw(&bytes)
+            .map_err(|e| format!("tagged pointer batch: {e}"))?;
+        if n != bytes.len() {
+            return Err("tagged pointer batch accepted partially".into());
+        }
+        Ok(())
+    }
 }

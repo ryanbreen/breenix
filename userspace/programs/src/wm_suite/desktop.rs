@@ -306,6 +306,27 @@ impl Client {
         self.commands.write_all(&bytes).map_err(|e| e.to_string())?;
         self.receive()
     }
+    pub fn finish_command(&mut self) -> Result<(), String> {
+        self.receive()
+    }
+    pub fn response_ready(&self) -> Result<bool, String> {
+        let mut f = [io::PollFd {
+            fd: self.replies.as_raw_fd(),
+            events: 1,
+            revents: 0,
+        }];
+        io::poll(&mut f, 0).map_err(|e| e.to_string())?;
+        Ok(f[0].revents & 1 != 0)
+    }
+    pub fn require_alive(&mut self) -> Result<(), String> {
+        match self.child.status()? {
+            None => Ok(()),
+            Some(status) => Err(format!(
+                "unexpected client exit: window {} wait status {status}",
+                self.id
+            )),
+        }
+    }
     pub fn snapshot(&mut self) -> Result<(), String> {
         self.command(SNAPSHOT, 0, 0)
     }
@@ -347,6 +368,13 @@ impl Client {
         self.commands
             .write_all(text)
             .map_err(|e| format!("clipboard client command: {e}"))?;
+        self.clipboard_reply()
+    }
+    pub fn clipboard_begin(&mut self, text: &[u8]) -> Result<(), String> {
+        self.send(CLIP_SET, text.len() as u32, 1)?;
+        self.commands.write_all(text).map_err(|e| e.to_string())
+    }
+    pub fn clipboard_reply(&mut self) -> Result<(i32, u64, Vec<u8>), String> {
         let mut header = [0; 16];
         read_n(&mut self.replies, &mut header)?;
         let status = i32::from_le_bytes(header[..4].try_into().unwrap());

@@ -46,6 +46,102 @@
         {
           "id": "capabilities",
           "title": "Undeclared keys return EINVAL between two successful declared-key deliveries"
+        },
+        {
+          "id": "uinput-create",
+          "title": "Root creates a virtual keyboard and pointer device with declared capabilities."
+        },
+        {
+          "id": "uinput-nonroot",
+          "title": "A non-root open of /dev/uinput fails with EACCES after root's open has succeeded."
+        },
+        {
+          "id": "abi-layout",
+          "title": "The event struct has the contract's literal size and field offsets."
+        },
+        {
+          "id": "key-press-release",
+          "title": "A virtual key press and release reach the event stream as values 1 and 0 with Linux keycodes."
+        },
+        {
+          "id": "modifiers-derived",
+          "title": "Shift, Ctrl, Alt and Super state follows key events, the same for every device."
+        },
+        {
+          "id": "pointer-absolute",
+          "title": "An absolute event maps to the screen coordinates the contract's formula gives."
+        },
+        {
+          "id": "pointer-relative",
+          "title": "Relative motion accumulates and clamps to the screen."
+        },
+        {
+          "id": "buttons",
+          "title": "Left, right and middle press and release arrive as sent."
+        },
+        {
+          "id": "wheel",
+          "title": "Vertical and horizontal wheel steps arrive with their signs."
+        },
+        {
+          "id": "syn-batches",
+          "title": "Events between SYN_REPORTs are delivered as one batch."
+        },
+        {
+          "id": "time-real",
+          "title": "A real-device event carries CLOCK_MONOTONIC time."
+        },
+        {
+          "id": "two-readers",
+          "title": "Two readers of the event stream each receive every event."
+        },
+        {
+          "id": "syn-dropped",
+          "title": "A reader that falls behind receives SYN_DROPPED, and each dropped serial is recorded as lost."
+        },
+        {
+          "id": "poll",
+          "title": "The event device reports POLLIN through poll when events are queued."
+        },
+        {
+          "id": "grab",
+          "title": "While the compositor holds the grab, the console sees no key events except the reserved console chords, Ctrl+Alt+F1 to F12 (`docs/console/contract.md` section 9), which go to the console and which the grab holder sees neither pressed nor released."
+        },
+        {
+          "id": "grab-select",
+          "title": "Events from a device outside the session's selection reach no client and are recorded as not-selected."
+        },
+        {
+          "id": "grab-drain",
+          "title": "Taking the grab drains queued events and resets pressed state."
+        },
+        {
+          "id": "text-invalid",
+          "title": "Invalid UTF-8, a truncated record and an oversize payload are each rejected whole."
+        },
+        {
+          "id": "malformed-batch",
+          "title": "A truncated batch or an unknown type is rejected with EINVAL, and nothing of it is published."
+        },
+        {
+          "id": "console-keymap",
+          "title": "With no compositor, key events become the console bytes the US keymap gives."
+        },
+        {
+          "id": "console-special-keys",
+          "title": "Arrows, Home, End, Delete, Page Up and Page Down become VT sequences on the console."
+        },
+        {
+          "id": "console-modifiers",
+          "title": "Ctrl+C on the console gives byte 3 from every device type."
+        },
+        {
+          "id": "ledger-gap",
+          "title": "A serial left without a disposition is reported as the first missing serial."
+        },
+        {
+          "id": "console-after-compositor",
+          "title": "When the compositor dies, keys return to the console."
         }
       ]
     },
@@ -94,6 +190,14 @@
         {
           "id": "supervisor-starts",
           "title": "Production init desktop starts bwm and composes an independent client"
+        },
+        {
+          "id": "no-gpu-required",
+          "title": "bwm runs on this target's backend without exiting."
+        },
+        {
+          "id": "epoch-ack",
+          "title": "bwm acknowledges each stepped UI-clock epoch in its status page, with `none-needed` and no composite when nothing it draws changed."
         }
       ]
     },
@@ -150,6 +254,62 @@
         {
           "id": "exit-restacks",
           "title": "Surviving clients keep their order when another owner exits"
+        },
+        {
+          "id": "raise-stable-id",
+          "title": "Raising by window id raises that window even after others exit."
+        },
+        {
+          "id": "appbar-order",
+          "title": "Appbar order follows creation, not stacking."
+        },
+        {
+          "id": "minimize-no-input",
+          "title": "Keys and clicks never reach a minimized window and are recorded as rejected."
+        },
+        {
+          "id": "minimize-close",
+          "title": "Closing a minimized window removes its appbar entry."
+        },
+        {
+          "id": "fkeys-skip-minimized",
+          "title": "Function-key selection skips minimized windows."
+        },
+        {
+          "id": "chromeless-top",
+          "title": "A chromeless window stays above normal windows."
+        },
+        {
+          "id": "dimmer-only-with-chromeless",
+          "title": "The dimmer appears only while a chromeless window is shown."
+        },
+        {
+          "id": "launcher-toggle",
+          "title": "The launcher hotkey shows and hides a chromeless test client."
+        },
+        {
+          "id": "close-focus-next",
+          "title": "Closing the focused window focuses the next one in the stack."
+        },
+        {
+          "id": "new-on-top",
+          "title": "A new window opens on top and focused."
+        },
+        {
+          "id": "registry-agrees",
+          "title": "After each of 16 operations, the kernel's z order equals the model's."
+        },
+        {
+          "id": "model-sequence",
+          "title": "50 seeded random raise, minimize, restore and close steps match the operation model at every step."
+        },
+        {
+          "id": "minimize-all-restore-all",
+          "title": "Minimizing and restoring every window returns the original stack and screen."
+        },
+        {
+          "id": "titlebar-drag-raises",
+          "title": "Starting a titlebar drag raises the window."
         }
       ]
     },
@@ -171,7 +331,7 @@
         },
         {
           "id": "text-exact",
-          "title": "Typing Hello World delivers exactly those eleven bytes"
+          "title": "Typing Hello, World! delivers exactly those thirteen UTF-8 bytes"
         },
         {
           "id": "releases",
@@ -192,6 +352,90 @@
         {
           "id": "cycle-next",
           "title": "Alt+Tab visits both clients and wraps with correct focus notices"
+        },
+        {
+          "id": "pair-appbar",
+          "title": "An appbar focus change sends exactly one correct pair."
+        },
+        {
+          "id": "pair-cycle",
+          "title": "A hotkey focus change sends exactly one correct pair."
+        },
+        {
+          "id": "focus-after-close",
+          "title": "Closing the focused window sends FocusGained to its successor."
+        },
+        {
+          "id": "cycle-prev",
+          "title": "Alt+Shift+Tab visits them in reverse."
+        },
+        {
+          "id": "cycle-skips-minimized",
+          "title": "Cycling skips minimized windows."
+        },
+        {
+          "id": "release-follows-press",
+          "title": "A key release goes to the window that got the press, even after focus moved."
+        },
+        {
+          "id": "focus-change-mid-press",
+          "title": "A focus change between press and release sends no release to the new window."
+        },
+        {
+          "id": "repeat-delay",
+          "title": "A key held to just before the repeat delay gives no repeat, and at the delay gives one."
+        },
+        {
+          "id": "repeat-rate",
+          "title": "A key held for 1,000 ms on the UI clock gives exactly 11 repeats (500 ms delay, then every 50 ms, inclusive)."
+        },
+        {
+          "id": "repeat-cancel",
+          "title": "Releasing the key or removing its device stops repeats at once."
+        },
+        {
+          "id": "repeat-frozen-clock",
+          "title": "With the UI clock frozen, a held key gives no repeats, and the case still ends by its real deadline."
+        },
+        {
+          "id": "super-return",
+          "title": "Super+Return runs its configured command."
+        },
+        {
+          "id": "alt-q",
+          "title": "Alt+Q sends CloseRequested to the focused window."
+        },
+        {
+          "id": "hotkey-consumed",
+          "title": "A hotkey is recorded as WM-handled and not delivered, and the same key without the modifier is delivered."
+        },
+        {
+          "id": "super-double-tap",
+          "title": "Two Super taps exactly at the interval toggle the launcher, and one tick over the interval does not."
+        },
+        {
+          "id": "super-single-tap",
+          "title": "A single Super tap does nothing."
+        },
+        {
+          "id": "hotkeys-config",
+          "title": "A binding in hotkeys.conf works on every target."
+        },
+        {
+          "id": "no-focus-no-delivery",
+          "title": "With no window, typed keys are recorded as rejected for no focus, after the same keys reached a focused window."
+        },
+        {
+          "id": "focus-new-window",
+          "title": "A newly opened window takes focus."
+        },
+        {
+          "id": "routing-after-exit",
+          "title": "After another window's client exits, keys still reach the focused window."
+        },
+        {
+          "id": "lost-then-delivered",
+          "title": "A key lost to a full ring followed by a delivered key leaves the lost serial recorded as lost."
         }
       ]
     },
@@ -222,6 +466,66 @@
         {
           "id": "press-release-order",
           "title": "Press motion and release reach the client in serial order"
+        },
+        {
+          "id": "capture-target-closes",
+          "title": "When the captured window is destroyed, the capture ends and no other window gets the release."
+        },
+        {
+          "id": "scroll-wakes",
+          "title": "Scroll on an idle desktop wakes the compositor and is delivered."
+        },
+        {
+          "id": "fast-click",
+          "title": "A press and release within one composite are both delivered."
+        },
+        {
+          "id": "double-click-threshold",
+          "title": "Two clicks exactly at the interval arrive with click counts 1 and 2, and one tick over gives 1 and 1."
+        },
+        {
+          "id": "double-click-distance",
+          "title": "Two clicks 4 pixels apart give click counts 1 and 2, and 5 pixels apart on either axis give 1 and 1."
+        },
+        {
+          "id": "chrome-click",
+          "title": "Clicks on chrome are recorded as WM-handled and not delivered."
+        },
+        {
+          "id": "enter-leave",
+          "title": "Crossing from one window to another delivers leave and enter."
+        },
+        {
+          "id": "cursor-position",
+          "title": "The cursor is drawn at the injected position."
+        },
+        {
+          "id": "modifier-click",
+          "title": "Shift+click arrives with the Shift modifier."
+        },
+        {
+          "id": "clamp",
+          "title": "Coordinates past the screen edge clamp to it."
+        },
+        {
+          "id": "minimized-none",
+          "title": "A minimized window receives no pointer events."
+        },
+        {
+          "id": "chromeless-click",
+          "title": "Clicks on a chromeless window reach it, and clicks outside it dismiss it."
+        },
+        {
+          "id": "press-raises-delivers",
+          "title": "A press on a lower window raises it and is delivered once."
+        },
+        {
+          "id": "hit-test",
+          "title": "bwm's hit test returns the topmost window at a point inside a partly covered window."
+        },
+        {
+          "id": "stale-scene",
+          "title": "A pointer event tagged with an older scene version is recorded as rejected for a stale scene when it starts a gesture, while a later batch of a gesture already under bwm's grab is delivered to the grabbing window even though the scene changed (section 5.5)."
         }
       ]
     },
@@ -243,7 +547,7 @@
         },
         {
           "id": "client-refuses",
-          "title": "An owner ignoring ResizeRequested keeps its whole original content and size"
+          "title": "An owner whose resize allocation exceeds RLIMIT_AS reports ResizeFailed and retains its original frame"
         },
         {
           "id": "resize-cross",
@@ -252,6 +556,78 @@
         {
           "id": "client-resize",
           "title": "bwm reconciles and composes a client-initiated resize"
+        },
+        {
+          "id": "drag-top-clamp",
+          "title": "A window cannot be dragged above the taskbar."
+        },
+        {
+          "id": "drag-keeps-titlebar",
+          "title": "A window dragged off a side keeps the contract's minimum titlebar strip on screen."
+        },
+        {
+          "id": "resize-left",
+          "title": "Dragging the left edge moves the left side and keeps the right side fixed."
+        },
+        {
+          "id": "resize-top",
+          "title": "Dragging the top edge moves the top side and keeps the bottom side fixed."
+        },
+        {
+          "id": "resize-corners",
+          "title": "Each corner resizes both dimensions, anchored at the opposite corner."
+        },
+        {
+          "id": "resize-minimum",
+          "title": "A resize stops at the minimum width and height."
+        },
+        {
+          "id": "resize-maximum",
+          "title": "A resize stops at the screen and buffer limits."
+        },
+        {
+          "id": "configure-ack",
+          "title": "The frame changes only after the client acknowledges the size with its configure serial."
+        },
+        {
+          "id": "buffer-matches",
+          "title": "After a resize, the client's buffer size equals the frame's content size."
+        },
+        {
+          "id": "coalesce",
+          "title": "A 60-step resize drag allocates client buffers no more often than configures are acknowledged."
+        },
+        {
+          "id": "exit-during-drag",
+          "title": "A client exiting mid-drag ends the drag, and no other window moves."
+        },
+        {
+          "id": "exit-during-resize",
+          "title": "A client exiting mid-resize ends the resize, and no other window changes."
+        },
+        {
+          "id": "client-title",
+          "title": "A client's title change shows in its titlebar and appbar."
+        },
+        {
+          "id": "remembered-geometry",
+          "title": "Reopening a window with the same title restores its last position and size."
+        },
+        {
+          "id": "expose-during-drag",
+          "title": "Windows beneath repaint exactly at each step of a drag."
+        },
+        {
+          "id": "resize-repaints",
+          "title": "During a resize, the uncovered desktop and windows repaint exactly."
+        },
+        {
+          "id": "geometry-registry",
+          "title": "After every move and resize, the registry's geometry equals the model's."
+        },
+        {
+          "id": "chromeless-not-resizable",
+          "title": "A chromeless window has no resize edges."
         }
       ]
     },
@@ -294,6 +670,50 @@
         {
           "id": "launch-reaped",
           "title": "bwm reaps the GUI client its hotkey launched after that client exits"
+        },
+        {
+          "id": "close-one-of-two",
+          "title": "Closing one of a process's two windows leaves the other open."
+        },
+        {
+          "id": "launch-missing",
+          "title": "A hotkey bound to a missing program shows an error on the desktop and leaves no zombie."
+        },
+        {
+          "id": "launch-fork-fails",
+          "title": "A launch whose fork fails by test control shows an error, and the next launch succeeds."
+        },
+        {
+          "id": "launch-close-50",
+          "title": "50 launch and close cycles return windows, processes and memory to the baseline."
+        },
+        {
+          "id": "read-other-denied",
+          "title": "A non-root client cannot capture another window."
+        },
+        {
+          "id": "huge-window",
+          "title": "A client's 4096x4096 window is clamped on screen, and the desktop stays usable."
+        },
+        {
+          "id": "commit-flood",
+          "title": "A client committing as fast as it can does not delay input to other windows."
+        },
+        {
+          "id": "title-flood",
+          "title": "A client changing its title 10,000 times does not stall the desktop."
+        },
+        {
+          "id": "never-reads",
+          "title": "A client that never reads events loses only its own events, each recorded as lost."
+        },
+        {
+          "id": "normal-exit-gives-back",
+          "title": "bwm's normal exit gives the display back."
+        },
+        {
+          "id": "window-limit",
+          "title": "A seventeenth window is refused visibly, and the others are unaffected."
         }
       ]
     },
@@ -320,6 +740,46 @@
         {
           "id": "supervisor-restarts",
           "title": "Production init desktop restarts a killed bwm and recomposes survivors"
+        },
+        {
+          "id": "death-releases",
+          "title": "When bwm is killed, the display returns to the session supervisor, grabs and pressed state reset, and the epoch advances."
+        },
+        {
+          "id": "blocked-acquire",
+          "title": "A client blocked in acquire when bwm dies returns within 250 ms."
+        },
+        {
+          "id": "blocked-wait",
+          "title": "A client blocked in wait_event when bwm dies returns within 250 ms."
+        },
+        {
+          "id": "death-at-composite",
+          "title": "bwm killed while composing a client's commit leaves that client able to commit to the next bwm."
+        },
+        {
+          "id": "death-mid-configure",
+          "title": "A configure pending at bwm's death is dropped, the client keeps its size, and the next bwm reconciles it."
+        },
+        {
+          "id": "death-mid-capture",
+          "title": "A pointer capture held at bwm's death ends, and the next bwm starts with no capture."
+        },
+        {
+          "id": "focus-restored",
+          "title": "The restarted bwm restores focus to the window that had it."
+        },
+        {
+          "id": "clipboard-reset",
+          "title": "A restarted bwm starts with an empty clipboard, as the contract says."
+        },
+        {
+          "id": "supervisor-gives-up",
+          "title": "After five restarts within ten seconds the supervisor stops and reports the crash loop."
+        },
+        {
+          "id": "unexpected-crash-fails",
+          "title": "An app crash during a deliberate bwm restart fails the scenario, distinct from the expected compositor death."
         }
       ]
     },
@@ -350,6 +810,38 @@
         {
           "id": "owner-exit",
           "title": "Clipboard text and serial survive the setting client exit"
+        },
+        {
+          "id": "set-get",
+          "title": "A program reads back the text it put on the clipboard."
+        },
+        {
+          "id": "empty",
+          "title": "Getting an empty clipboard returns empty, not an error."
+        },
+        {
+          "id": "too-large",
+          "title": "Text over the 16 MiB limit is refused with E2BIG, and the clipboard keeps its previous text."
+        },
+        {
+          "id": "change-notice",
+          "title": "Programs that asked are told when the clipboard changes."
+        },
+        {
+          "id": "concurrent-sets",
+          "title": "Of two concurrent sets, the one with the later clipboard serial wins, and both setters see that result."
+        },
+        {
+          "id": "mime-text-only",
+          "title": "A type other than text/plain;charset=utf-8 is refused."
+        },
+        {
+          "id": "window-required",
+          "title": "A process with no window on the desktop is refused."
+        },
+        {
+          "id": "unprivileged",
+          "title": "A uid 1000 client with a window can set and get."
         }
       ]
     },
