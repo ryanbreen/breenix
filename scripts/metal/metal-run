@@ -311,6 +311,12 @@ def boot(args):
                              tools_only + (['--catchup'] if catchup else []),
                              stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         print(json.dumps({'id': boot_id, 'build': 'started', 'commit': sha}), flush=True)
+    if payload not in ('image', 'disk-readback', 'manager') and '"status": "waiting"' in result.stdout:
+        try:
+            runpy.run_path(str(HERE / 'resting_host.py'))['preempt'](boot_id, only_persistent=True)
+        except Exception as error:
+            in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'stop', boot_id)
+            raise SystemExit('persistent preemption failed: ' + type(error).__name__)
     args.boot_id = boot_id
     if args.mode == 'suite' and payload == 'image' and not getattr(args, 'resuming', False):
         # Pin the commit before detaching, so branch movement cannot change a resumed boot.
@@ -343,6 +349,10 @@ def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=F
         in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-failed', boot_id, why)
         in_build(env, 'rm', '-rf', tools, out)
         return 1
+    try:
+        runpy.run_path(str(HERE / 'resting_host.py'))['preempt'](boot_id)
+    except Exception as error:
+        return failed('persistent preemption failed: ' + type(error).__name__)
     in_build(env, 'rm', '-rf', tools, check=True)
     in_build(env, 'mkdir', '-p', tools, check=True)
     # The slot and artifact helpers travel with metal-build: a commit builds under the deployed tools' rules.

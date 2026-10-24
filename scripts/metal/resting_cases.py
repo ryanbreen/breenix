@@ -18,6 +18,10 @@ def persistent(run, sha):
 
 def clean(receipt, sha):
     persistent(receipt['run'], sha)
+    request = receipt['preemption']
+    if (request.get('waiter') != receipt['test'] or request.get('complete') is not True
+            or request.get('authenticated') is not True or request.get('strictHostKey') is not True):
+        raise ValueError('queued test has no authenticated preemption request')
     if receipt['exit'] != '0':
         raise ValueError('preempted session did not end normally')
     events = receipt['events']
@@ -51,6 +55,9 @@ def one_shot(receipt, sha):
         raise ValueError('one-shot never booted previous with the candidate tools')
     if receipt['beforeSlots'] != receipt['afterSlots']:
         raise ValueError('one-shot changed the default slots')
+    persistent(receipt['resetRun'], sha)
+    if receipt['resetEntries'] != ['previous', 'current'] or receipt['beforeId'] == receipt['afterId']:
+        raise ValueError('a reset in the same lease repeated the one-shot choice')
     returned(receipt['returned'], sha)
 
 

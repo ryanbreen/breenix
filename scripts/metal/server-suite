@@ -105,7 +105,14 @@ REBOOT = (
     ('panic-reset', 'A fault-test kernel prints its panic and resets without a host reset'),
 )
 
-RESTING = runpy.run_path(str(Path(__file__).with_name('resting_cases.py')))['CASES']
+RESTING = (
+    ('clean-preempt', 'A queued test preempts the persistent session only after a clean shutdown'),
+    ('idle-return', 'An empty test queue returns to the current persistent install without a caller boot'),
+    ('one-shot', 'A one-shot previous entry leaves current as the next persistent default'),
+    ('reboot-return', 'An authenticated reboot returns unaided to the current persistent install'),
+    ('watchdog-return', 'A watchdog hang returns unaided to current persistent SSH within 600 seconds'),
+    ('uptime-24h', 'One persistent session answers strict authenticated SSH every five minutes for 24 hours'),
+)
 
 CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'time': TIME, 'reboot': REBOOT, 'watchdog': WATCHDOG, 'resting-state': RESTING, 'remote-upgrade': REMOTE_UPGRADE, 'operator': OPERATOR, 'console-input': CONSOLE_INPUT}
 SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'time': 'server', 'reboot': 'server', 'remote-upgrade': 'server', 'watchdog': 'server', 'resting-state': 'server', 'operator': 'users', 'console-input': 'server'}

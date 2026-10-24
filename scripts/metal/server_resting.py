@@ -1,6 +1,4 @@
 """Automated R240 resting-state category, with a resumable unlocked 24-hour phase."""
-import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -156,8 +154,10 @@ def run(api, args):
                         records['testBoot'] = test
                         lab.wait(lambda: lab.ended(source), 120, 'queued test did not cleanly preempt persistent session')
                         lab.wait(lambda: any(e['event'] == 'lease-claimed' for e in lab.events(test)), 60, 'test never acquired released lease')
+                        preemption = lab.wait(lambda: lab.read(source, 'preemption.json'), 30, 'queued test has no preemption receipt')
                         value = dict(run=json.loads(lab.read(source, 'run.json')), exit=lab.read(source, 'exit-status').strip(),
                             serial=lab.read(source, 'serial.txt'), events=lab.events(source), queuedAt=queued,
+                            test=test, preemption=json.loads(preemption),
                             testClaimedAt=next(e['t'] for e in lab.events(test) if e['event'] == 'lease-claimed'))
                         checks['clean'](value, args.sha)
                     elif name == 'idle-return':
@@ -171,13 +171,25 @@ def run(api, args):
                         checks['returned'](value, args.sha)
                     elif name == 'one-shot':
                         before = lab.slots()
-                        once = lab.launch('boot', '--persistent', '--entry', 'previous', '--verify', '--no-wait')
-                        back = lab.idle(once)
+                        once = lab.launch('boot', '--persistent', '--entry', 'previous', '--no-wait')
+                        lab.current = once
+                        lab.wait(lambda: 'bsshd: listening on ' in lab.read(once, 'serial.txt'), 600, 'previous slot did not reach SSH')
+                        once_run = json.loads(lab.read(once, 'run.json'))
+                        old_id = lab.boot_id()
+                        lab.power('reboot')
+                        lab.wait(lambda: any(e['event'] == 'requested-reboot-ready' for e in lab.events(once)),
+                            600, 'one-shot reboot did not return to SSH')
+                        new_id = lab.boot_id()
+                        reset_run = json.loads(lab.read(once, 'run.json'))
+                        entries = [e['entry'] for e in lab.events(once) if e['event'] == 'slot-boot']
                         serial = lab.read(once, 'serial.txt')
-                        if lab.read(once, 'exit-status').strip() != '0':
-                            raise ValueError('one-shot previous boot did not complete')
                         entry = re.findall(r'breenix-manager: booting (current|previous) [a-f0-9]{40}', serial)
-                        value = dict(onceRun=json.loads(lab.read(once, 'run.json')), onceEntry=entry[-1] if entry else None,
+                        lab.power('poweroff')
+                        back = lab.idle(once)
+                        if lab.read(once, 'exit-status').strip() != '0':
+                            raise ValueError('one-shot session did not complete normally')
+                        value = dict(onceRun=once_run, onceEntry=entry[0] if entry else None,
+                            resetRun=reset_run, resetEntries=entries, beforeId=old_id, afterId=new_id,
                             beforeSlots=before, afterSlots=lab.slots(), returned=back)
                         checks['one_shot'](value, args.sha)
                     elif name == 'reboot-return':
@@ -234,7 +246,7 @@ def run(api, args):
             start = time.monotonic()
             # Deadlines are measured on this boot host, never by an adjustable guest clock.
             for i in range(289):
-                deadline = start + i * 300
+                deadline = start + i * 300 + (1 if i == 288 else 0)
                 while time.monotonic() < deadline:
                     time.sleep(min(30, deadline - time.monotonic()))
                 at = time.time()

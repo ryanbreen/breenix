@@ -25,6 +25,7 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metal_lib as m  # noqa: E402
+import metal_persist  # noqa: E402
 
 SPACING_SECONDS = 2.0
 REAPER_SECONDS = 15
@@ -258,6 +259,30 @@ class Machine:
         self.events = []
         self.http = None
         self.stopping = False
+        self.last_resting_attempt = 0.0
+
+    def rest(self):
+        """Start current through the ordinary boot loop when the FIFO is empty."""
+        if m.now() - self.last_resting_attempt < 60 or not metal_persist.layout():
+            return
+        with m.locked('lease'):
+            queue = [entry for entry in m.read_queue()
+                     if entry['deadline'] > m.now() and m.holder_alive(entry)]
+            if m.read_lease() or queue or not m.machine_ready():
+                return
+            # The new driver joins the same FIFO. A request racing this check
+            # takes precedence when it has already enqueued.
+            self.last_resting_attempt = m.now()
+            boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+            if m.boot_dir(boot_id).exists():
+                return
+            started = subprocess.run(['systemd-run', '--unit', 'metal-boot-' + boot_id,
+                '--collect', '--property', 'MemoryMax=256M',
+                '--setenv', 'BREENIX_METAL_SITE=' + str(m.SITE_PATH), sys.executable,
+                str(m.TOOLS / 'metal-boot'), 'run', '--id', boot_id,
+                '--payload', 'persistent', '--mode', 'persistent', '--resting', '--wait', '240'],
+                capture_output=True)
+        self.remember(machine_event('resting-start' if started.returncode == 0 else 'resting-start-failed', id=boot_id))
 
     def remember(self, entry):
         self.events = (self.events + [entry])[-20:]
@@ -446,6 +471,7 @@ class Machine:
         while True:
             try:
                 self.reap()
+                self.rest()
                 if m.now() - self.last_sample >= self.due_sample():
                     self.take_sample()
                 self.publish()
