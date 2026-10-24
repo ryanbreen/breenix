@@ -33,6 +33,7 @@ fs_fault_disarm_eio = ["fs_fault_inject", "kernel/fs_fault_disarm_eio"]
 fs_fault_disarm_corrupt_inode = ["fs_fault_inject", "kernel/fs_fault_disarm_corrupt_inode"]
 xhci_fault_inject = ["kernel/xhci_fault_inject"]  # x86-metal xHCI recovery exercise, see kernel/Cargo.toml
 block_fence_inject = ["kernel/block_fence_inject"]  # x86-metal write fence exercise, see kernel/Cargo.toml
+watchdog_fault_inject = ["kernel/watchdog_fault_inject"]
 usb_pointer_replay = ["kernel/usb_pointer_replay"]  # ARM64 USB pointer replay control, see kernel/Cargo.toml
 ext2_lock_race = ["boot_tests", "kernel/ext2_lock_race"]  # #728 lock-discipline repro oracle, see kernel/Cargo.toml
 capture_selftest = ["boot_tests", "kernel/capture_selftest"]  # failure-capture PR-3, see kernel/Cargo.toml

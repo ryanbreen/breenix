@@ -182,7 +182,16 @@
     {
       "id": "watchdog",
       "title": "A hang is reset by the watchdog back into the persistent install",
-      "cases": []
+      "cases": [
+        {
+          "id": "feeder-hang",
+          "title": "A halted feeder CPU expires the 120-second KCS watchdog and returns to persistent SSH unaided within 600 seconds"
+        },
+        {
+          "id": "health-hang",
+          "title": "A wedged filesystem health check stops feeding and returns to persistent SSH unaided within 600 seconds"
+        }
+      ]
     },
     {
       "id": "resting-state",

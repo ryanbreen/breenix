@@ -45,6 +45,8 @@ impl GpuScreen {
         // One row per category; within a row one tile per case in manifest order.
         // Blue is running, grey pending, green pass and red fail. No skipped colour:
         // a GPU skip is displayed as a failure as well as reported by the runner.
+        let row_step = (1504 / states.len().max(1) as i32).min(160);
+        let tile_height = (row_step - 48).clamp(8, 112);
         for (row, cases) in states.iter().enumerate() {
             for (column, state) in cases.iter().enumerate() {
                 let colour = match state {
@@ -53,8 +55,8 @@ impl GpuScreen {
                     State::Done(Outcome::Pass { .. }) => 0xFF45_C46A,
                     State::Done(Outcome::Fail { .. } | Outcome::Skip { .. }) => 0xFFE8_4D42,
                 };
-                let (x, y) = (48 + column as i32 * 80, 48 + row as i32 * 160);
-                encode::draw(&mut stream, abi::pipeline::SOLID, colour, &[[x, y, x + 64, y + 112]]);
+                let (x, y) = (48 + column as i32 * 80, 48 + row as i32 * row_step);
+                encode::draw(&mut stream, abi::pipeline::SOLID, colour, &[[x, y, x + 64, y + tile_height]]);
             }
         }
         let (r, s) = gpu::submit(self.context, &stream);
@@ -118,6 +120,16 @@ const SETTLE_LIMIT_NS: i128 = 10_000_000_000;
 /// target remains held until the console's restore completes, independently of
 /// process reclaim receipts and of a temporarily steady free-page count.
 pub(super) fn await_console() -> Result<(), String> {
+    // NO_DEVICE also covers virtio-gpu probe failures; neither case leaves a
+    // GPU context holding frames. DEVICE_FAILED, MISSING_CAPABILITY and SVGA3
+    // still require the handoff below; MODES ENODEV alone cannot bypass it.
+    let (r, caps) = gpu::caps();
+    if r != 0 {
+        return Err(std::format!("display handoff: CAPS errno {}", -r));
+    }
+    if caps.status == abi::status::NO_DEVICE {
+        return Ok(());
+    }
     // The runner may still own its panel; give it back before waiting for the
     // console. If the cases already displaced it, give-back refuses the non-owner.
     let _ = graphics::give_back_display();

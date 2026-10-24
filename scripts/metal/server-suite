@@ -75,6 +75,10 @@ REMOTE_UPGRADE = (
     ('generation-repairs', 'Installer ENOSPC, I/O and interrupted-publication recovery retain the selected generation and byte-exact rollback'),
     ('reclamation', 'Reclamation uses recovered on-disk slot userlands and preserves current, previous, in-flight and shared data across failures and rollback'),
 )
+WATCHDOG = (
+    ('feeder-hang', 'A halted feeder CPU expires the 120-second KCS watchdog and returns to persistent SSH unaided within 600 seconds'),
+    ('health-hang', 'A wedged filesystem health check stops feeding and returns to persistent SSH unaided within 600 seconds'),
+)
 
 # The users suite's host-run category (docs/users/design.md, section 5): the persistent install's operator account.
 OPERATOR = (
@@ -92,10 +96,10 @@ CONSOLE_INPUT = (
 )
 
 # The populated categories in manifest order, the suite each belongs to, and the milestone each one measures.
-CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'time': TIME, 'remote-upgrade': REMOTE_UPGRADE, 'operator': OPERATOR, 'console-input': CONSOLE_INPUT}
-SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'time': 'server', 'remote-upgrade': 'server', 'operator': 'users', 'console-input': 'server'}
+CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'time': TIME, 'watchdog': WATCHDOG, 'remote-upgrade': REMOTE_UPGRADE, 'operator': OPERATOR, 'console-input': CONSOLE_INPUT}
+SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'time': 'server', 'remote-upgrade': 'server', 'watchdog': 'server', 'operator': 'users', 'console-input': 'server'}
 MILESTONES = {'server/ssh-keys': 'ssh-keys', 'server/services': 'services', 'server/logs': 'logs',
-              'server/time': 'time', 'server/remote-upgrade': 'remote-upgrade', 'users/operator-login': 'operator', 'server/console-input': 'console-input'}
+              'server/time': 'time', 'server/remote-upgrade': 'remote-upgrade', 'server/watchdog': 'watchdog', 'users/operator-login': 'operator', 'server/console-input': 'console-input'}
 # The console lines the operator's console challenge leaves in the capture (docs/metal/boot-path.json, console-login).
 OPERATOR_CONSOLE_LINES = ('Login incorrect', 'metal-login-ok 42', 'fbcon check: shadow and screen identical',
                           'fbcon row: metal-login-ok 42')
@@ -109,6 +113,21 @@ LOG_ARCHIVES = 4
 # bsshd restarts 1 s after a run that lasted 10 s exits (libs/libbreenix/src/services.rs); the window
 # allows for the console's typing of the kill and for bsshd's start-up.
 RESTART_WINDOW_S = 10
+
+
+# Reannounce a closed baseline after its later fault boots supplied host evidence.
+# Consumers follow finished.jsonl's sequence, as for cold disk readback.
+WATCHDOG_ARCHIVE = """import sys,json
+sys.path.insert(0,"/opt/breenix-metal")
+from pathlib import Path
+import metal_lib as m,metal_score
+p=Path(sys.argv[1])
+m.write_json(p/"milestone-verdict.json",metal_score.score(p))
+with m.locked('finished'):
+    finished=m.STATE/'finished.jsonl'
+    entries=[json.loads(line) for line in finished.read_text().splitlines()]
+    m.append_jsonl(finished,dict(id=p.name,seq=max((e['seq'] for e in entries),default=0)+1))
+"""
 
 
 def records_name(category):
@@ -193,6 +212,13 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
         upgrade_cases['generations'](records.get('generationProof', {}), True)
         if not records.get('physicalReclamation'):
             raise ValueError('no completed physical reclamation receipt')
+
+    if category == 'watchdog':
+        evidence = records.get('faultBoots', [])
+        if ([v.get('receipt', {}).get('case') for v in evidence] != [name for name, _ in WATCHDOG]
+                or len({v.get('boot') for v in evidence}) != len(WATCHDOG)
+                or any(v.get('passed') is not True or v.get('commit') != sha for v in evidence)):
+            raise ValueError('missing unaided watchdog recovery evidence')
     if records.get('consoleGaps'):
         raise ValueError('console capture has a gap')
     if any(re.search(pattern, serial) for pattern in fatal_patterns):
@@ -1765,6 +1791,89 @@ def probe_upgrade(args):
     result = save('ssh-verification.json', receipt)
     return 0 if result.returncode == 0 and receipt['passed'] else 1
 
+class Watchdog:
+    """Destructive cases own their fault boots; the driver observes, never recovers them."""
+    def __init__(self, probe, console, remote, runner, env, boot, sha, branch):
+        self.probe, self.console, self.remote = probe, console, remote
+        self.runner, self.env, self.base, self.sha = runner, env, boot, sha
+        self.branch = branch
+        self.boots = []
+        self.stopped = False
+
+    def read(self, boot, name):
+        result = self.remote('cat', '/var/lib/breenix-metal/boots/' + boot + '/' + name)
+        return result.stdout if result.returncode == 0 else ''
+
+    def stop(self, boot):
+        result = command(['python3', str(Path(__file__).with_name('metal-run')), 'stop', boot])
+        if result.returncode: raise ValueError('cannot stop owned boot')
+        deadline = time.monotonic() + 120
+        while not self.read(boot, 'ended'):
+            if time.monotonic() > deadline: raise ValueError('owned boot did not stop')
+            time.sleep(2)
+
+    def run_case(self, name):
+        if not self.stopped:
+            lease = self.remote('cat', '/var/lib/breenix-metal/lease.json')
+            if lease.returncode or json.loads(lease.stdout).get('id') != self.base:
+                raise ValueError('baseline lost the machine lease before watchdog handoff')
+            self.console.logout()
+            self.stop(self.base)
+            self.stopped = True
+        result = command(['python3', str(Path(__file__).with_name('metal-run')), 'boot',
+                          '--sha', self.sha, '--branch', self.branch,
+                          '--inject', 'watchdog-' + name, '--no-wait'])
+        if result.returncode:
+            raise ValueError('watchdog fault boot could not launch: ' + (result.stderr or result.stdout).strip())
+        ids = re.findall(r'"id":\s*"(\d{8}T\d{6}Z-metal)"', result.stdout)
+        if not ids: raise ValueError('fault launch returned no boot ID')
+        boot = ids[0]
+        self.boots.append(boot)
+        directory = '/var/lib/breenix-metal/boots/' + boot
+        # Builds and lease waits are outside S19's trigger-to-SSH deadline.
+        deadline = time.monotonic() + 4 * 3600
+        trigger = None
+        receipt = None
+        while time.monotonic() < deadline:
+            events = [json.loads(row) for row in self.read(boot, 'events.jsonl').splitlines()]
+            triggers = [e for e in events if e.get('event') == 'watchdog-trigger']
+            if triggers and trigger is None:
+                if len(triggers) != 1: raise ValueError('duplicate hang trigger')
+                trigger = triggers[0]['trigger']
+                deadline = time.monotonic() + max(0, 600 - (time.time() - trigger))
+            if self.read(boot, 'ended'): raise ValueError('fault boot ended before unaided SSH recovery')
+            if trigger is not None:
+                serial = self.read(boot, 'serial.txt')
+                run = json.loads(self.read(boot, 'run.json'))
+                if ('[watchdog] previous-expired=1' in serial and
+                        run.get('watchdogRecoveredCommit') == self.sha):
+                    # A fresh boot identity and an actual exec, using the persistent key pinned on SOL.
+                    result = self.probe.ssh('cat /run/breenix/boot-id')
+                    if result.returncode == 0 and re.fullmatch(r'[0-9a-f]+-[0-9a-f]+-[0-9a-f]+\s*', result.stdout):
+                        receipt = dict(boot=boot, commit=self.sha, case=name, trigger=trigger,
+                                       sshAt=time.time(), bootId=result.stdout.strip())
+                        break
+            time.sleep(3)
+        if receipt is None: raise ValueError('no unaided persistent SSH within 600 seconds of trigger')
+        # The driver checks this receipt before any power-off; the archived events independently prove the ordering.
+        result = self.remote('tee', directory + '/watchdog-ssh.json', input=json.dumps(receipt) + '\n', stdin=None)
+        if result.returncode: raise ValueError('cannot retain SSH recovery receipt')
+        until = time.monotonic() + 120
+        while True:
+            lease = self.remote('cat', '/var/lib/breenix-metal/lease.json')
+            holds = lease.returncode == 0 and json.loads(lease.stdout).get('id') == boot
+            if self.read(boot, 'ended') and not holds: break
+            if time.monotonic() > until: raise ValueError('fault observation did not close and release its lease')
+            time.sleep(2)
+        verdict = json.loads(self.read(boot, 'watchdog-verdict.json') or '{}')
+        if (verdict.get('passed') is not True or verdict.get('boot') != boot
+                or verdict.get('commit') != self.sha or verdict.get('receipt') != receipt):
+            raise ValueError('watchdog recovery evidence failed: ' + str(verdict))
+
+    def cleanup(self):
+        for boot in self.boots:
+            if not self.read(boot, 'ended'): self.stop(boot)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1775,7 +1884,7 @@ def main():
     parser.add_argument('--prepare-logs', action='store_true', help='Write the log whose bytes the next boot must retain')
     parser.add_argument('--boot')
     parser.add_argument('--sha')
-    parser.add_argument('--branch', default='main', help='pushed branch containing the upgrade candidate')
+    parser.add_argument('--branch', help='Pushed candidate branch (required for watchdog fault images)')
     parser.add_argument('--milestone', default='server/ssh-keys', choices=list(MILESTONES))
     args = parser.parse_args()
     if args.probe_upgrade:
@@ -1787,7 +1896,9 @@ def main():
     if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot or '') or not re.fullmatch(r'[a-f0-9]{40}', args.sha or ''):
         parser.error('--boot ID and --sha full commit required')
     category = MILESTONES[args.milestone]
+    if category == 'watchdog' and not args.branch: parser.error('--branch required for watchdog fault images')
     if category == 'remote-upgrade':
+        args.branch = args.branch or 'main'
         globals()['upgrade_cases'] = runpy.run_path(str(Path(__file__).with_name('upgrade_cases.py')))
         return runpy.run_path(str(Path(__file__).with_name('upgrade_suite.py')))['run'](args, globals())
     suite = SUITES[category]
@@ -1866,9 +1977,11 @@ def main():
         else:
             serial = console.service_log('bsshd')
         # Trust the fingerprint read over the leased console, never a key learned over SSH.
-        if category in ('services', 'logs', 'time', 'operator'):
+        if category in ('services', 'logs', 'time', 'operator', 'watchdog'):
             probe.run_case('host-key', serial)
-            if category == 'operator':
+            if category == 'watchdog':
+                target = Watchdog(probe, console, remote, runner, env, args.boot, args.sha, args.branch)
+            elif category == 'operator':
                 own = Console(lambda *cmd, **kw: runner['in_metal'](env, *cmd, **kw), args.boot, directory,
                               site['OPERATOR_USER'], site['OPERATOR_PASSWORD'])
                 target = Operator(probe, console, own, int(site['OPERATOR_UID']), site['OPERATOR_PASSWORD'],
@@ -1931,9 +2044,11 @@ def main():
                               if json.loads(line).get('event') == 'console-gap']
     try:
         lease = remote('cat', '/var/lib/breenix-metal/lease.json')
-        if lease.returncode or json.loads(lease.stdout).get('id') != args.boot:
+        if category != 'watchdog' and (lease.returncode or json.loads(lease.stdout).get('id') != args.boot):
             raise ValueError('boot lost the machine lease during the suite')
         if category in ('logs', 'time'): records['previous'] = previous
+        if category == 'watchdog':
+            records['faultBoots'] = [json.loads(target.read(b, 'watchdog-verdict.json') or '{}') for b in target.boots]
         verdict = score(manifest, effort, records, serial, boot, args.sha, fatal)
         status = 0
     except ValueError as error:
@@ -1946,6 +2061,11 @@ def main():
     result = runner['in_metal'](env, 'tee', directory + '/' + records_name(category)[:-len('.json')] + '-transcript.json',
                                 stdin=None, input=json.dumps(transcript) + '\n', capture_output=True, text=True)
     if result.returncode: raise ValueError('cannot save host transcript')
+    if category == 'watchdog':
+        # Its baseline capture closed before the fault boots. Fold the retained
+        # category records into that archive without executing cases again.
+        result = remote('python3', '-c', WATCHDOG_ARCHIVE, directory)
+        if result.returncode: raise ValueError('cannot score the archived watchdog category')
     print(verdict)
     return status
 

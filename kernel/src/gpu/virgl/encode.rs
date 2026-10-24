@@ -37,6 +37,8 @@ pub const CHUNK_WORDS: usize = 16 * 1024;
 pub const RECTS_PER_WRITE: usize = 1024;
 /// The vertex buffer's size in bytes.
 pub const VERTEX_BUFFER_BYTES: u32 = (RECTS_PER_WRITE * 48) as u32;
+/// The catalogue occupies bytes 0..16*48 in the context's fixed vertex buffer.
+pub const FIXED_QUAD_OFFSET: u32 = RENDERING_PIPELINES * 48;
 
 /// Viewport half-size: the viewport spans [0, 16384) on both axes, so a vertex at
 /// integer pixel coordinate `p` has the clip coordinate `(p - 8192) / 8192`, which
@@ -53,11 +55,12 @@ pub struct Enc {
     prefix_bytes: u64,
     vertices: Option<WordBuf>,
     vertex_words: usize,
+    fixed_quad: bool,
 }
 
 impl Enc {
     pub fn new() -> Enc {
-        Enc { chunks: Vec::new(), cur: WordBuf::new(), oom: false, sizing: None, prefix_bytes: 0, vertices: None, vertex_words: 0 }
+        Enc { chunks: Vec::new(), cur: WordBuf::new(), oom: false, sizing: None, prefix_bytes: 0, vertices: None, vertex_words: 0, fixed_quad: false }
     }
 
     /// Count the same command boundaries without allocating command frames.
@@ -67,10 +70,26 @@ impl Enc {
         enc
     }
 
+    /// Draw short unflipped streams with a fixed six-vertex quad. The viewport
+    /// places each rectangle while the geometry stays immutable.
+    pub fn fixed_quads(&mut self) { self.fixed_quad = true; }
+
     /// Rounded frame bytes for a sizing pass, or failure for an unencodable command.
     pub fn backing_bytes(&self) -> Option<u64> {
         let (words, bytes) = self.sizing?;
         (!self.oom).then_some(self.prefix_bytes + bytes + (words * 4).div_ceil(super::super::PAGE) as u64 * super::super::PAGE as u64)
+    }
+
+    /// Complete the preceding rendering before its vertex storage is reused. TRANSFER3D
+    /// has the inline-write layout through box depth, then backing offset and direction
+    /// (virgl_protocol.h, VIRGL_TRANSFER3D_*). Read the last written target: reading an
+    /// earlier target does not complete later draws on Parallels (provenance B23).
+    pub fn completion_read(&mut self, target: u32, pitch: u32) {
+        self.cmd(ccmd::TRANSFER3D, 0, &[
+            target, 0, wire::transfer::READ, pitch, 0, 0, 0, 0, 1, 1, 1,
+            0, wire::transfer::FROM_HOST,
+        ]);
+        self.cmd(ccmd::END_TRANSFERS, 0, &[]);
     }
 
     /// Append one command: its header and `payload` (at most `CMD0_MAX_LEN` words).
@@ -116,6 +135,8 @@ impl Enc {
 
     /// Collect a submission's vertices and upload them before any of its draws. Commands
     /// cannot consume a region while a later inline write is still changing that region.
+    /// Range discard also separates a reused region from the renderer's prior vertex reads;
+    /// on Parallels, usage 0 can overwrite those reads even after its native fence.
     fn begin_vertices(&mut self) {
         self.vertices = Some(WordBuf::new());
         self.vertex_words = 0;
@@ -128,7 +149,8 @@ impl Enc {
         let mut first = 0;
         while first < self.vertex_words {
             let count = (self.vertex_words - first).min(RECTS_PER_WRITE * 12);
-            let head = [resource, 0, 0, 0, 0, offset + first as u32 * 4, 0, 0, count as u32 * 4, 1, 1];
+            let usage = wire::transfer::WRITE | if self.fixed_quad { 0 } else { wire::transfer::DISCARD_RANGE };
+            let head = [resource, 0, usage, 0, 0, offset + first as u32 * 4, 0, 0, count as u32 * 4, 1, 1];
             prefix.cmd_iter(ccmd::RESOURCE_INLINE_WRITE, 0, head.len() + count,
                 head.into_iter().chain((first..first + count).map(|i| vertices.word(i))));
             first += count;
@@ -767,11 +789,15 @@ pub fn translate_at(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized
                         continue;
                     }
                     bind_vertices(enc, &mut bound, vertex_buffer);
-                    offset = write_vertices(enc, vertex_buffer, offset, &verts);
-                    let first = (offset - 48 * batch.len() as u32) / 8;
+                    if !enc.fixed_quad { offset = write_vertices(enc, vertex_buffer, offset, &verts); }
+                    let first = if enc.fixed_quad { 0 } else { (offset - 48 * batch.len() as u32) / 8 };
                     for (n, (ox, oy)) in batch.into_iter().enumerate() {
                         enc.cmd(ccmd::SET_CONSTANT_BUFFER, 0, &[pipe::SHADER_FRAGMENT, 0, ox, oy, 0, 0]);
-                        draw_range(enc, first + 6 * n as u32, 6);
+                        if enc.fixed_quad {
+                            offset = draw_vertices(enc, vertex_buffer, offset, &verts[n*12..(n+1)*12], 1);
+                        } else {
+                            draw_range(enc, first + 6 * n as u32, 6);
+                        }
                     }
                 }
             }
@@ -981,9 +1007,40 @@ fn bind_vertices(enc: &mut Enc, bound: &mut bool, vertex_buffer: u32) {
 /// Write `rects` rectangles' vertices into the vertex buffer at byte `offset` and draw
 /// them; returns the offset after them.
 fn draw_vertices(enc: &mut Enc, vertex_buffer: u32, offset: u32, verts: &[u32], rects: usize) -> u32 {
+    if enc.fixed_quad {
+        // Dedicated unit clip-space quad region.
+        const N: u32 = 0xBF80_0000;
+        const P: u32 = 0x3F80_0000;
+        if enc.vertex_words == 0 {
+            write_vertices(enc, vertex_buffer, FIXED_QUAD_OFFSET, &[N,N,P,N,N,P,P,N,P,P,N,P]);
+        }
+        for v in verts.chunks_exact(12).take(rects) {
+            let [x0,y0,x1,y1] = [v[0],v[1],v[8],v[9]].map(pixel_coord);
+            enc.cmd(ccmd::SET_VIEWPORT_STATE, 0, &[
+                0, scaled_int_bits((x1-x0) as i64,1), scaled_int_bits((y1-y0) as i64,1), 0x3F00_0000,
+                scaled_int_bits((x0+x1) as i64,1), scaled_int_bits((y0+y1) as i64,1), 0x3F00_0000,
+            ]);
+            draw_range(enc, FIXED_QUAD_OFFSET/8, 6);
+        }
+        return FIXED_QUAD_OFFSET + 48;
+    }
     let next = write_vertices(enc, vertex_buffer, offset, verts);
     draw_range(enc, offset / 8, (rects * 6) as u32);
     next
+}
+
+/// Invert clip_coord exactly on its integer 0..=16384 domain, using IEEE-754's
+/// sign, exponent and significand. No floating-point instruction runs in the kernel.
+fn pixel_coord(bits: u32) -> u32 {
+    let magnitude = bits & 0x7FFF_FFFF;
+    if magnitude == 0 { return HALF as u32; }
+    let distance = (0x80_0000 | (magnitude & 0x7F_FFFF)) >> (137 - (magnitude >> 23));
+    if bits >> 31 != 0 { HALF as u32 - distance } else { HALF as u32 + distance }
+}
+
+#[test]
+fn fixed_quad_recovers_every_integer_pixel_coordinate() {
+    for pixel in 0..=16384 { assert_eq!(pixel_coord(clip_coord(pixel)), pixel); }
 }
 
 /// Write vertices into the vertex buffer at byte `offset`; returns the offset after them.
@@ -1001,7 +1058,7 @@ fn write_vertices(enc: &mut Enc, vertex_buffer: u32, offset: u32, verts: &[u32])
     enc.cmd_with(
         ccmd::RESOURCE_INLINE_WRITE,
         0,
-        &[vertex_buffer, 0, 0, 0, 0, offset, 0, 0, bytes, 1, 1],
+        &[vertex_buffer, 0, wire::transfer::WRITE | wire::transfer::DISCARD_RANGE, 0, 0, offset, 0, 0, bytes, 1, 1],
         verts,
     );
     offset + bytes

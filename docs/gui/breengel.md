@@ -1360,15 +1360,16 @@ presentation; snapshot/provenance metadata or an op-19 success alone cannot cert
 
 | Target | Backend | Device observation | Completion | Boundary |
 |---|---|---|---|---|
-| ARM64 QEMU; later Parallels catch-up | 4, VirGL | SUBMIT_3D, two TRANSFER_FROM_HOST_3D observations under complementary poisons, cache invalidation | native kinds 0x207 and 0x206, status 0x1100, nonzero render/readback/present fences | 4, host renderer and window outside guest view |
-| Later VMware catch-up | 5, SVGA3D DX | DX_DRAW, host SURFACE_COPY to dedicated readback surface/MOB, two poisoned READBACK_GB_SURFACE observations | render 1152, readback 1104, copy 1042; status 1; dedicated nonzero surface/MOB | 4, host renderer and window outside guest view |
+| ARM64 QEMU; Parallels in the B5 catch-up | 4, VirGL | SUBMIT_3D, two TRANSFER_FROM_HOST_3D observations under complementary poisons, cache invalidation | native kinds 0x207 and 0x206, status 0x1100, nonzero render/readback/present fences | 4, host renderer and window outside guest view |
+| VMware in the B5 catch-up | 5, SVGA3D DX | DX_DRAW, host SURFACE_COPY to dedicated readback surface/MOB, two poisoned READBACK_GB_SURFACE observations | render 1152, readback 1104, copy 1042; status 1; dedicated nonzero surface/MOB | 4, host renderer and window outside guest view |
 
 <!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 Backend must equal CAPS and the window's backend. Backend 4 has zero VMware copy fields;
 backend 5 has its own native values and a readback surface distinct from the judged resource.
 `unwritten` is zero on success. Flags contain only scanout bit 0 and composite bit 1;
 a composed scanout sets exactly both. Legacy CPU backends and boundary codes are retired.
-The effort runs ARM64 QEMU `--gpu-gl` only (B5); no x86 QEMU evidence is admitted (S23).
+The initial effort runs ARM64 QEMU `--gpu-gl` under B5; its catch-up adds Parallels
+and VMware after that landing. No x86 QEMU evidence is admitted (S23).
 
 ### 20.3 Planted faults
 

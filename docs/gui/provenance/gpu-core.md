@@ -154,6 +154,7 @@ the target.
 | DRAW_VBO: 12 words: start, count, mode, indexed, instance count, index bias, start instance, primitive restart, restart index, minimum index, maximum index, count from stream output | P:342–356 |
 | Surface object: handle, resource, format, texture level, texture layers | P:369–376 |
 | RESOURCE_INLINE_WRITE: resource, level, usage, stride, layer stride, box x, y, z, w, h, d, then the data | P:521–532 |
+| Inline vertex upload usage WRITE `1 << 1` and DISCARD_RANGE `1 << 8` | D:247, 265–273; the uploaded range's old bytes are discarded, without discarding other arena ranges; B21 below |
 | BIND_SHADER: handle, type | P:550–552 |
 | Formats B8G8R8A8_UNORM 1, R32G32_FLOAT 29, R8_UNORM 64, R8G8B8A8_UNORM 67 | H:36, 64, 105, 108 |
 | Bind flags RENDER_TARGET bit 1, SAMPLER_VIEW bit 3, VERTEX_BUFFER bit 4 | H:636–638 |
@@ -1259,3 +1260,482 @@ traffic from starving warm-up.
 
 Source declaration: this change derives from Breenix's own GPU core, its contract,
 and PR #2111's review findings. No external implementation source was used.
+
+## B21: Reusing inline vertex storage on Parallels
+
+The versions of `tools/gpu-host-tests/vertex_reuse.rs` and
+`tools/gpu-experiments/vertex-reuse.c` at `407bcd73` are this experiment's reproducer.
+The current versions extend it as described in B22. The Rust producer uses the
+production Breenix VirGL encoder with a Vec-backed replacement for DMA storage,
+libfont's geometry, and the unchanged CPU rasterizer as its pixel oracle. The C
+helper uses Linux's public DRM ioctls to allocate resources, submit those commands,
+wait for each buffer object, and read the six glyph targets. Neither tool uses an
+external implementation or an externally captured command stream.
+
+The sequence keeps one context, a 64 KiB vertex buffer, its views, and its data and
+copy textures across 20 frames. Each frame renders `Brenix` at one of 8, 12, 16,
+24 and 48 pixels, then samples those six glyphs onto a separate target. Both passes
+upload their complete vertices at offset 0. A solid control precedes the glyphs,
+so the last glyph's vertices lie beyond the following sampling upload. The helper
+compares each RGB byte of each glyph target, including its 0 background, and
+returns failure for any mismatch. Each native submission is followed by DRM WAIT
+for the 12 named buffer objects.
+
+On the ARM64 Parallels probe device, Vigil boot
+record `20261023T173125Z-parallels-linux-probe` contains these results:
+
+| Inline vertex usage or storage | Frames | Mismatched RGB components | Result |
+|---|---:|---:|---|
+| 0, reusing offset 0 | 20 | 2,916 | FAIL |
+| WRITE only, reusing offset 0 | 20 | 1,755 | FAIL |
+| 0, distinct 1 KiB vertex ranges for each pass | 20 | 0 | PASS |
+| WRITE plus DISCARD_RANGE, reusing offset 0 | 20 | 0 | PASS |
+
+The failing frames lost whole glyphs whose vertex ranges the following pass
+rewrote; the last glyph's untouched range remained correct. The producer, programs,
+geometry, pixel oracle and DRM transport were identical across the variants. This
+isolates vertex-storage reuse from geometry generation and from Breenix's VirtIO
+transport.
+The inference is that usage 0 permits the renderer's prior vertex reads to see
+rewritten storage. WRITE plus DISCARD_RANGE describes the actual overwrite and
+keeps those reads separate without growing or delaying reuse of the bounded arena.
+The data-texture upload policy and the suite expectations are unchanged.
+
+To reproduce on a windowed ARM64 Linux guest with Parallels VirGL enabled:
+
+1. Install the distribution's C compiler, pkg-config and libdrm development headers.
+   Build the C helper with the command in its file header. Start it in a fresh
+   directory, with no `commands-ready` file, and redirect its output to a log.
+   It writes `ids`, prints `RESOURCES READY`, and waits for the command files.
+2. Copy `ids` into a host output directory. From the repository root, run:
+
+   ```sh
+   export CARGO_BUILD_JOBS=4
+   scripts/build-background.sh cargo run --release \
+     --manifest-path tools/gpu-host-tests/Cargo.toml --bin vertex-reuse -- \
+     "$OUT" fonts/DejaVuSans.ttf 0
+   ```
+
+3. Copy `warm.bin` and the `frame-*.bin` files into the guest helper's directory,
+   then create `commands-ready`. Its final line and exit status report the result.
+4. Repeat with a fresh helper context and omit the final `0` from the producer
+   command to use the production WRITE plus DISCARD_RANGE policy. Optional usage
+   `2` isolates WRITE alone. The comparison is identical in each variant.
+
+The distinct-range diagnostic changed only each vertex inline write's byte offset
+and its draws' vertex indices, using `(2 * frame + pass + 1) * 1024` bytes for the
+range. It left the data texture, programs, rectangles, colors and comparison alone.
+
+## B22: Parallels render completion before vertex-storage reuse
+
+B21's range-discard result did not suffice for BreenGL's stage. The extended
+reproducer places glyphs at non0 atlas rows and compares both the six glyph
+targets and their sampled output, with the same CPU oracle and strict failure
+exit status. It retains B21's inline WRITE plus DISCARD_RANGE policy.
+
+On the same ARM64 Parallels device, Vigil boot record
+`20261023T181757Z-parallels-linux-probe` contains these 20-frame results:
+
+| Completion between glyph and sampling passes | Mismatched RGB components | Result |
+|---|---:|---|
+| DRM WAIT for each named buffer object | 1,782 | FAIL |
+| The same waits plus a fenced one-pixel device readback before the next pass | 0 | PASS |
+
+Both variants wait for each native submission. The only additional operation in
+the passing variant is a transfer from the device, whose completion is also waited
+for; its pixel value is not used to produce any image. Run the current C helper
+without arguments for the first variant, or with `--completion-read` for the
+second, using the producer invocation from B21 without the final usage override.
+Transfer the producer's `frame-*-sampled.bin` files along with the other streams.
+
+The inference from the disappearing glyphs, B21's distinct vertex ranges, and this
+readback control is that the native render completion alone is insufficient to
+make subsequent reuse of inline vertex storage safe on this device. The core
+therefore appends a fenced one-pixel completion read to Parallels render submissions
+that write a target. It publishes only after its requests have returned, and keeps
+its submission resources and arena ranges until then. No CPU code consumes the
+completion read's pixels, and it adds no caller upload or readback accounting.
+
+The completion read has its own checked native fence. The render record continues
+to name the actual SUBMIT_3D fence and answer, rather than the transfer's fence. Errors
+from any request and mismatched render or completion-read fences fail the
+submission. Fence withholding and depth tests still hold publication and storage;
+a depth released before the last request returns cannot release storage early.
+The shared completion path also waits for each native chunk before publication,
+including on SVGA, so a late chunk error cannot be lost after a success publication.
+
+The focused BreenGL `raster/clip-empty` case, whose stage failed with B21 alone,
+passed with this change in Vigil diagnostic boot
+`20261023T183531Z-parallels-drain-case`, with 0 recovery uploads and device resets.
+This is a diagnostic case, not full-suite acceptance evidence.
+
+Source declaration: only Breenix's own encoder, geometry and CPU oracle, the public
+DRM interface, and the existing VirtIO transfer/fence interface were used. No
+external implementation source or externally captured command stream was used.
+
+
+## B23: Complete Parallels rendering within its command buffer
+
+B22's separate completion request made `icons/bounded` exceed its unchanged
+10-second case guard. The full Parallels boot at `4f8ef6d8`, Vigil record
+`20261023T184205Z-parallels-82617`, passed GPU 170/170 and BreenGL 398/401,
+including both memory records; the other failures were compositor-death latency
+and HiDPI readback. That boot is failure evidence, not acceptance.
+
+The pinned public protocol header P defines `TRANSFER3D` 43 and `END_TRANSFERS`
+44 (lines 123-124). Its transfer payload has the first eleven inline-write fields,
+then backing offset at word 12 and direction at word 13 (lines 630-637).
+Direction FROM_HOST is 2; usage READ is bit 0 in D's `pipe_transfer_usage`.
+Breenix encodes a one-pixel read at offset 0 and ends the transfers, after the stream's
+rendering, in the existing command buffer. Its normal fenced SUBMIT_3D therefore
+covers the completion operation as well as the draws, without another queue
+request. Both sizing and emission include these commands.
+
+Vigil diagnostic boot `20261023T185558Z-parallels-linux-probe` records the same
+20-frame, non0-atlas-row glyph and sampling comparison as B22:
+
+| In-stream completion read | Mismatched RGB components | Result |
+|---|---:|---|
+| First glyph target, in a following command buffer | 5,316 | FAIL |
+| Last glyph target, in a following command buffer | 0 | PASS |
+| Production encoder, last target in each render command buffer | 0 | PASS |
+
+The first two probes used the same handwritten packet from P's field layout;
+only the target changed. The third uses `Enc::completion_read` and the original
+DRM helper without its optional external completion read. The CPU oracle and
+failure exit status are unchanged. The producer option is:
+
+```sh
+vertex-reuse "$OUT" fonts/DejaVuSans.ttf 258 --completion-read
+```
+
+The last target matters: reading an earlier target did not complete the later
+draws in this device experiment. The core therefore tracks the actual last write
+in stream order, including COPY destinations, rather than choosing the first
+resource or the last distinct resource. It retains each submission resource
+through its native chunks as before. The observation pixels are not consumed by
+the CPU and do not change caller upload/readback accounting.
+
+Source declaration: only the pinned public protocol/enum headers, Breenix's own
+encoder, geometry and CPU oracle, and the public DRM interface were used.
+
+
+## B24: Immutable vertices for short Parallels frames
+
+An embedded completion read alone still exceeded `icons/bounded`'s unchanged
+10-second guard (diagnostic `20261023T190235Z-parallels-inline-icons`). A separate
+program replaying its 10,000 seeded inputs per icon measured about 12.1 seconds
+in drawing and only 41 ms in animation updates. This is diagnostic timing, not
+suite acceptance.
+
+For Parallels streams of at most 64 rectangles, the encoder now draws one fixed
+clip-space quad and places each rectangle with the existing viewport state.
+The fixed region is bytes 768..816 of the context's vertex buffer, immediately
+after the sixteen catalogue regions. Each upload to it has the identical twelve
+binary32 words, with WRITE and no discard; neither the catalogue nor the probe
+writes that region. Reuse therefore cannot change geometry a preceding GPU draw
+is still reading. Larger streams retain the bounded vertex arena and B23's
+in-stream read of the last written target. QEMU and SVGA retain their paths.
+
+The current vertex program already copies its input to clip-space output. A
+rectangle's viewport scales are half its width and height, and its translations
+are the half sums of its edges. These half-integers are exactly representable in
+the 16,384-pixel target domain. The conversion from the existing normalized
+vertex words back to integer edges decodes IEEE-754 sign, exponent and significand;
+it runs no floating-point instruction in the kernel. The fixed quad keeps the
+original triangle order. Fragment programs and their pixel coordinates, clips,
+colors, sampling and blend operations are unchanged.
+
+Host checks cover 16,385/16,385 integer coordinates and two differently placed
+rectangles sharing exactly one twelve-word upload. The existing dynamic-upload,
+chunk sizing, allocation-failure and arena checks are unchanged. The focused
+Parallels `icons/bounded` case passed in 5,140 ms with its expected stage hash
+`150018441a3e0a7524e436f28dae6a223485b78e5b2dfa5cddacd71d9bbf38ef`
+and 0 recovery uploads or device resets, in Vigil diagnostic
+`20261023T192536Z-parallels-fixed-icons`. This is one-case evidence, not full-suite
+acceptance.
+
+Source declaration: this optimization derives from Breenix's existing quad,
+vertex program and viewport encoder, its integer geometry contract, and IEEE-754.
+No external implementation source was read or used.
+
+
+## B25: Finish catalogue initialization before serving frames
+
+The compositor-death diagnostic released the retired buffer's pin immediately,
+but its replay still waited 327 ms in CTX_ATTACH_RESOURCE (0x202). The native
+queue's oldest request was SUBMIT_3D (0x207), and its active warm-up was the
+client's catalogue pipeline 8. Vigil diagnostic
+`20261023T193201Z-parallels-death-request-diag` retains the request timings.
+The full HiDPI failure in B23 likewise recorded a pipeline-8 warm-up ahead of
+two readback transfers when the unchanged watchdog fired.
+
+Raw CONTEXT_CREATE intentionally returns while the catalogue warms (gpu-abi.md).
+In the intermediate implementation at `79f8ea2b`, BGL and the production
+userspace compositor initialized through
+`context_create_ready`: they waited for the context's actual COUNTERS state 0
+before returning their constructors. A counter error, quarantine, reset or
+interrupted sleep destroyed the new context and returned an error. Raw context
+creation and each warm-up completion check stayed unchanged. This added a startup
+wait to these drawing libraries to keep background shader initialization out of
+later frame operations. It waited for device initialization, without inspecting
+or waiting for host load. B27 replaces this constructor wait after the full run
+exposed its cost to other callers.
+
+Each Parallels catalogue step also ends with B23's one-pixel in-stream read of
+its private scratch target before its native fence. Its successful completion
+therefore includes that device operation. The warm-up still compiles and draws
+each catalogue pipeline and checks its native fence; no early marker or counter
+substitution reports it ready. The completion pixels have no CPU consumer.
+
+With the normal userspace image and no diagnostic logging, the unchanged focused
+cases passed:
+
+| Case | Result | Measurement | Vigil diagnostic |
+|---|---|---|---|
+| composition/compositor-dies | PASS | both waits returned by reaping; each measured gap 0 ms, limit 250 ms; case 2,314 ms | `20261023T194859Z-parallels-ready-death` |
+| scanout/hidpi-mode | PASS | complete 2560x1600 observations including the changed last row; case 2,224 ms | `20261023T195001Z-parallels-ready-hidpi` |
+
+The HiDPI stage hash was
+`3f2879422970f9f0ba7e673af4ae4df540701a457c9c124912488f32cad4cc20`;
+recovery uploads and device resets were 0. These are focused-case results,
+not full-suite acceptance. No case, deadline, expected pixel or memory allowance
+was changed.
+
+Source declaration: Breenix's queue diagnostics, published context-state
+contract and existing initialization paths, plus the pinned protocol layout in
+B23; no external implementation source was used.
+
+
+## B26: Keep sampled draws inside the fixed-quad path
+
+The full Parallels run at `79f8ea2b` passed 169 of 170 GPU cases and returned
+memory within the unchanged allowance. `textures/immutable-while-pinned` failed:
+the sampled image was present, but its buffer-sourced red rectangle was missing.
+The native fence publication checks passed; the pixel oracle did not. Adding a
+completion read alone did not repair the same pixel in diagnostic
+`20261023T203528Z-parallels-cache-pinned`.
+
+The sampled-draw translator bypassed B24's fixed-quad emitter: it packed dynamic
+vertices directly into the shared fixed region. A later solid or buffer draw
+then reused those dynamic words as though they were the unit quad. Sampled draws
+now use the same immutable quad and per-rectangle viewport as other short draws,
+while retaining each instance's texel-offset constants. The dynamic path is
+unchanged. A host check reproduces mixed sampled/buffer/sampled draws and requires
+one identical 48-byte upload and the three exact viewports; it failed against the
+old encoder's 96-byte upload. No fence-publication control, expected pixel or
+ordering check changes.
+
+Source declaration: Breenix's unchanged GPU suite oracle and existing translator;
+no external implementation source was read or used.
+
+
+The focused Parallels case passed the original pixels and ordering checks in
+3,138 ms in Vigil diagnostic `20261023T203858Z-parallels-mixed-pinned`. The new
+host check also passed unchanged. These are focused results, not full-suite
+acceptance.
+
+
+## B27: Prepare window renderers during setup
+
+The full Parallels run `20261023T195650Z-parallels-92959` at `79f8ea2b` finished
+BreenGL at 394/401, with memory reclaimed. Waiting in each BGL constructor made
+`raster/extreme-work-bound`, `font-parser/coords-extreme`, `font-parser/corpus`,
+`windows/commit-waits-render` and `isolation/other-map` exceed their case deadlines.
+`composition/no-compositor` included that first initialization in its measured
+frame (1,207 ms, limit 250 ms), while `scanout/atomic-record` could not observe its
+first composite within one second. The checks and their deadlines are unchanged.
+
+BGL and the userspace compositor use ordinary asynchronous CONTEXT_CREATE again;
+the intermediate `context_create_ready` helper is removed. On Parallels, window
+creation instead prepares a renderer during setup, and compositor claim prepares
+one for its next context creation. The cache holds at most one fresh context per
+process. It uses the normal context allocator, counts against the same context
+limit, and transfers its existing handle to the next CONTEXT_CREATE. It does not
+alias an exposed context. Process exit retires it by the ordinary path.
+
+Setup waits for actual catalogue completion of the process's live rendering
+contexts, outside the window registry lock. Catalogue steps retain B25's native
+completion read. Allocation or interruption of this optional preparation leaves
+the successful window/claim result intact; normal context creation remains the
+fallback. Window notifications are published before claim waits. Existing
+contexts are not replaced, and offscreen and fork-heavy users keep asynchronous
+creation. QEMU and SVGA do not use this preparation.
+
+Source declaration: Breenix's context lifecycle, window setup and unchanged suite
+measurements; no external implementation source was read or used.
+
+Focused Parallels results with the normal userspace image:
+
+| Category | Result | Vigil diagnostic |
+|---|---|---|
+| composition | 28/28 PASS; no-compositor frame 6 ms; both death waits 0 ms | `20261023T203935Z-parallels-cache-composition` |
+| font-parser | 22/22 PASS; extreme coordinates 5,211 ms; corpus 9,877 ms | `20261023T204140Z-parallels-cache-font` |
+| scanout | 17/17 PASS; atomic record observed 19 distinct commits; HiDPI 2,429 ms | `20261023T204252Z-parallels-cache-scanout` |
+
+The HiDPI hash remains
+`3f2879422970f9f0ba7e673af4ae4df540701a457c9c124912488f32cad4cc20`.
+These category runs are focused evidence, not full-suite acceptance. No case,
+deadline, expected pixel or memory allowance changed.
+
+
+## B28: Retire unused preparation at its ownership boundary
+
+The full Parallels run at `12ba624f` passed GPU 170/170 and BreenGL 401/401,
+without skips. GPU memory reclaimed (9 pages, allowance 48), but BreenGL retirement
+correctly failed: its owner still held one context and one device context after
+its exposed renderers were destroyed. Vigil `20261023T204459Z-parallels-86515`
+retains the failure. Host GPU time attestation passed at 49 times the idle rate.
+
+The stage briefly claims the compositor to sample a judged window through the
+normal window API, then releases it. B27 prepared a spare for that claim, but the
+stage already had its renderer and left the spare unconsumed. Process-exit cleanup
+alone was too late for a process that releases its window/display ownership and
+continues running.
+
+The intermediate implementation at `ef35c7e6` retired unused preparation when
+its owner had neither a window nor the compositor claim: final window destruction
+and compositor release checked that boundary outside the registry lock. Group
+exit/exec also retired unused preparation. The cache handle was taken under the
+GPU lock and passed to ordinary context destruction; an exposed context could not
+be taken from this cache. Native unrefs and memory release stayed asynchronous
+and were judged by the existing retirement check. No context counter, retirement
+deadline or memory allowance changed. B29 replaces this window-lifetime boundary
+after the full run exposed repeated initialization during churn.
+
+Source declaration: Breenix's window ownership, stage sampling and GPU context
+lifecycle, and the unchanged retirement oracle; no external implementation source
+was read or used.
+
+
+## B29: Keep preparation through window churn and retire it with renderers
+
+Vigil `20261023T210222Z-parallels-29101` at `ef35c7e6` passed GPU 170/170 and
+BreenGL 399/401. Retirement reached 0 contexts, 0 device contexts, 0
+resources and 0 copy bytes; memory reclaimed within 40 pages (allowance 48).
+But `windows/churn` exceeded 20 seconds and `isolation/destroy-during-commit`
+exceeded its eight-second child deadline. Dropping preparation after each final
+window destruction made their next CREATE compile the whole catalogue again.
+The churn case makes 110 windows without ever creating a renderer, and the race
+case repeats 20 creates/destroys in one process.
+
+Window disappearance is therefore not a renderer-lifetime boundary. Preparation
+again survives window/compositor release and retires normally at process exit.
+An explicit GPU CONTEXT_DESTROY that leaves only the unused prepared context now
+retires that spare as well, through ordinary context destruction. A stage that
+already has renderers can release its temporary compositor claim without leaving
+preparation behind after it explicitly tears those renderers down. A process
+that has not started rendering reuses its single counted preparation across
+window churn. No exposed context is removed by this cleanup, and native unrefs
+still have to complete before counters and memory return.
+
+The window-release cleanup from B28 is removed. The case loops, deadlines,
+context counters and memory allowances remain unchanged.
+
+Source declaration: Breenix's unchanged churn/race oracles and explicit GPU
+context lifecycle; no external implementation source was read or used.
+
+
+## B30: Keep mutable scratch completion and renderer ownership
+
+Review M1 identified that B24's immutable geometry does not make the per-context
+coverage-data texture or copy scratch immutable. Short Parallels streams using
+those resources retain B23's in-stream completion read of the last written target;
+short streams without mutable scratch keep the fixed-quad path without that read.
+The fixed-quad selection also requires an unflipped viewport (review n1).
+
+Review M2 identified an interrupted setup racing CONTEXT_CREATE. Error cleanup
+now takes a matching prepared handle under the GPU lock before destroying it;
+a context already transferred to a caller is left owned by that caller. Explicit
+renderer destruction ignores internal window-target contexts when deciding whether
+the prepared spare is the last renderer (review m3).
+
+Source declaration: these repairs derive from Breenix's GPU resource ownership,
+existing completion encoder, and the final PR #2357 review. No external
+implementation source was used. The remaining boot-settle, preparation-quota,
+CURRENT_MODE refusal-coverage and stage-restore questions are tracked in #2358.
+
+Claim-lint round notes (review m1; private temporary inputs shown by basename):
+
+- `python3 scripts/claim-lint.py --base 3c897ba8`: exit 1 (28 findings), then exit 1 (2 findings), then exit 0 after wording corrections.
+- `python3 scripts/claim-lint.py --files pr2357-followup.md`: exit 1, then exit 0 after wording correction.
+- `python3 scripts/claim-lint.py --commit-msg pr2357-merge-msg.txt`: exit 0.
+- `python3 scripts/claim-lint.py --commit-msg pr2357-context-msg.txt`: exit 0.
+- `python3 scripts/claim-lint.py --commit-msg pr2357-completion-msg.txt`: exit 0.
+
+
+## B31: Final review validation and remaining non-GL blocker
+
+The final executable changes were built and booted at `54797eb5` after merging
+`origin/main` without conflicts. The ARM64 release kernel build and rebuilt
+userspace/disk completed; the kernel emitted the pinned core-library NEON notice
+tracked in #945. The userspace build installed 199 binaries without a warning.
+
+| Boot | Result | Memory | Vigil record |
+|---|---|---|---|
+| ARM64 QEMU GL, GPU | 170/170, skipped=0, exit 0 | reclaimed: 9 pages, allowance 48 | `20261023T221247Z-qemu-63094` |
+| Parallels, GPU and BreenGL | 170/170 and 401/401, skipped=0, exit 0 | reclaimed: 9 and 38 pages, allowance 48 | `20261023T221851Z-parallels-4911` |
+| ARM64 QEMU without GL, smoke | 5/5 cases, skipped=0, boot exit 1 | before sample settled in 202 ms; after sample missing | `20261023T221705Z-qemu-89483` |
+
+The QEMU GL host renderer and Parallels host GPU-time attestations were accepted.
+The Parallels `icons/bounded` case took 5,156 ms and retained hash
+`150018441a3e0a7524e436f28dae6a223485b78e5b2dfa5cddacd71d9bbf38ef`.
+The 3/3 Vigil records report dirty=0 and display=true, and their frozen serials
+match the launcher logs byte for byte. Builds used background policy and four
+Cargo jobs; boots used the mac-boot slot with quiet-host waiting disabled.
+
+The non-GL boot is failure evidence. Its final memory record reports
+`display handoff: MODES errno 19`, followed by reclaimed=FAIL because the after
+sample was not taken. Main's unchanged `Screen::open` installs a GPU view on
+ARM64, and `gpu_screen::await_console` requires MODES even without a 3D device.
+The handoff implementation from `fbdcb593` is already an ancestor of main;
+`libs/libbreenix/src/suite.rs` and `suite_gpu_screen.rs` have no PR diff.
+This separate failure is #2360; the review's M3 remains open because a passing
+non-GL memory gate is unavailable. No acceptance check was relaxed and no
+unrelated handoff repair was folded into the catch-up. PR #2357 stays open.
+
+Claim-lint final notes (temporary inputs shown by basename):
+
+- `python3 scripts/claim-lint.py --base 3c897ba8`: exit 0.
+- `python3 scripts/claim-lint.py --files pr2357-body.md pr2357-comment.md`: exit 1 (wording of incomplete validation), then exit 0.
+- `python3 scripts/claim-lint.py --commit-msg pr2357-evidence-msg.txt`: exit 0.
+
+
+## B32: Complete landing validation after the non-GL handoff repair
+
+PR #2362 brought #2360's device-status handoff repair to main. A conflict-free
+merge of origin/main into the catch-up produced executable head `3841f513`.
+No rebase or force push was used. The requested landing runs at that head were:
+
+| Target | Suite | Cases | Memory deficit, allowance 48 pages | Vigil record |
+|---|---|---|---|---|
+| ARM64 QEMU without GL | smoke | 5/5 | 10 pages, PASS | `20261023T232342Z-qemu-17016` |
+| ARM64 QEMU without GL | files-io | 219/219 | 10 pages, PASS | `20261023T232342Z-qemu-17016` |
+| ARM64 QEMU GL | gpu | 170/170 | 9 pages, PASS | `20261023T232414Z-qemu-18085` |
+| Parallels | gpu; breengel | 170/170; 401/401 | 9; 38 pages, PASS | `20261023T232909Z-parallels-29875` |
+| VMware | gpu; breengel | 170/170; 401/401 | 9; 39 pages, PASS | `20261023T234257Z-vmware-70807` |
+
+The 4/4 boots exited 0; their suite DONE records report failed=0 and skipped=0. The files-io disk verdict reports five passing checks. Both non-GL suites
+have before, after and reclaimed=PASS memory records, supplying review M3's
+missing evidence. The QEMU GL renderer and Parallels host GPU-time attestations
+were accepted. Parallels `icons/bounded` retained its expected hash and took
+5,400 ms. The 4/4 Vigil records retain commit `3841f513`, dirty=0 and display=true;
+their frozen serials match the corresponding launcher logs byte for byte.
+
+The ARM64 userspace rebuild completed without warnings; the production kernel
+emitted only the pinned core-library future-compatibility notice tracked in #945.
+The UEFI loader build completed without warnings. Cargo used four jobs and Mac
+builds used background policy. Boots opened their windows and serialized through
+the mac-boot slot. The later evidence and roadmap edit changes documentation only;
+no suite is repeated for a push or landing merge.
+
+The diff against origin/main leaves x86-64's executable settled path unchanged:
+`kernel/src/boot/settled.rs` changes behavior only under aarch64. The changed
+`kernel/src/gpu/` and `kernel/src/window/ops.rs` modules are aarch64-only.
+Shared library changes are `libs/gpu-abi/src/lib.rs`,
+`libs/libbreenix/src/gpu.rs`, `libs/libbreenix/src/suite_stage.rs`, and
+`libs/libgfx/src/surface.rs`; the other changed files are documentation and host
+tools. The landing brief explicitly requires no R240 boot, persistent install or
+branch-tools lock for this catch-up; execution used the requested Mac targets. No Tier 1, Tier 2 or
+workflow file changed. Review follow-ups remain in #2358. Claim-lint invocation
+statuses are recorded in the landing coordination ledger.

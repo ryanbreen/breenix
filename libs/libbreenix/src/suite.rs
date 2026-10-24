@@ -459,6 +459,16 @@ pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
     ("breengel", "png-decode/independent-fixtures", 20_000),
     ("breengel", "windows/churn", 20_000),
     ("breengel", "composition/present-rate", 20_000),
+    // GUI plan section 19: the fixed real-time workloads and stepped stress windows.
+    ("window-manager", "performance/typing-latency", 20_000),
+    ("window-manager", "performance/pointer-latency", 20_000),
+    ("window-manager", "performance/latency-under-animation", 20_000),
+    ("window-manager", "performance/present-latency", 20_000),
+    ("window-manager", "performance/frame-floor", 20_000),
+    ("window-manager", "performance/idle-cpu", 20_000),
+    ("window-manager", "performance/clipboard-latency", 20_000),
+    ("window-manager", "liveness/stress-animation", 30_000),
+    ("window-manager", "liveness/memory-bounded", 40_000),
     // Two authenticated logins, host-injected keys and init's respawn delay.
     ("console", "getty/logout-reacquires", 30_000),
     ("console", "getty/independent-sessions", 30_000),
@@ -703,6 +713,22 @@ pub fn hostkeys(chords: &str) -> Result<u64, String> {
     usb_input_attached()?;
     let seq = HOSTKEY_SEQ.fetch_add(1, Ordering::Relaxed);
     record("HOSTKEY", &std::format!("seq={seq} keys={chords}"));
+    Ok(seq)
+}
+
+/// Ask the boot host to move its real virtual tablet and set its buttons (HID order).
+/// Success means only that a request was emitted; the case must observe client delivery.
+pub fn hostpointer(x: u32, y: u32, width: u32, height: u32, buttons: u32, wheel: i32) -> Result<u64, String> {
+    hostkey_method().filter(|v| !v.is_empty()).ok_or("no host pointer path")?;
+    if width < 2 || height < 2 || x >= width || y >= height || buttons > 7 || !(-1..=1).contains(&wheel) {
+        return Err(String::from("invalid host pointer coordinates, buttons or wheel"));
+    }
+    if RECORD_FD.load(Ordering::Relaxed) < 0 || RECORDS.load(Ordering::Relaxed) >= RECORDS_PER_CASE {
+        return Err(String::from("host pointer record unavailable"));
+    }
+    usb_input_attached()?;
+    let seq = HOSTKEY_SEQ.fetch_add(1, Ordering::Relaxed);
+    record("HOSTPOINTER", &std::format!("seq={seq} x={x} y={y} width={width} height={height} buttons={buttons} wheel={wheel}"));
     Ok(seq)
 }
 
