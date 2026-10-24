@@ -23,11 +23,12 @@ pub fn stalled_ledger() -> CaseResult {
     let mut device = Virtual::create()?;
     stream.grab(&[])?;
     let mut last = 0;
-    for n in 1..=4096 {
-        device.batch(&[(1, 30, (n & 1) as i32)], n)?;
-        last = stream.read_from(2, &[device.id])?.last().unwrap().serial;
+    let edges = (0..255).map(|n| (1, 30, (n & 1) as i32)).collect::<Vec<_>>();
+    for n in 1..=32 {
+        device.batch(&edges, n)?;
+        last = stream.read_from(256, &[device.id])?.last().unwrap().serial;
     }
-    check(device.batch(&[(1, 30, 0)], 4097).err()
+    check(device.batch(&[(1, 30, 0)], 33).err()
         .is_some_and(|e| e.starts_with("uinput batch errno 11:")),
         "pending ledger did not reach its unchanged capacity")?;
     replay(1, 0, 0)?;
