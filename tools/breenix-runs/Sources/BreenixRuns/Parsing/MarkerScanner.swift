@@ -322,7 +322,7 @@ public struct MarkerScanner {
                 ]
             },
             // Source: docker/qemu/run-aarch64-testing-profile-boot-test.sh:66.
-            pattern(.faultPanic, #"panicked at kernel/src/"#) { _, _ in
+            pattern(.faultPanic, #"panicked at kernel/src/|KERNEL PANIC[:!]"#) { _, _ in
                 ["scope": .string("kernel")]
             },
             // Source: docker/qemu/run-aarch64-testing-profile-boot-test.sh:96.

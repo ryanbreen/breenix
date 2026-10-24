@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import secrets
 import subprocess
 import time
 from urllib.parse import urlsplit
@@ -52,6 +53,27 @@ def load_site(path=None):
             value = value[1:-1]
         values[key.strip()] = value
     return values
+
+
+def power_token():
+    """Private derivation seed mirrored into the install's root-only shutdown file."""
+    STATE.mkdir(parents=True, exist_ok=True)
+    # Derive receipts from a fresh private seed rather than the legacy
+    # power-token capability exposed in historical captures.
+    path = STATE / 'power-seed-v2'
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        token = path.read_text()
+    else:
+        token = secrets.token_hex(32)
+        with os.fdopen(fd, 'w') as handle:
+            handle.write(token)
+            handle.flush()
+            os.fsync(handle.fileno())
+    if not re.fullmatch(r'[a-f0-9]{64}', token) or path.stat().st_mode & 0o077:
+        raise ValueError('invalid private power-control token')
+    return token
 
 
 def now():

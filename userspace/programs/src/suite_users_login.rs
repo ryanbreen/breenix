@@ -408,13 +408,47 @@ fn logout_tty_restored() -> CaseResult {
     let pty = Pty::open()?;
     getty_login(&pty, &user.name, &user.password)?.probe()?;
     want(pty.owner()?.0 == user.uid, "the session did not own its line")?;
-    // getty serving the line again returns it to root and records the logout; an empty
-    // name then ends it.
-    let run = run_on(&pty, Start::Getty, &["/bin/getty", pty.line()], &[("login: ", "")])?;
-    run.exited(0)?;
-    let (uid, gid, mode) = pty.owner()?;
-    want((uid, gid, mode) == (0, TTY_GID, 0o620), format!("after logout the line is {uid}:{gid} {mode:o}, expected 0:5 620"))?;
-    Ok(logged("getty", &user.name, &user.name, "ok")?)
+    // S24 (#2415): serving the line restores it; an empty name reprompts in place.
+    let child = match process::fork().map_err(|e| format!("fork: {e}"))? {
+        ForkResult::Child => {
+            let _ = io::close(pty.master);
+            let _ = io::close(pty.keeper);
+            let argv = [cpath("/bin/getty"), cpath(pty.line())];
+            let _ = ses::exec("/bin/getty", &argv, &[]);
+            process::exit(127)
+        }
+        ForkResult::Parent(child) => child.raw() as i32,
+    };
+    let outcome = (|| -> Checked {
+        let mut output = Vec::new();
+        for prompt in 0..2 {
+            loop {
+                want(breenix_suite::suite::case_ms_left() >= 400,
+                    format!("getty did not show login prompt {}; output: {}", prompt + 1, String::from_utf8_lossy(&output)))?;
+                let mut fds = [io::PollFd::new(pty.master, io::poll_events::POLLIN)];
+                if io::poll(&mut fds, 20).unwrap_or(0) > 0 && fds[0].revents & io::poll_events::POLLIN != 0 {
+                    let mut buf = [0u8; 512];
+                    let n = io::read(pty.master, &mut buf).map_err(|e| format!("read getty: {e}"))?;
+                    output.extend_from_slice(&buf[..n]);
+                }
+                if output.windows(b"login: ".len()).any(|w| w == b"login: ") { break; }
+            }
+            if prompt == 0 {
+                let (uid, gid, mode) = pty.owner()?;
+                want((uid, gid, mode) == (0, TTY_GID, 0o620), format!("after logout the line is {uid}:{gid} {mode:o}, expected 0:5 620"))?;
+                logged("getty", &user.name, &user.name, "ok")?;
+                output.clear();
+                io::write(pty.master, b"\n").map_err(|e| format!("type empty name: {e}"))?;
+            }
+        }
+        Ok(())
+    })();
+    let stopped = ok("stop getty", kill(child, SIGTERM));
+    let reaped = wait(child);
+    outcome?;
+    stopped?;
+    let status = reaped?;
+    Ok(want(status & 0x7f == SIGTERM, format!("getty ended with {}, expected signal {SIGTERM}", status_text(status)))?)
 }
 
 /// A process the first session leaves behind keeps the line open for reading and

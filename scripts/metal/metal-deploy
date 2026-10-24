@@ -55,7 +55,7 @@ sudo -n incus exec "$METAL_INSTANCE" -- sh -c "rm -rf /opt/breenix-metal.new && 
     tar -C /opt/breenix-metal.new --no-same-owner -xf - && rm -rf /opt/breenix-metal && \
     mv /opt/breenix-metal.new /opt/breenix-metal"'
 printf '%s\n' "$TAG" | remote 'sudo -n incus exec "$METAL_INSTANCE" -- sh -c "cat > /opt/breenix-metal/COMMIT"'
-pack metal-run metal-build server-suite upgrade_probe.py upgrade_cases.py upgrade_suite.py users-hostssh efi-stub/Cargo.toml efi-stub/Cargo.lock efi-stub/rust-toolchain.toml efi-stub/src \
+pack metal-run metal-build server-suite server_reboot.py resting_cases.py server_resting.py resting_host.py upgrade_probe.py upgrade_cases.py upgrade_suite.py users-hostssh efi-stub/Cargo.toml efi-stub/Cargo.lock efi-stub/rust-toolchain.toml efi-stub/src \
     -C "$HERE/.." host-slots.py gate-artifacts.py gate-tree.py suite-sequence.py effort-target-guard.py | remote 'mkdir -p ~/.local/share/breenix-metal && rm -rf ~/.local/share/breenix-metal/efi-stub && tar -C ~/.local/share/breenix-metal --no-same-owner -xf -'
 remote '
 sudo -n incus exec "$METAL_INSTANCE" -- sh -c "install -d -m 700 /etc/breenix-metal /var/lib/breenix-metal && \

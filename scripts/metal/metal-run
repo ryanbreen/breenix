@@ -34,6 +34,7 @@ import runpy
 import subprocess
 import sys
 import time
+import threading
 
 TOOLS = '/opt/breenix-metal'
 STATE = '/var/lib/breenix-metal'
@@ -43,6 +44,7 @@ XHCI_FAULTS = ('xhci-reset-device', 'xhci-short-read')
 FAULT_FEATURE = 'xhci_fault_inject'
 # The write fence's fault-test feature (docs/metal/README.md, "The write fence").
 FENCE_FEATURE = 'block_fence_inject'
+PANIC_FEATURE = 'server_reboot_fault'
 FENCE_FAULT = 'fence-out-of-partition'
 WATCHDOG_FAULTS = ('watchdog-feeder-hang', 'watchdog-health-hang')
 # The testing kernel's feature, as run.sh --tests builds it.
@@ -300,6 +302,7 @@ def boot(args):
             features = (['--features', 'watchdog_fault_inject'] if args.inject in WATCHDOG_FAULTS else
                         ['--features', FAULT_FEATURE] if args.inject in XHCI_FAULTS else
                         ['--features', FENCE_FEATURE] if args.inject == FENCE_FAULT else
+                        ['--features', PANIC_FEATURE] if args.inject == 'panic-reboot' else
                         ['--features', TESTING_FEATURE] if args.mode == 'tests' else [])
             # A suite boot's build stages the suite's host-side fixtures (the SDK suite's results).
             suite = ['--suite', args.suite] if args.suite else []
@@ -309,6 +312,12 @@ def boot(args):
                              tools_only + (['--catchup'] if catchup else []),
                              stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         print(json.dumps({'id': boot_id, 'build': 'started', 'commit': sha}), flush=True)
+    if payload not in ('image', 'disk-readback', 'manager') and '"status": "waiting"' in result.stdout:
+        try:
+            runpy.run_path(str(HERE / 'resting_host.py'))['preempt'](boot_id, only_persistent=True)
+        except Exception as error:
+            in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'stop', boot_id)
+            raise SystemExit('persistent preemption failed: ' + type(error).__name__)
     args.boot_id = boot_id
     if args.mode == 'suite' and payload == 'image' and not getattr(args, 'resuming', False):
         # Pin the commit before detaching, so branch movement cannot change a resumed boot.
@@ -341,6 +350,14 @@ def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=F
         in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-failed', boot_id, why)
         in_build(env, 'rm', '-rf', tools, out)
         return 1
+    preemption_errors = []
+    def preempt():
+        try:
+            runpy.run_path(str(HERE / 'resting_host.py'))['preempt'](boot_id)
+        except Exception as error:
+            preemption_errors.append(type(error).__name__ + ': ' + str(error))
+    preemption = threading.Thread(target=preempt, daemon=True)
+    preemption.start()
     in_build(env, 'rm', '-rf', tools, check=True)
     in_build(env, 'mkdir', '-p', tools, check=True)
     # The slot and artifact helpers travel with metal-build: a commit builds under the deployed tools' rules.
@@ -377,6 +394,9 @@ def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=F
     if sender.wait() != 0 or receiver.returncode != 0:
         return failed('the inputs could not be copied into the service container')
     in_build(env, 'rm', '-rf', tools, out)
+    preemption.join()
+    if preemption_errors:
+        return failed('persistent preemption failed: ' + preemption_errors[0])
     in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-ready', boot_id, check=True)
     print(f'[metal-run] inputs delivered after {time.time() - started:.0f} s', flush=True)
     return 0
@@ -419,7 +439,7 @@ def main():
     p.add_argument('--catchup', action='store_true', help='admit pushed effort history for landing')
     p.add_argument('--no-wait', action='store_true', help='return after launch; the detached driver still queues')
     p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount',
-                                        FENCE_FAULT, *WATCHDOG_FAULTS))
+                                        FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS))
     p.add_argument('--nmi', action='store_true', help='NMI a started kernel before power-off even when it finished')
     p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'))
     p.add_argument('--content-type', choices=('application/octet-stream',))
@@ -435,7 +455,7 @@ def main():
     p = sub.add_parser('_build')
     p.add_argument('id')
     p.add_argument('sha')
-    p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, TESTING_FEATURE, 'watchdog_fault_inject'))
+    p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, PANIC_FEATURE, TESTING_FEATURE, 'watchdog_fault_inject'))
     p.add_argument('--suite')
     p.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager'))
     p.add_argument('--catchup', action='store_true')

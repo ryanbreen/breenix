@@ -61,6 +61,7 @@ pub mod pipe;
 pub mod priority;
 pub mod pty;
 pub mod random;
+pub mod reboot;
 pub mod rusage;
 pub mod session;
 pub mod signal;
@@ -933,6 +934,11 @@ pub const ADJTIMEX_SYSCALL_NUMBER: u64 = 171;
 
 /// The calls dispatched by number above that are not dispatched by enum, on
 /// both architectures: None for any other number.
+#[cfg(target_arch = "x86_64")]
+pub const REBOOT_SYSCALL_NUMBER: u64 = 169;
+#[cfg(target_arch = "aarch64")]
+pub const REBOOT_SYSCALL_NUMBER: u64 = 142;
+
 pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
     if let Some(r) = ipc::dispatch(number, a) {
         return Some(r);
@@ -942,6 +948,7 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
         return Some(crate::gpu_fault_acceptance::dispatch(a[0]));
     }
     Some(match number {
+        REBOOT_SYSCALL_NUMBER => reboot::sys_reboot(a[0], a[1], a[2]),
         ADJTIMEX_SYSCALL_NUMBER => clocks::sys_adjtimex(a[0]),
         #[cfg(target_arch = "aarch64")]
         410..=412 => SyscallResult::Err(ErrorCode::NoSys as u64),

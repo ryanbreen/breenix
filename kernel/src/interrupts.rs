@@ -492,18 +492,24 @@ extern "x86-interrupt" fn serial_interrupt_handler(stack_frame: InterruptStackFr
     // Read from COM1 data port while data is available
     let mut lsr_port = Port::<u8>::new(0x3F8 + 5); // Line Status Register
     let mut data_port = Port::<u8>::new(0x3F8); // Data port
+    let mut iir_port = Port::<u8>::new(0x3F8 + 2); // Interrupt Identification Register
 
-    // Check if data is available (bit 0 of LSR)
-    while unsafe { lsr_port.read() } & 0x01 != 0 {
-        let byte = unsafe { data_port.read() };
-        // Add to serial queue for async serial console processing
-        // Note: Serial input is kept separate from stdin (keyboard input)
-        // This follows proper Unix design where serial and keyboard are different devices
-        crate::serial::add_serial_byte(byte);
+    loop {
+        // Check if data is available (bit 0 of LSR)
+        while unsafe { lsr_port.read() } & 0x01 != 0 {
+            let byte = unsafe { data_port.read() };
+            crate::serial::add_serial_byte(byte);
+        }
+
+        // Wake the COM1 transmit thread if it waits for the transmitter to empty.
+        crate::serial::transmitter_interrupt();
+        // RX can arrive while THRE keeps INTRPT high, so disarming THRE
+        // need not produce another edge on ISA IRQ4. Keep servicing pending
+        // causes before EOI; reading IIR also acknowledges a residual THRE.
+        if unsafe { iir_port.read() } & 0x01 != 0 {
+            break;
+        }
     }
-
-    // Wake the COM1 transmit thread if it waits for the transmitter to empty.
-    crate::serial::transmitter_interrupt();
 
     crate::arch_impl::x86_64::irq::eoi(InterruptIndex::Serial.as_u8());
 

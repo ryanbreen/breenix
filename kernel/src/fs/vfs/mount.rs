@@ -169,3 +169,11 @@ pub fn list_mounts() -> Vec<(usize, String, &'static str, MountFlags)> {
         .map(|m| (m.mount_id, m.mount_path.clone(), m.fs_type, m.flags))
         .collect()
 }
+
+/// Final shutdown fence, also visible through /proc/mounts and statvfs.
+pub fn remount_read_only(id: usize) -> Result<(), &'static str> {
+    let mut table = MOUNT_TABLE.lock();
+    let mount = table.iter_mut().find(|m| m.mount_id == id).ok_or("Mount disappeared")?;
+    mount.flags.read_only = true;
+    Ok(())
+}

@@ -1,5 +1,10 @@
 # Breenix OS Project Roadmap
 
+The server effort's clean reboot and power-off milestone is tracked in
+[PR #2321](https://github.com/ryanbreen/breenix/pull/2321), following
+[the server plan](../metal/server-plan.md). The PR records hardware acceptance and landing status.
+The panic reset fault currently exercises early boot, before SMP and storage start.
+
 This is the master project roadmap for Breenix OS: current development status,
 completed phases, in-progress work, and planned work. Update after each PR
 merge and when starting new work.
@@ -10,6 +15,11 @@ short pointer to what's current. Live turn-by-turn ARM64/Parallels work
 log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
+
+The server `resting-state` milestone is in progress in [#2439](https://github.com/ryanbreen/breenix/issues/2439)
+and [PR #2437](https://github.com/ryanbreen/breenix/pull/2437). Its six automated S20 cases include
+clean test preemption, idle return, one-shot selection, reboot and watchdog recovery,
+and one strict authenticated SSH check on the returned install (operator ruling S25). Head `70baf203` passed 6/6 hardware cases; review fixes require scoped acceptance before landing.
 
 BreenGL's B5 catch-up acceptance is complete in PR #2357 for #2348:
 geometry queries, settled boot accounting, Parallels vertex reuse and completed

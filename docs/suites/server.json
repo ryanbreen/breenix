@@ -177,7 +177,32 @@
     {
       "id": "reboot",
       "title": "Reboot and power-off after sync and a read-only remount; a panic reboots",
-      "cases": []
+      "cases": [
+        {
+          "id": "reboot-refused",
+          "title": "An unprivileged reboot is refused without ending the boot"
+        },
+        {
+          "id": "poweroff-refused",
+          "title": "An unprivileged poweroff is refused without ending the boot"
+        },
+        {
+          "id": "refusal-recovery",
+          "title": "A refused kernel shutdown resumes SSH and service control"
+        },
+        {
+          "id": "reboot",
+          "title": "sudo reboot stops dependents first, preserves writes, resets through ACPI and boots clean"
+        },
+        {
+          "id": "poweroff",
+          "title": "sudo poweroff stops dependents first, preserves writes and ends the boot normally with clean filesystems"
+        },
+        {
+          "id": "panic-reset",
+          "title": "A fault-test kernel prints its panic and resets without a host reset"
+        }
+      ]
     },
     {
       "id": "watchdog",
@@ -196,7 +221,32 @@
     {
       "id": "resting-state",
       "title": "Test boots preempt the persistent install and the machine returns to it",
-      "cases": []
+      "cases": [
+        {
+          "id": "clean-preempt",
+          "title": "A queued test preempts the persistent session only after a clean shutdown"
+        },
+        {
+          "id": "idle-return",
+          "title": "An empty test queue returns to the current persistent install without a caller boot"
+        },
+        {
+          "id": "one-shot",
+          "title": "A one-shot previous entry leaves current as the next persistent default"
+        },
+        {
+          "id": "reboot-return",
+          "title": "An authenticated reboot returns unaided to the current persistent install"
+        },
+        {
+          "id": "watchdog-return",
+          "title": "A watchdog hang returns unaided to current persistent SSH within 600 seconds"
+        },
+        {
+          "id": "returned-ssh",
+          "title": "The returned current persistent install answers one strict authenticated SSH check"
+        }
+      ]
     },
     {
       "id": "remote-upgrade",

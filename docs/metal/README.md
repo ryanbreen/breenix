@@ -1073,6 +1073,51 @@ blogd checkpoints its byte offset and partial line under `/run/breenix`, keyed b
 the boot ID, and finishes a batch before honouring SIGTERM so service restarts
 resume the same stream. The existing `/proc/kmsg` text interface is retained.
 
+### Orderly reboot and power-off
+
+`sudo /sbin/reboot` and `sudo /sbin/poweroff` ask init over its service control
+socket; SO_PEERCRED restricts shutdown requests to root. The operator uses the
+ordinary sudo password policy. New service starts and reloads are refused once
+shutdown starts. init stops dependents before providers, keeps blogd to the end,
+uses each service's TERM-to-KILL timeout, terminates remaining sessions and jobs,
+reaps them, and drains service output before entering the kernel's reboot call.
+A failed drain or filesystem barrier refuses the transition and init resumes the
+services that shutdown interrupted, restoring login and SSH access. A mount
+already fenced read-only remains read-only for repair.
+
+The kernel writes back shared mappings and deferred inode work, flushes the home
+and root devices, persists and reads back their clean superblocks, then fences
+writes with a read-only remount. Writable mounts first persist a dirty superblock;
+`/proc/breenix/filesystems` reads that state directly from the devices. The next
+boot reports the state it read before marking each writable mount dirty again.
+
+The lab authenticates the final receipt with a host-generated capability in
+`/etc/breenix/power-token` (0400 root). The installer refreshes it from the private
+staging file; it is not a factory default or a site value in the repository.
+Each init creates a fresh random 256-bit boot ID. The shutdown receipt carries
+SHA-256 of the fixed-length protected seed and boot ID, keeping the seed private
+([shutdown implementation](../../kernel/src/syscall/reboot.rs)). The driver derives the same per-boot nonce and rejects receipts from
+earlier boots. The nonce is emitted only after the logger and sessions stop.
+
+The x86 reset uses the validated FADT RESET_REG and RESET_VALUE (ACPI 6.5 section
+4.8.3.6). Power-off follows the server plan: the halted kernel emits its clean
+shutdown receipt and the leased lab driver powers it off; ACPI S5 AML evaluation
+is not implemented. A requested reset keeps the persistent session and lease through firmware and
+the return to SSH on the selected slot; the case requires clean state readback
+from that autonomous return. Power-off readback uses a new leased boot. A panic keeps its failure capture and uses the
+prepared reset register without acquiring filesystem locks; it does not claim a
+clean shutdown. `--inject panic-reboot` builds the dedicated fault feature and
+records the panic and its autonomous reset, retaining a failed boot verdict.
+
+The reboot category at `f5891f6b` passed 6 of 6 cases, with matching kernel and
+tools identities, in the record ending at `20261024T094505Z-metal`. Its requested
+reboot returned to SSH within the same session with both prior superblocks clean;
+the power-off readback, refusal recovery and panic reset also passed. This record
+precedes the IRQ4 receive repair; acceptance of the later PR head is recorded in
+PR #2321. Raw captures and host-category records remain in the private boot store.
+
+The host-driven [reboot category](../suites/README.md#server-host-driven-persistent-categories)
+checks both orderly transitions and the separate panic fault boot.
 ### Synchronized time and UTC RTC
 
 The time service uses the private site's `SNTP_SERVERS` field (up to eight
@@ -1129,6 +1174,25 @@ session already holds the lease when setup runs.
 Each persistent boot is recorded and scored like a default boot, with boot shape and mode `persistent`: the boot
 manager's milestone, the kernel's storage milestone for the system and home partitions, `fb-console`, `xhci`,
 `usb-keyboard` and the login prompt. These stages are automated; normal operator usage adds no stages or results.
+
+The lab's resting-state policy starts an ordinary current-slot persistent boot when
+the live FIFO is empty. The machine service uses the existing boot driver and
+lease, with no separate power path. Queued image boots request shutdown from
+the boot host over strict authenticated SSH, using the site's operator key and
+password with `sudo /sbin/poweroff`. The private key stays on the boot host;
+the pin comes from the install verification's protected-console key record.
+The queued boot waits for the driver's authenticated clean shutdown receipt and
+lease release. Verification and `--run` batches finish before another boot takes
+their lease. A previous-slot choice is consumed once the manager starts it, so a
+later reboot in that same lease chooses current without changing the slots.
+
+The machine service must load a changed policy while no boot holds the lease.
+Deploy with `--restart` only at that idle point. Restore main's tools before
+releasing the shared branch-tools lock. Replacing the policy source disables
+its loaded revision's idle admission until an idle service restart loads the
+replacement; a running boot keeps its driver and lease.
+The [resting-state category](../suites/README.md#persistent-resting-state-s20-amended-by-s25)
+checks the machine events and one SSH login on the returned install (S25).
 
 ### Measured on the R240
 

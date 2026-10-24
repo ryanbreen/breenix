@@ -16,8 +16,7 @@
 //! - the display's diagnostic pixel read-back, in `syscall/graphics.rs`, which
 //!   also requires the caller to own the display.
 //!
-//! Breenix has no sethostname and no reboot call yet; each joins this list
-//! when it lands.
+//! sethostname joins this list when it lands.
 
 use crate::fs::permissions::Credentials;
 use crate::syscall::errno::{EACCES, EPERM};
@@ -25,6 +24,8 @@ use crate::syscall::errno::{EACCES, EPERM};
 /// An operation reserved to root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operation {
+    /// Final system reset or power-off, coordinated by PID 1.
+    Reboot,
     /// chroot.
     Chroot,
     /// Raising a hard resource limit (setrlimit, prlimit).
