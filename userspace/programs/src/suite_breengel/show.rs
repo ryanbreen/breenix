@@ -126,7 +126,11 @@ fn panel_boot_ribbon() -> CaseResult {
         let reached=crate::stage_serial::reached(&serial,EXPECTED);
         ensure(observed.iter().zip(&reached).all(|((lit,_),want)|(*lit=="1")==*want),"23.7","kernel reached bits disagree with independently parsed serial producer lines")?;
         ensure(!reached.is_empty() && reached.iter().any(|v|*v),"23.7","no actual producer stages were observed")?;
+        // The case entered with custody, so refresh the retained terminal before freezing
+        // its baseline; it may have received suite records while the stage was shown.
+        ensure(give_back()>=0,"23.7","give back for kernel baseline failed")?;
         let (baseline,_) = screen()?;
+        ensure(take_over()>=0,"23.7","take over after kernel baseline failed")?;
         if faulty {libbreenix::test_control::arm(15,0,0)?;}
         ensure(give_back()>=0,"23.7","give back for kernel ribbon failed")?;
         let result=screen();let took=take_over();ensure(took>=0,"23.7","retake after ribbon failed")?;
