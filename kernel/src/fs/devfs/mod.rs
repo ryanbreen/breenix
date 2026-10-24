@@ -337,7 +337,13 @@ pub fn list_devices() -> Vec<String> {
     let mut names: Vec<String> = devfs
         .devices
         .iter()
-        .map(|d| String::from(if d.device_type == DeviceType::InputEvents { "input" } else { d.device_type.name() }))
+        .map(|d| {
+            String::from(if d.device_type == DeviceType::InputEvents {
+                "input"
+            } else {
+                d.device_type.name()
+            })
+        })
         .collect();
     names.push(String::from("shm"));
     names.push(String::from("mqueue"));
