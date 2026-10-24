@@ -357,7 +357,11 @@ impl Drop for Drawn {
         // SAFETY: the surface is taken once, here, and the field is not used again.
         let surface = unsafe { core::mem::ManuallyDrop::take(&mut self.surface) }.into_inner();
         if self.mem.read.get() {
-            crate::keep_judged_surface(surface);
+            // A later-dropped control must not replace the explicitly judged target.
+            let judged = !EXPLICIT_FRAME.load(Relaxed) || LAST_JUDGED.lock().unwrap_or_else(|e| e.into_inner())
+                .as_ref().is_some_and(|(w, h, pixels, _)| (*w, *h) == (self.mem.width, self.mem.height)
+                    && *pixels == canonical_pixels(&self.mem));
+            if judged { crate::keep_judged_surface(surface); }
         }
     }
 }

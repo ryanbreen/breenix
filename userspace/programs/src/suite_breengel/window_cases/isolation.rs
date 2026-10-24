@@ -9,12 +9,12 @@ pub(crate) const ISOLATION: &[Case] = &[
     pictured!("other-position", "A non-compositor setting a window's position fails with EPERM", isolation_other_position),
     pictured!("other-inject", "A non-compositor writing events into a window fails with EPERM", isolation_other_inject),
     pictured!("other-read", "An unrelated non-root process capturing another's window fails with EPERM, and root succeeds", isolation_other_read),
-    pictured!("other-map", "Foreign GPU target handles are refused before submission or readback", isolation_other_map),
+    pictured!("other-map", "Foreign GPU target handles are refused before submission or readback", isolation_other_map).fullscreen("verify bound display custody delegation without transferring source aliases"),
     pictured!("other-resize", "An unrelated process resizing another's window fails with EPERM", isolation_other_resize),
     pictured!("other-destroy", "An unrelated process destroying another's window fails with EPERM", isolation_other_destroy),
     pictured!("other-tree", "An unrelated non-root process mapping another's tree page fails with EPERM", isolation_other_tree),
-    pictured!("texture-map", "An unrelated process cannot sample the compositor scanout through GPU resource handles", isolation_texture_map),
-    pictured!("composite-denied", "A non-compositor compositing fails with EPERM", isolation_composite_denied),
+    pictured!("texture-map", "An unrelated process cannot sample the compositor scanout through GPU resource handles", isolation_texture_map).fullscreen("unrelated processes must not sample a private bound scanout"),
+    pictured!("composite-denied", "A non-compositor compositing fails with EPERM", isolation_composite_denied).fullscreen("bound-scanout composition requires display ownership and compositor authority"),
     pictured!("claim-unprivileged", "A uid 1000 process claiming the compositor fails with EPERM, and root's claim succeeds", isolation_claim_unprivileged),
     pictured!("claim-twice", "A second compositor claim fails with EBUSY while the first lives", isolation_claim_twice),
     pictured!("claim-after-death", "The compositor role can be claimed again once its holder dies, with a higher epoch", isolation_claim_after_death),
@@ -354,6 +354,8 @@ interface()?;
     ensure(handle!=0 && ![0,255].contains(&(handle>>56)),"17.4","gpu-window: fixture did not expose an actual GPU resource handle")?;
     let (ret,modes)=libbreenix::gpu::modes();
     ensure(ret==0 && modes.binding_known==1 && modes.scanout_resource==device && device!=0,"17.4","gpu-display: compositor has no known GPU scanout binding")?;
+    let observed=super::composition::gpu_snapshot(&mut k)?;
+    same(&observed.pixels,observed.width as u32,observed.height as u32,true,"private bound scanout","23.9",|_,_|[51,34,17,255])?;
     let sample=|who:&str|->Result<(),String>{
         let mut c=bgl::Context::new().map_err(|r|format!("context {}",outcome(r)))?;
         let target=libbreenix::gpu::target_create(0,16,16).map_err(|r|format!("target {}",outcome(r)))?;
@@ -388,6 +390,10 @@ fn isolation_composite_denied() -> CaseResult {
     want_ok(unsafe { raw::syscall0(431) as i64 },"18","gpu-display: display owner fixture")?;
     let mut snapshot=[0u64;12];
     want_errno(super::handoff::wire(29,&mut snapshot),EPERM,"17.4","gpu-window: display owner without claim snapshot")?;
+    super::composition::paint([0x43,0x54,0x65,255]).cite("23.9")?;
+    let (pixels,_) = super::composition::screen()?;
+    let (width,height) = super::composition::physical_size()?;
+    same(&pixels,width as u32,height as u32,true,"bound composition authority fixture","23.9",|_,_|[0x43,0x54,0x65,255])?;
     let _w = shown(16, 16, 12, b"composite-denied")?;
     let r = composite();
     ensure(r == -(EPERM as i64), "17.4", format!("COMPOSITE by root that is not the compositor {}; the contract gives EPERM", outcome(r)))?;
@@ -715,7 +721,7 @@ fn isolation_efault_commit() -> CaseResult {
 fn isolation_efault_readback() -> CaseResult {
     interface()?;
     let mut record = vec![0u8; 1024];
-    let (width,height)=super::composition::screen_size()?;
+    let (width,height)=super::composition::physical_size()?;
     let screen = (width*height*4) as u64;
     let mut rb = super::handoff::Readback::ZERO;
     rb.dst = unmapped();

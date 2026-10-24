@@ -60,7 +60,7 @@ pub struct DiffRef {
 pub enum SpotRef {
     None,
     Actual(PictureRef),
-    Picture { expected: PictureRef, actual: PictureRef, difference: DiffRef },
+    Picture { expected: PictureRef, actual: PictureRef, panel: PictureRef, difference: DiffRef },
 }
 
 /// One stage frame for the painter: the oracle's run (text, stamps, numbers and spotlight
@@ -149,6 +149,7 @@ struct Show {
     started_ms: u64,
     finale: Option<u64>,
     fps: u32,
+    announcement: Option<String>,
 
     /// Each measured case window: the runner's kernel present count at its start and end,
     /// and how many of those presents the case's live checks asked the runner for.
@@ -272,8 +273,8 @@ const ATLAS: (u32, u32) = (512, 384);
 fn cell(tile: usize) -> (usize, usize) {
     ((tile % 32) * 16, (tile / 32) * 12)
 }
-/// The actual-only pane and the three picture panes, in logical pixels (section 23.4).
-const WIDE: (usize, usize) = (400, 250);
+/// The case panel in physical pixels at scale 2, and comparison panes in logical pixels (section 23.4).
+const WIDE: (usize, usize) = (800, 500);
 const SQUARE: usize = 128;
 /// The hash of pictures sampled before the case's judged frame was collected.
 const PENDING: [u8; 32] = [0xFF; 32];
@@ -670,7 +671,7 @@ impl Gpu {
 
     /// Sample the `w` x `h` frame at `at` in `source`, a resource of this process, into tile
     /// `tile`'s atlas cell (the integer box filter, section 23.3) and into new panes (the
-    /// nearest-scaled 400 x 250 and 128 x 128 samples, section 23.4), recorded as the
+    /// native 800 x 500 panel and nearest-scaled 128 x 128 samples, section 23.4), recorded as the
     /// pictures of the frame with SHA-256 `hash`. The box filter goes in a submission of its
     /// own: a whole 2560 x 1600 frame takes most of one submission's work cap.
     fn sample(&mut self, source: u64, at: (usize, usize), w: usize, h: usize, tile: usize, hash: [u8; 32]) -> Result<(), String> {
@@ -699,15 +700,28 @@ impl Gpu {
             }
         };
         let panes = Panes { hash, wide, square, artifacts: None, sampled: true, frame: None };
-        let mut stream = Vec::new();
-        encode::begin(&mut stream, panes.wide);
-        sampled(&mut stream, pipeline::NEAREST_SCALED, source, [0, 0, WIDE.0, WIDE.1], [at.0, at.1, w, h]);
-        encode::begin(&mut stream, panes.square);
-        sampled(&mut stream, pipeline::NEAREST_SCALED, source, [0, 0, SQUARE, SQUARE], [at.0, at.1, w, h]);
-        if let Err(e) = self.run(&stream, "stage panes") {
-            panes.destroy();
-            return Err(e);
-        }
+        let result=(|| {
+            if (w,h)==WIDE {
+                let mut stream=Vec::new();
+                encode::begin(&mut stream,panes.wide);
+                encode::copy(&mut stream,source,[at.0 as u32,at.1 as u32,w as u32,h as u32],panes.wide,[0,0]);
+                self.run(&stream,"stage native panel")?;
+            } else {
+                let band=(1usize<<17)/WIDE.0;
+                for y in (0..WIDE.1).step_by(band) {
+                    let mut stream=Vec::new();
+                    encode::begin(&mut stream,panes.wide);
+                    stream.extend([gpu::abi::stream::cmd::SCISSOR,6,0,y as u32,WIDE.0 as u32,(y+band).min(WIDE.1) as u32]);
+                    sampled(&mut stream,pipeline::NEAREST_SCALED,source,[0,0,WIDE.0,WIDE.1],[at.0,at.1,w,h]);
+                    self.run(&stream,"stage case panel")?;
+                }
+            }
+            let mut stream=Vec::new();
+            encode::begin(&mut stream,panes.square);
+            sampled(&mut stream,pipeline::NEAREST_SCALED,source,[0,0,SQUARE,SQUARE],[at.0,at.1,w,h]);
+            self.run(&stream,"stage square pane")
+        })();
+        if let Err(e)=result {panes.destroy();return Err(e);}
         self.set_cell(tile, Some(Cell { hash, pixels: Vec::new(), width: 0, height: 0 }));
         self.keep(panes);
         Ok(())
@@ -744,17 +758,22 @@ impl Gpu {
         const EBUSY: i64 = -(abi::errno::EBUSY as i64);
         const EINVAL: i64 = -(abi::errno::EINVAL as i64);
         win::set_geometry(id, 0, 0, 0, abi::geometry_flags::VISIBLE).map_err(|e| std::format!("judged window geometry: {e:?}"))?;
+        let target = gpu::target_create(0, self.width, self.height).map_err(|e| std::format!("sample target: {e}"))?;
+        struct Target(u64); impl Drop for Target { fn drop(&mut self) { let _ = gpu::resource_destroy(self.0); } }
+        let _target = Target(target);
         let deadline = time::now_monotonic().map_or(0, |t| t.as_nanos()) + 2_000_000_000;
         let early = || time::now_monotonic().map_or(0, |t| t.as_nanos()) < deadline;
         loop {
             let mut q = abi::SceneSnapshot::ZERO;
             q.context = self.context;
+            q.width = self.width; q.height = self.height; q.flags = 2;
             let mut r = raw(op::COMPOSITE_SNAPSHOT, &mut q);
             let mut windows = std::vec![abi::SceneWindow::ZERO; (q.window_count as usize).max(1)];
             let mut damage = std::vec![abi::Rect::ZERO; q.damage_count as usize];
             let mut s = abi::SceneSnapshot::ZERO;
             if r == 0 {
                 s.context = self.context;
+                s.width = self.width; s.height = self.height; s.flags = 2;
                 s.windows = windows.as_mut_ptr() as u64;
                 s.window_capacity = windows.len() as u32;
                 s.damage = damage.as_mut_ptr() as u64;
@@ -782,22 +801,20 @@ impl Gpu {
                 continue;
             }
             let (width, height) = (self.width, self.height);
-            let other = self.shown ^ 1;
             let mut words = Vec::new();
             encode::begin(&mut words, self.canvas);
             encode::copy(&mut words, self.scanout[self.shown], [0, 0, width, height], self.canvas, [0, 0]);
             encode::copy(&mut words, sample, [0, 0, w as u32, h as u32], self.canvas, [0, 0]);
-            encode::begin(&mut words, self.scanout[other]);
-            encode::copy(&mut words, self.canvas, [0, 0, width, height], self.scanout[other], [0, 0]);
+            encode::begin(&mut words, target);
+            encode::copy(&mut words, self.canvas, [0, 0, width, height], target, [0, 0]);
             let mut c = abi::Composite::ZERO;
             c.snapshot = s.snapshot;
-            c.target = self.scanout[other];
+            c.target = target;
             c.stream = words.as_ptr() as u64;
             c.length = (words.len() * 4) as u64;
             c.scene_target = self.canvas;
             match raw(op::COMPOSITE, &mut c) {
                 0 => {
-                    self.shown = other;
                     return Ok(());
                 }
                 EAGAIN if early() => {
@@ -1283,6 +1300,7 @@ impl Show {
                         spot = SpotRef::Picture {
                             expected: pane(artifacts.map_or(panes.square, |a| a.0), SQUARE, SQUARE, None),
                             actual: pane(panes.square, SQUARE, SQUARE, cover(SQUARE, SQUARE)),
+                            panel: pane(panes.wide, WIDE.0, WIDE.1, cover(WIDE.0, WIDE.1)),
                             difference: DiffRef {
                                 artifact: artifacts.map(|a| pane(a.1, SQUARE, SQUARE, None)),
                                 heat: heat.into_iter().collect(),
@@ -1349,6 +1367,7 @@ impl Show {
                 slowest_ms: slow.key,
             }),
             boundary: self.observation,
+            announcement: self.announcement.as_deref(),
         };
         match fb.as_deref_mut() {
             Some(fb) => render_at_ui_time(fb, &mut run, self.started_ms).map_err(|e| std::format!("stage render: {e:?}"))?,
@@ -1493,6 +1512,7 @@ pub(super) fn init(suite: &Suite) -> u64 {
         started_ms: clock::now_ns() / 1_000_000,
         finale: None,
         fps: 0,
+        announcement: None,
         windows: Vec::new(),
         measured: None,
         requested: 0,
@@ -1671,8 +1691,9 @@ const LIVE_CHECKS: [&str; 4] = ["panel/judged-frame-shown", "panel/serial-agreem
 
 /// Whether case `name`'s process takes the display over when it starts, nesting above the
 /// stage.
-pub(super) fn case_takes_display(name: &str) -> bool {
-    !STAGE_CUSTODY.contains(&name) && !LIVE_CHECKS.contains(&name)
+pub(super) fn case_takes_display(suite: &str, name: &str, reason: Option<&str>) -> bool {
+    if suite == "breengel" { reason.is_some() }
+    else { !STAGE_CUSTODY.contains(&name) && !LIVE_CHECKS.contains(&name) }
 }
 
 /// Before a case runs (ruling B29): the stage keeps the display, and the case's own
@@ -1680,6 +1701,43 @@ pub(super) fn case_takes_display(name: &str) -> bool {
 /// restored when it ends, without the console showing between cases. The cases above the
 /// kernel's screen start there: the stage gives the display back for them. The panel
 /// cursor follows the pointer while a case runs with the display left to the stage.
+/// Window-manager cases keep their desktop ownership boundary; only the announcement
+/// stage runs before them (B50), with its resources retired before the case is forked.
+pub(super) fn announce_desktop(suite: &Suite, states: &[Vec<State>], name: &str) -> Result<(), String> {
+    init(suite);
+    {
+        let mut show=SHOW.lock().unwrap();
+        let s=show.as_mut().ok_or("stage missing")?;
+        for (i,(entry,state)) in s.entries.iter_mut().zip(states.iter().flatten()).enumerate() {
+            let (stamp,key)=match state {
+                State::Pending => (Stamp::Pending,0),
+                State::Running => {s.current=i;(Stamp::Running,0)},
+                State::Done(Outcome::Pass{ms}) => (Stamp::Pass,*ms),
+                State::Done(Outcome::Fail{ms,..}) => (Stamp::Fail,*ms),
+                State::Done(Outcome::Skip{..}) => (Stamp::NotReached,0),
+            };
+            entry.stamp=stamp;entry.key=key;
+        }
+        s.selected=s.current;
+    }
+    let shown = announce(name, "the window manager owns the full display");
+    let released = release();
+    let retired = retire();
+    shown.and(released).and(retired)
+}
+
+pub(super) fn announce(name: &str, reason: &str) -> Result<(), String> {
+    {
+        let mut show = SHOW.lock().unwrap();
+        let s = show.as_mut().ok_or("stage missing")?;
+        s.announcement = Some(std::format!("Full screen next: {name} — {reason}"));
+        s.draw(0)?;
+    }
+    time::sleep_ms(1_000).map_err(|e| e.to_string())?;
+    if let Some(s) = SHOW.lock().unwrap().as_mut() { s.announcement = None; }
+    Ok(())
+}
+
 pub(super) fn release_for(name: &str) -> Result<(), String> {
     FOLLOW.store(STAGE_CUSTODY.contains(&name), core::sync::atomic::Ordering::Relaxed);
     if ABOVE_KERNEL_SCREEN.contains(&name) {

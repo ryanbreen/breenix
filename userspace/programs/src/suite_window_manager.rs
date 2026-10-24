@@ -9,6 +9,8 @@ mod input;
 mod measure;
 #[path = "wm_suite/protocol.rs"]
 mod protocol;
+#[path = "suite_breengel/stage_painter.rs"]
+mod stage_painter;
 use breenix_suite::suite::{case, category, suite, Suite};
 
 static SUITE: Suite = suite("window-manager", "Window manager", &[
@@ -124,5 +126,6 @@ static SUITE: Suite = suite("window-manager", "Window manager", &[
 ]).defer_display();
 
 fn main() {
+    breenix_suite::suite::set_painter(Box::new(stage_painter::StagePainter::new()));
     SUITE.run()
 }

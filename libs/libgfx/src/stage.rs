@@ -78,6 +78,7 @@ pub enum Spotlight<'a> {
     Picture {
         expected: Picture<'a>,
         actual: Picture<'a>,
+        panel: Picture<'a>,
         difference: Difference<'a>,
         differing: usize,
         bound: usize,
@@ -112,6 +113,7 @@ pub struct Finale<'a> {
 }
 
 pub struct Run<'a> {
+    pub announcement: Option<&'a str>,
     pub suite: &'a str,
     pub target: &'a str,
     pub case_number: usize,
@@ -393,6 +395,27 @@ impl Canvas<'_> {
         self.fb.mark(whole);
         if let Some((r, c)) = p.cover {
             self.fill(x + r[0] * scale, y + r[1] * scale, r[2] * scale, r[3] * scale, c);
+        }
+    }
+    /// Fixed logical panel, sampled at the destination's physical resolution (B50).
+    fn case_panel(&mut self, p: &Picture<'_>) {
+        let (x,y,w,h) = (848*self.n,400*self.n,400*self.n,250*self.n);
+        let mut params = [0u32;16];
+        for (slot,v) in params.iter_mut().zip([x,y,w,h,p.x,p.y,p.width,p.height]) { *slot=v as u32; }
+        if (p.width,p.height)==(w,h) {
+            self.fb.submit(|c|c.copy(p.source.resource(),&[[x as i32,y as i32,(x+w) as i32,(y+h) as i32,p.x as i32,p.y as i32]]));
+        } else {
+            let band=((1usize<<17)/w).max(1);
+            for row in (0..h).step_by(band) {
+                let rect=[x as i32,(y+row) as i32,(x+w) as i32,(y+(row+band).min(h)) as i32];
+                self.fb.submit(|c|c.draw(pipeline::NEAREST_SCALED,gpu_abi_opaque(p.source),p.source.resource(),0,0,&[Instance{rect,params}]));
+            }
+        }
+        self.fb.mark(Box64::wide(x as i64,y as i64,w as i64,h as i64));
+        if let Some((r,c))=p.cover {
+            let (left,top)=(x+r[0]*w/p.width,y+r[1]*h/p.height);
+            let (right,bottom)=(x+(r[0]+r[2])*w/p.width,y+(r[1]+r[3])*h/p.height);
+            crate::shapes::fill_rect(self.fb,left as i32,top as i32,(right-left) as i32,(bottom-top) as i32,c);
         }
     }
     /// Several small pictures at once, each `(picture, x, y)` drawn as `picture` draws it:
@@ -680,6 +703,9 @@ fn paint(cv: &mut Canvas<'_>, run: &Run<'_>, wall: &Surface, trails: &mut Vec<Tr
     cv.text(counts(run).bytes(), 24, 68, 1256, 2, Color::WHITE);
     blit::blit(cv.fb, wall, (WALL.0 * cv.n) as i32, (WALL.1 * cv.n) as i32);
     draw_spotlight(cv, run, trails);
+    if let Some(text) = run.announcement {
+        wrapped(cv, text.as_bytes(), 24, 720, 1232, 2);
+    }
     if let Some(finale) = run.finale {
         cv.fill(48, 240, 720, 240, HEADER);
         cv.text(b"RUN COMPLETE", 72, 264, 696, 3, Color::WHITE);
@@ -770,7 +796,7 @@ fn draw_spotlight(cv: &mut Canvas<'_>, run: &Run<'_>, trails: &mut Vec<Trail>) {
         Stamp::NotReached => b"NOT REACHED",
         _ => b"RUNNING",
     };
-    cv.text(verdict, 848, 640, 400, 3, stamp(selected.stamp, run.ui_time_ms));
+    cv.text(verdict, 848, 672, 400, 3, stamp(selected.stamp, run.ui_time_ms));
     match run.spotlight {
         Spotlight::None => {
             let words: &[u8] = if selected.stamp == Stamp::NotReached {
@@ -812,11 +838,12 @@ fn draw_spotlight(cv: &mut Canvas<'_>, run: &Run<'_>, trails: &mut Vec<Trail>) {
         }
         Spotlight::Actual(p) => {
             cv.text(b"actual (reference not supplied)", 840, 152, 424, 1, Color::WHITE);
-            cv.picture(&p, 848, 168, 1);
+            cv.case_panel(&p);
         }
         Spotlight::Picture {
             expected,
             actual,
+            panel,
             difference,
             differing,
             bound,
@@ -826,6 +853,7 @@ fn draw_spotlight(cv: &mut Canvas<'_>, run: &Run<'_>, trails: &mut Vec<Trail>) {
             }
             cv.picture(&expected, 840, 168, 1);
             cv.picture(&actual, 984, 168, 1);
+            cv.case_panel(&panel);
             match &difference.artifact {
                 Some(p) => cv.picture(p, 1128, 168, 1),
                 None => cv.fill(1128, 168, 128, 128, Color::BLACK),
@@ -862,11 +890,11 @@ fn draw_spotlight(cv: &mut Canvas<'_>, run: &Run<'_>, trails: &mut Vec<Trail>) {
         } else {
             b"INPUT / pointer trail and handler result"
         };
-        cv.text(heading, 848, 432, 400, 1, Color::WHITE);
-        wrapped(cv, hit.as_bytes(), 848, 448, 400, 1);
-        trails.push((points.to_vec(), 864, 516, 352, 80));
+        cv.text(heading, 848, 336, 400, 1, Color::WHITE);
+        wrapped(cv, hit.as_bytes(), 848, 352, 400, 1);
+        trails.push((points.to_vec(), 864, 376, 352, 16));
         if points.is_empty() {
-            cv.text(b"Events (no pointer)", 848, 536, 400, 2, Color::WHITE);
+            cv.text(b"Events (no pointer)", 848, 376, 400, 1, Color::WHITE);
         }
     }
 }

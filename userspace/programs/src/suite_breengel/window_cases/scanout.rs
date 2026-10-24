@@ -3,23 +3,23 @@
 use crate::*;
 
 pub(crate) const SCANOUT: &[Case] = &[
-    pictured!("mode-set", "GPU MODES and full readback agree on 2560x1600 at scale 2", scanout_mode_set),
-    pictured!("device-path", "Readback uses this backend's observation path from the contract and names it", scanout_device_path),
-    pictured!("changing-scene", "Three successive known scenes each read back equal to their formulas", scanout_changing_scene),
-    pictured!("full-destination", "Readback covers the whole destination, and a change in its last row is seen", scanout_full_destination),
-    pictured!("binding", "Every GPU present record names its actual completed scanout binding and composite", scanout_binding),
-    pictured!("completion", "The record carries answered completion for every damaged rectangle of its composite serial", scanout_completion),
-    pictured!("atomic-record", "The pixels and the record always belong to the same composite serial under continuous commits", scanout_atomic_record),
-    pictured!("window-commits", "The record lists the commit id of each window composed", scanout_window_commits),
-    pictured!("format-canonical", "RGB and BGR destinations read back as the same canonical BGRX pixels", scanout_format_canonical),
-    pictured!("root-only", "A non-root, non-compositor process cannot read back the scanout", scanout_root_only),
-    pictured!("fault-skipped-transfer", "GPU point 19 yields EIO unwritten without partial output and the next composite recovers", scanout_fault_skipped_transfer),
-    pictured!("fault-wrong-resource", "GPU point 26 exposes the wrong actual scanout binding and the next composite recovers", scanout_fault_wrong_resource),
-    pictured!("fault-stale-fence", "GPU point 20 yields EIO fence-mismatch without partial output and the next composite recovers", scanout_fault_stale_fence),
-    pictured!("fault-outside-damage", "Corruption written outside any damage is found by comparing the full destination", scanout_fault_outside_damage),
-    pictured!("boundary-stated", "The record states what lies outside the guest's view for this backend", scanout_boundary_stated),
-    pictured!("present-flip", "Every flip records its actual target and completed present fence", scanout_present_flip),
-    pictured!("hidpi-mode", "The complete 2560x1600 scanout is read back and changes in its final row are observed", scanout_hidpi_mode),
+    pictured!("mode-set", "GPU MODES and full readback agree on 2560x1600 at scale 2", scanout_mode_set).fullscreen("observe the complete bound scanout and its presentation record"),
+    pictured!("device-path", "Readback uses this backend's observation path from the contract and names it", scanout_device_path).fullscreen("observe the complete bound scanout and its presentation record"),
+    pictured!("changing-scene", "Three successive known scenes each read back equal to their formulas", scanout_changing_scene).fullscreen("observe the complete bound scanout and its presentation record"),
+    pictured!("full-destination", "Readback covers the whole destination, and a change in its last row is seen", scanout_full_destination).fullscreen("observe the complete bound scanout and its presentation record"),
+    pictured!("binding", "Every GPU present record names its actual completed scanout binding and composite", scanout_binding).fullscreen("observe the complete bound scanout and its presentation record"),
+    pictured!("completion", "The record carries answered completion for every damaged rectangle of its composite serial", scanout_completion).fullscreen("observe the complete bound scanout and its presentation record"),
+    pictured!("atomic-record", "The pixels and the record always belong to the same composite serial under continuous commits", scanout_atomic_record).fullscreen("observe the complete bound scanout and its presentation record"),
+    pictured!("window-commits", "The record lists the commit id of each window composed", scanout_window_commits).fullscreen("observe the complete bound scanout and its presentation record"),
+    pictured!("format-canonical", "RGB and BGR destinations read back as the same canonical BGRX pixels", scanout_format_canonical).fullscreen("observe the complete bound scanout and its presentation record"),
+    pictured!("root-only", "A non-root, non-compositor process cannot read back the scanout", scanout_root_only).fullscreen("observe the complete bound scanout and its presentation record"),
+    pictured!("fault-skipped-transfer", "GPU point 19 yields EIO unwritten without partial output and the next composite recovers", scanout_fault_skipped_transfer).fullscreen("observe the complete bound scanout and its presentation record"),
+    pictured!("fault-wrong-resource", "GPU point 26 exposes the wrong actual scanout binding and the next composite recovers", scanout_fault_wrong_resource).fullscreen("observe the complete bound scanout and its presentation record"),
+    pictured!("fault-stale-fence", "GPU point 20 yields EIO fence-mismatch without partial output and the next composite recovers", scanout_fault_stale_fence).fullscreen("observe the complete bound scanout and its presentation record"),
+    pictured!("fault-outside-damage", "Corruption written outside any damage is found by comparing the full destination", scanout_fault_outside_damage).fullscreen("observe the complete bound scanout and its presentation record"),
+    pictured!("boundary-stated", "The record states what lies outside the guest's view for this backend", scanout_boundary_stated).fullscreen("observe the complete bound scanout and its presentation record"),
+    pictured!("present-flip", "Every flip records its actual target and completed present fence", scanout_present_flip).fullscreen("observe the complete bound scanout and its presentation record"),
+    pictured!("hidpi-mode", "The complete 2560x1600 scanout is read back and changes in its final row are observed", scanout_hidpi_mode).fullscreen("observe the complete bound scanout and its presentation record"),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -38,6 +38,8 @@ fn one_window(seed: u32) -> Result<(Helper, W, Placed, u64), breenix_suite::suit
     let w = W::new(p.w, p.h, 2)?;
     show(&mut k, &w, &p)?;
     let (serial, _) = compose(&mut k)?;
+    let (pixels, _) = screen()?;
+    screen_is(&pixels, &[p], "full-screen scanout fixture")?;
     Ok((k, w, p, serial))
 }
 
@@ -151,7 +153,8 @@ fn scanout_completion() -> CaseResult {
     wa.frame(7).cite("17.3")?;
     wb.frame(8).cite("17.3")?;
     let (serial, _) = compose(&mut k)?;
-    let (_, rec) = screen()?;
+    let (pixels, rec) = screen()?;
+    screen_is(&pixels, &[Placed { seed: 7, ..a }, Placed { seed: 8, ..b }], "completed damaged scanout")?;
     let (status, render, readback) = match word(&rec,16) {
         4 => (0x1100, 0x207, 0x206), 5 => (1, 1152, 1104),
         other => return at("20.2", format!("gpu-display: B13 native backend missing: {other}")),
@@ -226,14 +229,9 @@ fn scanout_atomic_record() -> CaseResult {
             result = at("20.1", format!("readback serial {} names commit {commit} after a readback named commit {last}", quad(&rec,8)));
             break;
         }
-        // The window is at (600, 400); every one of its pixels must be the named commit's.
-        let differ = (0..64u32).flat_map(|y| (0..64u32).map(move |x| (x, y))).find(|&(x, y)| {
-            let at = ((400 + y) as usize * width + 600 + x as usize) * 4;
-            px[at..at + 3] != pattern(commit as u32, x, y)[..3]
-        });
-        if let Some((x, y)) = differ {
-            result = at("20.1", format!("readback serial {} names commit {commit}, but the window's pixel ({x},{y}) is not commit {commit}'s", quad(&rec,8)));
-            break;
+        let p = Placed::new(600,400,64,64,0,commit as u32);
+        if let Err(error) = screen_is(&px, &[p], "atomic scanout including background") {
+            result = Err(error); break;
         }
         last = commit;
         if !seen.contains(&commit) {
@@ -261,7 +259,9 @@ fn scanout_window_commits() -> CaseResult {
     }
     wins[1].frame(12).cite("17.3")?;
     compose(&mut k)?;
-    let (_, rec) = screen()?;
+    let (pixels, rec) = screen()?;
+    let mut expected_scene = scene; expected_scene[1].seed = 12;
+    screen_is(&pixels, &expected_scene, "scanout window commits")?;
     let observed = entries(&rec);
     for w in wins.iter() {
         let i = listed(w.id()).cite("17.1")?.ok_or("a window is not listed").cite("17.2")?;

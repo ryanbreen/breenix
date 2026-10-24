@@ -64,7 +64,7 @@ fn text_in_box(fb:&FrameBuf,x:usize,y:usize,t:&str,scale:usize,bottom:usize,back
 }
 
 fn run<'a>(tiles:&'a [Tile<'a>],milestones:&'a [Milestone<'a>]) -> Run<'a> {
-    Run { suite:"fixture",target:"qemu",case_number:3,ui_time_ms:250,fps:60,tiles,milestones,selected:1,
+    Run { announcement: None, suite:"fixture",target:"qemu",case_number:3,ui_time_ms:250,fps:60,tiles,milestones,selected:1,
         input:None,spotlight:Spotlight::None,finale:None,boundary:if DISPLAY_SCALE.with(|s|s.get())==2 {stage::Observation{backend:4,flags:3,boundary:4}}else{stage::Observation{backend:1,flags:1,boundary:1}} }
 }
 fn render(fb:&mut FrameBuf,run:&Run<'_>) -> Result<(),String> {
@@ -217,10 +217,10 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
             let points=[stage::InputPoint{x:10,y:20,pressed:false},stage::InputPoint{x:30,y:40,pressed:true}];
             model.input=Some((&points,"button OK: Clicked"));
             render(&mut fb,&model)?;
-            text(&fb,848,432,"INPUT / pointer trail and handler result",1,(18,29,44))?;
-            text(&fb,848,448,"button OK: Clicked",1,(18,29,44))?;
-            rect(&fb,862,514,5,5,(255,255,255))?;rect(&fb,1214,594,5,5,(26,112,77))?;
-            expect_pixel(&fb,1040,556,(64,160,224))?;
+            text(&fb,848,336,"INPUT / pointer trail and handler result",1,(18,29,44))?;
+            text(&fb,848,352,"button OK: Clicked",1,(18,29,44))?;
+            rect(&fb,862,374,5,5,(255,255,255))?;rect(&fb,1214,390,5,5,(26,112,77))?;
+            expect_pixel(&fb,1040,384,(64,160,224))?;
             text(&fb,840,312,"1 pixels differ; bound 0",1,(18,29,44))?;
             model.input=None;
             model.spotlight=Spotlight::Actual(Image{pixels:&actual,width:2,height:2});
@@ -228,7 +228,16 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
             text(&fb,840,152,"actual (reference not supplied)",1,(18,29,44))?;
             for y in 0..250 {for x in 0..400 {
                 let i=((y*2/250)*2+x*2/400)*4;
-                expect_pixel(&fb,848+x,168+y,(actual[i+2],actual[i+1],actual[i]))?;
+                expect_pixel(&fb,848+x,400+y,(actual[i+2],actual[i+1],actual[i]))?;
+            }}
+            let n = fb.width/1280;
+            let (w,h) = (400*n,250*n);
+            let native:Vec<u8> = (0..h).flat_map(|y|(0..w).flat_map(move |x|[x as u8,y as u8,(x^y) as u8,255])).collect();
+            model.spotlight=Spotlight::Actual(Image{pixels:&native,width:w,height:h});
+            render(&mut fb,&model)?;
+            for y in 0..h {for x in 0..w {
+                let got=fb.get_pixel(848*n+x,400*n+y);
+                if (got.r,got.g,got.b)!=((x^y) as u8,y as u8,x as u8) {return Err(format!("B50 native panel pixel {x},{y} was resampled"));}
             }} Ok(())
         }
         "spotlight-timing" => {

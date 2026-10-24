@@ -404,13 +404,20 @@ fn frame_hash(frame: Option<&JudgedFrame>) -> String {
 /// One case: its id (lowercase words joined by '-'), the title the manifest gives it,
 /// and the function that runs it.
 pub struct Case {
+    pub fullscreen_reason: Option<&'static str>,
     pub id: &'static str,
     pub title: &'static str,
     pub run: fn() -> CaseResult,
 }
 
 pub const fn case(id: &'static str, title: &'static str, run: fn() -> CaseResult) -> Case {
-    Case { id, title, run }
+    Case { fullscreen_reason: None, id, title, run }
+}
+
+impl Case {
+    pub const fn fullscreen(self, reason: &'static str) -> Self {
+        Self { fullscreen_reason: Some(reason), ..self }
+    }
 }
 
 /// A category of cases, shown as one group with its own progress bar.
@@ -991,6 +998,12 @@ impl Suite {
                 let limit_ms = NAMED_CASE_ALLOWANCES.iter()
                     .find(|&&(suite, case, _)| suite == self.id && case == name)
                     .map_or(self.case_limit_ms, |&(_, _, limit)| limit);
+                let reason = case.fullscreen_reason.or((self.id == "window-manager").then_some("the window manager owns the full display"));
+                if self.id == "window-manager" {
+                    screen.stage_result(crate::suite_stage::announce_desktop(self, &states, &name));
+                } else if self.gui {
+                    if let Some(reason) = reason { screen.stage_result(crate::suite_stage::announce(&name, reason)); }
+                }
                 let mut outcome = run_case(case, limit_ms, self.id, &name, &mut screen, &mut feed);
                 if let Some(error) = screen.stage_error.take() { outcome = with_note(outcome, &error); }
                 let picture_hash = frame_hash(screen.judged.as_ref());
@@ -1511,7 +1524,10 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
             CASE_DEADLINE_NS.store(deadline, Ordering::Relaxed);
             let _ = CASE_NAME.set(String::from(name));
             keep_record_output(suite, name);
-            let ready = if screen.gui && crate::suite_stage::case_takes_display(name) { graphics::take_over_display() } else { Ok(()) };
+            if suite == "breengel" && case.fullscreen_reason.is_none() {
+                std::env::set_var("BREENIX_CASE_PANEL", "800x500");
+            } else { std::env::remove_var("BREENIX_CASE_PANEL"); }
+            let ready = if screen.gui && crate::suite_stage::case_takes_display(suite, name, case.fullscreen_reason) { graphics::take_over_display() } else { Ok(()) };
             let outcome = match ready.and_then(|()| silence_output()) {
                 Ok(()) => run_inline(case),
                 Err(error) => Outcome::Fail {

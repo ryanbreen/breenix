@@ -265,7 +265,7 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
             }
             Ok(id)
         };
-        let target_id = check(target, true)?;
+        let target_id = check(target, !epoch.offscreen)?;
         let scene_id = check(scene, false)?;
         if scene_id == target_id {
             return Err(EINVAL);
@@ -377,7 +377,9 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
         }
     });
     a.phase = 2;
-    let (fence, status, answer) = display::present_as(tgid, context, target, &|_| Ok(()))?;
+    let (fence, status, answer) = if epoch.offscreen {
+        (0, fence_status::OK, 0)
+    } else { display::present_as(tgid, context, target, &|_| Ok(()))? };
     a.present_fence = fence;
     if status != fence_status::OK {
         a.fence_status = status;

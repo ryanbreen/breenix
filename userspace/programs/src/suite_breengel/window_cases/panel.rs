@@ -3,18 +3,18 @@
 use crate::*;
 
 pub(crate) const PANEL: &[Case] = &[
-    pictured!("handoff", "A display-taking child under probe takes the display, gives it back, and the panel is restored exactly", panel_handoff),
+    pictured!("handoff", "A display-taking child under probe takes the display, gives it back, and the panel is restored exactly", panel_handoff).fullscreen("verify full-screen display giveback to the stage"),
     pictured!("between-cases", "In a GUI suite the panel is drawn only between cases and restored exactly after each", panel_between_cases),
     pictured!("cursor-restore", "Moving the pointer over the panel leaves no cursor trail", panel_cursor_restore),
     pictured!("cursor-trail-detected", "With the panel cursor's save and restore disabled by a test control, the trail is detected", panel_cursor_trail_detected),
-    pictured!("kernel-screens", "The kernel's console screen redraws exactly after the display is given back", panel_kernel_screens),
+    pictured!("kernel-screens", "The kernel's console screen redraws exactly after the display is given back", panel_kernel_screens).fullscreen("verify restoration of the bound kernel console"),
 ];
 
 // ---------------------------------------------------------------------------------------
 // panel: the suite panel around window cases (contract section 23)
 // ---------------------------------------------------------------------------------------
 
-use super::composition::{screen_size,give_back, paint, screen, take_over};
+use super::composition::{physical_size as screen_size,give_back, paint, screen, take_over};
 use super::kit::*;
 
 fn first_difference(a: &[u8], b: &[u8]) -> Result<Option<(usize, usize)>,breenix_suite::suite::CaseError> {

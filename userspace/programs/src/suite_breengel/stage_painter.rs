@@ -115,7 +115,7 @@ impl breenix_suite::suite::Painter for StagePainter {
         let spot_refs: Vec<PictureRef> = match f.spot {
             SpotRef::None => Vec::new(),
             SpotRef::Actual(p) => vec![*p],
-            SpotRef::Picture { expected, actual, difference } => [Some(*expected), Some(*actual), difference.artifact].into_iter().flatten().collect(),
+            SpotRef::Picture { expected, actual, panel, difference } => [Some(*expected), Some(*actual), Some(*panel), difference.artifact].into_iter().flatten().collect(),
         };
         let thumb_refs: Vec<PictureRef> = f.thumbs.iter().filter_map(|t| match t {
             Some(ThumbRef::Picture(p)) => Some(*p),
@@ -141,13 +141,14 @@ impl breenix_suite::suite::Painter for StagePainter {
         let heat: Vec<([usize; 4], Color)>;
         let spotlight = match (&f.run.spotlight, f.spot) {
             (oracle::Spotlight::Actual(_), SpotRef::Actual(p)) => gpu::Spotlight::Actual(picture(p, &spot_held[0])),
-            (oracle::Spotlight::Picture { differing, bound, .. }, SpotRef::Picture { expected, actual, difference }) => {
+            (oracle::Spotlight::Picture { differing, bound, .. }, SpotRef::Picture { expected, actual, panel, difference }) => {
                 heat = difference.heat.iter().map(|(r, c)| (*r, rgb(*c))).collect();
                 gpu::Spotlight::Picture {
                     expected: picture(expected, &spot_held[0]),
                     actual: picture(actual, &spot_held[1]),
+                    panel: picture(panel, &spot_held[2]),
                     difference: gpu::Difference {
-                        artifact: difference.artifact.as_ref().map(|a| picture(a, &spot_held[2])),
+                        artifact: difference.artifact.as_ref().map(|a| picture(a, &spot_held[3])),
                         heat: &heat,
                         cross: difference.cross,
                     },
@@ -166,6 +167,7 @@ impl breenix_suite::suite::Painter for StagePainter {
         };
         input_points = f.run.input.map(|(p, _)| points(p));
         let run = gpu::Run {
+            announcement: f.run.announcement,
             suite: f.run.suite,
             target: f.run.target,
             case_number: f.run.case_number,

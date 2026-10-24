@@ -138,7 +138,12 @@ struct Kiosk {
 /// Display custody before composing or presenting: the current owner's takeover is
 /// idempotent; an owner below the top of the stack is refused, and composing then is EPERM.
 fn custody() {
-    let _ = libbreenix::graphics::take_over_display();
+    if std::env::var_os("BREENIX_CASE_PANEL").is_none() { let _ = libbreenix::graphics::take_over_display(); }
+}
+
+fn new_compositor() -> Result<Compositor, i64> {
+    if std::env::var_os("BREENIX_CASE_PANEL").is_some() { Compositor::offscreen(800, 500) }
+    else { Compositor::new() }
 }
 
 impl Drop for Kiosk {
@@ -150,7 +155,7 @@ impl Kiosk {
         if let Some(c) = &self.compositor {
             return Ok(c.clone());
         }
-        let c = Arc::new(Mutex::new(Compositor::new()?));
+        let c = Arc::new(Mutex::new(new_compositor()?));
         self.compositor = Some(c.clone());
         Ok(c)
     }
@@ -312,6 +317,14 @@ impl Kiosk {
                 (None, _) => say("err 22"),
                 (_, Err(e)) => say(&format!("err {}", -e)),
             },
+            Some("picture-window") => {
+                let result = self.compositor().and_then(|c| c.lock().map_err(|_| -5i64)?.picture_window());
+                match result { Ok(id) => say(&format!("ok {id}")), Err(e) => say(&format!("err {}", -e)) }
+            }
+            Some("park-picture") => {
+                self.auto = false;
+                match window::release_compositor() { Ok(_) => say("ok"), Err(e) => say(&format!("err {}", errno(e))) }
+            }
             Some("gpu-scanout") => {
                 // The composed scanout observed through SCANOUT_READBACK as the claimant: record
                 // version 2 and the whole binding's pixels, or, on EIO, only the reason (section
@@ -320,13 +333,17 @@ impl Kiosk {
                 let result=(||->Result<(),String>{
                     let path=*words.get(1).ok_or("missing output file")?;
                     let (ret,m)=libbreenix::gpu::modes();if ret!=0{return Err(format!("MODES {ret}"));}
-                    let mode=m.modes[m.current as usize];
+                    let mut mode=m.modes[m.current as usize];
+                    let panel = std::env::var_os("BREENIX_CASE_PANEL").is_some();
+                    if panel { mode.width = 800; mode.height = 500; }
                     let mut pixels=vec![0xA5u8;mode.width as usize*mode.height as usize*4];
                     let mut record=[0xA5u8;libbreenix::gpu::abi::record::SIZE];
                     let mut rb=abi::Readback::ZERO;
                     rb.dst=pixels.as_mut_ptr() as u64;rb.dst_len=pixels.len() as u64;
                     rb.record=record.as_mut_ptr() as u64;rb.record_len=record.len() as u32;
-                    let ret=raw(op::SCANOUT_READBACK,&mut rb as *mut abi::Readback as u64,core::mem::size_of::<abi::Readback>());
+                    let ret = if panel {
+                        self.compositor().and_then(|c| c.lock().map_err(|_| -5i64).map(|c| c.read_target(&mut pixels, &mut record))).unwrap_or_else(|e| e)
+                    } else { raw(op::SCANOUT_READBACK,&mut rb as *mut abi::Readback as u64,core::mem::size_of::<abi::Readback>()) };
                     observed=(ret,rb.reason);
                     let mut out=Vec::with_capacity(8+record.len()+pixels.len());
                     out.extend_from_slice(&mode.width.to_le_bytes());out.extend_from_slice(&mode.height.to_le_bytes());out.extend_from_slice(&record);out.extend_from_slice(&pixels);
@@ -353,7 +370,7 @@ impl Kiosk {
                     (c.compose_traced(&mut t), t)
                 };
                 // The second caller's objects are made, and cleared, before either starts.
-                match (self.compositor(), Compositor::new()) {
+                match (self.compositor(), new_compositor()) {
                     (Ok(mine), Ok(theirs)) => {
                         let other = std::thread::spawn(move || traced(theirs));
                         let first = std::thread::spawn(move || {
@@ -445,6 +462,7 @@ fn compose_damage(kiosk: &mut Kiosk) {
 }
 
 fn main() {
+    if std::env::args().any(|a| a == "--panel") { std::env::set_var("BREENIX_CASE_PANEL", "800x500"); }
     match window::claim_compositor() {
         Ok(epoch) => say(&format!("ready {epoch}")),
         Err(e) => {
