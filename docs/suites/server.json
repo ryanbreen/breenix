@@ -187,6 +187,10 @@
           "title": "An unprivileged poweroff is refused without ending the boot"
         },
         {
+          "id": "refusal-recovery",
+          "title": "A refused kernel shutdown resumes SSH and service control"
+        },
+        {
           "id": "reboot",
           "title": "sudo reboot stops dependents first, preserves writes, resets through ACPI and boots clean"
         },

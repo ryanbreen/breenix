@@ -87,6 +87,7 @@ class HostServerScore(unittest.TestCase):
     def test_panic_provenance_uses_validated_image_identity(self):
         records = dict(self.records, milestone='server/reboot',
                        cases=[dict(id='reboot/' + name, result='PASS') for name, _ in host['REBOOT']],
+                       refusalRecovery=dict(serial='[shutdown] kernel refused transition: -13\n[shutdown] refused; resuming services'),
                        transitions=[], panicBoot=dict(run=dict(toolsCommit=self.sha, kind='fault-test'),
                             build=dict(commit=self.sha), serial='KERNEL PANIC: reboot fault test',
                             events=[dict(event='panic-reset-observed')]))

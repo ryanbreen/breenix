@@ -1383,8 +1383,9 @@ server-suite --boot ID --sha SHA --branch BRANCH --milestone server/reboot
 ```
 
 The runner owns the subsequent boots it starts through `metal-run`; keep the tools
-lock for this sequence. Its five automated cases check unprivileged reboot and
-power-off refusal (including the kernel's EPERM), then sudo reboot and sudo power-off
+lock for this sequence. Its six automated cases check unprivileged reboot and
+power-off refusal (including the kernel's EPERM), recovery after the kernel
+refuses a protected seed with the wrong mode (SSH and service control must return), then sudo reboot and sudo power-off
 using the site's operator password, then an autonomous reset in a panic fault kernel.
 The two orderly transitions start dependent fixture services, require dirty disk
 superblocks while mounted, and write nonce data on the root and home filesystems

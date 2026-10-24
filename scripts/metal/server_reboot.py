@@ -100,6 +100,45 @@ def run(api, args):
                     if kernel.returncode != 1 or 'permission denied' not in kernel.stderr:
                         raise ValueError('kernel did not refuse the unprivileged reboot call with EPERM')
                     probe.require(probe.ssh('echo still-running'), 'still-running')
+                elif name == 'refusal-recovery':
+                    # Refuse before the filesystem barrier using the real protected-file
+                    # validation, after every service and existing session has stopped.
+                    offset = len(read(current, 'serial.txt'))
+                    state = probe.ssh('cat /run/breenix/services')
+                    probe.require(state)
+                    _, before = api['parse_state'](state.stdout)
+                    console.run('chmod 600 /etc/breenix/power-token')
+                    console.logout()
+                    process = subprocess.Popen(probe.common + ['-i', str(identity), '-tt', probe.user + '@' + probe.host,
+                                               'sudo /sbin/reboot'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                    output = b''
+                    deadline = time.monotonic() + 25
+                    try:
+                        while b'[sudo] password for ' not in output:
+                            if time.monotonic() >= deadline: raise ValueError('refusal sudo prompt missing')
+                            if select.select([process.stdout], [], [], .2)[0]:
+                                chunk = os.read(process.stdout.fileno(), 4096)
+                                if not chunk: raise ValueError('refusal sudo ended before authentication')
+                                output += chunk
+                        process.stdin.write(site['OPERATOR_PASSWORD'].encode() + b'\n'); process.stdin.flush()
+                        deadline = time.monotonic() + 120
+                        while '[shutdown] refused; resuming services' not in read(current, 'serial.txt')[offset:]:
+                            if ended(current) or time.monotonic() >= deadline:
+                                raise ValueError('shutdown refusal did not resume services')
+                            time.sleep(1)
+                    finally:
+                        if process.poll() is None: process.terminate()
+                        process.wait(timeout=10)
+                    console = connect()
+                    console.run('chmod 400 /etc/breenix/power-token')
+                    probe.require(probe.ssh('echo refusal-reconnected'), 'refusal-reconnected')
+                    state = probe.ssh('cat /run/breenix/services')
+                    probe.require(state)
+                    _, after = api['parse_state'](state.stdout)
+                    if after['bsshd']['state'] != 'running' or after['bsshd']['starts'] <= before['bsshd']['starts']:
+                        raise ValueError('refusal did not restart bsshd')
+                    console.run('svc reload')
+                    records['refusalRecovery'] = dict(serial=read(current, 'serial.txt')[offset:], before=before, after=after)
                 elif name == 'panic-reset':
                     help_text = subprocess.run(['python3', str(Path(api['__file__']).with_name('metal-run')), 'boot', '--help'], capture_output=True, text=True, check=True).stdout
                     if 'panic-reboot' not in help_text:

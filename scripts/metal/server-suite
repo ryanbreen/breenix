@@ -99,6 +99,7 @@ CONSOLE_INPUT = (
 REBOOT = (
     ('reboot-refused', 'An unprivileged reboot is refused without ending the boot'),
     ('poweroff-refused', 'An unprivileged poweroff is refused without ending the boot'),
+    ('refusal-recovery', 'A refused kernel shutdown resumes SSH and service control'),
     ('reboot', 'sudo reboot stops dependents first, preserves writes, resets through ACPI and boots clean'),
     ('poweroff', 'sudo poweroff stops dependents first, preserves writes and ends the boot normally with clean filesystems'),
     ('panic-reset', 'A fault-test kernel prints its panic and resets without a host reset'),
@@ -209,6 +210,9 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
     if category == 'logs' and (not records.get('previous') or records['previous'].get('commit') != sha):
         raise ValueError('logs need prior persistent boot evidence at this commit')
     if category == 'reboot':
+        recovery = records.get('refusalRecovery', {})
+        if '[shutdown] kernel refused transition: -13' not in recovery.get('serial', '') or '[shutdown] refused; resuming services' not in recovery.get('serial', ''):
+            raise ValueError('no kernel refusal and service recovery evidence')
         transitions = records.get('transitions', [])
         if [t['action'] for t in transitions] != ['reboot', 'poweroff']:
             raise ValueError('reboot needs both completed shutdown transitions')
