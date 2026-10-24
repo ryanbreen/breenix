@@ -134,7 +134,7 @@ pixels; the two extra pixel rows at the bottom of each cell are the cursor band.
   32.
 <!-- claim-lint:ok: Normative ruling B54, resolving #2458, supersedes B51-B53's console ribbon. -->
 - Under B54 the console draws no boot-stage ribbon in any mode, at any time. It reserves
-  no band: every grid row, including the bottom rows, holds text at the full fixed size above.
+  no band: every grid row, including the bottom rows, is available for text at the full fixed size above.
   The splash's progress bar and both of its read-backs (section 7) are unchanged. The console
   read-back (section 8) checks every grid row against the font, with no ribbon colour anywhere.
 

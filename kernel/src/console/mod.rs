@@ -833,7 +833,6 @@ struct Screen {
     frames: u64,
     /// The last pass wrote and flushed each row it drew, and left no row undrawn.
     complete: bool,
-
 }
 
 /// The foreground terminal's view as the render thread last copied it.

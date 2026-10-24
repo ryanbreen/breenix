@@ -1725,7 +1725,8 @@ composite identity and genuine native fences; no snapshot, requested target, CPU
 or partial band certifies it. The stage displays the verified judged artifact after the
 measured interval. Local thumbnails retain GPU copies; cross-process artifacts use the
 sanctioned decoded-image Image path, never a new raw upload or passing expected image.
-The existing stage-lie/substitution/draw/ribbon/cursor controls and exact restoration stand.
+The stage-lie/substitution/draw/cursor controls and exact restoration stand.
+B54 removes the console ribbon and its fault point 15; the splash read-backs remain.
 
 B13 changes checks before lane implementations, in separate commits. The reconciliation
 in [breengel-gpu-cases.md](breengel-gpu-cases.md) names the affected cases and missing lanes;

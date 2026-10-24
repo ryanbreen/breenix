@@ -98,6 +98,7 @@ mod images;
 mod raster;
 mod gpu_checks;
 mod show;
+mod stage_serial;
 mod stage_fixtures;
 mod stage_painter;
 #[cfg(target_arch = "aarch64")]

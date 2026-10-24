@@ -108,8 +108,28 @@ fn panel_deterministic() -> CaseResult {
 fn panel_judged_frame_shown() -> CaseResult { breenix_suite::suite::showcase_check("judged-frame-shown") }
 fn panel_serial_agreement() -> CaseResult { breenix_suite::suite::showcase_check("serial-agreement") }
 fn panel_quiet_window() -> CaseResult { breenix_suite::suite::showcase_check("quiet-window") }
+fn producer_stages() -> Result<Vec<bool>,String> {
+    const EXPECTED:&[&str]=include!("stage_boot_markers.in");
+    let before=std::fs::read_to_string("/proc/breenix/boot-ribbon").map_err(|e|format!("producer stage records: {e}"))?;
+    let observed:Vec<_>=before.lines().filter_map(|line|line.split_once('|')).collect();
+    if observed.len()!=EXPECTED.len() || !observed.iter().zip(EXPECTED).all(|((lit,marker),expected)|(*lit=="0" || *lit=="1") && marker==expected) {
+        return Err("kernel ribbon stages do not match the binding ARM64 manifest in order".into());
+    }
+    let argv=EXPECTED.iter().position(|m|*m=="ARGV_TEST_PASSED").ok_or("missing ARGV stage")?;
+    if crate::stage_serial::reached("EXEC_STACK_ARGV_TEST_PASSED\nEXEC_ARGV_TEST_PASSED\n",EXPECTED)[argv] || !crate::stage_serial::reached("ARGV_TEST_PASSED\n",EXPECTED)[argv] {
+        return Err("ARGV producer attribution differs".into());
+    }
+    let serial=std::fs::read_to_string("/proc/breenix/boot-serial").map_err(|e|format!("producer serial: {e}"))?;
+    let reached=crate::stage_serial::reached(&serial,EXPECTED);
+    if !observed.iter().zip(&reached).all(|((lit,_),want)|(*lit=="1")==*want) || !reached.iter().any(|v|*v) {
+        return Err("kernel reached bits disagree with independently parsed producer serial".into());
+    }
+    Ok(reached)
+}
+
 // B54 replaces the active/retired ribbon checks: the entire console is text.
 fn panel_boot_ribbon() -> CaseResult {
+    producer_stages()?;
     use crate::window_cases::composition::{give_back, take_over, screen, screen_size};
     use std::io::Write;
     let (width, height) = screen_size()?;
