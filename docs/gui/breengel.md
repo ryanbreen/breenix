@@ -1578,6 +1578,7 @@ its grid uses the full fixed size from docs/console/contract.md sections 1.5 and
 The splash's progress bar and its two read-backs remain unchanged (console contract section 7).
 Producer stage records remain available through `/proc/breenix/boot-ribbon` and serial stage lines.
 
+<!-- claim-lint:ok: Normative B54 requirement, resolving #2458. -->
 Under B54, `panel/boot-ribbon` retains its case identity and checks the console after the
 splash gives way: the device-bound console read-back covers every grid row against the font,
 text occupies every row including the bottom two, and no ribbon colour appears anywhere

@@ -132,7 +132,7 @@ pixels; the two extra pixel rows at the bottom of each cell are the cursor band.
   background colour.
 - The logo scale `k` (pixels per design unit, section 6) follows `S`: 2 for sizes 16 and 20, 3 for 24, 4 for
   32.
-<!-- claim-lint:ok: Normative ruling B54 supersedes B51-B53's console ribbon. -->
+<!-- claim-lint:ok: Normative ruling B54, resolving #2458, supersedes B51-B53's console ribbon. -->
 - Under B54 the console draws no boot-stage ribbon in any mode, at any time. It reserves
   no band: every grid row, including the bottom rows, holds text at the full fixed size above.
   The splash's progress bar and both of its read-backs (section 7) are unchanged. The console
