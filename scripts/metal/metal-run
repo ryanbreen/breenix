@@ -34,6 +34,7 @@ import runpy
 import subprocess
 import sys
 import time
+import threading
 
 TOOLS = '/opt/breenix-metal'
 STATE = '/var/lib/breenix-metal'
@@ -349,10 +350,14 @@ def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=F
         in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-failed', boot_id, why)
         in_build(env, 'rm', '-rf', tools, out)
         return 1
-    try:
-        runpy.run_path(str(HERE / 'resting_host.py'))['preempt'](boot_id)
-    except Exception as error:
-        return failed('persistent preemption failed: ' + type(error).__name__)
+    preemption_errors = []
+    def preempt():
+        try:
+            runpy.run_path(str(HERE / 'resting_host.py'))['preempt'](boot_id)
+        except Exception as error:
+            preemption_errors.append(type(error).__name__ + ': ' + str(error))
+    preemption = threading.Thread(target=preempt, daemon=True)
+    preemption.start()
     in_build(env, 'rm', '-rf', tools, check=True)
     in_build(env, 'mkdir', '-p', tools, check=True)
     # The slot and artifact helpers travel with metal-build: a commit builds under the deployed tools' rules.
@@ -389,6 +394,9 @@ def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=F
     if sender.wait() != 0 or receiver.returncode != 0:
         return failed('the inputs could not be copied into the service container')
     in_build(env, 'rm', '-rf', tools, out)
+    preemption.join()
+    if preemption_errors:
+        return failed('persistent preemption failed: ' + preemption_errors[0])
     in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-ready', boot_id, check=True)
     print(f'[metal-run] inputs delivered after {time.time() - started:.0f} s', flush=True)
     return 0

@@ -78,6 +78,7 @@ def reboot(receipt, sha):
 def watchdog(receipt, sha):
     if receipt.get('passed') is not True or receipt.get('commit') != sha:
         raise ValueError('watchdog recovery did not pass at this commit')
+    returned(receipt['returned'], sha)
     ssh = receipt['receipt']
     if ssh['case'] != 'feeder-hang' or not 0 < ssh['sshAt'] - ssh['trigger'] <= 600:
         raise ValueError('watchdog did not return unaided within S19 deadline')

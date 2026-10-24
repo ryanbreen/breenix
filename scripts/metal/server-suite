@@ -1861,7 +1861,7 @@ class Watchdog:
             if time.monotonic() > deadline: raise ValueError('owned boot did not stop')
             time.sleep(2)
 
-    def run_case(self, name):
+    def run_case(self, name, clean_shutdown=None):
         if not self.stopped:
             lease = self.remote('cat', '/var/lib/breenix-metal/lease.json')
             if lease.returncode or json.loads(lease.stdout).get('id') != self.base:
@@ -1904,9 +1904,21 @@ class Watchdog:
                         break
             time.sleep(3)
         if receipt is None: raise ValueError('no unaided persistent SSH within 600 seconds of trigger')
+        if clean_shutdown is not None:
+            receipt['cleanShutdown'] = True
         # The driver checks this receipt before any power-off; the archived events independently prove the ordering.
         result = self.remote('tee', directory + '/watchdog-ssh.json', input=json.dumps(receipt) + '\n', stdin=None)
         if result.returncode: raise ValueError('cannot retain SSH recovery receipt')
+        if clean_shutdown is not None:
+            until = time.monotonic() + 30
+            while not self.read(boot, 'watchdog-verdict.json'):
+                if time.monotonic() > until:
+                    raise ValueError('driver did not validate watchdog recovery before shutdown')
+                time.sleep(1)
+            verdict = json.loads(self.read(boot, 'watchdog-verdict.json'))
+            if not verdict.get('passed'):
+                raise ValueError('watchdog recovery evidence failed before shutdown')
+            clean_shutdown()
         until = time.monotonic() + 120
         while True:
             lease = self.remote('cat', '/var/lib/breenix-metal/lease.json')

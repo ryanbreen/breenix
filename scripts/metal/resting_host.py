@@ -9,6 +9,11 @@ import tempfile
 import time
 
 
+def preemptible(run):
+    return (run.get('resting') is True and run.get('session')
+            and not run.get('run') and not run.get('upgradeParent'))
+
+
 def preempt(waiter, only_persistent=False):
     runner = runpy.run_path(str(Path(__file__).with_name('metal-run')))
     env = runner['host_env']()
@@ -26,8 +31,10 @@ def preempt(waiter, only_persistent=False):
         lease = read('lease.json')
         if lease.get('kind') == 'persistent' and lease.get('id') != waiter:
             holder = read('boots/' + lease['id'] + '/run.json')
-            if holder.get('session') and not holder.get('run') and not holder.get('upgradeParent'):
+            if preemptible(holder):
                 break
+            if only_persistent:
+                return
         elif only_persistent:
             return
         time.sleep(2)
@@ -37,7 +44,10 @@ def preempt(waiter, only_persistent=False):
         lab = lab_type(api, argparse.Namespace(boot=waiter), Path(scratch))
         state = Path.home() / '.local/state/breenix-metal'
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        deadline = time.monotonic() + 180
         while not lab.ended(waiter):
+            if time.monotonic() >= deadline:
+                raise ValueError('resting preemption exceeded 180 seconds; cancel request and inspect holder')
             claim = json.loads(lab.read(waiter, 'claim.json') or '{}')
             if claim.get('status') == 'claimed':
                 return
@@ -49,7 +59,7 @@ def preempt(waiter, only_persistent=False):
                 run = json.loads(lab.read(holder, 'run.json') or '{}')
                 # A verification boot or command batch finishes on its own. It
                 # must retain the lease through automatic upgrade verification.
-                if run.get('session') and not run.get('run') and not run.get('upgradeParent'):
+                if preemptible(run):
                     with (state / ('preempt-' + holder + '.lock')).open('w') as handle:
                         try:
                             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)

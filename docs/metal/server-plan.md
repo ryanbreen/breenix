@@ -106,7 +106,7 @@ any time. A lane that also carries another main-path effort's unmerged work stay
 suite). The four manifests are skeletons: their categories are named and have no cases yet, and each category's cases
 arrive with the lane that implements it ([the suites README](../suites/README.md), "Planned categories"). A milestone
 whose categories have no cases reads as not measured yet. Where a milestone's evidence is a machine event (a reboot, a
-watchdog reset or migration), its category's cases are host-driven records, as the
+watchdog reset, a power cut or migration), its category's cases are host-driven records, as the
 SDK suite's host cases are; the R240 acceptance stated for each milestone is the evidence its lane lands with. Main-path
 `bootPath` measures resolve against `docs/boot-path.json`, the ARM testing-kernel gate, which has no persistent
 modes, so these milestones use suite measures instead.

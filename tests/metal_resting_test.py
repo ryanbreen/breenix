@@ -63,6 +63,41 @@ class IdleTest(existing.StateTest):
         start.assert_not_called()
         self.assertIsNone(m.read_lease())
 
+    def test_three_failed_idle_boots_disable_admission(self):
+        self.ready()
+        metal_persist.update_disk(layout=metal_persist.new_layout())
+        service = existing.machine.Machine({})
+        with patch.object(m, 'power_state', return_value='Off'), \
+             patch.object(existing.machine.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as start:
+            for attempt in range(3):
+                service.last_resting_attempt = 0
+                service.rest()
+                directory = m.boot_dir(service.resting_boot)
+                directory.mkdir(parents=True)
+                (directory / 'ended').write_text('1')
+                (directory / 'exit-status').write_text('124')
+                # Distinct boot names without waiting for wall time.
+                service.resting_boot = directory.name
+                service.last_resting_attempt = 0
+                if attempt < 2:
+                    with patch.object(m, 'now', return_value=0):
+                        service.rest()
+                    import shutil
+                    shutil.rmtree(directory)
+            service.rest()
+            service.rest()
+        self.assertEqual(start.call_count, 3)
+        self.assertEqual(service.resting_failures, 3)
+
+
+class PreemptionTest(unittest.TestCase):
+    def test_only_lab_resting_sessions_are_preemptible(self):
+        predicate = runpy.run_path(str(existing.TOOLS / 'resting_host.py'))['preemptible']
+        self.assertFalse(predicate(dict(session=True)))
+        self.assertTrue(predicate(dict(session=True, resting=True)))
+        self.assertFalse(predicate(dict(session=True, resting=True, upgradeParent='install')))
+        self.assertFalse(predicate(dict(session=True, resting=True, run=['work'])))
+
 
 class OneShotTest(unittest.TestCase):
     setUp = persistent.DriverPersistentTest.setUp

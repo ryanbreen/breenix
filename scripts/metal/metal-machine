@@ -260,26 +260,46 @@ class Machine:
         self.http = None
         self.stopping = False
         self.last_resting_attempt = 0.0
-        self.policy_source = Path(__file__).read_bytes()
+        self.resting_boot = None
+        self.resting_failures = 0
+        self.policy_source = self.policy_bytes()
+
+    def policy_bytes(self):
+        return tuple((m.TOOLS / name).read_bytes() for name in ('metal-machine', 'metal-boot', 'metal_lib.py'))
 
     def rest(self):
         """Start current through the ordinary boot loop when the FIFO is empty."""
         # A branch deployment is temporary. Once another revision replaces the
         # tools, this already-running policy must not launch its replacement's
         # driver with the old revision's assumptions.
-        if Path(__file__).read_bytes() != self.policy_source:
+        if self.policy_bytes() != self.policy_source:
             return
-        if m.now() - self.last_resting_attempt < 60 or not metal_persist.layout():
+        if self.resting_boot:
+            directory = m.boot_dir(self.resting_boot)
+            if not (directory / 'ended').exists():
+                return
+            status = (directory / 'exit-status').read_text().strip()
+            self.resting_failures = self.resting_failures + 1 if status != '0' else 0
+            self.resting_boot = None
+            if self.resting_failures >= 3:
+                self.remember(machine_event('resting-disabled', reason='three failed idle boots; operator intervention required'))
+        if self.resting_failures >= 3:
+            return
+        if m.now() - self.last_resting_attempt < 60 * (2 ** self.resting_failures) or not metal_persist.layout():
             return
         with m.locked('lease'):
             queue = [entry for entry in m.read_queue()
                      if entry['deadline'] > m.now() and m.holder_alive(entry)]
             if m.read_lease() or queue or not m.machine_ready():
                 return
+        # The controller call must not block lease claims or heartbeats.
+        if m.power_state() != 'Off':
+            return
+        with m.locked('lease'):
+            if m.read_lease() or m.read_queue() or not m.machine_ready():
+                return
             # Leave an operator's power-on to the manager's adoption route.
             # An idle return owns no right to stop a boot it did not start.
-            if m.power_state() != 'Off':
-                return
             # The new driver joins the same FIFO. A request racing this check
             # takes precedence when it has already enqueued.
             self.last_resting_attempt = m.now()
@@ -292,6 +312,10 @@ class Machine:
                 str(m.TOOLS / 'metal-boot'), 'run', '--id', boot_id,
                 '--payload', 'persistent', '--mode', 'persistent', '--resting', '--wait', '240'],
                 capture_output=True)
+        if started.returncode == 0:
+            self.resting_boot = boot_id
+        else:
+            self.resting_failures += 1
         self.remember(machine_event('resting-start' if started.returncode == 0 else 'resting-start-failed', id=boot_id))
 
     def remember(self, entry):

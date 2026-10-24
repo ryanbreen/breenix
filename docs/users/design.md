@@ -349,7 +349,7 @@ in `docs/metal/boot-path.json` for the metal stream.
   - Milestones 1 and 2 can start now, alongside ssh-doors, since they touch the kernel, the image builders and the
     installer rather than bsshd.
   - Milestone 2 precedes `services` and `logs`, which need shared `/var` and `/run`.
-  - Milestone 6 precedes `resting-state` and the 24-hour session (D4: daily non-root login, root SSH off).
+  - Milestone 6 precedes `resting-state` (S25 retires the 24-hour session) (D4: daily non-root login, root SSH off).
 - **toolchain:** `deliver` uploads into `/home/operator` as operator, after milestone 4. `sdk-on-box` installs into
   `/usr/include` and `/usr/lib`, after milestone 2.
 - **filesystem:**

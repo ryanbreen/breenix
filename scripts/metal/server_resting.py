@@ -217,10 +217,10 @@ def run(api, args):
                         lab.current, args.sha, args.branch)
                     # Enqueue the fault without a runner stop: it must cleanly preempt too.
                     target.stopped = True
-                    target.run_case('feeder-hang')
+                    target.run_case('feeder-hang', clean_shutdown=lambda: lab.power('poweroff'))
                     value = json.loads(lab.read(target.boots[-1], 'watchdog-verdict.json'))
+                    value['returned'] = lab.idle(target.boots[-1])
                     checks['watchdog'](value, args.sha)
-                    lab.idle(target.boots[-1])
                 records['evidence'][name] = value
                 result, reason = 'PASS', ''
             except Exception as error:
@@ -262,7 +262,5 @@ def run(api, args):
             json.loads(lab.read(args.boot, 'definition/docs/efforts/path.json')), records, serial, boot, args.sha, ['KERNEL PANIC:'])
         lab.save('server-resting-state.json', records)
         lab.remote('python3', '-c', api['WATCHDOG_ARCHIVE'], '/var/lib/breenix-metal/boots/' + args.boot, check=True)
-        for case in records['cases']:
-            print('SUITE server CASE ' + case['id'] + ' PASS ms=' + str(case['ms']), flush=True)
         print('SUITE server DONE passed=6 failed=0 skipped=0 total=6\n' + verdict, flush=True)
         return 0

@@ -1660,9 +1660,14 @@ class Driver:
             receipt = m.read_json(self.dir / 'watchdog-ssh.json', {})
             if receipt:
                 passed = self.watchdog_verdict(receipt)
-                m.write_json(self.dir / 'watchdog-verdict.json', dict(
-                    passed=passed, commit=self.args.commit, boot=self.id, receipt=receipt))
-                self.event('watchdog-verdict', passed=passed)
+                verdict = dict(passed=passed, commit=self.args.commit, boot=self.id, receipt=receipt)
+                if m.read_json(self.dir / 'watchdog-verdict.json', {}) != verdict:
+                    m.write_json(self.dir / 'watchdog-verdict.json', verdict)
+                    self.event('watchdog-verdict', passed=passed)
+                if passed and receipt.get('cleanShutdown'):
+                    if m.now() - receipt['sshAt'] > 120:
+                        raise Finish(m.EXIT_SHORT, 'watchdog clean shutdown deadline passed')
+                    return
                 raise Finish(m.EXIT_DONE if passed else m.EXIT_SHORT, 'watchdog recovery observation complete')
             if m.now() - self.watchdog_trigger > 600:
                 m.write_json(self.dir / 'watchdog-verdict.json', dict(passed=False, commit=self.args.commit,
