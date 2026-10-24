@@ -1,5 +1,6 @@
 """The host server scorer refuses incomplete or mismatched machine evidence."""
 import copy
+import hashlib
 import json
 from pathlib import Path
 import runpy
@@ -20,6 +21,20 @@ import metal_tools_test as existing
 
 ROOT = Path(__file__).resolve().parents[1]
 host = runpy.run_path(str(ROOT / 'scripts/metal/server-suite'))
+
+
+class RebootReadback(unittest.TestCase):
+    def test_interleaved_console_keeps_exact_order_and_data_checks(self):
+        verify = runpy.run_path(str(ROOT / 'scripts/metal/server_reboot.py'))['verify_root_readback']
+        root, token = '/var/lib/reboot-fixture', 'fresh-nonce'
+        def capture(order=b'reboot-child\nreboot-base\n', data=token.encode()):
+            return ('[ INFO] exec\n' + hashlib.sha256(order).hexdigest() + '  ' + root + '/order\n'
+                    '[ INFO] another exec\n' + hashlib.sha256(data).hexdigest() + '  ' + root + '/data\n')
+        verify(root, token, capture())
+        for output in [capture(order=b'reboot-base\nreboot-child\n'), capture(data=b'old-nonce'),
+                       capture(data=token.encode() + b'\n'), capture().replace(root, '/var/lib/other-fixture')]:
+            with self.assertRaises(ValueError):
+                verify(root, token, output)
 
 
 class TimeFixture(unittest.TestCase):
@@ -68,6 +83,27 @@ class HostServerScore(unittest.TestCase):
         self.records = dict(boot=self.boot['id'], commit=self.sha, milestone='server/ssh-keys', cleanup=True,
                             cases=[dict(id='ssh-keys/' + name, result='PASS') for name, _ in host['CATEGORIES']['ssh-keys']])
         self.serial = "[stdout] bsshd: host key ED25519 SHA256:example (loaded)\nbsshd: refused method 'password'\n"
+
+    def test_panic_provenance_uses_validated_image_identity(self):
+        records = dict(self.records, milestone='server/reboot',
+                       cases=[dict(id='reboot/' + name, result='PASS') for name, _ in host['REBOOT']],
+                       refusalRecovery=dict(serial='[shutdown] kernel refused transition: -13\n[shutdown] refused; resuming services'),
+                       transitions=[], panicBoot=dict(run=dict(toolsCommit=self.sha, kind='fault-test'),
+                            build=dict(commit=self.sha), serial='KERNEL PANIC: reboot fault test',
+                            events=[dict(event='panic-reset-observed')]))
+        for action in ('reboot', 'poweroff'):
+            records['transitions'].append(dict(action=action, before='same', after='same', exit='0',
+                beforeRun=self.boot, afterRun=self.boot,
+                beforeSerial='[shutdown] home clean read-only\n[shutdown] root clean read-only',
+                afterSerial='[storage] root prior state=clean\n[storage] home prior state=clean',
+                events=[dict(event='requested-shutdown', action=action), dict(event='requested-reset-observed'),
+                        dict(event='requested-reboot-ready', commit=self.sha)]))
+        def score():
+            return host['score'](self.manifest, self.path, records, self.serial, self.boot, self.sha, [])
+        self.assertTrue(score().startswith('PASS:'))
+        records['panicBoot']['build']['commit'] = 'b' * 40
+        with self.assertRaisesRegex(ValueError, 'matching fault-test'):
+            score()
 
     def test_complete_host_evidence_and_rejections(self):
         def score():

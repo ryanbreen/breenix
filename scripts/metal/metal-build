@@ -39,7 +39,8 @@ import time
 STUB_TARGET = 'x86_64-unknown-uefi'
 STUB_RELEASE = Path(STUB_TARGET) / 'release'
 # The kernel profile each --features value builds.
-PROFILES = {'': 'production', 'watchdog_fault_inject': 'fault-test', 'xhci_fault_inject': 'fault-test', 'block_fence_inject': 'fault-test', 'testing': 'testing'}
+PROFILES = {'watchdog_fault_inject': 'fault-test', '': 'production', 'xhci_fault_inject': 'fault-test', 'block_fence_inject': 'fault-test',
+            'server_reboot_fault': 'fault-test', 'testing': 'testing'}
 # Deployed, the helpers sit beside this file; in a checkout they are in scripts/.
 TOOLS = Path(__file__).resolve().parent
 TOOLS = TOOLS if (TOOLS / 'host-slots.py').exists() else TOOLS.parent
@@ -232,7 +233,7 @@ def inner(args):
         if args.features == 'testing':
             shutil.copyfile(clone / TEST_BINARIES, out / 'test-binaries.img')
         copied = []
-        definition_files = list(DEFINITION) + ['scripts/suite-verdict.py', 'scripts/suite-sequence.py', 'scripts/metal/server-suite', 'scripts/metal/upgrade_cases.py', 'docs/efforts/path.json']
+        definition_files = list(DEFINITION) + ['scripts/suite-verdict.py', 'scripts/suite-sequence.py', 'scripts/metal/server-suite', 'scripts/metal/server_reboot.py', 'scripts/metal/upgrade_cases.py', 'docs/efforts/path.json']
         definition_files += [str(path.relative_to(clone)) for path in sorted((clone / 'docs/suites').glob('*.json'))]
         for name in definition_files:
             source = clone / name

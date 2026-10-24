@@ -20,6 +20,8 @@ retain a RAM-disk root (README, "The disks").
 """
 import argparse
 import contextlib
+import hmac
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -221,6 +223,11 @@ class Driver:
         self.post_code = None
         self.post_seen = False
         self.gap = False
+        self.shutdown_seed = m.power_token()
+        self.shutdown_token = None
+        self.shutdown_action = None
+        self.requested_reset_at = None
+        self.clean_mounts = set()
         self.fatal_at = None
         self.fatal_patterns = []
         self.final_marker = None
@@ -267,7 +274,7 @@ class Driver:
         target = {'main': {}}
         if self.args.target.startswith('branch:'):
             target = {'branch': {'name': self.args.target.split(':', 1)[1]}}
-        fault = xhci_fault(self.args) or self.args.inject == FENCE_FAULT or self.args.inject in WATCHDOG_FAULTS
+        fault = xhci_fault(self.args) or self.args.inject in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS)
         kind = ('fault-test' if fault else 'persistent' if persistent(self.args)
                 else 'console-session' if session(self.args)
                 else {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test'))
@@ -445,10 +452,9 @@ class Driver:
             return
         build = m.read_json(inputs / 'build.json', {})
         # Only an xHCI fault boot takes a fault-test kernel and only a tests boot the testing kernel; neither takes another.
-        features = (['watchdog_fault_inject'] if self.args.inject in WATCHDOG_FAULTS else
-                    ['xhci_fault_inject'] if xhci_fault(self.args) else ['block_fence_inject'] if self.args.inject == FENCE_FAULT
-                    else ['testing'] if self.args.mode == 'tests' else [])
-        profile = {'watchdog_fault_inject': 'fault-test', 'xhci_fault_inject': 'fault-test', 'block_fence_inject': 'fault-test',
+        features = (['watchdog_fault_inject'] if self.args.inject in WATCHDOG_FAULTS else ['xhci_fault_inject'] if xhci_fault(self.args) else ['block_fence_inject'] if self.args.inject == FENCE_FAULT
+                    else ['server_reboot_fault'] if self.args.inject == 'panic-reboot' else ['testing'] if self.args.mode == 'tests' else [])
+        profile = {'watchdog_fault_inject': 'fault-test', 'xhci_fault_inject': 'fault-test', 'block_fence_inject': 'fault-test', 'server_reboot_fault': 'fault-test',
                    'testing': 'testing'}.get(''.join(features), 'production')
         if build.get('commit') != self.args.commit or build.get('profile') != profile or build.get('features') != features:
             raise Finish(m.EXIT_CANCELLED, f'build provenance differs from the requested {profile} commit')
@@ -480,7 +486,7 @@ class Driver:
                 install_partition=the_layout['partitions']['test']['guid'] if the_layout and disk == 'install' else None,
                 idle_minutes=getattr(self.args, 'idle_minutes', 30) if session(self.args) else None,
                 replug=self.args.mode == 'console' and not session(self.args) and not xhci_fault(self.args),
-                xhci_fault=xhci_fault(self.args),
+                xhci_fault=xhci_fault(self.args), power_token=self.shutdown_token,
                 watchdog_fault=self.args.inject.removeprefix('watchdog-') if self.args.inject in WATCHDOG_FAULTS else None)
             if disk == 'install':
                 write = self.delivery['root']['diskWrite']
@@ -1068,9 +1074,28 @@ class Driver:
                 if not upload.get('complete'):
                     raise Finish(m.EXIT_SHORT, 'the cold disk upload is missing')
                 raise Finish(m.EXIT_DONE, 'cold disk readback received')
+        if self.kernel_started and self.fatal_at is None:
+            challenge = re.fullmatch(r'\[init\] shutdown nonce=([a-f0-9]{64})', line)
+            if challenge:
+                self.shutdown_token = hashlib.sha256((self.shutdown_seed + challenge[1]).encode()).hexdigest()
+            clean = re.fullmatch(r'\[shutdown\] (home|root) clean read-only', line)
+            if clean: self.clean_mounts.add(clean[1])
+            request = re.fullmatch(r'\[shutdown\] requested (reboot|poweroff) token=([a-f0-9]{64})', line)
+            if request and self.shutdown_token is not None and hmac.compare_digest(request[2], self.shutdown_token) and self.clean_mounts == {'home', 'root'}:
+                self.shutdown_action = request[1]
+                if request[1] == 'reboot':
+                    self.seen.discard('manager-slot')
+                self.event('requested-shutdown', observed_at=observed_at, action=request[1])
+                if request[1] == 'poweroff':
+                    raise Finish(m.EXIT_DONE, 'the kernel requested power-off after clean shutdown')
+        if (self.requested_reset_at is not None and 'bsshd: listening on ' in line
+                and self.kernel_started and 'manager-slot' in self.seen and self.fatal_at is None):
+            self.event('requested-reboot-ready', observed_at=observed_at, commit=self.args.commit)
+            self.requested_reset_at = None
         self.on_watchdog_line(line, observed_at)
         self.on_persist_line(line, observed_at)
         if BOOTLOADER_LINE in line and self.kernel_started is not None:
+            self.on_reset(observed_at)
             if self.watchdog_trigger is not None or (session(self.args) and persistent(self.args)):
                 # The operator restarted the persistent install; the session goes on with the new boot.
                 self.event('persistent-restart', observed_at=observed_at, seconds=seconds)
@@ -1094,10 +1119,11 @@ class Driver:
             self.phase('Test payload running: interrupts masked, halted')
             self.last_stage = 'metal-hang started'
         suite_record = self.args.mode == 'suite' and line.startswith(('SUITE ', 'SUITE_SEQUENCE '))
-        dead_suite = self.args.mode == 'suite' and re.search(r'KERNEL PANIC[:!]|memory allocation of \d+ bytes failed|allocation error:', line)
+        panic_line = re.search(r'KERNEL PANIC[:!]', line)
+        dead_suite = self.args.mode == 'suite' and re.search(r'memory allocation of \d+ bytes failed|allocation error:', line)
         if (self.kernel_started and self.fatal_at is None
                 and (not suite_record or re.search(r'KERNEL PANIC[:!]', line))
-                and (dead_suite or any(p.search(line) for p in self.fatal_patterns))):
+                and (panic_line or dead_suite or any(p.search(line) for p in self.fatal_patterns))):
             self.fatal_at = observed_at
             self.event('fatal', observed_at=observed_at, seconds=seconds)
         if len(suites(self.args)) > 1 and re.fullmatch(r'SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED \S+ cases=\d+/\d+', line):
@@ -1321,6 +1347,10 @@ class Driver:
 
     def on_manager_line(self, line, observed_at, seconds):
         """The boot manager's start, the lab's answer it acted on, and a probe's end (README, "The boot manager")."""
+        if MANAGER_STARTED in line and self.kernel_started is not None and session(self.args) and persistent(self.args):
+            self.on_reset(observed_at)
+            self.event('persistent-restart', observed_at=observed_at)
+            self.kernel_started = None
         self.on_slot_line(line, observed_at)
         self.on_slot_boot(line, observed_at)
         if MANAGER_STARTED in line:
@@ -1448,6 +1478,7 @@ class Driver:
             elif self.complete_at is not None:
                 self.event('image-refused-again', observed_at=observed_at, seconds=elapsed)
                 if self.kernel_started is not None and self.watchdog_trigger is None:
+                    self.on_reset(observed_at)
                     raise Finish(m.EXIT_SHORT, 'the machine reset after the kernel started')
             return
         if entry.get('id') != self.id:
@@ -1531,6 +1562,7 @@ class Driver:
                 # Once a boot option runs, the firmware reports OSBootStarted or OSRunning; any other state after
                 # that is POST again, so the machine reset.
                 if self.kernel_started is not None and key[0] not in RUNNING_STATES:
+                    self.on_reset(observed_at)
                     if self.watchdog_trigger is not None or (session(self.args) and persistent(self.args)):
                         self.event('persistent-restart', observed_at=observed_at, state=key[0])
                         self.kernel_started = None
@@ -1541,16 +1573,31 @@ class Driver:
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     # Deadlines.
+    def on_reset(self, observed_at):
+        if self.shutdown_action == 'reboot' and self.fatal_at is None:
+            self.event('requested-reset-observed', observed_at=observed_at)
+            if not (session(self.args) and persistent(self.args)):
+                raise Finish(m.EXIT_SHORT, 'requested reset needs a persistent session')
+            self.requested_reset_at = observed_at
+            self.shutdown_action = None
+            self.clean_mounts.clear()
+            self.seen.discard('bootloader')
+        if self.args.inject == 'panic-reboot' and self.fatal_at is not None:
+            self.event('panic-reset-observed', observed_at=observed_at)
+            raise Finish(m.EXIT_SHORT, 'fault-test panic reset observed')
+
     def persistent_deadlines(self):
         """A persistent boot: POST until the manager starts, then silence bounds until the kernel; a session has no
         deadline after that, a check boot its mode deadline."""
+        if self.requested_reset_at is not None and m.now() - self.requested_reset_at > 600:
+            raise Finish(m.EXIT_HUNG, 'requested reboot did not return to SSH', hung=True)
         if getattr(self.args, 'upgrade_parent', None):
             self.maybe_complete(m.now(), self.since_power())
             if self.t0 is not None and self.since_power() >= 600:
                 raise Finish(m.EXIT_SHORT, 'S21 SSH verification deadline passed')
         if self.lease_ceiling and m.now() >= self.lease_ceiling:
             raise Finish(m.EXIT_HUNG, 'the attempt ceiling passed', hung=True)
-        if self.fatal_at and m.now() - self.fatal_at >= FATAL_GRACE_SECONDS:
+        if self.fatal_at and m.now() - self.fatal_at >= (120 if self.args.inject == 'panic-reboot' else FATAL_GRACE_SECONDS):
             raise Finish(m.EXIT_SHORT, 'a fatal line')
         adopted = getattr(self.args, 'adopt', False)
         if self.manager_started is None and self.kernel_started is None and not adopted:
@@ -1623,7 +1670,7 @@ class Driver:
             raise Finish(m.EXIT_DONE if session(self.args) else m.EXIT_HUNG,
                          'console session ceiling passed' if session(self.args) else 'the attempt ceiling passed',
                          hung=not session(self.args))
-        if self.fatal_at and m.now() - self.fatal_at >= FATAL_GRACE_SECONDS:
+        if self.fatal_at and m.now() - self.fatal_at >= (120 if self.args.inject == 'panic-reboot' else FATAL_GRACE_SECONDS):
             raise Finish(m.EXIT_SHORT, 'a fatal line')
         if self.request_at is None:
             if elapsed > self.post_budget:
@@ -1863,7 +1910,7 @@ class Driver:
                 self.power_off(False)
             status = m.EXIT_INCOMPLETE if self.t0 is not None else m.EXIT_CANCELLED
         # Persistent sessions are scored like default boots; console sessions and fault tests never are.
-        scored = (not session(self.args) or persistent(self.args)) and not xhci_fault(self.args) and self.args.inject != FENCE_FAULT and self.args.inject not in WATCHDOG_FAULTS
+        scored = (not session(self.args) or persistent(self.args)) and not xhci_fault(self.args) and self.args.inject not in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS)
         if scored and (self.dir / 'definition/docs/metal/boot-path.json').is_file():
             try:
                 verdict = metal_score.score(self.dir)
@@ -2092,7 +2139,7 @@ def main():
         p.add_argument('--task', default='')
         p.add_argument('--no-wait', action='store_true')
         p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount',
-                                            FENCE_FAULT, 'upgrade-no-ssh', 'upgrade-service-down', *WATCHDOG_FAULTS))
+                                            FENCE_FAULT, 'panic-reboot', 'upgrade-no-ssh', 'upgrade-service-down', *WATCHDOG_FAULTS))
         p.add_argument('--entry', choices=('current', 'previous'), help='the kernel slot a persistent boot runs')
         p.add_argument('--slot-action', choices=('commit', 'rollback'), help='what the manager does to the slots first')
         p.add_argument('--run', action='append', help='a persistent boot logs in over SOL and runs this; repeatable')

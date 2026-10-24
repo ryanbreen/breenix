@@ -66,7 +66,7 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
     # A reused mutable root can preserve the exact bytes diskChecks must check
     # this boot wrote, as well as consume fixtures needed by other suites.
     staged = metal_root.stage_root(image, mode, suite, site, hasher=inputs / 'sha512-crypt', writer=writer,
-                                   idle_minutes=idle_minutes, replug=replug, operator=operator)
+                                   idle_minutes=idle_minutes, replug=replug, operator=operator, power_token=m.power_token())
     if no_ssh:
         # Damage only the candidate's private userland before recording its digest.
         # Its kernel, init and console still boot; the previous generation is untouched.

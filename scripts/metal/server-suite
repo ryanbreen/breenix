@@ -96,10 +96,19 @@ CONSOLE_INPUT = (
 )
 
 # The populated categories in manifest order, the suite each belongs to, and the milestone each one measures.
-CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'time': TIME, 'watchdog': WATCHDOG, 'remote-upgrade': REMOTE_UPGRADE, 'operator': OPERATOR, 'console-input': CONSOLE_INPUT}
-SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'time': 'server', 'remote-upgrade': 'server', 'watchdog': 'server', 'operator': 'users', 'console-input': 'server'}
+REBOOT = (
+    ('reboot-refused', 'An unprivileged reboot is refused without ending the boot'),
+    ('poweroff-refused', 'An unprivileged poweroff is refused without ending the boot'),
+    ('refusal-recovery', 'A refused kernel shutdown resumes SSH and service control'),
+    ('reboot', 'sudo reboot stops dependents first, preserves writes, resets through ACPI and boots clean'),
+    ('poweroff', 'sudo poweroff stops dependents first, preserves writes and ends the boot normally with clean filesystems'),
+    ('panic-reset', 'A fault-test kernel prints its panic and resets without a host reset'),
+)
+
+CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'time': TIME, 'reboot': REBOOT, 'watchdog': WATCHDOG, 'remote-upgrade': REMOTE_UPGRADE, 'operator': OPERATOR, 'console-input': CONSOLE_INPUT}
+SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'time': 'server', 'reboot': 'server', 'remote-upgrade': 'server', 'watchdog': 'server', 'operator': 'users', 'console-input': 'server'}
 MILESTONES = {'server/ssh-keys': 'ssh-keys', 'server/services': 'services', 'server/logs': 'logs',
-              'server/time': 'time', 'server/remote-upgrade': 'remote-upgrade', 'server/watchdog': 'watchdog', 'users/operator-login': 'operator', 'server/console-input': 'console-input'}
+              'server/time': 'time', 'server/reboot': 'reboot', 'server/remote-upgrade': 'remote-upgrade', 'server/watchdog': 'watchdog', 'users/operator-login': 'operator', 'server/console-input': 'console-input'}
 # The console lines the operator's console challenge leaves in the capture (docs/metal/boot-path.json, console-login).
 OPERATOR_CONSOLE_LINES = ('Login incorrect', 'metal-login-ok 42', 'fbcon check: shadow and screen identical',
                           'fbcon row: metal-login-ok 42')
@@ -200,6 +209,33 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
                 raise ValueError('boot captured no line ' + line)
     if category == 'logs' and (not records.get('previous') or records['previous'].get('commit') != sha):
         raise ValueError('logs need prior persistent boot evidence at this commit')
+    if category == 'reboot':
+        recovery = records.get('refusalRecovery', {})
+        if '[shutdown] kernel refused transition: -13' not in recovery.get('serial', '') or '[shutdown] refused; resuming services' not in recovery.get('serial', ''):
+            raise ValueError('no kernel refusal and service recovery evidence')
+        transitions = records.get('transitions', [])
+        if [t['action'] for t in transitions] != ['reboot', 'poweroff']:
+            raise ValueError('reboot needs both completed shutdown transitions')
+        for transition in transitions:
+            for field in ('beforeRun', 'afterRun'):
+                run = transition[field]
+                if (run.get('bootedCommit'), run.get('toolsCommit'), run.get('mode'), run.get('evidenceEligible')) != (sha, sha, 'persistent', True):
+                    raise ValueError('transition needs this kernel and tools on both boots')
+            if (transition['action'] != 'reboot' and transition['exit'] != '0') or not any(e['event'] == 'requested-shutdown' and e.get('action') == transition['action'] for e in transition['events']):
+                raise ValueError('requested shutdown did not end ordinarily')
+            if transition['action'] == 'reboot' and not any(e['event'] == 'requested-reset-observed' for e in transition['events']):
+                raise ValueError('the ACPI reset was not observed')
+            if transition['action'] == 'reboot' and (transition['before'] != transition['after'] or not any(
+                    e['event'] == 'requested-reboot-ready' and e.get('commit') == sha for e in transition['events'])):
+                raise ValueError('reboot did not return to this persistent session autonomously')
+            for mount in ('home', 'root'):
+                if '[shutdown] ' + mount + ' clean read-only' not in transition['beforeSerial'] or '[storage] ' + mount + ' prior state=clean' not in transition['afterSerial']:
+                    raise ValueError('transition has no durable clean filesystem evidence')
+            if any(re.search(pattern, transition[field]) for pattern in fatal_patterns + [r'KERNEL PANIC:'] for field in ('beforeSerial', 'afterSerial')):
+                raise ValueError('fatal output in a clean shutdown transition')
+        panic = records.get('panicBoot', {})
+        if panic.get('build', {}).get('commit') != sha or panic.get('run', {}).get('toolsCommit') != sha or panic.get('run', {}).get('kind') != 'fault-test' or 'KERNEL PANIC: reboot fault test' not in panic.get('serial', '') or not any(e['event'] == 'panic-reset-observed' for e in panic.get('events', [])):
+            raise ValueError('panic reset has no matching fault-test boot evidence')
     if category == 'time' and (not records.get('previous') or records['previous'].get('commit') != sha):
         raise ValueError('time needs a completed synchronization boot at this commit')
     if category == 'remote-upgrade':
@@ -350,7 +386,8 @@ class Probe:
             result = self.ssh('/usr/bin/bssh ' + shlex.quote(self.host) + ' 22 ' + shlex.quote(self.user)
                               + ' synthetic-refused-password --smoke --known-hosts ' + self.known_guest[1]
                               + ' --host-key-alias ' + alias, posix=False)
-            if result.returncode != 77 or 'bssh: authentication failed' not in result.stdout:
+            if (result.returncode != 77 or 'bssh: authentication failed' not in result.stderr
+                    or 'bssh: authentication failed' in result.stdout):
                 raise ValueError('actual password request did not receive USERAUTH_FAILURE')
         elif name == 'wrong-key-refused':
             self.refusal(self.ssh('true', identity=self.wrong))
@@ -382,7 +419,8 @@ class Probe:
                     raise ValueError('exec exit status differs: expected ' + str(status))
             for script in ['/bin/echo ' + ' '.join(['arg'] * 64), '/bin/echo ' + 'x' * 4096]:
                 result = self.ssh(script, posix=False)
-                if result.returncode == 0 or 'argument list too long' not in result.stdout:
+                if (result.returncode != 1 or 'argument list too long' not in result.stderr
+                        or 'argument list too long' in result.stdout):
                     raise ValueError('oversized argv was executed or not reported')
             for arguments, message in [
                 (["/bin/echo"] + ['arg'] * 64, 'argument list too long'),
@@ -391,7 +429,7 @@ class Probe:
             ]:
                 script = 'exec(' + ','.join(json.dumps(arg) for arg in arguments) + ');'
                 result = self.ssh(script, posix=False)
-                if result.returncode == 0 or message not in result.stdout:
+                if result.returncode != 1 or message not in result.stderr or message in result.stdout:
                     raise ValueError('native exec accepted invalid argv or omitted its error')
             script = 'let r = exec("/bin/echo", "native-argv-ok"); console.log(r.stdout); exit(r.exitCode);'
             self.require(self.ssh(script, posix=False), 'native-argv-ok')
@@ -1024,7 +1062,7 @@ class Services:
         bsshd = services['bsshd']['pid']
         for request in ('svc stop bsshd', 'svc reload'):
             result = self.probe.ssh(request)
-            # bsshd delivers an exec request's stderr as ordinary channel data.
+            # Non-PTY exec preserves separate stdout and stderr streams.
             if result.returncode != 1 or 'permission denied' not in result.stdout + result.stderr:
                 raise ValueError(request + ' was not refused for the operator account')
         if self.state()[1]['bsshd']['pid'] != bsshd: raise ValueError('a refused request changed bsshd')
@@ -1895,6 +1933,8 @@ def main():
         return 0
     if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot or '') or not re.fullmatch(r'[a-f0-9]{40}', args.sha or ''):
         parser.error('--boot ID and --sha full commit required')
+    if args.milestone == 'server/reboot':
+        return runpy.run_path(str(Path(__file__).with_name('server_reboot.py')))['run'](globals(), args)
     category = MILESTONES[args.milestone]
     if category == 'watchdog' and not args.branch: parser.error('--branch required for watchdog fault images')
     if category == 'remote-upgrade':

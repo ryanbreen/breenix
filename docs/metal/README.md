@@ -1073,6 +1073,51 @@ blogd checkpoints its byte offset and partial line under `/run/breenix`, keyed b
 the boot ID, and finishes a batch before honouring SIGTERM so service restarts
 resume the same stream. The existing `/proc/kmsg` text interface is retained.
 
+### Orderly reboot and power-off
+
+`sudo /sbin/reboot` and `sudo /sbin/poweroff` ask init over its service control
+socket; SO_PEERCRED restricts shutdown requests to root. The operator uses the
+ordinary sudo password policy. New service starts and reloads are refused once
+shutdown starts. init stops dependents before providers, keeps blogd to the end,
+uses each service's TERM-to-KILL timeout, terminates remaining sessions and jobs,
+reaps them, and drains service output before entering the kernel's reboot call.
+A failed drain or filesystem barrier refuses the transition and init resumes the
+services that shutdown interrupted, restoring login and SSH access. A mount
+already fenced read-only remains read-only for repair.
+
+The kernel writes back shared mappings and deferred inode work, flushes the home
+and root devices, persists and reads back their clean superblocks, then fences
+writes with a read-only remount. Writable mounts first persist a dirty superblock;
+`/proc/breenix/filesystems` reads that state directly from the devices. The next
+boot reports the state it read before marking each writable mount dirty again.
+
+The lab authenticates the final receipt with a host-generated capability in
+`/etc/breenix/power-token` (0400 root). The installer refreshes it from the private
+staging file; it is not a factory default or a site value in the repository.
+Each init creates a fresh random 256-bit boot ID. The shutdown receipt carries
+SHA-256 of the fixed-length protected seed and boot ID, keeping the seed private
+([shutdown implementation](../../kernel/src/syscall/reboot.rs)). The driver derives the same per-boot nonce and rejects receipts from
+earlier boots. The nonce is emitted only after the logger and sessions stop.
+
+The x86 reset uses the validated FADT RESET_REG and RESET_VALUE (ACPI 6.5 section
+4.8.3.6). Power-off follows the server plan: the halted kernel emits its clean
+shutdown receipt and the leased lab driver powers it off; ACPI S5 AML evaluation
+is not implemented. A requested reset keeps the persistent session and lease through firmware and
+the return to SSH on the selected slot; the case requires clean state readback
+from that autonomous return. Power-off readback uses a new leased boot. A panic keeps its failure capture and uses the
+prepared reset register without acquiring filesystem locks; it does not claim a
+clean shutdown. `--inject panic-reboot` builds the dedicated fault feature and
+records the panic and its autonomous reset, retaining a failed boot verdict.
+
+The reboot category at `f5891f6b` passed 6 of 6 cases, with matching kernel and
+tools identities, in the record ending at `20261024T094505Z-metal`. Its requested
+reboot returned to SSH within the same session with both prior superblocks clean;
+the power-off readback, refusal recovery and panic reset also passed. This record
+precedes the IRQ4 receive repair; acceptance of the later PR head is recorded in
+PR #2321. Raw captures and host-category records remain in the private boot store.
+
+The host-driven [reboot category](../suites/README.md#server-host-driven-persistent-categories)
+checks both orderly transitions and the separate panic fault boot.
 ### Synchronized time and UTC RTC
 
 The time service uses the private site's `SNTP_SERVERS` field (up to eight

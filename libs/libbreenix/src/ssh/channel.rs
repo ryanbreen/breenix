@@ -178,6 +178,15 @@ pub fn send_channel_data(
     channel: &mut Channel,
     data: &[u8],
 ) -> Result<(), SshError> {
+    send_output(io, channel, data, false)
+}
+
+/// RFC 4254 sections 5.2 and 6.6: stderr shares stdout's channel window.
+pub fn send_channel_stderr(io: &mut PacketIo, channel: &mut Channel, data: &[u8]) -> Result<(), SshError> {
+    send_output(io, channel, data, true)
+}
+
+fn send_output(io: &mut PacketIo, channel: &mut Channel, data: &[u8], stderr: bool) -> Result<(), SshError> {
     if data.len() > channel.send_window as usize || channel.max_packet == 0 {
         return Err(SshError::Protocol("channel send window exhausted"));
     }
@@ -188,9 +197,10 @@ pub fn send_channel_data(
             core::cmp::min(channel.send_window as usize, channel.max_packet as usize),
         );
 
-        let mut msg = Vec::with_capacity(9 + chunk_size);
-        msg.push(SSH_MSG_CHANNEL_DATA);
+        let mut msg = Vec::with_capacity(13 + chunk_size);
+        msg.push(if stderr { super::SSH_MSG_CHANNEL_EXTENDED_DATA } else { SSH_MSG_CHANNEL_DATA });
         SshBuf::put_u32(&mut msg, channel.remote_id);
+        if stderr { SshBuf::put_u32(&mut msg, 1); }
         SshBuf::put_string(&mut msg, &data[offset..offset + chunk_size]);
         io.send_packet(&msg).map_err(|_| SshError::Io)?;
 

@@ -600,6 +600,16 @@ fn install_tree_from(source: &Path, target: &Path, id: &str, previous: Option<&s
     // Check the account collision before publishing any layout state.
     stage_store(&mut copier, target, operator.as_ref())?;
     seed_shared(&mut copier, source, target, previous, &fixtures)?;
+    // The lab's power-control capability is private machine state, not a
+    // factory default. Refresh it from this install's protected staging file.
+    let power_token = source.join("etc/breenix/power-token");
+    if present(&power_token)? {
+        let token = fs::read_to_string(&power_token).map_err(|e| fail("read power token", &power_token, e))?;
+        if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("invalid staged power token".into());
+        }
+        copier.write_file(&target.join(STORE).join("etc/breenix/power-token"), &token, 0o400)?;
+    }
     // Time server names are site-owned install configuration, outside factory defaults.
     let sntp = source.join("etc/breenix/sntp-servers");
     if present(&sntp)? {

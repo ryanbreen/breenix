@@ -5,7 +5,7 @@
   "bootProfile": "production",
   "scoring": "modes",
   "fatal": [
-    "panicked at kernel/src/",
+    "panicked at kernel/src/|KERNEL PANIC[:!]",
     "!!! SOFT LOCKUP DETECTED !!!"
   ],
   "modes": {

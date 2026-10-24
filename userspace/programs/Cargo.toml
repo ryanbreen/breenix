@@ -858,3 +858,15 @@ path = "src/groupadd.rs"
 [[bin]]
 name = "groupdel"
 path = "src/groupdel.rs"
+
+[[bin]]
+name = "reboot"
+path = "src/reboot.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "poweroff"
+path = "src/poweroff.rs"
+test = false
+bench = false

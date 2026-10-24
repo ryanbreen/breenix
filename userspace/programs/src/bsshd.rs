@@ -221,8 +221,9 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
         }
     };
 
-    if let Some(command) = session.take_exec_command() {
-        let status = run_exec_command(&mut session, &account, &command);
+    let exec_command = session.take_exec_command();
+    if let Some(command) = exec_command.as_ref().filter(|_| !pty_requested) {
+        let status = run_exec_command(&mut session, &account, command);
         if let Err(e) = session.finish(status) {
             eprintln!("bsshd: exec close failed: {:?}", e);
         }
@@ -319,8 +320,13 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
             let mut envp: Vec<*const u8> = environment.iter().map(|entry| entry.as_ptr().cast()).collect();
             envp.push(core::ptr::null());
             let shell = c_string(&account.shell);
-            let arg0 = c_string(&format!("-{}", account.shell.rsplit('/').next().unwrap_or("sh")));
-            let argv = [arg0.as_ptr(), core::ptr::null()];
+            let shell_name = account.shell.rsplit('/').next().unwrap_or("sh");
+            let arguments = match &exec_command {
+                Some(command) => vec![c_string(shell_name), c_string("-c"), c_string(command)],
+                None => vec![c_string(&format!("-{}", shell_name))],
+            };
+            let mut argv: Vec<*const u8> = arguments.iter().map(|arg| arg.as_ptr()).collect();
+            argv.push(core::ptr::null());
             let _ = process::execve(&shell, argv.as_ptr(), envp.as_ptr());
             eprintln!("bsshd: cannot run {}", account.shell);
             process::exit(127);
@@ -398,20 +404,29 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
             return 1;
         }
     };
+    let (error_read, error_write) = match io::pipe() {
+        Ok(pipe) => pipe,
+        Err(_) => {
+            for fd in [read_fd, write_fd, input_read, input_write] { let _ = io::close(fd); }
+            return 1;
+        }
+    };
     // Backpressure on command input must not prevent draining its output.
     if io::fcntl_setfl(input_write, io::status_flags::O_NONBLOCK).is_err() {
-        for fd in [read_fd, write_fd, input_read, input_write] { let _ = io::close(fd); }
+        for fd in [read_fd, write_fd, error_read, error_write, input_read, input_write] { let _ = io::close(fd); }
         return 1;
     }
 
     match process::fork() {
         Ok(process::ForkResult::Child) => {
             let _ = io::close(read_fd);
+            let _ = io::close(error_read);
             let _ = io::close(input_write);
             let _ = io::dup2(input_read, Fd::from_raw(0));
             if input_read.raw() > 2 { let _ = io::close(input_read); }
             let _ = io::dup2(write_fd, Fd::from_raw(1));
-            let _ = io::dup2(write_fd, Fd::from_raw(2));
+            let _ = io::dup2(error_write, Fd::from_raw(2));
+            if error_write.raw() > 2 { let _ = io::close(error_write); }
             if write_fd.raw() > 2 {
                 let _ = io::close(write_fd);
             }
@@ -435,9 +450,11 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
         }
         Ok(process::ForkResult::Parent(child_pid)) => {
             let _ = io::close(write_fd);
+            let _ = io::close(error_write);
             let _ = io::close(input_read);
-            let relay = exec_shuttle(session, read_fd, input_write);
+            let relay = exec_shuttle(session, [read_fd, error_read], input_write);
             let _ = io::close(read_fd);
+            let _ = io::close(error_read);
 
             let mut status = 0i32;
             let status = match process::waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0) {
@@ -455,6 +472,8 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
             }
         }
         Err(e) => {
+            let _ = io::close(error_read);
+            let _ = io::close(error_write);
             let _ = io::close(input_read);
             let _ = io::close(input_write);
             let _ = io::close(read_fd);
@@ -467,33 +486,41 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
 }
 
 /// RFC 4254 section 5.3: input EOF closes only stdin; output keeps flowing.
-fn exec_shuttle(session: &mut ServerSession, output: Fd, input: Fd) -> Result<(), String> {
+fn exec_shuttle(session: &mut ServerSession, outputs: [Fd; 2], input: Fd) -> Result<(), String> {
     use io::poll_events::{POLLERR, POLLHUP, POLLIN, POLLOUT};
     let mut pending = Vec::new();
     let mut offset = 0;
     let mut input_open = true;
+    let mut output_open = [true; 2];
     let result = (|| {
         loop {
             let capacity = session.send_capacity().min(4096);
             let mut fds = [
-                io::PollFd::new(if capacity > 0 { output } else { Fd::from_raw(u64::MAX) }, POLLIN),
+                io::PollFd::new(if capacity > 0 && output_open[0] { outputs[0] } else { Fd::from_raw(u64::MAX) }, POLLIN),
                 io::PollFd::new(session.io().fd(), POLLIN),
                 io::PollFd::new(if input_open { input } else { Fd::from_raw(u64::MAX) },
                                if pending.is_empty() { 0 } else { POLLOUT }),
+                io::PollFd::new(if capacity > 0 && output_open[1] { outputs[1] } else { Fd::from_raw(u64::MAX) }, POLLIN),
             ];
             match io::poll(&mut fds, 100) {
                 Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EINTR)) => continue,
                 Err(e) => return Err(format!("poll: {:?}", e)),
                 Ok(_) => {}
             }
-            if capacity > 0 && fds[0].revents & (POLLIN | POLLHUP) != 0 {
+            for (index, slot) in [(0, 0), (1, 3)] {
+                let capacity = session.send_capacity().min(4096);
+                if capacity == 0 || fds[slot].revents & (POLLIN | POLLHUP) == 0 { continue; }
                 let mut buf = [0u8; 4096];
-                match io::read(output, &mut buf[..capacity]) {
-                    Ok(0) => return Ok(()),
-                    Ok(n) => session.send_data(&buf[..n]).map_err(|e| format!("send output: {:?}", e))?,
+                match io::read(outputs[index], &mut buf[..capacity]) {
+                    Ok(0) => output_open[index] = false,
+                    Ok(n) => {
+                        let sent = if index == 0 { session.send_data(&buf[..n]) } else { session.send_stderr(&buf[..n]) };
+                        sent.map_err(|e| format!("send output: {:?}", e))?;
+                    }
                     Err(e) => return Err(format!("read command output: {:?}", e)),
                 }
             }
+            if output_open == [false; 2] { return Ok(()); }
             if fds[2].revents & POLLOUT != 0 {
                 match io::write(input, &pending[offset..]) {
                     Ok(0) => return Err(String::from("zero-byte stdin write")),

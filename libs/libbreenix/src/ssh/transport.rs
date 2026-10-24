@@ -15,7 +15,7 @@ use super::keys::{HostKey, Identity, ServerHostKeyInfo};
 use super::packet::PacketIo;
 use super::{SshBuf, SshError, BSSH_VERSION};
 use super::{
-    SSH_MSG_CHANNEL_CLOSE, SSH_MSG_CHANNEL_DATA, SSH_MSG_CHANNEL_EOF, SSH_MSG_CHANNEL_OPEN,
+    SSH_MSG_CHANNEL_CLOSE, SSH_MSG_CHANNEL_DATA, SSH_MSG_CHANNEL_EXTENDED_DATA, SSH_MSG_CHANNEL_EOF, SSH_MSG_CHANNEL_OPEN,
     SSH_MSG_CHANNEL_REQUEST, SSH_MSG_CHANNEL_SUCCESS, SSH_MSG_CHANNEL_WINDOW_ADJUST,
     SSH_MSG_DISCONNECT, SSH_MSG_GLOBAL_REQUEST, SSH_MSG_IGNORE, SSH_MSG_KEXINIT, SSH_MSG_NEWKEYS,
     SSH_MSG_UNIMPLEMENTED,
@@ -242,6 +242,15 @@ impl<'a> ServerSession<'a> {
         }
     }
 
+    /// Send the command's stderr as RFC 4254 extended data type 1.
+    pub fn send_stderr(&mut self, data: &[u8]) -> Result<(), SshError> {
+        if let Some(ref mut ch) = self.channel {
+            channel::send_channel_stderr(&mut self.io, ch, data)
+        } else {
+            Err(SshError::ChannelNotFound)
+        }
+    }
+
     /// Bytes that can be sent without waiting for peer window credit.
     pub fn send_capacity(&self) -> usize {
         self.channel.as_ref().map(|ch| ch.send_window.min(ch.max_packet) as usize).unwrap_or(0)
@@ -435,6 +444,7 @@ pub struct ClientSession {
     server_version: String,
     channel: Option<Channel>,
     exit_status: Option<i32>,
+    data_is_stderr: bool,
 }
 
 /// Authentication method for SSH client handshakes.
@@ -453,6 +463,7 @@ impl ClientSession {
             server_version: String::new(),
             channel: None,
             exit_status: None,
+            data_is_stderr: false,
         }
     }
 
@@ -587,14 +598,19 @@ impl ClientSession {
         }
 
         match msg[0] {
-            SSH_MSG_CHANNEL_DATA => {
+            SSH_MSG_CHANNEL_DATA | SSH_MSG_CHANNEL_EXTENDED_DATA => {
                 let mut pos = 1;
                 let _channel_id = SshBuf::get_u32(&msg, &mut pos);
+                self.data_is_stderr = msg[0] == SSH_MSG_CHANNEL_EXTENDED_DATA;
+                if self.data_is_stderr && SshBuf::get_u32(&msg, &mut pos) != Some(1) {
+                    return Err(SshError::Protocol("unsupported extended channel data"));
+                }
                 let data = SshBuf::get_string(&msg, &mut pos)
                     .ok_or(SshError::Protocol("bad channel data"))?;
 
                 if let Some(ref mut ch) = self.channel {
-                    ch.recv_window = ch.recv_window.saturating_sub(data.len() as u32);
+                    ch.recv_window = ch.recv_window.checked_sub(data.len() as u32)
+                        .ok_or(SshError::Protocol("channel receive window exceeded"))?;
                     if ch.recv_window < 512 * 1024 {
                         channel::send_window_adjust(&mut self.io, ch, 1024 * 1024)?;
                     }
@@ -652,6 +668,11 @@ impl ClientSession {
             }
             _ => Ok(None),
         }
+    }
+
+    /// Whether the most recently returned data is RFC 4254 stderr (type 1).
+    pub fn data_is_stderr(&self) -> bool {
+        self.data_is_stderr
     }
 
     /// Last exit status reported by the remote exec channel.

@@ -37,6 +37,10 @@ impl MountDevice {
         self.inner.as_ref()
     }
 
+    pub(super) fn remount_read_only(&mut self) {
+        self.read_only = true;
+    }
+
     fn write(&self, start_block: u64, buf: &[u8], write: impl FnOnce() -> Result<(), BlockError>) -> Result<(), BlockError> {
         if self.is_read_only() { return Err(BlockError::IoError); }
         if self.failed.load(Ordering::Acquire) {
