@@ -154,7 +154,10 @@ fn emit<const TEE: bool, const TERMINAL: bool>(writer: Writer, bytes: &[u8], lev
     if TEE {
         write_notices_from_thread();
     }
-    uart_owner::write::<Uart, TEE>(writer, bytes, Kind::Plain, &mut Ownership::acquire());
+    // Raw breadcrumbs can leave their own line open, but cannot prefix the
+    // next formatted kernel record. Retain their bytes under a separate lead.
+    let port_writer = if !TEE && writer == Writer::Kernel { Writer::Diagnostic } else { writer };
+    uart_owner::write_atomic::<Uart, TEE>(port_writer, bytes, false, &mut Ownership::acquire());
     // The kernel log, as the log rings keep it, also goes to the screen console.
     if TEE && writer == Writer::Kernel {
         crate::console::log_bytes_at(level, bytes);
@@ -174,7 +177,7 @@ pub fn write_notices() {
     if crate::log_notice::pending() {
         let mut ownership = Ownership::acquire();
         crate::log_notice::take(|line| {
-            uart_owner::write::<Uart, true>(Writer::Kernel, line, Kind::Line, &mut ownership);
+            uart_owner::write_atomic::<Uart, true>(Writer::Kernel, line, true, &mut ownership);
             crate::console::log_bytes_at(log::Level::Warn, line);
         });
     }
@@ -199,7 +202,7 @@ pub fn try_write(bytes: &[u8]) -> bool {
     match Ownership::try_acquire() {
         Some(mut ownership) => {
             crate::output_accounting::count(bytes.len(), true);
-            uart_owner::write::<Uart, false>(Writer::Kernel, bytes, Kind::Plain, &mut ownership);
+            uart_owner::write::<Uart, false>(Writer::Diagnostic, bytes, Kind::Plain, &mut ownership);
             true
         }
         None => false,
@@ -336,7 +339,7 @@ fn send_queued_owned(ownership: &mut Ownership) -> usize {
         return 0;
     }
     if let Some(sent) = record.get(..n) {
-        uart_owner::write::<Uart, false>(Writer::Tty, sent, Kind::Plain, ownership);
+        uart_owner::write_atomic::<Uart, false>(Writer::Tty, sent, false, ownership);
     }
     with_ring(|ring| ring.in_flight -= 1);
     TX_HEADER + n
@@ -450,7 +453,9 @@ pub type TeeLine = Buffer<true>;
 /// this entry point. Raw diagnostic buffers cannot link the scheduler wake.
 pub fn write_bytes(writer: Writer, bytes: &[u8]) {
     if writer == Writer::Tty {
-        Buffer::<false, true>::for_writer(writer).bytes(bytes);
+        // The caller already bounded and assembled this record. Feeding it
+        // through Buffer would split it at LF and CAPACITY again (#2411).
+        emit::<false, true>(writer, bytes, log::Level::Info, true);
     } else {
         Line::for_writer(writer).bytes(bytes);
     }

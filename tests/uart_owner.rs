@@ -319,6 +319,61 @@ fn an_ordinary_record_is_written_once_when_nothing_else_writes() {
 }
 
 #[test]
+fn a_bounded_record_and_kernel_line_stay_intact_when_either_owner_stalls() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut payload = vec![b'x'; 4096];
+    payload[4095] = b'\n';
+    let kernel = b"[signal] Process 42 (client) terminated by signal 15 (SIGTERM)\n";
+    for fresh in [false, true] {
+        for (first, second) in [(payload.as_slice(), kernel.as_slice()), (kernel.as_slice(), payload.as_slice())] {
+            WIRE.lock().unwrap().clear();
+            OPEN.store(0, Ordering::Relaxed);
+            // This stall ends independently of the waiting writer. 60 ms exceeds
+            // the port's scaled 10 ms takeover bound, including between the byte's
+            // ownership check and its hardware write.
+            WAKE_AFTER.store(0, Ordering::Relaxed);
+            HOLD_AT.store(0, Ordering::Relaxed);
+            let stalled: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+            thread::scope(|scope| {
+                let one = scope.spawn(|| {
+                    STALL_AT.with(|at| at.set(5));
+                    STALL.with(|stall| stall.set(Duration::from_millis(60)));
+                    STALLED.with(|flag| flag.set(Some(stalled)));
+                    uart_owner::write_atomic::<Test, false>(1, first, fresh, &mut Ownership::acquire());
+                });
+                wait_for(|| stalled.load(Ordering::Acquire));
+                let two = scope.spawn(|| uart_owner::write_atomic::<Test, false>(2, second, fresh, &mut Ownership::acquire()));
+                one.join().unwrap();
+                two.join().unwrap();
+            });
+            assert_eq!(&*WIRE.lock().unwrap(), &[first, second].concat());
+        }
+    }
+}
+
+#[test]
+fn a_bounded_record_waits_for_a_skipped_breadcrumbs_in_flight_byte() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    WIRE.lock().unwrap().clear();
+    OPEN.store(0, Ordering::Relaxed);
+    WAKE_AFTER.store(0, Ordering::Relaxed);
+    let stalled: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+    let one = thread::spawn(move || {
+        STALL_AT.with(|at| at.set(5));
+        STALL.with(|stall| stall.set(Duration::from_millis(60)));
+        STALLED.with(|flag| flag.set(Some(stalled)));
+        record(1, b"breadcrumb\n", Kind::Plain);
+    });
+    wait_for(|| stalled.load(Ordering::Acquire));
+    let two = thread::spawn(|| {
+        uart_owner::write_atomic::<Test, false>(2, b"SUITE record intact\n", false, &mut Ownership::acquire());
+    });
+    one.join().unwrap();
+    two.join().unwrap();
+    assert_eq!(&*WIRE.lock().unwrap(), b"bread\r\nSUITE record intact\ncrumb\n");
+}
+
+#[test]
 fn a_breadcrumb_does_not_wait_for_another_cpus_record() {
     let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let (owned_tx, owned_rx) = std::sync::mpsc::channel();

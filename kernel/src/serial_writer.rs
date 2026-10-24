@@ -14,26 +14,28 @@
 //! lock-free fatal, trace and capture writers, which must not wait on a holder
 //! that may never release) neither reads nor updates this state.
 //!
-//! The TTY writes a long line as several units of at most 256 bytes, so it
-//! does not mask interrupts for the whole line. [`exclusive`] keeps the
-//! console's prompt and echo out of the gaps between those units: a TTY write
-//! holds it from its first unit to its last, as Linux's tty write lock does,
-//! and so does each console write. Its holder runs with preemption disabled. Kernel output does not wait for it, since
-//! it is also written from interrupt and fault paths, so a kernel line that
-//! arrives between two units of one TTY line still starts a line of its own
-//! inside that TTY line.
+//! The TTY admits up to 4096 input bytes, after output processing, as one
+//! serial unit (#2411/W23). The port's exclusion keeps kernel output out of
+//! that unit: SERIAL1 on x86-64, pinned UART ownership on ARM64. Larger writes
+//! may have kernel output between their units. [`exclusive`] keeps the
+//! console's prompt and echo out of those gaps and excludes other TTY writes;
+//! its holder runs with preemption disabled. Kernel output uses the port's
+//! exclusion directly, since it can run in interrupt and fault context.
 use core::sync::atomic::{AtomicU8, Ordering};
 
 /// A writer to the console port.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Writer {
-    /// Kernel output: `serial_println!`, diagnostics, breadcrumbs.
+    /// Formatted kernel output: `serial_println!` and log records.
     Kernel = 1,
     /// Userspace output through the console TTY, and its echo.
     Tty = 2,
     /// The kernel serial console's prompt and echo.
     Console = 3,
+    /// ARM64's raw diagnostic fragments, distinct from formatted log lines.
+    #[cfg(target_arch = "aarch64")]
+    Diagnostic = 4,
 }
 
 /// The writer whose unterminated line the port is in, or 0 at the start of a line.

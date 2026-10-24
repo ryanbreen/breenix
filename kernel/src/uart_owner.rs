@@ -17,13 +17,13 @@
 //! on the owning CPU: a fault or panic taken while this CPU owns the UART
 //! writes its own output inline instead of waiting on itself.
 //!
-//! An owner that writes nothing for [`STALL_NS`] (it halted, faulted and never
-//! returned, or its vCPU was descheduled) has its ticket skipped by a waiter.
-//! Skipping revokes it: an owner checks its ticket before every byte, and one
+//! An unpinned owner that stops making progress for [`STALL_NS`] can have its
+//! ticket skipped by a waiter, including when its vCPU was descheduled.
+//! Skipping revokes it: an owner checks its ticket before a byte, and one
 //! that finds it skipped queues again behind the CPUs now waiting, and starts
 //! a fresh line if another writer's line was left open meanwhile; its record
-//! is then split around the other CPUs' output. Fatal output therefore
-//! depends on no other CPU and on no scheduler progress.
+//! is then split around the other CPUs' output. Pinned records retain their
+//! owner instead; a waiter must let that bounded emission finish.
 //!
 //! An owner that stalls between that check and its byte writes the byte late,
 //! into whatever another CPU is writing by then. Every byte is therefore
@@ -33,6 +33,10 @@
 //! boot-path stage marker (`stage_lines`), and a [`Kind::Line`]. Such a record
 //! that loses its ownership part way, or that another CPU wrote into, is
 //! written again from its first byte, on a fresh line.
+//!
+//! Bounded terminal writes and formatted kernel records use [`write_atomic`]
+//! instead: they pin their ticket before the first byte, so a descheduled vCPU
+//! retains its turn rather than leaving a partial record on the wire (#2411).
 
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -45,6 +49,11 @@ pub const STALL_NS: u64 = 100_000_000;
 /// How long one byte waits for the UART to accept it before being written
 /// anyway, as Linux's 8250 console does.
 pub const READY_NS: u64 = 10_000_000;
+
+/// The bit beside a 32-bit ticket pins a bounded record against stall takeover.
+/// Ticket and pin share one CAS word, so a waiter cannot skip a newly pinned
+/// owner based on an earlier observation of its progress (#2411).
+const PINNED: u64 = 1 << 32;
 
 /// The UART and the CPU a writer runs on.
 pub trait Port: Sized + 'static {
@@ -81,9 +90,9 @@ pub trait Port: Sized + 'static {
 pub struct State {
     /// The next ticket to hand out.
     next: AtomicU32,
-    /// The ticket that owns the UART. It advances when the owner releases, or
-    /// when a waiter skips an owner that stalled.
-    serving: AtomicU32,
+    /// The ticket in the low 32 bits, with PINNED beside it. It advances when
+    /// the owner releases, or a waiter skips an unpinned owner that stalled.
+    serving: AtomicU64,
     /// The owner's ticket (high half) and CPU tag (low half), written once it
     /// owns the UART. Only its own CPU acts on it, to recognise reentry.
     holder: AtomicU64,
@@ -103,7 +112,7 @@ impl State {
     pub const fn new() -> Self {
         Self {
             next: AtomicU32::new(0),
-            serving: AtomicU32::new(0),
+            serving: AtomicU64::new(0),
             holder: AtomicU64::new(0),
             begun: AtomicU64::new(0),
             ended: AtomicU64::new(0),
@@ -139,12 +148,12 @@ fn take<P: Port>(tag: u32) -> u32 {
 fn wait<P: Port>(ticket: u32, stall: u64) -> bool {
     let state = P::state();
     let mut watched = (
-        state.serving.load(Ordering::SeqCst),
+        state.serving.load(Ordering::SeqCst) as u32,
         state.ended.load(Ordering::Relaxed),
     );
     let mut since = P::counter();
     loop {
-        let serving = state.serving.load(Ordering::SeqCst);
+        let serving = state.serving.load(Ordering::SeqCst) as u32;
         if serving == ticket {
             return true;
         }
@@ -157,11 +166,11 @@ fn wait<P: Port>(ticket: u32, stall: u64) -> bool {
             watched = seen;
             since = now;
         } else if now.wrapping_sub(since) >= stall {
-            // The ticket being served has written nothing for STALL_NS. Skip it;
-            // if another waiter got there first, this does nothing.
+            // Skip a stalled, unpinned ticket. The CAS also fails when its
+            // owner pinned it or another waiter advanced it meanwhile.
             let _ = state.serving.compare_exchange(
-                serving,
-                serving.wrapping_add(1),
+                serving as u64,
+                serving.wrapping_add(1) as u64,
                 Ordering::SeqCst,
                 Ordering::Relaxed,
             );
@@ -191,7 +200,7 @@ impl<P: Port> Ownership<P> {
         let state = P::state();
         let holder = state.holder.load(Ordering::Relaxed);
         let ticket = (holder >> 32) as u32;
-        (holder as u32 == tag && state.serving.load(Ordering::SeqCst) == ticket).then_some(ticket)
+        (holder as u32 == tag && state.serving.load(Ordering::SeqCst) as u32 == ticket).then_some(ticket)
     }
 
     fn new(saved: u64, tag: u32, ticket: u32, release: bool) -> Self {
@@ -224,7 +233,7 @@ impl<P: Port> Ownership<P> {
             return Some(Self::new(saved, tag, ticket, false));
         }
         // With no ticket outstanding, NEXT equals SERVING and the next ticket owns at once.
-        let serving = state.serving.load(Ordering::SeqCst);
+        let serving = state.serving.load(Ordering::SeqCst) as u32;
         if state
             .next
             .compare_exchange(serving, serving.wrapping_add(1), Ordering::Acquire, Ordering::Relaxed)
@@ -241,7 +250,22 @@ impl<P: Port> Ownership<P> {
 
     /// False once a waiter has skipped this ticket after this CPU stalled.
     fn held(&self) -> bool {
-        P::state().serving.load(Ordering::SeqCst) == self.ticket
+        P::state().serving.load(Ordering::SeqCst) as u32 == self.ticket
+    }
+
+    /// Pin before the first byte of a bounded record. If takeover won the CAS
+    /// before pinning, rejoin the queue before emitting any bytes.
+    fn pin(&mut self) {
+        loop {
+            let ticket = self.ticket as u64;
+            match P::state().serving.compare_exchange(
+                ticket, ticket | PINNED, Ordering::SeqCst, Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(serving) if serving == (ticket | PINNED) => return,
+                Err(_) => self.regain(),
+            }
+        }
     }
 
     /// Own the UART again after losing it, behind the CPUs already waiting.
@@ -255,12 +279,16 @@ impl<P: Port> Drop for Ownership<P> {
     fn drop(&mut self) {
         if self.release {
             // Fails only if a waiter skipped this ticket; SERVING has moved on.
-            let _ = P::state().serving.compare_exchange(
-                self.ticket,
-                self.ticket.wrapping_add(1),
-                Ordering::SeqCst,
-                Ordering::Relaxed,
-            );
+            let state = P::state();
+            let serving = state.serving.load(Ordering::SeqCst);
+            if serving as u32 == self.ticket {
+                let _ = state.serving.compare_exchange(
+                    serving,
+                    self.ticket.wrapping_add(1) as u64,
+                    Ordering::SeqCst,
+                    Ordering::Relaxed,
+                );
+            }
         }
         P::restore_interrupts(self.saved);
     }
@@ -433,6 +461,34 @@ pub enum Kind {
     /// A whole line of its own, always: written whole, starting a fresh line
     /// whoever's line is open.
     Line,
+}
+
+/// Write a bounded record without stall takeover or replay. `fresh` starts a
+/// notice on its own line, including after the same writer's partial line.
+/// Unlike the recovery writer below, this path needs no stage-marker scan.
+pub fn write_atomic<P: Port, const TEE: bool>(
+    writer: P::Writer,
+    bytes: &[u8],
+    fresh: bool,
+    ownership: &mut Ownership<P>,
+) {
+    if bytes.is_empty() { return; }
+    ownership.pin();
+    // A previously skipped raw breadcrumb may still have a byte in flight.
+    // Let it finish before starting this record. A same-CPU fatal reentry
+    // cannot wait for its own interrupted byte.
+    let state = P::state();
+    while ownership.release
+        && state.begun.load(Ordering::SeqCst) != state.ended.load(Ordering::SeqCst)
+    {
+        core::hint::spin_loop();
+    }
+    let lead = if fresh && P::line_open() { &b"\r\n"[..] } else { P::lead(writer, bytes) };
+    for &byte in lead.iter().chain(bytes) {
+        while !put::<P, TEE>(writer, byte, ownership) {
+            ownership.pin();
+        }
+    }
 }
 
 /// Write one record from `writer` while owning the UART.

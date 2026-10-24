@@ -225,8 +225,10 @@ pub fn start_foreground_signal_thread() {
     });
 }
 
-/// Maximum UART bytes emitted while interrupts are masked for one TTY write.
+/// Grid/ONLCR processing stays small; serial admission spans a bounded write.
 const SERIAL_ATOMIC_OUTPUT_BYTES: usize = 256;
+const SERIAL_ATOMIC_INPUT_BYTES: usize = 4096;
+const SERIAL_RECORD_BYTES: usize = 2 * SERIAL_ATOMIC_INPUT_BYTES + crate::console::grid::HELD;
 
 fn for_each_line_segment(buf: &[u8], mut visit: impl FnMut(&[u8])) {
     for segment in buf.split_inclusive(|byte| *byte == b'\n') {
@@ -925,36 +927,50 @@ impl TtyDevice {
         // Get termios settings once for the entire buffer
         let termios = self.ldisc.lock().termios().clone();
         let do_onlcr = termios.is_opost() && termios.is_onlcr();
-        // Each lock acquisition covers at most one line and one bounded UART
-        // chunk, never the whole userspace buffer. Build ONLCR expansion before
-        // entering the serial primitive so CR-LF stays in the same atomic write.
-        // The whole write holds `serial_writer::exclusive`, so the console's
-        // prompt and echo do not land between its chunks.
+        // Process the grid and ONLCR in small pieces, then admit the serial
+        // copy of up to 4096 input bytes as one record (#2411/W23). The extra
+        // HELD bytes cover an escape sequence retained by an earlier write.
         crate::serial_writer::exclusive(|| {
-            for_each_line_segment(buf, |line| {
-                let mut expanded = [0u8; SERIAL_ATOMIC_OUTPUT_BYTES];
-                let mut expanded_len = 0usize;
-
-                for &c in line {
-                    let output_len = if do_onlcr && c == b'\n' { 2 } else { 1 };
-                    if expanded_len + output_len > expanded.len() {
-                        while self.transmission_stopped() { crate::arch_halt(); }
-                        self.to_sinks(&expanded[..expanded_len]);
-                        expanded_len = 0;
+            for input in buf.chunks(SERIAL_ATOMIC_INPUT_BYTES) {
+                let mut record = [0u8; SERIAL_RECORD_BYTES];
+                let mut record_len = 0;
+                let mut output = |bytes: &[u8]| {
+                    while self.transmission_stopped() { crate::arch_halt(); }
+                    if self.is_console() {
+                        crate::console::write_tty(bytes, |forwarded| {
+                            record[record_len..record_len + forwarded.len()].copy_from_slice(forwarded);
+                            record_len += forwarded.len();
+                        });
+                    } else {
+                        self.to_sinks(bytes);
                     }
-                    if output_len == 2 {
-                        expanded[expanded_len] = b'\r';
+                };
+                for_each_line_segment(input, |line| {
+                    let mut expanded = [0u8; SERIAL_ATOMIC_OUTPUT_BYTES];
+                    let mut expanded_len = 0usize;
+
+                    for &c in line {
+                        let output_len = if do_onlcr && c == b'\n' { 2 } else { 1 };
+                        if expanded_len + output_len > expanded.len() {
+                            output(&expanded[..expanded_len]);
+                            expanded_len = 0;
+                        }
+                        if output_len == 2 {
+                            expanded[expanded_len] = b'\r';
+                            expanded_len += 1;
+                        }
+                        expanded[expanded_len] = c;
                         expanded_len += 1;
                     }
-                    expanded[expanded_len] = c;
-                    expanded_len += 1;
-                }
 
-                if expanded_len != 0 {
-                    while self.transmission_stopped() { crate::arch_halt(); }
-                    self.to_sinks(&expanded[..expanded_len]);
+                    if expanded_len != 0 {
+                        output(&expanded[..expanded_len]);
+                    }
+                });
+                if record_len != 0 {
+                    crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, &record[..record_len]);
                 }
-            });
+            }
         });
         // A report the output asked for is input now, behind the keys
         // already typed, not at the render thread's next pass.
@@ -1242,17 +1258,15 @@ pub fn write_output(buf: &[u8]) -> usize {
 }
 
 /// Write `buf` to the console serial port as it is, without output
-/// processing, a line segment (at most one bounded chunk) per serial unit,
-/// holding `serial_writer::exclusive` for the whole write.
+/// processing, up to 4096 bytes per serial unit, holding
+/// `serial_writer::exclusive` for the whole write.
 pub fn write_unprocessed(buf: &[u8]) {
     #[cfg(target_arch = "x86_64")]
     crate::serial::sync_log_to_console();
     crate::serial_writer::exclusive(|| {
-        for_each_line_segment(buf, |line| {
-            for chunk in line.chunks(SERIAL_ATOMIC_OUTPUT_BYTES) {
-                crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, chunk);
-            }
-        });
+        for chunk in buf.chunks(SERIAL_ATOMIC_INPUT_BYTES) {
+            crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, chunk);
+        }
     });
 }
 
