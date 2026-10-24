@@ -697,3 +697,106 @@ pub fn console_after_compositor() -> CaseResult {
     drop(_d);
     console_bytes(&[(30, 1), (30, 0)], b"a")
 }
+
+/// The Phase A public library exercises whole payloads and transactional refusal
+/// without depending on lane 3's compositor routing.
+pub fn library_batches() -> CaseResult {
+    use libbreenix::input::{self as input, Batch, Capability, Injector, Reader};
+    let reader = Reader::open(true)?;
+    let device = Injector::create(&[
+        Capability { kind: input::kind::KEY, code: 30, minimum: 0, maximum: 1 },
+        Capability { kind: input::kind::TEXT, code: 0, minimum: 1, maximum: 256 },
+    ], true)?;
+    let mut storage = [0u8; 512];
+    let mut batch = Batch::new(&mut storage);
+    batch.event(1, 30, 1, 1234)?.text("hé\0λ🙂", 1234)?
+        .event(1, 30, 0, 1234)?.finish(1234)?;
+    device.inject(&batch)?;
+    let mut short = [0u8; 32];
+    let fault = unsafe { libbreenix::syscall::raw::syscall3(libbreenix::syscall::nr::READ, reader.fd().raw(), 1, 1024) } as i64;
+    check(fault == -14, "bad read buffer did not return EFAULT")?;
+    check(matches!(reader.read(&mut short), Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EINVAL))),
+        "short read did not return EINVAL for a variable-payload batch")?;
+    let mut bytes = [0u8; 1024];
+    let events = reader.read(&mut bytes)?.collect::<Result<Vec<_>, _>>()?;
+    check(events.len() == 4 && events[1].payload == "hé\0λ🙂".as_bytes()
+        && events.iter().all(|r| r.event.device == device.id() && r.event.time_ns == 1234)
+        && events.windows(2).all(|r| r[0].event.serial < r[1].event.serial),
+        "library reader changed text bytes, injector time, identity or serial order")?;
+    let last = events[3].event.serial;
+    batch.clear();
+    let bad = &mut batch;
+    bad.event(1, 30, 1, 1233)?.finish(1233)?;
+    check(matches!(device.inject(&bad), Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EINVAL))),
+        "decreasing injector time did not return EINVAL")?;
+    bad.clear();
+    bad.event(1, 48, 1, 1235)?.finish(1235)?;
+    check(matches!(device.inject(&bad), Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EINVAL))),
+        "undeclared capability did not return EINVAL")?;
+    check(matches!(reader.read(&mut bytes), Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EAGAIN))),
+        "refused batch published a prefix")?;
+    let good = bad;
+    good.clear();
+    good.event(1, 30, 1, 1235)?.event(1, 30, 0, 1235)?.finish(1235)?;
+    device.inject(&good)?;
+    let events = reader.read(&mut bytes)?.collect::<Result<Vec<_>, _>>()?;
+    check(events.len() == 3 && events[0].event.serial == last + 1,
+        "rejected write consumed serials or damaged subsequent batch")
+}
+
+pub fn reader_lifetime() -> CaseResult {
+    use libbreenix::{input::{self as input, Batch, Capability, Injector, Reader}, io};
+    let _claim = InputClaim::new()?;
+    let device = Injector::create(&[Capability { kind: 1, code: 30, minimum: 0, maximum: 1 }], true)?;
+    let reader = Reader::open(true)?;
+    let contender = Reader::open(true)?;
+    reader.grab(&[device.id()])?;
+    let duplicate = io::dup(reader.fd())?;
+    // An unrelated reader and one duplicate may close without ending custody.
+    drop(Reader::open(true)?);
+    let mut storage = [0u8; 512];
+    let mut batch = Batch::new(&mut storage); batch.event(1, 30, 1, 100)?.finish(100)?;
+    device.inject(&batch)?;
+    let mut bytes = [0; 256];
+    let events = reader.read(&mut bytes)?.collect::<Result<Vec<_>, _>>()?;
+    let press = events[0].event.serial;
+    let syn = events[1].event.serial;
+    reader.dispose(&input::Disposition { serial: syn, disposition: input::disposition::WM_HANDLED, ..input::Disposition::default() })?;
+    drop(reader);
+    check(matches!(contender.grab(&[device.id()]), Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EBUSY))),
+        "closing one duplicated fd released the grab")?;
+    // The pending press ends lost only at the last reference, even though SYN
+    // already has a terminal outcome.
+    check(!ledger()?.iter().any(|r| r.first() == Some(&press.to_string())), "later SYN hid the pending press")?;
+    io::close(duplicate)?;
+    contender.grab(&[device.id()])?;
+    let rows = ledger()?;
+    check(rows.iter().any(|r| r.first() == Some(&press.to_string()) && r.get(1).is_some_and(|v| v == "lost")
+        && r.get(3).is_some_and(|v| v == "compositor-died")), "last reader close omitted the pending serial's death disposition")?;
+    contender.ungrab()?;
+    drop(_claim);
+    let mut observer = Stream::open()?;
+    child_check(|| {
+        let run = || -> Result<(), libbreenix::error::Error> {
+            window::claim_compositor()?;
+            let owned = Reader::open(true)?;
+            owned.grab(&[device.id()])?;
+            let mut data = [0; 128];
+            let mut events = Batch::new(&mut data);
+            events.event(1, 30, 1, 200)?.finish(200)?;
+            device.inject(&events)?;
+            // Kernel process teardown, rather than a Rust destructor, closes
+            // this final reader reference and drops the compositor claim.
+            core::mem::forget(owned);
+            Ok(())
+        };
+        if run().is_ok() { 0 } else { 1 }
+    })?;
+    let dead = observer.read_from(2, &[device.id()])?;
+    let _new_claim = InputClaim::new()?;
+    contender.grab(&[device.id()])?;
+    check(ledger()?.iter().any(|r| r.first() == Some(&dead[0].serial.to_string())
+        && r.get(1).is_some_and(|v| v == "lost") && r.get(3).is_some_and(|v| v == "compositor-died")),
+        "process teardown kept the grab or lost the pending press's death disposition")?;
+    Ok(())
+}

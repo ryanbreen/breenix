@@ -77,6 +77,8 @@ static SUITE: Suite = suite("window-manager", "Window manager", &[
         case("console-modifiers", "Ctrl+C on the console gives byte 3 from every device type.", input_core::console_modifiers),
         case("ledger-gap", "A serial left without a disposition is reported as the first missing serial.", input_core::ledger_gap),
         case("console-after-compositor", "When the compositor dies, keys return to the console.", input_core::console_after_compositor),
+        case("library-batches", "The public reader and injector preserve UTF-8 payloads, injector time and atomic serial allocation.", input_core::library_batches),
+        case("reader-lifetime", "The compositor grab survives unrelated closes and dup, and ends on the last reader reference.", input_core::reader_lifetime),
     ]),
     category("input-devices", "Keyboard & pointer drivers on every target", &[
         case("keyboard-completion-path", "The bound keyboard completion reports, wakes bwm, delivers A and rearms", input_devices::keyboard_completion),

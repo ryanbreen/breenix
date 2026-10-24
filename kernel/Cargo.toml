@@ -200,6 +200,7 @@ interactive = ["testing"]  # Boot into init_shell instead of running automated t
 disable_x86_prod_init = []
 
 [dependencies]
+input-abi = { path = "../libs/input-abi" }
 gpu-abi = { path = "../libs/gpu-abi", features = ["alloc"] }
 bootloader_api = { git = "https://github.com/rust-osdev/bootloader.git", rev = "707db11201b19541b7cfef84037866ee03aa0927" }
 embedded-graphics = "0.8.1"

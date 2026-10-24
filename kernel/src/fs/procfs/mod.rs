@@ -102,6 +102,7 @@ pub enum ProcEntryType {
     Ext2,
     /// /proc/breenix/frames - allocated physical frames by allocation site
     Frames,
+    InputLedger,
     /// /proc/pids - list of all process IDs
     Pids,
     /// /proc/kmsg - kernel log messages
@@ -188,6 +189,7 @@ impl ProcEntryType {
             ProcEntryType::StageComposites => "stage-composites",
             ProcEntryType::Ext2 => "ext2",
             ProcEntryType::Frames => "frames",
+            ProcEntryType::InputLedger => "input-ledger",
             ProcEntryType::Pids => "pids",
             ProcEntryType::Kmsg => "kmsg",
             ProcEntryType::KmsgSequence => "kmsg-sequence",
@@ -247,6 +249,7 @@ impl ProcEntryType {
             ProcEntryType::StageComposites => "/proc/breenix/stage-composites",
             ProcEntryType::Ext2 => "/proc/breenix/ext2",
             ProcEntryType::Frames => "/proc/breenix/frames",
+            ProcEntryType::InputLedger => "/proc/breenix/input-ledger",
             ProcEntryType::Pids => "/proc/pids",
             ProcEntryType::Kmsg => "/proc/kmsg",
             ProcEntryType::KmsgSequence => "/proc/kmsg-sequence",
@@ -307,6 +310,7 @@ impl ProcEntryType {
             ProcEntryType::StageComposites => 206,
             ProcEntryType::Ext2 => 202,
             ProcEntryType::Frames => 203,
+            ProcEntryType::InputLedger => 209,
             ProcEntryType::Pids => 9,
             ProcEntryType::Kmsg => 10,
             ProcEntryType::KmsgSequence => 31,
@@ -444,6 +448,7 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::StageComposites));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Frames));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::InputLedger));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Pids));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Kmsg));
     procfs.entries.push(ProcEntry::new(ProcEntryType::KmsgSequence));
@@ -737,7 +742,7 @@ pub fn list_breenix_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::StageComposites))
+        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::StageComposites|ProcEntryType::InputLedger))
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -845,6 +850,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::XhciPointers => text(String::from("")),
         ProcEntryType::Ext2 => generate_ext2().map(String::into_bytes),
         ProcEntryType::Frames => generate_frames().map(String::into_bytes),
+        ProcEntryType::InputLedger => text(crate::input::stream::ledger()),
         ProcEntryType::NetDir => {
             let mut listing = Vec::new();
             listing.try_reserve_exact(8).map_err(|_| -12)?;
