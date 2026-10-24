@@ -34,8 +34,7 @@ use super::handoff::{word, quad, entries};
 /// A one-window scene, composed: the compositor, the window and its composite serial.
 fn one_window(seed: u32) -> Result<(Helper, W, Placed, u64), breenix_suite::suite::CaseError> {
     let mut k = compositor()?;
-    let (width, height) = screen_size()?;
-    let p = Placed::new(0, 0, width as u32, height as u32, 0, seed);
+    let p = Placed::new(320, 200, 200, 120, 0, seed);
     let w = W::new(p.w, p.h, 2)?;
     show(&mut k, &w, &p)?;
     let (serial, _) = compose(&mut k)?;
@@ -310,7 +309,7 @@ fn scanout_fault_wrong_resource() -> CaseResult {
     let (status,reason,s,serial)=gpu_fault(libbreenix::gpu::abi::test_point::WRONG_SCANOUT,18)?;
     ensure(status==0 && reason==0,"20.3","gpu-display: wrong-scanout must report the actual completed binding, not invent a device error")?;
     ensure(s.quad(80)!=0 && s.quad(176)!=serial && s.word(164)==0,"20.3","gpu-display: wrong-scanout was not exposed by the observed resource/composite identity")?;
-    let (width,height)=screen_size()?;let scene=[Placed::new(0,0,width as u32,height as u32,0,19)];let want=formula(&scene);
+    let scene=[Placed::new(320,200,200,120,0,19)];let want=formula(&scene);
     ensure((0..s.height).any(|y|(0..s.width).any(|x|s.pixels[(y*s.width+x)*4..(y*s.width+x+1)*4]!=want(x as u32,y as u32))),"20.3",
         "gpu-display: wrong-scanout did not expose a destination different from the intended composite")
 }
@@ -327,7 +326,7 @@ let (status,reason,s,_)=gpu_fault(libbreenix::gpu::abi::test_point::STALE_FENCE,
 fn scanout_fault_outside_damage() -> CaseResult {
 let (status,reason,s,_)=gpu_fault(libbreenix::gpu::abi::test_point::CORRUPT_PIXEL,24)?;
     ensure(status==0 && reason==0,"20.3","gpu-display: corrupt-pixel readback did not complete normally")?;
-    let (width,height)=screen_size()?;let scene=[Placed::new(0,0,width as u32,height as u32,0,25)];let want=formula(&scene);
+    let scene=[Placed::new(320,200,200,120,0,25)];let want=formula(&scene);
     let mut outside=0usize;
     for y in 0..s.height {for x in 0..s.width {
         let different=s.pixels[(y*s.width+x)*4..(y*s.width+x+1)*4]!=want(x as u32,y as u32);

@@ -354,6 +354,8 @@ interface()?;
     ensure(handle!=0 && ![0,255].contains(&(handle>>56)),"17.4","gpu-window: fixture did not expose an actual GPU resource handle")?;
     let (ret,modes)=libbreenix::gpu::modes();
     ensure(ret==0 && modes.binding_known==1 && modes.scanout_resource==device && device!=0,"17.4","gpu-display: compositor has no known GPU scanout binding")?;
+    let observed=super::composition::gpu_snapshot(&mut k)?;
+    same(&observed.pixels,observed.width as u32,observed.height as u32,true,"private bound scanout","23.9",|_,_|[51,34,17,255])?;
     let sample=|who:&str|->Result<(),String>{
         let mut c=bgl::Context::new().map_err(|r|format!("context {}",outcome(r)))?;
         let target=libbreenix::gpu::target_create(0,16,16).map_err(|r|format!("target {}",outcome(r)))?;

@@ -494,6 +494,7 @@ fn composition_damage_screen() -> CaseResult {
     let (_, pixels) = compose(&mut fresh)?;
     ensure(pixels == (width*height) as u64, "18", format!("a new compositor's first composite processed {pixels} pixels, not the whole screen"))?;
     let (full, _) = composed_screen(&mut fresh)?;
+    crate::remember_frame(&full,width,height,Some(partial.clone()));
     match (0..width * height).find(|&i| partial[i * 4..i * 4 + 4] != full[i * 4..i * 4 + 4]) {
         None => Ok(()),
         Some(i) => at("18", format!("the partial composite's frame differs from a full recomposition at ({}, {}): {:02x?} against {:02x?}",
@@ -787,7 +788,8 @@ fn composition_irq_bound() -> CaseResult {
     for i in 0..20 {
         w.frame(28 + i).cite("17.3")?;
         compose(&mut k)?;
-        let _=screen()?;
+        let (pixels,_)=screen()?;
+        screen_is(&pixels,&[Placed { seed: 28+i, ..p }],"full-resolution IRQ sample")?;
     }
     let bound = irq_gauge()?;
     value("irq-masked-max", bound as i64, "us", Some((0, 500)));
@@ -816,6 +818,10 @@ fn composition_present_rate() -> CaseResult {
     let elapsed = since(start).max(1);
     let composed = counter("composites").cite("18")? - composites0;
     let rate = composed * 1_000 / elapsed;
+    let record = k.ask("composite").cite("18")?;
+    ensure(record.starts_with("ok "),"18","final present-rate composite failed")?;
+    let (pixels,_) = screen()?;
+    screen_is(&pixels,&[Placed { seed: 299, ..p }],"full-resolution present-rate frame")?;
     breenix_suite::suite::timing(&frame_times,16_667)?;
     value("composites-per-second", rate as i64, "fps", Some((60, i64::MAX)));
     ensure(rate >= 60, "18", format!("one 256x256 window committing as fast as its buffers are released was composed {composed} times in {elapsed} ms, {rate} a second; the contract requires at least 60"))
