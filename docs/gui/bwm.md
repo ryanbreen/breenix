@@ -120,6 +120,11 @@ test configuration. The frozen wall base is 2026-01-01 00:00:00 UTC plus UI
 time. Malformed settings fall back to defaults with a visible error. Fonts
 and `/etc/hotkeys.conf` load on ARM64 as on other targets.
 
+W20 pins the shipped hotkey grammar: `<chord> = exec <path> | close |
+focus_next | focus_prev`. For example, `super+k = exec
+/usr/libexec/breenix/wm-client_test` launches that program; a bare path is
+not an action. <!-- claim-lint:ok: Normative W20 grammar ruling, not runtime acceptance. -->
+
 ## Clipboard (W4)
 
 The clipboard is a kernel service on window syscall 414, not a bwm socket.
