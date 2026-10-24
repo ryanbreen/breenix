@@ -416,7 +416,7 @@ pub fn super_single_tap() -> CaseResult {
 pub fn hotkeys_config() -> CaseResult {
     let _config = FileOverride::new(
         "/etc/hotkeys.conf",
-        b"super+k = /usr/libexec/breenix/wm-client_test\n",
+        b"super+k = exec /usr/libexec/breenix/wm-client_test\n",
     )?;
     let _d = Desktop::start()?;
     let before = listed()?;

@@ -110,10 +110,20 @@ Submission acceptance, an FPS print and an acknowledged epoch cannot stand
 in for native completed pixels. The four `[bwm]` boot-path markers retain
 the bytes catalogued in `docs/boot-path.json`.
 
-`/etc/bwm.conf` accepts `font=<path>`, `clock=frozen` and `fps=off` for the
+The default font is the installed TTF on every target (W19). `font=bitmap`
+selects the built-in bitmap font; pixel-exact bitmap title oracles pin this
+setting instead of assuming the default. Appbar widths use the selected
+font's measured advance. <!-- claim-lint:ok: Normative W19, PR #2384, font selection and oracle configuration ruling, not runtime acceptance. -->
+
+`/etc/bwm.conf` accepts `font=<path>`, `font=bitmap`, `clock=frozen` and `fps=off` for the
 test configuration. The frozen wall base is 2026-01-01 00:00:00 UTC plus UI
 time. Malformed settings fall back to defaults with a visible error. Fonts
 and `/etc/hotkeys.conf` load on ARM64 as on other targets.
+
+W20 pins the shipped hotkey grammar: `<chord> = exec <path> | close |
+focus_next | focus_prev`. For example, `super+k = exec
+/usr/libexec/breenix/wm-client_test` launches that program; a bare path is
+not an action. <!-- claim-lint:ok: Normative W20 grammar ruling, not runtime acceptance. -->
 
 ## Clipboard (W4)
 

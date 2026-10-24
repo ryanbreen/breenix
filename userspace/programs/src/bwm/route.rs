@@ -311,47 +311,6 @@ impl HotkeyManager {
     ///   Super+Super = exec blauncher
     ///   Alt+F4 = close
     ///   Super+Return = exec bterm
-    #[cfg(not(target_arch = "aarch64"))]
-    pub(super) fn load_config(&mut self, path: &str) {
-        let fd = match fs::open(path, fs::O_RDONLY) {
-            Ok(fd) => fd,
-            Err(_) => {
-                print!("[bwm] hotkeys: no config at {}, using defaults\n", path);
-                self.load_defaults();
-                return;
-            }
-        };
-        let mut buf = vec![0u8; 4096];
-        let n = match io::read(fd, &mut buf) {
-            Ok(n) => n,
-            Err(_) => {
-                let _ = io::close(fd);
-                print!("[bwm] hotkeys: failed to read config, using defaults\n");
-                self.load_defaults();
-                return;
-            }
-        };
-        let _ = io::close(fd);
-        buf.truncate(n);
-
-        let mut found_any = false;
-        for line in buf.split(|&b| b == b'\n') {
-            let line = trim(line);
-            if line.is_empty() || line[0] == b'#' {
-                continue;
-            }
-            if let Some(hotkey) = Self::parse_line(line) {
-                self.bindings.push(hotkey);
-                found_any = true;
-            }
-        }
-
-        if !found_any {
-            print!("[bwm] hotkeys: config empty, using defaults\n");
-            self.load_defaults();
-        }
-    }
-
     pub(super) fn load_defaults(&mut self) {
         self.bindings.clear();
         self.bindings.push(Hotkey {
@@ -384,95 +343,6 @@ impl HotkeyManager {
             taps: 1,
             action: HotkeyAction::FocusPrev,
         });
-    }
-
-    #[cfg(not(target_arch = "aarch64"))]
-    pub(super) fn parse_line(line: &[u8]) -> Option<Hotkey> {
-        // Split on '='
-        let eq_pos = line.iter().position(|&b| b == b'=')?;
-        let lhs = trim(&line[..eq_pos]);
-        let rhs = trim(&line[eq_pos + 1..]);
-        if lhs.is_empty() || rhs.is_empty() {
-            return None;
-        }
-
-        // Parse left side: modifier+modifier+key
-        let mut modifiers = 0u8;
-        let mut key = 0u8;
-        let mut taps = 1u8;
-
-        // Count how many times each modifier appears (for multi-tap)
-        let mut super_count = 0u8;
-
-        let parts: Vec<&[u8]> = lhs.split(|&b| b == b'+').collect();
-        for part in &parts {
-            let part = trim(part);
-            if part.is_empty() {
-                continue;
-            }
-            match &part.to_ascii_lowercase()[..] {
-                b"super" | b"cmd" | b"command" | b"win" => {
-                    modifiers |= modifier::SUPER;
-                    super_count += 1;
-                }
-                b"alt" => {
-                    modifiers |= modifier::ALT;
-                }
-                b"ctrl" | b"control" => {
-                    modifiers |= modifier::CTRL;
-                }
-                b"shift" => {
-                    modifiers |= modifier::SHIFT;
-                }
-                b"return" | b"enter" => {
-                    key = b'\r';
-                }
-                b"tab" => {
-                    key = b'\t';
-                }
-                b"space" => {
-                    key = b' ';
-                }
-                b"backspace" => {
-                    key = 0x08;
-                }
-                b"escape" | b"esc" => {
-                    key = 0x1b;
-                }
-                k if k.len() == 1 => {
-                    key = k[0].to_ascii_lowercase();
-                }
-                _ => {} // Unknown token, skip
-            }
-        }
-
-        // Super+Super means double-tap Super (no key, modifier appears twice)
-        if super_count >= 2 && key == 0 {
-            taps = 2;
-        }
-
-        // Parse right side: action
-        let action = if rhs.starts_with(b"exec ") || rhs.starts_with(b"exec\t") {
-            let path = trim(&rhs[5..]);
-            if path.is_empty() {
-                return None;
-            }
-            HotkeyAction::Exec(path.to_vec())
-        } else {
-            match &rhs.to_ascii_lowercase()[..] {
-                b"close" => HotkeyAction::Close,
-                b"focus_next" => HotkeyAction::FocusNext,
-                b"focus_prev" => HotkeyAction::FocusPrev,
-                _ => return None,
-            }
-        };
-
-        Some(Hotkey {
-            modifiers,
-            key,
-            taps,
-            action,
-        })
     }
 
     /// Match a stdin key press against the chord bindings, using the modifiers its own
@@ -635,20 +505,6 @@ impl HotkeyManager {
 
         None
     }
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-pub(super) fn trim(s: &[u8]) -> &[u8] {
-    let start = s
-        .iter()
-        .position(|&b| b != b' ' && b != b'\t' && b != b'\r')
-        .unwrap_or(s.len());
-    let end = s
-        .iter()
-        .rposition(|&b| b != b' ' && b != b'\t' && b != b'\r')
-        .map(|i| i + 1)
-        .unwrap_or(start);
-    &s[start..end]
 }
 
 pub(super) static INPUT_BACKLOG: std::sync::Mutex<input_backlog::Backlog<Input>> =

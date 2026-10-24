@@ -106,6 +106,8 @@ pub fn client_position() -> CaseResult {
     content(&mut d, &c)
 }
 pub fn title_text() -> CaseResult {
+    // W19: the certified bitmap oracle requires an explicit bitmap configuration.
+    let _config = FileOverride::new("/etc/bwm.conf", b"font=bitmap\nclock=frozen\nfps=off\n")?;
     let (mut d, mut c) = one()?;
     c.title(b"Window title 0123456789")?;
     time::sleep_ms(100)?;
@@ -143,14 +145,22 @@ pub fn background_pixels() -> CaseResult {
     )
 }
 pub fn appbar_entries() -> CaseResult {
+    // W19: the certified bitmap oracle requires an explicit bitmap configuration.
+    let _config = FileOverride::new("/etc/bwm.conf", b"font=bitmap\nclock=frozen\nfps=off\n")?;
     let (mut d, a, b) = twin()?;
     parked(&d)?;
     let s = d.shown(&b)?;
     let mut x = 4 * d.scale;
     for (c, bg) in [(&a, 0xff282d3c), (&b, 0xff2864dc)] {
         let w = c.info()?;
+        let height = if d.scale == 2 {
+            libgfx_ref::bitmap_font::RasterHeight::Size32
+        } else {
+            libgfx_ref::bitmap_font::RasterHeight::Size16
+        };
+        let advance = libgfx_ref::bitmap_font::metrics_at(height).char_width as i32;
         let width =
-            (w.title_len as i32 * 9 * d.scale + 16 * d.scale).clamp(60 * d.scale, 180 * d.scale);
+            (w.title_len as i32 * advance + 16 * d.scale).clamp(60 * d.scale, 180 * d.scale);
         check(
             s.pixel(x, d.height as i32 - 32 * d.scale)? == bg,
             "appbar entry missing or out of creation order",

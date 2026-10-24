@@ -594,6 +594,9 @@ pub struct CompositorAck {
     pub epoch: u64,
     pub handled_serial: u64,
     pub presented: u64,
+    pub next_deadline_ns: u64,
+    pub flags: u32,
+    pub reserved: u32,
 }
 
 #[repr(C)]
@@ -976,7 +979,7 @@ layout!(WindowEvent, 320, serial @ 0, time_ns @ 8, epoch @ 16, kind @ 24, flags 
     pressed @ 64, text_len @ 68, lost @ 72, clicks @ 76, text @ 80);
 layout!(TcArm, 24, point @ 0, reserved @ 4, target @ 8, param @ 16);
 layout!(TcFired, 16, point @ 0, reserved @ 4, count @ 8);
-layout!(CompositorAck, 32, claim_epoch @ 0, epoch @ 8, handled_serial @ 16, presented @ 24);
+layout!(CompositorAck, 48, claim_epoch @ 0, epoch @ 8, handled_serial @ 16, presented @ 24, next_deadline_ns @ 32, flags @ 40, reserved @ 44);
 layout!(CompositorStatus, 80, claim_epoch @ 0, epoch @ 8, handled_serial @ 16, presented @ 24, scene_version @ 32, composites @ 40, next_deadline_ns @ 48, owner @ 56, flags @ 60, reserved @ 64);
 layout!(ClipboardSet, 40, id @ 0, ptr @ 8, len @ 16, serial @ 24, mime @ 32, reserved @ 36);
 layout!(ClipboardGet, 48, id @ 0, dst @ 8, capacity @ 16, len @ 24, serial @ 32, mime @ 40, reserved @ 44);

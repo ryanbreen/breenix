@@ -97,6 +97,7 @@ pub enum ProcEntryType {
     BootRibbon,
     BootSerial,
     StageComposites,
+    CompositorStatus,
     ShowcasePace,
     /// /proc/breenix/ext2 - mounted ext2 allocation counters
     Ext2,
@@ -190,6 +191,7 @@ impl ProcEntryType {
             ProcEntryType::BootRibbon => "boot-ribbon",
             ProcEntryType::BootSerial => "boot-serial",
             ProcEntryType::StageComposites => "stage-composites",
+            ProcEntryType::CompositorStatus => "compositor",
             ProcEntryType::Ext2 => "ext2",
             ProcEntryType::Frames => "frames",
             ProcEntryType::InputReplay => "input-replay",
@@ -253,6 +255,7 @@ impl ProcEntryType {
             ProcEntryType::BootRibbon => "/proc/breenix/boot-ribbon",
             ProcEntryType::BootSerial => "/proc/breenix/boot-serial",
             ProcEntryType::StageComposites => "/proc/breenix/stage-composites",
+            ProcEntryType::CompositorStatus => "/proc/breenix/compositor",
             ProcEntryType::Ext2 => "/proc/breenix/ext2",
             ProcEntryType::Frames => "/proc/breenix/frames",
             ProcEntryType::InputReplay => "/proc/breenix/input-replay",
@@ -317,6 +320,7 @@ impl ProcEntryType {
             ProcEntryType::BootRibbon => 204,
             ProcEntryType::BootSerial => 205,
             ProcEntryType::StageComposites => 206,
+            ProcEntryType::CompositorStatus => 213,
             ProcEntryType::Ext2 => 202,
             ProcEntryType::Frames => 203,
             ProcEntryType::InputReplay => 210,
@@ -458,6 +462,7 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::BootRibbon));
     procfs.entries.push(ProcEntry::new(ProcEntryType::BootSerial));
     procfs.entries.push(ProcEntry::new(ProcEntryType::StageComposites));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::CompositorStatus));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Frames));
     procfs.entries.push(ProcEntry::new(ProcEntryType::InputReplay));
@@ -604,6 +609,7 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::TraceProviders
                     | ProcEntryType::TraceTeardownDir
                     | ProcEntryType::BreenixTesting
+                    | ProcEntryType::CompositorStatus
                     | ProcEntryType::Frames
                     | ProcEntryType::XhciTrace
                     | ProcEntryType::XhciCounters
@@ -757,7 +763,7 @@ pub fn list_breenix_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::StageComposites|ProcEntryType::InputLedger|ProcEntryType::InputReplay|ProcEntryType::InputDecode|ProcEntryType::InputDevices))
+        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::StageComposites|ProcEntryType::CompositorStatus|ProcEntryType::InputLedger|ProcEntryType::InputReplay|ProcEntryType::InputDecode|ProcEntryType::InputDevices))
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -776,6 +782,13 @@ pub fn is_initialized() -> bool {
 /// The content as a String, or an error code
 pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
     match entry_type {
+        ProcEntryType::CompositorStatus => {
+            #[cfg(target_arch="aarch64")]
+            { let caller = crate::window::Caller::current().map_err(|e| -e)?;
+              crate::window::status::text(&caller).map(|s| s.into_bytes()).map_err(|e| -e) }
+            #[cfg(not(target_arch="aarch64"))]
+            { Err(-38) }
+        }
         ProcEntryType::ShowcasePace => {
             #[cfg(target_arch="aarch64")]
             if !crate::platform_config::is_qemu() { return text(String::from("\n")); }
