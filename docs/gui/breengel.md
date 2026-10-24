@@ -883,7 +883,7 @@ architecture only.
 | 27 | `GIVE_DISPLAY` | `Give` (8) | 0 | EPERM, EINVAL, ESRCH, EBUSY, ENODEV, ENOMEM, EINTR, EIO; core custody rules in section 18 |
 | 28 | `READ_META` | `MetaQuery` (24) | 0 | ENOENT |
 | 29 | `COMPOSITE_SNAPSHOT` | `SceneSnapshot` (96) | 0 | EPERM, EINVAL, EBUSY, EAGAIN pending render, ENOMEM, ENODEV, EIO |
-| 30 | `COMPOSITOR_ACK` | `CompositorAck` (32) | 0 | EPERM stale/foreign claim; EINVAL regressing epoch or watermark, or incomplete presented serial |
+| 30 | `COMPOSITOR_ACK` | `CompositorAck` (48) | 0 | EPERM stale/foreign claim; EINVAL regressing epoch or watermark, or incomplete presented serial |
 | 31 | `COMPOSITOR_STATUS` | `CompositorStatus` (80) | 0 | ENOENT no claim; EPERM foreign desktop |
 | 32 | `CLIPBOARD_SET` | `ClipboardSet` (40) | 0 | ENOENT unregistered/stale window; E2BIG over 16 MiB; EINVAL mime/UTF-8; ENOMEM RLIMIT_AS |
 | 33 | `CLIPBOARD_GET` | `ClipboardGet` (48) | 0 | ENOENT unregistered/stale window; EINVAL short destination/mime; EAGAIN changed serial |
@@ -967,7 +967,12 @@ Argument structures (offsets in bytes):
 E18 argument structures (W1-W4; reserved/output fields start at zero): <!-- claim-lint:ok: Normative E18 contract allocation, W1-W13 and #2367; not implementation acceptance. -->
 
 - `CompositorAck`: `claim_epoch:u64 @0`, `epoch:u64 @8`,
-  `handled_serial:u64 @16`, `presented:u64 @24`. Only the current claimant
+  `handled_serial:u64 @16`, `presented:u64 @24`,
+  `next_deadline_ns:u64 @32`, `flags:u32 @40`, reserved `u32 @44` (48 bytes, W16).
+  The deadline names the next timed work on the UI clock, or zero for none.
+  Flags bit 0 means a validated test configuration is active; other bits or a
+  nonzero reserved word are EINVAL. A 32-byte acknowledgment is EINVAL; VERSION
+  remains 2 under the unlanded-v2 rule. Only the current claimant
   may acknowledge its claim. `presented=0` means none-needed; otherwise it
   names a successful device-completed composite of that claim. Epoch and
   handled serial never regress. An idle epoch acknowledges without a composite. <!-- claim-lint:ok: Normative E18 contract allocation, W1-W13 and #2367; not implementation acceptance. -->
@@ -977,7 +982,11 @@ E18 argument structures (W1-W4; reserved/output fields start at zero): <!-- clai
   `flags:u32 @60` (bit 0 test configuration active), reserved `[u64;2] @64`.
   Root, the claimant and window owners in the claimant's desktop may query it.
   `/proc/breenix/compositor` is a text view of this same state, with named
-  decimal fields including `epoch=N`. Publication is atomic.
+  decimal fields including `epoch=N`. Publication is atomic. W16 requires
+  deadline and flags to be copied atomically with the other acknowledgment
+  fields and read as the last accepted acknowledgment left them, zero before
+  the first. bwm sets bit 0 only after validating its test configuration file;
+  an invalid file leaves it clear. <!-- claim-lint:ok: Normative W16 acknowledgment fields and docs/gui/bwm.md clock/status contract, not implementation acceptance. -->
 - `ClipboardSet`: `id:u64 @0`, `ptr:u64 @8`, `len:u64 @16`, *out*
   `serial:u64 @24`, `mime:u32 @32` (1 text/plain;charset=utf-8), reserved @36.
 - `ClipboardGet`: `id:u64 @0`, `dst:u64 @8`, `capacity:u64 @16`, *out*
