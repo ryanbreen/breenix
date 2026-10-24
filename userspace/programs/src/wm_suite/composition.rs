@@ -186,25 +186,29 @@ pub fn chromeless() -> CaseResult {
     )
 }
 pub fn sixteen_clients() -> CaseResult {
-    let mut d = Desktop::start()?;
     let mut clients = Vec::new();
     // The 92-pixel content rectangles have 100-pixel cascade steps.
     // One device observation checks the sixteen complete patterns.
     for n in 0..16 {
-        clients.push(Client::start_shape(
+        clients.push(Client::spawn_shape(
             11 + n,
             flags::UNREGISTERED | flags::IGNORE_CLOSE | flags::NEVER_READ,
             92,
             64,
         )?);
     }
+    for (index, c) in clients.iter_mut().enumerate() {
+        c.receive()
+            .map_err(|e| format!("initial paint of client {index}: {e}"))?;
+    }
+    let mut d = Desktop::start()?;
     for c in clients.iter_mut() {
         c.send(REGISTER, 0, 0)?;
     }
     for c in clients.iter_mut() {
         c.receive()?;
     }
-    if let Some(status)=d.wm.status()? {
+    if let Some(status) = d.wm.status()? {
         return Err(format!("desktop exited during the sixteen-client fixture: {status}").into());
     }
     let mut final_screen = None;
@@ -213,7 +217,17 @@ pub fn sixteen_clients() -> CaseResult {
         2000,
         "sixteen registered client commits composed",
         || match Screen::read() {
-            Ok(s) if clients.iter().all(|c| s.contains(c.id, c.frame_commit)) => {
+            Ok(s)
+                if clients.iter().all(|c| {
+                    let Ok(w) = c.info() else {
+                        return false;
+                    };
+                    s.contains(c.id, c.frame_commit)
+                        && w.x > 0
+                        && w.y > 0
+                        && s.pixel(w.x, w.y).ok() == Some(pattern(c.seed, 0))
+                }) =>
+            {
                 final_screen = Some(s);
                 Ok(true)
             }

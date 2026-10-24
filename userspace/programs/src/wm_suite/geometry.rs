@@ -156,8 +156,11 @@ pub fn resize_top() -> CaseResult {
 }
 pub fn resize_corners() -> CaseResult {
     let mut d = Desktop::start()?;
-    for (index,(left, top)) in [(true, true), (false, true), (true, false), (false, false)].into_iter().enumerate() {
-        let mut c = Client::start(11+index as u32)?;
+    for (index, (left, top)) in [(true, true), (false, true), (true, false), (false, false)]
+        .into_iter()
+        .enumerate()
+    {
+        let mut c = Client::start(11 + index as u32)?;
         placed(&c)?;
         d.client_ready(&c)?;
         let w = c.info()?;
@@ -295,6 +298,11 @@ pub fn coalesce() -> CaseResult {
         time::sleep_ms(15).map_err(|e| e.to_string())?;
     }
     d.pointer(x + 60, y, 0, 0)?;
+    // Wait for the final delivered motion after the 60-step gesture.
+    d.pointer(w.x + 10, w.y + 10, 0, 0)?;
+    c.await_event("resize gesture's final input delivered", |e| {
+        e.kind == kind::POINTER_MOVE && e.x == 10 && e.y == 10
+    })?;
     c.snapshot()?;
     check(
         c.events

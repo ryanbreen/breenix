@@ -170,6 +170,12 @@ impl Client {
         Self::start_shape(seed, flags, 240, 160)
     }
     pub fn start_shape(seed: u32, flags: u32, width: u32, height: u32) -> Result<Self, String> {
+        let mut client = Self::spawn_shape(seed, flags, width, height)?;
+        client.receive()?;
+        Ok(client)
+    }
+    /// Start an independent client; receive its initial paint reply before sending commands.
+    pub fn spawn_shape(seed: u32, flags: u32, width: u32, height: u32) -> Result<Self, String> {
         if !(1..=4096).contains(&width) || !(1..=4096).contains(&height) {
             return Err("fixture client dimensions outside the window contract".into());
         }
@@ -233,7 +239,6 @@ impl Client {
             .commands
             .write_all(&first)
             .map_err(|e| e.to_string())?;
-        client.receive()?;
         Ok(client)
     }
     pub fn send(&mut self, op: u32, a: u32, b: u32) -> Result<(), String> {

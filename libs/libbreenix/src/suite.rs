@@ -664,7 +664,7 @@ static VALUE_LINES: std::sync::Mutex<String> = std::sync::Mutex::new(String::new
 /// The most VALUE and WAIT records one case process prints.
 pub const RECORDS_PER_CASE: u32 = 12;
 // Input is transport, not a VALUE/WAIT/PULSES measurement. A 60-step drag
-// uses 63 requests including positioning, press and release.
+// uses 64 requests including positioning, press, release and delivery control.
 const HOST_REQUESTS_PER_CASE: u32 = 64;
 static HOST_REQUESTS: AtomicU32 = AtomicU32::new(0);
 

@@ -160,7 +160,8 @@ records is a result: the CASE line that follows decides the case.
 
 Host input and SSH requests are transport, separate from the twelve measurement
 records. Their per-case budget is 64 requests; the window-manager coalescing
-fixture needs 63 for positioning, press, sixty motions and release. Host key and
+fixture needs 64 for positioning, press, sixty motions, release and the final
+positive delivery control. Host key and
 pointer sequence numbers reserve a disjoint 64-number block per case. Exhausting
 one budget does not consume the other. <!-- claim-lint:ok: Normative transport budget; libs/libbreenix/src/suite.rs keeps RECORDS_PER_CASE=12 and HOST_REQUESTS_PER_CASE=64. -->
 
