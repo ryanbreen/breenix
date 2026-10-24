@@ -370,7 +370,7 @@ pub fn write_byte(writer: Writer, byte: u8) {
 /// Write one caller-defined output unit from `writer` as a single record (see
 /// `serial_line`).
 pub fn write_bytes_atomic(writer: Writer, bytes: &[u8]) {
-    crate::serial_line::write_bytes(writer, bytes);
+    crate::serial_writer::interruptible(writer, || crate::serial_line::write_bytes(writer, bytes));
 }
 
 #[doc(hidden)]
@@ -399,10 +399,14 @@ pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
 /// Print from a panic or fatal path: `try_print`'s record, counted as unattributed
 /// output (`output_accounting`).
 pub fn emergency_print(args: fmt::Arguments) -> Result<(), ()> {
-    use core::fmt::Write;
-    crate::serial_line::TeeLine::unattributed()
-        .write_fmt(args)
-        .map_err(|_| ())
+    struct Fatal;
+    impl fmt::Write for Fatal {
+        fn write_str(&mut self, text: &str) -> fmt::Result {
+            crate::uart_owner::fatal::<crate::serial_line::Uart>(text.as_bytes());
+            Ok(())
+        }
+    }
+    fmt::Write::write_fmt(&mut Fatal, args).map_err(|_| ())
 }
 
 /// Write `s` as one record without waiting indefinitely on another CPU's output: up to 2^20

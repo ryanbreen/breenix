@@ -8,6 +8,16 @@
   "sequence": "first",
   "categories": [
     {
+      "id": "serial",
+      "title": "Console serial records",
+      "cases": [
+        {
+          "id": "records",
+          "title": "Single-write records and signal lines remain intact on the serial wire"
+        }
+      ]
+    },
+    {
       "id": "screen",
       "title": "Console on the screen",
       "cases": [

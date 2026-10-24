@@ -42,6 +42,7 @@ import shutil
 import subprocess
 import tempfile
 import re
+import runpy
 import sys
 from pathlib import Path
 
@@ -101,6 +102,13 @@ def verdict(manifest, records_log, logs, only=None, categories=None):
             for pattern in fatal:
                 if re.search(pattern, line):
                     return False, f"fatal kernel output in {log}: {line.strip()[:200]}"
+
+    # This case's oracle is the raw UART, independent of the guest's write results.
+    if suite == "console" and "serial/records" in cases:
+        try:
+            runpy.run_path(str(REPO / "scripts/check-serial-records.py"))["check"](records_log)
+        except (AssertionError, IndexError) as error:
+            return False, f"serial/records wire check: {error}"
 
     prefix = f"SUITE {suite} "
     name = r"([a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*)"

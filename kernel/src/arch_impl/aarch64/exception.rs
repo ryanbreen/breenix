@@ -74,39 +74,11 @@ impl Drop for FatalPostmortemUartGuard {
 #[cold]
 #[inline(never)]
 fn acquire_fatal_postmortem_uart() -> FatalPostmortemUartGuard {
-    let start: u64;
-    let frequency: u64;
-    unsafe {
-        core::arch::asm!(
-            "mrs {start}, cntvct_el0",
-            "mrs {frequency}, cntfrq_el0",
-            start = out(reg) start,
-            frequency = out(reg) frequency,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
-    let deadline = start.saturating_add(frequency / 4);
-
-    loop {
-        if FATAL_POSTMORTEM_UART_LOCK
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
-        {
-            return FatalPostmortemUartGuard { acquired: true };
-        }
-
-        let now: u64;
-        unsafe {
-            core::arch::asm!(
-                "mrs {}, cntvct_el0",
-                out(reg) now,
-                options(nomem, nostack, preserves_flags),
-            );
-        }
-        if now >= deadline {
-            return FatalPostmortemUartGuard { acquired: false };
-        }
-        core::hint::spin_loop();
+    crate::output_accounting::panicking();
+    FatalPostmortemUartGuard {
+        acquired: FATAL_POSTMORTEM_UART_LOCK
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok(),
     }
 }
 

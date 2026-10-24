@@ -2961,7 +2961,8 @@ use core::panic::PanicInfo;
 #[cfg(target_arch = "x86_64")]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    // Try to output panic info if possible
+    kernel::output_accounting::panicking();
+    kernel::serial::flush_log();
     serial_println!("KERNEL PANIC: {}", info.message());
     log::error!("KERNEL PANIC: {}", info.message());
     if let Some(location) = info.location() {

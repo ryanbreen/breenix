@@ -17,7 +17,16 @@ use libbreenix::syscall::{nr, raw};
 mod vt_cases;
 use vt_cases::*;
 
+fn serial_records() -> CaseResult {
+    let status = std::process::Command::new("/usr/libexec/breenix/serial-record_test")
+        .status().map_err(|error| format!("serial-record_test: {error}"))?;
+    breenix_suite::suite::check(status.success(), &format!("serial-record_test exited {status}"))
+}
+
 static SUITE: Suite = suite("console", "Screen console & virtual terminals", &[
+    category("serial", "Console serial records", &[
+        case("records", "Single-write records and signal lines remain intact on the serial wire", serial_records),
+    ]),
     category("screen", "Console on the screen", &[
         case("tty1-on-screen", "Text written to tty1 is drawn on the screen", screen_tty1_on_screen),
         case("readback-identical", "The displayed pixels read back identical to the console's shadow", screen_readback_identical),

@@ -54,3 +54,6 @@ pub fn panicking() {
 pub fn init() {
     crate::log_notice::set_on_post(|len| count(len, true));
 }
+
+/// Read the panic-state flag used by serial record admission.
+pub fn is_panicking() -> bool { PANICKING.load(Ordering::Relaxed) }

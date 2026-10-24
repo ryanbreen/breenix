@@ -13,6 +13,9 @@ use crate::log_ring::LogRing;
 
 pub mod command;
 
+static DEFERRED: crate::serial_writer::deferred::Deferred<Writer> =
+    crate::serial_writer::deferred::Deferred::new();
+
 const COM1_PORT: u16 = 0x3F8;
 const COM2_PORT: u16 = 0x2F8;
 
@@ -504,6 +507,10 @@ fn queue_log_line() -> Burst {
         let burst = match SERIAL1.try_lock() {
             None => Burst::Busy,
             Some(mut serial) => {
+                if DEFERRED.active() {
+                    LOG_PRINTER.store(false, Ordering::Release);
+                    return Burst::Busy;
+                }
                 let queue = &mut serial.queue;
                 let Some(mut ring) = LOG_RING.try_lock() else {
                     LOG_PRINTER.store(false, Ordering::Release);
@@ -825,39 +832,77 @@ pub fn write_byte(writer: Writer, byte: u8) {
 /// the serial lock once, starting a fresh line first if another writer's line
 /// is open (`serial_writer`).
 pub fn write_bytes_atomic(writer: Writer, bytes: &[u8]) {
-    // CRITICAL: Check if interrupts are currently enabled
-    // We must NOT re-enable interrupts if they were disabled by syscall entry
-    let irq_enabled = crate::arch_interrupts_enabled();
-
-    // Disable interrupts while holding the lock
-    unsafe {
-        crate::arch_disable_interrupts();
-    }
-
-    let mut serial = SERIAL1.lock();
-    let queue = &mut serial.queue;
-    let lead = crate::serial_writer::lead(writer, bytes);
-    for &byte in lead.iter().chain(bytes) {
-        queue_byte(queue, byte, writer);
-    }
-    // Terminal text belongs to its reader, not the persistent kernel log.
-    if writer == Writer::Kernel {
-        crate::log_buffer::capture_bytes(lead.iter().chain(bytes));
-    }
-    if let Some(&last) = bytes.last() {
-        crate::serial_writer::wrote(writer, last);
-    }
-    start_queued(queue);
-    drop(serial);
-
-    // Only re-enable if they were enabled before
-    // This prevents race condition in syscall handler where interrupts must stay disabled
-    if irq_enabled {
-        unsafe {
-            crate::arch_enable_interrupts();
+    crate::serial_writer::interruptible(writer, || {
+        if bytes.is_empty() { return; }
+        use crate::serial_writer::deferred::{Admission, Next, overflow_line};
+        let may_defer = writer == Writer::Kernel ||
+            (crate::per_cpu::is_initialized() && crate::per_cpu::in_interrupt());
+        loop {
+            let admission = crate::arch_without_interrupts(|| {
+                let cpu = if crate::per_cpu::is_initialized() { crate::per_cpu::cpu_id() } else { 0 };
+                DEFERRED.submit(cpu, writer, bytes, false, false, may_defer)
+            });
+            match admission {
+                Admission::Start => break,
+                Admission::Queued => return,
+                Admission::Busy => core::hint::spin_loop(),
+            }
         }
+        // Keep hardware exclusion short even when a full queue must make room.
+        let queue_unit = |writer: Writer, bytes: &[u8]| {
+            let mut first = true;
+            for chunk in bytes.chunks(16) {
+                crate::arch_without_interrupts(|| {
+                    let mut serial = SERIAL1.lock();
+                    let queue = &mut serial.queue;
+                    if first {
+                        for &byte in crate::serial_writer::lead(writer, bytes) { queue_byte(queue, byte, writer); }
+                        first = false;
+                    }
+                    for &byte in chunk { queue_byte(queue, byte, writer); }
+                    if writer == Writer::Kernel { crate::log_buffer::capture_bytes(chunk.iter()); }
+                    if let Some(&last) = chunk.last() { crate::serial_writer::wrote(writer, last); }
+                    start_queued(queue);
+                });
+            }
+        };
+        queue_unit(writer, bytes);
+        let mut pending = [0u8; 256];
+        loop {
+            let next = crate::arch_without_interrupts(|| DEFERRED.next(&mut pending));
+            match next {
+                None => core::hint::spin_loop(),
+                Some(Next::Record(meta, len)) => queue_unit(meta.writer, &pending[..len]),
+                Some(Next::Overflow(lost)) => {
+                    let mut report = [0u8; 96];
+                    queue_unit(Writer::Kernel, overflow_line(lost, &mut report));
+                }
+                Some(Next::Empty) => break,
+            }
+        }
+        if writer == Writer::Tty { sync_log_to_console(); }
+
+    });
+}
+
+struct KernelLine { bytes: [u8; 1024], len: usize }
+impl KernelLine {
+    fn new() -> Self { Self { bytes: [0; 1024], len: 0 } }
+    fn flush(&mut self) {
+        if self.len != 0 { write_bytes_atomic(Writer::Kernel, &self.bytes[..self.len]); self.len = 0; }
     }
 }
+impl fmt::Write for KernelLine {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        for byte in text.bytes() {
+            if self.len == self.bytes.len() { self.flush(); }
+            self.bytes[self.len] = byte; self.len += 1;
+            if byte == b'\n' { self.flush(); }
+        }
+        Ok(())
+    }
+}
+impl Drop for KernelLine { fn drop(&mut self) { self.flush(); } }
 
 /// One unit from `writer` queued for COM1, whose SERIAL1 its caller holds: it
 /// starts a fresh line first if another writer's line is open
@@ -882,74 +927,16 @@ impl fmt::Write for Unit<'_> {
 
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
+    if crate::output_accounting::is_panicking() { let _ = emergency_print(args); return; }
     use core::fmt::Write;
-
-    // CRITICAL FIX: Check if interrupts are currently enabled BEFORE disabling
-    // We must NOT re-enable interrupts if they were disabled by syscall entry
-    // This fixes the RDI corruption bug where timer interrupts fire during syscalls
-    let irq_enabled = crate::arch_interrupts_enabled();
-
-    // Disable interrupts while holding the lock
-    unsafe {
-        crate::arch_disable_interrupts();
-    }
-
-    let mut serial = SERIAL1.lock();
-    Unit {
-        queue: &mut serial.queue,
-        writer: Writer::Kernel,
-    }
-    .write_fmt(args)
-    .expect("Printing to serial failed");
-    start_queued(&mut serial.queue);
-    drop(serial);
-
-    // Only re-enable if they were enabled before
-    // This prevents race condition in syscall handler where interrupts must stay disabled
-    if irq_enabled {
-        unsafe {
-            crate::arch_enable_interrupts();
-        }
-    }
+    let _ = KernelLine::new().write_fmt(args);
 }
 
-/// Try to print without blocking - returns Err if lock is held
+/// Kernel lines queue immediately when a userspace unit is in flight.
 pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
+    if crate::output_accounting::is_panicking() { return emergency_print(args); }
     use core::fmt::Write;
-
-    // CRITICAL: Check if interrupts are currently enabled
-    // We must NOT re-enable interrupts if they were disabled by syscall entry
-    let irq_enabled = crate::arch_interrupts_enabled();
-
-    // Disable interrupts while holding the lock
-    unsafe {
-        crate::arch_disable_interrupts();
-    }
-
-    let result = match SERIAL1.try_lock() {
-        Some(mut serial) => {
-            let written = Unit {
-                queue: &mut serial.queue,
-                writer: Writer::Kernel,
-            }
-            .write_fmt(args)
-            .map_err(|_| ());
-            start_queued(&mut serial.queue);
-            drop(serial);
-            written
-        }
-        None => Err(()), // Lock is held
-    };
-
-    // Only re-enable if they were enabled before
-    // This prevents race condition in syscall handler where interrupts must stay disabled
-    if irq_enabled {
-        unsafe {
-            crate::arch_enable_interrupts();
-        }
-    }
-
-    result
+    KernelLine::new().write_fmt(args).map_err(|_| ())
 }
 
 /// Write `s` to COM1 as one unit, from a path that must not wait indefinitely
@@ -986,6 +973,10 @@ fn unit_fits(queue: &TxQueue, writer: Writer, s: &str) -> bool {
 }
 
 fn write_str_within(s: &str, attempts: u32, wait_for_uart: bool) {
+    if DEFERRED.active() {
+        write_bytes_atomic(Writer::Kernel, s.as_bytes());
+        return;
+    }
     use crate::log_notice::Node;
     use core::fmt::Write;
     static FALLBACK: [Node; 4] = [const { Node::new() }; 4];
@@ -998,6 +989,13 @@ fn write_str_within(s: &str, attempts: u32, wait_for_uart: bool) {
             let Some(mut serial) = SERIAL1.try_lock() else {
                 return false;
             };
+            // Admission may have begun after the outer check. Recheck under
+            // SERIAL1 before a raw kernel line can enter a unit's byte stream.
+            if DEFERRED.active() {
+                drop(serial);
+                write_bytes_atomic(Writer::Kernel, s.as_bytes());
+                return true;
+            }
             if !wait_for_uart && (TX_THREAD.get().is_none() || !unit_fits(&serial.queue, Writer::Kernel, s)) {
                 return false;
             }
@@ -1184,6 +1182,7 @@ pub fn _diag_print(args: fmt::Arguments) {
 /// (`drain_log_while`). Until an idle loop drains the log every caller waits.
 #[doc(hidden)]
 pub fn _log_print(args: fmt::Arguments) {
+    if crate::output_accounting::is_panicking() { let _ = emergency_print(args); return; }
     use core::sync::atomic::Ordering;
 
     write_notices_from_thread();
@@ -1199,14 +1198,26 @@ pub fn _log_print(args: fmt::Arguments) {
             (ring.len() > LOG_RING_BYTES / 2).then_some(ring.accepted())
         });
         if let Some(target) = backlog {
-            drain_until(target, core::hint::spin_loop);
+            drain_submission(target);
         }
     }
     let end = enqueue_log(args);
     if may_wait {
-        drain_until(end, core::hint::spin_loop);
+        drain_submission(end);
     } else {
         let _ = write_burst(SHORT_BURST);
+    }
+}
+
+/// A kernel producer leaves delivery to the unit owner as soon as a unit starts.
+fn drain_submission(target: u64) {
+    use core::sync::atomic::Ordering;
+    while LOG_SENT.load(Ordering::Acquire) < target && !DEFERRED.active() {
+        match write_burst_waiting() {
+            Burst::Empty => break,
+            Burst::Wrote => {},
+            Burst::Busy => core::hint::spin_loop(),
+        }
     }
 }
 
@@ -1220,6 +1231,10 @@ pub fn _log_print(args: fmt::Arguments) {
 /// reserve makes that a last resort.
 pub(crate) fn enqueue_log(args: fmt::Arguments) -> u64 {
     loop {
+        if DEFERRED.active() {
+            _print(args);
+            return LOG_SENT.load(core::sync::atomic::Ordering::Acquire);
+        }
         let appended = crate::arch_without_interrupts(|| {
             let mut ring = LOG_RING.lock();
             let appended = ring.append(args, crate::STAGE_MARKERS);

@@ -468,6 +468,7 @@ STD_BINARIES=(
     "poweroff"
 
     # Diagnostics
+    "serial-record_test"
     "btrace"
     "usb_pointer_check"
 
