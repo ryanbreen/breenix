@@ -796,26 +796,8 @@ fn ledger_has(serial: u64, expected: Option<(&str, &str)>) -> Result<bool, Strin
 
 pub fn reader_lifetime() -> CaseResult {
     use libbreenix::{input::{self as input, Batch, Capability, Injector, Reader}, io};
-    use libbreenix::{termios, types::Fd};
-    struct Restore(termios::Termios);
-    impl Drop for Restore {
-        fn drop(&mut self) { let _ = termios::tcsetattr(Fd::STDIN, termios::TCSANOW, &self.0); }
-    }
-    let mut saved = termios::Termios::default();
-    termios::tcgetattr(Fd::STDIN, &mut saved)?;
-    let _restore = Restore(saved);
-    let mut raw = saved;
-    termios::cfmakeraw(&mut raw);
-    termios::tcsetattr(Fd::STDIN, termios::TCSANOW, &raw)?;
-    let mut poll = [io::PollFd { fd: 0, events: 1, revents: 0 }];
-    // Drain earlier fixture input before this case creates or grabs a device.
-    // No input produced by this case may be discarded.
-    loop {
-        io::poll(&mut poll, 0)?;
-        if poll[0].revents & 1 == 0 { break; }
-        let mut previous = [0; 128];
-        io::read(Fd::STDIN, &mut previous)?;
-    }
+    // Discard only input that predates this case, before its first grab.
+    libbreenix::termios::tcflush(libbreenix::types::Fd::STDIN, libbreenix::termios::TCIFLUSH)?;
     let _claim = InputClaim::new()?;
     let device = Injector::create(&[Capability { kind: 1, code: 30, minimum: 0, maximum: 1 }], true)?;
     let reader = Reader::open(true)?;
@@ -916,6 +898,17 @@ pub fn reader_lifetime() -> CaseResult {
     recipient_reader.dispose(&input::Disposition { serial: events[1].event.serial,
         disposition: input::disposition::WM_HANDLED, ..input::Disposition::default() })?;
     {
+        use libbreenix::{termios, types::Fd};
+        struct Restore(termios::Termios);
+        impl Drop for Restore {
+            fn drop(&mut self) { let _ = termios::tcsetattr(Fd::STDIN, termios::TCSANOW, &self.0); }
+        }
+        let mut saved = termios::Termios::default();
+        termios::tcgetattr(Fd::STDIN, &mut saved)?;
+        let _restore = Restore(saved);
+        let mut raw = saved;
+        termios::cfmakeraw(&mut raw);
+        termios::tcsetattr(Fd::STDIN, termios::TCSANOW, &raw)?;
         let mut poll = [io::PollFd { fd: 0, events: 1, revents: 0 }];
         io::poll(&mut poll, 0)?;
         check(poll[0].revents & 1 == 0, "console has unexpected input before grabbed repeat")?;
