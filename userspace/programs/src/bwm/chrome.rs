@@ -559,8 +559,8 @@ pub(super) fn frame_layers(windows: &[Window]) -> Vec<Layer> {
 
 // ─── Hotkey Action Execution ─────────────────────────────────────────────────
 
-/// Show that the desktop covers the whole scanout at the chosen scale. bwm composes the
-/// desktop alone (no windows yet, and no pointer over the sampled pixels), then reads the
+/// Show that the desktop covers the whole scanout at the chosen scale. bwm presents the
+/// desktop alone without a window-composite receipt or pointer, then reads the
 /// scanout itself back where the scale puts the edges of the taskbar and the app bar: the
 /// top-left and bottom-right pixels of each bar, and the background pixel just past each.
 /// Each must be the colour the desktop's definition gives there (the bar colours, and
@@ -573,7 +573,7 @@ pub(super) fn check_desktop_fills(
     mode_index: u32,
 ) -> Result<String, String> {
     // The whole frame, so no pointer the last frame drew remains in it.
-    gpu.compose(&[], None, &[[0, 0, screen_w as i32, screen_h as i32]])
+    gpu.present_startup_desktop(None)
         .map_err(|e| e.to_string())?;
     let (w, h) = (screen_w as u32, screen_h as u32);
     let (tb, ab) = (px(TASKBAR_HEIGHT) as u32, px(APPBAR_HEIGHT) as u32);
