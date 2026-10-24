@@ -504,8 +504,8 @@ extern "x86-interrupt" fn serial_interrupt_handler(stack_frame: InterruptStackFr
         // Wake the COM1 transmit thread if it waits for the transmitter to empty.
         crate::serial::transmitter_interrupt();
         // RX can arrive while THRE keeps INTRPT high, so disarming THRE
-        // need not produce another edge on ISA IRQ4. Service every pending
-        // cause before EOI; reading IIR also acknowledges a residual THRE.
+        // need not produce another edge on ISA IRQ4. Keep servicing pending
+        // causes before EOI; reading IIR also acknowledges a residual THRE.
         if unsafe { iir_port.read() } & 0x01 != 0 {
             break;
         }
