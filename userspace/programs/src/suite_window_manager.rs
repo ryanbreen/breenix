@@ -29,6 +29,7 @@ static SUITE: Suite = suite("window-manager", "Window manager", &[
         case("replay-report-fault", "Suppressing the production report loses the event after a positive delivery", cases::replay_faults),
     ]),
     category("startup", "bwm starts and shows clients", &[
+        case("desktop-control", "A completed empty desktop exposes the literal taskbar pixel", cases::desktop_control),
         case("claims-display", "A live bwm retains the compositor claim after composing a client", cases::claims_display),
         case("first-client", "A real client pattern and commit appear in completed device scanout", cases::first_client),
         case("existing-windows", "bwm adopts and composes a window created before it starts", cases::existing_windows),

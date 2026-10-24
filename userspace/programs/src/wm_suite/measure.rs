@@ -1,5 +1,5 @@
 //! Kernel completion receipts and the existing BGCLK001 UI-clock page.
-use super::desktop::{now, until, Client, Desktop, Screen};
+use super::desktop::{now, until, Client, Desktop};
 use libbreenix::{
     memory,
     syscall::{nr, raw},
@@ -117,42 +117,50 @@ pub fn receipts() -> Result<Vec<Receipt>, String> {
         })
         .collect()
 }
-pub fn completed(d: &mut Desktop, c: &Client) -> Result<Receipt, String> {
+/// Kernel device-completion history supplies timing without observer readbacks per sample.
+/// The caller still validates the final completed scanout after the measured workload.
+pub fn completed_commit(c: &Client, commit: u64) -> Result<Receipt, String> {
+    if commit == 0 {
+        return Err("no input handling commit".into());
+    }
     let mut found = None;
-    until(
-        2000,
-        "completed composite receipt of handling commit",
-        || {
-            found = receipts()?
-                .into_iter()
-                .filter(|r| r.window == c.id && r.commit >= c.commit)
-                .min_by_key(|r| r.serial);
-            Ok(found.is_some())
-        },
-    )?;
+    until(2000, "device-completed target commit", || {
+        found = receipts()?
+            .into_iter()
+            .filter(|r| r.window == c.id && r.commit >= commit)
+            .min_by_key(|r| r.serial);
+        Ok(found.is_some())
+    })?;
     let r = found.unwrap();
-    let s = d.shown(c)?;
-    if r.serial > s.serial() || r.ns > now() || r.generation == 0 {
-        return Err("completion receipt is not backed by device observation".into());
+    if r.ns > now() || r.generation == 0 {
+        return Err("completion receipt has no completed pixel generation".into());
     }
     Ok(r)
 }
+/// A final native observation must cover the receipts and client commits judged above.
+pub fn observed(d: &mut Desktop, clients: &[&Client], serial: u64) -> Result<(), String> {
+    let last = clients.last().ok_or("no clients in final observation")?;
+    let screen = d.shown(last)?;
+    if screen.serial() < serial || !clients.iter().all(|c| screen.contains(c.id, c.commit)) {
+        return Err("final device observation does not cover workload receipts and commits".into());
+    }
+    Ok(())
+}
+
 pub fn epoch(
-    d: &mut Desktop,
     clock: &mut Clock,
     clients: &mut [Client],
     n: u32,
     animate: bool,
-) -> Result<Screen, String> {
+) -> Result<u64, String> {
     clock.step(n as u64, n as u64 * 16_000_000)?;
     for c in clients.iter_mut() {
         c.command(super::protocol::STEP, n, u32::from(animate))?;
     }
     acknowledged(n as u64)?;
-    let last = clients.last().ok_or("epoch has no clients")?;
-    let s = d.shown(last)?;
-    if !clients.iter().all(|c| s.contains(c.id, c.commit)) {
-        return Err(format!("not every client advanced in epoch {n}"));
+    let mut serial = 0;
+    for c in clients.iter() {
+        serial = serial.max(completed_commit(c, c.commit)?.serial);
     }
-    Ok(s)
+    Ok(serial)
 }

@@ -39,6 +39,26 @@ impl Child {
     pub fn signal(&self, sig: i32) -> Result<(), String> {
         signal::kill(self.pid, sig).map_err(|e| e.to_string())
     }
+    pub fn freeze(&self) -> Result<(), String> {
+        self.signal(signal::SIGSTOP)?;
+        until(
+            1000,
+            "owned client stopped before retained-frame observation",
+            || {
+                let mut status = 0;
+                let pid =
+                    process::waitpid(self.pid, &mut status, process::WNOHANG | process::WUNTRACED)
+                        .map_err(|e| e.to_string())?;
+                if pid.raw() == 0 {
+                    return Ok(false);
+                }
+                if status & 0xff != 0x7f || (status >> 8) & 0xff != signal::SIGSTOP {
+                    return Err(format!("client did not stop: wait status {status}"));
+                }
+                Ok(true)
+            },
+        )
+    }
     pub fn status(&mut self) -> Result<Option<i32>, String> {
         if self.reaped {
             return Err("child already reaped".into());
@@ -94,6 +114,7 @@ pub struct Client {
     pub id: u64,
     pub commit: u64,
     pub commit_ns: u64,
+    pub handling_commit: u64,
     pub width: u32,
     pub height: u32,
     pub seed: u32,
@@ -132,6 +153,12 @@ fn read_n(file: &mut File, bytes: &mut [u8]) -> Result<(), String> {
 }
 impl Client {
     pub fn start(seed: u32) -> Result<Self, String> {
+        Self::start_mode(seed, 0)
+    }
+    pub fn unregistered(seed: u32) -> Result<Self, String> {
+        Self::start_mode(seed, 2)
+    }
+    fn start_mode(seed: u32, flags: u32) -> Result<Self, String> {
         let (cr, cw) = io::pipe().map_err(|e| e.to_string())?;
         let (rr, rw) = io::pipe().map_err(|e| e.to_string())?;
         let pid = spawn(
@@ -163,12 +190,13 @@ impl Client {
             id: 0,
             commit: 0,
             commit_ns: 0,
+            handling_commit: 0,
             width: 0,
             height: 0,
             seed,
             events: Vec::new(),
         };
-        client.command(SNAPSHOT, seed, 0)?;
+        client.command(SNAPSHOT, seed, flags)?;
         Ok(client)
     }
     pub fn send(&mut self, op: u32, a: u32, b: u32) -> Result<(), String> {
@@ -196,6 +224,7 @@ impl Client {
         self.id = quad(&h, 0);
         self.commit = quad(&h, 8);
         self.commit_ns = quad(&h, 32);
+        self.handling_commit = quad(&h, 40);
         self.width = word(&h, 16);
         self.height = word(&h, 20);
         self.seed = word(&h, 24);
@@ -466,7 +495,7 @@ impl Desktop {
         let mut result = None;
         until(
             2000,
-            &format!("bwm composite of client {} commit {}", c.id, c.commit),
+            &format!("bwm composite of client {} commit {}", c.id, commit),
             || {
                 if let Some(status) = self.wm.status()? {
                     return Err(format!(
@@ -509,7 +538,10 @@ impl Desktop {
         time::sleep_ms(100).map_err(|e| e.to_string())
     }
     pub fn focus(&mut self, c: &mut Client) -> Result<(), String> {
-        self.shown(c)?;
+        until(2000, "bwm assigned client geometry", || {
+            let w = c.info()?;
+            Ok(w.x > 0 && w.y > 0)
+        })?;
         c.clear()?;
         let w = c.info()?;
         self.click(w.x + 20, w.y + 20)?;

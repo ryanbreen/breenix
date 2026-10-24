@@ -11,16 +11,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use window::abi::{self, op, Plain};
 
 static COMMIT_NS: AtomicU64 = AtomicU64::new(0);
+static HANDLING_COMMIT: AtomicU64 = AtomicU64::new(0);
 static EPOCH: AtomicU64 = AtomicU64::new(0);
 
 fn run(commands: &mut File, replies: &mut File) -> Result<(), String> {
     let mut first = [0; COMMAND_SIZE];
     commands.read_exact(&mut first).map_err(|e| e.to_string())?;
     let mut seed = word(&first, 4);
-    let mut refuse = word(&first, 8) != 0;
+    let mut refuse = word(&first, 8) & 1 != 0;
     let mut c = window::create(240, 160, 3, 4).map_err(|e| format!("CREATE: {e}"))?;
     let title = format!("WM client {seed}");
-    window::register(c.id, title.as_bytes()).map_err(|e| format!("REGISTER: {e}"))?;
+    if word(&first, 8) & 2 == 0 {
+        window::register(c.id, title.as_bytes()).map_err(|e| format!("REGISTER: {e}"))?;
+    }
     let event_fd =
         window::with_id(op::EVENT_FD, c.id).map_err(|e| format!("EVENT_FD: {e}"))? as i32;
     let mut renderer = bgl::Context::new().map_err(|e| format!("GPU context: {e}"))?;
@@ -63,6 +66,7 @@ fn run(commands: &mut File, replies: &mut File) -> Result<(), String> {
             }
             // A handling commit is made only after the whole batch's handlers returned.
             commit = paint(&c, &mut renderer, seed, processed)?;
+            HANDLING_COMMIT.store(commit, Ordering::Relaxed);
         }
         if animate {
             seed = seed.wrapping_add(1);
@@ -76,10 +80,10 @@ fn run(commands: &mut File, replies: &mut File) -> Result<(), String> {
         let a = word(&bytes, 4);
         let b = word(&bytes, 8);
         if matches!(word(&bytes, 0), CLIP_SET | CLIP_GET) {
-            let mut text = vec![0; a as usize];
-            if text.len() > 16 * 1024 * 1024 + 1 {
+            if a as usize > 16 * 1024 * 1024 + 1 {
                 return Err("client clipboard command exceeds bound".into());
             }
+            let mut text = vec![0; a as usize];
             commands.read_exact(&mut text).map_err(|e| e.to_string())?;
             let answer = clipboard(word(&bytes, 0) == CLIP_SET, c.id, &text);
             let (status, serial, text) = match answer {
@@ -98,6 +102,9 @@ fn run(commands: &mut File, replies: &mut File) -> Result<(), String> {
         }
         match word(&bytes, 0) {
             SNAPSHOT => {}
+            REGISTER => {
+                window::register(c.id, title.as_bytes()).map_err(|e| format!("REGISTER: {e}"))?;
+            }
             PAINT => {
                 seed = a;
                 commit = paint(&c, &mut renderer, seed, processed)?;
@@ -239,6 +246,7 @@ fn respond(
         h[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
     h[32..40].copy_from_slice(&COMMIT_NS.load(Ordering::Relaxed).to_le_bytes());
+    h[40..48].copy_from_slice(&HANDLING_COMMIT.load(Ordering::Relaxed).to_le_bytes());
     out.write_all(&h).map_err(|e| e.to_string())?;
     // SAFETY: WindowEvent is the plain 320-byte wire ABI with initialized reserved fields.
     let bytes = unsafe {

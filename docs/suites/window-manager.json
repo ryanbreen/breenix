@@ -72,6 +72,10 @@
       "title": "bwm starts and shows clients",
       "cases": [
         {
+          "id": "desktop-control",
+          "title": "A completed empty desktop exposes the literal taskbar pixel"
+        },
+        {
           "id": "claims-display",
           "title": "A live bwm retains the compositor claim after composing a client"
         },
@@ -408,6 +412,66 @@
           "title": "Eighteen measured 64 KiB transfers between programs each finish within 50 ms"
         }
       ]
+    },
+    {
+      "id": "input-core-remaining",
+      "title": "input-core planned coverage",
+      "cases": []
+    },
+    {
+      "id": "input-devices-remaining",
+      "title": "input-devices planned coverage",
+      "cases": []
+    },
+    {
+      "id": "startup-remaining",
+      "title": "startup planned coverage",
+      "cases": []
+    },
+    {
+      "id": "composition-remaining",
+      "title": "composition planned coverage",
+      "cases": []
+    },
+    {
+      "id": "stacking-remaining",
+      "title": "stacking planned coverage",
+      "cases": []
+    },
+    {
+      "id": "focus-remaining",
+      "title": "focus planned coverage",
+      "cases": []
+    },
+    {
+      "id": "pointer-remaining",
+      "title": "pointer planned coverage",
+      "cases": []
+    },
+    {
+      "id": "geometry-remaining",
+      "title": "geometry planned coverage",
+      "cases": []
+    },
+    {
+      "id": "lifecycle-remaining",
+      "title": "lifecycle planned coverage",
+      "cases": []
+    },
+    {
+      "id": "recovery-remaining",
+      "title": "recovery planned coverage",
+      "cases": []
+    },
+    {
+      "id": "clipboard-remaining",
+      "title": "clipboard planned coverage",
+      "cases": []
+    },
+    {
+      "id": "liveness-remaining",
+      "title": "liveness planned coverage",
+      "cases": []
     }
   ]
 }

@@ -3,18 +3,25 @@ use breenix_suite::suite::{check, hostkeys, value, CaseResult};
 use libbreenix::{signal, time, window};
 use window::abi::{self, event_kind as kind, win_flags, Plain};
 
+fn placed(c: &Client) -> Result<(), String> {
+    until(2000, "bwm assigned registered client geometry", || {
+        let w = c.info()?;
+        Ok(w.x > 0 && w.y > 0)
+    })
+}
+
 fn one() -> Result<(Desktop, Client), String> {
-    let mut d = Desktop::start()?;
+    let d = Desktop::start()?;
     let c = Client::start(11)?;
-    d.shown(&c)?;
+    placed(&c)?;
     Ok((d, c))
 }
 fn twin() -> Result<(Desktop, Client, Client), String> {
-    let mut d = Desktop::start()?;
+    let d = Desktop::start()?;
     let a = Client::start(11)?;
-    d.shown(&a)?;
+    placed(&a)?;
     let b = Client::start(23)?;
-    d.shown(&b)?;
+    placed(&b)?;
     Ok((d, a, b))
 }
 fn key(c: &mut Client, chords: &str, code: u32) -> Result<abi::WindowEvent, String> {
@@ -91,6 +98,9 @@ pub fn core_serials() -> CaseResult {
             .all(|e| e.device != 0 && e.flags == 0),
         "core omitted device identity or set reserved flags",
     )?;
+    c.await_event("first device A routed through bwm", |e| {
+        e.kind == kind::KEY_PRESS && e.keycode == 30
+    })?;
     c.await_event("second device B routed through bwm", |e| {
         e.kind == kind::KEY_PRESS && e.keycode == 48
     })?;
@@ -346,7 +356,8 @@ pub fn replay_faults() -> CaseResult {
 }
 
 pub fn claims_display() -> CaseResult {
-    let (_d, _c) = one()?;
+    let (mut d, c) = one()?;
+    d.shown(&c)?;
     let result = window::claim_compositor();
     check(
         matches!(
@@ -358,14 +369,24 @@ pub fn claims_display() -> CaseResult {
         &format!("bwm did not retain the compositor claim: {result:?}"),
     )
 }
+pub fn desktop_control() -> CaseResult {
+    let d = Desktop::start()?;
+    let s = Screen::read()?;
+    check(
+        s.serial() != 0 && s.pixel(d.width as i32 / 2, 1)? == 0xff14161e,
+        "completed desktop control lacks the literal taskbar pixel",
+    )
+}
+
 pub fn first_client() -> CaseResult {
     let (mut d, c) = one()?;
     content(&mut d, &c)
 }
 pub fn existing_windows() -> CaseResult {
     let c = Client::start(11)?;
+    c.child.freeze()?;
     let mut d = Desktop::start()?;
-    content(&mut d, &c)
+    d.shown(&c)?.client(&c)
 }
 pub fn independent_clients() -> CaseResult {
     let (mut d, a, b) = twin()?;
@@ -515,7 +536,7 @@ pub fn restore() -> CaseResult {
     Ok(())
 }
 pub fn all_minimized() -> CaseResult {
-    let (mut d, _a, mut b) = twin()?;
+    let (mut d, mut a, mut b) = twin()?;
     d.focus(&mut b)?;
     b.clear()?;
     key(&mut b, "a", 30)?;
@@ -531,31 +552,41 @@ pub fn all_minimized() -> CaseResult {
     {
         d.click(w.x + w.width as i32 - 39 * d.scale, w.y - 16 * d.scale)?;
     }
+    until(1000, "both clients minimized with no focus", || {
+        Ok([a.info()?, b.info()?]
+            .iter()
+            .all(|w| w.flags & win_flags::MINIMIZED != 0 && w.flags & win_flags::FOCUSED == 0))
+    })?;
     check(
         listed()?.iter().all(|w| w.flags & win_flags::FOCUSED == 0),
         "all-minimized desktop retained a focused window",
     )?;
+    a.clear()?;
     b.clear()?;
     hostkeys("a")?;
     time::sleep_ms(250)?;
+    a.snapshot()?;
     b.snapshot()?;
     check(
-        b.events.iter().all(|e| e.kind != kind::KEY_PRESS),
+        a.events
+            .iter()
+            .chain(&b.events)
+            .all(|e| e.kind != kind::KEY_PRESS),
         "a minimized window received typed input",
     )
 }
 pub fn exit_restacks() -> CaseResult {
-    let (mut d, mut a, b) = twin()?;
+    let (mut d, a, mut b) = twin()?;
     let c = Client::start(31)?;
     d.shown(&c)?;
-    let bz = b.info()?.z;
+    let az = a.info()?.z;
     let cz = c.info()?.z;
-    a.send(EXIT, 0, 0)?;
-    until(1000, "bottom exit", || {
-        Ok(!listed()?.iter().any(|w| w.id == a.id))
+    b.send(EXIT, 0, 0)?;
+    until(1000, "middle exit", || {
+        Ok(!listed()?.iter().any(|w| w.id == b.id))
     })?;
     check(
-        b.info()?.z < c.info()?.z && bz < cz,
+        a.info()?.z < c.info()?.z && az < cz,
         "survivors changed order after another owner exited",
     )?;
     content(&mut d, &c)
@@ -842,6 +873,11 @@ fn resize_case(bottom: bool) -> CaseResult {
                 (w.width + 80, w.height)
             })
     })?;
+    let after = c.info()?;
+    check(
+        after.x == w.x && after.y == w.y,
+        "right/bottom resize moved content origin",
+    )?;
     content(&mut d, &c)
 }
 pub fn resize_right() -> CaseResult {
@@ -876,9 +912,13 @@ pub fn resize_cross() -> CaseResult {
         (w.x + w.width as i32 + 1, w.y + 80),
         (w.x - 20, w.y + 80),
     )?;
-    c.await_event("crossing resize request", |e| {
+    let requested = c.await_event("crossing resize request", |e| {
         e.kind == kind::RESIZE_REQUESTED
     })?;
+    check(
+        requested.width == ((120 - 4) * d.scale) as u32,
+        "crossing resize requested a huge or non-minimum width",
+    )?;
     c.snapshot()?;
     check(
         c.width == ((120 - 4) * d.scale) as u32,
@@ -1045,9 +1085,10 @@ pub fn clients_notified() -> CaseResult {
 pub fn restart_adopts() -> CaseResult {
     let (mut d, c) = one()?;
     content(&mut d, &c)?;
+    c.child.freeze()?;
     d.wm.stop()?;
     let mut next = Desktop::start()?;
-    content(&mut next, &c)
+    next.shown(&c)?.client(&c)
 }
 pub fn interaction_restart() -> CaseResult {
     let (mut d, mut c) = one()?;
@@ -1217,10 +1258,12 @@ pub fn hung_client() -> CaseResult {
 }
 pub fn wake_registry() -> CaseResult {
     let (mut d, a) = one()?;
+    parked(&d)?;
+    let mut b = Client::unregistered(23)?;
     d.shown(&a)?;
     time::sleep_ms(200)?;
-    let b = Client::start(23)?;
-    content(&mut d, &b)
+    b.command(REGISTER, 0, 0)?;
+    d.shown(&b)?.client(&b)
 }
 pub fn stress_clients() -> CaseResult {
     let mut clock = measure::Clock::new()?;
@@ -1230,14 +1273,16 @@ pub fn stress_clients() -> CaseResult {
         .map(|n| Client::start(11 + n))
         .collect::<Result<Vec<_>, _>>()?;
     measure::acknowledged(0)?;
+    let mut receipt_serial = 0;
     for n in 1..=300 {
         device.batch(&[(1, 30, 1), (1, 30, 0)], n as u64 * 16_000_000)?;
-        measure::epoch(&mut d, &mut clock, &mut clients, n, true)?;
+        receipt_serial = receipt_serial.max(measure::epoch(&mut clock, &mut clients, n, true)?);
         clients[7].await_event("stress epoch input processed", |e| {
             e.kind == kind::KEY_PRESS && e.keycode == 30
         })?;
         clients[7].clear()?;
     }
+    measure::observed(&mut d, &clients.iter().collect::<Vec<_>>(), receipt_serial)?;
     Ok(())
 }
 pub fn memory_bounded() -> CaseResult {
@@ -1247,13 +1292,15 @@ pub fn memory_bounded() -> CaseResult {
         .map(|n| Client::start(11 + n))
         .collect::<Result<Vec<_>, _>>()?;
     measure::acknowledged(0)?;
+    let mut receipt_serial = 0;
     for n in 1..=60 {
-        measure::epoch(&mut d, &mut clock, &mut clients, n, true)?;
+        receipt_serial = receipt_serial.max(measure::epoch(&mut clock, &mut clients, n, true)?);
     }
     let before = rss(d.wm.pid)?;
     for n in 61..=660 {
-        measure::epoch(&mut d, &mut clock, &mut clients, n, true)?;
+        receipt_serial = receipt_serial.max(measure::epoch(&mut clock, &mut clients, n, true)?);
     }
+    measure::observed(&mut d, &clients.iter().collect::<Vec<_>>(), receipt_serial)?;
     let after = rss(d.wm.pid)?;
     value(
         "resident-growth",
@@ -1281,14 +1328,17 @@ pub fn present_latency() -> CaseResult {
     c.command(RESIZE, 256, 256)?;
     d.shown(&c)?;
     let mut samples = Vec::new();
+    let mut receipt_serial = 0;
     for n in 0..330 {
         c.command(PAINT, n, 0)?;
-        let r = measure::completed(&mut d, &c)?;
+        let r = measure::completed_commit(&c, c.commit)?;
+        receipt_serial = receipt_serial.max(r.serial);
         check(r.ns >= c.commit_ns, "composite receipt predates the commit")?;
         if n >= 30 {
             samples.push((r.ns - c.commit_ns) / 1000);
         }
     }
+    measure::observed(&mut d, &[&c], receipt_serial)?;
     samples.sort_unstable();
     let median = samples[samples.len() / 2];
     let max = *samples.last().unwrap();
@@ -1348,10 +1398,11 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
         c.command(ANIMATE, 1, 0)?;
     }
     let mut samples = Vec::new();
+    let mut receipt_serial = 0;
     let w = c.info()?;
     for n in 0..110 {
-        let begin = now();
         c.clear()?;
+        let begin = now();
         if pointer {
             let x = (w.x + 20 + (n % 100)) as u64;
             let y = (w.y + 40) as u64;
@@ -1373,7 +1424,8 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
                     kind::KEY_PRESS
                 }
         })?;
-        let r = measure::completed(&mut d, &c)?;
+        let r = measure::completed_commit(&c, c.handling_commit)?;
+        receipt_serial = receipt_serial.max(r.serial);
         check(r.ns >= begin, "completion predates injected input")?;
         if n >= 10 {
             samples.push((r.ns - begin) / 1000);
@@ -1383,6 +1435,7 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
             time::sleep_ms(50 - spent)?;
         }
     }
+    measure::observed(&mut d, &[&c], receipt_serial)?;
     samples.sort_unstable();
     let median = samples[50];
     let max = *samples.last().unwrap();

@@ -82,7 +82,15 @@ The mixed-script case requires exactly one row per source serial, checks the tar
 delivered rows and waits for that client's processed watermark. A later successful
 serial cannot cover a missing earlier one.
 
-`/proc/breenix/input-replay` is a root-only suite-latched control descriptor. A 64-byte
+`/proc/breenix/input-replay` is a root-only test-control descriptor governed by
+[plan section 3.4](plan.md#34-suite-mode-test-controls). Suite-latched means enabled
+only by the kernel's first exec of a suite as PID 1, immutable for that boot;
+all replay operations return ENOSYS in shell, desktop, probe and program boots.
+Root alone never enables replay. It is a named input control in the section 11
+point table, covered by the section 3.4 production absence and latch checks;
+`breengel/isolation/test-hooks-absent` must include its entry point before any
+implementation lands. This PR specifies a client for an absent endpoint and adds
+no kernel endpoint or input injection authority. A 64-byte
 request asks the *bound instance's production completion function* to consume a recorded
 report and use its production requeue path. Selector u32 at 0 is 1 keyboard or 2 pointer;
 bit 8 suppresses input::report once. Bytes 8..15 hold the USB boot-keyboard A report
@@ -118,7 +126,10 @@ at least the latest 4,096 window entries. Each line is five decimal integers:
 `composite_serial completed_monotonic_ns window_id commit_id pixel_generation`.
 Only successful device-completed compositions enter it. Entries for unchanged generations
 do not count as new animation frames. Performance cases require these receipts, a real
-client's post-handler commit and a completed scanout observation covering that commit.
+client's post-handler commit and a final completed scanout observation covering the workload.
+A sample or stepped epoch requires device-completed receipts; full readback
+is kept outside the per-sample loop so observation does not dominate the workload.
+The client reports its handling commit separately from subsequent animation commits.
 They measure completion time, excluding the observer's readback and IPC costs. A bwm FPS
 print, snapshot reservation or submission success cannot supply a receipt. No synthetic
 history is staged by the host or suite.
@@ -134,3 +145,53 @@ The serial starts nonzero and increases on replacement. UTF-8 and embedded NUL a
 length-counted, with the plan's 16 MiB bound. Closing the setting client's window does
 not clear the stored bytes. The suite's clients call the real socket; there is no
 in-suite clipboard store and no host-staged result.
+
+## Baseline scope and incomplete milestones
+
+This baseline implements a first cut of the plan's 249 cases, not the complete E18
+acceptance suite. Additional harness controls do not replace any planned case.
+Each incomplete milestone measures both its populated category and an empty
+`<category>-remaining` category using the existing planned-category mechanism.
+Full-suite and milestone acceptance stay blocked until those cases are implemented.
+The outstanding plan case ids are listed below; they are not runtime skips.
+
+- `input-core-remaining`: `uinput-create`, `uinput-nonroot`, `abi-layout`, `key-press-release`, `modifiers-derived`, `pointer-absolute`, `pointer-relative`, `buttons`, `wheel`, `syn-batches`, `time-real`, `two-readers`, `syn-dropped`, `poll`, `grab`, `grab-select`, `grab-drain`, `text-invalid`, `malformed-batch`, `console-keymap`, `console-special-keys`, `console-modifiers`, `ledger-gap`, `console-after-compositor`.
+- `input-devices-remaining`: `hid-keyboard-decode`, `hid-rollover`, `hid-tablet-parallels`, `hid-tablet-vmware`, `hid-relative`, `hid-wheel`, `virtio-keyboard-decode`, `virtio-tablet-decode`, `ps2-scancodes`, `replay-wake-fault`, `devices-bound`, `device-capabilities`.
+- `startup-remaining`: `no-gpu-required`, `empty-desktop`, `config-test`, `config-invalid`, `fonts-loaded`, `hotkeys-loaded`, `composited-marker`, `epoch-ack`.
+- `composition-remaining`: `client-position`, `title-text`, `shadow`, `background`, `appbar-entries`, `chromeless`, `sixteen-clients`, `moving-client`, `frozen-client`, `present-failure`, `visible-only`, `expose-move`, `partial-equals-full`, `damage-bounded`, `outer-bounds`, `scene-identical`, `resized-content`, `cursor-over-window`, `cursor-edge-shapes`, `cursor-stationary-shape`, `clock-test-config`, `no-fps-overlay`.
+<!-- claim-lint:ok: Planned case identifiers copied from docs/gui/plan.md section 16, not measured claims. -->
+- `stacking-remaining`: `raise-stable-id`, `appbar-order`, `minimize-no-input`, `minimize-close`, `fkeys-skip-minimized`, `chromeless-top`, `dimmer-only-with-chromeless`, `launcher-toggle`, `close-focus-next`, `new-on-top`, `registry-agrees`, `model-sequence`, `minimize-all-restore-all`, `titlebar-drag-raises`.
+- `focus-remaining`: `pair-appbar`, `pair-cycle`, `focus-after-close`, `cycle-prev`, `cycle-skips-minimized`, `release-follows-press`, `focus-change-mid-press`, `repeat-delay`, `repeat-rate`, `repeat-cancel`, `repeat-frozen-clock`, `super-return`, `alt-q`, `hotkey-consumed`, `super-double-tap`, `super-single-tap`, `hotkeys-config`, `no-focus-no-delivery`, `focus-new-window`, `routing-after-exit`, `lost-then-delivered`.
+<!-- claim-lint:ok: Planned case identifiers copied from docs/gui/plan.md section 16, not measured claims. -->
+- `pointer-remaining`: `capture-target-closes`, `scroll-wakes`, `fast-click`, `double-click-threshold`, `double-click-distance`, `chrome-click`, `enter-leave`, `cursor-position`, `modifier-click`, `clamp`, `minimized-none`, `chromeless-click`, `press-raises-delivers`, `hit-test`, `stale-scene`.
+- `geometry-remaining`: `drag-top-clamp`, `drag-keeps-titlebar`, `resize-left`, `resize-top`, `resize-corners`, `resize-minimum`, `resize-maximum`, `configure-ack`, `buffer-matches`, `coalesce`, `exit-during-drag`, `exit-during-resize`, `client-title`, `remembered-geometry`, `expose-during-drag`, `resize-repaints`, `geometry-registry`, `chromeless-not-resizable`.
+- `lifecycle-remaining`: `close-one-of-two`, `launch-missing`, `launch-fork-fails`, `launch-close-50`, `read-other-denied`, `huge-window`, `commit-flood`, `title-flood`, `never-reads`, `normal-exit-gives-back`, `window-limit`.
+- `recovery-remaining`: `death-releases`, `blocked-acquire`, `blocked-wait`, `death-at-composite`, `death-mid-configure`, `death-mid-capture`, `focus-restored`, `clipboard-reset`, `supervisor-gives-up`, `unexpected-crash-fails`.
+- `clipboard-remaining`: `set-get`, `empty`, `too-large`, `change-notice`, `concurrent-sets`, `mime-text-only`, `window-required`, `unprivileged`, `textfield-copy`, `textfield-paste`.
+- `liveness-remaining`: `deadline-wake`, `compositor-wait-timeout`, `slow-client`, `stopped-client`, `stress-io`, `progress-under-load`, `cursor-shape-idle`.
+
+## Baseline review corrections
+
+Shared routing setup waits for registry geometry, without requiring client scanout;
+composition cases keep their explicit device observation. The `desktop-control` case
+checks a completed empty desktop against a literal taskbar pixel to demonstrate a
+positive native-readback path independent of the failing client-presentation cases.
+A prerequisite failure reports its actual reason rather than diagnosing a distinct
+routing defect. Presentation failures remain tracked in #2365.
+
+The existing-windows and restart-adopts cases stop their independent client and wait
+for the SIGSTOP acknowledgment before starting bwm. Neither calls the paint barrier;
+only pixels committed before startup or restart can satisfy their device comparison.
+The registry-wake case paints an unregistered client before the idle interval, then
+registers it without painting, pointer input or clock stepping. Only the registry
+transition can initiate its observation.
+
+Latency starts after the clear-events reply. The client reports the post-handler
+commit separately from later animation commits. Each sample and each stepped client
+still needs a device-completed receipt; the final scanout covers the workload without
+hundreds of full physical readbacks inside the measurement loop. The workload counts,
+latency bounds, memory bounds and case deadlines remain unchanged.
+
+All-minimized waits for both clients' MINIMIZED flags and absence of focus, and checks
+both event logs after the negative input interval. Deferred review refinements are
+tracked in #2369.
