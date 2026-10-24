@@ -280,7 +280,8 @@ impl Window {
             self.note(&d.event);
             let handled = handler(&d);
             count += 1;
-            if d.serial != 0 {
+            // Clipboard notices have kernel delivery identities, not input serials.
+            if d.serial != 0 && !matches!(d.event, Event::ClipboardChanged | Event::ClipboardLost) {
                 self.handled = self.handled.max(d.serial);
                 self.since_pixel.push((d.serial, handled));
             }

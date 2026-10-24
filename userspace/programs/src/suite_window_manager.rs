@@ -297,6 +297,7 @@ static SUITE: Suite = suite("window-manager", "Window manager", &[
         case("mime-text-only", "A type other than text/plain;charset=utf-8 is refused.", clipboard::mime_text_only),
         case("window-required", "A process with no window on the desktop is refused.", clipboard::window_required),
         case("unprivileged", "A uid 1000 client with a window can set and get.", clipboard::unprivileged),
+        case("per-user", "Root and uid 1000 keep separate clipboard text, serials and notifications.", clipboard::per_user),
         case("textfield-copy", "Ctrl+C in a libbui text field copies its selection.", clipboard::textfield_copy),
         case("textfield-paste", "Ctrl+V in a libbui text field inserts the clipboard text.", clipboard::textfield_paste),
     ]),

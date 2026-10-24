@@ -1,7 +1,11 @@
 # Breenix service table, read by init at boot and by `svc reload`.
 # Format: libs/libbreenix/src/services.rs; status and control: svc(1).
-# The desktop and its applications start from init's boot script, not here.
+# init supervises bwm; the boot script starts the desktop's applications.
 # Default ARM64 init selects daemons; `init console` selects the login terminals.
+
+[bwm]
+command = /usr/bin/bwm
+give-up = 5 10
 
 # SSH key exchange reads the random pool, so bsshd starts once it is ready.
 [bsshd]
