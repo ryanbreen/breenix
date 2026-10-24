@@ -334,6 +334,7 @@ fn virtual_entry(path: &str) -> Option<bool> {
     }
     if path == "/dev"
         || path == "/proc"
+        || path == "/dev/input"
         || path == "/dev/pts"
         || path == "/dev/shm"
         || path == "/dev/mqueue"
