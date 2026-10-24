@@ -34,10 +34,13 @@ use super::handoff::{word, quad, entries};
 /// A one-window scene, composed: the compositor, the window and its composite serial.
 fn one_window(seed: u32) -> Result<(Helper, W, Placed, u64), breenix_suite::suite::CaseError> {
     let mut k = compositor()?;
-    let p = Placed::new(320, 200, 200, 120, 0, seed);
+    let (width, height) = screen_size()?;
+    let p = Placed::new(0, 0, width as u32, height as u32, 0, seed);
     let w = W::new(p.w, p.h, 2)?;
     show(&mut k, &w, &p)?;
     let (serial, _) = compose(&mut k)?;
+    let (pixels, _) = screen()?;
+    screen_is(&pixels, &[p], "full-screen scanout fixture")?;
     Ok((k, w, p, serial))
 }
 

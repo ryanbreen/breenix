@@ -871,7 +871,7 @@ fn composition_takeover_giveback() -> CaseResult {
     let said = h.line(5_000).cite("24")?;
     ensure(said == "painted", "18", format!("the display-taking child said `{said}`"))?;
     let (during, _) = screen()?;
-    ensure(during[..4] == [0x20, 0x80, 0xE0, 0xFF], "18", format!("while the child owns the display, the screen's first pixel is {:02x?}, not the child's colour", &during[..4]))?;
+    ensure(during.chunks_exact(4).all(|p| p == [0x20, 0x80, 0xE0, 0xFF]), "18", format!("while the child owns the display, the screen's first pixel is {:02x?}, not the child's colour", &during[..4]))?;
     let given = h.ask("go").cite("24")?;
     ensure(given == "given", "18", format!("the child's give_back_display: `{given}`"))?;
     let (after, _) = screen()?;
@@ -941,7 +941,7 @@ fn composition_ownership_stack() -> CaseResult {
     let mut k = compositor()?;
     let gave = giver.ask(&k.pid.to_string()).cite("24")?;
     ensure(gave == "gave 0", "18", format!("GIVE_DISPLAY to the compositor answered `{gave}`"))?;
-    let p = Placed::new(100, 100, 200, 200, 0, 28);
+    let p = Placed::new(0, 0, width as u32, height as u32, 0, 28);
     let w = W::new(p.w, p.h, 2)?;
     show(&mut k, &w, &p)?;
     compose(&mut k)?;
@@ -949,14 +949,14 @@ fn composition_ownership_stack() -> CaseResult {
     ensure(ret==0 && binding.binding_known==1 && binding.scanout_resource!=0,"18","gpu-display: ownership stack has no completed GPU binding")?;
     let (px, _) = screen()?;
     crate::remember_frame(&px,width,height,None);
-    ensure(px[(150 * width + 150) * 4..(150 * width + 150) * 4 + 3] == pattern(28, 50, 50)[..3], "18", "the compositor given the display does not show its composition")?;
+    screen_is(&px, &[p], "the compositor given the display fills the entire scanout")?;
     k.kill_checked().cite("24")?;
     let _ = time::sleep_ms(50);
     let (ret,restored)=libbreenix::gpu::modes();
     ensure(ret==0 && restored.binding_known==1 && restored.scanout_resource!=binding.scanout_resource,"18","gpu-display: compositor death did not restore the giver's GPU target")?;
     let (px, _) = screen()?;
     crate::remember_frame(&px,width,height,None);
-    ensure(px[..4] == [0x11, 0x99, 0x33, 0xFF] && px[(150 * width + 150) * 4..(150 * width + 150) * 4 + 4] == [0x11, 0x99, 0x33, 0xFF], "18", format!(
+    ensure(px.chunks_exact(4).all(|p| p == [0x11, 0x99, 0x33, 0xFF]), "18", format!(
         "after the compositor died the screen shows {:02x?} at (0, 0); the display returns to the giver and its frame is restored exactly", &px[..4]))
 }
 
