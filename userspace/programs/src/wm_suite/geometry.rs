@@ -387,6 +387,8 @@ pub fn exit_during_resize() -> CaseResult {
     exit_gesture(true)
 }
 pub fn client_title() -> CaseResult {
+    // W19: the certified bitmap oracle requires an explicit bitmap configuration.
+    let _config = FileOverride::new("/etc/bwm.conf", b"font=bitmap\nclock=frozen\nfps=off\n")?;
     let (mut d, mut c) = one()?;
     c.title(b"renamed window 0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLM")?;
     let w = c.info()?;

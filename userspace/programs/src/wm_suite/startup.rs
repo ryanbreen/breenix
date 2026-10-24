@@ -114,7 +114,54 @@ pub fn config_test() -> CaseResult {
         "pinned font or fps=off setting was ignored",
     )?;
     let s = Screen::read()?;
-    super::scene::clock(&s, &d, "00:00:00 UTC")
+    super::scene::clock(&s, &d, "00:00:00 UTC")?;
+    // W19: check configured TTF ink and distinguish it from the bitmap oracle.
+    let mut c = Client::start(11)?;
+    c.title(b"Font")?;
+    content(&mut d, &c)?;
+    parked(&d)?;
+    let s = d.shown(&c)?;
+    let w = c.info()?;
+    use libgfx_ref::{
+        bitmap_font as font,
+        color::Color,
+        framebuf::{Format, FrameBuf},
+    };
+    let scale = d.scale as usize;
+    let height = if scale == 2 {
+        font::RasterHeight::Size32
+    } else {
+        font::RasterHeight::Size16
+    };
+    let metrics = font::metrics_at(height);
+    let mut bitmap = FrameBuf::new(4 * metrics.char_width, metrics.char_height, Format::BGRX)
+        .map_err(|e| format!("W19 bitmap reference: {e:?}"))?;
+    bitmap.clear(Color::rgb(40, 100, 220));
+    for (i, ch) in "Font".chars().enumerate() {
+        font::draw_char_at(
+            &mut bitmap,
+            ch,
+            i * metrics.char_width,
+            0,
+            Color::rgb(255, 255, 255),
+            height,
+        );
+    }
+    let mut ink = false;
+    let mut different = false;
+    for y in 0..metrics.char_height {
+        for x in 0..4 * metrics.char_width {
+            let actual = s.pixel(w.x + 6 * d.scale + x as i32, w.y - 26 * d.scale + y as i32)?;
+            let c = bitmap.get_pixel(x, y);
+            let expected = 0xff000000 | (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32;
+            ink |= actual != 0xff2864dc;
+            different |= actual != expected;
+        }
+    }
+    check(
+        ink && different,
+        "configured TTF title is blank or uses the bitmap font",
+    )
 }
 pub fn config_invalid() -> CaseResult {
     let _clock = measure::Clock::new()?;
