@@ -390,6 +390,10 @@ fn isolation_composite_denied() -> CaseResult {
     want_ok(unsafe { raw::syscall0(431) as i64 },"18","gpu-display: display owner fixture")?;
     let mut snapshot=[0u64;12];
     want_errno(super::handoff::wire(29,&mut snapshot),EPERM,"17.4","gpu-window: display owner without claim snapshot")?;
+    super::composition::paint([0x43,0x54,0x65,255]).cite("23.9")?;
+    let (pixels,_) = super::composition::screen()?;
+    let (width,height) = super::composition::physical_size()?;
+    same(&pixels,width as u32,height as u32,true,"bound composition authority fixture","23.9",|_,_|[0x43,0x54,0x65,255])?;
     let _w = shown(16, 16, 12, b"composite-denied")?;
     let r = composite();
     ensure(r == -(EPERM as i64), "17.4", format!("COMPOSITE by root that is not the compositor {}; the contract gives EPERM", outcome(r)))?;
