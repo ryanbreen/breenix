@@ -1674,7 +1674,7 @@
         },
         {
           "id": "boot-ribbon",
-          "title": "The active ribbon detects point 15, then retires above a fixed console grid (B52/B53)"
+          "title": "The full console grid holds text through its bottom rows with no ribbon colour (B54)"
         },
         {
           "id": "boundary-notice",
