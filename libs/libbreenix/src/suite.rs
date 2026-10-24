@@ -1020,7 +1020,7 @@ impl Suite {
                 }
                 match &outcome { Outcome::Pass { .. } => counts.passed += 1, Outcome::Fail { .. } => counts.failed += 1, Outcome::Skip { .. } => counts.skipped += 1 }
                 emit(&line);
-                states[c][k] = State::Done(outcome);
+                states[c][k] = State::Done(outcome.into());
                 done += 1;
                 if place.is_some() { sequence::progress_after(done); }
             }
@@ -1078,16 +1078,50 @@ struct Counts {
     skipped: usize,
 }
 
-pub(super) enum Outcome {
+pub(super) enum Outcome<M = String> {
     Pass { ms: u64 },
-    Fail { ms: u64, msg: String },
-    Skip { msg: String },
+    Fail { ms: u64, msg: M },
+    Skip { msg: M },
+}
+
+/// Retained verdict text belongs to the preallocated state table. Keeping one
+/// malloc allocation per failed case retained a page per reason on Breenix,
+/// even after the allocator's free-block cache had been released.
+#[derive(Clone)]
+pub(super) struct RetainedMessage {
+    bytes: [u8; MSG_MAX],
+    len: usize,
+}
+
+impl RetainedMessage {
+    fn new(text: &str) -> Self {
+        let mut len = text.len().min(MSG_MAX);
+        while !text.is_char_boundary(len) { len -= 1; }
+        let mut bytes = [0; MSG_MAX];
+        bytes[..len].copy_from_slice(&text.as_bytes()[..len]);
+        Self { bytes, len }
+    }
+
+    fn as_str(&self) -> &str {
+        // The bytes were copied from a UTF-8 string at a character boundary.
+        std::str::from_utf8(&self.bytes[..self.len]).expect("retained verdict UTF-8")
+    }
+}
+
+impl From<Outcome> for Outcome<RetainedMessage> {
+    fn from(outcome: Outcome) -> Self {
+        match outcome {
+            Outcome::Pass { ms } => Self::Pass { ms },
+            Outcome::Fail { ms, msg } => Self::Fail { ms, msg: RetainedMessage::new(&msg) },
+            Outcome::Skip { msg } => Self::Skip { msg: RetainedMessage::new(&msg) },
+        }
+    }
 }
 
 pub(super) enum State {
     Pending,
     Running,
-    Done(Outcome),
+    Done(Outcome<RetainedMessage>),
 }
 
 /// Print a settled memory sample as `SUITE <id> MEMORY <when> ...`, or an ERROR
@@ -1899,7 +1933,7 @@ impl Screen {
                     let _ = write!(text, "{ms} ms");
                     text
                 }
-                State::Done(Outcome::Fail { msg, .. } | Outcome::Skip { msg }) => msg.clone(),
+                State::Done(Outcome::Fail { msg, .. } | Outcome::Skip { msg }) => String::from(msg.as_str()),
                 State::Pending | State::Running => String::new(),
             }).collect())
             .collect();
