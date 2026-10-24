@@ -1729,16 +1729,16 @@ class Watchdog:
         result = self.remote('tee', directory + '/watchdog-ssh.json', input=json.dumps(receipt) + '\n', stdin=None)
         if result.returncode: raise ValueError('cannot retain SSH recovery receipt')
         until = time.monotonic() + 120
-        while not self.read(boot, 'ended'):
-            if time.monotonic() > until: raise ValueError('fault observation did not close')
+        while True:
+            lease = self.remote('cat', '/var/lib/breenix-metal/lease.json')
+            holds = lease.returncode == 0 and json.loads(lease.stdout).get('id') == boot
+            if self.read(boot, 'ended') and not holds: break
+            if time.monotonic() > until: raise ValueError('fault observation did not close and release its lease')
             time.sleep(2)
         verdict = json.loads(self.read(boot, 'watchdog-verdict.json') or '{}')
         if (verdict.get('passed') is not True or verdict.get('boot') != boot
                 or verdict.get('commit') != self.sha or verdict.get('receipt') != receipt):
             raise ValueError('watchdog recovery evidence failed: ' + str(verdict))
-        lease = self.remote('cat', '/var/lib/breenix-metal/lease.json')
-        if lease.returncode == 0 and json.loads(lease.stdout).get('id') == boot:
-            raise ValueError('completed watchdog fault boot still holds the machine lease')
 
     def cleanup(self):
         for boot in self.boots:

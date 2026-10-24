@@ -149,12 +149,14 @@ fn run(port: u32) -> Result<(), &'static str> {
         })();
         match result {
             Ok(rearmed) => {
+                if announced {
+                    rounds += 1;
+                    if rounds % 3 == 0 { crate::serial_println!("[watchdog] healthy feeds={}", rounds); }
+                }
                 if rearmed || !announced {
                     crate::serial_println!("[watchdog] armed seconds=120 action=hard-reset health=root-io,root-inode");
                     announced = true;
                 }
-                rounds += 1;
-                if rounds % 3 == 0 { crate::serial_println!("[watchdog] healthy feeds={}", rounds); }
             }
             Err(reason) => crate::serial_println!("[watchdog] round failed; retrying: {}", reason),
         }

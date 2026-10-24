@@ -651,6 +651,43 @@ class WatchdogRecovery(existing.StateTest):
         existing.m.write_text(d.dir / 'serial.txt', self.serial)
         self.receipt = dict(boot=d.id, commit=self.sha, case='feeder-hang', trigger=100, sshAt=450, bootId='4-5-6')
 
+    def test_baseline_lease_loss_refuses_destructive_launch(self):
+        remote = lambda *a, **k: SimpleNamespace(returncode=0, stdout=json.dumps(dict(id='other')))
+        target = host['Watchdog'](None, None, remote, None, None, 'baseline', self.sha, 'fixture')
+        with patch.dict(target.run_case.__globals__, command=lambda *a, **k: self.fail('launched after lease loss')):
+            with self.assertRaisesRegex(ValueError, 'baseline lost'):
+                target.run_case('feeder-hang')
+
+    def test_completed_fault_waits_for_its_lease_release(self):
+        boot = self.driver.id
+        receipt = dict(self.receipt, sshAt=200)
+        saved = False
+        leases = []
+        def remote(*args, **kwargs):
+            nonlocal saved
+            if args[0] == 'tee':
+                saved = True
+                self.assertEqual(json.loads(kwargs['input']), receipt)
+                return SimpleNamespace(returncode=0)
+            leases.append(1)
+            return SimpleNamespace(returncode=0 if len(leases) == 1 else 1,
+                                   stdout=json.dumps(dict(id=boot)))
+        probe = SimpleNamespace(ssh=lambda _: SimpleNamespace(returncode=0, stdout='4-5-6'))
+        target = host['Watchdog'](probe, None, remote, None, None, 'baseline', self.sha, 'fixture')
+        target.stopped = True
+        def read(_, name):
+            return {'events.jsonl': json.dumps(dict(event='watchdog-trigger', t=100)),
+                    'serial.txt': '[watchdog] previous-expired=1',
+                    'run.json': json.dumps(dict(watchdogRecoveredCommit=self.sha)),
+                    'ended': 'done' if saved else '',
+                    'watchdog-verdict.json': json.dumps(dict(passed=True, boot=boot, commit=self.sha, receipt=receipt))}[name]
+        target.read = read
+        launch = lambda *a, **k: SimpleNamespace(returncode=0, stdout=json.dumps(dict(id=boot)))
+        with patch.dict(target.run_case.__globals__, command=launch), \
+             patch.object(host['time'], 'time', return_value=200), patch.object(host['time'], 'sleep'):
+            target.run_case('feeder-hang')
+        self.assertEqual(len(leases), 2)
+
     def test_late_watchdog_evidence_is_reannounced_to_the_importer(self):
         directory = self.driver.dir
         existing.m.write_text(existing.m.STATE / 'finished.jsonl', json.dumps(dict(id=directory.name, seq=8)) + '\n')
