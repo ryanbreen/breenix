@@ -54,7 +54,6 @@ pub fn retire() {
     if !RETIRED.swap(true, Ordering::AcqRel) { DIRTY.store(true, Ordering::Release); }
 }
 pub fn is_booting() -> bool {
-    drain();
     !RETIRED.load(Ordering::Acquire)
 }
 /// Complete serial prefix, not the matcher's interpretation of it. Never silently truncate.

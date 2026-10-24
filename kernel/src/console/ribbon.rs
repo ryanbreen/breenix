@@ -39,7 +39,7 @@ impl Ribbon {
             return None;
         }
         let mut lit = crate::graphics::boot_ribbon::reached();
-        if lit.is_empty() {
+        if lit.is_empty() || !crate::graphics::boot_ribbon::is_booting() {
             return None;
         }
         if drop_stage {

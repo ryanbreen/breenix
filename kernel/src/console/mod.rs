@@ -952,6 +952,11 @@ fn render_thread(display: &'static Display, attached: Attached) {
     while !crate::task::kthread::kthread_should_stop() {
         deliver_replies();
         crate::tty::driver::drain_keyboard_input();
+        // Track boot completion during the splash, before the first text frame (B51).
+        #[cfg(target_arch = "aarch64")]
+        if crate::graphics::boot_ribbon::is_booting() {
+            crate::graphics::boot_ribbon::drain();
+        }
         // The `/proc/console/check` this pass may answer: one asked for before
         // it copies the terminal, so the answer shows what was written before
         // the request. One asked for later waits for the next pass.
