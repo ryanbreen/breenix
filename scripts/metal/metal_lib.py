@@ -58,8 +58,8 @@ def load_site(path=None):
 def power_token():
     """Private derivation seed mirrored into the install's root-only shutdown file."""
     STATE.mkdir(parents=True, exist_ok=True)
-    # Legacy power-token bytes appeared in captures; never derive new receipts
-    # from that exposed capability. This seed is private from its creation.
+    # Derive receipts from a fresh private seed rather than the legacy
+    # power-token capability exposed in historical captures.
     path = STATE / 'power-seed-v2'
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)

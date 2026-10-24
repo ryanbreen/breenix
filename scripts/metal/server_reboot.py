@@ -102,7 +102,7 @@ def run(api, args):
                     probe.require(probe.ssh('echo still-running'), 'still-running')
                 elif name == 'refusal-recovery':
                     # Refuse before the filesystem barrier using the real protected-file
-                    # validation, after every service and existing session has stopped.
+                    # validation, after the services and existing sessions have stopped.
                     offset = len(read(current, 'serial.txt'))
                     state = probe.ssh('cat /run/breenix/services')
                     probe.require(state)

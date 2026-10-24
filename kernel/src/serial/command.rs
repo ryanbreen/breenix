@@ -66,7 +66,6 @@ pub async fn serial_command_task() {
 
     let mut host_keys = crate::drivers::xhci::host_keys::Lines::new();
     while let Some(byte) = input.next().await {
-        super::INPUT_POLL.fetch_add(1, Ordering::Relaxed);
         // A suite boot that declared serial host keys: serial lines are host-key requests.
         if crate::drivers::xhci::host_keys_armed() {
             if let Some(line) = host_keys.feed(byte) {
@@ -76,7 +75,6 @@ pub async fn serial_command_task() {
         }
         if tty_input {
             crate::tty::push_char_from(byte, crate::tty::InputSource::Serial);
-            super::INPUT_FORWARD.fetch_add(1, Ordering::Relaxed);
             continue;
         }
         match byte {

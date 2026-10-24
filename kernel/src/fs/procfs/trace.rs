@@ -255,12 +255,8 @@ pub fn generate_counters() -> String {
     #[cfg(target_arch = "aarch64")]
     crate::arch_impl::aarch64::ttbr0::emit_asid_census();
 
-    let mut output = format!("serial_input_rx: {}\nserial_input_poll: {}\nserial_input_forward: {}\n",
-        crate::serial::INPUT_RX.load(Ordering::Relaxed), crate::serial::INPUT_POLL.load(Ordering::Relaxed),
-        crate::serial::INPUT_FORWARD.load(Ordering::Relaxed));
+    let mut output = String::new();
 
-    let (state, ier, lsr, iir) = crate::serial::input_uart_snapshot();
-    output.push_str(&format!("serial_tx_state: {}\nserial_uart_ier: {}\nserial_uart_lsr: {}\nserial_uart_iir: {}\n", state, ier, lsr, iir));
     let count = TRACE_COUNTER_COUNT.load(Ordering::Relaxed);
     output.push_str(&format!("# {} registered counters\n\n", count));
 

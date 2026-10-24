@@ -1095,8 +1095,8 @@ The lab authenticates the final receipt with a host-generated capability in
 `/etc/breenix/power-token` (0400 root). The installer refreshes it from the private
 staging file; it is not a factory default or a site value in the repository.
 Each init creates a fresh random 256-bit boot ID. The shutdown receipt carries
-SHA-256 of the fixed-length protected seed and boot ID; the seed itself is never
-emitted. The driver derives the same per-boot nonce and rejects receipts from
+SHA-256 of the fixed-length protected seed and boot ID, keeping the seed private
+([shutdown implementation](../../kernel/src/syscall/reboot.rs)). The driver derives the same per-boot nonce and rejects receipts from
 earlier boots. The nonce is emitted only after the logger and sessions stop.
 
 The x86 reset uses the validated FADT RESET_REG and RESET_VALUE (ACPI 6.5 section

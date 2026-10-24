@@ -39,23 +39,6 @@ static LOG_PORT: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::
 // Serial input queue and waker (similar to keyboard)
 static SERIAL_INPUT_QUEUE: OnceCell<ArrayQueue<u8>> = OnceCell::uninit();
 static SERIAL_WAKER: AtomicWaker = AtomicWaker::new();
-pub static INPUT_RX: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-pub static INPUT_POLL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-pub static INPUT_FORWARD: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-
-
-/// Cold, root-only observation for the SOL input investigation. IIR reads
-/// acknowledge a THRE reason, so this is never called from the input path.
-pub fn input_uart_snapshot() -> (u8, u8, u8, u8) {
-    use core::sync::atomic::Ordering;
-    let state = TX_STATE.load(Ordering::Acquire);
-    unsafe {
-        let ier = x86_64::instructions::port::Port::<u8>::new(COM1_PORT + 1).read();
-        let lsr = com1_status();
-        let iir = x86_64::instructions::port::Port::<u8>::new(COM1_PORT + 2).read();
-        (state, ier, lsr, iir)
-    }
-}
 
 static SERIAL1_FIFO: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static LOG_FIFO: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -823,7 +806,6 @@ pub fn enable_serial_input() {
 ///
 /// Must not block or allocate.
 pub fn add_serial_byte(byte: u8) {
-    INPUT_RX.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     if let Ok(queue) = SERIAL_INPUT_QUEUE.try_get() {
         if let Err(_) = queue.push(byte) {
             log::warn!("Serial input queue full; dropping input");
