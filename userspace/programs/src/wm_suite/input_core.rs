@@ -426,6 +426,43 @@ pub fn pointer_absolute() -> CaseResult {
     c.await_event("absolute mapping at literal local coordinates", |e| {
         e.kind == kind::POINTER_MOVE && e.x == 20 && e.y == 30
     })?;
+    // W29: the same raw coordinate means different pixels for different
+    // declared ranges. Query through the public reader, then judge bwm at the
+    // independently computed physical point; source events must stay raw.
+    use libbreenix::input::{self as input, Batch, Capability, Injector, Reader};
+    let reader = Reader::open(true)?;
+    let caps = [
+        Capability { kind: input::kind::ABS, code: 0, minimum: -1000, maximum: 5000 },
+        Capability { kind: input::kind::ABS, code: 1, minimum: 100, maximum: 10100 },
+    ];
+    let device = Injector::create(&caps, true)?;
+    let mut queried = [Capability::default(); 2];
+    let info = reader.device_info(device.id(), &mut queried)?;
+    check(info.kind == input_abi::device_kind::VIRTUAL && info.generation != 0
+        && info.count == 2 && queried == caps, "W29 query changed virtual capabilities or ranges")?;
+    let x = w.x + 70;
+    let y = w.y + 80;
+    let raw_x = -1000 + ((x as i64 * 6000 + d.width as i64 - 2) / (d.width as i64 - 1)) as i32;
+    let raw_y = 100 + ((y as i64 * 10000 + d.height as i64 - 2) / (d.height as i64 - 1)) as i32;
+    let mut storage = [0; 128];
+    let mut batch = Batch::new(&mut storage);
+    batch.event(3, 0, raw_x, 200)?.event(3, 1, raw_y, 200)?.finish(200)?;
+    device.inject(&batch)?;
+    let source = stream.read_from(3, &[device.id()])?;
+    check(source[0].value == raw_x && source[1].value == raw_y,
+        "W29 non-default range source values were normalized in the core")?;
+    c.await_event("W29 non-default absolute ranges mapped by bwm", |e| {
+        e.kind == kind::POINTER_MOVE && (e.x, e.y) == (70, 80)
+    })?;
+    let id = device.id();
+    drop(device);
+    until(1000, "W29 removed device query returns ENOENT", || {
+        match reader.device_info(id, &mut queried) {
+            Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENOENT)) => Ok(true),
+            Ok(_) => Ok(false),
+            Err(e) => Err(e.to_string()),
+        }
+    })?;
     Ok(())
 }
 pub fn pointer_relative() -> CaseResult {
