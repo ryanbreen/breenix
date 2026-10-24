@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const LAUNCH_TIMEOUT_NS: u64 = 5_000_000_000;
+const CLOSE_KILL_DELAY_NS: u64 = 2_000_000_000;
 static TERMINATE: AtomicBool = AtomicBool::new(false);
 
 struct PendingLaunch {
@@ -12,9 +13,15 @@ struct PendingLaunch {
     path: Vec<u8>,
     deadline: u64,
 }
+struct PendingClose {
+    window: u64,
+    owner: u32,
+    kill_at: Option<u64>,
+}
 #[derive(Default)]
 struct Lifecycle {
     pending: Vec<PendingLaunch>,
+    closing: Vec<PendingClose>,
     error: Option<breengel::Window>,
 }
 thread_local! {
@@ -33,6 +40,47 @@ pub(super) fn initialize() {
 }
 
 impl Lifecycle {
+    fn close(&mut self, window: u64, owner: u32) {
+        if let Some(close) = self.closing.iter_mut().find(|c| c.window == window) {
+            // Further clicks never postpone an already running SIGKILL deadline.
+            if close.owner == owner && close.kill_at.is_none() && owner != 0 {
+                if signal::kill(owner as i32, signal::SIGTERM).is_ok() {
+                    close.kill_at = Some(libbreenix::ui_clock::now_ns()
+                        .saturating_add(CLOSE_KILL_DELAY_NS));
+                }
+            }
+            return;
+        }
+        let mut backlog = INPUT_BACKLOG.lock().unwrap();
+        let admission = backlog.push(window, Input::Close, |_, _| false);
+        if admission == input_backlog::Admission::Disabled {
+            backlog.request_close(window, Input::Close);
+        }
+        drop(backlog);
+        flush_input();
+        self.closing.push(PendingClose { window, owner, kill_at: None });
+    }
+
+    fn escalate(&mut self) {
+        if self.closing.is_empty() { return; }
+        let mut windows = Vec::new();
+        if session::list_windows(&mut windows).is_err() { return; }
+        let now = libbreenix::ui_clock::now_ns();
+        self.closing.retain(|close| {
+            if let Some(deadline) = close.kill_at {
+                // W30 follows the owner's lifetime once TERM was sent, even if
+                // it closes the window. Kernel PIDs increase without reuse.
+                let sig = if now >= deadline { signal::SIGKILL } else { 0 };
+                return match signal::kill(close.owner as i32, sig) {
+                    Ok(()) => sig == 0,
+                    Err(Error::Os(Errno::ESRCH)) => false,
+                    Err(_) => true,
+                };
+            }
+            windows.iter().any(|w| w.id == close.window && w.owner_pid == close.owner)
+        });
+    }
+
     fn show_error(&mut self, title: &str, path: &[u8], reason: &str) {
         let result = (|| -> Result<(), Error> {
             if let Some(error) = self.error.as_mut() {
@@ -152,6 +200,7 @@ impl State {
         LIFECYCLE.with(|state| {
             let mut state = state.borrow_mut();
             state.poll_error();
+            state.escalate();
             state.acknowledge(self.gpu.last_serial);
             state.expire();
         });
@@ -159,6 +208,12 @@ impl State {
     }
 }
 
+/// W28/W30: first request is cooperative, second sends TERM, then UI-clock KILL.
+pub(super) fn request_close(window_id: u64, owner_pid: u32) {
+    if window_id != 0 {
+        LIFECYCLE.with(|state| state.borrow_mut().close(window_id, owner_pid));
+    }
+}
 
 pub(super) fn execute_hotkey_action(
     action: &HotkeyAction,
@@ -173,7 +228,7 @@ pub(super) fn execute_hotkey_action(
                     .iter()
                     .position(|w| w.chromeless && w.title_len > 1 && w.title[0] == 1);
                 if let Some(idx) = launcher_idx {
-                    send_to(windows, idx, Input::Close);
+                    request_close(windows[idx].window_id, windows[idx].owner_pid);
                     return;
                 }
             }
@@ -181,7 +236,7 @@ pub(super) fn execute_hotkey_action(
         }
         HotkeyAction::Close => {
             if !windows.is_empty() && focused_win < windows.len() {
-                send_to(windows, focused_win, Input::Close);
+                request_close(windows[focused_win].window_id, windows[focused_win].owner_pid);
             }
         }
         HotkeyAction::FocusNext | HotkeyAction::FocusPrev => {
