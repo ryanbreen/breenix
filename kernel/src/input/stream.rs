@@ -535,6 +535,8 @@ impl InputFile {
                     holder: caller.tgid,
                     epoch,
                 });
+                // Release STATE before waking: the sleeper takes the queue
+                // lock before STATE in prepare_to_wait_checked (#2395).
                 drop(s);
                 drop(reg);
                 if regrab {
