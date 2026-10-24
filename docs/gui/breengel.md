@@ -1412,7 +1412,7 @@ negative control: the device reports no resource identity and it is observed as 
   `move-pointer` (param: x in bits 0 to 31, y in bits 32 to 63; the next time the kernel reads the pointing
   device's position, for the panel cursor (system call 413, which the run stage reads), the position is (x, y), as if the device had moved there), 18
   `capture-stall` (target: a window; the next `CAPTURE` of it pauses after copying half its rows, with its pins
-  held, until released or 1 s). Points 12 to 15 are the run stage's (section 23). Faults are branches in the
+  held, until released or 1 s). Points 12 to 14 are the run stage's (section 23). Faults are branches in the
   real code paths, disarmed at case end by the suite. GPU points 19–31 have the exact
   definitions in `gpu-abi.md`, including point 31's pending-fence depth mode used by the
   render-handoff check. All watchdog and kill bounds remain unchanged.
@@ -1570,28 +1570,21 @@ It remains up for at least 5,000 ms of UI time before the runner emits DONE. The
 the finale start time; a stepped session must advance its UI clock through that hold. A stalled clock
 is a stage failure at the runner deadline, never a successful hold or a lost DONE. The hold is complete iff `ui_time_ms.saturating_sub(start_ms) >= 5000`.
 
-### 23.7 Boot stage ribbon
+### 23.7 Boot progress and the console (B54)
 
-<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B35 specifies these requirements. -->
-The kernel draws one segment per architecture-applicable stage in `docs/boot-path.json`, in that file's
-order, across (16,752,1248,16). For stage i of m, its segment starts at
-x=16+floor(1248i/m) and ends at x=16+floor(1248(i+1)/m)-2, leaving a two-pixel gap.
-Reached is pass green, unreached is pending outline colour. A stage lights only when its actual producer
-prints the stage marker; loader announcements never light a segment. The serial stage lines remain the record.
-This boot ribbon belongs only to the kernel console, not the run stage.
-Rulings B51-B53: it shows from the first console frame until the running boot mode's last
-stage in docs/boot-path.json is reached
-or a display owner takes the screen, whichever comes first. Retirement lasts for the rest of
-that boot, including console give-back after a suite or window manager. The console reserves
-whole text rows above the band's top once at boot and keeps that fixed grid throughout
-the boot, with no reclamation or SIGWINCH (B52). Retirement repaints the band with console
-background. Its read-back expects the ribbon while active and background afterward.
-Before the suite takes the display, panel/boot-ribbon reads the active console back,
-checks the reserved grid and every band pixel, detects point 15, then requires a clean
-read-back after disarming it. After give-back it checks the blank band and the console
-font oracle outside it (B53); live console text need not stay identical across give-back.
-Each segment's last two pixels are the background colour. Point 15 drops the first reached
-stage only while the ribbon is active; a retired ribbon does not consume that point.
+<!-- claim-lint:ok: Normative ruling B54 replaces B51, B52 and B53 items 1 and 2. -->
+The console draws no boot-stage ribbon in any mode, at any time. It reserves no band;
+its grid uses the full fixed size from docs/console/contract.md sections 1.5 and 2.
+The splash's progress bar and its two read-backs remain unchanged (console contract section 7).
+Producer stage records remain available through `/proc/breenix/boot-ribbon` and serial stage lines.
+
+Under B54, `panel/boot-ribbon` retains its case identity and checks the console after the
+splash gives way: the device-bound console read-back covers every grid row against the font,
+text occupies every row including the bottom two, and no ribbon colour appears anywhere
+on the console scanout. Geometry stays at the full fixed size across repaint and display
+give-back. Live console text need not stay identical across give-back (B53 item 3).
+Fault point 15 (`ribbon-drop-stage`) is removed with the console painter; the splash's own
+read-backs keep testing its progress bar. This also resolves the multi-suite conflict #2458.
 
 ### 23.8 Agreement
 
@@ -1634,7 +1627,7 @@ The stage validates boundary 4 on GPU backends 4 and 5 without drawing a caption
 and the empty footer.
 An unknown or inconsistent backend/flags/boundary combination is an error, never a stronger observation.
 The live showcase checks arm the matching fault, require its detection, disarm it and require the clean result:
-12 `stage-lie`, 13 `stage-substitute-frame`, 14 `stage-draw-in-window`, 15 `ribbon-drop-stage`.
+12 `stage-lie`, 13 `stage-substitute-frame`, 14 `stage-draw-in-window`.
 Input and measurement spotlights independently detect point-13 substitution, as do picture panes;
 a changed thumbnail cannot satisfy their detection checks. Live checks also inspect the picture input
 overlay, verdict, category headings and empty footer, with individual pixel substitutions in each region.

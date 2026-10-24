@@ -283,12 +283,6 @@ fn size_rule((width, height): (usize, usize)) -> (usize, (usize, usize), (usize,
     let fonts = [(16, 7, 18), (20, 9, 22), (24, 11, 26), (32, 14, 34)];
     let &(size, cw, ch) = fonts.iter().rev().find(|&&(_, cw, ch)| width / cw >= 128 && height / ch >= 36)
         .unwrap_or(&fonts[0]);
-    // B52 reserves the ribbon band for the whole ARM64 boot, including after retirement.
-    #[cfg(target_arch = "aarch64")]
-    let height = {
-        let scale = width / 1280;
-        if scale > 0 && width == 1280 * scale && height == 800 * scale { 752 * scale } else { height }
-    };
     (size, (cw, ch), ((width / cw).min(255), (height / ch).min(255)))
 }
 

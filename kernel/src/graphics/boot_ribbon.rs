@@ -102,68 +102,15 @@ pub fn records() -> alloc::string::String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    static TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn reset() {
-        select_mode("tests");
-        RETIRED.store(false, Ordering::Release);
-        for reached in &REACHED { reached.store(false, Ordering::Release); }
-        TAIL.store(0, Ordering::Release);
-        *SCAN.lock() = (0, [0; 1024], 0);
-    }
 
     #[test]
-    fn last_stage_retires_even_with_earlier_stages_missing() {
-        let _guard = TEST.lock().unwrap();
-        reset();
-        assert!(is_booting());
-        let last = MARKERS.last().unwrap().split('|').next().unwrap();
-        for b in last.bytes().chain([b'\n']) { byte(b); }
+    fn proc_stages_follow_complete_producer_lines() {
+        let marker = MARKERS[0].split('|').next().unwrap();
+        for b in marker.bytes() { byte(b); }
         drain();
-        assert!(!is_booting());
         assert!(!REACHED[0].load(Ordering::Acquire));
-        assert!(reached().last().copied().unwrap());
-        assert!(!is_booting());
-    }
-
-    #[test]
-    fn shell_prompt_retires_without_a_trailing_newline() {
-        let _guard = TEST.lock().unwrap();
-        reset();
-        select_mode("shell");
-        for b in b"[init] shell ready\nbsh /" { byte(*b); }
+        byte(b'\n');
         drain();
-        assert!(is_booting());
-        for b in b">" { byte(*b); }
-        drain();
-        assert!(!is_booting());
-    }
-
-    #[test]
-    fn production_mode_ends_at_its_own_final_stage() {
-        let _guard = TEST.lock().unwrap();
-        reset();
-        select_mode("probe");
-        for b in b"PROBE udp-loopback OK\n" { byte(*b); }
-        drain();
-        assert!(is_booting());
-        for b in b"PROBE framebuffer OK\n" { byte(*b); }
-        drain();
-        assert!(!is_booting());
-    }
-
-    #[test]
-    fn display_takeover_retires_before_completion_and_never_revives() {
-        let _guard = TEST.lock().unwrap();
-        reset();
-        assert!(is_booting());
-        retire();
-        assert!(!is_booting());
-        for marker in MARKERS {
-            for b in marker.split('|').next().unwrap().bytes().chain([b'\n']) { byte(b); }
-        }
-        while drain() {}
-        assert!(!is_booting());
-        assert!(reached().iter().all(|&v| v));
+        assert!(records().starts_with(&alloc::format!("1|{}\n", MARKERS[0])));
     }
 }

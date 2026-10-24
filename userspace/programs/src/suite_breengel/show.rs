@@ -18,7 +18,7 @@ pub(crate) const PANEL: &[Case] = &[
     case("judged-frame-shown", "Every picture tile shows the frame whose SHA-256 its CASE record printed, after detecting substitution", panel_judged_frame_shown),
     case("serial-agreement", "Stage scanout tile ids, stamps and numbers agree with CASE bytes after detecting stage-lie", panel_serial_agreement),
     case("quiet-window", "No runner composite occurs inside a measured case window after detecting stage-draw-in-window", panel_quiet_window),
-    case("boot-ribbon", "The active ribbon detects point 15, then retires above a fixed console grid (B52/B53)", panel_boot_ribbon),
+    case("boot-ribbon", "The full console grid holds text through its bottom rows with no ribbon colour (B54)", panel_boot_ribbon),
     case("boundary-notice", "The stage validates observation flags and boundary code and leaves the removed caption blank", panel_boundary_notice),
     case("stage-hidpi", "The full HiDPI stage has scaled geometry and independently rasterized text", panel_stage_hidpi),
 ];
@@ -108,142 +108,50 @@ fn panel_deterministic() -> CaseResult {
 fn panel_judged_frame_shown() -> CaseResult { breenix_suite::suite::showcase_check("judged-frame-shown") }
 fn panel_serial_agreement() -> CaseResult { breenix_suite::suite::showcase_check("serial-agreement") }
 fn panel_quiet_window() -> CaseResult { breenix_suite::suite::showcase_check("quiet-window") }
-// B53: observe the active boot before the stage's display takeover retires it.
-static ACTIVE_RIBBON: std::sync::OnceLock<Result<String,String>> = std::sync::OnceLock::new();
-pub(crate) fn prepare_boot_ribbon() {
-    ACTIVE_RIBBON.get_or_init(|| {
-        let result=active_boot_ribbon().map_err(|e|format!("{e:?}"));
-        let cleanup=libbreenix::test_control::disarm_all().map_err(|e|format!("disarm active ribbon: {e:?}"));
-        result.and_then(|geometry|cleanup.map(|_|geometry))
-    });
-}
-
-fn ribbon_geometry(check:&str, height:usize, scale:usize) -> Result<String,String> {
-    let display=check.lines().find(|l|l.starts_with("console display:")).ok_or("missing console geometry")?;
-    let grid=display.split("grid ").nth(1).ok_or("missing console grid")?;
-    let (_,rows)=grid.split_once('x').ok_or("invalid console grid")?;
-    let rows:usize=rows.parse().map_err(|_|"invalid rows")?;
-    let cell=display.split(" pixel cells)").next().ok_or("missing console cell")?.rsplit('(').next().ok_or("missing cell geometry")?;
-    let (_,line_height)=cell.split_once('x').ok_or("invalid cell geometry")?;
-    let line_height:usize=line_height.parse().map_err(|_|"invalid line height")?;
-    if line_height==0 || rows!=(752*scale/line_height).min(255) || rows*line_height>752*scale || height!=800*scale {
-        return Err(format!("B52 grid does not end above the reserved band: {display}"));
-    }
-    Ok(display.to_owned())
-}
-
-fn ribbon_stages() -> Result<Vec<bool>,String> {
-    const EXPECTED:&[&str]=include!("stage_boot_markers.in");
-    let before=std::fs::read_to_string("/proc/breenix/boot-ribbon").map_err(|e|format!("producer stage records: {e}"))?;
-    let observed:Vec<_>=before.lines().filter_map(|line|line.split_once('|')).collect();
-    if observed.len()!=EXPECTED.len() || !observed.iter().zip(EXPECTED).all(|((lit,marker),expected)|(*lit=="0" || *lit=="1") && marker==expected) {
-        return Err("kernel ribbon stages do not match the binding ARM64 manifest in order".into());
-    }
-    let argv=EXPECTED.iter().position(|m|*m=="ARGV_TEST_PASSED").ok_or("missing ARGV stage")?;
-    if crate::stage_serial::reached("EXEC_STACK_ARGV_TEST_PASSED\nEXEC_ARGV_TEST_PASSED\n",EXPECTED)[argv] || !crate::stage_serial::reached("ARGV_TEST_PASSED\n",EXPECTED)[argv] {
-        return Err("ARGV producer attribution differs".into());
-    }
-    let serial=std::fs::read_to_string("/proc/breenix/boot-serial").map_err(|e|format!("producer serial: {e}"))?;
-    let reached=crate::stage_serial::reached(&serial,EXPECTED);
-    if !observed.iter().zip(&reached).all(|((lit,_),want)|(*lit=="1")==*want) || !reached.iter().any(|v|*v) {
-        return Err("kernel reached bits disagree with independently parsed producer serial".into());
-    }
-    Ok(reached)
-}
-
-fn band_mismatches(px:&[u8],width:usize,scale:usize,lit:&[bool]) -> usize {
-    let mut mismatches=0;
-    for (i,&reached) in lit.iter().enumerate() {
-        let a=16+1248*i/lit.len();let b=16+1248*(i+1)/lit.len();
-        for y in 752*scale..768*scale {for x in a*scale..b*scale {
-            let rgb=if x>=(b-2)*scale {[12,19,31]}else if reached {[26,112,77]}else{[48,67,96]};
-            let o=(y*width+x)*4;
-            if px[o..o+4]!=[rgb[2],rgb[1],rgb[0],255] {mismatches+=1;}
-        }}
-    }
-    mismatches
-}
-
-fn active_boot_ribbon() -> Result<String,breenix_suite::suite::CaseError> {
-    use crate::window_cases::composition::{screen_size,screen};
-    let (width,height)=screen_size()?;let scale=width/1280;
-    // KD_TEXT ends the production splash without taking display ownership.
-    use std::os::fd::AsRawFd;
-    let tty=std::fs::File::open("/dev/tty1").map_err(|e|e.to_string())?;
-    let r=unsafe {raw::syscall3(libbreenix::syscall::nr::IOCTL,tty.as_raw_fd() as u64,0x4b3a,0) as i64};
-    ensure(r>=0,"23.7","KD_TEXT before active ribbon check failed")?;
-    let start=std::time::Instant::now();
-    let initial=loop {
-        let check=std::fs::read_to_string("/proc/console/check").map_err(|e|e.to_string())?;
-        if !check.contains("the boot splash has the display") {break check;}
-        ensure(start.elapsed().as_secs()<15,"23.7","active console did not replace splash")?;
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    };
-    let geometry=ribbon_geometry(&initial,height,scale)?;
-    for faulty in [true,false] {
-        let fired=libbreenix::test_control::fired(15)?;
-        if faulty {libbreenix::test_control::arm(15,0,0)?;}
-        // SCANOUT_READBACK releases its console canvas hold with a repaint request.
-        screen()?;
-        let check=std::fs::read_to_string("/proc/console/check").map_err(|e|e.to_string())?;
-        ensure(check.contains("console ribbon: active\n"),"23.7","active ribbon retired before read-back")?;
-        ensure(ribbon_geometry(&check,height,scale)?==geometry,"23.7","active grid changed size")?;
-        let lit=ribbon_stages()?;
-        let (px,_)=screen()?;
-        let mismatches=band_mismatches(&px,width,scale,&lit);
-        let result=if faulty {
-            ensure(libbreenix::test_control::fired(15)?==fired+1 && mismatches>0 && !check.contains("mismatches=0\n"),"23.7","point 15 was not detected by active band and console read-back")
-        } else {
-            ensure(mismatches==0 && check.contains("console check: shadow and screen identical\n") && check.contains("mismatches=0\n"),"23.7",format!("clean active ribbon differs: {mismatches} pixels; {check}"))
-        };
-        libbreenix::test_control::disarm_all()?;
-        result?;
-    }
-    println!("BOOT_RIBBON_ACTIVE: point 15 detected; clean band and reserved grid read back");
-    // Direct KD_GRAPHICS owns the foreground VT without the GPU ownership-stack op.
-    for mode in [1,0] {
-        let r=unsafe {raw::syscall3(libbreenix::syscall::nr::IOCTL,tty.as_raw_fd() as u64,0x4b3a,mode) as i64};
-        ensure(r>=0,"23.7","KD_GRAPHICS/KD_TEXT ribbon takeover failed")?;
-    }
-    let retired=std::fs::read_to_string("/proc/console/check").map_err(|e|e.to_string())?;
-    ensure(retired.contains("console ribbon: retired\n") && retired.contains("console check: shadow and screen identical\n") && retired.contains("mismatches=0\n"),"23.7",format!("direct graphics takeover revived the ribbon: {retired}"))?;
-    ensure(ribbon_geometry(&retired,height,scale)?==geometry,"23.7","KD_GRAPHICS retirement resized the grid")?;
-    println!("BOOT_RIBBON_KD: foreground graphics takeover retired the ribbon permanently");
-    Ok(geometry)
-}
-
+// B54 replaces the active/retired ribbon checks: the entire console is text.
 fn panel_boot_ribbon() -> CaseResult {
-    let result=retired_boot_ribbon();
-    let cleanup=libbreenix::test_control::disarm_all();
+    use crate::window_cases::composition::{give_back, take_over, screen, screen_size};
+    use std::io::Write;
+    let (width, height) = screen_size()?;
+    ensure(give_back() >= 0, "23.7", "give back for console read-back failed")?;
+    let mut tty = std::fs::OpenOptions::new().write(true).open("/dev/tty1").map_err(|e| e.to_string())?;
+    let result = (|| -> CaseResult {
+        let initial = std::fs::read_to_string("/proc/console/check").map_err(|e| e.to_string())?;
+        let geometry = initial.lines().find(|l| l.starts_with("console display:")).ok_or("missing console geometry")?;
+        let fonts = [(16, 7, 18), (20, 9, 22), (24, 11, 26), (32, 14, 34)];
+        let &(size, cw, ch) = fonts.iter().rev().find(|&&(_, cw, ch)| width / cw >= 128 && height / ch >= 36).unwrap_or(&fonts[0]);
+        let (cols, rows) = ((width / cw).min(255), (height / ch).min(255));
+        ensure(geometry.ends_with(&format!("font {size} ({cw}x{ch} pixel cells), grid {cols}x{rows}")), "23.7", format!("B54 full grid size differs: {geometry}"))?;
+        tty.write_all(b"\x1b[?1049h\x1b[0m\x1b[2J\x1b[?25l").map_err(|e| e.to_string())?;
+        for row in 0..rows {
+            write!(tty, "\x1b[{};1HB54 console row {}", row + 1, row + 1).map_err(|e| e.to_string())?;
+        }
+        let check = std::fs::read_to_string("/proc/console/check").map_err(|e| e.to_string())?;
+        ensure(check.contains("console check: shadow and screen identical\n") && check.contains("mismatches=0\n"), "23.7", format!("full console font/read-back differs: {check}"))?;
+        ensure(check.lines().any(|l| l == geometry), "23.7", "console geometry changed across repaint")?;
+        let cells = std::fs::read("/dev/vcs1").map_err(|e| e.to_string())?;
+        ensure(cells.len() == cols * rows, "23.7", "vcs1 does not cover the full grid")?;
+        for row in 0..rows {
+            let text = format!("B54 console row {}", row + 1);
+            ensure(cells[row * cols..row * cols + text.len()] == *text.as_bytes(), "23.7", format!("text missing from console row {}", row + 1))?;
+            ensure(check.contains(&format!("console row: {text}\n")), "23.7", format!("font oracle omitted console row {}", row + 1))?;
+        }
+        let (pixels, _) = screen()?;
+        ensure(pixels.len() == width * height * 4, "23.7", "incomplete console scanout")?;
+        if let Some(i) = pixels.chunks_exact(4).position(|p| [[77,112,26], [96,67,48], [31,19,12]].contains(&[p[0],p[1],p[2]])) {
+            return ensure(false, "23.7", format!("ribbon colour on console at {},{}", i % width, i / width));
+        }
+        for row in rows - 2..rows {
+            let ink = pixels[row * ch * width * 4..(row + 1) * ch * width * 4].chunks_exact(4).any(|p| p[..3] != [35,20,15]);
+            ensure(ink, "23.7", format!("bottom console row {} has no text pixels", row + 1))?;
+        }
+        Ok(())
+    })();
+    let restored = tty.write_all(b"\x1b[?25h\x1b[?1049l").map_err(|e| e.to_string());
+    let took = take_over();
     result?;
-    cleanup?;
-    Ok(())
-}
-
-fn retired_boot_ribbon() -> CaseResult {
-    let geometry=ACTIVE_RIBBON.get().ok_or("active ribbon read-back was not prepared")?.as_ref().map_err(|e|e.clone())?;
-    let (width,height)=crate::window_cases::composition::screen_size()?;
-    let scale=width/1280;
-    use crate::window_cases::composition::{give_back,take_over,screen};
-    ribbon_stages()?;
-    let fired=libbreenix::test_control::fired(15)?;
-    libbreenix::test_control::arm(15,0,0)?;
-    ensure(give_back()>=0,"23.7","give back for retired ribbon failed")?;
-    let check=std::fs::read_to_string("/proc/console/check").map_err(|e|e.to_string());
-    let result=screen();
-    let took=take_over();
-    libbreenix::test_control::disarm_all()?;
-    ensure(took>=0,"23.7","retake after ribbon failed")?;
-    let check=check?;let (px,_)=result?;
-    ensure(check.contains("console ribbon: retired\n") && check.contains("console check: shadow and screen identical\n") && check.contains("mismatches=0\n"),"23.7",format!("retired console read-back differs: {check}"))?;
-    ensure(&ribbon_geometry(&check,height,scale)?==geometry,"23.7","retirement resized the fixed console grid")?;
-    ensure(libbreenix::test_control::fired(15)?==fired,"23.7","retired ribbon consumed point 15")?;
-    ensure(px.len()==width*height*4,"23.7","incomplete console scanout")?;
-    for y in 752*scale..768*scale {for x in 0..width {
-        let o=(y*width+x)*4;
-        ensure(px[o..o+4]==[35,20,15,255],"23.7",format!("retired band not console background at {x},{y}"))?;
-    }}
-    Ok(())
+    restored?;
+    ensure(took >= 0, "23.7", "retake after console read-back failed")
 }
 fn panel_boundary_notice() -> CaseResult { breenix_suite::suite::showcase_check("boundary-notice") }
 
