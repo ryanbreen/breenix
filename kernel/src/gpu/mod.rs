@@ -154,6 +154,9 @@ fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
     if let Some(made) = kick {
         ring_doorbell();
         RUNG.fetch_max(made, Ordering::AcqRel);
+        // Work sent after a waiter's poll may now need a progress transfer.
+        // Wake its waiter after the doorbell, outside the core lock.
+        notify();
     }
     crate::per_cpu::preempt_enable();
     r
