@@ -395,6 +395,14 @@ pub fn super_double_tap() -> CaseResult {
         v.batch(&[(1, 125, 1), (1, 125, 0)], interval)?;
         clock.step(2, interval + 1)?;
         measure::acknowledged(2)?;
+        // W30: the epoch acknowledges the launch action, not the asynchronous
+        // child's REGISTER. Establish that prerequisite inside the existing
+        // case deadline before comparing the unchanged window count.
+        if opens {
+            until(2000, "double-tap child registered its window", || {
+                Ok(listed()?.len() > before)
+            })?;
+        }
         let windows = listed()?;
         check(
             (windows.len() > before) == opens,

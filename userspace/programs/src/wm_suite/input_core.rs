@@ -471,6 +471,11 @@ pub fn pointer_relative() -> CaseResult {
     let w = c.info()?;
     d.focus(&mut c)?;
     d.pointer(w.x + 40, w.y + 40, 0, 0)?;
+    // W30: host transport acceptance is not delivery. Establish the physical
+    // starting position before the in-guest relative device can move it.
+    c.await_event("relative pointer starting position", |e| {
+        e.kind == kind::POINTER_MOVE && (e.x, e.y) == (40, 40)
+    })?;
     c.clear()?;
     v.batch(&[(2, 0, 7), (2, 1, -9)], 100)?;
     c.await_event("relative axes accumulate", |e| {

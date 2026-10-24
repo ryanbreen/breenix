@@ -386,6 +386,9 @@ pub(super) fn console_bytes(keys: &[(u16, i32)], expected: &[u8]) -> CaseResult 
     let mut raw = saved;
     termios::cfmakeraw(&mut raw);
     termios::tcsetattr(Fd::STDIN, termios::TCSANOW, &raw).map_err(|e| e.to_string())?;
+    // W30: earlier no-compositor input cases legitimately leave console bytes.
+    // Isolate this fixture before injecting the bytes its exact check judges.
+    termios::tcflush(Fd::STDIN, termios::TCIFLUSH).map_err(|e| e.to_string())?;
     let mut v = Virtual::create()?;
     let batch: Vec<_> = keys.iter().map(|&(code, value)| (1, code, value)).collect();
     v.batch(&batch, 100)?;

@@ -786,10 +786,15 @@ impl Desktop {
         // point. Choose exposed content from the current stack, including the
         // higher clients' chrome, before requiring positive target delivery.
         let stack = listed()?;
-        let left = w.x.max(0);
+        let inset = if w.title.first() == Some(&1) {
+            0
+        } else {
+            6 * self.scale
+        };
+        let left = (w.x + inset).max(0);
         let top = w.y.max(28 * self.scale);
-        let right = (w.x + w.width as i32).min(self.width as i32);
-        let bottom = (w.y + w.height as i32).min(self.height as i32 - 36 * self.scale);
+        let right = (w.x + w.width as i32 - inset).min(self.width as i32);
+        let bottom = (w.y + w.height as i32 - inset).min(self.height as i32 - 36 * self.scale);
         let covers: Vec<_> = stack
             .iter()
             .filter(|other| {
@@ -804,11 +809,12 @@ impl Desktop {
                     2 * self.scale
                 };
                 let title = if border == 0 { 0 } else { 34 * self.scale };
+                let grab = if border == 0 { 0 } else { 8 * self.scale };
                 (
-                    other.x - border,
-                    other.y - title,
-                    other.x + other.width as i32 + border,
-                    other.y + other.height as i32 + border,
+                    other.x - border - grab,
+                    other.y - title - grab,
+                    other.x + other.width as i32 + border + grab,
+                    other.y + other.height as i32 + border + grab,
                 )
             })
             .collect();
