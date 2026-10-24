@@ -128,9 +128,11 @@ fn panel_boot_ribbon() -> CaseResult {
         ensure(!reached.is_empty() && reached.iter().any(|v|*v),"23.7","no actual producer stages were observed")?;
         if faulty {libbreenix::test_control::arm(15,0,0)?;}
         ensure(give_back()>=0,"23.7","give back for kernel ribbon failed")?;
-        let result=screen();let took=take_over();ensure(took>=0,"23.7","retake after ribbon failed")?;
+        let result=screen();
+        let check=std::fs::read_to_string("/proc/console/check").map_err(|e|format!("console read-back: {e}"));
+        let took=take_over();ensure(took>=0,"23.7","retake after ribbon failed")?;
         let (px,_)=result?;
-        let check=std::fs::read_to_string("/proc/console/check").map_err(|e|format!("console read-back: {e}"))?;
+        let check=check?;
         ensure(check.contains("console check: shadow and screen identical\n") && check.contains("mismatches=0\n"),"23.7",format!("B51 console read-back differs after give-back: {check}"))?;
         let display=check.lines().find(|l|l.starts_with("console display:")).ok_or("missing console geometry")?;
         let grid=display.split("grid ").nth(1).ok_or("missing console grid")?;
@@ -138,7 +140,9 @@ fn panel_boot_ribbon() -> CaseResult {
         let cols:usize=cols.parse().map_err(|_|"invalid columns")?;
         let rows:usize=rows.parse().map_err(|_|"invalid rows")?;
         let cell=display.split(" pixel cells)").next().ok_or("missing console cell")?.rsplit('(').next().ok_or("missing cell geometry")?;
-        let line_height:usize=cell.split_once('x').ok_or("invalid cell geometry")?.1.parse().map_err(|_|"invalid cell height")?;
+        let (cell_width,line_height)=cell.split_once('x').ok_or("invalid cell geometry")?;
+        let cell_width:usize=cell_width.parse().map_err(|_|"invalid cell width")?;
+        let line_height:usize=line_height.parse().map_err(|_|"invalid cell height")?;
         ensure(rows==(height/line_height).min(255),"23.7","B51 console did not reclaim the ribbon rows")?;
         ensure(px.len()==width*height*4,"23.7","incomplete restored console scanout")?;
         let fired=libbreenix::test_control::fired(15)?;libbreenix::test_control::disarm_all()?;
@@ -154,7 +158,7 @@ fn panel_boot_ribbon() -> CaseResult {
         let captured=screen();let took=take_over();ensure(took>=0,"23.7","retake after reclaimed text failed")?;
         ensure(checked.contains("console check: shadow and screen identical\n") && checked.contains("mismatches=0\n"),"23.7",format!("B51 reclaimed text read-back differs: {checked}"))?;
         let (px,_)=captured?;
-        for y in 752*scale..768*scale {for x in 0..8 {
+        for y in 752*scale..768*scale {for x in 0..cols*cell_width {
             let o=(y*width+x)*4;
             ensure(px[o..o+4]==[215,120,70,255],"23.7",format!("B51 reclaimed text hidden at {x},{y}"))?;
         }}
