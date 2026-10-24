@@ -254,9 +254,8 @@ impl Surface {
     }
 
     fn display_scale() -> Result<u32, SurfaceError> {
-        let modes = bgl::modes().map_err(SurfaceError::Device)?;
-        modes.modes.get(modes.current as usize).map(|mode| mode.scale)
-            .filter(|scale| (1..=2).contains(scale))
+        let mode = gpu::current_mode().map_err(SurfaceError::Device)?;
+        Some(mode.scale).filter(|scale| (1..=2).contains(scale))
             .ok_or(SurfaceError::Device(-abi::errno::EINVAL))
     }
 

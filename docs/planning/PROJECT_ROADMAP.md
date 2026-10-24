@@ -11,6 +11,16 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+BreenGL's B5 catch-up acceptance is complete in PR #2357 for #2348:
+geometry queries, settled boot accounting, Parallels vertex reuse and completed
+catalogue initialization. At executable head `3841f513`, Parallels and VMware
+passed GPU 170/170 and BreenGL 401/401 with memory reclaimed; ARM64 QEMU GL GPU
+passed 170/170. After main's #2362 handoff repair, non-GL ARM64 QEMU smoke passed
+5/5 and files-io passed 219/219 with both memory records, supplying review M3's
+missing evidence. Earlier ARM64 QEMU GL BreenGL evidence and the landing records
+are in [device evidence](../gui/provenance/gpu-core.md#b32-complete-landing-validation-after-the-non-gl-handoff-repair).
+Review follow-ups remain in #2358.
+
 The server program defines four x86-led efforts in `docs/efforts/path.json`:
 `server`, `users`, `filesystem` (Breenix's own copy-on-write filesystem, D1) and
 `toolchain` (our own C compiler, assembler, linker and make, D2). Lanes are accepted

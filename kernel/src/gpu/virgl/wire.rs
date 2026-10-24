@@ -91,6 +91,14 @@ pub mod bind {
     pub const SCANOUT: u32 = 1 << 18;
 }
 
+/// Inline upload usage (`enum pipe_transfer_usage` in the pinned protocol header).
+pub mod transfer {
+    pub const READ: u32 = 1;
+    pub const WRITE: u32 = 1 << 1;
+    pub const DISCARD_RANGE: u32 = 1 << 8;
+    pub const FROM_HOST: u32 = 2;
+}
+
 /// Gallium texture targets as the wire carries them (`enum pipe_texture_target`).
 pub mod target {
     pub const BUFFER: u32 = 0;
@@ -113,6 +121,8 @@ pub mod ccmd {
     pub const RESOURCE_COPY_REGION: u32 = 17;
     pub const BIND_SAMPLER_STATES: u32 = 18;
     pub const BIND_SHADER: u32 = 31;
+    pub const TRANSFER3D: u32 = 43;
+    pub const END_TRANSFERS: u32 = 44;
 }
 
 /// VirGL object types (`enum virgl_object_type`).

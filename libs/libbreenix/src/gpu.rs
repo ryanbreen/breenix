@@ -96,6 +96,15 @@ pub fn resource_destroy(handle: u64) -> i64 {
     call_with(op::RESOURCE_DESTROY, &mut a)
 }
 
+/// The current physical dimensions and UI scale, without MODES' firmware diagnostics.
+pub fn current_mode() -> Result<abi::Mode, i64> {
+    let mut mode = abi::Mode::ZERO;
+    match call_with(op::CURRENT_MODE, &mut mode) {
+        0 => Ok(mode),
+        error => Err(error),
+    }
+}
+
 /// `RESOURCE_CREATE` of a texture.
 pub fn texture_create(format: u32, width: u32, height: u32) -> Result<u64, i64> {
     image_create(abi::kind::TEXTURE, format, width, height)

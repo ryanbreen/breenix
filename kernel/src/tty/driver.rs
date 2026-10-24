@@ -412,28 +412,27 @@ impl TtyDevice {
         if self.num == 0 {
             super::input_clock::record_input();
         }
-        let mut ldisc = self.ldisc.lock();
-        self.input_sources.record(source);
-
-        // Process the character through the line discipline
-        // The echo callback writes to serial output
-        let attrs = *ldisc.termios();
-        let signal = ldisc.input_char(c, &mut |echo_c| {
-            self.echo_char(echo_c, &attrs);
+        // The serial executor is a preemptible kernel thread. A syscall on
+        // the same CPU takes ldisc with preemption disabled, so this holder
+        // must not be switched out beneath it. IRQ input already uses a
+        // nonblocking entry; keep this thread-context admission bounded too.
+        let (signal, moved) = crate::arch_without_interrupts(|| {
+            let mut ldisc = self.ldisc.lock();
+            self.input_sources.record(source);
+            let attrs = *ldisc.termios();
+            let signal = ldisc.input_char(c, &mut |echo_c| {
+                self.echo_char(echo_c, &attrs);
+            });
+            self.input_flow_stopped.store(ldisc.flow_stopped(), Ordering::Release);
+            self.publish_serial_flow();
+            (signal, self.transfer_input(&mut ldisc))
         });
-        self.input_flow_stopped.store(ldisc.flow_stopped(), Ordering::Release);
-        self.publish_serial_flow();
 
-        // If a signal was generated, send it to the foreground process group
+        // Neither signal delivery nor reader wakeup may retain ldisc.
         if let Some(sig) = signal {
             self.send_signal_to_foreground(sig);
         }
-
-        // Transfer data from line discipline to stdin buffer when available
-        // This bridges the TTY layer (which handles line editing, echo, signals)
-        // with the stdin buffer (which userspace reads via read() syscall)
-        if self.transfer_input(&mut ldisc) {
-            drop(ldisc); // Release lock before waking
+        if moved {
             Self::wake_blocked_readers();
         }
     }
@@ -1003,7 +1002,7 @@ impl TtyDevice {
     #[allow(dead_code)] // Used by input_char (conditionally compiled) and tests
     pub fn send_signal_to_foreground(&self, sig: u32) {
         note_foreground_pgrp_acquisition(true);
-        let pgrp = match *self.foreground_pgrp.lock() {
+        let pgrp = match crate::arch_without_interrupts(|| *self.foreground_pgrp.lock()) {
             Some(pgrp) => pgrp,
             None => {
                 log::debug!("TTY{}: Signal {} but no foreground pgrp", self.num, sig);
@@ -1158,7 +1157,9 @@ static OTHER_VTS: spin::Once<[Arc<TtyDevice>; 5]> = spin::Once::new();
 ///
 /// Returns None if the TTY subsystem has not been initialized.
 pub fn console() -> Option<Arc<TtyDevice>> {
-    CONSOLE_TTY.lock().clone()
+    // Both syscalls and preemptible kernel workers look this up. A worker
+    // must release the lookup lock before a syscall can run on its CPU.
+    crate::arch_without_interrupts(|| CONSOLE_TTY.lock().clone())
 }
 
 /// Virtual terminal `number` (1-based): tty1 is the console.

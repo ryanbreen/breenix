@@ -3,6 +3,7 @@ import copy
 import json
 from pathlib import Path
 import runpy
+import re
 import socket
 import struct
 import os
@@ -444,11 +445,60 @@ class HostServerScore(unittest.TestCase):
             self.assertEqual(services.init_start, 1)
             self.assertEqual(services.init_log, ['[init] blogd started (PID 9)'])
 
+    def test_restart_matches_submitted_line_and_fresh_prompt_before_reconnect(self):
+        for prefix, prompt in (('', 'bsh /> '),
+                               ('bsh /> kill -9\nbsh /> \n', 'bsh /> '),
+                               ('', 'bsh /> [init] ntp is crash-looping\n')):
+            for prompt_delay in (1, 11):
+                with self.subTest(prefix=prefix, prompt=prompt, prompt_delay=prompt_delay):
+                    services = object.__new__(host['Services'])
+                    clock, states, notices = [0.0], [0], []
+                    stale = 'bsh /> \n'
+                    submitted = stale + prefix + 'bsh /> kill -9 42\n'
+                    def state(timeout=45):
+                        states[0] += 1
+                        if states[0] == 1: return {}, {'bsshd': dict(pid=42, starts=1)}
+                        self.assertEqual(timeout, 10 - prompt_delay)
+                        return {}, {'bsshd': dict(pid=43, starts=2, state='running', exit='signal:9')}
+                    console = object.__new__(host['Console'])
+                    console.login = lambda: None
+                    console.size = lambda: len(stale.encode())
+                    console.type_line = lambda line: self.assertEqual(line, 'kill -9 42')
+                    # Replay cleaned capture through the real wait: the retry's
+                    # cleared prompt precedes submission; completion arrives later.
+                    def since(offset):
+                        text = submitted + (prompt if clock[0] >= prompt_delay else '')
+                        return text.encode()[offset:].decode()
+                    console.since = since
+                    def notice(*args, **kwargs):
+                        self.assertEqual(states[0], 2)
+                        notices.append(args[1])
+                        clock[0] += 8  # Slow SOL log read must not consume restart time.
+                    def ssh(script, timeout):
+                        self.assertEqual(timeout, 10 - prompt_delay)
+                        self.assertEqual(notices, [])
+                        return SimpleNamespace(returncode=0, stdout='1000\n')
+                    services.state = state
+                    services.init_records = lambda: []
+                    services.await_init_line = notice
+                    services.console = console
+                    services.probe = SimpleNamespace(ssh=ssh, transcript=[])
+                    with patch.object(host['time'], 'monotonic', side_effect=lambda: clock[0]), \
+                            patch.object(host['time'], 'sleep', side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)):
+                        if prompt_delay > 10:
+                            with self.assertRaisesRegex(ValueError, 'shell prompt'):
+                                services.case_kill_restart()
+                            self.assertEqual(clock[0], 10)
+                        else:
+                            services.case_kill_restart()
+                            self.assertEqual(len(notices), 2)
+                            self.assertEqual(services.probe.transcript, [dict(reconnectSeconds=1)])
+
     def test_reconnect_rejects_success_after_deadline(self):
         services = object.__new__(host['Services'])
         services.state = lambda: ({}, {'bsshd': {'pid': 42}})
         services.console = SimpleNamespace(size=lambda: 0, login=lambda: None,
-                                          type_line=lambda line: None, wait=lambda *args: None)
+                                          type_line=lambda line: None, wait=lambda *args, **kwargs: ('kill\n', re.search('kill\n', 'kill\n')))
         clock = [0.0]
         timeouts = []
         def ssh(script, timeout):
@@ -464,8 +514,8 @@ class HostServerScore(unittest.TestCase):
         self.assertEqual(timeouts, [10.0])
         self.assertEqual(services.probe.transcript, [])
 
-    def test_restart_waits_for_reap_and_bounds_state_read(self):
-        for state_delay in (0, 9):
+    def test_restart_bounds_state_read_before_reading_reap_record(self):
+        for state_delay in (0, 10):
             with self.subTest(state_delay=state_delay):
                 services = object.__new__(host['Services'])
                 clock, events, state_timeouts = [0.0], [], []
@@ -480,14 +530,15 @@ class HostServerScore(unittest.TestCase):
                     events.append('reaped')
                     clock[0] += 2
                 def ssh(script, timeout):
-                    self.assertEqual(events, ['reaped'])
-                    self.assertEqual(timeout, 8)
+                    self.assertEqual(events, [])
+                    self.assertEqual(timeout, 10)
                     clock[0] += 1
                     return SimpleNamespace(returncode=0, stdout='1000\n')
                 services.state = state
                 services.init_records = lambda: []
                 services.await_init_line = notice
-                services.console = SimpleNamespace(login=lambda: None, type_line=lambda line: None)
+                services.console = SimpleNamespace(login=lambda: None, size=lambda: 0,
+                                                   type_line=lambda line: None, wait=lambda *args, **kwargs: ('kill\n', re.search('kill\n', 'kill\n')))
                 services.probe = SimpleNamespace(ssh=ssh, transcript=[])
                 with patch.object(host['time'], 'monotonic', side_effect=lambda: clock[0]):
                     if state_delay:
@@ -495,7 +546,7 @@ class HostServerScore(unittest.TestCase):
                             services.case_kill_restart()
                     else:
                         services.case_kill_restart()
-                self.assertEqual(state_timeouts, [45, 7])
+                self.assertEqual(state_timeouts, [45, 9])
 
     def test_operator_category_is_scored_against_the_users_manifest(self):
         users = json.loads((ROOT / 'docs/suites/users.json').read_text())
@@ -616,6 +667,29 @@ class WatchdogRecovery(existing.StateTest):
         with patch.object(existing.m, 'rf') as power, patch.object(existing.m, 'now', return_value=300):
             d.check_deadlines()
             power.assert_not_called()
+
+
+class ConsoleEchoTests(unittest.TestCase):
+    def test_console_only_score_needs_no_ssh_record(self):
+        sha = 'a' * 40
+        boot = dict(id='20261023T000000Z-metal', mode='persistent', bootedCommit=sha,
+                    toolsCommit=sha, evidenceEligible=True)
+        records = dict(boot=boot['id'], commit=sha, milestone='server/console-input',
+                       cases=[dict(id='console-input/long-line', result='PASS', ms=1)],
+                       cleanup=True, consoleGaps=[])
+        manifest = json.loads((ROOT / 'docs/suites/server.json').read_text())
+        effort = json.loads((ROOT / 'docs/efforts/path.json').read_text())
+        self.assertEqual(host['score'](manifest, effort, records, '', boot, sha, []),
+                         'PASS: server/console-input categories=console-input cases=1')
+
+    def test_kernel_records_between_echo_fragments_preserve_the_block(self):
+        text = 'a' * 32 + '\n[DISPATCH_STRAND_CENSUS:tick=1]\n' + 'a' * 32
+        self.assertEqual(host['canonical_echo'](text), 'a' * 64)
+
+    def test_kernel_text_cannot_replace_missing_echo(self):
+        text = 'a' * 32 + '\n[INFO] ' + 'a' * 64 + '\n'
+        self.assertEqual(host['canonical_echo'](text), 'a' * 32)
+        self.assertEqual(host['canonical_echo']('a\n[INFO] aaaa'), 'a')
 
 
 if __name__ == '__main__':

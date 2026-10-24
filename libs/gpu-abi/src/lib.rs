@@ -42,8 +42,10 @@ pub mod op {
     pub const SET_MODE: u32 = 11;
     pub const PRESENT: u32 = 12;
     pub const COUNTERS: u32 = 13;
+    /// Current physical dimensions and UI scale, without display diagnostics.
+    pub const CURRENT_MODE: u32 = 14;
     /// The highest op the table defines; anything above is EINVAL.
-    pub const LAST: u32 = 13;
+    pub const LAST: u32 = 14;
 }
 
 /// The errno values the interface returns (Linux numbering), negated in the return value.
