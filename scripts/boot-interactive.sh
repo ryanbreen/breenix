@@ -392,7 +392,7 @@ set +e
 HOSTKEYS_PID=
 if [ -n "$HOSTKEYS_SOCKET" ]; then
     python3 "$ROOT/scripts/hostkeys.py" watch --serial "$SERIAL_LOG" --backend "qmp:$HOSTKEYS_SOCKET" \
-        --log "$SERIAL_LOG.hostkeys" --parent "$$" > /dev/null 2>&1 &
+        --qmp-persistent --log "$SERIAL_LOG.hostkeys" --parent "$$" > /dev/null 2>&1 &
     HOSTKEYS_PID=$!
 fi
 # Terminal profiles end in an intentional panic or fatal abort, not probe's
