@@ -538,7 +538,11 @@ impl InputFile {
                     .and_then(|device| device.held.get_mut(&event.code))
                 {
                     if held.event.serial == d.serial {
-                        held.window = d.window;
+                        held.window = if d.disposition == disposition::DELIVERED {
+                            d.window
+                        } else {
+                            0
+                        };
                     }
                 }
                 Ok(0)

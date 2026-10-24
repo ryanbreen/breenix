@@ -744,6 +744,19 @@ pub fn library_batches() -> CaseResult {
         "rejected write consumed serials or damaged subsequent batch")
 }
 
+fn ledger_has(serial: u64, expected: Option<(&str, &str)>) -> Result<bool, String> {
+    let text = std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
+    Ok(text.lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        if fields.next().and_then(|s| s.parse::<u64>().ok()) != Some(serial) { return false; }
+        expected.is_none_or(|(outcome, reason)| {
+            let actual = fields.next();
+            fields.next();
+            actual == Some(outcome) && fields.next() == Some(reason)
+        })
+    }))
+}
+
 pub fn reader_lifetime() -> CaseResult {
     use libbreenix::{input::{self as input, Batch, Capability, Injector, Reader}, io};
     let _claim = InputClaim::new()?;
@@ -767,16 +780,15 @@ pub fn reader_lifetime() -> CaseResult {
         "closing one duplicated fd released the grab")?;
     // The pending press ends lost only at the last reference, even though SYN
     // already has a terminal outcome.
-    check(!ledger()?.iter().any(|r| r.first() == Some(&press.to_string())), "later SYN hid the pending press")?;
+    check(!ledger_has(press, None)?, "later SYN hid the pending press")?;
     io::close(duplicate)?;
     contender.grab(&[device.id()])?;
-    let rows = ledger()?;
-    check(rows.iter().any(|r| r.first() == Some(&press.to_string()) && r.get(1).is_some_and(|v| v == "lost")
-        && r.get(3).is_some_and(|v| v == "compositor-died")), "last reader close omitted the pending serial's death disposition")?;
+    check(ledger_has(press, Some(("lost", "compositor-died")))?,
+        "last reader close omitted the pending serial's death disposition")?;
     contender.ungrab()?;
     drop(_claim);
     let mut observer = Stream::open()?;
-    child_check(|| {
+    let mut child = || {
         let run = || -> Result<(), libbreenix::error::Error> {
             window::claim_compositor()?;
             let owned = Reader::open(true)?;
@@ -790,13 +802,82 @@ pub fn reader_lifetime() -> CaseResult {
             core::mem::forget(owned);
             Ok(())
         };
-        if run().is_ok() { 0 } else { 1 }
-    })?;
+        match run() { Ok(()) => 0, Err(libbreenix::error::Error::Os(errno)) => errno as i32 }
+    };
+    let pid = breenix_suite::suite::spawn(
+        &[(device.fd(), device.fd())], breenix_suite::suite::Run::Call(&mut child),
+    )?;
+    let mut status = 0;
+    libbreenix::process::waitpid(pid.raw() as i32, &mut status, 0)?;
+    check(status == 0, &format!("reader-exit helper failed with wait status {status}"))?;
     let dead = observer.read_from(2, &[device.id()])?;
     let _new_claim = InputClaim::new()?;
     contender.grab(&[device.id()])?;
-    check(ledger()?.iter().any(|r| r.first() == Some(&dead[0].serial.to_string())
-        && r.get(1).is_some_and(|v| v == "lost") && r.get(3).is_some_and(|v| v == "compositor-died")),
+    check(ledger_has(dead[0].serial, Some(("lost", "compositor-died")))?,
         "process teardown kept the grab or lost the pending press's death disposition")?;
+
+    // Exercise W2 against an actual window ring under this isolated claimant.
+    struct LocalWindow(u64);
+    impl Drop for LocalWindow {
+        fn drop(&mut self) { let _ = window::destroy(self.0); }
+    }
+    let target = LocalWindow(window::create(64, 64, 2, 0)?.id);
+    window::register(target.0, b"input fd lifetime")?;
+    let mut delivered = [abi::WindowEvent::ZERO; 8];
+    window::read_events(target.0, &mut delivered, false, 0)?;
+    batch.clear();
+    batch.event(1, 30, 1, 300)?.finish(300)?;
+    device.inject(&batch)?;
+    let events = contender.read(&mut bytes)?.collect::<Result<Vec<_>, _>>()?;
+    contender.dispose(&input::Disposition { serial: events[0].event.serial, window: target.0,
+        disposition: input::disposition::WM_HANDLED, ..input::Disposition::default() })?;
+    contender.dispose(&input::Disposition { serial: events[1].event.serial,
+        disposition: input::disposition::WM_HANDLED, ..input::Disposition::default() })?;
+    drop(contender);
+    time::sleep_ms(100)?;
+    check(window::read_events(target.0, &mut delivered, false, 0)? == 0,
+        "a WM-handled press manufactured a client release")?;
+
+    let recipient_reader = Reader::open(true)?;
+    recipient_reader.grab(&[device.id()])?;
+    batch.clear();
+    batch.event(1, 30, 1, 400)?.finish(400)?;
+    device.inject(&batch)?;
+    let events = recipient_reader.read(&mut bytes)?.collect::<Result<Vec<_>, _>>()?;
+    let source = events[0].event;
+    let mut press_event = abi::WindowEvent::ZERO;
+    press_event.kind = kind::KEY_PRESS;
+    press_event.keycode = 30;
+    press_event.serial = source.serial;
+    press_event.time_ns = source.time_ns;
+    check(window::write_events(target.0, &[press_event])? == 1,
+        "the positive press did not enter its actual window ring")?;
+    check(window::read_events(target.0, &mut delivered, false, 0)? == 1 && delivered[0] == press_event,
+        "the original recipient did not receive its press")?;
+    recipient_reader.dispose(&input::Disposition { serial: source.serial, window: target.0,
+        disposition: input::disposition::DELIVERED, ..input::Disposition::default() })?;
+    recipient_reader.dispose(&input::Disposition { serial: events[1].event.serial,
+        disposition: input::disposition::WM_HANDLED, ..input::Disposition::default() })?;
+    drop(recipient_reader);
+    let mut release_id = 0;
+    until(1000, "last reader close releases the original recipient", || {
+        let count = window::read_events(target.0, &mut delivered, false, 0).map_err(|e| e.to_string())?;
+        for event in &delivered[..count] {
+            check(event.kind == kind::KEY_RELEASE && event.keycode == 30 && event.serial != source.serial,
+                "final close produced the wrong release kind or reused the source id").map_err(|e| format!("{e:?}"))?;
+            let mut tag = abi::EventTag { id: target.0, serial: event.serial, ..abi::EventTag::default() };
+            window::call(abi::op::EVENT_TAG, &mut tag).map_err(|e| e.to_string())?;
+            check(tag.source_serial == source.serial && tag.derived != 0,
+                "the recipient release lost its source/derived identity").map_err(|e| format!("{e:?}"))?;
+            release_id = event.serial;
+        }
+        Ok(release_id != 0)
+    })?;
+    check(!ledger_has(release_id, None)?, "a derived release consumed a source ledger row")?;
+    let mut meta = abi::Meta::ZERO;
+    meta.processed_serial = source.serial;
+    window::commit_no_change(target.0, Some(&meta))?;
+    check(window::read_meta(target.0)?.1.processed_serial == source.serial,
+        "the original recipient did not publish its source acknowledgment")?;
     Ok(())
 }
