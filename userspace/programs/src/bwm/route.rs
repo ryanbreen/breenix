@@ -859,7 +859,11 @@ impl State {
                 self.mouse_y = new_my;
 
                 if self.dragging.is_some() || self.resizing.is_some() {
-                    self.drag_resize(damage);
+                    // A snapshot can combine button-up with later pointer motion.
+                    // End that gesture below without applying the released motion.
+                    if buttons & 1 != 0 {
+                        self.drag_resize(damage);
+                    }
                 } else if !self.windows.is_empty()
                     && self.focused_win < self.windows.len()
                     && !self.windows[self.focused_win].minimized
