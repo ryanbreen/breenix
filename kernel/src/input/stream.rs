@@ -1222,3 +1222,9 @@ pub fn wake_service() {
     SERVICE_GENERATION.fetch_add(1, Ordering::Release);
     RELEASE_WORK.wake_up_deferred();
 }
+
+/// Read the capabilities held by the input core, including their value ranges.
+#[cfg(target_arch = "aarch64")]
+pub fn hardware_capabilities(id: u32) -> Vec<Capability> {
+    STATE.lock().devices.get(&id).map_or_else(Vec::new, |d| d.capabilities.clone())
+}

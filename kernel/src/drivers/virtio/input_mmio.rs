@@ -931,19 +931,16 @@ pub fn replay(tablet: bool, events: &[VirtioInputEvent]) -> Result<(u32, u32, u3
 pub fn inventory() -> alloc::string::String {
     use core::fmt::Write;
     let mut text = alloc::string::String::new();
-    if is_initialized() {
-        let _ = writeln!(
-            text,
-            "{} virtio-keyboard-mmio key=1..255",
-            hardware::KEYBOARD
-        );
-    }
-    if is_tablet_initialized() {
-        let _ = writeln!(
-            text,
-            "{} virtio-tablet-mmio abs=0:0..32767 abs=1:0..32767 key=272..274 rel=6,8",
-            hardware::TABLET
-        );
+    for (id, name, bound) in [
+        (hardware::KEYBOARD, "virtio-keyboard-mmio", is_initialized()),
+        (hardware::TABLET, "virtio-tablet-mmio", is_tablet_initialized()),
+    ] {
+        if !bound { continue; }
+        let _ = write!(text, "{id} {name}");
+        for cap in crate::input::stream::hardware_capabilities(id) {
+            let _ = write!(text, " {}:{}:{}:{}", cap.kind, cap.code, cap.minimum, cap.maximum);
+        }
+        text.push('\n');
     }
     text
 }

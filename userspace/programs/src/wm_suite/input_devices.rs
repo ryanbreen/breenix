@@ -292,20 +292,21 @@ pub fn device_capabilities() -> CaseResult {
         .lines()
         .find(|l| l.split_whitespace().nth(1) == Some("virtio-tablet-mmio"))
         .ok_or("bound tablet absent")?;
-    check(
-        keyboard.split_whitespace().any(|s| s == "key=1..255"),
-        "keyboard key capabilities differ",
-    )?;
-    for cap in [
-        "abs=0:0..32767",
-        "abs=1:0..32767",
-        "key=272..274",
-        "rel=6,8",
-    ] {
-        check(
-            pointer.split_whitespace().any(|s| s == cap),
-            "tablet axes/buttons/wheel capabilities differ from declaration",
-        )?;
-    }
-    Ok(())
+    let registered = |line: &str| -> Result<Vec<(u16, u16, i32, i32)>, String> {
+        line.split_whitespace().skip(2).map(|entry| {
+            let fields = entry.split(':').collect::<Vec<_>>();
+            if fields.len() != 4 { return Err("invalid registered capability".into()); }
+            Ok((fields[0].parse().map_err(|_| "invalid kind")?,
+                fields[1].parse().map_err(|_| "invalid code")?,
+                fields[2].parse().map_err(|_| "invalid minimum")?,
+                fields[3].parse().map_err(|_| "invalid maximum")?))
+        }).collect()
+    };
+    check(registered(keyboard)? == (1..=255).map(|code| (1, code, 0, 2)).collect::<Vec<_>>(),
+        "registered keyboard key capabilities differ")?;
+    check(registered(pointer)? == vec![
+        (3, 0, 0, 32767), (3, 1, 0, 32767),
+        (1, 272, 0, 1), (1, 273, 0, 1), (1, 274, 0, 1),
+        (2, 6, i32::MIN, i32::MAX), (2, 8, i32::MIN, i32::MAX),
+    ], "registered tablet axes/buttons/wheel capabilities differ")
 }
