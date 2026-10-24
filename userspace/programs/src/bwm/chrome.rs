@@ -629,14 +629,14 @@ impl State {
 
 impl State {
     pub(super) fn present(&mut self, damage: Damage) {
-        // Keep complete pixel validation off the interactive drag path. A settled
-        // resize still gets the same whole-scanout comparison on the next redraw
-        // (the clock also redraws each second if no client commits after release).
-        let check_ready = self.resizing.is_none()
-            && self
-                .windows
-                .iter()
-                .any(|w| !w.frame_checked && monotonic_ms().unwrap_or(0) >= w.check_after_ms);
+        // A held pointer and its retained release must reach the policy loop
+        // before a full-frame readback can block it. Keep the validation queued,
+        // then run its unchanged comparison after an unheld input poll.
+        let pointer_active = self.prev_buttons != 0
+            || self.dragging.is_some()
+            || self.resizing.is_some();
+        let check_ready = !pointer_active && !self.pointer_check_deferred;
+        self.pointer_check_deferred = pointer_active;
         // ── 5. Composite on the GPU (only when something changed) ──
         if self.full_redraw
             || self.content_dirty
@@ -685,58 +685,8 @@ impl State {
                     }
                     self.drawn_pointer = Some(pointer);
                     self.clock.presented(self.gpu.last_serial);
-                    // Each client window's first shown frame is read back and compared.
-                    // Check the whole scanout for each newly shown or resized client,
-                    // including other clients that keep animating beside it.
-                    // A client that committed
-                    // again after the frame sampled it is checked on a later frame. Any
-                    // failure prints the line docs/boot-path.json lists as fatal.
-                    let unchecked: Vec<(u64, [u32; 4])> = if check_ready {
-                        self.gpu
-                            .shown_clients(&layers, Some(pointer))
-                            .into_iter()
-                            .filter(|(id, _)| {
-                                self.windows.iter().any(|win| {
-                                    win.window_id == *id
-                                        && !win.frame_checked
-                                        && monotonic_ms().unwrap_or(0) >= win.check_after_ms
-                                })
-                            })
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
-                    // One check a frame: the unchecked window tried the fewest times.
-                    let next = unchecked
-                        .iter()
-                        .min_by_key(|(id, _)| {
-                            self.windows
-                                .iter()
-                                .find(|w| w.window_id == *id)
-                                .map_or(0, |w| w.check_moved)
-                        })
-                        .copied();
-                    if let Some((id, _)) = next {
-                        let result = self.gpu.check(id, &layers, Some(pointer));
-                        let retry = match (
-                            &result,
-                            self.windows.iter_mut().find(|win| win.window_id == id),
-                        ) {
-                            (Err(CheckError::Moved(_)), Some(win)) => {
-                                win.check_moved += 1;
-                                win.check_moved < CHECK_MOVED_LIMIT
-                            }
-                            _ => false,
-                        };
-                        if !retry {
-                            if let Some(win) =
-                                self.windows.iter_mut().find(|win| win.window_id == id)
-                            {
-                                win.frame_checked = true;
-                            }
-                            report_check(id, &result);
-                        }
-                    }
+                    self.validation_pending = true;
+
                 }
                 Err(FrameError::NotOwner) => {
                     // Another process took the display (probe, say): wait for it to give the
@@ -770,6 +720,74 @@ impl State {
                     self.drawn_pointer = None;
                     self.full_redraw = true;
                 }
+            }
+        }
+        if check_ready {
+            self.validate_frame();
+        }
+    }
+
+    fn validate_frame(&mut self) {
+        if !self.validation_pending || self.display_lost || self.frame_failed
+            || self.full_redraw || self.content_dirty || self.windows_dirty {
+            return;
+        }
+        self.validation_pending = false;
+        let Some(pointer) = self.drawn_pointer else { return; };
+        let layers = frame_layers(&self.windows);
+        let check_ready = self.windows.iter().any(|w| {
+            !w.frame_checked && monotonic_ms().unwrap_or(0) >= w.check_after_ms
+        });
+        // Each client window's first shown frame is read back and compared.
+        // Check the whole scanout for each newly shown or resized client,
+        // including other clients that keep animating beside it.
+        // A client that committed
+        // again after the frame sampled it is checked on a later frame. Any
+        // failure prints the line docs/boot-path.json lists as fatal.
+        let unchecked: Vec<(u64, [u32; 4])> = if check_ready {
+            self.gpu
+                .shown_clients(&layers, Some(pointer))
+                .into_iter()
+                .filter(|(id, _)| {
+                    self.windows.iter().any(|win| {
+                        win.window_id == *id
+                            && !win.frame_checked
+                            && monotonic_ms().unwrap_or(0) >= win.check_after_ms
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // One check a frame: the unchecked window tried the fewest times.
+        let next = unchecked
+            .iter()
+            .min_by_key(|(id, _)| {
+                self.windows
+                    .iter()
+                    .find(|w| w.window_id == *id)
+                    .map_or(0, |w| w.check_moved)
+            })
+            .copied();
+        if let Some((id, _)) = next {
+            let result = self.gpu.check(id, &layers, Some(pointer));
+            let retry = match (
+                &result,
+                self.windows.iter_mut().find(|win| win.window_id == id),
+            ) {
+                (Err(CheckError::Moved(_)), Some(win)) => {
+                    win.check_moved += 1;
+                    win.check_moved < CHECK_MOVED_LIMIT
+                }
+                _ => false,
+            };
+            if !retry {
+                if let Some(win) =
+                    self.windows.iter_mut().find(|win| win.window_id == id)
+                {
+                    win.frame_checked = true;
+                }
+                report_check(id, &result);
             }
         }
     }

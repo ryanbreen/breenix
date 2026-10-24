@@ -364,6 +364,8 @@ pub(super) fn start() -> State {
         frame_failed,
         display_lost,
         drawn_pointer,
+        validation_pending: false,
+        pointer_check_deferred: false,
         read_buf,
         poll_fds,
     }
@@ -397,6 +399,8 @@ pub(super) struct State {
     pub(super) frame_failed: bool,
     pub(super) display_lost: bool,
     pub(super) drawn_pointer: Option<Pointer>,
+    pub(super) validation_pending: bool,
+    pub(super) pointer_check_deferred: bool,
     pub(super) read_buf: [u8; 512],
     pub(super) poll_fds: [io::PollFd; 2],
 }
