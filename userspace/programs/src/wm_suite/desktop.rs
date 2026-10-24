@@ -170,16 +170,16 @@ impl Client {
         Self::start_shape(seed, flags, 240, 160)
     }
     pub fn start_shape(seed: u32, flags: u32, width: u32, height: u32) -> Result<Self, String> {
-        let mut client = Self::spawn_shape(seed, flags, width, height)?;
+        let mut client = Self::spawn_shape(seed, flags, width, height, super::event_log::CAPACITY)?;
         client.receive()?;
         Ok(client)
     }
     /// Start an independent client; receive its initial paint reply before sending commands.
-    pub fn spawn_shape(seed: u32, flags: u32, width: u32, height: u32) -> Result<Self, String> {
+    pub fn spawn_shape(seed: u32, flags: u32, width: u32, height: u32, log_capacity: usize) -> Result<Self, String> {
         if !(1..=4096).contains(&width) || !(1..=4096).contains(&height) {
             return Err("fixture client dimensions outside the window contract".into());
         }
-        let (log, log_file) = EventLog::create()?;
+        let (log, log_file) = EventLog::create_bounded(log_capacity)?;
         let (cr, cw) = io::pipe().map_err(|e| e.to_string())?;
         let (rr, rw) = io::pipe().map_err(|e| e.to_string())?;
         let pid = spawn(

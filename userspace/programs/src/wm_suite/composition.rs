@@ -195,6 +195,9 @@ pub fn sixteen_clients() -> CaseResult {
             flags::UNREGISTERED | flags::IGNORE_CLOSE | flags::NEVER_READ,
             92,
             64,
+            // Event reads are disabled for these 16 clients. Keep strict
+            // overflow checks without mapping 8192 unused slots per child.
+            64,
         )?);
     }
     for (index, c) in clients.iter_mut().enumerate() {

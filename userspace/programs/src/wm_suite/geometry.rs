@@ -156,13 +156,11 @@ pub fn resize_top() -> CaseResult {
 }
 pub fn resize_corners() -> CaseResult {
     let mut d = Desktop::start()?;
-    for (index, (left, top)) in [(true, true), (false, true), (true, false), (false, false)]
-        .into_iter()
-        .enumerate()
-    {
-        let mut c = Client::start(11 + index as u32)?;
-        placed(&c)?;
-        d.client_ready(&c)?;
+    let mut c = Client::start(11)?;
+    placed(&c)?;
+    d.client_ready(&c)?;
+    for (left, top) in [(true, true), (false, true), (true, false), (false, false)] {
+        c.clear()?;
         let w = c.info()?;
         let x = if left {
             w.x - 2 * d.scale
