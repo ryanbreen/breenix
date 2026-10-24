@@ -695,7 +695,7 @@ unsafe fn complete_buffer(tablet: bool, descriptor: usize) -> u32 {
 fn report_tablet_frame(events: &[input_decode::Event]) {
     use crate::drivers::hid_boot::pointer::Axis;
     let mut state = MOUSE.lock();
-    let (mut x, mut y, mut buttons) = state.current();
+    let (mut x, mut y, _) = state.current();
     let (width, height) = screen_dimensions();
     for e in events {
         match (e.kind, e.code) {
@@ -724,19 +724,13 @@ fn report_tablet_frame(events: &[input_decode::Event]) {
                     y = axis.position(y, height);
                 }
             }
-            (1, 272..=274) => {
-                let bit = 1 << (e.code - 272);
-                if e.value == 0 {
-                    buttons &= !bit;
-                } else {
-                    buttons |= bit;
-                }
-            }
             (2, 8) => crate::input::pointer::report_wheel(e.value),
             _ => {}
         }
     }
-    state.report(x, y, buttons);
+    state.frame(x, y, events.iter()
+        .filter(|e| e.kind == 1 && (272..=274).contains(&e.code))
+        .map(|e| (e.code, e.value)));
 }
 
 /// Check if the keyboard device is initialized

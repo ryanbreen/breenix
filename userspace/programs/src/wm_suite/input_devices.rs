@@ -17,21 +17,37 @@ pub fn keyboard_completion() -> CaseResult {
     Ok(())
 }
 pub fn pointer_completion() -> CaseResult {
+    let (d, mut c) = one()?;
+    let w = c.info()?;
+    d.pointer(w.x + 20, w.y + 20, 0, 0)?;
+    c.await_event("positive tablet polling consumer before same-frame click", |e| {
+        e.kind == kind::POINTER_MOVE && (e.x, e.y) == (20, 20)
+    })?;
+    c.clear()?;
     let mut stream = Stream::open()?;
-    let (_d, mut c) = one()?;
-    {
-        let w = c.info()?;
-        replay(2, w.x + 40, w.y + 50)?;
-    };
+    replay(2, w.x + 40, w.y + 50)?;
+    let events = stream.read(5)?;
     check(
-        stream.read(4)?.iter().any(|e| e.kind == 3),
+        events.iter().any(|e| e.kind == 3),
         "bound pointer completion did not report absolute axes",
     )?;
+    let edges = events.iter().filter(|e| e.kind == 1 && e.code == 272).collect::<Vec<_>>();
+    value("pointer-source-edges", edges.len() as i64, "", Some((2, 2)));
+    check(edges.len() == 2 && edges[0].value == 1 && edges[1].value == 0
+        && edges[0].serial < edges[1].serial && edges[0].device == edges[1].device,
+        "bound tablet completion lost or reordered same-frame button edges")?;
     c.await_event("bound pointer completion wakes bwm", |e| {
         e.kind == kind::POINTER_MOVE
     })?;
-    Ok(())
+    let press = c.await_event("completed-frame pointer press", |e| {
+        e.kind == kind::POINTER_BUTTON && e.button == 272 && e.pressed == 1
+    })?;
+    let release = c.await_event("completed-frame pointer release", |e| {
+        e.kind == kind::POINTER_BUTTON && e.button == 272 && e.pressed == 0
+    })?;
+    check(press.serial < release.serial, "completed-frame fast click lost or reordered a client edge")
 }
+
 pub fn replay_faults() -> CaseResult {
     let mut stream = Stream::open()?;
     let (_d, mut c) = one()?;

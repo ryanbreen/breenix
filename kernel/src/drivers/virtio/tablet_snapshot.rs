@@ -47,6 +47,22 @@ impl TabletSnapshot {
         }
         self.current = next;
     }
+    /// Fold button edges at the completed frame's coordinates while the
+    /// driver owns the snapshot lock. Intermediate levels update the latches
+    /// without exposing a partial ABS/KEY frame to readers.
+    pub fn frame(&mut self, x: u32, y: u32, edges: impl Iterator<Item = (u16, i32)>) {
+        let mut buttons = self.current.2;
+        for (code, value) in edges {
+            let bit = 1 << (code - 272);
+            if value == 0 {
+                buttons &= !bit;
+            } else {
+                buttons |= bit;
+            }
+            self.report(x, y, buttons);
+        }
+        self.report(x, y, buttons);
+    }
     pub fn current(&self) -> (u32, u32, u32) {
         self.current
     }

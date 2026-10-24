@@ -88,3 +88,19 @@ fn unrelated_reader_does_not_consume_the_active_readers_release() {
     assert_eq!(pointer.take_for(1), (50, 60, 0));
     assert_eq!(pointer.take_for(2), (900, 800, 0));
 }
+
+#[test]
+fn completed_frame_retains_both_edges_of_a_fast_click() {
+    let mut pointer = TabletSnapshot::new();
+    assert_eq!(pointer.take_for(7), (0, 0, 0));
+    pointer.frame(100, 200, [(272, 1), (272, 0)].into_iter());
+    assert_eq!(pointer.current(), (100, 200, 0));
+    assert_eq!(pointer.take_for(7), (100, 200, 1));
+    assert_eq!(pointer.take_for(7), (100, 200, 0));
+    assert_eq!(pointer.take_for(8), (100, 200, 0));
+    pointer.frame(300, 400, [(273, 1), (274, 1)].into_iter());
+    assert_eq!(pointer.take_for(7), (300, 400, 6));
+    pointer.frame(500, 600, [(273, 0), (274, 0)].into_iter());
+    assert_eq!(pointer.take_for(7), (500, 600, 4));
+    assert_eq!(pointer.take_for(7), (500, 600, 0));
+}
