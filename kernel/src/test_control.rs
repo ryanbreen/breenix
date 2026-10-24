@@ -57,7 +57,11 @@ fn defined(point: u32) -> bool {
     breengel_abi::tc_point::defined(point)
         || test_point::defined(point)
 }
-const POINTS: usize = CRED_ORPHAN as usize + 1;
+const POINTS: usize = if breengel_abi::tc_point::LAST > CRED_ORPHAN {
+    breengel_abi::tc_point::LAST as usize + 1
+} else {
+    CRED_ORPHAN as usize + 1
+};
 
 mod point;
 use point::Point;
