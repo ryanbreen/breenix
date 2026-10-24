@@ -920,6 +920,30 @@ fn disappear(sig: Option<i32>, exec: bool) -> CaseResult {
     } else {
         b.send(if exec { EXEC } else { EXIT }, 0, 0)?;
     }
+    let mut status = None;
+    until(1000, "client completed its exit, exec or crash", || {
+        status = b.child.status()?;
+        Ok(status.is_some())
+    })?;
+    let status = status.unwrap();
+    if let Some(sig) = sig {
+        check(
+            status & 127 == sig,
+            &format!("client did not die from expected signal {sig}: wait status {status}"),
+        )?;
+    } else {
+        check(
+            status == 0,
+            &format!(
+                "client {} failed: wait status {status}",
+                if exec {
+                    "exec of /bin/true"
+                } else {
+                    "normal exit"
+                }
+            ),
+        )?;
+    }
     until(1000, "dead/exec client window removed", || {
         Ok(!listed()?.iter().any(|w| w.id == b.id))
     })?;

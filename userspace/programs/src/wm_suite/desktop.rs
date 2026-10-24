@@ -60,7 +60,13 @@ impl Child {
             result = self.status()?;
             Ok(result.is_some())
         })?;
-        Ok(result.unwrap())
+        let status = result.unwrap();
+        if status & 127 != signal::SIGKILL {
+            return Err(format!(
+                "owned process did not die from requested SIGKILL: wait status {status}"
+            ));
+        }
+        Ok(status)
     }
 }
 impl From<Pid> for Child {
