@@ -251,7 +251,6 @@ pub(super) fn start() -> State {
     let dragging: Option<(usize, i32, i32)> = None;
     // Active resize: (win_idx, edge, anchor_x, anchor_y, orig_x, orig_y, orig_w, orig_h)
     let resizing: Option<(usize, ResizeEdge, i32, i32, i32, i32, usize, usize)> = None;
-    let mut full_redraw = true;
     let content_dirty = false;
     let windows_dirty = false;
     let mut win_defaults: [WindowDefaults; MAX_DEFAULTS] =
@@ -276,22 +275,26 @@ pub(super) fn start() -> State {
     // client window is discovered. It is read back from the scanout and compared with the
     // desktop target and the pointer's bitmap (`compositor`).
     compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
+    // Observe the bare desktop's corners before installing the cursor. Readiness
+    // must describe the completed cursor-bearing frame, with no full repaint
+    // left pending in the first event-loop iteration.
+    let fills = check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index);
     let first_pointer = Pointer {
         x: mouse_x,
         y: mouse_y,
         shape: active_cursor_shape,
     };
     let first = gpu
-        .compose(&[], Some(first_pointer), &[])
+        .compose(&[], Some(first_pointer), &[compositor::pointer_footprint(first_pointer, ui().scale as i32)])
         .map_err(|e| CheckError::Failed(e.to_string()))
         .and_then(|()| gpu.check(0, &[], Some(first_pointer)));
+    let first_presented = first.is_ok();
     match first {
         Ok(pixels) => print!("[bwm] first frame read back: {} pixels exact\n", pixels),
         Err(CheckError::Moved(e)) | Err(CheckError::Failed(e)) => {
             print!("[bwm] first frame check FAILED: {}\n", e)
         }
     }
-    let fills = check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index);
     clock.presented(gpu.last_serial);
     clock.acknowledge(claim_epoch);
     match fills {
@@ -302,7 +305,8 @@ pub(super) fn start() -> State {
     // Another process holds the display: bwm composes again when it has it back.
     let display_lost = false;
     // The pointer the last composed frame drew, so a move repaints where it was.
-    let drawn_pointer: Option<Pointer> = None;
+    let drawn_pointer = first_presented.then_some(first_pointer);
+    let mut full_redraw = !first_presented;
 
     let read_buf = [0u8; 512];
     let poll_fds = [
