@@ -47,7 +47,7 @@ pub(super) struct Text {
     _charge: Charge,
 }
 
-pub(super) struct User {
+struct User {
     euid: u32,
     text: Option<Arc<Text>>,
     owner: Option<u64>,
@@ -56,6 +56,9 @@ pub(super) struct User {
 
 pub struct State {
     users: Vec<User>,
+    // Empty during a claim. SET reserves space to retire its users' text, so
+    // clearing can retain serial history without allocating under the registry.
+    clearing: Vec<Arc<Text>>,
     generation: u64,
 }
 
@@ -63,6 +66,7 @@ impl State {
     pub const fn new() -> Self {
         Self {
             users: Vec::new(),
+            clearing: Vec::new(),
             generation: 0,
         }
     }
@@ -72,7 +76,11 @@ impl State {
     }
 
     fn user_mut(&mut self, euid: u32) -> Result<&mut User, i32> {
-        let index = match self.users.iter().position(|u| u.euid == euid) {
+        let index = self.users.iter().position(|u| u.euid == euid);
+        self.clearing
+            .try_reserve_exact(self.users.len() + usize::from(index.is_none()))
+            .map_err(|_| ENOMEM)?;
+        let index = match index {
             Some(index) => index,
             None => {
                 self.users.try_reserve(1).map_err(|_| ENOMEM)?;
@@ -86,12 +94,20 @@ impl State {
 }
 
 /// End the claim under its registry transaction; free storage after releasing the lock.
-pub(super) fn clear(reg: &mut Registry) -> Option<Vec<User>> {
+pub(super) fn clear(reg: &mut Registry) -> Option<Vec<Arc<Text>>> {
     reg.clipboard.generation += 1;
+    let mut text = core::mem::take(&mut reg.clipboard.clearing);
+    for user in &mut reg.clipboard.users {
+        user.owner = None;
+        user.serial += 1;
+        if let Some(retired) = user.text.take() {
+            text.push(retired);
+        }
+    }
     for w in reg.windows.values_mut() {
         w.clipboard_subscribed = None;
     }
-    Some(core::mem::take(&mut reg.clipboard.users))
+    Some(text)
 }
 
 pub(super) fn window_gone(reg: &mut Registry, id: u64) {
