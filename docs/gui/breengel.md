@@ -1631,21 +1631,32 @@ Input and measurement spotlights independently detect point-13 substitution, as 
 a changed thumbnail cannot satisfy their detection checks. Live checks also inspect the picture input
 overlay, verdict, category headings and empty footer, with individual pixel substitutions in each region.
 
-### 23.9 Display custody during a run (B29)
+### 23.9 Display custody and inset case target (B50)
 
-The stage holds the display from the first case to the last. It does not give the display
-back before a case: the case's own takeover nests above the stage on the ownership stack, so
-the stage's frame stays on the screen until the case presents, and when the case's process
-ends the stack restores the stage's frame. An owner that took the display without presenting
-was shown the frame below it, so that frame is what the restore binds. The console does not
-show between cases. Three cases start above the kernel's screen instead, and for them alone
-the stage gives the display back before the case: `composition/ownership-stack`, whose
-property is the stack's four-owner depth, and `panel/kernel-screens` and `panel/boot-ribbon`,
-whose property is the kernel's screen itself. A case that presents a full-screen scanout (the
-composition and scanout cases, whose readback judges the device pixels of the whole mode,
-section 20) shows it while it owns the display, and the stage's next frame follows when it
-ends. After the three cases above the kernel's screen the stage takes the display back and
-shows its last frame as soon as the case's process ends, before collecting its result.
+Ruling B50 (operator, 2026-10-24) supersedes B29's per-case nested takeover
+and showcase principle 2. The header, tile wall and spotlight remain on the
+full-screen stage throughout the run, except during an announced scanout case.
+The fixed case panel is the actual-picture rectangle `(848,168,400,250)` in
+logical coordinates: at scale 2 its origin is `(1696,336)` and its target is
+`800×500` physical pixels. The runner samples the case's committed GPU target
+there. Widget pixels fit at native physical resolution; internal targets used
+for format, clipping, guard and size checks retain their tested geometry.
+The stage must not write a target while that target is being judged.
+
+A panel composite renders to private targets without presenting or taking the
+display. Its pixel check reads that target, not target zero (the bound scanout).
+The suite's full-screen annotations name the cases whose property requires the
+bound display, with a reason for each. Before such a case starts, the stage shows
+`Full screen next: <case> — <reason>` for at least 1,000 ms, outside its measured
+window. The case draws and checks the complete physical destination; the stage
+returns when the case ends. Window-manager cases retain their full-screen design
+and receive the same announcement.
+
+`composition/ownership-stack`, `panel/kernel-screens` and `panel/boot-ribbon`
+start above the kernel's screen. The stage releases its ownership only after the
+announcement and restores its frame when the case ends. The PR's B50 audit lists
+prior full-screen presentations, their actual drawn areas, their new placement,
+and each bound-scanout readback moved to a panel target.
 
 <!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B35 specifies these requirements. -->
 The stage's compositor draws the panel cursor (ruling B35): the compositor's arrow sprite
