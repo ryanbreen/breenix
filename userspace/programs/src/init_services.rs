@@ -380,8 +380,9 @@ impl Supervisor {
                                     && (line.starts_with(b"[BSSH_PUBKEY_ORACLE:")
                                         || line.starts_with(b"[BSSH_ACCOUNT_ORACLE:"))
                                     && line.ends_with(b"]");
-                                // Keep bwm's existing serial protocol intact, including fatal,
-                                // runtime-stage, readiness and GPU-abort markers.
+                                // Forward bwm stdout receipts, including frame-check failures,
+                                // runtime-stage, readiness and GPU-abort markers. Stderr
+                                // remains in the service log, including Rust panic messages.
                                 let desktop = entry.def.name == "bwm";
                                 if output.stream == "stdout" && (readiness || oracle || desktop) {
                                     if let Ok(text) = core::str::from_utf8(line) {

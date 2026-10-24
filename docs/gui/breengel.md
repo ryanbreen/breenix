@@ -964,7 +964,7 @@ Argument structures (offsets in bytes):
 - `MetaQuery`: `id: u64 @0`, `meta: u64 @8` (pointer to a `Meta` the kernel fills), *out* `commit_id: u64 @16` (the
   newest commit, `COMMIT` or `COMMIT_NO_CHANGE`, whose metadata it is; 0 before the first).
 
-E18 argument structures (W1-W4; reserved/output fields start at zero): <!-- claim-lint:ok: Normative E18 contract allocation, W1-W13 and #2367; not implementation acceptance. -->
+E18 argument structures (W1-W4; reserved/output fields start at zero unless specified): <!-- claim-lint:ok: Normative E18 contract allocation, W1-W13 and #2367; not implementation acceptance. -->
 
 - `CompositorAck`: `claim_epoch:u64 @0`, `epoch:u64 @8`,
   `handled_serial:u64 @16`, `presented:u64 @24`. Only the current claimant
@@ -980,6 +980,8 @@ E18 argument structures (W1-W4; reserved/output fields start at zero): <!-- clai
   decimal fields including `epoch=N`. Publication is atomic.
 - `ClipboardSet`: `id:u64 @0`, `ptr:u64 @8`, `len:u64 @16`, *out*
   `serial:u64 @24`, `mime:u32 @32` (1 text/plain;charset=utf-8), reserved @36.
+  SET ignores the input value of its output-only `serial`; callers may reuse a structure
+  containing a serial returned by an earlier SET.
 - `ClipboardGet`: `id:u64 @0`, `dst:u64 @8`, `capacity:u64 @16`, *out*
   `len:u64 @24`, in/out `serial:u64 @32`, `mime:u32 @40`, reserved @44.
   A null destination and capacity zero query the length and change serial.
