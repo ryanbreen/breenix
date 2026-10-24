@@ -163,10 +163,10 @@ fn band_mismatches(px:&[u8],width:usize,scale:usize,lit:&[bool]) -> usize {
 fn active_boot_ribbon() -> Result<String,breenix_suite::suite::CaseError> {
     use crate::window_cases::composition::{screen_size,screen};
     let (width,height)=screen_size()?;let scale=width/1280;
-    // Opening tty1 for a nonblocking read gives the production splash its reader trigger.
+    // KD_TEXT ends the production splash without taking display ownership.
     use std::os::fd::AsRawFd;
     let tty=std::fs::File::open("/dev/tty1").map_err(|e|e.to_string())?;
-    let r=unsafe {raw::syscall3(16,tty.as_raw_fd() as u64,0x4b3a,0) as i64};
+    let r=unsafe {raw::syscall3(libbreenix::syscall::nr::IOCTL,tty.as_raw_fd() as u64,0x4b3a,0) as i64};
     ensure(r>=0,"23.7","KD_TEXT before active ribbon check failed")?;
     let start=std::time::Instant::now();
     let initial=loop {
