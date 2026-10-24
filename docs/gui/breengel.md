@@ -1527,7 +1527,10 @@ pixel in row-major order is marked by white horizontal and vertical lines extend
 clipped to that pane. Its mapped coordinate is `(floor(x128/W),floor(y128/H))`.
 At (840,312), scale 1, white, is `<N> pixels differ; bound <M>`.
 
-When no independent reference was supplied, the actual-only pane is (848,168,400,250),
+The fixed actual panel is (848,400,400,250), including when a reference was supplied.
+It is sampled at physical resolution: at scale 2 its 800×500 source pixels map 1:1.
+The three 128×128 comparison panes remain above it.
+When no independent reference was supplied, the actual-only panel is (848,400,400,250),
 nearest-scaled from the complete verified snapshot and explicitly labelled as such.
 
 A timing spotlight plots at (848,336,400,192). It accepts 1–64 frame times in microseconds and a positive
@@ -1540,17 +1543,18 @@ its recorded pointer trail. The trail maps its min/max x and y to (864,336)..(12
 with each constant axis using an extent of one. Consecutive points are joined in timing blue;
 5x5 point markers are white when up, pass green when down. Without pointer samples the heading
 says `INPUT / events`, the panel says `Events (no pointer)`, and there is no pointer legend. For an input case with a judged picture, preserve the picture
-panes and put the input evidence below them: label at (848,432), handler text at (848,448),
-trail at (864,516)..(1216,596). Input metadata is snapshotted after its handler and transported
+panes and put the input evidence below them: label at (848,336), handler text at (848,352),
+trail at (864,376)..(1216,392). Input metadata is snapshotted after its handler and transported
 with a verified SHA-256, published after the timer stops. At most the first 256 pointer samples
 are retained. Target text is bounded to 192 bytes with an explicit trailing ellipsis.
 
+<!-- claim-lint:ok: Normative contract in docs/gui/breengel.md section 23.4; not a measured acceptance claim. -->
 A text-only case shows its recorded measurement name at (848,208), scale 2, its value and unit
 at (848,280), scale 3, and `Expected exactly <value> <unit>` or `Bound: <lo> to <hi> <unit>`
 at (848,392), scale 2. Text wraps within 400 pixels. Prefer the last bounded VALUE, then the
 last VALUE. Without a supplied reading, show the measured case execution time against its
 runner deadline, labelled `Case execution time`; never invent a picture or comparison bound.
-The selected case's verdict appears at (848,640), scale 3, in its stamp colour.
+The selected case's verdict appears at (848,672), scale 3, in its stamp colour.
 
 ### 23.5 Empty footer
 
@@ -1636,16 +1640,23 @@ overlay, verdict, category headings and empty footer, with individual pixel subs
 Ruling B50 (operator, 2026-10-24) supersedes B29's per-case nested takeover
 and showcase principle 2. The header, tile wall and spotlight remain on the
 full-screen stage throughout the run, except during an announced scanout case.
-The fixed case panel is the actual-picture rectangle `(848,168,400,250)` in
-logical coordinates: at scale 2 its origin is `(1696,336)` and its target is
+The fixed case panel is the actual-picture rectangle `(848,400,400,250)` in
+logical coordinates: at scale 2 its origin is `(1696,800)` and its target is
 `800×500` physical pixels. The runner samples the case's committed GPU target
 there. Widget pixels fit at native physical resolution; internal targets used
 for format, clipping, guard and size checks retain their tested geometry.
 The stage must not write a target while that target is being judged.
+Targets smaller than the panel keep native pixels in its top left with black padding;
+the GPU copy and padding are read back and checked before publication. Larger internal
+fixtures retain their original checks before the runner samples their frame for the panel.
 
+<!-- claim-lint:ok: Normative B50 contract in docs/gui/breengel.md section 23.9; not a measured acceptance claim. -->
 A panel composite renders to private targets without presenting or taking the
 display. Its pixel check reads that target, not target zero (the bound scanout).
-The suite's full-screen annotations name the cases whose property requires the
+A private composition reservation uses COMPOSITE_SNAPSHOT flags bit 1 with input
+width and height; the compositor claim is required, and ordinary reservations still
+require display ownership. A private reservation neither presents nor accepts a
+bound target as its destination. The suite's full-screen annotations name the cases whose property requires the
 bound display, with a reason for each. Before such a case starts, the stage shows
 `Full screen next: <case> — <reason>` for at least 1,000 ms, outside its measured
 window. The case draws and checks the complete physical destination; the stage
