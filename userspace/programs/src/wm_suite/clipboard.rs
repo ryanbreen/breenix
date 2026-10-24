@@ -98,8 +98,9 @@ pub fn set_get() -> CaseResult {
         "clipboard storage bypassed setter RLIMIT_AS")?;
     let got = c.clipboard_get()?;
     check(got.serial == replacement && got.text == "replacement", "ENOMEM changed clipboard")?;
-    // Keep the old short value in the baseline. Replacement reserves its
-    // new bytes before releasing the old charge, so one byte still fits later.
+    // VmSize reports whole KiB. Keep the baseline clipboard charge KiB-aligned
+    // so AddressLimit measures it exactly, with less than a page released by SET.
+    c.clipboard_set(&"x".repeat(1024))?;
     let payload = [b'x'; 8192];
     let limit = AddressLimit::new(libbreenix::process::getpid()?.raw() as i32, payload.len() as u64)?;
     c.clipboard_set(core::str::from_utf8(&payload).unwrap())?;
@@ -209,8 +210,11 @@ pub fn concurrent_sets() -> CaseResult {
     serials.sort_unstable();
     check(serials.windows(2).all(|s| s[0] < s[1]),
         "maximum-size concurrent SETs reused a serial")?;
-    let (got, text) = clip_ok(&mut a, false, &[])?;
-    check(got == serials[5] && text == payload.as_bytes(),
+    // Read the maximum payload directly; the client's pipe protocol otherwise
+    // asks read(2) for a contiguous 16 MiB kernel bounce buffer.
+    let reader = breengel::Window::new_without_fonts(b"maximum clipboard reader", 1, 1)?;
+    let got = reader.clipboard_get()?;
+    check(got.serial == serials[5] && got.text == *payload,
         "maximum-size concurrent SET lost exact text or final serial")?;
     Ok(())
 }
