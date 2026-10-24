@@ -39,6 +39,10 @@ static LOG_PORT: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::
 // Serial input queue and waker (similar to keyboard)
 static SERIAL_INPUT_QUEUE: OnceCell<ArrayQueue<u8>> = OnceCell::uninit();
 static SERIAL_WAKER: AtomicWaker = AtomicWaker::new();
+pub static INPUT_RX: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub static INPUT_POLL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub static INPUT_FORWARD: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 
 static SERIAL1_FIFO: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static LOG_FIFO: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -806,6 +810,7 @@ pub fn enable_serial_input() {
 ///
 /// Must not block or allocate.
 pub fn add_serial_byte(byte: u8) {
+    INPUT_RX.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     if let Ok(queue) = SERIAL_INPUT_QUEUE.try_get() {
         if let Err(_) = queue.push(byte) {
             log::warn!("Serial input queue full; dropping input");
