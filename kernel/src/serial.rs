@@ -986,6 +986,13 @@ fn write_str_within(s: &str, attempts: u32, wait_for_uart: bool) {
             let Some(mut serial) = SERIAL1.try_lock() else {
                 return false;
             };
+            // Admission may have begun after the outer check. Recheck under
+            // SERIAL1 before a raw kernel line can enter a unit's byte stream.
+            if DEFERRED.active() {
+                drop(serial);
+                write_bytes_atomic(Writer::Kernel, s.as_bytes());
+                return true;
+            }
             if !wait_for_uart && (TX_THREAD.get().is_none() || !unit_fits(&serial.queue, Writer::Kernel, s)) {
                 return false;
             }

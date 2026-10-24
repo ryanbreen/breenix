@@ -510,3 +510,33 @@ fn deferred_ring_overflow_is_counted_and_reported_after_retained_lines() {
     expected.extend_from_slice(b"[serial] deferred record overflow: 1\n");
     assert_eq!(&*WIRE.lock().unwrap(), &expected);
 }
+
+#[test]
+fn raw_fragments_do_not_exhaust_descriptors_a_signal_line_needs() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    WIRE.lock().unwrap().clear();
+    OPEN.store(0, Ordering::Relaxed);
+    WAKE_AFTER.store(0, Ordering::Relaxed);
+    let stalled: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+    let gate: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+    let payload = b"record paused at UART\n";
+    let signal = b"[signal] Process 42 (client) terminated by signal 15 (SIGTERM)\n";
+    let holder = thread::spawn(move || {
+        STALL_AT.with(|at| at.set(5));
+        STALLED.with(|flag| flag.set(Some(stalled)));
+        STALL_GATE.with(|flag| flag.set(Some(gate)));
+        uart_owner::write_atomic::<Test, false>(1, payload, false, &mut Ownership::acquire());
+    });
+    wait_for(|| stalled.load(Ordering::Acquire));
+    for _ in 0..128 {
+        uart_owner::write_atomic::<Test, false>(2, b"x", false, &mut Ownership::acquire());
+    }
+    uart_owner::write_atomic::<Test, true>(3, signal, false, &mut Ownership::acquire());
+    gate.store(true, Ordering::Release);
+    holder.join().unwrap();
+    let mut expected = payload.to_vec();
+    expected.extend_from_slice(&[b'x'; 128]);
+    expected.extend_from_slice(b"\r\n");
+    expected.extend_from_slice(signal);
+    assert_eq!(&*WIRE.lock().unwrap(), &expected);
+}

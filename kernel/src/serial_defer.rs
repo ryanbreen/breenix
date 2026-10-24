@@ -94,7 +94,10 @@ impl<W: Copy> Deferred<W> {
         tee: bool,
         fresh: bool,
         may_defer: bool,
-    ) -> Admission {
+    ) -> Admission
+    where
+        W: PartialEq,
+    {
         if self
             .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -114,7 +117,28 @@ impl<W: Copy> Deferred<W> {
         if !start {
             // SAFETY: the successful acquire CAS above owns locked until the release store below.
             let q = unsafe { &mut *self.queue.get() };
-            if q.count == RECORDS || bytes.len() > BYTES - q.len || bytes.len() > 8256 {
+            let last = (q.first + q.count.saturating_sub(1)) % RECORDS;
+            let join = !tee
+                && !fresh
+                && q.count != 0
+                && q.len != 0
+                && bytes.len() <= BYTES - q.len
+                && q.bytes[(q.head + q.len - 1) % BYTES] != b'\n'
+                && q.records[last].is_some_and(|meta| {
+                    !meta.tee
+                        && !meta.fresh
+                        && meta.writer == writer
+                        && meta.len + bytes.len() <= 8256
+                });
+            if join {
+                for &byte in bytes {
+                    q.bytes[(q.head + q.len) % BYTES] = byte;
+                    q.len += 1;
+                }
+                if let Some(meta) = q.records[last].as_mut() {
+                    meta.len += bytes.len();
+                }
+            } else if q.count == RECORDS || bytes.len() > BYTES - q.len || bytes.len() > 8256 {
                 self.lost.fetch_add(1, Ordering::Relaxed);
             } else {
                 for &byte in bytes {

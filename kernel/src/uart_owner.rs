@@ -39,7 +39,7 @@ pub const READY_NS: u64 = 10_000_000;
 /// The UART and the CPU a writer runs on.
 pub trait Port: Sized + 'static {
     /// Who a record belongs to, for starting fresh lines (`serial_writer`).
-    type Writer: Copy + Send;
+    type Writer: Copy + Send + PartialEq;
     /// Userspace units apply backpressure; kernel records use non-waiting admission.
     fn may_defer(_writer: Self::Writer) -> bool {
         true
@@ -230,6 +230,20 @@ impl<P: Port> Ownership<P> {
             Some(ticket) => Self::new(saved, tag, ticket, false),
             None => Self::new(saved, tag, take::<P>(tag), true),
         }
+    }
+
+    /// A record already excludes preemption. Wait for hardware ownership with
+    /// the incoming IRQ state restored, then mask only for the actual piece.
+    fn acquire_piece() -> Self {
+        let saved = P::mask_interrupts();
+        let tag = P::cpu_tag();
+        if let Some(ticket) = Self::reentered(tag) {
+            return Self::new(saved, tag, ticket, false);
+        }
+        P::restore_interrupts(saved);
+        let ticket = take::<P>(tag);
+        P::mask_interrupts();
+        Self::new(saved, tag, ticket, true)
     }
 
     /// Own the UART only if that needs no wait: it is free, or this CPU owns it.
@@ -553,17 +567,30 @@ pub fn write_atomic<P: Port, const TEE: bool>(
 fn transmit<P: Port, const TEE: bool>(writer: P::Writer, bytes: &[u8], fresh: bool) {
     let mut first = true;
     for chunk in bytes.chunks(16) {
-        let mut ownership = Ownership::<P>::acquire_uart();
+        let mut ownership = Ownership::<P>::acquire_piece();
         if first {
             let lead = if fresh && P::line_open() {
                 &b"\r\n"[..]
             } else {
                 P::lead(writer, bytes)
             };
-            put_all::<P, TEE>(writer, lead, &mut ownership);
+            put_piece::<P, TEE>(writer, lead, &mut ownership);
             first = false;
         }
-        put_all::<P, TEE>(writer, chunk, &mut ownership);
+        put_piece::<P, TEE>(writer, chunk, &mut ownership);
+    }
+}
+
+fn put_piece<P: Port, const TEE: bool>(
+    writer: P::Writer,
+    bytes: &[u8],
+    ownership: &mut Ownership<P>,
+) {
+    for &byte in bytes {
+        while !put::<P, TEE>(writer, byte, ownership) {
+            ownership.suspend();
+            *ownership = Ownership::<P>::acquire_piece();
+        }
     }
 }
 
