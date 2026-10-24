@@ -195,3 +195,39 @@ latency bounds, memory bounds and case deadlines remain unchanged.
 All-minimized waits for both clients' MINIMIZED flags and absence of focus, and checks
 both event logs after the negative input interval. Deferred review refinements are
 tracked in #2369.
+
+## Reviewed ARM64 GL baseline
+
+Boot `20261024T012512Z-qemu-13504` ran commit
+`e3877258e0e72a8ac43a17620a57af90979aa4ed` with a clean tree, four vCPUs,
+GL and its display open through the mac-boot slot. Vigil recorded completion and
+exit status 1. The runtime result was **9 PASS, 73 FAIL, 0 SKIP**, with 82 terminal
+case records. The empty-desktop control, compositor claim, chrome, overlap,
+cascade, corruption oracle, client resize, compositor-steal and inject-denied
+cases passed. The baseline remains red; incomplete milestones remain blocked
+by their planned categories, tracked in #2370.
+
+| Category | Passed | Failed | Skipped |
+|---|---:|---:|---:|
+| input-core | 0 | 9 | 0 |
+| input-devices | 0 | 3 | 0 |
+| startup | 2 | 4 | 0 |
+| composition | 4 | 2 | 0 |
+| stacking | 0 | 5 | 0 |
+| focus | 0 | 9 | 0 |
+| pointer | 0 | 6 | 0 |
+| geometry | 1 | 5 | 0 |
+| lifecycle | 2 | 7 | 0 |
+| recovery | 0 | 5 | 0 |
+| clipboard | 0 | 6 | 0 |
+| liveness | 0 | 5 | 0 |
+| performance | 0 | 7 | 0 |
+| **Total** | **9** | **73** | **0** |
+
+Memory reclamation failed: free pages fell from 84915 to 84833, an 82-page loss
+against the unchanged 48-page allowance (#2366). Missing input, epoch, completion
+history and clipboard interfaces remain #2367; presentation/update failures remain
+#2365. Minor refinements remain #2369. The manifest table check reported only the
+inherited BreenGL title mismatch (#2364), with no window-manager mismatch.
+
+Serial SHA-256: `38106664b610bb5c22195b20ac9e515e12d37a9d86475912daa22e9239c76358`.
