@@ -782,13 +782,66 @@ impl Desktop {
         })?;
         c.clear()?;
         let w = c.info()?;
-        self.pointer(w.x + 20, w.y + 20, 1, 0)?;
+        // W30: raising a different client can cover the old fixed (+20,+20)
+        // point. Choose exposed content from the current stack, including the
+        // higher clients' chrome, before requiring positive target delivery.
+        let stack = listed()?;
+        let left = w.x.max(0);
+        let top = w.y.max(28 * self.scale);
+        let right = (w.x + w.width as i32).min(self.width as i32);
+        let bottom = (w.y + w.height as i32).min(self.height as i32 - 36 * self.scale);
+        let covers: Vec<_> = stack
+            .iter()
+            .filter(|other| {
+                (other.z, other.id) > (w.z, w.id)
+                    && other.flags & abi::win_flags::VISIBLE != 0
+                    && other.flags & abi::win_flags::MINIMIZED == 0
+            })
+            .map(|other| {
+                let border = if other.title.first() == Some(&1) {
+                    0
+                } else {
+                    2 * self.scale
+                };
+                let title = if border == 0 { 0 } else { 34 * self.scale };
+                (
+                    other.x - border,
+                    other.y - title,
+                    other.x + other.width as i32 + border,
+                    other.y + other.height as i32 + border,
+                )
+            })
+            .collect();
+        let mut xs = vec![w.x + 20, left, right - 1];
+        let mut ys = vec![w.y + 20, top, bottom - 1];
+        for &(x0, y0, x1, y1) in &covers {
+            xs.extend([x0 - 1, x1]);
+            ys.extend([y0 - 1, y1]);
+        }
+        let (x, y) = ys
+            .iter()
+            .find_map(|&y| {
+                xs.iter()
+                    .copied()
+                    .find(|&x| {
+                        x >= left
+                            && x < right
+                            && y >= top
+                            && y < bottom
+                            && !covers
+                                .iter()
+                                .any(|&(x0, y0, x1, y1)| x >= x0 && x < x1 && y >= y0 && y < y1)
+                    })
+                    .map(|x| (x, y))
+            })
+            .ok_or("focus fixture target has no exposed content")?;
+        self.pointer(x, y, 1, 0)?;
         let pressed = c.await_event("positive click delivery to target client", |e| {
             e.kind == abi::event_kind::POINTER_BUTTON && e.pressed == 1
         });
         // Release even when the prerequisite failed, so the next case cannot
         // inherit a held hardware button. Fast clicks have their own case.
-        let released = self.pointer(w.x + 20, w.y + 20, 0, 0);
+        let released = self.pointer(x, y, 0, 0);
         pressed?;
         released?;
         Ok(())
