@@ -98,6 +98,55 @@ impl TextField {
         self.redraw = true;
         true
     }
+    /// Handle keys for a field in a registered window, including the desktop's
+    /// kernel clipboard. Clipboard failures preserve the text and selection.
+    /// Callers can report the returned error alongside their other window errors.
+    pub fn key_with_clipboard(
+        &mut self,
+        input: &KeyInput<'_>,
+        window_id: u64,
+    ) -> Result<WidgetEvent, libbreenix::error::Error> {
+        use libbreenix::window::{self, abi, abi::Plain};
+        use libbreenix::{errno::Errno, error::Error};
+        self.redraw = false;
+        if !self.focused || !self.enabled || !input.ctrl || input.alt || input.key != Key::Char {
+            return Ok(self.key(input));
+        }
+        match input.text {
+            "c" | "C" | "\u{3}" => {
+                if self.selection().is_some() {
+                    let text = self.selected_text();
+                    let mut set = abi::ClipboardSet::ZERO;
+                    set.id = window_id;
+                    set.ptr = text.as_ptr() as u64;
+                    set.len = text.len() as u64;
+                    set.mime = abi::CLIPBOARD_TEXT_UTF8;
+                    window::call(abi::op::CLIPBOARD_SET, &mut set)?;
+                }
+            }
+            "v" | "V" | "\u{16}" => {
+                let mut get = abi::ClipboardGet::ZERO;
+                get.id = window_id;
+                get.mime = abi::CLIPBOARD_TEXT_UTF8;
+                window::call(abi::op::CLIPBOARD_GET, &mut get)?;
+                if get.len > abi::CLIPBOARD_MAX_BYTES {
+                    return Err(Error::Os(Errno::EIO));
+                }
+                let mut bytes = alloc::vec::Vec::new();
+                bytes.try_reserve_exact(get.len as usize)
+                    .map_err(|_| Error::Os(Errno::ENOMEM))?;
+                bytes.resize(get.len as usize, 0);
+                get.dst = bytes.as_mut_ptr() as u64;
+                get.capacity = bytes.len() as u64;
+                // Keep the query's serial, including for an empty generation.
+                window::call(abi::op::CLIPBOARD_GET, &mut get)?;
+                let text = core::str::from_utf8(&bytes).map_err(|_| Error::Os(Errno::EIO))?;
+                self.insert_str(text);
+            }
+            _ => return Ok(self.key(input)),
+        }
+        Ok(WidgetEvent::None)
+    }
     pub fn key(&mut self, input: &KeyInput<'_>) -> WidgetEvent {
         self.redraw = false;
         if !self.focused || !self.enabled {
