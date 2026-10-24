@@ -47,6 +47,23 @@ class ShutdownTest(sessions.existing.StateTest):
         self.assertIsNone(d.requested_reset_at)
         d.event.assert_any_call('requested-reboot-ready', observed_at=132, commit=d.args.commit)
 
+    def test_new_slot_receipt_survives_a_late_reset_observation(self):
+        d = self.driver
+        d.args.mode, d.args.payload = 'persistent', 'persistent'
+        d.seen.add('manager-slot')
+        for mount in ('home', 'root'):
+            d.on_line('[shutdown] ' + mount + ' clean read-only', observed_at=110)
+        d.on_line('[shutdown] requested reboot token=' + d.shutdown_token, observed_at=111)
+        self.assertNotIn('manager-slot', d.seen)
+        # The new manager has already validated the selected slot before the
+        # bootloader banner supplies the first reset observation.
+        d.seen.add('manager-slot')
+        d.on_reset(120)
+        self.assertIn('manager-slot', d.seen)
+        d.kernel_started = 121
+        d.on_line('bsshd: listening on 0.0.0.0:22', observed_at=122)
+        self.assertIsNone(d.requested_reset_at)
+
     def test_receipt_is_scoped_to_the_kernel_boot(self):
         d = self.driver
         first = d.shutdown_token

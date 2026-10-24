@@ -1083,6 +1083,8 @@ class Driver:
             request = re.fullmatch(r'\[shutdown\] requested (reboot|poweroff) token=([a-f0-9]{64})', line)
             if request and self.shutdown_token is not None and hmac.compare_digest(request[2], self.shutdown_token) and self.clean_mounts == {'home', 'root'}:
                 self.shutdown_action = request[1]
+                if request[1] == 'reboot':
+                    self.seen.discard('manager-slot')
                 self.event('requested-shutdown', observed_at=observed_at, action=request[1])
                 if request[1] == 'poweroff':
                     raise Finish(m.EXIT_DONE, 'the kernel requested power-off after clean shutdown')
@@ -1579,7 +1581,6 @@ class Driver:
             self.requested_reset_at = observed_at
             self.shutdown_action = None
             self.clean_mounts.clear()
-            self.seen.discard('manager-slot')
             self.seen.discard('bootloader')
         if self.args.inject == 'panic-reboot' and self.fatal_at is not None:
             self.event('panic-reset-observed', observed_at=observed_at)
