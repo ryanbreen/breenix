@@ -1704,3 +1704,8 @@ erase, kill-line and newline recovery.
 The shared discipline is also measured by terminals `termios/canonical-limit`,
 and signals `waits/console-read-signals` observes blocked console and VT readers
 before sending TERM (default, ignored, caught and restarting) and KILL.
+
+A manifest may list `plannedCases` for target-specific catch-up. Each entry has
+`category`, `id`, `title`, `targets` (unique known target IDs) and `reason`. Its
+category must exist, and its ID must not also occur in that category's executable
+`cases`. Planned entries are excluded from executable inventories and counts.

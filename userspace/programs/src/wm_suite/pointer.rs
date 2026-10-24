@@ -113,12 +113,28 @@ pub fn capture_target_closes() -> CaseResult {
     })?;
     let p = a.info()?;
     d.pointer(p.x + 20, p.y + 20, 0, 0)?;
-    a.snapshot()?;
+    d.pointer(p.x + 60, p.y + 60, 0, 0)?;
+    a.await_event(
+        "later pointer motion proves orphan release was processed",
+        |e| e.kind == kind::POINTER_MOVE && e.x == 60 && e.y == 60,
+    )?;
     check(
         !a.events
             .iter()
             .any(|e| e.kind == kind::POINTER_BUTTON && e.pressed == 0),
         "orphaned capture released into different client",
+    )?;
+    d.click(p.x + 60, p.y + 60)?;
+    a.await_event("fresh capture on surviving client releases", |e| {
+        e.kind == kind::POINTER_BUTTON && e.pressed == 0
+    })?;
+    check(
+        a.events
+            .iter()
+            .filter(|e| e.kind == kind::POINTER_BUTTON && e.pressed == 0)
+            .count()
+            == 1,
+        "surviving client received an extra release",
     )
 }
 pub fn scroll_wakes() -> CaseResult {

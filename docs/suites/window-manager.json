@@ -163,35 +163,27 @@
         },
         {
           "id": "hid-keyboard-decode",
-          "title": "Recorded USB boot-keyboard reports decode to the literal expected events."
+          "title": "Literal USB boot-keyboard reports decode to the literal expected events."
         },
         {
           "id": "hid-rollover",
           "title": "Six-key rollover and phantom-state reports decode as the contract says."
         },
         {
-          "id": "hid-tablet-parallels",
-          "title": "Recorded Parallels tablet reports decode to the expected pointer events."
-        },
-        {
-          "id": "hid-tablet-vmware",
-          "title": "Recorded VMware tablet reports, including merged endpoints, decode correctly."
-        },
-        {
           "id": "hid-relative",
-          "title": "Recorded relative-mouse reports decode to relative motion."
+          "title": "Literal relative-mouse reports decode to relative motion."
         },
         {
           "id": "hid-wheel",
-          "title": "Recorded wheel reports decode to wheel events."
+          "title": "Literal wheel reports decode to wheel events."
         },
         {
           "id": "virtio-keyboard-decode",
-          "title": "Recorded virtio-input key events decode to the same core events."
+          "title": "Literal virtio-input key events decode to the same core events."
         },
         {
           "id": "virtio-tablet-decode",
-          "title": "Recorded virtio-input absolute, button and wheel events decode correctly."
+          "title": "Literal virtio-input absolute, button and wheel events decode correctly."
         },
         {
           "id": "replay-wake-fault",
@@ -1096,6 +1088,26 @@
           "title": "Eighteen measured 64 KiB transfers between programs each finish within 50 ms"
         }
       ]
+    }
+  ],
+  "plannedCases": [
+    {
+      "category": "input-devices",
+      "id": "hid-tablet-parallels",
+      "title": "Recorded Parallels tablet reports decode to the expected pointer events.",
+      "targets": [
+        "parallels"
+      ],
+      "reason": "W8 catch-up requires real hypervisor descriptor and report captures."
+    },
+    {
+      "category": "input-devices",
+      "id": "hid-tablet-vmware",
+      "title": "Recorded VMware tablet reports, including merged endpoints, decode correctly.",
+      "targets": [
+        "vmware"
+      ],
+      "reason": "W8 catch-up requires real hypervisor descriptor and report captures."
     }
   ]
 }

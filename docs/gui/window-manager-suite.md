@@ -89,8 +89,8 @@ all replay operations return ENOSYS in shell, desktop, probe and program boots.
 Root alone never enables replay. It is a named input control in the section 11
 point table, covered by the section 3.4 production absence and latch checks;
 `breengel/isolation/test-hooks-absent` must include its entry point before any
-implementation lands. This PR specifies a client for an absent endpoint and adds
-no kernel endpoint or input injection authority. A 64-byte
+implementation lands. The suite client requires the production endpoint; the client adds no kernel
+endpoint or input injection authority. A 64-byte
 request asks the *bound instance's production completion function* to consume a recorded
 report and use its production requeue path. Selector u32 at 0 is 1 keyboard or 2 pointer;
 bit 8 suppresses input::report once. Bytes 8..15 hold the USB boot-keyboard A report
@@ -130,6 +130,13 @@ bytes. Its 16-byte reply is four i32s: raw X, raw Y, merged buttons and wheel.
 Reset-state is 1 only for the capture's first report; subsequent reports retain
 the real endpoint merger state. Decoder tests assert the literal result rather than
 transport success. A missing implementation fails by endpoint name.
+
+Boot-keyboard selector 3 is 16 bytes: selector u32, reset-state u32, then the
+literal eight-byte boot report. Its reply starts with phantom u32 (0 or 1) and
+edge-count u32 (at most 32), then that many eight-byte kind u16, code u16,
+value i32 records. Reset is 1 on the first report only; rollover and release
+reports use the same production decoder state. These inputs are hand-written
+literal vectors, not recordings. Relative-mouse and wheel vectors use selector 2.
 
 `/proc/breenix/input-devices` snapshots bound input device rows as decimal id,
 driver name and whitespace-separated capability tokens. The ARM64 QEMU names are
@@ -171,18 +178,19 @@ no in-suite clipboard store or host-staged result.
 
 ## W12 recount
 
-The plan's 249 identifiers become **248 E18 identifiers** after
-`input-devices/ps2-scancodes` moves to the x86 hardware suite. The five existing
+The plan's 249 identifiers become **246 ARM64 E18 identifiers** after
+`input-devices/ps2-scancodes` moves to the x86 hardware suite and the two
+recorded hypervisor tablet cases remain planned W8 catch-up. The five existing
 extra controls remain additional: input-core/virtual-keyboard and
 virtual-pointer, startup/desktop-control and independent-clients, and
-composition/oracle-corruption. The completed table therefore has 253 cases.
-HID decoder cases exercise recorded layouts; Parallels/VMware bound completion
+composition/oracle-corruption. The completed table therefore has 251 cases.
+HID decoder cases exercise literal layouts; Parallels/VMware recorded tablet and bound completion
 rows and boots remain the W8 catch-up, not ARM64 execution evidence.
 
 | Category | Planned after W12 | Extra controls | Runnable target |
 |---|---:|---:|---:|
 | input-core | 31 | 2 | 33 |
-| input-devices | 14 | 0 | 14 |
+| input-devices | 12 | 0 | 12 |
 | startup | 12 | 2 | 14 |
 | composition | 27 | 1 | 28 |
 | stacking | 19 | 0 | 19 |
@@ -194,7 +202,7 @@ rows and boots remain the W8 catch-up, not ARM64 execution evidence.
 | clipboard | 16 | 0 | 16 |
 | liveness | 12 | 0 | 12 |
 | performance | 7 | 0 | 7 |
-| Total | 248 | 5 | 253 |
+| Total | 246 | 5 | 251 |
 
 Changed assertions, with their identifiers retained:
 
@@ -215,17 +223,19 @@ pass a native scanout assertion. Runtime verdict evidence and the missing record
 
 ## Executable W12 inventory
 
-The table contains the 248 retained plan identifiers and five additional controls,
-253 cases in thirteen categories. The former planned remaining categories are
+The table contains the 246 ARM64 plan identifiers and five additional controls,
+251 cases in thirteen categories. The former planned remaining categories are
 removed only because their identifiers now have executable case bodies. Runtime
 failure, including a missing recorded fixture or production endpoint, is still
 failure; an executable inventory does not establish E18 acceptance.
 
-The two target tablet decoder cases need captured descriptors and reports under
-`/usr/share/breenix/input-fixtures/parallels.txt` and `vmware.txt`. The image builder installs them from `testdata/input/`. Those recordings
-are not available in this change. Missing recordings are harness blockers; they
-must be supplied before lane acceptance, not generated from another target's
-layout or replaced by synthetic reports.
+The two tablet cases remain in the manifest's `plannedCases`, scoped to
+`parallels` and `vmware` respectively. They are absent from the executable ARM64
+inventory and its 251-case count. The W8 catch-up needs genuine descriptors and
+reports in `/usr/share/breenix/input-fixtures/parallels.txt` and `vmware.txt`,
+installed by the image builder from `testdata/input/`. Missing captures block
+that catch-up; lane 0's ARM64 run excludes the 2/2 planned tablet cases.
+Synthetic layouts cannot substitute for recorded hypervisor captures.
 
 Each non-comment fixture line is seven whitespace-separated fields: decimal
 endpoint id, descriptor hex, report hex, expected raw X, raw Y, merged button
@@ -327,13 +337,15 @@ never-read-events continues servicing commands without draining the window fd.
 
 ## Fixed scene hash
 
-`composition/scene-identical` uses the scale-2 2560x1600 mode and exactly three
-windows: a normal seed-11 client, a small seed-23 chromeless client and a mode-sized
-seed-41 chromeless client. The last window covers both earlier windows and both
-bars under W10. The arrow is at (2559,1599), clipped to its black tip. The expected
-whole image is the seed-41 quadrant formula, except that final opaque black pixel.
-FNV-1a over canonical B,G,R,FF bytes is `aa15277dfb38ce7d`, derived from that literal
-formula before observing bwm. The case compares 4096000 of 4096000 mode pixels with the formula. <!-- claim-lint:ok: userspace/programs/src/wm_suite/composition.rs scene_identical loops over the required 2560x1600 mode. -->
+`composition/scene-identical` uses three nested chromeless windows, sized
+480x320, 320x240 and 160x120, with seeds 11, 23 and 41. The 3/3 windows contribute
+visible pixels. Each is horizontally centered at one fifth of the native mode's
+height. The case verifies these positions, stacking and completed provenance,
+then compares 153600/153600 pixels of their 480x320 bounding rectangle with independently
+annotated literal palettes. The pointer is parked outside the rectangle.
+FNV-1a over canonical B,G,R,FF bytes of that rectangle is
+`3d35eb8722259f25`. The fixed crop makes the pinned hash independent of native
+resolution and UI scale; the desktop outside this scene has its own pixel cases.
 
 The text-field clipboard cases embed the real libbui TextField in wm-client_test
 and pass bwm-delivered Ctrl+C/Ctrl+V into its production key handler. The fixture
@@ -345,8 +357,8 @@ Case configuration files live in a per-process guest configuration root selected
 by BREENIX_CONFIG_ROOT. Killing a timed-out case cannot alter the next case's
 bwm.conf or hotkeys.conf. Clipboard notice delivery ids and stored change serials
 are distinct under W4: the case waits for the notice kind, then checks GET's
-change serial and bytes. The fixed scene waits for a later completed pointer
-frame before evaluating its formula and hash.
+change serial and bytes. The fixed scene judges the 3/3 completed client commits before evaluating its
+literal pixels and pinned hash.
 
 
 The startup command's final u32 packs initial physical width in bits 0-15 and

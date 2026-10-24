@@ -306,24 +306,69 @@ pub fn uinput_nonroot() -> CaseResult {
     })
 }
 pub fn abi_layout() -> CaseResult {
-    use input_abi::Event;
-    check(
-        core::mem::size_of::<Event>() == 32,
-        "input event size differs from 32",
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    let mut stream =
+        std::fs::File::open("/dev/input/events").map_err(|e| format!("input ABI stream: {e}"))?;
+    let mut device = Virtual::create()?;
+    let stamp = 0x0102030405060708u64;
+    device.batch(&[(1, 30, 1), (1, 30, 0)], stamp)?;
+    let mut records = Vec::new();
+    until(
+        1000,
+        "kernel emits three literal 32-byte ABI records",
+        || {
+            let mut poll = [libbreenix::io::PollFd {
+                fd: stream.as_raw_fd(),
+                events: 1,
+                revents: 0,
+            }];
+            libbreenix::io::poll(&mut poll, 10).map_err(|e| e.to_string())?;
+            if poll[0].revents & 1 == 0 {
+                return Ok(false);
+            }
+            let mut bytes = [0; 32768];
+            let n = stream.read(&mut bytes).map_err(|e| e.to_string())?;
+            if n == 0 || n % 32 != 0 {
+                return Err("kernel returned a partial ABI record".into());
+            }
+            for raw in bytes[..n].chunks_exact(32) {
+                if u32::from_le_bytes(raw[16..20].try_into().unwrap()) == device.id {
+                    records.push(raw.to_vec());
+                }
+            }
+            Ok(records.len() >= 3)
+        },
     )?;
     check(
-        [
-            core::mem::offset_of!(Event, serial),
-            core::mem::offset_of!(Event, time_ns),
-            core::mem::offset_of!(Event, device),
-            core::mem::offset_of!(Event, kind),
-            core::mem::offset_of!(Event, code),
-            core::mem::offset_of!(Event, value),
-            core::mem::offset_of!(Event, flags),
-        ] == [0, 8, 16, 20, 22, 24, 28],
-        "input ABI offsets differ from literal contract",
-    )
+        records.len() == 3,
+        "key batch did not emit exactly three ABI records",
+    )?;
+    let mut previous = 0;
+    for (raw, (kind, code, value)) in
+        records
+            .iter()
+            .zip([(1u16, 30u16, 1i32), (1, 30, 0), (0, 0, 0)])
+    {
+        let serial = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+        check(
+            serial > previous,
+            "serial at literal ABI offset 0 did not increase",
+        )?;
+        previous = serial;
+        check(
+            raw[8..16] == stamp.to_le_bytes()
+                && raw[16..20] == device.id.to_le_bytes()
+                && raw[20..22] == kind.to_le_bytes()
+                && raw[22..24] == code.to_le_bytes()
+                && raw[24..28] == value.to_le_bytes()
+                && raw[28..32] == [0; 4],
+            "kernel wire bytes differ from the literal size and field offsets",
+        )?;
+    }
+    Ok(())
 }
+
 pub fn key_press_release() -> CaseResult {
     let mut stream = Stream::open()?;
     let mut device = Virtual::create()?;

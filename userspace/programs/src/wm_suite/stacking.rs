@@ -166,8 +166,11 @@ pub fn fkeys_skip_minimized() -> CaseResult {
     d.focus(&mut b)?;
     a.clear()?;
     b.clear()?;
-    hostkeys("f1")?;
-    b.snapshot()?;
+    // A key behind F1 on the same keyboard is a positive routing barrier.
+    hostkeys("f1,a")?;
+    b.await_event("key following F1 reaches the eligible client", |e| {
+        e.kind == kind::KEY_PRESS && e.keycode == 30
+    })?;
     a.snapshot()?;
     check(
         !focused(&a)? && focused(&b)? && !a.events.iter().any(|e| e.kind == kind::FOCUS_GAINED),

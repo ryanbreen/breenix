@@ -679,9 +679,14 @@ impl Desktop {
                 Ok(n) => out.extend_from_slice(&b[..n]),
             }
         }
-        if self.output.len() < 65536 {
-            self.output
-                .push_str(&String::from_utf8_lossy(&out).replace(['\n', '\r'], " "));
+        self.output
+            .push_str(&String::from_utf8_lossy(&out).replace(['\n', '\r'], " "));
+        if self.output.len() > 65536 {
+            let mut at = self.output.len() - 65536;
+            while !self.output.is_char_boundary(at) {
+                at += 1;
+            }
+            self.output.drain(..at);
         }
         self.output.clone()
     }
@@ -700,6 +705,7 @@ impl Desktop {
             }
             Ok(Screen::read().is_ok_and(|s| s.contains(c.id, c.frame_commit)))
         })
+        .map_err(|e| format!("{e}; {}", self.output()))
     }
     pub fn shown_after(&mut self, c: &Client, commit: u64) -> Result<Screen, String> {
         let mut result = None;
@@ -764,10 +770,6 @@ impl Desktop {
         time::sleep_ms(100).map_err(|e| e.to_string())
     }
     pub fn focus(&mut self, c: &mut Client) -> Result<(), String> {
-        let marker = format!("[bwm] composited client frame: window {} on screen,", c.id);
-        if !self.output().contains(&marker) {
-            self.client_ready(c)?;
-        }
         until(2000, "bwm assigned client geometry", || {
             let w = c.info()?;
             Ok(w.x > 0 && w.y > 0)

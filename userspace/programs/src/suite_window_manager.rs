@@ -1,7 +1,3 @@
-#[path = "../../../kernel/src/drivers/hid_boot/report.rs"]
-pub mod hid_keyboard;
-#[path = "../../../kernel/src/drivers/hid_boot/pointer.rs"]
-pub mod hid_pointer;
 // E18: real bwm, independent GPU clients and device-backed scanout observation.
 #[path = "wm_suite/clipboard.rs"]
 mod clipboard;
@@ -86,14 +82,12 @@ static SUITE: Suite = suite("window-manager", "Window manager", &[
         case("keyboard-completion-path", "The bound keyboard completion reports, wakes bwm, delivers A and rearms", input_devices::keyboard_completion),
         case("pointer-completion-path", "The bound pointer completion reports, wakes bwm, delivers motion and rearms", input_devices::pointer_completion),
         case("replay-report-fault", "Suppressing the production report loses the event after a positive delivery", input_devices::replay_faults),
-        case("hid-keyboard-decode", "Recorded USB boot-keyboard reports decode to the literal expected events.", input_devices::hid_keyboard_decode),
+        case("hid-keyboard-decode", "Literal USB boot-keyboard reports decode to the literal expected events.", input_devices::hid_keyboard_decode),
         case("hid-rollover", "Six-key rollover and phantom-state reports decode as the contract says.", input_devices::hid_rollover),
-        case("hid-tablet-parallels", "Recorded Parallels tablet reports decode to the expected pointer events.", input_devices::hid_tablet_parallels),
-        case("hid-tablet-vmware", "Recorded VMware tablet reports, including merged endpoints, decode correctly.", input_devices::hid_tablet_vmware),
-        case("hid-relative", "Recorded relative-mouse reports decode to relative motion.", input_devices::hid_relative),
-        case("hid-wheel", "Recorded wheel reports decode to wheel events.", input_devices::hid_wheel),
-        case("virtio-keyboard-decode", "Recorded virtio-input key events decode to the same core events.", input_devices::virtio_keyboard_decode),
-        case("virtio-tablet-decode", "Recorded virtio-input absolute, button and wheel events decode correctly.", input_devices::virtio_tablet_decode),
+        case("hid-relative", "Literal relative-mouse reports decode to relative motion.", input_devices::hid_relative),
+        case("hid-wheel", "Literal wheel reports decode to wheel events.", input_devices::hid_wheel),
+        case("virtio-keyboard-decode", "Literal virtio-input key events decode to the same core events.", input_devices::virtio_keyboard_decode),
+        case("virtio-tablet-decode", "Literal virtio-input absolute, button and wheel events decode correctly.", input_devices::virtio_tablet_decode),
         case("replay-wake-fault", "With the wake skipped, the idle compositor's wake is missing, and the case says so.", input_devices::replay_wake_fault),
         case("devices-bound", "This target binds exactly the keyboard and pointer drivers its row of the coverage map names, by name.", input_devices::devices_bound),
         case("device-capabilities", "Each bound device reports the capabilities its driver declares.", input_devices::device_capabilities),

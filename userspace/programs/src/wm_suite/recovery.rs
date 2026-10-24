@@ -233,12 +233,28 @@ pub fn death_mid_capture() -> CaseResult {
     c.clear()?;
     next.pointer(w.x + w.width as i32 + 100, w.y + 40, 1, 0)?;
     next.pointer(w.x + w.width as i32 + 100, w.y + 40, 0, 0)?;
-    c.snapshot()?;
+    // Wait for a later motion on the same device before inspecting release delivery.
+    next.pointer(w.x + 60, w.y + 60, 0, 0)?;
+    c.await_event("post-restart pointer motion after outside release", |e| {
+        e.kind == kind::POINTER_MOVE && e.x == 60 && e.y == 60
+    })?;
     check(
         !c.events
             .iter()
             .any(|e| e.kind == kind::POINTER_BUTTON && e.pressed == 0),
         "restart inherited dead compositor capture",
+    )?;
+    next.click(w.x + 60, w.y + 60)?;
+    c.await_event("fresh capture releases after restart", |e| {
+        e.kind == kind::POINTER_BUTTON && e.pressed == 0
+    })?;
+    check(
+        c.events
+            .iter()
+            .filter(|e| e.kind == kind::POINTER_BUTTON && e.pressed == 0)
+            .count()
+            == 1,
+        "fresh capture must release exactly once",
     )
 }
 pub fn focus_restored() -> CaseResult {

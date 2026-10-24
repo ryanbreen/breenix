@@ -11,20 +11,17 @@ pub(super) fn placed(c: &Client) -> Result<(), String> {
 }
 
 pub(super) fn one() -> Result<(Desktop, Client), String> {
-    let mut d = Desktop::start()?;
+    let d = Desktop::start()?;
     let c = Client::start(11)?;
     placed(&c)?;
-    d.client_ready(&c)?;
     Ok((d, c))
 }
 pub(super) fn twin() -> Result<(Desktop, Client, Client), String> {
-    let mut d = Desktop::start()?;
+    let d = Desktop::start()?;
     let a = Client::start(11)?;
     placed(&a)?;
-    d.client_ready(&a)?;
     let b = Client::start(23)?;
     placed(&b)?;
-    d.client_ready(&b)?;
     Ok((d, a, b))
 }
 pub(super) fn key(c: &mut Client, chords: &str, code: u32) -> Result<abi::WindowEvent, String> {
@@ -541,7 +538,7 @@ pub(super) struct AddressLimit {
     previous: [u64; 2],
 }
 impl AddressLimit {
-    pub(super) fn near_current(pid: i32) -> Result<Self, String> {
+    pub(super) fn new(pid: i32, extra: u64) -> Result<Self, String> {
         let text =
             std::fs::read_to_string(format!("/proc/{pid}/status")).map_err(|e| e.to_string())?;
         let mapped = text
@@ -564,7 +561,7 @@ impl AddressLimit {
         if r < 0 {
             return Err(format!("query client RLIMIT_AS errno {}", -r));
         }
-        let limit = [mapped + 128 * 1024, previous[1]];
+        let limit = [mapped + extra, previous[1]];
         let r = unsafe {
             libbreenix::syscall::raw::syscall4(
                 libbreenix::syscall::nr::PRLIMIT64,

@@ -129,6 +129,8 @@ pub fn config_invalid() -> CaseResult {
         out.contains("bwm.conf") && out.to_ascii_lowercase().contains("error"),
         "malformed configuration was not reported",
     )?;
+    // The scanned rectangle excludes the rightmost 80 pixels, including this cursor.
+    parked(&d)?;
     let s = Screen::read()?;
     let mut visible = 0;
     for y in 28 * d.scale..d.height as i32 - 36 * d.scale {
@@ -178,7 +180,30 @@ pub fn composited_marker() -> CaseResult {
         !d.output().contains("[bwm] composited client frame:"),
         "bwm announced an unregistered client's frame",
     )?;
+    use libbreenix::test_control as tc;
+    let point = abi::tc_point::COMPOSITE_STALL;
+    let before = tc::fired(point)?;
+    tc::arm(point, c.id, 0)?;
     c.command(REGISTER, 0, 0)?;
+    until(
+        1000,
+        "first client composite paused before backend submission",
+        || {
+            if d.output().contains("[bwm] composited client frame:") {
+                return Err("client marker appeared before backend composite".into());
+            }
+            Ok(tc::fired(point).map_err(|e| e.to_string())? == before + 1)
+        },
+    )?;
+    check(
+        !Screen::read()?.contains(c.id, c.frame_commit),
+        "paused first composite already appeared in completed scanout",
+    )?;
+    check(
+        !d.output().contains("[bwm] composited client frame:"),
+        "client marker appeared while its first composite was paused",
+    )?;
+    tc::arm(abi::tc_point::RELEASE_STALL, 0, 0)?;
     d.client_ready(&c)?;
     d.shown(&c)?.client(&c)
 }

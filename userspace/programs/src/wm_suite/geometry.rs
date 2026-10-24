@@ -20,25 +20,67 @@ pub fn resize_refused() -> CaseResult {
     let (mut d, mut c) = one()?;
     let w = c.info()?;
     c.clear()?;
-    let _limit = AddressLimit::near_current(c.child.pid)?;
+    let target = (w.width + 800, w.height);
+    // Window backing uses a 256-byte row pitch (also a valid multiple of
+    // VMware's packed pitch here) and three page-rounded buffers.
+    let bytes =
+        ((target.0 as u64 * 4).next_multiple_of(256) * target.1 as u64).next_multiple_of(4096) * 3;
+    {
+        let _limit = AddressLimit::new(c.child.pid, bytes)?;
+        c.command(RESIZE, target.0, target.1)?;
+        check(
+            (c.info()?.width, c.info()?.height) == target,
+            "same owner resize did not succeed one page above the refusal limit",
+        )?;
+    }
+    c.command(RESIZE, w.width, w.height)?;
+    content(&mut d, &c)?;
+    c.clear()?;
+    {
+        let _limit = AddressLimit::new(c.child.pid, bytes - 4096)?;
+        drag(
+            &d,
+            (w.x + w.width as i32 + 1, w.y + 70),
+            (w.x + target.0 as i32 + 1, w.y + 70),
+        )?;
+        let request = c.await_event("constrained owner receives resize request", |e| {
+            e.kind == kind::RESIZE_REQUESTED
+        })?;
+        check(
+            (request.width, request.height) == target,
+            "constrained resize differs from the successful precondition",
+        )?;
+        c.await_event("RLIMIT_AS refusal reports ResizeFailed", |e| {
+            e.kind == kind::RESIZE_FAILED && e.width == w.width && e.height == w.height
+        })?;
+        check(
+            (c.info()?.x, c.info()?.y, c.info()?.width, c.info()?.height)
+                == (w.x, w.y, w.width, w.height),
+            "failed allocation changed retained frame geometry",
+        )?;
+        content(&mut d, &c)?;
+    }
+    // An owner ignoring ResizeRequested is a separate retained-frame path.
+    c.command(REFUSE, 1, 0)?;
+    c.clear()?;
     drag(
         &d,
         (w.x + w.width as i32 + 1, w.y + 70),
-        (w.x + w.width as i32 + 801, w.y + 70),
+        (w.x + w.width as i32 + 61, w.y + 70),
     )?;
-    c.await_event("constrained owner receives resize request", |e| {
+    c.await_event("ignoring owner receives ResizeRequested", |e| {
         e.kind == kind::RESIZE_REQUESTED
     })?;
-    c.await_event("RLIMIT_AS refusal reports ResizeFailed", |e| {
-        e.kind == kind::RESIZE_FAILED && e.width == w.width && e.height == w.height
-    })?;
+    c.command(REFUSE, 0, 0)?;
     check(
-        (c.info()?.x, c.info()?.y, c.info()?.width, c.info()?.height)
-            == (w.x, w.y, w.width, w.height),
-        "failed allocation changed retained frame geometry",
+        (c.info()?.width, c.info()?.height) == (w.width, w.height),
+        "ignored ResizeRequested changed owner geometry",
     )?;
+    content(&mut d, &c)?;
+    c.command(RESIZE, target.0, target.1)?;
     content(&mut d, &c)
 }
+
 pub fn resize_cross() -> CaseResult {
     let (mut d, mut c) = one()?;
     let w = c.info()?;

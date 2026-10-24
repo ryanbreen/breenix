@@ -485,7 +485,10 @@ fn run(
                         return Err("SIGSEGV did not terminate crash-after client".into());
                     }
                     if let Some(field) = field.as_mut() {
-                        if e.kind == abi::event_kind::KEY_PRESS || e.kind == abi::event_kind::TEXT {
+                        if e.kind == abi::event_kind::TEXT
+                            || (e.kind == abi::event_kind::KEY_PRESS
+                                && e.modifiers & abi::modifier::CTRL != 0)
+                        {
                             let text =
                                 std::str::from_utf8(&e.text[..(e.text_len as usize).min(240)])
                                     .map_err(|e| e.to_string())?;

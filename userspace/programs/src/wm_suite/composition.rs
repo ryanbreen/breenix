@@ -510,61 +510,82 @@ pub fn no_fps_overlay() -> CaseResult {
     Ok(())
 }
 
-/// A fixed three-window W10 scene: one normal client, one small chromeless
-/// client and one mode-sized chromeless client above both. The full-mode
-/// pattern covers the desktop; the arrow at the last pixel is clipped to its tip.
+/// The 3/3 nested chromeless windows contribute visible pixels to a fixed
+/// 480x320 scene. Hash its canonical B,G,R,FF crop so mode and UI scale do not
+/// change the pinned value. Placement, provenance and 153600/153600 crop pixels are checked.
 pub fn scene_identical() -> CaseResult {
     let mut d = Desktop::start()?;
+    let mut clients = Vec::new();
+    for (seed, width, height) in [(11, 480, 320), (23, 320, 240), (41, 160, 120)] {
+        let mut c = Client::start_mode(
+            seed,
+            flags::CHROMELESS | flags::IGNORE_CLOSE | flags::NEVER_READ | flags::UNREGISTERED,
+        )?;
+        c.command(RESIZE, width, height)?;
+        c.command(REGISTER, 0, 0)?;
+        d.client_ready(&c)?;
+        clients.push(c);
+    }
+    parked(&d)?;
+    let s = d.shown(&clients[2])?;
     check(
-        (d.width, d.height, d.scale) == (2560, 1600, 2),
-        "pinned scene requires the contract scale-2 mode",
+        listed()?.len() == 3,
+        "fixed scene must contain exactly three windows",
     )?;
-    let a = Client::start(11)?;
-    d.client_ready(&a)?;
-    let mut b = Client::start_mode(
-        23,
-        flags::CHROMELESS | flags::IGNORE_CLOSE | flags::NEVER_READ,
-    )?;
-    d.client_ready(&b)?;
-    b.create_window(41, d.width, d.height, 3)?;
-    d.client_ready(&b)?;
-    let before = d.shown(&b)?.serial();
-    d.pointer(d.width as i32 - 1, d.height as i32 - 1, 0, 0)?;
-    let mut completed = None;
-    until(2000, "fixed scene cursor commit completed", || {
-        let s = Screen::read()?;
-        if s.serial() > before
-            && s.contains(b.id, b.frame_commit)
-            && s.pixel(d.width as i32 - 1, d.height as i32 - 1)? == 0xff000000
-        {
-            completed = Some(s);
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    })?;
-    let s = completed.unwrap();
-    check(
-        listed()?.len() == 3 && b.info()?.x == 0 && b.info()?.y == 0,
-        "fixed three-window scene has incorrect registry or placement",
-    )?;
-    for y in 0..d.height {
-        for x in 0..d.width {
-            let q = u32::from(x >= d.width / 2) + 2 * u32::from(y >= d.height / 2);
-            let expected = if x == d.width - 1 && y == d.height - 1 {
-                0xff000000
-            } else {
-                pattern(41, q)
-            };
+    for (i, c) in clients.iter().enumerate() {
+        let w = c.info()?;
+        let dims = [(480, 320), (320, 240), (160, 120)][i];
+        check(
+            (w.width, w.height) == dims
+                && w.x == (d.width as i32 - dims.0 as i32) / 2
+                && w.y == d.height as i32 / 5
+                && s.contains(c.id, c.frame_commit),
+            "fixed scene placement, size or completed provenance differs",
+        )?;
+        if i > 0 {
             check(
-                s.pixel(x as i32, y as i32)? == expected,
-                "fixed scene differs from its independent full-mode formula",
+                w.z > clients[i - 1].info()?.z,
+                "fixed scene stacking differs",
             )?;
         }
     }
+    let origin = ((d.width as i32 - 480) / 2, d.height as i32 / 5);
+    // Literal independently annotated palettes; do not call the fixture's formula.
+    let colours: [[u32; 4]; 3] = [
+        [0xff970dbb, 0xffd4381c, 0xff11637d, 0xff4e8ede],
+        [0xff536187, 0xff908ce8, 0xffcdb749, 0xff0ae2aa],
+        [0xffed5fb9, 0xff2a8a1a, 0xff67b57b, 0xffa4e0dc],
+    ];
+    let mut hash = 0xcbf29ce484222325u64;
+    let mut visible = [0usize; 3];
+    for y in 0..320 {
+        for x in 0..480 {
+            let (i, lx, width, height) = if x >= 160 && x < 320 && y < 120 {
+                (2, x - 160, 160, 120)
+            } else if x >= 80 && x < 400 && y < 240 {
+                (1, x - 80, 320, 240)
+            } else {
+                (0, x, 480, 320)
+            };
+            let q = usize::from(lx >= width / 2) + 2 * usize::from(y >= height / 2);
+            let got = s.pixel(origin.0 + x, origin.1 + y)?;
+            check(
+                got == colours[i][q],
+                "fixed scene differs from literal visible window pixels",
+            )?;
+            visible[i] += 1;
+            for byte in got.to_le_bytes() {
+                hash = (hash ^ byte as u64).wrapping_mul(0x100000001b3);
+            }
+        }
+    }
     check(
-        super::scene::hash(&s) == 0xaa15277dfb38ce7d,
-        "fixed three-window scene differs from its pinned FNV-1a hash",
+        visible.iter().all(|n| *n > 0),
+        "a fixed scene window contributes no visible pixels",
+    )?;
+    check(
+        hash == 0x3d35eb8722259f25,
+        "three-window scene differs from its pinned canonical hash",
     )
 }
 

@@ -16,15 +16,6 @@ pub fn background_region(s: &Screen, scale: i32, rect: (i32, i32, i32, i32)) -> 
     Ok(())
 }
 
-pub fn hash(s: &Screen) -> u64 {
-    s.pixels
-        .chunks_exact(4)
-        .flat_map(|b| [b[0], b[1], b[2], 255])
-        .fold(0xcbf29ce484222325u64, |h, b| {
-            (h ^ b as u64).wrapping_mul(0x100000001b3)
-        })
-}
-
 pub fn ttf_text(
     screen: &Screen,
     bytes: &[u8],
