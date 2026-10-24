@@ -466,6 +466,7 @@ STD_BINARIES=(
     "svc"
 
     # Diagnostics
+    "serial-record_test"
     "btrace"
     "usb_pointer_check"
 

@@ -29,6 +29,10 @@ breenish-js = { path = "../../libs/breenish-js" }
 libicon = { path = "../../libs/libicon" }
 
 [[bin]]
+name = "serial-record_test"
+path = "src/serial_record_test.rs"
+
+[[bin]]
 name = "hello_std_real"
 path = "src/hello_std_real.rs"
 
