@@ -111,7 +111,11 @@ fn panel_quiet_window() -> CaseResult { breenix_suite::suite::showcase_check("qu
 // B53: observe the active boot before the stage's display takeover retires it.
 static ACTIVE_RIBBON: std::sync::OnceLock<Result<String,String>> = std::sync::OnceLock::new();
 pub(crate) fn prepare_boot_ribbon() {
-    ACTIVE_RIBBON.get_or_init(|| active_boot_ribbon().map_err(|e|format!("{e:?}")));
+    ACTIVE_RIBBON.get_or_init(|| {
+        let result=active_boot_ribbon().map_err(|e|format!("{e:?}"));
+        let cleanup=libbreenix::test_control::disarm_all().map_err(|e|format!("disarm active ribbon: {e:?}"));
+        result.and_then(|geometry|cleanup.map(|_|geometry))
+    });
 }
 
 fn ribbon_geometry(check:&str, height:usize, scale:usize) -> Result<String,String> {
@@ -200,6 +204,14 @@ fn active_boot_ribbon() -> Result<String,breenix_suite::suite::CaseError> {
 }
 
 fn panel_boot_ribbon() -> CaseResult {
+    let result=retired_boot_ribbon();
+    let cleanup=libbreenix::test_control::disarm_all();
+    result?;
+    cleanup?;
+    Ok(())
+}
+
+fn retired_boot_ribbon() -> CaseResult {
     let geometry=ACTIVE_RIBBON.get().ok_or("active ribbon read-back was not prepared")?.as_ref().map_err(|e|e.clone())?;
     let (width,height)=crate::window_cases::composition::screen_size()?;
     let scale=width/1280;
