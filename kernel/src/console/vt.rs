@@ -285,7 +285,12 @@ impl Terminals<'_> {
     fn publish(&mut self) {
         let fg = self.sw.fg;
         FOREGROUND.store(fg, Ordering::Release);
-        FG_GRAPHICS.store(self.vts[fg].graphics.is_some(), Ordering::Release);
+        let graphics = self.vts[fg].graphics.is_some();
+        #[cfg(target_arch = "aarch64")]
+        if graphics {
+            crate::graphics::boot_ribbon::retire();
+        }
+        FG_GRAPHICS.store(graphics, Ordering::Release);
         let suspended = self.sw.display_owner.is_some_and(|(_, vt)| vt != fg);
         PRESENTATION_SUSPENDED.store(suspended, Ordering::SeqCst);
     }
@@ -582,10 +587,6 @@ impl Terminals<'_> {
         }
         self.sw.display_owner = Some((pid, vt));
         self.set_kd(vt, pid, true, effects)?;
-        #[cfg(target_arch = "aarch64")]
-        {
-            crate::graphics::boot_ribbon::retire();
-        }
         self.publish();
         Ok(())
     }
