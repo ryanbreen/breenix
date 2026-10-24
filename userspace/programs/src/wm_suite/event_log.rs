@@ -84,7 +84,11 @@ impl EventLog {
             0,
         )
         .map_err(|e| format!("event log mapping: {e}"))?;
-        Ok(Self { ptr, bytes, capacity })
+        Ok(Self {
+            ptr,
+            bytes,
+            capacity,
+        })
     }
     fn header(&self) -> &Header {
         // The mapping starts at page alignment and outlives this borrow.

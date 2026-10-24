@@ -201,6 +201,7 @@ pub fn sixteen_clients() -> CaseResult {
         )?);
     }
     for (index, c) in clients.iter_mut().enumerate() {
+        c.initialize()?;
         c.receive()
             .map_err(|e| format!("initial paint of client {index}: {e}"))?;
     }

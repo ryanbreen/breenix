@@ -351,8 +351,12 @@ frame before evaluating its formula and hash.
 
 The startup command's final u32 packs initial physical width in bits 0-15 and
 height in bits 16-31, each 1..4096. Normal controlled clients start at 240x160.
-The sixteen-client fixture starts sixteen independent unregistered 92x64
-clients and registers them as a batch. Their complete content rectangles fit
+The sixteen-client fixture forks sixteen independent 92x64 clients waiting for
+their startup commands, then initializes and acknowledges their GPU paints
+before starting bwm and registering them as a batch. Deferring GPU initialization
+keeps child creation separate from concurrent GPU setup. These non-reading
+clients use 64 event-log slots with the same strict overflow detection; other
+fixtures retain 8192 slots. Their complete content rectangles fit
 between the 100-pixel cascade steps, so one native observation judges the full
 pattern of each client, with sixteen provenance entries, within the original
 case deadline. It does not require sixteen serial focus-and-readback cycles.

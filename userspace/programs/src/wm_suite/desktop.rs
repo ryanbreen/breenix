@@ -112,6 +112,7 @@ pub struct Client {
     pub child: Child,
     commands: File,
     replies: File,
+    initial_command: Option<[u8; COMMAND_SIZE]>,
     log: EventLog,
     pub logged: Vec<Entry>,
     pub second: u64,
@@ -171,11 +172,18 @@ impl Client {
     }
     pub fn start_shape(seed: u32, flags: u32, width: u32, height: u32) -> Result<Self, String> {
         let mut client = Self::spawn_shape(seed, flags, width, height, super::event_log::CAPACITY)?;
+        client.initialize()?;
         client.receive()?;
         Ok(client)
     }
-    /// Start an independent client; receive its initial paint reply before sending commands.
-    pub fn spawn_shape(seed: u32, flags: u32, width: u32, height: u32, log_capacity: usize) -> Result<Self, String> {
+    /// Fork a client waiting for initialize, then receive its initial paint reply.
+    pub fn spawn_shape(
+        seed: u32,
+        flags: u32,
+        width: u32,
+        height: u32,
+        log_capacity: usize,
+    ) -> Result<Self, String> {
         if !(1..=4096).contains(&width) || !(1..=4096).contains(&height) {
             return Err("fixture client dimensions outside the window contract".into());
         }
@@ -212,6 +220,7 @@ impl Client {
             child: pid.into(),
             commands,
             replies,
+            initial_command: None,
             log,
             logged: Vec::new(),
             second: 0,
@@ -235,13 +244,20 @@ impl Client {
         ] {
             first[at..at + 4].copy_from_slice(&word.to_le_bytes());
         }
-        client
-            .commands
-            .write_all(&first)
-            .map_err(|e| e.to_string())?;
+        client.initial_command = Some(first);
         Ok(client)
     }
+    pub fn initialize(&mut self) -> Result<(), String> {
+        let first = self
+            .initial_command
+            .take()
+            .ok_or("client already initialized")?;
+        self.commands.write_all(&first).map_err(|e| e.to_string())
+    }
     pub fn send(&mut self, op: u32, a: u32, b: u32) -> Result<(), String> {
+        if self.initial_command.is_some() {
+            return Err("client command before initialization".into());
+        }
         let mut command = [0; COMMAND_SIZE];
         for (offset, v) in [(0, op), (4, a), (8, b)] {
             command[offset..offset + 4].copy_from_slice(&v.to_le_bytes());
