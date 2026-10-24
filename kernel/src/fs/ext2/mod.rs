@@ -3034,6 +3034,7 @@ pub fn filesystem_states() -> Result<alloc::string::String, &'static str> {
 /// deferred inode work, flush, persist clean superblocks and fence new writes.
 /// The mount guard serializes the transition with the writeback kthread.
 pub fn shutdown_filesystems() -> Result<(), &'static str> {
+    let deadline = ext2_now_ns().saturating_add(10_000_000_000);
     let mut buffer = crate::memory::file_map::writeback_buffer()?;
     for (home, name) in [(true, "home"), (false, "root")] {
         let handles = {
@@ -3047,6 +3048,7 @@ pub fn shutdown_filesystems() -> Result<(), &'static str> {
             crate::memory::file_map::sync_range_with_buffer(handle, 0, u64::MAX, &mut buffer)?;
         }
         loop {
+            if ext2_now_ns() >= deadline { return Err("Filesystem shutdown deadline expired"); }
             let mut guard = fs_sync_guard(home)?;
             let fs = guard.as_mut().ok_or("Filesystem disappeared during shutdown")?;
             let progress = fs.finalize_writeback().merge(fs.finalize_pending_orphans());

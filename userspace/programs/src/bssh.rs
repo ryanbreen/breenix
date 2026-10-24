@@ -196,7 +196,8 @@ fn main() {
         if fds[1].revents & io::poll_events::POLLIN != 0 {
             match session.recv_data() {
                 Ok(Some(data)) => {
-                    let _ = io::write(stdout_fd, &data);
+                    let fd = if session.data_is_stderr() { Fd::STDERR } else { stdout_fd };
+                    let _ = io::write(fd, &data);
                 }
                 Ok(None) => {}
                 Err(libbreenix::ssh::SshError::Disconnected) => {
@@ -542,7 +543,8 @@ fn drain_exec_output(session: &mut ClientSession) -> i32 {
         if fds[0].revents & io::poll_events::POLLIN != 0 {
             match session.recv_data() {
                 Ok(Some(data)) => {
-                    let _ = io::write(stdout_fd, &data);
+                    let fd = if session.data_is_stderr() { Fd::STDERR } else { stdout_fd };
+                    let _ = io::write(fd, &data);
                 }
                 Ok(None) => {}
                 Err(libbreenix::ssh::SshError::Disconnected) => {
