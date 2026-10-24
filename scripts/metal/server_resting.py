@@ -1,4 +1,4 @@
-"""Automated R240 resting-state category, with a resumable unlocked 24-hour phase."""
+"""Automated R240 resting-state category under S20 and operator ruling S25."""
 import json
 import os
 from pathlib import Path
@@ -137,138 +137,115 @@ def run(api, args):
     checks = api['runpy'].run_path(str(Path(api['__file__']).with_name('resting_cases.py')))
     with tempfile.TemporaryDirectory(prefix='server-resting-') as scratch:
         lab = Lab(api, args, Path(scratch))
-        if args.resting_phase == 'events':
-            if not lab.locked():
-                raise ValueError('machine-event acceptance requires the branch-tools lock')
-            records = dict(boot=args.boot, commit=args.sha, milestone='server/resting-state', cases=[],
-                evidence={}, cleanup=True, consoleGaps=[])
-            lab.pin()
-            print('SUITE server START cases=6', flush=True)
-            for name, _ in checks['CASES'][:-1]:
-                started = time.monotonic()
-                try:
-                    if name == 'clean-preempt':
-                        source = lab.current
-                        queued = time.time()
-                        test = lab.launch('boot', '--branch', args.branch, '--sha', args.sha, '--no-wait')
-                        records['testBoot'] = test
-                        lab.wait(lambda: lab.ended(source), 120, 'queued test did not cleanly preempt persistent session')
-                        lab.wait(lambda: any(e['event'] == 'lease-claimed' for e in lab.events(test)), 60, 'test never acquired released lease')
-                        preemption = lab.wait(lambda: lab.read(source, 'preemption.json'), 30, 'queued test has no preemption receipt')
-                        value = dict(run=json.loads(lab.read(source, 'run.json')), exit=lab.read(source, 'exit-status').strip(),
-                            serial=lab.read(source, 'serial.txt'), events=lab.events(source), queuedAt=queued,
-                            test=test, preemption=json.loads(preemption),
-                            testClaimedAt=next(e['t'] for e in lab.events(test) if e['event'] == 'lease-claimed'))
-                        checks['clean'](value, args.sha)
-                    elif name == 'idle-return':
-                        test = records['testBoot']
-                        value = lab.idle(test)
-                        if lab.read(test, 'exit-status').strip() != '0':
-                            raise ValueError('preempting test boot failed')
-                        build = json.loads(lab.read(test, 'delivery.json'))['build']
-                        if build['commit'] != args.sha or json.loads(lab.read(test, 'run.json'))['toolsCommit'] != args.sha:
-                            raise ValueError('test boot has wrong kernel or tools')
-                        checks['returned'](value, args.sha)
-                    elif name == 'one-shot':
-                        before = lab.slots()
-                        once = lab.launch('boot', '--persistent', '--entry', 'previous', '--no-wait')
-                        lab.current = once
-                        lab.wait(lambda: 'bsshd: listening on ' in lab.read(once, 'serial.txt'), 600, 'previous slot did not reach SSH')
-                        once_run = json.loads(lab.read(once, 'run.json'))
-                        old_id = lab.boot_id()
-                        lab.power('reboot')
-                        lab.wait(lambda: any(e['event'] == 'requested-reboot-ready' for e in lab.events(once)),
-                            600, 'one-shot reboot did not return to SSH')
-                        new_id = lab.boot_id()
-                        reset_run = json.loads(lab.read(once, 'run.json'))
-                        entries = [e['entry'] for e in lab.events(once) if e['event'] == 'slot-boot']
-                        serial = lab.read(once, 'serial.txt')
-                        entry = re.findall(r'breenix-manager: booting (current|previous) [a-f0-9]{40}', serial)
-                        lab.power('poweroff')
-                        back = lab.idle(once)
-                        if lab.read(once, 'exit-status').strip() != '0':
-                            raise ValueError('one-shot session did not complete normally')
-                        value = dict(onceRun=once_run, onceEntry=entry[0] if entry else None,
-                            resetRun=reset_run, resetEntries=entries, beforeId=old_id, afterId=new_id,
-                            beforeSlots=before, afterSlots=lab.slots(), returned=back)
-                        checks['one_shot'](value, args.sha)
-                    elif name == 'reboot-return':
-                        offset = len(lab.events(lab.current))
-                        before = json.loads(lab.read(lab.current, 'run.json'))
-                        old_id = lab.boot_id()
-                        lab.power('reboot')
-                        lab.wait(lambda: any(e['event'] == 'requested-reboot-ready' for e in lab.events(lab.current)[offset:]),
-                            600, 'reboot did not return unaided')
-                        serial = lab.read(lab.current, 'serial.txt')
-                        entry = re.findall(r'breenix-manager: booting (current|previous) [a-f0-9]{40}', serial)
-                        value = dict(beforeRun=before, afterRun=json.loads(lab.read(lab.current, 'run.json')),
-                            beforeId=old_id, afterId=lab.boot_id(), entry=entry[-1] if entry else None,
-                            events=lab.events(lab.current)[offset:], authenticated=True, strictHostKey=True)
-                        checks['reboot'](value, args.sha)
-                    else:
-                        target = api['Watchdog'](lab.probe, None, lab.remote, lab.runner, lab.env,
-                            lab.current, args.sha, args.branch)
-                        # Enqueue the fault without a runner stop: it must cleanly preempt too.
-                        target.stopped = True
-                        target.run_case('feeder-hang')
-                        value = json.loads(lab.read(target.boots[-1], 'watchdog-verdict.json'))
-                        checks['watchdog'](value, args.sha)
-                        lab.idle(target.boots[-1])
-                    records['evidence'][name] = value
-                    result, reason = 'PASS', ''
-                except Exception as error:
-                    result, reason = 'FAIL', str(error)
-                records['cases'].append(dict(id='resting-state/' + name, result=result, reason=reason,
-                    ms=int((time.monotonic() - started) * 1000)))
-                print('SUITE server CASE resting-state/' + name + ' ' + result + ' msg=' + reason, flush=True)
-                records['session'] = lab.current
-                records['known'] = lab.probe.known.read_text()
-                lab.save('resting-prepared.json', records)
-                if result == 'FAIL':
-                    # Cancel only this runner's queued boot; preserve the live baseline.
-                    test = records.get('testBoot')
-                    if test and not lab.ended(test):
-                        subprocess.run(['python3', str(Path(api['__file__']).with_name('metal-run')), 'stop', test], check=True)
-                    return 1
-            print('Machine events complete; restore main tools and release the lock before --resting-phase soak', flush=True)
-            return 0
-
-        records = json.loads(lab.read(args.boot, 'resting-prepared.json'))
-        if records['commit'] != args.sha or len(records['cases']) != 5 or any(c['result'] != 'PASS' for c in records['cases']):
-            raise ValueError('machine events have not passed at this head')
-        lab.current = records['session']
-        lab.probe.known.write_text(records['known'])
-        if args.resting_phase == 'soak':
-            if lab.locked():
-                raise ValueError('release the branch-tools lock before the 24-hour session')
-            value = dict(boot=lab.current, run=json.loads(lab.read(lab.current, 'run.json')), samples=[])
-            checks['persistent'](value['run'], args.sha)
-            start = time.monotonic()
-            # Deadlines are measured on this boot host, never by an adjustable guest clock.
-            for i in range(289):
-                deadline = start + i * 300 + (1 if i == 288 else 0)
-                while time.monotonic() < deadline:
-                    time.sleep(min(30, deadline - time.monotonic()))
-                at = time.time()
-                lock = lab.locked()
-                lease = lab.lease().get('id')
-                boot_id = lab.boot_id()
-                value['samples'].append(dict(at=at, bootId=boot_id, lease=lease, lockHeld=lock,
-                    authenticated=True, strictHostKey=True))
-                value['elapsedMonotonic'] = time.monotonic() - start
-                lab.save('resting-soak.json', value)
-                if lock or lease != lab.current or boot_id != value['samples'][0]['bootId']:
-                    raise ValueError('24-hour persistent session was interrupted or tools lock was held')
-                print('Persistent SSH probe ' + str(i) + '/288 passed', flush=True)
-            checks['uptime'](value, args.sha)
-            return 0
-
         if not lab.locked():
-            raise ValueError('final resting-state scoring requires the branch-tools lock')
-        value = json.loads(lab.read(args.boot, 'resting-soak.json'))
-        checks['uptime'](value, args.sha)
-        records['evidence']['uptime-24h'] = value
-        records['cases'].append(dict(id='resting-state/uptime-24h', result='PASS', reason='', ms=86400000))
+            raise ValueError('machine-event acceptance requires the branch-tools lock')
+        records = dict(boot=args.boot, commit=args.sha, milestone='server/resting-state', cases=[],
+            evidence={}, cleanup=True, consoleGaps=[])
+        lab.pin()
+        print('SUITE server START cases=6', flush=True)
+        for name, _ in checks['CASES'][:-1]:
+            started = time.monotonic()
+            try:
+                if name == 'clean-preempt':
+                    source = lab.current
+                    queued = time.time()
+                    test = lab.launch('boot', '--branch', args.branch, '--sha', args.sha, '--no-wait')
+                    records['testBoot'] = test
+                    lab.wait(lambda: lab.ended(source), 120, 'queued test did not cleanly preempt persistent session')
+                    lab.wait(lambda: any(e['event'] == 'lease-claimed' for e in lab.events(test)), 60, 'test never acquired released lease')
+                    preemption = lab.wait(lambda: lab.read(source, 'preemption.json'), 30, 'queued test has no preemption receipt')
+                    value = dict(run=json.loads(lab.read(source, 'run.json')), exit=lab.read(source, 'exit-status').strip(),
+                        serial=lab.read(source, 'serial.txt'), events=lab.events(source), queuedAt=queued,
+                        test=test, preemption=json.loads(preemption),
+                        testClaimedAt=next(e['t'] for e in lab.events(test) if e['event'] == 'lease-claimed'))
+                    checks['clean'](value, args.sha)
+                elif name == 'idle-return':
+                    test = records['testBoot']
+                    value = lab.idle(test)
+                    if lab.read(test, 'exit-status').strip() != '0':
+                        raise ValueError('preempting test boot failed')
+                    build = json.loads(lab.read(test, 'delivery.json'))['build']
+                    if build['commit'] != args.sha or json.loads(lab.read(test, 'run.json'))['toolsCommit'] != args.sha:
+                        raise ValueError('test boot has wrong kernel or tools')
+                    checks['returned'](value, args.sha)
+                elif name == 'one-shot':
+                    before = lab.slots()
+                    once = lab.launch('boot', '--persistent', '--entry', 'previous', '--no-wait')
+                    lab.current = once
+                    lab.wait(lambda: 'bsshd: listening on ' in lab.read(once, 'serial.txt'), 600, 'previous slot did not reach SSH')
+                    once_run = json.loads(lab.read(once, 'run.json'))
+                    old_id = lab.boot_id()
+                    lab.power('reboot')
+                    lab.wait(lambda: any(e['event'] == 'requested-reboot-ready' for e in lab.events(once)),
+                        600, 'one-shot reboot did not return to SSH')
+                    new_id = lab.boot_id()
+                    reset_run = json.loads(lab.read(once, 'run.json'))
+                    entries = [e['entry'] for e in lab.events(once) if e['event'] == 'slot-boot']
+                    serial = lab.read(once, 'serial.txt')
+                    entry = re.findall(r'breenix-manager: booting (current|previous) [a-f0-9]{40}', serial)
+                    lab.power('poweroff')
+                    back = lab.idle(once)
+                    if lab.read(once, 'exit-status').strip() != '0':
+                        raise ValueError('one-shot session did not complete normally')
+                    value = dict(onceRun=once_run, onceEntry=entry[0] if entry else None,
+                        resetRun=reset_run, resetEntries=entries, beforeId=old_id, afterId=new_id,
+                        beforeSlots=before, afterSlots=lab.slots(), returned=back)
+                    checks['one_shot'](value, args.sha)
+                elif name == 'reboot-return':
+                    offset = len(lab.events(lab.current))
+                    before = json.loads(lab.read(lab.current, 'run.json'))
+                    old_id = lab.boot_id()
+                    lab.power('reboot')
+                    lab.wait(lambda: any(e['event'] == 'requested-reboot-ready' for e in lab.events(lab.current)[offset:]),
+                        600, 'reboot did not return unaided')
+                    serial = lab.read(lab.current, 'serial.txt')
+                    entry = re.findall(r'breenix-manager: booting (current|previous) [a-f0-9]{40}', serial)
+                    value = dict(beforeRun=before, afterRun=json.loads(lab.read(lab.current, 'run.json')),
+                        beforeId=old_id, afterId=lab.boot_id(), entry=entry[-1] if entry else None,
+                        events=lab.events(lab.current)[offset:], authenticated=True, strictHostKey=True)
+                    checks['reboot'](value, args.sha)
+                else:
+                    target = api['Watchdog'](lab.probe, None, lab.remote, lab.runner, lab.env,
+                        lab.current, args.sha, args.branch)
+                    # Enqueue the fault without a runner stop: it must cleanly preempt too.
+                    target.stopped = True
+                    target.run_case('feeder-hang')
+                    value = json.loads(lab.read(target.boots[-1], 'watchdog-verdict.json'))
+                    checks['watchdog'](value, args.sha)
+                    lab.idle(target.boots[-1])
+                records['evidence'][name] = value
+                result, reason = 'PASS', ''
+            except Exception as error:
+                result, reason = 'FAIL', str(error)
+            records['cases'].append(dict(id='resting-state/' + name, result=result, reason=reason,
+                ms=int((time.monotonic() - started) * 1000)))
+            print('SUITE server CASE resting-state/' + name + ' ' + result + ' msg=' + reason, flush=True)
+            records['session'] = lab.current
+            records['known'] = lab.probe.known.read_text()
+            lab.save('server-resting-state.json', records)
+            if result == 'FAIL':
+                # Cancel only this runner's queued boot; preserve the live baseline.
+                test = records.get('testBoot')
+                if test and not lab.ended(test):
+                    subprocess.run(['python3', str(Path(api['__file__']).with_name('metal-run')), 'stop', test], check=True)
+                return 1
+        started = time.monotonic()
+        try:
+            run = json.loads(lab.read(lab.current, 'run.json'))
+            entries = [e['entry'] for e in lab.events(lab.current) if e['event'] == 'slot-boot']
+            value = dict(boot=lab.current, run=run, bootId=lab.boot_id(), lease=lab.lease().get('id'),
+                entry=entries[-1] if entries else None, authenticated=True, strictHostKey=True)
+            checks['ssh'](value, args.sha)
+            records['evidence']['returned-ssh'] = value
+            result, reason = 'PASS', ''
+        except Exception as error:
+            result, reason = 'FAIL', str(error)
+        records['cases'].append(dict(id='resting-state/returned-ssh', result=result, reason=reason,
+            ms=int((time.monotonic() - started) * 1000)))
+        lab.save('server-resting-state.json', records)
+        print('SUITE server CASE resting-state/returned-ssh ' + result + ' msg=' + reason, flush=True)
+        if result == 'FAIL':
+            return 1
         checks['validate'](records['evidence'], args.sha)
         # The original baseline retains the definition and authenticated pinning capture.
         boot = json.loads(lab.read(args.boot, 'run.json'))

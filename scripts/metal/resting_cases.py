@@ -7,7 +7,7 @@ CASES = (
     ('one-shot', 'A one-shot previous entry leaves current as the next persistent default'),
     ('reboot-return', 'An authenticated reboot returns unaided to the current persistent install'),
     ('watchdog-return', 'A watchdog hang returns unaided to current persistent SSH within 600 seconds'),
-    ('uptime-24h', 'One persistent session answers strict authenticated SSH every five minutes for 24 hours'),
+    ('returned-ssh', 'The returned current persistent install answers one strict authenticated SSH check'),
 )
 
 
@@ -83,22 +83,13 @@ def watchdog(receipt, sha):
         raise ValueError('watchdog did not return unaided within S19 deadline')
 
 
-def uptime(receipt, sha):
+def ssh(receipt, sha):
     persistent(receipt['run'], sha)
-    samples = receipt['samples']
-    if len(samples) != 289:
-        raise ValueError('24-hour proof requires the initial probe and 288 five-minute probes')
-    if receipt['elapsedMonotonic'] < 86400 or samples[-1]['at'] - samples[0]['at'] < 86400:
-        raise ValueError('persistent observation was shorter than 24 hours')
-    identity = samples[0]['bootId']
-    if not re.fullmatch(r'[0-9a-f]+-[0-9a-f]+-[0-9a-f]+', identity):
-        raise ValueError('missing guest boot identity')
-    for i, sample in enumerate(samples):
-        if (sample['bootId'] != identity or not sample['authenticated'] or not sample['strictHostKey']
-                or sample['lockHeld'] or sample['lease'] != receipt['boot']):
-            raise ValueError('persistent session changed, SSH failed or branch-tools lock was held')
-        if i and not 295 <= sample['at'] - samples[i - 1]['at'] <= 305:
-            raise ValueError('a five-minute probe was missed')
+    if not re.fullmatch(r'[0-9a-f]+-[0-9a-f]+-[0-9a-f]+', receipt['bootId']):
+        raise ValueError('missing returned guest boot identity')
+    if (not receipt['authenticated'] or not receipt['strictHostKey']
+            or receipt['lease'] != receipt['boot'] or receipt['entry'] != 'current'):
+        raise ValueError('returned install has no strict authenticated SSH proof')
 
 
 def validate(records, sha):
@@ -107,4 +98,4 @@ def validate(records, sha):
     one_shot(records['one-shot'], sha)
     reboot(records['reboot-return'], sha)
     watchdog(records['watchdog-return'], sha)
-    uptime(records['uptime-24h'], sha)
+    ssh(records['returned-ssh'], sha)

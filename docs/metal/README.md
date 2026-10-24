@@ -1188,13 +1188,11 @@ later reboot in that same lease chooses current without changing the slots.
 
 The machine service must load a changed policy while no boot holds the lease.
 Deploy with `--restart` only at that idle point. Restore main's tools before
-releasing the shared branch-tools lock; the 24-hour observation holds no such
-lock. Replacing the policy source disables its loaded revision's idle admission
-until an idle service restart loads the replacement; a running boot keeps its
-driver and lease. Keep a private copy of the candidate's host tools to run the
-observation after restoring the shared tools.
-The [resting-state category](../suites/README.md#persistent-resting-state-s20)
-keeps the measured session separate from the machine-event phase.
+releasing the shared branch-tools lock. Replacing the policy source disables
+its loaded revision's idle admission until an idle service restart loads the
+replacement; a running boot keeps its driver and lease.
+The [resting-state category](../suites/README.md#persistent-resting-state-s20-amended-by-s25)
+checks the machine events and one SSH login on the returned install (S25).
 
 ### Measured on the R240
 

@@ -243,8 +243,8 @@
           "title": "A watchdog hang returns unaided to current persistent SSH within 600 seconds"
         },
         {
-          "id": "uptime-24h",
-          "title": "One persistent session answers strict authenticated SSH every five minutes for 24 hours"
+          "id": "returned-ssh",
+          "title": "The returned current persistent install answers one strict authenticated SSH check"
         }
       ]
     },

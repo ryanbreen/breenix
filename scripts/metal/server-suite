@@ -111,7 +111,7 @@ RESTING = (
     ('one-shot', 'A one-shot previous entry leaves current as the next persistent default'),
     ('reboot-return', 'An authenticated reboot returns unaided to the current persistent install'),
     ('watchdog-return', 'A watchdog hang returns unaided to current persistent SSH within 600 seconds'),
-    ('uptime-24h', 'One persistent session answers strict authenticated SSH every five minutes for 24 hours'),
+    ('returned-ssh', 'The returned current persistent install answers one strict authenticated SSH check'),
 )
 
 CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'time': TIME, 'reboot': REBOOT, 'watchdog': WATCHDOG, 'resting-state': RESTING, 'remote-upgrade': REMOTE_UPGRADE, 'operator': OPERATOR, 'console-input': CONSOLE_INPUT}
@@ -1926,7 +1926,6 @@ class Watchdog:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--resting-phase', choices=('events', 'soak', 'finish'), default='events')
     parser.add_argument('--probe-upgrade', action='store_true')
     parser.add_argument('--check-manifest', type=Path)
     parser.add_argument('--previous-boot', help='Completed logs preparation boot at this same commit')

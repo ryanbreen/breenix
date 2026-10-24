@@ -43,7 +43,7 @@ Coordinator rulings:
   before the box stays up. This is the `ssh-keys` milestone, under review in PR #2202.
 - **S2:** the efforts follow the existing ones. Filesystem and toolchain code is architecture-independent where
   possible; iteration runs on the host harness and ARM64 QEMU, and the R240 carries the acceptance proofs.
-- **S3:** the 24-hour uptime measurement is one measured session, recorded as milestone evidence, not a recurring soak.
+- **S25 (operator, 2026-10-24):** S3 is retired. Resting-state acceptance uses automated machine events and one SSH check on the returned install.
 - **S4:** the ext2 partitions stay read-only after migration until two upgrades succeed on the new filesystem, and
   are then reclaimed.
 - **S5:** Rust on the box is deferred until our C toolchain rebuilds itself.
@@ -106,7 +106,7 @@ any time. A lane that also carries another main-path effort's unmerged work stay
 suite). The four manifests are skeletons: their categories are named and have no cases yet, and each category's cases
 arrive with the lane that implements it ([the suites README](../suites/README.md), "Planned categories"). A milestone
 whose categories have no cases reads as not measured yet. Where a milestone's evidence is a machine event (a reboot, a
-watchdog reset, a power cut, a 24-hour session, a migration), its category's cases are host-driven records, as the
+watchdog reset or migration), its category's cases are host-driven records, as the
 SDK suite's host cases are; the R240 acceptance stated for each milestone is the evidence its lane lands with. Main-path
 `bootPath` measures resolve against `docs/boot-path.json`, the ARM testing-kernel gate, which has no persistent
 modes, so these milestones use suite measures instead.
@@ -150,8 +150,9 @@ root.
 8. **`resting-state` (`server/resting-state`).** The persistent install is the resting state (D3): a test boot
    preempts it with a clean shutdown, and the lab returns the machine to it when the queue empties. It needs the users
    effort's `operator-login` first (D4: daily login is non-root, and root SSH is off).
-   *R240 acceptance:* a test boot that preempts the persistent install and the machine's return to it, then one measured
-   24-hour persistent session probed over SSH at five-minute intervals (S3).
+   *R240 acceptance:* a test boot cleanly preempts the persistent install; an empty queue returns to current;
+   a one-shot choice never sticks; reboot and watchdog resets return to current; one strict authenticated SSH
+   check succeeds on the returned install (S20, amended by operator ruling S25).
 9. **`remote-upgrade` (`server/remote-upgrade`).** `install-persistent` from the boot host ends with an SSH probe of
    the verification boot and rolls back automatically when it does not answer. Validating the generation repairs
    (#2114) and reclamation (#2117) is part of this milestone.
