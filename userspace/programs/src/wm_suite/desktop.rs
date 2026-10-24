@@ -705,7 +705,11 @@ impl Desktop {
             }
             Ok(Screen::read().is_ok_and(|s| s.contains(c.id, c.frame_commit)))
         })
-        .map_err(|e| format!("{e}; {}", self.output()))
+        .map_err(|e| {
+            let out = self.output();
+            let at = out.char_indices().rev().nth(120).map_or(0, |(at, _)| at);
+            format!("{}; {e}", &out[at..])
+        })
     }
     pub fn shown_after(&mut self, c: &Client, commit: u64) -> Result<Screen, String> {
         let mut result = None;
