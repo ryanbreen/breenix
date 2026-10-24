@@ -564,7 +564,9 @@ def watch(args):
                     # The launcher starts the watcher before QEMU creates its socket.
                     # Negotiate while idle, rather than on a timed input request.
                     keys.connect()
-                except OSError:
+                except (OSError, json.JSONDecodeError, RuntimeError):
+                    # Teardown can close the greeting or reject capabilities.
+                    # connect() closes incomplete sessions; retry while the parent lives.
                     pass
             try:
                 with open(args.serial, 'rb') as f:

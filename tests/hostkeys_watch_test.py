@@ -60,6 +60,24 @@ class HostInputWatch(unittest.TestCase):
                 hostkeys.watch(args)
             self.assertEqual(delivered, [(2559, 1599, 0, 0, 'absolute')])
 
+    def test_watch_survives_incomplete_qmp_handshake(self):
+        for error in (json.JSONDecodeError('closed greeting', '', 0),
+                      RuntimeError('QMP qmp_capabilities: rejected')):
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as folder:
+                serial = Path(folder) / 'serial'
+                serial.touch()
+                keys = hostkeys.QMPKeys(str(Path(folder) / 'input.sock'))
+                args = SimpleNamespace(backend='qmp:unused', qmp_persistent=True, log=None,
+                                       suite='window-manager', serial=str(serial), parent=1)
+                with patch.object(hostkeys, 'backend', return_value=keys), \
+                     patch.object(hostkeys, 'select', SimpleNamespace()), \
+                     patch.object(hostkeys.os, 'kill', side_effect=[None, None, ProcessLookupError]), \
+                     patch.object(hostkeys.time, 'sleep'), \
+                     patch.object(keys, 'connect', side_effect=[error, None]) as connect:
+                    hostkeys.watch(args)
+                self.assertEqual(connect.call_count, 2)
+                self.assertIsNone(keys.stream)
+
     def test_private_qmp_negotiates_before_requests_and_reuses_connection(self):
         with tempfile.TemporaryDirectory() as folder:
             path = str(Path(folder) / 'input.sock')
