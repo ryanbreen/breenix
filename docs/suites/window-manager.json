@@ -158,6 +158,10 @@
       "title": "Keyboard & pointer drivers on every target",
       "cases": [
         {
+          "id": "stalled-ledger",
+          "title": "Physical input advances a full pending ledger with explicit overflow losses"
+        },
+        {
           "id": "keyboard-completion-path",
           "title": "The bound keyboard completion reports, wakes bwm, delivers A and rearms"
         },

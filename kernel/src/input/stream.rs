@@ -1189,14 +1189,31 @@ pub fn register_hardware(id: u32, capabilities: Vec<Capability>) {
     });
 }
 #[cfg(target_arch = "aarch64")]
-pub fn hardware_capacity(count: usize) -> bool {
-    let s = STATE.lock();
-    s.ledger.len() + count <= LEDGER_EVENTS + s.ledger.iter().take_while(|r| r.outcome.is_some()).count()
-}
-#[cfg(target_arch = "aarch64")]
 pub fn publish_hardware(id: u32, events: &[crate::drivers::virtio::input_decode::Event], time_ns: u64, wake: bool, dropped: bool) -> bool {
     let mut s = STATE.lock();
-    if !s.devices.contains_key(&id) || s.reserve_ledger(events.len() + usize::from(dropped)).is_err() { return false; }
+    if !s.devices.contains_key(&id) { return false; }
+    let count = events.len() + usize::from(dropped);
+    if s.reserve_ledger(count).is_err() {
+        // Physical producers cannot backpressure the console behind a stalled
+        // grab holder. End its outstanding ledger rows as overflow losses and
+        // discard the corresponding reader backlog before advancing the horizon.
+        for row in &mut s.ledger {
+            if row.outcome.is_none() {
+                row.outcome = Some(Disposition {
+                    serial: row.event.serial, disposition: disposition::LOST,
+                    reason: reason::OVERFLOW, ..Disposition::default()
+                });
+            }
+        }
+        let last = s.ledger.back().map(|row| row.event);
+        for reader in s.readers.values_mut() {
+            let queued: usize = reader.batches.iter().map(|b| b.records.len()).sum();
+            reader.events -= queued;
+            reader.batches.clear();
+            reader.dropped = last.map(|e| Event { kind: kind::SYN, code: syn::DROPPED, ..e });
+        }
+        if s.reserve_ledger(count).is_err() { return false; }
+    }
     if id == super::hardware::KEYBOARD {
         if dropped || events.iter().any(|e| e.kind == kind::SYN && e.code == syn::DROPPED) { super::reset_virtio_keyboard(); }
         for e in events.iter().filter(|e| e.kind == kind::KEY) { super::observe_virtio_key(e.code, e.value); }

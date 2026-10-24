@@ -16,6 +16,31 @@ pub fn keyboard_completion() -> CaseResult {
     })?;
     Ok(())
 }
+/// Keep read serials pending to fill the ledger without reader overflow.
+pub fn stalled_ledger() -> CaseResult {
+    let _claim = InputClaim::new()?;
+    let mut stream = Stream::open()?;
+    let mut device = Virtual::create()?;
+    stream.grab(&[])?;
+    let mut last = 0;
+    for n in 1..=4096 {
+        device.batch(&[(1, 30, (n & 1) as i32)], n)?;
+        last = stream.read_from(2, &[device.id])?.last().unwrap().serial;
+    }
+    check(device.batch(&[(1, 30, 0)], 4097).err()
+        .is_some_and(|e| e.starts_with("uinput batch errno 11:")),
+        "pending ledger did not reach its unchanged capacity")?;
+    replay(1, 0, 0)?;
+    let events = stream.read(4)?;
+    check(events.iter().any(|e| e.kind == 1 && e.code == 30 && e.value == 1 && e.device == 2),
+        "full pending ledger stopped the physical keyboard")?;
+    check(events.iter().any(|e| e.kind == 0 && e.code == 3),
+        "hardware ledger overflow omitted SYN_DROPPED")?;
+    check(ledger()?.iter().any(|row| row.len() == 4 && row[0] == last.to_string()
+        && row[1] == "lost" && row[3] == "overflow"),
+        "hardware ledger overflow omitted the pending source loss")
+}
+
 pub fn pointer_completion() -> CaseResult {
     let (d, mut c) = one()?;
     let w = c.info()?;
@@ -34,10 +59,10 @@ pub fn pointer_completion() -> CaseResult {
     let edges = events.iter().filter(|e| e.kind == 1 && e.code == 272).collect::<Vec<_>>();
     value("pointer-source-edges", edges.len() as i64, "", Some((2, 2)));
     check(edges.len() == 2 && edges[0].value == 1 && edges[1].value == 0
-        && edges[0].serial < edges[1].serial && edges[0].device == edges[1].device,
+        && edges[0].serial < edges[1].serial && edges[0].device == 3 && edges[1].device == 3,
         "bound tablet completion lost or reordered same-frame button edges")?;
     c.await_event("bound pointer completion wakes bwm", |e| {
-        e.kind == kind::POINTER_MOVE
+        e.kind == kind::POINTER_MOVE && (e.x, e.y) == (40, 50)
     })?;
     let press = c.await_event("completed-frame pointer press", |e| {
         e.kind == kind::POINTER_BUTTON && e.button == 272 && e.pressed == 1
@@ -45,7 +70,9 @@ pub fn pointer_completion() -> CaseResult {
     let release = c.await_event("completed-frame pointer release", |e| {
         e.kind == kind::POINTER_BUTTON && e.button == 272 && e.pressed == 0
     })?;
-    check(press.serial < release.serial, "completed-frame fast click lost or reordered a client edge")
+    check(press.serial < release.serial && (press.x, press.y) == (40, 50)
+        && (release.x, release.y) == (40, 50),
+        "completed-frame fast click lost coordinates or reordered a client edge")
 }
 
 pub fn replay_faults() -> CaseResult {

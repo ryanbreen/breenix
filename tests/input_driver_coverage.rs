@@ -2,7 +2,7 @@ use std::{fs, path::Path};
 
 #[test]
 fn every_production_input_reporter_has_a_target_row() {
-    let root = Path::new(env!("PWD"));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let map = fs::read_to_string(root.join("docs/gui/input.md")).unwrap();
     let reporters = [
         ("kernel/src/keyboard.rs", "crate::input::report_key(", "i8042 PS/2"),
