@@ -1062,7 +1062,7 @@ class Services:
         bsshd = services['bsshd']['pid']
         for request in ('svc stop bsshd', 'svc reload'):
             result = self.probe.ssh(request)
-            # bsshd delivers an exec request's stderr as ordinary channel data.
+            # Non-PTY exec preserves separate stdout and stderr streams.
             if result.returncode != 1 or 'permission denied' not in result.stdout + result.stderr:
                 raise ValueError(request + ' was not refused for the operator account')
         if self.state()[1]['bsshd']['pid'] != bsshd: raise ValueError('a refused request changed bsshd')
