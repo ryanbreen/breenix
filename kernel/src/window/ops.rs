@@ -241,7 +241,7 @@ pub fn create(caller: &Caller, a: &mut Create) -> Result<u64, i32> {
             geometry: 0,
             meta: Meta::ZERO,
             ring,
-            clipboard_subscribed: false,
+            clipboard_subscribed: None,
             waits,
             holder: None,
             gate: false,

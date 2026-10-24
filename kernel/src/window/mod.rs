@@ -217,7 +217,7 @@ pub struct Window {
     pub geometry: u32,
     pub meta: Meta,
     pub ring: events::Ring,
-    pub clipboard_subscribed: bool,
+    pub clipboard_subscribed: Option<u32>,
     pub waits: Arc<Waits>,
     /// The root process holding this window's evidence, if any.
     pub holder: Option<u64>,

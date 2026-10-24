@@ -1,4 +1,4 @@
-//! W4 clipboard storage, retained independently of its setting window and process.
+//! W22 per-euid clipboard storage within a claim, retained after its setter exits.
 //! User copies and process accounting run outside the registry lock. SET copies its
 //! result before publishing, then rechecks the claim and serial under the registry.
 
@@ -47,38 +47,58 @@ pub(super) struct Text {
     _charge: Charge,
 }
 
-pub struct State {
+pub(super) struct User {
+    euid: u32,
     text: Option<Arc<Text>>,
     owner: Option<u64>,
     serial: u64,
+}
+
+pub struct State {
+    users: Vec<User>,
     generation: u64,
 }
 
 impl State {
     pub const fn new() -> Self {
         Self {
-            text: None,
-            owner: None,
-            serial: 1,
+            users: Vec::new(),
             generation: 0,
         }
+    }
+
+    fn user(&self, euid: u32) -> Option<&User> {
+        self.users.iter().find(|u| u.euid == euid)
+    }
+
+    fn user_mut(&mut self, euid: u32) -> Result<&mut User, i32> {
+        let index = match self.users.iter().position(|u| u.euid == euid) {
+            Some(index) => index,
+            None => {
+                self.users.try_reserve(1).map_err(|_| ENOMEM)?;
+                let index = self.users.len();
+                self.users.push(User { euid, text: None, owner: None, serial: 1 });
+                index
+            }
+        };
+        Ok(&mut self.users[index])
     }
 }
 
 /// End the claim under its registry transaction; free storage after releasing the lock.
-pub(super) fn clear(reg: &mut Registry) -> Option<Arc<Text>> {
-    reg.clipboard.owner = None;
+pub(super) fn clear(reg: &mut Registry) -> Option<Vec<User>> {
     reg.clipboard.generation += 1;
-    reg.clipboard.serial += 1;
     for w in reg.windows.values_mut() {
-        w.clipboard_subscribed = false;
+        w.clipboard_subscribed = None;
     }
-    reg.clipboard.text.take()
+    Some(core::mem::take(&mut reg.clipboard.users))
 }
 
 pub(super) fn window_gone(reg: &mut Registry, id: u64) {
-    if reg.clipboard.owner == Some(id) {
-        reg.clipboard.owner = None;
+    for user in &mut reg.clipboard.users {
+        if user.owner == Some(id) {
+            user.owner = None;
+        }
     }
 }
 
@@ -150,34 +170,48 @@ pub fn set(caller: &Caller, a: &mut ClipboardSet, out: u64) -> Result<u64, i32> 
             if authorized(&reg, caller, a.id)? != epoch {
                 return Err(ENOENT);
             }
-            (reg.clipboard.serial + 1, reg.windows.len())
+            (reg.clipboard.user(caller.euid).map_or(1, |u| u.serial) + 1, reg.windows.len())
         };
         let mut wakes = Vec::new();
         wakes.try_reserve_exact(windows).map_err(|_| ENOMEM)?;
         a.serial = serial;
         crate::syscall::window::copy_out(out, a)?;
+        // As for LIST (B46), consult current credentials outside the registry.
+        // A process that changed euid cannot keep receiving its former user's notices.
+        let same_uid: Vec<u64> = crate::process::with_process_manager(|m| {
+            m.all_processes().iter()
+                .filter(|p| !p.is_terminated() && p.cred.euid == caller.euid)
+                .map(|p| p.thread_group_id.unwrap_or(p.id.as_u64()))
+                .collect()
+        }).ok_or(ENOENT)?;
         let (old, wakes) = {
             let mut reg = REGISTRY.lock();
             if authorized(&reg, caller, a.id)? != epoch {
                 return Err(ENOENT);
             }
             // Another setter won while the user copy ran: assign a later serial.
-            if reg.clipboard.serial + 1 != serial || reg.windows.len() > wakes.capacity() {
+            if reg.clipboard.user(caller.euid).map_or(1, |u| u.serial) + 1 != serial
+                || reg.windows.len() > wakes.capacity() {
                 continue;
             }
-            let previous = reg.clipboard.owner;
-            let old = reg.clipboard.text.replace(text.clone());
-            reg.clipboard.owner = Some(a.id);
-            reg.clipboard.serial = serial;
+            let user = reg.clipboard.user_mut(caller.euid)?;
+            let previous = user.owner;
+            let old = user.text.replace(text.clone());
+            user.owner = Some(a.id);
+            user.serial = serial;
             for w in reg.windows.values_mut() {
+                if !same_uid.contains(&w.owner) {
+                    continue;
+                }
                 let lost = previous == Some(w.id) && w.id != a.id;
+                let subscribed = w.clipboard_subscribed == Some(caller.euid);
                 if lost {
                     notice(w, event_kind::CLIPBOARD_LOST);
                 }
-                if w.clipboard_subscribed {
+                if subscribed {
                     notice(w, event_kind::CLIPBOARD_CHANGED);
                 }
-                if lost || w.clipboard_subscribed {
+                if lost || subscribed {
                     wakes.push(w.waits.clone());
                 }
             }
@@ -198,10 +232,12 @@ pub fn get(caller: &Caller, a: &mut ClipboardGet, out: u64) -> Result<u64, i32> 
     let (text, serial) = {
         let reg = REGISTRY.lock();
         authorized(&reg, caller, a.id)?;
-        if a.serial != 0 && a.serial != reg.clipboard.serial {
+        let user = reg.clipboard.user(caller.euid);
+        let serial = user.map_or(1, |u| u.serial);
+        if a.serial != 0 && a.serial != serial {
             return Err(EAGAIN);
         }
-        (reg.clipboard.text.clone(), reg.clipboard.serial)
+        (user.and_then(|u| u.text.clone()), serial)
     };
     let len = text.as_ref().map_or(0, |t| t.len);
     let query = a.dst == 0 && a.capacity == 0;
@@ -238,6 +274,6 @@ pub fn subscribe(caller: &Caller, a: &ClipboardSubscribe) -> Result<u64, i32> {
     reg.windows
         .get_mut(&a.id)
         .ok_or(ENOENT)?
-        .clipboard_subscribed = a.flags == 1;
+        .clipboard_subscribed = if a.flags == 1 { Some(caller.euid) } else { None };
     Ok(0)
 }
