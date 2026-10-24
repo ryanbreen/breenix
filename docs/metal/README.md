@@ -1109,6 +1109,13 @@ prepared reset register without acquiring filesystem locks; it does not claim a
 clean shutdown. `--inject panic-reboot` builds the dedicated fault feature and
 records the panic and its autonomous reset, retaining a failed boot verdict.
 
+The reboot category at `f5891f6b` passed 6 of 6 cases, with matching kernel and
+tools identities, in the record ending at `20261024T094505Z-metal`. Its requested
+reboot returned to SSH within the same session with both prior superblocks clean;
+the power-off readback, refusal recovery and panic reset also passed. This record
+precedes the IRQ4 receive repair; acceptance of the later PR head is recorded in
+PR #2321. Raw captures and host-category records remain in the private boot store.
+
 The host-driven [reboot category](../suites/README.md#server-host-driven-persistent-categories)
 checks both orderly transitions and the separate panic fault boot.
 ### Synchronized time and UTC RTC
