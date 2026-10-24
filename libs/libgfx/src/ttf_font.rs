@@ -19,10 +19,11 @@ pub type Error = FontError;
 
 /// A parsed font whose raster entry points render GPU targets and return readback.
 /// Parsing, metrics, outline expansion and flattening remain in libfont.
-pub struct Font(libfont::Font);
+#[derive(Clone)]
+pub struct Font(Arc<libfont::Font>);
 impl Deref for Font { type Target = libfont::Font; fn deref(&self) -> &Self::Target { &self.0 } }
 impl Font {
-    pub fn parse(bytes: &[u8]) -> Result<Self, FontError> { libfont::Font::parse(bytes).map(Self) }
+    pub fn parse(bytes: &[u8]) -> Result<Self, FontError> { libfont::Font::parse(bytes).map(|font| Self(Arc::new(font))) }
     pub fn size26(size: f32) -> Result<i32, FontError> { libfont::Font::size26(size) }
     pub fn rasterize_glyph(&self, g: u16, size: f32) -> Result<GlyphBitmap, Error> {
         self.rasterize_glyph26(g, Self::size26(size)?)

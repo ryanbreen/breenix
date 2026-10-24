@@ -223,11 +223,12 @@ pub(super) fn start() -> State {
         screen_w, screen_h
     );
 
-    let settings = Settings::load();
+    let mut settings = Settings::load();
     let _ = CONFIG_ERROR.set(settings.error);
     let mut ui_font = settings.load_font();
     // Layout and painting use independent caches of the same configured font.
-    let _ = FONT_METRICS.set(std::sync::Mutex::new(settings.load_font()));
+    let metrics_font = ui_font.as_ref().map(|font| CachedFont::new(font.font().clone(), 256));
+    let _ = FONT_METRICS.set(std::sync::Mutex::new(metrics_font));
     let mut clock = clock::Clock::new(settings.frozen, settings.valid_test);
 
     // Paint the decorative background once; each desktop repaint copies it.
@@ -589,6 +590,7 @@ fn config_path(path: &str) -> std::path::PathBuf {
 
 struct Settings {
     font: Option<String>,
+    parsed_font: Option<Font>,
     frozen: bool,
     valid_test: bool,
     error: bool,
@@ -597,6 +599,7 @@ impl Settings {
     fn defaults() -> Self {
         Self {
             font: Some(FontConfig::load().display_path),
+            parsed_font: None,
             frozen: false,
             valid_test: false,
             error: false,
@@ -637,7 +640,7 @@ impl Settings {
         }
         if let Some(path) = &settings.font {
             let bytes = std::fs::read(path).map_err(|_| ())?;
-            Font::parse(&bytes).map_err(|_| ())?;
+            settings.parsed_font = Some(Font::parse(&bytes).map_err(|_| ())?);
         }
         settings.valid_test = true;
         Ok(settings)
@@ -664,12 +667,11 @@ impl Settings {
             }
         }
     }
-    fn load_font(&self) -> Option<CachedFont> {
+    fn load_font(&mut self) -> Option<CachedFont> {
         let path = self.font.as_ref()?;
-        let font = std::fs::read(path)
-            .ok()
-            .and_then(|data| Font::parse(&data).ok())
-            .map(|font| CachedFont::new(font, 256));
+        let font = self.parsed_font.take().or_else(|| {
+            std::fs::read(path).ok().and_then(|data| Font::parse(&data).ok())
+        }).map(|font| CachedFont::new(font, 256));
         if font.is_some() {
             print!("[bwm] display font loaded: {}\n", path);
         } else {
