@@ -12,6 +12,7 @@ description = "Userspace programs and utilities for Breenix"
 framebuffer-v1 = []
 
 [dependencies]
+input-abi = { path = "../../libs/input-abi" }
 # The 16 px bitmap font libgfx draws; suite-breengel reads its rasters as the reference cells.
 noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "size_32", "regular", "unicode-basic-latin", "unicode-specials"] }
 bgl = { path = "../../libs/bgl" }

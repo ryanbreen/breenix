@@ -117,19 +117,19 @@ fn overflow(lost: u64) -> WindowEvent {
 }
 
 // claim-lint:ok: Event validation is normative in docs/gui/breengel.md section 19.2 and B41 (#2312).
-/// Whether a compositor may write `event` (section 19.2): a kind of 1 to 15 other than
+/// Whether a compositor may write `event` (section 19.2): a kind of 1 to 20 other than
 /// `FontChanged`, which Breengel makes, and the three the kernel makes: `Resized` and
 /// `ResizeFailed` (only a `RESIZE` of the window's buffers reports them, so a size in one is
 /// the buffers' actual size), `CompositorChanged` (each claim's epoch); the compositor reports its own `Overflow`; text of
-/// at most 240 bytes; the reserved field zero.
+/// at most 240 bytes; clicks at most 2 for PointerButton and 0 for another kind (E18 W3).
 pub fn writable(event: &WindowEvent) -> bool {
-    use event_kind::{COMPOSITOR_CHANGED, FONT_CHANGED, RESIZED, RESIZE_FAILED, RESIZE_REQUESTED};
-    (1..=RESIZE_REQUESTED).contains(&event.kind)
-        && ![FONT_CHANGED, RESIZED, RESIZE_FAILED, COMPOSITOR_CHANGED].contains(&event.kind)
+    use event_kind::{COMPOSITOR_CHANGED, FONT_CHANGED, RESIZED, RESIZE_FAILED, RESIZE_REQUESTED, CLIPBOARD_CHANGED, CLIPBOARD_LOST, POINTER_BUTTON};
+    (1..=CLIPBOARD_LOST).contains(&event.kind)
+        && ![FONT_CHANGED, RESIZED, RESIZE_FAILED, COMPOSITOR_CHANGED, CLIPBOARD_CHANGED, CLIPBOARD_LOST].contains(&event.kind)
         && (event.kind != RESIZE_REQUESTED
             || ((1..=limits::MAX_DIMENSION).contains(&event.width) && (1..=limits::MAX_DIMENSION).contains(&event.height)))
         && event.text_len as usize <= limits::EVENT_TEXT
-        && event.reserved == 0
+        && (event.clicks == 0 || (event.kind == POINTER_BUTTON && event.clicks <= 2))
 }
 
 /// A window's event descriptor (`EVENT_FD`): readable for poll, select and epoll while the

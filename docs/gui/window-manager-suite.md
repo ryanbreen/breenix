@@ -89,8 +89,8 @@ all replay operations return ENOSYS in shell, desktop, probe and program boots.
 Root alone never enables replay. It is a named input control in the section 11
 point table, covered by the section 3.4 production absence and latch checks;
 `breengel/isolation/test-hooks-absent` must include its entry point before any
-implementation lands. This PR specifies a client for an absent endpoint and adds
-no kernel endpoint or input injection authority. A 64-byte
+implementation lands. The suite client requires the production endpoint; the client adds no kernel
+endpoint or input injection authority. A 64-byte
 request asks the *bound instance's production completion function* to consume a recorded
 report and use its production requeue path. Selector u32 at 0 is 1 keyboard or 2 pointer;
 bit 8 suppresses input::report once. Bytes 8..15 hold the USB boot-keyboard A report
@@ -111,6 +111,39 @@ the target's own virtual device. QMP absolute axes are 0..32767. A host send is 
 verdict: cases require client events, geometry and/or device scanout. Host transport errors
 remain in the hostkeys log and missing delivery fails the guest case. QMP smoke does not
 replace the production-completion driver cases.
+
+### Pure decoders and bound-device inventory (W1/W8)
+
+The decode-only test transport is `/proc/breenix/input-decode`, under the same
+immutable suite latch and root authority as input-replay. It must call the pure
+production decoder, including the production per-endpoint button merger for HID;
+it uses the decoder implemented for production input. Production-absence coverage must
+include it before an implementation lands.
+
+A virtio request is 16 bytes: selector u32 1, reserved u32 zero, then the eight
+recorded event bytes (kind u16, code u16, value i32). Its eight-byte reply is the
+normalized core kind/code/value. <!-- claim-lint:ok: Normative W1/W8 decoder-test transport; userspace/programs/src/wm_suite/input_devices.rs sends and judges this layout. -->
+
+A HID request is five u32s (selector 2, endpoint,
+descriptor length, report length, reset-state flag), then descriptor and report
+bytes. Its 16-byte reply is four i32s: raw X, raw Y, merged buttons and wheel.
+Reset-state is 1 only for the capture's first report; subsequent reports retain
+the real endpoint merger state. Decoder tests assert the literal result rather than
+transport success. A missing implementation fails by endpoint name.
+
+Boot-keyboard selector 3 is 16 bytes: selector u32, reset-state u32, then the
+literal eight-byte boot report. Its reply starts with phantom u32 (0 or 1) and
+edge-count u32 (at most 32), then that many eight-byte kind u16, code u16,
+value i32 records. Reset is 1 on the first report only; rollover and release
+reports use the same production decoder state. These inputs are hand-written
+literal vectors, not recordings. Relative-mouse and wheel vectors use selector 2.
+
+`/proc/breenix/input-devices` snapshots bound input device rows as decimal id,
+driver name and whitespace-separated capability tokens. The ARM64 QEMU names are
+`virtio-keyboard-mmio` and `virtio-tablet-mmio`. The keyboard declares
+`key=1..255`; the tablet declares `abs=0:0..32767`, `abs=1:0..32767`,
+`key=272..274` and `rel=6,8`. These rows describe actual bound instances, not
+fixtures or a hard-coded coverage claim.
 
 ### Clock and completed composites
 
@@ -136,39 +169,79 @@ history is staged by the host or suite.
 
 ### Clipboard
 
-bwm serves `/run/bwm/clipboard` as a Unix stream socket. The peer is a real process
-owning a registered window in this desktop. A request is `BCLIP001` (8 bytes), op u32
-(1 SET, 2 GET), payload length u32, window id u64, then the length-counted bytes. GET
-has no payload. A reply is status i32 (0 or negative errno), payload length u32, change
-serial u64, then payload. SET returns an empty payload; GET returns the stored bytes.
-The serial starts nonzero and increases on replacement. UTF-8 and embedded NUL are
-length-counted, with the plan's 16 MiB bound. Closing the setting client's window does
-not clear the stored bytes. The suite's clients call the real socket; there is no
-in-suite clipboard store and no host-staged result.
+W4 replaces the proposed bwm socket with the kernel's CLIPBOARD_SET,
+CLIPBOARD_GET and CLIPBOARD_SUBSCRIBE operations on syscall 414, defined in
+[BreenGL 17.1](breengel.md#171-the-system-call). Clients call those operations
+with their own registered window. Lengths, UTF-8, embedded NUL, serial ordering,
+retained RLIMIT_AS charge and claim-end clearing follow that contract. There is
+no in-suite clipboard store or host-staged result.
 
-## Baseline scope and incomplete milestones
+## W12 recount
 
-This baseline implements a first cut of the plan's 249 cases, not the complete E18
-acceptance suite. Additional harness controls do not replace any planned case.
-Each incomplete milestone measures both its populated category and an empty
-`<category>-remaining` category using the existing planned-category mechanism.
-Full-suite and milestone acceptance stay blocked until those cases are implemented.
-The outstanding plan case ids are listed below; they are not runtime skips.
+The plan's 249 identifiers become **246 ARM64 E18 identifiers** after
+`input-devices/ps2-scancodes` moves to the x86 hardware suite and the two
+recorded hypervisor tablet cases remain planned W8 catch-up. The five existing
+extra controls remain additional: input-core/virtual-keyboard and
+virtual-pointer, startup/desktop-control and independent-clients, and
+composition/oracle-corruption. The completed table therefore has 251 cases.
+HID decoder cases exercise literal layouts; Parallels/VMware recorded tablet and bound completion
+rows and boots remain the W8 catch-up, not ARM64 execution evidence.
 
-- `input-core-remaining`: `uinput-create`, `uinput-nonroot`, `abi-layout`, `key-press-release`, `modifiers-derived`, `pointer-absolute`, `pointer-relative`, `buttons`, `wheel`, `syn-batches`, `time-real`, `two-readers`, `syn-dropped`, `poll`, `grab`, `grab-select`, `grab-drain`, `text-invalid`, `malformed-batch`, `console-keymap`, `console-special-keys`, `console-modifiers`, `ledger-gap`, `console-after-compositor`.
-- `input-devices-remaining`: `hid-keyboard-decode`, `hid-rollover`, `hid-tablet-parallels`, `hid-tablet-vmware`, `hid-relative`, `hid-wheel`, `virtio-keyboard-decode`, `virtio-tablet-decode`, `ps2-scancodes`, `replay-wake-fault`, `devices-bound`, `device-capabilities`.
-- `startup-remaining`: `no-gpu-required`, `empty-desktop`, `config-test`, `config-invalid`, `fonts-loaded`, `hotkeys-loaded`, `composited-marker`, `epoch-ack`.
-- `composition-remaining`: `client-position`, `title-text`, `shadow`, `background`, `appbar-entries`, `chromeless`, `sixteen-clients`, `moving-client`, `frozen-client`, `present-failure`, `visible-only`, `expose-move`, `partial-equals-full`, `damage-bounded`, `outer-bounds`, `scene-identical`, `resized-content`, `cursor-over-window`, `cursor-edge-shapes`, `cursor-stationary-shape`, `clock-test-config`, `no-fps-overlay`.
-<!-- claim-lint:ok: Planned case identifiers copied from docs/gui/plan.md section 16, not measured claims. -->
-- `stacking-remaining`: `raise-stable-id`, `appbar-order`, `minimize-no-input`, `minimize-close`, `fkeys-skip-minimized`, `chromeless-top`, `dimmer-only-with-chromeless`, `launcher-toggle`, `close-focus-next`, `new-on-top`, `registry-agrees`, `model-sequence`, `minimize-all-restore-all`, `titlebar-drag-raises`.
-- `focus-remaining`: `pair-appbar`, `pair-cycle`, `focus-after-close`, `cycle-prev`, `cycle-skips-minimized`, `release-follows-press`, `focus-change-mid-press`, `repeat-delay`, `repeat-rate`, `repeat-cancel`, `repeat-frozen-clock`, `super-return`, `alt-q`, `hotkey-consumed`, `super-double-tap`, `super-single-tap`, `hotkeys-config`, `no-focus-no-delivery`, `focus-new-window`, `routing-after-exit`, `lost-then-delivered`.
-<!-- claim-lint:ok: Planned case identifiers copied from docs/gui/plan.md section 16, not measured claims. -->
-- `pointer-remaining`: `capture-target-closes`, `scroll-wakes`, `fast-click`, `double-click-threshold`, `double-click-distance`, `chrome-click`, `enter-leave`, `cursor-position`, `modifier-click`, `clamp`, `minimized-none`, `chromeless-click`, `press-raises-delivers`, `hit-test`, `stale-scene`.
-- `geometry-remaining`: `drag-top-clamp`, `drag-keeps-titlebar`, `resize-left`, `resize-top`, `resize-corners`, `resize-minimum`, `resize-maximum`, `configure-ack`, `buffer-matches`, `coalesce`, `exit-during-drag`, `exit-during-resize`, `client-title`, `remembered-geometry`, `expose-during-drag`, `resize-repaints`, `geometry-registry`, `chromeless-not-resizable`.
-- `lifecycle-remaining`: `close-one-of-two`, `launch-missing`, `launch-fork-fails`, `launch-close-50`, `read-other-denied`, `huge-window`, `commit-flood`, `title-flood`, `never-reads`, `normal-exit-gives-back`, `window-limit`.
-- `recovery-remaining`: `death-releases`, `blocked-acquire`, `blocked-wait`, `death-at-composite`, `death-mid-configure`, `death-mid-capture`, `focus-restored`, `clipboard-reset`, `supervisor-gives-up`, `unexpected-crash-fails`.
-- `clipboard-remaining`: `set-get`, `empty`, `too-large`, `change-notice`, `concurrent-sets`, `mime-text-only`, `window-required`, `unprivileged`, `textfield-copy`, `textfield-paste`.
-- `liveness-remaining`: `deadline-wake`, `compositor-wait-timeout`, `slow-client`, `stopped-client`, `stress-io`, `progress-under-load`, `cursor-shape-idle`.
+| Category | Planned after W12 | Extra controls | Runnable target |
+|---|---:|---:|---:|
+| input-core | 31 | 2 | 33 |
+| input-devices | 12 | 0 | 12 |
+| startup | 12 | 2 | 14 |
+| composition | 27 | 1 | 28 |
+| stacking | 19 | 0 | 19 |
+| focus | 30 | 0 | 30 |
+| pointer | 21 | 0 | 21 |
+| geometry | 24 | 0 | 24 |
+| lifecycle | 20 | 0 | 20 |
+| recovery | 15 | 0 | 15 |
+| clipboard | 16 | 0 | 16 |
+| liveness | 12 | 0 | 12 |
+| performance | 7 | 0 | 7 |
+| Total | 246 | 5 | 251 |
+
+Changed assertions, with their identifiers retained:
+
+- W5 geometry/configure-ack waits for LIST's owner size before the frame changes.
+- W5 geometry/coalesce allows at most one outstanding ResizeRequested until
+  LIST reports a size change.
+- W5 recovery/death-mid-configure leaves the owner's size unchanged when
+  a pending request is abandoned by compositor death.
+- W6 startup/no-gpu-required requires bwm to stay alive and compose on the
+  target GPU core, with ARM64 QEMU GL inside the effort.
+- W10 composition/chromeless, stacking/chromeless-top and
+  stacking/dimmer-only-with-chromeless require chromeless content above both
+  bars with the full-mode dimmer geometry in bwm.md.
+
+W11 gives the physical display to each case's bwm. Between cases the stage
+restores its own frame. A host send, a submission or a marker alone cannot
+pass a native scanout assertion. Runtime verdict evidence and the missing recorded tablet fixtures remain tracked in #2370.
+
+## Executable W12 inventory
+
+The table contains the 246 ARM64 plan identifiers and five additional controls,
+251 cases in thirteen categories. The former planned remaining categories are
+removed only because their identifiers now have executable case bodies. Runtime
+failure, including a missing recorded fixture or production endpoint, is still
+failure; an executable inventory does not establish E18 acceptance.
+
+The two tablet cases remain in the manifest's `plannedCases`, scoped to
+`parallels` and `vmware` respectively. They are absent from the executable ARM64
+inventory and its 251-case count. The W8 catch-up needs genuine descriptors and
+reports in `/usr/share/breenix/input-fixtures/parallels.txt` and `vmware.txt`,
+installed by the image builder from `testdata/input/`. Missing captures block
+that catch-up; lane 0's ARM64 run excludes the 2/2 planned tablet cases.
+Synthetic layouts cannot substitute for recorded hypervisor captures.
+
+Each non-comment fixture line is seven whitespace-separated fields: decimal
+endpoint id, descriptor hex, report hex, expected raw X, raw Y, merged button
+mask and wheel steps. Expected values are independent literal annotations on the
+recording. Each fixture has at least two report transitions; VMware includes
+multiple endpoints with buttons held and released independently.
 
 ## Baseline review corrections
 
@@ -231,3 +304,71 @@ history and clipboard interfaces remain #2367; presentation/update failures rema
 inherited BreenGL title mismatch (#2364), with no window-manager mismatch.
 
 Serial SHA-256: `38106664b610bb5c22195b20ac9e515e12d37a9d86475912daa22e9239c76358`.
+
+## Configurable client
+
+`wm-client_test` renders its id-derived quadrant pattern through BreenGL v2. The
+case starts it with `--control`; command and reply descriptors are 3 and 4, and
+descriptor 5 maps the shared event log. The 32-byte `WMEVT001` header contains
+producer, consumer and lost counters. Entries start at page offset 4096 and hold
+a window id followed by its 320-byte window event. The producer publishes an
+entry before acting on the event, including an event-triggered crash. A full
+8192-entry ring reports loss instead of overwriting unread entries.
+
+The command protocol lives in `wm_suite/protocol.rs`. A reply identifies the
+selected window, its latest commit, dimensions, pattern seed, published event
+count, commit timestamp, processing commit, second window, animation counter and
+last pixel-changing commit. Readers stop at the reply's event watermark. A
+`COMMIT_NO_CHANGE` reply retains the previous pixel-changing commit: scanout
+observation still requires the native composite's render fence, target
+generation and client entry for that pixel-changing commit.
+
+The standalone flags are `--ignore-close`, `--slow-commit[=N]`, `--hang`,
+`--crash-after=N`, `--two-windows`, `--animate`, `--refuse-resize` and
+`--never-read-events`. Slow commit defaults to a four-step period; `N` selects
+another positive period. Animation draws a decimal frame counter over the
+pattern. Control commands select either window, step animation, change the slow
+period or behavior flags, set a title, request a resize, register an initially
+unregistered window, create another window, exit or exec. Clipboard commands use
+the kernel window operations. `--chromeless` and `--seed=N` configure composition
+fixtures. Hang stops command and event servicing after the initial frame;
+never-read-events continues servicing commands without draining the window fd.
+
+
+## Fixed scene hash
+
+`composition/scene-identical` uses three nested chromeless windows, sized
+480x320, 320x240 and 160x120, with seeds 11, 23 and 41. The 3/3 windows contribute
+visible pixels. Each is horizontally centered at one fifth of the native mode's
+height. The case verifies these positions, stacking and completed provenance,
+then compares 153600/153600 pixels of their 480x320 bounding rectangle with independently
+annotated literal palettes. The pointer is parked outside the rectangle.
+FNV-1a over canonical B,G,R,FF bytes of that rectangle is
+`3d35eb8722259f25`. The fixed crop makes the pinned hash independent of native
+resolution and UI scale; the desktop outside this scene has its own pixel cases.
+
+The text-field clipboard cases embed the real libbui TextField in wm-client_test
+and pass bwm-delivered Ctrl+C/Ctrl+V into its production key handler. The fixture
+supplies selection state and reads field text; it performs no clipboard operation
+on the widget's behalf. Missing production widget integration therefore fails.
+
+
+Case configuration files live in a per-process guest configuration root selected
+by BREENIX_CONFIG_ROOT. Killing a timed-out case cannot alter the next case's
+bwm.conf or hotkeys.conf. Clipboard notice delivery ids and stored change serials
+are distinct under W4: the case waits for the notice kind, then checks GET's
+change serial and bytes. The fixed scene judges the 3/3 completed client commits before evaluating its
+literal pixels and pinned hash.
+
+
+The startup command's final u32 packs initial physical width in bits 0-15 and
+height in bits 16-31, each 1..4096. Normal controlled clients start at 240x160.
+The sixteen-client fixture forks sixteen independent 92x64 clients waiting for
+their startup commands, then initializes and acknowledges their GPU paints
+before starting bwm and registering them as a batch. Deferring GPU initialization
+keeps child creation separate from concurrent GPU setup. These non-reading
+clients use 64 event-log slots with the same strict overflow detection; other
+fixtures retain 8192 slots. Their complete content rectangles fit
+between the 100-pixel cascade steps, so one native observation judges the full
+pattern of each client, with sixteen provenance entries, within the original
+case deadline. It does not require sixteen serial focus-and-readback cycles.

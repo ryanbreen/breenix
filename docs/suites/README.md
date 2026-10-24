@@ -158,6 +158,13 @@ periodic timer fired, each in microseconds after the case armed it, the programm
 `every` and how late an expiry may come, `limit`; it carries at most 32 times. None of the
 records is a result: the CASE line that follows decides the case.
 
+Host input and SSH requests are transport, separate from the twelve measurement
+records. Their per-case budget is 64 requests; the window-manager coalescing
+fixture needs 64 for positioning, press, sixty motions, release and the final
+positive delivery control. Host key and
+pointer sequence numbers reserve a disjoint 64-number block per case. Exhausting
+one budget does not consume the other. <!-- claim-lint:ok: Normative transport budget; libs/libbreenix/src/suite.rs keeps RECORDS_PER_CASE=12 and HOST_REQUESTS_PER_CASE=64. -->
+
 <!-- claim-lint:ok: libs/libbreenix/src/suite.rs sets RECORDS_PER_CASE to 12 and emit_record drops records after that cap. -->
 They are written like the other records, one write starting with a newline. A case prints
 them through `value(name, number, unit, expect)`, `wait_for(ms, result)` and
@@ -1564,12 +1571,11 @@ scripts/boot-interactive.sh --mode suite --suite gpu --gpu-gl --gate-timeout 900
 
 ## Window manager
 
-`window-manager` begins E18 with 82 runnable baseline cases in thirteen populated categories:
+`window-manager` has the W12 inventory of 253 case bodies in thirteen categories:
 `input-core`, `input-devices`, `startup`, `composition`, `stacking`, `focus`, `pointer`,
 `geometry`, `lifecycle`, `recovery`, `clipboard`, `liveness` and `performance`.
-Incomplete milestones also measure empty `*-remaining` categories; the
-[scope ledger](../gui/window-manager-suite.md#baseline-scope-and-incomplete-milestones)
-lists the unwritten plan cases, which block acceptance through planned categories.
+The [inventory](../gui/window-manager-suite.md#executable-w12-inventory) distinguishes
+executable cases from runtime acceptance, including missing target-recorded fixtures.
 Its executable is `/sbin/suite-window-manager`; `wm-client_test` is an independent GPU
 client, installed by the normal image layout. The [observation and transport contract](../gui/window-manager-suite.md)
 describes the literal expectations, input and clipboard operations, completion receipts
@@ -1698,3 +1704,8 @@ erase, kill-line and newline recovery.
 The shared discipline is also measured by terminals `termios/canonical-limit`,
 and signals `waits/console-read-signals` observes blocked console and VT readers
 before sending TERM (default, ignored, caught and restarting) and KILL.
+
+A manifest may list `plannedCases` for target-specific catch-up. Each entry has
+`category`, `id`, `title`, `targets` (unique known target IDs) and `reason`. Its
+category must exist, and its ID must not also occur in that category's executable
+`cases`. Planned entries are excluded from executable inventories and counts.

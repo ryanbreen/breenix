@@ -101,7 +101,8 @@ done
 # installed at /usr/local/test/share/breengel/ and /usr/local/test/share/breengel/frames/.
 BREENGEL_DATA="$PROJECT_ROOT/testdata/breengel"
 BREENGEL_FRAMES="$PROJECT_ROOT/docs/suites/frames/breengel"
-for dir in "$BREENGEL_DATA" "$BREENGEL_FRAMES"; do
+INPUT_FIXTURES="$PROJECT_ROOT/testdata/input"
+for dir in "$BREENGEL_DATA" "$BREENGEL_FRAMES" "$INPUT_FIXTURES"; do
     [[ -d "$dir" ]] || continue
     while IFS= read -r -d '' f; do
         payload_bytes=$(( payload_bytes + $(file_size_bytes "$f") ))
@@ -191,6 +192,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
     BREENGEL_MOUNTS=()
     [[ -d "$BREENGEL_DATA" ]] && BREENGEL_MOUNTS+=(-v "$BREENGEL_DATA:/breengel-data:ro")
     [[ -d "$BREENGEL_FRAMES" ]] && BREENGEL_MOUNTS+=(-v "$BREENGEL_FRAMES:/breengel-frames:ro")
+    [[ -d "$INPUT_FIXTURES" ]] && BREENGEL_MOUNTS+=(-v "$INPUT_FIXTURES:/input-fixtures:ro")
 
     docker run --rm --privileged \
         -v "$TARGET_DIR:/work" \
@@ -364,6 +366,10 @@ EOF
             echo "  Installed $font_count fonts in /usr/share/fonts"
 
             # Install the breengel suite test data and reviewed reference frames
+            if [ -d /input-fixtures ]; then
+                mkdir -p /mnt/ext2/usr/share/breenix/input-fixtures
+                cp -R /input-fixtures/. /mnt/ext2/usr/share/breenix/input-fixtures/
+            fi
             if [ -d /breengel-data ] || [ -d /breengel-frames ]; then
                 mkdir -p /mnt/ext2/usr/local/test/share/breengel
                 [ -d /breengel-data ] && cp -R /breengel-data/. /mnt/ext2/usr/local/test/share/breengel/
@@ -646,6 +652,10 @@ EOF
     echo "  Installed $font_count fonts in /usr/share/fonts"
 
     # Install the breengel suite test data and reviewed reference frames
+    if [[ -d "$INPUT_FIXTURES" ]]; then
+        mkdir -p "$MOUNT_DIR/usr/share/breenix/input-fixtures"
+        cp -R "$INPUT_FIXTURES/." "$MOUNT_DIR/usr/share/breenix/input-fixtures/"
+    fi
     if [[ -d "$BREENGEL_DATA" || -d "$BREENGEL_FRAMES" ]]; then
         mkdir -p "$MOUNT_DIR/usr/local/test/share/breengel"
         [[ -d "$BREENGEL_DATA" ]] && cp -R "$BREENGEL_DATA/." "$MOUNT_DIR/usr/local/test/share/breengel/"

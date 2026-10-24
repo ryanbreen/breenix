@@ -1,0 +1,295 @@
+use super::kit::*;
+
+pub fn keyboard_completion() -> CaseResult {
+    let mut stream = Stream::open()?;
+    let (_d, mut c) = one()?;
+    replay(1, 0, 0)?;
+    check(
+        stream
+            .read(2)?
+            .iter()
+            .any(|e| e.kind == 1 && e.code == 30 && e.value == 1),
+        "bound keyboard completion did not report A",
+    )?;
+    c.await_event("bound keyboard completion wakes bwm and delivers A", |e| {
+        e.kind == kind::KEY_PRESS && e.keycode == 30
+    })?;
+    Ok(())
+}
+pub fn pointer_completion() -> CaseResult {
+    let mut stream = Stream::open()?;
+    let (_d, mut c) = one()?;
+    {
+        let w = c.info()?;
+        replay(2, w.x + 40, w.y + 50)?;
+    };
+    check(
+        stream.read(4)?.iter().any(|e| e.kind == 3),
+        "bound pointer completion did not report absolute axes",
+    )?;
+    c.await_event("bound pointer completion wakes bwm", |e| {
+        e.kind == kind::POINTER_MOVE
+    })?;
+    Ok(())
+}
+pub fn replay_faults() -> CaseResult {
+    let mut stream = Stream::open()?;
+    let (_d, mut c) = one()?;
+    replay(1, 0, 0)?;
+    c.await_event("positive keyboard completion before planted fault", |e| {
+        e.kind == kind::KEY_PRESS && e.keycode == 30
+    })?;
+    stream.read(2)?;
+    c.clear()?;
+    replay(0x101, 0, 0)?; // same production completion, suppress its report once
+    check(
+        stream.read(1).is_err(),
+        "report-suppression fault still published input",
+    )?;
+    c.snapshot()?;
+    check(
+        c.events.iter().all(|e| e.kind != kind::KEY_PRESS),
+        "report-suppression fault still reached a client",
+    )
+}
+
+/// Selector 3 runs the kernel's stateful boot-keyboard decoder. Replies carry
+/// a phantom flag and literal normalized key edges, without publishing input.
+fn keyboard_decode(reports: &[[u8; 8]]) -> Result<Vec<(bool, Vec<(u16, i32)>)>, String> {
+    use std::io::{Read, Write};
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/proc/breenix/input-decode")
+        .map_err(|e| format!("production keyboard decoder transport is absent: {e}"))?;
+    let mut decoded = Vec::new();
+    for (n, report) in reports.iter().enumerate() {
+        let mut request = Vec::new();
+        request.extend_from_slice(&3u32.to_le_bytes());
+        request.extend_from_slice(&u32::from(n == 0).to_le_bytes());
+        request.extend_from_slice(report);
+        f.write_all(&request).map_err(|e| e.to_string())?;
+        let mut header = [0; 8];
+        f.read_exact(&mut header).map_err(|e| e.to_string())?;
+        let phantom = u32::from_le_bytes(header[..4].try_into().unwrap());
+        let count = u32::from_le_bytes(header[4..].try_into().unwrap()) as usize;
+        if phantom > 1 || count > 32 {
+            return Err("invalid keyboard decoder reply".into());
+        }
+        let mut edges = Vec::new();
+        for _ in 0..count {
+            let mut raw = [0; 8];
+            f.read_exact(&mut raw).map_err(|e| e.to_string())?;
+            if u16::from_le_bytes(raw[..2].try_into().unwrap()) != 1 {
+                return Err("keyboard decoder emitted a non-key edge".into());
+            }
+            edges.push((
+                u16::from_le_bytes(raw[2..4].try_into().unwrap()),
+                i32::from_le_bytes(raw[4..].try_into().unwrap()),
+            ));
+        }
+        decoded.push((phantom == 1, edges));
+    }
+    Ok(decoded)
+}
+pub fn hid_keyboard_decode() -> CaseResult {
+    let got = keyboard_decode(&[[2, 0, 4, 5, 0, 0, 0, 0], [0; 8]])?;
+    check(
+        got == [
+            (false, vec![(42, 1), (30, 1), (48, 1)]),
+            (false, vec![(42, 0), (30, 0), (48, 0)]),
+        ],
+        "production boot-keyboard decode differs from literal key edges",
+    )
+}
+pub fn hid_rollover() -> CaseResult {
+    let got = keyboard_decode(&[[0, 0, 4, 5, 6, 7, 8, 9], [0, 0, 1, 1, 1, 1, 1, 1], [0; 8]])?;
+    check(
+        got == [
+            (
+                false,
+                vec![(30, 1), (48, 1), (46, 1), (32, 1), (18, 1), (33, 1)],
+            ),
+            (true, vec![]),
+            (
+                false,
+                vec![(30, 0), (48, 0), (46, 0), (32, 0), (18, 0), (33, 0)],
+            ),
+        ],
+        "production phantom state did not retain the six held keys",
+    )
+}
+// HID 1.11 Appendix B.2 mouse fields with a signed wheel input.
+const MOUSE: &[u8] = &[
+    0x05, 1, 0x09, 2, 0xa1, 1, 0x09, 1, 0xa1, 0, 0x05, 9, 0x19, 1, 0x29, 3, 0x15, 0, 0x25, 1, 0x95,
+    3, 0x75, 1, 0x81, 2, 0x95, 1, 0x75, 5, 0x81, 1, 0x05, 1, 0x09, 0x30, 0x09, 0x31, 0x09, 0x38,
+    0x15, 0x81, 0x25, 0x7f, 0x75, 8, 0x95, 3, 0x81, 6, 0xc0, 0xc0,
+];
+fn pointer_decode(reports: &[[u8; 4]]) -> Result<Vec<[i32; 4]>, String> {
+    use std::io::{Read, Write};
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/proc/breenix/input-decode")
+        .map_err(|e| format!("production pointer decoder transport is absent: {e}"))?;
+    let mut decoded = Vec::new();
+    for (n, report) in reports.iter().enumerate() {
+        let mut request = Vec::new();
+        for v in [
+            2u32,
+            0,
+            MOUSE.len() as u32,
+            report.len() as u32,
+            u32::from(n == 0),
+        ] {
+            request.extend_from_slice(&v.to_le_bytes());
+        }
+        request.extend_from_slice(MOUSE);
+        request.extend_from_slice(report);
+        f.write_all(&request).map_err(|e| e.to_string())?;
+        let mut reply = [0; 16];
+        f.read_exact(&mut reply).map_err(|e| e.to_string())?;
+        decoded.push(std::array::from_fn(|i| {
+            i32::from_le_bytes(reply[i * 4..i * 4 + 4].try_into().unwrap())
+        }));
+    }
+    Ok(decoded)
+}
+pub fn hid_relative() -> CaseResult {
+    let got = pointer_decode(&[[5, 0xfe, 4, 0], [0, 0, 0, 0]])?;
+    check(
+        got == [[-2, 4, 5, 0], [0, 0, 0, 0]],
+        "production relative mouse decode differs from literal motion and buttons",
+    )?;
+    // Exercise the decoded deltas through the real pointer accumulator as well.
+    let mut v = Virtual::create()?;
+    let (mut d, c) = one()?;
+    d.pointer(1, d.height as i32 - 2, 0, 0)?;
+    time::sleep_ms(150)?;
+    v.batch(&[(2, 0, got[0][0]), (2, 1, got[0][1])], 100)?;
+    until(
+        1000,
+        "decoded relative deltas clamp at the mode edges",
+        || Ok(Screen::read()?.pixel(0, d.height as i32 - 1)? == 0xff000000),
+    )?;
+    d.shown(&c)?;
+    Ok(())
+}
+pub fn hid_wheel() -> CaseResult {
+    check(
+        pointer_decode(&[[0, 0, 0, 0xff], [0, 0, 0, 1], [0, 0, 0, 0]])?
+            == [[0, 0, 0, -1], [0, 0, 0, 1], [0, 0, 0, 0]],
+        "production signed wheel decode differs from literal steps",
+    )
+}
+/// Decode-only test transport runs the same pure virtio decoder used by completion.
+fn virtio_decode(events: &[(u16, u16, i32)]) -> CaseResult {
+    use std::io::{Read, Write};
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/proc/breenix/input-decode")
+        .map_err(|e| format!("pure input decoder /proc/breenix/input-decode is absent: {e}"))?;
+    for &(kind, code, value) in events {
+        let mut request = [0; 16];
+        request[..4].copy_from_slice(&1u32.to_le_bytes());
+        request[8..10].copy_from_slice(&kind.to_le_bytes());
+        request[10..12].copy_from_slice(&code.to_le_bytes());
+        request[12..16].copy_from_slice(&value.to_le_bytes());
+        f.write_all(&request).map_err(|e| e.to_string())?;
+        let mut reply = [0; 8];
+        f.read_exact(&mut reply).map_err(|e| e.to_string())?;
+        check(
+            u16::from_le_bytes(reply[..2].try_into().unwrap()) == kind
+                && u16::from_le_bytes(reply[2..4].try_into().unwrap()) == code
+                && i32::from_le_bytes(reply[4..8].try_into().unwrap()) == value,
+            "virtio pure decode differs from literal core event",
+        )?;
+    }
+    Ok(())
+}
+pub fn virtio_keyboard_decode() -> CaseResult {
+    virtio_decode(&[(1, 30, 1), (1, 30, 0), (1, 42, 1), (1, 42, 0)])
+}
+pub fn virtio_tablet_decode() -> CaseResult {
+    virtio_decode(&[
+        (3, 0, 0),
+        (3, 1, 32767),
+        (1, 0x110, 1),
+        (1, 0x111, 1),
+        (1, 0x112, 1),
+        (2, 8, -1),
+        (2, 6, 1),
+        (0, 0, 0),
+    ])
+}
+pub fn replay_wake_fault() -> CaseResult {
+    use libbreenix::test_control as tc;
+    let (_d, mut c) = one()?;
+    replay(1, 0, 0)?;
+    c.await_event("positive completion wake", |e| {
+        e.kind == kind::KEY_PRESS && e.keycode == 30
+    })?;
+    c.clear()?;
+    let point = abi::tc_point::INPUT_WAKE_SKIPPED;
+    let before = tc::fired(point)?;
+    tc::arm(point, 0, 0)?;
+    replay(1, 0, 0)?;
+    check(
+        tc::fired(point)? == before + 1,
+        "wake suppression did not fire exactly once",
+    )?;
+    time::sleep_ms(100)?;
+    c.snapshot()?;
+    check(
+        c.events.iter().all(|e| e.kind != kind::KEY_PRESS),
+        "idle compositor still received a suppressed wake",
+    )?;
+    tc::disarm_all()?;
+    replay(1, 0, 0)?;
+    c.await_event("clean completion wake after fault", |e| {
+        e.kind == kind::KEY_PRESS && e.keycode == 30
+    })?;
+    Ok(())
+}
+pub fn devices_bound() -> CaseResult {
+    let text = std::fs::read_to_string("/proc/breenix/input-devices")
+        .map_err(|e| format!("bound input device inventory is absent: {e}"))?;
+    let mut names = text
+        .lines()
+        .filter_map(|l| l.split_whitespace().nth(1))
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    check(
+        names == ["virtio-keyboard-mmio", "virtio-tablet-mmio"],
+        "ARM64 QEMU bindings differ from the coverage map",
+    )
+}
+pub fn device_capabilities() -> CaseResult {
+    let text = std::fs::read_to_string("/proc/breenix/input-devices")
+        .map_err(|e| format!("input capability inventory is absent: {e}"))?;
+    let keyboard = text
+        .lines()
+        .find(|l| l.split_whitespace().nth(1) == Some("virtio-keyboard-mmio"))
+        .ok_or("bound keyboard absent")?;
+    let pointer = text
+        .lines()
+        .find(|l| l.split_whitespace().nth(1) == Some("virtio-tablet-mmio"))
+        .ok_or("bound tablet absent")?;
+    check(
+        keyboard.split_whitespace().any(|s| s == "key=1..255"),
+        "keyboard key capabilities differ",
+    )?;
+    for cap in [
+        "abs=0:0..32767",
+        "abs=1:0..32767",
+        "key=272..274",
+        "rel=6,8",
+    ] {
+        check(
+            pointer.split_whitespace().any(|s| s == cap),
+            "tablet axes/buttons/wheel capabilities differ from declaration",
+        )?;
+    }
+    Ok(())
+}

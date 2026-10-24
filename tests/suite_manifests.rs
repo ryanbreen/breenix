@@ -186,6 +186,43 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
             errors.push(format!("{at}: hostRunner is true when present"));
         }
     }
+    // Planned target-specific catch-up is metadata outside executable inventory.
+    if let Some(planned) = object.get("plannedCases") {
+        expected.push("plannedCases");
+        match planned.as_array() {
+            Some(entries) if !entries.is_empty() => {
+                let mut ids = HashSet::new();
+                for entry in entries {
+                    let Some(entry) = entry.as_object() else {
+                        errors.push(format!("{at}: planned case must be an object"));
+                        continue;
+                    };
+                    keys(entry, &["category", "id", "title", "targets", "reason"], &at, errors);
+                    let category = text(entry, "category", &at, errors);
+                    let id = text(entry, "id", &at, errors);
+                    let _ = text(entry, "title", &at, errors);
+                    let _ = text(entry, "reason", &at, errors);
+                    if !is_id(category) || !is_id(id) || !ids.insert((category, id)) {
+                        errors.push(format!("{at}: planned case needs a unique category/id"));
+                    }
+                    if !entry.get("targets").and_then(Value::as_array).is_some_and(|targets| {
+                        let mut seen = HashSet::new();
+                        !targets.is_empty() && targets.iter().all(|t| t.as_str().is_some_and(|t|
+                            ["arm64-qemu", "parallels", "vmware", "x86-metal"].contains(&t) && seen.insert(t)))
+                    }) {
+                        errors.push(format!("{at}: planned case requires unique known targets"));
+                    }
+                    let category = object.get("categories").and_then(Value::as_array)
+                        .and_then(|categories| categories.iter().find(|c| c.get("id").and_then(Value::as_str) == Some(category)));
+                    if category.is_none() || category.and_then(|c| c.get("cases")).and_then(Value::as_array)
+                        .is_some_and(|cases| cases.iter().any(|c| c.get("id").and_then(Value::as_str) == Some(id))) {
+                        errors.push(format!("{at}: planned case must name an existing category and must not also be executable"));
+                    }
+                }
+            }
+            _ => errors.push(format!("{at}: plannedCases must be a nonempty array")),
+        }
+    }
     keys(object, &expected, &at, errors);
     let id = text(object, "id", &at, errors).to_string();
     if !id.is_empty() && !is_id(&id) {

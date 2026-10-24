@@ -417,7 +417,7 @@ fn events_compositor_changed() -> CaseResult {
 }
 
 fn events_unknown_type() -> CaseResult {
-    for k in [0u16, 16, 99, u16::MAX] {
+    for k in [0u16, 21, 99, u16::MAX] {
         let mut e = key(k, 30);
         e.text = [b'x'; 240];
         e.text_len = 1;
@@ -811,7 +811,7 @@ fn events_abi_layout() -> CaseResult {
     put(&mut want, 0, serial.to_le_bytes());
     for (at, len, name) in [(0, 8, "serial"), (8, 8, "time_ns"), (16, 8, "epoch"), (24, 2, "kind"), (26, 2, "flags"), (28, 4, "modifiers"),
         (32, 4, "keycode"), (36, 4, "button"), (40, 4, "x"), (44, 4, "y"), (48, 4, "scroll_x"), (52, 4, "scroll_y"), (56, 4, "width"),
-        (60, 4, "height"), (64, 4, "pressed"), (68, 4, "text_len"), (72, 4, "lost"), (76, 4, "reserved"), (80, 240, "text")] {
+        (60, 4, "height"), (64, 4, "pressed"), (68, 4, "text_len"), (72, 4, "lost"), (76, 4, "clicks"), (80, 240, "text")] {
         ensure(out[at..at + len] == want[at..at + len], "19.1", format!(
             "the event read back has {name} @{at} = {:02x?}; it was written as {:02x?}", &out[at..at + len.min(8)], &want[at..at + len.min(8)]))?;
     }
@@ -860,7 +860,7 @@ fn events_malformed_write() -> CaseResult {
     let mut long = key(kind::KEY_PRESS, 30);
     long.text_len = 241;
     let mut reserved = key(kind::KEY_PRESS, 30);
-    reserved.reserved = 1;
+    reserved.clicks = 1;
     let mut zero_width = ev(kind::RESIZE_REQUESTED);
     zero_width.height = 24;
     let mut zero_height = ev(kind::RESIZE_REQUESTED);
@@ -869,13 +869,18 @@ fn events_malformed_write() -> CaseResult {
     too_wide.width = 4097;
     let mut too_tall = zero_height;
     too_tall.height = 4097;
+    let mut too_many_clicks = ev(kind::POINTER_BUTTON);
+    too_many_clicks.clicks = 3;
     let cases = [
         ("resize width 0", zero_width), ("resize height 0", zero_height),
         ("resize width 4097", too_wide), ("resize height 4097", too_tall),
-        ("kind 0", ev(0)), ("kind 16", ev(16)), ("FontChanged, which Breengel makes", ev(kind::FONT_CHANGED)),
+        ("kind 0", ev(0)), ("kind 21 (W3 allocates 16-20)", ev(21)), ("FontChanged, which Breengel makes", ev(kind::FONT_CHANGED)),
         ("Resized, which the kernel makes", ev(kind::RESIZED)),
         ("ResizeFailed, which the kernel makes", ev(kind::RESIZE_FAILED)), ("CompositorChanged, which the kernel makes", ev(kind::COMPOSITOR_CHANGED)),
-        ("text_len 241", long), ("a nonzero reserved field", reserved),
+        ("text_len 241", long), ("clicks on a non-button event", reserved),
+        ("click count 3", too_many_clicks),
+        ("ClipboardChanged, which the kernel makes", ev(kind::CLIPBOARD_CHANGED)),
+        ("ClipboardLost, which the kernel makes", ev(kind::CLIPBOARD_LOST)),
     ];
     for (what, bad) in cases {
         let answer = k.ask(&format!("event {} {}", w.id(), event_hex(&bad))).cite("24")?;
@@ -885,5 +890,15 @@ fn events_malformed_write() -> CaseResult {
         ensure(pair == "err 22", "19.2", format!("a write of a valid event and one with {what} answered `{pair}`; the contract gives EINVAL"))?;
     }
     let got = read_events(w.id()).map_err(|e| format!("READ_EVENTS {}", outcome(e))).cite("19.2")?;
-    ensure(got.is_empty(), "19.2", format!("refused writes delivered {} event(s), keycodes {:?}", got.len(), got.iter().map(|e| e.keycode).collect::<Vec<_>>()))
+    ensure(got.is_empty(), "19.2", format!("refused writes delivered {} event(s), keycodes {:?}", got.len(), got.iter().map(|e| e.keycode).collect::<Vec<_>>()))?;
+    // W3 allocates 16-18 to writable pointer events and offset 76 to clicks.
+    let mut clicked = ev(kind::POINTER_BUTTON);
+    clicked.clicks = 2;
+    clicked.button = 0x110;
+    clicked.pressed = 1;
+    let allowed = [ev(kind::POINTER_ENTER), ev(kind::POINTER_LEAVE), ev(kind::POINTER_CANCEL), clicked];
+    let _ = send(&mut k, w.id(), &allowed).cite("19.2")?;
+    let got = read_events(w.id()).map_err(|e| format!("READ_EVENTS {}", outcome(e))).cite("19.2")?;
+    ensure(got.len() == 4 && got.iter().map(|e| e.kind).eq([16,17,18,5]) && got[3].clicks == 2,
+        "19.2", "W3 pointer kinds or click count did not survive a raw event round trip")
 }

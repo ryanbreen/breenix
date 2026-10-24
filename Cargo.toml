@@ -74,7 +74,8 @@ members = [
     "xtask",
     "libs/arm64-boot-contract",
     "libs/breengel-abi",
-    "libs/gpu-abi"
+    "libs/gpu-abi",
+    "libs/input-abi"
 ]
 
 [dependencies]

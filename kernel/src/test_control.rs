@@ -9,7 +9,9 @@
 //!
 //! The points defined here are the GPU effort's, 19 to 31, and BreenGL's, 1 to 18
 //! (`breengel_abi::tc_point`); the GPU core builds BreenGL's 2 `irq-hold` and 3
-//! `emit-diagnostic` too (`docs/gui/gpu-abi.md`), plus users point 32 `cred-orphan`. Each is a branch in the real
+//! `emit-diagnostic` too (`docs/gui/gpu-abi.md`), plus users point 32 `cred-orphan`.
+//! Window-manager input report, wake and launch points 33 to 35 are allocated in
+//! `breengel_abi::tc_point` as well. Each implemented point is a branch in the real
 //! code path that asks `take` (or `take_if`) whether its point is armed; both read the
 //! latch first, so outside a suite boot a point costs one load and cannot fire while
 //! disabled. A point is one-shot: it affects the next occurrence of its event, counts one firing and
@@ -57,7 +59,11 @@ fn defined(point: u32) -> bool {
     breengel_abi::tc_point::defined(point)
         || test_point::defined(point)
 }
-const POINTS: usize = CRED_ORPHAN as usize + 1;
+const POINTS: usize = if breengel_abi::tc_point::LAST > CRED_ORPHAN {
+    breengel_abi::tc_point::LAST as usize + 1
+} else {
+    CRED_ORPHAN as usize + 1
+};
 
 mod point;
 use point::Point;

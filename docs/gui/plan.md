@@ -2194,7 +2194,7 @@ Deterministic: counts of composites, epochs and events, on the stepped UI clock.
 - `idle-no-composites` — Over 100 epochs with nothing changing, every epoch is acknowledged by bwm and the clients, and the composite counter does not move.
 - `deadline-wake` — bwm wakes for its next clock deadline with no other work.
 - `wake-on-registry` — A new window wakes an idle compositor.
-- `compositor-wait-timeout` — compositor_wait returns no earlier than its timeout and within 100 ms after it when nothing happens.
+- `compositor-wait-timeout` — Under W14, poll the v2 scene descriptor (EVENT_FD for window 0): with no commit it returns no earlier than its timeout and within 100 ms after it; a client commit wakes it before the timeout.
 - `slow-client` — A client committing every tenth epoch does not reduce other clients' frames per epoch.
 - `hung-client` — A hung client does not stop the desktop or input.
 - `stopped-client` — A client stopped with SIGSTOP and explicitly excluded does not stop the desktop, and stays stale.

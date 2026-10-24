@@ -883,6 +883,22 @@ architecture only.
 | 27 | `GIVE_DISPLAY` | `Give` (8) | 0 | EPERM, EINVAL, ESRCH, EBUSY, ENODEV, ENOMEM, EINTR, EIO; core custody rules in section 18 |
 | 28 | `READ_META` | `MetaQuery` (24) | 0 | ENOENT |
 | 29 | `COMPOSITE_SNAPSHOT` | `SceneSnapshot` (96) | 0 | EPERM, EINVAL, EBUSY, EAGAIN pending render, ENOMEM, ENODEV, EIO |
+| 30 | `COMPOSITOR_ACK` | `CompositorAck` (32) | 0 | EPERM stale/foreign claim; EINVAL regressing epoch or watermark, or incomplete presented serial |
+| 31 | `COMPOSITOR_STATUS` | `CompositorStatus` (80) | 0 | ENOENT no claim; EPERM foreign desktop |
+| 32 | `CLIPBOARD_SET` | `ClipboardSet` (40) | 0 | ENOENT unregistered/stale window; E2BIG over 16 MiB; EINVAL mime/UTF-8; ENOMEM RLIMIT_AS |
+| 33 | `CLIPBOARD_GET` | `ClipboardGet` (48) | 0 | ENOENT unregistered/stale window; EINVAL short destination/mime; EAGAIN changed serial |
+| 34 | `CLIPBOARD_SUBSCRIBE` | `ClipboardSubscribe` (16) | 0 | ENOENT unregistered/stale window; EINVAL flags |
+| 35 | `HIT_TEST` | `HitTest` (32) | 0 | EPERM foreign desktop; EINVAL flags/reserved |
+| 36 | `EVENT_TAG` | `EventTag` (64) | 0 | ENOENT event no longer retained; EPERM foreign window |
+| 37 | `GESTURE_REPORT` | `GestureReport` (32) | 0 | ENOENT unknown gesture; EINVAL invalid transition/reason |
+
+E18 contract allocation (W1-W4): operations 30-37 may return ENOSYS while
+that operation's implementation lane is absent, after exact argument-size
+validation and before dereferencing the argument. This is an explicit
+foundation stub, never success or a compatibility operation. The kernel
+implementations replace the corresponding arm. An unknown operation above
+37 remains EINVAL. Window VERSION remains 2. <!-- claim-lint:ok: Normative E18 contract allocation, W1-W13 and #2367; not implementation acceptance. -->
+
 
 Argument structures (offsets in bytes):
 
@@ -938,7 +954,7 @@ Argument structures (offsets in bytes):
   All output/reserved fields start zero. The full argument/error/consumption rules are normative in
   [gpu-abi.md, Window front handoff](gpu-abi.md#window-front-handoff-b13-syscall-414-version-2).
   Window VERSION remains 2 for this coordinated unlanded-v2 change: old op-19 length 24 is EINVAL,
-  never a compatibility request; ops above 29 are EINVAL. Syscall 416 stays VERSION 1, ops 0–13 unchanged.
+  never a compatibility request; ops above 37 are EINVAL (E18 allocation). Syscall 416 stays VERSION 1, ops 0–13 unchanged.
 - `RecordQuery`: `serial: u64 @0`, `ptr: u64 @8` (a `CompositeRecord`), `len: u32 @16`, reserved `@20`.
 - `Readback`: `dst: u64 @0`, `dst_len: u64 @8`, `record: u64 @16` (an `ObservationRecord`),
   `record_len: u32 @24` (1,024), reserved `@28`, *out* `serial: u64 @32`, *out* `reason:u32 @40`, reserved u32 `@44`.
@@ -947,6 +963,57 @@ Argument structures (offsets in bytes):
 - `Give`: `pid: u32 @0`, reserved `@4`.
 - `MetaQuery`: `id: u64 @0`, `meta: u64 @8` (pointer to a `Meta` the kernel fills), *out* `commit_id: u64 @16` (the
   newest commit, `COMMIT` or `COMMIT_NO_CHANGE`, whose metadata it is; 0 before the first).
+
+E18 argument structures (W1-W4; reserved/output fields start at zero): <!-- claim-lint:ok: Normative E18 contract allocation, W1-W13 and #2367; not implementation acceptance. -->
+
+- `CompositorAck`: `claim_epoch:u64 @0`, `epoch:u64 @8`,
+  `handled_serial:u64 @16`, `presented:u64 @24`. Only the current claimant
+  may acknowledge its claim. `presented=0` means none-needed; otherwise it
+  names a successful device-completed composite of that claim. Epoch and
+  handled serial never regress. An idle epoch acknowledges without a composite. <!-- claim-lint:ok: Normative E18 contract allocation, W1-W13 and #2367; not implementation acceptance. -->
+- `CompositorStatus`: *out* `claim_epoch:u64 @0`, `epoch:u64 @8`,
+  `handled_serial:u64 @16`, `presented:u64 @24`, `scene_version:u64 @32`,
+  `composites:u64 @40`, `next_deadline_ns:u64 @48`, `owner:u32 @56`,
+  `flags:u32 @60` (bit 0 test configuration active), reserved `[u64;2] @64`.
+  Root, the claimant and window owners in the claimant's desktop may query it.
+  `/proc/breenix/compositor` is a text view of this same state, with named
+  decimal fields including `epoch=N`. Publication is atomic.
+- `ClipboardSet`: `id:u64 @0`, `ptr:u64 @8`, `len:u64 @16`, *out*
+  `serial:u64 @24`, `mime:u32 @32` (1 text/plain;charset=utf-8), reserved @36.
+- `ClipboardGet`: `id:u64 @0`, `dst:u64 @8`, `capacity:u64 @16`, *out*
+  `len:u64 @24`, in/out `serial:u64 @32`, `mime:u32 @40`, reserved @44.
+  A null destination and capacity zero query the length and change serial.
+  A later copy can supply that serial; a replacement in between returns
+  EAGAIN without a partial copy. Input serial zero accepts the current text.
+  An empty clipboard reports length zero and its current change serial. <!-- claim-lint:ok: Normative E18 contract allocation, W1-W13 and #2367; not implementation acceptance. -->
+- `ClipboardSubscribe`: `id:u64 @0`, `flags:u32 @8` (1 subscribe, 0 remove),
+  reserved @12. Clipboard operations require the caller's own registered
+  window, including for root. Their authority is not compositor authority.
+  SET retains UTF-8 including embedded NUL, up to 16 MiB. It atomically
+  replaces the text, assigns a later change serial, charges storage to the
+  setter's RLIMIT_AS, tells the previous live owner and notifies subscribers.
+  Text and its retained charge outlive the setter's window/process; replacement
+  or claim termination releases them. Claim termination clears the clipboard,
+  owner and subscriptions. Unsupported mime is EINVAL; oversize SET is E2BIG,
+  preserving the old text and serial. See [bwm clipboard](bwm.md#clipboard-w4).
+- `HitTest`: `x:i32 @0`, `y:i32 @4`, *out* `id:u64 @8`,
+  `scene_version:u64 @16`, `flags:u32 @24` (zero), reserved @28.
+  Root or the claimant queries the topmost visible content window, including
+  chromeless windows; chrome/background return id zero. The version is
+  sampled atomically with the hit and changes on geometry, stacking or visibility. <!-- claim-lint:ok: Normative E18 contract allocation, W1-W13 and #2367; not implementation acceptance. -->
+- `EventTag`: `id:u64 @0`, `serial:u64 @8`, *out* `source_serial:u64 @16`,
+  `scene_version:u64 @24`, `layout_version:u64 @32`, `gesture:u64 @40`,
+  `derived:u32 @48`, `flags:u32 @52` (bit 0 first event of gesture), reserved @56.
+  The window owner or current claimant queries a retained delivered event.
+  Untagged events have zero scene/layout/gesture fields. Derived focus,
+  repeat and release events name their source and nonzero derived index.
+  These fields do not overload the 320-byte WindowEvent's text or epoch. <!-- claim-lint:ok: Normative E18 contract allocation, W1-W13 and #2367; not implementation acceptance. -->
+- `GestureReport`: `id:u64 @0`, `gesture:u64 @8`, `source_serial:u64 @16`,
+  `state:u32 @24` (1 started, 2 completed, 3 cancelled), `reason:u32 @28`
+  (0 none, 7 stale-layout, 8 gesture-cancelled, as input.md). The window
+  owner reports dispatch after its handler returns. A gesture starts once,
+  then completes or cancels once; it is never restarted. The kernel retains
+  this result alongside dispositions for libuitest's retry decision. <!-- claim-lint:ok: Normative E18 contract allocation, W1-W13 and #2367; not implementation acceptance. -->
 
 ### 17.2 Ids, limits and lifetime
 
@@ -1093,9 +1160,13 @@ FLUSH_BATCH), 412 (`fb_mmap`) and the version-1 drawing/window operations are re
 under B42 and return ENOSYS. x86-64 keeps syscalls 410–412 and its framebuffer console
 path until it has a GPU core. V2 MAP_COMMITTED/MAP_COMPOSITOR_TEXTURE remain retired
 ENOSYS. The ARM64 wait-stress program and init gate retire with their v1 subject.
-The compositor's keyboard state, once version 1's ops 26 (modifiers) and 31
-(the latched Super presses), is the 8-byte form of `get_mouse_pos` (413): `[modifiers, super_taps]` as
-`u32`s, where the 16-byte form is the pointer's `[x, y, buttons, scroll]`; any other length is EINVAL.
+W9 retires the 8-byte keyboard-state form of `get_mouse_pos` (413), including
+its latched Super count, after lane 3 stops bwm's calls and before lane 1 narrows
+its implementation. The retained interface is the 16-byte pointer snapshot:
+`[x:u32, y:u32, buttons:u32, scroll:i32]`; another length is EINVAL.
+Bwm consumes the pollable input stream in [input.md](input.md), derives hotkeys
+from key events, and measures double taps by event timestamps. The snapshot
+remains for kernel/test readers and does not feed bwm's event routing.
 
 ## 18. Compositor, composition and the display
 
@@ -1245,21 +1316,28 @@ The claim is singleton, not an ownership-stack entry. The stage normally needs n
 | 64 | `pressed: u32` | 1 press, 0 release, `PointerButton` only |
 | 68 | `text_len: u32` | bytes of `text`, at most 240 |
 | 72 | `lost: u32` | events lost before this one, `Overflow` only |
-| 76 | reserved | zero |
+| 76 | `clicks: u32` | PointerButton click count: 1 or 2; zero when unspecified or for another kind (W3) <!-- claim-lint:ok: Normative E18 contract allocation, W1-W13 and #2367; not implementation acceptance. --> |
 | 80 | `text: [u8; 240]` | UTF-8, `KeyPress` (the text the compositor attached) and `Text` |
 
 <!-- claim-lint:ok: Normative event kinds specified by coordinator B41 and #2312. -->
 Kinds: 1 `KeyPress`, 2 `KeyRelease`, 3 `Text`, 4 `PointerMove`, 5 `PointerButton`, 6 `Scroll`,
 7 `FocusGained`, 8 `FocusLost`, 9 `CloseRequested`, 10 `Resized`, 11 `ResizeFailed`, 12 `FontChanged`
 (made by Breengel, section 9.3), 13 `CompositorChanged`, 14 `Overflow`, 15 `ResizeRequested`. No field carries another field's
-meaning. Breengel maps an unknown kind to `Event::Unknown { kind }`, never to a key press.
+meaning. E18 W3 allocates 16 `PointerEnter`, 17 `PointerLeave`,
+18 `PointerCancel`, 19 `ClipboardChanged` and 20 `ClipboardLost`. Enter/leave
+carry local x/y; cancel ends pointer capture without activation. Clipboard
+notices are kernel-made notifications; GET reads the changed text's serial.
+Breengel maps an unknown kind to `Event::Unknown { kind }`, never to a key press.
 
 ### 19.2 Delivery
 
 <!-- claim-lint:ok: Normative request validation specified by coordinator B41 and #2312. -->
-- `WRITE_EVENTS` (compositor only) queues events on one window's ring of 64. A kind outside 1 to 15, the kind
-  Breengel makes (`FontChanged`), a kind the kernel makes (`Resized`, `ResizeFailed`, `CompositorChanged`), a `ResizeRequested` whose width or height is outside 1 to 4,096 (section 17.2) or a
-  `text_len` above 240 is EINVAL, and nothing in that call is delivered.
+- `WRITE_EVENTS` (compositor only) queues events on one window's ring of 64. A kind outside 1 to 20, the kind
+  Breengel makes (`FontChanged`), a kind the kernel makes (`Resized`, `ResizeFailed`, `CompositorChanged`,
+  `ClipboardChanged`, `ClipboardLost`), a `ResizeRequested` whose width or height is outside 1 to 4,096
+  (section 17.2), `clicks` above 2 or nonzero for a kind other than PointerButton, or a
+  `text_len` above 240 is EINVAL, and nothing in that call is delivered. W3's new
+  writable kinds are PointerEnter, PointerLeave and PointerCancel.
   Writing to a destroyed window is ENOENT.
 <!-- claim-lint:ok: Normative input admission and overflow contract adopted by B48 for #2339. -->
 - Events arrive in the order written. `WRITE_EVENTS` returns the queued prefix's count. A full ring returns
@@ -1301,7 +1379,13 @@ meaning. Breengel maps an unknown kind to `Event::Unknown { kind }`, never to a 
 
 ### 19.3 Serials
 
-The compositor assigns each event a serial that increases strictly per compositor and is never reused.
+E18 source input events retain the core's boot-global serial. Derived notices
+(repeat, focus and synthetic releases) have distinct delivery ids and an
+EVENT_TAG source/derived pair, so they cannot cover a source serial's missing
+disposition. A source serial is never reused. Until lane 3 switches bwm to
+this input stream, its existing per-compositor strictly increasing delivery
+serials remain the v2 baseline. A clipboard notice has a kernel-generated
+delivery id; the stored clipboard change serial comes from GET, not epoch. <!-- claim-lint:ok: Normative E18 contract allocation, W1-W13 and #2367; not implementation acceptance. -->
 
 ### 19.4 Dispatch and the processed watermark
 
@@ -1416,6 +1500,13 @@ negative control: the device reports no resource identity and it is observed as 
   real code paths, disarmed at case end by the suite. GPU points 19–31 have the exact
   definitions in `gpu-abi.md`, including point 31's pending-fence depth mode used by the
   render-handoff check. All watchdog and kill bounds remain unchanged.
+  E18 reserves 33 `input-report-skipped`, 34 `input-wake-skipped` and
+  35 `launch-fork-fail`. Points 33/34 target a bound input device id and skip
+  one production completion's report or reader wake, respectively, while still
+  running its requeue. Point 35 targets the launching process and makes its
+  next child-creation attempt return EAGAIN before publishing a child. These
+  points are suite-latched and root-only like the existing points; no new
+  latch, diagnostic print or parallel driver implementation is introduced.
 - `init`, running as PID 1, checks that every op returns ENOSYS and prints `[init] test controls absent`; run
   as a child (in a suite boot) it prints `[init] not PID 1: test-control check skipped` and makes no absence
   claim.
@@ -1696,7 +1787,7 @@ context warm-up and no redraw of the run's history.
 ## 25. Error numbers
 
 The kernel returns Linux's errno values on both architectures: EPERM 1, ENOENT 2, ESRCH 3, EINTR 4, EIO 5,
-EAGAIN 11, ENOMEM 12, EACCES 13, EFAULT 14, EBUSY 16, ENODEV 19, EINVAL 22, EMFILE 24, ENOSYS 38, ETIMEDOUT 110, EDQUOT 122.
+E2BIG 7, EAGAIN 11, ENOMEM 12, EACCES 13, EFAULT 14, EBUSY 16, ENODEV 19, EINVAL 22, EMFILE 24, ENOSYS 38, ETIMEDOUT 110, EDQUOT 122.
 
 <!-- claim-lint:ok: Normative reset recovery and provenance rule adopted by coordinator B40 item 2 and #2287. -->
 B40 reset recovery: a device reset loses the stage's GPU pictures. Only after its

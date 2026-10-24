@@ -47,9 +47,17 @@ pub mod op {
     pub const RELEASE_REMNANT: u32 = 26;
     pub const GIVE_DISPLAY: u32 = 27;
     pub const READ_META: u32 = 28;
-    /// The highest op number; every op above it is EINVAL.
     pub const COMPOSITE_SNAPSHOT: u32 = 29;
-    pub const LAST: u32 = COMPOSITE_SNAPSHOT;
+    pub const COMPOSITOR_ACK: u32 = 30;
+    pub const COMPOSITOR_STATUS: u32 = 31;
+    pub const CLIPBOARD_SET: u32 = 32;
+    pub const CLIPBOARD_GET: u32 = 33;
+    pub const CLIPBOARD_SUBSCRIBE: u32 = 34;
+    pub const HIT_TEST: u32 = 35;
+    pub const EVENT_TAG: u32 = 36;
+    pub const GESTURE_REPORT: u32 = 37;
+    /// Ops above this highest allocated number return EINVAL (section 17.1).
+    pub const LAST: u32 = GESTURE_REPORT;
 }
 
 /// Linux's errno values, which the interface returns negated (section 25).
@@ -59,6 +67,7 @@ pub mod errno {
     pub const ESRCH: i32 = 3;
     pub const EINTR: i32 = 4;
     pub const EIO: i32 = 5;
+    pub const E2BIG: i32 = 7;
     pub const EAGAIN: i32 = 11;
     pub const ENOMEM: i32 = 12;
     pub const EACCES: i32 = 13;
@@ -577,6 +586,101 @@ pub struct CompositeEntry {
     pub pixels: u64,
 }
 
+/// E18 compositor acknowledgment (breengel.md 17.1).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CompositorAck {
+    pub claim_epoch: u64,
+    pub epoch: u64,
+    pub handled_serial: u64,
+    pub presented: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CompositorStatus {
+    pub claim_epoch: u64,
+    pub epoch: u64,
+    pub handled_serial: u64,
+    pub presented: u64,
+    pub scene_version: u64,
+    pub composites: u64,
+    pub next_deadline_ns: u64,
+    pub owner: u32,
+    pub flags: u32,
+    pub reserved: [u64; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ClipboardSet {
+    pub id: u64,
+    pub ptr: u64,
+    pub len: u64,
+    pub serial: u64,
+    pub mime: u32,
+    pub reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ClipboardGet {
+    pub id: u64,
+    pub dst: u64,
+    pub capacity: u64,
+    pub len: u64,
+    pub serial: u64,
+    pub mime: u32,
+    pub reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ClipboardSubscribe {
+    pub id: u64,
+    pub flags: u32,
+    pub reserved: u32,
+}
+
+pub const CLIPBOARD_TEXT_UTF8: u32 = 1;
+pub const CLIPBOARD_MAX_BYTES: u64 = 16 * 1024 * 1024;
+pub const COMPOSITOR_TEST_CONFIG: u32 = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HitTest {
+    pub x: i32,
+    pub y: i32,
+    pub id: u64,
+    pub scene_version: u64,
+    pub flags: u32,
+    pub reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EventTag {
+    pub id: u64,
+    pub serial: u64,
+    pub source_serial: u64,
+    pub scene_version: u64,
+    pub layout_version: u64,
+    pub gesture: u64,
+    pub derived: u32,
+    pub flags: u32,
+    pub reserved: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GestureReport {
+    pub id: u64,
+    pub gesture: u64,
+    pub source_serial: u64,
+    pub state: u32,
+    pub reason: u32,
+}
+
 /// A window and the commit an observation shows (`ObservationRecord.windows`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -650,6 +754,11 @@ pub mod event_kind {
     pub const COMPOSITOR_CHANGED: u16 = 13;
     pub const OVERFLOW: u16 = 14;
     pub const RESIZE_REQUESTED: u16 = 15;
+    pub const POINTER_ENTER: u16 = 16;
+    pub const POINTER_LEAVE: u16 = 17;
+    pub const POINTER_CANCEL: u16 = 18;
+    pub const CLIPBOARD_CHANGED: u16 = 19;
+    pub const CLIPBOARD_LOST: u16 = 20;
 }
 
 /// `WindowEvent.flags` bit 0: a repeat.
@@ -697,7 +806,8 @@ pub struct WindowEvent {
     pub text_len: u32,
     /// `Overflow` only.
     pub lost: u32,
-    pub reserved: u32,
+    /// PointerButton click count, 0 unspecified or 1/2.
+    pub clicks: u32,
     pub text: [u8; 240],
 }
 
@@ -750,12 +860,15 @@ pub mod tc_point {
     pub const COMPOSITE_STALL: u32 = 16;
     pub const MOVE_POINTER: u32 = 17;
     pub const CAPTURE_STALL: u32 = 18;
+    pub const INPUT_REPORT_SKIPPED: u32 = 33;
+    pub const INPUT_WAKE_SKIPPED: u32 = 34;
+    pub const LAUNCH_FORK_FAIL: u32 = 35;
     /// The highest point number section 21 defines.
-    pub const LAST: u32 = CAPTURE_STALL;
+    pub const LAST: u32 = LAUNCH_FORK_FAIL;
 
     /// Whether section 21 defines `point`.
     pub const fn defined(point: u32) -> bool {
-        matches!(point, IGNORE_DAMAGE..=CAPTURE_STALL)
+        matches!(point, IGNORE_DAMAGE..=CAPTURE_STALL | INPUT_REPORT_SKIPPED..=LAUNCH_FORK_FAIL)
     }
 }
 
@@ -860,9 +973,18 @@ layout!(ObservationRecord, 512, serial @ 0, backend @ 8, flags @ 12, width @ 16,
     completions @ 304, boundary @ 496, reserved @ 500);
 layout!(WindowEvent, 320, serial @ 0, time_ns @ 8, epoch @ 16, kind @ 24, flags @ 26, modifiers @ 28,
     keycode @ 32, button @ 36, x @ 40, y @ 44, scroll_x @ 48, scroll_y @ 52, width @ 56, height @ 60,
-    pressed @ 64, text_len @ 68, lost @ 72, reserved @ 76, text @ 80);
+    pressed @ 64, text_len @ 68, lost @ 72, clicks @ 76, text @ 80);
 layout!(TcArm, 24, point @ 0, reserved @ 4, target @ 8, param @ 16);
 layout!(TcFired, 16, point @ 0, reserved @ 4, count @ 8);
+layout!(CompositorAck, 32, claim_epoch @ 0, epoch @ 8, handled_serial @ 16, presented @ 24);
+layout!(CompositorStatus, 80, claim_epoch @ 0, epoch @ 8, handled_serial @ 16, presented @ 24, scene_version @ 32, composites @ 40, next_deadline_ns @ 48, owner @ 56, flags @ 60, reserved @ 64);
+layout!(ClipboardSet, 40, id @ 0, ptr @ 8, len @ 16, serial @ 24, mime @ 32, reserved @ 36);
+layout!(ClipboardGet, 48, id @ 0, dst @ 8, capacity @ 16, len @ 24, serial @ 32, mime @ 40, reserved @ 44);
+layout!(ClipboardSubscribe, 16, id @ 0, flags @ 8, reserved @ 12);
+layout!(HitTest, 32, x @ 0, y @ 4, id @ 8, scene_version @ 16, flags @ 24, reserved @ 28);
+layout!(EventTag, 64, id @ 0, serial @ 8, source_serial @ 16, scene_version @ 24, layout_version @ 32, gesture @ 40, derived @ 48, flags @ 52, reserved @ 56);
+layout!(GestureReport, 32, id @ 0, gesture @ 8, source_serial @ 16, state @ 24, reason @ 28);
+
 
 /// The size `len` must equal for `op`'s argument, or `None` for an op with no argument
 /// (`arg` null, `len` 0) or an unknown op.
@@ -891,6 +1013,14 @@ pub const fn arg_size(op: u32) -> Option<usize> {
         op::GIVE_DISPLAY => size_of::<Give>(),
         op::READ_META => size_of::<MetaQuery>(),
         op::COMPOSITE_SNAPSHOT => size_of::<SceneSnapshot>(),
+        op::COMPOSITOR_ACK => size_of::<CompositorAck>(),
+        op::COMPOSITOR_STATUS => size_of::<CompositorStatus>(),
+        op::CLIPBOARD_SET => size_of::<ClipboardSet>(),
+        op::CLIPBOARD_GET => size_of::<ClipboardGet>(),
+        op::CLIPBOARD_SUBSCRIBE => size_of::<ClipboardSubscribe>(),
+        op::HIT_TEST => size_of::<HitTest>(),
+        op::EVENT_TAG => size_of::<EventTag>(),
+        op::GESTURE_REPORT => size_of::<GestureReport>(),
         _ => return None,
     })
 }

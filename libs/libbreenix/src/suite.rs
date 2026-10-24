@@ -656,19 +656,26 @@ static RECORD_FD: AtomicI32 = AtomicI32::new(-1);
 static LIVE_FD: AtomicI32 = AtomicI32::new(-1);
 /// In a case's process, `SUITE <id> ` and the case's `<category>/<case>`.
 static RECORD_NAMES: OnceLock<(String, String)> = OnceLock::new();
-/// Records this process has printed.
+/// Measurement records this process has printed.
 static RECORDS: AtomicU32 = AtomicU32::new(0);
 // Exact VALUE lines sent to serial, transported after the case timer stops.
 static VALUE_LINES: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
 /// The most VALUE and WAIT records one case process prints.
 pub const RECORDS_PER_CASE: u32 = 12;
+// Input is transport, not a VALUE/WAIT/PULSES measurement. A 60-step drag
+// uses 64 requests including positioning, press, release and delivery control.
+const HOST_REQUESTS_PER_CASE: u32 = 64;
+static HOST_REQUESTS: AtomicU32 = AtomicU32::new(0);
 
 /// Print one record for the running case; nothing outside a case or past the cap.
 fn record(kind: &str, rest: &str) {
     let fd = RECORD_FD.load(Ordering::Relaxed);
     let Some((prefix, name)) = RECORD_NAMES.get() else { return };
-    if fd < 0 || RECORDS.fetch_add(1, Ordering::Relaxed) >= RECORDS_PER_CASE {
+    let (counter,limit)=if matches!(kind,"HOSTKEY"|"HOSTPOINTER"|"HOSTSSH") {
+        (&HOST_REQUESTS,HOST_REQUESTS_PER_CASE)
+    } else {(&RECORDS,RECORDS_PER_CASE)};
+    if fd < 0 || counter.fetch_add(1, Ordering::Relaxed) >= limit {
         return;
     }
     let line = std::format!("{prefix}{kind} {name} {rest}");
@@ -707,7 +714,7 @@ pub fn hostkeys(chords: &str) -> Result<u64, String> {
             return Err(std::format!("no host key path for {chord} on {path}"));
         }
     }
-    if RECORD_FD.load(Ordering::Relaxed) < 0 || RECORDS.load(Ordering::Relaxed) >= RECORDS_PER_CASE {
+    if RECORD_FD.load(Ordering::Relaxed) < 0 || HOST_REQUESTS.load(Ordering::Relaxed) >= HOST_REQUESTS_PER_CASE {
         return Err(String::from("host key record unavailable"));
     }
     usb_input_attached()?;
@@ -723,7 +730,7 @@ pub fn hostpointer(x: u32, y: u32, width: u32, height: u32, buttons: u32, wheel:
     if width < 2 || height < 2 || x >= width || y >= height || buttons > 7 || !(-1..=1).contains(&wheel) {
         return Err(String::from("invalid host pointer coordinates, buttons or wheel"));
     }
-    if RECORD_FD.load(Ordering::Relaxed) < 0 || RECORDS.load(Ordering::Relaxed) >= RECORDS_PER_CASE {
+    if RECORD_FD.load(Ordering::Relaxed) < 0 || HOST_REQUESTS.load(Ordering::Relaxed) >= HOST_REQUESTS_PER_CASE {
         return Err(String::from("host pointer record unavailable"));
     }
     usb_input_attached()?;
@@ -751,7 +758,7 @@ pub fn hostssh(attempt: &str, addr: [u8; 4], port: u16, user: &str, fingerprint:
     if !matches!(attempt, "account" | "root") || !name_ok || !fingerprint_ok {
         return Err(String::from("invalid host SSH request"));
     }
-    if RECORD_FD.load(Ordering::Relaxed) < 0 || RECORDS.load(Ordering::Relaxed) >= RECORDS_PER_CASE {
+    if RECORD_FD.load(Ordering::Relaxed) < 0 || HOST_REQUESTS.load(Ordering::Relaxed) >= HOST_REQUESTS_PER_CASE {
         return Err(String::from("host SSH record unavailable"));
     }
     let seq = HOSTSSH_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -1020,7 +1027,7 @@ impl Suite {
                 }
                 match &outcome { Outcome::Pass { .. } => counts.passed += 1, Outcome::Fail { .. } => counts.failed += 1, Outcome::Skip { .. } => counts.skipped += 1 }
                 emit(&line);
-                states[c][k] = State::Done(outcome);
+                states[c][k] = State::Done(outcome.into());
                 done += 1;
                 if place.is_some() { sequence::progress_after(done); }
             }
@@ -1078,16 +1085,50 @@ struct Counts {
     skipped: usize,
 }
 
-pub(super) enum Outcome {
+pub(super) enum Outcome<M = String> {
     Pass { ms: u64 },
-    Fail { ms: u64, msg: String },
-    Skip { msg: String },
+    Fail { ms: u64, msg: M },
+    Skip { msg: M },
+}
+
+/// Retained verdict text belongs to the preallocated state table. Keeping one
+/// malloc allocation per failed case retained a page per reason on Breenix,
+/// even after the allocator's free-block cache had been released.
+#[derive(Clone)]
+pub(super) struct RetainedMessage {
+    bytes: [u8; MSG_MAX],
+    len: usize,
+}
+
+impl RetainedMessage {
+    fn new(text: &str) -> Self {
+        let mut len = text.len().min(MSG_MAX);
+        while !text.is_char_boundary(len) { len -= 1; }
+        let mut bytes = [0; MSG_MAX];
+        bytes[..len].copy_from_slice(&text.as_bytes()[..len]);
+        Self { bytes, len }
+    }
+
+    fn as_str(&self) -> &str {
+        // The bytes were copied from a UTF-8 string at a character boundary.
+        std::str::from_utf8(&self.bytes[..self.len]).expect("retained verdict UTF-8")
+    }
+}
+
+impl From<Outcome> for Outcome<RetainedMessage> {
+    fn from(outcome: Outcome) -> Self {
+        match outcome {
+            Outcome::Pass { ms } => Self::Pass { ms },
+            Outcome::Fail { ms, msg } => Self::Fail { ms, msg: RetainedMessage::new(&msg) },
+            Outcome::Skip { msg } => Self::Skip { msg: RetainedMessage::new(&msg) },
+        }
+    }
 }
 
 pub(super) enum State {
     Pending,
     Running,
-    Done(Outcome),
+    Done(Outcome<RetainedMessage>),
 }
 
 /// Print a settled memory sample as `SUITE <id> MEMORY <when> ...`, or an ERROR
@@ -1486,7 +1527,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
         }
     } else { None };
     let start = monotonic_ns();
-    HOSTKEY_SEQ.fetch_add(RECORDS_PER_CASE as u64, Ordering::Relaxed);
+    HOSTKEY_SEQ.fetch_add(HOST_REQUESTS_PER_CASE as u64, Ordering::Relaxed);
     match process::fork() {
         Ok(ForkResult::Child) => {
             sequence::in_child();
@@ -1899,7 +1940,7 @@ impl Screen {
                     let _ = write!(text, "{ms} ms");
                     text
                 }
-                State::Done(Outcome::Fail { msg, .. } | Outcome::Skip { msg }) => msg.clone(),
+                State::Done(Outcome::Fail { msg, .. } | Outcome::Skip { msg }) => String::from(msg.as_str()),
                 State::Pending | State::Running => String::new(),
             }).collect())
             .collect();
