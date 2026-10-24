@@ -447,6 +447,8 @@ STD_BINARIES=(
     "kiosk_test"
     "raw-window_test"
     "suite-gpu"
+    "suite-window-manager"
+    "wm-client_test"
     "gpu-exec-probe"
     "suite-console"
     "suite-users"
