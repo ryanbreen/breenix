@@ -1456,16 +1456,16 @@ These are automated host cases; they require no attended steps and do not establ
 The six automated `resting-state` cases run from the boot host. Install the
 candidate under its branch-tools lock, then start its persistent baseline. Run
 `server-suite --boot BASELINE --sha SHA --branch BRANCH --milestone server/resting-state`.
-The queued test must cause a clean shutdown itself; the runner never stops the
-baseline to make preemption pass. The lab must start current when the queue
+The queued test must cause a clean shutdown itself; stopping the baseline from
+the runner cannot satisfy preemption. The lab must start current when the queue
 empties, including after a one-shot previous boot. Reboot requires a fresh SSH
 boot identity after an unaided reset; the watchdog case requires S19's unaided
 recovery. The final case makes one strict authenticated SSH check on the returned
 current install. A missing transition or failed check fails acceptance.
 
 Operator ruling S25 removes S3's 24-hour session and periodic probes. The entire
-category runs once under the candidate's tools lock and scores every case and
-its underlying receipts. The baseline's private boot store retains
+category runs once under the candidate's tools lock and scores its six cases and
+their underlying receipts. The baseline's private boot store retains
 `server-resting-state.json`. Restore main's tools and persistent install before
 releasing the owned lock.
 

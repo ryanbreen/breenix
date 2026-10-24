@@ -151,7 +151,7 @@ root.
    preempts it with a clean shutdown, and the lab returns the machine to it when the queue empties. It needs the users
    effort's `operator-login` first (D4: daily login is non-root, and root SSH is off).
    *R240 acceptance:* a test boot cleanly preempts the persistent install; an empty queue returns to current;
-   a one-shot choice never sticks; reboot and watchdog resets return to current; one strict authenticated SSH
+   a one-shot choice is consumed; reboot and watchdog resets return to current; one strict authenticated SSH
    check succeeds on the returned install (S20, amended by operator ruling S25).
 9. **`remote-upgrade` (`server/remote-upgrade`).** `install-persistent` from the boot host ends with an SSH probe of
    the verification boot and rolls back automatically when it does not answer. Validating the generation repairs
