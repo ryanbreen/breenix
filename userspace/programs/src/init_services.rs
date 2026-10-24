@@ -380,11 +380,9 @@ impl Supervisor {
                                     && (line.starts_with(b"[BSSH_PUBKEY_ORACLE:")
                                         || line.starts_with(b"[BSSH_ACCOUNT_ORACLE:"))
                                     && line.ends_with(b"]");
-                                let desktop = entry.def.name == "bwm"
-                                    && (line.starts_with(b"[bwm] compositor claim:")
-                                        || line.starts_with(b"[bwm] first frame read back:")
-                                        || line.starts_with(b"[bwm] desktop fills the scanout:")
-                                        || line.starts_with(b"[bwm] composited client frame"));
+                                // Keep bwm's existing serial protocol intact, including fatal,
+                                // runtime-stage, readiness and GPU-abort markers.
+                                let desktop = entry.def.name == "bwm";
                                 if output.stream == "stdout" && (readiness || oracle || desktop) {
                                     if let Ok(text) = core::str::from_utf8(line) {
                                         print!("{}\n", text);
@@ -535,6 +533,9 @@ impl Supervisor {
             return;
         }
         entry.next_ms = now + decision.delay_ms;
+        if login_terminal(&entry.def).is_none() && !decision.crash_loop {
+            notices.say(&format!("[init] {} restarts in {} ms", entry.def.name, decision.delay_ms));
+        }
         if decision.crash_loop {
             entry.set(State::CrashLoop, now);
             if !entry.crash_loop_reported {
@@ -605,9 +606,6 @@ impl Supervisor {
                     notices.say(&format!("[init] {} killed by signal {}", entry.def.name, process::wtermsig(status)))
                 }
                 None => notices.say(&format!("[init] {} exited (code {})", entry.def.name, process::wexitstatus(status))),
-            }
-            if terminal.is_none() && decision.restart && !decision.crash_loop {
-                notices.say(&format!("[init] {} restarts in {} ms", entry.def.name, decision.delay_ms));
             }
             Self::schedule(entry, decision, now, notices);
         }
