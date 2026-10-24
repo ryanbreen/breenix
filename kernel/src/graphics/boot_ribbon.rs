@@ -9,6 +9,7 @@ const CAPACITY: usize = 512 * 1024;
 static SERIAL: [AtomicU8; CAPACITY] = [const { AtomicU8::new(0) }; CAPACITY];
 static TAIL: AtomicUsize = AtomicUsize::new(0);
 static DIRTY: AtomicBool = AtomicBool::new(false);
+static RETIRED: AtomicBool = AtomicBool::new(false);
 static OVERFLOW: AtomicBool = AtomicBool::new(false);
 static SCAN: spin::Mutex<(usize, [u8; 1024], usize)> = spin::Mutex::new((0, [0; 1024], 0));
 /// Constant work per byte under UART ownership, including before the framebuffer exists.
@@ -34,6 +35,7 @@ pub fn drain() -> bool {
                 for (i, marker) in MARKERS.iter().enumerate() {
                     if super::boot_producer::matches(bytes, marker, MARKERS) {
                         changed |= !REACHED[i].swap(true, Ordering::AcqRel);
+                        if i + 1 == MARKERS.len() { retire(); }
                     }
                 }
             }
@@ -47,6 +49,14 @@ pub fn drain() -> bool {
     changed
 }
 pub fn take_dirty() -> bool { DIRTY.swap(false, Ordering::AcqRel) }
+/// B51: neither stage updates nor display give-back can revive a retired ribbon.
+pub fn retire() {
+    if !RETIRED.swap(true, Ordering::AcqRel) { DIRTY.store(true, Ordering::Release); }
+}
+pub fn is_booting() -> bool {
+    drain();
+    !RETIRED.load(Ordering::Acquire)
+}
 /// Complete serial prefix, not the matcher's interpretation of it. Never silently truncate.
 pub fn serial() -> Result<alloc::string::String, i32> {
     if OVERFLOW.load(Ordering::Acquire) { return Err(-75); }

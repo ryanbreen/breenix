@@ -6,7 +6,7 @@
 /// a longer exec-stack marker does not light its shorter argument-check suffix. This is the
 /// canonical boot stage scorer's rule (xtask's `marker_alternative_present`).
 pub fn matches(bytes: &[u8], marker: &str, all: &[&str]) -> bool {
-    if [b"test_exec".as_slice(), b"will emit", b"->", b"marker if"]
+    if [b"test_exec".as_slice(), b"will emit", b"marker if"]
         .iter()
         .any(|p| bytes.windows(p.len()).any(|w| w.eq_ignore_ascii_case(p)))
     {
@@ -15,7 +15,14 @@ pub fn matches(bytes: &[u8], marker: &str, all: &[&str]) -> bool {
     marker
         .split('|')
         .filter(|m| !m.is_empty())
-        .any(|m| stands_alone(bytes, m.as_bytes(), all))
+        .any(|m| {
+            let m = m.as_bytes();
+            // A catalogue producer may itself contain an arrow (TCP server->client).
+            // An arrow outside that producer still identifies a loader announcement.
+            occurrences(bytes, b"->").all(|arrow| {
+                occurrences(bytes, m).any(|at| arrow >= at && arrow + 2 <= at + m.len())
+            }) && stands_alone(bytes, m, all)
+        })
 }
 
 /// Whether `alt` occurs in `line` at least once outside every occurrence of a longer marker

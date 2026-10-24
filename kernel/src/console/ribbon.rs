@@ -1,6 +1,6 @@
 //! The boot stage ribbon on the console screen (docs/gui/breengel.md section 23.7, ruling
 //! B35): one segment per ARM64 boot-path stage across the band (16, 752, 1248, 16) of the
-//! 1280 by 800 stage layout, at the display's whole scale, drawn over the text grid.
+//! 1280 by 800 stage layout, at the display's whole scale, below the text grid (B51).
 //! Reached stages are pass green, unreached ones the pending outline colour, and each
 //! segment's last two pixels the stage background. The console's read-back expects the
 //! ribbon in that band (`colour`), computed apart from the painter (`paint`).
@@ -20,10 +20,20 @@ pub struct Ribbon {
 }
 
 impl Ribbon {
+    /// Reserve whole text rows above the band only while the ribbon is active.
+    pub fn text_rows(layout: &Layout, booting: bool) -> usize {
+        let scale = layout.width / 1280;
+        if booting && scale > 0 && layout.width == 1280 * scale && layout.height == 800 * scale {
+            layout.rows().min(752 * scale / layout.font.line_height())
+        } else {
+            layout.rows()
+        }
+    }
     /// The ribbon for `layout` with the stages reached so far, when the display is the stage
     /// layout at a whole scale and has stages. `drop_stage` shows the first reached stage
     /// unreached (test point 15, `ribbon-drop-stage`).
     pub fn now(layout: &Layout, drop_stage: bool) -> Option<Ribbon> {
+        if !crate::graphics::boot_ribbon::is_booting() { return None; }
         let scale = layout.width / 1280;
         if scale == 0 || layout.width != 1280 * scale || layout.height != 800 * scale {
             return None;

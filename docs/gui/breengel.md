@@ -1579,11 +1579,13 @@ x=16+floor(1248i/m) and ends at x=16+floor(1248(i+1)/m)-2, leaving a two-pixel g
 Reached is pass green, unreached is pending outline colour. A stage lights only when its actual producer
 prints the stage marker; loader announcements never light a segment. The serial stage lines remain the record.
 This boot ribbon belongs only to the kernel console, not the run stage.
-It is restored with the kernel screen after display giveback.
-On the GPU core the console draws it over its text, in this band at the display's scale, and its
-read-back check expects it there (docs/console/contract.md section 2, ruling B35). Each segment's last
-two pixels are the background colour. A full repaint of the kernel screen (after a give-back) takes
-point 15, which then shows the first reached stage unreached until the next full repaint.
+Ruling B51: it shows from the first console frame until the last boot-path stage is reached
+or a display owner takes the screen, whichever comes first. Retirement lasts for the rest of
+that boot, including console give-back after a suite or window manager. The console reserves
+whole text rows above the band's top while it shows, and reclaims them with a full repaint
+when it retires. Its read-back expects the band only while active and text afterward.
+Each segment's last two pixels are the background colour. Point 15 drops the first reached
+stage only while the ribbon is active; a retired ribbon does not consume that point.
 
 ### 23.8 Agreement
 
