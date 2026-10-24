@@ -41,7 +41,7 @@ pub fn clip_owner_exit() -> CaseResult {
 }
 
 pub fn set_get() -> CaseResult {
-    let _d = Desktop::start()?;
+    let mut d = Desktop::start()?;
     let mut c = breengel::Window::new(b"clipboard API", 32, 32)?;
     c.clipboard_subscribe(true)?;
     let set = c.clipboard_set("same-program\0λ")?;
@@ -121,6 +121,32 @@ pub fn set_get() -> CaseResult {
     let got = c.clipboard_get()?;
     check(got.text == "x", "short replacement was not retained")?;
     c.clipboard_subscribe(false)?;
+    // A window survives the compositor. An old GET token must not alias text
+    // published after its clipboard was cleared and a new claim began.
+    let old_serial = got.serial;
+    d.wm.stop()?;
+    window::claim_compositor()?;
+    check(c.clipboard_get()?.text.is_empty(), "claim end retained clipboard text")?;
+    let mut serial = c.clipboard_set("new claim")?;
+    while serial < old_serial {
+        let later = c.clipboard_set("new claim")?;
+        check(later > serial, "new claim SET did not advance its serial")?;
+        serial = later;
+    }
+    let mut dst = [0xa5; 32];
+    let mut stale = abi::ClipboardGet::ZERO;
+    stale.id = c.id();
+    stale.dst = dst.as_mut_ptr() as u64;
+    stale.capacity = dst.len() as u64;
+    stale.serial = old_serial;
+    stale.mime = abi::CLIPBOARD_TEXT_UTF8;
+    let code = unsafe {
+        window::raw_call(abi::op::CLIPBOARD_GET, (&mut stale as *mut abi::ClipboardGet).cast(),
+            core::mem::size_of_val(&stale))
+    };
+    check(code == -11 && dst == [0xa5; 32],
+        "a prior claim's GET token accepted new text or copied bytes")?;
+    window::release_compositor()?;
     Ok(())
 }
 pub fn empty() -> CaseResult {
