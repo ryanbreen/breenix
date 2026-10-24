@@ -200,6 +200,15 @@ fn active_boot_ribbon() -> Result<String,breenix_suite::suite::CaseError> {
         result?;
     }
     println!("BOOT_RIBBON_ACTIVE: point 15 detected; clean band and reserved grid read back");
+    // Direct KD_GRAPHICS owns the foreground VT without the GPU ownership-stack op.
+    for mode in [1,0] {
+        let r=unsafe {raw::syscall3(libbreenix::syscall::nr::IOCTL,tty.as_raw_fd() as u64,0x4b3a,mode) as i64};
+        ensure(r>=0,"23.7","KD_GRAPHICS/KD_TEXT ribbon takeover failed")?;
+    }
+    let retired=std::fs::read_to_string("/proc/console/check").map_err(|e|e.to_string())?;
+    ensure(retired.contains("console ribbon: retired\n") && retired.contains("console check: shadow and screen identical\n") && retired.contains("mismatches=0\n"),"23.7",format!("direct graphics takeover revived the ribbon: {retired}"))?;
+    ensure(ribbon_geometry(&retired,height,scale)?==geometry,"23.7","KD_GRAPHICS retirement resized the grid")?;
+    println!("BOOT_RIBBON_KD: foreground graphics takeover retired the ribbon permanently");
     Ok(geometry)
 }
 
