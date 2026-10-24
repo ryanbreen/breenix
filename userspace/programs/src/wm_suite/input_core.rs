@@ -509,21 +509,25 @@ pub fn two_readers() -> CaseResult {
     )
 }
 pub fn syn_dropped() -> CaseResult {
+    let _claim = InputClaim::new()?;
     let mut stream = Stream::open()?;
     let mut v = Virtual::create()?;
-    for n in 1..=1100 {
+    stream.grab(&[v.id])?;
+    v.batch(&[(1, 30, 1)], 1)?;
+    let first = stream.read_from(2, &[v.id])?[0].serial;
+    for n in 2..=1101 {
         v.batch(&[(1, 30, (n & 1) as i32)], n)?;
     }
     let es = stream.read_from(1, &[v.id])?;
-    check(
-        es.iter().any(|e| e.kind == 0 && e.code == 3),
-        "overflow reader omitted SYN_DROPPED",
-    )?;
-    let rows = ledger()?;
-    check(
-        rows.iter().any(|r| r.get(1).is_some_and(|v| v == "lost")),
-        "overflow omitted lost serial ledger entries",
-    )
+    let dropped = es.iter().find(|e| e.kind == 0 && e.code == 3)
+        .ok_or("overflow reader omitted SYN_DROPPED")?;
+    for serial in first + 2..=dropped.serial {
+        check(ledger_has(serial, Some(("lost", "overflow")))?,
+            "overflow omitted this holder's dropped serial disposition")?;
+    }
+    check(!ledger_has(first, None)?, "overflow changed an already-read pending serial")?;
+    drop(stream);
+    Ok(())
 }
 pub fn poll() -> CaseResult {
     let stream = Stream::open()?;
@@ -630,7 +634,8 @@ pub fn malformed_batch() -> CaseResult {
     Ok(())
 }
 pub fn console_keymap() -> CaseResult {
-    console_bytes(&[(30, 1), (30, 0)], b"a")
+    console_bytes(&[(30, 1), (30, 0)], b"a")?;
+    console_bytes(&[(30, 1), (30, 2), (30, 0)], b"aa")
 }
 pub fn console_special_keys() -> CaseResult {
     console_bytes(
@@ -706,6 +711,7 @@ pub fn library_batches() -> CaseResult {
     let device = Injector::create(&[
         Capability { kind: input::kind::KEY, code: 30, minimum: 0, maximum: 1 },
         Capability { kind: input::kind::TEXT, code: 0, minimum: 1, maximum: 256 },
+        Capability { kind: input::kind::KEY, code: input::key::BUTTON_LEFT, minimum: 0, maximum: 1 },
     ], true)?;
     let mut storage = [0u8; 512];
     let mut batch = Batch::new(&mut storage);
@@ -741,7 +747,38 @@ pub fn library_batches() -> CaseResult {
     device.inject(&good)?;
     let events = reader.read(&mut bytes)?.collect::<Result<Vec<_>, _>>()?;
     check(events.len() == 3 && events[0].event.serial == last + 1,
-        "rejected write consumed serials or damaged subsequent batch")
+        "rejected write consumed serials or damaged subsequent batch")?;
+    let second = Reader::open(true)?;
+    good.clear();
+    good.event(1, 30, 1, 1236)?.event(1, input::key::BUTTON_LEFT, 1, 1236)?.finish(1236)?;
+    device.inject(&good)?;
+    let presses = reader.read(&mut bytes)?.collect::<Result<Vec<_>, _>>()?;
+    let last = presses.last().unwrap().event.serial;
+    let id = device.id();
+    let mut other = [0u8; 1024];
+    second.read(&mut other)?;
+    drop(device);
+    until(1000, "device close publishes key/button releases and closing SYN", || {
+        match reader.read(&mut bytes) {
+            Ok(records) => {
+                let records = records.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+                check(records.len() == 3 && records.iter().all(|r| r.event.device == id)
+                    && records[0].event.code == 30 && records[0].event.value == 0
+                    && records[1].event.code == input::key::BUTTON_LEFT && records[1].event.value == 0
+                    && records[2].event.kind == 0 && records[2].event.code == 0
+                    && records.iter().enumerate().all(|(i, r)| r.event.serial == last + i as u64 + 1),
+                    "device close omitted, reordered or misidentified its release batch").map_err(|e| format!("{e:?}"))?;
+                let copy = second.read(&mut other).map_err(|e| e.to_string())?
+                    .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+                check(records == copy, "device close releases differ between readers")
+                    .map_err(|e| format!("{e:?}"))?;
+                Ok(true)
+            }
+            Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EAGAIN)) => Ok(false),
+            Err(e) => Err(e.to_string()),
+        }
+    })?;
+    Ok(())
 }
 
 fn ledger_has(serial: u64, expected: Option<(&str, &str)>) -> Result<bool, String> {
@@ -858,6 +895,61 @@ pub fn reader_lifetime() -> CaseResult {
         disposition: input::disposition::DELIVERED, ..input::Disposition::default() })?;
     recipient_reader.dispose(&input::Disposition { serial: events[1].event.serial,
         disposition: input::disposition::WM_HANDLED, ..input::Disposition::default() })?;
+    {
+        use libbreenix::{termios, types::Fd};
+        struct Restore(termios::Termios);
+        impl Drop for Restore {
+            fn drop(&mut self) { let _ = termios::tcsetattr(Fd::STDIN, termios::TCSANOW, &self.0); }
+        }
+        let mut saved = termios::Termios::default();
+        termios::tcgetattr(Fd::STDIN, &mut saved)?;
+        let _restore = Restore(saved);
+        let mut raw = saved;
+        termios::cfmakeraw(&mut raw);
+        termios::tcsetattr(Fd::STDIN, termios::TCSANOW, &raw)?;
+        let mut poll = [io::PollFd { fd: 0, events: 1, revents: 0 }];
+        // Earlier no-grab controls intentionally type into this console.
+        // Drain that fixture input before the repeat's empty-console baseline.
+        loop {
+            io::poll(&mut poll, 0)?;
+            if poll[0].revents & 1 == 0 { break; }
+            let mut previous = [0; 128];
+            io::read(Fd::STDIN, &mut previous)?;
+        }
+        io::poll(&mut poll, 0)?;
+        check(poll[0].revents & 1 == 0, "console has unexpected input before grabbed repeat")?;
+        batch.clear(); batch.event(1, 30, 2, 400)?.finish(400)?;
+        device.inject(&batch)?;
+        let repeated = recipient_reader.read(&mut bytes)?.collect::<Result<Vec<_>, _>>()?;
+        check(repeated.len() == 1 && repeated[0].event.kind == 0,
+            "device repeat reached grabbed reader")?;
+        recipient_reader.dispose(&input::Disposition { serial: repeated[0].event.serial,
+            disposition: input::disposition::WM_HANDLED, ..input::Disposition::default() })?;
+        io::poll(&mut poll, 50)?;
+        check(poll[0].revents & 1 == 0, "grabbed device repeat leaked into console")?;
+    }
+    let idle = Reader::open(true)?;
+    let mut last_serial = 0;
+    for _ in 0..1100 {
+        batch.clear();
+        batch.finish(400)?;
+        device.inject(&batch)?;
+        let seen = recipient_reader.read(&mut bytes)?.collect::<Result<Vec<_>, _>>()?;
+        for r in seen {
+            last_serial = r.event.serial;
+            recipient_reader.dispose(&input::Disposition { serial: last_serial,
+                disposition: input::disposition::WM_HANDLED, ..input::Disposition::default() })?;
+        }
+    }
+    check(ledger_has(source.serial, Some(("delivered", "none")))?,
+        "observer overflow overwrote the delivered press")?;
+    drop(idle);
+    // Leave a physical release queued when custody ends. The recipient still
+    // needs its release even though the device is no longer physically held.
+    batch.clear();
+    batch.event(1, 30, 0, 401)?.finish(401)?;
+    device.inject(&batch)?;
+    let queued_release = last_serial + 1;
     drop(recipient_reader);
     let mut release_id = 0;
     until(1000, "last reader close releases the original recipient", || {
@@ -874,6 +966,15 @@ pub fn reader_lifetime() -> CaseResult {
         Ok(release_id != 0)
     })?;
     check(!ledger_has(release_id, None)?, "a derived release consumed a source ledger row")?;
+    check(ledger_has(queued_release, Some(("lost", "compositor-died")))?,
+        "queued release did not retain its death outcome")?;
+    batch.clear();
+    let mut observer = Stream::open()?;
+    batch.event(1, 30, 1, 402)?.event(1, 30, 0, 402)?.finish(402)?;
+    device.inject(&batch)?;
+    let after = observer.read_from(1, &[device.id()])?;
+    check(after.iter().any(|e| e.serial == queued_release + 2 && e.kind == 1 && e.value == 1),
+        "derived release consumed a source serial")?;
     let mut meta = abi::Meta::ZERO;
     meta.processed_serial = source.serial;
     window::commit_no_change(target.0, Some(&meta))?;

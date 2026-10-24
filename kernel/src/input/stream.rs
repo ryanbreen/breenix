@@ -37,7 +37,7 @@ struct Device {
     last_time: u64,
     modifiers: u8,
     reserved: u16,
-    held: BTreeMap<u16, Held>,
+    held: BTreeMap<u16, Event>,
 }
 struct Held {
     event: Event,
@@ -74,6 +74,8 @@ struct State {
     ledger: VecDeque<Row>,
     grab: Option<Grab>,
     releases: VecDeque<Release>,
+    recipients: BTreeMap<(u32, u64), Held>,
+    removals: VecDeque<u32>,
     derived: BTreeMap<(u64, u64), breengel_abi::EventTag>,
     next_derived: u64,
     derivations: BTreeMap<(u64, u32), Disposition>,
@@ -89,6 +91,8 @@ impl State {
             ledger: VecDeque::new(),
             grab: None,
             releases: VecDeque::new(),
+            recipients: BTreeMap::new(),
+            removals: VecDeque::new(),
             derived: BTreeMap::new(),
             next_derived: 1 << 63,
             derivations: BTreeMap::new(),
@@ -110,7 +114,7 @@ impl State {
         if self.grab.as_ref().is_none_or(|g| g.reader != reader) {
             return;
         }
-        self.grab = None;
+        let selection = self.grab.take().unwrap().devices;
         for row in self
             .ledger
             .iter_mut()
@@ -125,21 +129,78 @@ impl State {
                 });
             }
         }
-        // Preserve each press's routing before clearing held state. A task-context
-        // service delivers derived releases; Drop never takes the window registry.
-        for d in self.devices.values_mut() {
-            d.modifiers = 0;
-            d.reserved = 0;
-            for held in core::mem::take(&mut d.held).into_values() {
-                if held.window != 0 {
-                    self.releases.push_back(Release {
-                        window: held.window,
-                        source: held.event,
-                    });
-                }
+        // Retain recipient routing before clearing held state. A task-context
+        // service delivers derived releases outside descriptor teardown.
+        let keys: Vec<_> = self
+            .recipients
+            .keys()
+            .copied()
+            .filter(|(id, _)| selection.is_empty() || selection.contains(id))
+            .collect();
+        for key in keys {
+            let held = self.recipients.remove(&key).unwrap();
+            self.releases.push_back(Release {
+                window: held.window,
+                source: held.event,
+            });
+        }
+        for (id, d) in &mut self.devices {
+            if selection.is_empty() || selection.contains(id) {
+                d.modifiers = 0;
+                d.reserved = 0;
+                d.held.clear();
             }
         }
     }
+    fn removal_count(&self, id: u32) -> usize {
+        self.devices.get(&id).map_or(0, |d| d.held.len() + 1)
+    }
+    fn removal_ready(&self) -> bool {
+        self.removals.front().is_some_and(|id| {
+            self.ledger.len() + self.removal_count(*id)
+                <= LEDGER_EVENTS
+                    + self
+                        .ledger
+                        .iter()
+                        .take_while(|row| row.outcome.is_some())
+                        .count()
+        })
+    }
+    fn remove_device(&mut self, id: u32) -> Vec<ConsoleKey> {
+        let d = self.devices.get(&id).unwrap();
+        let time_ns = if d.injector_time {
+            d.last_time
+        } else {
+            crate::window::events::now_ns()
+        };
+        let mut records: Vec<_> = d
+            .held
+            .values()
+            .map(|press| Record {
+                event: Event {
+                    kind: kind::KEY,
+                    code: press.code,
+                    value: 0,
+                    time_ns,
+                    ..Event::default()
+                },
+                payload: Vec::new(),
+            })
+            .collect();
+        records.push(Record {
+            event: Event {
+                kind: kind::SYN,
+                code: syn::REPORT,
+                time_ns,
+                ..Event::default()
+            },
+            payload: Vec::new(),
+        });
+        let console = self.publish(id, records);
+        self.devices.remove(&id);
+        console
+    }
+
     fn reserve_ledger(&mut self, count: usize) -> Result<(), u64> {
         if self
             .next_serial
@@ -186,13 +247,7 @@ impl State {
             if e.kind == kind::KEY {
                 d.modifiers = super::event::update_modifiers(d.modifiers, e.code, e.value);
                 if e.value == 1 {
-                    d.held.insert(
-                        e.code,
-                        Held {
-                            event: *e,
-                            window: 0,
-                        },
-                    );
+                    d.held.insert(e.code, *e);
                 }
                 if e.value == 0 {
                     d.held.remove(&e.code);
@@ -209,7 +264,7 @@ impl State {
                 && super::event::reserved(&mut d.reserved, e.code, e.value, mods);
             let repeat = e.kind == kind::KEY && e.value == 2;
             reserved.push(console_reserved || repeat);
-            if e.kind == kind::KEY && (holder.is_none() || console_reserved || repeat) && selected {
+            if e.kind == kind::KEY && (holder.is_none() || console_reserved) && selected {
                 console.push(ConsoleKey {
                     code: e.code,
                     value: e.value,
@@ -275,7 +330,9 @@ impl State {
                 };
                 reader.events -= old.records.len();
                 for r in &old.records {
-                    lost.push(r.event.serial);
+                    if holder == Some(id) {
+                        lost.push(r.event.serial);
+                    }
                 }
                 reader.dropped = Some(Event {
                     kind: kind::SYN,
@@ -291,7 +348,9 @@ impl State {
             {
                 // A concurrent read owns the remaining records; retain its lease
                 // and report this whole new batch as lost instead of exceeding bounds.
-                lost.extend(b.records.iter().map(|r| r.event.serial));
+                if holder == Some(id) {
+                    lost.extend(b.records.iter().map(|r| r.event.serial));
+                }
                 let e = b.records.last().unwrap().event;
                 reader.dropped = Some(Event {
                     kind: kind::SYN,
@@ -304,14 +363,7 @@ impl State {
             reader.batches.push_back(b.clone());
         }
         for serial in lost {
-            if let Some(row) = row_mut(&mut self.ledger, serial) {
-                row.outcome = Some(Disposition {
-                    serial,
-                    disposition: disposition::LOST,
-                    reason: reason::OVERFLOW,
-                    ..Disposition::default()
-                });
-            }
+            self.finish(serial, disposition::LOST, reason::OVERFLOW);
         }
         console
     }
@@ -366,8 +418,8 @@ fn wake_readers() {
     }
 }
 
-/// One open description, shared by dup and fork. The registry never retains
-/// this object, so its Drop is exactly the final descriptor/active-I/O release.
+/// An open description shared by dup and fork. Descriptor and active-I/O
+/// references own its lifetime; final Drop releases reader custody.
 pub struct InputFile {
     reader: Option<u64>,
     device: spin::Mutex<Option<u32>>,
@@ -466,10 +518,16 @@ impl InputFile {
                 r.batches.clear();
                 r.events = 0;
                 r.dropped = None;
-                for d in s.devices.values_mut() {
-                    d.held.clear();
-                    d.modifiers = 0;
-                    d.reserved = 0;
+                if s.grab.is_some() {
+                    s.release_grab(reader, disposition::REJECTED, reason::GRAB);
+                    RELEASE_WORK.wake_up_deferred();
+                }
+                for (id, d) in &mut s.devices {
+                    if ids.is_empty() || ids.contains(id) {
+                        d.held.clear();
+                        d.modifiers = 0;
+                        d.reserved = 0;
+                    }
                 }
                 s.grab = Some(Grab {
                     reader,
@@ -532,19 +590,26 @@ impl InputFile {
                 }
                 row.outcome = Some(d);
                 let event = row.event;
-                if let Some(held) = s
-                    .devices
-                    .get_mut(&event.device)
-                    .and_then(|device| device.held.get_mut(&event.code))
-                {
-                    if held.event.serial == d.serial {
-                        held.window = if d.disposition == disposition::DELIVERED {
-                            d.window
-                        } else {
-                            0
-                        };
+                if event.kind == kind::KEY && d.disposition == disposition::DELIVERED {
+                    if event.value == 1 {
+                        // Recipient state outlives the physical edge and device.
+                        s.recipients.insert(
+                            (event.device, event.serial),
+                            Held {
+                                event,
+                                window: d.window,
+                            },
+                        );
+                    } else if event.value == 0 {
+                        s.recipients.retain(|(device, serial), held| {
+                            !(*device == event.device
+                                && *serial < event.serial
+                                && held.event.code == event.code
+                                && held.window == d.window)
+                        });
                     }
                 }
+                RELEASE_WORK.wake_up_deferred();
                 Ok(0)
             }
             _ => Err(ENOTTY as u64),
@@ -846,7 +911,7 @@ impl Drop for InputFile {
             s.release_grab(id, disposition::LOST, reason::COMPOSITOR_DIED);
         }
         if let Some(id) = *self.device.lock() {
-            s.devices.remove(&id);
+            s.removals.push_back(id);
         }
 
         drop(s);
@@ -918,6 +983,32 @@ fn release_service() {
     use crate::task::{thread::ThreadState, waitqueue::PrepareOutcome};
     loop {
         crate::per_cpu::preempt_disable();
+        loop {
+            let console = {
+                let mut s = STATE.lock();
+                if !s.removal_ready() {
+                    break;
+                }
+                let id = *s.removals.front().unwrap();
+                let count = s.removal_count(id);
+                if s.reserve_ledger(count).is_err() {
+                    break;
+                }
+                s.removals.pop_front();
+                s.remove_device(id)
+            };
+            wake_readers();
+            for e in console {
+                crate::console::keys::key(
+                    usize::MAX,
+                    e.code,
+                    e.value,
+                    e.modifiers,
+                    e.reserved,
+                    crate::tty::InputSource::Other,
+                );
+            }
+        }
         loop {
             let next = STATE.lock().releases.pop_front();
             let Some(release) = next else {
@@ -1001,10 +1092,13 @@ fn release_service() {
             }
         }
         let outcome = RELEASE_WORK.prepare_to_wait_checked(ThreadState::BlockedOnIO, None, || {
-            STATE.lock().releases.is_empty()
+            let s = STATE.lock();
+            s.releases.is_empty() && !s.removal_ready()
         });
         match outcome {
             PrepareOutcome::Queued => {
+                #[cfg(target_arch = "x86_64")]
+                crate::task::scheduler::yield_current();
                 crate::task::waitqueue::schedule_current_wait();
                 RELEASE_WORK.finish_wait();
             }
