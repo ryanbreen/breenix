@@ -1183,6 +1183,10 @@ its implementation. The retained interface is the 16-byte pointer snapshot:
 Bwm consumes the pollable input stream in [input.md](input.md), derives hotkeys
 from key events, and measures double taps by event timestamps. The snapshot
 remains for kernel/test readers and does not feed bwm's event routing.
+The reader operations are GRAB, UNGRAB, DISPOSITION and the read-only
+INPUT_DEVICE_INFO query (W29); [input.md](input.md#device-information-w29)
+specifies its layout, physical/virtual coverage, generations and removal
+lifetime. Bwm normalizes raw absolute values using those declared ranges.
 
 ## 18. Compositor, composition and the display
 
