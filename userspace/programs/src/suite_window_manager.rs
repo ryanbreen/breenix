@@ -2,13 +2,15 @@
 #[path = "wm_suite/cases.rs"]
 mod cases;
 #[path = "wm_suite/desktop.rs"]
-mod desktop;
+pub mod desktop;
+#[path = "wm_suite/event_log.rs"]
+pub mod event_log;
 #[path = "wm_suite/input.rs"]
 mod input;
 #[path = "wm_suite/measure.rs"]
 mod measure;
 #[path = "wm_suite/protocol.rs"]
-mod protocol;
+pub mod protocol;
 use breenix_suite::suite::{case, category, suite, Suite};
 
 static SUITE: Suite = suite("window-manager", "Window manager", &[

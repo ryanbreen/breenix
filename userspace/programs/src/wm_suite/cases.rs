@@ -452,7 +452,13 @@ pub fn client_update() -> CaseResult {
     let before = c.commit;
     c.command(PAINT, 47, 0)?;
     check(c.commit > before, "paint did not commit a new frame")?;
-    content(&mut d, &c)
+    content(&mut d, &c)?;
+    let shown = d.shown(&c)?;
+    let generation = c.info()?.pixel_gen;
+    c.command(STEP, 1, 0)?;
+    check(c.info()?.pixel_gen == generation, "metadata-only commit changed pixels")?;
+    // B41: the previously completed frame already presents this generation.
+    shown.client(&c)
 }
 pub fn expose_close() -> CaseResult {
     let (mut d, a, mut b) = twin()?;
@@ -1179,7 +1185,7 @@ pub fn children(parent: i32, name: &str) -> Result<Vec<i32>, String> {
 fn clip_ok(c: &mut Client, set: bool, text: &[u8]) -> Result<(u64, Vec<u8>), String> {
     let (status, serial, text) = c.clipboard(set, text)?;
     if status != 0 {
-        return Err(format!("bwm clipboard {} failed: errno {}; requires /run/bwm/clipboard and a real window-owning peer",if set{"SET"}else{"GET"},-status));
+        return Err(format!("kernel CLIPBOARD_{} failed: errno {}; requires syscall 414 and a registered window",if set{"SET"}else{"GET"},-status));
     }
     if serial == 0 {
         return Err("bwm clipboard omitted its change serial".into());

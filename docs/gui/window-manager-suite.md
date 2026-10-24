@@ -273,3 +273,32 @@ history and clipboard interfaces remain #2367; presentation/update failures rema
 inherited BreenGL title mismatch (#2364), with no window-manager mismatch.
 
 Serial SHA-256: `38106664b610bb5c22195b20ac9e515e12d37a9d86475912daa22e9239c76358`.
+
+## Configurable client
+
+`wm-client_test` renders its id-derived quadrant pattern through BreenGL v2. The
+case starts it with `--control`; command and reply descriptors are 3 and 4, and
+descriptor 5 maps the shared event log. The 32-byte `WMEVT001` header contains
+producer, consumer and lost counters. Entries start at page offset 4096 and hold
+a window id followed by its 320-byte window event. The producer publishes an
+entry before acting on the event, including an event-triggered crash. A full
+8192-entry ring reports loss instead of overwriting unread entries.
+
+The command protocol lives in `wm_suite/protocol.rs`. A reply identifies the
+selected window, its latest commit, dimensions, pattern seed, published event
+count, commit timestamp, processing commit, second window, animation counter and
+last pixel-changing commit. Readers stop at the reply's event watermark. A
+`COMMIT_NO_CHANGE` reply retains the previous pixel-changing commit: scanout
+observation still requires the native composite's render fence, target
+generation and client entry for that pixel-changing commit.
+
+The standalone flags are `--ignore-close`, `--slow-commit[=N]`, `--hang`,
+`--crash-after=N`, `--two-windows`, `--animate`, `--refuse-resize` and
+`--never-read-events`. Slow commit defaults to a four-step period; `N` selects
+another positive period. Animation draws a decimal frame counter over the
+pattern. Control commands select either window, step animation, change the slow
+period or behavior flags, set a title, request a resize, register an initially
+unregistered window, create another window, exit or exec. Clipboard commands use
+the kernel window operations. `--chromeless` and `--seed=N` configure composition
+fixtures. Hang stops command and event servicing after the initial frame;
+never-read-events continues servicing commands without draining the window fd.

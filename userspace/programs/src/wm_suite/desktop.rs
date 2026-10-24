@@ -1,4 +1,5 @@
 //! The case controls processes and observes scanout; bwm alone places, routes and composes.
+use super::event_log::{Entry, EventLog};
 use super::protocol::*;
 use breenix_suite::suite::{case_ms_left, check, spawn, CaseResult, Run};
 use libbreenix::types::{Fd, Pid};
@@ -111,8 +112,15 @@ pub struct Client {
     pub child: Child,
     commands: File,
     replies: File,
+    log: EventLog,
+    pub logged: Vec<Entry>,
+    pub second: u64,
+    /// 0 disables the counter; another value is the displayed frame plus one.
+    pub frame: u64,
     pub id: u64,
     pub commit: u64,
+    /// Commit that introduced the current pixels; metadata-only commits retain it.
+    pub frame_commit: u64,
     pub commit_ns: u64,
     pub handling_commit: u64,
     pub width: u32,
@@ -153,19 +161,24 @@ fn read_n(file: &mut File, bytes: &mut [u8]) -> Result<(), String> {
 }
 impl Client {
     pub fn start(seed: u32) -> Result<Self, String> {
-        Self::start_mode(seed, 0)
+        Self::start_mode(seed, flags::IGNORE_CLOSE)
     }
     pub fn unregistered(seed: u32) -> Result<Self, String> {
-        Self::start_mode(seed, 2)
+        Self::start_mode(seed, flags::UNREGISTERED | flags::IGNORE_CLOSE)
     }
-    fn start_mode(seed: u32, flags: u32) -> Result<Self, String> {
+    pub fn start_mode(seed: u32, flags: u32) -> Result<Self, String> {
+        let (log, log_file) = EventLog::create()?;
         let (cr, cw) = io::pipe().map_err(|e| e.to_string())?;
         let (rr, rw) = io::pipe().map_err(|e| e.to_string())?;
         let pid = spawn(
-            &[(cr, Fd::from_raw(3)), (rw, Fd::from_raw(4))],
+            &[
+                (cr, Fd::from_raw(3)),
+                (rw, Fd::from_raw(4)),
+                (Fd::from_raw(log_file.as_raw_fd() as u64), Fd::from_raw(5)),
+            ],
             Run::Exec(
                 b"/usr/libexec/breenix/wm-client_test\0",
-                &[b"wm-client_test\0"],
+                &[b"wm-client_test\0", b"--control\0"],
             ),
         );
         let _ = (io::close(cr), io::close(rw));
@@ -187,8 +200,13 @@ impl Client {
             child: pid.into(),
             commands,
             replies,
+            log,
+            logged: Vec::new(),
+            second: 0,
+            frame: 0,
             id: 0,
             commit: 0,
+            frame_commit: 0,
             commit_ns: 0,
             handling_commit: 0,
             width: 0,
@@ -210,6 +228,9 @@ impl Client {
     }
     pub fn command(&mut self, op: u32, a: u32, b: u32) -> Result<(), String> {
         self.send(op, a, b)?;
+        self.receive()
+    }
+    fn receive(&mut self) -> Result<(), String> {
         let mut h = [0; RESPONSE_SIZE];
         read_n(&mut self.replies, &mut h)?;
         if quad(&h, 0) == u64::MAX {
@@ -223,27 +244,76 @@ impl Client {
         }
         self.id = quad(&h, 0);
         self.commit = quad(&h, 8);
+        self.frame_commit = quad(&h, 64);
         self.commit_ns = quad(&h, 32);
         self.handling_commit = quad(&h, 40);
+        self.second = quad(&h, 48);
+        self.frame = quad(&h, 56);
         self.width = word(&h, 16);
         self.height = word(&h, 20);
         self.seed = word(&h, 24);
-        let n = word(&h, 28) as usize;
-        if n > 8192 {
-            return Err("client reply event count exceeds its bound".into());
+        self.collect_through(word(&h, 28) as u64)
+    }
+    pub fn collect_events(&mut self) -> Result<(), String> {
+        self.collect_through(self.log.published())
+    }
+    fn collect_through(&mut self, published: u64) -> Result<(), String> {
+        for entry in self.log.drain_through(published)? {
+            if self.logged.len() >= 8192 {
+                return Err("retained client event log overflow".into());
+            }
+            if entry.window == self.id {
+                self.events.push(entry.event);
+            }
+            self.logged.push(entry);
         }
-        self.events = vec![abi::WindowEvent::ZERO; n];
-        // SAFETY: WindowEvent is plain data, initialized before the read, and exactly 320 bytes.
-        let bytes = unsafe {
-            core::slice::from_raw_parts_mut(self.events.as_mut_ptr().cast::<u8>(), n * 320)
-        };
-        read_n(&mut self.replies, bytes)
+        Ok(())
+    }
+    pub fn select(&mut self, index: u32) -> Result<(), String> {
+        self.command(SELECT_WINDOW, index, 0)?;
+        self.events = self
+            .logged
+            .iter()
+            .filter(|e| e.window == self.id)
+            .map(|e| e.event)
+            .collect();
+        Ok(())
+    }
+    pub fn title(&mut self, title: &[u8]) -> Result<(), String> {
+        self.send(SET_TITLE, title.len() as u32, 0)?;
+        self.commands.write_all(title).map_err(|e| e.to_string())?;
+        self.receive()
+    }
+    pub fn create_window(
+        &mut self,
+        seed: u32,
+        width: u32,
+        height: u32,
+        buffers: u32,
+    ) -> Result<(), String> {
+        if width > 65535 || height > 65535 {
+            return Err("fixture dimensions exceed command encoding".into());
+        }
+        let mut bytes = [0; COMMAND_SIZE];
+        for (at, v) in [
+            (0, CREATE_WINDOW),
+            (4, seed),
+            (8, buffers),
+            (12, width | (height << 16)),
+        ] {
+            bytes[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        self.commands.write_all(&bytes).map_err(|e| e.to_string())?;
+        self.receive()
     }
     pub fn snapshot(&mut self) -> Result<(), String> {
         self.command(SNAPSHOT, 0, 0)
     }
     pub fn clear(&mut self) -> Result<(), String> {
-        self.command(CLEAR_EVENTS, 0, 0)
+        self.command(CLEAR_EVENTS, 0, 0)?;
+        self.events.clear();
+        self.logged.clear();
+        Ok(())
     }
     /// Commit the same pixels after observing bwm's published registry change.
     pub fn barrier(&self) -> Result<u64, String> {
@@ -258,16 +328,22 @@ impl Client {
         if quad(&h, 0) != self.id {
             return Err("client barrier failed or named another window".into());
         }
-        let count = word(&h, 28) as usize;
-        if count > 8192 {
-            return Err("barrier event reply exceeds bound".into());
-        }
-        let mut events = vec![0; count * 320];
-        read_n(&mut replies, &mut events)?;
         Ok(quad(&h, 8))
     }
     pub fn clipboard(&mut self, set: bool, text: &[u8]) -> Result<(i32, u64, Vec<u8>), String> {
-        self.send(if set { CLIP_SET } else { CLIP_GET }, text.len() as u32, 0)?;
+        self.clipboard_mime(set, text, 1)
+    }
+    pub fn clipboard_mime(
+        &mut self,
+        set: bool,
+        text: &[u8],
+        mime: u32,
+    ) -> Result<(i32, u64, Vec<u8>), String> {
+        self.send(
+            if set { CLIP_SET } else { CLIP_GET },
+            text.len() as u32,
+            mime,
+        )?;
         self.commands
             .write_all(text)
             .map_err(|e| format!("clipboard client command: {e}"))?;
@@ -364,7 +440,11 @@ impl Screen {
         let n = word(&self.record, 196) as usize;
         n <= 16
             && (0..n).any(|i| {
-                quad(&self.record, 200 + i * 32) == id && quad(&self.record, 208 + i * 32) >= commit
+                quad(&self.record, 200 + i * 32) == id
+                    && quad(&self.record, 208 + i * 32) >= commit
+                    && (commit == 0
+                        || (quad(&self.record, 216 + i * 32) != 0
+                            && quad(&self.record, 224 + i * 32) != 0))
             })
     }
     pub fn pixel(&self, x: i32, y: i32) -> Result<u32, String> {
@@ -377,10 +457,10 @@ impl Screen {
     pub fn client(&self, c: &Client) -> CaseResult {
         let w = c.info()?;
         check(
-            self.contains(c.id, c.commit),
+            c.frame_commit != 0 && self.contains(c.id, c.frame_commit),
             &format!(
                 "device observation does not list client {} commit {}",
-                c.id, c.commit
+                c.id, c.frame_commit
             ),
         )?;
         for y in 0..c.height {
@@ -391,6 +471,11 @@ impl Screen {
                     | (((c.seed * 37 + q * 61) % 256) << 16)
                     | (((c.seed * 71 + q * 43) % 256) << 8)
                     | ((c.seed * 17 + q * 97) % 256);
+                let expected = if c.frame != 0 && counter_ink(c.frame - 1, x, y) {
+                    0xffff_ffff
+                } else {
+                    expected
+                };
                 let got = self.pixel(w.x + x as i32, w.y + y as i32)?;
                 if got != expected {
                     return Err(format!("bwm client {} at local {x},{y}: scanout {got:08x}, expected {expected:08x}", c.id).into());
@@ -399,6 +484,32 @@ impl Screen {
         }
         Ok(())
     }
+}
+
+fn counter_ink(frame: u64, x: u32, y: u32) -> bool {
+    const MASKS: [u16; 10] = [
+        0b111_101_101_101_111,
+        0b010_110_010_010_111,
+        0b111_001_111_100_111,
+        0b111_001_111_001_111,
+        0b101_101_111_001_001,
+        0b111_100_111_001_111,
+        0b111_100_111_101_111,
+        0b111_001_001_001_001,
+        0b111_101_111_101_111,
+        0b111_101_111_001_111,
+    ];
+    if x < 2 || y < 2 || y >= 7 {
+        return false;
+    }
+    let text = frame.to_string();
+    let column = (x - 2) as usize / 4;
+    let local = (x - 2) % 4;
+    if column >= text.len() || local == 3 {
+        return false;
+    }
+    let digit = (text.as_bytes()[column] - b'0') as usize;
+    MASKS[digit] & (1 << (14 - (y - 2) * 3 - local)) != 0
 }
 
 pub struct Desktop {
@@ -467,8 +578,10 @@ impl Desktop {
                 s.serial() != 0
                     && quad(&s.record, 64) != previous_context
                     && s.pixel(d.width as i32 / 2, 1).ok() == Some(0xff14161e)
-                    && (!supervised || initial_clients.iter().any(|w|
-                        w.commit_id != 0 && s.contains(w.id, w.commit_id)))
+                    && (!supervised
+                        || initial_clients
+                            .iter()
+                            .any(|w| w.commit_id != 0 && s.contains(w.id, w.commit_id)))
             }))
         });
         ready.map_err(|e| format!("{e}; {}", d.output()))?;
@@ -484,12 +597,13 @@ impl Desktop {
             }
         }
         if self.output.len() < 65536 {
-            self.output.push_str(&String::from_utf8_lossy(&out).replace(['\n', '\r'], " "));
+            self.output
+                .push_str(&String::from_utf8_lossy(&out).replace(['\n', '\r'], " "));
         }
         self.output.clone()
     }
     pub fn shown(&mut self, c: &Client) -> Result<Screen, String> {
-        self.shown_after(c, c.commit)
+        self.shown_after(c, c.frame_commit)
     }
     /// A newly discovered client's first-frame validation runs synchronously in
     /// bwm. Do not start an input scenario until that startup work is finished.
@@ -498,8 +612,10 @@ impl Desktop {
     pub fn client_ready(&mut self, c: &Client) -> Result<(), String> {
         let marker = format!("[bwm] composited client frame: window {} on screen,", c.id);
         until(2000, "bwm completed client startup validation", || {
-            if !self.output().contains(&marker) { return Ok(false); }
-            Ok(Screen::read().is_ok_and(|s| s.contains(c.id, c.commit)))
+            if !self.output().contains(&marker) {
+                return Ok(false);
+            }
+            Ok(Screen::read().is_ok_and(|s| s.contains(c.id, c.frame_commit)))
         })
     }
     pub fn shown_after(&mut self, c: &Client, commit: u64) -> Result<Screen, String> {
@@ -522,12 +638,16 @@ impl Desktop {
                     }
                     Ok(s) => {
                         let n = word(&s.record, 196) as usize;
-                        let entries: Vec<_> = (0..n.min(16)).map(|i|
-                            (quad(&s.record, 200 + i * 32), quad(&s.record, 208 + i * 32))).collect();
+                        let entries: Vec<_> = (0..n.min(16))
+                            .map(|i| (quad(&s.record, 200 + i * 32), quad(&s.record, 208 + i * 32)))
+                            .collect();
                         observed = format!("composite {} entries {:?}", s.serial(), entries);
                         Ok(false)
                     }
-                    Err(e) => { observed = e; Ok(false) }
+                    Err(e) => {
+                        observed = e;
+                        Ok(false)
+                    }
                 }
             },
         )
@@ -562,7 +682,9 @@ impl Desktop {
     }
     pub fn focus(&mut self, c: &mut Client) -> Result<(), String> {
         let marker = format!("[bwm] composited client frame: window {} on screen,", c.id);
-        if !self.output().contains(&marker) { self.client_ready(c)?; }
+        if !self.output().contains(&marker) {
+            self.client_ready(c)?;
+        }
         until(2000, "bwm assigned client geometry", || {
             let w = c.info()?;
             Ok(w.x > 0 && w.y > 0)
