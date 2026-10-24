@@ -161,16 +161,7 @@ pub fn launch_fork_fails() -> CaseResult {
     Ok(())
 }
 pub fn launch_close_50() -> CaseResult {
-    let _config = FileOverride::new(
-        "/etc/hotkeys.conf",
-        b"super+k = exec /usr/libexec/breenix/wm-client_test\n",
-    )?;
-    let d = Desktop::start()?;
-    let baseline = listed()?;
-    let processes = children(d.wm.pid, "")?;
-    let memory = rss(d.wm.pid)?;
-    for n in 0..50 {
-        hostkeys("super-k")?;
+    fn launched(baseline: &[abi::WinInfo]) -> Result<abi::WinInfo, String> {
         let mut launched = None;
         until(5000, "cycle launch committed", || {
             launched = listed()?
@@ -178,16 +169,43 @@ pub fn launch_close_50() -> CaseResult {
                 .find(|w| !baseline.iter().any(|b| b.id == w.id) && w.commit_id != 0);
             Ok(launched.is_some())
         })?;
-        let w = launched.ok_or("launched client missing")?;
+        launched.ok_or("launched client missing".into())
+    }
+    fn reaped(d: &Desktop, baseline: &[abi::WinInfo], processes: &[i32]) -> Result<(), String> {
+        until(2000, "cycle close reaped and removed", || {
+            Ok(listed()?.len() == baseline.len() && children(d.wm.pid, "")? == processes)
+        })
+    }
+    let _config = FileOverride::new(
+        "/etc/hotkeys.conf",
+        b"super+k = exec /usr/libexec/breenix/wm-client_test\n",
+    )?;
+    let d = Desktop::start()?;
+    let baseline = listed()?;
+    let processes = children(d.wm.pid, "")?;
+    // W30 item 2: sample physical input once, then measure all fifty cycles
+    // through the production input core without the host request cap/sleeps.
+    hostkeys("super-k")?;
+    let sample = launched(&baseline)?;
+    d.click(sample.x + sample.width as i32 - 15 * d.scale, sample.y - 16 * d.scale)?;
+    reaped(&d, &baseline, &processes)?;
+    let mut input = Virtual::create_timed(0)?;
+    let memory = rss(d.wm.pid)?;
+    for n in 0..50 {
+        input.batch(&[(1, 125, 1), (1, 37, 1), (1, 37, 0), (1, 125, 0)], 0)?;
+        let w = launched(&baseline)?;
         let s = Screen::read()?;
         check(
             s.contains(w.id, w.commit_id),
             &format!("cycle {n} launch not on device scanout"),
         )?;
-        d.click(w.x + w.width as i32 - 15 * d.scale, w.y - 16 * d.scale)?;
-        until(2000, "cycle close reaped and removed", || {
-            Ok(listed()?.len() == baseline.len() && children(d.wm.pid, "")? == processes)
-        })?;
+        let x = w.x + w.width as i32 - 15 * d.scale;
+        let y = w.y - 16 * d.scale;
+        let ax = ((x as i64 * 32767 + d.width as i64 - 2) / (d.width as i64 - 1)) as i32;
+        let ay = ((y as i64 * 32767 + d.height as i64 - 2) / (d.height as i64 - 1)) as i32;
+        input.batch(&[(3, 0, ax), (3, 1, ay), (1, 0x110, 1)], 0)?;
+        input.batch(&[(1, 0x110, 0)], 0)?;
+        reaped(&d, &baseline, &processes)?;
     }
     check(
         rss(d.wm.pid)? <= memory + 64,
