@@ -37,9 +37,15 @@ pub fn stalled_ledger() -> CaseResult {
         "full pending ledger stopped the physical keyboard")?;
     check(events.iter().any(|e| e.kind == 0 && e.code == 3),
         "hardware ledger overflow omitted SYN_DROPPED")?;
-    check(ledger()?.iter().any(|row| row.len() == 4 && row[0] == last.to_string()
-        && row[1] == "lost" && row[3] == "overflow"),
-        "hardware ledger overflow omitted the pending source loss")
+    // Inspect the full snapshot without allocating a String for each field.
+    let text = std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
+    let serial = last.to_string();
+    check(text.lines().any(|row| {
+        let mut fields = row.split_whitespace();
+        fields.next() == Some(serial.as_str()) && fields.next() == Some("lost")
+            && fields.next().is_some() && fields.next() == Some("overflow")
+            && fields.next().is_none()
+    }), "hardware ledger overflow omitted the pending source loss")
 }
 
 pub fn pointer_completion() -> CaseResult {
