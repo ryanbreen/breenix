@@ -167,6 +167,12 @@ impl Client {
         Self::start_mode(seed, flags::UNREGISTERED | flags::IGNORE_CLOSE)
     }
     pub fn start_mode(seed: u32, flags: u32) -> Result<Self, String> {
+        Self::start_shape(seed, flags, 240, 160)
+    }
+    pub fn start_shape(seed: u32, flags: u32, width: u32, height: u32) -> Result<Self, String> {
+        if !(1..=4096).contains(&width) || !(1..=4096).contains(&height) {
+            return Err("fixture client dimensions outside the window contract".into());
+        }
         let (log, log_file) = EventLog::create()?;
         let (cr, cw) = io::pipe().map_err(|e| e.to_string())?;
         let (rr, rw) = io::pipe().map_err(|e| e.to_string())?;
@@ -214,7 +220,20 @@ impl Client {
             seed,
             events: Vec::new(),
         };
-        client.command(SNAPSHOT, seed, flags)?;
+        let mut first = [0; COMMAND_SIZE];
+        for (at, word) in [
+            (0, SNAPSHOT),
+            (4, seed),
+            (8, flags),
+            (12, width | (height << 16)),
+        ] {
+            first[at..at + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        client
+            .commands
+            .write_all(&first)
+            .map_err(|e| e.to_string())?;
+        client.receive()?;
         Ok(client)
     }
     pub fn send(&mut self, op: u32, a: u32, b: u32) -> Result<(), String> {

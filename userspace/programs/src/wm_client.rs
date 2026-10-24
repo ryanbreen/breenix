@@ -17,6 +17,8 @@ struct Options {
     flags: u32,
     crash_after: u32,
     slow: u32,
+    width: u32,
+    height: u32,
 }
 impl Options {
     fn parse() -> Result<Self, String> {
@@ -26,6 +28,8 @@ impl Options {
             flags: 0,
             crash_after: 0,
             slow: 10,
+            width: 240,
+            height: 160,
         };
         let mut args = std::env::args().skip(1).peekable();
         while let Some(arg) = args.next() {
@@ -103,7 +107,7 @@ struct ClientWindow {
 }
 impl ClientWindow {
     fn new(seed: u32, options: &Options, renderer: &mut bgl::Context) -> Result<Self, String> {
-        Self::new_shape(seed, options, renderer, 240, 160, 3)
+        Self::new_shape(seed, options, renderer, options.width, options.height, 3)
     }
     fn new_shape(
         seed: u32,
@@ -379,6 +383,15 @@ fn run(
         command.read_exact(&mut first).map_err(|e| e.to_string())?;
         options.seed = word(&first, 4);
         options.flags |= word(&first, 8);
+        let dimensions = word(&first, 12);
+        options.width = dimensions & 0xffff;
+        options.height = dimensions >> 16;
+        if word(&first, 0) != SNAPSHOT
+            || !(1..=4096).contains(&options.width)
+            || !(1..=4096).contains(&options.height)
+        {
+            return Err("invalid initial client command or dimensions".into());
+        }
     }
     if options.flags & !flags::MASK != 0 {
         return Err("unknown client behaviour flags".into());

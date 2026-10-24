@@ -155,8 +155,11 @@ pub fn resize_top() -> CaseResult {
     anchored_resize(false, true)
 }
 pub fn resize_corners() -> CaseResult {
-    for (left, top) in [(true, true), (false, true), (true, false), (false, false)] {
-        let (mut d, mut c) = one()?;
+    let mut d = Desktop::start()?;
+    for (index,(left, top)) in [(true, true), (false, true), (true, false), (false, false)].into_iter().enumerate() {
+        let mut c = Client::start(11+index as u32)?;
+        placed(&c)?;
+        d.client_ready(&c)?;
         let w = c.info()?;
         let x = if left {
             w.x - 2 * d.scale
@@ -337,11 +340,11 @@ pub fn exit_during_resize() -> CaseResult {
 }
 pub fn client_title() -> CaseResult {
     let (mut d, mut c) = one()?;
-    c.title(b"renamed window 0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO")?;
+    c.title(b"renamed window 0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLM")?;
     let w = c.info()?;
     check(
         &w.title[..w.title_len as usize]
-            == b"renamed window 0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO",
+            == b"renamed window 0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLM",
         "client title truncated in registry",
     )?;
     title_pixels(&mut d, &c)
@@ -380,6 +383,7 @@ pub fn expose_during_drag() -> CaseResult {
             b.info()?.x == w.x + 80 * n,
             "drag sequence departed from requested delta",
         )?;
+        parked(&d)?;
         let s = d.shown(&b)?;
         s.client(&b)?;
         let aw = a.info()?;
