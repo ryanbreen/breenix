@@ -95,7 +95,7 @@ pub fn showcase_check(name: &str) -> CaseResult {
         let held=remote::drawn().map_err(crate::suite::CaseError::Fail)?;
         check(held.panes(&probe_hash).is_some_and(|p|p.artifacts.is_some()),"the runner did not draw the check's failing picture with its expected and difference panes")?;
         check_spotlight(&probe,&px,d,&held).map_err(crate::suite::CaseError::Fail)?;
-        for (x,y) in [(840,168),(984,168),(1128,168),(1136,176),(840,312)] {
+        for (x,y) in [(840,168),(984,168),(1128,168),(1136,176),(840,312),(849,401)] {
             // Each substitution is one changed byte, put back once checked.
             px[d.at(x,y)]^=255;let caught=check_spotlight(&probe,&px,d,&held).is_err();px[d.at(x,y)]^=255;
             check(caught,"spotlight accepted a substituted pane, heat map, cross or bound")?;
@@ -430,14 +430,13 @@ fn check_spotlight(s:&Show,bytes:&[u8],d:Dims,held:&dyn Holds)->Result<(),String
         let mut label=Region::new(d,840,312,424,rows,Color::rgb(18,29,44))?;
         label.text(&mut font,std::format!("{differing} pixels differ; bound {}",frame.bound).as_bytes(),0,0,424,1,Color::WHITE);
         label.compare(d,bytes).map_err(|_|String::from("spotlight bound differs"))?;
-    }else{
-        let mut pane=Region::new(d,848,168,400,250,Color::rgb(18,29,44))?;
-        for y in 0..250 {for x in 0..400 {
-            let i=((y*frame.height/250)*frame.width+x*frame.width/400)*4;
-            pane.put(x,y,colour(&frame.pixels[i..i+4]));
-        }}
-        pane.compare(d,bytes).map_err(|_|String::from("actual-only spotlight differs from judged source"))?;
     }
+    // B50's fixed panel compares physical pixels, including odd coordinates at scale 2.
+    for y in 0..250*d.n { for x in 0..400*d.n {
+        let source = ((y*frame.height/(250*d.n))*frame.width+x*frame.width/(400*d.n))*4;
+        let at = ((400*d.n+y)*d.width+848*d.n+x)*4;
+        check(bytes[at..at+3] == frame.pixels[source..source+3], "B50: inset target differs from the judged frame at native resolution").map_err(|e|std::format!("{e:?}"))?;
+    }}
     if let Some(input) = &s.entries[chosen].input { check_input(bytes, input, true, d)?; }
     Ok(())
 }
@@ -470,7 +469,7 @@ fn words(r: &mut Region, font: &mut Oracle, text: &str, x: usize, y: usize, widt
     }
 }
 fn check_input(bytes: &[u8], input: &super::super::suite::InputTrace, overlay: bool, d: Dims) -> Result<(), String> {
-    let (top,height,scale) = if overlay {(432,184,1)} else {(184,416,2)};
+    let (top,height,scale) = if overlay {(336,64,1)} else {(184,416,2)};
     let mut font=Oracle::new();
     let mut expected=Region::new(d,848,top,416,height,Color::rgb(18,29,44))?;
     let heading = match (overlay,input.points.is_empty()) {
@@ -483,11 +482,11 @@ fn check_input(bytes: &[u8], input: &super::super::suite::InputTrace, overlay: b
     words(&mut expected,&mut font,&input.hit,0,if overlay{16}else{32},400,scale);
     let points=&input.points;
     if points.is_empty() {
-        expected.text(&mut font,b"Events (no pointer)",0,if overlay{104}else{176},400,2,Color::WHITE);
+        expected.text(&mut font,b"Events (no pointer)",0,if overlay{40}else{176},400,if overlay{1}else{2},Color::WHITE);
     } else {
         let (min_x,max_x)=(points.iter().map(|p|p.x as i64).min().unwrap(),points.iter().map(|p|p.x as i64).max().unwrap());
         let (min_y,max_y)=(points.iter().map(|p|p.y as i64).min().unwrap(),points.iter().map(|p|p.y as i64).max().unwrap());
-        let map=|p:&stage::InputPoint|(16+(p.x as i64-min_x)*352/(max_x-min_x).max(1),(if overlay{84}else{152})+(p.y as i64-min_y)*(if overlay{80}else{192})/(max_y-min_y).max(1));
+        let map=|p:&stage::InputPoint|(16+(p.x as i64-min_x)*352/(max_x-min_x).max(1),(if overlay{40}else{152})+(p.y as i64-min_y)*(if overlay{16}else{192})/(max_y-min_y).max(1));
         for pair in points.windows(2) {
             let (x,y)=map(&pair[0]);let (xx,yy)=map(&pair[1]);
             expected.line(x as i32,y as i32,xx as i32,yy as i32,Color::rgb(64,160,224));
@@ -542,7 +541,7 @@ fn check_labels(s: &Show, bytes: &[u8], d: Dims) -> Result<(), String> {
         _=>return Err("label check needs a completed case".into()),
     };
     let rows=font.rows(d.n,3);
-    let mut expected=Region::new(d,848,640,400,rows,Color::rgb(18,29,44))?;
+    let mut expected=Region::new(d,848,672,400,rows,Color::rgb(18,29,44))?;
     expected.text(&mut font,label.as_bytes(),0,0,400,3,colour);
     expected.compare(d,bytes)?;
     Region::new(d,0,700,1280,100,Color::rgb(12,19,31))?.compare(d,bytes)?;
@@ -573,7 +572,7 @@ fn exercise_details(s: &Show) -> CaseResult {
                 let tiles:Vec<_>=probe.entries.iter().map(|e|Tile{id:&e.id,stamp:e.stamp,key:e.key,thumbnail:None}).collect();
                 let wall=stage::Wall::for_tiles(&tiles).map_err(|e|std::format!("wall: {e:?}"))?;
                 let (x,y)=wall.origin(wall.slot(&tiles,0)-2);
-                for (x,y) in [(x,y),(848,640),(16,728),(16,752)] {
+                for (x,y) in [(x,y),(848,672),(16,728),(16,752)] {
                     bytes[d.at(x,y)]^=255;let caught=check_labels(&probe,&bytes,d).is_err();bytes[d.at(x,y)]^=255;
                     check(caught,"heading, verdict or empty-footer substitution escaped detection")?;
                 }
