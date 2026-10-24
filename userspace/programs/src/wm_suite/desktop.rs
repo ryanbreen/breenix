@@ -230,7 +230,7 @@ impl Client {
         self.send(op, a, b)?;
         self.receive()
     }
-    fn receive(&mut self) -> Result<(), String> {
+    pub(super) fn receive(&mut self) -> Result<(), String> {
         let mut h = [0; RESPONSE_SIZE];
         read_n(&mut self.replies, &mut h)?;
         if quad(&h, 0) == u64::MAX {

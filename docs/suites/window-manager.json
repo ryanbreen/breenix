@@ -850,6 +850,10 @@
       "title": "Idle, stalls & stress",
       "cases": [
         {
+          "id": "compositor-wait-timeout",
+          "title": "The v2 scene poll times out within +100 ms when idle and wakes before timeout after a client commit"
+        },
+        {
           "id": "idle-no-composites",
           "title": "One hundred acknowledged idle UI epochs produce no composites"
         },

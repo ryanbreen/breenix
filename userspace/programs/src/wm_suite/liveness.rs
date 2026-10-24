@@ -84,3 +84,38 @@ pub fn memory_bounded() -> CaseResult {
         "bwm resident memory grew more than 64 KiB after warmup",
     )
 }
+
+/// W14: compositor waits use the v2 scene descriptor on ARM64.
+pub fn compositor_wait_timeout() -> CaseResult {
+    use libbreenix::{io, types::Fd};
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let mut c = Client::start_mode(11, flags::IGNORE_CLOSE | flags::NEVER_READ)?;
+    let _claim = InputClaim::new()?;
+    let raw = window::call(abi::op::EVENT_FD, &mut abi::WinId { id: 0 })?;
+    // SAFETY: EVENT_FD returns a new descriptor owned by this file.
+    let scene = unsafe { std::fs::File::from_raw_fd(raw as i32) };
+    let mut fds = [io::PollFd { fd: scene.as_raw_fd(), events: io::poll_events::POLLIN, revents: 0 }];
+    // Drain any publication completing after the descriptor was created.
+    if io::poll(&mut fds, 0)? != 0 {
+        let mut changes = [0; 8];
+        check(io::read(Fd::from_raw(scene.as_raw_fd() as u64), &mut changes)? == 8,
+              "scene descriptor did not return its change total")?;
+    }
+    const TIMEOUT_MS: i32 = 100;
+    let begin = now();
+    let ready = io::poll(&mut fds, TIMEOUT_MS)?;
+    let elapsed = now() - begin;
+    value("wait-time", (elapsed / 1000) as i64, "us", Some((100000, 200000)));
+    check(ready == 0 && elapsed >= 100_000_000 && elapsed <= 200_000_000,
+          "idle scene poll returned before its timeout or over 100 ms late")?;
+    c.send(PAINT, 23, 0)?;
+    let begin = now();
+    let ready = io::poll(&mut fds, TIMEOUT_MS)?;
+    let elapsed = now() - begin;
+    check(ready == 1 && fds[0].revents & io::poll_events::POLLIN != 0 && elapsed < 100_000_000,
+          "client commit did not wake scene poll before its timeout")?;
+    c.receive()?;
+    let mut changes = [0; 8];
+    check(io::read(Fd::from_raw(scene.as_raw_fd() as u64), &mut changes)? == 8
+          && u64::from_le_bytes(changes) > 0, "scene wake omitted its change total")
+}

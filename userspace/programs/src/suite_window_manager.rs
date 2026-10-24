@@ -257,6 +257,7 @@ static SUITE: Suite = suite("window-manager", "Window manager", &[
         case("unprivileged", "A uid 1000 client with a window can set and get.", clipboard::unprivileged),
     ]),
     category("liveness", "Idle, stalls & stress", &[
+        case("compositor-wait-timeout", "The v2 scene poll times out within +100 ms when idle and wakes before timeout after a client commit", liveness::compositor_wait_timeout),
         case("idle-no-composites", "One hundred acknowledged idle UI epochs produce no composites", liveness::idle_composites),
         case("hung-client", "A stopped client cannot prevent another client receiving input and repainting", liveness::hung_client),
         case("wake-on-registry", "An independent new client wakes an idle bwm and reaches scanout", liveness::wake_registry),
