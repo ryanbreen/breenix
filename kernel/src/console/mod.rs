@@ -61,8 +61,6 @@ pub use records::{console_session, write_tty};
 pub mod keymap;
 pub mod keys;
 pub mod raster;
-#[cfg(target_arch = "aarch64")]
-mod ribbon;
 pub mod splash;
 pub mod vcs;
 pub mod vt;
@@ -835,15 +833,6 @@ struct Screen {
     frames: u64,
     /// The last pass wrote and flushed each row it drew, and left no row undrawn.
     complete: bool,
-    /// The boot stage ribbon the rows under its band show (section 23.7 of the BreenGL
-    /// contract), once worked out, and whether the full repaint that started it took test
-    /// point 15 (`ribbon-drop-stage`).
-    #[cfg(target_arch = "aarch64")]
-    ribbon: Option<ribbon::Ribbon>,
-    #[cfg(target_arch = "aarch64")]
-    ribbon_known: bool,
-    #[cfg(target_arch = "aarch64")]
-    ribbon_drop: bool,
 }
 
 /// The foreground terminal's view as the render thread last copied it.
@@ -928,12 +917,6 @@ fn render_thread(display: &'static Display, attached: Attached) {
         cleared: false,
         frames: 0,
         complete: false,
-        #[cfg(target_arch = "aarch64")]
-        ribbon: None,
-        #[cfg(target_arch = "aarch64")]
-        ribbon_known: false,
-        #[cfg(target_arch = "aarch64")]
-        ribbon_drop: false,
     };
 
     let mut announced = false;
@@ -998,16 +981,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
             screen.cleared = false;
             screen.complete = false;
             screen.shown.fill(None);
-            // A full repaint, such as the one after a display give-back, draws the ribbon
-            // afresh: test point 15 drops a stage from it until the next one.
-            #[cfg(target_arch = "aarch64")]
-            {
-                screen.ribbon_drop = crate::test_control::take(breengel_abi::tc_point::RIBBON_DROP_STAGE, 0).is_some();
-                screen.ribbon_known = false;
-            }
         }
-        #[cfg(target_arch = "aarch64")]
-        screen.refresh_ribbon();
         if changed || !screen.complete {
             let started = crate::time::get_monotonic_time_ns();
             let drawn = screen.update(&snapshot);
@@ -1021,8 +995,8 @@ fn render_thread(display: &'static Display, attached: Attached) {
                     info,
                     "{} console tty and kernel log on the screen: {}x{} cells, {} rows drawn in {}.{:03} ms",
                     TAG,
-                    cols,
-                    rows,
+                    snapshot.cols,
+                    snapshot.rows,
                     drawn,
                     elapsed / 1000,
                     elapsed % 1000
@@ -1267,30 +1241,6 @@ fn sleep_ms(ms: u64) {
 }
 
 impl Screen {
-    /// Work out the ribbon again when a stage was reached or a full repaint began, and mark
-    /// the text rows under its band for drawing when it changed.
-    #[cfg(target_arch = "aarch64")]
-    fn refresh_ribbon(&mut self) {
-        crate::graphics::boot_ribbon::drain();
-        let reached = crate::graphics::boot_ribbon::take_dirty();
-        if self.ribbon_known && !reached {
-            return;
-        }
-        self.ribbon_known = true;
-        let wanted = ribbon::Ribbon::now(&self.layout, self.ribbon_drop);
-        if wanted == self.ribbon {
-            return;
-        }
-        let line_height = self.layout.font.line_height();
-        for band in [&self.ribbon, &wanted].into_iter().flatten().map(ribbon::Ribbon::rows) {
-            let rows = band.start / line_height..band.end.div_ceil(line_height).min(self.shown.len());
-            for shown in &mut self.shown[rows] {
-                *shown = None;
-            }
-        }
-        self.ribbon = wanted;
-    }
-
     /// Draw the rows that differ from what the screen shows, then flush them.
     /// Returns how many rows were written.
     fn update(&mut self, snapshot: &Snapshot) -> usize {
@@ -1318,10 +1268,6 @@ impl Screen {
             }
             raster::draw_row(&mut self.shadow, &self.layout, row, &wanted.text, wanted.cursor);
             let band = self.layout.band(row);
-            #[cfg(target_arch = "aarch64")]
-            if let Some(ribbon) = &self.ribbon {
-                ribbon.paint(&mut self.shadow, &self.layout, band.clone());
-            }
             if self.display.write(&self.shadow, band.clone(), may_draw) {
                 self.shown[row] = Some(wanted);
                 drawn += 1;
@@ -1338,7 +1284,9 @@ impl Screen {
             if !may_draw() || self.display.flush(lines.clone()).is_err() {
                 // The rows are drawn and flushed again on the next pass.
                 let line_height = self.layout.font.line_height();
-                for shown in &mut self.shown[lines.start / line_height..lines.end.div_ceil(line_height)] {
+                let start = (lines.start / line_height).min(self.shown.len());
+                let end = lines.end.div_ceil(line_height).min(self.shown.len());
+                for shown in &mut self.shown[start..end] {
                     *shown = None;
                 }
                 failed = true;
@@ -1383,12 +1331,6 @@ impl Screen {
                         }
                         None => raster::PALETTE[0],
                     };
-                    // A drawn row shows the boot stage ribbon over its text in the ribbon's band.
-                    #[cfg(target_arch = "aarch64")]
-                    let expected = match (&self.ribbon, shown) {
-                        (Some(ribbon), Some(_)) => ribbon.colour(x, y).unwrap_or(expected),
-                        _ => expected,
-                    };
                     if !layout.pixel_is(pixel, expected) {
                         font_mismatches += 1;
                     }
@@ -1410,6 +1352,7 @@ impl Screen {
             .collect();
         Check {
             fg,
+            text_rows: self.shown.len(),
             layout,
             kind: self.display.kind(),
             source,
@@ -1432,6 +1375,7 @@ impl Screen {
 
 /// One read-back of the screen.
 struct Check {
+    text_rows: usize,
     /// The foreground terminal (0-based) it read.
     fg: usize,
     layout: Layout,
@@ -1650,7 +1594,7 @@ pub fn proc_console_check() -> Result<String, i32> {
                 font.glyph_width(),
                 font.line_height(),
                 layout.cols(),
-                layout.rows()
+                check.text_rows
             );
             let _ = writeln!(text, "console logo scale: {}", splash::logo_scale(&font));
             match &check.source {

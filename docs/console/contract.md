@@ -132,10 +132,12 @@ pixels; the two extra pixel rows at the bottom of each cell are the cursor band.
   background colour.
 - The logo scale `k` (pixels per design unit, section 6) follows `S`: 2 for sizes 16 and 20, 3 for 24, 4 for
   32.
-- On ARM64, a display of `1280s` by `800s` pixels for a whole scale `s` also shows the boot stage ribbon
-  (docs/gui/breengel.md section 23.7) over the grid, in the band from `x = 16s` to `1264s` and `y = 752s` to
-  `768s`. The read-back check (section 8) expects the ribbon's pixels there, in the rows it has drawn; the
-  grid, `vcs` and `TIOCGWINSZ` keep the size rule's dimensions.
+<!-- claim-lint:ok: Normative ruling B54, resolving #2458, supersedes B51-B53's console ribbon. -->
+- Under B54 the console draws no boot-stage ribbon in any mode, at any time. It reserves
+  no band: every grid row, including the bottom rows, is available for text at the full fixed size above.
+  The splash's progress bar and both of its read-backs (section 7) are unchanged. The console
+  read-back (section 8) checks every grid row against the font, with no ribbon colour anywhere.
+
 
 | Display | Where | `S` | Cell | Grid | `k` |
 |---|---|---|---|---|---|

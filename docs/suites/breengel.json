@@ -1674,7 +1674,7 @@
         },
         {
           "id": "boot-ribbon",
-          "title": "The restored kernel ribbon matches producer boot-stage markers after detecting ribbon-drop-stage"
+          "title": "The full console grid holds text through its bottom rows with no ribbon colour (B54)"
         },
         {
           "id": "boundary-notice",

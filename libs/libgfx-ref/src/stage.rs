@@ -659,24 +659,3 @@ pub fn boundary_notice(
         _ => Err(StageError::Boundary),
     }
 }
-/// One segment per producer-reached stage; callers must supply the manifest order.
-pub fn draw_boot_ribbon(fb: &mut FrameBuf, reached: &[bool]) -> Result<(), StageError> {
-    let n = scale_of(fb)?;
-    if reached.is_empty() || reached.len() > 416 {
-        return Err(StageError::Manifest);
-    }
-    fill(fb, n, 16, 752, 1248, 16, BG);
-    for (i, &lit) in reached.iter().enumerate() {
-        let (left, right) = (
-            16 + 1248 * i / reached.len(),
-            16 + 1248 * (i + 1) / reached.len(),
-        );
-        fill(fb, n, left,
-            752,
-            right - left - 2,
-            16,
-            if lit { PASS } else { OUTLINE },
-        );
-    }
-    Ok(())
-}

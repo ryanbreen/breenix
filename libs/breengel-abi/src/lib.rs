@@ -746,7 +746,6 @@ pub mod tc_point {
     pub const STAGE_LIE:u32=12;
     pub const STAGE_SUBSTITUTE_FRAME:u32=13;
     pub const STAGE_DRAW_IN_WINDOW:u32=14;
-    pub const RIBBON_DROP_STAGE:u32=15;
     pub const COMPOSITE_STALL: u32 = 16;
     pub const MOVE_POINTER: u32 = 17;
     pub const CAPTURE_STALL: u32 = 18;
@@ -755,7 +754,7 @@ pub mod tc_point {
 
     /// Whether section 21 defines `point`.
     pub const fn defined(point: u32) -> bool {
-        matches!(point, IGNORE_DAMAGE..=CAPTURE_STALL)
+        matches!(point, IGNORE_DAMAGE..=STAGE_DRAW_IN_WINDOW | COMPOSITE_STALL..=CAPTURE_STALL)
     }
 }
 

@@ -572,7 +572,7 @@ source/runner integrity only; this contract-only PR has no boot or GPU acceptanc
 | `panel/judged-frame-shown` | kept | unchanged | gpu.md 2.2 panel Keep row |
 | `panel/serial-agreement` | kept | unchanged | gpu.md 2.2 panel Keep row |
 | `panel/quiet-window` | kept | unchanged | gpu.md 2.2 panel Keep row |
-| `panel/boot-ribbon` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `panel/boot-ribbon` | changed | gpu-display | B54: full console font/device read-back, bottom-row text and no console ribbon colours; retain producer-record agreement with captured serial. |
 | `panel/boundary-notice` | kept | unchanged | gpu.md 2.2 panel Keep row |
 | `panel/handoff` | changed | gpu-display | B7: shared fb_mmap/FLUSH paint retired; child presents a GPU target and restores the stage exactly. B8: reported-mode readback. |
 | `panel/between-cases` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |

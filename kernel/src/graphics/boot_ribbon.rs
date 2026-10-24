@@ -8,7 +8,6 @@ static REACHED: [AtomicBool; MARKERS.len()] = [const { AtomicBool::new(false) };
 const CAPACITY: usize = 512 * 1024;
 static SERIAL: [AtomicU8; CAPACITY] = [const { AtomicU8::new(0) }; CAPACITY];
 static TAIL: AtomicUsize = AtomicUsize::new(0);
-static DIRTY: AtomicBool = AtomicBool::new(false);
 static OVERFLOW: AtomicBool = AtomicBool::new(false);
 static SCAN: spin::Mutex<(usize, [u8; 1024], usize)> = spin::Mutex::new((0, [0; 1024], 0));
 /// Constant work per byte under UART ownership, including before the framebuffer exists.
@@ -18,12 +17,11 @@ pub fn byte(b: u8) {
     SERIAL[tail].store(b, Ordering::Relaxed);
     TAIL.store(tail + 1, Ordering::Release);
 }
-/// Drain in thread context; a bounded byte batch avoids monopolizing the render thread.
-pub fn drain() -> bool {
-    if !crate::arch_interrupts_enabled() { return false; }
-    let Some(mut scan) = SCAN.try_lock() else { return false; };
-    let end = TAIL.load(Ordering::Acquire).min(scan.0 + 8192);
-    let mut changed = false;
+/// Interpret the captured prefix only when /proc requests the stage records.
+fn drain() {
+    if !crate::arch_interrupts_enabled() { return; }
+    let Some(mut scan) = SCAN.try_lock() else { return; };
+    let end = TAIL.load(Ordering::Acquire);
     while scan.0 < end {
         let b = SERIAL[scan.0].load(Ordering::Relaxed);
         scan.0 += 1;
@@ -33,7 +31,7 @@ pub fn drain() -> bool {
                 let bytes = &scan.1[..n];
                 for (i, marker) in MARKERS.iter().enumerate() {
                     if super::boot_producer::matches(bytes, marker, MARKERS) {
-                        changed |= !REACHED[i].swap(true, Ordering::AcqRel);
+                        REACHED[i].store(true, Ordering::Release);
                     }
                 }
             }
@@ -43,23 +41,13 @@ pub fn drain() -> bool {
             scan.2 = n.saturating_add(1);
         }
     }
-    if changed { DIRTY.store(true, Ordering::Release); }
-    changed
 }
-pub fn take_dirty() -> bool { DIRTY.swap(false, Ordering::AcqRel) }
 /// Complete serial prefix, not the matcher's interpretation of it. Never silently truncate.
 pub fn serial() -> Result<alloc::string::String, i32> {
     if OVERFLOW.load(Ordering::Acquire) { return Err(-75); }
     let n = TAIL.load(Ordering::Acquire);
     let bytes: alloc::vec::Vec<u8> = SERIAL[..n].iter().map(|b| b.load(Ordering::Relaxed)).collect();
     Ok(alloc::string::String::from_utf8_lossy(&bytes).into_owned())
-}
-pub fn reached() -> alloc::vec::Vec<bool> {
-    drain();
-    REACHED[..MARKERS.len()]
-        .iter()
-        .map(|v| v.load(Ordering::Acquire))
-        .collect()
 }
 pub fn records() -> alloc::string::String {
     drain();
@@ -74,4 +62,20 @@ pub fn records() -> alloc::string::String {
         );
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proc_stages_follow_complete_producer_lines() {
+        let marker = MARKERS[0].split('|').next().unwrap();
+        for b in marker.bytes() { byte(b); }
+        drain();
+        assert!(!REACHED[0].load(Ordering::Acquire));
+        byte(b'\n');
+        drain();
+        assert!(records().starts_with(&alloc::format!("1|{}\n", MARKERS[0])));
+    }
 }

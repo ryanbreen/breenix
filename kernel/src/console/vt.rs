@@ -285,7 +285,8 @@ impl Terminals<'_> {
     fn publish(&mut self) {
         let fg = self.sw.fg;
         FOREGROUND.store(fg, Ordering::Release);
-        FG_GRAPHICS.store(self.vts[fg].graphics.is_some(), Ordering::Release);
+        let graphics = self.vts[fg].graphics.is_some();
+        FG_GRAPHICS.store(graphics, Ordering::Release);
         let suspended = self.sw.display_owner.is_some_and(|(_, vt)| vt != fg);
         PRESENTATION_SUSPENDED.store(suspended, Ordering::SeqCst);
     }
