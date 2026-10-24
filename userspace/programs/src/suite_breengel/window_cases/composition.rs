@@ -105,7 +105,13 @@ pub(crate) fn place(k: &mut Helper, id: u64, p: &Placed, flags: u32) -> CaseResu
 
 /// The compositor composes once: its serial and pixel count.
 pub(crate) fn compose(k: &mut Helper) -> Result<(u64, u64), breenix_suite::suite::CaseError> {
+    let before = bgl::modes().map_err(|e| format!("MODES {e}")).cite("23.9")?;
     let r = k.ask("composite").cite("24")?;
+    if panel_case() {
+        let after = bgl::modes().map_err(|e| format!("MODES {e}")).cite("23.9")?;
+        ensure(before.binding_known == 1 && after.binding_known == 1 && before.scanout_resource == after.scanout_resource,
+            "23.9", "B50: panel composition changed the stage's bound scanout")?;
+    }
     let mut w = r.split(' ');
     match (w.next(), w.next().and_then(|s| s.parse().ok()), w.next().and_then(|s| s.parse().ok())) {
         (Some("ok"), Some(serial), Some(pixels)) => Ok((serial, pixels)),
@@ -174,7 +180,7 @@ fn scene_case(scene: &[Placed], what: &str) -> CaseResult {
         show(&mut k, w, p)?;
     }
     compose(&mut k)?;
-    let (px, _) = screen()?;
+    let (px, _) = composed_screen(&mut k)?;
     screen_is(&px, scene, what)
 }
 
@@ -191,19 +197,19 @@ fn composition_compose_overlap() -> CaseResult {
         show(&mut k, w, p)?;
     }
     compose(&mut k)?;
-    let (px, _) = screen()?;
+    let (px, _) = composed_screen(&mut k)?;
     screen_is(&px, &scene, "window B above window A")?;
     // Restacked: A above B.
     scene[0].z = 3;
     place(&mut k, wins[0].id(), &scene[0], abi::geometry_flags::VISIBLE)?;
     compose(&mut k)?;
-    let (px, _) = screen()?;
+    let (px, _) = composed_screen(&mut k)?;
     screen_is(&px, &scene, "window A raised above window B")
 }
 
 fn composition_compose_offscreen() -> CaseResult {
     let (width,height)=screen_size()?;
-    scene_case(&[Placed::new(-30, -20, 100, 60, 0, 4), Placed::new(width as i32-60, height as i32-30, 120, 50, 1, 5), Placed::new(-10, 500, 40, 40, 2, 6)],
+    scene_case(&[Placed::new(-30, -20, 100, 60, 0, 4), Placed::new(width as i32-60, height as i32-30, 120, 50, 1, 5), Placed::new(-10, height as i32 / 2, 40, 40, 2, 6)],
         "windows partly off every screen edge")
 }
 
@@ -290,7 +296,7 @@ fn composition_no_compositor() -> CaseResult {
     let mut k = compositor()?;
     place(&mut k, w.id(), &p, abi::geometry_flags::VISIBLE)?;
     compose(&mut k)?;
-    let (px, _) = screen()?;
+    let (px, _) = composed_screen(&mut k)?;
     screen_is(&px, &[p], "the frame committed before the compositor claimed")
 }
 
@@ -481,13 +487,13 @@ fn composition_damage_screen() -> CaseResult {
     fill_rect(wins[0].target(a.buffer), 300, r, 33)?;
     wins[0].commit(a.buffer, &[r]).map_err(|e| format!("COMMIT {}", outcome(e))).cite("17.3")?;
     compose(&mut k)?;
-    let (partial, _) = screen()?;
+    let (partial, _) = composed_screen(&mut k)?;
     // A new claim composes the whole screen afresh.
     drop(k);
     let mut fresh = compositor()?;
     let (_, pixels) = compose(&mut fresh)?;
     ensure(pixels == (width*height) as u64, "18", format!("a new compositor's first composite processed {pixels} pixels, not the whole screen"))?;
-    let (full, _) = screen()?;
+    let (full, _) = composed_screen(&mut fresh)?;
     match (0..width * height).find(|&i| partial[i * 4..i * 4 + 4] != full[i * 4..i * 4 + 4]) {
         None => Ok(()),
         Some(i) => at("18", format!("the partial composite's frame differs from a full recomposition at ({}, {}): {:02x?} against {:02x?}",
@@ -546,10 +552,10 @@ fn composition_backend_error() -> CaseResult {
     let fields: Vec<u64> = record.strip_prefix("ok ").unwrap_or("").split(' ').take(4).filter_map(|n| n.parse().ok()).collect();
     ensure(fields.len() == 4 && fields[0] == serial + 1 && fields[1] == 0 && fields[2] == 0 && fields[3] & abi::record_flags::FAILED as u64 != 0, "18", format!(
         "COMPOSITE_RECORD of the failed composite {} answered `{record}`; it is recorded with 0 pixels, no windows and flags bit 0 (failed)", serial + 1))?;
-    let (px, _) = screen()?;
+    let (px, _) = composed_screen(&mut k)?;
     screen_is(&px, &[p], "the screen after the failed composite, still the previous commit")?;
     compose(&mut k)?;
-    let (px, _) = screen()?;
+    let (px, _) = composed_screen(&mut k)?;
     screen_is(&px, &[next], "the retried composite")
 }
 
@@ -652,7 +658,7 @@ fn composition_cursor_hidden() -> CaseResult {
     show(&mut k, &w, &scene[0])?;
     cursor(&mut k, abi::cursor_shape::ARROW, false, 300, 300)?;
     compose(&mut k)?;
-    let (px, _) = screen()?;
+    let (px, _) = composed_screen(&mut k)?;
     screen_is(&px, &scene, "the screen with the cursor hidden over a window")
 }
 
@@ -664,20 +670,20 @@ fn composition_cursor_no_trail() -> CaseResult {
     show(&mut k, &w, &scene[0])?;
     cursor(&mut k, abi::cursor_shape::ARROW, true, 300, 250)?;
     compose(&mut k)?;
-    let (px, _) = screen()?;
+    let (px, _) = composed_screen(&mut k)?;
     let first = differing(&px, &scene)?;
     ensure(!first.is_empty() && first.iter().all(|&(x, y)| x.abs_diff(300) < 32 && y.abs_diff(250) < 32), "18", format!(
         "with the arrow at (300, 250), {} pixels differ from the windows, the first at {:?}; the sprite is drawn there and nowhere else", first.len(), first.first()))?;
-    for (x, y) in [(320, 260), (500, 400), (900, 700), (150, 120)] {
+    for (x, y) in [(320, 260), (500, 400), (740, 460), (150, 120)] {
         cursor(&mut k, abi::cursor_shape::ARROW, true, x, y)?;
         compose(&mut k)?;
     }
-    let (px, _) = screen()?;
+    let (px, _) = composed_screen(&mut k)?;
     let trail: Vec<(u32, u32)> = differing(&px, &scene)?.into_iter().filter(|&(x, y)| x.abs_diff(150) >= 32 || y.abs_diff(120) >= 32).collect();
     ensure(trail.is_empty(), "18", format!("after the cursor moved on, {} pixels away from it still differ from the scene, the first at {:?}: a trail", trail.len(), trail.first()))?;
     cursor(&mut k, abi::cursor_shape::ARROW, false, 150, 120)?;
     compose(&mut k)?;
-    let (px, _) = screen()?;
+    let (px, _) = composed_screen(&mut k)?;
     screen_is(&px, &scene, "the screen once the cursor is hidden again")
 }
 
@@ -690,7 +696,7 @@ fn composition_cursor_shape() -> CaseResult {
         abi::cursor_shape::RESIZE_NWSE, abi::cursor_shape::RESIZE_NESW] {
         cursor(&mut k, shape, true, 640, 400)?;
         compose(&mut k)?;
-        let (px, _) = screen()?;
+        let (px, _) = composed_screen(&mut k)?;
         let drawn: Vec<(u32, u32, [u8; 4])> = differing(&px, &[])?.into_iter().map(|(x, y)| {
             let i = ((y as usize * width + x as usize) * 4) as usize;
             (x, y, [px[i], px[i + 1], px[i + 2], px[i + 3]])
@@ -715,7 +721,7 @@ fn composition_cursor_stationary_repaint() -> CaseResult {
     show(&mut k, &w, &scene[0])?;
     cursor(&mut k, abi::cursor_shape::ARROW, true, 380, 290)?;
     compose(&mut k)?;
-    let (px, _) = screen()?;
+    let (px, _) = composed_screen(&mut k)?;
     let sprite: Vec<(u32, u32)> = differing(&px, &scene)?;
     ensure(!sprite.is_empty(), "18", "the visible arrow cursor at (380, 290) drew no pixel over the window")?;
     ensure(sprite.iter().all(|&(x, y)| x.abs_diff(380) < 32 && y.abs_diff(290) < 32), "18", format!(
@@ -725,7 +731,7 @@ fn composition_cursor_stationary_repaint() -> CaseResult {
     scene[0].seed = 25;
     w.frame(25).cite("17.3")?;
     compose(&mut k)?;
-    let (px2, _) = screen()?;
+    let (px2, _) = composed_screen(&mut k)?;
     let now = differing(&px2, &scene)?;
     ensure(now == sprite, "18", format!(
         "after new content was committed under the stationary cursor, {} pixels differ from the new frame (the sprite covered {}); the content shows with the cursor redrawn above it",
@@ -974,7 +980,7 @@ fn composition_gpu_composite()->CaseResult {
     let before=compositor_gpu_counts(&mut k)?;compose(&mut k)?;let after=compositor_gpu_counts(&mut k)?;
     ensure(after[0]>before[0] && after[1]-before[1]<=4 && after[2]==before[2] && after[3]==before[3],"18",
         "gpu-display: composition did not use bounded GPU instances without CPU pixel uploads")?;
-    let (pixels,_)=screen()?;screen_is(&pixels,&[p],"GPU composition")
+    let (pixels,_)=composed_screen(&mut k)?;screen_is(&pixels,&[p],"GPU composition")
 }
 
 pub(crate) struct GpuSnapshot {pub width:usize,pub height:usize,pub record:[u8;1024],pub pixels:Vec<u8>}
@@ -1009,7 +1015,7 @@ fn composition_scale_2()->CaseResult {
     // Unlike the legacy physical-pixel scenes, this fixture has logical geometry.
     // Clients allocate physical targets; SET_GEOMETRY also takes physical positions.
     let scene=[Placed::new(40,60,128,96,0,11),Placed::new(100,100,160,80,1,12),
-        Placed::new(-20,780,100,40,2,13)];
+        Placed::new(-20,(screen_size()?.1 / 2 - 20) as i32,100,40,2,13)];
     let wins:Vec<_>=scene.iter().map(|p|W::new(p.w*2,p.h*2,2)).collect::<Result<_,_>>()?;
     let mut context=bgl::Context::new().map_err(|r|format!("gpu-display: context {}",outcome(r))).cite("18")?;
     for (w,p) in wins.iter().zip(&scene){
@@ -1038,8 +1044,8 @@ fn composition_scale_2()->CaseResult {
         place(&mut k,w.id(),&physical,abi::geometry_flags::VISIBLE)?;
     }
     compose(&mut k)?;
-    let s=gpu_snapshot(&mut k)?;
-    ensure((s.width,s.height)==(2560,1600),"18","gpu-display: scale-2 composition has the wrong destination size")?;
+    let s=composed_snapshot(&mut k)?;
+    ensure((s.width,s.height)==screen_size()?,"18","gpu-display: scale-2 composition has the wrong destination size")?;
     same(&s.pixels,s.width as u32,s.height as u32,true,"scaled GPU composition","18",|x,y|formula(&scene)(x/2,y/2))
 }
 
