@@ -19,7 +19,7 @@ log: `docs/planning/ralph-roadmap.html`.
 The server `resting-state` milestone is in progress in [#2439](https://github.com/ryanbreen/breenix/issues/2439)
 and [PR #2437](https://github.com/ryanbreen/breenix/pull/2437). Its six automated S20 cases include
 clean test preemption, idle return, one-shot selection, reboot and watchdog recovery,
-and S3's single 24-hour persistent SSH session. Hardware acceptance is pending.
+and one strict authenticated SSH check on the returned install (operator ruling S25). Hardware acceptance is pending.
 
 BreenGL's B5 catch-up acceptance is complete in PR #2357 for #2348:
 geometry queries, settled boot accounting, Parallels vertex reuse and completed
