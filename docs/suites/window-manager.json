@@ -160,6 +160,50 @@
         {
           "id": "replay-report-fault",
           "title": "Suppressing the production report loses the event after a positive delivery"
+        },
+        {
+          "id": "hid-keyboard-decode",
+          "title": "Recorded USB boot-keyboard reports decode to the literal expected events."
+        },
+        {
+          "id": "hid-rollover",
+          "title": "Six-key rollover and phantom-state reports decode as the contract says."
+        },
+        {
+          "id": "hid-tablet-parallels",
+          "title": "Recorded Parallels tablet reports decode to the expected pointer events."
+        },
+        {
+          "id": "hid-tablet-vmware",
+          "title": "Recorded VMware tablet reports, including merged endpoints, decode correctly."
+        },
+        {
+          "id": "hid-relative",
+          "title": "Recorded relative-mouse reports decode to relative motion."
+        },
+        {
+          "id": "hid-wheel",
+          "title": "Recorded wheel reports decode to wheel events."
+        },
+        {
+          "id": "virtio-keyboard-decode",
+          "title": "Recorded virtio-input key events decode to the same core events."
+        },
+        {
+          "id": "virtio-tablet-decode",
+          "title": "Recorded virtio-input absolute, button and wheel events decode correctly."
+        },
+        {
+          "id": "replay-wake-fault",
+          "title": "With the wake skipped, the idle compositor's wake is missing, and the case says so."
+        },
+        {
+          "id": "devices-bound",
+          "title": "This target binds exactly the keyboard and pointer drivers its row of the coverage map names, by name."
+        },
+        {
+          "id": "device-capabilities",
+          "title": "Each bound device reports the capabilities its driver declares."
         }
       ]
     },
@@ -198,6 +242,30 @@
         {
           "id": "epoch-ack",
           "title": "bwm acknowledges each stepped UI-clock epoch in its status page, with `none-needed` and no composite when nothing it draws changed."
+        },
+        {
+          "id": "empty-desktop",
+          "title": "With no clients, the screen shows exactly the background, taskbar and appbar from the contract's table."
+        },
+        {
+          "id": "config-test",
+          "title": "The session bwm.conf sets pinned fonts, frozen clock text and no frame-rate output."
+        },
+        {
+          "id": "config-invalid",
+          "title": "A malformed bwm.conf falls back to defaults and shows its error on the desktop."
+        },
+        {
+          "id": "fonts-loaded",
+          "title": "bwm's configured UI fonts are used on every target."
+        },
+        {
+          "id": "hotkeys-loaded",
+          "title": "hotkeys.conf bindings are read on every target."
+        },
+        {
+          "id": "composited-marker",
+          "title": "bwm prints its composited-client marker only after a composite record lists a client commit."
         }
       ]
     },
@@ -228,6 +296,94 @@
         {
           "id": "oracle-corruption",
           "title": "The scanout check rejects a wrong content pixel and missing commit provenance"
+        },
+        {
+          "id": "client-position",
+          "title": "A client's pattern appears at the content origin bwm assigned, exactly."
+        },
+        {
+          "id": "title-text",
+          "title": "The window's title matches the certified text renderer's drawing at the contract's position."
+        },
+        {
+          "id": "shadow",
+          "title": "The drop shadow's pixels match the contract's formula."
+        },
+        {
+          "id": "background",
+          "title": "The desktop background shows wherever no window is."
+        },
+        {
+          "id": "appbar-entries",
+          "title": "The appbar lists one entry per window, in creation order."
+        },
+        {
+          "id": "chromeless",
+          "title": "A chromeless window has no frame, sits where the contract says and has the dimmer behind it."
+        },
+        {
+          "id": "sixteen-clients",
+          "title": "Sixteen clients each show their own pattern."
+        },
+        {
+          "id": "moving-client",
+          "title": "An animating client's every committed frame is composed in order as the case steps it."
+        },
+        {
+          "id": "frozen-client",
+          "title": "A hung client keeps its last frame on screen while the chrome stays live."
+        },
+        {
+          "id": "present-failure",
+          "title": "A forced composite failure is reported by bwm and retried, and is not counted as a frame."
+        },
+        {
+          "id": "visible-only",
+          "title": "A minimized window's content is left out of composition."
+        },
+        {
+          "id": "expose-move",
+          "title": "Moving a window repaints the uncovered area exactly."
+        },
+        {
+          "id": "partial-equals-full",
+          "title": "A partial redraw gives the same screen as a full redraw."
+        },
+        {
+          "id": "damage-bounded",
+          "title": "Moving a small window composes exactly the union of its old and new outer painted bounds."
+        },
+        {
+          "id": "outer-bounds",
+          "title": "The outer painted bounds, shadow and cursor included, match the contract's table."
+        },
+        {
+          "id": "scene-identical",
+          "title": "A fixed three-window scene hashes to the pinned value, the same on every target."
+        },
+        {
+          "id": "resized-content",
+          "title": "After a resize, the content area shows the client's committed buffer at its new size."
+        },
+        {
+          "id": "cursor-over-window",
+          "title": "The cursor draws above windows and leaves no trail when it moves."
+        },
+        {
+          "id": "cursor-edge-shapes",
+          "title": "Hovering each resize edge and corner shows that edge's cursor on every target."
+        },
+        {
+          "id": "cursor-stationary-shape",
+          "title": "A cursor shape change with the pointer still is shown."
+        },
+        {
+          "id": "clock-test-config",
+          "title": "In the test configuration the taskbar clock shows the UI clock's wall time."
+        },
+        {
+          "id": "no-fps-overlay",
+          "title": "The test configuration draws no frame-rate text."
         }
       ]
     },
@@ -587,7 +743,7 @@
         },
         {
           "id": "configure-ack",
-          "title": "The frame changes only after the client acknowledges the size with its configure serial."
+          "title": "The frame changes only after LIST reports the owner's new size."
         },
         {
           "id": "buffer-matches",
@@ -595,7 +751,7 @@
         },
         {
           "id": "coalesce",
-          "title": "A 60-step resize drag allocates client buffers no more often than configures are acknowledged."
+          "title": "At most one ResizeRequested remains outstanding until LIST reports a size change."
         },
         {
           "id": "exit-during-drag",
@@ -759,7 +915,7 @@
         },
         {
           "id": "death-mid-configure",
-          "title": "A configure pending at bwm's death is dropped, the client keeps its size, and the next bwm reconciles it."
+          "title": "A resize request pending at compositor death leaves the owner's size unchanged and the next bwm reconciles it."
         },
         {
           "id": "death-mid-capture",
@@ -842,6 +998,14 @@
         {
           "id": "unprivileged",
           "title": "A uid 1000 client with a window can set and get."
+        },
+        {
+          "id": "textfield-copy",
+          "title": "Ctrl+C in a libbui text field copies its selection."
+        },
+        {
+          "id": "textfield-paste",
+          "title": "Ctrl+V in a libbui text field inserts the clipboard text."
         }
       ]
     },
@@ -872,6 +1036,30 @@
         {
           "id": "memory-bounded",
           "title": "After 60 warmup epochs 600 epochs of eight clients grow bwm RSS by at most 64 KiB"
+        },
+        {
+          "id": "deadline-wake",
+          "title": "bwm wakes for its next clock deadline with no other work."
+        },
+        {
+          "id": "slow-client",
+          "title": "A client committing every tenth epoch does not reduce other clients' frames per epoch."
+        },
+        {
+          "id": "stopped-client",
+          "title": "A client stopped with SIGSTOP and explicitly excluded does not stop the desktop, and stays stale."
+        },
+        {
+          "id": "stress-io",
+          "title": "Animation plus disk and loopback network traffic still processes input in order, with every disposition recorded."
+        },
+        {
+          "id": "progress-under-load",
+          "title": "Five seconds of multi-window composition raise the composite counter in every 100 ms window, and the soft-lockup counter stays unchanged."
+        },
+        {
+          "id": "cursor-shape-idle",
+          "title": "A cursor shape change on an idle desktop is shown."
         }
       ]
     },
@@ -908,66 +1096,6 @@
           "title": "Eighteen measured 64 KiB transfers between programs each finish within 50 ms"
         }
       ]
-    },
-    {
-      "id": "input-core-remaining",
-      "title": "input-core planned coverage",
-      "cases": []
-    },
-    {
-      "id": "input-devices-remaining",
-      "title": "input-devices planned coverage",
-      "cases": []
-    },
-    {
-      "id": "startup-remaining",
-      "title": "startup planned coverage",
-      "cases": []
-    },
-    {
-      "id": "composition-remaining",
-      "title": "composition planned coverage",
-      "cases": []
-    },
-    {
-      "id": "stacking-remaining",
-      "title": "stacking planned coverage",
-      "cases": []
-    },
-    {
-      "id": "focus-remaining",
-      "title": "focus planned coverage",
-      "cases": []
-    },
-    {
-      "id": "pointer-remaining",
-      "title": "pointer planned coverage",
-      "cases": []
-    },
-    {
-      "id": "geometry-remaining",
-      "title": "geometry planned coverage",
-      "cases": []
-    },
-    {
-      "id": "lifecycle-remaining",
-      "title": "lifecycle planned coverage",
-      "cases": []
-    },
-    {
-      "id": "recovery-remaining",
-      "title": "recovery planned coverage",
-      "cases": []
-    },
-    {
-      "id": "clipboard-remaining",
-      "title": "clipboard planned coverage",
-      "cases": []
-    },
-    {
-      "id": "liveness-remaining",
-      "title": "liveness planned coverage",
-      "cases": []
     }
   ]
 }

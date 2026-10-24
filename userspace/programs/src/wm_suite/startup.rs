@@ -84,3 +84,136 @@ pub fn epoch_ack() -> CaseResult {
         "idle acknowledged epoch composed instead of none-needed",
     )
 }
+
+pub fn empty_desktop() -> CaseResult {
+    let _clock = measure::Clock::new()?;
+    let _config = FileOverride::new("/etc/bwm.conf", b"clock=frozen\nfps=off\n")?;
+    let d = Desktop::start()?;
+    measure::acknowledged(0)?;
+    parked(&d)?;
+    let s = Screen::read()?;
+    super::scene::background_region(
+        &s,
+        d.scale,
+        (
+            0,
+            28 * d.scale,
+            d.width as i32 - 80,
+            d.height as i32 - 64 * d.scale,
+        ),
+    )?;
+    for y in d.height as i32 - 36 * d.scale..d.height as i32 {
+        for x in 0..d.width as i32 {
+            check(
+                s.pixel(x, y)?
+                    == if y < d.height as i32 - 35 * d.scale {
+                        0xff323746
+                    } else {
+                        0xff191c26
+                    },
+                "empty appbar differs from contract",
+            )?;
+        }
+    }
+    super::scene::text(
+        &s,
+        b"Breenix",
+        8 * d.scale,
+        14 * d.scale - 16,
+        0xffb4b9c3,
+        0xff14161e,
+        d.scale,
+    )
+}
+pub fn config_test() -> CaseResult {
+    let _clock = measure::Clock::new()?;
+    let _config = FileOverride::new(
+        "/etc/bwm.conf",
+        b"font=/usr/share/fonts/DejaVuSansMono.ttf\nclock=frozen\nfps=off\n",
+    )?;
+    let mut d = Desktop::start()?;
+    let state = status()?;
+    check(
+        state.flags & 1 != 0,
+        "bwm did not activate its test configuration",
+    )?;
+    check(
+        d.output().contains("DejaVuSansMono.ttf") && !d.output().contains("[bwm-fps]"),
+        "pinned font or fps=off setting was ignored",
+    )?;
+    let s = Screen::read()?;
+    super::scene::text(
+        &s,
+        b"00:00:00 UTC",
+        d.width as i32 - 11 * 18 - 8 * d.scale,
+        14 * d.scale - 14,
+        0xffb4b9c3,
+        0xff14161e,
+        d.scale,
+    )
+}
+pub fn config_invalid() -> CaseResult {
+    let _clock = measure::Clock::new()?;
+    let _config = FileOverride::new("/etc/bwm.conf", b"font=\nclock=invalid\nfps=invalid\n")?;
+    let mut d = Desktop::start()?;
+    check(
+        status()?.flags & 1 == 0,
+        "malformed configuration was accepted",
+    )?;
+    let out = d.output();
+    check(
+        out.contains("bwm.conf") && out.to_ascii_lowercase().contains("error"),
+        "malformed configuration was not reported",
+    )?;
+    let s = Screen::read()?;
+    let mut visible = 0;
+    for y in 28 * d.scale..d.height as i32 - 36 * d.scale {
+        for x in 0..d.width as i32 - 80 {
+            visible += usize::from(s.pixel(x, y)? != background(x, y, d.height as i32, d.scale));
+        }
+    }
+    check(
+        visible > 0,
+        "malformed configuration error is absent from the desktop",
+    )
+}
+pub fn fonts_loaded() -> CaseResult {
+    let _font = FileOverride::new(
+        "/etc/bwm.conf",
+        b"font=/usr/share/fonts/DejaVuSansMono.ttf\nclock=frozen\nfps=off\n",
+    )?;
+    let _clock = measure::Clock::new()?;
+    let (mut d, mut c) = one()?;
+    c.title(b"Configured font")?;
+    parked(&d)?;
+    let s = d.shown(&c)?;
+    let w = c.info()?;
+    super::scene::ttf_text(
+        &s,
+        b"Configured font",
+        w.x + 6 * d.scale,
+        w.y - 26 * d.scale,
+        0xffffffff,
+        0xff2864dc,
+        d.scale,
+        "/usr/share/fonts/DejaVuSansMono.ttf",
+    )
+}
+pub fn hotkeys_loaded() -> CaseResult {
+    super::focus::hotkeys_config()
+}
+pub fn composited_marker() -> CaseResult {
+    let mut d = Desktop::start()?;
+    check(
+        !d.output().contains("[bwm] composited client frame:"),
+        "bwm announced a client composite on an empty desktop",
+    )?;
+    let mut c = Client::unregistered(11)?;
+    check(
+        !d.output().contains("[bwm] composited client frame:"),
+        "bwm announced an unregistered client's frame",
+    )?;
+    c.command(REGISTER, 0, 0)?;
+    d.client_ready(&c)?;
+    d.shown(&c)?.client(&c)
+}

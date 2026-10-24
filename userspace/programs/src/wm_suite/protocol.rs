@@ -39,3 +39,6 @@ pub mod flags {
 }
 pub const CREATE_WINDOW: u32 = 18;
 pub const WAIT_EVENTS: u32 = 19;
+
+pub const FIELD_SET: u32 = 20;
+pub const FIELD_GET: u32 = 21;

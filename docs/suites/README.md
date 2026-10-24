@@ -1564,12 +1564,11 @@ scripts/boot-interactive.sh --mode suite --suite gpu --gpu-gl --gate-timeout 900
 
 ## Window manager
 
-`window-manager` begins E18 with 82 runnable baseline cases in thirteen populated categories:
+`window-manager` has the W12 inventory of 253 case bodies in thirteen categories:
 `input-core`, `input-devices`, `startup`, `composition`, `stacking`, `focus`, `pointer`,
 `geometry`, `lifecycle`, `recovery`, `clipboard`, `liveness` and `performance`.
-Incomplete milestones also measure empty `*-remaining` categories; the
-[scope ledger](../gui/window-manager-suite.md#baseline-scope-and-incomplete-milestones)
-lists the unwritten plan cases, which block acceptance through planned categories.
+The [inventory](../gui/window-manager-suite.md#executable-w12-inventory) distinguishes
+executable cases from runtime acceptance, including missing target-recorded fixtures.
 Its executable is `/sbin/suite-window-manager`; `wm-client_test` is an independent GPU
 client, installed by the normal image layout. The [observation and transport contract](../gui/window-manager-suite.md)
 describes the literal expectations, input and clipboard operations, completion receipts

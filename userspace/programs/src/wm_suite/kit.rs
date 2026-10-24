@@ -600,3 +600,17 @@ pub(super) fn visible_content(d: &mut Desktop, c: &Client) -> CaseResult {
     }
     check(checked > 0, "clipped client has no visible content pixels")
 }
+
+pub(super) fn counter(name: &str) -> Result<u64, String> {
+    let text = std::fs::read_to_string("/proc/trace/counters").map_err(|e| e.to_string())?;
+    text.lines()
+        .find_map(|l| {
+            let mut fields = l.split_whitespace();
+            if fields.next()?.trim_end_matches(':') == name {
+                fields.next()?.parse().ok()
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| format!("required trace counter {name} is absent"))
+}

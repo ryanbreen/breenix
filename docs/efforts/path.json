@@ -1688,8 +1688,7 @@
           "measure": {
             "suite": "window-manager",
             "categories": [
-              "input-core",
-              "input-core-remaining"
+              "input-core"
             ]
           }
         },
@@ -1699,8 +1698,7 @@
           "measure": {
             "suite": "window-manager",
             "categories": [
-              "input-devices",
-              "input-devices-remaining"
+              "input-devices"
             ]
           }
         },
@@ -1710,8 +1708,7 @@
           "measure": {
             "suite": "window-manager",
             "categories": [
-              "startup",
-              "startup-remaining"
+              "startup"
             ]
           }
         },
@@ -1721,8 +1718,7 @@
           "measure": {
             "suite": "window-manager",
             "categories": [
-              "composition",
-              "composition-remaining"
+              "composition"
             ]
           }
         },
@@ -1732,8 +1728,7 @@
           "measure": {
             "suite": "window-manager",
             "categories": [
-              "stacking",
-              "stacking-remaining"
+              "stacking"
             ]
           }
         },
@@ -1743,8 +1738,7 @@
           "measure": {
             "suite": "window-manager",
             "categories": [
-              "focus",
-              "focus-remaining"
+              "focus"
             ]
           }
         },
@@ -1754,8 +1748,7 @@
           "measure": {
             "suite": "window-manager",
             "categories": [
-              "pointer",
-              "pointer-remaining"
+              "pointer"
             ]
           }
         },
@@ -1765,8 +1758,7 @@
           "measure": {
             "suite": "window-manager",
             "categories": [
-              "geometry",
-              "geometry-remaining"
+              "geometry"
             ]
           }
         },
@@ -1776,8 +1768,7 @@
           "measure": {
             "suite": "window-manager",
             "categories": [
-              "lifecycle",
-              "lifecycle-remaining"
+              "lifecycle"
             ]
           }
         },
@@ -1787,8 +1778,7 @@
           "measure": {
             "suite": "window-manager",
             "categories": [
-              "recovery",
-              "recovery-remaining"
+              "recovery"
             ]
           }
         },
@@ -1798,8 +1788,7 @@
           "measure": {
             "suite": "window-manager",
             "categories": [
-              "clipboard",
-              "clipboard-remaining"
+              "clipboard"
             ]
           }
         },
@@ -1809,8 +1798,7 @@
           "measure": {
             "suite": "window-manager",
             "categories": [
-              "liveness",
-              "liveness-remaining"
+              "liveness"
             ]
           }
         },

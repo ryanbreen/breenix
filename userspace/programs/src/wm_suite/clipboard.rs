@@ -151,3 +151,29 @@ pub fn unprivileged() -> CaseResult {
         }
     })
 }
+
+pub fn textfield_copy() -> CaseResult {
+    let (mut d, mut a, mut b) = twin()?;
+    clip_ok(&mut b, true, b"old clipboard")?;
+    d.focus(&mut a)?;
+    a.field("selected text α", true)?;
+    a.clear()?;
+    key(&mut a, "ctrl-c", 46)?;
+    let (_, got) = clip_ok(&mut b, false, &[])?;
+    check(
+        got == "selected text α".as_bytes(),
+        "Ctrl+C in libbui TextField did not copy its exact selection",
+    )
+}
+pub fn textfield_paste() -> CaseResult {
+    let (mut d, mut a, mut b) = twin()?;
+    clip_ok(&mut b, true, "paste λ".as_bytes())?;
+    d.focus(&mut a)?;
+    a.field("kept ", false)?;
+    a.clear()?;
+    key(&mut a, "ctrl-v", 47)?;
+    check(
+        a.field_text()? == "kept paste λ".as_bytes(),
+        "Ctrl+V in libbui TextField did not insert the clipboard text",
+    )
+}

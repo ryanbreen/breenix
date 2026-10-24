@@ -112,6 +112,32 @@ verdict: cases require client events, geometry and/or device scanout. Host trans
 remain in the hostkeys log and missing delivery fails the guest case. QMP smoke does not
 replace the production-completion driver cases.
 
+### Pure decoders and bound-device inventory (W1/W8)
+
+The decode-only test transport is `/proc/breenix/input-decode`, under the same
+immutable suite latch and root authority as input-replay. It must call the pure
+production decoder, including the production per-endpoint button merger for HID;
+it uses the decoder implemented for production input. Production-absence coverage must
+include it before an implementation lands.
+
+A virtio request is 16 bytes: selector u32 1, reserved u32 zero, then the eight
+recorded event bytes (kind u16, code u16, value i32). Its eight-byte reply is the
+normalized core kind/code/value. <!-- claim-lint:ok: Normative W1/W8 decoder-test transport; userspace/programs/src/wm_suite/input_devices.rs sends and judges this layout. -->
+
+A HID request is five u32s (selector 2, endpoint,
+descriptor length, report length, reset-state flag), then descriptor and report
+bytes. Its 16-byte reply is four i32s: raw X, raw Y, merged buttons and wheel.
+Reset-state is 1 only for the capture's first report; subsequent reports retain
+the real endpoint merger state. Decoder tests assert the literal result rather than
+transport success. A missing implementation fails by endpoint name.
+
+`/proc/breenix/input-devices` snapshots bound input device rows as decimal id,
+driver name and whitespace-separated capability tokens. The ARM64 QEMU names are
+`virtio-keyboard-mmio` and `virtio-tablet-mmio`. The keyboard declares
+`key=1..255`; the tablet declares `abs=0:0..32767`, `abs=1:0..32767`,
+`key=272..274` and `rel=6,8`. These rows describe actual bound instances, not
+fixtures or a hard-coded coverage claim.
+
 ### Clock and completed composites
 
 The suite supplies BreenGL's existing shared BGCLK001 clock through BREENIX_UI_CLOCK,
@@ -185,32 +211,27 @@ Changed assertions, with their identifiers retained:
 
 W11 gives the physical display to each case's bwm. Between cases the stage
 restores its own frame. A host send, a submission or a marker alone cannot
-pass a native scanout assertion. The remainder remains #2370 until these
-identifiers have executable assertions and terminal verdicts.
+pass a native scanout assertion. Runtime verdict evidence and the missing recorded tablet fixtures remain tracked in #2370.
 
-## Baseline scope and incomplete milestones
+## Executable W12 inventory
 
-This baseline implements a first cut of the plan's 249 cases, not the complete E18
-acceptance suite. Additional harness controls do not replace any planned case.
-Each incomplete milestone measures both its populated category and an empty
-`<category>-remaining` category using the existing planned-category mechanism.
-Full-suite and milestone acceptance stay blocked until those cases are implemented.
-The outstanding plan case ids are listed below; they are not runtime skips.
+The table contains the 248 retained plan identifiers and five additional controls,
+253 cases in thirteen categories. The former planned remaining categories are
+removed only because their identifiers now have executable case bodies. Runtime
+failure, including a missing recorded fixture or production endpoint, is still
+failure; an executable inventory does not establish E18 acceptance.
 
-- `input-core-remaining`: `uinput-create`, `uinput-nonroot`, `abi-layout`, `key-press-release`, `modifiers-derived`, `pointer-absolute`, `pointer-relative`, `buttons`, `wheel`, `syn-batches`, `time-real`, `two-readers`, `syn-dropped`, `poll`, `grab`, `grab-select`, `grab-drain`, `text-invalid`, `malformed-batch`, `console-keymap`, `console-special-keys`, `console-modifiers`, `ledger-gap`, `console-after-compositor`.
-- `input-devices-remaining`: `hid-keyboard-decode`, `hid-rollover`, `hid-tablet-parallels`, `hid-tablet-vmware`, `hid-relative`, `hid-wheel`, `virtio-keyboard-decode`, `virtio-tablet-decode`, `ps2-scancodes`, `replay-wake-fault`, `devices-bound`, `device-capabilities`.
-- `startup-remaining`: `no-gpu-required`, `empty-desktop`, `config-test`, `config-invalid`, `fonts-loaded`, `hotkeys-loaded`, `composited-marker`, `epoch-ack`.
-- `composition-remaining`: `client-position`, `title-text`, `shadow`, `background`, `appbar-entries`, `chromeless`, `sixteen-clients`, `moving-client`, `frozen-client`, `present-failure`, `visible-only`, `expose-move`, `partial-equals-full`, `damage-bounded`, `outer-bounds`, `scene-identical`, `resized-content`, `cursor-over-window`, `cursor-edge-shapes`, `cursor-stationary-shape`, `clock-test-config`, `no-fps-overlay`.
-<!-- claim-lint:ok: Planned case identifiers copied from docs/gui/plan.md section 16, not measured claims. -->
-- `stacking-remaining`: `raise-stable-id`, `appbar-order`, `minimize-no-input`, `minimize-close`, `fkeys-skip-minimized`, `chromeless-top`, `dimmer-only-with-chromeless`, `launcher-toggle`, `close-focus-next`, `new-on-top`, `registry-agrees`, `model-sequence`, `minimize-all-restore-all`, `titlebar-drag-raises`.
-- `focus-remaining`: `pair-appbar`, `pair-cycle`, `focus-after-close`, `cycle-prev`, `cycle-skips-minimized`, `release-follows-press`, `focus-change-mid-press`, `repeat-delay`, `repeat-rate`, `repeat-cancel`, `repeat-frozen-clock`, `super-return`, `alt-q`, `hotkey-consumed`, `super-double-tap`, `super-single-tap`, `hotkeys-config`, `no-focus-no-delivery`, `focus-new-window`, `routing-after-exit`, `lost-then-delivered`.
-<!-- claim-lint:ok: Planned case identifiers copied from docs/gui/plan.md section 16, not measured claims. -->
-- `pointer-remaining`: `capture-target-closes`, `scroll-wakes`, `fast-click`, `double-click-threshold`, `double-click-distance`, `chrome-click`, `enter-leave`, `cursor-position`, `modifier-click`, `clamp`, `minimized-none`, `chromeless-click`, `press-raises-delivers`, `hit-test`, `stale-scene`.
-- `geometry-remaining`: `drag-top-clamp`, `drag-keeps-titlebar`, `resize-left`, `resize-top`, `resize-corners`, `resize-minimum`, `resize-maximum`, `configure-ack`, `buffer-matches`, `coalesce`, `exit-during-drag`, `exit-during-resize`, `client-title`, `remembered-geometry`, `expose-during-drag`, `resize-repaints`, `geometry-registry`, `chromeless-not-resizable`.
-- `lifecycle-remaining`: `close-one-of-two`, `launch-missing`, `launch-fork-fails`, `launch-close-50`, `read-other-denied`, `huge-window`, `commit-flood`, `title-flood`, `never-reads`, `normal-exit-gives-back`, `window-limit`.
-- `recovery-remaining`: `death-releases`, `blocked-acquire`, `blocked-wait`, `death-at-composite`, `death-mid-configure`, `death-mid-capture`, `focus-restored`, `clipboard-reset`, `supervisor-gives-up`, `unexpected-crash-fails`.
-- `clipboard-remaining`: `set-get`, `empty`, `too-large`, `change-notice`, `concurrent-sets`, `mime-text-only`, `window-required`, `unprivileged`, `textfield-copy`, `textfield-paste`.
-- `liveness-remaining`: `deadline-wake`, `compositor-wait-timeout`, `slow-client`, `stopped-client`, `stress-io`, `progress-under-load`, `cursor-shape-idle`.
+The two target tablet decoder cases need captured descriptors and reports under
+`/usr/share/breenix/input-fixtures/parallels.txt` and `vmware.txt`. Those recordings
+are not available in this change. Missing recordings are harness blockers; they
+must be supplied before lane acceptance, not generated from another target's
+layout or replaced by synthetic reports.
+
+Each non-comment fixture line is seven whitespace-separated fields: decimal
+endpoint id, descriptor hex, report hex, expected raw X, raw Y, merged button
+mask and wheel steps. Expected values are independent literal annotations on the
+recording. Each fixture has at least two report transitions; VMware includes
+multiple endpoints with buttons held and released independently.
 
 ## Baseline review corrections
 
@@ -302,3 +323,19 @@ unregistered window, create another window, exit or exec. Clipboard commands use
 the kernel window operations. `--chromeless` and `--seed=N` configure composition
 fixtures. Hang stops command and event servicing after the initial frame;
 never-read-events continues servicing commands without draining the window fd.
+
+
+## Fixed scene hash
+
+`composition/scene-identical` uses the scale-2 2560x1600 mode and exactly three
+windows: a normal seed-11 client, a small seed-23 chromeless client and a mode-sized
+seed-41 chromeless client. The last window covers both earlier windows and both
+bars under W10. The arrow is at (2559,1599), clipped to its black tip. The expected
+whole image is the seed-41 quadrant formula, except that final opaque black pixel.
+FNV-1a over canonical B,G,R,FF bytes is `aa15277dfb38ce7d`, derived from that literal
+formula before observing bwm. The case compares 4096000 of 4096000 mode pixels with the formula. <!-- claim-lint:ok: userspace/programs/src/wm_suite/composition.rs scene_identical loops over the required 2560x1600 mode. -->
+
+The text-field clipboard cases embed the real libbui TextField in wm-client_test
+and pass bwm-delivered Ctrl+C/Ctrl+V into its production key handler. The fixture
+supplies selection state and reads field text; it performs no clipboard operation
+on the widget's behalf. Missing production widget integration therefore fails.

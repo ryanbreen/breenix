@@ -1,4 +1,8 @@
-//! E18: real bwm, independent GPU clients and device-backed scanout observation.
+#[path = "../../../kernel/src/drivers/hid_boot/report.rs"]
+pub mod hid_keyboard;
+#[path = "../../../kernel/src/drivers/hid_boot/pointer.rs"]
+pub mod hid_pointer;
+// E18: real bwm, independent GPU clients and device-backed scanout observation.
 #[path = "wm_suite/clipboard.rs"]
 mod clipboard;
 #[path = "wm_suite/composition.rs"]
@@ -34,6 +38,8 @@ pub mod desktop;
 pub mod event_log;
 #[path = "wm_suite/input.rs"]
 mod input;
+#[path = "wm_suite/scene.rs"]
+mod scene;
 #[path = "wm_suite/measure.rs"]
 mod measure;
 #[path = "wm_suite/protocol.rs"]
@@ -80,6 +86,17 @@ static SUITE: Suite = suite("window-manager", "Window manager", &[
         case("keyboard-completion-path", "The bound keyboard completion reports, wakes bwm, delivers A and rearms", input_devices::keyboard_completion),
         case("pointer-completion-path", "The bound pointer completion reports, wakes bwm, delivers motion and rearms", input_devices::pointer_completion),
         case("replay-report-fault", "Suppressing the production report loses the event after a positive delivery", input_devices::replay_faults),
+        case("hid-keyboard-decode", "Recorded USB boot-keyboard reports decode to the literal expected events.", input_devices::hid_keyboard_decode),
+        case("hid-rollover", "Six-key rollover and phantom-state reports decode as the contract says.", input_devices::hid_rollover),
+        case("hid-tablet-parallels", "Recorded Parallels tablet reports decode to the expected pointer events.", input_devices::hid_tablet_parallels),
+        case("hid-tablet-vmware", "Recorded VMware tablet reports, including merged endpoints, decode correctly.", input_devices::hid_tablet_vmware),
+        case("hid-relative", "Recorded relative-mouse reports decode to relative motion.", input_devices::hid_relative),
+        case("hid-wheel", "Recorded wheel reports decode to wheel events.", input_devices::hid_wheel),
+        case("virtio-keyboard-decode", "Recorded virtio-input key events decode to the same core events.", input_devices::virtio_keyboard_decode),
+        case("virtio-tablet-decode", "Recorded virtio-input absolute, button and wheel events decode correctly.", input_devices::virtio_tablet_decode),
+        case("replay-wake-fault", "With the wake skipped, the idle compositor's wake is missing, and the case says so.", input_devices::replay_wake_fault),
+        case("devices-bound", "This target binds exactly the keyboard and pointer drivers its row of the coverage map names, by name.", input_devices::devices_bound),
+        case("device-capabilities", "Each bound device reports the capabilities its driver declares.", input_devices::device_capabilities),
     ]),
     category("startup", "bwm starts and shows clients", &[
         case("desktop-control", "A completed empty desktop exposes the literal taskbar pixel", startup::desktop_control),
@@ -90,6 +107,12 @@ static SUITE: Suite = suite("window-manager", "Window manager", &[
         case("supervisor-starts", "Production init desktop starts bwm and composes an independent client", startup::supervisor_starts),
         case("no-gpu-required", "bwm runs on this target's backend without exiting.", startup::no_gpu_required),
         case("epoch-ack", "bwm acknowledges each stepped UI-clock epoch in its status page, with `none-needed` and no composite when nothing it draws changed.", startup::epoch_ack),
+        case("empty-desktop", "With no clients, the screen shows exactly the background, taskbar and appbar from the contract's table.", startup::empty_desktop),
+        case("config-test", "The session bwm.conf sets pinned fonts, frozen clock text and no frame-rate output.", startup::config_test),
+        case("config-invalid", "A malformed bwm.conf falls back to defaults and shows its error on the desktop.", startup::config_invalid),
+        case("fonts-loaded", "bwm's configured UI fonts are used on every target.", startup::fonts_loaded),
+        case("hotkeys-loaded", "hotkeys.conf bindings are read on every target.", startup::hotkeys_loaded),
+        case("composited-marker", "bwm prints its composited-client marker only after a composite record lists a client commit.", startup::composited_marker),
     ]),
     category("composition", "Composition, chrome & repaint", &[
         case("chrome-geometry", "Decorations and desktop bars occupy the literal rectangles and colours", composition::chrome),
@@ -98,6 +121,28 @@ static SUITE: Suite = suite("window-manager", "Window manager", &[
         case("client-update", "A new client commit replaces its pattern in completed device scanout", composition::client_update),
         case("expose-close", "An exited top client reveals the exact complete lower client", composition::expose_close),
         case("oracle-corruption", "The scanout check rejects a wrong content pixel and missing commit provenance", composition::frame_integrity),
+        case("client-position", "A client's pattern appears at the content origin bwm assigned, exactly.", composition::client_position),
+        case("title-text", "The window's title matches the certified text renderer's drawing at the contract's position.", composition::title_text),
+        case("shadow", "The drop shadow's pixels match the contract's formula.", composition::shadow),
+        case("background", "The desktop background shows wherever no window is.", composition::background_pixels),
+        case("appbar-entries", "The appbar lists one entry per window, in creation order.", composition::appbar_entries),
+        case("chromeless", "A chromeless window has no frame, sits where the contract says and has the dimmer behind it.", composition::chromeless),
+        case("sixteen-clients", "Sixteen clients each show their own pattern.", composition::sixteen_clients),
+        case("moving-client", "An animating client's every committed frame is composed in order as the case steps it.", composition::moving_client),
+        case("frozen-client", "A hung client keeps its last frame on screen while the chrome stays live.", composition::frozen_client),
+        case("present-failure", "A forced composite failure is reported by bwm and retried, and is not counted as a frame.", composition::present_failure),
+        case("visible-only", "A minimized window's content is left out of composition.", composition::visible_only),
+        case("expose-move", "Moving a window repaints the uncovered area exactly.", composition::expose_move),
+        case("partial-equals-full", "A partial redraw gives the same screen as a full redraw.", composition::partial_equals_full),
+        case("damage-bounded", "Moving a small window composes exactly the union of its old and new outer painted bounds.", composition::damage_bounded),
+        case("outer-bounds", "The outer painted bounds, shadow and cursor included, match the contract's table.", composition::outer_bounds),
+        case("scene-identical", "A fixed three-window scene hashes to the pinned value, the same on every target.", composition::scene_identical),
+        case("resized-content", "After a resize, the content area shows the client's committed buffer at its new size.", composition::resized_content),
+        case("cursor-over-window", "The cursor draws above windows and leaves no trail when it moves.", composition::cursor_over_window),
+        case("cursor-edge-shapes", "Hovering each resize edge and corner shows that edge's cursor on every target.", composition::cursor_edge_shapes),
+        case("cursor-stationary-shape", "A cursor shape change with the pointer still is shown.", composition::cursor_stationary_shape),
+        case("clock-test-config", "In the test configuration the taskbar clock shows the UI clock's wall time.", composition::clock_test_config),
+        case("no-fps-overlay", "The test configuration draws no frame-rate text.", composition::no_fps_overlay),
     ]),
     category("stacking", "Stacking & minimize", &[
         case("click-raises", "Clicking an exposed lower client raises and composes that stable window id", stacking::click_raises),
@@ -189,9 +234,9 @@ static SUITE: Suite = suite("window-manager", "Window manager", &[
         case("resize-corners", "Each corner resizes both dimensions, anchored at the opposite corner.", geometry::resize_corners),
         case("resize-minimum", "A resize stops at the minimum width and height.", geometry::resize_minimum),
         case("resize-maximum", "A resize stops at the screen and buffer limits.", geometry::resize_maximum),
-        case("configure-ack", "The frame changes only after the client acknowledges the size with its configure serial.", geometry::configure_ack),
+        case("configure-ack", "The frame changes only after LIST reports the owner's new size.", geometry::configure_ack),
         case("buffer-matches", "After a resize, the client's buffer size equals the frame's content size.", geometry::buffer_matches),
-        case("coalesce", "A 60-step resize drag allocates client buffers no more often than configures are acknowledged.", geometry::coalesce),
+        case("coalesce", "At most one ResizeRequested remains outstanding until LIST reports a size change.", geometry::coalesce),
         case("exit-during-drag", "A client exiting mid-drag ends the drag, and no other window moves.", geometry::exit_during_drag),
         case("exit-during-resize", "A client exiting mid-resize ends the resize, and no other window changes.", geometry::exit_during_resize),
         case("client-title", "A client's title change shows in its titlebar and appbar.", geometry::client_title),
@@ -233,7 +278,7 @@ static SUITE: Suite = suite("window-manager", "Window manager", &[
         case("blocked-acquire", "A client blocked in acquire when bwm dies returns within 250 ms.", recovery::blocked_acquire),
         case("blocked-wait", "A client blocked in wait_event when bwm dies returns within 250 ms.", recovery::blocked_wait),
         case("death-at-composite", "bwm killed while composing a client's commit leaves that client able to commit to the next bwm.", recovery::death_at_composite),
-        case("death-mid-configure", "A configure pending at bwm's death is dropped, the client keeps its size, and the next bwm reconciles it.", recovery::death_mid_configure),
+        case("death-mid-configure", "A resize request pending at compositor death leaves the owner's size unchanged and the next bwm reconciles it.", recovery::death_mid_configure),
         case("death-mid-capture", "A pointer capture held at bwm's death ends, and the next bwm starts with no capture.", recovery::death_mid_capture),
         case("focus-restored", "The restarted bwm restores focus to the window that had it.", recovery::focus_restored),
         case("clipboard-reset", "A restarted bwm starts with an empty clipboard, as the contract says.", recovery::clipboard_reset),
@@ -255,6 +300,8 @@ static SUITE: Suite = suite("window-manager", "Window manager", &[
         case("mime-text-only", "A type other than text/plain;charset=utf-8 is refused.", clipboard::mime_text_only),
         case("window-required", "A process with no window on the desktop is refused.", clipboard::window_required),
         case("unprivileged", "A uid 1000 client with a window can set and get.", clipboard::unprivileged),
+        case("textfield-copy", "Ctrl+C in a libbui text field copies its selection.", clipboard::textfield_copy),
+        case("textfield-paste", "Ctrl+V in a libbui text field inserts the clipboard text.", clipboard::textfield_paste),
     ]),
     category("liveness", "Idle, stalls & stress", &[
         case("compositor-wait-timeout", "The v2 scene poll times out within +100 ms when idle and wakes before timeout after a client commit", liveness::compositor_wait_timeout),
@@ -263,6 +310,12 @@ static SUITE: Suite = suite("window-manager", "Window manager", &[
         case("wake-on-registry", "An independent new client wakes an idle bwm and reaches scanout", liveness::wake_registry),
         case("stress-animation", "Eight clients advance through 300 UI epochs while input is processed", liveness::stress_clients),
         case("memory-bounded", "After 60 warmup epochs 600 epochs of eight clients grow bwm RSS by at most 64 KiB", liveness::memory_bounded),
+        case("deadline-wake", "bwm wakes for its next clock deadline with no other work.", liveness::deadline_wake),
+        case("slow-client", "A client committing every tenth epoch does not reduce other clients' frames per epoch.", liveness::slow_client),
+        case("stopped-client", "A client stopped with SIGSTOP and explicitly excluded does not stop the desktop, and stays stale.", liveness::stopped_client),
+        case("stress-io", "Animation plus disk and loopback network traffic still processes input in order, with every disposition recorded.", liveness::stress_io),
+        case("progress-under-load", "Five seconds of multi-window composition raise the composite counter in every 100 ms window, and the soft-lockup counter stays unchanged.", liveness::progress_under_load),
+        case("cursor-shape-idle", "A cursor shape change on an idle desktop is shown.", liveness::cursor_shape_idle),
     ]),
     category("performance", "Latency & frame rate", &[
         case("typing-latency", "One hundred measured keys reach composited handling commits within median 20 ms and max 50 ms", performance::typing_latency),

@@ -279,6 +279,21 @@ impl Client {
             .collect();
         Ok(())
     }
+    pub fn field(&mut self, text: &str, select: bool) -> Result<(), String> {
+        self.send(FIELD_SET, text.len() as u32, u32::from(select))?;
+        self.commands
+            .write_all(text.as_bytes())
+            .map_err(|e| e.to_string())?;
+        self.receive()
+    }
+    pub fn field_text(&mut self) -> Result<Vec<u8>, String> {
+        self.send(FIELD_GET, 0, 0)?;
+        let (code, _, text) = self.clipboard_reply()?;
+        if code != 0 {
+            return Err(format!("text field query errno {}", -code));
+        }
+        Ok(text)
+    }
     pub fn title(&mut self, title: &[u8]) -> Result<(), String> {
         self.send(SET_TITLE, title.len() as u32, 0)?;
         self.commands.write_all(title).map_err(|e| e.to_string())?;

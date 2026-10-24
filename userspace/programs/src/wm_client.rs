@@ -400,6 +400,7 @@ fn run(
         )?);
     }
     let mut active = 0;
+    let mut field: Option<libbui::widget::text_field::TextField> = None;
     let mut received = 0u32;
     let mut continuous = !options.control && options.flags & flags::ANIMATE != 0;
     let session_clock = std::env::var_os("BREENIX_UI_CLOCK").is_some();
@@ -469,6 +470,29 @@ fn run(
                         )
                         .map_err(|e| e.to_string())?;
                         return Err("SIGSEGV did not terminate crash-after client".into());
+                    }
+                    if let Some(field) = field.as_mut() {
+                        if e.kind == abi::event_kind::KEY_PRESS || e.kind == abi::event_kind::TEXT {
+                            let text =
+                                std::str::from_utf8(&e.text[..(e.text_len as usize).min(240)])
+                                    .map_err(|e| e.to_string())?;
+                            let text = if text.is_empty() {
+                                match e.keycode {
+                                    46 => "c",
+                                    47 => "v",
+                                    _ => "",
+                                }
+                            } else {
+                                text
+                            };
+                            field.key(&libbui::KeyInput {
+                                key: libbui::Key::Char,
+                                shift: e.modifiers & abi::modifier::SHIFT != 0,
+                                ctrl: e.modifiers & abi::modifier::CTRL != 0,
+                                alt: e.modifiers & abi::modifier::ALT != 0,
+                                text,
+                            });
+                        }
                     }
                     w.processed = w.processed.max(e.serial);
                     if e.kind == abi::event_kind::CLOSE_REQUESTED
@@ -593,6 +617,44 @@ fn run(
                 }
                 Err(error) => reply_error(replies, &error)?,
             }
+            continue;
+        }
+        if which == FIELD_SET {
+            if a > 1024 {
+                return Err("text field fixture is too long".into());
+            }
+            let mut text = vec![0; a as usize];
+            command.read_exact(&mut text).map_err(|e| e.to_string())?;
+            let mut widget =
+                libbui::widget::text_field::TextField::new(libbui::Rect::new(0, 0, 240, 40), 1024);
+            widget.set_focused(true);
+            if !widget.insert_str(std::str::from_utf8(&text).map_err(|e| e.to_string())?) {
+                return Err("text field insertion refused".into());
+            }
+            if b != 0 {
+                let mut home = libbui::KeyInput::new(libbui::Key::Home);
+                home.shift = true;
+                widget.key(&home);
+            }
+            field = Some(widget);
+            respond(replies, &windows, active, &log)?;
+            continue;
+        }
+        if which == FIELD_GET {
+            let text = field
+                .as_ref()
+                .ok_or("text field is not initialized")?
+                .text()
+                .as_bytes();
+            let mut header = [0; 16];
+            header[4..8].copy_from_slice(&(text.len() as u32).to_le_bytes());
+            let reply = replies
+                .as_mut()
+                .ok_or("text field query requires control mode")?;
+            reply
+                .write_all(&header)
+                .and_then(|()| reply.write_all(text))
+                .map_err(|e| e.to_string())?;
             continue;
         }
         let w = &mut windows[active];
