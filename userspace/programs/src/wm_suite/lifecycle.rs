@@ -1,5 +1,8 @@
 use super::kit::*;
 
+#[path = "../bwm/input_limits.rs"]
+mod input_limits;
+
 pub fn close_request() -> CaseResult {
     let (mut d, mut c) = one()?;
     d.focus(&mut c)?;
@@ -264,7 +267,10 @@ pub fn never_reads() -> CaseResult {
     d.focus(&mut a)?;
     a.command(SET_FLAGS, flags::IGNORE_CLOSE | flags::NEVER_READ, 0)?;
     let mut sources = Vec::new();
-    for n in 1..=300 {
+    // W28 item 1 and W29 item 2: exceed both retention bounds by
+    // at least a complete client ring, even without derived Text events.
+    let pairs = (input_limits::MAX_PENDING + 2 * abi::limits::EVENT_RING) as u64;
+    for n in 1..=pairs {
         v.batch(&[(1, 30, 1), (1, 30, 0)], n)?;
         sources.extend(
             stream
@@ -287,7 +293,7 @@ pub fn never_reads() -> CaseResult {
     )?;
     d.focus(&mut b)?;
     b.clear()?;
-    v.batch(&[(1, 48, 1), (1, 48, 0)], 301)?;
+    v.batch(&[(1, 48, 1), (1, 48, 0)], pairs + 1)?;
     let es = stream.read_from(3, &[v.id])?;
     b.await_event("healthy peer survives unread owner", |e| {
         e.kind == kind::KEY_PRESS && e.keycode == 48
