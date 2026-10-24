@@ -94,10 +94,6 @@ fn peek(queue: &Ingress) -> Option<Batch> {
         None
     }
 }
-pub fn ready() -> bool {
-    let next = crate::arch_without_interrupts(|| peek(&INGRESS.lock()));
-    next.is_some_and(|b| stream::hardware_capacity(b.len + usize::from(b.dropped)))
-}
 pub fn drain_one() -> bool {
     let next = crate::arch_without_interrupts(|| {
         let mut queue = INGRESS.lock();

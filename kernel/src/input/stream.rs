@@ -5,6 +5,7 @@ use crate::{
     syscall::{errno::*, userptr},
     task::waitqueue::WaitQueueHead,
 };
+use core::sync::atomic::{AtomicU64, Ordering};
 use alloc::{
     collections::{BTreeMap, VecDeque},
     sync::Arc,
@@ -550,7 +551,7 @@ impl InputFile {
                 drop(s);
                 drop(reg);
                 if regrab {
-                    RELEASE_WORK.wake_up_deferred();
+                    wake_service();
                 }
                 Ok(0)
             }
@@ -563,7 +564,7 @@ impl InputFile {
                 drop(s);
                 drop(reg);
                 wake_readers();
-                RELEASE_WORK.wake_up_deferred();
+                wake_service();
                 Ok(0)
             }
             ioctl::DISPOSITION => {
@@ -630,7 +631,7 @@ impl InputFile {
                 // lock before STATE in prepare_to_wait_checked (#2395).
                 drop(s);
                 drop(reg);
-                RELEASE_WORK.wake_up_deferred();
+                wake_service();
                 Ok(0)
             }
             _ => Err(ENOTTY as u64),
@@ -937,7 +938,7 @@ impl Drop for InputFile {
 
         drop(s);
         wake_readers();
-        RELEASE_WORK.wake_up_deferred();
+        wake_service();
     }
 }
 
@@ -987,6 +988,7 @@ pub fn ledger() -> alloc::string::String {
 }
 
 static RELEASE_WORK: WaitQueueHead = WaitQueueHead::new();
+static SERVICE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Start before userspace memory accounting begins. The service is idle until
 /// a descriptor's final close publishes releases, including closes under PM.
@@ -1004,6 +1006,7 @@ fn release_service() {
     use crate::task::{thread::ThreadState, waitqueue::PrepareOutcome};
     loop {
         crate::per_cpu::preempt_disable();
+        let generation = SERVICE_GENERATION.load(Ordering::Acquire);
         #[cfg(target_arch = "aarch64")]
         while super::hardware::drain_one() {}
         loop {
@@ -1115,10 +1118,9 @@ fn release_service() {
             }
         }
         let outcome = RELEASE_WORK.prepare_to_wait_checked(ThreadState::BlockedOnIO, None, || {
-            #[cfg(target_arch = "aarch64")]
-            if super::hardware::ready() { return false; }
-            let s = STATE.lock();
-            s.releases.is_empty() && !s.removal_ready()
+            // IRQ wakes may interrupt a task holding STATE. Keep this predicate
+            // lock-free; the generation detects work published since draining.
+            SERVICE_GENERATION.load(Ordering::Acquire) == generation
         });
         match outcome {
             PrepareOutcome::Queued => {
@@ -1216,5 +1218,7 @@ pub fn publish_hardware(id: u32, events: &[crate::drivers::virtio::input_decode:
     }
     true
 }
-#[cfg(target_arch = "aarch64")]
-pub fn wake_service() { RELEASE_WORK.wake_up_deferred(); }
+pub fn wake_service() {
+    SERVICE_GENERATION.fetch_add(1, Ordering::Release);
+    RELEASE_WORK.wake_up_deferred();
+}
