@@ -48,7 +48,9 @@ pub fn sys_get_mouse_pos(out_ptr: u64, len: u64) -> SyscallResult {
         }
     }
     let (mx, my, buttons) = if tablet {
-        crate::drivers::virtio::input_mmio::mouse_state()
+        crate::drivers::virtio::input_mmio::mouse_state(
+            crate::window::Caller::current().map_or(0, |caller| caller.tgid),
+        )
     } else {
         crate::input::pointer::mouse_state_consume()
     };

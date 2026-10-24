@@ -1093,6 +1093,36 @@ fn fb_draw(op: u32, p1: i32, p2: i32, p3: i32, p4: i32) -> i64 {
 }
 
 fn isolation_test_hooks_absent() -> CaseResult {
+    // E18 decoder/replay controls have the same immutable suite latch as 415.
+    // A root-open descriptor rechecks authority after dropping privileges.
+    let controls = ["/proc/breenix/input-replay", "/proc/breenix/input-decode"];
+    step("21", child("non-root input controls", 1000, None, || {
+        use std::io::{Read, Write};
+        let mut opened = Vec::new();
+        for path in controls {
+            opened.push(std::fs::OpenOptions::new().read(true).write(true).open(path)
+                .map_err(|e| format!("suite-latched {path}: {e}"))?);
+        }
+        if setuid(1000) != 0 { return Err("input control setuid failed".into()); }
+        for path in controls {
+            match std::fs::OpenOptions::new().read(true).write(true).open(path) {
+                Err(e) if e.raw_os_error() == Some(1) => {},
+                _ => return Err(format!("non-root {path} open did not return EPERM")),
+            }
+        }
+        for file in &opened {
+            let mut file = file;
+            match file.write(&[0; 64]) {
+                Err(e) if e.raw_os_error() == Some(1) => {},
+                _ => return Err("root-open input control write did not return EPERM".into()),
+            }
+            match file.read(&mut [0; 64]) {
+                Err(e) if e.raw_os_error() == Some(1) => {},
+                _ => return Err("root-open input control read did not return EPERM".into()),
+            }
+        }
+        Ok(())
+    }))?;
     let mut stats = [0u64; 4];
     let ptr = stats.as_mut_ptr() as u64;
     let mut seen = vec![(27, fb_draw(27, 0, 0, 0, 0)), (29, fb_draw(29, 0, 0, 0, 0)),

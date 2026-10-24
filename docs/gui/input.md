@@ -113,6 +113,18 @@ terminal serial, even if a later serial succeeded. The core accounts for
 reader overflow and compositor death; bwm accounts for consumption/routing.
 No event silently disappears at a full client ring or in bwm's bounded backlog.
 
+A stalled grab holder can leave the bounded source ledger full of pending
+rows. Virtual injectors receive EAGAIN when ledger space cannot be reserved.
+Physical producers instead terminate pending rows as lost/overflow before
+reclaiming space, so physical input and reserved console chords can progress.
+The current pressure recovery clears reader backlogs and reports
+SYN_DROPPED to the readers. It also terminates rows already read by the holder;
+a later source DISPOSITION for such a row receives EALREADY. Narrowing this
+recovery to the stalled holder's rows and queue is tracked in #2454.
+`input-devices/stalled-ledger` fills 8192 pending rows, checks virtual-injector
+backpressure, then checks physical replay progress, SYN_DROPPED and a retained
+lost/overflow ledger row within the existing case deadline.
+
 ## Driver coverage
 
 | Target | Keyboard | Pointer | E18 evidence |

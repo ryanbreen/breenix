@@ -332,10 +332,8 @@ impl Controller {
         if let Some(buttons) = motion.buttons {
             self.devices[index].pointers[pipe_index].buttons = buttons as u8;
             motion.buttons = Some(
-                self.devices[index]
-                    .pointers
-                    .iter()
-                    .fold(0u32, |held, pipe| held | pipe.buttons as u32),
+                crate::drivers::hid_boot::pointer::merged_buttons(
+                    self.devices[index].pointers.iter().map(|pipe| pipe.buttons as u32)),
             );
         }
         crate::input::pointer::report(self.devices[index].port, motion);

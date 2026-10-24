@@ -1,20 +1,17 @@
-//! The input core, first slice (GUI plan section 5.1; `docs/console/contract.md`
-//! section 9).
+//! Input normalization and consumers (GUI plan section 5.1).
 //!
-//! Keyboard drivers report key events here and do no translation of their own:
-//! a key code from the published `input-event-codes.h` and a value, 0 release,
-//! 1 press, 2 repeat. The core derives the modifier state from those events,
-//! the same way for each driver, and routes each event to its consumer. The
-//! console keymap (`console::keys`) is the one consumer so far; the
-//! window-manager effort adds the event ABI, `/dev/uinput`, grabs and the
-//! compositor consumer here.
-//!
-//! `report_key` runs in interrupt handlers (PS/2, virtio-input) and in the xHCI
-//! worker thread: it waits only on locks whose holders mask interrupts, and only
-//! tries the others; it does not allocate and does not log.
+//! ARM64 virtio completions hand whole frames to `hardware`, whose fixed
+//! IRQ ingress feeds the task-context `stream` transport. That transport
+//! routes selected devices to the compositor grab and otherwise to the console.
+//! The PS/2 and USB keyboard adapters retain their allocation-free console
+//! report path for the hardware lane and USB target catch-up (W8).
 
 pub mod event;
 pub mod stream;
+#[cfg(target_arch = "aarch64")]
+pub mod hardware;
+#[cfg(target_arch = "aarch64")]
+pub mod control;
 #[cfg(target_arch = "aarch64")]
 pub mod pointer;
 
@@ -81,14 +78,7 @@ pub fn take_super_tap_count() -> u64 {
 
 /// One key event from `device`. Returns how many bytes it sent the foreground terminal.
 pub fn report_key(device: Device, code: u16, value: i32) -> usize {
-    // One device reports from one context at a time, so its own word needs no read-modify-write.
-    let slot = &HELD[device.index()];
-    let previous = slot.load(Ordering::Relaxed);
-    let next = event::update_modifiers(previous, code, value);
-    slot.store(next, Ordering::Relaxed);
-    if !Modifiers(previous).meta() && Modifiers(next).meta() {
-        SUPER_TAPS.fetch_add(1, Ordering::Release);
-    }
+    observe_key(device, code, value);
     let modifiers = Modifiers(
         HELD.iter()
             .fold(0, |all, held| all | held.load(Ordering::Relaxed)),
@@ -111,4 +101,30 @@ pub fn report_key(device: Device, code: u16, value: i32) -> usize {
         reserved,
         device.source(),
     )
+}
+
+/// Maintain 413's transitional modifier projection until lane 3 retires it.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn observe_virtio_key(code: u16, value: i32) {
+    observe_key(Device::VirtioKeyboard, code, value);
+}
+fn observe_key(device: Device, code: u16, value: i32) {
+    // One device reports from one context at a time, so its own word needs no read-modify-write.
+    let slot = &HELD[device.index()];
+    let previous = slot.load(Ordering::Relaxed);
+    let next = event::update_modifiers(previous, code, value);
+    slot.store(next, Ordering::Relaxed);
+    if !Modifiers(previous).meta() && Modifiers(next).meta() {
+        SUPER_TAPS.fetch_add(1, Ordering::Release);
+    }
+}
+
+/// Reset the console's physical-key view when input custody changes or a
+/// dropped frame makes the device's previous modifier state unknowable.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn reset_virtio_keyboard() {
+    let index = Device::VirtioKeyboard.index();
+    HELD[index].store(0, Ordering::Relaxed);
+    RESERVED[index].store(0, Ordering::Relaxed);
+    crate::console::keys::reset_device(index);
 }

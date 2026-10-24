@@ -19,6 +19,7 @@ use core::fmt;
 pub enum Class {
     Storage,
     Network,
+    Input,
 }
 
 fn line(event: &str, args: fmt::Arguments) {
@@ -36,6 +37,7 @@ fn screen(stage: crate::console::splash::Stage) {
 /// A device of `class` was found; `args` says where and what it is.
 pub fn found(class: Class, args: fmt::Arguments) {
     match class {
+        Class::Input => line("input found", args),
         Class::Storage => {
             line("storage found", args);
             #[cfg(target_arch = "aarch64")]

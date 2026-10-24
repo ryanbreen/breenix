@@ -104,6 +104,9 @@ pub enum ProcEntryType {
     /// /proc/breenix/frames - allocated physical frames by allocation site
     Frames,
     InputLedger,
+    InputReplay,
+    InputDecode,
+    InputDevices,
     /// /proc/pids - list of all process IDs
     Pids,
     /// /proc/kmsg - kernel log messages
@@ -191,6 +194,9 @@ impl ProcEntryType {
             ProcEntryType::CompositorStatus => "compositor",
             ProcEntryType::Ext2 => "ext2",
             ProcEntryType::Frames => "frames",
+            ProcEntryType::InputReplay => "input-replay",
+            ProcEntryType::InputDecode => "input-decode",
+            ProcEntryType::InputDevices => "input-devices",
             ProcEntryType::InputLedger => "input-ledger",
             ProcEntryType::Pids => "pids",
             ProcEntryType::Kmsg => "kmsg",
@@ -252,6 +258,9 @@ impl ProcEntryType {
             ProcEntryType::CompositorStatus => "/proc/breenix/compositor",
             ProcEntryType::Ext2 => "/proc/breenix/ext2",
             ProcEntryType::Frames => "/proc/breenix/frames",
+            ProcEntryType::InputReplay => "/proc/breenix/input-replay",
+            ProcEntryType::InputDecode => "/proc/breenix/input-decode",
+            ProcEntryType::InputDevices => "/proc/breenix/input-devices",
             ProcEntryType::InputLedger => "/proc/breenix/input-ledger",
             ProcEntryType::Pids => "/proc/pids",
             ProcEntryType::Kmsg => "/proc/kmsg",
@@ -311,9 +320,12 @@ impl ProcEntryType {
             ProcEntryType::BootRibbon => 204,
             ProcEntryType::BootSerial => 205,
             ProcEntryType::StageComposites => 206,
-            ProcEntryType::CompositorStatus => 210,
+            ProcEntryType::CompositorStatus => 213,
             ProcEntryType::Ext2 => 202,
             ProcEntryType::Frames => 203,
+            ProcEntryType::InputReplay => 210,
+            ProcEntryType::InputDecode => 211,
+            ProcEntryType::InputDevices => 212,
             ProcEntryType::InputLedger => 209,
             ProcEntryType::Pids => 9,
             ProcEntryType::Kmsg => 10,
@@ -453,6 +465,9 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::CompositorStatus));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Frames));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::InputReplay));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::InputDecode));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::InputDevices));
     procfs.entries.push(ProcEntry::new(ProcEntryType::InputLedger));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Pids));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Kmsg));
@@ -748,7 +763,7 @@ pub fn list_breenix_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::StageComposites|ProcEntryType::CompositorStatus|ProcEntryType::InputLedger))
+        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::StageComposites|ProcEntryType::CompositorStatus|ProcEntryType::InputLedger|ProcEntryType::InputReplay|ProcEntryType::InputDecode|ProcEntryType::InputDevices))
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -863,6 +878,11 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::XhciPointers => text(String::from("")),
         ProcEntryType::Ext2 => generate_ext2().map(String::into_bytes),
         ProcEntryType::Frames => generate_frames().map(String::into_bytes),
+        ProcEntryType::InputReplay | ProcEntryType::InputDecode => Err(-38),
+        #[cfg(target_arch = "aarch64")]
+        ProcEntryType::InputDevices => text(crate::drivers::virtio::input_mmio::inventory()),
+        #[cfg(not(target_arch = "aarch64"))]
+        ProcEntryType::InputDevices => text(String::new()),
         ProcEntryType::InputLedger => text(crate::input::stream::ledger()),
         ProcEntryType::NetDir => {
             let mut listing = Vec::new();

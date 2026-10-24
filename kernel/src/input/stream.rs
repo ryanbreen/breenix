@@ -1,10 +1,11 @@
-//! Task-context input transport. Drivers retain their allocation-free report path;
-//! their completion adapters join this transport in E18 phase B.
+//! Task-context input transport for uinput and the ARM64 virtio completion
+//! adapter. The fixed hardware ingress keeps allocation outside IRQ context.
 use crate::{
     ipc::object::IpcFile,
     syscall::{errno::*, userptr},
     task::waitqueue::WaitQueueHead,
 };
+use core::sync::atomic::{AtomicU64, Ordering};
 use alloc::{
     collections::{BTreeMap, VecDeque},
     sync::Arc,
@@ -149,6 +150,8 @@ impl State {
                 d.modifiers = 0;
                 d.reserved = 0;
                 d.held.clear();
+                #[cfg(target_arch = "aarch64")]
+                if *id == super::hardware::KEYBOARD { super::reset_virtio_keyboard(); }
             }
         }
     }
@@ -244,6 +247,9 @@ impl State {
                 });
             }
             let d = self.devices.get_mut(&device).expect("live input device");
+            if e.kind == kind::SYN && e.code == syn::DROPPED {
+                d.held.clear(); d.modifiers = 0; d.reserved = 0;
+            }
             if e.kind == kind::KEY {
                 d.modifiers = super::event::update_modifiers(d.modifiers, e.code, e.value);
                 if e.value == 1 {
@@ -272,7 +278,10 @@ impl State {
                     reserved: console_reserved,
                 });
             }
-            let outcome = if !selected {
+            let outcome = if e.kind == kind::SYN && e.code == syn::DROPPED {
+                Some(Disposition { serial: e.serial, disposition: disposition::LOST,
+                    reason: reason::OVERFLOW, ..Disposition::default() })
+            } else if !selected {
                 Some(Disposition {
                     serial: e.serial,
                     disposition: disposition::REJECTED,
@@ -527,6 +536,8 @@ impl InputFile {
                         d.held.clear();
                         d.modifiers = 0;
                         d.reserved = 0;
+                        #[cfg(target_arch = "aarch64")]
+                        if *id == super::hardware::KEYBOARD { super::reset_virtio_keyboard(); }
                     }
                 }
                 s.grab = Some(Grab {
@@ -535,12 +546,12 @@ impl InputFile {
                     holder: caller.tgid,
                     epoch,
                 });
-                // Release STATE before waking: the sleeper takes the queue
-                // lock before STATE in prepare_to_wait_checked (#2395).
+                // Publish the service wake after releasing STATE; the wait
+                // predicate observes the wake generation without taking STATE.
                 drop(s);
                 drop(reg);
                 if regrab {
-                    RELEASE_WORK.wake_up_deferred();
+                    wake_service();
                 }
                 Ok(0)
             }
@@ -553,7 +564,7 @@ impl InputFile {
                 drop(s);
                 drop(reg);
                 wake_readers();
-                RELEASE_WORK.wake_up_deferred();
+                wake_service();
                 Ok(0)
             }
             ioctl::DISPOSITION => {
@@ -616,11 +627,11 @@ impl InputFile {
                         });
                     }
                 }
-                // Release STATE before waking: the sleeper takes the queue
-                // lock before STATE in prepare_to_wait_checked (#2395).
+                // Publish the service wake after releasing STATE; the wait
+                // predicate observes the wake generation without taking STATE.
                 drop(s);
                 drop(reg);
-                RELEASE_WORK.wake_up_deferred();
+                wake_service();
                 Ok(0)
             }
             _ => Err(ENOTTY as u64),
@@ -927,7 +938,7 @@ impl Drop for InputFile {
 
         drop(s);
         wake_readers();
-        RELEASE_WORK.wake_up_deferred();
+        wake_service();
     }
 }
 
@@ -977,6 +988,7 @@ pub fn ledger() -> alloc::string::String {
 }
 
 static RELEASE_WORK: WaitQueueHead = WaitQueueHead::new();
+static SERVICE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Start before userspace memory accounting begins. The service is idle until
 /// a descriptor's final close publishes releases, including closes under PM.
@@ -994,6 +1006,9 @@ fn release_service() {
     use crate::task::{thread::ThreadState, waitqueue::PrepareOutcome};
     loop {
         crate::per_cpu::preempt_disable();
+        let generation = SERVICE_GENERATION.load(Ordering::Acquire);
+        #[cfg(target_arch = "aarch64")]
+        while super::hardware::drain_one() {}
         loop {
             let console = {
                 let mut s = STATE.lock();
@@ -1103,8 +1118,9 @@ fn release_service() {
             }
         }
         let outcome = RELEASE_WORK.prepare_to_wait_checked(ThreadState::BlockedOnIO, None, || {
-            let s = STATE.lock();
-            s.releases.is_empty() && !s.removal_ready()
+            // IRQ wakes may interrupt a task holding STATE. Keep this predicate
+            // lock-free; the generation detects work published since draining.
+            SERVICE_GENERATION.load(Ordering::Acquire) == generation
         });
         match outcome {
             PrepareOutcome::Queued => {
@@ -1161,4 +1177,71 @@ pub fn event_tag(
         ..breengel_abi::EventTag::default()
     };
     Ok(0)
+}
+
+/// Register only a successfully bound physical instance. IDs below 1024 are
+/// reserved for hardware, separate from uinput's non-reused identities.
+#[cfg(target_arch = "aarch64")]
+pub fn register_hardware(id: u32, capabilities: Vec<Capability>) {
+    STATE.lock().devices.insert(id, Device {
+        capabilities, injector_time: false, last_time: 0, modifiers: 0,
+        reserved: 0, held: BTreeMap::new(),
+    });
+}
+#[cfg(target_arch = "aarch64")]
+pub fn publish_hardware(id: u32, events: &[crate::drivers::virtio::input_decode::Event], time_ns: u64, wake: bool, dropped: bool) -> bool {
+    let mut s = STATE.lock();
+    if !s.devices.contains_key(&id) { return false; }
+    let count = events.len() + usize::from(dropped);
+    if s.reserve_ledger(count).is_err() {
+        // Physical producers cannot backpressure the console behind a stalled
+        // grab holder. End its outstanding ledger rows as overflow losses and
+        // discard the corresponding reader backlog before advancing the horizon.
+        for row in &mut s.ledger {
+            if row.outcome.is_none() {
+                row.outcome = Some(Disposition {
+                    serial: row.event.serial, disposition: disposition::LOST,
+                    reason: reason::OVERFLOW, ..Disposition::default()
+                });
+            }
+        }
+        let last = s.ledger.back().map(|row| row.event);
+        for reader in s.readers.values_mut() {
+            let queued: usize = reader.batches.iter().map(|b| b.records.len()).sum();
+            reader.events -= queued;
+            reader.batches.clear();
+            reader.dropped = last.map(|e| Event { kind: kind::SYN, code: syn::DROPPED, ..e });
+        }
+        if s.reserve_ledger(count).is_err() { return false; }
+    }
+    if id == super::hardware::KEYBOARD {
+        if dropped || events.iter().any(|e| e.kind == kind::SYN && e.code == syn::DROPPED) { super::reset_virtio_keyboard(); }
+        for e in events.iter().filter(|e| e.kind == kind::KEY) { super::observe_virtio_key(e.code, e.value); }
+    }
+    let prefix = dropped.then_some(crate::drivers::virtio::input_decode::Event {
+        kind: kind::SYN, code: syn::DROPPED, value: 0,
+    });
+    let records = prefix.iter().chain(events.iter()).map(|e| Record {
+        event: Event { kind: e.kind, code: e.code, value: e.value, time_ns, ..Event::default() },
+        payload: Vec::new(),
+    }).collect();
+    let console = s.publish(id, records);
+    drop(s);
+    if wake { wake_readers(); }
+    for e in console {
+        crate::console::keys::key(
+            if id == super::hardware::KEYBOARD { super::Device::VirtioKeyboard.index() } else { usize::MAX },
+            e.code, e.value, e.modifiers, e.reserved, crate::tty::InputSource::Other);
+    }
+    true
+}
+pub fn wake_service() {
+    SERVICE_GENERATION.fetch_add(1, Ordering::Release);
+    RELEASE_WORK.wake_up_deferred();
+}
+
+/// Read the capabilities held by the input core, including their value ranges.
+#[cfg(target_arch = "aarch64")]
+pub fn hardware_capabilities(id: u32) -> Vec<Capability> {
+    STATE.lock().devices.get(&id).map_or_else(Vec::new, |d| d.capabilities.clone())
 }

@@ -2788,6 +2788,24 @@ fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
     use crate::ipc::fd::{FdKind, FileDescriptor};
 
     let normalized = path.trim_end_matches('/');
+    #[cfg(target_arch = "aarch64")]
+    match crate::input::control::open(normalized) {
+        Ok(Some(object)) => {
+            let entry = match FileDescriptor::try_opened(FdKind::Ipc(object), flags) {
+                Ok(entry) => entry, Err(e) => return SyscallResult::Err(e),
+            };
+            let Some(tid) = crate::task::scheduler::current_thread_id() else { return SyscallResult::Err(3); };
+            let mut manager = crate::process::manager();
+            return match manager.as_mut().and_then(|pm| pm.find_process_by_thread_mut(tid)) {
+                Some((_, process)) => match process.fd_table.alloc_with_entry(entry) {
+                    Ok(fd) => SyscallResult::Ok(fd as u64), Err(e) => SyscallResult::Err(e as u64),
+                },
+                None => SyscallResult::Err(3),
+            };
+        }
+        Ok(None) => {}
+        Err(e) => return SyscallResult::Err(e),
+    }
 
     // Check if this is a directory path
     // /proc itself is the root directory; for sub-paths, check if the entry is a directory type

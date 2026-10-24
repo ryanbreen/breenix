@@ -81,6 +81,7 @@ static SUITE: Suite = suite("window-manager", "Window manager", &[
         case("reader-lifetime", "The compositor grab survives unrelated closes and dup, and ends on the last reader reference.", input_core::reader_lifetime),
     ]),
     category("input-devices", "Keyboard & pointer drivers on every target", &[
+        case("stalled-ledger", "Physical input advances a full pending ledger with explicit overflow losses", input_devices::stalled_ledger),
         case("keyboard-completion-path", "The bound keyboard completion reports, wakes bwm, delivers A and rearms", input_devices::keyboard_completion),
         case("pointer-completion-path", "The bound pointer completion reports, wakes bwm, delivers motion and rearms", input_devices::pointer_completion),
         case("replay-report-fault", "Suppressing the production report loses the event after a positive delivery", input_devices::replay_faults),

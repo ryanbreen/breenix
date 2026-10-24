@@ -16,22 +16,72 @@ pub fn keyboard_completion() -> CaseResult {
     })?;
     Ok(())
 }
-pub fn pointer_completion() -> CaseResult {
+/// Keep read serials pending to fill the ledger without reader overflow.
+pub fn stalled_ledger() -> CaseResult {
+    let _claim = InputClaim::new()?;
     let mut stream = Stream::open()?;
-    let (_d, mut c) = one()?;
-    {
-        let w = c.info()?;
-        replay(2, w.x + 40, w.y + 50)?;
-    };
+    let mut device = Virtual::create()?;
+    stream.grab(&[])?;
+    let mut last = 0;
+    let edges = (0..255).map(|n| (1, 30, (n & 1) as i32)).collect::<Vec<_>>();
+    for n in 1..=32 {
+        device.batch(&edges, n)?;
+        last = stream.read_from(256, &[device.id])?.last().unwrap().serial;
+    }
+    check(device.batch(&[(1, 30, 0)], 33).err()
+        .is_some_and(|e| e.starts_with("uinput batch errno 11:")),
+        "pending ledger did not reach its unchanged capacity")?;
+    replay(1, 0, 0)?;
+    let events = stream.read(4)?;
+    check(events.iter().any(|e| e.kind == 1 && e.code == 30 && e.value == 1 && e.device == 2),
+        "full pending ledger stopped the physical keyboard")?;
+    check(events.iter().any(|e| e.kind == 0 && e.code == 3),
+        "hardware ledger overflow omitted SYN_DROPPED")?;
+    // Inspect the full snapshot without allocating a String for each field.
+    let text = std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
+    let serial = last.to_string();
+    check(text.lines().any(|row| {
+        let mut fields = row.split_whitespace();
+        fields.next() == Some(serial.as_str()) && fields.next() == Some("lost")
+            && fields.next().is_some() && fields.next() == Some("overflow")
+            && fields.next().is_none()
+    }), "hardware ledger overflow omitted the pending source loss")
+}
+
+pub fn pointer_completion() -> CaseResult {
+    let (d, mut c) = one()?;
+    let w = c.info()?;
+    d.pointer(w.x + 20, w.y + 20, 0, 0)?;
+    c.await_event("positive tablet polling consumer before same-frame click", |e| {
+        e.kind == kind::POINTER_MOVE && (e.x, e.y) == (20, 20)
+    })?;
+    c.clear()?;
+    let mut stream = Stream::open()?;
+    replay(2, w.x + 40, w.y + 50)?;
+    let events = stream.read(5)?;
     check(
-        stream.read(4)?.iter().any(|e| e.kind == 3),
+        events.iter().any(|e| e.kind == 3),
         "bound pointer completion did not report absolute axes",
     )?;
+    let edges = events.iter().filter(|e| e.kind == 1 && e.code == 272).collect::<Vec<_>>();
+    value("pointer-source-edges", edges.len() as i64, "", Some((2, 2)));
+    check(edges.len() == 2 && edges[0].value == 1 && edges[1].value == 0
+        && edges[0].serial < edges[1].serial && edges[0].device == 3 && edges[1].device == 3,
+        "bound tablet completion lost or reordered same-frame button edges")?;
     c.await_event("bound pointer completion wakes bwm", |e| {
-        e.kind == kind::POINTER_MOVE
+        e.kind == kind::POINTER_MOVE && (e.x, e.y) == (40, 50)
     })?;
-    Ok(())
+    let press = c.await_event("completed-frame pointer press", |e| {
+        e.kind == kind::POINTER_BUTTON && e.button == 272 && e.pressed == 1
+    })?;
+    let release = c.await_event("completed-frame pointer release", |e| {
+        e.kind == kind::POINTER_BUTTON && e.button == 272 && e.pressed == 0
+    })?;
+    check(press.serial < release.serial && (press.x, press.y) == (40, 50)
+        && (release.x, release.y) == (40, 50),
+        "completed-frame fast click lost coordinates or reordered a client edge")
 }
+
 pub fn replay_faults() -> CaseResult {
     let mut stream = Stream::open()?;
     let (_d, mut c) = one()?;
@@ -276,20 +326,21 @@ pub fn device_capabilities() -> CaseResult {
         .lines()
         .find(|l| l.split_whitespace().nth(1) == Some("virtio-tablet-mmio"))
         .ok_or("bound tablet absent")?;
-    check(
-        keyboard.split_whitespace().any(|s| s == "key=1..255"),
-        "keyboard key capabilities differ",
-    )?;
-    for cap in [
-        "abs=0:0..32767",
-        "abs=1:0..32767",
-        "key=272..274",
-        "rel=6,8",
-    ] {
-        check(
-            pointer.split_whitespace().any(|s| s == cap),
-            "tablet axes/buttons/wheel capabilities differ from declaration",
-        )?;
-    }
-    Ok(())
+    let registered = |line: &str| -> Result<Vec<(u16, u16, i32, i32)>, String> {
+        line.split_whitespace().skip(2).map(|entry| {
+            let fields = entry.split(':').collect::<Vec<_>>();
+            if fields.len() != 4 { return Err("invalid registered capability".into()); }
+            Ok((fields[0].parse().map_err(|_| "invalid kind")?,
+                fields[1].parse().map_err(|_| "invalid code")?,
+                fields[2].parse().map_err(|_| "invalid minimum")?,
+                fields[3].parse().map_err(|_| "invalid maximum")?))
+        }).collect()
+    };
+    check(registered(keyboard)? == (1..=255).map(|code| (1, code, 0, 2)).collect::<Vec<_>>(),
+        "registered keyboard key capabilities differ")?;
+    check(registered(pointer)? == vec![
+        (3, 0, 0, 32767), (3, 1, 0, 32767),
+        (1, 272, 0, 1), (1, 273, 0, 1), (1, 274, 0, 1),
+        (2, 6, i32::MIN, i32::MAX), (2, 8, i32::MIN, i32::MAX),
+    ], "registered tablet axes/buttons/wheel capabilities differ")
 }

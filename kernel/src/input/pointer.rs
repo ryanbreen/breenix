@@ -97,3 +97,6 @@ pub fn release(port: u8) {
     BUTTONS[port as usize].store(0, Ordering::Release);
     report(port, Motion::default());
 }
+
+/// Vertical wheel ticks from another bound pointer transport.
+pub fn report_wheel(delta: i32) { WHEEL.fetch_add(delta, Ordering::AcqRel); }
