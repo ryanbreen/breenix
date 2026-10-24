@@ -8,6 +8,7 @@
 //!
 //! No path in this module writes to the serial log or any other kernel output (section 17.5).
 
+pub mod clipboard;
 mod damage_union;
 mod event_admission;
 pub mod events;
@@ -217,6 +218,7 @@ pub struct Window {
     pub geometry: u32,
     pub meta: Meta,
     pub ring: events::Ring,
+    pub clipboard_subscribed: Option<u32>,
     pub waits: Arc<Waits>,
     /// The root process holding this window's evidence, if any.
     pub holder: Option<u64>,
@@ -290,6 +292,7 @@ pub struct Registry {
     pub present: present::State,
     pub snapshot: Option<scene::Reservation>,
     pub cursor: breengel_abi::Cursor,
+    pub clipboard: clipboard::State,
 }
 
 impl Registry {
@@ -304,6 +307,7 @@ impl Registry {
             present: present::State::new(),
             snapshot: None,
             cursor: breengel_abi::Cursor { shape: 5, visible: 0, x: 0, y: 0 },
+            clipboard: clipboard::State::new(),
         }
     }
 

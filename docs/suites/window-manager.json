@@ -1000,6 +1000,10 @@
           "title": "A uid 1000 client with a window can set and get."
         },
         {
+          "id": "per-user",
+          "title": "Root and uid 1000 keep separate clipboard text, serials and notifications."
+        },
+        {
           "id": "textfield-copy",
           "title": "Ctrl+C in a libbui text field copies its selection."
         },

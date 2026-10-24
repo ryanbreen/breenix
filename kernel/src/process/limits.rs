@@ -197,6 +197,8 @@ impl Process {
         ));
         #[cfg(target_arch = "aarch64")]
         let bytes = bytes.saturating_add(self.limits.gpu_bytes.load(Ordering::Acquire));
+        #[cfg(target_arch = "aarch64")]
+        let bytes = bytes.saturating_add(self.limits.clipboard_bytes.load(Ordering::Acquire));
         bytes
     }
 
@@ -207,6 +209,16 @@ impl Process {
             return false;
         }
         self.limits.gpu_bytes.fetch_add(bytes, Ordering::AcqRel);
+        true
+    }
+
+    /// Reserve retained clipboard storage while PROCESS_MANAGER serializes address-space growth.
+    #[cfg(target_arch = "aarch64")]
+    pub fn reserve_clipboard_bytes(&self, bytes: u64) -> bool {
+        if self.mapped_bytes().saturating_add(bytes) > self.limits.get(AS).soft {
+            return false;
+        }
+        self.limits.clipboard_bytes.fetch_add(bytes, Ordering::AcqRel);
         true
     }
 
@@ -250,9 +262,15 @@ pub struct Limits {
     pending: AtomicU32,
     #[cfg(target_arch = "aarch64")]
     gpu_bytes: AtomicU64,
+    #[cfg(target_arch = "aarch64")]
+    clipboard_bytes: AtomicU64,
 }
 
 impl Limits {
+    #[cfg(target_arch = "aarch64")]
+    pub fn release_clipboard_bytes(&self, bytes: u64) {
+        self.clipboard_bytes.fetch_sub(bytes, Ordering::AcqRel);
+    }
     #[cfg(target_arch = "aarch64")]
     pub fn release_gpu_bytes(&self, bytes: u64) {
         self.gpu_bytes.fetch_sub(bytes, Ordering::AcqRel);
@@ -274,6 +292,8 @@ impl Limits {
             pending: AtomicU32::new(0),
             #[cfg(target_arch = "aarch64")]
             gpu_bytes: AtomicU64::new(0),
+            #[cfg(target_arch = "aarch64")]
+            clipboard_bytes: AtomicU64::new(0),
         })
     }
 

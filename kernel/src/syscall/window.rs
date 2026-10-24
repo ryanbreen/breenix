@@ -11,8 +11,9 @@
 
 use breengel_abi::errno::{EFAULT, EINVAL, ENOSYS, EPERM};
 use breengel_abi::{
-    arg_size, op, Acquire, Capture, Claim, Commit, Composite, CompositeEntry, CompositeRecordHeader,
-    CompositorAck, CompositorStatus, Create, Cursor, Geometry, Give, List, MapTree, Meta, MetaQuery, NoChange, Plain, ReadEvents,
+    arg_size, op, Acquire, Capture, Claim, ClipboardGet, ClipboardSet, ClipboardSubscribe, Commit,
+    Composite, CompositeEntry, CompositeRecordHeader, CompositorAck, CompositorStatus, Create, Cursor,
+    Geometry, Give, List, MapTree, Meta, MetaQuery, NoChange, Plain, ReadEvents,
     Readback, RecordQuery, Resize, SceneSnapshot, Title, WinId, WriteEvents, INTERFACE_VERSION,
 };
 
@@ -216,9 +217,9 @@ fn dispatch(caller: &Caller, op: u32, arg: u64) -> Result<u64, i32> {
             *s = crate::window::status::read(&caller)?;
             Ok(0)
         }),
-        op::CLIPBOARD_SET => Err(ENOSYS),
-        op::CLIPBOARD_GET => Err(ENOSYS),
-        op::CLIPBOARD_SUBSCRIBE => Err(ENOSYS),
+        op::CLIPBOARD_SET => committing::<ClipboardSet>(arg, |a, out| crate::window::clipboard::set(&caller, a, out)),
+        op::CLIPBOARD_GET => committing::<ClipboardGet>(arg, |a, out| crate::window::clipboard::get(&caller, a, out)),
+        op::CLIPBOARD_SUBSCRIBE => crate::window::clipboard::subscribe(&caller, &input::<ClipboardSubscribe>(arg)?),
         op::HIT_TEST => Err(ENOSYS),
         op::EVENT_TAG => inout::<breengel_abi::EventTag>(arg, |tag| crate::input::stream::event_tag(&caller, tag)),
         op::GESTURE_REPORT => Err(ENOSYS),

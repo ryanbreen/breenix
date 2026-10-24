@@ -129,7 +129,10 @@ not an action. <!-- claim-lint:ok: Normative W20 grammar ruling, not runtime acc
 
 The clipboard is a kernel service on window syscall 414, not a bwm socket.
 Its SET, GET and SUBSCRIBE arguments and authority are in BreenGL 17.1.
-A caller owns a registered window in the current desktop. Only
+A caller owns a registered window in the current desktop (ENOENT otherwise, W15).
+W22 keeps one clipboard per effective uid within each desktop claim. SET, GET
+and SUBSCRIBE reach only the caller's euid, including root, which reaches its
+own clipboard. E18 offers no copying between users. Only
 `text/plain;charset=utf-8` (mime 1) is supported; another mime is EINVAL.
 Text is length-counted UTF-8 including NUL, at most 16 MiB; oversize SET is
 E2BIG and preserves the previous text and serial. Empty GET succeeds.
@@ -139,9 +142,11 @@ increasing clipboard change serial. Storage is charged to the setter's
 RLIMIT_AS, including while text outlives its registered window or process;
 the retained charge is released on replacement or clearing. Window closure
 ends ownership but does not delete retained text. A replacement tells the
-previous live owner with ClipboardLost. Subscribed windows receive
+previous live owner of that euid with ClipboardLost. Subscribed windows of
+that euid receive
 ClipboardChanged made by the kernel, never forged by WRITE_EVENTS. GET
 reports the stored change serial, so concurrent setters agree on the later
-successful SET. Releasing or losing the compositor claim clears the text,
-subscriptions and owner; the next compositor starts empty. No client may
+successful SET within their euid. A change never wakes or informs another
+user's subscribers, nor advances that user's change serial. Releasing or
+losing the compositor claim clears every user's text, subscriptions and owner; the next compositor starts empty. No client may
 read or set clipboard data using another process's window id. <!-- claim-lint:ok: Normative E18 contract allocation, W1-W13 and #2367; not implementation acceptance. -->

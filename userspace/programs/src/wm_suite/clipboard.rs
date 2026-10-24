@@ -41,13 +41,113 @@ pub fn clip_owner_exit() -> CaseResult {
 }
 
 pub fn set_get() -> CaseResult {
-    let (_d, mut c) = one()?;
-    let (set, _) = clip_ok(&mut c, true, b"same-program")?;
-    let (got, text) = clip_ok(&mut c, false, &[])?;
+    let mut d = Desktop::start()?;
+    let mut c = breengel::Window::new(b"clipboard API", 32, 32)?;
+    c.clipboard_subscribe(true)?;
+    let set = c.clipboard_set("same-program\0λ")?;
+    let got = c.clipboard_get()?;
     check(
-        set == got && text == b"same-program",
+        set == got.serial && got.text == "same-program\0λ",
         "setter cannot read back its exact text and serial",
-    )
+    )?;
+    let mut notified = false;
+    c.dispatch(|e| {
+        if matches!(e.event, breengel::Event::ClipboardChanged) {
+            notified = e.serial != 0;
+        }
+        breengel::Handled::NoChange
+    })?;
+    check(notified, "Breengel did not decode the kernel clipboard notice")?;
+    let replacement = c.clipboard_set("replacement")?;
+    let mut dst = [0xa5; 32];
+    let mut stale = abi::ClipboardGet::ZERO;
+    stale.id = c.id();
+    stale.dst = dst.as_mut_ptr() as u64;
+    stale.capacity = dst.len() as u64;
+    stale.serial = set;
+    stale.mime = abi::CLIPBOARD_TEXT_UTF8;
+    let code = unsafe {
+        window::raw_call(abi::op::CLIPBOARD_GET, (&mut stale as *mut abi::ClipboardGet).cast(),
+            core::mem::size_of_val(&stale))
+    };
+    check(code == -11 && dst == [0xa5; 32], "stale clipboard copy did not return EAGAIN without a partial copy")?;
+    let invalid = [0xff];
+    let mut bad = abi::ClipboardSet::ZERO;
+    bad.id = c.id();
+    bad.ptr = invalid.as_ptr() as u64;
+    bad.len = 1;
+    bad.mime = abi::CLIPBOARD_TEXT_UTF8;
+    let code = unsafe {
+        window::raw_call(abi::op::CLIPBOARD_SET, (&mut bad as *mut abi::ClipboardSet).cast(),
+            core::mem::size_of_val(&bad))
+    };
+    check(code == -22, "invalid clipboard UTF-8 did not return EINVAL")?;
+    let got = c.clipboard_get()?;
+    check(got.serial == replacement && got.text == "replacement", "invalid UTF-8 changed clipboard")?;
+    let mut original = [0u64; 2];
+    let resource_limit = |new: u64, old: u64| unsafe {
+        libbreenix::syscall::raw::syscall4(libbreenix::syscall::nr::PRLIMIT64, 0, 9, new, old) as i64
+    };
+    check(resource_limit(0, original.as_mut_ptr() as u64) == 0, "read clipboard setter RLIMIT_AS")?;
+    let restricted = [0, original[1]];
+    check(resource_limit(restricted.as_ptr() as u64, 0) == 0, "restrict clipboard setter RLIMIT_AS")?;
+    let denied = c.clipboard_set("must be charged");
+    let restored = resource_limit(original.as_ptr() as u64, 0);
+    check(restored == 0, "restore clipboard setter RLIMIT_AS")?;
+    check(matches!(denied, Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENOMEM))),
+        "clipboard storage bypassed setter RLIMIT_AS")?;
+    let got = c.clipboard_get()?;
+    check(got.serial == replacement && got.text == "replacement", "ENOMEM changed clipboard")?;
+    // VmSize reports whole KiB. Keep the baseline clipboard charge KiB-aligned
+    // so AddressLimit measures it exactly, with less than a page released by SET.
+    c.clipboard_set(&"x".repeat(1024))?;
+    let payload = [b'x'; 8192];
+    let limit = AddressLimit::new(libbreenix::process::getpid()?.raw() as i32, payload.len() as u64)?;
+    c.clipboard_set(core::str::from_utf8(&payload).unwrap())?;
+    let page = || libbreenix::memory::mmap(core::ptr::null_mut(), 4096,
+        libbreenix::memory::PROT_READ | libbreenix::memory::PROT_WRITE,
+        libbreenix::memory::MAP_PRIVATE | libbreenix::memory::MAP_ANONYMOUS, -1, 0);
+    let denied = page();
+    if let Ok(ptr) = denied {
+        libbreenix::memory::munmap(ptr, 4096)?;
+        return Err("retained clipboard charge did not exclude a page mmap".into());
+    }
+    check(matches!(denied, Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENOMEM))),
+        "retained clipboard charge did not return ENOMEM for mmap")?;
+    c.clipboard_set("x")?;
+    let ptr = page()?;
+    libbreenix::memory::munmap(ptr, 4096)?;
+    drop(limit);
+    let got = c.clipboard_get()?;
+    check(got.text == "x", "short replacement was not retained")?;
+    c.clipboard_subscribe(false)?;
+    // A window survives the compositor. An old GET token must not alias text
+    // published after its clipboard was cleared and a new claim began.
+    let old_serial = got.serial;
+    d.wm.stop()?;
+    window::claim_compositor()?;
+    check(c.clipboard_get()?.text.is_empty(), "claim end retained clipboard text")?;
+    let mut serial = c.clipboard_set("new claim")?;
+    while serial < old_serial {
+        let later = c.clipboard_set("new claim")?;
+        check(later > serial, "new claim SET did not advance its serial")?;
+        serial = later;
+    }
+    let mut dst = [0xa5; 32];
+    let mut stale = abi::ClipboardGet::ZERO;
+    stale.id = c.id();
+    stale.dst = dst.as_mut_ptr() as u64;
+    stale.capacity = dst.len() as u64;
+    stale.serial = old_serial;
+    stale.mime = abi::CLIPBOARD_TEXT_UTF8;
+    let code = unsafe {
+        window::raw_call(abi::op::CLIPBOARD_GET, (&mut stale as *mut abi::ClipboardGet).cast(),
+            core::mem::size_of_val(&stale))
+    };
+    check(code == -11 && dst == [0xa5; 32],
+        "a prior claim's GET token accepted new text or copied bytes")?;
+    window::release_compositor()?;
+    Ok(())
 }
 pub fn empty() -> CaseResult {
     let (_d, mut c) = one()?;
@@ -112,6 +212,36 @@ pub fn concurrent_sets() -> CaseResult {
             "concurrent setter did not observe the later serial's text",
         )?;
     }
+    // Six simultaneous maximum-size SETs would put 96 MiB of payload on
+    // QEMU's 64 MiB kernel heap. Synchronize entry after registering windows.
+    let mut payload = vec![b'x'; abi::CLIPBOARD_MAX_BYTES as usize];
+    payload[4095..4099].copy_from_slice("🙂".as_bytes());
+    let payload = std::sync::Arc::new(String::from_utf8(payload).unwrap());
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(6));
+    let mut setters = Vec::new();
+    for _ in 0..6 {
+        let payload = payload.clone();
+        let barrier = barrier.clone();
+        setters.push(std::thread::spawn(move || -> Result<u64, String> {
+            let window = breengel::Window::new_without_fonts(b"maximum clipboard", 1, 1);
+            barrier.wait();
+            window.map_err(|e| e.to_string())?.clipboard_set(&payload).map_err(|e| e.to_string())
+        }));
+    }
+    let results: Vec<_> = setters.into_iter().map(|t| t.join()).collect();
+    let mut serials = Vec::new();
+    for result in results {
+        serials.push(result.map_err(|_| "maximum clipboard setter panicked")??);
+    }
+    serials.sort_unstable();
+    check(serials.windows(2).all(|s| s[0] < s[1]),
+        "maximum-size concurrent SETs reused a serial")?;
+    // Read the maximum payload directly; the client's pipe protocol otherwise
+    // asks read(2) for a contiguous 16 MiB kernel bounce buffer.
+    let reader = breengel::Window::new_without_fonts(b"maximum clipboard reader", 1, 1)?;
+    let got = reader.clipboard_get()?;
+    check(got.serial == serials[5] && got.text == *payload,
+        "maximum-size concurrent SET lost exact text or final serial")?;
     Ok(())
 }
 pub fn mime_text_only() -> CaseResult {
@@ -129,10 +259,17 @@ pub fn mime_text_only() -> CaseResult {
     )
 }
 pub fn window_required() -> CaseResult {
-    let (_d, _a) = one()?;
+    // W15: an unregistered window is ENOENT and cannot change the clipboard.
+    let (_d, mut a) = one()?;
+    let (serial, _) = clip_ok(&mut a, true, b"registered owner's text")?;
     let mut unregistered = Client::unregistered(99)?;
     let (code, _, _) = unregistered.clipboard(true, b"no desktop window")?;
-    check(code == -1, "unregistered client set desktop clipboard")
+    check(code == -2, "unregistered clipboard SET did not return ENOENT")?;
+    let (got, text) = clip_ok(&mut a, false, &[])?;
+    check(
+        got == serial && text == b"registered owner's text",
+        "unregistered clipboard SET changed text or serial",
+    )
 }
 pub fn unprivileged() -> CaseResult {
     let _d = Desktop::start()?;
@@ -155,6 +292,81 @@ pub fn unprivileged() -> CaseResult {
             2
         }
     })
+}
+
+// W22: independent clients under one root compositor retain separate user data.
+pub fn per_user() -> CaseResult {
+    use libbreenix::{io, types::Fd};
+    fn send(fd: Fd) -> CaseResult {
+        check(io::write(fd, &[1]).map_err(|e| e.to_string())? == 1,
+            "clipboard peer synchronization write failed")
+    }
+    fn receive(fd: Fd) -> CaseResult {
+        let mut poll = [io::PollFd { fd: fd.raw() as i32, events: 1, revents: 0 }];
+        check(io::poll(&mut poll, 2000).map_err(|e| e.to_string())? == 1,
+            "clipboard peer synchronization timed out")?;
+        let mut byte = [0];
+        check(io::read(fd, &mut byte).map_err(|e| e.to_string())? == 1 && byte == [1],
+            "clipboard peer synchronization read failed")
+    }
+    fn no_notice(c: &mut Client) -> CaseResult {
+        c.snapshot()?;
+        check(!c.events.iter().any(|e| matches!(e.kind,
+            kind::CLIPBOARD_CHANGED | kind::CLIPBOARD_LOST)),
+            "another user's SET delivered a clipboard notice")
+    }
+    let (_d, mut root) = one()?;
+    let (root_serial, _) = clip_ok(&mut root, true, b"root private text")?;
+    root.command(CLIP_SUBSCRIBE, 1, 0)?;
+    root.clear()?;
+    let (ready_r, ready_w) = io::pipe()?;
+    let (changed_r, changed_w) = io::pipe()?;
+    let mut run = || -> i32 {
+        let result = (|| -> CaseResult {
+            check(unsafe { libbreenix::syscall::raw::syscall1(
+                libbreenix::syscall::nr::SETUID, 1000) } as i64 == 0,
+                "clipboard peer could not become uid 1000")?;
+            let mut user = Client::start(88)?;
+            let (_, text) = clip_ok(&mut user, false, &[])?;
+            check(text.is_empty(), "uid 1000 read root's clipboard text")?;
+            user.command(CLIP_SUBSCRIBE, 1, 0)?;
+            user.clear()?;
+            let (serial, _) = clip_ok(&mut user, true, b"user private text")?;
+            user.await_event("uid 1000 receives its own clipboard change", |e|
+                e.kind == kind::CLIPBOARD_CHANGED)?;
+            user.clear()?;
+            send(ready_w)?;
+            receive(changed_r)?;
+            let (got, text) = clip_ok(&mut user, false, &[])?;
+            check(got == serial && text == b"user private text",
+                "root replaced uid 1000 clipboard text or serial")?;
+            no_notice(&mut user)?;
+            Ok(())
+        })();
+        if result.is_ok() { 0 } else { 1 }
+    };
+    let pid = breenix_suite::suite::spawn(
+        &[(ready_w, ready_w), (changed_r, changed_r)],
+        breenix_suite::suite::Run::Call(&mut run),
+    )?;
+    let mut child = Child::from(pid);
+    receive(ready_r)?;
+    let (got, text) = clip_ok(&mut root, false, &[])?;
+    check(got == root_serial && text == b"root private text",
+        "uid 1000 replaced root clipboard or root read uid 1000 text")?;
+    no_notice(&mut root)?;
+    let (later, _) = clip_ok(&mut root, true, b"root replacement")?;
+    check(later > root_serial, "root clipboard serial did not advance")?;
+    root.await_event("root receives its own clipboard change", |e|
+        e.kind == kind::CLIPBOARD_CHANGED)?;
+    send(changed_w)?;
+    let mut status = None;
+    until(2000, "uid 1000 checked isolation after root SET", || {
+        status = child.status()?;
+        Ok(status.is_some())
+    })?;
+    for fd in [ready_r, ready_w, changed_r, changed_w] { io::close(fd)?; }
+    check(status == Some(0), "uid 1000 clipboard isolation check failed")
 }
 
 pub fn textfield_copy() -> CaseResult {

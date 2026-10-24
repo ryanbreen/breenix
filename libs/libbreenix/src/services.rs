@@ -30,6 +30,9 @@
 //!   (that service is running, or ran to completion).
 //! - `stop-timeout`: seconds between SIGTERM and SIGKILL when the service is
 //!   stopped (1 to 300, default 5).
+//! - `give-up`: an optional failure count and rolling window in seconds, e.g.
+//!   `5 10`. Opted-in services retry at the base delay, then stop and report
+//!   when that many failures occur within the window. An explicit start resets it.
 //!
 //! A malformed stanza disables only that service and is reported; so is a
 //! service whose `needs` names no service in the table, or that depends on
@@ -108,6 +111,34 @@ pub struct Service {
     pub restart: Restart,
     pub needs: Vec<Need>,
     pub stop_timeout_ms: u64,
+    pub give_up: Option<GiveUp>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GiveUp {
+    pub failures: usize,
+    pub window_ms: u64,
+}
+
+/// Failure times for an opted-in service, bounded by its configured failure count.
+#[derive(Default)]
+pub struct FailureHistory(std::collections::VecDeque<u64>);
+
+impl FailureHistory {
+    /// Count failed starts and failed runs; successful runs consume no failure slot.
+    pub fn record(&mut self, limit: GiveUp, now: u64, failed: bool) -> bool {
+        while self.0.front().is_some_and(|t| now.saturating_sub(*t) >= limit.window_ms) {
+            self.0.pop_front();
+        }
+        if failed && self.0.len() < limit.failures {
+            self.0.push_back(now);
+        }
+        self.0.len() >= limit.failures
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
 }
 
 /// A service name: a lowercase letter or digit, then up to 31 of those and `-`.
@@ -191,6 +222,7 @@ struct Draft {
     restart: Option<Restart>,
     needs: Option<Vec<Need>>,
     stop_timeout_ms: Option<u64>,
+    give_up: Option<GiveUp>,
     error: Option<String>,
 }
 
@@ -253,6 +285,20 @@ impl Draft {
                 }
                 self.needs = Some(needs);
             }
+            "give-up" => {
+                if self.give_up.is_some() {
+                    return duplicate();
+                }
+                let words: Vec<&str> = value.split_ascii_whitespace().collect();
+                if words.len() != 2 {
+                    return Err("give-up needs a failure count and seconds".into());
+                }
+                let failures = words[0].parse::<usize>().ok().filter(|n| (1..=1024).contains(n))
+                    .ok_or("give-up failure count must be 1 to 1024")?;
+                let seconds = words[1].parse::<u64>().ok().filter(|n| (1..=300).contains(n))
+                    .ok_or("give-up window must be 1 to 300 seconds")?;
+                self.give_up = Some(GiveUp { failures, window_ms: seconds * 1000 });
+            }
             "stop-timeout" => {
                 if self.stop_timeout_ms.is_some() {
                     return duplicate();
@@ -290,6 +336,7 @@ impl Draft {
             restart: self.restart.unwrap_or(Restart::Always),
             needs: self.needs.unwrap_or_default(),
             stop_timeout_ms: self.stop_timeout_ms.unwrap_or(DEFAULT_STOP_TIMEOUT_MS),
+            give_up: self.give_up,
         });
     }
 }
@@ -694,6 +741,37 @@ mod tests {
         assert!(network_configured("#PROTO: DHCP\nnameserver 192.0.2.1\nbootserver 192.0.2.1\n"));
         assert!(network_configured("#MANUAL\n"));
         assert!(!network_configured("#PROTO: DHCP\n"));
+    }
+
+    #[test]
+    fn give_up_is_opt_in_and_validates_its_window() {
+        let (services, problems) = parse("[desktop]\ncommand = /bin/wm\ngive-up = 5 10\n[daemon]\ncommand = /bin/daemon\n");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(services[0].give_up, Some(GiveUp { failures: 5, window_ms: 10_000 }));
+        assert_eq!(services[1].give_up, None);
+        for value in ["0 10", "5 0", "5", "5 10 20", "1025 10", "5 301", "five ten"] {
+            let (services, problems) = parse(&format!("[bad]\ncommand = /bin/wm\ngive-up = {value}\n"));
+            assert!(services.is_empty(), "{value}");
+            assert_eq!(problems.len(), 1, "{value}");
+        }
+    }
+
+    #[test]
+    fn five_failures_in_a_rolling_window_give_up() {
+        let limit = GiveUp { failures: 5, window_ms: 10_000 };
+        let mut history = FailureHistory::default();
+        for now in [100, 1_100, 2_100, 3_100] {
+            assert!(!history.record(limit, now, true));
+        }
+        assert!(!history.record(limit, 3_500, false));
+        assert!(history.record(limit, 4_100, true));
+        history.clear();
+        for now in [100, 1_100, 2_100, 3_100] {
+            assert!(!history.record(limit, now, true));
+        }
+        // The oldest failure expires exactly at the ten-second boundary.
+        assert!(!history.record(limit, 10_100, true));
+        assert!(history.record(limit, 10_101, true));
     }
 
     #[test]
