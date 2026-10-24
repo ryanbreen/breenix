@@ -1413,7 +1413,7 @@ nonce-named sentinels in `/root` and the operator's home, records their SHA-256 
 fingerprint, then performs a good upgrade, an upgrade with a deliberately invalid NEXT loader, and a bootable upgrade
 with the candidate bsshd removed. The latter requires captured kernel entry and a console login prompt
 as well as actual failed SSH attempts before automatic rollback. Each case
-require the install flow's own S21 result; the broken case requires automatic rollback, not a runner-issued
+requires the install flow's own S21 result; the broken case requires automatic rollback, not a runner-issued
 rollback command. Each final default boot must select the expected paired userland and retain the pinned key and
 sentinel bytes. The category's other two cases compile the exact-head production installer on the boot host and
 execute its ENOSPC, I/O, interruption, paired-rollback and reclamation fault cases. The alias fixture uses

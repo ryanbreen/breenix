@@ -905,8 +905,8 @@ The boot host's detached probe worker uses its private operator key; that key st
 Ed25519 key against a protected bsshd log read over the leased SOL console for its first successful probe, then
 retains that authenticated pin in its private state directory, keyed by the system partition GUID and address.
 Once a verification boot reaches the protected console, its service log supplies a fresh pin; only a strict
-authenticated SSH success publishes it. This recovers a legitimate key rotation without trusting keyscan alone.
-During POST, later verification boots use the cached pin to attempt
+authenticated SSH success publishes it. The rotation recovery path has mocked unit coverage; physical
+key-rotation recovery remains unverified (#2356). Later verification boots use the cached pin to attempt
 SSH during POST as well as after kernel startup, including when the candidate cannot reach a console prompt. The
 probe requires an authenticated operator login and started services. The driver waits for that receipt instead of accepting a login
 prompt. A failed verification automatically swaps CURRENT and PREVIOUS and verifies the restored generation with

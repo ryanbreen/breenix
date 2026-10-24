@@ -28,10 +28,11 @@ on the R240 first and the catch-up brings the VMs to the same bar (D6). Their su
 are skeleton manifests whose cases arrive with the lanes; the plan and the
 operator decisions are in `docs/metal/server-plan.md`.
 
-The server `remote-upgrade` milestone is in progress in #2351 on `metal-server/remote-upgrade`:
+The server `remote-upgrade` milestone lands through #2351:
 strict operator SSH and started services within S21's 600-second power-on bound, automatic paired rollback,
-and generation failure recovery and reclamation. The original acceptance receipts are retained in #2351; the review adds a bootable SSH-failure case
-and host-key rotation recovery, whose physical verification is recorded with the landing result.
+and generation failure recovery and reclamation. Physical acceptance, including the bootable SSH-failure
+case, is recorded in #2351. Host-key rotation recovery has mocked unit coverage only; physical rotation
+verification remains in #2356.
 
 The server `time` milestone is in progress in #2320 on `metal-server/time`:
 configured SNTP sources, hourly polling, a first-sync step followed by slewing,
