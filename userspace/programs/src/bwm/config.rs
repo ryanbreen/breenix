@@ -132,10 +132,6 @@ pub(super) fn monotonic_ms() -> Option<u64> {
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
-/// How long bwm sleeps for input or a scene change before it reads the pointer again: the
-/// pointer has no descriptor of its own.
-pub(super) const POINTER_POLL_MS: i32 = 10;
-
 /// How long bwm sleeps between attempts to compose while another process holds the display.
 pub(super) const DISPLAY_WAIT_MS: i32 = 100;
 
@@ -234,24 +230,14 @@ pub(super) fn start() -> State {
     // Paint the decorative background once; each desktop repaint copies it.
     paint_background(&mut gpu.background);
 
-    // Enter raw mode on stdin
-    let mut orig_termios = libbreenix::termios::Termios::default();
-    let _ = libbreenix::termios::tcgetattr(Fd::from_raw(0), &mut orig_termios);
-    let mut raw = orig_termios;
-    libbreenix::termios::cfmakeraw(&mut raw);
-    let _ = libbreenix::termios::tcsetattr(Fd::from_raw(0), libbreenix::termios::TCSANOW, &raw);
-
+    let stream = input::Stream::new();
     let mut windows: Vec<Window> = Vec::new();
-    let mut focused_win: usize = 0;
-    let input_parser = InputParser::new();
-    let (mouse_x, mouse_y) = session::mouse_pos()
-        .map(|(x, y)| (x as i32, y as i32))
-        .unwrap_or((0, 0));
+    let mut focused_win: usize = usize::MAX;
+    let (mouse_x, mouse_y) = (0, 0);
     let active_cursor_shape = cursor_shape::ARROW;
-    let prev_buttons: u32 = 0;
-    let dragging: Option<(usize, i32, i32)> = None;
+    let dragging: Option<(u64, i32, i32)> = None;
     // Active resize: (win_idx, edge, anchor_x, anchor_y, orig_x, orig_y, orig_w, orig_h)
-    let resizing: Option<(usize, ResizeEdge, i32, i32, i32, i32, usize, usize)> = None;
+    let resizing: Option<(u64, ResizeEdge, i32, i32, i32, i32, usize, usize)> = None;
     let content_dirty = false;
     let windows_dirty = false;
     let mut win_defaults: [WindowDefaults; MAX_DEFAULTS] =
@@ -297,7 +283,7 @@ pub(super) fn start() -> State {
         }
     }
     clock.presented(gpu.last_serial);
-    clock.acknowledge(claim_epoch);
+    clock.acknowledge(claim_epoch, 0, None);
     match fills {
         Ok(line) => print!("[bwm] desktop fills the scanout: {}\n", line),
         Err(e) => print!("[bwm] desktop fill check FAILED: {}\n", e),
@@ -309,10 +295,10 @@ pub(super) fn start() -> State {
     let drawn_pointer = first_presented.then_some(first_pointer);
     let mut full_redraw = !first_presented;
 
-    let read_buf = [0u8; 512];
+    let clock_wake = libbreenix::ui_clock::epoch_notifications().expect("UI clock wake descriptor");
     let poll_fds = [
         io::PollFd {
-            fd: 0,
+            fd: stream.fd(),
             events: io::poll_events::POLLIN as i16,
             revents: 0,
         },
@@ -321,6 +307,7 @@ pub(super) fn start() -> State {
             events: io::poll_events::POLLIN as i16,
             revents: 0,
         },
+        io::PollFd { fd: clock_wake.as_ref().map_or(-1, |fd| fd.fd().raw() as i32), events: io::poll_events::POLLIN as i16, revents: 0 },
     ];
 
     // Initial window discovery (before entering event loop)
@@ -331,7 +318,9 @@ pub(super) fn start() -> State {
         &mut next_creation_order,
         &mut win_defaults,
     ) {
-        focused_win = next_visible_window(&windows, 0);
+        focused_win = windows.iter().rposition(|w| !w.minimized).unwrap_or(usize::MAX);
+        update_kernel_z_order(&windows, focused_win);
+        send_to(&windows, focused_win, Input::FocusGained);
         compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
         full_redraw = true;
     }
@@ -344,11 +333,10 @@ pub(super) fn start() -> State {
         ui_font,
         windows,
         focused_win,
-        input_parser,
+        stream,
         mouse_x,
         mouse_y,
         active_cursor_shape,
-        prev_buttons,
         dragging,
         resizing,
         full_redraw,
@@ -366,8 +354,8 @@ pub(super) fn start() -> State {
         drawn_pointer,
         validation_pending: false,
         pointer_check_deferred: false,
-        read_buf,
         poll_fds,
+        clock_wake,
     }
 }
 
@@ -379,13 +367,12 @@ pub(super) struct State {
     pub(super) ui_font: Option<CachedFont>,
     pub(super) windows: Vec<Window>,
     pub(super) focused_win: usize,
-    pub(super) input_parser: InputParser,
+    pub(super) stream: input::Stream,
     pub(super) mouse_x: i32,
     pub(super) mouse_y: i32,
     pub(super) active_cursor_shape: u32,
-    pub(super) prev_buttons: u32,
-    pub(super) dragging: Option<(usize, i32, i32)>,
-    pub(super) resizing: Option<(usize, ResizeEdge, i32, i32, i32, i32, usize, usize)>,
+    pub(super) dragging: Option<(u64, i32, i32)>,
+    pub(super) resizing: Option<(u64, ResizeEdge, i32, i32, i32, i32, usize, usize)>,
     pub(super) full_redraw: bool,
     pub(super) content_dirty: bool,
     pub(super) windows_dirty: bool,
@@ -401,31 +388,35 @@ pub(super) struct State {
     pub(super) drawn_pointer: Option<Pointer>,
     pub(super) validation_pending: bool,
     pub(super) pointer_check_deferred: bool,
-    pub(super) read_buf: [u8; 512],
-    pub(super) poll_fds: [io::PollFd; 2],
+    pub(super) poll_fds: [io::PollFd; 3],
+    pub(super) clock_wake: Option<libbreenix::types::OwnedFd>,
 }
 
 impl State {
     pub(super) fn wait(&mut self) -> (bool, bool) {
         flush_input();
-        // ── 0. Sleep until input or a scene change ──
-        // The scene descriptor is readable when a window registered, committed, moved or
-        // went away. The pointer has no descriptor, so the sleep is bounded and the
-        // pointer is read after it. Local work already prepared (the initial discovery's
-        // redraw) is presented before sleeping.
-        let timeout = if self.display_lost {
-            DISPLAY_WAIT_MS
-        } else if self.full_redraw || self.content_dirty || self.windows_dirty {
-            0
-        } else if self.input_parser.state == InputState::Escape {
-            (ESCAPE_TIMEOUT_MS as i32).min(POINTER_POLL_MS)
-        } else {
-            POINTER_POLL_MS
-        };
+        // Input, scene and stepped-clock changes wake descriptors. Only
+        // actual real-clock deadlines and retained client retries use timeouts.
+        let timeout = if self.full_redraw || self.content_dirty || self.windows_dirty { 0 }
+            else if self.display_lost { DISPLAY_WAIT_MS }
+            else if pending_input() { 10 }
+            else if self.clock_wake.is_some() { -1 }
+            else {
+                let now = libbreenix::ui_clock::now_ns();
+                let clock_deadline = now.saturating_add(1_000_000_000 - now % 1_000_000_000);
+                let deadline = self.stream.deadline().map_or(clock_deadline, |d| d.min(clock_deadline));
+                deadline.saturating_sub(now).div_ceil(1_000_000).min(i32::MAX as u64) as i32
+            };
         for fd in self.poll_fds.iter_mut() {
             fd.revents = 0;
         }
         let _ = io::poll(&mut self.poll_fds, timeout);
+        if self.poll_fds[2].revents != 0 {
+            if let Some(fd) = &self.clock_wake {
+                let mut bytes = [0; 128];
+                while io::read(fd.fd(), &mut bytes).is_ok() {}
+            }
+        }
         let stdin_ready = self.poll_fds[0].revents & io::poll_events::POLLIN as i16 != 0;
         let scene_changed = self.poll_fds[1].revents & io::poll_events::POLLIN as i16 != 0;
         if scene_changed {

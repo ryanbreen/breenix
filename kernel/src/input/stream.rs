@@ -13,7 +13,7 @@ use alloc::{
 };
 use input_abi::{axis, disposition, ioctl, key, kind, reason, syn, Capability, Disposition, Event};
 
-const MAX_CAPABILITIES: usize = 512;
+const MAX_CAPABILITIES: usize = input_abi::MAX_CAPABILITIES;
 const LEDGER_EVENTS: usize = 8192;
 const MAX_BATCH: usize = input_abi::READER_EVENTS - 1;
 
@@ -33,6 +33,8 @@ struct Reader {
     wake: Arc<WaitQueueHead>,
 }
 struct Device {
+    kind: u32,
+    generation: u64,
     capabilities: Vec<Capability>,
     injector_time: bool,
     last_time: u64,
@@ -55,6 +57,8 @@ struct Row {
     reader: Option<u64>,
     outcome: Option<Disposition>,
     scene: Option<input_abi::SceneTag>,
+    first: bool,
+    delivery_window: u64,
 }
 struct Release {
     window: u64,
@@ -69,6 +73,7 @@ struct ConsoleKey {
 struct State {
     next_reader: u64,
     next_device: u32,
+    next_generation: u64,
     next_serial: u64,
     readers: BTreeMap<u64, Reader>,
     devices: BTreeMap<u32, Device>,
@@ -80,12 +85,15 @@ struct State {
     derived: BTreeMap<(u64, u64), breengel_abi::EventTag>,
     next_derived: u64,
     derivations: BTreeMap<(u64, u32), Disposition>,
+    gestures: BTreeMap<(u32, u64), ()>,
+    gesture_reports: BTreeMap<(u64, u64), (u32, u32)>,
 }
 impl State {
     const fn new() -> Self {
         Self {
             next_reader: 1,
             next_device: 1024,
+            next_generation: 1,
             next_serial: 1,
             readers: BTreeMap::new(),
             devices: BTreeMap::new(),
@@ -97,6 +105,8 @@ impl State {
             derived: BTreeMap::new(),
             next_derived: 1 << 63,
             derivations: BTreeMap::new(),
+            gestures: BTreeMap::new(),
+            gesture_reports: BTreeMap::new(),
         }
     }
     fn finish(&mut self, serial: u64, outcome: u32, why: u32) {
@@ -194,6 +204,7 @@ impl State {
             event: Event {
                 kind: kind::SYN,
                 code: syn::REPORT,
+                value: syn::DEVICE_REMOVED,
                 time_ns,
                 ..Event::default()
             },
@@ -226,6 +237,7 @@ impl State {
     fn publish(&mut self, device: u32, mut records: Vec<Record>) -> Vec<ConsoleKey> {
         let mut console = Vec::new();
         let mut scene = None;
+        let mut first = false;
         let holder = self.grab.as_ref().map(|g| g.reader);
         let selected = self
             .grab
@@ -245,6 +257,9 @@ impl State {
                     layout_version: u64::from_le_bytes(p[16..24].try_into().unwrap()),
                     gesture: u64::from_le_bytes(p[24..32].try_into().unwrap()),
                 });
+                first = self.gestures.insert((device, scene.unwrap().gesture), ()).is_none();
+                while self.gestures.len() > input_abi::READER_EVENTS { self.gestures.pop_first(); }
+
             }
             let d = self.devices.get_mut(&device).expect("live input device");
             if e.kind == kind::SYN && e.code == syn::DROPPED {
@@ -303,6 +318,8 @@ impl State {
                 reader: holder,
                 outcome,
                 scene,
+                first,
+                delivery_window: 0,
             });
         }
         let all = Arc::new(batch(records));
@@ -471,6 +488,32 @@ impl InputFile {
     }
     pub fn ioctl(&self, request: u64, arg: u64) -> Result<u64, u64> {
         let reader = self.reader.ok_or(ENOTTY as u64)?;
+        if request == ioctl::INPUT_DEVICE_INFO {
+            let mut query: input_abi::DeviceInfo = userptr::copy_from_user(arg as *const _)?;
+            if query.reserved != 0 { return Err(EINVAL as u64); }
+            let (kind, generation, capabilities) = {
+                let s = STATE.lock();
+                let device = s.devices.get(&query.device).ok_or(ENOENT as u64)?;
+                (device.kind, device.generation, device.capabilities.clone())
+            };
+            if query.capacity != 0 && (query.capacity as usize) < capabilities.len() {
+                return Err(EINVAL as u64);
+            }
+            query.kind = kind;
+            query.generation = generation;
+            query.count = capabilities.len() as u32;
+            // This query does not mutate state, even if a concurrent unmap
+            // makes a later output copy fail.
+            userptr::validate_user_ptr_write(arg as *mut input_abi::DeviceInfo)?;
+            if query.capacity != 0 {
+                for (n, capability) in capabilities.iter().enumerate() {
+                    let address = query.capabilities.checked_add((n * 12) as u64).ok_or(EFAULT as u64)?;
+                    userptr::copy_to_user(address as *mut Capability, capability)?;
+                }
+            }
+            userptr::copy_to_user(arg as *mut input_abi::DeviceInfo, &query)?;
+            return Ok(0);
+        }
         let caller = crate::window::Caller::current().map_err(|e| e as u64)?;
         let selection = if request == ioctl::GRAB {
             let selection: input_abi::Selection = userptr::copy_from_user(arg as *const _)?;
@@ -682,9 +725,13 @@ impl InputFile {
         let mut s = STATE.lock();
         let id = s.next_device;
         s.next_device = id.checked_add(1).ok_or(ENOSPC as u64)?;
+        let generation = s.next_generation;
+        s.next_generation = generation.checked_add(1).ok_or(ENOSPC as u64)?;
         s.devices.insert(
             id,
             Device {
+                kind: input_abi::device_kind::VIRTUAL,
+                generation,
                 capabilities,
                 injector_time: flags != 0,
                 last_time: 0,
@@ -1164,7 +1211,7 @@ pub fn event_tag(
         return Ok(0);
     }
     let row = row(&s.ledger, tag.serial)
-        .filter(|row| row.outcome.is_some_and(|d| d.window == tag.id))
+        .filter(|row| row.delivery_window == tag.id || row.outcome.is_some_and(|d| d.window == tag.id))
         .ok_or(ENOENT)?;
     let scene = row.scene.unwrap_or_default();
     *tag = breengel_abi::EventTag {
@@ -1174,6 +1221,7 @@ pub fn event_tag(
         scene_version: scene.scene_version,
         layout_version: scene.layout_version,
         gesture: scene.gesture,
+        flags: u32::from(row.first),
         ..breengel_abi::EventTag::default()
     };
     Ok(0)
@@ -1183,7 +1231,11 @@ pub fn event_tag(
 /// reserved for hardware, separate from uinput's non-reused identities.
 #[cfg(target_arch = "aarch64")]
 pub fn register_hardware(id: u32, capabilities: Vec<Capability>) {
-    STATE.lock().devices.insert(id, Device {
+    let mut state = STATE.lock();
+    let generation = state.next_generation;
+    state.next_generation += 1;
+    state.devices.insert(id, Device {
+        kind: input_abi::device_kind::PHYSICAL, generation,
         capabilities, injector_time: false, last_time: 0, modifiers: 0,
         reserved: 0, held: BTreeMap::new(),
     });
@@ -1244,4 +1296,49 @@ pub fn wake_service() {
 #[cfg(target_arch = "aarch64")]
 pub fn hardware_capabilities(id: u32) -> Vec<Capability> {
     STATE.lock().devices.get(&id).map_or_else(Vec::new, |d| d.capabilities.clone())
+}
+
+/// WRITE_EVENTS registers compositor derivations before waking the recipient.
+/// The registry lock already establishes compositor authority at this call.
+pub fn tag_delivery(window: u64, serial: u64) {
+    let mut state = STATE.lock();
+    let Some((source, index)) = input_abi::derived_source(serial) else {
+        if let Some(row) = row_mut(&mut state.ledger, serial) { row.delivery_window = window; }
+        return;
+    };
+    let Some(row) = row(&state.ledger, source) else { return; };
+    let scene = row.scene.unwrap_or_default();
+    let tag = breengel_abi::EventTag {
+        id: window, serial, source_serial: source, derived: index,
+        scene_version: scene.scene_version, layout_version: scene.layout_version,
+        gesture: scene.gesture, flags: u32::from(row.first), ..breengel_abi::EventTag::default()
+    };
+    state.derived.insert((window, serial), tag);
+    while state.derived.len() > input_abi::READER_EVENTS { state.derived.pop_first(); }
+}
+
+/// Owner reports after a tagged handler returns. Results are bounded like the
+/// source provenance and never mutate the source serial namespace.
+pub fn gesture_report(caller: &crate::window::Caller, report: &breengel_abi::GestureReport) -> Result<u64, i32> {
+    {
+        let mut reg = crate::window::REGISTRY.lock();
+        reg.window(report.id, caller, |owner, _, _| owner)?;
+    }
+    if report.gesture == 0 || !(1..=3).contains(&report.state)
+        || (report.state != 3 && report.reason != 0)
+        || (report.state == 3 && ![reason::STALE_LAYOUT, reason::GESTURE_CANCELLED].contains(&report.reason)) {
+        return Err(EINVAL);
+    }
+    let mut s = STATE.lock();
+    let source = input_abi::derived_source(report.source_serial).map_or(report.source_serial, |(source,_)|source);
+    let row = row(&s.ledger, source).ok_or(ENOENT)?;
+    if row.scene.is_none_or(|tag| tag.gesture != report.gesture || tag.window != report.id) { return Err(ENOENT); }
+    let key = (report.id, report.gesture);
+    match (s.gesture_reports.get(&key), report.state) {
+        (None, 1 | 3) | (Some((1, _)), 2 | 3) => {},
+        _ => return Err(EINVAL),
+    }
+    s.gesture_reports.insert(key, (report.state, report.reason));
+    while s.gesture_reports.len() > input_abi::READER_EVENTS { s.gesture_reports.pop_first(); }
+    Ok(0)
 }

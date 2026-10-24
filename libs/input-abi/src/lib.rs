@@ -5,6 +5,7 @@ pub const VERSION: u32 = 1;
 pub const EVENT_SIZE: usize = 32;
 pub const TEXT_LIMIT: usize = 256;
 pub const READER_EVENTS: usize = 1024;
+pub const MAX_CAPABILITIES: usize = 512;
 pub const CREATE_MAGIC: [u8; 8] = *b"BINPUT01";
 pub const TIME_INJECTOR: u32 = 1;
 
@@ -19,6 +20,8 @@ pub mod syn {
     pub const REPORT: u16 = 0;
     pub const DROPPED: u16 = 3;
     pub const SCENE: u16 = 4;
+    /// Core-only value on a closing SYN_REPORT (W29).
+    pub const DEVICE_REMOVED: i32 = 1;
 }
 pub mod axis {
     pub const X: u16 = 0;
@@ -71,6 +74,7 @@ pub mod ioctl {
     pub const GRAB: u64 = 0x424901;
     pub const UNGRAB: u64 = 0x424902;
     pub const DISPOSITION: u64 = 0x424903;
+    pub const INPUT_DEVICE_INFO: u64 = 0x424904;
 }
 pub mod disposition {
     pub const WM_HANDLED: u32 = 1;
@@ -92,6 +96,26 @@ pub mod reason {
     pub const OVERFLOW: u32 = 9;
     pub const RING_FULL: u32 = 10;
     pub const COMPOSITOR_DIED: u32 = 11;
+}
+
+/// Device origin returned by INPUT_DEVICE_INFO (W29).
+pub mod device_kind {
+    pub const PHYSICAL: u32 = 1;
+    pub const VIRTUAL: u32 = 2;
+}
+
+/// Read-only reader query. Set device, capabilities and capacity on input;
+/// kind, generation and count are output. Reserved must be zero.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeviceInfo {
+    pub device: u32,
+    pub kind: u32,
+    pub generation: u64,
+    pub capabilities: u64,
+    pub capacity: u32,
+    pub count: u32,
+    pub reserved: u64,
 }
 
 #[repr(C)]
@@ -165,3 +189,23 @@ layout!(Capability, 12, kind @ 0, code @ 2, minimum @ 4, maximum @ 8);
 layout!(Selection, 16, devices @ 0, count @ 8, reserved @ 12);
 layout!(SceneTag, 32, scene_version @ 0, window @ 8, layout_version @ 16, gesture @ 24);
 layout!(Disposition, 32, serial @ 0, window @ 8, disposition @ 16, reason @ 20, derived @ 24, reserved @ 28);
+
+layout!(DeviceInfo, 40, device @ 0, kind @ 4, generation @ 8, capabilities @ 16, capacity @ 24, count @ 28, reserved @ 32);
+
+/// Disjoint compositor delivery identities. Source serials occupy the low
+/// half; kernel releases occupy bit 63 alone. Refuse namespace exhaustion
+/// rather than wrapping or aliasing a source/derivation pair.
+pub fn derived_serial(source: u64, index: u32) -> Option<u64> {
+    if source == 0 || source >= 1 << 40 || index == 0 || index >= 1 << 22 {
+        return None;
+    }
+    Some((3 << 62) | (source << 22) | index as u64)
+}
+pub fn derived_source(serial: u64) -> Option<(u64, u32)> {
+    if serial >> 62 != 3 {
+        return None;
+    }
+    let source = (serial & ((1 << 62) - 1)) >> 22;
+    let index = (serial & ((1 << 22) - 1)) as u32;
+    (source != 0 && index != 0).then_some((source, index))
+}

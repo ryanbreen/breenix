@@ -64,16 +64,15 @@ impl Clock {
     pub(super) fn presented(&mut self, serial: u64) {
         self.presented = serial;
     }
-    pub(super) fn acknowledge(&self, claim_epoch: u64) {
+    pub(super) fn acknowledge(&self, claim_epoch: u64, handled_serial: u64, deadline: Option<u64>) {
         let mut ack = abi::CompositorAck {
             claim_epoch,
             epoch: self.epoch,
             // Lane 3 records and acknowledges the handled source serial.
-            handled_serial: 0,
+            handled_serial,
             presented: self.presented,
-            next_deadline_ns: self
-                .now
-                .saturating_add(1_000_000_000 - self.wall % 1_000_000_000),
+            next_deadline_ns: deadline.map_or_else(|| self.now.saturating_add(1_000_000_000 - self.wall % 1_000_000_000),
+                |deadline| deadline.min(self.now.saturating_add(1_000_000_000 - self.wall % 1_000_000_000))),
             flags: u32::from(self.test),
             reserved: 0,
         };
@@ -93,7 +92,7 @@ impl State {
             && !self.display_lost
             && !self.frame_failed
         {
-            self.clock.acknowledge(self.claim_epoch);
+            self.clock.acknowledge(self.claim_epoch, handled_serial(self.stream.seen), self.stream.deadline());
         }
     }
 }

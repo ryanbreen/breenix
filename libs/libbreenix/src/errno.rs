@@ -6,6 +6,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i64)]
 pub enum Errno {
+    /// An operation already has its terminal outcome.
+    EALREADY = 114,
     /// Operation not permitted
     EPERM = 1,
     /// No such file or directory
@@ -170,6 +172,7 @@ impl Errno {
             115 => Errno::EINPROGRESS,
             74 => Errno::EBADMSG,
             90 => Errno::EMSGSIZE,
+            114 => Errno::EALREADY,
             _ => Errno::EINVAL, // Unknown error
         }
     }

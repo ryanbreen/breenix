@@ -220,9 +220,9 @@ fn dispatch(caller: &Caller, op: u32, arg: u64) -> Result<u64, i32> {
         op::CLIPBOARD_SET => committing::<ClipboardSet>(arg, |a, out| crate::window::clipboard::set(&caller, a, out)),
         op::CLIPBOARD_GET => committing::<ClipboardGet>(arg, |a, out| crate::window::clipboard::get(&caller, a, out)),
         op::CLIPBOARD_SUBSCRIBE => crate::window::clipboard::subscribe(&caller, &input::<ClipboardSubscribe>(arg)?),
-        op::HIT_TEST => Err(ENOSYS),
+        op::HIT_TEST => inout::<breengel_abi::HitTest>(arg, |query| crate::window::policy::hit_test(&caller, query)),
         op::EVENT_TAG => inout::<breengel_abi::EventTag>(arg, |tag| crate::input::stream::event_tag(&caller, tag)),
-        op::GESTURE_REPORT => Err(ENOSYS),
+        op::GESTURE_REPORT => crate::input::stream::gesture_report(&caller, &input::<breengel_abi::GestureReport>(arg)?),
         _ => Err(EINVAL),
     }
 }

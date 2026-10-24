@@ -15,6 +15,7 @@ use libgfx::surface::{Format, Surface};
 
 use crate::event::{Delivered, Event};
 use crate::font::FontWatcher;
+use std::collections::BTreeMap;
 
 /// What a handler did with an event: changed something the window draws, or not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,6 +70,11 @@ pub struct Window {
     epoch: u64,
     last: Option<Committed>,
     pending: Option<(Committed, Option<libgfx::surface::Surface>)>,
+    layout_version: u64,
+    capture: Option<u64>,
+    cancel_pending: bool,
+    gestures: BTreeMap<u64, u32>,
+    rejected: Vec<u64>,
 }
 
 impl Window {
@@ -104,6 +110,11 @@ impl Window {
             epoch: 0,
             last: None,
             pending: None,
+            layout_version: 0,
+            capture: None,
+            cancel_pending: false,
+            gestures: BTreeMap::new(),
+            rejected: Vec::new(),
         })
     }
 
@@ -164,6 +175,9 @@ impl Window {
         m.epoch = self.epoch;
         m.ui_time_ms = crate::clock::now_ns() / 1_000_000;
         m.real_clock_reads = crate::clock::real_clock_reads();
+        m.layout_version = self.layout_version;
+        m.rejected_count = self.rejected.len().min(8) as u32;
+        for (to, from) in m.rejected.iter_mut().zip(self.rejected.iter().rev()) { *to = *from; }
         m
     }
 
@@ -273,24 +287,83 @@ impl Window {
         Ok(raw)
     }
 
+    /// Report a layout change before dispatching the next pointer event.
+    pub fn layout_changed(&mut self) -> u64 {
+        self.layout_version = self.layout_version.checked_add(1).expect("layout version exhausted");
+        self.layout_version
+    }
+    pub fn layout_version(&self) -> u64 { self.layout_version }
+    /// A widget's stable identity owns capture until release or cancellation.
+    pub fn capture_pointer(&mut self, owner: u64) { self.capture = Some(owner); }
+    pub fn pointer_capture(&self) -> Option<u64> { self.capture }
+    /// Call when a captured widget leaves the tree. The next dispatch sends a
+    /// cancel before any further input, clearing pressed state without activation.
+    pub fn cancel_pointer_capture(&mut self, owner: u64) {
+        if self.capture == Some(owner) {
+            self.capture = None;
+            self.cancel_pending = true;
+            for state in self.gestures.values_mut().filter(|state| **state == 1) { *state = 3; }
+        }
+    }
     fn deliver(&mut self, raw: &[abi::WindowEvent], handler: &mut dyn FnMut(&Delivered) -> Handled) -> usize {
         let mut count = 0;
+        if self.cancel_pending {
+            self.cancel_pending = false;
+            handler(&Delivered { serial: 0, time_ns: 0, clicks: 0, event: Event::PointerCancel });
+            count += 1;
+        }
         for r in raw {
             let d = Delivered::from_raw(r);
             self.note(&d.event);
-            let handled = handler(&d);
+            let pointer = matches!(d.event, Event::MouseMove { .. } | Event::MouseButton { .. } | Event::Scroll { .. });
+            let mut tag = abi::EventTag { id: self.id, serial: d.serial, ..abi::EventTag::default() };
+            let tagged = pointer && d.serial != 0 && window::call(abi::op::EVENT_TAG, &mut tag).is_ok() && tag.gesture != 0;
+            let mut reject = 0;
+            let mut first = false;
+            if tagged {
+                first = !self.gestures.contains_key(&tag.gesture);
+                if first && tag.layout_version != self.layout_version { reject = 7; }
+                if self.gestures.get(&tag.gesture) == Some(&3) { reject = 8; }
+            }
+            let handled = if reject != 0 {
+                self.gestures.insert(tag.gesture, 3);
+                self.rejected.push(d.serial);
+                if self.rejected.len() > 8 { self.rejected.remove(0); }
+                if first { self.report_gesture(tag, 3, reject); }
+                Handled::NoChange
+            } else {
+                let handled = handler(&d);
+                if tagged && first {
+                    self.gestures.insert(tag.gesture, 1);
+                    self.report_gesture(tag, 1, 0);
+                }
+                let finished = matches!(d.event, Event::MouseButton { pressed: false, .. });
+                if tagged && finished && self.gestures.get(&tag.gesture) == Some(&1) {
+                    self.report_gesture(tag, 2, 0);
+                    self.gestures.insert(tag.gesture, 2);
+                }
+                if finished || matches!(d.event, Event::PointerCancel | Event::CompositorChanged { .. } | Event::Overflow { .. }) {
+                    self.capture = None;
+                }
+                handled
+            };
             count += 1;
-            // Clipboard notices have kernel delivery identities, not input serials.
             if d.serial != 0 && !matches!(d.event, Event::ClipboardChanged | Event::ClipboardLost) {
                 self.handled = self.handled.max(d.serial);
                 self.since_pixel.push((d.serial, handled));
             }
+            while self.gestures.len() > 1024 { self.gestures.pop_first(); }
         }
         if matches!(self.font_watcher.poll(), Ok(Some(_))) {
-            handler(&Delivered { serial: 0, time_ns: 0, event: Event::FontChanged });
+            handler(&Delivered { serial: 0, time_ns: 0, clicks: 0, event: Event::FontChanged });
             count += 1;
         }
         count
+    }
+    fn report_gesture(&self, tag: abi::EventTag, state: u32, reason: u32) {
+        let mut report = abi::GestureReport { id: self.id, gesture: tag.gesture, source_serial: tag.source_serial, state, reason };
+        // ENOENT is possible when the bounded provenance horizon moved on.
+        let _ = window::call(abi::op::GESTURE_REPORT, &mut report);
     }
 
     /// Run `handler` on every queued event, without waiting. A serial counts as handled once

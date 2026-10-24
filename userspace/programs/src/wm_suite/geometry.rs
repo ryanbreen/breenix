@@ -195,6 +195,9 @@ pub fn drag_keeps_titlebar() -> CaseResult {
         b.x - 2 * d.scale <= d.width as i32 - 32 * d.scale,
         "right drag lost minimum titlebar strip",
     )?;
+    // W30: the strip assertion deliberately leaves content off-screen. Bring
+    // the window back before the unchanged whole-client scanout comparison.
+    drag(&d, ((b.x + 30).min(d.width as i32 - 20), b.y - 16 * d.scale), (200, 200))?;
     content(&mut d, &c)
 }
 fn anchored_resize(left: bool, top: bool) -> CaseResult {

@@ -74,13 +74,37 @@ payloads. Overflow emits SYN_DROPPED before the next retained batch, resets
 that reader's pressed-state view and records the dropped serials as lost.
 No successful read is evidence that a client handled an event. <!-- claim-lint:ok: Normative E18 contract allocation, W1-W13 and #2367; not implementation acceptance. -->
 
-Reader ioctls are `GRAB` 0x424901, `UNGRAB` 0x424902 and `DISPOSITION`
+Reader ioctls include `INPUT_DEVICE_INFO` 0x424904 (W29), as well as `GRAB` 0x424901, `UNGRAB` 0x424902 and `DISPOSITION`
 0x424903. GRAB's 16-byte Selection is devices pointer u64, count u32,
 reserved u32. The pointed-to array contains distinct u32 device ids. Count
 zero selects all devices for an unrestricted desktop. A session supplies its
 own explicit ids. Only the live compositor claimant may GRAB or report a WM
 disposition (EPERM otherwise); a second holder gets EBUSY. UNGRAB takes no
 argument. Taking a grab drains queued input and resets pressed state. <!-- claim-lint:ok: Normative E18 contract allocation, W1-W13 and #2367; not implementation acceptance. -->
+
+### Device information (W29)
+
+`INPUT_DEVICE_INFO` is a read-only query on any input reader, without a grab
+or compositor authority. Its 40-byte DeviceInfo has input `device:u32 @0`,
+output `kind:u32 @4` (1 physical, 2 virtual), output `generation:u64 @8`,
+input `capabilities:u64 @16` (pointer to Capability entries), input
+`capacity:u32 @24`, output `count:u32 @28`, and reserved `u64 @32` (zero).
+The count is the device's complete capability count, at most 512. Capacity
+zero queries only the count; a nonzero capacity below count is EINVAL,
+without partial output. Unknown or removed ids give ENOENT; bad pointers
+give EFAULT. The returned set and generation are one atomic snapshot.
+Generation is nonzero, immutable during a device lifetime and changes on
+replacement, including physical devices. Each ABS capability includes its
+declared min/max; event values remain raw.
+
+Information exists from creation until removal. After the synthesized
+releases, removal marks the closing SYN_REPORT with value 1
+(`syn::DEVICE_REMOVED`), naming that device. Ordinary SYN_REPORT has value
+zero. This preserves the release batch shape. The removal value is core-only,
+never accepted from an injector. Bwm queries the first event of each device,
+caches its capabilities/generation and discards that cache on removal.
+Events queued before removal can outlive the queryable device; releases
+still route by their held recipient and do not require a range query.
 
 The grab belongs to the open reader description, including duplicated fds.
 Closing its last reference, including process death, releases the grab and

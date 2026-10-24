@@ -11,17 +11,22 @@ pub(super) fn placed(c: &Client) -> Result<(), String> {
 }
 
 pub(super) fn one() -> Result<(Desktop, Client), String> {
-    let d = Desktop::start()?;
+    let mut d = Desktop::start()?;
     let c = Client::start(11)?;
     placed(&c)?;
+    // W30: assigning geometry precedes the startup pixel check. Wait for
+    // its existing completion receipt before beginning a measured scenario.
+    d.client_ready(&c)?;
     Ok((d, c))
 }
 pub(super) fn twin() -> Result<(Desktop, Client, Client), String> {
-    let d = Desktop::start()?;
+    let mut d = Desktop::start()?;
     let a = Client::start(11)?;
     placed(&a)?;
+    d.client_ready(&a)?;
     let b = Client::start(23)?;
     placed(&b)?;
+    d.client_ready(&b)?;
     Ok((d, a, b))
 }
 pub(super) fn key(c: &mut Client, chords: &str, code: u32) -> Result<abi::WindowEvent, String> {
@@ -32,7 +37,9 @@ pub(super) fn key(c: &mut Client, chords: &str, code: u32) -> Result<abi::Window
     )
 }
 pub(super) fn parked(d: &Desktop) -> Result<(), String> {
-    d.pointer(d.width as i32 - 40, d.height as i32 - 100, 0, 0)?;
+    // W30: normal clients can fill the usable screen. Park in the appbar so
+    // their unchanged whole-client pixel comparisons exclude the cursor.
+    d.pointer(d.width as i32 - 40, d.height as i32 - 18 * d.scale, 0, 0)?;
     time::sleep_ms(150).map_err(|e| e.to_string())
 }
 pub(super) fn content(d: &mut Desktop, c: &Client) -> CaseResult {
@@ -386,6 +393,9 @@ pub(super) fn console_bytes(keys: &[(u16, i32)], expected: &[u8]) -> CaseResult 
     let mut raw = saved;
     termios::cfmakeraw(&mut raw);
     termios::tcsetattr(Fd::STDIN, termios::TCSANOW, &raw).map_err(|e| e.to_string())?;
+    // W30: earlier no-compositor input cases legitimately leave console bytes.
+    // Isolate this fixture before injecting the bytes its exact check judges.
+    termios::tcflush(Fd::STDIN, termios::TCIFLUSH).map_err(|e| e.to_string())?;
     let mut v = Virtual::create()?;
     let batch: Vec<_> = keys.iter().map(|&(code, value)| (1, code, value)).collect();
     v.batch(&batch, 100)?;
@@ -427,7 +437,8 @@ pub(super) fn background(x: i32, y: i32, height: i32, scale: i32) -> u32 {
 pub(super) fn title_pixels(d: &mut Desktop, c: &Client) -> CaseResult {
     use libgfx_ref::{bitmap_font as font, color::Color, framebuf::FrameBuf};
     parked(d)?;
-    let s = d.shown(c)?;
+    let commit = c.barrier()?;
+    let s = d.shown_after(c, commit)?;
     let w = c.info()?;
     let scale = d.scale as usize;
     let height = if scale == 2 {
