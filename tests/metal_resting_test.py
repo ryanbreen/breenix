@@ -28,7 +28,8 @@ class IdleTest(existing.StateTest):
         self.ready()
         metal_persist.update_disk(layout=metal_persist.new_layout())
         service = existing.machine.Machine({})
-        with patch.object(existing.machine.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as start:
+        with patch.object(m, 'power_state', return_value='Off'), \
+             patch.object(existing.machine.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as start:
             service.rest()
             service.rest()
         self.assertEqual(start.call_count, 1)
@@ -50,10 +51,32 @@ class IdleTest(existing.StateTest):
             service.rest()
         start.assert_not_called()
 
+    def test_operator_power_on_is_left_for_manager_adoption(self):
+        self.ready()
+        metal_persist.update_disk(layout=metal_persist.new_layout())
+        service = existing.machine.Machine({})
+        with patch.object(m, 'power_state', return_value='On'), \
+             patch.object(existing.machine.subprocess, 'run') as start:
+            service.rest()
+        start.assert_not_called()
+        self.assertIsNone(m.read_lease())
+
 
 class OneShotTest(unittest.TestCase):
     setUp = persistent.DriverPersistentTest.setUp
     tearDown = persistent.DriverPersistentTest.tearDown
+
+    def test_operator_power_on_racing_idle_admission_is_not_powered_off(self):
+        driver = self.driver
+        driver.t0 = None
+        driver.args.resting = True
+        with patch.object(m, 'machine_checks', return_value=([], dict(power='On'))), \
+             patch.object(m, 'force_off_and_wait') as off:
+            with self.assertRaises(existing.boot.Finish) as ended:
+                driver.preflight()
+        self.assertEqual(ended.exception.status, m.EXIT_CANCELLED)
+        self.assertIsNone(driver.t0)
+        off.assert_not_called()
 
     def test_previous_is_consumed_before_a_reboot_in_the_same_lease(self):
         driver = self.driver

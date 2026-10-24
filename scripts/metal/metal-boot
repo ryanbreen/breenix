@@ -707,6 +707,8 @@ class Driver:
         self.post_code = baseline.get('postCode')
         self.progress_key = progress_key(baseline.get('bootProgress'))
         if baseline.get('power') != 'Off':
+            if getattr(self.args, 'resting', False):
+                raise Finish(m.EXIT_CANCELLED, 'an existing power-on is left for boot manager adoption')
             self.event('stray-power-on', power=baseline.get('power'))
             if not m.force_off_and_wait():
                 m.quarantine_lease(self.id, 'pre-flight power-off failed')

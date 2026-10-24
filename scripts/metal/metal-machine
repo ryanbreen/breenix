@@ -276,6 +276,10 @@ class Machine:
                      if entry['deadline'] > m.now() and m.holder_alive(entry)]
             if m.read_lease() or queue or not m.machine_ready():
                 return
+            # Leave an operator's power-on to the manager's adoption route.
+            # An idle return owns no right to stop a boot it did not start.
+            if m.power_state() != 'Off':
+                return
             # The new driver joins the same FIFO. A request racing this check
             # takes precedence when it has already enqueued.
             self.last_resting_attempt = m.now()
