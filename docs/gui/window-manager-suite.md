@@ -174,7 +174,10 @@ W4 replaces the proposed bwm socket with the kernel's CLIPBOARD_SET,
 CLIPBOARD_GET and CLIPBOARD_SUBSCRIBE operations on syscall 414, defined in
 [BreenGL 17.1](breengel.md#171-the-system-call). Clients call those operations
 with their own registered window. Lengths, UTF-8, embedded NUL, serial ordering,
-retained RLIMIT_AS charge and claim-end clearing follow that contract. There is
+retained RLIMIT_AS charge and claim-end clearing follow that contract. W22
+isolates text, serials, owners and subscriptions per caller euid within the
+claim, including root. `clipboard/per-user` uses root and UID 1000 peers to
+check both directions and each peer's own notification as a positive control. There is
 no in-suite clipboard store or host-staged result.
 
 ## W12 recount
@@ -184,13 +187,14 @@ The plan's 249 identifiers become **246 ARM64 E18 identifiers** after
 recorded hypervisor tablet cases remain planned W8 catch-up. The five existing
 extra controls remain additional: input-core/virtual-keyboard and
 virtual-pointer, startup/desktop-control and independent-clients, and
-composition/oracle-corruption. W1/W2 Phase A adds two kernel-facing controls:
-input-core/library-batches checks the public reader/injector without requiring
-bwm routing, and input-core/reader-lifetime checks dup and process-exit custody,
-original-recipient releases and source/derived provenance. Those kernel-facing
-controls use an isolated compositor claim and a real owned window ring through
-the production window interface; routing cases use the installed bwm.
-The completed table therefore has 253 executable cases.
+composition/oracle-corruption. W22 adds clipboard/per-user. W1/W2 Phase A adds
+two kernel-facing controls: input-core/library-batches checks the public
+reader/injector without requiring bwm routing, and input-core/reader-lifetime
+checks dup and process-exit custody, original-recipient releases and
+source/derived provenance. Those kernel-facing controls use an isolated
+compositor claim and a real owned window ring through the production window
+interface; routing cases use the installed bwm. The completed table therefore
+has 254 executable cases.
 HID decoder cases exercise literal layouts; Parallels/VMware recorded tablet and bound completion
 rows and boots remain the W8 catch-up, not ARM64 execution evidence.
 
@@ -206,10 +210,10 @@ rows and boots remain the W8 catch-up, not ARM64 execution evidence.
 | geometry | 24 | 0 | 24 |
 | lifecycle | 20 | 0 | 20 |
 | recovery | 15 | 0 | 15 |
-| clipboard | 16 | 0 | 16 |
+| clipboard | 16 | 1 | 17 |
 | liveness | 12 | 0 | 12 |
 | performance | 7 | 0 | 7 |
-| Total | 246 | 7 | 253 |
+| Total | 246 | 8 | 254 |
 
 Changed assertions, with their identifiers retained:
 
@@ -230,15 +234,15 @@ pass a native scanout assertion. Runtime verdict evidence and the missing record
 
 ## Executable W12 inventory
 
-The table contains the 246 ARM64 plan identifiers and seven additional controls,
-253 cases in thirteen categories. The former planned remaining categories are
+The table contains the 246 ARM64 plan identifiers and eight additional controls,
+254 cases in thirteen categories. The former planned remaining categories are
 removed only because their identifiers now have executable case bodies. Runtime
 failure, including a missing recorded fixture or production endpoint, is still
 failure; an executable inventory does not establish E18 acceptance.
 
 The two tablet cases remain in the manifest's `plannedCases`, scoped to
 `parallels` and `vmware` respectively. They are absent from the executable ARM64
-inventory and its 253-case count. The W8 catch-up needs genuine descriptors and
+inventory and its 254-case count. The W8 catch-up needs genuine descriptors and
 reports in `/usr/share/breenix/input-fixtures/parallels.txt` and `vmware.txt`,
 installed by the image builder from `testdata/input/`. Missing captures block
 that catch-up; lane 0's ARM64 run excludes the 2/2 planned tablet cases.

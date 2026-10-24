@@ -420,9 +420,11 @@ impl Client {
             text.len() as u32,
             mime,
         )?;
-        self.commands
-            .write_all(text)
-            .map_err(|e| format!("clipboard client command: {e}"))?;
+        for chunk in text.chunks(64 * 1024) {
+            self.commands
+                .write_all(chunk)
+                .map_err(|e| format!("clipboard client command: {e}"))?;
+        }
         self.clipboard_reply()
     }
     pub fn clipboard_begin(&mut self, text: &[u8]) -> Result<(), String> {

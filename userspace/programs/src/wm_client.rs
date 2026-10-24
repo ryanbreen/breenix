@@ -510,7 +510,9 @@ fn run(
                             });
                         }
                     }
-                    w.processed = w.processed.max(e.serial);
+                    if !matches!(e.kind, abi::event_kind::CLIPBOARD_CHANGED | abi::event_kind::CLIPBOARD_LOST) {
+                        w.processed = w.processed.max(e.serial);
+                    }
                     if e.kind == abi::event_kind::CLOSE_REQUESTED
                         && options.flags & flags::IGNORE_CLOSE == 0
                     {
@@ -583,7 +585,10 @@ fn run(
                 return Err("clipboard command exceeds bound".into());
             }
             let mut text = vec![0; a as usize];
-            command.read_exact(&mut text).map_err(|e| e.to_string())?;
+            // read_pipe stages the requested length in the kernel (#2400).
+            for chunk in text.chunks_mut(64 * 1024) {
+                command.read_exact(chunk).map_err(|e| e.to_string())?;
+            }
             let (status, serial, text) = match clipboard(
                 which == CLIP_SET,
                 windows[active].c.id,

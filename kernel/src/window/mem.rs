@@ -64,7 +64,7 @@ impl Mem {
 
     /// Run `f` on each page-contiguous piece of `[offset, offset + len)`, which must lie in the
     /// memory, as (kernel pointer, bytes, offset into the range).
-    fn chunks(&self, offset: u64, len: usize, mut f: impl FnMut(*mut u8, usize, usize)) {
+    pub(super) fn chunks(&self, offset: u64, len: usize, mut f: impl FnMut(*mut u8, usize, usize)) {
         debug_assert!(offset + len as u64 <= self.len);
         let mut done = 0usize;
         while done < len {
