@@ -1318,7 +1318,7 @@ fn windows_distinct_content() -> CaseResult {
     }
     let r = kiosk.ask("composite").cite("24")?;
     ensure(r.starts_with("ok "), "18", format!("COMPOSITE answered `{r}`"))?;
-    let screen = readback().cite("20.1")?;
+    let (screen, _) = super::composition::composed_screen(&mut kiosk)?;
     for (i, w) in wins.iter().enumerate() {
         let (ox, oy) = (100 * (i as u32 % 4) + 10, 60 * (i as u32 / 4) + 10);
         for y in 0..50 {
@@ -1331,23 +1331,6 @@ fn windows_distinct_content() -> CaseResult {
         }
     }
     Ok(())
-}
-
-/// The composed screen at the reported physical mode, by SCANOUT_READBACK (as root).
-pub(crate) fn readback() -> Result<Vec<u8>, String> {
-    let (width,height)=super::composition::screen_size().map_err(|e|format!("{e:?}"))?;
-    let mut px = vec![0u8; width * height * 4];
-    let mut rec = [0u8; 1024];
-    let mut rb = super::handoff::Readback::ZERO;
-    rb.dst = px.as_mut_ptr() as u64;
-    rb.dst_len = px.len() as u64;
-    rb.record = rec.as_mut_ptr() as u64;
-    rb.record_len = 1024;
-    let r = call(op::SCANOUT_READBACK, &mut rb);
-    if r < 0 {
-        return Err(format!("gpu-display: B13 SCANOUT_READBACK {} reason {}", outcome(r), rb.reason));
-    }
-    Ok(px)
 }
 
 fn windows_raw_client() -> CaseResult {

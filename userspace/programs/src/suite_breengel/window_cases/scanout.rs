@@ -154,7 +154,8 @@ fn scanout_completion() -> CaseResult {
     wa.frame(7).cite("17.3")?;
     wb.frame(8).cite("17.3")?;
     let (serial, _) = compose(&mut k)?;
-    let (_, rec) = screen()?;
+    let (pixels, rec) = screen()?;
+    screen_is(&pixels, &[Placed { seed: 7, ..a }, Placed { seed: 8, ..b }], "completed damaged scanout")?;
     let (status, render, readback) = match word(&rec,16) {
         4 => (0x1100, 0x207, 0x206), 5 => (1, 1152, 1104),
         other => return at("20.2", format!("gpu-display: B13 native backend missing: {other}")),
@@ -229,14 +230,9 @@ fn scanout_atomic_record() -> CaseResult {
             result = at("20.1", format!("readback serial {} names commit {commit} after a readback named commit {last}", quad(&rec,8)));
             break;
         }
-        // The window is at (600, 400); every one of its pixels must be the named commit's.
-        let differ = (0..64u32).flat_map(|y| (0..64u32).map(move |x| (x, y))).find(|&(x, y)| {
-            let at = ((400 + y) as usize * width + 600 + x as usize) * 4;
-            px[at..at + 3] != pattern(commit as u32, x, y)[..3]
-        });
-        if let Some((x, y)) = differ {
-            result = at("20.1", format!("readback serial {} names commit {commit}, but the window's pixel ({x},{y}) is not commit {commit}'s", quad(&rec,8)));
-            break;
+        let p = Placed::new(600,400,64,64,0,commit as u32);
+        if let Err(error) = screen_is(&px, &[p], "atomic scanout including background") {
+            result = Err(error); break;
         }
         last = commit;
         if !seen.contains(&commit) {
@@ -264,7 +260,9 @@ fn scanout_window_commits() -> CaseResult {
     }
     wins[1].frame(12).cite("17.3")?;
     compose(&mut k)?;
-    let (_, rec) = screen()?;
+    let (pixels, rec) = screen()?;
+    let mut expected_scene = scene; expected_scene[1].seed = 12;
+    screen_is(&pixels, &expected_scene, "scanout window commits")?;
     let observed = entries(&rec);
     for w in wins.iter() {
         let i = listed(w.id()).cite("17.1")?.ok_or("a window is not listed").cite("17.2")?;
@@ -312,7 +310,7 @@ fn scanout_fault_wrong_resource() -> CaseResult {
     let (status,reason,s,serial)=gpu_fault(libbreenix::gpu::abi::test_point::WRONG_SCANOUT,18)?;
     ensure(status==0 && reason==0,"20.3","gpu-display: wrong-scanout must report the actual completed binding, not invent a device error")?;
     ensure(s.quad(80)!=0 && s.quad(176)!=serial && s.word(164)==0,"20.3","gpu-display: wrong-scanout was not exposed by the observed resource/composite identity")?;
-    let scene=[Placed::new(320,200,200,120,0,19)];let want=formula(&scene);
+    let (width,height)=screen_size()?;let scene=[Placed::new(0,0,width as u32,height as u32,0,19)];let want=formula(&scene);
     ensure((0..s.height).any(|y|(0..s.width).any(|x|s.pixels[(y*s.width+x)*4..(y*s.width+x+1)*4]!=want(x as u32,y as u32))),"20.3",
         "gpu-display: wrong-scanout did not expose a destination different from the intended composite")
 }
@@ -329,7 +327,7 @@ let (status,reason,s,_)=gpu_fault(libbreenix::gpu::abi::test_point::STALE_FENCE,
 fn scanout_fault_outside_damage() -> CaseResult {
 let (status,reason,s,_)=gpu_fault(libbreenix::gpu::abi::test_point::CORRUPT_PIXEL,24)?;
     ensure(status==0 && reason==0,"20.3","gpu-display: corrupt-pixel readback did not complete normally")?;
-    let scene=[Placed::new(320,200,200,120,0,25)];let want=formula(&scene);
+    let (width,height)=screen_size()?;let scene=[Placed::new(0,0,width as u32,height as u32,0,25)];let want=formula(&scene);
     let mut outside=0usize;
     for y in 0..s.height {for x in 0..s.width {
         let different=s.pixels[(y*s.width+x)*4..(y*s.width+x+1)*4]!=want(x as u32,y as u32);
