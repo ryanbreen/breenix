@@ -125,6 +125,14 @@ focus_next | focus_prev`. For example, `super+k = exec
 /usr/libexec/breenix/wm-client_test` launches that program; a bare path is
 not an action. <!-- claim-lint:ok: Normative W20 grammar ruling, not runtime acceptance. -->
 
+## Close escalation (W28, W30)
+
+The first close request for a window sends CloseRequested. A second request
+while that same window is still open sends SIGTERM to its owner. If the owner
+is still alive 2,000 ms of UI clock after SIGTERM, bwm sends SIGKILL. Further close
+requests do not restart that deadline. Closing a window cooperatively never
+signals its owner or closes its sibling windows. <!-- claim-lint:ok: Normative W30 item 3 close timeline; not runtime acceptance. -->
+
 ## Clipboard (W4)
 
 The clipboard is a kernel service on window syscall 414, not a bwm socket.

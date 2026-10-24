@@ -59,6 +59,7 @@ mod launch;
 use launch::*;
 
 fn main() {
+    launch::initialize();
     let mut wm = config::start();
     loop {
         let (stdin_ready, scene_changed) = wm.wait();
@@ -71,6 +72,7 @@ fn main() {
         wm.pointer(&mut damage);
         wm.clock(&mut damage);
         wm.present(damage);
+        if !wm.lifecycle() { break; }
         wm.acknowledge();
     }
 }

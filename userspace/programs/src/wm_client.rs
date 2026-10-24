@@ -501,13 +501,13 @@ fn run(
                             } else {
                                 text
                             };
-                            field.key(&libbui::KeyInput {
+                            field.key_with_clipboard(&libbui::KeyInput {
                                 key: libbui::Key::Char,
                                 shift: e.modifiers & abi::modifier::SHIFT != 0,
                                 ctrl: e.modifiers & abi::modifier::CTRL != 0,
                                 alt: e.modifiers & abi::modifier::ALT != 0,
                                 text,
-                            });
+                            }, w.c.id).map_err(|e| e.to_string())?;
                         }
                     }
                     if !matches!(e.kind, abi::event_kind::CLIPBOARD_CHANGED | abi::event_kind::CLIPBOARD_LOST) {

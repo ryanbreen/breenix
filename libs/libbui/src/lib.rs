@@ -2,7 +2,7 @@
 //!
 //! Lightweight retained-mode widget library for Breenix graphical applications.
 //! Widgets are standalone structs with `update()` and `draw()` methods.
-//! No libbreenix dependency — pure drawing logic on `FrameBuf`.
+//! Drawing uses GPU surfaces; window-aware text-field keys use the kernel clipboard.
 
 #![no_std]
 

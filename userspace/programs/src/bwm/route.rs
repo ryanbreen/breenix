@@ -965,13 +965,10 @@ impl State {
                         } else if clicked_title {
                             // Check chrome buttons before starting drag
                             if self.windows[top].hit_close_button(self.mouse_x, self.mouse_y) {
-                                send_to(&self.windows, top, Input::Close);
-                                if self.windows[top].owner_pid > 0 {
-                                    let _ = signal::kill(
-                                        self.windows[top].owner_pid as i32,
-                                        signal::SIGTERM,
-                                    );
-                                }
+                                launch::request_close(
+                                    self.windows[top].window_id,
+                                    self.windows[top].owner_pid,
+                                );
                             } else if self.windows[top]
                                 .hit_minimize_button(self.mouse_x, self.mouse_y)
                             {
