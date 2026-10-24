@@ -3,7 +3,7 @@
 use crate::*;
 
 pub(crate) const COMPOSITION: &[Case] = &[
-    case("fbinfo-geometry", "GPU MODES and the composed binding agree on physical dimensions and scale", composition_fbinfo_geometry),
+    case("fbinfo-geometry", "GPU MODES and the composed binding agree on physical dimensions and scale", composition_fbinfo_geometry).fullscreen("bound-scanout observation must refuse a composite with 18 window entries"),
 ];
 
 pub(crate) const PANEL: &[Case] = &[
@@ -18,7 +18,7 @@ pub(crate) const PANEL: &[Case] = &[
     case("judged-frame-shown", "Every picture tile shows the frame whose SHA-256 its CASE record printed, after detecting substitution", panel_judged_frame_shown),
     case("serial-agreement", "Stage scanout tile ids, stamps and numbers agree with CASE bytes after detecting stage-lie", panel_serial_agreement),
     case("quiet-window", "No runner composite occurs inside a measured case window after detecting stage-draw-in-window", panel_quiet_window),
-    case("boot-ribbon", "The restored kernel ribbon matches producer boot-stage markers after detecting ribbon-drop-stage", panel_boot_ribbon),
+    case("boot-ribbon", "The restored kernel ribbon matches producer boot-stage markers after detecting ribbon-drop-stage", panel_boot_ribbon).fullscreen("observe restoration of the complete kernel console and boot ribbon"),
     case("boundary-notice", "The stage validates observation flags and boundary code and leaves the removed caption blank", panel_boundary_notice),
     case("stage-hidpi", "The full HiDPI stage has scaled geometry and independently rasterized text", panel_stage_hidpi),
 ];
@@ -82,7 +82,7 @@ fn panel_deterministic() -> CaseResult {
         use stage::{Milestone, Observation, Run, Spotlight, Stamp, Tile};
         let tiles=[Tile{id:"clock/running",stamp:Stamp::Running,key:0,thumbnail:None}];
         let groups=[Milestone{id:"clock",first:0,end:1}];
-        let mut run=Run{suite:"clock",target:"ARM64 QEMU",case_number:1,ui_time_ms:0,fps:0,tiles:&tiles,milestones:&groups,selected:0,input:None,spotlight:Spotlight::None,finale:None,boundary:Observation{backend:1,flags:1,boundary:1}};
+        let mut run=Run{announcement:None,suite:"clock",target:"ARM64 QEMU",case_number:1,ui_time_ms:0,fps:0,tiles:&tiles,milestones:&groups,selected:0,input:None,spotlight:Spotlight::None,finale:None,boundary:Observation{backend:1,flags:1,boundary:1}};
         let mut a=FrameBuf::new(1280,800,libgfx_ref::framebuf::Format::BGRX).map_err(|e|e.to_string())?;
         let mut b=FrameBuf::new(1280,800,libgfx_ref::framebuf::Format::BGRX).map_err(|e|e.to_string())?;
         for fb in [&mut a,&mut b] {

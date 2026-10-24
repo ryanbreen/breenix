@@ -64,7 +64,7 @@ fn text_in_box(fb:&FrameBuf,x:usize,y:usize,t:&str,scale:usize,bottom:usize,back
 }
 
 fn run<'a>(tiles:&'a [Tile<'a>],milestones:&'a [Milestone<'a>]) -> Run<'a> {
-    Run { suite:"fixture",target:"qemu",case_number:3,ui_time_ms:250,fps:60,tiles,milestones,selected:1,
+    Run { announcement: None, suite:"fixture",target:"qemu",case_number:3,ui_time_ms:250,fps:60,tiles,milestones,selected:1,
         input:None,spotlight:Spotlight::None,finale:None,boundary:if DISPLAY_SCALE.with(|s|s.get())==2 {stage::Observation{backend:4,flags:3,boundary:4}}else{stage::Observation{backend:1,flags:1,boundary:1}} }
 }
 fn render(fb:&mut FrameBuf,run:&Run<'_>) -> Result<(),String> {

@@ -6,8 +6,8 @@ pub(crate) const COMPOSITION: &[Case] = &[
     pictured!("compose-position", "A committed pattern appears at the window's position in the composed frame, exactly", composition_compose_position),
     pictured!("compose-overlap", "Two overlapping windows compose in z order, exactly", composition_compose_overlap),
     pictured!("compose-offscreen", "A window partly off the screen is clipped at the screen edge", composition_compose_offscreen),
-    pictured!("compose-fullscreen", "A full-mode window at 0,0 fills the frame exactly", composition_compose_fullscreen),
-    pictured!("compose-many", "Sixteen windows in a fixed stack compose to the formula, exactly", composition_compose_many),
+    pictured!("compose-fullscreen", "A full-mode window at 0,0 fills the frame exactly", composition_compose_fullscreen).fullscreen("a mode-sized window must cover the bound scanout"),
+    pictured!("compose-many", "Sixteen windows in a fixed stack compose to the formula, exactly", composition_compose_many).fullscreen("scanout observation must refuse a composite with 17 window entries"),
     pictured!("generation", "Each commit advances the window's commit id by exactly one", composition_generation),
     pictured!("no-compositor", "A commit with no compositor returns within 250 ms and is composed once a compositor claims", composition_no_compositor),
     pictured!("compositor-dies", "An acquire blocked when the compositor exits, and a blocking event read on another window, return within 250 ms, and the next commit succeeds", composition_compositor_dies),
@@ -23,13 +23,13 @@ pub(crate) const COMPOSITION: &[Case] = &[
     pictured!("cursor-no-trail", "Moving the cursor over a static scene restores every pixel it covered", composition_cursor_no_trail),
     pictured!("cursor-shape", "Setting a cursor shape draws that shape at the pointer", composition_cursor_shape),
     pictured!("cursor-stationary-repaint", "Content committed under a stationary cursor is shown, with the cursor redrawn above it", composition_cursor_stationary_repaint),
-    pictured!("irq-bound", "The longest IRQ-masked interval during full-screen damage stays within 500 µs, after `irq-hold` has shown the gauge reads a 2 ms hold", composition_irq_bound),
-    pictured!("present-rate", "One 256x256 window composes at least 60 commits a second", composition_present_rate),
-    pictured!("takeover-giveback", "Display takeover and giveback restore the previous owner's frame exactly", composition_takeover_giveback),
-    pictured!("ownership-stack", "When a compositor dies, the display returns to the process that gave it, not to the runner", composition_ownership_stack),
+    pictured!("irq-bound", "The longest IRQ-masked interval during full-screen damage stays within 500 µs, after `irq-hold` has shown the gauge reads a 2 ms hold", composition_irq_bound).fullscreen("measure full-resolution composition and readback IRQ masking"),
+    pictured!("present-rate", "One 256x256 window composes at least 60 commits a second", composition_present_rate).fullscreen("measure presentation throughput at the full display resolution"),
+    pictured!("takeover-giveback", "Display takeover and giveback restore the previous owner's frame exactly", composition_takeover_giveback).fullscreen("restore the bound full-screen owner after giveback"),
+    pictured!("ownership-stack", "When a compositor dies, the display returns to the process that gave it, not to the runner", composition_ownership_stack).fullscreen("verify full-screen binding restoration and the four-owner stack"),
     pictured!("gpu-composite", "GPU composition draws client targets without CPU pixel uploads", composition_gpu_composite),
     pictured!("scale-2", "Scale-2 GPU composition preserves placement, clipping and exact pixels", composition_scale_2),
-    pictured!("target-lifetime", "Compositor, scanout, capture and replay holds retain GPU targets until their final release", composition_target_lifetime),
+    pictured!("target-lifetime", "Compositor, scanout, capture and replay holds retain GPU targets until their final release", composition_target_lifetime).fullscreen("a bound scanout must retain backing after its handle is destroyed"),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -121,7 +121,13 @@ pub(crate) fn compose(k: &mut Helper) -> Result<(u64, u64), breenix_suite::suite
 
 // claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 /// The active physical mode owns every screen allocation and row index (B8).
+pub(crate) fn panel_case() -> bool { std::env::var_os("BREENIX_CASE_PANEL").is_some() }
+
 pub(crate) fn screen_size() -> Result<(usize,usize), breenix_suite::suite::CaseError> {
+    if panel_case() { Ok((800, 500)) } else { physical_size() }
+}
+
+pub(crate) fn physical_size() -> Result<(usize,usize), breenix_suite::suite::CaseError> {
     let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("18")?;
     ensure((modes.current as usize)<modes.modes.len(),"18","gpu-display: invalid current mode")?;
     let mode=&modes.modes[modes.current as usize];
@@ -131,7 +137,7 @@ pub(crate) fn screen_size() -> Result<(usize,usize), breenix_suite::suite::CaseE
 
 /// The whole composed screen and its observation record (`SCANOUT_READBACK`, as root).
 pub(crate) fn screen() -> Result<(Vec<u8>, [u8; 1024]), breenix_suite::suite::CaseError> {
-    let (width,height) = screen_size()?;
+    let (width,height) = physical_size()?;
     let mut px = vec![0u8; width * height * 4];
     let mut rec = [0u8; 1024];
     let mut rb = super::handoff::Readback::ZERO;
@@ -146,6 +152,33 @@ pub(crate) fn screen() -> Result<(Vec<u8>, [u8; 1024]), breenix_suite::suite::Ca
     ensure(super::handoff::word(&rec,0)==2 && super::handoff::word(&rec,4)==1024,
         "20.1", "gpu-display: B13 window observation must decode core record v2")?;
     Ok((px, rec))
+}
+
+// The helper owns these published GPU windows until the runner samples them. The case's
+// normal process sweep then reaps the parked helpers; no private target is CPU-uploaded.
+static PANEL_PICTURES: Mutex<Vec<(i32, u64)>> = Mutex::new(Vec::new());
+pub(crate) fn park_picture(helper: &mut Helper) -> bool {
+    if helper.pid <= 0 || !PANEL_PICTURES.lock().unwrap().iter().any(|p| p.0 == helper.pid) { return false; }
+    if helper.ask("park-picture").ok().as_deref() != Some("ok") { return false; }
+    helper.pid = 0;
+    true
+}
+
+pub(crate) fn composed_snapshot(k: &mut Helper) -> Result<GpuSnapshot, breenix_suite::suite::CaseError> {
+    let s = gpu_snapshot(k)?;
+    if panel_case() {
+        let answer = k.ask("picture-window").cite("23.9")?;
+        let id = answer.strip_prefix("ok ").and_then(|v| v.parse::<u64>().ok()).ok_or_else(|| format!("B50 picture window: {answer}"))?;
+        PANEL_PICTURES.lock().unwrap().push((k.pid, id));
+        breenix_suite::suite::judged_picture_window(id, s.width as u32, s.height as u32);
+    }
+    Ok(s)
+}
+
+pub(crate) fn composed_screen(k: &mut Helper) -> Result<(Vec<u8>, [u8; 1024]), breenix_suite::suite::CaseError> {
+    if !panel_case() { return screen(); }
+    let s = composed_snapshot(k)?;
+    Ok((s.pixels, s.record))
 }
 
 /// The screen must equal `scene`'s formula everywhere.
@@ -1010,7 +1043,7 @@ pub(crate) fn gpu_observe(k:&mut Helper)->Result<(i64,u32,GpuSnapshot),breenix_s
     ensure(bytes.len()>=1032,"20","gpu-display: truncated GPU snapshot")?;
     let width=u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
     let height=u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
-    ensure(matches!((width,height),(1280,800)|(2560,1600)) && bytes.len()==1032+width*height*4,"20","gpu-display: snapshot does not cover its entire mode")?;
+    ensure((width,height)==screen_size()? && bytes.len()==1032+width*height*4,"20","gpu-display: snapshot does not cover its entire mode")?;
     let record=bytes[8..1032].try_into().unwrap();
     let snapshot=GpuSnapshot{width,height,record,pixels:bytes[1032..].to_vec()};
     Ok((status,reason,snapshot))
@@ -1077,6 +1110,7 @@ fn composition_target_lifetime()->CaseResult {
         let _=time::sleep_ms(5);
     };
     super::handoff::snapshot_lifetime(false)?;
+    ensure(give_back() >= 0 && take_over() >= 0,"18","release the alias fixture scanout before measuring target retirement")?;
     interface()?;
     let mut k=compositor()?;let mut w=W::new(64,48,3)?;
     let p=Placed::new(30,40,64,48,0,17);show(&mut k,&w,&p)?;

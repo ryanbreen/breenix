@@ -136,8 +136,6 @@ pub(crate) fn descriptor_faults() -> CaseResult {
     struct Release;
     impl Drop for Release {fn drop(&mut self){call_at(18,0,0);}}
     let _release=Release;
-    // SAFETY: TAKE has no arguments and is idempotent for a current owner.
-    want_ok(unsafe {raw::syscall0(431) as i64},"18","gpu-display: descriptor fixture ownership")?;
     let before=counter("composites").cite("18")?;
     want_errno(call_at(19,unmapped(),112),EFAULT,"17.5","gpu-display: B13 unmapped 112-byte COMPOSITE")?;
     let page=Pages::filled(1,0,false,|b|b.fill(0)).cite("17.5")?;

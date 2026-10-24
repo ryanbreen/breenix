@@ -9,12 +9,12 @@ pub(crate) const ISOLATION: &[Case] = &[
     pictured!("other-position", "A non-compositor setting a window's position fails with EPERM", isolation_other_position),
     pictured!("other-inject", "A non-compositor writing events into a window fails with EPERM", isolation_other_inject),
     pictured!("other-read", "An unrelated non-root process capturing another's window fails with EPERM, and root succeeds", isolation_other_read),
-    pictured!("other-map", "Foreign GPU target handles are refused before submission or readback", isolation_other_map),
+    pictured!("other-map", "Foreign GPU target handles are refused before submission or readback", isolation_other_map).fullscreen("verify bound display custody delegation without transferring source aliases"),
     pictured!("other-resize", "An unrelated process resizing another's window fails with EPERM", isolation_other_resize),
     pictured!("other-destroy", "An unrelated process destroying another's window fails with EPERM", isolation_other_destroy),
     pictured!("other-tree", "An unrelated non-root process mapping another's tree page fails with EPERM", isolation_other_tree),
-    pictured!("texture-map", "An unrelated process cannot sample the compositor scanout through GPU resource handles", isolation_texture_map),
-    pictured!("composite-denied", "A non-compositor compositing fails with EPERM", isolation_composite_denied),
+    pictured!("texture-map", "An unrelated process cannot sample the compositor scanout through GPU resource handles", isolation_texture_map).fullscreen("unrelated processes must not sample a private bound scanout"),
+    pictured!("composite-denied", "A non-compositor compositing fails with EPERM", isolation_composite_denied).fullscreen("bound-scanout composition requires display ownership and compositor authority"),
     pictured!("claim-unprivileged", "A uid 1000 process claiming the compositor fails with EPERM, and root's claim succeeds", isolation_claim_unprivileged),
     pictured!("claim-twice", "A second compositor claim fails with EBUSY while the first lives", isolation_claim_twice),
     pictured!("claim-after-death", "The compositor role can be claimed again once its holder dies, with a higher epoch", isolation_claim_after_death),
@@ -721,7 +721,7 @@ fn isolation_efault_commit() -> CaseResult {
 fn isolation_efault_readback() -> CaseResult {
     interface()?;
     let mut record = vec![0u8; 1024];
-    let (width,height)=super::composition::screen_size()?;
+    let (width,height)=super::composition::physical_size()?;
     let screen = (width*height*4) as u64;
     let mut rb = super::handoff::Readback::ZERO;
     rb.dst = unmapped();

@@ -52,7 +52,7 @@
         },
         {
           "id": "circle-fill",
-          "title": "fill_circle sets exactly the pixels the contract's x² + y² ≤ r² rule selects"
+          "title": "fill_circle sets exactly the pixels the contract's x\u00b2 + y\u00b2 \u2264 r\u00b2 rule selects"
         },
         {
           "id": "circle-fill-offscreen-left",
@@ -96,7 +96,7 @@
         },
         {
           "id": "premultiply",
-          "title": "Straight colour and alpha premultiply to div255(c × a) for all 65,536 pairs"
+          "title": "Straight colour and alpha premultiply to div255(c \u00d7 a) for all 65,536 pairs"
         },
         {
           "id": "alpha-over-examples",
@@ -258,7 +258,7 @@
         },
         {
           "id": "utf8-text",
-          "title": "UTF-8 input draws \"é\" from the font's glyph for U+00E9"
+          "title": "UTF-8 input draws \"\u00e9\" from the font's glyph for U+00E9"
         },
         {
           "id": "utf8-invalid",
@@ -408,7 +408,7 @@
         },
         {
           "id": "hmtx-truncated",
-          "title": "An hmtx shorter than 4 × numberOfHMetrics + 2 × (numGlyphs − numberOfHMetrics) bytes, or an hhea numberOfHMetrics of 0 or above the glyph count, is rejected"
+          "title": "An hmtx shorter than 4 \u00d7 numberOfHMetrics + 2 \u00d7 (numGlyphs \u2212 numberOfHMetrics) bytes, or an hhea numberOfHMetrics of 0 or above the glyph count, is rejected"
         },
         {
           "id": "units-per-em",
@@ -420,7 +420,7 @@
         },
         {
           "id": "work-bound",
-          "title": "Every corpus file loads, or fails to, within section 12.3's step bounds for a load and for each glyph's outline, flattening and rasterization; and the independent 1,024 × 1,024 square fixture rasterizes in at least 8,388,608 and at most 10,699,844 steps"
+          "title": "Every corpus file loads, or fails to, within section 12.3's step bounds for a load and for each glyph's outline, flattening and rasterization; and the independent 1,024 \u00d7 1,024 square fixture rasterizes in at least 8,388,608 and at most 10,699,844 steps"
         },
         {
           "id": "alloc-bound",
@@ -474,7 +474,7 @@
         },
         {
           "id": "no-distance-codes",
-          "title": "A block whose distance code lengths are all zero (RFC 1951 §3.2.7: no distance codes used) decodes its literals, and a length symbol in that block is rejected"
+          "title": "A block whose distance code lengths are all zero (RFC 1951 \u00a73.2.7: no distance codes used) decodes its literals, and a length symbol in that block is rejected"
         },
         {
           "id": "repeat-first",
@@ -662,7 +662,7 @@
         },
         {
           "id": "chunk-length",
-          "title": "A chunk length above 2³¹ - 1 is rejected"
+          "title": "A chunk length above 2\u00b3\u00b9 - 1 is rejected"
         },
         {
           "id": "huge",
@@ -954,7 +954,7 @@
         },
         {
           "id": "sin-approx",
-          "title": "sin_approx stays within 0.0012 of sin at 4,096 evenly spaced points of [−π, π]"
+          "title": "sin_approx stays within 0.0012 of sin at 4,096 evenly spaced points of [\u2212\u03c0, \u03c0]"
         },
         {
           "id": "particles-bounded",
@@ -1162,7 +1162,8 @@
         },
         {
           "id": "other-map",
-          "title": "Foreign GPU target handles are refused before submission or readback"
+          "title": "Foreign GPU target handles are refused before submission or readback",
+          "fullscreenReason": "verify bound display custody delegation without transferring source aliases"
         },
         {
           "id": "other-resize",
@@ -1178,11 +1179,13 @@
         },
         {
           "id": "texture-map",
-          "title": "An unrelated process cannot sample the compositor scanout through GPU resource handles"
+          "title": "An unrelated process cannot sample the compositor scanout through GPU resource handles",
+          "fullscreenReason": "unrelated processes must not sample a private bound scanout"
         },
         {
           "id": "composite-denied",
-          "title": "A non-compositor compositing fails with EPERM"
+          "title": "A non-compositor compositing fails with EPERM",
+          "fullscreenReason": "bound-scanout composition requires display ownership and compositor authority"
         },
         {
           "id": "claim-unprivileged",
@@ -1312,11 +1315,13 @@
         },
         {
           "id": "compose-fullscreen",
-          "title": "A full-mode window at 0,0 fills the frame exactly"
+          "title": "A full-mode window at 0,0 fills the frame exactly",
+          "fullscreenReason": "a mode-sized window must cover the bound scanout"
         },
         {
           "id": "compose-many",
-          "title": "Sixteen windows in a fixed stack compose to the formula, exactly"
+          "title": "Sixteen windows in a fixed stack compose to the formula, exactly",
+          "fullscreenReason": "scanout observation must refuse a composite with 17 window entries"
         },
         {
           "id": "generation",
@@ -1380,19 +1385,23 @@
         },
         {
           "id": "irq-bound",
-          "title": "The longest IRQ-masked interval during full-screen damage stays within 500 µs, after `irq-hold` has shown the gauge reads a 2 ms hold"
+          "title": "The longest IRQ-masked interval during full-screen damage stays within 500 \u00b5s, after `irq-hold` has shown the gauge reads a 2 ms hold",
+          "fullscreenReason": "measure full-resolution composition and readback IRQ masking"
         },
         {
           "id": "present-rate",
-          "title": "One 256x256 window composes at least 60 commits a second"
+          "title": "One 256x256 window composes at least 60 commits a second",
+          "fullscreenReason": "measure presentation throughput at the full display resolution"
         },
         {
           "id": "takeover-giveback",
-          "title": "Display takeover and giveback restore the previous owner's frame exactly"
+          "title": "Display takeover and giveback restore the previous owner's frame exactly",
+          "fullscreenReason": "restore the bound full-screen owner after giveback"
         },
         {
           "id": "ownership-stack",
-          "title": "When a compositor dies, the display returns to the process that gave it, not to the runner"
+          "title": "When a compositor dies, the display returns to the process that gave it, not to the runner",
+          "fullscreenReason": "verify full-screen binding restoration and the four-owner stack"
         },
         {
           "id": "gpu-composite",
@@ -1404,11 +1413,13 @@
         },
         {
           "id": "target-lifetime",
-          "title": "Compositor, scanout, capture and replay holds retain GPU targets until their final release"
+          "title": "Compositor, scanout, capture and replay holds retain GPU targets until their final release",
+          "fullscreenReason": "a bound scanout must retain backing after its handle is destroyed"
         },
         {
           "id": "fbinfo-geometry",
-          "title": "GPU MODES and the composed binding agree on physical dimensions and scale"
+          "title": "GPU MODES and the composed binding agree on physical dimensions and scale",
+          "fullscreenReason": "bound-scanout observation must refuse a composite with 18 window entries"
         }
       ]
     },
@@ -1556,71 +1567,88 @@
       "cases": [
         {
           "id": "mode-set",
-          "title": "GPU MODES and full readback agree on 2560x1600 at scale 2"
+          "title": "GPU MODES and full readback agree on 2560x1600 at scale 2",
+          "fullscreenReason": "observe the complete bound scanout and its presentation record"
         },
         {
           "id": "device-path",
-          "title": "Readback uses this backend's observation path from the contract and names it"
+          "title": "Readback uses this backend's observation path from the contract and names it",
+          "fullscreenReason": "observe the complete bound scanout and its presentation record"
         },
         {
           "id": "changing-scene",
-          "title": "Three successive known scenes each read back equal to their formulas"
+          "title": "Three successive known scenes each read back equal to their formulas",
+          "fullscreenReason": "observe the complete bound scanout and its presentation record"
         },
         {
           "id": "full-destination",
-          "title": "Readback covers the whole destination, and a change in its last row is seen"
+          "title": "Readback covers the whole destination, and a change in its last row is seen",
+          "fullscreenReason": "observe the complete bound scanout and its presentation record"
         },
         {
           "id": "binding",
-          "title": "Every GPU present record names its actual completed scanout binding and composite"
+          "title": "Every GPU present record names its actual completed scanout binding and composite",
+          "fullscreenReason": "observe the complete bound scanout and its presentation record"
         },
         {
           "id": "completion",
-          "title": "The record carries answered completion for every damaged rectangle of its composite serial"
+          "title": "The record carries answered completion for every damaged rectangle of its composite serial",
+          "fullscreenReason": "observe the complete bound scanout and its presentation record"
         },
         {
           "id": "atomic-record",
-          "title": "The pixels and the record always belong to the same composite serial under continuous commits"
+          "title": "The pixels and the record always belong to the same composite serial under continuous commits",
+          "fullscreenReason": "observe the complete bound scanout and its presentation record"
         },
         {
           "id": "window-commits",
-          "title": "The record lists the commit id of each window composed"
+          "title": "The record lists the commit id of each window composed",
+          "fullscreenReason": "observe the complete bound scanout and its presentation record"
         },
         {
           "id": "format-canonical",
-          "title": "RGB and BGR destinations read back as the same canonical BGRX pixels"
+          "title": "RGB and BGR destinations read back as the same canonical BGRX pixels",
+          "fullscreenReason": "observe the complete bound scanout and its presentation record"
         },
         {
           "id": "root-only",
-          "title": "A non-root, non-compositor process cannot read back the scanout"
+          "title": "A non-root, non-compositor process cannot read back the scanout",
+          "fullscreenReason": "observe the complete bound scanout and its presentation record"
         },
         {
           "id": "fault-skipped-transfer",
-          "title": "GPU point 19 yields EIO unwritten without partial output and the next composite recovers"
+          "title": "GPU point 19 yields EIO unwritten without partial output and the next composite recovers",
+          "fullscreenReason": "observe the complete bound scanout and its presentation record"
         },
         {
           "id": "fault-wrong-resource",
-          "title": "GPU point 26 exposes the wrong actual scanout binding and the next composite recovers"
+          "title": "GPU point 26 exposes the wrong actual scanout binding and the next composite recovers",
+          "fullscreenReason": "observe the complete bound scanout and its presentation record"
         },
         {
           "id": "fault-stale-fence",
-          "title": "GPU point 20 yields EIO fence-mismatch without partial output and the next composite recovers"
+          "title": "GPU point 20 yields EIO fence-mismatch without partial output and the next composite recovers",
+          "fullscreenReason": "observe the complete bound scanout and its presentation record"
         },
         {
           "id": "fault-outside-damage",
-          "title": "Corruption written outside any damage is found by comparing the full destination"
+          "title": "Corruption written outside any damage is found by comparing the full destination",
+          "fullscreenReason": "observe the complete bound scanout and its presentation record"
         },
         {
           "id": "boundary-stated",
-          "title": "The record states what lies outside the guest's view for this backend"
+          "title": "The record states what lies outside the guest's view for this backend",
+          "fullscreenReason": "observe the complete bound scanout and its presentation record"
         },
         {
           "id": "present-flip",
-          "title": "Every flip records its actual target and completed present fence"
+          "title": "Every flip records its actual target and completed present fence",
+          "fullscreenReason": "observe the complete bound scanout and its presentation record"
         },
         {
           "id": "hidpi-mode",
-          "title": "The complete 2560x1600 scanout is read back and changes in its final row are observed"
+          "title": "The complete 2560x1600 scanout is read back and changes in its final row are observed",
+          "fullscreenReason": "observe the complete bound scanout and its presentation record"
         }
       ]
     },
@@ -1674,7 +1702,8 @@
         },
         {
           "id": "boot-ribbon",
-          "title": "The restored kernel ribbon matches producer boot-stage markers after detecting ribbon-drop-stage"
+          "title": "The restored kernel ribbon matches producer boot-stage markers after detecting ribbon-drop-stage",
+          "fullscreenReason": "observe restoration of the complete kernel console and boot ribbon"
         },
         {
           "id": "boundary-notice",
@@ -1686,7 +1715,8 @@
         },
         {
           "id": "handoff",
-          "title": "A display-taking child under probe takes the display, gives it back, and the panel is restored exactly"
+          "title": "A display-taking child under probe takes the display, gives it back, and the panel is restored exactly",
+          "fullscreenReason": "verify full-screen display giveback to the stage"
         },
         {
           "id": "between-cases",
@@ -1702,7 +1732,8 @@
         },
         {
           "id": "kernel-screens",
-          "title": "The kernel's console screen redraws exactly after the display is given back"
+          "title": "The kernel's console screen redraws exactly after the display is given back",
+          "fullscreenReason": "verify restoration of the bound kernel console"
         }
       ]
     }

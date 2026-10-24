@@ -401,25 +401,29 @@ impl MetadataCharge {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SceneEpoch {
+    pub offscreen: bool,
     pub reset: u64,
     pub owner_sequence: u64,
     pub width: u32,
     pub height: u32,
     pub scale: u32,
 }
-pub fn scene_epoch(owner: u64, context: u64) -> Result<SceneEpoch, i32> {
+pub fn scene_epoch_at(owner: u64, context: u64, size: Option<(u32, u32)>) -> Result<SceneEpoch, i32> {
     with_core(|c| {
-        if !display::owner(owner) { return Err(breengel_abi::errno::EPERM as i64); }
+        if size.is_none() && !display::owner(owner) { return Err(breengel_abi::errno::EPERM as i64); }
         let id = c.ctx_of(owner, context).ok_or(EINVAL)?;
         let ctx = c.contexts.get(&id).ok_or(EINVAL)?;
         if ctx.state != CtxState::Live || ctx.dropped { return Err(EIO); }
         let mode = display::MODES[c.display.mode as usize];
-        Ok(SceneEpoch { reset: c.epoch, owner_sequence: c.display.owner_sequence,
-            width: mode.width, height: mode.height, scale: mode.scale })
+        let (width, height) = size.unwrap_or((mode.width, mode.height));
+        if width == 0 || height == 0 || width > mode.width || height > mode.height { return Err(EINVAL); }
+        Ok(SceneEpoch { offscreen: size.is_some(), reset: c.epoch,
+            owner_sequence: if size.is_some() { 0 } else { c.display.owner_sequence },
+            width, height, scale: mode.scale })
     }).unwrap_or(Err(ENODEV)).map_err(|e| e as i32)
 }
-pub fn scene_handle(owner: u64) -> Result<u64, i32> {
-    with_core(|c| if display::owner(owner) { Ok(c.handle()) } else { Err(breengel_abi::errno::EPERM) }).unwrap_or(Err(ENODEV as i32))
+pub fn scene_handle_at(owner: u64, offscreen: bool) -> Result<u64, i32> {
+    with_core(|c| if offscreen || display::owner(owner) { Ok(c.handle()) } else { Err(breengel_abi::errno::EPERM) }).unwrap_or(Err(ENODEV as i32))
 }
 
 pub fn display_owner(owner: u64) -> bool { display::owner(owner) }

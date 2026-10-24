@@ -136,6 +136,7 @@ pub fn encode_scene(out: &mut Vec<u32>, scene: u64, scanout: u64, size: (u32, u3
 /// The compositor's GPU objects: its context, and the scene target C and the scanout
 /// targets A and B at the display's current mode.
 pub struct Compositor {
+    offscreen: Option<(u32, u32)>,
     context: u64,
     scene: u64,
     scanout: [u64; 2],
@@ -157,9 +158,52 @@ impl Compositor {
     /// completed GPU clear.
     pub fn new() -> Result<Compositor, i64> {
         let context = gpu::context_create()?;
-        let mut c = Compositor { context, scene: 0, scanout: [0; 2], next: 0, width: 0, height: 0 };
+        let mut c = Compositor { offscreen: None, context, scene: 0, scanout: [0; 2], next: 0, width: 0, height: 0 };
         c.make_targets()?;
         Ok(c)
+    }
+
+    /// Compose a private scene without display custody or a scanout present (B50).
+    pub fn offscreen(width: u32, height: u32) -> Result<Self, i64> {
+        let context = gpu::context_create()?;
+        let mut c = Compositor { offscreen: Some((width, height)), context, scene: 0,
+            scanout: [0; 2], next: 0, width: 0, height: 0 };
+        c.make_targets()?;
+        Ok(c)
+    }
+
+    fn snapshot_request(&self) -> abi::SceneSnapshot {
+        let mut s = abi::SceneSnapshot::ZERO;
+        s.context = self.context;
+        if let Some((w, h)) = self.offscreen { s.width = w; s.height = h; s.flags = 2; }
+        s
+    }
+
+    /// Read the last completed private destination, without consulting the binding.
+    pub fn read_target(&self, pixels: &mut [u8], record: &mut [u8; 1024]) -> i64 {
+        gpu::readback(self.scanout[self.next ^ 1], [0, 0, self.width, self.height], pixels, self.width * 4, record)
+    }
+
+    /// Publish a GPU copy while the helper stays alive for the runner to sample it.
+    pub fn picture_window(&self) -> Result<u64, i64> {
+        let mut w = abi::Create::ZERO;
+        w.width = self.width; w.height = self.height; w.buffers = 2;
+        let r = call(op::CREATE, &mut w); if r != 0 { return Err(r); }
+        let title = b"B50 case target";
+        let mut t = abi::Title { id: w.id, ptr: title.as_ptr() as u64, len: title.len() as u32, ..abi::Title::ZERO };
+        let r = call(op::REGISTER, &mut t); if r != 0 { return Err(r); }
+        let mut a = abi::Acquire { id: w.id, timeout_ns: 2_000_000_000, ..abi::Acquire::ZERO };
+        let r = call(op::ACQUIRE, &mut a); if r != 0 { return Err(r); }
+        let mut words = Vec::new();
+        let dst = w.buffer[a.buffer as usize];
+        encode::begin(&mut words, dst);
+        encode::copy(&mut words, self.scanout[self.next ^ 1], [0, 0, self.width, self.height], dst, [0, 0]);
+        let (r, submitted) = gpu::submit(self.context, &words); if r != 0 { return Err(r); }
+        let (r, _) = gpu::wait(self.context, submitted.fence, 2_000_000_000); if r != 0 { return Err(r); }
+        let mut c = abi::Commit { id: w.id, buffer: a.buffer, damage_count: 1, ..abi::Commit::ZERO };
+        c.damage[0] = abi::Rect::new(0, 0, self.width as i32, self.height as i32);
+        let r = call(op::COMMIT, &mut c); if r != 0 { return Err(r); }
+        Ok(w.id)
     }
 
     pub fn context(&self) -> u64 {
@@ -182,12 +226,12 @@ impl Compositor {
             return Err(r);
         }
         let mode = modes.modes.get(modes.current as usize).copied().ok_or(-22)?;
-        (self.width, self.height) = (mode.width, mode.height);
+        (self.width, self.height) = self.offscreen.unwrap_or((mode.width, mode.height));
         // The scanout targets first: test point 26 binds the process's lowest other scanout.
         for slot in 0..2 {
-            self.scanout[slot] = gpu::scanout_target_create(0, mode.width, mode.height)?;
+            self.scanout[slot] = if self.offscreen.is_some() { gpu::target_create(0, self.width, self.height)? } else { gpu::scanout_target_create(0, self.width, self.height)? };
         }
-        self.scene = gpu::target_create(0, mode.width, mode.height)?;
+        self.scene = gpu::target_create(0, self.width, self.height)?;
         self.next = 0;
         self.clear(&[self.scanout[0], self.scanout[1], self.scene])
     }
@@ -211,8 +255,7 @@ impl Compositor {
     /// The window snapshot sizing query: the numbers of windows and damage rectangles, and
     /// whether anything needs composing.
     pub fn pending(&self) -> Result<bool, i64> {
-        let mut q = abi::SceneSnapshot::ZERO;
-        q.context = self.context;
+        let mut q = self.snapshot_request();
         match call(op::COMPOSITE_SNAPSHOT, &mut q) {
             0 => Ok(q.damage_count > 0 || q.flags & 1 != 0),
             r => Err(r),
@@ -234,8 +277,7 @@ impl Compositor {
         const EIO: i64 = -(abi::errno::EIO as i64);
         let deadline = now_ns() + RETRY_NS;
         loop {
-            let mut q = abi::SceneSnapshot::ZERO;
-            q.context = self.context;
+            let mut q = self.snapshot_request();
             let mut r = call(op::COMPOSITE_SNAPSHOT, &mut q);
             if r == 0 && (q.width, q.height) != (self.width, self.height) {
                 self.make_targets()?;
@@ -243,9 +285,8 @@ impl Compositor {
             }
             let mut windows = std::vec![abi::SceneWindow::ZERO; q.window_count as usize];
             let mut damage = std::vec![abi::Rect::ZERO; q.damage_count as usize];
-            let mut s = abi::SceneSnapshot::ZERO;
+            let mut s = self.snapshot_request();
             if r == 0 {
-                s.context = self.context;
                 s.windows = windows.as_mut_ptr() as u64;
                 s.window_capacity = windows.len() as u32;
                 s.damage = damage.as_mut_ptr() as u64;
