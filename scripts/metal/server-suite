@@ -1709,7 +1709,7 @@ class Watchdog:
             triggers = [e for e in events if e.get('event') == 'watchdog-trigger']
             if triggers and trigger is None:
                 if len(triggers) != 1: raise ValueError('duplicate hang trigger')
-                trigger = triggers[0]['t']
+                trigger = triggers[0]['trigger']
                 deadline = time.monotonic() + max(0, 600 - (time.time() - trigger))
             if self.read(boot, 'ended'): raise ValueError('fault boot ended before unaided SSH recovery')
             if trigger is not None:

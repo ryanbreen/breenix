@@ -1541,7 +1541,7 @@ class Driver:
         # This only changes the manager's one-shot answer. No power operation is
         # sent: the armed BMC must perform the reset itself.
         m.update_lease(self.id, watchdogRecovery=True, ceilingAt=observed_at + 660)
-        self.event('watchdog-trigger', observed_at=observed_at, fault=self.args.inject)
+        self.event('watchdog-trigger', observed_at=observed_at, fault=self.args.inject, trigger=observed_at)
 
     def watchdog_verdict(self, receipt):
         serial = (self.dir / 'serial.txt').read_text()

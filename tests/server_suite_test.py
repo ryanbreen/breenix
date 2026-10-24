@@ -651,6 +651,18 @@ class WatchdogRecovery(existing.StateTest):
         existing.m.write_text(d.dir / 'serial.txt', self.serial)
         self.receipt = dict(boot=d.id, commit=self.sha, case='feeder-hang', trigger=100, sshAt=450, bootId='4-5-6')
 
+    def test_trigger_round_trip_retains_exact_driver_timestamp(self):
+        d = self.driver
+        stamp = 100.123456
+        d.watchdog_trigger = None
+        with patch.object(existing.m, 'update_lease'):
+            d.on_watchdog_line('[watchdog-fault] trigger feeder-hang', stamp)
+        event = json.loads((d.dir / 'events.jsonl').read_text())
+        self.assertNotEqual(event['t'], stamp)
+        self.assertEqual(event['trigger'], stamp)
+        self.assertTrue(d.watchdog_verdict(dict(self.receipt, trigger=event['trigger'])))
+        self.assertFalse(d.watchdog_verdict(dict(self.receipt, trigger=event['t'])))
+
     def test_baseline_lease_loss_refuses_destructive_launch(self):
         remote = lambda *a, **k: SimpleNamespace(returncode=0, stdout=json.dumps(dict(id='other')))
         target = host['Watchdog'](None, None, remote, None, None, 'baseline', self.sha, 'fixture')
@@ -660,7 +672,8 @@ class WatchdogRecovery(existing.StateTest):
 
     def test_completed_fault_waits_for_its_lease_release(self):
         boot = self.driver.id
-        receipt = dict(self.receipt, sshAt=200)
+        trigger = 100.123456
+        receipt = dict(self.receipt, sshAt=200, trigger=trigger)
         saved = False
         leases = []
         def remote(*args, **kwargs):
@@ -676,7 +689,7 @@ class WatchdogRecovery(existing.StateTest):
         target = host['Watchdog'](probe, None, remote, None, None, 'baseline', self.sha, 'fixture')
         target.stopped = True
         def read(_, name):
-            return {'events.jsonl': json.dumps(dict(event='watchdog-trigger', t=100)),
+            return {'events.jsonl': json.dumps(dict(event='watchdog-trigger', t=round(trigger, 3), trigger=trigger)),
                     'serial.txt': '[watchdog] previous-expired=1',
                     'run.json': json.dumps(dict(watchdogRecoveredCommit=self.sha)),
                     'ended': 'done' if saved else '',
