@@ -55,22 +55,29 @@ fn run(log: &mut Option<std::fs::File>) -> Result<(), String> {
     t.c_cc[4] = 4; t.c_cc[10] = 26;
     check(termios::tcsetattr(Fd::STDIN, termios::TCSAFLUSH, &t))?;
     if console { check(termios::console_input_proof(Fd::STDIN, 0))?; }
-    let prompt = b"[getty] console acquired\n\nBreenix login: ";
-    if let Some(log) = log { check(log.write_all(prompt))?; }
-    check(std::io::stdout().write_all(prompt))?;
-    check(std::io::stdout().flush())?;
-    // Unbuffered: no bytes that belong to login may be stranded in a getty buffer.
+    let acquired = b"[getty] console acquired\n";
+    if let Some(log) = log { check(log.write_all(acquired))?; }
+    check(std::io::stdout().write_all(acquired))?;
+    // An empty name refreshes the prompt on this same terminal session.
+    // Exiting would make the respawn revoke and flush a name typed behind it.
     let mut name = Vec::new();
     loop {
-        let mut byte = [0];
-        if check(libbreenix::io::read(Fd::STDIN, &mut byte))? == 0 { return Ok(()); }
-        if byte[0] == b'\n' { break; }
-        if name.len() == 64 || !byte[0].is_ascii_alphanumeric() && byte[0] != b'_' && byte[0] != b'-' {
-            return Err("invalid login name".into());
+        let prompt = b"\nBreenix login: ";
+        if let Some(log) = log { check(log.write_all(prompt))?; }
+        check(std::io::stdout().write_all(prompt))?;
+        check(std::io::stdout().flush())?;
+        // Unbuffered: no bytes belonging to login are retained by getty.
+        loop {
+            let mut byte = [0];
+            if check(libbreenix::io::read(Fd::STDIN, &mut byte))? == 0 { return Ok(()); }
+            if byte[0] == b'\n' { break; }
+            if name.len() == 64 || !byte[0].is_ascii_alphanumeric() && byte[0] != b'_' && byte[0] != b'-' {
+                return Err("invalid login name".into());
+            }
+            name.push(byte[0]);
         }
-        name.push(byte[0]);
+        if !name.is_empty() { break; }
     }
-    if name.is_empty() { return Ok(()); }
     name.push(0);
     let argv = [b"login\0".as_ptr(), name.as_ptr(), core::ptr::null()];
     check(process::execv(b"/bin/login\0", argv.as_ptr()))?;
