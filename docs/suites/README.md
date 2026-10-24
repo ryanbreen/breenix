@@ -1451,6 +1451,31 @@ fails. The five ordered case records and install/probe receipts are retained as 
 the baseline boot's store. The runner removes its sentinels and stops its final boot through `metal-run`.
 These are automated host cases; they require no attended steps and do not establish torn-write durability on ext2.
 
+### Persistent resting state (S20)
+
+The six automated `resting-state` cases run from the boot host. Install the
+candidate under its branch-tools lock, then start its persistent baseline. Run
+`server-suite --boot BASELINE --sha SHA --branch BRANCH --milestone server/resting-state
+--resting-phase events`. The queued test must cause a clean shutdown itself;
+the runner never stops the baseline to make preemption pass. The lab must start
+current when the queue empties, including after a one-shot previous boot.
+The remaining machine cases require a fresh SSH boot identity after an unaided
+reboot and S19's watchdog fault recovery. A missing transition fails.
+
+Restore main's deployed tools and release the branch-tools lock. On the same
+boot host run the same command with `--resting-phase soak`. It observes the
+persistent session left by the events phase for a measured 86,400 seconds,
+with an initial strict authenticated SSH exec and 288 five-minute probes.
+A changed guest boot identity, missed probe, failed login or held tools lock
+fails. Receipts are saved after each probe; an incomplete session cannot pass.
+This is S3's single session, with no accelerated clock and no power-loss case.
+
+Reacquire the tools lock, redeploy the same candidate and use
+`--resting-phase finish` to score the retained events and completed session.
+The scorer requires every case and its underlying receipts; neither preparation
+nor a running observation is a category PASS. The baseline's private boot store
+holds `resting-prepared.json`, `resting-soak.json` and `server-resting-state.json`.
+
 ### Watchdog recovery
 
 `server/watchdog` runs from the boot host after `install-persistent` at the same

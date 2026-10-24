@@ -105,10 +105,12 @@ REBOOT = (
     ('panic-reset', 'A fault-test kernel prints its panic and resets without a host reset'),
 )
 
-CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'time': TIME, 'reboot': REBOOT, 'watchdog': WATCHDOG, 'remote-upgrade': REMOTE_UPGRADE, 'operator': OPERATOR, 'console-input': CONSOLE_INPUT}
-SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'time': 'server', 'reboot': 'server', 'remote-upgrade': 'server', 'watchdog': 'server', 'operator': 'users', 'console-input': 'server'}
+RESTING = runpy.run_path(str(Path(__file__).with_name('resting_cases.py')))['CASES']
+
+CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'time': TIME, 'reboot': REBOOT, 'watchdog': WATCHDOG, 'resting-state': RESTING, 'remote-upgrade': REMOTE_UPGRADE, 'operator': OPERATOR, 'console-input': CONSOLE_INPUT}
+SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'time': 'server', 'reboot': 'server', 'remote-upgrade': 'server', 'watchdog': 'server', 'resting-state': 'server', 'operator': 'users', 'console-input': 'server'}
 MILESTONES = {'server/ssh-keys': 'ssh-keys', 'server/services': 'services', 'server/logs': 'logs',
-              'server/time': 'time', 'server/reboot': 'reboot', 'server/remote-upgrade': 'remote-upgrade', 'server/watchdog': 'watchdog', 'users/operator-login': 'operator', 'server/console-input': 'console-input'}
+              'server/time': 'time', 'server/reboot': 'reboot', 'server/remote-upgrade': 'remote-upgrade', 'server/watchdog': 'watchdog', 'server/resting-state': 'resting-state', 'users/operator-login': 'operator', 'server/console-input': 'console-input'}
 # The console lines the operator's console challenge leaves in the capture (docs/metal/boot-path.json, console-login).
 OPERATOR_CONSOLE_LINES = ('Login incorrect', 'metal-login-ok 42', 'fbcon check: shadow and screen identical',
                           'fbcon row: metal-login-ok 42')
@@ -249,6 +251,8 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
         if not records.get('physicalReclamation'):
             raise ValueError('no completed physical reclamation receipt')
 
+    if category == 'resting-state':
+        runpy.run_path(str(Path(__file__).with_name('resting_cases.py')))['validate'](records['evidence'], sha)
     if category == 'watchdog':
         evidence = records.get('faultBoots', [])
         if ([v.get('receipt', {}).get('case') for v in evidence] != [name for name, _ in WATCHDOG]
@@ -1915,6 +1919,7 @@ class Watchdog:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--resting-phase', choices=('events', 'soak', 'finish'), default='events')
     parser.add_argument('--probe-upgrade', action='store_true')
     parser.add_argument('--check-manifest', type=Path)
     parser.add_argument('--previous-boot', help='Completed logs preparation boot at this same commit')
@@ -1933,6 +1938,9 @@ def main():
         return 0
     if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot or '') or not re.fullmatch(r'[a-f0-9]{40}', args.sha or ''):
         parser.error('--boot ID and --sha full commit required')
+    if args.milestone == 'server/resting-state':
+        if not args.branch: parser.error('--branch required for resting-state')
+        return runpy.run_path(str(Path(__file__).with_name('server_resting.py')))['run'](globals(), args)
     if args.milestone == 'server/reboot':
         return runpy.run_path(str(Path(__file__).with_name('server_reboot.py')))['run'](globals(), args)
     category = MILESTONES[args.milestone]
