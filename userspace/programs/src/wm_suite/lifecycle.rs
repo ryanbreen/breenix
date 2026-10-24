@@ -297,6 +297,7 @@ pub fn never_reads() -> CaseResult {
     // W28 item 1 and W29 item 2: exceed both retention bounds by
     // at least a complete client ring, even without derived Text events.
     let pairs = (input_limits::MAX_PENDING + 2 * abi::limits::EVENT_RING) as u64;
+    let burst_start = now();
     for n in 1..=pairs {
         v.batch(&[(1, 30, 1), (1, 30, 0)], n)?;
         sources.extend(
@@ -306,6 +307,10 @@ pub fn never_reads() -> CaseResult {
                 .filter(|e| e.kind == 1)
                 .map(|e| e.serial),
         );
+        if n % 128 == 0 {
+            value("unread-burst-pairs", n as i64, "pairs", None);
+            value("unread-burst-time", ((now() - burst_start) / 1_000_000) as i64, "ms", None);
+        }
     }
     let rows = ledger()?;
     check(
@@ -336,8 +341,10 @@ pub fn normal_exit_gives_back() -> CaseResult {
         ended = d.wm.status()?;
         Ok(ended.is_some())
     })?;
+    let output = d.output();
+    let tail = output.char_indices().rev().nth(100).map_or(0, |(at, _)| at);
     check(ended == Some(0), &format!(
-        "bwm did not exit normally on SIGTERM: {ended:?}; {}", d.output()))?;
+        "bwm did not exit normally on SIGTERM: {ended:?}; {}", &output[tail..]))?;
     let after = Screen::read()?;
     check(
         before.pixels == after.pixels,
