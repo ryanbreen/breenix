@@ -15,6 +15,15 @@ m = existing.m
 
 
 class IdleTest(existing.StateTest):
+    def test_restoring_other_tools_disables_the_loaded_branch_policy(self):
+        self.ready()
+        metal_persist.update_disk(layout=metal_persist.new_layout())
+        service = existing.machine.Machine({})
+        with patch.object(existing.machine.Path, 'read_bytes', return_value=b'restored tools'), \
+             patch.object(existing.machine.subprocess, 'run') as start:
+            service.rest()
+        start.assert_not_called()
+
     def test_idle_starts_current_through_the_ordinary_driver_and_does_not_duplicate_it(self):
         self.ready()
         metal_persist.update_disk(layout=metal_persist.new_layout())

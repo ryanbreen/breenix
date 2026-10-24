@@ -260,9 +260,15 @@ class Machine:
         self.http = None
         self.stopping = False
         self.last_resting_attempt = 0.0
+        self.policy_source = Path(__file__).read_bytes()
 
     def rest(self):
         """Start current through the ordinary boot loop when the FIFO is empty."""
+        # A branch deployment is temporary. Once another revision replaces the
+        # tools, this already-running policy must not launch its replacement's
+        # driver with the old revision's assumptions.
+        if Path(__file__).read_bytes() != self.policy_source:
+            return
         if m.now() - self.last_resting_attempt < 60 or not metal_persist.layout():
             return
         with m.locked('lease'):
