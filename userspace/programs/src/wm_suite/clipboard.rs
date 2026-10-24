@@ -129,10 +129,17 @@ pub fn mime_text_only() -> CaseResult {
     )
 }
 pub fn window_required() -> CaseResult {
-    let (_d, _a) = one()?;
+    // W15: an unregistered window is ENOENT and cannot change the clipboard.
+    let (_d, mut a) = one()?;
+    let (serial, _) = clip_ok(&mut a, true, b"registered owner's text")?;
     let mut unregistered = Client::unregistered(99)?;
     let (code, _, _) = unregistered.clipboard(true, b"no desktop window")?;
-    check(code == -1, "unregistered client set desktop clipboard")
+    check(code == -2, "unregistered clipboard SET did not return ENOENT")?;
+    let (got, text) = clip_ok(&mut a, false, &[])?;
+    check(
+        got == serial && text == b"registered owner's text",
+        "unregistered clipboard SET changed text or serial",
+    )
 }
 pub fn unprivileged() -> CaseResult {
     let _d = Desktop::start()?;
