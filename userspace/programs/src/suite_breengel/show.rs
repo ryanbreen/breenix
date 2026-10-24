@@ -126,10 +126,18 @@ fn panel_boot_ribbon() -> CaseResult {
         let reached=crate::stage_serial::reached(&serial,EXPECTED);
         ensure(observed.iter().zip(&reached).all(|((lit,_),want)|(*lit=="1")==*want),"23.7","kernel reached bits disagree with independently parsed serial producer lines")?;
         ensure(!reached.is_empty() && reached.iter().any(|v|*v),"23.7","no actual producer stages were observed")?;
+        let (baseline,_) = screen()?;
         if faulty {libbreenix::test_control::arm(15,0,0)?;}
         ensure(give_back()>=0,"23.7","give back for kernel ribbon failed")?;
         let result=screen();let took=take_over();ensure(took>=0,"23.7","retake after ribbon failed")?;
         let (px,_)=result?;let mut mismatch=false;
+        ensure(px.len()==baseline.len(),"23.9","kernel-screen readback changed dimensions")?;
+        for (i,(a,b)) in px.chunks_exact(4).zip(baseline.chunks_exact(4)).enumerate() {
+            let (x,y)=(i%width,i/width);
+            if !(16*scale..1264*scale).contains(&x) || !(752*scale..768*scale).contains(&y) {
+                ensure(a==b,"23.9",format!("kernel screen outside the boot ribbon changed at ({x},{y})"))?;
+            }
+        }
         for (i,&lit) in reached.iter().enumerate() {
             let a=16+1248*i/reached.len();let b=16+1248*(i+1)/reached.len();
             let rgb=if lit {[77,112,26,255]}else{[96,67,48,255]};
