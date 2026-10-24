@@ -523,8 +523,7 @@ pub fn scene_identical() -> CaseResult {
         )?;
         c.command(RESIZE, width, height)?;
         c.command(REGISTER, 0, 0)?;
-        d.client_ready(&c)
-            .map_err(|e| format!("scene seed {seed}: {e}"))?;
+        placed(&c)?;
         clients.push(c);
     }
     parked(&d)?;
