@@ -107,7 +107,10 @@ fn visible_launch_error(d: &mut Desktop, needle: &str) -> CaseResult {
                 .to_lowercase()
                 .contains(needle)
         });
-        Ok(error.as_ref().is_some_and(|w| w.commit_id != 0))
+        // W30 item 1: publication is not presentation (BreenGL 17.3/20.1).
+        // Wait for bwm's completed frame within the existing readiness bound.
+        Ok(error.as_ref().is_some_and(|w| w.commit_id != 0
+            && Screen::read().is_ok_and(|s| s.contains(w.id, w.commit_id))))
     })?;
     let w = error.ok_or("launch error window absent")?;
     let s = Screen::read()?;
@@ -167,7 +170,10 @@ pub fn launch_close_50() -> CaseResult {
             launched = listed()?
                 .into_iter()
                 .find(|w| !baseline.iter().any(|b| b.id == w.id) && w.commit_id != 0);
-            Ok(launched.is_some())
+            // W30: do not target a new window's still-unplaced (0,0) entry,
+            // or treat its commit as evidence that bwm has composed it.
+            Ok(launched.as_ref().is_some_and(|w| w.x > 0 && w.y > 0
+                && Screen::read().is_ok_and(|s| s.contains(w.id, w.commit_id))))
         })?;
         launched.ok_or("launched client missing".into())
     }
@@ -236,7 +242,10 @@ pub fn read_other_denied() -> CaseResult {
 pub fn huge_window() -> CaseResult {
     let (mut d, mut c) = one()?;
     c.create_window(73, 4096, 4096, 2)?;
-    d.client_ready(&c)?;
+    d.client_ready(&c).map_err(|e| {
+        eprintln!("huge-window startup validation: {e}; {}", d.output());
+        e
+    })?;
     let w = c.info()?;
     check(
         w.x - 2 * d.scale < d.width as i32 - 32 * d.scale
@@ -327,7 +336,8 @@ pub fn normal_exit_gives_back() -> CaseResult {
         ended = d.wm.status()?;
         Ok(ended.is_some())
     })?;
-    check(ended == Some(0), "bwm did not exit normally on SIGTERM")?;
+    check(ended == Some(0), &format!(
+        "bwm did not exit normally on SIGTERM: {ended:?}; {}", d.output()))?;
     let after = Screen::read()?;
     check(
         before.pixels == after.pixels,
