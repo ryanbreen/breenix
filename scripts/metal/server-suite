@@ -230,7 +230,7 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
             if any(re.search(pattern, transition[field]) for pattern in fatal_patterns + [r'KERNEL PANIC:'] for field in ('beforeSerial', 'afterSerial')):
                 raise ValueError('fatal output in a clean shutdown transition')
         panic = records.get('panicBoot', {})
-        if panic.get('run', {}).get('commit') != sha or panic.get('run', {}).get('toolsCommit') != sha or panic.get('run', {}).get('kind') != 'fault-test' or 'KERNEL PANIC: reboot fault test' not in panic.get('serial', '') or not any(e['event'] == 'panic-reset-observed' for e in panic.get('events', [])):
+        if panic.get('build', {}).get('commit') != sha or panic.get('run', {}).get('toolsCommit') != sha or panic.get('run', {}).get('kind') != 'fault-test' or 'KERNEL PANIC: reboot fault test' not in panic.get('serial', '') or not any(e['event'] == 'panic-reset-observed' for e in panic.get('events', [])):
             raise ValueError('panic reset has no matching fault-test boot evidence')
     if category == 'time' and (not records.get('previous') or records['previous'].get('commit') != sha):
         raise ValueError('time needs a completed synchronization boot at this commit')

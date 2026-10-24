@@ -115,9 +115,11 @@ def run(api, args):
                     if 'KERNEL PANIC: reboot fault test' not in serial or not any(e['event'] == 'panic-reset-observed' for e in events):
                         raise ValueError('panic did not print and reset autonomously')
                     fault_run = json.loads(read(fault, 'run.json'))
-                    if fault_run.get('commit') != args.sha or fault_run.get('toolsCommit') != args.sha or fault_run.get('kind') != 'fault-test':
+                    # S22: nonpersistent boots retain their validated image identity in delivery.json.
+                    fault_build = json.loads(read(fault, 'delivery.json'))['build']
+                    if fault_build.get('commit') != args.sha or fault_run.get('toolsCommit') != args.sha or fault_run.get('kind') != 'fault-test':
                         raise ValueError('panic fault boot has the wrong tools or boot kind')
-                    records['panicBoot'] = dict(id=fault, run=fault_run, serial=serial, events=events)
+                    records['panicBoot'] = dict(id=fault, run=fault_run, build=fault_build, serial=serial, events=events)
                     current = boot_command('boot', '--persistent')
                     console = connect()
                 else:

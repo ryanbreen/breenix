@@ -84,6 +84,26 @@ class HostServerScore(unittest.TestCase):
                             cases=[dict(id='ssh-keys/' + name, result='PASS') for name, _ in host['CATEGORIES']['ssh-keys']])
         self.serial = "[stdout] bsshd: host key ED25519 SHA256:example (loaded)\nbsshd: refused method 'password'\n"
 
+    def test_panic_provenance_uses_validated_image_identity(self):
+        records = dict(self.records, milestone='server/reboot',
+                       cases=[dict(id='reboot/' + name, result='PASS') for name, _ in host['REBOOT']],
+                       transitions=[], panicBoot=dict(run=dict(toolsCommit=self.sha, kind='fault-test'),
+                            build=dict(commit=self.sha), serial='KERNEL PANIC: reboot fault test',
+                            events=[dict(event='panic-reset-observed')]))
+        for action in ('reboot', 'poweroff'):
+            records['transitions'].append(dict(action=action, before='same', after='same', exit='0',
+                beforeRun=self.boot, afterRun=self.boot,
+                beforeSerial='[shutdown] home clean read-only\n[shutdown] root clean read-only',
+                afterSerial='[storage] root prior state=clean\n[storage] home prior state=clean',
+                events=[dict(event='requested-shutdown', action=action), dict(event='requested-reset-observed'),
+                        dict(event='requested-reboot-ready', commit=self.sha)]))
+        def score():
+            return host['score'](self.manifest, self.path, records, self.serial, self.boot, self.sha, [])
+        self.assertTrue(score().startswith('PASS:'))
+        records['panicBoot']['build']['commit'] = 'b' * 40
+        with self.assertRaisesRegex(ValueError, 'matching fault-test'):
+            score()
+
     def test_complete_host_evidence_and_rejections(self):
         def score():
             return host['score'](self.manifest, self.path, self.records, self.serial, self.boot, self.sha, ['KERNEL PANIC:'])
