@@ -546,8 +546,8 @@ impl InputFile {
                     holder: caller.tgid,
                     epoch,
                 });
-                // Release STATE before waking: the sleeper takes the queue
-                // lock before STATE in prepare_to_wait_checked (#2395).
+                // Publish the service wake after releasing STATE; the wait
+                // predicate observes the wake generation without taking STATE.
                 drop(s);
                 drop(reg);
                 if regrab {
@@ -627,8 +627,8 @@ impl InputFile {
                         });
                     }
                 }
-                // Release STATE before waking: the sleeper takes the queue
-                // lock before STATE in prepare_to_wait_checked (#2395).
+                // Publish the service wake after releasing STATE; the wait
+                // predicate observes the wake generation without taking STATE.
                 drop(s);
                 drop(reg);
                 wake_service();
