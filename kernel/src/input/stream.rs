@@ -518,9 +518,9 @@ impl InputFile {
                 r.batches.clear();
                 r.events = 0;
                 r.dropped = None;
-                if s.grab.is_some() {
+                let regrab = s.grab.is_some();
+                if regrab {
                     s.release_grab(reader, disposition::REJECTED, reason::GRAB);
-                    RELEASE_WORK.wake_up_deferred();
                 }
                 for (id, d) in &mut s.devices {
                     if ids.is_empty() || ids.contains(id) {
@@ -535,6 +535,11 @@ impl InputFile {
                     holder: caller.tgid,
                     epoch,
                 });
+                drop(s);
+                drop(reg);
+                if regrab {
+                    RELEASE_WORK.wake_up_deferred();
+                }
                 Ok(0)
             }
             ioctl::UNGRAB => {
@@ -609,6 +614,10 @@ impl InputFile {
                         });
                     }
                 }
+                // Release STATE before waking: the sleeper takes the queue
+                // lock before STATE in prepare_to_wait_checked (#2395).
+                drop(s);
+                drop(reg);
                 RELEASE_WORK.wake_up_deferred();
                 Ok(0)
             }
