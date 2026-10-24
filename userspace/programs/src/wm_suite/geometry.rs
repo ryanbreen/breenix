@@ -4,14 +4,65 @@ pub fn drag_move() -> CaseResult {
     let (mut d, c) = one()?;
     let w = c.info()?;
     let p = (w.x + 50, w.y - 16 * d.scale);
-    drag(&d, p, (p.0 + 90, p.1 + 70))?;
+    d.client_ready(&c)?;
+    d.pointer(p.0, p.1, 0, 0)?;
+    time::sleep_ms(150)?;
+    d.pointer(p.0, p.1, 1, 0)?;
+    time::sleep_ms(150)?;
+    d.pointer(p.0 + 1, p.1 + 1, 1, 0)?;
+    let started = until(1000, "drag has consumed its press and first motion", || {
+        Ok((c.info()?.x, c.info()?.y) == (w.x + 1, w.y + 1))
+    });
+    if started.is_err() {
+        let a = c.info()?;
+        value("drag-dx", (a.x - w.x) as i64, "px", None);
+        value("drag-dy", (a.y - w.y) as i64, "px", None);
+    }
+    started?;
+    finish_paused_gesture(&d, (p.0 + 90, p.1 + 70))?;
     until(1000, "titlebar drag published geometry", || {
         Ok(c.info()?.x == w.x + 90 && c.info()?.y == w.y + 70)
     })?;
     content(&mut d, &c)
 }
+// Retain the final held position across a release and later park while the
+// compositor is stopped; the first geometry change acknowledges the grab.
+fn finish_paused_gesture(d: &Desktop, to: (i32, i32)) -> Result<(), String> {
+    d.wm.freeze()?;
+    d.pointer(to.0, to.1, 1, 0)?;
+    d.pointer(to.0, to.1, 0, 0)?;
+    d.pointer(d.width as i32 - 40, d.height as i32 - 100, 0, 0)?;
+    time::sleep_ms(150).map_err(|e| e.to_string())?;
+    d.wm.signal(signal::SIGCONT)
+}
+
 pub fn resize_right() -> CaseResult {
-    resize_case(false)
+    let (mut d, mut c) = one()?;
+    d.client_ready(&c)?;
+    let w = c.info()?;
+    let from = (w.x + w.width as i32 + 1, w.y + 80);
+    d.pointer(from.0, from.1, 0, 0)?;
+    time::sleep_ms(150)?;
+    d.pointer(from.0, from.1, 1, 0)?;
+    time::sleep_ms(150)?;
+    d.pointer(from.0 + 1, from.1, 1, 0)?;
+    until(1000, "resize has consumed its press and first motion", || {
+        Ok(c.info()?.width == w.width + 1)
+    })?;
+    finish_paused_gesture(&d, (from.0 + 80, from.1))?;
+    c.await_event("owner-mediated ResizeRequested", |e| {
+        e.kind == kind::RESIZE_REQUESTED
+    })?;
+    until(1000, "owner resized buffers published", || {
+        c.snapshot()?;
+        Ok((c.width, c.height) == (w.width + 80, w.height))
+    })?;
+    let after = c.info()?;
+    check(
+        after.x == w.x && after.y == w.y,
+        "right/bottom resize moved content origin",
+    )?;
+    content(&mut d, &c)
 }
 pub fn resize_bottom() -> CaseResult {
     resize_case(true)

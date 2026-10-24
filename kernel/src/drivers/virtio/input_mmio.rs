@@ -17,7 +17,11 @@
 use super::mmio::{
     device_id, VirtioMmioDevice, VIRTIO_MMIO_BASE, VIRTIO_MMIO_COUNT, VIRTIO_MMIO_SIZE,
 };
-use core::sync::atomic::{fence, AtomicBool, AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicU16, Ordering};
+
+#[path = "tablet_snapshot.rs"]
+mod tablet_snapshot;
+use tablet_snapshot::TabletSnapshot;
 
 /// VirtIO descriptor flags
 const DESC_F_WRITE: u16 = 2; // Device writes (vs reads)
@@ -204,12 +208,7 @@ fn screen_dimensions() -> (u32, u32) {
         .unwrap_or((1280, 800))
 }
 
-/// Current mouse X position in screen coordinates
-static MOUSE_X: AtomicU32 = AtomicU32::new(0);
-/// Current mouse Y position in screen coordinates
-static MOUSE_Y: AtomicU32 = AtomicU32::new(0);
-/// Mouse button state (bit 0 = left button)
-static MOUSE_BUTTONS: AtomicU32 = AtomicU32::new(0);
+static MOUSE: TabletSnapshot = TabletSnapshot::new();
 
 // =============================================================================
 // Common Helpers
@@ -763,27 +762,25 @@ pub fn get_tablet_irq() -> Option<u32> {
 
 /// Get current mouse position in screen coordinates.
 pub fn mouse_position() -> (u32, u32) {
-    (
-        MOUSE_X.load(Ordering::Relaxed),
-        MOUSE_Y.load(Ordering::Relaxed),
-    )
+    let (x, y, _) = MOUSE.current();
+    (x, y)
 }
 
-/// Get current mouse position and button state.
+/// Consume the release position before newer tablet motion.
 pub fn mouse_state() -> (u32, u32, u32) {
-    (
-        MOUSE_X.load(Ordering::Relaxed),
-        MOUSE_Y.load(Ordering::Relaxed),
-        MOUSE_BUTTONS.load(Ordering::Relaxed),
-    )
+    MOUSE.take()
 }
 
 /// Put the pointer at `(x, y)`, clamped to the screen, as if the tablet had moved there
 /// (test point 17, `move-pointer`).
 pub fn move_to(x: u32, y: u32) {
     let (sw, sh) = screen_dimensions();
-    MOUSE_X.store(x.min(sw.saturating_sub(1)), Ordering::Relaxed);
-    MOUSE_Y.store(y.min(sh.saturating_sub(1)), Ordering::Relaxed);
+    let (_, _, buttons) = MOUSE.current();
+    MOUSE.report(
+        x.min(sw.saturating_sub(1)),
+        y.min(sh.saturating_sub(1)),
+        buttons,
+    );
 }
 
 /// Tablet interrupt handler.
@@ -808,31 +805,28 @@ pub fn handle_tablet_interrupt() {
     }
 
     for event in poll_tablet_events() {
+        let (mut x, mut y, mut buttons) = MOUSE.current();
         match event.event_type {
             event_type::EV_ABS => match event.code {
                 abs_code::ABS_X => {
                     let (sw, _) = screen_dimensions();
-                    let x = (event.value as u64 * sw as u64 / (TABLET_ABS_MAX as u64 + 1)) as u32;
-                    MOUSE_X.store(x.min(sw - 1), Ordering::Relaxed);
+                    x = ((event.value as u64 * sw as u64 / (TABLET_ABS_MAX as u64 + 1)) as u32)
+                        .min(sw - 1);
                 }
                 abs_code::ABS_Y => {
                     let (_, sh) = screen_dimensions();
-                    let y = (event.value as u64 * sh as u64 / (TABLET_ABS_MAX as u64 + 1)) as u32;
-                    MOUSE_Y.store(y.min(sh - 1), Ordering::Relaxed);
+                    y = ((event.value as u64 * sh as u64 / (TABLET_ABS_MAX as u64 + 1)) as u32)
+                        .min(sh - 1);
                 }
                 _ => {}
             },
             event_type::EV_KEY => {
                 if event.code == btn_code::BTN_LEFT {
-                    let pressed = event.value != 0;
-                    if pressed {
-                        MOUSE_BUTTONS.store(1, Ordering::Relaxed);
-                    } else {
-                        MOUSE_BUTTONS.store(0, Ordering::Relaxed);
-                    }
+                    buttons = u32::from(event.value != 0);
                 }
             }
-            _ => {} // EV_SYN and others — ignore
+            _ => continue, // EV_SYN and others
         }
+        MOUSE.report(x, y, buttons);
     }
 }
