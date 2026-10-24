@@ -286,10 +286,6 @@ impl Terminals<'_> {
         let fg = self.sw.fg;
         FOREGROUND.store(fg, Ordering::Release);
         let graphics = self.vts[fg].graphics.is_some();
-        #[cfg(target_arch = "aarch64")]
-        if graphics {
-            crate::graphics::boot_ribbon::retire();
-        }
         FG_GRAPHICS.store(graphics, Ordering::Release);
         let suspended = self.sw.display_owner.is_some_and(|(_, vt)| vt != fg);
         PRESENTATION_SUSPENDED.store(suspended, Ordering::SeqCst);

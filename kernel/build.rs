@@ -79,8 +79,6 @@ fn main() {
     .expect("write stage_markers.rs");
 
     if target.starts_with("aarch64") {
-        let last = stage_markers::arm64_ribbon_last(repo_root).expect("ARM64 mode endpoints");
-        fs::write(PathBuf::from(&out_dir).join("boot_ribbon_last.rs"), format!("&{last:?}")).expect("write mode endpoints");
         let ribbon=stage_markers::arm64_ribbon(repo_root).expect("ARM64 ribbon stages");
         assert!(!ribbon.is_empty() && ribbon.len() <= 416, "ARM64 boot ribbon exceeds its 1248-pixel segment capacity");
         fs::write(PathBuf::from(&out_dir).join("boot_ribbon.rs"),format!("&{ribbon:?}")).expect("write ribbon stages");

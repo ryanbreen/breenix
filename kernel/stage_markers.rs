@@ -364,30 +364,3 @@ pub fn arm64_ribbon(repo:&Path)->Result<Vec<String>,String> {
     }
     Ok(out)
 }
-
-/// The last stage each ARM64 boot mode can produce, from the binding path.
-pub fn arm64_ribbon_last(repo: &Path) -> Result<Vec<(String, String)>, String> {
-    let path = read_json(&repo.join("docs/boot-path.json"))?;
-    let catalog = read_json(&catalog_path(repo, "aarch64"))?;
-    let names: BTreeMap<_, _> = catalog.get("stages").as_array().ok_or("no stages")?.iter()
-        .filter_map(|s| Some((s.get("name").as_str()?, s.get("marker").as_str()?))).collect();
-    let mut out = Vec::new();
-    for mode in ["tests", "probe", "shell", "desktop", "program", "suite", "default", "console"] {
-        let key = if mode == "tests" { "aarch64" } else if mode == "console" { "suite" } else { mode };
-        let mut last = None;
-        for milestone in path.get("milestones").as_array().ok_or("no milestones")? {
-            // Console-only mode has no userspace stages: its last kernel stage is boot complete.
-            if mode == "console" && milestone.get("id").as_str() != Some("scheduler") { continue; }
-            if let Some(stages) = milestone.get("stages").get(key).as_array() {
-                for stage in stages {
-                    let marker = if let Some(name) = stage.as_str() {
-                        *names.get(name).ok_or_else(|| format!("unknown stage {name}"))?
-                    } else { stage.get("marker").as_str().ok_or("missing marker")? };
-                    last = Some(marker.to_owned());
-                }
-            }
-        }
-        out.push((mode.to_owned(), last.ok_or_else(|| format!("no last stage for {mode}"))?));
-    }
-    Ok(out)
-}

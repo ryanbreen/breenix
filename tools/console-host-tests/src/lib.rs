@@ -668,7 +668,7 @@ mod raster_tests {
         assert!(frame.iter().any(|&byte| byte != 0));
     }
 
-    /// Full-display raster capacity before the ARM64 ribbon reserves its boot-long band.
+    /// Full-display raster capacity under the fixed console size rule.
     #[test]
     fn the_size_rule_picks_the_contracts_font_and_grid() {
         let cases = [

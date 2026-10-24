@@ -61,8 +61,6 @@ pub use records::{console_session, write_tty};
 pub mod keymap;
 pub mod keys;
 pub mod raster;
-#[cfg(target_arch = "aarch64")]
-mod ribbon;
 pub mod splash;
 pub mod vcs;
 pub mod vt;
@@ -207,18 +205,11 @@ fn set_display(display: Display) {
         with_grid(move |console| {
             let tty1 = &mut console.vts[0].grid;
             tty1.set_storage(cells, alternate);
-            tty1.set_size(layout.cols(), text_rows(&layout));
+            tty1.set_size(layout.cols(), layout.rows());
             // SAFETY: installed once with the display, like the static screens.
             tty1.set_history(unsafe { &mut *core::ptr::addr_of_mut!(TTY1_HISTORY) });
         });
     }
-}
-
-fn text_rows(layout: &Layout) -> usize {
-    #[cfg(target_arch = "aarch64")]
-    { ribbon::Ribbon::text_rows(layout) }
-    #[cfg(target_arch = "x86_64")]
-    { layout.rows() }
 }
 
 /// Give tty2 to tty6 their screens and scrollback before keyboard input can
@@ -239,7 +230,7 @@ fn size_terminals(layout: &Layout) {
         with_grid(move |console| {
             let grid = &mut console.vts[index].grid;
             grid.set_storage(cells, alternate);
-            grid.set_size(layout.cols(), text_rows(layout));
+            grid.set_size(layout.cols(), layout.rows());
         });
         // Reserve before this terminal can receive interrupt-generated echo.
         vt::ensure_history(index);
@@ -285,7 +276,7 @@ fn prepare(
         font.glyph_width(),
         font.line_height(),
         layout.cols(),
-        text_rows(&layout)
+        layout.rows()
     );
     *ATTACHED.lock() = Some(Attached {
         shadow,
@@ -386,8 +377,6 @@ pub fn write_vt(number: usize, bytes: &[u8]) {
 /// A process has the display: stop drawing on it. Returns once no row of the
 /// console's is being written, so the new owner's first draw is not overwritten.
 pub fn take_display() {
-    #[cfg(target_arch = "aarch64")]
-    crate::graphics::boot_ribbon::retire();
     splash::request(splash::Reason::DisplayTaken);
     DISPLAY_TAKEN.store(true, Ordering::SeqCst);
     wait_until_not_presenting();
@@ -844,15 +833,7 @@ struct Screen {
     frames: u64,
     /// The last pass wrote and flushed each row it drew, and left no row undrawn.
     complete: bool,
-    /// The boot-only band below the text grid, and its pending pixel update (B51).
-    #[cfg(target_arch = "aarch64")]
-    ribbon: Option<ribbon::Ribbon>,
-    #[cfg(target_arch = "aarch64")]
-    ribbon_known: bool,
-    #[cfg(target_arch = "aarch64")]
-    ribbon_dirty: bool,
-    #[cfg(target_arch = "aarch64")]
-    ribbon_drop: bool,
+
 }
 
 /// The foreground terminal's view as the render thread last copied it.
@@ -937,14 +918,6 @@ fn render_thread(display: &'static Display, attached: Attached) {
         cleared: false,
         frames: 0,
         complete: false,
-        #[cfg(target_arch = "aarch64")]
-        ribbon: None,
-        #[cfg(target_arch = "aarch64")]
-        ribbon_known: false,
-        #[cfg(target_arch = "aarch64")]
-        ribbon_dirty: false,
-        #[cfg(target_arch = "aarch64")]
-        ribbon_drop: false,
     };
 
     let mut announced = false;
@@ -952,11 +925,6 @@ fn render_thread(display: &'static Display, attached: Attached) {
     while !crate::task::kthread::kthread_should_stop() {
         deliver_replies();
         crate::tty::driver::drain_keyboard_input();
-        // Track boot completion during the splash, before the first text frame (B51).
-        #[cfg(target_arch = "aarch64")]
-        if crate::graphics::boot_ribbon::is_booting() {
-            crate::graphics::boot_ribbon::drain();
-        }
         // The `/proc/console/check` this pass may answer: one asked for before
         // it copies the terminal, so the answer shows what was written before
         // the request. One asked for later waits for the next pass.
@@ -1000,8 +968,6 @@ fn render_thread(display: &'static Display, attached: Attached) {
             sleep_ms(1);
             continue;
         }
-        #[cfg(target_arch = "aarch64")]
-        screen.refresh_ribbon();
         let Some(changed) = snapshot.refresh() else {
             // Keep a requested read-back pending until a pass observes the grid.
             end_pass();
@@ -1016,15 +982,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
             screen.cleared = false;
             screen.complete = false;
             screen.shown.fill(None);
-            // Fault injection applies only to an active boot ribbon (B51).
-            #[cfg(target_arch = "aarch64")]
-            {
-                screen.ribbon_drop = screen.ribbon.is_some() && crate::test_control::take(breengel_abi::tc_point::RIBBON_DROP_STAGE, 0).is_some();
-                screen.ribbon_known = false;
-            }
         }
-        #[cfg(target_arch = "aarch64")]
-        screen.refresh_ribbon();
         if changed || !screen.complete {
             let started = crate::time::get_monotonic_time_ns();
             let drawn = screen.update(&snapshot);
@@ -1284,38 +1242,11 @@ fn sleep_ms(ms: u64) {
 }
 
 impl Screen {
-    /// Update boot progress; retirement repaints the permanently reserved band (B52).
-    #[cfg(target_arch = "aarch64")]
-    fn refresh_ribbon(&mut self) {
-        crate::graphics::boot_ribbon::drain();
-        let reached = crate::graphics::boot_ribbon::take_dirty();
-        let booting = crate::graphics::boot_ribbon::is_booting();
-        if self.ribbon_known && !reached && (booting || self.ribbon.is_none()) {
-            return;
-        }
-        self.ribbon_known = true;
-        let wanted = ribbon::Ribbon::now(&self.layout, self.ribbon_drop);
-        if wanted == self.ribbon {
-            return;
-        }
-        if wanted.is_none() {
-            self.cleared = false;
-            self.shown.fill(None);
-        }
-        self.complete = false;
-        self.ribbon_dirty = wanted.is_some();
-        self.ribbon = wanted;
-    }
-
     /// Draw the rows that differ from what the screen shows, then flush them.
     /// Returns how many rows were written.
     fn update(&mut self, snapshot: &Snapshot) -> usize {
         if !self.cleared {
             raster::clear(&mut self.shadow, &self.layout);
-            #[cfg(target_arch = "aarch64")]
-            if let Some(ribbon) = &self.ribbon {
-                ribbon.paint(&mut self.shadow, &self.layout, ribbon.rows());
-            }
             self.cleared = self.display.write(&self.shadow, 0..self.layout.height, may_draw)
                 && may_draw()
                 && self.display.flush(0..self.layout.height).is_ok();
@@ -1350,20 +1281,6 @@ impl Screen {
                 failed = true;
             }
         }
-        #[cfg(target_arch = "aarch64")]
-        if self.ribbon_dirty {
-            if let Some(ribbon) = &self.ribbon {
-                let band = ribbon.rows();
-                ribbon.paint(&mut self.shadow, &self.layout, band.clone());
-                if self.display.write(&self.shadow, band.clone(), may_draw) {
-                    dirty = Some(match dirty {
-                        Some(lines) => lines.start.min(band.start)..lines.end.max(band.end),
-                        None => band,
-                    });
-                    self.ribbon_dirty = false;
-                } else { failed = true; }
-            }
-        }
         if let Some(lines) = dirty {
             if !may_draw() || self.display.flush(lines.clone()).is_err() {
                 // The rows are drawn and flushed again on the next pass.
@@ -1374,8 +1291,6 @@ impl Screen {
                     *shown = None;
                 }
                 failed = true;
-                #[cfg(target_arch = "aarch64")]
-                { self.ribbon_dirty = self.ribbon.is_some(); }
             }
         }
         self.complete = !failed && self.shown.iter().all(Option::is_some);
@@ -1417,9 +1332,6 @@ impl Screen {
                         }
                         None => raster::PALETTE[0],
                     };
-                    // The band is outside the fixed grid; retirement leaves console background.
-                    #[cfg(target_arch = "aarch64")]
-                    let expected = self.ribbon.as_ref().and_then(|ribbon| ribbon.colour(x, y)).unwrap_or(expected);
                     if !layout.pixel_is(pixel, expected) {
                         font_mismatches += 1;
                     }
@@ -1440,8 +1352,6 @@ impl Screen {
             .filter(|text| !text.is_empty())
             .collect();
         Check {
-            #[cfg(target_arch = "aarch64")]
-            ribbon_active: self.ribbon.is_some(),
             fg,
             text_rows: self.shown.len(),
             layout,
@@ -1466,8 +1376,6 @@ impl Screen {
 
 /// One read-back of the screen.
 struct Check {
-    #[cfg(target_arch = "aarch64")]
-    ribbon_active: bool,
     text_rows: usize,
     /// The foreground terminal (0-based) it read.
     fg: usize,
@@ -1689,8 +1597,6 @@ pub fn proc_console_check() -> Result<String, i32> {
                 layout.cols(),
                 check.text_rows
             );
-            #[cfg(target_arch = "aarch64")]
-            let _ = writeln!(text, "console ribbon: {}", if check.ribbon_active { "active" } else { "retired" });
             let _ = writeln!(text, "console logo scale: {}", splash::logo_scale(&font));
             match &check.source {
                 Ok(source) => {
