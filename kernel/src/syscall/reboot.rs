@@ -39,6 +39,7 @@ pub fn sys_reboot(magic: u64, magic2: u64, command: u64) -> SyscallResult {
     crate::serial_println!("[shutdown] requested {} token={}", action, core::str::from_utf8(&token).unwrap());
     #[cfg(target_arch = "aarch64")]
     crate::serial_println!("[shutdown] requested {}", action);
+    #[cfg(target_arch = "x86_64")]
     crate::serial::flush_log();
     #[cfg(target_arch = "x86_64")]
     {
