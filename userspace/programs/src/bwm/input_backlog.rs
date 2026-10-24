@@ -1,7 +1,9 @@
 //! Ordered per-window retries when a client applies input backpressure (#2163).
 use std::collections::{BTreeMap, VecDeque};
 
-pub const MAX_PENDING: usize = 1024;
+#[path = "input_limits.rs"]
+mod limits;
+pub use limits::MAX_PENDING;
 
 pub enum Delivery {
     Accepted,
