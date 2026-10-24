@@ -8,9 +8,9 @@
 //!
 //! No path in this module writes to the serial log or any other kernel output (section 17.5).
 
+pub mod clipboard;
 mod damage_union;
 mod event_admission;
-pub mod clipboard;
 pub mod events;
 pub mod mem;
 pub mod ops;

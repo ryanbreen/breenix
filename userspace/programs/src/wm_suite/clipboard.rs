@@ -98,6 +98,27 @@ pub fn set_get() -> CaseResult {
         "clipboard storage bypassed setter RLIMIT_AS")?;
     let got = c.clipboard_get()?;
     check(got.serial == replacement && got.text == "replacement", "ENOMEM changed clipboard")?;
+    // Keep the old short value in the baseline. Replacement reserves its
+    // new bytes before releasing the old charge, so one byte still fits later.
+    let payload = [b'x'; 8192];
+    let limit = AddressLimit::new(libbreenix::process::getpid()?.raw() as i32, payload.len() as u64)?;
+    c.clipboard_set(core::str::from_utf8(&payload).unwrap())?;
+    let page = || libbreenix::memory::mmap(core::ptr::null_mut(), 4096,
+        libbreenix::memory::PROT_READ | libbreenix::memory::PROT_WRITE,
+        libbreenix::memory::MAP_PRIVATE | libbreenix::memory::MAP_ANONYMOUS, -1, 0);
+    let denied = page();
+    if let Ok(ptr) = denied {
+        libbreenix::memory::munmap(ptr, 4096)?;
+        return Err("retained clipboard charge did not exclude a page mmap".into());
+    }
+    check(matches!(denied, Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENOMEM))),
+        "retained clipboard charge did not return ENOMEM for mmap")?;
+    c.clipboard_set("x")?;
+    let ptr = page()?;
+    libbreenix::memory::munmap(ptr, 4096)?;
+    drop(limit);
+    let got = c.clipboard_get()?;
+    check(got.text == "x", "short replacement was not retained")?;
     c.clipboard_subscribe(false)?;
     Ok(())
 }
@@ -164,6 +185,33 @@ pub fn concurrent_sets() -> CaseResult {
             "concurrent setter did not observe the later serial's text",
         )?;
     }
+    // Six simultaneous maximum-size SETs would put 96 MiB of payload on
+    // QEMU's 64 MiB kernel heap. Synchronize entry after registering windows.
+    let mut payload = vec![b'x'; abi::CLIPBOARD_MAX_BYTES as usize];
+    payload[4095..4099].copy_from_slice("🙂".as_bytes());
+    let payload = std::sync::Arc::new(String::from_utf8(payload).unwrap());
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(6));
+    let mut setters = Vec::new();
+    for _ in 0..6 {
+        let payload = payload.clone();
+        let barrier = barrier.clone();
+        setters.push(std::thread::spawn(move || -> Result<u64, String> {
+            let window = breengel::Window::new_without_fonts(b"maximum clipboard", 1, 1);
+            barrier.wait();
+            window.map_err(|e| e.to_string())?.clipboard_set(&payload).map_err(|e| e.to_string())
+        }));
+    }
+    let results: Vec<_> = setters.into_iter().map(|t| t.join()).collect();
+    let mut serials = Vec::new();
+    for result in results {
+        serials.push(result.map_err(|_| "maximum clipboard setter panicked")??);
+    }
+    serials.sort_unstable();
+    check(serials.windows(2).all(|s| s[0] < s[1]),
+        "maximum-size concurrent SETs reused a serial")?;
+    let (got, text) = clip_ok(&mut a, false, &[])?;
+    check(got == serials[5] && text == payload.as_bytes(),
+        "maximum-size concurrent SET lost exact text or final serial")?;
     Ok(())
 }
 pub fn mime_text_only() -> CaseResult {

@@ -42,7 +42,8 @@ impl Drop for Charge {
 }
 
 pub(super) struct Text {
-    bytes: Vec<u8>,
+    pages: Arc<mem::Mem>,
+    len: usize,
     _charge: Charge,
 }
 
@@ -50,6 +51,7 @@ pub struct State {
     text: Option<Arc<Text>>,
     owner: Option<u64>,
     serial: u64,
+    generation: u64,
 }
 
 impl State {
@@ -58,6 +60,7 @@ impl State {
             text: None,
             owner: None,
             serial: 1,
+            generation: 0,
         }
     }
 }
@@ -65,6 +68,7 @@ impl State {
 /// End the claim under its registry transaction; free storage after releasing the lock.
 pub(super) fn clear(reg: &mut Registry) -> Option<Arc<Text>> {
     reg.clipboard.owner = None;
+    reg.clipboard.generation += 1;
     reg.clipboard.serial += 1;
     for w in reg.windows.values_mut() {
         w.clipboard_subscribed = false;
@@ -78,12 +82,12 @@ pub(super) fn window_gone(reg: &mut Registry, id: u64) {
     }
 }
 
-fn authorized(reg: &Registry, caller: &Caller, id: u64) -> Result<u64, i32> {
+fn authorized(reg: &Registry, caller: &Caller, id: u64) -> Result<(u64, u64), i32> {
     let w = reg.windows.get(&id).ok_or(ENOENT)?;
     if !w.registered || w.owner != caller.tgid {
         return Err(ENOENT);
     }
-    reg.claim.map(|c| c.epoch).ok_or(ENOENT)
+    reg.claim.map(|c| (c.epoch, reg.clipboard.generation)).ok_or(ENOENT)
 }
 
 fn notice(w: &mut super::Window, kind: u16) {
@@ -93,7 +97,7 @@ fn notice(w: &mut super::Window, kind: u16) {
 }
 
 pub fn set(caller: &Caller, a: &mut ClipboardSet, out: u64) -> Result<u64, i32> {
-    if a.reserved != 0 || a.mime != CLIPBOARD_TEXT_UTF8 || a.serial != 0 {
+    if a.reserved != 0 || a.mime != CLIPBOARD_TEXT_UTF8 {
         return Err(EINVAL);
     }
     let epoch = authorized(&REGISTRY.lock(), caller, a.id)?;
@@ -101,18 +105,42 @@ pub fn set(caller: &Caller, a: &mut ClipboardSet, out: u64) -> Result<u64, i32> 
         return Err(E2BIG);
     }
     let charge = Charge::new(caller, a.len)?;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(a.len as usize)
-        .map_err(|_| ENOMEM)?;
-    bytes.resize(a.len as usize, 0);
-    if !bytes.is_empty() {
-        crate::syscall::userptr::read_user_bytes(bytes.as_mut_ptr(), a.ptr, bytes.len())
-            .map_err(|_| EFAULT)?;
+    let pages = mem::Mem::new(a.len)?;
+    let len = a.len as usize;
+    let mut copied = Ok(());
+    pages.chunks(0, len, |ptr, n, at| {
+        if copied.is_ok() {
+            copied = crate::syscall::userptr::read_user_bytes(ptr, a.ptr + at as u64, n)
+                .map_err(|_| EFAULT);
+        }
+    });
+    copied?;
+    // Validate a bounded scratch buffer, preserving an incomplete UTF-8 suffix
+    // between pages. Payload bytes stay in page frames.
+    let mut scratch = [0u8; 4099];
+    let mut tail = 0;
+    let mut at = 0;
+    while at < len {
+        let n = (len - at).min(4096);
+        pages.read(at as u64, &mut scratch[tail..tail + n]);
+        let end = tail + n;
+        tail = match core::str::from_utf8(&scratch[..end]) {
+            Ok(_) => 0,
+            Err(e) if e.error_len().is_none() => {
+                let start = e.valid_up_to();
+                scratch.copy_within(start..end, 0);
+                end - start
+            }
+            Err(_) => return Err(EINVAL),
+        };
+        at += n;
     }
-    core::str::from_utf8(&bytes).map_err(|_| EINVAL)?;
+    if tail != 0 {
+        return Err(EINVAL);
+    }
     let text = Arc::try_new(Text {
-        bytes,
+        pages,
+        len,
         _charge: charge,
     })
     .map_err(|_| ENOMEM)?;
@@ -175,20 +203,28 @@ pub fn get(caller: &Caller, a: &mut ClipboardGet, out: u64) -> Result<u64, i32> 
         }
         (reg.clipboard.text.clone(), reg.clipboard.serial)
     };
-    let bytes = text.as_ref().map_or(&[][..], |t| t.bytes.as_slice());
+    let len = text.as_ref().map_or(0, |t| t.len);
     let query = a.dst == 0 && a.capacity == 0;
     if !query {
-        if a.capacity < bytes.len() as u64 {
+        if a.capacity < len as u64 {
             return Err(EINVAL);
         }
-        mem::probe_writable(a.dst, bytes.len() as u64)?;
+        mem::probe_writable(a.dst, len as u64)?;
     }
-    a.len = bytes.len() as u64;
+    a.len = len as u64;
     a.serial = serial;
     crate::syscall::window::copy_out(out, a)?;
-    if !query && !bytes.is_empty() {
-        crate::syscall::userptr::write_user_bytes(a.dst, bytes.as_ptr(), bytes.len())
-            .map_err(|_| EFAULT)?;
+    if !query {
+        if let Some(text) = text {
+            let mut copied = Ok(());
+            text.pages.chunks(0, len, |ptr, n, at| {
+                if copied.is_ok() {
+                    copied = crate::syscall::userptr::write_user_bytes(a.dst + at as u64, ptr, n)
+                        .map_err(|_| EFAULT);
+                }
+            });
+            copied?;
+        }
     }
     Ok(0)
 }
