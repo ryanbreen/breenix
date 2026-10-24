@@ -17,13 +17,14 @@ const BACKGROUND: [u8; 3] = [12, 19, 31];
 pub struct Ribbon {
     scale: usize,
     lit: alloc::vec::Vec<bool>,
+    drop_stage: bool,
 }
 
 impl Ribbon {
-    /// Reserve whole text rows above the band only while the ribbon is active.
-    pub fn text_rows(layout: &Layout, booting: bool) -> usize {
+    /// Size the fixed boot-long grid above the band (B52).
+    pub fn text_rows(layout: &Layout) -> usize {
         let scale = layout.width / 1280;
-        if booting && scale > 0 && layout.width == 1280 * scale && layout.height == 800 * scale {
+        if scale > 0 && layout.width == 1280 * scale && layout.height == 800 * scale {
             layout.rows().min(752 * scale / layout.font.line_height())
         } else {
             layout.rows()
@@ -38,16 +39,11 @@ impl Ribbon {
         if scale == 0 || layout.width != 1280 * scale || layout.height != 800 * scale {
             return None;
         }
-        let mut lit = crate::graphics::boot_ribbon::reached();
+        let lit = crate::graphics::boot_ribbon::reached();
         if lit.is_empty() || !crate::graphics::boot_ribbon::is_booting() {
             return None;
         }
-        if drop_stage {
-            if let Some(first) = lit.iter_mut().find(|s| **s) {
-                *first = false;
-            }
-        }
-        Some(Ribbon { scale, lit })
+        Some(Ribbon { scale, lit, drop_stage })
     }
 
     /// The pixel rows the band covers.
@@ -63,7 +59,9 @@ impl Ribbon {
             return;
         }
         let (s, m) = (self.scale, self.lit.len());
+        let first = self.lit.iter().position(|&lit| lit);
         for (i, &lit) in self.lit.iter().enumerate() {
+            let lit = lit && !(self.drop_stage && first == Some(i));
             let (a, b) = (16 + 1248 * i / m, 16 + 1248 * (i + 1) / m);
             let colour = if lit { PASS } else { PENDING };
             fill(frame, layout, a * s..(b - 2) * s, rows.clone(), colour);

@@ -1343,6 +1343,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         mode_arg = None;
         init_launch = InitLaunch::default_init();
     }
+    kernel::graphics::boot_ribbon::select_mode(if cfg!(feature = "testing") { "tests" } else { boot_mode.name() });
     announce_boot_mode(boot_mode, mode_arg.as_deref(), only.as_deref());
     let init_elf: Option<alloc::vec::Vec<u8>> = if mode_elf.is_some() {
         mode_elf

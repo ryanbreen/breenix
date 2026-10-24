@@ -2,6 +2,8 @@
 //! UART ownership serializes bytes; updates use atomics and never draw on the writer path.
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 const MARKERS: &[&str] = include!(concat!(env!("OUT_DIR"), "/boot_ribbon.rs"));
+const LAST: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/boot_ribbon_last.rs"));
+static MODE: AtomicUsize = AtomicUsize::new(0);
 static REACHED: [AtomicBool; MARKERS.len()] = [const { AtomicBool::new(false) }; MARKERS.len()];
 // UART ownership gives one producer. Preserve the serial bytes independently of REACHED;
 // matching and rendering happen only in thread context with IRQs enabled.
@@ -32,10 +34,10 @@ pub fn drain() -> bool {
         if b == b'\n' {
             if n <= 1024 {
                 let bytes = &scan.1[..n];
+                retire_at_last(bytes);
                 for (i, marker) in MARKERS.iter().enumerate() {
                     if super::boot_producer::matches(bytes, marker, MARKERS) {
                         changed |= !REACHED[i].swap(true, Ordering::AcqRel);
-                        if i + 1 == MARKERS.len() { retire(); }
                     }
                 }
             }
@@ -45,8 +47,20 @@ pub fn drain() -> bool {
             scan.2 = n.saturating_add(1);
         }
     }
+    // Prompts need not end with a newline. Match the current partial line as well.
+    if scan.2 <= 1024 { retire_at_last(&scan.1[..scan.2]); }
     if changed { DIRTY.store(true, Ordering::Release); }
     changed
+}
+/// Selected after boot-target resolution, before the mode's final stages can run.
+pub fn select_mode(mode: &str) {
+    if let Some(index) = LAST.iter().position(|&(name, _)| name == mode) {
+        MODE.store(index, Ordering::Release);
+    }
+}
+fn retire_at_last(bytes: &[u8]) {
+    let marker = LAST[MODE.load(Ordering::Acquire)].1;
+    if super::boot_producer::matches(bytes, marker, MARKERS) { retire(); }
 }
 pub fn take_dirty() -> bool { DIRTY.swap(false, Ordering::AcqRel) }
 /// B51: neither stage updates nor display give-back can revive a retired ribbon.

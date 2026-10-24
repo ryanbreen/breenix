@@ -585,11 +585,6 @@ impl Terminals<'_> {
         #[cfg(target_arch = "aarch64")]
         {
             crate::graphics::boot_ribbon::retire();
-            // Reclaim the logical grid at takeover, even while the owner keeps the screen.
-            if let Some(display) = super::DISPLAY.get() {
-                let rows = display.layout().rows();
-                for vt in self.vts.iter_mut() { vt.grid.grow_rows(rows); }
-            }
         }
         self.publish();
         Ok(())

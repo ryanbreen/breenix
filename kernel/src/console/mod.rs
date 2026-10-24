@@ -216,7 +216,7 @@ fn set_display(display: Display) {
 
 fn text_rows(layout: &Layout) -> usize {
     #[cfg(target_arch = "aarch64")]
-    { ribbon::Ribbon::text_rows(layout, crate::graphics::boot_ribbon::is_booting()) }
+    { ribbon::Ribbon::text_rows(layout) }
     #[cfg(target_arch = "x86_64")]
     { layout.rows() }
 }
@@ -1001,11 +1001,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
             continue;
         }
         #[cfg(target_arch = "aarch64")]
-        if !screen.refresh_ribbon(&mut snapshot) {
-            end_pass();
-            sleep_ms(PASS_INTERVAL_MS);
-            continue;
-        }
+        screen.refresh_ribbon();
         let Some(changed) = snapshot.refresh() else {
             // Keep a requested read-back pending until a pass observes the grid.
             end_pass();
@@ -1028,7 +1024,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
             }
         }
         #[cfg(target_arch = "aarch64")]
-        screen.refresh_ribbon(&mut snapshot);
+        screen.refresh_ribbon();
         if changed || !screen.complete {
             let started = crate::time::get_monotonic_time_ns();
             let drawn = screen.update(&snapshot);
@@ -1288,32 +1284,19 @@ fn sleep_ms(ms: u64) {
 }
 
 impl Screen {
-    /// Update boot progress; retirement grows the grids and requires a full repaint.
+    /// Update boot progress; retirement repaints the permanently reserved band (B52).
     #[cfg(target_arch = "aarch64")]
-    fn refresh_ribbon(&mut self, snapshot: &mut Snapshot) -> bool {
+    fn refresh_ribbon(&mut self) {
         crate::graphics::boot_ribbon::drain();
         let reached = crate::graphics::boot_ribbon::take_dirty();
         let booting = crate::graphics::boot_ribbon::is_booting();
-        let rows = ribbon::Ribbon::text_rows(&self.layout, booting);
-        if rows > snapshot.rows {
-            if with_grid(|console| {
-                for vt in &mut console.vts { vt.grid.grow_rows(rows); }
-            }).is_none() { return false; }
-            snapshot.rows = rows;
-            snapshot.cells.resize(snapshot.cols * rows, grid::BLANK);
-            snapshot.generation = u64::MAX;
-            self.shown.resize(rows, None);
-            self.shown.fill(None);
-            self.cleared = false;
-            self.complete = false;
-        }
         if self.ribbon_known && !reached && (booting || self.ribbon.is_none()) {
-            return true;
+            return;
         }
         self.ribbon_known = true;
         let wanted = ribbon::Ribbon::now(&self.layout, self.ribbon_drop);
         if wanted == self.ribbon {
-            return true;
+            return;
         }
         if wanted.is_none() {
             self.cleared = false;
@@ -1322,7 +1305,6 @@ impl Screen {
         self.complete = false;
         self.ribbon_dirty = wanted.is_some();
         self.ribbon = wanted;
-        true
     }
 
     /// Draw the rows that differ from what the screen shows, then flush them.
@@ -1435,7 +1417,7 @@ impl Screen {
                         }
                         None => raster::PALETTE[0],
                     };
-                    // The active boot band is outside the text grid; retired rows use the font.
+                    // The band is outside the fixed grid; retirement leaves console background.
                     #[cfg(target_arch = "aarch64")]
                     let expected = self.ribbon.as_ref().and_then(|ribbon| ribbon.colour(x, y)).unwrap_or(expected);
                     if !layout.pixel_is(pixel, expected) {
@@ -1458,6 +1440,8 @@ impl Screen {
             .filter(|text| !text.is_empty())
             .collect();
         Check {
+            #[cfg(target_arch = "aarch64")]
+            ribbon_active: self.ribbon.is_some(),
             fg,
             text_rows: self.shown.len(),
             layout,
@@ -1482,6 +1466,8 @@ impl Screen {
 
 /// One read-back of the screen.
 struct Check {
+    #[cfg(target_arch = "aarch64")]
+    ribbon_active: bool,
     text_rows: usize,
     /// The foreground terminal (0-based) it read.
     fg: usize,
@@ -1703,6 +1689,8 @@ pub fn proc_console_check() -> Result<String, i32> {
                 layout.cols(),
                 check.text_rows
             );
+            #[cfg(target_arch = "aarch64")]
+            let _ = writeln!(text, "console ribbon: {}", if check.ribbon_active { "active" } else { "retired" });
             let _ = writeln!(text, "console logo scale: {}", splash::logo_scale(&font));
             match &check.source {
                 Ok(source) => {

@@ -217,26 +217,6 @@ impl Grid {
         self.reset();
     }
 
-    /// Reclaim reserved rows without resetting text, scrollback or either screen's cursor.
-    #[cfg(any(test, target_arch = "aarch64"))]
-    pub fn grow_rows(&mut self, rows: usize) {
-        let rows = rows.min(MAX_ROWS);
-        if rows <= self.rows || self.cols * rows > self.cells.len().min(self.alternate.len()) { return; }
-        let old = self.rows;
-        let size = old * self.cols;
-        let main_top = if self.alt { self.main.top } else { self.state.top };
-        self.cells[..size].rotate_left(main_top * self.cols);
-        if self.alt { self.alternate[..size].rotate_left(self.state.top * self.cols); }
-        self.cells[size..rows * self.cols].fill(BLANK);
-        self.alternate[size..rows * self.cols].fill(BLANK);
-        for state in [&mut self.state, &mut self.main] {
-            state.top = 0;
-            if state.last + 1 == old { state.last = rows - 1; }
-        }
-        self.rows = rows;
-        self.generation = self.generation.wrapping_add(1);
-    }
-
     /// Install the scrollback: `HISTORY_LINES` rows of the grid's width.
     pub fn set_history(&mut self, history: &'static mut [Cell]) {
         if history.len() >= HISTORY_LINES * self.cols && self.cols != 0 {
