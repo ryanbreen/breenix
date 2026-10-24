@@ -1565,6 +1565,11 @@ the header, matrix, spotlight and display-custody rules are unchanged.
 `panel/milestone-ribbon` retains its case identity and now checks the empty footer
 and the matrix's category counts after a category completes.
 
+B50 reserves this footer for the transient full-screen announcement: at `(24,720)`,
+text scale 2, wrapping within 1,232 logical pixels. It names the case and its reason
+and stays visible for at least 1,000 ms before execution. Ordinary stage frames
+leave the footer empty. The hold is outside the case's measured window.
+
 ### 23.6 Finale
 
 The finale preserves the selected first-failure spotlight (or last case if no failure) and overlays
