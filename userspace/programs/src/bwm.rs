@@ -23,21 +23,21 @@ use std::process;
 use compositor::{CheckError, Compositor, FrameError, Layer, Pointer};
 use session::{cursor_shape, Input};
 
-#[cfg(not(target_arch = "aarch64"))]
 use libbreenix::fs;
 use libbreenix::io;
 use libbreenix::signal;
 use libbreenix::types::Fd;
 
-#[cfg(not(target_arch = "aarch64"))]
 use breengel::FontConfig;
 use libgfx::bitmap_font;
 use libgfx::color::Color;
 use libgfx::surface::{Rect as Clip, Surface};
 use libgfx::ttf_font;
 use libgfx::ttf_font::CachedFont;
-#[cfg(not(target_arch = "aarch64"))]
 use libgfx::ttf_font::Font;
+
+#[path = "bwm/clock.rs"]
+mod clock;
 
 #[path = "bwm/config.rs"]
 mod config;
@@ -62,12 +62,15 @@ fn main() {
     let mut wm = config::start();
     loop {
         let (stdin_ready, scene_changed) = wm.wait();
+        wm.begin_epoch();
         let (current_mods, super_taps, hotkey_actions) = wm.hotkey_state();
         wm.discover(scene_changed);
+        wm.chromeless_order();
         wm.keyboard(stdin_ready, current_mods, super_taps, hotkey_actions);
         let mut damage = Damage::new();
         wm.pointer(&mut damage);
         wm.clock(&mut damage);
         wm.present(damage);
+        wm.acknowledge();
     }
 }

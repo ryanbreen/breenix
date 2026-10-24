@@ -114,7 +114,22 @@ pub fn config_test() -> CaseResult {
         "pinned font or fps=off setting was ignored",
     )?;
     let s = Screen::read()?;
-    super::scene::clock(&s, &d, "00:00:00 UTC")
+    super::scene::clock(&s, &d, "00:00:00 UTC")?;
+    let mut c = Client::start(11)?;
+    c.title(b"Font")?;
+    content(&mut d, &c)?;
+    let s = d.shown(&c)?;
+    let w = c.info()?;
+    super::scene::ttf_text(
+        &s,
+        b"Font",
+        w.x + 6 * d.scale,
+        w.y - 26 * d.scale,
+        0xffffffff,
+        0xff2864dc,
+        d.scale,
+        "/usr/share/fonts/DejaVuSansMono.ttf",
+    )
 }
 pub fn config_invalid() -> CaseResult {
     let _clock = measure::Clock::new()?;
@@ -141,7 +156,30 @@ pub fn config_invalid() -> CaseResult {
     check(
         visible > 0,
         "malformed configuration error is absent from the desktop",
-    )
+    )?;
+    let mut c = Client::start(11)?;
+    content(&mut d, &c)?;
+    let w = c.info()?;
+    check(
+        w.x < 372 * d.scale && w.y < 80 * d.scale,
+        "regression client does not overlap the error banner",
+    )?;
+    c.child.stop()?;
+    until(1500, "error banner restored after overlapping client closes", || {
+        if listed()?.iter().any(|w| w.id == c.id) {
+            return Ok(false);
+        }
+        let after = Screen::read()?;
+        for y in 40 * d.scale..80 * d.scale {
+            for x in 12 * d.scale..372 * d.scale {
+                if after.pixel(x, y)? != s.pixel(x, y)? {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    })?;
+    Ok(())
 }
 pub fn fonts_loaded() -> CaseResult {
     let _font = FileOverride::new(

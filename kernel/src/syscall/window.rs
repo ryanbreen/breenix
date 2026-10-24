@@ -12,8 +12,8 @@
 use breengel_abi::errno::{EFAULT, EINVAL, ENOSYS, EPERM};
 use breengel_abi::{
     arg_size, op, Acquire, Capture, Claim, ClipboardGet, ClipboardSet, ClipboardSubscribe, Commit,
-    Composite, CompositeEntry, CompositeRecordHeader,
-    Create, Cursor, Geometry, Give, List, MapTree, Meta, MetaQuery, NoChange, Plain, ReadEvents,
+    Composite, CompositeEntry, CompositeRecordHeader, CompositorAck, CompositorStatus, Create, Cursor,
+    Geometry, Give, List, MapTree, Meta, MetaQuery, NoChange, Plain, ReadEvents,
     Readback, RecordQuery, Resize, SceneSnapshot, Title, WinId, WriteEvents, INTERFACE_VERSION,
 };
 
@@ -211,8 +211,12 @@ fn dispatch(caller: &Caller, op: u32, arg: u64) -> Result<u64, i32> {
         }),
         // E18 contract-first allocation; each implementation lane replaces its
         // arm. Exact sizes were validated before dispatch (breengel.md 17.1).
-        op::COMPOSITOR_ACK => Err(ENOSYS),
-        op::COMPOSITOR_STATUS => Err(ENOSYS),
+        op::COMPOSITOR_ACK => crate::window::status::ack(&caller, &input::<CompositorAck>(arg)?),
+        op::COMPOSITOR_STATUS => inout::<CompositorStatus>(arg, |s| {
+            if *s != CompositorStatus::ZERO { return Err(EINVAL); }
+            *s = crate::window::status::read(&caller)?;
+            Ok(0)
+        }),
         op::CLIPBOARD_SET => committing::<ClipboardSet>(arg, |a, out| crate::window::clipboard::set(&caller, a, out)),
         op::CLIPBOARD_GET => committing::<ClipboardGet>(arg, |a, out| crate::window::clipboard::get(&caller, a, out)),
         op::CLIPBOARD_SUBSCRIBE => crate::window::clipboard::subscribe(&caller, &input::<ClipboardSubscribe>(arg)?),

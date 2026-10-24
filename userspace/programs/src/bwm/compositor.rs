@@ -102,6 +102,8 @@ pub struct Compositor {
     height: u32,
     scene: u64,
     scanout: [u64; 2],
+    dimmer: u64,
+    pub last_serial: u64,
     /// The scanout target the next frame writes: the one not shown.
     next: usize,
     /// The desktop: background, taskbar, window frames and app bar.
@@ -145,6 +147,8 @@ impl Compositor {
             height,
             scene: 0,
             scanout: [0; 2],
+            dimmer: 0,
+            last_serial: 0,
             next: 0,
             desktop,
             background,
@@ -159,12 +163,12 @@ impl Compositor {
     }
 
     fn destroy_targets(&mut self) {
-        for t in [self.scene, self.scanout[0], self.scanout[1]] {
+        for t in [self.scene, self.scanout[0], self.scanout[1], self.dimmer] {
             if t != 0 {
                 gpu::resource_destroy(t);
             }
         }
-        (self.scene, self.scanout) = (0, [0; 2]);
+        (self.scene, self.scanout, self.dimmer) = (0, [0; 2], 0);
     }
 
     fn make_targets(&mut self) -> Result<(), String> {
@@ -176,6 +180,8 @@ impl Compositor {
         }
         self.scene = gpu::target_create(abi::format::B8G8R8A8, self.width, self.height)
             .map_err(|e| format!("scene target: errno {}", -e))?;
+        self.dimmer = gpu::target_create(abi::format::B8G8R8A8, self.width, self.height)
+            .map_err(|e| format!("dimmer target: errno {}", -e))?;
         self.next = 0;
         self.full = true;
         let mut words = Vec::new();
@@ -183,6 +189,8 @@ impl Compositor {
             encode::begin(&mut words, t);
             encode::clear(&mut words, BLACK);
         }
+        encode::begin(&mut words, self.dimmer);
+        encode::clear(&mut words, 0x80000000);
         let (r, s) = gpu::submit(self.context, &words);
         if r != 0 {
             return Err(format!("clear: errno {}", -r));
@@ -269,6 +277,7 @@ impl Compositor {
             match r {
                 0 => {
                     self.next ^= 1;
+                    self.last_serial = c.serial;
                     self.full = false;
                     self.sampled = windows.iter().map(|w| Sampled {
                         id: w.id, sample: w.sample, commit_id: w.commit_id, width: w.width, height: w.height,
@@ -335,7 +344,8 @@ impl Compositor {
         for &d in rects {
             out.extend([cmd::SCISSOR, 6, d[0] as u32, d[1] as u32, d[2] as u32, d[3] as u32]);
             copy(out, desktop, [0, 0], [0, 0, w, h], d);
-            for layer in layers {
+            // Normal clients, bars, one dimmer, then chromeless clients (W10).
+            for layer in layers.iter().filter(|l| l.frame_len != 0) {
                 for &r in &layer.frame[..layer.frame_len] {
                     copy(out, desktop, [0, 0], r, d);
                 }
@@ -343,8 +353,19 @@ impl Compositor {
                     copy(out, sample, [r[0], r[1]], r, d);
                 }
             }
-            // The app bar stays above the windows.
+            copy(out, desktop, [0, 0], [0, 0, w, 28 * self.scale], d);
             copy(out, desktop, [0, 0], [0, self.appbar_top, w, h], d);
+            if layers.iter().any(|l| l.frame_len == 0) {
+                // div255(channel * 127), rounded half up, is floor(channel/2)
+                // for an 8-bit channel. Alpha-128 premultiplied black dims exactly.
+                abi::draw::encode(out, abi::pipeline::OVER, abi::draw::DESTINATION_OPAQUE,
+                    self.dimmer, 0, 0, &[abi::draw::Instance { rect: d, params: [0; 16] }]);
+                for layer in layers.iter().filter(|l| l.frame_len == 0) {
+                    if let Some((sample, r)) = content_rect(layer, windows) {
+                        copy(out, sample, [r[0], r[1]], r, d);
+                    }
+                }
+            }
             if let Some(p) = pointer {
                 let (white, black) = pointer_rects(p, self.scale);
                 let white: Vec<[i32; 4]> = white.into_iter().filter_map(|r| intersect(r, d)).collect();
@@ -561,21 +582,26 @@ impl Compositor {
                 }
             }
         }
-        if y >= self.appbar_top {
-            return from_desktop;
-        }
-        for layer in layers.iter().rev() {
-            if let Some((_, r, width, px)) = clients.iter().find(|c| c.0 == layer.window_id) {
+        let pixel = |layer: &Layer| {
+            clients.iter().find(|c| c.0 == layer.window_id).and_then(|(_, r, width, px)| {
                 if x >= r[0] && x < r[2] && y >= r[1] && y < r[3] {
                     let o = ((y - r[1]) as usize * *width as usize + (x - r[0]) as usize) * 4;
-                    return u32::from_le_bytes([px[o], px[o + 1], px[o + 2], px[o + 3]]);
-                }
-            }
-            if layer.frame[..layer.frame_len].iter().any(|r| x >= r[0] && x < r[2] && y >= r[1] && y < r[3]) {
-                return from_desktop;
+                    Some(u32::from_le_bytes([px[o], px[o + 1], px[o + 2], px[o + 3]]))
+                } else { None }
+            })
+        };
+        let dim = layers.iter().any(|l| l.frame_len == 0);
+        for layer in layers.iter().rev().filter(|l| l.frame_len == 0) {
+            if let Some(p) = pixel(layer) { return p; }
+        }
+        let mut normal = from_desktop;
+        if y >= 28 * self.scale && y < self.appbar_top {
+            for layer in layers.iter().rev().filter(|l| l.frame_len != 0) {
+                if let Some(p) = pixel(layer) { normal = p; break; }
+                if layer.frame[..layer.frame_len].iter().any(|r| x >= r[0] && x < r[2] && y >= r[1] && y < r[3]) { break; }
             }
         }
-        from_desktop
+        if dim { 0xff000000 | ((normal & 0x00fefefe) >> 1) } else { normal }
     }
 }
 

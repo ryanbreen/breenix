@@ -3,7 +3,7 @@ use super::*;
 // ─── Window Defaults (Position/Size Memory) ─────────────────────────────────
 
 pub(super) struct WindowDefaults {
-    pub(super) title: [u8; 32],
+    pub(super) title: [u8; 64],
     pub(super) title_len: usize,
     pub(super) x: i32,
     pub(super) y: i32,
@@ -62,7 +62,7 @@ pub(super) struct Window {
     pub(super) y: i32,
     pub(super) width: usize,
     pub(super) height: usize,
-    pub(super) title: [u8; 32],
+    pub(super) title: [u8; 64],
     pub(super) title_len: usize,
     pub(super) window_id: u64,
     pub(super) owner_pid: u32,
@@ -148,6 +148,12 @@ pub(super) fn discover_windows(
             .enumerate()
             .find(|(_, w)| w.window_id == info.id)
         {
+            let title_len = (info.title_len as usize).min(64);
+            if w.title_len != title_len || w.title[..title_len] != info.title[..title_len] {
+                w.title = info.title;
+                w.title_len = title_len;
+                resized = true; // A title change repaints chrome and appbar too (W17).
+            }
             let width = info.width as usize
                 + if w.chromeless {
                     0
@@ -185,8 +191,8 @@ pub(super) fn discover_windows(
         }
 
         let n = windows.len();
-        let mut title = [0u8; 32];
-        let title_len = (info.title_len as usize).min(32);
+        let mut title = [0u8; 64];
+        let title_len = (info.title_len as usize).min(64);
         title[..title_len].copy_from_slice(&info.title[..title_len]);
 
         // Chromeless windows (title prefix \x01) have no frame/chrome
