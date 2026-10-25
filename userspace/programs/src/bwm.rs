@@ -12,12 +12,14 @@
 mod compositor;
 #[path = "bwm/input_backlog.rs"]
 mod input_backlog;
+#[path = "bwm/input.rs"]
+mod input;
+use input::*;
 #[path = "bwm/placement.rs"]
 mod placement;
 #[path = "bwm/session.rs"]
 mod session;
 
-use std::io::Write;
 use std::process;
 
 use compositor::{CheckError, Compositor, FrameError, Layer, Pointer};
@@ -26,7 +28,6 @@ use session::{cursor_shape, Input};
 use libbreenix::fs;
 use libbreenix::io;
 use libbreenix::signal;
-use libbreenix::types::Fd;
 
 use breengel::FontConfig;
 use libgfx::bitmap_font;
@@ -61,14 +62,12 @@ use launch::*;
 fn main() {
     let mut wm = config::start();
     loop {
-        let (stdin_ready, scene_changed) = wm.wait();
+        let (input_ready, scene_changed) = wm.wait();
         wm.begin_epoch();
-        let (current_mods, super_taps, hotkey_actions) = wm.hotkey_state();
         wm.discover(scene_changed);
         wm.chromeless_order();
-        wm.keyboard(stdin_ready, current_mods, super_taps, hotkey_actions);
         let mut damage = Damage::new();
-        wm.pointer(&mut damage);
+        wm.input(input_ready, &mut damage);
         wm.clock(&mut damage);
         wm.present(damage);
         wm.acknowledge();

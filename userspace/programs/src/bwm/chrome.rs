@@ -632,7 +632,7 @@ impl State {
         // A held pointer and its retained release must reach the policy loop
         // before a full-frame readback can block it. Keep the validation queued,
         // then run its unchanged comparison after an unheld input poll.
-        let pointer_active = self.prev_buttons != 0
+        let pointer_active = self.stream.pointer_active()
             || self.dragging.is_some()
             || self.resizing.is_some();
         let check_ready = !pointer_active && !self.pointer_check_deferred;
@@ -771,6 +771,19 @@ impl State {
             .copied();
         if let Some((id, _)) = next {
             let result = self.gpu.check(id, &layers, Some(pointer));
+            if result.is_ok() {
+                // check compares this entire completed scene, capturing and
+                // verifying every shown client against its sampled commit.
+                // Share that proof among its unchecked clients; repeating the
+                // same full-scene readback per client stalls source input.
+                for (checked, _) in &unchecked {
+                    if let Some(win) = self.windows.iter_mut().find(|w| w.window_id == *checked) {
+                        win.frame_checked = true;
+                    }
+                    report_check(*checked, &result);
+                }
+                return;
+            }
             let retry = match (
                 &result,
                 self.windows.iter_mut().find(|win| win.window_id == id),
@@ -842,8 +855,8 @@ impl State {
         if self.windows.iter().map(|w| w.window_id).ne(before) {
             self.focused_win = focused
                 .and_then(|id| self.windows.iter().position(|w| w.window_id == id))
-                .unwrap_or(0);
-            update_kernel_z_order(&self.windows);
+                .unwrap_or(usize::MAX);
+            update_kernel_z_order(&self.windows, self.focused_win);
             compose_full_redraw(
                 &mut self.gpu,
                 &self.windows,

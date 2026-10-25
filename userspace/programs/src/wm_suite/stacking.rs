@@ -139,11 +139,15 @@ pub fn minimize_no_input() -> CaseResult {
             .any(|e| matches!(e.kind, kind::KEY_PRESS | kind::POINTER_BUTTON)),
         "minimized client received input",
     )?;
-    let rows = ledger()?;
+    // W30: borrow the snapshot fields; repeated per-row string allocations
+    // made this observation consume the case's unchanged execution deadline.
+    let rows = std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
+    let serial = es[0].serial.to_string();
+    let target = b.id.to_string();
     check(
-        !rows.iter().any(|r| {
-            r.first().is_some_and(|s| s == &es[0].serial.to_string())
-                && r.get(2).is_some_and(|s| s == &b.id.to_string())
+        !rows.lines().any(|r| {
+            let mut fields = r.split_whitespace();
+            fields.next() == Some(serial.as_str()) && fields.nth(1) == Some(target.as_str())
         }),
         "key disposition targeted minimized client",
     )
@@ -156,6 +160,9 @@ pub fn minimize_close() -> CaseResult {
     until(1000, "minimized owner removed", || {
         Ok(listed()?.len() + 1 == before)
     })?;
+    // W30: the surviving client is already focused. Put it in the minimized
+    // state before using its appbar entry as the restore/focus prerequisite.
+    minimize(&d, &a)?;
     appbar(&d, a.id)?;
     until(1000, "remaining appbar entry eligible", || focused(&a))?;
     content(&mut d, &a)
@@ -179,12 +186,17 @@ pub fn fkeys_skip_minimized() -> CaseResult {
 }
 pub fn chromeless_top() -> CaseResult {
     let mut d = Desktop::start()?;
-    let c = Client::start_mode(77, flags::CHROMELESS | flags::IGNORE_CLOSE)?;
-    d.client_ready(&c)?;
     let mut normal = Client::start(11)?;
     placed(&normal)?;
     d.client_ready(&normal)?;
+    // W30: prove positive normal-client delivery before opening the modal.
+    // The contract consumes an outside modal click without delivering it to
+    // the normal client, so that later click cannot be a delivery prerequisite.
     d.focus(&mut normal)?;
+    let c = Client::start_mode(77, flags::CHROMELESS | flags::IGNORE_CLOSE)?;
+    d.client_ready(&c)?;
+    let w = normal.info()?;
+    d.click(w.x + 20, w.y + 20)?;
     check(
         c.info()?.z > normal.info()?.z,
         "normal window raised above chromeless layer",
@@ -243,6 +255,10 @@ pub fn close_focus_next() -> CaseResult {
     b.send(EXIT, 0, 0)?;
     a.await_event("top close focuses next stack id", |e| {
         e.kind == kind::FOCUS_GAINED
+    }).map_err(|e| {
+        let log = d.output();
+        let tail = log.char_indices().rev().nth(100).map_or(0, |(at, _)| at);
+        format!("focus successor missing; {}; {e}", &log[tail..])
     })?;
     check(focused(&a)?, "next visible stack id not focused")?;
     content(&mut d, &a)
@@ -260,18 +276,56 @@ pub fn new_on_top() -> CaseResult {
     content(&mut d, &b)
 }
 fn model(steps: usize, seed: u32) -> CaseResult {
-    let mut d = Desktop::start()?;
+    // W30: freeze incidental clock repaints; the model has no timed actions.
+    let mut clock = measure::Clock::new()?;
+    let begun = now();
     let mut clients = Vec::new();
     let mut stack = Vec::<u64>::new();
     let mut minimized = Vec::<u64>::new();
     let mut random = seed;
+    // W30: exec is fixture preparation, not one of the registry model's
+    // operations. Prepare future processes while the desktop starts; each
+    // still creates and registers its window only at its original model step.
+    let mut prepared = std::collections::BTreeMap::new();
+    let mut planned = seed;
+    let mut count = 3;
+    for step in 0..steps {
+        planned ^= planned << 13;
+        planned ^= planned >> 17;
+        planned ^= planned << 5;
+        if (planned >> 8) % 4 == 3 {
+            if count > 1 {
+                count -= 1;
+            } else {
+                prepared.insert(step, Client::spawn_shape(60 + step as u32, flags::IGNORE_CLOSE, 240, 160, 1024)?);
+                count += 1;
+            }
+        }
+    }
     for seed in [11, 23, 41] {
-        let c = Client::start(seed)?;
+        clients.push(Client::spawn_shape(seed, flags::IGNORE_CLOSE, 240, 160, 1024)?);
+    }
+    for c in &mut clients {
+        c.initialize()?;
+        c.receive()?;
+    }
+    let mut d = Desktop::start()?;
+    // W30: adopt the prepared initial arrangement together and complete its
+    // initial UI-clock frame before the unchanged per-client readiness checks.
+    clock.step(1, 1_000_000_000)?;
+    measure::acknowledged(1)?;
+    for c in &mut clients {
         placed(&c)?;
         d.client_ready(&c)?;
         stack.push(c.id);
-        clients.push(c);
     }
+    // W30 item 2 and W29 item 2: the same fixed-count transport conflict as
+    // launch-close-50. Keep physical samples, then all model steps and their
+    // unchanged registry, scanout and delivery checks use the actual core.
+    d.focus(&mut clients[2])?;
+    key(&mut clients[2], "a", 30)?;
+    d.use_virtual_input()?;
+    value("model-setup", ((now()-begun)/1_000_000) as i64, "ms", None);
     for step in 0..steps {
         random ^= random << 13;
         random ^= random >> 17;
@@ -316,7 +370,9 @@ fn model(steps: usize, seed: u32) -> CaseResult {
                     stack.retain(|&n| n != id);
                     minimized.retain(|&n| n != id);
                 } else {
-                    let c = Client::start(60 + step as u32)?;
+                    let mut c = prepared.remove(&step).ok_or("model fixture process missing")?;
+                    c.initialize()?;
+                    c.receive()?;
                     placed(&c)?;
                     d.client_ready(&c)?;
                     stack.push(c.id);
@@ -344,7 +400,13 @@ fn model(steps: usize, seed: u32) -> CaseResult {
             check(focused(c)?, "model top eligible id not focused")?;
             content(&mut d, c)?;
             c.clear()?;
-            key(c, "a", 30)?;
+            d.virtual_key(30)?;
+            c.await_event("model key reaches the expected focus", |e| {
+                e.kind == kind::KEY_PRESS && e.keycode == 30
+            })?;
+        }
+        if (step + 1) % 10 == 0 || step + 1 == steps {
+            value("model-steps", (step+1) as i64, "ops", None);
         }
     }
     Ok(())

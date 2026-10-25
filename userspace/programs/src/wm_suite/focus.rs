@@ -1,5 +1,8 @@
 use super::kit::*;
 
+#[path = "../bwm/input_limits.rs"]
+mod input_limits;
+
 pub fn initial_focus() -> CaseResult {
     let (_d, mut c) = one()?;
     c.await_event("initial FocusGained", |e| e.kind == kind::FOCUS_GAINED)?;
@@ -383,15 +386,29 @@ pub fn hotkey_consumed() -> CaseResult {
 pub fn super_double_tap() -> CaseResult {
     for (interval, opens) in [(400_000_000, true), (400_000_001, false)] {
         let mut clock = measure::Clock::new()?;
-        let _d = Desktop::start()?;
+        let d = Desktop::start()?;
+        let mut source = Stream::open()?;
         let mut v = Virtual::create()?;
         let before = listed()?.len();
         v.batch(&[(1, 125, 1), (1, 125, 0)], 0)?;
+        source.read_from(3, &[v.id])?;
         clock.step(1, interval)?;
         measure::acknowledged(1)?;
         v.batch(&[(1, 125, 1), (1, 125, 0)], interval)?;
+        let batch = source.read_from(3, &[v.id])?;
         clock.step(2, interval + 1)?;
         measure::acknowledged(2)?;
+        until(1000, "double-tap source batch handled", || {
+            Ok(status()?.handled_serial >= batch.last().ok_or("Super source batch missing")?.serial)
+        })?;
+        // W30: the epoch acknowledges the launch action, not the asynchronous
+        // child's REGISTER. Establish that prerequisite inside the existing
+        // case deadline before comparing the unchanged window count.
+        if !children(d.wm.pid, "blauncher")?.is_empty() {
+            until(2000, "double-tap child registered its window", || {
+                Ok(listed()?.len() > before)
+            })?;
+        }
         let windows = listed()?;
         check(
             (windows.len() > before) == opens,
@@ -472,7 +489,10 @@ pub fn lost_then_delivered() -> CaseResult {
     let (_d, mut c) = one()?;
     c.command(SET_FLAGS, flags::IGNORE_CLOSE | flags::NEVER_READ, 0)?;
     let mut sources = Vec::new();
-    for n in 1..=300 {
+    // W28: each pair produces at least two client events; exceed both
+    // retention bounds by a complete additional client ring.
+    let pairs = (input_limits::MAX_PENDING + 2 * abi::limits::EVENT_RING) as u64;
+    for n in 1..=pairs {
         v.batch(&[(1, 30, 1), (1, 30, 0)], n)?;
         sources.extend(
             stream
@@ -482,20 +502,18 @@ pub fn lost_then_delivered() -> CaseResult {
                 .map(|e| e.serial),
         );
     }
-    let rows = ledger()?;
-    let lost = sources
-        .iter()
-        .copied()
-        .find(|serial| {
-            rows.iter().any(|r| {
-                r.first().is_some_and(|s| s == &serial.to_string())
-                    && r.get(1).is_some_and(|s| s == "lost")
-            })
-        })
+    // W30: the observation must not allocate a serial string for every cell
+    // of a source-by-ledger cross product. Source serials are already sorted.
+    let rows = std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
+    let lost = rows.lines().find_map(|row| {
+        let mut fields = row.split_whitespace();
+        let serial = fields.next()?.parse::<u64>().ok()?;
+        (fields.next() == Some("lost") && sources.binary_search(&serial).is_ok()).then_some(serial)
+    })
         .ok_or("full client ring had no lost source disposition")?;
     c.command(SET_FLAGS, flags::IGNORE_CLOSE, 0)?;
     c.clear()?;
-    v.batch(&[(1, 48, 1), (1, 48, 0)], 301)?;
+    v.batch(&[(1, 48, 1), (1, 48, 0)], pairs + 1)?;
     let later = stream.read_from(3, &[v.id])?;
     c.await_event("delivery after overflow", |e| {
         e.kind == kind::KEY_PRESS && e.keycode == 48

@@ -17,6 +17,7 @@ pub mod ops;
 pub mod present;
 pub mod scene;
 pub mod status;
+pub mod policy;
 
 use alloc::{collections::BTreeMap, collections::VecDeque, sync::Arc, vec::Vec};
 
@@ -289,6 +290,9 @@ pub struct Registry {
     pub claim: Option<Claim>,
     pub epoch: u64,
     pub remnants: BTreeMap<u64, Remnant>,
+    /// Input targeting revision: geometry, stacking and visibility only.
+    /// Scene-descriptor notifications also include pixel publications.
+    pub scene_version: u64,
     pub present: present::State,
     pub snapshot: Option<scene::Reservation>,
     pub cursor: breengel_abi::Cursor,
@@ -304,6 +308,7 @@ impl Registry {
             claim: None,
             epoch: 0,
             remnants: BTreeMap::new(),
+            scene_version: 1,
             present: present::State::new(),
             snapshot: None,
             cursor: breengel_abi::Cursor { shape: 5, visible: 0, x: 0, y: 0 },
@@ -313,6 +318,11 @@ impl Registry {
 
     pub fn is_compositor(&self, caller: &Caller) -> bool {
         self.claim.is_some_and(|c| c.holder == caller.tgid)
+    }
+
+    pub fn geometry_changed(&mut self) {
+        self.scene_version = self.scene_version.checked_add(1)
+            .expect("window scene version exhausted");
     }
 
     /// The window `id` and whether `caller` may use it: `allow` is told whether the caller

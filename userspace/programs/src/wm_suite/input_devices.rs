@@ -275,12 +275,21 @@ pub fn virtio_tablet_decode() -> CaseResult {
 }
 pub fn replay_wake_fault() -> CaseResult {
     use libbreenix::test_control as tc;
-    let (_d, mut c) = one()?;
+    // W30: a running startup pixel check or a real-clock redraw is not an idle
+    // descriptor wait. Settle the client and acknowledge the cleared event log
+    // under the stepped clock before suppressing the input wake.
+    let mut clock = measure::Clock::new()?;
+    let (mut d, mut c) = one()?;
+    d.client_ready(&c)?;
     replay(1, 0, 0)?;
     c.await_event("positive completion wake", |e| {
         e.kind == kind::KEY_PRESS && e.keycode == 30
     })?;
     c.clear()?;
+    let commit = c.barrier()?;
+    d.shown_after(&c, commit)?;
+    clock.step(1, 0)?;
+    measure::acknowledged(1)?;
     let point = abi::tc_point::INPUT_WAKE_SKIPPED;
     let before = tc::fired(point)?;
     tc::arm(point, 0, 0)?;

@@ -10,7 +10,7 @@ harmless. A chord is modifiers then one key, joined by '-':
 
     modifiers  ctrl alt shift super rctrl ralt
     keys       a-z 0-9 f1-f12 left right up down pageup pagedown home end insert
-               delete enter tab backspace esc space capslock
+               delete enter tab backspace esc space capslock comma
     examples   alt-f3  ctrl-alt-f2  alt-left  alt-right  alt-f7  shift-pageup
 
 Chords go out in order, each pressed modifiers first and released in reverse.
@@ -82,7 +82,7 @@ SUITE_POINTER = re.compile(r'^SUITE ([a-z0-9-]+) HOSTPOINTER ([a-z0-9-]+/[a-z0-9
 
 MODIFIERS = ('ctrl', 'alt', 'shift', 'super', 'rctrl', 'ralt')
 NAMED = ('left', 'right', 'up', 'down', 'pageup', 'pagedown', 'home', 'end', 'insert', 'delete', 'enter', 'tab',
-         'backspace', 'esc', 'space', 'capslock')
+         'backspace', 'esc', 'space', 'capslock', 'comma')
 
 
 
@@ -162,8 +162,15 @@ class QMPKeys:
 
     def send(self, mods, key):
         qcodes = [k['data'] for k in self.keys(mods, key)]
-        self.execute('send-key', {'keys': [{'type': 'qcode', 'data': q} for q in qcodes],
-                                  'hold-time': self.hold_ms})
+        # W30: each chord must finish its releases before the next chord.
+        # send-key returns before its release timer, so adjacent repeated keys
+        # in a text request could overlap and lose a press.
+        def edge(code, down):
+            return {'type': 'key', 'data': {'down': down,
+                    'key': {'type': 'qcode', 'data': code}}}
+        self.execute('input-send-event', {'events': [edge(q, True) for q in qcodes]})
+        time.sleep(self.hold_ms / 1000)
+        self.execute('input-send-event', {'events': [edge(q, False) for q in reversed(qcodes)]})
 
     def pointer(self, x, y, buttons, wheel, axes, width=32768, height=32768):
         if axes != 'absolute' or width < 2 or height < 2 or not (0 <= x < width and 0 <= y < height):
@@ -195,7 +202,7 @@ class ParallelsKeys:
     CODES = {'ctrl': 37, 'alt': 64, 'shift': 50, 'super': 115, 'rctrl': 109, 'ralt': 113, 'esc': 9, 'tab': 23,
              'enter': 36, 'space': 65, 'capslock': 66, 'backspace': 22, 'home': 97, 'up': 98, 'pageup': 99,
              'left': 100, 'right': 102, 'end': 103, 'down': 104, 'pagedown': 105, 'insert': 106, 'delete': 107,
-             'f11': 95, 'f12': 96}
+             'f11': 95, 'f12': 96, 'comma': 59}
     ROWS = 'qwertyuiop', 'asdfghjkl', 'zxcvbnm'
     PRESS, RELEASE = 0, 0x80
 
@@ -297,7 +304,7 @@ class VNCKeys:
     SYMS = {'ctrl': 0xFFE3, 'alt': 0xFFE9, 'shift': 0xFFE1, 'super': 0xFFEB, 'rctrl': 0xFFE4, 'ralt': 0xFFEA,
             'capslock': 0xFFE5, 'enter': 0xFF0D, 'esc': 0xFF1B, 'tab': 0xFF09, 'backspace': 0xFF08, 'space': 0x20,
             'left': 0xFF51, 'up': 0xFF52, 'right': 0xFF53, 'down': 0xFF54, 'pageup': 0xFF55, 'pagedown': 0xFF56,
-            'home': 0xFF50, 'end': 0xFF57, 'insert': 0xFF63, 'delete': 0xFFFF}
+            'home': 0xFF50, 'end': 0xFF57, 'insert': 0xFF63, 'delete': 0xFFFF, 'comma': 0x2C}
 
     def __init__(self, host, port, hold_ms=100):
         self.host, self.port, self.hold_ms = host, int(port), hold_ms
@@ -407,7 +414,7 @@ class ReplayKeys:
     BITS = {'ctrl': 0x01, 'shift': 0x02, 'alt': 0x04, 'super': 0x08, 'rctrl': 0x10, 'ralt': 0x40}
     USAGES = {**{chr(ord('a') + i): 0x04 + i for i in range(26)}, **{str(i): 0x1D + i for i in range(1, 10)},
               '0': 0x27, 'enter': 0x28, 'esc': 0x29, 'backspace': 0x2A, 'tab': 0x2B, 'space': 0x2C,
-              'capslock': 0x39, **{'f%d' % i: 0x39 + i for i in range(1, 13)}, 'insert': 0x49, 'home': 0x4A,
+              'capslock': 0x39, 'comma': 0x36, **{'f%d' % i: 0x39 + i for i in range(1, 13)}, 'insert': 0x49, 'home': 0x4A,
               'pageup': 0x4B, 'delete': 0x4C, 'end': 0x4D, 'pagedown': 0x4E, 'right': 0x4F, 'left': 0x50,
               'down': 0x51, 'up': 0x52}
     HOST_KEY_GAP_MS = 10

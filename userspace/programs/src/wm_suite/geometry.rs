@@ -1,6 +1,7 @@
 use super::kit::*;
 
 pub fn drag_move() -> CaseResult {
+    let mut source = Stream::open()?;
     let (mut d, c) = one()?;
     let w = c.info()?;
     let p = (w.x + 50, w.y - 16 * d.scale);
@@ -21,7 +22,24 @@ pub fn drag_move() -> CaseResult {
     started?;
     finish_paused_gesture(&d, (p.0 + 90, p.1 + 70))?;
     until(1000, "titlebar drag published geometry", || {
+        let _ = d.output();
         Ok(c.info()?.x == w.x + 90 && c.info()?.y == w.y + 70)
+    }).map_err(|e| {
+        let after = c.info().unwrap_or(w);
+        let events = source.read_from(1, &[]).unwrap_or_default();
+        let mut point = (0, 0);
+        let mut release = point;
+        let mut held = false;
+        for event in events {
+            match (event.kind, event.code, event.value) {
+                (3, 0, x) => point.0 = x,
+                (3, 1, y) => point.1 = y,
+                (1, 0x110, 1) => held = true,
+                (1, 0x110, 0) if held => { release = point; held = false; }
+                _ => {}
+            }
+        }
+        format!("drag got ({},{}), expected (90,70); release raw {:?}; {e}", after.x-w.x, after.y-w.y, release)
     })?;
     content(&mut d, &c)
 }
@@ -56,7 +74,7 @@ pub fn resize_right() -> CaseResult {
     until(1000, "owner resized buffers published", || {
         c.snapshot()?;
         Ok((c.width, c.height) == (w.width + 80, w.height))
-    })?;
+    }).map_err(|e| format!("resize got {}x{}, expected {}x{}; {e}", c.width, c.height, w.width+80, w.height))?;
     let after = c.info()?;
     check(
         after.x == w.x && after.y == w.y,
@@ -112,6 +130,12 @@ pub fn resize_refused() -> CaseResult {
         content(&mut d, &c)?;
     }
     // An owner ignoring ResizeRequested is a separate retained-frame path.
+    // W30: finish the previous pending request through a LIST size change
+    // before starting that independent path (W5).
+    c.command(RESIZE, w.width + 1, w.height)?;
+    content(&mut d, &c)?;
+    c.command(RESIZE, w.width, w.height)?;
+    content(&mut d, &c)?;
     c.command(REFUSE, 1, 0)?;
     c.clear()?;
     drag(
@@ -150,7 +174,7 @@ pub fn resize_cross() -> CaseResult {
     c.snapshot()?;
     check(
         c.width == ((120 - 4) * d.scale) as u32,
-        "crossing right edge did not clamp to minimum content width",
+        &format!("crossing right edge got width {}, expected {}", c.width, (120-4)*d.scale),
     )?;
     content(&mut d, &c)
 }
@@ -195,6 +219,9 @@ pub fn drag_keeps_titlebar() -> CaseResult {
         b.x - 2 * d.scale <= d.width as i32 - 32 * d.scale,
         "right drag lost minimum titlebar strip",
     )?;
+    // W30: the strip assertion deliberately leaves content off-screen. Bring
+    // the window back before the unchanged whole-client scanout comparison.
+    drag(&d, ((b.x + 30).min(d.width as i32 - 20), b.y - 16 * d.scale), (200, 200))?;
     content(&mut d, &c)
 }
 fn anchored_resize(left: bool, top: bool) -> CaseResult {
@@ -253,6 +280,13 @@ pub fn resize_corners() -> CaseResult {
     placed(&c)?;
     d.client_ready(&c)?;
     for (left, top) in [(true, true), (false, true), (true, false), (false, false)] {
+        // W30: the previous top corner may reach the top-bar bound. Leave
+        // room for this corner's unchanged 20-pixel upward growth assertion.
+        let current = c.info()?;
+        if top && current.y - 34 * d.scale < 76 {
+            drag(&d, (current.x + 50, current.y - 16 * d.scale),
+                (current.x + 50, current.y - 16 * d.scale + 100))?;
+        }
         c.clear()?;
         let w = c.info()?;
         let x = if left {
@@ -307,7 +341,7 @@ pub fn resize_minimum() -> CaseResult {
     c.snapshot()?;
     check(
         (c.width, c.height) == ((116 * d.scale) as u32, (80 * d.scale) as u32),
-        "resize did not clamp to literal content minimum",
+        &format!("minimum got {}x{}, expected {}x{}", c.width, c.height, 116*d.scale, 80*d.scale),
     )?;
     content(&mut d, &c)
 }
@@ -514,6 +548,9 @@ pub fn geometry_registry() -> CaseResult {
     let (mut d, mut c) = one()?;
     let mut expected = c.info()?;
     for n in 0..8 {
+        // W30/W29: retain the first physical drag, then drive the remaining
+        // literal model steps through the same input core without host sleeps.
+        if n == 1 { d.use_virtual_input()?; }
         let p = (expected.x + 50, expected.y - 16 * d.scale);
         drag(&d, p, (p.0 + 10, p.1 + 8))?;
         expected.x += 10;

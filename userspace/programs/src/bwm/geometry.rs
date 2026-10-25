@@ -182,8 +182,9 @@ impl Damage {
 
 impl State {
     pub(super) fn drag_resize(&mut self, damage: &mut Damage) {
-                if let Some((win_idx, off_x, off_y)) = self.dragging {
-                    let new_x = self.mouse_x - off_x;
+                if let Some((id, off_x, off_y)) = self.dragging {
+                    let Some(win_idx) = self.windows.iter().position(|w| w.window_id == id) else { self.dragging = None; return; };
+                    let new_x = (self.mouse_x - off_x).clamp(px(32) as i32 - self.windows[win_idx].width as i32, self.screen_w as i32 - px(32) as i32);
                     // Clamp drag to stay below taskbar
                     let new_y = (self.mouse_y - off_y).max(px(TASKBAR_HEIGHT) as i32);
                     if new_x != self.windows[win_idx].x || new_y != self.windows[win_idx].y {
@@ -197,12 +198,16 @@ impl State {
                         if self.windows[win_idx].window_id != 0 {
                             let cx = self.windows[win_idx].content_x();
                             let cy = self.windows[win_idx].content_y();
-                            let _ = session::set_geometry(
+                            let flags = libbreenix::window::abi::geometry_flags::VISIBLE
+                                | if win_idx == self.focused_win {
+                                    libbreenix::window::abi::geometry_flags::FOCUSED
+                                } else { 0 };
+                            let _ = libbreenix::window::set_geometry(
                                 self.windows[win_idx].window_id,
                                 cx,
                                 cy,
                                 win_idx as u32,
-                                true,
+                                flags,
                             );
                         }
                         // Dirty region = union of old and new bounds
@@ -228,9 +233,10 @@ impl State {
                         damage.dirty_y1 = damage.dirty_y1.max(dr_y1 as i32);
                         self.content_dirty = true;
                     }
-                } else if let Some((win_idx, edge, anchor_x, anchor_y, _, orig_y, orig_w, orig_h)) =
+                } else if let Some((id, edge, anchor_x, anchor_y, orig_x, orig_y, orig_w, orig_h)) =
                     self.resizing
                 {
+                    let Some(win_idx) = self.windows.iter().position(|w| w.window_id == id) else { self.resizing = None; return; };
                     let dx = self.mouse_x - anchor_x;
                     let dy = self.mouse_y - anchor_y;
 
@@ -271,6 +277,8 @@ impl State {
                     if self.windows[win_idx].resize_bottom.is_some() {
                         new_h = new_h.min(orig_y + orig_h as i32 - px(TASKBAR_HEIGHT) as i32);
                     }
+                    new_w = new_w.min(self.screen_w as i32 - orig_x.max(0));
+                    new_h = new_h.min(self.screen_h as i32 - px(APPBAR_HEIGHT) as i32 - orig_y);
                     // B41: neither position nor dimensions change until LIST reports
                     // the owner's answer. LIST preserves the opposite edge atomically.
                     let width = new_w
@@ -279,6 +287,17 @@ impl State {
                     let height = new_h
                         .saturating_sub((px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2) as i32)
                         .clamp(1, 4096) as u32;
+                    let candidate = (width, height);
+                    if let Some(pending) = self.windows[win_idx].resize_pending {
+                        self.windows[win_idx].resize_desired = (candidate != pending).then_some(candidate);
+                        return;
+                    }
+                    if candidate == (self.windows[win_idx].content_width() as u32,
+                        self.windows[win_idx].content_height() as u32) {
+                        self.windows[win_idx].resize_desired = None;
+                        return;
+                    }
+                    self.windows[win_idx].resize_pending = Some(candidate);
                     send_to(&self.windows, win_idx, Input::Resize { width, height });
                 }
 

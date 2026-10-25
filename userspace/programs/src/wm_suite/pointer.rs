@@ -260,11 +260,17 @@ pub fn enter_leave() -> CaseResult {
     )
 }
 pub fn cursor_position() -> CaseResult {
-    let (mut d, c) = one()?;
+    let (mut d, mut c) = one()?;
     let w = c.info()?;
     for (x, y) in [(w.x + 30, w.y + 30), (w.x + 80, w.y + 90)] {
         d.pointer(x, y, 0, 0)?;
-        let s = d.shown(&c)?;
+        // W30: a host send is transport, not a completed pointer frame. The
+        // client's later publication puts this move before the observed frame.
+        c.await_event("cursor-position move delivered", |e| {
+            e.kind == kind::POINTER_MOVE && (e.x, e.y) == (x - w.x, y - w.y)
+        })?;
+        let commit = c.barrier()?;
+        let s = d.shown_after(&c, commit)?;
         check(
             s.pixel(x, y)? == 0xff000000,
             "cursor tip missing at injected physical position",

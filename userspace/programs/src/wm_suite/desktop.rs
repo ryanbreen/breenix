@@ -604,6 +604,7 @@ pub struct Desktop {
     pub width: u32,
     pub height: u32,
     pub scale: i32,
+    virtual_input: std::cell::RefCell<Option<(super::input::Virtual, super::input::Stream)>>,
 }
 impl Desktop {
     pub fn start() -> Result<Self, String> {
@@ -642,6 +643,7 @@ impl Desktop {
             width: mode.width,
             height: mode.height,
             scale: mode.scale as i32,
+            virtual_input: std::cell::RefCell::new(None),
         };
         let ready = until(4000, "bwm first completed desktop", || {
             if let Some(status) = d.wm.status()? {
@@ -721,9 +723,11 @@ impl Desktop {
             &format!("bwm composite of client {} commit {}", c.id, commit),
             || {
                 if let Some(status) = self.wm.status()? {
+                    let log = self.output();
+                    let tail = log.char_indices().rev().nth(110).map_or(0, |(at, _)| at);
                     return Err(format!(
                         "desktop died, wait status {status}; {}",
-                        self.output()
+                        &log[tail..]
                     ));
                 }
                 match Screen::read() {
@@ -759,6 +763,29 @@ impl Desktop {
             "pointer outside screen",
         )
         .map_err(|e| format!("{e:?}"))?;
+        if let Some((input, stream)) = self.virtual_input.borrow_mut().as_mut() {
+            let axis = |v: i32, extent: u32| {
+                ((v as i64 * 32767 + extent as i64 - 2) / (extent as i64 - 1)) as i32
+            };
+            let mut events = vec![(3, 0, axis(x, self.width)), (3, 1, axis(y, self.height))];
+            for (mask, code) in [(1, 0x110), (2, 0x111), (4, 0x112)] {
+                events.push((1, code, i32::from(buttons & mask != 0)));
+            }
+            if wheel != 0 {
+                events.push((2, 8, wheel));
+            }
+            input.batch(&events, now())?;
+            let source = stream.read_from(events.len() + 1, &[input.id])?;
+            let last = source
+                .last()
+                .ok_or("virtual pointer source batch missing")?
+                .serial;
+            return until(1000, "bwm completed model pointer batch", || {
+                let mut status = abi::CompositorStatus::ZERO;
+                window::call(op::COMPOSITOR_STATUS, &mut status).map_err(|e| e.to_string())?;
+                Ok(status.handled_serial >= last)
+            });
+        }
         breenix_suite::suite::hostpointer(
             x as u32,
             y as u32,
@@ -771,9 +798,32 @@ impl Desktop {
     }
     pub fn click(&self, x: i32, y: i32) -> Result<(), String> {
         self.pointer(x, y, 1, 0)?;
+        if self.uses_virtual_input() {
+            return self.pointer(x, y, 0, 0);
+        }
         time::sleep_ms(100).map_err(|e| e.to_string())?;
         self.pointer(x, y, 0, 0)?;
         time::sleep_ms(100).map_err(|e| e.to_string())
+    }
+    /// W30/W29: fixed-count operation models use the production in-guest input
+    /// path after their physical samples, without consuming host request slots.
+    pub fn use_virtual_input(&mut self) -> Result<(), String> {
+        *self.virtual_input.get_mut() = Some((
+            super::input::Virtual::create()?,
+            super::input::Stream::open()?,
+        ));
+        Ok(())
+    }
+    pub fn uses_virtual_input(&self) -> bool {
+        self.virtual_input.borrow().is_some()
+    }
+    pub fn virtual_key(&self, code: u16) -> Result<(), String> {
+        self.virtual_input
+            .borrow_mut()
+            .as_mut()
+            .ok_or("virtual input is not enabled")?
+            .0
+            .batch(&[(1, code, 1), (1, code, 0)], now())
     }
     pub fn focus(&mut self, c: &mut Client) -> Result<(), String> {
         until(2000, "bwm assigned client geometry", || {
@@ -782,15 +832,83 @@ impl Desktop {
         })?;
         c.clear()?;
         let w = c.info()?;
-        self.pointer(w.x + 20, w.y + 20, 1, 0)?;
+        // W30: raising a different client can cover the old fixed (+20,+20)
+        // point. Choose exposed content from the current stack, including the
+        // higher clients' chrome, before requiring positive target delivery.
+        let stack = listed()?;
+        let inset = if w.title.first() == Some(&1) {
+            0
+        } else {
+            6 * self.scale
+        };
+        let left = (w.x + inset).max(0);
+        let top = w.y.max(28 * self.scale);
+        let right = (w.x + w.width as i32 - inset).min(self.width as i32);
+        let bottom = (w.y + w.height as i32 - inset).min(self.height as i32 - 36 * self.scale);
+        let covers: Vec<_> = stack
+            .iter()
+            .filter(|other| {
+                (other.z, other.id) > (w.z, w.id)
+                    && other.flags & abi::win_flags::VISIBLE != 0
+                    && other.flags & abi::win_flags::MINIMIZED == 0
+            })
+            .map(|other| {
+                let border = if other.title.first() == Some(&1) {
+                    0
+                } else {
+                    2 * self.scale
+                };
+                let title = if border == 0 { 0 } else { 34 * self.scale };
+                let grab = if border == 0 { 0 } else { 8 * self.scale };
+                (
+                    other.x - border - grab,
+                    other.y - title - grab,
+                    other.x + other.width as i32 + border + grab,
+                    other.y + other.height as i32 + border + grab,
+                )
+            })
+            .collect();
+        let mut xs = vec![w.x + 20, left, right - 1];
+        let mut ys = vec![w.y + 20, top, bottom - 1];
+        for &(x0, y0, x1, y1) in &covers {
+            xs.extend([x0 - 1, x1]);
+            ys.extend([y0 - 1, y1]);
+        }
+        let (x, y) = ys
+            .iter()
+            .find_map(|&y| {
+                xs.iter()
+                    .copied()
+                    .find(|&x| {
+                        x >= left
+                            && x < right
+                            && y >= top
+                            && y < bottom
+                            && !covers
+                                .iter()
+                                .any(|&(x0, y0, x1, y1)| x >= x0 && x < x1 && y >= y0 && y < y1)
+                    })
+                    .map(|x| (x, y))
+            })
+            .ok_or("focus fixture target has no exposed content")?;
+        self.pointer(x, y, 1, 0)?;
         let pressed = c.await_event("positive click delivery to target client", |e| {
             e.kind == abi::event_kind::POINTER_BUTTON && e.pressed == 1
         });
         // Release even when the prerequisite failed, so the next case cannot
         // inherit a held hardware button. Fast clicks have their own case.
-        let released = self.pointer(w.x + 20, w.y + 20, 0, 0);
-        pressed?;
+        let released = self.pointer(x, y, 0, 0);
+        let pressed = pressed?;
         released?;
+        // W30: the next scenario may clear its event log immediately. Finish
+        // this setup's capture before that clear, rather than letting its
+        // asynchronous host release appear as the scenario's first release.
+        c.await_event("focus prerequisite released its pointer capture", |e| {
+            e.kind == abi::event_kind::POINTER_BUTTON
+                && e.button == 0x110
+                && e.pressed == 0
+                && e.serial > pressed.serial
+        })?;
         Ok(())
     }
 }
