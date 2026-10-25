@@ -1025,11 +1025,12 @@ fn vendor_name(vendor_id: u16) -> &'static str {
     }
 }
 
-/// Report a storage or network function by its class code (`device_class`).
+/// Report storage, network and display functions by class code (`device_class`).
 fn report_class(dev: &Device) {
     let class = match dev.class {
         DeviceClass::MassStorage => super::device_class::Class::Storage,
         DeviceClass::Network => super::device_class::Class::Network,
+        DeviceClass::Display => super::device_class::Class::Display,
         _ => return,
     };
     super::device_class::found(
@@ -1426,4 +1427,38 @@ fn dump_function(dev: &Device) {
             bar0.size,
             dev.interrupt_line
     );
+    if dev.class == DeviceClass::Display {
+        dump_display(dev);
+    }
+}
+
+/// Firmware-owned display resources, read without changing the display mode or
+/// enabling DMA or interrupts. Subsystem IDs are the type-0 header's dword 0x2c
+/// (PCI Local Bus 3.0, 6.2.4). Link fields are PCI Express Base Specification
+/// 4.0 section 7.5.3, Link Capabilities (+0x0c) and Link Status (+0x12), bits 3:0 and 9:4.
+#[cfg(target_arch = "x86_64")]
+fn dump_display(dev: &Device) {
+    let subsystem = pci_read_config_dword(dev.bus, dev.device, dev.function, 0x2c);
+    crate::serial_println!(
+        "PCI_DISPLAY {:02x}:{:02x}.{} subsystem={:04x}:{:04x} irq={:#04x} pin={} bars={}",
+        dev.bus, dev.device, dev.function, subsystem as u16, (subsystem >> 16) as u16,
+        dev.interrupt_line, dev.interrupt_pin, dev.bars.iter().filter(|bar| bar.is_valid()).count()
+    );
+    for (index, bar) in dev.bars.iter().enumerate().filter(|(_, bar)| bar.is_valid()) {
+        crate::serial_println!(
+            "PCI_DISPLAY_BAR {:02x}:{:02x}.{} index={} address={:#x} size={:#x} kind={} prefetch={} width={}",
+            dev.bus, dev.device, dev.function, index, bar.address, bar.size,
+            if bar.is_io { "io" } else { "mem" }, u8::from(bar.prefetchable),
+            if bar.is_64bit { 64 } else { 32 }
+        );
+    }
+    if let Some(offset) = dev.find_capability(0x10).filter(|offset| *offset <= 0xe8) {
+        let cap = pci_read_config_dword(dev.bus, dev.device, dev.function, offset + 0x0c);
+        let status = pci_read_config_word(dev.bus, dev.device, dev.function, offset + 0x12);
+        crate::serial_println!(
+            "PCI_DISPLAY_LINK {:02x}:{:02x}.{} cap={:#x} status={:#x} speed={} width={} max_speed={} max_width={}",
+            dev.bus, dev.device, dev.function, cap, status,
+            status & 0x0f, (status >> 4) & 0x3f, cap & 0x0f, (cap >> 4) & 0x3f
+        );
+    }
 }

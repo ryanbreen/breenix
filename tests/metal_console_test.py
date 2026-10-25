@@ -33,6 +33,58 @@ class ConsoleTest(unittest.TestCase):
         driver.console_send = Mock()
         return driver
 
+    def test_replay_ack_requires_the_current_complete_capture_line(self):
+        driver = self.driver()
+        driver.checkpoint = Mock()
+        with tempfile.TemporaryDirectory() as tmp:
+            driver.dir = Path(tmp)
+            raw = driver.dir / 'serial.raw'
+            raw.write_bytes(b'\r\nBXKEY_ACK 0000000000000001\r\n')
+            self.assertTrue(driver.wait_replay_ack(1))
+            for bad in (b'BXKEY_ACK 0000000000000000\r\n', b'BXKEY_ACK 0000000000000001'):
+                raw.write_bytes(bad)
+                with patch.object(boot.time, 'monotonic', side_effect=[0, 0, 1]), patch.object(boot.time, 'sleep'):
+                    self.assertFalse(driver.wait_replay_ack(1))
+
+    def test_lost_ack_retries_the_same_packet_and_missing_ack_fails(self):
+        driver = self.driver()
+        line = boot.hostkeys.ReplayKeys.line((), 'v')
+        with patch.object(driver, 'wait_replay_ack', side_effect=[False, True]):
+            driver.replay_send(line)
+        self.assertEqual(driver.console_send.call_count, 2)
+        first, second = driver.console_send.call_args_list
+        self.assertEqual(first, second)
+        self.assertTrue(first.args[0].startswith('BXKEY @0000000000000001:'))
+        driver.console_send.reset_mock()
+        with patch.object(driver, 'wait_replay_ack', return_value=False):
+            with self.assertRaisesRegex(RuntimeError, 'not acknowledged'):
+                driver.replay_send(line)
+        self.assertEqual(driver.console_send.call_count, 3)
+
+    def test_suite_replay_chunks_fit_the_uart_without_interactive_delays(self):
+        driver = self.driver()
+        driver.args.mode = 'suite'
+        driver.tmux = ['tmux', '-L', 'fixture']
+        line = boot.hostkeys.ReplayKeys.line((), 'v')
+        with patch.object(boot.subprocess, 'run') as run, patch.object(boot.time, 'sleep') as pause:
+            boot.Driver.console_send(driver, line, paced=True)
+        loads = [call.kwargs['input'] for call in run.call_args_list if 'load-buffer' in call.args[0]]
+        self.assertEqual(b''.join(loads), (line + '\r').encode())
+        self.assertTrue(all(len(chunk) == 8 for chunk in loads[:-1]))
+        self.assertTrue(all(call.args == (0.01,) for call in pause.call_args_list))
+
+    def test_suite_replay_uses_the_paced_sol_transport(self):
+        driver = self.driver()
+        driver.args.mode = 'suite'
+        driver.kernel_started = True
+        driver.hostkey_watcher = None
+        with patch.object(boot.hostkeys.time, 'sleep'), patch.object(driver, 'wait_replay_ack', return_value=True):
+            driver.on_hostkey_line('SUITE console HOSTKEY getty/independent-sessions seq=1 keys=v,t,enter')
+        self.assertEqual(driver.console_send.call_count, 3)
+        for call in driver.console_send.call_args_list:
+            self.assertTrue(call.args[0].startswith('BXKEY '))
+            self.assertEqual(call.kwargs, {'paced': True})
+
     def test_wrong_password_right_password_computation_and_reacquisition_are_required(self):
         driver = self.driver()
         # A prompt or an echoed command cannot stand in for the calculation.

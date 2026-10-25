@@ -121,6 +121,9 @@ static HOST_KEYS_ARMED: AtomicBool = AtomicBool::new(false);
 /// Reports waiting for the worker, oldest first.
 #[cfg(target_arch = "x86_64")]
 static HOST_KEY_REPORTS: spin::Mutex<VecDeque<[u8; host_keys::REPORT_LEN]>> = spin::Mutex::new(VecDeque::new());
+/// Last numbered packet queued by the single serial command task.
+#[cfg(target_arch = "x86_64")]
+static HOST_KEY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// Reports that may wait at once: a typed line of many chords, with room to spare.
 #[cfg(target_arch = "x86_64")]
 const HOST_KEY_BACKLOG: usize = 256;
@@ -159,7 +162,14 @@ pub fn host_key_line(line: Result<host_keys::Reports, &'static str>) {
             return;
         }
     };
-    {
+    let enqueue = match reports.enqueue_after(HOST_KEY_SEQUENCE.load(Ordering::Acquire)) {
+        Ok(enqueue) => enqueue,
+        Err(error) => {
+            log::warn!("[usb] host key line refused: {error}");
+            return;
+        }
+    };
+    if enqueue {
         let mut queue = HOST_KEY_REPORTS.lock();
         if queue.len() + reports.as_slice().len() > HOST_KEY_BACKLOG {
             drop(queue);
@@ -167,8 +177,14 @@ pub fn host_key_line(line: Result<host_keys::Reports, &'static str>) {
             return;
         }
         queue.extend(reports.as_slice().iter().copied());
+        if let Some(seq) = reports.sequence {
+            HOST_KEY_SEQUENCE.store(seq, Ordering::Release);
+        }
     }
     request(&HOST_KEYS);
+    if let Some(seq) = reports.sequence {
+        crate::serial_println!("\nBXKEY_ACK {:016x}", seq);
+    }
 }
 
 /// Prepare input before init starts getty. Only measured boot targets request

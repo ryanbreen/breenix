@@ -9,6 +9,8 @@
 //!
 //! - found: bus enumeration saw a device of the class (a PCI class code, a
 //!   VirtIO MMIO device ID, or a platform controller whose registers answer).
+//! - display found: enumeration saw a display-class function.
+//! - display initialized: the firmware framebuffer attached to that function.
 //! - storage initialized: a storage driver attached at least one disk.
 //! - storage read: a block read through `BlockDevice` completed.
 
@@ -19,6 +21,7 @@ use core::fmt;
 pub enum Class {
     Storage,
     Network,
+    Display,
 }
 
 fn line(event: &str, args: fmt::Arguments) {
@@ -46,7 +49,14 @@ pub fn found(class: Class, args: fmt::Arguments) {
             #[cfg(target_arch = "aarch64")]
             screen(crate::console::splash::Stage::NetworkFound);
         }
+        Class::Display => line("display found", args),
     }
+}
+
+/// The console adopted the memory BAR containing the firmware framebuffer.
+#[cfg(target_arch = "x86_64")]
+pub fn display_initialized(args: fmt::Arguments) {
+    line("display initialized", args);
 }
 
 /// `driver` attached `disks` storage disks. Returns without a line when `disks` is 0.

@@ -211,16 +211,16 @@ pub fn attach(display: &Linear, pixel_format: bootloader_api::info::PixelFormat,
         // SAFETY: the active tables, read through the physical memory map.
         let mapper = unsafe { crate::memory::paging::get_mapper_with_offset(offset) };
         let first = mapper.translate_addr(x86_64::VirtAddr::new(display.buffer as u64));
-        let last = mapper.translate_addr(x86_64::VirtAddr::new(display.buffer as u64 + layout.bytes() as u64 - 1));
+        let last = mapper.translate_addr(x86_64::VirtAddr::new(display.buffer as u64 + display.len as u64 - 1));
         match (first, last) {
-            (Some(first), Some(last)) if last.as_u64() - first.as_u64() == layout.bytes() as u64 - 1 => first.as_u64(),
+            (Some(first), Some(last)) if last.as_u64() - first.as_u64() == display.len as u64 - 1 => first.as_u64(),
             _ => {
                 log::warn!("[fbcon] no screen console: the framebuffer mapping is not physically contiguous");
                 return None;
             }
         }
     };
-    let end = phys + layout.bytes() as u64;
+    let end = phys + display.len as u64;
     let bar = crate::drivers::pci::get_devices().and_then(|devices| {
         devices.into_iter().find_map(|device| {
             let index = device.bars.iter().position(|bar| {
@@ -235,13 +235,14 @@ pub fn attach(display: &Linear, pixel_format: bootloader_api::info::PixelFormat,
     };
     let bar = device.bars[index];
     log::info!(
-        "[fbcon] framebuffer in display BAR: {}x{} {:?} {} bytes/pixel stride {} at {:#x}, {:02x}:{:02x}.{} {:04x}:{:04x} class {:02x}/{:02x} BAR{} {:#x}/{:#x}{}",
+        "[fbcon] framebuffer in display BAR: {}x{} {:?} {} bytes/pixel stride {} at {:#x} length {}, {:02x}:{:02x}.{} {:04x}:{:04x} class {:02x}/{:02x} BAR{} {:#x}/{:#x}{}",
         layout.width,
         layout.height,
         pixel_format,
         layout.bytes_per_pixel,
         stride,
         phys,
+        display.len,
         device.bus,
         device.device,
         device.function,
@@ -255,6 +256,10 @@ pub fn attach(display: &Linear, pixel_format: bootloader_api::info::PixelFormat,
         if bar.prefetchable { " prefetchable" } else { "" }
     );
     display.locate(phys, Place::Bar { bus: device.bus, device: device.device, function: device.function, index });
+    crate::drivers::device_class::display_initialized(format_args!(
+        "pci {:02x}:{:02x}.{} [{:04x}:{:04x}] driver=firmware-framebuffer BAR{}",
+        device.bus, device.device, device.function, device.vendor_id, device.device_id, index
+    ));
     let write_combining = map_write_combining(bar.address, bar.address + bar.size, bar.prefetchable);
     Some(Attached { write_combining })
 }

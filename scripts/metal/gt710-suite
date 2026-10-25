@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""E19's firmware and PCI-display cases, judged from a boot's retained capture."""
+import re
+import json
+from pathlib import Path
+import runpy
+import tempfile
+
+CATEGORIES = {
+    'firmware': (
+        ('mode', 'The firmware framebuffer report gives its mode, pixel format, pitch, base and mapped size'),
+        ('owner', 'The whole firmware framebuffer lies in the reported GT 710 memory BAR, not the embedded display'),
+    ),
+    'console': (
+        ('acceptance', 'The same GT 710 capture passes firmware ownership, display claim, screen read-back and the complete E16 console suite'),
+    ),
+    'device': (
+        ('identity', 'The PCI report identifies 10de:128b with subsystem 1462:8c93 and its interrupt line'),
+        ('bars-link', 'The PCI report lists the display BARs and the negotiated PCIe link from its capability registers'),
+        ('claimed', 'Display discovery and the firmware framebuffer claim name the same GT 710 function'),
+    ),
+}
+BDF = r'[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]'
+HEX = r'0x[0-9a-f]+'
+FB = (r'\[fbcon\] framebuffer in display BAR: (\d+)x(\d+) (Rgb|Bgr) ([34]) bytes/pixel stride (\d+) at (' + HEX + r') length (\d+), (' + BDF + r') ([0-9a-f]{4}:[0-9a-f]{4}) class 03/[0-9a-f]{2} BAR([0-5]) (' + HEX + r')/(' + HEX + r') prefetchable$')
+
+
+def one(pattern, serial, why):
+    matches = list(pattern.finditer(serial) if hasattr(pattern, 'finditer') else re.finditer(pattern, serial, re.M))
+    if len(matches) != 1:
+        raise ValueError(why + ': expected one record, got ' + str(len(matches)))
+    return matches[0]
+
+
+def framebuffer(serial):
+    m = one(FB, serial, 'firmware framebuffer description')
+    width, height, fmt, bpp, stride, base, size, bdf, ident, index, bar, span = m.groups()
+    return dict(width=int(width), height=int(height), fmt=fmt, bpp=int(bpp), stride=int(stride),
+                base=int(base, 16), size=int(size), bdf=bdf, ident=ident, index=int(index),
+                bar=int(bar, 16), span=int(span, 16))
+
+
+def pci(serial):
+    m = one(r'^PCI_FN (' + BDF + r') 10de:128b class=03/00 bar0=(' + HEX + r')/(' + HEX + r') irq=(' + HEX + r')$', serial, 'GT 710 PCI function')
+    return m[1], int(m[2], 16), int(m[3], 16), int(m[4], 16)
+
+
+def check_case(category, case, serial):
+    if category == 'console':
+        if case != 'acceptance':
+            raise ValueError('unknown console case')
+        for group in ('firmware', 'device'):
+            for name, _ in CATEGORIES[group]:
+                check_case(group, name, serial)
+        if not re.search(r'\[fbcon\] screen read back identical: [1-9][0-9]* pixel rows, [1-9][0-9]* glyph cells match the font, sha256 [0-9a-f]{64}$', serial, re.M):
+            raise ValueError('missing screen and font read-back')
+        root = Path(__file__).resolve().parents[2]
+        verdict = runpy.run_path(str(root / 'scripts/suite-verdict.py'))['verdict']
+        manifest = json.loads((root / 'docs/suites/console.json').read_text())
+        with tempfile.TemporaryDirectory() as tmp:
+            capture = Path(tmp) / 'serial.txt'
+            capture.write_text(serial)
+            passed, reason = verdict(manifest, capture, [capture])
+        if not passed:
+            raise ValueError('E16 console: ' + reason)
+    elif category == 'firmware':
+        f = framebuffer(serial)
+        if case == 'mode':
+            if not (0 < f['width'] <= f['stride'] and f['height'] > 0 and f['base'] > 0
+                    and f['size'] >= f['stride'] * f['height'] * f['bpp']):
+                raise ValueError('framebuffer geometry or pitch exceeds the handed-off mapping')
+        elif case == 'owner':
+            bdf, _, _, _ = pci(serial)
+            if not (f['ident'] == '10de:128b' and f['bdf'] == bdf
+                    and f['bar'] <= f['base'] and f['base'] + f['size'] <= f['bar'] + f['span']):
+                raise ValueError('firmware framebuffer is not wholly inside the GT 710 BAR')
+            bar = one(r'^PCI_DISPLAY_BAR ' + bdf + r' index=' + str(f['index'])
+                      + r' address=(' + HEX + r') size=(' + HEX + r') kind=mem prefetch=1 width=(32|64)$', serial, 'framebuffer PCI BAR')
+            if (int(bar[1], 16), int(bar[2], 16)) != (f['bar'], f['span']):
+                raise ValueError('framebuffer owner and PCI BAR census disagree')
+        else:
+            raise ValueError('unknown firmware case')
+    elif category == 'device':
+        bdf, bar0, size0, irq = pci(serial)
+        if case == 'identity':
+            m = one(r'^PCI_DISPLAY ' + bdf + r' subsystem=1462:8c93 irq=(' + HEX + r') pin=([0-4]) bars=([1-6])$', serial, 'GT 710 subsystem and interrupt')
+            if int(m[1], 16) != irq:
+                raise ValueError('PCI census and display interrupt line disagree')
+        elif case == 'bars-link':
+            m = one(r'^PCI_DISPLAY ' + bdf + r' subsystem=1462:8c93 irq=' + HEX + r' pin=[0-4] bars=([1-6])$', serial, 'display BAR count')
+            bars = list(re.finditer(r'^PCI_DISPLAY_BAR ' + bdf + r' index=([0-5]) address=(' + HEX + r') size=(' + HEX + r') kind=(mem|io) prefetch=([01]) width=(32|64)$', serial, re.M))
+            if len(bars) != int(m[1]) or len({b[1] for b in bars}) != len(bars):
+                raise ValueError('missing or duplicated display BARs')
+            if not any(b[1] == '0' and (int(b[2], 16), int(b[3], 16)) == (bar0, size0) for b in bars):
+                raise ValueError('BAR0 differs from the PCI function census')
+            for b in bars:
+                if int(b[2], 16) == 0 or int(b[3], 16) == 0:
+                    raise ValueError('display BAR is unassigned or has no measured extent')
+            link = one(r'^PCI_DISPLAY_LINK ' + bdf + r' cap=(' + HEX + r') status=(' + HEX + r') speed=(\d+) width=(\d+) max_speed=(\d+) max_width=(\d+)$', serial, 'display PCIe link')
+            cap, status = int(link[1], 16), int(link[2], 16)
+            values = tuple(int(link[i]) for i in range(3, 7))
+            if values != (status & 15, (status >> 4) & 63, cap & 15, (cap >> 4) & 63):
+                raise ValueError('PCIe link fields differ from their raw registers')
+            speed, width, max_speed, max_width = values
+            if not (1 <= speed <= max_speed <= 7 and width in (1, 2, 4, 8, 12, 16, 32) and width <= max_width):
+                raise ValueError('PCIe link is down or its reported parameters are invalid')
+        elif case == 'claimed':
+            one(r'\[devices\] display found: pci ' + bdf + r' \[10de:128b\] subclass 0x00$', serial, 'display class discovery')
+            f = framebuffer(serial)
+            one(r'\[devices\] display initialized: pci ' + bdf + r' \[10de:128b\] driver=firmware-framebuffer BAR' + str(f['index']) + r'$', serial, 'firmware display claim')
+            if f['bdf'] != bdf:
+                raise ValueError('claimed function does not own the console framebuffer')
+        else:
+            raise ValueError('unknown device case')
+    else:
+        raise ValueError('unknown category')
+
+
+def cases(category, serial):
+    results = []
+    for name, title in CATEGORIES[category]:
+        try:
+            check_case(category, name, serial)
+            result, reason = 'PASS', ''
+        except ValueError as error:
+            result, reason = 'FAIL', str(error)
+        results.append(dict(id=category + '/' + name, title=title, result=result, reason=reason))
+    return results
+
+
+def validate_manifest(manifest):
+    expected = [(cat, [(name, title) for name, title in entries]) for cat, entries in CATEGORIES.items()]
+    actual = [(cat['id'], [(case['id'], case['title']) for case in cat['cases']]) for cat in manifest['categories']]
+    if manifest.get('id') != 'gt710' or actual != expected:
+        raise ValueError('GT 710 case table differs from its manifest')
+
+
+def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
+    validate_manifest(manifest)
+    category = records.get('milestone', '').removeprefix('metal-gt710/')
+    if category not in CATEGORIES or records.get('milestone') != 'metal-gt710/' + category:
+        raise ValueError('unknown GT 710 milestone')
+    measures = [m['measure'] for e in effort_path['efforts'] if e['id'] == 'metal-gt710'
+                for m in e['milestones'] if m['id'] == category]
+    if measures != [dict(suite='gt710', categories=[category])]:
+        raise ValueError('milestone must measure its complete populated category')
+    if (not re.fullmatch('[0-9a-f]{40}', sha or '') or boot.get('toolsCommit') != sha
+            or boot.get('platform') != 'metal' or boot.get('arch') != 'x86_64'
+            or boot.get('evidenceEligible') is not True or boot.get('kind') not in ('boot', 'persistent')
+            or boot.get('mode') not in ('default', 'console', 'suite', 'persistent')
+            or boot.get('bootedCommit', sha) != sha):
+        raise ValueError('GT 710 evidence needs this kernel and tools in an eligible metal boot')
+    if records.get('boot') != boot.get('id') or records.get('commit') != sha:
+        raise ValueError('GT 710 records belong to another boot or commit')
+    if records.get('cases') != cases(category, serial):
+        raise ValueError('GT 710 results differ from the captured evidence')
+    if any(c['result'] != 'PASS' for c in records['cases']):
+        raise ValueError('one or more ' + category + ' cases failed')
+    if any(re.search(p, serial) for p in fatal_patterns):
+        raise ValueError('fatal kernel output')
+    return category + ': ' + str(len(CATEGORIES[category])) + ' cases passed'
+
+
+def record_capture(directory, sha):
+    """Recompute using the scorer and E16 files retained beside this capture."""
+    directory = Path(directory)
+    read = lambda name: json.loads((directory / name).read_text())
+    boot = read('run.json')
+    serial = (directory / 'serial.txt').read_text()
+    manifest = read('definition/docs/suites/gt710.json')
+    effort = read('definition/docs/efforts/metal.json')
+    fatal = read('definition/docs/boot-path.json')['fatal'] + [r'KERNEL PANIC:']
+    passed = True
+    for category in CATEGORIES:
+        if category == 'console' and (boot.get('mode') != 'suite' or boot.get('suite') != 'console'):
+            continue
+        records = dict(boot=boot['id'], commit=sha, milestone='metal-gt710/' + category,
+                       cases=cases(category, serial))
+        for c in records['cases']:
+            print('SUITE gt710 CASE ' + c['id'] + ' ' + c['result'] + ' ms=0' + (' msg=' + c['reason'] if c['reason'] else ''), flush=True)
+        try:
+            score(manifest, effort, records, serial, boot, sha, fatal)
+        except ValueError as error:
+            passed = False
+            print(str(error), flush=True)
+        (directory / ('gt710-' + category + '.json')).write_text(json.dumps(records) + '\n')
+    return 0 if passed else 1
+
+
+def main():
+    import argparse
+    import json
+    from pathlib import Path
+    import runpy
+    import sys
+    parser = argparse.ArgumentParser(description='Score E19 firmware and PCI-device cases from a completed metal boot')
+    parser.add_argument('--check-manifest', type=Path)
+    parser.add_argument('--boot')
+    parser.add_argument('--sha')
+    args = parser.parse_args()
+    if args.check_manifest:
+        validate_manifest(json.loads(args.check_manifest.read_text()))
+        return 0
+    if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot or '') or not re.fullmatch('[a-f0-9]{40}', args.sha or ''):
+        parser.error('--boot ID and --sha full commit required')
+    runner = runpy.run_path(str(Path(__file__).with_name('metal-run')))
+    env = runner['host_env']()
+    directory = runner['STATE'] + '/boots/' + args.boot
+
+    def read(name):
+        result = runner['in_metal'](env, 'cat', directory + '/' + name, capture_output=True, text=True, check=True)
+        return result.stdout
+
+    boot = json.loads(read('run.json'))
+    if (not read('ended').strip() or read('exit-status').strip() != '0' or read('dirty').strip() != '0'
+            or read('commit').strip() != args.sha):
+        raise ValueError('a completed, clean, successful boot of the requested commit is required')
+    if any(json.loads(line).get('event') == 'console-gap' for line in read('events.jsonl').splitlines()):
+        raise ValueError('capture has a console gap')
+    result = runner['in_metal'](env, 'python3', '-c',
+        'import runpy,sys;from pathlib import Path;'
+        'p=Path(sys.argv[1]);a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));'
+        'sys.exit(a["record_capture"](p,sys.argv[2]))', directory, args.sha)
+    passed = result.returncode == 0
+    # Rescore the retained facts, without executing another boot or suite.
+    runner['in_metal'](env, 'python3', '-c',
+        'import sys,json;sys.path.insert(0,"/opt/breenix-metal");import metal_score,metal_lib as m;'
+        'p=m.boot_dir(sys.argv[1]);m.write_json(p/"milestone-verdict.json",metal_score.score(p));'
+        '\nwith m.locked("finished"):\n entries=[json.loads(l) for l in (m.STATE/"finished.jsonl").read_text().splitlines()];'
+        'm.append_jsonl(m.STATE/"finished.jsonl",dict(id=p.name,seq=max(e["seq"] for e in entries)+1))',
+        args.boot, check=True)
+    return 0 if passed else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

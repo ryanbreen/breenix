@@ -32,6 +32,7 @@ import sys
 import tempfile
 import threading
 import time
+import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metal_lib as m  # noqa: E402
@@ -975,12 +976,15 @@ class Driver:
         the shell echoes (#2105)."""
         # stdin transport keeps a password out of process argv, events and logs.
         data = (text + '\r').encode()
-        step = 4 if paced else len(data)
+        # HID replay has no terminal echo and must fit the getty cases' deadlines.
+        # Keep its bursts below a 16550 FIFO while avoiding one tmux pair per four bytes.
+        replay = self.args.mode == 'suite'
+        step = (8 if replay else 4) if paced else len(data)
         for at in range(0, len(data), step):
             subprocess.run(self.tmux + ['load-buffer', '-'], input=data[at:at + step], check=True, capture_output=True)
             subprocess.run(self.tmux + ['paste-buffer', '-d', '-t', 'sol'], check=True, capture_output=True)
             if paced:
-                time.sleep(0.04)
+                time.sleep(0.01 if replay else 0.04)
 
     def console_account(self):
         """The account staging gave the console password to (metal_root.console_account): the users suite's wheel
@@ -1383,6 +1387,33 @@ class Driver:
             needed.add('console-intent')
         return needed <= self.seen
 
+    def wait_replay_ack(self, sequence):
+        marker = ('BXKEY_ACK %016x' % sequence).encode()
+        deadline = time.monotonic() + 0.35
+        raw = self.dir / 'serial.raw'
+        while time.monotonic() < deadline:
+            self.checkpoint()
+            with raw.open('rb') as stream:
+                stream.seek(max(0, raw.stat().st_size - 65536))
+                if re.search(rb'(?:^|[\r\n])' + marker + rb'\r?\n', stream.read()):
+                    return True
+            time.sleep(0.01)
+        return False
+
+    def replay_send(self, line):
+        # A UART/SOL loss must not silently remove a chord. Retry the numbered
+        # packet; the kernel acknowledges duplicates without queueing them again.
+        sequence = getattr(self, 'hostkey_sequence', 0) + 1
+        self.hostkey_sequence = sequence
+        body = '%016x %s' % (sequence, line.removeprefix('BXKEY '))
+        packet = 'BXKEY @%016x:%08x %s' % (sequence, zlib.crc32(body.encode()), line.removeprefix('BXKEY '))
+        for attempt in range(3):
+            self.console_send(packet, paced=True)
+            if self.wait_replay_ack(sequence):
+                return
+            self.event('hostkey-retry', sequence=sequence, attempt=attempt + 1)
+        raise RuntimeError('host key packet %d was not acknowledged' % sequence)
+
     def on_hostkey_line(self, line):
         """A suite case's HOSTKEY record: type its chords on the serial console as HID boot reports, which the
         kernel replays through its USB boot keyboard (scripts/hostkeys.py, ReplayKeys). Each record is answered
@@ -1390,7 +1421,7 @@ class Driver:
         if self.args.mode != 'suite' or not self.kernel_started or self.fatal_at is not None:
             return
         if self.hostkey_watcher is None:
-            self.hostkey_watcher = hostkeys.Watcher(hostkeys.ReplayKeys(self.console_send), metal_root.HOSTKEYS,
+            self.hostkey_watcher = hostkeys.Watcher(hostkeys.ReplayKeys(self.replay_send), metal_root.HOSTKEYS,
                                                     log=lambda message: self.event('hostkeys', message=message))
         self.hostkey_watcher.line(line)
 

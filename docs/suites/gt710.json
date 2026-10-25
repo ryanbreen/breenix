@@ -1,0 +1,52 @@
+{
+  "id": "gt710",
+  "title": "GT 710 firmware display",
+  "area": "Graphics",
+  "summary": "The firmware framebuffer belongs to the GT 710, whose PCI resources and firmware display claim are reported.",
+  "binary": "scripts/metal/gt710-suite",
+  "hostRunner": true,
+  "categories": [
+    {
+      "id": "firmware",
+      "title": "Firmware framebuffer",
+      "cases": [
+        {
+          "id": "mode",
+          "title": "The firmware framebuffer report gives its mode, pixel format, pitch, base and mapped size"
+        },
+        {
+          "id": "owner",
+          "title": "The whole firmware framebuffer lies in the reported GT 710 memory BAR, not the embedded display"
+        }
+      ]
+    },
+    {
+      "id": "console",
+      "title": "Console on the GT 710",
+      "cases": [
+        {
+          "id": "acceptance",
+          "title": "The same GT 710 capture passes firmware ownership, display claim, screen read-back and the complete E16 console suite"
+        }
+      ]
+    },
+    {
+      "id": "device",
+      "title": "PCI display device",
+      "cases": [
+        {
+          "id": "identity",
+          "title": "The PCI report identifies 10de:128b with subsystem 1462:8c93 and its interrupt line"
+        },
+        {
+          "id": "bars-link",
+          "title": "The PCI report lists the display BARs and the negotiated PCIe link from its capability registers"
+        },
+        {
+          "id": "claimed",
+          "title": "Display discovery and the firmware framebuffer claim name the same GT 710 function"
+        }
+      ]
+    }
+  ]
+}
