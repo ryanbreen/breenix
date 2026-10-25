@@ -73,7 +73,7 @@ pub struct Window {
     layout_version: u64,
     capture: Option<u64>,
     cancel_pending: bool,
-    gestures: BTreeMap<u64, u32>,
+    gestures: BTreeMap<u64, (u32, abi::EventTag)>,
     rejected: Vec<u64>,
 }
 
@@ -302,7 +302,12 @@ impl Window {
         if self.capture == Some(owner) {
             self.capture = None;
             self.cancel_pending = true;
-            for state in self.gestures.values_mut().filter(|state| **state == 1) { *state = 3; }
+            let mut cancelled = Vec::new();
+            for (state, tag) in self.gestures.values_mut().filter(|(state, _)| *state == 1) {
+                *state = 3;
+                cancelled.push(*tag);
+            }
+            for tag in cancelled { self.report_gesture(tag, 3, 8); }
         }
     }
     fn deliver(&mut self, raw: &[abi::WindowEvent], handler: &mut dyn FnMut(&Delivered) -> Handled) -> usize {
@@ -323,10 +328,13 @@ impl Window {
             if tagged {
                 first = !self.gestures.contains_key(&tag.gesture);
                 if first && tag.layout_version != self.layout_version { reject = 7; }
-                if self.gestures.get(&tag.gesture) == Some(&3) { reject = 8; }
+                if let Some((state, retained)) = self.gestures.get_mut(&tag.gesture) {
+                    *retained = tag;
+                    if *state == 3 { reject = 8; }
+                }
             }
             let handled = if reject != 0 {
-                self.gestures.insert(tag.gesture, 3);
+                self.gestures.insert(tag.gesture, (3, tag));
                 self.rejected.push(d.serial);
                 if self.rejected.len() > 8 { self.rejected.remove(0); }
                 if first { self.report_gesture(tag, 3, reject); }
@@ -334,13 +342,13 @@ impl Window {
             } else {
                 let handled = handler(&d);
                 if tagged && first {
-                    self.gestures.insert(tag.gesture, 1);
+                    self.gestures.insert(tag.gesture, (1, tag));
                     self.report_gesture(tag, 1, 0);
                 }
                 let finished = matches!(d.event, Event::MouseButton { pressed: false, .. });
-                if tagged && finished && self.gestures.get(&tag.gesture) == Some(&1) {
+                if tagged && finished && self.gestures.get(&tag.gesture).is_some_and(|(state, _)| *state == 1) {
                     self.report_gesture(tag, 2, 0);
-                    self.gestures.insert(tag.gesture, 2);
+                    self.gestures.insert(tag.gesture, (2, tag));
                 }
                 if finished || matches!(d.event, Event::PointerCancel | Event::CompositorChanged { .. } | Event::Overflow { .. }) {
                     self.capture = None;
