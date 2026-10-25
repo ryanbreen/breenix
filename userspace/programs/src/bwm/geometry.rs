@@ -287,11 +287,17 @@ impl State {
                     let height = new_h
                         .saturating_sub((px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2) as i32)
                         .clamp(1, 4096) as u32;
-                    if self.windows[win_idx].resize_pending {
-                        self.windows[win_idx].resize_desired = Some((width, height));
+                    let candidate = (width, height);
+                    if let Some(pending) = self.windows[win_idx].resize_pending {
+                        self.windows[win_idx].resize_desired = (candidate != pending).then_some(candidate);
                         return;
                     }
-                    self.windows[win_idx].resize_pending = true;
+                    if candidate == (self.windows[win_idx].content_width() as u32,
+                        self.windows[win_idx].content_height() as u32) {
+                        self.windows[win_idx].resize_desired = None;
+                        return;
+                    }
+                    self.windows[win_idx].resize_pending = Some(candidate);
                     send_to(&self.windows, win_idx, Input::Resize { width, height });
                 }
 

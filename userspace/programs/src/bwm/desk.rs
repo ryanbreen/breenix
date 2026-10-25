@@ -67,7 +67,7 @@ pub(super) struct Window {
     pub(super) window_id: u64,
     pub(super) owner_pid: u32,
     pub(super) minimized: bool,
-    pub(super) resize_pending: bool,
+    pub(super) resize_pending: Option<(u32, u32)>,
     pub(super) resize_desired: Option<(u32, u32)>,
     /// The first composed frame showing this client has been checked.
     pub(super) frame_checked: bool,
@@ -161,14 +161,14 @@ pub(super) fn discover_windows(
                 if let Some(bottom) = w.resize_bottom {
                     w.y = bottom - height as i32;
                 }
-                w.resize_pending = false;
+                w.resize_pending = None;
                 w.width = width;
                 w.height = height;
                 w.frame_checked = false;
                 w.check_moved = 0;
                 w.check_after_ms = monotonic_ms().unwrap_or(0) + 150;
                 if let Some((width, height)) = w.resize_desired.take().filter(|size| *size != (info.width, info.height)) {
-                    w.resize_pending = true;
+                    w.resize_pending = Some((width, height));
                     send_notice(w.window_id, Input::Resize { width, height });
                 }
 
@@ -271,7 +271,7 @@ pub(super) fn discover_windows(
             window_id: info.id,
             owner_pid: info.owner_pid,
             minimized: info.flags & libbreenix::window::abi::win_flags::MINIMIZED != 0,
-            resize_pending: false,
+            resize_pending: None,
             resize_desired: None,
             frame_checked: false,
             check_after_ms: 0,
