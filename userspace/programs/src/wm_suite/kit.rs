@@ -58,13 +58,14 @@ pub(super) fn minimize(d: &Desktop, c: &Client) -> Result<(), String> {
 }
 pub(super) fn drag(d: &Desktop, from: (i32, i32), to: (i32, i32)) -> Result<(), String> {
     d.pointer(from.0, from.1, 0, 0)?;
-    time::sleep_ms(150).map_err(|e| e.to_string())?;
+    if !d.uses_virtual_input() { time::sleep_ms(150).map_err(|e| e.to_string())?; }
     d.pointer(from.0, from.1, 1, 0)?;
-    time::sleep_ms(150).map_err(|e| e.to_string())?;
+    if !d.uses_virtual_input() { time::sleep_ms(150).map_err(|e| e.to_string())?; }
     d.pointer(to.0, to.1, 1, 0)?;
-    time::sleep_ms(150).map_err(|e| e.to_string())?;
+    if !d.uses_virtual_input() { time::sleep_ms(150).map_err(|e| e.to_string())?; }
     d.pointer(to.0, to.1, 0, 0)?;
-    time::sleep_ms(150).map_err(|e| e.to_string())
+    if !d.uses_virtual_input() { time::sleep_ms(150).map_err(|e| e.to_string())?; }
+    Ok(())
 }
 pub(super) fn resize_case(bottom: bool) -> CaseResult {
     let (mut d, mut c) = one()?;

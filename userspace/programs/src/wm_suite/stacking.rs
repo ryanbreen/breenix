@@ -277,19 +277,44 @@ pub fn new_on_top() -> CaseResult {
 }
 fn model(steps: usize, seed: u32) -> CaseResult {
     // W30: freeze incidental clock repaints; the model has no timed actions.
-    let _clock = measure::Clock::new()?;
+    let mut clock = measure::Clock::new()?;
     let begun = now();
-    let mut d = Desktop::start()?;
     let mut clients = Vec::new();
     let mut stack = Vec::<u64>::new();
     let mut minimized = Vec::<u64>::new();
     let mut random = seed;
+    // W30: exec is fixture preparation, not one of the registry model's
+    // operations. Prepare future processes while the desktop starts; each
+    // still creates and registers its window only at its original model step.
+    let mut prepared = std::collections::BTreeMap::new();
+    let mut planned = seed;
+    let mut count = 3;
+    for step in 0..steps {
+        planned ^= planned << 13;
+        planned ^= planned >> 17;
+        planned ^= planned << 5;
+        if (planned >> 8) % 4 == 3 {
+            if count > 1 {
+                count -= 1;
+            } else {
+                prepared.insert(step, Client::spawn_shape(60 + step as u32, flags::IGNORE_CLOSE, 240, 160, 1024)?);
+                count += 1;
+            }
+        }
+    }
     for seed in [11, 23, 41] {
         clients.push(Client::spawn_shape(seed, flags::IGNORE_CLOSE, 240, 160, 1024)?);
     }
     for c in &mut clients {
         c.initialize()?;
         c.receive()?;
+    }
+    let mut d = Desktop::start()?;
+    // W30: adopt the prepared initial arrangement together and complete its
+    // initial UI-clock frame before the unchanged per-client readiness checks.
+    clock.step(1, 1_000_000_000)?;
+    measure::acknowledged(1)?;
+    for c in &mut clients {
         placed(&c)?;
         d.client_ready(&c)?;
         stack.push(c.id);
@@ -345,7 +370,7 @@ fn model(steps: usize, seed: u32) -> CaseResult {
                     stack.retain(|&n| n != id);
                     minimized.retain(|&n| n != id);
                 } else {
-                    let mut c = Client::spawn_shape(60 + step as u32, flags::IGNORE_CLOSE, 240, 160, 1024)?;
+                    let mut c = prepared.remove(&step).ok_or("model fixture process missing")?;
                     c.initialize()?;
                     c.receive()?;
                     placed(&c)?;

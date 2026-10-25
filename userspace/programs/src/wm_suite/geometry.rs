@@ -22,6 +22,7 @@ pub fn drag_move() -> CaseResult {
     started?;
     finish_paused_gesture(&d, (p.0 + 90, p.1 + 70))?;
     until(1000, "titlebar drag published geometry", || {
+        let _ = d.output();
         Ok(c.info()?.x == w.x + 90 && c.info()?.y == w.y + 70)
     }).map_err(|e| {
         let after = c.info().unwrap_or(w);
@@ -547,6 +548,9 @@ pub fn geometry_registry() -> CaseResult {
     let (mut d, mut c) = one()?;
     let mut expected = c.info()?;
     for n in 0..8 {
+        // W30/W29: retain the first physical drag, then drive the remaining
+        // literal model steps through the same input core without host sleeps.
+        if n == 1 { d.use_virtual_input()?; }
         let p = (expected.x + 50, expected.y - 16 * d.scale);
         drag(&d, p, (p.0 + 10, p.1 + 8))?;
         expected.x += 10;
