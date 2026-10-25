@@ -8,9 +8,12 @@
 //!
 //! ```text
 //! BXKEY <report>[,<report>...]
+//! BXKEY @<sequence:16 hex>:<crc32:8 hex> <report>[,<report>...]
 //! ```
 //!
-//! each report sixteen hex digits: one HID boot keyboard report (HID 1.11
+//! Numbered packets cover the sequence, a space and report text with IEEE CRC-32;
+//! the receiver acknowledges accepted packets and suppresses retransmissions.
+//! Each report is sixteen hex digits: one HID boot keyboard report (HID 1.11
 //! B.1: modifier bits, a reserved byte, six usages). The xHCI worker replays
 //! the reports in order through the keyboard's interrupt-IN completion path
 //! (`Controller::replay_key`), the path a report takes once the device has
@@ -33,18 +36,44 @@ const PREFIX: &[u8] = b"BXKEY ";
 pub struct Reports {
     reports: [[u8; REPORT_LEN]; MAX_REPORTS],
     count: usize,
+    pub sequence: Option<u64>,
 }
 
 impl Reports {
     pub fn as_slice(&self) -> &[[u8; REPORT_LEN]] {
         &self.reports[..self.count]
     }
+
+    /// New packets are queued in order; a retransmission is acknowledged only.
+    pub fn enqueue_after(&self, last: u64) -> Result<bool, &'static str> {
+        match self.sequence {
+            None => Ok(true),
+            Some(seq) if seq == last => Ok(false),
+            Some(seq) if last.checked_add(1) == Some(seq) => Ok(true),
+            _ => Err("host key packet is out of sequence"),
+        }
+    }
 }
 
 /// Parse one line, without its terminator.
 pub fn parse(line: &[u8]) -> Result<Reports, &'static str> {
     let body = line.strip_prefix(PREFIX).ok_or("not a BXKEY line")?;
-    let mut parsed = Reports { reports: [[0; REPORT_LEN]; MAX_REPORTS], count: 0 };
+    let (body, sequence) = if body.first() == Some(&b'@') {
+        let split = body.iter().position(|&b| b == b' ').ok_or("missing host key packet body")?;
+        let (header, payload) = (&body[..split], &body[split + 1..]);
+        if header.len() != 26 || header[17] != b':' {
+            return Err("invalid host key packet header");
+        }
+        let seq = hex_word(&header[1..17])?;
+        if seq == 0 || crc32(header[1..17].iter().copied().chain(core::iter::once(b' ')).chain(payload.iter().copied()))
+                != hex_word(&header[18..26])? as u32 {
+            return Err("host key packet checksum mismatch");
+        }
+        (payload, Some(seq))
+    } else {
+        (body, None)
+    };
+    let mut parsed = Reports { reports: [[0; REPORT_LEN]; MAX_REPORTS], count: 0, sequence };
     for field in body.split(|&b| b == b',') {
         if parsed.count == MAX_REPORTS {
             return Err("more reports than one line may carry");
@@ -59,6 +88,22 @@ pub fn parse(line: &[u8]) -> Result<Reports, &'static str> {
         parsed.count += 1;
     }
     Ok(parsed)
+}
+
+fn hex_word(bytes: &[u8]) -> Result<u64, &'static str> {
+    bytes.iter().try_fold(0, |word, &digit| Ok((word << 4) | hex(digit)? as u64))
+}
+
+// Reflected IEEE CRC-32, polynomial 0x04c11db7, initial/final complement.
+fn crc32(bytes: impl Iterator<Item = u8>) -> u32 {
+    let mut crc = !0u32;
+    for byte in bytes {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xedb88320 & 0u32.wrapping_sub(crc & 1));
+        }
+    }
+    !crc
 }
 
 fn hex(digit: u8) -> Result<u8, &'static str> {
@@ -111,6 +156,23 @@ mod tests {
     fn lines(input: &[u8]) -> std::vec::Vec<Result<std::vec::Vec<[u8; 8]>, &'static str>> {
         let mut reader = Lines::new();
         input.iter().filter_map(|&b| reader.feed(b)).map(|r| r.map(|r| r.as_slice().to_vec())).collect()
+    }
+
+    #[test]
+    fn a_retransmission_is_not_enqueued_and_a_gap_is_refused() {
+        let packet = parse(b"BXKEY @0000000000000001:8cdc16e0 0000040000000000,0000000000000000").unwrap();
+        assert_eq!(packet.enqueue_after(0), Ok(true));
+        assert_eq!(packet.enqueue_after(1), Ok(false));
+        assert!(packet.enqueue_after(2).is_err());
+    }
+
+    #[test]
+    fn numbered_packets_require_their_crc() {
+        let good = b"BXKEY @0000000000000001:8cdc16e0 0000040000000000,0000000000000000";
+        assert_eq!(parse(good).unwrap().as_slice(), &[[0, 0, 4, 0, 0, 0, 0, 0], [0; 8]]);
+        let mut damaged = *good;
+        damaged[35] = b'5';
+        assert!(parse(&damaged).is_err());
     }
 
     #[test]
