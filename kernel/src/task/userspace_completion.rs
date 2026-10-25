@@ -61,6 +61,8 @@ fn report_when_finished() {
                     commit_polls = 0;
                     continue;
                 }
+                #[cfg(all(target_arch = "aarch64", feature = "force_exception_return_switch"))]
+                crate::arch_impl::aarch64::context_switch::report_forced_exception_return_switches();
                 crate::syscall::handlers::report_userspace_completion();
                 return;
             }

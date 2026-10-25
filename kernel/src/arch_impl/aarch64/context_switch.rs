@@ -5229,10 +5229,91 @@ fn dispatch_thread_locked(
 /// Called with IRQs masked; takes no lock.
 #[no_mangle]
 pub extern "C" fn aarch64_resume_user_time(frame: &Aarch64ExceptionFrame) {
+    #[cfg(feature = "force_exception_return_switch")]
+    check_exception_return_sp(frame);
     if (frame.spsr & 0xF) == 0 {
         crate::task::thread::resume_user_time();
     }
     super::irq_mask_account::returning(frame.spsr);
+}
+
+/// Inline switches forced by `force_exception_return_switch`, and the EL1
+/// returns whose SP it checked.
+#[cfg(feature = "force_exception_return_switch")]
+static FORCED_EXCEPTION_RETURN_SWITCHES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "force_exception_return_switch")]
+static FORCED_SWITCH_CANDIDATES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "force_exception_return_switch")]
+static CHECKED_EXCEPTION_RETURNS: AtomicU64 = AtomicU64::new(0);
+
+/// Switch the interrupted thread out and back in, as a wait inside the
+/// fault-exit drain does (`arch_halt_while_blocked`): interrupts enabled, then
+/// `schedule_from_kernel`, which saves the thread inline and later resumes it
+/// with a ret, on whichever CPU dispatches it. One in 64 interrupts that took
+/// a preemptible thread, idle excepted, at EL1.
+#[cfg(feature = "force_exception_return_switch")]
+fn force_exception_return_switch(frame: &Aarch64ExceptionFrame, from_el0: bool) {
+    let current = Aarch64PerCpu::current_thread_ptr();
+    if from_el0
+        || frame_returns_to_el0(frame)
+        || Aarch64PerCpu::preempt_count() != 0
+        || current.is_null()
+        || current == Aarch64PerCpu::idle_thread_ptr()
+        || FORCED_SWITCH_CANDIDATES.fetch_add(1, Ordering::Relaxed) % 64 != 63
+    {
+        return;
+    }
+    FORCED_EXCEPTION_RETURN_SWITCHES.fetch_add(1, Ordering::Relaxed);
+    unsafe {
+        super::cpu::enable_interrupts();
+    }
+    schedule_from_kernel();
+}
+
+/// An interrupt or syscall return to EL1 that did not switch threads resumes
+/// the interrupted code where it was interrupted: its frame, still on that
+/// thread's kernel stack, ends at the SP the epilogue must load. A frame staged
+/// on a scheduler stack, one redirected to idle, and a nested return through
+/// the per-CPU nested slot are not this case.
+#[cfg(feature = "force_exception_return_switch")]
+fn check_exception_return_sp(frame: &Aarch64ExceptionFrame) {
+    let frame_addr = frame as *const Aarch64ExceptionFrame as u64;
+    if frame_returns_to_el0(frame)
+        || !crate::memory::kernel_stack::addr_in_kernel_stack_pool(frame_addr)
+        || frame.elr == super::idle_loop_arm64 as *const () as u64
+        || !Aarch64PerCpu::tss_ptr().is_null()
+    {
+        return;
+    }
+    CHECKED_EXCEPTION_RETURNS.fetch_add(1, Ordering::Relaxed);
+    let return_sp = Aarch64PerCpu::user_rsp_scratch();
+    if return_sp != frame_addr + 272 {
+        panic!(
+            "EL1 exception return on cpu {} for tid {} would resume at sp {:#x}, not {:#x}",
+            Aarch64PerCpu::cpu_id(),
+            crate::per_cpu_aarch64::current_thread().map_or(0, |thread| thread.id()),
+            return_sp,
+            frame_addr + 272
+        );
+    }
+}
+
+/// The run's verdict: it forced switches and checked returns.
+#[cfg(feature = "force_exception_return_switch")]
+pub fn report_forced_exception_return_switches() {
+    let forced = FORCED_EXCEPTION_RETURN_SWITCHES.load(Ordering::Relaxed);
+    let checked = CHECKED_EXCEPTION_RETURNS.load(Ordering::Relaxed);
+    crate::serial_println!(
+        "[FORCE_EXCEPTION_RETURN_SWITCH] forced={} checked={}",
+        forced,
+        checked
+    );
+    assert!(
+        forced > 0 && checked > 0,
+        "force_exception_return_switch forced {} switches and checked {} returns",
+        forced,
+        checked
+    );
 }
 
 // =============================================================================
@@ -5259,6 +5340,8 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // already counted from its entry.
     super::irq_mask_account::opened();
     crate::task::process_task::drain_deferred_fault_sigsegv_exits();
+    #[cfg(feature = "force_exception_return_switch")]
+    force_exception_return_switch(frame, from_el0);
 
     // ── Lock-free pre-checks ──────────────────────────────────────
     let preempt_count = Aarch64PerCpu::preempt_count();
