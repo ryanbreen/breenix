@@ -37,6 +37,15 @@ class CaptureCases(unittest.TestCase):
         serial += 'SUITE console MEMORY after free=100 heap_free_kb=10 user_pages=1\n'
         serial += 'SUITE console MEMORY reclaimed=PASS free_before=100 free_after=100 allowance=0\n'
         API['check_case']('console', 'acceptance', serial)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'definition'
+            for name in ('scripts/metal/gt710-suite', 'scripts/suite-verdict.py',
+                         'docs/suites/console.json', 'docs/boot-path.json'):
+                dest = root / name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(ROOT / name, dest)
+            retained = runpy.run_path(str(root / 'scripts/metal/gt710-suite'))
+            retained['check_case']('console', 'acceptance', serial)
         for bad in (serial.replace('01:00.0 10de:128b class 03/00 BAR1', '04:00.0 102b:0536 class 03/00 BAR1'),
                     serial.replace('[fbcon] screen read back identical:', '[fbcon] mismatch:'),
                     serial.replace('getty/independent-sessions PASS ms=1', 'getty/independent-sessions FAIL ms=1 msg=refused'),

@@ -161,6 +161,32 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
     return category + ': ' + str(len(CATEGORIES[category])) + ' cases passed'
 
 
+def record_capture(directory, sha):
+    """Recompute using the scorer and E16 files retained beside this capture."""
+    directory = Path(directory)
+    read = lambda name: json.loads((directory / name).read_text())
+    boot = read('run.json')
+    serial = (directory / 'serial.txt').read_text()
+    manifest = read('definition/docs/suites/gt710.json')
+    effort = read('definition/docs/efforts/metal.json')
+    fatal = read('definition/docs/boot-path.json')['fatal'] + [r'KERNEL PANIC:']
+    passed = True
+    for category in CATEGORIES:
+        if category == 'console' and (boot.get('mode') != 'suite' or boot.get('suite') != 'console'):
+            continue
+        records = dict(boot=boot['id'], commit=sha, milestone='metal-gt710/' + category,
+                       cases=cases(category, serial))
+        for c in records['cases']:
+            print('SUITE gt710 CASE ' + c['id'] + ' ' + c['result'] + ' ms=0' + (' msg=' + c['reason'] if c['reason'] else ''), flush=True)
+        try:
+            score(manifest, effort, records, serial, boot, sha, fatal)
+        except ValueError as error:
+            passed = False
+            print(str(error), flush=True)
+        (directory / ('gt710-' + category + '.json')).write_text(json.dumps(records) + '\n')
+    return 0 if passed else 1
+
+
 def main():
     import argparse
     import json
@@ -191,24 +217,11 @@ def main():
         raise ValueError('a completed, clean, successful boot of the requested commit is required')
     if any(json.loads(line).get('event') == 'console-gap' for line in read('events.jsonl').splitlines()):
         raise ValueError('capture has a console gap')
-    serial = read('serial.txt')
-    manifest = json.loads(read('definition/docs/suites/gt710.json'))
-    effort_path = json.loads(read('definition/docs/efforts/metal.json'))
-    fatal = json.loads(read('definition/docs/boot-path.json'))['fatal'] + [r'KERNEL PANIC:']
-    passed = True
-    for category in CATEGORIES:
-        if category == 'console' and (boot.get('mode') != 'suite' or boot.get('suite') != 'console'):
-            continue
-        records = dict(boot=args.boot, commit=args.sha, milestone='metal-gt710/' + category, cases=cases(category, serial))
-        for c in records['cases']:
-            print('SUITE gt710 CASE ' + c['id'] + ' ' + c['result'] + ' ms=0' + (' msg=' + c['reason'] if c['reason'] else ''), flush=True)
-        try:
-            score(manifest, effort_path, records, serial, boot, args.sha, fatal)
-        except ValueError as error:
-            passed = False
-            print(str(error), file=sys.stderr)
-        runner['in_metal'](env, 'tee', directory + '/gt710-' + category + '.json', stdin=None,
-                          input=json.dumps(records) + '\n', capture_output=True, text=True, check=True)
+    result = runner['in_metal'](env, 'python3', '-c',
+        'import runpy,sys;from pathlib import Path;'
+        'p=Path(sys.argv[1]);a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));'
+        'sys.exit(a["record_capture"](p,sys.argv[2]))', directory, args.sha)
+    passed = result.returncode == 0
     # Rescore the retained facts, without executing another boot or suite.
     runner['in_metal'](env, 'python3', '-c',
         'import sys,json;sys.path.insert(0,"/opt/breenix-metal");import metal_score,metal_lib as m;'
