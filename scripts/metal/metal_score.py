@@ -9,7 +9,7 @@ from pathlib import Path
 ANNOUNCEMENT = 'kernel::test_exec:'
 # Host records whose milestone is not <suite>/<category> (scripts/metal/server-suite, MILESTONES).
 HOST_MILESTONES = {'users-operator.json': 'users/operator-login',
-                   'gt710-firmware.json': 'metal-gt710/firmware', 'gt710-device.json': 'metal-gt710/device'}
+                   'gt710-firmware.json': 'metal-gt710/firmware', 'gt710-device.json': 'metal-gt710/device', 'gt710-console.json': 'metal-gt710/console'}
 
 
 def boot_shape(disk):

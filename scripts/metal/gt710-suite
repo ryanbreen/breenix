@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """E19's firmware and PCI-display cases, judged from a boot's retained capture."""
 import re
+import json
+from pathlib import Path
+import runpy
+import tempfile
 
 CATEGORIES = {
     'firmware': (
         ('mode', 'The firmware framebuffer report gives its mode, pixel format, pitch, base and mapped size'),
         ('owner', 'The whole firmware framebuffer lies in the reported GT 710 memory BAR, not the embedded display'),
+    ),
+    'console': (
+        ('acceptance', 'The same GT 710 capture passes firmware ownership, display claim, screen read-back and the complete E16 console suite'),
     ),
     'device': (
         ('identity', 'The PCI report identifies 10de:128b with subsystem 1462:8c93 and its interrupt line'),
@@ -39,7 +46,24 @@ def pci(serial):
 
 
 def check_case(category, case, serial):
-    if category == 'firmware':
+    if category == 'console':
+        if case != 'acceptance':
+            raise ValueError('unknown console case')
+        for group in ('firmware', 'device'):
+            for name, _ in CATEGORIES[group]:
+                check_case(group, name, serial)
+        if not re.search(r'\[fbcon\] screen read back identical: [1-9][0-9]* pixel rows, [1-9][0-9]* glyph cells match the font, sha256 [0-9a-f]{64}$', serial, re.M):
+            raise ValueError('missing screen and font read-back')
+        root = Path(__file__).resolve().parents[2]
+        verdict = runpy.run_path(str(root / 'scripts/suite-verdict.py'))['verdict']
+        manifest = json.loads((root / 'docs/suites/console.json').read_text())
+        with tempfile.TemporaryDirectory() as tmp:
+            capture = Path(tmp) / 'serial.txt'
+            capture.write_text(serial)
+            passed, reason = verdict(manifest, capture, [capture])
+        if not passed:
+            raise ValueError('E16 console: ' + reason)
+    elif category == 'firmware':
         f = framebuffer(serial)
         if case == 'mode':
             if not (0 < f['width'] <= f['stride'] and f['height'] > 0 and f['base'] > 0
@@ -82,8 +106,9 @@ def check_case(category, case, serial):
                 raise ValueError('PCIe link is down or its reported parameters are invalid')
         elif case == 'claimed':
             one(r'\[devices\] display found: pci ' + bdf + r' \[10de:128b\] subclass 0x00$', serial, 'display class discovery')
-            one(r'\[devices\] display initialized: pci ' + bdf + r' \[10de:128b\] driver=firmware-framebuffer BAR[0-5]$', serial, 'firmware display claim')
-            if framebuffer(serial)['bdf'] != bdf:
+            f = framebuffer(serial)
+            one(r'\[devices\] display initialized: pci ' + bdf + r' \[10de:128b\] driver=firmware-framebuffer BAR' + str(f['index']) + r'$', serial, 'firmware display claim')
+            if f['bdf'] != bdf:
                 raise ValueError('claimed function does not own the console framebuffer')
         else:
             raise ValueError('unknown device case')
@@ -172,6 +197,8 @@ def main():
     fatal = json.loads(read('definition/docs/boot-path.json'))['fatal'] + [r'KERNEL PANIC:']
     passed = True
     for category in CATEGORIES:
+        if category == 'console' and (boot.get('mode') != 'suite' or boot.get('suite') != 'console'):
+            continue
         records = dict(boot=args.boot, commit=args.sha, milestone='metal-gt710/' + category, cases=cases(category, serial))
         for c in records['cases']:
             print('SUITE gt710 CASE ' + c['id'] + ' ' + c['result'] + ' ms=0' + (' msg=' + c['reason'] if c['reason'] else ''), flush=True)

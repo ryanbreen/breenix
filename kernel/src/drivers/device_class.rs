@@ -9,6 +9,8 @@
 //!
 //! - found: bus enumeration saw a device of the class (a PCI class code, a
 //!   VirtIO MMIO device ID, or a platform controller whose registers answer).
+//! - display found: enumeration saw a display-class function.
+//! - display initialized: the firmware framebuffer attached to that function.
 //! - storage initialized: a storage driver attached at least one disk.
 //! - storage read: a block read through `BlockDevice` completed.
 

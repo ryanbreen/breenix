@@ -5,7 +5,6 @@
   "summary": "The firmware framebuffer belongs to the GT 710, whose PCI resources and firmware display claim are reported.",
   "binary": "scripts/metal/gt710-suite",
   "hostRunner": true,
-  "timingSensitive": true,
   "categories": [
     {
       "id": "firmware",
@@ -18,6 +17,16 @@
         {
           "id": "owner",
           "title": "The whole firmware framebuffer lies in the reported GT 710 memory BAR, not the embedded display"
+        }
+      ]
+    },
+    {
+      "id": "console",
+      "title": "Console on the GT 710",
+      "cases": [
+        {
+          "id": "acceptance",
+          "title": "The same GT 710 capture passes firmware ownership, display claim, screen read-back and the complete E16 console suite"
         }
       ]
     },

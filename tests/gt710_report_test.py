@@ -24,7 +24,29 @@ PCI_DISPLAY_LINK 01:00.0 cap=0x82 status=0x81 speed=1 width=8 max_speed=2 max_wi
 
 class CaptureCases(unittest.TestCase):
     def results(self, serial):
-        return [c for cat in API['CATEGORIES'] for c in API['cases'](cat, serial)]
+        return [c for cat in ('firmware', 'device') for c in API['cases'](cat, serial)]
+
+    def test_console_requires_owner_readback_and_all_e16_cases_together(self):
+        manifest = json.loads((ROOT / 'docs/suites/console.json').read_text())
+        names = [cat['id'] + '/' + c['id'] for cat in manifest['categories'] for c in cat['cases']]
+        serial = SERIAL + '[fbcon] screen read back identical: 768 pixel rows, 7 glyph cells match the font, sha256 ' + 'a' * 64 + '\n'
+        serial += f'SUITE console START cases={len(names)}\n'
+        serial += 'SUITE console MEMORY before free=100 heap_free_kb=10 user_pages=1\n'
+        serial += ''.join('SUITE console CASE ' + name + ' PASS ms=1\n' for name in names)
+        serial += f'SUITE console DONE passed={len(names)} failed=0 skipped=0 total={len(names)}\n'
+        serial += 'SUITE console MEMORY after free=100 heap_free_kb=10 user_pages=1\n'
+        serial += 'SUITE console MEMORY reclaimed=PASS free_before=100 free_after=100 allowance=0\n'
+        API['check_case']('console', 'acceptance', serial)
+        for bad in (serial.replace('01:00.0 10de:128b class 03/00 BAR1', '04:00.0 102b:0536 class 03/00 BAR1'),
+                    serial.replace('[fbcon] screen read back identical:', '[fbcon] mismatch:'),
+                    serial.replace('getty/independent-sessions PASS ms=1', 'getty/independent-sessions FAIL ms=1 msg=refused'),
+                    serial.replace('MEMORY reclaimed=PASS', 'MEMORY reclaimed=FAIL')):
+            with self.assertRaises(ValueError):
+                API['check_case']('console', 'acceptance', bad)
+
+    def test_claim_requires_the_framebuffer_bar_index(self):
+        with self.assertRaises(ValueError):
+            API['check_case']('device', 'claimed', SERIAL.replace('driver=firmware-framebuffer BAR1', 'driver=firmware-framebuffer BAR0'))
 
     def test_padded_pitch_and_gt710_owner(self):
         self.assertTrue(all(c['result'] == 'PASS' for c in self.results(SERIAL)))
@@ -75,7 +97,7 @@ class CaptureCases(unittest.TestCase):
             for name, value in [('run.json', json.dumps(boot)), ('serial.txt', SERIAL), ('events.jsonl', ''),
                                 ('commit', SHA), ('dirty', '0'), ('exit-status', '0'), ('ended', '1')]:
                 (p / name).write_text(value)
-            for cat in API['CATEGORIES']:
+            for cat in ('firmware', 'device'):
                 records = dict(boot='fixture', commit=SHA, milestone='metal-gt710/' + cat, cases=API['cases'](cat, SERIAL))
                 (p / ('gt710-' + cat + '.json')).write_text(json.dumps(records))
             result = lambda: metal_score.score(p)['milestones']

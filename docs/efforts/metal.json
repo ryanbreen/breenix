@@ -288,16 +288,9 @@
           "id": "console",
           "title": "Screen console and virtual terminals on the GT 710",
           "measure": {
-            "suite": "console",
+            "suite": "gt710",
             "categories": [
-              "screen",
-              "emulation",
-              "vt-devices",
-              "vt-switch",
-              "scrollback",
-              "chvt",
-              "getty",
-              "keys"
+              "console"
             ]
           }
         }

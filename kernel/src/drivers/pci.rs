@@ -1435,7 +1435,7 @@ fn dump_function(dev: &Device) {
 /// Firmware-owned display resources, read without changing the display mode or
 /// enabling DMA or interrupts. Subsystem IDs are the type-0 header's dword 0x2c
 /// (PCI Local Bus 3.0, 6.2.4). Link fields are PCI Express Base Specification
-/// 7.8, Link Capabilities (+0x0c) and Link Status (+0x12), bits 3:0 and 9:4.
+/// 4.0 section 7.5.3, Link Capabilities (+0x0c) and Link Status (+0x12), bits 3:0 and 9:4.
 #[cfg(target_arch = "x86_64")]
 fn dump_display(dev: &Device) {
     let subsystem = pci_read_config_dword(dev.bus, dev.device, dev.function, 0x2c);
