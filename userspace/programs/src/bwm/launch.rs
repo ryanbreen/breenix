@@ -37,6 +37,25 @@ pub(super) fn initialize() {
         eprintln!("[bwm] cannot install shutdown handler: {error}");
         process::exit(1);
     }
+    mask_termination(signal::SIG_BLOCK);
+}
+
+fn mask_termination(how: i32) {
+    let mask = 1u64 << (signal::SIGTERM - 1);
+    if let Err(error) = signal::sigprocmask(how, Some(&mask), None) {
+        eprintln!("[bwm] cannot set shutdown signal mask: {error}");
+        process::exit(1);
+    }
+}
+
+fn shutdown() {
+    LIFECYCLE.with(|state| state.borrow_mut().error = None);
+    let release = window::release_compositor();
+    let restore = libbreenix::graphics::give_back_display();
+    if let Err(error) = release.and(restore) {
+        eprintln!("[bwm] shutdown failed: {error}");
+        process::exit(1);
+    }
 }
 
 impl Lifecycle {
@@ -109,7 +128,12 @@ impl Lifecycle {
         }
         let mut executable = path.to_vec();
         executable.push(0);
-        match libbreenix::process::spawn(&executable) {
+        // Children must inherit an unblocked TERM, rather than bwm's GPU-work
+        // mask. Process creation itself performs no compositor GPU operation.
+        mask_termination(signal::SIG_UNBLOCK);
+        let launched = libbreenix::process::spawn(&executable);
+        mask_termination(signal::SIG_BLOCK);
+        match launched {
             Ok(pid) => self.pending.push(PendingLaunch {
                 pid: pid.raw() as u32,
                 path: path.to_vec(),
@@ -163,7 +187,9 @@ impl Lifecycle {
         let entries = &record.entries[..(record.header.count as usize).min(record.entries.len())];
         self.pending.retain(|launch| !infos.iter().any(|w| {
             w.owner == launch.pid && w.commit_id != 0 && entries.iter().any(|e|
-                e.id == w.id && e.commit_id != 0 && e.pixel_gen >= w.pixel_gen)
+                // The launched client's first frame acknowledges the launch;
+                // it may have published a newer generation since that frame.
+                e.id == w.id && e.commit_id != 0 && e.pixel_gen != 0)
         }));
     }
 
@@ -179,15 +205,24 @@ impl Lifecycle {
 
 /// Called by the loop only; signal delivery itself sets an atomic flag.
 impl State {
+    pub(super) fn lifecycle_wait(&mut self) -> Option<(bool, bool)> {
+        // A caught TERM must not interrupt a GPU operation and enter compositor
+        // recovery before the loop can give back custody. Deliver it only at
+        // the input/scene wait boundary; GPU work and shutdown keep it masked.
+        mask_termination(signal::SIG_UNBLOCK);
+        let ready = self.wait();
+        mask_termination(signal::SIG_BLOCK);
+        if TERMINATE.load(Ordering::Relaxed) {
+            shutdown();
+            None
+        } else {
+            Some(ready)
+        }
+    }
+
     pub(super) fn lifecycle(&mut self) -> bool {
         if TERMINATE.load(Ordering::Relaxed) {
-            LIFECYCLE.with(|state| state.borrow_mut().error = None);
-            let release = window::release_compositor();
-            let restore = libbreenix::graphics::give_back_display();
-            if let Err(error) = release.and(restore) {
-                eprintln!("[bwm] shutdown failed: {error}");
-                process::exit(1);
-            }
+            shutdown();
             return false;
         }
         loop {
