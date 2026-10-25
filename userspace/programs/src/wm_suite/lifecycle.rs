@@ -320,10 +320,17 @@ pub fn never_reads() -> CaseResult {
     }
     value("unread-burst-pairs", pairs as i64, "pairs", None);
     value("unread-burst-time", ((now() - burst_start) / 1_000_000) as i64, "ms", None);
-    let rows = ledger()?;
+    let ledger_start = now();
+    let mut rows = ledger()?;
+    value("unread-ledger-rows", rows.len() as i64, "rows", None);
+    value("unread-ledger-time", ((now() - ledger_start) / 1_000_000) as i64, "ms", None);
     // W30 item 1: compare the same identities without allocating a fresh
     // decimal string for every source/ledger-row pair.
     let owner = a.id.to_string();
+    // Rows failing either of these same conjuncts cannot satisfy the check.
+    // Filter them once, rather than rescan unrelated outcomes for every key.
+    rows.retain(|r| r.get(1).is_some_and(|s| s == "lost")
+        && r.get(2).is_some_and(|s| s == &owner));
     check(
         sources.iter().any(|serial| {
             let serial = serial.to_string();
