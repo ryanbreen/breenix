@@ -848,6 +848,40 @@ fn route_el1_abort(esr: u64, far: u64, elr: u64) {
     }
 }
 
+/// The SP `sync_exception_handler` resumes an EL1 frame on, published again
+/// as `handle_sync_exception` returns.
+///
+/// The entry stub stores the frame's end in `user_rsp_scratch` before the
+/// handler runs, unless a pre-ERET window (PREEMPT_ACTIVE) keeps the outer
+/// return's value there. The handler can enable interrupts or wait: a nested
+/// exception then overwrites the word, and a wait's ret-based resume leaves
+/// another context's value in it, so the epilogue would resume the faulting
+/// code on another stack. An EL1 frame the handler did not redirect to idle
+/// therefore publishes its own end on the way out, with interrupts masked.
+struct El1ReturnSp(*const Aarch64ExceptionFrame);
+
+impl Drop for El1ReturnSp {
+    fn drop(&mut self) {
+        // SAFETY: the assembly entry passes the frame it saved, which outlives
+        // the handler call.
+        let frame = unsafe { &*self.0 };
+        if frame.spsr & 0xF == 0
+            || frame.elr == crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64
+            || crate::arch_impl::aarch64::percpu::Aarch64PerCpu::preempt_count()
+                & super::constants::PREEMPT_ACTIVE
+                != 0
+        {
+            return;
+        }
+        unsafe {
+            super::cpu::disable_interrupts();
+            crate::arch_impl::aarch64::percpu::Aarch64PerCpu::set_user_rsp_scratch(
+                self.0 as u64 + 272,
+            );
+        }
+    }
+}
+
 /// Handle synchronous exceptions (syscalls, page faults, etc.)
 ///
 /// Called from assembly with:
@@ -859,6 +893,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
     // The CPU takes the exception masked; the return restores the frame's
     // DAIF.
     let _masked = super::irq_mask_account::ExceptionStretch::begin(frame);
+    let _return_sp = El1ReturnSp(frame);
     // Per-CPU sync exception counter — increment FIRST, before any branching.
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
     if cpu_id < 8 {
