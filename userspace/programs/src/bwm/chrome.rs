@@ -771,6 +771,19 @@ impl State {
             .copied();
         if let Some((id, _)) = next {
             let result = self.gpu.check(id, &layers, Some(pointer));
+            if result.is_ok() {
+                // check compares this entire completed scene, capturing and
+                // verifying every shown client against its sampled commit.
+                // Share that proof among its unchecked clients; repeating the
+                // same full-scene readback per client stalls source input.
+                for (checked, _) in &unchecked {
+                    if let Some(win) = self.windows.iter_mut().find(|w| w.window_id == *checked) {
+                        win.frame_checked = true;
+                    }
+                    report_check(*checked, &result);
+                }
+                return;
+            }
             let retry = match (
                 &result,
                 self.windows.iter_mut().find(|win| win.window_id == id),
