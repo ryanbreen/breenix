@@ -241,10 +241,17 @@ pub fn read_other_denied() -> CaseResult {
 }
 pub fn huge_window() -> CaseResult {
     let (mut d, mut c) = one()?;
+    // W30 item 1: finish initial startup work before the large allocation.
+    d.client_ready(&c)?;
     c.create_window(73, 4096, 4096, 2)?;
     d.client_ready(&c).map_err(|e| {
-        eprintln!("huge-window startup validation: {e}; {}", d.output());
-        e
+        let output = d.output();
+        if let Some((_, failure)) = output.rsplit_once("[bwm] client frame check FAILED: ") {
+            format!("huge-window startup validation: {failure}")
+        } else {
+            let tail = output.char_indices().rev().nth(70).map_or(0, |(at, _)| at);
+            format!("{}; {}", e.rsplit_once("; ").map_or(e.as_str(), |(_, last)| last), &output[tail..])
+        }
     })?;
     let w = c.info()?;
     check(
@@ -310,18 +317,20 @@ pub fn never_reads() -> CaseResult {
                 .filter(|e| e.kind == 1)
                 .map(|e| e.serial),
         );
-        if n % 128 == 0 {
-            value("unread-burst-pairs", n as i64, "pairs", None);
-            value("unread-burst-time", ((now() - burst_start) / 1_000_000) as i64, "ms", None);
-        }
     }
+    value("unread-burst-pairs", pairs as i64, "pairs", None);
+    value("unread-burst-time", ((now() - burst_start) / 1_000_000) as i64, "ms", None);
     let rows = ledger()?;
+    // W30 item 1: compare the same identities without allocating a fresh
+    // decimal string for every source/ledger-row pair.
+    let owner = a.id.to_string();
     check(
         sources.iter().any(|serial| {
+            let serial = serial.to_string();
             rows.iter().any(|r| {
-                r.first().is_some_and(|s| s == &serial.to_string())
+                r.first().is_some_and(|s| s == &serial)
                     && r.get(1).is_some_and(|s| s == "lost")
-                    && r.get(2).is_some_and(|s| s == &a.id.to_string())
+                    && r.get(2).is_some_and(|s| s == &owner)
             })
         }),
         "unread client ring lost no recorded event",
