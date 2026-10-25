@@ -175,6 +175,7 @@ pub(super) struct Stream {
     devices: BTreeMap<u32, (u64, Vec<core_input::Capability>)>,
     keys: BTreeMap<(u32, u16), Held>,
     captures: BTreeMap<(u32, u16), (u64, u32)>,
+    buttons: BTreeSet<(u32, u16)>,
     clicks: BTreeMap<(u32, u16), Click>,
     hover: Option<u64>,
     gestures: BTreeMap<(u32, u64), u32>,
@@ -190,6 +191,7 @@ impl Stream {
             devices: BTreeMap::new(),
             keys: BTreeMap::new(),
             captures: BTreeMap::new(),
+            buttons: BTreeSet::new(),
             clicks: BTreeMap::new(),
             hover: None,
             gestures: BTreeMap::new(),
@@ -405,6 +407,7 @@ impl State {
                                 }
                                 self.stream.keys.clear();
                                 self.stream.captures.clear();
+                                self.stream.buttons.clear();
                                 self.stream.chrome_device = None;
                                 self.dragging = None;
                                 self.resizing = None;
@@ -807,6 +810,7 @@ impl State {
         }
         let slot = (e.device, e.code);
         if e.value == 0 {
+            self.stream.buttons.remove(&slot);
             if e.code == key::BUTTON_LEFT && self.stream.chrome_device == Some(e.device) {
                 self.stream.chrome_device = None;
                 if let Some((id, _, _)) = self.dragging.take() {
@@ -844,6 +848,12 @@ impl State {
             return;
         }
         if e.value != 1 {
+            self.handled(e);
+            return;
+        }
+        // A device may repeat its held button state in motion reports. Only
+        // the edge starts capture or establishes a drag/resize anchor.
+        if !self.stream.buttons.insert(slot) {
             self.handled(e);
             return;
         }
