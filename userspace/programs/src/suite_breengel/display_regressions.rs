@@ -4,6 +4,11 @@ use libbreenix::window as win;
 use win::abi::{self, op, Plain};
 
 pub fn many_windows() -> CaseResult {
+    crate::window_cases::composition::paint([0x57,0x68,0x79,255]).cite("23.9")?;
+    let (pixels,_) = crate::window_cases::composition::screen()?;
+    let (width,height) = crate::window_cases::composition::physical_size()?;
+    crate::window_cases::kit::same(&pixels,width as u32,height as u32,true,
+        "full bound destination before observation-capacity refusal","23.9",|_,_|[0x57,0x68,0x79,255])?;
     let (mut compositor, _) = crate::window_cases::kit::kiosk()?;
     ensure(compositor.ask("auto 0")? == "ok", "24", "gpu-apps: kiosk auto 0 failed")?;
     let (rd, wr) = io::pipe()?;

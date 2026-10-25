@@ -96,6 +96,7 @@ impl Finale<'_> {
     }
 }
 pub struct Run<'a> {
+    pub announcement: Option<&'a str>,
     pub suite: &'a str,
     pub target: &'a str,
     pub case_number: usize,
@@ -446,6 +447,9 @@ pub fn draw_with(fb: &mut FrameBuf, run: &Run<'_>, font: &mut StageFont) -> Resu
         }
     }
     draw_spotlight(cv, run);
+    if let Some(text) = run.announcement {
+        wrapped(cv, text.as_bytes(), 24, 720, 1232, 2);
+    }
     if let Some(finale) = run.finale {
         cv.fill(48, 240, 720, 240, HEADER);
         cv.text(b"RUN COMPLETE", 72, 264, 696, 3, Color::WHITE);
@@ -511,6 +515,14 @@ fn wrapped(cv:&mut Canvas<'_>,bytes:&[u8],x:usize,y:usize,width:usize,scale:usiz
         rest = &rest[end..];
     }
 }
+fn case_panel(cv: &mut Canvas<'_>, image: Image<'_>) {
+    let n=cv.n;
+    for y in 0..250*n {for x in 0..400*n {
+        let p=image.pixel(x*image.width/(400*n),y*image.height/(250*n));
+        cv.fb.put_pixel(848*n+x,400*n+y,color(p));
+    }}
+}
+
 fn draw_spotlight(cv: &mut Canvas<'_>, run: &Run<'_>) {
     cv.fill(832, 112, 432, 588, INSET);
     let selected = &run.tiles[run.selected];
@@ -522,7 +534,7 @@ fn draw_spotlight(cv: &mut Canvas<'_>, run: &Run<'_>) {
     let mut key = Text::new();
     let _ = write!(key, "key {}", selected.key);
     cv.text(key.bytes(), 840, 144, 424, 1, Color::WHITE);
-    cv.text(match selected.stamp {Stamp::Pass=>b"PASS",Stamp::Fail=>b"FAIL",Stamp::NotReached=>b"NOT REACHED",_=>b"RUNNING"},848,640,400,3,stamp(selected.stamp,run.ui_time_ms));
+    cv.text(match selected.stamp {Stamp::Pass=>b"PASS",Stamp::Fail=>b"FAIL",Stamp::NotReached=>b"NOT REACHED",_=>b"RUNNING"},848,672,400,3,stamp(selected.stamp,run.ui_time_ms));
     match run.spotlight {
         Spotlight::None => {
             cv.text(if selected.stamp == Stamp::NotReached {b"Case did not run"} else {b"Awaiting case result"},848,360,400,2,DIM);
@@ -557,7 +569,7 @@ fn draw_spotlight(cv: &mut Canvas<'_>, run: &Run<'_>) {
         }
         Spotlight::Actual(image) => {
             cv.text(b"actual (reference not supplied)",840,152,424,1,Color::WHITE);
-            for y in 0..250 {for x in 0..400 {cv.put(848+x,168+y,color(image.pixel(x*image.width/400,y*image.height/250)));}}
+            case_panel(cv,image);
         }
         Spotlight::Picture {
             expected,
@@ -590,6 +602,7 @@ fn draw_spotlight(cv: &mut Canvas<'_>, run: &Run<'_>) {
                     );
                 }
             }
+            case_panel(cv,actual);
             if let Some((x, y)) = first {
                 let (cx, cy) = (x * 128 / actual.width, y * 128 / actual.height);
                 for xx in cx.saturating_sub(2)..=(cx + 2).min(127) {
@@ -628,19 +641,19 @@ fn draw_spotlight(cv: &mut Canvas<'_>, run: &Run<'_>) {
         }
     }
     if let Some((points,hit))=run.input {
-        cv.text(if points.is_empty(){b"INPUT / events and handler result"}else{b"INPUT / pointer trail and handler result"},848,432,400,1,Color::WHITE);
-        wrapped(cv,hit.as_bytes(),848,448,400,1);
+        cv.text(if points.is_empty(){b"INPUT / events and handler result"}else{b"INPUT / pointer trail and handler result"},848,336,400,1,Color::WHITE);
+        wrapped(cv,hit.as_bytes(),848,352,400,1);
         let min_x=points.iter().map(|p|p.x).min().unwrap_or(0) as i64;
         let min_y=points.iter().map(|p|p.y).min().unwrap_or(0) as i64;
         let dx=(points.iter().map(|p|p.x).max().unwrap_or(1) as i64-min_x).max(1);
         let dy=(points.iter().map(|p|p.y).max().unwrap_or(1) as i64-min_y).max(1);
-        let mapped=|p:&InputPoint|(864+((p.x as i64-min_x)*352/dx) as usize,516+((p.y as i64-min_y)*80/dy) as usize);
+        let mapped=|p:&InputPoint|(864+((p.x as i64-min_x)*352/dx) as usize,376+((p.y as i64-min_y)*16/dy) as usize);
         for pair in points.windows(2) {
             let (x,y)=mapped(&pair[0]);let (xx,yy)=mapped(&pair[1]);
             cv.line(x as i32,y as i32,xx as i32,yy as i32,BAR);
         }
         for p in points {let (x,y)=mapped(p);cv.fill(x-2,y-2,5,5,if p.pressed{PASS}else{Color::WHITE});}
-        if points.is_empty(){cv.text(b"Events (no pointer)",848,536,400,2,Color::WHITE);}
+        if points.is_empty(){cv.text(b"Events (no pointer)",848,376,400,1,Color::WHITE);}
     }
 }
 /// Decode precisely the observation strength the record supports.

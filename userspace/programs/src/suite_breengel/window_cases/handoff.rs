@@ -18,6 +18,10 @@ pub(crate) fn snapshot_lifetime(check_aliases: bool) -> CaseResult {
     // The suite stage is already the display owner. TAKE is idempotent for that owner.
     // SAFETY: TAKE has no arguments.
     want_ok(unsafe { raw::syscall0(431) as i64 }, "18", "gpu-display: B13 fixture display ownership")?;
+    super::composition::paint([0x31,0x42,0x53,255]).cite("23.9")?;
+    let (pixels, _) = super::composition::screen()?;
+    let (width,height) = super::composition::physical_size()?;
+    same(&pixels,width as u32,height as u32,true,"alias ownership fixture fills the bound scanout","23.9",|_,_|[0x31,0x42,0x53,255])?;
     let w = W::new(16, 16, 2)?;
     want_ok(w.register(b"B13"), "17.1", "REGISTER")?;
     w.frame(11).cite("17.3")?;
@@ -132,8 +136,6 @@ pub(crate) fn descriptor_faults() -> CaseResult {
     struct Release;
     impl Drop for Release {fn drop(&mut self){call_at(18,0,0);}}
     let _release=Release;
-    // SAFETY: TAKE has no arguments and is idempotent for a current owner.
-    want_ok(unsafe {raw::syscall0(431) as i64},"18","gpu-display: descriptor fixture ownership")?;
     let before=counter("composites").cite("18")?;
     want_errno(call_at(19,unmapped(),112),EFAULT,"17.5","gpu-display: B13 unmapped 112-byte COMPOSITE")?;
     let page=Pages::filled(1,0,false,|b|b.fill(0)).cite("17.5")?;

@@ -1318,7 +1318,7 @@ fn windows_distinct_content() -> CaseResult {
     }
     let r = kiosk.ask("composite").cite("24")?;
     ensure(r.starts_with("ok "), "18", format!("COMPOSITE answered `{r}`"))?;
-    let screen = readback().cite("20.1")?;
+    let (screen, _) = super::composition::composed_screen(&mut kiosk)?;
     for (i, w) in wins.iter().enumerate() {
         let (ox, oy) = (100 * (i as u32 % 4) + 10, 60 * (i as u32 / 4) + 10);
         for y in 0..50 {
@@ -1331,23 +1331,6 @@ fn windows_distinct_content() -> CaseResult {
         }
     }
     Ok(())
-}
-
-/// The composed screen at the reported physical mode, by SCANOUT_READBACK (as root).
-pub(crate) fn readback() -> Result<Vec<u8>, String> {
-    let (width,height)=super::composition::screen_size().map_err(|e|format!("{e:?}"))?;
-    let mut px = vec![0u8; width * height * 4];
-    let mut rec = [0u8; 1024];
-    let mut rb = super::handoff::Readback::ZERO;
-    rb.dst = px.as_mut_ptr() as u64;
-    rb.dst_len = px.len() as u64;
-    rb.record = rec.as_mut_ptr() as u64;
-    rb.record_len = 1024;
-    let r = call(op::SCANOUT_READBACK, &mut rb);
-    if r < 0 {
-        return Err(format!("gpu-display: B13 SCANOUT_READBACK {} reason {}", outcome(r), rb.reason));
-    }
-    Ok(px)
 }
 
 fn windows_raw_client() -> CaseResult {
@@ -1449,11 +1432,12 @@ fn windows_commit_waits_render()->CaseResult {
             let reply=match early{Some(r)=>r,None=>received.recv().map_err(|e|e.to_string())?}.cite("17.3")?;
             if reply=="err 11" {super::composition::compose(&mut k)?;}
             else {ensure(reply.starts_with("ok "),"17.3",format!("gpu-window: completed composition: {reply}"))?;}
-            let (screen,_)=super::composition::screen()?;
-            let (width,height)=super::composition::screen_size()?;
-            same(&screen,width as u32,height as u32,true,"completed GPU render on scanout","17.3",|x,y|if (20..36).contains(&x) && (20..36).contains(&y){[51,34,17,255]}else{[0,0,0,255]})?;
             let (_,front)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
             window_pixels(&front,16,16,"completed render","17.3",|_,_|[51,34,17,255])?;
+            // Both checks remain; the composed target is the frame published to the stage.
+            let (screen,_)=super::composition::composed_screen(&mut k)?;
+            let (width,height)=super::composition::screen_size()?;
+            same(&screen,width as u32,height as u32,true,"completed GPU render on case target","17.3",|x,y|if (20..36).contains(&x) && (20..36).contains(&y){[51,34,17,255]}else{[0,0,0,255]})?;
         }
         libbreenix::test_control::disarm_all().cite("21")?;
         if error {let (_,front)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;

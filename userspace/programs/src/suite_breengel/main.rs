@@ -125,13 +125,13 @@ const fn total(parts: &[&[Case]]) -> usize {
 
 /// The cases of `parts`, in order, as one table.
 const fn join<const N: usize>(parts: &[&[Case]]) -> [Case; N] {
-    let mut out = [const { Case { id: "", title: "", run: unjoined } }; N];
+    let mut out = [const { Case { fullscreen_reason: None, id: "", title: "", run: unjoined } }; N];
     let (mut k, mut i) = (0, 0);
     while i < parts.len() {
         let mut j = 0;
         while j < parts[i].len() {
             let c = &parts[i][j];
-            out[k] = Case { id: c.id, title: c.title, run: c.run };
+            out[k] = Case { fullscreen_reason: c.fullscreen_reason, id: c.id, title: c.title, run: c.run };
             k += 1;
             j += 1;
         }
@@ -337,9 +337,31 @@ fn publish_picture(width: usize, height: usize, pixels: &[u8]) {
 
 /// Hand the last judged frame, if any, to the runner; whether one was handed.
 fn hand_off_judged() -> Result<bool, String> {
-    let Some((width, height, mut pixels, mut expected)) = LAST_JUDGED.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+    let Some((mut width, mut height, mut pixels, mut expected)) = LAST_JUDGED.lock().unwrap_or_else(|e| e.into_inner()).take() else {
         return Ok(false);
     };
+    if window_cases::composition::panel_case() && width <= 800 && height <= 500 && (width,height)!=(800,500) {
+        let source=KEPT.with(|k|k.borrow_mut().take());
+        if let Some(source)=source {
+            if (source.width(),source.height())==(width,height) {
+                let mut panel=libgfx::surface::Surface::new(800,500,libgfx::surface::Format::BGRX).map_err(|e|e.to_string())?;
+                panel.clear(libgfx::color::Color::BLACK);
+                libgfx::blit::blit(&mut panel,&source,0,0);
+                panel.wait().map_err(|e|e.to_string())?;
+                let pad=|src:&[u8]| {
+                    let mut dst=vec![0u8;800*500*4]; for p in dst.chunks_exact_mut(4){p[3]=255;}
+                    for y in 0..height {dst[y*800*4..y*800*4+width*4].copy_from_slice(&src[y*width*4..(y+1)*width*4]);}
+                    dst
+                };
+                let wanted=pad(&pixels);
+                let mut read=vec![0u8;800*500*4];
+                panel.read(&mut read,800*4).map_err(|e|e.to_string())?;
+                if read.chunks_exact(4).zip(wanted.chunks_exact(4)).any(|(a,b)|a[..3]!=b[..3]) {return Err("B50 panel GPU copy changed a judged pixel or its padding".into());}
+                expected=expected.as_ref().map(|e|pad(e)); pixels=read; width=800; height=500;
+                keep_judged_surface(panel);
+            } else {keep_judged_surface(source);}
+        }
+    }
     // SAFETY: `pixels` holds width × height canonical BGRX pixels and outlives the surface.
     let frame = unsafe { FrameBuf::from_raw(pixels.as_mut_ptr(), width, height, width * 4, 4, true) }
         .map_err(|e| format!("the judged {width} x {height} frame is not a valid surface: {e}"))?;

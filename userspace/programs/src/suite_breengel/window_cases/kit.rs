@@ -604,6 +604,7 @@ impl Helper {
 
 impl Drop for Helper {
     fn drop(&mut self) {
+        if super::composition::park_picture(self) { return; }
         self.kill();
         let _ = io::close(self.to);
         let _ = io::close(self.from);
@@ -612,7 +613,8 @@ impl Drop for Helper {
 
 /// `kiosk_test`, claimed: its epoch.
 pub(crate) fn kiosk() -> Result<(Helper, u64), String> {
-    let mut k = Helper::exec(b"/usr/libexec/breenix/kiosk_test\0", &[b"kiosk_test\0"])?;
+    let argv: &[&[u8]] = if super::composition::panel_case() { &[b"kiosk_test\0", b"--panel\0"] } else { &[b"kiosk_test\0"] };
+    let mut k = Helper::exec(b"/usr/libexec/breenix/kiosk_test\0", argv)?;
     let line = k.line(5_000)?;
     match line.strip_prefix("ready ").and_then(|e| e.parse().ok()) {
         Some(epoch) => Ok((k, epoch)),

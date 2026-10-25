@@ -71,8 +71,8 @@ pub fn changes_queue(caller: &Caller) -> Result<Arc<WaitQueueHead>, i32> {
     Ok(CHANGES.call_once(|| queue).clone())
 }
 
-fn authority(caller: &Caller) -> Result<u64, i32> {
-    if !crate::gpu::window_targets::display_owner(caller.tgid) {
+fn authority(caller: &Caller, offscreen: bool) -> Result<u64, i32> {
+    if !offscreen && !crate::gpu::window_targets::display_owner(caller.tgid) {
         return Err(EPERM);
     }
     REGISTRY
@@ -133,7 +133,7 @@ pub fn invalidate_stale() {
         .lock()
         .claim
         .is_some_and(|c| c.holder == owner && c.epoch == claim);
-    if valid_claim && window_targets::scene_epoch(owner, context) == Ok(epoch) {
+    if valid_claim && epoch_now(owner, context, epoch) == Ok(epoch) {
         return;
     }
     let old = {
@@ -147,15 +147,20 @@ pub fn invalidate_stale() {
     drop(old);
 }
 
+fn epoch_now(owner: u64, context: u64, saved: SceneEpoch) -> Result<SceneEpoch, i32> {
+    window_targets::scene_epoch_at(owner, context, saved.offscreen.then_some((saved.width, saved.height)))
+}
+
 pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64, i32> {
-    let claim = authority(caller)?;
+    let offscreen = a.flags == 2;
+    let size = offscreen.then_some((a.width, a.height));
+    let claim = authority(caller, offscreen)?;
     if a.window_count != 0
         || a.damage_count != 0
         || a.snapshot != 0
-        || a.width != 0
-        || a.height != 0
+        || (!offscreen && (a.width != 0 || a.height != 0))
         || a.scale != 0
-        || a.flags != 0
+        || (a.flags != 0 && !offscreen)
         || a.cursor != Cursor::ZERO
         || a.claim_epoch != 0
         || a.owner_sequence != 0
@@ -163,7 +168,7 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
         return Err(EINVAL);
     }
     super::ops::publish_ready();
-    let epoch = window_targets::scene_epoch(caller.tgid, a.context)?;
+    let epoch = window_targets::scene_epoch_at(caller.tgid, a.context, size)?;
     let stale = {
         let reg = REGISTRY.lock();
         reg.snapshot
@@ -277,7 +282,7 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
             None => (epoch.reset, 0, 0),
         };
         let sample = if !sizing && target.is_some() {
-            window_targets::scene_handle(caller.tgid)?
+            window_targets::scene_handle_at(caller.tgid, offscreen)?
         } else {
             0
         };
@@ -307,7 +312,7 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
     a.width = epoch.width;
     a.height = epoch.height;
     a.scale = epoch.scale;
-    a.flags = full as u32;
+    a.flags = full as u32 | if offscreen { 2 } else { 0 };
     a.cursor = cursor;
     a.claim_epoch = claim;
     a.owner_sequence = epoch.owner_sequence;
@@ -325,7 +330,7 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
         .and_then(|n| n.checked_add(damage.capacity() * core::mem::size_of::<Rect>()))
         .ok_or(ENOMEM)?;
     let charge = MetadataCharge::new(caller.tgid, bytes)?;
-    let token = window_targets::scene_handle(caller.tgid)?;
+    let token = window_targets::scene_handle_at(caller.tgid, offscreen)?;
     for (i, s) in sources.iter().enumerate() {
         crate::syscall::window::copy_out(a.windows + i as u64 * 80, &s.wire)?;
     }
@@ -334,7 +339,7 @@ pub fn snapshot(caller: &Caller, a: &mut SceneSnapshot, out: u64) -> Result<u64,
     }
     a.snapshot = token;
     crate::syscall::window::copy_out(out, a)?;
-    if authority(caller)? != claim || window_targets::scene_epoch(caller.tgid, a.context)? != epoch
+    if authority(caller, offscreen)? != claim || epoch_now(caller.tgid, a.context, epoch)? != epoch
     {
         return Err(EAGAIN);
     }
@@ -399,8 +404,8 @@ impl Admission {
     /// Call only after core stream validation, before any attach or device send.
     pub fn begin(&mut self) -> Result<(), i32> {
         let caller = Caller::current()?;
-        if authority(&caller)? != self.reservation.claim
-            || window_targets::scene_epoch(caller.tgid, self.context())? != self.epoch()
+        if authority(&caller, self.epoch().offscreen)? != self.reservation.claim
+            || epoch_now(caller.tgid, self.context(), self.epoch())? != self.epoch()
         {
             return Err(EPERM);
         }
@@ -424,7 +429,9 @@ impl Drop for Admission {
 }
 
 pub fn submit(caller: &Caller, a: &mut Composite, out: u64) -> Result<u64, i32> {
-    let claim = authority(caller)?;
+    let offscreen = REGISTRY.lock().snapshot.as_ref().is_some_and(|s|
+        s.owner == caller.tgid && s.token == a.snapshot && s.epoch.offscreen);
+    authority(caller, offscreen)?;
     if a.reserved != 0
         || a.flags > 1
         || a.serial != 0
@@ -455,7 +462,8 @@ pub fn submit(caller: &Caller, a: &mut Composite, out: u64) -> Result<u64, i32> 
         }
         reg.snapshot.take().ok_or(ENOENT)?
     };
-    let epoch = window_targets::scene_epoch(caller.tgid, reservation.context)?;
+    let claim = authority(caller, reservation.epoch.offscreen)?;
+    let epoch = epoch_now(caller.tgid, reservation.context, reservation.epoch)?;
     if reservation.claim != claim || reservation.epoch.owner_sequence != epoch.owner_sequence {
         return Err(ENOENT);
     }
