@@ -1390,7 +1390,7 @@ class Driver:
         if self.args.mode != 'suite' or not self.kernel_started or self.fatal_at is not None:
             return
         if self.hostkey_watcher is None:
-            self.hostkey_watcher = hostkeys.Watcher(hostkeys.ReplayKeys(self.console_send), metal_root.HOSTKEYS,
+            self.hostkey_watcher = hostkeys.Watcher(hostkeys.ReplayKeys(lambda text: self.console_send(text, paced=True)), metal_root.HOSTKEYS,
                                                     log=lambda message: self.event('hostkeys', message=message))
         self.hostkey_watcher.line(line)
 

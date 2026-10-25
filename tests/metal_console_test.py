@@ -33,6 +33,18 @@ class ConsoleTest(unittest.TestCase):
         driver.console_send = Mock()
         return driver
 
+    def test_suite_replay_uses_the_paced_sol_transport(self):
+        driver = self.driver()
+        driver.args.mode = 'suite'
+        driver.kernel_started = True
+        driver.hostkey_watcher = None
+        with patch.object(boot.hostkeys.time, 'sleep'):
+            driver.on_hostkey_line('SUITE console HOSTKEY getty/independent-sessions seq=1 keys=v,t,enter')
+        self.assertEqual(driver.console_send.call_count, 3)
+        for call in driver.console_send.call_args_list:
+            self.assertTrue(call.args[0].startswith('BXKEY '))
+            self.assertEqual(call.kwargs, {'paced': True})
+
     def test_wrong_password_right_password_computation_and_reacquisition_are_required(self):
         driver = self.driver()
         # A prompt or an echoed command cannot stand in for the calculation.
