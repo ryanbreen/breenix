@@ -19,6 +19,7 @@ use core::fmt;
 pub enum Class {
     Storage,
     Network,
+    Display,
 }
 
 fn line(event: &str, args: fmt::Arguments) {
@@ -46,7 +47,14 @@ pub fn found(class: Class, args: fmt::Arguments) {
             #[cfg(target_arch = "aarch64")]
             screen(crate::console::splash::Stage::NetworkFound);
         }
+        Class::Display => line("display found", args),
     }
+}
+
+/// The console adopted the memory BAR containing the firmware framebuffer.
+#[cfg(target_arch = "x86_64")]
+pub fn display_initialized(args: fmt::Arguments) {
+    line("display initialized", args);
 }
 
 /// `driver` attached `disks` storage disks. Returns without a line when `disks` is 0.
