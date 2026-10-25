@@ -233,7 +233,7 @@ def inner(args):
         if args.features == 'testing':
             shutil.copyfile(clone / TEST_BINARIES, out / 'test-binaries.img')
         copied = []
-        definition_files = list(DEFINITION) + ['scripts/suite-verdict.py', 'scripts/suite-sequence.py', 'scripts/metal/server-suite', 'scripts/metal/server_reboot.py', 'scripts/metal/resting_cases.py', 'scripts/metal/upgrade_cases.py', 'docs/efforts/path.json']
+        definition_files = list(DEFINITION) + ['scripts/suite-verdict.py', 'scripts/suite-sequence.py', 'scripts/metal/server-suite', 'scripts/metal/gt710-suite', 'docs/efforts/metal.json', 'scripts/metal/server_reboot.py', 'scripts/metal/resting_cases.py', 'scripts/metal/upgrade_cases.py', 'docs/efforts/path.json']
         definition_files += [str(path.relative_to(clone)) for path in sorted((clone / 'docs/suites').glob('*.json'))]
         for name in definition_files:
             source = clone / name

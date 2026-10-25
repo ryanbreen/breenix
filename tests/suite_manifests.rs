@@ -200,7 +200,7 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
     let binary = text(object, "binary", &at, errors);
     let host_runner = (object.get("hostRunner") == Some(&Value::Bool(true))).then(|| binary.to_string());
     if host_runner.is_some() {
-        if binary != "scripts/metal/server-suite" || id != "server" {
+        if !matches!((id.as_str(), binary), ("server", "scripts/metal/server-suite") | ("gt710", "scripts/metal/gt710-suite")) {
             errors.push(format!("{at}: unrecognized host runner {binary:?}"));
         }
     } else if binary != format!("/sbin/suite-{id}") {
@@ -1373,7 +1373,7 @@ fn metal_stream_is_independent_and_resolves_its_measures() {
     let errors = metal_definition_errors(&root, &main, &metal, &boot);
     assert!(errors.is_empty(), "metal definitions:\n{}", errors.join("\n"));
     assert_eq!(metal["efforts"].as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap())
-        .collect::<Vec<_>>(), ["metal-bring-up", "metal-userspace", "metal-network", "metal-storage", "metal-console"]);
+        .collect::<Vec<_>>(), ["metal-bring-up", "metal-userspace", "metal-network", "metal-storage", "metal-console", "metal-gt710"]);
     assert_eq!(boot["milestones"][0]["id"], "delivery");
     assert_eq!(boot["milestones"][1]["id"], "first-light");
     assert!(boot["milestones"][0].get("stub").is_none());

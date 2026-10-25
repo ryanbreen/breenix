@@ -1793,3 +1793,12 @@ erase, kill-line and newline recovery.
 The shared discipline is also measured by terminals `termios/canonical-limit`,
 and signals `waits/console-read-signals` observes blocked console and VT readers
 before sending TERM (default, ignored, caught and restarting) and KILL.
+
+## GT 710 firmware display
+
+The x86 E19 effort's first two milestones use the host-run `gt710` suite,
+`scripts/metal/gt710-suite`. Its `firmware` category has two cases for the mode
+and framebuffer's PCI owner; `device` has three for identity, resources and
+the firmware framebuffer claim. The [E19 contract](../metal/gt710.md) describes
+the required records and completed-capture scoring. The third milestone uses
+E16's existing `console` suite categories, with their existing cases.

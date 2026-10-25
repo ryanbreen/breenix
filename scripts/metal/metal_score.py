@@ -8,7 +8,8 @@ from pathlib import Path
 # The test runner names the marker each test will print before the test runs; that promise reaches no stage.
 ANNOUNCEMENT = 'kernel::test_exec:'
 # Host records whose milestone is not <suite>/<category> (scripts/metal/server-suite, MILESTONES).
-HOST_MILESTONES = {'users-operator.json': 'users/operator-login'}
+HOST_MILESTONES = {'users-operator.json': 'users/operator-login',
+                   'gt710-firmware.json': 'metal-gt710/firmware', 'gt710-device.json': 'metal-gt710/device'}
 
 
 def boot_shape(disk):
@@ -65,7 +66,7 @@ def score(directory):
     # scored again from the completed capture without rerunning them. Each measured
     # category's records are server-<category>.json, or users-operator.json for the
     # users suite's host-run category, beside its transcript.
-    found = sorted(directory.glob('server-*.json')) + sorted(directory.glob('users-operator.json'))
+    found = sorted(directory.glob('server-*.json')) + sorted(directory.glob('users-operator.json')) + sorted(directory.glob('gt710-*.json'))
     for host_records in found:
         suite, category = host_records.name[:-len('.json')].split('-', 1)
         if category.endswith('-transcript'):
@@ -73,14 +74,20 @@ def score(directory):
         milestone = HOST_MILESTONES.get(host_records.name, suite + '/' + category)
         root = directory / 'definition'
         try:
-            host = runpy.run_path(str(root / 'scripts/metal/server-suite'))
+            host = runpy.run_path(str(root / ('scripts/metal/gt710-suite' if suite == 'gt710' else 'scripts/metal/server-suite')))
             manifest = read('definition/docs/suites/' + suite + '.json')
             records = read(host_records.name)
             if records.get('milestone') != milestone:
                 raise ValueError(host_records.name + ' records another milestone')
             fatal = read('definition/docs/boot-path.json')['fatal'] + [r'KERNEL PANIC:']
-            reason = host['score'](manifest, read('definition/docs/efforts/path.json'), records,
-                                   (directory / 'serial.txt').read_text(), run, run.get('bootedCommit'), fatal)
+            effort = 'metal.json' if suite == 'gt710' else 'path.json'
+            sha = (directory / 'commit').read_text().strip() if suite == 'gt710' else run.get('bootedCommit')
+            if suite == 'gt710' and (not (directory / 'ended').exists()
+                    or (directory / 'exit-status').read_text().strip() != '0'
+                    or (directory / 'dirty').read_text().strip() != '0' or 'console-gap' in events):
+                raise ValueError('GT 710 cases need a completed clean successful capture')
+            reason = host['score'](manifest, read('definition/docs/efforts/' + effort), records,
+                                   (directory / 'serial.txt').read_text(), run, sha, fatal)
             total = len(host['CATEGORIES'][category])
             results[milestone] = dict(reached=total, total=total, passed=True, reason=reason)
         except (OSError, ValueError, KeyError, StopIteration, TypeError, AttributeError) as error:

@@ -255,6 +255,53 @@
           }
         }
       ]
+    },
+    {
+      "id": "metal-gt710",
+      "title": "GT 710 graphics bring-up",
+      "outcome": "The GT 710 owns the firmware framebuffer and runs the screen console and virtual terminals; later work adds native display and rendering.",
+      "targets": [
+        "x86-metal"
+      ],
+      "milestones": [
+        {
+          "id": "firmware",
+          "title": "Identify the firmware framebuffer and its PCI owner",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "firmware"
+            ]
+          }
+        },
+        {
+          "id": "device",
+          "title": "Enumerate and claim the GT 710 display",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "device"
+            ]
+          }
+        },
+        {
+          "id": "console",
+          "title": "Screen console and virtual terminals on the GT 710",
+          "measure": {
+            "suite": "console",
+            "categories": [
+              "screen",
+              "emulation",
+              "vt-devices",
+              "vt-switch",
+              "scrollback",
+              "chvt",
+              "getty",
+              "keys"
+            ]
+          }
+        }
+      ]
     }
   ],
   "later": [
