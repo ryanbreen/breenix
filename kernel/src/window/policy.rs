@@ -12,7 +12,7 @@ pub fn hit_test(caller: &Caller, query: &mut HitTest) -> Result<u64, i32> {
     if !caller.is_root() && !reg.is_compositor(caller) {
         return Err(EPERM);
     }
-    query.scene_version = reg.present.changes;
+    query.scene_version = reg.scene_version;
     query.id = reg
         .windows
         .values()
