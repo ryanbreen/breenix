@@ -112,6 +112,12 @@ pub fn resize_refused() -> CaseResult {
         content(&mut d, &c)?;
     }
     // An owner ignoring ResizeRequested is a separate retained-frame path.
+    // W30: finish the previous pending request through a LIST size change
+    // before starting that independent path (W5).
+    c.command(RESIZE, w.width + 1, w.height)?;
+    content(&mut d, &c)?;
+    c.command(RESIZE, w.width, w.height)?;
+    content(&mut d, &c)?;
     c.command(REFUSE, 1, 0)?;
     c.clear()?;
     drag(
@@ -256,6 +262,13 @@ pub fn resize_corners() -> CaseResult {
     placed(&c)?;
     d.client_ready(&c)?;
     for (left, top) in [(true, true), (false, true), (true, false), (false, false)] {
+        // W30: the previous top corner may reach the top-bar bound. Leave
+        // room for this corner's unchanged 20-pixel upward growth assertion.
+        let current = c.info()?;
+        if top && current.y - 34 * d.scale < 76 {
+            drag(&d, (current.x + 50, current.y - 16 * d.scale),
+                (current.x + 50, current.y - 16 * d.scale + 100))?;
+        }
         c.clear()?;
         let w = c.info()?;
         let x = if left {

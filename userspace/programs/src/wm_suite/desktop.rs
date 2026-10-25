@@ -604,6 +604,7 @@ pub struct Desktop {
     pub width: u32,
     pub height: u32,
     pub scale: i32,
+    virtual_input: std::cell::RefCell<Option<(super::input::Virtual, super::input::Stream)>>,
 }
 impl Desktop {
     pub fn start() -> Result<Self, String> {
@@ -642,6 +643,7 @@ impl Desktop {
             width: mode.width,
             height: mode.height,
             scale: mode.scale as i32,
+            virtual_input: std::cell::RefCell::new(None),
         };
         let ready = until(4000, "bwm first completed desktop", || {
             if let Some(status) = d.wm.status()? {
@@ -761,6 +763,29 @@ impl Desktop {
             "pointer outside screen",
         )
         .map_err(|e| format!("{e:?}"))?;
+        if let Some((input, stream)) = self.virtual_input.borrow_mut().as_mut() {
+            let axis = |v: i32, extent: u32| {
+                ((v as i64 * 32767 + extent as i64 - 2) / (extent as i64 - 1)) as i32
+            };
+            let mut events = vec![(3, 0, axis(x, self.width)), (3, 1, axis(y, self.height))];
+            for (mask, code) in [(1, 0x110), (2, 0x111), (4, 0x112)] {
+                events.push((1, code, i32::from(buttons & mask != 0)));
+            }
+            if wheel != 0 {
+                events.push((2, 8, wheel));
+            }
+            input.batch(&events, now())?;
+            let source = stream.read_from(events.len() + 1, &[input.id])?;
+            let last = source
+                .last()
+                .ok_or("virtual pointer source batch missing")?
+                .serial;
+            return until(1000, "bwm completed model pointer batch", || {
+                let mut status = abi::CompositorStatus::ZERO;
+                window::call(op::COMPOSITOR_STATUS, &mut status).map_err(|e| e.to_string())?;
+                Ok(status.handled_serial >= last)
+            });
+        }
         breenix_suite::suite::hostpointer(
             x as u32,
             y as u32,
@@ -773,9 +798,32 @@ impl Desktop {
     }
     pub fn click(&self, x: i32, y: i32) -> Result<(), String> {
         self.pointer(x, y, 1, 0)?;
+        if self.uses_virtual_input() {
+            return self.pointer(x, y, 0, 0);
+        }
         time::sleep_ms(100).map_err(|e| e.to_string())?;
         self.pointer(x, y, 0, 0)?;
         time::sleep_ms(100).map_err(|e| e.to_string())
+    }
+    /// W30/W29: fixed-count operation models use the production in-guest input
+    /// path after their physical samples, without consuming host request slots.
+    pub fn use_virtual_input(&mut self) -> Result<(), String> {
+        *self.virtual_input.get_mut() = Some((
+            super::input::Virtual::create()?,
+            super::input::Stream::open()?,
+        ));
+        Ok(())
+    }
+    pub fn uses_virtual_input(&self) -> bool {
+        self.virtual_input.borrow().is_some()
+    }
+    pub fn virtual_key(&self, code: u16) -> Result<(), String> {
+        self.virtual_input
+            .borrow_mut()
+            .as_mut()
+            .ok_or("virtual input is not enabled")?
+            .0
+            .batch(&[(1, code, 1), (1, code, 0)], now())
     }
     pub fn focus(&mut self, c: &mut Client) -> Result<(), String> {
         until(2000, "bwm assigned client geometry", || {

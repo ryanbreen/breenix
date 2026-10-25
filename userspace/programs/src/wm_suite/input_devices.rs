@@ -286,6 +286,8 @@ pub fn replay_wake_fault() -> CaseResult {
         e.kind == kind::KEY_PRESS && e.keycode == 30
     })?;
     c.clear()?;
+    let commit = c.barrier()?;
+    d.shown_after(&c, commit)?;
     clock.step(1, 0)?;
     measure::acknowledged(1)?;
     let point = abi::tc_point::INPUT_WAKE_SKIPPED;

@@ -386,19 +386,25 @@ pub fn hotkey_consumed() -> CaseResult {
 pub fn super_double_tap() -> CaseResult {
     for (interval, opens) in [(400_000_000, true), (400_000_001, false)] {
         let mut clock = measure::Clock::new()?;
-        let _d = Desktop::start()?;
+        let d = Desktop::start()?;
+        let mut source = Stream::open()?;
         let mut v = Virtual::create()?;
         let before = listed()?.len();
         v.batch(&[(1, 125, 1), (1, 125, 0)], 0)?;
+        source.read_from(3, &[v.id])?;
         clock.step(1, interval)?;
         measure::acknowledged(1)?;
         v.batch(&[(1, 125, 1), (1, 125, 0)], interval)?;
+        let batch = source.read_from(3, &[v.id])?;
         clock.step(2, interval + 1)?;
         measure::acknowledged(2)?;
+        until(1000, "double-tap source batch handled", || {
+            Ok(status()?.handled_serial >= batch.last().ok_or("Super source batch missing")?.serial)
+        })?;
         // W30: the epoch acknowledges the launch action, not the asynchronous
         // child's REGISTER. Establish that prerequisite inside the existing
         // case deadline before comparing the unchanged window count.
-        if opens {
+        if !children(d.wm.pid, "blauncher")?.is_empty() {
             until(2000, "double-tap child registered its window", || {
                 Ok(listed()?.len() > before)
             })?;

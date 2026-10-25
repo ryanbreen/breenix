@@ -40,6 +40,7 @@ pub(super) fn parked(d: &Desktop) -> Result<(), String> {
     // W30: normal clients can fill the usable screen. Park in the appbar so
     // their unchanged whole-client pixel comparisons exclude the cursor.
     d.pointer(d.width as i32 - 40, d.height as i32 - 18 * d.scale, 0, 0)?;
+    if d.uses_virtual_input() { return Ok(()); }
     time::sleep_ms(150).map_err(|e| e.to_string())
 }
 pub(super) fn content(d: &mut Desktop, c: &Client) -> CaseResult {

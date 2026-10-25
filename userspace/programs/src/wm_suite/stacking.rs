@@ -255,6 +255,10 @@ pub fn close_focus_next() -> CaseResult {
     b.send(EXIT, 0, 0)?;
     a.await_event("top close focuses next stack id", |e| {
         e.kind == kind::FOCUS_GAINED
+    }).map_err(|e| {
+        let log = d.output();
+        let tail = log.char_indices().rev().nth(100).map_or(0, |(at, _)| at);
+        format!("focus successor missing; {}; {e}", &log[tail..])
     })?;
     check(focused(&a)?, "next visible stack id not focused")?;
     content(&mut d, &a)
@@ -284,6 +288,12 @@ fn model(steps: usize, seed: u32) -> CaseResult {
         stack.push(c.id);
         clients.push(c);
     }
+    // W30 item 2 and W29 item 2: the same fixed-count transport conflict as
+    // launch-close-50. Keep physical samples, then all model steps and their
+    // unchanged registry, scanout and delivery checks use the actual core.
+    d.focus(&mut clients[2])?;
+    key(&mut clients[2], "a", 30)?;
+    d.use_virtual_input()?;
     for step in 0..steps {
         random ^= random << 13;
         random ^= random >> 17;
@@ -356,7 +366,10 @@ fn model(steps: usize, seed: u32) -> CaseResult {
             check(focused(c)?, "model top eligible id not focused")?;
             content(&mut d, c)?;
             c.clear()?;
-            key(c, "a", 30)?;
+            d.virtual_key(30)?;
+            c.await_event("model key reaches the expected focus", |e| {
+                e.kind == kind::KEY_PRESS && e.keycode == 30
+            })?;
         }
     }
     Ok(())
