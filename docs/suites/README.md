@@ -1801,4 +1801,6 @@ The x86 E19 effort's first two milestones use the host-run `gt710` suite,
 and framebuffer's PCI owner; `device` has three for identity, resources and
 the firmware framebuffer claim. The [E19 contract](../metal/gt710.md) describes
 the required records and completed-capture scoring. The third milestone uses
-E16's existing `console` suite categories, with their existing cases.
+the host-run `console/acceptance` case: the same capture must pass those GT 710
+reporting categories, screen/font read-back and E16's complete 88-case `console`
+suite, including its memory reclamation record.
