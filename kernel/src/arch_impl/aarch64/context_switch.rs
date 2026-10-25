@@ -24,7 +24,9 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering
 
 use super::exception_frame::Aarch64ExceptionFrame;
 use super::percpu::{Aarch64PerCpu, CpuId, PivotHalf};
-use crate::arch_impl::aarch64::constants::{HARDIRQ_MASK, NMI_MASK, PREEMPT_MASK, SOFTIRQ_MASK};
+use crate::arch_impl::aarch64::constants::{
+    HARDIRQ_MASK, NMI_MASK, PREEMPT_ACTIVE, PREEMPT_MASK, SOFTIRQ_MASK,
+};
 use crate::arch_impl::traits::PerCpuOps;
 use crate::task::scheduler::Scheduler;
 use crate::task::thread::{CpuContext, Thread, ThreadPrivilege, ThreadState};
@@ -3274,6 +3276,38 @@ fn ensure_user_rsp_scratch_for_el0(frame: &Aarch64ExceptionFrame) {
     }
 }
 
+/// Publish the SP the exception epilogue resumes `frame` on, for a return
+/// that switches no thread.
+///
+/// The entry stubs store that SP in `user_rsp_scratch` before they call the
+/// reschedule check, and the check can switch this thread out and back in:
+/// a wait in the fault-exit drain or in signal delivery saves it inline, and
+/// a ret-based dispatch resumes it, perhaps on another CPU, without restoring
+/// that CPU's word. The wait also leaves interrupts enabled, and a nested
+/// exception overwrites the word with its own SP. Either way the epilogue
+/// would resume on another context's stack. So the value is published here,
+/// from the frame, with interrupts masked until the ERET: an EL0 return
+/// resumes on this thread's `kernel_stack_top`, which the ERET and ret-based
+/// dispatches install, and an EL1 return where it was interrupted, at the end
+/// of the frame. A frame redirected to idle keeps the idle stack its redirect
+/// installed.
+#[inline(always)]
+fn publish_return_sp(frame: &Aarch64ExceptionFrame) {
+    unsafe {
+        super::cpu::disable_interrupts();
+    }
+    if frame.elr == super::idle_loop_arm64 as *const () as u64 {
+        return;
+    }
+    if frame_returns_to_el0(frame) {
+        ensure_user_rsp_scratch_for_el0(frame);
+    } else {
+        unsafe {
+            Aarch64PerCpu::set_user_rsp_scratch(frame as *const Aarch64ExceptionFrame as u64 + 272);
+        }
+    }
+}
+
 /// EL0-conditioned `user_rsp_scratch` install census.
 ///
 /// The two counters are the read-back assertion on the (pending EL, installed
@@ -5339,9 +5373,20 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // The syscall return masks just before this call; the IRQ return is
     // already counted from its entry.
     super::irq_mask_account::opened();
-    crate::task::process_task::drain_deferred_fault_sigsegv_exits();
-    #[cfg(feature = "force_exception_return_switch")]
-    force_exception_return_switch(frame, from_el0);
+    // A fault exit can wait, and a wait switches this thread out and back in
+    // (`publish_return_sp`). Inside a pre-ERET window (PREEMPT_ACTIVE) the
+    // return SP lives in the per-CPU nested slot, which no exit republishes,
+    // so the drain waits for a return outside one.
+    if (Aarch64PerCpu::preempt_count() & PREEMPT_ACTIVE) == 0 {
+        crate::task::process_task::drain_deferred_fault_sigsegv_exits();
+        #[cfg(feature = "force_exception_return_switch")]
+        force_exception_return_switch(frame, from_el0);
+        // A wait resumes with interrupts enabled. The rest of the check, the
+        // return SP a dispatch installs included, runs masked.
+        unsafe {
+            super::cpu::disable_interrupts();
+        }
+    }
 
     // ── Lock-free pre-checks ──────────────────────────────────────
     let preempt_count = Aarch64PerCpu::preempt_count();
@@ -5434,6 +5479,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     if (preempt_count & PREEMPT_GUARD_MASK) != 0 {
         // Kernel or interrupt context is not safe to preempt.
         // Deferred requeue was already processed above.
+        publish_return_sp(frame);
         #[cfg(all(
             target_arch = "aarch64",
             any(
@@ -5505,8 +5551,8 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             // will be corrected on the next tick that does acquire the lock.
             if from_el0 {
                 check_and_deliver_signals_for_current_thread_arm64(frame);
-                ensure_user_rsp_scratch_for_el0(frame);
             }
+            publish_return_sp(frame);
             #[cfg(all(
                 target_arch = "aarch64",
                 any(
@@ -5531,6 +5577,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     let sched = match guard.as_mut() {
         Some(s) => s,
         None => {
+            publish_return_sp(frame);
             #[cfg(all(
                 target_arch = "aarch64",
                 any(
@@ -5618,8 +5665,8 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         drop(guard);
         if from_el0 {
             check_and_deliver_signals_for_current_thread_arm64(frame);
-            ensure_user_rsp_scratch_for_el0(frame);
         }
+        publish_return_sp(frame);
         #[cfg(all(
             target_arch = "aarch64",
             any(
@@ -5654,8 +5701,8 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         drop(guard);
         if from_el0 {
             check_and_deliver_signals_for_current_thread_arm64(frame);
-            ensure_user_rsp_scratch_for_el0(frame);
         }
+        publish_return_sp(frame);
         #[cfg(all(
             target_arch = "aarch64",
             any(
@@ -5686,8 +5733,8 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         drop(guard);
         if from_el0 {
             check_and_deliver_signals_for_current_thread_arm64(frame);
-            ensure_user_rsp_scratch_for_el0(frame);
         }
+        publish_return_sp(frame);
         #[cfg(all(
             target_arch = "aarch64",
             any(
