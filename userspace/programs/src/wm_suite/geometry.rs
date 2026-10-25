@@ -1,6 +1,7 @@
 use super::kit::*;
 
 pub fn drag_move() -> CaseResult {
+    let mut source = Stream::open()?;
     let (mut d, c) = one()?;
     let w = c.info()?;
     let p = (w.x + 50, w.y - 16 * d.scale);
@@ -22,6 +23,22 @@ pub fn drag_move() -> CaseResult {
     finish_paused_gesture(&d, (p.0 + 90, p.1 + 70))?;
     until(1000, "titlebar drag published geometry", || {
         Ok(c.info()?.x == w.x + 90 && c.info()?.y == w.y + 70)
+    }).map_err(|e| {
+        let after = c.info().unwrap_or(w);
+        let events = source.read_from(1, &[]).unwrap_or_default();
+        let mut point = (0, 0);
+        let mut release = point;
+        let mut held = false;
+        for event in events {
+            match (event.kind, event.code, event.value) {
+                (3, 0, x) => point.0 = x,
+                (3, 1, y) => point.1 = y,
+                (1, 0x110, 1) => held = true,
+                (1, 0x110, 0) if held => { release = point; held = false; }
+                _ => {}
+            }
+        }
+        format!("drag got ({},{}), expected (90,70); release raw {:?}; {e}", after.x-w.x, after.y-w.y, release)
     })?;
     content(&mut d, &c)
 }
@@ -56,7 +73,7 @@ pub fn resize_right() -> CaseResult {
     until(1000, "owner resized buffers published", || {
         c.snapshot()?;
         Ok((c.width, c.height) == (w.width + 80, w.height))
-    })?;
+    }).map_err(|e| format!("resize got {}x{}, expected {}x{}; {e}", c.width, c.height, w.width+80, w.height))?;
     let after = c.info()?;
     check(
         after.x == w.x && after.y == w.y,
@@ -156,7 +173,7 @@ pub fn resize_cross() -> CaseResult {
     c.snapshot()?;
     check(
         c.width == ((120 - 4) * d.scale) as u32,
-        "crossing right edge did not clamp to minimum content width",
+        &format!("crossing right edge got width {}, expected {}", c.width, (120-4)*d.scale),
     )?;
     content(&mut d, &c)
 }
@@ -323,7 +340,7 @@ pub fn resize_minimum() -> CaseResult {
     c.snapshot()?;
     check(
         (c.width, c.height) == ((116 * d.scale) as u32, (80 * d.scale) as u32),
-        "resize did not clamp to literal content minimum",
+        &format!("minimum got {}x{}, expected {}x{}", c.width, c.height, 116*d.scale, 80*d.scale),
     )?;
     content(&mut d, &c)
 }

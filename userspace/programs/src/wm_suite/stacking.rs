@@ -276,17 +276,23 @@ pub fn new_on_top() -> CaseResult {
     content(&mut d, &b)
 }
 fn model(steps: usize, seed: u32) -> CaseResult {
+    // W30: freeze incidental clock repaints; the model has no timed actions.
+    let _clock = measure::Clock::new()?;
+    let begun = now();
     let mut d = Desktop::start()?;
     let mut clients = Vec::new();
     let mut stack = Vec::<u64>::new();
     let mut minimized = Vec::<u64>::new();
     let mut random = seed;
     for seed in [11, 23, 41] {
-        let c = Client::start(seed)?;
+        clients.push(Client::spawn_shape(seed, flags::IGNORE_CLOSE, 240, 160, 1024)?);
+    }
+    for c in &mut clients {
+        c.initialize()?;
+        c.receive()?;
         placed(&c)?;
         d.client_ready(&c)?;
         stack.push(c.id);
-        clients.push(c);
     }
     // W30 item 2 and W29 item 2: the same fixed-count transport conflict as
     // launch-close-50. Keep physical samples, then all model steps and their
@@ -294,6 +300,7 @@ fn model(steps: usize, seed: u32) -> CaseResult {
     d.focus(&mut clients[2])?;
     key(&mut clients[2], "a", 30)?;
     d.use_virtual_input()?;
+    value("model-setup", ((now()-begun)/1_000_000) as i64, "ms", None);
     for step in 0..steps {
         random ^= random << 13;
         random ^= random >> 17;
@@ -338,7 +345,9 @@ fn model(steps: usize, seed: u32) -> CaseResult {
                     stack.retain(|&n| n != id);
                     minimized.retain(|&n| n != id);
                 } else {
-                    let c = Client::start(60 + step as u32)?;
+                    let mut c = Client::spawn_shape(60 + step as u32, flags::IGNORE_CLOSE, 240, 160, 1024)?;
+                    c.initialize()?;
+                    c.receive()?;
                     placed(&c)?;
                     d.client_ready(&c)?;
                     stack.push(c.id);
@@ -370,6 +379,9 @@ fn model(steps: usize, seed: u32) -> CaseResult {
             c.await_event("model key reaches the expected focus", |e| {
                 e.kind == kind::KEY_PRESS && e.keycode == 30
             })?;
+        }
+        if (step + 1) % 10 == 0 || step + 1 == steps {
+            value("model-steps", (step+1) as i64, "ops", None);
         }
     }
     Ok(())
