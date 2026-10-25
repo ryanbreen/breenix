@@ -259,6 +259,9 @@ pub fn huge_window() -> CaseResult {
 }
 pub fn commit_flood() -> CaseResult {
     let (mut d, mut a, mut b) = twin()?;
+    // W30 item 1 / W26: startup readbacks precede the measured workload.
+    d.client_ready(&a)?;
+    d.client_ready(&b)?;
     a.command(ANIMATE, 1, 0)?;
     d.focus(&mut b)?;
     b.clear()?;
