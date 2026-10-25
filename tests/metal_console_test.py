@@ -33,6 +33,18 @@ class ConsoleTest(unittest.TestCase):
         driver.console_send = Mock()
         return driver
 
+    def test_suite_replay_chunks_fit_the_uart_without_interactive_delays(self):
+        driver = self.driver()
+        driver.args.mode = 'suite'
+        driver.tmux = ['tmux', '-L', 'fixture']
+        line = boot.hostkeys.ReplayKeys.line((), 'v')
+        with patch.object(boot.subprocess, 'run') as run, patch.object(boot.time, 'sleep') as pause:
+            boot.Driver.console_send(driver, line, paced=True)
+        loads = [call.kwargs['input'] for call in run.call_args_list if 'load-buffer' in call.args[0]]
+        self.assertEqual(b''.join(loads), (line + '\r').encode())
+        self.assertTrue(all(len(chunk) == 8 for chunk in loads[:-1]))
+        self.assertTrue(all(call.args == (0.01,) for call in pause.call_args_list))
+
     def test_suite_replay_uses_the_paced_sol_transport(self):
         driver = self.driver()
         driver.args.mode = 'suite'

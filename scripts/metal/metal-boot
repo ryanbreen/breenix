@@ -975,12 +975,15 @@ class Driver:
         the shell echoes (#2105)."""
         # stdin transport keeps a password out of process argv, events and logs.
         data = (text + '\r').encode()
-        step = 4 if paced else len(data)
+        # HID replay has no terminal echo and must fit the getty cases' deadlines.
+        # Keep its bursts below a 16550 FIFO while avoiding one tmux pair per four bytes.
+        replay = self.args.mode == 'suite'
+        step = (8 if replay else 4) if paced else len(data)
         for at in range(0, len(data), step):
             subprocess.run(self.tmux + ['load-buffer', '-'], input=data[at:at + step], check=True, capture_output=True)
             subprocess.run(self.tmux + ['paste-buffer', '-d', '-t', 'sol'], check=True, capture_output=True)
             if paced:
-                time.sleep(0.04)
+                time.sleep(0.01 if replay else 0.04)
 
     def console_account(self):
         """The account staging gave the console password to (metal_root.console_account): the users suite's wheel
