@@ -58,6 +58,9 @@ const DEFAULT_SIGPENDING: u64 = 4096;
 /// Count the user's unreaped tasks under the same lock that publishes a fork.
 /// Zombies retain their charge until wait reaps them; the iterator excludes tombstones.
 pub fn fork_allowed(manager: &ProcessManager, pid: ProcessId) -> bool {
+    if crate::test_control::take(breengel_abi::tc_point::LAUNCH_FORK_FAIL, pid.as_u64()).is_some() {
+        return false;
+    }
     let Some(parent) = manager.get_process(pid) else {
         return false;
     };
