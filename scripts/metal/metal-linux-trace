@@ -47,6 +47,7 @@ def main():
         (root / 'bin' / name).symlink_to('busybox')
     (root / 'sbin/modprobe').symlink_to('../bin/busybox')
     shutil.copy2(Path(__file__).with_name('metal-linux-trace-init'), root / 'init')
+    shutil.copy2(Path(__file__).with_name('metal-linux-trace-filter.awk'), root / 'filter.awk')
     run('depmod', '-b', str(src), a.release)
     deps = subprocess.check_output(['modprobe', '-d', str(src), '-S', a.release,
                                     '--show-depends', 'nouveau'], text=True)

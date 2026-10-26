@@ -84,13 +84,7 @@ dmesg > dmesg.txt
 echo "metal-trace-progress phase=filter bytes=$(wc -c < /tmp/trace.raw)"
 head -n 2000 /tmp/trace.raw > first.txt
 tail -n 2000 /tmp/trace.raw > last.txt
-# BusyBox awk has no strtonum; convert addresses explicitly.
-awk -v bar="$BAR" '
-function hex(s, n,i,c) { sub(/^0x/,"",s); n=0; for(i=1;i<=length(s);i++){c=index("0123456789abcdef",tolower(substr(s,i,1)))-1; if(c<0)return -1; n=n*16+c} return n }
-BEGIN {base=hex(bar)}
-$1=="R" || $1=="W" {o=hex($5)-base; if((o>=hex("610000") && o<=hex("6fffff")) || (o>=hex("1700") && o<=hex("1704")) || (o>=hex("100c80") && o<=hex("100cff")) || (o>=hex("102000") && o<=hex("102fff")) || (o>=hex("70000") && o<=hex("70fff")) || o==hex("200")) print; next}
-{print}
-' /tmp/trace.raw > trace.txt
+awk -v bar="$BAR" -f /filter.awk /tmp/trace.raw > trace.txt
 {
     echo "BAR0=$BAR"
     echo 'Retained BAR0 offsets: 610000-6fffff,1700-1704,100c80-100cff,102000-102fff,70000-70fff,200; all non-access records; first/last 2000 raw lines separately.'
