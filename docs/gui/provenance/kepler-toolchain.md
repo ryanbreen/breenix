@@ -66,3 +66,34 @@ claim-lint: scripts/claim-lint.py                          -> exit 0
 claim-lint: scripts/claim-lint.py --files /tmp/kepler-pr-body.md -> exit 0
 claim-lint: scripts/claim-lint.py --commit-msg /tmp/kepler-commit.txt -> exit 0
 ```
+
+## PR 2490 review fixes
+
+CMake now probes for `endian.h` and defines `HAVE_ENDIAN_H` when found,
+so Mesa's endian header selects the Linux host byte order. The macOS
+platform-specific header selection remains available when that probe fails.
+The missing-Homebrew path reports an actionable error with `KEPLER_BISON`.
+The root notices now distinguish retained SPDX-only headers from full notices
+and reconcile the future-source paragraph with ruling G1.
+
+The scoped `scripts/build-kepler-assets --check` passed on macOS with
+AppleClang 21 and on Linux ARM64 with GCC 16.1.0. Both used GNU cpp 16.1.0,
+Bison 3.8.2 and Flex 2.6.4, four build jobs and the existing `-Werror` flags.
+Each platform's two fresh builds matched 184/184 files and passed the Rust/C
+embedding, C execution and unsupported-opcode checks. The Linux CMake probe
+found `endian.h`. This review did not run a Linux x86 host build.
+
+A separate digest comparison matched 182/184 files between platforms and
+against the original recorded inventory. The differences were `manifest.json`
+and `embed.h`: the manifest records the changed CMake recipe and host compiler,
+and the C embedding contains that manifest. Firmware, shader binaries, SPH,
+metadata, disassembly, Rust embedding and notices matched. The recorded hash
+inventory above remains the original run's evidence, not a cross-host gate.
+The missing-Homebrew exception path also passed a targeted injected-failure
+check. The review's absent-prebuilt-tools policy-test failures are outside the
+host asset fix's reach and were not rerun.
+
+Remaining Minor/Nit work is tracked together in
+[#2491](https://github.com/ryanbreen/breenix/issues/2491): portable output
+checks, SPDX notice text, TGSI shift wrapping, independent encoding evidence
+and an explicit frontend plan ruling. Device acceptance remains separate.

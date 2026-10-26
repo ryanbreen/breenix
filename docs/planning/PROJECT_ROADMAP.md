@@ -16,8 +16,9 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
-The native GK208B milestone 7 host firmware/compiler assets are in progress in
-[#2489](https://github.com/ryanbreen/breenix/issues/2489). This is source-built
+The native GK208B milestone 7 host firmware/compiler assets are tracked in
+[PR #2490](https://github.com/ryanbreen/breenix/pull/2490), with review follow-up in
+[#2491](https://github.com/ryanbreen/breenix/issues/2491). This is source-built
 firmware and offline catalogue tooling; graphics execution remains separate
 ([build and source notes](../../../tools/kepler/README.md)).
 

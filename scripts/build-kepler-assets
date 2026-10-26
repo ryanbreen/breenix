@@ -37,7 +37,10 @@ def build(path):
     args = ["cmake", "-S", ROOT / "tools/kepler", "-B", path, "-G", "Ninja", "-DCMAKE_BUILD_TYPE="]
     bison = os.environ.get("KEPLER_BISON")
     if not bison and sys.platform == "darwin":
-        prefix = subprocess.check_output(["brew", "--prefix", "bison"], text=True).strip()
+        try:
+            prefix = subprocess.check_output(["brew", "--prefix", "bison"], text=True).strip()
+        except FileNotFoundError as error:
+            raise RuntimeError("Homebrew is required to locate Bison; install it or set KEPLER_BISON") from error
         bison = str(Path(prefix) / "bin/bison")
     if os.environ.get("KEPLER_CPP"):
         args.append("-DKEPLER_CPP=" + os.environ["KEPLER_CPP"])
