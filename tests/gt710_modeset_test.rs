@@ -290,3 +290,23 @@ fn preparing_the_disabled_core_requires_empty_cursors_and_disabled_requests() {
         } else {assert!(r.writes.is_empty(),"unsafe core preparation performed writes");}
     }
 }
+
+#[test]
+fn empty_core_bootstrap_requires_owned_bindings_and_waits_for_initialization() {
+    struct Regs {control:u32,instance:u32,push:u32,get:u32,busy:bool,writes:Vec<(usize,u32)>}
+    impl modeset::Io for Regs {
+        fn read(&mut self,r:usize)->u32 {match r {0x610490=>self.control|if self.busy {0x80000000} else {0},
+            0x610010=>self.instance,0x610494=>self.push,0x640000=>0,0x640004=>self.get,_=>panic!("unexpected read")}}
+        fn write(&mut self,r:usize,v:u32) {self.writes.push((r,v));if r==0x610490 {self.control=v;}}
+        fn delay_us(&mut self,_:u32) {}
+    }
+    for (control,instance,push,get,busy,allowed) in [
+        (0xb8,0x81009,0x80101,0,false,true),(0xb8,0x81009,0x80101,0,true,true),
+        (0xb9,0x81009,0x80101,0,false,false),(0xa8,0x81009,0x80101,0,false,false),
+        (0xb8,1,0x80101,0,false,false),(0xb8,0x81009,1,0,false,false),
+        (0xb8,0x81009,0x80101,4,false,false)] {
+        let mut r=Regs{control,instance,push,get,busy,writes:vec![]};
+        assert_eq!(modeset::initialize_empty_core(&mut r,0x08100000,0x08010000).is_ok(),allowed&&!busy);
+        assert_eq!(r.writes,if allowed {vec![(0x610490,0x01000013)]} else {vec![]});
+    }
+}
