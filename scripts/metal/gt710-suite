@@ -198,6 +198,8 @@ def display_memory(serial):
         require(re.fullmatch('[0-9a-f]{64}',e[prefix+'_before']) and e[prefix+'_before'] == e[prefix+'_after'], prefix+' storage changed')
     w,h = e['width'],e['height']
     require(integer(w) and integer(h) and 0 < w <= 8192 and 0 < h <= 8192, 'invalid scanout geometry')
+    preferred = board_inventory(serial)['modes'][0]
+    require((w,h) == (preferred['width'],preferred['height']), 'scanouts differ from the live sink preferred timing')
     pitch = (w*4+255) & ~255
     size = (pitch*h+4095) & ~4095
     require(e['pitch'] == pitch, 'invalid scanout pitch')

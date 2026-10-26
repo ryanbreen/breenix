@@ -14,10 +14,28 @@ def digest(start,size,seed,phase):
     return hashlib.sha256(b''.join(struct.pack('<I',(((a//4)*0x9e3779b1)^seed^(0xffffffff if phase else 0))&0xffffffff)
                                   for a in range(start,start+size,4))).hexdigest()
 
-def evidence():
+# Independent live-board fixture: preferred 512x512, plus a different second DTD.
+edid=bytearray(128)
+edid[:8]=bytes([0,255,255,255,255,255,255,0])
+edid[18:21]=bytes([1,4,128])
+edid[54:72]=bytes.fromhex('302a0080200080201010110000000000001e')
+edid[72:90]=bytes.fromhex('302a0080400080201010110000000000001e')
+edid[127]=-sum(edid)&255
+board=dict(schema=1,phase='board',bdf='01:00.0',boot0=0x106000a1,
+           chipset=0x106,revision=0xa1,post=2,rom_bytes=4096,rom_sha256='a'*64,
+           bit_version=0x100,dcb_version=0x40,i2c_version=0x41,connector_version=0x40,
+           pll_version=0x40,dcb_entry=0x01000102,dcb_conf=0x30,i2c_entry=2,
+           connector=0,connector_type=0x30,drive=2,sor=0,sor_state=0x501,head=0,
+           head_total=0x033f0540,head_clock=65000000,ddc='live',edid=edid.hex(),
+           edid_sha256=hashlib.sha256(edid).hexdigest(),modes=API['edid_timings'](edid))
+SERIAL += 'GT710_NATIVE '+json.dumps(board)+'\n'
+
+def evidence(width=512,height=512):
     seed=0x12345678
+    pitch=(width*4+255)&~255
+    scanout=(pitch*height+4095)&~4095
     objects=[]; p=128<<20
-    for name,size,align in [('scanout-a',1<<20,65536),('scanout-b',1<<20,65536),
+    for name,size,align in [('scanout-a',scanout,65536),('scanout-b',scanout,65536),
                             ('evo',4096,4096),('notifier',4096,4096),
                             ('instance',65536,65536),('dma',4096,4096)]:
         start=(p+4096+align-1)&-align
@@ -25,7 +43,7 @@ def evidence():
                             sha256=[digest(start,size,seed,phase) for phase in range(2)]))
         p=start+size+4096
     return dict(schema=1,phase='memory',bdf='01:00.0',total=1<<30,aperture=128<<20,
-                pitch=2048,width=512,height=512,seed=seed,
+                pitch=pitch,width=width,height=height,seed=seed,
                 reserved=[[0,128<<20],[0x3f000000,(1<<30)-0x3f000000]],
                 references=[[0x3f000000,65536]],
                 registers=[[0x22438,1],[0x22554,0],[0x11020c,1024],[0x1704,0],
@@ -42,6 +60,11 @@ class MemoryCapture(unittest.TestCase):
         def check(e):
             API['check_case']('memory','carveout',SERIAL+'GT710_MEMORY '+json.dumps(e)+'\n')
         check(e)
+        # These are complete, internally consistent allocation reports; only
+        # their mismatch with the attached sink makes them invalid.
+        for width,height in [(1,1),(512,256),(1024,512)]:
+            with self.subTest(geometry=(width,height)),self.assertRaisesRegex(ValueError,'preferred timing'):
+                check(evidence(width,height))
         low=copy.deepcopy(e)
         low['references']=[[1<<20,65536]]
         low['registers'][5][1]=0x1009
