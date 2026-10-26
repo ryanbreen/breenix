@@ -429,6 +429,8 @@ struct Device {
     pointers: Vec<pointer::Pipe>,
     /// EP0 requests sent again since Address Device.
     ep0_retries: u32,
+    /// Device resets the census used before this enumeration succeeded.
+    census_resets: u32,
 }
 struct Controller {
     pci: pci::Device,
@@ -465,6 +467,76 @@ struct Controller {
     next_host_key: u64,
     #[cfg(feature = "xhci_fault_inject")]
     fault: fault::Injection,
+    #[cfg(all(feature = "testing", target_arch = "x86_64"))]
+    address_fault: AddressFault,
+}
+
+/// A testing kernel provokes a real Address Device transaction error: first
+/// address the device, disable its slot, then address it on a fresh slot
+/// without a USB reset. It no longer answers address 0 (USB 2.0 9.1.1.4).
+/// Require the code-4 completion and Default slot state (xHCI 4.6.5), then
+/// exercise the census's ordinary reclaim/reset path (#2495).
+#[cfg(all(feature = "testing", target_arch = "x86_64"))]
+struct AddressFault {
+    armed: bool,
+    /// The port whose Address Device failed; 0 before it fires.
+    port: u8,
+    witnessed: bool,
+}
+#[cfg(all(feature = "testing", target_arch = "x86_64"))]
+impl AddressFault {
+    fn arm(&mut self) {
+        self.armed = true;
+        log::info!("[TEST:xhci:census_address_recovery:START]");
+    }
+    /// True once, for the first Address Device while armed.
+    fn fail(&mut self, port: u8) -> bool {
+        if !self.armed || self.port != 0 {
+            return false;
+        }
+        self.port = port;
+        true
+    }
+    /// Disarm, and report whether the census, with the port whose Address
+    /// Device failed, completed.
+    fn report(&mut self, census: Result<u32, &'static str>) {
+        self.armed = false;
+        match (census, self.port, self.witnessed) {
+            (Err(error), _, _) => {
+                log::error!("[TEST:xhci:census_address_recovery:FAIL:{error}]")
+            }
+            (Ok(_), 0, _) => log::error!(
+                "[TEST:xhci:census_address_recovery:FAIL:no connected port reached Address Device]"
+            ),
+            (Ok(_), _, false) => log::error!(
+                "[TEST:xhci:census_address_recovery:FAIL:code-4 completion and Default state not witnessed]"
+            ),
+            (Ok(_), port, true) => log::info!(
+                "[TEST:xhci:census_address_recovery:PASS] port {port} enumerated after its Address Device failed"
+            ),
+        }
+    }
+}
+
+/// The census side of `recovery::reset_while_refused` for one root port: a
+/// reset enumerates the device again (`enumerate` resets the port first);
+/// `serve` configures it afterwards, with the resets that remain.
+struct Census<'a> {
+    controller: &'a mut Controller,
+    port: u8,
+}
+impl recovery::Port for Census<'_> {
+    fn connected(&self) -> bool {
+        self.controller.portsc(self.port) & 1 != 0
+    }
+    fn reset(&mut self, reset: u32) -> recovery::Attach {
+        log::warn!(
+            "[xhci] port {}: resetting the device ({reset} of {})",
+            self.port,
+            recovery::DEVICE_RESETS
+        );
+        self.controller.census_enumerate(self.port, reset)
+    }
 }
 
 /// One x86-metal attach hook, after clocks and the interrupt controller exist.
@@ -642,6 +714,8 @@ fn start(device: pci::Device) -> Result<(), &'static str> {
         next_host_key: 0,
         #[cfg(feature = "xhci_fault_inject")]
         fault: fault::Injection::new(),
+        #[cfg(all(feature = "testing", target_arch = "x86_64"))]
+        address_fault: AddressFault { armed: false, port: 0, witnessed: false },
     };
     let result = controller.run(scratchpads);
     if result.is_err() {
@@ -837,6 +911,21 @@ impl Controller {
             "[xhci] no-op completed by MSI: interrupts={interrupts} event-wraps={}",
             self.consumer.wraps
         );
+        #[cfg(all(feature = "testing", target_arch = "x86_64"))]
+        self.address_fault.arm();
+        let census = self.census();
+        #[cfg(all(feature = "testing", target_arch = "x86_64"))]
+        self.address_fault.report(census);
+        let connected = census?;
+        log::info!("[xhci] port census: ports={} connected={connected} enumerated={}; descriptors complete", self.ports, self.devices.len());
+        INITIALIZED.store(true, Ordering::Release);
+        // Keep owning the event ring: class drivers, port changes, reclamation.
+        self.serve()
+    }
+    /// Enumerate the connected root ports, resetting a device whose
+    /// enumeration failed as an attach does (`recovery::reset_while_refused`).
+    /// Returns how many are connected.
+    fn census(&mut self) -> Result<u32, &'static str> {
         let mut connected = 0;
         for port in 1..=self.ports {
             let status = self.portsc(port);
@@ -849,18 +938,37 @@ impl Controller {
                 continue;
             }
             connected += 1;
-            if let Err(error) = self.enumerate(port) {
+            let first = self.census_enumerate(port, 0);
+            let resets =
+                recovery::reset_while_refused(&mut Census { controller: self, port }, first, 0);
+            if !self.devices.iter().any(|d| d.port == port) {
                 log::error!(
-                    "[xhci] port {port}: enumeration FAILED: {error}; PORTSC={:#x}",
+                    "[xhci] port {port}: enumeration FAILED after {resets} device resets; PORTSC={:#x}",
                     self.portsc(port)
                 );
                 return Err("attached device enumeration incomplete");
             }
         }
-        log::info!("[xhci] port census: ports={} connected={connected} enumerated={}; descriptors complete", self.ports, self.devices.len());
-        INITIALIZED.store(true, Ordering::Release);
-        // Keep owning the event ring: class drivers, port changes, reclamation.
-        self.serve()
+        Ok(connected)
+    }
+    /// Retry only when enumeration has returned the failed slot. An
+    /// unreclaimed slot settles the reset loop and makes `census` fail.
+    fn census_enumerate(&mut self, port: u8, resets: u32) -> recovery::Attach {
+        match self.enumerate(port) {
+            Ok(()) => {
+                if let Some(device) = self.devices.last_mut() {
+                    device.census_resets = resets;
+                }
+                recovery::Attach::Settled
+            }
+            Err(error) => {
+                log::error!(
+                    "[xhci] port {port}: enumeration FAILED: {}; PORTSC={:#x}",
+                    error.reason(), self.portsc(port)
+                );
+                error.outcome()
+            }
+        }
     }
     fn ring_doorbell(&self, slot: u8, target: u32) {
         fence(Ordering::Release);
@@ -1098,14 +1206,16 @@ impl Controller {
     }
     /// Reset the port, give the device a slot and an address, and read its
     /// descriptors. A device that fails after Enable Slot is reclaimed.
-    fn enumerate(&mut self, port: u8) -> Result<(), &'static str> {
-        let (speed_id, speed) = self.reset_port(port)?;
+    fn enumerate(&mut self, port: u8) -> Result<(), recovery::EnumerationError> {
+        use recovery::EnumerationError::{Retry, Unreclaimed};
+        let (speed_id, speed) = self.reset_port(port).map_err(Retry)?;
         let protocol = self.protocols[port as usize];
         let slot = self
-            .command(Trb::new(9, 0, 0, (protocol.slot_type as u32) << 16))?
+            .command(Trb::new(9, 0, 0, (protocol.slot_type as u32) << 16))
+            .map_err(Unreclaimed)?
             .slot();
         if slot == 0 || slot > self.slots {
-            return Err("Enable Slot returned invalid slot");
+            return Err(Unreclaimed("Enable Slot returned invalid slot"));
         }
         let allocated = (|| {
             Ok::<_, &'static str>(Device {
@@ -1128,14 +1238,17 @@ impl Controller {
                 #[cfg(target_arch = "aarch64")]
                 pointers: Vec::new(),
                 ep0_retries: 0,
+                census_resets: 0,
             })
         })();
         let mut device = match allocated {
             Ok(device) => device,
             Err(error) => {
                 // The controller has no contexts for this slot yet; free the slot.
-                let _ = self.command_code(spec::disable_slot(slot));
-                return Err(error);
+                return match self.command_code(spec::disable_slot(slot)) {
+                    Ok(1) => Err(Retry(error)),
+                    _ => Err(Unreclaimed("failed to disable uninitialized slot")),
+                };
             }
         };
         match self.address_and_describe(&mut device, port, speed_id, protocol) {
@@ -1144,10 +1257,51 @@ impl Controller {
                 Ok(())
             }
             Err(error) => {
-                self.reclaim(device);
-                Err(error)
+                match self.reclaim(device) {
+                    Some(_) => Err(Retry(error)),
+                    None => Err(Unreclaimed(error)),
+                }
             }
         }
+    }
+    #[cfg(all(feature = "testing", target_arch = "x86_64"))]
+    fn fail_address_on_wire(
+        &mut self,
+        device: &mut Device,
+        port: u8,
+        protocol: Protocol,
+    ) -> Result<(), &'static str> {
+        let old = device.slot;
+        self.command(Trb::new(11, device.input.phys, 0, (old as u32) << 24))?;
+        delay(spec::SET_ADDRESS_RECOVERY_NS);
+        // EP0 is idle: no transfers were submitted. Disable Slot returns
+        // its contexts but does not reset the USB device's address (4.6.4).
+        self.command(spec::disable_slot(old))?;
+        self.dcbaa.put64(old as usize * 8, 0);
+        let slot = self.command(Trb::new(9, 0, 0, (protocol.slot_type as u32) << 16))?.slot();
+        device.slot = slot;
+        if slot == 0 || slot > self.slots {
+            return Err("fault preparation Enable Slot returned invalid slot");
+        }
+        for offset in (0..32 * self.contexts.stride).step_by(4) {
+            device.output.put32(offset, 0);
+        }
+        self.dcbaa.put64(slot as usize * 8, device.output.phys);
+        fence(Ordering::Release);
+        // Populate a Default output context with BSR=1 (4.6.5) before the
+        // on-wire failure. A failed command from Enabled need not copy the
+        // input contexts, so its output context can remain uninitialized.
+        self.command(Trb::new(11, device.input.phys, 0, (slot as u32) << 24 | (1 << 9)))?;
+        // No responder remains at address 0: consume the real command
+        // completion through the same MSI/event queue as ordinary commands.
+        let code = self.command_code(Trb::new(11, device.input.phys, 0, (slot as u32) << 24))?;
+        let state = (device.output.get32(self.contexts.output(0) + 12) >> 27) & 31;
+        log::info!("[xhci] port {port}: testing Address Device completion code={code} slot={slot} state={state}");
+        if code != 4 || state != 1 {
+            return Err("fault did not produce code 4 in Default state");
+        }
+        self.address_fault.witnessed = true;
+        Err("command/transfer completion failed")
     }
     fn address_and_describe(
         &mut self,
@@ -1171,6 +1325,10 @@ impl Controller {
         input.put32(ep_at + 16, 8); // Average TRB length for control, 6.2.3.
         self.dcbaa.put64(slot as usize * 8, device.output.phys);
         fence(Ordering::Release);
+        #[cfg(all(feature = "testing", target_arch = "x86_64"))]
+        if self.address_fault.fail(port) {
+            return self.fail_address_on_wire(device, port, protocol);
+        }
         self.command(Trb::new(11, device.input.phys, 0, (slot as u32) << 24))?;
         // The SetAddress() recovery interval is software's to time (4.6.5).
         delay(spec::SET_ADDRESS_RECOVERY_NS);

@@ -70,6 +70,26 @@ pub(super) enum Attach {
     Refused,
 }
 
+/// Enumeration may retry only after its slot is known to be returned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum EnumerationError {
+    Retry(&'static str),
+    Unreclaimed(&'static str),
+}
+impl EnumerationError {
+    pub(super) fn reason(self) -> &'static str {
+        match self {
+            Self::Retry(reason) | Self::Unreclaimed(reason) => reason,
+        }
+    }
+    pub(super) fn outcome(self) -> Attach {
+        match self {
+            Self::Retry(_) => Attach::Refused,
+            Self::Unreclaimed(_) => Attach::Settled,
+        }
+    }
+}
+
 pub(super) trait Port {
     fn connected(&self) -> bool;
     /// Reset the device and enumerate and configure it again; `reset`
@@ -78,9 +98,11 @@ pub(super) trait Port {
 }
 
 /// After a refused attach, reset the device and attach it again while it is
-/// connected, at most `DEVICE_RESETS` times. Returns the resets used.
-pub(super) fn reset_while_refused(port: &mut impl Port, first: Attach) -> u32 {
-    let (mut outcome, mut resets) = (first, 0);
+/// connected, until the attach has used `DEVICE_RESETS` resets, `used` of
+/// them before this call (the census's, for a device configured after it).
+/// Returns the attach's resets, `used` included.
+pub(super) fn reset_while_refused(port: &mut impl Port, first: Attach, used: u32) -> u32 {
+    let (mut outcome, mut resets) = (first, used);
     while outcome == Attach::Refused && resets < DEVICE_RESETS && port.connected() {
         resets += 1;
         outcome = port.reset(resets);
