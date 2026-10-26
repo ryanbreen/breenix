@@ -77,6 +77,13 @@ class CaptureCases(unittest.TestCase):
                                     vsync_start=1603, vsync_end=1609, vtotal=1646, flags=26)])
         serial = lambda e: SERIAL + 'GT710_NATIVE ' + json.dumps(e) + '\n'
         API['check_case']('board', 'inventory', serial(evidence))
+        for version in (0x30, 0x40):
+            legacy = dict(evidence, i2c_version=version, i2c_entry=0x050005a2)
+            API['check_case']('board', 'inventory', serial(legacy))
+            with self.assertRaises(ValueError):
+                API['check_case']('board', 'inventory', serial(dict(legacy, drive=3)))
+            with self.assertRaises(ValueError):
+                API['check_case']('board', 'inventory', serial(dict(legacy, i2c_entry=0x060005a2)))
         for field, bad in [('ddc', 'firmware'), ('post', 0), ('chipset', 0x108),
                            ('drive', 3), ('connector', 1), ('sor_state', 0),
                            ('edid', edid[:-1].hex()), ('edid_sha256', 'b'*64),
