@@ -361,7 +361,8 @@ pub fn takeover(
     let firmware_baseline = crate::firmware_writes::count();
     regs.write(0x610090, 0);
     regs.write(0x6100a0, 0);
-    regs.write(0x6100b0, 0);
+    // Supervisor requests remain enabled while the boot CPU polls their status.
+    regs.write(0x6100b0, 0x307);
     if regs.read(0x6100ac) & 0x100 != 0 {
         regs.write(0x6100ac, 0x100);
         regs.mask(0x6194e8, 1, 0);
