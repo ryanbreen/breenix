@@ -21,7 +21,7 @@ def capture(change=None, short=False):
             0x46c:0x1000000|(pitch>>4)<<8,0x470:0xcf00,0x474:1,0x404:0x140,0x200:0x101}
     e=dict(schema=1,phase='native',bdf='01:00.0',head=0,sor=0,protocol=1,timing=t,
            surface=start,pitch=pitch,seed=seed,active=[[r+0x640000,v] for r,v in active.items()],
-           notifier_before=0,notifier_after=1,put=256,get=256,errors=0,underflow=0,
+           notifier_before=0,notifier_after=1,put=256,get=256,errors=0,underflow=1,
            power=1,power_status=0,raster_before=1<<16,raster_after=3<<16,
            instance=memory['objects'][4]['start'],push=memory['objects'][2]['start'],
            skipped_address=start,skipped_notifier=0,clean_notifier=1,firmware_writes=0,
@@ -46,7 +46,8 @@ class NativeCapture(unittest.TestCase):
         API['native_mode'](capture())
         mutations=[lambda e:e.update(notifier_after=0),lambda e:e.update(notifier_before=1),
                    lambda e:e.update(get=e['put']-4),lambda e:e.update(errors=1),
-                   lambda e:e.update(underflow=16),lambda e:e.update(power=0),
+                   lambda e:e.update(underflow=17),lambda e:e.update(underflow=0),
+                   lambda e:e.update(underflow=257),lambda e:e.update(power=0),
                    lambda e:e.update(raster_after=e['raster_before']),
                    lambda e:e.update(surface=0),lambda e:e['active'][5].__setitem__(1,1),
                    lambda e:e.update(skipped_notifier=1),lambda e:e.update(skipped_address=0),
