@@ -2,7 +2,7 @@
 name = "libbreenix"
 version = "0.1.0"
 edition = "2021"
-authors = ["Ryan Breen <rbreen@cimpress.com>"]
+authors = ["Ryan Breen"]
 description = "Breenix userspace system call library"
 license = "PolyForm-Noncommercial-1.0.0"
 
