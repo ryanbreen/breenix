@@ -64,9 +64,10 @@ class MemoryCapture(unittest.TestCase):
         opaque['reserved'][1]=[(1<<30)-(1<<20),1<<20]
         check(opaque)
         for i in range(9):
-            bad=copy.deepcopy(opaque)
-            bad['registers'][15+i][1]=0x13
-            with self.assertRaises(ValueError):check(bad)
+            for control in (0x13,0x10,0x80000000):
+                bad=copy.deepcopy(opaque)
+                bad['registers'][15+i][1]=control
+                with self.assertRaises(ValueError):check(bad)
         for control in (2,3,5,0x1001):
             bad=copy.deepcopy(opaque)
             bad['registers'][5][1]=control
