@@ -329,6 +329,16 @@ fn display_memory(
         regs.read(0x22438),
         regs.read(0x2243c)
     );
+    // Retain the inherited DMA controls even when reservation discovery refuses
+    // them, so an unsupported POST state can be resolved without GPU writes.
+    for channel in 0..9 {
+        crate::serial_println!(
+            "GT710_PROBE memory-channel index={} control={:#x} push={:#x}",
+            channel,
+            regs.read(0x610490 + channel * 16),
+            regs.read(0x610494 + channel * 16)
+        );
+    }
     let inventory = memory::discover(regs, bar.size)?;
     let layout = memory::Layout::new(inventory.total, &inventory.reserved, width, height)?;
     let before_window = regs.read(0x1700);
