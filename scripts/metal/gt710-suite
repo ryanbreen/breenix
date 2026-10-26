@@ -269,7 +269,7 @@ def native_mode(serial):
         need(e['notifier_before']==0 and e['notifier_after']&1 and e['clean_notifier']&1
              and type(e['put']) is int and 0<e['put']<=2048 and e['get']==e['put'], 'uncompleted native update')
         need(e['skipped_address']==surface and e['skipped_notifier']==0, 'suppressed update was accepted')
-        need(e['errors']==0 and not e['underflow']&16 and e['power']&0x80000001==1
+        need(e['errors']==0 and e['underflow']&0x111==1 and e['power']&0x80000001==1
              and not e['power_status']&0x10000000, 'native output is down or faulted')
         progressed=((e['raster_after']>>16)-(e['raster_before']>>16))&65535
         need(0<progressed<100, 'native raster did not advance')

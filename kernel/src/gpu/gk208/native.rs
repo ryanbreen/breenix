@@ -439,7 +439,8 @@ pub fn takeover(
             }
         }
     }
-    regs.mask(0x616308 + head as usize * 0x800, 0x111, 0x10);
+    // Enable sticky reporting in repeat mode for the native measurement window.
+    regs.mask(0x616308 + head as usize * 0x800, 0x111, 0x11);
     let notifier_before = read_word(regs, total, notifier)?;
     let mut put = 0;
     let mut init = alloc::vec![(0x88, 2)];
@@ -631,7 +632,7 @@ pub fn console_binding(surface: &ConsoleSurface) -> Result<(), &'static str> {
     let h = surface.head as usize * 0x300;
     if u64::from(regs.read(0x640460 + h)) << 8 != surface.vram
         || regs.read(0x61009c) != 0
-        || regs.read(0x616308 + surface.head as usize * 0x800) & 16 != 0
+        || regs.read(0x616308 + surface.head as usize * 0x800) & 0x111 != 1
     {
         return Err("native console lost active binding or display health");
     }
