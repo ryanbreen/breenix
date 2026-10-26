@@ -315,6 +315,7 @@ pub fn takeover(
     layout: &memory::Layout,
 ) -> Result<ConsoleSurface, &'static str> {
     let limits = modeset::board_pll(rom, head)?;
+    let pll_record = modeset::board_pll_record(rom,head)?;
     let coefficients = modeset::pll(&limits, t.clock_khz)?;
     let protocol = if route.conf & 0x10 != 0 {
         1
@@ -603,11 +604,11 @@ pub fn takeover(
         "\"notifier_before\":{},\"notifier_after\":{},\"put\":{},\"get\":{},\"errors\":{},\"underflow\":{},",
         "\"power\":{},\"power_status\":{},\"raster_before\":{},\"raster_after\":{},\"instance\":{},\"push\":{},",
         "\"skipped_address\":{},\"skipped_notifier\":{},\"clean_notifier\":{},\"firmware_writes\":{},",
-        "\"bytes\":{},\"sha256\":\"{}\",\"bar1_before\":{},\"bar1_after\":{},\"pll_register\":{},\"pll_reference\":{},\"pll_coefficients\":{},\"pll_fraction\":{}}}"),
+        "\"bytes\":{},\"sha256\":\"{}\",\"bar1_before\":{},\"bar1_after\":{},\"pll_record\":\"{}\",\"pll_register\":{},\"pll_reference\":{},\"pll_coefficients\":{},\"pll_fraction\":{}}}"),
         device.bus,device.device,device.function,head,route.sor,protocol,timing,surface.start,layout.pitch,seed,active,
         notifier_before,after,put,regs.read(0x640004),regs.read(0x61009c),regs.read(0x616308+head as usize*0x800),
         regs.read(0x61c004+route.sor as usize*0x800),regs.read(0x61c030+route.sor as usize*0x800),raster_before,raster_after,instance,evo,
-        skipped_address,skipped_notifier,clean,crate::firmware_writes::count()-firmware_baseline,data_bytes,super::hex(&digest.finalize()),old_bar,regs.read(0x1704),limits.reg,limits.reference,
+        skipped_address,skipped_notifier,clean,crate::firmware_writes::count()-firmware_baseline,data_bytes,super::hex(&digest.finalize()),old_bar,regs.read(0x1704),super::hex(pll_record),limits.reg,limits.reference,
         regs.read(limits.reg as usize+4),regs.read(limits.reg as usize+16));
     crate::serial_println!("GT710_MODE {}", report);
     Ok(ConsoleSurface {

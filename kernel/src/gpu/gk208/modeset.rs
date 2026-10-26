@@ -385,7 +385,7 @@ fn bit(r: &[u8], id: u8) -> Result<(u8, usize, usize), &'static str> {
     }
     Err("missing native display BIT entry")
 }
-pub fn board_pll(r: &[u8], head: u32) -> Result<PllLimits, &'static str> {
+pub fn board_pll_record(r: &[u8], head: u32) -> Result<&[u8], &'static str> {
     if head >= 4 {
         return Err("invalid PLL head");
     }
@@ -405,25 +405,29 @@ pub fn board_pll(r: &[u8], head: u32) -> Result<PllLimits, &'static str> {
         if e[0] as u32 != 0x80 + head {
             continue;
         }
-        let data = u16::from_le_bytes([e[1], e[2]]) as usize;
-        let l = bytes(r, data, 14)?;
-        let word = |i| u16::from_le_bytes([l[i], l[i + 1]]) as u32 * 1000;
-        return Ok(PllLimits {
-            reg: u32::from_le_bytes(e[3..7].try_into().unwrap()),
-            reference: u16::from_le_bytes([e[9], e[10]]) as u32 * 1000,
-            min_vco: word(0),
-            max_vco: word(2),
-            min_input: word(4),
-            max_input: word(6),
-            min_m: l[8],
-            max_m: l[9],
-            min_n: l[10],
-            max_n: l[11],
-            min_p: l[12],
-            max_p: l[13],
-        });
+        return Ok(e);
     }
     Err("selected head has no board VPLL record")
+}
+pub fn board_pll(r: &[u8], head: u32) -> Result<PllLimits, &'static str> {
+    let e = board_pll_record(r, head)?;
+    let data = u16::from_le_bytes([e[1], e[2]]) as usize;
+    let l = bytes(r, data, 14)?;
+    let word = |i| u16::from_le_bytes([l[i], l[i + 1]]) as u32 * 1000;
+    Ok(PllLimits {
+        reg: u32::from_le_bytes(e[3..7].try_into().unwrap()),
+        reference: u16::from_le_bytes([e[9], e[10]]) as u32 * 1000,
+        min_vco: word(0),
+        max_vco: word(2),
+        min_input: word(4),
+        max_input: word(6),
+        min_m: l[8],
+        max_m: l[9],
+        min_n: l[10],
+        max_n: l[11],
+        min_p: l[12],
+        max_p: l[13],
+    })
 }
 pub trait Io {
     fn read(&mut self, reg: usize) -> u32;

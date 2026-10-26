@@ -274,7 +274,13 @@ def native_mode(serial):
         progressed=((e['raster_after']>>16)-(e['raster_before']>>16))&65535
         need(0<progressed<100, 'native raster did not advance')
         need(e['firmware_writes']==0, 'firmware framebuffer written during native ownership')
-        need(e['pll_register']==0x614100+e['head']*32 and 1000<=e['pll_reference']<=100000,
+        pll=bytes.fromhex(e['pll_record'])
+        need(11<=len(pll)<=255 and pll[0]==0x80+e['head'], 'invalid selected board VPLL record')
+        pll_register=int.from_bytes(pll[3:7],'little')
+        pll_reference=int.from_bytes(pll[9:11],'little')*1000
+        need(0x614100<=pll_register<0x614180 and pll_register%32==0
+             and e['pll_register']==pll_register and e['pll_reference']==pll_reference
+             and 1000<=pll_reference<=100000,
              'invalid native pixel PLL source')
         c=e['pll_coefficients']; m=c&255; n=(c>>8)&255; p=(c>>16)&63
         fraction=(e['pll_fraction']>>16)&65535
