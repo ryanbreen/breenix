@@ -31,3 +31,24 @@ fn requires_complete_live_edid_blocks_and_exact_supported_timings() {
     let mut missing = e; missing[38..40].copy_from_slice(&[1,1]); checksum(&mut missing[..128]);
     assert!(!edid::parse(&missing).unwrap().iter().any(|m| m.width == 1280 && m.height == 800));
 }
+
+#[test]
+fn admits_1024_768_60_only_when_the_sink_advertises_that_exact_dmt() {
+    // E-EDID A2 table 3.18: byte 36 bit 3. DMT 1.13 p.33: ID 10h.
+    let mut e = vec![0u8; 128];
+    e[..8].copy_from_slice(&[0,255,255,255,255,255,255,0]);
+    e[18..21].copy_from_slice(&[1,3,128]);
+    let expected = edid::Timing { width:1024,height:768,clock_khz:65000,
+        hsync_start:1048,hsync_end:1184,htotal:1344,
+        vsync_start:771,vsync_end:777,vtotal:806,flags:24 };
+    for (established,standard,advertised) in [
+        (8,[1,1],true),(0,[0x61,0x40],true),(8,[0x61,0x40],true),
+        (0,[1,1],false),(4,[1,1],false),(16,[1,1],false),
+        (0,[0x61,0x4a],false),(0,[0x61,0],false)] {
+        e[36]=established;
+        e[38..40].copy_from_slice(&standard);
+        checksum(&mut e);
+        let modes=edid::parse(&e).unwrap();
+        assert_eq!(modes.iter().filter(|t| **t==expected).count(),usize::from(advertised));
+    }
+}
