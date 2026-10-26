@@ -284,9 +284,13 @@ The source SHA-256 table is docs/gui/provenance/gt710-board.md.
 - `subdev/bios/i2c.c` -> `kernel/src/gpu/gk208/board.rs` (MIT)
 - `subdev/bios/conn.c` -> `kernel/src/gpu/gk208/board.rs` (MIT)
 - `subdev/bios/pll.c` -> `kernel/src/gpu/gk208/board.rs` (MIT)
-- `subdev/bios/shadowramin.c` -> `kernel/src/gpu/gk208/mod.rs` (MIT)
 - `engine/disp/gf119.c` -> `kernel/src/gpu/gk208/mod.rs` (MIT)
 - `subdev/i2c/busgf119.c` -> `kernel/src/gpu/gk208/mod.rs` (MIT)
 - `subdev/i2c/padgf119.c` -> `kernel/src/gpu/gk208/mod.rs` (MIT)
 - `subdev/i2c/padg94.c` -> `kernel/src/gpu/gk208/mod.rs` (MIT)
 - `subdev/devinit/gf100.c` -> `kernel/src/gpu/gk208/mod.rs` (MIT)
+
+GK208B direct PROM reader (`kernel/src/gpu/gk208/rom.rs`): nouveau Linux v6.8
+`nvkm/subdev/bios/shadowrom.c` and `nvkm/subdev/pci/{base,nv40}.c`,
+MIT, Copyright 2012 and 2015 Red Hat Inc. Original notices are retained
+in the consumer; exact source hashes are in `docs/gui/provenance/gt710-board.md`.

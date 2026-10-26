@@ -19,7 +19,7 @@ a console suite boot; it does not execute the suite again.
 | `bdf` | PCI display function, joined to the firmware framebuffer owner and claim |
 | `boot0`, `chipset`, `revision` | BAR0 BOOT0 and its decoded GK208B chipset/revision |
 | `post` | Raw 0x2240c; bit 1 is the devinit-complete indicator |
-| `rom_bytes`, `rom_sha256` | Length and SHA-256 of the legacy PCIR image read through the POST PRAMIN window; ROM bytes are not emitted or redistributed |
+| `rom_bytes`, `rom_sha256` | Length and SHA-256 of the legacy PCIR image read through the direct PROM aperture; ROM bytes are not emitted or redistributed |
 | `bit_version`, `dcb_version`, `i2c_version`, `connector_version`, `pll_version` | Parsed, bounded table versions |
 | `dcb_entry`, `dcb_conf`, `i2c_entry` | Selected route's raw table records |
 | `connector`, `connector_type`, `drive`, `sor` | Board connector index/type, DDC port and SOR, decoded from those tables |

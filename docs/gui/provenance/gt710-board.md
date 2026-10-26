@@ -12,12 +12,14 @@ included. The Rust files retain the source copyright and license headers.
 | `subdev/bios/i2c.c` | `4d51892b5c771f01770ce092071f463422dff53e047e648ee7cca49d828e46aa` | `kernel/src/gpu/gk208/board.rs` |
 | `subdev/bios/conn.c` | `8b658d114d554ac9623b5ef59a2d8ff22d87905b7c364f711a6d387634bf625d` | `kernel/src/gpu/gk208/board.rs` |
 | `subdev/bios/pll.c` | `31b051120e80bcb546c5b1ab43abf10a05c9c5e029cf316223b828237ad12da4` | `kernel/src/gpu/gk208/board.rs` |
-| `subdev/bios/shadowramin.c` | `5993608771cf9fd77db71b2983b00b5ec1e69ef6e534005bd6b2cfea47d31ffc` | `kernel/src/gpu/gk208/mod.rs` |
 | `engine/disp/gf119.c` | `b00c2a325e0783dd7948694fda03520f46ed9eb656c16b04c6f4c47d32271522` | `kernel/src/gpu/gk208/mod.rs` |
 | `subdev/i2c/busgf119.c` | `24cdf28deab20486c48b4702c473375b6d91e4e6a0286475e5f9f48ca88a17f7` | `kernel/src/gpu/gk208/mod.rs` |
 | `subdev/i2c/padgf119.c` | `494eeea1b2b4418d2fee0e1e300739eacd1954d9d7c8459328fc370c9bf247fd` | `kernel/src/gpu/gk208/mod.rs` |
 | `subdev/i2c/padg94.c` | `47680e51b2bd1f34473a898eed4f862ef930afafa7433cae214fa5645da9cdd3` | `kernel/src/gpu/gk208/mod.rs` |
 | `subdev/devinit/gf100.c` | `260e57fd22b56e7f765b26ef014900e8e2e43e0fa9aac750734ffa7e9b0872be` | `kernel/src/gpu/gk208/mod.rs` |
+| `subdev/bios/shadowrom.c` | `20d4fe363b323165a95914a42f2082d2abf5d24be778f92fd10e04430731bb3a` | `kernel/src/gpu/gk208/rom.rs` |
+| `subdev/pci/base.c` | `cc1611a5d1b22109c19567066d6bf3c721e6785040cbdf2e6b1ab25a4bc681a9` | `kernel/src/gpu/gk208/rom.rs` |
+| `subdev/pci/nv40.c` | `ad3078ff848315ac81aed415b3f1452628ad65c271945311573b096820c042b2` | `kernel/src/gpu/gk208/rom.rs` |
 
 The parser decodes only supported BIT/DCB/I2C/connector/PLL layouts. It does
 not execute VBIOS scripts. The BIT C v2 payload supported here is exactly

@@ -117,9 +117,10 @@
 mod board;
 mod ddc;
 mod edid;
+mod rom;
 use crate::arch_impl::x86_64::timer;
 use crate::drivers::pci;
-use alloc::{format, string::String, vec, vec::Vec};
+use alloc::{format, string::String, vec::Vec};
 use core::fmt::Write;
 
 struct Registers(usize);
@@ -129,7 +130,7 @@ impl Registers {
         unsafe { ((self.0 + reg) as *const u32).read_volatile() }
     }
     fn write(&self, reg: usize, value: u32) {
-        // SAFETY: same mapping; only PRAMIN window and I2C controls are written.
+        // SAFETY: same mapping; only ROM shadow and I2C controls are written.
         unsafe {
             ((self.0 + reg) as *mut u32).write_volatile(value);
         }
@@ -150,45 +151,13 @@ fn hash(data: &[u8]) -> String {
     hex(&crate::block::install::sha256::sha256(data))
 }
 
-/// Read the legacy PCIR image for local parsing and hashing.
-fn rom(regs: &Registers) -> Result<Vec<u8>, &'static str> {
-    if regs.read(0x22500) & 1 != 0 {
-        return Err("PDISP disabled");
+impl rom::Access for Registers {
+    fn read(&self, reg: usize) -> u32 {
+        Registers::read(self, reg)
     }
-    let window = regs.read(0x619f04);
-    if window & 11 != 9 {
-        return Err("POST ROM window is not enabled in VRAM");
+    fn write(&mut self, reg: usize, value: u32) {
+        Registers::write(self, reg, value);
     }
-    let saved = regs.read(0x1700);
-    let mut addr = ((window & 0xffffff00) as u64) << 8;
-    if addr == 0 {
-        addr = ((saved as u64) << 16) + 0xf0000;
-    }
-    regs.write(0x1700, (addr >> 16) as u32);
-    let result = (|| {
-        let mut data = vec![0u8; 512];
-        for p in (0..512).step_by(4) {
-            data[p..p + 4].copy_from_slice(&regs.read(0x700000 + p).to_le_bytes());
-        }
-        if data[..2] != [0x55, 0xaa] {
-            return Err("POST ROM signature");
-        }
-        let pcir = u16::from_le_bytes([data[0x18], data[0x19]]) as usize;
-        if pcir + 0x16 > 512 || data[pcir..pcir + 4] != *b"PCIR" {
-            return Err("POST ROM PCIR");
-        }
-        let len = u16::from_le_bytes([data[pcir + 16], data[pcir + 17]]) as usize * 512;
-        if !(512..=256 * 1024).contains(&len) {
-            return Err("POST ROM length bound");
-        }
-        data.resize(len, 0);
-        for p in (512..len).step_by(4) {
-            data[p..p + 4].copy_from_slice(&regs.read(0x700000 + p).to_le_bytes());
-        }
-        Ok(data)
-    })();
-    regs.write(0x1700, saved);
-    result
 }
 struct Bus<'a> {
     regs: &'a Registers,
@@ -277,7 +246,7 @@ fn inventory(device: pci::Device) -> Result<(), &'static str> {
     if bar.address == 0 || bar.size < 0x800000 || bar.is_io || bar.prefetchable {
         return Err("BAR0 is not an assigned register aperture");
     }
-    let regs = Registers(crate::memory::map_mmio(bar.address, 0x800000)?);
+    let mut regs = Registers(crate::memory::map_mmio(bar.address, 0x800000)?);
     let boot0 = regs.read(0);
     let chipset = (boot0 >> 20) & 0x1ff;
     let post = regs.read(0x2240c);
@@ -290,7 +259,7 @@ fn inventory(device: pci::Device) -> Result<(), &'static str> {
     if chipset != 0x106 || post & 2 == 0 {
         return Err("GK208B must be POSTed before inventory");
     }
-    let rom = rom(&regs)?;
+    let rom = rom::read(&mut regs)?;
     let board = board::parse(&rom)?;
     for route in &board.routes {
         let state = regs.read(0x640200 + route.sor as usize * 0x20);
