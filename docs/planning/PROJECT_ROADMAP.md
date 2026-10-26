@@ -328,3 +328,9 @@ retained alongside the passing invocation. The aarch64 matrix remains separate.
 - 📋 **`check_signals_for_eintr` ignores signal disposition** (default-ignored signals spuriously interrupt futex/epoll/`wait.rs`/AHCI/`socket.rs`/`time.rs` waits) — [#493](https://github.com/ryanbreen/breenix/issues/493)
 
 Run `gh issue list --repo ryanbreen/breenix` for the full current backlog.
+
+## Native display board inventory (E19 M4 PR 4.1)
+
+In progress: bounded GK208B board-table inventory and live EDID over the
+board-routed DDC port, with native evidence recorded by the metal capture
+scorer. Native scanout allocation, modes and flips follow in later M4 PRs.

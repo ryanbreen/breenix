@@ -72,6 +72,10 @@ pub mod socket;
 // both architectures: the users suite's points are architecture-independent.
 #[cfg(target_arch = "aarch64")]
 pub mod gpu;
+// Native board mechanisms join the shared GPU device boundary in E19 M8.
+#[cfg(target_arch = "x86_64")]
+#[path = "gpu/gk208/mod.rs"]
+pub mod gk208;
 pub mod test_control;
 #[cfg(target_arch = "x86_64")]
 pub mod test_exec;
