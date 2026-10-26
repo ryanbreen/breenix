@@ -52,3 +52,23 @@ fn rejects_bad_rom_tables_without_reading_outside_the_image() {
     let mut bad = r; bad[0x44] = 0; checksum(&mut bad);
     assert!(board::parse(&bad).is_err());
 }
+
+#[test]
+fn decodes_legacy_nvio_ddc_ports_and_shared_pads_without_using_pmgr_bits() {
+    for version in [0x30, 0x40] {
+        let mut r = rom();
+        r[0x180] = version;
+        // NVIO type 5: drive is byte 0 low nibble; byte 1 bit 0 enables
+        // sharing with pad byte1 >> 1. These are not CCB 4.1 PMGR fields.
+        r[0x184..0x188].copy_from_slice(&[0xa2, 5, 0, 5]);
+        checksum(&mut r);
+        let b = board::parse(&r).unwrap();
+        assert_eq!((b.i2c_version, b.routes[0].drive, b.routes[0].share), (version, 2, 2));
+        r[0x185] = 0;
+        checksum(&mut r);
+        assert_eq!(board::parse(&r).unwrap().routes[0].share, 31);
+        r[0x187] = 6; // AUX-only entry cannot provide bit-banged DDC.
+        checksum(&mut r);
+        assert!(board::parse(&r).is_err());
+    }
+}
