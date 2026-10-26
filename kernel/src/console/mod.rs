@@ -593,6 +593,7 @@ static FRAMEBUFFER_INFO: OnceCell<bootloader_api::info::FrameBufferInfo> = OnceC
 pub fn init_early(buffer: &'static mut [u8], info: bootloader_api::info::FrameBufferInfo) {
     use bootloader_api::info::PixelFormat;
     let _ = FRAMEBUFFER_INFO.try_init_once(|| info);
+    crate::firmware_writes::register(buffer.as_mut_ptr() as usize,buffer.len());
     if !matches!((info.pixel_format, info.bytes_per_pixel), (PixelFormat::Rgb | PixelFormat::Bgr, 3 | 4)) {
         return;
     }
@@ -620,6 +621,7 @@ pub fn init_early(buffer: &'static mut [u8], info: bootloader_api::info::FrameBu
 /// shadow (`display::linear::attach`).
 #[cfg(target_arch = "x86_64")]
 pub fn attach() {
+    let native = crate::gk208::identify();
     let Some(info) = FRAMEBUFFER_INFO.get() else {
         return;
     };
@@ -634,7 +636,25 @@ pub fn attach() {
     let Some(attached) = display::linear::attach(linear, info.pixel_format, info.stride) else {
         return;
     };
-    prepare(info.pixel_format == bootloader_api::info::PixelFormat::Bgr, attached.write_combining);
+    let surface=match native {
+        Ok(surface)=>surface,
+        Err(_) if crate::gk208::takeover_started()=>{linear.disable();return;},
+        Err(_)=>None,
+    };
+    if let Some(surface)=surface {
+        if let Err(e)=linear.install_native(surface) {
+            linear.disable();
+            log::error!("native console attachment failed: {}",e);
+            return;
+        }
+        let layout=linear.layout();
+        if !matches!(with_grid(|console| console.vts[0].grid.resize_boot(layout.cols(),layout.rows())),Some(Ok(()))) {
+            linear.disable();
+            log::error!("native boot terminal resize failed");
+            return;
+        }
+    }
+    prepare(linear.layout().bgr, attached.write_combining);
 }
 
 /// The framebuffer's layout: width, height and stride in pixels, bytes per
@@ -642,15 +662,11 @@ pub fn attach() {
 /// one whose pixels are not 3- or 4-byte RGB or BGR.
 #[cfg(target_arch = "x86_64")]
 pub fn display_geometry() -> Option<(usize, usize, usize, usize, bool)> {
-    DISPLAY.get()?;
-    let info = FRAMEBUFFER_INFO.get()?;
-    Some((
-        info.width,
-        info.height,
-        info.stride,
-        info.bytes_per_pixel,
-        info.pixel_format == bootloader_api::info::PixelFormat::Bgr,
-    ))
+    let display=DISPLAY.get()?;
+    let Display::Linear(linear)=display;
+    if !linear.available() {return None;}
+    let layout=display.layout();
+    Some((layout.width,layout.height,layout.stride_bytes/layout.bytes_per_pixel,layout.bytes_per_pixel,layout.bgr))
 }
 
 /// Copy rows `rows` and columns `columns` of a display owner's pane onto the
@@ -680,11 +696,7 @@ pub fn read_display_pixel(x: usize, y: usize) -> Option<u32> {
         return None;
     };
     let [c0, c1, c2] = linear.read_pixel(x, y)?;
-    let (r, b) = match FRAMEBUFFER_INFO.get()?.pixel_format {
-        bootloader_api::info::PixelFormat::Rgb => (c0, c2),
-        bootloader_api::info::PixelFormat::Bgr => (c2, c0),
-        _ => return None,
-    };
+    let (r,b)=if linear.layout().bgr {(c2,c0)} else {(c0,c2)};
     Some((u32::from(r) << 16) | (u32::from(c1) << 8) | u32::from(b))
 }
 

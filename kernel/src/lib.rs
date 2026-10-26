@@ -94,6 +94,9 @@ pub mod platform_config;
 // Graphics module: the ARM64 framebuffer, boot screen and display owners' drawing
 #[cfg(target_arch = "aarch64")]
 pub mod graphics;
+#[cfg(target_arch = "x86_64")]
+#[path = "graphics/firmware_writes.rs"]
+pub mod firmware_writes;
 // Boot utilities (test disk loader, etc.)
 pub mod boot;
 // Lock-free tracing for critical paths (interrupt handlers, context switch, etc.)

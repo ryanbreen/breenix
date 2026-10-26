@@ -313,6 +313,16 @@
               "memory"
             ]
           }
+        },
+        {
+          "id": "native",
+          "title": "Program the connected sink preferred timing natively (M4 PR 4.3)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "native"
+            ]
+          }
         }
       ]
     }

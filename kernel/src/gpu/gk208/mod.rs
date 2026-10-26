@@ -32,7 +32,7 @@
  * Software is furnished to do so, subject to the following conditions:
  *
  * The above copyright notice and this permission notice shall be included in
- * all copies or substantial busions of the Software.
+ * all copies or substantial portions of the Software.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -96,6 +96,9 @@ mod board;
 mod ddc;
 mod edid;
 mod memory;
+mod modeset;
+mod native;
+pub use native::{ConsoleSurface,console_binding,takeover_started};
 mod rom;
 static DISPLAY_MEMORY: conquer_once::spin::OnceCell<memory::Layout> =
     conquer_once::spin::OnceCell::uninit();
@@ -111,7 +114,7 @@ impl Registers {
         unsafe { ((self.0 + reg) as *const u32).read_volatile() }
     }
     fn write(&self, reg: usize, value: u32) {
-        // SAFETY: checked BAR0 mapping; ROM, I2C and bounded PRAMIN writes only.
+        // SAFETY: checked BAR0 mapping; board access and native display/MMU bootstrap.
         unsafe {
             ((self.0 + reg) as *mut u32).write_volatile(value);
         }
@@ -230,7 +233,7 @@ fn sink(
     let modes = edid::parse(&data)?;
     Ok((data, modes))
 }
-fn inventory(device: pci::Device) -> Result<(), &'static str> {
+fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
     let bar = device.bars[0];
     if bar.address == 0 || bar.size < 0x800000 || bar.is_io || bar.prefetchable {
         return Err("BAR0 is not an assigned register aperture");
@@ -295,25 +298,32 @@ fn inventory(device: pci::Device) -> Result<(), &'static str> {
         let preferred = modes.first().ok_or("no preferred sink timing")?;
         display_memory(
             &mut regs,
-            device,
+            &device,
             preferred.width.into(),
             preferred.height.into(),
         )?;
-        return Ok(());
+        let layout=DISPLAY_MEMORY.get().ok_or("missing retained display allocation")?;
+        let result=native::takeover(&mut regs,device,&rom,preferred,route,head,layout);
+        if result.is_err() {
+            crate::serial_println!("GT710_MODE_STATE ctrl={:#x} error={:#x} stat={:#x} data={:#x} code={:#x} put={} get={} super={:#x} head-super={:#x}",
+                regs.read(0x610490),regs.read(0x61009c),regs.read(0x6101f0),regs.read(0x6101f4),regs.read(0x6101f8),
+                regs.read(0x640000),regs.read(0x640004),regs.read(0x6100ac),regs.read(0x6101d4+head as usize*0x800));
+        }
+        return result;
     }
     Err("no active board-routed TMDS sink responded to live DDC")
 }
-pub fn identify() {
-    if let Some(device) = pci::find_device(0x10de, 0x128b) {
-        if let Err(e) = inventory(device) {
-            crate::serial_println!("GT710_PROBE failed: {}", e);
-        }
+pub fn identify() -> Result<Option<ConsoleSurface>, &'static str> {
+    let Some(device)=pci::find_device(0x10de,0x128b) else {return Ok(None);};
+    match inventory(device) {
+        Ok(surface)=>Ok(Some(surface)),
+        Err(e)=>{crate::serial_println!("GT710_PROBE failed: {}",e);Err(e)},
     }
 }
 
 fn display_memory(
     regs: &mut Registers,
-    device: pci::Device,
+    device: &pci::Device,
     width: u32,
     height: u32,
 ) -> Result<(), &'static str> {
@@ -341,6 +351,11 @@ fn display_memory(
     }
     let inventory = memory::discover(regs, bar.size)?;
     let layout = memory::Layout::new(inventory.total, &inventory.reserved, width, height)?;
+    if !native::measuring() {
+        DISPLAY_MEMORY.try_get_or_init(|| layout)
+            .map_err(|_| "display memory already initializing")?;
+        return Ok(());
+    }
     let before_window = regs.read(0x1700);
     let seed = (timer::rdtsc() as u32) | 1;
     let mut p = memory::Pramin::new(regs, inventory.total);

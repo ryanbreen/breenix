@@ -217,6 +217,67 @@ impl Grid {
         self.reset();
     }
 
+    /// Resize the boot terminal before userspace starts, retaining its main
+    /// screen and scrollback. Columns that no longer fit are clipped; rows
+    /// removed from the live screen join the retained history.
+    pub fn resize_boot(&mut self, cols: usize, rows: usize) -> Result<(), &'static str> {
+        if self.alt || self.cols == 0 || self.rows == 0 || cols == 0 || rows == 0
+            || cols > MAX_COLS || rows > MAX_ROWS
+            || cols * rows > self.cells.len().min(self.alternate.len())
+            || (!self.history.is_empty() && HISTORY_LINES * cols > self.history.len())
+        {
+            return Err("boot terminal geometry exceeds retained storage");
+        }
+        if (cols, rows) == (self.cols, self.rows) { return Ok(()); }
+        let old_cols = self.cols;
+        let old_rows = self.rows;
+        let old_history = self.history_len;
+        let mut state = self.state;
+        let visible = self.visible;
+        let autowrap = self.autowrap;
+        let view = self.view;
+        let mut saved = alloc::vec::Vec::new();
+        saved.try_reserve_exact((old_history + old_rows) * old_cols)
+            .map_err(|_| "no memory to retain boot terminal contents")?;
+        for row in 0..old_history {
+            let start = ((self.history_start + row) % HISTORY_LINES) * old_cols;
+            saved.extend_from_slice(&self.history[start..start + old_cols]);
+        }
+        for row in 0..old_rows { saved.extend_from_slice(self.row(row)); }
+        let removed = old_rows.saturating_sub(rows);
+        let history_end = old_history + removed;
+        let history_start = history_end.saturating_sub(HISTORY_LINES);
+        let history_len = if self.history.is_empty() { 0 } else { history_end - history_start };
+        self.set_size(cols, rows);
+        let copy_cols = cols.min(old_cols);
+        self.history[..history_len * cols].fill(BLANK);
+        for row in 0..history_len {
+            let source = (history_start + row) * old_cols;
+            self.history[row * cols..row * cols + copy_cols]
+                .copy_from_slice(&saved[source..source + copy_cols]);
+        }
+        self.history_len = history_len;
+        for row in 0..rows.min(old_rows) {
+            let source = (history_end + row) * old_cols;
+            self.cells[row * cols..row * cols + copy_cols]
+                .copy_from_slice(&saved[source..source + copy_cols]);
+        }
+        state.top = 0;
+        state.first = 0;
+        state.last = rows - 1;
+        for cursor in [&mut state.cursor, &mut state.saved] {
+            cursor.row = cursor.row.saturating_sub(removed).min(rows - 1);
+            cursor.col = cursor.col.min(cols - 1);
+            cursor.pending_wrap = false;
+        }
+        self.state = state;
+        self.main = state;
+        self.visible = visible;
+        self.autowrap = autowrap;
+        self.view = view.min(history_len);
+        Ok(())
+    }
+
     /// Install the scrollback: `HISTORY_LINES` rows of the grid's width.
     pub fn set_history(&mut self, history: &'static mut [Cell]) {
         if history.len() >= HISTORY_LINES * self.cols && self.cols != 0 {
