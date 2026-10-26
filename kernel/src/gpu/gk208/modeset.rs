@@ -576,7 +576,7 @@ pub fn script(
         }
         let register = |mut raw: u32| -> Result<usize, &'static str> {
             if raw & 3 != 0 {
-                return Err("unaligned script register".into());
+                return Err("unaligned script register");
             }
             if raw & 0x80000000 != 0 {
                 raw = (raw & !0x80000000) + head * 0x800;
@@ -588,7 +588,7 @@ pub fn script(
                 }
             }
             if !(0x610000..0x620000).contains(&raw) {
-                return Err("script register outside display MMIO".into());
+                return Err("script register outside display MMIO");
             }
             Ok(raw as usize)
         };
