@@ -42,6 +42,11 @@ class MemoryCapture(unittest.TestCase):
         def check(e):
             API['check_case']('memory','carveout',SERIAL+'GT710_MEMORY '+json.dumps(e)+'\n')
         check(e)
+        low=copy.deepcopy(e)
+        low['references']=[[1<<20,65536]]
+        low['registers'][5][1]=0x1009
+        low['reserved'][1]=[(1<<30)-(1<<20),1<<20]
+        check(low)
         for field,value in [('pramin_after',0),('protected_after','c'*64),('guard_after','c'*64),
                             ('verified_bytes',4096),('bdf','02:00.0'),('total',128<<20),
                             ('protected_bytes',4096),('guard_bytes',4096),('seed',0)]:

@@ -118,3 +118,14 @@ fn discovers_vram_separately_from_bar_and_reserves_inherited_instances() {
     d.regs.insert(0x22438,0);
     assert!(memory::discover(&mut d,128<<20).is_err());
 }
+
+#[test]
+fn low_firmware_instances_are_already_inside_the_low_reservation() {
+    let mut d=Device::new();d.regs.insert(0x610010,0x00001009);
+    let inventory=memory::discover(&mut d,128<<20).unwrap();
+    assert!(inventory.references.contains(&Range{start:1<<20,size:65536}));
+    assert_eq!(inventory.reserved,[Range{start:0,size:128<<20},
+                                  Range{start:(1<<30)-(1<<20),size:1<<20}]);
+    let layout=Layout::new(inventory.total,&inventory.reserved,1280,1024).unwrap();
+    assert!(layout.objects.iter().all(|o|o.guarded().start>=128<<20));
+}
