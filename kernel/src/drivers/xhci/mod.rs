@@ -429,6 +429,8 @@ struct Device {
     pointers: Vec<pointer::Pipe>,
     /// EP0 requests sent again since Address Device.
     ep0_retries: u32,
+    /// Device resets the census used before this enumeration succeeded.
+    census_resets: u32,
 }
 struct Controller {
     pci: pci::Device,
@@ -510,6 +512,27 @@ impl AddressFault {
                 "[TEST:xhci:census_address_recovery:PASS] port {port} enumerated after its Address Device failed"
             ),
         }
+    }
+}
+
+/// The census side of `recovery::reset_while_refused` for one root port: a
+/// reset enumerates the device again (`enumerate` resets the port first);
+/// `serve` configures it afterwards, with the resets that remain.
+struct Census<'a> {
+    controller: &'a mut Controller,
+    port: u8,
+}
+impl recovery::Port for Census<'_> {
+    fn connected(&self) -> bool {
+        self.controller.portsc(self.port) & 1 != 0
+    }
+    fn reset(&mut self, reset: u32) -> recovery::Attach {
+        log::warn!(
+            "[xhci] port {}: resetting the device ({reset} of {})",
+            self.port,
+            recovery::DEVICE_RESETS
+        );
+        self.controller.census_enumerate(self.port, reset)
     }
 }
 
@@ -896,7 +919,9 @@ impl Controller {
         // Keep owning the event ring: class drivers, port changes, reclamation.
         self.serve()
     }
-    /// Enumerate the connected root ports. Returns how many are connected.
+    /// Enumerate the connected root ports, resetting a device whose
+    /// enumeration failed as an attach does (`recovery::reset_while_refused`).
+    /// Returns how many are connected.
     fn census(&mut self) -> Result<u32, &'static str> {
         let mut connected = 0;
         for port in 1..=self.ports {
@@ -910,15 +935,37 @@ impl Controller {
                 continue;
             }
             connected += 1;
-            if let Err(error) = self.enumerate(port) {
+            let first = self.census_enumerate(port, 0);
+            let resets =
+                recovery::reset_while_refused(&mut Census { controller: self, port }, first, 0);
+            if !self.devices.iter().any(|d| d.port == port) {
                 log::error!(
-                    "[xhci] port {port}: enumeration FAILED: {error}; PORTSC={:#x}",
+                    "[xhci] port {port}: enumeration FAILED after {resets} device resets; PORTSC={:#x}",
                     self.portsc(port)
                 );
                 return Err("attached device enumeration incomplete");
             }
         }
         Ok(connected)
+    }
+    /// One census enumeration of `port`. A failure has given its slot back
+    /// (`enumerate`), so the device may be reset and enumerated again.
+    fn census_enumerate(&mut self, port: u8, resets: u32) -> recovery::Attach {
+        match self.enumerate(port) {
+            Ok(()) => {
+                if let Some(device) = self.devices.last_mut() {
+                    device.census_resets = resets;
+                }
+                recovery::Attach::Settled
+            }
+            Err(error) => {
+                log::error!(
+                    "[xhci] port {port}: enumeration FAILED: {error}; PORTSC={:#x}",
+                    self.portsc(port)
+                );
+                recovery::Attach::Refused
+            }
+        }
     }
     fn ring_doorbell(&self, slot: u8, target: u32) {
         fence(Ordering::Release);
@@ -1186,6 +1233,7 @@ impl Controller {
                 #[cfg(target_arch = "aarch64")]
                 pointers: Vec::new(),
                 ep0_retries: 0,
+                census_resets: 0,
             })
         })();
         let mut device = match allocated {

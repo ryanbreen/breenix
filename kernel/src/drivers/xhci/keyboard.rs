@@ -56,8 +56,10 @@ impl Controller {
         let ports: Vec<u8> = self.devices.iter().map(|d| d.port).collect();
         for port in ports {
             if let Some(index) = self.devices.iter().position(|d| d.port == port) {
-                let first = self.attach_keyboard(index, 0);
-                recovery::reset_while_refused(&mut Reattach { controller: self, port }, first);
+                // The census's resets count against this attach's budget.
+                let used = self.devices[index].census_resets;
+                let first = self.attach_keyboard(index, used);
+                recovery::reset_while_refused(&mut Reattach { controller: self, port }, first, used);
                 #[cfg(target_arch = "aarch64")]
                 if let Some(index) = self.devices.iter().position(|d| d.port == port) {
                     if let Err(error) = self.attach_pointers(index) {
@@ -605,7 +607,7 @@ impl Controller {
     /// it is refused and resets are left.
     pub(super) fn attach(&mut self, port: u8) {
         let first = self.attach_once(port, 0);
-        recovery::reset_while_refused(&mut Reattach { controller: self, port }, first);
+        recovery::reset_while_refused(&mut Reattach { controller: self, port }, first, 0);
         #[cfg(target_arch = "aarch64")]
         if let Some(index) = self.devices.iter().position(|d| d.port == port) {
             if let Err(error) = self.attach_pointers(index) {
