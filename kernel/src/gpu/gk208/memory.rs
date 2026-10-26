@@ -261,7 +261,7 @@ pub struct Inventory {
 }
 fn reference(refs: &mut Vec<Range>, total: u64, start: u64, size: u64) -> Result<(), &'static str> {
     let r = Range { start, size };
-    if start == 0 || start & 4095 != 0 || r.end().is_none_or(|e| e > total) {
+    if start & 4095 != 0 || r.end().is_none_or(|e| e > total) {
         return Err("inherited instance outside VRAM");
     }
     if !refs.contains(&r) {
@@ -321,7 +321,7 @@ pub fn discover<A: Access>(a: &mut A, aperture: u64) -> Result<Inventory, &'stat
     registers.push((0x610010, disp));
     // G4 fallback: raw POST value 1 has no address bits, but its Kepler
     // control fields are not defined by the checked rnndb. Keep it opaque;
-    // require idle channels and exclude the entire firmware aperture plus
+    // require DMA-disabled channels and exclude the firmware aperture plus
     // the VBIOS tail. Do not infer an instance pointer from this value.
     let opaque_post = disp == 1;
     if disp != 0 && !opaque_post && disp & 15 != 9 {
@@ -334,7 +334,12 @@ pub fn discover<A: Access>(a: &mut A, aperture: u64) -> Result<Inventory, &'stat
         let ctrl_reg = 0x610490 + i * 16;
         let control = a.read(ctrl_reg);
         registers.push((ctrl_reg, control));
-        if (disp == 0 && control & 3 != 0) || (opaque_post && control != 0) {
+        // GF119 init/fini uses bit 4 for DMA submission and bit 31 for
+        // activation busy. Other POST status bits need not be cleared to
+        // reserve unrelated physical VRAM; quiescing belongs to PR 4.3.
+        if (disp == 0 && control & 3 != 0)
+            || (opaque_post && control & 0x80000010 != 0)
+        {
             return Err("active display channel has no known instance");
         }
         let reg = 0x610494 + i * 16;

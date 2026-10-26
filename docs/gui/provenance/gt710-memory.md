@@ -26,7 +26,8 @@ puts the address in a separate register. That later-generation definition
 is not used to decode Kepler's combined instance/address register.
 
 PR 4.2 therefore uses G4's conservative carveout path for the opaque raw
-value `0x1`: require a control value of `0x0` for the nine inherited DMA display channels,
+value `0x1`: require DMA submission disabled and activation not busy for the nine
+inherited DMA display channels,
 retain the raw bits, and do not dereference an invented instance pointer.
 Other unknown values remain refused. Known initializer-style pointers and
 configured push buffers remain reserved, as do VM-enabled BAR instance,
@@ -39,6 +40,15 @@ references. It also excludes the final MiB for VBIOS storage and the first
 These latter reservations are the checked MIT nouveau
 `nvkm/subdev/fb/ramgf100.c` values `rsvd_head` and `rsvd_tail` at Linux v6.8
 `e8f897f4afef0031fe618a8e94127a0934896aba`, Copyright 2013 Red Hat Inc.
+The checked MIT display `gf119.c` initializes DMA submission with bit 4 and
+waits for activation-busy bit 31 to clear. Other retained POST status bits
+are not interpreted as a requirement that the whole control register be
+cleared. The bootstrap does not quiesce or replace the firmware channels;
+that is PR 4.3. Display `nv50.c` encodes a VRAM push pointer as
+`(physical_address >> 8) | 1`. Thus push value `0x1` references VRAM address
+`0x0`, a valid physical page inside the low reservation. That page is retained
+and snapshotted explicitly; it is not treated as an absent pointer.
+
 Mixed-memory topologies are refused. PR 4.2 does not change VBIOS memory
 training or execute memory scripts. Full VRAM allocation/accounting remains
 milestone 5.
