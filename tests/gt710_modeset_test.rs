@@ -4,8 +4,12 @@ extern crate alloc;
 #[path = "../kernel/src/gpu/gk208/modeset.rs"] mod modeset;
 use edid::Timing;
 fn preferred() -> Timing {
-    Timing { width:1280,height:1024,clock_khz:108000,hsync_start:1328,
-        hsync_end:1440,htotal:1688,vsync_start:1025,vsync_end:1028,vtotal:1066,flags:30 }
+    let mut raw=[0u8;128];
+    raw[..8].copy_from_slice(&[0,255,255,255,255,255,255,0]);
+    raw[18..21].copy_from_slice(&[1,3,128]);
+    raw[54..72].copy_from_slice(&[0x30,0x2a,0,0x98,0x51,0,0x2a,0x40,0x30,0x70,0x13,0,0,0,0,0,0,0x1e]);
+    raw[127]=0u8.wrapping_sub(raw.iter().fold(0u8,|a,b|a.wrapping_add(*b)));
+    edid::parse(&raw).unwrap()[0]
 }
 #[test]
 fn encodes_preferred_timing_and_owned_pitch_surface() {
@@ -51,4 +55,30 @@ fn chooses_a_bounded_native_pixel_clock_from_board_limits() {
     assert!(modeset::pll(&limits,0).is_err());
     let mut bad=limits;bad.min_m=0;
     assert!(modeset::pll(&bad,108000).is_err());
+}
+
+#[test]
+fn parses_only_the_selected_board_pixel_pll_with_bounded_limits() {
+    let mut rom=vec![0u8;1024];
+    rom[0x80..0x8c].copy_from_slice(&[255,184,66,73,84,0,0,1,12,6,1,0]);
+    rom[0x8c..0x92].copy_from_slice(&[b'C',2,4,0,0xa0,0]);
+    rom[0xa0..0xa4].copy_from_slice(&0xb0u32.to_le_bytes());
+    rom[0xb0..0xb4].copy_from_slice(&[0x40,4,12,1]);
+    rom[0xb4]=0x80;
+    rom[0xb5..0xb7].copy_from_slice(&0x100u16.to_le_bytes());
+    rom[0xb7..0xbb].copy_from_slice(&0x614100u32.to_le_bytes());
+    rom[0xbd..0xbf].copy_from_slice(&27u16.to_le_bytes());
+    for (i,value) in [500u16,1000,1,27].into_iter().enumerate() {
+        rom[0x100+i*2..0x102+i*2].copy_from_slice(&value.to_le_bytes());
+    }
+    rom[0x108..0x10e].copy_from_slice(&[1,255,1,255,1,63]);
+    let l=modeset::board_pll(&rom,0).unwrap();
+    assert_eq!((l.reg,l.reference,l.min_vco,l.max_vco),(0x614100,27000,500000,1000000));
+    assert!(modeset::board_pll(&rom,1).is_err());
+    assert!(modeset::board_pll(&rom,4).is_err());
+    for n in [0,64,0x90,0xb5,0xbf,0x108,0x10d] {
+        assert!(modeset::board_pll(&rom[..n],0).is_err());
+    }
+    rom[0x108]=0;
+    assert!(modeset::pll(&modeset::board_pll(&rom,0).unwrap(),108000).is_err());
 }
