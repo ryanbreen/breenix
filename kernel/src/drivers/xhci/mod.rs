@@ -471,16 +471,17 @@ struct Controller {
     address_fault: AddressFault,
 }
 
-/// A testing kernel's x86 census fails its first Address Device once, so a
-/// tests boot takes the census's device-reset recovery (#2495). The
-/// command is not sent: the slot stays Enabled and unaddressed, as a USB
-/// transaction error leaves it (4.6.5). `[TEST:xhci:census_address_recovery]`
-/// reports the outcome; its FAIL ends a tests boot.
+/// A testing kernel provokes a real Address Device transaction error: first
+/// address the device, disable its slot, then address it on a fresh slot
+/// without a USB reset. It no longer answers address 0 (USB 2.0 9.1.1.4).
+/// Require the code-4 completion and Default slot state (xHCI 4.6.5), then
+/// exercise the census's ordinary reclaim/reset path (#2495).
 #[cfg(all(feature = "testing", target_arch = "x86_64"))]
 struct AddressFault {
     armed: bool,
     /// The port whose Address Device failed; 0 before it fires.
     port: u8,
+    witnessed: bool,
 }
 #[cfg(all(feature = "testing", target_arch = "x86_64"))]
 impl AddressFault {
@@ -494,21 +495,23 @@ impl AddressFault {
             return false;
         }
         self.port = port;
-        log::warn!("[xhci] port {port}: testing fault point: Address Device fails once, unsent");
         true
     }
     /// Disarm, and report whether the census, with the port whose Address
     /// Device failed, completed.
     fn report(&mut self, census: Result<u32, &'static str>) {
         self.armed = false;
-        match (census, self.port) {
-            (Err(error), _) => {
+        match (census, self.port, self.witnessed) {
+            (Err(error), _, _) => {
                 log::error!("[TEST:xhci:census_address_recovery:FAIL:{error}]")
             }
-            (Ok(_), 0) => log::error!(
+            (Ok(_), 0, _) => log::error!(
                 "[TEST:xhci:census_address_recovery:FAIL:no connected port reached Address Device]"
             ),
-            (Ok(_), port) => log::info!(
+            (Ok(_), _, false) => log::error!(
+                "[TEST:xhci:census_address_recovery:FAIL:code-4 completion and Default state not witnessed]"
+            ),
+            (Ok(_), port, true) => log::info!(
                 "[TEST:xhci:census_address_recovery:PASS] port {port} enumerated after its Address Device failed"
             ),
         }
@@ -712,7 +715,7 @@ fn start(device: pci::Device) -> Result<(), &'static str> {
         #[cfg(feature = "xhci_fault_inject")]
         fault: fault::Injection::new(),
         #[cfg(all(feature = "testing", target_arch = "x86_64"))]
-        address_fault: AddressFault { armed: false, port: 0 },
+        address_fault: AddressFault { armed: false, port: 0, witnessed: false },
     };
     let result = controller.run(scratchpads);
     if result.is_err() {
@@ -1261,6 +1264,41 @@ impl Controller {
             }
         }
     }
+    #[cfg(all(feature = "testing", target_arch = "x86_64"))]
+    fn fail_address_on_wire(
+        &mut self,
+        device: &mut Device,
+        port: u8,
+        protocol: Protocol,
+    ) -> Result<(), &'static str> {
+        let old = device.slot;
+        self.command(Trb::new(11, device.input.phys, 0, (old as u32) << 24))?;
+        delay(spec::SET_ADDRESS_RECOVERY_NS);
+        // EP0 is idle: no transfers were submitted. Disable Slot returns
+        // its contexts but does not reset the USB device's address (4.6.4).
+        self.command(spec::disable_slot(old))?;
+        self.dcbaa.put64(old as usize * 8, 0);
+        let slot = self.command(Trb::new(9, 0, 0, (protocol.slot_type as u32) << 16))?.slot();
+        device.slot = slot;
+        if slot == 0 || slot > self.slots {
+            return Err("fault preparation Enable Slot returned invalid slot");
+        }
+        for offset in (0..32 * self.contexts.stride).step_by(4) {
+            device.output.put32(offset, 0);
+        }
+        self.dcbaa.put64(slot as usize * 8, device.output.phys);
+        fence(Ordering::Release);
+        // No responder remains at address 0: consume the real command
+        // completion through the same MSI/event queue as ordinary commands.
+        let code = self.command_code(Trb::new(11, device.input.phys, 0, (slot as u32) << 24))?;
+        let state = (device.output.get32(self.contexts.output(0) + 12) >> 27) & 31;
+        log::info!("[xhci] port {port}: testing Address Device completion code={code} slot={slot} state={state}");
+        if code != 4 || state != 1 {
+            return Err("fault did not produce code 4 in Default state");
+        }
+        self.address_fault.witnessed = true;
+        Err("command/transfer completion failed")
+    }
     fn address_and_describe(
         &mut self,
         device: &mut Device,
@@ -1285,7 +1323,7 @@ impl Controller {
         fence(Ordering::Release);
         #[cfg(all(feature = "testing", target_arch = "x86_64"))]
         if self.address_fault.fail(port) {
-            return Err("command/transfer completion failed");
+            return self.fail_address_on_wire(device, port, protocol);
         }
         self.command(Trb::new(11, device.input.phys, 0, (slot as u32) << 24))?;
         // The SetAddress() recovery interval is software's to time (4.6.5).

@@ -1382,8 +1382,11 @@ and the HID Usage Tables; their comments cite the sections.
   The port census does the same when an enumeration fails, Address Device's USB Transaction Error (code 4)
   included (#2495): `[xhci] port <n>: resetting the device (<k> of 2)`, then a fresh slot. Those resets count
   against the two that configuring the device may use. The controller stops only when a connected device is
-  still not enumerated after them. An x86 testing kernel (`--features testing`, a `metal-run boot --mode tests`
-  boot) fails the census's first Address Device once without sending it and reports
+  still not enumerated after them, or when a failed enumeration's slot cannot be reclaimed.
+  An x86 testing kernel (`--features testing`, a `metal-run boot --mode tests` boot) first addresses
+  the device, disables its slot, then tries Address Device on a fresh slot without resetting the USB device.
+  The device no longer answers address 0. The oracle requires the real code-4 command completion
+  and Default slot state before reclaiming the slot and resetting the port, then reports
   `[TEST:xhci:census_address_recovery:PASS]`, or a `FAIL` that ends the boot.
 - **Reports.** One interrupt-IN TD is posted at a time. A report must be 8 bytes; one of any other length is
   ignored. Presses and releases are the differences between consecutive reports, and an ErrorRollOver report
