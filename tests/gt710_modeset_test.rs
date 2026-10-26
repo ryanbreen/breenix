@@ -41,6 +41,32 @@ fn encodes_preferred_timing_and_owned_pitch_surface() {
     assert!(modeset::head_methods(&bad,0,0,1,0x08010000,5120).is_err());
 }
 #[test]
+fn switch_sequence_uses_a_lower_advertised_mode_and_detaches_before_retiming() {
+    let high=preferred();
+    let low=Timing {width:1024,height:768,clock_khz:65000,hsync_start:1048,
+        hsync_end:1184,htotal:1344,vsync_start:771,vsync_end:777,vtotal:806,flags:24};
+    assert_eq!(modeset::switch_sequence(&[high,low]).unwrap(),[low,high,low]);
+    assert!(modeset::switch_sequence(&[high]).is_err());
+    assert!(modeset::switch_sequence(&[high,high]).is_err());
+    assert!(modeset::switch_sequence(&[low,high]).is_err());
+    assert!(modeset::switch_sequence(&[]).is_err());
+    let mut interlaced=low;interlaced.flags|=128;
+    assert!(modeset::switch_sequence(&[high,interlaced]).is_err());
+    let m:std::collections::BTreeMap<_,_>=modeset::head_methods(&low,1,2,1,0x08010000,4096)
+        .unwrap().into_iter().collect();
+    assert_eq!(m[&0x714],806<<16|1344);
+    assert_eq!(m[&0x718],5<<16|135);
+    assert_eq!(m[&0x71c],34<<16|295);
+    assert_eq!(m[&0x720],802<<16|1319);
+    assert_eq!(m[&0x750],65000000);
+    assert_eq!(m[&0x76c],0x01001000);
+    assert_eq!(m[&0x704]&0x3d8,0x158);
+    assert_eq!(m[&0x240],0x102);
+    assert_eq!(modeset::detach_methods(1,2).unwrap(),[(0x774,0),(0x240,0)]);
+    assert!(modeset::detach_methods(4,0).is_err());
+    assert!(modeset::detach_methods(0,4).is_err());
+}
+#[test]
 fn physical_dma_and_ramht_entries_stay_within_private_instance() {
     assert_eq!(modeset::dma_object(0x08010000,0x500000).unwrap(),
         [0x49,0x080100,0x0850ff,0,0,0]);
