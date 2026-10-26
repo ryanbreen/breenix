@@ -13,7 +13,8 @@ display MMIO refuse takeover before any script executes.
 
 The scanout uses pitch-linear A8R8G8B8 storage. A bounded BAR1 view maps it
 through private instance/table storage; 128 KiB pages are selected before either inherited BAR VM is enabled.
-The instance switch completes both device drains before mapping invalidation. This supplies CPU access for the console, without
+The CPU view uses uncompressed 4 KiB SPT entries. The instance switch
+completes both device drains before mapping invalidation. This supplies CPU access for the console, without
 introducing a general-purpose GPU virtual address allocator.
 
 `GT710_MODE` records the preferred timing, active head and SOR registers,

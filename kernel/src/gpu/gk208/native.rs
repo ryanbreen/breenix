@@ -527,17 +527,13 @@ pub fn takeover(
         bar_inst + 0x200,
         &[directory as u32, 0, (modeset::BAR1_WINDOW-1) as u32, 0],
     )?;
-    write_words(regs, total, directory, &[((table >> 8) as u32) | 1, 0])?;
+    let (pde,ptes)=modeset::bar1_small_pages(base,pages<<page,table)?;
+    write_words(regs,total,directory,&pde)?;
     {
-        let mut p = memory::Pramin::new(regs, total);
-        for i in 0..1024 {
-            let pte = if i < pages {
-                ((base + (i << page)) >> 8) | 1
-            } else {
-                2
-            };
-            p.write(table + i * 8, pte as u32)?;
-            p.write(table + i * 8 + 4, (pte >> 32) as u32)?;
+        let mut p=memory::Pramin::new(regs,total);
+        for (i,pte) in ptes.iter().enumerate() {
+            p.write(table+i as u64*8,*pte as u32)?;
+            p.write(table+i as u64*8+4,(*pte>>32) as u32)?;
         }
     }
     let old_bar = modeset::activate_bar1(regs,bar_inst,directory)?;
@@ -562,9 +558,10 @@ pub fn takeover(
                 let physical=read_word(regs,total,surface.start+offset)?;
                 let pd=read_word(regs,total,bar_inst+0x200)?;
                 let pde=read_word(regs,total,directory)?;
-                let pte=read_word(regs,total,table+((displacement as u64+offset)>>page)*8)?;
-                crate::serial_println!("GT710_BAR1_REFUSAL offset={} expected={:#x} actual={:#x} pramin={:#x} block={:#x} page={} pdb={:#x} pde={:#x} pte={:#x} mmu={:#x} firmware_writes={}",
-                    offset,expected,actual,physical,regs.read(0x1704),page,pd,pde,pte,regs.read(0x100c80),crate::firmware_writes::count());
+                let pte=read_word(regs,total,table+((displacement as u64+offset)>>12)*8)?;
+                let spde=read_word(regs,total,directory+4)?;
+                crate::serial_println!("GT710_BAR1_REFUSAL offset={} expected={:#x} actual={:#x} pramin={:#x} block={:#x} page={} pdb={:#x} pde={:#x} spde={:#x} pte={:#x} mmu={:#x} firmware_writes={}",
+                    offset,expected,actual,physical,regs.read(0x1704),12,pd,pde,spde,pte,regs.read(0x100c80),crate::firmware_writes::count());
                 return Err("native BAR1 complete read-back differs from physical pattern");
             }
             digest.update(&actual.to_le_bytes());

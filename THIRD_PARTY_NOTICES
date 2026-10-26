@@ -382,3 +382,10 @@ The same nouveau revision dispnv50/head907d.c (MIT, Copyright 2018 Red Hat
 Inc.) supplies the native core surface pitch's 256-byte unit encoding in
 modeset.rs, consistent with cl927d.h's bits 20:8. The original full MIT
 notice is retained in the consumer's header.
+
+The bounded BAR1 SPT writer in modeset.rs/native.rs uses the same checked
+MIT vmmgk104.c and vmmgf100.c sources above: 4 KiB PTEs, the high PDE half
+and absent unused entries. The Copyright 2017 Red Hat Inc. full MIT notice
+is retained in both consumers. rnndb/memory/gf100_vm.xml at the same
+checked envytools revision imports the MIT copyright.xml grant and confirms
+the SPT address/valid half; its imported notice is retained in both files.

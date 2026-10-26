@@ -1,4 +1,25 @@
 /*
+ * Copyright 2017 Red Hat Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ */
+/*
  * Copyright 2018 Red Hat Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -463,6 +484,19 @@ pub fn bar1_view(start:u64, bytes:u64, aperture:u64, page:u32) -> Result<(u64,us
     let span=end-base;
     if span>BAR1_WINDOW as u64 {return Err("native scanout exceeds bounded BAR1 view");}
     Ok((base,(start-base) as usize,(span+page_bytes-1)>>page))
+}
+/// Build only the uncompressed 4 KiB SPT covering the bounded CPU view.
+pub fn bar1_small_pages(base:u64, span:u64, table:u64) -> Result<([u32;2],Vec<u64>), &'static str> {
+    if base&4095!=0 || table&4095!=0 || table>=1<<40 || span==0
+        || span&4095!=0 || span>BAR1_WINDOW as u64
+        || base.checked_add(span).is_none_or(|end|end>1<<40) {
+        return Err("invalid bounded BAR small-page table");
+    }
+    let mut ptes=vec![0;BAR1_WINDOW/4096];
+    for (i,pte) in ptes[..(span/4096) as usize].iter_mut().enumerate() {
+        *pte=((base+i as u64*4096)>>8)|1;
+    }
+    Ok(([0,(table>>8) as u32|1],ptes))
 }
 pub trait Io {
     fn read(&mut self, reg: usize) -> u32;
