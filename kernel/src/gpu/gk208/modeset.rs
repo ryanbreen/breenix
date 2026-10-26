@@ -1,4 +1,27 @@
 /*
+ * Copyright 2015 Red Hat Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * Authors: Ben Skeggs <bskeggs@redhat.com>
+ */
+/*
  * rnndb copyright 2006
  * Artur Huillet
  * Ben Skeggs
@@ -419,6 +442,16 @@ pub fn wait(a: &mut impl Io, r: usize, mask: u32, value: u32) -> Result<(), &'st
         a.delay_us(100);
     }
     Err("display register wait timed out")
+}
+/// Drain the GK208B-selected BAR write path before engine consumption.
+pub fn bar_flush(a: &mut impl Io) -> Result<(), &'static str> {
+    a.write(0x70000, 1);
+    wait(a, 0x70000, 2, 0)
+}
+pub fn publish(a: &mut impl Io, put: u32) -> Result<(), &'static str> {
+    bar_flush(a)?;
+    a.write(0x640000, put);
+    Ok(())
 }
 pub fn quiesce(a: &mut impl Io) -> Result<(), &'static str> {
     for i in 0..9 {

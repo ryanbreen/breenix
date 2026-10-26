@@ -220,8 +220,7 @@ fn submit(
     }
     write_words(regs, total, push + u64::from(*put), &words)?;
     *put += words.len() as u32 * 4;
-    regs.write(0x640000, *put);
-    Ok(())
+    modeset::publish(regs, *put)
 }
 fn complete(
     regs: &mut Registers,
@@ -401,6 +400,7 @@ pub fn takeover(
         instance + modeset::ramht_slot(2, 0),
         &[2, (0x1020 << 9) | 1],
     )?;
+    modeset::bar_flush(regs)?;
     regs.write(0x610010, (instance >> 8) as u32 | 9);
     regs.write(0x610494, (evo >> 8) as u32 | 1);
     regs.write(0x610498, 0x10000);
@@ -516,6 +516,7 @@ pub fn takeover(
             p.write(table + i * 8 + 4, (pte >> 32) as u32)?;
         }
     }
+    modeset::bar_flush(regs)?;
     let old_bar = regs.read(0x1704);
     regs.write(0x1704, 0x80000000 | (bar_inst >> 12) as u32);
     let mut free = false;

@@ -362,3 +362,9 @@ NVIDIA open-gpu-doc at the same checked revision, classes/display/cl507c.h:
 SPDX-License-Identifier: MIT; Copyright (c) 1993-2014 NVIDIA CORPORATION &
 AFFILIATES. Its DMA method packet count/offset fields confirm native.rs's
 EVO wire encoding; the full original notice is retained there.
+
+The GK208B-selected gf100 BAR implementation dispatches its write barrier to
+nvkm/subdev/bar/g84.c at the same nouveau revision. That file's checked MIT
+grant is Copyright 2015 Red Hat Inc.; the original full notice is retained
+in modeset.rs. The consumer drains this barrier before publishing EVO PUT
+and before enabling the owned display/BAR instance tables.

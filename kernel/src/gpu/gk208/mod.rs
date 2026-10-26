@@ -114,7 +114,7 @@ impl Registers {
         unsafe { ((self.0 + reg) as *const u32).read_volatile() }
     }
     fn write(&self, reg: usize, value: u32) {
-        // SAFETY: checked BAR0 mapping; ROM, I2C and bounded PRAMIN writes only.
+        // SAFETY: checked BAR0 mapping; board access and native display/MMU bootstrap.
         unsafe {
             ((self.0 + reg) as *mut u32).write_volatile(value);
         }
