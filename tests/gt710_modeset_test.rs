@@ -106,7 +106,9 @@ fn board_scripts_are_predecoded_and_bounded_before_display_writes() {
     let ops=modeset::script(&rom,16,1,0,1).unwrap();
     assert_eq!(ops,[modeset::Op::Register(0x611800,0,0x12345678)]);
     rom[16]=0xff;
-    assert!(modeset::script(&rom,16,1,0,1).is_err());
+    let refusal=modeset::script(&rom,16,1,0,1).unwrap_err();
+    assert_eq!((refusal.offset,refusal.opcode),(16,0xff));
+    assert_eq!(refusal.reason,"unsupported display script opcode");
     rom[16..19].copy_from_slice(&[0x5b,16,0]);
     assert!(modeset::script(&rom,16,1,0,1).is_err(),"recursive script escaped bounds");
     assert!(modeset::script(&rom[..17],16,1,0,1).is_err());
