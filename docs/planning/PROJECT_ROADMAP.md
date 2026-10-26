@@ -16,6 +16,11 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+The native GK208B milestone 7 host firmware/compiler assets are in progress in
+[#2489](https://github.com/ryanbreen/breenix/issues/2489). This is source-built
+firmware and offline catalogue tooling; graphics execution remains separate
+([build and source notes](../../../tools/kepler/README.md)).
+
 The server `resting-state` milestone is in progress in [#2439](https://github.com/ryanbreen/breenix/issues/2439)
 and [PR #2437](https://github.com/ryanbreen/breenix/pull/2437). Its six automated S20 cases include
 clean test preemption, idle return, one-shot selection, reboot and watchdog recovery,

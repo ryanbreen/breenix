@@ -228,6 +228,12 @@ fn prepare_aarch64_ext2_disk() -> Result<PathBuf> {
 /// Simple developer utility tasks.
 #[derive(StructOpt)]
 enum Cmd {
+    /// Build source-pinned GK208B firmware and the offline fixed shader catalogue.
+    KeplerAssets {
+        /// Independently rebuild twice and compare the complete asset inventories.
+        #[structopt(long)]
+        check: bool,
+    },
     /// Build Breenix and run the Ring-3 smoke test in QEMU.
     Ring3Smoke,
     /// Build Breenix and test ENOSYS syscall handling.
@@ -323,6 +329,18 @@ fn main() -> Result<()> {
         _ => {}
     }
     match cmd {
+        Cmd::KeplerAssets { check } => {
+            let mut command = Command::new("python3");
+            command.arg(workspace_root().join("scripts/build-kepler-assets"));
+            if check {
+                command.arg("--check");
+            }
+            let status = command.status().context("build Kepler host assets")?;
+            if !status.success() {
+                bail!("Kepler asset build failed: {status}");
+            }
+            Ok(())
+        }
         Cmd::Ring3Smoke => ring3_smoke(),
         Cmd::Ring3Enosys => ring3_enosys(),
         Cmd::BootStages => run_boot_stages(&qemu_config::Arch::X86_64),

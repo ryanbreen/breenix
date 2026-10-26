@@ -1,0 +1,485 @@
+--- a/envytools/envydis/core.c
++++ b/envytools/envydis/core.c
+@@ -33,28 +33,13 @@
+ int op6blen[] = { 6 };
+ int op8blen[] = { 8 };
+ 
++/* Breenix host build: only the two audited instruction sets are linked. */
+ static const struct {
+-	const char *name;
+-	struct disisa *isa;
++ const char *name;
++ struct disisa *isa;
+ } isas[] = {
+-	"g80", &g80_isa_s,
+-	"nv50", &g80_isa_s, /* XXX remove some day */
+-	"gf100", &gf100_isa_s,
+-	"nvc0", &gf100_isa_s, /* XXX remove some day */
+-	"gk110", &gk110_isa_s,
+-	"gm107", &gm107_isa_s,
+-	"ctx", &ctx_isa_s,
+-	"falcon", &falcon_isa_s,
+-	"fuc", &falcon_isa_s, /* XXX remove some day */
+-	"fµc", &falcon_isa_s, /* XXX remove some day */
+-	"hwsq", &hwsq_isa_s,
+-	"xtensa", &xtensa_isa_s,
+-	"vp2", &xtensa_isa_s, /* XXX remove some day, preferably before cracking the actual VP2 ISA open */
+-	"vuc", &vuc_isa_s,
+-	"vµc", &vuc_isa_s,
+-	"macro", &macro_isa_s,
+-	"vp1", &vp1_isa_s,
+-	"vcomp", &vcomp_isa_s,
++ {"gk110", &gk110_isa_s},
++ {"falcon", &falcon_isa_s},
+ };
+ 
+ const struct disisa *ed_getisa(const char *name) {
+--- a/envytools/envydis/gk110.c
++++ b/envytools/envydis/gk110.c
+@@ -303,6 +303,11 @@
+ #define CONST atommem, &cmem_m
+ #define LCONST atommem, &lcmem_m
+ #define TCONST atommem, &tcmem_m
++
++/* Direct GK110 TXF uses bits 45..57 for the handle-table word index,
++ * as encoded by Mesa nv50_ir_emit_gk110.cpp::emitTEX. */
++static struct rbitfield txf_handle = { { 45, 13 }, RBF_UNSIGNED };
++#define TXFHANDLE atomrimm, &txf_handle
+ #define VBA atommem, &vba_m
+ 
+ 
+@@ -834,9 +839,12 @@
+ 	{ 0x0000000000000c00ull, 0x0000000000000c00ull, N("f64"), DSTD },
+ 	{ 0, 0, OOPS },
+ };
++/* Mesa folds byte extraction into CVT with the byte selector at 44..45. */
++static struct rbitfield cvt_byte = { { 44, 2 }, RBF_UNSIGNED };
++#define CVTBYTE atomrimm, &cvt_byte
+ static struct insn tabcvti2fsrc[] = {
+-	{ 0x0000000000000000ull, 0x000000000000b000ull, N("u8"), T(is2) },
+-	{ 0x0000000000008000ull, 0x000000000000b000ull, N("s8"), T(is2) },
++	{ 0x0000000000000000ull, 0x000000000000b000ull, N("u8"), T(is2), N("byte"), CVTBYTE },
++	{ 0x0000000000008000ull, 0x000000000000b000ull, N("s8"), T(is2), N("byte"), CVTBYTE },
+ 	{ 0x0000000000001000ull, 0x000000000000b000ull, N("u16"), T(is2) },
+ 	{ 0x0000000000009000ull, 0x000000000000b000ull, N("s16"), T(is2) },
+ 	{ 0x0000000000002000ull, 0x000000000000b000ull, N("u32"), T(is2) },
+@@ -1570,6 +1578,9 @@
+ 	{ 0x3800000000000002ull, 0xf8000000000000f3ull, N("sustgb"), T(suscop2), T(sclamp2s2), T(sustty2), GLOBALDSU, CONST, SRC3, T(sup2) },
+ 	{ 0x3800000000000002ull, 0xf800000000000003ull, N("sustgp"), T(suscop2), T(sclamp2s2), T(sustty2), GLOBALDSU, CONST, SUSTPSRC1, T(sup2) },
+ 	{ 0x6800000000000002ull, 0xf800000000000003ull, N("ld"), T(redop), T(atomd), T(gamem), T(atoms) },
++	/* The fixed catalogue uses direct, non-array 2D TXF, without offsets. */
++	{ 0x7000008000000002ull, 0x7c001fc000000003ull, N("texfetch"), T(texm), N("lzero"), T(ltex), TDST, N("t2d"), N("handle"), TXFHANDLE, TSRC12, SRC2 },
++	{ 0x7000108000000002ull, 0x7c001fc000000003ull, N("texfetch"), T(texm), N("llod"), T(ltex), TDST, N("t2d"), N("handle"), TXFHANDLE, TSRC13, SRC2 },
+ 	{ 0x7000000000000002ull, 0x7c00000000000003ull, N("texfetch"), T(texm), T(lodf), T(texms), T(texoff2), T(ltex), TDST, T(text), T(texsrc1), T(texsrc2) }, // XXX: args are wrong
+ 	{ 0x7400000000000002ull, 0x7f80000000000003ull, T(lane0e), N("mov"), N("b32"), DST, LIMM },
+ 	{ 0x7480000000000002ull, 0x7f80000000000003ull, N("interp"), T(interpmode), N("f32"), DST, IATTR, SRC2, SRC1, SRC3 },
+@@ -1577,6 +1588,8 @@
+ 	{ 0x7540000000000002ull, 0x7fc0000000000003ull, N("texquery"), T(texm), T(ltex), TDST, T(text), T(texquery), SRC1, SRC2 }, // XXX: check src args
+ 	{ 0x7600000000000002ull, 0x7fc0000000000003ull, N("texgrad"), T(texm), T(ltex), TDST, T(text), TCONST, T(texgrsrc1), T(texgrsrc2) },
+ 	{ 0x76c0000000000002ull, 0x7fc0000000000003ull, N("texcsaa"), T(texm), T(texf), TDST, TSRC13 },
++	/* Mesa GK110 emits TEXBAR with fixed low bits 0x3e. */
++	{ 0x770000000000003eull, 0x7fc000000000003full, N("texbar"), TEXBARIMM },
+ 	{ 0x7700000000000002ull, 0x7fc0000000000003ull, N("texbar"), TEXBARIMM },
+ 	{ 0x7740000000000002ull, 0x7fc0000000000003ull, N("ld"), N("lock"), T(lldstt), PDSTL, T(lldstd), SHARED },
+ 	{ 0x7780000000000002ull, 0xff90000000000003ull, N("cas"), N("b32"), DST, T(gamem), T(cass) },
+--- a/envytools/easm/easm_lex.l
++++ b/envytools/easm/easm_lex.l
+@@ -26,6 +26,7 @@
+ #include "yy.h"
+ #include "easm.h"
+ #include "easm_parse.h"
++#define YYSTYPE EASM_STYPE
+ %}
+ 
+ %option bison-bridge
+--- a/envytools/easm/easm_parse.y
++++ b/envytools/easm/easm_parse.y
+@@ -26,6 +26,7 @@
+ #include "easm.h"
+ #include "yy.h"
+ #include "easm_parse.h"
++#define YYSTYPE EASM_STYPE
+ #include "easm_lex.h"
+ void easm_error(YYLTYPE *loc, void *lex_state, struct easm_file **res, const char *err) {
+ 	fprintf(stderr, LOC_FORMAT(*loc, "%s\n"), err);
+@@ -33,8 +34,9 @@
+ %}
+ 
+ %locations
+-%define api.pure
+-%name-prefix "easm_"
++%define api.location.type {struct envy_loc}
++%define api.pure full
++%define api.prefix {easm_}
+ %lex-param { void *lex_state }
+ %parse-param { void *lex_state }
+ %parse-param { struct easm_file **res }
+--- a/envytools/include/yy.h
++++ b/envytools/include/yy.h
+@@ -35,7 +35,9 @@
+ 	int nest;
+ };
+ 
++#ifndef YYLTYPE
+ #define YYLTYPE struct envy_loc
++#endif
+ 
+ #define YYLLOC_DEFAULT(Current, Rhs, N)					\
+ 	do {								\
+@@ -57,7 +59,7 @@
+ #define YY_USER_ACTION yy_lex_common(&yyextra, yylloc, yytext);
+ #define YY_USER_INIT yyextra.line = 1; yyextra.pos = 1; yyextra.ws = 0; yylloc->lend = 1; yylloc->cend = 1; yylloc->lstart = 1; yylloc->cstart = 1; yylloc->file = yyextra.file; yyextra.nest = 0;
+ 
+-void yy_lex_common(struct yy_lex_intern *x, YYLTYPE *loc, const char *str);
++void yy_lex_common(struct yy_lex_intern *x, struct envy_loc *loc, const char *str);
+ 
+ void yy_str_deescape(const char *str, struct astr *astr);
+ 
+--- a/mesa/src/nouveau/codegen/nv50_ir.cpp
++++ b/mesa/src/nouveau/codegen/nv50_ir.cpp
+@@ -1236,121 +1236,3 @@
+ 
+ } // namespace nv50_ir
+ 
+-extern "C" {
+-
+-static void
+-nv50_ir_init_prog_info(struct nv50_ir_prog_info *info,
+-                       struct nv50_ir_prog_info_out *info_out)
+-{
+-   info_out->target = info->target;
+-   info_out->type = info->type;
+-   if (info->type == PIPE_SHADER_TESS_CTRL || info->type == PIPE_SHADER_TESS_EVAL) {
+-      info_out->prop.tp.domain = MESA_PRIM_COUNT;
+-      info_out->prop.tp.outputPrim = MESA_PRIM_COUNT;
+-   }
+-   if (info->type == PIPE_SHADER_GEOMETRY) {
+-      info_out->prop.gp.instanceCount = 1;
+-      info_out->prop.gp.maxVertices = 1;
+-   }
+-   if (info->type == PIPE_SHADER_COMPUTE) {
+-      info->prop.cp.numThreads[0] =
+-      info->prop.cp.numThreads[1] =
+-      info->prop.cp.numThreads[2] = 1;
+-   }
+-   info_out->bin.smemSize = info->bin.smemSize;
+-   info_out->io.instanceId = 0xff;
+-   info_out->io.vertexId = 0xff;
+-   info_out->io.edgeFlagIn = 0xff;
+-   info_out->io.edgeFlagOut = 0xff;
+-   info_out->io.fragDepth = 0xff;
+-   info_out->io.sampleMask = 0xff;
+-}
+-
+-int
+-nv50_ir_generate_code(struct nv50_ir_prog_info *info,
+-                      struct nv50_ir_prog_info_out *info_out)
+-{
+-   int ret = 0;
+-
+-   nv50_ir::Program::Type type;
+-
+-   nv50_ir_init_prog_info(info, info_out);
+-
+-#define PROG_TYPE_CASE(a, b)                                      \
+-   case PIPE_SHADER_##a: type = nv50_ir::Program::TYPE_##b; break
+-
+-   switch (info->type) {
+-   PROG_TYPE_CASE(VERTEX, VERTEX);
+-   PROG_TYPE_CASE(TESS_CTRL, TESSELLATION_CONTROL);
+-   PROG_TYPE_CASE(TESS_EVAL, TESSELLATION_EVAL);
+-   PROG_TYPE_CASE(GEOMETRY, GEOMETRY);
+-   PROG_TYPE_CASE(FRAGMENT, FRAGMENT);
+-   PROG_TYPE_CASE(COMPUTE, COMPUTE);
+-   default:
+-      INFO_DBG(info->dbgFlags, VERBOSE, "unsupported program type %u\n", info->type);
+-      return -1;
+-   }
+-   INFO_DBG(info->dbgFlags, VERBOSE, "translating program of type %u\n", type);
+-
+-   nv50_ir::Target *targ = nv50_ir::Target::create(info->target);
+-   if (!targ)
+-      return -1;
+-
+-   nv50_ir::Program *prog = new nv50_ir::Program(type, targ);
+-   if (!prog) {
+-      nv50_ir::Target::destroy(targ);
+-      return -1;
+-   }
+-   prog->driver = info;
+-   prog->driver_out = info_out;
+-   prog->dbgFlags = info->dbgFlags;
+-   prog->optLevel = info->optLevel;
+-
+-   ret = prog->makeFromNIR(info, info_out) ? 0 : -2;
+-   if (ret < 0)
+-      goto out;
+-   if (prog->dbgFlags & NV50_IR_DEBUG_VERBOSE)
+-      prog->print();
+-
+-   targ->parseDriverInfo(info, info_out);
+-   prog->getTarget()->runLegalizePass(prog, nv50_ir::CG_STAGE_PRE_SSA);
+-
+-   prog->convertToSSA();
+-
+-   if (prog->dbgFlags & NV50_IR_DEBUG_VERBOSE)
+-      prog->print();
+-
+-   prog->optimizeSSA(info->optLevel);
+-   prog->getTarget()->runLegalizePass(prog, nv50_ir::CG_STAGE_SSA);
+-
+-   if (prog->dbgFlags & NV50_IR_DEBUG_BASIC)
+-      prog->print();
+-
+-   if (!prog->registerAllocation()) {
+-      ret = -4;
+-      goto out;
+-   }
+-   prog->getTarget()->runLegalizePass(prog, nv50_ir::CG_STAGE_POST_RA);
+-
+-   prog->optimizePostRA(info->optLevel);
+-
+-   if (!prog->emitBinary(info_out)) {
+-      ret = -5;
+-      goto out;
+-   }
+-
+-out:
+-   INFO_DBG(prog->dbgFlags, VERBOSE, "nv50_ir_generate_code: ret = %i\n", ret);
+-
+-   info_out->bin.maxGPR = prog->maxGPR;
+-   info_out->bin.code = prog->code;
+-   info_out->bin.codeSize = prog->binSize;
+-   info_out->bin.tlsSpace = ALIGN(prog->tlsSize, 0x10);
+-
+-   delete prog;
+-   nv50_ir::Target::destroy(targ);
+-
+-   return ret;
+-}
+-
+-} // extern "C"
+--- a/mesa/src/nouveau/codegen/nv50_ir_peephole.cpp
++++ b/mesa/src/nouveau/codegen/nv50_ir_peephole.cpp
+@@ -1622,12 +1622,12 @@
+          break; \
+       case TYPE_S16: \
+          res.data.dst = i->saturate ? \
+-                        CLAMP(imm0.reg.data.s16, imin, imax) : \
++                        CLAMP(int64_t(imm0.reg.data.s16), int64_t(imin), int64_t(imax)) : \
+                         imm0.reg.data.s16; \
+          break; \
+       case TYPE_U16: \
+          res.data.dst = i->saturate ? \
+-                        CLAMP(imm0.reg.data.u16, umin, umax) : \
++                        CLAMP(uint64_t(imm0.reg.data.u16), uint64_t(umin), uint64_t(umax)) : \
+                         imm0.reg.data.u16; \
+          break; \
+       default: return false; \
+--- a/mesa/src/nouveau/codegen/nv50_ir_target.cpp
++++ b/mesa/src/nouveau/codegen/nv50_ir_target.cpp
+@@ -143,40 +143,14 @@
+ };
+ 
+ 
+-extern Target *getTargetGV100(unsigned int chipset);
+-extern Target *getTargetGM107(unsigned int chipset);
+ extern Target *getTargetNVC0(unsigned int chipset);
+-extern Target *getTargetNV50(unsigned int chipset);
+-
++
++/* Breenix catalogue compiler deliberately supports GK208B only. */
+ Target *Target::create(unsigned int chipset)
+ {
+    STATIC_ASSERT(ARRAY_SIZE(operationSrcNr) == OP_LAST + 1);
+    STATIC_ASSERT(ARRAY_SIZE(operationClass) == OP_LAST + 1);
+-   switch (chipset & ~0xf) {
+-   case 0x190:
+-   case 0x170:
+-   case 0x160:
+-   case 0x140:
+-      return getTargetGV100(chipset);
+-   case 0x110:
+-   case 0x120:
+-   case 0x130:
+-      return getTargetGM107(chipset);
+-   case 0xc0:
+-   case 0xd0:
+-   case 0xe0:
+-   case 0xf0:
+-   case 0x100:
+-      return getTargetNVC0(chipset);
+-   case 0x50:
+-   case 0x80:
+-   case 0x90:
+-   case 0xa0:
+-      return getTargetNV50(chipset);
+-   default:
+-      ERROR("unsupported target: NV%x\n", chipset);
+-      return 0;
+-   }
++   return chipset == 0x106 ? getTargetNVC0(chipset) : NULL;
+ }
+ 
+ void Target::destroy(Target *targ)
+--- a/mesa/src/nouveau/codegen/nv50_ir_target_nvc0.cpp
++++ b/mesa/src/nouveau/codegen/nv50_ir_target_nvc0.cpp
+@@ -40,49 +40,18 @@
+ 
+ // lazyness -> will just hardcode everything for the time being
+ 
+-#include "lib/gf100.asm.h"
+-#include "lib/gk104.asm.h"
+-#include "lib/gk110.asm.h"
+-
++/* Breenix does not import the unchecked builtin assembly libraries.
++ * A call is a catalogue compilation error, never an unresolved relocation. */
+ void
+-TargetNVC0::getBuiltinCode(const uint32_t **code, uint32_t *size) const
+-{
+-   switch (chipset & ~0xf) {
+-   case 0xe0:
+-      if (chipset < NVISA_GK20A_CHIPSET) {
+-         *code = (const uint32_t *)&gk104_builtin_code[0];
+-         *size = sizeof(gk104_builtin_code);
+-         break;
+-      }
+-      FALLTHROUGH; /* for GK20A */
+-   case 0xf0:
+-   case 0x100:
+-      *code = (const uint32_t *)&gk110_builtin_code[0];
+-      *size = sizeof(gk110_builtin_code);
+-      break;
+-   default:
+-      *code = (const uint32_t *)&gf100_builtin_code[0];
+-      *size = sizeof(gf100_builtin_code);
+-      break;
+-   }
++TargetNVC0::getBuiltinCode(const uint32_t **, uint32_t *) const
++{
++   FATAL("Kepler catalogue does not permit compiler builtin libraries\n");
+ }
+ 
+ uint32_t
+-TargetNVC0::getBuiltinOffset(int builtin) const
+-{
+-   assert(builtin < NVC0_BUILTIN_COUNT);
+-
+-   switch (chipset & ~0xf) {
+-   case 0xe0:
+-      if (chipset < NVISA_GK20A_CHIPSET)
+-         return gk104_builtin_offsets[builtin];
+-      FALLTHROUGH; /* for GK20A */
+-   case 0xf0:
+-   case 0x100:
+-      return gk110_builtin_offsets[builtin];
+-   default:
+-      return gf100_builtin_offsets[builtin];
+-   }
++TargetNVC0::getBuiltinOffset(int) const
++{
++   FATAL("Kepler catalogue emitted a forbidden builtin call\n");
+ }
+ 
+ struct nvc0_opProperties
+--- a/mesa/src/util/format/u_formats.h
++++ b/mesa/src/util/format/u_formats.h
+@@ -30,7 +30,7 @@
+ #define U_FORMATS_H_
+ 
+ #include "util/detect.h"
+-#include "util/format/u_format_gen.h"
++/* Host codegen uses the enum below, not generated endian aliases. */
+ 
+ #ifdef __cplusplus
+ extern "C" {
+--- a/mesa/src/nouveau/codegen/nv50_ir.h
++++ b/mesa/src/nouveau/codegen/nv50_ir.h
+@@ -1346,7 +1346,7 @@
+    Type getType() const { return progType; }
+ 
+    inline void add(Function *fn, int& id) { allFuncs.insert(fn, id); }
+-   inline void del(Function *fn, int& id) { allFuncs.remove(id); }
++   inline void del(Function *, int& id) { allFuncs.remove(id); }
+    inline void add(Value *rval, int& id) { allRValues.insert(rval, id); }
+ 
+    bool makeFromNIR(struct nv50_ir_prog_info *,
+--- a/mesa/src/nouveau/codegen/nv50_ir_target.h
++++ b/mesa/src/nouveau/codegen/nv50_ir_target.h
+@@ -226,14 +226,14 @@
+    virtual bool isModSupported(const Instruction *,
+                                int s, Modifier) const = 0;
+    virtual bool isSatSupported(const Instruction *) const = 0;
+-   virtual bool isPostMultiplySupported(operation op, float f,
+-                                        int& e) const { return false; }
++   virtual bool isPostMultiplySupported(operation, float,
++                                        int&) const { return false; }
+    virtual bool mayPredicate(const Instruction *,
+                              const Value *) const = 0;
+ 
+    // whether @insn can be issued together with @next (order matters)
+-   virtual bool canDualIssue(const Instruction *insn,
+-                             const Instruction *next) const { return false; }
++   virtual bool canDualIssue(const Instruction *,
++                             const Instruction *) const { return false; }
+    virtual int getLatency(const Instruction *) const { return 1; }
+    virtual int getThroughput(const Instruction *) const { return 1; }
+ 
+--- a/mesa/src/nouveau/codegen/nv50_ir_util.h
++++ b/mesa/src/nouveau/codegen/nv50_ir_util.h
+@@ -33,8 +33,12 @@
+ # include <typeinfo>
+ #endif
+ 
+-#include "util/u_inlines.h"
++#include "util/u_math.h"
++#include "pipe/p_defines.h"
++#include "util/format/u_formats.h"
+ #include "util/u_memory.h"
++
++#define _debug_printf(args...) fprintf(stderr, args)
+ 
+ #define ERROR(args...) _debug_printf("ERROR: " args)
+ #define WARN(args...) _debug_printf("WARNING: " args)
+@@ -711,7 +715,7 @@
+ 
+ protected:
+    virtual void *lookup(void *obj) = 0;
+-   virtual void insert(const void *obj, void *clone) = 0;
++   virtual void insert(const void *, void *) = 0;
+ };
+ 
+ /**
+@@ -733,7 +737,7 @@
+       return obj;
+    }
+ 
+-   virtual void insert(const void *obj, void *clone)
++   virtual void insert(const void *, void *)
+    {
+    }
+ };
+--- a/mesa/src/compiler/shader_enums.h
++++ b/mesa/src/compiler/shader_enums.h
+@@ -29,7 +29,9 @@
+ #ifndef __OPENCL_VERSION__
+ #include <stdbool.h>
+ #include "util/macros.h"
+-#include "util/u_debug.h"
++#include <stdio.h>
++#define debug_printf(...) fprintf(stderr, __VA_ARGS__)
++
+ #else
+ #define ENUM_PACKED
+ #define BITFIELD_BIT(b) (1u << (b))
+--- a/mesa/src/util/u_memory.h
++++ b/mesa/src/util/u_memory.h
+@@ -34,7 +34,7 @@
+ #ifndef U_MEMORY_H
+ #define U_MEMORY_H
+ 
+-#include "util/u_debug.h"
++
+ #include "util/os_memory.h"
+ 
+ 
