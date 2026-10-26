@@ -167,6 +167,7 @@ fn copy_nv_reg_preserves_destination_bits_and_handles_both_shift_directions() {
             rom[p+5]=invalid;
             assert!(modeset::script(&rom,p,1,1,1).is_err());
         }
+        rom[p+5]=shift;
         assert!(modeset::script(&rom[..p+21],p,1,1,1).is_err());
     }
 }
