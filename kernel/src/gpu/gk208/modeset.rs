@@ -482,6 +482,21 @@ pub fn prepare_disabled_core(a: &mut impl Io, push: u64) -> Result<(), &'static 
     a.write(0x640000,0);
     Ok(())
 }
+/// Initialize the verified owned empty channel before its DMA idle transition.
+pub fn initialize_empty_core(a: &mut impl Io, instance:u64, push:u64) -> Result<(), &'static str> {
+    if instance==0 || instance&65535!=0 || instance>=1<<40
+        || push==0 || push&4095!=0 || push>=1<<40 {
+        return Err("invalid empty core storage");
+    }
+    if a.read(0x610490)&0x13!=0x10
+        || a.read(0x610010)!=(instance>>8) as u32|9
+        || a.read(0x610494)!=(push>>8) as u32|1
+        || a.read(0x640000)!=0 || a.read(0x640004)!=0 {
+        return Err("empty core bootstrap lacks owned bindings or cursors");
+    }
+    a.write(0x610490,0x01000013);
+    wait(a,0x610490,0x80000000,0)
+}
 pub fn quiesce(a: &mut impl Io) -> Result<(), &'static str> {
     // Satellites can interlock with the core. Stop their requests first.
     for i in (1..17).rev().chain(core::iter::once(0)) {

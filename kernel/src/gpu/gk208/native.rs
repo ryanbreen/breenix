@@ -410,6 +410,9 @@ pub fn takeover(
     modeset::bar_flush(regs)?;
     regs.write(0x610010, (instance >> 8) as u32 | 9);
     modeset::prepare_disabled_core(regs,evo)?;
+    modeset::initialize_empty_core(regs,instance,evo)?;
+    crate::serial_println!("GT710_MODE_STAGE empty-core-ready control={:#x} put={} get={}",
+        regs.read(0x610490),regs.read(0x640000),regs.read(0x640004));
     modeset::quiesce(regs).inspect_err(|_| {
         for channel in 0..17 {
             crate::serial_println!("GT710_QUIESCE channel={} control={:#x} push={:#x}",
