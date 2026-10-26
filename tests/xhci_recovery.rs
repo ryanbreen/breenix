@@ -131,19 +131,30 @@ impl recovery::Port for Port {
 #[test]
 fn a_third_device_reset_is_refused() {
     let mut p = Port::new(vec![]);
-    assert_eq!(recovery::reset_while_refused(&mut p, Attach::Refused), recovery::DEVICE_RESETS);
+    assert_eq!(recovery::reset_while_refused(&mut p, Attach::Refused, 0), recovery::DEVICE_RESETS);
     assert_eq!(p.resets, [1, 2]);
 }
 #[test]
 fn resets_stop_once_settled_or_disconnected() {
     let mut p = Port::new(vec![]);
-    assert_eq!(recovery::reset_while_refused(&mut p, Attach::Settled), 0);
+    assert_eq!(recovery::reset_while_refused(&mut p, Attach::Settled, 0), 0);
     let mut p = Port::new(vec![Attach::Settled]);
-    assert_eq!(recovery::reset_while_refused(&mut p, Attach::Refused), 1);
+    assert_eq!(recovery::reset_while_refused(&mut p, Attach::Refused, 0), 1);
     assert_eq!(p.resets, [1]);
     let mut p = Port::new(vec![]);
     p.connected = false;
-    assert_eq!(recovery::reset_while_refused(&mut p, Attach::Refused), 0);
+    assert_eq!(recovery::reset_while_refused(&mut p, Attach::Refused, 0), 0);
+    assert!(p.resets.is_empty());
+}
+/// A device the census reset once has one reset left when its configuration
+/// is refused: the census and configuration share one attach's budget.
+#[test]
+fn census_resets_count_against_the_configuration_budget() {
+    let mut p = Port::new(vec![]);
+    assert_eq!(recovery::reset_while_refused(&mut p, Attach::Refused, 1), recovery::DEVICE_RESETS);
+    assert_eq!(p.resets, [2]);
+    let mut p = Port::new(vec![]);
+    assert_eq!(recovery::reset_while_refused(&mut p, Attach::Refused, recovery::DEVICE_RESETS), recovery::DEVICE_RESETS);
     assert!(p.resets.is_empty());
 }
 /// The reset-device exercise's two refusals use the whole budget: the
@@ -164,6 +175,19 @@ fn reset_device_exercise_configures_on_the_last_reset() {
     let mut e = Exercise { fault: fault::Injection::new(), resets: vec![] };
     e.fault.arm(fault::Mode::ResetDevice, 2);
     let first = if e.fault.refuse_configuration(2) { Attach::Refused } else { Attach::Settled };
-    assert_eq!(recovery::reset_while_refused(&mut e, first), 2);
+    assert_eq!(recovery::reset_while_refused(&mut e, first, 0), 2);
     assert_eq!((e.resets.as_slice(), e.fault.refusals), ([1, 2].as_slice(), 2));
+}
+
+#[test]
+fn an_unreclaimed_enumeration_stops_resets() {
+    use recovery::EnumerationError::{Retry, Unreclaimed};
+    let fatal = Unreclaimed("Disable Slot failed");
+    assert_eq!(fatal.reason(), "Disable Slot failed");
+    let mut p = Port::new(vec![]);
+    assert_eq!(recovery::reset_while_refused(&mut p, fatal.outcome(), 0), 0);
+    assert!(p.resets.is_empty());
+    let mut p = Port::new(vec![fatal.outcome()]);
+    assert_eq!(recovery::reset_while_refused(&mut p, Retry("Address Device failed").outcome(), 0), 1);
+    assert_eq!(p.resets, [1]);
 }
