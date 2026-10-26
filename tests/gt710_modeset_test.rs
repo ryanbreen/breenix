@@ -267,3 +267,26 @@ fn inherited_requests_must_read_back_disabled_before_instance_binding() {
         }
     }
 }
+
+#[test]
+fn preparing_the_disabled_core_requires_empty_cursors_and_disabled_requests() {
+    struct Regs {control:u32,put:u32,get:u32,writes:Vec<(usize,u32)>}
+    impl modeset::Io for Regs {
+        fn read(&mut self,r:usize)->u32 {match r {0x610490=>self.control,0x640000=>self.put,0x640004=>self.get,_=>panic!("unexpected read")}}
+        fn write(&mut self,r:usize,v:u32) {self.writes.push((r,v));if r==0x610490 {self.control=v;}}
+        fn delay_us(&mut self,_:u32) {}
+    }
+    for (control,put,get,push,ok) in [(0xa8,0,0,0x08010000,true),
+        (0xa9,0,0,0x08010000,false),(0xba,0,0,0x08010000,false),
+        (0xb8,0,0,0x08010000,false),(0xa8,0,0,0,false),
+        (0xa8,4,0,0x08010000,false),(0xa8,0,4,0x08010000,false),
+        (0xa8,0,0,0x08010001,false),(0xa8,0,0,1<<40,false)] {
+        let mut r=Regs{control,put,get,writes:vec![]};
+        assert_eq!(modeset::prepare_disabled_core(&mut r,push).is_ok(),ok);
+        if ok {
+            assert!(r.writes.contains(&(0x610494,0x080101)));
+            assert!(r.writes.iter().filter(|(reg,_)|*reg==0x610490).all(|(_,v)|v&3==0));
+            assert_eq!(r.control&0x13,0x10,"preparation enabled a channel request");
+        } else {assert!(r.writes.is_empty(),"unsafe core preparation performed writes");}
+    }
+}
