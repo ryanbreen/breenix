@@ -1,4 +1,26 @@
 /*
+ * SPDX-FileCopyrightText: Copyright (c) 1993-2014 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: MIT
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ */
+/*
  * rnndb copyright 2006
  * Artur Huillet
  * Ben Skeggs
@@ -167,17 +189,6 @@ impl Io for Registers {
         }
     }
 }
-fn run_ops(regs: &mut Registers, ops: &[modeset::Op]) {
-    for op in ops {
-        match *op {
-            modeset::Op::Register(r, keep, v) => {
-                let old = regs.read(r);
-                regs.write(r, (old & keep) | v);
-            }
-            modeset::Op::Delay(us) => regs.delay_us(us),
-        }
-    }
-}
 fn write_words(
     regs: &mut Registers,
     total: u64,
@@ -241,13 +252,13 @@ fn complete(
             regs.write(0x6100ac, phase);
             if state & 0x1000 != 0 {
                 if phase == 1 {
-                    run_ops(regs, &scripts[0]);
+                    modeset::execute_ops(regs, &scripts[0]);
                 }
                 if phase == 2 {
-                    run_ops(regs, &scripts[1]);
+                    modeset::execute_ops(regs, &scripts[1]);
                 }
                 if phase == 4 {
-                    run_ops(regs, &scripts[3]);
+                    modeset::execute_ops(regs, &scripts[3]);
                 }
             }
             if phase == 2 && state & 0x10000 != 0 {
@@ -260,7 +271,7 @@ fn complete(
                 regs.write(r + 16, u32::from(coefficients.fraction) << 16);
             }
             if phase == 2 && state & 0x1000 != 0 {
-                run_ops(regs, &scripts[2]);
+                modeset::execute_ops(regs, &scripts[2]);
                 regs.mask(0x612200 + h, 15, 0);
                 let s = sor as usize * 0x800;
                 regs.mask(0x612300 + s, 0x007c0707, 0x0a << 18);

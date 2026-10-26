@@ -357,3 +357,8 @@ rnndb/display/{nv_evo,g80_pdisplay}.xml and rnndb/bus/pbus.xml:
 MIT via their imported rnndb/copyright.xml. Storage pitch units, active
 raster/underflow and BAR mode fields; imported author/grant notice retained
 in modeset.rs and native.rs. No imported executable Linux/DRM integration.
+
+NVIDIA open-gpu-doc at the same checked revision, classes/display/cl507c.h:
+SPDX-License-Identifier: MIT; Copyright (c) 1993-2014 NVIDIA CORPORATION &
+AFFILIATES. Its DMA method packet count/offset fields confirm native.rs's
+EVO wire encoding; the full original notice is retained there.

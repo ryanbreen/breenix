@@ -443,6 +443,43 @@ pub fn quiesce(a: &mut impl Io) -> Result<(), &'static str> {
 pub enum Op {
     Register(usize, u32, u32),
     Delay(u32),
+    Copy {
+        source: usize,
+        shift: u8,
+        source_mask: u32,
+        xor: u32,
+        destination: usize,
+        keep: u32,
+    },
+}
+/// Execute a predecoded display script on the boot CPU.
+pub fn execute_ops(a: &mut impl Io, ops: &[Op]) {
+    for op in ops {
+        match *op {
+            Op::Register(r, keep, value) => {
+                let old = a.read(r);
+                a.write(r, (old & keep) | value);
+            }
+            Op::Delay(us) => a.delay_us(us),
+            Op::Copy {
+                source,
+                shift,
+                source_mask,
+                xor,
+                destination,
+                keep,
+            } => {
+                let value = a.read(source);
+                let value = if shift < 0x80 {
+                    value >> shift
+                } else {
+                    value << (0x100 - u32::from(shift))
+                };
+                let old = a.read(destination);
+                a.write(destination, (old & keep) | ((value & source_mask) ^ xor));
+            }
+        }
+    }
 }
 #[derive(Debug)]
 pub struct ScriptError {
@@ -533,6 +570,26 @@ pub fn script(
                     let sub = u16at(r, p)?;
                     p += 2;
                     decode(r, sub, route, depth + 1, ops, budget)?;
+                }
+                0x5f => {
+                    let source = register(u32at(r, p)?)?;
+                    let shift = bytes(r, p + 4, 1)?[0];
+                    if (32..=224).contains(&shift) {
+                        return Err("invalid register-copy shift".into());
+                    }
+                    let source_mask = u32at(r, p + 5)?;
+                    let xor = u32at(r, p + 9)?;
+                    let destination = register(u32at(r, p + 13)?)?;
+                    let keep = u32at(r, p + 17)?;
+                    p += 21;
+                    ops.push(Op::Copy {
+                        source,
+                        shift,
+                        source_mask,
+                        xor,
+                        destination,
+                        keep,
+                    });
                 }
                 0x58 => {
                     let base = u32at(r, p)?;

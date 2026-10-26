@@ -43,7 +43,7 @@ to Linux v6.8 `e8f897f4afef0031fe618a8e94127a0934896aba`:
 `nvkm/subdev/fb/gf100.c`, and `nvkm/subdev/mmu/{vmmgf100,vmmgk104}.c`.
 Each declares MIT; Linux integration code is excluded.
 
-NVIDIA open-gpu-doc `classes/display/cl927d.h` declares MIT at revision
+NVIDIA open-gpu-doc `classes/display/{cl507c,cl927d}.h` declare MIT at revision
 `9fdf5c4062007929d9f4e6cbad9c9771fe61b880`.
 Envytools `rnndb/display/{nv_evo,g80_pdisplay}.xml` and `rnndb/bus/pbus.xml`
 import the MIT grant in `rnndb/copyright.xml`, checked at revision
