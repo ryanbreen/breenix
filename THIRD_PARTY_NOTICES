@@ -377,3 +377,8 @@ with the MIT usergf119.c descriptor layout listed above.
 The same MIT nvkm/subdev/bar/gf100.c also supplies the BAR1
 completion wait with two device drains in modeset.rs. Its Copyright 2012 Red Hat Inc. full MIT
 notice is retained there as well as in native.rs.
+
+The same nouveau revision dispnv50/head907d.c (MIT, Copyright 2018 Red Hat
+Inc.) supplies the native core surface pitch's 256-byte unit encoding in
+modeset.rs, consistent with cl927d.h's bits 20:8. The original full MIT
+notice is retained in the consumer's header.
