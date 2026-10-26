@@ -183,3 +183,26 @@ fn opaque_post_control_uses_only_the_idle_reserved_carveout() {
         assert!(memory::discover(&mut d,128<<20).is_err(),"unbounded opaque control {unknown:#x}");
     }
 }
+
+#[test]
+fn dma_disabled_post_status_preserves_physical_page_zero() {
+    let mut d=Device::new();d.regs.insert(0x610010,1);
+    for i in 0..9 {
+        d.regs.insert(0x610490+i*16,if i==0 {0x0d0500a9} else {0x40000088});
+        d.regs.insert(0x610494+i*16,1);
+    }
+    let before=d.regs.clone();
+    let inv=memory::discover(&mut d,128<<20).unwrap();
+    assert_eq!(inv.references,[Range{start:0,size:4096}]);
+    assert_eq!(d.regs,before);
+    assert!(d.writes.is_empty());
+    let layout=Layout::new(inv.total,&inv.reserved,1280,1024).unwrap();
+    assert!(layout.objects.iter().all(|o|o.guarded().start>=128<<20));
+    for i in 0..9 {
+        for control in [0x10,0x13,0x80000000] {
+            d.regs.insert(0x610490+i*16,control);
+            assert!(memory::discover(&mut d,128<<20).is_err());
+        }
+        d.regs.insert(0x610490+i*16,0x40000088);
+    }
+}
