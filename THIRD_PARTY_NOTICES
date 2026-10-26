@@ -82,12 +82,35 @@ records the original procedural icon artwork. They are not additional
 third-party font distributions. Embedded DejaVu TTFs in library and userspace
 programs are covered by the DejaVu entry above.
 
+## Linux reference artifacts
+
+The following retained Linux source artifacts keep their own terms; the root
+PolyForm license does not cover them. The listed paths are relative to
+`docs/artifacts/turn1-artifacts/`. Their original notices remain in the files.
+
+| File | Copyright / retained notice | License |
+|---|---|---|
+| `linux-source/ehci-hcd.c` | Copyright (c) 2000-2004 David Brownell | Header SPDX `GPL-2.0+` (GPL-2.0-or-later) |
+| `linux-source/virtio_input.c` | Linux contributors; header SPDX notice retained | GPL-2.0-only |
+| `linux-source/virtio_pci_common.c` | Copyright IBM Corp. 2007; Red Hat, Inc. 2014 | GPL-2.0-or-later |
+| `linux-source/virtgpu_vq.c` | Copyright (C) 2015 Red Hat, Inc.; permission and disclaimer in file | MIT-style grant; retain the file's full notice, including its VA Linux disclaimer |
+| `linux-probe/linux-v6.8-virtgpu_drv.h` | Copyright (C) 2015 Red Hat, Inc.; permission and disclaimer in file | MIT-style grant; retain the file's full notice |
+| `linux-probe/linux-v6.8-virtgpu_kms.c` | Copyright (C) 2015 Red Hat, Inc.; permission and disclaimer in file | MIT-style grant; retain the file's full notice |
+
+The GPL version 2 text is retained in [vendor/busybox/LICENSE](vendor/busybox/LICENSE)
+after its BusyBox-specific preamble. That preamble's version-2-only restriction
+belongs to BusyBox; the Linux files' SPDX identifiers above determine their
+version choices. These artifacts are reference material, not permission to
+copy, port or translate their implementations into Breenix.
+
 ## Embedded dependency fonts
 
-`kernel/src/graphics/font.rs` and the console use the Cargo dependency
 [noto-sans-mono-bitmap](https://github.com/phip1611/noto-sans-mono-bitmap)
-(version requirement 0.3). The crate code is MIT, copyright (c) 2022 Philipp
-Schuster; [license text](licenses/noto-sans-mono-bitmap-MIT.txt) retained from
+is declared by the root, `kernel/`, `libs/libgfx-ref/`, `userspace/programs/`
+and `tools/console-host-tests/` manifests with requirement `0.3`, by
+`libs/libgfx/` with `0.3.2`, and by `scripts/metal/efi-stub/` with the exact
+pin `=0.3.2`. The kernel graphics font and console are among its consumers.
+The crate code is MIT, copyright (c) 2022 Philipp Schuster; [license text](licenses/noto-sans-mono-bitmap-MIT.txt) retained from
 release 0.3.2. Its README identifies the rasterized Noto Sans Mono font as
 OFL-1.1. [The Noto Sans Mono OFL notice](licenses/OFL-notosansmono.txt) is included
 for the font family; the exact source-font version and copyright notice for
@@ -103,24 +126,25 @@ build time, not stored as a vendor directory in this tree.
   https://curl.se/ca/cacert.pem. The exact input snapshot and its copyright and
   license notices are absent; applicable notices for this bundled conversion
   remain unresolved, rather than inferred from today's download.
-- `scripts/qemu-gl/host-renderer-attestation.patch`: contains QEMU context and
-  a local modification. Exact upstream file copyright and license notices are
-  not retained beside the patch; these need checking against the pinned QEMU
-  source before redistribution. This inventory does not assign the root license
-  to that third-party context.
+- `scripts/qemu-gl/host-renderer-attestation.patch`: its own notice assigns
+  GPL-2.0-or-later to this QEMU modification. The license is identified; the
+  remaining check is to retain the exact pinned upstream file copyright and
+  license notices for its QEMU context before redistribution. The root license
+  does not replace these terms.
 - `libs/libc/ci/android-emulator-package.xml`: contains Google's Android SDK
   License Agreement in package metadata. The agreement is preserved in that
   file; the grant to redistribute this metadata itself is not established here.
 - Historical compressed evidence archives under `docs/planning/` and toolchain
   patch excerpts have not been individually license-cleared. They must not be
-  treated as proof that all archived third-party content is covered by the root
+  treated as license clearance for archived third-party content under the root
   license.
 - The exact Noto source-font notices for `noto-sans-mono-bitmap` remain to be
   matched to its rasterized font version, as described above.
 
-## Future GPU sources under ruling G1
+## Future GPU source notices
 
-Future GPU work under ruling G1 adds MIT/BSD-licensed sources to this inventory,
+Future additions of MIT/BSD-licensed GPU sources require inventory entries
 with each source's origin, copyright, license text and required notices. This
-heading records the notice requirement; it does not assert that any future
-source has already been imported or license-checked.
+is a notice requirement for future additions, not a record of imported or
+license-checked sources; it does not authorize copying, porting or translating
+third-party implementations into Breenix.
