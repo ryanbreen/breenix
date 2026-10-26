@@ -386,3 +386,21 @@ fn bar1_activation_finishes_switch_drains_before_invalidating_the_mapping() {
         assert_eq!(r.writes,sequence[..length]);
     }
 }
+
+#[test]
+fn bar1_small_pages_use_the_spt_half_and_bound_each_linear_page() {
+    let (pde,ptes)=modeset::bar1_small_pages(0x08000000,0x520000,0x08a34000).unwrap();
+    assert_eq!(pde,[0,0x8a341]);
+    assert_eq!(ptes.len(),2048);
+    assert_eq!(ptes[0],0x80001);
+    assert_eq!(ptes[1],0x80011);
+    assert_eq!(ptes[16],0x80101);
+    assert_eq!(ptes[1311],0x851f1);
+    assert!(ptes[1312..].iter().all(|pte|*pte==0));
+    for (base,span,table) in [(0x08000001,0x520000,0x08a34000),
+        (0x08000000,0,0x08a34000),(0x08000000,0x801000,0x08a34000),
+        (0x08000000,0x520001,0x08a34000),(0x08000000,0x520000,0x08a34001),
+        ((1<<40)-4096,8192,0x08a34000),(0x08000000,4096,1<<40)] {
+        assert!(modeset::bar1_small_pages(base,span,table).is_err());
+    }
+}
