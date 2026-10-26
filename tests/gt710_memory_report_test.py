@@ -30,7 +30,7 @@ def evidence():
                 references=[[0x3f000000,65536]],
                 registers=[[0x22438,1],[0x22554,0],[0x11020c,1024],[0x1704,0],
                            [0x1714,0],[0x610010,0x003f0009]]+
-                          [[0x610494+i*16,0] for i in range(9)]+[[0x2243c,1]],
+                          [[0x610494+i*16,0] for i in range(9)]+[[0x610490+i*16,0] for i in range(9)]+[[0x2243c,1]],
                 pramin_before=0x1234,pramin_after=0x1234,
                 protected_bytes=1310720+65536,protected_before='a'*64,protected_after='a'*64,
                 guard_bytes=12*4096,guard_before='b'*64,guard_after='b'*64,
@@ -47,6 +47,14 @@ class MemoryCapture(unittest.TestCase):
         low['registers'][5][1]=0x1009
         low['reserved'][1]=[(1<<30)-(1<<20),1<<20]
         check(low)
+        idle=copy.deepcopy(e)
+        idle['registers'][5][1]=0
+        idle['references']=[]
+        idle['protected_bytes']=1310720
+        idle['reserved'][1]=[(1<<30)-(1<<20),1<<20]
+        check(idle)
+        idle['registers'][15][1]=0x13
+        with self.assertRaises(ValueError):check(idle)
         multi=copy.deepcopy(e)
         multi['registers'][-1][1]=2
         multi['registers'].append([0x11120c,1024])

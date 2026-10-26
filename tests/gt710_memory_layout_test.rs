@@ -143,3 +143,14 @@ fn sums_enabled_fbpa_units_within_each_partition() {
     d.regs.insert(0x11120c,512);
     assert!(memory::discover(&mut d,128<<20).is_err());
 }
+
+#[test]
+fn idle_post_display_needs_no_inherited_evo_instance() {
+    let mut d=Device::new();d.regs.insert(0x610010,0);
+    let inv=memory::discover(&mut d,128<<20).unwrap();
+    assert!(inv.references.is_empty());
+    assert_eq!(inv.reserved,[Range{start:0,size:128<<20},Range{start:(1<<30)-(1<<20),size:1<<20}]);
+    assert_eq!(Layout::new(inv.total,&inv.reserved,1280,1024).unwrap().objects.len(),6);
+    d.regs.insert(0x610490,0x13);
+    assert!(memory::discover(&mut d,128<<20).is_err(),"active channel without an instance escaped");
+}
