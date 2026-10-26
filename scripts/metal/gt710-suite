@@ -251,6 +251,15 @@ def native_mode(serial):
         need(e['surface']==surface and e['pitch']==memory['pitch']
              and e['instance']==memory['objects'][4]['start'] and e['push']==memory['objects'][2]['start'],
              'native display uses foreign storage')
+        for phase in ('quiesce_before','quiesce_after'):
+            controls=e[phase]
+            need(type(controls) is list and len(controls)==17, 'incomplete native quiesce snapshot')
+            for channel,control in enumerate(controls):
+                need(type(control) is int and 0<=control<=0xffffffff, 'invalid channel control')
+                need(control & (0x13 if channel<9 else 1)==0, 'inherited channel requests remain enabled')
+                if phase=='quiesce_after':
+                    need(control & (0x1e0000 if channel<9 else 0x30000)==0,
+                         'display channel was busy before native enable')
         h=e['head']*0x300
         regs=dict(e['active'])
         need(len(regs)==len(e['active']), 'duplicate active register')

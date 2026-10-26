@@ -457,6 +457,16 @@ pub fn publish(a: &mut impl Io, put: u32) -> Result<(), &'static str> {
     a.write(0x640000, put);
     Ok(())
 }
+/// Clear and verify inherited request enables before installing owned instance tables.
+pub fn stop_requests(a: &mut impl Io) -> Result<(), &'static str> {
+    for i in (1..17).rev().chain(core::iter::once(0)) {
+        let r=0x610490+i*16;
+        let flags=if i<9 {0x13} else {1};
+        mask(a,r,flags,0);
+        wait(a,r,flags,0)?;
+    }
+    Ok(())
+}
 pub fn quiesce(a: &mut impl Io) -> Result<(), &'static str> {
     // Satellites can interlock with the core. Stop their requests first.
     for i in (1..17).rev().chain(core::iter::once(0)) {
@@ -468,11 +478,6 @@ pub fn quiesce(a: &mut impl Io) -> Result<(), &'static str> {
             if i == 0 { mask(a, r, 0x10, 0); }
             else { mask(a, r, 0x1010, 0x1000); }
             mask(a, r, 3, 0);
-            if i == 0 {
-                // Drop inherited controls and request DMA deactivation using
-                // the GF119 DMA teardown request, with channel/DMA disabled.
-                a.write(r, 0x01001000);
-            }
             wait(a, r, 0x001e0000, 0)?;
         }
     }

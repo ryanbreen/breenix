@@ -378,14 +378,10 @@ pub fn takeover(
     }
     // Apply the GF119 engine setup before tearing down inherited channels.
     regs.mask(0x616308 + head as usize * 0x800, 0x111, 0x10);
-    modeset::quiesce(regs).inspect_err(|_| {
-        for channel in 0..17 {
-            crate::serial_println!("GT710_QUIESCE channel={} control={:#x} push={:#x}",
-                channel,regs.read(0x610490+channel*16),regs.read(0x610494+channel*16));
-        }
-        crate::serial_println!("GT710_QUIESCE bios={:#x} underflow={:#x} tsc_hz={}",
-            regs.read(0x6194e8),regs.read(0x616308+head as usize*0x800),timer::frequency_hz());
-    })?;
+    modeset::stop_requests(regs)?;
+    let quiesce_before:[u32;17]=core::array::from_fn(|i|regs.read(0x610490+i*16));
+    crate::serial_println!("GT710_MODE_STAGE requests-disabled core={:#x} instance={:#x}",
+        quiesce_before[0],regs.read(0x610010));
     // Owned storage only; inherited instance and command bytes remain untouched.
     {
         let mut p = memory::Pramin::new(regs, total);
@@ -413,6 +409,15 @@ pub fn takeover(
     )?;
     modeset::bar_flush(regs)?;
     regs.write(0x610010, (instance >> 8) as u32 | 9);
+    modeset::quiesce(regs).inspect_err(|_| {
+        for channel in 0..17 {
+            crate::serial_println!("GT710_QUIESCE channel={} control={:#x} push={:#x}",
+                channel,regs.read(0x610490+channel*16),regs.read(0x610494+channel*16));
+        }
+        crate::serial_println!("GT710_QUIESCE bios={:#x} underflow={:#x} tsc_hz={} instance={:#x}",
+            regs.read(0x6194e8),regs.read(0x616308+head as usize*0x800),timer::frequency_hz(),regs.read(0x610010));
+    })?;
+    let quiesce_after:[u32;17]=core::array::from_fn(|i|regs.read(0x610490+i*16));
     regs.write(0x610494, (evo >> 8) as u32 | 1);
     regs.write(0x610498, 0x10000);
     regs.write(0x61049c, 1);
@@ -602,12 +607,12 @@ pub fn takeover(
     let _ = write!(active, ",[{},{}]", sor_reg, regs.read(sor_reg));
     let timing=format!("{{\"width\":{},\"height\":{},\"clock_khz\":{},\"hsync_start\":{},\"hsync_end\":{},\"htotal\":{},\"vsync_start\":{},\"vsync_end\":{},\"vtotal\":{},\"flags\":{}}}",t.width,t.height,t.clock_khz,t.hsync_start,t.hsync_end,t.htotal,t.vsync_start,t.vsync_end,t.vtotal,t.flags);
     let report=format!(concat!("{{\"schema\":1,\"phase\":\"native\",\"bdf\":\"{:02x}:{:02x}.{}\",",
-        "\"head\":{},\"sor\":{},\"protocol\":{},\"timing\":{},\"surface\":{},\"pitch\":{},\"seed\":{},\"active\":[{}],",
+        "\"head\":{},\"sor\":{},\"protocol\":{},\"timing\":{},\"surface\":{},\"pitch\":{},\"seed\":{},\"active\":[{}],\"quiesce_before\":{:?},\"quiesce_after\":{:?},",
         "\"notifier_before\":{},\"notifier_after\":{},\"put\":{},\"get\":{},\"errors\":{},\"underflow\":{},",
         "\"power\":{},\"power_status\":{},\"raster_before\":{},\"raster_after\":{},\"instance\":{},\"push\":{},",
         "\"skipped_address\":{},\"skipped_notifier\":{},\"clean_notifier\":{},\"firmware_writes\":{},",
         "\"bytes\":{},\"sha256\":\"{}\",\"bar1_before\":{},\"bar1_after\":{},\"pll_record\":\"{}\",\"pll_register\":{},\"pll_reference\":{},\"pll_coefficients\":{},\"pll_fraction\":{}}}"),
-        device.bus,device.device,device.function,head,route.sor,protocol,timing,surface.start,layout.pitch,seed,active,
+        device.bus,device.device,device.function,head,route.sor,protocol,timing,surface.start,layout.pitch,seed,active,quiesce_before,quiesce_after,
         notifier_before,after,put,regs.read(0x640004),regs.read(0x61009c),regs.read(0x616308+head as usize*0x800),
         regs.read(0x61c004+route.sor as usize*0x800),regs.read(0x61c030+route.sor as usize*0x800),raster_before,raster_after,instance,evo,
         skipped_address,skipped_notifier,clean,crate::firmware_writes::count()-firmware_baseline,data_bytes,super::hex(&digest.finalize()),old_bar,regs.read(0x1704),super::hex(pll_record),limits.reg,limits.reference,
