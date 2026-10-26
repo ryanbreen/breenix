@@ -1,0 +1,917 @@
+{
+  "schema": 1,
+  "projects": {
+    "nouveau": {
+      "commit": "e8f897f4afef0031fe618a8e94127a0934896aba",
+      "url": "https://github.com/torvalds/linux",
+      "prefix": "drivers/gpu/drm/nouveau/nvkm/engine/gr/fuc/"
+    },
+    "envytools": {
+      "commit": "f102b82381f3f11cee113d16374c87091db039d9",
+      "url": "https://github.com/envytools/envytools",
+      "prefix": "",
+      "archive_sha256": "fed49495308b034c6a72893e3a472d6b98b7eb2ffd0b5738c26014d560b96ccc"
+    },
+    "mesa": {
+      "commit": "769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de",
+      "url": "https://gitlab.freedesktop.org/mesa/mesa",
+      "mirror": "https://github.com/chaotic-cx/mesa-mirror",
+      "prefix": "",
+      "archive_sha256": "196d77632234c282e939d4814770dff9d775c0f176abebbc25a66160eb83b97e"
+    }
+  },
+  "files": [
+    {
+      "project": "envytools",
+      "path": "easm/easm.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2011-2012 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "798daa819ddff0b56d9665e1b008cebf2cc09cbb23f7a6399a62543f28b5a33e",
+      "vendored_sha256": "798daa819ddff0b56d9665e1b008cebf2cc09cbb23f7a6399a62543f28b5a33e",
+      "upstream_path": "easm/easm.c",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "easm/easm_lex.l",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2011 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "f582df7ce828625130ee21b309e8f3fc55c1d757d59690ed32368a4adedcf5a3",
+      "vendored_sha256": "4a73ac7a60e492aa49fb0241312b6e1d3c46502c2a4c080cb99470453daad223",
+      "upstream_path": "easm/easm_lex.l",
+      "adapted": true
+    },
+    {
+      "project": "envytools",
+      "path": "easm/easm_parse.y",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2010-2012 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "601400ab8e0a43581ef7b8110317ebd804e21483c80d83ff010eaad09204425c",
+      "vendored_sha256": "97f31c06625e6cbb7c9d9132653733502f6090544e8d813a22005ab013c6c2ed",
+      "upstream_path": "easm/easm_parse.y",
+      "adapted": true
+    },
+    {
+      "project": "envytools",
+      "path": "easm/easm_print.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2012 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "13b3e049c4d776a0ecf3f1274b5d34a781b3eb38c1a872369f04ae09d284101f",
+      "vendored_sha256": "13b3e049c4d776a0ecf3f1274b5d34a781b3eb38c1a872369f04ae09d284101f",
+      "upstream_path": "easm/easm_print.c",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "easm/easm_xfrm.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2012 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "6282aff1771533520454df4a30f918d30d3768f5a2175bd59fba2a5747a58156",
+      "vendored_sha256": "6282aff1771533520454df4a30f918d30d3768f5a2175bd59fba2a5747a58156",
+      "upstream_path": "easm/easm_xfrm.c",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "envydis/core-as.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2009-2011 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "1a1e84f5085b150bdaf6045a808f9ec87409651d05c2a8b15da2086f9adf52e9",
+      "vendored_sha256": "1a1e84f5085b150bdaf6045a808f9ec87409651d05c2a8b15da2086f9adf52e9",
+      "upstream_path": "envydis/core-as.c",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "envydis/core-dis.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2009-2011 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "cc949c2843fb6dc02425be6cc1b269d444cf79c4b3ee90c6f61ff5d894913e5e",
+      "vendored_sha256": "cc949c2843fb6dc02425be6cc1b269d444cf79c4b3ee90c6f61ff5d894913e5e",
+      "upstream_path": "envydis/core-dis.c",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "envydis/core.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2009-2011 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "7d5747e3d56e5007d4d72a97144b9e98235842d71881cf7b4d3a62935d72b460",
+      "vendored_sha256": "ab94dee7f4b13ce80a1d1ced285031f6b2ecda63c06712f482ff4d1be3362c4d",
+      "upstream_path": "envydis/core.c",
+      "adapted": true
+    },
+    {
+      "project": "envytools",
+      "path": "envydis/dis-intern.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2009-2012 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "c6fd8379be947108548cd864a13cb52230bc4053b6948a1c2b5a330394447b75",
+      "vendored_sha256": "c6fd8379be947108548cd864a13cb52230bc4053b6948a1c2b5a330394447b75",
+      "upstream_path": "envydis/dis-intern.h",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "envydis/envyas.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2010-2011 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "099596f553cd6515e103e7c69d4bbbae91b2407bfdff888f68c66058d2d35538",
+      "vendored_sha256": "099596f553cd6515e103e7c69d4bbbae91b2407bfdff888f68c66058d2d35538",
+      "upstream_path": "envydis/envyas.c",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "envydis/envyas.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2009-2012 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "e26551343a9963455d861fdf15ef5bf7e4af828499abed30e4b9d01c052a46be",
+      "vendored_sha256": "e26551343a9963455d861fdf15ef5bf7e4af828499abed30e4b9d01c052a46be",
+      "upstream_path": "envydis/envyas.h",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "envydis/envydis.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2010-2011 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "e140e9d896141c96cbf6d91e4a2601e786af4b8c8b4c5621f131f97e36ca2a8c",
+      "vendored_sha256": "e140e9d896141c96cbf6d91e4a2601e786af4b8c8b4c5621f131f97e36ca2a8c",
+      "upstream_path": "envydis/envydis.c",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "envydis/falcon.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2010-2011 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "a4424c17145e72f31e1a9ed55296c3ee49058f3860374b2c34dd49f92cf99bd9",
+      "vendored_sha256": "a4424c17145e72f31e1a9ed55296c3ee49058f3860374b2c34dd49f92cf99bd9",
+      "upstream_path": "envydis/falcon.c",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "envydis/gk110.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2009-2011 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * Copyright (C) 2012 Christoph Bumiller <e0425955@student.tuwien.ac.at>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "c45591dfc8989feedc941c0c31de5dc6e05dab4f3f5cf1aca083eca1d5b11170",
+      "vendored_sha256": "6128627133ed4f33df6816ce871966b935843005c770350bc88b19c93a05c637",
+      "upstream_path": "envydis/gk110.c",
+      "adapted": true
+    },
+    {
+      "project": "envytools",
+      "path": "include/colors.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2012 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "c30572985f7a33edfea93d636a0048fcf7b94d767c756527bf694c474f2e4399",
+      "vendored_sha256": "c30572985f7a33edfea93d636a0048fcf7b94d767c756527bf694c474f2e4399",
+      "upstream_path": "include/colors.h",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "include/dis.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2009-2012 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "837d5384d336efbd6377f1c60b5ae5777c6fba2072a805ae64d28d8c996326a3",
+      "vendored_sha256": "837d5384d336efbd6377f1c60b5ae5777c6fba2072a805ae64d28d8c996326a3",
+      "upstream_path": "include/dis.h",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "include/easm.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2011-2012 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "52558a9b5e2af2a46f0b367a6ab1265a1cfacd4d87b097d0748517f817d10a07",
+      "vendored_sha256": "52558a9b5e2af2a46f0b367a6ab1265a1cfacd4d87b097d0748517f817d10a07",
+      "upstream_path": "include/easm.h",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "include/mask.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2011 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "659e9ad5082e4bafc45574d3f38f087079c55e324a18e6651db0d21ddce5c136",
+      "vendored_sha256": "659e9ad5082e4bafc45574d3f38f087079c55e324a18e6651db0d21ddce5c136",
+      "upstream_path": "include/mask.h",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "include/symtab.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2011 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "27148d16b7a992d91407775238c797b8d3cab6c70bba3c316b96387b695a3bf7",
+      "vendored_sha256": "27148d16b7a992d91407775238c797b8d3cab6c70bba3c316b96387b695a3bf7",
+      "upstream_path": "include/symtab.h",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "include/util.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2010-2011 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * Copyright (C) 2010 Francisco Jerez <currojerez@riseup.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "88dbfde27a551a017922e8d0daf0945ae89835a5964289ee7dc7198e729570c8",
+      "vendored_sha256": "88dbfde27a551a017922e8d0daf0945ae89835a5964289ee7dc7198e729570c8",
+      "upstream_path": "include/util.h",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "include/var.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2012 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "e9f03450e37723e1f6ac813574d3ecab97a9ae22ab13ee13a64f5c4a7ce5d0c8",
+      "vendored_sha256": "e9f03450e37723e1f6ac813574d3ecab97a9ae22ab13ee13a64f5c4a7ce5d0c8",
+      "upstream_path": "include/var.h",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "include/yy.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2011 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "1d588aff49ac8e0b6a6084270fed7ba17b8730a06daf061238eea6213f1cf665",
+      "vendored_sha256": "fa72fb781cafebad5b7b80f24598a0222b8f1effea2eb30965a09c115aff1942",
+      "upstream_path": "include/yy.h",
+      "adapted": true
+    },
+    {
+      "project": "envytools",
+      "path": "util/aprintf.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2009-2011 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "739b9be6b37a95552a18e14ea6db3f02648af362ba1a9587ad82b3b67e5f6565",
+      "vendored_sha256": "739b9be6b37a95552a18e14ea6db3f02648af362ba1a9587ad82b3b67e5f6565",
+      "upstream_path": "util/aprintf.c",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "util/astr.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2012 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "8b3c92eb5cebe7b116ff86783840c44f11362b4befd7faef3ff6a9170c7d878b",
+      "vendored_sha256": "8b3c92eb5cebe7b116ff86783840c44f11362b4befd7faef3ff6a9170c7d878b",
+      "upstream_path": "util/astr.c",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "util/colors.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2012 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "81cef70b9dcb01fc8b0755f7058cd5d82ed3d5b48fc0884fe3722f5c47b91373",
+      "vendored_sha256": "81cef70b9dcb01fc8b0755f7058cd5d82ed3d5b48fc0884fe3722f5c47b91373",
+      "upstream_path": "util/colors.c",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "util/file.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2011 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "747dba8c5954bdebf93eff86855ee04d14d91cf209fcda37e193810205fca55e",
+      "vendored_sha256": "747dba8c5954bdebf93eff86855ee04d14d91cf209fcda37e193810205fca55e",
+      "upstream_path": "util/file.c",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "util/hash.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2011 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "d832040c40ff756747b1a033f64fc8716bd5e70f5282ee70dadca6a9143b9a4d",
+      "vendored_sha256": "d832040c40ff756747b1a033f64fc8716bd5e70f5282ee70dadca6a9143b9a4d",
+      "upstream_path": "util/hash.c",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "util/mask.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2011 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "11b22671c80fea6441a8f91a6e89fc47731682c97a3217356f77566ee3f7e80c",
+      "vendored_sha256": "11b22671c80fea6441a8f91a6e89fc47731682c97a3217356f77566ee3f7e80c",
+      "upstream_path": "util/mask.c",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "util/symtab.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2011 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "11cd1e8e59eed095d8b51e8395f02b67a5d981fab144b578308ebca9f8c553da",
+      "vendored_sha256": "11cd1e8e59eed095d8b51e8395f02b67a5d981fab144b578308ebca9f8c553da",
+      "upstream_path": "util/symtab.c",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "util/vardata.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2012 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "d22b1c6c2388a87ad9a978fabb40721879f6fc9f8d2488b33836ae15e114db45",
+      "vendored_sha256": "d22b1c6c2388a87ad9a978fabb40721879f6fc9f8d2488b33836ae15e114db45",
+      "upstream_path": "util/vardata.c",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "util/varinfo.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2012 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "09502af426551f563217218b7c6fdf0a63791f2cf5475011483c7c8023f287e3",
+      "vendored_sha256": "09502af426551f563217218b7c6fdf0a63791f2cf5475011483c7c8023f287e3",
+      "upstream_path": "util/varinfo.c",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "util/varselect.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2012 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "19f06ef32879179e3db77737e8c246162ce48c2d77eef31565287b1aef12b4c4",
+      "vendored_sha256": "19f06ef32879179e3db77737e8c246162ce48c2d77eef31565287b1aef12b4c4",
+      "upstream_path": "util/varselect.c",
+      "adapted": false
+    },
+    {
+      "project": "envytools",
+      "path": "util/yy.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright (C) 2011-2012 Marcelina Ko\u015bcielnicka <mwk@0x04.net>\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "3f1362902cc7e12b3f591618f68e9e66fac74d4ba8fc81566e22a2e40931ddf8",
+      "vendored_sha256": "3f1362902cc7e12b3f591618f68e9e66fac74d4ba8fc81566e22a2e40931ddf8",
+      "upstream_path": "util/yy.c",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "include/c99_compat.h",
+      "license": "MIT",
+      "notice": "/**************************************************************************\n *\n * Copyright 2007-2013 VMware, Inc.\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the\n * \"Software\"), to deal in the Software without restriction, including\n * without limitation the rights to use, copy, modify, merge, publish,\n * distribute, sub license, and/or sell copies of the Software, and to\n * permit persons to whom the Software is furnished to do so, subject to\n * the following conditions:\n *\n * The above copyright notice and this permission notice (including the\n * next paragraph) shall be included in all copies or substantial portions\n * of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.\n * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR\n * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,\n * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE\n * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n *\n **************************************************************************/",
+      "upstream_sha256": "92445314d5fb3eff3a12eaf4cc864f9b459862a99594403b36ea79dfe149d267",
+      "vendored_sha256": "92445314d5fb3eff3a12eaf4cc864f9b459862a99594403b36ea79dfe149d267",
+      "upstream_path": "include/c99_compat.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "include/no_extern_c.h",
+      "license": "MIT",
+      "notice": "/**************************************************************************\n *\n * Copyright 2014 VMware, Inc.\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included\n * in all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n **************************************************************************/",
+      "upstream_sha256": "60883a8d2b2978b861ef686c5a9afb41cf91ffec7c56baca89c626e7fea2d385",
+      "vendored_sha256": "60883a8d2b2978b861ef686c5a9afb41cf91ffec7c56baca89c626e7fea2d385",
+      "upstream_path": "include/no_extern_c.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/compiler/shader_enums.h",
+      "license": "MIT",
+      "notice": "/*\n * Mesa 3-D graphics library\n *\n * Copyright (C) 1999-2008  Brian Paul   All Rights Reserved.\n * Copyright (C) 2009  VMware, Inc.  All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included\n * in all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "43c346cfb8a87b53ff8bd410b3c122e3be06b0a6b79617f0d33813ac332622e6",
+      "vendored_sha256": "77b4750a434fa6efa37293627620f7a9605907843d432a45c97e92b7a70528f6",
+      "upstream_path": "src/compiler/shader_enums.h",
+      "adapted": true
+    },
+    {
+      "project": "mesa",
+      "path": "src/gallium/drivers/nouveau/nvc0/nvc0_program.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2010 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "reference_only": true,
+      "upstream_sha256": "394dbcc6a3ebaf67f8bcf8e2513d2f6ea5e2a8d5c64ad8f82eaad57ab4808c6d",
+      "vendored_sha256": "394dbcc6a3ebaf67f8bcf8e2513d2f6ea5e2a8d5c64ad8f82eaad57ab4808c6d",
+      "upstream_path": "src/gallium/drivers/nouveau/nvc0/nvc0_program.c",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/gallium/include/pipe/p_defines.h",
+      "license": "MIT",
+      "notice": "/**************************************************************************\n *\n * Copyright 2007 VMware, Inc.\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the\n * \"Software\"), to deal in the Software without restriction, including\n * without limitation the rights to use, copy, modify, merge, publish,\n * distribute, sub license, and/or sell copies of the Software, and to\n * permit persons to whom the Software is furnished to do so, subject to\n * the following conditions:\n *\n * The above copyright notice and this permission notice (including the\n * next paragraph) shall be included in all copies or substantial portions\n * of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.\n * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR\n * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,\n * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE\n * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n *\n **************************************************************************/",
+      "upstream_sha256": "e582b6536452faf6df83a8baf50fba7b71c9063348a17a7d0ed06e2406a1a085",
+      "vendored_sha256": "e582b6536452faf6df83a8baf50fba7b71c9063348a17a7d0ed06e2406a1a085",
+      "upstream_path": "src/gallium/include/pipe/p_defines.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir.cpp",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "ac6baa2384c16598d0c2a81484ade7a031f71d5277249a326baf502df0c7ce2c",
+      "vendored_sha256": "d896c7633074a6a3219a64c0d98175f57e4e88ed8ee5c588b9decc80f7bc8fb4",
+      "upstream_path": "src/nouveau/codegen/nv50_ir.cpp",
+      "adapted": true
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "11b6ccc7da89f5e38f18d729a2ec5d0b0e0897339aa810c88bc6969918454e09",
+      "vendored_sha256": "46260f13eddc903170f7fa7e48d7dea6c392058c5770198173c63fed470d479b",
+      "upstream_path": "src/nouveau/codegen/nv50_ir.h",
+      "adapted": true
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_bb.cpp",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "d8acdc8a980f346aa9868d88fed254e1bade189fe9acd010d834b285167a6961",
+      "vendored_sha256": "d8acdc8a980f346aa9868d88fed254e1bade189fe9acd010d834b285167a6961",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_bb.cpp",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_build_util.cpp",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "520ab58ea13cb91a4ffa87fa8e9d451977e9ee9d65bea586b13a709580392dfb",
+      "vendored_sha256": "520ab58ea13cb91a4ffa87fa8e9d451977e9ee9d65bea586b13a709580392dfb",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_build_util.cpp",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_build_util.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "883230eb79335a85785069797de1132b629310e8b56374278e49266d4fe73b9f",
+      "vendored_sha256": "883230eb79335a85785069797de1132b629310e8b56374278e49266d4fe73b9f",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_build_util.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_driver.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "97936d240a21b8411e8b19d7c78f229058962eb518d1afa9c5e8153f36f1c4a7",
+      "vendored_sha256": "97936d240a21b8411e8b19d7c78f229058962eb518d1afa9c5e8153f36f1c4a7",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_driver.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_emit_gk110.cpp",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2012 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "2dd18af514c972a8299c9e15d4a7dc699f589d3b892163e6b28bd8a11604e554",
+      "vendored_sha256": "2dd18af514c972a8299c9e15d4a7dc699f589d3b892163e6b28bd8a11604e554",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_emit_gk110.cpp",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_emit_nvc0.cpp",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "628ffabbb6fb2968bb09f7c27cc5b626ce5a836de5603fbca9265480c65cd62d",
+      "vendored_sha256": "628ffabbb6fb2968bb09f7c27cc5b626ce5a836de5603fbca9265480c65cd62d",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_emit_nvc0.cpp",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_from_nir.cpp",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2017 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Karol Herbst <kherbst@redhat.com>\n */",
+      "reference_only": true,
+      "upstream_sha256": "d2e9b0406ca06f80a58c7df9f018610cd78af069d1e5be6adbd322b2ac5bc236",
+      "vendored_sha256": "d2e9b0406ca06f80a58c7df9f018610cd78af069d1e5be6adbd322b2ac5bc236",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_from_nir.cpp",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_graph.cpp",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "9e96a3b81dfb945415801205a78485936cb6dd1dbb4e9f5dfda5e0c4ae9fcfe0",
+      "vendored_sha256": "9e96a3b81dfb945415801205a78485936cb6dd1dbb4e9f5dfda5e0c4ae9fcfe0",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_graph.cpp",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_graph.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "61022f6cc19d6703b9c5e56c6c46dc5caa333fed152ba014c97b281a09d2ebdf",
+      "vendored_sha256": "61022f6cc19d6703b9c5e56c6c46dc5caa333fed152ba014c97b281a09d2ebdf",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_graph.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_inlines.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "60cf149812f30290f49ce0e7f00b3b519719fa1553b7e06e5dff6423b1208533",
+      "vendored_sha256": "60cf149812f30290f49ce0e7f00b3b519719fa1553b7e06e5dff6423b1208533",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_inlines.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_lowering_helper.cpp",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2018 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Karol Herbst <kherbst@redhat.com>\n */",
+      "upstream_sha256": "bb61999c97f6f19dabbe82d8d5cafc49f038419e6e0f2064dc24746654c9dcb3",
+      "vendored_sha256": "bb61999c97f6f19dabbe82d8d5cafc49f038419e6e0f2064dc24746654c9dcb3",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_lowering_helper.cpp",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_lowering_helper.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2018 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Karol Herbst <kherbst@redhat.com>\n */",
+      "upstream_sha256": "8c9453a1ec7eb04aaadb307ae0f14becbad23ff7678e35430b5238a101f31b14",
+      "vendored_sha256": "8c9453a1ec7eb04aaadb307ae0f14becbad23ff7678e35430b5238a101f31b14",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_lowering_helper.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_lowering_nvc0.cpp",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "78208c342ee274d33725a73b49a8e4a5bc9094ee5734f2318577e653784ae41b",
+      "vendored_sha256": "78208c342ee274d33725a73b49a8e4a5bc9094ee5734f2318577e653784ae41b",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_lowering_nvc0.cpp",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_lowering_nvc0.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "5fb26d44227de39749f0916c1893055c3175367ed5b9cd8caa87c5565c2f04f9",
+      "vendored_sha256": "5fb26d44227de39749f0916c1893055c3175367ed5b9cd8caa87c5565c2f04f9",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_lowering_nvc0.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_peephole.cpp",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "1fb65baecea89f2f87e2f243727dc0cc2030f50379790c1cf710da5d3503fd85",
+      "vendored_sha256": "88c703fcfb65b71ca1fb3d8d484b7e531262a3f466437a296846e70fb04d5769",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_peephole.cpp",
+      "adapted": true
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_print.cpp",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "f41757d43e9cc8f4379268d8636376d24659f1774a2b060289e9616f0dc383ed",
+      "vendored_sha256": "f41757d43e9cc8f4379268d8636376d24659f1774a2b060289e9616f0dc383ed",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_print.cpp",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_ra.cpp",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "0353b3b6adc83092972b2730cf319e0115d5c4ec6d757132320ebf20da5b2c32",
+      "vendored_sha256": "0353b3b6adc83092972b2730cf319e0115d5c4ec6d757132320ebf20da5b2c32",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_ra.cpp",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_ssa.cpp",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "79a58485dc29494de48e7fa9eaa3ce0cc7e9466e53f85083911411a886ec0358",
+      "vendored_sha256": "79a58485dc29494de48e7fa9eaa3ce0cc7e9466e53f85083911411a886ec0358",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_ssa.cpp",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_target.cpp",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "1ec57b828c56b4c2ae11049af778341390038975b6b7792be7d4d9d87cb1812d",
+      "vendored_sha256": "3e3e5b4d881f58ef94ca10c3d309df681773c1ab1024ea9cd636b07571cb64c3",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_target.cpp",
+      "adapted": true
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_target.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "d0ab365a890522f522406511c8c301a2b0a446b32fbb9cea19223590c172ab81",
+      "vendored_sha256": "fbd272348291b004f74328d286ac5bd3882d9241a42bad64aa6fc6e74e7d81d1",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_target.h",
+      "adapted": true
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_target_nvc0.cpp",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "c33716a152a4d237f68f58a4d31f5bca1d0d8f05d283ae29837e9f809d1738e0",
+      "vendored_sha256": "87dd5a34da17f3cf42ff5ec3e68be7988e5b724cb21ee12161edef55833cd9f4",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_target_nvc0.cpp",
+      "adapted": true
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_target_nvc0.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "a2bcb09d2c54173627c82c71dcffaed65c1159d815c31d5d2bca1835edcd6d9d",
+      "vendored_sha256": "a2bcb09d2c54173627c82c71dcffaed65c1159d815c31d5d2bca1835edcd6d9d",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_target_nvc0.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_util.cpp",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "6fad1f0aa8c8287cfd147d6eb9a66d04e7389989844d97851052c0f6421b22dd",
+      "vendored_sha256": "6fad1f0aa8c8287cfd147d6eb9a66d04e7389989844d97851052c0f6421b22dd",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_util.cpp",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/nouveau/codegen/nv50_ir_util.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2011 Christoph Bumiller\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "cb83c3abf55becf83501a71475b5e8824d5e96c40f2c3a5167b357253d73f831",
+      "vendored_sha256": "b3b871bd2b6d48ac04146f5f4ad77c482b212e91703c09c4d32dff4a036d8afa",
+      "upstream_path": "src/nouveau/codegen/nv50_ir_util.h",
+      "adapted": true
+    },
+    {
+      "project": "mesa",
+      "path": "src/util/bitscan.h",
+      "license": "MIT",
+      "notice": "/**************************************************************************\n *\n * Copyright 2008 VMware, Inc.\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the\n * \"Software\"), to deal in the Software without restriction, including\n * without limitation the rights to use, copy, modify, merge, publish,\n * distribute, sub license, and/or sell copies of the Software, and to\n * permit persons to whom the Software is furnished to do so, subject to\n * the following conditions:\n *\n * The above copyright notice and this permission notice (including the\n * next paragraph) shall be included in all copies or substantial portions\n * of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.\n * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR\n * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,\n * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE\n * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n *\n **************************************************************************/",
+      "upstream_sha256": "6296c0d1fb170d0cd6136da9d9228832fa80755610c57fd2d6f296f8e919a29d",
+      "vendored_sha256": "6296c0d1fb170d0cd6136da9d9228832fa80755610c57fd2d6f296f8e919a29d",
+      "upstream_path": "src/util/bitscan.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/util/blend.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2023 Valve Corporation\n * Copyright 2007 VMware, Inc.\n * SPDX-License-Identifier: MIT\n */",
+      "upstream_sha256": "1f16441094de04ca4f266cadbc3f6b183e2e4257dcb63211234dabeedd1705e4",
+      "vendored_sha256": "1f16441094de04ca4f266cadbc3f6b183e2e4257dcb63211234dabeedd1705e4",
+      "upstream_path": "src/util/blend.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/util/blob.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright \u00a9 2014 Intel Corporation\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING\n * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS\n * IN THE SOFTWARE.\n */",
+      "upstream_sha256": "f102f88a8363f799d1a4553b1494ac19482ccb4763eea31f648291fe8ae9420d",
+      "vendored_sha256": "f102f88a8363f799d1a4553b1494ac19482ccb4763eea31f648291fe8ae9420d",
+      "upstream_path": "src/util/blob.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/util/compiler.h",
+      "license": "MIT",
+      "notice": "/*\n * Mesa 3-D graphics library\n *\n * Copyright (C) 1999-2008  Brian Paul   All Rights Reserved.\n * Copyright (C) 2009  VMware, Inc.  All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included\n * in all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n */",
+      "upstream_sha256": "919661909955445d4a0858f56e0ebaabbcaf8b694f5be8906c987979eeaa4fd0",
+      "vendored_sha256": "919661909955445d4a0858f56e0ebaabbcaf8b694f5be8906c987979eeaa4fd0",
+      "upstream_path": "src/util/compiler.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/util/detect.h",
+      "license": "MIT",
+      "notice": "/**************************************************************************\n *\n * Copyright 2022 Yonggang Luo\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the\n * \"Software\"), to deal in the Software without restriction, including\n * without limitation the rights to use, copy, modify, merge, publish,\n * distribute, sub license, and/or sell copies of the Software, and to\n * permit persons to whom the Software is furnished to do so, subject to\n * the following conditions:\n *\n * The above copyright notice and this permission notice (including the\n * next paragraph) shall be included in all copies or substantial portions\n * of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.\n * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR\n * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,\n * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE\n * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n *\n **************************************************************************/",
+      "upstream_sha256": "a8ea16b111b4e89830aa9084b7915760e13c8be1e96bc240ae31edab2395439a",
+      "vendored_sha256": "a8ea16b111b4e89830aa9084b7915760e13c8be1e96bc240ae31edab2395439a",
+      "upstream_path": "src/util/detect.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/util/detect_arch.h",
+      "license": "MIT",
+      "notice": "/**************************************************************************\n * \n * Copyright 2008 VMware, Inc.\n * All Rights Reserved.\n * \n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the\n * \"Software\"), to deal in the Software without restriction, including\n * without limitation the rights to use, copy, modify, merge, publish,\n * distribute, sub license, and/or sell copies of the Software, and to\n * permit persons to whom the Software is furnished to do so, subject to\n * the following conditions:\n * \n * The above copyright notice and this permission notice (including the\n * next paragraph) shall be included in all copies or substantial portions\n * of the Software.\n * \n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.\n * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR\n * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,\n * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE\n * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n * \n **************************************************************************/",
+      "upstream_sha256": "cfd6b3b724c2a4dd92dd3a303e0796b846ac17f202c254016799b34cb0d3ef80",
+      "vendored_sha256": "cfd6b3b724c2a4dd92dd3a303e0796b846ac17f202c254016799b34cb0d3ef80",
+      "upstream_path": "src/util/detect_arch.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/util/detect_cc.h",
+      "license": "MIT",
+      "notice": "/**************************************************************************\n *\n * Copyright 2022 Yonggang Luo\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the\n * \"Software\"), to deal in the Software without restriction, including\n * without limitation the rights to use, copy, modify, merge, publish,\n * distribute, sub license, and/or sell copies of the Software, and to\n * permit persons to whom the Software is furnished to do so, subject to\n * the following conditions:\n *\n * The above copyright notice and this permission notice (including the\n * next paragraph) shall be included in all copies or substantial portions\n * of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.\n * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR\n * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,\n * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE\n * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n *\n **************************************************************************/",
+      "upstream_sha256": "bffcab52c836d510782f872e26055f0ca93562378fccbd5ecdb436a90fdca573",
+      "vendored_sha256": "bffcab52c836d510782f872e26055f0ca93562378fccbd5ecdb436a90fdca573",
+      "upstream_path": "src/util/detect_cc.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/util/detect_os.h",
+      "license": "MIT",
+      "notice": "/* SPDX-License-Identifier: MIT */",
+      "upstream_sha256": "143d669562560a4613e47beb0e7e06c4dc608e7db156600600a6dccd7e87e7b8",
+      "vendored_sha256": "143d669562560a4613e47beb0e7e06c4dc608e7db156600600a6dccd7e87e7b8",
+      "upstream_path": "src/util/detect_os.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/util/format/u_formats.h",
+      "license": "MIT",
+      "notice": "/**************************************************************************\n *\n * Copyright 2007 VMware, Inc.\n * Copyright (c) 2008 VMware, Inc.\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the\n * \"Software\"), to deal in the Software without restriction, including\n * without limitation the rights to use, copy, modify, merge, publish,\n * distribute, sub license, and/or sell copies of the Software, and to\n * permit persons to whom the Software is furnished to do so, subject to\n * the following conditions:\n *\n * The above copyright notice and this permission notice (including the\n * next paragraph) shall be included in all copies or substantial portions\n * of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.\n * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR\n * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,\n * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE\n * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n *\n **************************************************************************/",
+      "upstream_sha256": "2bbf8eecaacb8ce538dfd44641e2c468147f7702adb7e531399cbdebd5749772",
+      "vendored_sha256": "d0e924d05af1466b349586772d9a596cc9af246aba8d7afd5657cf7dc1323081",
+      "upstream_path": "src/util/format/u_formats.h",
+      "adapted": true
+    },
+    {
+      "project": "mesa",
+      "path": "src/util/macros.h",
+      "license": "MIT",
+      "notice": "/*\n * Copyright \u00a9 2014 Intel Corporation\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice (including the next\n * paragraph) shall be included in all copies or substantial portions of the\n * Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING\n * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS\n * IN THE SOFTWARE.\n */",
+      "upstream_sha256": "cb7761079fd529cae22c7c5959573ddccdad7ebc335f362431557f7e0ef19e06",
+      "vendored_sha256": "cb7761079fd529cae22c7c5959573ddccdad7ebc335f362431557f7e0ef19e06",
+      "upstream_path": "src/util/macros.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/util/os_memory.h",
+      "license": "MIT",
+      "notice": "/**************************************************************************\n *\n * Copyright 2010 VMware, Inc.\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the\n * \"Software\"), to deal in the Software without restriction, including\n * without limitation the rights to use, copy, modify, merge, publish,\n * distribute, sub license, and/or sell copies of the Software, and to\n * permit persons to whom the Software is furnished to do so, subject to\n * the following conditions:\n *\n * The above copyright notice and this permission notice (including the\n * next paragraph) shall be included in all copies or substantial portions\n * of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.\n * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR\n * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,\n * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE\n * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n *\n **************************************************************************/",
+      "upstream_sha256": "58ea533018d008c9b7261321182f3e172dcceba111d6b64a3188f6a9697f5cf9",
+      "vendored_sha256": "58ea533018d008c9b7261321182f3e172dcceba111d6b64a3188f6a9697f5cf9",
+      "upstream_path": "src/util/os_memory.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/util/os_memory_aligned.h",
+      "license": "MIT",
+      "notice": "/**************************************************************************\n *\n * Copyright 2008-2010 VMware, Inc.\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the\n * \"Software\"), to deal in the Software without restriction, including\n * without limitation the rights to use, copy, modify, merge, publish,\n * distribute, sub license, and/or sell copies of the Software, and to\n * permit persons to whom the Software is furnished to do so, subject to\n * the following conditions:\n *\n * The above copyright notice and this permission notice (including the\n * next paragraph) shall be included in all copies or substantial portions\n * of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.\n * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR\n * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,\n * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE\n * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n *\n **************************************************************************/",
+      "upstream_sha256": "3aed2738b59aad2019c2698619b283f45e9d15af9852224bb3201f0fd9cb08d1",
+      "vendored_sha256": "3aed2738b59aad2019c2698619b283f45e9d15af9852224bb3201f0fd9cb08d1",
+      "upstream_path": "src/util/os_memory_aligned.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/util/os_memory_fd.h",
+      "license": "MIT",
+      "notice": "/**************************************************************************\n *\n * Copyright 2021 Snap Inc.\n * SPDX-License-Identifier: MIT\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the\n * \"Software\"), to deal in the Software without restriction, including\n * without limitation the rights to use, copy, modify, merge, publish,\n * distribute, sublicense, and/or sell copies of the Software, and to\n * permit persons to whom the Software is furnished to do so, subject to\n * the following conditions:\n *\n * The above copyright notice and this permission notice shall be included\n * in all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.\n * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY\n * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,\n * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE\n * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n *\n **************************************************************************/",
+      "upstream_sha256": "0202e8ee39b1eb95dc01d74c830044bdc683d494c07d77b496f22470e6b4deed",
+      "vendored_sha256": "0202e8ee39b1eb95dc01d74c830044bdc683d494c07d77b496f22470e6b4deed",
+      "upstream_path": "src/util/os_memory_fd.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/util/os_memory_stdc.h",
+      "license": "MIT",
+      "notice": "/**************************************************************************\n *\n * Copyright 2008-2010 VMware, Inc.\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the\n * \"Software\"), to deal in the Software without restriction, including\n * without limitation the rights to use, copy, modify, merge, publish,\n * distribute, sub license, and/or sell copies of the Software, and to\n * permit persons to whom the Software is furnished to do so, subject to\n * the following conditions:\n *\n * The above copyright notice and this permission notice (including the\n * next paragraph) shall be included in all copies or substantial portions\n * of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.\n * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR\n * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,\n * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE\n * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n *\n **************************************************************************/",
+      "upstream_sha256": "0f8e3c0b484e433286cc11204521a0b6012e4eb351c075b3b39e119c45a45dbb",
+      "vendored_sha256": "0f8e3c0b484e433286cc11204521a0b6012e4eb351c075b3b39e119c45a45dbb",
+      "upstream_path": "src/util/os_memory_stdc.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/util/os_time.h",
+      "license": "MIT",
+      "notice": "/**************************************************************************\n *\n * Copyright 2008-2010 VMware, Inc.\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the\n * \"Software\"), to deal in the Software without restriction, including\n * without limitation the rights to use, copy, modify, merge, publish,\n * distribute, sub license, and/or sell copies of the Software, and to\n * permit persons to whom the Software is furnished to do so, subject to\n * the following conditions:\n *\n * The above copyright notice and this permission notice (including the\n * next paragraph) shall be included in all copies or substantial portions\n * of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.\n * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR\n * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,\n * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE\n * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n *\n **************************************************************************/",
+      "upstream_sha256": "34d52b6f391c2d0bf5aff4b665bfd58fc8976a4a32eb4361320f25a99d06ba99",
+      "vendored_sha256": "34d52b6f391c2d0bf5aff4b665bfd58fc8976a4a32eb4361320f25a99d06ba99",
+      "upstream_path": "src/util/os_time.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/util/u_endian.h",
+      "license": "MIT",
+      "notice": "/**************************************************************************\n *\n * Copyright 2007-2008 VMware, Inc.\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the\n * \"Software\"), to deal in the Software without restriction, including\n * without limitation the rights to use, copy, modify, merge, publish,\n * distribute, sub license, and/or sell copies of the Software, and to\n * permit persons to whom the Software is furnished to do so, subject to\n * the following conditions:\n *\n * The above copyright notice and this permission notice (including the\n * next paragraph) shall be included in all copies or substantial portions\n * of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.\n * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR\n * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,\n * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE\n * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n *\n **************************************************************************/",
+      "upstream_sha256": "b727f1fce3bedee761ac017bb7cd117e8f13b78fc61089757df64664d18565b2",
+      "vendored_sha256": "b727f1fce3bedee761ac017bb7cd117e8f13b78fc61089757df64664d18565b2",
+      "upstream_path": "src/util/u_endian.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/util/u_math.h",
+      "license": "MIT",
+      "notice": "/**************************************************************************\n *\n * Copyright 2008 VMware, Inc.\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the\n * \"Software\"), to deal in the Software without restriction, including\n * without limitation the rights to use, copy, modify, merge, publish,\n * distribute, sub license, and/or sell copies of the Software, and to\n * permit persons to whom the Software is furnished to do so, subject to\n * the following conditions:\n *\n * The above copyright notice and this permission notice (including the\n * next paragraph) shall be included in all copies or substantial portions\n * of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.\n * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR\n * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,\n * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE\n * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n *\n **************************************************************************/",
+      "upstream_sha256": "f5b6882b95a9da07bc1c767bb7a50203455e575d685315f56d041ffaffa09806",
+      "vendored_sha256": "f5b6882b95a9da07bc1c767bb7a50203455e575d685315f56d041ffaffa09806",
+      "upstream_path": "src/util/u_math.h",
+      "adapted": false
+    },
+    {
+      "project": "mesa",
+      "path": "src/util/u_memory.h",
+      "license": "MIT",
+      "notice": "/**************************************************************************\n *\n * Copyright 2008 VMware, Inc.\n * All Rights Reserved.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the\n * \"Software\"), to deal in the Software without restriction, including\n * without limitation the rights to use, copy, modify, merge, publish,\n * distribute, sub license, and/or sell copies of the Software, and to\n * permit persons to whom the Software is furnished to do so, subject to\n * the following conditions:\n *\n * The above copyright notice and this permission notice (including the\n * next paragraph) shall be included in all copies or substantial portions\n * of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.\n * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR\n * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,\n * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE\n * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n *\n **************************************************************************/",
+      "upstream_sha256": "8792266c0d8ef9e9765e29c50217dc2bdcf56c6d31e8c0999459fd851ad90f90",
+      "vendored_sha256": "d46e433dbae5c57227c4bf71161e34d1b599ed68524a173d1256424ec2cec731",
+      "upstream_path": "src/util/u_memory.h",
+      "adapted": true
+    },
+    {
+      "project": "nouveau",
+      "path": "com.fuc",
+      "license": "MIT",
+      "notice": "/* fuc microcode util functions for gf100 PGRAPH\n *\n * Copyright 2011 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs\n */",
+      "upstream_sha256": "d8ea62d8f1c8e56725e21d07adc8e845acd15309aafa350ee9574ced841d524f",
+      "vendored_sha256": "d8ea62d8f1c8e56725e21d07adc8e845acd15309aafa350ee9574ced841d524f",
+      "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/fuc/com.fuc",
+      "adapted": false
+    },
+    {
+      "project": "nouveau",
+      "path": "gpc.fuc",
+      "license": "MIT",
+      "notice": "/* fuc microcode for gf100 PGRAPH/GPC\n *\n * Copyright 2011 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs\n */",
+      "upstream_sha256": "2c4fdb7f93f3c2e942e7c12d70ec36dac5426369aa8e59c32f08c45cff3fafd8",
+      "vendored_sha256": "2c4fdb7f93f3c2e942e7c12d70ec36dac5426369aa8e59c32f08c45cff3fafd8",
+      "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/fuc/gpc.fuc",
+      "adapted": false
+    },
+    {
+      "project": "nouveau",
+      "path": "gpcgk208.fuc5",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs <bskeggs@redhat.com>\n */",
+      "upstream_sha256": "fac20e63bc5e30b7b2ee2c978d0defeb6ce807e5f199bb2b8aa1641e213d30ab",
+      "vendored_sha256": "fac20e63bc5e30b7b2ee2c978d0defeb6ce807e5f199bb2b8aa1641e213d30ab",
+      "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/fuc/gpcgk208.fuc5",
+      "adapted": false
+    },
+    {
+      "project": "nouveau",
+      "path": "hub.fuc",
+      "license": "MIT",
+      "notice": "/* fuc microcode for gf100 PGRAPH/HUB\n *\n * Copyright 2011 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs\n */",
+      "upstream_sha256": "5b68e01db5f7ff771d3ed149875f551e7a389e0fed7cc06217afa0f0d4fc060b",
+      "vendored_sha256": "5b68e01db5f7ff771d3ed149875f551e7a389e0fed7cc06217afa0f0d4fc060b",
+      "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/fuc/hub.fuc",
+      "adapted": false
+    },
+    {
+      "project": "nouveau",
+      "path": "hubgk208.fuc5",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs <bskeggs@redhat.com>\n */",
+      "upstream_sha256": "4068a39c6c7f9ea2a9e9b3c0ca7998c89ff64f4f1f3bc7faff8af594a98d11b3",
+      "vendored_sha256": "4068a39c6c7f9ea2a9e9b3c0ca7998c89ff64f4f1f3bc7faff8af594a98d11b3",
+      "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/fuc/hubgk208.fuc5",
+      "adapted": false
+    },
+    {
+      "project": "nouveau",
+      "path": "macros.fuc",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs <bskeggs@redhat.com>\n */",
+      "upstream_sha256": "4143f186f9c7985a81b10e44c51d0dbe5633b5f69a1164ea1dca9d96c3138b6b",
+      "vendored_sha256": "4143f186f9c7985a81b10e44c51d0dbe5633b5f69a1164ea1dca9d96c3138b6b",
+      "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/fuc/macros.fuc",
+      "adapted": false
+    },
+    {
+      "project": "nouveau",
+      "path": "os.h",
+      "license": "MIT",
+      "notice": "/* SPDX-License-Identifier: MIT */",
+      "upstream_sha256": "4c69991407e82306dec7364d5fcc67c08bedbaf32b0e80d592c7665588db336a",
+      "vendored_sha256": "4c69991407e82306dec7364d5fcc67c08bedbaf32b0e80d592c7665588db336a",
+      "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/fuc/os.h",
+      "adapted": false
+    }
+  ]
+}
