@@ -361,3 +361,28 @@ fn bar1_page_setup_requires_inactive_vm_and_selects_128k() {
         assert_eq!(r.writes,if bar1&0x80000000!=0 || bar2&0x80000000!=0 {vec![]} else {vec![(0x100c80,config&!1)]});
     }
 }
+
+#[test]
+fn bar1_activation_finishes_switch_drains_before_invalidating_the_mapping() {
+    struct Regs {drains:usize,blocked:usize,free:bool,queued:bool,writes:Vec<(usize,u32)>}
+    impl modeset::Io for Regs {
+        fn read(&mut self,r:usize)->u32 {match r {
+            0x1704=>0x7ff00,
+            0x70000=>if self.drains==self.blocked {2} else {0},
+            0x100c80=>(if self.free {0x200000} else {0})|(if self.queued {0x8000} else {0}),
+            _=>panic!("unexpected read {r:x}")}}
+        fn write(&mut self,r:usize,v:u32) {self.writes.push((r,v));if r==0x70000 {self.drains+=1;}}
+        fn delay_us(&mut self,_:u32) {}
+    }
+    let sequence=vec![(0x70000,1),(0x1704,0x80008a32),(0x70000,1),(0x70000,1),
+        (0x70000,1),(0x100cb8,0x8a330),(0x100cbc,0x80000005)];
+    for (blocked,free,queued) in [(0,true,true),(1,true,true),(2,true,true),
+        (3,true,true),(4,true,true),(0,false,true),(0,true,false)] {
+        let mut r=Regs{drains:0,blocked,free,queued,writes:vec![]};
+        let result=modeset::activate_bar1(&mut r,0x8a32000,0x8a33000);
+        assert_eq!(result.is_ok(),blocked==0&&free&&queued);
+        if result.is_ok() {assert_eq!(result.unwrap(),0x7ff00);}
+        let length=if blocked>0 {if blocked==1 {1} else {blocked+1}} else if !free {5} else {7};
+        assert_eq!(r.writes,sequence[..length]);
+    }
+}
