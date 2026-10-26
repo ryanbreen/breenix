@@ -3,7 +3,7 @@ name = "breenish-js"
 version = "0.1.0"
 edition = "2021"
 description = "ECMAScript engine for Breenish shell"
-license = "MIT"
+license = "PolyForm-Noncommercial-1.0.0"
 
 [workspace]
 

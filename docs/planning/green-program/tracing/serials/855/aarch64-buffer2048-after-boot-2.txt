@@ -1,4 +1,4 @@
-# Provenance: accepted buffer follow-up after evidence; gate=bash docker/qemu/run-aarch64-boot-test-strict.sh 3; exit=0; iteration=2; host=Ryans-M5-Max.local; branch=tracing/855-ring-window; base_commit=134343d70c1ccfd053a8a03f03283b24ffd1f49a; features=boot_tests,capture_selftest; TRACE_BUFFER_SIZE=2048; TRACE_DIAG_SAMPLE=1024; TRACE_SCHED_DIAG_SAMPLE=8192; acceptance=span_ms above 1500; raw_serial_sha256=8cd56a1a362b6c1b25692d7f220879cac24091435348255a9b9f60049d52deaa
+# Provenance: accepted buffer follow-up after evidence; gate=bash docker/qemu/run-aarch64-boot-test-strict.sh 3; exit=0; iteration=2; host=mac-host; branch=tracing/855-ring-window; base_commit=134343d70c1ccfd053a8a03f03283b24ffd1f49a; features=boot_tests,capture_selftest; TRACE_BUFFER_SIZE=2048; TRACE_DIAG_SAMPLE=1024; TRACE_SCHED_DIAG_SAMPLE=8192; acceptance=span_ms above 1500; raw_serial_sha256=8cd56a1a362b6c1b25692d7f220879cac24091435348255a9b9f60049d52deaa
 EOS
 ========================================
   Breenix ARM64 Kernel Starting

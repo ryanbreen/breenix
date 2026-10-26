@@ -1,5 +1,5 @@
 891ae034f8c0bb5de0b9ad400cf6524a7e92645c
-Darwin Ryans-M5-Max.local 25.6.0 Darwin Kernel Version 25.6.0: Fri Jul 31 19:19:08 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6050 arm64
+Darwin mac-host 25.6.0 Darwin Kernel Version 25.6.0: Fri Jul 31 19:19:08 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6050 arm64
 ProductName:		macOS
 ProductVersion:		26.6.2
 BuildVersion:		25G83

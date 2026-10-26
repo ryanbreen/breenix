@@ -3,7 +3,7 @@ name = "breenix-suite"
 version = "0.1.0"
 edition = "2021"
 description = "Guest effort-suite harness and independent display expectations"
-license = "MIT"
+license = "PolyForm-Noncommercial-1.0.0"
 
 [workspace]
 

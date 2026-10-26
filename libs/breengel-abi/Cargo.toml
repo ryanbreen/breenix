@@ -3,7 +3,7 @@ name = "breengel-abi"
 version = "0.1.0"
 edition = "2021"
 description = "The window interface's binary layout: system calls 414 and 415 (docs/gui/breengel.md sections 17 to 21)"
-license = "MIT"
+license = "PolyForm-Noncommercial-1.0.0"
 
 [lib]
 path = "src/lib.rs"

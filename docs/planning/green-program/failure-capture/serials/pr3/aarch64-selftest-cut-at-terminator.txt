@@ -1,6 +1,6 @@
 # Provenance
 # gate: docker/qemu/run-aarch64-boot-test-strict.sh 1 (real boot, not score-only replay)
-# host: Ryans-M5-Max (Mac, native HVF-accelerated aarch64 QEMU)
+# host: mac-host (Mac, native HVF-accelerated aarch64 QEMU)
 # branch: capture/ftc-pr3-bxcap-emitter
 # base: ee48a4a132ebb97e4297141e0bf1fb1d85f31b39
 # kernel features: boot_tests,capture_selftest_cut_at_terminator

@@ -2,7 +2,7 @@
 name = "libpixcheck"
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "PolyForm-Noncommercial-1.0.0"
 description = "Canonical frame comparison and hashing for Breenix graphics verdicts"
 
 [workspace]

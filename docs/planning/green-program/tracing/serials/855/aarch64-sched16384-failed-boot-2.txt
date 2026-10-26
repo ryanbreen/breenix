@@ -1,5 +1,5 @@
 # Current evidence: FAILED; no accepted passing fixture. Earlier after/final fixtures remain as failed evidence of the SCHED_DIAG discovery.
-# Provenance: gate=bash docker/qemu/run-aarch64-boot-test-strict.sh 3; exit=1; iteration=2; host=Ryans-M5-Max.local; branch=tracing/855-ring-window; base_commit=686b959ff2596f558189dbf7e90c7fff0df8753a; features=boot_tests,capture_selftest; TRACE_DIAG_SAMPLE=1024; TRACE_SCHED_DIAG_SAMPLE=16384
+# Provenance: gate=bash docker/qemu/run-aarch64-boot-test-strict.sh 3; exit=1; iteration=2; host=mac-host; branch=tracing/855-ring-window; base_commit=686b959ff2596f558189dbf7e90c7fff0df8753a; features=boot_tests,capture_selftest; TRACE_DIAG_SAMPLE=1024; TRACE_SCHED_DIAG_SAMPLE=16384
 EOS
 ========================================
   Breenix ARM64 Kernel Starting
