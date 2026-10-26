@@ -28,3 +28,7 @@ path = "../../tests/quiet_console.rs"
 
 [features]
 boot_tests = []
+
+[[test]]
+name = "native_boot_grid_resize"
+path = "../../tests/native_boot_grid_resize.rs"

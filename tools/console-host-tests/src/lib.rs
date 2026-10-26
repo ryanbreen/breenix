@@ -33,35 +33,6 @@ mod grid_tests {
     }
 
     #[test]
-    fn native_boot_resize_preserves_text_history_cursor_and_pen() {
-        let mut g=Grid::new();
-        g.set_storage(vec![BLANK;8*6].leak(),vec![BLANK;8*6].leak());
-        g.set_size(4,2);
-        g.set_history(vec![BLANK;super::grid::HISTORY_LINES*8].leak());
-        g.write_kernel(b"one\ntwo\n",false);
-        g.write(b"\x1b[31mR");
-        let red=g.row(1)[0];
-        assert_eq!(text(&g,0),"two");
-        assert_eq!(g.cursor(),(1,1));
-        g.resize_boot(3,4).unwrap();
-        assert_eq!((g.cols(),g.rows()),(3,4));
-        assert_eq!(text(&g,0),"two");
-        assert_eq!(text(&g,1),"R");
-        assert_eq!(g.row(1)[0],red);
-        assert_eq!(text(&g,2),"");
-        assert_eq!(g.cursor(),(1,1));
-        g.scroll_view(isize::MAX);
-        assert_eq!(g.view_row(0).iter().map(|c|c.character()).collect::<String>(),"one");
-        g.view_live();
-        g.write(b"S");
-        assert_eq!(text(&g,1),"RS");
-        assert_eq!(g.row(1)[1].colours,red.colours);
-        assert!(g.resize_boot(9,9).is_err());
-        assert_eq!((g.cols(),g.rows()),(3,4));
-        assert_eq!(text(&g,1),"RS");
-    }
-
-    #[test]
     fn kernel_records_escape_application_modes_and_control_injection() {
         let mut g = grid(64, 6);
         g.write(b"main\x1b[?1049h\x1b[8mhidden\x1b[2;3r\x1b[?7l\x1b[");
