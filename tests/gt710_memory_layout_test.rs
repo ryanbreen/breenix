@@ -105,6 +105,7 @@ fn discovers_vram_separately_from_bar_and_reserves_inherited_instances() {
     let layout=Layout::new(inventory.total,&inventory.reserved,1280,1024).unwrap();
     assert!(layout.objects.iter().all(|o|o.guarded().start>=128<<20 && o.guarded().end().unwrap()<=0x3f000000));
     assert!(!inventory.registers.is_empty());
+    assert!(inventory.references.contains(&Range{start:0x3f000000,size:65536}));
     // A BAR instance's page-directory storage lowers the reserved upper envelope.
     d.regs.insert(0x1704,0x8003e000);
     d.words.insert(0x3e000200,0x3d000000);
