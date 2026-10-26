@@ -7,6 +7,9 @@ import hashlib
 import json
 import struct
 from functools import lru_cache
+import shutil
+import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 API = runpy.run_path(str(ROOT / 'scripts/metal/gt710-suite'))
@@ -59,6 +62,31 @@ def switch_capture():
 
 
 class SwitchingCapture(unittest.TestCase):
+    def test_native_records_publish_their_actual_effort_milestones(self):
+        sys.path.insert(0,str(ROOT/'scripts/metal'))
+        import metal_score
+        sha='a'*40
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp)
+            for name in ['docs/metal/boot-path.json','docs/boot-path.json','docs/efforts/metal.json',
+                         'docs/suites/gt710.json','scripts/metal/gt710-suite',
+                         'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json']:
+                dest=p/'definition'/name;dest.parent.mkdir(parents=True,exist_ok=True)
+                shutil.copyfile(ROOT/name,dest)
+            serial=switch_capture()
+            boot=dict(id='fixture',toolsCommit=sha,evidenceEligible=True,platform='metal',arch='x86_64',
+                      kind='boot',mode='console',disk='root')
+            for name,value in [('run.json',json.dumps(boot)),('serial.txt',serial),('events.jsonl',''),
+                               ('commit',sha),('dirty','0'),('exit-status','0'),('ended','1')]:
+                (p/name).write_text(value)
+            for category in ['native','switching']:
+                record=dict(boot='fixture',commit=sha,milestone='metal-gt710/'+category,
+                            cases=API['cases'](category,serial))
+                (p/('gt710-'+category+'.json')).write_text(json.dumps(record))
+            results=metal_score.score(p)['milestones']
+            for category in ['native','switching']:
+                self.assertTrue(results['metal-gt710/'+category]['passed'])
+
     def test_console_receipt_must_follow_the_final_low_mode(self):
         serial=switch_capture()
         early_only=serial[:serial.rindex('GT710_NATIVE_CONSOLE ')]
