@@ -8,6 +8,9 @@ import runpy
 import tempfile
 
 CATEGORIES = {
+    'memory': (
+        ('carveout', 'Private display allocations preserve inherited VRAM and pass complete complementary physical read-back without aliasing'),
+    ),
     'board': (
         ('inventory', 'Live board tables, POST and active TMDS routing identify the attached DDC sink and its preferred timing'),
     ),
@@ -136,8 +139,111 @@ def board_inventory(serial):
     return e
 
 
+def display_memory(serial):
+    bdf, _, _, _ = pci(serial)
+    e = json.loads(one(r'^GT710_MEMORY (.+)$', serial, 'display memory evidence')[1])
+    integer = lambda v: type(v) is int and 0 <= v <= (1 << 40)
+    def require(ok, why):
+        if not ok:
+            raise ValueError(why)
+    require(e['schema'] == 1 and e['phase'] == 'memory' and e['bdf'] == bdf, 'memory identity mismatch')
+    total, aperture = e['total'], e['aperture']
+    require(integer(total) and integer(aperture) and (32 << 20) <= total <= (1 << 32)
+            and (16 << 20) <= aperture < total and aperture & (aperture-1) == 0, 'invalid memory sizes')
+    require(framebuffer(serial)['span'] == aperture, 'BAR aperture differs from PCI ownership')
+    pairs = e['registers']
+    require(isinstance(pairs,list) and len(pairs) <= 41 and all(len(p)==2 and all(integer(v) for v in p) for p in pairs), 'invalid register evidence')
+    regs = dict(pairs)
+    require(len(regs) == len(pairs), 'duplicate register evidence')
+    fbps, disabled = regs[0x22438], regs[0x22554]
+    require(1 <= fbps <= 8, 'invalid partition count')
+    fbpat = regs[0x2243c]
+    require(fbps <= fbpat <= 16 and fbpat % fbps == 0, 'invalid FBPA topology')
+    units = fbpat // fbps
+    amounts = []
+    for fbp in range(fbps):
+        part = 0
+        for unit in range(fbp*units,(fbp+1)*units):
+            if disabled & (1 << unit):
+                continue
+            mib = regs[0x11020c+unit*4096]
+            require(0 < mib <= 4096, 'invalid FBPA capacity')
+            part += mib
+        if part:
+            amounts.append(part)
+    require(amounts and len(set(amounts)) == 1 and sum(amounts) << 20 == total, 'VRAM inventory mismatch')
+    refs = e['references']
+    require(isinstance(refs,list) and len(refs) <= 4096, 'missing inherited references')
+    require(all(len(r)==2 and all(integer(v) for v in r) and r[0] % 4096 == 0
+                and 0 < r[1] <= (1 << 20) and r[1] % 4096 == 0 and sum(r) <= total for r in refs), 'invalid inherited reference')
+    disp = regs[0x610010]
+    require(disp in (0,1) or (disp & 15 == 9 and [(disp & ~255) << 8,65536] in refs), 'missing display instance reservation')
+    for reg in (0x1704,0x1714):
+        control = regs[reg]
+        require(not control & 0x80000000 or [(control & 0x0fffffff) << 12,4096] in refs, 'missing BAR instance reservation')
+    for i in range(9):
+        require(disp != 0 or regs[0x610490+i*16] & 3 == 0, 'active display channel without a known instance')
+        require(disp != 1 or regs[0x610490+i*16] & 0x80000010 == 0, 'opaque POST channel has DMA enabled or activation busy')
+        push = regs[0x610494+i*16]
+        require(not push or push & 3 in (1,2,3), 'invalid inherited push target')
+        require(push & 3 != 1 or [(push & ~3) << 8,4096] in refs, 'missing inherited push reservation')
+    require(not any(r[0] < aperture < sum(r) for r in refs), 'inherited object straddles reservation boundary')
+    upper = min([total-(1 << 20)]+[r[0] for r in refs if r[0] >= aperture])
+    require(e['reserved'] == [[0,aperture],[upper,total-upper]] and upper > aperture, 'reservation envelope mismatch')
+    require(integer(e['seed']) and 0 < e['seed'] <= 0xffffffff, 'invalid nonce seed')
+    require(integer(e['pramin_before']) and e['pramin_before'] == e['pramin_after'], 'PRAMIN control changed')
+    snapshots = set(map(tuple, refs)) | {(0,256 << 10),(total-(1 << 20),1 << 20)}
+    require(e['protected_bytes'] == sum(r[1] for r in snapshots), 'incomplete protected storage snapshot')
+    for prefix in ('protected','guard'):
+        require(re.fullmatch('[0-9a-f]{64}',e[prefix+'_before']) and e[prefix+'_before'] == e[prefix+'_after'], prefix+' storage changed')
+    w,h = e['width'],e['height']
+    require(integer(w) and integer(h) and 0 < w <= 8192 and 0 < h <= 8192, 'invalid scanout geometry')
+    preferred = board_inventory(serial)['modes'][0]
+    require((w,h) == (preferred['width'],preferred['height']), 'scanouts differ from the live sink preferred timing')
+    pitch = (w*4+255) & ~255
+    size = (pitch*h+4095) & ~4095
+    require(e['pitch'] == pitch, 'invalid scanout pitch')
+    specs = [('scanout-a',size,65536),('scanout-b',size,65536),('evo',4096,4096),
+             ('notifier',4096,4096),('instance',65536,65536),('dma',4096,4096)]
+    objects = e['objects']
+    require(isinstance(objects,list) and len(objects)==len(specs), 'missing display allocations')
+    occupied = [(0,aperture),(upper,total-upper)]
+    import struct
+    cursor = 4096
+    for o,(name,length,align) in zip(objects,specs):
+        require(o['name']==name and o['size']==length and o['align']==align and integer(o['start']), 'object geometry mismatch')
+        while True:
+            start = (cursor+align-1) & -align
+            lo,hi = start-4096,start+length+4096
+            overlaps = [a+b for a,b in occupied if a < hi and lo < a+b]
+            if not overlaps:
+                break
+            cursor = max(overlaps)+4096
+        require(o['start']==start and hi<=total, 'overlapping, unaligned or reserved allocation')
+        occupied.append((lo,hi-lo))
+        cursor = hi+4096
+        expected = []
+        for phase in range(2):
+            digest = hashlib.sha256()
+            for offset in range(start,start+length,65536):
+                data = b''.join(struct.pack('<I',((a//4)*0x9e3779b1 ^ e['seed'] ^ (0xffffffff if phase else 0)) & 0xffffffff)
+                                for a in range(offset,min(offset+65536,start+length),4))
+                digest.update(data)
+            expected.append(digest.hexdigest())
+        require(o['sha256']==expected, 'complete complementary physical read-back mismatch')
+    require(e['guard_bytes']==12*4096 and e['verified_bytes']==2*sum(s[1] for s in specs), 'short guard or allocation read-back')
+    return e
+
+
 def check_case(category, case, serial):
-    if category == 'board':
+    if category == 'memory':
+        if case != 'carveout':
+            raise ValueError('unknown memory case')
+        try:
+            display_memory(serial)
+        except (KeyError, TypeError, OverflowError, IndexError, json.JSONDecodeError) as error:
+            raise ValueError('malformed display memory evidence') from error
+    elif category == 'board':
         if case != 'inventory':
             raise ValueError('unknown board case')
         board_inventory(serial)

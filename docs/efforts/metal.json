@@ -303,6 +303,16 @@
               "board"
             ]
           }
+        },
+        {
+          "id": "memory",
+          "title": "Own guarded display memory without disturbing inherited storage (M4 PR 4.2)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "memory"
+            ]
+          }
         }
       ]
     }
