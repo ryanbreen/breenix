@@ -323,6 +323,16 @@
               "native"
             ]
           }
+        },
+        {
+          "id": "switching",
+          "title": "Switch a second advertised mode low-high-low (M4 PR 4.4)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "switching"
+            ]
+          }
         }
       ]
     }

@@ -8,6 +8,7 @@ import runpy
 import tempfile
 
 CATEGORIES = {
+    'switching': [('low-high-low', 'A second advertised EDID mode switches low-high-low with latched timings, link state and complete unique-pixel read-back')],
     'native': [('preferred', 'The preferred EDID mode completes on owned native scanout with advancing raster and full pixel read-back')],
     'memory': (
         ('carveout', 'Private display allocations preserve inherited VRAM and pass complete complementary physical read-back without aliasing'),
@@ -79,6 +80,12 @@ def edid_timings(raw):
     if any(raw[i:i+2] == bytes([129,0]) for i in range(38,54,2)):
         timings.append(dict(width=1280,height=800,clock_khz=83500,hsync_start=1352,
                             hsync_end=1480,htotal=1680,vsync_start=803,vsync_end=809,vtotal=831,flags=28))
+    # E-EDID A2 table 3.18 p.30; DMT 1.13 p.33, ID 10h / standard 61 40.
+    if raw[36] & 8 or any(raw[i:i+2] == bytes([97,64]) for i in range(38,54,2)):
+        timing = dict(width=1024,height=768,clock_khz=65000,hsync_start=1048,
+                      hsync_end=1184,htotal=1344,vsync_start=771,vsync_end=777,vtotal=806,flags=24)
+        if timing not in timings:
+            timings.append(timing)
     for i in range(128,len(raw),128):
         b = raw[i:i+128]
         if b[0] == 2 and b[2]:
@@ -328,8 +335,108 @@ def native_mode(serial):
         raise ValueError('malformed native modeset evidence') from error
 
 
+def native_switches(serial):
+    """Validate each clock-changing UPDATE against the live route and full image."""
+    try:
+        board = board_inventory(serial)
+        memory = display_memory(serial)
+        previous, _ = native_mode(serial)
+        reports = list(re.finditer(r'^GT710_SWITCH (.+)$', serial, re.M))
+        def need(ok, why):
+            if not ok: raise ValueError(why)
+        need(len(reports)==3, 'three completed mode switches required')
+        frames = []
+        seeds = {previous['seed']}
+        for step, match in enumerate(reports):
+            e = json.loads(match[1]); t = e['timing']; h = board['head']*0x300
+            need(e['schema']==1 and e['phase']=='switch' and e['step']==step
+                 and e['bdf']==board['bdf'] and e['head']==board['head'] and e['sor']==board['sor'],
+                 'switch identity or order mismatch')
+            need(t in board['modes'] and t['flags']&0x98==0x18, 'switch timing not advertised by live sink')
+            high = board['modes'][0]
+            if step==1:
+                need(t==high, 'middle switch must use preferred EDID mode')
+            else:
+                need(t['width']<high['width'] and t['height']<=high['height']
+                     and t['clock_khz']<high['clock_khz'], 'switch needs a lower EDID mode')
+                if step==2: need(t==frames[0][0]['timing'], 'final switch did not return to low mode')
+            need(e['before_active']==previous['active'] and e['put_before']==previous['put']
+                 and previous['put']<e['put']<=2048 and e['get']==e['put'], 'stale switch state or cursor')
+            need(match.start()>serial.index('GT710_MODE ')
+                 and (step==0 or match.start()>reports[step-1].end()), 'switch precedes takeover')
+            need(e['detached_notifier']&1 and e['detached_output']&0xf0f==0
+                 and e['detached_iso']==0, 'switch output did not detach')
+            pitch = (t['width']*4+255)&~255
+            surface = memory['objects'][0]['start']
+            need(e['surface']==surface and e['pitch']==pitch
+                 and pitch*t['height']<=memory['objects'][0]['size']
+                 and e['instance']==memory['objects'][4]['start'] and e['push']==memory['objects'][2]['start'],
+                 'switch uses foreign or undersized storage')
+            regs = dict(e['active']); pair=lambda x,y:x|y<<16
+            need(len(regs)==len(e['active']), 'duplicate switch active register')
+            expected={0x414:pair(t['htotal'],t['vtotal']),
+                0x418:pair(t['hsync_end']-t['hsync_start']-1,t['vsync_end']-t['vsync_start']-1),
+                0x41c:pair(t['htotal']-t['hsync_start']-1,t['vtotal']-t['vsync_start']-1),
+                0x420:pair(t['htotal']-t['hsync_start']+t['width']-1,t['vtotal']-t['vsync_start']+t['height']-1),
+                0x450:t['clock_khz']*1000,0x460:surface>>8,0x468:pair(t['width'],t['height']),
+                0x46c:0x1000000|pitch,0x470:0xcf00,0x474:1,0x498:0x40000,0x4a0:0}
+            need(all(regs.get(0x640000+h+r)==v for r,v in expected.items()), 'active switch timings or scanout differ')
+            polarity=(8 if not t['flags']&2 else 0)|(16 if not t['flags']&4 else 0)
+            need(regs[0x640404+h]&0x3d8==0x140|polarity, 'switch sync polarity mismatch')
+            need(e['protocol']==previous['protocol'] and e['protocol'] in (1,2)
+                 and regs[0x640200+e['sor']*32]&0xf0f==e['protocol']<<8|1<<e['head'], 'switch link mismatch')
+            need(e['notifier_before']==0 and e['notifier_after']&1, 'switch completion missing or stale')
+            need(e['errors']==0 and e['underflow']&0x111==1 and e['power']&0x80000001==1
+                 and not e['power_status']&0x10000000 and e['firmware_writes']==0, 'switch output fault or firmware write')
+            need(0<((e['raster_after']>>16)-(e['raster_before']>>16))&65535<100, 'switch raster did not advance')
+            need(e['pll_record']==previous['pll_record'] and e['pll_register']==previous['pll_register']
+                 and e['pll_reference']==previous['pll_reference'], 'switch uses another PLL source')
+            c=e['pll_coefficients']; m=c&255; n=(c>>8)&255; p=(c>>16)&63
+            f=(e['pll_fraction']>>16)&65535
+            if f&32768: f-=65536
+            denominator=m*p*8192; numerator=e['pll_reference']*(n*8192+4096+f)
+            need(m>0 and p>0 and n>0 and
+                 abs(numerator-t['clock_khz']*denominator)*1000000<=t['clock_khz']*denominator*250,
+                 'switch pixel PLL frequency differs from EDID timing')
+            need(type(e['seed']) is int and 0<e['seed']<=0xffffffff and e['seed'] not in seeds, 'switch pattern nonce reused')
+            seeds.add(e['seed'])
+            rows=list(re.finditer(r'^GT710_SWITCH_PIX '+str(step)+r' (\d+) ([0-9a-f:,]+)$',serial,re.M))
+            need(len(rows)==t['height'], 'incomplete switch image')
+            data=bytearray()
+            import struct
+            for y,row in enumerate(rows):
+                need(int(row[1])==y and (reports[step-1].end() if step else serial.index('GT710_MODE '))<row.start()<match.start(),
+                     'switch image belongs to another update')
+                x=0
+                for run in row[2].split(','):
+                    count,value=(int(v,16) for v in run.split(':'))
+                    need(0<count<=pitch//4-x and value>>24==255, 'invalid unique-pixel run')
+                    for i in range(count):
+                        actual=0xff000000|((value+i)&0xffffff)
+                        expected=0xff000000|((e['seed']+y*(pitch//4)+x+i)&0xffffff)
+                        need(actual==expected, 'switch pixel differs from independent nonce pattern')
+                        data+=struct.pack('<I',actual)
+                    x+=count
+                need(x*4==pitch, 'incomplete switch pitch edge')
+            need(e['bytes']==len(data)==pitch*t['height'] and e['sha256']==hashlib.sha256(data).hexdigest(),
+                 'switch binary length or digest mismatch')
+            frames.append((e,bytes(data)));previous=e
+        need(len(re.findall(r'^GT710_SWITCH_PIX ',serial,re.M))==sum(e['timing']['height'] for e,_ in frames),
+             'unassociated switch pixels')
+        receipts=list(re.finditer(r'^GT710_NATIVE_CONSOLE surface=(\d+) firmware_writes=(\d+)$',
+                                 serial[reports[-1].end():],re.M))
+        need(receipts and all(int(r[1])==previous['surface'] and int(r[2])==0 for r in receipts),
+             'console return after final low mode is missing or faulted')
+        return frames
+    except (KeyError,TypeError,IndexError,OverflowError,json.JSONDecodeError) as error:
+        raise ValueError('malformed native switching evidence') from error
+
+
 def check_case(category, case, serial):
-    if category == 'native':
+    if category == 'switching':
+        if case != 'low-high-low': raise ValueError('unknown switching case')
+        native_switches(serial)
+    elif category == 'native':
         if case != 'preferred': raise ValueError('unknown native case')
         native_mode(serial)
     elif category == 'memory':
@@ -484,6 +591,8 @@ def record_capture(directory, sha):
     if passed:
         _, pixels = native_mode(serial)
         (directory / 'gt710-native-scanout.bin').write_bytes(pixels)
+        for e, pixels in native_switches(serial):
+            (directory / ('gt710-switch-' + str(e['step']) + '.bin')).write_bytes(pixels)
     return 0 if passed else 1
 
 

@@ -303,7 +303,7 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
             preferred.height.into(),
         )?;
         let layout=DISPLAY_MEMORY.get().ok_or("missing retained display allocation")?;
-        let result=native::takeover(&mut regs,device,&rom,preferred,route,head,layout);
+        let result=native::takeover(&mut regs,device,&rom,&modes,route,head,layout);
         if result.is_err() {
             crate::serial_println!("GT710_MODE_STATE ctrl={:#x} error={:#x} stat={:#x} data={:#x} code={:#x} put={} get={} super={:#x} head-super={:#x}",
                 regs.read(0x610490),regs.read(0x61009c),regs.read(0x6101f0),regs.read(0x6101f4),regs.read(0x6101f8),
