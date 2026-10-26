@@ -454,20 +454,18 @@ pub fn publish(a: &mut impl Io, put: u32) -> Result<(), &'static str> {
     Ok(())
 }
 pub fn quiesce(a: &mut impl Io) -> Result<(), &'static str> {
-    for i in 0..9 {
+    // Satellites can interlock with the core. Stop their requests first.
+    for i in (1..17).rev().chain(core::iter::once(0)) {
         let r = 0x610490 + i * 16;
-        if i == 0 {
-            mask(a, r, 0x10, 0);
+        if i >= 9 {
+            mask(a, r, 1, 0);
+            wait(a, r, 0x00030000, 0)?;
         } else {
-            mask(a, r, 0x1010, 0x1000);
+            if i == 0 { mask(a, r, 0x10, 0); }
+            else { mask(a, r, 0x1010, 0x1000); }
+            mask(a, r, 3, 0);
+            wait(a, r, 0x001e0000, 0)?;
         }
-        mask(a, r, 3, 0);
-        wait(a, r, 0x001e0000, 0)?;
-    }
-    for i in 9..17 {
-        let r = 0x610490 + i * 16;
-        mask(a, r, 1, 0);
-        wait(a, r, 0x00030000, 0)?;
     }
     Ok(())
 }

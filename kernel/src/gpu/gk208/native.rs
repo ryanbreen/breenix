@@ -358,7 +358,6 @@ pub fn takeover(
         scripts.each_ref().map(|s| s.len())
     );
     let firmware_baseline = crate::firmware_writes::count();
-    modeset::quiesce(regs)?;
     regs.write(0x610090, 0);
     regs.write(0x6100a0, 0);
     regs.write(0x6100b0, 0);
@@ -375,6 +374,16 @@ pub fn takeover(
         let v = regs.read(0x61c000 + i * 0x800);
         regs.write(0x6301c4 + i * 0x800, v);
     }
+    // Apply the GF119 engine setup before tearing down inherited channels.
+    regs.mask(0x616308 + head as usize * 0x800, 0x111, 0x10);
+    modeset::quiesce(regs).inspect_err(|_| {
+        for channel in 0..17 {
+            crate::serial_println!("GT710_QUIESCE channel={} control={:#x} push={:#x}",
+                channel,regs.read(0x610490+channel*16),regs.read(0x610494+channel*16));
+        }
+        crate::serial_println!("GT710_QUIESCE bios={:#x} underflow={:#x} tsc_hz={}",
+            regs.read(0x6194e8),regs.read(0x616308+head as usize*0x800),timer::frequency_hz());
+    })?;
     // Owned storage only; inherited instance and command bytes remain untouched.
     {
         let mut p = memory::Pramin::new(regs, total);
