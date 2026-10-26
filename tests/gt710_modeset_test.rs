@@ -341,3 +341,23 @@ fn native_bar_view_refuses_a_scanout_beyond_the_bounded_cpu_mapping() {
         assert!(modeset::bar1_view(start,bytes,aperture,page).is_err());
     }
 }
+
+#[test]
+fn bar1_page_setup_requires_inactive_vm_and_selects_128k() {
+    struct Regs {bar1:u32,bar2:u32,config:u32,stuck:bool,writes:Vec<(usize,u32)>}
+    impl modeset::Io for Regs {
+        fn read(&mut self,r:usize)->u32 {match r {0x1704=>self.bar1,0x1714=>self.bar2,0x100c80=>self.config,_=>panic!("unexpected read")}}
+        fn write(&mut self,r:usize,v:u32) {assert_eq!(r,0x100c80);self.writes.push((r,v));if !self.stuck {self.config=v;}}
+        fn delay_us(&mut self,_:u32) {}
+    }
+    for (bar1,bar2,config,stuck,ok) in [
+        (0x7ff00,0x40000000,0x208001,false,true),
+        (0x7ff00,0x40000000,0x208000,false,true),
+        (0x8007ff00,0x40000000,0x208001,false,false),
+        (0x7ff00,0xc0000000,0x208001,false,false),
+        (0x7ff00,0x40000000,0x208001,true,false)] {
+        let mut r=Regs {bar1,bar2,config,stuck,writes:vec![]};
+        assert_eq!(modeset::bar1_page(&mut r),if ok {Ok(17)} else {Err("BAR page setup requires inactive VM and a latched 128 KiB page size")});
+        assert_eq!(r.writes,if bar1&0x80000000!=0 || bar2&0x80000000!=0 {vec![]} else {vec![(0x100c80,config&!1)]});
+    }
+}
