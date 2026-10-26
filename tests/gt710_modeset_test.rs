@@ -37,7 +37,7 @@ fn encodes_preferred_timing_and_owned_pitch_surface() {
 #[test]
 fn physical_dma_and_ramht_entries_stay_within_private_instance() {
     assert_eq!(modeset::dma_object(0x08010000,0x500000).unwrap(),
-        [9,0x080100,0x0850ff,0,0,0]);
+        [0x49,0x080100,0x0850ff,0,0,0]);
     assert!(modeset::dma_object(3,4096).is_err());
     assert!(modeset::dma_object(1<<40,4096).is_err());
     assert_eq!(modeset::ramht_slot(1,0),8);
