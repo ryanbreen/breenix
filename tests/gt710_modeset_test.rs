@@ -244,3 +244,26 @@ fn quiesce_stops_satellite_channels_before_the_core() {
     modeset::quiesce(&mut r).unwrap();
     assert!(r.control.iter().all(|v|v&1==0));
 }
+
+#[test]
+fn inherited_requests_must_read_back_disabled_before_instance_binding() {
+    struct Regs {control:[u32;17],stuck:Option<usize>}
+    impl modeset::Io for Regs {
+        fn read(&mut self,r:usize)->u32 {self.control[(r-0x610490)/16]}
+        fn write(&mut self,r:usize,v:u32) {
+            let i=(r-0x610490)/16;
+            if self.stuck!=Some(i) {self.control[i]=v;}
+        }
+        fn delay_us(&mut self,_:u32) {}
+    }
+    for stuck in [None,Some(0),Some(1),Some(9),Some(16)] {
+        let mut r=Regs{control:core::array::from_fn(|i|if i<9 {0x40000013} else {0x85}),stuck};
+        assert_eq!(modeset::stop_requests(&mut r).is_err(),stuck.is_some());
+        if stuck.is_none() {
+            for (i,v) in r.control.iter().enumerate() {
+                assert_eq!(v & if i<9 {0x13} else {1},0);
+                assert_eq!(v & if i<9 {0x40000000} else {0x84},if i<9 {0x40000000} else {0x84});
+            }
+        }
+    }
+}
