@@ -228,7 +228,7 @@ From https://github.com/ryanbreen/breenix
  * [new branch]          fix/idle-stack-ist      -> origin/fix/idle-stack-ist
  * [new branch]          fix/kill-pgroup-esrch-race -> origin/fix/kill-pgroup-esrch-race
  * [new branch]          fix/last-ahci-timeout   -> origin/fix/last-ahci-timeout
- * [new branch]          fix/m5-max-gicr-bounds-check -> origin/fix/m5-max-gicr-bounds-check
+ * [new branch]          fix/arm64-gicr-bounds-check -> origin/fix/arm64-gicr-bounds-check
  * [new branch]          fix/net-rx-msix-spi55   -> origin/fix/net-rx-msix-spi55
  * [new branch]          fix/proc-cpuinfo-smp    -> origin/fix/proc-cpuinfo-smp
  * [new branch]          fix/scheduler-thread-arc -> origin/fix/scheduler-thread-arc

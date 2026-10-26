@@ -1,6 +1,6 @@
 # Provenance
 # gate: docker/qemu/run-aarch64-boot-test-strict.sh (real boot, not score-only replay)
-# host: Ryans-M5-Max (Mac, native HVF-accelerated aarch64 QEMU, -smp 4 cortex-a72)
+# host: mac-host (Mac, native HVF-accelerated aarch64 QEMU, -smp 4 cortex-a72)
 # branch: capture/ftc-pr4-terminal-edges
 # base: 9538ebb769b4fb5bc292e554d38b8ba5834d70b2
 # kernel features: boot_tests,capture_panic_oracle

@@ -1,4 +1,4 @@
-# Provenance: gate=bash docker/qemu/run-aarch64-boot-test-strict.sh 3 (boot 1, exit 1); host=Ryans-M5-Max.local; branch=tracing/855-ring-window; base_commit=45daec35bae5d9851bd6b62075ecb9bdc921c2f1; commit=579b79a57129c4822be582bd950dfd313d332b5c; features=boot_tests,capture_selftest; TRACE_DIAG_SAMPLE=1024; span acceptance FAILED
+# Provenance: gate=bash docker/qemu/run-aarch64-boot-test-strict.sh 3 (boot 1, exit 1); host=mac-host; branch=tracing/855-ring-window; base_commit=45daec35bae5d9851bd6b62075ecb9bdc921c2f1; commit=579b79a57129c4822be582bd950dfd313d332b5c; features=boot_tests,capture_selftest; TRACE_DIAG_SAMPLE=1024; span acceptance FAILED
 EOS
 ========================================
   Breenix ARM64 Kernel Starting

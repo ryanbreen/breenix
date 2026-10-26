@@ -1,6 +1,6 @@
 # Provenance
 # gate: docker/qemu/run-aarch64-boot-test-strict.sh (real boot, not score-only replay)
-# host: Ryans-M5-Max (Mac, native HVF-accelerated aarch64 QEMU)
+# host: mac-host (Mac, native HVF-accelerated aarch64 QEMU)
 # branch: capture/ftc-pr2-tick-sampling
 # base: e9b0a4f6b45bea1ffddd9b26c674d350581e44c8
 # note: kernel built with TICK_SAMPLE=1 (equivalent to unsampled/main behaviour), CHECK_AT_MS=1000 self-check. Real gate run FAILED on this boot with the gate's own printed reason: 'Ring-span self-check span_ms 896 below floor 1100'. RING_SPAN span_ms=896 < RING_SPAN_FLOOR_MS=1100 -> RED.

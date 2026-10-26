@@ -1,4 +1,4 @@
-# Provenance: GDB hardware breakpoint at kernel::capture::emit (0xffff0000405b00f0); features=boot_tests,capture_selftest; TRACE_DIAG_SAMPLE=1024; TRACE_SCHED_DIAG_SAMPLE=16384; host=Ryans-M5-Max.local; base_commit=686b959ff2596f558189dbf7e90c7fff0df8753a; dump=0xffff000040855a80..0xffff000040875c80; stride=16448; event_format=<QHBBI; entries=1024; frequency=62500000 Hz
+# Provenance: GDB hardware breakpoint at kernel::capture::emit (0xffff0000405b00f0); features=boot_tests,capture_selftest; TRACE_DIAG_SAMPLE=1024; TRACE_SCHED_DIAG_SAMPLE=16384; host=mac-host; base_commit=686b959ff2596f558189dbf7e90c7fff0df8753a; dump=0xffff000040855a80..0xffff000040875c80; stride=16448; event_format=<QHBBI; entries=1024; frequency=62500000 Hz
 QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
 The target architecture is set to "aarch64".
 0x0000000040080000 in _start ()

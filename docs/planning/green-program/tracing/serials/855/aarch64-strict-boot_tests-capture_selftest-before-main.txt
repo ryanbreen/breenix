@@ -1,4 +1,4 @@
-# Provenance: gate=bash docker/qemu/run-aarch64-boot-test-strict.sh 3 (boot 1); host=Ryans-M5-Max.local; branch=detached origin/main; base_commit=45daec35bae5d9851bd6b62075ecb9bdc921c2f1; features=boot_tests,capture_selftest
+# Provenance: gate=bash docker/qemu/run-aarch64-boot-test-strict.sh 3 (boot 1); host=mac-host; branch=detached origin/main; base_commit=45daec35bae5d9851bd6b62075ecb9bdc921c2f1; features=boot_tests,capture_selftest
 EOS
 ========================================
   Breenix ARM64 Kernel Starting
