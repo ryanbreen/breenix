@@ -429,6 +429,20 @@ pub fn board_pll(r: &[u8], head: u32) -> Result<PllLimits, &'static str> {
         max_p: l[13],
     })
 }
+pub const BAR1_WINDOW: usize = 8 << 20;
+/// Bound the physical scanout and its page displacement to the CPU aperture.
+pub fn bar1_view(start:u64, bytes:u64, aperture:u64, page:u32) -> Result<(u64,usize,u64), &'static str> {
+    if bytes==0 || aperture<BAR1_WINDOW as u64 || !matches!(page,16|17) {
+        return Err("unsupported native BAR1 view");
+    }
+    let end=start.checked_add(bytes).ok_or("native BAR1 range overflow")?;
+    if end>1<<40 {return Err("native BAR1 address outside PTE format");}
+    let page_bytes=1u64<<page;
+    let base=start & !(page_bytes-1);
+    let span=end-base;
+    if span>BAR1_WINDOW as u64 {return Err("native scanout exceeds bounded BAR1 view");}
+    Ok((base,(start-base) as usize,(span+page_bytes-1)>>page))
+}
 pub trait Io {
     fn read(&mut self, reg: usize) -> u32;
     fn write(&mut self, reg: usize, value: u32);
@@ -451,6 +465,11 @@ pub fn wait(a: &mut impl Io, r: usize, mask: u32, value: u32) -> Result<(), &'st
 pub fn bar_flush(a: &mut impl Io) -> Result<(), &'static str> {
     a.write(0x70000, 1);
     wait(a, 0x70000, 2, 0)
+}
+/// Complete the GF100 BAR1 switch before accessing its CPU aperture.
+pub fn bar1_wait(a: &mut impl Io) -> Result<(), &'static str> {
+    bar_flush(a)?;
+    bar_flush(a)
 }
 pub fn publish(a: &mut impl Io, put: u32) -> Result<(), &'static str> {
     bar_flush(a)?;

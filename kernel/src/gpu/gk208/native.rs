@@ -342,6 +342,8 @@ pub fn takeover(
     let notifier = layout.objects[3].range.start;
     let instance = layout.objects[4].range.start;
     let total = memory::discover(regs, device.bars[1].size)?.total;
+    let page = if regs.read(0x100c80) & 1 != 0 { 16 } else { 17 };
+    let (base,displacement,pages)=modeset::bar1_view(surface.start,surface.size,device.bars[1].size,page)?;
     let methods = modeset::head_methods(
         t,
         head,
@@ -358,6 +360,12 @@ pub fn takeover(
         limits.reg,
         scripts.each_ref().map(|s| s.len())
     );
+    // Prepare CPU aliases before changing the BAR GPU translation.
+    let pointer = crate::memory::map_mmio(device.bars[1].address, modeset::BAR1_WINDOW)? + displacement;
+    crate::console::display::linear::map_native_write_combining(
+        device.bars[1].address,
+        device.bars[1].size,
+    )?;
     let firmware_baseline = crate::firmware_writes::count();
     regs.write(0x610090, 0);
     regs.write(0x6100a0, 0);
@@ -447,6 +455,8 @@ pub fn takeover(
     }
     // Enable sticky reporting in repeat mode for the native measurement window.
     regs.mask(0x616308 + head as usize * 0x800, 0x111, 0x11);
+    // The measured update has a fresh completion epoch after empty bootstrap.
+    write_words(regs,total,notifier,&[0,0,0,0])?;
     let notifier_before = read_word(regs, total, notifier)?;
     let mut put = 0;
     let mut init = alloc::vec![(0x88, 2)];
@@ -508,9 +518,6 @@ pub fn takeover(
         &scripts,
     )?;
     // A bounded BAR1 view of owned scanout storage; general VM allocation is M5.
-    let page = if regs.read(0x100c80) & 1 != 0 { 16 } else { 17 };
-    let base = surface.start & !((1u64 << page) - 1);
-    let displacement = (surface.start - base) as usize;
     let bar_inst = instance + 0x2000;
     let directory = instance + 0x3000;
     let table = instance + 0x4000;
@@ -518,14 +525,13 @@ pub fn takeover(
         regs,
         total,
         bar_inst + 0x200,
-        &[directory as u32, 0, 0x7fffff, 0],
+        &[directory as u32, 0, (modeset::BAR1_WINDOW-1) as u32, 0],
     )?;
     write_words(regs, total, directory, &[((table >> 8) as u32) | 1, 0])?;
     {
         let mut p = memory::Pramin::new(regs, total);
-        let count = (surface.start + surface.size - base + (1 << page) - 1) >> page;
         for i in 0..1024 {
-            let pte = if i < count {
+            let pte = if i < pages {
                 ((base + (i << page)) >> 8) | 1
             } else {
                 2
@@ -551,11 +557,7 @@ pub fn takeover(
     regs.write(0x100cb8, (directory >> 8) as u32);
     regs.write(0x100cbc, 0x80000005);
     modeset::wait(regs, 0x100c80, 0x8000, 0x8000)?;
-    let pointer = crate::memory::map_mmio(device.bars[1].address, 8 << 20)? + displacement;
-    crate::console::display::linear::map_native_write_combining(
-        device.bars[1].address,
-        device.bars[1].size,
-    )?;
+    modeset::bar1_wait(regs)?;
     let mut digest = crate::block::install::sha256::Sha256::new();
     let mut data_bytes = 0usize;
     for y in 0..t.height {
@@ -573,6 +575,13 @@ pub fn takeover(
                     .wrapping_add((x as u32 / 64) * 0x10203)
                     & 0xffffff);
             if actual != expected {
+                let offset=u64::from(y)*layout.pitch+x*4;
+                let physical=read_word(regs,total,surface.start+offset)?;
+                let pd=read_word(regs,total,bar_inst+0x200)?;
+                let pde=read_word(regs,total,directory)?;
+                let pte=read_word(regs,total,table+((displacement as u64+offset)>>page)*8)?;
+                crate::serial_println!("GT710_BAR1_REFUSAL offset={} expected={:#x} actual={:#x} pramin={:#x} block={:#x} page={} pdb={:#x} pde={:#x} pte={:#x} mmu={:#x} firmware_writes={}",
+                    offset,expected,actual,physical,regs.read(0x1704),page,pd,pde,pte,regs.read(0x100c80),crate::firmware_writes::count());
                 return Err("native BAR1 complete read-back differs from physical pattern");
             }
             digest.update(&actual.to_le_bytes());
