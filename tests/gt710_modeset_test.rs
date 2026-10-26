@@ -325,3 +325,15 @@ fn bar1_switch_waits_for_both_device_completion_drains() {
         assert_eq!(r.requests,if blocked==1 {1} else {2});
     }
 }
+
+#[test]
+fn native_bar_view_refuses_a_scanout_beyond_the_bounded_cpu_mapping() {
+    assert_eq!(modeset::bar1_view(0x08010000,0x500000,0x8000000,16).unwrap(),(0x08010000,0,80));
+    assert_eq!(modeset::bar1_view(0x08010000,0x500000,0x8000000,17).unwrap(),(0x08000000,65536,41));
+    for (start,bytes,aperture,page) in [(0x08010000,0x800000,0x8000000,17),
+        (0x08010000,1920*4*1200,0x8000000,16),(0x08010000,0x1000,0x400000,16),
+        (0x08010000,0,0x8000000,16),(u64::MAX-4095,8192,0x8000000,16),
+        (1<<40,4096,0x8000000,16),(0x08010000,4096,0x8000000,12)] {
+        assert!(modeset::bar1_view(start,bytes,aperture,page).is_err());
+    }
+}
