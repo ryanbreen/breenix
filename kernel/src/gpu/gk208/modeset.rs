@@ -444,6 +444,21 @@ pub enum Op {
     Register(usize, u32, u32),
     Delay(u32),
 }
+#[derive(Debug)]
+pub struct ScriptError {
+    pub reason: &'static str,
+    pub offset: usize,
+    pub opcode: u8,
+}
+impl From<&'static str> for ScriptError {
+    fn from(reason: &'static str) -> Self {
+        Self {
+            reason,
+            offset: 0,
+            opcode: 0,
+        }
+    }
+}
 /// Predecode the selected board script. Unsupported operations refuse takeover;
 /// no partial script is executed. Only display/PLL MMIO is admitted here.
 pub fn script(
@@ -452,7 +467,7 @@ pub fn script(
     head: u32,
     sor: u32,
     link: u32,
-) -> Result<Vec<Op>, &'static str> {
+) -> Result<Vec<Op>, ScriptError> {
     fn decode(
         r: &[u8],
         mut p: usize,
@@ -460,17 +475,17 @@ pub fn script(
         depth: u8,
         ops: &mut Vec<Op>,
         budget: &mut usize,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), ScriptError> {
         let (head, sor, link) = route;
         if p == 0 {
             return Ok(());
         }
         if depth > 8 {
-            return Err("recursive display script");
+            return Err("recursive display script".into());
         }
         let register = |mut raw: u32| -> Result<usize, &'static str> {
             if raw & 3 != 0 {
-                return Err("unaligned script register");
+                return Err("unaligned script register".into());
             }
             if raw & 0x80000000 != 0 {
                 raw = (raw & !0x80000000) + head * 0x800;
@@ -482,13 +497,13 @@ pub fn script(
                 }
             }
             if !(0x610000..0x620000).contains(&raw) {
-                return Err("script register outside display MMIO");
+                return Err("script register outside display MMIO".into());
             }
             Ok(raw as usize)
         };
         loop {
             if *budget == 0 {
-                return Err("display script operation limit");
+                return Err("display script operation limit".into());
             }
             *budget -= 1;
             let op = bytes(r, p, 1)?[0];
@@ -532,12 +547,18 @@ pub fn script(
                     }
                     p += n * 4;
                 }
-                _ => return Err("unsupported display script opcode"),
+                _ => {
+                    return Err(ScriptError {
+                        reason: "unsupported display script opcode",
+                        offset: p - 1,
+                        opcode: op,
+                    })
+                }
             }
         }
     }
     if head >= 4 || sor >= 4 || !(1..=2).contains(&link) {
-        return Err("invalid script route");
+        return Err("invalid script route".into());
     }
     let mut ops = Vec::new();
     decode(r, pointer, (head, sor, link), 0, &mut ops, &mut 1024)?;
@@ -553,7 +574,7 @@ pub fn script(
         .sum::<u64>()
         > 500000
     {
-        return Err("display script delay limit");
+        return Err("display script delay limit".into());
     }
     Ok(ops)
 }
@@ -564,15 +585,15 @@ pub fn board_scripts(
     sor: u32,
     protocol: u32,
     khz: u32,
-) -> Result<[Vec<Op>; 4], &'static str> {
+) -> Result<[Vec<Op>; 4], ScriptError> {
     let (v, p, size) = bit(r, b'U')?;
     if v != 1 || size < 2 {
-        return Err("unsupported BIT display entry");
+        return Err("unsupported BIT display entry".into());
     }
     let table = u16at(r, p)?;
     let h = bytes(r, table, 5)?;
     if !matches!(h[0], 0x20..=0x22) || h[1] < 5 || h[2] < 2 || h[3] > 64 || h[4] < 10 {
-        return Err("unsupported board display table");
+        return Err("unsupported board display table".into());
     }
     let mask = (0x100 << head) | (protocol << 6) | (1 << sor);
     let mut result = [0usize; 4];
@@ -588,7 +609,7 @@ pub fn board_scripts(
             continue;
         }
         if found {
-            return Err("ambiguous display script route");
+            return Err("ambiguous display script route".into());
         }
         found = true;
         result[0] = u16at(r, data + 8)?;
@@ -619,14 +640,14 @@ pub fn board_scripts(
                     cmp += 4;
                 }
                 if !selected {
-                    return Err("unterminated display clock script table");
+                    return Err("unterminated display clock script table".into());
                 }
             }
             break;
         }
     }
     if !found {
-        return Err("no board script route for native TMDS");
+        return Err("no board script route for native TMDS".into());
     }
     Ok([
         script(r, result[0], head, sor, protocol)?,

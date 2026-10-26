@@ -313,7 +313,19 @@ pub fn takeover(
     } else {
         return Err("no TMDS link");
     };
-    let scripts = modeset::board_scripts(rom, head, u32::from(route.sor), protocol, t.clock_khz)?;
+    let scripts = modeset::board_scripts(rom, head, u32::from(route.sor), protocol, t.clock_khz)
+        .map_err(|e| {
+            let end = e.offset.saturating_add(256).min(rom.len());
+            let excerpt = rom.get(e.offset..end).unwrap_or(&[]);
+            crate::serial_println!(
+                "GT710_SCRIPT_REFUSAL offset={} opcode={:#x} reason={} bytes={}",
+                e.offset,
+                e.opcode,
+                e.reason,
+                super::hex(excerpt)
+            );
+            e.reason
+        })?;
     let surface = layout.objects[0].range;
     let evo = layout.objects[2].range.start;
     let notifier = layout.objects[3].range.start;
