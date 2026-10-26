@@ -82,3 +82,20 @@ fn parses_only_the_selected_board_pixel_pll_with_bounded_limits() {
     rom[0x108]=0;
     assert!(modeset::pll(&modeset::board_pll(&rom,0).unwrap(),108000).is_err());
 }
+#[test]
+fn quiesce_refuses_a_busy_channel_before_replacing_display_storage() {
+    struct Regs { values:std::collections::BTreeMap<usize,u32>,busy:bool,writes:Vec<usize> }
+    impl modeset::Io for Regs {
+        fn read(&mut self,r:usize)->u32 {
+            if self.busy && r==0x610490 {0x001e0000} else {*self.values.get(&r).unwrap_or(&0)}
+        }
+        fn write(&mut self,r:usize,v:u32) { self.writes.push(r);self.values.insert(r,v); }
+        fn delay_us(&mut self,_:u32) {}
+    }
+    for busy in [false,true] {
+        let mut r=Regs{values:Default::default(),busy,writes:vec![]};
+        assert_eq!(modeset::quiesce(&mut r).is_err(),busy);
+        assert!(r.writes.iter().all(|r|(0x610490..0x6105a0).contains(r)),"quiesce wrote outside channel controls");
+        if !busy {for channel in 0..17 {assert!(r.writes.contains(&(0x610490+channel*16)));}}
+    }
+}
