@@ -476,6 +476,9 @@ pub fn quiesce(a: &mut impl Io) -> Result<(), &'static str> {
 pub enum Op {
     Register(usize, u32, u32),
     Delay(u32),
+    Resume,
+    Call(Vec<Op>),
+    ConditionTime { register: usize, mask: u32, value: u32, attempts: u8 },
     Copy {
         source: usize,
         shift: u8,
@@ -487,32 +490,43 @@ pub enum Op {
 }
 /// Execute a predecoded display script on the boot CPU.
 pub fn execute_ops(a: &mut impl Io, ops: &[Op]) {
-    for op in ops {
-        match *op {
-            Op::Register(r, keep, value) => {
-                let old = a.read(r);
-                a.write(r, (old & keep) | value);
+    fn run(a: &mut impl Io, ops: &[Op], enabled: &mut bool) {
+        for op in ops {
+            match op {
+                Op::Resume => { *enabled = true; continue; }
+                Op::Call(body) => {
+                    if *enabled { run(a, body, enabled); }
+                    continue;
+                }
+                _ if !*enabled => continue,
+                _ => {}
             }
-            Op::Delay(us) => a.delay_us(us),
-            Op::Copy {
-                source,
-                shift,
-                source_mask,
-                xor,
-                destination,
-                keep,
-            } => {
-                let value = a.read(source);
-                let value = if shift < 0x80 {
-                    value >> shift
-                } else {
-                    value << (0x100 - u32::from(shift))
-                };
-                let old = a.read(destination);
-                a.write(destination, (old & keep) | ((value & source_mask) ^ xor));
+            match *op {
+                Op::Register(r, keep, value) => {
+                    let old = a.read(r);
+                    a.write(r, (old & keep) | value);
+                }
+                Op::Delay(us) => a.delay_us(us),
+                Op::ConditionTime { register, mask, value, attempts } => {
+                    let mut met = false;
+                    for _ in 0..attempts {
+                        if a.read(register) & mask == value { met=true;break; }
+                        a.delay_us(20000);
+                    }
+                    if !met { *enabled=false; }
+                }
+                Op::Copy { source, shift, source_mask, xor, destination, keep } => {
+                    let value = a.read(source);
+                    let value = if shift < 0x80 { value >> shift }
+                        else { value << (0x100 - u32::from(shift)) };
+                    let old = a.read(destination);
+                    a.write(destination, (old & keep) | ((value & source_mask) ^ xor));
+                }
+                Op::Resume | Op::Call(_) => {}
             }
         }
     }
+    run(a, ops, &mut true);
 }
 #[derive(Debug)]
 pub struct ScriptError {
@@ -580,7 +594,21 @@ pub fn script(
             p += 1;
             match op {
                 0x71 => return Ok(()),
-                0x72 => {}
+                0x72 => ops.push(Op::Resume),
+                0x56 => {
+                    let cond=bytes(r,p,1)?[0] as usize;
+                    let attempts=(u16::from(bytes(r,p+1,1)?[0])*50).min(100) as u8;
+                    p+=2;
+                    let (version,address,size)=bit(r,b'I')?;
+                    if version!=1 || size<8 {return Err("unsupported BIT init entry".into());}
+                    let table=u16at(r,address+6)?;
+                    if table==0 {return Err("missing board condition table".into());}
+                    let entry=table+cond*12;
+                    let register=register(u32at(r,entry)?)?;
+                    let mask=u32at(r,entry+4)?;
+                    let value=u32at(r,entry+8)?;
+                    ops.push(Op::ConditionTime {register,mask,value,attempts});
+                }
                 0x7a => {
                     let a = register(u32at(r, p)?)?;
                     let v = u32at(r, p + 4)?;
@@ -602,7 +630,9 @@ pub fn script(
                 0x5b => {
                     let sub = u16at(r, p)?;
                     p += 2;
-                    decode(r, sub, route, depth + 1, ops, budget)?;
+                    let mut body=Vec::new();
+                    decode(r, sub, route, depth + 1, &mut body, budget)?;
+                    ops.push(Op::Call(body));
                 }
                 0x5f => {
                     let source = register(u32at(r, p)?)?;
@@ -652,20 +682,22 @@ pub fn script(
     }
     let mut ops = Vec::new();
     decode(r, pointer, (head, sor, link), 0, &mut ops, &mut 1024)?;
-    if ops
-        .iter()
-        .filter_map(|op| {
-            if let Op::Delay(us) = op {
-                Some(u64::from(*us))
-            } else {
-                None
+    fn delay_cost(ops:&[Op])->(u64,u64) {
+        let mut delays=0;
+        let mut polling=0;
+        for op in ops {
+            match op {
+                Op::Delay(us)=>delays+=u64::from(*us),
+                Op::ConditionTime {attempts,..}=>polling+=u64::from(*attempts)*20000,
+                Op::Call(body)=>{let (d,p)=delay_cost(body);delays+=d;polling+=p;},
+                _=>{}
             }
-        })
-        .sum::<u64>()
-        > 500000
-    {
-        return Err("display script delay limit".into());
+        }
+        (delays,polling)
     }
+    let (delays,polling)=delay_cost(&ops);
+    if delays>500000 {return Err("display script delay limit".into());}
+    if polling>2000000 {return Err("display script condition polling limit".into());}
     Ok(ops)
 }
 /// OffInt1, OffInt2, OnInt2, OnInt3 from the selected on-board TMDS IEDT.
