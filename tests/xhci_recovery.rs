@@ -178,3 +178,16 @@ fn reset_device_exercise_configures_on_the_last_reset() {
     assert_eq!(recovery::reset_while_refused(&mut e, first, 0), 2);
     assert_eq!((e.resets.as_slice(), e.fault.refusals), ([1, 2].as_slice(), 2));
 }
+
+#[test]
+fn an_unreclaimed_enumeration_stops_resets() {
+    use recovery::EnumerationError::{Retry, Unreclaimed};
+    let fatal = Unreclaimed("Disable Slot failed");
+    assert_eq!(fatal.reason(), "Disable Slot failed");
+    let mut p = Port::new(vec![]);
+    assert_eq!(recovery::reset_while_refused(&mut p, fatal.outcome(), 0), 0);
+    assert!(p.resets.is_empty());
+    let mut p = Port::new(vec![fatal.outcome()]);
+    assert_eq!(recovery::reset_while_refused(&mut p, Retry("Address Device failed").outcome(), 0), 1);
+    assert_eq!(p.resets, [1]);
+}

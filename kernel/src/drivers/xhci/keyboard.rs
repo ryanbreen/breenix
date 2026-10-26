@@ -623,9 +623,9 @@ impl Controller {
                 self.attach_keyboard(index, resets)
             }
             Err(error) => {
-                // `enumerate` has given the slot back.
-                log::error!("[usb] port {port}: attach FAILED: {error}");
-                Attach::Refused
+                // Do not retry if enumeration could not return the slot.
+                log::error!("[usb] port {port}: attach FAILED: {}", error.reason());
+                error.outcome()
             }
         }
     }

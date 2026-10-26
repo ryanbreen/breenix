@@ -70,6 +70,26 @@ pub(super) enum Attach {
     Refused,
 }
 
+/// Enumeration may retry only after its slot is known to be returned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum EnumerationError {
+    Retry(&'static str),
+    Unreclaimed(&'static str),
+}
+impl EnumerationError {
+    pub(super) fn reason(self) -> &'static str {
+        match self {
+            Self::Retry(reason) | Self::Unreclaimed(reason) => reason,
+        }
+    }
+    pub(super) fn outcome(self) -> Attach {
+        match self {
+            Self::Retry(_) => Attach::Refused,
+            Self::Unreclaimed(_) => Attach::Settled,
+        }
+    }
+}
+
 pub(super) trait Port {
     fn connected(&self) -> bool;
     /// Reset the device and enumerate and configure it again; `reset`

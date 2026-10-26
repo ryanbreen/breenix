@@ -948,8 +948,8 @@ impl Controller {
         }
         Ok(connected)
     }
-    /// One census enumeration of `port`. A failure has given its slot back
-    /// (`enumerate`), so the device may be reset and enumerated again.
+    /// Retry only when enumeration has returned the failed slot. An
+    /// unreclaimed slot settles the reset loop and makes `census` fail.
     fn census_enumerate(&mut self, port: u8, resets: u32) -> recovery::Attach {
         match self.enumerate(port) {
             Ok(()) => {
@@ -960,10 +960,10 @@ impl Controller {
             }
             Err(error) => {
                 log::error!(
-                    "[xhci] port {port}: enumeration FAILED: {error}; PORTSC={:#x}",
-                    self.portsc(port)
+                    "[xhci] port {port}: enumeration FAILED: {}; PORTSC={:#x}",
+                    error.reason(), self.portsc(port)
                 );
-                recovery::Attach::Refused
+                error.outcome()
             }
         }
     }
@@ -1203,14 +1203,16 @@ impl Controller {
     }
     /// Reset the port, give the device a slot and an address, and read its
     /// descriptors. A device that fails after Enable Slot is reclaimed.
-    fn enumerate(&mut self, port: u8) -> Result<(), &'static str> {
-        let (speed_id, speed) = self.reset_port(port)?;
+    fn enumerate(&mut self, port: u8) -> Result<(), recovery::EnumerationError> {
+        use recovery::EnumerationError::{Retry, Unreclaimed};
+        let (speed_id, speed) = self.reset_port(port).map_err(Retry)?;
         let protocol = self.protocols[port as usize];
         let slot = self
-            .command(Trb::new(9, 0, 0, (protocol.slot_type as u32) << 16))?
+            .command(Trb::new(9, 0, 0, (protocol.slot_type as u32) << 16))
+            .map_err(Unreclaimed)?
             .slot();
         if slot == 0 || slot > self.slots {
-            return Err("Enable Slot returned invalid slot");
+            return Err(Unreclaimed("Enable Slot returned invalid slot"));
         }
         let allocated = (|| {
             Ok::<_, &'static str>(Device {
@@ -1240,8 +1242,10 @@ impl Controller {
             Ok(device) => device,
             Err(error) => {
                 // The controller has no contexts for this slot yet; free the slot.
-                let _ = self.command_code(spec::disable_slot(slot));
-                return Err(error);
+                return match self.command_code(spec::disable_slot(slot)) {
+                    Ok(1) => Err(Retry(error)),
+                    _ => Err(Unreclaimed("failed to disable uninitialized slot")),
+                };
             }
         };
         match self.address_and_describe(&mut device, port, speed_id, protocol) {
@@ -1250,8 +1254,10 @@ impl Controller {
                 Ok(())
             }
             Err(error) => {
-                self.reclaim(device);
-                Err(error)
+                match self.reclaim(device) {
+                    Some(_) => Err(Retry(error)),
+                    None => Err(Unreclaimed(error)),
+                }
             }
         }
     }
