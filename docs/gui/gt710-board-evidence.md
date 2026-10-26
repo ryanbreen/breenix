@@ -27,11 +27,11 @@ a console suite boot; it does not execute the suite again.
 | `head_total`, `head_clock` | Active 0x640414 / 0x640450 + head*0x300, raw inherited totals and pixel clock |
 | `ddc` | `live`; read from the actual routed pins during this boot |
 | `edid`, `edid_sha256` | Complete hexadecimal base and advertised extension blocks, and SHA-256; each block checksum is checked |
-| `modes` | Sink-advertised 1280x800 and 2560x1600 timings, each with width, height, clock_khz, hsync_start/end, htotal, vsync_start/end, vtotal and EDID flags |
+| `modes` | Decoded sink-advertised timings, starting with the preferred base detailed timing, each with width, height, clock_khz, hsync_start/end, htotal, vsync_start/end, vtotal and EDID flags |
 
 The scorer independently derives detailed timings and the supported DMT
 standard timing from the raw EDID and compares the complete records. Missing
-modes, a truncated block, wrong checksum/hash, stale duplicate record, inactive
+decoded modes, a truncated block, wrong checksum/hash, stale duplicate record, inactive
 SOR, contradictory route or absent POST bit fail the case. EDID is sink
 capability evidence; it does not establish that new timings were programmed
 or that pixels reached the connector. Active registers here describe the
@@ -53,3 +53,7 @@ and the repository's `THIRD_PARTY_NOTICES`.
 
 CCB 3.0/4.0 NVIO bit-bang entries and CCB 4.1 PMGR entries use their
 respective drive/shared-pad layouts; AUX-only entries are not DDC routes.
+
+Coordinator ruling G3 (2026-10-26) makes the attached monitor the source of
+display sizes. Inventory requires its preferred detailed timing, rather than
+the ARM targets' sizes; native programming remains PR 4.3.

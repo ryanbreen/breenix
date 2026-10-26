@@ -53,13 +53,13 @@ class CaptureCases(unittest.TestCase):
             with self.assertRaises(ValueError):
                 API['check_case']('console', 'acceptance', bad)
 
-    def test_board_inventory_requires_live_edid_route_post_and_two_timings(self):
+    def test_board_inventory_requires_live_edid_route_post_and_preferred_timing(self):
         import hashlib
         edid = bytearray(128)
         edid[:8] = bytes([0, 255, 255, 255, 255, 255, 255, 0])
         edid[18:21] = bytes([1, 4, 128])
         edid[38:40] = bytes([0x81, 0])
-        edid[54:72] = bytes.fromhex('e26800a0a0402e603020360000000000001a')
+        edid[54:72] = bytes.fromhex('302a009851002a403070130000000000001e')
         edid[127] = -sum(edid) & 255
         evidence = dict(schema=1, phase='board', bdf='01:00.0', boot0=0x106000a1,
                         chipset=0x106, revision=0xa1, post=2, rom_bytes=4096,
@@ -69,12 +69,12 @@ class CaptureCases(unittest.TestCase):
                         connector=0, connector_type=0x31, drive=2, sor=0,
                         sor_state=0x501, head=0, head_total=0x033f0540, head_clock=65000000,
                         ddc='live', edid=edid.hex(), edid_sha256=hashlib.sha256(edid).hexdigest(),
-                        modes=[dict(width=1280, height=800, clock_khz=83500,
+                        modes=[dict(width=1280, height=1024, clock_khz=108000,
+                                    hsync_start=1328, hsync_end=1440, htotal=1688,
+                                    vsync_start=1025, vsync_end=1028, vtotal=1066, flags=30),
+                               dict(width=1280, height=800, clock_khz=83500,
                                     hsync_start=1352, hsync_end=1480, htotal=1680,
-                                    vsync_start=803, vsync_end=809, vtotal=831, flags=28),
-                               dict(width=2560, height=1600, clock_khz=268500,
-                                    hsync_start=2608, hsync_end=2640, htotal=2720,
-                                    vsync_start=1603, vsync_end=1609, vtotal=1646, flags=26)])
+                                    vsync_start=803, vsync_end=809, vtotal=831, flags=28)])
         serial = lambda e: SERIAL + 'GT710_NATIVE ' + json.dumps(e) + '\n'
         API['check_case']('board', 'inventory', serial(evidence))
         for version in (0x30, 0x40):

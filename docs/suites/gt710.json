@@ -12,7 +12,7 @@
       "cases": [
         {
           "id": "inventory",
-          "title": "Live board tables, POST and active TMDS routing identify a DDC sink advertising both required timings"
+          "title": "Live board tables, POST and active TMDS routing identify the attached DDC sink and its preferred timing"
         }
       ]
     },

@@ -331,6 +331,10 @@ Run `gh issue list --repo ryanbreen/breenix` for the full current backlog.
 
 ## Native display board inventory (E19 M4 PR 4.1)
 
-In progress: bounded GK208B board-table inventory and live EDID over the
-board-routed DDC port, with native evidence recorded by the metal capture
-scorer. Native scanout allocation, modes and flips follow in later M4 PRs.
+PR [#2493](https://github.com/ryanbreen/breenix/pull/2493) carries bounded
+GK208B board-table inventory and live EDID over the board-routed DDC port,
+with native evidence recorded by the metal capture scorer. Under coordinator
+ruling G3, the attached monitor supplies the preferred timing; the PR records
+acceptance and landing status. Review follow-ups are in
+[#2494](https://github.com/ryanbreen/breenix/issues/2494). Native scanout
+allocation, modes and flips follow in later M4 PRs.

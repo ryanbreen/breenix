@@ -9,7 +9,7 @@ import tempfile
 
 CATEGORIES = {
     'board': (
-        ('inventory', 'Live board tables, POST and active TMDS routing identify a DDC sink advertising both required timings'),
+        ('inventory', 'Live board tables, POST and active TMDS routing identify the attached DDC sink and its preferred timing'),
     ),
     'firmware': (
         ('mode', 'The firmware framebuffer report gives its mode, pixel format, pitch, base and mapped size'),
@@ -121,9 +121,13 @@ def board_inventory(serial):
                 or e['edid_sha256'] != hashlib.sha256(raw).hexdigest()):
             raise ValueError('board identity, route, POST, active state or EDID provenance mismatch')
         selected = e['modes']
-        if (not selected or any(t not in timings for t in selected)
-                or {(t['width'],t['height']) for t in selected} != {(1280,800),(2560,1600)}):
-            raise ValueError('both required complete timings must be advertised by this live sink')
+        # G3: the attached monitor supplies the modes, including its first DTD.
+        preferred = raw[54:72]
+        if (not selected or selected != list({tuple(t.items()): t for t in timings}.values())
+                or selected[0]['clock_khz'] != int.from_bytes(preferred[:2], 'little') * 10
+                or selected[0]['width'] != preferred[2] + ((preferred[4] & 240) << 4)
+                or selected[0]['height'] != preferred[5] + ((preferred[7] & 240) << 4)):
+            raise ValueError('complete decoded timings including the preferred DTD must match this live sink')
     except (KeyError,TypeError,IndexError,json.JSONDecodeError) as error:
         raise ValueError('malformed native board evidence') from error
     for group in ('firmware','device'):
