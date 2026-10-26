@@ -374,7 +374,7 @@ fn bar1_activation_finishes_switch_drains_before_invalidating_the_mapping() {
         fn write(&mut self,r:usize,v:u32) {self.writes.push((r,v));if r==0x70000 {self.drains+=1;}}
         fn delay_us(&mut self,_:u32) {}
     }
-    let sequence=vec![(0x70000,1),(0x1704,0x80008a32),(0x70000,1),(0x70000,1),
+    let sequence=[(0x70000,1),(0x1704,0x80008a32),(0x70000,1),(0x70000,1),
         (0x70000,1),(0x100cb8,0x8a330),(0x100cbc,0x80000005)];
     for (blocked,free,queued) in [(0,true,true),(1,true,true),(2,true,true),
         (3,true,true),(4,true,true),(0,false,true),(0,true,false)] {
