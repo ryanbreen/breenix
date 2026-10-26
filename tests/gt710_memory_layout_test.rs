@@ -154,3 +154,30 @@ fn idle_post_display_needs_no_inherited_evo_instance() {
     d.regs.insert(0x610490,0x13);
     assert!(memory::discover(&mut d,128<<20).is_err(),"active channel without an instance escaped");
 }
+
+#[test]
+fn opaque_post_control_uses_only_the_idle_reserved_carveout() {
+    let mut d=Device::new();
+    d.regs.insert(0x610010,1);
+    d.regs.insert(0x1704,0x7ff00); // Direct VRAM mode, not a VM instance.
+    d.regs.insert(0x1714,0x40000000);
+    let before=d.regs.clone();
+    let inv=memory::discover(&mut d,128<<20).unwrap();
+    assert_eq!(d.regs,before,"discovery changed inherited controls");
+    assert!(d.writes.is_empty(),"discovery wrote inherited storage");
+    assert!(inv.references.is_empty());
+    assert_eq!(inv.reserved,[Range{start:0,size:128<<20},
+                             Range{start:(1<<30)-(1<<20),size:1<<20}]);
+    let layout=Layout::new(inv.total,&inv.reserved,1280,1024).unwrap();
+    assert!(layout.objects.iter().all(|o|o.guarded().start>=128<<20 &&
+        o.guarded().end().unwrap()<=(1<<30)-(1<<20)));
+    for i in 0..9 {
+        let mut active=Device::new();active.regs.insert(0x610010,1);
+        active.regs.insert(0x610490+i*16,0x13);
+        assert!(memory::discover(&mut active,128<<20).is_err(),"opaque active channel {i}");
+    }
+    for unknown in [2,3,5,0x1001] {
+        d.regs.insert(0x610010,unknown);
+        assert!(memory::discover(&mut d,128<<20).is_err(),"unbounded opaque control {unknown:#x}");
+    }
+}
