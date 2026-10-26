@@ -368,3 +368,8 @@ nvkm/subdev/bar/g84.c at the same nouveau revision. That file's checked MIT
 grant is Copyright 2015 Red Hat Inc.; the original full notice is retained
 in modeset.rs. The consumer drains this barrier before publishing EVO PUT
 and before enabling the owned display/BAR instance tables.
+
+The same nouveau revision include/nvif/cl0002.h declares
+SPDX-License-Identifier: MIT (no additional copyright line). Its GF119
+physical small-page and pitch definitions are used by modeset.rs together
+with the MIT usergf119.c descriptor layout listed above.

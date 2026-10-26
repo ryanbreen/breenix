@@ -271,7 +271,7 @@ pub fn dma_object(start: u64, size: u64) -> Result<[u32; 6], &'static str> {
         return Err("invalid physical display DMA range");
     }
     Ok([
-        9,
+        0x49, // VRAM target | GF119_DMA_V0_PAGE_SP (MIT include/nvif/cl0002.h).
         (start >> 8) as u32,
         ((start + size - 1) >> 8) as u32,
         0,
