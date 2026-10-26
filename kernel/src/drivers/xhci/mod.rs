@@ -465,6 +465,52 @@ struct Controller {
     next_host_key: u64,
     #[cfg(feature = "xhci_fault_inject")]
     fault: fault::Injection,
+    #[cfg(all(feature = "testing", target_arch = "x86_64"))]
+    address_fault: AddressFault,
+}
+
+/// A testing kernel's x86 census fails its first Address Device once, so a
+/// tests boot takes the census's device-reset recovery (#2495). The
+/// command is not sent: the slot stays Enabled and unaddressed, as a USB
+/// transaction error leaves it (4.6.5). `[TEST:xhci:census_address_recovery]`
+/// reports the outcome; its FAIL ends a tests boot.
+#[cfg(all(feature = "testing", target_arch = "x86_64"))]
+struct AddressFault {
+    armed: bool,
+    /// The port whose Address Device failed; 0 before it fires.
+    port: u8,
+}
+#[cfg(all(feature = "testing", target_arch = "x86_64"))]
+impl AddressFault {
+    fn arm(&mut self) {
+        self.armed = true;
+        log::info!("[TEST:xhci:census_address_recovery:START]");
+    }
+    /// True once, for the first Address Device while armed.
+    fn fail(&mut self, port: u8) -> bool {
+        if !self.armed || self.port != 0 {
+            return false;
+        }
+        self.port = port;
+        log::warn!("[xhci] port {port}: testing fault point: Address Device fails once, unsent");
+        true
+    }
+    /// Disarm, and report whether the census, with the port whose Address
+    /// Device failed, completed.
+    fn report(&mut self, census: Result<u32, &'static str>) {
+        self.armed = false;
+        match (census, self.port) {
+            (Err(error), _) => {
+                log::error!("[TEST:xhci:census_address_recovery:FAIL:{error}]")
+            }
+            (Ok(_), 0) => log::error!(
+                "[TEST:xhci:census_address_recovery:FAIL:no connected port reached Address Device]"
+            ),
+            (Ok(_), port) => log::info!(
+                "[TEST:xhci:census_address_recovery:PASS] port {port} enumerated after its Address Device failed"
+            ),
+        }
+    }
 }
 
 /// One x86-metal attach hook, after clocks and the interrupt controller exist.
@@ -642,6 +688,8 @@ fn start(device: pci::Device) -> Result<(), &'static str> {
         next_host_key: 0,
         #[cfg(feature = "xhci_fault_inject")]
         fault: fault::Injection::new(),
+        #[cfg(all(feature = "testing", target_arch = "x86_64"))]
+        address_fault: AddressFault { armed: false, port: 0 },
     };
     let result = controller.run(scratchpads);
     if result.is_err() {
@@ -837,6 +885,19 @@ impl Controller {
             "[xhci] no-op completed by MSI: interrupts={interrupts} event-wraps={}",
             self.consumer.wraps
         );
+        #[cfg(all(feature = "testing", target_arch = "x86_64"))]
+        self.address_fault.arm();
+        let census = self.census();
+        #[cfg(all(feature = "testing", target_arch = "x86_64"))]
+        self.address_fault.report(census);
+        let connected = census?;
+        log::info!("[xhci] port census: ports={} connected={connected} enumerated={}; descriptors complete", self.ports, self.devices.len());
+        INITIALIZED.store(true, Ordering::Release);
+        // Keep owning the event ring: class drivers, port changes, reclamation.
+        self.serve()
+    }
+    /// Enumerate the connected root ports. Returns how many are connected.
+    fn census(&mut self) -> Result<u32, &'static str> {
         let mut connected = 0;
         for port in 1..=self.ports {
             let status = self.portsc(port);
@@ -857,10 +918,7 @@ impl Controller {
                 return Err("attached device enumeration incomplete");
             }
         }
-        log::info!("[xhci] port census: ports={} connected={connected} enumerated={}; descriptors complete", self.ports, self.devices.len());
-        INITIALIZED.store(true, Ordering::Release);
-        // Keep owning the event ring: class drivers, port changes, reclamation.
-        self.serve()
+        Ok(connected)
     }
     fn ring_doorbell(&self, slot: u8, target: u32) {
         fence(Ordering::Release);
@@ -1171,6 +1229,10 @@ impl Controller {
         input.put32(ep_at + 16, 8); // Average TRB length for control, 6.2.3.
         self.dcbaa.put64(slot as usize * 8, device.output.phys);
         fence(Ordering::Release);
+        #[cfg(all(feature = "testing", target_arch = "x86_64"))]
+        if self.address_fault.fail(port) {
+            return Err("command/transfer completion failed");
+        }
         self.command(Trb::new(11, device.input.phys, 0, (slot as u32) << 24))?;
         // The SetAddress() recovery interval is software's to time (4.6.5).
         delay(spec::SET_ADDRESS_RECOVERY_NS);
