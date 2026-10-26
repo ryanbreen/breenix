@@ -173,8 +173,10 @@ fn opaque_post_control_uses_only_the_idle_reserved_carveout() {
         o.guarded().end().unwrap()<=(1<<30)-(1<<20)));
     for i in 0..9 {
         let mut active=Device::new();active.regs.insert(0x610010,1);
-        active.regs.insert(0x610490+i*16,0x13);
-        assert!(memory::discover(&mut active,128<<20).is_err(),"opaque active channel {i}");
+        for control in [0x13,0x10,0x80000000] {
+            active.regs.insert(0x610490+i*16,control);
+            assert!(memory::discover(&mut active,128<<20).is_err(),"opaque channel {i} control {control:#x}");
+        }
     }
     for unknown in [2,3,5,0x1001] {
         d.regs.insert(0x610010,unknown);
