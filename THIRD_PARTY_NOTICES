@@ -336,7 +336,8 @@ drivers/gpu/drm/nouveau/. Each file-local MIT grant was checked before use.
   Copyright 2012 Red Hat Inc.; private display object/hash-table encodings.
 - nvkm/subdev/bios/pll.c: Copyright 2005-2006 Erik Waling,
   2006 Stephane Marchesin, 2007-2009 Stuart Bennett; VPLL table 4.0.
-- include/nvkm/subdev/bios/pll.h: SPDX-License-Identifier: MIT; VPLL type IDs.
+- include/nvkm/subdev/bios/{pll,disp}.h: SPDX-License-Identifier: MIT;
+  VPLL type IDs and the byte-sized IEDT configuration flags.
 - nvkm/subdev/clk/pllgt215.c: Copyright 2010 Red Hat Inc.; fractional PLL calculation.
 - nvkm/subdev/devinit/gf100.c: Copyright 2013 Red Hat Inc.; pixel PLL programming.
 - nvkm/subdev/bios/{disp,init,dcb}.c: Copyright 2012 Red Hat Inc.; bounded

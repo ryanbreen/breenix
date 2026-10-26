@@ -38,7 +38,7 @@ to Linux v6.8 `e8f897f4afef0031fe618a8e94127a0934896aba`:
 `nvkm/engine/disp/{gf119,nv50,gk104,gk110}.c`,
 `nvkm/engine/dma/usergf119.c`, `nvkm/core/ramht.c`,
 `nvkm/subdev/bios/{pll,disp,init,dcb}.c`,
-`include/nvkm/subdev/bios/pll.h`, `nvkm/subdev/clk/pllgt215.c`,
+`include/nvkm/subdev/bios/{pll,disp}.h`, `nvkm/subdev/clk/pllgt215.c`,
 `nvkm/subdev/devinit/gf100.c`, `nvkm/subdev/bar/gf100.c`,
 `nvkm/subdev/fb/gf100.c`, and `nvkm/subdev/mmu/{vmmgf100,vmmgk104}.c`.
 Each declares MIT; Linux integration code is excluded.

@@ -147,6 +147,7 @@
  *
  * Authors: Ben Skeggs
  */
+//! IEDT flags use the u8 declaration in MIT-SPDX bios/disp.h.
 //! Bounded GK208B display method encoding (E19 M4 PR 4.3).
 //! NVIDIA cl927d.h, nouveau gf119.c/pllgt215.c and rnndb nv_evo.xml;
 //! revisions and complete licenses are recorded in THIRD_PARTY_NOTICES.
@@ -600,7 +601,7 @@ pub fn board_scripts(
                 continue;
             }
             // Select the single-link TMDS configuration (MIT nv50.c supervisor).
-            if u16::from_le_bytes([c[1], c[2]]) != 0 {
+            if c[1] != 0 {
                 continue;
             }
             for i in 0..2 {
