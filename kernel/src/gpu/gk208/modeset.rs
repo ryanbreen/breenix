@@ -492,6 +492,34 @@ pub fn bar1_wait(a: &mut impl Io) -> Result<(), &'static str> {
     bar_flush(a)?;
     bar_flush(a)
 }
+/// Choose the observed GK208B big-page layout before either BAR VM is live.
+pub fn bar1_page(a: &mut impl Io) -> Result<u32, &'static str> {
+    let refusal="BAR page setup requires inactive VM and a latched 128 KiB page size";
+    if a.read(0x1704)&0x80000000!=0 || a.read(0x1714)&0x80000000!=0 {
+        return Err(refusal);
+    }
+    mask(a,0x100c80,1,0);
+    if a.read(0x100c80)&1!=0 {return Err(refusal);}
+    Ok(17)
+}
+/// Publish a private BAR1 instance, complete its switch, then invalidate its view.
+pub fn activate_bar1(a: &mut impl Io, instance:u64, directory:u64) -> Result<u32, &'static str> {
+    let before=a.read(0x1704);
+    bar_flush(a)?;
+    a.write(0x1704,0x80000000|(instance>>12) as u32);
+    bar1_wait(a)?;
+    bar_flush(a)?;
+    let mut free=false;
+    for _ in 0..20000 {
+        if a.read(0x100c80)&0x00ff0000!=0 {free=true;break;}
+        a.delay_us(100);
+    }
+    if !free {return Err("BAR1 invalidation queue has no free slot");}
+    a.write(0x100cb8,(directory>>8) as u32);
+    a.write(0x100cbc,0x80000005);
+    wait(a,0x100c80,0x8000,0x8000)?;
+    Ok(before)
+}
 pub fn publish(a: &mut impl Io, put: u32) -> Result<(), &'static str> {
     bar_flush(a)?;
     a.write(0x640000, put);

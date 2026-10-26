@@ -342,7 +342,7 @@ pub fn takeover(
     let notifier = layout.objects[3].range.start;
     let instance = layout.objects[4].range.start;
     let total = memory::discover(regs, device.bars[1].size)?.total;
-    let page = if regs.read(0x100c80) & 1 != 0 { 16 } else { 17 };
+    let page = modeset::bar1_page(regs)?;
     let (base,displacement,pages)=modeset::bar1_view(surface.start,surface.size,device.bars[1].size,page)?;
     let methods = modeset::head_methods(
         t,
@@ -540,24 +540,7 @@ pub fn takeover(
             p.write(table + i * 8 + 4, (pte >> 32) as u32)?;
         }
     }
-    modeset::bar_flush(regs)?;
-    let old_bar = regs.read(0x1704);
-    regs.write(0x1704, 0x80000000 | (bar_inst >> 12) as u32);
-    let mut free = false;
-    for _ in 0..20000 {
-        if regs.read(0x100c80) & 0x00ff0000 != 0 {
-            free = true;
-            break;
-        }
-        regs.delay_us(100);
-    }
-    if !free {
-        return Err("BAR1 invalidation queue has no free slot");
-    }
-    regs.write(0x100cb8, (directory >> 8) as u32);
-    regs.write(0x100cbc, 0x80000005);
-    modeset::wait(regs, 0x100c80, 0x8000, 0x8000)?;
-    modeset::bar1_wait(regs)?;
+    let old_bar = modeset::activate_bar1(regs,bar_inst,directory)?;
     let mut digest = crate::block::install::sha256::Sha256::new();
     let mut data_bytes = 0usize;
     for y in 0..t.height {
