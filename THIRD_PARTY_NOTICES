@@ -321,3 +321,38 @@ physical pattern verifier and retained-capture scoring are Breenix code.
 The FBPA-per-partition sum also adapts `drivers/gpu/drm/nouveau/nvkm/subdev/fb/ramgf108.c`
 at the same revision: Copyright 2017 Red Hat Inc.; MIT. Its checked original
 notice is retained in `kernel/src/gpu/gk208/memory.rs`.
+
+
+GK208B native preferred mode (E19 M4 PR 4.3)
+------------------------------------------
+Consumer files: kernel/src/gpu/gk208/modeset.rs and native.rs.
+Source revision for nouveau: Linux v6.8,
+e8f897f4afef0031fe618a8e94127a0934896aba, paths below relative to
+drivers/gpu/drm/nouveau/. Each file-local MIT grant was checked before use.
+
+- nvkm/engine/disp/{gf119,nv50,gk104,gk110}.c: Copyright 2012 Red Hat Inc.;
+  DMA lifecycle, supervisor, head state, SOR power and TMDS clock handling.
+- nvkm/core/ramht.c and nvkm/engine/dma/usergf119.c:
+  Copyright 2012 Red Hat Inc.; private display object/hash-table encodings.
+- nvkm/subdev/bios/pll.c: Copyright 2005-2006 Erik Waling,
+  2006 Stephane Marchesin, 2007-2009 Stuart Bennett; VPLL table 4.0.
+- include/nvkm/subdev/bios/pll.h: SPDX-License-Identifier: MIT; VPLL type IDs.
+- nvkm/subdev/clk/pllgt215.c: Copyright 2010 Red Hat Inc.; fractional PLL calculation.
+- nvkm/subdev/devinit/gf100.c: Copyright 2013 Red Hat Inc.; pixel PLL programming.
+- nvkm/subdev/bios/{disp,init,dcb}.c: Copyright 2012 Red Hat Inc.; bounded
+  display script selection, register relocation and admitted operations.
+- nvkm/subdev/bar/gf100.c and nvkm/subdev/fb/gf100.c:
+  Copyright 2012 Red Hat Inc.; bounded scanout BAR1 attachment and page size.
+- nvkm/subdev/mmu/{vmmgf100,vmmgk104}.c:
+  Copyright 2017 Red Hat Inc.; BAR1 page-directory, large-page and invalidation fields.
+
+NVIDIA open-gpu-doc revision 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+classes/display/cl927d.h: SPDX-License-Identifier: MIT;
+Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES.
+Head, surface, notifier and TMDS methods; original full notice in both consumers.
+
+envytools revision f102b82381f3f11cee113d16374c87091db039d9,
+rnndb/display/{nv_evo,g80_pdisplay}.xml and rnndb/bus/pbus.xml:
+MIT via their imported rnndb/copyright.xml. Storage pitch units, active
+raster/underflow and BAR mode fields; imported author/grant notice retained
+in modeset.rs and native.rs. No imported executable Linux/DRM integration.

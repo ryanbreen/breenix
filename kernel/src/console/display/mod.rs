@@ -91,6 +91,8 @@ unsafe fn write_bands(target: *mut u8, layout: &Layout, shadow: &[u8], lines: Ra
             core::ptr::copy_nonoverlapping(from.as_ptr(), target.add(bytes.start), bytes.len());
             #[cfg(target_arch = "aarch64")]
             crate::graphics::firmware_writes::note_range(target.add(bytes.start), bytes.len());
+            #[cfg(target_arch = "x86_64")]
+            crate::firmware_writes::note_range(target.add(bytes.start), bytes.len());
         }
     })
 }

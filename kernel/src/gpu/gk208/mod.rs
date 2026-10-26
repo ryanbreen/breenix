@@ -96,6 +96,9 @@ mod board;
 mod ddc;
 mod edid;
 mod memory;
+mod modeset;
+mod native;
+pub use native::{ConsoleSurface,console_binding};
 mod rom;
 static DISPLAY_MEMORY: conquer_once::spin::OnceCell<memory::Layout> =
     conquer_once::spin::OnceCell::uninit();
@@ -230,7 +233,7 @@ fn sink(
     let modes = edid::parse(&data)?;
     Ok((data, modes))
 }
-fn inventory(device: pci::Device) -> Result<(), &'static str> {
+fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
     let bar = device.bars[0];
     if bar.address == 0 || bar.size < 0x800000 || bar.is_io || bar.prefetchable {
         return Err("BAR0 is not an assigned register aperture");
@@ -295,25 +298,32 @@ fn inventory(device: pci::Device) -> Result<(), &'static str> {
         let preferred = modes.first().ok_or("no preferred sink timing")?;
         display_memory(
             &mut regs,
-            device,
+            &device,
             preferred.width.into(),
             preferred.height.into(),
         )?;
-        return Ok(());
+        let layout=DISPLAY_MEMORY.get().ok_or("missing retained display allocation")?;
+        let result=native::takeover(&mut regs,device,&rom,preferred,route,head,layout);
+        if result.is_err() {
+            crate::serial_println!("GT710_MODE_STATE ctrl={:#x} error={:#x} stat={:#x} data={:#x} code={:#x} put={} get={} super={:#x} head-super={:#x}",
+                regs.read(0x610490),regs.read(0x61009c),regs.read(0x6101f0),regs.read(0x6101f4),regs.read(0x6101f8),
+                regs.read(0x640000),regs.read(0x640004),regs.read(0x6100ac),regs.read(0x6101d4+head as usize*0x800));
+        }
+        return result;
     }
     Err("no active board-routed TMDS sink responded to live DDC")
 }
-pub fn identify() {
-    if let Some(device) = pci::find_device(0x10de, 0x128b) {
-        if let Err(e) = inventory(device) {
-            crate::serial_println!("GT710_PROBE failed: {}", e);
-        }
+pub fn identify() -> Option<ConsoleSurface> {
+    let device=pci::find_device(0x10de,0x128b)?;
+    match inventory(device) {
+        Ok(surface)=>Some(surface),
+        Err(e)=>{crate::serial_println!("GT710_PROBE failed: {}",e);None},
     }
 }
 
 fn display_memory(
     regs: &mut Registers,
-    device: pci::Device,
+    device: &pci::Device,
     width: u32,
     height: u32,
 ) -> Result<(), &'static str> {

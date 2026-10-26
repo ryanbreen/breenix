@@ -44,6 +44,8 @@ pub struct Linear {
     layout: Layout,
     /// The framebuffer's physical address and where it is, once known.
     located: OnceCell<(u64, Place)>,
+    #[cfg(target_arch = "x86_64")]
+    native: OnceCell<crate::gk208::ConsoleSurface>,
 }
 
 // SAFETY: the mapping lives for the kernel's lifetime, and its rows are written
@@ -63,6 +65,8 @@ impl Linear {
             len,
             layout,
             located: OnceCell::uninit(),
+            #[cfg(target_arch = "x86_64")]
+            native: OnceCell::uninit(),
         })
     }
 
@@ -72,22 +76,47 @@ impl Linear {
     }
 
     pub fn layout(&self) -> Layout {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(s)=self.native.get() {
+            return Layout {width:s.width,height:s.height,stride_bytes:s.pitch,bytes_per_pixel:4,
+                reserved:0,bgr:true,font:super::super::raster::Font::for_display(s.width,s.height)};
+        }
         self.layout
+    }
+    fn buffer(&self)->*mut u8 {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(s)=self.native.get() {return s.pointer as *mut u8;}
+        self.buffer
+    }
+    #[cfg(target_arch = "x86_64")]
+    fn length(&self)->usize {self.native.get().map_or(self.len,|s|s.bytes)}
+    /// Called once, on the boot CPU, before prepare allocates the console shadow.
+    #[cfg(target_arch = "x86_64")]
+    pub fn install_native(&self,surface:crate::gk208::ConsoleSurface)->Result<(),&'static str> {
+        self.native.try_init_once(||surface).map_err(|_|"native console already attached")
     }
 
     pub fn write(&self, shadow: &[u8], lines: Range<usize>, allowed: fn() -> bool) -> bool {
         // SAFETY: the mapping holds at least `layout.bytes()` bytes (`new`).
-        unsafe { write_bands(self.buffer, &self.layout, shadow, lines, allowed) }
+        unsafe { write_bands(self.buffer(), &self.layout(), shadow, lines, allowed) }
     }
 
     pub fn settle(&self) -> Result<Source, &'static str> {
         drain_writes();
         let &(phys, place) = self.located.get().ok_or("the framebuffer's physical address is not known")?;
+        #[cfg(target_arch = "x86_64")]
+        if let Some(s)=self.native.get() {
+            crate::gk208::console_binding(s)?;
+            let writes=crate::firmware_writes::count().checked_sub(s.firmware_baseline).ok_or("firmware write counter reversed")?;
+            if writes!=0 {return Err("firmware writes after native handoff");}
+            crate::serial_println!("GT710_NATIVE_CONSOLE surface={} firmware_writes={}",s.vram,writes);
+            return Ok(Source::Scanout {phys:s.phys,place});
+        }
         Ok(Source::Scanout { phys, place })
     }
 
     pub fn read_line(&self, y: usize, out: &mut [u8]) {
-        let start = self.layout.line(y).start;
+        let start = self.layout().line(y).start;
         // The widest read the mapping allows: each read of video memory is a
         // bus transaction of its own. On x86 a whole 64-byte line where
         // aligned (`read_64`), else eight bytes where aligned.
@@ -97,7 +126,7 @@ impl Linear {
         while index < out.len() {
             // SAFETY: inside the framebuffer mapping; the wide reads are aligned.
             unsafe {
-                let source = self.buffer.add(start + index);
+                let source = self.buffer().add(start + index);
                 #[cfg(target_arch = "x86_64")]
                 if lines && index + 64 <= out.len() && source as usize % 64 == 0 {
                     read_64(source, out[index..index + 64].as_mut_ptr());
@@ -133,7 +162,7 @@ impl Linear {
         rows: Range<usize>,
         columns: Range<usize>,
     ) -> bool {
-        let layout = self.layout;
+        let layout = self.layout();
         let bpp = layout.bytes_per_pixel;
         let columns = columns.start.min(layout.width)..columns.end.min(layout.width);
         let len = columns.len() * bpp;
@@ -143,13 +172,14 @@ impl Linear {
         for y in rows.start..rows.end.min(layout.height) {
             let target = y * layout.stride_bytes + columns.start * bpp;
             let copied = holding_screen(|| {
-                if len != 0 && target + len <= self.len {
+                if len != 0 && target + len <= self.length() {
+                    crate::firmware_writes::note_range(unsafe {self.buffer().add(target)},len);
                     // SAFETY: the caller's pane holds this row; the target is
                     // inside the framebuffer mapping.
                     unsafe {
                         core::ptr::copy_nonoverlapping(
                             pane.add(y * pane_stride + columns.start * bpp),
-                            self.buffer.add(target),
+                            self.buffer().add(target),
                             len,
                         );
                     }
@@ -166,12 +196,12 @@ impl Linear {
     /// device memory. Absent outside the framebuffer or while a row is written.
     #[cfg(target_arch = "x86_64")]
     pub fn read_pixel(&self, x: usize, y: usize) -> Option<[u8; 3]> {
-        let layout = self.layout;
+        let layout = self.layout();
         if x >= layout.width || y >= layout.height {
             return None;
         }
         let offset = y * layout.stride_bytes + x * layout.bytes_per_pixel;
-        if offset.checked_add(3)? > self.len {
+        if offset.checked_add(3)? > self.length() {
             return None;
         }
         let mut pixel = [0; 3];
@@ -180,7 +210,7 @@ impl Linear {
             drain_writes();
             // SAFETY: inside the framebuffer mapping (checked above).
             unsafe {
-                let source = self.buffer.add(offset);
+                let source = self.buffer().add(offset);
                 pixel = [source.read_volatile(), source.add(1).read_volatile(), source.add(2).read_volatile()];
             }
         });
@@ -400,4 +430,10 @@ unsafe fn read_64(source: *const u8, out: *mut u8) {
             options(nostack, preserves_flags),
         );
     }
+}
+
+/// Retype the BAR aliases after adding the bounded native mapping.
+#[cfg(target_arch = "x86_64")]
+pub fn map_native_write_combining(start:u64,size:u64)->Result<(),&'static str> {
+    map_write_combining(start,start+size,true).map(|_|())
 }

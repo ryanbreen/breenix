@@ -8,6 +8,7 @@ import runpy
 import tempfile
 
 CATEGORIES = {
+    'native': [('preferred', 'The preferred EDID mode completes on owned native scanout with advancing raster and full pixel read-back')],
     'memory': (
         ('carveout', 'Private display allocations preserve inherited VRAM and pass complete complementary physical read-back without aliasing'),
     ),
@@ -235,8 +236,87 @@ def display_memory(serial):
     return e
 
 
+def native_mode(serial):
+    try:
+        board = board_inventory(serial)
+        memory = display_memory(serial)
+        e = json.loads(one(r'^GT710_MODE (.+)$', serial, 'native mode evidence')[1])
+        def need(ok, why):
+            if not ok: raise ValueError(why)
+        t = board['modes'][0]
+        surface = memory['objects'][0]['start']
+        need(e['schema']==1 and e['phase']=='native' and e['bdf']==board['bdf']
+             and e['head']==board['head'] and e['sor']==board['sor'] and e['timing']==t,
+             'native timing differs from the live preferred EDID route')
+        need(e['surface']==surface and e['pitch']==memory['pitch']
+             and e['instance']==memory['objects'][4]['start'] and e['push']==memory['objects'][2]['start'],
+             'native display uses foreign storage')
+        h=e['head']*0x300
+        regs=dict(e['active'])
+        need(len(regs)==len(e['active']), 'duplicate active register')
+        pair=lambda x,y:x|(y<<16)
+        expected={0x414:pair(t['htotal'],t['vtotal']),
+          0x418:pair(t['hsync_end']-t['hsync_start']-1,t['vsync_end']-t['vsync_start']-1),
+          0x41c:pair(t['htotal']-t['hsync_start']-1,t['vtotal']-t['vsync_start']-1),
+          0x420:pair(t['htotal']-t['hsync_start']+t['width']-1,t['vtotal']-t['vsync_start']+t['height']-1),
+          0x450:t['clock_khz']*1000,0x460:surface>>8,0x468:pair(t['width'],t['height']),
+          0x46c:0x1000000|(e['pitch']>>4)<<8,0x470:0xcf00,0x474:1}
+        need(all(regs.get(0x640000+h+r)==v for r,v in expected.items()), 'active native head or scanout mismatch')
+        polarity=(8 if not t['flags']&2 else 0)|(16 if not t['flags']&4 else 0)
+        need(regs[0x640404+h]&0x3d8==0x140|polarity, 'native sync polarity or pixel depth mismatch')
+        need(e['protocol'] in (1,2) and regs[0x640200+e['sor']*32]&0xf0f==e['protocol']<<8|1<<e['head'],
+             'active TMDS output mismatch')
+        need(e['notifier_before']==0 and e['notifier_after']&1 and e['clean_notifier']&1
+             and type(e['put']) is int and 0<e['put']<=2048 and e['get']==e['put'], 'uncompleted native update')
+        need(e['skipped_address']==surface and e['skipped_notifier']==0, 'suppressed update was accepted')
+        need(e['errors']==0 and not e['underflow']&16 and e['power']&0x80000001==1
+             and not e['power_status']&0x10000000, 'native output is down or faulted')
+        progressed=((e['raster_after']>>16)-(e['raster_before']>>16))&65535
+        need(0<progressed<100, 'native raster did not advance')
+        need(e['firmware_writes']==0, 'firmware framebuffer written during native ownership')
+        need(e['pll_register']==0x614100+e['head']*32 and 1000<=e['pll_reference']<=100000,
+             'invalid native pixel PLL source')
+        c=e['pll_coefficients']; m=c&255; n=(c>>8)&255; p=(c>>16)&63
+        fraction=(e['pll_fraction']>>16)&65535
+        if fraction&32768: fraction-=65536
+        need(m>0 and p>0 and n>0, 'invalid native pixel PLL coefficients')
+        numerator=e['pll_reference']*(n*8192+4096+fraction)
+        denominator=m*p*8192
+        need(abs(numerator-t['clock_khz']*denominator)*1000000<=t['clock_khz']*denominator*250,
+             'native pixel PLL frequency differs from preferred timing')
+        end=one(r'^GT710_MODE (.+)$',serial,'native mode evidence').end()
+        receipts=list(re.finditer(r'^GT710_NATIVE_CONSOLE surface=(\d+) firmware_writes=(\d+)$',serial[end:],re.M))
+        need(receipts and all(int(r[1])==surface and int(r[2])==0 for r in receipts),
+             'native console binding or firmware-write evidence missing or wrong')
+        rows=list(re.finditer(r'^GT710_PIX (\d+) ([0-9a-f:,]+)$',serial,re.M))
+        need(len(rows)==t['height'], 'incomplete native full-screen read-back')
+        import struct
+        data=bytearray()
+        for y,row in enumerate(rows):
+            need(int(row[1])==y, 'out-of-order native read-back row')
+            x=0
+            for run in row[2].split(','):
+                count,value=map(lambda s:int(s,16),run.split(':'))
+                need(0<count<=e['pitch']//4 and 0<=value<=0xffffffff, 'invalid native pixel run')
+                need(x+count<=e['pitch']//4, 'native pixel run exceeds pitch')
+                for column in range(x,x+count):
+                    expected=0xff000000|((e['seed']+y*257+(column//64)*0x10203)&0xffffff)
+                    need(value==expected, 'native pixel differs from independent nonce pattern')
+                data+=struct.pack('<I',value)*count
+                x+=count
+            need(x*4==e['pitch'], 'incomplete native pitch edge')
+        need(e['bytes']==len(data)==e['pitch']*t['height'] and e['sha256']==hashlib.sha256(data).hexdigest(),
+             'native binary read-back length or digest mismatch')
+        return e, bytes(data)
+    except (KeyError,TypeError,IndexError,OverflowError,json.JSONDecodeError) as error:
+        raise ValueError('malformed native modeset evidence') from error
+
+
 def check_case(category, case, serial):
-    if category == 'memory':
+    if category == 'native':
+        if case != 'preferred': raise ValueError('unknown native case')
+        native_mode(serial)
+    elif category == 'memory':
         if case != 'carveout':
             raise ValueError('unknown memory case')
         try:
@@ -385,6 +465,9 @@ def record_capture(directory, sha):
             passed = False
             print(str(error), flush=True)
         (directory / ('gt710-' + category + '.json')).write_text(json.dumps(records) + '\n')
+    if passed:
+        _, pixels = native_mode(serial)
+        (directory / 'gt710-native-scanout.bin').write_bytes(pixels)
     return 0 if passed else 1
 
 

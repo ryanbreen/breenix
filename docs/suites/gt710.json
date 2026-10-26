@@ -7,6 +7,16 @@
   "hostRunner": true,
   "categories": [
     {
+      "id": "native",
+      "title": "Native preferred mode",
+      "cases": [
+        {
+          "id": "preferred",
+          "title": "The preferred EDID mode completes on owned native scanout with advancing raster and full pixel read-back"
+        }
+      ]
+    },
+    {
       "id": "memory",
       "title": "Display memory bootstrap",
       "cases": [
