@@ -317,3 +317,7 @@ permission notices are retained in the consumer's header.
 
 Only GPU hardware mechanisms are adapted under G1. The first-fit allocator,
 physical pattern verifier and retained-capture scoring are Breenix code.
+
+The FBPA-per-partition sum also adapts `drivers/gpu/drm/nouveau/nvkm/subdev/fb/ramgf108.c`
+at the same revision: Copyright 2017 Red Hat Inc.; MIT. Its checked original
+notice is retained in `kernel/src/gpu/gk208/memory.rs`.

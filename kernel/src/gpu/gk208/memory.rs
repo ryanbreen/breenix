@@ -1,4 +1,27 @@
 /*
+ * Copyright 2017 Red Hat Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * Authors: Ben Skeggs <bskeggs@redhat.com>
+ */
+/*
  * Copyright 2013 Red Hat Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -254,20 +277,36 @@ pub fn discover<A: Access>(a: &mut A, aperture: u64) -> Result<Inventory, &'stat
     if !(1..=8).contains(&fbps) {
         return Err("invalid FBP count");
     }
+    let fbpat = a.read(0x2243c);
+    registers.push((0x2243c, fbpat));
+    if fbpat < fbps || fbpat > 16 || fbpat % fbps != 0 {
+        return Err("invalid FBPA topology");
+    }
+    let units = fbpat / fbps;
     let mut common = None;
     let mut total = 0;
-    for i in 0..fbps {
-        if disabled & (1 << i) != 0 {
+    for fbp in 0..fbps {
+        let mut partition = 0;
+        for unit in fbp * units..(fbp + 1) * units {
+            if disabled & (1 << unit) != 0 {
+                continue;
+            }
+            let reg = 0x11020c + unit as usize * 4096;
+            let mib = a.read(reg);
+            registers.push((reg, mib));
+            if mib == 0 || mib > 4096 {
+                return Err("invalid FBPA capacity");
+            }
+            partition += u64::from(mib) << 20;
+        }
+        if partition == 0 {
             continue;
         }
-        let reg = 0x11020c + i as usize * 4096;
-        let mib = a.read(reg);
-        registers.push((reg, mib));
-        if mib == 0 || mib > 4096 || common.is_some_and(|c| c != mib) {
-            return Err("mixed or invalid VRAM outside bootstrap");
+        if common.is_some_and(|c| c != partition) {
+            return Err("mixed VRAM outside bootstrap");
         }
-        common = Some(mib);
-        total += u64::from(mib) << 20;
+        common = Some(partition);
+        total += partition;
     }
     if total > 1 << 32
         || total < 32 << 20

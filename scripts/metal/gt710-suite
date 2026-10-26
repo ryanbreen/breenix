@@ -152,13 +152,26 @@ def display_memory(serial):
             and (16 << 20) <= aperture < total and aperture & (aperture-1) == 0, 'invalid memory sizes')
     require(framebuffer(serial)['span'] == aperture, 'BAR aperture differs from PCI ownership')
     pairs = e['registers']
-    require(isinstance(pairs,list) and len(pairs) <= 23 and all(len(p)==2 and all(integer(v) for v in p) for p in pairs), 'invalid register evidence')
+    require(isinstance(pairs,list) and len(pairs) <= 32 and all(len(p)==2 and all(integer(v) for v in p) for p in pairs), 'invalid register evidence')
     regs = dict(pairs)
     require(len(regs) == len(pairs), 'duplicate register evidence')
     fbps, disabled = regs[0x22438], regs[0x22554]
     require(1 <= fbps <= 8, 'invalid partition count')
-    amounts = [regs[0x11020c+i*4096] for i in range(fbps) if not disabled & (1 << i)]
-    require(amounts and len(set(amounts)) == 1 and 0 < amounts[0] <= 4096 and sum(amounts) << 20 == total, 'VRAM inventory mismatch')
+    fbpat = regs[0x2243c]
+    require(fbps <= fbpat <= 16 and fbpat % fbps == 0, 'invalid FBPA topology')
+    units = fbpat // fbps
+    amounts = []
+    for fbp in range(fbps):
+        part = 0
+        for unit in range(fbp*units,(fbp+1)*units):
+            if disabled & (1 << unit):
+                continue
+            mib = regs[0x11020c+unit*4096]
+            require(0 < mib <= 4096, 'invalid FBPA capacity')
+            part += mib
+        if part:
+            amounts.append(part)
+    require(amounts and len(set(amounts)) == 1 and sum(amounts) << 20 == total, 'VRAM inventory mismatch')
     refs = e['references']
     require(isinstance(refs,list) and 0 < len(refs) <= 4096, 'missing inherited references')
     require(all(len(r)==2 and all(integer(v) for v in r) and r[0] > 0 and r[0] % 4096 == 0
