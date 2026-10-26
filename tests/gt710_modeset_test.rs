@@ -129,4 +129,11 @@ fn selects_the_board_iedt_for_the_connected_head_and_tmds_link() {
     assert!(modeset::board_scripts(&rom,1,0,1,108000).is_err());
     assert!(modeset::board_scripts(&rom,0,0,2,108000).is_err());
     assert!(modeset::board_scripts(&rom[..0x185],0,0,1,108000).is_err());
+    // OCFG flags are u8; the next byte is the low byte of a script-table pointer.
+    rom[0x125]=1;
+    rom[0x12c..0x132].copy_from_slice(&[1,0,0x91,1,0,0]);
+    rom[0x191..0x195].copy_from_slice(&[0x30,0x2a,0xa0,1]);
+    rom[0x1a0..0x1aa].copy_from_slice(&[0x7a,0,0x23,0x61,0,2,0,0,0,0x71]);
+    let selected=modeset::board_scripts(&rom,0,0,1,108000).unwrap();
+    assert_eq!(selected[2],[modeset::Op::Register(0x612300,0,2)]);
 }
