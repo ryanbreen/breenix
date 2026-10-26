@@ -40,3 +40,80 @@ fn refuses_invalid_or_exhausted_memory_without_wrapping() {
     }
     assert!(Layout::new(0, &[], 1280,1024).is_err());
 }
+
+use std::collections::BTreeMap;
+struct Device {
+    regs: BTreeMap<usize,u32>,
+    words: BTreeMap<u64,u32>,
+    alias: bool,
+    drop_writes: bool,
+    writes: Vec<u64>,
+}
+impl Device {
+    fn new() -> Self {
+        Self { regs: [(0x1700,0x1234),(0x22438,1),(0x22554,0),(0x11020c,1024),
+                      (0x610010,0x003f0009)].into(), words: BTreeMap::new(),
+               alias:false,drop_writes:false,writes:Vec::new() }
+    }
+    fn address(&self, reg:usize) -> u64 {
+        let a = (u64::from(self.regs[&0x1700]) << 16) + (reg-0x700000) as u64;
+        if self.alias { a & 0xfffff } else { a }
+    }
+}
+impl memory::Access for Device {
+    fn read(&mut self, reg:usize) -> u32 {
+        if (0x700000..0x800000).contains(&reg) { *self.words.get(&self.address(reg)).unwrap_or(&0) }
+        else { *self.regs.get(&reg).unwrap_or(&0) }
+    }
+    fn write(&mut self,reg:usize,value:u32) {
+        if (0x700000..0x800000).contains(&reg) {
+            let a=self.address(reg);self.writes.push(a);
+            if !self.drop_writes { self.words.insert(a,value); }
+        } else { assert_eq!(reg,0x1700); self.regs.insert(reg,value); }
+    }
+}
+#[test]
+fn physical_windows_restore_and_full_patterns_reject_aliases_and_dropped_writes() {
+    let layout=Layout::new(32<<20,&[Range{start:0,size:1<<20}],512,512).unwrap();
+    for fault in 0..3 {
+        let mut d=Device::new();d.alias=fault==1;d.drop_writes=fault==2;
+        let mut p=memory::Pramin::new(&mut d,32<<20);
+        let mut seen=0;
+        let result=memory::exercise(&mut p,&layout,0x12345678,|phase,index,bytes| {
+            assert!(phase<2);assert!(index<6);
+            assert_eq!(bytes.len() as u64,layout.objects[index].range.size);
+            seen+=bytes.len() as u64;
+        });
+        drop(p);
+        assert_eq!(d.regs[&0x1700],0x1234);
+        if fault==0 {
+            assert_eq!(result.unwrap(),seen);
+            assert_eq!(seen,2*layout.objects.iter().map(|o| o.range.size).sum::<u64>());
+            assert!(d.writes.iter().all(|a|layout.objects.iter().any(|o|o.range.start<=*a&&*a<o.range.end().unwrap())));
+        } else { assert!(result.is_err(),"fault {fault} escaped full read-back"); }
+    }
+    let mut d=Device::new();let mut p=memory::Pramin::new(&mut d,32<<20);
+    assert!(p.read(32<<20).is_err());assert!(p.write(3,4).is_err());
+    drop(p);assert_eq!(d.regs[&0x1700],0x1234);
+}
+#[test]
+fn discovers_vram_separately_from_bar_and_reserves_inherited_instances() {
+    let mut d=Device::new();
+    let inventory=memory::discover(&mut d,128<<20).unwrap();
+    assert_eq!(inventory.total,1<<30);
+    assert_eq!(d.regs[&0x1700],0x1234);
+    let layout=Layout::new(inventory.total,&inventory.reserved,1280,1024).unwrap();
+    assert!(layout.objects.iter().all(|o|o.guarded().start>=128<<20 && o.guarded().end().unwrap()<=0x3f000000));
+    assert!(!inventory.registers.is_empty());
+    // A BAR instance's page-directory storage lowers the reserved upper envelope.
+    d.regs.insert(0x1704,0x8003e000);
+    d.words.insert(0x3e000200,0x3d000000);
+    d.words.insert(0x3e000208,(128<<20)-1);
+    d.words.insert(0x3d000000,0x003c0001);
+    let inv=memory::discover(&mut d,128<<20).unwrap();
+    assert!(inv.reserved.iter().any(|r|r.start<=0x3c000000 && r.end().unwrap()==inv.total));
+    d.regs.insert(0x22438,2);d.regs.insert(0x11120c,512);
+    assert!(memory::discover(&mut d,128<<20).is_err(),"mixed memory is outside bootstrap");
+    d.regs.insert(0x22438,0);
+    assert!(memory::discover(&mut d,128<<20).is_err());
+}
