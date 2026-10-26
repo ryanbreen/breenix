@@ -18,7 +18,7 @@ def capture(change=None, short=False):
             0x41c:(t['vtotal']-t['vsync_start']-1)<<16|t['htotal']-t['hsync_start']-1,
             0x420:(t['vtotal']-t['vsync_start']+h-1)<<16|t['htotal']-t['hsync_start']+w-1,
             0x450:t['clock_khz']*1000,0x460:start>>8,0x468:h<<16|w,
-            0x46c:0x1000000|(pitch>>4)<<8,0x470:0xcf00,0x474:1,0x404:0x140,0x200:0x101}
+            0x46c:0x1000000|pitch,0x470:0xcf00,0x474:1,0x404:0x140,0x200:0x101}
     e=dict(schema=1,phase='native',bdf='01:00.0',head=0,sor=0,protocol=1,timing=t,
            surface=start,pitch=pitch,seed=seed,active=[[r+0x640000,v] for r,v in active.items()],
            quiesce_before=[0x40000000]*9+[0x84]*8,quiesce_after=[0x40000000]*9+[0x84]*8,
@@ -45,7 +45,8 @@ def capture(change=None, short=False):
 class NativeCapture(unittest.TestCase):
     def test_native_state_and_pixels_with_negative_controls(self):
         API['native_mode'](capture())
-        mutations=[lambda e:e.update(notifier_after=0),lambda e:e.update(notifier_before=1),
+        mutations=[lambda e:next(r for r in e['active'] if r[0]==0x64046c).__setitem__(1,0x01014000),
+                   lambda e:e.update(notifier_after=0),lambda e:e.update(notifier_before=1),
                    lambda e:e.update(get=e['put']-4),lambda e:e.update(errors=1),
                    lambda e:e.update(underflow=17),lambda e:e.update(underflow=0),
                    lambda e:e.update(underflow=257),lambda e:e.update(power=0),
