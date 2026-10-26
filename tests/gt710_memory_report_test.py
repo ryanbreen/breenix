@@ -55,6 +55,22 @@ class MemoryCapture(unittest.TestCase):
         check(idle)
         idle['registers'][15][1]=0x13
         with self.assertRaises(ValueError):check(idle)
+        opaque=copy.deepcopy(e)
+        opaque['registers'][5][1]=1
+        opaque['registers'][3][1]=0x7ff00
+        opaque['registers'][4][1]=0x40000000
+        opaque['references']=[]
+        opaque['protected_bytes']=1310720
+        opaque['reserved'][1]=[(1<<30)-(1<<20),1<<20]
+        check(opaque)
+        for i in range(9):
+            bad=copy.deepcopy(opaque)
+            bad['registers'][15+i][1]=0x13
+            with self.assertRaises(ValueError):check(bad)
+        for control in (2,3,5,0x1001):
+            bad=copy.deepcopy(opaque)
+            bad['registers'][5][1]=control
+            with self.assertRaises(ValueError):check(bad)
         multi=copy.deepcopy(e)
         multi['registers'][-1][1]=2
         multi['registers'].append([0x11120c,1024])
