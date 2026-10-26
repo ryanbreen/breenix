@@ -226,3 +226,22 @@ shell. The SDK's documentation is in
 Work is tracked in GitHub Issues. [`AGENTS.md`](AGENTS.md) and [`CLAUDE.md`](CLAUDE.md) hold the
 development rules, including the constraints on interrupt and syscall paths and the
 zero-warnings build policy. Agent skills live in [`.agents/skills/`](.agents/skills/).
+
+## License
+
+The root license for Breenix material offered by its author is
+[PolyForm Noncommercial 1.0.0](LICENSE), permitting personal, research,
+educational, hobby and other noncommercial use. Commercial use of material
+under that license needs a separate license from the author.
+
+Existing first-party Cargo manifests in `libs/libbreenix/`,
+`libs/libbreenix-libc/`, `libs/breengel-abi/`, `libs/breenish-js/`,
+`libs/gpu-abi/`, `libs/libpixcheck/` and `libs/libbreenix/suite/` still declare
+`license = "MIT"`. This conflicts with the root licensing decision and remains
+unreconciled; see [issue #2484](https://github.com/ryanbreen/breenix/issues/2484).
+This documentation change does not replace previously granted rights or
+resolve those package declarations.
+
+Using Breenix? I'd love to hear about it: ryan@ryanbreen.com
+
+Third-party material retains its own licenses; see [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).

@@ -1,0 +1,150 @@
+# Third-party notices
+
+Breenix's root LICENSE covers Breenix material offered by its author. It does
+not replace the licenses, copyright notices, or redistribution conditions of
+third-party material listed here. In particular, the noncommercial restriction
+does not apply to third-party components under their own licenses.
+
+This inventory records the material present on 2026-10-25. Existing component
+license files remain authoritative. Dependencies fetched by Cargo, the Rust
+fork, SDK toolchains, QEMU and other external build tools are not vendored in
+this tree; distributions containing them also need their respective notices.
+
+## Fonts in fonts/
+
+Copyright statements below are transcribed from the checked-in fonts' name
+records (including reserved names). Source links identify the font projects;
+most files were obtained through [Google Fonts](https://github.com/google/fonts),
+as recorded in fonts/LICENSE-GoogleFonts. Full OFL texts linked below were
+fetched from each family's `ofl/<family>/OFL.txt` in that repository on
+2026-10-25; Cascadia's was fetched from its project's LICENSE. These current
+upstream texts supplement, rather than replace, the embedded copyright
+statements of the bundled versions. The full OFL is also already present in
+fonts/LICENSE-Inconsolata and fonts/LICENSE-JetBrainsMono. The full DejaVu,
+Bitstream Vera and Arev notices are already present in fonts/LICENSE-DejaVu;
+Hack's MIT and Bitstream Vera notices are in fonts/LICENSE-Hack.
+
+| File in fonts/ | Source | Copyright notice of bundled file | License and full text |
+|---|---|---|---|
+| `CascadiaCode-Regular.ttf` | [Project](https://github.com/microsoft/cascadia-code) | © 2021 Microsoft Corporation. All Rights Reserved. | Unresolved: conflicting embedded terms; upstream OFL-1.1 ([text](licenses/OFL-cascadia.txt), [embedded notice](licenses/CascadiaCode-embedded-notice.txt)) |
+| `DejaVuSans.ttf` | [Project](https://dejavu-fonts.github.io/) | Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved.<br>Copyright (c) 2006 by Tavmjong Bah. All Rights Reserved.<br>DejaVu changes are in public domain | Bitstream Vera / Arev; DejaVu changes public domain ([text](fonts/LICENSE-DejaVu)) |
+| `DejaVuSansMono.ttf` | [Project](https://dejavu-fonts.github.io/) | Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved.<br>DejaVu changes are in public domain | Bitstream Vera; DejaVu changes public domain ([text](fonts/LICENSE-DejaVu)) |
+| `FiraCode-Regular.ttf` | [Project](https://github.com/tonsky/FiraCode) | Copyright 2014-2020 The Fira Code Project Authors (https://github.com/tonsky/FiraCode) | OFL-1.1 ([text](licenses/OFL-firacode.txt)) |
+| `Hack-Regular.ttf` | [Project](https://github.com/source-foundry/Hack) | Copyright (c) 2018 Source Foundry Authors / Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved. | MIT + Bitstream Vera; DejaVu changes public domain ([text](fonts/LICENSE-Hack)) |
+| `IBMPlexMono-Regular.ttf` | [Project](https://github.com/IBM/plex) | Copyright 2017 IBM Corp. All rights reserved. | OFL-1.1 ([text](licenses/OFL-ibmplexmono.txt)) |
+| `Inconsolata-Regular.ttf` | [Project](https://github.com/cyrealtype/Inconsolata) | Copyright 2006 The Inconsolata Project Authors (https://github.com/cyrealtype/Inconsolata) | OFL-1.1 ([text](fonts/LICENSE-Inconsolata)) |
+| `Inter-Regular.ttf` | [Project](https://github.com/rsms/inter) | Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter) | OFL-1.1 ([text](licenses/OFL-inter.txt)) |
+| `JetBrainsMono-Regular.ttf` | [Project](https://github.com/JetBrains/JetBrainsMono) | Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono) | OFL-1.1 ([text](fonts/LICENSE-JetBrainsMono)) |
+| `Lato-Regular.ttf` | [Project](https://www.latofonts.com/) | Copyright (c) 2011-2015 by tyPoland Lukasz Dziedzic (http://www.typoland.com/) with Reserved Font Name "Lato". Licensed under the SIL Open Font License, Version 1.1 (http://scripts.sil.org/OFL). | OFL-1.1 ([text](licenses/OFL-lato.txt)) |
+| `Lora-Regular.ttf` | [Project](https://github.com/cyrealtype/Lora-Cyrillic) | Copyright 2011 The Lora Project Authors (https://github.com/cyrealtype/Lora-Cyrillic), with Reserved Font Name "Lora". | OFL-1.1 ([text](licenses/OFL-lora.txt)) |
+| `Merriweather-Regular.ttf` | [Project](https://github.com/SorkinType/Merriweather) | Copyright 2020 The Merriweather Project Authors (https://github.com/SorkinType/Merriweather/), with Reserved Font Name "Merriweather". | OFL-1.1 ([text](licenses/OFL-merriweather.txt)) |
+| `Montserrat-Regular.ttf` | [Project](https://github.com/JulietaUla/Montserrat) | Copyright 2011 The Montserrat Project Authors (https://github.com/JulietaUla/Montserrat) | OFL-1.1 ([text](licenses/OFL-montserrat.txt)) |
+| `NotoSans-Regular.ttf` | [Project](https://github.com/notofonts/latin-greek-cyrillic) | Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic) | OFL-1.1 ([text](licenses/OFL-notosans.txt)) |
+| `NotoSansMono-Regular.ttf` | [Project](https://github.com/notofonts/latin-greek-cyrillic) | Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic) | OFL-1.1 ([text](licenses/OFL-notosansmono.txt)) |
+| `NotoSerif-Regular.ttf` | [Project](https://github.com/notofonts/latin-greek-cyrillic) | Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic) | OFL-1.1 ([text](licenses/OFL-notoserif.txt)) |
+| `Nunito-Regular.ttf` | [Project](https://github.com/googlefonts/nunito) | Copyright 2014 The Nunito Project Authors (https://github.com/googlefonts/nunito) | OFL-1.1 ([text](licenses/OFL-nunito.txt)) |
+| `OpenSans-Regular.ttf` | [Project](https://github.com/googlefonts/opensans) | Copyright 2020 The Open Sans Project Authors (https://github.com/googlefonts/opensans) | OFL-1.1 ([text](licenses/OFL-opensans.txt)) |
+| `PTSerif-Regular.ttf` | [Project](https://www.paratype.com/public/) | Copyright © 2010 ParaType Ltd. All rights reserved. | OFL-1.1 ([text](licenses/OFL-ptserif.txt)) |
+| `PlayfairDisplay-Regular.ttf` | [Project](https://github.com/clauseggers/Playfair-Display) | Copyright 2017 The Playfair Display Project Authors (https://github.com/clauseggers/Playfair-Display), with Reserved Font Name "Playfair Display". | OFL-1.1 ([text](licenses/OFL-playfairdisplay.txt)) |
+| `Poppins-Regular.ttf` | [Project](https://github.com/itfoundry/Poppins) | Copyright 2020 The Poppins Project Authors (https://github.com/itfoundry/Poppins) | OFL-1.1 ([text](licenses/OFL-poppins.txt)) |
+| `Raleway-Regular.ttf` | [Project](https://github.com/impallari/Raleway) | Copyright 2010 The Raleway Project Authors (impallari@gmail.com), with Reserved Font Name "Raleway". | OFL-1.1 ([text](licenses/OFL-raleway.txt)) |
+| `Roboto-Regular.ttf` | [Project](https://github.com/googlefonts/roboto-classic) | Copyright 2011 The Roboto Project Authors (https://github.com/googlefonts/roboto-classic) | OFL-1.1 ([text](licenses/OFL-roboto.txt)) |
+| `RobotoMono-Regular.ttf` | [Project](https://github.com/googlefonts/robotomono) | Copyright 2015 The Roboto Mono Project Authors (https://github.com/googlefonts/robotomono) | OFL-1.1 ([text](licenses/OFL-robotomono.txt)) |
+| `SourceCodePro-Regular.ttf` | [Project](https://github.com/adobe-fonts/source-code-pro) | © 2023 Adobe (http://www.adobe.com/), with Reserved Font Name ‘Source’ | OFL-1.1 ([text](licenses/OFL-sourcecodepro.txt)) |
+| `SourceSans3-Regular.ttf` | [Project](https://github.com/adobe-fonts/source-sans) | © 2023 Adobe (http://www.adobe.com/), with Reserved Font Name ‘Source’ | OFL-1.1 ([text](licenses/OFL-sourcesans3.txt)) |
+| `SourceSerif4-Regular.ttf` | [Project](https://github.com/adobe-fonts/source-serif) | © 2014 - 2021 Adobe Systems Incorporated (http://www.adobe.com/), with Reserved Font Name ‘Source’. | OFL-1.1 ([text](licenses/OFL-sourceserif4.txt)) |
+| `Ubuntu-Regular.ttf` | [Project](https://design.ubuntu.com/font) | Copyright 2011 Canonical Ltd.  Licensed under the Ubuntu Font Licence 1.0 | Ubuntu Font Licence 1.0 ([text](licenses/UFL-1.0.txt)) |
+| `UbuntuMono-Regular.ttf` | [Project](https://design.ubuntu.com/font) | Copyright 2011 Canonical Ltd.  Licensed under the Ubuntu Font Licence 1.0 | Ubuntu Font Licence 1.0 ([text](licenses/UFL-1.0.txt)) |
+
+Cascadia Code's embedded name record 13 starts with restrictive Microsoft
+product-font terms and then gives an OFL-based permission. The existing
+fonts/LICENSE-GoogleFonts calls it OFL; upstream's LICENSE is OFL-1.1 with the
+reserved name Cascadia Code. The provenance and applicable grant for this exact
+binary remain unresolved; the upstream license alone does not resolve that
+conflict. Both notices are retained without asserting a resolution.
+
+## Vendored source, data and fixtures
+
+| Material | Source | Copyright | License / retained notices |
+|---|---|---|---|
+| `vendor/busybox/busybox-1.37.0.tar.bz2` and the accompanying patches | [BusyBox 1.37.0](https://busybox.net/downloads/busybox-1.37.0.tar.bz2); origin and SHA-256 in `vendor/busybox/README.md` | BusyBox authors; individual owners and years remain in the archive's file notices, with contributors identified in its AUTHORS file | GPL-2.0-only for BusyBox, as explicitly specified in [vendor/busybox/LICENSE](vendor/busybox/LICENSE); retain the archive's individual notices as well. Patches to BusyBox are distributed with that component, not relicensed by the root LICENSE. |
+| `libs/libc/` (Rust libc 0.2.174, including platform bindings, copied test headers and libc-test) | [rust-lang/libc](https://github.com/rust-lang/libc) | Copyright (c) 2014-2020 The Rust Project Developers | MIT OR Apache-2.0: [MIT](libs/libc/LICENSE-MIT), [Apache](libs/libc/LICENSE-APACHE). This is Rust's FFI bindings crate, distinct from Breenix's clean-room C implementation in `libs/libbreenix-libc/`. |
+| `libs/libc/ctest/` | [rust-lang/libc ctest](https://github.com/rust-lang/libc/tree/main/ctest) | Copyright (c) 2014-2020 Alex Crichton, Gonzalo Brito Gadeschi, Yuki Okushi | MIT OR Apache-2.0: [MIT](libs/libc/ctest/LICENSE-MIT), [Apache](libs/libc/ctest/LICENSE-APACHE). |
+| `vendor/unicode/{UnicodeData,DerivedCoreProperties,EastAsianWidth,PropList}.txt` and generated Unicode tables in `libs/libbreenix-libc/` | [Unicode Character Database 17.0.0](https://www.unicode.org/Public/17.0.0/ucd/); generated by `scripts/gen-unicode-tables.py` | Copyright © 1991-2026 Unicode, Inc.; the data headers also retain their individual notices | Unicode License V3: [text](vendor/unicode/LICENSE.txt). |
+| `testdata/breengel/png/*.png` and reference `*.bgra` conversions | [PngSuite](https://www.schaik.com/pngsuite/), [pinned mirror](https://github.com/lunapaint/pngsuite/tree/8cd768dd0d0063195174d0d01cacbd5a7d1e5605); hashes and conversion provenance in `testdata/breengel/png/PROVENANCE.json` | (c) Willem van Schaik, 1996, 2011 | Permission to use, copy, modify and distribute for any purpose without fee: [full notice](testdata/breengel/png/LICENSE). |
+| `testdata/breengel/inflate/*.deflate`, `*.raw` (original generated data, included here to preserve the separate dedication) | In-tree fixture generation; `testdata/breengel/inflate/PROVENANCE.json` | Authors waive copyright and related rights to the extent possible under law | CC0-1.0: [dedication](testdata/breengel/inflate/LICENSE), [full text](testdata/breengel/inflate/LICENSE-CC0.txt). |
+
+The synthetic fonts in `testdata/breengel/fonts-corpus/` and
+`testdata/breengel/fonts/compound-transform.ttf` are generated from original
+literal tables, with no published glyphs or tables, as documented in
+[testdata/breengel/LICENSES.md](testdata/breengel/LICENSES.md). That document also
+records the original procedural icon artwork. They are not additional
+third-party font distributions. Embedded DejaVu TTFs in library and userspace
+programs are covered by the DejaVu entry above.
+
+## Linux reference artifacts
+
+The following retained Linux source artifacts keep their own terms; the root
+PolyForm license does not cover them. The listed paths are relative to
+`docs/artifacts/turn1-artifacts/`. Their original notices remain in the files.
+
+| File | Copyright / retained notice | License |
+|---|---|---|
+| `linux-source/ehci-hcd.c` | Copyright (c) 2000-2004 David Brownell | Header SPDX `GPL-2.0+` (GPL-2.0-or-later) |
+| `linux-source/virtio_input.c` | Linux contributors; header SPDX notice retained | GPL-2.0-only |
+| `linux-source/virtio_pci_common.c` | Copyright IBM Corp. 2007; Red Hat, Inc. 2014 | GPL-2.0-or-later |
+| `linux-source/virtgpu_vq.c` | Copyright (C) 2015 Red Hat, Inc.; permission and disclaimer in file | MIT-style grant; retain the file's full notice, including its VA Linux disclaimer |
+| `linux-probe/linux-v6.8-virtgpu_drv.h` | Copyright (C) 2015 Red Hat, Inc.; permission and disclaimer in file | MIT-style grant; retain the file's full notice |
+| `linux-probe/linux-v6.8-virtgpu_kms.c` | Copyright (C) 2015 Red Hat, Inc.; permission and disclaimer in file | MIT-style grant; retain the file's full notice |
+
+The GPL version 2 text is retained in [vendor/busybox/LICENSE](vendor/busybox/LICENSE)
+after its BusyBox-specific preamble. That preamble's version-2-only restriction
+belongs to BusyBox; the Linux files' SPDX identifiers above determine their
+version choices. These artifacts are reference material, not permission to
+copy, port or translate their implementations into Breenix.
+
+## Embedded dependency fonts
+
+[noto-sans-mono-bitmap](https://github.com/phip1611/noto-sans-mono-bitmap)
+is declared by the root, `kernel/`, `libs/libgfx-ref/`, `userspace/programs/`
+and `tools/console-host-tests/` manifests with requirement `0.3`, by
+`libs/libgfx/` with `0.3.2`, and by `scripts/metal/efi-stub/` with the exact
+pin `=0.3.2`. The kernel graphics font and console are among its consumers.
+The crate code is MIT, copyright (c) 2022 Philipp Schuster; [license text](licenses/noto-sans-mono-bitmap-MIT.txt) retained from
+release 0.3.2. Its README identifies the rasterized Noto Sans Mono font as
+OFL-1.1. [The Noto Sans Mono OFL notice](licenses/OFL-notosansmono.txt) is included
+for the font family; the exact source-font version and copyright notice for
+the dependency's raster data remain unresolved. This dependency is fetched at
+build time, not stored as a vendor directory in this tree.
+
+## Unresolved provenance and license checks
+
+- `fonts/CascadiaCode-Regular.ttf`: conflicting embedded and upstream license
+  records, described above; copyright © 2021 Microsoft Corporation.
+- `libs/libbreenix/src/x509/ca-certificates.der`: embedded Mozilla root CA
+  certificates, sourced according to `ca_bundle.rs` from
+  https://curl.se/ca/cacert.pem. The exact input snapshot and its copyright and
+  license notices are absent; applicable notices for this bundled conversion
+  remain unresolved, rather than inferred from today's download.
+- `scripts/qemu-gl/host-renderer-attestation.patch`: its own notice assigns
+  GPL-2.0-or-later to this QEMU modification. The license is identified; the
+  remaining check is to retain the exact pinned upstream file copyright and
+  license notices for its QEMU context before redistribution. The root license
+  does not replace these terms.
+- `libs/libc/ci/android-emulator-package.xml`: contains Google's Android SDK
+  License Agreement in package metadata. The agreement is preserved in that
+  file; the grant to redistribute this metadata itself is not established here.
+- Historical compressed evidence archives under `docs/planning/` and toolchain
+  patch excerpts have not been individually license-cleared. They must not be
+  treated as license clearance for archived third-party content under the root
+  license.
+- The exact Noto source-font notices for `noto-sans-mono-bitmap` remain to be
+  matched to its rasterized font version, as described above.
+
+## Future GPU source notices
+
+Future additions of MIT/BSD-licensed GPU sources require inventory entries
+with each source's origin, copyright, license text and required notices. This
+is a notice requirement for future additions, not a record of imported or
+license-checked sources; it does not authorize copying, porting or translating
+third-party implementations into Breenix.
