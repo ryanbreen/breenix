@@ -71,7 +71,7 @@ class CaptureCases(unittest.TestCase):
                         ddc='live', edid=edid.hex(), edid_sha256=hashlib.sha256(edid).hexdigest(),
                         modes=[dict(width=1280, height=800, clock_khz=83500,
                                     hsync_start=1352, hsync_end=1480, htotal=1680,
-                                    vsync_start=803, vsync_end=809, vtotal=831, flags=30),
+                                    vsync_start=803, vsync_end=809, vtotal=831, flags=28),
                                dict(width=2560, height=1600, clock_khz=268500,
                                     hsync_start=2608, hsync_end=2640, htotal=2720,
                                     vsync_start=1603, vsync_end=1609, vtotal=1646, flags=26)])
