@@ -186,3 +186,44 @@ fn evo_publication_requires_the_device_bar_flush_to_finish() {
         assert_eq!(&r.writes[1..],if busy {&[][..]} else {&[(0x640000,128)][..]});
     }
 }
+
+#[test]
+fn timed_board_condition_bounds_polling_and_preserves_resume_and_call_semantics() {
+    struct Regs {ready_after:usize,reads:usize,delays:usize,writes:Vec<(usize,u32)>}
+    impl modeset::Io for Regs {
+        fn read(&mut self,r:usize)->u32 {
+            if r==0x611800 {self.reads+=1;u32::from(self.reads>self.ready_after)} else {0}
+        }
+        fn write(&mut self,r:usize,v:u32) {self.writes.push((r,v));}
+        fn delay_us(&mut self,us:u32) {assert_eq!(us,20000);self.delays+=1;}
+    }
+    let mut rom=vec![0;1024];
+    rom[0x80..0x8c].copy_from_slice(&[255,184,66,73,84,0,0,1,12,6,1,0]);
+    rom[0x8c..0x92].copy_from_slice(&[b'I',1,8,0,0xa0,0]);
+    rom[0xa6..0xa8].copy_from_slice(&0x200u16.to_le_bytes());
+    let c=0x200+5*12;
+    for (i,v) in [0x80611000u32,1,1].into_iter().enumerate() {
+        rom[c+i*4..c+i*4+4].copy_from_slice(&v.to_le_bytes());
+    }
+    // A skipped call must not execute its RESUME; the caller's RESUME restores writes.
+    rom[16..19].copy_from_slice(&[0x56,5,255]);
+    rom[19..28].copy_from_slice(&[0x7a,0,0,0x61,0,1,0,0,0]);
+    rom[28..31].copy_from_slice(&[0x5b,0,1]);
+    rom[31..42].copy_from_slice(&[0x72,0x7a,4,0,0x61,0,3,0,0,0,0x71]);
+    rom[0x100..0x10b].copy_from_slice(&[0x72,0x7a,8,0,0x61,0,2,0,0,0,0x71]);
+    let ops=modeset::script(&rom,16,1,0,1).unwrap();
+    for (ready_after,reads,delays,writes) in [
+        (2,3,2,vec![(0x610000,1),(0x610008,2),(0x610004,3)]),
+        (usize::MAX,100,100,vec![(0x610004,3)])] {
+        let mut r=Regs{ready_after,reads:0,delays:0,writes:vec![]};
+        modeset::execute_ops(&mut r,&ops);
+        assert_eq!((r.reads,r.delays,r.writes),(reads,delays,writes));
+    }
+    let original=rom.clone();
+    rom[c..c+4].copy_from_slice(&0x700000u32.to_le_bytes());
+    assert!(modeset::script(&rom,16,1,0,1).is_err(),"condition escaped display MMIO");
+    rom=original.clone();rom[0xa6..0xa8].fill(0);
+    assert!(modeset::script(&rom,16,1,0,1).is_err(),"missing condition table accepted");
+    rom=original;rom[0x100..0x104].copy_from_slice(&[0x56,5,255,0x71]);
+    assert!(modeset::script(&rom,16,1,0,1).is_err(),"nested condition polling escaped total bound");
+}
