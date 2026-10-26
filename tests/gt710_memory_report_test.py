@@ -72,6 +72,19 @@ class MemoryCapture(unittest.TestCase):
             bad=copy.deepcopy(opaque)
             bad['registers'][5][1]=control
             with self.assertRaises(ValueError):check(bad)
+        retained=copy.deepcopy(opaque)
+        retained['references']=[[0,4096]]
+        retained['protected_bytes']+=4096
+        for i in range(9):
+            retained['registers'][6+i][1]=1
+            retained['registers'][15+i][1]=0x0d0500a9 if i==0 else 0x40000088
+        check(retained)
+        bad=copy.deepcopy(retained);bad['references']=[]
+        with self.assertRaises(ValueError):check(bad)
+        for i in range(9):
+            for control in (0x10,0x13,0x80000000):
+                bad=copy.deepcopy(retained);bad['registers'][15+i][1]=control
+                with self.assertRaises(ValueError):check(bad)
         multi=copy.deepcopy(e)
         multi['registers'][-1][1]=2
         multi['registers'].append([0x11120c,1024])
