@@ -227,3 +227,20 @@ fn timed_board_condition_bounds_polling_and_preserves_resume_and_call_semantics(
     rom=original;rom[0x100..0x104].copy_from_slice(&[0x56,5,255,0x71]);
     assert!(modeset::script(&rom,16,1,0,1).is_err(),"nested condition polling escaped total bound");
 }
+
+#[test]
+fn quiesce_stops_satellite_channels_before_the_core() {
+    struct Regs {control:[u32;17]}
+    impl modeset::Io for Regs {
+        fn read(&mut self,r:usize)->u32 {
+            let i=(r-0x610490)/16;
+            let blocked=i==0 && self.control[1..].iter().any(|v|v&1!=0);
+            self.control[i] | if blocked {0x40000} else {0}
+        }
+        fn write(&mut self,r:usize,v:u32) {self.control[(r-0x610490)/16]=v;}
+        fn delay_us(&mut self,_:u32) {}
+    }
+    let mut r=Regs{control:[1;17]};
+    modeset::quiesce(&mut r).unwrap();
+    assert!(r.control.iter().all(|v|v&1==0));
+}
