@@ -37,6 +37,9 @@ fn rom() -> Vec<u8> {
 fn rejects_bad_rom_tables_without_reading_outside_the_image() {
     let r = rom();
     let b = board::parse(&r).unwrap();
+    assert_eq!(b.bit_version, 0x100);
+    assert_eq!((b.routes[0].entry, b.routes[0].conf, b.routes[0].i2c_entry, b.routes[0].sor, b.routes[0].heads),
+               (0x01000102, 0x30, 0x3e2, 0, 1));
     assert_eq!((b.dcb_version, b.i2c_version, b.connector_version, b.pll_version), (0x40, 0x41, 0x40, 0x40));
     assert_eq!((b.routes[0].connector, b.routes[0].kind, b.routes[0].drive), (0, 0x31, 2));
     for n in 0..r.len() { assert!(board::parse(&r[..n]).is_err(), "truncation {n}"); }
