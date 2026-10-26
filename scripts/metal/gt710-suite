@@ -177,12 +177,13 @@ def display_memory(serial):
     require(all(len(r)==2 and all(integer(v) for v in r) and r[0] > 0 and r[0] % 4096 == 0
                 and 0 < r[1] <= (1 << 20) and r[1] % 4096 == 0 and sum(r) <= total for r in refs), 'invalid inherited reference')
     disp = regs[0x610010]
-    require(disp == 0 or (disp & 15 == 9 and [(disp & ~255) << 8,65536] in refs), 'missing display instance reservation')
+    require(disp in (0,1) or (disp & 15 == 9 and [(disp & ~255) << 8,65536] in refs), 'missing display instance reservation')
     for reg in (0x1704,0x1714):
         control = regs[reg]
         require(not control & 0x80000000 or [(control & 0x0fffffff) << 12,4096] in refs, 'missing BAR instance reservation')
     for i in range(9):
         require(disp != 0 or regs[0x610490+i*16] & 3 == 0, 'active display channel without a known instance')
+        require(disp != 1 or regs[0x610490+i*16] == 0, 'opaque POST channel is not idle')
         push = regs[0x610494+i*16]
         require(not push or push & 3 in (1,2,3), 'invalid inherited push target')
         require(push & 3 != 1 or [(push & ~3) << 8,4096] in refs, 'missing inherited push reservation')

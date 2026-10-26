@@ -319,17 +319,22 @@ pub fn discover<A: Access>(a: &mut A, aperture: u64) -> Result<Inventory, &'stat
     let mut references = Vec::new();
     let disp = a.read(0x610010);
     registers.push((0x610010, disp));
-    if disp != 0 && disp & 15 != 9 {
+    // G4 fallback: raw POST value 1 has no address bits, but its Kepler
+    // control fields are not defined by the checked rnndb. Keep it opaque;
+    // require idle channels and exclude the entire firmware aperture plus
+    // the VBIOS tail. Do not infer an instance pointer from this value.
+    let opaque_post = disp == 1;
+    if disp != 0 && !opaque_post && disp & 15 != 9 {
         return Err("unsupported inherited display instance target");
     }
-    if disp != 0 {
+    if disp != 0 && !opaque_post {
         reference(&mut references, total, u64::from(disp & !255) << 8, 65536)?;
     }
     for i in 0..9 {
         let ctrl_reg = 0x610490 + i * 16;
         let control = a.read(ctrl_reg);
         registers.push((ctrl_reg, control));
-        if disp == 0 && control & 3 != 0 {
+        if (disp == 0 && control & 3 != 0) || (opaque_post && control != 0) {
             return Err("active display channel has no known instance");
         }
         let reg = 0x610494 + i * 16;
