@@ -99,3 +99,17 @@ fn quiesce_refuses_a_busy_channel_before_replacing_display_storage() {
         if !busy {for channel in 0..17 {assert!(r.writes.contains(&(0x610490+channel*16)));}}
     }
 }
+#[test]
+fn board_scripts_are_predecoded_and_bounded_before_display_writes() {
+    let mut rom=vec![0;128];
+    rom[16..26].copy_from_slice(&[0x7a,0x00,0x10,0x61,0x80,0x78,0x56,0x34,0x12,0x71]);
+    let ops=modeset::script(&rom,16,1,0,1).unwrap();
+    assert_eq!(ops,[modeset::Op::Register(0x611800,0,0x12345678)]);
+    rom[16]=0xff;
+    assert!(modeset::script(&rom,16,1,0,1).is_err());
+    rom[16..19].copy_from_slice(&[0x5b,16,0]);
+    assert!(modeset::script(&rom,16,1,0,1).is_err(),"recursive script escaped bounds");
+    assert!(modeset::script(&rom[..17],16,1,0,1).is_err());
+    rom[16..26].copy_from_slice(&[0x7a,0,0,0x70,0,0,0,0,0,0x71]);
+    assert!(modeset::script(&rom,16,1,0,1).is_err(),"script wrote inherited PRAMIN storage");
+}
