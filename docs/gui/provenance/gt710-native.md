@@ -56,3 +56,23 @@ import the MIT grant in `rnndb/copyright.xml`, checked at revision
 The adapted files retain original notices; `THIRD_PARTY_NOTICES` maps the sources
 to `modeset.rs` and `native.rs`. The repository's remaining subsystems retain
 their existing provenance.
+
+## Exact-card measurement instrument
+
+The private MMIO capture is boot `20261026T212822Z-metal`, tools commit
+`fd3e73df`, using Debian Linux `6.1.0-50-amd64` (`6.1.176-1`). Its retained
+`uname.txt` identifies that kernel, `cmdline.txt` requests `nouveau.modeset=1`
+and `nouveau.noaccel=1`, and `dmesg.txt` records `nouveau_drm_init [nouveau]`
+loading the module and binding the display. The capture's `status.txt` is 0.
+This was nouveau, not NVIDIA's proprietary driver. These are hardware
+measurements; no Linux implementation from that instrument was incorporated.
+Raw hardware and site data remain in the private capture store.
+
+Expensive PRAMIN exercises, nonce fill and full BAR1 serial read-back now run
+only with the `testing` feature or an explicit `console`/`gt710` suite boot
+intent. Ordinary and persistent boots allocate the same private surfaces and
+initialize the display without the pixel dump. Console settles publish the
+firmware-write delta before refusing a nonzero count, so a later bad settle
+cannot be hidden by an earlier clean receipt. Preflight refusals retain the
+firmware console; after display takeover starts, an unsafe mapping is disabled
+and the serial console remains available.
