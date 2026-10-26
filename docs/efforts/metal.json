@@ -293,6 +293,16 @@
               "console"
             ]
           }
+        },
+        {
+          "id": "board",
+          "title": "Identify the native board and its connected sink (M4 PR 4.1)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "board"
+            ]
+          }
         }
       ]
     }

@@ -271,3 +271,30 @@ parser-skeleton exception applies to its generated host parser; that parser and
 its exception notice are build outputs, not vendored GPL source or guest assets.
 No proprietary driver firmware, unchecked assembly helper, or GPL GPU
 implementation is part of this source selection.
+
+## GK208B board inventory (E19 M4 PR 4.1)
+
+Source: https://github.com/torvalds/linux/tree/e8f897f4afef0031fe618a8e94127a0934896aba/drivers/gpu/drm/nouveau/nvkm
+License: MIT, checked individually in each file header.
+Full original grants are retained in the adapted Rust files.
+The source SHA-256 table is docs/gui/provenance/gt710-board.md.
+
+- `subdev/bios/bit.c` -> `kernel/src/gpu/gk208/board.rs` (MIT)
+- `subdev/bios/dcb.c` -> `kernel/src/gpu/gk208/board.rs` (MIT)
+- `subdev/bios/i2c.c` -> `kernel/src/gpu/gk208/board.rs` (MIT)
+- `subdev/bios/conn.c` -> `kernel/src/gpu/gk208/board.rs` (MIT)
+- `subdev/bios/pll.c` -> `kernel/src/gpu/gk208/board.rs` (MIT)
+- `engine/disp/gf119.c` -> `kernel/src/gpu/gk208/mod.rs` (MIT)
+- `subdev/i2c/busgf119.c` -> `kernel/src/gpu/gk208/mod.rs` (MIT)
+- `subdev/i2c/padgf119.c` -> `kernel/src/gpu/gk208/mod.rs` (MIT)
+- `subdev/i2c/padg94.c` -> `kernel/src/gpu/gk208/mod.rs` (MIT)
+- `subdev/devinit/gf100.c` -> `kernel/src/gpu/gk208/mod.rs` (MIT)
+
+GK208B direct PROM reader (`kernel/src/gpu/gk208/rom.rs`): nouveau Linux v6.8
+`nvkm/subdev/bios/shadowrom.c` and `nvkm/subdev/pci/{base,nv40}.c`,
+MIT, Copyright 2012 and 2015 Red Hat Inc. Original notices are retained
+in the consumer; exact source hashes are in `docs/gui/provenance/gt710-board.md`.
+
+Legacy DDC route type definitions: nouveau Linux v6.8
+`include/nvkm/subdev/bios/i2c.h` (SPDX-License-Identifier: MIT), used by
+`kernel/src/gpu/gk208/board.rs` with the MIT BIOS I2C parser above.

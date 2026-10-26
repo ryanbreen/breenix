@@ -457,6 +457,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // The screen console's display BAR, its write-combining mapping and shadow:
     // after PCI enumeration and the boot CPU's PAT, before the other CPUs run.
     kernel::console::attach();
+    kernel::gk208::identify();
 
     // Initialize threading subsystem (Linux-style init/idle separation)
     log::info!("Initializing threading subsystem...");

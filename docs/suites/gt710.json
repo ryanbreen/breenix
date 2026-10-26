@@ -7,6 +7,16 @@
   "hostRunner": true,
   "categories": [
     {
+      "id": "board",
+      "title": "Native board inventory",
+      "cases": [
+        {
+          "id": "inventory",
+          "title": "Live board tables, POST and active TMDS routing identify the attached DDC sink and its preferred timing"
+        }
+      ]
+    },
+    {
       "id": "firmware",
       "title": "Firmware framebuffer",
       "cases": [

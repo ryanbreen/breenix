@@ -53,6 +53,48 @@ class CaptureCases(unittest.TestCase):
             with self.assertRaises(ValueError):
                 API['check_case']('console', 'acceptance', bad)
 
+    def test_board_inventory_requires_live_edid_route_post_and_preferred_timing(self):
+        import hashlib
+        edid = bytearray(128)
+        edid[:8] = bytes([0, 255, 255, 255, 255, 255, 255, 0])
+        edid[18:21] = bytes([1, 4, 128])
+        edid[38:40] = bytes([0x81, 0])
+        edid[54:72] = bytes.fromhex('302a009851002a403070130000000000001e')
+        edid[127] = -sum(edid) & 255
+        evidence = dict(schema=1, phase='board', bdf='01:00.0', boot0=0x106000a1,
+                        chipset=0x106, revision=0xa1, post=2, rom_bytes=4096,
+                        rom_sha256='a' * 64, bit_version=0x100, dcb_version=0x40,
+                        i2c_version=0x41, connector_version=0x40, pll_version=0x40,
+                        dcb_entry=0x01000102, dcb_conf=0x30, i2c_entry=0x3e2,
+                        connector=0, connector_type=0x31, drive=2, sor=0,
+                        sor_state=0x501, head=0, head_total=0x033f0540, head_clock=65000000,
+                        ddc='live', edid=edid.hex(), edid_sha256=hashlib.sha256(edid).hexdigest(),
+                        modes=[dict(width=1280, height=1024, clock_khz=108000,
+                                    hsync_start=1328, hsync_end=1440, htotal=1688,
+                                    vsync_start=1025, vsync_end=1028, vtotal=1066, flags=30),
+                               dict(width=1280, height=800, clock_khz=83500,
+                                    hsync_start=1352, hsync_end=1480, htotal=1680,
+                                    vsync_start=803, vsync_end=809, vtotal=831, flags=28)])
+        serial = lambda e: SERIAL + 'GT710_NATIVE ' + json.dumps(e) + '\n'
+        API['check_case']('board', 'inventory', serial(evidence))
+        for version in (0x30, 0x40):
+            legacy = dict(evidence, i2c_version=version, i2c_entry=0x050005a2)
+            API['check_case']('board', 'inventory', serial(legacy))
+            with self.assertRaises(ValueError):
+                API['check_case']('board', 'inventory', serial(dict(legacy, drive=3)))
+            with self.assertRaises(ValueError):
+                API['check_case']('board', 'inventory', serial(dict(legacy, i2c_entry=0x060005a2)))
+        for field, bad in [('ddc', 'firmware'), ('post', 0), ('chipset', 0x108),
+                           ('drive', 3), ('connector', 1), ('sor_state', 0),
+                           ('edid', edid[:-1].hex()), ('edid_sha256', 'b'*64),
+                           ('modes', evidence['modes'][:1]), ('schema', 2)]:
+            e = dict(evidence, **{field: bad})
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                API['check_case']('board', 'inventory', serial(e))
+        e = copy.deepcopy(evidence); e['modes'][0]['clock_khz'] += 1
+        with self.assertRaises(ValueError): API['check_case']('board', 'inventory', serial(e))
+        with self.assertRaises(ValueError): API['check_case']('board', 'inventory', serial(evidence)*2)
+
     def test_claim_requires_the_framebuffer_bar_index(self):
         with self.assertRaises(ValueError):
             API['check_case']('device', 'claimed', SERIAL.replace('driver=firmware-framebuffer BAR1', 'driver=firmware-framebuffer BAR0'))

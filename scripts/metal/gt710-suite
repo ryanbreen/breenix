@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """E19's firmware and PCI-display cases, judged from a boot's retained capture."""
 import re
+import hashlib
 import json
 from pathlib import Path
 import runpy
 import tempfile
 
 CATEGORIES = {
+    'board': (
+        ('inventory', 'Live board tables, POST and active TMDS routing identify the attached DDC sink and its preferred timing'),
+    ),
     'firmware': (
         ('mode', 'The firmware framebuffer report gives its mode, pixel format, pitch, base and mapped size'),
         ('owner', 'The whole firmware framebuffer lies in the reported GT 710 memory BAR, not the embedded display'),
@@ -45,8 +49,99 @@ def pci(serial):
     return m[1], int(m[2], 16), int(m[3], 16), int(m[4], 16)
 
 
+def edid_timings(raw):
+    if (len(raw) < 128 or raw[:8] != bytes([0,255,255,255,255,255,255,0])
+            or raw[18] != 1 or raw[19] not in (3,4) or not raw[20] & 128
+            or raw[126] > 3 or len(raw) != 128 * (raw[126] + 1)
+            or any(sum(raw[i:i+128]) % 256 for i in range(0,len(raw),128))):
+        raise ValueError('incomplete or corrupt digital EDID')
+    timings = []
+    def detailed(d):
+        clock = int.from_bytes(d[:2], 'little') * 10
+        if not clock:
+            return
+        w, h = d[2] + ((d[4] & 240) << 4), d[5] + ((d[7] & 240) << 4)
+        hb, vb = d[3] + ((d[4] & 15) << 8), d[6] + ((d[7] & 15) << 8)
+        hs, hw = d[8] + ((d[11] & 192) << 2), d[9] + ((d[11] & 48) << 4)
+        vs, vw = (d[10] >> 4) + ((d[11] & 12) << 2), (d[10] & 15) + ((d[11] & 3) << 4)
+        if min(w,h,hs,hw,vs,vw) <= 0 or hs+hw > hb or vs+vw > vb:
+            raise ValueError('invalid EDID detailed timing')
+        if d[17] & 152 == 24:
+            timings.append(dict(width=w,height=h,clock_khz=clock,hsync_start=w+hs,
+                                hsync_end=w+hs+hw,htotal=w+hb,vsync_start=h+vs,
+                                vsync_end=h+vs+vw,vtotal=h+vb,flags=d[17]))
+    for i in range(54,126,18):
+        detailed(raw[i:i+18])
+    if any(raw[i:i+2] == bytes([129,0]) for i in range(38,54,2)):
+        timings.append(dict(width=1280,height=800,clock_khz=83500,hsync_start=1352,
+                            hsync_end=1480,htotal=1680,vsync_start=803,vsync_end=809,vtotal=831,flags=28))
+    for i in range(128,len(raw),128):
+        b = raw[i:i+128]
+        if b[0] == 2 and b[2]:
+            if not 4 <= b[2] <= 127:
+                raise ValueError('CTA timing offset outside block')
+            for offset in range(b[2],110,18):
+                detailed(b[offset:offset+18])
+    return timings
+
+
+def board_inventory(serial):
+    bdf, _, _, _ = pci(serial)
+    m = one(r'^GT710_NATIVE (.+)$', serial, 'native board evidence')
+    try:
+        e = json.loads(m[1])
+        raw = bytes.fromhex(e['edid'])
+        timings = edid_timings(raw)
+        integers = ('boot0','chipset','revision','post','rom_bytes','bit_version','dcb_version',
+                    'i2c_version','connector_version','pll_version','dcb_entry','dcb_conf','i2c_entry',
+                    'connector','connector_type','drive','sor','sor_state','head','head_total','head_clock')
+        if any(type(e[k]) is not int or not 0 <= e[k] <= 0xffffffff for k in integers):
+            raise ValueError('invalid integer evidence')
+        entry, state = e['dcb_entry'], e['sor_state']
+        i2c = e['i2c_entry']
+        legacy = e['i2c_version'] in (0x30, 0x40)
+        drive = i2c & (15 if legacy else 31)
+        if (e['schema'] != 1 or e['phase'] != 'board' or e['bdf'] != bdf or e['ddc'] != 'live'
+                or e['chipset'] != 0x106 or (e['boot0'] >> 20) & 511 != e['chipset']
+                or e['revision'] != e['boot0'] & 255 or not e['post'] & 2
+                or not 512 <= e['rom_bytes'] <= 256*1024 or e['rom_bytes'] % 512
+                or not re.fullmatch('[0-9a-f]{64}',e['rom_sha256'])
+                or e['bit_version'] != 0x100 or e['dcb_version'] not in (0x40,0x41)
+                or e['i2c_version'] not in (0x30,0x40,0x41)
+                or (legacy and i2c >> 24 != 5) or e['connector_version'] not in (0x30,0x40)
+                or e['pll_version'] not in (0x30,0x40,0x50)
+                or entry & 15 != 2 or entry & 0x00300000
+                or e['connector'] != (entry >> 12) & 15 or e['connector_type'] not in (0x30,0x31,0x60,0x61)
+                or e['drive'] != drive or e['drive'] == 31
+                or not 0 <= e['sor'] < 4 or (entry >> 24) & 15 != 1 << e['sor']
+                or not 0 <= e['head'] < 4 or state & 15 != 1 << e['head']
+                or not entry & (1 << (e['head']+8)) or (state >> 8) & 15 not in (1,2,5)
+                or not e['dcb_conf'] & 48 or not e['head_total'] & 65535
+                or not e['head_total'] >> 16 or not e['head_clock']
+                or e['edid_sha256'] != hashlib.sha256(raw).hexdigest()):
+            raise ValueError('board identity, route, POST, active state or EDID provenance mismatch')
+        selected = e['modes']
+        # G3: the attached monitor supplies the modes, including its first DTD.
+        preferred = raw[54:72]
+        if (not selected or selected != list({tuple(t.items()): t for t in timings}.values())
+                or selected[0]['clock_khz'] != int.from_bytes(preferred[:2], 'little') * 10
+                or selected[0]['width'] != preferred[2] + ((preferred[4] & 240) << 4)
+                or selected[0]['height'] != preferred[5] + ((preferred[7] & 240) << 4)):
+            raise ValueError('complete decoded timings including the preferred DTD must match this live sink')
+    except (KeyError,TypeError,IndexError,json.JSONDecodeError) as error:
+        raise ValueError('malformed native board evidence') from error
+    for group in ('firmware','device'):
+        for name, _ in CATEGORIES[group]:
+            check_case(group,name,serial)
+    return e
+
+
 def check_case(category, case, serial):
-    if category == 'console':
+    if category == 'board':
+        if case != 'inventory':
+            raise ValueError('unknown board case')
+        board_inventory(serial)
+    elif category == 'console':
         if case != 'acceptance':
             raise ValueError('unknown console case')
         for group in ('firmware', 'device'):
