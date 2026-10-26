@@ -98,17 +98,21 @@ def board_inventory(serial):
         if any(type(e[k]) is not int or not 0 <= e[k] <= 0xffffffff for k in integers):
             raise ValueError('invalid integer evidence')
         entry, state = e['dcb_entry'], e['sor_state']
+        i2c = e['i2c_entry']
+        legacy = e['i2c_version'] in (0x30, 0x40)
+        drive = i2c & (15 if legacy else 31)
         if (e['schema'] != 1 or e['phase'] != 'board' or e['bdf'] != bdf or e['ddc'] != 'live'
                 or e['chipset'] != 0x106 or (e['boot0'] >> 20) & 511 != e['chipset']
                 or e['revision'] != e['boot0'] & 255 or not e['post'] & 2
                 or not 512 <= e['rom_bytes'] <= 256*1024 or e['rom_bytes'] % 512
                 or not re.fullmatch('[0-9a-f]{64}',e['rom_sha256'])
                 or e['bit_version'] != 0x100 or e['dcb_version'] not in (0x40,0x41)
-                or e['i2c_version'] != 0x41 or e['connector_version'] not in (0x30,0x40)
+                or e['i2c_version'] not in (0x30,0x40,0x41)
+                or (legacy and i2c >> 24 != 5) or e['connector_version'] not in (0x30,0x40)
                 or e['pll_version'] not in (0x30,0x40,0x50)
                 or entry & 15 != 2 or entry & 0x00300000
                 or e['connector'] != (entry >> 12) & 15 or e['connector_type'] not in (0x30,0x31,0x60,0x61)
-                or e['drive'] != e['i2c_entry'] & 31 or e['drive'] == 31
+                or e['drive'] != drive or e['drive'] == 31
                 or not 0 <= e['sor'] < 4 or (entry >> 24) & 15 != 1 << e['sor']
                 or not 0 <= e['head'] < 4 or state & 15 != 1 << e['head']
                 or not entry & (1 << (e['head']+8)) or (state >> 8) & 15 not in (1,2,5)

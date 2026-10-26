@@ -43,10 +43,13 @@ timing list. Unsupported descriptions do not invent modes. Missing support
 or a physical sink prerequisite is retained as a failed inventory result.
 The metal record retains EDID privately; public summaries omit sink identifiers.
 
-The ROM window and shared-pad state are restored after access. DDC stretches
+The ROM shadow control and shared-pad state are restored after access. DDC stretches
 are bounded; NACK/timeout returns no partial block and releases the lines.
 No firmware framebuffer, scanout, clock, output or channel programming is
 performed by this inventory path.
 
 Source revisions, file hashes and notices: [board provenance](provenance/gt710-board.md)
 and the repository's `THIRD_PARTY_NOTICES`.
+
+CCB 3.0/4.0 NVIO bit-bang entries and CCB 4.1 PMGR entries use their
+respective drive/shared-pad layouts; AUX-only entries are not DDC routes.

@@ -294,3 +294,7 @@ GK208B direct PROM reader (`kernel/src/gpu/gk208/rom.rs`): nouveau Linux v6.8
 `nvkm/subdev/bios/shadowrom.c` and `nvkm/subdev/pci/{base,nv40}.c`,
 MIT, Copyright 2012 and 2015 Red Hat Inc. Original notices are retained
 in the consumer; exact source hashes are in `docs/gui/provenance/gt710-board.md`.
+
+Legacy DDC route type definitions: nouveau Linux v6.8
+`include/nvkm/subdev/bios/i2c.h` (SPDX-License-Identifier: MIT), used by
+`kernel/src/gpu/gk208/board.rs` with the MIT BIOS I2C parser above.

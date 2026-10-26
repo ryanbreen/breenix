@@ -65,6 +65,7 @@ pub struct Route {
     pub connector: u8,
     pub kind: u8,
     pub drive: u8,
+    pub share: u8,
     pub sor: u8,
     pub heads: u8,
 }
@@ -143,7 +144,7 @@ pub fn parse(r: &[u8]) -> Result<Board, &'static str> {
     }
     let i2c = u16at(r, dcb + 4)?;
     let (is, ic, il) = table(r, i2c, 4, 4)?;
-    if r[i2c] != 0x41 {
+    if !matches!(r[i2c], 0x30 | 0x40 | 0x41) {
         return Err("unsupported I2C table");
     }
     let conn = u16at(r, dcb + 0x14)?;
@@ -167,7 +168,20 @@ pub fn parse(r: &[u8]) -> Result<Board, &'static str> {
             return Err("route table index");
         }
         let i2c_entry = u32at(r, is + index * il)?;
-        let drive = (i2c_entry & 31) as u8;
+        let (drive, share) = if r[i2c] == 0x41 {
+            ((i2c_entry & 31) as u8, ((i2c_entry >> 5) & 31) as u8)
+        } else {
+            // CCB 3.0/4.0 NVIO_BIT: type in byte 3, drive in byte 0,
+            // and optional shared AUX pad in byte 1 (MIT bios/i2c.c).
+            if i2c_entry >> 24 != 5 {
+                continue;
+            }
+            let pad = (i2c_entry >> 8) as u8;
+            (
+                (i2c_entry & 15) as u8,
+                if pad & 1 != 0 { pad >> 1 } else { 31 },
+            )
+        };
         let sor_mask = (entry >> 24) & 15;
         if drive == 31 {
             continue;
@@ -182,6 +196,7 @@ pub fn parse(r: &[u8]) -> Result<Board, &'static str> {
             connector: connector as u8,
             kind: r[cs + connector * cl],
             drive,
+            share,
             sor: sor_mask.trailing_zeros() as u8,
             heads: ((entry >> 8) & 15) as u8,
         });

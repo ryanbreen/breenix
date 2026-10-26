@@ -21,6 +21,10 @@ included. The Rust files retain the source copyright and license headers.
 | `subdev/pci/base.c` | `cc1611a5d1b22109c19567066d6bf3c721e6785040cbdf2e6b1ab25a4bc681a9` | `kernel/src/gpu/gk208/rom.rs` |
 | `subdev/pci/nv40.c` | `ad3078ff848315ac81aed415b3f1452628ad65c271945311573b096820c042b2` | `kernel/src/gpu/gk208/rom.rs` |
 
+The MIT-SPDX header `include/nvkm/subdev/bios/i2c.h` at the same revision
+defines the legacy NVIO type values (SHA-256
+`350ed8dacb7b2a182b1f4166c54a7687153002255a0ec55b87f7c01343856ebd`).
+
 The parser decodes only supported BIT/DCB/I2C/connector/PLL layouts. It does
 not execute VBIOS scripts. The BIT C v2 payload supported here is exactly
 the four-byte PLL-table pointer; larger payload layouts are rejected.

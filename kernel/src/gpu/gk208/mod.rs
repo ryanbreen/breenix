@@ -172,7 +172,7 @@ impl<'a> Bus<'a> {
         if frequency < 1_000_000 {
             return Err("DDC requires calibrated TSC");
         }
-        let aux = ((route.i2c_entry >> 5) & 31) as usize;
+        let aux = route.share as usize;
         let pad = if aux != 31 {
             if aux >= 4 {
                 return Err("unsupported shared DDC pad");
