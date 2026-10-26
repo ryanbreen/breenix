@@ -11,6 +11,8 @@ use super::holding_screen;
 use conquer_once::spin::OnceCell;
 use core::fmt;
 use core::ops::Range;
+#[cfg(target_arch = "x86_64")]
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Where the framebuffer is.
 #[derive(Clone, Copy)]
@@ -46,6 +48,8 @@ pub struct Linear {
     located: OnceCell<(u64, Place)>,
     #[cfg(target_arch = "x86_64")]
     native: OnceCell<crate::gk208::ConsoleSurface>,
+    #[cfg(target_arch = "x86_64")]
+    disabled: AtomicBool,
 }
 
 // SAFETY: the mapping lives for the kernel's lifetime, and its rows are written
@@ -67,6 +71,8 @@ impl Linear {
             located: OnceCell::uninit(),
             #[cfg(target_arch = "x86_64")]
             native: OnceCell::uninit(),
+            #[cfg(target_arch = "x86_64")]
+            disabled: AtomicBool::new(false),
         })
     }
 
@@ -96,12 +102,27 @@ impl Linear {
         self.native.try_init_once(||surface).map_err(|_|"native console already attached")
     }
 
+    /// A failed native takeover may have replaced BAR1 or the active surface.
+    /// Disable framebuffer access instead of reusing that inherited mapping.
+    #[cfg(target_arch = "x86_64")]
+    pub fn disable(&self) {
+        self.disabled.store(true, Ordering::Release);
+    }
+    pub fn available(&self) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        { !self.disabled.load(Ordering::Acquire) }
+        #[cfg(target_arch = "aarch64")]
+        { true }
+    }
+
     pub fn write(&self, shadow: &[u8], lines: Range<usize>, allowed: fn() -> bool) -> bool {
+        if !self.available() { return false; }
         // SAFETY: the mapping holds at least `layout.bytes()` bytes (`new`).
         unsafe { write_bands(self.buffer(), &self.layout(), shadow, lines, allowed) }
     }
 
     pub fn settle(&self) -> Result<Source, &'static str> {
+        if !self.available() { return Err("display disabled after native takeover failure"); }
         drain_writes();
         let &(phys, place) = self.located.get().ok_or("the framebuffer's physical address is not known")?;
         #[cfg(target_arch = "x86_64")]
@@ -116,6 +137,7 @@ impl Linear {
     }
 
     pub fn read_line(&self, y: usize, out: &mut [u8]) {
+        if !self.available() { out.fill(0); return; }
         let start = self.layout().line(y).start;
         // The widest read the mapping allows: each read of video memory is a
         // bus transaction of its own. On x86 a whole 64-byte line where
@@ -162,6 +184,7 @@ impl Linear {
         rows: Range<usize>,
         columns: Range<usize>,
     ) -> bool {
+        if !self.available() { return false; }
         let layout = self.layout();
         let bpp = layout.bytes_per_pixel;
         let columns = columns.start.min(layout.width)..columns.end.min(layout.width);
@@ -196,6 +219,7 @@ impl Linear {
     /// device memory. Absent outside the framebuffer or while a row is written.
     #[cfg(target_arch = "x86_64")]
     pub fn read_pixel(&self, x: usize, y: usize) -> Option<[u8; 3]> {
+        if !self.available() { return None; }
         let layout = self.layout();
         if x >= layout.width || y >= layout.height {
             return None;

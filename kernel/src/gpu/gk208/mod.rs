@@ -313,11 +313,11 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
     }
     Err("no active board-routed TMDS sink responded to live DDC")
 }
-pub fn identify() -> Option<ConsoleSurface> {
-    let device=pci::find_device(0x10de,0x128b)?;
+pub fn identify() -> Result<Option<ConsoleSurface>, &'static str> {
+    let Some(device)=pci::find_device(0x10de,0x128b) else {return Ok(None);};
     match inventory(device) {
-        Ok(surface)=>Some(surface),
-        Err(e)=>{crate::serial_println!("GT710_PROBE failed: {}",e);None},
+        Ok(surface)=>Ok(Some(surface)),
+        Err(e)=>{crate::serial_println!("GT710_PROBE failed: {}",e);Err(e)},
     }
 }
 

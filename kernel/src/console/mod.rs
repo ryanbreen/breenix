@@ -635,13 +635,19 @@ pub fn attach() {
     let Some(attached) = display::linear::attach(linear, info.pixel_format, info.stride) else {
         return;
     };
-    if let Some(surface)=crate::gk208::identify() {
+    let surface=match crate::gk208::identify() {
+        Ok(surface)=>surface,
+        Err(_)=>{linear.disable();return;},
+    };
+    if let Some(surface)=surface {
         if let Err(e)=linear.install_native(surface) {
+            linear.disable();
             log::error!("native console attachment failed: {}",e);
             return;
         }
         let layout=linear.layout();
         if !matches!(with_grid(|console| console.vts[0].grid.resize_boot(layout.cols(),layout.rows())),Some(Ok(()))) {
+            linear.disable();
             log::error!("native boot terminal resize failed");
             return;
         }
@@ -654,7 +660,10 @@ pub fn attach() {
 /// one whose pixels are not 3- or 4-byte RGB or BGR.
 #[cfg(target_arch = "x86_64")]
 pub fn display_geometry() -> Option<(usize, usize, usize, usize, bool)> {
-    let layout=DISPLAY.get()?.layout();
+    let display=DISPLAY.get()?;
+    let Display::Linear(linear)=display;
+    if !linear.available() {return None;}
+    let layout=display.layout();
     Some((layout.width,layout.height,layout.stride_bytes/layout.bytes_per_pixel,layout.bytes_per_pixel,layout.bgr))
 }
 
