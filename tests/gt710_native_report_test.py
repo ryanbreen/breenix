@@ -24,7 +24,8 @@ def capture(change=None, short=False):
            notifier_before=0,notifier_after=1,put=256,get=256,errors=0,underflow=0,
            power=1,power_status=0,raster_before=1<<16,raster_after=3<<16,
            instance=memory['objects'][4]['start'],push=memory['objects'][2]['start'],
-           skipped_address=start,skipped_notifier=0,clean_notifier=1,firmware_writes=0)
+           skipped_address=start,skipped_notifier=0,clean_notifier=1,firmware_writes=0,
+           pll_register=0x614100,pll_reference=27000,pll_coefficients=0x94702,pll_fraction=0x10000000)
     data=bytearray(); rows=[]
     for y in range(h):
         runs=[]
@@ -37,7 +38,7 @@ def capture(change=None, short=False):
     e['bytes']=len(data);e['sha256']=hashlib.sha256(data).hexdigest()
     if change:change(e)
     serial=M['SERIAL']+'GT710_MEMORY '+json.dumps(memory)+'\n'
-    return serial+''.join(rows[:-1] if short else rows)+'GT710_MODE '+json.dumps(e)+'\n'
+    return serial+''.join(rows[:-1] if short else rows)+'GT710_MODE '+json.dumps(e)+'\n'+f'GT710_NATIVE_CONSOLE surface={start} firmware_writes=0\n'
 
 class NativeCapture(unittest.TestCase):
     def test_native_state_and_pixels_with_negative_controls(self):
@@ -49,11 +50,14 @@ class NativeCapture(unittest.TestCase):
                    lambda e:e.update(surface=0),lambda e:e['active'][5].__setitem__(1,1),
                    lambda e:e.update(skipped_notifier=1),lambda e:e.update(skipped_address=0),
                    lambda e:e.update(clean_notifier=0),lambda e:e.update(firmware_writes=1),
+                   lambda e:e.update(pll_coefficients=0),lambda e:e.update(pll_fraction=0),
                    lambda e:e.update(sha256='0'*64),lambda e:e.update(bytes=e['bytes']-4)]
         for mutate in mutations:
             with self.subTest(mutation=mutate),self.assertRaises(ValueError):
                 API['native_mode'](capture(mutate))
         with self.assertRaises(ValueError):API['native_mode'](capture(short=True))
+        with self.assertRaises(ValueError):API['native_mode'](capture().replace('firmware_writes=0','firmware_writes=1'))
+        with self.assertRaises(ValueError):API['native_mode'](capture().replace('GT710_NATIVE_CONSOLE','MISSING_CONSOLE'))
         serial=capture().replace('40:ff003039','40:ff003038',1)
         self.assertNotEqual(serial,capture())
         with self.assertRaises(ValueError):API['native_mode'](serial)
