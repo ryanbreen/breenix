@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Build GK208B assets; --check independently rebuilds and compares the bytes."""
+import argparse
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location("kepler_assets", ROOT / "tools/kepler/assets.py")
+ASSETS = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(ASSETS)
+
+
+def run(command, log):
+    if sys.platform == "darwin":
+        command = ["taskpolicy", "-b"] + command
+    with log.open("wb") as stream:
+        result = subprocess.run([str(x) for x in command], cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT,
+                                env=dict(os.environ, CARGO_BUILD_JOBS="4"))
+    text = log.read_text()
+    if result.returncode or any(word in text.lower() for word in ["warning:", "error:", "cmake warning"]):
+        print(text, file=sys.stderr)
+        raise RuntimeError(f"build failed or emitted diagnostics; see {log}")
+
+
+def inventory(path):
+    return {str(p.relative_to(path)): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(path.rglob("*")) if p.is_file()}
+
+
+def build(path):
+    args = ["cmake", "-S", ROOT / "tools/kepler", "-B", path, "-G", "Ninja", "-DCMAKE_BUILD_TYPE="]
+    bison = os.environ.get("KEPLER_BISON")
+    if not bison and sys.platform == "darwin":
+        try:
+            prefix = subprocess.check_output(["brew", "--prefix", "bison"], text=True).strip()
+        except FileNotFoundError as error:
+            raise RuntimeError("Homebrew is required to locate Bison; install it or set KEPLER_BISON") from error
+        bison = str(Path(prefix) / "bin/bison")
+    if os.environ.get("KEPLER_CPP"):
+        args.append("-DKEPLER_CPP=" + os.environ["KEPLER_CPP"])
+    if bison:
+        args.append(f"-DBISON_EXECUTABLE={bison}")
+    run(args, path.parent / (path.name + "-configure.log"))
+    run(["cmake", "--build", path, "--target", "kepler-assets", "--parallel", "4"],
+        path.parent / (path.name + "-build.log"))
+    print(f"Built {path.name}: FECS/GPCCS and 44 shaders", flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true", help="two independent builds plus embedding and rejection checks")
+    args = parser.parse_args()
+    ASSETS.verify_sources()
+    base = ROOT / "target/kepler"
+    base.mkdir(parents=True, exist_ok=True)
+    # Fresh tool/object directories make --check an independent compiler rebuild.
+    attempt = Path(tempfile.mkdtemp(prefix="build-", dir=base))
+    build(attempt / "first")
+    first = attempt / "first/assets"
+    hashes = inventory(first)
+    if args.check:
+        build(attempt / "second")
+        second = inventory(attempt / "second/assets")
+        if hashes != second:
+            changed = [name for name in hashes.keys() | second.keys() if hashes.get(name) != second.get(name)]
+            raise RuntimeError(f"non-reproducible assets: {changed}")
+        rust_consumer = attempt / "embed.rs"
+        rust_consumer.write_text('#![no_std]\ninclude!("' + str(first / 'embed.rs') + '");\n')
+        run(["rustc", "--edition=2021", "--crate-type=lib", "--crate-name=kepler_assets", "-Dwarnings",
+             rust_consumer, "-o", attempt / "embed.rlib"], attempt / "rust-embed.log")
+        consumer = attempt / "embed.c"
+        consumer.write_text('#include "embed.h"\nint main(void) { return breenix_kepler_assets[0].size == 0; }\n')
+        run(["cc", "-std=c99", "-Wall", "-Wextra", "-Werror", "-I", first, consumer, "-o", attempt / "embed-c"],
+            attempt / "c-embed.log")
+        subprocess.run([str(attempt / "embed-c")], check=True)
+        # Fail closed on instructions outside the selected catalogue frontend.
+        invalid = attempt / "unsupported.tgsi"
+        invalid.write_text("FRAG\nDCL OUT[0], COLOR\nDCL TEMP[0]\nSIN OUT[0], TEMP[0]\nEND\n")
+        rejected = subprocess.run([str(attempt / "first/kepler-compile"), str(invalid), str(attempt / "invalid")], capture_output=True)
+        if rejected.returncode == 0 or b"unsupported opcode" not in rejected.stderr or list(attempt.glob("invalid.*")):
+            raise RuntimeError("unsupported instruction did not fail closed")
+        print(f"PASS: two independent builds produced {len(hashes)} byte-identical assets; embedding and rejection checks passed")
+    # A stable path for later include_bytes!, C includes or disk image packaging.
+    link = base / "assets"
+    temporary = attempt / "publish"
+    if link.exists() and not link.is_symlink():
+        raise RuntimeError(f"refusing to replace non-symlink {link}")
+    # Relative to the published link's parent, rather than the attempt directory.
+    temporary.symlink_to(first.relative_to(base))
+    os.replace(temporary, link)
+    (attempt / "asset-hashes.json").write_bytes(ASSETS.json_bytes(hashes))
+    print(f"Assets: {link}\nEvidence: {attempt}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (RuntimeError, subprocess.CalledProcessError) as error:
+        print(error, file=sys.stderr)
+        sys.exit(1)
