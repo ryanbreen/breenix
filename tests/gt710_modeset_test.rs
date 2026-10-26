@@ -22,7 +22,11 @@ fn encodes_preferred_timing_and_owned_pitch_surface() {
     assert_eq!(m[&0x450],108000000);
     assert_eq!(m[&0x460],0x080100);
     assert_eq!(m[&0x468],1024<<16|1280);
-    assert_eq!(m[&0x46c],0x01014000);
+    // NV927D_HEAD_SET_STORAGE_PITCH is bits 20:8, in 256-byte units.
+    assert_eq!(m[&0x46c],0x01001400);
+    assert_eq!(modeset::head_methods(&preferred(),0,0,1,0x08010000,8191*256)
+        .unwrap().into_iter().find(|(r,_)|*r==0x46c).unwrap().1,0x011fff00);
+    assert!(modeset::head_methods(&preferred(),0,0,1,0x08010000,8192*256).is_err());
     assert_eq!(m[&0x470],0xcf00);
     assert_eq!(m[&0x474],1);
     assert_eq!(m[&0x200],0x101);
