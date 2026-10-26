@@ -7,6 +7,16 @@
   "hostRunner": true,
   "categories": [
     {
+      "id": "memory",
+      "title": "Display memory bootstrap",
+      "cases": [
+        {
+          "id": "carveout",
+          "title": "Private display allocations preserve inherited VRAM and pass complete complementary physical read-back without aliasing"
+        }
+      ]
+    },
+    {
       "id": "board",
       "title": "Native board inventory",
       "cases": [

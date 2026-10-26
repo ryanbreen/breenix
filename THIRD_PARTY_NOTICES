@@ -298,3 +298,22 @@ in the consumer; exact source hashes are in `docs/gui/provenance/gt710-board.md`
 Legacy DDC route type definitions: nouveau Linux v6.8
 `include/nvkm/subdev/bios/i2c.h` (SPDX-License-Identifier: MIT), used by
 `kernel/src/gpu/gk208/board.rs` with the MIT BIOS I2C parser above.
+
+## GK208B display-memory bootstrap (E19 PR 4.2)
+
+`kernel/src/gpu/gk208/memory.rs` adapts hardware discovery, reservations,
+PRAMIN window addressing, inherited BAR table decoding and display-instance
+fields from the following individually inspected MIT files at Linux v6.8
+(`e8f897f4afef0031fe618a8e94127a0934896aba`). The original copyright and
+permission notices are retained in the consumer's header.
+
+- `drivers/gpu/drm/nouveau/nvkm/subdev/fb/ramgf100.c`: Copyright 2013 Red Hat Inc.; MIT.
+- `drivers/gpu/drm/nouveau/nvkm/subdev/instmem/nv50.c`: Copyright 2012 Red Hat Inc.; MIT.
+- `drivers/gpu/drm/nouveau/nvkm/subdev/mmu/vmmgf100.c`: Copyright 2017 Red Hat Inc.; MIT.
+- `drivers/gpu/drm/nouveau/nvkm/subdev/mmu/vmmgk104.c`: Copyright 2017 Red Hat Inc.; MIT.
+- `drivers/gpu/drm/nouveau/nvkm/subdev/bar/gf100.c`: Copyright 2012 Red Hat Inc.; MIT.
+- `drivers/gpu/drm/nouveau/nvkm/engine/disp/gf119.c`: Copyright 2012 Red Hat Inc.; MIT.
+- `drivers/gpu/drm/nouveau/nvkm/engine/disp/nv50.c`: Copyright 2012 Red Hat Inc.; MIT.
+
+Only GPU hardware mechanisms are adapted under G1. The first-fit allocator,
+physical pattern verifier and retained-capture scoring are Breenix code.

@@ -95,7 +95,10 @@
 mod board;
 mod ddc;
 mod edid;
+mod memory;
 mod rom;
+static DISPLAY_MEMORY: conquer_once::spin::OnceCell<memory::Layout> =
+    conquer_once::spin::OnceCell::uninit();
 use crate::arch_impl::x86_64::timer;
 use crate::drivers::pci;
 use alloc::{format, string::String, vec::Vec};
@@ -108,7 +111,7 @@ impl Registers {
         unsafe { ((self.0 + reg) as *const u32).read_volatile() }
     }
     fn write(&self, reg: usize, value: u32) {
-        // SAFETY: same mapping; only ROM shadow and I2C controls are written.
+        // SAFETY: checked BAR0 mapping; ROM, I2C and bounded PRAMIN writes only.
         unsafe {
             ((self.0 + reg) as *mut u32).write_volatile(value);
         }
@@ -129,6 +132,14 @@ fn hash(data: &[u8]) -> String {
     hex(&crate::block::install::sha256::sha256(data))
 }
 
+impl memory::Access for Registers {
+    fn read(&mut self, reg: usize) -> u32 {
+        Registers::read(self, reg)
+    }
+    fn write(&mut self, reg: usize, value: u32) {
+        Registers::write(self, reg, value)
+    }
+}
 impl rom::Access for Registers {
     fn read(&self, reg: usize) -> u32 {
         Registers::read(self, reg)
@@ -281,6 +292,13 @@ fn inventory(device: pci::Device) -> Result<(), &'static str> {
             route.entry,route.conf,route.i2c_entry,route.connector,route.kind,route.drive,route.sor,state,head,
             regs.read(0x640414+head as usize*0x300),regs.read(0x640450+head as usize*0x300),hex(&data),hash(&data),timings);
         crate::serial_println!("GT710_NATIVE {}", evidence);
+        let preferred = modes.first().ok_or("no preferred sink timing")?;
+        display_memory(
+            &mut regs,
+            device,
+            preferred.width.into(),
+            preferred.height.into(),
+        )?;
         return Ok(());
     }
     Err("no active board-routed TMDS sink responded to live DDC")
@@ -291,4 +309,130 @@ pub fn identify() {
             crate::serial_println!("GT710_PROBE failed: {}", e);
         }
     }
+}
+
+fn display_memory(
+    regs: &mut Registers,
+    device: pci::Device,
+    width: u32,
+    height: u32,
+) -> Result<(), &'static str> {
+    let bar = device.bars[1];
+    if bar.address == 0 || bar.is_io || !bar.prefetchable {
+        return Err("missing display BAR1");
+    }
+    let inventory = memory::discover(regs, bar.size)?;
+    let layout = memory::Layout::new(inventory.total, &inventory.reserved, width, height)?;
+    let before_window = regs.read(0x1700);
+    let seed = (timer::rdtsc() as u32) | 1;
+    let mut p = memory::Pramin::new(regs, inventory.total);
+    // Small actual inherited objects are snapshotted; the allocator additionally
+    // excludes their entire upper envelope and the whole low BAR aperture.
+    let mut protected = inventory.references.clone();
+    protected.extend([
+        memory::Range {
+            start: 0,
+            size: 256 << 10,
+        },
+        memory::Range {
+            start: inventory.total - (1 << 20),
+            size: 1 << 20,
+        },
+    ]);
+    protected.sort_by_key(|r| (r.start, r.size));
+    protected.dedup();
+    let mut snapshots = Vec::new();
+    let mut protected_data = Vec::new();
+    for r in &protected {
+        let b = p.bytes(*r)?;
+        protected_data.extend_from_slice(&b);
+        snapshots.push(b);
+    }
+    let protected_before = hash(&protected_data);
+    let protected_bytes = protected_data.len();
+    let mut guards = Vec::new();
+    for o in &layout.objects {
+        guards.extend([
+            memory::Range {
+                start: o.range.start - 4096,
+                size: 4096,
+            },
+            memory::Range {
+                start: o.range.start + o.range.size,
+                size: 4096,
+            },
+        ]);
+    }
+    let mut guard_data = Vec::new();
+    for r in &guards {
+        guard_data.extend_from_slice(&p.bytes(*r)?);
+    }
+    let guard_before = hash(&guard_data);
+    let guard_bytes = guard_data.len();
+    let mut hashes = alloc::vec![[String::new(),String::new()];layout.objects.len()];
+    crate::serial_println!(
+        "GT710_PROBE memory total={} reserved-low={} owned-objects={}",
+        inventory.total,
+        bar.size,
+        layout.objects.len()
+    );
+    let verified = memory::exercise(&mut p, &layout, seed, |phase, index, data| {
+        hashes[index][phase] = hash(data);
+    })?;
+    protected_data.clear();
+    for (r, before) in protected.iter().zip(snapshots.iter()) {
+        let after = p.bytes(*r)?;
+        if after != *before {
+            return Err("inherited VRAM storage changed");
+        }
+        protected_data.extend_from_slice(&after);
+    }
+    guard_data.clear();
+    for r in &guards {
+        guard_data.extend_from_slice(&p.bytes(*r)?);
+    }
+    let protected_after = hash(&protected_data);
+    let guard_after = hash(&guard_data);
+    drop(p);
+    let after_window = regs.read(0x1700);
+    if before_window != after_window {
+        return Err("PRAMIN control was not restored");
+    }
+    let mut objects = String::new();
+    for (o, h) in layout.objects.iter().zip(hashes.iter()) {
+        if !objects.is_empty() {
+            objects.push(',');
+        }
+        let _ = write!(
+            objects,
+            "{{\"name\":\"{}\",\"start\":{},\"size\":{},\"align\":{},\"sha256\":[\"{}\",\"{}\"]}}",
+            o.name, o.range.start, o.range.size, o.align, h[0], h[1]
+        );
+    }
+    let pairs = |ranges: &[memory::Range]| {
+        ranges
+            .iter()
+            .map(|r| format!("[{},{}]", r.start, r.size))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let registers = inventory
+        .registers
+        .iter()
+        .map(|(r, v)| format!("[{},{}]", r, v))
+        .collect::<Vec<_>>()
+        .join(",");
+    let report=format!(concat!("{{\"schema\":1,\"phase\":\"memory\",\"bdf\":\"{:02x}:{:02x}.{}\",",
+        "\"total\":{},\"aperture\":{},\"pitch\":{},\"width\":{},\"height\":{},\"seed\":{},",
+        "\"reserved\":[{}],\"references\":[{}],\"registers\":[{}],",
+        "\"pramin_before\":{},\"pramin_after\":{},\"protected_bytes\":{},\"protected_before\":\"{}\",\"protected_after\":\"{}\",",
+        "\"guard_bytes\":{},\"guard_before\":\"{}\",\"guard_after\":\"{}\",\"objects\":[{}],\"verified_bytes\":{}}}"),
+        device.bus,device.device,device.function,inventory.total,bar.size,layout.pitch,width,height,seed,
+        pairs(&inventory.reserved),pairs(&inventory.references),registers,before_window,after_window,
+        protected_bytes,protected_before,protected_after,guard_bytes,guard_before,guard_after,objects,verified);
+    DISPLAY_MEMORY
+        .try_get_or_init(|| layout)
+        .map_err(|_| "display memory already initializing")?;
+    crate::serial_println!("GT710_MEMORY {}", report);
+    Ok(())
 }
