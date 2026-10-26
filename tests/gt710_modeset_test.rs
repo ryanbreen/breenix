@@ -310,3 +310,18 @@ fn empty_core_bootstrap_requires_owned_bindings_and_waits_for_initialization() {
         assert_eq!(r.writes,if allowed {vec![(0x610490,0x01000013)]} else {vec![]});
     }
 }
+
+#[test]
+fn bar1_switch_waits_for_both_device_completion_drains() {
+    struct Regs {requests:usize,blocked:usize}
+    impl modeset::Io for Regs {
+        fn read(&mut self,r:usize)->u32 {assert_eq!(r,0x70000);if self.requests==self.blocked {2} else {0}}
+        fn write(&mut self,r:usize,v:u32) {assert_eq!((r,v),(0x70000,1));self.requests+=1;}
+        fn delay_us(&mut self,_:u32) {}
+    }
+    for blocked in [0,1,2] {
+        let mut r=Regs{requests:0,blocked};
+        assert_eq!(modeset::bar1_wait(&mut r).is_err(),blocked!=0);
+        assert_eq!(r.requests,if blocked==1 {1} else {2});
+    }
+}
