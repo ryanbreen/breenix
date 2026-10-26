@@ -55,10 +55,15 @@ def switch_capture():
         e.update(bytes=len(data),sha256=hashlib.sha256(data).hexdigest())
         serial+='GT710_SWITCH '+json.dumps(e)+'\n'
         prior=e
-    return serial
+    return serial+f"GT710_NATIVE_CONSOLE surface={native['surface']} firmware_writes=0\n"
 
 
 class SwitchingCapture(unittest.TestCase):
+    def test_console_receipt_must_follow_the_final_low_mode(self):
+        serial=switch_capture()
+        early_only=serial[:serial.rindex('GT710_NATIVE_CONSOLE ')]
+        with self.assertRaises(ValueError):API['native_switches'](early_only)
+
     def test_low_high_low_requires_each_latched_mode_and_every_device_pixel(self):
         serial=switch_capture()
         frames=API['native_switches'](serial)
