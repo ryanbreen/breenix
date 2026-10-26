@@ -1288,6 +1288,10 @@ impl Controller {
         }
         self.dcbaa.put64(slot as usize * 8, device.output.phys);
         fence(Ordering::Release);
+        // Populate a Default output context with BSR=1 (4.6.5) before the
+        // on-wire failure. A failed command from Enabled need not copy the
+        // input contexts, so its output context can remain uninitialized.
+        self.command(Trb::new(11, device.input.phys, 0, (slot as u32) << 24 | (1 << 9)))?;
         // No responder remains at address 0: consume the real command
         // completion through the same MSI/event queue as ordinary commands.
         let code = self.command_code(Trb::new(11, device.input.phys, 0, (slot as u32) << 24))?;

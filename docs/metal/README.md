@@ -1385,6 +1385,7 @@ and the HID Usage Tables; their comments cite the sections.
   still not enumerated after them, or when a failed enumeration's slot cannot be reclaimed.
   An x86 testing kernel (`--features testing`, a `metal-run boot --mode tests` boot) first addresses
   the device, disables its slot, then tries Address Device on a fresh slot without resetting the USB device.
+  It first initializes the fresh slot to Default with BSR=1, which sends no USB request (xHCI 4.6.5).
   The device no longer answers address 0. The oracle requires the real code-4 command completion
   and Default slot state before reclaiming the slot and resetting the port, then reports
   `[TEST:xhci:census_address_recovery:PASS]`, or a `FAIL` that ends the boot.
