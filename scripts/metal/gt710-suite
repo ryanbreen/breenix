@@ -152,7 +152,7 @@ def display_memory(serial):
             and (16 << 20) <= aperture < total and aperture & (aperture-1) == 0, 'invalid memory sizes')
     require(framebuffer(serial)['span'] == aperture, 'BAR aperture differs from PCI ownership')
     pairs = e['registers']
-    require(isinstance(pairs,list) and len(pairs) <= 32 and all(len(p)==2 and all(integer(v) for v in p) for p in pairs), 'invalid register evidence')
+    require(isinstance(pairs,list) and len(pairs) <= 41 and all(len(p)==2 and all(integer(v) for v in p) for p in pairs), 'invalid register evidence')
     regs = dict(pairs)
     require(len(regs) == len(pairs), 'duplicate register evidence')
     fbps, disabled = regs[0x22438], regs[0x22554]
@@ -173,15 +173,16 @@ def display_memory(serial):
             amounts.append(part)
     require(amounts and len(set(amounts)) == 1 and sum(amounts) << 20 == total, 'VRAM inventory mismatch')
     refs = e['references']
-    require(isinstance(refs,list) and 0 < len(refs) <= 4096, 'missing inherited references')
+    require(isinstance(refs,list) and len(refs) <= 4096, 'missing inherited references')
     require(all(len(r)==2 and all(integer(v) for v in r) and r[0] > 0 and r[0] % 4096 == 0
                 and 0 < r[1] <= (1 << 20) and r[1] % 4096 == 0 and sum(r) <= total for r in refs), 'invalid inherited reference')
     disp = regs[0x610010]
-    require(disp & 15 == 9 and [(disp & ~255) << 8,65536] in refs, 'missing display instance reservation')
+    require(disp == 0 or (disp & 15 == 9 and [(disp & ~255) << 8,65536] in refs), 'missing display instance reservation')
     for reg in (0x1704,0x1714):
         control = regs[reg]
         require(not control & 0x80000000 or [(control & 0x0fffffff) << 12,4096] in refs, 'missing BAR instance reservation')
     for i in range(9):
+        require(disp != 0 or regs[0x610490+i*16] & 3 == 0, 'active display channel without a known instance')
         push = regs[0x610494+i*16]
         require(not push or push & 3 in (1,2,3), 'invalid inherited push target')
         require(push & 3 != 1 or [(push & ~3) << 8,4096] in refs, 'missing inherited push reservation')

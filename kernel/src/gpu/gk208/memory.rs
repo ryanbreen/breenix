@@ -319,11 +319,19 @@ pub fn discover<A: Access>(a: &mut A, aperture: u64) -> Result<Inventory, &'stat
     let mut references = Vec::new();
     let disp = a.read(0x610010);
     registers.push((0x610010, disp));
-    if disp & 15 != 9 {
+    if disp != 0 && disp & 15 != 9 {
         return Err("unsupported inherited display instance target");
     }
-    reference(&mut references, total, u64::from(disp & !255) << 8, 65536)?;
+    if disp != 0 {
+        reference(&mut references, total, u64::from(disp & !255) << 8, 65536)?;
+    }
     for i in 0..9 {
+        let ctrl_reg = 0x610490 + i * 16;
+        let control = a.read(ctrl_reg);
+        registers.push((ctrl_reg, control));
+        if disp == 0 && control & 3 != 0 {
+            return Err("active display channel has no known instance");
+        }
         let reg = 0x610494 + i * 16;
         let push = a.read(reg);
         registers.push((reg, push));

@@ -321,6 +321,14 @@ fn display_memory(
     if bar.address == 0 || bar.is_io || !bar.prefetchable {
         return Err("missing display BAR1");
     }
+    crate::serial_println!(
+        "GT710_PROBE memory-instances display={:#x} bar1={:#x} bar2={:#x} fbp={} fbpa={}",
+        regs.read(0x610010),
+        regs.read(0x1704),
+        regs.read(0x1714),
+        regs.read(0x22438),
+        regs.read(0x2243c)
+    );
     let inventory = memory::discover(regs, bar.size)?;
     let layout = memory::Layout::new(inventory.total, &inventory.reserved, width, height)?;
     let before_window = regs.read(0x1700);
