@@ -468,6 +468,11 @@ pub fn quiesce(a: &mut impl Io) -> Result<(), &'static str> {
             if i == 0 { mask(a, r, 0x10, 0); }
             else { mask(a, r, 0x1010, 0x1000); }
             mask(a, r, 3, 0);
+            if i == 0 {
+                // Drop inherited PIO/control requests using the native core's
+                // configuration word with channel and DMA enables removed.
+                a.write(r, 0x01000000);
+            }
             wait(a, r, 0x001e0000, 0)?;
         }
     }
