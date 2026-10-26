@@ -113,3 +113,20 @@ fn board_scripts_are_predecoded_and_bounded_before_display_writes() {
     rom[16..26].copy_from_slice(&[0x7a,0,0,0x70,0,0,0,0,0,0x71]);
     assert!(modeset::script(&rom,16,1,0,1).is_err(),"script wrote inherited PRAMIN storage");
 }
+#[test]
+fn selects_the_board_iedt_for_the_connected_head_and_tmds_link() {
+    let mut rom=vec![0u8;512];
+    rom[0x80..0x8c].copy_from_slice(&[255,184,66,73,84,0,0,1,12,6,1,0]);
+    rom[0x8c..0x92].copy_from_slice(&[b'U',1,2,0,0xa0,0]);
+    rom[0xa0..0xa2].copy_from_slice(&0x100u16.to_le_bytes());
+    rom[0x100..0x107].copy_from_slice(&[0x22,5,2,1,12,0x20,1]);
+    rom[0x120..0x126].copy_from_slice(&[2,0,0x41,1,0,0]);
+    rom[0x128..0x12a].copy_from_slice(&0x180u16.to_le_bytes());
+    rom[0x180..0x18a].copy_from_slice(&[0x7a,0,0x10,0x61,0x80,1,0,0,0,0x71]);
+    let ops=modeset::board_scripts(&rom,0,0,1,108000).unwrap();
+    assert_eq!(ops[0],[modeset::Op::Register(0x611000,0,1)]);
+    assert!(ops[1..].iter().all(Vec::is_empty));
+    assert!(modeset::board_scripts(&rom,1,0,1,108000).is_err());
+    assert!(modeset::board_scripts(&rom,0,0,2,108000).is_err());
+    assert!(modeset::board_scripts(&rom[..0x185],0,0,1,108000).is_err());
+}
