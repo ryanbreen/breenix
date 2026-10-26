@@ -338,3 +338,15 @@ ruling G3, the attached monitor supplies the preferred timing; the PR records
 acceptance and landing status. Review follow-ups are in
 [#2494](https://github.com/ryanbreen/breenix/issues/2494). Native scanout
 allocation, modes and flips follow in later M4 PRs.
+
+## Native preferred display mode (E19 M4 PR 4.3)
+
+PR [#2500](https://github.com/ryanbreen/breenix/pull/2500) programs the live
+EDID preferred timing on an owned GK208B core channel and scanout, with native
+console geometry and backing. Boot `20261026T225626Z-metal` at `24f9848d`
+records console 88/88, GT 710 capture cases 9/9 and a complete 5,242,880-byte
+BAR1 comparison. Landing review adds explicit RGB PROCAMP/dither state,
+preflight firmware fallback and firmware-write refusal receipts, and limits
+bulk pixel diagnostics to test requests. Second-mode switching and A-B-A
+flips remain PRs 4.4 and 4.5; nontrivial review follow-ups are grouped in
+[#2505](https://github.com/ryanbreen/breenix/issues/2505).
