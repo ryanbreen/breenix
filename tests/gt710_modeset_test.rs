@@ -171,3 +171,18 @@ fn copy_nv_reg_preserves_destination_bits_and_handles_both_shift_directions() {
         assert!(modeset::script(&rom[..p+21],p,1,1,1).is_err());
     }
 }
+#[test]
+fn evo_publication_requires_the_device_bar_flush_to_finish() {
+    struct Regs {busy:bool,writes:Vec<(usize,u32)>}
+    impl modeset::Io for Regs {
+        fn read(&mut self,r:usize)->u32 {assert_eq!(r,0x70000);if self.busy {2} else {0}}
+        fn write(&mut self,r:usize,v:u32) {self.writes.push((r,v));}
+        fn delay_us(&mut self,_:u32) {}
+    }
+    for busy in [false,true] {
+        let mut r=Regs{busy,writes:vec![]};
+        assert_eq!(modeset::publish(&mut r,128).is_err(),busy);
+        assert_eq!(r.writes[0],(0x70000,1));
+        assert_eq!(&r.writes[1..],if busy {&[][..]} else {&[(0x640000,128)][..]});
+    }
+}
