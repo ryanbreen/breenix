@@ -25,7 +25,8 @@ def capture(change=None, short=False):
            power=1,power_status=0,raster_before=1<<16,raster_after=3<<16,
            instance=memory['objects'][4]['start'],push=memory['objects'][2]['start'],
            skipped_address=start,skipped_notifier=0,clean_notifier=1,firmware_writes=0,
-           pll_register=0x614100,pll_reference=27000,pll_coefficients=0x94702,pll_fraction=0x10000000)
+           pll_register=0x614140,pll_reference=27000,
+           pll_record=struct.pack('<BHIHH',0x80,0x200,0x614140,0,27).hex(),pll_coefficients=0x94702,pll_fraction=0x10000000)
     data=bytearray(); rows=[]
     for y in range(h):
         runs=[]
@@ -50,6 +51,8 @@ class NativeCapture(unittest.TestCase):
                    lambda e:e.update(surface=0),lambda e:e['active'][5].__setitem__(1,1),
                    lambda e:e.update(skipped_notifier=1),lambda e:e.update(skipped_address=0),
                    lambda e:e.update(clean_notifier=0),lambda e:e.update(firmware_writes=1),
+                   lambda e:e.update(pll_register=0x614100),lambda e:e.update(pll_reference=25000),
+                   lambda e:e.update(pll_record=''),lambda e:e.update(pll_record='81'+e['pll_record'][2:]),
                    lambda e:e.update(pll_coefficients=0),lambda e:e.update(pll_fraction=0),
                    lambda e:e.update(sha256='0'*64),lambda e:e.update(bytes=e['bytes']-4)]
         for mutate in mutations:
