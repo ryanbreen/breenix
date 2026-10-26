@@ -1813,3 +1813,38 @@ The earlier populated-system refusal is replaced by the [generation protocol](#i
 publishes a new tree beside the current one, and the kernel slot selects its matching tree by install ID. Existing
 flat paths, shared data directories and published generations are retained for rollback. The protocol's hardware
 validation remains deferred until after review (#2114).
+
+## RAM-only nouveau trace instrument
+
+The separate `linux-trace` payload accepts a distribution EFI-stub kernel with
+`CONFIG_MMIOTRACE=y` and modular nouveau. It leaves the census policy intact.
+`metal-linux-trace PACKAGE_ROOT PRIVATE_OUTPUT --release RELEASE` assembles an
+EFI image using the distribution's systemd stub and an embedded initramfs. Run
+this recipe in the Linux build container at low priority; its dependencies are
+kmod, binutils, zstd and cpio. Extract authenticated distribution kernel, modules,
+static BusyBox and systemd-boot-efi packages into `PACKAGE_ROOT` first. Keep their
+provenance, resulting image, configuration and captures outside this repository.
+
+The initramfs contains only the explicitly checked nouveau dependency closure,
+blacklists the distribution's network modules, has no udev, and disables the
+kernel's automatic module loader. Physical storage, NIC and IPMI driver modules
+are absent. The init mounts only RAM filesystems. It enables mmiotrace before
+explicitly loading nouveau with debug logging and acceleration disabled, then
+records the initial framebuffer mode set and connector state. The trace filters
+BAR0 display offsets `0x610000–0x6fffff`, instance/MMU offsets `0x1700–0x1704`,
+`0x100c80–0x100cff`, `0x102000–0x102fff`, `0x70000–0x70fff`, and PMC `0x200`.
+It retains non-access records and the first and last 2,000 raw lines separately.
+
+The gzip archive includes trace, dmesg, release, command line, PCI driver/mount
+inventory, display state, filtering counts and capture status. Its base64 serial
+frame has unique markers, byte count and SHA-256, capped at 1,200,000 base64 bytes.
+A successful boot receipt establishes transfer integrity; `status.txt`, display
+state and lost-event evidence must still be assessed before claiming a complete
+native mode capture. The existing console-gap refusal still applies.
+
+Stage the private directory on the boot host and run
+`metal-run boot --payload linux-trace --linux-directory PRIVATE_OUTPUT` through
+the ordinary machine lease, with branch tools deployed under the shared tools
+lock. The closed boot record stores decoded files in `linux-trace/`. Restore main
+tools immediately after the attempt and return through the normal persistent
+boot path. No firmware setting changes or Linux disk installation are involved.

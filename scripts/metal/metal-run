@@ -268,7 +268,7 @@ def boot(args):
             command.append('--verify')
     if args.nmi:
         command.append('--nmi')
-    if payload == 'linux' and not args.linux_directory:
+    if payload in ('linux', 'linux-trace') and not args.linux_directory:
         raise SystemExit('Linux payload needs --linux-directory')
     if args.serve_as:
         command += ['--serve-as', args.serve_as]
@@ -282,7 +282,7 @@ def boot(args):
     print(result.stdout.strip() or result.stderr.strip(), flush=True)
     if result.returncode != 0:
         return result.returncode
-    if payload == 'linux':
+    if payload in ('linux', 'linux-trace'):
         source = Path(args.linux_directory).resolve()
         stage = f'{STATE}/stage/{boot_id}/inputs'
         try:
@@ -416,7 +416,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('boot')
-    p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-readback', 'manager'),
+    p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'linux-trace', 'disk-readback', 'manager'),
                    default='image', help='manager serves the boot manager over the network in probe mode')
     p.add_argument('--linux-directory', help='prebuilt Linux instrument directory on the boot host')
     p.add_argument('--mode', choices=('default', 'shell', 'probe', 'suite', 'console', 'tests'), default='default',
