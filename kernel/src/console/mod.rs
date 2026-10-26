@@ -621,6 +621,7 @@ pub fn init_early(buffer: &'static mut [u8], info: bootloader_api::info::FrameBu
 /// shadow (`display::linear::attach`).
 #[cfg(target_arch = "x86_64")]
 pub fn attach() {
+    let native = crate::gk208::identify();
     let Some(info) = FRAMEBUFFER_INFO.get() else {
         return;
     };
@@ -635,9 +636,10 @@ pub fn attach() {
     let Some(attached) = display::linear::attach(linear, info.pixel_format, info.stride) else {
         return;
     };
-    let surface=match crate::gk208::identify() {
+    let surface=match native {
         Ok(surface)=>surface,
-        Err(_)=>{linear.disable();return;},
+        Err(_) if crate::gk208::takeover_started()=>{linear.disable();return;},
+        Err(_)=>None,
     };
     if let Some(surface)=surface {
         if let Err(e)=linear.install_native(surface) {

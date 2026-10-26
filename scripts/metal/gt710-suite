@@ -243,6 +243,7 @@ def native_mode(serial):
         e = json.loads(one(r'^GT710_MODE (.+)$', serial, 'native mode evidence')[1])
         def need(ok, why):
             if not ok: raise ValueError(why)
+        need('GT710_NATIVE_CONSOLE_REFUSAL' not in serial, 'native console reported lost binding or health')
         t = board['modes'][0]
         surface = memory['objects'][0]['start']
         need(e['schema']==1 and e['phase']=='native' and e['bdf']==board['bdf']
@@ -269,7 +270,7 @@ def native_mode(serial):
           0x41c:pair(t['htotal']-t['hsync_start']-1,t['vtotal']-t['vsync_start']-1),
           0x420:pair(t['htotal']-t['hsync_start']+t['width']-1,t['vtotal']-t['vsync_start']+t['height']-1),
           0x450:t['clock_khz']*1000,0x460:surface>>8,0x468:pair(t['width'],t['height']),
-          0x46c:0x1000000|e['pitch'],0x470:0xcf00,0x474:1}
+          0x46c:0x1000000|e['pitch'],0x470:0xcf00,0x474:1,0x498:0x40000,0x4a0:0}
         need(all(regs.get(0x640000+h+r)==v for r,v in expected.items()), 'active native head or scanout mismatch')
         polarity=(8 if not t['flags']&2 else 0)|(16 if not t['flags']&4 else 0)
         need(regs[0x640404+h]&0x3d8==0x140|polarity, 'native sync polarity or pixel depth mismatch')

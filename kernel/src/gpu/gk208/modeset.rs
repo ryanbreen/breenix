@@ -280,7 +280,7 @@ pub fn head_methods(
         (0x424 + h, 0),
         (0x428 + h, 0),
         (0x42c + h, 0),
-        (0x430 + h, 0), // dithering disabled
+        (0x430 + h, 0), // CRC disabled
         (0x440 + h, 0),
         (0x448 + h, 0), // LUTs disabled
         (0x450 + h, t.clock_khz * 1000),
@@ -293,6 +293,9 @@ pub fn head_methods(
         (0x474 + h, 1),
         (0x480 + h, 0),
         (0x494 + h, 0),
+        // NV927D: RGB, VESA range, unity SAT_COS, SAT_SINE=0.
+        (0x498 + h, 0x400 << 8),
+        (0x4a0 + h, 0), // dithering disabled
         (0x4b0 + h, 0),
         (0x4b8 + h, pair(t.width, t.height)),
         (0x4c0 + h, pair(t.width, t.height)),

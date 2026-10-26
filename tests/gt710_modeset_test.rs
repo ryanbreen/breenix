@@ -29,6 +29,8 @@ fn encodes_preferred_timing_and_owned_pitch_surface() {
     assert!(modeset::head_methods(&preferred(),0,0,1,0x08010000,8192*256).is_err());
     assert_eq!(m[&0x470],0xcf00);
     assert_eq!(m[&0x474],1);
+    assert_eq!(m[&0x498],0x40000);
+    assert_eq!(m[&0x4a0],0);
     assert_eq!(m[&0x200],0x101);
     assert_eq!(m[&0x404]&0x3d8,0x140);
     for (head,sor,address,pitch) in [(4,0,0x08010000,5120),(0,4,0x08010000,5120),

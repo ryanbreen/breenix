@@ -174,6 +174,23 @@ use crate::{arch_impl::x86_64::timer, drivers::pci};
 use alloc::{format, string::String, vec::Vec};
 use core::fmt::Write;
 use modeset::Io;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+static TAKEOVER_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Before this boundary, a refused probe can keep the firmware console.
+pub fn takeover_started() -> bool { TAKEOVER_STARTED.load(Ordering::Acquire) }
+
+/// Expensive pixel evidence requires a test request.
+/// The boot intent is captured before attach.
+pub fn measuring() -> bool {
+    if cfg!(feature = "testing") { return true; }
+    crate::boot::intent::get()
+        .and_then(|bytes| core::str::from_utf8(bytes).ok())
+        .and_then(|text| crate::boot::target::parse(text).ok())
+        .is_some_and(|target| matches!(target, crate::boot::target::Target::Suite(s)
+            if matches!(s.id.as_str(), "console" | "gt710")))
+}
 impl Io for Registers {
     fn read(&mut self, r: usize) -> u32 {
         Registers::read(self, r)
@@ -367,6 +384,7 @@ pub fn takeover(
         device.bars[1].size,
     )?;
     let firmware_baseline = crate::firmware_writes::count();
+    TAKEOVER_STARTED.store(true, Ordering::Release);
     regs.write(0x610090, 0);
     regs.write(0x6100a0, 0);
     // Supervisor requests remain enabled while the boot CPU polls their status.
@@ -440,7 +458,7 @@ pub fn takeover(
         regs.read(0x610010)
     );
     let seed = (timer::rdtsc() as u32) | 1;
-    {
+    if measuring() {
         let mut p = memory::Pramin::new(regs, total);
         for y in 0..t.height {
             for x in 0..layout.pitch / 4 {
@@ -461,7 +479,7 @@ pub fn takeover(
     let mut put = 0;
     let mut init = alloc::vec![(0x88, 2)];
     init.extend(methods);
-    init.extend([(0x84, 0x90000000), (0x80, 0)]);
+    init.extend([(0x84, 0x80000000), (0x80, 0)]);
     submit(regs, total, evo, &mut put, &init)?;
     let after = complete(
         regs,
@@ -486,7 +504,7 @@ pub fn takeover(
                 0x460 + head * 0x300,
                 (layout.objects[1].range.start >> 8) as u32,
             ),
-            (0x84, 0x90000000),
+            (0x84, 0x80000000),
         ],
     )?;
     modeset::wait(regs, 0x640004, u32::MAX, put)?;
@@ -537,6 +555,16 @@ pub fn takeover(
         }
     }
     let old_bar = modeset::activate_bar1(regs,bar_inst,directory)?;
+    let console = ConsoleSurface {
+        pointer, bytes: surface.size as usize, width: t.width as usize,
+        height: t.height as usize, pitch: layout.pitch as usize, vram: surface.start,
+        regs: regs.0, head, phys: device.bars[1].address + displacement as u64,
+        firmware_baseline,
+    };
+    if !measuring() {
+        crate::serial_println!("GT710_MODE_STAGE console-ready diagnostics=off");
+        return Ok(console);
+    }
     let mut digest = crate::block::install::sha256::Sha256::new();
     let mut data_bytes = 0usize;
     for y in 0..t.height {
@@ -585,7 +613,7 @@ pub fn takeover(
     let raster_after = regs.read(0x616340 + head as usize * 0x800);
     let mut active = String::new();
     for r in [
-        0x404, 0x414, 0x418, 0x41c, 0x420, 0x450, 0x460, 0x468, 0x46c, 0x470, 0x474,
+        0x404, 0x414, 0x418, 0x41c, 0x420, 0x450, 0x460, 0x468, 0x46c, 0x470, 0x474, 0x498, 0x4a0,
     ] {
         if !active.is_empty() {
             active.push(',');
@@ -608,18 +636,7 @@ pub fn takeover(
         skipped_address,skipped_notifier,clean,crate::firmware_writes::count()-firmware_baseline,data_bytes,super::hex(&digest.finalize()),old_bar,regs.read(0x1704),super::hex(pll_record),limits.reg,limits.reference,
         regs.read(limits.reg as usize+4),regs.read(limits.reg as usize+16));
     crate::serial_println!("GT710_MODE {}", report);
-    Ok(ConsoleSurface {
-        pointer,
-        bytes: surface.size as usize,
-        width: t.width as usize,
-        height: t.height as usize,
-        pitch: layout.pitch as usize,
-        vram: surface.start,
-        regs: regs.0,
-        head,
-        phys: device.bars[1].address + displacement as u64,
-        firmware_baseline,
-    })
+    Ok(console)
 }
 
 pub fn console_binding(surface: &ConsoleSurface) -> Result<(), &'static str> {

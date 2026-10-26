@@ -127,10 +127,12 @@ impl Linear {
         let &(phys, place) = self.located.get().ok_or("the framebuffer's physical address is not known")?;
         #[cfg(target_arch = "x86_64")]
         if let Some(s)=self.native.get() {
-            crate::gk208::console_binding(s)?;
             let writes=crate::firmware_writes::count().checked_sub(s.firmware_baseline).ok_or("firmware write counter reversed")?;
-            if writes!=0 {return Err("firmware writes after native handoff");}
             crate::serial_println!("GT710_NATIVE_CONSOLE surface={} firmware_writes={}",s.vram,writes);
+            if writes!=0 {return Err("firmware writes after native handoff");}
+            crate::gk208::console_binding(s).inspect_err(|error| {
+                crate::serial_println!("GT710_NATIVE_CONSOLE_REFUSAL {}",error);
+            })?;
             return Ok(Source::Scanout {phys:s.phys,place});
         }
         Ok(Source::Scanout { phys, place })

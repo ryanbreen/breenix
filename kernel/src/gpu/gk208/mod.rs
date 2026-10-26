@@ -32,7 +32,7 @@
  * Software is furnished to do so, subject to the following conditions:
  *
  * The above copyright notice and this permission notice shall be included in
- * all copies or substantial busions of the Software.
+ * all copies or substantial portions of the Software.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -98,7 +98,7 @@ mod edid;
 mod memory;
 mod modeset;
 mod native;
-pub use native::{ConsoleSurface,console_binding};
+pub use native::{ConsoleSurface,console_binding,takeover_started};
 mod rom;
 static DISPLAY_MEMORY: conquer_once::spin::OnceCell<memory::Layout> =
     conquer_once::spin::OnceCell::uninit();
@@ -351,6 +351,11 @@ fn display_memory(
     }
     let inventory = memory::discover(regs, bar.size)?;
     let layout = memory::Layout::new(inventory.total, &inventory.reserved, width, height)?;
+    if !native::measuring() {
+        DISPLAY_MEMORY.try_get_or_init(|| layout)
+            .map_err(|_| "display memory already initializing")?;
+        return Ok(());
+    }
     let before_window = regs.read(0x1700);
     let seed = (timer::rdtsc() as u32) | 1;
     let mut p = memory::Pramin::new(regs, inventory.total);
