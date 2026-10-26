@@ -636,7 +636,15 @@ pub fn attach() {
         return;
     };
     if let Some(surface)=crate::gk208::identify() {
-        if let Err(e)=linear.install_native(surface) {log::error!("native console attachment failed: {}",e);}
+        if let Err(e)=linear.install_native(surface) {
+            log::error!("native console attachment failed: {}",e);
+            return;
+        }
+        let layout=linear.layout();
+        if !matches!(with_grid(|console| console.vts[0].grid.resize_boot(layout.cols(),layout.rows())),Some(Ok(()))) {
+            log::error!("native boot terminal resize failed");
+            return;
+        }
     }
     prepare(linear.layout().bgr, attached.write_combining);
 }
