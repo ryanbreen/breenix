@@ -69,6 +69,9 @@ class Trace:
                     raise ValueError('trace exceeds wire budget')
                 self.parts.append(line)
             return False
+        if self.header is None and re.fullmatch(
+                r'metal-trace-progress phase=(module|module-return|collect|filter|compress) bytes=[0-9]+', line):
+            return False
         match = re.fullmatch(r'TRACE ([0-9]+) ([0-9a-f]{64})', line)
         if match and self.header is None:
             self.header = (int(match[1]), match[2])

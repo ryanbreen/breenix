@@ -54,6 +54,14 @@ class ReceiptTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             receipt.feed('TRACE 2000000 ' + '0' * 64)
 
+    def test_progress_is_bounded_to_pre_frame(self):
+        receipt = metal_trace.Trace()
+        receipt.feed('metal-trace-start')
+        self.assertFalse(receipt.feed('metal-trace-progress phase=module bytes=4096'))
+        receipt.feed(frame()[1])
+        with self.assertRaises(ValueError):
+            receipt.feed('metal-trace-progress phase=module bytes=8192')
+
     def test_census_still_forbids_trace_kernel(self):
         config = '\n'.join('CONFIG_' + s + '=y' for s in
                            ('MMIOTRACE', 'EFI_STUB', 'BLK_DEV_INITRD', 'SERIAL_8250_CONSOLE', 'MODULES'))

@@ -37,10 +37,30 @@ reader=$!
 echo metal-trace-start
 echo 'NOUVEAU_MODULE_LOAD_BEGIN' > /sys/kernel/tracing/trace_marker
 if [ "$status" = 0 ]; then
-    modprobe nouveau modeset=1 noaccel=1 debug=debug > /tmp/modprobe.log 2>&1 || status=1
+    (modprobe nouveau modeset=1 noaccel=1 debug=debug > /tmp/modprobe.log 2>&1
+     echo "$?" > /tmp/modprobe.status) &
+    loader=$!
+    ticks=0
+    while [ ! -f /tmp/modprobe.status ] && [ "$ticks" -lt 20 ]; do
+        sleep 5
+        ticks=$((ticks + 1))
+        echo "metal-trace-progress phase=module bytes=$(wc -c < /tmp/trace.raw)"
+    done
+    if [ ! -f /tmp/modprobe.status ]; then
+        status=1
+        echo 'Module load did not return within the 100 s observation bound' >> safety.txt
+        cat /proc/$loader/stack >> safety.txt 2>&1
+        for pid in $(cat /proc/$loader/task/$loader/children); do
+            cat /proc/$pid/stack >> safety.txt 2>&1
+        done
+    elif [ "$(cat /tmp/modprobe.status)" != 0 ]; then
+        status=1
+    fi
 fi
-echo 'NOUVEAU_MODULE_LOAD_RETURN' > /sys/kernel/tracing/trace_marker
+echo "metal-trace-progress phase=module-return bytes=$(wc -c < /tmp/trace.raw)"
+echo 'NOUVEAU_MODULE_OBSERVATION_BOUNDARY' > /sys/kernel/tracing/trace_marker
 sleep 10
+echo "metal-trace-progress phase=collect bytes=$(wc -c < /tmp/trace.raw)"
 {
     cat /tmp/modprobe.log
     cat /sys/kernel/debug/dri/*/state 2>/dev/null
@@ -61,6 +81,7 @@ echo nop > /sys/kernel/tracing/current_tracer
 cat /proc/modules >> safety.txt
 cat /proc/mounts >> safety.txt
 dmesg > dmesg.txt
+echo "metal-trace-progress phase=filter bytes=$(wc -c < /tmp/trace.raw)"
 head -n 2000 /tmp/trace.raw > first.txt
 tail -n 2000 /tmp/trace.raw > last.txt
 # BusyBox awk has no strtonum; convert addresses explicitly.
@@ -78,6 +99,7 @@ $1=="R" || $1=="W" {o=hex($5)-base; if((o>=hex("610000") && o<=hex("6fffff")) ||
 if grep -qi 'lost.*events\|events.*lost' /tmp/trace.raw dmesg.txt; then status=1; fi
 if ! grep -q nouveaudrmfb display.txt; then status=1; fi
 echo "$status" > status.txt
+echo "metal-trace-progress phase=compress bytes=$(wc -c < /tmp/trace.raw)"
 tar -czf /tmp/capture.tar.gz trace.txt first.txt last.txt dmesg.txt uname.txt cmdline.txt safety.txt display.txt filter.txt status.txt
 size=$(wc -c < /tmp/capture.tar.gz)
 if [ "$size" -gt 900000 ]; then
