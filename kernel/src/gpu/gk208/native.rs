@@ -409,6 +409,7 @@ pub fn takeover(
     )?;
     modeset::bar_flush(regs)?;
     regs.write(0x610010, (instance >> 8) as u32 | 9);
+    modeset::prepare_disabled_core(regs,evo)?;
     modeset::quiesce(regs).inspect_err(|_| {
         for channel in 0..17 {
             crate::serial_println!("GT710_QUIESCE channel={} control={:#x} push={:#x}",
@@ -418,9 +419,6 @@ pub fn takeover(
             regs.read(0x6194e8),regs.read(0x616308+head as usize*0x800),timer::frequency_hz(),regs.read(0x610010));
     })?;
     let quiesce_after:[u32;17]=core::array::from_fn(|i|regs.read(0x610490+i*16));
-    regs.write(0x610494, (evo >> 8) as u32 | 1);
-    regs.write(0x610498, 0x10000);
-    regs.write(0x61049c, 1);
     regs.mask(0x610490, 16, 16);
     regs.write(0x640000, 0);
     regs.write(0x610490, 0x01000013);

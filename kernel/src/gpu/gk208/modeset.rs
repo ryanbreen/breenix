@@ -467,6 +467,21 @@ pub fn stop_requests(a: &mut impl Io) -> Result<(), &'static str> {
     }
     Ok(())
 }
+/// Prepare an empty owned DMA interface while channel requests remain disabled.
+pub fn prepare_disabled_core(a: &mut impl Io, push: u64) -> Result<(), &'static str> {
+    if push==0 || push&4095!=0 || push>=1<<40 {
+        return Err("invalid owned core push address");
+    }
+    if a.read(0x610490)&0x13!=0 || a.read(0x640000)!=0 || a.read(0x640004)!=0 {
+        return Err("inherited core requests or cursors are not empty");
+    }
+    a.write(0x610494,(push>>8) as u32|1);
+    a.write(0x610498,0x10000);
+    a.write(0x61049c,1);
+    mask(a,0x610490,16,16);
+    a.write(0x640000,0);
+    Ok(())
+}
 pub fn quiesce(a: &mut impl Io) -> Result<(), &'static str> {
     // Satellites can interlock with the core. Stop their requests first.
     for i in (1..17).rev().chain(core::iter::once(0)) {
