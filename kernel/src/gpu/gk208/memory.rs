@@ -239,7 +239,8 @@ impl<'a, A: Access> Pramin<'a, A> {
         if range.size > 1 << 20 || range.size & 3 != 0 {
             return Err("snapshot exceeds bound");
         }
-        let mut bytes = Vec::with_capacity(range.size as usize);
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(range.size as usize).map_err(|_| "VRAM snapshot allocation failed")?;
         for a in (range.start..range.end().ok_or("snapshot overflow")?).step_by(4) {
             bytes.extend_from_slice(&self.read(a)?.to_le_bytes());
         }
@@ -468,6 +469,9 @@ pub fn exercise<A: Access>(
             guards.push((r, p.bytes(r)?));
         }
     }
+    // Bounded independently of EDID geometry; allocate before any pattern writes.
+    let mut data = Vec::new();
+    data.try_reserve_exact(4096).map_err(|_| "VRAM read-back allocation failed")?;
     let mut verified = 0;
     for phase in 0..2 {
         // Fill the entire set before reading it, so one bank/region cannot echo
@@ -478,16 +482,22 @@ pub fn exercise<A: Access>(
             }
         }
         for (index, o) in layout.objects.iter().enumerate().rev() {
-            let mut data = Vec::with_capacity(o.range.size as usize);
+            data.clear();
             for address in (o.range.start..o.range.end().ok_or("object overflow")?).step_by(4) {
                 let value = p.read(address)?;
                 if value != pattern(address, seed, phase) {
                     return Err("display VRAM full read-back mismatch");
                 }
                 data.extend_from_slice(&value.to_le_bytes());
+                if data.len() == 4096 {
+                    observe(phase, index, &data);
+                    data.clear();
+                }
+            }
+            if !data.is_empty() {
+                observe(phase, index, &data);
             }
             verified += o.range.size;
-            observe(phase, index, &data);
         }
         for (r, before) in &guards {
             if p.bytes(*r)? != *before {

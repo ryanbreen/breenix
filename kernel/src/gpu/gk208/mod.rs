@@ -387,7 +387,9 @@ fn display_memory(
     }
     let guard_before = hash(&guard_data);
     let guard_bytes = guard_data.len();
-    let mut hashes = alloc::vec![[String::new(),String::new()];layout.objects.len()];
+    use crate::block::install::sha256::Sha256;
+    let mut hashes: Vec<_> = layout.objects.iter()
+        .map(|_| [Sha256::new(), Sha256::new()]).collect();
     crate::serial_println!(
         "GT710_PROBE memory total={} reserved-low={} owned-objects={}",
         inventory.total,
@@ -395,7 +397,7 @@ fn display_memory(
         layout.objects.len()
     );
     let verified = memory::exercise(&mut p, &layout, seed, |phase, index, data| {
-        hashes[index][phase] = hash(data);
+        hashes[index][phase].update(data);
     })?;
     protected_data.clear();
     for (r, before) in protected.iter().zip(snapshots.iter()) {
@@ -417,7 +419,9 @@ fn display_memory(
         return Err("PRAMIN control was not restored");
     }
     let mut objects = String::new();
-    for (o, h) in layout.objects.iter().zip(hashes.iter()) {
+    for (o, h) in layout.objects.iter().zip(hashes) {
+        let [first, second] = h;
+        let h = [hex(&first.finalize()), hex(&second.finalize())];
         if !objects.is_empty() {
             objects.push(',');
         }

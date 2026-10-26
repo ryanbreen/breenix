@@ -79,15 +79,26 @@ fn physical_windows_restore_and_full_patterns_reject_aliases_and_dropped_writes(
         let mut d=Device::new();d.alias=fault==1;d.drop_writes=fault==2;
         let mut p=memory::Pramin::new(&mut d,32<<20);
         let mut seen=0;
+        let mut offsets = [[0u64; 6]; 2];
         let result=memory::exercise(&mut p,&layout,0x12345678,|phase,index,bytes| {
             assert!(phase<2);assert!(index<6);
-            assert_eq!(bytes.len() as u64,layout.objects[index].range.size);
+            assert!(!bytes.is_empty() && bytes.len() <= 4096);
+            for (word, value) in bytes.chunks_exact(4).enumerate() {
+                let address = layout.objects[index].range.start + offsets[phase][index] + word as u64 * 4;
+                assert_eq!(value, memory::pattern(address, 0x12345678, phase).to_le_bytes());
+            }
+            offsets[phase][index] += bytes.len() as u64;
             seen+=bytes.len() as u64;
         });
         drop(p);
         assert_eq!(d.regs[&0x1700],0x1234);
         if fault==0 {
             assert_eq!(result.unwrap(),seen);
+            for phase in offsets {
+                for (index, count) in phase.into_iter().enumerate() {
+                    assert_eq!(count, layout.objects[index].range.size);
+                }
+            }
             assert_eq!(seen,2*layout.objects.iter().map(|o| o.range.size).sum::<u64>());
             assert!(d.writes.iter().all(|a|layout.objects.iter().any(|o|o.range.start<=*a&&*a<o.range.end().unwrap())));
         } else { assert!(result.is_err(),"fault {fault} escaped full read-back"); }
