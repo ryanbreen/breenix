@@ -139,3 +139,34 @@ fn selects_the_board_iedt_for_the_connected_head_and_tmds_link() {
     let selected=modeset::board_scripts(&rom,0,0,1,108000).unwrap();
     assert_eq!(selected[2],[modeset::Op::Register(0x612300,0,2)]);
 }
+#[test]
+fn copy_nv_reg_preserves_destination_bits_and_handles_both_shift_directions() {
+    struct Regs {src:u32,dst:u32}
+    impl modeset::Io for Regs {
+        fn read(&mut self,r:usize)->u32 {match r {0x611800=>self.src,0x61c800=>self.dst,_=>panic!("unexpected read {r:x}")}}
+        fn write(&mut self,r:usize,v:u32) {assert_eq!(r,0x61c800);self.dst=v;}
+        fn delay_us(&mut self,_:u32) {panic!("unexpected delay");}
+    }
+    for (shift,source,mask,xor,keep,expected) in [
+        (8,0x1234ab00,0xff,0x55,0xffffff00,0xdeadbefe),
+        (248,0x12,0xffff,0x55,0xffff0000,0xdead1255)] {
+        let mut rom=vec![0;64];let p=16;
+        rom[p]=0x5f;
+        rom[p+1..p+5].copy_from_slice(&0x80611000u32.to_le_bytes());
+        rom[p+5]=shift;
+        rom[p+6..p+10].copy_from_slice(&u32::to_le_bytes(mask));
+        rom[p+10..p+14].copy_from_slice(&u32::to_le_bytes(xor));
+        rom[p+14..p+18].copy_from_slice(&0x4061c000u32.to_le_bytes());
+        rom[p+18..p+22].copy_from_slice(&u32::to_le_bytes(keep));
+        rom[p+22]=0x71;
+        let ops=modeset::script(&rom,p,1,1,1).unwrap();
+        let mut r=Regs{src:source,dst:0xdeadbeef};
+        modeset::execute_ops(&mut r,&ops);
+        assert_eq!(r.dst,expected);
+        for invalid in [32,128,224] {
+            rom[p+5]=invalid;
+            assert!(modeset::script(&rom,p,1,1,1).is_err());
+        }
+        assert!(modeset::script(&rom[..p+21],p,1,1,1).is_err());
+    }
+}
