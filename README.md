@@ -226,3 +226,13 @@ shell. The SDK's documentation is in
 Work is tracked in GitHub Issues. [`AGENTS.md`](AGENTS.md) and [`CLAUDE.md`](CLAUDE.md) hold the
 development rules, including the constraints on interrupt and syscall paths and the
 zero-warnings build policy. Agent skills live in [`.agents/skills/`](.agents/skills/).
+
+## License
+
+Breenix is licensed under [PolyForm Noncommercial 1.0.0](LICENSE), free for
+personal, research, educational, hobby and other noncommercial use. Commercial
+use needs a separate license from the author.
+
+Using Breenix? I'd love to hear about it: ryan@ryanbreen.com
+
+Third-party material retains its own licenses; see [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
