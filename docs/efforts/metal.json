@@ -333,6 +333,16 @@
               "switching"
             ]
           }
+        },
+        {
+          "id": "flips",
+          "title": "Latch A-B-A and hand off the native console (M4 PR 4.5)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "flips"
+            ]
+          }
         }
       ]
     }

@@ -8,6 +8,7 @@ import runpy
 import tempfile
 
 CATEGORIES = {
+    'flips': [('aba-handoff', 'Both EDID modes latch private A-B-A surfaces with complete pixels, suppressed-update recovery and native console handoff')],
     'switching': [('low-high-low', 'A second advertised EDID mode switches low-high-low with latched timings, link state and complete unique-pixel read-back')],
     'native': [('preferred', 'The preferred EDID mode completes on owned native scanout with advancing raster and full pixel read-back')],
     'memory': (
@@ -444,8 +445,94 @@ def native_switches(serial):
         raise ValueError('malformed native switching evidence') from error
 
 
+def native_flips(serial):
+    """Judge the two same-mode A-B-A sequences from device state and full pixels."""
+    try:
+        modes = native_switches(serial)
+        memory = display_memory(serial)
+        returned = one(r'^GT710_PREFERRED_RETURN (.+)$',serial,'preferred return')
+        restored = json.loads(returned[1])
+        reports = list(re.finditer(r'^GT710_FLIP (.+)$',serial,re.M))
+        skipped = list(re.finditer(r'^GT710_FLIP_SKIPPED (.+)$',serial,re.M))
+        def need(ok, why):
+            if not ok: raise ValueError(why)
+        need('GT710_FLIP_REFUSAL' not in serial, 'native flip reported an error')
+        need(len(reports)==6 and len(skipped)==2, 'both modes need A-B-A and a suppressed update')
+        a,b = [o['start'] for o in memory['objects'][:2]]
+        seeds = {json.loads(one(r'^GT710_MODE (.+)$',serial,'native mode')[1])['seed']}
+        seeds.update(e['seed'] for e,_ in modes)
+        frames=[]
+        switch_end = list(re.finditer(r'^GT710_SWITCH (.+)$',serial,re.M))[-1].end()
+        for mode,template in enumerate([modes[2][0],modes[1][0]]):
+            h=template['head']*0x300
+            boundary=switch_end if mode==0 else returned.end()
+            cursor=template['put'] if mode==0 else restored['put']
+            s=json.loads(skipped[mode][1])
+            need(boundary<skipped[mode].start()<reports[mode*3].start()
+                 and s['mode']==mode and s['expected']==b and s['active']==template['active']
+                 and s['notifier']==0 and s['put']==cursor+16 and s['get']==s['put']
+                 and s['errors']==0 and s['firmware_writes']==0, 'suppressed update changed binding or completion')
+            cursor=s['put']; previous=template['active']; seed_a=None; data_a=None
+            for step,address in enumerate([a,b,a]):
+                match=reports[mode*3+step]; e=json.loads(match[1]);t=template['timing']
+                need(e['schema']==1 and e['phase']=='flip' and e['mode']==mode and e['step']==step,
+                     'flip sequence identity differs')
+                for field in ['bdf','head','sor','protocol','timing','pitch','instance','push',
+                              'pll_record','pll_register','pll_reference','pll_coefficients','pll_fraction']:
+                    need(e[field]==template[field], 'flip changed mode, route or private objects')
+                active=[list(r) for r in template['active']]
+                next(r for r in active if r[0]==0x640460+h)[1]=address>>8
+                need(e['surface']==address and e['before_active']==previous and e['active']==active,
+                     'flip did not latch the expected private surface')
+                need(e['put_before']==cursor and e['put']==cursor+24<=2048 and e['get']==e['put']
+                     and e['notifier_before']==0 and e['notifier_after']&1, 'flip completion missing or stale')
+                need(e['errors']==0 and e['underflow']&0x111==1 and e['power']&0x80000001==1
+                     and not e['power_status']&0x10000000 and e['firmware_writes']==0, 'flip output fault or firmware write')
+                need(0<((e['raster_after']>>16)-(e['raster_before']>>16))&65535<100, 'flip raster did not advance')
+                need(type(e['seed']) is int and 0<e['seed']<=0xffffffff, 'invalid flip nonce')
+                if step<2:
+                    need(e['seed'] not in seeds, 'flip pattern nonce reused')
+                    seeds.add(e['seed'])
+                if step==0: seed_a=e['seed']
+                else: need((e['seed']==seed_a)==(step==2), 'A-B-A nonce relationship differs')
+                rows=list(re.finditer(r'^GT710_FLIP_PIX '+str(mode)+' '+str(step)+r' (\d+) ([0-9a-f:,]+)$',serial,re.M))
+                need(len(rows)==t['height'], 'incomplete flip read-back')
+                import struct
+                data=bytearray()
+                for y,row in enumerate(rows):
+                    need(int(row[1])==y and boundary<row.start()<match.start(), 'flip pixel association differs')
+                    x=0
+                    for run in row[2].split(','):
+                        count,value=(int(v,16) for v in run.split(':'))
+                        need(0<count<=e['pitch']//4-x and value>>24==255, 'invalid flip pixel run')
+                        for i in range(count):
+                            actual=0xff000000|((value+i)&0xffffff)
+                            expected=0xff000000|((e['seed']+y*(e['pitch']//4)+x+i)&0xffffff)
+                            need(actual==expected, 'flip pixel differs from independent nonce pattern')
+                            data+=struct.pack('<I',actual)
+                        x+=count
+                    need(x*4==e['pitch'], 'incomplete flip pitch edge')
+                need(e['bytes']==len(data)==e['pitch']*t['height'] and e['sha256']==hashlib.sha256(data).hexdigest(),
+                     'flip binary length or digest differs')
+                if step==0: data_a=bytes(data)
+                else: need((data==data_a)==(step==2), 'A-B-A full images differ')
+                frames.append((e,bytes(data)));cursor=e['put'];previous=e['active'];boundary=match.end()
+            if mode==0:
+                need(boundary<returned.start() and cursor<restored['put'], 'preferred return precedes low flips')
+        need(len(re.findall(r'^GT710_FLIP_PIX ',serial,re.M))==sum(e['timing']['height'] for e,_ in frames),
+             'unassociated flip pixels')
+        receipts=list(re.finditer(r'^GT710_NATIVE_CONSOLE surface=(\d+) firmware_writes=(\d+)$',serial[reports[-1].end():],re.M))
+        need(receipts and all(int(r[1])==a and int(r[2])==0 for r in receipts), 'console handoff after flips missing or faulted')
+        return frames
+    except (KeyError,TypeError,IndexError,StopIteration,OverflowError,json.JSONDecodeError) as error:
+        raise ValueError('malformed native flip evidence') from error
+
+
 def check_case(category, case, serial):
-    if category == 'switching':
+    if category == 'flips':
+        if case != 'aba-handoff': raise ValueError('unknown flips case')
+        native_flips(serial)
+    elif category == 'switching':
         if case != 'low-high-low': raise ValueError('unknown switching case')
         native_switches(serial)
     elif category == 'native':
@@ -603,6 +690,8 @@ def record_capture(directory, sha):
     if passed:
         _, pixels = native_mode(serial)
         (directory / 'gt710-native-scanout.bin').write_bytes(pixels)
+        for e, pixels in native_flips(serial):
+            (directory / ('gt710-flip-' + str(e['mode']) + '-' + str(e['step']) + '.bin')).write_bytes(pixels)
         for e, pixels in native_switches(serial):
             (directory / ('gt710-switch-' + str(e['step']) + '.bin')).write_bytes(pixels)
     return 0 if passed else 1

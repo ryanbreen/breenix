@@ -392,3 +392,8 @@ and absent unused entries. The Copyright 2017 Red Hat Inc. full MIT notice
 is retained in both consumers. rnndb/memory/gf100_vm.xml at the same
 checked envytools revision imports the MIT copyright.xml grant and confirms
 the SPT address/valid half; its imported notice is retained in both files.
+
+The PR 4.5 same-mode surface updates in native.rs also use cl927d.h's
+HEAD_SET_OFFSET, SET_NOTIFIER_CONTROL and UPDATE interface and DONE bit.
+The pinned file-local MIT grant above was rechecked before this use; its
+original copyright and full permission notice remain in native.rs.
