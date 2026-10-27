@@ -426,6 +426,11 @@ def privileged_channel(serial):
         need(e['instance']%4096==0 and e['instance']>0 and e['bind']==0x80000000|(e['instance']>>12)
              and e['state']&1 and (e['state']>>16)&15==runlist, 'channel binding did not latch')
         need(len({e[k] for k in ('instance','directory','userd','ring','push','semaphore')})==6, 'aliased channel storage')
+        live=e['progress']
+        need(live['source']=='pbdma-live' and live['channel']&0xfff==e['channel']
+             and any(i==live['pbdma'] and mask&(1<<runlist) for i,mask in e['pbdmas'])
+             and live['userd_low']&0xfffff003==e['userd']&0xfffff003
+             and live['userd_high']==e['userd']>>32, 'foreign native progress source')
         need(e['fault']==0 and e['pbdma_errors']==[0,0], 'channel hardware fault')
         samples=e['samples'];need(len(samples)==2, 'missing clean semaphore progression')
         need(samples[0]['expected']!=samples[1]['expected'], 'reused semaphore value')

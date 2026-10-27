@@ -4,10 +4,12 @@ This step implements the plan's first privileged A06F channel. It enumerates
 64 hardware TOP words and the implemented PBDMAs, selects a real copy-engine
 runlist, constructs private RAMFC/USERD/GPFIFO storage and schedules one
 standalone channel. It submits host semaphore releases and SET_REFERENCE,
-then compares the payload and USERD GPGet against GPPut in the native epoch.
+then compares the payload and resident PBDMA IB_GET against GPPut in the
+native epoch. Live REF_CNT, CHID and the USERD control address tie progress
+to the owned channel; a saved USERD GPGet is not the resident cursor.
 A host semaphore is PFIFO evidence; it is not an engine-ordered CE fence.
 
-The boot-CPU bootstrap runs before SMP and client publication. FIFO interrupt
+The boot-CPU bootstrap runs before native console and client publication. FIFO interrupt
 delivery stays masked during this bounded polling path. This step installs
 no IRQ handler. It emits failure diagnostics from the boot CPU. Subsequent
 interrupt-driven submission must acknowledge/count/wake in its top half and

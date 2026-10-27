@@ -232,7 +232,7 @@ fn wait(
 fn accepted(epoch: u64, current: u64, observed: u32, expected: u32, get: u32, put: u32) -> bool {
     epoch == current && observed == expected && get == put
 }
-/// Run once before SMP and before publishing any clients. On any uncertain
+/// Run once on the boot CPU before publishing the native console or clients. On any uncertain
 /// result Context's existing residency owner keeps tables and backing pinned.
 pub fn probe(
     regs: &mut Registers,
@@ -421,7 +421,7 @@ pub fn probe(
         let expected = seed.wrapping_add(sequence);
         let offset = u64::from(sequence - 1) * 64;
         let before = read(regs, total, semaphore)?;
-        let get_before = read(regs, total, userd + 0x88)?;
+        let get_before = regs.read(0x40014 + pbdma * 0x2000);
         let ticket = context.hold(Consumer::Queued)?;
         // Incrementing A06F semaphore address/payload/release, then SET_REFERENCE.
         // 4-byte RELEASE with WFI enabled: host only, no CE commands admitted.
@@ -447,9 +447,9 @@ pub fn probe(
         let observed;
         loop {
             let v = read(regs, total, semaphore)?;
-            let get = read(regs, total, userd + 0x88)?;
+            let get = regs.read(0x40014 + pbdma * 0x2000);
             if accepted(epoch, epoch, v, expected, get, sequence)
-                && read(regs, total, userd + 0x48)? == expected
+                && regs.read(0x40028 + pbdma * 0x2000) == expected
             {
                 observed = v;
                 break;
@@ -460,7 +460,7 @@ pub fn probe(
             }
             regs.delay_us(10);
         }
-        let reference = read(regs, total, userd + 0x48)?;
+        let reference = regs.read(0x40028 + pbdma * 0x2000);
         samples.push(format!("{{\"sequence\":{},\"epoch\":{},\"expected\":{},\"before\":{},\"after\":{},\"get_before\":{},\"put\":{},\"get\":{},\"reference\":{}}}",sequence,epoch,expected,before,observed,get_before,sequence,read(regs,total,userd+0x88)?,reference));
         // SAFETY: matching native epoch, payload and GPGet observed for this host-only ticket.
         unsafe {
@@ -484,7 +484,7 @@ pub fn probe(
             epoch,
             read(regs, total, semaphore)?,
             expected,
-            read(regs, total, userd + 0x88)?,
+            regs.read(0x40014 + pbdma * 0x2000),
             3,
         );
         regs.delay_us(10);
@@ -494,7 +494,7 @@ pub fn probe(
     let stale_value = seed.wrapping_add(2);
     words(regs, total, semaphore, &[stale_value])?;
     let stale_observed = read(regs, total, semaphore)?;
-    let gpget = read(regs, total, userd + 0x88)?;
+    let gpget = regs.read(0x40014 + pbdma * 0x2000);
     let gpput = read(regs, total, userd + 0x8c)?;
     let stale = accepted(epoch - 1, epoch, stale_observed, stale_value, gpget, gpput);
     if false_success || stale {
@@ -517,7 +517,9 @@ pub fn probe(
     )?;
     publish(regs, 3)?;
     let start = timer::rdtsc();
-    while read(regs, total, userd + 0x88)? != 3 || read(regs, total, userd + 0x48)? != expected {
+    while regs.read(0x40014 + pbdma * 0x2000) != 3
+        || regs.read(0x40028 + pbdma * 0x2000) != expected
+    {
         if elapsed(start) >= 2_000_000 {
             return Err("suppressed-release work did not execute");
         }
@@ -531,7 +533,7 @@ pub fn probe(
             epoch,
             read(regs, total, semaphore)?,
             expected,
-            read(regs, total, userd + 0x88)?,
+            regs.read(0x40014 + pbdma * 0x2000),
             3,
         );
         regs.delay_us(10);
@@ -544,7 +546,7 @@ pub fn probe(
     // Disarm the negative control and require the next complete native result.
     let clean_expected = seed.wrapping_add(4);
     let clean_before = read(regs, total, semaphore)?;
-    let clean_get_before = read(regs, total, userd + 0x88)?;
+    let clean_get_before = regs.read(0x40014 + pbdma * 0x2000);
     let ticket = context.hold(Consumer::Queued)?;
     words(
         regs,
@@ -573,9 +575,9 @@ pub fn probe(
         epoch,
         read(regs, total, semaphore)?,
         clean_expected,
-        read(regs, total, userd + 0x88)?,
+        regs.read(0x40014 + pbdma * 0x2000),
         4,
-    ) || read(regs, total, userd + 0x48)? != clean_expected
+    ) || regs.read(0x40028 + pbdma * 0x2000) != clean_expected
     {
         if elapsed(start) >= 2_000_000 {
             return Err("clean host completion failed after negative controls");
@@ -588,6 +590,19 @@ pub fn probe(
     unsafe {
         context.finish_device(ticket)?;
     }
+    // USERD GPGet is a saved writeback, not the resident PBDMA cursor.
+    // Read the documented IB_GET and REF_CNT registers while the sole channel
+    // is resident, and tie the observation to its CHID and USERD control address.
+    let current = regs.read(0x40120 + pbdma * 0x2000);
+    let control_low = regs.read(0x40008 + pbdma * 0x2000);
+    let control_high = regs.read(0x4000c + pbdma * 0x2000);
+    if current & 0xfff != 0
+        || control_low & 0xfffff003 != (userd as u32) & 0xfffff003
+        || control_high != (userd >> 32) as u32
+    {
+        return Err("PBDMA native identity changed; storage retained");
+    }
+    let progress=format!("{{\"source\":\"pbdma-live\",\"pbdma\":{},\"channel\":{},\"userd_low\":{},\"userd_high\":{}}}",pbdma,current,control_low,control_high);
     let faults = regs.read(0x259c);
     let errors = [
         regs.read(0x40108 + pbdma * 0x2000),
@@ -628,7 +643,7 @@ pub fn probe(
     if layout.allocator.stats() != baseline {
         return Err("channel reclamation mismatch");
     }
-    crate::serial_println!("GT710_CHANNEL {{\"schema\":1,\"bdf\":\"{:02x}:{:02x}.{}\",\"chipset\":262,\"host_class\":41071,\"channel\":0,\"epoch\":{},\"instance\":{},\"directory\":{},\"userd\":{},\"ring\":{},\"push\":{},\"semaphore\":{},\"top\":{:?},\"pbdmas\":{:?},\"runlist\":{},\"engine\":{},\"bind\":{},\"state\":{},\"fault\":{},\"pbdma_errors\":{:?},\"samples\":[{}],\"withheld\":{{\"epoch\":{},\"expected\":{},\"observed\":{},\"get\":{},\"put\":{},\"elapsed_us\":{},\"accepted\":false}},\"stale\":{{\"epoch\":{},\"expected\":{},\"observed\":{},\"get\":{},\"put\":{},\"accepted\":false}},\"suppressed\":{},\"clean\":{},\"drain\":{{\"runlist_count\":0,\"pending\":{},\"preempt\":{},\"binding\":{}}},\"retained_on_failure\":true,\"firmware_writes\":{},\"ce\":\"pending-6.2\",\"vm_probes\":\"pending-6.2\",\"reset\":\"pending-6.5\",\"baseline\":{},\"after\":{}}}",
-        device.bus,device.device,device.function,epoch,instance,directory,userd,ring,push,semaphore,top,pbdmas,runlist,engine,bind,state,faults,errors,samples.join(","),epoch,expected,withheld,gpget,gpput,withheld_elapsed,epoch-1,stale_value,stale_observed,gpget,gpput,suppressed,clean,pending,preempt,binding,crate::firmware_writes::count()-console.firmware_baseline,stats(baseline),stats(layout.allocator.stats()));
+    crate::serial_println!("GT710_CHANNEL {{\"schema\":1,\"bdf\":\"{:02x}:{:02x}.{}\",\"chipset\":262,\"host_class\":41071,\"channel\":0,\"epoch\":{},\"instance\":{},\"directory\":{},\"userd\":{},\"ring\":{},\"push\":{},\"semaphore\":{},\"top\":{:?},\"pbdmas\":{:?},\"runlist\":{},\"engine\":{},\"bind\":{},\"state\":{},\"fault\":{},\"pbdma_errors\":{:?},\"samples\":[{}],\"withheld\":{{\"epoch\":{},\"expected\":{},\"observed\":{},\"get\":{},\"put\":{},\"elapsed_us\":{},\"accepted\":false}},\"stale\":{{\"epoch\":{},\"expected\":{},\"observed\":{},\"get\":{},\"put\":{},\"accepted\":false}},\"progress\":{},\"suppressed\":{},\"clean\":{},\"drain\":{{\"runlist_count\":0,\"pending\":{},\"preempt\":{},\"binding\":{}}},\"retained_on_failure\":true,\"firmware_writes\":{},\"ce\":\"pending-6.2\",\"vm_probes\":\"pending-6.2\",\"reset\":\"pending-6.5\",\"baseline\":{},\"after\":{}}}",
+        device.bus,device.device,device.function,epoch,instance,directory,userd,ring,push,semaphore,top,pbdmas,runlist,engine,bind,state,faults,errors,samples.join(","),epoch,expected,withheld,gpget,gpput,withheld_elapsed,epoch-1,stale_value,stale_observed,gpget,gpput,progress,suppressed,clean,pending,preempt,binding,crate::firmware_writes::count()-console.firmware_baseline,stats(baseline),stats(layout.allocator.stats()));
     Ok(())
 }
