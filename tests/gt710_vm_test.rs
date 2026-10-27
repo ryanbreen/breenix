@@ -84,3 +84,20 @@ fn rejected_maps_do_not_mutate_and_failed_invalidation_never_recycles_storage() 
     assert!(s.retire(&mut a,&mut io).is_err());
     assert_eq!(a.stats(),used,"uncertain device access must retain all table charges");
 }
+
+#[test]
+fn fault_records_keep_raw_words_and_decode_only_pending_units_without_acknowledging() {
+    let mut io=Model::default();
+    io.regs.insert(0x259c,(1<<5)|(1<<21));
+    let raw=[0x12345,0x89abcdef,0x23,0x17001bc6];
+    for unit in [5,21] {for (i,v) in raw.into_iter().enumerate(){io.regs.insert(0x2800+unit*16+i*4,v);}}
+    let (mask,records)=vm::faults(&mut io);
+    assert_eq!(mask,(1<<5)|(1<<21));assert_eq!(records.len(),2);
+    for (record,unit) in records.iter().zip([5,21]) {
+        assert_eq!(record.unit,unit);assert_eq!(record.raw,raw);
+        assert_eq!(record.instance,0x12345000);assert_eq!(record.address,0x2389abcdef);
+        assert_eq!(record.reason,6);assert_eq!(record.client,27);assert_eq!(record.gpc,23);
+        assert!(record.hub);assert!(record.write);
+    }
+    assert!(io.events.is_empty(),"fault observation must not acknowledge or reset hardware");
+}
