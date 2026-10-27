@@ -2,6 +2,8 @@
 
 mod probe_signal;
 mod probe_metal;
+#[cfg(target_arch="x86_64")]
+mod gt710_artifacts;
 mod probe_panel;
 #[cfg(target_arch = "x86_64")]
 mod probe_framebuffer;
@@ -636,6 +638,8 @@ fn probe() {
             Err(reason) => println!("PROBE metal-fetch FAIL {}", reason),
         }
     }
+    #[cfg(target_arch="x86_64")]
+    gt710_artifacts::upload().expect("native display artifact upload");
     println!("PROBE DONE passed={} failed={}", passed, count - passed);
     println!("\x1b[1mProbe complete: {} passed, {} failed\x1b[0m", passed, count - passed);
     reap_forever();

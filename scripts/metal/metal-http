@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metal_lib as m  # noqa: E402
 
 from metal_probe import PROBE_PATH, PROBE_BODY
+import gt710_upload
 import metal_disk
 import metal_persist
 
@@ -103,7 +104,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_PUT(self):
-        metal_disk.receive(self)
+        if urlsplit(self.path).path.startswith(gt710_upload.PREFIX):
+            gt710_upload.receive(self)
+        else:
+            metal_disk.receive(self)
 
     def not_found(self, staged_id):
         log(event='404', method=self.command, route=urlsplit(self.path).path.startswith(self.server.prefix),

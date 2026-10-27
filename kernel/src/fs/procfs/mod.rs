@@ -125,10 +125,18 @@ pub enum ProcEntryType {
     /// /proc/net/tcp - TCP listeners and connections, the first columns of Linux's format
     NetTcp,
     /// /proc/console - screen console directory
+    #[cfg(target_arch="x86_64")]
+    Gt710Pixels,
     ConsoleDir,
     /// /proc/console/check - the screen read back against the console's shadow
     /// and font, where it was read, and the text rows it shows
     ConsoleCheck,
+    #[cfg(target_arch="x86_64")]
+    Gt710Ce,
+    #[cfg(target_arch="x86_64")]
+    Gt710Wait,
+    #[cfg(target_arch="x86_64")]
+    Gt710Drain,
     /// /proc/fbcon - the x86-64 screen console's directory under the name the
     /// x86-metal boot path reads
     #[cfg(target_arch = "x86_64")]
@@ -201,7 +209,15 @@ impl ProcEntryType {
             ProcEntryType::NetDir => "net",
             ProcEntryType::NetPnp => "pnp",
             ProcEntryType::NetTcp => "tcp",
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Pixels => "gt710-pixels",
             ProcEntryType::ConsoleDir => "console",
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Ce => "gt710-ce",
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Wait => "gt710-wait",
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Drain => "gt710-drain",
             ProcEntryType::ConsoleCheck => "check",
             #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconDir => "fbcon",
@@ -261,7 +277,15 @@ impl ProcEntryType {
             ProcEntryType::NetDir => "/proc/net",
             ProcEntryType::NetPnp => "/proc/net/pnp",
             ProcEntryType::NetTcp => "/proc/net/tcp",
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Pixels => "/proc/gt710-pixels",
             ProcEntryType::ConsoleDir => "/proc/console",
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Ce => "/proc/gt710-ce",
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Wait => "/proc/gt710-wait",
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Drain => "/proc/gt710-drain",
             ProcEntryType::ConsoleCheck => "/proc/console/check",
             #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconDir => "/proc/fbcon",
@@ -326,7 +350,15 @@ impl ProcEntryType {
             ProcEntryType::FbconDir => 500,
             #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconCheck => 501,
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Pixels => 507,
             ProcEntryType::ConsoleDir => 502,
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Ce => 504,
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Wait => 505,
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Drain => 506,
             ProcEntryType::ConsoleCheck => 503,
             ProcEntryType::PidDir(pid) => pid_inode(*pid, 0),
             ProcEntryType::PidStatus(pid) => pid_inode(*pid, 1),
@@ -471,12 +503,17 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetDir));
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetPnp));
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetTcp));
+    #[cfg(target_arch="x86_64")]
+    procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Pixels));
 
     // Register the screen console's directories and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::ConsoleDir));
     procfs.entries.push(ProcEntry::new(ProcEntryType::ConsoleCheck));
     #[cfg(target_arch = "x86_64")]
     {
+        procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Ce));
+        procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Wait));
+        procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Drain));
         procfs.entries.push(ProcEntry::new(ProcEntryType::FbconDir));
         procfs.entries.push(ProcEntry::new(ProcEntryType::FbconCheck));
     }
@@ -861,7 +898,15 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         }
         ProcEntryType::NetPnp => net::generate_pnp().map(String::into_bytes),
         ProcEntryType::NetTcp => crate::net::tcp::proc_net_tcp().map(String::into_bytes),
+        #[cfg(target_arch="x86_64")]
+        ProcEntryType::Gt710Pixels => require(Operation::Trace).map(|()|crate::gk208::proc_pixels()),
         ProcEntryType::ConsoleDir => text(String::from("check\n")),
+        #[cfg(target_arch="x86_64")]
+        ProcEntryType::Gt710Ce => require(Operation::Trace).and_then(|()|crate::gk208::proc_ce(0)),
+        #[cfg(target_arch="x86_64")]
+        ProcEntryType::Gt710Wait => require(Operation::Trace).and_then(|()|crate::gk208::proc_ce(1)),
+        #[cfg(target_arch="x86_64")]
+        ProcEntryType::Gt710Drain => require(Operation::Trace).and_then(|()|crate::gk208::proc_ce(2)),
         ProcEntryType::ConsoleCheck => crate::console::proc_console_check().map(String::into_bytes),
         #[cfg(target_arch = "x86_64")]
         ProcEntryType::FbconDir => text(String::from("check\n")),

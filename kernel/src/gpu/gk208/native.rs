@@ -184,7 +184,7 @@ pub fn takeover_started() -> bool { TAKEOVER_STARTED.load(Ordering::Acquire) }
 /// Expensive pixel evidence requires a test request.
 /// The boot intent is captured before attach.
 pub fn measuring() -> bool {
-    cfg!(feature = "testing") || suite_requested()
+    cfg!(feature = "testing") || suite_requested() || memory_requested()
 }
 
 /// Full VRAM snapshots run only when the display suite explicitly requests them.
@@ -195,6 +195,13 @@ pub fn suite_requested() -> bool {
         .and_then(|text| crate::boot::target::parse(text).ok())
         .is_some_and(|target| matches!(target, crate::boot::target::Target::Suite(s)
             if matches!(s.id.as_str(), "console" | "gt710")))
+}
+/// CPU-only memory evidence has a separate, bounded probe boot route.
+pub fn memory_requested()->bool {
+    crate::boot::intent::get()
+        .and_then(|bytes| core::str::from_utf8(bytes).ok())
+        .and_then(|text| crate::boot::target::parse(text).ok())
+        .is_some_and(|target| matches!(target,crate::boot::target::Target::Probe))
 }
 impl Io for Registers {
     fn read(&mut self, r: usize) -> u32 {
@@ -646,7 +653,7 @@ pub fn takeover(
             }
             let _ = write!(line, "{n:x}:{v:08x}");
         }
-        crate::serial_println!("GT710_PIX {} {}", y, line);
+        super::bulk::line(format!("GT710_PIX {} {}", y, line))?;
     }
     let raster_before = regs.read(0x616340 + head as usize * 0x800);
     regs.delay_us(50000);
@@ -744,7 +751,7 @@ pub fn takeover(
                         if i!=0 {line.push(',');}
                         let _=write!(line,"{count:x}:{first:08x}");
                     }
-                    crate::serial_println!("GT710_FLIP_PIX {} {} {} {}",mode,step,y,line);
+                    super::bulk::line(format!("GT710_FLIP_PIX {} {} {} {}",mode,step,y,line))?;
                 }
             }
             let raster_before=regs.read(0x616340+head as usize*0x800);
@@ -832,7 +839,7 @@ pub fn takeover(
                 if i!=0 { line.push(','); }
                 let _ = write!(line,"{count:x}:{first:08x}");
             }
-            crate::serial_println!("GT710_SWITCH_PIX {} {} {}",step,y,line);
+            super::bulk::line(format!("GT710_SWITCH_PIX {} {} {}",step,y,line))?;
         }
         let raster_before = regs.read(0x616340+head as usize*0x800);
         regs.delay_us(50000);

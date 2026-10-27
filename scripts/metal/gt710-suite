@@ -8,6 +8,7 @@ import runpy
 import tempfile
 
 CATEGORIES = {
+    'contexts': [('concurrent', 'Private native channels wrap their rings under backpressure and compare concurrent opposite transfers'), ('killed-wait', 'A killed native waiter exits within 250 ms while device backing stays held until ordered drain')],
     'completion': [('observation', 'Native CE observations bind independent caller fences and ordered releases to context, reset epoch and resource generation under complementary poisons')],
     'copy': [('transfers', 'Native A0B5 transfers compare complete complementary read-backs and execute private VM, remap, system-memory and bounded fault/reset probes')],
     'channel': [('semaphore', 'A privileged A06F channel executes unique semaphores with native identity, epoch and GET/PUT progression; withheld and stale completions fail')],
@@ -504,6 +505,35 @@ def copy_engine(serial):
         raise ValueError('malformed CE capture') from error
 
 
+def multiple_contexts(serial):
+    e=json.loads(one(r'^GT710_MULTI (.+)$',serial,'multiple contexts')[1])
+    def need(ok,why):
+        if not ok: raise ValueError(why)
+    try:
+        need(e['schema']==1 and e['baseline']==e['after'] and e['firmware_writes']==0,'concurrent reclamation')
+        channels=e['channels'];need(len(channels)==2,'two concurrent channels required')
+        for i,c in enumerate(channels):
+            need(c['id']==i and c['epoch']>0 and c['last']-c['first']>=512,'hardware ring did not wrap')
+            need(c['backpressure']==130 and c['compares']==130 and c['poisons']==[85,170],'missing pressure or complementary compares')
+            seed=e['seed'] if i==0 else e['seed']^0xffffffff
+            digest=hashlib.sha256(bytes(ce_pattern(n,seed) for n in range(8192))).hexdigest()
+            need(c['digests']==[digest]*130,'concurrent complete opposite bytes differ')
+        for field in ('instance','commands','source','dest'):
+            need(channels[0][field]!=channels[1][field],'concurrent private '+field)
+    except (KeyError,TypeError,IndexError) as error: raise ValueError('malformed concurrency evidence') from error
+
+
+def killed_wait(serial):
+    e=json.loads(one(r'^GT710_KILLED_WAIT (.+)$',serial,'killed native wait')[1])
+    try:
+        if not (e['schema']==1 and e['waiter']>1 and e['held_before']==e['held_after_kill']==1
+                and e['released_before_drain']==0 and e['killed'] is True and 0<e['kill_us']<=250000
+                and e['drained'] is True and e['after_baseline'] is True and e['survivor'] is True
+                and e['device_completed_before_kill'] is False and e['complete_compares']==2 and e['poisons']==[85,170]):
+            raise ValueError('native killed wait lost hold, deadline, drain or whole-buffer proof')
+    except (KeyError,TypeError) as error: raise ValueError('malformed killed wait evidence') from error
+
+
 def observation_record(r, c):
     def need(ok, why):
         if not ok: raise ValueError(why)
@@ -979,6 +1009,11 @@ def native_flips(serial):
 
 
 def check_case(category, case, serial):
+    if category == 'contexts':
+        if case == 'concurrent': multiple_contexts(serial)
+        elif case == 'killed-wait': killed_wait(serial)
+        else: raise ValueError('unknown contexts case')
+        return
     if category == 'completion':
         if case != 'observation': raise ValueError('unknown completion case')
         native_observations(serial)
@@ -1127,7 +1162,7 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
     if (not re.fullmatch('[0-9a-f]{40}', sha or '') or boot.get('toolsCommit') != sha
             or boot.get('platform') != 'metal' or boot.get('arch') != 'x86_64'
             or boot.get('evidenceEligible') is not True or boot.get('kind') not in ('boot', 'persistent')
-            or boot.get('mode') not in ('default', 'console', 'suite', 'persistent')
+            or boot.get('mode') not in ('default', 'console', 'suite', 'persistent', 'probe')
             or boot.get('bootedCommit', sha) != sha):
         raise ValueError('GT 710 evidence needs this kernel and tools in an eligible metal boot')
     if records.get('boot') != boot.get('id') or records.get('commit') != sha:
@@ -1141,19 +1176,61 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
     return category + ': ' + str(len(CATEGORIES[category])) + ' cases passed'
 
 
+def capture_serial(directory):
+    serial=(Path(directory)/'serial.txt').read_text()
+    matches=list(re.finditer(r'^GT710_BULK (\d+) ([a-f0-9]{64})$',serial,re.M))
+    if not matches: return serial
+    if len(matches)!=1: raise ValueError('duplicate display artifact digest')
+    data=(Path(directory)/'gt710-pixels.rle').read_bytes()
+    if len(data)!=int(matches[0][1]) or len(data)>2<<20 or hashlib.sha256(data).hexdigest()!=matches[0][2]:
+        raise ValueError('display artifact differs from serial length/digest')
+    text=data.decode('ascii')
+    groups={};previous=None
+    for line in text.splitlines(keepends=True):
+        fields=line.split()
+        if fields[0]=='GT710_PIX': key=('native',)
+        elif fields[0]=='GT710_SWITCH_PIX': key=('switch',int(fields[1]))
+        elif fields[0]=='GT710_FLIP_PIX': key=('flip',int(fields[1]),int(fields[2]))
+        else: raise ValueError('unexpected display artifact record')
+        if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
+        groups.setdefault(key,[]).append(line);previous=key
+    def report_key(line):
+        for prefix,kind in [('GT710_MODE ','native'),('GT710_SWITCH ','switch'),('GT710_FLIP ','flip')]:
+            if line.startswith(prefix):
+                e=json.loads(line[len(prefix):])
+                return (kind,) if kind=='native' else ((kind,e['step']) if kind=='switch' else (kind,e['mode'],e['step']))
+        return None
+    reports=[report_key(line) for line in serial.splitlines()]
+    order=[key for key in reports if key is not None]
+    if len(order)!=len(set(order)) or list(groups)!=order:
+        raise ValueError('display artifact blocks differ from update order')
+    result=[]
+    for line in serial.splitlines(keepends=True):
+        key=report_key(line)
+        if key is not None: result.extend(groups[key])
+        result.append(line)
+    return ''.join(result)
+
+
+CPU_MEMORY_CATEGORIES = {'inventory','vm','aperture','lifetime'}
+def capture_categories(boot):
+    if boot.get('mode') == 'probe':
+        return [c for c in CATEGORIES if c in CPU_MEMORY_CATEGORIES]
+    return [c for c in CATEGORIES if c not in CPU_MEMORY_CATEGORIES
+            and (c != 'console' or (boot.get('mode') == 'suite' and boot.get('suite') == 'console'))]
+
+
 def record_capture(directory, sha):
     """Recompute using the scorer and E16 files retained beside this capture."""
     directory = Path(directory)
     read = lambda name: json.loads((directory / name).read_text())
     boot = read('run.json')
-    serial = (directory / 'serial.txt').read_text()
+    serial = capture_serial(directory)
     manifest = read('definition/docs/suites/gt710.json')
     effort = read('definition/docs/efforts/metal.json')
     fatal = read('definition/docs/boot-path.json')['fatal'] + [r'KERNEL PANIC:']
     passed = True
-    for category in CATEGORIES:
-        if category == 'console' and (boot.get('mode') != 'suite' or boot.get('suite') != 'console'):
-            continue
+    for category in capture_categories(boot):
         records = dict(boot=boot['id'], commit=sha, milestone='metal-gt710/' + category,
                        cases=cases(category, serial))
         for c in records['cases']:
@@ -1164,7 +1241,7 @@ def record_capture(directory, sha):
             passed = False
             print(str(error), flush=True)
         (directory / ('gt710-' + category + '.json')).write_text(json.dumps(records) + '\n')
-    if passed:
+    if passed and boot.get('mode') != 'probe':
         _, pixels = native_mode(serial)
         (directory / 'gt710-native-scanout.bin').write_bytes(pixels)
         for e, pixels in native_flips(serial):

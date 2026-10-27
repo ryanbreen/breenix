@@ -214,7 +214,7 @@
  *
  * Authors: Ben Skeggs
  */
-//! Serialized bring-up channels for device-executed VM and CE checks.
+//! Privileged bring-up channels for device-executed VM and CE checks.
 //! IRQs remain masked; this boot-CPU owner polls and decodes outside top halves.
 use super::{channel::{VmIo, read, wait as fifo_wait, elapsed}, copy::{self, Rect}, inventory::{words,stats},
     lifetime::{Context, Consumer, Ticket}, memory::{self, allocator::{Allocation,Kind}}, modeset::{self,Io},
@@ -232,6 +232,8 @@ const STAGE:u64=0x600000;
 const SYSTEM:u64=0x800000;
 const SIZE:usize=8192;
 const SLOT:u64=(8<<20)-4096;
+const USERD:u64=0x200000;
+const RUNLIST:u64=57344;
 fn wait(regs:&mut Registers,r:usize,mask:u32,value:u32,budget:u64)->Result<(),&'static str> {
     let result=fifo_wait(regs,r,mask,value,budget);
     if result.is_err() {
@@ -268,37 +270,38 @@ fn discover(regs:&mut Registers)->Result<Engine,&'static str> {
     Err("enumerated CE0 unavailable")
 }
 struct Channel {
-    id:u32, context:Context, commands:Allocation,source:Allocation,dest:Allocation,stage:Allocation,
-    pages:ManuallyDrop<system_dma::Pages>, epoch:u64, put:u32, active:bool, generation:u64,
+    id:u32, context:Context, commands:Allocation,userd:Allocation,source:Allocation,dest:Allocation,stage:Allocation,
+    pages:ManuallyDrop<system_dma::Pages>, epoch:u64, put:u32, active:bool, generation:u64, queue:super::queue::Queue, shared:bool,
 }
 fn flags()->Flags {Flags{volatile:true,..Flags::default()}}
 impl Channel {
-    fn new(regs:&mut Registers,layout:&mut memory::Layout,total:u64,id:u32,status:&[u32])->Result<Self,&'static str> {
+    fn new(regs:&mut Registers,layout:&mut memory::Layout,total:u64,id:u32,status:&[u32],userd:Allocation)->Result<Self,&'static str> {
         let mut io=VmIo{regs,total};let mut context=Context::new(&mut layout.allocator,&mut io)?;
         let commands=layout.allocator.allocate(65536,4096,Kind::Engine)?;
         let source=layout.allocator.allocate(SIZE as u64,4096,Kind::Engine)?;
         let dest=layout.allocator.allocate(SIZE as u64,4096,Kind::Engine)?;
         let stage=layout.allocator.allocate(SIZE as u64,4096,Kind::Engine)?;
-        for (va,a) in [(COMMAND,commands),(SOURCE,source),(DEST,dest),(STAGE,stage)] {
+        for (va,a) in [(COMMAND,commands),(USERD,userd),(SOURCE,source),(DEST,dest),(STAGE,stage)] {
             context.map(&mut layout.allocator,&mut io,va,a,flags())?;
         }
         let pages=ManuallyDrop::new(system_dma::Pages::new(2,status)?);
         context.map_system(&mut layout.allocator,&mut io,SYSTEM,&[pages.address(0),pages.address(1)])?;
         for off in (0..65536).step_by(4096) {words(regs,total,commands.range.start+off,&[0;1024])?;}
         let instance=context.space().instance.range.start;
-        let userd=commands.range.start+12288+u64::from(id)*512;
-        for (offset,value) in [(0x08,userd as u32),(0x0c,(userd>>32) as u32),(0x10,0xface),
+        let userd_address=userd.range.start+u64::from(id)*512;
+        words(regs,total,userd_address,&[0;128])?;
+        for (offset,value) in [(0x08,userd_address as u32),(0x0c,(userd_address>>32) as u32),(0x10,0xface),
             (0x30,0xfffff902),(0x48,COMMAND as u32),(0x4c,9<<16),(0x84,0x20400000),
             (0x94,0x30000fff),(0x9c,0x100),(0xac,0x1f),(0xe4,0x20),(0xe8,id),
             (0xb8,0xf8000000),(0xf8,0x10003080),(0xfc,0x10000010)] {
             words(regs,total,instance+offset,&[value])?;
         }
-        words(regs,total,commands.range.start+16384,&[id,0])?;
-        Ok(Self{id,context,commands,source,dest,stage,pages,epoch:timer::rdtsc()|1,put:0,active:false,generation:0})
+        words(regs,total,commands.range.start+RUNLIST,&[id,0])?;
+        Ok(Self{id,context,commands,userd,source,dest,stage,pages,epoch:timer::rdtsc()|1,put:0,active:false,generation:0,queue:super::queue::Queue::new(),shared:false})
     }
     fn activate(&mut self,regs:&mut Registers,total:u64,e:&Engine,bar_inst:u64,bar_dir:u64,pte:u64)->Result<(),&'static str> {
         if self.active {return Ok(());}
-        words(regs,total,pte,&[(((self.commands.range.start+12288)>>8)|1) as u32,0])?;
+        words(regs,total,pte,&[((self.userd.range.start>>8)|1) as u32,0])?;
         modeset::activate_bar1(regs,bar_inst,bar_dir)?;
         unsafe {self.context.admit_device()?;}
         let ch=self.id as usize*8;
@@ -306,30 +309,33 @@ impl Channel {
         regs.write(0x800000+ch,0x80000000|(self.context.space().instance.range.start>>12) as u32);
         regs.mask(0x800004+ch,0x400,0x400);
         regs.mask(0x2630,1<<e.run,0);
-        regs.write(0x2270,((self.commands.range.start+16384)>>12) as u32);
+        regs.write(0x2270,((self.commands.range.start+RUNLIST)>>12) as u32);
         regs.write(0x2274,(e.run<<20)|1);
         wait(regs,0x2284+e.run as usize*8,0x100000,0,2_000_000)?;
         self.active=true;
         Ok(())
     }
     fn submit(&mut self,regs:&mut Registers,total:u64,bar:usize,rect:Rect,publish:bool)->Result<u32,&'static str> {
-        let command=copy::encode(rect,COMMAND+8192,self.epoch,self.put+1)?;
+        let seq=self.queue.next()?;
+        let command=copy::encode(rect,COMMAND+8192+u64::from(super::queue::Queue::slot(seq))*16,self.epoch,seq)?;
         self.push(regs,total,bar,&command,publish)
     }
     fn push(&mut self,regs:&mut Registers,total:u64,bar:usize,command:&[u32],publish:bool)->Result<u32,&'static str> {
-        if !self.active || self.put>=500 {return Err("CE ring unavailable");}
-        let seq=self.put+1;
-        // Reuse command storage only after the preceding engine completion.
-        words(regs,total,self.commands.range.start+4096,command)?;
-        words(regs,total,self.commands.range.start+u64::from(self.put)*8,
-            &[(COMMAND+4096) as u32,((command.len() as u32)<<10)|0x100])?;
+        if !self.active || command.len()>128 {return Err("CE ring unavailable");}
+        let seq=self.queue.next()?;
+        let offset=16384+u64::from(super::queue::Queue::slot(seq))*512;
+        // Four in-flight descriptors have four immutable command slots.
+        words(regs,total,self.commands.range.start+offset,command)?;
+        words(regs,total,self.commands.range.start+u64::from(super::queue::Queue::entry(seq))*8,
+            &[(COMMAND+offset) as u32,((command.len() as u32)<<10)|0x100])?;
         modeset::bar_flush(regs)?;
         if publish {
-            unsafe {((bar+SLOT as usize+self.id as usize*512+0x8c) as *mut u32).write_volatile(seq);}
-            crate::gpu_cache::drain_wc();let _=regs.read(0x2254); self.put=seq;
+            unsafe {((bar+SLOT as usize+self.id as usize*512+0x8c) as *mut u32).write_volatile(seq%512);}
+            crate::gpu_cache::drain_wc();let _=regs.read(0x2254); self.put=seq;self.queue.publish(seq)?;
         }
         Ok(seq)
     }
+    fn release_address(&self,seq:u32)->u64 {self.commands.range.start+8192+u64::from(super::queue::Queue::slot(seq))*16}
     fn request(&self,seq:u32,resource:u64,generation:u64)->Request {
         Request{context:self.context.space().instance.range.start,epoch:self.epoch,
             caller:NEXT_CALLER.fetch_add(1,Ordering::Relaxed),sequence:seq,resource,generation}
@@ -337,15 +343,21 @@ impl Channel {
     fn completed(&self,regs:&mut Registers,total:u64,e:&Engine,request:Request,budget:u64)->Result<(Option<CeCompletion>,u64),&'static str> {
         let start=timer::rdtsc();
         loop {
-            let addr=self.commands.range.start+8192;
+            let addr=self.release_address(request.sequence);
             let value=read(regs,total,addr)?;
             let epoch=u64::from(read(regs,total,addr+4)?)|u64::from(read(regs,total,addr+8)?)<<32;
             let p=e.pbdma*0x2000;
             let bound=regs.read(0x800000+self.id as usize*8);
+            let current=regs.read(0x40120+p)&0x2fff==0x2000|self.id;
+            // A06F's read-only GPGet belongs to this channel's private USERD.
+            // While loaded, PBDMA has the current value; otherwise use its saved USERD.
+            let get=if current {regs.read(0x40014+p)} else {
+                read(regs,total,self.userd.range.start+u64::from(self.id)*512+0x88)?
+            };
+            let consumed=super::queue::Queue::consumed(self.put,get);
             let sample=CeSample{context:u64::from(bound&0x0fffffff)<<12,epoch,sequence:value,
-                consumed:regs.read(0x40014+p),healthy:bound&0x80000000!=0 && regs.read(0x259c)==0
-                    && regs.read(e.base+0x908)&7==0 && regs.read(0x40108+p)==0 && regs.read(0x40148+p)==0
-                    && regs.read(0x40014+p)==self.put && regs.read(0x40120+p)&0x2fff==0x2000|self.id};
+                consumed:consumed.unwrap_or(0),healthy:consumed.is_some() && bound&0x80000000!=0 && regs.read(0x259c)==0
+                    && regs.read(e.base+0x908)&7==0 && regs.read(0x40108+p)==0 && regs.read(0x40148+p)==0 && (self.shared || (regs.read(0x40014+p)==self.put%512 && regs.read(0x40120+p)&0x2fff==0x2000|self.id))};
             let accepted=request.complete(sample);
             if accepted.is_some() || elapsed(start)>=budget {return Ok((accepted,elapsed(start)));}
             if regs.read(0x259c)!=0 {return Ok((None,elapsed(start)));}
@@ -365,6 +377,7 @@ impl Channel {
             return Err("CE completion failed; backing retained");
         }
         unsafe {self.context.finish_device(ticket)?;}
+        self.queue.complete(seq)?;
         if regs.read(e.base+0x908)&7!=0 || regs.read(0x40108+e.pbdma*0x2000)!=0
             || regs.read(0x40148+e.pbdma*0x2000)!=0 {return Err("CE hardware error");}
         let completion=done.ok_or("native request not completed")?;
@@ -377,7 +390,7 @@ impl Channel {
         regs.mask(0x800004+self.id as usize*8,0x800,0x800);
         regs.write(0x2634,self.id);
         wait(regs,0x2634,0x100000,0,2_000_000)?;
-        regs.write(0x2270,((self.commands.range.start+16384)>>12) as u32);
+        regs.write(0x2270,((self.commands.range.start+RUNLIST)>>12) as u32);
         regs.write(0x2274,e.run<<20);
         wait(regs,0x2284+e.run as usize*8,0x100000,0,2_000_000)?;
         wait(regs,0x3080+e.pbdma*4,0xe000,0,2_000_000)?;
@@ -398,6 +411,31 @@ impl Channel {
 fn request_json(r:Request)->String {
     format!("{{\"context\":{},\"epoch\":{},\"caller\":{},\"sequence\":{},\"resource\":{},\"generation\":{}}}",
         r.context,r.epoch,r.caller,r.sequence,r.resource,r.generation)
+}
+/// Owned packed USERD slots and channel entries. G1 MIT A06F/gk104 runlists.
+fn activate_pair(regs:&mut Registers,total:u64,e:&Engine,bar_inst:u64,bar_dir:u64,pte:u64,a:&mut Channel,b:&mut Channel)->Result<(),&'static str> {
+    a.activate(regs,total,e,bar_inst,bar_dir,pte)?;
+    // Block scheduling while publishing the second binding and two-entry list.
+    regs.mask(0x2630,1<<e.run,1<<e.run);
+    if a.userd!=b.userd {return Err("CE USERD page must have packed channel slots");}
+    unsafe {b.context.admit_device()?;}
+    regs.mask(0x80000c,0xf0000,e.run<<16);
+    regs.write(0x800008,0x80000000|(b.context.space().instance.range.start>>12) as u32);
+    regs.mask(0x80000c,0x400,0x400);
+    words(regs,total,a.commands.range.start+RUNLIST,&[0,0,1,0])?;
+    modeset::bar_flush(regs)?;
+    regs.write(0x2270,((a.commands.range.start+RUNLIST)>>12) as u32);
+    regs.write(0x2274,(e.run<<20)|2);
+    regs.mask(0x2630,1<<e.run,0);
+    wait(regs,0x2284+e.run as usize*8,0x100000,0,2_000_000)?;
+    a.shared=true;b.shared=true;b.active=true;Ok(())
+}
+/// A06F acquire yields the channel until its private gate is released by the owner.
+fn gated_copy(c:&Channel,sequence:u32)->Result<Vec<u32>,&'static str> {
+    let mut words=vec![(1<<29)|(4<<16)|4,0,(COMMAND+9216) as u32,1,0x1001];
+    words.extend(copy::encode(rect(SOURCE,DEST,SIZE as u32,1,SIZE as u32,SIZE as u32),
+        COMMAND+8192+u64::from(super::queue::Queue::slot(sequence))*16,c.epoch,sequence)?);
+    Ok(words)
 }
 fn pattern(i:usize,seed:u32)->u8 {
     let mut x=(i as u32)^seed;x^=x>>16;x=x.wrapping_mul(0x7feb352d);x^=x>>15;
@@ -441,7 +479,7 @@ fn suppressed_copy(regs:&mut Registers,layout:&memory::Layout,total:u64,e:&Engin
     let (accepted,elapsed_us)=c.completed(regs,total,e,request,10000)?;
     let accepted=accepted.is_some();
     let get=regs.read(0x40014+e.pbdma*0x2000);
-    let record=c.commands.range.start+8192;
+    let record=c.release_address(seq);
     let observed=read(regs,total,record)?;
     let observed_epoch=u64::from(read(regs,total,record+4)?)|u64::from(read(regs,total,record+8)?)<<32;
     let held=c.context.holds()[0];let reclaimed=u32::from(layout.allocator.stats()!=stats);
@@ -520,8 +558,9 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
     crate::serial_println!("GT710_CE_STAGE discovery engine={} run={} base={:#x} reset={} fault={}",e.engine,e.run,e.base,e.reset,e.fault);
     if regs.read(0x259c)!=0 || regs.read(0x800000)!=0 || regs.read(0x800008)!=0 {return Err("CE inherited or faulted state");}
     let status=system_dma::translation_status()?;
-    let mut a=Channel::new(regs,layout,total,0,&status)?;
-    let mut b=Channel::new(regs,layout,total,1,&status)?;
+    let userd=layout.allocator.allocate(4096,4096,Kind::Engine)?;
+    let mut a=Channel::new(regs,layout,total,0,&status,userd)?;
+    let mut b=Channel::new(regs,layout,total,1,&status,userd)?;
     let native=layout.objects.iter().find(|o|o.name=="instance").ok_or("native BAR instance absent")?.range.start;
     let (bar_inst,bar_dir)=(native+0x2000,native+0x3000);
     let pte=native+0x4000+(SLOT/4096)*8;
@@ -559,7 +598,7 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
     let accepted=accepted.is_some();
     if accepted {return Err("withheld CE completion accepted");}
     let (suppressed,suppressed_ticket)=suppressed_copy(regs,layout,total,&e,bar,&mut a,seed)?;
-    words(regs,total,a.commands.range.start+8192,&[a.put,(a.epoch-1) as u32,((a.epoch-1)>>32) as u32])?;
+    words(regs,total,a.release_address(a.put),&[a.put,(a.epoch-1) as u32,((a.epoch-1)>>32) as u32])?;
     modeset::bar_flush(regs)?;
     let request=a.request(a.put,a.dest.range.start,a.generation);
     let (accepted,stale_us)=a.completed(regs,total,&e,request,10000)?;
@@ -614,7 +653,7 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
     regs.mask(0x200,1<<e.reset,0);let disabled=regs.read(0x200);
     regs.delay_us(50);regs.mask(0x200,1<<e.reset,1<<e.reset);let enabled=regs.read(0x200);
     regs.write(0x259c,fault_mask);regs.write(0x2100,0x10000000);
-    regs.write(0x2270,((a.commands.range.start+16384)>>12) as u32);
+    regs.write(0x2270,((a.commands.range.start+RUNLIST)>>12) as u32);
     regs.write(0x2274,e.run<<20);
     regs.write(0x262c,1<<e.run);
     regs.mask(0x2630,1<<e.run,0);
@@ -631,7 +670,7 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
     words(regs,total,pte,&[0,0])?;modeset::activate_bar1(regs,bar_inst,bar_dir)?;
     a.retire(regs,layout,total)?;
     // Restore the mapping in a fresh channel after the confirmed engine reset.
-    let mut a=Channel::new(regs,layout,total,0,&status)?;
+    let mut a=Channel::new(regs,layout,total,0,&status,userd)?;
     a.context.map(&mut layout.allocator,&mut VmIo{regs,total},invalid,a.source,flags())?;
     a.activate(regs,total,&e,bar_inst,bar_dir,pte)?;
     cases.push(run_case(regs,total,&e,bar,&mut a,cases.len(),seed,Case{name:"restored-a",..full})?);
@@ -640,10 +679,16 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
     cases.push(run_case(regs,total,&e,bar,&mut b,cases.len(),!seed,Case{name:"survivor-b",..full})?);
     b.drain(regs,&e)?;
     words(regs,total,pte,&[0,0])?;modeset::activate_bar1(regs,bar_inst,bar_dir)?;
-    a.retire(regs,layout,total)?;b.retire(regs,layout,total)?;
+    let multiple=multi::probe(regs,layout,total,&e,bar,bar_inst,bar_dir,pte,&mut a,&mut b,seed)?;
+    a.retire(regs,layout,total)?;b.retire(regs,layout,total)?;layout.allocator.release(userd)?;
     regs.write(0x2254,old_userd);regs.write(0x2140,old_intr);regs.write(0x204,old_enabled);
     if layout.allocator.stats()!=baseline {return Err("CE baseline reclamation mismatch");}
+    crate::serial_println!("GT710_MULTI {{{},\"baseline\":{},\"after\":{},\"firmware_writes\":{}}}",multiple,stats(baseline),stats(layout.allocator.stats()),crate::firmware_writes::count()-console.firmware_baseline);
     crate::serial_println!("GT710_CE {{\"schema\":1,\"class\":41141,\"source_va\":{},\"system_va\":{},\"engine\":{},\"runlist\":{},\"reset_bit\":{},\"fault_unit\":{},\"cases\":[{}],\"withheld_us\":{},\"suppressed\":{},\"stale_us\":{},\"invalid\":{},\"fault_instance\":{},\"fault_raw\":{:?},\"fault_mask\":{},\"reset_us\":{},\"reset_disabled\":{},\"reset_enabled\":{},\"fault_after\":{},\"firmware_writes\":{},\"baseline\":{},\"after\":{},\"pgraph\":\"unmeasured\"}}",
         SOURCE,SYSTEM,e.engine,e.run,e.reset,e.fault,cases.join(","),withheld_us,suppressed,stale_us,invalid,fault_instance,fault_raw,fault_mask,reset_us,disabled,enabled,regs.read(0x259c),crate::firmware_writes::count()-console.firmware_baseline,stats(baseline),stats(layout.allocator.stats()));
     Ok(())
 }
+
+mod multi;
+mod process;
+pub(super) use process::{retain,proc_read};
