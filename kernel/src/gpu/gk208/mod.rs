@@ -346,7 +346,7 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
             ce::probe(&mut regs,&device,&mut layout,&console)?;
             crate::serial_println!("GT710_PROBE_TIME ce-completion us={}",channel::elapsed(start));
             let start=timer::rdtsc();
-            gr::probe(&mut regs,&device,&mut layout)?;
+            gr::probe(&mut regs,&device,&mut layout,&console)?;
             crate::serial_println!("GT710_PROBE_TIME graphics us={}",channel::elapsed(start));
         }
         let (_,displacement,_)=modeset::bar1_view(layout.objects[0].range.start,layout.objects[0].range.size,device.bars[1].size,17)?;

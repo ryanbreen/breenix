@@ -625,3 +625,33 @@ envytools f102b82381f3f11cee113d16374c87091db039d9
 explicit import of `rnndb/copyright.xml`). Its author list and grant are
 retained in the sequencer and its check. The headers and imported grant were
 read before use. No proprietary or GPL implementation is used here.
+
+## GK208B golden context (milestone 7.2 unit 5)
+
+`kernel/src/gpu/gk208/gr/context.rs` and `tests/gt710_grctx_test.rs` adapt
+Linux v6.8 `e8f897f4afef0031fe618a8e94127a0934896aba` nouveau
+`nvkm/engine/gr/{ctxgf100.c,ctxgf117.c,ctxgk104.c,ctxgk110.c,ctxgk208.c,gf100.c}`
+and `nvkm/engine/gr/fuc/{hub.fuc,gpc.fuc,com.fuc,macros.fuc}` (MIT;
+Copyright 2010, 2011, 2012, 2013 Red Hat Inc.; Ben Skeggs). The source
+headers were read before adaptation; the consumers retain the copyright
+notices and full grant. These routines supply buffer geometry, per-channel
+patches, MMIO/ICMD/method replay, floorsweep, bind/save and context sizing.
+The hardware adapter in `gr/mod.rs` uses `gf100.c`'s instance and runnable
+header layouts under its retained Copyright 2012 Red Hat Inc. MIT grant.
+
+The indexed Falcon host port and strand register definitions come from
+envytools `f102b82381f3f11cee113d16374c87091db039d9`
+`rnndb/{falcon.xml,graph/gf100_pgraph/ctxctl.xml}`, with the MIT grant and
+author list imported from `rnndb/copyright.xml`; those notices are retained
+in `context.rs` and its check. The imported grant was read before use.
+
+`kernel/src/gpu/gk208/ce/readback.rs` reuses the M6.2 channel, VM and
+engine-release path from `ce.rs`, retaining that file's original notices.
+Its source-to-consumer map is the same M6 FIFO/CE source inventory above;
+no new external channel implementation is imported.
+
+G6's scorer and fixture changes in `scripts/metal/gt710-suite` and
+`tests/gt710_graphics_report_test.py` use the same MIT `hub.fuc`, `com.fuc`,
+`gf100.c` and GK208 context dispatch. Header bytes and final strand padding
+retain each save's own poison; saved bytes have separate region digests.
+The runnable header is checked separately against `gf100.c:336-338`.
