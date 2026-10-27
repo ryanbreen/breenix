@@ -23,15 +23,21 @@ A separate yielding acquire withholds real channel work. The watchdog scans
 at scheduler wakes spaced by 10 ms, quarantines after 2 s and removes that
 channel from scheduling without treating removal as device completion. The
 survivor completes complementary full transfers and advances the no-progress
-clock. Its next request also waits behind an acquire. After a further 2 s
-without an ordered completion, transport reset fails both outstanding fences
-with `device-reset`. Backing stays pinned through the unconfirmed-reset branch.
+clock. Its next request queues eight private 16 MiB copies behind an acquire. After a
+further 2 s without an ordered completion, the worker releases that acquire and
+requires a changed destination nonce, a busy engine and an absent final hardware
+release. Transport reset then fails both outstanding fences
+with `device-reset`. The receipt validator first rejects real pre-reset observations, with backing
+still pinned; the same validator judges the actual reset readbacks. Both raw
+release records and budget-0 hardware completion observations precede EIO.
 Reset-enable readbacks, cleared bindings, idle runlist/PBDMA/engine and absent
 fault/error state precede the trusted reset receipt.
 
 Replacement command storage and mappings are prepared before that decision,
 then published only after confirmed cessation of old engine access. The 100 ms
-budget includes reset, control-channel republication and EIO outcomes. Fresh
+budget includes reset from observed active copy work, control-channel republication
+and EIO outcomes. Scheduling is restored on removal errors before CE-reset
+escalation; backing remains retained until the final reset receipt. Fresh
 channels have distinct reset epochs. A stale epoch planted in an otherwise
 valid release is rejected before clean complementary copies on both new
 channels. The worker drains and reclaims its exact allocator baseline.

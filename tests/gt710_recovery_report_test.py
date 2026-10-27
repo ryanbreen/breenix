@@ -17,16 +17,18 @@ class Recovery(unittest.TestCase):
                 survivor_digests=[digest(seed^0xffffffff)]*2,reset_us=60,confirmed=True),
             watchdog=dict(reset_bit=6,reset_disabled=0,reset_enabled=64,pending=0,busy=0,errors=0,quarantine_us=2_000_010,no_progress_us=2_000_010,total_us=4_020_000,
                 held_at_quarantine=1,held_before_reset=[1,1],failed_reset_held=[1,1],rejected=True,
-                removed=True,runlist=[1],binding=0,success_before_reset=False,
+                removed=True,runlist=[1],binding=0,success_before_reset=False,hardware_completed=[False,False],hardware_fences=[[0,0,0],[0,0,0]],expected_fences=[[1,44,0],[3,33,0]],failed_reset_rejected=True,failed_reset_observation=[64,0,0x80000400],
                 survivor_digests=[digest(seed^0xffffffff)]*2,reset_us=1500,confirmed=True,
                 old_epochs=[44,33],new_epochs=[55,66],old_fences_eio=[True,True],stale_accepted=False,
                 bindings=[0x500000,0x600000],fresh_digests=[[digest(seed)]*2,[digest(seed^0xffffffff)]*2]))
+        report['active_reset']=dict(busy=0x80000000,word=12345,nonce=12345,held=1,reset_us=60,reset_disabled=0,reset_enabled=64,reset_bit=6,fresh_digests=[digest(seed^0xffffffff)]*2)
         line=lambda e:'GT710_RECOVERY '+json.dumps(e)+'\n'
         API['recovery_gate'](line(report))
-        for section,field,value in [('', 'worker',False),('fault','raw',[0,0,0,2]),
+        for section,field,value in [('', 'worker',False),('active_reset','busy',0),('active_reset','word',0),('active_reset','reset_us',100001),('fault','raw',[0,0,0,2]),
                 ('fault','reset_disabled',64),('fault','busy',1),('fault','binding',1),('fault','runlist',[0,1]),('fault','held',0),
                 ('fault','survivor_digests',['0'*64]*2),('fault','survivor_after_epoch',34),
                 ('watchdog','quarantine_us',1999999),('watchdog','no_progress_us',1999999),
+                ('watchdog','hardware_completed',[False,True]),('watchdog','hardware_fences',[[1,44,0],[3,33,0]]),('watchdog','failed_reset_rejected',False),('watchdog','failed_reset_observation',[0,0,0]),
                 ('watchdog','total_us',4850001),('watchdog','held_before_reset',[0,1]),
                 ('watchdog','failed_reset_held',[0,1]),('watchdog','reset_us',100001),
                 ('watchdog','reset_enabled',0),('watchdog','pending',0x100000),('watchdog','errors',1),('watchdog','confirmed',False),('watchdog','old_fences_eio',[True,False]),

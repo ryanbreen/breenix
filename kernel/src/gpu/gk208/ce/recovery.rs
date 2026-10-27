@@ -74,19 +74,24 @@ fn remove(
 ) -> Result<(), &'static str> {
     let start = timer::rdtsc();
     regs.mask(0x2630, 1 << e.run, 1 << e.run);
-    regs.write(0x2634, a.id);
-    budget_wait(regs, start, 0x2634, 0x100000)?;
-    words(regs, total, b.commands.range.start + RUNLIST, &[b.id, 0])?;
-    modeset::bar_flush(regs)?;
-    regs.write(0x2270, ((b.commands.range.start + RUNLIST) >> 12) as u32);
-    regs.write(0x2274, (e.run << 20) | 1);
+    let result = (|| {
+        regs.write(0x2634, a.id);
+        budget_wait(regs, start, 0x2634, 0x100000)?;
+        words(regs, total, b.commands.range.start + RUNLIST, &[b.id, 0])?;
+        modeset::bar_flush(regs)?;
+        regs.write(0x2270, ((b.commands.range.start + RUNLIST) >> 12) as u32);
+        regs.write(0x2274, (e.run << 20) | 1);
+        regs.mask(0x2630, 1 << e.run, 0);
+        budget_wait(regs, start, 0x2284 + e.run as usize * 8, 0x100000)?;
+        regs.write(0x800000 + a.id as usize * 8, 0);
+        if regs.read(0x800000 + a.id as usize * 8) != 0 {
+            return Err("quarantined channel binding remains");
+        }
+        Ok(())
+    })();
+    // Restore scheduling after the closure, including its error returns.
     regs.mask(0x2630, 1 << e.run, 0);
-    budget_wait(regs, start, 0x2284 + e.run as usize * 8, 0x100000)?;
-    regs.write(0x800000 + a.id as usize * 8, 0);
-    if regs.read(0x800000 + a.id as usize * 8) != 0 {
-        return Err("quarantined channel binding remains");
-    }
-    Ok(())
+    result
 }
 /// Local engine recovery retains B's RAMFC, identity, mappings and epoch. A CE
 /// fault can stall the runlist; reset the enumerated CE before waiting on it.
@@ -129,17 +134,27 @@ fn fault_reset(
     {
         return Err("local engine reset unconfirmed; backing retained");
     }
-    unsafe {
-        a.context.confirm_reset();
-    }
-    a.active = false;
     Ok((elapsed(start), disabled, enabled))
 }
+// A receipt is issued only after these hardware observations agree. Calling
+// this before reset deliberately takes the same refusal path with live backing.
+fn transport_confirmed(regs: &mut Registers, e: &Engine, disabled: u32, enabled: u32) -> Result<(), &'static str> {
+    if disabled & (1 << e.reset) != 0
+        || enabled & (1 << e.reset) == 0
+        || regs.read(0x259c) != 0
+        || regs.read(0x800000) != 0
+        || regs.read(0x800008) != 0
+        || regs.read(0x2284 + e.run as usize * 8) & 0x100000 != 0
+        || regs.read(0x3080 + e.pbdma * 4) & 0xe000 != 0
+        || regs.read(0x2640 + e.engine as usize * 8) & 0xc0000000 != 0
+    {
+        return Err("transport reset unconfirmed; backing retained");
+    }
+    Ok(())
+}
 fn hold_check(layout: &mut memory::Layout, c: &Channel) -> Result<usize, &'static str> {
-    let before = layout.allocator.stats();
-    if layout.allocator.release(c.commands).is_ok()
-        || layout.allocator.release(c.dest).is_ok()
-        || before != layout.allocator.stats()
+    if !layout.allocator.is_pinned(c.commands)?
+        || !layout.allocator.is_pinned(c.dest)?
         || c.context.holds()[0] != 1
     {
         return Err("recovery lost device backing");
@@ -226,6 +241,16 @@ pub(super) fn probe(s: &mut super::process::Session) -> Result<String, &'static 
     let mut a = Channel::new(&mut regs, &mut s.layout, s.total, 0, &status, userd)?;
     let mut b = Channel::new(&mut regs, &mut s.layout, s.total, 1, &status, userd)?;
     let seed = timer::rdtsc() as u32;
+    // B's reset workload is private, mapped before admission, and has no alias
+    // to firmware/display storage. Eight transfers keep a real copy in flight.
+    let active_source = s.layout.allocator.allocate(16 << 20, 4096, Kind::Engine)?;
+    let active_dest = s.layout.allocator.allocate(16 << 20, 4096, Kind::Engine)?;
+    for (va, allocation) in [(0x1000000, active_source), (0x2000000, active_dest)] {
+        b.context.map(&mut s.layout.allocator, &mut VmIo {regs: &mut regs, total: s.total}, va, allocation, flags())?;
+    }
+    let nonce = seed | 1;
+    words(&mut regs, s.total, active_source.range.start, &[nonce])?;
+    words(&mut regs, s.total, active_dest.range.start, &[!nonce])?;
     for (i, c) in [&mut a, &mut b].into_iter().enumerate() {
         let data: Vec<_> = (0..SIZE)
             .map(|n| pattern(n, if i == 0 { seed } else { !seed }))
@@ -278,16 +303,21 @@ pub(super) fn probe(s: &mut super::process::Session) -> Result<String, &'static 
     let refused = rejected(&mut regs, s.total, s.bar, &mut a)?;
     let (local_us, local_disabled, local_enabled) =
         fault_reset(&mut regs, s.total, &e, &mut a, &b, mask)?;
+    unsafe { a.context.confirm_reset(); }
+    a.active = false;
     drop(held);
     let binding = regs.read(0x800000);
     if regs.read(0x800008) != 0x80000000 | (survivor_context >> 12) as u32 {
         return Err("local fault replaced surviving binding");
     }
     let survivor = compare(&mut regs, s.total, &e, s.bar, &mut b, !seed)?;
+    let survivor_after_context = u64::from(regs.read(0x800008) & 0x0fffffff) << 12;
+    let survivor_after_epoch = u64::from(read(&mut regs, s.total, b.release_address(b.put) + 4)?)
+        | u64::from(read(&mut regs, s.total, b.release_address(b.put) + 8)?) << 32;
     let local_pending = regs.read(0x2284 + e.run as usize * 8) & 0x100000;
     let local_busy = regs.read(0x2640 + e.engine as usize * 8) & 0xc0000000;
     let local_errors = regs.read(0x259c) | regs.read(e.base + 0x908) & 7;
-    let fault=format!("{{\"instance\":{},\"invalid\":{},\"raw\":{:?},\"mask\":{},\"held\":{},\"rejected\":{},\"removed\":{},\"runlist\":[1],\"binding\":{},\"survivor_context\":{},\"survivor_epoch\":{},\"survivor_after_context\":{},\"survivor_after_epoch\":{},\"survivor_digests\":{},\"reset_us\":{},\"reset_bit\":{},\"reset_disabled\":{},\"reset_enabled\":{},\"pending\":{},\"busy\":{},\"errors\":{},\"confirmed\":true}}",instance,invalid,raw,mask,fault_held,refused,binding==0,binding,survivor_context,survivor_epoch,b.context.space().instance.range.start,b.epoch,survivor,local_us,e.reset,local_disabled,local_enabled,local_pending,local_busy,local_errors);
+    let fault=format!("{{\"instance\":{},\"invalid\":{},\"raw\":{:?},\"mask\":{},\"held\":{},\"rejected\":{},\"removed\":{},\"runlist\":[1],\"binding\":{},\"survivor_context\":{},\"survivor_epoch\":{},\"survivor_after_context\":{},\"survivor_after_epoch\":{},\"survivor_digests\":{},\"reset_us\":{},\"reset_bit\":{},\"reset_disabled\":{},\"reset_enabled\":{},\"pending\":{},\"busy\":{},\"errors\":{},\"confirmed\":true}}",instance,invalid,raw,mask,fault_held,refused,binding==0,binding,survivor_context,survivor_epoch,survivor_after_context,survivor_after_epoch,survivor,local_us,e.reset,local_disabled,local_enabled,local_pending,local_busy,local_errors);
     a.retire(&mut regs, &mut s.layout, s.total)?;
     b.drain(&mut regs, &e)?;
     let mut a = Channel::new(&mut regs, &mut s.layout, s.total, 0, &status, userd)?;
@@ -312,7 +342,11 @@ pub(super) fn probe(s: &mut super::process::Session) -> Result<String, &'static 
     quarantine(&mut regs, &mut a, "device-hung");
     let held_at_quarantine = hold_check(&mut s.layout, &a)?;
     let refused = rejected(&mut regs, s.total, s.bar, &mut a)?;
-    remove(&mut regs, s.total, &e, &a, &b)?;
+    if remove(&mut regs, s.total, &e, &a, &b).is_err() {
+        // Preempt/runlist timeout is not a terminal parked-runlist state.
+        // Escalate to CE reset, with the same survivor and retained backing.
+        fault_reset(&mut regs, s.total, &e, &mut a, &b, 0)?;
+    }
     a.active = false;
     let binding = regs.read(0x800000);
     let survivor = compare(&mut regs, s.total, &e, s.bar, &mut b, !seed)?;
@@ -323,7 +357,14 @@ pub(super) fn probe(s: &mut super::process::Session) -> Result<String, &'static 
     }
     // Keep a second pending request on the other context while reset fails
     // its outstanding fence. Its acquire stays withheld until reset.
-    let (held_b, request_b) = gate(&mut regs, s.total, s.bar, &mut b)?;
+    let held_b = b.context.hold(Consumer::Queued)?;
+    let seq = b.queue.next()?;
+    let rectangle = rect(0x1000000, 0x2000000, 8192, 2048, 8192, 8192);
+    let mut commands = vec![(1 << 29) | (4 << 16) | 4, 0, (COMMAND + 9216) as u32, 1, 0x1001];
+    for _ in 0..7 { commands.extend(copy::transfer(rectangle)?); }
+    commands.extend(copy::encode(rectangle, COMMAND + 8192 + u64::from(super::super::queue::Queue::slot(seq)) * 16, b.epoch, seq)?);
+    b.push(&mut regs, s.total, s.bar, &commands, true)?;
+    let request_b = b.request(seq, active_dest.range.start, 1);
     // Prepare replacement storage before the reset decision; do not touch its
     // USERD slots or publish it until the old engine access has ended.
     let fresh_userd = s.layout.allocator.allocate(4096, 4096, Kind::Engine)?;
@@ -342,18 +383,59 @@ pub(super) fn probe(s: &mut super::process::Session) -> Result<String, &'static 
         pause()?;
     }
     let decision = elapsed(start);
+    // Start the queued copies only once the no-progress decision is made.
+    // Require observed DMA progress AND an absent final release before reset.
+    words(&mut regs, s.total, b.commands.range.start + 9216, &[1])?;
+    modeset::bar_flush(&mut regs)?;
+    let active_start = timer::rdtsc();
+    let (active_busy, active_word) = loop {
+        let busy = regs.read(0x2640 + e.engine as usize * 8);
+        let word = read(&mut regs, s.total, active_dest.range.start)?;
+        if b.completed(&mut regs, s.total, &e, request_b, 0)?.0.is_some() {
+            return Err("active reset copy finished before observation");
+        }
+        if busy & 0x80000000 != 0 && word == nonce { break (busy, word); }
+        if elapsed(active_start) >= 100_000 { return Err("active reset copy never started"); }
+    };
     let reset_start = timer::rdtsc();
     let old_epochs = [a.epoch, b.epoch];
+    let mut hardware_fences = [[0u32; 3]; 2];
+    for (i, (c, request)) in [(&a, request), (&b, request_b)].into_iter().enumerate() {
+        for (j, value) in hardware_fences[i].iter_mut().enumerate() {
+            *value = read(&mut regs, s.total, c.release_address(request.sequence) + j as u64 * 4)?;
+        }
+    }
+    let expected_fences = [
+        [request.sequence, a.epoch as u32, (a.epoch >> 32) as u32],
+        [request_b.sequence, b.epoch as u32, (b.epoch >> 32) as u32],
+    ];
+    if hardware_fences.iter().zip(expected_fences).any(|(actual, expected)| *actual == expected) {
+        return Err("old hardware fence released before reset");
+    }
+    let hardware_completed = [
+        a.hardware_completed(&mut regs, s.total, &e, request, 0)?.0.is_some(),
+        b.hardware_completed(&mut regs, s.total, &e, request_b, 0)?.0.is_some(),
+    ];
+    if hardware_completed.iter().any(|done| *done) {
+        return Err("old request completed before transport reset");
+    }
     quarantine(&mut regs, &mut a, "device-reset");
     quarantine(&mut regs, &mut b, "device-reset");
     let before = [
         hold_check(&mut s.layout, &a)?,
         hold_check(&mut s.layout, &b)?,
     ];
-    // An unconfirmed reset result cannot release anything. Exercise the same
-    // production failure branch before the real reset, without faking hardware.
-    a.context.reset_failed();
-    b.context.reset_failed();
+    // The engine is still enabled and B still bound: the actual reset receipt
+    // validator must refuse these real pre-reset observations, retaining holds.
+    let not_disabled = regs.read(0x200);
+    let failed_reset_observation = [not_disabled, regs.read(0x800000), regs.read(0x800008)];
+    let failed_reset_rejected = matches!(
+        transport_confirmed(&mut regs, &e, not_disabled, not_disabled),
+        Err("transport reset unconfirmed; backing retained")
+    );
+    if !failed_reset_rejected {
+        return Err("unperformed reset produced a trusted receipt");
+    }
     let failed_held = [
         hold_check(&mut s.layout, &a)?,
         hold_check(&mut s.layout, &b)?,
@@ -397,14 +479,7 @@ pub(super) fn probe(s: &mut super::process::Session) -> Result<String, &'static 
     )?;
     regs.write(0x800000, 0);
     regs.write(0x800008, 0);
-    if disabled & (1 << e.reset) != 0
-        || enabled & (1 << e.reset) == 0
-        || regs.read(0x259c) != 0
-        || regs.read(0x800000) != 0
-        || regs.read(0x800008) != 0
-    {
-        return Err("transport reset unconfirmed; backing retained");
-    }
+    transport_confirmed(&mut regs, &e, disabled, enabled)?;
     let reset_pending = regs.read(0x2284 + e.run as usize * 8) & 0x100000;
     let reset_busy = regs.read(0x2640 + e.engine as usize * 8) & 0xc0000000;
     let reset_errors = regs.read(0x259c) | regs.read(e.base + 0x908) & 7;
@@ -459,8 +534,9 @@ pub(super) fn probe(s: &mut super::process::Session) -> Result<String, &'static 
         compare(&mut regs, s.total, &e, s.bar, &mut fresh_a, seed)?,
         compare(&mut regs, s.total, &e, s.bar, &mut fresh_b, !seed)?,
     ];
+    let active_record = format!("{{\"busy\":{},\"word\":{},\"nonce\":{},\"held\":{},\"reset_us\":{},\"reset_disabled\":{},\"reset_enabled\":{},\"reset_bit\":{},\"fresh_digests\":{}}}", active_busy, active_word, nonce, before[1], reset_us, disabled, enabled, e.reset, fresh[1]);
     let total_us = elapsed(start);
-    let watchdog=format!("{{\"quarantine_us\":{},\"no_progress_us\":{},\"total_us\":{},\"held_at_quarantine\":{},\"held_before_reset\":{:?},\"failed_reset_held\":{:?},\"rejected\":{},\"removed\":{},\"runlist\":[1],\"binding\":{},\"success_before_reset\":false,\"survivor_digests\":{},\"reset_us\":{},\"reset_bit\":{},\"reset_disabled\":{},\"reset_enabled\":{},\"pending\":{},\"busy\":{},\"errors\":{},\"confirmed\":true,\"old_epochs\":{:?},\"new_epochs\":{:?},\"old_fences_eio\":{:?},\"stale_accepted\":{},\"bindings\":{:?},\"fresh_digests\":[{},{}]}}",quarantine_us,decision-progress,total_us,held_at_quarantine,before,failed_held,refused,binding==0,binding,survivor,reset_us,e.reset,disabled,enabled,reset_pending,reset_busy,reset_errors,old_epochs,new_epochs,old_eio,stale_accepted,fresh_contexts,fresh[0],fresh[1]);
+    let watchdog=format!("{{\"quarantine_us\":{},\"no_progress_us\":{},\"total_us\":{},\"held_at_quarantine\":{},\"held_before_reset\":{:?},\"failed_reset_held\":{:?},\"failed_reset_rejected\":{},\"failed_reset_observation\":{:?},\"rejected\":{},\"removed\":{},\"runlist\":[1],\"binding\":{},\"success_before_reset\":{},\"hardware_completed\":{:?},\"hardware_fences\":{:?},\"expected_fences\":{:?},\"survivor_digests\":{},\"reset_us\":{},\"reset_bit\":{},\"reset_disabled\":{},\"reset_enabled\":{},\"pending\":{},\"busy\":{},\"errors\":{},\"confirmed\":true,\"old_epochs\":{:?},\"new_epochs\":{:?},\"old_fences_eio\":{:?},\"stale_accepted\":{},\"bindings\":{:?},\"fresh_digests\":[{},{}]}}",quarantine_us,decision-progress,total_us,held_at_quarantine,before,failed_held,failed_reset_rejected,failed_reset_observation,refused,binding==0,binding,hardware_completed.iter().any(|v|*v),hardware_completed,hardware_fences,expected_fences,survivor,reset_us,e.reset,disabled,enabled,reset_pending,reset_busy,reset_errors,old_epochs,new_epochs,old_eio,stale_accepted,bindings,fresh[0],fresh[1]);
     fresh_a.drain(&mut regs, &e)?;
     fresh_b.drain(&mut regs, &e)?;
     words(&mut regs, s.total, s.pte, &[0, 0])?;
@@ -468,6 +544,8 @@ pub(super) fn probe(s: &mut super::process::Session) -> Result<String, &'static 
     for c in [a, b, fresh_a, fresh_b] {
         c.retire(&mut regs, &mut s.layout, s.total)?;
     }
+    s.layout.allocator.release(active_source)?;
+    s.layout.allocator.release(active_dest)?;
     s.layout.allocator.release(userd)?;
     s.layout.allocator.release(fresh_userd)?;
     regs.write(0x2254, old[0]);
@@ -476,5 +554,5 @@ pub(super) fn probe(s: &mut super::process::Session) -> Result<String, &'static 
     if s.layout.allocator.stats() != baseline {
         return Err("native recovery baseline differs");
     }
-    Ok(format!("GT710_RECOVERY {{\"schema\":1,\"seed\":{},\"worker\":true,\"poisons\":[85,170],\"baseline\":{},\"after\":{},\"firmware_writes\":{},\"fault\":{},\"watchdog\":{}}}\n",seed,stats(baseline),stats(s.layout.allocator.stats()),crate::firmware_writes::count(),fault,watchdog))
+    Ok(format!("GT710_RECOVERY {{\"schema\":1,\"seed\":{},\"worker\":true,\"poisons\":[85,170],\"baseline\":{},\"after\":{},\"firmware_writes\":{},\"fault\":{},\"watchdog\":{},\"active_reset\":{}}}\n",seed,stats(baseline),stats(s.layout.allocator.stats()),crate::firmware_writes::count(),fault,watchdog,active_record))
 }

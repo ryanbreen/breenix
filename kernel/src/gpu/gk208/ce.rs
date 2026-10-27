@@ -342,6 +342,11 @@ impl Channel {
     }
     fn completed(&self,regs:&mut Registers,total:u64,e:&Engine,request:Request,budget:u64)->Result<(Option<CeCompletion>,u64),&'static str> {
         if let Some(error)=self.failure {return Err(error);}
+        self.hardware_completed(regs,total,e,request,budget)
+    }
+    // Recovery observes the device before publishing EIO; ordinary callers must
+    // still go through completed() and its quarantine check.
+    fn hardware_completed(&self,regs:&mut Registers,total:u64,e:&Engine,request:Request,budget:u64)->Result<(Option<CeCompletion>,u64),&'static str> {
         let start=timer::rdtsc();
         loop {
             let addr=self.release_address(request.sequence);
