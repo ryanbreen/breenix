@@ -1,5 +1,6 @@
 """CE acceptance is based on retained complete bytes and native faults."""
 import copy
+import hashlib
 import json
 from pathlib import Path
 import runpy
@@ -21,16 +22,17 @@ class CopyCapture(unittest.TestCase):
         for y in range(3): expected[4093+y*271:4093+y*271+257]=initial[17+y*263:17+y*263+257]
         e=dict(size=size,seed=seed,width=257,height=3,src_pitch=263,dst_pitch=271,
                src_offset=17,dst_offset=4093,fill=0xcc,poisons=[0x55,0xaa])
-        check(e,[bytes(expected),bytes(expected)])
+        sha=lambda b:hashlib.sha256(bytes(b)).hexdigest()
+        check(e,[sha(expected),sha(expected)])
         for mutate in [lambda b:b.__setitem__(4093,b[4093]^1),lambda b:b.__setitem__(0,b[0]^1),
                        lambda b:b.__setitem__(size-1,b[size-1]^1)]:
             bad=bytearray(expected);mutate(bad)
-            with self.assertRaises(ValueError):check(e,[bytes(expected),bytes(bad)])
-        for snapshots in [[bytes(expected)], [bytes(expected),bytes(expected[:-1])],
+            with self.assertRaises(ValueError):check(e,[sha(expected),sha(bad)])
+        for snapshots in [[expected], [expected,expected[:-1]],
                           [bytes([0x55])*size,bytes([0xaa])*size]]:
-            with self.assertRaises(ValueError):check(e,snapshots)
+            with self.assertRaises(ValueError):check(e,[sha(x) for x in snapshots])
         bad=copy.deepcopy(e);bad['poisons']=[0x55,0x55]
-        with self.assertRaises(ValueError):check(bad,[bytes(expected),bytes(expected)])
+        with self.assertRaises(ValueError):check(bad,[sha(expected),sha(expected)])
 
     def test_restored_va_and_survivor_source_are_not_substituted_or_refilled(self):
         check=API['copy_source']

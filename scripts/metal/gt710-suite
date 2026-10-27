@@ -409,19 +409,22 @@ def ce_pattern(i, seed):
     return (x^(x>>16))&255
 
 
-def copy_bytes(e, snapshots):
+def copy_bytes(e, digests):
+    """Each complementary CE read-back's complete-buffer SHA-256 must equal the
+    host's independently built destination, padding and untouched bytes included."""
     def need(ok,why):
         if not ok: raise ValueError(why)
     size=e['size']; width=e['width']; height=e['height']
     need(0<size<=32768 and size%4096==0 and width>0 and 0<height<=65536, 'invalid CE extent')
-    need(e['poisons']==[0x55,0xaa] and len(snapshots)==2, 'two complementary CE transfers required')
+    need(e['poisons']==[0x55,0xaa] and len(digests)==2, 'two complementary CE transfers required')
     initial=bytes(ce_pattern(i,e['seed']) for i in range(size))
     expected=bytearray(initial if e.get('overlap',False) else bytes([e['fill']])*size)
     for y in range(height):
         a=e['src_offset']+y*e['src_pitch']; b=e['dst_offset']+y*e['dst_pitch']
         need(min(a,b)>=0 and max(a,b)+width<=size and width<=min(e['src_pitch'],e['dst_pitch']), 'CE rectangle outside backing')
         expected[b:b+width]=initial[a:a+width]
-    need(snapshots[0]==expected and snapshots[1]==expected, 'CE full destination mismatch or unwritten bytes')
+    want=hashlib.sha256(bytes(expected)).hexdigest()
+    need(digests[0]==want and digests[1]==want, 'CE full destination mismatch or unwritten bytes')
 
 
 def copy_source(c):
@@ -456,10 +459,10 @@ def copy_engine(serial):
         required={'same-va-a','same-va-b','byte','unaligned','rectangle','upload','overlap-forward','overlap-backward',
                   'clean-next','remapped-a','unaffected-b','restored-a','survivor-b'}
         need(set(names)==required|{'random'} and names.count('random')==4 and len(cases)==len(required)+4,'incomplete CE operations')
-        chunks={}
-        for m in re.finditer(r'^GT710_CE_BYTES (\d+) ([01]) (\d+) ([0-9a-f]+)$',serial,re.M):
-            key=tuple(map(int,m.group(1,2,3)));need(key not in chunks,'duplicate CE bytes')
-            chunks[key]=bytes.fromhex(m[4])
+        readbacks={}
+        for m in re.finditer(r'^GT710_CE_DIGEST (\d+) ([01]) (\d+) ([0-9a-f]{64})$',serial,re.M):
+            key=(int(m[1]),int(m[2]));need(key not in readbacks,'duplicate CE read-back')
+            readbacks[key]=(int(m[3]),m[4])
         used=set(); sequences={}
         for index,c in enumerate(cases):
             need(c['id']==index and c['channel'] in (0,1) and c['epoch']>0,'foreign CE case identity')
@@ -467,17 +470,14 @@ def copy_engine(serial):
             need(c['sequence']>sequences.get(identity,0),'stale CE sequence')
             sequences[identity]=c['sequence']
             need(c['releases']==[c['sequence']-1,c['sequence']] and c['elapsed_us']<=6000000,'CE release ordering')
-            snapshots=[]
+            digests=[]
             for poison in range(2):
-                data=bytearray()
-                for offset in range(0,c['size'],256):
-                    key=(index,poison,offset);need(key in chunks,'missing complete CE read-back')
-                    need(len(chunks[key])==min(256,c['size']-offset),'bad CE chunk length')
-                    data.extend(chunks[key]);used.add(key)
-                snapshots.append(bytes(data))
+                key=(index,poison);need(key in readbacks,'missing complete CE read-back')
+                need(readbacks[key][0]==c['size'],'partial CE read-back')
+                digests.append(readbacks[key][1]);used.add(key)
             copy_source(c)
-            copy_bytes(c,snapshots)
-        need(set(chunks)==used,'unbound CE bytes')
+            copy_bytes(c,digests)
+        need(set(readbacks)==used,'unbound CE read-back')
         byname={c['name']:c for c in cases}
         a,b,r=(byname[k] for k in ('same-va-a','same-va-b','remapped-a'))
         need(a['channel']==r['channel']==0 and b['channel']==1 and a['epoch']==r['epoch'],'VM channel identity')
