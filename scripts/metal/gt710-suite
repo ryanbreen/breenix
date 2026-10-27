@@ -610,10 +610,12 @@ def graphics_engine(serial):
         # nouveau v6.8 gr/gf100.c gf100_gr_oneinit: GPC_UNIT(g, 0x2608).
         topology = words(e['topology_raw'])
         gpcs = topology[0x409604] & 0x1f
-        need(0 < gpcs <= 31 and set(topology) == {0x409604} | {0x502608 + g * 0x8000 for g in range(gpcs)},
+        need(0 < gpcs <= 31 and set(topology) == {0x409604} | {a + g * 0x8000 for g in range(gpcs) for a in (0x502608, 0x500c30)},
              'raw topology registers')
         tpcs = [topology[0x502608 + g * 0x8000] for g in range(gpcs)]
-        need(all(0 < t <= 8 for t in tpcs) and e['topology'] == dict(gpc_nr=gpcs, tpc_nr=tpcs), 'raw topology')
+        masks = [topology[0x500c30 + g * 0x8000] for g in range(gpcs)]
+        need(all(0 < t <= 8 for t in tpcs) and all(0 < m < 256 and m.bit_count() == t for m, t in zip(masks, tpcs))
+             and e['topology'] == dict(gpc_nr=gpcs, tpc_nr=tpcs, tpc_mask=masks), 'raw topology')
 
         # Internal source firmware, not the external NVIDIA firmware protocol:
         # gf100_gr_init_ctxctl_int polls FECS 0x409800 bit 31. hub.fuc waits
@@ -625,7 +627,7 @@ def graphics_engine(serial):
         size = e['fecs_size']
         need(type(size) is int and 0 < size <= 1 << 20 and size % 4 == 0, 'mailbox size')
         queries = e['queries']
-        need(len(queries) == 2 and [q['method'] for q in queries] == [1, 2], 'mailbox method')
+        need(len(queries) == 4 and [q['method'] for q in queries] == [1, 2, 1, 2], 'mailbox method')
         # hub.fuc main_done sets scratch-0 bit 31 for commands 1 (ctx_chan)
         # and 2 (ctx_xfer save). Scratch 1 remains the reported context size.
         for q in queries:
@@ -649,11 +651,13 @@ def graphics_engine(serial):
         need(lists == GR_INIT_LISTS
              and all(type(v['count']) is int for v in lists), 'init lists')
         buffers = e['global_buffers']
-        need(len(buffers) > 0 and len({v['name'] for v in buffers}) == len(buffers), 'global buffers')
+        expected_buffers = [('bundle', 0x3000, 0x100), ('pagepool', 0x8000, 0x100),
+                            ('attrib', 0x20 * (0x324 + 0x7ff) * sum(tpcs), 0x1000), ('mmio', 0x1000, 0x100)]
+        need([(b['name'], b['bytes'], b['align']) for b in buffers] == expected_buffers, 'global buffers')
         ranges = []
         for b in buffers:
             need(b['name'] and type(b['va']) is int and type(b['bytes']) is int
-                 and b['va'] > 0 and b['bytes'] > 0 and b['va'] + b['bytes'] <= 1 << 40, 'global buffers')
+                 and b['va'] > 0 and b['va'] % b['align'] == 0 and b['bytes'] > 0 and b['va'] + b['bytes'] <= 1 << 40, 'global buffers')
             ranges.append((b['va'], b['va'] + b['bytes']))
         for s in saves:
             need(type(s['va']) is int and s['va'] > 0 and s['va'] + size <= 1 << 40, 'complementary images destinations')
@@ -677,9 +681,33 @@ def graphics_engine(serial):
             images[poison].extend(chunk)
             previous = poison
         need(all(len(image) == size for image in images.values()), 'image rows incomplete')
-        for s in saves:
-            need(hashlib.sha256(images[s['poison']]).hexdigest() == s['sha256'], 'image digest')
-        need(images[85] == images[170], 'complementary images bytes')
+        # G6/G2: MIT hub.fuc:134-213 reserves [0,256), method 2 at
+        # 285-294 saves without ctx_mmio_exec's header store (585-592,686-690).
+        # com.fuc:314-333 reserves ((words >> 6) + 1) * 256 per strand.
+        layout = e['save_layout']
+        need(gpcs == 1 and layout['gpc'] == 0 and type(layout['strands']) is int
+             and 0 < layout['strands'] <= 64 and type(layout['strand_base']) is int
+             and type(layout['strand_words']) is int and layout['strand_words'] > 0, 'saved size words')
+        base, count = layout['strand_base'] * 256, layout['strand_words']
+        end = base + count * 4
+        need(base >= 256 and 256 < end <= size and base + ((count >> 6) + 1) * 256 == size
+             and e['saved_end'] == end, 'saved size words')
+        for save in saves:
+            image = images[save['poison']]
+            need(hashlib.sha256(image).hexdigest() == save['image_sha256'], 'image digest')
+            need(hashlib.sha256(image[256:end]).hexdigest() == save['sha256'], 'image digest')
+            need(image[:256] == bytes([save['poison']]) * 256
+                 and image[end:] == bytes([save['poison']]) * (size - end), 'save changed poison outside data')
+        need(images[85][256:end] == images[170][256:end], 'complementary images bytes')
+        # Runnable header is CPU-filled separately: MIT gf100.c:336-338.
+        header = e['runnable_header']
+        mmio = next(b for b in buffers if b['name'] == 'mmio')
+        need(header['count'] == 18 and header['va'] == mmio['va'], 'runnable header')
+        expected = header['count'].to_bytes(4, 'little') + (header['va'] >> 8).to_bytes(4, 'little') + bytes(248)
+        need(header['words'] == [18, header['va'] >> 8]
+             and header['sha256'] == hashlib.sha256(expected).hexdigest(), 'runnable header')
+        need(e['image_bulk_bytes'] == len(raw) and len(raw) <= e['bulk_artifact_estimate'] <= 2 << 20,
+             'graphics artifact size')
 
         c = e['channel']
         need(type(c['id']) is int and 0 <= c['id'] < 4096 and c['epoch'] > 0, 'graphics channel identity')

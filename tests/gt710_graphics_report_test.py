@@ -1,6 +1,8 @@
 # Hardware encodings from pinned MIT sources; see THIRD_PARTY_NOTICES.
 # /*
+#  * Copyright 2010 Red Hat Inc.
 #  * Copyright 2011 Red Hat Inc.
+#  * Copyright 2013 Red Hat Inc.
 #  * Copyright 2012 Red Hat Inc.
 #  * Copyright 2016 Red Hat Inc.
 #  *
@@ -66,7 +68,11 @@ HASHES = {
     'gpccs.data.bin': '67859e7b5e6e4002910d5ae94d2668828c867a7d0ef1787624dd97cc8839b405',
 }
 PCI = 'PCI_FN 01:00.0 10de:128b class=03/00 bar0=0x80000000/0x1000000 irq=0x10\n'
-IMAGE = bytes((i * 31 + i // 7) & 255 for i in range(512))
+# Synthetic data does not assert a hardware context size. G6 checks the source
+# save extent plus its separately poisoned header and trailing strand padding.
+DATA = bytes((i * 31 + i // 7) & 255 for i in range(640))
+IMAGES = tuple(bytes([p]) * 256 + DATA + bytes([p]) * 128 for p in [85, 170])
+IMAGE = IMAGES[0]
 
 
 def fixture():
@@ -77,15 +83,20 @@ def fixture():
         elapsed_us=12000, bound_us=2000000, fecs_size=len(IMAGE),
         queries=[dict(method=m, poison=p, reply=p | 0x80000000,
                       size=len(IMAGE), elapsed_us=100, bound_us=2000000)
-                 for m, p in [(1, 0x55555555), (2, 0x2aaaaaaa)]],
+                 for m, p in [(1, 0x15555555), (2, 0x15555555), (1, 0x2aaaaaaa), (2, 0x2aaaaaaa)]],
         withheld_start=dict(started=False, ready=False, poison=0x55555555,
                             reply=0x55555555, accepted=False),
         stale_reply=dict(method=1, poison=0, planted=0x80000000,
                          reply=0x80000000, accepted=False),
-        topology_raw=[[0x409604, 0x10001], [0x502608, 1]],
-        topology=dict(gpc_nr=1, tpc_nr=[1]), golden_bytes=len(IMAGE),
+        topology_raw=[[0x409604, 0x10001], [0x502608, 1], [0x500c30, 1]],
+        topology=dict(gpc_nr=1, tpc_nr=[1], tpc_mask=[1]), golden_bytes=len(IMAGE),
+        saved_end=896, save_layout=dict(gpc=0, strands=1, strand_base=3, strand_words=32),
+        runnable_header=dict(count=18, va=0x540000,
+                             words=[18, 0x5400],
+                             sha256=hashlib.sha256(int(18).to_bytes(4, 'little') + int(0x5400).to_bytes(4, 'little') + bytes(248)).hexdigest()),
+        image_bulk_bytes=len(image_rows()), bulk_artifact_estimate=len(image_rows()),
         saves=[dict(poison=p, va=0x400000 + n * 0x1000,
-                    sha256=hashlib.sha256(IMAGE).hexdigest()) for n, p in enumerate([85, 170])],
+                    sha256=hashlib.sha256(DATA).hexdigest(), image_sha256=hashlib.sha256(IMAGES[n]).hexdigest()) for n, p in enumerate([85, 170])],
         init_lists=[
             dict(name='mmio', count=115, sha256='7e944a30c8d9f35bfefef91d0a73e4c1135510ad2615265af141cf75ced4e79e'),
             dict(name='icmd', count=245, sha256='e062254f9033263c696cb5f66ff2cd150f0ce771022fc6021cb696ec72195ff2'),
@@ -97,8 +108,10 @@ def fixture():
             dict(name='ppc', count=14, sha256='47d9ecd1b081049e83745541d580984c5a00b6290ef71ee5ed2a3a2c6ff35968'),
             dict(name='zcull', count=24, sha256='6627431341d439972b5f1ec0442db9fc79ff21ba084cc79061288c03f9b1681e'),
         ],
-        global_buffers=[dict(name='bundle', va=0x500000, bytes=4096),
-                        dict(name='pagepool', va=0x501000, bytes=4096)],
+        global_buffers=[dict(name='bundle', va=0x500000, bytes=0x3000, align=0x100),
+                        dict(name='pagepool', va=0x504000, bytes=0x8000, align=0x100),
+                        dict(name='attrib', va=0x510000, bytes=0x16460, align=0x1000),
+                        dict(name='mmio', va=0x540000, bytes=0x1000, align=0x100)],
         channel=dict(id=0, epoch=42, instance=0x10000000, class_id=0xa197,
                      top=[0x80000036, 3] + [0] * 62, engine=0, runlist=0,
                      bind=0x80010000, state=1, current_context=0x80010000),
@@ -113,7 +126,7 @@ def fixture():
         firmware_writes=0, draw='pending-7.4', shaders='pending-7.3', context_switch='pending-7.5')
 
 
-def image_rows(images=(IMAGE, IMAGE)):
+def image_rows(images=IMAGES):
     return ''.join(f'GT710_GR_IMAGE {poison} {offset} {data[offset:offset+64].hex()}\n'
                    for poison, data in zip([85, 170], images)
                    for offset in range(0, len(data), 64)).encode('ascii')
@@ -213,6 +226,25 @@ class Graphics(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, reason):
                     self.check(bad)
 
+    def test_g6_rejects_changed_saved_data_header_padding_and_runnable_header(self):
+        # Refresh transport/full/region hashes so rejection comes from bytes,
+        # rather than from a stale hash. G6 permits no excluded saved fields.
+        for offset in [0, 255, 256, 700, 895, 896, 1023]:
+            with self.subTest(offset=offset), tempfile.TemporaryDirectory() as temporary:
+                e = fixture()
+                changed = bytearray(IMAGES[1]); changed[offset] ^= 1
+                e['saves'][1]['image_sha256'] = hashlib.sha256(changed).hexdigest()
+                e['saves'][1]['sha256'] = hashlib.sha256(changed[256:896]).hexdigest()
+                body = image_rows((IMAGES[0], changed))
+                e['image_bulk_bytes'] = len(body); e['bulk_artifact_estimate'] = len(body)
+                directory = Path(temporary); stage(directory, e, body)
+                with self.assertRaisesRegex(ValueError, 'complementary images|poison outside data'):
+                    API['graphics_engine'](API['capture_serial'](directory))
+        for key, value in [('saved_end', 892), ('runnable_header', dict(count=17, va=0x540000, words=[17, 0x5400], sha256='0' * 64))]:
+            e = fixture(); e[key] = value
+            with self.assertRaisesRegex(ValueError, 'saved size words|runnable header'):
+                self.check(e)
+
     def test_bulk_bytes_framing_and_image_digests_are_required(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -222,8 +254,8 @@ class Graphics(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'display artifact differs'):
                 API['capture_serial'](directory)
             # Rehashing the transport must still fail the independently recorded save digest.
-            changed = bytes([IMAGE[0] ^ 1]) + IMAGE[1:]
-            stage(directory, fixture(), image_rows((IMAGE, changed)))
+            changed = IMAGES[1][:300] + bytes([IMAGES[1][300] ^ 1]) + IMAGES[1][301:]
+            stage(directory, fixture(), image_rows((IMAGES[0], changed)))
             with self.assertRaisesRegex(ValueError, 'image digest'):
                 API['graphics_engine'](API['capture_serial'](directory))
             stage(directory, fixture())
