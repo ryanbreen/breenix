@@ -104,7 +104,7 @@ struct Mock {
     regs: BTreeMap<u32,u32>, memory: BTreeMap<(u32,bool,u32),u32>,
     index: BTreeMap<(u32,bool),u32>, events: Vec<Event>,
     now: u64, frozen: bool, corrupt: Option<(u32,bool,u32)>,
-    ready: bool, gpc_ready: bool, reply: bool,
+    ready: bool, gpc_ready: bool, reply: bool, pgob_stuck: bool,
 }
 impl Mock {
     fn new() -> Self {
@@ -112,7 +112,7 @@ impl Mock {
                 (0x502608,2), (0x500c30,3), (0x409108,0x20040), (0x502108,0x20040),
                 (0x120074,1), (0x100800,1)]), memory: BTreeMap::new(),
             index: BTreeMap::new(), events: vec![], now:0, frozen:false,
-            corrupt:None, ready:true, gpc_ready:true, reply:true }
+            corrupt:None, ready:true, gpc_ready:true, reply:true, pgob_stuck:false }
     }
     fn port(a:u32) -> Option<(u32,bool,bool)> {
         let base=a & !0xfff;
@@ -148,6 +148,9 @@ impl Access for Mock {
             }
         }
         self.regs.insert(a,v);
+        if matches!(a,0x20520|0x20524|0x20528|0x2052c|0x20530) && !self.pgob_stuck {
+            self.regs.insert(a,v & 0x7fffffff);
+        }
         if a==0x200 && v&0x1000==0 {
             for a in [0x409800,0x409804,0x502800,0x502804] { self.regs.insert(a,0); }
         }
@@ -284,4 +287,45 @@ fn ctxctl_bad_size_caps_and_busy_engine_are_errors() {
     let mut m=Mock::new();let mut c=prepared(&mut m);c.start(&mut m).unwrap();
     m.regs.insert(0x409804,0);
     assert!(c.request(&mut m,1,0x80010000,0).is_err());
+}
+
+// nouveau v6.8 pmu/gk208.c selects gk110_pmu_pgob; gr/gf100.c calls
+// pgob(false) before oneinit reads GPC/PPC topology. Both files are MIT.
+#[test]
+fn ctxctl_power_on_exits_pgob_before_topology_without_resetting_fifo_or_ce() {
+    let mut m = Mock::new();
+    ctxctl::reset(&mut m).unwrap();
+    let sequence: Vec<_> = m.events.iter().filter_map(|event| match event {
+        Event::Write(a @ (0x20520 | 0x20524 | 0x20528 | 0x2052c | 0x20530), v) => Some((*a, *v)),
+        _ => None,
+    }).collect();
+    assert_eq!(sequence, vec![
+        (0x20520,0xfffffffc),(0x20524,0xfffffffe),(0x20524,0xfffffffc),
+        (0x20524,0xfffffff8),(0x20524,0xffffffe0),(0x20530,0xfffffffe),
+        (0x2052c,0xfffffffa),(0x2052c,0xfffffff0),(0x2052c,0xffffffc0),
+        (0x2052c,0xffffff00),(0x2052c,0xfffffc00),(0x2052c,0xfffcfc00),
+        (0x2052c,0xfff0fc00),(0x2052c,0xff80fc00),(0x20528,0xfffffffe),
+        (0x20528,0xfffffffc),
+    ]);
+    assert!(m.now >= 50_000);
+    assert_eq!(m.regs[&0x200], 0xa5011100);
+    assert_eq!(m.regs[&0x10a78c] & 3, 0);
+    assert!(m.events.iter().filter_map(|e| match e { Event::Write(0x200,v) => Some(v), _=>None })
+        .all(|v| v & !(0x08000000 | 0x1000) == 0xa5010100));
+    // Each sequencer command must finish before the next is submitted.
+    for (a,v) in sequence {
+        let pos = m.events.iter().position(|e| *e == Event::Write(a,v)).unwrap();
+        assert_eq!(m.events[pos+1], Event::Read(a,v & 0x7fffffff));
+    }
+}
+
+#[test]
+fn ctxctl_pgob_timeout_stops_the_sequence_and_restores_temporary_controls() {
+    let mut m = Mock::new();
+    m.pgob_stuck = true;
+    assert!(ctxctl::reset(&mut m).is_err());
+    assert!(!m.events.iter().any(|e| matches!(e, Event::Write(0x20524,_))));
+    assert_eq!(m.regs[&0x200] & 0x08001000, 0);
+    assert_eq!(m.regs[&0x10a78c] & 3, 0);
+    assert!(m.now < 2_100_000);
 }

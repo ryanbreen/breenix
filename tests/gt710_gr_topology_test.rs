@@ -117,3 +117,10 @@ fn tpc_count_excludes_zcull_units_and_preserves_the_raw_word() {
         assert!(decode(&[[0x409604, 1], [0x502608, units], [0x500c30, 3]]).is_err());
     }
 }
+
+#[test]
+fn failed_pri_read_is_not_a_fused_tpc_mask() {
+    // Failed R240 capture: the low byte happens to have one set bit.
+    // Truncating the error response would manufacture a topology.
+    assert!(decode(&[[0x409604,0x10001],[0x502608,0x40001],[0x500c30,0xbadf1002]]).is_err());
+}
