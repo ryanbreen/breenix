@@ -16,7 +16,10 @@ pub fn upload()->Result<(),String> {
         if std::fs::read_to_string("/proc/net/pnp").is_ok_and(|s|s.lines().any(|l|l.starts_with("bootserver "))) {break;}
         time::sleep_ms(100).map_err(|_|"native lease wait")?;
     }
-    let ip=dns::resolve_auto(host).map_err(|_|"native upload resolution")?.addr;
+    let ip=match host.parse::<std::net::Ipv4Addr>() {
+        Ok(address)=>address.octets(),
+        Err(_)=>dns::resolve_auto(host).map_err(|_|"native upload resolution")?.addr,
+    };
     let fd=socket::socket(socket::AF_INET,socket::SOCK_STREAM,0).map_err(|_|"native upload socket")?;
     let digest:String=sha256(&data).iter().map(|b|format!("{b:02x}")).collect();
     let result=(|| {
