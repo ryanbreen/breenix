@@ -683,7 +683,9 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
     a.retire(regs,layout,total)?;b.retire(regs,layout,total)?;layout.allocator.release(userd)?;
     regs.write(0x2254,old_userd);regs.write(0x2140,old_intr);regs.write(0x204,old_enabled);
     if layout.allocator.stats()!=baseline {return Err("CE baseline reclamation mismatch");}
-    crate::serial_println!("GT710_MULTI {{{},\"baseline\":{},\"after\":{},\"firmware_writes\":{}}}",multiple,stats(baseline),stats(layout.allocator.stats()),crate::firmware_writes::count()-console.firmware_baseline);
+    let multiple=format!("GT710_MULTI {{{},\"baseline\":{},\"after\":{},\"firmware_writes\":{}}}\n",multiple,stats(baseline),stats(layout.allocator.stats()),crate::firmware_writes::count()-console.firmware_baseline);
+    crate::serial_println!("GT710_MULTI_BULK {} {}",multiple.len(),super::hash(multiple.as_bytes()));
+    super::bulk::line(multiple.trim_end_matches('\n').into())?;
     crate::serial_println!("GT710_CE {{\"schema\":1,\"class\":41141,\"source_va\":{},\"system_va\":{},\"engine\":{},\"runlist\":{},\"reset_bit\":{},\"fault_unit\":{},\"cases\":[{}],\"withheld_us\":{},\"suppressed\":{},\"stale_us\":{},\"invalid\":{},\"fault_instance\":{},\"fault_raw\":{:?},\"fault_mask\":{},\"reset_us\":{},\"reset_disabled\":{},\"reset_enabled\":{},\"fault_after\":{},\"firmware_writes\":{},\"baseline\":{},\"after\":{},\"pgraph\":\"unmeasured\"}}",
         SOURCE,SYSTEM,e.engine,e.run,e.reset,e.fault,cases.join(","),withheld_us,suppressed,stale_us,invalid,fault_instance,fault_raw,fault_mask,reset_us,disabled,enabled,regs.read(0x259c),crate::firmware_writes::count()-console.firmware_baseline,stats(baseline),stats(layout.allocator.stats()));
     Ok(())

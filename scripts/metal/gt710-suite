@@ -1191,10 +1191,12 @@ def capture_serial(directory):
         if fields[0]=='GT710_PIX': key=('native',)
         elif fields[0]=='GT710_SWITCH_PIX': key=('switch',int(fields[1]))
         elif fields[0]=='GT710_FLIP_PIX': key=('flip',int(fields[1]),int(fields[2]))
+        elif fields[0]=='GT710_MULTI': key=('multi',)
         else: raise ValueError('unexpected display artifact record')
         if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
         groups.setdefault(key,[]).append(line);previous=key
     def report_key(line):
+        if line.startswith('GT710_MULTI_BULK '): return ('multi',)
         for prefix,kind in [('GT710_MODE ','native'),('GT710_SWITCH ','switch'),('GT710_FLIP ','flip')]:
             if line.startswith(prefix):
                 e=json.loads(line[len(prefix):])
@@ -1207,6 +1209,11 @@ def capture_serial(directory):
     result=[]
     for line in serial.splitlines(keepends=True):
         key=report_key(line)
+        if key == ('multi',):
+            record=''.join(groups[key]).encode('ascii')
+            fields=line.split()
+            if len(fields)!=3 or len(groups[key])!=1 or len(record)!=int(fields[1]) or hashlib.sha256(record).hexdigest()!=fields[2]:
+                raise ValueError('concurrency artifact differs from serial length/digest')
         if key is not None: result.extend(groups[key])
         result.append(line)
     return ''.join(result)
