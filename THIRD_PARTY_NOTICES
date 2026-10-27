@@ -538,3 +538,19 @@ kernel/src/gpu/gk208/ce/recovery.rs:
 Their original copyright notices and full MIT grants accompany the adaptation.
 Breenix owns watchdog timing, worker scheduling and DMA retention policy.
 No graphics or CE firmware is introduced.
+
+## GT 710 graphics gate encodings (M7 PR 7.2)
+
+`tests/gt710_graphics_report_test.py` uses the hardware interface facts from:
+
+- Nouveau in Linux v6.8, `e8f897f4afef0031fe618a8e94127a0934896aba`,
+  `drivers/gpu/drm/nouveau/nvkm/engine/gr/gf100.c` (Copyright 2012 Red Hat Inc.),
+  `engine/gr/fuc/hub.fuc` and `engine/gr/fuc/gpc.fuc` (Copyright 2011 Red Hat Inc.),
+  and `subdev/top/gk104.c` (Copyright 2016 Red Hat Inc.); MIT.
+  Paths after the first are relative to the same `nvkm/` directory.
+- NVIDIA open-gpu-doc `9fdf5c4062007929d9f4e6cbad9c9771fe61b880`,
+  `classes/3d/cla197.h`, Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.; MIT.
+
+The test header retains the copyright notices and full permission grants.
+These encodings describe source-built firmware startup and graphics completion;
+they contain no captured context, shader or proprietary firmware bytes.

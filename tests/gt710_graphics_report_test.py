@@ -1,0 +1,244 @@
+# Hardware encodings from pinned MIT sources; see THIRD_PARTY_NOTICES.
+# /*
+#  * Copyright 2011 Red Hat Inc.
+#  * Copyright 2012 Red Hat Inc.
+#  * Copyright 2016 Red Hat Inc.
+#  *
+#  * Permission is hereby granted, free of charge, to any person obtaining a
+#  * copy of this software and associated documentation files (the "Software"),
+#  * to deal in the Software without restriction, including without limitation
+#  * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+#  * and/or sell copies of the Software, and to permit persons to whom the
+#  * Software is furnished to do so, subject to the following conditions:
+#  *
+#  * The above copyright notice and this permission notice shall be included in
+#  * all copies or substantial portions of the Software.
+# claim-lint:ok: MIT license condition; source inventory in vendor/kepler/sources.json.
+#  *
+#  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+#  * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+#  * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+#  * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+#  * OTHER DEALINGS IN THE SOFTWARE.
+#  *
+#  * Authors: Ben Skeggs
+#  */
+# /*******************************************************************************
+#     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+#
+#     Permission is hereby granted, free of charge, to any person obtaining a
+#     copy of this software and associated documentation files (the "Software"),
+#     to deal in the Software without restriction, including without limitation
+#     the rights to use, copy, modify, merge, publish, distribute, sublicense,
+#     and/or sell copies of the Software, and to permit persons to whom the
+#     Software is furnished to do so, subject to the following conditions:
+#
+#     The above copyright notice and this permission notice shall be included in
+#     all copies or substantial portions of the Software.
+# claim-lint:ok: MIT license condition; G1 source policy in tools/kepler/README.md.
+#
+#     THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#     IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#     FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+#     THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#     LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+#     FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+#     DEALINGS IN THE SOFTWARE.
+#
+# *******************************************************************************/
+"""M7.2 consumes raw graphics facts and retained complementary context images."""
+import copy
+import hashlib
+import json
+from pathlib import Path
+import runpy
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+API = runpy.run_path(str(ROOT / 'scripts/metal/gt710-suite'))
+HASHES = {
+    'fecs.code.bin': 'b3d192b4423fe1e150bd66b819374724ddb2ba9c40f92e4c83aba03139b85d3f',
+    'fecs.data.bin': '3d4dc9a6c009e844ce7d538496cb267ad78984f0256ccfc29c73412a446806a6',
+    'gpccs.code.bin': 'ccc302340f23f6624bd278038b696b27eb20cc5a256547ea9a244aff6e3164b6',
+    'gpccs.data.bin': '67859e7b5e6e4002910d5ae94d2668828c867a7d0ef1787624dd97cc8839b405',
+}
+PCI = 'PCI_FN 01:00.0 10de:128b class=03/00 bar0=0x80000000/0x1000000 irq=0x10\n'
+IMAGE = bytes((i * 31 + i // 7) & 255 for i in range(512))
+
+
+def fixture():
+    return dict(
+        schema=1, bdf='01:00.0', chipset=262,
+        firmware={k: dict(sha256=v, readback_sha256=v) for k, v in HASHES.items()},
+        status=[[0x409800, 0x80000000], [0x502800, 0x80000000]],
+        elapsed_us=12000, bound_us=2000000, fecs_size=len(IMAGE),
+        queries=[dict(method=m, poison=p, reply=p | 0x80000000,
+                      size=len(IMAGE), elapsed_us=100, bound_us=2000000)
+                 for m, p in [(1, 0x55555555), (2, 0x2aaaaaaa)]],
+        withheld_start=dict(started=False, ready=False, poison=0x55555555,
+                            reply=0x55555555, accepted=False),
+        stale_reply=dict(method=1, poison=0, planted=0x80000000,
+                         reply=0x80000000, accepted=False),
+        topology_raw=[[0x409604, 0x10001], [0x502608, 1]],
+        topology=dict(gpc_nr=1, tpc_nr=[1]), golden_bytes=len(IMAGE),
+        saves=[dict(poison=p, va=0x400000 + n * 0x1000,
+                    sha256=hashlib.sha256(IMAGE).hexdigest()) for n, p in enumerate([85, 170])],
+        init_lists=[dict(name='gk208_hub', count=32, sha256='1' * 64),
+                    dict(name='gk208_gpc', count=16, sha256='2' * 64)],
+        global_buffers=[dict(name='bundle', va=0x500000, bytes=4096),
+                        dict(name='pagepool', va=0x501000, bytes=4096)],
+        channel=dict(id=0, epoch=42, instance=0x10000000, class_id=0xa197,
+                     top=[0x80000036, 3] + [0] * 62, engine=0, runlist=0,
+                     bind=0x80010000, state=1, current_context=0x80010000),
+        releases=[dict(class_id=0xa197, method=0x1b0c, word=0x1000f010,
+                       target=0x600000, poison=p, nonce=0x12345678,
+                       observed=0x12345678, epoch=42, elapsed_us=100, bound_us=2000000)
+                  for p in [85, 170]],
+        withheld_release=dict(poison=85, observed=85, accepted=False),
+        stale_release=dict(epoch=41, nonce=0x12345678, observed=0x12345678, accepted=False),
+        faults=[[0x400100, 0], [0x400108, 0], [0x259c, 0]],
+        teardown=dict(runlist_count=0, binding=0), baseline=[1, 2, 3], after=[1, 2, 3],
+        firmware_writes=0, draw='pending-7.4', shaders='pending-7.3', context_switch='pending-7.5')
+
+
+def image_rows(images=(IMAGE, IMAGE)):
+    return ''.join(f'GT710_GR_IMAGE {poison} {offset} {data[offset:offset+64].hex()}\n'
+                   for poison, data in zip([85, 170], images)
+                   for offset in range(0, len(data), 64)).encode('ascii')
+
+
+def stage(directory, record, body=None):
+    body = image_rows() if body is None else body
+    anchor = f'GT710_GR_IMAGE_BULK {len(body)} {hashlib.sha256(body).hexdigest()}\n'
+    outer = f'GT710_BULK {len(body)} {hashlib.sha256(body).hexdigest()}\n'
+    serial = PCI + 'GT710_GR ' + json.dumps(record) + '\n' + anchor + outer
+    (directory / 'serial.txt').write_text(serial)
+    (directory / 'gt710-pixels.rle').write_bytes(body)
+    return serial
+
+
+class Graphics(unittest.TestCase):
+    def check(self, record):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            stage(directory, record)
+            API['graphics_engine'](API['capture_serial'](directory))
+
+    def test_clean_capture_passes_three_manifest_cases_and_console_route(self):
+        manifest = json.loads((ROOT / 'docs/suites/gt710.json').read_text())
+        self.assertEqual(manifest['categories'][0]['id'], 'graphics')
+        self.assertEqual(list(API['CATEGORIES'])[0], 'graphics')
+        API['validate_manifest'](manifest)
+        effort = json.loads((ROOT / 'docs/efforts/metal.json').read_text())
+        milestone = next(m for e in effort['efforts'] if e['id'] == 'metal-gt710'
+                         for m in e['milestones'] if m['id'] == 'graphics')
+        self.assertEqual(milestone['measure'], dict(suite='gt710', categories=['graphics']))
+        self.assertIn('graphics', API['capture_categories'](dict(mode='suite', suite='console')))
+        self.assertNotIn('graphics', API['capture_categories'](dict(mode='probe')))
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            stage(directory, fixture())
+            serial = API['capture_serial'](directory)
+            API['graphics_engine'](serial)
+            cases = API['cases']('graphics', serial)
+            self.assertEqual([c['id'] for c in cases],
+                             ['graphics/ctxctl', 'graphics/context', 'graphics/channel'])
+            self.assertEqual([c['result'] for c in cases], ['PASS'] * 3)
+
+    def test_pinned_hashes_match_the_7_1_inventory(self):
+        inventory = json.loads((ROOT / 'docs/gui/provenance/kepler-toolchain.sha256.json').read_text())
+        for name, digest in HASHES.items():
+            self.assertEqual(inventory[name], digest)
+        self.assertEqual(API['GR_FIRMWARE_HASHES'], HASHES)
+
+    def test_each_raw_fact_and_negative_control_has_a_specific_failure(self):
+        mutations = [
+            ('firmware hash', lambda e: e['firmware']['fecs.code.bin'].update(sha256='f' * 64)),
+            ('firmware read-back', lambda e: e['firmware']['gpccs.data.bin'].update(readback_sha256='f' * 64)),
+            ('firmware ready', lambda e: e['status'][0].__setitem__(1, 0)),
+            ('firmware ready', lambda e: e['status'][1].__setitem__(1, 0)),
+            ('mailbox reply', lambda e: e['queries'][0].update(reply=e['queries'][0]['poison'], accepted=True)),
+            ('withheld start', lambda e: e['withheld_start'].update(accepted=True)),
+            ('stale reply', lambda e: e['stale_reply'].update(accepted=True)),
+            ('raw topology', lambda e: e['topology_raw'][1].__setitem__(1, 2)),
+            ('golden size', lambda e: e.update(golden_bytes=len(IMAGE) + 4)),
+            ('complementary images', lambda e: e['saves'][1].update(sha256='f' * 64)),
+            ('current context', lambda e: e['channel'].update(current_context=0x80020000)),
+            ('release class', lambda e: e['releases'][0].update(class_id=0xa06f)),
+            ('release nonce', lambda e: e['releases'][0].update(observed=85)),
+            ('withheld release', lambda e: e['withheld_release'].update(accepted=True)),
+            ('stale release', lambda e: e['stale_release'].update(accepted=True)),
+            ('trap/fault', lambda e: e['faults'][0].__setitem__(1, 1)),
+            ('trap/fault', lambda e: e['faults'][1].__setitem__(1, 1)),
+            ('trap/fault', lambda e: e['faults'][2].__setitem__(1, 1)),
+            ('allocator baseline', lambda e: e.update(after=[1, 2, 4])),
+            ('firmware writes', lambda e: e.update(firmware_writes=1)),
+            ('graphics identity', lambda e: e.update(bdf='02:00.0')),
+            ('graphics identity', lambda e: e.update(chipset=0x108)),
+            ('firmware bound', lambda e: e.update(elapsed_us=2000001)),
+            ('mailbox size', lambda e: e['queries'][0].update(size=0)),
+            ('mailbox method', lambda e: e['queries'][0].update(method=0x10)),
+            ('mailbox bound', lambda e: e['queries'][0].update(elapsed_us=2000001)),
+            ('init lists', lambda e: e['init_lists'][0].update(count=0)),
+            ('init lists', lambda e: e['init_lists'][0].update(sha256='0' * 64)),
+            ('global buffers', lambda e: e['global_buffers'][1].update(va=0x500000)),
+            ('GR runlist', lambda e: e['channel'].update(runlist=2)),
+            ('graphics class', lambda e: e['channel'].update(class_id=0xa06f)),
+            ('release operation', lambda e: e['releases'][0].update(word=0x1000f011)),
+            ('release bound', lambda e: e['releases'][0].update(elapsed_us=2000001)),
+            ('channel teardown', lambda e: e['teardown'].update(binding=1)),
+            ('pending markers', lambda e: e.update(draw='done')),
+        ]
+        self.check(fixture())
+        for reason, mutate in mutations:
+            with self.subTest(reason=reason):
+                bad = copy.deepcopy(fixture())
+                mutate(bad)
+                with self.assertRaisesRegex(ValueError, reason):
+                    self.check(bad)
+
+    def test_bulk_bytes_framing_and_image_digests_are_required(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            serial = stage(directory, fixture())
+            body = image_rows()
+            (directory / 'gt710-pixels.rle').write_bytes(body.replace(b'001f', b'001e', 1))
+            with self.assertRaisesRegex(ValueError, 'display artifact differs'):
+                API['capture_serial'](directory)
+            # Rehashing the transport must still fail the independently recorded save digest.
+            changed = bytes([IMAGE[0] ^ 1]) + IMAGE[1:]
+            stage(directory, fixture(), image_rows((IMAGE, changed)))
+            with self.assertRaisesRegex(ValueError, 'image digest'):
+                API['graphics_engine'](API['capture_serial'](directory))
+            stage(directory, fixture())
+            (directory / 'serial.txt').write_text(serial.replace('GT710_BULK ', 'REMOVED_BULK '))
+            with self.assertRaisesRegex(ValueError, 'graphics image bulk missing'):
+                API['capture_serial'](directory)
+            stage(directory, fixture())
+            (directory / 'gt710-pixels.rle').unlink()
+            with self.assertRaisesRegex(ValueError, 'graphics image bulk missing'):
+                API['capture_serial'](directory)
+            stage(directory, fixture())
+            (directory / 'serial.txt').write_text(serial.replace('GT710_GR_IMAGE_BULK ', 'REMOVED_IMAGE_BULK '))
+            with self.assertRaisesRegex(ValueError, 'update order'):
+                API['capture_serial'](directory)
+            stage(directory, fixture())
+            anchor = next(line for line in serial.splitlines() if line.startswith('GT710_GR_IMAGE_BULK '))
+            (directory / 'serial.txt').write_text(serial.replace(anchor, anchor[:-64] + '0' * 64))
+            with self.assertRaisesRegex(ValueError, 'graphics image artifact differs'):
+                API['capture_serial'](directory)
+            rows = body.splitlines(keepends=True)
+            interleaved = rows[0] + b'GT710_MULTI {}\n' + b''.join(rows[1:])
+            stage(directory, fixture(), interleaved)
+            with self.assertRaisesRegex(ValueError, 'interleaved'):
+                API['capture_serial'](directory)
+            stage(directory, fixture(), b''.join(rows[1:]))
+            with self.assertRaisesRegex(ValueError, 'image rows'):
+                API['graphics_engine'](API['capture_serial'](directory))
+
+
+if __name__ == '__main__':
+    unittest.main()
