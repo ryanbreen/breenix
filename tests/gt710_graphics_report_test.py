@@ -170,6 +170,12 @@ class Graphics(unittest.TestCase):
                              ['graphics/ctxctl', 'graphics/context', 'graphics/channel'])
             self.assertEqual([c['result'] for c in cases], ['PASS'] * 3)
 
+    def test_tpc_units_word_keeps_zcull_count_out_of_topology(self):
+        record = fixture()
+        # MIT nouveau gpc.fuc:149-156: UNITS TPC count is bits 4:0.
+        record['topology_raw'][1][1] = 0x00010001
+        self.check(record)
+
     def test_pinned_hashes_match_the_7_1_inventory(self):
         inventory = json.loads((ROOT / 'docs/gui/provenance/kepler-toolchain.sha256.json').read_text())
         for name, digest in HASHES.items():

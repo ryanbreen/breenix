@@ -1,4 +1,5 @@
 /*
+ * Copyright 2011 Red Hat Inc.
  * Copyright 2012 Red Hat Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -100,5 +101,19 @@ fn rejects_out_of_range_counts_and_inconsistent_or_incomplete_snapshots() {
         vec![[0x409604, 1], [0x502608, 1], [0x500c30, 1], [0x1234, 0]],
     ] {
         assert!(decode(&raw).is_err(), "accepted {raw:x?}");
+    }
+}
+
+// gpc.fuc:149-156 masks GPCCS_UNITS to five bits. The ZCULL count shares
+// this word (rnndb ctxctl.xml:317-320), and is not another active TPC.
+#[test]
+fn tpc_count_excludes_zcull_units_and_preserves_the_raw_word() {
+    let raw = [[0x409604, 0x00010001], [0x502608, 0x00010002], [0x500c30, 3]];
+    let t = decode(&raw).unwrap();
+    assert_eq!(t.tpc_nr[0], 2);
+    assert_eq!(t.tpc_mask[0], 3);
+    assert_eq!(t.raw, raw);
+    for units in [0x10000, 0x10009] {
+        assert!(decode(&[[0x409604, 1], [0x502608, units], [0x500c30, 3]]).is_err());
     }
 }

@@ -1,0 +1,92 @@
+"""Execute the real inventory handoff tail with a refused GR probe.
+
+Only the hardware calls are substituted. The production control flow is compiled
+unchanged, so propagating the GR error loses the console and fails this test.
+"""
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class ProbeConsole(unittest.TestCase):
+    def test_gr_refusal_returns_native_surface_and_retains_its_backing(self):
+        source = (ROOT / 'kernel/src/gpu/gk208/mod.rs').read_text()
+        start = source.index('        if native::suite_requested() {')
+        end = source.index('        return Ok(console);', start) + len('        return Ok(console);')
+        tail = source[start:end]
+        harness = r'''
+use std::sync::atomic::{AtomicBool, Ordering};
+static REFUSE: AtomicBool = AtomicBool::new(false);
+static RETAINED: AtomicBool = AtomicBool::new(false);
+static REPORTED: AtomicBool = AtomicBool::new(false);
+#[macro_export]
+macro_rules! serial_println {
+    ($($a:tt)*) => {{
+        let line = format!($($a)*);
+        if line.contains("GR probe refused") { REPORTED.store(true, Ordering::SeqCst); }
+    }};
+}
+#[derive(Clone, Copy, Debug, PartialEq)] struct Console { pointer: usize }
+struct Range { start: u64, size: u64 }
+struct Object { range: Range }
+struct Layout { objects: [Object; 1] }
+struct Registers(usize);
+struct Bar { size: u64 }
+struct Device { bars: [Bar; 2] }
+mod timer { pub fn rdtsc() -> u64 { 1 } }
+mod native { pub fn suite_requested() -> bool { true } }
+mod channel {
+    use super::*;
+    pub fn elapsed(_: u64) -> u64 { 1 }
+    pub fn probe(_: &mut Registers, _: &Device, _: &mut Layout, _: &Console) -> Result<(), &'static str> { Ok(()) }
+}
+mod ce {
+    use super::*;
+    pub fn probe(_: &mut Registers, _: &Device, _: &mut Layout, _: &Console) -> Result<(), &'static str> { Ok(()) }
+    pub fn retain(layout: Layout, regs: usize, bar: usize) -> Result<(), &'static str> {
+        assert_eq!((layout.objects[0].range.start, regs, bar), (4096, 8192, 16384));
+        RETAINED.store(true, Ordering::SeqCst); Ok(())
+    }
+}
+mod gr {
+    use super::*;
+    pub fn probe(_: &mut Registers, _: &Device, _: &mut Layout, _: &Console) -> Result<(), &'static str> {
+        if REFUSE.load(Ordering::SeqCst) { Err("GR probe refused") } else { Ok(()) }
+    }
+}
+mod modeset {
+    pub fn bar1_view(_: u64, _: u64, _: u64, _: u8) -> Result<(u64, usize, u64), &'static str> { Ok((0, 256, 0)) }
+}
+fn handoff(mut regs: Registers, device: Device, mut layout: Layout, console: Console) -> Result<Console, &'static str> {
+TAIL
+}
+#[test]
+fn clean_and_refused_gr_both_deliver_the_native_console() {
+    for refuse in [false, true] {
+        REFUSE.store(refuse, Ordering::SeqCst);
+        RETAINED.store(false, Ordering::SeqCst);
+        REPORTED.store(false, Ordering::SeqCst);
+        let console = Console { pointer: 16640 };
+        let result = handoff(Registers(8192), Device { bars: [Bar {size: 0}, Bar {size: 1 << 27}] },
+            Layout { objects: [Object {range: Range {start: 4096, size: 4096}}] }, console);
+        assert_eq!(result, Ok(console), "GR refusal detached the screen console");
+        assert!(RETAINED.load(Ordering::SeqCst));
+        assert_eq!(REPORTED.load(Ordering::SeqCst), refuse, "GR refusal was not recorded");
+    }
+}
+'''.replace('TAIL', tail)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / 'probe.rs').write_text(harness)
+            priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
+            subprocess.run(priority + ['rustc', '--edition=2021', '-Dwarnings', '--test',
+                            str(path / 'probe.rs'), '-o', str(path / 'probe')], check=True, cwd=ROOT)
+            subprocess.run([str(path / 'probe')], check=True)
+
+
+if __name__ == '__main__':
+    unittest.main()

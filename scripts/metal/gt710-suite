@@ -612,7 +612,9 @@ def graphics_engine(serial):
         gpcs = topology[0x409604] & 0x1f
         need(0 < gpcs <= 31 and set(topology) == {0x409604} | {a + g * 0x8000 for g in range(gpcs) for a in (0x502608, 0x500c30)},
              'raw topology registers')
-        tpcs = [topology[0x502608 + g * 0x8000] for g in range(gpcs)]
+        # G2: MIT gpc.fuc:149-156 masks GPCCS_UNITS to bits 4:0;
+        # ZCULL count in bits 20:16 is retained only in topology_raw.
+        tpcs = [topology[0x502608 + g * 0x8000] & 0x1f for g in range(gpcs)]
         masks = [topology[0x500c30 + g * 0x8000] for g in range(gpcs)]
         need(all(0 < t <= 8 for t in tpcs) and all(0 < m < 256 and m.bit_count() == t for m, t in zip(masks, tpcs))
              and e['topology'] == dict(gpc_nr=gpcs, tpc_nr=tpcs, tpc_mask=masks), 'raw topology')
