@@ -492,4 +492,9 @@ fn terminal_writes_cover_whole_quads_without_consuming_empty_strands_or_allocati
         assert!(mask[512..512 + bytes].iter().all(|v| *v));
         assert!(mask[512 + bytes..gpc as usize].iter().all(|v| !*v));
     }
+    let mut m = Mock::new();
+    m.regs.insert(0x40974c, 31);
+    let error = run(&mut m).unwrap_err();
+    assert_eq!(error.reason, "save terminal padding is not zero");
+    assert!((380..384).contains(&error.offset));
 }

@@ -267,8 +267,30 @@ class Graphics(unittest.TestCase):
                        lambda e:e['save_layout']['units'][1]['strands'][0].update(base=3),
                        lambda e:e['save_layout']['units'][1].update(mmio_base=2)]:
             e=fixture(); mutate(e)
-            with self.assertRaisesRegex(ValueError,'saved size words|poison outside data|image digest'):
+            with self.assertRaisesRegex(ValueError,'saved size words|poison outside data|image digest|terminal padding'):
                 self.check(e)
+
+    def test_terminal_padding_requires_zero_even_when_both_saves_match(self):
+        e = fixture()
+        e['save_layout']['units'][0]['mmio_words'] = 31
+        images = [bytearray(image) for image in IMAGES]
+        for image in images:
+            image[380:384] = bytes(4)
+        for value in [0, 1, 85, 170]:
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as temporary:
+                for image in images:
+                    image[383] = value
+                for save, image in zip(e['saves'], images):
+                    save['image_sha256'] = hashlib.sha256(image).hexdigest()
+                    save['sha256'] = hashlib.sha256(saved_data(image)).hexdigest()
+                body = image_rows(images)
+                e['image_bulk_bytes'] = len(body); e['bulk_artifact_estimate'] = len(body)
+                directory = Path(temporary); stage(directory, e, body)
+                if value == 0:
+                    API['graphics_engine'](API['capture_serial'](directory))
+                else:
+                    with self.assertRaisesRegex(ValueError, 'terminal padding'):
+                        API['graphics_engine'](API['capture_serial'](directory))
 
     def test_bulk_bytes_framing_and_image_digests_are_required(self):
         with tempfile.TemporaryDirectory() as temporary:

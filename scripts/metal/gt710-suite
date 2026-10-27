@@ -689,6 +689,7 @@ def graphics_engine(serial):
         units = layout['units']
         need(gpcs == 1 and len(units) == 2, 'saved size words')
         written = bytearray(size)
+        terminals = []
         cursor = 256
         end = 0
         for unit, controller in zip(units, [0x409000, 0x502000]):
@@ -697,19 +698,25 @@ def graphics_engine(serial):
                  and type(unit['mmio_words']) is int and 0 < unit['mmio_words'] <= size // 4,
                  'saved size words')
             start = cursor
-            end = start + unit['mmio_words'] * 4
+            logical_end = start + unit['mmio_words'] * 4
+            # Logical count and allocation come from the firmware; GK208B
+            # terminal quad writes are a separately checked hardware fact.
+            end = (logical_end + 15) & ~15
             need(end <= size, 'saved size words')
             written[start:end] = bytes([1]) * (end - start)
-            cursor = (end // 256 + 1) * 256
+            terminals.append((logical_end, end))
+            cursor = (logical_end // 256 + 1) * 256
             strands = unit['strands']
             need(0 < len(strands) <= 64, 'saved size words')
             for strand in strands:
                 need(type(strand['base']) is int and strand['base'] * 256 == cursor
                      and type(strand['words']) is int and 0 <= strand['words'] <= size // 4,
                      'saved size words')
-                end = cursor + strand['words'] * 4
+                logical_end = cursor + strand['words'] * 4
+                end = (logical_end + 15) & ~15
                 need(end <= size, 'saved size words')
                 written[cursor:end] = bytes([1]) * (end - cursor)
+                terminals.append((logical_end, end))
                 cursor += (strand['words'] // 64 + 1) * 256
         last = units[-1]['strands'][-1]
         need(cursor == size and e['saved_end'] == end
@@ -718,6 +725,8 @@ def graphics_engine(serial):
              'saved size words')
         for save in saves:
             image = images[save['poison']]
+            need(all(image[start:end] == bytes(end - start) for start, end in terminals),
+                 'save terminal padding is not zero')
             data = bytes(v for v, used in zip(image, written) if used)
             need(hashlib.sha256(image).hexdigest() == save['image_sha256'], 'image digest')
             need(hashlib.sha256(data).hexdigest() == save['sha256'], 'image digest')

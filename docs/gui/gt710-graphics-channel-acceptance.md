@@ -1,11 +1,11 @@
 # M7.2 graphics-channel acceptance handoff
 
-No R240 boot was run for u6. The acceptance unit must collect the actual
-record and bulk artifact and run `scripts/metal/gt710-suite`; this document
-is an expectation, not hardware evidence. The console handoff-to-done limit
+The acceptance unit collects the actual record and bulk artifact and runs
+`scripts/metal/gt710-suite`; the schema below specifies the expected evidence.
+The console handoff-to-done limit
 is 330 seconds. The added negative-control observation windows total 20 ms;
 stream-consumption and successful releases have separate 2-second bounds.
-The completed boot time remains unmeasured for this tree.
+Boot results for the final head belong in the PR and private run record.
 
 The channel is A06F channel 0 on the GR engine/runlist discovered from the
 64 TOP words. A197 binds on subchannel 0. Its system-memory release target
@@ -362,3 +362,44 @@ into coherent system memory, FECS current-context encoding, raw fault words,
 preemption/drain/reset and allocator baseline, artifact capacity and console
 time. U4/U5 startup and golden-context assumptions also await that boot.
 Drawing, shaders and context switching remain pending 7.4, 7.3 and 7.5.
+
+## Logical sizes, terminal writes and allocation
+
+The map has three distinct extents. Pinned MIT `com.fuc:152-171` counts
+logical MMIO words; `hub.fuc:149-164` and `gpc.fuc:188-242` place MMIO
+sections. `com.fuc:314-333` allocates a strand `(words / 64 + 1) * 256`
+bytes, including an unused slot for a zero-sized strand. These firmware
+sources do **not** specify the terminal memory transaction width.
+
+GK208B hardware saves end nonempty MMIO and strand writes on four-word
+boundaries: `write_end = base * 256 + ((words + 3) / 4) * 16`.
+This is a measured hardware model, not a claim that the firmware performs
+that rounding. `tests/fixtures/gt710_save_map/captures.json` identifies the
+retained observations. Comparing the 19 section ends in each of its two
+boots gives the following terminal extensions; the remaining eight sections
+have no extension. Three of those eight are zero-sized strands and leave
+their allocated slots untouched. <!-- claim-lint:ok: 19 section ends in each of the two retained capture sets, replayed by tests/gt710_save_map_test.py. -->
+
+| Logical end | Terminal write end | Added bytes |
+|---:|---:|---:|
+| 1052 | 1056 | 4 |
+| 5068 | 5072 | 4 |
+| 19460 | 19472 | 12 |
+| 25864 | 25872 | 8 |
+| 33816 | 33824 | 8 |
+| 40964 | 40976 | 12 |
+| 44092 | 44096 | 4 |
+| 48524 | 48528 | 4 |
+| 50492 | 50496 | 4 |
+| 61272 | 61280 | 8 |
+| 67592 | 67600 | 8 |
+
+The driver and independent scorer compute the written set from the raw
+firmware map with that fixed hardware rule, without scanning images for
+boundaries. They require matching written bytes, terminal extension bytes
+equal to zero, and original poison in the header, remaining allocation gaps
+and trailing padding. Thus the extra 76 bytes are checked rather than
+ignored. <!-- claim-lint:ok: kernel/src/gpu/gk208/gr/context.rs and scripts/metal/gt710-suite validate terminal fill and poison gaps; tests/gt710_save_map_test.py replays the 76 terminal bytes. --> `tests/gt710_save_map_test.py` mutates terminal and gap bytes;
+`tests/gt710_graphics_report_test.py` rejects matching nonzero terminal fill
+after refreshing transport and image hashes. The final-head hardware gate
+must still produce two complete saves and execute the A197 release controls.

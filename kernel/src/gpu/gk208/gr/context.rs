@@ -230,14 +230,20 @@ impl SaveLayout {
             {
                 return Err("invalid saved-data size words".into());
             }
-            let end = cursor + u64::from(unit.mmio_words) * 4;
+            let logical_end = cursor + u64::from(unit.mmio_words) * 4;
+            // GK208B saves a terminal four-word memory transaction. The
+            // firmware count is logical words (com.fuc:152-171), whereas
+            // allocation still follows hub.fuc:160-164 / com.fuc:314-333.
+            // Hardware evidence and the distinction are recorded in
+            // docs/gui/gt710-graphics-channel-acceptance.md.
+            let end = (logical_end + 15) & !15;
             if end > u64::from(size) {
                 return Err("invalid saved-data size words".into());
             }
             written[cursor as usize..end as usize].fill(true);
-            cursor = (end / 256 + 1) * 256;
+            cursor = (logical_end / 256 + 1) * 256;
             for strand in &unit.strands {
-                let end = cursor + u64::from(strand.words) * 4;
+                let end = (cursor + u64::from(strand.words) * 4 + 15) & !15;
                 if u64::from(strand.base) * 256 != cursor || end > u64::from(size) {
                     return Err("invalid saved-data size words".into());
                 }
@@ -250,9 +256,18 @@ impl SaveLayout {
         }
         Ok(written)
     }
+    pub fn terminal_padding(&self) -> impl Iterator<Item = core::ops::Range<usize>> + '_ {
+        self.units.iter().flat_map(|unit| {
+            core::iter::once((unit.mmio_base, unit.mmio_words))
+                .chain(unit.strands.iter().map(|s| (s.base, s.words)))
+        }).map(|(base, words)| {
+            let end = base as usize * 256 + words as usize * 4;
+            end..((end + 15) & !15)
+        })
+    }
     pub fn end(&self, size: u32) -> Result<usize, Error> {
         self.written(size)?;
-        Ok(self.strand_base as usize * 256 + self.strand_words as usize * 4)
+        Ok((self.strand_base as usize * 256 + self.strand_words as usize * 4 + 15) & !15)
     }
 }
 #[derive(Debug)]
@@ -551,6 +566,11 @@ pub fn generate(io: &mut impl Io, t: &Topology<'_>, size: u32) -> Result<Golden,
         }
         if let Some(i) = first.iter().zip(&second).position(|(a, b)| a != b) {
             return Err(difference("CE readbacks differ", i, first[i], second[i]));
+        }
+        for i in layouts.last().unwrap().terminal_padding().flatten() {
+            if first[i] != 0 {
+                return Err(difference("save terminal padding is not zero", i, 0, first[i]));
+            }
         }
         for i in (0..size as usize).filter(|&i| !written[i]) {
             if first[i] != poison {
