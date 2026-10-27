@@ -495,3 +495,25 @@ and its imported `copyright.xml`, MIT, revision
 `f102b82381f3f11cee113d16374c87091db039d9`; the author list and grant
 are retained in the consumer. No third-party OS scheduling, waits or
 interrupt plumbing is imported. No firmware is loaded by this channel path.
+
+M6.2 native copy engine:
+- NVIDIA open-gpu-doc 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+  classes/dma-copy/cla0b5.h, MIT, Copyright (c) 2019 NVIDIA Corporation:
+  kernel/src/gpu/gk208/copy.rs (methods and launch fields).
+- NVIDIA open-gpu-doc at the same revision, classes/host/cla06f.h, MIT,
+  Copyright (c) 2020 NVIDIA CORPORATION:
+  kernel/src/gpu/gk208/copy.rs (host method packet headers).
+- Nouveau Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba,
+  nvkm/engine/ce/gk104.c (MIT, Copyright 2012 Red Hat Inc.), and the
+  FIFO/top/rnndb sources already attributed for channel.rs:
+  kernel/src/gpu/gk208/ce.rs (class, engine status, native transport and reset).
+- Nouveau v6.8 nvkm/subdev/mmu/vmmgf100.c (MIT, Copyright 2017 Red Hat Inc.):
+  kernel/src/gpu/gk208/vm.rs coherent host aperture encoding (aper 2, volatile).
+Original notices accompany the adapted files. No CE firmware is loaded.
+
+M6.2 recovery ordering additionally references nouveau v6.8
+nvkm/engine/fifo/runl.c (MIT, Copyright 2021 Red Hat Inc.) and
+nvkm/subdev/mc/base.c (MIT, Copyright 2012 Red Hat Inc.).
+The adaptation in kernel/src/gpu/gk208/ce.rs resets the enumerated engine before
+waiting for a runlist update, clears the exception and unblocks scheduling.
+The added source copyright and MIT grant accompany that file.

@@ -8,6 +8,7 @@ import runpy
 import tempfile
 
 CATEGORIES = {
+    'copy': [('transfers', 'Native A0B5 transfers compare complete complementary read-backs and execute private VM, remap, system-memory and bounded fault/reset probes')],
     'channel': [('semaphore', 'A privileged A06F channel executes unique semaphores with native identity, epoch and GET/PUT progression; withheld and stale completions fail')],
     'lifetime': [('retention', 'Mapping and table holds retain faulted storage through EIO and failed reset, attribute contexts and reclaim the CPU-only baseline; engine recovery remains pending')],
     'aperture': [('cpu-dma', 'BAR1 and BAR2 preserve nonce-bearing boundary patterns with explicit cache types and bounded coherent DMA; engine access remains pending')],
@@ -399,6 +400,107 @@ def virtual_memory(serial):
         return e
     except (KeyError,TypeError,IndexError,OverflowError,struct.error,json.JSONDecodeError) as error:
         raise ValueError('malformed private VM evidence') from error
+
+
+def ce_pattern(i, seed):
+    x=(i^seed)&0xffffffff
+    x^=x>>16; x=x*0x7feb352d&0xffffffff; x^=x>>15
+    x=x*0x846ca68b&0xffffffff
+    return (x^(x>>16))&255
+
+
+def copy_bytes(e, digests):
+    """Each complementary CE read-back's complete-buffer SHA-256 must equal the
+    host's independently built destination, padding and untouched bytes included."""
+    def need(ok,why):
+        if not ok: raise ValueError(why)
+    size=e['size']; width=e['width']; height=e['height']
+    need(0<size<=32768 and size%4096==0 and width>0 and 0<height<=65536, 'invalid CE extent')
+    need(e['poisons']==[0x55,0xaa] and len(digests)==2, 'two complementary CE transfers required')
+    initial=bytes(ce_pattern(i,e['seed']) for i in range(size))
+    expected=bytearray(initial if e.get('overlap',False) else bytes([e['fill']])*size)
+    for y in range(height):
+        a=e['src_offset']+y*e['src_pitch']; b=e['dst_offset']+y*e['dst_pitch']
+        need(min(a,b)>=0 and max(a,b)+width<=size and width<=min(e['src_pitch'],e['dst_pitch']), 'CE rectangle outside backing')
+        expected[b:b+width]=initial[a:a+width]
+    want=hashlib.sha256(bytes(expected)).hexdigest()
+    need(digests[0]==want and digests[1]==want, 'CE full destination mismatch or unwritten bytes')
+
+
+def copy_source(c):
+    base=0x800000 if c['upload'] else 0x600000 if c['overlap'] else 0x403000 if c['name']=='restored-a' else 0x400000
+    if c['src_va']!=base+c['src_offset']:
+        raise ValueError('CE compared a substituted source VA')
+    if c['refilled'] != (c['name'] not in ('survivor-b','unaffected-b')):
+        raise ValueError('CE survivor source was refilled')
+
+
+def suppressed_copy(s, seed):
+    """An executed transfer whose CE release was withheld is never a completion."""
+    def need(ok,why):
+        if not ok: raise ValueError(why)
+    need(s['epoch']>0 and s['observed_epoch']==s['epoch'],'suppressed CE record identity')
+    need(s['get']==s['put']==s['expected'] and s['observed']<s['expected'],'suppressed CE launch not consumed')
+    need(s['accepted'] is False and 10000<=s['elapsed_us']<=250000,'suppressed CE release accepted')
+    need(s['held']==1 and s['reclaimed']==0,'suppressed CE backing released early')
+    need(s['source_va']==0x400000 and s['dest_va']==0x500000,'suppressed CE addresses')
+    need(s['before_sha256']==hashlib.sha256(bytes([0xcc])*8192).hexdigest(),'suppressed CE destination not poisoned')
+    need(s['data_sha256']==hashlib.sha256(bytes(ce_pattern(i,seed) for i in range(8192))).hexdigest(),
+         'suppressed CE copy did not execute')
+
+
+def copy_engine(serial):
+    def need(ok,why):
+        if not ok: raise ValueError(why)
+    try:
+        e=json.loads(one(r'^GT710_CE (.+)$',serial,'CE evidence')[1])
+        need(e['schema']==1 and e['class']==0xa0b5 and e['source_va']==0x400000 and e['system_va']==0x800000,'CE identity')
+        cases=e['cases']; names=[c['name'] for c in cases]
+        required={'same-va-a','same-va-b','byte','unaligned','rectangle','upload','overlap-forward','overlap-backward',
+                  'clean-next','remapped-a','unaffected-b','restored-a','survivor-b'}
+        need(set(names)==required|{'random'} and names.count('random')==4 and len(cases)==len(required)+4,'incomplete CE operations')
+        readbacks={}
+        for m in re.finditer(r'^GT710_CE_DIGEST (\d+) ([01]) (\d+) ([0-9a-f]{64})$',serial,re.M):
+            key=(int(m[1]),int(m[2]));need(key not in readbacks,'duplicate CE read-back')
+            readbacks[key]=(int(m[3]),m[4])
+        used=set(); sequences={}
+        for index,c in enumerate(cases):
+            need(c['id']==index and c['channel'] in (0,1) and c['epoch']>0,'foreign CE case identity')
+            identity=(c['channel'],c['epoch'])
+            need(c['sequence']>sequences.get(identity,0),'stale CE sequence')
+            sequences[identity]=c['sequence']
+            need(c['releases']==[c['sequence']-1,c['sequence']] and c['elapsed_us']<=6000000,'CE release ordering')
+            digests=[]
+            for poison in range(2):
+                key=(index,poison);need(key in readbacks,'missing complete CE read-back')
+                need(readbacks[key][0]==c['size'],'partial CE read-back')
+                digests.append(readbacks[key][1]);used.add(key)
+            copy_source(c)
+            copy_bytes(c,digests)
+        need(set(readbacks)==used,'unbound CE read-back')
+        byname={c['name']:c for c in cases}
+        a,b,r=(byname[k] for k in ('same-va-a','same-va-b','remapped-a'))
+        need(a['channel']==r['channel']==0 and b['channel']==1 and a['epoch']==r['epoch'],'VM channel identity')
+        need(a['source']!=b['source'] and a['instance']!=b['instance'] and a['directory']!=b['directory']
+             and a['seed']^b['seed']==0xffffffff,'same VA lacks distinct channel backing/patterns')
+        need(r['source']!=a['source'] and r['source']!=b['source'] and r['seed']!=a['seed'],'remap did not change backing')
+        need(byname['unaffected-b']['seed']==b['seed'] and byname['unaffected-b']['source']==b['source'],'remap affected other channel')
+        need(byname['survivor-b']['instance']==b['instance'] and byname['survivor-b']['epoch']==b['epoch'],'surviving channel replaced')
+        need(10000<=e['withheld_us']<=250000 and 10000<=e['stale_us']<=250000,'negative CE wait bounds')
+        s,clean=e['suppressed'],byname['clean-next']
+        need(clean['channel']==0 and s['epoch']==clean['epoch'] and min(clean['releases'])>s['expected'],
+             'suppressed CE ticket not retired by a later release')
+        suppressed_copy(s,clean['seed'])
+        unit=e['fault_unit'];raw=e['fault_raw']
+        need(0<=unit<32 and e['fault_mask']==1<<unit and len(raw)==4,'real CE fault required')
+        need(raw[0]<<12==e['fault_instance']==a['instance'] and raw[1]|raw[2]<<32==e['invalid']
+             and e['invalid']==0x403000 and raw[3]&15==2 and raw[3]&128==0,'unmapped CE fault attribution')
+        bit=1<<e['reset_bit']
+        need(0<e['reset_us']<=100000 and e['reset_disabled']&bit==0 and e['reset_enabled']&bit!=0
+             and e['fault_after']==0,'bounded in-guest CE reset absent')
+        need(e['baseline']==e['after'] and e['firmware_writes']==0 and e['pgraph']=='unmeasured','CE retirement or display ownership failed')
+    except (KeyError,TypeError,IndexError,OverflowError) as error:
+        raise ValueError('malformed CE capture') from error
 
 
 def privileged_channel(serial):
@@ -836,6 +938,10 @@ def native_flips(serial):
 
 
 def check_case(category, case, serial):
+    if category == 'copy':
+        if case != 'transfers': raise ValueError('unknown CE case')
+        copy_engine(serial)
+        return
     if category == 'channel':
         if case != 'semaphore': raise ValueError('unknown channel case')
         privileged_channel(serial)

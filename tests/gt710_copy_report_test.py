@@ -1,0 +1,66 @@
+"""CE acceptance is based on retained complete bytes and native faults."""
+import copy
+import hashlib
+import json
+from pathlib import Path
+import runpy
+import unittest
+ROOT=Path(__file__).resolve().parents[1]
+API=runpy.run_path(str(ROOT/'scripts/metal/gt710-suite'))
+
+class CopyCapture(unittest.TestCase):
+    def test_missing_or_fabricated_transfer_capture_is_rejected(self):
+        for serial in ['', 'GT710_CE {"passed":true}\n',
+                       'GT710_CE {"schema":1,"class":41141,"copies":[],"vm":"passed"}\n']:
+            with self.assertRaises(ValueError): API['copy_engine'](serial)
+
+    def test_compare_checks_padding_and_both_complementary_poison_transfers(self):
+        check=API['copy_bytes']
+        seed=0x1234; size=8192
+        initial=bytes(API['ce_pattern'](i,seed) for i in range(size))
+        expected=bytearray([0xcc])*size
+        for y in range(3): expected[4093+y*271:4093+y*271+257]=initial[17+y*263:17+y*263+257]
+        e=dict(size=size,seed=seed,width=257,height=3,src_pitch=263,dst_pitch=271,
+               src_offset=17,dst_offset=4093,fill=0xcc,poisons=[0x55,0xaa])
+        sha=lambda b:hashlib.sha256(bytes(b)).hexdigest()
+        check(e,[sha(expected),sha(expected)])
+        for mutate in [lambda b:b.__setitem__(4093,b[4093]^1),lambda b:b.__setitem__(0,b[0]^1),
+                       lambda b:b.__setitem__(size-1,b[size-1]^1)]:
+            bad=bytearray(expected);mutate(bad)
+            with self.assertRaises(ValueError):check(e,[sha(expected),sha(bad)])
+        for snapshots in [[expected], [expected,expected[:-1]],
+                          [bytes([0x55])*size,bytes([0xaa])*size]]:
+            with self.assertRaises(ValueError):check(e,[sha(x) for x in snapshots])
+        bad=copy.deepcopy(e);bad['poisons']=[0x55,0x55]
+        with self.assertRaises(ValueError):check(bad,[sha(expected),sha(expected)])
+
+    def test_restored_va_and_survivor_source_are_not_substituted_or_refilled(self):
+        check=API['copy_source']
+        for name,source,refilled in [('same-va-a',0x400000,True),('upload',0x800ffd,True),
+                                    ('overlap-forward',0x600000,True),('restored-a',0x403000,True),
+                                    ('survivor-b',0x400000,False)]:
+            e=dict(name=name,src_va=source,src_offset=4093 if name=='upload' else 0,refilled=refilled,
+                   upload=name=='upload',overlap=name.startswith('overlap'))
+            check(e)
+            bad=copy.deepcopy(e);bad['src_va']^=4096
+            with self.assertRaises(ValueError):check(bad)
+            if name=='survivor-b':
+                bad=copy.deepcopy(e);bad['refilled']=True
+                with self.assertRaises(ValueError):check(bad)
+
+    def test_advanced_get_and_actual_copy_do_not_replace_a_withheld_release(self):
+        import hashlib
+        seed=0x1234
+        check=API['suppressed_copy']
+        e=dict(epoch=42,observed_epoch=42,expected=99,observed=0,get=99,put=99,
+               elapsed_us=10000,accepted=False,held=1,reclaimed=0,
+               source_va=0x400000,dest_va=0x500000,
+               before_sha256=hashlib.sha256(bytes([0xcc])*8192).hexdigest(),
+               data_sha256=hashlib.sha256(bytes(API['ce_pattern'](i,seed) for i in range(8192))).hexdigest())
+        check(e,seed)
+        for field,value in [('get',98),('accepted',True),('observed',99),('held',0),('reclaimed',1),
+                            ('elapsed_us',0),('data_sha256',e['before_sha256'])]:
+            bad=copy.deepcopy(e);bad[field]=value
+            with self.assertRaises(ValueError):check(bad,seed)
+
+if __name__=='__main__':unittest.main()

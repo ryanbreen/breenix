@@ -217,6 +217,28 @@ impl Space {
         }
         result
     }
+    /// Map caller-retained coherent DMA pages. The caller must keep the physical
+    /// pages pinned until engine drain and must validate platform DMA translation.
+    pub fn map_system(
+        &mut self, a: &mut Allocator, io: &mut impl Io, va: u64, pages: &[u64],
+    ) -> Result<(), &'static str> {
+        if pages.is_empty() || pages.len() > 256
+            || pages.iter().any(|p| p % PAGE != 0 || *p >= LIMIT)
+        { return Err("invalid coherent DMA pages"); }
+        let size = pages.len() as u64 * PAGE;
+        // Allocate/clear SPTs through the regular bounded constructor. No channel
+        // is admitted while these temporary VRAM entries are being replaced.
+        self.map(a, io, va, Range { start: 0, size }, Flags::default())?;
+        let result = (|| {
+            for (i, p) in pages.iter().enumerate() {
+                io.write(self.pte_address(va + i as u64 * PAGE).ok_or("missing system PTE")?,
+                    (p >> 8) | 1 | (1 << 32) | (2 << 33))?;
+            }
+            self.publish(io)
+        })();
+        if result.is_err() { self.poisoned = true; }
+        result
+    }
     fn write_mapping(
         &self,
         io: &mut impl Io,
