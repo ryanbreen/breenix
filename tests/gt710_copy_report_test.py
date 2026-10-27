@@ -46,4 +46,19 @@ class CopyCapture(unittest.TestCase):
                 bad=copy.deepcopy(e);bad['refilled']=True
                 with self.assertRaises(ValueError):check(bad)
 
+    def test_advanced_get_and_actual_copy_do_not_replace_a_withheld_release(self):
+        import hashlib
+        seed=0x1234
+        check=API['suppressed_copy']
+        e=dict(epoch=42,observed_epoch=42,expected=99,observed=0,get=99,put=99,
+               elapsed_us=10000,accepted=False,held=1,reclaimed=0,
+               source_va=0x400000,dest_va=0x500000,
+               before_sha256=hashlib.sha256(bytes([0xcc])*8192).hexdigest(),
+               data_sha256=hashlib.sha256(bytes(API['ce_pattern'](i,seed) for i in range(8192))).hexdigest())
+        check(e,seed)
+        for field,value in [('get',98),('accepted',True),('observed',99),('held',0),('reclaimed',1),
+                            ('elapsed_us',0),('data_sha256',e['before_sha256'])]:
+            bad=copy.deepcopy(e);bad[field]=value
+            with self.assertRaises(ValueError):check(bad,seed)
+
 if __name__=='__main__':unittest.main()

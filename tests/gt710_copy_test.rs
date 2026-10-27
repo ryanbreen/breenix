@@ -36,3 +36,13 @@ fn encoder_rejects_overflow_bad_pitches_and_unstaged_overlap() {
     assert!(encode(good,(1<<40)-8,1,1).is_err());
     assert!(encode(good,0x800000,0,1).is_err());
 }
+
+#[test]
+fn suppressed_release_executes_the_same_data_launch_without_a_semaphore() {
+    let r=Rect{src:0x400000,dst:0x500000,width:8192,height:1,src_pitch:8192,dst_pitch:8192};
+    let p=methods(&copy::transfer(r).unwrap());
+    assert_eq!(p.len(),3);
+    assert_eq!(p[2],(0x300,vec![0x386]));
+    assert!(!p.iter().any(|(m,_)|*m==0x240));
+    assert_eq!(p,methods(&encode(r,0x108000,42,99).unwrap())[..3]);
+}
