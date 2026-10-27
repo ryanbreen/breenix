@@ -96,6 +96,13 @@ pub fn parse(e: &[u8]) -> Result<Vec<Timing>, &'static str> {
             modes.push(low);
         }
     }
+    // E-EDID A2 table 3.18 p.30; DMT 1.13 p.33 (ID 10h).
+    if e[36] & 8 != 0 || e[38..54].chunks_exact(2).any(|s| s == [0x61, 0x40]) {
+        let low = Timing { width:1024,height:768,clock_khz:65000,
+            hsync_start:1048,hsync_end:1184,htotal:1344,
+            vsync_start:771,vsync_end:777,vtotal:806,flags:24 };
+        if !modes.contains(&low) { modes.push(low); }
+    }
     for b in e[128..].chunks_exact(128) {
         if b[0] == 2 && b[2] != 0 {
             let start = b[2] as usize;

@@ -21,8 +21,8 @@ introducing a general-purpose GPU virtual address allocator.
 notifier transitions, GET/PUT, raster samples, underflow/error state and the
 private object addresses. The skipped-update probe submits a different shadow
 address without UPDATE and requires the old active address and an incomplete
-notifier; the following clean update must complete. A-B-A flips and a second
-advertised mode remain PRs 4.4 and 4.5.
+notifier; the following clean update must complete. Same-mode A-B-A surface
+flips remain PR 4.5.
 
 `GT710_PIX` rows retain the full BAR1 read-back, pitch included.
 The collector reconstructs `gt710-native-scanout.bin` in the private boot store,
@@ -56,6 +56,34 @@ import the MIT grant in `rnndb/copyright.xml`, checked at revision
 The adapted files retain original notices; `THIRD_PARTY_NOTICES` maps the sources
 to `modeset.rs` and `native.rs`. The repository's remaining subsystems retain
 their existing provenance.
+
+## Second advertised mode (PR 4.4)
+
+Under G3, measurement boots select a lower progressive timing from the live
+EDID and switch low, preferred, low before starting the console. Ordinary
+boots retain preferred mode. The supported 1024x768 at 60 Hz established bit
+and standard code are decoded from [E-EDID A2 table 3.18, page 30](https://glenwing.github.io/docs/VESA-EEDID-A2.pdf)
+and [DMT 1.13, page 33](https://glenwing.github.io/docs/VESA-DMT-1.13.pdf).
+Absent advertisement does not create a mode. Both timings' PLL coefficients,
+head methods and clock-selected board scripts are checked before takeover.
+
+Each switch releases the owned ISO context and SOR owner with a completed
+UPDATE, then binds the new timing through the same native supervisor and
+bounded board interpreter. These are the existing checked MIT NV927D method
+definitions and GF119 supervisor mechanisms; their original notices remain
+in the consumers and `THIRD_PARTY_NOTICES`.
+
+`GT710_SWITCH` associates the previous active state, detached output and
+completion, new active head/link, actual PLL, raster progress, errors and
+firmware-write delta with a monotonic EVO position. `GT710_SWITCH_PIX` carries
+the entire pitch, using runs of observed consecutive 24-bit RGB values with
+opaque alpha. A run records its length and first value; reconstruction adds
+one modulo 2^24 for each following pixel. This keeps a unique value per pixel
+within a frame while bounding serial volume. Each frame uses a distinct seed.
+The collector compares reconstructed pixels independently and retains
+`gt710-switch-0.bin`, `gt710-switch-1.bin` and `gt710-switch-2.bin` with hashes.
+The switching case requires a clean console receipt after the final low mode.
+This is CPU-filled display-memory evidence; device rendering remains later work.
 
 ## Exact-card measurement instrument
 

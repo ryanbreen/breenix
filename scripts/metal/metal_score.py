@@ -9,6 +9,7 @@ from pathlib import Path
 ANNOUNCEMENT = 'kernel::test_exec:'
 # Host records whose milestone is not <suite>/<category> (scripts/metal/server-suite, MILESTONES).
 HOST_MILESTONES = {'gt710-memory.json': 'metal-gt710/memory', 'users-operator.json': 'users/operator-login',
+                   'gt710-native.json': 'metal-gt710/native', 'gt710-switching.json': 'metal-gt710/switching',
                    'gt710-board.json': 'metal-gt710/board', 'gt710-firmware.json': 'metal-gt710/firmware', 'gt710-device.json': 'metal-gt710/device', 'gt710-console.json': 'metal-gt710/console'}
 
 

@@ -7,6 +7,16 @@
   "hostRunner": true,
   "categories": [
     {
+      "id": "switching",
+      "title": "Native EDID mode switching",
+      "cases": [
+        {
+          "id": "low-high-low",
+          "title": "A second advertised EDID mode switches low-high-low with latched timings, link state and complete unique-pixel read-back"
+        }
+      ]
+    },
+    {
       "id": "native",
       "title": "Native preferred mode",
       "cases": [

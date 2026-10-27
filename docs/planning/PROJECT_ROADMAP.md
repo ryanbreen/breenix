@@ -350,3 +350,14 @@ preflight firmware fallback and firmware-write refusal receipts, and limits
 bulk pixel diagnostics to test requests. Second-mode switching and A-B-A
 flips remain PRs 4.4 and 4.5; nontrivial review follow-ups are grouped in
 [#2505](https://github.com/ryanbreen/breenix/issues/2505).
+
+## Native second-mode switching (E19 M4 PR 4.4)
+
+PR [#2507](https://github.com/ryanbreen/breenix/pull/2507) programs the live
+EDID low, preferred, low sequence, then restores the preferred console.
+Landing repair `e3c5d76f` separates outgoing/incoming supervisor operations,
+powers down detached outputs, and recovers the preferred mode after a failed
+switch. Missing switch prerequisites retain preferred takeover. Boot
+`20261027T001802Z-metal` records the three complete device frames and the
+preferred return; the PR carries the scoped console and capture verdicts.
+Same-mode A-B-A surface flips remain PR 4.5.

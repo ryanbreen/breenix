@@ -326,6 +326,9 @@ notice is retained in `kernel/src/gpu/gk208/memory.rs`.
 GK208B native preferred mode (E19 M4 PR 4.3)
 ------------------------------------------
 Consumer files: kernel/src/gpu/gk208/modeset.rs and native.rs.
+PR 4.4 also uses the NV927D ISO-context/SOR-owner release methods and the
+existing GF119 supervisor/board-script path for clock-changing mode switches.
+The same original MIT notices below remain in those consumers.
 Source revision for nouveau: Linux v6.8,
 e8f897f4afef0031fe618a8e94127a0934896aba, paths below relative to
 drivers/gpu/drm/nouveau/. Each file-local MIT grant was checked before use.

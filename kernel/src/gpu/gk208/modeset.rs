@@ -219,6 +219,21 @@
 use super::edid::Timing;
 use alloc::{vec, vec::Vec};
 
+pub fn switch_sequence(modes: &[Timing]) -> Result<[Timing; 3], &'static str> {
+    let high = *modes.first().ok_or("missing preferred EDID timing")?;
+    let low = modes.iter().filter(|t| t.width < high.width && t.height <= high.height
+        && t.clock_khz < high.clock_khz && t.flags & 0x98 == 0x18)
+        .max_by_key(|t| u64::from(t.width)*u64::from(t.height))
+        .ok_or("no lower advertised progressive EDID timing")?;
+    Ok([*low,high,*low])
+}
+
+pub fn detach_methods(head: u32, sor: u32) -> Result<[(u32,u32);2], &'static str> {
+    if head >= 4 || sor >= 4 { return Err("invalid native display route"); }
+    // NV927D: release ISO storage and SOR owner before a clock-changing UPDATE.
+    Ok([(0x474+head*0x300,0),(0x200+sor*0x20,0)])
+}
+
 pub fn head_methods(
     t: &Timing,
     head: u32,
