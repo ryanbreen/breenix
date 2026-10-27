@@ -8,6 +8,7 @@ import runpy
 import tempfile
 
 CATEGORIES = {
+    'inventory': [('allocator', 'VRAM charges and reusable guarded allocations preserve reserved storage across independent nonce-bearing PRAMIN/BAR views; engine translation remains pending')],
     'flips': [('aba-handoff', 'Both EDID modes latch private A-B-A surfaces with complete pixels, suppressed-update recovery and native console handoff')],
     'switching': [('low-high-low', 'A second advertised EDID mode switches low-high-low with latched timings, link state and complete unique-pixel read-back')],
     'native': [('preferred', 'The preferred EDID mode completes on owned native scanout with advancing raster and full pixel read-back')],
@@ -242,6 +243,65 @@ def display_memory(serial):
         require(o['sha256']==expected, 'complete complementary physical read-back mismatch')
     require(e['guard_bytes']==12*4096 and e['verified_bytes']==2*sum(s[1] for s in specs), 'short guard or allocation read-back')
     return e
+
+
+def memory_inventory(serial):
+    """M5.1 CPU evidence; no engine or permission verdict is derived here."""
+    try:
+        m=display_memory(serial)
+        e=json.loads(one(r'^GT710_VRAM (.+)$',serial,'VRAM inventory evidence')[1])
+        def need(ok,why):
+            if not ok:raise ValueError(why)
+        need(e['schema']==1 and e['phase']=='inventory' and e['bdf']==m['bdf']
+             and e['total']==m['total'] and e['aperture']==m['aperture'], 'inventory differs from discovered hardware')
+        total=m['total'];reserved=sum(r[1] for r in m['reserved'])
+        payload=sum(o['size'] for o in m['objects'])
+        baseline=dict(reserved=reserved,payload=payload,guards=49152,charged=payload+49152,
+                      display=payload,engine=0,probe=0,free=total-reserved-payload-49152,allocations=6)
+        need(e['baseline']==baseline and e['after']==baseline,'VRAM charges or reclamation differ')
+        occupied=[(r[0],sum(r)) for r in m['reserved']]
+        occupied += [(o['start']-4096,o['start']+o['size']+4096) for o in m['objects']]
+        need(type(e['scratch']) is list and len(e['scratch'])==2,'missing scratch allocations')
+        for r,size in zip(e['scratch']+[e['tables']],[(1<<20)+4096,12288,65536]):
+            need(type(r) is list and len(r)==2 and all(type(v) is int for v in r)
+                 and r[1]==size and r[0]%4096==0 and 4096<=r[0] and sum(r)+4096<=total,'invalid scratch extent')
+            lo,hi=r[0]-4096,sum(r)+4096
+            need(not any(a<hi and lo<b for a,b in occupied),'allocation aliases retained storage')
+            occupied.append((lo,hi))
+        peak=dict(baseline)
+        peak.update(engine=65536,probe=sum(r[1] for r in e['scratch']),allocations=9)
+        peak['payload']+=peak['engine']+peak['probe'];peak['guards']+=24576
+        peak['charged']=peak['payload']+peak['guards'];peak['free']=total-reserved-peak['charged']
+        need(e['peak']==peak,'probe or page-table storage is uncharged')
+        need(e['protected_bytes']==reserved+payload+49152,'incomplete reserved storage snapshot')
+        need(re.fullmatch('[0-9a-f]{64}',e['protected_before']) and e['protected_before']==e['protected_after'], 'reserved storage changed')
+        need(type(e['seed']) is int and 0<e['seed']<=0xffffffff and e['seed']!=m['seed'],'invalid or reused inventory nonce')
+        need(e['bar_before']==e['bar_after']==0x80000000|((m['objects'][4]['start']+8192)>>12)
+             and e['pramin_before']==e['pramin_after'],'aperture controls not restored')
+        need(e['scratch_guard_bytes']==24576 and re.fullmatch('[0-9a-f]{64}',e['scratch_guard_before'])
+             and e['scratch_guard_before']==e['scratch_guard_after'],'scratch guard changed')
+        need(e['faults_before']==e['faults_after']==0 and e['fault_records']==[], 'GPU memory fault')
+        need(e['translation']=='pending-m6','CPU evidence cannot certify engine translation')
+        need(type(e['views']) is list and len(e['views'])==3,'missing A-B-A aperture view')
+        import struct
+        for view,index in zip(e['views'],[0,1,0]):
+            start,size=e['scratch'][index];instance=e['tables'][0];directory=instance+4096;table=instance+8192
+            need(view['index']==index and view['instance']==instance and view['directory']==directory
+                 and view['table']==table and view['pde']==[0,(table>>8)|1],'BAR table binding mismatch')
+            ptes=[((start+i*4096)>>8)|1 if i<size//4096 else 0 for i in range(2048)]
+            need(view['ptes_sha256']==hashlib.sha256(struct.pack('<2048Q',*ptes)).hexdigest(),'BAR small-page snapshot mismatch')
+            expected=[]
+            for direction in range(2):
+                data=bytearray()
+                for address in range(start,start+size,4):
+                    x=((address//4)^e['seed']^(0xa511e9b3*direction))&0xffffffff
+                    x^=x>>16;x=x*0x7feb352d&0xffffffff;x^=x>>15;x=x*0x846ca68b&0xffffffff;x^=x>>16
+                    data+=struct.pack('<I',x)
+                expected.append(hashlib.sha256(data).hexdigest())
+            need(view['sha256']==expected,'independent PRAMIN/BAR pattern mismatch')
+        return e
+    except (KeyError,TypeError,IndexError,OverflowError,json.JSONDecodeError) as error:
+        raise ValueError('malformed VRAM inventory evidence') from error
 
 
 def native_mode(serial):
@@ -529,7 +589,10 @@ def native_flips(serial):
 
 
 def check_case(category, case, serial):
-    if category == 'flips':
+    if category == 'inventory':
+        if case != 'allocator': raise ValueError('unknown inventory case')
+        memory_inventory(serial)
+    elif category == 'flips':
         if case != 'aba-handoff': raise ValueError('unknown flips case')
         native_flips(serial)
     elif category == 'switching':

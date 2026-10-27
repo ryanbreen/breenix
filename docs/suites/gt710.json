@@ -7,6 +7,16 @@
   "hostRunner": true,
   "categories": [
     {
+      "id": "inventory",
+      "title": "VRAM inventory and accounting",
+      "cases": [
+        {
+          "id": "allocator",
+          "title": "VRAM charges and reusable guarded allocations preserve reserved storage across independent nonce-bearing PRAMIN/BAR views; engine translation remains pending"
+        }
+      ]
+    },
+    {
       "id": "flips",
       "title": "Native flips and handoff",
       "cases": [
