@@ -19,7 +19,8 @@ class ProbeConsole(unittest.TestCase):
         end = source.index('        return Ok(console);', start) + len('        return Ok(console);')
         tail = source[start:end]
         harness = r'''
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+static PMC: AtomicU32 = AtomicU32::new(0);
 static REFUSE: AtomicBool = AtomicBool::new(false);
 static RETAINED: AtomicBool = AtomicBool::new(false);
 static REPORTED: AtomicBool = AtomicBool::new(false);
@@ -35,6 +36,12 @@ struct Range { start: u64, size: u64 }
 struct Object { range: Range }
 struct Layout { objects: [Object; 1] }
 struct Registers(usize);
+impl Registers {
+    fn read(&self, address: usize) -> u32 { assert_eq!(address,0x200);PMC.load(Ordering::SeqCst) }
+    fn mask(&mut self,address: usize,mask:u32,value:u32) {
+        let before=self.read(address);PMC.store((before & !mask)|value,Ordering::SeqCst);
+    }
+}
 struct Bar { size: u64 }
 struct Device { bars: [Bar; 2] }
 mod timer { pub fn rdtsc() -> u64 { 1 } }
@@ -54,8 +61,8 @@ mod ce {
 }
 mod gr {
     use super::*;
-    pub fn probe(_: &mut Registers, _: &Device, _: &mut Layout, _: &Console) -> Result<(), &'static str> {
-        if REFUSE.load(Ordering::SeqCst) { Err("GR probe refused") } else { Ok(()) }
+    pub fn probe(regs: &mut Registers, _: &Device, _: &mut Layout, _: &Console) -> Result<(), &'static str> {
+        if REFUSE.load(Ordering::SeqCst) { regs.mask(0x200,0x1000,0x1000); Err("GR probe refused") } else { Ok(()) }
     }
 }
 mod modeset {
@@ -66,7 +73,9 @@ TAIL
 }
 #[test]
 fn clean_and_refused_gr_both_deliver_the_native_console() {
+    for initial in [0xe011216d,0xe011316d] {
     for refuse in [false, true] {
+        PMC.store(initial,Ordering::SeqCst);
         REFUSE.store(refuse, Ordering::SeqCst);
         RETAINED.store(false, Ordering::SeqCst);
         REPORTED.store(false, Ordering::SeqCst);
@@ -74,8 +83,10 @@ fn clean_and_refused_gr_both_deliver_the_native_console() {
         let result = handoff(Registers(8192), Device { bars: [Bar {size: 0}, Bar {size: 1 << 27}] },
             Layout { objects: [Object {range: Range {start: 4096, size: 4096}}] }, console);
         assert_eq!(result, Ok(console), "GR refusal detached the screen console");
+        assert_eq!(PMC.load(Ordering::SeqCst),initial,"GR refusal leaked its PMC enable into CE recovery");
         assert!(RETAINED.load(Ordering::SeqCst));
         assert_eq!(REPORTED.load(Ordering::SeqCst), refuse, "GR refusal was not recorded");
+    }
     }
 }
 '''.replace('TAIL', tail)
