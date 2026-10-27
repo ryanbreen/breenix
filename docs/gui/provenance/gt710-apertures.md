@@ -44,8 +44,9 @@ The system-page nonce hashes are CPU snapshots only.
 
 `GT710_APERTURE` and the `aperture/cpu-dma` case retain this CPU evidence. Its
 scorer independently reconstructs patterns and table hashes, validates physical
-charges, controls, memory types and DMA bounds, and requires the existing VM
-and inventory captures. `dma_access` and `translation` remain `pending-m6`.
+charges, controls, memory types and DMA bounds, and requires the existing
+display-memory (`GT710_MEMORY`) and VM (`GT710_VM`) captures. `dma_access` and
+`translation` remain `pending-m6`.
 No engine DMA, engine-enforced permission, same-VA channel isolation or
 intentional unmapped-page fault is claimed. M6 must execute those probes and
 require a clean subsequent copy. M5.4's queued-work lifetimes remain separate.
