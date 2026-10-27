@@ -133,9 +133,12 @@ impl Mock {
     fn new() -> Self {
         Self {
             regs: BTreeMap::from([
-                (0x409804, 1024),
+                (0x409804, 1280),
+                (0x409700, 1), (0x40974c, 32), (0x409880, 1),
+                (0x409908, 2), (0x409910, 32),
+                (0x502700, 3), (0x50274c, 32),
                 (0x502880, 1),
-                (0x502908, 3),
+                (0x502908, 4),
                 (0x502910, 32),
             ]),
             events: vec![],
@@ -210,7 +213,7 @@ impl Io for Mock {
         self.events.push(Event::Request(m));
         if m == 2 {
             self.saves += 1;
-            for i in 256..896 {
+            for i in (256..384).chain(512..640).chain(768..896).chain(1024..1152) {
                 self.image[i] = ((i * 19 + i / 9) & 255) as u8;
             }
             if self.saves == 2 {
@@ -223,7 +226,7 @@ impl Io for Mock {
             method: m,
             poison: p,
             reply: p | 0x80000000,
-            size: if self.size_change { 1028 } else { 1024 },
+            size: if self.size_change { 1284 } else { 1280 },
             elapsed_us: 100,
         })
     }
@@ -238,7 +241,7 @@ impl Io for Mock {
         header: [u32; 2],
     ) -> Result<[u32; 2], context::Error> {
         assert_eq!(b.spec.name, "runnable");
-        assert!(image[..256].iter().all(|v| *v == 85));
+        assert!(image[..256].iter().all(|v| *v == 0));
         self.events.push(Event::Header(b.va, header));
         Ok(if self.bad_header {
             [header[0] + 1, header[1]]
@@ -249,7 +252,7 @@ impl Io for Mock {
 }
 fn run(m: &mut Mock) -> Result<context::Golden, context::Error> {
     let t = topology::decode(&[[0x409604, 0x10001], [0x502608, 2], [0x500c30, 3]]).unwrap();
-    context::generate(m, &t, 1024)
+    context::generate(m, &t, 1280)
 }
 fn hex(d: &[u8]) -> String {
     d.iter().map(|v| format!("{v:02x}")).collect()
@@ -271,9 +274,9 @@ fn source_sizes_alignment_and_patch_addresses_are_exact() {
             ("pagepool", 0x8000, 0x100),
             ("attrib", 0x2c8c0, 0x1000),
             ("mmio", 0x1000, 0x100),
-            ("golden-55", 1024, 0x100),
-            ("golden-aa", 1024, 0x100),
-            ("runnable", 1024, 0x100)
+            ("golden-55", 1280, 0x100),
+            ("golden-aa", 1280, 0x100),
+            ("runnable", 1280, 0x100)
         ]
     );
     let b = |name| g.buffers.iter().find(|b| b.spec.name == name).unwrap().va as u32;
@@ -304,8 +307,8 @@ fn source_sizes_alignment_and_patch_addresses_are_exact() {
         ]
     );
     assert_eq!(g.header, [g.patches.len() as u32, b("mmio") >> 8]);
-    assert_eq!(g.saved_end, 896);
-    assert_eq!(g.layout.strand_base, 3);
+    assert_eq!(g.saved_end, 1152);
+    assert_eq!(g.layout.strand_base, 4);
     assert_eq!(g.layout.strand_words, 32);
 }
 #[test]
@@ -416,11 +419,18 @@ fn both_destinations_are_poisoned_before_bind_and_save_and_read_back_twice() {
         );
         assert!(m.events[at + 4..].contains(&Event::Readback(b.va)));
         assert!(g.images[n][..256].iter().all(|v| *v == p));
-        assert!(g.images[n][896..].iter().all(|v| *v == p));
+        assert!(g.images[n][1152..].iter().all(|v| *v == p));
     }
-    assert_eq!(&g.images[0][256..896], &g.images[1][256..896]);
+    for range in [256..384,512..640,768..896,1024..1152] {
+        assert_eq!(&g.images[0][range.clone()], &g.images[1][range]);
+    }
+    for range in [384..512,640..768,896..1024,1152..1280] {
+        for (n,p) in [85,170].into_iter().enumerate() {
+            assert!(g.images[n][range.clone()].iter().all(|b| *b==p));
+        }
+    }
     assert_ne!(g.images[0], g.images[1]);
-    assert_eq!(g.hashes[0], sha256::sha256(&g.images[0][256..896]));
+    assert_eq!(g.hashes[0], sha256::sha256(&[&g.images[0][256..384], &g.images[0][512..640], &g.images[0][768..896], &g.images[0][1024..1152]].concat()));
     assert_eq!(g.hashes[0], g.hashes[1]);
     assert_eq!(g.queries.len(), 4);
 }
@@ -438,7 +448,7 @@ fn inconsistent_size_header_or_poisoned_extent_is_refused_without_masking() {
     let mut m = Mock::new();
     m.bad_header = true;
     assert_eq!(run(&mut m).unwrap_err().reason, "runnable header differs");
-    for offset in [0, 255, 256, 700, 895, 896, 1023] {
+    for offset in [0,255,256,383,384,511,512,639,640,767,768,895,896,1023,1024,1151,1152,1279] {
         let mut m = Mock::new();
         m.corrupt = Some(offset);
         let e = run(&mut m).unwrap_err();
@@ -446,7 +456,7 @@ fn inconsistent_size_header_or_poisoned_extent_is_refused_without_masking() {
         assert_ne!(e.first, e.second);
         assert_eq!(
             e.reason,
-            if (256..896).contains(&offset) {
+            if [256..384,512..640,768..896,1024..1152].iter().any(|r|r.contains(&offset)) {
                 "golden saves differ"
             } else {
                 "save changed poison outside data"

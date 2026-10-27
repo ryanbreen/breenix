@@ -12,7 +12,7 @@ pub mod tables;
 pub mod topology;
 #[path = "ROOT/kernel/src/gpu/gk208/gr/ctxctl.rs"]
 pub mod real_ctxctl;
-const POWER: [u32; 7] = [0x200, 0x10a78c, 0x20520, 0x20524, 0x20528, 0x2052c, 0x20530];
+const POWER: [u32; 11] = [0x200, 0x10a78c, 0x20520, 0x20524, 0x20528, 0x2052c, 0x20530, 0x140, 0x40013c, 0x409c24, 0x40901c];
 #[derive(Default)]
 struct Injection { target: &'static str, counts: BTreeMap<&'static str, usize>, stopped: bool, releases: usize }
 thread_local! { static INJECT: RefCell<Injection> = RefCell::new(Injection::default()); }
@@ -29,6 +29,7 @@ struct Registers { values: BTreeMap<u32, u32>, now: u64, stuck_stop: bool }
 impl Registers {
     fn new() -> Self {
         Self { values: BTreeMap::from([
+            (0x140, 3), (0x40013c, 0), (0x409c24, 0), (0x40901c, 0),
             (0x200, 0xe011216d), (0x10a78c, 0x44),
             (0x20520, 3), (0x20524, 0x1f), (0x20528, 3),
             (0x2052c, 0x7f03ff), (0x20530, 1),
@@ -67,8 +68,9 @@ mod ctxctl {
     }
     pub struct Controller;
     impl Controller {
-        pub fn upload(_: &mut Registers, _: &Topology<'_>, _: [u64; 2]) -> Result<Self, Fault> {
-            fail("upload")?; Ok(Self)
+        pub fn upload(r: &mut Registers, _: &Topology<'_>, _: [u64; 2]) -> Result<Self, Fault> {
+            r.write(0x40013c, u32::MAX); r.write(0x409c24, 0xe0001);
+            r.write(0x40901c, 0x100); fail("upload")?; Ok(Self)
         }
         pub fn withheld_start(&mut self, _: &mut Registers) -> Result<(), Fault> { fail("withheld") }
         pub fn start(&mut self, r: &mut Registers) -> Result<(), Fault> {

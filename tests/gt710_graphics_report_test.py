@@ -68,11 +68,18 @@ HASHES = {
     'gpccs.data.bin': '67859e7b5e6e4002910d5ae94d2668828c867a7d0ef1787624dd97cc8839b405',
 }
 PCI = 'PCI_FN 01:00.0 10de:128b class=03/00 bar0=0x80000000/0x1000000 irq=0x10\n'
-# Synthetic data does not assert a hardware context size. G6 checks the source
-# save extent plus its separately poisoned header and trailing strand padding.
-DATA = bytes((i * 31 + i // 7) & 255 for i in range(640))
-IMAGES = tuple(bytes([p]) * 256 + DATA + bytes([p]) * 128 for p in [85, 170])
+# G7 synthetic sections: HUB MMIO, HUB strand, GPC MMIO, GPC strand.
+RANGES = [(256,384),(512,640),(768,896),(1024,1152)]
+DATA = bytes((i * 31 + i // 7) & 255 for i in range(512))
+def make_image(poison):
+    image = bytearray([poison]) * 1280
+    for n,(start,end) in enumerate(RANGES):
+        image[start:end] = DATA[n*128:(n+1)*128]
+    return bytes(image)
+IMAGES = tuple(make_image(p) for p in [85,170])
 IMAGE = IMAGES[0]
+def saved_data(image):
+    return b''.join(image[a:b] for a,b in RANGES)
 
 
 def fixture():
@@ -90,7 +97,9 @@ def fixture():
                          reply=0, accepted=False),
         topology_raw=[[0x409604, 0x10001], [0x502608, 1], [0x500c30, 1]],
         topology=dict(gpc_nr=1, tpc_nr=[1], tpc_mask=[1]), golden_bytes=len(IMAGE),
-        saved_end=896, save_layout=dict(gpc=0, strands=1, strand_base=3, strand_words=32),
+        saved_end=1152, save_layout=dict(gpc=0, strands=1, strand_base=4, strand_words=32,
+            units=[dict(controller=0x409000, mmio_base=1, mmio_words=32, strands=[dict(base=2,words=32)]),
+                   dict(controller=0x502000, mmio_base=3, mmio_words=32, strands=[dict(base=4,words=32)])]),
         runnable_header=dict(count=18, va=0x540000,
                              words=[18, 0x5400],
                              sha256=hashlib.sha256(int(18).to_bytes(4, 'little') + int(0x5400).to_bytes(4, 'little') + bytes(248)).hexdigest()),
@@ -234,13 +243,13 @@ class Graphics(unittest.TestCase):
 
     def test_g6_rejects_changed_saved_data_header_padding_and_runnable_header(self):
         # Refresh transport/full/region hashes so rejection comes from bytes,
-        # rather than from a stale hash. G6 permits no excluded saved fields.
-        for offset in [0, 255, 256, 700, 895, 896, 1023]:
+        # rather than from a stale hash. The firmware map defines the G7 byte classification.
+        for offset in [0,255,256,383,384,511,512,639,640,767,768,895,896,1023,1024,1151,1152,1279]:
             with self.subTest(offset=offset), tempfile.TemporaryDirectory() as temporary:
                 e = fixture()
                 changed = bytearray(IMAGES[1]); changed[offset] ^= 1
                 e['saves'][1]['image_sha256'] = hashlib.sha256(changed).hexdigest()
-                e['saves'][1]['sha256'] = hashlib.sha256(changed[256:896]).hexdigest()
+                e['saves'][1]['sha256'] = hashlib.sha256(saved_data(changed)).hexdigest()
                 body = image_rows((IMAGES[0], changed))
                 e['image_bulk_bytes'] = len(body); e['bulk_artifact_estimate'] = len(body)
                 directory = Path(temporary); stage(directory, e, body)
@@ -249,6 +258,16 @@ class Graphics(unittest.TestCase):
         for key, value in [('saved_end', 892), ('runnable_header', dict(count=17, va=0x540000, words=[17, 0x5400], sha256='0' * 64))]:
             e = fixture(); e[key] = value
             with self.assertRaisesRegex(ValueError, 'saved size words|runnable header'):
+                self.check(e)
+
+    def test_g7_rejects_incomplete_overlapping_or_shifted_firmware_maps(self):
+        for mutate in [lambda e:e['save_layout']['units'].pop(),
+                       lambda e:e['save_layout']['units'][0]['strands'].clear(),
+                       lambda e:e['save_layout']['units'][0].update(mmio_words=31),
+                       lambda e:e['save_layout']['units'][1]['strands'][0].update(base=3),
+                       lambda e:e['save_layout']['units'][1].update(mmio_base=2)]:
+            e=fixture(); mutate(e)
+            with self.assertRaisesRegex(ValueError,'saved size words|poison outside data|image digest'):
                 self.check(e)
 
     def test_bulk_bytes_framing_and_image_digests_are_required(self):

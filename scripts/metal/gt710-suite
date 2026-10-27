@@ -683,24 +683,48 @@ def graphics_engine(serial):
             images[poison].extend(chunk)
             previous = poison
         need(all(len(image) == size for image in images.values()), 'image rows incomplete')
-        # G6/G2: MIT hub.fuc:134-213 reserves [0,256), method 2 at
-        # 285-294 saves without ctx_mmio_exec's header store (585-592,686-690).
-        # com.fuc:314-333 reserves ((words >> 6) + 1) * 256 per strand.
+        # G2/G7: firmware layout, not differences in the two images, defines
+        # written bytes. hub.fuc:134-213; gpc.fuc:188-242; com.fuc:314-333.
         layout = e['save_layout']
-        need(gpcs == 1 and layout['gpc'] == 0 and type(layout['strands']) is int
-             and 0 < layout['strands'] <= 64 and type(layout['strand_base']) is int
-             and type(layout['strand_words']) is int and layout['strand_words'] > 0, 'saved size words')
-        base, count = layout['strand_base'] * 256, layout['strand_words']
-        end = base + count * 4
-        need(base >= 256 and 256 < end <= size and base + ((count >> 6) + 1) * 256 == size
-             and e['saved_end'] == end, 'saved size words')
+        units = layout['units']
+        need(gpcs == 1 and len(units) == 2, 'saved size words')
+        written = bytearray(size)
+        cursor = 256
+        end = 0
+        for unit, controller in zip(units, [0x409000, 0x502000]):
+            need(unit['controller'] == controller and type(unit['mmio_base']) is int
+                 and unit['mmio_base'] * 256 == cursor
+                 and type(unit['mmio_words']) is int and 0 < unit['mmio_words'] <= size // 4,
+                 'saved size words')
+            start = cursor
+            end = start + unit['mmio_words'] * 4
+            need(end <= size, 'saved size words')
+            written[start:end] = bytes([1]) * (end - start)
+            cursor = (end // 256 + 1) * 256
+            strands = unit['strands']
+            need(0 < len(strands) <= 64, 'saved size words')
+            for strand in strands:
+                need(type(strand['base']) is int and strand['base'] * 256 == cursor
+                     and type(strand['words']) is int and 0 <= strand['words'] <= size // 4,
+                     'saved size words')
+                end = cursor + strand['words'] * 4
+                need(end <= size, 'saved size words')
+                written[cursor:end] = bytes([1]) * (end - cursor)
+                cursor += (strand['words'] // 64 + 1) * 256
+        last = units[-1]['strands'][-1]
+        need(cursor == size and e['saved_end'] == end
+             and layout['gpc'] == 0 and layout['strands'] == len(units[-1]['strands'])
+             and layout['strand_base'] == last['base'] and layout['strand_words'] == last['words'],
+             'saved size words')
         for save in saves:
             image = images[save['poison']]
+            data = bytes(v for v, used in zip(image, written) if used)
             need(hashlib.sha256(image).hexdigest() == save['image_sha256'], 'image digest')
-            need(hashlib.sha256(image[256:end]).hexdigest() == save['sha256'], 'image digest')
-            need(image[:256] == bytes([save['poison']]) * 256
-                 and image[end:] == bytes([save['poison']]) * (size - end), 'save changed poison outside data')
-        need(images[85][256:end] == images[170][256:end], 'complementary images bytes')
+            need(hashlib.sha256(data).hexdigest() == save['sha256'], 'image digest')
+            need(all(v == save['poison'] for v, used in zip(image, written) if not used),
+                 'save changed poison outside data')
+        need(all(a == b for a, b, used in zip(images[85], images[170], written) if used),
+             'complementary images bytes')
         # Runnable header is CPU-filled separately: MIT gf100.c:336-338.
         header = e['runnable_header']
         mmio = next(b for b in buffers if b['name'] == 'mmio')
