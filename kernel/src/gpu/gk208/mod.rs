@@ -100,6 +100,11 @@ mod inventory;
 mod vm;
 mod vm_control;
 mod vm_probe;
+mod aperture;
+mod dma_policy;
+mod system_dma;
+mod aperture_probe;
+pub use system_dma::set_platform as set_dma_platform;
 mod modeset;
 mod native;
 pub use native::{ConsoleSurface,console_binding,takeover_started};
@@ -316,6 +321,7 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
         if native::suite_requested() {
             inventory::probe(&mut regs,&device,&mut layout,&console)?;
             vm_probe::probe(&mut regs,&device,&mut layout,&console)?;
+            aperture_probe::probe(&mut regs,&device,&mut layout,&console)?;
         }
         DISPLAY_MEMORY.try_get_or_init(||layout).map_err(|_|"display memory already initializing")?;
         return Ok(console);

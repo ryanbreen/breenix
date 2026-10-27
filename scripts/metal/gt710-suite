@@ -8,6 +8,7 @@ import runpy
 import tempfile
 
 CATEGORIES = {
+    'aperture': [('cpu-dma', 'BAR1 and BAR2 preserve nonce-bearing boundary patterns with explicit cache types and bounded coherent DMA; engine access remains pending')],
     'vm': [('tables', 'Private GPU tables preserve distinct same-VA backing, ordered remaps and reserved storage; engine translation remains pending')],
     'inventory': [('allocator', 'VRAM charges and reusable guarded allocations preserve reserved storage across independent nonce-bearing PRAMIN/BAR views; engine translation remains pending')],
     'flips': [('aba-handoff', 'Both EDID modes latch private A-B-A surfaces with complete pixels, suppressed-update recovery and native console handoff')],
@@ -398,6 +399,66 @@ def virtual_memory(serial):
         raise ValueError('malformed private VM evidence') from error
 
 
+def cpu_apertures(serial):
+    """CPU views and DMA preparation only; M6 owns engine execution evidence."""
+    import struct
+    try:
+        m=display_memory(serial);virtual_memory(serial)
+        e=json.loads(one(r'^GT710_APERTURE (.+)$',serial,'CPU aperture evidence')[1])
+        def need(ok,why):
+            if not ok:raise ValueError(why)
+        need(e['schema']==1 and e['bdf']==m['bdf'],'aperture identity differs')
+        need(type(e['seed']) is int and 0<e['seed']<=0xffffffff and e['seed']!=m['seed'],'invalid aperture nonce')
+        need(e['dma_bits']==40 and e['dma_access']==e['translation']=='pending-m6','CPU evidence cannot certify engine DMA')
+        need(e['memory_types']==[3,1,1,0,0,0],'CPU PAT types differ from UC/WC/WB policy')
+        need(type(e['dmar_status']) is list and len(e['dmar_status'])<=64
+             and all(type(s) is int and 0<=s<1<<32 and s&(1<<31)==0 for s in e['dmar_status']),'active or unknown platform translation')
+        vm=json.loads(one(r'^GT710_VM (.+)$',serial,'VM evidence')[1]);baseline=vm['baseline']
+        need(e['baseline']==e['after']==baseline,'aperture baseline or reclamation differs')
+        need(len(e['scratch'])==len(e['tables'])==2,'missing aperture allocations')
+        need([r[1] for r in e['scratch']]==[(1<<20)+4096,12288] and [r[1] for r in e['tables']]==[65536,65536],'missing PRAMIN bank/page boundary')
+        total=m['total'];occupied=[(r[0],sum(r)) for r in m['reserved']]
+        occupied += [(o['start']-4096,o['start']+o['size']+4096) for o in m['objects']]
+        for start,size in e['scratch']+e['tables']:
+            need(type(start) is int and start%4096==0 and start>=4096 and start+size+4096<=total,'unbounded aperture allocation')
+            low,high=start-4096,start+size+4096
+            need(all(high<=a or low>=b for a,b in occupied),'aperture allocation aliases reserved/owned storage')
+            occupied.append((low,high))
+        peak=dict(baseline);probe=sum(r[1] for r in e['scratch']);engine=131072
+        peak['payload']+=probe+engine;peak['guards']+=32768;peak['charged']=peak['payload']+peak['guards']
+        peak['probe']+=probe;peak['engine']+=engine;peak['free']-=probe+engine+32768;peak['allocations']+=4
+        need(e['peak']==peak,'aperture storage is uncharged')
+        def pattern(a,d):
+            x=((a//4)^e['seed']^((0xa511e9b3*d)&0xffffffff))&0xffffffff
+            x^=x>>16;x=x*0x7feb352d&0xffffffff;x^=x>>15;x=x*0x846ca68b&0xffffffff
+            return x^(x>>16)
+        def digest(start,size,d):
+            return hashlib.sha256(b''.join(struct.pack('<I',pattern(a,d)) for a in range(start,start+size,4))).hexdigest()
+        need(len(e['views'])==6,'missing A-B-A BAR views')
+        for view,(bar,index) in zip(e['views'],[(b,i) for b in [1,2] for i in [0,1,0]]):
+            start,size=e['scratch'][index];table=e['tables'][bar-1][0]
+            need(view['bar']==bar and view['index']==index and view['instance']==table
+                 and view['directory']==table+4096 and view['table']==table+8192,'wrong CPU window/table binding')
+            need(view['binding']==[table+4096,(8<<20)-1] and view['pde']==[0,((table+8192)>>8)|1],'CPU aperture binding snapshot differs')
+            ptes=b''.join(struct.pack('<Q',((start+i*4096)>>8)|1 if i<size//4096 else 0) for i in range(2048))
+            need(view['ptes_sha256']==hashlib.sha256(ptes).hexdigest(),'stale or wrong CPU aperture PTEs')
+            need(view['sha256']==[digest(start,size,0),digest(start,size,bar)],'independent BAR/PRAMIN bytes differ')
+        need(len(e['dma'])==3 and len({p[0] for p in e['dma']})==3,'DMA pages missing or aliased')
+        for address,pte,sha in e['dma']:
+            need(type(address) is int and address>0 and address%4096==0 and address+4096<=1<<40,'DMA page exceeds addressability')
+            need(pte==((address>>8)|0x500000001) and sha==digest(address,4096,3),'coherent DMA page/PTE CPU snapshot differs')
+        need(len(e['bar_before'])==2 and e['bar_before']==e['bar_after']
+             and e['bar_before'][0]==vm['bar_before'] and e['pramin_before']==e['pramin_after'],'CPU aperture controls not restored')
+        need(e['protected_bytes']==vm['protected_bytes'] and e['guard_bytes']==32768,'protected coverage differs')
+        for key in ['protected','guard']:
+            need(re.fullmatch('[0-9a-f]{64}',e[key+'_before']) is not None
+                 and e[key+'_before']==e[key+'_after'],'CPU aperture changed '+key+' storage')
+        need(e['faults_before']==e['faults_after']==0 and e['fault_records_before']==e['fault_records_after']==[],'pending GPU fault')
+        return e
+    except (KeyError,TypeError,IndexError,OverflowError,json.JSONDecodeError) as error:
+        raise ValueError('malformed CPU aperture evidence') from error
+
+
 def native_mode(serial):
     try:
         board = board_inventory(serial)
@@ -683,6 +744,10 @@ def native_flips(serial):
 
 
 def check_case(category, case, serial):
+    if category == 'aperture':
+        if case != 'cpu-dma': raise ValueError('unknown CPU aperture case')
+        cpu_apertures(serial)
+        return
     if category == 'vm':
         if case != 'tables': raise ValueError('unknown VM case')
         virtual_memory(serial)

@@ -1006,3 +1006,28 @@ fn smbios_kcs(rsdp: Option<u64>, offset: u64) -> Option<(u16, u16)> {
     }
     None
 }
+
+/// Read the complete DMA-remapping table, refusing unknown or truncated roots.
+/// An empty vector means the validated root advertises neither DMAR nor IVRS.
+pub fn dma_remapping_table(rsdp:Option<u64>,offset:u64)->Result<alloc::vec::Vec<u8>,&'static str> {
+    let r=PhysReader::new(offset);
+    let (root,width)=root_table(&r,rsdp.ok_or("DMA requires ACPI root")?).map_err(|_|"invalid DMA ACPI root")?;
+    let sig=if width==8 {b"XSDT"}else{b"RSDT"};
+    let len=sdt_length(&r,root,sig).ok_or("invalid DMA ACPI root length")?;
+    let count=(u64::from(len-SDT_HEADER_LENGTH)/width) as usize;
+    if count>MAX_ROOT_ENTRIES || u64::from(len-SDT_HEADER_LENGTH)%width!=0 {return Err("truncated DMA ACPI root");}
+    let mut result=alloc::vec::Vec::new();let mut found=false;
+    for i in 0..count {
+        let entry=root+u64::from(SDT_HEADER_LENGTH)+i as u64*width;
+        let table=if width==8 {r.u64_at(entry)}else{r.u32_at(entry).map(u64::from)}.ok_or("unreadable DMA ACPI entry")?;
+        if !r.readable(table,u64::from(SDT_HEADER_LENGTH)) {return Err("unreadable DMA ACPI table");}
+        if r.signature_is(table,b"IVRS")==Some(true) {return Err("AMD DMA translation is not supported");}
+        if r.signature_is(table,b"DMAR")!=Some(true) {continue;}
+        if found {return Err("duplicate DMAR");}found=true;
+        let bytes=sdt_length(&r,table,b"DMAR").ok_or("invalid DMAR checksum or length")?;
+        if bytes>65536 {return Err("oversized DMAR");}
+        result.try_reserve_exact(bytes as usize).map_err(|_|"DMAR allocation failed")?;
+        for n in 0..bytes {result.push(r.u8_at(table+u64::from(n)).ok_or("unreadable DMAR byte")?);}
+    }
+    Ok(result)
+}
