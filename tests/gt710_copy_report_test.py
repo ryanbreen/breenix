@@ -32,4 +32,18 @@ class CopyCapture(unittest.TestCase):
         bad=copy.deepcopy(e);bad['poisons']=[0x55,0x55]
         with self.assertRaises(ValueError):check(bad,[bytes(expected),bytes(expected)])
 
+    def test_restored_va_and_survivor_source_are_not_substituted_or_refilled(self):
+        check=API['copy_source']
+        for name,source,refilled in [('same-va-a',0x400000,True),('upload',0x800ffd,True),
+                                    ('overlap-forward',0x600000,True),('restored-a',0x403000,True),
+                                    ('survivor-b',0x400000,False)]:
+            e=dict(name=name,src_va=source,src_offset=4093 if name=='upload' else 0,refilled=refilled,
+                   upload=name=='upload',overlap=name.startswith('overlap'))
+            check(e)
+            bad=copy.deepcopy(e);bad['src_va']^=4096
+            with self.assertRaises(ValueError):check(bad)
+            if name=='survivor-b':
+                bad=copy.deepcopy(e);bad['refilled']=True
+                with self.assertRaises(ValueError):check(bad)
+
 if __name__=='__main__':unittest.main()
