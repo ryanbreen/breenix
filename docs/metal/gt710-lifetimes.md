@@ -65,7 +65,13 @@ with separate ordered release records. The 512-entry descriptor ring wraps
 independently of monotonic native sequences. Admission refuses a fifth request
 until an ordered completion releases storage; GET progression alone does not
 release a mapping hold. Concurrent completion reads the consuming channel's
-PBDMA GET or its private saved USERD GPGet, plus its CE release and epoch.
+PBDMA GET or its saved USERD GPGet slot, plus its CE release and epoch.
+The two channels have separate instance, page-table, command and data storage,
+but share one USERD allocation with separate 512-byte hardware slots. Both
+address spaces map that entire allocation at GPU VA `0x200000`; a channel can
+therefore address the other channel's USERD slot. The mapping is not an
+isolation boundary. Method encoding remains kernel-only, and these probes
+expose no userspace method submission.
 
 The `contexts` category adds concurrent opposite-pattern copies through two
 scheduled channels, complete complementary poisoned readbacks across ring wrap,
