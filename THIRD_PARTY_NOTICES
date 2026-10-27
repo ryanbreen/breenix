@@ -744,3 +744,12 @@ word counts and allocation spacing (`com.fuc:152-171,314-333`,
 their zero fill are GK208B hardware observations documented in
 `docs/gui/gt710-graphics-channel-acceptance.md`, not transfer-width claims
 from those firmware sources. No additional external implementation is used.
+
+M7.2's completed-channel interrupt snapshot in `gr/mod.rs` uses register
+facts from envytools `f102b82381f3f11cee113d16374c87091db039d9`
+`rnndb/bus/pmc.xml`, `rnndb/fifo/gf100_pfifo.xml` and
+`rnndb/graph/gf100_pgraph/ctxctl.xml`. Each imports the checked MIT grant
+in `rnndb/copyright.xml`; its author list and full grant are retained in
+the consumer header. The snapshot reads status, enables, host interrupt-line
+state, runlist/engine state and enabled PBDMAs before GR gating as well as
+before and after the probe. It does not alter interrupt policy.

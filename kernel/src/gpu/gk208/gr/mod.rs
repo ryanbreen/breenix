@@ -21,6 +21,64 @@
  *
  * Authors: Ben Skeggs
  */
+/*
+ * rnndb copyright 2006
+ * Artur Huillet
+ * Ben Skeggs
+ * B. R.
+ * Carlos Martin
+ * Christoph Bumiller
+ * Dawid Gajownik
+ * Dmitry Baryshkov
+ * Dmitry Eremin-Solenikov
+ * EdB
+ * Erik Waling
+ * Francisco Jerez
+ * Ilia Mirkin
+ * jb17bsome
+ * Jeremy Kolb
+ * Laurent Carlier
+ * Luca Barbieri
+ * Maarten Maathuis
+ * Marcelina Kościelnicka
+ * Mark Carey
+ * Matthieu Castet
+ * nvidiaman
+ * Patrice Mandin
+ * Pekka Paalanen
+ * Peter Popov
+ * Richard Hughes
+ * Rudi Cilibrasi
+ * Serge Martin
+ * Simon Raffeiner
+ * Stephane Loeuillet
+ * Stephane Marchesin
+ * sturmflut
+ * Sylvain Munaut
+ * Victor Stinner
+ * Wladmir van der Laan
+ * Younes Manton
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE COPYRIGHT OWNER(S) AND/OR ITS SUPPLIERS BE
+ * LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+ * OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
 //! Native PGRAPH startup and golden context construction.
 pub mod channel;
 pub mod context;
@@ -90,12 +148,24 @@ pub(super) fn interrupt_snapshot(
     phase: &str,
 ) {
     use crate::drivers::pci;
-    let words: Vec<[u32; 2]> = [
-        0x100, 0x140, 0x400100, 0x40013c, 0x409008, 0x409018, 0x40901c, 0x409c18, 0x409c24,
+    // MIT rnndb bus/pmc.xml, fifo/gf100_pfifo.xml and gr/ctxctl.xml.
+    let mut words: Vec<[u32; 2]> = [
+        0x100, 0x140, 0x160, 0x200, 0x204, 0x2100, 0x2140, 0x2274,
+        0x2284, 0x2630, 0x2640, 0x2644, 0x400100, 0x400108, 0x40013c,
+        0x409008, 0x409018, 0x40901c, 0x409b00, 0x409b04, 0x409c18, 0x409c24,
     ]
     .into_iter()
     .map(|a| [a, regs.read(a as usize)])
     .collect();
+    let enabled = words.iter().find(|w| w[0] == 0x204).unwrap()[1];
+    for i in 0..3 {
+        if enabled & (1 << i) != 0 {
+            for offset in [0x108, 0x10c, 0x13c, 0x148, 0x14c] {
+                let address = 0x40000 + i * 0x2000 + offset;
+                words.push([address, regs.read(address as usize)]);
+            }
+        }
+    }
     let xhci = pci::find_by_class(pci::DeviceClass::SerialBus, 3, 0x30);
     let routes:Vec<String> = core::iter::once(device).chain(xhci.as_ref()).map(|d| {
         let read=|offset|pci::pci_read_config_word(d.bus,d.device,d.function,offset);
@@ -239,6 +309,9 @@ fn probe_inner(
         let mut graphics = channel::Session::new(&mut hardware, golden)?;
         graphics.execute(&mut hardware)?;
         let report = graphics.report();
+        // Observe the quiesced channel while GR registers remain accessible,
+        // before reset/gating makes PGRAPH reads return PRI error words.
+        interrupt_snapshot(hardware.regs, hardware.device, "channel-drained");
         // Retain context and system backing until finish confirms GR reset.
         hardware.graphics = Some(graphics);
         Some(report)
