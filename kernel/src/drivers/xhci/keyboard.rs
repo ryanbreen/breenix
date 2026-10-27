@@ -145,6 +145,10 @@ impl Controller {
         if super::HOST_KEYS.swap(false, Ordering::SeqCst) {
             self.host_keys.extend(super::HOST_KEY_REPORTS.lock().drain(..));
         }
+        #[cfg(feature = "testing")]
+        if !self.host_keys.is_empty() {
+            super::softirq_wake_test::begin(self.host_keys.len());
+        }
         let now = now();
         if now < self.next_host_key {
             return;
