@@ -22,6 +22,7 @@
  * Authors: Ben Skeggs
  */
 //! Native PGRAPH startup and golden context construction.
+pub mod channel;
 pub mod context;
 pub mod ctxctl;
 pub mod firmware;
@@ -82,8 +83,7 @@ fn hardware_error(error: ctxctl::Fault) -> &'static str {
     error.reason
 }
 
-/// Context fragment: graphics-channel execution follows in the next unit.
-/// The full graphics scorer must continue to reject this incomplete record.
+/// Capture startup, golden context and one A197 channel for the raw scorer.
 pub(super) fn probe(
     regs: &mut Registers,
     device: &crate::drivers::pci::Device,
@@ -144,11 +144,28 @@ pub(super) fn probe(
         next_va: 0x10000000,
         admitted: false,
         reader: None,
+        graphics: None,
         captures: Vec::new(),
         runnable_header: Vec::new(),
     };
     let generated = context::generate(&mut hardware, &topology, ready.size);
-    if let Err(error) = &generated { context_error(error); }
+    if let Err(error) = &generated {
+        context_error(error);
+    }
+    let graphics = if let Ok(golden) = &generated {
+        // CE read-back owns channel 0 and its USERD alias until drained.
+        if let Some(reader) = hardware.reader.take() {
+            reader.finish(hardware.regs, hardware.layout)?;
+        }
+        let mut graphics = channel::Session::new(&mut hardware, golden)?;
+        graphics.execute(&mut hardware)?;
+        let report = graphics.report();
+        // Retain context and system backing until finish confirms GR reset.
+        hardware.graphics = Some(graphics);
+        Some(report)
+    } else {
+        None
+    };
     // Preserve raw saves even when the byte check fails. No serial image dump.
     let artifact = hardware.emit_images();
     let runnable_bytes = hardware.runnable_header.clone();
@@ -161,6 +178,7 @@ pub(super) fn probe(
         return Err("GR baseline reclamation mismatch");
     }
     let golden = generated.map_err(|error| error.reason)?;
+    let graphics = graphics.ok_or("GR channel record missing")?;
     let (image_bulk_bytes, artifact_estimate) = artifact?;
     let firmware: Vec<String> = [
         ("fecs.code.bin", firmware::FECS_CODE_BIN_SHA256),
@@ -231,7 +249,7 @@ pub(super) fn probe(
         })
         .collect();
     let layout_words = golden.layout;
-    crate::serial_println!("GT710_GR {{\"schema\":1,\"bdf\":\"{:02x}:{:02x}.{}\",\"chipset\":{},\"firmware\":{{{}}},\"status\":{:?},\"elapsed_us\":{},\"bound_us\":{},\"fecs_size\":{},\"queries\":[{}],\"withheld_start\":{{\"started\":{},\"ready\":{},\"poison\":{},\"reply\":{},\"accepted\":{}}},\"stale_reply\":{{\"method\":{},\"poison\":{},\"planted\":{},\"reply\":{},\"accepted\":{}}},\"topology_raw\":{:?},\"topology\":{{\"gpc_nr\":{},\"tpc_nr\":{:?},\"tpc_mask\":{:?}}},\"init_lists\":[{}],\"global_buffers\":[{}],\"golden_bytes\":{},\"saved_end\":{},\"save_layout\":{{\"gpc\":{},\"strands\":{},\"strand_base\":{},\"strand_words\":{}}},\"saves\":[{}],\"runnable_header\":{{\"count\":{},\"va\":{},\"words\":{:?},\"sha256\":\"{}\"}},\"image_bulk_bytes\":{},\"bulk_artifact_estimate\":{},\"baseline\":{},\"after\":{},\"firmware_writes\":{},\"draw\":\"pending-7.4\",\"shaders\":\"pending-7.3\",\"context_switch\":\"pending-7.5\"}}",
+    let context_fields = format!("\"schema\":1,\"bdf\":\"{:02x}:{:02x}.{}\",\"chipset\":{},\"firmware\":{{{}}},\"status\":{:?},\"elapsed_us\":{},\"bound_us\":{},\"fecs_size\":{},\"queries\":[{}],\"withheld_start\":{{\"started\":{},\"ready\":{},\"poison\":{},\"reply\":{},\"accepted\":{}}},\"stale_reply\":{{\"method\":{},\"poison\":{},\"planted\":{},\"reply\":{},\"accepted\":{}}},\"topology_raw\":{:?},\"topology\":{{\"gpc_nr\":{},\"tpc_nr\":{:?},\"tpc_mask\":{:?}}},\"init_lists\":[{}],\"global_buffers\":[{}],\"golden_bytes\":{},\"saved_end\":{},\"save_layout\":{{\"gpc\":{},\"strands\":{},\"strand_base\":{},\"strand_words\":{}}},\"saves\":[{}],\"runnable_header\":{{\"count\":{},\"va\":{},\"words\":{:?},\"sha256\":\"{}\"}},\"image_bulk_bytes\":{},\"bulk_artifact_estimate\":{},\"baseline\":{},\"after\":{},\"firmware_writes\":{},\"draw\":\"pending-7.4\",\"shaders\":\"pending-7.3\",\"context_switch\":\"pending-7.5\"",
         device.bus,device.device,device.function,(regs.read(0) >> 20) & 0x1ff,
         firmware.join(","),ready.status,elapsed,ctxctl::BOUND_US,ready.size,queries.join(","),
         withheld.started,withheld.ready,withheld.poison,withheld.reply,withheld.accepted,
@@ -241,6 +259,7 @@ pub(super) fn probe(
         saves.join(","),golden.patches.len(),golden.buffers[3].va,golden.header,super::hash(&runnable_bytes),image_bulk_bytes,artifact_estimate,
         super::inventory::stats(baseline),super::inventory::stats(layout.allocator.stats()),
         crate::firmware_writes::count()-console.firmware_baseline);
+    crate::serial_println!("{}", channel::format_record(&context_fields, &graphics));
     crate::serial_println!(
         "GT710_GR_STAGE startup controls_us={}",
         withheld.elapsed_us + stale.elapsed_us
@@ -270,6 +289,7 @@ struct Hardware<'a> {
     next_va: u64,
     admitted: bool,
     reader: Option<super::ce::readback::Reader>,
+    graphics: Option<channel::Session>,
     captures: Vec<(u8, Vec<u8>)>,
     runnable_header: Vec<u8>,
 }
@@ -342,14 +362,17 @@ impl Hardware<'_> {
         Ok((bytes, estimate))
     }
     fn finish(mut self) -> Result<(), &'static str> {
-        // No GR PFIFO channel has been admitted in this unit. Reset stops both
-        // Falcon engines before freeing their VM, image and global storage.
+        // The graphics channel has left its runlist and drained. Reset stops
+        // FECS/GPCCS before reclaiming either instance or its current image.
         ctxctl::reset(self.regs).map_err(hardware_error)?;
         unsafe {
             self.context.confirm_reset();
         }
         if let Some(reader) = self.reader.take() {
             reader.finish(self.regs, self.layout)?;
+        }
+        if let Some(graphics) = self.graphics.take() {
+            graphics.finish(self.regs, self.layout, self.total)?;
         }
         self.context.retire(
             &mut self.layout.allocator,

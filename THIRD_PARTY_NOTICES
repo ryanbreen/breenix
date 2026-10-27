@@ -663,3 +663,25 @@ NVIDIA open-gpu-doc revision `9fdf5c4062007929d9f4e6cbad9c9771fe61b880`,
 `classes/3d/cla197.h` and `classes/host/cla06f.h` (MIT; Copyright (c) 2020,
 NVIDIA CORPORATION. All rights reserved.). Both file headers were checked;
 the original notice and permission grant accompany the check.
+
+## GK208 graphics channel (M7.2 u6)
+
+`kernel/src/gpu/gk208/gr/channel.rs` adapts the following individually checked
+MIT files from nouveau Linux v6.8, revision
+`e8f897f4afef0031fe618a8e94127a0934896aba`, under `drivers/gpu/drm/nouveau/`:
+
+- `nvkm/engine/fifo/gk208.c`, Copyright 2013 Red Hat Inc.: channel selection.
+- `nvkm/engine/fifo/gk110.c`, Copyright 2016 Red Hat Inc.: inherited channel.
+- `nvkm/engine/fifo/gk104.c`, Copyright 2012 Red Hat Inc.: RAMFC, USERD,
+  standalone runlist, instance GR pointer, scheduling and engine status.
+- `nvkm/engine/fifo/gf100.c`, Copyright 2012 Red Hat Inc.: preemption and drain.
+- `nvkm/engine/gr/gf100.c`, Copyright 2012 Red Hat Inc.: per-channel golden
+  image copy, internal-firmware header and mapped channel buffers.
+- `nvkm/subdev/top/gk104.c`, Copyright 2016 Red Hat Inc.: engine/runlist words.
+
+The same channel file uses the MIT open-gpu-doc `cla197.h` and `cla06f.h`
+sources, revision and NVIDIA notice listed for the check above. The original
+copyrights and full grants are retained in the channel file. Its Breenix
+adapter uses the existing VM, coherent DMA pages and BAR flush helpers;
+the M6 CE implementation is unchanged. `gr/mod.rs` joins its raw channel
+record with the existing attributed firmware and context records.
