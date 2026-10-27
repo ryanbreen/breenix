@@ -655,3 +655,11 @@ G6's scorer and fixture changes in `scripts/metal/gt710-suite` and
 `gf100.c` and GK208 context dispatch. Header bytes and final strand padding
 retain each save's own poison; saved bytes have separate region digests.
 The runnable header is checked separately against `gf100.c:336-338`.
+
+## GK208 graphics-channel check (M7.2 u6)
+
+`tests/gt710_gr_channel_test.rs` derives method and host packet words from
+NVIDIA open-gpu-doc revision `9fdf5c4062007929d9f4e6cbad9c9771fe61b880`,
+`classes/3d/cla197.h` and `classes/host/cla06f.h` (MIT; Copyright (c) 2020,
+NVIDIA CORPORATION. All rights reserved.). Both file headers were checked;
+the original notice and permission grant accompany the check.
