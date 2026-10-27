@@ -97,6 +97,9 @@ pub(super) fn probe(
         [0x502608, regs.read(0x502608)],
         [0x500c30, regs.read(0x500c30)],
     ];
+    // Retain the source words even if decoding refuses the topology, before
+    // any firmware upload. No context or image bytes travel over serial.
+    crate::serial_println!("GT710_GR_TOPOLOGY {:?}",raw);
     let topology = topology::decode(&raw)?;
     let baseline = layout.allocator.stats();
     let total = baseline.reserved + baseline.charged + baseline.free;

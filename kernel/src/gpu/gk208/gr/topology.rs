@@ -1,4 +1,5 @@
 /*
+ * Copyright 2011 Red Hat Inc.
  * Copyright 2012 Red Hat Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -46,7 +47,8 @@
  */
 //! Pure decoder of the GF100 topology reads selected by GK208's one-PPC setup.
 //! Source: Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba,
-//! nvkm/engine/gr/gf100.c:gf100_gr_oneinit and gk208.c:gk208_gr (MIT).
+//! nvkm/engine/gr/gf100.c:gf100_gr_oneinit, gk208.c:gk208_gr and
+//! fuc/gpc.fuc:149-156 (MIT): GPCCS_UNITS carries TPC count in bits 4:0.
 
 // The count occupies five bits; each PPC mask uses eight TPC bits.
 pub const MAX_GPCS: usize = 31;
@@ -86,7 +88,8 @@ pub fn decode(raw: &[[u32; 2]]) -> Result<Topology<'_>, &'static str> {
     };
     for gpc in 0..gpc_nr {
         let base = 0x500000 + u32::from(gpc) * 0x8000;
-        let count = read(raw, base + 0x2608)?;
+        // The same UNITS word also carries the ZCULL count in bits 20:16.
+        let count = read(raw, base + 0x2608)? & 0x1f;
         let mask = read(raw, base + 0x0c30)?;
         if count == 0 || count > MAX_TPCS || mask > 0xff || mask.count_ones() != count {
             return Err("GR TPC count or PPC mask out of range or inconsistent");
