@@ -7,6 +7,16 @@
   "hostRunner": true,
   "categories": [
     {
+      "id": "aperture",
+      "title": "CPU apertures and DMA",
+      "cases": [
+        {
+          "id": "cpu-dma",
+          "title": "BAR1 and BAR2 preserve nonce-bearing boundary patterns with explicit cache types and bounded coherent DMA; engine access remains pending"
+        }
+      ]
+    },
+    {
       "id": "vm",
       "title": "Private GPU virtual memory",
       "cases": [

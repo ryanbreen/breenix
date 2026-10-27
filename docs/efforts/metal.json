@@ -363,6 +363,16 @@
               "vm"
             ]
           }
+        },
+        {
+          "id": "aperture",
+          "title": "CPU apertures and coherent DMA preparation (M5 PR 5.3; engine access pending M6)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "aperture"
+            ]
+          }
         }
       ]
     }

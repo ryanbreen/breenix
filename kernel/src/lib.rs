@@ -67,6 +67,8 @@ pub mod window;
 // Unix domain sockets are fully arch-independent
 pub mod net;
 pub mod socket;
+#[path = "gpu/cache.rs"]
+pub mod gpu_cache;
 // The GPU core (syscall 416): ARM64 only until x86-64 joins the GPU era
 // (docs/gui/gpu.md section 1.6.4). Suite-mode test controls (syscall 415) serve
 // both architectures: the users suite's points are architecture-independent.

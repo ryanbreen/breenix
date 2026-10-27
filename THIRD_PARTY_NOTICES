@@ -434,3 +434,25 @@ existing 2012 Red Hat MIT notice for its saved BAR controls. The Breenix
 allocator, CPU probe policy and capture verifier remain original code.
 The exact source hashes and CPU-versus-engine evidence boundary are in
 `docs/gui/provenance/gt710-vm.md`. No GPL integration is incorporated.
+
+## GK208B CPU apertures and DMA preparation (E21 M5 PR 5.3)
+
+Source revision: nouveau in Linux v6.8,
+`e8f897f4afef0031fe618a8e94127a0934896aba`; paths relative to
+`drivers/gpu/drm/nouveau/`. The file-local full MIT grants were read before use.
+
+- `nvkm/subdev/bar/gf100.c`, Copyright 2012 Red Hat Inc., MIT:
+  `kernel/src/gpu/gk208/aperture.rs` uses BAR1/BAR2 instance controls and
+  the double-drain completion sequence. It calls the existing attributed
+  small-page and device-drain helpers.
+- `nvkm/subdev/mmu/gk104.c` and `nvkm/subdev/mmu/vmmgf100.c`,
+  Copyright 2017 Red Hat Inc., MIT: `kernel/src/gpu/gk208/dma_policy.rs`
+  uses the 40-bit DMA limit and coherent HOST/volatile PTE fields.
+- `nvkm/engine/fifo/gf100.c`, Copyright 2012 Red Hat Inc., MIT:
+  `kernel/src/gpu/gk208/aperture_probe.rs` reads pending fault records.
+
+These three consumers retain the applicable original copyright and full MIT
+permission notice in their headers. The probe's table construction invokes
+existing attributed M4 helpers. The ACPI/VT-d admission policy, owned-frame
+integration, CPU cache split and capture scorer are Breenix code written from
+standards and existing Breenix mechanisms. No Linux DMA/DRM integration is used.

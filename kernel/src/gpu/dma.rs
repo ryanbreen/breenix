@@ -29,45 +29,8 @@ fn frame_va(frame: &PhysFrame) -> u64 {
     crate::memory::physical_memory_offset().as_u64() + frame.start_address().as_u64()
 }
 
-/// The data cache line size from CTR_EL0 (Arm Architecture Reference Manual, D19.2.34).
-fn dcache_line() -> u64 {
-    let ctr: u64;
-    // SAFETY: CTR_EL0 is readable at EL1.
-    unsafe { core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack)) };
-    4 << ((ctr >> 16) & 0xF)
-}
-
-/// Clean `[va, va + len)` to the point of coherency, so the device reads what the CPU wrote.
-pub fn clean(va: u64, len: usize) {
-    maintain(va, len, false);
-}
-
-/// Clean and invalidate `[va, va + len)`, so the CPU reads what the device wrote.
-pub fn invalidate(va: u64, len: usize) {
-    maintain(va, len, true);
-}
-
-fn maintain(va: u64, len: usize, invalidate: bool) {
-    if len == 0 {
-        return;
-    }
-    let line = dcache_line();
-    let mut at = va & !(line - 1);
-    let end = va + len as u64;
-    while at < end {
-        // SAFETY: the range is mapped kernel memory owned by the caller.
-        unsafe {
-            if invalidate {
-                core::arch::asm!("dc civac, {}", in(reg) at, options(nostack));
-            } else {
-                core::arch::asm!("dc cvac, {}", in(reg) at, options(nostack));
-            }
-        }
-        at += line;
-    }
-    // SAFETY: barrier only.
-    unsafe { core::arch::asm!("dsb sy", options(nostack)) };
-}
+pub use crate::gpu_cache::{clean, invalidate};
+use crate::gpu_cache::dcache_line;
 
 /// A small, physically contiguous, zeroed buffer for command headers and responses.
 pub struct DmaBox {

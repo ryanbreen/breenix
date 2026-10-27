@@ -201,6 +201,8 @@ impl Io for Registers {
         Registers::read(self, r)
     }
     fn write(&mut self, r: usize, v: u32) {
+        // EVO PUT must not overtake CPU WC writes to the next scanout.
+        if r==0x640000 {crate::gpu_cache::drain_wc();}
         Registers::write(self, r, v);
     }
     fn delay_us(&mut self, us: u32) {

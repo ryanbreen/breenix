@@ -223,6 +223,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         }
     };
     let rsdp_addr = boot_info.rsdp_addr.into_option();
+    kernel::gk208::set_dma_platform(rsdp_addr,physical_memory_offset.as_u64());
     let memory_regions = &boot_info.memory_regions;
     memory::init(physical_memory_offset, memory_regions);
     kernel::console::splash::stage(kernel::console::splash::Stage::Heap);
