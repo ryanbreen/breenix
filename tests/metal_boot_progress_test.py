@@ -50,6 +50,12 @@ class BootProgressTest(existing.StateTest):
         self.assertEqual(raised.exception.status, m.EXIT_SHORT)
         self.d.on_reset.assert_called_once_with(at)
 
+    def test_pre_handoff_post_state_is_not_new_reset_evidence(self):
+        self.d.progress_key = ('SystemHardwareInitializationComplete', '', None)
+        self.d.post_code = 88
+        self.reading(1793095756.458, 'SystemHardwareInitializationComplete', 88)
+        self.assertIsNotNone(self.d.kernel_started)
+
     def test_post_code_and_banner_confirm_only_within_the_window(self):
         for evidence in ('code', 'banner', 'image'):
             with self.subTest(evidence=evidence):

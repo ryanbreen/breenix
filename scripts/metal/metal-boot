@@ -1596,7 +1596,8 @@ class Driver:
                 if self.kernel_started is None and self.request_at is None:
                     self.phase(f'POST code 0x{int(code):02x} · {self.since_power():.0f} s')
             key = progress_key(progress)
-            if key != self.progress_key:
+            progress_changed = key != self.progress_key
+            if progress_changed:
                 # Only a state new since power-on counts: the baseline may be left from an earlier power cycle.
                 self.progress_key = key
                 self.progress_changed = True
@@ -1611,7 +1612,7 @@ class Driver:
                     self.event('boot-progress-unknown', observed_at=observed_at, reading=reading)
                 elif not empty:
                     self.unknown_progress_key = None
-                if (not empty and key[0] not in RUNNING_STATES) or (pending and code_changed):
+                if (progress_changed and not empty and key[0] not in RUNNING_STATES) or (pending and code_changed):
                     self.on_reset(self.reset_time(observed_at))
                     if self.watchdog_trigger is not None or (session(self.args) and persistent(self.args)):
                         self.event('persistent-restart', observed_at=observed_at, state=key[0])
