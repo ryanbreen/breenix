@@ -7,6 +7,16 @@
   "hostRunner": true,
   "categories": [
     {
+      "id": "channel",
+      "title": "One privileged native channel (M6 PR 6.1)",
+      "cases": [
+        {
+          "id": "semaphore",
+          "title": "A privileged A06F channel executes unique semaphores with native identity, epoch and GET/PUT progression; withheld and stale completions fail"
+        }
+      ]
+    },
+    {
       "id": "lifetime",
       "title": "Memory lifetimes and fault containment",
       "cases": [

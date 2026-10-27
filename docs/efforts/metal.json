@@ -383,6 +383,16 @@
               "lifetime"
             ]
           }
+        },
+        {
+          "id": "channel",
+          "title": "Execute one privileged native channel (M6 PR 6.1)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "channel"
+            ]
+          }
         }
       ]
     }
