@@ -76,6 +76,27 @@ class RetainedSaveMap(unittest.TestCase):
         self.assertEqual(set(unexplained(images, written)), before | {256})
         self.assertEqual(unexplained(images, written)[0], 256)
 
+    def test_terminal_writes_and_the_first_gap_byte_remain_checked(self):
+        written = scorer_written(CAPTURES['record'])
+        # Literal end observations, independent of the scorer's arithmetic.
+        for start, end in [(1052,1056), (5068,5072), (19460,19472),
+                           (25864,25872), (33816,33824), (40964,40976),
+                           (44092,44096), (48524,48528), (50492,50496),
+                           (61272,61280), (67592,67600)]:
+            self.assertTrue(all(written[start:end]))
+            self.assertFalse(written[end])
+        # Zero-sized strands allocate space but do not issue memory writes.
+        for start in [41216, 44288, 44544]:
+            self.assertFalse(any(written[start:start+256]))
+        boot = CAPTURES['boots'][0]
+        original = {item['poison']: zlib.decompress((FIXTURES / item['file']).read_bytes())
+                    for item in boot['images']}
+        for offset in [1052, 1055, 1056, 19460, 19471, 19472, 41216]:
+            images = dict(original)
+            data = bytearray(images[170]); data[offset] ^= 1
+            images[170] = data
+            self.assertIn(offset, unexplained(images, written))
+
 
 if __name__ == '__main__':
     unittest.main()

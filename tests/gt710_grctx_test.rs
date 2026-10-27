@@ -467,3 +467,29 @@ fn inconsistent_size_header_or_poisoned_extent_is_refused_without_masking() {
         );
     }
 }
+
+#[test]
+fn terminal_writes_cover_whole_quads_without_consuming_empty_strands_or_allocation_gaps() {
+    // Firmware allocation: com.fuc:314-333. Terminal transfer footprint is
+    // the GK208B hardware observation retained in fixtures/gt710_save_map.
+    for (words, bytes) in [(0, 0), (1, 16), (2, 16), (3, 16), (4, 16),
+                           (63, 256), (64, 256), (65, 272)] {
+        let advance = (words / 64 + 1) * 256;
+        let gpc = 512 + advance;
+        let layout = context::SaveLayout {
+            gpc: 0, strands: 1, strand_base: (gpc + 256) / 256, strand_words: 4,
+            units: vec![
+                context::UnitLayout { controller: 0x409000, mmio_base: 1, mmio_words: 1,
+                    strands: vec![context::Strand { base: 2, words }] },
+                context::UnitLayout { controller: 0x502000, mmio_base: gpc / 256, mmio_words: 1,
+                    strands: vec![context::Strand { base: (gpc + 256) / 256, words: 4 }] },
+            ],
+        };
+        let mask = layout.written(gpc + 512).unwrap();
+        assert!(mask[256..272].iter().all(|v| *v));
+        assert!(mask[272..512].iter().all(|v| !*v));
+        assert_eq!(mask[512..gpc as usize].iter().filter(|v| **v).count(), bytes);
+        assert!(mask[512..512 + bytes].iter().all(|v| *v));
+        assert!(mask[512 + bytes..gpc as usize].iter().all(|v| !*v));
+    }
+}
