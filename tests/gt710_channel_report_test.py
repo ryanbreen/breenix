@@ -27,6 +27,10 @@ def fixture():
              drain=dict(runlist_count=0,pending=0,preempt=0,binding=0),
              retained_on_failure=True, firmware_writes=0, ce='pending-6.2',
              vm_probes='pending-6.2', reset='pending-6.5')
+    e['suppressed']=dict(epoch=1,expected=0x12345003,observed=0,get=3,put=3,
+                         reference=0x12345003,elapsed_us=10000,accepted=False)
+    e['clean']=dict(sequence=4,epoch=1,expected=0x12345004,before=0,after=0x12345004,
+                    get_before=3,put=4,get=4,reference=0x12345004)
     return BASE['SERIAL'], e
 
 
@@ -50,6 +54,19 @@ class ChannelCapture(unittest.TestCase):
                        lambda b:b.update(retained_on_failure=False),lambda b:b.update(vm_probes='passed')]:
             bad=copy.deepcopy(e);change(bad)
             with self.assertRaises(ValueError): check(bad)
+
+    def test_advanced_get_without_release_still_times_out_and_clean_next_executes(self):
+        serial,e=fixture()
+        def check(e): return API['privileged_channel'](serial+'GT710_CHANNEL '+json.dumps(e)+'\n')
+        check(e)
+        for mutate in [lambda b:b.pop('suppressed'),lambda b:b['suppressed'].update(accepted=True),
+                       lambda b:b['suppressed'].update(observed=b['suppressed']['expected']),
+                       lambda b:b['suppressed'].update(get=2),lambda b:b['suppressed'].update(elapsed_us=0),
+                       lambda b:b.pop('clean'),lambda b:b['clean'].update(after=0),
+                       lambda b:b['clean'].update(epoch=0),lambda b:b['clean'].update(get=3),
+                       lambda b:b['clean'].update(before=b['clean']['expected'])]:
+            bad=copy.deepcopy(e);mutate(bad)
+            with self.assertRaises(ValueError):check(bad)
 
     def test_channel_case_has_a_metal_measurement(self):
         manifest=json.loads((ROOT/'docs/suites/gt710.json').read_text());API['validate_manifest'](manifest)
