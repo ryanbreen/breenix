@@ -231,8 +231,9 @@ impl SaveLayout {
                 return Err("invalid saved-data size words".into());
             }
             let logical_end = cursor + u64::from(unit.mmio_words) * 4;
-            // GK208B saves a terminal four-word memory transaction. The
-            // firmware count is logical words (com.fuc:152-171), whereas
+            // Measured GK208B model: terminal four-word writes, observed in
+            // boots 191735Z and 195818Z (G8). This is not a source fact.
+            // The firmware count is logical words (com.fuc:152-171), whereas
             // allocation still follows hub.fuc:160-164 / com.fuc:314-333.
             // Hardware evidence and the distinction are recorded in
             // docs/gui/gt710-graphics-channel-acceptance.md.

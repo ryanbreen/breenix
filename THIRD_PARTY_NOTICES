@@ -753,3 +753,9 @@ in `rnndb/copyright.xml`; its author list and full grant are retained in
 the consumer header. The snapshot reads status, enables, host interrupt-line
 state, runlist/engine state and enabled PBDMAs before GR gating as well as
 before and after the probe. It does not alter interrupt policy.
+
+The terminal-width provenance cross-check reads the same checked MIT
+rnndb `falcon.xml:227-246` (`XFER_CTRL.SIZE`) and MIT
+`hub.fuc:585-592` (`xdst` channel-header store), and checks
+`gpc.fuc:403-489` for its distinct strand/MMCTX path. These do not define
+MMCTX/strand terminal width; no implementation is adapted from them here.

@@ -373,8 +373,9 @@ sources do **not** specify the terminal memory transaction width.
 
 GK208B hardware saves end nonempty MMIO and strand writes on four-word
 boundaries: `write_end = base * 256 + ((words + 3) / 4) * 16`.
-This is a measured hardware model, not a claim that the firmware performs
-that rounding. `tests/fixtures/gt710_save_map/captures.json` identifies the
+This is the measured GK208B model permitted by G8, from boots
+`20261027T191735Z-metal` and `20261027T195818Z-metal`, not a claim that the
+firmware performs that rounding. `tests/fixtures/gt710_save_map/captures.json` identifies the
 retained observations. Comparing the 19 section ends in each of its two
 boots gives the following terminal extensions; the remaining eight sections
 have no extension. Three of those eight are zero-sized strands and leave
@@ -403,3 +404,15 @@ ignored. <!-- claim-lint:ok: kernel/src/gpu/gk208/gr/context.rs and scripts/meta
 `tests/gt710_graphics_report_test.py` rejects matching nonzero terminal fill
 after refreshing transport and image hashes. The final-head hardware gate
 must still produce two complete saves and execute the A197 release controls.
+
+The transfer-width cross-check uses MIT envytools
+`f102b82381f3f11cee113d16374c87091db039d9`,
+`rnndb/falcon.xml:227-246`, whose explicit `copyright.xml` import carries
+the MIT grant. `XFER_CTRL.SIZE` encodes 16, 32, 64, 128 and 256 bytes as
+2 through 6. Pinned MIT `hub.fuc:585-592` uses `xdst` with size encoding 6
+to store the 256-byte channel header after clearing its MMIO count.
+`gpc.fuc` has no `xdst`; its `ctx_xfer:403-489` invokes strand SAVE/LOAD
+and `mmctx_xfer`. These facts describe Falcon DMA and the header store;
+they do not specify the terminal width of MMCTX or strand saves. The
+16-byte terminal rule therefore remains measured, bounded to at most
+12 bytes equal to 0 per nonempty section, with the remaining bytes checked against written data or original poison.

@@ -699,8 +699,9 @@ def graphics_engine(serial):
                  'saved size words')
             start = cursor
             logical_end = start + unit['mmio_words'] * 4
-            # Logical count and allocation come from the firmware; GK208B
-            # terminal quad writes are a separately checked hardware fact.
+            # Logical count/allocation come from firmware. Terminal quad
+            # writes are the measured GK208B model (G8, boots 191735Z and
+            # 195818Z), not a transfer-width fact stated by those sources.
             end = (logical_end + 15) & ~15
             need(end <= size, 'saved size words')
             written[start:end] = bytes([1]) * (end - start)
