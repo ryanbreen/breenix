@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""Assemble a private RAM-only EFI nouveau trace instrument from extracted distro packages.
+
+Run in the low-priority Linux build container. Needs kmod, binutils, zstd and cpio.
+The package root must contain an EFI-stub kernel, its config/modules, static BusyBox,
+and systemd's linuxx64.efi.stub. Package provenance stays in the private directory.
+"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import struct
+import subprocess
+
+from metal_trace import validate_config
+
+
+def run(*args, **kw):
+    return subprocess.run(args, check=True, **kw)
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('packages', type=Path)
+    p.add_argument('output', type=Path)
+    p.add_argument('--release', required=True)
+    a = p.parse_args()
+    src, out = a.packages.resolve(), a.output.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    config = src / 'boot' / ('config-' + a.release)
+    validate_config(config.read_text())
+    root = out / 'initramfs'
+    root.mkdir(exist_ok=False)
+    for name in ('bin', 'sbin', 'proc', 'sys', 'dev', 'tmp', 'etc/modprobe.d'):
+        (root / name).mkdir(parents=True, exist_ok=True)
+    busybox = src / 'usr/bin/busybox'
+    if not busybox.exists():
+        busybox = src / 'bin/busybox'
+    info = subprocess.run(['ldd', str(busybox)], capture_output=True, text=True)
+    if not any(s in info.stdout + info.stderr for s in ('not a dynamic executable', 'statically linked')):
+        raise ValueError('BusyBox must be static')
+    shutil.copy2(busybox, root / 'bin/busybox')
+    for name in ('sh', 'mount', 'mkdir', 'cat', 'echo', 'uname', 'readlink', 'awk', 'sleep', 'head',
+                 'tail', 'grep', 'base64', 'tar', 'gzip', 'wc', 'sha256sum', 'cut', 'dmesg', 'false'):
+        (root / 'bin' / name).symlink_to('busybox')
+    (root / 'sbin/modprobe').symlink_to('../bin/busybox')
+    shutil.copy2(Path(__file__).with_name('metal-linux-trace-init'), root / 'init')
+    shutil.copy2(Path(__file__).with_name('metal-linux-trace-filter.awk'), root / 'filter.awk')
+    run('depmod', '-b', str(src), a.release)
+    deps = subprocess.check_output(['modprobe', '-d', str(src), '-S', a.release,
+                                    '--show-depends', 'nouveau'], text=True)
+    allowed = []
+    for line in deps.splitlines():
+        if not line.startswith('insmod '):
+            raise ValueError('unexpected module dependency')
+        module = Path(line.split()[1])
+        relative = module.relative_to(src)
+        # Only these driver families are required by the distribution nouveau module.
+        if not any('/' + family + '/' in str(relative) for family in
+                   ('gpu', 'i2c', 'video', 'acpi')) and module.name.split('.')[0] not in (
+                       'ttm', 'drm', 'drm_kms_helper', 'drm_display_helper', 'drm_ttm_helper',
+                       'drm_buddy', 'cec', 'rc-core', 'i2c-algo-bit', 'video', 'wmi', 'mxm-wmi'):
+            raise ValueError('unexpected nouveau dependency: ' + str(relative))
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if module.suffix == '.zst':
+            target = target.with_suffix('')
+            with target.open('wb') as f:
+                run('zstd', '-q', '-d', '-c', str(module), stdout=f)
+        else:
+            shutil.copy2(module, target)
+        allowed.append(str(target.relative_to(root)))
+    moddir = Path('lib/modules') / a.release
+    for name in ('modules.builtin', 'modules.builtin.modinfo', 'modules.order'):
+        if (src / moddir / name).exists():
+            shutil.copy2(src / moddir / name, root / moddir / name)
+    run('depmod', '-b', str(root), a.release, stdout=subprocess.DEVNULL)
+    # Every network driver is absent. Explicit blacklists also document the policy.
+    nic_names = set()
+    for module in (src / moddir / 'kernel/drivers/net').rglob('*.ko*'):
+        nic_names.add(module.name.split('.')[0])
+    (root / 'etc/modprobe.d/no-network.conf').write_text(
+        ''.join('blacklist ' + name + '\n' for name in sorted(nic_names | {'tg3'})))
+    cmdline = ('console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200n8 loglevel=3 '
+               'panic=0 rdinit=/init drm.debug=0x1ff log_buf_len=16M '
+               'nouveau.modeset=1 nouveau.noaccel=1 nouveau.debug=debug '
+               'module_blacklist=tg3 ip=off maxcpus=1')
+    (out / 'cmdline').write_bytes(cmdline.encode() + b'\0')
+    # cpio reads a NUL-delimited inventory so names are not interpreted by a shell.
+    paths = b'\0'.join(os.fsencode(p.relative_to(root)) for p in sorted(root.rglob('*'))) + b'\0'
+    with (out / 'initrd').open('wb') as f:
+        run('cpio', '--null', '-o', '-H', 'newc', '--quiet', cwd=root, input=paths, stdout=f)
+    image = out / 'metal-linux.efi'
+    stub = src / 'usr/lib/systemd/boot/efi/linuxx64.efi.stub'
+    header = stub.read_bytes()
+    pe = struct.unpack_from('<I', header, 0x3c)[0]
+    image_base = struct.unpack_from('<Q', header, pe + 24 + 24)[0]
+    run('objcopy', '--add-section', '.cmdline=' + str(out / 'cmdline'),
+        '--change-section-vma', '.cmdline=' + hex(image_base + 0x30000), '--add-section', '.linux=' + str(src / 'boot' / ('vmlinuz-' + a.release)),
+        '--change-section-vma', '.linux=' + hex(image_base + 0x2000000), '--add-section', '.initrd=' + str(out / 'initrd'),
+        '--change-section-vma', '.initrd=' + hex(image_base + 0x4000000),
+        str(stub), str(image))
+    shutil.copyfile(config, out / 'config')
+    (out / 'modules.txt').write_text('\n'.join(allowed) + '\n')
+    files = {name: {'size': (out / filename).stat().st_size,
+                     'sha256': hashlib.sha256((out / filename).read_bytes()).hexdigest()}
+             for name, filename in (('efi', 'metal-linux.efi'), ('config', 'config'))}
+    (out / 'build.json').write_text(json.dumps({'profile': 'nouveau-trace', 'version': a.release,
+                                               'modules': allowed, 'files': files}, indent=2) + '\n')
+    print(json.dumps({'size': image.stat().st_size, 'modules': allowed}))
+
+
+if __name__ == '__main__':
+    main()

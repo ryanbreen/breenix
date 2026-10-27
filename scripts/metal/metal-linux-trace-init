@@ -1,0 +1,108 @@
+#!/bin/busybox sh
+export PATH=/bin:/sbin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mount -t tmpfs tmpfs /tmp
+mkdir -p /sys/kernel/debug /sys/kernel/tracing /tmp/capture
+mount -t debugfs debugfs /sys/kernel/debug
+mount -t tracefs tracefs /sys/kernel/tracing
+echo /bin/false > /proc/sys/kernel/modprobe
+echo 0 > /proc/sys/kernel/printk
+exec > /dev/ttyS0 2>&1
+cd /tmp/capture
+uname -a > uname.txt
+cat /proc/cmdline > cmdline.txt
+{
+    echo 'PRE-LOAD'
+    cat /proc/modules /proc/mounts
+    for d in /sys/bus/pci/devices/*; do
+        echo "DEVICE ${d##*/} $(cat "$d/vendor") $(cat "$d/device") $(cat "$d/class") driver=$(readlink "$d/driver")"
+        cat "$d/resource"
+    done
+    cat /sys/class/graphics/fb*/name 2>/dev/null
+    cat /proc/iomem
+} > safety.txt
+GPU=
+for d in /sys/bus/pci/devices/*; do
+    if [ "$(cat "$d/vendor")" = 0x10de ] && [ "$(cat "$d/device")" = 0x128b ]; then GPU=$d; fi
+done
+status=0
+if [ -z "$GPU" ] || [ -e /sys/module/nouveau ]; then status=1; fi
+BAR=$(awk 'NR==1 {print $1}' "$GPU/resource")
+echo 131072 > /sys/kernel/tracing/buffer_size_kb
+if ! echo mmiotrace > /sys/kernel/tracing/current_tracer; then status=1; fi
+cat /sys/kernel/tracing/trace_pipe > /tmp/trace.raw &
+reader=$!
+echo metal-trace-start
+echo 'NOUVEAU_MODULE_LOAD_BEGIN' > /sys/kernel/tracing/trace_marker
+if [ "$status" = 0 ]; then
+    (modprobe nouveau modeset=1 noaccel=1 debug=debug > /tmp/modprobe.log 2>&1
+     echo "$?" > /tmp/modprobe.status) &
+    loader=$!
+    ticks=0
+    while [ ! -f /tmp/modprobe.status ] && [ "$ticks" -lt 20 ]; do
+        sleep 5
+        ticks=$((ticks + 1))
+        echo "metal-trace-progress phase=module bytes=$(wc -c < /tmp/trace.raw)"
+    done
+    if [ ! -f /tmp/modprobe.status ]; then
+        status=1
+        echo 'Module load did not return within the 100 s observation bound' >> safety.txt
+        cat /proc/$loader/stack >> safety.txt 2>&1
+        for pid in $(cat /proc/$loader/task/$loader/children); do
+            cat /proc/$pid/stack >> safety.txt 2>&1
+        done
+    elif [ "$(cat /tmp/modprobe.status)" != 0 ]; then
+        status=1
+    fi
+fi
+echo "metal-trace-progress phase=module-return bytes=$(wc -c < /tmp/trace.raw)"
+echo 'NOUVEAU_MODULE_OBSERVATION_BOUNDARY' > /sys/kernel/tracing/trace_marker
+sleep 10
+echo "metal-trace-progress phase=collect bytes=$(wc -c < /tmp/trace.raw)"
+{
+    cat /tmp/modprobe.log
+    cat /sys/kernel/debug/dri/*/state 2>/dev/null
+    for d in /sys/class/drm/card*-*; do
+        echo "CONNECTOR ${d##*/}"
+        cat "$d/status" "$d/enabled" "$d/modes" 2>/dev/null
+        base64 "$d/edid" 2>/dev/null
+    done
+    cat /sys/class/graphics/fb*/name /sys/class/graphics/fb*/virtual_size 2>/dev/null
+} > display.txt
+echo 'FIRST_NATIVE_MODE_OBSERVATION_END' > /sys/kernel/tracing/trace_marker
+echo 0 > /sys/kernel/tracing/tracing_on
+sleep 1
+# This is the reader started by this init, not another lane's process.
+kill "$reader" 2>/dev/null
+wait "$reader" 2>/dev/null
+echo nop > /sys/kernel/tracing/current_tracer
+cat /proc/modules >> safety.txt
+cat /proc/mounts >> safety.txt
+dmesg > dmesg.txt
+echo "metal-trace-progress phase=filter bytes=$(wc -c < /tmp/trace.raw)"
+head -n 2000 /tmp/trace.raw > first.txt
+tail -n 2000 /tmp/trace.raw > last.txt
+awk -v bar="$BAR" -f /filter.awk /tmp/trace.raw > trace.txt
+{
+    echo "BAR0=$BAR"
+    echo 'Retained BAR0 offsets: 610000-6fffff,1700-1704,100c80-100cff,102000-102fff,70000-70fff,200; all non-access records; first/last 2000 raw lines separately.'
+    wc -lc /tmp/trace.raw trace.txt first.txt last.txt
+} > filter.txt
+if grep -qi 'lost.*events\|events.*lost' /tmp/trace.raw dmesg.txt; then status=1; fi
+if ! grep -q nouveaudrmfb display.txt; then status=1; fi
+echo "$status" > status.txt
+echo "metal-trace-progress phase=compress bytes=$(wc -c < /tmp/trace.raw)"
+tar -czf /tmp/capture.tar.gz trace.txt first.txt last.txt dmesg.txt uname.txt cmdline.txt safety.txt display.txt filter.txt status.txt
+size=$(wc -c < /tmp/capture.tar.gz)
+if [ "$size" -gt 900000 ]; then
+    echo 'metal-trace-failed: compressed capture exceeds budget'
+else
+    echo "TRACE $size $(sha256sum /tmp/capture.tar.gz | cut -d' ' -f1)"
+    echo 'BEGIN metal-nouveau-trace-v1'
+    base64 /tmp/capture.tar.gz
+    echo 'END metal-nouveau-trace-v1'
+    echo metal-trace-ok
+fi
+while :; do sleep 60; done

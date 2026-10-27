@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metal_lib as m  # noqa: E402
 import metal_image  # noqa: E402
 import metal_census  # noqa: E402
+import metal_trace  # noqa: E402
 import metal_root  # noqa: E402
 import metal_score  # noqa: E402
 import metal_disk  # noqa: E402
@@ -54,7 +55,7 @@ DISK_ACTIONS = ('install', 'root')
 READ_BACK_LINE = re.compile(r'\[storage\] read back identical: (\d+) bytes, sha256 after the record sector ([0-9a-f]{64})')
 ROOT_RECORD_LINE = re.compile(r'\[storage\] root record: installed by boot ([A-Za-z0-9-]+), (\d+) bytes, sha256 ([0-9a-f]{64})')
 INTENT_LINE = re.compile(r'\[console\] input preparation: replug (requested|not requested) by (fw_cfg|intent|target)')
-PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-readback', 'manager', 'persistent')
+PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'linux-trace', 'disk-readback', 'manager', 'persistent')
 CEILING_SECONDS = {'default': 900, 'shell': 900, 'probe': 900, 'suite': 1320, 'console': 900, 'tests': 1500,
                    'persistent-install': 2400, 'persistent': 900}
 # The install boot's stub writes the layout and the test root before the bootloader starts (README, "Install and
@@ -256,7 +257,8 @@ class Driver:
         self.lease_ceiling = None
         self.post_budget = m.DEFAULT_POST_BUDGET
         self.stopping = threading.Event()
-        self.census = metal_census.Census() if args.payload == 'linux' else None
+        self.census = (metal_census.Census() if args.payload == 'linux' else
+                       metal_trace.Trace() if args.payload == 'linux-trace' else None)
 
     # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
     # Record helpers: event text is always a fixed template or redacted.
@@ -280,7 +282,7 @@ class Driver:
         fault = xhci_fault(self.args) or self.args.inject in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS)
         kind = ('fault-test' if fault else 'persistent' if persistent(self.args)
                 else 'console-session' if session(self.args)
-                else {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test'))
+                else {'image': 'boot', 'linux': 'platform-census', 'linux-trace': 'linux-trace'}.get(self.args.payload, 'fault-test'))
         run = {'id': self.id, 'platform': 'metal', 'arch': 'x86_64', 'mode': self.args.mode, 'target': target,
                'catchup': bool(getattr(self.args, 'catchup', False)),
                'taskName': self.args.task or self.id, 'watch': False, 'display': False, 'startedAt': m.now(),
@@ -431,7 +433,7 @@ class Driver:
                                       contentType=metal_image.CONTENT_TYPES['efi'], name='boot.efi')
             self.delivery['image'] = {k: v for k, v in self.payload_facts.items() if k != 'path'}
             return
-        if self.args.payload == 'linux':
+        if self.args.payload in ('linux', 'linux-trace'):
             manifest = m.read_json(inputs / 'build.json', {})
             image = inputs / 'metal-linux.efi'
             expected = manifest.get('files', {}).get('efi', {})
@@ -444,7 +446,8 @@ class Driver:
                     metal_image.sha256(config) != config_facts.get('sha256')):
                 raise Finish(m.EXIT_CANCELLED, 'Linux configuration checksum mismatch')
             try:
-                metal_census.validate_config(config.read_text())
+                validator = metal_trace if self.args.payload == 'linux-trace' else metal_census
+                validator.validate_config(config.read_text())
             except ValueError:
                 raise Finish(m.EXIT_CANCELLED, 'Linux configuration violates instrument constraints')
             shutil.copyfile(inputs / 'build.json', self.dir / 'linux-build.json')
@@ -1064,7 +1067,7 @@ class Driver:
 
         self.on_manager_line(line, observed_at, seconds)
         if self.census:
-            if line == 'metal-linux-start' and self.kernel_started is None:
+            if line in ('metal-linux-start', 'metal-trace-start') and self.kernel_started is None:
                 self.kernel_started = observed_at
                 self.last_stage = 'Linux census started'
                 self.event('linux-started', observed_at=observed_at, seconds=seconds)
@@ -1957,7 +1960,7 @@ class Driver:
                 if self.census and status == m.EXIT_DONE:
                     if off and not self.gap:
                         try:
-                            self.census.write(self.dir / 'platform-facts')
+                            self.census.write(self.dir / ('linux-trace' if self.args.payload == 'linux-trace' else 'platform-facts'))
                         except (ValueError, OSError):
                             self.event('linux-evidence-write-failed')
                             status = m.EXIT_INCOMPLETE
