@@ -556,3 +556,29 @@ the hardware interface facts from:
 Both file headers retain the copyright notices and full permission grants.
 These encodings describe source-built firmware startup and graphics completion;
 they contain no captured context, shader or proprietary firmware bytes.
+
+## GK208 graphics init and context lists
+
+The following unmodified nouveau files are pinned to Linux v6.8 commit
+`e8f897f4afef0031fe618a8e94127a0934896aba`. Each retains its MIT grant;
+`vendor/kepler/sources.json` records the upstream path, commit, license line
+and SHA-256. The root PolyForm license does not replace these MIT terms.
+
+Consumers: `tools/kepler/gr_tables.py` reads their arrays and emits
+`kernel/src/gpu/gk208/gr/tables.rs`, retaining each full original notice.
+`tests/gt710_gr_tables_test.py` independently checks the data and provenance.
+The graphics comparator in `scripts/metal/gt710-suite` pins the list digests.
+
+| Vendored source | Upstream source | License and copyright |
+|---|---|---|
+| `vendor/kepler/nouveau/gr/ctxgf100.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/ctxgf100.c` | MIT; Copyright 2010 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/ctxgf117.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/ctxgf117.c` | MIT; Copyright 2013 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/ctxgk104.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/ctxgk104.c` | MIT; Copyright 2013 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/ctxgk110.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/ctxgk110.c` | MIT; Copyright 2013 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/ctxgk208.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/ctxgk208.c` | MIT; Copyright 2013 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/gf100.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/gf100.c` | MIT; Copyright 2012 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/gf117.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/gf117.c` | MIT; Copyright 2013 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/gf119.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/gf119.c` | MIT; Copyright 2013 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/gk104.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/gk104.c` | MIT; Copyright 2013 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/gk110.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/gk110.c` | MIT; Copyright 2013 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/gk208.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/gk208.c` | MIT; Copyright 2013 Red Hat Inc. |

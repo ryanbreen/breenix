@@ -912,6 +912,138 @@
       "vendored_sha256": "4c69991407e82306dec7364d5fcc67c08bedbaf32b0e80d592c7665588db336a",
       "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/fuc/os.h",
       "adapted": false
+    },
+    {
+      "project": "nouveau",
+      "path": "gr/ctxgf100.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2010 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs\n */",
+      "license_line": "Permission is hereby granted, free of charge, to any person obtaining a",
+      "commit": "e8f897f4afef0031fe618a8e94127a0934896aba",
+      "upstream_sha256": "f22a88255ddcaf1089965903a172f79dee6103a1650b431c355d402689c71b6f",
+      "vendored_sha256": "f22a88255ddcaf1089965903a172f79dee6103a1650b431c355d402689c71b6f",
+      "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/ctxgf100.c",
+      "adapted": false
+    },
+    {
+      "project": "nouveau",
+      "path": "gr/ctxgf117.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs <bskeggs@redhat.com>\n */",
+      "license_line": "Permission is hereby granted, free of charge, to any person obtaining a",
+      "commit": "e8f897f4afef0031fe618a8e94127a0934896aba",
+      "upstream_sha256": "f8869c05203618ac55e762d13d31fcd0c93e6bbae600a6898423ce062860033c",
+      "vendored_sha256": "f8869c05203618ac55e762d13d31fcd0c93e6bbae600a6898423ce062860033c",
+      "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/ctxgf117.c",
+      "adapted": false
+    },
+    {
+      "project": "nouveau",
+      "path": "gr/ctxgk104.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs <bskeggs@redhat.com>\n */",
+      "license_line": "Permission is hereby granted, free of charge, to any person obtaining a",
+      "commit": "e8f897f4afef0031fe618a8e94127a0934896aba",
+      "upstream_sha256": "c2f9b1ff6d1aae759f5d4129ebd588d5e749a580547c296432e249c5e8df04d7",
+      "vendored_sha256": "c2f9b1ff6d1aae759f5d4129ebd588d5e749a580547c296432e249c5e8df04d7",
+      "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/ctxgk104.c",
+      "adapted": false
+    },
+    {
+      "project": "nouveau",
+      "path": "gr/ctxgk110.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs <bskeggs@redhat.com>\n */",
+      "license_line": "Permission is hereby granted, free of charge, to any person obtaining a",
+      "commit": "e8f897f4afef0031fe618a8e94127a0934896aba",
+      "upstream_sha256": "0d113681135d06ed4e8db876f2d083ca470edf6fa46cb2f335dab826b8058cd6",
+      "vendored_sha256": "0d113681135d06ed4e8db876f2d083ca470edf6fa46cb2f335dab826b8058cd6",
+      "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/ctxgk110.c",
+      "adapted": false
+    },
+    {
+      "project": "nouveau",
+      "path": "gr/ctxgk208.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs <bskeggs@redhat.com>\n */",
+      "license_line": "Permission is hereby granted, free of charge, to any person obtaining a",
+      "commit": "e8f897f4afef0031fe618a8e94127a0934896aba",
+      "upstream_sha256": "671151b6cda10e1a6590a3776b937caa234fa2113c97613950dba21fb51024f6",
+      "vendored_sha256": "671151b6cda10e1a6590a3776b937caa234fa2113c97613950dba21fb51024f6",
+      "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/ctxgk208.c",
+      "adapted": false
+    },
+    {
+      "project": "nouveau",
+      "path": "gr/gf100.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2012 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs\n */",
+      "license_line": "Permission is hereby granted, free of charge, to any person obtaining a",
+      "commit": "e8f897f4afef0031fe618a8e94127a0934896aba",
+      "upstream_sha256": "2bfb440995838d50d6497d6eedfbf1899be22e4fbeacbd23cfbfc189f5be7602",
+      "vendored_sha256": "2bfb440995838d50d6497d6eedfbf1899be22e4fbeacbd23cfbfc189f5be7602",
+      "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/gf100.c",
+      "adapted": false
+    },
+    {
+      "project": "nouveau",
+      "path": "gr/gf117.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs <bskeggs@redhat.com>\n */",
+      "license_line": "Permission is hereby granted, free of charge, to any person obtaining a",
+      "commit": "e8f897f4afef0031fe618a8e94127a0934896aba",
+      "upstream_sha256": "fcf619c5071def99c3ce0011d560117b0ac88430a4fe60841a85e8c176594d33",
+      "vendored_sha256": "fcf619c5071def99c3ce0011d560117b0ac88430a4fe60841a85e8c176594d33",
+      "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/gf117.c",
+      "adapted": false
+    },
+    {
+      "project": "nouveau",
+      "path": "gr/gf119.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs <bskeggs@redhat.com>\n */",
+      "license_line": "Permission is hereby granted, free of charge, to any person obtaining a",
+      "commit": "e8f897f4afef0031fe618a8e94127a0934896aba",
+      "upstream_sha256": "a5c30dc78e69a7c72a9e44b3511c3a950267ddcb57aa3a8ce9101657f7836641",
+      "vendored_sha256": "a5c30dc78e69a7c72a9e44b3511c3a950267ddcb57aa3a8ce9101657f7836641",
+      "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/gf119.c",
+      "adapted": false
+    },
+    {
+      "project": "nouveau",
+      "path": "gr/gk104.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs <bskeggs@redhat.com>\n */",
+      "license_line": "Permission is hereby granted, free of charge, to any person obtaining a",
+      "commit": "e8f897f4afef0031fe618a8e94127a0934896aba",
+      "upstream_sha256": "71b413d2d0a51e364d6b5bd93f3a59df555995ba603b185a4cf0b98a20f3ae34",
+      "vendored_sha256": "71b413d2d0a51e364d6b5bd93f3a59df555995ba603b185a4cf0b98a20f3ae34",
+      "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/gk104.c",
+      "adapted": false
+    },
+    {
+      "project": "nouveau",
+      "path": "gr/gk110.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs <bskeggs@redhat.com>\n */",
+      "license_line": "Permission is hereby granted, free of charge, to any person obtaining a",
+      "commit": "e8f897f4afef0031fe618a8e94127a0934896aba",
+      "upstream_sha256": "3af47fec0c4c2aa379e51b14fe43588734181324b55f20be6d5c6ce816f4d693",
+      "vendored_sha256": "3af47fec0c4c2aa379e51b14fe43588734181324b55f20be6d5c6ce816f4d693",
+      "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/gk110.c",
+      "adapted": false
+    },
+    {
+      "project": "nouveau",
+      "path": "gr/gk208.c",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs <bskeggs@redhat.com>\n */",
+      "license_line": "Permission is hereby granted, free of charge, to any person obtaining a",
+      "commit": "e8f897f4afef0031fe618a8e94127a0934896aba",
+      "upstream_sha256": "7523dbd732013be07a81da51d3fc367125abe8625dd93caf789d0a88d7569f09",
+      "vendored_sha256": "7523dbd732013be07a81da51d3fc367125abe8625dd93caf789d0a88d7569f09",
+      "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/gk208.c",
+      "adapted": false
     }
   ]
 }

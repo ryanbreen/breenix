@@ -92,6 +92,8 @@
  */
 //! GK208B board inventory, before native display ownership (E19 PR 4.1).
 //! Runs once on the boot CPU before secondary CPUs and GPU clients exist.
+#[path = "gr/tables.rs"]
+pub mod gr_tables;
 mod board;
 mod ddc;
 mod edid;
