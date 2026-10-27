@@ -125,6 +125,8 @@ pub enum ProcEntryType {
     /// /proc/net/tcp - TCP listeners and connections, the first columns of Linux's format
     NetTcp,
     /// /proc/console - screen console directory
+    #[cfg(target_arch="x86_64")]
+    Gt710Pixels,
     ConsoleDir,
     /// /proc/console/check - the screen read back against the console's shadow
     /// and font, where it was read, and the text rows it shows
@@ -201,6 +203,8 @@ impl ProcEntryType {
             ProcEntryType::NetDir => "net",
             ProcEntryType::NetPnp => "pnp",
             ProcEntryType::NetTcp => "tcp",
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Pixels => "gt710-pixels",
             ProcEntryType::ConsoleDir => "console",
             ProcEntryType::ConsoleCheck => "check",
             #[cfg(target_arch = "x86_64")]
@@ -261,6 +265,8 @@ impl ProcEntryType {
             ProcEntryType::NetDir => "/proc/net",
             ProcEntryType::NetPnp => "/proc/net/pnp",
             ProcEntryType::NetTcp => "/proc/net/tcp",
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Pixels => "/proc/gt710-pixels",
             ProcEntryType::ConsoleDir => "/proc/console",
             ProcEntryType::ConsoleCheck => "/proc/console/check",
             #[cfg(target_arch = "x86_64")]
@@ -326,6 +332,8 @@ impl ProcEntryType {
             ProcEntryType::FbconDir => 500,
             #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconCheck => 501,
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Pixels => 507,
             ProcEntryType::ConsoleDir => 502,
             ProcEntryType::ConsoleCheck => 503,
             ProcEntryType::PidDir(pid) => pid_inode(*pid, 0),
@@ -471,6 +479,8 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetDir));
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetPnp));
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetTcp));
+    #[cfg(target_arch="x86_64")]
+    procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Pixels));
 
     // Register the screen console's directories and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::ConsoleDir));
@@ -861,6 +871,8 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         }
         ProcEntryType::NetPnp => net::generate_pnp().map(String::into_bytes),
         ProcEntryType::NetTcp => crate::net::tcp::proc_net_tcp().map(String::into_bytes),
+        #[cfg(target_arch="x86_64")]
+        ProcEntryType::Gt710Pixels => require(Operation::Trace).map(|()|crate::gk208::proc_pixels()),
         ProcEntryType::ConsoleDir => text(String::from("check\n")),
         ProcEntryType::ConsoleCheck => crate::console::proc_console_check().map(String::into_bytes),
         #[cfg(target_arch = "x86_64")]

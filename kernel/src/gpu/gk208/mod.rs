@@ -95,6 +95,7 @@
 mod board;
 mod ddc;
 mod edid;
+mod bulk;
 mod memory;
 mod inventory;
 mod vm;
@@ -113,6 +114,7 @@ mod modeset;
 mod native;
 pub use native::{ConsoleSurface,console_binding,takeover_started};
 mod rom;
+pub fn proc_pixels()->Vec<u8> {bulk::take()}
 static DISPLAY_MEMORY: conquer_once::spin::OnceCell<memory::Layout> =
     conquer_once::spin::OnceCell::uninit();
 use crate::arch_impl::x86_64::timer;
@@ -322,12 +324,24 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
                 regs.read(0x640000),regs.read(0x640004),regs.read(0x6100ac),regs.read(0x6101d4+head as usize*0x800));
         }
         let console=result?;
-        if native::suite_requested() {
+        if native::memory_requested() {
+            let start=timer::rdtsc();
             inventory::probe(&mut regs,&device,&mut layout,&console)?;
+            crate::serial_println!("GT710_PROBE_TIME inventory us={}",channel::elapsed(start));
+            let start=timer::rdtsc();
             vm_probe::probe(&mut regs,&device,&mut layout,&console)?;
+            crate::serial_println!("GT710_PROBE_TIME vm-lifetime us={}",channel::elapsed(start));
+            let start=timer::rdtsc();
             aperture_probe::probe(&mut regs,&device,&mut layout,&console)?;
+            crate::serial_println!("GT710_PROBE_TIME aperture us={}",channel::elapsed(start));
+        }
+        if native::suite_requested() {
+            let start=timer::rdtsc();
             channel::probe(&mut regs,&device,&mut layout,&console)?;
+            crate::serial_println!("GT710_PROBE_TIME channel us={}",channel::elapsed(start));
+            let start=timer::rdtsc();
             ce::probe(&mut regs,&device,&mut layout,&console)?;
+            crate::serial_println!("GT710_PROBE_TIME ce-completion us={}",channel::elapsed(start));
         }
         DISPLAY_MEMORY.try_get_or_init(||layout).map_err(|_|"display memory already initializing")?;
         return Ok(console);

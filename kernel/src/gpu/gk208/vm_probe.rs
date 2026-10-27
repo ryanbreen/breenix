@@ -330,6 +330,7 @@ pub fn probe(
             1,
         )?);
         let snapshots_before = snapshots.clone();
+        let lifetime_start=crate::arch_impl::x86_64::timer::rdtsc();
         let tickets = [Consumer::Queued, Consumer::Readback, Consumer::Scanout]
             .into_iter()
             .map(|kind| a.hold(kind))
@@ -443,6 +444,7 @@ pub fn probe(
         stages.push(stage("cpu-cancel", &a, &layout.allocator));
         let lifetime=format!("\"stages\":[{}],\"blocked\":{{\"release_backing\":1,\"release_tables\":{},\"remap\":1,\"unmap\":1,\"retire\":6}},\"fault\":{{\"raw\":{:?},\"instance\":{},\"address\":4660,\"reason\":2}},\"attributed\":[{},{},{}],\"unaffected\":true,\"snapshots_before\":[{}],\"snapshots_retained\":[{}]",
             stages.join(","),table_blocks,raw,instance,own,foreign,unknown,snapshots_before.join(","),retained_snapshots.join(","));
+        crate::serial_println!("GT710_PROBE_TIME lifetime us={}",super::channel::elapsed(lifetime_start));
         a.remap(
             &layout.allocator,
             &mut io,

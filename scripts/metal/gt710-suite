@@ -1127,7 +1127,7 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
     if (not re.fullmatch('[0-9a-f]{40}', sha or '') or boot.get('toolsCommit') != sha
             or boot.get('platform') != 'metal' or boot.get('arch') != 'x86_64'
             or boot.get('evidenceEligible') is not True or boot.get('kind') not in ('boot', 'persistent')
-            or boot.get('mode') not in ('default', 'console', 'suite', 'persistent')
+            or boot.get('mode') not in ('default', 'console', 'suite', 'persistent', 'probe')
             or boot.get('bootedCommit', sha) != sha):
         raise ValueError('GT 710 evidence needs this kernel and tools in an eligible metal boot')
     if records.get('boot') != boot.get('id') or records.get('commit') != sha:
@@ -1141,19 +1141,39 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
     return category + ': ' + str(len(CATEGORIES[category])) + ' cases passed'
 
 
+def capture_serial(directory):
+    serial=(Path(directory)/'serial.txt').read_text()
+    matches=list(re.finditer(r'^GT710_BULK (\d+) ([a-f0-9]{64})$',serial,re.M))
+    if not matches: return serial
+    if len(matches)!=1: raise ValueError('duplicate display artifact digest')
+    data=(Path(directory)/'gt710-pixels.rle').read_bytes()
+    if len(data)!=int(matches[0][1]) or len(data)>2<<20 or hashlib.sha256(data).hexdigest()!=matches[0][2]:
+        raise ValueError('display artifact differs from serial length/digest')
+    text=data.decode('ascii')
+    if any(not line.startswith(('GT710_PIX ','GT710_FLIP_PIX ','GT710_SWITCH_PIX ')) for line in text.splitlines()):
+        raise ValueError('unexpected display artifact record')
+    return serial+text
+
+
+CPU_MEMORY_CATEGORIES = {'inventory','vm','aperture','lifetime'}
+def capture_categories(boot):
+    if boot.get('mode') == 'probe':
+        return [c for c in CATEGORIES if c in CPU_MEMORY_CATEGORIES]
+    return [c for c in CATEGORIES if c not in CPU_MEMORY_CATEGORIES
+            and (c != 'console' or (boot.get('mode') == 'suite' and boot.get('suite') == 'console'))]
+
+
 def record_capture(directory, sha):
     """Recompute using the scorer and E16 files retained beside this capture."""
     directory = Path(directory)
     read = lambda name: json.loads((directory / name).read_text())
     boot = read('run.json')
-    serial = (directory / 'serial.txt').read_text()
+    serial = capture_serial(directory)
     manifest = read('definition/docs/suites/gt710.json')
     effort = read('definition/docs/efforts/metal.json')
     fatal = read('definition/docs/boot-path.json')['fatal'] + [r'KERNEL PANIC:']
     passed = True
-    for category in CATEGORIES:
-        if category == 'console' and (boot.get('mode') != 'suite' or boot.get('suite') != 'console'):
-            continue
+    for category in capture_categories(boot):
         records = dict(boot=boot['id'], commit=sha, milestone='metal-gt710/' + category,
                        cases=cases(category, serial))
         for c in records['cases']:
@@ -1164,7 +1184,7 @@ def record_capture(directory, sha):
             passed = False
             print(str(error), flush=True)
         (directory / ('gt710-' + category + '.json')).write_text(json.dumps(records) + '\n')
-    if passed:
+    if passed and boot.get('mode') != 'probe':
         _, pixels = native_mode(serial)
         (directory / 'gt710-native-scanout.bin').write_bytes(pixels)
         for e, pixels in native_flips(serial):

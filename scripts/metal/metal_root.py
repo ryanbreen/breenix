@@ -204,7 +204,7 @@ def console_shadow(site, hasher, image_shadow='', account='root'):
 
 
 def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None, idle_minutes=None, replug=False, xhci_fault=None,
-               install_partition=None, operator=None, watchdog_fault=None, power_token=None):
+               install_partition=None, operator=None, watchdog_fault=None, power_token=None, gt710_upload=None):
     """`operator`, the operator file (operator_account), is written for install-persistent's userland only."""
     if watchdog_fault not in (None, 'feeder-hang', 'health-hang') or (watchdog_fault and mode != 'default'):
         raise ValueError('invalid watchdog fault-test target')
@@ -269,6 +269,7 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         if len(sntp) > 8 or any(not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?', name) for name in sntp):
             raise ValueError('SNTP_SERVERS needs up to eight DNS names or IPv4 addresses')
         files = {'site.env': ''.join(lines), 'sntp-servers': ''.join(name + '\n' for name in sntp)}
+        files['gt710-upload']=(gt710_upload+'\n') if gt710_upload else ''
         # Replace this file so ordinary staging disarms a prior fault.
         files['watchdog-fault'] = '' if watchdog_fault is None else watchdog_fault + '\n'
         files['xhci-fault'] = '' if xhci_fault is None else xhci_fault + '\n'
@@ -281,6 +282,8 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
             source = scratch / name
             source.write_text(text)
             commands.extend([f'rm /etc/breenix/{name}', f'write {source} /etc/breenix/{name}'])
+        if gt710_upload:
+            commands.append('set_inode_field /etc/breenix/gt710-upload mode 0100400')
         commands.extend(['rm /etc/resolv.conf', 'symlink /etc/resolv.conf /proc/net/pnp'])
         commands.append('rm ' + OPERATOR_ACCOUNT)
         commands.append('rm ' + OPERATOR_FIXTURE)

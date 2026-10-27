@@ -16,6 +16,8 @@ use libbreenix::syscall::{nr, raw};
 #[path = "suite_console_vt.rs"]
 mod vt_cases;
 use vt_cases::*;
+#[cfg(target_arch="x86_64")]
+mod gt710_artifacts;
 
 static SUITE: Suite = suite("console", "Screen console & virtual terminals", &[
     category("screen", "Console on the screen", &[
@@ -1339,6 +1341,8 @@ fn getty_independent_sessions() -> CaseResult {
 }
 
 fn main() {
+    #[cfg(target_arch="x86_64")]
+    gt710_artifacts::upload().expect("native display artifact upload");
     let args: Vec<_> = std::env::args().collect();
     let selected = args.windows(2).find_map(|pair| (pair[0] == "--case").then_some(pair[1].as_str()));
     if selected.is_none_or(|case| case == "getty" || case.starts_with("getty/")) {

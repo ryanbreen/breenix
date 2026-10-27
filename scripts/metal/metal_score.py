@@ -88,7 +88,7 @@ def score(directory):
                     or (directory / 'dirty').read_text().strip() != '0' or 'console-gap' in events):
                 raise ValueError('GT 710 cases need a completed clean successful capture')
             reason = host['score'](manifest, read('definition/docs/efforts/' + effort), records,
-                                   (directory / 'serial.txt').read_text(), run, sha, fatal)
+                                   host['capture_serial'](directory) if suite=='gt710' else (directory / 'serial.txt').read_text(), run, sha, fatal)
             total = len(host['CATEGORIES'][category])
             results[milestone] = dict(reached=total, total=total, passed=True, reason=reason)
         except (OSError, ValueError, KeyError, StopIteration, TypeError, AttributeError) as error:
