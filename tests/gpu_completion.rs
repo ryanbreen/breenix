@@ -1,5 +1,5 @@
 #[path = "../kernel/src/gpu/completion.rs"]
-mod completion;
+pub mod completion;
 
 use completion::finish_write;
 

@@ -172,6 +172,10 @@ impl Layout {
     }
 }
 pub trait Access {
+    /// Read aligned storage; control registers use read().
+    fn read_pair(&mut self, reg: usize) -> u64 {
+        u64::from(self.read(reg)) | u64::from(self.read(reg + 4)) << 32
+    }
     fn read(&mut self, reg: usize) -> u32;
     fn write(&mut self, reg: usize, value: u32);
 }
@@ -224,8 +228,18 @@ impl<'a, A: Access> Pramin<'a, A> {
         }
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(range.size as usize).map_err(|_| "VRAM snapshot allocation failed")?;
-        for a in (range.start..range.end().ok_or("snapshot overflow")?).step_by(4) {
-            bytes.extend_from_slice(&self.read(a)?.to_le_bytes());
+        let end=range.end().filter(|&end|end<=self.total).ok_or("snapshot outside VRAM")?;
+        let mut address=range.start;
+        while address<end {
+            if address%8==0 && end-address>=8 {
+                // Eight-byte alignment also keeps the pair in one 1 MiB bank.
+                let reg=self.window(address)?;
+                bytes.extend_from_slice(&self.access.read_pair(reg).to_le_bytes());
+                address+=8;
+            } else {
+                bytes.extend_from_slice(&self.read(address)?.to_le_bytes());
+                address+=4;
+            }
         }
         Ok(bytes)
     }

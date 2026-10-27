@@ -7,6 +7,16 @@
   "hostRunner": true,
   "categories": [
     {
+      "id": "completion",
+      "title": "Reusable native completion and observation (M6 PR 6.3)",
+      "cases": [
+        {
+          "id": "observation",
+          "title": "Native CE observations bind independent caller fences and ordered releases to context, reset epoch and resource generation under complementary poisons"
+        }
+      ]
+    },
+    {
       "id": "copy",
       "title": "Native CE transfers (M6 PR 6.2)",
       "cases": [

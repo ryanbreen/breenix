@@ -403,6 +403,16 @@
               "copy"
             ]
           }
+        },
+        {
+          "id": "completion",
+          "title": "Join native request completion and observation (M6 PR 6.3)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "completion"
+            ]
+          }
         }
       ]
     }

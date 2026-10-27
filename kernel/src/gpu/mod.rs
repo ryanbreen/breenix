@@ -34,13 +34,13 @@
 //! (section 1.4: no kernel output on any path).
 
 pub mod window_targets;
-mod completion;
+use crate::gpu_completion as completion;
 mod present_answers;
 mod display;
 pub mod console;
 pub mod panic;
 pub mod screen;
-mod observation;
+use crate::gpu_observation as observation;
 mod quota;
 mod staging;
 mod vertex_arena;
@@ -4897,22 +4897,6 @@ fn probe_writable(addr: u64, len: usize) -> Result<(), i64> {
 const STAGING_CHUNK: usize = 512;
 
 
-/// The bytes that differ between two observations of the same span.
-/// Equal words, the case of a written target, cost one comparison each; only a word that
-/// differs has its bytes counted.
-fn differing(a: &[u8], b: &[u8]) -> u32 {
-    let (wa, wb) = (a.chunks_exact(8), b.chunks_exact(8));
-    let tail = wa.remainder().iter().zip(wb.remainder()).filter(|(p, q)| p != q).count() as u32;
-    let mut count = tail;
-    for (x, y) in wa.zip(wb) {
-        let d = u64::from_le_bytes(x.try_into().unwrap_or_default())
-            ^ u64::from_le_bytes(y.try_into().unwrap_or_default());
-        if d != 0 {
-            count += d.to_le_bytes().iter().filter(|&&b| b != 0).count() as u32;
-        }
-    }
-    count
-}
 
 struct Observation {
     unwritten: u32,
@@ -5148,7 +5132,7 @@ fn observe(
                     observation::read(memory(b), src + done, kept);
                 } else {
                     observation::read(memory(b), src + done, &mut seen[..n]);
-                    unwritten += differing(&seen[..n], kept);
+                    unwritten += observation::differing(&seen[..n], kept);
                 }
                 Ok::<(), ()>(())
             });

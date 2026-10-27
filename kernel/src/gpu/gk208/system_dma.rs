@@ -73,6 +73,25 @@ impl Pages {
         }
     }
 }
+impl crate::gpu_observation::Memory for Pages {
+    fn invalidate(&self,offset:usize,length:usize) {
+        assert!(offset.checked_add(length).is_some_and(|end|end<=self.frames.len()*4096));
+        for i in offset/4096..(offset+length).div_ceil(4096) {
+            crate::gpu_cache::invalidate(self.va(i),4096);
+        }
+    }
+    fn copy(&self,offset:usize,out:&mut [u8]) {
+        assert!(offset.checked_add(out.len()).is_some_and(|end|end<=self.frames.len()*4096));
+        let mut done=0;
+        while done<out.len() {
+            let at=offset+done;let count=(4096-at%4096).min(out.len()-done);
+            // SAFETY: this Pages owns the bounded frame and the observation
+            // boundary invalidated the device-written span before this copy.
+            unsafe {core::ptr::copy_nonoverlapping((self.va(at/4096)+at as u64%4096) as *const u8,out[done..].as_mut_ptr(),count);}
+            done+=count;
+        }
+    }
+}
 impl Drop for Pages {
     fn drop(&mut self) {
         for f in self.frames.drain(..) {

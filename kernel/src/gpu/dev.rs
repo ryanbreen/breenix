@@ -84,7 +84,7 @@ pub struct Done {
 impl Done {
     /// Check both the request identity and the device's unmodified native echo.
     pub fn matches_fence(&self, fence: u64) -> bool {
-        self.fence == Some(fence) && self.fenced && self.native_fence == Some(self.echoed)
+        crate::gpu_completion::matches_echo(self.fence, self.native_fence, self.echoed, self.fenced, fence)
     }
 
     /// The answer of a request a confirmed reset ended.

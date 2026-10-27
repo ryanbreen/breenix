@@ -221,7 +221,10 @@ use super::{channel::{VmIo, read, wait as fifo_wait, elapsed}, copy::{self, Rect
     system_dma, vm::Flags, Registers};
 use crate::{arch_impl::x86_64::timer,drivers::pci};
 use alloc::{format,vec,vec::Vec,string::String};
-use core::mem::ManuallyDrop;
+use core::{mem::ManuallyDrop, sync::atomic::{AtomicU64, Ordering}};
+use crate::gpu_completion::{Request, CeSample, CeCompletion};
+use crate::gpu_observation::{self as observation, ResourceVersion};
+static NEXT_CALLER:AtomicU64=AtomicU64::new(1<<40);
 const COMMAND:u64=0x100000;
 const SOURCE:u64=0x400000;
 const DEST:u64=0x500000;
@@ -266,7 +269,7 @@ fn discover(regs:&mut Registers)->Result<Engine,&'static str> {
 }
 struct Channel {
     id:u32, context:Context, commands:Allocation,source:Allocation,dest:Allocation,stage:Allocation,
-    pages:ManuallyDrop<system_dma::Pages>, epoch:u64, put:u32, active:bool,
+    pages:ManuallyDrop<system_dma::Pages>, epoch:u64, put:u32, active:bool, generation:u64,
 }
 fn flags()->Flags {Flags{volatile:true,..Flags::default()}}
 impl Channel {
@@ -291,7 +294,7 @@ impl Channel {
             words(regs,total,instance+offset,&[value])?;
         }
         words(regs,total,commands.range.start+16384,&[id,0])?;
-        Ok(Self{id,context,commands,source,dest,stage,pages,epoch:timer::rdtsc()|1,put:0,active:false})
+        Ok(Self{id,context,commands,source,dest,stage,pages,epoch:timer::rdtsc()|1,put:0,active:false,generation:0})
     }
     fn activate(&mut self,regs:&mut Registers,total:u64,e:&Engine,bar_inst:u64,bar_dir:u64,pte:u64)->Result<(),&'static str> {
         if self.active {return Ok(());}
@@ -327,25 +330,36 @@ impl Channel {
         }
         Ok(seq)
     }
-    fn completed(&self,regs:&mut Registers,total:u64,e:&Engine,seq:u32,budget:u64)->Result<(bool,u64),&'static str> {
+    fn request(&self,seq:u32,resource:u64,generation:u64)->Request {
+        Request{context:self.context.space().instance.range.start,epoch:self.epoch,
+            caller:NEXT_CALLER.fetch_add(1,Ordering::Relaxed),sequence:seq,resource,generation}
+    }
+    fn completed(&self,regs:&mut Registers,total:u64,e:&Engine,request:Request,budget:u64)->Result<(Option<CeCompletion>,u64),&'static str> {
         let start=timer::rdtsc();
         loop {
             let addr=self.commands.range.start+8192;
             let value=read(regs,total,addr)?;
             let epoch=u64::from(read(regs,total,addr+4)?)|u64::from(read(regs,total,addr+8)?)<<32;
             let p=e.pbdma*0x2000;
-            let accepted=regs.read(0x259c)==0 && value==seq && epoch==self.epoch && regs.read(0x40014+p)==self.put
-                && regs.read(0x40120+p)&0x2fff==0x2000|self.id;
-            if accepted || elapsed(start)>=budget {return Ok((accepted,elapsed(start)));}
-            if regs.read(0x259c)!=0 {return Ok((false,elapsed(start)));}
+            let bound=regs.read(0x800000+self.id as usize*8);
+            let sample=CeSample{context:u64::from(bound&0x0fffffff)<<12,epoch,sequence:value,
+                consumed:regs.read(0x40014+p),healthy:bound&0x80000000!=0 && regs.read(0x259c)==0
+                    && regs.read(e.base+0x908)&7==0 && regs.read(0x40108+p)==0 && regs.read(0x40148+p)==0
+                    && regs.read(0x40014+p)==self.put && regs.read(0x40120+p)&0x2fff==0x2000|self.id};
+            let accepted=request.complete(sample);
+            if accepted.is_some() || elapsed(start)>=budget {return Ok((accepted,elapsed(start)));}
+            if regs.read(0x259c)!=0 {return Ok((None,elapsed(start)));}
             regs.delay_us(10);
         }
     }
-    fn execute(&mut self,regs:&mut Registers,total:u64,e:&Engine,bar:usize,r:Rect)->Result<u64,&'static str> {
+    fn execute(&mut self,regs:&mut Registers,total:u64,e:&Engine,bar:usize,r:Rect)->Result<(CeCompletion,u64),&'static str> {
         let ticket=self.context.hold(Consumer::Queued)?;
         let seq=self.submit(regs,total,bar,r,true)?;
-        let (done,time)=self.completed(regs,total,e,seq,2_000_000)?;
-        if !done {
+        let generation=self.generation+u64::from(r.dst>=DEST && r.dst<DEST+SIZE as u64);
+        let resource=if r.dst>=STAGE && r.dst<STAGE+SIZE as u64 {self.stage.range.start} else {self.dest.range.start};
+        let request=self.request(seq,resource,generation.max(1));
+        let (done,time)=self.completed(regs,total,e,request,2_000_000)?;
+        if done.is_none() {
             crate::serial_println!("GT710_CE_ERROR channel={} seq={} sem={} get={} current={:#x} fifo={:#x} fault={:#x} ce={:#x} launch={:#x} pbdma={:#x}/{:#x} method={:#x} data={:#x}",
                 self.id,seq,read(regs,total,self.commands.range.start+8192)?,regs.read(0x40014+e.pbdma*0x2000),regs.read(0x40120+e.pbdma*0x2000),regs.read(0x2100),regs.read(0x259c),regs.read(e.base+0x908),regs.read(e.base+0xf14),regs.read(0x40108+e.pbdma*0x2000),regs.read(0x40148+e.pbdma*0x2000),regs.read(0x40150+e.pbdma*0x2000),regs.read(0x40154+e.pbdma*0x2000));
             return Err("CE completion failed; backing retained");
@@ -353,7 +367,9 @@ impl Channel {
         unsafe {self.context.finish_device(ticket)?;}
         if regs.read(e.base+0x908)&7!=0 || regs.read(0x40108+e.pbdma*0x2000)!=0
             || regs.read(0x40148+e.pbdma*0x2000)!=0 {return Err("CE hardware error");}
-        Ok(time)
+        let completion=done.ok_or("native request not completed")?;
+        self.generation=generation;
+        Ok((completion,time))
     }
     fn drain(&mut self,regs:&mut Registers,e:&Engine)->Result<(),&'static str> {
         if !self.active {return Ok(());}
@@ -379,6 +395,10 @@ impl Channel {
         Ok(())
     }
 }
+fn request_json(r:Request)->String {
+    format!("{{\"context\":{},\"epoch\":{},\"caller\":{},\"sequence\":{},\"resource\":{},\"generation\":{}}}",
+        r.context,r.epoch,r.caller,r.sequence,r.resource,r.generation)
+}
 fn pattern(i:usize,seed:u32)->u8 {
     let mut x=(i as u32)^seed;x^=x>>16;x=x.wrapping_mul(0x7feb352d);x^=x>>15;
     x=x.wrapping_mul(0x846ca68b);((x^(x>>16))&255) as u8
@@ -396,10 +416,9 @@ fn system_fill(c:&Channel,byte:u8) {
     c.pages.publish();
 }
 fn system_bytes(c:&Channel)->Vec<u8> {
-    c.pages.observe();let mut data=Vec::with_capacity(SIZE);
-    for i in 0..2 {unsafe {data.extend_from_slice(core::slice::from_raw_parts(c.pages.va(i) as *const u8,4096));}}
-    data
+    let mut data=vec![0;SIZE];observation::read(&*c.pages,0,&mut data);data
 }
+
 fn vram(regs:&mut Registers,total:u64,a:u64)->Result<Vec<u8>,&'static str> {
     let mut p=memory::Pramin::new(regs,total);let mut data=Vec::with_capacity(SIZE);
     for i in (0..SIZE as u64).step_by(4) {data.extend_from_slice(&p.read(a+i)?.to_le_bytes());}
@@ -418,7 +437,9 @@ fn suppressed_copy(regs:&mut Registers,layout:&memory::Layout,total:u64,e:&Engin
     let stats=layout.allocator.stats();
     let ticket=c.context.hold(Consumer::Queued)?;
     let seq=c.push(regs,total,bar,&copy::transfer(rect(SOURCE,DEST,SIZE as u32,1,SIZE as u32,SIZE as u32))?,true)?;
-    let (accepted,elapsed_us)=c.completed(regs,total,e,seq,10000)?;
+    let request=c.request(seq,c.dest.range.start,c.generation.max(1));
+    let (accepted,elapsed_us)=c.completed(regs,total,e,request,10000)?;
+    let accepted=accepted.is_some();
     let get=regs.read(0x40014+e.pbdma*0x2000);
     let record=c.commands.range.start+8192;
     let observed=read(regs,total,record)?;
@@ -443,7 +464,7 @@ fn run_case(regs:&mut Registers,total:u64,e:&Engine,bar:usize,c:&mut Channel,id:
         let s=k.src_offset as usize+y*k.sp as usize;let d=k.dst_offset as usize+y*k.dp as usize;
         expected[d..d+k.width as usize].copy_from_slice(&initial[s..s+k.width as usize]);
     }
-    let refilled=k.name!="survivor-b";
+    let refilled=k.name!="survivor-b" && k.name!="unaffected-b";
     if refilled {fill(regs,total,c.source.range.start,&initial)?;}
     let destination=if k.overlap {initial.clone()} else {vec![0xcc;SIZE]};
     fill(regs,total,c.dest.range.start,&destination)?;
@@ -455,22 +476,43 @@ fn run_case(regs:&mut Registers,total:u64,e:&Engine,bar:usize,c:&mut Channel,id:
     let src=if k.upload {SYSTEM} else if k.overlap {DEST} else if k.name=="restored-a" {SOURCE+SIZE as u64+4096} else {SOURCE};
     let mut transfer_us=0;
     if k.overlap {
-        transfer_us+=c.execute(regs,total,e,bar,rect(DEST,STAGE,SIZE as u32,1,SIZE as u32,SIZE as u32))?;
+        transfer_us+=c.execute(regs,total,e,bar,rect(DEST,STAGE,SIZE as u32,1,SIZE as u32,SIZE as u32))?.1;
     }
     let submitted=rect((if k.overlap {STAGE} else {src})+u64::from(k.src_offset),
         DEST+u64::from(k.dst_offset),k.width,k.height,k.sp,k.dp);
-    transfer_us+=c.execute(regs,total,e,bar,submitted)?;
-    let mut releases=Vec::new();
+    let (writer,time)=c.execute(regs,total,e,bar,submitted)?;transfer_us+=time;
+    let version=ResourceVersion{context:writer.request().context,epoch:c.epoch,resource:c.dest.range.start,generation:c.generation};
+    let observing=c.context.hold(Consumer::Readback)?;
+    let mut releases=Vec::new();let mut transfers=Vec::new();let mut snapshots=Vec::new();
     for (pass,poison) in [0x55,0xaa].into_iter().enumerate() {
         system_fill(c,poison);
-        transfer_us+=c.execute(regs,total,e,bar,rect(DEST,SYSTEM,SIZE as u32,1,SIZE as u32,SIZE as u32))?;
+        let (done,time)=c.execute(regs,total,e,bar,rect(DEST,SYSTEM,SIZE as u32,1,SIZE as u32,SIZE as u32))?;
+        transfer_us+=time;transfers.push(done);
         let actual=system_bytes(c);
         emit_bytes(id,pass,&actual);
         if actual!=expected {return Err("complete CE byte comparison failed");}
-        releases.push(c.put);
+        releases.push(done.request().sequence);snapshots.push(actual);
     }
+    let transfers=[transfers[0],transfers[1]];
+    let record=observation::native_record(version,writer,transfers,&snapshots[0],&snapshots[1])?;
+    if id==0 {
+        let foreign=Request{context:version.context+4096,..transfers[1].request()};
+        let (accepted,time)=c.completed(regs,total,e,foreign,10000)?;
+    let accepted=accepted.is_some();
+        let accepts=|v| observation::native_record(v,writer,transfers,&snapshots[0],&snapshots[1]).is_ok();
+        crate::serial_println!("GT710_COMPLETION_CONTROLS {{\"context\":{},\"epoch\":{},\"foreign_context\":{},\"foreign_accepted\":{},\"elapsed_us\":{},\"wrong_resource_accepted\":{},\"wrong_generation_accepted\":{},\"stale_epoch_accepted\":{}}}",
+            version.context,version.epoch,foreign.context,accepted,time,
+            accepts(ResourceVersion{resource:version.resource+4096,..version}),
+            accepts(ResourceVersion{generation:version.generation+1,..version}),
+            accepts(ResourceVersion{epoch:version.epoch-1,..version}));
+        if accepted {return Err("foreign native request accepted");}
+    }
+    crate::serial_println!("GT710_OBSERVATION {{\"schema\":1,\"id\":{},\"kind\":\"a0b5-engine-release\",\"context\":{},\"epoch\":{},\"resource\":{},\"generation\":{},\"writer\":{},\"transfers\":[{},{}],\"bytes\":{},\"unwritten\":{}}}",
+        id,record.version.context,record.version.epoch,record.version.resource,record.version.generation,
+        request_json(record.writer.request()),request_json(record.transfers[0].request()),request_json(record.transfers[1].request()),record.bytes,record.unwritten);
+    unsafe {c.context.finish_device(observing)?;}
     crate::serial_println!("GT710_CE_STAGE case={} channel={} sequence={} elapsed_us={}",k.name,c.id,c.put,transfer_us);
-    Ok(format!("{{\"id\":{},\"name\":\"{}\",\"channel\":{},\"epoch\":{},\"sequence\":{},\"size\":{},\"seed\":{},\"width\":{},\"height\":{},\"src_pitch\":{},\"dst_pitch\":{},\"src_offset\":{},\"dst_offset\":{},\"fill\":204,\"overlap\":{},\"upload\":{},\"poisons\":[85,170],\"releases\":{:?},\"elapsed_us\":{},\"source\":{},\"dest\":{},\"instance\":{},\"directory\":{},\"src_va\":{},\"refilled\":{}}}",id,k.name,c.id,c.epoch,c.put,SIZE,seed,k.width,k.height,k.sp,k.dp,k.src_offset,k.dst_offset,k.overlap,k.upload,releases,transfer_us,c.source.range.start,c.dest.range.start,c.context.space().instance.range.start,c.context.space().directory.range.start,submitted.src,refilled))
+    Ok(format!("{{\"id\":{},\"name\":\"{}\",\"channel\":{},\"epoch\":{},\"sequence\":{},\"writer_sequence\":{},\"size\":{},\"seed\":{},\"width\":{},\"height\":{},\"src_pitch\":{},\"dst_pitch\":{},\"src_offset\":{},\"dst_offset\":{},\"fill\":204,\"overlap\":{},\"upload\":{},\"poisons\":[85,170],\"releases\":{:?},\"elapsed_us\":{},\"source\":{},\"dest\":{},\"instance\":{},\"directory\":{},\"src_va\":{},\"refilled\":{}}}",id,k.name,c.id,c.epoch,c.put,writer.request().sequence,SIZE,seed,k.width,k.height,k.sp,k.dp,k.src_offset,k.dst_offset,k.overlap,k.upload,releases,transfer_us,c.source.range.start,c.dest.range.start,c.context.space().instance.range.start,c.context.space().directory.range.start,submitted.src,refilled))
 }
 pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,console:&super::ConsoleSurface)->Result<(),&'static str> {
     let baseline=layout.allocator.stats();let total=baseline.reserved+baseline.charged+baseline.free;
@@ -512,12 +554,16 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
     }
     // Withhold GPPut, then plant an earlier epoch in the real completion record.
     let seq=a.submit(regs,total,bar,rect(SOURCE,DEST,8192,1,8192,8192),false)?;
-    let (accepted,withheld_us)=a.completed(regs,total,&e,seq,10000)?;
+    let request=a.request(seq,a.dest.range.start,a.generation);
+    let (accepted,withheld_us)=a.completed(regs,total,&e,request,10000)?;
+    let accepted=accepted.is_some();
     if accepted {return Err("withheld CE completion accepted");}
     let (suppressed,suppressed_ticket)=suppressed_copy(regs,layout,total,&e,bar,&mut a,seed)?;
     words(regs,total,a.commands.range.start+8192,&[a.put,(a.epoch-1) as u32,((a.epoch-1)>>32) as u32])?;
     modeset::bar_flush(regs)?;
-    let (accepted,stale_us)=a.completed(regs,total,&e,a.put,10000)?;
+    let request=a.request(a.put,a.dest.range.start,a.generation);
+    let (accepted,stale_us)=a.completed(regs,total,&e,request,10000)?;
+    let accepted=accepted.is_some();
     if accepted {return Err("stale CE epoch accepted");}
     cases.push(run_case(regs,total,&e,bar,&mut a,cases.len(),seed,Case{name:"clean-next",..full})?);
     // clean-next's releases follow the suppressed transfer on the same CE channel.
@@ -535,13 +581,8 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
     cases.push(run_case(regs,total,&e,bar,&mut a,cases.len(),seed^0x91827364,Case{name:"remapped-a",..full})?);
     a.drain(regs,&e)?;
     b.activate(regs,total,&e,bar_inst,bar_dir,pte)?;
-    // B's source and destination are checked without any CPU refill after A's remap.
-    for (pass,poison) in [0x55,0xaa].into_iter().enumerate() {
-        system_fill(&b,poison);b.execute(regs,total,&e,bar,rect(SOURCE,SYSTEM,8192,1,8192,8192))?;
-        let bytes=system_bytes(&b);emit_bytes(cases.len(),pass,&bytes);
-        if bytes!=(0..SIZE).map(|i|pattern(i,!seed)).collect::<Vec<_>>() {return Err("other channel source changed");}
-    }
-    cases.push(format!("{{\"id\":{},\"name\":\"unaffected-b\",\"channel\":1,\"epoch\":{},\"sequence\":{},\"size\":8192,\"seed\":{},\"width\":8192,\"height\":1,\"src_pitch\":8192,\"dst_pitch\":8192,\"src_offset\":0,\"dst_offset\":0,\"fill\":204,\"overlap\":false,\"upload\":false,\"poisons\":[85,170],\"releases\":[{},{}],\"elapsed_us\":0,\"source\":{},\"dest\":{},\"instance\":{},\"directory\":{},\"src_va\":4194304,\"refilled\":false}}",cases.len(),b.epoch,b.put,!seed,b.put-1,b.put,b.source.range.start,b.dest.range.start,b.context.space().instance.range.start,b.context.space().directory.range.start));
+    // No refill: copy and observe B's preserved source through the same request path.
+    cases.push(run_case(regs,total,&e,bar,&mut b,cases.len(),!seed,Case{name:"unaffected-b",..full})?);
     b.drain(regs,&e)?;
     a.activate(regs,total,&e,bar_inst,bar_dir,pte)?;
     // This VA has an allocated SPT but no PTE, and is bounded to a single byte.
@@ -559,7 +600,8 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
     if f.instance!=a.context.space().instance.range.start || f.address!=invalid || f.reason!=2 || f.write {
         return Err("unmapped CE fault attribution mismatch");
     }
-    if a.completed(regs,total,&e,badseq,10000)?.0 {return Err("faulted CE request reported success");}
+    let badrequest=a.request(badseq,a.dest.range.start,a.generation);
+    if a.completed(regs,total,&e,badrequest,10000)?.0.is_some() {return Err("faulted CE request reported success");}
     let fault_instance=f.instance;let fault_raw=f.raw;
     if !a.context.attribute(f) || a.context.holds()[0]!=1 {return Err("fault backing hold lost");}
     // Reset only this enumerated engine. Scheduling stays blocked and backing is

@@ -251,6 +251,8 @@ class Driver:
         self.seen = set()
         self.progress_key = None
         self.progress_changed = False
+        self.progress_unknown_at = None
+        self.unknown_progress_key = None
         self.lease_ceiling = None
         self.post_budget = m.DEFAULT_POST_BUDGET
         self.stopping = threading.Event()
@@ -1102,7 +1104,7 @@ class Driver:
         self.on_watchdog_line(line, observed_at)
         self.on_persist_line(line, observed_at)
         if BOOTLOADER_LINE in line and self.kernel_started is not None:
-            self.on_reset(observed_at)
+            self.on_reset(self.reset_time(observed_at))
             if self.watchdog_trigger is not None or (session(self.args) and persistent(self.args)):
                 # The operator restarted the persistent install; the session goes on with the new boot.
                 self.event('persistent-restart', observed_at=observed_at, seconds=seconds)
@@ -1358,7 +1360,7 @@ class Driver:
     def on_manager_line(self, line, observed_at, seconds):
         """The boot manager's start, the lab's answer it acted on, and a probe's end (README, "The boot manager")."""
         if MANAGER_STARTED in line and self.kernel_started is not None and session(self.args) and persistent(self.args):
-            self.on_reset(observed_at)
+            self.on_reset(self.reset_time(observed_at))
             self.event('persistent-restart', observed_at=observed_at)
             self.kernel_started = None
         self.on_slot_line(line, observed_at)
@@ -1515,7 +1517,7 @@ class Driver:
             elif self.complete_at is not None:
                 self.event('image-refused-again', observed_at=observed_at, seconds=elapsed)
                 if self.kernel_started is not None and self.watchdog_trigger is None:
-                    self.on_reset(observed_at)
+                    self.on_reset(self.reset_time(observed_at))
                     raise Finish(m.EXIT_SHORT, 'the machine reset after the kernel started')
             return
         if entry.get('id') != self.id:
@@ -1579,9 +1581,12 @@ class Driver:
                 self.event('power-off-observed', observed_at=observed_at, seconds=elapsed)
                 raise Finish(m.EXIT_DONE if session(self.args) else m.EXIT_SHORT,
                              'the machine powered off during the boot')
+            unknown = self.progress_unknown_at
+            pending = unknown is not None and 0 <= observed_at - unknown <= 60
             code = reading.get('postCode')
+            code_changed = code is not None and code != self.post_code
             progress = reading.get('progress') or {}
-            if code is not None and code != self.post_code:
+            if code_changed:
                 previous, self.post_code = self.post_code, code
                 if not self.post_seen:
                     self.post_seen = True
@@ -1591,25 +1596,40 @@ class Driver:
                 if self.kernel_started is None and self.request_at is None:
                     self.phase(f'POST code 0x{int(code):02x} · {self.since_power():.0f} s')
             key = progress_key(progress)
-            if key != self.progress_key:
+            progress_changed = key != self.progress_key
+            if progress_changed:
                 # Only a state new since power-on counts: the baseline may be left from an earlier power cycle.
                 self.progress_key = key
                 self.progress_changed = True
                 self.event('boot-progress', observed_at=observed_at, state=key[0], oem=key[1], seconds=elapsed)
-                # Once a boot option runs, the firmware reports OSBootStarted or OSRunning; any other state after
-                # that is POST again, so the machine reset.
-                if self.kernel_started is not None and key[0] not in RUNNING_STATES:
-                    self.on_reset(observed_at)
+            # S26: an empty management state is not POST evidence. Retain the
+            # selected management reading beside it; do not delay stage judging.
+            if self.kernel_started is not None:
+                empty = key[0] in (None, '', 'None')
+                if empty and key != self.unknown_progress_key:
+                    self.progress_unknown_at = observed_at
+                    self.unknown_progress_key = key
+                    self.event('boot-progress-unknown', observed_at=observed_at, reading=reading)
+                elif not empty:
+                    self.unknown_progress_key = None
+                if (progress_changed and not empty and key[0] not in RUNNING_STATES) or (pending and code_changed):
+                    self.on_reset(self.reset_time(observed_at))
                     if self.watchdog_trigger is not None or (session(self.args) and persistent(self.args)):
                         self.event('persistent-restart', observed_at=observed_at, state=key[0])
                         self.kernel_started = None
                     else:
                         raise Finish(m.EXIT_SHORT, 'the machine reset after the kernel started')
-                if NO_BOOTABLE in key[1].lower() and self.kernel_started is None:
-                    raise Finish(m.EXIT_DELIVERY, 'the firmware found no bootable device')
+            if NO_BOOTABLE in key[1].lower() and self.kernel_started is None:
+                raise Finish(m.EXIT_DELIVERY, 'the firmware found no bootable device')
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     # Deadlines.
+    def reset_time(self, observed_at):
+        unknown = self.progress_unknown_at
+        self.progress_unknown_at = None
+        self.unknown_progress_key = None
+        return unknown if unknown is not None and 0 <= observed_at - unknown <= 60 else observed_at
+
     def on_reset(self, observed_at):
         if self.shutdown_action == 'reboot' and self.fatal_at is None:
             self.event('requested-reset-observed', observed_at=observed_at)
