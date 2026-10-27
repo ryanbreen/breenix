@@ -341,6 +341,7 @@ reset, VM detach and backing reclamation.
 }
 ```
 
+<!-- claim-lint:ok: G7 requirements, exercised by tests/gt710_graphics_report_test.py and tests/gt710_grctx_test.rs. -->
 Bulk context images use `GT710_GR_IMAGE` rows in the network artifact.
 Serial carries only `GT710_GR_IMAGE_BULK <bytes> <sha256>` for those rows,
 plus the enclosing artifact digest. The single `GT710_GR` JSON line carries
@@ -354,7 +355,6 @@ FECS size. Runnable copies zero unwritten spans before their separate
 CPU-filled header check. `GT710_GR_LAYOUT` also retains the map if context
 validation refuses the probe. `GT710_GR_IRQ` records PMC, PGRAPH and FECS
 status/enables and PCI INTx/MSI routing before and after the probe.
-<!-- claim-lint:ok: G7 requirements, exercised by tests/gt710_graphics_report_test.py and tests/gt710_grctx_test.rs. -->
 
 Open hardware observations for acceptance: GR runlist/PBDMA discovery,
 context restore from the copied image and patched MMIO list, A197 releases
