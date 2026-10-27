@@ -2,6 +2,15 @@
 #[path = "../kernel/src/gpu/gk208/queue.rs"] mod queue;
 use queue::Queue;
 #[test]
+fn gpget_unwraps_only_observed_consumption_in_the_live_ring() {
+    assert_eq!(Queue::consumed(4,0),Some(0));
+    assert_eq!(Queue::consumed(4,3),Some(3));
+    assert_eq!(Queue::consumed(513,511),Some(511));
+    assert_eq!(Queue::consumed(513,0),Some(512));
+    assert_eq!(Queue::consumed(513,1),Some(513));
+    assert_eq!(Queue::consumed(513,512),None);
+}
+#[test]
 fn backpressure_does_not_reuse_command_or_release_storage() {
     let mut q=Queue::new();
     for s in 1..=4 {assert_eq!(q.next().unwrap(),s);q.publish(s).unwrap();}
