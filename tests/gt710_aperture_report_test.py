@@ -36,7 +36,7 @@ def fixture():
         pages.append([address,(address>>8)|0x500000001,hashlib.sha256(data).hexdigest()])
     e=dict(schema=1,bdf=m['bdf'],seed=seed,baseline=baseline,peak=peak,after=baseline,scratch=scratch,tables=tables,
            views=views,dma=pages,dma_bits=40,dma_access='pending-m6',translation='pending-m6',dmar_status=[0],
-           memory_types=[3,1,1,0,0,0],bar_before=[0x80012345,0x40000000],bar_after=[0x80012345,0x40000000],
+           memory_types=[3,1,1,0,0,0],bar_before=[vm['bar_before'],0x40000000],bar_after=[vm['bar_before'],0x40000000],
            pramin_before=0,pramin_after=0,protected_bytes=vm['protected_bytes'],protected_before='a'*64,protected_after='a'*64,
            guard_bytes=32768,guard_before='b'*64,guard_after='b'*64,faults_before=0,faults_after=0,
            fault_records_before=[],fault_records_after=[])
