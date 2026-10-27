@@ -49,7 +49,6 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 mod trace;
-#[cfg(target_arch = "aarch64")]
 mod xhci;
 
 /// Procfs entry types
@@ -884,14 +883,8 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
             let entries = list_xhci_entries();
             text(entries.join("\n") + "\n")
         }
-        #[cfg(target_arch = "aarch64")]
         ProcEntryType::XhciTrace => text(xhci::generate_xhci_trace()),
-        #[cfg(target_arch = "aarch64")]
         ProcEntryType::XhciCounters => text(xhci::generate_xhci_counters()),
-        #[cfg(not(target_arch = "aarch64"))]
-        ProcEntryType::XhciTrace => text(String::from("")),
-        #[cfg(not(target_arch = "aarch64"))]
-        ProcEntryType::XhciCounters => text(String::from("")),
         #[cfg(target_arch = "aarch64")]
         ProcEntryType::XhciPointers => text(crate::drivers::xhci::describe_pointers()),
         #[cfg(not(target_arch = "aarch64"))]
