@@ -642,7 +642,7 @@ def graphics_engine(serial):
              and 0 <= w['poison'] < 0x80000000 and w['reply'] == w['poison'], 'withheld start')
         s = e['stale_reply']
         need(s['method'] in (1, 2) and 0 <= s['poison'] < 0x80000000
-             and s['planted'] == s['poison'] | 0x80000000 and s['reply'] == s['planted']
+             and s['planted'] == s['poison'] | 0x80000000 and s['reply'] == s['poison']
              and s['accepted'] is False, 'stale reply')
 
         need(e['golden_bytes'] == size, 'golden size')

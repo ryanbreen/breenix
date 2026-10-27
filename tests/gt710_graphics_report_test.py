@@ -87,7 +87,7 @@ def fixture():
         withheld_start=dict(started=False, ready=False, poison=0x55555555,
                             reply=0x55555555, accepted=False),
         stale_reply=dict(method=1, poison=0, planted=0x80000000,
-                         reply=0x80000000, accepted=False),
+                         reply=0, accepted=False),
         topology_raw=[[0x409604, 0x10001], [0x502608, 1], [0x500c30, 1]],
         topology=dict(gpc_nr=1, tpc_nr=[1], tpc_mask=[1]), golden_bytes=len(IMAGE),
         saved_end=896, save_layout=dict(gpc=0, strands=1, strand_base=3, strand_words=32),

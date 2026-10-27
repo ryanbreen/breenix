@@ -250,7 +250,8 @@ fn ctxctl_poison_precedes_both_mailbox_requests_and_unchanged_is_refused() {
         assert_eq!(reply.reply,poison|0x80000000);assert_eq!(reply.size,0x4000);
         assert!(reply.elapsed_us>0 && reply.elapsed_us<=BOUND_US);
         let writes:Vec<_>=m.events[begin..].iter().filter(|e|matches!(e,Event::Write(..))).collect();
-        assert_eq!(writes[..3],[&Event::Write(0x409800,poison),
+        assert_eq!(writes[..4],[&Event::Write(0x409800,poison),
+            &Event::Write(0x409840,0x80000000),
             &Event::Write(0x409500,0x80010000),&Event::Write(0x409504,method)]);
     }
     m.reply=false; let begin=m.now;
@@ -263,7 +264,7 @@ fn ctxctl_stale_reply_withheld_request_is_never_accepted() {
     let previous=c.request(&mut m,1,0x80010000,0x15555555).unwrap().reply;
     let begin=m.events.len(); let control=c.stale_reply(&mut m,previous).unwrap();
     assert_eq!(control.method,1);assert_eq!(control.planted,previous);
-    assert_eq!(control.reply,previous);assert!(!control.accepted);
+    assert_eq!(control.reply,control.poison);assert!(!control.accepted);
     assert!(control.elapsed_us>=BOUND_US);
     assert!(!m.events[begin..].iter().any(|e|matches!(e,Event::Write(0x409504,_))));
 }

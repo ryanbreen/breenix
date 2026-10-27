@@ -711,3 +711,6 @@ also checked. This sequence does not load PMU firmware.
 (Copyright 2021 Red Hat Inc., MIT) and `fifo/gk104.c:gk104_chan_stop`
 (Copyright 2012 Red Hat Inc., MIT) at the same revision. Their checked
 notices and full grants are retained in the consumers.
+
+The ctxctl reply clear in `kernel/src/gpu/gk208/gr/ctxctl.rs` follows
+`vendor/kepler/nouveau/gr/ctxgf100.c:1506-1512` (MIT, Copyright 2010 Red Hat Inc.).

@@ -130,7 +130,7 @@ fn mask(io: &mut impl Access, address: u32, bits: u32, value: u32) {
     io.write(address, (old & !bits) | value);
 }
 
-// The poll count also bounds a stalled clock. No IRQ-masked interval or lock.
+// Bound by elapsed time; only consecutive clock stalls consume the guard.
 fn poll(
     io: &mut impl Access,
     bound: u64,
@@ -138,15 +138,22 @@ fn poll(
     mut sample: impl FnMut(&mut dyn Access) -> (bool, u32, u32),
 ) -> Result<u64, Fault> {
     let begin = io.now_us();
-    let mut last = (0, 0);
-    for _ in 0..MAX_POLLS {
+    let mut last_time = begin;
+    let mut stalled = 0;
+    loop {
         let (done, address, value) = sample(io);
-        last = (address, value);
-        let elapsed = io.now_us().saturating_sub(begin);
+        let now = io.now_us();
+        let elapsed = now.saturating_sub(begin);
+        if now > last_time {
+            last_time = now;
+            stalled = 0;
+        } else {
+            stalled += 1;
+        }
         if done && elapsed > 0 && elapsed <= bound {
             return Ok(elapsed);
         }
-        if elapsed >= bound {
+        if elapsed >= bound || stalled >= MAX_POLLS {
             return Err(Fault {
                 reason,
                 elapsed_us: elapsed,
@@ -156,12 +163,6 @@ fn poll(
         }
         io.relax();
     }
-    Err(Fault {
-        reason,
-        elapsed_us: io.now_us().saturating_sub(begin),
-        address: last.0,
-        value: last.1,
-    })
 }
 fn delay(io: &mut impl Access, us: u64) -> Result<(), Fault> {
     let begin = io.now_us();
@@ -193,14 +194,22 @@ pub fn reset(io: &mut impl Access) -> Result<(), Fault> {
         // gk110_pmu_pgob(false), also selected by GK208B. A failed PRI
         // response is not truncated into a topology mask or a completion.
         for (address, value) in [
-            (0x20520, 0xfffffffc), (0x20524, 0xfffffffe),
-            (0x20524, 0xfffffffc), (0x20524, 0xfffffff8),
-            (0x20524, 0xffffffe0), (0x20530, 0xfffffffe),
-            (0x2052c, 0xfffffffa), (0x2052c, 0xfffffff0),
-            (0x2052c, 0xffffffc0), (0x2052c, 0xffffff00),
-            (0x2052c, 0xfffffc00), (0x2052c, 0xfffcfc00),
-            (0x2052c, 0xfff0fc00), (0x2052c, 0xff80fc00),
-            (0x20528, 0xfffffffe), (0x20528, 0xfffffffc),
+            (0x20520, 0xfffffffc),
+            (0x20524, 0xfffffffe),
+            (0x20524, 0xfffffffc),
+            (0x20524, 0xfffffff8),
+            (0x20524, 0xffffffe0),
+            (0x20530, 0xfffffffe),
+            (0x2052c, 0xfffffffa),
+            (0x2052c, 0xfffffff0),
+            (0x2052c, 0xffffffc0),
+            (0x2052c, 0xffffff00),
+            (0x2052c, 0xfffffc00),
+            (0x2052c, 0xfffcfc00),
+            (0x2052c, 0xfff0fc00),
+            (0x2052c, 0xff80fc00),
+            (0x20528, 0xfffffffe),
+            (0x20528, 0xfffffffc),
         ] {
             io.write(address, value);
             poll(io, BOUND_US, "GR power-gating exit timeout", |io| {
@@ -588,11 +597,12 @@ impl Controller {
         };
         let reply = io.read(FECS + 0x800);
         if reply != START_POISON || io.read(GPCCS + 0x800) != 0 || error.elapsed_us < BOUND_US {
-            return Err(fault(
-                "withheld ctxctl start control failed",
-                FECS + 0x800,
-                reply,
-            ));
+            return Err(Fault {
+                reason: "withheld ctxctl start control failed",
+                elapsed_us: error.elapsed_us,
+                address: FECS + 0x800,
+                value: reply,
+            });
         }
         Ok(Control {
             method: 0,
@@ -610,12 +620,11 @@ impl Controller {
         io: &mut impl Access,
         method: u32,
         poison: u32,
-        issued: bool,
     ) -> Result<Reply, Fault> {
         let elapsed_us = poll(io, BOUND_US, "ctxctl mailbox timeout", |io| {
             let reply = io.read(FECS + 0x800);
             (
-                issued && reply != poison && reply == poison | READY,
+                reply != poison && reply == poison | READY,
                 FECS + 0x800,
                 reply,
             )
@@ -631,6 +640,14 @@ impl Controller {
             size,
             elapsed_us,
         })
+    }
+    fn clear_reply(io: &mut impl Access, poison: u32) -> Result<(), Fault> {
+        io.write(FECS + 0x840, READY);
+        let reply = io.read(FECS + 0x800);
+        if reply != poison {
+            return Err(fault("ctxctl reply clear failed", FECS + 0x800, reply));
+        }
+        Ok(())
     }
     /// Caller supplies a valid instance, with context backing already pinned.
     pub fn request(
@@ -651,9 +668,10 @@ impl Controller {
                 io.read(FECS + 0x800),
             ));
         }
+        Self::clear_reply(io, poison)?;
         io.write(FECS + 0x500, instance);
         io.write(FECS + 0x504, method);
-        self.wait_reply(io, method, poison, true)
+        self.wait_reply(io, method, poison)
     }
     pub fn stale_reply(&mut self, io: &mut impl Access, previous: u32) -> Result<Control, Fault> {
         if !self.started || self.size == 0 || previous & READY == 0 {
@@ -662,7 +680,8 @@ impl Controller {
         let poison = previous & !READY;
         io.write(FECS + 0x800, poison);
         io.write(FECS + 0x800, previous);
-        let error = match self.wait_reply(io, 1, poison, false) {
+        Self::clear_reply(io, poison)?;
+        let error = match self.wait_reply(io, 1, poison) {
             Err(error) => error,
             Ok(_) => {
                 return Err(fault(
@@ -673,13 +692,13 @@ impl Controller {
             }
         };
         let reply = io.read(FECS + 0x800);
-        io.write(FECS + 0x800, poison);
-        if reply != previous || error.elapsed_us < BOUND_US {
-            return Err(fault(
-                "stale ctxctl reply control failed",
-                FECS + 0x800,
-                reply,
-            ));
+        if reply != poison || error.elapsed_us < BOUND_US {
+            return Err(Fault {
+                reason: "stale ctxctl reply control failed",
+                elapsed_us: error.elapsed_us,
+                address: FECS + 0x800,
+                value: reply,
+            });
         }
         Ok(Control {
             method: 1,
