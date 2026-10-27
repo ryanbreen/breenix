@@ -24,7 +24,9 @@ an unbound channel before the context retires.
 
 The capture gate requires distinct semaphore payloads, native binding and
 GET/PUT progression. It rejects a withheld GPFIFO publication and a stale
-reset epoch. Polling is bounded by the milestone's two-second watchdog.
+reset epoch. A second control executes a reference update with its semaphore
+release suppressed, requires advancing GET/PUT without success, then requires
+a clean next semaphore completion after disarming. Polling is bounded by the milestone's two-second watchdog.
 This step does not claim the reset budget or killable process waits.
 
 CE full compares under complementary poisons, rectangle/overlap operations,

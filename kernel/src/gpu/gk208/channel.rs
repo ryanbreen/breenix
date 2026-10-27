@@ -342,7 +342,12 @@ pub fn probe(
         words(regs, total, instance + offset, &[value])?;
     }
     words(regs, total, list, &[0, 0])?; // standalone channel, no hardware TSG
-    let page = modeset::bar1_page(regs)?;
+                                        // Native takeover already established the 128 KiB geometry. Do not
+                                        // invoke its pre-VM setup helper while the owned BAR address space is live.
+    if regs.read(0x100c80) & 1 != 0 {
+        return Err("native BAR page geometry changed");
+    }
+    let page = 17;
     let surface = layout.objects[0].range;
     let (_, displacement, _) =
         modeset::bar1_view(surface.start, surface.size, device.bars[1].size, page)?;
@@ -495,6 +500,94 @@ pub fn probe(
     if false_success || stale {
         return Err("false channel completion");
     }
+    // Execute a reference update but suppress its semaphore release. GPGet and
+    // the reference must advance: a waiter using only GET/PUT would be wrong.
+    words(regs, total, semaphore, &[0])?;
+    words(
+        regs,
+        total,
+        push + 128,
+        &[0x20010002, 0, 0x20010014, expected],
+    )?;
+    words(
+        regs,
+        total,
+        ring + 16,
+        &[(VA + 4096 + 128) as u32, (4 << 10) | 0x100],
+    )?;
+    publish(regs, 3)?;
+    let start = timer::rdtsc();
+    while read(regs, total, userd + 0x88)? != 3 || read(regs, total, userd + 0x48)? != expected {
+        if elapsed(start) >= 2_000_000 {
+            return Err("suppressed-release work did not execute");
+        }
+        regs.delay_us(10);
+    }
+    let start = timer::rdtsc();
+    let mut suppressed_success = false;
+    while elapsed(start) < 10000 {
+        suppressed_success |= accepted(
+            epoch,
+            epoch,
+            read(regs, total, semaphore)?,
+            expected,
+            read(regs, total, userd + 0x88)?,
+            3,
+        );
+        regs.delay_us(10);
+    }
+    let suppressed=format!("{{\"epoch\":{},\"expected\":{},\"observed\":{},\"get\":{},\"put\":{},\"reference\":{},\"elapsed_us\":{},\"accepted\":{}}}",
+        epoch,expected,read(regs,total,semaphore)?,read(regs,total,userd+0x88)?,read(regs,total,userd+0x8c)?,read(regs,total,userd+0x48)?,elapsed(start),suppressed_success);
+    if suppressed_success {
+        return Err("missing host release reported success");
+    }
+    // Disarm the negative control and require the next complete native result.
+    let clean_expected = seed.wrapping_add(4);
+    let clean_before = read(regs, total, semaphore)?;
+    let clean_get_before = read(regs, total, userd + 0x88)?;
+    let ticket = context.hold(Consumer::Queued)?;
+    words(
+        regs,
+        total,
+        push + 192,
+        &[
+            0x20040004,
+            0,
+            (VA + 8192) as u32,
+            clean_expected,
+            0x01000002,
+            0x20010014,
+            clean_expected,
+        ],
+    )?;
+    words(
+        regs,
+        total,
+        ring + 24,
+        &[(VA + 4096 + 192) as u32, (7 << 10) | 0x100],
+    )?;
+    publish(regs, 4)?;
+    let start = timer::rdtsc();
+    while !accepted(
+        epoch,
+        epoch,
+        read(regs, total, semaphore)?,
+        clean_expected,
+        read(regs, total, userd + 0x88)?,
+        4,
+    ) || read(regs, total, userd + 0x48)? != clean_expected
+    {
+        if elapsed(start) >= 2_000_000 {
+            return Err("clean host completion failed after negative controls");
+        }
+        regs.delay_us(10);
+    }
+    let clean=format!("{{\"sequence\":4,\"epoch\":{},\"expected\":{},\"before\":{},\"after\":{},\"get_before\":{},\"put\":{},\"get\":{},\"reference\":{}}}",
+        epoch,clean_expected,clean_before,read(regs,total,semaphore)?,clean_get_before,read(regs,total,userd+0x8c)?,read(regs,total,userd+0x88)?,read(regs,total,userd+0x48)?);
+    // SAFETY: the exact native epoch/payload, GPGet and reference completed.
+    unsafe {
+        context.finish_device(ticket)?;
+    }
     let faults = regs.read(0x259c);
     let errors = [
         regs.read(0x40108 + pbdma * 0x2000),
@@ -535,7 +628,7 @@ pub fn probe(
     if layout.allocator.stats() != baseline {
         return Err("channel reclamation mismatch");
     }
-    crate::serial_println!("GT710_CHANNEL {{\"schema\":1,\"bdf\":\"{:02x}:{:02x}.{}\",\"chipset\":262,\"host_class\":41071,\"channel\":0,\"epoch\":{},\"instance\":{},\"directory\":{},\"userd\":{},\"ring\":{},\"push\":{},\"semaphore\":{},\"top\":{:?},\"pbdmas\":{:?},\"runlist\":{},\"engine\":{},\"bind\":{},\"state\":{},\"fault\":{},\"pbdma_errors\":{:?},\"samples\":[{}],\"withheld\":{{\"epoch\":{},\"expected\":{},\"observed\":{},\"get\":{},\"put\":{},\"elapsed_us\":{},\"accepted\":false}},\"stale\":{{\"epoch\":{},\"expected\":{},\"observed\":{},\"get\":{},\"put\":{},\"accepted\":false}},\"drain\":{{\"runlist_count\":0,\"pending\":{},\"preempt\":{},\"binding\":{}}},\"retained_on_failure\":true,\"firmware_writes\":{},\"ce\":\"pending-6.2\",\"vm_probes\":\"pending-6.2\",\"reset\":\"pending-6.5\",\"baseline\":{},\"after\":{}}}",
-        device.bus,device.device,device.function,epoch,instance,directory,userd,ring,push,semaphore,top,pbdmas,runlist,engine,bind,state,faults,errors,samples.join(","),epoch,expected,withheld,gpget,gpput,withheld_elapsed,epoch-1,stale_value,stale_observed,gpget,gpput,pending,preempt,binding,crate::firmware_writes::count()-console.firmware_baseline,stats(baseline),stats(layout.allocator.stats()));
+    crate::serial_println!("GT710_CHANNEL {{\"schema\":1,\"bdf\":\"{:02x}:{:02x}.{}\",\"chipset\":262,\"host_class\":41071,\"channel\":0,\"epoch\":{},\"instance\":{},\"directory\":{},\"userd\":{},\"ring\":{},\"push\":{},\"semaphore\":{},\"top\":{:?},\"pbdmas\":{:?},\"runlist\":{},\"engine\":{},\"bind\":{},\"state\":{},\"fault\":{},\"pbdma_errors\":{:?},\"samples\":[{}],\"withheld\":{{\"epoch\":{},\"expected\":{},\"observed\":{},\"get\":{},\"put\":{},\"elapsed_us\":{},\"accepted\":false}},\"stale\":{{\"epoch\":{},\"expected\":{},\"observed\":{},\"get\":{},\"put\":{},\"accepted\":false}},\"suppressed\":{},\"clean\":{},\"drain\":{{\"runlist_count\":0,\"pending\":{},\"preempt\":{},\"binding\":{}}},\"retained_on_failure\":true,\"firmware_writes\":{},\"ce\":\"pending-6.2\",\"vm_probes\":\"pending-6.2\",\"reset\":\"pending-6.5\",\"baseline\":{},\"after\":{}}}",
+        device.bus,device.device,device.function,epoch,instance,directory,userd,ring,push,semaphore,top,pbdmas,runlist,engine,bind,state,faults,errors,samples.join(","),epoch,expected,withheld,gpget,gpput,withheld_elapsed,epoch-1,stale_value,stale_observed,gpget,gpput,suppressed,clean,pending,preempt,binding,crate::firmware_writes::count()-console.firmware_baseline,stats(baseline),stats(layout.allocator.stats()));
     Ok(())
 }

@@ -438,6 +438,16 @@ def privileged_channel(serial):
              and 10000<=w['elapsed_us']<=2000000 and w['accepted'] is False, 'withheld completion accepted')
         need(s['epoch']!=e['epoch'] and s['expected']==s['observed']==samples[-1]['expected']
              and s['get']==s['put']==2 and s['accepted'] is False, 'stale epoch accepted')
+        missing=e['suppressed'];clean=e['clean']
+        need(missing['epoch']==e['epoch'] and missing['get']==missing['put']==3
+             and missing['reference']==missing['expected'] and missing['observed']!=missing['expected']
+             and missing['accepted'] is False and 10000<=missing['elapsed_us']<=2000000,
+             'GET advancement accepted without semaphore release')
+        need(clean['sequence']==4 and clean['epoch']==e['epoch'] and clean['get_before']==3
+             and clean['before']!=clean['expected'] and clean['get']==clean['put']==4
+             and clean['after']==clean['expected']==clean['reference']
+             and clean['expected'] not in [v['expected'] for v in samples]+[missing['expected']],
+             'missing clean completion after negative controls')
         need(e['drain']==dict(runlist_count=0,pending=0,preempt=0,binding=0), 'channel not drained')
         need(e['retained_on_failure'] is True and e['firmware_writes']==0
              and e['ce']==e['vm_probes']=='pending-6.2' and e['reset']=='pending-6.5', 'incorrect execution claim')
