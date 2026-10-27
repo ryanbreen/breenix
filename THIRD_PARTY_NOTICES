@@ -463,3 +463,35 @@ sources and license headers. `kernel/src/gpu/gk208/lifetime.rs` and the allocato
 reference policy are original Breenix code; they introduce no external source.
 The pinned MIT vmmgf100.c, vmmgk104.c and engine/fifo/gf100.c headers and hashes
 were rechecked for this step against the revision recorded above.
+
+## GK208B privileged FIFO channel (E22 M6 PR 6.1)
+
+`kernel/src/gpu/gk208/channel.rs` adapts the following individually checked
+MIT files from nouveau in Linux v6.8,
+`e8f897f4afef0031fe618a8e94127a0934896aba` (relative to
+`drivers/gpu/drm/nouveau/`):
+
+- `nvkm/engine/fifo/gk208.c`, Copyright 2013 Red Hat Inc.: selected A06F
+  channel and PBDMA timeout initialization.
+- `nvkm/engine/fifo/gk110.c`, Copyright 2016 Red Hat Inc.: standalone channel
+  scheduling and runlist entry selection.
+- `nvkm/engine/fifo/gk104.c`, Copyright 2012 Red Hat Inc.: RAMFC, USERD,
+  channel binding/start/stop, runlist submission and PBDMA initialization.
+- `nvkm/engine/fifo/gf100.c`, Copyright 2012 Red Hat Inc.: PBDMA discovery,
+  preemption, idle and interrupt status registers.
+- `nvkm/engine/fifo/base.c`, Copyright 2012 Red Hat Inc.: initialization
+  order and the USERD polling aperture.
+- `nvkm/subdev/top/gk104.c`, Copyright 2016 Red Hat Inc.: 64-word hardware
+  engine enumeration. The capture verifier uses the same documented fields.
+- `nvkm/subdev/mc/gk104.c`, Copyright 2016 Red Hat Inc.: FIFO enable mask.
+
+The consumer retains the original copyright and full MIT permission notices.
+It also adapts NVIDIA open-gpu-doc `classes/host/cla06f.h`, MIT,
+Copyright (c) 2020 NVIDIA CORPORATION, revision
+`9fdf5c4062007929d9f4e6cbad9c9771fe61b880`: host packets, GPFIFO entries,
+semaphore release and USERD fields; its original full notice is retained.
+The GK104 channel-state fields use envytools rnndb `fifo/gf100_pfifo.xml`
+and its imported `copyright.xml`, MIT, revision
+`f102b82381f3f11cee113d16374c87091db039d9`; the author list and grant
+are retained in the consumer. No third-party OS scheduling, waits or
+interrupt plumbing is imported. No firmware is loaded by this channel path.

@@ -105,6 +105,7 @@ mod aperture;
 mod dma_policy;
 mod system_dma;
 mod aperture_probe;
+mod channel;
 pub use system_dma::set_platform as set_dma_platform;
 mod modeset;
 mod native;
@@ -120,7 +121,7 @@ use core::fmt::Write;
 struct Registers(usize);
 impl Registers {
     fn read(&self, reg: usize) -> u32 {
-        // SAFETY: offsets used here fit the checked, uncached 8 MiB BAR0 mapping.
+        // SAFETY: offsets used here fit the checked, uncached 16 MiB BAR0 mapping.
         unsafe { ((self.0 + reg) as *const u32).read_volatile() }
     }
     fn write(&self, reg: usize, value: u32) {
@@ -245,10 +246,10 @@ fn sink(
 }
 fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
     let bar = device.bars[0];
-    if bar.address == 0 || bar.size < 0x800000 || bar.is_io || bar.prefetchable {
+    if bar.address == 0 || bar.size < 0x1000000 || bar.is_io || bar.prefetchable {
         return Err("BAR0 is not an assigned register aperture");
     }
-    let mut regs = Registers(crate::memory::map_mmio(bar.address, 0x800000)?);
+    let mut regs = Registers(crate::memory::map_mmio(bar.address, 0x1000000)?);
     let boot0 = regs.read(0);
     let chipset = (boot0 >> 20) & 0x1ff;
     let post = regs.read(0x2240c);
@@ -323,6 +324,7 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
             inventory::probe(&mut regs,&device,&mut layout,&console)?;
             vm_probe::probe(&mut regs,&device,&mut layout,&console)?;
             aperture_probe::probe(&mut regs,&device,&mut layout,&console)?;
+            channel::probe(&mut regs,&device,&mut layout,&console)?;
         }
         DISPLAY_MEMORY.try_get_or_init(||layout).map_err(|_|"display memory already initializing")?;
         return Ok(console);
