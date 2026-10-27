@@ -373,6 +373,16 @@
               "aperture"
             ]
           }
+        },
+        {
+          "id": "lifetime",
+          "title": "Memory lifetimes and fault containment (M5 PR 5.4; engine recovery pending M6)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "lifetime"
+            ]
+          }
         }
       ]
     }

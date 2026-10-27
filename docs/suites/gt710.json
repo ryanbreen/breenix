@@ -7,6 +7,16 @@
   "hostRunner": true,
   "categories": [
     {
+      "id": "lifetime",
+      "title": "Memory lifetimes and fault containment",
+      "cases": [
+        {
+          "id": "retention",
+          "title": "Mapping and table holds retain faulted storage through EIO and failed reset, attribute contexts and reclaim the CPU-only baseline; engine recovery remains pending"
+        }
+      ]
+    },
+    {
       "id": "aperture",
       "title": "CPU apertures and DMA",
       "cases": [

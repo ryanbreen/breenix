@@ -8,6 +8,7 @@ import runpy
 import tempfile
 
 CATEGORIES = {
+    'lifetime': [('retention', 'Mapping and table holds retain faulted storage through EIO and failed reset, attribute contexts and reclaim the CPU-only baseline; engine recovery remains pending')],
     'aperture': [('cpu-dma', 'BAR1 and BAR2 preserve nonce-bearing boundary patterns with explicit cache types and bounded coherent DMA; engine access remains pending')],
     'vm': [('tables', 'Private GPU tables preserve distinct same-VA backing, ordered remaps and reserved storage; engine translation remains pending')],
     'inventory': [('allocator', 'VRAM charges and reusable guarded allocations preserve reserved storage across independent nonce-bearing PRAMIN/BAR views; engine translation remains pending')],
@@ -399,6 +400,35 @@ def virtual_memory(serial):
         raise ValueError('malformed private VM evidence') from error
 
 
+def memory_lifetimes(serial):
+    """CPU lifetime policy plus retained physical tables; reset execution awaits M6."""
+    try:
+        vm=virtual_memory(serial)
+        e=json.loads(one(r'^GT710_LIFETIME (.+)$',serial,'lifetime evidence')[1])
+        def need(ok,why):
+            if not ok:raise ValueError(why)
+        need(e['schema']==1 and e['bdf']==vm['bdf'], 'lifetime identity differs')
+        need(e['exercise']=='cpu-only' and e['translation']==e['reset_execution']=='pending-m6',
+             'CPU holds cannot certify engine execution or reset')
+        need(e['baseline']==vm['baseline'] and e['peak']==vm['peak'] and e['after']==vm['after'],
+             'lifetime charges differ from the physical VM capture')
+        phases=[('held',[1,1,1]),('eio',[1,1,1]),('reset-failed',[1,1,1]),
+                ('queued-done',[0,1,1]),('readback-done',[0,0,1]),('scanout-done',[0,0,0]),('cpu-cancel',[0,0,0])]
+        need(e['stages']==[dict(phase=p,holds=h,stats=vm['peak']) for p,h in phases],
+             'missing consumer, failed-reset retention or premature reclamation')
+        need(e['blocked']==dict(release_backing=1,release_tables=4,remap=1,unmap=1,retire=6),
+             'held backing, tables or context could be recycled')
+        need(e['snapshots_before']==e['snapshots_retained']==vm['snapshots'][:2],
+             'retained mappings/tables changed or belong to another space')
+        instance=vm['snapshots'][0]['instance']
+        need(e['fault']==dict(raw=[instance>>12,0x1234,0,2],instance=instance,address=0x1234,reason=2)
+             and e['attributed']==[True,False,False] and e['unaffected'] is True,
+             'fault attribution or unaffected context differs')
+        return e
+    except (KeyError,TypeError,IndexError,OverflowError,json.JSONDecodeError) as error:
+        raise ValueError('malformed CPU lifetime evidence') from error
+
+
 def cpu_apertures(serial):
     """CPU views and DMA preparation only; M6 owns engine execution evidence."""
     import struct
@@ -744,6 +774,10 @@ def native_flips(serial):
 
 
 def check_case(category, case, serial):
+    if category == 'lifetime':
+        if case != 'retention': raise ValueError('unknown lifetime case')
+        memory_lifetimes(serial)
+        return
     if category == 'aperture':
         if case != 'cpu-dma': raise ValueError('unknown CPU aperture case')
         cpu_apertures(serial)

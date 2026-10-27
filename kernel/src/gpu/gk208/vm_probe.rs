@@ -26,6 +26,7 @@
 //! and VM encodings call vm.rs; no inherited VRAM storage is written here.
 use super::{
     inventory::{digest, pattern, stats, words},
+    lifetime::{Consumer, Context},
     memory::{self, allocator::Kind, Range},
     modeset,
     vm::{self, Flags, Io, Space},
@@ -236,25 +237,19 @@ pub fn probe(
         for address in (window.range.start..window.range.end().unwrap()).step_by(8) {
             io.write(address, 0)?;
         }
-        let mut a = Space::new(&mut layout.allocator, &mut io)?;
-        let mut b = Space::new(&mut layout.allocator, &mut io)?;
+        let mut a = Context::new(&mut layout.allocator, &mut io)?;
+        let mut b = Context::new(&mut layout.allocator, &mut io)?;
         let initial = Flags {
             read_only: true,
             privileged: true,
             volatile: false,
         };
-        a.map(
-            &mut layout.allocator,
-            &mut io,
-            VA,
-            backing[0].range,
-            initial,
-        )?;
+        a.map(&mut layout.allocator, &mut io, VA, backing[0], initial)?;
         b.map(
             &mut layout.allocator,
             &mut io,
             VA,
-            backing[1].range,
+            backing[1],
             Flags::default(),
         )?;
         let peak = layout.allocator.stats();
@@ -263,13 +258,13 @@ pub fn probe(
             .map(|a| a.range)
             .chain(core::iter::once(window.range))
             .chain([
-                a.instance.range,
-                a.directory.range,
-                b.instance.range,
-                b.directory.range,
+                a.space().instance.range,
+                a.space().directory.range,
+                b.space().instance.range,
+                b.space().directory.range,
             ])
-            .chain(a.table_ranges().map(|(_, r)| r))
-            .chain(b.table_ranges().map(|(_, r)| r));
+            .chain(a.space().table_ranges().map(|(_, r)| r))
+            .chain(b.space().table_ranges().map(|(_, r)| r));
         let guard_ranges = guards(owned);
         let (guard_bytes, guard_before) = digest(io.p.access(), total, &guard_ranges)?;
         // Fill the three physical allocations before reading an independent view.
@@ -317,7 +312,7 @@ pub fn probe(
             total,
             window.range,
             pointer,
-            &a,
+            a.space(),
             0,
             "map",
             Some(backing[0].range.start),
@@ -328,16 +323,131 @@ pub fn probe(
             total,
             window.range,
             pointer,
-            &b,
+            b.space(),
             1,
             "map",
             Some(backing[1].range.start),
             1,
         )?);
+        let snapshots_before = snapshots.clone();
+        let tickets = [Consumer::Queued, Consumer::Readback, Consumer::Scanout]
+            .into_iter()
+            .map(|kind| a.hold(kind))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut stages = Vec::new();
+        let stage = |phase: &str, context: &Context, allocator: &memory::allocator::Allocator| {
+            format!(
+                "{{\"phase\":\"{}\",\"holds\":{:?},\"stats\":{}}}",
+                phase,
+                context.holds(),
+                stats(allocator.stats())
+            )
+        };
+        stages.push(stage("held", &a, &layout.allocator));
+        if layout.allocator.release(backing[0]).is_ok() {
+            return Err("held backing recycled");
+        }
+        let mut table_blocks = 0;
+        for allocation in a.space().allocations() {
+            if layout.allocator.release(allocation).is_ok() {
+                return Err("held VM table recycled");
+            }
+            table_blocks += 1;
+        }
+        if a.remap(&layout.allocator, &mut io, VA, backing[2], Flags::default())
+            .is_ok()
+            || a.unmap(&mut io, VA).is_ok()
+            || a.retire(&mut layout.allocator, &mut io).is_ok()
+        {
+            return Err("consumer-held VM changed or retired");
+        }
+        a.fail_eio();
+        if a.retire(&mut layout.allocator, &mut io).is_ok() {
+            return Err("synthetic EIO recycled storage");
+        }
+        stages.push(stage("eio", &a, &layout.allocator));
+        // Synthetic fault attribution exercises software ownership only. Do not
+        // write PFIFO fault registers or imply an engine executed a translation.
+        let instance = a.space().instance.range.start;
+        let raw = [(instance >> 12) as u32, 0x1234, 0, 2];
+        let fault = vm::Fault {
+            unit: 5,
+            raw,
+            instance,
+            address: 0x1234,
+            reason: 2,
+            client: 0,
+            gpc: 0,
+            hub: false,
+            write: false,
+        };
+        let foreign = b.attribute(&fault);
+        let own = a.attribute(&fault);
+        let unknown = a.attribute(&vm::Fault {
+            instance: 1 << 39,
+            ..fault
+        });
+        if !own || foreign || unknown {
+            return Err("VM fault attributed to wrong context");
+        }
+        let survivor = b.hold(Consumer::Readback)?;
+        b.finish_cpu(survivor)?;
+        a.reset_failed();
+        if a.retire(&mut layout.allocator, &mut io).is_ok() {
+            return Err("failed reset recycled storage");
+        }
+        stages.push(stage("reset-failed", &a, &layout.allocator));
+        for (ticket, phase) in
+            tickets
+                .into_iter()
+                .zip(["queued-done", "readback-done", "scanout-done"])
+        {
+            a.finish_cpu(ticket)?;
+            if a.retire(&mut layout.allocator, &mut io).is_ok() {
+                return Err("faulted consumer retirement recycled storage");
+            }
+            stages.push(stage(phase, &a, &layout.allocator));
+        }
+        let retained_snapshots = [
+            snapshot(
+                &mut io,
+                total,
+                window.range,
+                pointer,
+                a.space(),
+                0,
+                "map",
+                Some(backing[0].range.start),
+                7,
+            )?,
+            snapshot(
+                &mut io,
+                total,
+                window.range,
+                pointer,
+                b.space(),
+                1,
+                "map",
+                Some(backing[1].range.start),
+                1,
+            )?,
+        ];
+        if retained_snapshots.as_slice() != snapshots_before.as_slice()
+            || layout.allocator.stats() != peak
+        {
+            return Err("fault containment changed storage or charges");
+        }
+        // Neither space has ever been admitted to a channel. CPU cancellation
+        // may end this synthetic policy exercise; it cannot stand in for reset.
+        a.cancel_unsubmitted()?;
+        stages.push(stage("cpu-cancel", &a, &layout.allocator));
+        let lifetime=format!("\"stages\":[{}],\"blocked\":{{\"release_backing\":1,\"release_tables\":{},\"remap\":1,\"unmap\":1,\"retire\":6}},\"fault\":{{\"raw\":{:?},\"instance\":{},\"address\":4660,\"reason\":2}},\"attributed\":[{},{},{}],\"unaffected\":true,\"snapshots_before\":[{}],\"snapshots_retained\":[{}]",
+            stages.join(","),table_blocks,raw,instance,own,foreign,unknown,snapshots_before.join(","),retained_snapshots.join(","));
         a.remap(
+            &layout.allocator,
             &mut io,
             VA,
-            backing[2].range,
+            backing[2],
             Flags {
                 volatile: true,
                 ..Flags::default()
@@ -348,37 +458,31 @@ pub fn probe(
             total,
             window.range,
             pointer,
-            &a,
+            a.space(),
             0,
             "remap",
             Some(backing[2].range.start),
             (1 << 32) | 1,
         )?);
-        a.unmap(&mut io, VA, 12288)?;
+        a.unmap(&mut io, VA)?;
         snapshots.push(snapshot(
             &mut io,
             total,
             window.range,
             pointer,
-            &a,
+            a.space(),
             0,
             "unmap",
             None,
             0,
         )?);
-        a.map(
-            &mut layout.allocator,
-            &mut io,
-            VA,
-            backing[0].range,
-            initial,
-        )?;
+        a.map(&mut layout.allocator, &mut io, VA, backing[0], initial)?;
         snapshots.push(snapshot(
             &mut io,
             total,
             window.range,
             pointer,
-            &a,
+            a.space(),
             0,
             "restore",
             Some(backing[0].range.start),
@@ -389,7 +493,7 @@ pub fn probe(
             total,
             window.range,
             pointer,
-            &b,
+            b.space(),
             1,
             "unaffected",
             Some(backing[1].range.start),
@@ -419,6 +523,7 @@ pub fn probe(
             guard_bytes,
             guard_before,
             guard_after,
+            lifetime,
         ))
     })();
     let display_directory = layout.objects[4].range.start + 0x3000;
@@ -430,8 +535,17 @@ pub fn probe(
     if io.register(0x1704) != bar_before {
         return Err("VM probe failed to restore display BAR1");
     }
-    let (backing, window, peak, backing_hashes, snapshots, guard_bytes, guard_before, guard_after) =
-        result?;
+    let (
+        backing,
+        window,
+        peak,
+        backing_hashes,
+        snapshots,
+        guard_bytes,
+        guard_before,
+        guard_after,
+        lifetime,
+    ) = result?;
     crate::serial_println!("GT710_VM_STAGE reserved-after");
     let (_, protected_after) = digest(io.p.access(), total, &protected)?;
     if protected_before != protected_after {
@@ -456,6 +570,8 @@ pub fn probe(
     if after != baseline {
         return Err("VM probe charge reclamation mismatch");
     }
+    crate::serial_println!("GT710_LIFETIME {{\"schema\":1,\"bdf\":\"{:02x}:{:02x}.{}\",\"baseline\":{},\"peak\":{},\"after\":{},{},\"exercise\":\"cpu-only\",\"translation\":\"pending-m6\",\"reset_execution\":\"pending-m6\"}}",
+        device.bus,device.device,device.function,stats(baseline),stats(peak),stats(after),lifetime);
     let ranges: Vec<[u64; 2]> = backing
         .iter()
         .map(|a| [a.range.start, a.range.size])

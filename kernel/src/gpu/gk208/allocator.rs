@@ -1,8 +1,7 @@
 //! Breenix-owned guarded VRAM allocator. BAR views have no allocation or charge.
-//! Only explicitly released CPU-only allocations can be reused here; queued-work
-//! ownership and retirement must be attached before engine clients are exposed.
+//! Mapping/table/consumer pins must end before explicit release can recycle storage.
 use super::Range;
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 
 const PAGE: u64 = 4096;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,11 +22,16 @@ pub struct Stats {
     pub reserved:u64, pub payload:u64, pub guards:u64, pub charged:u64,
     pub display:u64, pub engine:u64, pub probe:u64, pub free:u64, pub allocations:usize,
 }
+/// An unforgeable reference to a live allocation. Clones retain the same charge.
+#[derive(Clone, Debug)]
+pub struct Pin { _reference: Arc<()> }
+#[derive(Debug)]
+struct Entry { allocation: Allocation, reference: Arc<()> }
 #[derive(Debug)]
 pub struct Allocator {
     total:u64,
     reserved:Vec<Range>,
-    live:Vec<Allocation>,
+    live:Vec<Entry>,
     next:u64,
 }
 impl Allocator {
@@ -57,7 +61,8 @@ impl Allocator {
     pub fn stats(&self)->Stats {
         let mut s=Stats{reserved:self.reserved.iter().map(|r|r.size).sum(),payload:0,guards:self.live.len() as u64*8192,
             charged:0,display:0,engine:0,probe:0,free:0,allocations:self.live.len()};
-        for a in &self.live {
+        for entry in &self.live {
+            let a = &entry.allocation;
             s.payload+=a.range.size;
             match a.kind {Kind::Display=>s.display+=a.range.size,Kind::Engine=>s.engine+=a.range.size,Kind::Probe=>s.probe+=a.range.size}
         }
@@ -75,17 +80,22 @@ impl Allocator {
             let end=start.checked_add(size).and_then(|v|v.checked_add(PAGE)).ok_or("allocation overflow")?;
             if end>self.total {return Err("VRAM allocation exhausted");}
             let candidate=Range{start:start-PAGE,size:size+2*PAGE};
-            let bump=self.reserved.iter().copied().chain(self.live.iter().map(|a|a.guarded()))
+            let bump=self.reserved.iter().copied().chain(self.live.iter().map(|a|a.allocation.guarded()))
                 .filter(|r|r.overlaps(candidate)).filter_map(Range::end).max();
             if let Some(end)=bump {cursor=end+PAGE;continue;}
             self.live.try_reserve(1).map_err(|_|"VRAM metadata allocation failed")?;
             let a=Allocation{id:self.next,range:Range{start,size},kind};
-            self.next+=1;self.live.push(a);return Ok(a);
+            self.next+=1;self.live.push(Entry{allocation:a,reference:Arc::new(())});return Ok(a);
         }
     }
-    /// Caller must own all access: this does not imply GPU work has drained.
+    pub fn pin(&self, allocation: Allocation) -> Result<Pin, &'static str> {
+        let entry=self.live.iter().find(|e|e.allocation==allocation).ok_or("stale VRAM allocation")?;
+        Ok(Pin{_reference:Arc::clone(&entry.reference)})
+    }
+    /// Refuse reuse while a mapping, table or consumer retains a reference.
     pub fn release(&mut self,a:Allocation)->Result<(),&'static str> {
-        let i=self.live.iter().position(|live|*live==a).ok_or("stale VRAM allocation")?;
+        let i=self.live.iter().position(|live|live.allocation==a).ok_or("stale VRAM allocation")?;
+        if Arc::strong_count(&self.live[i].reference)!=1 {return Err("VRAM allocation is retained");}
         self.live.remove(i);Ok(())
     }
 }

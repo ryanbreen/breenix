@@ -456,3 +456,10 @@ permission notice in their headers. The probe's table construction invokes
 existing attributed M4 helpers. The ACPI/VT-d admission policy, owned-frame
 integration, CPU cache split and capture scorer are Breenix code written from
 standards and existing Breenix mechanisms. No Linux DMA/DRM integration is used.
+
+E21 M5 PR 5.4 preserves the existing GK208 VM/fault and BAR notices above.
+The changes to `kernel/src/gpu/gk208/vm.rs` and `vm_probe.rs` retain those
+sources and license headers. `kernel/src/gpu/gk208/lifetime.rs` and the allocator
+reference policy are original Breenix code; they introduce no external source.
+The pinned MIT vmmgf100.c, vmmgk104.c and engine/fifo/gf100.c headers and hashes
+were rechecked for this step against the revision recorded above.
