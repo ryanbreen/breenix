@@ -598,3 +598,30 @@ The graphics comparator in `scripts/metal/gt710-suite` pins the list digests.
   original notice; `vendor/kepler/NOTICES` retains the package notices.
   `kernel/assets/kepler/manifest.json` is the unmodified generated package
   manifest, including provenance for assets outside this firmware subset.
+
+
+## GK208B ctxctl startup (milestone 7.2 unit 4)
+
+`kernel/src/gpu/gk208/gr/ctxctl.rs` adapts hardware initialization, Falcon
+ports and the internal source-firmware protocol from the following MIT files
+in nouveau Linux v6.8, revision e8f897f4afef0031fe618a8e94127a0934896aba:
+`nvkm/engine/gr/{gf100.c,gf100.h,gk208.c,gk104.c,gk110.c,gf117.c}` and
+`nvkm/engine/gr/fuc/{hub.fuc,gpc.fuc}`. The generated MMIO/context packs
+remain attributed in `gr/tables.rs`. Copyright 2010, 2011, 2012 and 2013
+Red Hat Inc.; Ben Skeggs. The startup file retains the MIT grant.
+
+`kernel/src/gpu/gk208/gr/mod.rs` uses the scratch-buffer allocation geometry
+from nouveau `nvkm/subdev/fb/gf100.c` at that revision (MIT, Copyright 2012
+Red Hat Inc.; Ben Skeggs), and retains its grant. Buffers use the hardware
+64/128 KiB page setting, remain charged and are initialized before GR use.
+
+`tests/gt710_ctxctl_test.rs` uses the protocol/register facts from the same
+MIT `gr/gf100.c` and `fuc/{hub.fuc,gpc.fuc}` sources and the register database
+below. Its register mock supplies replies; it is not hardware evidence.
+
+Falcon IMEM/DMEM port controls, start and scratch register meanings come from
+envytools f102b82381f3f11cee113d16374c87091db039d9
+`rnndb/falcon.xml` and `rnndb/graph/gf100_pgraph/ctxctl.xml` (MIT through the
+explicit import of `rnndb/copyright.xml`). Its author list and grant are
+retained in the sequencer and its check. The headers and imported grant were
+read before use. No proprietary or GPL implementation is used here.
