@@ -42,24 +42,42 @@ class ResetOrder(unittest.TestCase):
         begin = source.index('    regs.mask(0x2630', source.index('    let old_eio = ['))
         end = source.index('    let reset_pending', begin)
         block = source[begin:end]
+        wait = source[source.index('fn budget_wait('):source.index('/// Stop scheduling A.')].strip()
         harness = r'''
 use std::collections::BTreeMap;
-#[derive(Default)] struct Registers { values: BTreeMap<usize,u32>, writes: Vec<(usize,u32)> }
+use std::sync::atomic::{AtomicU64,AtomicU32,Ordering};
+static CLOCK:AtomicU64=AtomicU64::new(0);
+static RESETS:AtomicU32=AtomicU32::new(0);
+fn elapsed(start:u64)->u64 {CLOCK.load(Ordering::SeqCst)-start}
+#[derive(Default)] struct Registers { values: BTreeMap<usize,u32>, writes: Vec<(usize,u32)>, pending:u32, stuck:bool }
 impl Registers {
-    fn read(&mut self, r: usize) -> u32 { *self.values.get(&r).unwrap_or(&0) }
-    fn write(&mut self, r: usize, v: u32) { self.writes.push((r,v)); self.values.insert(r,v); }
+    fn read(&mut self, r: usize) -> u32 {
+        if r==0x2634 && self.pending!=0 {
+            if !self.stuck {self.pending-=1;}
+            if self.pending!=0 {return 0x100000;}
+        }
+        *self.values.get(&r).unwrap_or(&0)
+    }
+    fn write(&mut self, r: usize, v: u32) {
+        if r==0x2634 {self.pending=3;}
+        if r==0x200 && v & 64==0 {
+            assert_eq!(self.pending,0,"CE reset raced unfinished preemption");
+            RESETS.fetch_add(1,Ordering::SeqCst);
+        }
+        self.writes.push((r,v)); self.values.insert(r,v);
+    }
     fn mask(&mut self, r: usize, m: u32, v: u32) { let old=self.read(r);self.write(r,(old & !m)|v); }
-    fn delay_us(&mut self, _: u64) {}
+    fn delay_us(&mut self, us: u64) {CLOCK.fetch_add(us,Ordering::SeqCst);}
 }
 struct Engine {run:u32,reset:u32,base:usize,pbdma:usize,engine:usize}
 struct Range {start:u64}
 struct Allocation {range:Range}
 struct Channel {id:u32,commands:Allocation}
 const RUNLIST:u64=4096;
-fn budget_wait(_: &mut Registers,_:u64,_:usize,_:u32)->Result<(), &'static str> {Ok(())}
+WAIT
 fn transport_confirmed(_: &mut Registers,_:&Engine,_:u32,_:u32)->Result<(), &'static str> {Ok(())}
-fn run()->Result<(), &'static str> {
-    let mut regs=Registers::default();regs.values.insert(0x200,0x1000140);
+fn run(stuck:bool)->Result<(), &'static str> {
+    let mut regs=Registers{stuck,..Registers::default()};regs.values.insert(0x200,0x1000140);
     let e=Engine{run:4,reset:6,base:0x104000,pbdma:0,engine:4};
     let a=Channel{id:0,commands:Allocation{range:Range{start:0x100000}}};
     let b=Channel{id:1,commands:Allocation{range:Range{start:0x200000}}};
@@ -72,8 +90,14 @@ BLOCK
     assert_eq!(regs.read(0x200)&!64,0x1000100);
     Ok(())
 }
-fn main() {run().unwrap();}
-'''.replace('BLOCK', block)
+fn main() {
+    run(false).unwrap();
+    RESETS.store(0,Ordering::SeqCst);CLOCK.store(0,Ordering::SeqCst);
+    assert_eq!(run(true),Err("native reset budget exhausted; backing retained"));
+    assert_eq!(RESETS.load(Ordering::SeqCst),0,"timed-out preempt still reset CE");
+    assert_eq!(CLOCK.load(Ordering::SeqCst),100_000);
+}
+'''.replace('BLOCK', block).replace('WAIT', wait)
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory);(path/'reset.rs').write_text(harness)
             priority=['taskpolicy','-b'] if sys.platform=='darwin' else []
