@@ -80,4 +80,14 @@ class VmCapture(unittest.TestCase):
             bad=copy.deepcopy(e);mutate(bad)
             with self.assertRaises(ValueError):check(bad)
 
+    def test_vm_category_is_measured_by_the_metal_milestone(self):
+        manifest=json.loads((ROOT/'docs/suites/gt710.json').read_text())
+        API['validate_manifest'](manifest)
+        self.assertEqual(next(c for c in manifest['categories'] if c['id']=='vm')['cases'],[dict(id='tables',title=TITLE)])
+        effort=json.loads((ROOT/'docs/efforts/metal.json').read_text())
+        row=next(e for e in effort['efforts'] if e['id']=='metal-gt710')
+        self.assertEqual(next(m for m in row['milestones'] if m['id']=='vm')['measure'],dict(suite='gt710',categories=['vm']))
+        score=runpy.run_path(str(ROOT/'scripts/metal/metal_score.py'))
+        self.assertEqual(score['HOST_MILESTONES']['gt710-vm.json'],'metal-gt710/vm')
+
 if __name__=='__main__':unittest.main()
