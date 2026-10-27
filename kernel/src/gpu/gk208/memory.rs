@@ -191,6 +191,7 @@ impl<'a, A: Access> Pramin<'a, A> {
             bank: None,
         }
     }
+    pub(super) fn access(&mut self) -> &mut A { self.access }
     fn window(&mut self, address: u64) -> Result<usize, &'static str> {
         if address & 3 != 0 || address.checked_add(4).is_none_or(|e| e > self.total) {
             return Err("PRAMIN address outside VRAM");

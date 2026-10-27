@@ -8,6 +8,7 @@ import runpy
 import tempfile
 
 CATEGORIES = {
+    'vm': [('tables', 'Private GPU tables preserve distinct same-VA backing, ordered remaps and reserved storage; engine translation remains pending')],
     'inventory': [('allocator', 'VRAM charges and reusable guarded allocations preserve reserved storage across independent nonce-bearing PRAMIN/BAR views; engine translation remains pending')],
     'flips': [('aba-handoff', 'Both EDID modes latch private A-B-A surfaces with complete pixels, suppressed-update recovery and native console handoff')],
     'switching': [('low-high-low', 'A second advertised EDID mode switches low-high-low with latched timings, link state and complete unique-pixel read-back')],
@@ -304,6 +305,99 @@ def memory_inventory(serial):
         raise ValueError('malformed VRAM inventory evidence') from error
 
 
+def virtual_memory(serial):
+    """M5.2: CPU construction and independent apertures; never engine translation."""
+    import struct
+    try:
+        m=display_memory(serial)
+        e=json.loads(one(r'^GT710_VM (.+)$',serial,'private VM evidence')[1])
+        def need(ok,why):
+            if not ok:raise ValueError(why)
+        need(e['schema']==1 and e['bdf']==m['bdf'] and e['va']==(128<<20)-4096
+             and e['limit']==1<<40,'VM geometry or identity differs')
+        need(type(e['seed']) is int and 0<e['seed']<=0xffffffff and e['seed']!=m['seed'],'invalid VM nonce')
+        need(e['translation']=='pending-m6','CPU tables cannot certify engine translation')
+        total=m['total'];reserved=sum(r[1] for r in m['reserved']);payload=sum(o['size'] for o in m['objects'])
+        baseline=dict(reserved=reserved,payload=payload,guards=49152,charged=payload+49152,
+                      display=payload,engine=0,probe=0,free=total-reserved-payload-49152,allocations=6)
+        need(e['baseline']==e['after']==baseline,'VM charge baseline or reclamation differs')
+        engine=2*(4096+65536+2*262144)+65536
+        peak=dict(baseline,engine=engine,probe=36864,allocations=18)
+        peak['payload']+=engine+36864;peak['guards']+=12*8192
+        peak['charged']=peak['payload']+peak['guards'];peak['free']=total-reserved-peak['charged']
+        need(e['peak']==peak,'VM physical storage is uncharged')
+        occupied=[(r[0],sum(r)) for r in m['reserved']]
+        occupied += [(o['start']-4096,o['start']+o['size']+4096) for o in m['objects']]
+        def allocation(start,size):
+            need(type(start) is int and start%4096==0 and start>=4096 and start+size+4096<=total,'VM allocation outside VRAM')
+            lo,hi=start-4096,start+size+4096
+            need(not any(a<hi and lo<b for a,b in occupied),'VM allocation aliases another owner')
+            occupied.append((lo,hi))
+        need(type(e['backing']) is list and len(e['backing'])==3,'missing physical VM backing')
+        for r in e['backing']:
+            need(type(r) is list and len(r)==2 and r[1]==12288,'invalid physical VM backing')
+            allocation(r[0],r[1])
+        need(type(e['view']) is list and len(e['view'])==2 and e['view'][1]==65536,'missing private CPU viewer')
+        allocation(*e['view'])
+        need(len(e['snapshots'])==6,'missing VM snapshots')
+        bindings=[]
+        for n,s in enumerate(e['snapshots'][:2]):
+            need(s['space']==n,'missing private space')
+            allocation(s['instance'],4096);allocation(s['directory'],65536)
+            need(type(s['tables']) is list and len(s['tables'])==2,'missing boundary tables')
+            for index,(pdi,address) in enumerate(s['tables']):
+                need(pdi==index,'unexpected page-directory index');allocation(address,262144)
+            bindings.append((s['instance'],s['directory'],s['tables']))
+        phases=[(0,'map',0,7),(1,'map',1,1),(0,'remap',2,(1<<32)|1),
+                (0,'unmap',None,0),(0,'restore',0,7),(1,'unaffected',1,1)]
+        for s,(index,phase,backing,bits) in zip(e['snapshots'],phases):
+            instance,directory,tables=bindings[index]
+            need(s['space']==index and s['phase']==phase and s['instance']==instance and s['directory']==directory
+                 and s['tables']==tables and s['binding']==[directory,(1<<40)-1],'stale or foreign VM binding')
+            pd=bytearray(65536);hashes=[]
+            base=e['backing'][backing][0] if backing is not None else None
+            for pdi,address in tables:
+                struct.pack_into('<Q',pd,pdi*8,((address>>8)|1)<<32)
+                table=bytearray(262144)
+                if base is not None:
+                    for n in range(3):
+                        va=e['va']+n*4096
+                        if va//(128<<20)==pdi:
+                            struct.pack_into('<Q',table,(va%(128<<20))//4096*8,((base+n*4096)>>8)|bits)
+                hashes.append(hashlib.sha256(table).hexdigest())
+            need(s['directory_sha256']==hashlib.sha256(pd).hexdigest() and s['tables_sha256']==hashes,'VM complete table snapshot mismatch')
+            ptes=[0]+([((base+n*4096)>>8)|bits for n in range(3)] if base is not None else [0]*3)+[0]
+            need(s['ptes']==ptes,'VM boundary/permission snapshot mismatch')
+        pd=[v[1] for v in bindings]
+        expected_pd=[pd[0],pd[1],pd[0],pd[1],pd[0],pd[0],pd[0],pd[0],pd[1]]
+        need(len(e['invalidations'])==len(expected_pd),'missing VM invalidations')
+        for r,directory in zip(e['invalidations'],expected_pd):
+            need(type(r) is list and len(r)==4 and r[:3]==[directory,directory>>8,0x80000001]
+                 and type(r[3]) is int and 0<=r[3]<=0xffffffff and r[3]&0x8000,'VM invalidation request or completion differs')
+        hashes=[]
+        for start,size in e['backing']:
+            pair=[]
+            for direction in range(2):
+                data=bytearray()
+                for address in range(start,start+size,4):
+                    x=((address//4)^e['seed']^(0xa511e9b3*direction))&0xffffffff
+                    x^=x>>16;x=x*0x7feb352d&0xffffffff;x^=x>>15;x=x*0x846ca68b&0xffffffff;x^=x>>16
+                    data+=struct.pack('<I',x)
+                pair.append(hashlib.sha256(data).hexdigest())
+            hashes.append(pair)
+        need(e['backing_sha256']==hashes,'VM independent aperture nonce mismatch')
+        need(e['protected_bytes']==reserved+payload+49152 and re.fullmatch('[0-9a-f]{64}',e['protected_before'])
+             and e['protected_before']==e['protected_after'],'VM reserved storage changed or snapshot incomplete')
+        need(e['guard_bytes']==12*8192 and re.fullmatch('[0-9a-f]{64}',e['guard_before'])
+             and e['guard_before']==e['guard_after'],'VM guard changed')
+        need(e['bar_before']==e['bar_after']==0x80000000|((m['objects'][4]['start']+8192)>>12)
+             and e['pramin_before']==e['pramin_after'],'VM probe did not restore CPU apertures')
+        need(e['faults_before']==e['faults_after']==0 and e['fault_records_before']==e['fault_records_after']==[],'GPU fault during VM construction')
+        return e
+    except (KeyError,TypeError,IndexError,OverflowError,struct.error,json.JSONDecodeError) as error:
+        raise ValueError('malformed private VM evidence') from error
+
+
 def native_mode(serial):
     try:
         board = board_inventory(serial)
@@ -589,6 +683,10 @@ def native_flips(serial):
 
 
 def check_case(category, case, serial):
+    if category == 'vm':
+        if case != 'tables': raise ValueError('unknown VM case')
+        virtual_memory(serial)
+        return
     if category == 'inventory':
         if case != 'allocator': raise ValueError('unknown inventory case')
         memory_inventory(serial)

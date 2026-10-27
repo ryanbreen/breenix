@@ -353,6 +353,16 @@
               "inventory"
             ]
           }
+        },
+        {
+          "id": "vm",
+          "title": "Construct private GPU spaces and ordered remaps (M5 PR 5.2; engine translation pending M6)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "vm"
+            ]
+          }
         }
       ]
     }

@@ -411,3 +411,26 @@ BAR publication and small-page encodings call the existing attributed
 above. VRAM discovery and G4 reservations continue to use the attributed
 `memory.rs` implementation unchanged. `allocator.rs`, the pseudorandom
 probe, accounting policy and capture scorer are original Breenix code.
+
+
+## GK208B private virtual memory (E21 M5 PR 5.2)
+
+`kernel/src/gpu/gk208/vm.rs` adapts the individually checked MIT nouveau
+Linux v6.8 files below at `e8f897f4afef0031fe618a8e94127a0934896aba`.
+Paths are relative to `drivers/gpu/drm/nouveau/`:
+
+- `nvkm/subdev/mmu/vmmgf100.c`: Copyright 2017 Red Hat Inc.; PTE/PDE
+  packing, flags, directory attachment and invalidation ordering.
+- `nvkm/subdev/mmu/vmmgk104.c`: Copyright 2017 Red Hat Inc.; selected
+  128 KiB big-page geometry with 4 KiB SPTs.
+- `nvkm/engine/fifo/gf100.c`: Copyright 2012 Red Hat Inc.; read-only pending
+  fault records and field decoding.
+
+`kernel/src/gpu/gk208/vm_control.rs` adapts `vmmgf100.c`'s per-PDB
+PAGE_ALL invalidation sequence. Both consumers retain the relevant full
+original copyright and MIT permission notices in their headers.
+`vm_probe.rs` uses the existing M4 BAR1 attachment/PRAMIN helpers and the
+existing 2012 Red Hat MIT notice for its saved BAR controls. The Breenix
+allocator, CPU probe policy and capture verifier remain original code.
+The exact source hashes and CPU-versus-engine evidence boundary are in
+`docs/gui/provenance/gt710-vm.md`. No GPL integration is incorporated.
