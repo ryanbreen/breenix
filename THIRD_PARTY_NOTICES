@@ -582,3 +582,19 @@ The graphics comparator in `scripts/metal/gt710-suite` pins the list digests.
 | `vendor/kepler/nouveau/gr/gk104.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/gk104.c` | MIT; Copyright 2013 Red Hat Inc. |
 | `vendor/kepler/nouveau/gr/gk110.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/gk110.c` | MIT; Copyright 2013 Red Hat Inc. |
 | `vendor/kepler/nouveau/gr/gk208.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/gk208.c` | MIT; Copyright 2013 Red Hat Inc. |
+
+## GK208 PGRAPH static inputs (M7.2 u3)
+
+- `vendor/kepler/nouveau/gr/gf100.c` (`gf100_gr_oneinit`, Copyright 2012
+  Red Hat Inc.) and `vendor/kepler/nouveau/gr/gk208.c` (`gk208_gr`, Copyright
+  2013 Red Hat Inc.), Linux v6.8
+  `e8f897f4afef0031fe618a8e94127a0934896aba`, MIT ->
+  `kernel/src/gpu/gk208/gr/topology.rs` and `tests/gt710_gr_topology_test.rs`.
+  Both consumers retain the original full notices.
+- The seven MIT firmware inputs listed above (`nouveau/{hubgk208.fuc5,
+  gpcgk208.fuc5,com.fuc,hub.fuc,gpc.fuc,macros.fuc,os.h}` at the same Linux
+  revision) -> the four generated images under `kernel/assets/kepler/` and
+  `kernel/src/gpu/gk208/gr/firmware.rs`. The embedding file retains each
+  original notice; `vendor/kepler/NOTICES` retains the package notices.
+  `kernel/assets/kepler/manifest.json` is the unmodified generated package
+  manifest, including provenance for assets outside this firmware subset.

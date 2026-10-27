@@ -92,8 +92,8 @@
  */
 //! GK208B board inventory, before native display ownership (E19 PR 4.1).
 //! Runs once on the boot CPU before secondary CPUs and GPU clients exist.
-#[path = "gr/tables.rs"]
-pub mod gr_tables;
+pub mod gr;
+pub use gr::tables as gr_tables;
 mod board;
 mod ddc;
 mod edid;
@@ -339,6 +339,7 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
             crate::serial_println!("GT710_PROBE_TIME aperture us={}",channel::elapsed(start));
         }
         if native::suite_requested() {
+            gr::probe_static_inputs()?;
             let start=timer::rdtsc();
             channel::probe(&mut regs,&device,&mut layout,&console)?;
             crate::serial_println!("GT710_PROBE_TIME channel us={}",channel::elapsed(start));
