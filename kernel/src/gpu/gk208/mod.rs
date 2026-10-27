@@ -149,6 +149,11 @@ fn hash(data: &[u8]) -> String {
 }
 
 impl memory::Access for Registers {
+    fn read_pair(&mut self, reg: usize) -> u64 {
+        // SAFETY: Pramin::bytes supplies aligned storage inside its
+        // checked BAR0 PRAMIN storage window.
+        unsafe { ((self.0+reg) as *const u64).read_volatile() }
+    }
     fn read(&mut self, reg: usize) -> u32 {
         Registers::read(self, reg)
     }
