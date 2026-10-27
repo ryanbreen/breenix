@@ -258,6 +258,17 @@ pub(super) fn probe(s: &mut super::process::Session) -> Result<String, &'static 
         fill(&mut regs, s.total, c.source.range.start, &data)?;
     }
     modeset::bar_flush(&mut regs)?;
+    // Prepare private replacement storage before either identity is bound.
+    // Its USERD is separate; publish it only after confirmed transport reset.
+    let fresh_userd = s.layout.allocator.allocate(4096, 4096, Kind::Engine)?;
+    let mut fresh_a = Channel::new(&mut regs, &mut s.layout, s.total, 0, &status, fresh_userd)?;
+    let mut fresh_b = Channel::new(&mut regs, &mut s.layout, s.total, 1, &status, fresh_userd)?;
+    for (i, c) in [&mut fresh_a, &mut fresh_b].into_iter().enumerate() {
+        let data: Vec<_> = (0..SIZE)
+            .map(|n| pattern(n, if i == 0 { seed } else { !seed }))
+            .collect();
+        fill(&mut regs, s.total, c.source.range.start, &data)?;
+    }
     activate_pair(&mut regs, s.total, &e, s.bi, s.bd, s.pte, &mut a, &mut b)?;
     // B has executed before A faults, and remains bound throughout local recovery.
     let _ = compare(&mut regs, s.total, &e, s.bar, &mut b, !seed)?;
@@ -365,17 +376,6 @@ pub(super) fn probe(s: &mut super::process::Session) -> Result<String, &'static 
     commands.extend(copy::encode(rectangle, COMMAND + 8192 + u64::from(super::super::queue::Queue::slot(seq)) * 16, b.epoch, seq)?);
     b.push(&mut regs, s.total, s.bar, &commands, true)?;
     let request_b = b.request(seq, active_dest.range.start, 1);
-    // Prepare replacement storage before the reset decision; do not touch its
-    // USERD slots or publish it until the old engine access has ended.
-    let fresh_userd = s.layout.allocator.allocate(4096, 4096, Kind::Engine)?;
-    let mut fresh_a = Channel::new(&mut regs, &mut s.layout, s.total, 0, &status, fresh_userd)?;
-    let mut fresh_b = Channel::new(&mut regs, &mut s.layout, s.total, 1, &status, fresh_userd)?;
-    for (i, c) in [&mut fresh_a, &mut fresh_b].into_iter().enumerate() {
-        let data: Vec<_> = (0..SIZE)
-            .map(|n| pattern(n, if i == 0 { seed } else { !seed }))
-            .collect();
-        fill(&mut regs, s.total, c.source.range.start, &data)?;
-    }
     loop {
         if watchdog.scan(elapsed(start)) == Action::Reset {
             break;
