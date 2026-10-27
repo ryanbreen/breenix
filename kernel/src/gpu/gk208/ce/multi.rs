@@ -50,7 +50,7 @@ pub(super) fn probe(regs:&mut Registers,layout:&mut memory::Layout,total:u64,e:&
             c.id,c.context.space().instance.range.start,c.commands.range.start,c.source.range.start,c.dest.range.start,c.epoch,first[i],c.put,blocked[i],digests[i].len(),digests[i].join(",")));
     }
     a.drain(regs,e)?;b.drain(regs,e)?;
-    words(regs,total,pte,&[0,0,0,0])?;modeset::activate_bar1(regs,bi,bd)?;
+    words(regs,total,pte,&[0,0])?;modeset::activate_bar1(regs,bi,bd)?;
     if layout.allocator.stats()!=baseline {return Err("concurrent charges changed");}
     Ok(format!("\"schema\":1,\"seed\":{},\"channels\":[{}]",seed,channels.join(",")))
 }

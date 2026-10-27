@@ -6,7 +6,7 @@ use crate::task::{waitqueue::{WaitQueueHead,PrepareOutcome},thread::ThreadState}
 static SESSION:spin::Mutex<Option<Session>>=spin::Mutex::new(None);
 static WAITING:AtomicBool=AtomicBool::new(false);
 static WAITERS:WaitQueueHead=WaitQueueHead::new();
-struct Work {a:Channel,b:Channel,ticket:Option<Ticket>,request:Request,seed:u32,baseline:memory::allocator::Stats,old:[u32;3]}
+struct Work {a:Channel,b:Channel,ticket:Option<Ticket>,request:Request,seed:u32,baseline:memory::allocator::Stats,old:[u32;3],userd:Allocation}
 struct Session {layout:memory::Layout,registers:usize,bar:usize,bi:u64,bd:u64,pte:u64,total:u64,work:Option<Work>}
 pub(crate) fn retain(layout:memory::Layout,regs:usize,bar:usize)->Result<(),&'static str> {
     let native=layout.objects[4].range.start;
@@ -24,8 +24,9 @@ impl Session {
         regs.mask(0x204,1<<e.pbdma,1<<e.pbdma);
         regs.write(0x2254,0x10000000|(SLOT>>12) as u32);
         let baseline=self.layout.allocator.stats();let status=system_dma::translation_status()?;
-        let mut a=Channel::new(&mut regs,&mut self.layout,self.total,0,&status)?;
-        let mut b=Channel::new(&mut regs,&mut self.layout,self.total,1,&status)?;
+        let userd=self.layout.allocator.allocate(4096,4096,Kind::Engine)?;
+        let mut a=Channel::new(&mut regs,&mut self.layout,self.total,0,&status,userd)?;
+        let mut b=Channel::new(&mut regs,&mut self.layout,self.total,1,&status,userd)?;
         let seed=timer::rdtsc() as u32;
         for (i,c) in [&mut a,&mut b].into_iter().enumerate() {
             let data:Vec<_>=(0..SIZE).map(|n|pattern(n,if i==0 {seed}else{!seed})).collect();
@@ -38,7 +39,7 @@ impl Session {
         let seq=a.queue.next()?;let command=gated_copy(&a,seq)?;
         a.push(&mut regs,self.total,self.bar,&command,true)?;
         let request=a.request(seq,a.dest.range.start,1);
-        self.work=Some(Work{a,b,ticket:Some(ticket),request,seed,baseline,old});
+        self.work=Some(Work{a,b,ticket:Some(ticket),request,seed,baseline,old,userd});
         // Copy on the second channel while the first waits on its private gate.
         let w=self.work.as_mut().unwrap();
         w.b.execute(&mut regs,self.total,&e,self.bar,rect(SOURCE,DEST,8192,1,8192,8192))?;
@@ -76,9 +77,9 @@ impl Session {
             }
         }
         w.a.drain(&mut regs,&e)?;w.b.drain(&mut regs,&e)?;
-        words(&mut regs,self.total,self.pte,&[0,0,0,0])?;modeset::activate_bar1(&mut regs,self.bi,self.bd)?;
+        words(&mut regs,self.total,self.pte,&[0,0])?;modeset::activate_bar1(&mut regs,self.bi,self.bd)?;
         let w=self.work.take().unwrap();
-        w.a.retire(&mut regs,&mut self.layout,self.total)?;w.b.retire(&mut regs,&mut self.layout,self.total)?;
+        w.a.retire(&mut regs,&mut self.layout,self.total)?;w.b.retire(&mut regs,&mut self.layout,self.total)?;self.layout.allocator.release(w.userd)?;
         if self.layout.allocator.stats()!=w.baseline {return Err("deferred destruction baseline differs");}
         regs.write(0x2254,w.old[0]);regs.write(0x2140,w.old[1]);regs.write(0x204,w.old[2]);
         Ok(String::from("drained compares=2 survivor=1 baseline=1\n"))
