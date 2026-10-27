@@ -101,3 +101,16 @@ fn fault_records_keep_raw_words_and_decode_only_pending_units_without_acknowledg
     }
     assert!(io.events.is_empty(),"fault observation must not acknowledge or reset hardware");
 }
+
+#[test]
+fn initialization_writes_only_payload_of_charged_instance_directory_and_tables() {
+    let mut a=Allocator::new(1<<30,&[Range{start:0,size:128<<20}]).unwrap();
+    let mut io=Model::default();let mut s=Space::new(&mut a,&mut io).unwrap();
+    s.map(&mut a,&mut io,(128<<20)-4096,Range{start:512<<20,size:12288},Flags::default()).unwrap();
+    let mut payload=vec![s.instance.range,s.directory.range];payload.extend(s.table_ranges().map(|(_,r)|r));
+    for &(_,address,_) in io.events.iter().filter(|e|e.0=='w') {
+        assert!(payload.iter().any(|r|r.start<=address && address+8<=r.end().unwrap()),
+                "write at {address:#x} escaped the charged payloads");
+    }
+    for r in &payload {assert!(!io.words.contains_key(&(r.start-8)));assert!(!io.words.contains_key(&r.end().unwrap()));}
+}
