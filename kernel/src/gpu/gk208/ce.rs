@@ -409,7 +409,8 @@ fn run_case(regs:&mut Registers,total:u64,e:&Engine,bar:usize,c:&mut Channel,id:
         let s=k.src_offset as usize+y*k.sp as usize;let d=k.dst_offset as usize+y*k.dp as usize;
         expected[d..d+k.width as usize].copy_from_slice(&initial[s..s+k.width as usize]);
     }
-    fill(regs,total,c.source.range.start,&initial)?;
+    let refilled=k.name!="survivor-b";
+    if refilled {fill(regs,total,c.source.range.start,&initial)?;}
     let destination=if k.overlap {initial.clone()} else {vec![0xcc;SIZE]};
     fill(regs,total,c.dest.range.start,&destination)?;
     modeset::bar_flush(regs)?;
@@ -417,13 +418,14 @@ fn run_case(regs:&mut Registers,total:u64,e:&Engine,bar:usize,c:&mut Channel,id:
         for i in 0..2 {unsafe {core::ptr::copy_nonoverlapping(initial[i*4096..].as_ptr(),c.pages.va(i) as *mut u8,4096);}}
         c.pages.publish();
     }
-    let src=if k.upload {SYSTEM} else if k.overlap {DEST} else {SOURCE};
+    let src=if k.upload {SYSTEM} else if k.overlap {DEST} else if k.name=="restored-a" {SOURCE+SIZE as u64+4096} else {SOURCE};
     let mut transfer_us=0;
     if k.overlap {
         transfer_us+=c.execute(regs,total,e,bar,rect(DEST,STAGE,SIZE as u32,1,SIZE as u32,SIZE as u32))?;
     }
-    transfer_us+=c.execute(regs,total,e,bar,rect(
-        (if k.overlap {STAGE} else {src})+u64::from(k.src_offset),DEST+u64::from(k.dst_offset),k.width,k.height,k.sp,k.dp))?;
+    let submitted=rect((if k.overlap {STAGE} else {src})+u64::from(k.src_offset),
+        DEST+u64::from(k.dst_offset),k.width,k.height,k.sp,k.dp);
+    transfer_us+=c.execute(regs,total,e,bar,submitted)?;
     let mut releases=Vec::new();
     for (pass,poison) in [0x55,0xaa].into_iter().enumerate() {
         system_fill(c,poison);
@@ -434,7 +436,7 @@ fn run_case(regs:&mut Registers,total:u64,e:&Engine,bar:usize,c:&mut Channel,id:
         releases.push(c.put);
     }
     crate::serial_println!("GT710_CE_STAGE case={} channel={} sequence={} elapsed_us={}",k.name,c.id,c.put,transfer_us);
-    Ok(format!("{{\"id\":{},\"name\":\"{}\",\"channel\":{},\"epoch\":{},\"sequence\":{},\"size\":{},\"seed\":{},\"width\":{},\"height\":{},\"src_pitch\":{},\"dst_pitch\":{},\"src_offset\":{},\"dst_offset\":{},\"fill\":204,\"overlap\":{},\"upload\":{},\"poisons\":[85,170],\"releases\":{:?},\"elapsed_us\":{},\"source\":{},\"dest\":{},\"instance\":{},\"directory\":{}}}",id,k.name,c.id,c.epoch,c.put,SIZE,seed,k.width,k.height,k.sp,k.dp,k.src_offset,k.dst_offset,k.overlap,k.upload,releases,transfer_us,c.source.range.start,c.dest.range.start,c.context.space().instance.range.start,c.context.space().directory.range.start))
+    Ok(format!("{{\"id\":{},\"name\":\"{}\",\"channel\":{},\"epoch\":{},\"sequence\":{},\"size\":{},\"seed\":{},\"width\":{},\"height\":{},\"src_pitch\":{},\"dst_pitch\":{},\"src_offset\":{},\"dst_offset\":{},\"fill\":204,\"overlap\":{},\"upload\":{},\"poisons\":[85,170],\"releases\":{:?},\"elapsed_us\":{},\"source\":{},\"dest\":{},\"instance\":{},\"directory\":{},\"src_va\":{},\"refilled\":{}}}",id,k.name,c.id,c.epoch,c.put,SIZE,seed,k.width,k.height,k.sp,k.dp,k.src_offset,k.dst_offset,k.overlap,k.upload,releases,transfer_us,c.source.range.start,c.dest.range.start,c.context.space().instance.range.start,c.context.space().directory.range.start,submitted.src,refilled))
 }
 pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,console:&super::ConsoleSurface)->Result<(),&'static str> {
     let baseline=layout.allocator.stats();let total=baseline.reserved+baseline.charged+baseline.free;
@@ -502,7 +504,7 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
         let bytes=system_bytes(&b);emit_bytes(cases.len(),pass,&bytes);
         if bytes!=(0..SIZE).map(|i|pattern(i,!seed)).collect::<Vec<_>>() {return Err("other channel source changed");}
     }
-    cases.push(format!("{{\"id\":{},\"name\":\"unaffected-b\",\"channel\":1,\"epoch\":{},\"sequence\":{},\"size\":8192,\"seed\":{},\"width\":8192,\"height\":1,\"src_pitch\":8192,\"dst_pitch\":8192,\"src_offset\":0,\"dst_offset\":0,\"fill\":204,\"overlap\":false,\"upload\":false,\"poisons\":[85,170],\"releases\":[{},{}],\"elapsed_us\":0,\"source\":{},\"dest\":{},\"instance\":{},\"directory\":{}}}",cases.len(),b.epoch,b.put,!seed,b.put-1,b.put,b.source.range.start,b.dest.range.start,b.context.space().instance.range.start,b.context.space().directory.range.start));
+    cases.push(format!("{{\"id\":{},\"name\":\"unaffected-b\",\"channel\":1,\"epoch\":{},\"sequence\":{},\"size\":8192,\"seed\":{},\"width\":8192,\"height\":1,\"src_pitch\":8192,\"dst_pitch\":8192,\"src_offset\":0,\"dst_offset\":0,\"fill\":204,\"overlap\":false,\"upload\":false,\"poisons\":[85,170],\"releases\":[{},{}],\"elapsed_us\":0,\"source\":{},\"dest\":{},\"instance\":{},\"directory\":{},\"src_va\":4194304,\"refilled\":false}}",cases.len(),b.epoch,b.put,!seed,b.put-1,b.put,b.source.range.start,b.dest.range.start,b.context.space().instance.range.start,b.context.space().directory.range.start));
     b.drain(regs,&e)?;
     a.activate(regs,total,&e,bar_inst,bar_dir,pte)?;
     // This VA has an allocated SPT but no PTE, and is bounded to a single byte.
@@ -553,7 +555,6 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
     a.context.map(&mut layout.allocator,&mut VmIo{regs,total},invalid,a.source,flags())?;
     a.activate(regs,total,&e,bar_inst,bar_dir,pte)?;
     cases.push(run_case(regs,total,&e,bar,&mut a,cases.len(),seed,Case{name:"restored-a",..full})?);
-    a.execute(regs,total,&e,bar,rect(invalid,DEST,8192,1,8192,8192))?;
     a.drain(regs,&e)?;
     b.activate(regs,total,&e,bar_inst,bar_dir,pte)?;
     cases.push(run_case(regs,total,&e,bar,&mut b,cases.len(),!seed,Case{name:"survivor-b",..full})?);
