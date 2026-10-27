@@ -6,7 +6,7 @@ use crate::task::{waitqueue::{WaitQueueHead,PrepareOutcome},thread::ThreadState}
 static SESSION:spin::Mutex<Option<Session>>=spin::Mutex::new(None);
 static WAITING:AtomicBool=AtomicBool::new(false);
 static WAITERS:WaitQueueHead=WaitQueueHead::new();
-struct Work {a:Channel,b:Channel,ticket:Option<Ticket>,request:Request,seed:u32,baseline:memory::allocator::Stats,old:[u32;3],userd:Allocation}
+struct Work {a:Channel,b:Channel,ticket:Option<Ticket>,request:Request,seed:u32,baseline:memory::allocator::Stats,old:[u32;3],userd:Allocation,engine:Engine}
 struct Session {layout:memory::Layout,registers:usize,bar:usize,bi:u64,bd:u64,pte:u64,total:u64,work:Option<Work>}
 pub(crate) fn retain(layout:memory::Layout,regs:usize,bar:usize)->Result<(),&'static str> {
     let native=layout.objects[4].range.start;
@@ -39,16 +39,16 @@ impl Session {
         let seq=a.queue.next()?;let command=gated_copy(&a,seq)?;
         a.push(&mut regs,self.total,self.bar,&command,true)?;
         let request=a.request(seq,a.dest.range.start,1);
-        self.work=Some(Work{a,b,ticket:Some(ticket),request,seed,baseline,old,userd});
+        self.work=Some(Work{a,b,ticket:Some(ticket),request,seed,baseline,old,userd,engine:e});
         // Copy on the second channel while the first waits on its private gate.
         let w=self.work.as_mut().unwrap();
-        w.b.execute(&mut regs,self.total,&e,self.bar,rect(SOURCE,DEST,8192,1,8192,8192))?;
-        if w.a.completed(&mut regs,self.total,&e,w.request,0)?.0.is_some() {return Err("gated copy ran before release");}
+        w.b.execute(&mut regs,self.total,&w.engine,self.bar,rect(SOURCE,DEST,8192,1,8192,8192))?;
+        if w.a.completed(&mut regs,self.total,&w.engine,w.request,0)?.0.is_some() {return Err("gated copy ran before release");}
         Ok(())
     }
     fn status(&mut self)->Result<String,&'static str> {
         let Some(w)=self.work.as_mut() else {return Ok(String::from("ready\n"));};
-        let mut regs=Registers(self.registers);let e=discover(&mut regs)?;
+        let mut regs=Registers(self.registers);let e=&w.engine;
         let completed=w.a.completed(&mut regs,self.total,&e,w.request,0)?.0.is_some();
         let held=w.a.context.holds()[0];
         // Refused releases retain the measured charges and mapping pins.
@@ -59,7 +59,7 @@ impl Session {
     }
     fn drain(&mut self)->Result<String,&'static str> {
         let w=self.work.as_mut().ok_or("native waiter absent")?;
-        let mut regs=Registers(self.registers);let e=discover(&mut regs)?;
+        let mut regs=Registers(self.registers);let e=&w.engine;
         if w.a.completed(&mut regs,self.total,&e,w.request,0)?.0.is_some() {return Err("native wait already completed");}
         words(&mut regs,self.total,w.a.commands.range.start+9216,&[1])?;
         modeset::bar_flush(&mut regs)?;
@@ -99,7 +99,16 @@ pub(crate) fn proc_read(op:u8)->Result<Vec<u8>,i32> {
         loop {
             if elapsed(start)>=2_000_000 {return Err(-5);}
             if crate::syscall::check_signals_for_wait().is_some() {return Err(-4);}
-            let outcome=WAITERS.prepare_to_wait_checked(ThreadState::BlockedOnIO,Some(deadline),||true);
+            {
+                let mut session=SESSION.lock();let s=session.as_mut().ok_or(-19)?;
+                let w=s.work.as_mut().ok_or(-5)?;let mut regs=Registers(s.registers);
+                if w.a.completed(&mut regs,s.total,&w.engine,w.request,0).map_err(|_|-5)?.0.is_some() {
+                    return Ok(b"completed\n".to_vec());
+                }
+            }
+            let (seconds,nanos)=crate::time::timer::get_monotonic_time_ns();
+            let wake=seconds.saturating_mul(1_000_000_000).saturating_add(nanos).saturating_add(10_000_000).min(deadline);
+            let outcome=WAITERS.prepare_to_wait_checked(ThreadState::BlockedOnIO,Some(wake),||true);
             if matches!(outcome,PrepareOutcome::Queued) {WAITING.store(true,Ordering::Release);}
             crate::syscall::blocking_io::wait_prepared(&WAITERS,outcome).map_err(|e|-e)?;
             if matches!(outcome,PrepareOutcome::Mismatch) {continue;}
