@@ -14,7 +14,7 @@ def fixture():
     e = dict(schema=1, bdf='01:00.0', chipset=0x106, host_class=0xa06f,
              channel=0, epoch=1, instance=256<<20, directory=(256<<20)+12288,
              userd=257<<20, ring=258<<20, push=259<<20, semaphore=260<<20,
-             top=[0x80000026 | (2<<21) | (4<<26), 7],
+             top=[0x80000036 | (2<<21) | (4<<26), 7]+[0]*62,
              pbdmas=[[0,4]], runlist=2, engine=4, bind=0x80010000,
              state=0x20001, fault=0, pbdma_errors=[0,0],
              samples=[dict(sequence=i,epoch=1,expected=0x12345000+i,
