@@ -39,8 +39,9 @@ def fixture():
     e=dict(schema=1,phase='inventory',bdf=memory['bdf'],total=memory['total'],aperture=memory['aperture'],seed=0x12345679,
            baseline=baseline,peak=peak,after=baseline,scratch=scratch,tables=tables,views=views,
            protected_bytes=reserved+payload+49152,protected_before='a'*64,protected_after='a'*64,
-           bar_before=0x80008000,bar_after=0x80008000,pramin_before=0,pramin_after=0,
-           faults_before=0,faults_after=0,fault_records=[],translation='pending-m6')
+           bar_before=0x80000000|((memory['objects'][4]['start']+8192)>>12),bar_after=0x80000000|((memory['objects'][4]['start']+8192)>>12),pramin_before=0,pramin_after=0,
+           faults_before=0,faults_after=0,fault_records=[],translation='pending-m6',
+           scratch_guard_bytes=24576,scratch_guard_before='b'*64,scratch_guard_after='b'*64)
     return memory,e
 
 
@@ -57,6 +58,9 @@ class Inventory(unittest.TestCase):
                        lambda b:b.update(protected_after='b'*64),
                        lambda b:b.update(protected_bytes=4096),
                        lambda b:b.update(bar_after=0),lambda b:b.update(faults_after=16),
+                       lambda b:b.update(bar_before=0x80000001,bar_after=0x80000001),
+                       lambda b:b.update(scratch_guard_after='c'*64),
+                       lambda b:b.update(scratch_guard_bytes=4096),
                        lambda b:b.update(translation='passed'),lambda b:b['views'].pop(),
                        lambda b:b['views'][0].update(ptes_sha256='0'*64),
                        lambda b:b['views'][1]['sha256'].__setitem__(0,b['views'][0]['sha256'][0]),
