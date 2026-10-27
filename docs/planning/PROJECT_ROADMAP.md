@@ -361,3 +361,12 @@ switch. Missing switch prerequisites retain preferred takeover. Boot
 `20261027T001802Z-metal` records the three complete device frames and the
 preferred return; the PR carries the scoped console and capture verdicts.
 Same-mode A-B-A surface flips remain PR 4.5.
+
+### GT 710 same-mode flips (PR #2509, 2026-10-26)
+
+The R240 capture `20261027T004848Z-metal` records A-B-A at both live EDID
+modes, full retained pixel comparisons, suppressed-UPDATE recovery and native
+console handoff. The landing collector additionally rejects flip nonces reused
+from native takeover, switches or the other mode. Core-channel UPDATEs meet the
+step 4.5 gate; NV927C base-channel creation, sustained 60 Hz flipping and
+preferred-flip failure recovery remain follow-ups in #2510.

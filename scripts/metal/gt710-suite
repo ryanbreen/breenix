@@ -459,6 +459,8 @@ def native_flips(serial):
         need('GT710_FLIP_REFUSAL' not in serial, 'native flip reported an error')
         need(len(reports)==6 and len(skipped)==2, 'both modes need A-B-A and a suppressed update')
         a,b = [o['start'] for o in memory['objects'][:2]]
+        seeds = {json.loads(one(r'^GT710_MODE (.+)$',serial,'native mode')[1])['seed']}
+        seeds.update(e['seed'] for e,_ in modes)
         frames=[]
         switch_end = list(re.finditer(r'^GT710_SWITCH (.+)$',serial,re.M))[-1].end()
         for mode,template in enumerate([modes[2][0],modes[1][0]]):
@@ -488,6 +490,9 @@ def native_flips(serial):
                      and not e['power_status']&0x10000000 and e['firmware_writes']==0, 'flip output fault or firmware write')
                 need(0<((e['raster_after']>>16)-(e['raster_before']>>16))&65535<100, 'flip raster did not advance')
                 need(type(e['seed']) is int and 0<e['seed']<=0xffffffff, 'invalid flip nonce')
+                if step<2:
+                    need(e['seed'] not in seeds, 'flip pattern nonce reused')
+                    seeds.add(e['seed'])
                 if step==0: seed_a=e['seed']
                 else: need((e['seed']==seed_a)==(step==2), 'A-B-A nonce relationship differs')
                 rows=list(re.finditer(r'^GT710_FLIP_PIX '+str(mode)+' '+str(step)+r' (\d+) ([0-9a-f:,]+)$',serial,re.M))

@@ -12,7 +12,7 @@ API = runpy.run_path(str(ROOT/'scripts/metal/gt710-suite'))
 SWITCH = runpy.run_path(str(ROOT/'tests/gt710_switch_report_test.py'))
 
 
-def capture():
+def capture(seeds=None):
     serial = SWITCH['switch_capture']()
     memory = API['display_memory'](serial)
     modes = API['native_switches'](serial)
@@ -31,7 +31,8 @@ def capture():
             e = copy.deepcopy(template)
             e.update(phase='flip',mode=mode,step=step,surface=address,before_active=before,
                      put_before=previous,put=previous+24,get=previous+24,
-                     seed=0x123450+mode*0x34567+(0x789ab if step==1 else 0),
+                     seed=(seeds[mode][step==1] if seeds else
+                           0x123450+mode*0x34567+(0x789ab if step==1 else 0)),
                      notifier_before=0,notifier_after=1)
             e['active'] = copy.deepcopy(before)
             next(r for r in e['active'] if r[0]==0x640460)[1]=address>>8
@@ -60,6 +61,19 @@ class Flips(unittest.TestCase):
         sys.path.insert(0,str(ROOT/'scripts/metal'))
         import metal_score
         self.assertEqual(metal_score.HOST_MILESTONES['gt710-flips.json'],'metal-gt710/flips')
+
+    def test_reused_native_switch_and_other_mode_nonces_are_rejected(self):
+        serial=SWITCH['switch_capture']()
+        prior=[json.loads(line.split(' ',1)[1])['seed'] for line in serial.splitlines()
+               if line.startswith(('GT710_MODE ', 'GT710_SWITCH '))]
+        for mode in range(2):
+            for buffer in range(2):
+                for nonce in prior+[0x123450+(0 if mode else 0x34567)]:
+                    seeds=[[0x123450,0x19bdfb],[0x1579b7,0x1d0362]]
+                    seeds[mode][buffer]=nonce
+                    with self.subTest(mode=mode,buffer=buffer,nonce=nonce):
+                        with self.assertRaisesRegex(ValueError,'flip pattern nonce reused'):
+                            API['native_flips'](capture(seeds))
 
     def test_each_edid_mode_requires_latched_aba_full_pixels_and_clean_next_update(self):
         serial=capture()

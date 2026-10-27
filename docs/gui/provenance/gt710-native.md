@@ -121,10 +121,17 @@ first and final read-backs must have byte-for-byte equality, while B must differ
 notifier, drained GET/PUT, live clock, advancing raster and error/underflow state.
 The collector retains six `gt710-flip-<mode>-<step>.bin` files and their digests.
 These CPU-filled diagnostic images remain provisional display-memory evidence.
+Flip seeds must differ from the native-mode and three switch seeds and from the
+other mode's seeds; only the final A reuses its sequence's first A seed.
+
+Milestone 4 currently uses full NV927D core-channel UPDATEs. It does not create
+an NV927C base channel, although the plan lists core/base channel creation.
+The step 4.5 gate covers these measured flips; a base channel and sustained
+60 Hz flipping remain follow-up work.
 
 `GT710_FLIP_SKIPPED` records an address change with UPDATE deliberately omitted.
 It requires the old active A binding and incomplete notifier despite command
-consumption. The following clean A-B-A updates must complete. Collector controls
+consumption. The following clean A-B-A updates must complete. Host-side collector controls
 also reject a wrong surface, stale completion and changed/missing pixel; they
 judge captured state and pixels rather than a fault flag. A runtime failure
 records `GT710_FLIP_REFUSAL`; a low-mode failure uses the existing bounded
