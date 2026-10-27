@@ -239,6 +239,7 @@ fn probe_inner(
     cleanup: &mut ProbeCleanup,
 ) -> Result<(), &'static str> {
     ctxctl::reset(regs).map_err(hardware_error)?;
+    cleanup.state.capture_gr(regs).map_err(hardware_error)?;
     let raw = [
         [0x409604, regs.read(0x409604)],
         [0x502608, regs.read(0x502608)],

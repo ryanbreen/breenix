@@ -88,7 +88,8 @@
 //! gk208.c/gk104.c/gf117.c initialization and hub.fuc/gpc.fuc (MIT).
 //! Power-gating exit: nvkm/subdev/pmu/gk110.c:32-83, selected by
 //! pmu/gk208.c and called before topology by gr/gf100.c:2006 (MIT).
-//! Register ports: envytools f102b823 falcon.xml/ctxctl.xml (MIT).
+//! Register ports: envytools f102b823 falcon.xml/ctxctl.xml and bus/pmc.xml
+//! (MIT through their explicit copyright.xml imports).
 //! The external NVIDIA firmware protocol is incompatible with these images.
 
 use super::{firmware, tables, topology::Topology};
@@ -180,24 +181,39 @@ fn delay(io: &mut impl Access, us: u64) -> Result<(), Fault> {
 // their incoming payloads, rather than guessing which units main had gated.
 const PGOB: [u32; 5] = [0x20520, 0x20524, 0x20530, 0x2052c, 0x20528];
 
+// PMC/PFIFO stay accessible while GR is gated. GR enables/routing are only
+// captured after reset exits PGOB, before firmware or init packs change them.
+const IRQ_ENABLES: [u32; 2] = [0x140, 0x2140];
+const GR_IRQ: [u32; 3] = [0x40013c, 0x409c24, 0x40901c];
+fn state_word(io: &mut impl Access, address: u32) -> Result<u32, Fault> {
+    let value = io.read(address);
+    if value >> 16 == 0xbadf {
+        return Err(fault("GR state capture returned PRI error", address, value));
+    }
+    Ok(value)
+}
+
 // Host IRQs are polled during this probe. Leave Falcon's internal IRQs alone.
-const IRQ_ENABLES: [u32; 4] = [0x140, 0x40013c, 0x409c24, 0x40901c];
 fn mask_host_irqs(io: &mut impl Access) {
     io.write(0x40013c, 0);
     io.write(0x409c24, 0);
     io.read(0x40013c);
 }
 pub struct SavedState {
-    irq: [u32; 4],
+    irq: [u32; 2],
+    gr_irq: Option<[u32; 3]>,
     pmc: u32,
     control: u32,
     pgob: [u32; 5],
 }
 impl SavedState {
     pub fn capture(io: &mut impl Access) -> Result<Self, Fault> {
-        let irq = IRQ_ENABLES.map(|a| io.read(a));
-        let pmc = io.read(0x200);
-        let control = io.read(0x10a78c);
+        let mut irq = [0; 2];
+        for (i, address) in IRQ_ENABLES.into_iter().enumerate() {
+            irq[i] = state_word(io, address)?;
+        }
+        let pmc = state_word(io, 0x200)?;
+        let control = state_word(io, 0x10a78c)?;
         let mut pgob = [0; 5];
         for (index, address) in PGOB.into_iter().enumerate() {
             poll(
@@ -216,14 +232,33 @@ impl SavedState {
             control,
             pgob,
             irq,
+            gr_irq: None,
         })
+    }
+
+    /// Capture the accessible reset baseline, before the first GR upload.
+    /// Incoming gated PRI responses cannot describe dormant GR state.
+    pub fn capture_gr(&mut self, io: &mut impl Access) -> Result<(), Fault> {
+        if io.read(0x200) & 0x1000 == 0 {
+            return Err(fault("GR state capture requires enabled engine", 0x200, 0));
+        }
+        let mut irq = [0; 3];
+        for (i, address) in GR_IRQ.into_iter().enumerate() {
+            irq[i] = state_word(io, address)?;
+        }
+        self.gr_irq = Some(irq);
+        Ok(())
     }
 
     /// Assert PGRAPH reset and confirm it before releasing Falcon backing.
     pub fn stop(&self, io: &mut impl Access) -> Result<(), Fault> {
-        mask_host_irqs(io);
-        io.write(0x409c20, u32::MAX);
-        io.write(0x400100, u32::MAX);
+        // An early reset/capture refusal may leave GR inaccessible, and no
+        // firmware has been uploaded in that case. Assert reset via PMC only.
+        if self.gr_irq.is_some() && io.read(0x200) & 0x1000 != 0 {
+            mask_host_irqs(io);
+            io.write(0x409c20, u32::MAX);
+            io.write(0x400100, u32::MAX);
+        }
         mask(io, 0x200, 0x1000, 0);
         poll(
             io,
@@ -240,6 +275,27 @@ impl SavedState {
     /// Restore the saved PGOB payloads under the same programming controls as
     /// gk110_pmu_pgob, with PGRAPH held in reset until its scratch is retired.
     pub fn restore(&self, io: &mut impl Access) -> Result<(), Fault> {
+        // stop() confirmed reset before backing was retired. Re-enable the
+        // empty, halted engine while PGOB is still open to restore and verify
+        // its reset baseline. Re-gating first makes the readback a PRI error.
+        let gr_result = (|| {
+            if let Some(irq) = self.gr_irq {
+                mask(io, 0x200, 0x1000, 0x1000);
+                delay(io, 10)?;
+                for (address, value) in GR_IRQ.into_iter().zip(irq).rev() {
+                    io.write(address, value);
+                }
+                for (address, expected) in GR_IRQ.into_iter().zip(irq) {
+                    let actual = state_word(io, address)?;
+                    if actual != expected {
+                        return Err(fault("GR interrupt state did not restore", address, actual));
+                    }
+                }
+            }
+            Ok(())
+        })();
+        // Also hold reset if the GR readback or its clock check refused.
+        mask(io, 0x200, 0x1000, 0);
         let result = (|| {
             if PGOB.iter().zip(self.pgob).any(|(&a, v)| io.read(a) != v) {
                 mask(io, 0x200, 0x08000000, 0x08000000);
@@ -283,6 +339,7 @@ impl SavedState {
         }
         let control = io.read(0x10a78c);
         let pmc = io.read(0x200);
+        gr_result?;
         result?;
         if control != self.control || pmc != self.pmc {
             return Err(fault("GR incoming power state did not restore", 0x200, pmc));

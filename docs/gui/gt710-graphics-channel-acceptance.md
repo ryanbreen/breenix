@@ -7,6 +7,22 @@ is 330 seconds. The added negative-control observation windows total 20 ms;
 stream-consumption and successful releases have separate 2-second bounds.
 Boot results for the final head belong in the PR and private run record.
 
+The interrupt-state unit separates always-accessible PMC/PFIFO capture from
+GR capture after PGOB exit and reset, before the first upload. It rejects
+PRI error words as saved state. Cleanup confirms stop before releasing
+scratch, briefly enables the halted reset engine to restore and check the
+GR baseline while accessible, then restores PGOB, PMC and PFIFO state. An
+early reset/capture refusal uses PMC reset without accessing gated GR.
+The host unwind check models gated reads as PRI responses and covers
+success and startup refusals; it inspects the underlying enable words.
+
+This repairs an invalid state round-trip; it does not establish the cause
+of intermittent console input loss. The retained 195818Z snapshot had
+PMC host interrupts disabled before and after the probe while its GR reads
+were PRI errors. Those words do not identify an enabled GR interrupt source
+or GPU interrupt starvation of xHCI. Hardware causality and console
+acceptance remain with the acceptance unit; this unit performs no boot.
+
 The channel is A06F channel 0 on the GR engine/runlist discovered from the
 64 TOP words. A197 binds on subchannel 0. Its system-memory release target
 is GPU VA 0x02000000; adjacent words hold the epoch halves. There are four

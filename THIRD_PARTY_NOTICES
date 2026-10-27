@@ -754,6 +754,13 @@ the consumer header. The snapshot reads status, enables, host interrupt-line
 state, runlist/engine state and enabled PBDMAs before GR gating as well as
 before and after the probe. It does not alter interrupt policy.
 
+M7.2's interrupt-state repair in `gr/ctxctl.rs` also uses the checked MIT
+`rnndb/bus/pmc.xml` PMC enable/host-interrupt fields together with the
+already listed `falcon.xml` and `graph/gf100_pgraph/ctxctl.xml` routing and
+upstream-enable fields. The imported `copyright.xml` grant was read again;
+its author list and full license remain in the consumer header. The
+two-stage state capture and gating-aware host unwind model are Breenix code.
+
 The terminal-width provenance cross-check reads the same checked MIT
 rnndb `falcon.xml:227-246` (`XFER_CTRL.SIZE`) and MIT
 `hub.fuc:585-592` (`xdst` channel-header store), and checks
