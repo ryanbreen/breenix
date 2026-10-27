@@ -86,6 +86,19 @@ fn rejected_maps_do_not_mutate_and_failed_invalidation_never_recycles_storage() 
 }
 
 #[test]
+fn retire_invalidation_failure_on_healthy_space_retains_every_charge() {
+    let mut a=Allocator::new(1<<30,&[]).unwrap();let mut io=Model::default();
+    let mut s=Space::new(&mut a,&mut io).unwrap();
+    s.map(&mut a,&mut io,0,Range{start:512<<20,size:4096},Flags::default()).unwrap();
+    let used=a.stats();let instance=s.instance.range.start;let directory=s.directory.range.start;
+    io.events.clear();io.fail=true;
+    assert_eq!(s.retire(&mut a,&mut io),Err("invalidation timeout"));
+    assert_eq!(io.events,vec![('w',instance+0x200,0),('w',instance+0x208,0),
+                             ('f',0,0),('i',directory,0)]);
+    assert_eq!(a.stats(),used,"failed retirement must retain instance, directory and table charges");
+}
+
+#[test]
 fn fault_records_keep_raw_words_and_decode_only_pending_units_without_acknowledging() {
     let mut io=Model::default();
     io.regs.insert(0x259c,(1<<5)|(1<<21));
@@ -107,6 +120,14 @@ fn initialization_writes_only_payload_of_charged_instance_directory_and_tables()
     let mut a=Allocator::new(1<<30,&[Range{start:0,size:128<<20}]).unwrap();
     let mut io=Model::default();let mut s=Space::new(&mut a,&mut io).unwrap();
     s.map(&mut a,&mut io,(128<<20)-4096,Range{start:512<<20,size:12288},Flags::default()).unwrap();
+    for (index,table) in s.table_ranges() {
+        let pde=io.events.iter().position(|e|e.0=='w' && e.1==s.directory.range.start+index*8 && e.2==((table.start>>8)|1)<<32).unwrap();
+        assert_eq!(io.events[pde-1],('f',0,0),"clear must be flushed before publishing a table");
+        let cleared=&io.events[pde-1-(TABLE_BYTES/8) as usize..pde-1];
+        for (event,address) in cleared.iter().zip((table.start..table.end().unwrap()).step_by(8)) {
+            assert_eq!(*event,('w',address,0),"every table word must be cleared before publication");
+        }
+    }
     let mut payload=vec![s.instance.range,s.directory.range];payload.extend(s.table_ranges().map(|(_,r)|r));
     for &(_,address,_) in io.events.iter().filter(|e|e.0=='w') {
         assert!(payload.iter().any(|r|r.start<=address && address+8<=r.end().unwrap()),
