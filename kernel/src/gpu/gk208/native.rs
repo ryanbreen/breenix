@@ -669,6 +669,103 @@ pub fn takeover(
         skipped_address,skipped_notifier,clean,crate::firmware_writes::count()-firmware_baseline,data_bytes,super::hex(&digest.finalize()),old_bar,regs.read(0x1704),super::hex(pll_record),limits.reg,limits.reference,
         regs.read(limits.reg as usize+4),regs.read(limits.reg as usize+16));
     crate::serial_println!("GT710_MODE {}", report);
+    // NV927D core UPDATE latches HEAD_SET_OFFSET; notifier bit 0 is DONE.
+    // Source: NVIDIA open-gpu-doc cl927d.h (MIT), pinned in THIRD_PARTY_NOTICES.
+    // Run after the existing switch snapshots so their command positions remain
+    // directly comparable. Both sequences finish on A, which backs the console.
+    let flip_probe = |regs: &mut Registers, put: &mut u32, mode: usize,
+                      timing: &edid::Timing, pitch: u64, pll: &modeset::Pll,
+                      ops: &[Vec<modeset::Op>;4]| -> Result<(), &'static str> {
+        let a=layout.objects[0].range;
+        let b=layout.objects[1].range;
+        let bytes=pitch*u64::from(timing.height);
+        if bytes>a.size || bytes>b.size {return Err("flip image exceeds private surface");}
+        let seed_a=seed.wrapping_add((mode as u32+1)*0x45679)|1;
+        let seed_b=seed_a.wrapping_add(0x6789b)|1;
+        {
+            let mut p=memory::Pramin::new(regs,total);
+            for (address,nonce) in [(a.start,seed_a),(b.start,seed_b)] {
+                for y in 0..timing.height {
+                    for x in 0..pitch/4 {
+                        let pixel=0xff000000|(nonce.wrapping_add(y*(pitch as u32/4)).wrapping_add(x as u32)&0xffffff);
+                        p.write(address+u64::from(y)*pitch+x*4,pixel)?;
+                    }
+                }
+            }
+        }
+        // Drain the shadow-address methods without issuing UPDATE. The gate
+        // must see A still active, with no DONE, before the clean A-B-A sequence.
+        write_words(regs,total,notifier,&[0,0,0,0])?;
+        submit(regs,total,evo,put,&[(0x460+head*0x300,(b.start>>8) as u32),(0x84,0x80000000)])?;
+        modeset::wait(regs,0x640004,u32::MAX,*put)?;
+        regs.delay_us(50000);
+        let skipped=read_word(regs,total,notifier)?;
+        crate::serial_println!("GT710_FLIP_SKIPPED {{\"mode\":{},\"expected\":{},\"active\":[{}],\"notifier\":{},\"put\":{},\"get\":{},\"errors\":{},\"firmware_writes\":{}}}",
+            mode,b.start,active_snapshot(regs,head,u32::from(route.sor)),skipped,*put,regs.read(0x640004),regs.read(0x61009c),
+            crate::firmware_writes::count()-firmware_baseline);
+        if skipped!=0 || u64::from(regs.read(0x640460+h))<<8!=a.start {
+            return Err("suppressed flip changed native binding or completion");
+        }
+        for (step,(address,nonce)) in [(a.start,seed_a),(b.start,seed_b),(a.start,seed_a)].iter().enumerate() {
+            let before_active=active_snapshot(regs,head,u32::from(route.sor));
+            let put_before=*put;
+            write_words(regs,total,notifier,&[0,0,0,0])?;
+            let notifier_before=read_word(regs,total,notifier)?;
+            submit(regs,total,evo,put,&[(0x460+head*0x300,(address>>8) as u32),(0x84,0x80000000),(0x80,0)])?;
+            let notifier_after=complete(regs,total,notifier,&limits,pll,(head,u32::from(route.sor),true,true),ops)?;
+            modeset::wait(regs,0x640004,u32::MAX,*put)?;
+            if u64::from(regs.read(0x640460+h))<<8!=*address {
+                return Err("native flip latched a different surface");
+            }
+            let mut digest=crate::block::install::sha256::Sha256::new();
+            {
+                let mut p=memory::Pramin::new(regs,total);
+                for y in 0..timing.height {
+                    let mut runs: Vec<(usize,u32)>=Vec::new();
+                    for x in 0..pitch/4 {
+                        let actual=p.read(address+u64::from(y)*pitch+x*4)?;
+                        let expected=0xff000000|(nonce.wrapping_add(y*(pitch as u32/4)).wrapping_add(x as u32)&0xffffff);
+                        if actual!=expected {return Err("native flip complete read-back mismatch");}
+                        digest.update(&actual.to_le_bytes());
+                        if let Some((count,_))=runs.last_mut().filter(|(count,first)|
+                            actual==0xff000000|(first.wrapping_add(*count as u32)&0xffffff)) {
+                            *count+=1;
+                        } else {runs.push((1,actual));}
+                    }
+                    let mut line=String::new();
+                    for (i,(count,first)) in runs.iter().enumerate() {
+                        if i!=0 {line.push(',');}
+                        let _=write!(line,"{count:x}:{first:08x}");
+                    }
+                    crate::serial_println!("GT710_FLIP_PIX {} {} {} {}",mode,step,y,line);
+                }
+            }
+            let raster_before=regs.read(0x616340+head as usize*0x800);
+            regs.delay_us(50000);
+            let raster_after=regs.read(0x616340+head as usize*0x800);
+            let timing_json=format!("{{\"width\":{},\"height\":{},\"clock_khz\":{},\"hsync_start\":{},\"hsync_end\":{},\"htotal\":{},\"vsync_start\":{},\"vsync_end\":{},\"vtotal\":{},\"flags\":{}}}",
+                timing.width,timing.height,timing.clock_khz,timing.hsync_start,timing.hsync_end,timing.htotal,
+                timing.vsync_start,timing.vsync_end,timing.vtotal,timing.flags);
+            crate::serial_println!(concat!("GT710_FLIP {{\"schema\":1,\"phase\":\"flip\",\"mode\":{},\"step\":{},\"bdf\":\"{:02x}:{:02x}.{}\",",
+                "\"head\":{},\"sor\":{},\"protocol\":{},\"timing\":{},\"surface\":{},\"pitch\":{},\"seed\":{},\"before_active\":[{}],\"active\":[{}],",
+                "\"put_before\":{},\"put\":{},\"get\":{},\"notifier_before\":{},\"notifier_after\":{},\"errors\":{},\"underflow\":{},",
+                "\"power\":{},\"power_status\":{},\"raster_before\":{},\"raster_after\":{},\"instance\":{},\"push\":{},\"firmware_writes\":{},",
+                "\"bytes\":{},\"sha256\":\"{}\",\"pll_record\":\"{}\",\"pll_register\":{},\"pll_reference\":{},\"pll_coefficients\":{},\"pll_fraction\":{}}}"),
+                mode,step,device.bus,device.device,device.function,head,route.sor,protocol,timing_json,address,pitch,nonce,before_active,
+                active_snapshot(regs,head,u32::from(route.sor)),put_before,*put,regs.read(0x640004),notifier_before,notifier_after,
+                regs.read(0x61009c),regs.read(0x616308+head as usize*0x800),regs.read(0x61c004+route.sor as usize*0x800),
+                regs.read(0x61c030+route.sor as usize*0x800),raster_before,raster_after,instance,evo,
+                crate::firmware_writes::count()-firmware_baseline,bytes,super::hex(&digest.finalize()),super::hex(pll_record),limits.reg,limits.reference,
+                regs.read(limits.reg as usize+4),regs.read(limits.reg as usize+16));
+            if regs.read(0x616308+head as usize*0x800)&0x111!=1
+                || regs.read(0x61c004+route.sor as usize*0x800)&0x80000001!=1
+                || regs.read(0x61c030+route.sor as usize*0x800)&0x10000000!=0
+                || raster_before>>16==raster_after>>16 {
+                return Err("native flip lost output health or raster progress");
+            }
+        }
+        Ok(())
+    };
     let switch_result = (|| {
     for (step,(timing,pitch,words,pll,ops)) in switches.iter().enumerate() {
         let before_active = active_snapshot(regs,head,u32::from(route.sor));
@@ -751,6 +848,11 @@ pub fn takeover(
             crate::firmware_writes::count()-firmware_baseline,pitch*u64::from(timing.height),super::hex(&digest.finalize()),
             super::hex(pll_record),limits.reg,limits.reference,regs.read(limits.reg as usize+4),regs.read(limits.reg as usize+16));
         crate::serial_println!("GT710_SWITCH {}",report);
+        if step==2 {
+            flip_probe(regs,&mut put,0,timing,*pitch,pll,ops).inspect_err(|reason| {
+                crate::serial_println!("GT710_FLIP_REFUSAL runtime={}",reason);
+            })?;
+        }
         console.width=timing.width as usize;
         console.height=timing.height as usize;
         console.pitch=*pitch as usize;
@@ -796,6 +898,11 @@ pub fn takeover(
             regs.read(0x61c004+route.sor as usize*0x800),regs.read(0x61c030+route.sor as usize*0x800),
             raster_before,raster_after,regs.read(limits.reg as usize+4),regs.read(limits.reg as usize+16),
             crate::firmware_writes::count()-firmware_baseline);
+    }
+    if !switches.is_empty() {
+        flip_probe(regs,&mut put,1,t,layout.pitch,&coefficients,&scripts).inspect_err(|reason| {
+            crate::serial_println!("GT710_FLIP_REFUSAL runtime={}",reason);
+        })?;
     }
     Ok(console)
 }

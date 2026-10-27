@@ -7,6 +7,16 @@
   "hostRunner": true,
   "categories": [
     {
+      "id": "flips",
+      "title": "Native flips and handoff",
+      "cases": [
+        {
+          "id": "aba-handoff",
+          "title": "Both EDID modes latch private A-B-A surfaces with complete pixels, suppressed-update recovery and native console handoff"
+        }
+      ]
+    },
+    {
       "id": "switching",
       "title": "Native EDID mode switching",
       "cases": [

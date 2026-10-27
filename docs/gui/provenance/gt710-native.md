@@ -104,3 +104,36 @@ firmware-write delta before refusing a nonzero count, so a later bad settle
 cannot be hidden by an earlier clean receipt. Preflight refusals retain the
 firmware console; after display takeover starts, an unsafe mapping is disabled
 and the serial console remains available.
+
+## Flips and console handoff (PR 4.5)
+
+Measurement boots add same-mode A-B-A surface updates after the last low-mode
+switch and after the preferred-mode return. Each sequence submits only the head
+offset, notifier and UPDATE methods. Mode, output routing and pitch stay fixed.
+The existing 2048-byte EVO limit is retained. Each sequence ends on scanout A,
+so normal console writes continue through the owned BAR1 view of A.
+
+Both private surfaces receive distinct nonce patterns with one value per pixel,
+including the full pitch. `GT710_FLIP_PIX` retains PRAMIN reads after each actual
+latch; consecutive runs use the same encoding as the switching records. A's
+first and final read-backs must have byte-for-byte equality, while B must differ.
+`GT710_FLIP` correlates those bytes with the active head/SOR snapshot, fresh
+notifier, drained GET/PUT, live clock, advancing raster and error/underflow state.
+The collector retains six `gt710-flip-<mode>-<step>.bin` files and their digests.
+These CPU-filled diagnostic images remain provisional display-memory evidence.
+
+`GT710_FLIP_SKIPPED` records an address change with UPDATE deliberately omitted.
+It requires the old active A binding and incomplete notifier despite command
+consumption. The following clean A-B-A updates must complete. Collector controls
+also reject a wrong surface, stale completion and changed/missing pixel; they
+judge captured state and pixels rather than a fault flag. A runtime failure
+records `GT710_FLIP_REFUSAL`; a low-mode failure uses the existing bounded
+preferred-mode recovery, and an unsafe final takeover retains serial diagnostics.
+Console settle receipts after the last preferred flip must still name A and
+report a firmware-write delta of 0, through the console suite's return.
+
+The added methods use NVIDIA open-gpu-doc `classes/display/cl927d.h`, revision
+`9fdf5c4062007929d9f4e6cbad9c9771fe61b880`: the file-local MIT grant and copyright
+were read before use. `native.rs` retains that grant, and THIRD_PARTY_NOTICES
+maps the interface source to the consumer. The private exact-card trace remains
+hardware evidence; no additional Linux implementation was read or incorporated.
