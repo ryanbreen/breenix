@@ -136,14 +136,14 @@ const O_NOCTTY: u32 = 0o400;
 type Verdict<T = ()> = Result<T, String>;
 
 fn measured(run: impl FnOnce() -> Verdict) -> CaseResult {
-    let result = run();
-    #[cfg(target_arch = "x86_64")]
-    if result.is_err() {
-        if let Ok(counters) = std::fs::read_to_string("/proc/xhci/counters") {
-            println!("CONSOLE_INPUT_COUNTERS {}", counters.replace('\n', " "));
-        }
-    }
-    result.map_err(breenix_suite::suite::CaseError::Fail)
+    run().map_err(|reason| {
+        #[cfg(target_arch = "x86_64")]
+        let reason = match std::fs::read_to_string("/proc/xhci/counters") {
+            Ok(counters) => format!("{reason}; input counters: {}", counters.replace('\n', " ")),
+            Err(error) => format!("{reason}; input counters unavailable: {error}"),
+        };
+        breenix_suite::suite::CaseError::Fail(reason)
+    })
 }
 
 fn require(ok: bool, message: &str) -> Verdict {
