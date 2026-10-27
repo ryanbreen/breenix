@@ -15,7 +15,7 @@ TITLE='Private GPU tables preserve distinct same-VA backing, ordered remaps and 
 
 
 def snapshot(space,phase,base,bits):
-    instance=(300+space*2)<<20;directory=instance+8192
+    instance=(300+space*2)<<20;directory=instance+12288
     tables=[[0,instance+0x20000],[1,instance+0x70000]]
     pd=bytearray(65536);hashes=[]
     for index,start in tables:
