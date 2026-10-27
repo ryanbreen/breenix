@@ -27,6 +27,7 @@ def fixture():
              drain=dict(runlist_count=0,pending=0,preempt=0,binding=0),
              retained_on_failure=True, firmware_writes=0, ce='pending-6.2',
              vm_probes='pending-6.2', reset='pending-6.5')
+    e['progress']=dict(source='pbdma-live',pbdma=0,channel=0x2000,userd_low=e['userd'],userd_high=0)
     e['suppressed']=dict(epoch=1,expected=0x12345003,observed=0,get=3,put=3,
                          reference=0x12345003,elapsed_us=10000,accepted=False)
     e['clean']=dict(sequence=4,epoch=1,expected=0x12345004,before=0,after=0x12345004,
@@ -65,6 +66,16 @@ class ChannelCapture(unittest.TestCase):
                        lambda b:b.pop('clean'),lambda b:b['clean'].update(after=0),
                        lambda b:b['clean'].update(epoch=0),lambda b:b['clean'].update(get=3),
                        lambda b:b['clean'].update(before=b['clean']['expected'])]:
+            bad=copy.deepcopy(e);mutate(bad)
+            with self.assertRaises(ValueError):check(bad)
+
+    def test_live_progress_belongs_to_the_selected_channel_userd(self):
+        serial,e=fixture()
+        def check(e): return API['privileged_channel'](serial+'GT710_CHANNEL '+json.dumps(e)+'\n')
+        check(e)
+        for mutate in [lambda b:b.pop('progress'),lambda b:b['progress'].update(source='software'),
+                       lambda b:b['progress'].update(pbdma=1),lambda b:b['progress'].update(channel=1),
+                       lambda b:b['progress'].update(userd_low=b['push']),lambda b:b['progress'].update(userd_high=1)]:
             bad=copy.deepcopy(e);mutate(bad)
             with self.assertRaises(ValueError):check(bad)
 
