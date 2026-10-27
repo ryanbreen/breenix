@@ -283,6 +283,7 @@ impl Context {
     }
     /// # Safety
     /// An engine-ordered completion for this exact ticket must have been observed.
+    /// For scanout, the display must have flipped away and stopped reading it.
     #[allow(dead_code)] // Public completion API consumed by milestone 6.
     pub unsafe fn finish_device(&mut self, ticket: Ticket) -> Result<(), &'static str> {
         self.finish(ticket)
@@ -294,10 +295,11 @@ impl Context {
         self.device = false;
     }
     /// # Safety
-    /// A real reset must be confirmed to have stopped device access to this space.
+    /// A real reset must be confirmed to have stopped engine access to this space.
+    /// Scanout reads VRAM directly and remains retained until display completion.
     #[allow(dead_code)] // Public reset API consumed by milestone 6; no M5 caller.
     pub unsafe fn confirm_reset(&mut self) {
-        self.pending.clear();
+        self.pending.retain(|p| p.consumer == Consumer::Scanout);
         self.device = false;
         self.failed = false;
         if let Some(s) = self.space.as_mut() {

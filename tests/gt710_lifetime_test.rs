@@ -99,3 +99,21 @@ fn an_engine_completion_releases_only_its_consumer_and_still_requires_drain() {
  unsafe{c.confirm_drain();}assert!(c.retire(&mut a,&mut io).is_err());
  unsafe{c.confirm_reset();}c.retire(&mut a,&mut io).unwrap();assert_eq!(a.stats(),baseline);
 }
+#[test]
+fn reset_keeps_scanout_resident_until_display_completion() {
+ let mut a=Allocator::new(1<<30,&[]).unwrap();let baseline=a.stats();let mut io=Model::default();
+ let backing=a.allocate(4096,4096,Kind::Probe).unwrap();
+ let mut c=Context::new(&mut a,&mut io).unwrap();
+ c.map(&mut a,&mut io,0,backing,vm::Flags::default()).unwrap();
+ unsafe{c.admit_device().unwrap();}
+ drop(c.hold(Consumer::Queued).unwrap());drop(c.hold(Consumer::Readback).unwrap());
+ let scanout=c.hold(Consumer::Scanout).unwrap();let peak=a.stats();
+ c.fail_eio();unsafe{c.confirm_reset();}
+ assert_eq!(c.holds(),[0,0,1]);
+ assert!(c.retire(&mut a,&mut io).is_err());assert!(a.release(backing).is_err());
+ for allocation in c.space().allocations(){assert!(a.release(allocation).is_err());}
+ assert_eq!(a.stats(),peak);
+ // Model the display flipping away; an engine reset alone is not this receipt.
+ unsafe{c.finish_device(scanout).unwrap();}
+ c.retire(&mut a,&mut io).unwrap();a.release(backing).unwrap();assert_eq!(a.stats(),baseline);
+}
