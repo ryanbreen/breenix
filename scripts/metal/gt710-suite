@@ -1185,9 +1185,31 @@ def capture_serial(directory):
     if len(data)!=int(matches[0][1]) or len(data)>2<<20 or hashlib.sha256(data).hexdigest()!=matches[0][2]:
         raise ValueError('display artifact differs from serial length/digest')
     text=data.decode('ascii')
-    if any(not line.startswith(('GT710_PIX ','GT710_FLIP_PIX ','GT710_SWITCH_PIX ')) for line in text.splitlines()):
-        raise ValueError('unexpected display artifact record')
-    return serial+text
+    groups={};previous=None
+    for line in text.splitlines(keepends=True):
+        fields=line.split()
+        if fields[0]=='GT710_PIX': key=('native',)
+        elif fields[0]=='GT710_SWITCH_PIX': key=('switch',int(fields[1]))
+        elif fields[0]=='GT710_FLIP_PIX': key=('flip',int(fields[1]),int(fields[2]))
+        else: raise ValueError('unexpected display artifact record')
+        if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
+        groups.setdefault(key,[]).append(line);previous=key
+    def report_key(line):
+        for prefix,kind in [('GT710_MODE ','native'),('GT710_SWITCH ','switch'),('GT710_FLIP ','flip')]:
+            if line.startswith(prefix):
+                e=json.loads(line[len(prefix):])
+                return (kind,) if kind=='native' else ((kind,e['step']) if kind=='switch' else (kind,e['mode'],e['step']))
+        return None
+    reports=[report_key(line) for line in serial.splitlines()]
+    order=[key for key in reports if key is not None]
+    if len(order)!=len(set(order)) or list(groups)!=order:
+        raise ValueError('display artifact blocks differ from update order')
+    result=[]
+    for line in serial.splitlines(keepends=True):
+        key=report_key(line)
+        if key is not None: result.extend(groups[key])
+        result.append(line)
+    return ''.join(result)
 
 
 CPU_MEMORY_CATEGORIES = {'inventory','vm','aperture','lifetime'}
