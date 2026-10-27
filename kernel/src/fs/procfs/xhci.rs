@@ -26,11 +26,24 @@ pub fn generate_xhci_counters() -> String {
 
     // The heartbeat reads the nonempty report count from hid_boot::note_report.
     // It observes reports received, not characters consumed by a terminal.
-    format!(
+    let result = format!(
         "XHCI_MSI_EVENT_TOTAL={}\nXHCI_IRQ_ENTRY_TOTAL={}\nXHCI_LOCK_CONTENDED_TOTAL={}\nKBD_NONZERO_TOTAL={}\n",
         XHCI_MSI_EVENT_TOTAL.aggregate(),
         XHCI_IRQ_ENTRY_TOTAL.aggregate(),
         XHCI_LOCK_CONTENDED_TOTAL.aggregate(),
         NONZERO_KBD_COUNT.load(Ordering::Relaxed)
-    )
+    );
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mut result = result;
+        use crate::drivers::xhci::host_keys;
+        use core::fmt::Write;
+        writeln!(result, "HOSTKEY_QUEUED={} HOSTKEY_REPLAYED={} HOSTKEY_DISPATCHED={} HOSTKEY_CHANGED={} HOSTKEY_REPLAY_MAX_NS={}",
+            host_keys::QUEUED.load(Ordering::Relaxed), host_keys::REPLAYED.load(Ordering::Relaxed),
+            host_keys::DISPATCHED.load(Ordering::Relaxed), host_keys::CHANGED.load(Ordering::Relaxed),
+            host_keys::REPLAY_MAX_NS.load(Ordering::Relaxed)).unwrap();
+        result
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    result
 }

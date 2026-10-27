@@ -136,7 +136,14 @@ const O_NOCTTY: u32 = 0o400;
 type Verdict<T = ()> = Result<T, String>;
 
 fn measured(run: impl FnOnce() -> Verdict) -> CaseResult {
-    run().map_err(breenix_suite::suite::CaseError::Fail)
+    let result = run();
+    #[cfg(target_arch = "x86_64")]
+    if result.is_err() {
+        if let Ok(counters) = std::fs::read_to_string("/proc/xhci/counters") {
+            println!("CONSOLE_INPUT_COUNTERS {}", counters.replace('\n', " "));
+        }
+    }
+    result.map_err(breenix_suite::suite::CaseError::Fail)
 }
 
 fn require(ok: bool, message: &str) -> Verdict {

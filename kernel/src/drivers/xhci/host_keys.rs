@@ -32,6 +32,13 @@ pub const MAX_LINE: usize = PREFIX.len() + MAX_REPORTS * (2 * REPORT_LEN + 1) - 
 
 const PREFIX: &[u8] = b"BXKEY ";
 
+use core::sync::atomic::AtomicU64;
+pub static QUEUED: AtomicU64 = AtomicU64::new(0);
+pub static REPLAYED: AtomicU64 = AtomicU64::new(0);
+pub static DISPATCHED: AtomicU64 = AtomicU64::new(0);
+pub static CHANGED: AtomicU64 = AtomicU64::new(0);
+pub static REPLAY_MAX_NS: AtomicU64 = AtomicU64::new(0);
+
 /// One line's reports, in the order they are replayed.
 pub struct Reports {
     reports: [[u8; REPORT_LEN]; MAX_REPORTS],
