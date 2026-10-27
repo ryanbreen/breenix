@@ -38,7 +38,7 @@ def switch_capture():
         e = copy.deepcopy(native)
         e.update(phase='switch',step=step,timing=t,pitch=pitch,seed=12346+step,
                  before_active=prior['active'],put_before=prior['put'],put=prior['put']+320,
-                 get=prior['put']+320,detached_output=0,detached_iso=0,detached_notifier=1)
+                 get=prior['put']+320,detached_output=0,detached_iso=0,detached_power=0,detached_link=0,detached_notifier=1)
         pair=lambda x,y:x|y<<16
         values={0x414:pair(t['htotal'],t['vtotal']),
                 0x418:pair(t['hsync_end']-t['hsync_start']-1,t['vsync_end']-t['vsync_start']-1),
@@ -58,6 +58,12 @@ def switch_capture():
         e.update(bytes=len(data),sha256=hashlib.sha256(data).hexdigest())
         serial+='GT710_SWITCH '+json.dumps(e)+'\n'
         prior=e
+    restored=dict(active=json.loads(next(line[13:] for line in serial.splitlines()
+        if line.startswith('GT710_SWITCH ') and json.loads(line[13:])['step']==1))['active'],
+        notifier=1,put=prior['put']+320,get=prior['put']+320,power=1,link=0,
+        raster_before=1<<16,raster_after=4<<16,pll_coefficients=native['pll_coefficients'],
+        pll_fraction=native['pll_fraction'],firmware_writes=0)
+    serial+='GT710_PREFERRED_RETURN '+json.dumps(restored)+'\n'
     return serial+f"GT710_NATIVE_CONSOLE surface={native['surface']} firmware_writes=0\n"
 
 
@@ -92,6 +98,18 @@ class SwitchingCapture(unittest.TestCase):
         early_only=serial[:serial.rindex('GT710_NATIVE_CONSOLE ')]
         with self.assertRaises(ValueError):API['native_switches'](early_only)
 
+    def test_preferred_console_return_requires_live_binding_and_completion(self):
+        serial=switch_capture()
+        line=next(s for s in serial.splitlines() if s.startswith('GT710_PREFERRED_RETURN '))
+        for field,value in [('notifier',0),('get',0),('power',0),('link',0x10000000),
+                            ('pll_coefficients',0),('firmware_writes',1),('raster_after',1<<16),
+                            ('active',[])]:
+            e=json.loads(line.split(' ',1)[1]); e[field]=value
+            with self.subTest(field=field),self.assertRaises(ValueError):
+                API['native_switches'](serial.replace(line,'GT710_PREFERRED_RETURN '+json.dumps(e)))
+        with self.assertRaises(ValueError):
+            API['native_switches'](serial.replace(line,''))
+
     def test_low_high_low_requires_each_latched_mode_and_every_device_pixel(self):
         serial=switch_capture()
         frames=API['native_switches'](serial)
@@ -104,7 +122,9 @@ class SwitchingCapture(unittest.TestCase):
                        lambda e:e['before_active'][0].__setitem__(1,0),
                        lambda e:e.update(notifier_before=1),lambda e:e.update(notifier_after=0),
                        lambda e:e.update(detached_notifier=0),lambda e:e.update(detached_output=1),
-                       lambda e:e.update(detached_iso=1),lambda e:e.update(put_before=0),
+                       lambda e:e.update(detached_iso=1),lambda e:e.update(detached_power=1),
+                       lambda e:e.update(detached_power=0x80000000),lambda e:e.update(detached_link=0x10000000),
+                       lambda e:e.update(put_before=0),
                        lambda e:e.update(get=e['put']-4),lambda e:e.update(errors=1),
                        lambda e:e.update(underflow=17),lambda e:e.update(power=0),
                        lambda e:e.update(raster_after=e['raster_before']),

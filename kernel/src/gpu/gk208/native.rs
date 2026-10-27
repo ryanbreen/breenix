@@ -245,10 +245,10 @@ fn complete(
     notifier: u64,
     limits: &modeset::PllLimits,
     coefficients: &modeset::Pll,
-    route: (u32, u32),
+    route: (u32, u32, bool, bool),
     scripts: &[Vec<modeset::Op>; 4],
 ) -> Result<u32, &'static str> {
-    let (head, sor) = route;
+    let (head, sor, attached, attaching) = route;
     let h = head as usize * 0x800;
     for _ in 0..2000 {
         let errors = regs.read(0x61009c);
@@ -267,13 +267,13 @@ fn complete(
             let state = regs.read(0x6101d4 + h);
             regs.write(0x6100ac, phase);
             if state & 0x1000 != 0 {
-                if phase == 1 {
+                if phase == 1 && attached {
                     modeset::execute_ops(regs, &scripts[0]);
                 }
-                if phase == 2 {
+                if phase == 2 && attached {
                     modeset::execute_ops(regs, &scripts[1]);
                 }
-                if phase == 4 {
+                if phase == 4 && attaching {
                     modeset::execute_ops(regs, &scripts[3]);
                 }
             }
@@ -286,7 +286,16 @@ fn complete(
                 );
                 regs.write(r + 16, u32::from(coefficients.fraction) << 16);
             }
-            if phase == 2 && state & 0x1000 != 0 {
+            // Release power for an outgoing attachment; gate incoming scripts
+            // separately from the outgoing configuration.
+            if phase == 2 && state & 0x1000 != 0 && attached && !attaching {
+                let s = sor as usize * 0x800;
+                modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
+                regs.mask(0x61c004 + s, 0x80000001, 0x80000000);
+                modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
+                modeset::wait(regs, 0x61c030 + s, 0x10000000, 0)?;
+            }
+            if phase == 2 && state & 0x1000 != 0 && attaching {
                 modeset::execute_ops(regs, &scripts[2]);
                 regs.mask(0x612200 + h, 15, 0);
                 let s = sor as usize * 0x800;
@@ -371,20 +380,27 @@ pub fn takeover(
         layout.pitch,
     )?;
     // Decode each selected mode's board scripts before the takeover boundary.
-    let mut switches = Vec::new();
-    if measuring() {
-        for timing in modeset::switch_sequence(modes)? {
-            let pitch = (u64::from(timing.width)*4+255)&!255;
-            if pitch*u64::from(timing.height)>surface.size {
-                return Err("advertised mode exceeds private scanout");
+    let prepared = (|| {
+        let mut switches = Vec::new();
+        if measuring() {
+            for timing in modeset::switch_sequence(modes)? {
+                let pitch = (u64::from(timing.width)*4+255)&!255;
+                if pitch*u64::from(timing.height)>surface.size {
+                    return Err("advertised mode exceeds private scanout");
+                }
+                let words = modeset::head_methods(&timing,head,u32::from(route.sor),protocol,surface.start,pitch)?;
+                let pll = modeset::pll(&limits,timing.clock_khz)?;
+                let ops = modeset::board_scripts(rom,head,u32::from(route.sor),protocol,timing.clock_khz)
+                    .map_err(|e|e.reason)?;
+                switches.push((timing,pitch,words,pll,ops));
             }
-            let words = modeset::head_methods(&timing,head,u32::from(route.sor),protocol,surface.start,pitch)?;
-            let pll = modeset::pll(&limits,timing.clock_khz)?;
-            let ops = modeset::board_scripts(rom,head,u32::from(route.sor),protocol,timing.clock_khz)
-                .map_err(|e|e.reason)?;
-            switches.push((timing,pitch,words,pll,ops));
         }
-    }
+        Ok(switches)
+    })();
+    let switches = prepared.unwrap_or_else(|reason| {
+        crate::serial_println!("GT710_SWITCH_REFUSAL preparation={}",reason);
+        Vec::new()
+    });
     crate::serial_println!(
         "GT710_MODE_STAGE preflight head={} sor={} clock={} pll={:#x} script-ops={:?}",
         head,
@@ -496,6 +512,7 @@ pub fn takeover(
     let mut init = alloc::vec![(0x88, 2)];
     init.extend(methods);
     init.extend([(0x84, 0x80000000), (0x80, 0)]);
+    let inherited_attached = regs.read(0x640200 + route.sor as usize * 32) & (1 << head) != 0;
     submit(regs, total, evo, &mut put, &init)?;
     let after = complete(
         regs,
@@ -503,7 +520,7 @@ pub fn takeover(
         notifier,
         &limits,
         &coefficients,
-        (head, u32::from(route.sor)),
+        (head, u32::from(route.sor), inherited_attached, true),
         &scripts,
     )?;
     crate::firmware_writes::handoff();
@@ -548,7 +565,7 @@ pub fn takeover(
         notifier,
         &limits,
         &coefficients,
-        (head, u32::from(route.sor)),
+        (head, u32::from(route.sor), true, true),
         &scripts,
     )?;
     // A bounded BAR1 view of owned scanout storage; general VM allocation is M5.
@@ -652,6 +669,7 @@ pub fn takeover(
         skipped_address,skipped_notifier,clean,crate::firmware_writes::count()-firmware_baseline,data_bytes,super::hex(&digest.finalize()),old_bar,regs.read(0x1704),super::hex(pll_record),limits.reg,limits.reference,
         regs.read(limits.reg as usize+4),regs.read(limits.reg as usize+16));
     crate::serial_println!("GT710_MODE {}", report);
+    let switch_result = (|| {
     for (step,(timing,pitch,words,pll,ops)) in switches.iter().enumerate() {
         let before_active = active_snapshot(regs,head,u32::from(route.sor));
         let put_before = put;
@@ -663,11 +681,13 @@ pub fn takeover(
         detach.extend([(0x84,0x80000000),(0x80,0)]);
         submit(regs,total,evo,&mut put,&detach)?;
         let detached_notifier = complete(regs,total,notifier,&limits,prior_pll,
-            (head,u32::from(route.sor)),prior_ops)?;
+            (head,u32::from(route.sor),true,false),prior_ops)?;
         modeset::wait(regs,0x640004,u32::MAX,put)?;
         let detached_output = regs.read(sor_reg);
         let detached_iso = regs.read(0x640474+h);
-        if detached_output&0xf0f!=0 || detached_iso!=0 {
+        let detached_power = regs.read(0x61c004+route.sor as usize*0x800);
+        let detached_link = regs.read(0x61c030+route.sor as usize*0x800);
+        if detached_output&0xf0f!=0 || detached_iso!=0 || detached_power&0x80000001!=0 || detached_link&0x10000000!=0 {
             return Err("native mode switch did not detach output and ISO storage");
         }
         let seed = seed.wrapping_add((step as u32+1)*0x34567);
@@ -686,7 +706,7 @@ pub fn takeover(
         let mut attach = words.clone();
         attach.extend([(0x84,0x80000000),(0x80,0)]);
         submit(regs,total,evo,&mut put,&attach)?;
-        let notifier_after = complete(regs,total,notifier,&limits,pll,(head,u32::from(route.sor)),ops)?;
+        let notifier_after = complete(regs,total,notifier,&limits,pll,(head,u32::from(route.sor),false,true),ops)?;
         modeset::wait(regs,0x640004,u32::MAX,put)?;
         let mut digest = crate::block::install::sha256::Sha256::new();
         for y in 0..timing.height {
@@ -720,12 +740,12 @@ pub fn takeover(
         let report = format!(concat!("{{\"schema\":1,\"phase\":\"switch\",\"step\":{},\"bdf\":\"{:02x}:{:02x}.{}\",",
             "\"head\":{},\"sor\":{},\"protocol\":{},\"timing\":{},\"surface\":{},\"pitch\":{},\"seed\":{},",
             "\"before_active\":[{}],\"active\":[{}],\"put_before\":{},\"put\":{},\"get\":{},",
-            "\"detached_output\":{},\"detached_iso\":{},\"detached_notifier\":{},\"notifier_before\":{},\"notifier_after\":{},",
+            "\"detached_output\":{},\"detached_iso\":{},\"detached_power\":{},\"detached_link\":{},\"detached_notifier\":{},\"notifier_before\":{},\"notifier_after\":{},",
             "\"errors\":{},\"underflow\":{},\"power\":{},\"power_status\":{},\"raster_before\":{},\"raster_after\":{},",
             "\"instance\":{},\"push\":{},\"firmware_writes\":{},\"bytes\":{},\"sha256\":\"{}\",",
             "\"pll_record\":\"{}\",\"pll_register\":{},\"pll_reference\":{},\"pll_coefficients\":{},\"pll_fraction\":{}}}"),
             step,device.bus,device.device,device.function,head,route.sor,protocol,timing_json,surface.start,pitch,seed,
-            before_active,active,put_before,put,regs.read(0x640004),detached_output,detached_iso,detached_notifier,notifier_before,notifier_after,
+            before_active,active,put_before,put,regs.read(0x640004),detached_output,detached_iso,detached_power,detached_link,detached_notifier,notifier_before,notifier_after,
             regs.read(0x61009c),regs.read(0x616308+head as usize*0x800),regs.read(0x61c004+route.sor as usize*0x800),
             regs.read(0x61c030+route.sor as usize*0x800),raster_before,raster_after,instance,evo,
             crate::firmware_writes::count()-firmware_baseline,pitch*u64::from(timing.height),super::hex(&digest.finalize()),
@@ -735,6 +755,47 @@ pub fn takeover(
         console.height=timing.height as usize;
         console.pitch=*pitch as usize;
         console.bytes=console.pitch*console.height;
+    }
+    Ok::<(), &'static str>(())
+    })();
+    if let Err(reason) = switch_result {
+        crate::serial_println!("GT710_SWITCH_REFUSAL runtime={}",reason);
+    }
+    if !switches.is_empty() {
+        // A switch failure must not discard the native console. Re-establish
+        // the known-good preferred mode through a bounded detach/attach, also
+        // returning successful measurements to preferred console geometry.
+        let attached = regs.read(sor_reg) & (1 << head) != 0;
+        let (old_pll,old_ops) = switches.iter()
+            .find(|(timing,_,_,_,_)| regs.read(0x640450+h)==timing.clock_khz*1000)
+            .map(|(_,_,_,pll,ops)|(pll,ops)).unwrap_or((&coefficients,&scripts));
+        write_words(regs,total,notifier,&[0,0,0,0])?;
+        let mut detach = modeset::detach_methods(head,u32::from(route.sor))?.to_vec();
+        detach.extend([(0x84,0x80000000),(0x80,0)]);
+        submit(regs,total,evo,&mut put,&detach)?;
+        complete(regs,total,notifier,&limits,old_pll,
+            (head,u32::from(route.sor),attached,false),old_ops)?;
+        modeset::wait(regs,0x640004,u32::MAX,put)?;
+        write_words(regs,total,notifier,&[0,0,0,0])?;
+        let mut preferred = modeset::head_methods(t,head,u32::from(route.sor),protocol,surface.start,layout.pitch)?;
+        preferred.extend([(0x84,0x80000000),(0x80,0)]);
+        submit(regs,total,evo,&mut put,&preferred)?;
+        let completion=complete(regs,total,notifier,&limits,&coefficients,
+            (head,u32::from(route.sor),false,true),&scripts)?;
+        modeset::wait(regs,0x640004,u32::MAX,put)?;
+        console.width=t.width as usize;
+        console.height=t.height as usize;
+        console.pitch=layout.pitch as usize;
+        console.bytes=console.pitch*console.height;
+        console_binding(&console)?;
+        let raster_before=regs.read(0x616340+head as usize*0x800);
+        regs.delay_us(50000);
+        let raster_after=regs.read(0x616340+head as usize*0x800);
+        crate::serial_println!("GT710_PREFERRED_RETURN {{\"active\":[{}],\"notifier\":{},\"put\":{},\"get\":{},\"power\":{},\"link\":{},\"raster_before\":{},\"raster_after\":{},\"pll_coefficients\":{},\"pll_fraction\":{},\"firmware_writes\":{}}}",
+            active_snapshot(regs,head,u32::from(route.sor)),completion,put,regs.read(0x640004),
+            regs.read(0x61c004+route.sor as usize*0x800),regs.read(0x61c030+route.sor as usize*0x800),
+            raster_before,raster_after,regs.read(limits.reg as usize+4),regs.read(limits.reg as usize+16),
+            crate::firmware_writes::count()-firmware_baseline);
     }
     Ok(console)
 }

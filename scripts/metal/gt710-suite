@@ -365,7 +365,8 @@ def native_switches(serial):
             need(match.start()>serial.index('GT710_MODE ')
                  and (step==0 or match.start()>reports[step-1].end()), 'switch precedes takeover')
             need(e['detached_notifier']&1 and e['detached_output']&0xf0f==0
-                 and e['detached_iso']==0, 'switch output did not detach')
+                 and e['detached_iso']==0 and e['detached_power']&0x80000001==0
+                 and e['detached_link']&0x10000000==0, 'switch output did not detach')
             pitch = (t['width']*4+255)&~255
             surface = memory['objects'][0]['start']
             need(e['surface']==surface and e['pitch']==pitch
@@ -423,8 +424,19 @@ def native_switches(serial):
             frames.append((e,bytes(data)));previous=e
         need(len(re.findall(r'^GT710_SWITCH_PIX ',serial,re.M))==sum(e['timing']['height'] for e,_ in frames),
              'unassociated switch pixels')
+        returned=list(re.finditer(r'^GT710_PREFERRED_RETURN (.+)$',serial,re.M))
+        need(len(returned)==1 and returned[0].start()>reports[-1].end(), 'preferred return missing or early')
+        restored=json.loads(returned[0][1]); preferred=frames[1][0]
+        need(restored['active']==preferred['active'] and restored['notifier']&1
+             and previous['put']<restored['put']<=2048 and restored['get']==restored['put']
+             and restored['power']&0x80000001==1 and restored['link']&0x10000000==0
+             and restored['pll_coefficients']==preferred['pll_coefficients']
+             and restored['pll_fraction']==preferred['pll_fraction'] and restored['firmware_writes']==0,
+             'preferred return binding, completion, clock or output fault')
+        need(0<((restored['raster_after']>>16)-(restored['raster_before']>>16))&65535<100,
+             'preferred return raster did not advance')
         receipts=list(re.finditer(r'^GT710_NATIVE_CONSOLE surface=(\d+) firmware_writes=(\d+)$',
-                                 serial[reports[-1].end():],re.M))
+                                 serial[returned[0].end():],re.M))
         need(receipts and all(int(r[1])==previous['surface'] and int(r[2])==0 for r in receipts),
              'console return after final low mode is missing or faulted')
         return frames
