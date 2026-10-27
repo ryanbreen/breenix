@@ -461,7 +461,7 @@ pub fn probe(
             regs.delay_us(10);
         }
         let reference = regs.read(0x40028 + pbdma * 0x2000);
-        samples.push(format!("{{\"sequence\":{},\"epoch\":{},\"expected\":{},\"before\":{},\"after\":{},\"get_before\":{},\"put\":{},\"get\":{},\"reference\":{}}}",sequence,epoch,expected,before,observed,get_before,sequence,read(regs,total,userd+0x88)?,reference));
+        samples.push(format!("{{\"sequence\":{},\"epoch\":{},\"expected\":{},\"before\":{},\"after\":{},\"get_before\":{},\"put\":{},\"get\":{},\"reference\":{}}}",sequence,epoch,expected,before,observed,get_before,sequence,regs.read(0x40014 + pbdma * 0x2000),reference));
         // SAFETY: matching native epoch, payload and GPGet observed for this host-only ticket.
         unsafe {
             context.finish_device(ticket)?;
@@ -539,7 +539,7 @@ pub fn probe(
         regs.delay_us(10);
     }
     let suppressed=format!("{{\"epoch\":{},\"expected\":{},\"observed\":{},\"get\":{},\"put\":{},\"reference\":{},\"elapsed_us\":{},\"accepted\":{}}}",
-        epoch,expected,read(regs,total,semaphore)?,read(regs,total,userd+0x88)?,read(regs,total,userd+0x8c)?,read(regs,total,userd+0x48)?,elapsed(start),suppressed_success);
+        epoch,expected,read(regs,total,semaphore)?,regs.read(0x40014 + pbdma * 0x2000),read(regs,total,userd+0x8c)?,regs.read(0x40028 + pbdma * 0x2000),elapsed(start),suppressed_success);
     if suppressed_success {
         return Err("missing host release reported success");
     }
@@ -585,7 +585,7 @@ pub fn probe(
         regs.delay_us(10);
     }
     let clean=format!("{{\"sequence\":4,\"epoch\":{},\"expected\":{},\"before\":{},\"after\":{},\"get_before\":{},\"put\":{},\"get\":{},\"reference\":{}}}",
-        epoch,clean_expected,clean_before,read(regs,total,semaphore)?,clean_get_before,read(regs,total,userd+0x8c)?,read(regs,total,userd+0x88)?,read(regs,total,userd+0x48)?);
+        epoch,clean_expected,clean_before,read(regs,total,semaphore)?,clean_get_before,read(regs,total,userd+0x8c)?,regs.read(0x40014 + pbdma * 0x2000),regs.read(0x40028 + pbdma * 0x2000));
     // SAFETY: the exact native epoch/payload, GPGet and reference completed.
     unsafe {
         context.finish_device(ticket)?;
