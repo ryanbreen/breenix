@@ -98,6 +98,7 @@ mod edid;
 mod memory;
 mod inventory;
 mod vm;
+mod lifetime;
 mod vm_control;
 mod vm_probe;
 mod aperture;

@@ -46,7 +46,7 @@
 //! Encodings/attachment/invalidation: MIT nouveau v6.8 vmmgf100.c and
 //! vmmgk104.c; fault fields: MIT engine/fifo/gf100.c (THIRD_PARTY_NOTICES).
 //! These CPU-only builders are not channel admission. The caller owns backing
-//! through retirement; queued-work references and permission probes belong to M6.
+//! through retirement; lifetime.rs retains mappings/tables. Engine probes await M6.
 use super::memory::{
     allocator::{Allocation, Allocator, Kind},
     Range,
@@ -87,6 +87,7 @@ pub struct Space {
     tables: Vec<(u64, Allocation)>,
     total: u64,
     poisoned: bool,
+    detached: bool,
 }
 fn clear(io: &mut impl Io, r: Range) -> Result<(), &'static str> {
     for a in (r.start..r.end().ok_or("VM extent overflow")?).step_by(8) {
@@ -120,7 +121,13 @@ impl Space {
             tables: Vec::new(),
             total,
             poisoned: false,
+            detached: false,
         })
+    }
+    pub fn allocations(&self) -> impl Iterator<Item = Allocation> + '_ {
+        core::iter::once(self.instance)
+            .chain(core::iter::once(self.directory))
+            .chain(self.tables.iter().map(|(_, a)| *a))
     }
     pub fn table_ranges(&self) -> impl Iterator<Item = (u64, Range)> + '_ {
         self.tables.iter().map(|(i, a)| (*i, a.range))
@@ -135,7 +142,7 @@ impl Space {
             .map(|(_, a)| a.range.start + ((va % COVERAGE) / PAGE) * 8)
     }
     fn validate(&self, va: u64, backing: Range) -> Result<(), &'static str> {
-        if self.poisoned {
+        if self.poisoned || self.detached {
             return Err("VM retained after uncertain device operation");
         }
         if va % PAGE != 0
@@ -257,21 +264,50 @@ impl Space {
         }
         result
     }
-    /// Only for CPU-only spaces not exposed to a channel.
-    /// Once engines exist, actual drain/reset must precede this operation.
-    pub fn retire(self, a: &mut Allocator, io: &mut impl Io) -> Result<(), &'static str> {
+    /// Detach while storage is still pinned. A failed invalidate retains it.
+    pub(super) fn detach(&mut self, io: &mut impl Io) -> Result<(), &'static str> {
         if self.poisoned {
             return Err("VM retained after uncertain device operation");
         }
-        io.write(self.instance.range.start + 0x200, 0)?;
-        io.write(self.instance.range.start + 0x208, 0)?;
-        io.flush()?;
-        io.invalidate(self.directory.range.start)?;
+        if self.detached {
+            return Ok(());
+        }
+        let result = (|| {
+            io.write(self.instance.range.start + 0x200, 0)?;
+            io.write(self.instance.range.start + 0x208, 0)?;
+            io.flush()?;
+            io.invalidate(self.directory.range.start)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.poisoned = true;
+        } else {
+            self.detached = true;
+        }
+        result
+    }
+    pub(super) fn reclaim(self, a: &mut Allocator) -> Result<(), &'static str> {
+        if !self.detached {
+            return Err("VM still attached");
+        }
         for (_, table) in self.tables {
             a.release(table)?;
         }
         a.release(self.directory)?;
         a.release(self.instance)
+    }
+    /// Only for CPU-only spaces not exposed to a channel.
+    /// Engine owners use lifetime::Context and its verified drain/reset contract.
+    #[allow(dead_code)] // Public CPU-only builder API; engine owners use Context.
+    pub fn retire(mut self, a: &mut Allocator, io: &mut impl Io) -> Result<(), &'static str> {
+        self.detach(io)?;
+        self.reclaim(a)
+    }
+    /// # Safety
+    /// The caller must have confirmed that device reset ended DMA for this space.
+    pub(super) unsafe fn reset_confirmed(&mut self) {
+        self.poisoned = false;
+        self.detached = false;
     }
 }
 #[derive(Debug)]
