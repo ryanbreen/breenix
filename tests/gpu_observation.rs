@@ -2,8 +2,10 @@
 //! invalidate device-written backing first, and the readback path stages through frames
 //! rather than kernel heap pixel buffers. Source checks cover the direct path only;
 //! Pages frame descriptors and request hold lists still use heap metadata.
+#[path = "../kernel/src/gpu/completion.rs"]
+pub mod gpu_completion;
 #[path = "../kernel/src/gpu/observation.rs"]
-mod observation;
+pub mod observation;
 
 use observation::{read, Memory};
 use std::cell::{Cell, RefCell};
