@@ -45,20 +45,25 @@ fn method(out: &mut Vec<u32>, address: u32, values: &[u32]) {
     out.push(0x20000000 | ((values.len() as u32) << 16) | (4 << 13) | (address >> 2));
     out.extend_from_slice(values);
 }
-/// The three completion words are engine releases, following a non-pipelined
-/// flushed transfer; a PFIFO front-end release cannot certify copy completion.
-pub fn encode(r: Rect, semaphore: u64, epoch: u64, sequence: u32) -> Result<Vec<u32>, &'static str> {
+/// The data launch alone: a flushed, non-pipelined transfer with no release.
+pub fn transfer(r: Rect) -> Result<Vec<u32>, &'static str> {
     let s = end(r.src, r.src_pitch, r.width, r.height)?;
     let d = end(r.dst, r.dst_pitch, r.width, r.height)?;
     if r.src < d && r.dst < s { return Err("CE overlap requires staging"); }
-    if semaphore % 4 != 0 || semaphore > (1 << 40) - 12 || epoch == 0 {
-        return Err("invalid CE completion record");
-    }
     let mut out = vec![];
     method(&mut out, 0, &[0xa0b5]);
     method(&mut out, 0x400, &[(r.src >> 32) as u32, r.src as u32,
         (r.dst >> 32) as u32, r.dst as u32, r.src_pitch, r.dst_pitch, r.width, r.height]);
     method(&mut out, 0x300, &[0x386]);
+    Ok(out)
+}
+/// The three completion words are engine releases, following a non-pipelined
+/// flushed transfer; a PFIFO front-end release cannot certify copy completion.
+pub fn encode(r: Rect, semaphore: u64, epoch: u64, sequence: u32) -> Result<Vec<u32>, &'static str> {
+    if semaphore % 4 != 0 || semaphore > (1 << 40) - 12 || epoch == 0 {
+        return Err("invalid CE completion record");
+    }
+    let mut out = transfer(r)?;
     for (offset, value) in [(4, epoch as u32), (8, (epoch >> 32) as u32), (0, sequence)] {
         let address = semaphore + offset;
         method(&mut out, 0x240, &[(address >> 32) as u32, address as u32, value]);

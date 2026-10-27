@@ -217,7 +217,7 @@
 //! Serialized bring-up channels for device-executed VM and CE checks.
 //! IRQs remain masked; this boot-CPU owner polls and decodes outside top halves.
 use super::{channel::{VmIo, read, wait as fifo_wait, elapsed}, copy::{self, Rect}, inventory::{words,stats},
-    lifetime::{Context, Consumer}, memory::{self, allocator::{Allocation,Kind}}, modeset::{self,Io},
+    lifetime::{Context, Consumer, Ticket}, memory::{self, allocator::{Allocation,Kind}}, modeset::{self,Io},
     system_dma, vm::Flags, Registers};
 use crate::{arch_impl::x86_64::timer,drivers::pci};
 use alloc::{format,vec,vec::Vec,string::String};
@@ -308,11 +308,14 @@ impl Channel {
         Ok(())
     }
     fn submit(&mut self,regs:&mut Registers,total:u64,bar:usize,rect:Rect,publish:bool)->Result<u32,&'static str> {
+        let command=copy::encode(rect,COMMAND+8192,self.epoch,self.put+1)?;
+        self.push(regs,total,bar,&command,publish)
+    }
+    fn push(&mut self,regs:&mut Registers,total:u64,bar:usize,command:&[u32],publish:bool)->Result<u32,&'static str> {
         if !self.active || self.put>=500 {return Err("CE ring unavailable");}
         let seq=self.put+1;
-        let command=copy::encode(rect,COMMAND+8192,self.epoch,seq)?;
         // Reuse command storage only after the preceding engine completion.
-        words(regs,total,self.commands.range.start+4096,&command)?;
+        words(regs,total,self.commands.range.start+4096,command)?;
         words(regs,total,self.commands.range.start+u64::from(self.put)*8,
             &[(COMMAND+4096) as u32,((command.len() as u32)<<10)|0x100])?;
         modeset::bar_flush(regs)?;
@@ -394,6 +397,37 @@ fn system_bytes(c:&Channel)->Vec<u8> {
     c.pages.observe();let mut data=Vec::with_capacity(SIZE);
     for i in 0..2 {unsafe {data.extend_from_slice(core::slice::from_raw_parts(c.pages.va(i) as *const u8,4096));}}
     data
+}
+fn vram(regs:&mut Registers,total:u64,a:u64)->Result<Vec<u8>,&'static str> {
+    let mut p=memory::Pramin::new(regs,total);let mut data=Vec::with_capacity(SIZE);
+    for i in (0..SIZE as u64).step_by(4) {data.extend_from_slice(&p.read(a+i)?.to_le_bytes());}
+    Ok(data)
+}
+/// Execute a complete copy whose CE release is left out. The completion wait
+/// is refused for it even when GET reaches PUT and the bytes have landed, and
+/// the queued ticket stays held until a later engine-ordered release retires it.
+fn suppressed_copy(regs:&mut Registers,layout:&memory::Layout,total:u64,e:&Engine,bar:usize,c:&mut Channel,seed:u32)
+    ->Result<(String,Ticket),&'static str> {
+    let initial:Vec<u8>=(0..SIZE).map(|i|pattern(i,seed)).collect();
+    fill(regs,total,c.source.range.start,&initial)?;
+    fill(regs,total,c.dest.range.start,&[0xcc;SIZE])?;
+    modeset::bar_flush(regs)?;
+    let before=vram(regs,total,c.dest.range.start)?;
+    let stats=layout.allocator.stats();
+    let ticket=c.context.hold(Consumer::Queued)?;
+    let seq=c.push(regs,total,bar,&copy::transfer(rect(SOURCE,DEST,SIZE as u32,1,SIZE as u32,SIZE as u32))?,true)?;
+    let (accepted,elapsed_us)=c.completed(regs,total,e,seq,10000)?;
+    let get=regs.read(0x40014+e.pbdma*0x2000);
+    let record=c.commands.range.start+8192;
+    let observed=read(regs,total,record)?;
+    let observed_epoch=u64::from(read(regs,total,record+4)?)|u64::from(read(regs,total,record+8)?)<<32;
+    let held=c.context.holds()[0];let reclaimed=u32::from(layout.allocator.stats()!=stats);
+    let data=vram(regs,total,c.dest.range.start)?;
+    crate::serial_println!("GT710_CE_STAGE suppressed channel={} sequence={} get={} observed={} accepted={} elapsed_us={}",c.id,seq,get,observed,accepted,elapsed_us);
+    if accepted {return Err("CE completion accepted without its release");}
+    if data!=initial {return Err("suppressed-release CE copy did not execute");}
+    Ok((format!("{{\"epoch\":{},\"observed_epoch\":{},\"expected\":{},\"observed\":{},\"get\":{},\"put\":{},\"elapsed_us\":{},\"accepted\":{},\"held\":{},\"reclaimed\":{},\"source_va\":{},\"dest_va\":{},\"before_sha256\":\"{}\",\"data_sha256\":\"{}\"}}",
+        c.epoch,observed_epoch,seq,observed,get,c.put,elapsed_us,accepted,held,reclaimed,SOURCE,DEST,super::hash(&before),super::hash(&data)),ticket))
 }
 fn emit_bytes(id:usize,pass:usize,data:&[u8]) {
     for (n,b) in data.chunks(256).enumerate() {
@@ -480,11 +514,14 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
     let seq=a.submit(regs,total,bar,rect(SOURCE,DEST,8192,1,8192,8192),false)?;
     let (accepted,withheld_us)=a.completed(regs,total,&e,seq,10000)?;
     if accepted {return Err("withheld CE completion accepted");}
+    let (suppressed,suppressed_ticket)=suppressed_copy(regs,layout,total,&e,bar,&mut a,seed)?;
     words(regs,total,a.commands.range.start+8192,&[a.put,(a.epoch-1) as u32,((a.epoch-1)>>32) as u32])?;
     modeset::bar_flush(regs)?;
     let (accepted,stale_us)=a.completed(regs,total,&e,a.put,10000)?;
     if accepted {return Err("stale CE epoch accepted");}
     cases.push(run_case(regs,total,&e,bar,&mut a,cases.len(),seed,Case{name:"clean-next",..full})?);
+    // clean-next's releases follow the suppressed transfer on the same CE channel.
+    unsafe {a.context.finish_device(suppressed_ticket)?;}
     a.drain(regs,&e)?;
     b.activate(regs,total,&e,bar_inst,bar_dir,pte)?;
     cases.push(run_case(regs,total,&e,bar,&mut b,cases.len(),!seed,Case{name:"same-va-b",..full})?);
@@ -563,7 +600,7 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
     words(regs,total,pte,&[0,0])?;modeset::activate_bar1(regs,bar_inst,bar_dir)?;
     regs.write(0x2254,old_userd);regs.write(0x2140,old_intr);regs.write(0x204,old_enabled);
     if layout.allocator.stats()!=baseline {return Err("CE baseline reclamation mismatch");}
-    crate::serial_println!("GT710_CE {{\"schema\":1,\"class\":41141,\"source_va\":{},\"system_va\":{},\"engine\":{},\"runlist\":{},\"reset_bit\":{},\"fault_unit\":{},\"cases\":[{}],\"withheld_us\":{},\"stale_us\":{},\"invalid\":{},\"fault_instance\":{},\"fault_raw\":{:?},\"fault_mask\":{},\"reset_us\":{},\"reset_disabled\":{},\"reset_enabled\":{},\"fault_after\":{},\"firmware_writes\":{},\"baseline\":{},\"after\":{},\"pgraph\":\"unmeasured\"}}",
-        SOURCE,SYSTEM,e.engine,e.run,e.reset,e.fault,cases.join(","),withheld_us,stale_us,invalid,fault_instance,fault_raw,fault_mask,reset_us,disabled,enabled,regs.read(0x259c),crate::firmware_writes::count()-console.firmware_baseline,stats(baseline),stats(layout.allocator.stats()));
+    crate::serial_println!("GT710_CE {{\"schema\":1,\"class\":41141,\"source_va\":{},\"system_va\":{},\"engine\":{},\"runlist\":{},\"reset_bit\":{},\"fault_unit\":{},\"cases\":[{}],\"withheld_us\":{},\"suppressed\":{},\"stale_us\":{},\"invalid\":{},\"fault_instance\":{},\"fault_raw\":{:?},\"fault_mask\":{},\"reset_us\":{},\"reset_disabled\":{},\"reset_enabled\":{},\"fault_after\":{},\"firmware_writes\":{},\"baseline\":{},\"after\":{},\"pgraph\":\"unmeasured\"}}",
+        SOURCE,SYSTEM,e.engine,e.run,e.reset,e.fault,cases.join(","),withheld_us,suppressed,stale_us,invalid,fault_instance,fault_raw,fault_mask,reset_us,disabled,enabled,regs.read(0x259c),crate::firmware_writes::count()-console.firmware_baseline,stats(baseline),stats(layout.allocator.stats()));
     Ok(())
 }

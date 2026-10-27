@@ -302,7 +302,6 @@ impl Context {
     /// # Safety
     /// A real reset must be confirmed to have stopped engine access to this space.
     /// Scanout reads VRAM directly and remains retained until display completion.
-    #[allow(dead_code)] // Public reset API consumed by milestone 6; no M5 caller.
     pub unsafe fn confirm_reset(&mut self) {
         self.pending.retain(|p| p.consumer == Consumer::Scanout);
         self.device = false;
