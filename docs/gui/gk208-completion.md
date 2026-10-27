@@ -15,8 +15,8 @@ GET alone nor an old epoch certifies a transfer. A native completion has an
 `a0b5-engine-release` evidence kind, without a virtual response status.
 
 The bring-up adapter serializes writes and observations. A completed destination
-write advances its resource generation. A read-back hold spans both transfers
-and record construction. Each transfer poisons the pinned system destination
+write advances its resource generation. A read-back hold pins lifetime across both transfers
+and record construction; the serialized caller supplies write exclusion. Each transfer poisons the pinned system destination
 with 0x55 or 0xaa, executes CE, checks its genuine release, and reads through the
 shared invalidate-before-copy boundary. Record construction requires ordered,
 distinct requests for the writer and both transfers, matching context, epoch,
@@ -27,8 +27,10 @@ transfers to their actual native sequence values and separate caller fences.
 
 The 6.3 gate is `metal-gt710/completion`, backed by the `gt710` suite's
 `completion/observation` case. It also requires the existing CE transfer checks.
-The native controls use a real completed transfer to reject another context's
-request and refuse publication against another resource, generation or epoch.
+The native controls mutate software request/publication fields around a real
+completed transfer. They check matcher rejection and publication validation;
+hardware isolation evidence comes from the separate private-channel and fault
+probes, not those software controls.
 Existing withheld-release, stale-epoch and real unmapped-page controls run
 through the same native request matcher.
 

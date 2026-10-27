@@ -16,8 +16,9 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
-Native GK208B milestone 6 PR 6.3 is in progress: shared request/completion
-identity and two-poison resource-generation observation
+Native GK208B milestone 6 PR 6.3 joins shared request/completion identity
+and two-poison resource-generation observation. Hardware acceptance and landing
+are recorded in [PR #2525](https://github.com/ryanbreen/breenix/pull/2525)
 ([adapter contract](../gui/gk208-completion.md)). Killable client lifetime and
 the full watchdog/reset policy follow in PRs 6.4 and 6.5.
 

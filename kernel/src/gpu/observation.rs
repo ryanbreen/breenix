@@ -33,7 +33,8 @@ pub struct NativeRecord {
 
 /// Publish only after both complete poisoned transfers describe the same
 /// resource version as its completed writer. The backend retains that resource
-/// and prevents writes for the duration of these two transfers.
+/// while its serialized bring-up caller issues only read-back transfers. The
+/// hold pins lifetime; it does not itself exclude concurrent writers.
 pub fn native_record(version: ResourceVersion, writer: CeCompletion, transfers: [CeCompletion; 2],
     first: &[u8], second: &[u8]) -> Result<NativeRecord, &'static str> {
     let requests = [writer.request(), transfers[0].request(), transfers[1].request()];

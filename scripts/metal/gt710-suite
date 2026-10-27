@@ -519,6 +519,7 @@ def observation_record(r, c):
         need(len({q['caller'] for q in requests})==3, 'reused caller fence')
         need(requests[0]['sequence']<requests[1]['sequence']<requests[2]['sequence'], 'native completion order')
         need([q['sequence'] for q in r['transfers']]==c['releases'], 'unbound native transfers')
+        need(r['writer']['sequence']==c['writer_sequence'], 'unbound native writer')
     except (KeyError,TypeError,IndexError) as error:
         raise ValueError('malformed native observation') from error
 
