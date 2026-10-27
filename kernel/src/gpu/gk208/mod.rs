@@ -110,6 +110,7 @@ mod channel;
 mod copy;
 mod ce;
 mod queue;
+mod recovery_policy;
 pub use system_dma::set_platform as set_dma_platform;
 mod modeset;
 mod native;

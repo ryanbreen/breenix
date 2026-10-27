@@ -8,6 +8,7 @@ import runpy
 import tempfile
 
 CATEGORIES = {
+    'recovery': [('fault-reset', 'A bad native channel is removed while its survivor copies; watchdog and confirmed transport reset retain backing and restore fresh epochs within budget')],
     'contexts': [('concurrent', 'Private native channels wrap their rings under backpressure and compare concurrent opposite transfers'), ('killed-wait', 'A killed native waiter exits within 250 ms while device backing stays held until ordered drain')],
     'completion': [('observation', 'Native CE observations bind independent caller fences and ordered releases to context, reset epoch and resource generation under complementary poisons')],
     'copy': [('transfers', 'Native A0B5 transfers compare complete complementary read-backs and execute private VM, remap, system-memory and bounded fault/reset probes')],
@@ -503,6 +504,50 @@ def copy_engine(serial):
         need(e['baseline']==e['after'] and e['firmware_writes']==0 and e['pgraph']=='unmeasured','CE retirement or display ownership failed')
     except (KeyError,TypeError,IndexError,OverflowError) as error:
         raise ValueError('malformed CE capture') from error
+
+
+def recovery_gate(serial):
+    def need(ok,why):
+        if not ok: raise ValueError(why)
+    try:
+        e=json.loads(one(r'^GT710_RECOVERY (.+)$',serial,'native recovery')[1])
+        need(e['schema']==1 and e['worker'] is True and e['poisons']==[85,170], 'native worker/poison evidence')
+        need(e['baseline']==e['after'] and e['firmware_writes']==0,'native reset retirement/display')
+        digest=lambda seed:hashlib.sha256(bytes(ce_pattern(i,seed) for i in range(8192))).hexdigest()
+        seed=e['seed'];opposite=digest(seed^0xffffffff)
+        f=e['fault'];w=e['watchdog']
+        active=e['active_reset']; bit=1<<active['reset_bit']
+        need(active['busy']&0x80000000!=0 and active['word']==active['nonce'] and active['held']==1,
+             'reset did not interrupt started copy work')
+        need(0<active['reset_us']<=100000 and active['reset_disabled']&bit==0
+             and active['reset_enabled']&bit!=0 and active['fresh_digests']==[opposite]*2,
+             'active copy reset or original survivor failed')
+        need(f['raw'][0]<<12==f['instance'] and f['instance']>0 and f['raw'][1]|f['raw'][2]<<32==f['invalid']==0x403000
+             and f['raw'][3]&15==2 and f['raw'][3]&128==0 and f['mask']==1<<21,'real bounded fault attribution')
+        for r in (f,w):
+            need(r['rejected'] is True and r['removed'] is True and r['binding']==0 and r['runlist']==[1],'bad channel still scheduled')
+            bit=1<<r['reset_bit']
+            need(0<=r['reset_bit']<32 and r['reset_disabled']&bit==0 and r['reset_enabled']&bit!=0
+                 and r['pending']==r['busy']==r['errors']==0,'raw reset or idle observations contradict confirmation')
+            need(r['confirmed'] is True and 0<r['reset_us']<=100000,'reset not confirmed within budget')
+            need(r['survivor_digests']==[opposite]*2,'surviving channel full complementary copies')
+        need(f['held']==1 and f['survivor_context']==f['survivor_after_context']>0
+             and f['survivor_epoch']==f['survivor_after_epoch']>0,'local fault lost hold or survivor identity')
+        need(2000000<=w['quarantine_us']<=2500000 and 2000000<=w['no_progress_us']<=2250000
+             and 4000000<=w['total_us']<=4850000,'watchdog/no-progress timing')
+        need(w['held_at_quarantine']==1 and w['held_before_reset']==w['failed_reset_held']==[1,1]
+             and w['failed_reset_rejected'] is True and w['hardware_completed']==[False,False] and w['success_before_reset'] is False,'reset released backing before proof')
+        need(len(w['hardware_fences'])==len(w['expected_fences'])==2
+             and all(len(a)==len(b)==3 and a!=b for a,b in zip(w['hardware_fences'],w['expected_fences'])),
+             'old hardware release already complete')
+        need(w['failed_reset_observation'][0]&(1<<w['reset_bit'])!=0 and w['failed_reset_observation'][2]!=0,
+             'unconfirmed-reset refusal lacks real pre-reset observations')
+        need(w['old_fences_eio']==[True,True] and w['stale_accepted'] is False,'reset fence outcomes')
+        need(len(w['old_epochs'])==len(w['new_epochs'])==2 and len(set(w['new_epochs']))==2
+             and all(v>0 and v not in w['old_epochs'] for v in w['new_epochs']),'reset reused epochs')
+        need(len(w['bindings'])==2 and len(set(w['bindings']))==2 and all(v>0 for v in w['bindings']),'fresh channels not bound')
+        need(w['fresh_digests']==[[digest(seed)]*2,[opposite]*2],'reset fresh full complementary copies')
+    except (KeyError,TypeError,IndexError,OverflowError) as error: raise ValueError('malformed native recovery evidence') from error
 
 
 def multiple_contexts(serial):
@@ -1009,6 +1054,10 @@ def native_flips(serial):
 
 
 def check_case(category, case, serial):
+    if category == 'recovery':
+        if case != 'fault-reset': raise ValueError('unknown recovery case')
+        recovery_gate(serial)
+        return
     if category == 'contexts':
         if case == 'concurrent': multiple_contexts(serial)
         elif case == 'killed-wait': killed_wait(serial)
@@ -1191,10 +1240,12 @@ def capture_serial(directory):
         if fields[0]=='GT710_PIX': key=('native',)
         elif fields[0]=='GT710_SWITCH_PIX': key=('switch',int(fields[1]))
         elif fields[0]=='GT710_FLIP_PIX': key=('flip',int(fields[1]),int(fields[2]))
+        elif fields[0]=='GT710_MULTI': key=('multi',)
         else: raise ValueError('unexpected display artifact record')
         if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
         groups.setdefault(key,[]).append(line);previous=key
     def report_key(line):
+        if line.startswith('GT710_MULTI_BULK '): return ('multi',)
         for prefix,kind in [('GT710_MODE ','native'),('GT710_SWITCH ','switch'),('GT710_FLIP ','flip')]:
             if line.startswith(prefix):
                 e=json.loads(line[len(prefix):])
@@ -1207,12 +1258,18 @@ def capture_serial(directory):
     result=[]
     for line in serial.splitlines(keepends=True):
         key=report_key(line)
+        if key == ('multi',):
+            record=''.join(groups[key]).encode('ascii')
+            fields=line.split()
+            if len(fields)!=3 or len(groups[key])!=1 or len(record)!=int(fields[1]) or hashlib.sha256(record).hexdigest()!=fields[2]:
+                raise ValueError('concurrency artifact differs from serial length/digest')
         if key is not None: result.extend(groups[key])
         result.append(line)
     return ''.join(result)
 
 
 CPU_MEMORY_CATEGORIES = {'inventory','vm','aperture','lifetime'}
+
 def capture_categories(boot):
     if boot.get('mode') == 'probe':
         return [c for c in CATEGORIES if c in CPU_MEMORY_CATEGORIES]

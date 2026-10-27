@@ -92,6 +92,11 @@ impl Allocator {
         let entry=self.live.iter().find(|e|e.allocation==allocation).ok_or("stale VRAM allocation")?;
         Ok(Pin{_reference:Arc::clone(&entry.reference)})
     }
+    /// Read-only residency observation without recycling DMA storage.
+    pub fn is_pinned(&self, allocation: Allocation) -> Result<bool, &'static str> {
+        let entry = self.live.iter().find(|e| e.allocation == allocation).ok_or("stale VRAM allocation")?;
+        Ok(Arc::strong_count(&entry.reference) > 1)
+    }
     /// Refuse reuse while a mapping, table or consumer retains a reference.
     pub fn release(&mut self,a:Allocation)->Result<(),&'static str> {
         let i=self.live.iter().position(|live|live.allocation==a).ok_or("stale VRAM allocation")?;

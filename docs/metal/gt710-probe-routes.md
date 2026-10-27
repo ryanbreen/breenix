@@ -43,3 +43,11 @@ unchanged exact pixel/state comparators and reconstructs the retained images.
 Missing or corrupted bulk data fails the capture. Verdicts, native identities,
 completion records and hashes stay on serial. No later disk boot is needed to
 recover readback data. HTTP framing follows RFC 9112 section 6.3.
+
+M6.5 also moves the intact concurrency record off the UART. The retained
+`20261027T124909Z-metal` record used 18,205 wire bytes, or 1.580295 s at
+115200 baud. `GT710_MULTI_BULK` retains its length and SHA-256 on serial;
+the network artifact carries the original `GT710_MULTI` record. The joiner
+checks that digest and restores the record at its serial boundary, before
+running the existing concurrency comparer. Complementary full comparisons,
+130 per channel, and the original digest arrays remain required.

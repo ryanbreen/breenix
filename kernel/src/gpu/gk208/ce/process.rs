@@ -4,10 +4,14 @@ use super::*;
 use core::sync::atomic::AtomicBool;
 use crate::task::{waitqueue::{WaitQueueHead,PrepareOutcome},thread::ThreadState};
 static SESSION:spin::Mutex<Option<Session>>=spin::Mutex::new(None);
+static RECOVERY_STARTED:AtomicBool=AtomicBool::new(false);
+static RECOVERY_READY:AtomicBool=AtomicBool::new(false);
+static RECOVERY_RESULT:spin::Mutex<Option<Result<String,&'static str>>>=spin::Mutex::new(None);
+static RECOVERY_WAITERS:WaitQueueHead=WaitQueueHead::new();
 static WAITING:AtomicBool=AtomicBool::new(false);
 static WAITERS:WaitQueueHead=WaitQueueHead::new();
 struct Work {a:Channel,b:Channel,ticket:Option<Ticket>,request:Request,seed:u32,baseline:memory::allocator::Stats,old:[u32;3],userd:Allocation,engine:Engine}
-struct Session {layout:memory::Layout,registers:usize,bar:usize,bi:u64,bd:u64,pte:u64,total:u64,work:Option<Work>}
+pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,work:Option<Work>}
 pub(crate) fn retain(layout:memory::Layout,regs:usize,bar:usize)->Result<(),&'static str> {
     let native=layout.objects[4].range.start;
     let s=layout.allocator.stats();
@@ -85,8 +89,37 @@ impl Session {
         Ok(String::from("drained compares=2 survivor=1 baseline=1\n"))
     }
 }
+fn recovery_read()->Result<Vec<u8>,i32> {
+    if !RECOVERY_STARTED.load(Ordering::Acquire) && SESSION.lock().is_none() {return Ok(b"unavailable\n".to_vec());}
+    if !RECOVERY_STARTED.swap(true,Ordering::AcqRel) {
+        let started=crate::task::kthread::kthread_run(|| {
+            let owned={SESSION.lock().take()};
+            let result=if let Some(mut s)=owned {
+                let result=if s.work.is_some() {Err("native deferred work still owned")} else {super::recovery::probe(&mut s)};
+                *SESSION.lock()=Some(s);result
+            } else {Err("native recovery owner absent")};
+            *RECOVERY_RESULT.lock()=Some(result);
+            RECOVERY_READY.store(true,Ordering::Release);
+            RECOVERY_WAITERS.wake_up();
+        },"kgk208");
+        if started.is_err() {
+            *RECOVERY_RESULT.lock()=Some(Err("native recovery worker creation failed"));
+            RECOVERY_READY.store(true,Ordering::Release);
+            RECOVERY_WAITERS.wake_up();
+            return Err(-12);
+        }
+    }
+    loop {
+        if RECOVERY_READY.load(Ordering::Acquire) {
+            return Ok(match RECOVERY_RESULT.lock().as_ref().ok_or(-5)? {Ok(s)=>s.as_bytes().to_vec(),Err(why)=>format!("GT710_RECOVERY_ERROR {}\n",why).into_bytes()});
+        }
+        let outcome=RECOVERY_WAITERS.prepare_to_wait_checked(ThreadState::BlockedOnIO,None,||!RECOVERY_READY.load(Ordering::Acquire));
+        crate::syscall::blocking_io::wait_prepared(&RECOVERY_WAITERS,outcome).map_err(|e|-e)?;
+    }
+}
 pub(crate) fn proc_read(op:u8)->Result<Vec<u8>,i32> {
     if !crate::test_control::enabled() {return Err(-38);}
+    if op==3 {return recovery_read();}
     if op==1 {
         {
             let mut session=SESSION.lock();let s=session.as_mut().ok_or(-19)?;

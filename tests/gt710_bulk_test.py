@@ -44,6 +44,20 @@ class Bulk(unittest.TestCase):
                 stage(body,metadata)
                 with self.assertRaises(ValueError):API['capture_serial'](d)
 
+    def test_concurrency_record_moves_intact_off_serial(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            d=Path(temporary)
+            rows=b'GT710_PIX 0 1:ff003039\n'
+            record=b'GT710_MULTI {"schema":1,"channels":[{"digests":["full"]}]}\n'
+            anchor='GT710_MULTI_BULK '+str(len(record))+' '+hashlib.sha256(record).hexdigest()+'\n'
+            body=rows+record
+            serial='GT710_MODE {"schema":1}\n'+anchor+'GT710_BULK '+str(len(body))+' '+hashlib.sha256(body).hexdigest()+'\n'
+            (d/'gt710-pixels.rle').write_bytes(body);(d/'serial.txt').write_text(serial)
+            self.assertEqual(API['capture_serial'](d),rows.decode()+'GT710_MODE {"schema":1}\n'+record.decode()+serial.split('\n',1)[1])
+            for bad in [anchor.replace(str(len(record)),str(len(record)+1),1),anchor.replace(hashlib.sha256(record).hexdigest(),'0'*64)]:
+                (d/'serial.txt').write_text(serial.replace(anchor,bad))
+                with self.assertRaises(ValueError):API['capture_serial'](d)
+
     def test_bounded_upload_requires_live_lease_exact_body_and_digest(self):
         import gt710_upload as upload
         class Connection:
