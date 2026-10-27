@@ -59,3 +59,28 @@ fn private_spaces_cross_a_directory_boundary_and_remap_only_after_visibility() {
     assert!((0..3).all(|n|io.words[&x.pte_address(va+n*4096).unwrap()]==0));
     x.retire(&mut a,&mut io).unwrap();y.retire(&mut a,&mut io).unwrap();assert_eq!(a.stats(),baseline);
 }
+
+#[test]
+fn rejected_maps_do_not_mutate_and_failed_invalidation_never_recycles_storage() {
+    let mut a=Allocator::new(1<<30,&[]).unwrap();let mut io=Model::default();
+    let mut s=Space::new(&mut a,&mut io).unwrap();
+    let before=a.stats();io.events.clear();
+    for (va,physical,size) in [(1,4096,4096),(0,1,4096),(0,4096,0),(0,4096,4097),
+                              (LIMIT,4096,4096),(LIMIT-4096,4096,8192),(0,1<<30,4096),
+                              (u64::MAX-4095,4096,8192),(0,u64::MAX-4095,8192)] {
+        assert!(s.map(&mut a,&mut io,va,Range{start:physical,size},Flags::default()).is_err());
+        assert_eq!(a.stats(),before);assert!(io.events.is_empty());
+    }
+    s.map(&mut a,&mut io,LIMIT-4096,Range{start:4096,size:4096},Flags::default()).unwrap();
+    assert_eq!(io.words[&(s.directory.range.start+8191*8)]&0xffffffff,0);
+    let used=a.stats();io.events.clear();
+    assert!(s.map(&mut a,&mut io,LIMIT-4096,Range{start:8192,size:4096},Flags::default()).is_err());
+    assert!(s.remap(&mut io,LIMIT-8192,Range{start:8192,size:8192},Flags::default()).is_err());
+    assert!(s.unmap(&mut io,LIMIT-8192,8192).is_err());
+    assert!(io.events.is_empty());assert_eq!(a.stats(),used);
+    io.fail=true;
+    assert!(s.remap(&mut io,LIMIT-4096,Range{start:8192,size:4096},Flags::default()).is_err());
+    assert!(s.unmap(&mut io,LIMIT-4096,4096).is_err());
+    assert!(s.retire(&mut a,&mut io).is_err());
+    assert_eq!(a.stats(),used,"uncertain device access must retain all table charges");
+}
