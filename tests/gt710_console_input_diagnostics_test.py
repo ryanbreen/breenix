@@ -41,7 +41,10 @@ mod breenix_suite { pub mod suite {
 use std::fmt::Write;
 pub static RECORDS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 #[derive(Debug, PartialEq)] pub enum CaseError { Fail(String) }
-fn record(kind: &str, rest: &str) { RECORDS.lock().unwrap().push(format!("{kind} {rest}")); }
+fn record(kind: &str, rest: &str) {
+    let mut records = RECORDS.lock().unwrap();
+    if records.len() < 12 { records.push(format!("{kind} {rest}")); }
+}
 IS_WORD
 VALUE
 }}
@@ -49,11 +52,23 @@ MEASURED
 fn main() {
     breenix_suite::suite::value("INVALID", 1, "count", None);
     assert!(breenix_suite::suite::RECORDS.lock().unwrap().is_empty());
-    assert_eq!(measured(|| Err("missing key".into())), Err(breenix_suite::suite::CaseError::Fail("missing key".into())));
+    let failure = measured(|| Err("missing key".into()));
+    assert!(matches!(&failure, Err(breenix_suite::suite::CaseError::Fail(message)) if message.ends_with("missing key")));
+
     let records = breenix_suite::suite::RECORDS.lock().unwrap().clone();
     assert_eq!(records, ["VALUE kbd-nonzero-total=1count", "VALUE hostkey-queued=2count",
         "VALUE hostkey-replayed=2count", "VALUE hostkey-dispatched=2count",
         "VALUE hostkey-changed=1count", "VALUE hostkey-replay-max-ns=1000000ns"]);
+    breenix_suite::suite::RECORDS.lock().unwrap().clear();
+    // Real HOSTKEY requests can exhaust all twelve record slots before a
+    // failure. Its capped CASE message must still retain the counters.
+    breenix_suite::suite::RECORDS.lock().unwrap().extend((0..12).map(|_| "HOSTKEY".into()));
+    let failure = measured(|| Err("missing key".into()));
+    let Err(breenix_suite::suite::CaseError::Fail(message)) = failure else { panic!("failure lost"); };
+    let capped: String = message.chars().take(160).collect();
+    assert!(capped.contains("q=2 r=2 d=2 changed=1 maxns=1000000"), "counter evidence lost after record cap: {capped}");
+    assert!(capped.ends_with("missing key"));
+    assert_eq!(breenix_suite::suite::RECORDS.lock().unwrap().len(), 12);
     breenix_suite::suite::RECORDS.lock().unwrap().clear();
     assert_eq!(measured(|| Ok(())), Ok(()));
     assert!(breenix_suite::suite::RECORDS.lock().unwrap().is_empty());
