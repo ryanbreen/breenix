@@ -137,6 +137,8 @@ pub enum ProcEntryType {
     Gt710Wait,
     #[cfg(target_arch="x86_64")]
     Gt710Drain,
+    #[cfg(target_arch="x86_64")]
+    Gt710Recovery,
     /// /proc/fbcon - the x86-64 screen console's directory under the name the
     /// x86-metal boot path reads
     #[cfg(target_arch = "x86_64")]
@@ -218,6 +220,8 @@ impl ProcEntryType {
             ProcEntryType::Gt710Wait => "gt710-wait",
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Drain => "gt710-drain",
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Recovery => "gt710-recovery",
             ProcEntryType::ConsoleCheck => "check",
             #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconDir => "fbcon",
@@ -286,6 +290,8 @@ impl ProcEntryType {
             ProcEntryType::Gt710Wait => "/proc/gt710-wait",
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Drain => "/proc/gt710-drain",
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Recovery => "/proc/gt710-recovery",
             ProcEntryType::ConsoleCheck => "/proc/console/check",
             #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconDir => "/proc/fbcon",
@@ -359,6 +365,8 @@ impl ProcEntryType {
             ProcEntryType::Gt710Wait => 505,
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Drain => 506,
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Recovery => 508,
             ProcEntryType::ConsoleCheck => 503,
             ProcEntryType::PidDir(pid) => pid_inode(*pid, 0),
             ProcEntryType::PidStatus(pid) => pid_inode(*pid, 1),
@@ -514,6 +522,7 @@ pub fn init() {
         procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Ce));
         procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Wait));
         procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Drain));
+        procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Recovery));
         procfs.entries.push(ProcEntry::new(ProcEntryType::FbconDir));
         procfs.entries.push(ProcEntry::new(ProcEntryType::FbconCheck));
     }
@@ -907,6 +916,8 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::Gt710Wait => require(Operation::Trace).and_then(|()|crate::gk208::proc_ce(1)),
         #[cfg(target_arch="x86_64")]
         ProcEntryType::Gt710Drain => require(Operation::Trace).and_then(|()|crate::gk208::proc_ce(2)),
+        #[cfg(target_arch="x86_64")]
+        ProcEntryType::Gt710Recovery => require(Operation::Trace).and_then(|()|crate::gk208::proc_ce(3)),
         ProcEntryType::ConsoleCheck => crate::console::proc_console_check().map(String::into_bytes),
         #[cfg(target_arch = "x86_64")]
         ProcEntryType::FbconDir => text(String::from("check\n")),

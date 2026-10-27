@@ -7,6 +7,16 @@
   "hostRunner": true,
   "categories": [
     {
+      "id": "recovery",
+      "title": "Native fault and reset gate (M6 PR 6.5)",
+      "cases": [
+        {
+          "id": "fault-reset",
+          "title": "A bad native channel is removed while its survivor copies; watchdog and confirmed transport reset retain backing and restore fresh epochs within budget"
+        }
+      ]
+    },
+    {
       "id": "contexts",
       "title": "Multiple native contexts and lifetimes (M6 PR 6.4)",
       "cases": [

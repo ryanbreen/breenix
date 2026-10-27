@@ -20,8 +20,8 @@ Native GK208B milestone 6 PR 6.4 adds concurrent CE contexts and retained
 ownership across a killed waiter. Hardware acceptance and landing are recorded
 in [PR #2528](https://github.com/ryanbreen/breenix/pull/2528)
 ([lifetime contract](../metal/gt710-lifetimes.md)). USERD remains shared;
-setup/drain cancellation and failure recovery need follow-up. The full
-watchdog/reset policy follows in PR 6.5.
+setup/drain cancellation and failure recovery need follow-up. PR 6.5 is implementing worker-owned quarantine and bounded CE-transport reset
+([recovery contract](../metal/gt710-recovery.md)); hardware acceptance is pending.
 
 The native GK208B milestone 7 host firmware/compiler assets are tracked in
 [PR #2490](https://github.com/ryanbreen/breenix/pull/2490), with review follow-up in

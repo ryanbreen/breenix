@@ -8,6 +8,7 @@ import runpy
 import tempfile
 
 CATEGORIES = {
+    'recovery': [('fault-reset', 'A bad native channel is removed while its survivor copies; watchdog and confirmed transport reset retain backing and restore fresh epochs within budget')],
     'contexts': [('concurrent', 'Private native channels wrap their rings under backpressure and compare concurrent opposite transfers'), ('killed-wait', 'A killed native waiter exits within 250 ms while device backing stays held until ordered drain')],
     'completion': [('observation', 'Native CE observations bind independent caller fences and ordered releases to context, reset epoch and resource generation under complementary poisons')],
     'copy': [('transfers', 'Native A0B5 transfers compare complete complementary read-backs and execute private VM, remap, system-memory and bounded fault/reset probes')],
@@ -503,6 +504,39 @@ def copy_engine(serial):
         need(e['baseline']==e['after'] and e['firmware_writes']==0 and e['pgraph']=='unmeasured','CE retirement or display ownership failed')
     except (KeyError,TypeError,IndexError,OverflowError) as error:
         raise ValueError('malformed CE capture') from error
+
+
+def recovery_gate(serial):
+    def need(ok,why):
+        if not ok: raise ValueError(why)
+    try:
+        e=json.loads(one(r'^GT710_RECOVERY (.+)$',serial,'native recovery')[1])
+        need(e['schema']==1 and e['worker'] is True and e['poisons']==[85,170], 'native worker/poison evidence')
+        need(e['baseline']==e['after'] and e['firmware_writes']==0,'native reset retirement/display')
+        digest=lambda seed:hashlib.sha256(bytes(ce_pattern(i,seed) for i in range(8192))).hexdigest()
+        seed=e['seed'];opposite=digest(seed^0xffffffff)
+        f=e['fault'];w=e['watchdog']
+        need(f['raw'][0]<<12==f['instance'] and f['instance']>0 and f['raw'][1]|f['raw'][2]<<32==f['invalid']==0x403000
+             and f['raw'][3]&15==2 and f['raw'][3]&128==0 and f['mask']==1<<21,'real bounded fault attribution')
+        for r in (f,w):
+            need(r['rejected'] is True and r['removed'] is True and r['binding']==0 and r['runlist']==[1],'bad channel still scheduled')
+            bit=1<<r['reset_bit']
+            need(0<=r['reset_bit']<32 and r['reset_disabled']&bit==0 and r['reset_enabled']&bit!=0
+                 and r['pending']==r['busy']==r['errors']==0,'raw reset or idle observations contradict confirmation')
+            need(r['confirmed'] is True and 0<r['reset_us']<=100000,'reset not confirmed within budget')
+            need(r['survivor_digests']==[opposite]*2,'surviving channel full complementary copies')
+        need(f['held']==1 and f['survivor_context']==f['survivor_after_context']>0
+             and f['survivor_epoch']==f['survivor_after_epoch']>0,'local fault lost hold or survivor identity')
+        need(2000000<=w['quarantine_us']<=2500000 and 2000000<=w['no_progress_us']<=2250000
+             and 4000000<=w['total_us']<=4850000,'watchdog/no-progress timing')
+        need(w['held_at_quarantine']==1 and w['held_before_reset']==w['failed_reset_held']==[1,1]
+             and w['success_before_reset'] is False,'reset released backing before proof')
+        need(w['old_fences_eio']==[True,True] and w['stale_accepted'] is False,'reset fence outcomes')
+        need(len(w['old_epochs'])==len(w['new_epochs'])==2 and len(set(w['new_epochs']))==2
+             and all(v>0 and v not in w['old_epochs'] for v in w['new_epochs']),'reset reused epochs')
+        need(len(w['bindings'])==2 and len(set(w['bindings']))==2 and all(v>0 for v in w['bindings']),'fresh channels not bound')
+        need(w['fresh_digests']==[[digest(seed)]*2,[opposite]*2],'reset fresh full complementary copies')
+    except (KeyError,TypeError,IndexError,OverflowError) as error: raise ValueError('malformed native recovery evidence') from error
 
 
 def multiple_contexts(serial):
@@ -1009,6 +1043,10 @@ def native_flips(serial):
 
 
 def check_case(category, case, serial):
+    if category == 'recovery':
+        if case != 'fault-reset': raise ValueError('unknown recovery case')
+        recovery_gate(serial)
+        return
     if category == 'contexts':
         if case == 'concurrent': multiple_contexts(serial)
         elif case == 'killed-wait': killed_wait(serial)
@@ -1220,6 +1258,7 @@ def capture_serial(directory):
 
 
 CPU_MEMORY_CATEGORIES = {'inventory','vm','aperture','lifetime'}
+
 def capture_categories(boot):
     if boot.get('mode') == 'probe':
         return [c for c in CATEGORIES if c in CPU_MEMORY_CATEGORIES]

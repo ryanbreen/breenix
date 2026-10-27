@@ -423,6 +423,16 @@
               "contexts"
             ]
           }
+        },
+        {
+          "id": "recovery",
+          "title": "Quarantine native faults and confirm bounded reset (M6 PR 6.5)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "recovery"
+            ]
+          }
         }
       ]
     }

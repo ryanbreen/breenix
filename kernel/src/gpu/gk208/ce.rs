@@ -271,7 +271,7 @@ fn discover(regs:&mut Registers)->Result<Engine,&'static str> {
 }
 struct Channel {
     id:u32, context:Context, commands:Allocation,userd:Allocation,source:Allocation,dest:Allocation,stage:Allocation,
-    pages:ManuallyDrop<system_dma::Pages>, epoch:u64, put:u32, active:bool, generation:u64, queue:super::queue::Queue, shared:bool,
+    pages:ManuallyDrop<system_dma::Pages>, epoch:u64, put:u32, active:bool, generation:u64, queue:super::queue::Queue, shared:bool, failure:Option<&'static str>,
 }
 fn flags()->Flags {Flags{volatile:true,..Flags::default()}}
 impl Channel {
@@ -297,7 +297,7 @@ impl Channel {
             words(regs,total,instance+offset,&[value])?;
         }
         words(regs,total,commands.range.start+RUNLIST,&[id,0])?;
-        Ok(Self{id,context,commands,userd,source,dest,stage,pages,epoch:timer::rdtsc()|1,put:0,active:false,generation:0,queue:super::queue::Queue::new(),shared:false})
+        Ok(Self{id,context,commands,userd,source,dest,stage,pages,epoch:timer::rdtsc()|1,put:0,active:false,generation:0,queue:super::queue::Queue::new(),shared:false,failure:None})
     }
     fn activate(&mut self,regs:&mut Registers,total:u64,e:&Engine,bar_inst:u64,bar_dir:u64,pte:u64)->Result<(),&'static str> {
         if self.active {return Ok(());}
@@ -321,7 +321,7 @@ impl Channel {
         self.push(regs,total,bar,&command,publish)
     }
     fn push(&mut self,regs:&mut Registers,total:u64,bar:usize,command:&[u32],publish:bool)->Result<u32,&'static str> {
-        if !self.active || command.len()>128 {return Err("CE ring unavailable");}
+        if self.failure.is_some() || !self.active || command.len()>128 {return Err("CE ring unavailable");}
         let seq=self.queue.next()?;
         let offset=16384+u64::from(super::queue::Queue::slot(seq))*512;
         // Four in-flight descriptors have four immutable command slots.
@@ -341,6 +341,7 @@ impl Channel {
             caller:NEXT_CALLER.fetch_add(1,Ordering::Relaxed),sequence:seq,resource,generation}
     }
     fn completed(&self,regs:&mut Registers,total:u64,e:&Engine,request:Request,budget:u64)->Result<(Option<CeCompletion>,u64),&'static str> {
+        if let Some(error)=self.failure {return Err(error);}
         let start=timer::rdtsc();
         loop {
             let addr=self.release_address(request.sequence);
@@ -553,6 +554,7 @@ fn run_case(regs:&mut Registers,total:u64,e:&Engine,bar:usize,c:&mut Channel,id:
     Ok(format!("{{\"id\":{},\"name\":\"{}\",\"channel\":{},\"epoch\":{},\"sequence\":{},\"writer_sequence\":{},\"size\":{},\"seed\":{},\"width\":{},\"height\":{},\"src_pitch\":{},\"dst_pitch\":{},\"src_offset\":{},\"dst_offset\":{},\"fill\":204,\"overlap\":{},\"upload\":{},\"poisons\":[85,170],\"releases\":{:?},\"elapsed_us\":{},\"source\":{},\"dest\":{},\"instance\":{},\"directory\":{},\"src_va\":{},\"refilled\":{}}}",id,k.name,c.id,c.epoch,c.put,writer.request().sequence,SIZE,seed,k.width,k.height,k.sp,k.dp,k.src_offset,k.dst_offset,k.overlap,k.upload,releases,transfer_us,c.source.range.start,c.dest.range.start,c.context.space().instance.range.start,c.context.space().directory.range.start,submitted.src,refilled))
 }
 pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,console:&super::ConsoleSurface)->Result<(),&'static str> {
+    let probe_start=timer::rdtsc();
     let baseline=layout.allocator.stats();let total=baseline.reserved+baseline.charged+baseline.free;
     let e=discover(regs)?;
     crate::serial_println!("GT710_CE_STAGE discovery engine={} run={} base={:#x} reset={} fault={}",e.engine,e.run,e.base,e.reset,e.fault);
@@ -591,6 +593,7 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
         let k=Case{name:"random",src_offset:4093,dst_offset:4095,width,..full};
         cases.push(run_case(regs,total,&e,bar,&mut a,cases.len(),seed^i,k)?);
     }
+    let completion_start=timer::rdtsc();
     // Withhold GPPut, then plant an earlier epoch in the real completion record.
     let seq=a.submit(regs,total,bar,rect(SOURCE,DEST,8192,1,8192,8192),false)?;
     let request=a.request(seq,a.dest.range.start,a.generation);
@@ -607,6 +610,7 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
     cases.push(run_case(regs,total,&e,bar,&mut a,cases.len(),seed,Case{name:"clean-next",..full})?);
     // clean-next's releases follow the suppressed transfer on the same CE channel.
     unsafe {a.context.finish_device(suppressed_ticket)?;}
+    let completion_us=elapsed(completion_start);
     a.drain(regs,&e)?;
     b.activate(regs,total,&e,bar_inst,bar_dir,pte)?;
     cases.push(run_case(regs,total,&e,bar,&mut b,cases.len(),!seed,Case{name:"same-va-b",..full})?);
@@ -686,11 +690,14 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
     let multiple=format!("GT710_MULTI {{{},\"baseline\":{},\"after\":{},\"firmware_writes\":{}}}\n",multiple,stats(baseline),stats(layout.allocator.stats()),crate::firmware_writes::count()-console.firmware_baseline);
     crate::serial_println!("GT710_MULTI_BULK {} {}",multiple.len(),super::hash(multiple.as_bytes()));
     super::bulk::line(multiple.trim_end_matches('\n').into())?;
+    crate::serial_println!("GT710_PROBE_TIME completion us={}",completion_us);
+    crate::serial_println!("GT710_PROBE_TIME ce us={}",elapsed(probe_start).saturating_sub(completion_us));
     crate::serial_println!("GT710_CE {{\"schema\":1,\"class\":41141,\"source_va\":{},\"system_va\":{},\"engine\":{},\"runlist\":{},\"reset_bit\":{},\"fault_unit\":{},\"cases\":[{}],\"withheld_us\":{},\"suppressed\":{},\"stale_us\":{},\"invalid\":{},\"fault_instance\":{},\"fault_raw\":{:?},\"fault_mask\":{},\"reset_us\":{},\"reset_disabled\":{},\"reset_enabled\":{},\"fault_after\":{},\"firmware_writes\":{},\"baseline\":{},\"after\":{},\"pgraph\":\"unmeasured\"}}",
         SOURCE,SYSTEM,e.engine,e.run,e.reset,e.fault,cases.join(","),withheld_us,suppressed,stale_us,invalid,fault_instance,fault_raw,fault_mask,reset_us,disabled,enabled,regs.read(0x259c),crate::firmware_writes::count()-console.firmware_baseline,stats(baseline),stats(layout.allocator.stats()));
     Ok(())
 }
 
 mod multi;
+mod recovery;
 mod process;
 pub(super) use process::{retain,proc_read};

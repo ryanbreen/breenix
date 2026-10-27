@@ -527,3 +527,14 @@ M6.4 native channel concurrency additionally uses these already admitted files:
   kernel/src/gpu/gk208/ce.rs (two-entry channel runlist publication).
 The original grants remain in ce.rs. The queue admission, process wait and
 probe orchestration in queue.rs and ce/{multi,process}.rs are Breenix code.
+
+M6.5 CE-only recovery additionally adapts the already admitted nouveau v6.8
+(e8f897f4afef0031fe618a8e94127a0934896aba) MIT sources in
+kernel/src/gpu/gk208/ce/recovery.rs:
+- nvkm/engine/fifo/gk104.c and gf100.c, Copyright 2012 Red Hat Inc.:
+  channel stop, preempt, unbind, survivor runlist and idle observations.
+- nvkm/engine/fifo/runl.c, Copyright 2021 Red Hat Inc.:
+  engine reset before waiting for a fault-blocked runlist update.
+Their original copyright notices and full MIT grants accompany the adaptation.
+Breenix owns watchdog timing, worker scheduling and DMA retention policy.
+No graphics or CE firmware is introduced.
