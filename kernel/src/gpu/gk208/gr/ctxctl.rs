@@ -3,6 +3,7 @@
  * Copyright 2011 Red Hat Inc.
  * Copyright 2012 Red Hat Inc.
  * Copyright 2013 Red Hat Inc.
+ * Copyright 2015 Red Hat Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -85,6 +86,8 @@
 //! GK208B source-built ctxctl protocol. Runs in the suite thread, outside IRQs.
 //! Adapted from nouveau v6.8 gf100.c (init, init_ctxctl_int, init_csdata),
 //! gk208.c/gk104.c/gf117.c initialization and hub.fuc/gpc.fuc (MIT).
+//! Power-gating exit: nvkm/subdev/pmu/gk110.c:32-83, selected by
+//! pmu/gk208.c and called before topology by gr/gf100.c:2006 (MIT).
 //! Register ports: envytools f102b823 falcon.xml/ctxctl.xml (MIT).
 //! The external NVIDIA firmware protocol is incompatible with these images.
 
@@ -172,13 +175,47 @@ fn delay(io: &mut impl Access, us: u64) -> Result<(), Fault> {
     Ok(())
 }
 
-/// Reset only PGRAPH. PFIFO/CE and the display engine retain their enables.
+/// Reset PGRAPH and leave its power-gated units accessible before discovery.
+/// PFIFO/CE and display enables are outside the masks used here.
 pub fn reset(io: &mut impl Access) -> Result<(), Fault> {
+    let temporary = io.read(0x200) & 0x08000000;
     mask(io, 0x200, 0x1000, 0);
     if io.read(0x200) & 0x1000 != 0 {
         return Err(fault("GR reset did not assert", 0x200, io.read(0x200)));
     }
-    delay(io, 10)?;
+    mask(io, 0x200, 0x08000000, 0x08000000);
+    let result = (|| {
+        delay(io, 50_000)?;
+        mask(io, 0x10a78c, 2, 2);
+        mask(io, 0x10a78c, 1, 1);
+        mask(io, 0x10a78c, 1, 0);
+        mask(io, 0x206b4, 0, 0);
+        // gk110_pmu_pgob(false), also selected by GK208B. A failed PRI
+        // response is not truncated into a topology mask or a completion.
+        for (address, value) in [
+            (0x20520, 0xfffffffc), (0x20524, 0xfffffffe),
+            (0x20524, 0xfffffffc), (0x20524, 0xfffffff8),
+            (0x20524, 0xffffffe0), (0x20530, 0xfffffffe),
+            (0x2052c, 0xfffffffa), (0x2052c, 0xfffffff0),
+            (0x2052c, 0xffffffc0), (0x2052c, 0xffffff00),
+            (0x2052c, 0xfffffc00), (0x2052c, 0xfffcfc00),
+            (0x2052c, 0xfff0fc00), (0x2052c, 0xff80fc00),
+            (0x20528, 0xfffffffe), (0x20528, 0xfffffffc),
+        ] {
+            io.write(address, value);
+            poll(io, BOUND_US, "GR power-gating exit timeout", |io| {
+                let value = io.read(address);
+                (value & 0x80000000 == 0, address, value)
+            })?;
+        }
+        Ok(())
+    })();
+    // Do not leave the temporary power-gating controls asserted on refusal.
+    mask(io, 0x10a78c, 2, 0);
+    mask(io, 0x10a78c, 1, 1);
+    mask(io, 0x10a78c, 1, 0);
+    mask(io, 0x200, 0x08000000, temporary);
+    result?;
     mask(io, 0x200, 0x1000, 0x1000);
     delay(io, 10)?;
     if io.read(0x200) & 0x1000 == 0 {

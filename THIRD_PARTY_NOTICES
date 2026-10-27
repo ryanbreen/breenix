@@ -683,7 +683,7 @@ The same channel file uses the MIT open-gpu-doc `cla197.h` and `cla06f.h`
 sources, revision and NVIDIA notice listed for the check above. The original
 copyrights and full grants are retained in the channel file. Its Breenix
 adapter uses the existing VM, coherent DMA pages and BAR flush helpers;
-the M6 CE implementation is unchanged. `gr/mod.rs` joins its raw channel
+the M6 CE mechanisms provide read-back. `gr/mod.rs` joins its raw channel
 record with the existing attributed firmware and context records.
 
 ## GPCCS topology count decoding correction
@@ -693,3 +693,21 @@ The GPCCS UNITS count mask in `scripts/metal/gt710-suite`,
 and `tests/gt710_gr_topology_test.rs` follows `vendor/kepler/nouveau/gpc.fuc`
 lines 149-156 (Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba,
 MIT, Copyright 2011 Red Hat Inc.). Each consumer retains the full MIT grant.
+
+## GK208 power-gating exit and transport reset ordering
+
+`kernel/src/gpu/gk208/gr/ctxctl.rs` and `tests/gt710_ctxctl_test.rs` adapt
+`drivers/gpu/drm/nouveau/nvkm/subdev/pmu/gk110.c:32-83`
+(Copyright 2015 Red Hat Inc., MIT) at Linux v6.8 revision
+`e8f897f4afef0031fe618a8e94127a0934896aba`.
+The full file-local grant was checked before adaptation and is retained in
+both consumers. `pmu/gk208.c:41` selects that routine, and
+`gr/gf100.c:2006` calls it before reading topology; their MIT headers were
+also checked. This sequence does not load PMU firmware.
+
+`kernel/src/gpu/gk208/ce/recovery.rs` and
+`tests/gt710_ce_reset_order_test.py` follow
+`drivers/gpu/drm/nouveau/nvkm/engine/fifo/runl.c:74-128,132-140`
+(Copyright 2021 Red Hat Inc., MIT) and `fifo/gk104.c:gk104_chan_stop`
+(Copyright 2012 Red Hat Inc., MIT) at the same revision. Their checked
+notices and full grants are retained in the consumers.

@@ -451,6 +451,10 @@ pub(super) fn probe(s: &mut super::process::Session) -> Result<String, &'static 
         ),
     ];
     regs.mask(0x2630, 1 << e.run, 1 << e.run);
+    // runl.c requests preemption before resetting the active engine. Asking
+    // afterwards can save the old PBDMA context into the reset engine.
+    regs.write(0x2634, b.id);
+    let _ = regs.read(0x2634);
     regs.mask(0x200, 1 << e.reset, 0);
     let disabled = regs.read(0x200);
     regs.delay_us(50);
