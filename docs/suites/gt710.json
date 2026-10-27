@@ -7,6 +7,16 @@
   "hostRunner": true,
   "categories": [
     {
+      "id": "copy",
+      "title": "Native CE transfers (M6 PR 6.2)",
+      "cases": [
+        {
+          "id": "transfers",
+          "title": "Native A0B5 transfers compare complete complementary read-backs and execute private VM, remap, system-memory and bounded fault/reset probes"
+        }
+      ]
+    },
+    {
       "id": "channel",
       "title": "One privileged native channel (M6 PR 6.1)",
       "cases": [

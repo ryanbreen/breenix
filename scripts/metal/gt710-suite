@@ -8,6 +8,7 @@ import runpy
 import tempfile
 
 CATEGORIES = {
+    'copy': [('transfers', 'Native A0B5 transfers compare complete complementary read-backs and execute private VM, remap, system-memory and bounded fault/reset probes')],
     'channel': [('semaphore', 'A privileged A06F channel executes unique semaphores with native identity, epoch and GET/PUT progression; withheld and stale completions fail')],
     'lifetime': [('retention', 'Mapping and table holds retain faulted storage through EIO and failed reset, attribute contexts and reclaim the CPU-only baseline; engine recovery remains pending')],
     'aperture': [('cpu-dma', 'BAR1 and BAR2 preserve nonce-bearing boundary patterns with explicit cache types and bounded coherent DMA; engine access remains pending')],
@@ -399,6 +400,80 @@ def virtual_memory(serial):
         return e
     except (KeyError,TypeError,IndexError,OverflowError,struct.error,json.JSONDecodeError) as error:
         raise ValueError('malformed private VM evidence') from error
+
+
+def ce_pattern(i, seed):
+    x=(i^seed)&0xffffffff
+    x^=x>>16; x=x*0x7feb352d&0xffffffff; x^=x>>15
+    x=x*0x846ca68b&0xffffffff
+    return (x^(x>>16))&255
+
+
+def copy_bytes(e, snapshots):
+    def need(ok,why):
+        if not ok: raise ValueError(why)
+    size=e['size']; width=e['width']; height=e['height']
+    need(0<size<=32768 and size%4096==0 and width>0 and 0<height<=65536, 'invalid CE extent')
+    need(e['poisons']==[0x55,0xaa] and len(snapshots)==2, 'two complementary CE transfers required')
+    initial=bytes(ce_pattern(i,e['seed']) for i in range(size))
+    expected=bytearray(initial if e.get('overlap',False) else bytes([e['fill']])*size)
+    for y in range(height):
+        a=e['src_offset']+y*e['src_pitch']; b=e['dst_offset']+y*e['dst_pitch']
+        need(min(a,b)>=0 and max(a,b)+width<=size and width<=min(e['src_pitch'],e['dst_pitch']), 'CE rectangle outside backing')
+        expected[b:b+width]=initial[a:a+width]
+    need(snapshots[0]==expected and snapshots[1]==expected, 'CE full destination mismatch or unwritten bytes')
+
+
+def copy_engine(serial):
+    def need(ok,why):
+        if not ok: raise ValueError(why)
+    try:
+        e=json.loads(one(r'^GT710_CE (.+)$',serial,'CE evidence')[1])
+        need(e['schema']==1 and e['class']==0xa0b5 and e['source_va']==0x400000 and e['system_va']==0x800000,'CE identity')
+        cases=e['cases']; names=[c['name'] for c in cases]
+        required={'same-va-a','same-va-b','byte','unaligned','rectangle','upload','overlap-forward','overlap-backward',
+                  'clean-next','remapped-a','unaffected-b','restored-a','survivor-b'}
+        need(set(names)==required|{'random'} and names.count('random')==4 and len(cases)==len(required)+4,'incomplete CE operations')
+        chunks={}
+        for m in re.finditer(r'^GT710_CE_BYTES (\d+) ([01]) (\d+) ([0-9a-f]+)$',serial,re.M):
+            key=tuple(map(int,m.group(1,2,3)));need(key not in chunks,'duplicate CE bytes')
+            chunks[key]=bytes.fromhex(m[4])
+        used=set(); sequences={}
+        for index,c in enumerate(cases):
+            need(c['id']==index and c['channel'] in (0,1) and c['epoch']>0,'foreign CE case identity')
+            identity=(c['channel'],c['epoch'])
+            need(c['sequence']>sequences.get(identity,0),'stale CE sequence')
+            sequences[identity]=c['sequence']
+            need(c['releases']==[c['sequence']-1,c['sequence']] and c['elapsed_us']<=6000000,'CE release ordering')
+            snapshots=[]
+            for poison in range(2):
+                data=bytearray()
+                for offset in range(0,c['size'],256):
+                    key=(index,poison,offset);need(key in chunks,'missing complete CE read-back')
+                    need(len(chunks[key])==min(256,c['size']-offset),'bad CE chunk length')
+                    data.extend(chunks[key]);used.add(key)
+                snapshots.append(bytes(data))
+            copy_bytes(c,snapshots)
+        need(set(chunks)==used,'unbound CE bytes')
+        byname={c['name']:c for c in cases}
+        a,b,r=(byname[k] for k in ('same-va-a','same-va-b','remapped-a'))
+        need(a['channel']==r['channel']==0 and b['channel']==1 and a['epoch']==r['epoch'],'VM channel identity')
+        need(a['source']!=b['source'] and a['instance']!=b['instance'] and a['directory']!=b['directory']
+             and a['seed']^b['seed']==0xffffffff,'same VA lacks distinct channel backing/patterns')
+        need(r['source']!=a['source'] and r['source']!=b['source'] and r['seed']!=a['seed'],'remap did not change backing')
+        need(byname['unaffected-b']['seed']==b['seed'] and byname['unaffected-b']['source']==b['source'],'remap affected other channel')
+        need(byname['survivor-b']['instance']==b['instance'] and byname['survivor-b']['epoch']==b['epoch'],'surviving channel replaced')
+        need(10000<=e['withheld_us']<=250000 and 10000<=e['stale_us']<=250000,'negative CE wait bounds')
+        unit=e['fault_unit'];raw=e['fault_raw']
+        need(0<=unit<32 and e['fault_mask']==1<<unit and len(raw)==4,'real CE fault required')
+        need(raw[0]<<12==e['fault_instance']==a['instance'] and raw[1]|raw[2]<<32==e['invalid']
+             and e['invalid']==0x403000 and raw[3]&15==2 and raw[3]&128==0,'unmapped CE fault attribution')
+        bit=1<<e['reset_bit']
+        need(0<e['reset_us']<=100000 and e['reset_disabled']&bit==0 and e['reset_enabled']&bit!=0
+             and e['fault_after']==0,'bounded in-guest CE reset absent')
+        need(e['baseline']==e['after'] and e['firmware_writes']==0 and e['pgraph']=='unmeasured','CE retirement or display ownership failed')
+    except (KeyError,TypeError,IndexError,OverflowError) as error:
+        raise ValueError('malformed CE capture') from error
 
 
 def privileged_channel(serial):
@@ -836,6 +911,10 @@ def native_flips(serial):
 
 
 def check_case(category, case, serial):
+    if category == 'copy':
+        if case != 'transfers': raise ValueError('unknown CE case')
+        copy_engine(serial)
+        return
     if category == 'channel':
         if case != 'semaphore': raise ValueError('unknown channel case')
         privileged_channel(serial)

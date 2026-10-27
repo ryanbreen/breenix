@@ -393,6 +393,16 @@
               "channel"
             ]
           }
+        },
+        {
+          "id": "copy",
+          "title": "Execute native CE transfers and VM probes (M6 PR 6.2)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "copy"
+            ]
+          }
         }
       ]
     }
