@@ -136,14 +136,22 @@ const O_NOCTTY: u32 = 0o400;
 type Verdict<T = ()> = Result<T, String>;
 
 fn measured(run: impl FnOnce() -> Verdict) -> CaseResult {
-    run().map_err(|reason| {
-        #[cfg(target_arch = "x86_64")]
-        let reason = match std::fs::read_to_string("/proc/xhci/counters") {
-            Ok(counters) => format!("{reason}; input counters: {}", counters.replace('\n', " ")),
-            Err(error) => format!("{reason}; input counters unavailable: {error}"),
-        };
-        breenix_suite::suite::CaseError::Fail(reason)
-    })
+    let result = run();
+    #[cfg(target_arch = "x86_64")]
+    if result.is_err() {
+        if let Ok(counters) = std::fs::read_to_string("/proc/xhci/counters") {
+            for field in counters.split_whitespace() {
+                let Some((name, value)) = field.split_once('=') else { continue };
+                if name.starts_with("HOSTKEY_") || name == "KBD_NONZERO_TOTAL" {
+                    if let Ok(number) = value.parse::<i64>() {
+                        let unit = if name.ends_with("_NS") { "ns" } else { "count" };
+                        breenix_suite::suite::value(&name.to_ascii_lowercase().replace('_', "-"), number, unit, None);
+                    }
+                }
+            }
+        }
+    }
+    result.map_err(breenix_suite::suite::CaseError::Fail)
 }
 
 fn require(ok: bool, message: &str) -> Verdict {
