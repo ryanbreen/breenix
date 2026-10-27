@@ -48,6 +48,19 @@ def capture():
 
 
 class Flips(unittest.TestCase):
+    def test_flips_have_a_measured_effort_and_suite_case(self):
+        manifest=json.loads((ROOT/'docs/suites/gt710.json').read_text())
+        self.assertEqual(next(c for c in manifest['categories'] if c['id']=='flips')['cases'][0]['id'],'aba-handoff')
+        API['validate_manifest'](manifest)
+        effort=json.loads((ROOT/'docs/efforts/metal.json').read_text())
+        row=next(e for e in effort['efforts'] if e['id']=='metal-gt710')
+        self.assertEqual(next(m for m in row['milestones'] if m['id']=='flips')['measure'],
+                         dict(suite='gt710',categories=['flips']))
+        import sys
+        sys.path.insert(0,str(ROOT/'scripts/metal'))
+        import metal_score
+        self.assertEqual(metal_score.HOST_MILESTONES['gt710-flips.json'],'metal-gt710/flips')
+
     def test_each_edid_mode_requires_latched_aba_full_pixels_and_clean_next_update(self):
         serial=capture()
         frames=API['native_flips'](serial)
