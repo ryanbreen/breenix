@@ -25,8 +25,12 @@ scheduling, completed empty-runlist publication, preemption, PBDMA idle and
 an unbound channel before the context retires.
 
 The capture gate requires distinct semaphore payloads, native binding and
-GET/PUT progression. It rejects a withheld GPFIFO publication and a stale
-reset epoch. A second control executes a reference update with its semaphore
+GET/PUT progression. Ordered host releases write a two-word epoch and the
+payload into the completion record. The production waiter reads that record
+for clean work and negative controls. A stale control plants the preceding
+epoch with matching payload, GET/PUT and reference, then requires that same
+waiter to expire. A withheld control prepares the ring entry without publishing
+GPPut. A second control executes a reference update with its semaphore
 release suppressed, requires advancing GET/PUT without success, then requires
 a clean next semaphore completion after disarming. Polling is bounded by the milestone's two-second watchdog.
 This step does not claim the reset budget or killable process waits.

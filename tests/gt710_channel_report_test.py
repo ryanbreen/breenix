@@ -23,7 +23,7 @@ def fixture():
              withheld=dict(epoch=1,expected=0x12345003,observed=0,get=2,put=2,
                            elapsed_us=10000,accepted=False),
              stale=dict(epoch=0,expected=0x12345002,observed=0x12345002,
-                        get=2,put=2,accepted=False),
+                        get=2,put=2,reference=0x12345002,elapsed_us=10000,accepted=False),
              drain=dict(runlist_count=0,pending=0,preempt=0,binding=0),
              retained_on_failure=True, firmware_writes=0, ce='pending-6.2',
              vm_probes='pending-6.2', reset='pending-6.5')
@@ -51,7 +51,8 @@ class ChannelCapture(unittest.TestCase):
                        lambda b:b['samples'][1].update(reference=0),lambda b:b['samples'].pop(),
                        lambda b:b['withheld'].update(accepted=True),lambda b:b['withheld'].update(observed=0x12345003),
                        lambda b:b['withheld'].update(elapsed_us=0),lambda b:b['stale'].update(accepted=True),
-                       lambda b:b['stale'].update(epoch=1),lambda b:b['drain'].update(pending=0x100000),
+                       lambda b:b['stale'].update(epoch=1),lambda b:b['stale'].update(elapsed_us=0),
+                       lambda b:b['stale'].update(reference=0),lambda b:b['drain'].update(pending=0x100000),
                        lambda b:b.update(retained_on_failure=False),lambda b:b.update(vm_probes='passed')]:
             bad=copy.deepcopy(e);change(bad)
             with self.assertRaises(ValueError): check(bad)
@@ -74,7 +75,7 @@ class ChannelCapture(unittest.TestCase):
         def check(e): return API['privileged_channel'](serial+'GT710_CHANNEL '+json.dumps(e)+'\n')
         check(e)
         for mutate in [lambda b:b.pop('progress'),lambda b:b['progress'].update(source='software'),
-                       lambda b:b['progress'].update(pbdma=1),lambda b:b['progress'].update(channel=1),
+                       lambda b:b['progress'].update(channel=0),lambda b:b['progress'].update(pbdma=1),lambda b:b['progress'].update(channel=1),
                        lambda b:b['progress'].update(userd_low=b['push']),lambda b:b['progress'].update(userd_high=1)]:
             bad=copy.deepcopy(e);mutate(bad)
             with self.assertRaises(ValueError):check(bad)

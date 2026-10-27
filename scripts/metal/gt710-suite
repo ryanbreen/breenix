@@ -427,7 +427,7 @@ def privileged_channel(serial):
              and e['state']&1 and (e['state']>>16)&15==runlist, 'channel binding did not latch')
         need(len({e[k] for k in ('instance','directory','userd','ring','push','semaphore')})==6, 'aliased channel storage')
         live=e['progress']
-        need(live['source']=='pbdma-live' and live['channel']&0xfff==e['channel']
+        need(live['source']=='pbdma-live' and live['channel']&0x2fff==0x2000|e['channel']
              and any(i==live['pbdma'] and mask&(1<<runlist) for i,mask in e['pbdmas'])
              and live['userd_low']&0xfffff003==e['userd']&0xfffff003
              and live['userd_high']==e['userd']>>32, 'foreign native progress source')
@@ -442,7 +442,8 @@ def privileged_channel(serial):
         need(w['epoch']==e['epoch'] and w['observed']!=w['expected'] and w['get']==w['put']==2
              and 10000<=w['elapsed_us']<=2000000 and w['accepted'] is False, 'withheld completion accepted')
         need(s['epoch']!=e['epoch'] and s['expected']==s['observed']==samples[-1]['expected']
-             and s['get']==s['put']==2 and s['accepted'] is False, 'stale epoch accepted')
+             and s['get']==s['put']==2 and s['reference']==s['expected']
+             and 10000<=s['elapsed_us']<=2000000 and s['accepted'] is False, 'stale epoch accepted')
         missing=e['suppressed'];clean=e['clean']
         need(missing['epoch']==e['epoch'] and missing['get']==missing['put']==3
              and missing['reference']==missing['expected'] and missing['observed']!=missing['expected']
