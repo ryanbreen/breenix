@@ -7,6 +7,24 @@
   "hostRunner": true,
   "categories": [
     {
+      "id": "graphics",
+      "title": "Graphics engine and starting context (M7 PR 7.2)",
+      "cases": [
+        {
+          "id": "ctxctl",
+          "title": "Source-built FECS and GPCCS images load with verified IMEM/DMEM read-back, start and answer fresh mailbox queries; a withheld start and a stale reply fail"
+        },
+        {
+          "id": "context",
+          "title": "Active GPC/TPC topology and a golden graphics context generated from attributed init lists match the FECS-reported image size under complementary poisons"
+        },
+        {
+          "id": "channel",
+          "title": "One graphics channel binds A197 and PGRAPH executes its report-semaphore release under complementary poisons; withheld and stale releases fail"
+        }
+      ]
+    },
+    {
       "id": "recovery",
       "title": "Native fault and reset gate (M6 PR 6.5)",
       "cases": [

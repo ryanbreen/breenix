@@ -1,4 +1,54 @@
 #!/usr/bin/env python3
+# Hardware encodings from pinned MIT sources; see THIRD_PARTY_NOTICES.
+# /*
+#  * Copyright 2011 Red Hat Inc.
+#  * Copyright 2012 Red Hat Inc.
+#  * Copyright 2016 Red Hat Inc.
+#  *
+#  * Permission is hereby granted, free of charge, to any person obtaining a
+#  * copy of this software and associated documentation files (the "Software"),
+#  * to deal in the Software without restriction, including without limitation
+#  * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+#  * and/or sell copies of the Software, and to permit persons to whom the
+#  * Software is furnished to do so, subject to the following conditions:
+#  *
+#  * The above copyright notice and this permission notice shall be included in
+#  * all copies or substantial portions of the Software.
+# claim-lint:ok: MIT license condition; source inventory in vendor/kepler/sources.json.
+#  *
+#  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+#  * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+#  * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+#  * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+#  * OTHER DEALINGS IN THE SOFTWARE.
+#  *
+#  * Authors: Ben Skeggs
+#  */
+# /*******************************************************************************
+#     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+#
+#     Permission is hereby granted, free of charge, to any person obtaining a
+#     copy of this software and associated documentation files (the "Software"),
+#     to deal in the Software without restriction, including without limitation
+#     the rights to use, copy, modify, merge, publish, distribute, sublicense,
+#     and/or sell copies of the Software, and to permit persons to whom the
+#     Software is furnished to do so, subject to the following conditions:
+#
+#     The above copyright notice and this permission notice shall be included in
+#     all copies or substantial portions of the Software.
+# claim-lint:ok: MIT license condition; G1 source policy in tools/kepler/README.md.
+#
+#     THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#     IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#     FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+#     THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#     LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+#     FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+#     DEALINGS IN THE SOFTWARE.
+#
+# *******************************************************************************/
 """E19's firmware and PCI-display cases, judged from a boot's retained capture."""
 import re
 import hashlib
@@ -8,6 +58,7 @@ import runpy
 import tempfile
 
 CATEGORIES = {
+    'graphics': [('ctxctl', 'Source-built FECS and GPCCS images load with verified IMEM/DMEM read-back, start and answer fresh mailbox queries; a withheld start and a stale reply fail'), ('context', 'Active GPC/TPC topology and a golden graphics context generated from attributed init lists match the FECS-reported image size under complementary poisons'), ('channel', 'One graphics channel binds A197 and PGRAPH executes its report-semaphore release under complementary poisons; withheld and stale releases fail')],
     'recovery': [('fault-reset', 'A bad native channel is removed while its survivor copies; watchdog and confirmed transport reset retain backing and restore fresh epochs within budget')],
     'contexts': [('concurrent', 'Private native channels wrap their rings under backpressure and compare concurrent opposite transfers'), ('killed-wait', 'A killed native waiter exits within 250 ms while device backing stays held until ordered drain')],
     'completion': [('observation', 'Native CE observations bind independent caller fences and ordered releases to context, reset epoch and resource generation under complementary poisons')],
@@ -504,6 +555,171 @@ def copy_engine(serial):
         need(e['baseline']==e['after'] and e['firmware_writes']==0 and e['pgraph']=='unmeasured','CE retirement or display ownership failed')
     except (KeyError,TypeError,IndexError,OverflowError) as error:
         raise ValueError('malformed CE capture') from error
+
+
+GR_FIRMWARE_HASHES = {
+    'fecs.code.bin': 'b3d192b4423fe1e150bd66b819374724ddb2ba9c40f92e4c83aba03139b85d3f',
+    'fecs.data.bin': '3d4dc9a6c009e844ce7d538496cb267ad78984f0256ccfc29c73412a446806a6',
+    'gpccs.code.bin': 'ccc302340f23f6624bd278038b696b27eb20cc5a256547ea9a244aff6e3164b6',
+    'gpccs.data.bin': '67859e7b5e6e4002910d5ae94d2668828c867a7d0ef1787624dd97cc8839b405',
+}
+
+
+def graphics_engine(serial):
+    """M7.2 raw observations; drawing and shader execution remain pending."""
+    def need(ok, why):
+        if not ok: raise ValueError(why)
+
+    def bounded(record, why):
+        need(0 < record['elapsed_us'] <= record['bound_us'] <= 2000000, why)
+
+    def digest(value):
+        return isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) and value != '0' * 64
+
+    def words(pairs):
+        need(isinstance(pairs, list) and all(len(p) == 2 and all(type(x) is int and 0 <= x <= 0xffffffff for x in p)
+                                          for p in pairs), 'malformed graphics register words')
+        result = dict(pairs)
+        need(len(result) == len(pairs), 'duplicate graphics register words')
+        return result
+
+    try:
+        e = json.loads(one(r'^GT710_GR (.+)$', serial, 'graphics engine')[1])
+        need(e['schema'] == 1 and e['bdf'] == pci(serial)[0] and e['chipset'] == 262, 'graphics identity')
+        need(set(e['firmware']) == set(GR_FIRMWARE_HASHES), 'firmware hash inventory')
+        for name, expected in GR_FIRMWARE_HASHES.items():
+            need(e['firmware'][name]['sha256'] == expected, 'firmware hash: ' + name)
+            need(e['firmware'][name]['readback_sha256'] == expected, 'firmware read-back: ' + name)
+        bounded(e, 'firmware bound')
+
+        # nouveau v6.8 gr/gf100.c gf100_gr_oneinit: GPC_UNIT(g, 0x2608).
+        topology = words(e['topology_raw'])
+        gpcs = topology[0x409604] & 0x1f
+        need(0 < gpcs <= 31 and set(topology) == {0x409604} | {0x502608 + g * 0x8000 for g in range(gpcs)},
+             'raw topology registers')
+        tpcs = [topology[0x502608 + g * 0x8000] for g in range(gpcs)]
+        need(all(0 < t <= 8 for t in tpcs) and e['topology'] == dict(gpc_nr=gpcs, tpc_nr=tpcs), 'raw topology')
+
+        # Internal source firmware, not the external NVIDIA firmware protocol:
+        # gf100_gr_init_ctxctl_int polls FECS 0x409800 bit 31. hub.fuc waits
+        # for each physical GPC's scratch-0 bit 31 before publishing FECS ready;
+        # gpc.fuc writes its size to scratch 1 and sets that bit.
+        status = words(e['status'])
+        need(set(status) == {0x409800} | {0x502800 + g * 0x8000 for g in range(gpcs)}
+             and all(value & 0x80000000 for value in status.values()), 'firmware ready')
+        size = e['fecs_size']
+        need(type(size) is int and 0 < size <= 1 << 20 and size % 4 == 0, 'mailbox size')
+        queries = e['queries']
+        need(len(queries) == 2 and [q['method'] for q in queries] == [1, 2], 'mailbox method')
+        # hub.fuc main_done sets scratch-0 bit 31 for commands 1 (ctx_chan)
+        # and 2 (ctx_xfer save). Scratch 1 remains the reported context size.
+        for q in queries:
+            need(type(q['poison']) is int and 0 <= q['poison'] < 0x80000000
+                 and q['reply'] != q['poison'] and q['reply'] == q['poison'] | 0x80000000, 'mailbox reply')
+            need(q['size'] == size and q['size'] > 0, 'mailbox size')
+            bounded(q, 'mailbox bound')
+        w = e['withheld_start']
+        need(w['started'] is False and w['ready'] is False and w['accepted'] is False
+             and 0 <= w['poison'] < 0x80000000 and w['reply'] == w['poison'], 'withheld start')
+        s = e['stale_reply']
+        need(s['method'] in (1, 2) and 0 <= s['poison'] < 0x80000000
+             and s['planted'] == s['poison'] | 0x80000000 and s['reply'] == s['planted']
+             and s['accepted'] is False, 'stale reply')
+
+        need(e['golden_bytes'] == size, 'golden size')
+        saves = e['saves']
+        need(len(saves) == 2 and [s['poison'] for s in saves] == [85, 170]
+             and digest(saves[0]['sha256']) and saves[0]['sha256'] == saves[1]['sha256'], 'complementary images')
+        lists = e['init_lists']
+        need(len(lists) > 0 and len({v['name'] for v in lists}) == len(lists)
+             and all(v['name'] and type(v['count']) is int and v['count'] > 0 and digest(v['sha256']) for v in lists),
+             'init lists')
+        buffers = e['global_buffers']
+        need(len(buffers) > 0 and len({v['name'] for v in buffers}) == len(buffers), 'global buffers')
+        ranges = []
+        for b in buffers:
+            need(b['name'] and type(b['va']) is int and type(b['bytes']) is int
+                 and b['va'] > 0 and b['bytes'] > 0 and b['va'] + b['bytes'] <= 1 << 40, 'global buffers')
+            ranges.append((b['va'], b['va'] + b['bytes']))
+        for s in saves:
+            need(type(s['va']) is int and s['va'] > 0 and s['va'] + size <= 1 << 40, 'complementary images destinations')
+            ranges.append((s['va'], s['va'] + size))
+        ranges.sort()
+        need(all(a[1] <= b[0] for a, b in zip(ranges, ranges[1:])), 'global buffers overlap')
+
+        anchor = one(r'^GT710_GR_IMAGE_BULK (\d+) ([0-9a-f]{64})$', serial, 'graphics image bulk missing')
+        rows = re.findall(r'^GT710_GR_IMAGE .+\n', serial, re.M)
+        raw = ''.join(rows).encode('ascii')
+        need(len(raw) == int(anchor[1]) and hashlib.sha256(raw).hexdigest() == anchor[2], 'graphics image artifact differs')
+        images = {85: bytearray(), 170: bytearray()}
+        previous = 85
+        for row in rows:
+            match = re.fullmatch(r'GT710_GR_IMAGE (85|170) (\d+) ([0-9a-f]+)\n', row)
+            need(match is not None, 'image rows encoding')
+            poison, offset = int(match[1]), int(match[2])
+            need(not (previous == 170 and poison == 85) and offset == len(images[poison]), 'image rows order/offset')
+            chunk = bytes.fromhex(match[3])
+            need(0 < len(chunk) <= 256 and offset + len(chunk) <= size, 'image rows size')
+            images[poison].extend(chunk)
+            previous = poison
+        need(all(len(image) == size for image in images.values()), 'image rows incomplete')
+        for s in saves:
+            need(hashlib.sha256(images[s['poison']]).hexdigest() == s['sha256'], 'image digest')
+        need(images[85] == images[170], 'complementary images bytes')
+
+        c = e['channel']
+        need(type(c['id']) is int and 0 <= c['id'] < 4096 and c['epoch'] > 0, 'graphics channel identity')
+        need(c['class_id'] == 0xa197, 'graphics class')
+        # MIT nouveau subdev/top/gk104.c: ENUM carries engine/runlist;
+        # terminal ENGINE_TYPE 0 is GR, whereas 1/2/3 are CE engines.
+        need(len(c['top']) == 64 and 0 <= c['engine'] < 16 and 0 <= c['runlist'] < 16, 'GR runlist inventory')
+        found = False
+        engine = runlist = kind = -1
+        for word in c['top']:
+            need(type(word) is int and 0 <= word <= 0xffffffff, 'GR runlist words')
+            if word & 3 == 0: continue
+            if word & 3 == 2:
+                if word & 32: engine = (word >> 26) & 15
+                if word & 16: runlist = (word >> 21) & 15
+            if word & 3 == 3: kind = (word & 0x7ffffffc) >> 2
+            if not word & 0x80000000:
+                if kind == 0 and (engine, runlist) == (c['engine'], c['runlist']): found = True
+                engine = runlist = kind = -1
+        need(found, 'GR runlist')
+        need(0 < c['instance'] < 1 << 40 and c['instance'] % 4096 == 0
+             and c['bind'] == 0x80000000 | (c['instance'] >> 12)
+             and c['state'] & 1 and (c['state'] >> 16) & 15 == c['runlist'], 'graphics channel binding')
+        # MIT nouveau v6.8 nvkm/engine/gr/gf100.c gf100_gr_ctxsw_inst reads
+        # 0x409b00; gf100_gr_intr masks 0x0fffffff and shifts left 12 to
+        # recover the instance address. hub.fuc ctx_chan sets valid bit 31.
+        need(c['current_context'] == 0x80000000 | (c['instance'] >> 12), 'current context')
+        releases = e['releases']
+        need(len(releases) == 2 and [r['poison'] for r in releases] == [85, 170], 'release poisons')
+        need(releases[0]['target'] == releases[1]['target'] and releases[0]['target'] > 0
+             and releases[0]['target'] % 4 == 0 and releases[0]['target'] < 1 << 40, 'release target')
+        for r in releases:
+            need(r['class_id'] == 0xa197, 'release class')
+            # MIT cla197.h: RELEASE, writes complete, pipeline location 0xf,
+            # one-word structure, flushing enabled (0x1b00..0x1b0c).
+            need(r['method'] == 0x1b0c and r['word'] == 0x1000f010, 'release operation')
+            need(type(r['nonce']) is int and 0 < r['nonce'] <= 0xffffffff and r['nonce'] not in (85, 170)
+                 and r['observed'] == r['nonce'] and r['epoch'] == c['epoch'], 'release nonce')
+            bounded(r, 'release bound')
+        need(releases[0]['nonce'] == releases[1]['nonce'], 'release nonce')
+        w = e['withheld_release']
+        need(w['accepted'] is False and w['poison'] in (85, 170) and w['observed'] == w['poison'], 'withheld release')
+        s = e['stale_release']
+        need(s['accepted'] is False and 0 <= s['epoch'] < c['epoch']
+             and s['nonce'] == releases[0]['nonce'] and s['observed'] == s['nonce'], 'stale release')
+        faults = words(e['faults'])
+        need(set(faults) == {0x400100, 0x400108, 0x259c} and all(v == 0 for v in faults.values()), 'trap/fault')
+        need(e['teardown'] == dict(runlist_count=0, binding=0), 'channel teardown')
+        need(e['baseline'] == e['after'], 'allocator baseline')
+        need(e['firmware_writes'] == 0, 'firmware writes')
+        need(e['draw'] == 'pending-7.4' and e['shaders'] == 'pending-7.3'
+             and e['context_switch'] == 'pending-7.5', 'pending markers')
+    except (KeyError, TypeError, IndexError, OverflowError, UnicodeError) as error:
+        raise ValueError('malformed graphics evidence') from error
 
 
 def recovery_gate(serial):
@@ -1054,6 +1270,10 @@ def native_flips(serial):
 
 
 def check_case(category, case, serial):
+    if category == 'graphics':
+        if case not in ('ctxctl', 'context', 'channel'): raise ValueError('unknown graphics case')
+        graphics_engine(serial)
+        return
     if category == 'recovery':
         if case != 'fault-reset': raise ValueError('unknown recovery case')
         recovery_gate(serial)
@@ -1228,6 +1448,11 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
 def capture_serial(directory):
     serial=(Path(directory)/'serial.txt').read_text()
     matches=list(re.finditer(r'^GT710_BULK (\d+) ([a-f0-9]{64})$',serial,re.M))
+    graphics = 'GT710_GR_IMAGE_BULK ' in serial or 'GT710_GR ' in serial
+    if graphics and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file()):
+        raise ValueError('graphics image bulk missing')
+    if graphics and re.search(r'^GT710_GR_IMAGE ', serial, re.M):
+        raise ValueError('graphics image rows must arrive in bulk')
     if not matches: return serial
     if len(matches)!=1: raise ValueError('duplicate display artifact digest')
     data=(Path(directory)/'gt710-pixels.rle').read_bytes()
@@ -1241,11 +1466,13 @@ def capture_serial(directory):
         elif fields[0]=='GT710_SWITCH_PIX': key=('switch',int(fields[1]))
         elif fields[0]=='GT710_FLIP_PIX': key=('flip',int(fields[1]),int(fields[2]))
         elif fields[0]=='GT710_MULTI': key=('multi',)
+        elif fields[0]=='GT710_GR_IMAGE': key=('graphics',)
         else: raise ValueError('unexpected display artifact record')
         if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
         groups.setdefault(key,[]).append(line);previous=key
     def report_key(line):
         if line.startswith('GT710_MULTI_BULK '): return ('multi',)
+        if line.startswith('GT710_GR_IMAGE_BULK '): return ('graphics',)
         for prefix,kind in [('GT710_MODE ','native'),('GT710_SWITCH ','switch'),('GT710_FLIP ','flip')]:
             if line.startswith(prefix):
                 e=json.loads(line[len(prefix):])
@@ -1258,11 +1485,12 @@ def capture_serial(directory):
     result=[]
     for line in serial.splitlines(keepends=True):
         key=report_key(line)
-        if key == ('multi',):
+        if key in (('multi',), ('graphics',)):
             record=''.join(groups[key]).encode('ascii')
             fields=line.split()
-            if len(fields)!=3 or len(groups[key])!=1 or len(record)!=int(fields[1]) or hashlib.sha256(record).hexdigest()!=fields[2]:
-                raise ValueError('concurrency artifact differs from serial length/digest')
+            if len(fields)!=3 or (key==('multi',) and len(groups[key])!=1) or len(record)!=int(fields[1]) or hashlib.sha256(record).hexdigest()!=fields[2]:
+                kind='concurrency' if key==('multi',) else 'graphics image'
+                raise ValueError(kind+' artifact differs from serial length/digest')
         if key is not None: result.extend(groups[key])
         result.append(line)
     return ''.join(result)
