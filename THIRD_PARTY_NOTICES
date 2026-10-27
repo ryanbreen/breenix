@@ -500,6 +500,9 @@ M6.2 native copy engine:
 - NVIDIA open-gpu-doc 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
   classes/dma-copy/cla0b5.h, MIT, Copyright (c) 2019 NVIDIA Corporation:
   kernel/src/gpu/gk208/copy.rs (methods and launch fields).
+- NVIDIA open-gpu-doc at the same revision, classes/host/cla06f.h, MIT,
+  Copyright (c) 2020 NVIDIA CORPORATION:
+  kernel/src/gpu/gk208/copy.rs (host method packet headers).
 - Nouveau Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba,
   nvkm/engine/ce/gk104.c (MIT, Copyright 2012 Red Hat Inc.), and the
   FIFO/top/rnndb sources already attributed for channel.rs:

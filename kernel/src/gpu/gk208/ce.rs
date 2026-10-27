@@ -244,14 +244,16 @@ fn discover(regs:&mut Registers)->Result<Engine,&'static str> {
         let w=regs.read(0x22700+i*4);
         match w&3 {
             0=>continue,
-            1=>{base=Some((w&0xfff000) as usize);if w&4!=0 {fault=Some((w>>3)&127);}},
+            1=>{base=Some((w&0xfff000) as usize);if w&4!=0 {fault=Some((w>>3)&63);}},
             2=>{if w&32!=0 {engine=Some((w>>26)&15);}if w&16!=0 {run=Some((w>>21)&15);}if w&4!=0 {reset=Some((w>>9)&31);}},
             _=>(),
         }
         if w&0x80000000==0 {
             if w&3==3 && (w&0x7ffffffc)>>2==1 {
                 let run=run.ok_or("CE runlist absent")?;
-                let pbdma=(0..32).find(|i|regs.read(0x2390+i*4)&(1<<run)!=0).ok_or("CE PBDMA absent")?;
+                let enabled=regs.read(0x204);
+                regs.write(0x204,u32::MAX);let implemented=regs.read(0x204);regs.write(0x204,enabled);
+                let pbdma=(0..32).find(|i|implemented&(1<<i)!=0 && regs.read(0x2390+i*4)&(1<<run)!=0).ok_or("CE PBDMA absent")?;
                 // GK208 omits DATA words. gk104 CE0 has register base
                 // 104000h and gk104_fifo_mmu_fault_engine identifies unit 15h.
                 return Ok(Engine{engine:engine.ok_or("CE engine absent")?,run,pbdma,
@@ -284,7 +286,7 @@ impl Channel {
         let userd=commands.range.start+12288+u64::from(id)*512;
         for (offset,value) in [(0x08,userd as u32),(0x0c,(userd>>32) as u32),(0x10,0xface),
             (0x30,0xfffff902),(0x48,COMMAND as u32),(0x4c,9<<16),(0x84,0x20400000),
-            (0x94,0x30000fff),(0x9c,0x100),(0xac,0x1f),(0xe4,0x20),(0xe8,0),
+            (0x94,0x30000fff),(0x9c,0x100),(0xac,0x1f),(0xe4,0x20),(0xe8,id),
             (0xb8,0xf8000000),(0xf8,0x10003080),(0xfc,0x10000010)] {
             words(regs,total,instance+offset,&[value])?;
         }
@@ -481,7 +483,7 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
     let native=layout.objects.iter().find(|o|o.name=="instance").ok_or("native BAR instance absent")?.range.start;
     let (bar_inst,bar_dir)=(native+0x2000,native+0x3000);
     let pte=native+0x4000+(SLOT/4096)*8;
-    if read(regs,total,pte)?!=0 {return Err("CE USERD BAR alias occupied");}
+    if read(regs,total,pte)?!=0 || read(regs,total,pte+4)?!=0 {return Err("CE USERD BAR alias occupied");}
     let (_,displacement,_)=modeset::bar1_view(layout.objects[0].range.start,layout.objects[0].range.size,device.bars[1].size,17)?;
     let bar=console.pointer-displacement;
     let (old_userd,old_intr,old_enabled)=(regs.read(0x2254),regs.read(0x2140),regs.read(0x204));
@@ -584,6 +586,7 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
         return Err("CE reset unconfirmed; backing retained");
     }
     unsafe {a.context.confirm_reset();}a.active=false;drop(held);
+    words(regs,total,pte,&[0,0])?;modeset::activate_bar1(regs,bar_inst,bar_dir)?;
     a.retire(regs,layout,total)?;
     // Restore the mapping in a fresh channel after the confirmed engine reset.
     let mut a=Channel::new(regs,layout,total,0,&status)?;
@@ -594,8 +597,8 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
     b.activate(regs,total,&e,bar_inst,bar_dir,pte)?;
     cases.push(run_case(regs,total,&e,bar,&mut b,cases.len(),!seed,Case{name:"survivor-b",..full})?);
     b.drain(regs,&e)?;
-    a.retire(regs,layout,total)?;b.retire(regs,layout,total)?;
     words(regs,total,pte,&[0,0])?;modeset::activate_bar1(regs,bar_inst,bar_dir)?;
+    a.retire(regs,layout,total)?;b.retire(regs,layout,total)?;
     regs.write(0x2254,old_userd);regs.write(0x2140,old_intr);regs.write(0x204,old_enabled);
     if layout.allocator.stats()!=baseline {return Err("CE baseline reclamation mismatch");}
     crate::serial_println!("GT710_CE {{\"schema\":1,\"class\":41141,\"source_va\":{},\"system_va\":{},\"engine\":{},\"runlist\":{},\"reset_bit\":{},\"fault_unit\":{},\"cases\":[{}],\"withheld_us\":{},\"suppressed\":{},\"stale_us\":{},\"invalid\":{},\"fault_instance\":{},\"fault_raw\":{:?},\"fault_mask\":{},\"reset_us\":{},\"reset_disabled\":{},\"reset_enabled\":{},\"fault_after\":{},\"firmware_writes\":{},\"baseline\":{},\"after\":{},\"pgraph\":\"unmeasured\"}}",
