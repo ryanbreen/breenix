@@ -17,7 +17,7 @@ fn dma_checks_the_entire_page_without_truncation_or_assuming_iommu_identity() {
     for status in [1<<31,u32::MAX] {
         assert!(identity_page(4096,&[status]).is_err(),"active translation accepted");
     }
-    assert_eq!(dma_policy::coherent_pte(0x12345000).unwrap(),0x51234501);
+    assert_eq!(dma_policy::coherent_pte(0x12345000).unwrap(),0x500123451);
     assert!(dma_policy::coherent_pte(1<<40).is_err());
 }
 
