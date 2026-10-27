@@ -479,10 +479,7 @@ fn init(io: &mut impl Access, t: &Topology<'_>, mmu: [u64; 2]) -> Result<(), Fau
     for a in [0x500420, 0x500900, 0x501028, 0x500824] {
         io.write(a, 0xc0000000);
     }
-    for tpc in 0..8 {
-        if t.tpc_mask[0] & (1 << tpc) == 0 {
-            continue;
-        }
+    for tpc in 0..count {
         let base = 0x504000 + tpc * 0x800;
         for offset in [0x508, 0x50c] {
             io.write(base + offset, u32::MAX);

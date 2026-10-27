@@ -580,7 +580,7 @@ GR_FIRMWARE_HASHES = {
 }
 
 
-def graphics_engine(serial):
+def graphics_engine(serial, case=None):
     """M7.2 raw observations; drawing and shader execution remain pending."""
     def need(ok, why):
         if not ok: raise ValueError(why)
@@ -601,201 +601,213 @@ def graphics_engine(serial):
     try:
         e = json.loads(one(r'^GT710_GR (.+)$', serial, 'graphics engine')[1])
         need(e['schema'] == 1 and e['bdf'] == pci(serial)[0] and e['chipset'] == 262, 'graphics identity')
-        need(set(e['firmware']) == set(GR_FIRMWARE_HASHES), 'firmware hash inventory')
-        for name, expected in GR_FIRMWARE_HASHES.items():
-            need(e['firmware'][name]['sha256'] == expected, 'firmware hash: ' + name)
-            need(e['firmware'][name]['readback_sha256'] == expected, 'firmware read-back: ' + name)
-        bounded(e, 'firmware bound')
+        def read_topology():
+            # nouveau v6.8 gr/gf100.c gf100_gr_oneinit: GPC_UNIT(g, 0x2608).
+            topology = words(e['topology_raw'])
+            gpcs = topology[0x409604] & 0x1f
+            need(0 < gpcs <= 31 and set(topology) == {0x409604} | {a + g * 0x8000 for g in range(gpcs) for a in (0x502608, 0x500c30)},
+                 'raw topology registers')
+            # G2: MIT gpc.fuc:149-156 masks GPCCS_UNITS to bits 4:0;
+            # ZCULL count in bits 20:16 is retained only in topology_raw.
+            tpcs = [topology[0x502608 + g * 0x8000] & 0x1f for g in range(gpcs)]
+            masks = [topology[0x500c30 + g * 0x8000] for g in range(gpcs)]
+            need(all(0 < t <= 8 for t in tpcs) and all(0 < m < 256 and m.bit_count() == t for m, t in zip(masks, tpcs))
+                 and e['topology'] == dict(gpc_nr=gpcs, tpc_nr=tpcs, tpc_mask=masks), 'raw topology')
 
-        # nouveau v6.8 gr/gf100.c gf100_gr_oneinit: GPC_UNIT(g, 0x2608).
-        topology = words(e['topology_raw'])
-        gpcs = topology[0x409604] & 0x1f
-        need(0 < gpcs <= 31 and set(topology) == {0x409604} | {a + g * 0x8000 for g in range(gpcs) for a in (0x502608, 0x500c30)},
-             'raw topology registers')
-        # G2: MIT gpc.fuc:149-156 masks GPCCS_UNITS to bits 4:0;
-        # ZCULL count in bits 20:16 is retained only in topology_raw.
-        tpcs = [topology[0x502608 + g * 0x8000] & 0x1f for g in range(gpcs)]
-        masks = [topology[0x500c30 + g * 0x8000] for g in range(gpcs)]
-        need(all(0 < t <= 8 for t in tpcs) and all(0 < m < 256 and m.bit_count() == t for m, t in zip(masks, tpcs))
-             and e['topology'] == dict(gpc_nr=gpcs, tpc_nr=tpcs, tpc_mask=masks), 'raw topology')
+            return gpcs, tpcs
+        def check_ctxctl():
+            gpcs, _ = read_topology()
+            size = e['fecs_size']
+            need(set(e['firmware']) == set(GR_FIRMWARE_HASHES), 'firmware hash inventory')
+            for name, expected in GR_FIRMWARE_HASHES.items():
+                need(e['firmware'][name]['sha256'] == expected, 'firmware hash: ' + name)
+                need(e['firmware'][name]['readback_sha256'] == expected, 'firmware read-back: ' + name)
+            bounded(e, 'firmware bound')
 
-        # Internal source firmware, not the external NVIDIA firmware protocol:
-        # gf100_gr_init_ctxctl_int polls FECS 0x409800 bit 31. hub.fuc waits
-        # for each physical GPC's scratch-0 bit 31 before publishing FECS ready;
-        # gpc.fuc writes its size to scratch 1 and sets that bit.
-        status = words(e['status'])
-        need(set(status) == {0x409800} | {0x502800 + g * 0x8000 for g in range(gpcs)}
-             and all(value & 0x80000000 for value in status.values()), 'firmware ready')
-        size = e['fecs_size']
-        need(type(size) is int and 0 < size <= 1 << 20 and size % 4 == 0, 'mailbox size')
-        queries = e['queries']
-        need(len(queries) == 4 and [q['method'] for q in queries] == [1, 2, 1, 2], 'mailbox method')
-        # hub.fuc main_done sets scratch-0 bit 31 for commands 1 (ctx_chan)
-        # and 2 (ctx_xfer save). Scratch 1 remains the reported context size.
-        for q in queries:
-            need(type(q['poison']) is int and 0 <= q['poison'] < 0x80000000
-                 and q['reply'] != q['poison'] and q['reply'] == q['poison'] | 0x80000000, 'mailbox reply')
-            need(q['size'] == size and q['size'] > 0, 'mailbox size')
-            bounded(q, 'mailbox bound')
-        w = e['withheld_start']
-        need(w['started'] is False and w['ready'] is False and w['accepted'] is False
-             and 0 <= w['poison'] < 0x80000000 and w['reply'] == w['poison'], 'withheld start')
-        s = e['stale_reply']
-        need(s['method'] in (1, 2) and 0 <= s['poison'] < 0x80000000
-             and s['planted'] == s['poison'] | 0x80000000 and s['reply'] == s['poison']
-             and s['accepted'] is False, 'stale reply')
+            # Internal source firmware, not the external NVIDIA firmware protocol:
+            # gf100_gr_init_ctxctl_int polls FECS 0x409800 bit 31. hub.fuc waits
+            # for each physical GPC's scratch-0 bit 31 before publishing FECS ready;
+            # gpc.fuc writes its size to scratch 1 and sets that bit.
+            status = words(e['status'])
+            need(set(status) == {0x409800} | {0x502800 + g * 0x8000 for g in range(gpcs)}
+                 and all(value & 0x80000000 for value in status.values()), 'firmware ready')
+            need(type(size) is int and 0 < size <= 1 << 20 and size % 4 == 0, 'mailbox size')
+            queries = e['queries']
+            need(len(queries) == 4 and [q['method'] for q in queries] == [1, 2, 1, 2], 'mailbox method')
+            # hub.fuc main_done sets scratch-0 bit 31 for commands 1 (ctx_chan)
+            # and 2 (ctx_xfer save). Scratch 1 remains the reported context size.
+            for q in queries:
+                need(type(q['poison']) is int and 0 <= q['poison'] < 0x80000000
+                     and q['reply'] != q['poison'] and q['reply'] == q['poison'] | 0x80000000, 'mailbox reply')
+                need(q['size'] == size and q['size'] > 0, 'mailbox size')
+                bounded(q, 'mailbox bound')
+            w = e['withheld_start']
+            need(w['started'] is False and w['ready'] is False and w['accepted'] is False
+                 and 0 <= w['poison'] < 0x80000000 and w['reply'] == w['poison'], 'withheld start')
+            s = e['stale_reply']
+            need(s['method'] in (1, 2) and 0 <= s['poison'] < 0x80000000
+                 and s['planted'] == s['poison'] | 0x80000000 and s['reply'] == s['poison']
+                 and s['accepted'] is False, 'stale reply')
 
-        need(e['golden_bytes'] == size, 'golden size')
-        saves = e['saves']
-        need(len(saves) == 2 and [s['poison'] for s in saves] == [85, 170]
-             and digest(saves[0]['sha256']) and saves[0]['sha256'] == saves[1]['sha256'], 'complementary images')
-        lists = e['init_lists']
-        need(lists == GR_INIT_LISTS
-             and all(type(v['count']) is int for v in lists), 'init lists')
-        buffers = e['global_buffers']
-        expected_buffers = [('bundle', 0x3000, 0x100), ('pagepool', 0x8000, 0x100),
-                            ('attrib', 0x20 * (0x324 + 0x7ff) * sum(tpcs), 0x1000), ('mmio', 0x1000, 0x100)]
-        need([(b['name'], b['bytes'], b['align']) for b in buffers] == expected_buffers, 'global buffers')
-        ranges = []
-        for b in buffers:
-            need(b['name'] and type(b['va']) is int and type(b['bytes']) is int
-                 and b['va'] > 0 and b['va'] % b['align'] == 0 and b['bytes'] > 0 and b['va'] + b['bytes'] <= 1 << 40, 'global buffers')
-            ranges.append((b['va'], b['va'] + b['bytes']))
-        for s in saves:
-            need(type(s['va']) is int and s['va'] > 0 and s['va'] + size <= 1 << 40, 'complementary images destinations')
-            ranges.append((s['va'], s['va'] + size))
-        ranges.sort()
-        need(all(a[1] <= b[0] for a, b in zip(ranges, ranges[1:])), 'global buffers overlap')
+        def check_context():
+            gpcs, tpcs = read_topology()
+            size = e['fecs_size']
+            need(type(size) is int and 0 < size <= 1 << 20 and size % 4 == 0, 'mailbox size')
+            need(e['golden_bytes'] == size, 'golden size')
+            saves = e['saves']
+            need(len(saves) == 2 and [s['poison'] for s in saves] == [85, 170]
+                 and digest(saves[0]['sha256']) and saves[0]['sha256'] == saves[1]['sha256'], 'complementary images')
+            lists = e['init_lists']
+            need(lists == GR_INIT_LISTS
+                 and all(type(v['count']) is int for v in lists), 'init lists')
+            buffers = e['global_buffers']
+            expected_buffers = [('bundle', 0x3000, 0x100), ('pagepool', 0x8000, 0x100),
+                                ('attrib', 0x20 * (0x324 + 0x7ff) * sum(tpcs), 0x1000), ('mmio', 0x1000, 0x100)]
+            need([(b['name'], b['bytes'], b['align']) for b in buffers] == expected_buffers, 'global buffers')
+            ranges = []
+            for b in buffers:
+                need(b['name'] and type(b['va']) is int and type(b['bytes']) is int
+                     and b['va'] > 0 and b['va'] % b['align'] == 0 and b['bytes'] > 0 and b['va'] + b['bytes'] <= 1 << 40, 'global buffers')
+                ranges.append((b['va'], b['va'] + b['bytes']))
+            for s in saves:
+                need(type(s['va']) is int and s['va'] > 0 and s['va'] + size <= 1 << 40, 'complementary images destinations')
+                ranges.append((s['va'], s['va'] + size))
+            ranges.sort()
+            need(all(a[1] <= b[0] for a, b in zip(ranges, ranges[1:])), 'global buffers overlap')
 
-        anchor = one(r'^GT710_GR_IMAGE_BULK (\d+) ([0-9a-f]{64})$', serial, 'graphics image bulk missing')
-        rows = re.findall(r'^GT710_GR_IMAGE .+\n', serial, re.M)
-        raw = ''.join(rows).encode('ascii')
-        need(len(raw) == int(anchor[1]) and hashlib.sha256(raw).hexdigest() == anchor[2], 'graphics image artifact differs')
-        images = {85: bytearray(), 170: bytearray()}
-        previous = 85
-        for row in rows:
-            match = re.fullmatch(r'GT710_GR_IMAGE (85|170) (\d+) ([0-9a-f]+)\n', row)
-            need(match is not None, 'image rows encoding')
-            poison, offset = int(match[1]), int(match[2])
-            need(not (previous == 170 and poison == 85) and offset == len(images[poison]), 'image rows order/offset')
-            chunk = bytes.fromhex(match[3])
-            need(0 < len(chunk) <= 256 and offset + len(chunk) <= size, 'image rows size')
-            images[poison].extend(chunk)
-            previous = poison
-        need(all(len(image) == size for image in images.values()), 'image rows incomplete')
-        # G2/G7: firmware layout, not differences in the two images, defines
-        # written bytes. hub.fuc:134-213; gpc.fuc:188-242; com.fuc:314-333.
-        layout = e['save_layout']
-        units = layout['units']
-        need(gpcs == 1 and len(units) == 2, 'saved size words')
-        written = bytearray(size)
-        terminals = []
-        cursor = 256
-        end = 0
-        for unit, controller in zip(units, [0x409000, 0x502000]):
-            need(unit['controller'] == controller and type(unit['mmio_base']) is int
-                 and unit['mmio_base'] * 256 == cursor
-                 and type(unit['mmio_words']) is int and 0 < unit['mmio_words'] <= size // 4,
-                 'saved size words')
-            start = cursor
-            logical_end = start + unit['mmio_words'] * 4
-            # Logical count/allocation come from firmware. Terminal quad
-            # writes are the measured GK208B model (G8, boots 191735Z and
-            # 195818Z), not a transfer-width fact stated by those sources.
-            end = (logical_end + 15) & ~15
-            need(end <= size, 'saved size words')
-            written[start:end] = bytes([1]) * (end - start)
-            terminals.append((logical_end, end))
-            cursor = (logical_end // 256 + 1) * 256
-            strands = unit['strands']
-            need(0 < len(strands) <= 64, 'saved size words')
-            for strand in strands:
-                need(type(strand['base']) is int and strand['base'] * 256 == cursor
-                     and type(strand['words']) is int and 0 <= strand['words'] <= size // 4,
+            anchor = one(r'^GT710_GR_IMAGE_BULK (\d+) ([0-9a-f]{64})$', serial, 'graphics image bulk missing')
+            rows = re.findall(r'^GT710_GR_IMAGE .+\n', serial, re.M)
+            raw = ''.join(rows).encode('ascii')
+            need(len(raw) == int(anchor[1]) and hashlib.sha256(raw).hexdigest() == anchor[2], 'graphics image artifact differs')
+            images = {85: bytearray(), 170: bytearray()}
+            previous = 85
+            for row in rows:
+                match = re.fullmatch(r'GT710_GR_IMAGE (85|170) (\d+) ([0-9a-f]+)\n', row)
+                need(match is not None, 'image rows encoding')
+                poison, offset = int(match[1]), int(match[2])
+                need(not (previous == 170 and poison == 85) and offset == len(images[poison]), 'image rows order/offset')
+                chunk = bytes.fromhex(match[3])
+                need(0 < len(chunk) <= 256 and offset + len(chunk) <= size, 'image rows size')
+                images[poison].extend(chunk)
+                previous = poison
+            need(all(len(image) == size for image in images.values()), 'image rows incomplete')
+            # G2/G7: firmware layout, not differences in the two images, defines
+            # written bytes. hub.fuc:134-213; gpc.fuc:188-242; com.fuc:314-333.
+            layout = e['save_layout']
+            units = layout['units']
+            need(gpcs == 1 and len(units) == 2, 'saved size words')
+            written = bytearray(size)
+            terminals = []
+            cursor = 256
+            end = 0
+            for unit, controller in zip(units, [0x409000, 0x502000]):
+                need(unit['controller'] == controller and type(unit['mmio_base']) is int
+                     and unit['mmio_base'] * 256 == cursor
+                     and type(unit['mmio_words']) is int and 0 < unit['mmio_words'] <= size // 4,
                      'saved size words')
-                logical_end = cursor + strand['words'] * 4
+                start = cursor
+                logical_end = start + unit['mmio_words'] * 4
+                # Logical count/allocation come from firmware. Terminal quad
+                # writes are the measured GK208B model (G8, boots 191735Z and
+                # 195818Z), not a transfer-width fact stated by those sources.
                 end = (logical_end + 15) & ~15
                 need(end <= size, 'saved size words')
-                written[cursor:end] = bytes([1]) * (end - cursor)
+                written[start:end] = bytes([1]) * (end - start)
                 terminals.append((logical_end, end))
-                cursor += (strand['words'] // 64 + 1) * 256
-        last = units[-1]['strands'][-1]
-        need(cursor == size and e['saved_end'] == end
-             and layout['gpc'] == 0 and layout['strands'] == len(units[-1]['strands'])
-             and layout['strand_base'] == last['base'] and layout['strand_words'] == last['words'],
-             'saved size words')
-        for save in saves:
-            image = images[save['poison']]
-            need(all(image[start:end] == bytes(end - start) for start, end in terminals),
-                 'save terminal padding is not zero')
-            data = bytes(v for v, used in zip(image, written) if used)
-            need(hashlib.sha256(image).hexdigest() == save['image_sha256'], 'image digest')
-            need(hashlib.sha256(data).hexdigest() == save['sha256'], 'image digest')
-            need(all(v == save['poison'] for v, used in zip(image, written) if not used),
-                 'save changed poison outside data')
-        need(all(a == b for a, b, used in zip(images[85], images[170], written) if used),
-             'complementary images bytes')
-        # Runnable header is CPU-filled separately: MIT gf100.c:336-338.
-        header = e['runnable_header']
-        mmio = next(b for b in buffers if b['name'] == 'mmio')
-        need(header['count'] == 18 and header['va'] == mmio['va'], 'runnable header')
-        expected = header['count'].to_bytes(4, 'little') + (header['va'] >> 8).to_bytes(4, 'little') + bytes(248)
-        need(header['words'] == [18, header['va'] >> 8]
-             and header['sha256'] == hashlib.sha256(expected).hexdigest(), 'runnable header')
-        need(e['image_bulk_bytes'] == len(raw) and len(raw) <= e['bulk_artifact_estimate'] <= 2 << 20,
-             'graphics artifact size')
+                cursor = (logical_end // 256 + 1) * 256
+                strands = unit['strands']
+                need(0 < len(strands) <= 64, 'saved size words')
+                for strand in strands:
+                    need(type(strand['base']) is int and strand['base'] * 256 == cursor
+                         and type(strand['words']) is int and 0 <= strand['words'] <= size // 4,
+                         'saved size words')
+                    logical_end = cursor + strand['words'] * 4
+                    end = (logical_end + 15) & ~15
+                    need(end <= size, 'saved size words')
+                    written[cursor:end] = bytes([1]) * (end - cursor)
+                    terminals.append((logical_end, end))
+                    cursor += (strand['words'] // 64 + 1) * 256
+            last = units[-1]['strands'][-1]
+            need(cursor == size and e['saved_end'] == end
+                 and layout['gpc'] == 0 and layout['strands'] == len(units[-1]['strands'])
+                 and layout['strand_base'] == last['base'] and layout['strand_words'] == last['words'],
+                 'saved size words')
+            for save in saves:
+                image = images[save['poison']]
+                need(all(image[start:end] == bytes(end - start) for start, end in terminals),
+                     'save terminal padding is not zero')
+                data = bytes(v for v, used in zip(image, written) if used)
+                need(hashlib.sha256(image).hexdigest() == save['image_sha256'], 'image digest')
+                need(hashlib.sha256(data).hexdigest() == save['sha256'], 'image digest')
+                need(all(v == save['poison'] for v, used in zip(image, written) if not used),
+                     'save changed poison outside data')
+            need(all(a == b for a, b, used in zip(images[85], images[170], written) if used),
+                 'complementary images bytes')
+            # Runnable header is CPU-filled separately: MIT gf100.c:336-338.
+            header = e['runnable_header']
+            mmio = next(b for b in buffers if b['name'] == 'mmio')
+            need(header['count'] == 18 and header['va'] == mmio['va'], 'runnable header')
+            expected = header['count'].to_bytes(4, 'little') + (header['va'] >> 8).to_bytes(4, 'little') + bytes(248)
+            need(header['words'] == [18, header['va'] >> 8]
+                 and header['sha256'] == hashlib.sha256(expected).hexdigest(), 'runnable header')
+            need(e['image_bulk_bytes'] == len(raw) and len(raw) <= e['bulk_artifact_estimate'] <= 2 << 20,
+                 'graphics artifact size')
 
-        c = e['channel']
-        need(type(c['id']) is int and 0 <= c['id'] < 4096 and c['epoch'] > 0, 'graphics channel identity')
-        need(c['class_id'] == 0xa197, 'graphics class')
-        # MIT nouveau subdev/top/gk104.c: ENUM carries engine/runlist;
-        # terminal ENGINE_TYPE 0 is GR, whereas 1/2/3 are CE engines.
-        need(len(c['top']) == 64 and 0 <= c['engine'] < 16 and 0 <= c['runlist'] < 16, 'GR runlist inventory')
-        found = False
-        engine = runlist = kind = -1
-        for word in c['top']:
-            need(type(word) is int and 0 <= word <= 0xffffffff, 'GR runlist words')
-            if word & 3 == 0: continue
-            if word & 3 == 2:
-                if word & 32: engine = (word >> 26) & 15
-                if word & 16: runlist = (word >> 21) & 15
-            if word & 3 == 3: kind = (word & 0x7ffffffc) >> 2
-            if not word & 0x80000000:
-                if kind == 0 and (engine, runlist) == (c['engine'], c['runlist']): found = True
-                engine = runlist = kind = -1
-        need(found, 'GR runlist')
-        need(0 < c['instance'] < 1 << 40 and c['instance'] % 4096 == 0
-             and c['bind'] == 0x80000000 | (c['instance'] >> 12)
-             and c['state'] & 1 and (c['state'] >> 16) & 15 == c['runlist'], 'graphics channel binding')
-        # MIT nouveau v6.8 nvkm/engine/gr/gf100.c gf100_gr_ctxsw_inst reads
-        # 0x409b00; gf100_gr_intr masks 0x0fffffff and shifts left 12 to
-        # recover the instance address. hub.fuc ctx_chan sets valid bit 31.
-        need(c['current_context'] == 0x80000000 | (c['instance'] >> 12), 'current context')
-        releases = e['releases']
-        need(len(releases) == 2 and [r['poison'] for r in releases] == [85, 170], 'release poisons')
-        need(releases[0]['target'] == releases[1]['target'] and releases[0]['target'] > 0
-             and releases[0]['target'] % 4 == 0 and releases[0]['target'] < 1 << 40, 'release target')
-        for r in releases:
-            need(r['class_id'] == 0xa197, 'release class')
-            # MIT cla197.h: RELEASE, writes complete, pipeline location 0xf,
-            # one-word structure, flushing enabled (0x1b00..0x1b0c).
-            need(r['method'] == 0x1b0c and r['word'] == 0x1000f010, 'release operation')
-            need(type(r['nonce']) is int and 0 < r['nonce'] <= 0xffffffff and r['nonce'] not in (85, 170)
-                 and r['observed'] == r['nonce'] and r['epoch'] == c['epoch'], 'release nonce')
-            bounded(r, 'release bound')
-        need(releases[0]['nonce'] == releases[1]['nonce'], 'release nonce')
-        w = e['withheld_release']
-        need(w['accepted'] is False and w['poison'] in (85, 170) and w['observed'] == w['poison'], 'withheld release')
-        s = e['stale_release']
-        need(s['accepted'] is False and 0 <= s['epoch'] < c['epoch']
-             and s['nonce'] == releases[0]['nonce'] and s['observed'] == s['nonce'], 'stale release')
-        faults = words(e['faults'])
-        need(set(faults) == {0x400100, 0x400108, 0x259c} and all(v == 0 for v in faults.values()), 'trap/fault')
-        need(e['teardown'] == dict(runlist_count=0, binding=0), 'channel teardown')
-        need(e['baseline'] == e['after'], 'allocator baseline')
-        need(e['firmware_writes'] == 0, 'firmware writes')
-        need(e['draw'] == 'pending-7.4' and e['shaders'] == 'pending-7.3'
-             and e['context_switch'] == 'pending-7.5', 'pending markers')
+        def check_channel():
+            c = e['channel']
+            need(type(c['id']) is int and 0 <= c['id'] < 4096 and c['epoch'] > 0, 'graphics channel identity')
+            need(c['class_id'] == 0xa197, 'graphics class')
+            # MIT nouveau subdev/top/gk104.c: ENUM carries engine/runlist;
+            # terminal ENGINE_TYPE 0 is GR, whereas 1/2/3 are CE engines.
+            need(len(c['top']) == 64 and 0 <= c['engine'] < 16 and 0 <= c['runlist'] < 16, 'GR runlist inventory')
+            found = False
+            engine = runlist = kind = -1
+            for word in c['top']:
+                need(type(word) is int and 0 <= word <= 0xffffffff, 'GR runlist words')
+                if word & 3 == 0: continue
+                if word & 3 == 2:
+                    if word & 32: engine = (word >> 26) & 15
+                    if word & 16: runlist = (word >> 21) & 15
+                if word & 3 == 3: kind = (word & 0x7ffffffc) >> 2
+                if not word & 0x80000000:
+                    if kind == 0 and (engine, runlist) == (c['engine'], c['runlist']): found = True
+                    engine = runlist = kind = -1
+            need(found, 'GR runlist')
+            need(0 < c['instance'] < 1 << 40 and c['instance'] % 4096 == 0
+                 and c['bind'] == 0x80000000 | (c['instance'] >> 12)
+                 and c['state'] & 1 and (c['state'] >> 16) & 15 == c['runlist'], 'graphics channel binding')
+            # MIT nouveau v6.8 nvkm/engine/gr/gf100.c gf100_gr_ctxsw_inst reads
+            # 0x409b00; gf100_gr_intr masks 0x0fffffff and shifts left 12 to
+            # recover the instance address. hub.fuc ctx_chan sets valid bit 31.
+            need(c['current_context'] == 0x80000000 | (c['instance'] >> 12), 'current context')
+            releases = e['releases']
+            need(len(releases) == 2 and [r['poison'] for r in releases] == [85, 170], 'release poisons')
+            need(releases[0]['target'] == releases[1]['target'] and releases[0]['target'] > 0
+                 and releases[0]['target'] % 4 == 0 and releases[0]['target'] < 1 << 40, 'release target')
+            for r in releases:
+                need(r['class_id'] == 0xa197, 'release class')
+                # MIT cla197.h: RELEASE, writes complete, pipeline location 0xf,
+                # one-word structure, flushing enabled (0x1b00..0x1b0c).
+                need(r['method'] == 0x1b0c and r['word'] == 0x1000f010, 'release operation')
+                need(type(r['nonce']) is int and 0 < r['nonce'] <= 0xffffffff and r['nonce'] not in (85, 170)
+                     and r['observed'] == r['nonce'] and r['epoch'] == c['epoch'], 'release nonce')
+                bounded(r, 'release bound')
+            need(releases[0]['nonce'] == releases[1]['nonce'], 'release nonce')
+            w = e['withheld_release']
+            need(w['accepted'] is False and w['poison'] in (85, 170) and w['observed'] == w['poison'], 'withheld release')
+            s = e['stale_release']
+            need(s['accepted'] is False and 0 <= s['epoch'] < c['epoch']
+                 and s['nonce'] == releases[0]['nonce'] and s['observed'] == s['nonce'], 'stale release')
+            faults = words(e['faults'])
+            need(set(faults) == {0x400100, 0x400108, 0x259c} and all(v == 0 for v in faults.values()), 'trap/fault')
+            need(e['teardown'] == dict(runlist_count=0, binding=0), 'channel teardown')
+            need(e['baseline'] == e['after'], 'allocator baseline')
+            need(e['firmware_writes'] == 0, 'firmware writes')
+            need(e['draw'] == 'pending-7.4' and e['shaders'] == 'pending-7.3'
+                 and e['context_switch'] == 'pending-7.5', 'pending markers')
+        for name, check in [('ctxctl', check_ctxctl), ('context', check_context), ('channel', check_channel)]:
+            if case is None or case == name:
+                check()
     except (KeyError, TypeError, IndexError, OverflowError, UnicodeError) as error:
         raise ValueError('malformed graphics evidence') from error
 
@@ -1350,7 +1362,7 @@ def native_flips(serial):
 def check_case(category, case, serial):
     if category == 'graphics':
         if case not in ('ctxctl', 'context', 'channel'): raise ValueError('unknown graphics case')
-        graphics_engine(serial)
+        graphics_engine(serial, case)
         return
     if category == 'recovery':
         if case != 'fault-reset': raise ValueError('unknown recovery case')

@@ -406,16 +406,11 @@ fn patches(io: &mut impl ctxctl::Access, b: &[Buffer], tpcs: u32) -> Vec<[u32; 2
 }
 fn floorsweep(io: &mut impl ctxctl::Access, t: &Topology<'_>) {
     let count = u32::from(t.tpc_nr[0]);
-    let mut sm = 0;
-    for tpc in 0..8 {
-        if t.tpc_mask[0] & (1 << tpc) == 0 {
-            continue;
-        }
+    for tpc in 0..count {
         let base = 0x504000 + tpc * 0x800;
         for a in [base + 0x698, base + 0x4e8, 0x500c10 + tpc * 4, base + 0x88] {
-            io.write(a, sm);
+            io.write(a, tpc);
         }
-        sm += 1;
     }
     io.write(0x500c08, count);
     io.write(0x500c8c, count);
