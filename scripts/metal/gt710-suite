@@ -8,6 +8,7 @@ import runpy
 import tempfile
 
 CATEGORIES = {
+    'completion': [('observation', 'Native CE observations bind independent caller fences and ordered releases to context, reset epoch and resource generation under complementary poisons')],
     'copy': [('transfers', 'Native A0B5 transfers compare complete complementary read-backs and execute private VM, remap, system-memory and bounded fault/reset probes')],
     'channel': [('semaphore', 'A privileged A06F channel executes unique semaphores with native identity, epoch and GET/PUT progression; withheld and stale completions fail')],
     'lifetime': [('retention', 'Mapping and table holds retain faulted storage through EIO and failed reset, attribute contexts and reclaim the CPU-only baseline; engine recovery remains pending')],
@@ -503,6 +504,45 @@ def copy_engine(serial):
         raise ValueError('malformed CE capture') from error
 
 
+def observation_record(r, c):
+    def need(ok, why):
+        if not ok: raise ValueError(why)
+    try:
+        need(r['schema']==1 and r['id']==c['id'] and r['kind']=='a0b5-engine-release', 'native completion kind')
+        need(r['context']==c['instance'] and r['epoch']==c['epoch'] and r['resource']==c['dest']
+             and r['generation']>0 and r['bytes']==c['size'] and r['unwritten']==0, 'native observation identity or extent')
+        requests=[r['writer']]+r['transfers']
+        need(len(requests)==3, 'two native transfers required')
+        for q in requests:
+            need(all(q[k]==r[k] for k in ('context','epoch','resource','generation')), 'foreign native request')
+            need(type(q['caller']) is int and q['caller']>0 and 0<q['sequence']<=0xffffffff, 'missing caller or native fence')
+        need(len({q['caller'] for q in requests})==3, 'reused caller fence')
+        need(requests[0]['sequence']<requests[1]['sequence']<requests[2]['sequence'], 'native completion order')
+        need([q['sequence'] for q in r['transfers']]==c['releases'], 'unbound native transfers')
+    except (KeyError,TypeError,IndexError) as error:
+        raise ValueError('malformed native observation') from error
+
+
+def native_observations(serial):
+    copy_engine(serial)
+    e=json.loads(one(r'^GT710_CE (.+)$',serial,'CE evidence')[1])
+    records=[json.loads(m[1]) for m in re.finditer(r'^GT710_OBSERVATION (.+)$',serial,re.M)]
+    if len(records)!=len(e['cases']): raise ValueError('missing native observations')
+    generations={}
+    for r,c in zip(records,e['cases']):
+        observation_record(r,c)
+        key=(r['context'],r['epoch'],r['resource'])
+        if r['generation']<=generations.get(key,0): raise ValueError('stale published generation')
+        generations[key]=r['generation']
+    ctl=json.loads(one(r'^GT710_COMPLETION_CONTROLS (.+)$',serial,'native completion controls')[1])
+    first=records[0]
+    if (ctl['context']!=first['context'] or ctl['epoch']!=first['epoch']
+            or ctl['foreign_context']==first['context'] or ctl['foreign_accepted'] is not False
+            or not 10000<=ctl['elapsed_us']<=250000
+            or any(ctl[k] is not False for k in ('wrong_resource_accepted','wrong_generation_accepted','stale_epoch_accepted'))):
+        raise ValueError('foreign or stale native publication accepted')
+
+
 def privileged_channel(serial):
     """M6.1 host execution only; a host release is not a CE fence."""
     board = board_inventory(serial)
@@ -938,6 +978,10 @@ def native_flips(serial):
 
 
 def check_case(category, case, serial):
+    if category == 'completion':
+        if case != 'observation': raise ValueError('unknown completion case')
+        native_observations(serial)
+        return
     if category == 'copy':
         if case != 'transfers': raise ValueError('unknown CE case')
         copy_engine(serial)
