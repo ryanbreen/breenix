@@ -226,6 +226,7 @@ pub(in crate::gk208) struct Reader {
     bar_dir: u64,
     pte: u64,
     old: [u32; 7],
+    quiesced: bool,
 }
 impl Reader {
     pub(in crate::gk208) fn new(
@@ -237,6 +238,8 @@ impl Reader {
     ) -> Result<Self, &'static str> {
         let s = layout.allocator.stats();
         let total = s.reserved + s.charged + s.free;
+        ensure_unbound(regs, 0)?;
+        ensure_unbound(regs, 1)?;
         let engine = discover(regs)?;
         if regs.read(0x259c) != 0 || regs.read(0x800000) != 0 || regs.read(0x800008) != 0 {
             return Err("context readback CE inherited or faulted state");
@@ -297,6 +300,7 @@ impl Reader {
             bar_dir,
             pte,
             old,
+            quiesced: false,
         })
     }
     pub(in crate::gk208) fn image(
@@ -342,19 +346,20 @@ impl Reader {
         }
         Ok(snapshots)
     }
-    pub(in crate::gk208) fn finish(
-        mut self,
+    /// Keep ownership on a failed drain or alias invalidation.
+    pub(in crate::gk208) fn quiesce(
+        &mut self,
         regs: &mut Registers,
-        layout: &mut memory::Layout,
+        layout: &memory::Layout,
     ) -> Result<(), &'static str> {
+        if self.quiesced {
+            return Ok(());
+        }
         let s = layout.allocator.stats();
         let total = s.reserved + s.charged + s.free;
         self.channel.drain(regs, &self.engine)?;
         words(regs, total, self.pte, &[0, 0])?;
         modeset::activate_bar1(regs, self.bar_inst, self.bar_dir)?;
-        let userd = self.channel.userd;
-        self.channel.retire(regs, layout, total)?;
-        layout.allocator.release(userd)?;
         regs.write(0x2254, self.old[0]);
         regs.write(0x2140, self.old[1]);
         regs.write(0x204, self.old[2]);
@@ -370,6 +375,22 @@ impl Reader {
             1 << self.engine.reset,
             self.old[6] & (1 << self.engine.reset),
         );
+        self.quiesced = true;
+        Ok(())
+    }
+    pub(in crate::gk208) fn finish(
+        self,
+        regs: &mut Registers,
+        layout: &mut memory::Layout,
+    ) -> Result<(), &'static str> {
+        if !self.quiesced {
+            return Err("CE reader retirement before FIFO unwind");
+        }
+        let s = layout.allocator.stats();
+        let total = s.reserved + s.charged + s.free;
+        let userd = self.channel.userd;
+        self.channel.retire(regs, layout, total)?;
+        layout.allocator.release(userd)?;
         Ok(())
     }
 }

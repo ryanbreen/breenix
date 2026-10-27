@@ -766,3 +766,11 @@ rnndb `falcon.xml:227-246` (`XFER_CTRL.SIZE`) and MIT
 `hub.fuc:585-592` (`xdst` channel-header store), and checks
 `gpc.fuc:403-489` for its distinct strand/MMCTX path. These do not define
 MMCTX/strand terminal width; no implementation is adapted from them here.
+
+M7.2's live-channel unwind in `gr/{mod,channel}.rs` and CE preflight and
+borrowed read-back cleanup in `ce.rs` and `ce/{process,readback}.rs` reuse
+the FIFO/channel mechanisms already attributed above (MIT nouveau v6.8
+FIFO gf100/gk104/gk110/gk208 and MIT open-gpu-doc cla06f/cla197).
+The existing original notices and full grants remain in their consumers.
+Ownership across fallible activation, pre-reset restoration and the host
+failure-injection harness are Breenix code; no external source is added.

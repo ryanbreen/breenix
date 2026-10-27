@@ -186,6 +186,7 @@ struct ProbeCleanup {
     state: ctxctl::SavedState,
     scratch: Vec<memory::allocator::Allocation>,
     finished: bool,
+    fifo_quiesced: bool,
 }
 impl ProbeCleanup {
     fn finish(
@@ -195,6 +196,9 @@ impl ProbeCleanup {
     ) -> Result<(), &'static str> {
         if self.finished {
             return Ok(());
+        }
+        if !self.fifo_quiesced {
+            return Err("GR FIFO unwind incomplete; backing retained");
         }
         self.state.stop(regs).map_err(hardware_error)?;
         let release = (|| {
@@ -224,6 +228,7 @@ pub(super) fn probe(
         state: ctxctl::SavedState::capture(regs).map_err(hardware_error)?,
         scratch: Vec::new(),
         finished: false,
+        fifo_quiesced: true,
     };
     let result = probe_inner(regs, device, layout, console, &mut cleanup);
     // This also runs after topology, allocation, upload and startup refusals.
@@ -298,33 +303,46 @@ fn probe_inner(
         captures: Vec::new(),
         runnable_header: Vec::new(),
     };
-    let generated = context::generate(&mut hardware, &topology, ready.size);
-    if let Err(error) = &generated {
-        context_error(error);
-    }
-    let graphics = if let Ok(golden) = &generated {
-        // CE read-back owns channel 0 and its USERD alias until drained.
-        if let Some(reader) = hardware.reader.take() {
-            reader.finish(hardware.regs, hardware.layout)?;
+    // From here, only Hardware::finish can certify that reset is safe.
+    cleanup.fifo_quiesced = false;
+    let outcome = (|| {
+        let generated = context::generate(&mut hardware, &topology, ready.size);
+        if let Err(error) = &generated {
+            context_error(error);
         }
-        let mut graphics = channel::Session::new(&mut hardware, golden)?;
-        graphics.execute(&mut hardware)?;
-        let report = graphics.report();
-        // Observe the quiesced channel while GR registers remain accessible,
-        // before reset/gating makes PGRAPH reads return PRI error words.
-        interrupt_snapshot(hardware.regs, hardware.device, "channel-drained");
-        // Retain context and system backing until finish confirms GR reset.
-        hardware.graphics = Some(graphics);
-        Some(report)
-    } else {
-        None
-    };
-    // Preserve raw saves even when the byte check fails. No serial image dump.
-    let artifact = hardware.emit_images();
-    let runnable_bytes = hardware.runnable_header.clone();
-    let firmware_hashes = hardware.controller.readback_sha256;
+        let graphics = if let Ok(golden) = &generated {
+            // CE read-back owns channel 0 and its USERD alias until drained.
+            if let Some(reader) = hardware.reader.as_mut() {
+                reader.quiesce(hardware.regs, hardware.layout)?;
+            }
+            if let Some(reader) = hardware.reader.take() {
+                reader.finish(hardware.regs, hardware.layout)?;
+            }
+            let mut graphics = channel::Session::new(&mut hardware, golden)?;
+            let result = graphics.activate(&mut hardware)
+                .and_then(|()| graphics.execute(&mut hardware));
+            let report = graphics.report();
+            // Retain ownership before propagating activation or execution errors.
+            hardware.graphics = Some(graphics);
+            result?;
+            // Observe the quiesced channel while GR registers remain accessible,
+            // before reset/gating makes PGRAPH reads return PRI error words.
+            interrupt_snapshot(hardware.regs, hardware.device, "channel-drained");
+            Some(report)
+        } else {
+            None
+        };
+        // Preserve raw saves even when the byte check fails. No serial image dump.
+        let artifact = hardware.emit_images();
+        let runnable_bytes = hardware.runnable_header.clone();
+        let firmware_hashes = hardware.controller.readback_sha256;
+        Ok::<_, &'static str>((generated, graphics, artifact, runnable_bytes, firmware_hashes))
+    })();
+    // Run on closure errors too; the outer reset requires confirmed FIFO unwind.
     hardware.finish()?;
+    cleanup.fifo_quiesced = true;
     cleanup.finish(regs, layout)?;
+    let (generated, graphics, artifact, runnable_bytes, firmware_hashes) = outcome?;
     if layout.allocator.stats() != baseline {
         return Err("GR baseline reclamation mismatch");
     }
@@ -514,14 +532,19 @@ impl Hardware<'_> {
         Ok((bytes, estimate))
     }
     fn finish(mut self) -> Result<(), &'static str> {
-        // The graphics channel has left its runlist and drained. Reset stops
-        // FECS/GPCCS before reclaiming either instance or its current image.
-        ctxctl::reset(self.regs).map_err(hardware_error)?;
-        unsafe {
-            self.context.confirm_reset();
+        if let Some(graphics) = self.graphics.as_mut() {
+            graphics.quiesce(self.regs, self.total)?;
+        }
+        if let Some(reader) = self.reader.as_mut() {
+            reader.quiesce(self.regs, self.layout)?;
         }
         if let Some(reader) = self.reader.take() {
             reader.finish(self.regs, self.layout)?;
+        }
+        // FIFO is unbound, empty and restored before resetting FECS/GPCCS.
+        ctxctl::reset(self.regs).map_err(hardware_error)?;
+        unsafe {
+            self.context.confirm_reset();
         }
         if let Some(graphics) = self.graphics.take() {
             graphics.finish(self.regs, self.layout, self.total)?;

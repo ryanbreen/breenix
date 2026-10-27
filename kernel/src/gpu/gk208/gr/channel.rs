@@ -293,6 +293,10 @@ mod native {
         bar_dir: u64,
         pte: u64,
         old: [u32; 6],
+        old_pbdma: [u32; 4],
+        bound: bool,
+        alias: bool,
+        quiesced: bool,
         report: Report,
     }
     impl Session {
@@ -491,7 +495,8 @@ mod native {
                 epoch: 0,
                 elapsed_us: 0,
             };
-            let mut s = Self {
+            let b = 0x40000 + pbdma * 0x2000;
+            Ok(Self {
                 context,
                 commands,
                 image,
@@ -502,6 +507,10 @@ mod native {
                 bar_dir,
                 pte,
                 old,
+                old_pbdma: [0x13c, 0x10c, 0x14c, 0x12c].map(|o| h.regs.read(b + o)),
+                bound: false,
+                alias: false,
+                quiesced: false,
                 report: Report {
                     identity: Identity {
                         id: 0,
@@ -527,12 +536,12 @@ mod native {
                     runlist_count: 1,
                     binding: 0,
                 },
-            };
-            s.activate(h)?;
-            Ok(s)
+            })
         }
-        fn activate(&mut self, h: &mut Hardware<'_>) -> Result<(), &'static str> {
+        pub(in crate::gk208::gr) fn activate(&mut self, h: &mut Hardware<'_>) -> Result<(), &'static str> {
             let c = self.report.identity;
+            // Track the alias before its first potentially partial write.
+            self.alias = true;
             words(
                 h.regs,
                 h.total,
@@ -562,6 +571,7 @@ mod native {
                 self.context.admit_device()?;
             }
             h.regs.mask(0x800004, 0xf0000, c.runlist << 16);
+            self.bound = true;
             h.regs
                 .write(0x800000, 0x80000000 | (c.instance >> 12) as u32);
             h.regs.mask(0x800004, 0x400, 0x400);
@@ -687,37 +697,66 @@ mod native {
             for pair in &mut self.report.faults {
                 pair[1] = h.regs.read(pair[0] as usize);
             }
-            // Stop scheduling, preempt, submit an empty runlist and observe both
-            // PBDMA and GR idle before unbinding. Keep backing until GR reset.
-            let c = self.report.identity;
-            h.regs.mask(0x2630, 1 << c.runlist, 1 << c.runlist);
-            h.regs.mask(0x800004, 0x800, 0x800);
-            h.regs.write(0x2634, c.id);
-            register_wait(h.regs, 0x2634, 0x100000, 0, BOUND_US)?;
-            h.regs
-                .write(0x2270, ((self.commands.range.start + RUNLIST) >> 12) as u32);
-            h.regs.write(0x2274, c.runlist << 20);
-            register_wait(
-                h.regs,
-                0x2284 + c.runlist as usize * 8,
-                0x100000,
-                0,
-                BOUND_US,
-            )?;
-            register_wait(h.regs, 0x3080 + self.pbdma * 4, 0xe000, 0, BOUND_US)?;
-            register_wait(
-                h.regs,
-                0x2640 + c.engine as usize * 8,
-                0x80000000,
-                0,
-                100000,
-            )?;
-            h.regs.write(0x800000, 0);
-            self.report.binding = h.regs.read(0x800000);
-            self.report.runlist_count = h.regs.read(0x2274) & 0xfffff;
-            if self.report.binding != 0 {
-                return Err("GR unbind failed; backing retained");
+            self.quiesce(h.regs, h.total)
+        }
+        /// Leave FIFO and BAR1 safe before PGRAPH reset, including partial activation.
+        /// Failed waits retain the channel and its pinned backing for recovery.
+        pub(in crate::gk208::gr) fn quiesce(
+            &mut self,
+            regs: &mut Registers,
+            total: u64,
+        ) -> Result<(), &'static str> {
+            if self.quiesced {
+                return Ok(());
             }
+            let c = self.report.identity;
+            if self.bound {
+                regs.mask(0x2630, 1 << c.runlist, 1 << c.runlist);
+                regs.mask(0x800004, 0x800, 0x800);
+                regs.write(0x2634, c.id);
+                register_wait(regs, 0x2634, 0x100000, 0, BOUND_US)?;
+                regs
+                    .write(0x2270, ((self.commands.range.start + RUNLIST) >> 12) as u32);
+                regs.write(0x2274, c.runlist << 20);
+                register_wait(
+                    regs,
+                    0x2284 + c.runlist as usize * 8,
+                    0x100000,
+                    0,
+                    BOUND_US,
+                )?;
+                register_wait(regs, 0x3080 + self.pbdma * 4, 0xe000, 0, BOUND_US)?;
+                register_wait(
+                    regs,
+                    0x2640 + c.engine as usize * 8,
+                    0x80000000,
+                    0,
+                    100000,
+                )?;
+                regs.write(0x800000, 0);
+                self.report.binding = regs.read(0x800000);
+                self.report.runlist_count = regs.read(0x2274) & 0xfffff;
+                if self.report.binding != 0 {
+                    return Err("GR unbind failed; backing retained");
+                }
+                self.bound = false;
+            }
+            if self.alias {
+                words(regs, total, self.pte, &[0, 0])?;
+                modeset::activate_bar1(regs, self.bar_inst, self.bar_dir)?;
+                self.alias = false;
+            }
+            let b = 0x40000 + self.pbdma * 0x2000;
+            for (offset, value) in [0x13c, 0x10c, 0x14c, 0x12c].into_iter().zip(self.old_pbdma) {
+                regs.write(b + offset, value);
+            }
+            regs.write(0x2254, self.old[0]);
+            regs.write(0x2140, self.old[1]);
+            regs.write(0x204, self.old[2]);
+            regs.mask(0x2630, 1 << c.runlist, self.old[3] & (1 << c.runlist));
+            regs.write(0x800004, self.old[4]);
+            regs.mask(0x200, 0x100, self.old[5] & 0x100);
+            self.quiesced = true;
             Ok(())
         }
         pub(in crate::gk208::gr) fn report(&self) -> Report {
@@ -731,12 +770,13 @@ mod native {
             layout: &mut memory::Layout,
             total: u64,
         ) -> Result<(), &'static str> {
-            // SAFETY: reset has stopped GR; execute removed and drained FIFO.
+            if !self.quiesced {
+                return Err("GR retirement before FIFO unwind");
+            }
+            // SAFETY: reset has stopped GR; quiesce removed and drained FIFO.
             unsafe {
                 self.context.confirm_reset();
             }
-            words(regs, total, self.pte, &[0, 0])?;
-            modeset::activate_bar1(regs, self.bar_inst, self.bar_dir)?;
             self.context
                 .retire(&mut layout.allocator, &mut VmIo { regs, total })?;
             layout.allocator.release(self.commands)?;
@@ -745,16 +785,6 @@ mod native {
             unsafe {
                 ManuallyDrop::drop(&mut self.pages);
             }
-            regs.write(0x2254, self.old[0]);
-            regs.write(0x2140, self.old[1]);
-            regs.write(0x204, self.old[2]);
-            regs.mask(
-                0x2630,
-                1 << self.report.identity.runlist,
-                self.old[3] & (1 << self.report.identity.runlist),
-            );
-            regs.write(0x800004, self.old[4]);
-            regs.mask(0x200, 0x100, self.old[5] & 0x100);
             Ok(())
         }
     }

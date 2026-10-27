@@ -46,8 +46,8 @@ class LiveUnwind(unittest.TestCase):
         methods = methods.replace(issue, issue[:issue.index('{') + 1] + '''
             let _ = (h, poison, epoch, release, budget, self.bar);
             step(&format!("issue-{sequence}"))?;
-            Ok(Observation { value: nonce, epoch: self.report.identity.epoch,
-                consumed: true, elapsed_us: 10, accepted: true })
+            Ok(Observation { value: nonce, epoch,
+                consumed: true, elapsed_us: 10, accepted: epoch == self.report.identity.epoch })
         }''')
         # Include new cleanup methods automatically; substitute only issue DMA.
         methods = methods.replace('pub(in crate::gk208::gr)', 'pub(crate)')
@@ -61,8 +61,15 @@ class LiveUnwind(unittest.TestCase):
         # Pre-live helpers are separate from the live operations under test.
         harness = (ROOT / 'tests/fixtures/gt710_gr_live_unwind.rs').read_text()
         for key, value in [('SESSION', session + '\n' + methods), ('FLOW', flow),
-                           ('FINISH', finish)]:
+                           ('FINISH', finish),
+                           ('CLEANUP', gr[gr.index('struct ProbeCleanup'):gr.index('/// Capture startup')])]:
             harness = harness.replace('// ' + key, value)
+        readback = (ROOT / 'kernel/src/gpu/gk208/ce/readback.rs').read_text()
+        reader_type = item(readback, 'pub(in crate::gk208) struct Reader')
+        quiesce = item(readback, '    pub(in crate::gk208) fn quiesce(')
+        harness = harness.replace('// READER_QUIESCE',
+            reader_type.replace('pub(in crate::gk208)', '') + '\nimpl Reader {\n' +
+            quiesce.replace('pub(in crate::gk208)', '') + '\n}')
         # Exercise CE preflight from the real entry points, up to allocation.
         ce = (ROOT / 'kernel/src/gpu/gk208/ce.rs').read_text()
         helper = item(ce, 'fn ensure_unbound(') if 'fn ensure_unbound(' in ce else ''

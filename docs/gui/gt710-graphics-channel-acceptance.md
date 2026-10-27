@@ -432,3 +432,50 @@ and `mmctx_xfer`. These facts describe Falcon DMA and the header store;
 they do not specify the terminal width of MMCTX or strand saves. The
 16-byte terminal rule therefore remains measured, bounded to at most
 12 bytes equal to 0 per nonempty section, with the remaining bytes checked against written data or original poison.
+
+## Live-channel error unwind unit
+
+The check-first commit `20cbe870` adds
+`tests/gt710_gr_live_unwind_test.py` and its Rust host fixture. Against
+`18d47431`, its 3/3 cases fail: CE process preflight accepts a bound channel,
+reset precedes alias/FIFO restoration, and an activation error skips cleanup.
+This is a host register model, with pre-live allocations and command DMA
+substituted; it does not claim device execution.
+
+Session construction now returns before activation. The probe retains the
+session across activation/execute errors and invokes `Hardware::finish` on
+those errors. Borrowed quiescing stops scheduling, preempts, submits an empty
+runlist, waits for PBDMA/GR idle, unbinds, clears the USERD alias and restores
+the saved FIFO and PBDMA controls before PGRAPH reset. A persistent drain
+failure retains backing and refuses the outer reset. The CE reader also
+keeps ownership across failed quiescing; CE process/readback entry points
+and channel construction refuse a bound channel before changing FIFO state.
+
+The final host check passes 4/4 cases, covering 15 injected GR failures,
+three CE-reader cleanup failures with retry, clean completion, permanent
+drain refusal, and CE refusal of bound IDs 0 and 1. The DMA substitute was
+corrected to echo its submitted epoch so the stale control reaches issue 4;
+the restored-state assertions remain unchanged. The fixture now executes
+the production outer cleanup guard and borrowed reader quiesce as well.
+
+Validation for this unit:
+
+- `python3 tests/gt710_gr_live_unwind_test.py`: exit 0, 4 Rust cases.
+- `python3 tests/gt710_gr_probe_unwind_test.py`: exit 0, 3 Rust cases.
+- `rustc --edition=2021 --test -Dwarnings tests/gt710_gr_channel_test.rs`:
+  compiled without warnings; its executable passed 3/3 cases.
+- `CARGO_BUILD_JOBS=4 taskpolicy -b cargo build --release --features testing,external_test_bins --bin qemu-uefi`:
+  exit 0, no warnings, 61 seconds. The changed native module is x86-only;
+  shared ARM GPU code was not changed.
+
+Claim-lint invocation record:
+
+- `scripts/claim-lint.py --files tests/gt710_gr_live_unwind_test.py tests/fixtures/gt710_gr_live_unwind.rs`: exit 0.
+- `scripts/claim-lint.py --commit-msg /tmp/gt710-live-check-msg.txt`: exit 1
+  for unquantified wording; exit 0 after changing it to the measured 3/3 count.
+- `scripts/claim-lint.py`: exit 1 for two new comments; the comments were
+  clarified without changing runtime behavior. Final invocation: exit 0.
+- `scripts/claim-lint.py --commit-msg /tmp/gt710-live-fix-msg.txt`: exit 0.
+
+No boot was performed in this unit. Hardware acceptance, console timing and
+the milestone gate remain for the acceptance unit on the final PR tree.

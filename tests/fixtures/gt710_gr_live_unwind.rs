@@ -8,8 +8,9 @@ thread_local! { static INJECT: RefCell<Injection> = RefCell::new(Injection::defa
 fn step(name: &str) -> Result<(), &'static str> {
     INJECT.with(|i| {
         let mut i = i.borrow_mut();
+        let occurrence=i.calls.iter().filter(|n| n.as_str()==name).count()+1;
         i.calls.push(name.into());
-        if i.target == name && !i.reached { i.reached = true; Err("injected") } else { Ok(()) }
+        if (i.target == name || i.target == format!("{name}-{occurrence}")) && !i.reached { i.reached = true; Err("injected") } else { Ok(()) }
     })
 }
 const SAVED: [(usize, u32); 10] = [
@@ -81,6 +82,11 @@ fn context_error(e: &context::Error) { let _ = e.reason; }
 fn interrupt_snapshot(_: &mut Registers, _: &Device, _: &str) {}
 mod ctxctl {
     use super::*;
+    pub struct SavedState;
+    impl SavedState {
+        pub fn stop(&self, r: &mut Registers) -> Result<(), &'static str> { reset(r) }
+        pub fn restore(&self, _: &mut Registers) -> Result<(), &'static str> { Ok(()) }
+    }
     pub fn reset(r: &mut Registers) -> Result<(), &'static str> {
         assert!(r.restored(), "reset under live or unrestored FIFO: {:x?}, VRAM={:x?}", r.values, r.vram);
         INJECT.with(|i| i.borrow_mut().resets+=1); Ok(())
@@ -93,7 +99,9 @@ mod context {
     pub fn generate(_: &mut Hardware<'_>, _: &(), _: u32) -> Result<Golden, Error> { Ok(Golden) }
 }
 struct Reader;
-impl Reader { fn finish(self, _: &mut Registers, _: &mut memory::Layout) -> Result<(), &'static str> { Ok(()) } }
+impl Reader {
+    fn quiesce(&mut self, _: &mut Registers, _: &memory::Layout) -> Result<(), &'static str> { Ok(()) }
+    fn finish(self, _: &mut Registers, _: &mut memory::Layout) -> Result<(), &'static str> { Ok(()) } }
 struct Controller { readback_sha256: [[u8;32];4] }
 struct Hardware<'a> {
     regs: &'a mut Registers, layout: &'a mut memory::Layout, device: &'a Device, console: &'a Console,
@@ -127,26 +135,29 @@ mod channel {
         let o=r.stale.observation; let _=(r.stale.nonce,o.value,o.epoch,o.consumed,o.elapsed_us,o.accepted,r.faults,r.runlist_count,r.binding);
     }
 }
-struct Cleanup;
-impl Cleanup { fn finish(&mut self, r: &mut Registers, _: &mut memory::Layout) -> Result<(), &'static str> { ctxctl::reset(r) } }
+// CLEANUP
 fn run(regs: &mut Registers, stuck: bool) -> Result<(), &'static str> {
     let mut storage=memory::Layout{allocator:memory::allocator::Allocator};
     let layout=&mut storage;
     let console=Console{pointer:0}; let device=Device;
     regs.stuck=stuck;
+    let mut cleanup=ProbeCleanup{state:ctxctl::SavedState,scratch:vec![],finished:false,fifo_quiesced:false};
+    let result=(|| {
     let mut hardware=Hardware{regs,layout,device:&device,console:&console,total:1<<24,context:Context,
         reader:None,graphics:None,backing:vec![],runnable_header:vec![],controller:Controller{readback_sha256:[[0;32];4]}};
     let topology=(); struct Ready {size:u32} let ready=Ready{size:1024};
-    let mut cleanup=Cleanup;
     // FLOW
     // Keep the same error propagation boundary; report formatting is irrelevant.
     let _=(generated,artifact,runnable_bytes,firmware_hashes);
     if let Some(r)=graphics {channel::touch(r);}
     Ok(())
+    })();
+    cleanup.finish(regs,layout)?;
+    result
 }
 #[test]
 fn live_errors_restore_fifo_alias_and_binding_before_reset() {
-    for target in ["alias-install", "bar1", "flush", "admit", "wait-228c-1", "issue-1", "issue-2", "issue-3", "issue-4", "wait-2634-1", "wait-228c-0", "wait-3080-0", "wait-2640-0"] {
+    for target in ["alias-install", "alias-clear", "bar1", "bar1-2", "flush", "admit", "wait-228c-1", "issue-1", "issue-2", "issue-3", "issue-4", "wait-2634-1", "wait-228c-0", "wait-3080-0", "wait-2640-0"] {
         INJECT.with(|i|*i.borrow_mut()=Injection{target:target.into(),..Injection::default()});
         let mut regs=Registers::new();
         let result=run(&mut regs,false);
@@ -190,6 +201,34 @@ mod ce {
             assert!(s.begin().is_err(),"process CE replaced bound channel {id}");assert_eq!(regs.values,before);
             assert!(reader(&mut regs,&memory::Layout{allocator:memory::allocator::Allocator}).is_err());assert_eq!(regs.values,before);
             assert!(constructor(&mut regs,id as u32).is_err());assert_eq!(regs.values,before);
+        }
+    }
+}
+
+mod readback_unwind {
+    use super::*;
+    struct Engine {base:usize,reset:u32,run:u32,pbdma:usize}
+    struct Channel;
+    impl Channel {
+        fn drain(&mut self,r:&mut Registers,_:&Engine) -> Result<(),&'static str> {
+            step("reader-drain")?;r.write(0x800000,0);r.write(0x2274,1<<20);Ok(())
+        }
+    }
+    // READER_QUIESCE
+    #[test]
+    fn borrowed_reader_cleanup_keeps_state_until_retry_restores_fifo() {
+        for target in ["reader-drain","alias-clear","bar1"] {
+            INJECT.with(|i|*i.borrow_mut()=Injection{target:target.into(),..Injection::default()});
+            let mut regs=Registers::new();
+            let old=[regs.read(0x2254),regs.read(0x2140),regs.read(0x204),regs.read(0x2630),regs.read(0x800004),0,regs.read(0x200)];
+            regs.write(0x800000,0x80000300);regs.write(0x2140,0);
+            regs.vram.insert(0x900000,0x1231);
+            let mut reader=Reader{channel:Channel,engine:Engine{base:0x104000,reset:7,run:1,pbdma:0},bar:0,bar_inst:0,bar_dir:0,pte:0x900000,old,quiesced:false};
+            let layout=memory::Layout{allocator:memory::allocator::Allocator};
+            let _=(reader.bar,reader.engine.pbdma);
+            assert!(reader.quiesce(&mut regs,&layout).is_err());assert!(!reader.quiesced);
+            assert!(reader.quiesce(&mut regs,&layout).is_ok());assert!(reader.quiesced);
+            assert!(regs.restored(),"{target}: {:x?}",regs.values);
         }
     }
 }
