@@ -15,14 +15,35 @@ class Bulk(unittest.TestCase):
     def test_bulk_is_required_and_bound_to_the_serial_digest(self):
         with tempfile.TemporaryDirectory() as temporary:
             d=Path(temporary);body=b'GT710_PIX 0 1:ff003039\n'
-            serial='GT710_BULK '+str(len(body))+' '+hashlib.sha256(body).hexdigest()+'\n'
+            report='GT710_MODE {"schema":1}\n'
+            serial=report+'GT710_BULK '+str(len(body))+' '+hashlib.sha256(body).hexdigest()+'\n'
             (d/'serial.txt').write_text(serial)
             with self.assertRaises((ValueError,OSError)):API['capture_serial'](d)
             (d/'gt710-pixels.rle').write_bytes(body)
-            self.assertEqual(API['capture_serial'](d),serial+body.decode())
+            self.assertEqual(API['capture_serial'](d),body.decode()+serial)
             for bad in [body[:-1],body.replace(b'3039',b'3038'),body+body]:
                 (d/'gt710-pixels.rle').write_bytes(bad)
                 with self.assertRaises(ValueError):API['capture_serial'](d)
+    def test_rows_keep_their_original_update_boundaries(self):
+        reports=['GT710_MODE {"schema":1}\n','GT710_SWITCH {"step":0}\n',
+                 'GT710_SWITCH {"step":1}\n','GT710_FLIP {"mode":0,"step":0}\n']
+        rows=['GT710_PIX 0 1:ff000001\n','GT710_SWITCH_PIX 0 0 1:ff000002\n',
+              'GT710_SWITCH_PIX 1 0 1:ff000003\n','GT710_FLIP_PIX 0 0 0 1:ff000004\n']
+        with tempfile.TemporaryDirectory() as temporary:
+            d=Path(temporary)
+            def stage(body,metadata):
+                (d/'gt710-pixels.rle').write_bytes(body)
+                digest='GT710_BULK '+str(len(body))+' '+hashlib.sha256(body).hexdigest()+'\n'
+                (d/'serial.txt').write_text(''.join(metadata)+digest)
+                return digest
+            body=''.join(rows).encode();digest=stage(body,reports)
+            self.assertEqual(API['capture_serial'](d),''.join(r+m for r,m in zip(rows,reports))+digest)
+            for body,metadata in [(''.join(rows[::-1]).encode(),reports),
+                                  (''.join(rows).encode(),reports[:-1]),
+                                  (''.join(rows).encode(),reports+reports[:1])]:
+                stage(body,metadata)
+                with self.assertRaises(ValueError):API['capture_serial'](d)
+
     def test_bounded_upload_requires_live_lease_exact_body_and_digest(self):
         import gt710_upload as upload
         class Connection:
