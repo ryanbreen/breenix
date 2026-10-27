@@ -29,7 +29,9 @@ class ProbeUnwind(unittest.TestCase):
         else:
             inner, probe = probe, ''
         inner = inner[:inner.index('    let context = super::lifetime::Context::new(')]
-        inner += '    let _ = (device, console, ready, withheld, stale);\n    Err("late failure")\n}\n'
+        inner += ('    let _ = (device, console, ready, withheld, stale);\n'
+                  '    if crate::INJECT.with(|i| i.borrow().target == "success") { Ok(()) }\n'
+                  '    else { Err("late failure") }\n}\n')
         harness = (ROOT / 'tests/fixtures/gt710_gr_probe_unwind.rs').read_text()
         harness = harness.replace('PRODUCTION', helpers + probe + inner)
         harness = harness.replace('ROOT', str(ROOT))

@@ -25,7 +25,11 @@ fn step(name: &'static str) -> Result<(), &'static str> {
 }
 #[macro_export]
 macro_rules! serial_println { ($($a:tt)*) => { let _ = format!($($a)*); }; }
-struct Registers { values: BTreeMap<u32, u32>, now: u64, stuck_stop: bool }
+struct Registers {
+    values: BTreeMap<u32, u32>, now: u64, stuck_stop: bool,
+    model_gating: bool, gated_reads: Vec<u32>, gated_writes: Vec<u32>,
+    writes: Vec<(u32, u32)>, pri_capture: bool,
+}
 impl Registers {
     fn new() -> Self {
         Self { values: BTreeMap::from([
@@ -34,15 +38,38 @@ impl Registers {
             (0x20520, 3), (0x20524, 0x1f), (0x20528, 3),
             (0x2052c, 0x7f03ff), (0x20530, 1),
             (0x409604, 0x10001), (0x502608, 0x40001), (0x500c30, 1),
-        ]), now: 0, stuck_stop: false }
+        ]), now: 0, stuck_stop: false, model_gating: false,
+            gated_reads: vec![], gated_writes: vec![], writes: vec![], pri_capture: false }
     }
-    fn read(&mut self, r: usize) -> u32 { *self.values.get(&(r as u32)).unwrap_or(&0) }
+    fn gr_accessible(&self) -> bool {
+        self.values[&0x200] & 0x1000 != 0 &&
+        [(0x20520, 0x7ffffffc), (0x20524, 0x7fffffe0), (0x20528, 0x7ffffffc),
+         (0x2052c, 0x7f80fc00), (0x20530, 0x7ffffffe)].iter()
+            .all(|(a, v)| self.values.get(a) == Some(v))
+    }
+    fn read(&mut self, r: usize) -> u32 {
+        let r = r as u32;
+        if self.model_gating && (0x400000..0x600000).contains(&r) && !self.gr_accessible() {
+            self.gated_reads.push(r);
+            return if r < 0x409000 { 0xbadf1001 } else { 0xbadf1000 };
+        }
+        if self.pri_capture && r == 0x40013c { return 0xbadf1001; }
+        *self.values.get(&r).unwrap_or(&0)
+    }
     fn write(&mut self, r: usize, v: u32) {
         let r = r as u32;
+        self.writes.push((r, v));
+        if self.model_gating && (0x400000..0x600000).contains(&r) && !self.gr_accessible() {
+            self.gated_writes.push(r);
+            return;
+        }
         if r == 0x200 && v & 0x1000 == 0 {
             if self.stuck_stop { return; }
             INJECT.with(|i| i.borrow_mut().stopped = true);
             self.values.insert(0x409100, 0); self.values.insert(0x502100, 0);
+            if self.model_gating {
+                for a in [0x40013c, 0x409c24, 0x40901c] { self.values.insert(a, 0); }
+            }
         }
         let value = if (0x20520..=0x20530).contains(&r) { v & 0x7fffffff } else { v };
         self.values.insert(r, value);
@@ -153,4 +180,38 @@ fn unwind_failed_stop_retains_scratch() {
     // A later confirmed stop permits explicit reclamation of retained backing.
     regs.stuck_stop=false;regs.write(0x200,0xe011216d);
     for a in core::mem::take(&mut layout.allocator.live) {layout.allocator.live.push(a);layout.allocator.release(a).unwrap();}
+}
+
+#[test]
+fn unwind_gated_pri_capture_never_replays_errors_and_preserves_main_enables() {
+    // Main's polling path leaves GR disabled, host interrupts off, and PFIFO's
+    // inherited mask intact. Inspect underlying words, not gated read responses.
+    const MAIN_IRQ: [(u32, u32); 5] = [
+        (0x140, 0), (0x2140, 0x10000001),
+        (0x40013c, 0), (0x409c24, 0), (0x40901c, 0),
+    ];
+    let mut failures = Vec::new();
+    for target in ["success", "reset-1", "topology", "allocate-1", "clear-1",
+                   "allocate-2", "clear-2", "upload-1", "withheld", "reset-2",
+                   "upload-2", "start", "stale", "late", "pri-capture"] {
+        INJECT.with(|i| *i.borrow_mut() = Injection { target, ..Injection::default() });
+        let mut regs = Registers::new();
+        regs.model_gating = true;
+        regs.pri_capture = target == "pri-capture";
+        regs.values.extend(MAIN_IRQ);
+        let original = POWER.map(|a| regs.values[&a]);
+        let mut layout = memory::Layout { allocator: memory::allocator::Allocator { live: vec![] } };
+        let result = gr::probe(&mut regs, &drivers::pci::Device, &mut layout, &ConsoleSurface);
+        let after = POWER.map(|a| regs.values[&a]);
+        let poison_writes: Vec<_> = regs.writes.iter().filter(|(_, v)| v >> 16 == 0xbadf).collect();
+        let irq_matches = MAIN_IRQ.iter().all(|(a, v)| regs.values.get(a) == Some(v));
+        if result.is_ok() != (target == "success") || after != original || !irq_matches ||
+            !regs.gated_reads.is_empty() || !regs.gated_writes.is_empty() ||
+            !poison_writes.is_empty() || !layout.allocator.live.is_empty() {
+            failures.push(format!("{target}: result={result:?}, power={after:x?}, expected={original:x?}, \
+                IRQ={irq_matches}, gated_reads={:x?}, gated_writes={:x?}, poison_writes={poison_writes:x?}, live={}",
+                regs.gated_reads, regs.gated_writes, layout.allocator.live.len()));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
