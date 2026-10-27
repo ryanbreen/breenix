@@ -180,33 +180,60 @@ fn delay(io: &mut impl Access, us: u64) -> Result<(), Fault> {
 // their incoming payloads, rather than guessing which units main had gated.
 const PGOB: [u32; 5] = [0x20520, 0x20524, 0x20530, 0x2052c, 0x20528];
 
+// Host IRQs are polled during this probe. Leave Falcon's internal IRQs alone.
+const IRQ_ENABLES: [u32; 4] = [0x140, 0x40013c, 0x409c24, 0x40901c];
+fn mask_host_irqs(io: &mut impl Access) {
+    io.write(0x40013c, 0);
+    io.write(0x409c24, 0);
+    io.read(0x40013c);
+}
 pub struct SavedState {
+    irq: [u32; 4],
     pmc: u32,
     control: u32,
     pgob: [u32; 5],
 }
 impl SavedState {
     pub fn capture(io: &mut impl Access) -> Result<Self, Fault> {
+        let irq = IRQ_ENABLES.map(|a| io.read(a));
         let pmc = io.read(0x200);
         let control = io.read(0x10a78c);
         let mut pgob = [0; 5];
         for (index, address) in PGOB.into_iter().enumerate() {
-            poll(io, BOUND_US, "GR incoming power-gating command busy", |io| {
-                let value = io.read(address);
-                pgob[index] = value;
-                (value & READY == 0, address, value)
-            })?;
+            poll(
+                io,
+                BOUND_US,
+                "GR incoming power-gating command busy",
+                |io| {
+                    let value = io.read(address);
+                    pgob[index] = value;
+                    (value & READY == 0, address, value)
+                },
+            )?;
         }
-        Ok(Self { pmc, control, pgob })
+        Ok(Self {
+            pmc,
+            control,
+            pgob,
+            irq,
+        })
     }
 
     /// Assert PGRAPH reset and confirm it before releasing Falcon backing.
     pub fn stop(&self, io: &mut impl Access) -> Result<(), Fault> {
+        mask_host_irqs(io);
+        io.write(0x409c20, u32::MAX);
+        io.write(0x400100, u32::MAX);
         mask(io, 0x200, 0x1000, 0);
-        poll(io, BOUND_US, "GR stop unconfirmed; backing retained", |io| {
-            let value = io.read(0x200);
-            (value & 0x1000 == 0, 0x200, value)
-        })?;
+        poll(
+            io,
+            BOUND_US,
+            "GR stop unconfirmed; backing retained",
+            |io| {
+                let value = io.read(0x200);
+                (value & 0x1000 == 0, 0x200, value)
+            },
+        )?;
         delay(io, 50_000)
     }
 
@@ -241,6 +268,19 @@ impl SavedState {
         mask(io, 0x10a78c, 1, 0);
         io.write(0x10a78c, self.control);
         io.write(0x200, self.pmc);
+        for (a, v) in IRQ_ENABLES.into_iter().zip(self.irq).rev() {
+            io.write(a, v);
+        }
+        for (a, v) in IRQ_ENABLES.into_iter().zip(self.irq) {
+            let actual = io.read(a);
+            if actual != v {
+                return Err(fault(
+                    "GR incoming interrupt state did not restore",
+                    a,
+                    actual,
+                ));
+            }
+        }
         let control = io.read(0x10a78c);
         let pmc = io.read(0x200);
         result?;
@@ -337,7 +377,9 @@ fn init(io: &mut impl Access, t: &Topology<'_>, mmu: [u64; 2]) -> Result<(), Fau
     for pack in tables::INIT_LISTS[0].packs {
         for entry in pack.init {
             for i in 0..entry.count {
-                io.write(entry.addr + i * entry.pitch, entry.data);
+                let address = entry.addr + i * entry.pitch;
+                // nouveau registers a host IRQ handler; Breenix polls this probe.
+                io.write(address, if address == 0x40013c { 0 } else { entry.data });
             }
         }
     }
@@ -366,11 +408,10 @@ fn init(io: &mut impl Access, t: &Topology<'_>, mmu: [u64; 2]) -> Result<(), Fau
     mask(io, 0x408850, 0xf, fbps & 0xf);
     mask(io, 0x408958, 0xf, fbps & 0xf);
     io.write(0x400500, 0x00010001);
-    for a in [0x400100, 0x40013c] {
-        io.write(a, u32::MAX);
-    }
+    io.write(0x400100, u32::MAX);
+    io.write(0x40013c, 0); // no host PGRAPH handler; observe status by polling
     io.write(0x400124, 2);
-    io.write(0x409c24, 0x000e0001); // internal, unmodified source firmware
+    io.write(0x409c24, 0); // host INTR_UP only, not Falcon internal enables
     for a in [0x404000, 0x404600, 0x408030, 0x406018, 0x404490, 0x405840] {
         io.write(a, 0xc0000000);
     }
@@ -654,7 +695,10 @@ impl Controller {
         io.write(FECS + 0x800, 0);
         self.started = true;
         io.write(FECS + 0x100, 2); // hub.fuc starts GPCCS; never race its context offset
-        self.wait_ready(io)
+        let ready = self.wait_ready(io);
+        // hub.fuc enables INTR_UP during init; PGRAPH remains host-masked.
+        mask_host_irqs(io);
+        ready
     }
     pub fn withheld_start(&mut self, io: &mut impl Access) -> Result<Control, Fault> {
         if self.started {

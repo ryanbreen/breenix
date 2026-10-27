@@ -137,7 +137,15 @@ reset, VM detach and backing reclamation.
     "gpc": "<live word>",
     "strands": "<live word>",
     "strand_base": "<live word>",
-    "strand_words": "<live word>"
+    "strand_words": "<live word>",
+    "units": [
+      {"controller": 4231168, "mmio_base": "<MMCTX_SAVE_SWBASE>",
+       "mmio_words": "<MMCTX_LOAD_COUNT>",
+       "strands": [{"base": "<indexed STRAND_SAVE_SWBASE>", "words": "<indexed STRAND_WORDS>"}]},
+      {"controller": 5251072, "mmio_base": "<MMCTX_SAVE_SWBASE>",
+       "mmio_words": "<MMCTX_LOAD_COUNT>",
+       "strands": [{"base": "<indexed STRAND_SAVE_SWBASE>", "words": "<indexed STRAND_WORDS>"}]}
+    ]
   },
   "runnable_header": {
     "count": "<patch pair count>",
@@ -154,13 +162,13 @@ reset, VM detach and backing reclamation.
     {
       "poison": 85,
       "va": "<golden-85 VA>",
-      "sha256": "<same saved-region SHA-256>",
+      "sha256": "<same SHA-256 of written bytes in offset order>",
       "image_sha256": "<actual image-85 SHA-256>"
     },
     {
       "poison": 170,
       "va": "<golden-170 VA>",
-      "sha256": "<same saved-region SHA-256>",
+      "sha256": "<same SHA-256 of written bytes in offset order>",
       "image_sha256": "<actual image-170 SHA-256>"
     }
   ],
@@ -337,8 +345,16 @@ Bulk context images use `GT710_GR_IMAGE` rows in the network artifact.
 Serial carries only `GT710_GR_IMAGE_BULK <bytes> <sha256>` for those rows,
 plus the enclosing artifact digest. The single `GT710_GR` JSON line carries
 metadata and digests, not image bytes. The fixture/formatter check exercises
-the complete record through the U1 comparator; G6's saved-region, untouched
-header/padding and runnable-header requirements remain in that comparator.
+the complete record through the U1 comparator. G7 derives written-byte coverage independently from the two
+units' firmware-computed MMIO and indexed strand registers captured after
+method 2, citing MIT `hub.fuc:134-213`, `gpc.fuc:188-242` and
+`com.fuc:314-333`. Written bytes must match; outside that set the original
+poison must remain. Section allocation boundaries must account for the
+FECS size. Runnable copies zero unwritten spans before their separate
+CPU-filled header check. `GT710_GR_LAYOUT` also retains the map if context
+validation refuses the probe. `GT710_GR_IRQ` records PMC, PGRAPH and FECS
+status/enables and PCI INTx/MSI routing before and after the probe.
+<!-- claim-lint:ok: G7 requirements, exercised by tests/gt710_graphics_report_test.py and tests/gt710_grctx_test.rs. -->
 
 Open hardware observations for acceptance: GR runlist/PBDMA discovery,
 context restore from the copied image and patched MMIO list, A197 releases

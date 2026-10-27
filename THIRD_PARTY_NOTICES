@@ -725,3 +725,15 @@ its host injection fixture are Breenix code. The CE timeout diagnostics in
 for that file; the pre-reset completion wait in `ce/recovery.rs` follows the
 existing attributed FIFO preemption protocol. No additional external source
 or firmware is introduced.
+
+M7.2 firmware save-map and polled host interrupts use the already listed MIT
+`fuc/hub.fuc:134-213`, `fuc/gpc.fuc:188-242`, `fuc/com.fuc:314-333`,
+`gr/gk208.c:41` and `gr/gf100.c:336-338`, plus MIT rnndb
+`falcon.xml` HOST_IO_INDEX_V4 and `ctxctl.xml` MMCTX/STRAND/INTR_UP fields.
+The original firmware files remain unmodified. `gr/context.rs` reads the
+firmware-computed map after a save; `gr/mod.rs` records it; the branch scorer
+derives byte coverage independently. Runnable copies zero the unwritten
+spans. `gr/ctxctl.rs` overrides the inherited host-interrupt enable in the
+init pack because this probe polls without a host GR handler, and restores
+the incoming enables after its confirmed stop. The imported rnndb MIT grant
+and listed source headers were read before this adaptation.

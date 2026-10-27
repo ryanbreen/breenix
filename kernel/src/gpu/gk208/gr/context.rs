@@ -140,6 +140,7 @@ pub trait Io: ctxctl::Access {
     fn request(&mut self, method: u32, poison: u32) -> Result<ctxctl::Reply, Error>;
     /// Each image is CE-copied into pinned system pages under P and ~P.
     fn readback(&mut self, image: Buffer) -> Result<[Vec<u8>; 2], Error>;
+    fn capture_layout(&mut self) -> Result<SaveLayout, Error>;
     fn runnable(&mut self, image: Buffer, data: &[u8], header: [u32; 2])
         -> Result<[u32; 2], Error>;
 }
@@ -155,31 +156,103 @@ pub struct Receipt {
     pub sha256: [u8; 32],
     pub packs: Vec<PackReceipt>,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Strand {
+    pub base: u32,
+    pub words: u32,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnitLayout {
+    pub controller: u32,
+    pub mmio_base: u32,
+    pub mmio_words: u32,
+    pub strands: Vec<Strand>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SaveLayout {
     pub gpc: u32,
     pub strands: u32,
     pub strand_base: u32,
     pub strand_words: u32,
+    pub units: Vec<UnitLayout>,
 }
 impl SaveLayout {
-    pub fn end(self, size: u32) -> Result<usize, Error> {
-        // com.fuc:314-333: bases in 256-byte units, sizes in words;
-        // one extra 256-byte block is reserved even for an exact multiple.
-        let base = u64::from(self.strand_base) * 256;
-        let end = base + u64::from(self.strand_words) * 4;
-        let padded = base + (u64::from(self.strand_words >> 6) + 1) * 256;
-        if self.gpc != 0
-            || self.strands == 0
-            || self.strands > 64
-            || base < 256
-            || end <= 256
-            || end > u64::from(size)
-            || padded != u64::from(size)
-        {
+    /// Read after method 2 completes. Bases/counts were computed by
+    /// hub.fuc:149-164 and gpc.fuc:188-242; strand words by com.fuc:314-333.
+    /// HOST_IO_INDEX_V4: rnndb falcon.xml; fields: ctxctl.xml:136-194.
+    pub fn capture(io: &mut impl ctxctl::Access) -> Result<Self, Error> {
+        let mut units = Vec::new();
+        for controller in [0x409000, 0x502000] {
+            let count = io.read(controller + 0x880);
+            if count == 0 || count > 64 {
+                return Err("invalid strand count".into());
+            }
+            let mmio_base = io.read(controller + 0x700);
+            let mmio_words = io.read(controller + 0x74c);
+            let old = io.read(controller + 0xac);
+            let mut strands = Vec::new();
+            for index in 0..count {
+                io.write(controller + 0xac, index);
+                strands.push(Strand {
+                    base: io.read(controller + 0x908),
+                    words: io.read(controller + 0x910),
+                });
+            }
+            io.write(controller + 0xac, old);
+            units.push(UnitLayout {
+                controller,
+                mmio_base,
+                mmio_words,
+                strands,
+            });
+        }
+        let last = units[1].strands.last().ok_or("missing GPC strand")?;
+        Ok(Self {
+            gpc: 0,
+            strands: units[1].strands.len() as u32,
+            strand_base: last.base,
+            strand_words: last.words,
+            units,
+        })
+    }
+    pub fn written(&self, size: u32) -> Result<Vec<bool>, Error> {
+        let mut written = vec![false; size as usize];
+        let mut cursor = 256u64;
+        if self.units.len() != 2 {
             return Err("invalid saved-data size words".into());
         }
-        Ok(end as usize)
+        for (unit, controller) in self.units.iter().zip([0x409000, 0x502000]) {
+            if unit.controller != controller
+                || u64::from(unit.mmio_base) * 256 != cursor
+                || unit.mmio_words == 0
+                || unit.strands.is_empty()
+                || unit.strands.len() > 64
+            {
+                return Err("invalid saved-data size words".into());
+            }
+            let end = cursor + u64::from(unit.mmio_words) * 4;
+            if end > u64::from(size) {
+                return Err("invalid saved-data size words".into());
+            }
+            written[cursor as usize..end as usize].fill(true);
+            cursor = (end / 256 + 1) * 256;
+            for strand in &unit.strands {
+                let end = cursor + u64::from(strand.words) * 4;
+                if u64::from(strand.base) * 256 != cursor || end > u64::from(size) {
+                    return Err("invalid saved-data size words".into());
+                }
+                written[cursor as usize..end as usize].fill(true);
+                cursor += (u64::from(strand.words) / 64 + 1) * 256;
+            }
+        }
+        if cursor != u64::from(size) {
+            return Err("invalid saved-data size words".into());
+        }
+        Ok(written)
+    }
+    pub fn end(&self, size: u32) -> Result<usize, Error> {
+        self.written(size)?;
+        Ok(self.strand_base as usize * 256 + self.strand_words as usize * 4)
     }
 }
 #[derive(Debug)]
@@ -188,6 +261,7 @@ pub struct Golden {
     pub patches: Vec<[u32; 2]>,
     pub lists: Vec<Receipt>,
     pub images: [Vec<u8>; 2],
+    pub runnable: Vec<u8>,
     pub hashes: [[u8; 32]; 2],
     pub saved_end: usize,
     pub layout: SaveLayout,
@@ -411,22 +485,6 @@ pub fn generate(io: &mut impl Io, t: &Topology<'_>, size: u32) -> Result<Golden,
         }
         buffers.push(b);
     }
-    // Capture the final GPC strand's actual size words, before the red switch.
-    // Falcon v5 HOST_IO_INDEX_V4 selects indexed host register copies.
-    let strands = io.read(0x502880);
-    if strands == 0 || strands > 64 {
-        return Err("invalid strand count".into());
-    }
-    let old_index = io.read(0x5020ac);
-    io.write(0x5020ac, strands - 1);
-    let layout = SaveLayout {
-        gpc: 0,
-        strands,
-        strand_base: io.read(0x502908),
-        strand_words: io.read(0x502910),
-    };
-    io.write(0x5020ac, old_index);
-    let saved_end = layout.end(size)?;
     // ctxgf100 generate and gf100 fecs.reset: force FE power, red switch,
     // return to AUTO, initialise SCC RAM. Firmware remains source-built.
     io.write(0x404170, 0x12);
@@ -474,6 +532,7 @@ pub fn generate(io: &mut impl Io, t: &Topology<'_>, size: u32) -> Result<Golden,
     io.patch(buffers[3], &patches)?;
     let mut images = [Vec::new(), Vec::new()];
     let mut queries = Vec::new();
+    let mut layouts = Vec::new();
     for (n, poison) in [0x55, 0xaa].into_iter().enumerate() {
         let image = buffers[4 + n];
         io.poison(image, poison)?;
@@ -483,6 +542,9 @@ pub fn generate(io: &mut impl Io, t: &Topology<'_>, size: u32) -> Result<Golden,
             check_size(&reply, size)?;
             queries.push(reply);
         }
+        let layout = io.capture_layout()?;
+        let written = layout.written(size)?;
+        layouts.push(layout);
         let [first, second] = io.readback(image)?;
         if first.len() != size as usize || second.len() != size as usize {
             return Err("CE image size differs".into());
@@ -490,7 +552,7 @@ pub fn generate(io: &mut impl Io, t: &Topology<'_>, size: u32) -> Result<Golden,
         if let Some(i) = first.iter().zip(&second).position(|(a, b)| a != b) {
             return Err(difference("CE readbacks differ", i, first[i], second[i]));
         }
-        for i in (0..256).chain(saved_end..size as usize) {
+        for i in (0..size as usize).filter(|&i| !written[i]) {
             if first[i] != poison {
                 return Err(difference(
                     "save changed poison outside data",
@@ -502,7 +564,13 @@ pub fn generate(io: &mut impl Io, t: &Topology<'_>, size: u32) -> Result<Golden,
         }
         images[n] = first;
     }
-    if let Some(i) = (256..saved_end).find(|i| images[0][*i] != images[1][*i]) {
+    if layouts[0] != layouts[1] {
+        return Err("save layout changed between saves".into());
+    }
+    let layout = layouts.remove(0);
+    let saved_end = layout.end(size)?;
+    let written = layout.written(size)?;
+    if let Some(i) = (0..size as usize).find(|&i| written[i] && images[0][i] != images[1][i]) {
         return Err(difference(
             "golden saves differ",
             i,
@@ -510,12 +578,23 @@ pub fn generate(io: &mut impl Io, t: &Topology<'_>, size: u32) -> Result<Golden,
             images[1][i],
         ));
     }
-    let hashes = [
-        hash(&images[0][256..saved_end]),
-        hash(&images[1][256..saved_end]),
-    ];
+    let hashes = images.each_ref().map(|image| {
+        hash(
+            &image
+                .iter()
+                .zip(&written)
+                .filter_map(|(&v, &used)| used.then_some(v))
+                .collect::<Vec<_>>(),
+        )
+    });
+    let mut runnable = images[0].clone();
+    for (v, &used) in runnable.iter_mut().zip(&written) {
+        if !used {
+            *v = 0;
+        }
+    }
     let header = [patches.len() as u32, (buffers[3].va >> 8) as u32];
-    if io.runnable(buffers[6], &images[0], header)? != header {
+    if io.runnable(buffers[6], &runnable, header)? != header {
         return Err("runnable header differs".into());
     }
     Ok(Golden {
@@ -523,6 +602,7 @@ pub fn generate(io: &mut impl Io, t: &Topology<'_>, size: u32) -> Result<Golden,
         patches,
         lists,
         images,
+        runnable,
         hashes,
         saved_end,
         layout,

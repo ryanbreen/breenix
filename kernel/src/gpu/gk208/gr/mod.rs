@@ -83,13 +83,46 @@ fn hardware_error(error: ctxctl::Fault) -> &'static str {
     error.reason
 }
 
+/// Suite-thread snapshot, also emitted on refused probes.
+pub(super) fn interrupt_snapshot(
+    regs: &mut Registers,
+    device: &crate::drivers::pci::Device,
+    phase: &str,
+) {
+    use crate::drivers::pci;
+    let words: Vec<[u32; 2]> = [
+        0x100, 0x140, 0x400100, 0x40013c, 0x409008, 0x409018, 0x40901c, 0x409c18, 0x409c24,
+    ]
+    .into_iter()
+    .map(|a| [a, regs.read(a as usize)])
+    .collect();
+    let xhci = pci::find_by_class(pci::DeviceClass::SerialBus, 3, 0x30);
+    let routes:Vec<String> = core::iter::once(device).chain(xhci.as_ref()).map(|d| {
+        let read=|offset|pci::pci_read_config_word(d.bus,d.device,d.function,offset);
+        let msi=d.find_msi_capability().map(|c|format!("{}",read(c+2))).unwrap_or_else(||"null".into());
+        let msix=d.find_msix_capability().map(|c|format!("{}",read(c+2))).unwrap_or_else(||"null".into());
+        format!("{{\"bdf\":\"{:02x}:{:02x}.{}\",\"line_pin\":{},\"command\":{},\"msi\":{},\"msix\":{}}}",
+            d.bus,d.device,d.function,read(0x3c),read(4),msi,msix)
+    }).collect();
+    crate::serial_println!(
+        "GT710_GR_IRQ {{\"phase\":\"{}\",\"registers\":{:?},\"routes\":[{}]}}",
+        phase,
+        words,
+        routes.join(",")
+    );
+}
+
 struct ProbeCleanup {
     state: ctxctl::SavedState,
     scratch: Vec<memory::allocator::Allocation>,
     finished: bool,
 }
 impl ProbeCleanup {
-    fn finish(&mut self, regs: &mut Registers, layout: &mut memory::Layout) -> Result<(), &'static str> {
+    fn finish(
+        &mut self,
+        regs: &mut Registers,
+        layout: &mut memory::Layout,
+    ) -> Result<(), &'static str> {
         if self.finished {
             return Ok(());
         }
@@ -143,7 +176,7 @@ fn probe_inner(
     ];
     // Retain the source words even if decoding refuses the topology, before
     // any firmware upload. No context or image bytes travel over serial.
-    crate::serial_println!("GT710_GR_TOPOLOGY {:?}",raw);
+    crate::serial_println!("GT710_GR_TOPOLOGY {:?}", raw);
     let topology = topology::decode(&raw)?;
     let baseline = layout.allocator.stats();
     let total = baseline.reserved + baseline.charged + baseline.free;
@@ -292,14 +325,15 @@ fn probe_inner(
             )
         })
         .collect();
-    let layout_words = golden.layout;
-    let context_fields = format!("\"schema\":1,\"bdf\":\"{:02x}:{:02x}.{}\",\"chipset\":{},\"firmware\":{{{}}},\"status\":{:?},\"elapsed_us\":{},\"bound_us\":{},\"fecs_size\":{},\"queries\":[{}],\"withheld_start\":{{\"started\":{},\"ready\":{},\"poison\":{},\"reply\":{},\"accepted\":{}}},\"stale_reply\":{{\"method\":{},\"poison\":{},\"planted\":{},\"reply\":{},\"accepted\":{}}},\"topology_raw\":{:?},\"topology\":{{\"gpc_nr\":{},\"tpc_nr\":{:?},\"tpc_mask\":{:?}}},\"init_lists\":[{}],\"global_buffers\":[{}],\"golden_bytes\":{},\"saved_end\":{},\"save_layout\":{{\"gpc\":{},\"strands\":{},\"strand_base\":{},\"strand_words\":{}}},\"saves\":[{}],\"runnable_header\":{{\"count\":{},\"va\":{},\"words\":{:?},\"sha256\":\"{}\"}},\"image_bulk_bytes\":{},\"bulk_artifact_estimate\":{},\"baseline\":{},\"after\":{},\"firmware_writes\":{},\"draw\":\"pending-7.4\",\"shaders\":\"pending-7.3\",\"context_switch\":\"pending-7.5\"",
+    let layout_words = &golden.layout;
+    let units = layout_units(layout_words);
+    let context_fields = format!("\"schema\":1,\"bdf\":\"{:02x}:{:02x}.{}\",\"chipset\":{},\"firmware\":{{{}}},\"status\":{:?},\"elapsed_us\":{},\"bound_us\":{},\"fecs_size\":{},\"queries\":[{}],\"withheld_start\":{{\"started\":{},\"ready\":{},\"poison\":{},\"reply\":{},\"accepted\":{}}},\"stale_reply\":{{\"method\":{},\"poison\":{},\"planted\":{},\"reply\":{},\"accepted\":{}}},\"topology_raw\":{:?},\"topology\":{{\"gpc_nr\":{},\"tpc_nr\":{:?},\"tpc_mask\":{:?}}},\"init_lists\":[{}],\"global_buffers\":[{}],\"golden_bytes\":{},\"saved_end\":{},\"save_layout\":{{\"gpc\":{},\"strands\":{},\"strand_base\":{},\"strand_words\":{},\"units\":{}}},\"saves\":[{}],\"runnable_header\":{{\"count\":{},\"va\":{},\"words\":{:?},\"sha256\":\"{}\"}},\"image_bulk_bytes\":{},\"bulk_artifact_estimate\":{},\"baseline\":{},\"after\":{},\"firmware_writes\":{},\"draw\":\"pending-7.4\",\"shaders\":\"pending-7.3\",\"context_switch\":\"pending-7.5\"",
         device.bus,device.device,device.function,(regs.read(0) >> 20) & 0x1ff,
         firmware.join(","),ready.status,elapsed,ctxctl::BOUND_US,ready.size,queries.join(","),
         withheld.started,withheld.ready,withheld.poison,withheld.reply,withheld.accepted,
         stale.method,stale.poison,stale.planted,stale.reply,stale.accepted,
         raw,topology.gpc_nr,&topology.tpc_nr[..1],&topology.tpc_mask[..1],lists.join(","),buffers.join(","),
-        ready.size,golden.saved_end,layout_words.gpc,layout_words.strands,layout_words.strand_base,layout_words.strand_words,
+        ready.size,golden.saved_end,layout_words.gpc,layout_words.strands,layout_words.strand_base,layout_words.strand_words,units,
         saves.join(","),golden.patches.len(),golden.buffers[3].va,golden.header,super::hash(&runnable_bytes),image_bulk_bytes,artifact_estimate,
         super::inventory::stats(baseline),super::inventory::stats(layout.allocator.stats()),
         crate::firmware_writes::count()-console.firmware_baseline);
@@ -431,6 +465,27 @@ impl Hardware<'_> {
         Ok(())
     }
 }
+fn layout_units(layout: &context::SaveLayout) -> String {
+    let units: Vec<String> = layout
+        .units
+        .iter()
+        .map(|u| {
+            let strands: Vec<String> = u
+                .strands
+                .iter()
+                .map(|s| format!("{{\"base\":{},\"words\":{}}}", s.base, s.words))
+                .collect();
+            format!(
+                "{{\"controller\":{},\"mmio_base\":{},\"mmio_words\":{},\"strands\":[{}]}}",
+                u.controller,
+                u.mmio_base,
+                u.mmio_words,
+                strands.join(",")
+            )
+        })
+        .collect();
+    format!("[{}]", units.join(","))
+}
 impl context::Io for Hardware<'_> {
     fn allocate(&mut self, spec: context::Spec) -> Result<context::Buffer, context::Error> {
         let a = self.layout.allocator.allocate(
@@ -520,6 +575,11 @@ impl context::Io for Hardware<'_> {
             ));
         }
         Ok(images)
+    }
+    fn capture_layout(&mut self) -> Result<context::SaveLayout, context::Error> {
+        let layout = context::SaveLayout::capture(self)?;
+        crate::serial_println!("GT710_GR_LAYOUT {{\"units\":{}}}", layout_units(&layout));
+        Ok(layout)
     }
     fn runnable(
         &mut self,

@@ -234,6 +234,9 @@ impl Io for Mock {
         self.events.push(Event::Readback(b.va));
         Ok([self.image.clone(), self.image.clone()])
     }
+    fn capture_layout(&mut self) -> Result<context::SaveLayout, context::Error> {
+        context::SaveLayout::capture(self)
+    }
     fn runnable(
         &mut self,
         b: Buffer,

@@ -427,7 +427,7 @@ mod native {
             }
             // gf100_gr_chan_bind copies the golden bytes and fills only the
             // internal-firmware header: count and MMIO VA >> 8 at offsets 0/4.
-            let mut data = golden.images[0].clone();
+            let mut data = golden.runnable.clone();
             data[..256].fill(0);
             data[..4].copy_from_slice(&golden.header[0].to_le_bytes());
             data[4..8].copy_from_slice(&golden.header[1].to_le_bytes());

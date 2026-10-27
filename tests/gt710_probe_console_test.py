@@ -20,6 +20,7 @@ class ProbeConsole(unittest.TestCase):
         tail = source[start:end]
         harness = r'''
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+static SNAPSHOTS: AtomicU32 = AtomicU32::new(0);
 static PMC: AtomicU32 = AtomicU32::new(0);
 static REFUSE: AtomicBool = AtomicBool::new(false);
 static RETAINED: AtomicBool = AtomicBool::new(false);
@@ -61,6 +62,9 @@ mod ce {
 }
 mod gr {
     use super::*;
+    pub fn interrupt_snapshot(_: &mut Registers, _: &Device, phase: &str) {
+        SNAPSHOTS.fetch_or(match phase {"before"=>1,"after"=>2,_=>panic!("unknown snapshot phase")},Ordering::SeqCst);
+    }
     pub fn probe(regs: &mut Registers, _: &Device, _: &mut Layout, _: &Console) -> Result<(), &'static str> {
         if REFUSE.load(Ordering::SeqCst) { regs.mask(0x200,0x1000,0x1000); Err("GR probe refused") } else { Ok(()) }
     }
@@ -75,6 +79,7 @@ TAIL
 fn clean_and_refused_gr_both_deliver_the_native_console() {
     for initial in [0xe011216d,0xe011316d] {
     for refuse in [false, true] {
+        SNAPSHOTS.store(0,Ordering::SeqCst);
         PMC.store(initial,Ordering::SeqCst);
         REFUSE.store(refuse, Ordering::SeqCst);
         RETAINED.store(false, Ordering::SeqCst);
@@ -82,6 +87,7 @@ fn clean_and_refused_gr_both_deliver_the_native_console() {
         let console = Console { pointer: 16640 };
         let result = handoff(Registers(8192), Device { bars: [Bar {size: 0}, Bar {size: 1 << 27}] },
             Layout { objects: [Object {range: Range {start: 4096, size: 4096}}] }, console);
+        assert_eq!(SNAPSHOTS.load(Ordering::SeqCst),3);
         assert_eq!(result, Ok(console), "GR refusal detached the screen console");
         assert_eq!(PMC.load(Ordering::SeqCst),initial,"GR refusal leaked its PMC enable into CE recovery");
         assert!(RETAINED.load(Ordering::SeqCst));
