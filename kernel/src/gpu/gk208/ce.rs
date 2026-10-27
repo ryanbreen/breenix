@@ -430,9 +430,7 @@ fn suppressed_copy(regs:&mut Registers,layout:&memory::Layout,total:u64,e:&Engin
         c.epoch,observed_epoch,seq,observed,get,c.put,elapsed_us,accepted,held,reclaimed,SOURCE,DEST,super::hash(&before),super::hash(&data)),ticket))
 }
 fn emit_bytes(id:usize,pass:usize,data:&[u8]) {
-    for (n,b) in data.chunks(256).enumerate() {
-        crate::serial_println!("GT710_CE_BYTES {} {} {} {}",id,pass,n*256,super::hex(b));
-    }
+    crate::serial_println!("GT710_CE_DIGEST {} {} {} {}",id,pass,data.len(),super::hash(data));
 }
 #[derive(Clone,Copy)]
 struct Case {name:&'static str,src_offset:u32,dst_offset:u32,width:u32,height:u32,sp:u32,dp:u32,upload:bool,overlap:bool}
