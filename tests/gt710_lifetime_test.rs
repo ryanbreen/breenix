@@ -4,7 +4,7 @@ extern crate alloc;
 #[path = "../kernel/src/gpu/gk208/memory.rs"] mod memory;
 #[path = "../kernel/src/gpu/gk208/vm.rs"] mod vm;
 #[path = "../kernel/src/gpu/gk208/lifetime.rs"] mod lifetime;
-use memory::{allocator::{Allocator,Kind},Range};
+use memory::allocator::{Allocator,Kind};
 use lifetime::{Context,Consumer};
 use std::collections::BTreeMap;
 #[derive(Default)]
@@ -76,4 +76,26 @@ fn retire_timeout_and_remap_timeout_keep_all_charges_and_both_backings() {
  let mut io=Model::default();let mut y=Context::new(&mut a,&mut io).unwrap();let used=a.stats();io.fail=true;
  assert_eq!(y.retire(&mut a,&mut io),Err("invalidation timeout"));
  assert!(a.release(y.space().instance).is_err());assert!(a.release(y.space().directory).is_err());assert_eq!(a.stats(),used);
+}
+
+#[test]
+fn dropping_an_unretired_owner_retains_backing_and_table_references() {
+ let mut a=Allocator::new(1<<30,&[]).unwrap();let mut io=Model::default();
+ let backing=a.allocate(4096,4096,Kind::Probe).unwrap();let instance;
+ {
+  let mut c=Context::new(&mut a,&mut io).unwrap();
+  c.map(&mut a,&mut io,0,backing,vm::Flags::default()).unwrap();
+  instance=c.space().instance;c.fail_eio();
+ }
+ let used=a.stats();assert!(a.release(backing).is_err());assert!(a.release(instance).is_err());assert_eq!(a.stats(),used);
+}
+#[test]
+fn an_engine_completion_releases_only_its_consumer_and_still_requires_drain() {
+ let mut a=Allocator::new(1<<30,&[]).unwrap();let baseline=a.stats();let mut io=Model::default();
+ let mut c=Context::new(&mut a,&mut io).unwrap();unsafe{c.admit_device().unwrap();}
+ let queued=c.hold(Consumer::Queued).unwrap();let readback=c.hold(Consumer::Readback).unwrap();
+ assert!(c.finish_cpu(queued).is_err());assert_eq!(c.holds(),[1,1,0]);
+ unsafe{c.finish_device(readback).unwrap();}assert_eq!(c.holds(),[1,0,0]);
+ unsafe{c.confirm_drain();}assert!(c.retire(&mut a,&mut io).is_err());
+ unsafe{c.confirm_reset();}c.retire(&mut a,&mut io).unwrap();assert_eq!(a.stats(),baseline);
 }
