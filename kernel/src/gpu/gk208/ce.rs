@@ -378,8 +378,8 @@ impl Channel {
         let request=self.request(seq,resource,generation.max(1));
         let (done,time)=self.completed(regs,total,e,request,2_000_000)?;
         if done.is_none() {
-            crate::serial_println!("GT710_CE_ERROR channel={} seq={} sem={} get={} current={:#x} fifo={:#x} fault={:#x} ce={:#x} launch={:#x} pbdma={:#x}/{:#x} method={:#x} data={:#x}",
-                self.id,seq,read(regs,total,self.commands.range.start+8192)?,regs.read(0x40014+e.pbdma*0x2000),regs.read(0x40120+e.pbdma*0x2000),regs.read(0x2100),regs.read(0x259c),regs.read(e.base+0x908),regs.read(e.base+0xf14),regs.read(0x40108+e.pbdma*0x2000),regs.read(0x40148+e.pbdma*0x2000),regs.read(0x40150+e.pbdma*0x2000),regs.read(0x40154+e.pbdma*0x2000));
+            crate::serial_println!("GT710_CE_ERROR channel={} seq={} sem={} get={} current={:#x} fifo={:#x} fault={:#x} ce={:#x} launch={:#x} pbdma={:#x}/{:#x} method={:#x} data={:#x} pmc={:#x} engine_status={:#x} pbdma_status={:#x} preempt={:#x} runlist={:#x} mmu_flush={:#x}",
+                self.id,seq,read(regs,total,self.release_address(seq))?,regs.read(0x40014+e.pbdma*0x2000),regs.read(0x40120+e.pbdma*0x2000),regs.read(0x2100),regs.read(0x259c),regs.read(e.base+0x908),regs.read(e.base+0xf14),regs.read(0x40108+e.pbdma*0x2000),regs.read(0x40148+e.pbdma*0x2000),regs.read(0x40150+e.pbdma*0x2000),regs.read(0x40154+e.pbdma*0x2000),regs.read(0x200),regs.read(0x2640+e.engine as usize*8),regs.read(0x3080+e.pbdma*4),regs.read(0x2634),regs.read(0x2284+e.run as usize*8),regs.read(0x100c80));
             return Err("CE completion failed; backing retained");
         }
         unsafe {self.context.finish_device(ticket)?;}

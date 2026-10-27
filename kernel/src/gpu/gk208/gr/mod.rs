@@ -83,6 +83,32 @@ fn hardware_error(error: ctxctl::Fault) -> &'static str {
     error.reason
 }
 
+struct ProbeCleanup {
+    state: ctxctl::SavedState,
+    scratch: Vec<memory::allocator::Allocation>,
+    finished: bool,
+}
+impl ProbeCleanup {
+    fn finish(&mut self, regs: &mut Registers, layout: &mut memory::Layout) -> Result<(), &'static str> {
+        if self.finished {
+            return Ok(());
+        }
+        self.state.stop(regs).map_err(hardware_error)?;
+        let release = (|| {
+            while let Some(&allocation) = self.scratch.last() {
+                layout.allocator.release(allocation)?;
+                self.scratch.pop();
+            }
+            Ok(())
+        })();
+        let restore = self.state.restore(regs).map_err(hardware_error);
+        release?;
+        restore?;
+        self.finished = true;
+        Ok(())
+    }
+}
+
 /// Capture startup, golden context and one A197 channel for the raw scorer.
 pub(super) fn probe(
     regs: &mut Registers,
@@ -91,6 +117,24 @@ pub(super) fn probe(
     console: &super::ConsoleSurface,
 ) -> Result<(), &'static str> {
     probe_static_inputs()?;
+    let mut cleanup = ProbeCleanup {
+        state: ctxctl::SavedState::capture(regs).map_err(hardware_error)?,
+        scratch: Vec::new(),
+        finished: false,
+    };
+    let result = probe_inner(regs, device, layout, console, &mut cleanup);
+    // This also runs after topology, allocation, upload and startup refusals.
+    cleanup.finish(regs, layout)?;
+    result
+}
+
+fn probe_inner(
+    regs: &mut Registers,
+    device: &crate::drivers::pci::Device,
+    layout: &mut memory::Layout,
+    console: &super::ConsoleSurface,
+    cleanup: &mut ProbeCleanup,
+) -> Result<(), &'static str> {
     ctxctl::reset(regs).map_err(hardware_error)?;
     let raw = [
         [0x409604, regs.read(0x409604)],
@@ -106,14 +150,13 @@ pub(super) fn probe(
     // Scratch backing stays charged until the confirmed GR reset below.
     let scratch_bytes = 1u64 << if regs.read(0x100c80) & 1 != 0 { 16 } else { 17 };
     let mut mmu = [0; 2];
-    let mut scratch = Vec::new();
     for index in 0..2 {
         let allocation =
             layout
                 .allocator
                 .allocate(scratch_bytes, 4096, memory::allocator::Kind::Engine)?;
         mmu[index] = allocation.range.start;
-        scratch.push(allocation);
+        cleanup.scratch.push(allocation);
         let mut aperture = memory::Pramin::new(regs, total);
         for offset in (0..scratch_bytes).step_by(4) {
             aperture.write(mmu[index] + offset, 0)?;
@@ -174,9 +217,7 @@ pub(super) fn probe(
     let runnable_bytes = hardware.runnable_header.clone();
     let firmware_hashes = hardware.controller.readback_sha256;
     hardware.finish()?;
-    for allocation in scratch {
-        layout.allocator.release(allocation)?;
-    }
+    cleanup.finish(regs, layout)?;
     if layout.allocator.stats() != baseline {
         return Err("GR baseline reclamation mismatch");
     }

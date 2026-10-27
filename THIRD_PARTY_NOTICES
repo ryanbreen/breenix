@@ -714,3 +714,14 @@ notices and full grants are retained in the consumers.
 
 The ctxctl reply clear in `kernel/src/gpu/gk208/gr/ctxctl.rs` follows
 `vendor/kepler/nouveau/gr/ctxgf100.c:1506-1512` (MIT, Copyright 2010 Red Hat Inc.).
+
+M7.2 GR refusal cleanup in `kernel/src/gpu/gk208/gr/ctxctl.rs` uses the
+PGOB programming controls and command acknowledgement from the checked
+`nvkm/subdev/pmu/gk110.c:32-83` above (MIT, Copyright 2015 Red Hat Inc.).
+It saves the incoming command payloads and restores them after confirmed GR
+reset. The scratch ownership/unwind in `kernel/src/gpu/gk208/gr/mod.rs` and
+its host injection fixture are Breenix code. The CE timeout diagnostics in
+`kernel/src/gpu/gk208/ce.rs` use the FIFO/MMU register sources already listed
+for that file; the pre-reset completion wait in `ce/recovery.rs` follows the
+existing attributed FIFO preemption protocol. No additional external source
+or firmware is introduced.

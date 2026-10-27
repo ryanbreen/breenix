@@ -176,6 +176,81 @@ fn delay(io: &mut impl Access, us: u64) -> Result<(), Fault> {
     Ok(())
 }
 
+// gk110_pmu_pgob's command ports acknowledge by clearing bit 31. Preserve
+// their incoming payloads, rather than guessing which units main had gated.
+const PGOB: [u32; 5] = [0x20520, 0x20524, 0x20530, 0x2052c, 0x20528];
+
+pub struct SavedState {
+    pmc: u32,
+    control: u32,
+    pgob: [u32; 5],
+}
+impl SavedState {
+    pub fn capture(io: &mut impl Access) -> Result<Self, Fault> {
+        let pmc = io.read(0x200);
+        let control = io.read(0x10a78c);
+        let mut pgob = [0; 5];
+        for (index, address) in PGOB.into_iter().enumerate() {
+            poll(io, BOUND_US, "GR incoming power-gating command busy", |io| {
+                let value = io.read(address);
+                pgob[index] = value;
+                (value & READY == 0, address, value)
+            })?;
+        }
+        Ok(Self { pmc, control, pgob })
+    }
+
+    /// Assert PGRAPH reset and confirm it before releasing Falcon backing.
+    pub fn stop(&self, io: &mut impl Access) -> Result<(), Fault> {
+        mask(io, 0x200, 0x1000, 0);
+        poll(io, BOUND_US, "GR stop unconfirmed; backing retained", |io| {
+            let value = io.read(0x200);
+            (value & 0x1000 == 0, 0x200, value)
+        })?;
+        delay(io, 50_000)
+    }
+
+    /// Restore the saved PGOB payloads under the same programming controls as
+    /// gk110_pmu_pgob, with PGRAPH held in reset until its scratch is retired.
+    pub fn restore(&self, io: &mut impl Access) -> Result<(), Fault> {
+        let result = (|| {
+            if PGOB.iter().zip(self.pgob).any(|(&a, v)| io.read(a) != v) {
+                mask(io, 0x200, 0x08000000, 0x08000000);
+                delay(io, 50_000)?;
+                mask(io, 0x10a78c, 2, 2);
+                mask(io, 0x10a78c, 1, 1);
+                mask(io, 0x10a78c, 1, 0);
+                // Undo the distinct command ports in reverse exit order.
+                for (address, saved) in PGOB.into_iter().zip(self.pgob).rev() {
+                    if io.read(address) == saved {
+                        continue;
+                    }
+                    io.write(address, saved | READY);
+                    poll(io, BOUND_US, "GR power-gating restore timeout", |io| {
+                        let value = io.read(address);
+                        (value == saved, address, value)
+                    })?;
+                }
+            }
+            Ok(())
+        })();
+        // Restore programming controls and the complete incoming enable word
+        // even if one power-gating command timed out; report that failure.
+        mask(io, 0x10a78c, 2, 0);
+        mask(io, 0x10a78c, 1, 1);
+        mask(io, 0x10a78c, 1, 0);
+        io.write(0x10a78c, self.control);
+        io.write(0x200, self.pmc);
+        let control = io.read(0x10a78c);
+        let pmc = io.read(0x200);
+        result?;
+        if control != self.control || pmc != self.pmc {
+            return Err(fault("GR incoming power state did not restore", 0x200, pmc));
+        }
+        Ok(())
+    }
+}
+
 /// Reset PGRAPH and leave its power-gated units accessible before discovery.
 /// PFIFO/CE and display enables are outside the masks used here.
 pub fn reset(io: &mut impl Access) -> Result<(), Fault> {
