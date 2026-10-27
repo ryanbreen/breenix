@@ -507,3 +507,10 @@ M6.2 native copy engine:
 - Nouveau v6.8 nvkm/subdev/mmu/vmmgf100.c (MIT, Copyright 2017 Red Hat Inc.):
   kernel/src/gpu/gk208/vm.rs coherent host aperture encoding (aper 2, volatile).
 Original notices accompany the adapted files. No CE firmware is loaded.
+
+M6.2 recovery ordering additionally references nouveau v6.8
+nvkm/engine/fifo/runl.c (MIT, Copyright 2021 Red Hat Inc.) and
+nvkm/subdev/mc/base.c (MIT, Copyright 2012 Red Hat Inc.).
+The adaptation in kernel/src/gpu/gk208/ce.rs resets the enumerated engine before
+waiting for a runlist update, clears the exception and unblocks scheduling.
+The added source copyright and MIT grant accompany that file.

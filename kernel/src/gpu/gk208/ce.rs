@@ -1,4 +1,25 @@
 /*
+ * Copyright 2021 Red Hat Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ */
+/*
  * rnndb copyright 2006
  * Artur Huillet
  * Ben Skeggs
@@ -195,7 +216,7 @@
  */
 //! Serialized bring-up channels for device-executed VM and CE checks.
 //! IRQs remain masked; this boot-CPU owner polls and decodes outside top halves.
-use super::{channel::{VmIo, read, wait, elapsed}, copy::{self, Rect}, inventory::{words,stats},
+use super::{channel::{VmIo, read, wait as fifo_wait, elapsed}, copy::{self, Rect}, inventory::{words,stats},
     lifetime::{Context, Consumer}, memory::{self, allocator::{Allocation,Kind}}, modeset::{self,Io},
     system_dma, vm::Flags, Registers};
 use crate::{arch_impl::x86_64::timer,drivers::pci};
@@ -208,6 +229,14 @@ const STAGE:u64=0x600000;
 const SYSTEM:u64=0x800000;
 const SIZE:usize=8192;
 const SLOT:u64=(8<<20)-4096;
+fn wait(regs:&mut Registers,r:usize,mask:u32,value:u32,budget:u64)->Result<(),&'static str> {
+    let result=fifo_wait(regs,r,mask,value,budget);
+    if result.is_err() {
+        crate::serial_println!("GT710_CE_WAIT register={:#x} mask={:#x} wanted={:#x} observed={:#x} fault={:#x} freeze={:#x} exception={:#x} preempt={:#x}",
+            r,mask,value,regs.read(r),regs.read(0x259c),regs.read(0x2630),regs.read(0x262c),regs.read(0x2634));
+    }
+    result
+}
 struct Engine { engine:u32,run:u32,pbdma:usize,base:usize,reset:u32,fault:u32 }
 fn discover(regs:&mut Registers)->Result<Engine,&'static str> {
     let (mut engine,mut run,mut base,mut reset,mut fault)=(None,None,None,None,None);
@@ -300,7 +329,7 @@ impl Channel {
             let value=read(regs,total,addr)?;
             let epoch=u64::from(read(regs,total,addr+4)?)|u64::from(read(regs,total,addr+8)?)<<32;
             let p=e.pbdma*0x2000;
-            let accepted=value==seq && epoch==self.epoch && regs.read(0x40014+p)==self.put
+            let accepted=regs.read(0x259c)==0 && value==seq && epoch==self.epoch && regs.read(0x40014+p)==self.put
                 && regs.read(0x40120+p)&0x2fff==0x2000|self.id;
             if accepted || elapsed(start)>=budget {return Ok((accepted,elapsed(start)));}
             if regs.read(0x259c)!=0 {return Ok((false,elapsed(start)));}
@@ -499,13 +528,16 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
     let reset_start=timer::rdtsc();
     regs.mask(0x2630,1<<e.run,1<<e.run);
     regs.mask(0x800004,0x800,0x800);
-    regs.write(0x2270,((a.commands.range.start+16384)>>12) as u32);
-    regs.write(0x2274,e.run<<20);
-    wait(regs,0x2284+e.run as usize*8,0x100000,0,100000)?;
+    // A fault stops runlist progress. Reset before the update, then clear its
+    // exception and allow scheduling before waiting (MIT nouveau runl.c RC).
     regs.mask(0x200,1<<e.reset,0);let disabled=regs.read(0x200);
     regs.delay_us(50);regs.mask(0x200,1<<e.reset,1<<e.reset);let enabled=regs.read(0x200);
     regs.write(0x259c,fault_mask);regs.write(0x2100,0x10000000);
+    regs.write(0x2270,((a.commands.range.start+16384)>>12) as u32);
+    regs.write(0x2274,e.run<<20);
     regs.write(0x262c,1<<e.run);
+    regs.mask(0x2630,1<<e.run,0);
+    wait(regs,0x2284+e.run as usize*8,0x100000,0,100000)?;
     regs.write(0x2634,0);wait(regs,0x2634,0x100000,0,100000)?;
     wait(regs,0x3080+e.pbdma*4,0xe000,0,100000)?;
     wait(regs,0x2640+e.engine as usize*8,0xc0000000,0,100000)?;
