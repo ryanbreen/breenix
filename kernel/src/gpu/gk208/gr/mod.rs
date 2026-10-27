@@ -128,6 +128,12 @@ impl ctxctl::Access for Registers {
     fn relax(&mut self) {
         core::hint::spin_loop();
     }
+    fn restored_irqs(&mut self, expected: [u32; 5], actual: [u32; 5]) {
+        crate::serial_println!(
+            "GT710_GR_IRQ_RESTORED {{\"registers\":[320,8512,4194620,4234276,4231196],\"expected\":{:?},\"actual\":{:?},\"gr_accessible_readback\":true}}",
+            expected, actual
+        );
+    }
 }
 fn hardware_error(error: ctxctl::Fault) -> &'static str {
     crate::serial_println!(

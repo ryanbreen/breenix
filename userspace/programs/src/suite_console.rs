@@ -138,17 +138,26 @@ type Verdict<T = ()> = Result<T, String>;
 fn measured(run: impl FnOnce() -> Verdict) -> CaseResult {
     let result = run();
     #[cfg(target_arch = "x86_64")]
+    let mut result = result;
+    #[cfg(target_arch = "x86_64")]
     if result.is_err() {
         if let Ok(counters) = std::fs::read_to_string("/proc/xhci/counters") {
+            let mut replay = [0i64; 5];
             for field in counters.split_whitespace() {
                 let Some((name, value)) = field.split_once('=') else { continue };
                 if name.starts_with("HOSTKEY_") || name == "KBD_NONZERO_TOTAL" {
                     if let Ok(number) = value.parse::<i64>() {
+                        if let Some(index) = ["HOSTKEY_QUEUED", "HOSTKEY_REPLAYED", "HOSTKEY_DISPATCHED", "HOSTKEY_CHANGED", "HOSTKEY_REPLAY_MAX_NS"].iter().position(|&key| key == name) {
+                            replay[index] = number;
+                        }
                         let unit = if name.ends_with("_NS") { "ns" } else { "count" };
                         breenix_suite::suite::value(&name.to_ascii_lowercase().replace('_', "-"), number, unit, None);
                     }
                 }
             }
+            // HOSTKEY requests may consume the case's record budget. Keep the
+            // measured counters first in its capped failure message as well.
+            result = result.map_err(|reason| format!("q={} r={} d={} changed={} maxns={} {reason}", replay[0], replay[1], replay[2], replay[3], replay[4]));
         }
     }
     result.map_err(breenix_suite::suite::CaseError::Fail)

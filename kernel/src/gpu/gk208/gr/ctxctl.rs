@@ -109,6 +109,8 @@ pub trait Access {
     fn write(&mut self, address: u32, value: u32);
     fn now_us(&mut self) -> u64;
     fn relax(&mut self);
+    /// Suite-thread evidence from verified reads, before GR is gated again.
+    fn restored_irqs(&mut self, _expected: [u32; 5], _actual: [u32; 5]) {}
 }
 
 #[derive(Debug)]
@@ -278,6 +280,7 @@ impl SavedState {
         // stop() confirmed reset before backing was retired. Re-enable the
         // empty, halted engine while PGOB is still open to restore and verify
         // its reset baseline. Re-gating first makes the readback a PRI error.
+        let mut gr_actual = [0; 3];
         let gr_result = (|| {
             if let Some(irq) = self.gr_irq {
                 mask(io, 0x200, 0x1000, 0x1000);
@@ -285,8 +288,9 @@ impl SavedState {
                 for (address, value) in GR_IRQ.into_iter().zip(irq).rev() {
                     io.write(address, value);
                 }
-                for (address, expected) in GR_IRQ.into_iter().zip(irq) {
+                for (index, (address, expected)) in GR_IRQ.into_iter().zip(irq).enumerate() {
                     let actual = state_word(io, address)?;
+                    gr_actual[index] = actual;
                     if actual != expected {
                         return Err(fault("GR interrupt state did not restore", address, actual));
                     }
@@ -327,8 +331,10 @@ impl SavedState {
         for (a, v) in IRQ_ENABLES.into_iter().zip(self.irq).rev() {
             io.write(a, v);
         }
-        for (a, v) in IRQ_ENABLES.into_iter().zip(self.irq) {
-            let actual = io.read(a);
+        let mut irq_actual = [0; 2];
+        for (index, (a, v)) in IRQ_ENABLES.into_iter().zip(self.irq).enumerate() {
+            let actual = state_word(io, a)?;
+            irq_actual[index] = actual;
             if actual != v {
                 return Err(fault(
                     "GR incoming interrupt state did not restore",
@@ -343,6 +349,12 @@ impl SavedState {
         result?;
         if control != self.control || pmc != self.pmc {
             return Err(fault("GR incoming power state did not restore", 0x200, pmc));
+        }
+        if let Some(gr) = self.gr_irq {
+            io.restored_irqs(
+                [self.irq[0], self.irq[1], gr[0], gr[1], gr[2]],
+                [irq_actual[0], irq_actual[1], gr_actual[0], gr_actual[1], gr_actual[2]],
+            );
         }
         Ok(())
     }
