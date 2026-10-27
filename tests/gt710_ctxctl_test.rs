@@ -370,3 +370,13 @@ fn ctxctl_polling_probe_never_enables_host_pgraph_irqs() {
     assert!(m.events.contains(&Event::Write(0x40013c,0)));
     assert!(m.events.contains(&Event::Write(0x409c24,0)));
 }
+
+#[test]
+fn sparse_tpc_mask_uses_logical_register_index() {
+    let mut m = Mock::new();
+    let t = topology::decode(&[[0x409604, 0x10001], [0x502608, 1], [0x500c30, 2]]).unwrap();
+    reset(&mut m).unwrap();
+    Controller::upload(&mut m, &t, [0x100000, 0x101000]).unwrap();
+    assert!(m.events.contains(&Event::Write(0x504508, u32::MAX)));
+    assert!(!m.events.contains(&Event::Write(0x504d08, u32::MAX)));
+}

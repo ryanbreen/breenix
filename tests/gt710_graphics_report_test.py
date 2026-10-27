@@ -179,6 +179,21 @@ class Graphics(unittest.TestCase):
                              ['graphics/ctxctl', 'graphics/context', 'graphics/channel'])
             self.assertEqual([c['result'] for c in cases], ['PASS'] * 3)
 
+    def test_graphics_cases_score_their_own_evidence(self):
+        mutations = [
+            (lambda e: e['firmware']['fecs.code.bin'].update(readback_sha256='f' * 64), ['FAIL', 'PASS', 'PASS']),
+            (lambda e: e.update(golden_bytes=len(IMAGE) + 4), ['PASS', 'FAIL', 'PASS']),
+            (lambda e: e['channel'].update(class_id=0xa06f), ['PASS', 'PASS', 'FAIL']),
+        ]
+        for mutate, expected in mutations:
+            record = fixture()
+            mutate(record)
+            with tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                stage(directory, record)
+                cases = API['cases']('graphics', API['capture_serial'](directory))
+                self.assertEqual([c['result'] for c in cases], expected)
+
     def test_tpc_units_word_keeps_zcull_count_out_of_topology(self):
         record = fixture()
         # MIT nouveau gpc.fuc:149-156: UNITS TPC count is bits 4:0.

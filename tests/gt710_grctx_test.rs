@@ -498,3 +498,13 @@ fn terminal_writes_cover_whole_quads_without_consuming_empty_strands_or_allocati
     assert_eq!(error.reason, "save terminal padding is not zero");
     assert!((380..384).contains(&error.offset));
 }
+
+#[test]
+fn sparse_tpc_mask_uses_logical_sm_registers() {
+    let mut m = Mock::new();
+    let t = topology::decode(&[[0x409604, 0x10001], [0x502608, 1], [0x500c30, 2]]).unwrap();
+    context::generate(&mut m, &t, 1280).unwrap();
+    assert!(m.events.contains(&Event::Write(0x504698, 0)));
+    assert!(!m.events.contains(&Event::Write(0x504e98, 0)));
+    assert!(m.events.contains(&Event::Write(0x500c10, 0)));
+}
