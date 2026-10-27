@@ -424,6 +424,14 @@ def copy_bytes(e, snapshots):
     need(snapshots[0]==expected and snapshots[1]==expected, 'CE full destination mismatch or unwritten bytes')
 
 
+def copy_source(c):
+    base=0x800000 if c['upload'] else 0x600000 if c['overlap'] else 0x403000 if c['name']=='restored-a' else 0x400000
+    if c['src_va']!=base+c['src_offset']:
+        raise ValueError('CE compared a substituted source VA')
+    if c['refilled'] != (c['name'] not in ('survivor-b','unaffected-b')):
+        raise ValueError('CE survivor source was refilled')
+
+
 def copy_engine(serial):
     def need(ok,why):
         if not ok: raise ValueError(why)
@@ -453,6 +461,7 @@ def copy_engine(serial):
                     need(len(chunks[key])==min(256,c['size']-offset),'bad CE chunk length')
                     data.extend(chunks[key]);used.add(key)
                 snapshots.append(bytes(data))
+            copy_source(c)
             copy_bytes(c,snapshots)
         need(set(chunks)==used,'unbound CE bytes')
         byname={c['name']:c for c in cases}
