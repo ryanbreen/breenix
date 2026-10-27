@@ -8,6 +8,7 @@ import runpy
 import tempfile
 
 CATEGORIES = {
+    'channel': [('semaphore', 'A privileged A06F channel executes unique semaphores with native identity, epoch and GET/PUT progression; withheld and stale completions fail')],
     'lifetime': [('retention', 'Mapping and table holds retain faulted storage through EIO and failed reset, attribute contexts and reclaim the CPU-only baseline; engine recovery remains pending')],
     'aperture': [('cpu-dma', 'BAR1 and BAR2 preserve nonce-bearing boundary patterns with explicit cache types and bounded coherent DMA; engine access remains pending')],
     'vm': [('tables', 'Private GPU tables preserve distinct same-VA backing, ordered remaps and reserved storage; engine translation remains pending')],
@@ -400,6 +401,67 @@ def virtual_memory(serial):
         raise ValueError('malformed private VM evidence') from error
 
 
+def privileged_channel(serial):
+    """M6.1 host execution only; a host release is not a CE fence."""
+    board = board_inventory(serial)
+    def need(condition, why):
+        if not condition: raise ValueError(why)
+    try:
+        e = json.loads(one(r'^GT710_CHANNEL (.+)$', serial, 'privileged channel evidence')[1])
+        need(e['schema']==1 and e['bdf']==board['bdf'] and e['chipset']==0x106
+             and e['host_class']==0xa06f and e['channel']==0 and e['epoch']>0, 'foreign native channel identity')
+        runlist=e['runlist']; engine=e['engine']
+        need(0<=runlist<16 and 0<=engine<16, 'invalid discovered engine')
+        found=False; en=rl=-1
+        need(len(e['top'])==64, 'incomplete hardware engine table')
+        for word in e['top']:
+            if word&3==0: continue
+            if word&3==2:
+                if word&32: en=(word>>26)&15
+                if word&16: rl=(word>>21)&15
+            if not word&0x80000000:
+                if word&3==3 and (word&0x7ffffffc)>>2 in (1,2,3) and (en,rl)==(engine,runlist): found=True
+                en=rl=-1
+        need(found and any(0<=i<32 and mask&(1<<runlist) for i,mask in e['pbdmas']), 'runlist not backed by real CE engine/PBDMA')
+        need(e['instance']%4096==0 and e['instance']>0 and e['bind']==0x80000000|(e['instance']>>12)
+             and e['state']&1 and (e['state']>>16)&15==runlist, 'channel binding did not latch')
+        need(len({e[k] for k in ('instance','directory','userd','ring','push','semaphore')})==6, 'aliased channel storage')
+        live=e['progress']
+        need(live['source']=='pbdma-live' and live['channel']&0x2fff==0x2000|e['channel']
+             and any(i==live['pbdma'] and mask&(1<<runlist) for i,mask in e['pbdmas'])
+             and live['userd_low']&0xfffff003==e['userd']&0xfffff003
+             and live['userd_high']==e['userd']>>32, 'foreign native progress source')
+        need(e['fault']==0 and e['pbdma_errors']==[0,0], 'channel hardware fault')
+        samples=e['samples'];need(len(samples)==2, 'missing clean semaphore progression')
+        need(samples[0]['expected']!=samples[1]['expected'], 'reused semaphore value')
+        for i,s in enumerate(samples,1):
+            need(s['epoch']==e['epoch'] and s['sequence']==i and 0<s['expected']<=0xffffffff
+                 and s['before']!=s['expected'] and s['after']==s['expected']==s['reference']
+                 and s['get_before']==i-1 and s['put']==s['get']==i, 'semaphore or GET/PUT did not progress')
+        w=e['withheld'];s=e['stale']
+        need(w['epoch']==e['epoch'] and w['observed']!=w['expected'] and w['get']==w['put']==2
+             and 10000<=w['elapsed_us']<=2000000 and w['accepted'] is False, 'withheld completion accepted')
+        need(s['epoch']!=e['epoch'] and s['expected']==s['observed']==samples[-1]['expected']
+             and s['get']==s['put']==2 and s['reference']==s['expected']
+             and 10000<=s['elapsed_us']<=2000000 and s['accepted'] is False, 'stale epoch accepted')
+        missing=e['suppressed'];clean=e['clean']
+        need(missing['epoch']==e['epoch'] and missing['get']==missing['put']==3
+             and missing['reference']==missing['expected'] and missing['observed']!=missing['expected']
+             and missing['accepted'] is False and 10000<=missing['elapsed_us']<=2000000,
+             'GET advancement accepted without semaphore release')
+        need(clean['sequence']==4 and clean['epoch']==e['epoch'] and clean['get_before']==3
+             and clean['before']!=clean['expected'] and clean['get']==clean['put']==4
+             and clean['after']==clean['expected']==clean['reference']
+             and clean['expected'] not in [v['expected'] for v in samples]+[missing['expected']],
+             'missing clean completion after negative controls')
+        need(e['drain']==dict(runlist_count=0,pending=0,preempt=0,binding=0), 'channel not drained')
+        need(e['retained_on_failure'] is True and e['firmware_writes']==0
+             and e['ce']==e['vm_probes']=='pending-6.2' and e['reset']=='pending-6.5', 'incorrect execution claim')
+    except (KeyError,TypeError,IndexError,json.JSONDecodeError) as error:
+        raise ValueError('malformed privileged channel evidence') from error
+    return e
+
+
 def memory_lifetimes(serial):
     """CPU lifetime policy plus retained physical tables; reset execution awaits M6."""
     try:
@@ -774,6 +836,10 @@ def native_flips(serial):
 
 
 def check_case(category, case, serial):
+    if category == 'channel':
+        if case != 'semaphore': raise ValueError('unknown channel case')
+        privileged_channel(serial)
+        return
     if category == 'lifetime':
         if case != 'retention': raise ValueError('unknown lifetime case')
         memory_lifetimes(serial)

@@ -274,7 +274,6 @@ impl Context {
     /// # Safety
     /// The scheduler must serialize this owner and pin it before publishing a
     /// channel, push buffer or scanout binding. Call only with owned storage.
-    #[allow(dead_code)] // Public scheduler admission API consumed by milestone 6.
     pub unsafe fn admit_device(&mut self) -> Result<(), &'static str> {
         self.mutable()?;
         self.device = true;
@@ -284,13 +283,11 @@ impl Context {
     /// # Safety
     /// An engine-ordered completion for this exact ticket must have been observed.
     /// For scanout, the display must have flipped away and stopped reading it.
-    #[allow(dead_code)] // Public completion API consumed by milestone 6.
     pub unsafe fn finish_device(&mut self, ticket: Ticket) -> Result<(), &'static str> {
         self.finish(ticket)
     }
     /// # Safety
     /// Scheduling/bindings must be disabled, and actual device access drained.
-    #[allow(dead_code)] // Public drain API consumed by milestone 6.
     pub unsafe fn confirm_drain(&mut self) {
         self.device = false;
     }
