@@ -1718,6 +1718,17 @@ For the scoped console host checks, put e2fsprogs `debugfs` and `mke2fs` on `PAT
 
 ## xHCI recovery fault boots
 
+`metal-run boot --mode suite --suite console --inject softirq-hostkey` builds
+only the `softirq_hostkey_test` feature, recorded as a `fault-test` profile.
+It runs the normal console suite with real serial host-key reports and requires
+`SOFTIRQ_HOSTKEY PASS` in addition to suite completion. The first press/release
+forces command interrupts across short preempt-disabled sections with safe
+release points; replay must finish in less than 100 ms without a callback over
+disabled preemption. This boot is not milestone evidence. An ordinary console
+suite uses the production kernel; its final keyboard case reads the host-key
+counters from `/proc/xhci/counters`, reports them as VALUE records and requires
+the maximum replay time to be below 100 ms on x86.
+
 A recovery exercise uses `--mode console --input sol --inject xhci-reset-device`
 or `--inject xhci-short-read` through `metal-run boot`, with the target branch.
 It requires a RAM-disk image and cannot be combined with a session or a disk action. The boot record is `fault-test`, evidence-ineligible;

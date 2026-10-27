@@ -328,7 +328,29 @@ pub fn keys_report_joins_typed_line() -> CaseResult {
         expected.extend_from_slice(&b"\x1b[1;3R".repeat(11));
         expected.push(b'\n');
         require(got[..count] == expected, &format!("tty2 read {:?}", &got[..count]))?;
-        require(term.available() == 0, "report bytes remained after the canonical line")
+        require(term.available() == 0, "report bytes remained after the canonical line")?;
+        #[cfg(target_arch = "x86_64")]
+        {
+            let counters = std::fs::read_to_string("/proc/xhci/counters")
+                .map_err(|e| format!("xHCI replay counters: {e}"))?;
+            for (counter, name) in [
+                ("HOSTKEY_QUEUED", "hostkey-queued"),
+                ("HOSTKEY_REPLAYED", "hostkey-replayed"),
+                ("HOSTKEY_DISPATCHED", "hostkey-dispatched"),
+                ("HOSTKEY_CHANGED", "hostkey-changed"),
+                ("HOSTKEY_REPLAY_MAX_NS", "hostkey-replay-max-ns"),
+            ] {
+                let value = counters.split_whitespace().find_map(|field| {
+                    field.strip_prefix(counter)?.strip_prefix('=')?.parse::<i64>().ok()
+                }).ok_or_else(|| format!("missing xHCI counter {counter}: {counters}"))?;
+                let range = (counter == "HOSTKEY_REPLAY_MAX_NS").then_some((1, 99_999_999));
+                breenix_suite::suite::value(name, value, if range.is_some() { "ns" } else { "" }, range);
+                if let Some((low, high)) = range {
+                    require((low..=high).contains(&value), &format!("{counter}={value} exceeds replay budget"))?;
+                }
+            }
+        }
+        Ok(())
     })
 }
 
