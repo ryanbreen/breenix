@@ -359,3 +359,14 @@ fn ctxctl_stale_control_clears_ready_via_alias() {
     assert!(m.events[begin..].contains(&Event::Write(0x409840,0x80000000)));
     assert_eq!(m.regs[&0x409800], previous & 0x7fffffff);
 }
+
+#[test]
+fn ctxctl_polling_probe_never_enables_host_pgraph_irqs() {
+    let mut m=Mock::new();
+    let mut c=prepared(&mut m);
+    c.start(&mut m).unwrap();
+    assert!(!m.events.iter().any(|e| matches!(e,Event::Write(0x40013c|0x409c24,v) if *v!=0)),
+        "an init pack enabled an unhandled host interrupt before it was masked");
+    assert!(m.events.contains(&Event::Write(0x40013c,0)));
+    assert!(m.events.contains(&Event::Write(0x409c24,0)));
+}
