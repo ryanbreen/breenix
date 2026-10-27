@@ -333,7 +333,7 @@ pub struct ConsoleSurface {
 
 pub fn takeover(
     regs: &mut Registers,
-    device: pci::Device,
+    device: &pci::Device,
     rom: &[u8],
     modes: &[edid::Timing],
     route: &board::Route,

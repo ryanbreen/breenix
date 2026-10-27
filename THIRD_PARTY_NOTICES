@@ -397,3 +397,17 @@ The PR 4.5 same-mode surface updates in native.rs also use cl927d.h's
 HEAD_SET_OFFSET, SET_NOTIFIER_CONTROL and UPDATE interface and DONE bit.
 The pinned file-local MIT grant above was rechecked before this use; its
 original copyright and full permission notice remain in native.rs.
+
+## GK208B memory inventory (E21 M5 PR 5.1)
+
+`kernel/src/gpu/gk208/inventory.rs` reads the fault mask at 0x00259c and
+pending units' four fault words using
+`drivers/gpu/drm/nouveau/nvkm/engine/fifo/gf100.c` from Linux v6.8
+(`e8f897f4afef0031fe618a8e94127a0934896aba`), Copyright 2012 Red Hat Inc.,
+MIT. Its file-local full MIT grant was checked before use and is retained
+in the consumer's header. No interrupt handling or Linux integration is used.
+BAR publication and small-page encodings call the existing attributed
+`modeset.rs` implementation; their sources and retained notices are listed
+above. VRAM discovery and G4 reservations continue to use the attributed
+`memory.rs` implementation unchanged. `allocator.rs`, the pseudorandom
+probe, accounting policy and capture scorer are original Breenix code.
