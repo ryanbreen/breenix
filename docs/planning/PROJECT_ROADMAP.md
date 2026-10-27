@@ -16,6 +16,11 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+Native GK208B milestone 6 PR 6.3 is in progress: shared request/completion
+identity and two-poison resource-generation observation
+([adapter contract](../gui/gk208-completion.md)). Killable client lifetime and
+the full watchdog/reset policy follow in PRs 6.4 and 6.5.
+
 The native GK208B milestone 7 host firmware/compiler assets are tracked in
 [PR #2490](https://github.com/ryanbreen/breenix/pull/2490), with review follow-up in
 [#2491](https://github.com/ryanbreen/breenix/issues/2491). This is source-built

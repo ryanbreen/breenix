@@ -69,6 +69,10 @@ pub mod net;
 pub mod socket;
 #[path = "gpu/cache.rs"]
 pub mod gpu_cache;
+#[path = "gpu/completion.rs"]
+pub mod gpu_completion;
+#[path = "gpu/observation.rs"]
+pub mod gpu_observation;
 // The GPU core (syscall 416): ARM64 only until x86-64 joins the GPU era
 // (docs/gui/gpu.md section 1.6.4). Suite-mode test controls (syscall 415) serve
 // both architectures: the users suite's points are architecture-independent.
