@@ -353,9 +353,11 @@ flips remain PRs 4.4 and 4.5; nontrivial review follow-ups are grouped in
 
 ## Native second-mode switching (E19 M4 PR 4.4)
 
-In progress: select a lower mode advertised by the live EDID and program
-low, preferred, low through the native owned display channel. Acceptance
-requires each latched timing, actual pixel PLL and live link, complete unique
-pixel read-back including pitch edges, firmware-write accounting through
-console return, and the console suite on the card. Same-mode A-B-A surface
-flips remain PR 4.5.
+PR [#2507](https://github.com/ryanbreen/breenix/pull/2507) programs the live
+EDID low, preferred, low sequence, then restores the preferred console.
+Landing repair `e3c5d76f` separates outgoing/incoming supervisor operations,
+powers down detached outputs, and recovers the preferred mode after a failed
+switch. Missing switch prerequisites retain preferred takeover. Boot
+`20261027T001802Z-metal` records the three complete device frames and the
+preferred return; the PR carries the scoped console and capture verdicts.
+Same-mode A-B-A surface flips remain PR 4.5.
