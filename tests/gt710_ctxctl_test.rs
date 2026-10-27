@@ -104,7 +104,7 @@ enum Event { Read(u32, u32), Write(u32, u32) }
 struct Mock {
     regs: BTreeMap<u32,u32>, memory: BTreeMap<(u32,bool,u32),u32>,
     index: BTreeMap<(u32,bool),u32>, events: Vec<Event>,
-    now: u64, frozen: bool, corrupt: Option<(u32,bool,u32)>,
+    now: u64, frozen: bool, fast_clock: bool, ticks: u64, record: bool, corrupt: Option<(u32,bool,u32)>,
     ready: bool, gpc_ready: bool, reply: bool, pgob_stuck: bool,
 }
 impl Mock {
@@ -112,7 +112,7 @@ impl Mock {
         Self { regs: BTreeMap::from([(0x200,0xa5010100), (0x409604,0x10001),
                 (0x502608,2), (0x500c30,3), (0x409108,0x20040), (0x502108,0x20040),
                 (0x120074,1), (0x100800,1)]), memory: BTreeMap::new(),
-            index: BTreeMap::new(), events: vec![], now:0, frozen:false,
+            index: BTreeMap::new(), events: vec![], now:0, frozen:false, fast_clock:false, ticks:0, record:true,
             corrupt:None, ready:true, gpc_ready:true, reply:true, pgob_stuck:false }
     }
     fn port(a:u32) -> Option<(u32,bool,bool)> {
@@ -134,10 +134,10 @@ impl Access for Mock {
             if index & 0x02000000!=0 { self.index.insert((b,c),index+4); }
             v
         } else { *self.regs.get(&a).unwrap_or(&0) };
-        self.events.push(Event::Read(a,v)); v
+        if self.record { self.events.push(Event::Read(a,v)); } v
     }
     fn write(&mut self,a:u32,v:u32) {
-        self.events.push(Event::Write(a,v));
+        if self.record { self.events.push(Event::Write(a,v)); }
         if let Some((b,c,data))=Self::port(a) {
             let bases=if b==0x41a000 { vec![0x502000] } else { vec![b] };
             for b in bases {
@@ -149,6 +149,7 @@ impl Access for Mock {
             }
         }
         self.regs.insert(a,v);
+        if a==0x409840 { *self.regs.entry(0x409800).or_default() &= !v; }
         if matches!(a,0x20520|0x20524|0x20528|0x2052c|0x20530) && !self.pgob_stuck {
             self.regs.insert(a,v & 0x7fffffff);
         }
@@ -166,7 +167,7 @@ impl Access for Mock {
             self.regs.insert(0x409800,poison|0x80000000);
         }
     }
-    fn now_us(&mut self)->u64 { if !self.frozen { self.now+=100; } self.now }
+    fn now_us(&mut self)->u64 { if !self.frozen { if self.fast_clock { self.ticks+=1; self.now+=self.ticks%2; } else { self.now+=100; } } self.now }
     fn relax(&mut self) {}
 }
 fn topo()->topology::Topology<'static> {
@@ -329,4 +330,31 @@ fn ctxctl_pgob_timeout_stops_the_sequence_and_restores_temporary_controls() {
     assert_eq!(m.regs[&0x200] & 0x08001000, 0);
     assert_eq!(m.regs[&0x10a78c] & 3, 0);
     assert!(m.now < 2_100_000);
+}
+
+// A sub-microsecond polling loop must reach the clock bound, and the
+// stale control must clear the real mailbox through its hardware CLR alias.
+#[test]
+fn ctxctl_fast_poll_reaches_bound_and_reports_elapsed() {
+    let mut m=Mock::new(); let mut c=prepared(&mut m);
+    m.fast_clock=true; m.record=false;
+    let control=c.withheld_start(&mut m).unwrap();
+    assert!(control.elapsed_us>=BOUND_US);
+}
+#[test]
+fn ctxctl_fast_poll_timeout_reaches_clock_bound() {
+    let mut m=Mock::new(); let mut c=prepared(&mut m);
+    m.fast_clock=true; m.record=false; m.ready=false;
+    let error=c.start(&mut m).unwrap_err();
+    assert!(error.elapsed_us>=BOUND_US, "elapsed {}", error.elapsed_us);
+}
+#[test]
+fn ctxctl_stale_control_clears_ready_via_alias() {
+    let mut m=Mock::new(); let mut c=prepared(&mut m); c.start(&mut m).unwrap();
+    let previous=c.request(&mut m,1,0x80010000,0x15555555).unwrap().reply;
+    let begin=m.events.len();
+    let control=c.stale_reply(&mut m,previous).unwrap();
+    assert!(control.elapsed_us>=BOUND_US);
+    assert!(m.events[begin..].contains(&Event::Write(0x409840,0x80000000)));
+    assert_eq!(m.regs[&0x409800], previous & 0x7fffffff);
 }
