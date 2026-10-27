@@ -135,3 +135,21 @@ fn initialization_writes_only_payload_of_charged_instance_directory_and_tables()
     }
     for r in &payload {assert!(!io.words.contains_key(&(r.start-8)));assert!(!io.words.contains_key(&r.end().unwrap()));}
 }
+
+#[test]
+fn coherent_system_pages_encode_host_aperture_without_truncating_dma_addresses() {
+    let mut a=Allocator::new(1<<30,&[]).unwrap(); let mut io=Model::default();
+    let mut s=Space::new(&mut a,&mut io).unwrap();
+    let va=0x400000; let pages=[0x12345000,0x812345000,0xfffffff000];
+    s.map_system(&mut a,&mut io,va,&pages).unwrap();
+    for (i,p) in pages.iter().enumerate() {
+        assert_eq!(io.words[&s.pte_address(va+i as u64*4096).unwrap()],(p>>8)|1|(1<<32)|(2<<33));
+    }
+    assert_eq!(&io.events[io.events.len()-2..],&[('f',0,0),('i',s.directory.range.start,0)]);
+    for bad in [vec![],vec![4097],vec![1<<40],vec![4096,1<<40]] {
+        io.events.clear();
+        assert!(s.map_system(&mut a,&mut io,0x800000,&bad).is_err());
+        assert!(io.events.is_empty());
+    }
+    s.retire(&mut a,&mut io).unwrap();
+}
