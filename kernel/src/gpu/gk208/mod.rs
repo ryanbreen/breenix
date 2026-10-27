@@ -106,6 +106,8 @@ mod dma_policy;
 mod system_dma;
 mod aperture_probe;
 mod channel;
+mod copy;
+mod ce;
 pub use system_dma::set_platform as set_dma_platform;
 mod modeset;
 mod native;
@@ -325,6 +327,7 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
             vm_probe::probe(&mut regs,&device,&mut layout,&console)?;
             aperture_probe::probe(&mut regs,&device,&mut layout,&console)?;
             channel::probe(&mut regs,&device,&mut layout,&console)?;
+            ce::probe(&mut regs,&device,&mut layout,&console)?;
         }
         DISPLAY_MEMORY.try_get_or_init(||layout).map_err(|_|"display memory already initializing")?;
         return Ok(console);

@@ -185,9 +185,9 @@ use crate::{arch_impl::x86_64::timer, drivers::pci};
 use alloc::{format, vec::Vec};
 const VA: u64 = 0x100000;
 const USERD_OFFSET: u64 = (8 << 20) - 4096;
-struct VmIo<'a> {
-    regs: &'a mut Registers,
-    total: u64,
+pub(super) struct VmIo<'a> {
+    pub(super) regs: &'a mut Registers,
+    pub(super) total: u64,
 }
 impl vm::Io for VmIo<'_> {
     fn read(&mut self, a: u64) -> Result<u64, &'static str> {
@@ -207,13 +207,13 @@ impl vm::Io for VmIo<'_> {
         self.regs.read(r)
     }
 }
-fn read(regs: &mut Registers, total: u64, a: u64) -> Result<u32, &'static str> {
+pub(super) fn read(regs: &mut Registers, total: u64, a: u64) -> Result<u32, &'static str> {
     memory::Pramin::new(regs, total).read(a)
 }
-fn elapsed(begin: u64) -> u64 {
+pub(super) fn elapsed(begin: u64) -> u64 {
     timer::rdtsc().wrapping_sub(begin) / (timer::frequency_hz() / 1_000_000)
 }
-fn wait(
+pub(super) fn wait(
     regs: &mut Registers,
     r: usize,
     mask: u32,

@@ -124,6 +124,14 @@ impl Context {
         self.refresh_tables(a)?;
         result
     }
+    /// Caller owns the system frames through a confirmed device drain/reset.
+    pub fn map_system(&mut self, a: &mut Allocator, io: &mut impl Io, va: u64, pages: &[u64]) -> Result<(), &'static str> {
+        self.mutable()?;
+        let result = self.space.as_mut().unwrap().map_system(a, io, va, pages);
+        if result.is_err() { self.failed = true; }
+        self.refresh_tables(a)?;
+        result
+    }
     pub fn remap(
         &mut self,
         a: &Allocator,
