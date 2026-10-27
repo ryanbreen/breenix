@@ -92,7 +92,7 @@ impl Session {
 fn recovery_read()->Result<Vec<u8>,i32> {
     if !RECOVERY_STARTED.load(Ordering::Acquire) && SESSION.lock().is_none() {return Ok(b"unavailable\n".to_vec());}
     if !RECOVERY_STARTED.swap(true,Ordering::AcqRel) {
-        crate::task::kthread::kthread_run(|| {
+        let started=crate::task::kthread::kthread_run(|| {
             let owned={SESSION.lock().take()};
             let result=if let Some(mut s)=owned {
                 let result=if s.work.is_some() {Err("native deferred work still owned")} else {super::recovery::probe(&mut s)};
@@ -101,7 +101,13 @@ fn recovery_read()->Result<Vec<u8>,i32> {
             *RECOVERY_RESULT.lock()=Some(result);
             RECOVERY_READY.store(true,Ordering::Release);
             RECOVERY_WAITERS.wake_up();
-        },"kgk208").map_err(|_|-12)?;
+        },"kgk208");
+        if started.is_err() {
+            *RECOVERY_RESULT.lock()=Some(Err("native recovery worker creation failed"));
+            RECOVERY_READY.store(true,Ordering::Release);
+            RECOVERY_WAITERS.wake_up();
+            return Err(-12);
+        }
     }
     loop {
         if RECOVERY_READY.load(Ordering::Acquire) {
