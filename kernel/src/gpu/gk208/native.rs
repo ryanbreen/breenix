@@ -184,7 +184,12 @@ pub fn takeover_started() -> bool { TAKEOVER_STARTED.load(Ordering::Acquire) }
 /// Expensive pixel evidence requires a test request.
 /// The boot intent is captured before attach.
 pub fn measuring() -> bool {
-    if cfg!(feature = "testing") { return true; }
+    cfg!(feature = "testing") || suite_requested()
+}
+
+/// Full VRAM snapshots run only when the display suite explicitly requests them.
+/// A testing kernel alone must not impose uncached VRAM reads on other lanes.
+pub fn suite_requested() -> bool {
     crate::boot::intent::get()
         .and_then(|bytes| core::str::from_utf8(bytes).ok())
         .and_then(|text| crate::boot::target::parse(text).ok())
@@ -333,7 +338,7 @@ pub struct ConsoleSurface {
 
 pub fn takeover(
     regs: &mut Registers,
-    device: pci::Device,
+    device: &pci::Device,
     rom: &[u8],
     modes: &[edid::Timing],
     route: &board::Route,

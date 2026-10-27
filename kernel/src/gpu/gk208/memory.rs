@@ -88,10 +88,12 @@
  * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
  * OTHER DEALINGS IN THE SOFTWARE.
  */
-//! E19 PR 4.2: bounded POST-era display memory, not a per-context VM allocator.
+//! E21 PR 5.1: physical VRAM inventory and guarded allocation; engine VM is pending.
 //! Hardware fields adapted from the individually checked MIT nouveau v6.8 files
 //! listed in THIRD_PARTY_NOTICES. Called on the boot CPU before GPU clients exist.
 use alloc::{vec, vec::Vec};
+#[path = "allocator.rs"]
+pub mod allocator;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Range {
@@ -122,6 +124,7 @@ impl Object {
 }
 #[derive(Debug)]
 pub struct Layout {
+    pub allocator: allocator::Allocator,
     pub pitch: u64,
     pub objects: Vec<Object>,
 }
@@ -149,6 +152,7 @@ impl Layout {
         }
         let pitch = (u64::from(width) * 4 + 255) & !255;
         let size = (pitch * u64::from(height) + 4095) & !4095;
+        let mut allocator=allocator::Allocator::new(total,reserved)?;
         let mut objects: Vec<Object> = Vec::new();
         let mut cursor = 4096;
         for (name, bytes, align) in [
@@ -159,34 +163,12 @@ impl Layout {
             ("instance", 65536, 65536),
             ("dma", 4096, 4096),
         ] {
-            loop {
-                let start = (cursor + align - 1) & !(align - 1);
-                let object = Object {
-                    name,
-                    range: Range { start, size: bytes },
-                    align,
-                };
-                let guard = object.guarded();
-                if guard.end().is_none_or(|e| e > total) {
-                    return Err("display carveout exhausted");
-                }
-                let bump = reserved
-                    .iter()
-                    .copied()
-                    .chain(objects.iter().map(Object::guarded))
-                    .filter(|r| r.overlaps(guard))
-                    .filter_map(Range::end)
-                    .max();
-                if let Some(end) = bump {
-                    cursor = end + 4096;
-                } else {
-                    cursor = object.guarded().end().ok_or("object overflow")? + 4096;
-                    objects.push(object);
-                    break;
-                }
-            }
+            let allocation=allocator.allocate_after(bytes,align,allocator::Kind::Display,cursor)?;
+            let object=Object{name,range:allocation.range,align};
+            cursor=object.guarded().end().ok_or("object overflow")?+4096;
+            objects.push(object);
         }
-        Ok(Self { pitch, objects })
+        Ok(Self { allocator, pitch, objects })
     }
 }
 pub trait Access {

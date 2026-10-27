@@ -96,6 +96,7 @@ mod board;
 mod ddc;
 mod edid;
 mod memory;
+mod inventory;
 mod modeset;
 mod native;
 pub use native::{ConsoleSurface,console_binding,takeover_started};
@@ -296,20 +297,22 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
             regs.read(0x640414+head as usize*0x300),regs.read(0x640450+head as usize*0x300),hex(&data),hash(&data),timings);
         crate::serial_println!("GT710_NATIVE {}", evidence);
         let preferred = modes.first().ok_or("no preferred sink timing")?;
-        display_memory(
+        let mut layout=display_memory(
             &mut regs,
             &device,
             preferred.width.into(),
             preferred.height.into(),
         )?;
-        let layout=DISPLAY_MEMORY.get().ok_or("missing retained display allocation")?;
-        let result=native::takeover(&mut regs,device,&rom,&modes,route,head,layout);
+        let result=native::takeover(&mut regs,&device,&rom,&modes,route,head,&layout);
         if result.is_err() {
             crate::serial_println!("GT710_MODE_STATE ctrl={:#x} error={:#x} stat={:#x} data={:#x} code={:#x} put={} get={} super={:#x} head-super={:#x}",
                 regs.read(0x610490),regs.read(0x61009c),regs.read(0x6101f0),regs.read(0x6101f4),regs.read(0x6101f8),
                 regs.read(0x640000),regs.read(0x640004),regs.read(0x6100ac),regs.read(0x6101d4+head as usize*0x800));
         }
-        return result;
+        let console=result?;
+        if native::suite_requested() { inventory::probe(&mut regs,&device,&mut layout,&console)?; }
+        DISPLAY_MEMORY.try_get_or_init(||layout).map_err(|_|"display memory already initializing")?;
+        return Ok(console);
     }
     Err("no active board-routed TMDS sink responded to live DDC")
 }
@@ -326,7 +329,7 @@ fn display_memory(
     device: &pci::Device,
     width: u32,
     height: u32,
-) -> Result<(), &'static str> {
+) -> Result<memory::Layout, &'static str> {
     let bar = device.bars[1];
     if bar.address == 0 || bar.is_io || !bar.prefetchable {
         return Err("missing display BAR1");
@@ -352,9 +355,7 @@ fn display_memory(
     let inventory = memory::discover(regs, bar.size)?;
     let layout = memory::Layout::new(inventory.total, &inventory.reserved, width, height)?;
     if !native::measuring() {
-        DISPLAY_MEMORY.try_get_or_init(|| layout)
-            .map_err(|_| "display memory already initializing")?;
-        return Ok(());
+        return Ok(layout);
     }
     let before_window = regs.read(0x1700);
     let seed = (timer::rdtsc() as u32) | 1;
@@ -467,9 +468,6 @@ fn display_memory(
         device.bus,device.device,device.function,inventory.total,bar.size,layout.pitch,width,height,seed,
         pairs(&inventory.reserved),pairs(&inventory.references),registers,before_window,after_window,
         protected_bytes,protected_before,protected_after,guard_bytes,guard_before,guard_after,objects,verified);
-    DISPLAY_MEMORY
-        .try_get_or_init(|| layout)
-        .map_err(|_| "display memory already initializing")?;
     crate::serial_println!("GT710_MEMORY {}", report);
-    Ok(())
+    Ok(layout)
 }
