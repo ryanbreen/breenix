@@ -432,6 +432,20 @@ def copy_source(c):
         raise ValueError('CE survivor source was refilled')
 
 
+def suppressed_copy(s, seed):
+    """An executed transfer whose CE release was withheld is never a completion."""
+    def need(ok,why):
+        if not ok: raise ValueError(why)
+    need(s['epoch']>0 and s['observed_epoch']==s['epoch'],'suppressed CE record identity')
+    need(s['get']==s['put']==s['expected'] and s['observed']<s['expected'],'suppressed CE launch not consumed')
+    need(s['accepted'] is False and 10000<=s['elapsed_us']<=250000,'suppressed CE release accepted')
+    need(s['held']==1 and s['reclaimed']==0,'suppressed CE backing released early')
+    need(s['source_va']==0x400000 and s['dest_va']==0x500000,'suppressed CE addresses')
+    need(s['before_sha256']==hashlib.sha256(bytes([0xcc])*8192).hexdigest(),'suppressed CE destination not poisoned')
+    need(s['data_sha256']==hashlib.sha256(bytes(ce_pattern(i,seed) for i in range(8192))).hexdigest(),
+         'suppressed CE copy did not execute')
+
+
 def copy_engine(serial):
     def need(ok,why):
         if not ok: raise ValueError(why)
@@ -473,6 +487,10 @@ def copy_engine(serial):
         need(byname['unaffected-b']['seed']==b['seed'] and byname['unaffected-b']['source']==b['source'],'remap affected other channel')
         need(byname['survivor-b']['instance']==b['instance'] and byname['survivor-b']['epoch']==b['epoch'],'surviving channel replaced')
         need(10000<=e['withheld_us']<=250000 and 10000<=e['stale_us']<=250000,'negative CE wait bounds')
+        s,clean=e['suppressed'],byname['clean-next']
+        need(clean['channel']==0 and s['epoch']==clean['epoch'] and min(clean['releases'])>s['expected'],
+             'suppressed CE ticket not retired by a later release')
+        suppressed_copy(s,clean['seed'])
         unit=e['fault_unit'];raw=e['fault_raw']
         need(0<=unit<32 and e['fault_mask']==1<<unit and len(raw)==4,'real CE fault required')
         need(raw[0]<<12==e['fault_instance']==a['instance'] and raw[1]|raw[2]<<32==e['invalid']
