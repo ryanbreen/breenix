@@ -7,6 +7,16 @@
   "hostRunner": true,
   "categories": [
     {
+      "id": "vm",
+      "title": "Private GPU virtual memory",
+      "cases": [
+        {
+          "id": "tables",
+          "title": "Private GPU tables preserve distinct same-VA backing, ordered remaps and reserved storage; engine translation remains pending"
+        }
+      ]
+    },
+    {
       "id": "inventory",
       "title": "VRAM inventory and accounting",
       "cases": [
