@@ -413,6 +413,16 @@
               "completion"
             ]
           }
+        },
+        {
+          "id": "contexts",
+          "title": "Concurrent private channels and killed-wait retention (M6 PR 6.4)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "contexts"
+            ]
+          }
         }
       ]
     }

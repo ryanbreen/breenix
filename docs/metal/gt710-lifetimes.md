@@ -57,3 +57,29 @@ fault decode and BAR operations retain their original checked MIT notices and
 sources in `THIRD_PARTY_NOTICES` and `docs/gui/provenance/gt710-vm.md`.
 No new third-party implementation is introduced. This document specifies the
 mechanism; final-head measurements belong to the PR and private boot record.
+
+## M6 PR 6.4: queued native ownership
+
+The native CE owner has four in-flight command slots per private address space,
+with separate ordered release records. The 512-entry descriptor ring wraps
+independently of monotonic native sequences. Admission refuses a fifth request
+until an ordered completion releases storage; GET progression alone does not
+release a mapping hold. Concurrent completion reads the consuming channel's
+PBDMA GET or its private saved USERD GPGet, plus its CE release and epoch.
+
+The `contexts` category adds concurrent opposite-pattern copies through two
+scheduled channels, complete complementary poisoned readbacks across ring wrap,
+and a process kill probe before the console cases. In a native suite boot,
+root opens `/proc/gt710-wait` to queue a fixed kernel-encoded copy behind a
+private yielding acquire. `/proc/gt710-ce` reports counts and completion state.
+The parent kills and reaps the waiter within the 250 ms bound, checks that
+backing remains held, then opens `/proc/gt710-drain` to release the acquire,
+observe actual CE completion, compare the deferred and surviving channel under
+both poisons, remove scheduling and reclaim the allocator baseline. These
+suite probes accept no command stream, GPU address or mapping from userspace.
+They are unavailable outside suite boots. A two-second interrupted/timed-out
+wait leaves the service's queued ownership intact.
+
+M6.5 still owns channel quarantine and device-wide no-progress recovery policy.
+This step retains M6.2's bounded unmapped CE fault and confirmed engine reset
+probe for issue #2514; it does not measure PGRAPH or load firmware.

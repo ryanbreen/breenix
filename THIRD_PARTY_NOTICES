@@ -517,3 +517,13 @@ nvkm/subdev/mc/base.c (MIT, Copyright 2012 Red Hat Inc.).
 The adaptation in kernel/src/gpu/gk208/ce.rs resets the enumerated engine before
 waiting for a runlist update, clears the exception and unblocks scheduling.
 The added source copyright and MIT grant accompany that file.
+
+M6.4 native channel concurrency additionally uses these already admitted files:
+- NVIDIA open-gpu-doc 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+  classes/host/cla06f.h, MIT, Copyright (c) 2020 NVIDIA CORPORATION:
+  kernel/src/gpu/gk208/ce.rs (yielding acquire and private USERD GPGet).
+- Nouveau Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba,
+  nvkm/engine/fifo/gk104.c, MIT, Copyright 2012 Red Hat Inc.:
+  kernel/src/gpu/gk208/ce.rs (two-entry channel runlist publication).
+The original grants remain in ce.rs. The queue admission, process wait and
+probe orchestration in queue.rs and ce/{multi,process}.rs are Breenix code.

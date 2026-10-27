@@ -7,6 +7,20 @@
   "hostRunner": true,
   "categories": [
     {
+      "id": "contexts",
+      "title": "Multiple native contexts and lifetimes (M6 PR 6.4)",
+      "cases": [
+        {
+          "id": "concurrent",
+          "title": "Private native channels wrap their rings under backpressure and compare concurrent opposite transfers"
+        },
+        {
+          "id": "killed-wait",
+          "title": "A killed native waiter exits within 250 ms while device backing stays held until ordered drain"
+        }
+      ]
+    },
+    {
       "id": "completion",
       "title": "Reusable native completion and observation (M6 PR 6.3)",
       "cases": [

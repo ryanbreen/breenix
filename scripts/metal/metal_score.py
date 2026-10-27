@@ -8,7 +8,7 @@ from pathlib import Path
 # The test runner names the marker each test will print before the test runs; that promise reaches no stage.
 ANNOUNCEMENT = 'kernel::test_exec:'
 # Host records whose milestone is not <suite>/<category> (scripts/metal/server-suite, MILESTONES).
-HOST_MILESTONES = {'gt710-completion.json': 'metal-gt710/completion', 'gt710-copy.json': 'metal-gt710/copy', 'gt710-channel.json': 'metal-gt710/channel', 'gt710-lifetime.json': 'metal-gt710/lifetime', 'gt710-aperture.json': 'metal-gt710/aperture', 'gt710-vm.json': 'metal-gt710/vm', 'gt710-inventory.json': 'metal-gt710/inventory', 'gt710-flips.json': 'metal-gt710/flips', 'gt710-memory.json': 'metal-gt710/memory', 'users-operator.json': 'users/operator-login',
+HOST_MILESTONES = {'gt710-contexts.json': 'metal-gt710/contexts', 'gt710-completion.json': 'metal-gt710/completion', 'gt710-copy.json': 'metal-gt710/copy', 'gt710-channel.json': 'metal-gt710/channel', 'gt710-lifetime.json': 'metal-gt710/lifetime', 'gt710-aperture.json': 'metal-gt710/aperture', 'gt710-vm.json': 'metal-gt710/vm', 'gt710-inventory.json': 'metal-gt710/inventory', 'gt710-flips.json': 'metal-gt710/flips', 'gt710-memory.json': 'metal-gt710/memory', 'users-operator.json': 'users/operator-login',
                    'gt710-native.json': 'metal-gt710/native', 'gt710-switching.json': 'metal-gt710/switching',
                    'gt710-board.json': 'metal-gt710/board', 'gt710-firmware.json': 'metal-gt710/firmware', 'gt710-device.json': 'metal-gt710/device', 'gt710-console.json': 'metal-gt710/console'}
 

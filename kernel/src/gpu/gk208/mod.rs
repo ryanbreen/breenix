@@ -109,14 +109,14 @@ mod aperture_probe;
 mod channel;
 mod copy;
 mod ce;
+mod queue;
 pub use system_dma::set_platform as set_dma_platform;
 mod modeset;
 mod native;
 pub use native::{ConsoleSurface,console_binding,takeover_started};
 mod rom;
 pub fn proc_pixels()->Vec<u8> {bulk::take()}
-static DISPLAY_MEMORY: conquer_once::spin::OnceCell<memory::Layout> =
-    conquer_once::spin::OnceCell::uninit();
+pub fn proc_ce(op:u8)->Result<Vec<u8>,i32> {ce::proc_read(op)}
 use crate::arch_impl::x86_64::timer;
 use crate::drivers::pci;
 use alloc::{format, string::String, vec::Vec};
@@ -343,7 +343,8 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
             ce::probe(&mut regs,&device,&mut layout,&console)?;
             crate::serial_println!("GT710_PROBE_TIME ce-completion us={}",channel::elapsed(start));
         }
-        DISPLAY_MEMORY.try_get_or_init(||layout).map_err(|_|"display memory already initializing")?;
+        let (_,displacement,_)=modeset::bar1_view(layout.objects[0].range.start,layout.objects[0].range.size,device.bars[1].size,17)?;
+        ce::retain(layout,regs.0,console.pointer-displacement)?;
         return Ok(console);
     }
     Err("no active board-routed TMDS sink responded to live DDC")
