@@ -20,7 +20,10 @@ impl memory::Access for Aperture {
 fn wide_snapshot_preserves_unaligned_edges_bank_crossings_and_the_last_word() {
     for (start,size) in [(0xffffc,20),(0x100000,4096),(0x1ffffc,4)] {
         let mut a=Aperture{bank:0x1234,pairs:0};
-        let bytes=memory::Pramin::new(&mut a,2<<20).bytes(memory::Range{start,size}).unwrap();
+        let mut p=memory::Pramin::new(&mut a,2<<20);
+        let bytes=p.bytes(memory::Range{start,size}).unwrap();
+        assert_eq!(memory::Access::read(p.access(),0x1700),(((start+size-1)&!0xfffff)>>16) as u32);
+        drop(p);
         let expected:Vec<u8>=(start..start+size).step_by(4).flat_map(|v|((v as u32).wrapping_mul(0x10203)^0xaabbccdd).to_le_bytes()).collect();
         assert_eq!(bytes,expected);assert_eq!(a.bank,0x1234);
         if size>=8 {assert!(a.pairs>0);}
