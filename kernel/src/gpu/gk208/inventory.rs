@@ -29,15 +29,15 @@ use crate::{arch_impl::x86_64::timer, drivers::pci};
 use alloc::{format, string::String, vec, vec::Vec};
 use core::fmt::Write;
 
-fn stats(s:Stats)->String {
+pub(super) fn stats(s:Stats)->String {
     format!("{{\"reserved\":{},\"payload\":{},\"guards\":{},\"charged\":{},\"display\":{},\"engine\":{},\"probe\":{},\"free\":{},\"allocations\":{}}}",
         s.reserved,s.payload,s.guards,s.charged,s.display,s.engine,s.probe,s.free,s.allocations)
 }
-fn pattern(address:u64,seed:u32,direction:usize)->u32 {
+pub(super) fn pattern(address:u64,seed:u32,direction:usize)->u32 {
     let mut x=(address/4) as u32 ^ seed ^ 0xa511e9b3u32.wrapping_mul(direction as u32);
     x^=x>>16;x=x.wrapping_mul(0x7feb352d);x^=x>>15;x=x.wrapping_mul(0x846ca68b);x^(x>>16)
 }
-fn digest(regs:&mut Registers,total:u64,ranges:&[Range])->Result<(u64,String),&'static str> {
+pub(super) fn digest(regs:&mut Registers,total:u64,ranges:&[Range])->Result<(u64,String),&'static str> {
     let mut hash=crate::block::install::sha256::Sha256::new();
     let mut p=memory::Pramin::new(regs,total);let mut count=0;
     for r in ranges {
@@ -48,7 +48,7 @@ fn digest(regs:&mut Registers,total:u64,ranges:&[Range])->Result<(u64,String),&'
     }
     Ok((count,super::hex(&hash.finalize())))
 }
-fn words(regs:&mut Registers,total:u64,address:u64,words:&[u32])->Result<(),&'static str> {
+pub(super) fn words(regs:&mut Registers,total:u64,address:u64,words:&[u32])->Result<(),&'static str> {
     let mut p=memory::Pramin::new(regs,total);
     for (i,word) in words.iter().enumerate() {p.write(address+i as u64*4,*word)?;}
     Ok(())
