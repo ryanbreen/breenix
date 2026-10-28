@@ -241,6 +241,18 @@ class CoreReport(unittest.TestCase):
         self.assertEqual(features('suite', 'console', 'xhci-short-read'),
                          ['--features', 'xhci_fault_inject'])
 
+    def test_native_suite_profile_matches_driver_provenance(self):
+        driver = runpy.run_path(str(ROOT/'scripts/metal/metal-boot'))['kernel_profile']
+        launcher = runpy.run_path(str(ROOT/'scripts/metal/metal-run'))['kernel_features']
+        builder = runpy.run_path(str(ROOT/'scripts/metal/metal-build'))['PROFILES']
+        for mode, suite, inject in [('suite','console',None), ('suite','gpu',None),
+                                   ('suite','gt710',None), ('suite','smoke',None),
+                                   ('tests',None,None), ('default',None,None),
+                                   ('suite','console','xhci-short-read')]:
+            args = SimpleNamespace(mode=mode, suite=suite, inject=inject)
+            selected = launcher(mode, suite, inject)[1:]
+            self.assertEqual(driver(args), (selected, builder[''.join(selected)]))
+
     def test_core_manifest_runner_and_effort_mapping(self):
         manifest=json.loads((ROOT/'docs/suites/gt710.json').read_text()); API['validate_manifest'](manifest)
         category=next(c for c in manifest['categories'] if c['id']=='core')
