@@ -1,7 +1,7 @@
 //! The display carveout excludes inherited storage and has disjoint guarded objects.
 extern crate alloc;
 #[path = "../kernel/src/gpu/gk208/memory.rs"]
-mod memory;
+pub mod memory;
 use memory::{Layout, Range};
 
 #[test]
@@ -104,7 +104,9 @@ fn physical_windows_restore_and_full_patterns_reject_aliases_and_dropped_writes(
         } else { assert!(result.is_err(),"fault {fault} escaped full read-back"); }
     }
     let mut d=Device::new();let mut p=memory::Pramin::new(&mut d,32<<20);
+    let before=p.access().writes.len();
     assert!(p.read(32<<20).is_err());assert!(p.write(3,4).is_err());
+    assert_eq!(p.access().writes.len(),before,"invalid access wrote VRAM");
     drop(p);assert_eq!(d.regs[&0x1700],0x1234);
 }
 #[test]
