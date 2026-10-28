@@ -73,8 +73,9 @@ GR_INIT_LISTS = [
 ]
 
 CATEGORIES = {
-    'shaders': [('assets', 'Committed triangle asset hashes and shader register counts match the manifest and metadata'), ('upload', 'Complete complementary shader read-backs prove withheld and flipped controls and their clean next uploads'), ('binding', 'A197 program binding completes with a release receipt and zero trap words; drawing remains pending')],
     'graphics': [('ctxctl', 'Source-built FECS and GPCCS images load with verified IMEM/DMEM read-back, start and answer fresh mailbox queries; a withheld start and a stale reply fail'), ('context', 'Active GPC/TPC topology and a golden graphics context generated from attributed init lists match the FECS-reported image size under complementary poisons'), ('channel', 'One graphics channel binds A197 and PGRAPH executes its report-semaphore release under complementary poisons; withheld and stale releases fail')],
+    'draw': [('triangle', 'Complete complementary read-backs prove exact triangle coverage, background and literal samples'), ('controls', 'Both shader controls fail the literals and each following clean draw passes'), ('present', 'The second scanout contains the complete drawn rectangle without firmware writes')],
+    'shaders': [('assets', 'Committed triangle asset hashes and shader register counts match the manifest and metadata'), ('upload', 'Complete complementary shader read-backs prove withheld and flipped controls and their clean next uploads'), ('binding', 'A197 program binding completes with a release receipt and zero trap words; drawing remains pending')],
     'recovery': [('fault-reset', 'A bad native channel is removed while its survivor copies; watchdog and confirmed transport reset retain backing and restore fresh epochs within budget')],
     'contexts': [('concurrent', 'Private native channels wrap their rings under backpressure and compare concurrent opposite transfers'), ('killed-wait', 'A killed native waiter exits within 250 ms while device backing stays held until ordered drain')],
     'completion': [('observation', 'Native CE observations bind independent caller fences and ordered releases to context, reset epoch and resource generation under complementary poisons')],
@@ -1405,7 +1406,88 @@ def shader_gate(serial, case):
         raise ValueError('malformed shader evidence') from error
 
 
+
+def draw_gate(serial, case):
+    def need(ok, reason):
+        if not ok:
+            raise ValueError(reason)
+    try:
+        e = json.loads(one(r'^GT710_DRAW (.+)$', serial, 'draw report')[1])
+        p = json.loads(one(r'^GT710_PRESENT (.+)$', serial, 'present report')[1])
+        oracle = json.loads((Path(__file__).resolve().parents[2] / 'docs/gui/provenance/gt710-triangle.json').read_text())
+        names = ('triangle', 'vertex-control', 'after-vertex', 'fragment-control', 'after-fragment', 'present')
+        width, height, pitch = p['width'], p['height'], p['pitch']
+        need(all(type(v) is int for v in (width,height,pitch,p['x'],p['y'])) and 64 <= width <= 4096 and 64 <= height <= 4096 and width * 4 <= pitch <= 16384 and pitch % 4 == 0 and 0 <= p['x'] <= width-64 and 0 <= p['y'] <= height-64, 'present geometry')
+        sizes = {name: 64*64*4 for name in names}
+        sizes['present'] = pitch * height
+        chunks = {}
+        rows = re.findall(r'^GT710_DRAW_IMAGE (triangle|vertex-control|after-vertex|fragment-control|after-fragment|present) (85|170) (\d+) ([0-9a-f:,]+)$', serial, re.M)
+        need(len(rows) == len(re.findall(r'^GT710_DRAW_IMAGE ', serial, re.M)), 'malformed draw image row')
+        for name, poison, off, hexdata in rows:
+            key = name, int(poison); off = int(off)
+            chunks.setdefault(key, bytearray())
+            if name == 'present':
+                need(off * pitch == len(chunks[key]) and off < height, 'present row order')
+                data = bytearray()
+                for run in hexdata.split(','):
+                    count, word = run.split(':')
+                    need(re.fullmatch(r'[0-9a-f]+', count) and re.fullmatch(r'[0-9a-f]{8}', word), 'present run format')
+                    count = int(count, 16)
+                    need(0 < count <= pitch//4 and len(data) + count*4 <= pitch, 'present run length')
+                    data.extend(int(word,16).to_bytes(4,'little') * count)
+                need(len(data) == pitch, 'present row length')
+            else:
+                data = bytes.fromhex(hexdata)
+                need(off == len(chunks[key]) and off < sizes[name] and len(data) == min(256, sizes[name]-off), 'draw image row offset or length')
+            chunks[key].extend(data)
+        keys = [(name, poison) for name in names for poison in (85,170)]
+        need(list(chunks) == keys and len(e['readbacks']) == len(keys), 'draw images missing or out of order')
+        for i, key in enumerate(keys):
+            data = bytes(chunks[key]); record = e['readbacks'][i]
+            need(len(data) == sizes[key[0]] and record == dict(case=key[0], poison=key[1], bytes=len(data), sha256=hashlib.sha256(data).hexdigest()), 'draw read-back length or digest')
+        for name in names:
+            need(chunks[name,85] == chunks[name,170], 'complementary read-backs differ')
+        need(e['schema'] == 1 and e['class_id'] == 0xa197 and e['error'] is None and e['trap_registers'] == [0x400100,0x400108,0x400110,0x400118] and e['trap_before'] == [0]*4 and e['trap_after'] == [0]*4, 'draw class or traps')
+        releases = e['releases']
+        need(len(releases) == 5, 'draw receipts missing')
+        for r in releases:
+            need(type(r['target']) is int and 0 < r['target'] < 1<<40 and r['target'] % 4 == 0 and type(r['epoch']) is int and r['epoch'] > 0 and type(r['nonce']) is int and 0 < r['nonce'] <= 0xffffffff and r['observed'] == r['nonce'] and r['observed_epoch'] == r['epoch'] and r['consumed'] is True and r['accepted'] is True, 'stale draw receipt')
+        need(len({(r['epoch'],r['nonce']) for r in releases}) == 5, 'reused draw receipt')
+        def literals(data):
+            return all(data[(s['y']*64+s['x'])*4:(s['y']*64+s['x']+1)*4] == bytes(s['bgra']) for s in oracle['samples'])
+        def clean(name):
+            data = chunks[name,85]
+            mask = bytearray()
+            for i in range(0, len(data), 4):
+                pixel = data[i:i+4]
+                mask.append(int(pixel[3] == 255))
+                need(pixel[3] == 255 or pixel == b'\0'*4, 'draw background differs')
+            need(hashlib.sha256(mask).hexdigest() == oracle['coverage_sha256'] and literals(data), 'draw coverage or literal samples differ')
+        if case == 'triangle': clean('triangle')
+        elif case == 'controls':
+            for control, after in (('vertex-control','after-vertex'),('fragment-control','after-fragment')):
+                need(not literals(chunks[control,85]), 'shader control passed literals')
+                clean(after)
+        elif case == 'present':
+            clean('after-fragment')
+            memory = json.loads(one(r'^GT710_MEMORY (.+)$', serial, 'display memory evidence')[1])
+            first, second = [o['start'] for o in memory['objects'][:2]]
+            need(type(first) is int and type(second) is int and 0 < first != second and second % 256 == 0 and p['second_address'] == second and p['head'] in (0, 1) and p['active_register'] == 0x640460 + p['head'] * 0x300 and p['active_value'] == second >> 8 and p['schema'] == 1 and p['active_address'] == second and p['firmware_writes'] == 0 and p['epoch'] == releases[-1]['epoch'] and p['nonce'] == releases[-1]['nonce'], 'stale present or firmware write')
+            image = chunks['present',85]; draw = chunks['after-fragment',85]
+            need(type(p['background']) is int and 0 <= p['background'] <= 0xffffffff, 'present background')
+            background = p['background'].to_bytes(4,'little')
+            for y in range(height):
+                for x in range(pitch//4):
+                    expected = draw[((y-p['y'])*64+x-p['x'])*4:((y-p['y'])*64+x-p['x']+1)*4] if p['y'] <= y < p['y']+64 and p['x'] <= x < p['x']+64 else background
+                    need(image[(y*pitch+x*4):(y*pitch+x*4+4)] == expected, 'present read-back differs')
+        else: raise ValueError('unknown draw case')
+    except (KeyError, TypeError, IndexError, OverflowError, OSError) as error:
+        raise ValueError('malformed draw evidence') from error
+
 def check_case(category, case, serial):
+    if category == 'draw':
+        draw_gate(serial, case)
+        return
     if category == 'shaders':
         shader_gate(serial, case)
         return
@@ -1587,6 +1669,9 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
 def capture_serial(directory):
     serial=(Path(directory)/'serial.txt').read_text()
     matches=list(re.finditer(r'^GT710_BULK (\d+) ([a-f0-9]{64})$',serial,re.M))
+    draw = 'GT710_DRAW_BULK ' in serial or 'GT710_DRAW ' in serial
+    if draw and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file() or re.search(r'^GT710_DRAW_IMAGE ', serial, re.M)):
+        raise ValueError('draw image bulk missing or on serial')
     graphics = 'GT710_GR_IMAGE_BULK ' in serial or 'GT710_GR ' in serial
     shaders = 'GT710_SHADER_BULK ' in serial or 'GT710_SHADER ' in serial
     if shaders and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file() or re.search(r'^GT710_SHADER_IMAGE ', serial, re.M)):
@@ -1610,10 +1695,12 @@ def capture_serial(directory):
         elif fields[0]=='GT710_MULTI': key=('multi',)
         elif fields[0]=='GT710_GR_IMAGE': key=('graphics',)
         elif fields[0]=='GT710_SHADER_IMAGE': key=('shaders',)
+        elif fields[0]=='GT710_DRAW_IMAGE': key=('draw',)
         else: raise ValueError('unexpected display artifact record')
         if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
         groups.setdefault(key,[]).append(line);previous=key
     def report_key(line):
+        if line.startswith('GT710_DRAW_BULK '): return ('draw',)
         if line.startswith('GT710_SHADER_BULK '): return ('shaders',)
         if line.startswith('GT710_MULTI_BULK '): return ('multi',)
         if line.startswith('GT710_GR_IMAGE_BULK '): return ('graphics',)
@@ -1629,7 +1716,7 @@ def capture_serial(directory):
     result=[]
     for line in serial.splitlines(keepends=True):
         key=report_key(line)
-        if key in (('multi',), ('graphics',), ('shaders',)):
+        if key in (('multi',), ('graphics',), ('shaders',), ('draw',)):
             record=''.join(groups[key]).encode('ascii')
             fields=line.split()
             if len(fields)!=3 or (key==('multi',) and len(groups[key])!=1) or len(record)!=int(fields[1]) or hashlib.sha256(record).hexdigest()!=fields[2]:

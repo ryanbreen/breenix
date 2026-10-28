@@ -1,4 +1,25 @@
 /*
+ * Copyright 2010 Christoph Bumiller
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ */
+/*
  * Copyright 2012 Red Hat Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -84,6 +105,7 @@ pub mod binding;
 pub mod channel;
 pub mod context;
 pub mod ctxctl;
+pub mod draw;
 pub mod firmware;
 pub mod shaders;
 pub mod tables;
@@ -116,6 +138,11 @@ pub fn probe_static_inputs() -> Result<(), &'static str> {
 
 use super::{memory, Registers};
 use alloc::{format, string::String, vec::Vec};
+
+impl binding::TrapIo for Registers {
+    fn read(&mut self, address: usize) -> u32 { Registers::read(self, address) }
+    fn write(&mut self, address: usize, value: u32) { Registers::write(self, address, value); }
+}
 
 impl ctxctl::Access for Registers {
     fn read(&mut self, address: u32) -> u32 {
@@ -241,6 +268,7 @@ pub(super) fn probe(
     device: &crate::drivers::pci::Device,
     layout: &mut memory::Layout,
     console: &super::ConsoleSurface,
+    evo: &mut super::native::Evo,
 ) -> Result<(), &'static str> {
     probe_static_inputs()?;
     let mut cleanup = ProbeCleanup {
@@ -249,7 +277,7 @@ pub(super) fn probe(
         finished: false,
         fifo_quiesced: true,
     };
-    let result = probe_inner(regs, device, layout, console, &mut cleanup);
+    let result = probe_inner(regs, device, layout, console, evo, &mut cleanup);
     // This also runs after topology, allocation, upload and startup refusals.
     let unwind = cleanup.finish(regs, layout);
     result.and(unwind)
@@ -260,6 +288,7 @@ fn probe_inner(
     device: &crate::drivers::pci::Device,
     layout: &mut memory::Layout,
     console: &super::ConsoleSurface,
+    evo: &mut super::native::Evo,
     cleanup: &mut ProbeCleanup,
 ) -> Result<(), &'static str> {
     ctxctl::reset(regs).map_err(hardware_error)?;
@@ -324,7 +353,7 @@ fn probe_inner(
     };
     // From here, only Hardware::finish can certify that reset is safe.
     cleanup.fifo_quiesced = false;
-    let outcome = (|| {
+    let mut outcome = (|| {
         let shader_buffer = context::Io::allocate(&mut hardware, context::Spec {
             name: "shader-segment", bytes: shaders::SEGMENT_SIZE as u64, align: 4096,
         }).map_err(|e| e.reason)?;
@@ -369,10 +398,31 @@ fn probe_inner(
             };
             let result = graphics.bind_shaders(&mut hardware, shader_buffer.va, &mut receipt);
             // Keep ownership on trap/timeout so finish drains and resets before freeing.
-            let report = graphics.report();
             hardware.graphics = Some(graphics);
             evidence.emit(shader_buffer.va, &receipt, result.as_ref().err().copied())?;
             result?;
+            let mut graphics = hardware.graphics.take().ok_or("draw GR channel absent")?;
+            let mut draw_evidence = DrawEvidence::default();
+            let draw_result = draw_probe(&mut hardware, &mut graphics, shader_buffer.va, &mut draw_evidence);
+            let draw_result = draw_result.and_then(|()|
+                present_probe(&mut hardware, &mut graphics, evo, &mut draw_evidence));
+            draw_evidence.trap_capture = binding::capture_trap(hardware.regs);
+            if let Some(capture) = &draw_evidence.trap_capture {
+                binding::acknowledge_trap(hardware.regs, capture);
+            }
+            let draw_result = if draw_evidence.trap_capture.is_some() {
+                draw_result.and(Err("draw PGRAPH trap/exception"))
+            } else { draw_result };
+            hardware.graphics = Some(graphics);
+            let draw_emit = draw_evidence.emit(draw_result.as_ref().err().copied());
+            draw_result?;
+            draw_emit?;
+            // Only retire the FIFO after the final draw and its CE snapshots.
+            hardware.graphics.as_mut().ok_or("draw GR channel absent")?
+                .quiesce(hardware.regs, hardware.total)?;
+            let graphics = hardware.graphics.as_ref().ok_or("draw GR channel absent")?;
+            graphics.preempt_result()?;
+            let report = graphics.report();
             interrupt_snapshot(hardware.regs, hardware.device, "channel-drained");
             Some(report)
         } else {
@@ -384,6 +434,18 @@ fn probe_inner(
         let firmware_hashes = hardware.controller.readback_sha256;
         Ok::<_, &'static str>((generated, graphics, artifact, runnable_bytes, firmware_hashes))
     })();
+    // Earlier shader/context refusals also need a first capture before reset.
+    if let Some(capture) = binding::capture_trap(hardware.regs) {
+        binding::acknowledge_trap(hardware.regs, &capture);
+        let evidence = DrawEvidence { trap_capture: Some(capture), ..DrawEvidence::default() };
+        let error = outcome.as_ref().err().copied().unwrap_or("GR PGRAPH trap/exception");
+        let _ = evidence.emit(Some(error));
+        outcome = Err(error);
+    }
+    if outcome.is_err() && hardware.regs.read(0x259c) != 0 {
+        // Retain the raw MMU unit words before the owned-fault reset/W1C.
+        interrupt_snapshot(hardware.regs, hardware.device, "before-unwind");
+    }
     // Run on closure errors too; the outer reset requires confirmed FIFO unwind.
     if let Err(error) = hardware.finish() {
         // Keep the failing FIFO words while GR is still accessible. The outer
@@ -644,6 +706,204 @@ impl ShaderEvidence {
             shaders::VERTEX_OFFSET, shaders::FRAGMENT_OFFSET, shaders::VERTEX_GPRS, shaders::FRAGMENT_GPRS,
             self.readbacks.join(","), release, binding::TRAP_REGISTERS, r.before, r.after, error,
         );
+        Ok(())
+    }
+}
+/// Five draws on the session that bound the shader code. Transfers are checked
+/// for byte equality; only the host scorer interprets rendered colours.
+fn draw_probe(
+    hardware: &mut Hardware<'_>, graphics: &mut channel::Session,
+    code_address: u64, evidence: &mut DrawEvidence,
+) -> Result<(), &'static str> {
+    let target = graphics.allocate_draw(hardware, "draw-target", 64 * 256, 4096)?;
+    let vertices = graphics.allocate_draw(hardware, "draw-vertices", 96, 4096)?;
+    // Mesa 24.3.4 nvc0_screen.c:1274-1283 (MIT): poly_cache storage.
+    // The context and backing list keep it pinned through FIFO drain and reset.
+    let quarantine = graphics.allocate_draw(hardware, "draw-quarantine", 1 << 20, 1 << 17)?;
+    let vertex_bytes: Vec<u8> = draw::VERTEX_WORDS.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let mut controls = alloc::vec![0; shaders::CODE_REGION_SIZE - shaders::SEGMENT_SIZE];
+    for (offset, header, code) in [
+        (shaders::CONSTANT_COLOUR_FRAGMENT_OFFSET, &shaders::CONSTANT_COLOUR_FRAGMENT_HEADER[..], &shaders::CONSTANT_COLOUR_FRAGMENT_CODE[..]),
+        (shaders::DROP_COLOUR_VERTEX_OFFSET, &shaders::DROP_COLOUR_VERTEX_HEADER[..], &shaders::DROP_COLOUR_VERTEX_CODE[..]),
+    ] {
+        let start = offset - shaders::SEGMENT_SIZE;
+        controls[start..start + header.len()].copy_from_slice(header);
+        controls[start + header.len()..start + header.len() + code.len()].copy_from_slice(code);
+    }
+    for (va, data) in [(vertices.va, &vertex_bytes[..]), (code_address + shaders::SEGMENT_SIZE as u64, &controls[..])] {
+        graphics.upload(hardware, va, data)?;
+        let images = graphics.readback(hardware, va, data.len())?;
+        if images[0] != data || images[1] != data {
+            return Err("draw input CE readbacks differ from upload");
+        }
+    }
+    let background = alloc::vec![0; 64 * 256];
+    for (name, vp, fp) in [
+        ("triangle", shaders::VERTEX_OFFSET, shaders::FRAGMENT_OFFSET),
+        ("fragment-control", shaders::VERTEX_OFFSET, shaders::CONSTANT_COLOUR_FRAGMENT_OFFSET),
+        ("after-fragment", shaders::VERTEX_OFFSET, shaders::FRAGMENT_OFFSET),
+        ("vertex-control", shaders::DROP_COLOUR_VERTEX_OFFSET, shaders::FRAGMENT_OFFSET),
+        ("after-vertex", shaders::VERTEX_OFFSET, shaders::FRAGMENT_OFFSET),
+    ] {
+        // Supply uniform background bytes for the CE transfer.
+        graphics.upload(hardware, target.va, &background)?;
+        let mut receipt = binding::Receipt {
+            target: 0, epoch: 0, nonce: 0, before: [0; 4], after: [0; 4], observation: None,
+        };
+        let result = graphics.draw(hardware, draw::Draw {
+            target_va: target.va, pitch: 256, width: 64, height: 64,
+            vertex_va: vertices.va, quarantine_va: quarantine.va, vertex_program: vp as u32, fragment_program: fp as u32,
+            report_va: 0, epoch: 0, nonce: 0,
+        }, &mut receipt);
+        evidence.draws.push(DrawCapture { name, receipt, images: None });
+        result?;
+        let images = graphics.readback(hardware, target.va, background.len())?;
+        let capture = evidence.draws.last_mut().ok_or("draw capture absent")?;
+        let equal = images[0] == images[1];
+        capture.images = Some(images);
+        if !equal { return Err("draw CE P/~P readbacks differ"); }
+    }
+    evidence.target = Some(target.va);
+    Ok(())
+}
+
+/// Present the final clean target without teaching EVO another method.
+fn present_probe(
+    hardware: &mut Hardware<'_>, graphics: &mut channel::Session,
+    evo: &mut super::native::Evo, evidence: &mut DrawEvidence,
+) -> Result<(), &'static str> {
+    use core::fmt::Write;
+    let console = hardware.console;
+    let second = evo.surfaces[1];
+    let (width,height,pitch) = (console.width,console.height,console.pitch);
+    let (x,y,background) = (32usize,32usize,0xff182028u32);
+    // Geometry is bounded before touching the inactive scanout.
+    if width < x+64 || height < y+64 || pitch < width*4 || pitch%4 != 0
+        || pitch.checked_mul(height).is_none_or(|n| n as u64 > second.size || n > 16 << 20) {
+        return Err("presentation exceeds private scanout");
+    }
+    let result = (|| {
+        let target = evidence.target.ok_or("clean draw target absent")?;
+        let receipt = &evidence.draws.last().ok_or("clean draw receipt absent")?.receipt;
+        let scanout = graphics.map_scanout(hardware)?;
+        {
+            let mut p = memory::Pramin::new(hardware.regs,hardware.total);
+            for offset in (0..pitch*height).step_by(4) {
+                p.write(second.start+offset as u64,background)?;
+            }
+        }
+        super::modeset::bar_flush(hardware.regs)?;
+        graphics.copy_rect(hardware,super::copy::Rect {
+            src: target, dst: scanout+(y*pitch+x*4) as u64,
+            width: 256, height: 64, src_pitch: 256, dst_pitch: pitch as u32,
+        })?;
+        let snapshot = evo.flip(hardware.regs,second.start)?;
+        let images = graphics.readback(hardware,scanout,pitch*height)?;
+        if images[0] != images[1] { return Err("present CE P/~P readbacks differ"); }
+        let mut rows = String::new();
+        let mut readbacks = Vec::new();
+        for (poison,image) in [85,170].into_iter().zip(&images) {
+            for (row,bytes) in image.chunks_exact(pitch).enumerate() {
+                let mut runs: Vec<(usize,u32)> = Vec::new();
+                for pixel in bytes.chunks_exact(4) {
+                    let value = u32::from_le_bytes(pixel.try_into().unwrap());
+                    if let Some((count,_)) = runs.last_mut().filter(|(_,word)| *word == value) {
+                        *count += 1;
+                    } else { runs.push((1,value)); }
+                }
+                write!(rows,"GT710_DRAW_IMAGE present {} {} ",poison,row).map_err(|_| "present row formatting")?;
+                for (i,(count,word)) in runs.iter().enumerate() {
+                    if i != 0 { rows.push(','); }
+                    write!(rows,"{count:x}:{word:08x}").map_err(|_| "present run formatting")?;
+                }
+                rows.push('\n');
+            }
+            readbacks.push(format!("{{\"case\":\"present\",\"poison\":{},\"bytes\":{},\"sha256\":\"{}\"}}",
+                poison,image.len(),super::hash(image)));
+        }
+        evidence.present_rows = rows;
+        evidence.present_readbacks = readbacks;
+        Ok((snapshot,receipt.epoch,receipt.nonce))
+    })();
+    // An error can follow a consumed UPDATE, so restore with the advanced PUT
+    // even when the presentation flip or readback failed. Check the binding too.
+    let restore = evo.flip(hardware.regs,evo.surfaces[0].start);
+    let binding = super::native::console_binding(console);
+    restore?;
+    binding?;
+    let (s,epoch,nonce) = result?;
+    crate::serial_println!(concat!("GT710_PRESENT {{\"schema\":1,\"width\":{},\"height\":{},\"pitch\":{},\"background\":{},\"x\":{},\"y\":{},",
+        "\"second_address\":{},\"head\":{},\"active_register\":{},\"active_value\":{},\"active_address\":{},\"epoch\":{},\"nonce\":{},\"firmware_writes\":{},",
+        "\"notifier_before\":{},\"notifier_after\":{},\"put\":{},\"get\":{},\"raster_before\":{},\"raster_after\":{},\"underflow\":{},\"errors\":{},\"power\":{},\"link\":{},\"console_restored\":true}}"),
+        width,height,pitch,background,x,y,second.start,evo.head,s.active_register,s.active_value,u64::from(s.active_value)<<8,
+        epoch,nonce,crate::firmware_writes::count()-console.firmware_baseline,
+        s.notifier_before,s.notifier_after,s.put,s.get,s.raster_before,s.raster_after,s.underflow,s.errors,s.power,s.link);
+    Ok(())
+}
+
+#[derive(Default)]
+struct DrawEvidence {
+    draws: Vec<DrawCapture>,
+    trap_capture: Option<binding::TrapCapture>,
+    target: Option<u64>,
+    present_rows: String,
+    present_readbacks: Vec<String>,
+}
+struct DrawCapture {
+    name: &'static str,
+    receipt: binding::Receipt,
+    images: Option<[Vec<u8>; 2]>,
+}
+impl DrawEvidence {
+    fn emit(&self, error: Option<&str>) -> Result<(), &'static str> {
+        use core::fmt::Write;
+        let mut rows = String::new();
+        let mut readbacks = Vec::new();
+        let mut releases = Vec::new();
+        let mut before = [0; 4];
+        let mut after = [0; 4];
+        // Preserve unit 4's wire order; the execution order is fragment first.
+        for name in ["triangle", "vertex-control", "after-vertex", "fragment-control", "after-fragment"] {
+            let Some(capture) = self.draws.iter().find(|c| c.name == name) else { continue; };
+            let r = &capture.receipt;
+            for i in 0..4 { before[i] |= r.before[i]; after[i] |= r.after[i]; }
+            if let Some(images) = &capture.images {
+                for (poison, image) in [85, 170].into_iter().zip(images) {
+                    for (i, chunk) in image.chunks(256).enumerate() {
+                        writeln!(rows, "GT710_DRAW_IMAGE {} {} {} {}", name, poison, i * 256, super::hex(chunk))
+                            .map_err(|_| "draw image formatting")?;
+                    }
+                    readbacks.push(format!("{{\"case\":\"{}\",\"poison\":{},\"bytes\":{},\"sha256\":\"{}\"}}",
+                        name, poison, image.len(), super::hash(image)));
+                }
+            }
+        }
+        for capture in &self.draws {
+            let r = &capture.receipt;
+            if let Some(o) = &r.observation {
+                releases.push(format!(
+                    "{{\"target\":{},\"epoch\":{},\"nonce\":{},\"observed\":{},\"observed_epoch\":{},\"consumed\":{},\"accepted\":{},\"elapsed_us\":{},\"trap_before\":{:?},\"trap_after\":{:?}}}",
+                    r.target, r.epoch, r.nonce, o.value, o.epoch, o.consumed, o.accepted, o.elapsed_us, r.before, r.after));
+            }
+        }
+        rows.push_str(&self.present_rows);
+        readbacks.extend(self.present_readbacks.iter().cloned());
+        // Retain headroom for pending golden-context rows in the shared buffer.
+        let estimate = super::bulk::used().checked_add(rows.len()).and_then(|n| n.checked_add(512 * 1024))
+            .ok_or("draw artifact estimate overflow")?;
+        if estimate >= 2 << 20 { return Err("draw artifact estimate exceeds 2 MiB"); }
+        if !rows.is_empty() {
+            let digest = super::hash(rows.as_bytes());
+            super::bulk::line(rows.trim_end_matches('\n').into())?;
+            crate::serial_println!("GT710_DRAW_BULK {} {}", rows.len(), digest);
+        }
+        let trap_capture = self.trap_capture.as_ref().map(|c| format!(
+            "{{\"registers\":{:?},\"values\":{:?},\"status\":{:?}}}", c.registers, c.values, c.status))
+            .unwrap_or_else(|| "null".into());
+        let error = error.map(|e| format!("{:?}", e)).unwrap_or_else(|| "null".into());
+        crate::serial_println!(
+            "GT710_DRAW {{\"schema\":1,\"class_id\":41367,\"readbacks\":[{}],\"releases\":[{}],\"trap_registers\":{:?},\"trap_before\":{:?},\"trap_after\":{:?},\"trap_capture\":{},\"error\":{}}}",
+            readbacks.join(","), releases.join(","), binding::TRAP_REGISTERS, before, after, trap_capture, error);
         Ok(())
     }
 }

@@ -46,7 +46,7 @@ class LiveUnwind(unittest.TestCase):
         methods = methods.replace(new, new[:start] + prelude + new[new.index('            let epoch ='):])
         issue = item(methods, '        fn issue_words(')
         methods = methods.replace(issue, issue[:issue.index('{') + 1] + '''
-            let _ = (h, poison, budget, stop_on_trap, self.bar, USERD);
+            let _ = (h, poison, budget, stop_on_trap, self.bar, USERD, self.next_sequence);
             let epoch = if sequence < 5 {u64::from(command[0]) | (u64::from(command[1])<<32)} else {self.report.identity.epoch};
             assert!(self.bound && !self.quiesced, "submission on a stopped graphics channel");
             step(&format!("issue-{sequence}"))?;
@@ -54,14 +54,19 @@ class LiveUnwind(unittest.TestCase):
             Ok(Observation { value: if sequence == 1 || reject { poison } else { nonce }, epoch,
                 consumed: true, elapsed_us: 10, accepted: !reject && sequence != 1 && epoch == self.report.identity.epoch })
         }''')
+        # Draw transfer mechanics have their own production-slice check; keep
+        # this harness focused on activation/binding and the FIFO unwind.
+        draw_start = methods.index('        /// Append a fresh ordinary mapping')
+        draw_end = methods.index('        pub(in crate::gk208::gr) fn execute(', draw_start)
+        methods = methods[:draw_start] + methods[draw_end:]
         # Retain the actual issue wrapper/execute/bind/cleanup ordering.
-        methods = methods.replace('super::super::binding', 'binding')
+        methods = methods.replace('super::super::binding', 'binding').replace('super::super::ctxctl', 'ctxctl').replace('super::super::hardware_error', 'hardware_error')
         # Include new cleanup methods automatically; substitute only issue DMA.
         methods = methods.replace('pub(in crate::gk208::gr)', 'pub(crate)')
         session = session.replace('pub(in crate::gk208::gr)', 'pub(crate)')
         start = gr.index('    let generated = context::generate(')
-        if '    let outcome = (||' in gr:
-            start = gr.index('    let outcome = (||')
+        if '    let mut outcome = (||' in gr:
+            start = gr.index('    let mut outcome = (||')
         stop = gr.index('    if layout.allocator.stats() != baseline', start)
         flow = gr[start:stop].replace("super::ce::readback::Reader", "Reader")
         finish = item(gr, '    fn finish(mut self)').replace('super::channel::VmIo', 'VmIo')

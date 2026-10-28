@@ -102,6 +102,27 @@ impl Context {
         flags: Flags,
     ) -> Result<(), &'static str> {
         self.mutable()?;
+        self.map_owned(a, io, va, allocation, flags)
+    }
+    /// Extend an idle but retained channel's address space with a new mapping.
+    /// Space::map refuses present PTEs and map_owned retains the new residency.
+    /// # Safety
+    /// The exclusive channel owner must have observed an engine-ordered receipt
+    /// and must submit no work until publication/invalidation has completed.
+    pub unsafe fn map_idle(
+        &mut self, a: &mut Allocator, io: &mut impl Io, va: u64,
+        allocation: Allocation, flags: Flags,
+    ) -> Result<(), &'static str> {
+        if self.failed || self.space.is_none() || !self.device
+            || !self.pending.is_empty() || Arc::strong_count(&self.residency) != 1 {
+            return Err("GPU context not idle for mapping");
+        }
+        self.map_owned(a, io, va, allocation, flags)
+    }
+    fn map_owned(
+        &mut self, a: &mut Allocator, io: &mut impl Io, va: u64,
+        allocation: Allocation, flags: Flags,
+    ) -> Result<(), &'static str> {
         let pin = a.pin(allocation)?;
         let r = Arc::get_mut(&mut self.residency).unwrap();
         r.mappings

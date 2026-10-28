@@ -24,3 +24,20 @@ fn segment_contains_both_programs_at_kepler_offsets() {
     assert_eq!(sha256::sha256(&segment), digest);
     assert_eq!(segment, expected);
 }
+
+#[test]
+fn controls_fit_after_the_unchanged_triangle_segment() {
+    let controls = [
+        (shaders::CONSTANT_COLOUR_FRAGMENT_OFFSET, &shaders::CONSTANT_COLOUR_FRAGMENT_HEADER[..], &shaders::CONSTANT_COLOUR_FRAGMENT_CODE[..]),
+        (shaders::DROP_COLOUR_VERTEX_OFFSET, &shaders::DROP_COLOUR_VERTEX_HEADER[..], &shaders::DROP_COLOUR_VERTEX_CODE[..]),
+    ];
+    let mut end = shaders::SEGMENT_SIZE;
+    for (offset, header, code) in controls {
+        assert!(offset >= end);
+        assert_eq!((offset + header.len()) % 128, 0);
+        assert_eq!((offset + header.len()) % 64, 0);
+        end = offset + header.len() + code.len();
+    }
+    assert!(end <= shaders::CODE_REGION_SIZE);
+    assert_eq!(shaders::CODE_REGION_SIZE % 64, 0);
+}

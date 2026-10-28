@@ -20,7 +20,8 @@ def function(source, name):
 
 class ProbeUnwind(unittest.TestCase):
     def test_startup_failures_restore_state_and_release_scratch_after_stop(self):
-        source = (ROOT / 'kernel/src/gpu/gk208/gr/mod.rs').read_text()
+        # The retained EVO handle is used after the startup slice under test.
+        source = (ROOT / 'kernel/src/gpu/gk208/gr/mod.rs').read_text().replace('super::native::Evo', '()')
         probe = function(source, 'pub(super) fn probe(')
         helpers = ''
         if 'fn probe_inner(' in source:
@@ -29,7 +30,7 @@ class ProbeUnwind(unittest.TestCase):
         else:
             inner, probe = probe, ''
         inner = inner[:inner.index('    let context = super::lifetime::Context::new(')]
-        inner += ('    let _ = (device, console, ready, withheld, stale);\n'
+        inner += ('    let _ = (device, console, evo, ready, withheld, stale);\n'
                   '    if crate::INJECT.with(|i| i.borrow().target == "success") { Ok(()) }\n'
                   '    else { Err("late failure") }\n}\n')
         harness = (ROOT / 'tests/fixtures/gt710_gr_probe_unwind.rs').read_text()

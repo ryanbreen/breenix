@@ -22,6 +22,26 @@
       "license": "MIT",
       "sha256": "23f1d91134ed62367d68eb39fa7cf8baabf4388261bca45db28b3f7aba8e45d0"
     },
+    "constant-colour-fragment.asm": {
+      "bytes": 326,
+      "license": "PolyForm-Noncommercial-1.0.0",
+      "sha256": "c74b6408be46fd558099f491898c86f1fed6f9a0ff0af6bd94ff472331bb04fb"
+    },
+    "constant-colour-fragment.bin": {
+      "bytes": 48,
+      "license": "PolyForm-Noncommercial-1.0.0",
+      "sha256": "c5ca391c763b9497ce69db35477f85d4b6d18a962bce8180f625406af787be2d"
+    },
+    "constant-colour-fragment.json": {
+      "bytes": 320,
+      "license": "PolyForm-Noncommercial-1.0.0",
+      "sha256": "2673a5579701f023e19d3b3bc0389a27091ba413f4cd79ff9297cf20b75bf1b6"
+    },
+    "constant-colour-fragment.sph": {
+      "bytes": 80,
+      "license": "MIT",
+      "sha256": "15203e376bb888a2caaca69f60db03c7d328b9b9abfb730b0a7f77689203b542"
+    },
     "diagnostic-triangle-fragment.asm": {
       "bytes": 395,
       "license": "PolyForm-Noncommercial-1.0.0",
@@ -61,6 +81,26 @@
       "bytes": 80,
       "license": "MIT",
       "sha256": "6abc0035498572d704606c426ad345c70f6e40bf8640eb9211000a44ffb21de0"
+    },
+    "drop-colour-vertex.asm": {
+      "bytes": 649,
+      "license": "PolyForm-Noncommercial-1.0.0",
+      "sha256": "9454f73623bdb3a9831a2ce03908ec8c247b5f387543812f6fc1777ffc07f04f"
+    },
+    "drop-colour-vertex.bin": {
+      "bytes": 88,
+      "license": "PolyForm-Noncommercial-1.0.0",
+      "sha256": "3fdc90af1fc05de6e1c291ec17c5b3d27d895ec089843e7df5bcd365d9da006b"
+    },
+    "drop-colour-vertex.json": {
+      "bytes": 355,
+      "license": "PolyForm-Noncommercial-1.0.0",
+      "sha256": "9d9753b2bc37fd635928533df921af0cef941ee425805121968203fc898a5d67"
+    },
+    "drop-colour-vertex.sph": {
+      "bytes": 80,
+      "license": "MIT",
+      "sha256": "23f1d91134ed62367d68eb39fa7cf8baabf4388261bca45db28b3f7aba8e45d0"
     },
     "fecs.code.bin": {
       "bytes": 2560,
@@ -934,8 +974,8 @@
   },
   "recipe_sha256": {
     "libs/gpu-abi/src/lib.rs": "122c9b6f6244ad31521f8e334337f87603b9fa1988e1803608b464fdb8e3e21b",
-    "tools/kepler/CMakeLists.txt": "fb2e6903905125e5def401a2c14b9434746f93948f6a26fff44ff89fea956375",
-    "tools/kepler/assets.py": "e513f6755ec67188cf944f42bd2f20d7dfd312bffa14c102d1607dc15b726413",
+    "tools/kepler/CMakeLists.txt": "bb493a774b8cf0dde02a2e0bcd1829fa2bfbba2ef89b560b70e53a29734e941c",
+    "tools/kepler/assets.py": "712c67fff50186ee1120463bf4a3eed947ad1beb92360f704471e1c1b283aa50",
     "tools/kepler/compile.cpp": "6ba5577b4a37d714517a1187a65ca5c280e863d2d20adb9a352a51b39b612754"
   },
   "schema": 1,
@@ -2461,6 +2501,66 @@
       "name": "diagnostic-triangle-fragment",
       "source": "tools/kepler/shaders/triangle.frag.tgsi",
       "source_sha256": "7800cf22acecf728b548fa70cca036303e3334d15605a18c83c9be169de51f07"
+    },
+    {
+      "asset": "constant-colour-fragment",
+      "metadata": {
+        "builtin_calls": 0,
+        "chipset": 262,
+        "code_bytes": 48,
+        "constant_buffer_bytes": 0,
+        "constant_buffer_slot": 0,
+        "fixups_applied": false,
+        "gprs": 4,
+        "input_slots": [],
+        "output_slots": [
+          {
+            "address": 0,
+            "index": 0,
+            "mask": 15
+          }
+        ],
+        "relocations": 0,
+        "stage": "fragment",
+        "texture_mask": 0,
+        "tls_bytes": 0
+      },
+      "name": "constant-colour-fragment",
+      "source": "tests/fixtures/gt710_shader_controls/constant-colour-fragment.tgsi",
+      "source_sha256": "bc094eb11605950227ec1178f6a5615e5200bff622abf9eab83ae20b1fe5d6f3"
+    },
+    {
+      "asset": "drop-colour-vertex",
+      "metadata": {
+        "builtin_calls": 0,
+        "chipset": 262,
+        "code_bytes": 88,
+        "constant_buffer_bytes": 0,
+        "constant_buffer_slot": 0,
+        "fixups_applied": false,
+        "gprs": 4,
+        "input_slots": [
+          {
+            "address": 128,
+            "index": 0,
+            "mask": 15
+          }
+        ],
+        "output_slots": [
+          {
+            "address": 112,
+            "index": 0,
+            "mask": 15
+          }
+        ],
+        "relocations": 0,
+        "stage": "vertex",
+        "texture_mask": 0,
+        "tls_bytes": 0
+      },
+      "name": "drop-colour-vertex",
+      "source": "tests/fixtures/gt710_shader_controls/drop-colour-vertex.tgsi",
+      "source_sha256": "a8e11f2f2c29db45af384ff56fcfdcacca1577f9aba85df4833fb4cb57d583d8"
     }
   ],
   "source_lock_sha256": "f00b06cfb8f8064ccae0dd93a3eb489f435a81516685d7966cf5a37ada7b459b",

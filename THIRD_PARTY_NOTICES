@@ -686,6 +686,11 @@ adapter uses the existing VM, coherent DMA pages and BAR flush helpers;
 the M6 CE mechanisms provide read-back. `gr/mod.rs` joins its raw channel
 record with the existing attributed firmware and context records.
 
+`tests/gt710_draw_submission_test.py` also uses `cla06f.h:125-126` at that
+revision (MIT, Copyright (c) 2020 NVIDIA CORPORATION). The check and retained
+channel copy/draw wrappers use its SET_REFERENCE method after the engine
+release. The check retains NVIDIA's copyright and full permission grant.
+
 ## GPCCS topology count decoding correction
 
 The GPCCS UNITS count mask in `scripts/metal/gt710-suite`,
@@ -853,3 +858,102 @@ permission split in nouveau v6.8 `nvkm/subdev/mmu/vmmgf100.c:249-265,314-316`
 firmware context buffers remain privileged as in GR `gf100.c:383`.
 The read-only fault snapshot in `gr/mod.rs` uses the existing MIT FIFO
 `gf100.c:696-714` source listed above; it does not acknowledge fault records.
+
+## GT 710 A197 diagnostic draw encoder (M7 7.4 unit 3)
+
+Consumers: `kernel/src/gpu/gk208/gr/draw.rs` and
+`tests/gt710_draw_stream_test.rs`. Each consumer retains the original full
+copyright and permission notices. Per-packet source lines are recorded in the
+literal stream test. The external files' license headers were read before use.
+
+- NVIDIA open-gpu-doc at `9fdf5c4062007929d9f4e6cbad9c9771fe61b880`,
+  `classes/3d/cla197.h`, MIT, Copyright (c) 2020 NVIDIA CORPORATION.
+  A197 method addresses, bit fields, vertex formats and report releases.
+- Mesa 24.3.4 at `769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de`,
+  `src/gallium/drivers/nouveau/nvc0/nvc0_screen.c`, MIT,
+  Copyright 2010 Christoph Bumiller. Kepler baseline state and stage selection.
+- Same Mesa revision and directory, `nvc0_state.c`, MIT,
+  Copyright 2010 Christoph Bumiller. Raster, depth, stencil, mask and blend state.
+- Same Mesa revision and directory, `nvc0_vbo.c`, MIT,
+  Copyright 2010 Christoph Bumiller. Vertex fetch layout and draw sequence.
+- Same Mesa revision and directory, `nvc0_surface.c`, MIT,
+  Copyright 2008 Ben Skeggs. Pitch-linear render-target setup.
+
+This adaptation uses the hardware mechanisms from those five files. It does
+not import a Gallium/DRM runtime or change the repository's own license.
+
+GT 710 draw orchestration (milestone 7.4)
+----------------------------------------
+`kernel/src/gpu/gk208/gr/channel.rs` additionally uses these individually
+checked MIT sources for the CE2 path on the retained graphics channel:
+
+- Mesa 24.3.4, 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de,
+  src/gallium/drivers/nouveau/nvc0/nvc0_screen.c:1080-1102,
+  Copyright 2010 Christoph Bumiller: A0B5 binding on the graphics channel.
+- Nouveau v6.8, e8f897f4afef0031fe618a8e94127a0934896aba,
+  nvkm/engine/ce/gk104.c, Copyright 2012 Red Hat Inc.:
+  CE register base/instance spacing and interrupt mask/status.
+  nvkm/subdev/mc/base.c:nvkm_mc_enable, Copyright 2012 Red Hat Inc.:
+  TOP-derived PMC enable before accessing the selected copy engine.
+  nvkm/subdev/mc/nv04.c:nv04_mc_device_enable, Copyright 2012 Red Hat Inc.:
+  masked PMC enable with a posted-write read-back.
+  nvkm/engine/fifo/gk104.c:281-286, Copyright 2012 Red Hat Inc.:
+  CE engine scheduling without a separate graphics-context binding.
+- NVIDIA open-gpu-doc, 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+  classes/dma-copy/cla0b5.h, Copyright (c) 2019 NVIDIA CORPORATION:
+  transfer and engine-release methods, through the existing copy.rs encoder.
+
+The MIT grants and copyright notices are retained in gr/channel.rs. The
+orchestration in gr/mod.rs uses Breenix's draw encoder and committed shader
+assets; its host check substitutes device boundaries and supplies no colour
+oracle or rasterizer.
+
+
+## GK208B retained EVO presentation (E23 M7 PR 7.4)
+
+The retained handle and shared flip in `kernel/src/gpu/gk208/native.rs`
+reuse the existing NV927D offset, notifier and UPDATE sequence from
+NVIDIA open-gpu-doc `9fdf5c4062007929d9f4e6cbad9c9771fe61b880`,
+`classes/display/cl927d.h`, SPDX-License-Identifier: MIT,
+Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES.
+The notice remains in that file and in `tests/fixtures/gt710_present.rs`.
+
+The presentation rectangle in `kernel/src/gpu/gk208/gr/mod.rs` uses the
+existing copy encoder through `gr/channel.rs`, whose pitch/line-count and
+engine-ordered releases derive from `classes/dma-copy/cla0b5.h` at the same
+revision, MIT, Copyright (c) 2019 NVIDIA CORPORATION. Its notice remains
+in `gr/channel.rs` and `copy.rs`. Both source headers were rechecked for
+this step. Breenix supplies retained allocation ownership, staging,
+complementary snapshots, compressed rows and error-safe console return.
+
+## GK208B draw trap capture and acknowledgement (E23 M7 PR 7.4)
+
+`kernel/src/gpu/gk208/gr/binding.rs` adapts nouveau v6.8
+`nvkm/engine/gr/gf100.c:1235-1696` (MIT, Copyright 2012 Red Hat Inc.)
+for child-before-summary trap acknowledgement and FIFO resume, and
+`nvkm/engine/gr/gf100.h:41-45` (MIT, Copyright 2010 Red Hat Inc.)
+for GPC/TPC/ROP register addressing. Both file headers were read at
+`e8f897f4afef0031fe618a8e94127a0934896aba`; their copyright notices and
+permission grants remain in the adapted file. Breenix supplies the first
+capture, draw record, bounded preempt/reset fallback and ownership policy.
+
+- envytools `f102b82381f3f11cee113d16374c87091db039d9`,
+  `rnndb/graph/gf100_3d.xml:217-222`, MIT (imported `rnndb/copyright.xml`,
+  copyright 2006 and authors listed in the consumer headers). Sample shading pass count.
+
+The M7.4 vertex quarantine repair uses Mesa 24.3.4
+`src/gallium/drivers/nouveau/nvc0/nvc0_screen.c:1274-1283` (MIT,
+Copyright 2010 Christoph Bumiller) for the 1 MiB backing and 128 KiB
+alignment, and envytools f102b82381f3f11cee113d16374c87091db039d9
+`rnndb/graph/gf100_3d.xml:990-998` (MIT via imported `copyright.xml`)
+for methods 0x17bc/0x17c0/0x17c4 and size selector 3. Consumers:
+`gr/mod.rs`, `gr/draw.rs`, and `tests/gt710_draw_stream_test.rs`; the
+original grants and copyrights are retained in those files. Breenix's
+existing VM/context ownership retains this scratch through drain/reset.
+
+The M7.4 MMU-fault unwind in `gr/channel.rs` uses nouveau v6.8
+`nvkm/engine/fifo/gf100.c:696-733` (instance attribution and MMU unit W1C)
+and `gk104.c:404-418` (runlist fault clear/allow), both MIT,
+Copyright 2012 Red Hat Inc. Their notices are retained in the consumer.
+`tests/gt710_gr_mmu_unwind_test.py` exercises Breenix's teardown order
+with a host MMIO model; it contains no nouveau implementation text.

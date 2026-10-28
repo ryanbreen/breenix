@@ -453,6 +453,16 @@
               "shaders"
             ]
           }
+        },
+        {
+          "id": "draw",
+          "title": "Draw and present the shaded triangle (M7 PR 7.4)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "draw"
+            ]
+          }
         }
       ]
     }

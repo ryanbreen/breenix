@@ -133,6 +133,51 @@
     DEALINGS IN THE SOFTWARE.
 
 *******************************************************************************/
+/*******************************************************************************
+    Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in
+    all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+
+*******************************************************************************/
+
+/*
+ * Copyright 2010 Christoph Bumiller
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 //! One privileged graphics channel; method data is kernel-owned and waits poll.
 //! Adapted hardware fields: MIT nouveau v6.8 FIFO gk208/gk110/gk104/gf100,
 //! GR gf100 (channel copy/header), TOP gk104; MIT open-gpu-doc cla197/cla06f.
@@ -304,6 +349,16 @@ mod native {
     const COMMAND: u64 = 0x01000000;
     const TARGET: u64 = 0x02000000;
     const IMAGE: u64 = 0x03000000;
+    const TRANSFER: u64 = TARGET + 4096;
+    const COPY_BYTES: usize = 4096;
+    const READBACK_BYTES: usize = 65536;
+    struct DrawCopy {
+        base: usize,
+        engine: u32,
+        reset: u32,
+        old_irq: u32,
+        old_enable: u32,
+    }
     const SLOT: u64 = (8 << 20) - 4096;
     const USERD: u64 = 8192;
     const RUNLIST: u64 = 12288;
@@ -324,7 +379,10 @@ mod native {
         admitted: bool,
         alias: bool,
         quiesced: bool,
+        preempt_error: Option<&'static str>,
         report: Report,
+        next_sequence: u32,
+        copy: Option<DrawCopy>,
     }
     impl Session {
         pub(in crate::gk208::gr) fn new(
@@ -445,7 +503,7 @@ mod native {
                 )?;
             }
             let pages = ManuallyDrop::new(system_dma::Pages::new(
-                1,
+                1 + READBACK_BYTES / 4096,
                 &system_dma::translation_status()?,
             )?);
             context.map_system(
@@ -455,7 +513,7 @@ mod native {
                     total: h.total,
                 },
                 TARGET,
-                &[pages.address(0)],
+                &(0..1 + READBACK_BYTES / 4096).map(|i| pages.address(i)).collect::<Vec<_>>(),
             )?;
             for offset in (0..65536).step_by(4096) {
                 words(h.regs, h.total, commands.range.start + offset, &[0; 1024])?;
@@ -543,6 +601,9 @@ mod native {
                 admitted: false,
                 alias: false,
                 quiesced: false,
+                preempt_error: None,
+                next_sequence: 6,
+                copy: None,
                 report: Report {
                     identity: Identity {
                         id: 0,
@@ -652,7 +713,14 @@ mod native {
                 ((self.pages.va(0) + 8) as *mut u32).write_volatile(0);
             }
             self.pages.publish();
-            let offset = 4096 + u64::from(sequence - 1) * 256;
+            if !self.bound || self.quiesced || !(1..512).contains(&sequence)
+                || command.is_empty() || command.len() * 4 > 16384 {
+                return Err("GR command slot unavailable");
+            }
+            // One immutable slot, reused only after the preceding stream was
+            // consumed and its engine receipt observed by the caller. A draw
+            // exceeds the old 256-byte stride; keep it beyond USERD/runlist.
+            let offset = 16384;
             words(
                 h.regs,
                 h.total,
@@ -724,8 +792,172 @@ mod native {
             // Read even after a submission error, before quiesce/reset.
             receipt.after = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
             binding::check_traps(receipt.after)?;
-            result?;
-            self.quiesce(h.regs, h.total)
+            result
+        }
+        /// Append a fresh ordinary mapping after bind_shaders' receipt. The
+        /// allocation is registered before any fallible publication operation.
+        pub(in crate::gk208::gr) fn allocate_draw(
+            &mut self, h: &mut Hardware<'_>, name: &'static str, bytes: u64, alignment: u64,
+        ) -> Result<super::super::context::Buffer, &'static str> {
+            if !self.bound || self.quiesced { return Err("draw mapping requires active GR"); }
+            if alignment < 4096 || !alignment.is_power_of_two() {
+                return Err("invalid draw allocation alignment");
+            }
+            let va = h.next_va.checked_add(alignment - 1)
+                .ok_or("draw VA alignment overflow")? & !(alignment - 1);
+            let allocation = h.layout.allocator.allocate(bytes, alignment, Kind::Engine)?;
+            h.next_va = va.checked_add(allocation.range.size + 4096).ok_or("draw VA overflow")?;
+            h.backing.push((va, allocation));
+            // SAFETY: bind_shaders returned an accepted engine receipt, and
+            // subsequent uploads/draws are serialized to the same boundary.
+            unsafe {
+                self.context.map_idle(&mut h.layout.allocator,
+                    &mut VmIo { regs: h.regs, total: h.total }, va, allocation,
+                    Flags { volatile: true, ..Flags::default() })?;
+            }
+            Ok(super::super::context::Buffer {
+                spec: super::super::context::Spec { name, bytes, align: alignment }, va,
+            })
+        }
+        fn sequence(&mut self) -> Result<(u32, u32), &'static str> {
+            let sequence = self.next_sequence;
+            if sequence >= 512 { return Err("diagnostic GR ring exhausted"); }
+            self.next_sequence += 1;
+            let nonce = receipt_nonce(self.report.identity.epoch, true).wrapping_add(sequence);
+            if nonce == 0 { return Err("draw receipt nonce overflow"); }
+            Ok((sequence, nonce))
+        }
+        fn prepare_copy(&mut self, h: &mut Hardware<'_>) -> Result<(), &'static str> {
+            if self.copy.is_some() { return Ok(()); }
+            // GK208 TOP CE2 type 3 shares GR's runlist. No CE0 channel or
+            // USERD alias may replace this retained FECS context. MIT Mesa
+            // nvc0_screen.c:1080-1102 binds A0B5 on the graphics channel.
+            let (mut engine, mut runlist, mut reset) = (None, None, None);
+            let mut selected = None;
+            for &w in &self.report.identity.top {
+                if w & 3 == 2 {
+                    if w & 32 != 0 { engine = Some((w >> 26) & 15); }
+                    if w & 16 != 0 { runlist = Some((w >> 21) & 15); }
+                    if w & 4 != 0 { reset = Some((w >> 9) & 31); }
+                }
+                if w != 0 && w & 0x80000000 == 0 {
+                    if w & 3 == 3 && (w & 0x7ffffffc) >> 2 == 3
+                        && runlist == Some(self.report.identity.runlist) {
+                        selected = engine.zip(reset);
+                        break;
+                    }
+                    engine = None; runlist = None; reset = None;
+                }
+            }
+            let (engine, reset) = selected.ok_or("GR-runlist CE2 absent")?;
+            // MIT gk104 CE: register base 0x104000 + inst * 0x1000.
+            let base = 0x106000;
+            // MIT nouveau mc/base.c:nvkm_mc_enable uses the TOP reset
+            // mask before engine access. A disabled CE returns PRI errors,
+            // not interrupt status; retain restoration state before refusal.
+            let old_enable = h.regs.read(0x200) & (1 << reset);
+            h.regs.mask(0x200, 1 << reset, 1 << reset);
+            if h.regs.read(0x200) & (1 << reset) == 0 {
+                return Err("draw CE2 enable did not latch");
+            }
+            self.copy = Some(DrawCopy { base, engine, reset,
+                old_irq: h.regs.read(base + 0x904), old_enable });
+            h.regs.write(base + 0x904, 0);
+            if h.regs.read(base + 0x908) & 7 != 0 || h.regs.read(0x259c) != 0 {
+                return Err("draw CE2 inherited fault");
+            }
+            Ok(())
+        }
+        /// Borrow the display owner's existing allocation through reset/drain.
+        pub(in crate::gk208::gr) fn map_scanout(&mut self, h: &mut Hardware<'_>) -> Result<u64, &'static str> {
+            if !self.bound || self.quiesced { return Err("scanout mapping requires active GR"); }
+            let allocation = h.layout.objects[1].allocation;
+            let va = h.next_va;
+            h.next_va = va.checked_add(allocation.range.size + 4096).ok_or("scanout VA overflow")?;
+            // SAFETY: the last draw/readback receipt completed; no submission
+            // races this owner. The mapping pins display storage through reset.
+            unsafe {
+                self.context.map_idle(&mut h.layout.allocator,
+                    &mut VmIo { regs: h.regs, total: h.total }, va, allocation,
+                    Flags { volatile: true, ..Flags::default() })?;
+            }
+            Ok(va)
+        }
+        pub(in crate::gk208::gr) fn copy_rect(
+            &mut self, h: &mut Hardware<'_>, rect: crate::gk208::copy::Rect,
+        ) -> Result<(), &'static str> {
+            self.prepare_copy(h)?;
+            let (sequence, nonce) = self.sequence()?;
+            let mut command = crate::gk208::copy::encode(rect, TARGET, self.report.identity.epoch, nonce)?;
+            // A06F SET_REFERENCE (MIT cla06f.h:125) certifies stream
+            // consumption; the CE epoch/nonce release certifies the transfer.
+            command.extend([0x20010014, sequence]);
+            let sample = self.issue_words(h, sequence, 85, nonce, BOUND_US, &command, true)?;
+            if !sample.accepted { return Err("draw CE release not observed"); }
+            Ok(())
+        }
+        fn transfer(
+            &mut self, h: &mut Hardware<'_>, source: u64, target: u64, bytes: usize,
+        ) -> Result<(), &'static str> {
+            self.copy_rect(h, crate::gk208::copy::Rect {
+                src: source, dst: target, width: bytes as u32, height: 1,
+                src_pitch: bytes as u32, dst_pitch: bytes as u32,
+            })
+        }
+        pub(in crate::gk208::gr) fn upload(
+            &mut self, h: &mut Hardware<'_>, va: u64, data: &[u8],
+        ) -> Result<(), &'static str> {
+            if data.is_empty() || data.len() > 16384 { return Err("draw upload extent"); }
+            for (i, chunk) in data.chunks(COPY_BYTES).enumerate() {
+                // SAFETY: page 1 is owned coherent staging; prior CE receipt
+                // was observed before it can be overwritten for another chunk.
+                unsafe { core::ptr::copy_nonoverlapping(chunk.as_ptr(), self.pages.va(1) as *mut u8, chunk.len()); }
+                self.pages.publish();
+                self.transfer(h, TRANSFER, va + (i * COPY_BYTES) as u64, chunk.len())?;
+            }
+            Ok(())
+        }
+        pub(in crate::gk208::gr) fn readback(
+            &mut self, h: &mut Hardware<'_>, va: u64, bytes: usize,
+        ) -> Result<[Vec<u8>; 2], &'static str> {
+            if bytes == 0 || bytes > 16 << 20 { return Err("draw readback extent"); }
+            let mut images = [alloc::vec![0; bytes], alloc::vec![0; bytes]];
+            for (index, poison) in [0x55, 0xaa].into_iter().enumerate() {
+                for start in (0..bytes).step_by(READBACK_BYTES) {
+                    let count = READBACK_BYTES.min(bytes - start);
+                    // SAFETY: page 1 remains owned and the preceding CE release
+                    // completed before this complementary destination poison.
+                    for i in 1..=count.div_ceil(4096) {
+                        unsafe { core::ptr::write_bytes(self.pages.va(i) as *mut u8, poison, 4096); }
+                    }
+                    self.pages.publish();
+                    self.transfer(h, va + start as u64, TRANSFER, count)?;
+                    crate::gpu_observation::read(&*self.pages, 4096, &mut images[index][start..start + count]);
+                }
+            }
+            Ok(images)
+        }
+        pub(in crate::gk208::gr) fn draw(
+            &mut self, h: &mut Hardware<'_>, mut draw: super::super::draw::Draw,
+            receipt: &mut super::super::binding::Receipt,
+        ) -> Result<(), &'static str> {
+            use super::super::{binding, draw as encoder};
+            receipt.before = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
+            let result = (|| {
+                binding::check_traps(receipt.before)?;
+                let (sequence, nonce) = self.sequence()?;
+                draw.report_va = TARGET; draw.epoch = self.report.identity.epoch; draw.nonce = nonce;
+                receipt.target = TARGET; receipt.epoch = draw.epoch; receipt.nonce = nonce;
+                let mut command = encoder::commands(draw)?;
+                command.extend([0x20010014, sequence]);
+                let observation = self.issue_words(h, sequence, 85, nonce, BOUND_US, &command, true)?;
+                receipt.observation = Some(observation);
+                if !observation.accepted { return Err("draw engine release not observed"); }
+                Ok(())
+            })();
+            receipt.after = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
+            binding::check_traps(receipt.after)?;
+            result
         }
         pub(in crate::gk208::gr) fn execute(
             &mut self,
@@ -781,52 +1013,75 @@ mod native {
             }
             Ok(())
         }
-        /// Leave FIFO and BAR1 safe before PGRAPH reset, including partial activation.
-        /// Failed waits retain the channel and its pinned backing for recovery.
+        /// Drain FIFO, with a GR reset fallback if FECS cannot finish preempt.
+        /// Cleanup errors retain backing, but do not skip unbind/restoration.
         pub(in crate::gk208::gr) fn quiesce(
             &mut self,
             regs: &mut Registers,
             total: u64,
         ) -> Result<(), &'static str> {
-            if self.quiesced {
-                return Ok(());
-            }
+            if self.quiesced { return Ok(()); }
             let c = self.report.identity;
+            let mut failure = None;
+            let mut gr_enable = None;
+            let mut fault_reset = false;
             if self.bound {
                 regs.mask(0x2630, 1 << c.runlist, 1 << c.runlist);
                 regs.mask(0x800004, 0x800, 0x800);
                 regs.write(0x2634, c.id);
-                register_wait(regs, 0x2634, 0x100000, 0, BOUND_US)?;
-                regs
-                    .write(0x2270, ((self.commands.range.start + RUNLIST) >> 12) as u32);
+                if let Err(error) = register_wait(regs, 0x2634, 0x100000, 0, BOUND_US) {
+                    self.preempt_error = Some(error);
+                    // The trap was captured/acknowledged by the suite thread.
+                    // A stuck FECS save must not strand the FIFO owner forever.
+                    gr_enable = Some(regs.read(0x200) & 0x1000);
+                    if let Err(error) = super::super::ctxctl::reset(regs).map_err(super::super::hardware_error) {
+                        failure = Some(error);
+                    } else if regs.read(0x259c) & 1 != 0
+                        && u64::from(regs.read(0x2800)) << 12 == c.instance
+                    {
+                        // MIT nouveau gf100.c:696-733: acknowledge only this
+                        // GR unit's recorded instance after its DMA is stopped.
+                        // Unrelated units/instances keep their fault evidence.
+                        regs.write(0x259c, 1);
+                        fault_reset = regs.read(0x259c) == 0;
+                    }
+                }
+                regs.write(0x2270, ((self.commands.range.start + RUNLIST) >> 12) as u32);
                 regs.write(0x2274, c.runlist << 20);
-                register_wait(
-                    regs,
-                    0x2284 + c.runlist as usize * 8,
-                    0x100000,
-                    0,
-                    BOUND_US,
-                )?;
-                register_wait(regs, 0x3080 + self.pbdma * 4, 0xe000, 0, BOUND_US)?;
-                register_wait(
-                    regs,
-                    0x2640 + c.engine as usize * 8,
-                    0x80000000,
-                    0,
-                    100000,
-                )?;
+                if fault_reset {
+                    // MIT nouveau gk104.c:404-418. A faulted runlist cannot
+                    // consume the empty replacement until cleared and resumed.
+                    regs.write(0x262c, 1 << c.runlist);
+                    regs.mask(0x2630, 1 << c.runlist, 0);
+                }
+                for (address, mask, budget) in [
+                    (0x2284 + c.runlist as usize * 8, 0x100000, BOUND_US),
+                    (0x3080 + self.pbdma * 4, 0xe000, BOUND_US),
+                    (0x2640 + c.engine as usize * 8, 0x80000000, 100000),
+                ] {
+                    if let Err(error) = register_wait(regs, address, mask, 0, budget) {
+                        failure.get_or_insert(error);
+                    }
+                }
+                if let Some(copy) = &self.copy {
+                    if let Err(error) = register_wait(regs, 0x2640 + copy.engine as usize * 8, 0x80000000, 0, 100000) {
+                        failure.get_or_insert(error);
+                    }
+                }
                 regs.write(0x800000, 0);
                 self.report.binding = regs.read(0x800000);
                 self.report.runlist_count = regs.read(0x2274) & 0xfffff;
                 if self.report.binding != 0 {
-                    return Err("GR unbind failed; backing retained");
+                    failure.get_or_insert("GR unbind failed; backing retained");
+                } else {
+                    self.bound = false;
                 }
-                self.bound = false;
             }
             if self.alias {
-                words(regs, total, self.pte, &[0, 0])?;
-                modeset::activate_bar1(regs, self.bar_inst, self.bar_dir)?;
-                self.alias = false;
+                let clear = words(regs, total, self.pte, &[0, 0])
+                    .and_then(|()| modeset::activate_bar1(regs, self.bar_inst, self.bar_dir));
+                if let Err(error) = clear { failure.get_or_insert(error); }
+                else { self.alias = false; }
             }
             let b = 0x40000 + self.pbdma * 0x2000;
             for (offset, value) in [0x13c, 0x10c, 0x14c, 0x12c].into_iter().zip(self.old_pbdma) {
@@ -838,8 +1093,17 @@ mod native {
             regs.mask(0x2630, 1 << c.runlist, self.old[3] & (1 << c.runlist));
             regs.write(0x800004, self.old[4]);
             regs.mask(0x200, 0x100, self.old[5] & 0x100);
+            if let Some(enable) = gr_enable { regs.mask(0x200, 0x1000, enable); }
+            if let Some(copy) = &self.copy {
+                regs.write(copy.base + 0x904, copy.old_irq);
+                regs.mask(0x200, 1 << copy.reset, copy.old_enable);
+            }
+            if let Some(error) = failure { return Err(error); }
             self.quiesced = true;
             Ok(())
+        }
+        pub(in crate::gk208::gr) fn preempt_result(&self) -> Result<(), &'static str> {
+            self.preempt_error.map_or(Ok(()), Err)
         }
         pub(in crate::gk208::gr) fn report(&self) -> Report {
             self.report
@@ -882,6 +1146,12 @@ mod native {
             if self.stop_on_trap {
                 let words = super::super::binding::TRAP_REGISTERS.map(|a| self.regs.read(a));
                 super::super::binding::check_traps(words)?;
+                let p = self.session.pbdma * 0x2000;
+                if self.regs.read(0x259c) != 0 || self.regs.read(0x40108 + p) != 0
+                    || self.regs.read(0x40148 + p) != 0
+                    || self.session.copy.as_ref().is_some_and(|c| self.regs.read(c.base + 0x908) & 7 != 0) {
+                    return Err("draw FIFO/CE fault; backing retained");
+                }
             }
             let s = self.session;
             s.pages.observe();

@@ -65,7 +65,7 @@ mod gr {
     pub fn interrupt_snapshot(_: &mut Registers, _: &Device, phase: &str) {
         SNAPSHOTS.fetch_or(match phase {"before"=>1,"after"=>2,_=>panic!("unknown snapshot phase")},Ordering::SeqCst);
     }
-    pub fn probe(regs: &mut Registers, _: &Device, _: &mut Layout, _: &Console) -> Result<(), &'static str> {
+    pub fn probe(regs: &mut Registers, _: &Device, _: &mut Layout, _: &Console, _: &mut ()) -> Result<(), &'static str> {
         if REFUSE.load(Ordering::SeqCst) { regs.mask(0x200,0x1000,0x1000); Err("GR probe refused") } else { Ok(()) }
     }
 }
@@ -73,6 +73,7 @@ mod modeset {
     pub fn bar1_view(_: u64, _: u64, _: u64, _: u8) -> Result<(u64, usize, u64), &'static str> { Ok((0, 256, 0)) }
 }
 fn handoff(mut regs: Registers, device: Device, mut layout: Layout, console: Console) -> Result<Console, &'static str> {
+let mut evo=();
 TAIL
 }
 #[test]

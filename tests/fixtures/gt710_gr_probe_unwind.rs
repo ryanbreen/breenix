@@ -159,7 +159,7 @@ fn startup_errors_unwind_before_ce_can_run() {
         INJECT.with(|i| *i.borrow_mut()=Injection{target,..Injection::default()});
         let mut regs=Registers::new();let initial=POWER.map(|r|regs.read(r as usize));
         let mut layout=memory::Layout{allocator:memory::allocator::Allocator{live:vec![]}};
-        let result=gr::probe(&mut regs,&drivers::pci::Device,&mut layout,&ConsoleSurface);
+        let result=gr::probe(&mut regs,&drivers::pci::Device,&mut layout,&ConsoleSurface,&mut ());
         assert!(result.is_err(),"injection {target} was not reached");
         let after=POWER.map(|r|regs.read(r as usize));
         if after!=initial || !layout.allocator.live.is_empty() || regs.read(0x409100)!=0 || regs.read(0x502100)!=0 {
@@ -174,7 +174,7 @@ fn unwind_failed_stop_retains_scratch() {
     INJECT.with(|i| *i.borrow_mut()=Injection{target:"stop-stuck",..Injection::default()});
     let mut regs=Registers::new();
     let mut layout=memory::Layout{allocator:memory::allocator::Allocator{live:vec![]}};
-    assert!(gr::probe(&mut regs,&drivers::pci::Device,&mut layout,&ConsoleSurface).is_err());
+    assert!(gr::probe(&mut regs,&drivers::pci::Device,&mut layout,&ConsoleSurface,&mut ()).is_err());
     assert_eq!(layout.allocator.live.len(),2);
     INJECT.with(|i|assert_eq!(i.borrow().releases,0));
     // A later confirmed stop permits explicit reclamation of retained backing.
@@ -201,7 +201,7 @@ fn unwind_gated_pri_capture_never_replays_errors_and_preserves_main_enables() {
         regs.values.extend(MAIN_IRQ);
         let original = POWER.map(|a| regs.values[&a]);
         let mut layout = memory::Layout { allocator: memory::allocator::Allocator { live: vec![] } };
-        let result = gr::probe(&mut regs, &drivers::pci::Device, &mut layout, &ConsoleSurface);
+        let result = gr::probe(&mut regs, &drivers::pci::Device, &mut layout, &ConsoleSurface,&mut ());
         let after = POWER.map(|a| regs.values[&a]);
         let poison_writes: Vec<_> = regs.writes.iter().filter(|(_, v)| v >> 16 == 0xbadf).collect();
         let irq_matches = MAIN_IRQ.iter().all(|(a, v)| regs.values.get(a) == Some(v));
