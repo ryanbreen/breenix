@@ -49,3 +49,29 @@ pub fn triangle_segment() -> [u8; SEGMENT_SIZE] {
     }
     segment
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UploadCase { Withheld, AfterWithheld, Flipped, AfterFlipped }
+
+pub trait UploadIo {
+    type Error;
+    fn poison(&mut self, byte: u8) -> Result<(), Self::Error>;
+    fn upload(&mut self, bytes: &[u8]) -> Result<(), Self::Error>;
+    fn readback(&mut self, case: UploadCase, expected: &[u8]) -> Result<(), Self::Error>;
+}
+
+/// Exercise both negative controls and their subsequent clean uploads.
+pub fn exercise_uploads<I: UploadIo>(io: &mut I) -> Result<(), I::Error> {
+    let clean = triangle_segment();
+    let poison = [0x55; SEGMENT_SIZE];
+    io.poison(0x55)?;
+    io.readback(UploadCase::Withheld, &poison)?;
+    io.upload(&clean)?;
+    io.readback(UploadCase::AfterWithheld, &clean)?;
+    let mut flipped = clean;
+    flipped[0] ^= 1;
+    io.upload(&flipped)?;
+    io.readback(UploadCase::Flipped, &flipped)?;
+    io.upload(&clean)?;
+    io.readback(UploadCase::AfterFlipped, &clean)
+}

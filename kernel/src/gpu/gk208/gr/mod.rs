@@ -313,6 +313,9 @@ fn probe_inner(
     // From here, only Hardware::finish can certify that reset is safe.
     cleanup.fifo_quiesced = false;
     let outcome = (|| {
+        let shader_buffer = context::Io::allocate(&mut hardware, context::Spec {
+            name: "shader-segment", bytes: shaders::SEGMENT_SIZE as u64, align: 4096,
+        }).map_err(|e| e.reason)?;
         let generated = context::generate(&mut hardware, &topology, ready.size);
         if let Err(error) = &generated {
             context_error(error);
@@ -335,6 +338,10 @@ fn probe_inner(
             // Observe the quiesced channel while GR registers remain accessible,
             // before reset/gating makes PGRAPH reads return PRI error words.
             interrupt_snapshot(hardware.regs, hardware.device, "channel-drained");
+            hardware.reader = Some(super::ce::readback::Reader::new(
+                hardware.regs, hardware.device, hardware.layout, hardware.console, &hardware.backing,
+            )?);
+            shaders::exercise_uploads(&mut ShaderUpload { hardware: &mut hardware, buffer: shader_buffer })?;
             Some(report)
         } else {
             None
@@ -565,6 +572,36 @@ impl Hardware<'_> {
         )?;
         for (_, a) in self.backing {
             self.layout.allocator.release(a)?;
+        }
+        Ok(())
+    }
+}
+struct ShaderUpload<'a, 'b> {
+    hardware: &'a mut Hardware<'b>,
+    buffer: context::Buffer,
+}
+impl shaders::UploadIo for ShaderUpload<'_, '_> {
+    type Error = &'static str;
+    fn poison(&mut self, byte: u8) -> Result<(), Self::Error> {
+        self.hardware.fill(self.buffer, &alloc::vec![byte; shaders::SEGMENT_SIZE]).map_err(|e| e.reason)
+    }
+    fn upload(&mut self, bytes: &[u8]) -> Result<(), Self::Error> {
+        self.hardware.reader.as_mut().ok_or("shader CE reader absent")?.upload(
+            self.hardware.regs, self.hardware.total, self.buffer.va, bytes)
+    }
+    fn readback(&mut self, case: shaders::UploadCase, expected: &[u8]) -> Result<(), Self::Error> {
+        let images = self.hardware.reader.as_mut().ok_or("shader CE reader absent")?.image(
+            self.hardware.regs, self.hardware.total, self.buffer.va, expected.len())?;
+        for (index, image) in images.iter().enumerate() {
+            let mut rows = String::new();
+            use core::fmt::Write;
+            for (i, chunk) in image.chunks(256).enumerate() {
+                writeln!(rows, "GT710_SHADER_IMAGE {:?} {} {} {}", case, [85, 170][index], i * 256, super::hex(chunk))
+                    .map_err(|_| "shader image formatting")?;
+            }
+            super::bulk::line(rows.trim_end_matches('\n').into())?;
+            crate::serial_println!("GT710_SHADER_UPLOAD {:?} {} {} {}", case, [85, 170][index], image.len(), super::hash(image));
+            if image != expected { return Err("shader CE upload bytes differ"); }
         }
         Ok(())
     }
