@@ -149,7 +149,7 @@ impl Controller {
         }
         #[cfg(feature = "softirq_hostkey_test")]
         if !self.host_keys.is_empty() {
-            super::softirq_wake_test::begin(self.host_keys.len());
+            super::softirq_wake_test::begin(&self.pci, self.host_keys.len());
         }
         let now = now();
         if now < self.next_host_key {
