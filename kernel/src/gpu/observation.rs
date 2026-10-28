@@ -70,21 +70,37 @@ impl NativeRecord {
     /// owner supplies geometry, render serial, pixels, binding and publication;
     /// no scanout flag or present completion is inferred from a CE transfer.
     pub fn write_backend_fields(&self, out: &mut [u8; gpu_abi::record::SIZE], upload: bool) {
-        use gpu_abi::{backend, gk208, record as r};
+        use gpu_abi::{gk208, record as r};
         let put32 = |out: &mut [u8], off: usize, value: u32| out[off..off + 4].copy_from_slice(&value.to_le_bytes());
         let put64 = |out: &mut [u8], off: usize, value: u64| out[off..off + 8].copy_from_slice(&value.to_le_bytes());
-        put32(out, r::BACKEND, backend::GK208);
-        put32(out, r::BOUNDARY, r::BOUNDARY_NATIVE);
+        write_backend_fields(out, gk208::SUCCESS);
         put64(out, r::CONTEXT, self.version.context);
         put64(out, r::RESOURCE, self.version.resource);
         put64(out, r::GENERATION, self.version.generation);
         put64(out, r::RENDER_FENCE, self.writer.request().caller);
         put64(out, r::READBACK_FENCE, self.transfers[1].request().caller);
         put32(out, r::RENDER_KIND, if upload { gk208::TRANSFER_RELEASE } else { gk208::DRAW_RELEASE });
-        for off in [r::RENDER_STATUS, r::READBACK_STATUS, r::COPY_STATUS] { put32(out, off, gk208::SUCCESS); }
-        for off in [r::READBACK_KIND, r::COPY_KIND] { put32(out, off, gk208::TRANSFER_RELEASE); }
-        put64(out, r::READBACK_SURFACE, 0);
-        put64(out, r::READBACK_MOB, 0);
+        put32(out, r::RENDER_STATUS, gk208::SUCCESS);
         put32(out, r::UNWRITTEN, self.unwritten);
+    }
+}
+
+/// Encode the native readback boundary after the common observation owner has
+/// checked the transfers. Preserve its actual answer, writer, identities,
+/// geometry and binding; a serializer cannot manufacture successful completion.
+pub fn write_backend_fields(out: &mut [u8; gpu_abi::record::SIZE], answer: u32) {
+    use gpu_abi::{backend, gk208, record as r};
+    for (at, value) in [
+        (r::BACKEND, backend::GK208),
+        (r::BOUNDARY, r::BOUNDARY_NATIVE),
+        (r::READBACK_KIND, gk208::TRANSFER_RELEASE),
+        (r::COPY_KIND, gk208::TRANSFER_RELEASE),
+        (r::READBACK_STATUS, answer),
+        (r::COPY_STATUS, answer),
+    ] {
+        out[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    for at in [r::READBACK_SURFACE, r::READBACK_MOB] {
+        out[at..at + 8].fill(0);
     }
 }

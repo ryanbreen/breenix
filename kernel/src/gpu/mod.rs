@@ -547,9 +547,17 @@ pub fn init() {
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn install_native(device: crate::gk208::adapter::Device) -> Result<(), &'static str> {
     let caps = device.caps();
-    if device.needs_reset() || caps.backend != abi::backend::GK208
-        || caps.status != abi::status::MISSING_CAPABILITY || caps.missing != capability::BGRA_RENDER {
+    if device.needs_reset() || caps.backend != abi::backend::GK208 {
         return Err("native core lacks live class evidence");
+    }
+    if caps.status == abi::status::MISSING_CAPABILITY {
+        // Installation needs the live engine and class evidence. The first
+        // unprobed format/profile capability is reported by CAPS/admission.
+        if matches!(caps.missing, capability::FEATURE_3D | capability::CAPABILITY_SET) {
+            return Err(capability::name(caps.missing));
+        }
+    } else if caps.status != abi::status::ADMITTED {
+        return Err("native core capability state invalid");
     }
     with_core(|core| {
         if core.dev.is_some() { return Err("GPU core already has a device"); }
@@ -4916,7 +4924,9 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     }
     put64(&mut rec, record::READBACK_FENCE, transfer_fence);
     put32(&mut rec, record::READBACK_STATUS, transfer_answer);
-    if dev::is_svga() {
+    if dev::backend() == abi::backend::GK208 {
+        observation::write_backend_fields(&mut rec, transfer_answer);
+    } else if dev::is_svga() {
         // The host copy into the readback surface answered as the readback did: both run
         // in the same command buffer, whose status is the answer.
         put32(&mut rec, record::READBACK_KIND, svga::wire::cmd::READBACK_SURFACE);
