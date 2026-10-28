@@ -95,7 +95,7 @@ fn main() { assert!(suite_requested(), "explicit core default boot must run the 
         sequence = RUN['sequence_tools']()
         resolved, _ = sequence['resolve']('all', 'x86-metal', True)
         self.assertIn('console', resolved)
-        self.assertIn('gpu', resolved)
+        self.assertNotIn('gpu', resolved)
         self.assertEqual(RUN['kernel_features']('suite', ','.join(resolved), None), [])
 
     def test_only_named_core_diagnostic_selects_probe(self):
