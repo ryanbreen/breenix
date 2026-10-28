@@ -96,7 +96,7 @@ fn session(seq:u32,accept:bool)->Session {
 #[test] fn draw_reference_follows_engine_release() {
     for seq in [7,38,511] {for accept in [false,true] {
         let mut s=session(seq,accept);
-        let request=draw::Draw{target_va:0x100000,pitch:256,width:64,height:64,vertex_va:0x200000,
+        let request=draw::Draw{target_va:0x100000,pitch:256,width:64,height:64,vertex_va:0x200000,quarantine_va:0x400000,
                               vertex_program:0x30,fragment_program:0x1b0,report_va:0,epoch:0,nonce:0};
         let mut receipt=binding::Receipt{target:0,epoch:0,nonce:0,before:[0;4],after:[0;4],observation:None};
         let result=s.draw(&mut Hardware{regs:&mut Registers},request,&mut receipt);

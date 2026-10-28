@@ -19,7 +19,7 @@ mod shaders {
 }
 mod draw {
     pub const VERTEX_WORDS:[u32;24]=[0;24];
-    pub struct Draw { pub target_va:u64,pub pitch:u32,pub width:u32,pub height:u32,pub vertex_va:u64,pub vertex_program:u32,pub fragment_program:u32,pub report_va:u64,pub epoch:u64,pub nonce:u32 }
+    pub struct Draw { pub target_va:u64,pub pitch:u32,pub width:u32,pub height:u32,pub vertex_va:u64,pub quarantine_va:u64,pub vertex_program:u32,pub fragment_program:u32,pub report_va:u64,pub epoch:u64,pub nonce:u32 }
 }
 mod binding {
     // TRAP_CAPTURE
@@ -48,12 +48,14 @@ mod channel {
     #[derive(Clone,Copy)] pub struct Observation {pub value:u32,pub epoch:u64,pub consumed:bool,pub accepted:bool,pub elapsed_us:u64}
     pub struct Session {pub next:u32,pub uploads:Vec<(u64,Vec<u8>)>}
     impl Session {
-        pub fn allocate_draw(&mut self,_:&mut Hardware<'_>,name:&'static str,bytes:u64)->Result<context::Buffer,&'static str>{event(name);assert!(bytes==16384||bytes==96);Ok(context::Buffer{va:if bytes==96{0x20000}else{0x10000}})}
+        pub fn allocate_draw(&mut self,_:&mut Hardware<'_>,name:&'static str,bytes:u64,align:u64)->Result<context::Buffer,&'static str>{event(name);assert_eq!((bytes,align),match name {"draw-target"=>(16384,4096),"draw-vertices"=>(96,4096),"draw-quarantine"=>(1<<20,1<<17),_=>panic!("unknown draw allocation")});Ok(context::Buffer{va:match name {"draw-vertices"=>0x20000,"draw-quarantine"=>0x60000,_=>0x10000}})}
         pub fn upload(&mut self,_:&mut Hardware<'_>,va:u64,data:&[u8])->Result<(),&'static str>{event(&format!("upload-{va:x}-{}",data.len()));self.uploads.push((va,data.into()));Ok(())}
         pub fn readback(&mut self,_:&mut Hardware<'_>,va:u64,size:usize)->Result<[Vec<u8>;2],&'static str>{event(&format!("read-{va:x}-{size}"));let data=self.uploads.iter().rev().find(|(a,_)|*a==va).unwrap().1.clone();let mut images=[data.clone(),data];if fail("mismatch")&&va==0x10000{images[1][0]^=1;}Ok(images)}
         pub fn draw(&mut self,_:&mut Hardware<'_>,r:draw::Draw,receipt:&mut binding::Receipt)->Result<(),&'static str>{
             event(&format!("issue-draw-{:x}-{:x}",r.vertex_program,r.fragment_program));
             assert_eq!((r.target_va,r.vertex_va,r.width,r.height,r.pitch),(0x10000,0x20000,64,64,256));
+            assert_eq!(r.quarantine_va,0x60000);
+            assert!(events().contains(&"draw-quarantine".into()),"IDXFETCH scratch is unmapped");
             assert_eq!((r.report_va,r.epoch,r.nonce),(0,0,0));
             let last=self.uploads.last().unwrap();assert_eq!(last.0,0x10000);assert!(last.1.iter().all(|v|*v==0));
             receipt.target=0x30000;receipt.epoch=42;receipt.nonce=self.next;self.next+=1;

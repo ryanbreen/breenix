@@ -62,7 +62,7 @@ mod bulk {pub fn used()->usize{0} pub fn line(_:String)->Result<(),&'static str>
 struct ShaderBuffer {va:u64}
 fn draw_probe(h:&mut Hardware<'_>,s:&mut Session,_:u64,e:&mut DrawEvidence)->Result<(),&'static str>{
     let mut receipt=binding::Receipt{target:0,epoch:0,nonce:0,before:[0;4],after:[0;4],observation:None};
-    let result=s.draw(h,draw::Draw{target_va:0x100000,pitch:256,width:64,height:64,vertex_va:0x200000,vertex_program:0x30,fragment_program:0x1b0,report_va:0,epoch:0,nonce:0},&mut receipt);
+    let result=s.draw(h,draw::Draw{target_va:0x100000,pitch:256,width:64,height:64,vertex_va:0x200000,quarantine_va:0x400000,vertex_program:0x30,fragment_program:0x1b0,report_va:0,epoch:0,nonce:0},&mut receipt);
     e.draws.push(DrawCapture{name:"triangle",receipt,images:None});result
 }
 fn present_probe(_:&mut Hardware<'_>,_:&mut Session,_:&mut (),_:&mut DrawEvidence)->Result<(),&'static str>{panic!("present after failing draw")}

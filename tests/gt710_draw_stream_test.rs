@@ -138,7 +138,7 @@ pub mod draw;
 fn request() -> draw::Draw {
     draw::Draw {
         target_va: 0x1234560000, pitch: 256, width: 64, height: 64,
-        vertex_va: 0x2345670000, vertex_program: 0x30, fragment_program: 0x1b0,
+        vertex_va: 0x2345670000, quarantine_va: 0x4567880000, vertex_program: 0x30, fragment_program: 0x1b0,
         report_va: 0x3456780000, epoch: 0x1122334455667788, nonce: 0xaabbccdd,
     }
 }
@@ -146,6 +146,9 @@ fn request() -> draw::Draw {
 #[test]
 fn literal_a197_draw_stream() {
     let expected = [
+        // Mesa 24.3.4 nvc0_screen.c:1274-1283; MIT rnndb gf100_3d.xml:990-998.
+        // 1 MiB backing, 128 KiB alignment, high/low VA and size selector 3.
+        0x200305ef, 0x00000045, 0x67880000, 0x00000003,
         // cla197.h:697-812; nvc0_surface.c:590-599 (linear WIDTH is pitch bytes; A8R8G8B8 is little-endian BGRA)
         0x20090200, 0x00000012, 0x34560000, 0x00000100, 0x00000040, 0x000000cf, 0x00001000, 0x00000001, 0x00000000, 0x00000000,
         // cla197.h:1685-1694; nvc0_surface.c:588
@@ -342,6 +345,7 @@ fn addresses_offsets_and_bounds_are_encoded_without_truncation() {
     r.target_va += 0x100000000;
     r.vertex_va += 0x200000000;
     r.report_va += 0x300000000;
+    r.quarantine_va += 0x400000000;
     r.pitch = 512;
     r.vertex_program = 0x3b0;
     r.fragment_program = 0x2b0;
@@ -365,12 +369,15 @@ fn addresses_offsets_and_bounds_are_encoded_without_truncation() {
     }
     // envytools rnndb graph/gf100_3d.xml:217-222: bits 3:0 must be 1, 2, 4 or 8.
     assert!(matches!(methods[&0x0754] & 0xf, 1 | 2 | 4 | 8));
-    for (m,v) in [(0x800,0x13),(0x808,512),(0x1c04,0x25),(0x1f00,0x25),
+    for (m,v) in [(0x17bc,0x49),(0x17c0,0x67880000),(0x17c4,3),(0x800,0x13),(0x808,512),(0x1c04,0x25),(0x1f00,0x25),
                   (0x2044,0x3b0),(0x2144,0x2b0)] { assert_eq!(methods[&m],v); }
     assert_eq!(reports, [[0x37,0x56780004,0x76543210,0x1000f010],
                          [0x37,0x56780008,0xfedcba98,0x1000f010],
                          [0x37,0x56780000,0x12345678,0x1000f010]]);
-    for bad in [draw::Draw { target_va: 0, ..r }, draw::Draw { target_va: 1<<40, ..r },
+    for bad in [draw::Draw { quarantine_va: 0, ..r },
+                draw::Draw { quarantine_va: r.quarantine_va+4096, ..r },
+                draw::Draw { quarantine_va: (1<<40)-(1<<17), ..r },
+                draw::Draw { target_va: 0, ..r }, draw::Draw { target_va: 1<<40, ..r },
                 draw::Draw { target_va: r.target_va+4, ..r }, draw::Draw { pitch: 255, ..r },
                 draw::Draw { width: 0, ..r }, draw::Draw { height: 65, ..r },
                 draw::Draw { vertex_va: (1<<40)-4, ..r }, draw::Draw { vertex_va: 0, ..r },
