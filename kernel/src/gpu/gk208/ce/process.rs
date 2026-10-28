@@ -11,16 +11,35 @@ static RECOVERY_WAITERS:WaitQueueHead=WaitQueueHead::new();
 static WAITING:AtomicBool=AtomicBool::new(false);
 static WAITERS:WaitQueueHead=WaitQueueHead::new();
 struct Work {a:Channel,b:Channel,ticket:Option<Ticket>,request:Request,seed:u32,baseline:memory::allocator::Stats,old:[u32;3],userd:Allocation,engine:Engine}
-pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,work:Option<Work>}
-pub(crate) fn retain(layout:memory::Layout,regs:usize,bar:usize)->Result<(),&'static str> {
+pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,console:super::super::ConsoleSurface,core_started:bool,work:Option<Work>}
+pub(crate) fn retain(layout:memory::Layout,regs:usize,bar:usize,console:super::super::ConsoleSurface)->Result<(),&'static str> {
     let native=layout.objects[4].range.start;
     let s=layout.allocator.stats();
     *SESSION.lock()=Some(Session{layout,registers:regs,bar,bi:native+0x2000,bd:native+0x3000,
-        pte:native+0x4000+(SLOT/4096)*8,total:s.reserved+s.charged+s.free,work:None});
+        pte:native+0x4000+(SLOT/4096)*8,total:s.reserved+s.charged+s.free,console,core_started:false,work:None});
     Ok(())
 }
+pub(in crate::gk208) fn initialize_core()->Result<(),&'static str> {
+    let mut s={
+        let mut owner=SESSION.lock();
+        let s=owner.as_mut().ok_or("native display/allocator unavailable")?;
+        if s.core_started {return Err("native core startup already attempted");}
+        if s.work.is_some() {return Err("native CE work still owned");}
+        s.core_started=true;
+        owner.take().unwrap()
+    };
+    let result=(|| {
+        let device=crate::drivers::pci::find_device(0x10de,0x128b).ok_or("native PCI device absent")?;
+        let native=super::super::gr::initialize(&mut Registers(s.registers),&device,&mut s.layout,&s.console)?;
+        crate::gpu::install_native(native)
+    })();
+    *SESSION.lock()=Some(s);
+    result
+}
+
 impl Session {
     fn begin(&mut self)->Result<(),&'static str> {
+        if self.core_started {return Err("native GPU core owns FIFO");}
         if self.work.is_some() {return Err("native wait already owned");}
         let mut regs=Registers(self.registers);
         ensure_unbound(&mut regs, 0)?;

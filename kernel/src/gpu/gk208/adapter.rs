@@ -47,9 +47,13 @@ pub struct Device {
     resetting: Option<Result<(), &'static str>>,
 }
 impl Device {
-    #[allow(dead_code)] // Native device installation uses this public integration API.
     pub(crate) fn new(channel: NativeChannel, board: super::caps::BoardState) -> Self {
         Self { channel, board, queue: Queue::new(), pending: VecDeque::new(), fault: false, resetting: None }
+    }
+    pub(crate) fn registered(channel: NativeChannel, board: super::caps::BoardState, last: u32) -> Self {
+        let mut device = Self::new(channel, board);
+        device.queue = Queue::drained(last);
+        device
     }
     /// Recheck snapshot identity against the channel when querying CAPS. Restart's
     /// new epoch cannot silently inherit old object-creation evidence.
@@ -131,9 +135,7 @@ impl Device {
 #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
 impl Device {
     pub(crate) fn probe(channel: NativeChannel, board: super::caps::BoardState, last: u32) -> Self {
-        let mut device = Self::new(channel, board);
-        device.queue = Queue::drained(last);
-        device
+        Self::registered(channel, board, last)
     }
     pub(crate) fn probe_identity(&self) -> Result<(u64, u64, u32), &'static str> {
         let (context, epoch) = self.channel.identity();

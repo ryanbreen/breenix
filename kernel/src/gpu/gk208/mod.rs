@@ -364,7 +364,7 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
             crate::serial_println!("GT710_PROBE_TIME graphics us={}",channel::elapsed(start));
         }
         let (_,displacement,_)=modeset::bar1_view(layout.objects[0].range.start,layout.objects[0].range.size,device.bars[1].size,17)?;
-        ce::retain(layout,regs.0,console.pointer-displacement)?;
+        ce::retain(layout,regs.0,console.pointer-displacement,console)?;
         return Ok(console);
     }
     Err("no active board-routed TMDS sink responded to live DDC")
@@ -527,3 +527,8 @@ fn display_memory(
 
 pub mod adapter;
 pub mod caps;
+
+/// Serialize first-use native startup with the existing allocator/CE owner.
+pub(crate) fn initialize_core() -> Result<(), &'static str> {
+    ce::initialize_core()
+}

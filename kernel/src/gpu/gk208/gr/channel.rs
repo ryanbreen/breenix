@@ -1269,6 +1269,7 @@ mod native {
         pub(in crate::gk208::gr) fn preempt_result(&self) -> Result<(), &'static str> {
             self.preempt_error.or_else(|| self.second.as_ref().and_then(|s| s.preempt_error)).map_or(Ok(()), Err)
         }
+        pub(in crate::gk208::gr) fn last_sequence(&self) -> u32 { self.next_sequence - 1 }
         pub(in crate::gk208::gr) fn report(&self) -> Report {
             self.report
         }
@@ -1356,7 +1357,7 @@ mod native {
             let session = self.session.take().unwrap();
             let channel = NativeChannel { session, registers: h.regs.0, total: h.total,
                 mmu: [0; 2], _scratch: None, topology: [[0; 2]; 3], initial: Vec::new(),
-                put: last, confirmed: false };
+                put: last, confirmed: false, _bootstrap: None };
             let mut device = crate::gpu::dev::Device::Gk208(adapter::Device::probe(channel, board, last));
             let result = self.producer.run(&mut device, operation, name);
             let crate::gpu::dev::Device::Gk208(device) = device else { unreachable!() };
@@ -1402,33 +1403,36 @@ mod native {
         initial: Vec<u8>,
         put: u32,
         confirmed: bool,
+        _bootstrap: Option<ManuallyDrop<crate::gk208::lifetime::Context>>,
     }
     impl Session {
-        /// Native initialization hands over a fresh, unbound session after CE2
-        /// preparation. The following initialization unit owns this entrypoint.
-        #[allow(dead_code)] // Public integration API; device installation follows this unit.
+        /// Transfer a drained live channel only after all fallible preparation.
         pub(in crate::gk208::gr) fn into_native(
-            self, registers: usize, total: u64, mmu: [Allocation; 2],
+            owner: &mut Option<Self>, registers: usize, total: u64, mmu: [Allocation; 2],
             allocator: &memory::allocator::Allocator,
         ) -> Result<NativeChannel, &'static str> {
-            if self.bound || self.second.is_some() || self.copy.is_none() || self.quiesced {
-                return Err("native handoff requires fresh prepared channel");
+            let session = owner.as_ref().ok_or("native channel owner absent")?;
+            if !session.bound || session.second.is_some() || session.copy.is_none() || session.quiesced {
+                return Err("native handoff requires live prepared channel");
             }
             let mut regs = Registers(registers);
             let topology = [0x409604, 0x502608, 0x500c30].map(|a| [a, regs.read(a as usize)]);
-            let mut initial = Vec::with_capacity(self.image.range.size as usize);
-            for off in (0..self.image.range.size).step_by(4) {
-                initial.extend(read(&mut regs, total, self.image.range.start + off)?.to_le_bytes());
+            let mut initial = Vec::with_capacity(session.image.range.size as usize);
+            for off in (0..session.image.range.size).step_by(4) {
+                initial.extend(read(&mut regs, total, session.image.range.start + off)?.to_le_bytes());
             }
             let scratch = ManuallyDrop::new([allocator.pin(mmu[0])?, allocator.pin(mmu[1])?]);
-            let mut native = NativeChannel { session: self, registers, total,
+            let put = session.next_sequence - 1;
+            Ok(NativeChannel { session: owner.take().unwrap(), registers, total,
                 mmu: mmu.map(|a| a.range.start), _scratch: Some(scratch), topology,
-                initial, put: 0, confirmed: false };
-            native.session.activate_regs(&mut regs, total)?;
-            Ok(native)
+                initial, put, confirmed: false, _bootstrap: None })
         }
     }
+
     impl NativeChannel {
+        pub(in crate::gk208::gr) fn retain_bootstrap(&mut self, context: crate::gk208::lifetime::Context) {
+            self._bootstrap = Some(ManuallyDrop::new(context));
+        }
         pub(crate) fn identity(&self) -> (u64, u64) {
             let c = self.session.report.identity;
             (c.instance, c.epoch)

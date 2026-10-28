@@ -1104,3 +1104,13 @@ the original owners and MIT grants. The explicit G6 header check and
 256-byte header poisoned, while runnable count/address are CPU-filled.
 G7's firmware-derived section map and G8's measured terminal padding rule
 continue to classify the rest of each image.
+
+## GK208 production core registration (M8.1 repair)
+
+Production startup in `kernel/src/gpu/gk208/gr/mod.rs` and the ownership bridge
+in `gr/channel.rs` reuse their existing attributed MIT nouveau GF100/GK208
+context/controller/FIFO mechanisms, NVIDIA A197/A0B5 methods and Mesa shader
+metadata described above. Their existing copyright headers and full MIT grants
+are retained. `kernel/src/gpu/gk208/ce/process.rs` and `kernel/src/gpu/mod.rs`
+supply Breenix-owned first-use registration and shared admission. No additional
+external source or generated asset is introduced by this repair.

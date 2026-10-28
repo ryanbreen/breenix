@@ -142,15 +142,19 @@ draws, the copy, three rejected controls and their immediate clean successors,
 using the native answer and method namespaces and matching receipts.
 
 The diagnostic retains its refusal-only CAPS snapshot and tears its channels down.
-Production console and GPU boots compile the ordinary M7 draw path, without
-core controls or `record_native_refusal`. Before native core installation,
-the production GPU suite therefore sees `NO_DEVICE` with `no GPU core backend`,
-as specified by `Core::empty`, rather than the diagnostic's missing-format CAPS.
-The runner acquires no GPU view or display ownership for that absent core.
+Production uses the ordinary M7 draw path without the core controls. On the first
+CAPS request, the existing native allocator/CE owner initializes FECS/GPCCS,
+generates a context, uploads the committed shaders, binds A197 and executes CE2
+readbacks on a live channel. It transfers that channel and its pinned bootstrap
+storage to `dev::Device::Gk208`, resuming after the startup sequences. Shared
+admission then reports the unprobed BGRA render capability. Startup failure
+reports DEVICE_FAILED and its cause; it cannot qualify as capability evidence.
+The existing console CE checks run before this first-use ownership transfer.
 
 `producer` requires START, the shared manifest's 170 CASE identities in order,
 DONE with 170 failures and no skips, `SUITE gpu ELAPSED ms=N`, and READY.
-Each case's sole failure must name the production no-device admission reason.
+Each case's sole failure must name CAPS status 2 and `missing b8g8r8a8-render`.
+NO_DEVICE and other startup or admission failures are rejected.
 Panic, stalls, other failure reasons, incomplete capture, changed commits,
 console gaps, missing or inconsistent memory records and elapsed time above
 900 seconds fail. Exit status 1 is expected for these admission refusals;

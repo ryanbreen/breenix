@@ -105,7 +105,7 @@ CATEGORIES = {
     'console': (
         ('acceptance', 'The same GT 710 capture passes firmware ownership, display claim, screen read-back and the complete E16 console suite'),
     ),
-    'core': [('row', 'CAPS bytes match the native backend-6 row and the created board classes'), ('dispatch', 'Native copy and draw completions reject withheld release, stale epoch and masked class controls and accept their clean successors'), ('producer', 'A named production GPU-suite boot reports 170 manifest-ordered no-device admission refusals without skips and reports its own time')],
+    'core': [('row', 'CAPS bytes match the native backend-6 row and the created board classes'), ('dispatch', 'Native copy and draw completions reject withheld release, stale epoch and masked class controls and accept their clean successors'), ('producer', 'A named production GPU-suite boot reports 170 manifest-ordered unprobed-capability admission refusals without skips and reports its own time')],
     'device': (
         ('identity', 'The PCI report identifies 10de:128b with subsystem 1462:8c93 and its interrupt line'),
         ('bars-link', 'The PCI report lists the display BARs and the negotiated PCIe link from its capability registers'),
@@ -1763,9 +1763,8 @@ def core_producer(serial, caps, boot):
         raise ValueError('core producer incomplete line')
     lines = serial.splitlines()
     records = [line for line in lines if re.match(r'^SUITE gpu (?:START|CASE|DONE|ELAPSED)\b',line)]
-    # Production has no installed native core yet; the diagnostic CAPS snapshot
-    # must never replace its real NO_DEVICE status (gpu/mod.rs Core::empty).
-    reason = 'missing the GPU core with a device admitted to the profile (G1): CAPS status 1 (no GPU core backend)'
+    # Production must register the native backend and refuse the unprobed format.
+    reason = 'missing the GPU core with a device admitted to the profile (G1): CAPS status 2 (missing b8g8r8a8-render)'
     if len(records) != 173 or records[0] != 'SUITE gpu START cases=170':
         raise ValueError('core producer START/CASE/DONE/time count')
     for line, name in zip(records[1:171], names):

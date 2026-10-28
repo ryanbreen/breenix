@@ -332,6 +332,7 @@ fn complete(
     }
     Err("native update notifier did not complete")
 }
+#[derive(Clone, Copy)]
 pub struct ConsoleSurface {
     pub pointer: usize,
     pub bytes: usize,

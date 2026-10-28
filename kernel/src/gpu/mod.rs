@@ -541,6 +541,24 @@ pub fn init() {
     panic::initialized();
 }
 
+/// Install the native owner only after hardware startup and channel receipts.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn install_native(device: crate::gk208::adapter::Device) -> Result<(), &'static str> {
+    let caps = device.caps();
+    if device.needs_reset() || caps.backend != abi::backend::GK208
+        || caps.status != abi::status::MISSING_CAPABILITY || caps.missing != capability::BGRA_RENDER {
+        return Err("native core lacks live class evidence");
+    }
+    with_core(|core| {
+        if core.dev.is_some() { return Err("GPU core already has a device"); }
+        core.queue_size = device.queue_size();
+        core.status = caps.status;
+        core.caps = caps;
+        core.dev = Some(Device::Gk208(device));
+        Ok(())
+    }).unwrap_or(Err("GPU core not initialized"))
+}
+
 /// Apply the capability control through shared admission while the early boot
 /// probe still owns the channel. This does not alter the userspace control latch
 /// or install a device whose format/profile probes have not run yet.
@@ -2546,6 +2564,13 @@ pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
 fn op_caps(arg: u64, len: u64) -> Result<u64, i64> {
     if len != core::mem::size_of::<abi::Caps>() as u64 {
         return Err(EINVAL);
+    }
+    #[cfg(target_arch = "x86_64")]
+    if crate::gk208::takeover_started()
+        && with_core(|c| c.dev.is_none() && c.status == abi::status::NO_DEVICE).unwrap_or(false) {
+        if let Err(error) = crate::gk208::initialize_core() {
+            with_core(|c| { c.status = abi::status::DEVICE_FAILED; c.reason = error; });
+        }
     }
     let caps = with_core(|c| c.caps_record()).unwrap_or_else(|| Core::empty().caps_record());
     write_arg(arg, &caps)?;
