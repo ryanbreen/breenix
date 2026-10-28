@@ -1,4 +1,25 @@
 /*
+ * Copyright 2017 Red Hat Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ */
+/*
  * Copyright 2012 Red Hat Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -304,6 +325,7 @@ mod native {
         pub(in crate::gk208::gr) fn new(
             h: &mut Hardware<'_>,
             golden: &Golden,
+            code_address: u64,
         ) -> Result<Self, &'static str> {
             let top = core::array::from_fn(|i| h.regs.read(0x22700 + i * 4));
             let (mut engine, mut runlist, mut kind) = (None, None, None);
@@ -394,7 +416,10 @@ mod native {
                     },
                     va,
                     a,
-                    flags,
+                    // Shader fetch is an ordinary engine access, unlike the
+                    // firmware-owned context buffers (MIT vmmgf100.c:259-265,
+                    // 314-316; GR gf100.c:383). Keep program data unprivileged.
+                    Flags { privileged: va != code_address, ..flags },
                 )?;
             }
             let commands = h.layout.allocator.allocate(65536, 4096, Kind::Engine)?;

@@ -159,12 +159,23 @@ pub(super) fn interrupt_snapshot(
     // MIT rnndb bus/pmc.xml, fifo/gf100_pfifo.xml and gr/ctxctl.xml.
     let mut words: Vec<[u32; 2]> = [
         0x100, 0x140, 0x160, 0x200, 0x204, 0x2100, 0x2140, 0x2274,
-        0x2284, 0x2630, 0x2634, 0x2640, 0x2644, 0x800000, 0x800004, 0x400100, 0x400108, 0x40013c,
+        0x2284, 0x259c, 0x2630, 0x2634, 0x2640, 0x2644, 0x800000, 0x800004, 0x400100, 0x400108, 0x40013c,
         0x409008, 0x409018, 0x40901c, 0x409b00, 0x409b04, 0x409c18, 0x409c24,
     ]
     .into_iter()
     .map(|a| [a, regs.read(a as usize)])
     .collect();
+    // MIT FIFO gf100.c:696-714: read fault records without acknowledging
+    // them, before a failed preempt or outer power-state restore obscures GR.
+    let faults = regs.read(0x259c);
+    for unit in 0..32 {
+        if faults & (1 << unit) != 0 {
+            for offset in [0, 4, 8, 12] {
+                let address = 0x2800 + unit * 16 + offset;
+                words.push([address, regs.read(address as usize)]);
+            }
+        }
+    }
     let enabled = words.iter().find(|w| w[0] == 0x204).unwrap()[1];
     for i in 0..3 {
         if enabled & (1 << i) != 0 {
@@ -346,7 +357,7 @@ fn probe_inner(
             // Channel IDs remain owned by GR until reset, even after FIFO
             // quiesce: FECS retains its current context. Finish CE before GR
             // admission and keep GR active through the binding submission.
-            let mut graphics = channel::Session::new(&mut hardware, golden)?;
+            let mut graphics = channel::Session::new(&mut hardware, golden, shader_buffer.va)?;
             let result = graphics.activate(&mut hardware)
                 .and_then(|()| graphics.execute(&mut hardware));
             // Retain ownership before propagating activation or execution errors.

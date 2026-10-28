@@ -846,3 +846,10 @@ listed above, and the retained-current-context behavior in the MIT
 `vendor/kepler/nouveau/hub.fuc` (Copyright 2011 Red Hat Inc.). The expanded
 read-only FIFO snapshot uses the already attributed MIT envytools
 `rnndb/fifo/gf100_pfifo.xml`; its copyright and grant remain in `gr/mod.rs`.
+
+The shader mapping in `kernel/src/gpu/gk208/gr/channel.rs` also uses the
+permission split in nouveau v6.8 `nvkm/subdev/mmu/vmmgf100.c:249-265,314-316`
+(MIT, Copyright 2017 Red Hat Inc.): shader program data is not privileged;
+firmware context buffers remain privileged as in GR `gf100.c:383`.
+The read-only fault snapshot in `gr/mod.rs` uses the existing MIT FIFO
+`gf100.c:696-714` source listed above; it does not acknowledge fault records.

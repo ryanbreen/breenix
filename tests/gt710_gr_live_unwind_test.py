@@ -32,7 +32,7 @@ class LiveUnwind(unittest.TestCase):
         methods = item(channel, '    impl Session {')
         new = item(methods, 'pub(in crate::gk208::gr) fn new(')
         prelude = '''
-            let _ = golden;
+            let _ = (golden, code_address);
             step("graphics-new")?;
             let context = Context;
             let commands = Allocation::at(0x100000);

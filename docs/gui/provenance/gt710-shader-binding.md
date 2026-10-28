@@ -71,3 +71,27 @@ The userspace wait probe now reaps a child that exits before queuing and
 prints `GT710_KILLED_WAIT_ERROR`, allowing the console to continue. It emits
 no successful killed-wait receipt on this path, so the existing scorer still
 rejects the missing evidence.
+
+## Program-fetch permissions
+
+Boot `20261028T054537Z-metal` at `30688b63` still failed binding after
+the lifecycle repair. Its unwind snapshot has PFIFO interrupt 0x50000000
+(including VM-fault bit 28), engine state 0xc000c000, and PBDMA GET 5 with
+reference 4. PGRAPH trap words are clear. The capture did not retain the
+MMU fault address/reason, so those words alone do not identify the fault.
+
+The graphics constructor mapped shader code with `privileged: true`,
+alongside the internal context buffers. The shader allocation now has ordinary
+program-fetch permissions; internal context buffers retain their privileged
+mappings. The program VA is passed explicitly to the constructor, rather
+than inferred from backing order. `tests/gt710_shader_mapping_test.py` runs
+the production mapping loop and PTE encoder with varied program addresses.
+Its first completed run rejected the shader PTE's privilege bit. This is a
+permission check, not a simulated hardware acceptance.
+
+The source is nouveau v6.8 `nvkm/subdev/mmu/vmmgf100.c:249-265,314-316`
+(MIT, Copyright 2017 Red Hat Inc.), checked at the pinned revision listed
+above. GR `gf100.c:383` explicitly requests privileged context-buffer maps.
+The existing read-only snapshot now includes pending MMU fault records from
+FIFO `gf100.c:696-714`, without acknowledging them, so any subsequent
+failure retains its address, client and reason before teardown.
