@@ -49,7 +49,6 @@ FENCE_FAULT = 'fence-out-of-partition'
 WATCHDOG_FAULTS = ('watchdog-feeder-hang', 'watchdog-health-hang')
 # The testing kernel's feature, as run.sh --tests builds it.
 TESTING_FEATURE = 'testing'
-SOFTIRQ_FEATURE = 'softirq_hostkey_test'
 
 
 def host_env():
@@ -213,8 +212,6 @@ def boot(args):
             args.payload != 'image' or args.mode != 'console' or args.input != 'sol'
             or is_session or args.disk):
         raise SystemExit('xHCI faults need a RAM-disk console boot with --input sol')
-    if args.inject == 'softirq-hostkey' and (args.payload != 'image' or args.mode != 'suite' or args.suite != 'console'):
-        raise SystemExit('softirq-hostkey needs --mode suite --suite console')
     if args.mode == 'tests' and (args.payload != 'image' or args.inject or args.suite or args.disk == 'install'):
         raise SystemExit('tests mode needs a disk-root image boot without --inject or --suite')
     if args.inject in WATCHDOG_FAULTS and (args.payload != 'image' or args.mode != 'default' or args.disk or args.nmi):
@@ -300,13 +297,12 @@ def boot(args):
         logs = Path.home() / '.local/state/breenix-metal'
         logs.mkdir(parents=True, exist_ok=True)
         with (logs / f'{boot_id}.log').open('w') as log:
-            # Fault boots get their dedicated feature, tests mode the testing kernel;
-            # ordinary suites keep the production profile.
+            # An xHCI fault boot gets a fault-test kernel, a tests boot the testing kernel; every other boot the
+            # production one.
             features = (['--features', 'watchdog_fault_inject'] if args.inject in WATCHDOG_FAULTS else
                         ['--features', FAULT_FEATURE] if args.inject in XHCI_FAULTS else
                         ['--features', FENCE_FEATURE] if args.inject == FENCE_FAULT else
                         ['--features', PANIC_FEATURE] if args.inject == 'panic-reboot' else
-                        ['--features', SOFTIRQ_FEATURE] if args.inject == 'softirq-hostkey' else
                         ['--features', TESTING_FEATURE] if args.mode == 'tests' else [])
             # A suite boot's build stages the suite's host-side fixtures (the SDK suite's results).
             suite = ['--suite', args.suite] if args.suite else []
@@ -442,7 +438,7 @@ def main():
     p.add_argument('--branch')
     p.add_argument('--catchup', action='store_true', help='admit pushed effort history for landing')
     p.add_argument('--no-wait', action='store_true', help='return after launch; the detached driver still queues')
-    p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'softirq-hostkey', 'disk-before-mount',
+    p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount',
                                         FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS))
     p.add_argument('--nmi', action='store_true', help='NMI a started kernel before power-off even when it finished')
     p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'))
@@ -459,7 +455,7 @@ def main():
     p = sub.add_parser('_build')
     p.add_argument('id')
     p.add_argument('sha')
-    p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, PANIC_FEATURE, TESTING_FEATURE, SOFTIRQ_FEATURE, 'watchdog_fault_inject'))
+    p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, PANIC_FEATURE, TESTING_FEATURE, 'watchdog_fault_inject'))
     p.add_argument('--suite')
     p.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager'))
     p.add_argument('--catchup', action='store_true')

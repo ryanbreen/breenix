@@ -13,7 +13,6 @@ opt-level = 3
 server_reboot_fault = ["kernel/server_reboot_fault"]
 force_cpu_accounting_delay = ["kernel/force_cpu_accounting_delay"]
 testing = ["kernel/testing"]
-softirq_hostkey_test = ["kernel/softirq_hostkey_test"]
 boot_tests = ["kernel/boot_tests"]  # Parallel boot test framework
 force_eret_dispatch_596 = ["boot_tests", "kernel/force_eret_dispatch_596"]  # #596 forced-repro knob
 ret_zero_pc_oracle = ["boot_tests", "kernel/ret_zero_pc_oracle"]

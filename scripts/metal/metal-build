@@ -40,7 +40,7 @@ STUB_TARGET = 'x86_64-unknown-uefi'
 STUB_RELEASE = Path(STUB_TARGET) / 'release'
 # The kernel profile each --features value builds.
 PROFILES = {'watchdog_fault_inject': 'fault-test', '': 'production', 'xhci_fault_inject': 'fault-test', 'block_fence_inject': 'fault-test',
-            'server_reboot_fault': 'fault-test', 'softirq_hostkey_test': 'fault-test', 'testing': 'testing'}
+            'server_reboot_fault': 'fault-test', 'testing': 'testing'}
 # Deployed, the helpers sit beside this file; in a checkout they are in scripts/.
 TOOLS = Path(__file__).resolve().parent
 TOOLS = TOOLS if (TOOLS / 'host-slots.py').exists() else TOOLS.parent

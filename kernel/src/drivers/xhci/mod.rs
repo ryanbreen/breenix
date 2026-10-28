@@ -10,7 +10,7 @@
 //! `host_keys` is the serial line format of x86-metal suite boots' host keys.
 #[cfg(target_arch = "x86_64")]
 pub mod host_keys;
-#[cfg(all(target_arch = "x86_64", feature = "softirq_hostkey_test"))]
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
 mod softirq_wake_test;
 mod keyboard;
 mod recovery;
@@ -272,7 +272,7 @@ pub fn handle_interrupt() {
     let _ = rd(ir, IMAN); // flush posted acknowledgements before APIC EOI
     INTERRUPTS.fetch_add(1, Ordering::Relaxed);
     crate::tracing::providers::xhci::count_irq_entry();
-    #[cfg(all(target_arch = "x86_64", feature = "softirq_hostkey_test"))]
+    #[cfg(all(target_arch = "x86_64", feature = "testing"))]
     softirq_wake_test::note_irq();
     let tid = WORK.signal();
     if tid != 0 {
@@ -285,7 +285,7 @@ pub fn handle_interrupt() {
 /// the scheduler's owner-queue path, which retains a busy-owner wake, rather
 /// than the bounded ISR TID buffer. No hardware polling occurs here.
 fn deferred_wake(_: crate::task::softirqd::SoftirqType) {
-    #[cfg(all(target_arch = "x86_64", feature = "softirq_hostkey_test"))]
+    #[cfg(all(target_arch = "x86_64", feature = "testing"))]
     softirq_wake_test::note_wake();
     let tid = WORK.waiter();
     if tid != 0 && WORK.pending() {
@@ -982,7 +982,7 @@ impl Controller {
         }
     }
     fn ring_doorbell(&self, slot: u8, target: u32) {
-        #[cfg(all(target_arch = "x86_64", feature = "softirq_hostkey_test"))]
+        #[cfg(all(target_arch = "x86_64", feature = "testing"))]
         if slot == 0 {
             softirq_wake_test::publish_command_waiter();
         }
@@ -1050,7 +1050,7 @@ impl Controller {
         };
         loop {
             WORK.publish(tid);
-            #[cfg(all(target_arch = "x86_64", feature = "softirq_hostkey_test"))]
+            #[cfg(all(target_arch = "x86_64", feature = "testing"))]
             softirq_wake_test::wait_for_command_wake();
             if WORK.take() {
                 WORK.withdraw();
