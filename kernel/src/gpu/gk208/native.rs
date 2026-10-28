@@ -1095,15 +1095,25 @@ impl CoreProducer {
         let start = timer::rdtsc();
         let mut submitted = false;
         let result = (|| {
-            match device.send(DevRequest::Gk208(request)) {
-                Err(_) if control == Control::MaskedClass => {
-                    let Device::Gk208(d) = &*device else { unreachable!() };
-                    if d.probe_identity()? != (context, epoch, sequence) || device.outstanding() != 0
-                        || !matches!(device.reap(), Reap::Empty) || device.needs_reset() {
-                        return Err("masked class changed the native queue");
-                    }
-                    return Ok(());
+            if control == Control::MaskedClass {
+                // FEATURE_3D is evidenced already. Mask it in shared admission,
+                // ahead of the honestly unprobed M8.2 format capabilities. An
+                // unrelated refusal or an admission that ignores the mask fails.
+                let expected = Err((gpu_abi::status::MISSING_CAPABILITY, gpu_abi::capability::FEATURE_3D));
+                let before = crate::gpu::probe_native_admission(device, false);
+                let masked = crate::gpu::probe_native_admission(device, true);
+                let after = crate::gpu::probe_native_admission(device, false);
+                if before == expected || masked != expected || after != before {
+                    return Err("shared admission did not apply the capability mask once");
                 }
+                let Device::Gk208(d) = &*device else { unreachable!() };
+                if d.probe_identity()? != (context, epoch, sequence) || device.outstanding() != 0
+                    || !matches!(device.reap(), Reap::Empty) || device.needs_reset() {
+                    return Err("masked capability changed the native queue");
+                }
+                return Ok(());
+            }
+            match device.send(DevRequest::Gk208(request)) {
                 Err(_) => return Err("core adapter refused clean/native control request"),
                 Ok(()) => { submitted = true; }
             }

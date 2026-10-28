@@ -541,6 +541,17 @@ pub fn init() {
     panic::initialized();
 }
 
+/// Apply the capability control through shared admission while the early boot
+/// probe still owns the channel. This does not alter the userspace control latch
+/// or install a device whose format/profile probes have not run yet.
+#[cfg(all(target_arch = "x86_64", any(feature = "testing", feature = "gt710_core_probe")))]
+pub(crate) fn probe_native_admission(device: &Device, masked: bool) -> Result<(), (u32, u32)> {
+    Core::empty().admission_on(Some(device), |point, target| {
+        (masked && point == test_point::MASK_CAPABILITY && target == 0)
+            .then_some(u64::from(capability::FEATURE_3D))
+    })
+}
+
 /// Retain measured capability facts after a testing probe, without retaining its
 /// channel. This snapshot can only refuse admission until native installation.
 #[cfg(all(target_arch = "x86_64", any(feature = "testing", feature = "gt710_core_probe")))]
@@ -819,15 +830,23 @@ impl Core {
     /// (`device/missing-capability-fails`), and the decision after it sees the device's
     /// real capabilities.
     fn admission(&self) -> Result<(), (u32, u32)> {
-        if self.dev.is_none() && !self.resetting {
+        self.admission_on(self.dev.as_ref(), crate::test_control::take)
+    }
+
+    /// The boot probe borrows its device and supplies a scoped one-shot at the
+    /// same take point; ordinary admissions use the suite-latched control table.
+    fn admission_on(&self, device: Option<&Device>,
+        take: impl FnOnce(u32, u64) -> Option<u64>,
+    ) -> Result<(), (u32, u32)> {
+        if device.is_none() && !self.resetting {
             return Err((if self.status == abi::status::ADMITTED { abi::status::DEVICE_FAILED } else { self.status },
                 if self.status == abi::status::MISSING_CAPABILITY { self.caps.missing } else { 0 }));
         }
-        let masked = crate::test_control::take(test_point::MASK_CAPABILITY, 0)
+        let masked = take(test_point::MASK_CAPABILITY, 0)
             .map(|p| p as u32)
             .filter(|&c| (1..=capability::LAST).contains(&c));
         #[cfg(target_arch = "x86_64")]
-        if let Some(Device::Gk208(device)) = &self.dev {
+        if let Some(Device::Gk208(device)) = device {
             return device.admission(masked);
         }
         match self.first_missing(masked) {

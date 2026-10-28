@@ -11,16 +11,32 @@ pub mod timer {
     pub fn frequency_hz() -> u64 { 3_000_000_000 }
 }
 pub mod gpu {
-    // The host substitutes only the admission decision; the producer and
-    // adapter below are the production code. A mask-ignoring decision must
-    // make the control fail even when ordinary admission already refuses.
-    pub fn probe_native_admission(device: &dev::Device, masked: bool) -> Result<(), (u32, u32)> {
-        let dev::Device::Gk208(device) = device else { panic!("native admission device") };
-        let ignore = IGNORE_MASK.with(|v| v.get());
-        device.admission(if masked && !ignore { Some(gpu_abi::capability::FEATURE_3D) } else { None })
+    use gpu_abi::{self as abi, capability, test_point, Plain};
+    use dev::Device;
+    // Only the surrounding core storage and engine are fixtures. The gate and
+    // early-probe entry point are extracted from gpu/mod.rs by the host runner.
+    struct Core { resetting: bool, status: u32, caps: abi::Caps,
+        have: [bool; capability::LAST as usize + 1] }
+    impl Core {
+        fn empty() -> Self { Self { resetting: false, status: abi::status::NO_DEVICE,
+            caps: abi::Caps::ZERO, have: [false; capability::LAST as usize + 1] } }
+        // SHARED_CORE_ADMISSION
     }
+    // PROBE_ADMISSION
     std::thread_local! { pub static IGNORE_MASK: core::cell::Cell<bool> = const { core::cell::Cell::new(false) }; }
 
+    #[test] fn shared_admission_keeps_virtual_mask_and_missing_device_rules() {
+        let mut core = Core::empty();
+        assert_eq!(core.admission_on(None, |_, _| panic!("absent device consumed mask")),
+            Err((abi::status::NO_DEVICE, 0)));
+        core.have.fill(true);
+        let device = Device::Other;
+        assert_eq!(core.admission_on(Some(&device), |point, target| {
+            assert_eq!((point, target), (test_point::MASK_CAPABILITY, 0));
+            Some(u64::from(capability::FEATURE_3D))
+        }), Err((abi::status::MISSING_CAPABILITY, capability::FEATURE_3D)));
+        assert_eq!(core.admission_on(Some(&device), |_, _| None), Ok(()));
+    }
     pub fn record_native_refusal(caps: gpu_abi::Caps) {
         assert_eq!(caps.backend, gpu_abi::backend::GK208);
         assert_eq!(caps.status, gpu_abi::status::MISSING_CAPABILITY);

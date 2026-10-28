@@ -60,14 +60,6 @@ impl Device {
         super::caps::Profile::from_board(&self.board, self.channel.identity()).admission(masked)
     }
     pub fn send(&mut self, request: Request) -> Result<(), Request> {
-        #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
-        if request.control == super::core_record::Control::MaskedClass {
-            // Mask the CE class through the same class profile CAPS exposes.
-            let mut masked = self.board;
-            masked.created_classes.iter_mut().filter(|id| **id == 0xa0b5).for_each(|id| *id = 0);
-            let caps = super::caps::Profile::from_board(&masked, self.channel.identity()).record(None);
-            if !caps.capset_ids.contains(&0xa0b5) { return Err(request); }
-        }
         if !self.has_room(1) || self.pending.try_reserve(1).is_err() { return Err(request); }
         let Ok(sequence) = self.queue.next() else { return Err(request) };
         let (context, epoch) = self.channel.identity();
