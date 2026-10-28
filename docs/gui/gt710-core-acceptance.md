@@ -1,6 +1,6 @@
 # Native GPU core producer (8.1)
 
-The x86 console-suite route with `gt710_core_probe` uses `gpu::dev::Device::Gk208`
+The explicit `--gt710-category core` probe-mode diagnostic with `gt710_core_probe` uses `gpu::dev::Device::Gk208`
 for the five 7.4 A197 draws and the A0B5 rectangle copy into the inactive
 scanout. The existing input uploads and complementary readbacks retain their
 7.4 mechanisms. The core producer runs inside the same graphics probe, before
@@ -116,20 +116,23 @@ with the console's 330 s bound and a separately timed GPU-suite boot.
 ## Host scorer and companion boot (8.1 u8)
 
 The host-run `core` category has `row`, `dispatch` and `producer`; its metal
-milestone is `metal-gt710/gpu-core`. Run the scorer after the two acceptance
+milestone is `metal-gt710/gpu-core`. Run the scorer after the three acceptance
 boots, with matching kernel and tool commits:
 
 ```text
-scripts/metal/gt710-suite --boot CONSOLE_BOOT --gpu-boot GPU_BOOT --sha FULL_COMMIT
+scripts/metal/gt710-suite --boot CONSOLE_BOOT --gpu-boot GPU_BOOT --core-boot CORE_BOOT --sha FULL_COMMIT
 ```
 
-The primary is a completed successful console-suite boot. Its retained
+The primary is a completed successful production console-suite boot. Its retained
 handoff and final-marker events must be at most 330 seconds apart. The
-companion is a distinct completed `--suite gpu` boot. Its original run,
+GPU companion is a distinct completed production `--suite gpu` boot. Its original run,
 commit, cleanliness, exit, event and serial files are copied under the
 primary capture's `core-producer/` directory, then rescored from those files.
+A third, successful probe-mode boot explicitly requests `--gt710-category core`;
+its authenticated upload and capture files are retained under `core-diagnostic/`.
+Only this boot builds `gt710_core_probe` and supplies row/dispatch evidence.
 No persistent session is used. The acceptance lane deploys the branch tools
-under the shared lock before either boot and restores main's tools afterward.
+under the shared lock before the boots and restores main's tools afterward.
 This unit does not boot or deploy.
 
 `row` checks the complete 512-byte CAPS record: backend 6, the created
@@ -138,16 +141,16 @@ bytes. Format/profile/pipeline support stays absent. `dispatch` checks five
 draws, the copy, three rejected controls and their immediate clean successors,
 using the native answer and method namespaces and matching receipts.
 
-The shared core retains only the diagnostic's refusal-only CAPS snapshot;
-its channels follow the existing teardown. A GPU-only `gt710_core_probe` boot requests
-the same bounded native probes so that its syscall CAPS names the same
-unprobed capability. Admission refuses the suite's cases before rendering.
-The runner acquires no GPU view or display ownership for that unprobed native
-profile and leaves the owned native console in place.
+The diagnostic retains its refusal-only CAPS snapshot and tears its channels down.
+Production console and GPU boots compile the ordinary M7 draw path, without
+core controls or `record_native_refusal`. Before native core installation,
+the production GPU suite therefore sees `NO_DEVICE` with `no GPU core backend`,
+as specified by `Core::empty`, rather than the diagnostic's missing-format CAPS.
+The runner acquires no GPU view or display ownership for that absent core.
 
 `producer` requires START, the shared manifest's 170 CASE identities in order,
 DONE with 170 failures and no skips, `SUITE gpu ELAPSED ms=N`, and READY.
-Each case's sole failure must name the measured unprobed admission capability.
+Each case's sole failure must name the production no-device admission reason.
 Panic, stalls, other failure reasons, incomplete capture, changed commits,
 console gaps, missing or inconsistent memory records and elapsed time above
 900 seconds fail. Exit status 1 is expected for these admission refusals;
@@ -155,6 +158,14 @@ it is accepted only with that complete evidence. This host milestone is
 integration evidence, not a passing GPU suite. Later milestones retain the
 unchanged 170-pass GPU gate, pixels and bounds.
 
-The metal launcher enables `gt710_core_probe` for console, GPU and GT 710 suite
-boots. This compiles the producer, controls and refusal snapshot while keeping
-production init and the requested suite target; it does not enable `testing`.
+<!-- claim-lint:ok: tests/gt710_profile_test.py exercises suite combinations and the resolved all selection. -->
+The launcher selects production for ordinary console, GPU and GT 710 selections,
+including lists and `--suite all`. `--gt710-category core` is accepted only for
+an automated probe-mode image boot with no suite or fault injection. Its
+feature also requests the native hardware probes on that probe-mode boot. Omitting `--mode` selects this same probe route,
+whose existing guest producer uploads the evidence before exiting.
+The driver records the verified build's `commit`, `profile` and `features` in
+`run.json` under `build`; the full manifest remains in `delivery.json`.
+Scorers require production `build.profile` for console timing and GPU evidence,
+and `gpu-core` with `gt710_core_probe` for the separate diagnostic. A missing
+profile fails scoring.

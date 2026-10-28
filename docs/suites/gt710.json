@@ -257,7 +257,7 @@
         },
         {
           "id": "producer",
-          "title": "A named GPU-suite boot reports 170 manifest-ordered unprobed admission refusals without skips and reports its own time"
+          "title": "A named production GPU-suite boot reports 170 manifest-ordered no-device admission refusals without skips and reports its own time"
         }
       ]
     },

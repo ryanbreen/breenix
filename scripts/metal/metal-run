@@ -52,8 +52,12 @@ TESTING_FEATURE = 'testing'
 
 
 
-def kernel_features(mode, suites, inject):
+def kernel_features(mode, suites, inject, gt710_category=None):
     """Keep native suite evidence independent of the testing startup path."""
+    if gt710_category is not None:
+        if gt710_category != 'core' or mode not in ('default', 'probe') or suites or inject:
+            raise ValueError('gt710 core diagnostic needs a default/probe boot without suites or injection')
+        return ['--features', 'gt710_core_probe']
     if inject in WATCHDOG_FAULTS:
         return ['--features', 'watchdog_fault_inject']
     if inject in XHCI_FAULTS:
@@ -64,8 +68,6 @@ def kernel_features(mode, suites, inject):
         return ['--features', PANIC_FEATURE]
     if mode == 'tests':
         return ['--features', TESTING_FEATURE]
-    if mode == 'suite' and {'console', 'gpu', 'gt710'}.intersection((suites or '').split(',')):
-        return ['--features', 'gt710_core_probe']
     return []
 
 
@@ -209,6 +211,16 @@ def boot(args):
         args.mode = 'suite'
     if getattr(args, 'persistent', False):
         args.payload, args.mode = 'persistent', 'persistent'
+    category = getattr(args, 'gt710_category', None)
+    if category and args.mode == 'default':
+        # The existing automated probe uploads bulk evidence before exiting.
+        args.mode = 'probe'
+    try:
+        kernel_features(args.mode, args.suite, args.inject, category)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
+    if category and (args.payload != 'image' or getattr(args, 'session', False)):
+        raise SystemExit('--gt710-category needs an automated image boot')
     if (getattr(args, 'run', None) or getattr(args, 'verify', False) or getattr(args, 'entry', None)) and args.payload != 'persistent':
         raise SystemExit('--run, --verify and --entry need --persistent')
     if getattr(args, 'inject', None) == FENCE_FAULT and (args.payload != 'image' or args.mode != 'default' or args.disk == 'install'):
@@ -269,6 +281,8 @@ def boot(args):
         command += ['--source-boot', args.source_boot]
     if args.suite:
         command += ['--suite', args.suite]
+    if category:
+        command += ['--gt710-category', category]
     if milestone:
         command += ['--milestone', milestone]
     if sha:
@@ -316,7 +330,7 @@ def boot(args):
         logs = Path.home() / '.local/state/breenix-metal'
         logs.mkdir(parents=True, exist_ok=True)
         with (logs / f'{boot_id}.log').open('w') as log:
-            features = kernel_features(args.mode, args.suite, args.inject)
+            features = kernel_features(args.mode, args.suite, args.inject, category)
             # A suite boot's build stages the suite's host-side fixtures (the SDK suite's results).
             suite = ['--suite', args.suite] if args.suite else []
             tools_only = {'disk-readback': ['--tools-profile', 'disk-readback'],
@@ -445,6 +459,8 @@ def main():
     p.add_argument('--disk', choices=('install', 'root'),
                    help='physical disk root (default), or an explicit recovery install')
     p.add_argument('--suite')
+    p.add_argument('--gt710-category', choices=('core',),
+                   help='run the named native diagnostic on a separate automated probe boot')
     p.add_argument('--milestone', help='score the effort/milestone category set from the boot commit')
     p.add_argument('--source-boot', help='completed disk suite boot to read after a cold power cycle')
     p.add_argument('--sha')

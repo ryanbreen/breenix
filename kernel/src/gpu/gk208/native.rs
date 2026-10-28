@@ -187,10 +187,10 @@ pub fn measuring() -> bool {
     cfg!(feature = "testing") || suite_requested() || memory_requested()
 }
 
-/// Full VRAM snapshots run only when the display suite explicitly requests them.
+/// Full VRAM snapshots require a display suite or the explicit core diagnostic.
 /// A testing kernel alone must not impose uncached VRAM reads on other lanes.
 pub fn suite_requested() -> bool {
-    crate::boot::intent::get()
+    cfg!(feature = "gt710_core_probe") || crate::boot::intent::get()
         .and_then(|bytes| core::str::from_utf8(bytes).ok())
         .and_then(|text| crate::boot::target::parse(text).ok())
         .is_some_and(|target| matches!(target, crate::boot::target::Target::Suite(s)

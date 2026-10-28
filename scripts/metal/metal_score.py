@@ -28,10 +28,19 @@ def measures(milestone, shape, mode):
             and ('bootModes' not in milestone or mode in milestone['bootModes']))
 
 
+def require_suite_profile(run):
+    """Console bounds and GPU cases measure the shipped kernel."""
+    suites = run.get('suites') or (run.get('suite') or '').split(',')
+    if (run.get('mode') == 'suite' and {'console', 'gpu'}.intersection(suites)
+            and run.get('build', {}).get('profile') != 'production'):
+        raise ValueError('console and GPU suites require production build.profile')
+
+
 def score(directory):
     directory = Path(directory)
     read = lambda name: json.loads((directory / name).read_text())
     run = read('run.json')
+    require_suite_profile(run)
     if run.get('kind') == 'fault-test' or run.get('inject') in ('xhci-reset-device', 'xhci-short-read'):
         raise ValueError('fault tests are never milestone evidence')
     if run.get('kind') == 'console-session':

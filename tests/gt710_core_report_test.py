@@ -255,7 +255,7 @@ class CoreReport(unittest.TestCase):
                    'ended':'1\n','exit-status':'1\n','dirty':'0\n','commit':SHA+'\n'}
             for name,text in files.items(): (companion/name).write_text(text)
             diagnostic=path/'core-diagnostic'; diagnostic.mkdir()
-            diagnostic_boot=dict(gpu_boot(), id='20261028T160000Z-metal', mode='default',
+            diagnostic_boot=dict(gpu_boot(), id='20261028T160000Z-metal', mode='probe',
                                  suite=None, suites=None, gt710Category='core',
                                  build=dict(profile='gpu-core', features=['gt710_core_probe']))
             for name,text in dict(files, **{'run.json':json.dumps(diagnostic_boot),'exit-status':'0\n'}).items():
@@ -273,6 +273,11 @@ class CoreReport(unittest.TestCase):
                 (companion/name).write_text(text)
                 with self.subTest(name=name),self.assertRaises(ValueError): API['core_capture'](path,SHA)
                 (companion/name).write_text(files[name])
+            for profile in [None, 'gpu-core']:
+                (path/'run.json').write_text(json.dumps(dict(primary, build=dict(profile=profile))))
+                with self.subTest(console_profile=profile), self.assertRaisesRegex(ValueError, 'production.*build.profile'):
+                    API['core_capture'](path,SHA)
+            (path/'run.json').write_text(json.dumps(primary))
             events[1]['seconds']=340.001
             (path/'events.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in events))
             with self.assertRaisesRegex(ValueError,'330'): API['core_capture'](path,SHA)

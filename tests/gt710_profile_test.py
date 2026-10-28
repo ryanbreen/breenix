@@ -5,6 +5,7 @@ from pathlib import Path
 import runpy
 import subprocess
 from types import SimpleNamespace
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -17,6 +18,46 @@ CORE = runpy.run_path(str(ROOT / 'tests/gt710_core_report_test.py'))
 
 
 class Profiles(unittest.TestCase):
+    def test_named_core_cli_uses_the_automated_upload_route(self):
+        selected = []
+        launch = RUN['boot']
+        def stop_before_remote():
+            raise RuntimeError('stop before remote')
+        def capture(args):
+            selected.append(args)
+            return launch(args)
+        with patch.dict(launch.__globals__, host_env=stop_before_remote), \
+             patch.dict(RUN['main'].__globals__, boot=capture), \
+             patch.object(sys, 'argv', ['metal-run', 'boot', '--gt710-category', 'core']):
+            with self.assertRaisesRegex(RuntimeError, 'stop before remote'):
+                RUN['main']()
+        self.assertEqual(selected[0].mode, 'probe')
+        self.assertEqual(selected[0].gt710_category, 'core')
+
+    def test_capture_records_verified_build_profile(self):
+        for profile, features, category in [('production', [], None),
+                                            ('gpu-core', ['gt710_core_probe'], 'core')]:
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp)
+                inputs = path / 'inputs'
+                inputs.mkdir()
+                (inputs / 'ready').touch()
+                build = dict(commit=CORE['SHA'], profile=profile, features=features)
+                (inputs / 'build.json').write_text(json.dumps(build))
+                (path / 'run.json').write_text('{"id":"fixture"}')
+                driver = object.__new__(BOOT['Driver'])
+                driver.dir = driver.stage = path
+                driver.args = SimpleNamespace(payload='image', mode='default', inject=None,
+                                              commit=CORE['SHA'], gt710_category=category)
+                driver.delivery = {}
+                driver.phase = lambda *a: None
+                def delivered(*args, **kwargs):
+                    raise RuntimeError('stop after provenance')
+                driver.event = delivered
+                with self.assertRaisesRegex(RuntimeError, 'stop after provenance'):
+                    driver.prepare_payload()
+                self.assertEqual(json.loads((path / 'run.json').read_text())['build'], build)
+
     def test_explicit_core_default_boot_reaches_probe(self):
         source = (ROOT / 'kernel/src/gpu/gk208/native.rs').read_text()
         start = source.index('pub fn suite_requested()')
@@ -62,6 +103,10 @@ fn main() { assert!(suite_requested(), "explicit core default boot must run the 
         self.assertEqual(RUN['kernel_features']('default', None, None, 'core'),
                          ['--features', 'gt710_core_probe'])
         self.assertEqual(BOOT['kernel_profile'](args), (['gt710_core_probe'], 'gpu-core'))
+        args.mode = 'probe'
+        self.assertEqual(RUN['kernel_features']('probe', None, None, 'core'),
+                         ['--features', 'gt710_core_probe'])
+        self.assertEqual(BOOT['kernel_profile'](args), (['gt710_core_probe'], 'gpu-core'))
         for suites in ['console', 'gpu', 'console,gpu', 'gt710', 'all']:
             with self.subTest(suites=suites), self.assertRaisesRegex(ValueError, 'core.*default'):
                 RUN['kernel_features']('suite', suites, None, 'core')
@@ -97,15 +142,17 @@ fn main() { assert!(suite_requested(), "explicit core default boot must run the 
                         driver = object.__new__(BOOT['Driver'])
                         driver.args = SimpleNamespace(mode='suite', suite=','.join(suites))
                         driver.dir = path
+                        driver.event = lambda *a, **k: None
                         with patch.dict(BOOT['Driver'].score_suite.__globals__,
                                         subprocess=SimpleNamespace(run=lambda *a, **k: self.fail('scorer spawned'))):
                             if profile != 'production':
-                                self.assertEqual(driver.score_suite(), 1)
+                                self.assertIs(driver.score_suite(), False)
 
     def test_core_and_producer_capture_profiles_are_required(self):
         api = CORE['API']
         boot = CORE['gpu_boot']()
-        caps = api['core_row'](''.join('GT710_CORE ' + json.dumps(r) + '\n' for r in CORE['records']()))
+        with tempfile.TemporaryDirectory() as tmp:
+            caps = api['core_row'](CORE['stage'](Path(tmp)))
         for profile in [None, 'gpu-core', 'testing']:
             wrong = dict(boot)
             wrong['build'] = dict(profile=profile)
@@ -113,13 +160,18 @@ fn main() { assert!(suite_requested(), "explicit core default boot must run the 
                 api['core_producer'](CORE['gpu_serial'](), caps, wrong)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
-            diagnostic = dict(boot, mode='default', suite=None, suites=None, gt710Category='core',
+            diagnostic = dict(boot, mode='probe', suite=None, suites=None, gt710Category='core',
                               build=dict(profile='gpu-core', features=['gt710_core_probe']))
             for name, text in {'run.json':json.dumps(diagnostic), 'commit':CORE['SHA'], 'dirty':'0',
                                'ended':'1', 'exit-status':'0', 'events.jsonl':'{"event":"final-marker"}\n'}.items():
                 (path / name).write_text(text)
             CORE['stage'](path)
             self.assertIn('GT710_CORE ', api['core_diagnostic_capture'](path, CORE['SHA'])['serial'])
+            original = (path / 'serial.txt').read_text()
+            (path / 'serial.txt').write_text(original + 'KERNEL PANIC: diagnostic failed\n')
+            with self.assertRaisesRegex(ValueError, 'fatal'):
+                api['core_diagnostic_capture'](path, CORE['SHA'])
+            (path / 'serial.txt').write_text(original)
             for profile in [None, 'production', 'testing']:
                 diagnostic['build'] = dict(profile=profile)
                 (path / 'run.json').write_text(json.dumps(diagnostic))
