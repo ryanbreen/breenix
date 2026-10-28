@@ -51,7 +51,7 @@ impl Device {
     pub(crate) fn new(channel: NativeChannel, board: super::caps::BoardState) -> Self {
         Self { channel, board, queue: Queue::new(), pending: VecDeque::new(), fault: false, resetting: None }
     }
-    /// Recheck snapshot identity against the channel on every query. Restart's
+    /// Recheck snapshot identity against the channel when querying CAPS. Restart's
     /// new epoch cannot silently inherit old object-creation evidence.
     pub fn caps(&self) -> gpu_abi::Caps {
         super::caps::Profile::from_board(&self.board, self.channel.identity()).record(None)

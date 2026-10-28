@@ -35,7 +35,7 @@ DEALINGS IN THE SOFTWARE.
 */
 //! Native CAPS from a snapshot of successful object creation and live display state.
 //! The installation owner supplies this snapshot after binding the channel;
-//! an encoder or a source class table alone is never creation evidence.
+//! creation evidence requires more than an encoder or a source class table.
 use gpu_abi::{self as abi, capability as c, capability_origin as origin, Plain};
 
 #[derive(Clone, Copy)]
@@ -75,7 +75,7 @@ impl Profile {
             .map(|format| abi::FormatCaps { format, flags: 0 });
         let mut p = Self { caps, have: [false; c::LAST as usize + 1] };
         // nouveau device/base.c:1869-1897,3285 selects GK208B and its engines;
-        // fifo/gk208.c:69 selects A06F, never A16F. See provenance document.
+        // fifo/gk208.c:69 selects A06F. See provenance document.
         if board.chipset != 0x106 || bound.0 == 0 || bound.1 == 0 || board.channel != bound {
             return p;
         }

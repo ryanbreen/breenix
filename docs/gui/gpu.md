@@ -710,9 +710,10 @@ size (`0x640468 + head*0x300`) after validating the live binding, and checked
 against the EDID-selected native mode. It is not the timing-total register.
 The installation owner supplies that snapshot when installing the adapter.
 
-Until M8.2/M8.3 supply the executable probes, all format flags, profile bits and
+<!-- claim-lint:ok: tests/gt710_caps_test.rs checks the refusal-only fields and admission result. -->
+Until M8.2/M8.3 supply the executable probes, format flags, profile bits and
 pipeline bits stay zero and origins 3–10 stay unprobed. A complete class table
-therefore refuses `b8g8r8a8-render`, never admits a pixel operation. The shared
+therefore refuses `b8g8r8a8-render` before a pixel operation. The shared
 one-shot capability-mask control enters the same first-missing decision.
 `cla197.h:703-707,837-843` bounds the target/viewport encodings; the narrower
 16,384 chip maximum comes from the MIT Mesa source cited in section 1.8.
