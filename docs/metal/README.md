@@ -1720,8 +1720,8 @@ For the scoped console host checks, put e2fsprogs `debugfs` and `mke2fs` on `PAT
 
 `metal-run boot --mode suite --suite console --inject softirq-hostkey` builds
 only the `softirq_hostkey_test` feature, recorded as a `fault-test` profile.
-It sends one real serial host-key press/release when the kernel reports
-`SOFTIRQ_HOSTKEY READY` and ends only on `SOFTIRQ_HOSTKEY PASS`. The first press/release
+It runs the normal console suite with real serial host-key reports and requires
+`SOFTIRQ_HOSTKEY PASS` in addition to suite completion. The first press/release
 forces command interrupts across short preempt-disabled sections with safe
 release points; replay must finish in less than 100 ms without a callback over
 disabled preemption. This boot is not milestone evidence. An ordinary console

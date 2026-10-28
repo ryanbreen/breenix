@@ -72,26 +72,12 @@ class DriverTest(StateTest):
     def test_forcing_marker_consumes_only_the_complete_pass_line(self):
         d = self.driver()
         d.load_definition()
-        d.final_marker = None
         d.t0 = 1
         d.on_line('Initializing PCIe, USB, and Video... Done')
         d.on_line('announced SOFTIRQ_HOSTKEY PASS')
         self.assertTrue(any(d.required_stages))
         d.on_line('SOFTIRQ_HOSTKEY PASS')
         self.assertFalse(any(d.required_stages))
-
-    def test_forcing_ready_sends_one_packet_and_pass_is_terminal(self):
-        d = self.driver()
-        d.load_definition()
-        d.t0 = d.kernel_started = 1
-        d.seen.add('disk-root')
-        d.replay_send = Mock()
-        d.on_line('SOFTIRQ_HOSTKEY READY')
-        d.on_line('SOFTIRQ_HOSTKEY READY')
-        d.replay_send.assert_called_once_with('BXKEY 00001b0000000000,0000000000000000')
-        with self.assertRaises(boot.Finish) as result:
-            d.on_line('SOFTIRQ_HOSTKEY PASS')
-        self.assertEqual(result.exception.status, m.EXIT_DONE)
 
 
 if __name__ == '__main__':

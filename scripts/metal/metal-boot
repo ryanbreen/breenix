@@ -686,16 +686,13 @@ class Driver:
             marker = '[fence-fault] PASS: '
             self.final_marker = (marker, 'contains')
             self.required_stages = [[(marker, 'contains')]]
+        if self.args.inject == 'softirq-hostkey':
+            self.required_stages.append([('SOFTIRQ_HOSTKEY PASS', 'exact')])
         if self.args.mode == 'suite':
             # One suite finishes at its READY, after its DONE and memory record (docs/suites/README.md,
             # "Memory record"); several suites when the last has handed off.
             self.final_marker = (('SUITE_SEQUENCE READY ' + self.args.suite, 'contains') if len(suites(self.args)) == 1
                                  else ('SUITE_SEQUENCE DONE ', 'contains'))
-        if self.args.inject == 'softirq-hostkey':
-            # This fault leg measures the forcing oracle; production console
-            # acceptance is a separate, complete suite boot.
-            self.final_marker = ('SOFTIRQ_HOSTKEY PASS', 'exact')
-            self.required_stages = [[self.final_marker]]
         self.event('definition', metalPath=bool(metal), fatalPatterns=len(self.fatal_patterns),
                    finalMarker=self.final_marker is not None)
 
@@ -1166,8 +1163,6 @@ class Driver:
         suite_done = (re.fullmatch(r'SUITE_SEQUENCE DONE suites=\d+', line) if len(suites(self.args)) > 1
                       else re.fullmatch(r'SUITE_SEQUENCE READY ' + re.escape(self.args.suite or ''), line)
                       ) if self.args.mode == 'suite' else True
-        if self.args.inject == 'softirq-hostkey':
-            suite_done = True
         if (suite_done and self.final_marker and marker_matches(self.final_marker, line)
                 and (self.args.mode != 'shell' or self.shell_sent)):
             self.final_seen = True
@@ -1428,12 +1423,6 @@ class Driver:
         kernel replays through its USB boot keyboard (scripts/hostkeys.py, ReplayKeys). Each record is answered
         once; what was sent goes to the boot's events, never to the guest's serial."""
         if self.args.mode != 'suite' or not self.kernel_started or self.fatal_at is not None:
-            return
-        if self.args.inject == 'softirq-hostkey' and line == 'SOFTIRQ_HOSTKEY READY':
-            if 'softirq-hostkey-input' not in self.seen:
-                self.seen.add('softirq-hostkey-input')
-                self.replay_send(hostkeys.ReplayKeys.line((), 'x'))
-                self.event('softirq-hostkey-input', reports=2)
             return
         if self.hostkey_watcher is None:
             self.hostkey_watcher = hostkeys.Watcher(hostkeys.ReplayKeys(self.replay_send), metal_root.HOSTKEYS,
@@ -1941,7 +1930,7 @@ class Driver:
                 # A multi-suite boot scores each suite even when it stopped part way, so a stalled suite keeps
                 # the cases it reported.
                 several = len(suites(self.args)) > 1 and self.kernel_started is not None
-                if (self.args.mode == 'suite' and self.args.inject != 'softirq-hostkey' and (status == m.EXIT_DONE or several)
+                if (self.args.mode == 'suite' and (status == m.EXIT_DONE or several)
                         and status not in (m.EXIT_CANCELLED, m.EXIT_STOPPED, m.EXIT_INCOMPLETE)):
                     with contextlib.suppress(Finish):
                         self.pump_serial()
