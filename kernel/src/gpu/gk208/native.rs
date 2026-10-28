@@ -1092,7 +1092,7 @@ impl CoreProducer {
         request.control = control;
         let mut sample = CeSample { context: 0, epoch: 0, sequence: 0, consumed: 0, healthy: false };
         let mut answer = 0;
-        let start = super::channel::elapsed(0);
+        let start = timer::rdtsc();
         let mut submitted = false;
         let result = (|| {
             match device.send(DevRequest::Gk208(request)) {
