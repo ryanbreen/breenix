@@ -4,6 +4,12 @@ extern crate alloc;
 pub mod block { pub mod install { pub mod sha256 { pub use crate::sha256::*; } } }
 macro_rules! serial_println { ($($arg:tt)*) => { println!($($arg)*) }; }
 pub(crate) use serial_println;
+pub mod timer {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static TSC: AtomicU64 = AtomicU64::new(300_000_000_000);
+    pub fn rdtsc() -> u64 { TSC.fetch_add(30_000, Ordering::Relaxed) }
+    pub fn frequency_hz() -> u64 { 3_000_000_000 }
+}
 pub mod gpu {
     pub fn record_native_refusal(caps: gpu_abi::Caps) {
         assert_eq!(caps.backend, gpu_abi::backend::GK208);
@@ -31,17 +37,17 @@ pub mod gk208 {
     #[path = "../../kernel/src/gpu/gk208/copy.rs"] pub mod copy;
     #[path = "../../kernel/src/gpu/gk208/caps.rs"] pub mod caps;
     #[path = "../../kernel/src/gpu/gk208/adapter.rs"] pub mod adapter;
-    pub mod channel {pub fn elapsed(begin:u64)->u64 {use core::sync::atomic::{AtomicU64,Ordering};static NOW:AtomicU64=AtomicU64::new(0);NOW.fetch_add(10,Ordering::Relaxed)-begin}}
+    pub mod channel {pub fn elapsed(begin:u64)->u64 {crate::timer::rdtsc().wrapping_sub(begin)/(crate::timer::frequency_hz()/1_000_000)}}
     pub mod bulk {pub fn line(s:String)->Result<(),&'static str>{println!("{s}");Ok(())}}
     pub mod gr {
         pub mod draw {#[derive(Clone,Copy)] pub struct Draw {pub target_va:u64}}
         pub mod channel {
             use crate::{gpu_completion::CeSample,gk208::{adapter::Operation,core_record::Control}};
-            pub struct NativeChannel {pub sample:CeSample,pub drain:u32,pub ignore_control:bool,pub published:usize,pub final_sample:Option<CeSample>}
+            pub struct NativeChannel {pub sample:CeSample,pub drain:u32,pub ignore_control:bool,pub published:usize,pub final_sample:Option<CeSample>,pub polls:usize}
             impl NativeChannel {
                 pub fn identity(&self)->(u64,u64){(0x123000,17)}
                 pub fn healthy(&self)->bool{true}
-                pub fn publish(&mut self,sequence:u32,_:&Operation)->Result<(),&'static str>{self.published+=1;self.final_sample=None;self.sample=CeSample{context:0x123000,epoch:17,sequence,consumed:sequence,healthy:true};self.drain=0;Ok(())}
+                pub fn publish(&mut self,sequence:u32,_:&Operation)->Result<(),&'static str>{self.published+=1;self.final_sample=None;self.polls=0;self.sample=CeSample{context:0x123000,epoch:17,sequence,consumed:sequence,healthy:true};self.drain=0;Ok(())}
                 pub fn publish_probe(&mut self,sequence:u32,op:&Operation,control:Control)->Result<(),&'static str>{
                     self.publish(sequence,op)?;
                     if self.ignore_control{return Ok(());}
@@ -57,7 +63,11 @@ pub mod gk208 {
                     // Model a sample racing epoch writes before the terminal word.
                     self.final_sample=Some(self.sample);self.sample.epoch=0;Ok(())
                 }
-                pub fn sample(&mut self,_:u32)->Result<CeSample,&'static str>{Ok(self.sample)}
+                pub fn sample(&mut self,_:u32)->Result<CeSample,&'static str>{
+                    self.polls+=1;
+                    // A consumed stream can precede the engine release.
+                    if self.drain==0 && self.polls<=3 {Ok(CeSample{sequence:0,..self.sample})} else {Ok(self.sample)}
+                }
                 pub fn probe_drained(&mut self,sequence:u32)->Result<bool,&'static str>{if self.drain==sequence {if let Some(s)=self.final_sample.take(){self.sample=s;}Ok(true)} else {Ok(false)}}
                 pub fn reset(&mut self)->Result<(),&'static str>{Ok(())}
                 pub fn restart(&mut self)->Result<(),&'static str>{Ok(())}
@@ -66,15 +76,16 @@ pub mod gk208 {
     }
     pub mod native {
         use alloc::string::String;
+        pub mod timer {pub use crate::timer::*;}
         // PRODUCER
         pub(super) fn exercise(ignore:bool)->(Result<(),&'static str>,String,usize) {
             use crate::{gpu::dev::Device,gpu_completion::CeSample};
             use super::{adapter,gr::{channel::NativeChannel,draw::Draw},copy::Rect};
-            let channel=NativeChannel{sample:CeSample{context:0x123000,epoch:17,sequence:0,consumed:0,healthy:true},drain:0,ignore_control:ignore,published:0,final_sample:None};
+            let channel=NativeChannel{sample:CeSample{context:0x123000,epoch:17,sequence:0,consumed:0,healthy:true},drain:0,ignore_control:ignore,published:0,final_sample:None,polls:0};
             let mut board=super::caps::BoardState::empty();board.chipset=0x106;board.channel=(0x123000,17);board.graphics_ready=true;board.created_classes=gpu_abi::gk208::CAPSET_IDS;
             let mut d=Device::Gk208(adapter::Device::probe(channel,board,5));let mut p=CoreProducer::new();
             let result=(||{let receipt=p.run(&mut d,adapter::Operation::Draw(Draw{target_va:0x456000}),"triangle")?;
-                assert_eq!((receipt.request.sequence,receipt.sample.sequence),(6,6));assert!(receipt.elapsed_us>0);
+                assert_eq!((receipt.request.sequence,receipt.sample.sequence),(6,6));assert!((1..1_000).contains(&receipt.elapsed_us),"clean completion duration must be microseconds");
                 p.run(&mut d,adapter::Operation::Copy(Rect{src:0x400000,dst:0x456000,width:256,height:64,src_pitch:256,dst_pitch:256}),"copy")?;Ok(())})();
             p.emit().unwrap();let Device::Gk208(d)=d else{unreachable!()};
             (result,p.rows,d.into_probe_channel().published)
