@@ -46,5 +46,5 @@ class Lifetimes(unittest.TestCase):
         row=next(e for e in effort['efforts'] if e['id']=='metal-gt710')
         self.assertEqual(next(m for m in row['milestones'] if m['id']=='lifetime')['measure'],dict(suite='gt710',categories=['lifetime']))
         score=runpy.run_path(str(ROOT/'scripts/metal/metal_score.py'))
-        self.assertEqual(score['HOST_MILESTONES']['gt710-lifetime.json'],'metal-gt710/lifetime')
+        self.assertEqual(score['host_milestone']('gt710-lifetime.json'),'metal-gt710/lifetime')
 if __name__=='__main__':unittest.main()

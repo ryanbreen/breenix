@@ -70,6 +70,6 @@ class Apertures(unittest.TestCase):
         row=next(e for e in effort['efforts'] if e['id']=='metal-gt710')
         self.assertEqual(next(m for m in row['milestones'] if m['id']=='aperture')['measure'],dict(suite='gt710',categories=['aperture']))
         score=runpy.run_path(str(ROOT/'scripts/metal/metal_score.py'))
-        self.assertEqual(score['HOST_MILESTONES']['gt710-aperture.json'],'metal-gt710/aperture')
+        self.assertEqual(score['host_milestone']('gt710-aperture.json'),'metal-gt710/aperture')
 
 if __name__=='__main__':unittest.main()

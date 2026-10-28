@@ -76,6 +76,6 @@ class Inventory(unittest.TestCase):
         row=next(e for e in effort['efforts'] if e['id']=='metal-gt710')
         self.assertEqual(next(m for m in row['milestones'] if m['id']=='inventory')['measure'],dict(suite='gt710',categories=['inventory']))
         score=runpy.run_path(str(ROOT/'scripts/metal/metal_score.py'))
-        self.assertEqual(score['HOST_MILESTONES']['gt710-inventory.json'],'metal-gt710/inventory')
+        self.assertEqual(score['host_milestone']('gt710-inventory.json'),'metal-gt710/inventory')
 
 if __name__=='__main__':unittest.main()
