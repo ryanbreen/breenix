@@ -11,6 +11,16 @@ pub mod timer {
     pub fn frequency_hz() -> u64 { 3_000_000_000 }
 }
 pub mod gpu {
+    // The host substitutes only the admission decision; the producer and
+    // adapter below are the production code. A mask-ignoring decision must
+    // make the control fail even when ordinary admission already refuses.
+    pub fn probe_native_admission(device: &dev::Device, masked: bool) -> Result<(), (u32, u32)> {
+        let dev::Device::Gk208(device) = device else { panic!("native admission device") };
+        let ignore = IGNORE_MASK.with(|v| v.get());
+        device.admission(if masked && !ignore { Some(gpu_abi::capability::FEATURE_3D) } else { None })
+    }
+    std::thread_local! { pub static IGNORE_MASK: core::cell::Cell<bool> = const { core::cell::Cell::new(false) }; }
+
     pub fn record_native_refusal(caps: gpu_abi::Caps) {
         assert_eq!(caps.backend, gpu_abi::backend::GK208);
         assert_eq!(caps.status, gpu_abi::status::MISSING_CAPABILITY);
@@ -78,6 +88,23 @@ pub mod gk208 {
         use alloc::string::String;
         pub mod timer {pub use crate::timer::*;}
         // PRODUCER
+        pub(super) fn exercise_mask() -> (Result<(), &'static str>, String, usize) {
+            use crate::{gpu::dev::Device, gpu_completion::CeSample};
+            use super::{adapter, gr::channel::NativeChannel, copy::Rect, core_record::Control};
+            let channel = NativeChannel { sample: CeSample { context: 0x123000, epoch: 17,
+                sequence: 0, consumed: 0, healthy: true }, drain: 0, ignore_control: false,
+                published: 0, final_sample: None, polls: 0 };
+            let mut board = super::caps::BoardState::empty();
+            board.chipset = 0x106; board.channel = (0x123000, 17);
+            board.graphics_ready = true; board.created_classes = gpu_abi::gk208::CAPSET_IDS;
+            let mut device = Device::Gk208(adapter::Device::probe(channel, board, 5));
+            let mut producer = CoreProducer::new();
+            let result = producer.one(&mut device, adapter::Operation::Copy(Rect { src: 0x400000,
+                dst: 0x456000, width: 256, height: 64, src_pitch: 256, dst_pitch: 256 }),
+                "copy", Control::MaskedClass);
+            let Device::Gk208(device) = device else { unreachable!() };
+            (result.map(|_| ()), producer.rows, device.into_probe_channel().published)
+        }
         pub(super) fn exercise(ignore:bool)->(Result<(),&'static str>,String,usize) {
             use crate::{gpu::dev::Device,gpu_completion::CeSample};
             use super::{adapter,gr::{channel::NativeChannel,draw::Draw},copy::Rect};
@@ -90,6 +117,14 @@ pub mod gk208 {
             p.emit().unwrap();let Device::Gk208(d)=d else{unreachable!()};
             (result,p.rows,d.into_probe_channel().published)
         }
+    }
+    #[test] fn mask_ignoring_admission_cannot_satisfy_the_control() {
+        crate::gpu::IGNORE_MASK.with(|v| v.set(true));
+        let (result, rows, count) = native::exercise_mask();
+        crate::gpu::IGNORE_MASK.with(|v| v.set(false));
+        assert!(result.is_err(), "a mask-ignoring admission falsely satisfied the control: {rows}");
+        assert!(rows.contains("\"outcome\":\"error\""));
+        assert_eq!(count, 0, "ordinary missing format admission must not publish");
     }
     #[test] fn clean_requests_follow_three_real_adapter_controls() {
         let (result,rows,count)=native::exercise(false);assert!(result.is_ok());
