@@ -1,3 +1,29 @@
+/* fuc microcode for gf100 PGRAPH/HUB
+ *
+ * Copyright 2011 Red Hat Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * Authors: Ben Skeggs
+ */
+
+
 /*
  * Copyright 2017 Red Hat Inc.
  *
@@ -178,7 +204,7 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-//! One privileged graphics channel; method data is kernel-owned and waits poll.
+//! Privileged graphics sessions on one owned runlist; waits poll.
 //! Adapted hardware fields: MIT nouveau v6.8 FIFO gk208/gk110/gk104/gf100,
 //! GR gf100 (channel copy/header), TOP gk104; MIT open-gpu-doc cla197/cla06f.
 use alloc::{format, string::String, vec::Vec};
@@ -346,6 +372,7 @@ mod native {
         Registers,
     };
     use core::mem::ManuallyDrop;
+    use alloc::boxed::Box;
     const COMMAND: u64 = 0x01000000;
     const TARGET: u64 = 0x02000000;
     const IMAGE: u64 = 0x03000000;
@@ -367,6 +394,9 @@ mod native {
         context: Context,
         commands: Allocation,
         image: Allocation,
+        mmio: Allocation,
+        userd: u64,
+        pub(in crate::gk208::gr) second: Option<Box<Session>>,
         pages: ManuallyDrop<system_dma::Pages>,
         pbdma: usize,
         bar: usize,
@@ -389,6 +419,24 @@ mod native {
             h: &mut Hardware<'_>,
             golden: &Golden,
             code_address: u64,
+        ) -> Result<Self, &'static str> {
+            Self::new_channel(h, golden, code_address, 0, None)
+        }
+        /// Open before publication so a failed second open leaves channel 0
+        /// owned and unsubmitted. The caller returns it to Hardware::finish.
+        pub(in crate::gk208::gr) fn open_second(
+            &mut self, h: &mut Hardware<'_>, golden: &Golden, code_address: u64,
+        ) -> Result<(), &'static str> {
+            if self.bound || self.admitted || self.second.is_some() || self.report.identity.id != 0 {
+                return Err("GR pair already published or second slot occupied");
+            }
+            let second = Self::new_channel(h, golden, code_address, 1, Some(self.userd + 512))?;
+            self.second = Some(Box::new(second));
+            Ok(())
+        }
+        fn new_channel(
+            h: &mut Hardware<'_>, golden: &Golden, code_address: u64,
+            id: u32, userd: Option<u64>,
         ) -> Result<Self, &'static str> {
             let top = core::array::from_fn(|i| h.regs.read(0x22700 + i * 4));
             let (mut engine, mut runlist, mut kind) = (None, None, None);
@@ -463,110 +511,151 @@ mod native {
                     total: h.total,
                 },
             )?;
-            let flags = Flags {
-                privileged: true,
-                volatile: true,
-                ..Flags::default()
-            };
-            // One channel owns this global-buffer set and the MMIO patch list.
-            // Their addresses match the CPU-filled header and U5's patches.
-            for &(va, a) in &h.backing {
-                context.map(
+            let mut owned = Vec::new();
+            let mut pages = None;
+            let built = (|| {
+                let flags = Flags {
+                    privileged: true,
+                    volatile: true,
+                    ..Flags::default()
+                };
+                // Global buffers keep the golden VAs in both VMs. Only the MMIO
+                // list is private: MIT GR gf100.c:364-426, 470-509.
+                for &(va, a) in &h.backing {
+                    if va == golden.buffers[3].va { continue; }
+                    context.map(
+                        &mut h.layout.allocator,
+                        &mut VmIo {
+                            regs: h.regs,
+                            total: h.total,
+                        },
+                        va,
+                        a,
+                        // Shader fetch is an ordinary engine access, unlike the
+                        // firmware-owned context buffers (MIT vmmgf100.c:259-265,
+                        // 314-316; GR gf100.c:383). Keep program data unprivileged.
+                        Flags { privileged: va != code_address, ..flags },
+                    )?;
+                }
+                let commands = h.layout.allocator.allocate(65536, 4096, Kind::Engine)?;
+                owned.push(commands);
+                let image =
+                    h.layout
+                        .allocator
+                        .allocate(golden.images[0].len() as u64, 4096, Kind::Engine)?;
+                owned.push(image);
+                let mmio = h.layout.allocator.allocate(4096, 4096, Kind::Engine)?;
+                owned.push(mmio);
+                for (va, a) in [(COMMAND, commands), (IMAGE, image), (golden.buffers[3].va, mmio)] {
+                    context.map(
+                        &mut h.layout.allocator,
+                        &mut VmIo {
+                            regs: h.regs,
+                            total: h.total,
+                        },
+                        va,
+                        a,
+                        flags,
+                    )?;
+                }
+                pages = Some(ManuallyDrop::new(system_dma::Pages::new(
+                    1 + READBACK_BYTES / 4096,
+                    &system_dma::translation_status()?,
+                )?));
+                let dma = pages.as_ref().unwrap();
+                context.map_system(
                     &mut h.layout.allocator,
                     &mut VmIo {
                         regs: h.regs,
                         total: h.total,
                     },
-                    va,
-                    a,
-                    // Shader fetch is an ordinary engine access, unlike the
-                    // firmware-owned context buffers (MIT vmmgf100.c:259-265,
-                    // 314-316; GR gf100.c:383). Keep program data unprivileged.
-                    Flags { privileged: va != code_address, ..flags },
+                    TARGET,
+                    &(0..1 + READBACK_BYTES / 4096).map(|i| dma.address(i)).collect::<Vec<_>>(),
                 )?;
-            }
-            let commands = h.layout.allocator.allocate(65536, 4096, Kind::Engine)?;
-            let image =
-                h.layout
-                    .allocator
-                    .allocate(golden.images[0].len() as u64, 4096, Kind::Engine)?;
-            for (va, a) in [(COMMAND, commands), (IMAGE, image)] {
-                context.map(
-                    &mut h.layout.allocator,
-                    &mut VmIo {
-                        regs: h.regs,
-                        total: h.total,
-                    },
-                    va,
-                    a,
-                    flags,
-                )?;
-            }
-            let pages = ManuallyDrop::new(system_dma::Pages::new(
-                1 + READBACK_BYTES / 4096,
-                &system_dma::translation_status()?,
-            )?);
-            context.map_system(
-                &mut h.layout.allocator,
-                &mut VmIo {
-                    regs: h.regs,
-                    total: h.total,
-                },
-                TARGET,
-                &(0..1 + READBACK_BYTES / 4096).map(|i| pages.address(i)).collect::<Vec<_>>(),
-            )?;
-            for offset in (0..65536).step_by(4096) {
-                words(h.regs, h.total, commands.range.start + offset, &[0; 1024])?;
-            }
-            // gf100_gr_chan_bind copies the golden bytes and fills only the
-            // internal-firmware header: count and MMIO VA >> 8 at offsets 0/4.
-            let mut data = golden.runnable.clone();
-            data[..256].fill(0);
-            data[..4].copy_from_slice(&golden.header[0].to_le_bytes());
-            data[4..8].copy_from_slice(&golden.header[1].to_le_bytes());
-            for (i, w) in data.chunks_exact(4).enumerate() {
+                for offset in (0..65536).step_by(4096) {
+                    words(h.regs, h.total, commands.range.start + offset, &[0; 1024])?;
+                }
+                if golden.patches.len() * 8 > mmio.range.size as usize {
+                    return Err("GR private MMIO list exceeds backing");
+                }
+                for offset in (0..mmio.range.size).step_by(4) {
+                    words(h.regs, h.total, mmio.range.start + offset, &[0])?;
+                }
+                for (i, patch) in golden.patches.iter().enumerate() {
+                    words(h.regs, h.total, mmio.range.start + i as u64 * 8, patch)?;
+                }
+                // gf100_gr_chan_bind (MIT gf100.c:331-338) copies the golden bytes and fills only the
+                // internal-firmware header: count and MMIO VA >> 8 at offsets 0/4.
+                let mut data = golden.runnable.clone();
+                data[..256].fill(0);
+                data[..4].copy_from_slice(&(golden.patches.len() as u32).to_le_bytes());
+                data[4..8].copy_from_slice(&((golden.buffers[3].va >> 8) as u32).to_le_bytes());
+                for (i, w) in data.chunks_exact(4).enumerate() {
+                    words(
+                        h.regs,
+                        h.total,
+                        image.range.start + i as u64 * 4,
+                        &[u32::from_le_bytes(w.try_into().unwrap())],
+                    )?;
+                }
+                // Packed 512-byte USERD slots share a BAR page, as in M6.4.
+                // MIT FIFO gk104.c:82-118: RAMFC contains the physical slot,
+                // 0xe8 contains CHID, and USERD.size is 0x200.
+                let userd = userd.unwrap_or(commands.range.start + USERD);
+                let instance = context.space().instance.range.start;
+                for (offset, value) in [
+                    (0x08, userd as u32),
+                    (0x0c, (userd >> 32) as u32),
+                    (0x10, 0xface),
+                    (0x30, 0xfffff902),
+                    (0x48, COMMAND as u32),
+                    (0x4c, 9 << 16),
+                    (0x84, 0x20400000),
+                    (0x94, 0x30000fff),
+                    (0x9c, 0x100),
+                    (0xac, 0x1f),
+                    (0xe4, 0x20),
+                    (0xe8, id),
+                    (0xb8, 0xf8000000),
+                    (0xf8, 0x10003080),
+                    (0xfc, 0x10000010),
+                ] {
+                    words(h.regs, h.total, instance + offset, &[value])?;
+                }
+                // gk104_ectx_bind selects 0x210 for GR and sets bit 2 in the VA.
                 words(
                     h.regs,
                     h.total,
-                    image.range.start + i as u64 * 4,
-                    &[u32::from_le_bytes(w.try_into().unwrap())],
+                    instance + 0x210,
+                    &[(IMAGE | 4) as u32, (IMAGE >> 32) as u32],
                 )?;
-            }
-            let instance = context.space().instance.range.start;
-            for (offset, value) in [
-                (0x08, (commands.range.start + USERD) as u32),
-                (0x0c, ((commands.range.start + USERD) >> 32) as u32),
-                (0x10, 0xface),
-                (0x30, 0xfffff902),
-                (0x48, COMMAND as u32),
-                (0x4c, 9 << 16),
-                (0x84, 0x20400000),
-                (0x94, 0x30000fff),
-                (0x9c, 0x100),
-                (0xac, 0x1f),
-                (0xe4, 0x20),
-                (0xe8, 0),
-                (0xb8, 0xf8000000),
-                (0xf8, 0x10003080),
-                (0xfc, 0x10000010),
-            ] {
-                words(h.regs, h.total, instance + offset, &[value])?;
-            }
-            // gk104_ectx_bind selects 0x210 for GR and sets bit 2 in the VA.
-            words(
-                h.regs,
-                h.total,
-                instance + 0x210,
-                &[(IMAGE | 4) as u32, (IMAGE >> 32) as u32],
-            )?;
-            words(h.regs, h.total, commands.range.start + RUNLIST, &[0, 0])?;
+                words(h.regs, h.total, commands.range.start + RUNLIST, &[id, 0])?;
+                Ok((commands, image, mmio, userd, instance))
+
+            })();
+            let (commands, image, mmio, userd, instance) = match built {
+                Ok(parts) => parts,
+                Err(error) => {
+                    // No binding/admission has occurred. Cancel partial VM
+                    // publication before dropping pins or releasing storage.
+                    context.cancel_unsubmitted()?;
+                    context.retire(&mut h.layout.allocator, &mut VmIo { regs: h.regs, total: h.total })?;
+                    for a in owned { h.layout.allocator.release(a)?; }
+                    if let Some(mut dma) = pages {
+                        // SAFETY: the unsubmitted VM was detached above.
+                        unsafe { ManuallyDrop::drop(&mut dma); }
+                    }
+                    return Err(error);
+                }
+            };
+            let pages = pages.unwrap();
             let epoch = crate::arch_impl::x86_64::timer::rdtsc() | 1;
             let old = [
                 h.regs.read(0x2254),
                 h.regs.read(0x2140),
                 enabled,
                 h.regs.read(0x2630),
-                h.regs.read(0x800004),
+                h.regs.read(0x800004 + id as usize * 8),
                 h.regs.read(0x200),
             ];
             let empty = Observation {
@@ -589,6 +678,9 @@ mod native {
                 context,
                 commands,
                 image,
+                mmio,
+                userd,
+                second: None,
                 pages,
                 pbdma,
                 bar: h.console.pointer - displacement,
@@ -606,7 +698,7 @@ mod native {
                 copy: None,
                 report: Report {
                     identity: Identity {
-                        id: 0,
+                        id,
                         epoch,
                         instance,
                         top,
@@ -632,16 +724,14 @@ mod native {
             })
         }
         pub(in crate::gk208::gr) fn activate(&mut self, h: &mut Hardware<'_>) -> Result<(), &'static str> {
+            if self.report.identity.id != 0 || self.bound || self.quiesced {
+                return Err("GR runlist owner unavailable");
+            }
             let c = self.report.identity;
-            self.quiesced = false;
-            // Track the alias before its first potentially partial write.
+            // One BAR page, two distinct aliases at SLOT + CHID * 0x200.
             self.alias = true;
-            words(
-                h.regs,
-                h.total,
-                self.pte,
-                &[(((self.commands.range.start + USERD) >> 8) | 1) as u32, 0],
-            )?;
+            words(h.regs, h.total, self.pte,
+                &[((self.userd >> 8) | 1) as u32, 0])?;
             modeset::activate_bar1(h.regs, self.bar_inst, self.bar_dir)?;
             h.device.enable_bus_master();
             h.regs.write(0x2140, 0);
@@ -649,42 +739,40 @@ mod native {
             h.regs.mask(0x204, 1 << self.pbdma, 1 << self.pbdma);
             let b = 0x40000 + self.pbdma * 0x2000;
             h.regs.mask(b + 0x13c, 0x10000100, 0);
-            for (offset, value) in [
-                (0x108, u32::MAX),
-                (0x10c, 0),
-                (0x148, u32::MAX),
-                (0x14c, 0),
-                (0x12c, 0xf4240),
-            ] {
+            for (offset, value) in [(0x108, u32::MAX), (0x10c, 0),
+                (0x148, u32::MAX), (0x14c, 0), (0x12c, 0xf4240)] {
                 h.regs.write(b + offset, value);
             }
             h.regs.write(0x2254, 0x10000000 | (SLOT >> 12) as u32);
+            h.regs.mask(0x2630, 1 << c.runlist, 1 << c.runlist);
+            self.activate_channel(h)?;
+            let mut entries = alloc::vec![c.id, 0];
+            if let Some(second) = self.second.as_mut() {
+                second.activate_channel(h)?;
+                entries.extend([second.report.identity.id, 0]);
+            }
+            // MIT FIFO gk104.c:430-456: entries are {CHID, 0}; count
+            // belongs to the runlist submission, not to an individual channel.
+            words(h.regs, h.total, self.commands.range.start + RUNLIST, &entries)?;
             modeset::bar_flush(h.regs)?;
+            h.regs.write(0x2270, ((self.commands.range.start + RUNLIST) >> 12) as u32);
+            h.regs.write(0x2274, (c.runlist << 20) | (entries.len() as u32 / 2));
+            h.regs.mask(0x2630, 1 << c.runlist, 0);
+            register_wait(h.regs, 0x2284 + c.runlist as usize * 8, 0x100000, 0, BOUND_US)
+        }
+        fn activate_channel(&mut self, h: &mut Hardware<'_>) -> Result<(), &'static str> {
+            let c = self.report.identity;
+            self.quiesced = false;
             if !self.admitted {
-                // SAFETY: context pins its mappings before the channel is visible.
-                unsafe {
-                    self.context.admit_device()?;
-                }
-                // Quiesce leaves FECS's context retained until reset; reactivation
-                // republishes that owner without admitting its mappings again.
+                // SAFETY: Context::map retains mapping pins before channel publication.
+                unsafe { self.context.admit_device()?; }
                 self.admitted = true;
             }
-            h.regs.mask(0x800004, 0xf0000, c.runlist << 16);
+            let ch = c.id as usize * 8;
+            h.regs.mask(0x800004 + ch, 0xf0000, c.runlist << 16);
             self.bound = true;
-            h.regs
-                .write(0x800000, 0x80000000 | (c.instance >> 12) as u32);
-            h.regs.mask(0x800004, 0x400, 0x400);
-            h.regs.mask(0x2630, 1 << c.runlist, 0);
-            h.regs
-                .write(0x2270, ((self.commands.range.start + RUNLIST) >> 12) as u32);
-            h.regs.write(0x2274, (c.runlist << 20) | 1);
-            register_wait(
-                h.regs,
-                0x2284 + c.runlist as usize * 8,
-                0x100000,
-                0,
-                BOUND_US,
-            )?;
+            h.regs.write(0x800000 + ch, 0x80000000 | (c.instance >> 12) as u32);
+            h.regs.mask(0x800004 + ch, 0x400, 0x400);
             Ok(())
         }
         fn issue(
@@ -739,7 +827,7 @@ mod native {
             modeset::bar_flush(h.regs)?;
             // SAFETY: the owned USERD page's WC BAR1 alias is installed above.
             unsafe {
-                ((self.bar + SLOT as usize + 0x8c) as *mut u32).write_volatile(sequence);
+                ((self.bar + SLOT as usize + self.report.identity.id as usize * 512 + 0x8c) as *mut u32).write_volatile(sequence);
             }
             crate::gpu_cache::drain_wc();
             let _ = h.regs.read(0x2254);
@@ -959,6 +1047,57 @@ mod native {
             binding::check_traps(receipt.after)?;
             result
         }
+        /// Physical allocation identities for the context evidence. Shader and
+        /// semaphore commands still use this session's private GPU VA mappings.
+        pub(in crate::gk208::gr) fn context_storage(&self) -> [u64; 4] {
+            [self.report.identity.instance, self.image.range.start,
+                self.pages.address(0), self.report.identity.epoch]
+        }
+        /// Select with a state-free engine release, then sample FECS around
+        /// the actual draw before CE can select the peer. MIT nouveau
+        /// macros.fuc:125 and hub.fuc:234-267 define CHAN_ADDR (0x409b00).
+        pub(in crate::gk208::gr) fn context_draw(
+            &mut self, h: &mut Hardware<'_>, mut request: super::super::draw::Draw,
+            full: bool, suppressed: bool, receipt: &mut super::super::binding::Receipt,
+            current: &mut [u32; 2],
+        ) -> Result<(), &'static str> {
+            use super::super::{binding, draw};
+            let result = (|| {
+                let (sequence, nonce) = self.sequence()?;
+                request.report_va = TARGET;
+                request.epoch = self.report.identity.epoch;
+                request.nonce = nonce;
+                let mut select = draw::release_commands(request)?;
+                select.extend([0x20010014, sequence]);
+                let selected = self.issue_words(h, sequence, 85, nonce, BOUND_US, &select, true)?;
+                if !selected.accepted { return Err("context activation release not observed"); }
+                current[0] = h.regs.read(0x409b00);
+                receipt.before = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
+                binding::check_traps(receipt.before)?;
+                let (sequence, nonce) = self.sequence()?;
+                request.nonce = nonce;
+                receipt.target = self.pages.address(0);
+                receipt.epoch = request.epoch;
+                receipt.nonce = nonce;
+                // The one-shot control retains the same ordered receipt and
+                // binding samples, without draw or saved-state methods.
+                let mut stream = if suppressed { draw::release_commands(request)? }
+                    else if full { draw::commands(request)? }
+                    else { draw::draw_commands(request)? };
+                stream.extend([0x20010014, sequence]);
+                let sample = self.issue_words(h, sequence, 85, nonce, BOUND_US, &stream, true)?;
+                receipt.observation = Some(sample);
+                if !sample.accepted { return Err("context draw release not observed"); }
+                Ok(())
+            })();
+            current[1] = h.regs.read(0x409b00);
+            receipt.after = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
+            binding::check_traps(receipt.after)?;
+            result?;
+            let expected = 0x80000000 | (self.report.identity.instance >> 12) as u32;
+            if *current != [expected; 2] { return Err("context draw FECS binding mismatch"); }
+            Ok(())
+        }
         pub(in crate::gk208::gr) fn execute(
             &mut self,
             h: &mut Hardware<'_>,
@@ -1005,82 +1144,66 @@ mod native {
                     return Err("GR stale release control failed");
                 }
             }
-            self.report.identity.bind = h.regs.read(0x800000);
-            self.report.identity.state = h.regs.read(0x800004);
+            self.report.identity.bind = h.regs.read(0x800000 + self.report.identity.id as usize * 8);
+            self.report.identity.state = h.regs.read(0x800004 + self.report.identity.id as usize * 8);
             self.report.identity.current_context = h.regs.read(0x409b00);
             for pair in &mut self.report.faults {
                 pair[1] = h.regs.read(pair[0] as usize);
             }
             Ok(())
         }
-        /// Drain FIFO, with a GR reset fallback if FECS cannot finish preempt.
-        /// Cleanup errors retain backing, but do not skip unbind/restoration.
+        /// Remove the whole owned runlist before restoring shared FIFO state.
+        /// Any reset, drain, unbind or alias error forbids pair reclamation.
         pub(in crate::gk208::gr) fn quiesce(
-            &mut self,
-            regs: &mut Registers,
-            total: u64,
+            &mut self, regs: &mut Registers, total: u64,
         ) -> Result<(), &'static str> {
             if self.quiesced { return Ok(()); }
             let c = self.report.identity;
             let mut failure = None;
-            let mut gr_enable = None;
-            let mut fault_reset = false;
-            if self.bound {
+            let active = self.bound || self.second.as_ref().is_some_and(|s| s.bound);
+            if active {
                 regs.mask(0x2630, 1 << c.runlist, 1 << c.runlist);
-                regs.mask(0x800004, 0x800, 0x800);
-                regs.write(0x2634, c.id);
-                if let Err(error) = register_wait(regs, 0x2634, 0x100000, 0, BOUND_US) {
-                    self.preempt_error = Some(error);
-                    // The trap was captured/acknowledged by the suite thread.
-                    // A stuck FECS save must not strand the FIFO owner forever.
-                    gr_enable = Some(regs.read(0x200) & 0x1000);
-                    if let Err(error) = super::super::ctxctl::reset(regs).map_err(super::super::hardware_error) {
-                        failure = Some(error);
-                    } else if regs.read(0x259c) & 1 != 0
-                        && u64::from(regs.read(0x2800)) << 12 == c.instance
-                    {
-                        // MIT nouveau gf100.c:696-733: acknowledge only this
-                        // GR unit's recorded instance after its DMA is stopped.
-                        // Unrelated units/instances keep their fault evidence.
-                        regs.write(0x259c, 1);
-                        fault_reset = regs.read(0x259c) == 0;
-                    }
+                // Disable both before preempt: fallback reset stops the GR engine.
+                for s in core::iter::once(&*self).chain(self.second.as_deref()) {
+                    if s.bound { regs.mask(0x800004 + s.report.identity.id as usize * 8, 0x800, 0x800); }
+                }
+                if let Err(e) = self.quiesce_channel(regs) { failure.get_or_insert(e); }
+                if let Some(second) = self.second.as_mut() {
+                    if let Err(e) = second.quiesce_channel(regs) { failure.get_or_insert(e); }
                 }
                 regs.write(0x2270, ((self.commands.range.start + RUNLIST) >> 12) as u32);
                 regs.write(0x2274, c.runlist << 20);
-                if fault_reset {
-                    // MIT nouveau gk104.c:404-418. A faulted runlist cannot
-                    // consume the empty replacement until cleared and resumed.
-                    regs.write(0x262c, 1 << c.runlist);
-                    regs.mask(0x2630, 1 << c.runlist, 0);
-                }
                 for (address, mask, budget) in [
                     (0x2284 + c.runlist as usize * 8, 0x100000, BOUND_US),
                     (0x3080 + self.pbdma * 4, 0xe000, BOUND_US),
                     (0x2640 + c.engine as usize * 8, 0x80000000, 100000),
                 ] {
-                    if let Err(error) = register_wait(regs, address, mask, 0, budget) {
-                        failure.get_or_insert(error);
-                    }
-                }
-                if let Some(copy) = &self.copy {
-                    if let Err(error) = register_wait(regs, 0x2640 + copy.engine as usize * 8, 0x80000000, 0, 100000) {
-                        failure.get_or_insert(error);
-                    }
-                }
-                regs.write(0x800000, 0);
-                self.report.binding = regs.read(0x800000);
-                self.report.runlist_count = regs.read(0x2274) & 0xfffff;
-                if self.report.binding != 0 {
-                    failure.get_or_insert("GR unbind failed; backing retained");
-                } else {
-                    self.bound = false;
+                    if let Err(e) = register_wait(regs, address, mask, 0, budget) { failure.get_or_insert(e); }
                 }
             }
+            // Unbind the owned pair even after an earlier error.
+            let mut second = self.second.take();
+            for s in core::iter::once(&mut *self).chain(second.as_deref_mut()) {
+                if active && s.bound {
+                    if let Some(copy) = &s.copy {
+                        if let Err(e) = register_wait(regs, 0x2640 + copy.engine as usize * 8, 0x80000000, 0, 100000) {
+                            failure.get_or_insert(e);
+                        }
+                    }
+                    let ch = s.report.identity.id as usize * 8;
+                    regs.write(0x800000 + ch, 0);
+                    s.report.binding = regs.read(0x800000 + ch);
+                    s.report.runlist_count = regs.read(0x2274) & 0xfffff;
+                    if s.report.binding != 0 { failure.get_or_insert("GR unbind failed; backing retained"); }
+                    else { s.bound = false; }
+                }
+                regs.write(0x800004 + s.report.identity.id as usize * 8, s.old[4]);
+            }
+            self.second = second;
             if self.alias {
                 let clear = words(regs, total, self.pte, &[0, 0])
                     .and_then(|()| modeset::activate_bar1(regs, self.bar_inst, self.bar_dir));
-                if let Err(error) = clear { failure.get_or_insert(error); }
+                if let Err(e) = clear { failure.get_or_insert(e); }
                 else { self.alias = false; }
             }
             let b = 0x40000 + self.pbdma * 0x2000;
@@ -1091,19 +1214,46 @@ mod native {
             regs.write(0x2140, self.old[1]);
             regs.write(0x204, self.old[2]);
             regs.mask(0x2630, 1 << c.runlist, self.old[3] & (1 << c.runlist));
-            regs.write(0x800004, self.old[4]);
             regs.mask(0x200, 0x100, self.old[5] & 0x100);
-            if let Some(enable) = gr_enable { regs.mask(0x200, 0x1000, enable); }
+            if let Some(second) = self.second.as_ref() {
+                if let Some(copy) = &second.copy {
+                    regs.write(copy.base + 0x904, copy.old_irq);
+                    regs.mask(0x200, 1 << copy.reset, copy.old_enable);
+                }
+            }
             if let Some(copy) = &self.copy {
                 regs.write(copy.base + 0x904, copy.old_irq);
                 regs.mask(0x200, 1 << copy.reset, copy.old_enable);
             }
-            if let Some(error) = failure { return Err(error); }
+            if let Some(e) = failure { return Err(e); }
+            if let Some(second) = self.second.as_mut() { second.quiesced = true; }
             self.quiesced = true;
             Ok(())
         }
+        fn quiesce_channel(&mut self, regs: &mut Registers) -> Result<(), &'static str> {
+            if !self.bound { return Ok(()); }
+            let c = self.report.identity;
+            regs.write(0x2634, c.id);
+            if let Err(error) = register_wait(regs, 0x2634, 0x100000, 0, BOUND_US) {
+                self.preempt_error = Some(error);
+                let enable = regs.read(0x200) & 0x1000;
+                let reset = super::super::ctxctl::reset(regs).map_err(super::super::hardware_error);
+                regs.mask(0x200, 0x1000, enable);
+                reset?;
+                if regs.read(0x259c) & 1 != 0
+                    && u64::from(regs.read(0x2800)) << 12 == c.instance {
+                    // MIT FIFO gf100.c:696-733 and gk104.c:404-418.
+                    regs.write(0x259c, 1);
+                    if regs.read(0x259c) == 0 {
+                        regs.write(0x262c, 1 << c.runlist);
+                        regs.mask(0x2630, 1 << c.runlist, 0);
+                    }
+                }
+            }
+            Ok(())
+        }
         pub(in crate::gk208::gr) fn preempt_result(&self) -> Result<(), &'static str> {
-            self.preempt_error.map_or(Ok(()), Err)
+            self.preempt_error.or_else(|| self.second.as_ref().and_then(|s| s.preempt_error)).map_or(Ok(()), Err)
         }
         pub(in crate::gk208::gr) fn report(&self) -> Report {
             self.report
@@ -1119,6 +1269,15 @@ mod native {
             if !self.quiesced {
                 return Err("GR retirement before FIFO unwind");
             }
+            if let Some(second) = self.second.take() {
+                second.finish_channel(regs, layout, total)?;
+            }
+            self.finish_channel(regs, layout, total)
+        }
+        fn finish_channel(
+            mut self, regs: &mut Registers, layout: &mut memory::Layout, total: u64,
+        ) -> Result<(), &'static str> {
+            if !self.quiesced { return Err("GR retirement before pair unwind"); }
             // SAFETY: reset has stopped GR; quiesce removed and drained FIFO.
             unsafe {
                 self.context.confirm_reset();
@@ -1127,6 +1286,7 @@ mod native {
                 .retire(&mut layout.allocator, &mut VmIo { regs, total })?;
             layout.allocator.release(self.commands)?;
             layout.allocator.release(self.image)?;
+            layout.allocator.release(self.mmio)?;
             // SAFETY: GR reset and PFIFO drain precede system-page reclamation.
             unsafe {
                 ManuallyDrop::drop(&mut self.pages);
@@ -1165,16 +1325,16 @@ mod native {
                 )
             };
             let b = s.pbdma * 0x2000;
-            let current = self.regs.read(0x40120 + b) & 0x2fff == 0x2000;
+            let current = self.regs.read(0x40120 + b) & 0x2fff == 0x2000 | self.session.report.identity.id;
             let get = if current {
                 self.regs.read(0x40014 + b)
             } else {
-                read(self.regs, self.total, s.commands.range.start + USERD + 0x88)?
+                read(self.regs, self.total, s.userd + 0x88)?
             };
             let consumed = current
                 && get == self.sequence
                 && self.regs.read(0x40028 + b) == self.sequence
-                && self.regs.read(0x800000)
+                && self.regs.read(0x800000 + s.report.identity.id as usize * 8)
                     == 0x80000000 | (s.report.identity.instance >> 12) as u32;
             Ok((value, u64::from(lo) | (u64::from(hi) << 32), consumed))
         }

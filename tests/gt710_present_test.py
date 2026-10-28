@@ -28,7 +28,10 @@ class Present(unittest.TestCase):
         fixture = fixture.replace('// READBACK', readback)
         fixture = fixture.replace('const READBACK_BYTES:usize=65536;', next(line.strip() for line in channel.splitlines() if 'const READBACK_BYTES:' in line))
         self.assertIn('1 + READBACK_BYTES / 4096', channel)
-        self.assertIn('(0..1 + READBACK_BYTES / 4096).map(|i| pages.address(i))', channel)
+        # G2: u4 split optional ownership (pages) from its borrowed DMA view.
+        # The mapped addresses must still come from the retained readback pages.
+        self.assertIn('let dma = pages.as_ref().unwrap();', channel)
+        self.assertIn('(0..1 + READBACK_BYTES / 4096).map(|i| dma.address(i))', channel)
         # The takeover returns its final cursor, rather than a fresh channel.
         takeover = item(native, 'pub fn takeover(')
         self.assertIn('Result<(ConsoleSurface, Evo)', takeover)

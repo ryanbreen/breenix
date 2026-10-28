@@ -772,6 +772,15 @@ rnndb `falcon.xml:227-246` (`XFER_CTRL.SIZE`) and MIT
 `gpc.fuc:403-489` for its distinct strand/MMCTX path. These do not define
 MMCTX/strand terminal width; no implementation is adapted from them here.
 
+M7.5's graphics-context comparator in `scripts/metal/gt710-suite` uses
+the already listed MIT nouveau v6.8 `fuc/macros.fuc:125`,
+`fuc/hub.fuc:234-267,470-483` and `gr/gf100.c:1613-1626` for the FECS
+channel address, valid bit and instance shift. Each source's full MIT
+header was checked before use. The Red Hat 2011/2012/2013 copyright
+notices and full MIT grant remain in the consumer header. The frame wire
+contract and rational/integer pixel oracles are Breenix code. The rnndb
+GM107-and-newer CURRENT_CTX declaration is not used for the Kepler check.
+
 M7.2's live-channel unwind in `gr/{mod,channel}.rs` and CE preflight and
 borrowed read-back cleanup in `ce.rs` and `ce/{process,readback}.rs` reuse
 the FIFO/channel mechanisms already attributed above (MIT nouveau v6.8
@@ -791,8 +800,17 @@ were checked before use and remain in the header and `vendor/kepler/NOTICES`.
 `vendor/kepler/sources.json` records the upstream and vendored hashes.
 
 Consumer: `tests/gt710_sph_test.py` parses its field bit ranges to decode the
-committed diagnostic vertex/fragment SPHs independently of the compiler.
+committed diagnostic vertex/fragment and gradient fragment SPHs independently
+of the compiler.
 The header is a reference input, with no linked NVIDIA driver code.
+
+The M7.5 position-based gradient definition in
+`tools/kepler/shaders/gradient.frag.tgsi` is Breenix PolyForm Noncommercial code.
+Its committed `kernel/assets/kepler/gradient-fragment.{bin,sph,json,asm}` outputs
+use the same pinned MIT Mesa compiler, adapted `tools/kepler/compile.cpp` SPH
+logic and MIT envytools decoder listed above. The SPH keeps the Mesa MIT terms;
+the shader code and definition keep Breenix's terms. `kernel/src/gpu/gk208/gr/shaders.rs`
+exposes these bytes and their metadata GPR count with its existing MIT notice.
 
 ## Triangle stage dataflow reference and controls (M7.3)
 
@@ -957,3 +975,56 @@ and `gk104.c:404-418` (runlist fault clear/allow), both MIT,
 Copyright 2012 Red Hat Inc. Their notices are retained in the consumer.
 `tests/gt710_gr_mmu_unwind_test.py` exercises Breenix's teardown order
 with a host MMIO model; it contains no nouveau implementation text.
+
+GT 710 two graphics sessions (milestone 7.5 unit 4)
+------------------------------------------------
+Consumer: `kernel/src/gpu/gk208/gr/channel.rs`; the original full
+Copyright 2012 Red Hat Inc., author Ben Skeggs and MIT grant remain in its
+header. Both upstream file headers were read before this adaptation.
+
+Nouveau v6.8 / e8f897f4afef0031fe618a8e94127a0934896aba, paths relative
+to drivers/gpu/drm/nouveau/:
+
+- `nvkm/engine/fifo/gk104.c`, MIT:82-118 (RAMFC CHID and 512-byte USERD
+  slots), 134-174 (GR context pointer), 430-456 (runlist address, count and
+  channel entries).
+- `nvkm/engine/gr/gf100.c`, MIT:331-338 (golden copy and internal-firmware
+  count/MMIO-VA header), 378-426 (global buffers mapped per VM), 451-480
+  (private MMIO patch list).
+
+The packed USERD publication follows the in-tree milestone 6.4
+`kernel/src/gpu/gk208/ce.rs:activate_pair`. Private context images and patch
+lists use shared global-buffer VAs; OS allocation and lifetime handling remain
+Breenix-owned.
+
+
+## GT 710 context alternation (E23 M7 PR 7.5 unit 5)
+
+Consumers: `kernel/src/gpu/gk208/gr/{draw,channel,mod}.rs` and the
+`tests/gt710_contexts_orchestration_test.py` extraction fixtures. The draw
+split retains the existing MIT NVIDIA open-gpu-doc cla197.h methods
+(revision 9fdf5c4062007929d9f4e6cbad9c9771fe61b880) and Mesa 24.3.4
+nvc0_{screen,state,vbo,surface}.c state, listed above. No new external
+implementation is imported. The full original notices remain in draw.rs.
+
+The binding snapshots additionally use nouveau v6.8
+nvkm/engine/gr/fuc/macros.fuc:125 (MIT, Copyright 2013 Red Hat Inc.) and
+hub.fuc:234-267 (MIT, Copyright 2011 Red Hat Inc.), committed unmodified
+under vendor/kepler/nouveau. Each header was read before use; both full
+notices are retained in channel.rs. The producer uses Breenix-owned
+orchestration, the committed G5 shader assets, and u1's literal V2 and
+full-viewport vertex inputs. The host fixture substitutes device execution
+with synthetic oracle images; it is not hardware evidence.
+
+## GT 710 one-shot context controls (E23 M7 PR 7.5 unit 6)
+
+Consumers: kernel/src/gpu/gk208/gr/{mod,channel}.rs and the orchestration
+fixtures. The release-only suppressed submission reuses the existing A197
+report semaphore encoder: NVIDIA open-gpu-doc revision
+9fdf5c4062007929d9f4e6cbad9c9771fe61b880, classes/3d/cla197.h:3274-3366,
+MIT, Copyright (c) 2020 NVIDIA CORPORATION. The single-pixel corruption
+uses the existing session CE upload: classes/dma-copy/cla0b5.h at that
+revision, MIT, Copyright (c) 2019 NVIDIA CORPORATION. Both file headers
+were read for this unit; the full original grants remain in gr/draw.rs and
+gk208/copy.rs. Control orchestration and epoch-to-pixel selection are
+Breenix-owned; no additional external implementation is imported.

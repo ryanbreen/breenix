@@ -463,6 +463,16 @@
               "draw"
             ]
           }
+        },
+        {
+          "id": "gr-contexts",
+          "title": "Alternate two graphics contexts and reject draw controls (M7 PR 7.5)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "gr-contexts"
+            ]
+          }
         }
       ]
     }

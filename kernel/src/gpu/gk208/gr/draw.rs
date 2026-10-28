@@ -145,6 +145,21 @@ pub const VERTEX_WORDS: [u32; 24] = [
     0xbf7e0000, 0x3c000000, 0, 0x3f800000, 0, 0x3f800000, 0x3ec00000, 0x3f800000,
 ];
 
+// Literal GPU inputs from gt710-contexts.json; no target pixels are generated.
+pub const V2_VERTEX_WORDS: [u32; 24] = [
+    0x3f7e0000, 0xbf7e0000, 0x00000000, 0x3f800000, 0x3e000000, 0x3f600000, 0x3ec00000, 0x3f800000,
+    0x3f7e0000, 0x3c000000, 0x00000000, 0x3f800000, 0x3f200000, 0x3ec00000, 0x3e000000, 0x3f800000,
+    0xbc000000, 0xbf7e0000, 0x00000000, 0x3f800000, 0x3ec00000, 0x3e000000, 0x3f600000, 0x3f800000,
+];
+pub const FULL_VIEWPORT_VERTEX_WORDS: [u32; 24] = [
+    0xc0400000, 0xc0400000, 0x00000000, 0x3f800000, 0x00000000, 0x00000000, 0x00000000, 0x3f800000,
+    0x40a00000, 0xc0400000, 0x00000000, 0x3f800000, 0x00000000, 0x00000000, 0x00000000, 0x3f800000,
+    0xc0400000, 0x40a00000, 0x00000000, 0x3f800000, 0x00000000, 0x00000000, 0x00000000, 0x3f800000,
+];
+
+// SPH at 0x4b0, instructions at 0x500, within the retained code page.
+pub const GRADIENT_PROGRAM: u32 = 0x4b0;
+
 #[derive(Clone, Copy)]
 pub struct Draw {
     pub target_va: u64,
@@ -173,7 +188,7 @@ fn span(address: u64, bytes: u64, alignment: u64) -> bool {
 /// are permitted; resizing this diagnostic requires a new geometry oracle.
 /// Program offsets name the SPH (80 bytes before aligned instructions).
 /// This function performs no device access and does not bind another object.
-pub fn commands(r: Draw) -> Result<Vec<u32>, &'static str> {
+fn validate(r: Draw) -> Result<(), &'static str> {
     if r.width != 64 || r.height != 64 || r.pitch < 256 || r.pitch & 255 != 0
         || r.pitch >= 1 << 28
         || !span(r.target_va, u64::from(r.pitch) * u64::from(r.height), 256)
@@ -188,6 +203,12 @@ pub fn commands(r: Draw) -> Result<Vec<u32>, &'static str> {
             return Err("invalid diagnostic SPH offset");
         }
     }
+    Ok(())
+}
+
+/// Saved render state, emitted only for the first draw in each context.
+pub fn state_commands(r: Draw) -> Result<Vec<u32>, &'static str> {
+    validate(r)?;
     let mut words = Vec::new();
     let mut emit = |method: u32, data: &[u32]| {
         words.push(0x20000000 | ((data.len() as u32) << 16)
@@ -266,24 +287,61 @@ pub fn commands(r: Draw) -> Result<Vec<u32>, &'static str> {
     emit(0x2040, &[0x11, r.vertex_program]);
     emit(0x204c, &[shaders::VERTEX_GPRS]);
     emit(0x2140, &[0x51, r.fragment_program]);
-    emit(0x214c, &[shaders::FRAGMENT_GPRS]);
+    emit(0x214c, &[if r.fragment_program == GRADIENT_PROGRAM {
+        shaders::GRADIENT_FRAGMENT_GPRS
+    } else { shaders::FRAGMENT_GPRS }]);
     // Interleaved float4 fetch at a[0x80]/a[0x90], inclusive stream limit.
     emit(0x1880, &[0]);
     emit(0x1c00, &[0x1020, (r.vertex_va >> 32) as u32, r.vertex_va as u32, 0]);
     let last = r.vertex_va + 95;
     emit(0x1f00, &[(last >> 32) as u32, last as u32]);
     emit(0x1160, &[0x38200000, 0x38200800]);
+    Ok(words)
+}
+
+/// Draw using saved state, including invalidation after an in-place V2 upload.
+/// Contains no render target, viewport, program or vertex-array methods.
+pub fn draw_commands(r: Draw) -> Result<Vec<u32>, &'static str> {
+    validate(r)?;
+    let mut words = Vec::new();
+    let mut emit = |method: u32, data: &[u32]| {
+        words.push(0x20000000 | ((data.len() as u32) << 16)
+            | (channel::SUBCHANNEL << 13) | (method / 4));
+        words.extend_from_slice(data);
+    };
+    // cla197.h:2277-2278, Mesa nvc0_vbo.c:787,1020 (MIT):
+    // invalidate fetch data after V2 replaces bytes at the same vertex VA.
     emit(0x142c, &[0]);
     emit(0x021c, &[1]);
     emit(0x1618, &[4]);
     emit(0x0d74, &[0, 3]);
     emit(0x1614, &[0]);
     emit(0x0110, &[0]);
+    words.extend(release_commands(r)?);
+    Ok(words)
+}
+
+/// Engine-ordered activation receipt without altering saved graphics state.
+pub fn release_commands(r: Draw) -> Result<Vec<u32>, &'static str> {
+    validate(r)?;
+    let mut words = Vec::new();
+    let mut emit = |method: u32, data: &[u32]| {
+        words.push(0x20000000 | ((data.len() as u32) << 16)
+            | (channel::SUBCHANNEL << 13) | (method / 4));
+        words.extend_from_slice(data);
+    };
     // cla197:3274-3366: pipeline-end location 0xf, after writes, one word, flush enabled.
     // No host SET_REFERENCE can substitute for these engine releases.
     for (offset, value) in [(4, r.epoch as u32), (8, (r.epoch >> 32) as u32), (0, r.nonce)] {
         let target = r.report_va + offset;
         emit(0x1b00, &[(target >> 32) as u32, target as u32, value, 0x1000f010]);
     }
+    Ok(words)
+}
+
+/// Full state followed by the state-free draw and pipeline-end releases.
+pub fn commands(r: Draw) -> Result<Vec<u32>, &'static str> {
+    let mut words = state_commands(r)?;
+    words.extend(draw_commands(r)?);
     Ok(words)
 }

@@ -31,16 +31,18 @@ class LiveUnwind(unittest.TestCase):
         session = item(channel, 'pub(in crate::gk208::gr) struct Session')
         nonce = item(channel, 'pub fn receipt_nonce(')
         methods = item(channel, '    impl Session {')
-        new = item(methods, 'pub(in crate::gk208::gr) fn new(')
+        new = item(methods, 'fn new_channel(')
         prelude = '''
             let _ = (golden, code_address);
+            let userd = userd.unwrap_or(0x102000);
+            let mmio = Allocation::at(0x210000);
             step("graphics-new")?;
             let context = Context;
             let commands = Allocation::at(0x100000);
             let image = Allocation::at(0x200000);
             let pages = ManuallyDrop::new(system_dma::Pages);
             let (pbdma, bar_inst, bar_dir, pte, displacement) = (0, 0, 0, 0x900000, 0);
-            let top = [0; 64]; let (engine, runlist, enabled, instance) = (0, 1, h.regs.read(0x204), 0x300000);
+            let top = [0; 64]; let (engine, runlist, enabled, instance) = (0, 1, h.regs.read(0x204), 0x300000 + u64::from(id) * 4096);
 '''
         start = new.index('{') + 1
         methods = methods.replace(new, new[:start] + prelude + new[new.index('            let epoch ='):])

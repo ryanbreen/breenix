@@ -22,7 +22,20 @@ struct Registers { values: BTreeMap<usize, u32>, vram: BTreeMap<u64, u32>, stuck
 impl Registers {
     fn new() -> Self { Self { values: SAVED.into_iter().collect(), vram: BTreeMap::new(), stuck: false } }
     fn read(&self, a: usize) -> u32 { *self.values.get(&a).unwrap_or(&0) }
-    fn write(&mut self, a: usize, v: u32) { self.values.insert(a, v); }
+    fn write(&mut self, a: usize, v: u32) {
+        if a == 0x800000 && v == 0 && self.read(a) != 0 {
+            let failed = INJECT.with(|i| {
+                let mut i = i.borrow_mut();
+                if i.target == "failed-unbind" {
+                    assert!(i.resets > 0, "unbind failure must follow confirmed GR reset");
+                    i.reached = true;
+                    true
+                } else { false }
+            });
+            if failed { return; }
+        }
+        self.values.insert(a, v);
+    }
     fn mask(&mut self, a: usize, m: u32, v: u32) { self.write(a, (self.read(a) & !m) | v); }
     fn restored(&self) -> bool {
         self.read(0x800000) == 0 && self.read(0x2274) & 0xfffff == 0 &&
@@ -32,7 +45,10 @@ impl Registers {
     }
 }
 fn register_wait(r: &mut Registers, a: usize, _: u32, _: u32, _: u64) -> Result<(), &'static str> {
-    if r.stuck && a == 0x2634 { return Err("stuck preempt"); }
+    if r.stuck && a == 0x2634 {
+        INJECT.with(|i| i.borrow_mut().calls.push("stuck-preempt".into()));
+        return Err("stuck preempt");
+    }
     step(&format!("wait-{a:x}-{}", r.read(0x2274) & 0xfffff))
 }
 fn words(r: &mut Registers, _: u64, a: u64, w: &[u32]) -> Result<(), &'static str> {
@@ -88,9 +104,23 @@ mod ctxctl {
         pub fn restore(&self, _: &mut Registers) -> Result<(), &'static str> { Ok(()) }
     }
     pub fn reset(r: &mut Registers) -> Result<(), &'static str> {
+        let failed = INJECT.with(|i| {
+            let mut i = i.borrow_mut();
+            if i.target == "failed-reset" {
+                assert!(r.stuck, "reset failure must follow stuck preempt");
+                assert!(i.calls.iter().any(|c| c == "stuck-preempt"));
+                if !i.reached {
+                    assert_ne!(r.read(0x2630)&2, 0);
+                    assert_ne!(r.read(0x800004)&0x800, 0);
+                }
+                i.reached = true;
+                true
+            } else { false }
+        });
+        if failed { return Err("GR reset failed"); }
         if r.read(0x800000) != 0 {
             // This unit explicitly permits reset after bounded FECS preempt.
-            assert!(r.stuck || INJECT.with(|i|i.borrow().target=="wait-2634-1"));
+            assert!(r.stuck || INJECT.with(|i|i.borrow().target=="wait-2634-2"));
             assert_ne!(r.read(0x2630)&2,0,"runlist not disabled before fallback");
             assert_ne!(r.read(0x800004)&0x800,0,"channel not disabled before fallback");
             r.stuck=false;
@@ -162,6 +192,7 @@ impl Hardware<'_> {
 #[derive(Default)] struct DrawEvidence {trap_capture:Option<binding::TrapCapture>}
 impl DrawEvidence { fn emit(&self,_:Option<&str>)->Result<(),&'static str>{let _=&self.trap_capture;Ok(())} }
 fn present_probe(_: &mut Hardware<'_>,_: &mut channel::Session,_:(),_:&mut DrawEvidence)->Result<(),&'static str>{Ok(())}
+fn contexts_probe(_: &mut Hardware<'_>,_: &mut channel::Session,_:u64)->Result<(),&'static str>{step("contexts-probe")}
 fn draw_probe(_: &mut Hardware<'_>,_: &mut channel::Session,_:u64,_:&mut DrawEvidence)->Result<(),&'static str>{step("draw-probe")}
 mod channel {
     struct DrawCopy { base:usize,engine:u32,reset:u32,old_irq:u32,old_enable:u32 }
@@ -208,7 +239,7 @@ fn run(regs: &mut Registers, stuck: bool) -> Result<(), &'static str> {
 }
 #[test]
 fn live_errors_restore_fifo_alias_and_binding_before_reset() {
-    for target in ["alias-install", "alias-clear", "bar1", "bar1-2", "flush", "admit", "wait-228c-1", "issue-1", "issue-2", "issue-3", "issue-4", "issue-5", "shader-upload", "draw-probe", "wait-2634-1", "wait-228c-0", "wait-3080-0", "wait-2640-0"] {
+    for target in ["alias-install", "alias-clear", "bar1", "bar1-2", "flush", "admit", "wait-228c-2", "issue-1", "issue-2", "issue-3", "issue-4", "issue-5", "shader-upload", "draw-probe", "contexts-probe", "wait-2634-2", "wait-228c-0", "wait-3080-0", "wait-2640-0"] {
         INJECT.with(|i|*i.borrow_mut()=Injection{target:target.into(),..Injection::default()});
         let mut regs=Registers::new();
         let result=run(&mut regs,false);
@@ -236,6 +267,21 @@ fn clean_channel_restores_and_stuck_preempt_resets_before_reclaim() {
     let mut regs=Registers::new(); assert_eq!(run(&mut regs,true),Err("injected"));
     INJECT.with(|i| { let i=i.borrow();assert!(i.resets>0);assert!(i.releases>0); });
     assert!(regs.restored());
+}
+#[test]
+fn stuck_preempt_with_failed_reset_or_unbind_retains_backing() {
+    for target in ["failed-reset", "failed-unbind"] {
+        INJECT.with(|i| *i.borrow_mut() = Injection { target: target.into(), ..Injection::default() });
+        let mut regs = Registers::new();
+        assert!(run(&mut regs, true).is_err(), "accepted failed cleanup: {target}");
+        INJECT.with(|i| {
+            let i = i.borrow();
+            assert!(i.reached, "failure not injected: {target}");
+            assert!(i.calls.iter().any(|c| c == "stuck-preempt"));
+            assert_eq!(i.releases, 0, "released backing after {target}");
+            assert_eq!(i.resets > 0, target == "failed-unbind");
+        });
+    }
 }
 mod ce {
     use super::*;

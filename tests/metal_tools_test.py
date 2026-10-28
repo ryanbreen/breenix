@@ -1855,6 +1855,9 @@ class BuildSlotTest(unittest.TestCase):
             path = clone / 'docs/efforts/path.json'
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('fixture effort path')
+            oracle = clone / 'docs/gui/provenance/gt710-contexts.json'
+            oracle.parent.mkdir(parents=True, exist_ok=True)
+            oracle.write_text('context oracle fixture')
             order = []
             def run(command, **options):
                 order.append(command[2:])
@@ -1872,6 +1875,7 @@ class BuildSlotTest(unittest.TestCase):
                 self.assertEqual(build.inner(args), 0)
             built = json.loads((out / 'build.json').read_text())
             self.assertEqual((out / 'definition/docs/efforts/path.json').read_text(), 'fixture effort path')
+            self.assertEqual((out / 'definition/docs/gui/provenance/gt710-contexts.json').read_text(), 'context oracle fixture')
             built['builtRoot'] = (clone / 'testdata/ext2.img').read_bytes()
             built['clone'] = str(clone)
             return build, clone, tmp, order, (out / 'ext2.img').read_bytes(), built

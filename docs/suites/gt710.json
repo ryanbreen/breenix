@@ -25,6 +25,20 @@
       ]
     },
     {
+      "id": "gr-contexts",
+      "title": "Graphics context switching and controls (M7 PR 7.5)",
+      "cases": [
+        {
+          "id": "switch",
+          "title": "Two A197 contexts preserve private targets across V1, gradient, V2 and restored-gradient draws with exact pixels and fresh channel-bound receipts"
+        },
+        {
+          "id": "controls",
+          "title": "A suppressed draw and one corrupted target pixel are rejected and each immediate clean successor passes"
+        }
+      ]
+    },
+    {
       "id": "draw",
       "title": "Shaded triangle draw and presentation",
       "cases": [

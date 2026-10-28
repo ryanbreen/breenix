@@ -73,7 +73,9 @@ GR_INIT_LISTS = [
 ]
 
 CATEGORIES = {
+    # claim-lint:ok: normative case table; tests/gt710_contexts_report_test.py checks the new category and matching manifest.
     'graphics': [('ctxctl', 'Source-built FECS and GPCCS images load with verified IMEM/DMEM read-back, start and answer fresh mailbox queries; a withheld start and a stale reply fail'), ('context', 'Active GPC/TPC topology and a golden graphics context generated from attributed init lists match the FECS-reported image size under complementary poisons'), ('channel', 'One graphics channel binds A197 and PGRAPH executes its report-semaphore release under complementary poisons; withheld and stale releases fail')],
+    'gr-contexts': [('switch', 'Two A197 contexts preserve private targets across V1, gradient, V2 and restored-gradient draws with exact pixels and fresh channel-bound receipts'), ('controls', 'A suppressed draw and one corrupted target pixel are rejected and each immediate clean successor passes')],
     'draw': [('triangle', 'Complete complementary read-backs prove exact triangle coverage, background and literal samples'), ('controls', 'Both shader controls fail the literals and each following clean draw passes'), ('present', 'The second scanout contains the complete drawn rectangle without firmware writes')],
     'shaders': [('assets', 'Committed triangle asset hashes and shader register counts match the manifest and metadata'), ('upload', 'Complete complementary shader read-backs prove withheld and flipped controls and their clean next uploads'), ('binding', 'A197 program binding completes with a release receipt and zero trap words; drawing remains pending')],
     'recovery': [('fault-reset', 'A bad native channel is removed while its survivor copies; watchdog and confirmed transport reset retain backing and restore fresh epochs within budget')],
@@ -1484,7 +1486,138 @@ def draw_gate(serial, case):
     except (KeyError, TypeError, IndexError, OverflowError, OSError) as error:
         raise ValueError('malformed draw evidence') from error
 
+def graphics_contexts_gate(serial, case):
+    """M7.5: retained target bytes, FECS binding and peer read-back digests."""
+    def need(ok, why):
+        if not ok:
+            raise ValueError('graphics contexts: ' + why)
+
+    def integer(value, low, high):
+        return type(value) is int and low <= value < high
+
+    try:
+        # claim-lint:ok: normative wire validation; tests/gt710_contexts_report_test.py mutates images and channel records.
+        e = json.loads(one(r'^GT710_CONTEXTS (.+)$', serial, 'graphics contexts')[1])
+        root = Path(__file__).resolve().parents[2]
+        v1 = json.loads((root / 'docs/gui/provenance/gt710-triangle.json').read_text())
+        oracle = json.loads((root / 'docs/gui/provenance/gt710-contexts.json').read_text())
+        assets = json.loads((root / 'kernel/assets/kepler/manifest.json').read_text())['files']
+        steps = (('a-v1', 'a', 'v1'), ('b-gradient', 'b', 'gradient'),
+                 ('a-v2', 'a', 'v2'), ('b-restored', 'b', 'gradient'),
+                 ('suppress', 'a', 'v2'), ('after-suppress', 'a', 'v2'),
+                 ('corrupt', 'b', 'gradient'), ('after-corrupt', 'b', 'gradient'))
+        need(case in ('switch', 'controls'), 'unknown case')
+        need(e['schema'] == 1 and e['class_id'] == 0xa197 and e['error'] is None
+             and e['current_register'] == 0x409b00
+             and e['trap_registers'] == [0x400100, 0x400108, 0x400110, 0x400118],
+             'class, register namespace or error')
+        channels = e['channels']
+        need(len(channels) == 2 and [c['id'] for c in channels] == ['a', 'b'], 'two channel identities required')
+        for c, fragment in zip(channels, ('diagnostic-triangle-fragment', 'gradient-fragment')):
+            for field in ('instance', 'image', 'target', 'release'):
+                need(integer(c[field], 4096, 1 << 40) and c[field] % 4096 == 0, 'channel allocation')
+            need(integer(c['epoch'], 1, 1 << 64), 'channel epoch')
+            need(c['vertex_sha256'] == assets['diagnostic-triangle-vertex.bin']['sha256']
+                 and c['fragment_sha256'] == assets[fragment + '.bin']['sha256'], 'distinct shader identity')
+        # The retained record names allocation bases, not offsets within them.
+        allocations = [c[field] for c in channels for field in ('instance', 'image', 'target', 'release')]
+        need(len(set(allocations)) == len(allocations), 'aliased channel storage')
+        channels = {c['id']: c for c in channels}
+        keys = [(name, poison) for name, _, _ in steps for poison in (85, 170)]
+        rows = re.findall(r'^GT710_CTX_IMAGE ([a-z0-9-]+) (85|170) (\d+) ([0-9a-f:,]+)$', serial, re.M)
+        need(len(rows) == len(re.findall(r'^GT710_CTX_IMAGE ', serial, re.M)), 'malformed image row')
+        images = {}
+        previous = None
+        for name, poison, y, encoded in rows:
+            key = (name, int(poison))
+            need(key in keys, 'unknown image')
+            if key != previous:
+                need(key not in images, 'interleaved image rows')
+            data = images.setdefault(key, bytearray())
+            need(int(y) < 64 and int(y)*256 == len(data), 'image row order')
+            row = bytearray()
+            for run in encoded.split(','):
+                need(re.fullmatch(r'[0-9a-f]+:[0-9a-f]{8}', run), 'image run format')
+                count, word = (int(value, 16) for value in run.split(':'))
+                need(0 < count <= 64 and len(row) + count*4 <= 256, 'image run length')
+                row.extend(word.to_bytes(4, 'little') * count)
+            need(len(row) == 256, 'incomplete image row')
+            data.extend(row)
+            previous = key
+        need(list(images) == keys and len(e['readbacks']) == len(keys), 'missing poison or image order')
+        for key, record in zip(keys, e['readbacks']):
+            data = images[key]
+            need(len(data) == 16384 and record == dict(case=key[0], poison=key[1], bytes=16384,
+                 sha256=hashlib.sha256(data).hexdigest()), 'image digest or extent')
+        for name, _, _ in steps:
+            need(images[name, 85] == images[name, 170], 'complementary read-backs differ')
+
+        def clean(data, variant):
+            # claim-lint:ok: normative pixel oracle; tests/gt710_contexts_report_test.py mutates matching-poison samples and gradient bytes.
+            if variant == 'gradient':
+                expected = bytes(v for y in range(64) for x in range(64) for v in (4*x, 4*y, 2*(x+y), 255))
+                return (data == expected and hashlib.sha256(data).hexdigest() == oracle['gradient']['image_sha256'])
+            reference = v1 if variant == 'v1' else oracle['v2']
+            mask = bytearray()
+            for i in range(0, 16384, 4):
+                pixel = data[i:i+4]
+                if pixel[3] != 255 and pixel != b'\0'*4:
+                    return False
+                mask.append(int(pixel[3] == 255))
+            return (hashlib.sha256(mask).hexdigest() == reference['coverage_sha256']
+                    and all(data[(s['y']*64+s['x'])*4:(s['y']*64+s['x']+1)*4] == bytes(s['bgra'])
+                            for s in reference['samples']))
+
+        frames = e['frames']
+        # claim-lint:ok: normative frame validation; tests/gt710_contexts_report_test.py mutates peers, bindings, receipts and controls.
+        need(len(frames) == len(steps), 'missing frame or clean successor')
+        state = {c: hashlib.sha256(bytes(16384)).hexdigest() for c in channels}
+        seen = set()
+        for frame, (name, channel, variant) in zip(frames, steps):
+            need((frame['case'], frame['channel'], frame['variant']) == (name, channel, variant), 'frame sequence')
+            c = channels[channel]
+            # MIT nouveau macros.fuc:125, hub.fuc:234-267, gr/gf100.c:1613-1626:
+            # bit 31 validates the channel; bits 27:0 carry instance >> 12.
+            current = 0x80000000 | (c['instance'] >> 12)
+            need(type(frame['current_before']) is int and type(frame['current_after']) is int
+                 and frame['current_before'] == current == frame['current_after'], 'draw under another channel')
+            need(frame['trap_before'] == [0]*4 and frame['trap_after'] == [0]*4, 'graphics trap')
+            peer = 'b' if channel == 'a' else 'a'
+            need(frame['peer_before'] == [state[peer]]*2 == frame['peer_after'], 'peer target changed')
+            r = frame['receipt']
+            need(type(r['target']) is int and r['target'] == c['release']
+                 and type(r['epoch']) is int and r['epoch'] == c['epoch']
+                 and integer(r['nonce'], 1, 1 << 32) and type(r['observed']) is int
+                 and type(r['observed_epoch']) is int and r['observed'] == r['nonce']
+                 and r['observed_epoch'] == r['epoch'] and r['consumed'] is True
+                 and r['accepted'] is True, 'stale or foreign release')
+            pair = r['epoch'], r['nonce']
+            need(pair not in seen, 'reused epoch/nonce')
+            seen.add(pair)
+            data = images[name, 85]
+            is_control = name in ('suppress', 'corrupt')
+            need(frame['accepted'] is (not is_control), 'accepted control or rejected clean draw')
+            if not is_control:
+                need(clean(data, variant), 'coverage, background, literal or gradient mismatch')
+            elif case == 'controls':
+                need(not clean(data, variant), 'control passed pixel oracle')
+                if name == 'suppress':
+                    need(data == bytes(16384), 'suppressed draw must leave the cleared target')
+                else:
+                    expected = bytearray(images['b-restored', 85])
+                    offset = (c['epoch'] % 4096)*4
+                    expected[offset:offset+4] = bytes(4)
+                    need(data == expected, 'corruption must overwrite only the epoch-selected pixel with background')
+            state[channel] = hashlib.sha256(data).hexdigest()
+    except (KeyError, TypeError, IndexError, OverflowError, OSError) as error:
+        raise ValueError('malformed graphics context evidence') from error
+
+
 def check_case(category, case, serial):
+    # claim-lint:ok: normative category dispatch; tests/gt710_contexts_report_test.py exercises gr-contexts through cases().
+    if category == 'gr-contexts':
+        graphics_contexts_gate(serial, case)
+        return
     if category == 'draw':
         draw_gate(serial, case)
         return
@@ -1667,8 +1800,13 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
 
 
 def capture_serial(directory):
+    # claim-lint:ok: normative bulk framing; tests/gt710_bulk_test.py and tests/gt710_contexts_report_test.py mutate anchors and bodies.
     serial=(Path(directory)/'serial.txt').read_text()
     matches=list(re.finditer(r'^GT710_BULK (\d+) ([a-f0-9]{64})$',serial,re.M))
+    contexts = 'GT710_CTX_BULK ' in serial or 'GT710_CONTEXTS ' in serial
+    if contexts and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file()
+                     or re.search(r'^GT710_CTX_IMAGE ', serial, re.M)):
+        raise ValueError('graphics context image bulk missing or on serial')
     draw = 'GT710_DRAW_BULK ' in serial or 'GT710_DRAW ' in serial
     if draw and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file() or re.search(r'^GT710_DRAW_IMAGE ', serial, re.M)):
         raise ValueError('draw image bulk missing or on serial')
@@ -1696,10 +1834,12 @@ def capture_serial(directory):
         elif fields[0]=='GT710_GR_IMAGE': key=('graphics',)
         elif fields[0]=='GT710_SHADER_IMAGE': key=('shaders',)
         elif fields[0]=='GT710_DRAW_IMAGE': key=('draw',)
+        elif fields[0]=='GT710_CTX_IMAGE': key=('gr-contexts',)
         else: raise ValueError('unexpected display artifact record')
         if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
         groups.setdefault(key,[]).append(line);previous=key
     def report_key(line):
+        if line.startswith('GT710_CTX_BULK '): return ('gr-contexts',)
         if line.startswith('GT710_DRAW_BULK '): return ('draw',)
         if line.startswith('GT710_SHADER_BULK '): return ('shaders',)
         if line.startswith('GT710_MULTI_BULK '): return ('multi',)
@@ -1716,7 +1856,7 @@ def capture_serial(directory):
     result=[]
     for line in serial.splitlines(keepends=True):
         key=report_key(line)
-        if key in (('multi',), ('graphics',), ('shaders',), ('draw',)):
+        if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',)):
             record=''.join(groups[key]).encode('ascii')
             fields=line.split()
             if len(fields)!=3 or (key==('multi',) and len(groups[key])!=1) or len(record)!=int(fields[1]) or hashlib.sha256(record).hexdigest()!=fields[2]:
