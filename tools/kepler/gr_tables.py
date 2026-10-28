@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Emit GK208 GR static data from the pinned, unmodified MIT nouveau C lists.
+
+Run with python3 -I. No C headers, preprocessor, host compiler or network needed.
+Counts exclude sentinel records. SHA-256 covers LE u32 member count, then each
+member's class ID and record count, then addr/count/pitch/data LE u32 records.
+This includes boundaries, order and method classes, not expanded writes.
+"""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import re
+import struct
+
+ROOT = Path(__file__).resolve().parents[2]
+VENDOR = ROOT / 'vendor/kepler'
+OUTPUT = ROOT / 'kernel/src/gpu/gk208/gr/tables.rs'
+KINDS = ('mmio', 'icmd', 'mthd', 'hub', 'gpc_0', 'gpc_1', 'tpc', 'ppc', 'zcull')
+PIN = 'e8f897f4afef0031fe618a8e94127a0934896aba'
+NUMBER = r'(?:0x[0-9a-fA-F]+|[0-9]+)'
+
+
+def stripped(text):
+    return re.sub(r'/\*.*?\*/|//[^\n]*', '', text, flags=re.S)
+
+
+def sources():
+    manifest = json.loads((VENDOR / 'sources.json').read_text())
+    texts, notices = {}, {}
+    for entry in manifest['files']:
+        if entry['project'] != 'nouveau' or not entry['path'].startswith('gr/'):
+            continue
+        path = VENDOR / 'nouveau' / entry['path']
+        data = path.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        notice = entry['notice']
+        if not (entry['commit'] == PIN and entry['license'] == 'MIT'
+                and entry['upstream_sha256'] == digest == entry['vendored_sha256']
+                and data.decode().startswith(notice)
+                and entry['license_line'] in notice
+                and 'Permission is hereby granted, free of charge' in notice):
+            raise ValueError(f'source provenance failed: {path.name}')
+        texts[path.name] = stripped(data.decode())
+        notices[path.name] = notice
+    if set(texts) != {p.name for p in (VENDOR / 'nouveau/gr').iterdir()}:
+        raise ValueError('unrecorded GR source')
+    return texts, notices
+
+
+def generate():
+    texts, notices = sources()
+    declarations = {}
+    for file, text in texts.items():
+        for typ, name, body in re.findall(r'const struct gf100_gr_(init|pack)\s+(\w+)\[\]\s*=\s*\{(.*?)\n\};', text, re.S):
+            if name in declarations:
+                raise ValueError(f'duplicate array: {name}')
+            declarations[name] = file, typ, body
+    roots = []
+    for kind in KINDS:
+        file = 'gk208.c' if kind == 'mmio' else 'ctxgk208.c'
+        match = re.search(r'\.' + kind + r'\s*=\s*(\w+)\s*,', texts[file])
+        if not match:
+            raise ValueError(f'missing dispatch: {kind}')
+        roots.append((kind, match[1]))
+
+    used, init_arrays, pack_arrays, metadata = set(), {}, {}, []
+    for kind, root in roots:
+        file, typ, body = declarations[root]
+        if typ != 'pack':
+            raise ValueError(f'expected pack: {root}')
+        used.add(file)
+        members = []
+        pattern = r'\{\s*(\w+)\s*(?:,\s*(' + NUMBER + r'))?\s*\}\s*,'
+        # The empty C terminator is structural and is not emitted as data.
+        content = re.sub(r'\{\s*\}\s*,?\s*$', '', body)
+        if content == body or re.sub(pattern, '', content).strip():
+            raise ValueError(f'unparsed pack: {root}')
+        for name, cls in re.findall(pattern, content):
+            source, typ, init = declarations[name]
+            if typ != 'init':
+                raise ValueError(f'expected init: {name}')
+            used.add(source)
+            values = []
+            for line in init.strip().splitlines():
+                if line.strip() == '{}':
+                    continue
+                row = re.fullmatch(r'\s*\{\s*(' + NUMBER + r')\s*,\s*(' + NUMBER + r')\s*,\s*(' + NUMBER + r')\s*,\s*(' + NUMBER + r')\s*\},\s*', line)
+                if not row:
+                    raise ValueError(f'unparsed init: {name}: {line}')
+                value = tuple(int(v, 0) for v in row.groups())
+                if not (value[1] > 0 and value[2] > 0 and all(0 <= v <= 0xffffffff for v in value)):
+                    raise ValueError(f'invalid init: {name}')
+                values.append(value)
+            if not init.rstrip().endswith('{}') or not values:
+                raise ValueError(f'missing init terminator or data: {name}')
+            init_arrays[name] = source, values
+            members.append((name, int(cls, 0) if cls else 0))
+        pack_arrays[root] = file, members
+        wire = bytearray(struct.pack('<I', len(members)))
+        count = 0
+        for name, cls in members:
+            rows = init_arrays[name][1]
+            count += len(rows)
+            wire.extend(struct.pack('<II', cls, len(rows)))
+            for row in rows:
+                wire.extend(struct.pack('<IIII', *row))
+        metadata.append((kind, root, count, hashlib.sha256(wire).hexdigest()))
+    if used != set(texts):
+        raise ValueError(f'GR closure mismatch: {used ^ set(texts)}')
+
+    lines = ['// Generated by python3 -I tools/kepler/gr_tables.py; do not edit.',
+             '// nouveau Linux v6.8 ' + PIN + '; MIT notices follow.']
+    for file in sorted(used):
+        lines.extend(['// source: ' + file, notices[file]])
+    lines.extend(['', '/// One stored register sequence, before topology replication.',
+                  'pub struct Init {', '    pub addr: u32,', '    pub count: u32,',
+                  '    pub pitch: u32,', '    pub data: u32,', '}', '',
+                  '/// An ordered init array with its method class ID.',
+                  'pub struct Pack {', '    pub class_id: u32,', "    pub init: &'static [Init],", '}', '',
+                  '/// A pack kind and its record count and canonical digest.',
+                  '/// Hash LE u32 pack length, then class ID, init length and each record.',
+                  '/// Record words are addr/count/pitch/data; C terminators are excluded.',
+                  'pub struct InitList {', "    pub name: &'static str,", "    pub packs: &'static [Pack],",
+                  '    pub count: usize,', "    pub sha256: &'static str,", '}', ''])
+    for name, (file, rows) in init_arrays.items():
+        lines.extend([f'// source: {file}:{name}', f'static {name.upper()}: [Init; {len(rows)}] = ['])
+        for addr, count, pitch, data in rows:
+            lines.append(f'    Init {{ addr: 0x{addr:08x}, count: {count}, pitch: 0x{pitch:08x}, data: 0x{data:08x} }},')
+        lines.extend(['];', ''])
+    for kind, root in roots:
+        file, members = pack_arrays[root]
+        lines.extend([f'// {kind}; source: {file}:{root}', f'static {root.upper()}: [Pack; {len(members)}] = ['])
+        for name, cls in members:
+            lines.extend([f'    // source: {init_arrays[name][0]}:{name}',
+                          f'    Pack {{ class_id: 0x{cls:08x}, init: &{name.upper()} }},'])
+        lines.extend(['];', ''])
+    lines.append(f'pub static INIT_LISTS: [InitList; {len(metadata)}] = [')
+    for kind, root, count, digest in metadata:
+        lines.append(f'    InitList {{ name: "{kind}", packs: &{root.upper()}, count: {count}, sha256: "{digest}" }},')
+    lines.extend(['];', ''])
+    return '\n'.join(lines), metadata
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', type=Path, default=OUTPUT)
+    parser.add_argument('--check', action='store_true', help='compare without writing')
+    args = parser.parse_args()
+    text, metadata = generate()
+    if args.check:
+        if args.output.read_bytes() != text.encode():
+            parser.exit(1, 'GR tables differ; regenerate with python3 -I tools/kepler/gr_tables.py\n')
+    else:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_bytes(text.encode())
+    for kind, root, count, digest in metadata:
+        print(f'{kind}: count={count} sha256={digest} source={root}')
+
+
+if __name__ == '__main__':
+    main()

@@ -97,3 +97,34 @@ Remaining Minor/Nit work is tracked together in
 [#2491](https://github.com/ryanbreen/breenix/issues/2491): portable output
 checks, SPDX notice text, TGSI shift wrapping, independent encoding evidence
 and an explicit frontend plan ruling. Device acceptance remains separate.
+
+## Committed firmware subset (M7.2 u3, 2026-10-27)
+
+G5 places the four firmware images and the generated package manifest under
+`kernel/assets/kepler/`. The x86 build runs `kernel/verify_kepler_firmware.py`
+with Python 3; it checks bytes and embedding constants against the hash
+inventory above before compiling the kernel. It does not run the assembler.
+The native suite route checks the embedded images in a static-input stub,
+without MMIO or firmware startup, so the linker retains the payloads.
+
+The command recorded above was rerun on the current tree: two independent
+builds produced 184 byte-identical assets, and embedding/rejection checks passed.
+The four firmware hashes and the shader output hashes match the original gate.
+The current source inventory includes u2's GR source additions, and the CMake
+recipe includes main's endian-header check. Those two input hashes account for
+the changed generated manifest; substituting their original hashes reproduces
+the original manifest SHA-256 recorded above.
+
+Current generated manifest SHA-256:
+`aba5c30297e4f6708a541f54bfc2b269820b4b8e95356d0a010bdadb4bcc765a`.
+Current source inventory SHA-256:
+`cf559afc412be20dd2203020a91f2b1fdb5b495e33dddc7d74b3b3b4a04f5386`.
+The hash inventory updates `manifest.json` and `embed.h` (which embeds that
+manifest), preserving the firmware and shader hashes. The manifest remains
+whole; shader binaries are not part of this unit's committed subset.
+
+The decoder retains input address/value pairs as `raw` and exposes `gpc_nr`,
+`tpc_nr` and `tpc_mask`. Counts use the GF100 five-bit GPC and eight-bit PPC
+mask representation; the GK208 selection has one PPC per GPC. Missing,
+duplicate, extra or inconsistent inputs return errors. Device startup,
+mailboxes, context generation and GT710_GR emission belong to later units.

@@ -538,3 +538,239 @@ kernel/src/gpu/gk208/ce/recovery.rs:
 Their original copyright notices and full MIT grants accompany the adaptation.
 Breenix owns watchdog timing, worker scheduling and DMA retention policy.
 No graphics or CE firmware is introduced.
+
+## GT 710 graphics gate encodings (M7 PR 7.2)
+
+`tests/gt710_graphics_report_test.py` and `scripts/metal/gt710-suite` use
+the hardware interface facts from:
+
+- Nouveau in Linux v6.8, `e8f897f4afef0031fe618a8e94127a0934896aba`,
+  `drivers/gpu/drm/nouveau/nvkm/engine/gr/gf100.c` (Copyright 2012 Red Hat Inc.),
+  `engine/gr/fuc/hub.fuc` and `engine/gr/fuc/gpc.fuc` (Copyright 2011 Red Hat Inc.),
+  `engine/fifo/gk104.c` (Copyright 2012 Red Hat Inc.),
+  and `subdev/top/gk104.c` (Copyright 2016 Red Hat Inc.); MIT.
+  Paths after the first are relative to the same `nvkm/` directory.
+- NVIDIA open-gpu-doc `9fdf5c4062007929d9f4e6cbad9c9771fe61b880`,
+  `classes/3d/cla197.h`, Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.; MIT.
+
+Both file headers retain the copyright notices and full permission grants.
+These encodings describe source-built firmware startup and graphics completion;
+they contain no captured context, shader or proprietary firmware bytes.
+
+## GK208 graphics init and context lists
+
+The following unmodified nouveau files are pinned to Linux v6.8 commit
+`e8f897f4afef0031fe618a8e94127a0934896aba`. Each retains its MIT grant;
+`vendor/kepler/sources.json` records the upstream path, commit, license line
+and SHA-256. The root PolyForm license does not replace these MIT terms.
+
+Consumers: `tools/kepler/gr_tables.py` reads their arrays and emits
+`kernel/src/gpu/gk208/gr/tables.rs`, retaining each full original notice.
+`tests/gt710_gr_tables_test.py` independently checks the data and provenance.
+The graphics comparator in `scripts/metal/gt710-suite` pins the list digests.
+
+| Vendored source | Upstream source | License and copyright |
+|---|---|---|
+| `vendor/kepler/nouveau/gr/ctxgf100.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/ctxgf100.c` | MIT; Copyright 2010 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/ctxgf117.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/ctxgf117.c` | MIT; Copyright 2013 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/ctxgk104.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/ctxgk104.c` | MIT; Copyright 2013 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/ctxgk110.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/ctxgk110.c` | MIT; Copyright 2013 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/ctxgk208.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/ctxgk208.c` | MIT; Copyright 2013 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/gf100.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/gf100.c` | MIT; Copyright 2012 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/gf117.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/gf117.c` | MIT; Copyright 2013 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/gf119.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/gf119.c` | MIT; Copyright 2013 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/gk104.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/gk104.c` | MIT; Copyright 2013 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/gk110.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/gk110.c` | MIT; Copyright 2013 Red Hat Inc. |
+| `vendor/kepler/nouveau/gr/gk208.c` | `drivers/gpu/drm/nouveau/nvkm/engine/gr/gk208.c` | MIT; Copyright 2013 Red Hat Inc. |
+
+## GK208 PGRAPH static inputs (M7.2 u3)
+
+- `vendor/kepler/nouveau/gr/gf100.c` (`gf100_gr_oneinit`, Copyright 2012
+  Red Hat Inc.) and `vendor/kepler/nouveau/gr/gk208.c` (`gk208_gr`, Copyright
+  2013 Red Hat Inc.), Linux v6.8
+  `e8f897f4afef0031fe618a8e94127a0934896aba`, MIT ->
+  `kernel/src/gpu/gk208/gr/topology.rs` and `tests/gt710_gr_topology_test.rs`.
+  Both consumers retain the original full notices.
+- The seven MIT firmware inputs listed above (`nouveau/{hubgk208.fuc5,
+  gpcgk208.fuc5,com.fuc,hub.fuc,gpc.fuc,macros.fuc,os.h}` at the same Linux
+  revision) -> the four generated images under `kernel/assets/kepler/` and
+  `kernel/src/gpu/gk208/gr/firmware.rs`. The embedding file retains each
+  original notice; `vendor/kepler/NOTICES` retains the package notices.
+  `kernel/assets/kepler/manifest.json` is the unmodified generated package
+  manifest, including provenance for assets outside this firmware subset.
+
+
+## GK208B ctxctl startup (milestone 7.2 unit 4)
+
+`kernel/src/gpu/gk208/gr/ctxctl.rs` adapts hardware initialization, Falcon
+ports and the internal source-firmware protocol from the following MIT files
+in nouveau Linux v6.8, revision e8f897f4afef0031fe618a8e94127a0934896aba:
+`nvkm/engine/gr/{gf100.c,gf100.h,gk208.c,gk104.c,gk110.c,gf117.c}` and
+`nvkm/engine/gr/fuc/{hub.fuc,gpc.fuc}`. The generated MMIO/context packs
+remain attributed in `gr/tables.rs`. Copyright 2010, 2011, 2012 and 2013
+Red Hat Inc.; Ben Skeggs. The startup file retains the MIT grant.
+
+`kernel/src/gpu/gk208/gr/mod.rs` uses the scratch-buffer allocation geometry
+from nouveau `nvkm/subdev/fb/gf100.c` at that revision (MIT, Copyright 2012
+Red Hat Inc.; Ben Skeggs), and retains its grant. Buffers use the hardware
+64/128 KiB page setting, remain charged and are initialized before GR use.
+
+`tests/gt710_ctxctl_test.rs` uses the protocol/register facts from the same
+MIT `gr/gf100.c` and `fuc/{hub.fuc,gpc.fuc}` sources and the register database
+below. Its register mock supplies replies; it is not hardware evidence.
+
+Falcon IMEM/DMEM port controls, start and scratch register meanings come from
+envytools f102b82381f3f11cee113d16374c87091db039d9
+`rnndb/falcon.xml` and `rnndb/graph/gf100_pgraph/ctxctl.xml` (MIT through the
+explicit import of `rnndb/copyright.xml`). Its author list and grant are
+retained in the sequencer and its check. The headers and imported grant were
+read before use. No proprietary or GPL implementation is used here.
+
+## GK208B golden context (milestone 7.2 unit 5)
+
+`kernel/src/gpu/gk208/gr/context.rs` and `tests/gt710_grctx_test.rs` adapt
+Linux v6.8 `e8f897f4afef0031fe618a8e94127a0934896aba` nouveau
+`nvkm/engine/gr/{ctxgf100.c,ctxgf117.c,ctxgk104.c,ctxgk110.c,ctxgk208.c,gf100.c}`
+and `nvkm/engine/gr/fuc/{hub.fuc,gpc.fuc,com.fuc,macros.fuc}` (MIT;
+Copyright 2010, 2011, 2012, 2013 Red Hat Inc.; Ben Skeggs). The source
+headers were read before adaptation; the consumers retain the copyright
+notices and full grant. These routines supply buffer geometry, per-channel
+patches, MMIO/ICMD/method replay, floorsweep, bind/save and context sizing.
+The hardware adapter in `gr/mod.rs` uses `gf100.c`'s instance and runnable
+header layouts under its retained Copyright 2012 Red Hat Inc. MIT grant.
+
+The indexed Falcon host port and strand register definitions come from
+envytools `f102b82381f3f11cee113d16374c87091db039d9`
+`rnndb/{falcon.xml,graph/gf100_pgraph/ctxctl.xml}`, with the MIT grant and
+author list imported from `rnndb/copyright.xml`; those notices are retained
+in `context.rs` and its check. The imported grant was read before use.
+
+`kernel/src/gpu/gk208/ce/readback.rs` reuses the M6.2 channel, VM and
+engine-release path from `ce.rs`, retaining that file's original notices.
+Its source-to-consumer map is the same M6 FIFO/CE source inventory above;
+no new external channel implementation is imported.
+
+G6's scorer and fixture changes in `scripts/metal/gt710-suite` and
+`tests/gt710_graphics_report_test.py` use the same MIT `hub.fuc`, `com.fuc`,
+`gf100.c` and GK208 context dispatch. Header bytes and final strand padding
+retain each save's own poison; saved bytes have separate region digests.
+The runnable header is checked separately against `gf100.c:336-338`.
+
+## GK208 graphics-channel check (M7.2 u6)
+
+`tests/gt710_gr_channel_test.rs` derives method and host packet words from
+NVIDIA open-gpu-doc revision `9fdf5c4062007929d9f4e6cbad9c9771fe61b880`,
+`classes/3d/cla197.h` and `classes/host/cla06f.h` (MIT; Copyright (c) 2020,
+NVIDIA CORPORATION. All rights reserved.). Both file headers were checked;
+the original notice and permission grant accompany the check.
+
+## GK208 graphics channel (M7.2 u6)
+
+`kernel/src/gpu/gk208/gr/channel.rs` adapts the following individually checked
+MIT files from nouveau Linux v6.8, revision
+`e8f897f4afef0031fe618a8e94127a0934896aba`, under `drivers/gpu/drm/nouveau/`:
+
+- `nvkm/engine/fifo/gk208.c`, Copyright 2013 Red Hat Inc.: channel selection.
+- `nvkm/engine/fifo/gk110.c`, Copyright 2016 Red Hat Inc.: inherited channel.
+- `nvkm/engine/fifo/gk104.c`, Copyright 2012 Red Hat Inc.: RAMFC, USERD,
+  standalone runlist, instance GR pointer, scheduling and engine status.
+- `nvkm/engine/fifo/gf100.c`, Copyright 2012 Red Hat Inc.: preemption and drain.
+- `nvkm/engine/gr/gf100.c`, Copyright 2012 Red Hat Inc.: per-channel golden
+  image copy, internal-firmware header and mapped channel buffers.
+- `nvkm/subdev/top/gk104.c`, Copyright 2016 Red Hat Inc.: engine/runlist words.
+
+The same channel file uses the MIT open-gpu-doc `cla197.h` and `cla06f.h`
+sources, revision and NVIDIA notice listed for the check above. The original
+copyrights and full grants are retained in the channel file. Its Breenix
+adapter uses the existing VM, coherent DMA pages and BAR flush helpers;
+the M6 CE mechanisms provide read-back. `gr/mod.rs` joins its raw channel
+record with the existing attributed firmware and context records.
+
+## GPCCS topology count decoding correction
+
+The GPCCS UNITS count mask in `scripts/metal/gt710-suite`,
+`tests/gt710_graphics_report_test.py`, `kernel/src/gpu/gk208/gr/topology.rs`
+and `tests/gt710_gr_topology_test.rs` follows `vendor/kepler/nouveau/gpc.fuc`
+lines 149-156 (Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba,
+MIT, Copyright 2011 Red Hat Inc.). Each consumer retains the full MIT grant.
+
+## GK208 power-gating exit and transport reset ordering
+
+`kernel/src/gpu/gk208/gr/ctxctl.rs` and `tests/gt710_ctxctl_test.rs` adapt
+`drivers/gpu/drm/nouveau/nvkm/subdev/pmu/gk110.c:32-83`
+(Copyright 2015 Red Hat Inc., MIT) at Linux v6.8 revision
+`e8f897f4afef0031fe618a8e94127a0934896aba`.
+The full file-local grant was checked before adaptation and is retained in
+both consumers. `pmu/gk208.c:41` selects that routine, and
+`gr/gf100.c:2006` calls it before reading topology; their MIT headers were
+also checked. This sequence does not load PMU firmware.
+
+`kernel/src/gpu/gk208/ce/recovery.rs` and
+`tests/gt710_ce_reset_order_test.py` follow
+`drivers/gpu/drm/nouveau/nvkm/engine/fifo/runl.c:74-128,132-140`
+(Copyright 2021 Red Hat Inc., MIT) and `fifo/gk104.c:gk104_chan_stop`
+(Copyright 2012 Red Hat Inc., MIT) at the same revision. Their checked
+notices and full grants are retained in the consumers.
+
+The ctxctl reply clear in `kernel/src/gpu/gk208/gr/ctxctl.rs` follows
+`vendor/kepler/nouveau/gr/ctxgf100.c:1506-1512` (MIT, Copyright 2010 Red Hat Inc.).
+
+M7.2 GR refusal cleanup in `kernel/src/gpu/gk208/gr/ctxctl.rs` uses the
+PGOB programming controls and command acknowledgement from the checked
+`nvkm/subdev/pmu/gk110.c:32-83` above (MIT, Copyright 2015 Red Hat Inc.).
+It saves the incoming command payloads and restores them after confirmed GR
+reset. The scratch ownership/unwind in `kernel/src/gpu/gk208/gr/mod.rs` and
+its host injection fixture are Breenix code. The CE timeout diagnostics in
+`kernel/src/gpu/gk208/ce.rs` use the FIFO/MMU register sources already listed
+for that file; the pre-reset completion wait in `ce/recovery.rs` follows the
+existing attributed FIFO preemption protocol. No additional external source
+or firmware is introduced.
+
+M7.2 firmware save-map and polled host interrupts use the already listed MIT
+`fuc/hub.fuc:134-213`, `fuc/gpc.fuc:188-242`, `fuc/com.fuc:314-333`,
+`gr/gk208.c:41` and `gr/gf100.c:336-338`, plus MIT rnndb
+`falcon.xml` HOST_IO_INDEX_V4 and `ctxctl.xml` MMCTX/STRAND/INTR_UP fields.
+The original firmware files remain unmodified. `gr/context.rs` reads the
+firmware-computed map after a save; `gr/mod.rs` records it; the branch scorer
+derives byte coverage independently. Runnable copies zero the unwritten
+spans. `gr/ctxctl.rs` overrides the inherited host-interrupt enable in the
+init pack because this probe polls without a host GR handler, and restores
+the incoming enables after its confirmed stop. The imported rnndb MIT grant
+and listed source headers were read before this adaptation.
+
+M7.2 terminal-write coverage keeps the same MIT firmware-derived logical
+word counts and allocation spacing (`com.fuc:152-171,314-333`,
+`hub.fuc:149-164`, `gpc.fuc:188-242`). Four-word terminal transactions and
+their zero fill are GK208B hardware observations documented in
+`docs/gui/gt710-graphics-channel-acceptance.md`, not transfer-width claims
+from those firmware sources. No additional external implementation is used.
+
+M7.2's completed-channel interrupt snapshot in `gr/mod.rs` uses register
+facts from envytools `f102b82381f3f11cee113d16374c87091db039d9`
+`rnndb/bus/pmc.xml`, `rnndb/fifo/gf100_pfifo.xml` and
+`rnndb/graph/gf100_pgraph/ctxctl.xml`. Each imports the checked MIT grant
+in `rnndb/copyright.xml`; its author list and full grant are retained in
+the consumer header. The snapshot reads status, enables, host interrupt-line
+state, runlist/engine state and enabled PBDMAs before GR gating as well as
+before and after the probe. It does not alter interrupt policy.
+
+M7.2's interrupt-state repair in `gr/ctxctl.rs` also uses the checked MIT
+`rnndb/bus/pmc.xml` PMC enable/host-interrupt fields together with the
+already listed `falcon.xml` and `graph/gf100_pgraph/ctxctl.xml` routing and
+upstream-enable fields. The imported `copyright.xml` grant was read again;
+its author list and full license remain in the consumer header. The
+two-stage state capture and gating-aware host unwind model are Breenix code.
+
+The terminal-width provenance cross-check reads the same checked MIT
+rnndb `falcon.xml:227-246` (`XFER_CTRL.SIZE`) and MIT
+`hub.fuc:585-592` (`xdst` channel-header store), and checks
+`gpc.fuc:403-489` for its distinct strand/MMCTX path. These do not define
+MMCTX/strand terminal width; no implementation is adapted from them here.
+
+M7.2's live-channel unwind in `gr/{mod,channel}.rs` and CE preflight and
+borrowed read-back cleanup in `ce.rs` and `ce/{process,readback}.rs` reuse
+the FIFO/channel mechanisms already attributed above (MIT nouveau v6.8
+FIFO gf100/gk104/gk110/gk208 and MIT open-gpu-doc cla06f/cla197).
+The existing original notices and full grants remain in their consumers.
+Ownership across fallible activation, pre-reset restoration and the host
+failure-injection harness are Breenix code; no external source is added.

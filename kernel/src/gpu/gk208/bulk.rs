@@ -8,3 +8,5 @@ pub(super) fn line(text:String)->Result<(),&'static str> {
     rows.extend_from_slice(text.as_bytes());rows.push(b'\n');Ok(())
 }
 pub(super) fn take()->Vec<u8> {core::mem::take(&mut *ROWS.lock())}
+
+pub(super) fn used() -> usize { ROWS.lock().len() }

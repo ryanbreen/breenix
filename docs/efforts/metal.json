@@ -433,6 +433,16 @@
               "recovery"
             ]
           }
+        },
+        {
+          "id": "graphics",
+          "title": "Start source-built FECS/GPCCS and one graphics channel (M7 PR 7.2)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "graphics"
+            ]
+          }
         }
       ]
     }

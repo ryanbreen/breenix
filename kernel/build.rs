@@ -36,6 +36,19 @@ fn main() {
     let kernel_dir = PathBuf::from(&manifest_dir);
     let target = env::var("TARGET").unwrap_or_default();
 
+    // The x86 build consumes committed 7.1 outputs (G5); no assembler runs here.
+    if target.starts_with("x86_64") {
+        for path in ["assets/kepler", "verify_kepler_firmware.py", "../docs/gui/provenance/kepler-toolchain.sha256.json"] {
+            println!("cargo:rerun-if-changed={path}");
+        }
+        let status = Command::new("python3")
+            .arg(kernel_dir.join("verify_kepler_firmware.py"))
+            .arg(kernel_dir.parent().expect("kernel directory parent"))
+            .status()
+            .expect("Kepler asset verification requires Python 3");
+        assert!(status.success(), "Kepler firmware verification failed; run cargo run -p xtask -- kepler-assets --check and commit kernel/assets/kepler/");
+    }
+
     // Supply the fallback fixture for noninteractive testing boots without an
     // attached home disk. Interactive profiles use their writable home disk.
     if env::var_os("CARGO_FEATURE_TESTING").is_some()

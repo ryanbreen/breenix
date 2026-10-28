@@ -22,7 +22,10 @@ pub(crate) fn retain(layout:memory::Layout,regs:usize,bar:usize)->Result<(),&'st
 impl Session {
     fn begin(&mut self)->Result<(),&'static str> {
         if self.work.is_some() {return Err("native wait already owned");}
-        let mut regs=Registers(self.registers);let e=discover(&mut regs)?;
+        let mut regs=Registers(self.registers);
+        ensure_unbound(&mut regs, 0)?;
+        ensure_unbound(&mut regs, 1)?;
+        let e=discover(&mut regs)?;
         let old=[regs.read(0x2254),regs.read(0x2140),regs.read(0x204)];
         regs.write(0x2140,0);regs.write(e.base+0x904,0);
         regs.mask(0x204,1<<e.pbdma,1<<e.pbdma);

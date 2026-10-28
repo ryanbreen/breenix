@@ -1,0 +1,127 @@
+{
+  "record": {
+    "fecs_size": 69376,
+    "saved_end": 69296,
+    "save_layout": {
+      "gpc": 0,
+      "strands": 8,
+      "strand_base": 265,
+      "strand_words": 364,
+      "units": [
+        {
+          "controller": 4231168,
+          "mmio_base": 1,
+          "mmio_words": 199,
+          "strands": [
+            {
+              "base": 5,
+              "words": 947
+            },
+            {
+              "base": 20,
+              "words": 1476
+            },
+            {
+              "base": 44,
+              "words": 2049
+            },
+            {
+              "base": 77,
+              "words": 1538
+            },
+            {
+              "base": 102,
+              "words": 728
+            },
+            {
+              "base": 114,
+              "words": 1158
+            },
+            {
+              "base": 133,
+              "words": 1729
+            },
+            {
+              "base": 161,
+              "words": 0
+            },
+            {
+              "base": 162,
+              "words": 464
+            }
+          ]
+        },
+        {
+          "controller": 5251072,
+          "mmio_base": 170,
+          "mmio_words": 143,
+          "strands": [
+            {
+              "base": 173,
+              "words": 0
+            },
+            {
+              "base": 174,
+              "words": 0
+            },
+            {
+              "base": 175,
+              "words": 931
+            },
+            {
+              "base": 190,
+              "words": 463
+            },
+            {
+              "base": 198,
+              "words": 1712
+            },
+            {
+              "base": 225,
+              "words": 918
+            },
+            {
+              "base": 240,
+              "words": 1538
+            },
+            {
+              "base": 265,
+              "words": 364
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "boots": [
+    {
+      "boot": "20261027T191735Z-metal",
+      "bulk_bytes": 291233,
+      "bulk_sha256": "7b11ef8a9cbcba5eca0ee9e431c0c352da3dd8ca5db083009340e7142d7ded6b",
+      "images": [
+        {
+          "poison": 85,
+          "file": "20261027T191735Z-metal-85.bin.zlib",
+          "sha256": "f973bd896f2ef08825480fe1dcd1a76892c0febaedccdb7fff95902d93e490d4"
+        },
+        {
+          "poison": 170,
+          "file": "20261027T191735Z-metal-170.bin.zlib",
+          "sha256": "d1102c662dc6f09fff1e988d4d53919a8d2a9ad27a50c581e0069468bada7e37"
+        }
+      ]
+    },
+    {
+      "boot": "20261027T195818Z-metal",
+      "bulk_bytes": 145481,
+      "bulk_sha256": "41ba917705180fe0ab03ff972ed0a655598795bd1ce26348ec2ffa52fd0ff755",
+      "images": [
+        {
+          "poison": 85,
+          "file": "20261027T195818Z-metal-85.bin.zlib",
+          "sha256": "e2eae21c8fd5adc0c3b56f217f0032a2ad8eb0d32f8bed769c25f1f26eb65198"
+        }
+      ]
+    }
+  ]
+}

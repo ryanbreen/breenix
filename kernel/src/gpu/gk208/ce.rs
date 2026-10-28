@@ -269,6 +269,13 @@ fn discover(regs:&mut Registers)->Result<Engine,&'static str> {
     }
     Err("enumerated CE0 unavailable")
 }
+// Refuse inherited/live storage before allocating or changing FIFO state.
+fn ensure_unbound(regs: &mut Registers, id: u32) -> Result<(), &'static str> {
+    if id >= 1024 || regs.read(0x800000 + id as usize * 8) != 0 {
+        return Err("CE channel still bound");
+    }
+    Ok(())
+}
 struct Channel {
     id:u32, context:Context, commands:Allocation,userd:Allocation,source:Allocation,dest:Allocation,stage:Allocation,
     pages:ManuallyDrop<system_dma::Pages>, epoch:u64, put:u32, active:bool, generation:u64, queue:super::queue::Queue, shared:bool, failure:Option<&'static str>,
@@ -276,6 +283,7 @@ struct Channel {
 fn flags()->Flags {Flags{volatile:true,..Flags::default()}}
 impl Channel {
     fn new(regs:&mut Registers,layout:&mut memory::Layout,total:u64,id:u32,status:&[u32],userd:Allocation)->Result<Self,&'static str> {
+        ensure_unbound(regs, id)?;
         let mut io=VmIo{regs,total};let mut context=Context::new(&mut layout.allocator,&mut io)?;
         let commands=layout.allocator.allocate(65536,4096,Kind::Engine)?;
         let source=layout.allocator.allocate(SIZE as u64,4096,Kind::Engine)?;
@@ -378,8 +386,8 @@ impl Channel {
         let request=self.request(seq,resource,generation.max(1));
         let (done,time)=self.completed(regs,total,e,request,2_000_000)?;
         if done.is_none() {
-            crate::serial_println!("GT710_CE_ERROR channel={} seq={} sem={} get={} current={:#x} fifo={:#x} fault={:#x} ce={:#x} launch={:#x} pbdma={:#x}/{:#x} method={:#x} data={:#x}",
-                self.id,seq,read(regs,total,self.commands.range.start+8192)?,regs.read(0x40014+e.pbdma*0x2000),regs.read(0x40120+e.pbdma*0x2000),regs.read(0x2100),regs.read(0x259c),regs.read(e.base+0x908),regs.read(e.base+0xf14),regs.read(0x40108+e.pbdma*0x2000),regs.read(0x40148+e.pbdma*0x2000),regs.read(0x40150+e.pbdma*0x2000),regs.read(0x40154+e.pbdma*0x2000));
+            crate::serial_println!("GT710_CE_ERROR channel={} seq={} sem={} get={} current={:#x} fifo={:#x} fault={:#x} ce={:#x} launch={:#x} pbdma={:#x}/{:#x} method={:#x} data={:#x} pmc={:#x} engine_status={:#x} pbdma_status={:#x} preempt={:#x} runlist={:#x} mmu_flush={:#x}",
+                self.id,seq,read(regs,total,self.release_address(seq))?,regs.read(0x40014+e.pbdma*0x2000),regs.read(0x40120+e.pbdma*0x2000),regs.read(0x2100),regs.read(0x259c),regs.read(e.base+0x908),regs.read(e.base+0xf14),regs.read(0x40108+e.pbdma*0x2000),regs.read(0x40148+e.pbdma*0x2000),regs.read(0x40150+e.pbdma*0x2000),regs.read(0x40154+e.pbdma*0x2000),regs.read(0x200),regs.read(0x2640+e.engine as usize*8),regs.read(0x3080+e.pbdma*4),regs.read(0x2634),regs.read(0x2284+e.run as usize*8),regs.read(0x100c80));
             return Err("CE completion failed; backing retained");
         }
         unsafe {self.context.finish_device(ticket)?;}
@@ -706,3 +714,5 @@ mod multi;
 mod recovery;
 mod process;
 pub(super) use process::{retain,proc_read};
+
+pub(super) mod readback;

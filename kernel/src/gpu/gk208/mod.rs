@@ -92,6 +92,8 @@
  */
 //! GK208B board inventory, before native display ownership (E19 PR 4.1).
 //! Runs once on the boot CPU before secondary CPUs and GPU clients exist.
+pub mod gr;
+pub use gr::tables as gr_tables;
 mod board;
 mod ddc;
 mod edid;
@@ -343,6 +345,19 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
             let start=timer::rdtsc();
             ce::probe(&mut regs,&device,&mut layout,&console)?;
             crate::serial_println!("GT710_PROBE_TIME ce-completion us={}",channel::elapsed(start));
+            let start=timer::rdtsc();
+            // GR is independent of the native display. Its refused probe must
+            // not discard the surface that takeover has already made active.
+            gr::interrupt_snapshot(&mut regs,&device,"before");
+            let gr_enabled=regs.read(0x200)&0x1000;
+            if let Err(error)=gr::probe(&mut regs,&device,&mut layout,&console) {
+                // The probe enabled PGRAPH before it could refuse topology.
+                // Return that enable to its incoming state for the CE owner.
+                regs.mask(0x200,0x1000,gr_enabled);
+                crate::serial_println!("GT710_GR_REFUSAL {}",error);
+            }
+            gr::interrupt_snapshot(&mut regs,&device,"after");
+            crate::serial_println!("GT710_PROBE_TIME graphics us={}",channel::elapsed(start));
         }
         let (_,displacement,_)=modeset::bar1_view(layout.objects[0].range.start,layout.objects[0].range.size,device.bars[1].size,17)?;
         ce::retain(layout,regs.0,console.pointer-displacement)?;
