@@ -46,7 +46,8 @@ file(GLOB_RECURSE KEPLER_INPUTS CONFIGURE_DEPENDS
   "${ROOT}/vendor/kepler/*"
   "${ROOT}/kernel/src/gpu/virgl/pipelines/*.tgsi"
   "${ROOT}/kernel/src/gpu/virgl/profile/*.tgsi"
-  "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.tgsi")
+  "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.tgsi"
+  "${ROOT}/tests/fixtures/gt710_shader_controls/*.tgsi")
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/assets/manifest.json"
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/assets.py"
           --tools "${CMAKE_CURRENT_BINARY_DIR}" --output "${CMAKE_CURRENT_BINARY_DIR}/assets"

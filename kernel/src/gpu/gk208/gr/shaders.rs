@@ -27,6 +27,19 @@
 pub const VERTEX_OFFSET: usize = 0x30;
 pub const FRAGMENT_OFFSET: usize = 0x1b0;
 pub const SEGMENT_SIZE: usize = 0x280;
+// Each SPH begins 80 bytes before a 128-byte-aligned instruction stream.
+pub const CONSTANT_COLOUR_FRAGMENT_OFFSET: usize = 0x2b0;
+pub const DROP_COLOUR_VERTEX_OFFSET: usize = 0x3b0;
+pub const CODE_REGION_SIZE: usize = 0x480;
+
+pub const CONSTANT_COLOUR_FRAGMENT_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/constant-colour-fragment.sph");
+pub const CONSTANT_COLOUR_FRAGMENT_CODE: &[u8; 48] =
+    include_bytes!("../../../../assets/kepler/constant-colour-fragment.bin");
+pub const DROP_COLOUR_VERTEX_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/drop-colour-vertex.sph");
+pub const DROP_COLOUR_VERTEX_CODE: &[u8; 88] =
+    include_bytes!("../../../../assets/kepler/drop-colour-vertex.bin");
 
 // Read the committed 7.1 metadata at compile time; no container toolchain runs.
 const fn asset_gprs(json: &str) -> u32 {

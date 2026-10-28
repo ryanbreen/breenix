@@ -1,0 +1,15 @@
+{
+  "chipset": 262,
+  "stage": "vertex",
+  "code_bytes": 88,
+  "gprs": 4,
+  "tls_bytes": 0,
+  "constant_buffer_slot": 0,
+  "constant_buffer_bytes": 0,
+  "texture_mask": 0,
+  "builtin_calls": 0,
+  "relocations": 0,
+  "fixups_applied": false,
+  "input_slots": [{"index":0,"address":128,"mask":15}],
+  "output_slots": [{"index":0,"address":112,"mask":15}]
+}

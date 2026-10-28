@@ -47,9 +47,9 @@ is refused.
 
 - `fecs.{code,data}.bin` and `gpccs.{code,data}.bin`: little-endian u32 words,
   separate IMEM/DMEM images. Code is aligned to 256 bytes by the upstream source.
-- 44 shader programs: 16 pipeline fragments, 25 `probe_int` variants, the shared
+- 46 shader programs: 16 pipeline fragments, 25 `probe_int` variants, the shared
   position vertex program, and diagnostic position/color vertex and interpolating
-  fragment programs. Pipeline IDs come from `libs/gpu-abi/src/lib.rs`.
+  fragment programs, and two triangle stage controls. Pipeline IDs come from `libs/gpu-abi/src/lib.rs`.
 - Per program: `.bin` GK110 instructions including scheduling words, `.sph`
   80-byte program header, `.json` GPR/TLS/constant/texture/linkage information,
   and `.asm` inspection output from the pinned MIT decoder. An unknown encoding
