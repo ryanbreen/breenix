@@ -1,4 +1,4 @@
-"""Exercise the four-frame producer with device IO substituted, without a boot."""
+"""Exercise the eight-frame producer with device IO substituted, without a boot."""
 import hashlib
 import json
 from pathlib import Path
@@ -11,7 +11,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tests'))
 from gt710_gr_live_unwind_test import item
-from gt710_contexts_report_test import triangle, V1, V2
+from gt710_contexts_report_test import triangle, V1, V2, STEPS, API, fixture as scorer_fixture, capture
 
 
 class ContextsOrchestration(unittest.TestCase):
@@ -54,16 +54,17 @@ class ContextsOrchestration(unittest.TestCase):
         report = json.loads(next(line.split(' ', 1)[1] for line in result.stdout.splitlines() if line.startswith('GT710_CONTEXTS ')))
         self.assertIsNone(report['error'])
         frames = report['frames']
-        self.assertEqual([f['case'] for f in frames], ['a-v1', 'b-gradient', 'a-v2', 'b-restored'])
-        self.assertEqual(len({(f['receipt']['epoch'], f['receipt']['nonce']) for f in frames}), 4)
-        self.assertTrue(all(f['accepted'] for f in frames))
-        self.assertEqual(len(report['readbacks']), 8)
+        self.assertEqual([f['case'] for f in frames], [name for name, _, _ in STEPS])
+        self.assertEqual(len({(f['receipt']['epoch'], f['receipt']['nonce']) for f in frames}), 8)
+        self.assertEqual([f['accepted'] for f in frames], [True]*4 + [False, True, False, True])
+        self.assertEqual(len(report['readbacks']), 16)
         rows = [line+'\n' for line in result.stdout.splitlines() if line.startswith('GT710_CTX_IMAGE ')]
         anchor = next(line.split() for line in result.stdout.splitlines() if line.startswith('GT710_CTX_BULK '))
         body = ''.join(rows).encode()
         self.assertEqual([str(len(body)), hashlib.sha256(body).hexdigest()], anchor[1:])
         self.assertEqual([row.split()[1:3] for row in rows[::64]],
-                         [[name, str(p)] for name in ['a-v1', 'b-gradient', 'a-v2', 'b-restored'] for p in (85, 170)])
+                         [[name, str(p)] for name, _, _ in STEPS for p in (85, 170)])
+        images = {}
         for record in report['readbacks']:
             image = bytearray()
             for row in rows:
@@ -74,6 +75,30 @@ class ContextsOrchestration(unittest.TestCase):
                         image.extend(int(word, 16).to_bytes(4, 'little') * int(count, 16))
             self.assertEqual(len(image), 16384)
             self.assertEqual(hashlib.sha256(image).hexdigest(), record['sha256'])
+            images[record['case'], record['poison']] = bytes(image)
+        # Feed production metadata and retained synthetic device images to u3's scorer.
+        channels, _ = scorer_fixture()
+        report['channels'] = channels['channels']
+        for i, channel in enumerate(report['channels']):
+            channel.update(instance=0x600000+i*4096, image=0x500000+i*4096,
+                           target=0x100000+i*0x100000, release=0x900000+i*4096, epoch=42+i)
+        serial, encoded = capture(report, images)
+        self.assertEqual([r['result'] for r in API['cases']('gr-contexts', encoded+serial)], ['PASS']*2)
+        for control, successor in [('suppress', 'after-suppress'), ('corrupt', 'after-corrupt')]:
+            rejected = json.loads(json.dumps(report))
+            rejected['frames'][next(i for i, f in enumerate(frames) if f['case'] == control)]['accepted'] = True
+            serial, encoded = capture(rejected, images)
+            self.assertEqual(API['cases']('gr-contexts', encoded+serial)[1]['result'], 'FAIL')
+            # A control image presented as its clean successor must fail the pixel oracle.
+            bad = dict(images)
+            for poison in (85, 170): bad[successor, poison] = images[control, poison]
+            serial, encoded = capture(report, bad)
+            self.assertEqual(API['cases']('gr-contexts', encoded+serial)[1]['result'], 'FAIL')
+        offset = (report['channels'][1]['epoch'] % 4096)*4
+        self.assertTrue(0 <= offset <= 16380)
+        expected = bytearray(images['b-restored', 85]); expected[offset:offset+4] = bytes(4)
+        self.assertEqual(images['corrupt', 85], expected)
+        self.assertEqual(images['suppress', 85], bytes(16384))
         draw = (ROOT / 'kernel/src/gpu/gk208/gr/draw.rs').read_text()
         for name, oracle in [('V2_VERTEX_WORDS', V2)]:
             words = draw.split('pub const '+name)[1].split('= [', 1)[1].split('];', 1)[0]

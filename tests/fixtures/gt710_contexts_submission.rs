@@ -26,13 +26,13 @@ impl Session {
     // METHODS
 }
 #[test]fn activation_and_draw_release_surround_raw_binding_reads(){
-    for full in [true,false]{for reject in 0..=2{
+    for (full,suppressed) in [(true,false),(false,false),(false,true)]{for reject in 0..=2{
         let mut regs=Registers{events:RefCell::new(vec![]),current:0x80000300};
         let mut s=Session{report:Report{identity:Identity{epoch:42,instance:0x300000}},pages:Pages,next_sequence:6,streams:vec![],reject};
         let request=draw::Draw{target_va:0x100000,pitch:256,width:64,height:64,vertex_va:0x200000,quarantine_va:0x400000,vertex_program:0x30,fragment_program:draw::GRADIENT_PROGRAM,report_va:0,epoch:0,nonce:0};
         let mut receipt=binding::Receipt{target:0,epoch:0,nonce:0,before:[0;4],after:[0;4],observation:None};
         let mut current=[0;2];
-        let result=s.context_draw(&mut Hardware{regs:&mut regs},request,full,&mut receipt,&mut current);
+        let result=s.context_draw(&mut Hardware{regs:&mut regs},request,full,suppressed,&mut receipt,&mut current);
         assert_eq!(result,match reject{1=>Err("context activation release not observed"),2=>Err("context draw release not observed"),_=>Ok(())});
         let active=draw::Draw{report_va:TARGET,epoch:42,nonce:receipt_nonce(42,true).wrapping_add(6),..request};
         let activation=draw::release_commands(active).unwrap();
@@ -40,7 +40,17 @@ impl Session {
         if reject!=1{
             assert_eq!(current,[0x80000300;2]);
             let r=draw::Draw{nonce:receipt_nonce(42,true).wrapping_add(7),..active};
-            let expected=if full{draw::commands(r)}else{draw::draw_commands(r)}.unwrap();
+            let expected=if suppressed{draw::release_commands(r)}else if full{draw::commands(r)}else{draw::draw_commands(r)}.unwrap();
+            if suppressed {
+                let stream=&s.streams[1][..s.streams[1].len()-2];
+                let mut i=0; let mut releases=0;
+                while i<stream.len() {
+                    let h=stream[i]; let n=((h>>16)&0x1fff)as usize;
+                    assert_eq!((h&0x1fff)*4,0x1b00,"suppressed stream contains draw/state methods");
+                    assert_eq!(n,4); assert_eq!(stream[i+4],0x1000f010); releases+=1; i+=n+1;
+                }
+                assert_eq!(releases,3,"suppression must retain epoch and nonce releases");
+            }
             assert_eq!(&s.streams[1][..s.streams[1].len()-2],expected);
             assert_eq!((receipt.target,receipt.epoch,receipt.nonce),(0x800000,42,r.nonce));
             let e=regs.events.borrow();

@@ -19,10 +19,19 @@ pub mod channel {
     use super::*;
     pub struct Session{pub id:usize,pub next:u32,pub target:Vec<u8>,pub vertices:Vec<u8>}
     impl Session {
+        pub fn context_storage(&self)->[u64;4]{[0x600000+self.id as u64*4096,0x500000+self.id as u64*4096,0x900000+self.id as u64*4096,42+self.id as u64]}
         pub fn upload(&mut self,h:&mut Hardware<'_>,va:u64,data:&[u8])->Result<(),&'static str>{
             let _=h.marker;
             event(format!("upload-{}-{va:x}",self.id));
-            if va==target(self.id){assert!(data.iter().all(|v|*v==0));self.target=data.to_vec();}
+            if self.id==1 && data.len()==4 {
+                let offset=usize::try_from(va-target(self.id)).unwrap();
+                assert_eq!(offset,(self.context_storage()[3]%4096)as usize*4);
+                assert!(offset+4<=16384);assert_eq!(data,[0;4]);
+                assert_eq!(self.target.len(),16384);
+                assert_eq!(self.target[offset+3],255,"corruption must follow a clean draw");
+                if fails("corrupt-upload"){return Err("injected corrupt upload failure");}
+                if !fails("corrupt-ignored"){self.target[offset..offset+4].copy_from_slice(data);}
+            } else if va==target(self.id){assert!(data.iter().all(|v|*v==0));self.target=data.to_vec();}
             else {assert_eq!(va,vertex(self.id));self.vertices=data.to_vec();}
             Ok(())
         }
@@ -31,27 +40,28 @@ pub mod channel {
             let mut pair=[self.target.clone(),self.target.clone()];
             if fails("poison"){pair[1][0]^=1;} Ok(pair)
         }
-        pub fn context_draw(&mut self,_:&mut Hardware<'_>,r:draw::Draw,full:bool,
+        pub fn context_draw(&mut self,_:&mut Hardware<'_>,r:draw::Draw,full:bool,suppressed:bool,
                             receipt:&mut binding::Receipt,current:&mut [u32;2])->Result<(),&'static str>{
-            event(format!("draw-{}-{full}",self.id));
+            event(format!("draw-{}-{full}-{suppressed}",self.id));
             assert_eq!(r.target_va,target(self.id));assert_eq!(r.vertex_va,vertex(self.id));
             let r=draw::Draw{report_va:0x900000+self.id as u64*4096,epoch:42+self.id as u64,nonce:self.next,..r};
             self.next+=1;
-            let stream=if full {draw::commands(r)} else {draw::draw_commands(r)}.unwrap();
+            let stream=if suppressed {draw::release_commands(r)} else if full {draw::commands(r)} else {draw::draw_commands(r)}.unwrap();
             let methods=methods(&stream);
-            assert_eq!(packet(&stream,0x142c),vec![0],"in-place V2 requires vertex-fetch invalidation");
+            if !suppressed {assert_eq!(packet(&stream,0x142c),vec![0],"in-place V2 requires vertex-fetch invalidation");}
             if !full {assert!(methods.iter().all(|m|[0x142c,0x021c,0x1618,0x0d74,0x0d78,0x1614,0x0110,0x1b00,0x1b04,0x1b08,0x1b0c].contains(m)),"state leaked into restore stream");}
-            if self.id==0 {
+            if suppressed {assert_eq!(self.id,0);assert!(!full);assert!(methods.iter().all(|m|[0x1b00,0x1b04,0x1b08,0x1b0c].contains(m)));}
+            if self.id==0 && (!suppressed || fails("suppress-executed")) {
                 let words=if full {draw::VERTEX_WORDS} else {draw::V2_VERTEX_WORDS};
                 assert_eq!(self.vertices,words.iter().flat_map(|w|w.to_le_bytes()).collect::<Vec<_>>());
                 self.target=if full {include_bytes!("v1.bin").to_vec()} else {include_bytes!("v2.bin").to_vec()};
-            } else {
+            } else if self.id==1 {
                 assert_eq!(r.fragment_program,draw::GRADIENT_PROGRAM);
                 assert_eq!(self.vertices,draw::FULL_VIEWPORT_VERTEX_WORDS.iter().flat_map(|w|w.to_le_bytes()).collect::<Vec<_>>());
                 if full {assert_eq!(packet(&stream,0x214c),vec![shaders::GRADIENT_FRAGMENT_GPRS]);}
                 self.target=(0..64).flat_map(|y|(0..64).flat_map(move|x|[4*x,4*y,2*(x+y),255])).collect();
             }
-            *current=[0x80000100+self.id as u32;2];
+            *current=[0x80000600+self.id as u32;2];
             receipt.target=r.report_va;receipt.epoch=r.epoch;receipt.nonce=r.nonce;
             receipt.observation=Some(Observation{value:r.nonce,epoch:r.epoch,consumed:true,accepted:!fails("release"),elapsed_us:1});
             if fails("release"){return Err("injected missing release");} Ok(())
@@ -73,8 +83,24 @@ fn run(failure:&'static str)->Result<(),&'static str>{
     let result=contexts_sequence(&mut Hardware{marker:&()},&mut a,&mut b,requests,&mut evidence);
     if failure.is_empty(){evidence.emit(None)?;} result
 }
-#[test]fn context_alternation(){assert!(run("").is_ok());let e=EVENTS.with(|v|v.borrow().clone());assert_eq!(e,vec!["read-1","draw-0-true","read-0","read-1","read-0","draw-1-true","read-1","read-0","upload-0-100000","upload-0-300000","read-1","draw-0-false","read-0","read-1","read-0","draw-1-false","read-1","read-0"]);}
-#[test]fn context_missing_release_stops_before_ce(){assert!(run("release").is_err());assert_eq!(EVENTS.with(|v|v.borrow().clone()),["read-1","draw-0-true"]);}
+#[test]fn context_alternation(){
+    assert!(run("").is_ok()); let e=EVENTS.with(|v|v.borrow().clone());
+    let draws:Vec<_>=e.iter().filter(|v|v.starts_with("draw-")).map(String::as_str).collect();
+    assert_eq!(draws,["draw-0-true-false","draw-1-true-false","draw-0-false-false","draw-1-false-false","draw-0-false-true","draw-0-false-false","draw-1-false-false","draw-1-false-false"]);
+    // Each frame must sandwich the target readback between independent peer reads.
+    for (i,event) in e.iter().enumerate().filter(|(_,v)|v.starts_with("draw-")) {
+        let id=event.split('-').nth(1).unwrap();let peer=if id=="0"{"1"}else{"0"};
+        assert_eq!(e[i-1],format!("read-{peer}"));
+        let next=i+1+usize::from(i+1<e.len()&&e[i+1].starts_with("upload-"));
+        assert_eq!(e[next],format!("read-{id}"));assert_eq!(e[next+1],format!("read-{peer}"));
+    }
+    let suppress=e.iter().position(|v|v=="draw-0-false-true").unwrap();
+    assert_eq!(&e[suppress-2..suppress],&["upload-0-100000","read-1"]);
+    let corrupt=e.iter().position(|v|v=="upload-1-2000ac").unwrap();
+    assert_eq!(e[corrupt-1],"draw-1-false-false");assert_eq!(e[corrupt+1],"read-1");
+}
+#[test]fn context_controls_must_change_pixels(){for failure in ["suppress-executed","corrupt-ignored","corrupt-upload"]{assert!(run(failure).is_err(),"{failure}");}}
+#[test]fn context_missing_release_stops_before_ce(){assert!(run("release").is_err());assert_eq!(EVENTS.with(|v|v.borrow().clone()),["read-1","draw-0-true-false"]);}
 #[test]fn context_poison_mismatch_stops_before_draw(){assert!(run("poison").is_err());assert_eq!(EVENTS.with(|v|v.borrow().clone()),["read-1"]);}
 
 #[test]fn context_pixels_reject_mutations(){

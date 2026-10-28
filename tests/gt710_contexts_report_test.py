@@ -38,7 +38,9 @@ def fixture():
                                                   ('b', 'gradient-fragment')))]
     gradient = bytes(v for y in range(64) for x in range(64) for v in (4*x, 4*y, 2*(x+y), 255))
     images = dict(v1=triangle(V1), v2=triangle(V2), gradient=gradient)
-    bad = bytearray(gradient); bad[0] ^= 1
+    bad = bytearray(gradient)
+    offset = (channels[1]['epoch'] % 4096)*4
+    bad[offset:offset+4] = bytes(4)
     state = dict(a=bytes(16384), b=bytes(16384))
     report = dict(schema=1, class_id=0xa197, channels=channels, frames=[], readbacks=[],
                   current_register=0x409b00, trap_registers=[0x400100, 0x400108, 0x400110, 0x400118],
@@ -134,6 +136,20 @@ class ContextsReport(unittest.TestCase):
         serial, rows = capture(self.report, self.images)
         serial = serial.replace(SHA(self.images['a-v1', 85]), '0'*64, 1)
         self.assertIn('FAIL', [r['result'] for r in API['cases']('gr-contexts', rows+serial)])
+
+    def test_corruption_is_exactly_one_epoch_selected_background_pixel(self):
+        gradient = self.images['after-corrupt', 85]
+        selected = self.report['channels'][1]['epoch'] % 4096
+        for pixel, word in ((0, bytes(4)), ((selected+1) % 4096, bytes(4)),
+                            (selected, bytes([0, 0, 0, 255]))):
+            images = dict(self.images)
+            data = bytearray(gradient); data[pixel*4:pixel*4+4] = word
+            for poison in (85, 170): images['corrupt', poison] = bytes(data)
+            self.assertEqual(self.results(self.report, images)[1]['result'], 'FAIL')
+        images = dict(self.images)
+        data = bytearray(gradient); data[0] ^= 1
+        for poison in (85, 170): images['corrupt', poison] = bytes(data)
+        self.assertEqual(self.results(self.report, images)[1]['result'], 'FAIL')
 
     def test_bulk_authentication_and_serial_exclusion(self):
         serial, rows = capture(self.report, self.images)
