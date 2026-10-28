@@ -3,7 +3,6 @@
 
 Only GS storage and interrupt masking are substituted. The extracted functions
 are the implementation under test, not a second copy of its dispatch policy.
-Hardware replay latency is asserted by xhci/softirq_wake_test.rs on metal.
 """
 from pathlib import Path
 import platform
