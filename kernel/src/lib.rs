@@ -69,6 +69,8 @@ pub mod net;
 pub mod socket;
 #[path = "gpu/cache.rs"]
 pub mod gpu_cache;
+#[path = "gpu/backend_answers.rs"]
+pub mod gpu_backend_answers;
 #[path = "gpu/completion.rs"]
 pub mod gpu_completion;
 #[path = "gpu/observation.rs"]

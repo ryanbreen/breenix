@@ -187,6 +187,8 @@ pub(super) fn prepare() -> Result<(), i64> {
     let queue = with_core(|core| match core.dev.as_ref()? {
         dev::Device::Virgl(device) => Some(device.terminal_queue()),
         dev::Device::Svga(_) => None,
+        #[cfg(target_arch = "x86_64")]
+        dev::Device::Gk208(_) => None,
     })
     .flatten()
     .ok_or(EIO)?;

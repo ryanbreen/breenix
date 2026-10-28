@@ -153,6 +153,8 @@ fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
                 Device::Virgl(d) => Some(d.made()),
                 // SVGA submits command buffers directly, without a deferred doorbell.
                 Device::Svga(_) => None,
+                #[cfg(target_arch = "x86_64")]
+                Device::Gk208(_) => None,
             })
         }).flatten();
         (r, kick)
@@ -1452,7 +1454,7 @@ impl Core {
         }
         // The device may use the backing until it answers the unref, which keeps it.
         let epoch = r.epoch;
-        let req = dev::resource_unref(Tag::Background, id, Some(r.backing));
+        let req = dev::resource_unref(Tag::Background, id, Some(r.backing))?;
         self.background_in(epoch, req)
     }
 
@@ -1469,8 +1471,7 @@ impl Core {
         }
         let dropped = c.dropped;
         if destroy {
-            let req = dev::ctx_destroy(Tag::Background, id);
-            self.background(req);
+            if let Some(req) = dev::ctx_destroy(Tag::Background, id) { self.background(req); }
         }
         if dropped {
             if let Some(c) = self.contexts.remove(&id) {
@@ -1554,6 +1555,8 @@ impl Core {
             })),
             // SVGA has command buffers, not a VirtIO descriptor/used ring.
             Device::Svga(_) => None,
+            #[cfg(target_arch = "x86_64")]
+            Device::Gk208(_) => None,
         };
         let (oldest_serial, oldest_sent) = match q.and_then(|q| q.oldest_tag) {
             Some(Tag::Sync(s)) => (s, self.syncs.get(&s).and_then(|x| x.sent_ns)),
@@ -2018,13 +2021,13 @@ fn attach_all(pairs: &[(u32, u32)]) -> Vec<Result<(), i64>> {
     let Some(serials) = with_core(|c| pairs.iter().map(|_| c.serial()).collect::<Vec<u64>>()) else {
         return alloc::vec![Err(ENODEV); pairs.len()];
     };
-    let reqs: Vec<Request> =
+    let reqs: Vec<Option<Request>> =
         pairs.iter().zip(&serials).map(|(&(ctx, id), &serial)| dev::ctx_attach(Tag::Sync(serial), ctx, id)).collect();
     // A pair that could not be queued has its outcome already.
     let mut out: Vec<Option<Result<(), i64>>> = with_core(|c| {
         reqs.into_iter()
             .zip(pairs.iter().zip(&serials))
-            .map(|(req, (&(ctx, _), &serial))| c.start_sync(serial, req, ctx, &[], &[], None).err().map(Err))
+            .map(|(req, (&(ctx, _), &serial))| match req { Some(req) => c.start_sync(serial, req, ctx, &[], &[], None).err().map(Err), None => Some(Err(EIO)) })
             .collect()
     })
     .unwrap_or_else(|| alloc::vec![Some(Err(ENODEV)); pairs.len()]);
@@ -2815,12 +2818,12 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
     }
     exec_ok(|t| dev::resource_create(t, vb, kind::BUFFER, format::R8, encode::VERTEX_BUFFER_BYTES, 1, false), 0, &[])?;
     exec_ok(|t| dev::attach_backing(t, vb, vb_pages.clone()), 0, &[])?;
-    exec_ok(|t| Some(dev::ctx_attach(t, id, vb)), id, &[])?;
+    exec_ok(|t| dev::ctx_attach(t, id, vb), id, &[])?;
     exec_ok(|t| dev::resource_create(t, scratch, kind::TARGET, format::B8G8R8A8, 1, 1, false), 0, &[])?;
     exec_ok(|t| dev::attach_backing(t, scratch, scratch_pages.clone()), 0, &[])?;
-    exec_ok(|t| Some(dev::ctx_attach(t, id, scratch)), id, &[])?;
+    exec_ok(|t| dev::ctx_attach(t, id, scratch), id, &[])?;
     exec_ok(|t| dev::resource_create(t, scratch_texture, kind::TEXTURE, format::B8G8R8A8, 1, 1, false), 0, &[])?;
-    exec_ok(|t| Some(dev::ctx_attach(t, id, scratch_texture)), id, &[])?;
+    exec_ok(|t| dev::ctx_attach(t, id, scratch_texture), id, &[])?;
     // The process's live resources, held so none is freed before it is attached.
     let theirs: Vec<u32> = with_core(|c| {
         let ids: Vec<u32> = c
@@ -4261,7 +4264,7 @@ fn scratch_for(tgid: u64, ctx: u32, class: u32, w: u32, h: u32) -> Result<u32, i
 fn create_private(ctx: u32, id: u32, target: u32, vformat: u32, bind: u32, w: u32, h: u32) -> Result<(), i64> {
     with_core(|c| { if let Some(r) = c.resources.get_mut(&id) { r.lost = false; } });
     exec_ok(|t| Some(dev::Request::Virgl(virgl::resource_create(t, id, target, vformat, bind, w, h))), 0, &[id])?;
-    exec_ok(|t| Some(dev::ctx_attach(t, ctx, id)), ctx, &[id])?;
+    exec_ok(|t| dev::ctx_attach(t, ctx, id), ctx, &[id])?;
     Ok(())
 }
 

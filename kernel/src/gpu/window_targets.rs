@@ -244,7 +244,7 @@ impl Target {
     fn execute(&self, words: &[u32], source: Option<&Target>) -> Result<(), i64> {
         let ctx = self.context.id;
         if let Some(src) = source {
-            exec_ok(|tag| Some(dev::ctx_attach(tag, ctx, src.id)), ctx, &[src.id])?;
+            exec_ok(|tag| dev::ctx_attach(tag, ctx, src.id), ctx, &[src.id])?;
         }
         wait_for(None, true, |c| {
             let context = c.contexts.get(&ctx)?;
@@ -321,7 +321,7 @@ impl Target {
     fn read_to_inner(&self, dst: u64, pause_at: Option<u64>, pause: impl Fn()) -> Result<(), i64> {
         let owner = caller()?;
         let context = Context::get(owner)?;
-        exec_ok(|t| Some(dev::ctx_attach(t,context.id,self.id)),context.id,&[self.id])?;
+        exec_ok(|t| dev::ctx_attach(t,context.id,self.id),context.id,&[self.id])?;
         let (last,backing,pitch) = wait_for(None,true,|c| {
             let Some(r) = c.resources.get_mut(&self.id) else { return Some(Err(EIO)); };
             if r.lost { return Some(Err(EIO)); }

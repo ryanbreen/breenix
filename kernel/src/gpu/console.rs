@@ -163,7 +163,7 @@ pub(super) fn resource_with(
         if backed {
             exec_ok(|t| dev::attach_backing(t, id, pages.clone()), 0, &[id])?;
         }
-        exec_ok(|t| Some(dev::ctx_attach(t, ctx, id)), ctx, &[id])?;
+        exec_ok(|t| dev::ctx_attach(t, ctx, id), ctx, &[id])?;
         Ok(id)
     })();
     if result.is_err() {

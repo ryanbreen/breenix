@@ -522,3 +522,5 @@ fn display_memory(
     crate::serial_println!("GT710_MEMORY {}", report);
     Ok(layout)
 }
+
+pub mod adapter;
