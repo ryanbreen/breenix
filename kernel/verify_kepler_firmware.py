@@ -7,6 +7,9 @@ import re
 import sys
 
 NAMES = ('fecs.code.bin', 'fecs.data.bin', 'gpccs.code.bin', 'gpccs.data.bin')
+TRIANGLE = tuple(f'diagnostic-triangle-{stage}.{extension}'
+                 for stage in ('vertex', 'fragment')
+                 for extension in ('bin', 'sph', 'json', 'asm'))
 REBUILD = 'regenerate with cargo run -p xtask -- kepler-assets --check and commit kernel/assets/kepler/'
 
 
@@ -16,7 +19,7 @@ def verify_assets(root):
     expected = json.loads((root / 'docs/gui/provenance/kepler-toolchain.sha256.json').read_text())
     source = (root / 'kernel/src/gpu/gk208/gr/firmware.rs').read_text()
     constants = dict(re.findall(r'pub const (\w+)_SHA256: &str = "([0-9a-f]{64})";', source))
-    for name in NAMES + ('manifest.json',):
+    for name in NAMES + TRIANGLE + ('manifest.json',):
         try:
             data = (assets / name).read_bytes()
         except FileNotFoundError as error:
@@ -28,14 +31,14 @@ def verify_assets(root):
                 raise ValueError(f'{name}: expected nonempty little-endian u32 image; {REBUILD}')
             if constants.get(name.replace('.', '_').upper()) != expected[name]:
                 raise ValueError(f'{name}: firmware.rs SHA-256 constant mismatch; {REBUILD}')
-    # The unmodified generated manifest describes the complete 7.1 package;
-    # this unit commits the firmware subset and retains that provenance whole.
+    # The generated manifest describes the complete 7.1 package.
     manifest = json.loads((assets / 'manifest.json').read_text())
     if (manifest['schema'], manifest['chipset'], manifest['byte_order']) != (1, 0x106, 'little'):
         raise ValueError(f'manifest.json: wrong firmware format; {REBUILD}')
-    for name in NAMES:
+    for name in NAMES + TRIANGLE:
         entry = manifest['files'][name]
-        if entry != dict(bytes=(assets / name).stat().st_size, license='MIT', sha256=expected[name]):
+        license_name = 'MIT' if name in NAMES or name.endswith('.sph') else 'PolyForm-Noncommercial-1.0.0'
+        if entry != dict(bytes=(assets / name).stat().st_size, license=license_name, sha256=expected[name]):
             raise ValueError(f'manifest.json: inconsistent {name}; {REBUILD}')
 
 
