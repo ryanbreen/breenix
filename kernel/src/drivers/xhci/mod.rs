@@ -177,6 +177,7 @@ pub fn host_key_line(line: Result<host_keys::Reports, &'static str>) {
             return;
         }
         queue.extend(reports.as_slice().iter().copied());
+        host_keys::QUEUED.fetch_add(reports.as_slice().len() as u64, Ordering::Relaxed);
         if let Some(seq) = reports.sequence {
             HOST_KEY_SEQUENCE.store(seq, Ordering::Release);
         }
@@ -465,6 +466,8 @@ struct Controller {
     host_keys: VecDeque<[u8; host_keys::REPORT_LEN]>,
     #[cfg(target_arch = "x86_64")]
     next_host_key: u64,
+    #[cfg(target_arch = "x86_64")]
+    host_key_event: Option<(u64, [u8; host_keys::REPORT_LEN])>,
     #[cfg(feature = "xhci_fault_inject")]
     fault: fault::Injection,
     #[cfg(all(feature = "testing", target_arch = "x86_64"))]
@@ -712,6 +715,8 @@ fn start(device: pci::Device) -> Result<(), &'static str> {
         host_keys: VecDeque::new(),
         #[cfg(target_arch = "x86_64")]
         next_host_key: 0,
+        #[cfg(target_arch = "x86_64")]
+        host_key_event: None,
         #[cfg(feature = "xhci_fault_inject")]
         fault: fault::Injection::new(),
         #[cfg(all(feature = "testing", target_arch = "x86_64"))]
