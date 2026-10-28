@@ -212,7 +212,7 @@ fn live_errors_restore_fifo_alias_and_binding_before_reset() {
         INJECT.with(|i|*i.borrow_mut()=Injection{target:target.into(),..Injection::default()});
         let mut regs=Registers::new();
         let result=run(&mut regs,false);
-        assert_eq!(result.is_ok(),target=="wait-2634-1","wrong recovery result: {target}");
+        assert!(result.is_err(), "wrong recovery result: {target}");
         INJECT.with(|i|assert!(i.borrow().reached,"not reached: {target}"));
         assert!(regs.restored(),"{target}: FIFO={:x?}, VRAM={:x?}",regs.values,regs.vram);
         INJECT.with(|i|assert!(i.borrow().resets>0,"no reset after safe unwind: {target}"));

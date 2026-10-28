@@ -420,7 +420,9 @@ fn probe_inner(
             // Only retire the FIFO after the final draw and its CE snapshots.
             hardware.graphics.as_mut().ok_or("draw GR channel absent")?
                 .quiesce(hardware.regs, hardware.total)?;
-            let report = hardware.graphics.as_ref().ok_or("draw GR channel absent")?.report();
+            let graphics = hardware.graphics.as_ref().ok_or("draw GR channel absent")?;
+            graphics.preempt_result()?;
+            let report = graphics.report();
             interrupt_snapshot(hardware.regs, hardware.device, "channel-drained");
             Some(report)
         } else {

@@ -379,6 +379,7 @@ mod native {
         admitted: bool,
         alias: bool,
         quiesced: bool,
+        preempt_error: Option<&'static str>,
         report: Report,
         next_sequence: u32,
         copy: Option<DrawCopy>,
@@ -600,6 +601,7 @@ mod native {
                 admitted: false,
                 alias: false,
                 quiesced: false,
+                preempt_error: None,
                 next_sequence: 6,
                 copy: None,
                 report: Report {
@@ -1027,7 +1029,8 @@ mod native {
                 regs.mask(0x2630, 1 << c.runlist, 1 << c.runlist);
                 regs.mask(0x800004, 0x800, 0x800);
                 regs.write(0x2634, c.id);
-                if register_wait(regs, 0x2634, 0x100000, 0, BOUND_US).is_err() {
+                if let Err(error) = register_wait(regs, 0x2634, 0x100000, 0, BOUND_US) {
+                    self.preempt_error = Some(error);
                     // The trap was captured/acknowledged by the suite thread.
                     // A stuck FECS save must not strand the FIFO owner forever.
                     gr_enable = Some(regs.read(0x200) & 0x1000);
@@ -1098,6 +1101,9 @@ mod native {
             if let Some(error) = failure { return Err(error); }
             self.quiesced = true;
             Ok(())
+        }
+        pub(in crate::gk208::gr) fn preempt_result(&self) -> Result<(), &'static str> {
+            self.preempt_error.map_or(Ok(()), Err)
         }
         pub(in crate::gk208::gr) fn report(&self) -> Report {
             self.report
