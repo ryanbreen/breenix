@@ -118,6 +118,7 @@ CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'time': 
 SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'time': 'server', 'reboot': 'server', 'remote-upgrade': 'server', 'watchdog': 'server', 'resting-state': 'server', 'operator': 'users', 'console-input': 'server'}
 MILESTONES = {'server/ssh-keys': 'ssh-keys', 'server/services': 'services', 'server/logs': 'logs',
               'server/time': 'time', 'server/reboot': 'reboot', 'server/remote-upgrade': 'remote-upgrade', 'server/watchdog': 'watchdog', 'server/resting-state': 'resting-state', 'users/operator-login': 'operator', 'server/console-input': 'console-input'}
+S27_SUSPENDS_PERSISTENT = True
 # The console lines the operator's console challenge leaves in the capture (docs/metal/boot-path.json, console-login).
 OPERATOR_CONSOLE_LINES = ('Login incorrect', 'metal-login-ok 42', 'fbcon check: shadow and screen identical',
                           'fbcon row: metal-login-ok 42')
@@ -1953,6 +1954,13 @@ def main():
         return probe_upgrade(args)
     if args.check_manifest:
         validate_manifest(json.loads(args.check_manifest.read_text()))
+        return 0
+    # S27 suspends every host-driven category: all require a persistent session.
+    if S27_SUSPENDS_PERSISTENT:
+        category = MILESTONES[args.milestone]
+        for name, _ in CATEGORIES[category]:
+            print(f'SKIP {SUITES[category]} {category}/{name}: S27 suspends persistent sessions')
+        print('Not counted: S27 suspends persistent sessions')
         return 0
     if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot or '') or not re.fullmatch(r'[a-f0-9]{40}', args.sha or ''):
         parser.error('--boot ID and --sha full commit required')
