@@ -54,6 +54,8 @@
 # *******************************************************************************/
 """M8.1 host scoring: native evidence, negative controls and a named refusal boot."""
 import hashlib
+from contextlib import redirect_stdout
+from io import StringIO
 import json
 from pathlib import Path
 import runpy
@@ -130,6 +132,37 @@ def gpu_serial():
             + 'SUITE gpu DONE passed=0 failed=170 skipped=0 total=170\nSUITE gpu MEMORY after free=1000 heap_free_kb=500 user_pages=100\nSUITE gpu MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=64\nSUITE gpu ELAPSED ms=210\nSUITE_SEQUENCE READY gpu\n')
 
 class CoreReport(unittest.TestCase):
+    def test_acceptance_requires_successful_console_and_complete_aggregate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            boot = dict(gpu_boot(), suite='console', suites=['console'])
+            (path / 'run.json').write_text(json.dumps(boot))
+            (path / 'exit-status').write_text('0\n')
+            milestones = {
+                'metal-gt710/' + ('gpu-core' if c == 'core' else c):
+                    dict(passed=True, reached=len(API['CATEGORIES'][c]), total=len(API['CATEGORIES'][c]))
+                for c in API['capture_categories'](boot)
+            }
+            verdict = dict(captureComplete=True, milestones=milestones)
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertTrue(API['acceptance_status'](path, verdict))
+            self.assertIn('console exit 0', output.getvalue())
+            self.assertIn('metal-gt710/gpu-core PASS 3/3', output.getvalue())
+            core = milestones['metal-gt710/gpu-core']
+            for field, value in [('passed', False), ('reached', 2), ('total', 4)]:
+                changed = dict(verdict, milestones=dict(milestones))
+                changed['milestones']['metal-gt710/gpu-core'] = dict(core, **{field: value})
+                with self.subTest(field=field), redirect_stdout(StringIO()):
+                    self.assertFalse(API['acceptance_status'](path, changed))
+            missing = dict(milestones)
+            del missing['metal-gt710/gpu-core']
+            with redirect_stdout(StringIO()):
+                self.assertFalse(API['acceptance_status'](path, dict(verdict, milestones=missing)))
+                self.assertFalse(API['acceptance_status'](path, dict(verdict, captureComplete=False)))
+                (path / 'exit-status').write_text('1\n')
+                self.assertFalse(API['acceptance_status'](path, verdict))
+
     def joined(self, rows=None):
         with tempfile.TemporaryDirectory() as tmp: return stage(Path(tmp), rows)
 
