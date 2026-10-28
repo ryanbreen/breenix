@@ -161,7 +161,7 @@ fn main() { assert!(suite_requested(), "explicit core default boot must run the 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
             diagnostic = dict(boot, mode='probe', suite=None, suites=None, gt710Category='core',
-                              build=dict(profile='gpu-core', features=['gt710_core_probe']))
+                              build=dict(commit=CORE['SHA'], profile='gpu-core', features=['gt710_core_probe']))
             for name, text in {'run.json':json.dumps(diagnostic), 'commit':CORE['SHA'], 'dirty':'0',
                                'ended':'1', 'exit-status':'0', 'events.jsonl':'{"event":"final-marker"}\n'}.items():
                 (path / name).write_text(text)

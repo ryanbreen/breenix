@@ -122,7 +122,7 @@ def stage(directory, rows=None):
 def gpu_boot():
     return dict(id='20261028T180000Z-metal', platform='metal', arch='x86_64', kind='boot',
                 evidenceEligible=True, mode='suite', suite='gpu', suites=['gpu'],
-                toolsCommit=SHA, bootedCommit=SHA, build=dict(profile='production', features=[]))
+                toolsCommit=SHA, bootedCommit=SHA, build=dict(commit=SHA, profile='production', features=[]))
 
 def gpu_serial():
     manifest = json.loads((ROOT / 'docs/suites/gpu.json').read_text())
@@ -262,10 +262,14 @@ class CoreReport(unittest.TestCase):
             diagnostic=path/'core-diagnostic'; diagnostic.mkdir()
             diagnostic_boot=dict(gpu_boot(), id='20261028T160000Z-metal', mode='probe',
                                  suite=None, suites=None, gt710Category='core',
-                                 build=dict(profile='gpu-core', features=['gt710_core_probe']))
+                                 build=dict(commit=SHA, profile='gpu-core', features=['gt710_core_probe']))
             for name,text in dict(files, **{'run.json':json.dumps(diagnostic_boot),'exit-status':'0\n'}).items():
                 (diagnostic/name).write_text(text)
             stage(diagnostic)
+            for name, text in {'ended': '1', 'exit-status': '0', 'dirty': '0', 'commit': SHA}.items():
+                (path / name).write_text(text)
+            (path / 'serial.txt').write_text('GT710_CORE_STARTUP_BULK ' + anchor + 'GT710_BULK ' + anchor)
+            (path / 'gt710-pixels.rle').write_bytes(startup)
             serial=''; producer=API['core_capture'](path,SHA)
             manifest=json.loads((ROOT/'docs/suites/gt710.json').read_text())
             effort=json.loads((ROOT/'docs/efforts/metal.json').read_text())
