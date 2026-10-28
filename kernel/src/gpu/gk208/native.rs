@@ -1026,3 +1026,126 @@ pub fn caps_scanout(surface: &ConsoleSurface) -> Result<gpu_abi::ScanoutInfo, &'
     }
     Ok(gpu_abi::ScanoutInfo { enabled: 1, width, height, reserved: 0 })
 }
+
+/// The testing producer uses the existing dev.rs boundary and upload buffer.
+#[cfg(feature = "testing")]
+pub(super) struct CoreProducer {
+    rows: String,
+    caps_emitted: bool,
+    controls_done: bool,
+}
+#[cfg(feature = "testing")]
+pub(super) struct CoreReceipt {
+    pub request: crate::gpu_completion::Request,
+    pub sample: crate::gpu_completion::CeSample,
+    pub elapsed_us: u64,
+}
+#[cfg(feature = "testing")]
+impl CoreProducer {
+    pub(super) fn new() -> Self { Self { rows: String::new(), caps_emitted: false, controls_done: false } }
+    pub(super) fn run(&mut self, device: &mut crate::gpu::dev::Device,
+        operation: super::adapter::Operation, name: &'static str,
+    ) -> Result<CoreReceipt, &'static str> {
+        use super::core_record::Control;
+        if !self.caps_emitted {
+            let crate::gpu::dev::Device::Gk208(d) = &*device else { return Err("core producer backend mismatch") };
+            let caps = d.caps();
+            if caps.backend != gpu_abi::backend::GK208 || caps.capset_count != 4 {
+                return Err("core producer lacks created native classes");
+            }
+            // Caps implements Plain: repr(C), integer fields, no undefined padding.
+            let bytes: [u8; 512] = unsafe { core::mem::transmute(caps) };
+            self.rows.push_str(&super::core_record::caps(&bytes));
+            self.caps_emitted = true;
+        }
+        if matches!(operation, super::adapter::Operation::Copy(_)) && !self.controls_done {
+            for (control, clean) in [(Control::WithheldRelease, "after-withheld"),
+                (Control::StaleEpoch, "after-stale"), (Control::MaskedClass, "after-mask")] {
+                self.one(device, operation, name, control)?;
+                self.one(device, operation, clean, Control::Clean)?;
+            }
+            self.controls_done = true;
+        }
+        self.one(device, operation, name, Control::Clean)
+    }
+    fn one(&mut self, device: &mut crate::gpu::dev::Device,
+        operation: super::adapter::Operation, name: &'static str, control: super::core_record::Control,
+    ) -> Result<CoreReceipt, &'static str> {
+        use super::{adapter::{Operation, Request}, core_record::{Completion, Control}};
+        use crate::gpu::{dev::{Reap, Request as DevRequest, Tag}, dev::Device};
+        use crate::gpu_completion::CeSample;
+        let Device::Gk208(d) = &*device else { return Err("core producer backend mismatch") };
+        let (context, epoch, sequence) = d.probe_identity()?;
+        let (resource, kind) = match operation {
+            Operation::Copy(rect) => (rect.dst, gpu_abi::gk208::TRANSFER_RELEASE),
+            Operation::Draw(draw) => (draw.target_va, gpu_abi::gk208::DRAW_RELEASE),
+        };
+        // Deliberately distinct from the native sequence.
+        let caller = (1u64 << 32) | u64::from(sequence);
+        let identity = crate::gpu_completion::Request { context, epoch, caller, sequence, resource, generation: 1 };
+        let mut request = match operation {
+            Operation::Copy(rect) => Request::copy(Tag::Sync(caller), caller, resource, 1, rect),
+            Operation::Draw(draw) => Request::draw(Tag::Sync(caller), caller, resource, 1, draw),
+        };
+        request.control = control;
+        let mut sample = CeSample { context: 0, epoch: 0, sequence: 0, consumed: 0, healthy: false };
+        let mut answer = 0;
+        let start = super::channel::elapsed(0);
+        let mut submitted = false;
+        let result = (|| {
+            match device.send(DevRequest::Gk208(request)) {
+                Err(_) if control == Control::MaskedClass => {
+                    let Device::Gk208(d) = &*device else { unreachable!() };
+                    if d.probe_identity()? != (context, epoch, sequence) || device.outstanding() != 0
+                        || !matches!(device.reap(), Reap::Empty) || device.needs_reset() {
+                        return Err("masked class changed the native queue");
+                    }
+                    return Ok(());
+                }
+                Err(_) => return Err("core adapter refused clean/native control request"),
+                Ok(()) => { submitted = true; }
+            }
+            loop {
+                match device.reap() {
+                    Reap::Done(done) => {
+                        // Record the real answer even if a negative request unexpectedly succeeds.
+                        answer = done.answer;
+                        let Device::Gk208(d) = &mut *device else { unreachable!() };
+                        sample = d.probe_sample(sequence)?;
+                        if control != Control::Clean || !done.matches_fence(caller)
+                            || done.native_fence != Some(u64::from(sequence))
+                            || done.answer != gpu_abi::gk208::SUCCESS {
+                            return Err("core adapter returned an invalid success");
+                        }
+                        return Ok(());
+                    }
+                    Reap::Fault => return Err("core adapter engine fault"),
+                    Reap::Empty => (),
+                }
+                let Device::Gk208(d) = &mut *device else { unreachable!() };
+                sample = d.probe_sample(sequence)?;
+                if matches!(control, Control::WithheldRelease | Control::StaleEpoch) {
+                    if let Some(observed) = d.probe_reject()? { sample = observed; return Ok(()); }
+                }
+                if super::channel::elapsed(start) >= 2_000_000 { return Err("core adapter completion timeout"); }
+                // Poll on the boot CPU, outside interrupts/syscalls; keep the
+                // existing channel wait budget and yield hardware time.
+                core::hint::spin_loop();
+            }
+        })();
+        let elapsed_us = super::channel::elapsed(start);
+        let recorded = if submitted { identity } else { crate::gpu_completion::Request { sequence: 0, ..identity } };
+        self.rows.push_str(&Completion { name, control: control.name(), request: recorded, sample, kind, answer,
+            elapsed_us, outcome: if result.is_err() { "error" } else if control == Control::Clean { "done" }
+                else if submitted { "rejected" } else { "refused" } }.encode());
+        result?;
+        Ok(CoreReceipt { request: identity, sample, elapsed_us })
+    }
+    pub(super) fn emit(&self) -> Result<(), &'static str> {
+        if self.rows.is_empty() { return Ok(()); }
+        // bulk::line contributes one trailing LF; retain exactly the bytes hashed.
+        super::bulk::line(self.rows.trim_end_matches('\n').into())?;
+        crate::serial_println!("{}", super::core_record::anchor(self.rows.as_bytes()));
+        Ok(())
+    }
+}

@@ -1807,6 +1807,11 @@ def capture_serial(directory):
     if contexts and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file()
                      or re.search(r'^GT710_CTX_IMAGE ', serial, re.M)):
         raise ValueError('graphics context image bulk missing or on serial')
+    core = 'GT710_CORE_BULK ' in serial
+    if core and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file()):
+        raise ValueError('core evidence bulk missing')
+    if re.search(r'^GT710_CORE ', serial, re.M):
+        raise ValueError('core records must arrive in bulk')
     draw = 'GT710_DRAW_BULK ' in serial or 'GT710_DRAW ' in serial
     if draw and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file() or re.search(r'^GT710_DRAW_IMAGE ', serial, re.M)):
         raise ValueError('draw image bulk missing or on serial')
@@ -1835,10 +1840,12 @@ def capture_serial(directory):
         elif fields[0]=='GT710_SHADER_IMAGE': key=('shaders',)
         elif fields[0]=='GT710_DRAW_IMAGE': key=('draw',)
         elif fields[0]=='GT710_CTX_IMAGE': key=('gr-contexts',)
+        elif fields[0]=='GT710_CORE': key=('core',)
         else: raise ValueError('unexpected display artifact record')
         if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
         groups.setdefault(key,[]).append(line);previous=key
     def report_key(line):
+        if line.startswith('GT710_CORE_BULK '): return ('core',)
         if line.startswith('GT710_CTX_BULK '): return ('gr-contexts',)
         if line.startswith('GT710_DRAW_BULK '): return ('draw',)
         if line.startswith('GT710_SHADER_BULK '): return ('shaders',)
@@ -1856,7 +1863,7 @@ def capture_serial(directory):
     result=[]
     for line in serial.splitlines(keepends=True):
         key=report_key(line)
-        if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',)):
+        if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',), ('core',)):
             record=''.join(groups[key]).encode('ascii')
             fields=line.split()
             if len(fields)!=3 or (key==('multi',) and len(groups[key])!=1) or len(record)!=int(fields[1]) or hashlib.sha256(record).hexdigest()!=fields[2]:

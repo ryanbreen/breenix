@@ -195,6 +195,15 @@ fn present_probe(_: &mut Hardware<'_>,_: &mut channel::Session,_:(),_:&mut DrawE
 fn contexts_probe(_: &mut Hardware<'_>,_: &mut channel::Session,_:u64)->Result<(),&'static str>{step("contexts-probe")}
 fn draw_probe(_: &mut Hardware<'_>,_: &mut channel::Session,_:u64,_:&mut DrawEvidence)->Result<(),&'static str>{step("draw-probe")}
 mod channel {
+    pub(crate) struct DrawSession(Session);
+    impl DrawSession {
+        pub fn new(session: Session) -> Self { Self(session) }
+        pub fn into_session(self) -> Session { self.0 }
+        pub fn emit_core(&self) -> Result<(), &'static str> { Ok(()) }
+    }
+    impl core::ops::Deref for DrawSession { type Target = Session; fn deref(&self)->&Session { &self.0 } }
+    impl core::ops::DerefMut for DrawSession { fn deref_mut(&mut self)->&mut Session { &mut self.0 } }
+
     struct DrawCopy { base:usize,engine:u32,reset:u32,old_irq:u32,old_enable:u32 }
     use super::*;
     const BOUND_US: u64 = 2_000_000;

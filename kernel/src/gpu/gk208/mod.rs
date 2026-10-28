@@ -116,6 +116,8 @@ mod recovery_policy;
 pub use system_dma::set_platform as set_dma_platform;
 mod modeset;
 mod native;
+#[cfg(feature = "testing")]
+mod core_record;
 pub use native::{ConsoleSurface,console_binding,takeover_started,caps_scanout};
 mod rom;
 pub fn proc_pixels()->Vec<u8> {bulk::take()}

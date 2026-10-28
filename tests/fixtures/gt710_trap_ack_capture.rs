@@ -46,6 +46,9 @@ struct DrawCopy {base:usize,engine:u32,reset:u32,old_irq:u32,old_enable:u32}
 struct Session {report:Report,next_sequence:u32,bound:bool,quiesced:bool,preempt_error:Option<&'static str>,commands:Allocation,pbdma:usize,copy:Option<DrawCopy>,alias:bool,pte:u64,bar_inst:u64,bar_dir:u64,old:[u32;6],old_pbdma:[u32;4],trap:bool}
 struct Hardware<'a> {regs:&'a mut Registers,graphics:Option<Session>}
 impl Session {
+    fn emit_core(&self)->Result<(), &'static str>{Ok(())}
+    fn into_session(self)->Self{self}
+
     fn issue_words(&mut self,h:&mut Hardware<'_>,_:u32,_:u32,_:u32,_:u64,_:&[u32],_:bool)->Result<Observation,&'static str>{
         h.regs.values.extend([(0x400100,0x100000 | if self.trap {0x200000}else{0}), (0x400108,if self.trap {1}else{0}), (0x400110,4),
             (0x400704,0x21400),(0x400708,0xdeadbeef),(0x40070c,0x1234),(0x400500,0),(0x409b00,0x80123456),(0x404208,0xa197),(0x404000,0x80000001)]);
@@ -74,7 +77,7 @@ fn run(trap:bool,stuck:bool,reset_fails:bool){
     let mut graphics=Session{report:Report{identity:Identity{epoch:1,runlist:0,id:0,engine:0,instance:0x851c000},binding:0,runlist_count:1},next_sequence:7,bound:true,quiesced:false,preempt_error:None,commands:Allocation{range:Range{start:0x100000}},pbdma:0,copy:None,alias:true,pte:0,bar_inst:0,bar_dir:0,old:[0x123,0x456,7,0x14,0x10000,0x1100],old_pbdma:[1,2,3,4],trap};
     let shader_buffer=ShaderBuffer{va:0x300000};let evo=&mut ();
     // FLOW
-    assert!(draw_result.is_err());assert!(draw_emit.is_ok());assert!(draw_evidence.target.is_none());
+    assert!(draw_result.is_err());assert!(draw_emit.is_ok());assert!(core_emit.is_ok());assert!(draw_evidence.target.is_none());
     let result=hardware.graphics.as_mut().unwrap().quiesce(hardware.regs,1<<24);
     assert_eq!(hardware.graphics.as_ref().unwrap().preempt_error,if stuck {Some("preempt timeout")} else {None});
     let log=LOG.with(|l|l.borrow().clone());

@@ -402,7 +402,8 @@ fn probe_inner(
             hardware.graphics = Some(graphics);
             evidence.emit(shader_buffer.va, &receipt, result.as_ref().err().copied())?;
             result?;
-            let mut graphics = hardware.graphics.take().ok_or("draw GR channel absent")?;
+            let graphics = hardware.graphics.take().ok_or("draw GR channel absent")?;
+            let mut graphics = channel::DrawSession::new(graphics);
             let mut draw_evidence = DrawEvidence::default();
             let draw_result = draw_probe(&mut hardware, &mut graphics, shader_buffer.va, &mut draw_evidence);
             let draw_result = draw_result.and_then(|()|
@@ -414,10 +415,13 @@ fn probe_inner(
             let draw_result = if draw_evidence.trap_capture.is_some() {
                 draw_result.and(Err("draw PGRAPH trap/exception"))
             } else { draw_result };
+            let core_emit = graphics.emit_core();
+            let graphics = graphics.into_session();
             hardware.graphics = Some(graphics);
             let draw_emit = draw_evidence.emit(draw_result.as_ref().err().copied());
             draw_result?;
             draw_emit?;
+            core_emit?;
             // Emit the existing draw block before adding context rows: its
             // unchanged guard reserves space for the pending golden saves.
             let mut graphics = hardware.graphics.take().ok_or("context GR channel absent")?;
@@ -719,7 +723,7 @@ impl ShaderEvidence {
 /// Five draws on the session that bound the shader code. Transfers are checked
 /// for byte equality; only the host scorer interprets rendered colours.
 fn draw_probe(
-    hardware: &mut Hardware<'_>, graphics: &mut channel::Session,
+    hardware: &mut Hardware<'_>, graphics: &mut channel::DrawSession,
     code_address: u64, evidence: &mut DrawEvidence,
 ) -> Result<(), &'static str> {
     let target = graphics.allocate_draw(hardware, "draw-target", 64 * 256, 4096)?;
@@ -895,7 +899,7 @@ fn contexts_sequence(
 
 /// Present the final clean target without teaching EVO another method.
 fn present_probe(
-    hardware: &mut Hardware<'_>, graphics: &mut channel::Session,
+    hardware: &mut Hardware<'_>, graphics: &mut channel::DrawSession,
     evo: &mut super::native::Evo, evidence: &mut DrawEvidence,
 ) -> Result<(), &'static str> {
     use core::fmt::Write;

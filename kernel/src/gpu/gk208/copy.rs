@@ -88,9 +88,32 @@ pub fn encode(r: Rect, semaphore: u64, epoch: u64, sequence: u32) -> Result<Vec<
     }
     let mut out = transfer(r)?;
     for (offset, value) in [(4, epoch as u32), (8, (epoch >> 32) as u32), (0, sequence)] {
-        let address = semaphore + offset;
-        method(&mut out, 0x240, &[(address >> 32) as u32, address as u32, value]);
-        method(&mut out, 0x300, &[0x0c]);
+        release(&mut out, semaphore + offset, value);
     }
+    Ok(out)
+}
+
+/// A0B5 one-word engine release, ordered after preceding non-pipelined work.
+pub fn release(out: &mut Vec<u32>, address: u64, value: u32) {
+    method(out, 0x240, &[(address >> 32) as u32, address as u32, value]);
+    method(out, 0x300, &[0x0c]);
+}
+
+/// Testing controls alter engine releases, with a separate terminal drain word.
+#[cfg(feature = "testing")]
+pub fn probe_encode(r: Rect, semaphore: u64, epoch: u64, sequence: u32,
+    control: super::core_record::Control,
+) -> Result<Vec<u32>, &'static str> {
+    use super::core_record::Control;
+    if !matches!(control, Control::WithheldRelease | Control::StaleEpoch)
+        || semaphore % 16 != 0 || semaphore > (1 << 40) - 16 || epoch == 0 || sequence == 0 {
+        return Err("invalid CE control");
+    }
+    let mut out = transfer(r)?;
+    let written_epoch = if control == Control::StaleEpoch { epoch.wrapping_sub(1) } else { epoch };
+    release(&mut out, semaphore + 4, written_epoch as u32);
+    release(&mut out, semaphore + 8, (written_epoch >> 32) as u32);
+    if control != Control::WithheldRelease { release(&mut out, semaphore, sequence); }
+    release(&mut out, semaphore + 12, sequence);
     Ok(out)
 }

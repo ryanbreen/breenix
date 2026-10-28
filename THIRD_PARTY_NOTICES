@@ -1082,3 +1082,14 @@ The existing native display-state reader in `kernel/src/gpu/gk208/native.rs`
 supplies active geometry under its existing MIT display/register notices.
 `kernel/src/gpu/observation.rs` maps Breenix's validated receipts to the
 existing u1 ABI constants; no external implementation is copied there.
+
+M8.1's testing producer reuses the existing attributed A197/A0B5 channel and
+copy mechanisms. `kernel/src/gpu/gk208/copy.rs::probe_encode` uses NVIDIA
+open-gpu-doc 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+`classes/dma-copy/cla0b5.h` (MIT, Copyright (c) 2019 NVIDIA CORPORATION)
+for the ordered semaphore releases and separate control drain word.
+The packet encoding uses `classes/host/cla06f.h` at that revision (MIT,
+Copyright (c) 2020 NVIDIA CORPORATION). The original full grants remain in
+`copy.rs`; the existing A197 and FIFO/context notices remain in
+`kernel/src/gpu/gk208/gr/channel.rs`. The producer and record encoder use
+Breenix's existing shared device and ABI types, with no external runtime.

@@ -2,6 +2,8 @@
 pub struct Queue { issued:u32, finished:u32 }
 impl Queue {
     pub const fn new()->Self {Self{issued:0,finished:0}}
+    #[cfg(feature = "testing")]
+    pub fn drained(sequence:u32)->Self {Self{issued:sequence,finished:sequence}}
     pub fn outstanding(&self)->u32 {self.issued-self.finished}
     pub fn next(&self)->Result<u32,&'static str> {
         if self.outstanding()>=4 {return Err("CE backpressure");}

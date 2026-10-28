@@ -14,14 +14,20 @@ pub struct Request {
     resource: u64,
     generation: u64,
     upload: bool,
+    #[cfg(feature = "testing")]
+    pub(crate) control: super::core_record::Control,
 }
 impl Request {
     /// Kernel builders resolve validated handles to GPU addresses before admission.
     pub fn copy(tag: Tag, caller: u64, resource: u64, generation: u64, rect: Rect) -> Self {
-        Self { tag, fence: Some(caller), operation: Operation::Copy(rect), resource, generation, upload: false }
+        Self { tag, fence: Some(caller), operation: Operation::Copy(rect), resource, generation, upload: false,
+            #[cfg(feature = "testing")]
+            control: super::core_record::Control::Clean }
     }
     pub fn draw(tag: Tag, caller: u64, resource: u64, generation: u64, draw: Draw) -> Self {
-        Self { tag, fence: Some(caller), operation: Operation::Draw(draw), resource, generation, upload: false }
+        Self { tag, fence: Some(caller), operation: Operation::Draw(draw), resource, generation, upload: false,
+            #[cfg(feature = "testing")]
+            control: super::core_record::Control::Clean }
     }
     pub fn upload(tag: Tag, caller: u64, resource: u64, generation: u64, rect: Rect) -> Self {
         let mut request = Self::copy(tag, caller, resource, generation, rect);
@@ -54,6 +60,14 @@ impl Device {
         super::caps::Profile::from_board(&self.board, self.channel.identity()).admission(masked)
     }
     pub fn send(&mut self, request: Request) -> Result<(), Request> {
+        #[cfg(feature = "testing")]
+        if request.control == super::core_record::Control::MaskedClass {
+            // Mask the CE class through the same class profile CAPS exposes.
+            let mut masked = self.board;
+            masked.created_classes.iter_mut().filter(|id| **id == 0xa0b5).for_each(|id| *id = 0);
+            let caps = super::caps::Profile::from_board(&masked, self.channel.identity()).record(None);
+            if !caps.capset_ids.contains(&0xa0b5) { return Err(request); }
+        }
         if !self.has_room(1) || self.pending.try_reserve(1).is_err() { return Err(request); }
         let Ok(sequence) = self.queue.next() else { return Err(request) };
         let (context, epoch) = self.channel.identity();
@@ -63,7 +77,12 @@ impl Device {
             resource: request.resource, generation: request.generation };
         // Retain the request on uncertain publication: a failing doorbell or
         // BAR flush leaves backing in pending until confirmed recovery.
+        #[cfg(not(feature = "testing"))]
         let result = self.channel.publish(sequence, &request.operation);
+        #[cfg(feature = "testing")]
+        let result = if request.control == super::core_record::Control::Clean {
+            self.channel.publish(sequence, &request.operation)
+        } else { self.channel.publish_probe(sequence, &request.operation, request.control) };
         self.pending.push_back(Sent { request, identity });
         if result.is_err() || self.queue.publish(sequence).is_err() { self.fault = true; }
         Ok(())
@@ -115,4 +134,46 @@ impl Device {
         self.resetting = None;
         (held, Ok(()))
     }
+}
+
+#[cfg(feature = "testing")]
+impl Device {
+    pub(crate) fn probe(channel: NativeChannel, board: super::caps::BoardState, last: u32) -> Self {
+        let mut device = Self::new(channel, board);
+        device.queue = Queue::drained(last);
+        device
+    }
+    pub(crate) fn probe_identity(&self) -> Result<(u64, u64, u32), &'static str> {
+        let (context, epoch) = self.channel.identity();
+        Ok((context, epoch, self.queue.next()?))
+    }
+    pub(crate) fn probe_sample(&mut self, sequence: u32) -> Result<gpu_completion::CeSample, &'static str> {
+        self.channel.sample(sequence)
+    }
+    /// Negative requests retire without Done only after the separate CE drain
+    /// release and FIFO consumption, while their owner retains the mappings.
+    pub(crate) fn probe_reject(&mut self) -> Result<Option<gpu_completion::CeSample>, &'static str> {
+        let Some(sent) = self.pending.front() else { return Err("core control absent") };
+        if !matches!(sent.request.control, super::core_record::Control::WithheldRelease | super::core_record::Control::StaleEpoch) {
+            return Err("core request is not a negative control");
+        }
+        let identity = sent.identity;
+        if !self.channel.probe_drained(identity.sequence)? { return Ok(None); }
+        // Resample after the terminal release: an earlier observation could
+        // have raced the engine while it was still writing the epoch words.
+        let sample = self.channel.sample(identity.sequence)?;
+        if identity.complete(sample).is_some() { return Err("core control completed successfully"); }
+        let expected = match sent.request.control {
+            super::core_record::Control::WithheldRelease => sample.sequence == 0 && sample.epoch == identity.epoch,
+            super::core_record::Control::StaleEpoch => sample.sequence == identity.sequence && sample.epoch == identity.epoch.wrapping_sub(1),
+            _ => false,
+        };
+        if !expected || !sample.healthy || sample.context != identity.context || sample.consumed < identity.sequence {
+            return Err("core control did not produce the expected hardware effect");
+        }
+        self.queue.complete(identity.sequence)?;
+        self.pending.pop_front();
+        Ok(Some(sample))
+    }
+    pub(crate) fn into_probe_channel(self) -> NativeChannel { self.channel }
 }

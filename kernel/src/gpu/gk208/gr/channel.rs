@@ -353,7 +353,7 @@ pub fn format_record(context_fields: &str, r: &Report) -> String {
 }
 
 #[cfg(target_os = "none")]
-pub(super) use native::Session;
+pub(super) use native::{Session, DrawSession};
 #[cfg(target_os = "none")]
 pub(crate) use native::NativeChannel;
 #[cfg(target_os = "none")]
@@ -1038,6 +1038,7 @@ mod native {
             }
             Ok(images)
         }
+        #[cfg(not(feature = "testing"))]
         pub(in crate::gk208::gr) fn draw(
             &mut self, h: &mut Hardware<'_>, mut draw: super::super::draw::Draw,
             receipt: &mut super::super::binding::Receipt,
@@ -1307,6 +1308,88 @@ mod native {
             Ok(())
         }
     }
+    /// The 7.4 owner lends its active pair to the adapter by value. Returning
+    /// the session precedes error propagation; Hardware keeps teardown authority.
+    pub(in crate::gk208::gr) struct DrawSession {
+        session: Option<Session>,
+        #[cfg(feature = "testing")]
+        producer: crate::gk208::native::CoreProducer,
+    }
+    impl core::ops::Deref for DrawSession {
+        type Target = Session;
+        fn deref(&self) -> &Session { self.session.as_ref().unwrap() }
+    }
+    impl core::ops::DerefMut for DrawSession {
+        fn deref_mut(&mut self) -> &mut Session { self.session.as_mut().unwrap() }
+    }
+    impl DrawSession {
+        pub(in crate::gk208::gr) fn new(session: Session) -> Self {
+            Self { session: Some(session),
+                #[cfg(feature = "testing")]
+                producer: crate::gk208::native::CoreProducer::new() }
+        }
+        pub(in crate::gk208::gr) fn into_session(self) -> Session { self.session.unwrap() }
+        pub(in crate::gk208::gr) fn emit_core(&self) -> Result<(), &'static str> {
+            #[cfg(feature = "testing")]
+            self.producer.emit()?;
+            Ok(())
+        }
+        #[cfg(feature = "testing")]
+        fn core_request(&mut self, h: &mut Hardware<'_>, operation: crate::gk208::adapter::Operation,
+            name: &'static str,
+        ) -> Result<crate::gk208::native::CoreReceipt, &'static str> {
+            use crate::gk208::{adapter, caps, gr::channel::NativeChannel};
+            // Existing uploads/readbacks have already bound A0B5 and observed
+            // its engine release; shader binding did the same for A197.
+            let s = self.session.as_ref().unwrap();
+            if !s.bound || s.quiesced || s.copy.is_none() {
+                return Err("core probe requires the live graphics/copy owner");
+            }
+            let mut board = caps::BoardState::empty();
+            board.chipset = ((h.regs.read(0) >> 20) & 0x1ff) as u16;
+            board.channel = (s.report.identity.instance, s.report.identity.epoch);
+            board.graphics_ready = true;
+            board.created_classes = gpu_abi::gk208::CAPSET_IDS;
+            board.scanouts[0] = crate::gk208::caps_scanout(h.console)?;
+            board.scanout_count = 1;
+            let last = s.next_sequence - 1;
+            let session = self.session.take().unwrap();
+            let channel = NativeChannel { session, registers: h.regs.0, total: h.total,
+                mmu: [0; 2], _scratch: None, topology: [[0; 2]; 3], initial: Vec::new(),
+                put: last, confirmed: false };
+            let mut device = crate::gpu::dev::Device::Gk208(adapter::Device::probe(channel, board, last));
+            let result = self.producer.run(&mut device, operation, name);
+            let crate::gpu::dev::Device::Gk208(device) = device else { unreachable!() };
+            self.session = Some(device.into_probe_channel().session);
+            result
+        }
+        pub(in crate::gk208::gr) fn draw(&mut self, h: &mut Hardware<'_>, draw: super::super::draw::Draw,
+            receipt: &mut super::super::binding::Receipt,
+        ) -> Result<(), &'static str> {
+            #[cfg(not(feature = "testing"))]
+            return self.session.as_mut().unwrap().draw(h, draw, receipt);
+            #[cfg(feature = "testing")]
+            {
+                receipt.before = super::super::binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
+                let result = self.core_request(h, crate::gk208::adapter::Operation::Draw(draw), "triangle");
+                receipt.after = super::super::binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
+                let r = result?;
+                receipt.target = TARGET + u64::from(crate::gk208::queue::Queue::slot(r.request.sequence)) * 16;
+                receipt.epoch = r.request.epoch;
+                receipt.nonce = r.request.sequence;
+                receipt.observation = Some(Observation { value: r.sample.sequence, epoch: r.sample.epoch,
+                    consumed: r.sample.consumed >= r.request.sequence, accepted: true, elapsed_us: r.elapsed_us });
+                Ok(())
+            }
+        }
+        pub(in crate::gk208::gr) fn copy_rect(&mut self, h: &mut Hardware<'_>, rect: crate::gk208::copy::Rect)
+            -> Result<(), &'static str> {
+            #[cfg(not(feature = "testing"))]
+            return self.session.as_mut().unwrap().copy_rect(h, rect);
+            #[cfg(feature = "testing")]
+            self.core_request(h, crate::gk208::adapter::Operation::Copy(rect), "copy").map(|_| ())
+        }
+    }
     /// Ownership bridge for the shared device boundary. Retained mappings and
     /// DMA pages stay in Session across a failed reset or restart.
     pub(crate) struct NativeChannel {
@@ -1314,7 +1397,7 @@ mod native {
         registers: usize,
         total: u64,
         mmu: [u64; 2],
-        _scratch: ManuallyDrop<[memory::allocator::Pin; 2]>,
+        _scratch: Option<ManuallyDrop<[memory::allocator::Pin; 2]>>,
         topology: [[u32; 2]; 3],
         initial: Vec<u8>,
         put: u32,
@@ -1339,7 +1422,7 @@ mod native {
             }
             let scratch = ManuallyDrop::new([allocator.pin(mmu[0])?, allocator.pin(mmu[1])?]);
             let mut native = NativeChannel { session: self, registers, total,
-                mmu: mmu.map(|a| a.range.start), _scratch: scratch, topology,
+                mmu: mmu.map(|a| a.range.start), _scratch: Some(scratch), topology,
                 initial, put: 0, confirmed: false };
             native.session.activate_regs(&mut regs, total)?;
             Ok(native)
@@ -1373,14 +1456,42 @@ mod native {
                     super::super::draw::commands(draw)?
                 }
             };
+            self.publish_encoded(sequence, &mut command)
+        }
+        fn publish_encoded(&mut self, sequence: u32, command: &mut Vec<u32>) -> Result<(), &'static str> {
+            let s = &self.session;
+            let slot = crate::gk208::queue::Queue::slot(sequence);
             command.extend([0x20010014, sequence]);
             if command.len() * 4 > 8192 { return Err("native command slot extent"); }
             // Only this slot is poisoned; the other three may still be live.
             unsafe { core::ptr::write_bytes((s.pages.va(0) + u64::from(slot) * 16) as *mut u8, 0, 16); }
             s.pages.publish();
             self.put = sequence;
-            s.publish_words(&mut Registers(self.registers), self.total, sequence, &command,
+            self.session.next_sequence = sequence.checked_add(1).ok_or("probe sequence exhausted")?;
+            let s = &self.session;
+            s.publish_words(&mut Registers(self.registers), self.total, sequence, command,
                 16384 + u64::from(slot) * 8192, 8192)
+        }
+        #[cfg(feature = "testing")]
+        pub(crate) fn publish_probe(&mut self, sequence: u32, operation: &crate::gk208::adapter::Operation,
+            control: crate::gk208::core_record::Control,
+        ) -> Result<(), &'static str> {
+            let crate::gk208::adapter::Operation::Copy(rect) = *operation else {
+                return Err("core completion controls require CE copy");
+            };
+            let report = TARGET + u64::from(crate::gk208::queue::Queue::slot(sequence)) * 16;
+            let mut command = crate::gk208::copy::probe_encode(rect, report,
+                self.session.report.identity.epoch, sequence, control)?;
+            self.publish_encoded(sequence, &mut command)
+        }
+        #[cfg(feature = "testing")]
+        pub(crate) fn probe_drained(&mut self, sequence: u32) -> Result<bool, &'static str> {
+            let sample = self.sample(sequence)?;
+            self.session.pages.observe();
+            let offset = u64::from(crate::gk208::queue::Queue::slot(sequence)) * 16 + 12;
+            // SAFETY: the retained coherent release page contains this slot.
+            let drain = unsafe { ((self.session.pages.va(0) + offset) as *const u32).read_volatile() };
+            Ok(sample.healthy && sample.consumed >= sequence && drain == sequence)
         }
         pub(crate) fn sample(&mut self, sequence: u32) -> Result<crate::gpu_completion::CeSample, &'static str> {
             let mut regs = Registers(self.registers);
@@ -1410,6 +1521,7 @@ mod native {
         }
         pub(crate) fn restart(&mut self) -> Result<(), &'static str> {
             if !self.confirmed { return Err("native reset unconfirmed; backing retained"); }
+            if self.initial.is_empty() { return Err("probe session returns to its original teardown"); }
             let epoch = self.session.report.identity.epoch.checked_add(1).ok_or("native epoch exhausted")?;
             self.confirmed = false;
             let mut regs = Registers(self.registers);
