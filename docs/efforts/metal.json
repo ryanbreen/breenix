@@ -443,6 +443,16 @@
               "graphics"
             ]
           }
+        },
+        {
+          "id": "shaders",
+          "title": "Upload and bind the triangle programs on A197 (M7 PR 7.3; draw pending 7.4)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "shaders"
+            ]
+          }
         }
       ]
     }

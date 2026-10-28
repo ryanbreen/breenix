@@ -60,7 +60,7 @@ class Flips(unittest.TestCase):
         import sys
         sys.path.insert(0,str(ROOT/'scripts/metal'))
         import metal_score
-        self.assertEqual(metal_score.HOST_MILESTONES['gt710-flips.json'],'metal-gt710/flips')
+        self.assertEqual(metal_score.host_milestone('gt710-flips.json'),'metal-gt710/flips')
 
     def test_reused_native_switch_and_other_mode_nonces_are_rejected(self):
         serial=SWITCH['switch_capture']()

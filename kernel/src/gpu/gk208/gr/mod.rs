@@ -80,10 +80,12 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 //! Native PGRAPH startup and golden context construction.
+pub mod binding;
 pub mod channel;
 pub mod context;
 pub mod ctxctl;
 pub mod firmware;
+pub mod shaders;
 pub mod tables;
 pub mod topology;
 
@@ -157,16 +159,27 @@ pub(super) fn interrupt_snapshot(
     // MIT rnndb bus/pmc.xml, fifo/gf100_pfifo.xml and gr/ctxctl.xml.
     let mut words: Vec<[u32; 2]> = [
         0x100, 0x140, 0x160, 0x200, 0x204, 0x2100, 0x2140, 0x2274,
-        0x2284, 0x2630, 0x2640, 0x2644, 0x400100, 0x400108, 0x40013c,
+        0x2284, 0x259c, 0x2630, 0x2634, 0x2640, 0x2644, 0x800000, 0x800004, 0x400100, 0x400108, 0x40013c,
         0x409008, 0x409018, 0x40901c, 0x409b00, 0x409b04, 0x409c18, 0x409c24,
     ]
     .into_iter()
     .map(|a| [a, regs.read(a as usize)])
     .collect();
+    // MIT FIFO gf100.c:696-714: read fault records without acknowledging
+    // them, before a failed preempt or outer power-state restore obscures GR.
+    let faults = regs.read(0x259c);
+    for unit in 0..32 {
+        if faults & (1 << unit) != 0 {
+            for offset in [0, 4, 8, 12] {
+                let address = 0x2800 + unit * 16 + offset;
+                words.push([address, regs.read(address as usize)]);
+            }
+        }
+    }
     let enabled = words.iter().find(|w| w[0] == 0x204).unwrap()[1];
     for i in 0..3 {
         if enabled & (1 << i) != 0 {
-            for offset in [0x108, 0x10c, 0x13c, 0x148, 0x14c] {
+            for offset in [0x00, 0x14, 0x28, 0x108, 0x10c, 0x120, 0x13c, 0x148, 0x14c] {
                 let address = 0x40000 + i * 0x2000 + offset;
                 words.push([address, regs.read(address as usize)]);
             }
@@ -238,8 +251,8 @@ pub(super) fn probe(
     };
     let result = probe_inner(regs, device, layout, console, &mut cleanup);
     // This also runs after topology, allocation, upload and startup refusals.
-    cleanup.finish(regs, layout)?;
-    result
+    let unwind = cleanup.finish(regs, layout);
+    result.and(unwind)
 }
 
 fn probe_inner(
@@ -312,6 +325,9 @@ fn probe_inner(
     // From here, only Hardware::finish can certify that reset is safe.
     cleanup.fifo_quiesced = false;
     let outcome = (|| {
+        let shader_buffer = context::Io::allocate(&mut hardware, context::Spec {
+            name: "shader-segment", bytes: shaders::SEGMENT_SIZE as u64, align: 4096,
+        }).map_err(|e| e.reason)?;
         let generated = context::generate(&mut hardware, &topology, ready.size);
         if let Err(error) = &generated {
             context_error(error);
@@ -324,15 +340,39 @@ fn probe_inner(
             if let Some(reader) = hardware.reader.take() {
                 reader.finish(hardware.regs, hardware.layout)?;
             }
-            let mut graphics = channel::Session::new(&mut hardware, golden)?;
+            hardware.reader = Some(super::ce::readback::Reader::new(
+                hardware.regs, hardware.device, hardware.layout, hardware.console, &hardware.backing,
+            )?);
+            let mut evidence = ShaderEvidence::default();
+            shaders::exercise_uploads(&mut ShaderUpload {
+                hardware: &mut hardware, buffer: shader_buffer, evidence: &mut evidence,
+            })?;
+            // CE owns channel 0 and the USERD alias. Drain it before restoring GR.
+            if let Some(reader) = hardware.reader.as_mut() {
+                reader.quiesce(hardware.regs, hardware.layout)?;
+            }
+            if let Some(reader) = hardware.reader.take() {
+                reader.finish(hardware.regs, hardware.layout)?;
+            }
+            // Channel IDs remain owned by GR until reset, even after FIFO
+            // quiesce: FECS retains its current context. Finish CE before GR
+            // admission and keep GR active through the binding submission.
+            let mut graphics = channel::Session::new(&mut hardware, golden, shader_buffer.va)?;
             let result = graphics.activate(&mut hardware)
                 .and_then(|()| graphics.execute(&mut hardware));
-            let report = graphics.report();
             // Retain ownership before propagating activation or execution errors.
             hardware.graphics = Some(graphics);
             result?;
-            // Observe the quiesced channel while GR registers remain accessible,
-            // before reset/gating makes PGRAPH reads return PRI error words.
+            let mut graphics = hardware.graphics.take().ok_or("shader GR channel absent")?;
+            let mut receipt = binding::Receipt {
+                target: 0, epoch: 0, nonce: 0, before: [0; 4], after: [0; 4], observation: None,
+            };
+            let result = graphics.bind_shaders(&mut hardware, shader_buffer.va, &mut receipt);
+            // Keep ownership on trap/timeout so finish drains and resets before freeing.
+            let report = graphics.report();
+            hardware.graphics = Some(graphics);
+            evidence.emit(shader_buffer.va, &receipt, result.as_ref().err().copied())?;
+            result?;
             interrupt_snapshot(hardware.regs, hardware.device, "channel-drained");
             Some(report)
         } else {
@@ -345,7 +385,12 @@ fn probe_inner(
         Ok::<_, &'static str>((generated, graphics, artifact, runnable_bytes, firmware_hashes))
     })();
     // Run on closure errors too; the outer reset requires confirmed FIFO unwind.
-    hardware.finish()?;
+    if let Err(error) = hardware.finish() {
+        // Keep the failing FIFO words while GR is still accessible. The outer
+        // cleanup must refuse reset here, but must not replace this cause.
+        interrupt_snapshot(regs, device, "unwind-failed");
+        return Err(error);
+    }
     cleanup.fifo_quiesced = true;
     cleanup.finish(regs, layout)?;
     let (generated, graphics, artifact, runnable_bytes, firmware_hashes) = outcome?;
@@ -564,6 +609,72 @@ impl Hardware<'_> {
         )?;
         for (_, a) in self.backing {
             self.layout.allocator.release(a)?;
+        }
+        Ok(())
+    }
+}
+#[derive(Default)]
+struct ShaderEvidence {
+    rows: String,
+    readbacks: Vec<String>,
+}
+impl ShaderEvidence {
+    fn emit(&self, code_address: u64, r: &binding::Receipt, error: Option<&str>) -> Result<(), &'static str> {
+        let assets: Vec<String> = [
+            ("vertex.bin", &include_bytes!("../../../../assets/kepler/diagnostic-triangle-vertex.bin")[..]),
+            ("vertex.sph", &include_bytes!("../../../../assets/kepler/diagnostic-triangle-vertex.sph")[..]),
+            ("vertex.json", &include_bytes!("../../../../assets/kepler/diagnostic-triangle-vertex.json")[..]),
+            ("vertex.asm", &include_bytes!("../../../../assets/kepler/diagnostic-triangle-vertex.asm")[..]),
+            ("fragment.bin", &include_bytes!("../../../../assets/kepler/diagnostic-triangle-fragment.bin")[..]),
+            ("fragment.sph", &include_bytes!("../../../../assets/kepler/diagnostic-triangle-fragment.sph")[..]),
+            ("fragment.json", &include_bytes!("../../../../assets/kepler/diagnostic-triangle-fragment.json")[..]),
+            ("fragment.asm", &include_bytes!("../../../../assets/kepler/diagnostic-triangle-fragment.asm")[..]),
+        ].into_iter().map(|(name, bytes)| format!("\"{}\":\"{}\"", name, super::hash(bytes))).collect();
+        let release = r.observation.as_ref().map(|o| format!(
+            "{{\"target\":{},\"method\":6924,\"operation\":268496912,\"epoch\":{},\"nonce\":{},\"observed\":{},\"observed_epoch\":{},\"consumed\":{},\"accepted\":{},\"elapsed_us\":{}}}",
+            r.target, r.epoch, r.nonce, o.value, o.epoch, o.consumed, o.accepted, o.elapsed_us,
+        )).unwrap_or_else(|| "null".into());
+        let error = error.map(|s| format!("\"{}\"", s)).unwrap_or_else(|| "null".into());
+        let digest = super::hash(self.rows.as_bytes());
+        super::bulk::line(self.rows.trim_end_matches('\n').into())?;
+        crate::serial_println!("GT710_SHADER_BULK {} {}", self.rows.len(), digest);
+        crate::serial_println!(
+            "GT710_SHADER {{\"schema\":1,\"assets\":{{{}}},\"class_id\":41367,\"subchannel\":{},\"code_address\":{},\"segment_bytes\":{},\"offsets\":[{},{}],\"gprs\":[{},{}],\"readbacks\":[{}],\"release\":{},\"trap_registers\":{:?},\"trap_before\":{:?},\"trap_after\":{:?},\"error\":{},\"draw\":\"pending-7.4\"}}",
+            assets.join(","), channel::SUBCHANNEL, code_address, shaders::SEGMENT_SIZE,
+            shaders::VERTEX_OFFSET, shaders::FRAGMENT_OFFSET, shaders::VERTEX_GPRS, shaders::FRAGMENT_GPRS,
+            self.readbacks.join(","), release, binding::TRAP_REGISTERS, r.before, r.after, error,
+        );
+        Ok(())
+    }
+}
+struct ShaderUpload<'a, 'b> {
+    hardware: &'a mut Hardware<'b>,
+    buffer: context::Buffer,
+    evidence: &'a mut ShaderEvidence,
+}
+impl shaders::UploadIo for ShaderUpload<'_, '_> {
+    type Error = &'static str;
+    fn poison(&mut self, byte: u8) -> Result<(), Self::Error> {
+        self.hardware.fill(self.buffer, &alloc::vec![byte; shaders::SEGMENT_SIZE]).map_err(|e| e.reason)
+    }
+    fn upload(&mut self, bytes: &[u8]) -> Result<(), Self::Error> {
+        self.hardware.reader.as_mut().ok_or("shader CE reader absent")?.upload(
+            self.hardware.regs, self.hardware.total, self.buffer.va, bytes)
+    }
+    fn readback(&mut self, case: shaders::UploadCase, expected: &[u8]) -> Result<(), Self::Error> {
+        let images = self.hardware.reader.as_mut().ok_or("shader CE reader absent")?.image(
+            self.hardware.regs, self.hardware.total, self.buffer.va, expected.len())?;
+        for (index, image) in images.iter().enumerate() {
+            use core::fmt::Write;
+            for (i, chunk) in image.chunks(256).enumerate() {
+                writeln!(self.evidence.rows, "GT710_SHADER_IMAGE {:?} {} {} {}", case, [85, 170][index], i * 256, super::hex(chunk))
+                    .map_err(|_| "shader image formatting")?;
+            }
+            self.evidence.readbacks.push(format!(
+                "{{\"case\":\"{:?}\",\"poison\":{},\"bytes\":{},\"sha256\":\"{}\"}}",
+                case, [85, 170][index], image.len(), super::hash(image),
+            ));
+            if image != expected { return Err("shader CE upload bytes differ"); }
         }
         Ok(())
     }

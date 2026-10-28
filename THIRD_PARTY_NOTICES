@@ -208,7 +208,7 @@ source. The retained file-local notices are in the linked file and in
 | [mesa/include/c99_compat.h](vendor/kepler/mesa/include/c99_compat.h) | MIT | Host compiler |
 | [mesa/include/no_extern_c.h](vendor/kepler/mesa/include/no_extern_c.h) | MIT | Host compiler |
 | [mesa/src/compiler/shader_enums.h](vendor/kepler/mesa/src/compiler/shader_enums.h) | MIT | Host compiler |
-| [mesa/src/gallium/drivers/nouveau/nvc0/nvc0_program.c](vendor/kepler/mesa/src/gallium/drivers/nouveau/nvc0/nvc0_program.c) | MIT | Reference for adapted frontend/SPH logic; not compiled |
+| [mesa/src/gallium/drivers/nouveau/nvc0/nvc0_program.c](vendor/kepler/mesa/src/gallium/drivers/nouveau/nvc0/nvc0_program.c) | MIT | Reference for adapted frontend/SPH logic and `kernel/src/gpu/gk208/gr/shaders.rs` segment layout; not compiled |
 | [mesa/src/gallium/include/pipe/p_defines.h](vendor/kepler/mesa/src/gallium/include/pipe/p_defines.h) | MIT | Host compiler |
 | [mesa/src/nouveau/codegen/nv50_ir.cpp](vendor/kepler/mesa/src/nouveau/codegen/nv50_ir.cpp) | MIT | Host compiler |
 | [mesa/src/nouveau/codegen/nv50_ir.h](vendor/kepler/mesa/src/nouveau/codegen/nv50_ir.h) | MIT | Host compiler |
@@ -774,3 +774,82 @@ FIFO gf100/gk104/gk110/gk208 and MIT open-gpu-doc cla06f/cla197).
 The existing original notices and full grants remain in their consumers.
 Ownership across fallible activation, pre-reset restoration and the host
 failure-injection harness are Breenix code; no external source is added.
+
+## Triangle SPH field reference (M7.3)
+
+NVIDIA open-gpu-doc at revision
+`9fdf5c4062007929d9f4e6cbad9c9771fe61b880`,
+[`classes/3d/cla097sph.h`](https://github.com/NVIDIA/open-gpu-doc/blob/9fdf5c4062007929d9f4e6cbad9c9771fe61b880/classes/3d/cla097sph.h),
+is retained unchanged at `vendor/kepler/nvidia/classes/3d/cla097sph.h`.
+Its file-local MIT grant and Copyright (c) 2020, NVIDIA CORPORATION notice
+were checked before use and remain in the header and `vendor/kepler/NOTICES`.
+`vendor/kepler/sources.json` records the upstream and vendored hashes.
+
+Consumer: `tests/gt710_sph_test.py` parses its field bit ranges to decode the
+committed diagnostic vertex/fragment SPHs independently of the compiler.
+The header is a reference input, with no linked NVIDIA driver code.
+
+## Triangle stage dataflow reference and controls (M7.3)
+
+`tests/gt710_shader_stage_test.py` uses hardware interface facts from these
+previously admitted MIT sources, after checking their file-local grants:
+
+- envytools `f102b82381f3f11cee113d16374c87091db039d9`,
+  `envydis/gk110.c:555-560,1585-1586,1604-1606,1618-1619,1691-1701`,
+  Copyright (C) 2009-2011 Marcelina Kościelnicka and
+  Copyright (C) 2012 Christoph Bumiller: instruction spellings and operands.
+- Mesa `769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de`,
+  `src/gallium/drivers/nouveau/nvc0/nvc0_program.c:135-153`,
+  Copyright 2010 Christoph Bumiller: packed fragment colour register slots.
+- NVIDIA open-gpu-doc `9fdf5c4062007929d9f4e6cbad9c9771fe61b880`,
+  `classes/3d/cla097sph.h:616-627`, Copyright (c) 2020 NVIDIA CORPORATION:
+  target RGBA output-map bits, read through `tests/gt710_sph_test.py`.
+
+The original files retain their copyright notices and full MIT grants under
+`vendor/kepler/`, also collected in `vendor/kepler/NOTICES`. The Python dataflow
+checker is Breenix code and does not copy a decoder or compiler implementation.
+The sources and generated outputs under `tests/fixtures/gt710_shader_controls/`
+use the already attributed `tools/kepler/compile.cpp` and vendored Mesa compiler
+and envytools decoder. Generated SPHs retain those MIT attribution terms;
+the shader definitions and code retain Breenix's PolyForm Noncommercial terms.
+
+
+## GK208B diagnostic shader program binding (M7 PR 7.3)
+
+`kernel/src/gpu/gk208/gr/binding.rs` adapts the following MIT interface and
+ordering facts. The original copyright and permission text are in its header.
+`tests/gt710_shader_bind_test.rs` derives literal method/data words from the
+NVIDIA interface; its header carries that source's notice.
+
+- NVIDIA open-gpu-doc `9fdf5c4062007929d9f4e6cbad9c9771fe61b880`,
+  `classes/3d/cla197.h:2634-2638,3600-3619` (MIT; Copyright (c) 2020,
+  NVIDIA CORPORATION): program-region address, stage type/enable, program
+  offset and register count. Existing `gr/channel.rs` supplies the MIT
+  `cla06f.h` packet encoding and A197 report release described above.
+- Mesa `769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de`,
+  `src/gallium/drivers/nouveau/nvc0/nvc0_program.c:775-856` and
+  `nvc0_screen.c:895-898` (MIT; Copyright 2010 Christoph Bumiller):
+  SPH-relative program offsets and upper/lower code-region address order.
+- Nouveau Linux v6.8 `e8f897f4afef0031fe618a8e94127a0934896aba`,
+  `nvkm/engine/gr/gf100.c:1414,1502,1614-1619` (MIT; Copyright 2012
+  Red Hat Inc.): PGRAPH interrupt, trap and exception-status registers.
+
+The file-local grants were read for these sources. The excluded
+`nvc0_state_validate.c` is not an input. Source byte hashes and the serial/bulk
+record contract are in `docs/gui/provenance/gt710-shader-binding.md`.
+
+The M7.3 lifecycle repair in `kernel/src/gpu/gk208/gr/mod.rs` and its
+production-slice checks in `tests/gt710_gr_live_unwind_test.py` and
+`tests/fixtures/gt710_gr_live_unwind.rs` use the channel lifecycle and
+engine-status meanings from the MIT nouveau v6.8 FIFO gk104/gf100 sources
+listed above, and the retained-current-context behavior in the MIT
+`vendor/kepler/nouveau/hub.fuc` (Copyright 2011 Red Hat Inc.). The expanded
+read-only FIFO snapshot uses the already attributed MIT envytools
+`rnndb/fifo/gf100_pfifo.xml`; its copyright and grant remain in `gr/mod.rs`.
+
+The shader mapping in `kernel/src/gpu/gk208/gr/channel.rs` also uses the
+permission split in nouveau v6.8 `nvkm/subdev/mmu/vmmgf100.c:249-265,314-316`
+(MIT, Copyright 2017 Red Hat Inc.): shader program data is not privileged;
+firmware context buffers remain privileged as in GR `gf100.c:383`.
+The read-only fault snapshot in `gr/mod.rs` uses the existing MIT FIFO
+`gf100.c:696-714` source listed above; it does not acknowledge fault records.

@@ -1,4 +1,25 @@
 /*
+ * Copyright 2017 Red Hat Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ */
+/*
  * Copyright 2012 Red Hat Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -167,6 +188,11 @@ pub struct Observation {
     pub elapsed_us: u64,
     pub accepted: bool,
 }
+/// Distinct receipt domains prevent a delayed channel release from certifying binding.
+pub fn receipt_nonce(epoch: u64, binding: bool) -> u32 {
+    let mixed = (epoch as u32 ^ (epoch >> 32) as u32) & !0x6000_0000;
+    mixed | if binding { 0x2000_0000 } else { 0x4000_0000 }
+}
 pub trait Poll {
     fn snapshot(&mut self) -> Result<(u32, u64, bool), &'static str>;
     fn now_us(&mut self) -> u64;
@@ -295,6 +321,7 @@ mod native {
         old: [u32; 6],
         old_pbdma: [u32; 4],
         bound: bool,
+        admitted: bool,
         alias: bool,
         quiesced: bool,
         report: Report,
@@ -303,6 +330,7 @@ mod native {
         pub(in crate::gk208::gr) fn new(
             h: &mut Hardware<'_>,
             golden: &Golden,
+            code_address: u64,
         ) -> Result<Self, &'static str> {
             let top = core::array::from_fn(|i| h.regs.read(0x22700 + i * 4));
             let (mut engine, mut runlist, mut kind) = (None, None, None);
@@ -393,7 +421,10 @@ mod native {
                     },
                     va,
                     a,
-                    flags,
+                    // Shader fetch is an ordinary engine access, unlike the
+                    // firmware-owned context buffers (MIT vmmgf100.c:259-265,
+                    // 314-316; GR gf100.c:383). Keep program data unprivileged.
+                    Flags { privileged: va != code_address, ..flags },
                 )?;
             }
             let commands = h.layout.allocator.allocate(65536, 4096, Kind::Engine)?;
@@ -509,6 +540,7 @@ mod native {
                 old,
                 old_pbdma: [0x13c, 0x10c, 0x14c, 0x12c].map(|o| h.regs.read(b + o)),
                 bound: false,
+                admitted: false,
                 alias: false,
                 quiesced: false,
                 report: Report {
@@ -540,6 +572,7 @@ mod native {
         }
         pub(in crate::gk208::gr) fn activate(&mut self, h: &mut Hardware<'_>) -> Result<(), &'static str> {
             let c = self.report.identity;
+            self.quiesced = false;
             // Track the alias before its first potentially partial write.
             self.alias = true;
             words(
@@ -566,9 +599,14 @@ mod native {
             }
             h.regs.write(0x2254, 0x10000000 | (SLOT >> 12) as u32);
             modeset::bar_flush(h.regs)?;
-            // SAFETY: context pins its mappings before the channel is visible.
-            unsafe {
-                self.context.admit_device()?;
+            if !self.admitted {
+                // SAFETY: context pins its mappings before the channel is visible.
+                unsafe {
+                    self.context.admit_device()?;
+                }
+                // Quiesce leaves FECS's context retained until reset; reactivation
+                // republishes that owner without admitting its mappings again.
+                self.admitted = true;
             }
             h.regs.mask(0x800004, 0xf0000, c.runlist << 16);
             self.bound = true;
@@ -598,6 +636,13 @@ mod native {
             release: bool,
             budget: u64,
         ) -> Result<Observation, &'static str> {
+            let command = commands(TARGET, epoch, nonce, release, sequence)?;
+            self.issue_words(h, sequence, poison, nonce, budget, &command, false)
+        }
+        fn issue_words(
+            &self, h: &mut Hardware<'_>, sequence: u32, poison: u32,
+            nonce: u32, budget: u64, command: &[u32], stop_on_trap: bool,
+        ) -> Result<Observation, &'static str> {
             // SAFETY: this retained WB DMA page is private, and the preceding
             // submission has consumed its stream before the next CPU poison.
             unsafe {
@@ -607,7 +652,6 @@ mod native {
                 ((self.pages.va(0) + 8) as *mut u32).write_volatile(0);
             }
             self.pages.publish();
-            let command = commands(TARGET, epoch, nonce, release, sequence)?;
             let offset = 4096 + u64::from(sequence - 1) * 256;
             words(
                 h.regs,
@@ -636,6 +680,7 @@ mod native {
                 regs: h.regs,
                 total: h.total,
                 sequence,
+                stop_on_trap,
             };
             if budget < BOUND_US {
                 // A cold context restore gets the normal engine bound before
@@ -654,13 +699,44 @@ mod native {
             }
             Ok(sample)
         }
+        pub(in crate::gk208::gr) fn bind_shaders(
+            &mut self, h: &mut Hardware<'_>, code_address: u64,
+            receipt: &mut super::super::binding::Receipt,
+        ) -> Result<(), &'static str> {
+            use super::super::binding;
+            receipt.before = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
+            let result = (|| {
+                binding::check_traps(receipt.before)?;
+                if !self.bound || self.quiesced {
+                    return Err("shader binding requires the active GR channel");
+                }
+                let epoch = self.report.identity.epoch;
+                let nonce = receipt_nonce(epoch, true);
+                receipt.target = TARGET;
+                receipt.epoch = epoch;
+                receipt.nonce = nonce;
+                let command = binding::commands(code_address, TARGET, epoch, nonce, 5)?;
+                let sample = self.issue_words(h, 5, 85, nonce, BOUND_US, &command, true)?;
+                receipt.observation = Some(sample);
+                if !sample.accepted { return Err("shader binding release not observed"); }
+                Ok(())
+            })();
+            // Read even after a submission error, before quiesce/reset.
+            receipt.after = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
+            binding::check_traps(receipt.after)?;
+            result?;
+            self.quiesce(h.regs, h.total)
+        }
         pub(in crate::gk208::gr) fn execute(
             &mut self,
             h: &mut Hardware<'_>,
         ) -> Result<(), &'static str> {
             let epoch = self.report.identity.epoch;
-            let nonce = (epoch as u32 ^ (epoch >> 32) as u32) | 0x40000000;
+            let nonce = receipt_nonce(epoch, false);
             self.report.withheld.observation = self.issue(h, 1, 85, epoch, nonce, false, 10000)?;
+            if self.report.withheld.observation.accepted || self.report.withheld.observation.value != 85 {
+                return Err("GR withheld release control failed");
+            }
             let first = self.issue(h, 2, 85, epoch, nonce, true, BOUND_US)?;
             self.report.releases[0] = Release {
                 target: TARGET,
@@ -670,6 +746,9 @@ mod native {
                 epoch: first.epoch,
                 elapsed_us: first.elapsed_us,
             };
+            if !first.accepted {
+                return Err("GR first release not accepted");
+            }
             // Re-poison only after an engine-ordered receipt. On a missing
             // receipt retain the raw failure, stop submission and drain below;
             // a delayed old release must not satisfy the second poison pass.
@@ -679,8 +758,9 @@ mod native {
                     nonce,
                     observation: stale,
                 };
-                if stale.value == nonce && stale.epoch == epoch - 1 {
+                if !stale.accepted && stale.value == nonce && stale.epoch == epoch - 1 {
                     let second = self.issue(h, 4, 170, epoch, nonce, true, BOUND_US)?;
+                    if !second.accepted { return Err("GR second release not accepted"); }
                     self.report.releases[1] = Release {
                         target: TARGET,
                         poison: 170,
@@ -689,6 +769,8 @@ mod native {
                         epoch: second.epoch,
                         elapsed_us: second.elapsed_us,
                     };
+                } else {
+                    return Err("GR stale release control failed");
                 }
             }
             self.report.identity.bind = h.regs.read(0x800000);
@@ -697,7 +779,7 @@ mod native {
             for pair in &mut self.report.faults {
                 pair[1] = h.regs.read(pair[0] as usize);
             }
-            self.quiesce(h.regs, h.total)
+            Ok(())
         }
         /// Leave FIFO and BAR1 safe before PGRAPH reset, including partial activation.
         /// Failed waits retain the channel and its pinned backing for recovery.
@@ -793,9 +875,14 @@ mod native {
         regs: &'a mut Registers,
         total: u64,
         sequence: u32,
+        stop_on_trap: bool,
     }
     impl Poll for Monitor<'_> {
         fn snapshot(&mut self) -> Result<(u32, u64, bool), &'static str> {
+            if self.stop_on_trap {
+                let words = super::super::binding::TRAP_REGISTERS.map(|a| self.regs.read(a));
+                super::super::binding::check_traps(words)?;
+            }
             let s = self.session;
             s.pages.observe();
             // SAFETY: coherent observation of the owned page's three words.

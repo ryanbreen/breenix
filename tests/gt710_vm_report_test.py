@@ -88,6 +88,6 @@ class VmCapture(unittest.TestCase):
         row=next(e for e in effort['efforts'] if e['id']=='metal-gt710')
         self.assertEqual(next(m for m in row['milestones'] if m['id']=='vm')['measure'],dict(suite='gt710',categories=['vm']))
         score=runpy.run_path(str(ROOT/'scripts/metal/metal_score.py'))
-        self.assertEqual(score['HOST_MILESTONES']['gt710-vm.json'],'metal-gt710/vm')
+        self.assertEqual(score['host_milestone']('gt710-vm.json'),'metal-gt710/vm')
 
 if __name__=='__main__':unittest.main()

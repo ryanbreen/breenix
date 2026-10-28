@@ -87,6 +87,6 @@ class ChannelCapture(unittest.TestCase):
         row=next(e for e in effort['efforts'] if e['id']=='metal-gt710')
         self.assertEqual(next(m for m in row['milestones'] if m['id']=='channel')['measure'],dict(suite='gt710',categories=['channel']))
         score=runpy.run_path(str(ROOT/'scripts/metal/metal_score.py'))
-        self.assertEqual(score['HOST_MILESTONES']['gt710-channel.json'],'metal-gt710/channel')
+        self.assertEqual(score['host_milestone']('gt710-channel.json'),'metal-gt710/channel')
 
 if __name__=='__main__': unittest.main()

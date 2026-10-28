@@ -18,6 +18,11 @@
       "mirror": "https://github.com/chaotic-cx/mesa-mirror",
       "prefix": "",
       "archive_sha256": "196d77632234c282e939d4814770dff9d775c0f176abebbc25a66160eb83b97e"
+    },
+    "nvidia": {
+      "commit": "9fdf5c4062007929d9f4e6cbad9c9771fe61b880",
+      "url": "https://github.com/NVIDIA/open-gpu-doc",
+      "prefix": ""
     }
   },
   "files": [
@@ -1044,6 +1049,17 @@
       "vendored_sha256": "7523dbd732013be07a81da51d3fc367125abe8625dd93caf789d0a88d7569f09",
       "upstream_path": "drivers/gpu/drm/nouveau/nvkm/engine/gr/gk208.c",
       "adapted": false
+    },
+    {
+      "project": "nvidia",
+      "path": "classes/3d/cla097sph.h",
+      "license": "MIT",
+      "notice": "/*******************************************************************************\n    Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.\n\n    Permission is hereby granted, free of charge, to any person obtaining a\n    copy of this software and associated documentation files (the \"Software\"),\n    to deal in the Software without restriction, including without limitation\n    the rights to use, copy, modify, merge, publish, distribute, sublicense,\n    and/or sell copies of the Software, and to permit persons to whom the\n    Software is furnished to do so, subject to the following conditions:\n\n    The above copyright notice and this permission notice shall be included in\n    all copies or substantial portions of the Software.\n\n    THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING\n    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER\n    DEALINGS IN THE SOFTWARE.\n\n*******************************************************************************/",
+      "upstream_sha256": "a804dc66816ec4bd5a49be6c6745f7aa2cda31881e48472625abe4a691f0c1a3",
+      "vendored_sha256": "a804dc66816ec4bd5a49be6c6745f7aa2cda31881e48472625abe4a691f0c1a3",
+      "upstream_path": "classes/3d/cla097sph.h",
+      "adapted": false,
+      "reference_only": true
     }
   ]
 }

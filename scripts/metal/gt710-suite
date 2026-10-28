@@ -73,6 +73,7 @@ GR_INIT_LISTS = [
 ]
 
 CATEGORIES = {
+    'shaders': [('assets', 'Committed triangle asset hashes and shader register counts match the manifest and metadata'), ('upload', 'Complete complementary shader read-backs prove withheld and flipped controls and their clean next uploads'), ('binding', 'A197 program binding completes with a release receipt and zero trap words; drawing remains pending')],
     'graphics': [('ctxctl', 'Source-built FECS and GPCCS images load with verified IMEM/DMEM read-back, start and answer fresh mailbox queries; a withheld start and a stale reply fail'), ('context', 'Active GPC/TPC topology and a golden graphics context generated from attributed init lists match the FECS-reported image size under complementary poisons'), ('channel', 'One graphics channel binds A197 and PGRAPH executes its report-semaphore release under complementary poisons; withheld and stale releases fail')],
     'recovery': [('fault-reset', 'A bad native channel is removed while its survivor copies; watchdog and confirmed transport reset retain backing and restore fresh epochs within budget')],
     'contexts': [('concurrent', 'Private native channels wrap their rings under backpressure and compare concurrent opposite transfers'), ('killed-wait', 'A killed native waiter exits within 250 ms while device backing stays held until ordered drain')],
@@ -1359,7 +1360,55 @@ def native_flips(serial):
         raise ValueError('malformed native flip evidence') from error
 
 
+def shader_gate(serial, case):
+    def need(ok, why):
+        if not ok: raise ValueError(why)
+    try:
+        e = json.loads(one(r'^GT710_SHADER (.+)$', serial, 'shader report')[1])
+        root = Path(__file__).resolve().parents[2] / 'kernel/assets/kepler'
+        manifest = json.loads((root / 'manifest.json').read_text())['files']
+        stages = ('vertex', 'fragment')
+        if case == 'assets':
+            expected = {stage + '.' + ext: manifest['diagnostic-triangle-' + stage + '.' + ext]['sha256']
+                        for stage in stages for ext in ('bin', 'sph', 'json', 'asm')}
+            need(e['schema'] == 1 and e['assets'] == expected, 'shader asset hashes')
+            need(e['gprs'] == [json.loads((root / ('diagnostic-triangle-' + stage + '.json')).read_text())['gprs'] for stage in stages], 'shader GPRs')
+        elif case == 'upload':
+            clean = bytearray(640)
+            for stage, offset in zip(stages, (48, 432)):
+                data = (root / ('diagnostic-triangle-' + stage + '.sph')).read_bytes() + (root / ('diagnostic-triangle-' + stage + '.bin')).read_bytes()
+                clean[offset:offset+len(data)] = data
+            flipped = bytearray(clean); flipped[0] ^= 1
+            images = [bytes([85])*640, bytes(clean), bytes(flipped), bytes(clean)]
+            names = ('Withheld', 'AfterWithheld', 'Flipped', 'AfterFlipped')
+            need(e['segment_bytes'] == 640 and e['offsets'] == [48,432], 'shader segment layout')
+            rows = list(re.finditer(r'^GT710_SHADER_IMAGE (Withheld|AfterWithheld|Flipped|AfterFlipped) (85|170) (\d+) ([0-9a-f]+)$', serial, re.M))
+            chunks = {}
+            for row in rows:
+                key = (row[1], int(row[2])); offset = int(row[3]); data = bytes.fromhex(row[4])
+                chunks.setdefault(key, bytearray())
+                need(offset == len(chunks[key]) and len(data) == min(256, 640-offset) and offset < 640, 'shader row offset/length')
+                chunks[key].extend(data)
+            expected_keys = [(name, poison) for name in names for poison in (85,170)]
+            need(list(chunks) == expected_keys and len(e['readbacks']) == 8, 'missing shader bulk row')
+            for i, key in enumerate(expected_keys):
+                image = bytes(chunks[key]); expected = images[i//2]; record = e['readbacks'][i]
+                need(image == expected and record == dict(case=key[0], poison=key[1], bytes=640, sha256=hashlib.sha256(image).hexdigest()), 'shader readback differs')
+        elif case == 'binding':
+            r = e['release']
+            need(e['schema'] == 1 and e['class_id'] == 0xa197 and e['subchannel'] == 0 and type(e['code_address']) is int and e['code_address'] > 0 and e['code_address'] % 256 == 0, 'shader binding')
+            need(e['trap_registers'] == [0x400100,0x400108,0x400110,0x400118] and e['trap_before'] == [0]*4 and e['trap_after'] == [0]*4, 'shader trap')
+            need(r['method'] == 0x1b0c and r['operation'] == 0x1000f010 and type(r['target']) is int and 0 < r['target'] < 1<<40 and r['target'] % 4 == 0 and type(r['nonce']) is int and 0 < r['nonce'] <= 0xffffffff and type(r['epoch']) is int and r['epoch'] > 0 and r['observed'] == r['nonce'] and r['observed_epoch'] == r['epoch'] and r['consumed'] is True and r['accepted'] is True and 0 < r['elapsed_us'] <= 2000000, 'shader release')
+            need(e['error'] is None and e['draw'] == 'pending-7.4', 'shader pending draw')
+        else: raise ValueError('unknown shader case')
+    except (KeyError, TypeError, IndexError, OverflowError, UnicodeError, OSError) as error:
+        raise ValueError('malformed shader evidence') from error
+
+
 def check_case(category, case, serial):
+    if category == 'shaders':
+        shader_gate(serial, case)
+        return
     if category == 'graphics':
         if case not in ('ctxctl', 'context', 'channel'): raise ValueError('unknown graphics case')
         graphics_engine(serial, case)
@@ -1539,6 +1588,9 @@ def capture_serial(directory):
     serial=(Path(directory)/'serial.txt').read_text()
     matches=list(re.finditer(r'^GT710_BULK (\d+) ([a-f0-9]{64})$',serial,re.M))
     graphics = 'GT710_GR_IMAGE_BULK ' in serial or 'GT710_GR ' in serial
+    shaders = 'GT710_SHADER_BULK ' in serial or 'GT710_SHADER ' in serial
+    if shaders and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file() or re.search(r'^GT710_SHADER_IMAGE ', serial, re.M)):
+        raise ValueError('shader image bulk missing or on serial')
     if graphics and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file()):
         raise ValueError('graphics image bulk missing')
     if graphics and re.search(r'^GT710_GR_IMAGE ', serial, re.M):
@@ -1557,10 +1609,12 @@ def capture_serial(directory):
         elif fields[0]=='GT710_FLIP_PIX': key=('flip',int(fields[1]),int(fields[2]))
         elif fields[0]=='GT710_MULTI': key=('multi',)
         elif fields[0]=='GT710_GR_IMAGE': key=('graphics',)
+        elif fields[0]=='GT710_SHADER_IMAGE': key=('shaders',)
         else: raise ValueError('unexpected display artifact record')
         if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
         groups.setdefault(key,[]).append(line);previous=key
     def report_key(line):
+        if line.startswith('GT710_SHADER_BULK '): return ('shaders',)
         if line.startswith('GT710_MULTI_BULK '): return ('multi',)
         if line.startswith('GT710_GR_IMAGE_BULK '): return ('graphics',)
         for prefix,kind in [('GT710_MODE ','native'),('GT710_SWITCH ','switch'),('GT710_FLIP ','flip')]:
@@ -1575,7 +1629,7 @@ def capture_serial(directory):
     result=[]
     for line in serial.splitlines(keepends=True):
         key=report_key(line)
-        if key in (('multi',), ('graphics',)):
+        if key in (('multi',), ('graphics',), ('shaders',)):
             record=''.join(groups[key]).encode('ascii')
             fields=line.split()
             if len(fields)!=3 or (key==('multi',) and len(groups[key])!=1) or len(record)!=int(fields[1]) or hashlib.sha256(record).hexdigest()!=fields[2]:

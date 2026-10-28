@@ -29,10 +29,12 @@ class LiveUnwind(unittest.TestCase):
         gr = (ROOT / 'kernel/src/gpu/gk208/gr/mod.rs').read_text()
         channel = (ROOT / 'kernel/src/gpu/gk208/gr/channel.rs').read_text()
         session = item(channel, 'pub(in crate::gk208::gr) struct Session')
+        nonce = item(channel, 'pub fn receipt_nonce(')
         methods = item(channel, '    impl Session {')
         new = item(methods, 'pub(in crate::gk208::gr) fn new(')
         prelude = '''
-            let _ = golden;
+            let _ = (golden, code_address);
+            step("graphics-new")?;
             let context = Context;
             let commands = Allocation::at(0x100000);
             let image = Allocation::at(0x200000);
@@ -42,13 +44,18 @@ class LiveUnwind(unittest.TestCase):
 '''
         start = new.index('{') + 1
         methods = methods.replace(new, new[:start] + prelude + new[new.index('            let epoch ='):])
-        issue = item(methods, '        fn issue(')
+        issue = item(methods, '        fn issue_words(')
         methods = methods.replace(issue, issue[:issue.index('{') + 1] + '''
-            let _ = (h, poison, epoch, release, budget, self.bar);
+            let _ = (h, poison, budget, stop_on_trap, self.bar, USERD);
+            let epoch = if sequence < 5 {u64::from(command[0]) | (u64::from(command[1])<<32)} else {self.report.identity.epoch};
+            assert!(self.bound && !self.quiesced, "submission on a stopped graphics channel");
             step(&format!("issue-{sequence}"))?;
-            Ok(Observation { value: nonce, epoch,
-                consumed: true, elapsed_us: 10, accepted: epoch == self.report.identity.epoch })
+            let reject = INJECT.with(|i| i.borrow().target == format!("reject-{sequence}"));
+            Ok(Observation { value: if sequence == 1 || reject { poison } else { nonce }, epoch,
+                consumed: true, elapsed_us: 10, accepted: !reject && sequence != 1 && epoch == self.report.identity.epoch })
         }''')
+        # Retain the actual issue wrapper/execute/bind/cleanup ordering.
+        methods = methods.replace('super::super::binding', 'binding')
         # Include new cleanup methods automatically; substitute only issue DMA.
         methods = methods.replace('pub(in crate::gk208::gr)', 'pub(crate)')
         session = session.replace('pub(in crate::gk208::gr)', 'pub(crate)')
@@ -56,12 +63,14 @@ class LiveUnwind(unittest.TestCase):
         if '    let outcome = (||' in gr:
             start = gr.index('    let outcome = (||')
         stop = gr.index('    if layout.allocator.stats() != baseline', start)
-        flow = gr[start:stop]
+        flow = gr[start:stop].replace("super::ce::readback::Reader", "Reader")
         finish = item(gr, '    fn finish(mut self)').replace('super::channel::VmIo', 'VmIo')
+        probe = item(gr, 'pub(super) fn probe(')
+        probe_finish = probe[probe.index('    // This also runs'):probe.rindex('}')]
         # Pre-live helpers are separate from the live operations under test.
         harness = (ROOT / 'tests/fixtures/gt710_gr_live_unwind.rs').read_text()
-        for key, value in [('SESSION', session + '\n' + methods), ('FLOW', flow),
-                           ('FINISH', finish),
+        for key, value in [('SESSION', nonce + '\n' + session + '\n' + methods), ('FLOW', flow),
+                           ('FINISH', finish), ('PROBE_FINISH', probe_finish),
                            ('CLEANUP', gr[gr.index('struct ProbeCleanup'):gr.index('/// Capture startup')])]:
             harness = harness.replace('// ' + key, value)
         readback = (ROOT / 'kernel/src/gpu/gk208/ce/readback.rs').read_text()

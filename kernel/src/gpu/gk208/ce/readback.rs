@@ -346,6 +346,18 @@ impl Reader {
         }
         Ok(snapshots)
     }
+    pub(in crate::gk208) fn upload(
+        &mut self, regs: &mut Registers, total: u64, va: u64, data: &[u8],
+    ) -> Result<(), &'static str> {
+        if data.is_empty() || data.len() > SIZE { return Err("invalid CE upload extent"); }
+        for (i, chunk) in data.chunks(4096).enumerate() {
+            unsafe { core::ptr::copy_nonoverlapping(chunk.as_ptr(), self.channel.pages.va(i) as *mut u8, chunk.len()); }
+        }
+        self.channel.pages.publish();
+        self.channel.execute(regs, total, &self.engine, self.bar,
+            rect(SYSTEM, va, data.len() as u32, 1, data.len() as u32, data.len() as u32))?;
+        Ok(())
+    }
     /// Keep ownership on a failed drain or alias invalidation.
     pub(in crate::gk208) fn quiesce(
         &mut self,

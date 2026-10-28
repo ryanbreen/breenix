@@ -18,7 +18,25 @@ pub fn run() {
     let end=now_us()+2_000_000;
     loop {
         if std::fs::read_to_string("/proc/gt710-ce").expect("native status")=="waiting held=1 completed=0\n" {break;}
-        assert!(now_us()<end,"native CE waiter never queued");
+        let mut status=0;
+        match process::waitpid(pid,&mut status,1) {
+            Ok(got) if got.raw() as i32==pid=>{
+                println!("GT710_KILLED_WAIT_ERROR child exited before queue status={}",status);
+                return;
+            }
+            Err(error)=>{
+                println!("GT710_KILLED_WAIT_ERROR child status {:?}",error);
+                return;
+            }
+            _=>(),
+        }
+        if now_us()>=end {
+            let _=signal::kill(pid,signal::SIGKILL);
+            let mut status=0;
+            let _=process::waitpid(pid,&mut status,0);
+            println!("GT710_KILLED_WAIT_ERROR native CE waiter never queued");
+            return;
+        }
         time::sleep_ms(1).unwrap();
     }
     let start=now_us();

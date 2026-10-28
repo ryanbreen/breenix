@@ -96,12 +96,47 @@ mod context {
     use super::*;
     pub struct Error { pub reason: &'static str }
     pub struct Golden;
+    #[derive(Clone,Copy)] pub struct Buffer {pub va:u64}
+    pub struct Spec {pub name:&'static str,pub bytes:u64,pub align:u64}
+    pub trait Io {fn allocate(&mut self, spec:Spec)->Result<Buffer,Error>;}
+    impl Io for Hardware<'_> {
+        fn allocate(&mut self,spec:Spec)->Result<Buffer,Error> {
+            let _=(spec.name,spec.bytes,spec.align); Ok(Buffer{va:0x10000000})
+        }
+    }
     pub fn generate(_: &mut Hardware<'_>, _: &(), _: u32) -> Result<Golden, Error> { Ok(Golden) }
 }
-struct Reader;
+pub(crate) struct Reader;
 impl Reader {
+    fn new(_: &mut Registers, _: &Device, _: &mut memory::Layout, _: &Console, _: &[(u64,Allocation)]) -> Result<Self, &'static str> {
+        INJECT.with(|i| assert!(!i.borrow().calls.iter().any(|c| c == "graphics-new"),
+            "CE reused the graphics channel ID before GR reset"));
+        step("reader-new")?; Ok(Self)
+    }
     fn quiesce(&mut self, _: &mut Registers, _: &memory::Layout) -> Result<(), &'static str> { Ok(()) }
     fn finish(self, _: &mut Registers, _: &mut memory::Layout) -> Result<(), &'static str> { Ok(()) } }
+mod shaders {
+    pub const SEGMENT_SIZE:usize=640;
+    pub fn exercise_uploads(u:&mut ShaderUpload<'_, '_>)->Result<(),&'static str> {
+        let _=(&u.buffer,&u.evidence);
+        assert!(u.hardware.reader.is_some()); step("shader-upload")
+    }
+    use super::*;
+}
+#[derive(Default)] struct ShaderEvidence;
+impl ShaderEvidence {
+    fn emit(&self,_:u64,r:&binding::Receipt,error:Option<&str>)->Result<(),&'static str> {
+        let _=(r.target,r.epoch,r.nonce,r.before,r.after,r.observation,error); Ok(())
+    }
+}
+struct ShaderUpload<'a,'b>{hardware:&'a mut Hardware<'b>,buffer:context::Buffer,evidence:&'a mut ShaderEvidence}
+mod binding {
+    pub const TRAP_REGISTERS:[usize;4]=[0x400100,0x400108,0x400110,0x400118];
+    pub fn check_traps(w:[u32;4])->Result<(),&'static str>{if w==[0;4] {Ok(())} else {Err("trap")}}
+    pub fn commands(_:u64,_:u64,_:u64,_:u32,_:u32)->Result<Vec<u32>,&'static str>{Ok(vec![])}
+    pub struct Receipt {pub target:u64,pub epoch:u64,pub nonce:u32,pub before:[u32;4],pub after:[u32;4],pub observation:Option<super::channel::Observation>}
+}
+fn commands(_:u64,epoch:u64,_:u32,_:bool,_:u32)->Result<Vec<u32>,&'static str>{Ok(vec![epoch as u32,(epoch>>32) as u32])}
 struct Controller { readback_sha256: [[u8;32];4] }
 struct Hardware<'a> {
     regs: &'a mut Registers, layout: &'a mut memory::Layout, device: &'a Device, console: &'a Console,
@@ -139,7 +174,7 @@ mod channel {
 fn run(regs: &mut Registers, stuck: bool) -> Result<(), &'static str> {
     let mut storage=memory::Layout{allocator:memory::allocator::Allocator};
     let layout=&mut storage;
-    let console=Console{pointer:0}; let device=Device;
+    let console=Console{pointer:0}; let owned_device=Device; let device=&owned_device;
     regs.stuck=stuck;
     let mut cleanup=ProbeCleanup{state:ctxctl::SavedState,scratch:vec![],finished:false,fifo_quiesced:false};
     let result=(|| {
@@ -152,12 +187,11 @@ fn run(regs: &mut Registers, stuck: bool) -> Result<(), &'static str> {
     if let Some(r)=graphics {channel::touch(r);}
     Ok(())
     })();
-    cleanup.finish(regs,layout)?;
-    result
+    // PROBE_FINISH
 }
 #[test]
 fn live_errors_restore_fifo_alias_and_binding_before_reset() {
-    for target in ["alias-install", "alias-clear", "bar1", "bar1-2", "flush", "admit", "wait-228c-1", "issue-1", "issue-2", "issue-3", "issue-4", "wait-2634-1", "wait-228c-0", "wait-3080-0", "wait-2640-0"] {
+    for target in ["alias-install", "alias-clear", "bar1", "bar1-2", "flush", "admit", "wait-228c-1", "issue-1", "issue-2", "issue-3", "issue-4", "issue-5", "shader-upload", "wait-2634-1", "wait-228c-0", "wait-3080-0", "wait-2640-0"] {
         INJECT.with(|i|*i.borrow_mut()=Injection{target:target.into(),..Injection::default()});
         let mut regs=Registers::new();
         let result=run(&mut regs,false);
@@ -168,11 +202,21 @@ fn live_errors_restore_fifo_alias_and_binding_before_reset() {
     }
 }
 #[test]
+fn rejected_channel_receipts_prevent_shader_submission() {
+    for sequence in [2, 3, 4] {
+        INJECT.with(|i| *i.borrow_mut() = Injection { target: format!("reject-{sequence}"), ..Injection::default() });
+        let mut regs = Registers::new();
+        assert!(run(&mut regs, false).is_err());
+        INJECT.with(|i| assert!(!i.borrow().calls.iter().any(|call| call == "issue-5")));
+        assert!(regs.restored());
+    }
+}
+#[test]
 fn clean_channel_restores_before_reset_and_failed_drain_forbids_reset() {
     INJECT.with(|i|*i.borrow_mut()=Injection::default());
     let mut regs=Registers::new(); assert!(run(&mut regs,false).is_ok()); assert!(regs.restored());
     INJECT.with(|i|*i.borrow_mut()=Injection{target:"issue-1".into(),..Injection::default()});
-    let mut regs=Registers::new(); assert!(run(&mut regs,true).is_err());
+    let mut regs=Registers::new(); assert_eq!(run(&mut regs,true),Err("stuck preempt"));
     INJECT.with(|i| { let i=i.borrow();assert_eq!(i.resets,0);assert_eq!(i.releases,0); });
     assert_ne!(regs.read(0x800000),0);
 }
