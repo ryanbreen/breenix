@@ -774,3 +774,17 @@ FIFO gf100/gk104/gk110/gk208 and MIT open-gpu-doc cla06f/cla197).
 The existing original notices and full grants remain in their consumers.
 Ownership across fallible activation, pre-reset restoration and the host
 failure-injection harness are Breenix code; no external source is added.
+
+## Triangle SPH field reference (M7.3)
+
+NVIDIA open-gpu-doc at revision
+`9fdf5c4062007929d9f4e6cbad9c9771fe61b880`,
+[`classes/3d/cla097sph.h`](https://github.com/NVIDIA/open-gpu-doc/blob/9fdf5c4062007929d9f4e6cbad9c9771fe61b880/classes/3d/cla097sph.h),
+is retained unchanged at `vendor/kepler/nvidia/classes/3d/cla097sph.h`.
+Its file-local MIT grant and Copyright (c) 2020, NVIDIA CORPORATION notice
+were checked before use and remain in the header and `vendor/kepler/NOTICES`.
+`vendor/kepler/sources.json` records the upstream and vendored hashes.
+
+Consumer: `tests/gt710_sph_test.py` parses its field bit ranges to decode the
+committed diagnostic vertex/fragment SPHs independently of the compiler.
+The header is a reference input, with no linked NVIDIA driver code.

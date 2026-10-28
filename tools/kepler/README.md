@@ -110,10 +110,16 @@ The source selections match the 2026-10-25 GT 710 plan and ruling G1:
 | nouveau firmware in Linux v6.8 | `e8f897f4afef0031fe618a8e94127a0934896aba` | MIT, checked file headers/SPDX |
 | envytools assembler, Falcon and GK110 decoder closure | `f102b82381f3f11cee113d16374c87091db039d9` | MIT, checked file headers |
 | Mesa 24.3.4 nouveau codegen and selected utility headers | `769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de` | MIT, checked file headers |
+| NVIDIA open-gpu-doc SPH v3 reference | `9fdf5c4062007929d9f4e6cbad9c9771fe61b880` | MIT, checked file header |
 
-`vendor/kepler/sources.json` enumerates 89 selected files, their original notice,
+`vendor/kepler/sources.json` enumerates 101 selected files, their original notice,
 upstream path, original hash and vendored hash. Two Mesa files are retained as
-reference-only sources of the adapted frontend/header logic. `NOTICES` retains
+reference-only sources of the adapted frontend/header logic. NVIDIA's unchanged
+`nvidia/classes/3d/cla097sph.h` is a reference input for
+`python3 tests/gt710_sph_test.py`: the test parses its bit ranges to decode the
+committed triangle SPHs and compares literal stage/linkage/interpolation fields.
+It also rejects constant and unused generic 0 interpolation mutations.
+`NOTICES` retains
 those individual notices, and the root `THIRD_PARTY_NOTICES` maps their consumers.
 The pinned Mesa mirror supplied the archive bytes; the authoritative project is
 freedesktop.org/mesa/mesa. The archive hashes are recorded too. No other files in

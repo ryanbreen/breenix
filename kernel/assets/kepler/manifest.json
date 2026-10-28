@@ -2463,7 +2463,7 @@
       "source_sha256": "7800cf22acecf728b548fa70cca036303e3334d15605a18c83c9be169de51f07"
     }
   ],
-  "source_lock_sha256": "cf559afc412be20dd2203020a91f2b1fdb5b495e33dddc7d74b3b3b4a04f5386",
+  "source_lock_sha256": "f00b06cfb8f8064ccae0dd93a3eb489f435a81516685d7966cf5a37ada7b459b",
   "sources": {
     "envytools": {
       "archive_sha256": "fed49495308b034c6a72893e3a472d6b98b7eb2ffd0b5738c26014d560b96ccc",
@@ -2482,6 +2482,11 @@
       "commit": "e8f897f4afef0031fe618a8e94127a0934896aba",
       "prefix": "drivers/gpu/drm/nouveau/nvkm/engine/gr/fuc/",
       "url": "https://github.com/torvalds/linux"
+    },
+    "nvidia": {
+      "commit": "9fdf5c4062007929d9f4e6cbad9c9771fe61b880",
+      "prefix": "",
+      "url": "https://github.com/NVIDIA/open-gpu-doc"
     }
   }
 }
