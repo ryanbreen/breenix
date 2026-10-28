@@ -94,8 +94,8 @@ deltas, not arbitrary increasing gaps.
 - **Stale epoch:** execute the same transfer with the previous epoch in its
   engine release. The sequence must match and the epoch must differ by one.
   The separate terminal release and stream consumption are required here too.
-- **Masked class:** remove A0B5 from the adapter's effective class profile
-  before submission. Admission must refuse without advancing the queue,
+- **Masked class:** mask the 3D feature at admission before the copy
+  submission. Admission must refuse without advancing the queue,
   producing Done, or publishing a command. The next unmasked copy must complete.
 
 The terminal control word is not a request completion and cannot produce Done.
@@ -116,13 +116,15 @@ with the console's 330 s bound.
 ## Host scorer and companion boot (8.1 u8)
 
 The host-run `core` category has `row`, `dispatch` and `producer`; its metal
-milestone is `metal-gt710/gpu-core`. The coordinator's 2026-10-28 redirect
-requires two final-head boots for 8.1: the production console suite and the
-explicit core diagnostic. Formats arrive in 8.2, so 8.1 does not boot the GPU
-suite again. Score the two captures with:
+milestone is `metal-gt710/gpu-core`. The coordinator's 2026-10-28 review ruling
+requires one final-head production GPU-suite boot for `producer`, after the
+profile-source and wording fixes are committed. Formats arrive in 8.2, so the
+170 cases must refuse the unprobed format at 8.1. The production console suite
+and explicit core diagnostic stand from the preceding acceptance when the
+review fixes change no kernel or startup code. For same-head captures, use:
 
 ```text
-scripts/metal/gt710-suite --boot CONSOLE_BOOT --core-boot CORE_BOOT --sha FULL_COMMIT
+scripts/metal/gt710-suite --boot CONSOLE_BOOT --core-boot CORE_BOOT --gpu-boot GPU_BOOT --sha FULL_COMMIT
 ```
 
 The primary must exit 0 with console 88/88 and authenticated first-CAPS startup
@@ -130,9 +132,17 @@ evidence. Its retained handoff and final-marker events must be at most 330 secon
 apart. The separate successful probe-mode boot explicitly requests
 `--gt710-category core`; its authenticated upload and original capture files
 are retained under `core-diagnostic/`. Only that boot builds `gt710_core_probe`
-and supplies row/dispatch evidence. Both captures must bind their commit file,
-verified `build.commit` and `toolsCommit` to the requested full commit, with
+and supplies row/dispatch evidence. Captures must bind their commit file,
+verified `build.commit` and `toolsCommit` to their requested full commit, with
 clean source, the required profiles and no gaps or fatal events.
+
+For the review ruling's retained console/core pair, rescore the original
+capture files with the final scorer, passing their original SHA and the
+explicit final GPU SHA to `core_capture`, `record_capture` and
+`acceptance_status`. Check the source diff first: this exception is authorized
+only because kernel and startup code are unchanged. `acceptance.json` records the
+retained SHA separately and binds `producerBoot` and `gpuElapsedMS` to the new
+GPU capture; it does not relabel the older captures as final-head boots.
 
 The scorer retains `acceptance.json` beside the console capture. It records each
 boot ID, exit status, kernel/build/tools identity, profile and serial/bulk hashes;
@@ -147,7 +157,8 @@ shared lock before the boots and restores main's tools afterward.
 `row` checks the complete 512-byte CAPS record: backend 6, the created
 927D/A06F/A0B5/A197 classes, native origins, limits, live geometry and reserved
 bytes. Format/profile/pipeline support stays absent. `dispatch` checks five
-draws, the copy, three rejected controls and their immediate clean successors,
+clean draws and the copy; the three controls and their clean successors run
+on copies,
 using the native answer and method namespaces and matching receipts.
 
 The diagnostic retains its refusal-only CAPS snapshot and tears its channels down.
@@ -178,13 +189,17 @@ entry IRQ state on success, failure and interrupted waiting.
 
 Production startup retains one `GT710_CORE_STARTUP` JSON line in the existing
 `/proc/gt710-pixels` bulk buffer, with `schema=1`, boolean `ready`, and unsigned
-`irq_masked_max_us`. The latter is the GPU gauge's boot-global maximum through
-startup; the record reads the gauge without changing it. Both x86 masking helpers
-time GPU-path intervals, including IRQ-safe mutex acquisitions. Serial carries
+`irq_masked_max_us`. The latter snapshots the GPU gauge's boot-global maximum
+through the startup window; the record reads the gauge without changing it.
+The x86 masking helpers time instrumented intervals that begin with interrupts
+enabled, including IRQ-safe mutex acquisitions. This startup-window measurement
+does not measure interrupts-off time across GPU syscalls, which enter with
+interrupts already disabled. That measurement belongs to the 24.9 performance
+follow-up [#2567](https://github.com/ryanbreen/breenix/issues/2567). Serial carries
 only `GT710_CORE_STARTUP_BULK <bytes> <sha256>`, covering the exact line and LF.
 The acceptance capture must upload the buffer after first CAPS, through the
 existing network uploader. The joiner authenticates this block and rejects
-failed startup or a maximum over the unchanged 500 µs bound. A host check of
+failed startup or a startup-window maximum over the 500 µs startup bound. A host check of
 the encoder or interrupt state supplies no measured hardware duration.
 
 The console entry point runs its CE wait/recovery checks before first CAPS,
@@ -195,18 +210,17 @@ them. A sequence's later suite finds no pending rows after the earlier upload
 unless a producer has added evidence. The GPU companion retains its bulk file;
 scoring authenticates its startup row as well as the console's.
 
-`producer` on the two-boot path checks the completed shared console manifest,
-including 88/88 passed cases, 0/88 skips and the ordinary memory rule, plus the
-authenticated ready startup row and diagnostic backend-6 CAPS snapshot. Startup
-failure, a maximum above 500 µs, dirty or mismatched builds/tools, a nonzero exit,
-gaps or missing captures fail acceptance.
+Acceptance checks the completed shared console manifest, including 88/88 passed
+cases, 0/88 skips and the ordinary memory rule, plus the authenticated ready
+startup row and diagnostic backend-6 CAPS snapshot. Startup failure, a
+startup-window maximum above 500 µs, dirty or mismatched builds/tools, a failed
+console or diagnostic exit, gaps or missing captures fail acceptance.
 
-For retained historical captures supplied with `--gpu-boot`, the existing GPU
-producer check still requires START, the shared manifest's 170 CASE identities
+`producer` requires its own named production GPU capture: START, the shared manifest's 170 CASE identities
 in order, DONE with 170 failures and no skips, elapsed time and READY. Each
 case's sole failure must name CAPS status 2 and `missing b8g8r8a8-render`;
 NO_DEVICE and other admission failures fail. The memory and 900-second rules
-remain in that historical scorer. This does not direct another GPU boot for 8.1.
+apply to that GPU boot, whose exit 1 is expected for 170 honest refusals.
 The milestone 8 rendering gate remains 170 passing cases with its shared pixels
 and existing bounds.
 
