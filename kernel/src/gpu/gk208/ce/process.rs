@@ -4,6 +4,9 @@ use super::*;
 use core::sync::atomic::AtomicBool;
 use crate::task::{waitqueue::{WaitQueueHead,PrepareOutcome},thread::ThreadState};
 static SESSION:spin::Mutex<Option<Session>>=spin::Mutex::new(None);
+// Sticky through failed startup too: cleanup may retain channels/backing.
+// Keep this visible while initialize_core temporarily takes SESSION.
+static CORE_STARTED:AtomicBool=AtomicBool::new(false);
 static RECOVERY_STARTED:AtomicBool=AtomicBool::new(false);
 static RECOVERY_READY:AtomicBool=AtomicBool::new(false);
 static RECOVERY_RESULT:spin::Mutex<Option<Result<String,&'static str>>>=spin::Mutex::new(None);
@@ -11,21 +14,26 @@ static RECOVERY_WAITERS:WaitQueueHead=WaitQueueHead::new();
 static WAITING:AtomicBool=AtomicBool::new(false);
 static WAITERS:WaitQueueHead=WaitQueueHead::new();
 struct Work {a:Channel,b:Channel,ticket:Option<Ticket>,request:Request,seed:u32,baseline:memory::allocator::Stats,old:[u32;3],userd:Allocation,engine:Engine}
-pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,console:super::super::ConsoleSurface,core_started:bool,work:Option<Work>}
+pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,console:super::super::ConsoleSurface,work:Option<Work>}
+pub(in crate::gk208) fn test_ownership()->Result<(),&'static str> {
+    if CORE_STARTED.load(Ordering::Acquire) {return Err("native GPU core owns FIFO");}
+    Ok(())
+}
 pub(crate) fn retain(layout:memory::Layout,regs:usize,bar:usize,console:super::super::ConsoleSurface)->Result<(),&'static str> {
+    test_ownership()?;
     let native=layout.objects[4].range.start;
     let s=layout.allocator.stats();
     *SESSION.lock()=Some(Session{layout,registers:regs,bar,bi:native+0x2000,bd:native+0x3000,
-        pte:native+0x4000+(SLOT/4096)*8,total:s.reserved+s.charged+s.free,console,core_started:false,work:None});
+        pte:native+0x4000+(SLOT/4096)*8,total:s.reserved+s.charged+s.free,console,work:None});
     Ok(())
 }
 pub(in crate::gk208) fn initialize_core()->Result<(),&'static str> {
     let mut s={
         let mut owner=SESSION.lock();
         let s=owner.as_mut().ok_or("native display/allocator unavailable")?;
-        if s.core_started {return Err("native core startup already attempted");}
+        if CORE_STARTED.load(Ordering::Acquire) {return Err("native core startup already attempted");}
         if s.work.is_some() {return Err("native CE work still owned");}
-        s.core_started=true;
+        CORE_STARTED.store(true,Ordering::Release);
         owner.take().unwrap()
     };
     let result=(|| {
@@ -39,7 +47,7 @@ pub(in crate::gk208) fn initialize_core()->Result<(),&'static str> {
 
 impl Session {
     fn begin(&mut self)->Result<(),&'static str> {
-        if self.core_started {return Err("native GPU core owns FIFO");}
+        test_ownership()?;
         if self.work.is_some() {return Err("native wait already owned");}
         let mut regs=Registers(self.registers);
         ensure_unbound(&mut regs, 0)?;
@@ -73,6 +81,7 @@ impl Session {
         Ok(())
     }
     fn status(&mut self)->Result<String,&'static str> {
+        test_ownership()?;
         let Some(w)=self.work.as_mut() else {return Ok(String::from("ready\n"));};
         let mut regs=Registers(self.registers);let e=&w.engine;
         let completed=w.a.completed(&mut regs,self.total,&e,w.request,0)?.0.is_some();
@@ -84,6 +93,7 @@ impl Session {
         Ok(format!("waiting held={} completed={}\n",held,u32::from(completed)))
     }
     fn drain(&mut self)->Result<String,&'static str> {
+        test_ownership()?;
         let w=self.work.as_mut().ok_or("native waiter absent")?;
         let mut regs=Registers(self.registers);let e=&w.engine;
         if w.a.completed(&mut regs,self.total,&e,w.request,0)?.0.is_some() {return Err("native wait already completed");}

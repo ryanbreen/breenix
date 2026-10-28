@@ -294,11 +294,13 @@ fn stuck_preempt_with_failed_reset_or_unbind_retains_backing() {
 }
 mod ce {
     use super::*;
+    use std::sync::atomic::Ordering;
+    thread_local! { static CORE_STARTED: std::sync::atomic::AtomicBool = const { std::sync::atomic::AtomicBool::new(false) }; }
     // CE_HELPER
     struct Engine { base:usize, pbdma:usize }
     fn discover(_: &mut Registers) -> Result<Engine,&'static str> { step("discover")?;Ok(Engine{base:0x104000,pbdma:0}) }
     const SLOT:u64=(8<<20)-4096;
-    struct Session { registers:usize, core_started:bool, work:Option<()> }
+    struct Session { registers:usize, work:Option<()> }
     impl Session {
         // CE_BEGIN
     }
@@ -312,16 +314,18 @@ mod ce {
     fn core_ownership_refuses_ce_before_register_writes() {
         let mut regs=Registers::new();
         let before=regs.values.clone();
-        let mut s=Session{core_started:true,registers:&mut regs as *mut _ as usize,work:None};
+        CORE_STARTED.with(|s| s.store(true, Ordering::Release));
+        let mut s=Session{registers:&mut regs as *mut _ as usize,work:None};
         assert_eq!(s.begin(),Err("native GPU core owns FIFO"));
         assert_eq!(regs.values,before);
+        CORE_STARTED.with(|s| s.store(false, Ordering::Release));
     }
     #[test]
     fn bound_channels_are_refused_before_fifo_writes_or_construction() {
         for id in [0,1] {
             let mut regs=Registers::new();regs.write(0x800000+id*8,0x80000300);
             let before=regs.values.clone();
-            let mut s=Session{core_started:false,registers:&mut regs as *mut _ as usize,work:None};
+            let mut s=Session{registers:&mut regs as *mut _ as usize,work:None};
             assert!(s.begin().is_err(),"process CE replaced bound channel {id}");assert_eq!(regs.values,before);
             assert!(reader(&mut regs,&memory::Layout{allocator:memory::allocator::Allocator}).is_err());assert_eq!(regs.values,before);
             assert!(constructor(&mut regs,id as u32).is_err());assert_eq!(regs.values,before);

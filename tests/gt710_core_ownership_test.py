@@ -144,6 +144,9 @@ mod gk208 {
         }
         for key, value in replacements.items():
             fixture = re.sub(r'\b' + key + r'\b', lambda _: value, fixture)
+        if helper:
+            fixture = fixture.replace('pub struct Registers',
+                'pub(super) use process::test_ownership;\n  pub struct Registers')
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)

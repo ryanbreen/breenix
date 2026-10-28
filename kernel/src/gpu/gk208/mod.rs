@@ -254,6 +254,7 @@ fn sink(
     Ok((data, modes))
 }
 fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
+    ce::test_ownership()?;
     let bar = device.bars[0];
     if bar.address == 0 || bar.size < 0x1000000 || bar.is_io || bar.prefetchable {
         return Err("BAR0 is not an assigned register aperture");

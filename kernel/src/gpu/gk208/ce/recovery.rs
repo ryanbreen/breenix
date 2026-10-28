@@ -231,6 +231,7 @@ fn pause() -> Result<(), &'static str> {
 }
 
 pub(super) fn probe(s: &mut super::process::Session) -> Result<String, &'static str> {
+    super::process::test_ownership()?;
     let mut regs = Registers(s.registers);
     let e = discover(&mut regs)?;
     let old = [regs.read(0x2254), regs.read(0x2140), regs.read(0x204)];

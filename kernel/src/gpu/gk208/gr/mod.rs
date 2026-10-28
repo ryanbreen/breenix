@@ -270,6 +270,7 @@ pub(super) fn probe(
     console: &super::ConsoleSurface,
     evo: &mut super::native::Evo,
 ) -> Result<(), &'static str> {
+    super::ce::test_ownership()?;
     probe_static_inputs()?;
     let mut cleanup = ProbeCleanup {
         state: ctxctl::SavedState::capture(regs).map_err(hardware_error)?,

@@ -151,6 +151,17 @@ admission then reports the unprobed BGRA render capability. Startup failure
 reports DEVICE_FAILED and its cause; it cannot qualify as capability evidence.
 The existing console CE checks run before this first-use ownership transfer.
 
+The native test probes refuse with `native GPU core owns FIFO` once first-use
+startup claims the engine, including after failed startup. The ownership flag
+remains visible while startup temporarily removes its retained
+session. CE wait/status/drain, CE recovery, the startup CE/GR probes and board
+inventory re-entry check ownership before hardware access. GR refusal precedes
+cleanup capture, so it cannot reset or restore the core's live state. Recovery
+publishes `GT710_RECOVERY_ERROR native GPU core owns FIFO` and returns its
+retained session on that early error. The host check is
+`tests/gt710_core_ownership_test.py`; it substitutes the hardware boundary and
+does not supply hardware execution evidence.
+
 First-CAPS startup runs with CPU interrupts enabled; only short register
 read/modify/write sequences mask them. Concurrent first callers sleep through
 the ownership transfer and result publication. The startup restores its caller's

@@ -92,7 +92,8 @@ class LiveUnwind(unittest.TestCase):
         # Exercise CE preflight from the real entry points, up to allocation.
         ce = (ROOT / 'kernel/src/gpu/gk208/ce.rs').read_text()
         helper = item(ce, 'fn ensure_unbound(') if 'fn ensure_unbound(' in ce else ''
-        begin = item((ROOT / 'kernel/src/gpu/gk208/ce/process.rs').read_text(), '    fn begin(')
+        process = (ROOT / 'kernel/src/gpu/gk208/ce/process.rs').read_text()
+        begin = item(process, '    fn begin(')
         begin = begin.replace('let mut regs=Registers(self.registers)', 'let mut regs=unsafe { &mut *(self.registers as *mut Registers) }')
         begin = begin[:begin.index('        let baseline=')] + '\n let _ = old; Ok(())\n}'
         reader = item((ROOT / 'kernel/src/gpu/gk208/ce/readback.rs').read_text(),
@@ -101,7 +102,10 @@ class LiveUnwind(unittest.TestCase):
         # The constructor itself must independently reject bound storage.
         constructor = item(ce, '    fn new(regs:')
         guard = constructor[constructor.index('{') + 1:constructor.index('        let mut io=')]
-        harness = harness.replace('// CE_HELPER', helper)
+        ownership = item(process, 'pub(in crate::gk208) fn test_ownership(').replace('pub(in crate::gk208) ', '')
+        ownership = ownership.replace('CORE_STARTED.load(Ordering::Acquire)',
+            'CORE_STARTED.with(|s| s.load(Ordering::Acquire))')
+        harness = harness.replace('// CE_HELPER', helper + '\n' + ownership)
         harness = harness.replace('// CE_BEGIN', begin)
         harness = harness.replace('// CE_READER', body + '\n let _ = (total, engine); Ok(())')
         harness = harness.replace('// CE_CONSTRUCTOR', guard + '\n let _ = (regs, id); Ok(())')
