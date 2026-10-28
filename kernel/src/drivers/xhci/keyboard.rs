@@ -75,6 +75,8 @@ impl Controller {
                 self.service()?;
             }
             self.dispatch();
+            #[cfg(all(target_arch = "x86_64", feature = "softirq_hostkey_test"))]
+            super::softirq_wake_test::after_dispatch();
             self.tick_keyboards();
             if CONSOLE_START.swap(false, Ordering::SeqCst) {
                 // A fault-test kernel's recovery exercise replaces the replug exercise.
