@@ -107,3 +107,14 @@ fn send(d:&mut Device,caller:u64) {assert!(d.send(request(caller)).is_ok());}
     s.borrow_mut().release=1;assert!(!matches!(d.reap(),Reap::Done(_)));
     s.borrow_mut().release_epoch=18;assert!(matches!(d.reap(),Reap::Done(_)));
 }
+
+#[test] fn registered_channel_resumes_after_startup_receipts() {
+    let (old,s)=device();drop(old);
+    let mut d=Device::registered(NativeChannel(s.clone()),gk208::caps::BoardState::empty(),8);
+    send(&mut d,9001);
+    assert_eq!(s.borrow().published,vec![9]);
+    s.borrow_mut().release=8;
+    assert!(!matches!(d.reap(),Reap::Done(_)));
+    s.borrow_mut().release=9;
+    assert!(matches!(d.reap(),Reap::Done(_)));
+}

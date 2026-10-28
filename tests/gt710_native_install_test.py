@@ -17,9 +17,9 @@ class NativeInstall(unittest.TestCase):
         fixture = (ROOT / 'tests/gt710_adapter_test.rs').read_text()
         fixture += r"""
 mod installation {
-    use crate::{gk208, gpu::dev::{self, Device}, device};
+    use crate::{gk208, gpu::dev::Device, device};
     use gpu_abi as abi;
-    use abi::capability;
+    use abi::{capability, Plain};
     struct Core { dev: Option<Device>, queue_size: usize, status: u32, caps: abi::Caps }
     std::thread_local! { static CORE: std::cell::RefCell<Option<Core>> = const { std::cell::RefCell::new(None) }; }
     fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
@@ -28,15 +28,15 @@ mod installation {
     // INSTALL
     #[test] fn registration_requires_a_live_backend_and_retains_real_caps() {
         CORE.with(|c| *c.borrow_mut() = Some(Core { dev: None, queue_size: 0, status: abi::status::NO_DEVICE, caps: abi::Caps::ZERO }));
-        let (d, state) = device();
+        let (d, _) = device();
         assert!(install_native(d).is_err(), "unprobed board must not be registered");
-        let (mut d, _) = device();
+        let (d0, state) = device(); drop(d0);
         let mut board = gk208::caps::BoardState::empty();
         board.chipset = 0x106;
         board.channel = (0x123000, 17);
         board.graphics_ready = true;
         board.created_classes = abi::gk208::CAPSET_IDS;
-        d.set_board(board);
+        let d = gk208::adapter::Device::registered(crate::gk208::gr::channel::NativeChannel(state.clone()), board, 8);
         assert!(install_native(d).is_ok());
         with_core(|core| {
             let Some(Device::Gk208(d)) = core.dev.as_ref() else { panic!("native backend missing") };
@@ -53,10 +53,6 @@ mod installation {
         fixture = fixture.replace('// INSTALL', install)
         fixture = fixture.replace('pub enum Reap {Empty,Done(Done),Fault}',
             'pub enum Reap {Empty,Done(Done),Fault} pub enum Device { Gk208(crate::gk208::adapter::Device), Other }')
-        # Supply observed board facts through the actual constructor, not a fake CAPS response.
-        fixture = fixture.replace('d.set_board(board);', 'd = gk208::adapter::Device::new(crate::gk208::gr::channel::NativeChannel(state.clone()), board);')
-        fixture = fixture.replace('let (mut d, _) = device();', 'let (d0, state) = device(); drop(d0); let mut d;')
-        fixture = fixture.replace('gpu::dev::{self, Device}', 'gpu::dev::Device')
         fixture = fixture.replace('../../kernel/', str(ROOT / 'kernel') + '/').replace('../kernel/', str(ROOT / 'kernel') + '/')
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
         with tempfile.TemporaryDirectory() as tmp:
@@ -65,6 +61,51 @@ mod installation {
             subprocess.run(priority + ['rustc', '--edition=2021', '--crate-name', 'gpu_abi', '--crate-type', 'rlib', str(ROOT / 'libs/gpu-abi/src/lib.rs'), '-o', str(path / 'libgpu_abi.rlib')], check=True)
             subprocess.run(priority + ['rustc', '--edition=2021', '--test', '-Dwarnings', '--extern', f'gpu_abi={path / "libgpu_abi.rlib"}', str(path / 'install.rs'), '-o', str(path / 'install')], check=True)
             subprocess.run([str(path / 'install'), 'installation::', '--nocapture'], check=True)
+
+    def test_production_caps_initializes_before_reading_the_core(self):
+        source = (ROOT / 'kernel/src/gpu/mod.rs').read_text()
+        function = item(source, 'fn op_caps(').replace('#[cfg(target_arch = "x86_64")]', '')
+        fixture = r"""
+use std::cell::{Cell,RefCell};
+const EINVAL:i64=22;
+mod abi {
+    #[derive(Clone,Copy,Default)] pub struct Caps { pub backend:u32,pub status:u32,pub missing:u32 }
+    pub mod status {pub const NO_DEVICE:u32=1;pub const DEVICE_FAILED:u32=3;}
+}
+struct Core {dev:Option<()>,status:u32,reason:&'static str}
+impl Core {
+ fn empty()->Self{Self{dev:None,status:1,reason:"absent"}}
+ fn caps_record(&self)->abi::Caps{abi::Caps{backend:if self.dev.is_some(){6}else{0},status:self.status,missing:if self.dev.is_some(){3}else{0}}}
+}
+thread_local! {
+ static CORE:RefCell<Core>=RefCell::new(Core::empty());
+ static CALLS:Cell<u32>=const{Cell::new(0)};
+ static OUTPUT:Cell<abi::Caps>=Cell::new(abi::Caps::default());
+}
+fn with_core<R>(f:impl FnOnce(&mut Core)->R)->Option<R>{Some(CORE.with(|c|f(&mut c.borrow_mut())))}
+fn write_arg(_:u64,c:&abi::Caps)->Result<(),i64>{OUTPUT.with(|o|o.set(*c));Ok(())}
+mod gk208 {
+ pub fn takeover_started()->bool{true}
+ pub fn initialize_core()->Result<(),&'static str>{
+  crate::CALLS.with(|c|c.set(c.get()+1));
+  crate::with_core(|c|{c.dev=Some(());c.status=2;});Ok(())
+ }
+}
+// CAPS
+fn main(){
+ assert_eq!(op_caps(0,0),Err(EINVAL));assert_eq!(CALLS.with(Cell::get),0);
+ assert_eq!(op_caps(0,core::mem::size_of::<abi::Caps>() as u64),Ok(0));
+ let c=OUTPUT.with(Cell::get);assert_eq!((c.backend,c.status,c.missing),(6,2,3));
+ assert_eq!(op_caps(0,core::mem::size_of::<abi::Caps>() as u64),Ok(0));
+ assert_eq!(CALLS.with(Cell::get),1,"CAPS must initialize exactly once");
+}
+""".replace('// CAPS', function)
+        priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path / 'caps.rs').write_text(fixture)
+            subprocess.run(priority + ['rustc', '--edition=2021', '-Dwarnings', str(path / 'caps.rs'), '-o', str(path / 'caps')], check=True)
+            subprocess.run([str(path / 'caps')], check=True)
 
 
 if __name__ == '__main__':
