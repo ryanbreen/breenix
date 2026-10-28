@@ -1,6 +1,6 @@
 //! Force the first host-key press/release's real command IRQs across PREEMPT.
 //!
-//! The xHCI MSI targets the current worker CPU for this packet. Each command
+//! The xHCI worker moves to the device-IRQ CPU for this packet. Each command
 //! holds PREEMPT from before its doorbell until its deferred callback runs.
 //! The command wait releases/reacquires PREEMPT with IRQs masked at 1 ms
 //! intervals, at a lock-free boundary. The old irq_exit therefore cannot
@@ -8,8 +8,7 @@
 //! This needs no extra thread to start during the measured replay.
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use super::{host_keys, now};
-use crate::drivers::pci;
+use super::{host_keys, now, SECOND};
 use crate::{per_cpu, task::{scheduler, thread::CpuPin}};
 
 const LIMIT_NS: u64 = 100_000_000;
@@ -23,8 +22,6 @@ static REPLAYED_AT: AtomicU64 = AtomicU64::new(0);
 static DISPATCHED_AT: AtomicU64 = AtomicU64::new(0);
 static CHANGED_AT: AtomicU64 = AtomicU64::new(0);
 static OLD_PIN: spin::Once<Option<CpuPin>> = spin::Once::new();
-// This controller only: BDF, MSI address-register offset, original address.
-static OLD_ROUTE: spin::Once<(u8, u8, u8, u8, u32)> = spin::Once::new();
 static IRQS: AtomicU64 = AtomicU64::new(0);
 static WAKES: AtomicU64 = AtomicU64::new(0);
 static EXPECT_WAKE: AtomicU64 = AtomicU64::new(0);
@@ -89,38 +86,24 @@ pub(super) fn wait_for_command_wake() {
 }
 
 /// First serial packet, before its first synchronous command.
-pub(super) fn begin(device: &pci::Device, reports: usize) {
+pub(super) fn begin(reports: usize) {
     if STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
     assert_eq!(reports, 2, "softirq wake test needs one press/release packet");
-    let tid = scheduler::current_thread_id().expect("xHCI worker identity");
-    // Pin the already-running worker where it is. Changing the MSI address
-    // avoids depending on another CPU accepting a new thread or a migration.
-    let cpu = crate::arch_without_interrupts(|| {
-        let cpu = per_cpu::cpu_id();
-        let old_pin = scheduler::with_thread_mut(tid, |thread| thread.cpu_affinity)
-            .expect("xHCI worker row");
-        OLD_PIN.call_once(|| old_pin);
-        assert!(scheduler::set_user_affinity(tid, Some(CpuPin::per_cpu_worker(cpu))));
-        cpu
-    });
+    let cpu = crate::arch_impl::x86_64::smp::cpus_online() as usize - 1;
     CPU.store(cpu, Ordering::Relaxed);
+    let tid = scheduler::current_thread_id().expect("xHCI worker identity");
+    let old_pin = scheduler::with_thread_mut(tid, |thread| thread.cpu_affinity)
+        .expect("xHCI worker row");
+    OLD_PIN.call_once(|| old_pin);
+    assert!(scheduler::set_user_affinity(tid, Some(CpuPin::per_cpu_worker(cpu))));
+    let deadline = now() + 5 * SECOND;
+    while per_cpu::cpu_id() != cpu {
+        assert!(now() < deadline, "xHCI worker did not move for forcing test");
+        scheduler::yield_current();
+    }
     assert_eq!(per_cpu::preempt_count(), 0, "forcing replay entry context");
-    let capability = device.find_msi_capability().expect("xHCI MSI capability");
-    let (bus, slot, function, at) = (device.bus, device.device, device.function, capability + 4);
-    let original = pci::pci_read_config_dword(bus, slot, function, at);
-    OLD_ROUTE.call_once(|| (bus, slot, function, at, original));
-    let apic_id = crate::arch_impl::x86_64::smp::cpu_apic_id(cpu).expect("worker APIC id");
-    // PCI Local Bus 3.0 6.8.1 and Intel SDM MSI addressing: replace only the
-    // 32-bit destination address, as msi::set_destination does, retaining the
-    // vector, enable bit, upper address, and other devices' routes.
-    assert!(apic_id <= 0xff, "worker MSI destination fits eight bits");
-    let address = 0xfee0_0000 | (apic_id << 12);
-    pci::pci_write_config_dword(bus, slot, function, at, address);
-    assert_eq!(pci::pci_read_config_dword(bus, slot, function, at), address,
-        "forcing MSI route read-back");
-    crate::serial_println!("SOFTIRQ_HOSTKEY SETUP cpu={} msi-routed-to-worker", cpu);
     REPLAYED_AT.store(host_keys::REPLAYED.load(Ordering::Acquire), Ordering::Relaxed);
     DISPATCHED_AT.store(host_keys::DISPATCHED.load(Ordering::Acquire), Ordering::Relaxed);
     CHANGED_AT.store(host_keys::CHANGED.load(Ordering::Acquire), Ordering::Relaxed);
@@ -151,10 +134,6 @@ fn finish() {
     if HELD.swap(false, Ordering::AcqRel) {
         per_cpu::preempt_enable();
     }
-    let (bus, slot, function, at, original) = *OLD_ROUTE.get().expect("saved MSI route");
-    pci::pci_write_config_dword(bus, slot, function, at, original);
-    assert_eq!(pci::pci_read_config_dword(bus, slot, function, at), original,
-        "restored MSI route read-back");
     let tid = scheduler::current_thread_id().expect("forcing worker identity");
     assert!(scheduler::set_user_affinity(tid, *OLD_PIN.get().expect("saved worker pin")));
     crate::serial_println!(
