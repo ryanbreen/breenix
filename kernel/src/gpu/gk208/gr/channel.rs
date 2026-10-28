@@ -795,11 +795,15 @@ mod native {
         /// Append a fresh ordinary mapping after bind_shaders' receipt. The
         /// allocation is registered before any fallible publication operation.
         pub(in crate::gk208::gr) fn allocate_draw(
-            &mut self, h: &mut Hardware<'_>, name: &'static str, bytes: u64,
+            &mut self, h: &mut Hardware<'_>, name: &'static str, bytes: u64, alignment: u64,
         ) -> Result<super::super::context::Buffer, &'static str> {
             if !self.bound || self.quiesced { return Err("draw mapping requires active GR"); }
-            let allocation = h.layout.allocator.allocate(bytes, 4096, Kind::Engine)?;
-            let va = h.next_va;
+            if alignment < 4096 || !alignment.is_power_of_two() {
+                return Err("invalid draw allocation alignment");
+            }
+            let va = h.next_va.checked_add(alignment - 1)
+                .ok_or("draw VA alignment overflow")? & !(alignment - 1);
+            let allocation = h.layout.allocator.allocate(bytes, alignment, Kind::Engine)?;
             h.next_va = va.checked_add(allocation.range.size + 4096).ok_or("draw VA overflow")?;
             h.backing.push((va, allocation));
             // SAFETY: bind_shaders returned an accepted engine receipt, and
@@ -810,7 +814,7 @@ mod native {
                     Flags { volatile: true, ..Flags::default() })?;
             }
             Ok(super::super::context::Buffer {
-                spec: super::super::context::Spec { name, bytes, align: 4096 }, va,
+                spec: super::super::context::Spec { name, bytes, align: alignment }, va,
             })
         }
         fn sequence(&mut self) -> Result<(u32, u32), &'static str> {
@@ -1018,6 +1022,7 @@ mod native {
             let c = self.report.identity;
             let mut failure = None;
             let mut gr_enable = None;
+            let mut fault_reset = false;
             if self.bound {
                 regs.mask(0x2630, 1 << c.runlist, 1 << c.runlist);
                 regs.mask(0x800004, 0x800, 0x800);
@@ -1028,10 +1033,24 @@ mod native {
                     gr_enable = Some(regs.read(0x200) & 0x1000);
                     if let Err(error) = super::super::ctxctl::reset(regs).map_err(super::super::hardware_error) {
                         failure = Some(error);
+                    } else if regs.read(0x259c) & 1 != 0
+                        && u64::from(regs.read(0x2800)) << 12 == c.instance
+                    {
+                        // MIT nouveau gf100.c:696-733: acknowledge only this
+                        // GR unit's recorded instance after its DMA is stopped.
+                        // Unrelated units/instances keep their fault evidence.
+                        regs.write(0x259c, 1);
+                        fault_reset = regs.read(0x259c) == 0;
                     }
                 }
                 regs.write(0x2270, ((self.commands.range.start + RUNLIST) >> 12) as u32);
                 regs.write(0x2274, c.runlist << 20);
+                if fault_reset {
+                    // MIT nouveau gk104.c:404-418. A faulted runlist cannot
+                    // consume the empty replacement until cleared and resumed.
+                    regs.write(0x262c, 1 << c.runlist);
+                    regs.mask(0x2630, 1 << c.runlist, 0);
+                }
                 for (address, mask, budget) in [
                     (0x2284 + c.runlist as usize * 8, 0x100000, BOUND_US),
                     (0x3080 + self.pbdma * 4, 0xe000, BOUND_US),

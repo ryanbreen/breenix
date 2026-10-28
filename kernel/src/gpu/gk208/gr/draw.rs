@@ -152,6 +152,8 @@ pub struct Draw {
     pub width: u32,
     pub height: u32,
     pub vertex_va: u64,
+    /// Retained 1 MiB IDXFETCH scratch, aligned to 128 KiB (Mesa screen:1274-1283).
+    pub quarantine_va: u64,
     /// SPH offsets relative to the already bound program region, including
     /// the 7.4 stage-control offsets. Register counts are the committed metadata.
     pub vertex_program: u32,
@@ -175,6 +177,7 @@ pub fn commands(r: Draw) -> Result<Vec<u32>, &'static str> {
     if r.width != 64 || r.height != 64 || r.pitch < 256 || r.pitch & 255 != 0
         || r.pitch >= 1 << 28
         || !span(r.target_va, u64::from(r.pitch) * u64::from(r.height), 256)
+        || !span(r.quarantine_va, 1 << 20, 1 << 17)
         || !span(r.vertex_va, 96, 4) || !span(r.report_va, 12, 4)
         || r.epoch == 0 || r.nonce == 0
     {
@@ -191,6 +194,9 @@ pub fn commands(r: Draw) -> Result<Vec<u32>, &'static str> {
             | (channel::SUBCHANNEL << 13) | (method / 4));
         words.extend_from_slice(data);
     };
+    // Mesa screen:1274-1283 and MIT rnndb gf100_3d.xml:990-998.
+    // IDXFETCH writes here even for this non-indexed diagnostic.
+    emit(0x17bc, &[(r.quarantine_va >> 32) as u32, r.quarantine_va as u32, 3]);
     // Pitch-linear RT0: WIDTH is bytes, not pixels (Mesa surface:590-599).
     // A8R8G8B8 (0xcf) gives B,G,R,A bytes in little-endian memory.
     emit(0x0800, &[(r.target_va >> 32) as u32, r.target_va as u32,

@@ -1,4 +1,25 @@
 /*
+ * Copyright 2010 Christoph Bumiller
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ */
+/*
  * Copyright 2012 Red Hat Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -419,6 +440,10 @@ fn probe_inner(
         let _ = evidence.emit(Some(error));
         outcome = Err(error);
     }
+    if outcome.is_err() && hardware.regs.read(0x259c) != 0 {
+        // Retain the raw MMU unit words before the owned-fault reset/W1C.
+        interrupt_snapshot(hardware.regs, hardware.device, "before-unwind");
+    }
     // Run on closure errors too; the outer reset requires confirmed FIFO unwind.
     if let Err(error) = hardware.finish() {
         // Keep the failing FIFO words while GR is still accessible. The outer
@@ -688,8 +713,11 @@ fn draw_probe(
     hardware: &mut Hardware<'_>, graphics: &mut channel::Session,
     code_address: u64, evidence: &mut DrawEvidence,
 ) -> Result<(), &'static str> {
-    let target = graphics.allocate_draw(hardware, "draw-target", 64 * 256)?;
-    let vertices = graphics.allocate_draw(hardware, "draw-vertices", 96)?;
+    let target = graphics.allocate_draw(hardware, "draw-target", 64 * 256, 4096)?;
+    let vertices = graphics.allocate_draw(hardware, "draw-vertices", 96, 4096)?;
+    // Mesa 24.3.4 nvc0_screen.c:1274-1283 (MIT): poly_cache storage.
+    // The context and backing list keep it pinned through FIFO drain and reset.
+    let quarantine = graphics.allocate_draw(hardware, "draw-quarantine", 1 << 20, 1 << 17)?;
     let vertex_bytes: Vec<u8> = draw::VERTEX_WORDS.iter().flat_map(|w| w.to_le_bytes()).collect();
     let mut controls = alloc::vec![0; shaders::CODE_REGION_SIZE - shaders::SEGMENT_SIZE];
     for (offset, header, code) in [
@@ -722,7 +750,7 @@ fn draw_probe(
         };
         let result = graphics.draw(hardware, draw::Draw {
             target_va: target.va, pitch: 256, width: 64, height: 64,
-            vertex_va: vertices.va, vertex_program: vp as u32, fragment_program: fp as u32,
+            vertex_va: vertices.va, quarantine_va: quarantine.va, vertex_program: vp as u32, fragment_program: fp as u32,
             report_va: 0, epoch: 0, nonce: 0,
         }, &mut receipt);
         evidence.draws.push(DrawCapture { name, receipt, images: None });

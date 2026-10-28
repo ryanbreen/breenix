@@ -940,3 +940,20 @@ capture, draw record, bounded preempt/reset fallback and ownership policy.
 - envytools `f102b82381f3f11cee113d16374c87091db039d9`,
   `rnndb/graph/gf100_3d.xml:217-222`, MIT (imported `rnndb/copyright.xml`,
   copyright 2006 and authors listed in the consumer headers). Sample shading pass count.
+
+The M7.4 vertex quarantine repair uses Mesa 24.3.4
+`src/gallium/drivers/nouveau/nvc0/nvc0_screen.c:1274-1283` (MIT,
+Copyright 2010 Christoph Bumiller) for the 1 MiB backing and 128 KiB
+alignment, and envytools f102b82381f3f11cee113d16374c87091db039d9
+`rnndb/graph/gf100_3d.xml:990-998` (MIT via imported `copyright.xml`)
+for methods 0x17bc/0x17c0/0x17c4 and size selector 3. Consumers:
+`gr/mod.rs`, `gr/draw.rs`, and `tests/gt710_draw_stream_test.rs`; the
+original grants and copyrights are retained in those files. Breenix's
+existing VM/context ownership retains this scratch through drain/reset.
+
+The M7.4 MMU-fault unwind in `gr/channel.rs` uses nouveau v6.8
+`nvkm/engine/fifo/gf100.c:696-733` (instance attribution and MMU unit W1C)
+and `gk104.c:404-418` (runlist fault clear/allow), both MIT,
+Copyright 2012 Red Hat Inc. Their notices are retained in the consumer.
+`tests/gt710_gr_mmu_unwind_test.py` exercises Breenix's teardown order
+with a host MMIO model; it contains no nouveau implementation text.
