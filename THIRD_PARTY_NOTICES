@@ -888,6 +888,10 @@ checked MIT sources for the CE2 path on the retained graphics channel:
 - Nouveau v6.8, e8f897f4afef0031fe618a8e94127a0934896aba,
   nvkm/engine/ce/gk104.c, Copyright 2012 Red Hat Inc.:
   CE register base/instance spacing and interrupt mask/status.
+  nvkm/subdev/mc/base.c:nvkm_mc_enable, Copyright 2012 Red Hat Inc.:
+  TOP-derived PMC enable before accessing the selected copy engine.
+  nvkm/subdev/mc/nv04.c:nv04_mc_device_enable, Copyright 2012 Red Hat Inc.:
+  masked PMC enable with a posted-write read-back.
   nvkm/engine/fifo/gk104.c:281-286, Copyright 2012 Red Hat Inc.:
   CE engine scheduling without a separate graphics-context binding.
 - NVIDIA open-gpu-doc, 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,

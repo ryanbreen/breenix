@@ -846,13 +846,20 @@ mod native {
             let (engine, reset) = selected.ok_or("GR-runlist CE2 absent")?;
             // MIT gk104 CE: register base 0x104000 + inst * 0x1000.
             let base = 0x106000;
+            // MIT nouveau mc/base.c:nvkm_mc_enable uses the TOP reset
+            // mask before engine access. A disabled CE returns PRI errors,
+            // not interrupt status; retain restoration state before refusal.
+            let old_enable = h.regs.read(0x200) & (1 << reset);
+            h.regs.mask(0x200, 1 << reset, 1 << reset);
+            if h.regs.read(0x200) & (1 << reset) == 0 {
+                return Err("draw CE2 enable did not latch");
+            }
+            self.copy = Some(DrawCopy { base, engine, reset,
+                old_irq: h.regs.read(base + 0x904), old_enable });
+            h.regs.write(base + 0x904, 0);
             if h.regs.read(base + 0x908) & 7 != 0 || h.regs.read(0x259c) != 0 {
                 return Err("draw CE2 inherited fault");
             }
-            self.copy = Some(DrawCopy { base, engine, reset,
-                old_irq: h.regs.read(base + 0x904), old_enable: h.regs.read(0x200) & (1 << reset) });
-            h.regs.write(base + 0x904, 0);
-            h.regs.mask(0x200, 1 << reset, 1 << reset);
             Ok(())
         }
         /// Borrow the display owner's existing allocation through reset/drain.
