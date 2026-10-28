@@ -1827,7 +1827,9 @@ def core_producer_capture(directory, sha):
             or any(e['event'] in ('console-gap','fatal') for e in events)
             or not any(e['event'] == 'final-marker' for e in events)):
         raise ValueError('core producer capture incomplete, dirty, gapped or wrong commit')
-    return dict(boot=dict(boot, bootedCommit=sha), serial=read('serial.txt'))
+    serial = capture_serial(directory)
+    core_startup(serial)
+    return dict(boot=dict(boot, bootedCommit=sha), serial=serial)
 
 
 def core_diagnostic_capture(directory, sha):
@@ -2284,7 +2286,7 @@ def main():
             'import runpy,sys,shutil;from pathlib import Path;'
             'p=Path(sys.argv[1]);q=Path(sys.argv[2]);a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));'
             'a["core_producer_capture"](q,sys.argv[3]);d=p/"core-producer";d.mkdir(exist_ok=True);'
-            '[shutil.copyfile(q/n,d/n) for n in ("run.json","serial.txt","events.jsonl","ended","exit-status","dirty","commit")]',
+            '[shutil.copyfile(q/n,d/n) for n in ("run.json","serial.txt","events.jsonl","ended","exit-status","dirty","commit","gt710-pixels.rle")]',
             directory, companion, args.sha, check=True)
     result = runner['in_metal'](env, 'python3', '-c',
         'import runpy,sys;from pathlib import Path;'

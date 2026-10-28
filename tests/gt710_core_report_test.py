@@ -254,7 +254,11 @@ class CoreReport(unittest.TestCase):
             boot=gpu_boot(); del boot['bootedCommit']
             files={'run.json':json.dumps(boot),'serial.txt':gpu_serial(),'events.jsonl':json.dumps(dict(event='final-marker',seconds=30))+'\n',
                    'ended':'1\n','exit-status':'1\n','dirty':'0\n','commit':SHA+'\n'}
+            startup = b'GT710_CORE_STARTUP {"schema":1,"irq_masked_max_us":37,"ready":true}\n'
+            anchor = f'{len(startup)} {hashlib.sha256(startup).hexdigest()}\n'
+            files['serial.txt'] = 'GT710_CORE_STARTUP_BULK ' + anchor + 'GT710_BULK ' + anchor + files['serial.txt']
             for name,text in files.items(): (companion/name).write_text(text)
+            (companion/'gt710-pixels.rle').write_bytes(startup)
             diagnostic=path/'core-diagnostic'; diagnostic.mkdir()
             diagnostic_boot=dict(gpu_boot(), id='20261028T160000Z-metal', mode='probe',
                                  suite=None, suites=None, gt710Category='core',

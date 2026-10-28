@@ -47,6 +47,8 @@ mod present;
 mod isolation;
 #[path = "suite_gpu/performance.rs"]
 mod performance;
+#[cfg(target_arch="x86_64")]
+mod gt710_artifacts;
 
 static SUITE: Suite = suite("gpu", "GPU rendering", &[
     category("device", "3D device & capability profile", &[
@@ -277,5 +279,12 @@ fn device_version() -> CaseResult {
 }
 
 fn main() {
+    #[cfg(target_arch="x86_64")]
+    {
+        // The view and cases also read CAPS; finish its first-use evidence
+        // before consuming the lease-bound artifact route.
+        let _ = libbreenix::gpu::caps();
+        gt710_artifacts::upload().expect("native display artifact upload");
+    }
     SUITE.run()
 }

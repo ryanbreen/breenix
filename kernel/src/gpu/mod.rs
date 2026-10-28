@@ -2586,7 +2586,7 @@ fn op_caps(arg: u64, len: u64) -> Result<u64, i64> {
     Ok(0)
 }
 
-/// Claim startup under the core lock, then release it through all firmware IO.
+/// Claim startup under the core lock, then release it before initialize_core.
 /// A competing first CAPS sleeps through publication, including startup failure.
 #[cfg(target_arch = "x86_64")]
 fn native_caps_startup() -> Result<(), i64> {

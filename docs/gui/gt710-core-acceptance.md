@@ -170,13 +170,21 @@ entry IRQ state on success, failure and interrupted waiting.
 Production startup retains one `GT710_CORE_STARTUP` JSON line in the existing
 `/proc/gt710-pixels` bulk buffer, with `schema=1`, boolean `ready`, and unsigned
 `irq_masked_max_us`. The latter is the GPU gauge's boot-global maximum through
-startup; it is never reset or clamped for this record. Both x86 masking helpers
+startup; the record reads the gauge without changing it. Both x86 masking helpers
 time GPU-path intervals, including IRQ-safe mutex acquisitions. Serial carries
 only `GT710_CORE_STARTUP_BULK <bytes> <sha256>`, covering the exact line and LF.
 The acceptance capture must upload the buffer after first CAPS, through the
 existing network uploader. The joiner authenticates this block and rejects
 failed startup or a maximum over the unchanged 500 µs bound. A host check of
 the encoder or interrupt state supplies no measured hardware duration.
+
+The console entry point runs its CE wait/recovery checks before first CAPS,
+then uploads the retained buffer before starting the cases. The GPU entry
+point also calls CAPS before uploading and starting its cases. Disk staging
+provides the lease-bound route for named console/GPU suites and lists containing
+them. A sequence's later suite finds no pending rows after the earlier upload
+unless a producer has added evidence. The GPU companion retains its bulk file;
+scoring authenticates its startup row as well as the console's.
 
 `producer` requires START, the shared manifest's 170 CASE identities in order,
 DONE with 170 failures and no skips, `SUITE gpu ELAPSED ms=N`, and READY.
