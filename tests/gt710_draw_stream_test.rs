@@ -304,6 +304,8 @@ fn addresses_offsets_and_bounds_are_encoded_without_truncation() {
         for j in 0..n { methods.insert(m + 4*j as u32, stream[i+1+j]); }
         i += n+1;
     }
+    // envytools rnndb graph/gf100_3d.xml:217-222: bits 3:0 must be 1, 2, 4 or 8.
+    assert!(matches!(methods[&0x0754] & 0xf, 1 | 2 | 4 | 8));
     for (m,v) in [(0x800,0x13),(0x808,512),(0x1c04,0x25),(0x1f00,0x25),
                   (0x2044,0x3b0),(0x2144,0x2b0)] { assert_eq!(methods[&m],v); }
     assert_eq!(reports, [[0x37,0x56780004,0x76543210,0x1000f010],
