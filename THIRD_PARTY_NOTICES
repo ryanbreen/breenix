@@ -1028,3 +1028,24 @@ revision, MIT, Copyright (c) 2019 NVIDIA CORPORATION. Both file headers
 were read for this unit; the full original grants remain in gr/draw.rs and
 gk208/copy.rs. Control orchestration and epoch-to-pixel selection are
 Breenix-owned; no additional external implementation is imported.
+
+## Native GPU ABI contract (M8.1 unit 1)
+
+`libs/gpu-abi/tests/gk208_contract.rs` derives class/method constants and
+fault/limit expectations from the following individually checked MIT files.
+The consumer's header retains their copyright and full MIT grant.
+
+- NVIDIA open-gpu-doc, revision `9fdf5c4062007929d9f4e6cbad9c9771fe61b880`:
+  `classes/host/cla06f.h`, `classes/3d/cla197.h` (Copyright (c) 2020 NVIDIA
+  CORPORATION); `classes/dma-copy/cla0b5.h` (Copyright (c) 2019 NVIDIA
+  CORPORATION); `classes/display/cl927d.h` (Copyright (c) 1993-2022 NVIDIA
+  CORPORATION & AFFILIATES). MIT, including cl927d.h's explicit SPDX line.
+- Nouveau in Linux v6.8, revision `e8f897f4afef0031fe618a8e94127a0934896aba`:
+  `drivers/gpu/drm/nouveau/nvkm/engine/fifo/gk104.c` (Copyright 2012 Red Hat
+  Inc.) and `gk208.c` (Copyright 2013 Red Hat Inc.). Both full MIT headers.
+- Mesa 24.3.4, revision `769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de`:
+  `src/gallium/drivers/nouveau/nvc0/nvc0_screen.c` (Copyright 2010 Christoph
+  Bumiller). Full MIT header; `PIPE_CAP_MAX_TEXTURE_2D_SIZE` is 16384.
+
+Backend, boundary, feature, status tags and origin packing are Breenix ABI
+allocations; the source class/method/fault numbers retain their native meaning.
