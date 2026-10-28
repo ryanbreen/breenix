@@ -15,10 +15,25 @@ from gt710_contexts_report_test import triangle, V1, V2
 
 
 class ContextsOrchestration(unittest.TestCase):
+    def test_native_release_and_binding_order(self):
+        source = (ROOT / 'kernel/src/gpu/gk208/gr/channel.rs').read_text()
+        methods = '\n'.join(item(source, marker) for marker in [
+            '        fn sequence(', '        pub(in crate::gk208::gr) fn context_draw('])
+        methods = methods.replace('pub(in crate::gk208::gr)', 'pub(crate)').replace('super::super::', 'crate::')
+        fixture = (ROOT / 'tests/fixtures/gt710_contexts_submission.rs').read_text()
+        fixture = fixture.replace('ROOT', str(ROOT)).replace('// METHODS', methods)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / 'submission.rs').write_text(fixture)
+            priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
+            subprocess.run(priority + ['rustc', '--edition=2021', '--test', '-Dwarnings',
+                                      str(path / 'submission.rs'), '-o', str(path / 'submission')], check=True)
+            subprocess.run([str(path / 'submission'), '--nocapture'], check=True)
+
     def test_alternation_and_state_free_restore(self):
         source = (ROOT / 'kernel/src/gpu/gk208/gr/mod.rs').read_text()
-        flow = item(source, 'fn contexts_sequence(')
-        evidence = source[source.index('#[derive(Default)]\nstruct ContextsEvidence'):source.index('struct ShaderUpload')]
+        flow = item(source, 'fn contexts_sequence(').replace('super::hash', 'hash')
+        evidence = source[source.index('#[derive(Default)]\nstruct ContextsEvidence'):source.index('#[derive(Default)]\nstruct DrawEvidence')]
         for old, new in [('super::bulk', 'bulk'), ('super::hash', 'hash')]:
             evidence = evidence.replace(old, new)
         fixture = (ROOT / 'tests/fixtures/gt710_contexts_orchestration.rs').read_text()
@@ -31,7 +46,10 @@ class ContextsOrchestration(unittest.TestCase):
             priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
             subprocess.run(priority + ['rustc', '--edition=2021', '--test', '-Dwarnings',
                                       str(path / 'contexts.rs'), '-o', str(path / 'contexts')], check=True)
-            result = subprocess.run([str(path / 'contexts'), '--nocapture'], check=True, capture_output=True, text=True)
+            result = subprocess.run([str(path / 'contexts'), 'context_', '--nocapture'], capture_output=True, text=True)
+            if result.returncode:
+                print(result.stdout, result.stderr)
+            result.check_returncode()
             print('\n'.join(line for line in result.stdout.splitlines() if not line.startswith('GT710_CTX_IMAGE ')))
         report = json.loads(next(line.split(' ', 1)[1] for line in result.stdout.splitlines() if line.startswith('GT710_CONTEXTS ')))
         self.assertIsNone(report['error'])
@@ -66,6 +84,7 @@ class ContextsOrchestration(unittest.TestCase):
         # Ownership returns to the pair even when the producer fails.
         probe = item(source, 'fn contexts_probe(')
         self.assertLess(probe.index('contexts_sequence('), probe.index('graphics.second = Some(second)'))
+        self.assertLess(probe.index('session.execute(hardware)?'), probe.index('session.bind_shaders('))
         self.assertIn('contexts_probe(', item(source, 'fn probe_inner('))
 
 

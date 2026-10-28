@@ -996,3 +996,22 @@ The packed USERD publication follows the in-tree milestone 6.4
 `kernel/src/gpu/gk208/ce.rs:activate_pair`. Private context images and patch
 lists use shared global-buffer VAs; OS allocation and lifetime handling remain
 Breenix-owned.
+
+
+## GT 710 context alternation (E23 M7 PR 7.5 unit 5)
+
+Consumers: `kernel/src/gpu/gk208/gr/{draw,channel,mod}.rs` and the
+`tests/gt710_contexts_orchestration_test.py` extraction fixtures. The draw
+split retains the existing MIT NVIDIA open-gpu-doc cla197.h methods
+(revision 9fdf5c4062007929d9f4e6cbad9c9771fe61b880) and Mesa 24.3.4
+nvc0_{screen,state,vbo,surface}.c state, listed above. No new external
+implementation is imported. The full original notices remain in draw.rs.
+
+The binding snapshots additionally use nouveau v6.8
+nvkm/engine/gr/fuc/macros.fuc:125 (MIT, Copyright 2013 Red Hat Inc.) and
+hub.fuc:234-267 (MIT, Copyright 2011 Red Hat Inc.), committed unmodified
+under vendor/kepler/nouveau. Each header was read before use; both full
+notices are retained in channel.rs. The producer uses Breenix-owned
+orchestration, the committed G5 shader assets, and u1's literal V2 and
+full-viewport vertex inputs. The host fixture substitutes device execution
+with synthetic oracle images; it is not hardware evidence.

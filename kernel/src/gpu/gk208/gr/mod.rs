@@ -418,6 +418,12 @@ fn probe_inner(
             let draw_emit = draw_evidence.emit(draw_result.as_ref().err().copied());
             draw_result?;
             draw_emit?;
+            // Emit the existing draw block before adding context rows: its
+            // unchanged guard reserves space for the pending golden saves.
+            let mut graphics = hardware.graphics.take().ok_or("context GR channel absent")?;
+            let context_result = contexts_probe(&mut hardware, &mut graphics, shader_buffer.va);
+            hardware.graphics = Some(graphics);
+            context_result?;
             // Only retire the FIFO after the final draw and its CE snapshots.
             hardware.graphics.as_mut().ok_or("draw GR channel absent")?
                 .quiesce(hardware.regs, hardware.total)?;
@@ -768,6 +774,111 @@ fn draw_probe(
     Ok(())
 }
 
+/// Use the already published pair; keep both owners until the shared teardown.
+fn contexts_probe(
+    hardware: &mut Hardware<'_>, graphics: &mut channel::Session, code_address: u64,
+) -> Result<(), &'static str> {
+    let mut second = graphics.second.take().ok_or("context peer absent")?;
+    let mut evidence = ContextsEvidence::default();
+    let result = (|| {
+        let mut requests = Vec::new();
+        for (index, session) in [&mut *graphics, &mut *second].into_iter().enumerate() {
+            // B has its own CODE_ADDRESS/stage bindings, installed once only.
+            if index == 1 {
+                // Populate slots 1-4 before bind_shaders publishes slot 5.
+                session.execute(hardware)?;
+                let mut receipt = binding::Receipt {
+                    target: 0, epoch: 0, nonce: 0, before: [0; 4], after: [0; 4], observation: None,
+                };
+                session.bind_shaders(hardware, code_address, &mut receipt)?;
+            }
+            let target = session.allocate_draw(hardware, "context-target", 16384, 4096)?;
+            let vertices = session.allocate_draw(hardware, "context-vertices", 96, 4096)?;
+            let quarantine = session.allocate_draw(hardware, "context-quarantine", 1 << 20, 1 << 17)?;
+            let words = if index == 0 { draw::VERTEX_WORDS } else { draw::FULL_VIEWPORT_VERTEX_WORDS };
+            let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+            session.upload(hardware, vertices.va, &bytes)?;
+            let pair = session.readback(hardware, vertices.va, bytes.len())?;
+            if pair[0] != bytes || pair[1] != bytes { return Err("context vertex upload mismatch"); }
+            session.upload(hardware, target.va, &alloc::vec![0; 16384])?;
+            if index == 1 {
+                let mut bytes = Vec::from(&shaders::GRADIENT_FRAGMENT_HEADER[..]);
+                bytes.extend_from_slice(shaders::GRADIENT_FRAGMENT_CODE);
+                let va = code_address + u64::from(draw::GRADIENT_PROGRAM);
+                session.upload(hardware, va, &bytes)?;
+                let pair = session.readback(hardware, va, bytes.len())?;
+                if pair[0] != bytes || pair[1] != bytes { return Err("context gradient upload mismatch"); }
+            }
+            let [instance, image, release, epoch] = session.context_storage();
+            let physical = hardware.backing.iter().find(|(va, _)| *va == target.va)
+                .ok_or("context target backing absent")?.1.range.start;
+            let vertex_sha = super::hash(include_bytes!("../../../../assets/kepler/diagnostic-triangle-vertex.bin"));
+            let fragment_sha = if index == 0 {
+                super::hash(include_bytes!("../../../../assets/kepler/diagnostic-triangle-fragment.bin"))
+            } else { super::hash(shaders::GRADIENT_FRAGMENT_CODE) };
+            evidence.channels.push(format!(
+                "{{\"id\":\"{}\",\"instance\":{},\"image\":{},\"target\":{},\"release\":{},\"epoch\":{},\"vertex_sha256\":\"{}\",\"fragment_sha256\":\"{}\"}}",
+                if index == 0 { "a" } else { "b" }, instance, image, physical, release, epoch, vertex_sha, fragment_sha));
+            requests.push(draw::Draw {
+                target_va: target.va, pitch: 256, width: 64, height: 64,
+                vertex_va: vertices.va, quarantine_va: quarantine.va,
+                vertex_program: shaders::VERTEX_OFFSET as u32,
+                fragment_program: if index == 0 { shaders::FRAGMENT_OFFSET as u32 } else { draw::GRADIENT_PROGRAM },
+                report_va: 0, epoch: 0, nonce: 0,
+            });
+        }
+        contexts_sequence(hardware, graphics, &mut second, [requests[0], requests[1]], &mut evidence)
+    })();
+    // Even an upload/submission failure must return the peer to pair teardown.
+    graphics.second = Some(second);
+    let emitted = evidence.emit(result.as_ref().err().copied());
+    result.and(emitted)
+}
+
+/// First four frames of the 7.5 wire sequence; the control unit extends it.
+fn contexts_sequence(
+    hardware: &mut Hardware<'_>, a: &mut channel::Session, b: &mut channel::Session,
+    requests: [draw::Draw; 2], evidence: &mut ContextsEvidence,
+) -> Result<(), &'static str> {
+    for (index, name, variant, full) in [
+        (0, "a-v1", "v1", true), (1, "b-gradient", "gradient", true),
+        (0, "a-v2", "v2", false), (1, "b-restored", "gradient", false),
+    ] {
+        let (active, peer) = if index == 0 { (&mut *a, &mut *b) } else { (&mut *b, &mut *a) };
+        let request = requests[index];
+        if name == "a-v2" {
+            active.upload(hardware, request.target_va, &alloc::vec![0; 16384])?;
+            let bytes: Vec<u8> = draw::V2_VERTEX_WORDS.iter().flat_map(|w| w.to_le_bytes()).collect();
+            active.upload(hardware, request.vertex_va, &bytes)?;
+        }
+        let peer_images = peer.readback(hardware, requests[1-index].target_va, 16384)?;
+        if peer_images[0] != peer_images[1] { return Err("context peer P/~P mismatch before draw"); }
+        let peer_before = peer_images.each_ref().map(|image| super::hash(image));
+        let mut receipt = binding::Receipt {
+            target: 0, epoch: 0, nonce: 0, before: [0; 4], after: [0; 4], observation: None,
+        };
+        let mut current = [0; 2];
+        let result = active.context_draw(hardware, request, full, &mut receipt, &mut current);
+        evidence.frames.push(ContextFrame {
+            name, channel: if index == 0 { "a" } else { "b" }, variant, current,
+            receipt, peer_before, peer_after: [String::new(), String::new()], images: None, accepted: false,
+        });
+        result?;
+        // context_draw reads CHAN_ADDR after release, before these CE transfers.
+        let images = active.readback(hardware, request.target_va, 16384)?;
+        let peer_after = peer.readback(hardware, requests[1-index].target_va, 16384)?;
+        let frame = evidence.frames.last_mut().ok_or("context frame absent")?;
+        frame.peer_after = peer_after.each_ref().map(|image| super::hash(image));
+        let same = images[0] == images[1];
+        frame.accepted = same && context_pixels(&images[0], variant);
+        frame.images = Some(images);
+        if peer_after != peer_images { return Err("context peer changed across draw"); }
+        if !same { return Err("context target P/~P mismatch"); }
+        if !frame.accepted { return Err("context pixel oracle rejected draw"); }
+    }
+    Ok(())
+}
+
 /// Present the final clean target without teaching EVO another method.
 fn present_probe(
     hardware: &mut Hardware<'_>, graphics: &mut channel::Session,
@@ -841,6 +952,107 @@ fn present_probe(
         s.notifier_before,s.notifier_after,s.put,s.get,s.raster_before,s.raster_after,s.underflow,s.errors,s.power,s.link);
     Ok(())
 }
+
+#[derive(Default)]
+struct ContextsEvidence {
+    channels: Vec<String>,
+    frames: Vec<ContextFrame>,
+}
+struct ContextFrame {
+    name: &'static str,
+    channel: &'static str,
+    variant: &'static str,
+    current: [u32; 2],
+    receipt: binding::Receipt,
+    peer_before: [String; 2],
+    peer_after: [String; 2],
+    images: Option<[Vec<u8>; 2]>,
+    accepted: bool,
+}
+
+/// Check read-back only: the GPU, not this verifier, supplies actual pixels.
+/// Coverage hashes and literal dyadic samples come from the u1 provenance.
+fn context_pixels(image: &[u8], variant: &str) -> bool {
+    if image.len() != 16384 { return false; }
+    if variant == "gradient" {
+        return image.chunks_exact(4).enumerate().all(|(i, pixel)| {
+            let (x, y) = ((i % 64) as u8, (i / 64) as u8);
+            pixel == [4*x, 4*y, 2*(x+y), 255]
+        });
+    }
+    let (coverage, samples): (&str, &[(usize, usize, [u8; 4])]) = if variant == "v1" {
+        ("67f58e6f204c69e7ddebf6057c92d5fd19549be11f42067405ff9065ab6b28ba", &[
+            (15,14,[126,131,63,255]), (14,15,[124,138,60,255]), (15,15,[126,138,56,255]),
+            (12,16,[120,145,61,255]), (13,16,[122,145,57,255]), (14,16,[124,145,53,255]),
+        ])
+    } else if variant == "v2" {
+        ("0d8340d0e10f22323048b185495fbe1f992414cc54906fe7e89df9cd46efdba0", &[
+            (52,7,[126,127,83,255]), (52,8,[124,123,87,255]), (51,9,[126,113,93,255]),
+            (52,9,[122,119,91,255]), (53,9,[118,125,89,255]), (51,10,[124,109,97,255]),
+        ])
+    } else { return false; };
+    let mut mask = Vec::with_capacity(4096);
+    for pixel in image.chunks_exact(4) {
+        match pixel[3] {
+            0 if pixel == [0; 4] => mask.push(0),
+            255 => mask.push(1),
+            _ => return false,
+        }
+    }
+    super::hash(&mask) == coverage && samples.iter().all(|(x,y,bgra)| {
+        image[(y*64+x)*4..(y*64+x+1)*4] == *bgra
+    })
+}
+impl ContextsEvidence {
+    fn emit(&self, error: Option<&str>) -> Result<(), &'static str> {
+        use core::fmt::Write;
+        let mut rows = String::new();
+        let mut readbacks = Vec::new();
+        let mut frames = Vec::new();
+        for frame in &self.frames {
+            if let Some(images) = &frame.images {
+                for (poison, image) in [85, 170].into_iter().zip(images) {
+                    for (y, row) in image.chunks_exact(256).enumerate() {
+                        let mut runs = Vec::new();
+                        for pixel in row.chunks_exact(4) {
+                            let word = u32::from_le_bytes(pixel.try_into().map_err(|_| "context pixel length")?);
+                            match runs.last_mut() {
+                                Some((count, last)) if *last == word => *count += 1,
+                                _ => runs.push((1u32, word)),
+                            }
+                        }
+                        let encoded = runs.iter().map(|(count, word)| format!("{:x}:{:08x}", count, word)).collect::<Vec<_>>().join(",");
+                        writeln!(rows, "GT710_CTX_IMAGE {} {} {} {}", frame.name, poison, y, encoded)
+                            .map_err(|_| "context row formatting")?;
+                    }
+                    readbacks.push(format!("{{\"case\":\"{}\",\"poison\":{},\"bytes\":{},\"sha256\":\"{}\"}}",
+                        frame.name, poison, image.len(), super::hash(image)));
+                }
+            }
+            let r = &frame.receipt;
+            let receipt = r.observation.as_ref().map(|o| format!(
+                "{{\"target\":{},\"epoch\":{},\"nonce\":{},\"observed_epoch\":{},\"observed\":{},\"consumed\":{},\"accepted\":{}}}",
+                r.target, r.epoch, r.nonce, o.epoch, o.value, o.consumed, o.accepted)).unwrap_or_else(|| "null".into());
+            frames.push(format!(
+                "{{\"case\":\"{}\",\"channel\":\"{}\",\"variant\":\"{}\",\"current_before\":{},\"current_after\":{},\"trap_before\":{:?},\"trap_after\":{:?},\"peer_before\":{:?},\"peer_after\":{:?},\"accepted\":{},\"receipt\":{}}}",
+                frame.name, frame.channel, frame.variant, frame.current[0], frame.current[1],
+                r.before, r.after, frame.peer_before, frame.peer_after, frame.accepted, receipt));
+        }
+        let estimate = super::bulk::used().checked_add(rows.len()).ok_or("context bulk overflow")?;
+        if estimate > 2 << 20 { return Err("context bulk exceeds 2 MiB"); }
+        if !rows.is_empty() {
+            let digest = super::hash(rows.as_bytes());
+            super::bulk::line(rows.trim_end_matches('\n').into())?;
+            crate::serial_println!("GT710_CTX_BULK {} {}", rows.len(), digest);
+        }
+        let error = error.map(|e| format!("{:?}", e)).unwrap_or_else(|| "null".into());
+        crate::serial_println!(
+            "GT710_CONTEXTS {{\"schema\":1,\"class_id\":41367,\"current_register\":4233984,\"trap_registers\":{:?},\"channels\":[{}],\"frames\":[{}],\"readbacks\":[{}],\"error\":{}}}",
+            binding::TRAP_REGISTERS, self.channels.join(","), frames.join(","), readbacks.join(","), error);
+        Ok(())
+    }
+}
+
 
 #[derive(Default)]
 struct DrawEvidence {

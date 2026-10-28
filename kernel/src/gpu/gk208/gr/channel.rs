@@ -1,3 +1,29 @@
+/* fuc microcode for gf100 PGRAPH/HUB
+ *
+ * Copyright 2011 Red Hat Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * Authors: Ben Skeggs
+ */
+
+
 /*
  * Copyright 2017 Red Hat Inc.
  *
@@ -1020,6 +1046,53 @@ mod native {
             receipt.after = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
             binding::check_traps(receipt.after)?;
             result
+        }
+        /// Physical allocation identities for the context evidence. Shader and
+        /// semaphore commands still use this session's private GPU VA mappings.
+        pub(in crate::gk208::gr) fn context_storage(&self) -> [u64; 4] {
+            [self.report.identity.instance, self.image.range.start,
+                self.pages.address(0), self.report.identity.epoch]
+        }
+        /// Select with a state-free engine release, then sample FECS around
+        /// the actual draw before CE can select the peer. MIT nouveau
+        /// macros.fuc:125 and hub.fuc:234-267 define CHAN_ADDR (0x409b00).
+        pub(in crate::gk208::gr) fn context_draw(
+            &mut self, h: &mut Hardware<'_>, mut request: super::super::draw::Draw,
+            full: bool, receipt: &mut super::super::binding::Receipt,
+            current: &mut [u32; 2],
+        ) -> Result<(), &'static str> {
+            use super::super::{binding, draw};
+            let result = (|| {
+                let (sequence, nonce) = self.sequence()?;
+                request.report_va = TARGET;
+                request.epoch = self.report.identity.epoch;
+                request.nonce = nonce;
+                let mut select = draw::release_commands(request)?;
+                select.extend([0x20010014, sequence]);
+                let selected = self.issue_words(h, sequence, 85, nonce, BOUND_US, &select, true)?;
+                if !selected.accepted { return Err("context activation release not observed"); }
+                current[0] = h.regs.read(0x409b00);
+                receipt.before = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
+                binding::check_traps(receipt.before)?;
+                let (sequence, nonce) = self.sequence()?;
+                request.nonce = nonce;
+                receipt.target = self.pages.address(0);
+                receipt.epoch = request.epoch;
+                receipt.nonce = nonce;
+                let mut stream = if full { draw::commands(request)? } else { draw::draw_commands(request)? };
+                stream.extend([0x20010014, sequence]);
+                let sample = self.issue_words(h, sequence, 85, nonce, BOUND_US, &stream, true)?;
+                receipt.observation = Some(sample);
+                if !sample.accepted { return Err("context draw release not observed"); }
+                Ok(())
+            })();
+            current[1] = h.regs.read(0x409b00);
+            receipt.after = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
+            binding::check_traps(receipt.after)?;
+            result?;
+            let expected = 0x80000000 | (self.report.identity.instance >> 12) as u32;
+            if *current != [expected; 2] { return Err("context draw FECS binding mismatch"); }
+            Ok(())
         }
         pub(in crate::gk208::gr) fn execute(
             &mut self,

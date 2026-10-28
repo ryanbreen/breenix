@@ -4,17 +4,17 @@ use std::cell::RefCell;
 thread_local! {static EVENTS:RefCell<Vec<String>>=const{RefCell::new(Vec::new())}; static FAIL:RefCell<&'static str>=const{RefCell::new("")};}
 fn event(s:String){EVENTS.with(|v|v.borrow_mut().push(s));}
 fn fails(s:&str)->bool{FAIL.with(|f|*f.borrow()==s)}
-#[path="ROOT/libs/libbreenix/src/crypto/sha256.rs"] mod sha256;
+#[path="ROOT/libs/libbreenix/src/crypto/sha256.rs"] pub mod sha256;
 fn hash(data:&[u8])->String{sha256::sha256(data).iter().map(|v|format!("{v:02x}")).collect()}
 macro_rules! serial_println {($($arg:tt)*)=>{println!($($arg)*)};}
 pub(crate) use serial_println;
 mod bulk {pub fn line(s:String)->Result<(),&'static str>{println!("{s}");Ok(())} pub fn used()->usize{1_326_749}}
-#[path="ROOT/kernel/src/gpu/gk208/gr/channel.rs"] mod wire;
-#[path="ROOT/kernel/src/gpu/gk208/gr/shaders.rs"] mod shaders;
-#[path="ROOT/kernel/src/gpu/gk208/gr/draw.rs"] mod draw;
-#[path="ROOT/kernel/src/gpu/gk208/gr/binding.rs"] mod binding;
-struct Hardware<'a>{marker:&'a ()}
-mod channel {
+#[path="ROOT/kernel/src/gpu/gk208/gr/channel.rs"] pub mod wire;
+#[path="ROOT/kernel/src/gpu/gk208/gr/shaders.rs"] pub mod shaders;
+#[path="ROOT/kernel/src/gpu/gk208/gr/draw.rs"] pub mod draw;
+#[path="ROOT/kernel/src/gpu/gk208/gr/binding.rs"] pub mod binding;
+pub struct Hardware<'a>{marker:&'a ()}
+pub mod channel {
     pub use super::wire::*;
     use super::*;
     pub struct Session{pub id:usize,pub next:u32,pub target:Vec<u8>,pub vertices:Vec<u8>}
@@ -39,7 +39,8 @@ mod channel {
             self.next+=1;
             let stream=if full {draw::commands(r)} else {draw::draw_commands(r)}.unwrap();
             let methods=methods(&stream);
-            if !full {assert!(methods.iter().all(|m|[0x021c,0x1618,0x0d74,0x0d78,0x1614,0x0110,0x1b00,0x1b04,0x1b08,0x1b0c].contains(m)),"state leaked into restore stream");}
+            assert_eq!(packet(&stream,0x142c),vec![0],"in-place V2 requires vertex-fetch invalidation");
+            if !full {assert!(methods.iter().all(|m|[0x142c,0x021c,0x1618,0x0d74,0x0d78,0x1614,0x0110,0x1b00,0x1b04,0x1b08,0x1b0c].contains(m)),"state leaked into restore stream");}
             if self.id==0 {
                 let words=if full {draw::VERTEX_WORDS} else {draw::V2_VERTEX_WORDS};
                 assert_eq!(self.vertices,words.iter().flat_map(|w|w.to_le_bytes()).collect::<Vec<_>>());
@@ -72,6 +73,17 @@ fn run(failure:&'static str)->Result<(),&'static str>{
     let result=contexts_sequence(&mut Hardware{marker:&()},&mut a,&mut b,requests,&mut evidence);
     if failure.is_empty(){evidence.emit(None)?;} result
 }
-#[test]fn alternation(){assert!(run("").is_ok());let e=EVENTS.with(|v|v.borrow().clone());assert_eq!(e,vec!["read-1","draw-0-true","read-0","read-1","read-0","draw-1-true","read-1","read-0","upload-0-100000","upload-0-300000","read-1","draw-0-false","read-0","read-1","read-0","draw-1-false","read-1","read-0"]);}
-#[test]fn missing_release_stops_before_ce(){assert!(run("release").is_err());assert_eq!(EVENTS.with(|v|v.borrow().clone()),["read-1","draw-0-true"]);}
-#[test]fn poison_mismatch_stops_before_draw(){assert!(run("poison").is_err());assert_eq!(EVENTS.with(|v|v.borrow().clone()),["read-1"]);}
+#[test]fn context_alternation(){assert!(run("").is_ok());let e=EVENTS.with(|v|v.borrow().clone());assert_eq!(e,vec!["read-1","draw-0-true","read-0","read-1","read-0","draw-1-true","read-1","read-0","upload-0-100000","upload-0-300000","read-1","draw-0-false","read-0","read-1","read-0","draw-1-false","read-1","read-0"]);}
+#[test]fn context_missing_release_stops_before_ce(){assert!(run("release").is_err());assert_eq!(EVENTS.with(|v|v.borrow().clone()),["read-1","draw-0-true"]);}
+#[test]fn context_poison_mismatch_stops_before_draw(){assert!(run("poison").is_err());assert_eq!(EVENTS.with(|v|v.borrow().clone()),["read-1"]);}
+
+#[test]fn context_pixels_reject_mutations(){
+    for (variant,data) in [("v1",include_bytes!("v1.bin").to_vec()),("v2",include_bytes!("v2.bin").to_vec()),("gradient",(0..64).flat_map(|y|(0..64).flat_map(move|x|[4*x,4*y,2*(x+y),255])).collect())]{
+        assert!(context_pixels(&data,variant));
+        let mut changed=data.clone();let offset=if variant=="v1"{(14*64+15)*4}else if variant=="v2"{(7*64+52)*4}else{0};
+        changed[offset]^=1;assert!(!context_pixels(&changed,variant));
+        assert!(!context_pixels(&vec![0;16384],variant));
+        assert!(!context_pixels(&[0,0,0,255].repeat(4096),variant));
+        let mut covered=data.clone();covered[0..4].copy_from_slice(&[1,1,1,128]);assert!(!context_pixels(&covered,variant));
+    }
+}

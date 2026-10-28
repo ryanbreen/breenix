@@ -192,6 +192,7 @@ impl Hardware<'_> {
 #[derive(Default)] struct DrawEvidence {trap_capture:Option<binding::TrapCapture>}
 impl DrawEvidence { fn emit(&self,_:Option<&str>)->Result<(),&'static str>{let _=&self.trap_capture;Ok(())} }
 fn present_probe(_: &mut Hardware<'_>,_: &mut channel::Session,_:(),_:&mut DrawEvidence)->Result<(),&'static str>{Ok(())}
+fn contexts_probe(_: &mut Hardware<'_>,_: &mut channel::Session,_:u64)->Result<(),&'static str>{step("contexts-probe")}
 fn draw_probe(_: &mut Hardware<'_>,_: &mut channel::Session,_:u64,_:&mut DrawEvidence)->Result<(),&'static str>{step("draw-probe")}
 mod channel {
     struct DrawCopy { base:usize,engine:u32,reset:u32,old_irq:u32,old_enable:u32 }
@@ -238,7 +239,7 @@ fn run(regs: &mut Registers, stuck: bool) -> Result<(), &'static str> {
 }
 #[test]
 fn live_errors_restore_fifo_alias_and_binding_before_reset() {
-    for target in ["alias-install", "alias-clear", "bar1", "bar1-2", "flush", "admit", "wait-228c-2", "issue-1", "issue-2", "issue-3", "issue-4", "issue-5", "shader-upload", "draw-probe", "wait-2634-2", "wait-228c-0", "wait-3080-0", "wait-2640-0"] {
+    for target in ["alias-install", "alias-clear", "bar1", "bar1-2", "flush", "admit", "wait-228c-2", "issue-1", "issue-2", "issue-3", "issue-4", "issue-5", "shader-upload", "draw-probe", "contexts-probe", "wait-2634-2", "wait-228c-0", "wait-3080-0", "wait-2640-0"] {
         INJECT.with(|i|*i.borrow_mut()=Injection{target:target.into(),..Injection::default()});
         let mut regs=Registers::new();
         let result=run(&mut regs,false);
