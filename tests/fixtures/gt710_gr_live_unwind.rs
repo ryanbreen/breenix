@@ -120,7 +120,7 @@ mod ctxctl {
         if failed { return Err("GR reset failed"); }
         if r.read(0x800000) != 0 {
             // This unit explicitly permits reset after bounded FECS preempt.
-            assert!(r.stuck || INJECT.with(|i|i.borrow().target=="wait-2634-1"));
+            assert!(r.stuck || INJECT.with(|i|i.borrow().target=="wait-2634-2"));
             assert_ne!(r.read(0x2630)&2,0,"runlist not disabled before fallback");
             assert_ne!(r.read(0x800004)&0x800,0,"channel not disabled before fallback");
             r.stuck=false;
@@ -238,7 +238,7 @@ fn run(regs: &mut Registers, stuck: bool) -> Result<(), &'static str> {
 }
 #[test]
 fn live_errors_restore_fifo_alias_and_binding_before_reset() {
-    for target in ["alias-install", "alias-clear", "bar1", "bar1-2", "flush", "admit", "wait-228c-1", "issue-1", "issue-2", "issue-3", "issue-4", "issue-5", "shader-upload", "draw-probe", "wait-2634-1", "wait-228c-0", "wait-3080-0", "wait-2640-0"] {
+    for target in ["alias-install", "alias-clear", "bar1", "bar1-2", "flush", "admit", "wait-228c-2", "issue-1", "issue-2", "issue-3", "issue-4", "issue-5", "shader-upload", "draw-probe", "wait-2634-2", "wait-228c-0", "wait-3080-0", "wait-2640-0"] {
         INJECT.with(|i|*i.borrow_mut()=Injection{target:target.into(),..Injection::default()});
         let mut regs=Registers::new();
         let result=run(&mut regs,false);

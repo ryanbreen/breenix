@@ -975,3 +975,24 @@ and `gk104.c:404-418` (runlist fault clear/allow), both MIT,
 Copyright 2012 Red Hat Inc. Their notices are retained in the consumer.
 `tests/gt710_gr_mmu_unwind_test.py` exercises Breenix's teardown order
 with a host MMIO model; it contains no nouveau implementation text.
+
+GT 710 two graphics sessions (milestone 7.5 unit 4)
+------------------------------------------------
+Consumer: `kernel/src/gpu/gk208/gr/channel.rs`; the original full
+Copyright 2012 Red Hat Inc., author Ben Skeggs and MIT grant remain in its
+header. Both upstream file headers were read before this adaptation.
+
+Nouveau v6.8 / e8f897f4afef0031fe618a8e94127a0934896aba, paths relative
+to drivers/gpu/drm/nouveau/:
+
+- `nvkm/engine/fifo/gk104.c`, MIT:82-118 (RAMFC CHID and 512-byte USERD
+  slots), 134-174 (GR context pointer), 430-456 (runlist address, count and
+  channel entries).
+- `nvkm/engine/gr/gf100.c`, MIT:331-338 (golden copy and internal-firmware
+  count/MMIO-VA header), 378-426 (global buffers mapped per VM), 451-480
+  (private MMIO patch list).
+
+The packed USERD publication follows the in-tree milestone 6.4
+`kernel/src/gpu/gk208/ce.rs:activate_pair`. Private context images and patch
+lists use shared global-buffer VAs; OS allocation and lifetime handling remain
+Breenix-owned.

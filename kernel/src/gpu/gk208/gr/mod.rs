@@ -387,7 +387,8 @@ fn probe_inner(
             // quiesce: FECS retains its current context. Finish CE before GR
             // admission and keep GR active through the binding submission.
             let mut graphics = channel::Session::new(&mut hardware, golden, shader_buffer.va)?;
-            let result = graphics.activate(&mut hardware)
+            let result = graphics.open_second(&mut hardware, golden, shader_buffer.va)
+                .and_then(|()| graphics.activate(&mut hardware))
                 .and_then(|()| graphics.execute(&mut hardware));
             // Retain ownership before propagating activation or execution errors.
             hardware.graphics = Some(graphics);

@@ -1,7 +1,7 @@
 // Fake host IO executes production constructors and pair lifetime operations.
 extern crate alloc;
 use std::{collections::BTreeMap, mem::ManuallyDrop};
-#[path="ROOT/kernel/src/gpu/gk208/gr/channel.rs"] mod channel;
+#[path="ROOT/kernel/src/gpu/gk208/gr/channel.rs"] pub mod channel;
 use channel::{Identity, Observation, Release, Report, Stale, Withheld};
 const BOUND_US:u64=2_000_000;
 #[derive(Default)] struct Registers {
@@ -82,7 +82,7 @@ struct Bar{size:u64} struct Device{bars:[Bar;2]}
 impl Device {fn enable_bus_master(&self){}}
 struct Console{pointer:usize,bytes:usize}
 #[derive(Clone,Copy)] struct Buffer{va:u64}
-struct Golden{images:[Vec<u8>;2],runnable:Vec<u8>,header:[u32;2],buffers:Vec<Buffer>,patches:Vec<[u32;2]>}
+struct Golden{images:[Vec<u8>;2],runnable:Vec<u8>,buffers:Vec<Buffer>,patches:Vec<[u32;2]>}
 struct Hardware<'a>{regs:&'a mut Registers,total:u64,layout:&'a mut memory::Layout,device:&'a Device,console:&'a Console,backing:Vec<(u64,Allocation)>}
 // STATE
 impl Session {
@@ -94,7 +94,7 @@ fn fixture(f:impl FnOnce(&mut Hardware<'_>,&Golden)) {
     regs.values.insert(0x22700,0x80000032);regs.values.insert(0x22704,3);regs.values.insert(0x2390,1);
     let mut layout=memory::Layout{allocator:memory::allocator::Allocator{next:0x100000,live:BTreeMap::new()},objects:vec![memory::Object{name:"instance",range:memory::allocator::Range{start:0x80000,size:0x10000}}]};
     let mut backing=Vec::new();for va in [0x10000000,0x10010000,0x10020000,0x10030000] {backing.push((va,layout.allocator.allocate(4096,4096,Kind::Engine).unwrap()));}
-    let golden=Golden{images:[vec![0;4096],vec![0;4096]],runnable:(0..4096).map(|i|(i%251) as u8).collect(),header:[2,0x100300],buffers:backing.iter().map(|(va,_)|Buffer{va:*va}).collect(),patches:vec![[0x408004,0x1234],[0x408008,0x5678]]};
+    let golden=Golden{images:[vec![0;4096],vec![0;4096]],runnable:(0..4096).map(|i|(i%251) as u8).collect(),buffers:backing.iter().map(|(va,_)|Buffer{va:*va}).collect(),patches:vec![[0x408004,0x1234],[0x408008,0x5678]]};
     let device=Device{bars:[Bar{size:0},Bar{size:8<<20}]};let console=Console{pointer:0x10000000,bytes:4096};
     f(&mut Hardware{regs:&mut regs,total:1<<30,layout:&mut layout,device:&device,console:&console,backing},&golden);
 }
@@ -117,9 +117,14 @@ fn assert_pair(s:&Session,h:&Hardware<'_>,g:&Golden){
     }
 }
 #[test] fn two_sessions_publish_one_list_and_clear_both_slots(){fixture(|h,g|{
-    let baseline=h.layout.allocator.live.clone();let mut s=Session::new(h,g,0x10000000).unwrap();
+    let _=(TRANSFER,COPY_BYTES);let baseline=h.layout.allocator.live.clone();let mut s=Session::new(h,g,0x10000000).unwrap();
     s.open_second(h,g,0x10000000).unwrap();assert_pair(&s,h,g);
     s.activate(h).unwrap();assert_eq!(h.regs.lists,vec![vec![0,0,1,0]]);
+    assert_eq!(h.regs.read(0x2254),0x10000000|(SLOT>>12) as u32);
+    assert_eq!(h.regs.vram[&s.pte],((s.userd>>8)|1) as u32);
+    let second=s.second.as_ref().unwrap();
+    assert_ne!(s.bar+SLOT as usize+s.report.identity.id as usize*512,
+               second.bar+SLOT as usize+second.report.identity.id as usize*512);
     assert_eq!(h.regs.read(0x800000),0x80000000|(s.report.identity.instance>>12) as u32);
     assert_eq!(h.regs.read(0x800008),0x80000000|(s.second.as_ref().unwrap().report.identity.instance>>12) as u32);
     s.quiesce(h.regs,h.total).unwrap();assert!(h.regs.lists.last().unwrap().is_empty());
@@ -129,11 +134,16 @@ fn assert_pair(s:&Session,h:&Hardware<'_>,g:&Golden){
     s.finish(h.regs,h.layout,h.total).unwrap();assert_eq!(h.layout.allocator.live,baseline);
 });}
 #[test] fn failed_second_open_is_atomic_and_first_can_teardown(){fixture(|h,g|{
-    let baseline=h.layout.allocator.live.clone();let mut s=Session::new(h,g,0x10000000).unwrap();
+    let _=(TRANSFER,COPY_BYTES);let baseline=h.layout.allocator.live.clone();let mut s=Session::new(h,g,0x10000000).unwrap();
     let first=h.layout.allocator.live.clone();
     // Context instance, ring, then private image: fail during the second image.
     h.regs.fail_at=Some(h.layout.allocator.next+4096+65536);
     assert!(s.open_second(h,g,0x10000000).is_err());assert!(h.regs.fail_at.is_none());
     assert!(s.second.is_none());assert_eq!(h.layout.allocator.live,first);assert!(h.regs.lists.is_empty());
-    s.quiesce(h.regs,h.total).unwrap();s.finish(h.regs,h.layout,h.total).unwrap();assert_eq!(h.layout.allocator.live,baseline);
+    s.activate(h).unwrap();assert_eq!(h.regs.lists,vec![vec![0,0]]);
+    s.quiesce(h.regs,h.total).unwrap();assert!(h.regs.lists.last().unwrap().is_empty());
+    assert_eq!(h.regs.read(0x800000),0);assert_eq!(h.regs.read(0x800008),0);
+    assert_eq!(h.regs.vram[&s.pte],0);assert_eq!(h.regs.vram[&(s.pte+4)],0);
+    for (a,v) in SAVED {assert_eq!(h.regs.read(a),v);}
+    s.finish(h.regs,h.layout,h.total).unwrap();assert_eq!(h.layout.allocator.live,baseline);
 });}
