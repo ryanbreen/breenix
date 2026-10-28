@@ -45,6 +45,7 @@ class TrapAckCapture(unittest.TestCase):
             self.assertEqual(len(reports), 4)
             for report in reports:
                 self.assertIsNotNone(report['error'], 'acknowledging a trap must not accept the draw')
+                self.assertEqual(report['readbacks'], [], 'failed draw must not report rendered pixels')
                 capture = report.get('trap_capture')
                 self.assertIsNotNone(capture, 'missing pre-ack GR method/error capture')
                 self.assertEqual(capture['registers'], [0x400704, 0x400708, 0x40070c, 0x400500, 0x409b00, 0x404208])
