@@ -876,3 +876,25 @@ literal stream test. The external files' license headers were read before use.
 
 This adaptation uses the hardware mechanisms from those five files. It does
 not import a Gallium/DRM runtime or change the repository's own license.
+
+GT 710 draw orchestration (milestone 7.4)
+----------------------------------------
+`kernel/src/gpu/gk208/gr/channel.rs` additionally uses these individually
+checked MIT sources for the CE2 path on the retained graphics channel:
+
+- Mesa 24.3.4, 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de,
+  src/gallium/drivers/nouveau/nvc0/nvc0_screen.c:1080-1102,
+  Copyright 2010 Christoph Bumiller: A0B5 binding on the graphics channel.
+- Nouveau v6.8, e8f897f4afef0031fe618a8e94127a0934896aba,
+  nvkm/engine/ce/gk104.c, Copyright 2012 Red Hat Inc.:
+  CE register base/instance spacing and interrupt mask/status.
+  nvkm/engine/fifo/gk104.c:281-286, Copyright 2012 Red Hat Inc.:
+  CE engine scheduling without a separate graphics-context binding.
+- NVIDIA open-gpu-doc, 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+  classes/dma-copy/cla0b5.h, Copyright (c) 2019 NVIDIA CORPORATION:
+  transfer and engine-release methods, through the existing copy.rs encoder.
+
+The MIT grants and copyright notices are retained in gr/channel.rs. The
+orchestration in gr/mod.rs uses Breenix's draw encoder and committed shader
+assets; its host check substitutes device boundaries and supplies no colour
+oracle or rasterizer.

@@ -51,7 +51,7 @@ mod channel {
         pub fn upload(&mut self,_:&mut Hardware<'_>,va:u64,data:&[u8])->Result<(),&'static str>{event(&format!("upload-{va:x}-{}",data.len()));self.uploads.push((va,data.into()));Ok(())}
         pub fn readback(&mut self,_:&mut Hardware<'_>,va:u64,size:usize)->Result<[Vec<u8>;2],&'static str>{event(&format!("read-{va:x}-{size}"));let data=self.uploads.iter().rev().find(|(a,_)|*a==va).unwrap().1.clone();let mut images=[data.clone(),data];if fail("mismatch")&&va==0x10000{images[1][0]^=1;}Ok(images)}
         pub fn draw(&mut self,_:&mut Hardware<'_>,r:draw::Draw,receipt:&mut binding::Receipt)->Result<(),&'static str>{
-            event(&format!("draw-{:x}-{:x}",r.vertex_program,r.fragment_program));
+            event(&format!("issue-draw-{:x}-{:x}",r.vertex_program,r.fragment_program));
             assert_eq!((r.target_va,r.vertex_va,r.width,r.height,r.pitch),(0x10000,0x20000,64,64,256));
             assert_eq!((r.report_va,r.epoch,r.nonce),(0,0,0));
             let last=self.uploads.last().unwrap();assert_eq!(last.0,0x10000);assert!(last.1.iter().all(|v|*v==0));
@@ -78,19 +78,19 @@ fn run(failure:&'static str)->Result<(),&'static str>{
 }
 #[test] fn order_and_evidence(){
     assert!(run("").is_ok());
-    let e=events();let draws:Vec<_>=e.iter().filter(|s|s.starts_with("draw-")).cloned().collect();
-    assert_eq!(draws,["draw-30-1b0","draw-30-2b0","draw-30-1b0","draw-3b0-1b0","draw-30-1b0"]);
+    let e=events();let draws:Vec<_>=e.iter().filter(|s|s.starts_with("issue-draw-")).cloned().collect();
+    assert_eq!(draws,["issue-draw-30-1b0","issue-draw-30-2b0","issue-draw-30-1b0","issue-draw-3b0-1b0","issue-draw-30-1b0"]);
     assert_eq!(e.iter().filter(|s|s.as_str()=="read-10000-16384").count(),5);
     let first=e.iter().position(|s|s=="draw-target").unwrap();let upload=e.iter().position(|s|s=="upload-20000-96").unwrap();assert!(first<upload);
 }
 #[test] fn receipt_timeout_retains_channel_until_reset(){
     assert_eq!(run("timeout"),Err("injected receipt timeout"));let e=events();
-    assert_eq!(e.iter().filter(|s|s.starts_with("draw-")).count(),1);
+    assert_eq!(e.iter().filter(|s|s.starts_with("issue-draw-")).count(),1);
     assert!(!e.contains(&"read-10000-16384".into()));
     assert!(e.iter().position(|s|s=="reset").unwrap()<e.iter().position(|s|s=="session-reclaim").unwrap());
 }
 #[test] fn mismatch_stops_draws_and_resets_before_reclaim(){
-    assert!(run("mismatch").is_err());let e=events();assert_eq!(e.iter().filter(|s|s.starts_with("draw-")).count(),1);
+    assert!(run("mismatch").is_err());let e=events();assert_eq!(e.iter().filter(|s|s.starts_with("issue-draw-")).count(),1);
     assert!(e.iter().position(|s|s=="reset").unwrap()<e.iter().position(|s|s=="release").unwrap());
 }
 #[test] fn failed_drain_retains_backing(){assert!(run("drain").is_err());let e=events();assert!(!e.contains(&"reset".into()));assert!(!e.contains(&"release".into()));assert!(!e.contains(&"retire".into()));}

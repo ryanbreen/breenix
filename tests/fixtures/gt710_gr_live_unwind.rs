@@ -147,7 +147,11 @@ impl Hardware<'_> {
     fn emit_images(&mut self) -> Result<(usize, usize), &'static str> { Ok((0,0)) }
     // FINISH
 }
+#[derive(Default)] struct DrawEvidence;
+impl DrawEvidence { fn emit(&self,_:Option<&str>)->Result<(),&'static str>{Ok(())} }
+fn draw_probe(_: &mut Hardware<'_>,_: &mut channel::Session,_:u64,_:&mut DrawEvidence)->Result<(),&'static str>{step("draw-probe")}
 mod channel {
+    struct DrawCopy { base:usize,engine:u32,reset:u32,old_irq:u32,old_enable:u32 }
     use super::*;
     const BOUND_US: u64 = 2_000_000;
     const USERD: u64 = 8192;
@@ -191,7 +195,7 @@ fn run(regs: &mut Registers, stuck: bool) -> Result<(), &'static str> {
 }
 #[test]
 fn live_errors_restore_fifo_alias_and_binding_before_reset() {
-    for target in ["alias-install", "alias-clear", "bar1", "bar1-2", "flush", "admit", "wait-228c-1", "issue-1", "issue-2", "issue-3", "issue-4", "issue-5", "shader-upload", "wait-2634-1", "wait-228c-0", "wait-3080-0", "wait-2640-0"] {
+    for target in ["alias-install", "alias-clear", "bar1", "bar1-2", "flush", "admit", "wait-228c-1", "issue-1", "issue-2", "issue-3", "issue-4", "issue-5", "shader-upload", "draw-probe", "wait-2634-1", "wait-228c-0", "wait-3080-0", "wait-2640-0"] {
         INJECT.with(|i|*i.borrow_mut()=Injection{target:target.into(),..Injection::default()});
         let mut regs=Registers::new();
         let result=run(&mut regs,false);

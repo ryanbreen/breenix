@@ -117,3 +117,21 @@ fn reset_keeps_scanout_resident_until_display_completion() {
  unsafe{c.finish_device(scanout).unwrap();}
  c.retire(&mut a,&mut io).unwrap();a.release(backing).unwrap();assert_eq!(a.stats(),baseline);
 }
+
+#[test]
+fn idle_append_retains_device_ownership_and_failed_publication_pins_new_backing() {
+ let mut a=Allocator::new(1<<30,&[]).unwrap();let mut io=Model::default();
+ let mut c=Context::new(&mut a,&mut io).unwrap();let b=a.allocate(4096,4096,Kind::Probe).unwrap();
+ unsafe{c.admit_device().unwrap();}
+ let held=c.hold(Consumer::Queued).unwrap();let before=io.mutations;
+ assert!(unsafe{c.map_idle(&mut a,&mut io,0x4000,b,vm::Flags::default())}.is_err());
+ assert_eq!(io.mutations,before);
+ unsafe{c.finish_device(held).unwrap();c.map_idle(&mut a,&mut io,0x4000,b,vm::Flags::default()).unwrap();}
+ assert!(a.release(b).is_err());assert!(c.retire(&mut a,&mut io).is_err());
+ let extra=a.allocate(4096,4096,Kind::Probe).unwrap();io.fail=true;
+ assert!(unsafe{c.map_idle(&mut a,&mut io,0x8000,extra,vm::Flags::default())}.is_err());
+ assert!(a.release(extra).is_err());assert!(a.release(b).is_err());
+ assert!(c.retire(&mut a,&mut io).is_err());
+ io.fail=false;unsafe{c.confirm_reset();}c.retire(&mut a,&mut io).unwrap();
+ a.release(b).unwrap();a.release(extra).unwrap();
+}
