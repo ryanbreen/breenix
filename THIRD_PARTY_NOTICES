@@ -772,6 +772,15 @@ rnndb `falcon.xml:227-246` (`XFER_CTRL.SIZE`) and MIT
 `gpc.fuc:403-489` for its distinct strand/MMCTX path. These do not define
 MMCTX/strand terminal width; no implementation is adapted from them here.
 
+M7.5's graphics-context comparator in `scripts/metal/gt710-suite` uses
+the already listed MIT nouveau v6.8 `fuc/macros.fuc:125`,
+`fuc/hub.fuc:234-267,470-483` and `gr/gf100.c:1613-1626` for the FECS
+channel address, valid bit and instance shift. Each source's full MIT
+header was checked before use. The Red Hat 2011/2012/2013 copyright
+notices and full MIT grant remain in the consumer header. The frame wire
+contract and rational/integer pixel oracles are Breenix code. The rnndb
+GM107-and-newer CURRENT_CTX declaration is not used for the Kepler check.
+
 M7.2's live-channel unwind in `gr/{mod,channel}.rs` and CE preflight and
 borrowed read-back cleanup in `ce.rs` and `ce/{process,readback}.rs` reuse
 the FIFO/channel mechanisms already attributed above (MIT nouveau v6.8
