@@ -451,6 +451,10 @@ pub(super) fn probe(s: &mut super::process::Session) -> Result<String, &'static 
         ),
     ];
     regs.mask(0x2630, 1 << e.run, 1 << e.run);
+    // Finish preempting the resident channel before resetting its engine.
+    // A request alone can still overlap the reset with the old context save.
+    regs.write(0x2634, b.id);
+    budget_wait(&mut regs, reset_start, 0x2634, 0x100000)?;
     regs.mask(0x200, 1 << e.reset, 0);
     let disabled = regs.read(0x200);
     regs.delay_us(50);
