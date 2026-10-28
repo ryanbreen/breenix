@@ -131,6 +131,17 @@ def gpu_serial():
     return ('SUITE gpu START cases=170\nSUITE gpu MEMORY before free=1000 heap_free_kb=500 user_pages=100\n' + ''.join(f'SUITE gpu CASE {name} FAIL ms=1 msg={reason}\n' for name in names)
             + 'SUITE gpu DONE passed=0 failed=170 skipped=0 total=170\nSUITE gpu MEMORY after free=1000 heap_free_kb=500 user_pages=100\nSUITE gpu MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=64\nSUITE gpu ELAPSED ms=210\nSUITE_SEQUENCE READY gpu\n')
 
+def console_serial():
+    manifest = json.loads((ROOT / 'docs/suites/console.json').read_text())
+    names = [c['id'] + '/' + case['id'] for c in manifest['categories'] for case in c['cases']]
+    return ('SUITE console START cases=88\n'
+            + 'SUITE console MEMORY before free=1000 heap_free_kb=500 user_pages=100\n'
+            + ''.join(f'SUITE console CASE {name} PASS ms=1\n' for name in names)
+            + 'SUITE console DONE passed=88 failed=0 skipped=0 total=88\n'
+            + 'SUITE console MEMORY after free=1000 heap_free_kb=500 user_pages=100\n'
+            + 'SUITE console MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=48\n'
+            + 'SUITE console ELAPSED ms=210\nSUITE_SEQUENCE READY console\n')
+
 class CoreReport(unittest.TestCase):
     def test_acceptance_requires_successful_console_and_complete_aggregate(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -268,7 +279,7 @@ class CoreReport(unittest.TestCase):
             stage(diagnostic)
             for name, text in {'ended': '1', 'exit-status': '0', 'dirty': '0', 'commit': SHA}.items():
                 (path / name).write_text(text)
-            (path / 'serial.txt').write_text('GT710_CORE_STARTUP_BULK ' + anchor + 'GT710_BULK ' + anchor)
+            (path / 'serial.txt').write_text('GT710_CORE_STARTUP_BULK ' + anchor + 'GT710_BULK ' + anchor + console_serial())
             (path / 'gt710-pixels.rle').write_bytes(startup)
             serial=''; producer=API['core_capture'](path,SHA)
             manifest=json.loads((ROOT/'docs/suites/gt710.json').read_text())
