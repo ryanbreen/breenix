@@ -84,6 +84,7 @@ pub mod channel;
 pub mod context;
 pub mod ctxctl;
 pub mod firmware;
+pub mod shaders;
 pub mod tables;
 pub mod topology;
 

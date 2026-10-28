@@ -208,7 +208,7 @@ source. The retained file-local notices are in the linked file and in
 | [mesa/include/c99_compat.h](vendor/kepler/mesa/include/c99_compat.h) | MIT | Host compiler |
 | [mesa/include/no_extern_c.h](vendor/kepler/mesa/include/no_extern_c.h) | MIT | Host compiler |
 | [mesa/src/compiler/shader_enums.h](vendor/kepler/mesa/src/compiler/shader_enums.h) | MIT | Host compiler |
-| [mesa/src/gallium/drivers/nouveau/nvc0/nvc0_program.c](vendor/kepler/mesa/src/gallium/drivers/nouveau/nvc0/nvc0_program.c) | MIT | Reference for adapted frontend/SPH logic; not compiled |
+| [mesa/src/gallium/drivers/nouveau/nvc0/nvc0_program.c](vendor/kepler/mesa/src/gallium/drivers/nouveau/nvc0/nvc0_program.c) | MIT | Reference for adapted frontend/SPH logic and `kernel/src/gpu/gk208/gr/shaders.rs` segment layout; not compiled |
 | [mesa/src/gallium/include/pipe/p_defines.h](vendor/kepler/mesa/src/gallium/include/pipe/p_defines.h) | MIT | Host compiler |
 | [mesa/src/nouveau/codegen/nv50_ir.cpp](vendor/kepler/mesa/src/nouveau/codegen/nv50_ir.cpp) | MIT | Host compiler |
 | [mesa/src/nouveau/codegen/nv50_ir.h](vendor/kepler/mesa/src/nouveau/codegen/nv50_ir.h) | MIT | Host compiler |
