@@ -1,5 +1,5 @@
 #[path = "../kernel/src/gpu/gk208/gr/shaders.rs"]
-mod shaders;
+pub mod shaders;
 #[path = "../libs/libbreenix/src/crypto/sha256.rs"]
 mod sha256;
 

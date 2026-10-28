@@ -22,6 +22,7 @@ class ProbeConsole(unittest.TestCase):
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 static SNAPSHOTS: AtomicU32 = AtomicU32::new(0);
 static PMC: AtomicU32 = AtomicU32::new(0);
+static PMC_WRITES: AtomicU32 = AtomicU32::new(0);
 static REFUSE: AtomicBool = AtomicBool::new(false);
 static RETAINED: AtomicBool = AtomicBool::new(false);
 static REPORTED: AtomicBool = AtomicBool::new(false);
@@ -36,11 +37,20 @@ macro_rules! serial_println {
 struct Range { start: u64, size: u64 }
 struct Object { range: Range }
 struct Layout { objects: [Object; 1] }
-struct Registers(usize);
+struct Registers(usize, u32, u32);
 impl Registers {
-    fn read(&self, address: usize) -> u32 { assert_eq!(address,0x200);PMC.load(Ordering::SeqCst) }
+    fn read(&self, address: usize) -> u32 {
+        match address {
+            0x200 => PMC.load(Ordering::SeqCst),
+            0x800000 => self.1,
+            0x409b00 => self.2,
+            _ => panic!("unexpected register read {address:#x}"),
+        }
+    }
     fn mask(&mut self,address: usize,mask:u32,value:u32) {
+        assert_eq!((address,mask),(0x200,0x1000));
         let before=self.read(address);PMC.store((before & !mask)|value,Ordering::SeqCst);
+        PMC_WRITES.fetch_add(1,Ordering::SeqCst);
     }
 }
 struct Bar { size: u64 }
@@ -80,19 +90,30 @@ TAIL
 fn clean_and_refused_gr_both_deliver_the_native_console() {
     for initial in [0xe011216d,0xe011316d] {
     for refuse in [false, true] {
+    for binding in [0,0x80000300] {
+    for current in [0,0x80123456] {
         SNAPSHOTS.store(0,Ordering::SeqCst);
         PMC.store(initial,Ordering::SeqCst);
+        PMC_WRITES.store(0,Ordering::SeqCst);
         REFUSE.store(refuse, Ordering::SeqCst);
         RETAINED.store(false, Ordering::SeqCst);
         REPORTED.store(false, Ordering::SeqCst);
         let console = Console { pointer: 16640 };
-        let result = handoff(Registers(8192), Device { bars: [Bar {size: 0}, Bar {size: 1 << 27}] },
+        let result = handoff(Registers(8192,binding,current), Device { bars: [Bar {size: 0}, Bar {size: 1 << 27}] },
             Layout { objects: [Object {range: Range {start: 4096, size: 4096}}] }, console);
         assert_eq!(SNAPSHOTS.load(Ordering::SeqCst),3);
         assert_eq!(result, Ok(console), "GR refusal detached the screen console");
-        assert_eq!(PMC.load(Ordering::SeqCst),initial,"GR refusal leaked its PMC enable into CE recovery");
+        if refuse && (binding != 0 || current != 0) {
+            assert_eq!(PMC.load(Ordering::SeqCst),initial|0x1000,"live GR context was power cycled");
+            assert_eq!(PMC_WRITES.load(Ordering::SeqCst),1,"outer restore wrote PMC with live GR state");
+        } else {
+            assert_eq!(PMC.load(Ordering::SeqCst),initial,"GR refusal leaked its PMC enable into CE recovery");
+            assert_eq!(PMC_WRITES.load(Ordering::SeqCst),if refuse {2} else {0});
+        }
         assert!(RETAINED.load(Ordering::SeqCst));
         assert_eq!(REPORTED.load(Ordering::SeqCst), refuse, "GR refusal was not recorded");
+    }
+    }
     }
     }
 }
