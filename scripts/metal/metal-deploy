@@ -58,6 +58,9 @@ printf '%s\n' "$TAG" | remote 'sudo -n incus exec "$METAL_INSTANCE" -- sh -c "ca
 pack metal-run metal-build server-suite gt710-suite server_reboot.py resting_cases.py server_resting.py resting_host.py upgrade_probe.py upgrade_cases.py upgrade_suite.py users-hostssh efi-stub/Cargo.toml efi-stub/Cargo.lock efi-stub/rust-toolchain.toml efi-stub/src \
     -C "$HERE/.." host-slots.py gate-artifacts.py gate-tree.py suite-sequence.py effort-target-guard.py | remote 'mkdir -p ~/.local/share/breenix-metal && rm -rf ~/.local/share/breenix-metal/efi-stub && tar -C ~/.local/share/breenix-metal --no-same-owner -xf -'
 remote '
+resting=off
+if [ "${BREENIX_METAL_RESTING:-off}" = on ]; then resting=on; fi
+printf "BREENIX_METAL_RESTING=%s\n" "$resting" | sudo -n incus exec "$METAL_INSTANCE" -- sh -c "install -d -m 700 /etc/breenix-metal && cat > /etc/breenix-metal/resting.env"
 sudo -n incus exec "$METAL_INSTANCE" -- sh -c "install -d -m 700 /etc/breenix-metal /var/lib/breenix-metal && \
     install -m 644 /opt/breenix-metal/units/breenix-metal-machine.service /etc/systemd/system/ && \
     systemctl daemon-reload && systemctl enable breenix-metal-machine.service >/dev/null 2>&1" </dev/null'

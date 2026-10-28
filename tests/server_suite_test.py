@@ -23,6 +23,21 @@ ROOT = Path(__file__).resolve().parents[1]
 host = runpy.run_path(str(ROOT / 'scripts/metal/server-suite'))
 
 
+class SuspendedPersistentSuite(unittest.TestCase):
+    def test_all_host_milestones_are_skipped_without_boot_or_evidence(self):
+        import contextlib
+        import io
+        for milestone, category in host['MILESTONES'].items():
+            with self.subTest(milestone=milestone), patch.object(sys, 'argv', ['server-suite', '--milestone', milestone]):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    self.assertEqual(host['main'](), 0)
+                lines = output.getvalue().splitlines()
+                self.assertEqual(len(lines), len(host['CATEGORIES'][category]) + 1)
+                self.assertTrue(all(line.startswith('SKIP ') for line in lines[:-1]))
+                self.assertEqual(lines[-1], 'Not counted: S27 suspends persistent sessions')
+
+
 class RebootReadback(unittest.TestCase):
     def test_interleaved_console_keeps_exact_order_and_data_checks(self):
         verify = runpy.run_path(str(ROOT / 'scripts/metal/server_reboot.py'))['verify_root_readback']

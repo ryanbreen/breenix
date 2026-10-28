@@ -30,7 +30,7 @@ class IdleTest(existing.StateTest):
     def test_restoring_other_tools_disables_the_loaded_branch_policy(self):
         self.ready()
         metal_persist.update_disk(layout=metal_persist.new_layout())
-        service = existing.machine.Machine({})
+        service = existing.machine.Machine({'BREENIX_METAL_RESTING': 'on'})
         with patch.object(existing.machine.Path, 'read_bytes', return_value=b'restored tools'), \
              patch.object(existing.machine.subprocess, 'run') as start:
             service.rest()
@@ -39,7 +39,7 @@ class IdleTest(existing.StateTest):
     def test_idle_starts_current_through_the_ordinary_driver_and_does_not_duplicate_it(self):
         self.ready()
         metal_persist.update_disk(layout=metal_persist.new_layout())
-        service = existing.machine.Machine({})
+        service = existing.machine.Machine({'BREENIX_METAL_RESTING': 'on'})
         with patch.object(m, 'power_state', return_value='Off'), \
              patch.object(existing.machine.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as start:
             service.rest()
@@ -54,7 +54,7 @@ class IdleTest(existing.StateTest):
     def test_a_live_holder_or_queued_request_prevents_idle_admission(self):
         self.ready()
         metal_persist.update_disk(layout=metal_persist.new_layout())
-        service = existing.machine.Machine({})
+        service = existing.machine.Machine({'BREENIX_METAL_RESTING': 'on'})
         with patch.object(existing.machine.subprocess, 'run') as start:
             m.claim_lease(dict(id='holder', pid=os.getpid()), wait=False)
             service.rest()
@@ -66,7 +66,7 @@ class IdleTest(existing.StateTest):
     def test_operator_power_on_is_left_for_manager_adoption(self):
         self.ready()
         metal_persist.update_disk(layout=metal_persist.new_layout())
-        service = existing.machine.Machine({})
+        service = existing.machine.Machine({'BREENIX_METAL_RESTING': 'on'})
         with patch.object(m, 'power_state', return_value='On'), \
              patch.object(existing.machine.subprocess, 'run') as start:
             service.rest()
@@ -76,7 +76,7 @@ class IdleTest(existing.StateTest):
     def test_three_failed_idle_boots_disable_admission(self):
         self.ready()
         metal_persist.update_disk(layout=metal_persist.new_layout())
-        service = existing.machine.Machine({})
+        service = existing.machine.Machine({'BREENIX_METAL_RESTING': 'on'})
         with patch.object(m, 'power_state', return_value='Off'), \
              patch.object(existing.machine.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as start:
             for attempt in range(3):

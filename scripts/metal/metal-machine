@@ -269,6 +269,8 @@ class Machine:
 
     def rest(self):
         """Start current through the ordinary boot loop when the FIFO is empty."""
+        if self.site.get('BREENIX_METAL_RESTING') != 'on':
+            return
         # A branch deployment is temporary. Once another revision replaces the
         # tools, this already-running policy must not launch its replacement's
         # driver with the old revision's assumptions.
@@ -515,7 +517,9 @@ class Machine:
 
 
 def main():
-    Machine(m.load_site()).run()
+    site = m.load_site()
+    site['BREENIX_METAL_RESTING'] = os.environ.get('BREENIX_METAL_RESTING', 'off')
+    Machine(site).run()
 
 
 if __name__ == '__main__':
