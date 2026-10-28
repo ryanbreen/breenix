@@ -898,3 +898,21 @@ The MIT grants and copyright notices are retained in gr/channel.rs. The
 orchestration in gr/mod.rs uses Breenix's draw encoder and committed shader
 assets; its host check substitutes device boundaries and supplies no colour
 oracle or rasterizer.
+
+
+## GK208B retained EVO presentation (E23 M7 PR 7.4)
+
+The retained handle and shared flip in `kernel/src/gpu/gk208/native.rs`
+reuse the existing NV927D offset, notifier and UPDATE sequence from
+NVIDIA open-gpu-doc `9fdf5c4062007929d9f4e6cbad9c9771fe61b880`,
+`classes/display/cl927d.h`, SPDX-License-Identifier: MIT,
+Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES.
+The notice remains in that file and in `tests/fixtures/gt710_present.rs`.
+
+The presentation rectangle in `kernel/src/gpu/gk208/gr/mod.rs` uses the
+existing copy encoder through `gr/channel.rs`, whose pitch/line-count and
+engine-ordered releases derive from `classes/dma-copy/cla0b5.h` at the same
+revision, MIT, Copyright (c) 2019 NVIDIA CORPORATION. Its notice remains
+in `gr/channel.rs` and `copy.rs`. Both source headers were rechecked for
+this step. Breenix supplies retained allocation ownership, staging,
+complementary snapshots, compressed rows and error-safe console return.

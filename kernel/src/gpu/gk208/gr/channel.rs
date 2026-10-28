@@ -351,6 +351,7 @@ mod native {
     const IMAGE: u64 = 0x03000000;
     const TRANSFER: u64 = TARGET + 4096;
     const COPY_BYTES: usize = 4096;
+    const READBACK_BYTES: usize = 65536;
     struct DrawCopy {
         base: usize,
         engine: u32,
@@ -501,7 +502,7 @@ mod native {
                 )?;
             }
             let pages = ManuallyDrop::new(system_dma::Pages::new(
-                2,
+                1 + READBACK_BYTES / 4096,
                 &system_dma::translation_status()?,
             )?);
             context.map_system(
@@ -511,7 +512,7 @@ mod native {
                     total: h.total,
                 },
                 TARGET,
-                &[pages.address(0), pages.address(1)],
+                &(0..1 + READBACK_BYTES / 4096).map(|i| pages.address(i)).collect::<Vec<_>>(),
             )?;
             for offset in (0..65536).step_by(4096) {
                 words(h.regs, h.total, commands.range.start + offset, &[0; 1024])?;
@@ -854,18 +855,38 @@ mod native {
             h.regs.mask(0x200, 1 << reset, 1 << reset);
             Ok(())
         }
-        fn transfer(
-            &mut self, h: &mut Hardware<'_>, source: u64, target: u64, bytes: usize,
+        /// Borrow the display owner's existing allocation through reset/drain.
+        pub(in crate::gk208::gr) fn map_scanout(&mut self, h: &mut Hardware<'_>) -> Result<u64, &'static str> {
+            if !self.bound || self.quiesced { return Err("scanout mapping requires active GR"); }
+            let allocation = h.layout.objects[1].allocation;
+            let va = h.next_va;
+            h.next_va = va.checked_add(allocation.range.size + 4096).ok_or("scanout VA overflow")?;
+            // SAFETY: the last draw/readback receipt completed; no submission
+            // races this owner. The mapping pins display storage through reset.
+            unsafe {
+                self.context.map_idle(&mut h.layout.allocator,
+                    &mut VmIo { regs: h.regs, total: h.total }, va, allocation,
+                    Flags { volatile: true, ..Flags::default() })?;
+            }
+            Ok(va)
+        }
+        pub(in crate::gk208::gr) fn copy_rect(
+            &mut self, h: &mut Hardware<'_>, rect: crate::gk208::copy::Rect,
         ) -> Result<(), &'static str> {
             self.prepare_copy(h)?;
             let (sequence, nonce) = self.sequence()?;
-            let command = crate::gk208::copy::encode(crate::gk208::copy::Rect {
-                src: source, dst: target, width: bytes as u32, height: 1,
-                src_pitch: bytes as u32, dst_pitch: bytes as u32,
-            }, TARGET, self.report.identity.epoch, nonce)?;
+            let command = crate::gk208::copy::encode(rect, TARGET, self.report.identity.epoch, nonce)?;
             let sample = self.issue_words(h, sequence, 85, nonce, BOUND_US, &command, true)?;
             if !sample.accepted { return Err("draw CE release not observed"); }
             Ok(())
+        }
+        fn transfer(
+            &mut self, h: &mut Hardware<'_>, source: u64, target: u64, bytes: usize,
+        ) -> Result<(), &'static str> {
+            self.copy_rect(h, crate::gk208::copy::Rect {
+                src: source, dst: target, width: bytes as u32, height: 1,
+                src_pitch: bytes as u32, dst_pitch: bytes as u32,
+            })
         }
         pub(in crate::gk208::gr) fn upload(
             &mut self, h: &mut Hardware<'_>, va: u64, data: &[u8],
@@ -883,14 +904,16 @@ mod native {
         pub(in crate::gk208::gr) fn readback(
             &mut self, h: &mut Hardware<'_>, va: u64, bytes: usize,
         ) -> Result<[Vec<u8>; 2], &'static str> {
-            if bytes == 0 || bytes > 16384 { return Err("draw readback extent"); }
+            if bytes == 0 || bytes > 16 << 20 { return Err("draw readback extent"); }
             let mut images = [alloc::vec![0; bytes], alloc::vec![0; bytes]];
             for (index, poison) in [0x55, 0xaa].into_iter().enumerate() {
-                for start in (0..bytes).step_by(COPY_BYTES) {
-                    let count = COPY_BYTES.min(bytes - start);
+                for start in (0..bytes).step_by(READBACK_BYTES) {
+                    let count = READBACK_BYTES.min(bytes - start);
                     // SAFETY: page 1 remains owned and the preceding CE release
                     // completed before this complementary destination poison.
-                    unsafe { core::ptr::write_bytes(self.pages.va(1) as *mut u8, poison, COPY_BYTES); }
+                    for i in 1..=count.div_ceil(4096) {
+                        unsafe { core::ptr::write_bytes(self.pages.va(i) as *mut u8, poison, 4096); }
+                    }
                     self.pages.publish();
                     self.transfer(h, va + start as u64, TRANSFER, count)?;
                     crate::gpu_observation::read(&*self.pages, 4096, &mut images[index][start..start + count]);

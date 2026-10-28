@@ -242,6 +242,7 @@ pub(super) fn probe(
     device: &crate::drivers::pci::Device,
     layout: &mut memory::Layout,
     console: &super::ConsoleSurface,
+    evo: &mut super::native::Evo,
 ) -> Result<(), &'static str> {
     probe_static_inputs()?;
     let mut cleanup = ProbeCleanup {
@@ -250,7 +251,7 @@ pub(super) fn probe(
         finished: false,
         fifo_quiesced: true,
     };
-    let result = probe_inner(regs, device, layout, console, &mut cleanup);
+    let result = probe_inner(regs, device, layout, console, evo, &mut cleanup);
     // This also runs after topology, allocation, upload and startup refusals.
     let unwind = cleanup.finish(regs, layout);
     result.and(unwind)
@@ -261,6 +262,7 @@ fn probe_inner(
     device: &crate::drivers::pci::Device,
     layout: &mut memory::Layout,
     console: &super::ConsoleSurface,
+    evo: &mut super::native::Evo,
     cleanup: &mut ProbeCleanup,
 ) -> Result<(), &'static str> {
     ctxctl::reset(regs).map_err(hardware_error)?;
@@ -376,6 +378,8 @@ fn probe_inner(
             let mut graphics = hardware.graphics.take().ok_or("draw GR channel absent")?;
             let mut draw_evidence = DrawEvidence::default();
             let draw_result = draw_probe(&mut hardware, &mut graphics, shader_buffer.va, &mut draw_evidence);
+            let draw_result = draw_result.and_then(|()|
+                present_probe(&mut hardware, &mut graphics, evo, &mut draw_evidence));
             hardware.graphics = Some(graphics);
             let draw_emit = draw_evidence.emit(draw_result.as_ref().err().copied());
             draw_result?;
@@ -709,12 +713,90 @@ fn draw_probe(
         capture.images = Some(images);
         if !equal { return Err("draw CE P/~P readbacks differ"); }
     }
+    evidence.target = Some(target.va);
+    Ok(())
+}
+
+/// Present the final clean target without teaching EVO another method.
+fn present_probe(
+    hardware: &mut Hardware<'_>, graphics: &mut channel::Session,
+    evo: &mut super::native::Evo, evidence: &mut DrawEvidence,
+) -> Result<(), &'static str> {
+    use core::fmt::Write;
+    let console = hardware.console;
+    let second = evo.surfaces[1];
+    let (width,height,pitch) = (console.width,console.height,console.pitch);
+    let (x,y,background) = (32usize,32usize,0xff182028u32);
+    // Geometry is bounded before touching the inactive scanout.
+    if width < x+64 || height < y+64 || pitch < width*4 || pitch%4 != 0
+        || pitch.checked_mul(height).is_none_or(|n| n as u64 > second.size || n > 16 << 20) {
+        return Err("presentation exceeds private scanout");
+    }
+    let result = (|| {
+        let target = evidence.target.ok_or("clean draw target absent")?;
+        let receipt = &evidence.draws.last().ok_or("clean draw receipt absent")?.receipt;
+        let scanout = graphics.map_scanout(hardware)?;
+        {
+            let mut p = memory::Pramin::new(hardware.regs,hardware.total);
+            for offset in (0..pitch*height).step_by(4) {
+                p.write(second.start+offset as u64,background)?;
+            }
+        }
+        super::modeset::bar_flush(hardware.regs)?;
+        graphics.copy_rect(hardware,super::copy::Rect {
+            src: target, dst: scanout+(y*pitch+x*4) as u64,
+            width: 256, height: 64, src_pitch: 256, dst_pitch: pitch as u32,
+        })?;
+        let snapshot = evo.flip(hardware.regs,second.start)?;
+        let images = graphics.readback(hardware,scanout,pitch*height)?;
+        if images[0] != images[1] { return Err("present CE P/~P readbacks differ"); }
+        let mut rows = String::new();
+        let mut readbacks = Vec::new();
+        for (poison,image) in [85,170].into_iter().zip(&images) {
+            for (row,bytes) in image.chunks_exact(pitch).enumerate() {
+                let mut runs: Vec<(usize,u32)> = Vec::new();
+                for pixel in bytes.chunks_exact(4) {
+                    let value = u32::from_le_bytes(pixel.try_into().unwrap());
+                    if let Some((count,_)) = runs.last_mut().filter(|(_,word)| *word == value) {
+                        *count += 1;
+                    } else { runs.push((1,value)); }
+                }
+                write!(rows,"GT710_DRAW_IMAGE present {} {} ",poison,row).map_err(|_| "present row formatting")?;
+                for (i,(count,word)) in runs.iter().enumerate() {
+                    if i != 0 { rows.push(','); }
+                    write!(rows,"{count:x}:{word:08x}").map_err(|_| "present run formatting")?;
+                }
+                rows.push('\n');
+            }
+            readbacks.push(format!("{{\"case\":\"present\",\"poison\":{},\"bytes\":{},\"sha256\":\"{}\"}}",
+                poison,image.len(),super::hash(image)));
+        }
+        evidence.present_rows = rows;
+        evidence.present_readbacks = readbacks;
+        Ok((snapshot,receipt.epoch,receipt.nonce))
+    })();
+    // An error can follow a consumed UPDATE, so restore with the advanced PUT
+    // even when the presentation flip or readback failed. Check the binding too.
+    let restore = evo.flip(hardware.regs,evo.surfaces[0].start);
+    let binding = super::native::console_binding(console);
+    restore?;
+    binding?;
+    let (s,epoch,nonce) = result?;
+    crate::serial_println!(concat!("GT710_PRESENT {{\"schema\":1,\"width\":{},\"height\":{},\"pitch\":{},\"background\":{},\"x\":{},\"y\":{},",
+        "\"second_address\":{},\"head\":{},\"active_register\":{},\"active_value\":{},\"active_address\":{},\"epoch\":{},\"nonce\":{},\"firmware_writes\":{},",
+        "\"notifier_before\":{},\"notifier_after\":{},\"put\":{},\"get\":{},\"raster_before\":{},\"raster_after\":{},\"underflow\":{},\"errors\":{},\"power\":{},\"link\":{},\"console_restored\":true}}"),
+        width,height,pitch,background,x,y,second.start,evo.head,s.active_register,s.active_value,u64::from(s.active_value)<<8,
+        epoch,nonce,crate::firmware_writes::count()-console.firmware_baseline,
+        s.notifier_before,s.notifier_after,s.put,s.get,s.raster_before,s.raster_after,s.underflow,s.errors,s.power,s.link);
     Ok(())
 }
 
 #[derive(Default)]
 struct DrawEvidence {
     draws: Vec<DrawCapture>,
+    target: Option<u64>,
+    present_rows: String,
+    present_readbacks: Vec<String>,
 }
 struct DrawCapture {
     name: &'static str,
@@ -734,11 +816,6 @@ impl DrawEvidence {
             let Some(capture) = self.draws.iter().find(|c| c.name == name) else { continue; };
             let r = &capture.receipt;
             for i in 0..4 { before[i] |= r.before[i]; after[i] |= r.after[i]; }
-            if let Some(o) = &r.observation {
-                releases.push(format!(
-                    "{{\"target\":{},\"epoch\":{},\"nonce\":{},\"observed\":{},\"observed_epoch\":{},\"consumed\":{},\"accepted\":{},\"elapsed_us\":{},\"trap_before\":{:?},\"trap_after\":{:?}}}",
-                    r.target, r.epoch, r.nonce, o.value, o.epoch, o.consumed, o.accepted, o.elapsed_us, r.before, r.after));
-            }
             if let Some(images) = &capture.images {
                 for (poison, image) in [85, 170].into_iter().zip(images) {
                     for (i, chunk) in image.chunks(256).enumerate() {
@@ -750,8 +827,17 @@ impl DrawEvidence {
                 }
             }
         }
-        // Account for pending golden-context rows and the later presentation
-        // producer before accepting this unit's addition to the shared buffer.
+        for capture in &self.draws {
+            let r = &capture.receipt;
+            if let Some(o) = &r.observation {
+                releases.push(format!(
+                    "{{\"target\":{},\"epoch\":{},\"nonce\":{},\"observed\":{},\"observed_epoch\":{},\"consumed\":{},\"accepted\":{},\"elapsed_us\":{},\"trap_before\":{:?},\"trap_after\":{:?}}}",
+                    r.target, r.epoch, r.nonce, o.value, o.epoch, o.consumed, o.accepted, o.elapsed_us, r.before, r.after));
+            }
+        }
+        rows.push_str(&self.present_rows);
+        readbacks.extend(self.present_readbacks.iter().cloned());
+        // Retain headroom for pending golden-context rows in the shared buffer.
         let estimate = super::bulk::used().checked_add(rows.len()).and_then(|n| n.checked_add(512 * 1024))
             .ok_or("draw artifact estimate overflow")?;
         if estimate >= 2 << 20 { return Err("draw artifact estimate exceeds 2 MiB"); }

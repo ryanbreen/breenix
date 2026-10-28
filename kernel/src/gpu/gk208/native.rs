@@ -345,6 +345,74 @@ pub struct ConsoleSurface {
     pub firmware_baseline: u64,
 }
 
+/// Retain the owned EVO channel and its post-takeover command cursor.
+pub struct Evo {
+    pub head: u32,
+    sor: u32,
+    total: u64,
+    push: u64,
+    put: u32,
+    notifier: u64,
+    pub surfaces: [memory::Range; 2],
+    limits: modeset::PllLimits,
+    coefficients: modeset::Pll,
+    scripts: [Vec<modeset::Op>; 4],
+}
+pub struct FlipSnapshot {
+    pub notifier_before: u32,
+    pub notifier_after: u32,
+    pub put: u32,
+    pub get: u32,
+    pub active_register: usize,
+    pub active_value: u32,
+    pub raster_before: u32,
+    pub raster_after: u32,
+    pub underflow: u32,
+    pub errors: u32,
+    pub power: u32,
+    pub link: u32,
+}
+impl Evo {
+    pub fn flip(&mut self, regs: &mut Registers, address: u64) -> Result<FlipSnapshot, &'static str> {
+        if !self.surfaces.iter().any(|s| s.start == address) {
+            return Err("flip outside private scanouts");
+        }
+        flip(regs,self.total,self.push,&mut self.put,self.notifier,self.head,
+            self.sor,&self.limits,&self.coefficients,&self.scripts,address)
+    }
+}
+/// Existing NV927D offset/notifier/UPDATE sequence, shared by takeover and GR.
+/// MIT cl927d.h: HEAD_SET_OFFSET, UPDATE and CORE_NOTIFIER_3 DONE bit.
+fn flip(
+    regs: &mut Registers, total: u64, push: u64, put: &mut u32,
+    notifier: u64, head: u32, sor: u32, limits: &modeset::PllLimits,
+    pll: &modeset::Pll, ops: &[Vec<modeset::Op>; 4], address: u64,
+) -> Result<FlipSnapshot, &'static str> {
+    write_words(regs,total,notifier,&[0,0,0,0])?;
+    let notifier_before=read_word(regs,total,notifier)?;
+    submit(regs,total,push,put,&[(0x460+head*0x300,(address>>8) as u32),(0x84,0x80000000),(0x80,0)])?;
+    let notifier_after=complete(regs,total,notifier,limits,pll,(head,sor,true,true),ops)?;
+    modeset::wait(regs,0x640004,u32::MAX,*put)?;
+    let active_register=0x640460+head as usize*0x300;
+    let active_value=regs.read(active_register);
+    if u64::from(active_value)<<8!=address {
+        return Err("native flip latched a different surface");
+    }
+    let raster_before=regs.read(0x616340+head as usize*0x800);
+    regs.delay_us(50000);
+    let raster_after=regs.read(0x616340+head as usize*0x800);
+    let underflow=regs.read(0x616308+head as usize*0x800);
+    let errors=regs.read(0x61009c);
+    let power=regs.read(0x61c004+sor as usize*0x800);
+    let link=regs.read(0x61c030+sor as usize*0x800);
+    if notifier_before!=0 || notifier_after&1!=1 || errors!=0 || underflow&0x111!=1
+        || power&0x80000001!=1 || link&0x10000000!=0 || raster_before>>16==raster_after>>16 {
+        return Err("native flip lost output health or raster progress");
+    }
+    Ok(FlipSnapshot { notifier_before,notifier_after,put:*put,get:regs.read(0x640004),
+        active_register,active_value,raster_before,raster_after,underflow,errors,power,link })
+}
+
 pub fn takeover(
     regs: &mut Registers,
     device: &pci::Device,
@@ -353,7 +421,7 @@ pub fn takeover(
     route: &board::Route,
     head: u32,
     layout: &memory::Layout,
-) -> Result<ConsoleSurface, &'static str> {
+) -> Result<(ConsoleSurface, Evo), &'static str> {
     let t = modes.first().ok_or("no preferred sink timing")?;
     let limits = modeset::board_pll(rom, head)?;
     let pll_record = modeset::board_pll_record(rom,head)?;
@@ -610,7 +678,11 @@ pub fn takeover(
     };
     if !measuring() {
         crate::serial_println!("GT710_MODE_STAGE console-ready diagnostics=off");
-        return Ok(console);
+        return Ok((console, Evo {
+            head, sor: u32::from(route.sor), total, push: evo, put, notifier,
+            surfaces: [layout.objects[0].range, layout.objects[1].range],
+            limits, coefficients, scripts,
+        }));
     }
     let mut digest = crate::block::install::sha256::Sha256::new();
     let mut data_bytes = 0usize;
@@ -723,14 +795,10 @@ pub fn takeover(
         for (step,(address,nonce)) in [(a.start,seed_a),(b.start,seed_b),(a.start,seed_a)].iter().enumerate() {
             let before_active=active_snapshot(regs,head,u32::from(route.sor));
             let put_before=*put;
-            write_words(regs,total,notifier,&[0,0,0,0])?;
-            let notifier_before=read_word(regs,total,notifier)?;
-            submit(regs,total,evo,put,&[(0x460+head*0x300,(address>>8) as u32),(0x84,0x80000000),(0x80,0)])?;
-            let notifier_after=complete(regs,total,notifier,&limits,pll,(head,u32::from(route.sor),true,true),ops)?;
-            modeset::wait(regs,0x640004,u32::MAX,*put)?;
-            if u64::from(regs.read(0x640460+h))<<8!=*address {
-                return Err("native flip latched a different surface");
-            }
+            let snapshot=flip(regs,total,evo,put,notifier,head,
+                u32::from(route.sor),&limits,pll,ops,*address)?;
+            let notifier_before=snapshot.notifier_before;
+            let notifier_after=snapshot.notifier_after;
             let mut digest=crate::block::install::sha256::Sha256::new();
             {
                 let mut p=memory::Pramin::new(regs,total);
@@ -754,9 +822,8 @@ pub fn takeover(
                     super::bulk::line(format!("GT710_FLIP_PIX {} {} {} {}",mode,step,y,line))?;
                 }
             }
-            let raster_before=regs.read(0x616340+head as usize*0x800);
-            regs.delay_us(50000);
-            let raster_after=regs.read(0x616340+head as usize*0x800);
+            let raster_before=snapshot.raster_before;
+            let raster_after=snapshot.raster_after;
             let timing_json=format!("{{\"width\":{},\"height\":{},\"clock_khz\":{},\"hsync_start\":{},\"hsync_end\":{},\"htotal\":{},\"vsync_start\":{},\"vsync_end\":{},\"vtotal\":{},\"flags\":{}}}",
                 timing.width,timing.height,timing.clock_khz,timing.hsync_start,timing.hsync_end,timing.htotal,
                 timing.vsync_start,timing.vsync_end,timing.vtotal,timing.flags);
@@ -771,12 +838,6 @@ pub fn takeover(
                 regs.read(0x61c030+route.sor as usize*0x800),raster_before,raster_after,instance,evo,
                 crate::firmware_writes::count()-firmware_baseline,bytes,super::hex(&digest.finalize()),super::hex(pll_record),limits.reg,limits.reference,
                 regs.read(limits.reg as usize+4),regs.read(limits.reg as usize+16));
-            if regs.read(0x616308+head as usize*0x800)&0x111!=1
-                || regs.read(0x61c004+route.sor as usize*0x800)&0x80000001!=1
-                || regs.read(0x61c030+route.sor as usize*0x800)&0x10000000!=0
-                || raster_before>>16==raster_after>>16 {
-                return Err("native flip lost output health or raster progress");
-            }
         }
         Ok(())
     };
@@ -918,7 +979,11 @@ pub fn takeover(
             crate::serial_println!("GT710_FLIP_REFUSAL runtime={}",reason);
         })?;
     }
-    Ok(console)
+    Ok((console, Evo {
+            head, sor: u32::from(route.sor), total, push: evo, put, notifier,
+            surfaces: [layout.objects[0].range, layout.objects[1].range],
+            limits, coefficients, scripts,
+        }))
 }
 
 fn active_snapshot(regs: &Registers, head: u32, sor: u32) -> String {

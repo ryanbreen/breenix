@@ -149,6 +149,7 @@ impl Hardware<'_> {
 }
 #[derive(Default)] struct DrawEvidence;
 impl DrawEvidence { fn emit(&self,_:Option<&str>)->Result<(),&'static str>{Ok(())} }
+fn present_probe(_: &mut Hardware<'_>,_: &mut channel::Session,_:(),_:&mut DrawEvidence)->Result<(),&'static str>{Ok(())}
 fn draw_probe(_: &mut Hardware<'_>,_: &mut channel::Session,_:u64,_:&mut DrawEvidence)->Result<(),&'static str>{step("draw-probe")}
 mod channel {
     struct DrawCopy { base:usize,engine:u32,reset:u32,old_irq:u32,old_enable:u32 }
@@ -178,7 +179,7 @@ mod channel {
 fn run(regs: &mut Registers, stuck: bool) -> Result<(), &'static str> {
     let mut storage=memory::Layout{allocator:memory::allocator::Allocator};
     let layout=&mut storage;
-    let console=Console{pointer:0}; let owned_device=Device; let device=&owned_device;
+    let evo=(); let console=Console{pointer:0}; let owned_device=Device; let device=&owned_device;
     regs.stuck=stuck;
     let mut cleanup=ProbeCleanup{state:ctxctl::SavedState,scratch:vec![],finished:false,fifo_quiesced:false};
     let result=(|| {

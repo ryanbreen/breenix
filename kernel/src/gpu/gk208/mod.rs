@@ -326,7 +326,7 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
                 regs.read(0x610490),regs.read(0x61009c),regs.read(0x6101f0),regs.read(0x6101f4),regs.read(0x6101f8),
                 regs.read(0x640000),regs.read(0x640004),regs.read(0x6100ac),regs.read(0x6101d4+head as usize*0x800));
         }
-        let console=result?;
+        let (console,mut evo)=result?;
         if native::memory_requested() {
             let start=timer::rdtsc();
             inventory::probe(&mut regs,&device,&mut layout,&console)?;
@@ -350,7 +350,7 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
             // not discard the surface that takeover has already made active.
             gr::interrupt_snapshot(&mut regs,&device,"before");
             let gr_enabled=regs.read(0x200)&0x1000;
-            if let Err(error)=gr::probe(&mut regs,&device,&mut layout,&console) {
+            if let Err(error)=gr::probe(&mut regs,&device,&mut layout,&console,&mut evo) {
                 // The probe enabled PGRAPH before it could refuse topology.
                 // Return that enable to its incoming state for the CE owner.
                 regs.mask(0x200,0x1000,gr_enabled);

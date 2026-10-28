@@ -110,6 +110,7 @@ impl Range {
 }
 #[derive(Debug)]
 pub struct Object {
+    pub allocation: allocator::Allocation,
     pub name: &'static str,
     pub range: Range,
     pub align: u64,
@@ -164,7 +165,7 @@ impl Layout {
             ("dma", 4096, 4096),
         ] {
             let allocation=allocator.allocate_after(bytes,align,allocator::Kind::Display,cursor)?;
-            let object=Object{name,range:allocation.range,align};
+            let object=Object{name,range:allocation.range,align,allocation};
             cursor=object.guarded().end().ok_or("object overflow")?+4096;
             objects.push(object);
         }
