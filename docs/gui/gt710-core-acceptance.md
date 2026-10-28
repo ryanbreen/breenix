@@ -158,6 +158,11 @@ it is accepted only with that complete evidence. This host milestone is
 integration evidence, not a passing GPU suite. Later milestones retain the
 unchanged 170-pass GPU gate, pixels and bounds.
 
+<!-- claim-lint:ok: the flag names are checked by tests/suite_sequence_test.py. -->
+Use a named `--suite gpu` for this producer boot. The x86-metal `--suite all` aggregate
+explicitly excludes `gpu`, with an admission reason from `suite-sequence.py`, until native CAPS
+reports `ADMITTED` at milestone 8.7; registering the 8.1 producer does not admit it.
+
 <!-- claim-lint:ok: tests/gt710_profile_test.py exercises suite combinations and the resolved all selection. -->
 The launcher selects production for ordinary console, GPU and GT 710 selections,
 including lists and `--suite all`. `--gt710-category core` is accepted only for

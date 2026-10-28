@@ -537,8 +537,11 @@ for the measured kernel stages before accepting the mode result. The console-gap
 
 <!-- claim-lint:ok: `all` is the flag's name; scripts/suite-sequence.py (resolve) and scripts/metal/metal-boot implement this paragraph. -->
 A suite boot can run several suites in turn for one boot's firmware, delivery and build time:
-`metal-run boot --mode suite --suite directories,memory,files-io`, or `--suite all` for every main-path effort suite
-but those that need a 3D GPU, which this machine lacks (docs/suites/README.md, "Several suites in one boot").
+`metal-run boot --mode suite --suite directories,memory,files-io`, or `--suite all` for the main-path effort suites
+eligible under docs/suites/README.md, "Several suites in one boot".
+The native card permits a named `--suite gpu` for admission diagnostics and category development.
+Until native CAPS reports `ADMITTED` at milestone 8.7, `suite-sequence.py` explicitly leaves `gpu` out
+of x86-metal's aggregate selection and prints that admission reason with the named-suite command.
 `metal-run` resolves the list against the commit's own `docs/efforts/path.json` and manifests with the deployed
 `suite-sequence.py`, and refuses a list that puts `console` anywhere but first or `files-io` anywhere but last.
 Staging writes the list beside the boot target and checks that each suite's binary is on the root; the build stages

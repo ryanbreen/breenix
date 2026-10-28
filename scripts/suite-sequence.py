@@ -10,6 +10,8 @@
 leaving out suites with no manifest or no cases yet and, on a target without a 3D GPU, suites that need one. TARGET is arm64-qemu,
 parallels, vmware or x86-metal; ARM64 QEMU has a 3D GPU only with `--gpu-3d` (boot-interactive.sh --gpu-gl). In a list
 of two or more, a manifest's `"sequence": "first"` suite must run first and its `"sequence": "last"` suite last.
+On x86-metal, `all` explicitly excludes `gpu` until the native backend is ADMITTED (milestone 8.7).
+A named `gpu` remains runnable for admission diagnostics and category development.
 
 `score` scores each suite of SUITES (comma-separated) from the serial as scripts/suite-verdict.py scores it alone,
 and prints one line per suite: PASS, FAIL, STALLED (the runner's watchdog, or the boot, stopped it with the cases
@@ -82,6 +84,10 @@ def resolve(spec, target, has_3d=False, read=read_repo):
                 skipped.append((suite, "host-run categories need a persistent boot; run it with its milestone selectors"))
             elif manifest(suite).get("needs3dGpu") and not has_3d:
                 skipped.append((suite, "needs a 3D GPU"))
+            elif target == "x86-metal" and suite == "gpu":
+                # M8.1 registers the producer, not full admission. Lift this aggregate
+                # exclusion only when native CAPS reports ADMITTED at milestone 8.7.
+                skipped.append((suite, "native GPU backend is not ADMITTED (milestone 8.7); run --suite gpu explicitly"))
             elif suite not in ids:
                 ids.append(suite)
         place = {suite: manifest(suite).get("sequence") for suite in ids}
