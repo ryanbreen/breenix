@@ -848,9 +848,9 @@ fn contexts_sequence(
     ] {
         let (active, peer) = if index == 0 { (&mut *a, &mut *b) } else { (&mut *b, &mut *a) };
         let request = requests[index];
-        // A suppressed submission must expose the cleared target, rather
-        // than V2 left behind by the previous draw on this context.
-        if name == "a-v2" || name == "suppress" {
+        // Clear stale pixels so restored draws must actually render, and the
+        // suppressed control exposes the background.
+        if matches!(name, "a-v2" | "b-restored" | "suppress" | "corrupt") {
             active.upload(hardware, request.target_va, &alloc::vec![0; 16384])?;
         }
         if name == "a-v2" {

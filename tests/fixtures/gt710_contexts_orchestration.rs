@@ -59,7 +59,7 @@ pub mod channel {
                 assert_eq!(r.fragment_program,draw::GRADIENT_PROGRAM);
                 assert_eq!(self.vertices,draw::FULL_VIEWPORT_VERTEX_WORDS.iter().flat_map(|w|w.to_le_bytes()).collect::<Vec<_>>());
                 if full {assert_eq!(packet(&stream,0x214c),vec![shaders::GRADIENT_FRAGMENT_GPRS]);}
-                self.target=(0..64).flat_map(|y|(0..64).flat_map(move|x|[4*x,4*y,2*(x+y),255])).collect();
+                if !(fails("restore-noop") && r.nonce == 7) { self.target=(0..64).flat_map(|y|(0..64).flat_map(move|x|[4*x,4*y,2*(x+y),255])).collect(); }
             }
             *current=[0x80000600+self.id as u32;2];
             receipt.target=r.report_va;receipt.epoch=r.epoch;receipt.nonce=r.nonce;
@@ -99,6 +99,7 @@ fn run(failure:&'static str)->Result<(),&'static str>{
     let corrupt=e.iter().position(|v|v=="upload-1-2000ac").unwrap();
     assert_eq!(e[corrupt-1],"draw-1-false-false");assert_eq!(e[corrupt+1],"read-1");
 }
+#[test]fn context_restored_draw_must_render(){assert!(run("restore-noop").is_err());}
 #[test]fn context_controls_must_change_pixels(){for failure in ["suppress-executed","corrupt-ignored","corrupt-upload"]{assert!(run(failure).is_err(),"{failure}");}}
 #[test]fn context_missing_release_stops_before_ce(){assert!(run("release").is_err());assert_eq!(EVENTS.with(|v|v.borrow().clone()),["read-1","draw-0-true-false"]);}
 #[test]fn context_poison_mismatch_stops_before_draw(){assert!(run("poison").is_err());assert_eq!(EVENTS.with(|v|v.borrow().clone()),["read-1"]);}

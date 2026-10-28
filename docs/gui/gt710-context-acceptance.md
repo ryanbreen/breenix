@@ -82,7 +82,8 @@ The initial A/B/A/B sequence exercises FECS save/restore with distinct
 private images and programs. Change A's vertices for V2 after returning to
 A. Keep B's state resident in its saved context; reinitializing that state
 before `b-restored` would defeat the restore probe. Targets begin cleared
-to the oracle's zero background. Clean images must come from A197 execution.
+to the oracle's zero background; B is also cleared before `b-restored`
+and `corrupt` so those draws cannot pass using stale pixels. Clean images must come from A197 execution.
 CE uploads initialize the background and vertex/program data, and the corrupt control uploads one
 background word after the draw release; CE also performs fenced read-back.
 <!-- claim-lint:ok: normative producer requirements for the eight-frame sequence in tests/gt710_contexts_report_test.py; not hardware claims. -->
