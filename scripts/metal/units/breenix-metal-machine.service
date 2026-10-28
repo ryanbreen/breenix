@@ -8,6 +8,7 @@ Wants=network-online.target
 Type=notify
 NotifyAccess=main
 Environment=BREENIX_METAL_SITE=/etc/breenix-metal/site.env
+EnvironmentFile=-/etc/breenix-metal/resting.env
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 /opt/breenix-metal/metal-machine
 Restart=always

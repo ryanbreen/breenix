@@ -18,6 +18,11 @@ site's identifiers live in the **site file** (`BREENIX_METAL_SITE`, default `/et
 (`BREENIX_METAL_HOST_ENV`, default `~/.config/breenix-metal/host.env` on the boot host).
 `tests/metal_tools_test.py` fails if an address, a MAC address or a home-folder path appears in the tools or here.
 
+**S27:** Persistent sessions and installs are suspended unless the operator requests one. The machine stays off
+between test boots; the persistent disk layout is left intact. Host-driven server and operator cases that require
+persistent sessions are skipped and do not count while this ruling stands. The descriptions below of persistent
+operation are retained for when the operator restores it.
+
 ## Layout
 
 | Where | What |
@@ -1175,16 +1180,10 @@ Each persistent boot is recorded and scored like a default boot, with boot shape
 manager's milestone, the kernel's storage milestone for the system and home partitions, `fb-console`, `xhci`,
 `usb-keyboard` and the login prompt. These stages are automated; normal operator usage adds no stages or results.
 
-The lab's resting-state policy starts an ordinary current-slot persistent boot when
-the live FIFO is empty. The machine service uses the existing boot driver and
-lease, with no separate power path. Queued image boots request shutdown from
-the boot host over strict authenticated SSH, using the site's operator key and
-password with `sudo /sbin/poweroff`. The private key stays on the boot host;
-the pin comes from the install verification's protected-console key record.
-The queued boot waits for the driver's authenticated clean shutdown receipt and
-lease release. Verification and `--run` batches finish before another boot takes
-their lease. A previous-slot choice is consumed once the manager starts it, so a
-later reboot in that same lease chooses current without changing the slots.
+The resting-state policy is off by default (S27). The boot host's `host.env` may set
+`BREENIX_METAL_RESTING=on` when the operator authorizes persistent sessions again; deployment passes this setting
+to the machine service. When enabled, the service starts the current persistent entry through the ordinary boot
+loop when the queue is empty.
 
 The machine service must load a changed policy while no boot holds the lease.
 Deploy with `--restart` only at that idle point. Restore main's tools before
@@ -1192,7 +1191,7 @@ releasing the shared branch-tools lock. Replacing the policy source disables
 its loaded revision's idle admission until an idle service restart loads the
 replacement; a running boot keeps its driver and lease.
 The [resting-state category](../suites/README.md#persistent-resting-state-s20-amended-by-s25)
-checks the machine events and one SSH login on the returned install (S25).
+is suspended under S27; its former acceptance remains documented for a future ruling.
 
 ### Measured on the R240
 
