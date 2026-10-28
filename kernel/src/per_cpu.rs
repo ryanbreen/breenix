@@ -776,23 +776,18 @@ pub fn irq_exit() {
 
     // LOGGING REMOVED: All logging removed to prevent serial lock deadlock
 
-    // A PREEMPT section may hold a handler's lock. Leave its work pending;
-    // the outermost preempt_enable() drains it after those locks are released.
-    run_pending_softirqs();
-}
+    // Check if we should process softirqs after exiting hardirq
+    // Use HAL to read current preempt_count
 
-/// Dispatch only outside PREEMPT, hardirq, softirq/BH-disable and NMI context.
-#[inline(always)]
-fn run_pending_softirqs() {
-    if hal_percpu::X86PerCpu::preempt_count() == 0 && softirq_pending() != 0 {
-        // preempt_enable() can run with IRQs enabled. Exclude a local IRQ or
-        // migration between the eligibility check and entering softirq context,
-        // then recheck this CPU's state after masking.
-        crate::arch_without_interrupts(|| {
-            if hal_percpu::X86PerCpu::preempt_count() == 0 && softirq_pending() != 0 {
-                do_softirq();
-            }
-        });
+    let new_count = hal_percpu::X86PerCpu::preempt_count();
+
+    if new_count == 0 {
+        // Check if any softirqs are pending
+        let pending = softirq_pending();
+        if pending != 0 {
+            // Process softirqs (logging removed to prevent deadlock)
+            do_softirq();
+        }
     }
 }
 
@@ -1088,10 +1083,6 @@ pub fn preempt_enable() {
 
     // Compiler barrier after decrementing preempt count
     compiler_fence(Ordering::Release);
-
-    // Complete work deferred by irq_exit() inside the section just released.
-    // Nested PREEMPT and interrupt/BH-disable contexts remain excluded.
-    run_pending_softirqs();
 
     // CRITICAL: Disable logging to prevent recursion issues
 
