@@ -222,9 +222,18 @@ fn pause() -> Result<(), &'static str> {
         .saturating_mul(1_000_000_000)
         .saturating_add(n)
         .saturating_add(10_000_000);
+    // Prepared waits hold one PREEMPT level through publication and cleanup.
+    // The recovery kthread has no syscall-entry bracket to supply that level.
+    let unheld = crate::per_cpu::preempt_count() == 0;
+    if unheld {
+        crate::per_cpu::preempt_disable();
+    }
     let outcome = POLL.prepare_to_wait_checked(ThreadState::BlockedOnIO, Some(wake), || true);
-    crate::syscall::blocking_io::wait_prepared(&POLL, outcome)
-        .map_err(|_| "native recovery worker wait failed")
+    let result = crate::syscall::blocking_io::wait_prepared(&POLL, outcome);
+    if unheld {
+        crate::per_cpu::preempt_enable();
+    }
+    result.map_err(|_| "native recovery worker wait failed")
 }
 
 pub(super) fn probe(s: &mut super::process::Session) -> Result<String, &'static str> {
