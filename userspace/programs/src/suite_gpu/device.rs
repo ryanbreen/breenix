@@ -50,9 +50,22 @@ pub fn caps_parsed() -> CaseResult {
     pass()
 }
 
+fn measured_sources(c: &abi::Caps, ids: core::ops::RangeInclusive<u32>) -> CaseResult {
+    if c.backend == abi::backend::GK208 {
+        for id in ids {
+            let source = c.capability_origin(id);
+            ensure(source == abi::capability_origin::EXECUTABLE_PROBE, || {
+                format!("{} has source {source}, expected an executable probe", capability::name(id))
+            })?;
+        }
+    }
+    pass()
+}
+
 pub fn profile_formats() -> CaseResult {
     let _case = begin()?;
     let c = caps()?;
+    measured_sources(&c, capability::BGRA_RENDER..=capability::R8_SAMPLE)?;
     let both = abi::format_flag::SAMPLE | abi::format_flag::RENDER;
     let want = [(format::B8G8R8A8, both, "B8G8R8A8"), (format::R8G8B8A8, both, "R8G8B8A8"), (format::R8, abi::format_flag::SAMPLE, "R8")];
     for (i, (f, flags, name)) in want.iter().enumerate() {
@@ -66,6 +79,7 @@ pub fn profile_formats() -> CaseResult {
 pub fn profile_integer_ops() -> CaseResult {
     let _case = begin()?;
     let c = caps()?;
+    measured_sources(&c, capability::INTEGER_OPS..=capability::REGION_COPY)?;
     let need = abi::profile::INTEGER_OPS | abi::profile::TEXEL_FETCH | abi::profile::REGION_COPY;
     ensure(c.profile & need == need, || format!("profile bits {:#x}: integer ops, texel fetch and region copies need {need:#x}", c.profile))?;
     ensure(if c.backend == abi::backend::GK208 { c.shading_level == 0 } else { c.shading_level > 0 }, || "invalid shading-language level".to_string())?;
@@ -84,6 +98,7 @@ pub fn profile_limits() -> CaseResult {
 pub fn profile_record() -> CaseResult {
     let _case = begin()?;
     let c = caps()?;
+    measured_sources(&c, capability::BGRA_RENDER..=capability::REGION_COPY)?;
     let b = raw(&c);
     ensure(u32_at(&b, 0) == 1, || format!("record version {}", u32_at(&b, 0)))?;
     ensure(u32_at(&b, 4) == 512, || format!("record size {}", u32_at(&b, 4)))?;
