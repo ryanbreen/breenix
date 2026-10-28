@@ -21,7 +21,9 @@ def scorer_written(record):
     tree = ast.parse((ROOT / 'scripts/metal/gt710-suite').read_text())
     engine = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
                   and n.name == 'graphics_engine')
-    body = next(n for n in engine.body if isinstance(n, ast.Try)).body
+    try_body = next(n for n in engine.body if isinstance(n, ast.Try)).body
+    body = next(n for n in try_body if isinstance(n, ast.FunctionDef)
+                and n.name == 'check_context').body
     start = next(i for i, n in enumerate(body) if isinstance(n, ast.Assign)
                  and ast.unparse(n.targets[0]) == 'layout')
     end = next(i for i in range(start, len(body)) if isinstance(body[i], ast.For)
