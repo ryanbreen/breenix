@@ -94,7 +94,11 @@ GRADIENT = (
     ('SPH_TYPE', 0, 2),
     ('VERSION', 0, 3),
     ('SHADER_TYPE', 0, 5),
-    ('MRT_ENABLE', 0, 0),
+    # G2: Mesa 24.3.4 nvc0_program.c:442-448 sets 0x4000 for
+    # !separateFragData; cla097sph.h:413-415 names that bit MRT_ENABLE.
+    # Colour target 0 is OMAP RGBA index 0 below (cla097sph.h:616-627)
+    # and output_slots in the independently checked metadata.
+    ('MRT_ENABLE', 0, 1),
     ('KILLS_PIXELS', 0, 0),
     ('DOES_LOAD_OR_STORE', 0, 0),
     ('SHADER_LOCAL_MEMORY_LOW_SIZE', 0, 0),
