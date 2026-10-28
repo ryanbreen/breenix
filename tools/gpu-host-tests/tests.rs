@@ -4,6 +4,8 @@ extern crate alloc;
 const PAGE: usize = 4096;
 const POISON: u32 = 0x3C5A_A5C3;
 mod gpu {
+    pub use crate::virgl;
+    pub mod svga { pub use crate::svga_wire as wire; }
     pub mod dma {
         thread_local! { static FAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
         thread_local! { static PAGES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
@@ -25,7 +27,7 @@ mod gpu {
 }
 #[path = "../../kernel/src/gpu/vertex_arena.rs"]
 mod vertex_arena;
-mod virgl;
+pub mod virgl;
 use virgl::{encode, wire};
 
 struct View;
@@ -209,4 +211,39 @@ fn fixed_quads_share_one_unit_upload_across_sampled_and_buffer_draws() {
     }
     assert_eq!((uploads,draws),(1,3));
     assert_eq!(&viewports[1..],&[vec![6.,3.,0.5,6.,3.,0.5],vec![1.5,1.5,0.5,2.5,2.5,0.5],vec![2.,1.5,0.5,6.,3.5,0.5]]);
+}
+
+#[path = "../../kernel/src/gpu/backend_answers.rs"]
+mod backend_answers;
+#[path = "../../kernel/src/gpu/svga/wire.rs"]
+pub mod svga_wire;
+
+#[test]
+fn backend_answers_are_isolated() {
+    use gpu_abi::{backend, gk208};
+    let rows = [
+        (backend::VIRGL, wire::resp::OK_NODATA, wire::cmd::SUBMIT_3D, wire::cmd::TRANSFER_TO_HOST_3D),
+        (backend::SVGA3D_DX, svga_wire::status::COMPLETED, svga_wire::cmd::DX_DRAW, svga_wire::cmd::UPDATE_SURFACE),
+        (backend::GK208, gk208::SUCCESS, gk208::DRAW_RELEASE, gk208::TRANSFER_RELEASE),
+    ];
+    for &(number, success, draw, upload) in &rows {
+        assert_eq!(backend_answers::success(number), Some(success));
+        assert_eq!(backend_answers::draw_kind(number), Some(draw));
+        assert_eq!(backend_answers::upload_kind(number), Some(upload));
+        for &(other, answer, _, _) in &rows {
+            assert_eq!(backend_answers::ok(number, answer), number == other);
+        }
+    }
+    for answer in wire::resp::OK_NODATA..wire::resp::ERR_UNSPEC {
+        assert!(backend_answers::ok(backend::VIRGL, answer));
+        assert!(!backend_answers::ok(backend::GK208, answer));
+    }
+    for answer in svga_wire::status::PENDING..=svga_wire::status::PARTIAL_COMPLETE {
+        assert!(!backend_answers::ok(backend::GK208, answer));
+    }
+    assert!(!backend_answers::ok(backend::GK208, gk208::MMU_FAULT_PDE));
+    assert_eq!(backend_answers::success(0), None);
+    assert_eq!(backend_answers::draw_kind(0), None);
+    assert_eq!(backend_answers::upload_kind(0), None);
+    assert!(!backend_answers::ok(0, gk208::SUCCESS));
 }
