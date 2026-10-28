@@ -90,6 +90,22 @@ def input_kind(args):
     return getattr(args, 'input', None)
 
 
+
+def kernel_profile(args):
+    """Expected build identity for this boot's requested mode and suite."""
+    features = (['watchdog_fault_inject'] if args.inject in WATCHDOG_FAULTS else
+                ['xhci_fault_inject'] if xhci_fault(args) else
+                ['block_fence_inject'] if args.inject == FENCE_FAULT else
+                ['server_reboot_fault'] if args.inject == 'panic-reboot' else
+                ['testing'] if args.mode == 'tests' else
+                ['gt710_core_probe'] if args.mode == 'suite' and
+                {'console', 'gpu', 'gt710'}.intersection((getattr(args, 'suite', None) or '').split(',')) else [])
+    profile = {'watchdog_fault_inject': 'fault-test', 'xhci_fault_inject': 'fault-test',
+               'block_fence_inject': 'fault-test', 'server_reboot_fault': 'fault-test',
+               'testing': 'testing', 'gt710_core_probe': 'gpu-core'}.get(''.join(features), 'production')
+    return features, profile
+
+
 def xhci_fault(args):
     value = getattr(args, 'inject', None)
     return {'xhci-reset-device': 'reset-device', 'xhci-short-read': 'short-read'}.get(value)
@@ -455,11 +471,7 @@ class Driver:
             self.event('linux-payload-ready', sha256=expected['sha256'], size=expected['size'])
             return
         build = m.read_json(inputs / 'build.json', {})
-        # Only an xHCI fault boot takes a fault-test kernel and only a tests boot the testing kernel; neither takes another.
-        features = (['watchdog_fault_inject'] if self.args.inject in WATCHDOG_FAULTS else ['xhci_fault_inject'] if xhci_fault(self.args) else ['block_fence_inject'] if self.args.inject == FENCE_FAULT
-                    else ['server_reboot_fault'] if self.args.inject == 'panic-reboot' else ['testing'] if self.args.mode == 'tests' else [])
-        profile = {'watchdog_fault_inject': 'fault-test', 'xhci_fault_inject': 'fault-test', 'block_fence_inject': 'fault-test', 'server_reboot_fault': 'fault-test',
-                   'testing': 'testing'}.get(''.join(features), 'production')
+        features, profile = kernel_profile(self.args)
         if build.get('commit') != self.args.commit or build.get('profile') != profile or build.get('features') != features:
             raise Finish(m.EXIT_CANCELLED, f'build provenance differs from the requested {profile} commit')
         tests = inputs / 'test-binaries.img'

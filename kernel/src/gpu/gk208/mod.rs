@@ -116,7 +116,7 @@ mod recovery_policy;
 pub use system_dma::set_platform as set_dma_platform;
 mod modeset;
 mod native;
-#[cfg(feature = "testing")]
+#[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
 mod core_record;
 pub use native::{ConsoleSurface,console_binding,takeover_started,caps_scanout};
 mod rom;

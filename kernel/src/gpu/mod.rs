@@ -543,7 +543,7 @@ pub fn init() {
 
 /// Retain measured capability facts after a testing probe, without retaining its
 /// channel. This snapshot can only refuse admission until native installation.
-#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+#[cfg(all(target_arch = "x86_64", any(feature = "testing", feature = "gt710_core_probe")))]
 pub(crate) fn record_native_refusal(caps: abi::Caps) {
     if caps.backend != abi::backend::GK208 || caps.status != abi::status::MISSING_CAPABILITY
         || caps.missing != capability::BGRA_RENDER || caps.capability_origin(caps.missing) != 0 {

@@ -51,6 +51,24 @@ WATCHDOG_FAULTS = ('watchdog-feeder-hang', 'watchdog-health-hang')
 TESTING_FEATURE = 'testing'
 
 
+
+def kernel_features(mode, suites, inject):
+    """Keep native suite evidence independent of the testing startup path."""
+    if inject in WATCHDOG_FAULTS:
+        return ['--features', 'watchdog_fault_inject']
+    if inject in XHCI_FAULTS:
+        return ['--features', FAULT_FEATURE]
+    if inject == FENCE_FAULT:
+        return ['--features', FENCE_FEATURE]
+    if inject == 'panic-reboot':
+        return ['--features', PANIC_FEATURE]
+    if mode == 'tests':
+        return ['--features', TESTING_FEATURE]
+    if mode == 'suite' and {'console', 'gpu', 'gt710'}.intersection((suites or '').split(',')):
+        return ['--features', 'gt710_core_probe']
+    return []
+
+
 def host_env():
     path = Path(os.environ.get('BREENIX_METAL_HOST_ENV', Path.home() / '.config/breenix-metal/host.env'))
     values = {}
@@ -298,13 +316,7 @@ def boot(args):
         logs = Path.home() / '.local/state/breenix-metal'
         logs.mkdir(parents=True, exist_ok=True)
         with (logs / f'{boot_id}.log').open('w') as log:
-            # An xHCI fault boot gets a fault-test kernel, a tests boot the testing kernel; every other boot the
-            # production one.
-            features = (['--features', 'watchdog_fault_inject'] if args.inject in WATCHDOG_FAULTS else
-                        ['--features', FAULT_FEATURE] if args.inject in XHCI_FAULTS else
-                        ['--features', FENCE_FEATURE] if args.inject == FENCE_FAULT else
-                        ['--features', PANIC_FEATURE] if args.inject == 'panic-reboot' else
-                        ['--features', TESTING_FEATURE] if args.mode == 'tests' else [])
+            features = kernel_features(args.mode, args.suite, args.inject)
             # A suite boot's build stages the suite's host-side fixtures (the SDK suite's results).
             suite = ['--suite', args.suite] if args.suite else []
             tools_only = {'disk-readback': ['--tools-profile', 'disk-readback'],
@@ -456,7 +468,7 @@ def main():
     p = sub.add_parser('_build')
     p.add_argument('id')
     p.add_argument('sha')
-    p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, PANIC_FEATURE, TESTING_FEATURE, 'watchdog_fault_inject'))
+    p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, PANIC_FEATURE, TESTING_FEATURE, 'gt710_core_probe', 'watchdog_fault_inject'))
     p.add_argument('--suite')
     p.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager'))
     p.add_argument('--catchup', action='store_true')

@@ -1,6 +1,6 @@
 # Native GPU core producer (8.1)
 
-The x86 `testing` console-suite route uses `gpu::dev::Device::Gk208`
+The x86 console-suite route with `gt710_core_probe` uses `gpu::dev::Device::Gk208`
 for the five 7.4 A197 draws and the A0B5 rectangle copy into the inactive
 scanout. The existing input uploads and complementary readbacks retain their
 7.4 mechanisms. The core producer runs inside the same graphics probe, before
@@ -130,7 +130,7 @@ draws, the copy, three rejected controls and their immediate clean successors,
 using the native answer and method namespaces and matching receipts.
 
 The shared core retains only the diagnostic's refusal-only CAPS snapshot;
-its channels follow the existing teardown. A GPU-only testing boot requests
+its channels follow the existing teardown. A GPU-only `gt710_core_probe` boot requests
 the same bounded native probes so that its syscall CAPS names the same
 unprobed capability. Admission refuses the suite's cases before rendering.
 The runner acquires no GPU view or display ownership for that unprobed native
@@ -145,3 +145,7 @@ console gaps, missing or inconsistent memory records and elapsed time above
 it is accepted only with that complete evidence. This host milestone is
 integration evidence, not a passing GPU suite. Later milestones retain the
 unchanged 170-pass GPU gate, pixels and bounds.
+
+The metal launcher enables `gt710_core_probe` for console, GPU and GT 710 suite
+boots. This compiles the producer, controls and refusal snapshot while keeping
+production init and the requested suite target; it does not enable `testing`.

@@ -100,7 +100,7 @@ pub fn release(out: &mut Vec<u32>, address: u64, value: u32) {
 }
 
 /// Testing controls alter engine releases, with a separate terminal drain word.
-#[cfg(feature = "testing")]
+#[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
 pub fn probe_encode(r: Rect, semaphore: u64, epoch: u64, sequence: u32,
     control: super::core_record::Control,
 ) -> Result<Vec<u32>, &'static str> {

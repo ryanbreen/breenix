@@ -1038,7 +1038,7 @@ mod native {
             }
             Ok(images)
         }
-        #[cfg(not(feature = "testing"))]
+        #[cfg(not(any(feature = "testing", feature = "gt710_core_probe")))]
         pub(in crate::gk208::gr) fn draw(
             &mut self, h: &mut Hardware<'_>, mut draw: super::super::draw::Draw,
             receipt: &mut super::super::binding::Receipt,
@@ -1312,7 +1312,7 @@ mod native {
     /// the session precedes error propagation; Hardware keeps teardown authority.
     pub(in crate::gk208::gr) struct DrawSession {
         session: Option<Session>,
-        #[cfg(feature = "testing")]
+        #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
         producer: crate::gk208::native::CoreProducer,
     }
     impl core::ops::Deref for DrawSession {
@@ -1325,16 +1325,16 @@ mod native {
     impl DrawSession {
         pub(in crate::gk208::gr) fn new(session: Session) -> Self {
             Self { session: Some(session),
-                #[cfg(feature = "testing")]
+                #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
                 producer: crate::gk208::native::CoreProducer::new() }
         }
         pub(in crate::gk208::gr) fn into_session(self) -> Session { self.session.unwrap() }
         pub(in crate::gk208::gr) fn emit_core(&self) -> Result<(), &'static str> {
-            #[cfg(feature = "testing")]
+            #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             self.producer.emit()?;
             Ok(())
         }
-        #[cfg(feature = "testing")]
+        #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
         fn core_request(&mut self, h: &mut Hardware<'_>, operation: crate::gk208::adapter::Operation,
             name: &'static str,
         ) -> Result<crate::gk208::native::CoreReceipt, &'static str> {
@@ -1366,9 +1366,9 @@ mod native {
         pub(in crate::gk208::gr) fn draw(&mut self, h: &mut Hardware<'_>, draw: super::super::draw::Draw,
             receipt: &mut super::super::binding::Receipt,
         ) -> Result<(), &'static str> {
-            #[cfg(not(feature = "testing"))]
+            #[cfg(not(any(feature = "testing", feature = "gt710_core_probe")))]
             return self.session.as_mut().unwrap().draw(h, draw, receipt);
-            #[cfg(feature = "testing")]
+            #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             {
                 receipt.before = super::super::binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
                 let result = self.core_request(h, crate::gk208::adapter::Operation::Draw(draw), "triangle");
@@ -1384,9 +1384,9 @@ mod native {
         }
         pub(in crate::gk208::gr) fn copy_rect(&mut self, h: &mut Hardware<'_>, rect: crate::gk208::copy::Rect)
             -> Result<(), &'static str> {
-            #[cfg(not(feature = "testing"))]
+            #[cfg(not(any(feature = "testing", feature = "gt710_core_probe")))]
             return self.session.as_mut().unwrap().copy_rect(h, rect);
-            #[cfg(feature = "testing")]
+            #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             self.core_request(h, crate::gk208::adapter::Operation::Copy(rect), "copy").map(|_| ())
         }
     }
@@ -1472,7 +1472,7 @@ mod native {
             s.publish_words(&mut Registers(self.registers), self.total, sequence, command,
                 16384 + u64::from(slot) * 8192, 8192)
         }
-        #[cfg(feature = "testing")]
+        #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
         pub(crate) fn publish_probe(&mut self, sequence: u32, operation: &crate::gk208::adapter::Operation,
             control: crate::gk208::core_record::Control,
         ) -> Result<(), &'static str> {
@@ -1484,7 +1484,7 @@ mod native {
                 self.session.report.identity.epoch, sequence, control)?;
             self.publish_encoded(sequence, &mut command)
         }
-        #[cfg(feature = "testing")]
+        #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
         pub(crate) fn probe_drained(&mut self, sequence: u32) -> Result<bool, &'static str> {
             let sample = self.sample(sequence)?;
             self.session.pages.observe();

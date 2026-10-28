@@ -14,19 +14,19 @@ pub struct Request {
     resource: u64,
     generation: u64,
     upload: bool,
-    #[cfg(feature = "testing")]
+    #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
     pub(crate) control: super::core_record::Control,
 }
 impl Request {
     /// Kernel builders resolve validated handles to GPU addresses before admission.
     pub fn copy(tag: Tag, caller: u64, resource: u64, generation: u64, rect: Rect) -> Self {
         Self { tag, fence: Some(caller), operation: Operation::Copy(rect), resource, generation, upload: false,
-            #[cfg(feature = "testing")]
+            #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             control: super::core_record::Control::Clean }
     }
     pub fn draw(tag: Tag, caller: u64, resource: u64, generation: u64, draw: Draw) -> Self {
         Self { tag, fence: Some(caller), operation: Operation::Draw(draw), resource, generation, upload: false,
-            #[cfg(feature = "testing")]
+            #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             control: super::core_record::Control::Clean }
     }
     pub fn upload(tag: Tag, caller: u64, resource: u64, generation: u64, rect: Rect) -> Self {
@@ -60,7 +60,7 @@ impl Device {
         super::caps::Profile::from_board(&self.board, self.channel.identity()).admission(masked)
     }
     pub fn send(&mut self, request: Request) -> Result<(), Request> {
-        #[cfg(feature = "testing")]
+        #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
         if request.control == super::core_record::Control::MaskedClass {
             // Mask the CE class through the same class profile CAPS exposes.
             let mut masked = self.board;
@@ -77,9 +77,9 @@ impl Device {
             resource: request.resource, generation: request.generation };
         // Retain the request on uncertain publication: a failing doorbell or
         // BAR flush leaves backing in pending until confirmed recovery.
-        #[cfg(not(feature = "testing"))]
+        #[cfg(not(any(feature = "testing", feature = "gt710_core_probe")))]
         let result = self.channel.publish(sequence, &request.operation);
-        #[cfg(feature = "testing")]
+        #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
         let result = if request.control == super::core_record::Control::Clean {
             self.channel.publish(sequence, &request.operation)
         } else { self.channel.publish_probe(sequence, &request.operation, request.control) };
@@ -136,7 +136,7 @@ impl Device {
     }
 }
 
-#[cfg(feature = "testing")]
+#[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
 impl Device {
     pub(crate) fn probe(channel: NativeChannel, board: super::caps::BoardState, last: u32) -> Self {
         let mut device = Self::new(channel, board);

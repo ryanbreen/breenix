@@ -1028,20 +1028,20 @@ pub fn caps_scanout(surface: &ConsoleSurface) -> Result<gpu_abi::ScanoutInfo, &'
 }
 
 /// The testing producer uses the existing dev.rs boundary and upload buffer.
-#[cfg(feature = "testing")]
+#[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
 pub(super) struct CoreProducer {
     rows: String,
     caps_emitted: bool,
     caps_snapshot: Option<gpu_abi::Caps>,
     controls_done: bool,
 }
-#[cfg(feature = "testing")]
+#[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
 pub(super) struct CoreReceipt {
     pub request: crate::gpu_completion::Request,
     pub sample: crate::gpu_completion::CeSample,
     pub elapsed_us: u64,
 }
-#[cfg(feature = "testing")]
+#[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
 impl CoreProducer {
     pub(super) fn new() -> Self { Self { rows: String::new(), caps_emitted: false, caps_snapshot: None, controls_done: false } }
     pub(super) fn run(&mut self, device: &mut crate::gpu::dev::Device,
