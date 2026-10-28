@@ -1,26 +1,28 @@
-//! Guest memory the GPU paths hand to the device.
+//! Owned guest DMA storage for the shared GPU core.
 //!
-//! Resource backing and large command payloads are whole frames from the frame allocator
-//! (`docs/gui/gpu.md` section 1.3), described to the device as page lists; small command
-//! headers and responses live in heap boxes, whose direct-mapped addresses are physically
-//! contiguous on ARM64. Every buffer is owned by the kernel object that holds it, and a
-//! request that hands a buffer to the device keeps it until the device returns the
-//! request or the device is reset (VirtIO 1.3, section 2.7.13 and 2.4).
+//! Small ARM command buffers retain the direct-mapped heap allocation. On x86,
+//! small buffers own contiguous frames checked against the native DMA policy.
+//! Page-list resources own individually checked frames on x86. Device holders
+//! retain either form until completion or confirmed reset ends DMA ownership.
 
-use alloc::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
+#[cfg(target_arch = "aarch64")]
+use alloc::alloc::{alloc_zeroed, dealloc, Layout};
 use alloc::sync::Arc;
 use core::ptr::NonNull;
 use alloc::vec::Vec;
 
+#[cfg(target_arch = "aarch64")]
 use crate::memory::arch_stub::PhysFrame;
+#[cfg(target_arch = "x86_64")]
+use x86_64::structures::paging::PhysFrame;
 use crate::memory::frame_allocator;
 
 pub const PAGE: usize = 4096;
 
-/// The device address of a kernel virtual address in the direct map or the heap.
+/// Device address of a direct-map frame, or ARM direct-mapped heap storage.
 #[inline]
 pub fn device_addr(virt: u64) -> u64 {
-    crate::platform_config::kernel_va_to_ipa(virt)
+    super::arch::device_addr(virt)
 }
 
 /// The kernel virtual address of a frame.
@@ -30,12 +32,17 @@ fn frame_va(frame: &PhysFrame) -> u64 {
 }
 
 pub use crate::gpu_cache::{clean, invalidate};
+#[cfg(target_arch = "aarch64")]
 use crate::gpu_cache::dcache_line;
 
 /// A small, physically contiguous, zeroed buffer for command headers and responses.
 pub struct DmaBox {
     bytes: NonNull<u8>,
+    #[cfg(target_arch = "aarch64")]
     layout: Layout,
+    #[cfg(target_arch = "x86_64")]
+    _frames: FrameRun,
+    address: u64,
     len: usize,
 }
 
@@ -45,24 +52,61 @@ unsafe impl Send for DmaBox {}
 impl Drop for DmaBox {
     fn drop(&mut self) {
         // SAFETY: the original allocator and layout; DMA ownership ended before Drop.
+        #[cfg(target_arch = "aarch64")]
         unsafe { dealloc(self.bytes.as_ptr(), self.layout) };
     }
 }
 
 impl DmaBox {
-    /// A zeroed buffer of `len` bytes. The ARM64 kernel heap is one physically contiguous
-    /// range of the direct map, so the device sees the buffer as one contiguous range.
+    /// Allocate pinned storage; fail closed on allocation or address admission.
     pub fn new(len: usize) -> DmaBox {
-        // The entire first and last cache lines belong to this allocation, so
-        // invalidating a device response cannot discard a neighbour's CPU writes.
-        // SVGA command headers reserve the low six address bits for the queue.
-        let line = (dcache_line() as usize).max(64);
-        let layout = Layout::from_size_align(len.max(1).next_multiple_of(line), line)
-            .expect("DMA buffer layout");
-        // SAFETY: nonzero layout; the allocation is owned until Drop.
-        let raw = unsafe { alloc_zeroed(layout) };
-        let bytes = NonNull::new(raw).unwrap_or_else(|| handle_alloc_error(layout));
-        DmaBox { bytes, layout, len }
+        Self::try_new(len).expect("GPU DMA allocation or address admission failed")
+    }
+
+    pub fn try_new(len: usize) -> Option<DmaBox> {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let line = (dcache_line() as usize).max(64);
+            let size = len.max(1).checked_next_multiple_of(line)?;
+            let layout = Layout::from_size_align(size, line).ok()?;
+            // SAFETY: nonzero, cache-line-exclusive allocation, owned until Drop.
+            let bytes = NonNull::new(unsafe { alloc_zeroed(layout) })?;
+            let mut buffer = DmaBox { bytes, layout, len, address: 0 };
+            let va = buffer.va();
+            let offset = va as usize % PAGE;
+            let count = offset.checked_add(size)?.div_ceil(PAGE);
+            let mut addresses = Vec::new();
+            addresses.try_reserve_exact(count).ok()?;
+            for i in 0..count {
+                addresses.push(device_addr((va & !(PAGE as u64 - 1)) + (i * PAGE) as u64));
+            }
+            buffer.address = super::arch_rules::device_span(
+                super::arch_rules::Architecture::Arm64, &addresses, offset, size, &[],
+            ).ok()?;
+            Some(buffer)
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            let count = len.max(1).div_ceil(PAGE);
+            let bytes_len = count.checked_mul(PAGE)?;
+            let statuses = crate::gk208::system_dma::translation_status().ok()?;
+            let mut frames = FrameRun { frames: Vec::new() };
+            frames.frames.try_reserve_exact(count).ok()?;
+            frames.frames.resize(count, None);
+            let first = frame_allocator::allocate_contiguous_frames(count, &mut frames.frames)?;
+            let mut addresses = Vec::new();
+            addresses.try_reserve_exact(count).ok()?;
+            for f in &frames.frames {
+                addresses.push(f.as_ref()?.start_address().as_u64());
+            }
+            let address = super::arch_rules::device_span(
+                super::arch_rules::Architecture::X86_64, &addresses, 0, len.max(1), &statuses,
+            ).ok()?;
+            let bytes = NonNull::new(frame_va(&first) as *mut u8)?;
+            // SAFETY: checked contiguous fresh frames in the WB direct map.
+            unsafe { core::ptr::write_bytes(bytes.as_ptr(), 0, bytes_len) };
+            Some(DmaBox { bytes, _frames: frames, len, address })
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -70,7 +114,7 @@ impl DmaBox {
     }
 
     pub fn as_mut(&mut self) -> &mut [u8] {
-        // SAFETY: the u64 slice holds at least `len` bytes.
+        // SAFETY: the owned allocation holds at least `len` bytes.
         unsafe { core::slice::from_raw_parts_mut(self.bytes.as_ptr(), self.len) }
     }
 
@@ -84,7 +128,7 @@ impl DmaBox {
     }
 
     pub fn addr(&self) -> u64 {
-        device_addr(self.va())
+        self.address
     }
 
     pub fn put_u32(&mut self, at: usize, v: u32) {
@@ -114,6 +158,19 @@ impl DmaBox {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+struct FrameRun {
+    frames: Vec<Option<PhysFrame>>,
+}
+#[cfg(target_arch = "x86_64")]
+impl Drop for FrameRun {
+    fn drop(&mut self) {
+        for frame in self.frames.iter_mut().filter_map(Option::take) {
+            frame_allocator::deallocate_frame(frame);
+        }
+    }
+}
+
 /// Whole frames, in order, owned until dropped.
 pub struct Pages {
     frames: Vec<PhysFrame>,
@@ -132,8 +189,17 @@ impl Pages {
         if pages.frames.try_reserve_exact(count).is_err() {
             return None;
         }
+        #[cfg(target_arch = "x86_64")]
+        let statuses = if count == 0 { Vec::new() } else {
+            crate::gk208::system_dma::translation_status().ok()?
+        };
         for _ in 0..count {
             let frame = frame_allocator::allocate_frame()?;
+            #[cfg(target_arch = "x86_64")]
+            if super::dma_policy::identity_page(frame.start_address().as_u64(), &statuses).is_err() {
+                frame_allocator::deallocate_frame(frame);
+                return None;
+            }
             // SAFETY: a fresh frame in the direct map, owned here.
             unsafe { core::ptr::write_bytes(frame_va(&frame) as *mut u8, 0, PAGE) };
             pages.frames.push(frame);

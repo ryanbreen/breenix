@@ -587,7 +587,6 @@ impl Terminals<'_> {
     }
 
     /// Stack a GPU owner, retaining the previous owner's terminal for give-back.
-    #[cfg(any(test, target_arch = "aarch64"))]
     pub(super) fn take_display_nested(&mut self, pid: u64, vt: usize, effects: &mut Effects) -> Result<(), i32> {
         let previous = self.sw.display_owner;
         if previous == Some((pid, vt)) {
@@ -829,7 +828,6 @@ pub fn display_owner() -> Option<(u64, usize)> {
 }
 
 /// GPU takeover with nested VT custody retained until give-back.
-#[cfg(target_arch = "aarch64")]
 pub fn take_display_nested(pid: u64, vt: usize) -> Result<(), i32> {
     with_terminals(|terminals, effects| terminals.take_display_nested(pid, vt - 1, effects))
 }

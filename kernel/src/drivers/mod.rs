@@ -119,6 +119,7 @@ pub fn init() -> usize {
         }
     }
 
+    crate::gpu::init();
     log::info!("Driver subsystem initialized");
     device_count
 }

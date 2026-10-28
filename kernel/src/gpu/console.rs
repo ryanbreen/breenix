@@ -31,6 +31,7 @@ const DRAW_INTERVAL_NS: u64 = 250_000_000;
 
 /// Initial console preparation owns persistent DMA buffers even on a device without
 /// a panic queue. It is over once preparation succeeds or its bounded attempts end.
+#[cfg(target_arch = "aarch64")]
 pub(super) fn preparation_settled(epoch: u64) -> bool {
     PANIC_EPOCH.load(Ordering::Acquire) == epoch
         || (PANIC_ATTEMPT_EPOCH.load(Ordering::Acquire) == epoch
@@ -77,16 +78,12 @@ pub(super) fn describe(a: &mut abi::Modes) {
     } else {
         0
     };
-    a.firmware_writes_after_handoff = crate::graphics::firmware_writes::count();
+    a.firmware_writes_after_handoff = arch::firmware_writes();
 }
 
 /// Inspect the actual framebuffer memory while its writer lock is held.
 fn firmware_hash() -> u64 {
-    let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() else {
-        return 0;
-    };
-    let guard = fb.lock();
-    guard.firmware_hash()
+    arch::firmware_hash()
 }
 
 /// The core is about to show the kernel's screen: the firmware framebuffer is no longer
@@ -96,20 +93,14 @@ pub(super) fn retire_firmware() {
     if RETIRED.load(Ordering::Acquire) {
         return;
     }
-    // Quiesce direct canvas writers under the framebuffer lock before retiring it.
-    if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
-        let _guard = fb.lock();
-        RETIRED.store(true, Ordering::Release);
-    } else {
-        RETIRED.store(true, Ordering::Release);
-    }
+    arch::retire_firmware(&RETIRED);
 }
 
 /// The first frame of the kernel's screen completed: count firmware writes from here on.
 pub(super) fn handed_off() {
     if !HANDOFF.load(Ordering::Acquire) {
         HASH.store(firmware_hash(), Ordering::Release);
-        crate::graphics::firmware_writes::handoff();
+        arch::firmware_handoff();
         HANDOFF.store(true, Ordering::Release);
     }
 }

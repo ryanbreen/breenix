@@ -448,6 +448,9 @@ Source revision: nouveau in Linux v6.8,
 - `nvkm/subdev/mmu/gk104.c` and `nvkm/subdev/mmu/vmmgf100.c`,
   Copyright 2017 Red Hat Inc., MIT: `kernel/src/gpu/gk208/dma_policy.rs`
   uses the 40-bit DMA limit and coherent HOST/volatile PTE fields.
+  The shared GPU DMA allocator (`kernel/src/gpu/dma.rs`) and pure span
+  admission (`kernel/src/gpu/arch_rules.rs`) call this policy in E24 M8.1;
+  the original policy file and its MIT header remain the source consumer.
 - `nvkm/engine/fifo/gf100.c`, Copyright 2012 Red Hat Inc., MIT:
   `kernel/src/gpu/gk208/aperture_probe.rs` reads pending fault records.
 

@@ -31,11 +31,12 @@ pub fn terminal() -> bool {
 
 /// Stop a peer at its next timer interrupt after its raw device access drains.
 /// Let an interrupted Access finish before parking its CPU.
+#[cfg(target_arch = "aarch64")]
 pub(crate) fn stop_if_terminal() {
     if !terminal() {
         return;
     }
-    let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    let cpu = arch::cpu_id();
     if USERS[cpu].load(Ordering::SeqCst) == 0 {
         park();
     }
@@ -43,18 +44,11 @@ pub(crate) fn stop_if_terminal() {
 
 static VALID: AtomicBool = AtomicBool::new(false);
 static STATE: AtomicPtr<Screen> = AtomicPtr::new(core::ptr::null_mut());
-static USERS: [AtomicUsize; crate::arch_impl::aarch64::constants::MAX_CPUS] =
-    [const { AtomicUsize::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+static USERS: [AtomicUsize; arch::MAX_CPUS] =
+    [const { AtomicUsize::new(0) }; arch::MAX_CPUS];
 
 pub(crate) fn park() -> ! {
-    unsafe {
-        core::arch::asm!("msr daifset, #3", options(nomem, nostack));
-    }
-    loop {
-        unsafe {
-            core::arch::asm!("wfi", options(nomem, nostack));
-        }
-    }
+    arch::park()
 }
 
 /// Normal users stop even when a panicking CPU stranded the mutex they need.
@@ -104,7 +98,7 @@ impl Access {
             return Self(None);
         }
         crate::per_cpu::preempt_disable();
-        let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+        let cpu = arch::cpu_id();
         USERS[cpu].fetch_add(1, Ordering::SeqCst);
         if TERMINAL.load(Ordering::SeqCst) {
             USERS[cpu].fetch_sub(1, Ordering::SeqCst);
@@ -116,8 +110,9 @@ impl Access {
 }
 /// Exception recovery abandons the current stack, so its Access guards cannot drop.
 /// Called with IRQs masked before switching to the idle stack.
+#[cfg(target_arch = "aarch64")]
 pub(crate) fn abandon_accesses() {
-    let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    let cpu = arch::cpu_id();
     let count = USERS[cpu].swap(0, Ordering::SeqCst);
     for _ in 0..count {
         crate::per_cpu::preempt_enable();
@@ -465,7 +460,7 @@ impl Screen {
             }
             self.backing.maintain(0, bytes, true);
             for offset in (0..bytes).step_by(PAGE) {
-                if crate::arch_impl::aarch64::timer::rdtsc() >= deadline {
+                if arch::counter() >= deadline {
                     return None;
                 }
                 let n = (bytes - offset).min(PAGE);
@@ -483,7 +478,7 @@ impl Screen {
         let mut mismatches = 0;
         let mut first = None;
         for offset in (0..bytes).step_by(PAGE) {
-            if crate::arch_impl::aarch64::timer::rdtsc() >= deadline {
+            if arch::counter() >= deadline {
                 return None;
             }
             let n = (bytes - offset).min(PAGE);
@@ -502,7 +497,7 @@ impl Screen {
                 }
             }
         }
-        (crate::arch_impl::aarch64::timer::rdtsc() < deadline).then_some((mismatches, first))
+        (arch::counter() < deadline).then_some((mismatches, first))
     }
 }
 struct Line {
@@ -536,15 +531,15 @@ pub fn show(title: &str, headline: &str, details: &[(&str, &str)], stage: &str, 
     if TERMINAL.swap(true, Ordering::SeqCst) {
         return;
     }
-    let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
-    let frequency = crate::arch_impl::aarch64::timer::frequency_hz();
-    let drain = crate::arch_impl::aarch64::timer::rdtsc() + frequency / 10;
+    let cpu = arch::cpu_id();
+    let frequency = arch::frequency_hz();
+    let drain = arch::counter() + frequency / 10;
     while USERS
         .iter()
         .enumerate()
         .any(|(i, n)| i != cpu && n.load(Ordering::SeqCst) != 0)
     {
-        if crate::arch_impl::aarch64::timer::rdtsc() >= drain {
+        if arch::counter() >= drain {
             return;
         }
         core::hint::spin_loop();
@@ -559,7 +554,7 @@ pub fn show(title: &str, headline: &str, details: &[(&str, &str)], stage: &str, 
     // SAFETY: the terminal latch excludes preparation and normal device writers.
     // This CPU owns the published state and retains it for post-mortem inspection.
     let s = unsafe { &*screen };
-    let deadline = crate::arch_impl::aarch64::timer::rdtsc() + frequency * 2;
+    let deadline = arch::counter() + frequency * 2;
     if !(s.queue.drain(deadline) && s.show(title, headline, details, stage, log, deadline)) {
         #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
         report(s, false, deadline);
@@ -601,7 +596,7 @@ fn report(s: &Screen, shown: bool, deadline: u64) {
 
 #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 pub fn test_ready() -> bool {
-    !crate::platform_config::is_qemu()
+    !arch::is_qemu()
         || (INITIALIZED.load(Ordering::Acquire)
             && (DOORBELL.load(Ordering::Acquire) == 0
                 || (console::active() && PREPARATION_FINISHED.load(Ordering::Acquire))))
@@ -613,13 +608,7 @@ pub fn test_with_locks(f: impl FnOnce()) {
         return;
     };
     console::panic_with_lock(|| {
-        let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() else {
-            return;
-        };
-        let Some(_fb) = fb.try_lock() else {
-            return;
-        };
-        f();
+        arch::with_framebuffer_lock(f);
     });
 }
 

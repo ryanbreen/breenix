@@ -660,7 +660,7 @@ pub struct Device {
 
 impl Device {
     pub fn probe() -> Result<Self, Error> {
-        if !crate::platform_config::is_vmware() { return Err(Error::NoDevice); }
+        if !super::arch::is_vmware() { return Err(Error::NoDevice); }
         let pci = pci::find_device(wire::VENDOR, wire::DEVICE).ok_or(Error::NoDevice)?;
         let bar = pci.bars[0];
         if bar.is_io || bar.address == 0 || bar.size < 4 * (wire::reg::IRQ_STATUS as u64 + 1) { return Err(Error::DeviceFault); }

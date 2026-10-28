@@ -164,6 +164,7 @@ impl Target {
 
     pub fn handle(&self) -> u64 { self.handle }
     /// The core resource, for the composition path that samples this target (414 op 19).
+    #[cfg(target_arch = "aarch64")]
     pub(super) fn id(&self) -> u32 { self.id }
     pub fn len(&self) -> u64 { self.bytes }
 

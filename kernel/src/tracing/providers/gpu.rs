@@ -63,18 +63,14 @@ pub fn reset_irq_masked() {
 
 #[inline(always)]
 fn counter_now() -> u64 {
-    let v: u64;
-    // SAFETY: the virtual counter is readable at EL1.
-    unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) v, options(nomem, nostack)) };
-    v
+    crate::arch_read_timestamp()
 }
 
 /// Raise the IRQ-masked gauge to the interval since counter value `start`.
 #[inline]
 fn record_since(start: u64) {
     let ticks = counter_now().wrapping_sub(start);
-    let freq = crate::arch_impl::aarch64::timer::frequency_hz().max(1);
-    let us = ticks.saturating_mul(1_000_000) / freq;
+    let us = crate::arch_ticks_to_nanos(ticks) / 1_000;
     GPU_IRQ_MASKED_MAX_US.per_cpu[0].value.fetch_max(us, Ordering::Relaxed);
 }
 

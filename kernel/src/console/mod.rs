@@ -158,7 +158,6 @@ static REDRAW: AtomicBool = AtomicBool::new(false);
 /// The render thread took a full repaint (`REDRAW`) and has not completed the screen yet.
 static REPAINTING: AtomicBool = AtomicBool::new(false);
 /// How long an observation of the kernel's screen waits for a repaint the console owes.
-#[cfg(target_arch = "aarch64")]
 const REPAINT_WAIT_MS: u64 = 1000;
 
 /// The idle read-back has been asked for.
@@ -486,7 +485,6 @@ fn wait_until_not_presenting() {
 /// A read-back of the GPU core's screen target transfers the device's pixels into the
 /// guest backing this console writes. Until the returned hold drops, the console writes no
 /// band; it returns once no pass is writing, by the protocol `take_display` uses.
-#[cfg(target_arch = "aarch64")]
 pub fn hold_canvas() -> CanvasHold {
     CANVAS_HOLDS.fetch_add(1, Ordering::SeqCst);
     wait_until_not_presenting();
@@ -498,7 +496,6 @@ pub fn hold_canvas() -> CanvasHold {
 /// such as the one a display give-back or a canvas hold's end asks for, wait until the render
 /// thread has completed it, so the observation sees the screen the repaint restores. Bounded
 /// by `REPAINT_WAIT_MS`; it blocks as an I/O wait, woken at the end of each pass.
-#[cfg(target_arch = "aarch64")]
 pub fn await_repaint() {
     use crate::task::waitqueue::PrepareOutcome;
     let owed = || {
@@ -533,10 +530,8 @@ pub fn await_repaint() {
 
 /// See `hold_canvas`. Dropping it asks for a full repaint, since the read-back may have
 /// replaced rows the console wrote but had not yet uploaded.
-#[cfg(target_arch = "aarch64")]
 pub struct CanvasHold;
 
-#[cfg(target_arch = "aarch64")]
 impl Drop for CanvasHold {
     fn drop(&mut self) {
         REDRAW.store(true, Ordering::Release);

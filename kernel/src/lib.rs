@@ -73,10 +73,7 @@ pub mod gpu_cache;
 pub mod gpu_completion;
 #[path = "gpu/observation.rs"]
 pub mod gpu_observation;
-// The GPU core (syscall 416): ARM64 only until x86-64 joins the GPU era
-// (docs/gui/gpu.md section 1.6.4). Suite-mode test controls (syscall 415) serve
-// both architectures: the users suite's points are architecture-independent.
-#[cfg(target_arch = "aarch64")]
+// The shared GPU core and syscall 416 serve both architectures.
 pub mod gpu;
 // Native board mechanisms join the shared GPU device boundary in E19 M8.
 #[cfg(target_arch = "x86_64")]

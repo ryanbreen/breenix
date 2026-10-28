@@ -17,15 +17,6 @@ use crate::window::scene::Admission;
 use crate::window::Caller;
 use breengel_abi::Composite;
 
-/// A composition's provenance, kept on the scanout target with the generation its transport
-/// produced: the composite serial and, in stacking order, each window's id, commit, native
-/// render fence and sampled target generation (record v2 offsets 176, 196 and 200).
-pub(super) struct Provenance {
-    pub generation: u64,
-    pub serial: u64,
-    pub windows: Vec<[u64; 4]>,
-}
-
 pub(super) struct Compose;
 static BACKEND: Compose = Compose;
 
@@ -368,7 +359,7 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
     for s in &frame.sources {
         windows.push([s.window.id, s.window.commit_id, s.window.render_fence, s.window.target_generation]);
     }
-    let provenance = Arc::try_new(Provenance { generation: before + 1, serial: frame.serial, windows }).map_err(|_| ENOMEM)?;
+    let provenance = Arc::try_new(Composition { generation: before + 1, serial: frame.serial, windows }).map_err(|_| ENOMEM)?;
     with_core(|c| {
         if let Some(r) = c.resources.get_mut(&target_id) {
             if r.generation == before + 1 {

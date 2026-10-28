@@ -232,7 +232,7 @@ pub fn open() -> Option<(usize, usize)> {
     let pages = BACKING.try_get_or_init(|| Arc::new(Pages::new((PITCH * HEIGHT as usize).div_ceil(PAGE)).unwrap_or_else(Pages::none)));
     pages.ok().filter(|p| p.bytes() >= PITCH * HEIGHT as usize)?;
     // The pointer moves over this screen, not the firmware framebuffer it replaced.
-    crate::input::pointer::set_screen(WIDTH, HEIGHT);
+    super::arch::set_screen(WIDTH, HEIGHT);
     Some((WIDTH as usize, HEIGHT as usize))
 }
 
