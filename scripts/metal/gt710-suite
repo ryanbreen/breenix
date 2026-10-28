@@ -2147,6 +2147,25 @@ def record_capture(directory, sha):
     return 0 if passed else 1
 
 
+def acceptance_status(directory, verdict):
+    """Require the retained boot status and every measured GT 710 aggregate."""
+    directory = Path(directory)
+    boot = json.loads((directory / 'run.json').read_text())
+    status = (directory / 'exit-status').read_text().strip()
+    print(f'{boot.get("suite", boot["mode"])} exit {status}', flush=True)
+    passed = status == '0' and verdict.get('captureComplete') is True
+    for category in capture_categories(boot):
+        name = 'metal-gt710/' + ('gpu-core' if category == 'core' else category)
+        result = verdict.get('milestones', {}).get(name, {})
+        count = len(CATEGORIES[category])
+        complete = (result.get('passed') is True
+                    and result.get('reached') == count and result.get('total') == count)
+        print(f'{name} {"PASS" if complete else "FAIL"} '
+              f'{result.get("reached", 0)}/{result.get("total", count)}', flush=True)
+        passed = passed and complete
+    return passed
+
+
 def main():
     import argparse
     import json
@@ -2194,13 +2213,17 @@ def main():
         'sys.exit(a["record_capture"](p,sys.argv[2]))', directory, args.sha)
     passed = result.returncode == 0
     # Rescore the retained facts, without executing another boot or suite.
-    runner['in_metal'](env, 'python3', '-c',
+    aggregate = runner['in_metal'](env, 'python3', '-c',
         'import sys,json;sys.path.insert(0,"/opt/breenix-metal");import metal_score,metal_lib as m;'
-        'p=m.boot_dir(sys.argv[1]);m.write_json(p/"milestone-verdict.json",metal_score.score(p));'
+        'import runpy;p=m.boot_dir(sys.argv[1]);v=metal_score.score(p);'
+        'm.write_json(p/"milestone-verdict.json",v);'
+        'a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));'
+        'passed=a["acceptance_status"](p,v);'
         '\nwith m.locked("finished"):\n entries=[json.loads(l) for l in (m.STATE/"finished.jsonl").read_text().splitlines()];'
-        'm.append_jsonl(m.STATE/"finished.jsonl",dict(id=p.name,seq=max(e["seq"] for e in entries)+1))',
-        args.boot, check=True)
-    return 0 if passed else 1
+        'm.append_jsonl(m.STATE/"finished.jsonl",dict(id=p.name,seq=max(e["seq"] for e in entries)+1))'
+        '\nsys.exit(0 if passed else 1)',
+        args.boot)
+    return 0 if passed and aggregate.returncode == 0 else 1
 
 
 if __name__ == '__main__':
