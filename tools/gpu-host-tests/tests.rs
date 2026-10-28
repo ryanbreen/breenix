@@ -247,3 +247,25 @@ fn backend_answers_are_isolated() {
     assert_eq!(backend_answers::upload_kind(0), None);
     assert!(!backend_answers::ok(0, gk208::SUCCESS));
 }
+
+#[path = "../../libs/libbreenix/src/suite_gpu_backend.rs"]
+mod suite_expectations;
+
+#[test]
+fn suite_backend_values_are_backend_specific() {
+    use suite_expectations::{backend_values, native_classes, device_error};
+    let native = backend_values(6).unwrap();
+    assert_eq!((native.success, native.draw, native.upload, native.readback, native.copy, native.boundary),
+        (0x60000000, 0xa1971b0c, 0xa0b50300, 0xa0b50300, 0xa0b50300, 5));
+    for backend in [4, 5, 99] {
+        assert!(backend_values(backend).map_or(true, |v| v.success != native.success && v.draw != native.draw && v.readback != native.readback));
+        assert!(!native_classes(backend, 1 << 9, &[0x927d, 0xa06f, 0xa0b5, 0xa197]));
+        assert!(!device_error(backend, 0x60010000));
+    }
+    assert!(native_classes(6, 1 << 9, &[0x927d, 0xa06f, 0xa0b5, 0xa197]));
+    assert!(!native_classes(6, 0, &[0x927d, 0xa06f, 0xa0b5, 0xa197]));
+    assert!(!native_classes(6, 1 << 9, &[0x927d, 0xa06f, 0xa0b5]));
+    for value in [0x60010000, 0x6001000f] { assert!(device_error(6, value)); }
+    for value in [0x1200, 0x12ff, 3, 0x6000ffff, 0x60010010] { assert!(!device_error(6, value)); }
+    assert!(backend_values(99).is_none());
+}
