@@ -74,7 +74,7 @@ the x86 build host. No proprietary shaders or firmware are admitted.
 | `b-restored` | `b` | `gradient` | Restore B and repeat its gradient without re-emitting its shader/target state |
 | `suppress` | `a` | `v2` | Clear A, suppress its draw, reject the resulting background |
 | `after-suppress` | `a` | `v2` | Immediate clean V2 successor |
-| `corrupt` | `b` | `gradient` | Draw B, XOR target byte at offset 0 with 1 before CE, reject it |
+| `corrupt` | `b` | `gradient` | Draw B, CE-upload the background word to the epoch-selected pixel before read-back, reject it |
 | `after-corrupt` | `b` | `gradient` | Immediate clean full-gradient successor |
 <!-- claim-lint:ok: normative eight-frame sequence in tests/gt710_contexts_report_test.py and graphics_contexts_gate. -->
 
@@ -82,8 +82,9 @@ The initial A/B/A/B sequence exercises FECS save/restore with distinct
 private images and programs. Change A's vertices for V2 after returning to
 A. Keep B's state resident in its saved context; reinitializing that state
 before `b-restored` would defeat the restore probe. Targets begin cleared
-to the oracle's zero background. No image may be supplied by CPU raster or
-CE painting; CE is used for fenced read-back after A197 execution.
+to the oracle's zero background. Clean images must come from A197 execution.
+CE uploads initialize the background and vertex/program data, and the corrupt control uploads one
+background word after the draw release; CE also performs fenced read-back.
 <!-- claim-lint:ok: normative producer requirements for the eight-frame sequence in tests/gt710_contexts_report_test.py; not hardware claims. -->
 
 Each frame contains `case`, `channel`, `variant`, `current_before`,
@@ -139,8 +140,13 @@ For B, independently construct the full image with BGRA
 `[4*x, 4*y, 2*(x+y), 255]` at each integer coordinate and compare all
 16,384 bytes, as well as the provenance SHA-256. A single changed byte
 fails. `suppress` must leave exactly the cleared image; `corrupt` must
-equal the preceding restored gradient with only byte zero XOR 1. Both
-must fail their normal pixel oracle, and both immediate clean successors
+equal the preceding restored gradient with exactly one complete BGRA pixel
+replaced by `[0,0,0,0]`. Its linear index is channel B's epoch modulo 4096:
+`x = index % 64`, `y = index // 64`, byte offset `index * 4`. The producer
+performs this four-byte upload through B's CE session after B's A197 draw
+release and before the two read-backs. The host derives the location from
+the channel epoch, rather than trusting an offset supplied by the producer.
+Both must fail their normal pixel oracle, and both immediate clean successors
 must pass. A producer's rejection flag alone is insufficient.
 <!-- claim-lint:ok: normative control decisions exercised by tests/gt710_contexts_report_test.py. -->
 

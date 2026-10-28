@@ -34,7 +34,7 @@
         },
         {
           "id": "controls",
-          "title": "A suppressed draw and one corrupted target byte are rejected and each immediate clean successor passes"
+          "title": "A suppressed draw and one corrupted target pixel are rejected and each immediate clean successor passes"
         }
       ]
     },

@@ -75,7 +75,7 @@ GR_INIT_LISTS = [
 CATEGORIES = {
     # claim-lint:ok: normative case table; tests/gt710_contexts_report_test.py checks the new category and matching manifest.
     'graphics': [('ctxctl', 'Source-built FECS and GPCCS images load with verified IMEM/DMEM read-back, start and answer fresh mailbox queries; a withheld start and a stale reply fail'), ('context', 'Active GPC/TPC topology and a golden graphics context generated from attributed init lists match the FECS-reported image size under complementary poisons'), ('channel', 'One graphics channel binds A197 and PGRAPH executes its report-semaphore release under complementary poisons; withheld and stale releases fail')],
-    'gr-contexts': [('switch', 'Two A197 contexts preserve private targets across V1, gradient, V2 and restored-gradient draws with exact pixels and fresh channel-bound receipts'), ('controls', 'A suppressed draw and one corrupted target byte are rejected and each immediate clean successor passes')],
+    'gr-contexts': [('switch', 'Two A197 contexts preserve private targets across V1, gradient, V2 and restored-gradient draws with exact pixels and fresh channel-bound receipts'), ('controls', 'A suppressed draw and one corrupted target pixel are rejected and each immediate clean successor passes')],
     'draw': [('triangle', 'Complete complementary read-backs prove exact triangle coverage, background and literal samples'), ('controls', 'Both shader controls fail the literals and each following clean draw passes'), ('present', 'The second scanout contains the complete drawn rectangle without firmware writes')],
     'shaders': [('assets', 'Committed triangle asset hashes and shader register counts match the manifest and metadata'), ('upload', 'Complete complementary shader read-backs prove withheld and flipped controls and their clean next uploads'), ('binding', 'A197 program binding completes with a release receipt and zero trap words; drawing remains pending')],
     'recovery': [('fault-reset', 'A bad native channel is removed while its survivor copies; watchdog and confirmed transport reset retain backing and restore fresh epochs within budget')],
@@ -1604,8 +1604,10 @@ def graphics_contexts_gate(serial, case):
                 if name == 'suppress':
                     need(data == bytes(16384), 'suppressed draw must leave the cleared target')
                 else:
-                    expected = bytearray(images['b-restored', 85]); expected[0] ^= 1
-                    need(data == expected, 'corruption must change only target byte zero by xor one')
+                    expected = bytearray(images['b-restored', 85])
+                    offset = (c['epoch'] % 4096)*4
+                    expected[offset:offset+4] = bytes(4)
+                    need(data == expected, 'corruption must overwrite only the epoch-selected pixel with background')
             state[channel] = hashlib.sha256(data).hexdigest()
     except (KeyError, TypeError, IndexError, OverflowError, OSError) as error:
         raise ValueError('malformed graphics context evidence') from error

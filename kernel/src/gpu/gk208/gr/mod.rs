@@ -835,7 +835,7 @@ fn contexts_probe(
     result.and(emitted)
 }
 
-/// First four frames of the 7.5 wire sequence; the control unit extends it.
+/// Alternate saved contexts, then reject one-shot controls and redraw cleanly.
 fn contexts_sequence(
     hardware: &mut Hardware<'_>, a: &mut channel::Session, b: &mut channel::Session,
     requests: [draw::Draw; 2], evidence: &mut ContextsEvidence,
@@ -843,11 +843,17 @@ fn contexts_sequence(
     for (index, name, variant, full) in [
         (0, "a-v1", "v1", true), (1, "b-gradient", "gradient", true),
         (0, "a-v2", "v2", false), (1, "b-restored", "gradient", false),
+        (0, "suppress", "v2", false), (0, "after-suppress", "v2", false),
+        (1, "corrupt", "gradient", false), (1, "after-corrupt", "gradient", false),
     ] {
         let (active, peer) = if index == 0 { (&mut *a, &mut *b) } else { (&mut *b, &mut *a) };
         let request = requests[index];
-        if name == "a-v2" {
+        // A suppressed submission must expose the cleared target, rather
+        // than V2 left behind by the previous draw on this context.
+        if name == "a-v2" || name == "suppress" {
             active.upload(hardware, request.target_va, &alloc::vec![0; 16384])?;
+        }
+        if name == "a-v2" {
             let bytes: Vec<u8> = draw::V2_VERTEX_WORDS.iter().flat_map(|w| w.to_le_bytes()).collect();
             active.upload(hardware, request.vertex_va, &bytes)?;
         }
@@ -858,13 +864,20 @@ fn contexts_sequence(
             target: 0, epoch: 0, nonce: 0, before: [0; 4], after: [0; 4], observation: None,
         };
         let mut current = [0; 2];
-        let result = active.context_draw(hardware, request, full, &mut receipt, &mut current);
+        let result = active.context_draw(hardware, request, full, name == "suppress", &mut receipt, &mut current);
         evidence.frames.push(ContextFrame {
             name, channel: if index == 0 { "a" } else { "b" }, variant, current,
             receipt, peer_before, peer_after: [String::new(), String::new()], images: None, accepted: false,
         });
         result?;
         // context_draw reads CHAN_ADDR after release, before these CE transfers.
+        if name == "corrupt" {
+            // The full gradient covers the target, so any epoch-chosen pixel
+            // differs from the background. Only this four-byte CE upload is
+            // injected; the next B draw uses its saved state with no control.
+            let offset = (active.context_storage()[3] % 4096) * 4;
+            active.upload(hardware, request.target_va + offset, &0u32.to_le_bytes())?;
+        }
         let images = active.readback(hardware, request.target_va, 16384)?;
         let peer_after = peer.readback(hardware, requests[1-index].target_va, 16384)?;
         let frame = evidence.frames.last_mut().ok_or("context frame absent")?;
@@ -874,7 +887,8 @@ fn contexts_sequence(
         frame.images = Some(images);
         if peer_after != peer_images { return Err("context peer changed across draw"); }
         if !same { return Err("context target P/~P mismatch"); }
-        if !frame.accepted { return Err("context pixel oracle rejected draw"); }
+        let control = name == "suppress" || name == "corrupt";
+        if frame.accepted == control { return Err("context pixel oracle unexpected decision"); }
     }
     Ok(())
 }

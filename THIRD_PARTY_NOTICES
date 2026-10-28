@@ -1015,3 +1015,16 @@ notices are retained in channel.rs. The producer uses Breenix-owned
 orchestration, the committed G5 shader assets, and u1's literal V2 and
 full-viewport vertex inputs. The host fixture substitutes device execution
 with synthetic oracle images; it is not hardware evidence.
+
+## GT 710 one-shot context controls (E23 M7 PR 7.5 unit 6)
+
+Consumers: kernel/src/gpu/gk208/gr/{mod,channel}.rs and the orchestration
+fixtures. The release-only suppressed submission reuses the existing A197
+report semaphore encoder: NVIDIA open-gpu-doc revision
+9fdf5c4062007929d9f4e6cbad9c9771fe61b880, classes/3d/cla197.h:3274-3366,
+MIT, Copyright (c) 2020 NVIDIA CORPORATION. The single-pixel corruption
+uses the existing session CE upload: classes/dma-copy/cla0b5.h at that
+revision, MIT, Copyright (c) 2019 NVIDIA CORPORATION. Both file headers
+were read for this unit; the full original grants remain in gr/draw.rs and
+gk208/copy.rs. Control orchestration and epoch-to-pixel selection are
+Breenix-owned; no additional external implementation is imported.

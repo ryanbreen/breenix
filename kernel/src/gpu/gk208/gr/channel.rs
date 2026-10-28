@@ -1058,7 +1058,7 @@ mod native {
         /// macros.fuc:125 and hub.fuc:234-267 define CHAN_ADDR (0x409b00).
         pub(in crate::gk208::gr) fn context_draw(
             &mut self, h: &mut Hardware<'_>, mut request: super::super::draw::Draw,
-            full: bool, receipt: &mut super::super::binding::Receipt,
+            full: bool, suppressed: bool, receipt: &mut super::super::binding::Receipt,
             current: &mut [u32; 2],
         ) -> Result<(), &'static str> {
             use super::super::{binding, draw};
@@ -1079,7 +1079,11 @@ mod native {
                 receipt.target = self.pages.address(0);
                 receipt.epoch = request.epoch;
                 receipt.nonce = nonce;
-                let mut stream = if full { draw::commands(request)? } else { draw::draw_commands(request)? };
+                // The one-shot control retains the same ordered receipt and
+                // binding samples, without draw or saved-state methods.
+                let mut stream = if suppressed { draw::release_commands(request)? }
+                    else if full { draw::commands(request)? }
+                    else { draw::draw_commands(request)? };
                 stream.extend([0x20010014, sequence]);
                 let sample = self.issue_words(h, sequence, 85, nonce, BOUND_US, &stream, true)?;
                 receipt.observation = Some(sample);
