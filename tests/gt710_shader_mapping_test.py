@@ -30,6 +30,8 @@ struct Layout { allocator: () }
 struct Hardware<'a> { regs: &'a mut (), total: u64, layout: Layout, backing: Vec<(u64, Allocation)> }
 struct VmIo<'a> { regs: &'a mut (), total: u64 }
 struct Context { mappings: Vec<(u64,u64)> }
+#[derive(Clone, Copy)] struct Buffer { va: u64 }
+struct Golden { buffers: [Buffer; 4] }
 impl Context {
     fn map(&mut self, _: &mut (), io: &mut VmIo<'_>, va: u64, a: Allocation, flags: Flags) -> Result<(), &'static str> {
         let _ = (&io.regs, io.total);
@@ -37,7 +39,7 @@ impl Context {
     }
 }
 fn mapped(code_address: u64) -> Result<Vec<(u64,u64)>, &'static str> {
-    let _ = code_address;
+    let golden = Golden { buffers: [Buffer { va: 0x10004000 }; 4] };
     let mut regs = ();
     let mut h = Hardware { regs: &mut regs, total: 1<<30, layout: Layout { allocator: () },
         backing: vec![(0x10002000,Allocation(0x800000)), (0x10000000,Allocation(0x900000)),
