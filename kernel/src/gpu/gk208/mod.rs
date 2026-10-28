@@ -116,7 +116,7 @@ mod recovery_policy;
 pub use system_dma::set_platform as set_dma_platform;
 mod modeset;
 mod native;
-pub use native::{ConsoleSurface,console_binding,takeover_started};
+pub use native::{ConsoleSurface,console_binding,takeover_started,caps_scanout};
 mod rom;
 pub fn proc_pixels()->Vec<u8> {bulk::take()}
 pub fn proc_ce(op:u8)->Result<Vec<u8>,i32> {ce::proc_read(op)}
@@ -524,3 +524,4 @@ fn display_memory(
 }
 
 pub mod adapter;
+pub mod caps;

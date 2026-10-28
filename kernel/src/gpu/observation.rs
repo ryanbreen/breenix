@@ -21,7 +21,7 @@ pub struct ResourceVersion {
     pub generation: u64,
 }
 
-/// Internal native evidence, before M8's public ABI extension. No virtual
+/// Validated native evidence for M8's public ABI row. No virtual
 /// response status is manufactured for a native engine release.
 pub struct NativeRecord {
     pub version: ResourceVersion,
@@ -63,4 +63,28 @@ pub fn differing(a: &[u8], b: &[u8]) -> u32 {
         if d != 0 { count += d.to_le_bytes().iter().filter(|&&b| b != 0).count() as u32; }
     }
     count
+}
+
+impl NativeRecord {
+    /// Map validated native receipts into record v2. The common observation
+    /// owner supplies geometry, render serial, pixels, binding and publication;
+    /// no scanout flag or present completion is inferred from a CE transfer.
+    pub fn write_backend_fields(&self, out: &mut [u8; gpu_abi::record::SIZE], upload: bool) {
+        use gpu_abi::{backend, gk208, record as r};
+        let put32 = |out: &mut [u8], off: usize, value: u32| out[off..off + 4].copy_from_slice(&value.to_le_bytes());
+        let put64 = |out: &mut [u8], off: usize, value: u64| out[off..off + 8].copy_from_slice(&value.to_le_bytes());
+        put32(out, r::BACKEND, backend::GK208);
+        put32(out, r::BOUNDARY, r::BOUNDARY_NATIVE);
+        put64(out, r::CONTEXT, self.version.context);
+        put64(out, r::RESOURCE, self.version.resource);
+        put64(out, r::GENERATION, self.version.generation);
+        put64(out, r::RENDER_FENCE, self.writer.request().caller);
+        put64(out, r::READBACK_FENCE, self.transfers[1].request().caller);
+        put32(out, r::RENDER_KIND, if upload { gk208::TRANSFER_RELEASE } else { gk208::DRAW_RELEASE });
+        for off in [r::RENDER_STATUS, r::READBACK_STATUS, r::COPY_STATUS] { put32(out, off, gk208::SUCCESS); }
+        for off in [r::READBACK_KIND, r::COPY_KIND] { put32(out, off, gk208::TRANSFER_RELEASE); }
+        put64(out, r::READBACK_SURFACE, 0);
+        put64(out, r::READBACK_MOB, 0);
+        put32(out, r::UNWRITTEN, self.unwritten);
+    }
 }

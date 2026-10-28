@@ -809,6 +809,10 @@ impl Core {
         let masked = crate::test_control::take(test_point::MASK_CAPABILITY, 0)
             .map(|p| p as u32)
             .filter(|&c| (1..=capability::LAST).contains(&c));
+        #[cfg(target_arch = "x86_64")]
+        if let Some(Device::Gk208(device)) = &self.dev {
+            return device.admission(masked);
+        }
         match self.first_missing(masked) {
             Some(missing) => Err((abi::status::MISSING_CAPABILITY, missing)),
             None => Ok(()),
@@ -817,6 +821,8 @@ impl Core {
 
     fn caps_record(&self) -> abi::Caps {
         let mut c = self.caps;
+        #[cfg(target_arch = "x86_64")]
+        if let Some(Device::Gk208(device)) = &self.dev { c = device.caps(); }
         c.status = abi::status::ADMITTED;
         c.missing = capability::NONE;
         c.reason = [0; 64];

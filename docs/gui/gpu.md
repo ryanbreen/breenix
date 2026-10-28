@@ -700,6 +700,23 @@ refuses the capability. A class's presence alone cannot certify executable pixel
 | 10, region-copy | A0B5 rectangle copies, pitches/overlap staging and two-poison comparison | executable probe (4) |
 | 11, target-size | Selected chip's 16,384 2D limit, retaining the shared minimum and cap | chip limit (2) |
 
+The M8.1 adapter builds this row from a bound-instance/epoch board snapshot.
+The snapshot records only classes whose creation succeeded, plus graphics-ready
+hardware evidence and native scanouts. The class list is intersected with the
+four required classes and sorted; unknown classes and duplicate entries do not
+increase the count. A different channel or epoch invalidates its creation
+provenance. Native display geometry is read from the owned active ISO surface
+size (`0x640468 + head*0x300`) after validating the live binding, and checked
+against the EDID-selected native mode. It is not the timing-total register.
+The installation owner supplies that snapshot when installing the adapter.
+
+Until M8.2/M8.3 supply the executable probes, all format flags, profile bits and
+pipeline bits stay zero and origins 3–10 stay unprobed. A complete class table
+therefore refuses `b8g8r8a8-render`, never admits a pixel operation. The shared
+one-shot capability-mask control enters the same first-missing decision.
+`cla197.h:703-707,837-843` bounds the target/viewport encodings; the narrower
+16,384 chip maximum comes from the MIT Mesa source cited in section 1.8.
+
 Class/method/limit sources and checked licenses are linked under section 1.8.
 Native records use boundary **5**: device memory is read after native engine
 completion; live display binding/status and EDID describe the connected scanout.
@@ -899,6 +916,12 @@ MIT permission before deriving the constants; copyright/full grants are retained
 in this document's header, `gpu-abi.md`, the ABI crate and its host check, and
 mapped in `THIRD_PARTY_NOTICES`.
 
+- [nouveau device/base.c](https://github.com/torvalds/linux/blob/e8f897f4afef0031fe618a8e94127a0934896aba/drivers/gpu/drm/nouveau/nvkm/engine/device/base.c#L1869-L1897),
+  `nv106_chipset` names GK208B and selects GK110 display, GK208 FIFO/GR and
+  GK104 CE; line 3285 maps chipset `0x106` to that table. The selected MIT
+  class tables are `disp/gk110.c:48` (927D), `fifo/gk208.c:69` (A06F),
+  `ce/gk104.c:91` (A0B5) and `gr/gk208.c:194` (A197). These select candidates;
+  the adapter retains each only after successful object creation.
 - [NVIDIA cla06f.h](https://github.com/NVIDIA/open-gpu-doc/blob/9fdf5c4062007929d9f4e6cbad9c9771fe61b880/classes/host/cla06f.h),
   `KEPLER_CHANNEL_GPFIFO_A=0xA06F`; [nouveau gk208.c](https://github.com/torvalds/linux/blob/e8f897f4afef0031fe618a8e94127a0934896aba/drivers/gpu/drm/nouveau/nvkm/engine/fifo/gk208.c),
   `gk208_fifo.chan` selects that host class and its MMU faults use the GK104 table.

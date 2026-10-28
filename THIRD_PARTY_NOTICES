@@ -1065,3 +1065,20 @@ in `kernel/src/gpu/gk208/ce/recovery.rs`, with its existing MIT nouveau
 `nvkm/engine/fifo/runl.c` and FIFO/CE notices above. No additional external
 source is imported. Original copyright notices and full MIT grants remain in
 the hardware implementation files. Native asset generation is unchanged.
+
+## GK208 CAPS and native observation mapping (M8.1 u5)
+
+`kernel/src/gpu/gk208/caps.rs` and `tests/gt710_caps_test.rs` use the
+MIT sources listed in the M8.1 u1 ABI notice above, with the same pinned
+revisions. Additional checked MIT chip/class dispatch sources are nouveau
+`nvkm/engine/device/base.c` and `nvkm/engine/disp/gk110.c` (Copyright 2012
+Red Hat Inc.), `nvkm/engine/ce/gk104.c` (Copyright 2012 Red Hat Inc.) and
+`nvkm/engine/gr/gk208.c` (Copyright 2013 Red Hat Inc.), Linux v6.8 revision
+`e8f897f4afef0031fe618a8e94127a0934896aba`. Full MIT grants and original
+copyright notices are retained in the consumer headers. `cla197.h` supplies
+encoding bounds, while MIT Mesa `nvc0_screen.c:123-124` supplies the narrower
+16384 chip limit; no format or arithmetic probe is inferred from either.
+The existing native display-state reader in `kernel/src/gpu/gk208/native.rs`
+supplies active geometry under its existing MIT display/register notices.
+`kernel/src/gpu/observation.rs` maps Breenix's validated receipts to the
+existing u1 ABI constants; no external implementation is copied there.

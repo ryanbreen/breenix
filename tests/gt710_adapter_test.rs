@@ -43,6 +43,7 @@ pub mod gk208 {
             }
         }
     }
+    #[path = "../../kernel/src/gpu/gk208/caps.rs"] pub mod caps;
     #[path = "../../kernel/src/gpu/gk208/adapter.rs"] pub mod adapter;
 }
 use gpu::dev::{Reap,Tag};
@@ -54,7 +55,7 @@ pub struct State {
 fn device()->(Device,Rc<RefCell<State>>) {
     let s=Rc::new(RefCell::new(State{epoch:17,channel:0x123000,release_epoch:17,release:0,fault:false,
         fail_reset:false,fail_unbind:false,stopped:false,published:vec![],events:vec![]}));
-    (Device::new(NativeChannel(s.clone())),s)
+    (Device::new(NativeChannel(s.clone()),gk208::caps::BoardState::empty()),s)
 }
 fn request(caller:u64)->Request {
     Request::copy(Tag::Sync(caller),caller,0x456000,9,

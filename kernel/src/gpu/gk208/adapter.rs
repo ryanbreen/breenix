@@ -34,6 +34,7 @@ struct Sent { request: Request, identity: gpu_completion::Request }
 
 pub struct Device {
     channel: NativeChannel,
+    board: super::caps::BoardState,
     queue: Queue,
     pending: VecDeque<Sent>,
     fault: bool,
@@ -41,8 +42,16 @@ pub struct Device {
 }
 impl Device {
     #[allow(dead_code)] // Native device installation uses this public integration API.
-    pub(crate) fn new(channel: NativeChannel) -> Self {
-        Self { channel, queue: Queue::new(), pending: VecDeque::new(), fault: false, resetting: None }
+    pub(crate) fn new(channel: NativeChannel, board: super::caps::BoardState) -> Self {
+        Self { channel, board, queue: Queue::new(), pending: VecDeque::new(), fault: false, resetting: None }
+    }
+    /// Recheck snapshot identity against the channel on every query. Restart's
+    /// new epoch cannot silently inherit old object-creation evidence.
+    pub fn caps(&self) -> gpu_abi::Caps {
+        super::caps::Profile::from_board(&self.board, self.channel.identity()).record(None)
+    }
+    pub fn admission(&self, masked: Option<u32>) -> Result<(), (u32, u32)> {
+        super::caps::Profile::from_board(&self.board, self.channel.identity()).admission(masked)
     }
     pub fn send(&mut self, request: Request) -> Result<(), Request> {
         if !self.has_room(1) || self.pending.try_reserve(1).is_err() { return Err(request); }

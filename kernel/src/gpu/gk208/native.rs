@@ -1010,3 +1010,19 @@ pub fn console_binding(surface: &ConsoleSurface) -> Result<(), &'static str> {
     }
     Ok(())
 }
+
+/// CAPS observes the owned native scanout, whose dimensions were selected from
+/// live DDC/EDID during takeover. Refuse stale/lost native bindings.
+pub fn caps_scanout(surface: &ConsoleSurface) -> Result<gpu_abi::ScanoutInfo, &'static str> {
+    console_binding(surface)?;
+    let regs = Registers(surface.regs);
+    // The active ISO surface size shadows EVO method 0x468, not the
+    // timing-total method 0x414 (modeset.rs:276,305).
+    let size = regs.read(0x640468 + surface.head as usize * 0x300);
+    let width = size & 0xffff;
+    let height = size >> 16;
+    if width as usize != surface.width || height as usize != surface.height {
+        return Err("native CAPS active dimensions differ from EDID mode");
+    }
+    Ok(gpu_abi::ScanoutInfo { enabled: 1, width, height, reserved: 0 })
+}
