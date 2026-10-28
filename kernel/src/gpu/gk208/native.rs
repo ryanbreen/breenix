@@ -194,7 +194,7 @@ pub fn suite_requested() -> bool {
         .and_then(|bytes| core::str::from_utf8(bytes).ok())
         .and_then(|text| crate::boot::target::parse(text).ok())
         .is_some_and(|target| matches!(target, crate::boot::target::Target::Suite(s)
-            if matches!(s.id.as_str(), "console" | "gt710")))
+            if matches!(s.id.as_str(), "console" | "gt710" | "gpu")))
 }
 /// CPU-only memory evidence has a separate, bounded probe boot route.
 pub fn memory_requested()->bool {
@@ -1032,6 +1032,7 @@ pub fn caps_scanout(surface: &ConsoleSurface) -> Result<gpu_abi::ScanoutInfo, &'
 pub(super) struct CoreProducer {
     rows: String,
     caps_emitted: bool,
+    caps_snapshot: Option<gpu_abi::Caps>,
     controls_done: bool,
 }
 #[cfg(feature = "testing")]
@@ -1042,7 +1043,7 @@ pub(super) struct CoreReceipt {
 }
 #[cfg(feature = "testing")]
 impl CoreProducer {
-    pub(super) fn new() -> Self { Self { rows: String::new(), caps_emitted: false, controls_done: false } }
+    pub(super) fn new() -> Self { Self { rows: String::new(), caps_emitted: false, caps_snapshot: None, controls_done: false } }
     pub(super) fn run(&mut self, device: &mut crate::gpu::dev::Device,
         operation: super::adapter::Operation, name: &'static str,
     ) -> Result<CoreReceipt, &'static str> {
@@ -1057,6 +1058,7 @@ impl CoreProducer {
             let bytes: [u8; 512] = unsafe { core::mem::transmute(caps) };
             self.rows.push_str(&super::core_record::caps(&bytes));
             self.caps_emitted = true;
+            self.caps_snapshot = Some(caps);
         }
         if matches!(operation, super::adapter::Operation::Copy(_)) && !self.controls_done {
             for (control, clean) in [(Control::WithheldRelease, "after-withheld"),
@@ -1143,6 +1145,9 @@ impl CoreProducer {
     }
     pub(super) fn emit(&self) -> Result<(), &'static str> {
         if self.rows.is_empty() { return Ok(()); }
+        if self.controls_done {
+            if let Some(caps) = self.caps_snapshot { crate::gpu::record_native_refusal(caps); }
+        }
         // bulk::line contributes one trailing LF; retain exactly the bytes hashed.
         super::bulk::line(self.rows.trim_end_matches('\n').into())?;
         crate::serial_println!("{}", super::core_record::anchor(self.rows.as_bytes()));

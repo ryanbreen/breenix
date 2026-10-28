@@ -5,6 +5,11 @@ pub mod block { pub mod install { pub mod sha256 { pub use crate::sha256::*; } }
 macro_rules! serial_println { ($($arg:tt)*) => { println!($($arg)*) }; }
 pub(crate) use serial_println;
 pub mod gpu {
+    pub fn record_native_refusal(caps: gpu_abi::Caps) {
+        assert_eq!(caps.backend, gpu_abi::backend::GK208);
+        assert_eq!(caps.status, gpu_abi::status::MISSING_CAPABILITY);
+        assert_eq!(caps.capability_origin(caps.missing), 0);
+    }
     pub mod dev {
         #[derive(Clone, Copy)] pub enum Tag { Sync(u64) }
         pub struct Done {pub tag:Tag,pub fence:Option<u64>,pub native_fence:Option<u64>,pub answer:u32,pub echoed:u64,pub fenced:bool}

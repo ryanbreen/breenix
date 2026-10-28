@@ -473,6 +473,16 @@
               "gr-contexts"
             ]
           }
+        },
+        {
+          "id": "gpu-core",
+          "title": "Score shared GPU core dispatch and the native suite producer (M8 PR 8.1)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "core"
+            ]
+          }
         }
       ]
     }

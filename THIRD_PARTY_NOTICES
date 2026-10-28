@@ -1093,3 +1093,14 @@ Copyright (c) 2020 NVIDIA CORPORATION). The original full grants remain in
 `copy.rs`; the existing A197 and FIFO/context notices remain in
 `kernel/src/gpu/gk208/gr/channel.rs`. The producer and record encoder use
 Breenix's existing shared device and ABI types, with no external runtime.
+
+M8.1 u8's `scripts/metal/gt710-suite` core scorer and
+`tests/gt710_core_report_test.py` compare the attributed backend-6 ABI row
+above (NVIDIA open-gpu-doc, nouveau and Mesa, MIT). Their headers retain
+the original owners and MIT grants. The explicit G6 header check and
+`tests/gt710_graphics_report_test.py` use the pinned MIT nouveau
+`nvkm/engine/gr/fuc/hub.fuc` (Copyright 2011 Red Hat Inc.) and
+`nvkm/engine/gr/gf100.c` (Copyright 2012 Red Hat Inc.): the save leaves the
+256-byte header poisoned, while runnable count/address are CPU-filled.
+G7's firmware-derived section map and G8's measured terminal padding rule
+continue to classify the rest of each image.

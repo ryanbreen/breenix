@@ -541,6 +541,22 @@ pub fn init() {
     panic::initialized();
 }
 
+/// Retain measured capability facts after a testing probe, without retaining its
+/// channel. This snapshot can only refuse admission until native installation.
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+pub(crate) fn record_native_refusal(caps: abi::Caps) {
+    if caps.backend != abi::backend::GK208 || caps.status != abi::status::MISSING_CAPABILITY
+        || caps.missing != capability::BGRA_RENDER || caps.capability_origin(caps.missing) != 0 {
+        return;
+    }
+    if let Some(core) = CORE.lock().as_mut() {
+        if core.dev.is_none() && core.status == abi::status::NO_DEVICE {
+            core.status = caps.status;
+            core.caps = caps;
+        }
+    }
+}
+
 /// Find and initialise VMware's SVGA3 device for the SVGA3D DX backend, read its profile
 /// from the device-capability entries, and take its programs. The device raises no
 /// interrupt this kernel can take, so `kgpu` polls it while work is outstanding. An absent
@@ -804,7 +820,8 @@ impl Core {
     /// real capabilities.
     fn admission(&self) -> Result<(), (u32, u32)> {
         if self.dev.is_none() && !self.resetting {
-            return Err((if self.status == abi::status::ADMITTED { abi::status::DEVICE_FAILED } else { self.status }, 0));
+            return Err((if self.status == abi::status::ADMITTED { abi::status::DEVICE_FAILED } else { self.status },
+                if self.status == abi::status::MISSING_CAPABILITY { self.caps.missing } else { 0 }));
         }
         let masked = crate::test_control::take(test_point::MASK_CAPABILITY, 0)
             .map(|p| p as u32)

@@ -257,6 +257,10 @@ class Graphics(unittest.TestCase):
                     self.check(bad)
 
     def test_g6_rejects_changed_saved_data_header_padding_and_runnable_header(self):
+        self.assertEqual(IMAGES[0][:256], bytes([85]) * 256)
+        self.assertEqual(IMAGES[1][:256], bytes([170]) * 256)
+        self.assertNotEqual(IMAGES[0][:256], IMAGES[1][:256])
+        # G6 / hub.fuc:134-153,285-294,585-592,686-690; gf100.c:336-338.
         # Refresh transport/full/region hashes so rejection comes from bytes,
         # rather than from a stale hash. The firmware map defines the G7 byte classification.
         for offset in [0,255,256,383,384,511,512,639,640,767,768,895,896,1023,1024,1151,1152,1279]:

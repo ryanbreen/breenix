@@ -103,3 +103,45 @@ checks upload joining and rejects changed bytes and a changed core digest.
 These host checks do not supply device execution evidence. The later acceptance
 unit boots and scores the native core category and the existing 7.4/7.5 records,
 with the console's 330 s bound and a separately timed GPU-suite boot.
+
+## Host scorer and companion boot (8.1 u8)
+
+The host-run `core` category has `row`, `dispatch` and `producer`; its metal
+milestone is `metal-gt710/gpu-core`. Run the scorer after the two acceptance
+boots, with matching kernel and tool commits:
+
+```text
+scripts/metal/gt710-suite --boot CONSOLE_BOOT --gpu-boot GPU_BOOT --sha FULL_COMMIT
+```
+
+The primary is a completed successful console-suite boot. Its retained
+handoff and final-marker events must be at most 330 seconds apart. The
+companion is a distinct completed `--suite gpu` boot. Its original run,
+commit, cleanliness, exit, event and serial files are copied under the
+primary capture's `core-producer/` directory, then rescored from those files.
+No persistent session is used. The acceptance lane deploys the branch tools
+under the shared lock before either boot and restores main's tools afterward.
+This unit does not boot or deploy.
+
+`row` checks the complete 512-byte CAPS record: backend 6, the created
+927D/A06F/A0B5/A197 classes, native origins, limits, live geometry and reserved
+bytes. Format/profile/pipeline support stays absent. `dispatch` checks five
+draws, the copy, three rejected controls and their immediate clean successors,
+using the native answer and method namespaces and matching receipts.
+
+The shared core retains only the diagnostic's refusal-only CAPS snapshot;
+its channels follow the existing teardown. A GPU-only testing boot requests
+the same bounded native probes so that its syscall CAPS names the same
+unprobed capability. Admission refuses the suite's cases before rendering.
+The runner acquires no GPU view or display ownership for that unprobed native
+profile and leaves the owned native console in place.
+
+`producer` requires START, the shared manifest's 170 CASE identities in order,
+DONE with 170 failures and no skips, `SUITE gpu ELAPSED ms=N`, and READY.
+Each case's sole failure must name the measured unprobed admission capability.
+Panic, stalls, other failure reasons, incomplete capture, changed commits,
+console gaps, missing or inconsistent memory records and elapsed time above
+900 seconds fail. Exit status 1 is expected for these admission refusals;
+it is accepted only with that complete evidence. This host milestone is
+integration evidence, not a passing GPU suite. Later milestones retain the
+unchanged 170-pass GPU gate, pixels and bounds.

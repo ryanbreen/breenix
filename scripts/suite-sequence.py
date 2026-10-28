@@ -41,7 +41,7 @@ def read_repo(relative):
 
 def gpu_3d(target, gpu_gl=False):
     """Whether the target has the 3D GPU a `needs3dGpu` suite renders on."""
-    return target in ("parallels", "vmware") or (target == "arm64-qemu" and gpu_gl)
+    return target in ("parallels", "vmware", "x86-metal") or (target == "arm64-qemu" and gpu_gl)
 
 
 def resolve(spec, target, has_3d=False, read=read_repo):

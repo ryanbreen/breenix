@@ -1,4 +1,6 @@
 # Hardware encodings from pinned MIT sources; see THIRD_PARTY_NOTICES.
+# Copyright 2010 Christoph Bumiller
+# Copyright (c) 2019 NVIDIA CORPORATION. All rights reserved.
 # /*
 #  * Copyright 2010 Red Hat Inc.
 #  * Copyright 2013 Red Hat Inc.
@@ -56,6 +58,8 @@ import json
 from pathlib import Path
 import runpy
 import struct
+from types import SimpleNamespace
+from unittest.mock import patch
 import tempfile
 import unittest
 
@@ -119,8 +123,8 @@ def gpu_serial():
     manifest = json.loads((ROOT / 'docs/suites/gpu.json').read_text())
     names = [cat['id']+'/'+case['id'] for cat in manifest['categories'] for case in cat['cases']]
     reason = 'missing the GPU core with a device admitted to the profile (G1): CAPS status 2 (missing b8g8r8a8-render)'
-    return ('SUITE gpu START cases=170\n' + ''.join(f'SUITE gpu CASE {name} FAIL ms=1 msg={reason}\n' for name in names)
-            + 'SUITE gpu DONE passed=0 failed=170 skipped=0 total=170\nSUITE gpu ELAPSED ms=210\nSUITE_SEQUENCE READY gpu\n')
+    return ('SUITE gpu START cases=170\nSUITE gpu MEMORY before free=1000 heap_free_kb=500 user_pages=100\n' + ''.join(f'SUITE gpu CASE {name} FAIL ms=1 msg={reason}\n' for name in names)
+            + 'SUITE gpu DONE passed=0 failed=170 skipped=0 total=170\nSUITE gpu MEMORY after free=1000 heap_free_kb=500 user_pages=100\nSUITE gpu MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=64\nSUITE gpu ELAPSED ms=210\nSUITE_SEQUENCE READY gpu\n')
 
 class CoreReport(unittest.TestCase):
     def joined(self, rows=None):
@@ -178,14 +182,54 @@ class CoreReport(unittest.TestCase):
                  text.replace('SUITE gpu START cases=170\n',''), text.replace('SUITE gpu DONE','SUITE other DONE'),
                  text.replace('SUITE gpu ELAPSED ms=210\n',''), text.replace('ms=210','ms=900001'),
                  text.replace('SUITE_SEQUENCE READY gpu\n',''), text+'KERNEL PANIC: broken\n',
-                 text+'SUITE_SEQUENCE STALLED gpu cases=170/170\n']
-        lines=text.splitlines(keepends=True); lines[1],lines[2]=lines[2],lines[1]; changes.append(''.join(lines))
+                 text+'SUITE_SEQUENCE STALLED gpu cases=170/170\n',
+                 text.replace('MEMORY before','MEMORY lost'),text.replace('free_after=1000','free_after=10')]
+        lines=text.splitlines(keepends=True); lines[2],lines[3]=lines[3],lines[2]; changes.append(''.join(lines))
         for changed in changes:
             with self.subTest(capture=changed[:100]), self.assertRaises(ValueError):
                 API['core_producer'](changed, API['core_row'](serial), gpu_boot())
         for field,value in [('suite','console'), ('mode','persistent'), ('toolsCommit','b'*40), ('evidenceEligible',False)]:
             boot=gpu_boot();boot[field]=value
             with self.subTest(field=field),self.assertRaises(ValueError): API['core_producer'](text,API['core_row'](serial),boot)
+
+    def test_retained_companion_binds_boot_commit_timing_and_milestone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp); companion=path/'core-producer'; companion.mkdir()
+            primary=dict(gpu_boot(),id='20261028T170000Z-metal',suite='console',suites=['console'])
+            (path/'run.json').write_text(json.dumps(primary))
+            events=[dict(event='handoff',seconds=10),dict(event='final-marker',seconds=340)]
+            (path/'events.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in events))
+            # Ordinary RAM-disk run.json has no bootedCommit; the retained commit file is authoritative.
+            boot=gpu_boot(); del boot['bootedCommit']
+            files={'run.json':json.dumps(boot),'serial.txt':gpu_serial(),'events.jsonl':json.dumps(dict(event='final-marker',seconds=30))+'\n',
+                   'ended':'1\n','exit-status':'1\n','dirty':'0\n','commit':SHA+'\n'}
+            for name,text in files.items(): (companion/name).write_text(text)
+            serial=stage(path); producer=API['core_capture'](path,SHA)
+            manifest=json.loads((ROOT/'docs/suites/gt710.json').read_text())
+            effort=json.loads((ROOT/'docs/efforts/metal.json').read_text())
+            cases=API['cases']('core',serial,producer)
+            self.assertEqual([c['result'] for c in cases],['PASS']*3)
+            report=dict(boot=primary['id'],commit=SHA,milestone='metal-gt710/gpu-core',producerBoot=boot['id'],cases=cases)
+            self.assertIn('3 cases passed',API['score'](manifest,effort,report,serial,primary,SHA,[],producer))
+            for name,text in [('commit','b'*40),('dirty','1'),('ended',''),('exit-status','124'),
+                              ('events.jsonl',json.dumps(dict(event='console-gap'))+'\n')]:
+                (companion/name).write_text(text)
+                with self.subTest(name=name),self.assertRaises(ValueError): API['core_capture'](path,SHA)
+                (companion/name).write_text(files[name])
+            events[1]['seconds']=340.001
+            (path/'events.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in events))
+            with self.assertRaisesRegex(ValueError,'330'): API['core_capture'](path,SHA)
+
+    def test_metal_launcher_resolves_gpu_using_the_target_3d_capability(self):
+        launcher=runpy.run_path(str(ROOT/'scripts/metal/metal-run'))
+        resolve=launcher['resolve_suites']
+        def in_build(env,*args,**kwargs):
+            if 'show' in args:
+                path=ROOT/args[-1].split(':',1)[1]
+                return SimpleNamespace(returncode=0,stdout=path.read_text())
+            return SimpleNamespace(returncode=0,stdout='')
+        with patch.dict(resolve.__globals__,in_build=in_build):
+            self.assertEqual(resolve(dict(BUILD_REPO='checkout'),SHA,'gpu'),'gpu')
 
     def test_core_manifest_runner_and_effort_mapping(self):
         manifest=json.loads((ROOT/'docs/suites/gt710.json').read_text()); API['validate_manifest'](manifest)

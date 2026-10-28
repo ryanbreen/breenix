@@ -14,7 +14,7 @@ HOST_MILESTONES = {'users-operator.json': 'users/operator-login'}
 def host_milestone(name):
     suite, category = name.removesuffix('.json').split('-', 1)
     if suite == 'gt710':
-        return 'metal-gt710/' + category
+        return 'metal-gt710/' + ('gpu-core' if category == 'core' else category)
     return HOST_MILESTONES.get(name, suite + '/' + category)
 
 
@@ -93,7 +93,9 @@ def score(directory):
                     or (directory / 'dirty').read_text().strip() != '0' or 'console-gap' in events):
                 raise ValueError('GT 710 cases need a completed clean successful capture')
             reason = host['score'](manifest, read('definition/docs/efforts/' + effort), records,
-                                   host['capture_serial'](directory) if suite=='gt710' else (directory / 'serial.txt').read_text(), run, sha, fatal)
+                                   host['capture_serial'](directory) if suite=='gt710' else (directory / 'serial.txt').read_text(), run, sha, fatal,
+                                   **({'producer': host['core_capture'](directory, sha)}
+                                      if suite == 'gt710' and category == 'core' else {}))
             total = len(host['CATEGORIES'][category])
             results[milestone] = dict(reached=total, total=total, passed=True, reason=reason)
         except (OSError, ValueError, KeyError, StopIteration, TypeError, AttributeError) as error:

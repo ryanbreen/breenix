@@ -1633,8 +1633,10 @@ scripts/boot-interactive.sh --mode suite --suite breengel
 `docs/gui/gpu.md`: one category per milestone, in build order, `device` (12), `submit` (22),
 `readback` (19), `textures` (19), `profile` (22), `pipelines` (26), `isolation` (25),
 `present` (16) and `performance` (9), 170 cases. Its targets are ARM64 QEMU, Parallels and
-VMware; x86-64 joins when a dedicated Breenix hardware box replaces the current x86 gate host
-(`docs/gui/gpu.md` section 1.6.4), so there is no x86-64 boot of it.
+VMware and native x86-metal (`docs/gui/gpu.md` section 1.6.4). The metal image
+installs the same `/sbin/suite-gpu`. M8.1's `gt710/core` host category measures
+its initial admission-only producer separately from full GPU acceptance;
+see `docs/gui/gt710-core-acceptance.md`.
 
 The suite is written ahead of the layers it measures. Each case names the layer it needs and
 the build step that supplies it, asks syscall 416's VERSION op, and until that layer exists

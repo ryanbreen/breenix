@@ -112,7 +112,8 @@ def resolve_suites(env, sha, spec):
     # Deployed, the resolver sits beside metal-run; in a checkout it is in scripts/.
     source = HERE / 'suite-sequence.py' if (HERE / 'suite-sequence.py').exists() else HERE.parent / 'suite-sequence.py'
     try:
-        ids, skipped = runpy.run_path(str(source))['resolve'](spec, 'x86-metal', False, read)
+        sequence = runpy.run_path(str(source))
+        ids, skipped = sequence['resolve'](spec, 'x86-metal', sequence['gpu_3d']('x86-metal'), read)
     except ValueError as error:
         raise SystemExit(f'--suite: {error}') from None
     for suite, why in skipped:
