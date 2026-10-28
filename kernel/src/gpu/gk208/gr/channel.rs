@@ -882,7 +882,10 @@ mod native {
         ) -> Result<(), &'static str> {
             self.prepare_copy(h)?;
             let (sequence, nonce) = self.sequence()?;
-            let command = crate::gk208::copy::encode(rect, TARGET, self.report.identity.epoch, nonce)?;
+            let mut command = crate::gk208::copy::encode(rect, TARGET, self.report.identity.epoch, nonce)?;
+            // A06F SET_REFERENCE (MIT cla06f.h:125) certifies stream
+            // consumption; the CE epoch/nonce release certifies the transfer.
+            command.extend([0x20010014, sequence]);
             let sample = self.issue_words(h, sequence, 85, nonce, BOUND_US, &command, true)?;
             if !sample.accepted { return Err("draw CE release not observed"); }
             Ok(())
@@ -939,7 +942,8 @@ mod native {
                 let (sequence, nonce) = self.sequence()?;
                 draw.report_va = TARGET; draw.epoch = self.report.identity.epoch; draw.nonce = nonce;
                 receipt.target = TARGET; receipt.epoch = draw.epoch; receipt.nonce = nonce;
-                let command = encoder::commands(draw)?;
+                let mut command = encoder::commands(draw)?;
+                command.extend([0x20010014, sequence]);
                 let observation = self.issue_words(h, sequence, 85, nonce, BOUND_US, &command, true)?;
                 receipt.observation = Some(observation);
                 if !observation.accepted { return Err("draw engine release not observed"); }

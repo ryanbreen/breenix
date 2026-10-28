@@ -686,6 +686,11 @@ adapter uses the existing VM, coherent DMA pages and BAR flush helpers;
 the M6 CE mechanisms provide read-back. `gr/mod.rs` joins its raw channel
 record with the existing attributed firmware and context records.
 
+`tests/gt710_draw_submission_test.py` also uses `cla06f.h:125-126` at that
+revision (MIT, Copyright (c) 2020 NVIDIA CORPORATION). The check and retained
+channel copy/draw wrappers use its SET_REFERENCE method after the engine
+release. The check retains NVIDIA's copyright and full permission grant.
+
 ## GPCCS topology count decoding correction
 
 The GPCCS UNITS count mask in `scripts/metal/gt710-suite`,
