@@ -109,6 +109,8 @@ const WARM_GRACE_NS: u64 = 20_000_000;
 /// steps also spaces their starts by at least `WARM_GRACE_NS` (#2103, #2111).
 const WARM_QUIET_NS: u64 = 2_000_000;
 static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
+#[cfg(target_arch = "x86_64")]
+static NATIVE_STARTING: AtomicBool = AtomicBool::new(false);
 /// Counts interrupts and the state changes waiters wait for; a waiter sleeps only while it
 /// is unchanged.
 static EVENTS: AtomicU64 = AtomicU64::new(0);
@@ -2567,14 +2569,38 @@ fn op_caps(arg: u64, len: u64) -> Result<u64, i64> {
     }
     #[cfg(target_arch = "x86_64")]
     if crate::gk208::takeover_started()
-        && with_core(|c| c.dev.is_none() && c.status == abi::status::NO_DEVICE).unwrap_or(false) {
-        if let Err(error) = crate::gk208::initialize_core() {
-            with_core(|c| { c.status = abi::status::DEVICE_FAILED; c.reason = error; });
-        }
+        && with_core(|c| NATIVE_STARTING.load(Ordering::Acquire)
+            || (c.dev.is_none() && c.status == abi::status::NO_DEVICE)).unwrap_or(false) {
+        arch::with_interrupts(native_caps_startup)?;
     }
     let caps = with_core(|c| c.caps_record()).unwrap_or_else(|| Core::empty().caps_record());
     write_arg(arg, &caps)?;
     Ok(0)
+}
+
+/// Claim startup under the core lock, then release it through all firmware IO.
+/// A competing first CAPS sleeps through publication, including startup failure.
+#[cfg(target_arch = "x86_64")]
+fn native_caps_startup() -> Result<(), i64> {
+    let start = wait_for(None, true, |c| {
+        if NATIVE_STARTING.load(Ordering::Acquire) {
+            None
+        } else if c.dev.is_some() || c.status != abi::status::NO_DEVICE {
+            Some(false)
+        } else if !NATIVE_STARTING.swap(true, Ordering::AcqRel) {
+            Some(true)
+        } else {
+            None
+        }
+    }).map_err(|_| EINTR)?;
+    if start {
+        if let Err(error) = crate::gk208::initialize_core() {
+            with_core(|c| { c.status = abi::status::DEVICE_FAILED; c.reason = error; });
+        }
+        NATIVE_STARTING.store(false, Ordering::Release);
+        notify();
+    }
+    Ok(())
 }
 
 /// Serialize a process's context/resource creation through device attachment and

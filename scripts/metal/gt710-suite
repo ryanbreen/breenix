@@ -1625,6 +1625,21 @@ CORE_NAMES = ('3d-feature', 'capability-set', 'b8g8r8a8-render', 'b8g8r8a8-sampl
               'texel-fetch', 'region-copy', 'target-size')
 
 
+def core_startup(serial):
+    """First-CAPS startup's retained IRQ gauge, under the unchanged 500 us bound."""
+    anchor = one(r'^GT710_CORE_STARTUP_BULK (\d+) ([0-9a-f]{64})$', serial, 'core startup anchor')
+    line = one(r'^GT710_CORE_STARTUP (.+)$', serial, 'core startup row')
+    raw = ('GT710_CORE_STARTUP ' + line[1] + '\n').encode('ascii')
+    if len(raw) != int(anchor[1]) or hashlib.sha256(raw).hexdigest() != anchor[2]:
+        raise ValueError('core startup differs from bulk anchor')
+    row = json.loads(line[1])
+    if (type(row) is not dict or type(row.get('schema')) is not int or row['schema'] != 1
+            or row.get('ready') is not True or type(row.get('irq_masked_max_us')) is not int
+            or not 0 <= row['irq_masked_max_us'] <= 500):
+        raise ValueError('core startup failed or IRQ-masked maximum exceeds 500 us')
+    return row['irq_masked_max_us']
+
+
 def core_records(serial):
     anchor = one(r'^GT710_CORE_BULK (\d+) ([0-9a-f]{64})$', serial, 'core bulk anchor')
     rows = re.findall(r'^GT710_CORE (.+)\n', serial, re.M)
@@ -2082,10 +2097,11 @@ def capture_serial(directory):
     if contexts and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file()
                      or re.search(r'^GT710_CTX_IMAGE ', serial, re.M)):
         raise ValueError('graphics context image bulk missing or on serial')
-    core = 'GT710_CORE_BULK ' in serial
+    startup = 'GT710_CORE_STARTUP_BULK ' in serial
+    core = 'GT710_CORE_BULK ' in serial or startup
     if core and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file()):
         raise ValueError('core evidence bulk missing')
-    if re.search(r'^GT710_CORE ', serial, re.M):
+    if re.search(r'^GT710_CORE(?:_STARTUP)? ', serial, re.M):
         raise ValueError('core records must arrive in bulk')
     draw = 'GT710_DRAW_BULK ' in serial or 'GT710_DRAW ' in serial
     if draw and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file() or re.search(r'^GT710_DRAW_IMAGE ', serial, re.M)):
@@ -2116,10 +2132,12 @@ def capture_serial(directory):
         elif fields[0]=='GT710_DRAW_IMAGE': key=('draw',)
         elif fields[0]=='GT710_CTX_IMAGE': key=('gr-contexts',)
         elif fields[0]=='GT710_CORE': key=('core',)
+        elif fields[0]=='GT710_CORE_STARTUP': key=('core-startup',)
         else: raise ValueError('unexpected display artifact record')
         if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
         groups.setdefault(key,[]).append(line);previous=key
     def report_key(line):
+        if line.startswith('GT710_CORE_STARTUP_BULK '): return ('core-startup',)
         if line.startswith('GT710_CORE_BULK '): return ('core',)
         if line.startswith('GT710_CTX_BULK '): return ('gr-contexts',)
         if line.startswith('GT710_DRAW_BULK '): return ('draw',)
@@ -2138,7 +2156,7 @@ def capture_serial(directory):
     result=[]
     for line in serial.splitlines(keepends=True):
         key=report_key(line)
-        if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',), ('core',)):
+        if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',), ('core',), ('core-startup',)):
             record=''.join(groups[key]).encode('ascii')
             fields=line.split()
             if len(fields)!=3 or (key==('multi',) and len(groups[key])!=1) or len(record)!=int(fields[1]) or hashlib.sha256(record).hexdigest()!=fields[2]:
@@ -2146,7 +2164,10 @@ def capture_serial(directory):
                 raise ValueError(kind+' artifact differs from serial length/digest')
         if key is not None: result.extend(groups[key])
         result.append(line)
-    return ''.join(result)
+    joined = ''.join(result)
+    if startup:
+        core_startup(joined)
+    return joined
 
 
 CPU_MEMORY_CATEGORIES = {'inventory','vm','aperture','lifetime'}

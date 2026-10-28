@@ -151,6 +151,22 @@ admission then reports the unprobed BGRA render capability. Startup failure
 reports DEVICE_FAILED and its cause; it cannot qualify as capability evidence.
 The existing console CE checks run before this first-use ownership transfer.
 
+First-CAPS startup runs with CPU interrupts enabled; only short register
+read/modify/write sequences mask them. Concurrent first callers sleep through
+the ownership transfer and result publication. The startup restores its caller's
+entry IRQ state on success, failure and interrupted waiting.
+
+Production startup retains one `GT710_CORE_STARTUP` JSON line in the existing
+`/proc/gt710-pixels` bulk buffer, with `schema=1`, boolean `ready`, and unsigned
+`irq_masked_max_us`. The latter is the GPU gauge's boot-global maximum through
+startup; it is never reset or clamped for this record. Both x86 masking helpers
+time GPU-path intervals, including IRQ-safe mutex acquisitions. Serial carries
+only `GT710_CORE_STARTUP_BULK <bytes> <sha256>`, covering the exact line and LF.
+The acceptance capture must upload the buffer after first CAPS, through the
+existing network uploader. The joiner authenticates this block and rejects
+failed startup or a maximum over the unchanged 500 µs bound. A host check of
+the encoder or interrupt state supplies no measured hardware duration.
+
 `producer` requires START, the shared manifest's 170 CASE identities in order,
 DONE with 170 failures and no skips, `SUITE gpu ELAPSED ms=N`, and READY.
 Each case's sole failure must name CAPS status 2 and `missing b8g8r8a8-render`.

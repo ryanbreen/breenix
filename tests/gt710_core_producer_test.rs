@@ -29,3 +29,13 @@ fn caps_and_anchor_cover_exact_wire_bytes() {
     assert_eq!(anchor(b"abc\n"), "GT710_CORE_BULK 4 edeaaff3f1774ad2888673770c6d64097e391bc362d7d6fb34982ddf0efd18cb");
     assert_ne!(anchor(row.as_bytes()), anchor(row.trim_end().as_bytes()));
 }
+
+#[test]
+fn startup_retains_the_measured_maximum_even_when_it_exceeds_the_bound() {
+    for (us, ready) in [(0, true), (500, true), (501, false), (2001, true)] {
+        let row = core_record::startup(us, ready);
+        assert_eq!(row, format!("GT710_CORE_STARTUP {{\"schema\":1,\"irq_masked_max_us\":{us},\"ready\":{ready}}}\n"));
+        assert_eq!(core_record::startup_anchor(row.as_bytes()),
+            anchor(row.as_bytes()).replacen("GT710_CORE_BULK", "GT710_CORE_STARTUP_BULK", 1));
+    }
+}

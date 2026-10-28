@@ -65,9 +65,18 @@ mod installation {
     def test_production_caps_initializes_before_reading_the_core(self):
         source = (ROOT / 'kernel/src/gpu/mod.rs').read_text()
         function = item(source, 'fn op_caps(').replace('#[cfg(target_arch = "x86_64")]', '')
+        function += '\n' + item(source, 'fn native_caps_startup(')
         fixture = r"""
 use std::cell::{Cell,RefCell};
+use std::sync::atomic::{AtomicBool,Ordering};
 const EINVAL:i64=22;
+const EINTR:i64=4;
+static NATIVE_STARTING:AtomicBool=AtomicBool::new(false);
+mod arch {pub fn with_interrupts<R>(f:impl FnOnce()->R)->R{f()}}
+fn notify(){}
+fn wait_for<T>(_:Option<u64>,_:bool,mut f:impl FnMut(&mut Core)->Option<T>)->Result<T,()>{
+ Ok(with_core(&mut f).unwrap().expect("single caller must not wait"))
+}
 mod abi {
     #[derive(Clone,Copy,Default)] pub struct Caps { pub backend:u32,pub status:u32,pub missing:u32 }
     pub mod status {pub const NO_DEVICE:u32=1;pub const DEVICE_FAILED:u32=3;}

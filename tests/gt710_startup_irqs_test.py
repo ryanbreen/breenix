@@ -21,7 +21,7 @@ class StartupIrqs(unittest.TestCase):
         caps = item(source, 'fn op_caps(').replace('#[cfg(target_arch = "x86_64")]', '')
         startup = item(source, 'fn native_caps_startup(') if 'fn native_caps_startup(' in source else ''
         arch = (ROOT / 'kernel/src/gpu/arch.rs').read_text()
-        enabled = item(arch, 'pub(super) fn with_interrupts(') if 'pub(super) fn with_interrupts(' in arch else ''
+        enabled = item(arch, 'pub(super) fn with_interrupts') if 'pub(super) fn with_interrupts' in arch else ''
         fixture = r'''
 use std::cell::Cell;
 use std::sync::{Mutex,Condvar,atomic::{AtomicBool,AtomicU32,Ordering}};
@@ -42,6 +42,7 @@ static CALLS:AtomicU32=AtomicU32::new(0);
 static GATE:Mutex<(bool,bool,bool)>=Mutex::new((false,false,false));
 static CHANGED:Condvar=Condvar::new();
 static FAIL:AtomicBool=AtomicBool::new(false);
+static INSTALL_EARLY:AtomicBool=AtomicBool::new(false);
 thread_local!{static IRQS:Cell<bool>=const{Cell::new(false)};static SECOND:Cell<bool>=const{Cell::new(false)};}
 pub fn arch_interrupts_enabled()->bool{IRQS.with(Cell::get)}
 pub unsafe fn arch_enable_interrupts(){IRQS.with(|i|i.set(true));}
@@ -71,6 +72,7 @@ mod gk208 {
   for phase in ["FECS upload","GPCCS upload","firmware wait","channel wait"] {
    assert!(super::arch_interrupts_enabled(),"IRQs masked across {phase}");
   }
+  if super::INSTALL_EARLY.load(super::Ordering::Acquire){super::with_core(|c|{c.dev=Some(());c.status=2;});}
   let mut g=super::GATE.lock().unwrap();g.0=true;super::CHANGED.notify_all();
   while !g.1{g=super::CHANGED.wait(g).unwrap();}drop(g);
   if super::FAIL.load(super::Ordering::Acquire){return Err("injected startup failure");}
@@ -91,6 +93,8 @@ STARTUP
  }
 }
 #[test]fn second_first_caps_waits_for_the_same_result(){
+ for early in [false,true]{
+ INSTALL_EARLY.store(early,Ordering::Release);
  *CORE.lock().unwrap()=Core::empty();*GATE.lock().unwrap()=(false,false,false);
  NATIVE_STARTING.store(false,Ordering::Release);CALLS.store(0,Ordering::Release);FAIL.store(false,Ordering::Release);
  let a=std::thread::spawn(||{unsafe{arch_enable_interrupts();}op_caps(0,core::mem::size_of::<abi::Caps>() as u64)});
@@ -105,6 +109,8 @@ STARTUP
  g.1=true;CHANGED.notify_all();drop(g);
  assert_eq!(a.join().unwrap(),Ok(0));assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(),Ok(0));b.join().unwrap();
  assert_eq!(CALLS.load(Ordering::Acquire),1);
+ }
+ INSTALL_EARLY.store(false,Ordering::Release);
 }
 '''
         # These harness hooks are used only after the repair adds serialization.

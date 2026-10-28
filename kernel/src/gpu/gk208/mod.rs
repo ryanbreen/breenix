@@ -116,7 +116,6 @@ mod recovery_policy;
 pub use system_dma::set_platform as set_dma_platform;
 mod modeset;
 mod native;
-#[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
 mod core_record;
 pub use native::{ConsoleSurface,console_binding,takeover_started,caps_scanout};
 mod rom;
@@ -141,7 +140,8 @@ impl Registers {
         let _ = self.read(reg); // drain the posted MMIO write
     }
     fn mask(&self, reg: usize, mask: u32, value: u32) {
-        self.write(reg, (self.read(reg) & !mask) | value);
+        // Only this read/modify/write is indivisible; uploads and polls stay IRQ-on.
+        crate::arch_without_interrupts(|| self.write(reg, (self.read(reg) & !mask) | value));
     }
 }
 fn hex(data: &[u8]) -> String {
@@ -530,5 +530,11 @@ pub mod caps;
 
 /// Serialize first-use native startup with the existing allocator/CE owner.
 pub(crate) fn initialize_core() -> Result<(), &'static str> {
-    ce::initialize_core()
+    let result = ce::initialize_core();
+    let longest = crate::tracing::providers::gpu::GPU_IRQ_MASKED_MAX_US.per_cpu[0].value.load(core::sync::atomic::Ordering::Relaxed);
+    let row = core_record::startup(longest, result.is_ok());
+    // Keep the measured startup row with bulk evidence, only its digest on serial.
+    bulk::line(row.trim_end_matches('\n').into())?;
+    crate::serial_println!("{}", core_record::startup_anchor(row.as_bytes()));
+    result
 }

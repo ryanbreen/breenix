@@ -1,6 +1,21 @@
 //! The small OS/architecture seam of the shared GPU core.
 use core::sync::atomic::{AtomicBool, Ordering};
 
+/// x86 syscall entry masks IRQs. Firmware uploads and device waits must allow
+/// timer/USB delivery; restore entry state after success, refusal or a signal.
+#[cfg(target_arch = "x86_64")]
+pub(super) fn with_interrupts<R>(f: impl FnOnce() -> R) -> R {
+    let enabled = crate::arch_interrupts_enabled();
+    // SAFETY: called outside the core/session locks, with syscall preemption held.
+    unsafe { crate::arch_enable_interrupts(); }
+    let result = f();
+    if !enabled {
+        // SAFETY: restore the syscall's entry state before returning to its caller.
+        unsafe { crate::arch_disable_interrupts(); }
+    }
+    result
+}
+
 #[cfg(target_arch = "aarch64")]
 pub(super) const MAX_CPUS: usize = crate::arch_impl::aarch64::constants::MAX_CPUS;
 #[cfg(target_arch = "x86_64")]
