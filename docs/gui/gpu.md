@@ -1,3 +1,39 @@
+<!--
+Native interface constants derived from NVIDIA open-gpu-doc at
+9fdf5c4062007929d9f4e6cbad9c9771fe61b880:
+classes/{host/cla06f.h,3d/cla197.h}:
+Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+classes/dma-copy/cla0b5.h:
+Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
+classes/display/cl927d.h:
+Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Fault reasons from nouveau nvkm/engine/fifo/gk104.c (Linux v6.8):
+Copyright 2012 Red Hat Inc.
+Class selection from nouveau nvkm/engine/fifo/gk208.c (Linux v6.8):
+Copyright 2013 Red Hat Inc.
+2D limit from Mesa 24.3.4 src/gallium/drivers/nouveau/nvc0/nvc0_screen.c:
+Copyright 2010 Christoph Bumiller
+
+MIT License
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+claim-lint:ok: Retained MIT license condition; source mapping in libs/gpu-abi/tests/gk208_contract.rs.
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+-->
 # GPU rendering: the `gpu` effort's design and contract
 
 Written 2026-10-16 against `origin/main` `45ff7aa6`; the contract was frozen the same day, after the G0
@@ -46,16 +82,16 @@ when this was written.
    Breenix-authored GL-style API (`libs/bgl`, "BGL"), display modes up to 2560×1600 with a scale factor,
    present, and exact device readback on ARM64 QEMU, Parallels and VMware. Its suite is `gpu` (170 cases,
    9 categories, 9 milestones).
-2. **Every target renders on a hardware GPU; no software renderer counts.** Each run carries a host-side
-   renderer attestation (section 1.6.5), and the gate refuses a run whose renderer is software or unknown.
+2. **Every target renders on a hardware GPU; no software renderer counts.** Virtual-backend runs carry
+   host renderer attestation (section 1.6.5); native runs carry section 1.6.4 evidence.
+   The gate refuses a software or unknown execution path. <!-- claim-lint:ok: Normative native extension; docs/gui/gpu.md sections 1.6.4 and 1.8. -->
    llvmpipe may exercise guest transport code on throwaway branches; it never produces a verdict.
 3. **The macOS host for ARM64 QEMU uses UTM's matched graphics stack** (QEMU 10.0.12-utm with its ANGLE on
    Metal, epoxy and virglrenderer forks), built as a command-line binary that serves both the headless gate
    and the interactive window (section 1.6.1).
-4. **x86-64 is out of the GPU era for now (ruling R1).** The x86 gate host is VGA only, so x86-64 is
-   measured up to the shell and no further. `gpu`, `breengel`, `window-manager`, `ui-testing` and `gui-apps`
-   are measured on ARM64 QEMU, Parallels and VMware (their `targets` in `docs/efforts/path.json`); x86-64
-   joins them when a dedicated Breenix hardware box replaces the current x86 gate host (section 1.6.4).
+4. **x86-64 uses native hardware for the GPU era.** Backend 6 extends the shared core
+   to GK208B under the native evidence contract (section 1.6.4). This replaces the
+   historical VGA-only x86 gate exclusion; it does not certify native suite acceptance.
 5. **Exactness comes from a declared deterministic rendering profile.** Exact pipelines draw integer-cornered
    rectangles, decide membership of non-rectangular shapes with integer predicates in the fragment shader,
    using multi-word integer arithmetic wherever the contract's input range needs more than 32 bits, read
@@ -627,19 +663,57 @@ in order:
 
 #### 1.6.4 x86-64
 
-x86-64 is out of the GPU era for now (ruling R1). The current x86 gate host has no hardware GPU a guest
-renderer can use: the gate's QEMU runs inside a virtual machine whose virtio GPU negotiates without
-`VIRTIO_GPU_F_VIRGL`, and that QEMU (8.2.2) failed to load its GL display module in a help probe
-(`undefined symbol: qemu_egl_display`). Its display stays VGA only, and x86-64 is measured up to the shell and
-no further. The GPU-era efforts list ARM64 QEMU, Parallels and VMware as their targets, so x86-64 neither
-counts toward them nor holds them back.
+The native GK208B path is backend **6**, `backend::GK208`, behind the same GPU core
+and `dev.rs` dispatch as backends 4 and 5. It uses native PFIFO/A0B5/PGRAPH/EVO
+mechanisms, not a virtual renderer. ARM targets retain their existing backends and
+host attestation. Native admission and evidence are specified here; registering a
+contract row is not a claim that the native suite has passed.
 
-x86-64 joins those efforts when a dedicated Breenix hardware box replaces the current x86 gate host. Its GPU
-path is designed for that box then, to the bar every other target meets: a hardware GPU, a host renderer
-attestation (section 1.6.5) that refuses a software renderer, and an x86-64 spike whose acceptance is G0's,
-item for item. The guest side it will need is known now: the gpu core's virtio-gpu command path, queues, DMA
-allocation and cache handling, ARM64-only today, generalized to x86-64, with the kernel kept free of FPU use
-(section 1.3). Until the box is in place no x86-64 GPU work runs, on effort lanes or on `scratch/*` branches.
+`CAPS.features` bit 9 (`NATIVE_CLASSES`) means that native supported-class discovery
+is available. Bits 0, 1 and 8 are clear. Discover the actual chip and enabled engines,
+then select the permitted source's chip-specific class tables; do not infer classes
+from the marketing name, or advertise a class merely because an encoder exists.
+The complete required class list, numerically ascending, is **927D, A06F, A0B5, A197**;
+`capset_count=4`, unused entries zero. `capset_id=A197`, `capset_version=0` (no
+virtual capset version), `shading_level=0` (no advertised GLSL language level).
+Missing classes remain missing capabilities, not substitute VirGL capsets.
+The native 2D chip limit is 16,384 in each dimension, subject to the shared cap;
+format flags, profile bits and pipeline bits are set only for admitted support.
+`renderer` is the checked native chip identity, NUL-padded, not a host GL attestation.
+Scanout count, enabled state and dimensions come from live display hardware and EDID. <!-- claim-lint:ok: Normative native ABI contract; source symbols in section 1.8 and layout check libs/gpu-abi/tests/gk208_contract.rs, not hardware acceptance. -->
+
+CAPS bytes 120–127 expose an origin per capability as specified in `gpu-abi.md`.
+Before establishing the evidence below the origin is `unprobed` and admission
+refuses the capability. A class's presence alone cannot certify executable pixels.
+
+| Capability id | Required native evidence | Origin once established |
+|---|---|---|
+| 1, 3d-feature | Live boot-chip identity, enabled engine/runlist and initialized graphics engine, matching the selected chip's class table | hardware read (3) |
+| 2, capability-set | Discovered supported classes 927D/A06F/A0B5/A197, through chip-specific class tables | class table (1) |
+| 3, BGRA render | Exact A197 BGRA render and fenced whole-target readback | executable probe (4) |
+| 4, BGRA sample | Exact BGRA sampling/channel-swizzle draw and readback | executable probe (4) |
+| 5, RGBA render | Exact A197 RGBA render and fenced whole-target readback | executable probe (4) |
+| 6, RGBA sample | Exact RGBA sampling/channel-swizzle draw and readback | executable probe (4) |
+| 7, R8 sample | Exact R8 integer texel fetch and readback | executable probe (4) |
+| 8, integer-ops | Shared exact integer profile probes, including wide arithmetic | executable probe (4) |
+| 9, texel-fetch | Explicit integer-addressed native fetch probes | executable probe (4) |
+| 10, region-copy | A0B5 rectangle copies, pitches/overlap staging and two-poison comparison | executable probe (4) |
+| 11, target-size | Selected chip's 16,384 2D limit, retaining the shared minimum and cap | chip limit (2) |
+
+Class/method/limit sources and checked licenses are linked under section 1.8.
+Native records use boundary **5**: device memory is read after native engine
+completion; live display binding/status and EDID describe the connected scanout.
+The connector's emitted light and external panel are outside this boundary. EDID
+alone proves a responding sink, not displayed pixels. Host-renderer attestation is
+not applicable to native silicon; retain native PCI/chip identity, source/asset
+hashes, releases, fault state, display status and EDID in the run's evidence bundle. <!-- claim-lint:ok: Normative native ABI contract; source symbols in section 1.8 and layout check libs/gpu-abi/tests/gk208_contract.rs, not hardware acceptance. -->
+
+Native acceptance retains the shared 170 GPU cases, exact expected pixels, zero
+skips, quotas, fault outcomes and timing bounds. Bulk pixels/register evidence use
+the network evidence upload, with digests on serial. The console-suite boot has a
+330 s handoff-to-done ceiling; the GPU-suite boot reports its own duration and
+retains the existing 900 s suite deadline. This unit adds the contract only;
+shared dispatch, producer wiring and execution acceptance follow in their units. <!-- claim-lint:ok: Normative native ABI contract; source symbols in section 1.8 and layout check libs/gpu-abi/tests/gk208_contract.rs, not hardware acceptance. -->
 
 #### 1.6.5 Host renderer attestation
 
@@ -782,8 +856,8 @@ the process's guest-backing quota or `RLIMIT_AS`. The charge is released when th
 |---|---|
 | 0 | `version: u32` (2), `size: u32` (1,024) |
 | 8 | `serial: u64`: this observation, monotonic per device |
-| 16 | `backend: u32`: 4 VirGL, 5 SVGA3D DX (1 virtio-gpu 2D, 2 GOP and 3 CPU-written SVGA3 screen target are retired) |
-| 20 | `boundary: u32`: 4, the host renderer and host window are outside the guest's view; the renderer is covered by the run's host attestation (section 1.6.5) |
+| 16 | `backend: u32`: 4 VirGL, 5 SVGA3D DX, 6 native GK208B (1 virtio-gpu 2D, 2 GOP and 3 CPU-written SVGA3 screen target are retired) |
+| 20 | `boundary: u32`: 4 for virtual backends (host renderer/window outside the guest view, section 1.6.5); 5 for native device-memory/display-status evidence (section 1.6.4) |
 | 24 | `flags: u32`: bit 0 the observed target is the scanout, bit 1 the observation is of a composite; other bits invalid |
 | 28 | `format: u32`: the target's format (0 `B8G8R8A8`, 1 `R8G8B8A8`) |
 | 32 | `x, y, width, height: u32`: the rectangle read |
@@ -793,36 +867,86 @@ the process's guest-backing quota or `RLIMIT_AS`. The charge is released when th
 | 72 | `target: u64`: the caller's handle; `resource: u64` at 80: the device's resource or surface id |
 | 88 | `generation: u64`: the target's published generation (section 1.4.1) |
 | 96 | `render_serial: u64`: the submission that produced that generation; `render_fence: u64` at 104 |
-| 112 | `render_status: u32`, `render_kind: u32`: the answer and the command answered (`SUBMIT_3D` on VirGL; the command buffer's status and `DX_DRAW` on SVGA3D) |
+| 112 | `render_status: u32`, `render_kind: u32`: the answer and the command answered (`SUBMIT_3D` on VirGL; command-buffer status and `DX_DRAW` on SVGA3D; native evidence status and A197 draw/A0B5 upload release on GK208B) |
 | 120 | `readback_fence: u64`; `readback_status: u32`, `readback_kind: u32` at 128 (`TRANSFER_FROM_HOST_3D`; `READBACK_GB_SURFACE`) |
-| 136 | `readback_surface: u64`, `readback_mob: u64` at 144: VMware's dedicated readback surface and its MOB; 0 on VirGL |
-| 152 | `copy_kind: u32`, `copy_status: u32`: VMware's host copy into the readback surface; 0 on VirGL |
+| 136 | `readback_surface: u64`, `readback_mob: u64` at 144: VMware's dedicated readback surface and its MOB; 0 on VirGL and GK208B |
+| 152 | `copy_kind: u32`, `copy_status: u32`: VMware's host copy into the readback surface or GK208B CE copy into staging; 0 on VirGL |
 | 160 | `poison: u32`: the first observation's poison pattern (the second's is its complement); `unwritten: u32` at 164: bytes whose two observations differ, which must be 0 |
 | 168 | `commit: u64`, `composite_serial: u64` at 176: for a window or composite observation, else 0 |
 | 184 | `present_fence: u64`: when bit 0 of `flags` is set, the context fence `PRESENT` returned for the completed binding that made the observed target the scanout (section 1.7), never a raw device fence number; else 0. `present_status: u32`, `window_count: u32` at 192 |
 | 200 | `windows: [(window: u64, commit: u64, render_fence: u64, generation: u64); 16]`: every window in the composite, the commit sampled, the render fence that commit carried and the generation sampled |
-| 712 | `renderer: [u8; 64]`: the device's renderer string from its capability set, NUL-padded, empty if none |
+| 712 | `renderer: [u8; 64]`: the device's capset renderer or checked native chip identity, NUL-padded; empty when unavailable |
 | 776 | reserved |
 
 <!-- claim-lint:ok: Normative catch-up contract amendment, rulings 47-52 (#1814), not measured results. -->
 **Backend-specific observations (ruling 47).** A record's backend must match `CAPS.backend`;
-checks select the following native values by that backend, never accept a value from the other one.
+checks select the following values by that backend and refuse values from another backend.
 These are interface identifiers from VirtIO section 5.7.6.7 and VMware's published
 `svga3d_cmd.h` and `svga_reg.h` (section 1.9), not rendering-policy sources.
 
-| Field | Backend 4 (VirGL) | Backend 5 (SVGA3D DX) |
-|---|---|---|
-| Successful render, readback, copy and present status | `OK_NODATA` 0x1100 (copy fields remain 0) | `SVGA_CB_STATUS_COMPLETED` 1 |
-| Render kind after drawing | `SUBMIT_3D` 0x207 | `DX_DRAW` 1152 |
-| Render kind after texture upload | `TRANSFER_TO_HOST_3D` 0x205 | `UPDATE_GB_SURFACE` 1102 |
-| Readback kind | `TRANSFER_FROM_HOST_3D` 0x206 | `READBACK_GB_SURFACE` 1104 |
-| Readback surface and MOB | both 0 | both nonzero; dedicated readback surface differs from the judged resource |
-| Copy kind | 0 | `SURFACE_COPY` 1042 |
-| Forced device-error answer | VirtIO error response 0x1200 through 0x12ff | `SVGA_CB_STATUS_COMMAND_ERROR` 3 |
+| Field | Backend 4 (VirGL) | Backend 5 (SVGA3D DX) | Backend 6 (native GK208B) |
+|---|---|---|---|
+| Successful render, readback, copy and present status | `OK_NODATA` 0x1100 (copy fields remain 0) | `SVGA_CB_STATUS_COMPLETED` 1 | `SUCCESS` 0x60000000: matched native release/latch and no relevant fault, not a response packet |
+| Render kind after drawing | `SUBMIT_3D` 0x207 | `DX_DRAW` 1152 | `DRAW_RELEASE` 0xA1971B0C |
+| Render kind after texture upload | `TRANSFER_TO_HOST_3D` 0x205 | `UPDATE_GB_SURFACE` 1102 | `TRANSFER_RELEASE` 0xA0B50300 |
+| Readback kind | `TRANSFER_FROM_HOST_3D` 0x206 | `READBACK_GB_SURFACE` 1104 | `TRANSFER_RELEASE` 0xA0B50300 |
+| Readback surface and MOB | both 0 | both nonzero; dedicated readback surface differs from the judged resource | both 0; direct CE copy into pinned system staging |
+| Copy kind | 0 | `SURFACE_COPY` 1042 | `TRANSFER_RELEASE` 0xA0B50300; the actual CE copy into staging |
+| Forced device-error answer | VirtIO error response 0x1200 through 0x12ff | `SVGA_CB_STATUS_COMMAND_ERROR` 3 | 0x60010000–0x6001000F: tagged native MMU reason (see below) |
+
+**Native source register and encoding.** The following pinned files were checked for
+MIT permission before deriving the constants; copyright/full grants are retained
+in this document's header, `gpu-abi.md`, the ABI crate and its host check, and
+mapped in `THIRD_PARTY_NOTICES`.
+
+- [NVIDIA cla06f.h](https://github.com/NVIDIA/open-gpu-doc/blob/9fdf5c4062007929d9f4e6cbad9c9771fe61b880/classes/host/cla06f.h),
+  `KEPLER_CHANNEL_GPFIFO_A=0xA06F`; [nouveau gk208.c](https://github.com/torvalds/linux/blob/e8f897f4afef0031fe618a8e94127a0934896aba/drivers/gpu/drm/nouveau/nvkm/engine/fifo/gk208.c),
+  `gk208_fifo.chan` selects that host class and its MMU faults use the GK104 table.
+- [NVIDIA cla197.h](https://github.com/NVIDIA/open-gpu-doc/blob/9fdf5c4062007929d9f4e6cbad9c9771fe61b880/classes/3d/cla197.h),
+  `KEPLER_B=0xA197`, `SET_REPORT_SEMAPHORE_D=0x1B0C`, RELEASE after preceding
+  writes at pipeline location ALL. This observes the draw's actual engine release. <!-- claim-lint:ok: Normative native ABI contract; source symbols in section 1.8 and layout check libs/gpu-abi/tests/gk208_contract.rs, not hardware acceptance. -->
+- [NVIDIA cla0b5.h](https://github.com/NVIDIA/open-gpu-doc/blob/9fdf5c4062007929d9f4e6cbad9c9771fe61b880/classes/dma-copy/cla0b5.h),
+  `KEPLER_DMA_COPY_A=0xA0B5`, `LAUNCH_DMA=0x300`, flush enabled and semaphore
+  release after the transfer. Upload, readback and copy share this transfer kind.
+- [NVIDIA cl927d.h](https://github.com/NVIDIA/open-gpu-doc/blob/9fdf5c4062007929d9f4e6cbad9c9771fe61b880/classes/display/cl927d.h),
+  class 0x927D, `UPDATE=0x80`. Present's implicit kind is `EVO_UPDATE_LATCH`
+  0x927D0080: notifier completion **and** confirmed active binding/counter progress,
+  with no display errors. Sending UPDATE or reading its shadow is insufficient.
+- [nouveau gk104.c](https://github.com/torvalds/linux/blob/e8f897f4afef0031fe618a8e94127a0934896aba/drivers/gpu/drm/nouveau/nvkm/engine/fifo/gk104.c#L504-L522),
+  `gk104_fifo_mmu_fault_reason`: 0x00 PDE through 0x0F INFO_TYPE_POISONED,
+  including 0x02 PTE. The answer is 0x60010000 OR the captured reason. The
+  forced-error control submits an unmapped address and must observe a real PDE
+  (0x60010000) or PTE (0x60010002) fault attributed to that request's native
+  instance/channel and reset epoch. A number in the range alone proves nothing;
+  never synthesize the answer from the control flag. Other native faults retain
+  their raw evidence and are failures, not successful replies or guessed MMU codes. <!-- claim-lint:ok: Normative native ABI contract; source symbols in section 1.8 and layout check libs/gpu-abi/tests/gk208_contract.rs, not hardware acceptance. -->
+- [Mesa nvc0_screen.c](https://github.com/chaotic-cx/mesa-mirror/blob/769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de/src/gallium/drivers/nouveau/nvc0/nvc0_screen.c#L123-L124),
+  `PIPE_CAP_MAX_TEXTURE_2D_SIZE=16384` supplies the chip-limit origin.
+
+The kind encoding `(class << 16) | completion_method` is a Breenix allocation;
+its three class namespaces are disjoint from virtual command numbers. Backend 6,
+feature bit 9, boundary 5, success tag 0x60000000, MMU tag 0x60010000 and origin
+codes/packing are Breenix ABI choices, not values claimed to come from hardware.
+Success requires the actual engine release sequence, channel/instance and reset
+epoch to match, plus absence of relevant faults; GET progress or a front-end
+semaphore alone cannot establish it.
+
+Record v2 needs no new fields: draw/upload use render_kind, CE readback and its
+copy use readback_kind/copy_kind, and backend 6 makes present's EVO kind implicit.
+Render/readback fences retain caller context namespaces and never expose a raw
+native sequence as a context fence. Native context/resource ids resolve to the
+actual channel/instance and allocation; they are opaque ids below 2^32, not GPU
+addresses. Mint a fresh context incarnation/fence namespace after reset; never
+reuse an old identity to make stale completion valid. The retained native evidence
+bundle maps these ids/fences and observation serial to the actual instance,
+resource, generation, native sequences and reset epoch. Lost/reset work cannot
+publish a successful record. Preserve binding pins and atomic pixels/metadata
+across both poisoned CE copies. Boundary 5 certifies device memory and measured
+display state, not external light. <!-- claim-lint:ok: Normative native ABI contract; source symbols in section 1.8 and layout check libs/gpu-abi/tests/gk208_contract.rs, not hardware acceptance. -->
 
 <!-- claim-lint:ok: Normative catch-up contract amendment, rulings 47-52 (#1814), not measured results. -->
 Pixel equality, both complementary poisons, fence and resource identities, all performance bounds,
-and the same 170 cases with zero skips remain required on both backends.
+and the same 170 cases with zero skips remain required on these three backends.
 
 A readback refuses with EIO and a named reason (the codes are in `docs/gui/gpu-abi.md`) when the two
 complementary-poison observations differ (unwritten), when any recorded fence belongs to another submission
@@ -853,6 +977,7 @@ Resource mismatch (3) is not observable for that fault.
 |---|---|
 | VirGL (ARM64 QEMU, Parallels) | fenced `SUBMIT_3D` of the frame; poison the attached backing with P; fenced `TRANSFER_FROM_HOST_3D` of the read rectangle into it; invalidate the CPU cache over it and keep the bytes; poison with the complement of P, transfer and invalidate again; refuse when any byte differs between the two |
 | SVGA3D DX (VMware) | complete the draw; GPU `SURFACE_COPY` from the judged target into a dedicated readback surface on its own MOB, in the same command buffer; poison the MOB with P; `READBACK_GB_SURFACE`; `DX_MOB_FENCE_64` and wait for its value; invalidate and read the MOB; repeat the copy and readback with the complement of P; refuse when any byte differs between the two |
+| Native GK208B | wait for the A197 draw release; poison pinned system staging with P; A0B5 CE-copy the actual judged rectangle with engine release and fault checks; read canonical bytes after architecture DMA ordering; repeat with ~P; require identical complete rectangles. If scanout is claimed, pin and check the actually latched EVO resource through the copies and record construction. |
 
 **Two observations under complementary poisons.** A byte the device wrote is the same in both observations;
 a byte it did not write keeps each poison and so differs. One poison cannot tell an unwritten byte from a

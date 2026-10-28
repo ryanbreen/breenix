@@ -1,3 +1,38 @@
+/*
+Native interface constants derived from NVIDIA open-gpu-doc at
+9fdf5c4062007929d9f4e6cbad9c9771fe61b880:
+classes/{host/cla06f.h,3d/cla197.h}:
+Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+classes/dma-copy/cla0b5.h:
+Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
+classes/display/cl927d.h:
+Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Fault reasons from nouveau nvkm/engine/fifo/gk104.c (Linux v6.8):
+Copyright 2012 Red Hat Inc.
+Class selection from nouveau nvkm/engine/fifo/gk208.c (Linux v6.8):
+Copyright 2013 Red Hat Inc.
+2D limit from Mesa 24.3.4 src/gallium/drivers/nouveau/nvc0/nvc0_screen.c:
+Copyright 2010 Christoph Bumiller
+
+MIT License
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+*/
 //! Syscall 416's binary interface, shared by the kernel and userspace.
 //!
 //! `gpu(op, arg, len)` and its rules are `docs/gui/gpu.md` section 1.4; the argument
@@ -79,6 +114,8 @@ pub mod backend {
     pub const NONE: u32 = 0;
     pub const VIRGL: u32 = 4;
     pub const SVGA3D_DX: u32 = 5;
+    /// Native GK208B; Breenix allocation, docs/gui/gpu.md section 1.6.4.
+    pub const GK208: u32 = 6;
 }
 
 /// `Caps::status`: whether the device was admitted to the profile.
@@ -97,7 +134,7 @@ pub mod status {
 /// and test-control point 23's parameter name them.
 pub mod capability {
     pub const NONE: u32 = 0;
-    /// The device's 3D feature: VirGL negotiated, or SVGA3D DX contexts.
+    /// The device's 3D feature: VirGL, SVGA3D DX contexts, or native engine discovery.
     pub const FEATURE_3D: u32 = 1;
     /// A capability set the backend can read the profile from.
     pub const CAPABILITY_SET: u32 = 2;
@@ -143,6 +180,49 @@ pub mod feature {
     pub const VERSION_1: u32 = 1 << 1;
     /// SVGA3D: the DX-context capability entry is set.
     pub const DX_CONTEXT: u32 = 1 << 8;
+    /// Native class discovery, not virtual feature negotiation (Breenix bit allocation).
+    pub const NATIVE_CLASSES: u32 = 1 << 9;
+}
+
+/// Provenance of each native admission capability (Breenix wire allocation).
+/// Three bits per capability id, id 1 at bit 0 of `Caps::capability_origins`.
+pub mod capability_origin {
+    pub const UNPROBED: u32 = 0;
+    pub const CLASS_TABLE: u32 = 1;
+    pub const CHIP_LIMIT: u32 = 2;
+    pub const HARDWARE_READ: u32 = 3;
+    pub const EXECUTABLE_PROBE: u32 = 4;
+}
+
+/// Backend 6's native evidence row; source symbols and pinned links are in
+/// `docs/gui/gpu.md` section 1.8. Tags are Breenix allocations, not GPU replies.
+pub mod gk208 {
+    /// NV927D / KEPLER_CHANNEL_GPFIFO_A / KEPLER_DMA_COPY_A / KEPLER_B.
+    /// Only advertise classes actually discovered on the selected chip.
+    pub const CAPSET_IDS: [u32; 4] = [0x927d, 0xa06f, 0xa0b5, 0xa197];
+    /// Primary graphics class; classes have no capset protocol version or GLSL level.
+    pub const CAPSET_ID: u32 = 0xa197;
+    pub const CAPSET_VERSION: u32 = 0;
+    pub const SHADING_LEVEL: u32 = 0;
+    /// Mesa nvc0_screen.c: PIPE_CAP_MAX_TEXTURE_2D_SIZE; also the shared ABI cap.
+    pub const MAX_2D_SIZE: u32 = 16_384;
+    /// A197 SET_REPORT_SEMAPHORE_D, RELEASE, after preceding writes, pipeline ALL.
+    /// claim-lint:ok: Pinned cla197.h:3283-3307; source register in docs/gui/gpu.md.
+    pub const DRAW_RELEASE: u32 = 0xa197_1b0c;
+    /// A0B5 LAUNCH_DMA with engine-ordered semaphore release (upload/readback/copy).
+    pub const TRANSFER_RELEASE: u32 = 0xa0b5_0300;
+    /// 927D UPDATE, accepted only after notifier completion AND confirmed latch.
+    /// PRESENT has no kind field; backend 6 implies this kind for present_status.
+    pub const EVO_UPDATE_LATCH: u32 = 0x927d_0080;
+    /// Matched native release/latch with no relevant engine fault, not a device reply.
+    pub const SUCCESS: u32 = 0x6000_0000;
+    /// Tag plus gk104_fifo_mmu_fault_reason's native 0x00..0x0f reason.
+    /// A fault must also be attributed to the submitted channel/instance/epoch.
+    pub const MMU_FAULT_FIRST: u32 = 0x6001_0000;
+    pub const MMU_FAULT_LAST: u32 = 0x6001_000f;
+    /// Unmapped-directory/table controls must observe the actual PDE/PTE reason.
+    pub const MMU_FAULT_PDE: u32 = 0x6001_0000;
+    pub const MMU_FAULT_PTE: u32 = 0x6001_0002;
 }
 
 /// `Caps::profile`.
@@ -314,7 +394,7 @@ pub struct Caps {
     pub formats: [FormatCaps; 3],
     /// [`profile`] bits.
     pub profile: u32,
-    /// The device's shading-language level from its capability set.
+    /// Virtual shading-language level; 0 for native machine-code catalogues.
     pub shading_level: u32,
     /// The largest target: the device's 2D maximum, capped at 16,384.
     pub max_width: u32,
@@ -324,12 +404,27 @@ pub struct Caps {
     pub pipelines: u32,
     /// How many scanouts the device reports.
     pub scanout_count: u32,
-    pub reserved0: [u32; 2],
-    /// The device's renderer string from its capability set, NUL-padded.
+    /// Backend 6: eleven three-bit origins, low word first; bits 33..63 zero.
+    /// Backends 4/5: reserved zero. No offsets or version change.
+    pub capability_origins: [u32; 2],
+    /// Virtual capset renderer, or native chip identity string, NUL-padded.
     pub renderer: [u8; 64],
     /// Why the device is not admitted, NUL-padded; empty when it is.
     pub reason: [u8; 64],
     pub scanouts: [ScanoutInfo; 16],
+}
+
+impl Caps {
+    /// Native capability provenance, or UNPROBED for a non-native/unknown id.
+    /// Unknown origin codes 5..7 are invalid on the wire, not evidence of support.
+    pub const fn capability_origin(&self, id: u32) -> u32 {
+        if self.backend != backend::GK208 || id == 0 || id > capability::LAST {
+            return capability_origin::UNPROBED;
+        }
+        let packed = self.capability_origins[0] as u64
+            | ((self.capability_origins[1] as u64) << 32);
+        ((packed >> ((id - 1) * 3)) & 7) as u32
+    }
 }
 
 /// `CONTEXT_CREATE` (32 bytes).
@@ -486,7 +581,7 @@ pub struct Wait {
     pub timeout_ns: u64,
     /// Out: the fence's [`fence_status`] once it has completed.
     pub status: u32,
-    /// Out: the device's answer for a `DEVICE_ERROR` (its response type).
+    /// Out: the virtual response type or tagged native fault for a `DEVICE_ERROR`.
     pub answer: u32,
     pub reserved: [u64; 2],
 }
@@ -671,6 +766,8 @@ pub mod record {
     pub const CANONICAL_R8: u32 = 1;
     /// Boundary code 4: the host renderer and window are outside the guest's view.
     pub const BOUNDARY_HOST: u32 = 4;
+    /// Boundary 5: native device memory and display status; external light is unobserved.
+    pub const BOUNDARY_NATIVE: u32 = 5;
 }
 
 /// Test-control points the effort owns (`docs/gui/gpu.md` section 1.8), with the ops of
@@ -775,6 +872,7 @@ const _: () = {
     assert!(core::mem::size_of::<Caps>() == 512);
     assert!(core::mem::offset_of!(Caps, formats) == 68);
     assert!(core::mem::offset_of!(Caps, profile) == 92);
+    assert!(core::mem::offset_of!(Caps, capability_origins) == 120);
     assert!(core::mem::offset_of!(Caps, renderer) == 128);
     assert!(core::mem::offset_of!(Caps, reason) == 192);
     assert!(core::mem::offset_of!(Caps, scanouts) == 256);

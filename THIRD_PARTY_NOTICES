@@ -1031,7 +1031,8 @@ Breenix-owned; no additional external implementation is imported.
 
 ## Native GPU ABI contract (M8.1 unit 1)
 
-`libs/gpu-abi/tests/gk208_contract.rs` derives class/method constants and
+`libs/gpu-abi/src/lib.rs`, `libs/gpu-abi/tests/gk208_contract.rs`,
+`docs/gui/gpu.md` and `docs/gui/gpu-abi.md` derive class/method constants and
 fault/limit expectations from the following individually checked MIT files.
 The consumer's header retains their copyright and full MIT grant.
 
