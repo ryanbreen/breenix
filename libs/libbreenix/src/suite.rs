@@ -1020,6 +1020,13 @@ impl Suite {
                 }
                 match &outcome { Outcome::Pass { .. } => counts.passed += 1, Outcome::Fail { .. } => counts.failed += 1, Outcome::Skip { .. } => counts.skipped += 1 }
                 emit(&line);
+                // GPU tiles consume only status. Serial already owns the reason;
+                // keep its allocation only for a current or deferred text panel.
+                if !self.gui && screen.fb.is_none() && !self.defer_display {
+                    if let Outcome::Fail { msg, .. } | Outcome::Skip { msg } = &mut outcome {
+                        *msg = String::new();
+                    }
+                }
                 states[c][k] = State::Done(outcome);
                 done += 1;
                 if place.is_some() { sequence::progress_after(done); }
