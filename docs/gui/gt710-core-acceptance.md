@@ -111,29 +111,38 @@ class profile and control encoder against controlled engine words; it also
 checks upload joining and rejects changed bytes and a changed core digest.
 These host checks do not supply device execution evidence. The later acceptance
 unit boots and scores the native core category and the existing 7.4/7.5 records,
-with the console's 330 s bound and a separately timed GPU-suite boot.
+with the console's 330 s bound.
 
 ## Host scorer and companion boot (8.1 u8)
 
 The host-run `core` category has `row`, `dispatch` and `producer`; its metal
-milestone is `metal-gt710/gpu-core`. Run the scorer after the three acceptance
-boots, with matching kernel and tool commits:
+milestone is `metal-gt710/gpu-core`. The coordinator's 2026-10-28 redirect
+requires two final-head boots for 8.1: the production console suite and the
+explicit core diagnostic. Formats arrive in 8.2, so 8.1 does not boot the GPU
+suite again. Score the two captures with:
 
 ```text
-scripts/metal/gt710-suite --boot CONSOLE_BOOT --gpu-boot GPU_BOOT --core-boot CORE_BOOT --sha FULL_COMMIT
+scripts/metal/gt710-suite --boot CONSOLE_BOOT --core-boot CORE_BOOT --sha FULL_COMMIT
 ```
 
-The primary is a completed successful production console-suite boot. Its retained
-handoff and final-marker events must be at most 330 seconds apart. The
-GPU companion is a distinct completed production `--suite gpu` boot. Its original run,
-commit, cleanliness, exit, event and serial files are copied under the
-primary capture's `core-producer/` directory, then rescored from those files.
-A third, successful probe-mode boot explicitly requests `--gt710-category core`;
-its authenticated upload and capture files are retained under `core-diagnostic/`.
-Only this boot builds `gt710_core_probe` and supplies row/dispatch evidence.
-No persistent session is used. The acceptance lane deploys the branch tools
-under the shared lock before the boots and restores main's tools afterward.
-This unit does not boot or deploy.
+The primary must exit 0 with console 88/88 and authenticated first-CAPS startup
+evidence. Its retained handoff and final-marker events must be at most 330 seconds
+apart. The separate successful probe-mode boot explicitly requests
+`--gt710-category core`; its authenticated upload and original capture files
+are retained under `core-diagnostic/`. Only that boot builds `gt710_core_probe`
+and supplies row/dispatch evidence. Both captures must bind their commit file,
+verified `build.commit` and `toolsCommit` to the requested full commit, with
+clean source, the required profiles and no gaps or fatal events.
+
+The scorer retains `acceptance.json` beside the console capture. It records each
+boot ID, exit status, kernel/build/tools identity, profile and serial/bulk hashes;
+the console handoff-to-done duration and startup masked maximum; named core
+row/dispatch/producer and masked-capability results; and measured aggregates.
+The masked-capability result requires the dispatch check, including the refused
+A0B5 request and immediate clean successor. PROBE 17/17 alone is not that check.
+
+No persistent session is used. The acceptance lane deploys branch tools under the
+shared lock before the boots and restores main's tools afterward.
 
 `row` checks the complete 512-byte CAPS record: backend 6, the created
 927D/A06F/A0B5/A197 classes, native origins, limits, live geometry and reserved
@@ -186,16 +195,20 @@ them. A sequence's later suite finds no pending rows after the earlier upload
 unless a producer has added evidence. The GPU companion retains its bulk file;
 scoring authenticates its startup row as well as the console's.
 
-`producer` requires START, the shared manifest's 170 CASE identities in order,
-DONE with 170 failures and no skips, `SUITE gpu ELAPSED ms=N`, and READY.
-Each case's sole failure must name CAPS status 2 and `missing b8g8r8a8-render`.
-NO_DEVICE and other startup or admission failures are rejected.
-Panic, stalls, other failure reasons, incomplete capture, changed commits,
-console gaps, missing or inconsistent memory records and elapsed time above
-900 seconds fail. Exit status 1 is expected for these admission refusals;
-it is accepted only with that complete evidence. This host milestone is
-integration evidence, not a passing GPU suite. Later milestones retain the
-unchanged 170-pass GPU gate, pixels and bounds.
+`producer` on the two-boot path checks the completed shared console manifest,
+including 88/88 passed cases, 0/88 skips and the ordinary memory rule, plus the
+authenticated ready startup row and diagnostic backend-6 CAPS snapshot. Startup
+failure, a maximum above 500 µs, dirty or mismatched builds/tools, a nonzero exit,
+gaps or missing captures fail acceptance.
+
+For retained historical captures supplied with `--gpu-boot`, the existing GPU
+producer check still requires START, the shared manifest's 170 CASE identities
+in order, DONE with 170 failures and no skips, elapsed time and READY. Each
+case's sole failure must name CAPS status 2 and `missing b8g8r8a8-render`;
+NO_DEVICE and other admission failures fail. The memory and 900-second rules
+remain in that historical scorer. This does not direct another GPU boot for 8.1.
+The milestone 8 rendering gate remains 170 passing cases with its shared pixels
+and existing bounds.
 
 <!-- claim-lint:ok: the flag names are checked by tests/suite_sequence_test.py. -->
 Use a named `--suite gpu` for this producer boot. The x86-metal `--suite all` aggregate
