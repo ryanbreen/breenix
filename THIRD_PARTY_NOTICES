@@ -853,3 +853,26 @@ permission split in nouveau v6.8 `nvkm/subdev/mmu/vmmgf100.c:249-265,314-316`
 firmware context buffers remain privileged as in GR `gf100.c:383`.
 The read-only fault snapshot in `gr/mod.rs` uses the existing MIT FIFO
 `gf100.c:696-714` source listed above; it does not acknowledge fault records.
+
+## GT 710 A197 diagnostic draw encoder (M7 7.4 unit 3)
+
+Consumers: `kernel/src/gpu/gk208/gr/draw.rs` and
+`tests/gt710_draw_stream_test.rs`. Each consumer retains the original full
+copyright and permission notices. Per-packet source lines are recorded in the
+literal stream test. The external files' license headers were read before use.
+
+- NVIDIA open-gpu-doc at `9fdf5c4062007929d9f4e6cbad9c9771fe61b880`,
+  `classes/3d/cla197.h`, MIT, Copyright (c) 2020 NVIDIA CORPORATION.
+  A197 method addresses, bit fields, vertex formats and report releases.
+- Mesa 24.3.4 at `769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de`,
+  `src/gallium/drivers/nouveau/nvc0/nvc0_screen.c`, MIT,
+  Copyright 2010 Christoph Bumiller. Kepler baseline state and stage selection.
+- Same Mesa revision and directory, `nvc0_state.c`, MIT,
+  Copyright 2010 Christoph Bumiller. Raster, depth, stencil, mask and blend state.
+- Same Mesa revision and directory, `nvc0_vbo.c`, MIT,
+  Copyright 2010 Christoph Bumiller. Vertex fetch layout and draw sequence.
+- Same Mesa revision and directory, `nvc0_surface.c`, MIT,
+  Copyright 2008 Ben Skeggs. Pitch-linear render-target setup.
+
+This adaptation uses the hardware mechanisms from those five files. It does
+not import a Gallium/DRM runtime or change the repository's own license.
