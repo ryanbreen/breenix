@@ -24,7 +24,8 @@ class TrapAckCapture(unittest.TestCase):
         evidence = evidence.replace('super::bulk', 'bulk').replace('super::hex', 'hex').replace('super::hash', 'hash')
         methods = '\n'.join(item(channel, m) for m in [
             '        fn sequence(', '        pub(in crate::gk208::gr) fn draw(',
-            '        pub(in crate::gk208::gr) fn quiesce('])
+            '        pub(in crate::gk208::gr) fn quiesce(',
+            '        fn quiesce_channel('])
         methods = methods.replace('pub(in crate::gk208::gr)', 'pub(crate)').replace('super::super::', 'crate::')
         harness = (ROOT / 'tests/fixtures/gt710_trap_ack_capture.rs').read_text()
         # Use the production MMIO adapter when it exists; the first red tree
