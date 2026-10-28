@@ -1,0 +1,86 @@
+{
+  "files": {
+    "constant-colour-fragment.asm": {
+      "bytes": 326,
+      "sha256": "c74b6408be46fd558099f491898c86f1fed6f9a0ff0af6bd94ff472331bb04fb"
+    },
+    "constant-colour-fragment.bin": {
+      "bytes": 48,
+      "sha256": "c5ca391c763b9497ce69db35477f85d4b6d18a962bce8180f625406af787be2d"
+    },
+    "constant-colour-fragment.json": {
+      "bytes": 320,
+      "sha256": "2673a5579701f023e19d3b3bc0389a27091ba413f4cd79ff9297cf20b75bf1b6"
+    },
+    "constant-colour-fragment.sph": {
+      "bytes": 80,
+      "sha256": "15203e376bb888a2caaca69f60db03c7d328b9b9abfb730b0a7f77689203b542"
+    },
+    "constant-colour-fragment.tgsi": {
+      "bytes": 112,
+      "sha256": "bc094eb11605950227ec1178f6a5615e5200bff622abf9eab83ae20b1fe5d6f3"
+    },
+    "drop-colour-vertex.asm": {
+      "bytes": 649,
+      "sha256": "9454f73623bdb3a9831a2ce03908ec8c247b5f387543812f6fc1777ffc07f04f"
+    },
+    "drop-colour-vertex.bin": {
+      "bytes": 88,
+      "sha256": "3fdc90af1fc05de6e1c291ec17c5b3d27d895ec089843e7df5bcd365d9da006b"
+    },
+    "drop-colour-vertex.json": {
+      "bytes": 355,
+      "sha256": "9d9753b2bc37fd635928533df921af0cef941ee425805121968203fc898a5d67"
+    },
+    "drop-colour-vertex.sph": {
+      "bytes": 80,
+      "sha256": "23f1d91134ed62367d68eb39fa7cf8baabf4388261bca45db28b3f7aba8e45d0"
+    },
+    "drop-colour-vertex.tgsi": {
+      "bytes": 91,
+      "sha256": "a8e11f2f2c29db45af384ff56fcfdcacca1577f9aba85df4833fb4cb57d583d8"
+    }
+  },
+  "host_tool_sha256": {
+    "envydis": "66992d861b30d26b83b14c95ae6fda597fb42580b03886e45be80522bdd314c5",
+    "kepler-compile": "1cb8acc074245b074255d38d442411ba7ac1793157c9277267faa05b1bc286e6"
+  },
+  "recipe_sha256": {
+    "tools/kepler/CMakeLists.txt": "fb2e6903905125e5def401a2c14b9434746f93948f6a26fff44ff89fea956375",
+    "tools/kepler/compile.cpp": "6ba5577b4a37d714517a1187a65ca5c280e863d2d20adb9a352a51b39b612754"
+  },
+  "schema": 1,
+  "source_lock_sha256": "f00b06cfb8f8064ccae0dd93a3eb489f435a81516685d7966cf5a37ada7b459b",
+  "sources": {
+    "envytools": {
+      "archive_sha256": "fed49495308b034c6a72893e3a472d6b98b7eb2ffd0b5738c26014d560b96ccc",
+      "commit": "f102b82381f3f11cee113d16374c87091db039d9",
+      "prefix": "",
+      "url": "https://github.com/envytools/envytools"
+    },
+    "mesa": {
+      "archive_sha256": "196d77632234c282e939d4814770dff9d775c0f176abebbc25a66160eb83b97e",
+      "commit": "769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de",
+      "mirror": "https://github.com/chaotic-cx/mesa-mirror",
+      "prefix": "",
+      "url": "https://gitlab.freedesktop.org/mesa/mesa"
+    },
+    "nouveau": {
+      "commit": "e8f897f4afef0031fe618a8e94127a0934896aba",
+      "prefix": "drivers/gpu/drm/nouveau/nvkm/engine/gr/fuc/",
+      "url": "https://github.com/torvalds/linux"
+    },
+    "nvidia": {
+      "commit": "9fdf5c4062007929d9f4e6cbad9c9771fe61b880",
+      "prefix": "",
+      "url": "https://github.com/NVIDIA/open-gpu-doc"
+    }
+  },
+  "toolchain": {
+    "bison": "3.8.2",
+    "c": "AppleClang 21.0.0.21000334",
+    "cxx": "AppleClang 21.0.0.21000334",
+    "flags": "-O2 -g0 -Werror -fno-fast-math -ffp-contract=off; assertions enabled",
+    "flex": "2.6.4"
+  }
+}
