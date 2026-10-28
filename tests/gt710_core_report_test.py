@@ -100,7 +100,10 @@ def records():
                  outcome='done' if control == 'clean' else ('refused' if masked else 'rejected'))
         result.append(r)
         if masked: sequence -= 1
-    for _ in range(5): add('triangle')
+    for index in range(5):
+        if index: sequence += 6  # two readbacks + four 4 KiB upload chunks
+        add('triangle')
+    sequence += 2  # final triangle's two-poison readback
     for control, after in [('withheld-release','after-withheld'), ('stale-epoch','after-stale'), ('masked-class','after-mask')]:
         add('copy', control); add(after)
     add('copy')
@@ -147,6 +150,20 @@ class CoreReport(unittest.TestCase):
         for offset in [134,215,511]:
             rows=records(); data=caps_bytes(); data[offset]=1; rows[0]['hex']=data.hex()
             with self.subTest(offset=offset), self.assertRaises(ValueError): API['core_row'](self.joined(rows))
+
+    def test_dispatch_requires_the_source_defined_intervening_transfers(self):
+        rows = records()
+        for index in [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
+            for delta in [-1, 1]:
+                changed = [dict(row) for row in rows]
+                row = changed[index]
+                row['caller'] += delta
+                if row['control'] != 'masked-class':
+                    row['sequence'] += delta
+                    row['consumed'] += delta
+                    if row['control'] != 'withheld-release': row['observed_sequence'] += delta
+                with self.subTest(index=index, delta=delta), self.assertRaises(ValueError):
+                    API['core_dispatch'](self.joined(changed))
 
     def test_controls_virtual_answers_and_identity_fail(self):
         changes = [(6,'outcome','done'), (6,'answer',0x60000000), (6,'observed_sequence',11),
