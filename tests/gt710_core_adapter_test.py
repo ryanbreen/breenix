@@ -19,7 +19,7 @@ class CoreAdapter(unittest.TestCase):
             out = Path(directory)
             (out / 'fixture.rs').write_text(fixture)
             subprocess.run(priority + ['rustc', '--edition=2021', '--crate-name', 'gpu_abi', '--crate-type', 'rlib', str(ROOT / 'libs/gpu-abi/src/lib.rs'), '-o', str(out / 'libgpu_abi.rlib')], check=True, cwd=ROOT)
-            subprocess.run(priority + ['rustc', '--edition=2021', '--test', '-Dwarnings', '--cfg', 'feature="testing"', '--extern', f'gpu_abi={out / "libgpu_abi.rlib"}', str(out / 'fixture.rs'), '-o', str(out / 'fixture')], check=True, cwd=ROOT)
+            subprocess.run(priority + ['rustc', '--edition=2021', '--test', '-Dwarnings', '--cfg', 'feature="gt710_core_probe"', '--extern', f'gpu_abi={out / "libgpu_abi.rlib"}', str(out / 'fixture.rs'), '-o', str(out / 'fixture')], check=True, cwd=ROOT)
             result = subprocess.run([str(out / 'fixture'), 'gk208::', '--nocapture', '--test-threads=1'], capture_output=True, text=True, check=True)
             print(result.stdout)
             # Authenticate both the intentionally failing control and clean run blocks.

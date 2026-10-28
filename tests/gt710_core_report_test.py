@@ -231,6 +231,16 @@ class CoreReport(unittest.TestCase):
         with patch.dict(resolve.__globals__,in_build=in_build):
             self.assertEqual(resolve(dict(BUILD_REPO='checkout'),SHA,'gpu'),'gpu')
 
+    def test_native_suite_build_enables_core_evidence_without_testing_startup(self):
+        features = runpy.run_path(str(ROOT/'scripts/metal/metal-run'))['kernel_features']
+        for suites in ['console', 'gpu', 'gt710', 'smoke,console']:
+            self.assertEqual(features('suite', suites, None), ['--features', 'gt710_core_probe'])
+        self.assertEqual(features('tests', None, None), ['--features', 'testing'])
+        self.assertEqual(features('suite', 'smoke', None), [])
+        self.assertEqual(features('default', None, None), [])
+        self.assertEqual(features('suite', 'console', 'xhci-short-read'),
+                         ['--features', 'xhci_fault_inject'])
+
     def test_core_manifest_runner_and_effort_mapping(self):
         manifest=json.loads((ROOT/'docs/suites/gt710.json').read_text()); API['validate_manifest'](manifest)
         category=next(c for c in manifest['categories'] if c['id']=='core')
