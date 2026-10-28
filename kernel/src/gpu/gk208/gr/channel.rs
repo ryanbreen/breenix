@@ -295,6 +295,7 @@ mod native {
         old: [u32; 6],
         old_pbdma: [u32; 4],
         bound: bool,
+        admitted: bool,
         alias: bool,
         quiesced: bool,
         report: Report,
@@ -509,6 +510,7 @@ mod native {
                 old,
                 old_pbdma: [0x13c, 0x10c, 0x14c, 0x12c].map(|o| h.regs.read(b + o)),
                 bound: false,
+                admitted: false,
                 alias: false,
                 quiesced: false,
                 report: Report {
@@ -540,6 +542,7 @@ mod native {
         }
         pub(in crate::gk208::gr) fn activate(&mut self, h: &mut Hardware<'_>) -> Result<(), &'static str> {
             let c = self.report.identity;
+            self.quiesced = false;
             // Track the alias before its first potentially partial write.
             self.alias = true;
             words(
@@ -566,9 +569,14 @@ mod native {
             }
             h.regs.write(0x2254, 0x10000000 | (SLOT >> 12) as u32);
             modeset::bar_flush(h.regs)?;
-            // SAFETY: context pins its mappings before the channel is visible.
-            unsafe {
-                self.context.admit_device()?;
+            if !self.admitted {
+                // SAFETY: context pins its mappings before the channel is visible.
+                unsafe {
+                    self.context.admit_device()?;
+                }
+                // Quiesce leaves FECS's context retained until reset; reactivation
+                // republishes that owner without admitting its mappings again.
+                self.admitted = true;
             }
             h.regs.mask(0x800004, 0xf0000, c.runlist << 16);
             self.bound = true;
@@ -598,6 +606,13 @@ mod native {
             release: bool,
             budget: u64,
         ) -> Result<Observation, &'static str> {
+            let command = commands(TARGET, epoch, nonce, release, sequence)?;
+            self.issue_words(h, sequence, poison, nonce, budget, &command, false)
+        }
+        fn issue_words(
+            &self, h: &mut Hardware<'_>, sequence: u32, poison: u32,
+            nonce: u32, budget: u64, command: &[u32], stop_on_trap: bool,
+        ) -> Result<Observation, &'static str> {
             // SAFETY: this retained WB DMA page is private, and the preceding
             // submission has consumed its stream before the next CPU poison.
             unsafe {
@@ -607,7 +622,6 @@ mod native {
                 ((self.pages.va(0) + 8) as *mut u32).write_volatile(0);
             }
             self.pages.publish();
-            let command = commands(TARGET, epoch, nonce, release, sequence)?;
             let offset = 4096 + u64::from(sequence - 1) * 256;
             words(
                 h.regs,
@@ -636,6 +650,7 @@ mod native {
                 regs: h.regs,
                 total: h.total,
                 sequence,
+                stop_on_trap,
             };
             if budget < BOUND_US {
                 // A cold context restore gets the normal engine bound before
@@ -653,6 +668,32 @@ mod native {
                 return Err("GR stream not consumed; backing retained");
             }
             Ok(sample)
+        }
+        pub(in crate::gk208::gr) fn bind_shaders(
+            &mut self, h: &mut Hardware<'_>, code_address: u64,
+            receipt: &mut super::super::binding::Receipt,
+        ) -> Result<(), &'static str> {
+            use super::super::binding;
+            receipt.before = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
+            let result = (|| {
+                binding::check_traps(receipt.before)?;
+                self.activate(h)?;
+                let epoch = self.report.identity.epoch;
+                let nonce = (epoch as u32 ^ (epoch >> 32) as u32) | 0x20000000;
+                receipt.target = TARGET;
+                receipt.epoch = epoch;
+                receipt.nonce = nonce;
+                let command = binding::commands(code_address, TARGET, epoch, nonce, 5)?;
+                let sample = self.issue_words(h, 5, 85, nonce, BOUND_US, &command, true)?;
+                receipt.observation = Some(sample);
+                if !sample.accepted { return Err("shader binding release not observed"); }
+                Ok(())
+            })();
+            // Read even after a submission error, before quiesce/reset.
+            receipt.after = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
+            binding::check_traps(receipt.after)?;
+            result?;
+            self.quiesce(h.regs, h.total)
         }
         pub(in crate::gk208::gr) fn execute(
             &mut self,
@@ -793,9 +834,14 @@ mod native {
         regs: &'a mut Registers,
         total: u64,
         sequence: u32,
+        stop_on_trap: bool,
     }
     impl Poll for Monitor<'_> {
         fn snapshot(&mut self) -> Result<(u32, u64, bool), &'static str> {
+            if self.stop_on_trap {
+                let words = super::super::binding::TRAP_REGISTERS.map(|a| self.regs.read(a));
+                super::super::binding::check_traps(words)?;
+            }
             let s = self.session;
             s.pages.observe();
             // SAFETY: coherent observation of the owned page's three words.

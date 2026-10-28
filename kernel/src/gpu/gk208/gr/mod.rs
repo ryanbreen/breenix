@@ -80,6 +80,7 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 //! Native PGRAPH startup and golden context construction.
+pub mod binding;
 pub mod channel;
 pub mod context;
 pub mod ctxctl;
@@ -341,7 +342,26 @@ fn probe_inner(
             hardware.reader = Some(super::ce::readback::Reader::new(
                 hardware.regs, hardware.device, hardware.layout, hardware.console, &hardware.backing,
             )?);
-            shaders::exercise_uploads(&mut ShaderUpload { hardware: &mut hardware, buffer: shader_buffer })?;
+            let mut evidence = ShaderEvidence::default();
+            shaders::exercise_uploads(&mut ShaderUpload {
+                hardware: &mut hardware, buffer: shader_buffer, evidence: &mut evidence,
+            })?;
+            // CE owns channel 0 and the USERD alias. Drain it before restoring GR.
+            if let Some(reader) = hardware.reader.as_mut() {
+                reader.quiesce(hardware.regs, hardware.layout)?;
+            }
+            if let Some(reader) = hardware.reader.take() {
+                reader.finish(hardware.regs, hardware.layout)?;
+            }
+            let mut graphics = hardware.graphics.take().ok_or("shader GR channel absent")?;
+            let mut receipt = binding::Receipt {
+                target: 0, epoch: 0, nonce: 0, before: [0; 4], after: [0; 4], observation: None,
+            };
+            let result = graphics.bind_shaders(&mut hardware, shader_buffer.va, &mut receipt);
+            // Keep ownership on trap/timeout so finish drains and resets before freeing.
+            hardware.graphics = Some(graphics);
+            evidence.emit(shader_buffer.va, &receipt, result.as_ref().err().copied())?;
+            result?;
             Some(report)
         } else {
             None
@@ -576,9 +596,44 @@ impl Hardware<'_> {
         Ok(())
     }
 }
+#[derive(Default)]
+struct ShaderEvidence {
+    rows: String,
+    readbacks: Vec<String>,
+}
+impl ShaderEvidence {
+    fn emit(&self, code_address: u64, r: &binding::Receipt, error: Option<&str>) -> Result<(), &'static str> {
+        let assets: Vec<String> = [
+            ("vertex.bin", &include_bytes!("../../../../assets/kepler/diagnostic-triangle-vertex.bin")[..]),
+            ("vertex.sph", &include_bytes!("../../../../assets/kepler/diagnostic-triangle-vertex.sph")[..]),
+            ("vertex.json", &include_bytes!("../../../../assets/kepler/diagnostic-triangle-vertex.json")[..]),
+            ("vertex.asm", &include_bytes!("../../../../assets/kepler/diagnostic-triangle-vertex.asm")[..]),
+            ("fragment.bin", &include_bytes!("../../../../assets/kepler/diagnostic-triangle-fragment.bin")[..]),
+            ("fragment.sph", &include_bytes!("../../../../assets/kepler/diagnostic-triangle-fragment.sph")[..]),
+            ("fragment.json", &include_bytes!("../../../../assets/kepler/diagnostic-triangle-fragment.json")[..]),
+            ("fragment.asm", &include_bytes!("../../../../assets/kepler/diagnostic-triangle-fragment.asm")[..]),
+        ].into_iter().map(|(name, bytes)| format!("\"{}\":\"{}\"", name, super::hash(bytes))).collect();
+        let release = r.observation.as_ref().map(|o| format!(
+            "{{\"target\":{},\"method\":6924,\"operation\":268496912,\"epoch\":{},\"nonce\":{},\"observed\":{},\"observed_epoch\":{},\"consumed\":{},\"accepted\":{},\"elapsed_us\":{}}}",
+            r.target, r.epoch, r.nonce, o.value, o.epoch, o.consumed, o.accepted, o.elapsed_us,
+        )).unwrap_or_else(|| "null".into());
+        let error = error.map(|s| format!("\"{}\"", s)).unwrap_or_else(|| "null".into());
+        let digest = super::hash(self.rows.as_bytes());
+        super::bulk::line(self.rows.trim_end_matches('\n').into())?;
+        crate::serial_println!("GT710_SHADER_BULK {} {}", self.rows.len(), digest);
+        crate::serial_println!(
+            "GT710_SHADER {{\"schema\":1,\"assets\":{{{}}},\"class_id\":41367,\"subchannel\":{},\"code_address\":{},\"segment_bytes\":{},\"offsets\":[{},{}],\"gprs\":[{},{}],\"readbacks\":[{}],\"release\":{},\"trap_registers\":{:?},\"trap_before\":{:?},\"trap_after\":{:?},\"error\":{},\"draw\":\"pending-7.4\"}}",
+            assets.join(","), channel::SUBCHANNEL, code_address, shaders::SEGMENT_SIZE,
+            shaders::VERTEX_OFFSET, shaders::FRAGMENT_OFFSET, shaders::VERTEX_GPRS, shaders::FRAGMENT_GPRS,
+            self.readbacks.join(","), release, binding::TRAP_REGISTERS, r.before, r.after, error,
+        );
+        Ok(())
+    }
+}
 struct ShaderUpload<'a, 'b> {
     hardware: &'a mut Hardware<'b>,
     buffer: context::Buffer,
+    evidence: &'a mut ShaderEvidence,
 }
 impl shaders::UploadIo for ShaderUpload<'_, '_> {
     type Error = &'static str;
@@ -593,14 +648,15 @@ impl shaders::UploadIo for ShaderUpload<'_, '_> {
         let images = self.hardware.reader.as_mut().ok_or("shader CE reader absent")?.image(
             self.hardware.regs, self.hardware.total, self.buffer.va, expected.len())?;
         for (index, image) in images.iter().enumerate() {
-            let mut rows = String::new();
             use core::fmt::Write;
             for (i, chunk) in image.chunks(256).enumerate() {
-                writeln!(rows, "GT710_SHADER_IMAGE {:?} {} {} {}", case, [85, 170][index], i * 256, super::hex(chunk))
+                writeln!(self.evidence.rows, "GT710_SHADER_IMAGE {:?} {} {} {}", case, [85, 170][index], i * 256, super::hex(chunk))
                     .map_err(|_| "shader image formatting")?;
             }
-            super::bulk::line(rows.trim_end_matches('\n').into())?;
-            crate::serial_println!("GT710_SHADER_UPLOAD {:?} {} {} {}", case, [85, 170][index], image.len(), super::hash(image));
+            self.evidence.readbacks.push(format!(
+                "{{\"case\":\"{:?}\",\"poison\":{},\"bytes\":{},\"sha256\":\"{}\"}}",
+                case, [85, 170][index], image.len(), super::hash(image),
+            ));
             if image != expected { return Err("shader CE upload bytes differ"); }
         }
         Ok(())

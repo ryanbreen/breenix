@@ -28,6 +28,32 @@ pub const VERTEX_OFFSET: usize = 0x30;
 pub const FRAGMENT_OFFSET: usize = 0x1b0;
 pub const SEGMENT_SIZE: usize = 0x280;
 
+// Read the committed 7.1 metadata at compile time; no container toolchain runs.
+const fn asset_gprs(json: &str) -> u32 {
+    let bytes = json.as_bytes();
+    let key = b"\"gprs\":";
+    let mut i = 0;
+    while i + key.len() < bytes.len() {
+        let mut j = 0;
+        while j < key.len() && bytes[i + j] == key[j] { j += 1; }
+        if j == key.len() {
+            i += j;
+            while bytes[i] == b' ' { i += 1; }
+            let mut value = 0;
+            while bytes[i] >= b'0' && bytes[i] <= b'9' {
+                value = value * 10 + (bytes[i] - b'0') as u32;
+                i += 1;
+            }
+            assert!(value >= 4 && value <= 255);
+            return value;
+        }
+        i += 1;
+    }
+    panic!("Kepler asset has no gprs field");
+}
+pub const VERTEX_GPRS: u32 = asset_gprs(include_str!("../../../../assets/kepler/diagnostic-triangle-vertex.json"));
+pub const FRAGMENT_GPRS: u32 = asset_gprs(include_str!("../../../../assets/kepler/diagnostic-triangle-fragment.json"));
+
 const VERTEX_HEADER: &[u8; 80] =
     include_bytes!("../../../../assets/kepler/diagnostic-triangle-vertex.sph");
 const VERTEX_CODE: &[u8; 160] =
