@@ -60,13 +60,13 @@ class LiveUnwind(unittest.TestCase):
         draw_end = methods.index('        pub(in crate::gk208::gr) fn execute(', draw_start)
         methods = methods[:draw_start] + methods[draw_end:]
         # Retain the actual issue wrapper/execute/bind/cleanup ordering.
-        methods = methods.replace('super::super::binding', 'binding')
+        methods = methods.replace('super::super::binding', 'binding').replace('super::super::ctxctl', 'ctxctl').replace('super::super::hardware_error', 'hardware_error')
         # Include new cleanup methods automatically; substitute only issue DMA.
         methods = methods.replace('pub(in crate::gk208::gr)', 'pub(crate)')
         session = session.replace('pub(in crate::gk208::gr)', 'pub(crate)')
         start = gr.index('    let generated = context::generate(')
-        if '    let outcome = (||' in gr:
-            start = gr.index('    let outcome = (||')
+        if '    let mut outcome = (||' in gr:
+            start = gr.index('    let mut outcome = (||')
         stop = gr.index('    if layout.allocator.stats() != baseline', start)
         flow = gr[start:stop].replace("super::ce::readback::Reader", "Reader")
         finish = item(gr, '    fn finish(mut self)').replace('super::channel::VmIo', 'VmIo')

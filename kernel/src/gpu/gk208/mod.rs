@@ -351,9 +351,11 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
             gr::interrupt_snapshot(&mut regs,&device,"before");
             let gr_enabled=regs.read(0x200)&0x1000;
             if let Err(error)=gr::probe(&mut regs,&device,&mut layout,&console,&mut evo) {
-                // The probe enabled PGRAPH before it could refuse topology.
-                // Return that enable to its incoming state for the CE owner.
-                regs.mask(0x200,0x1000,gr_enabled);
+                // A refused probe may retain a live channel and pinned backing.
+                // Do not power-cycle its GR state in the outer display owner.
+                if regs.read(0x800000) & 0x80000000 == 0 && regs.read(0x409b00) & 0x80000000 == 0 {
+                    regs.mask(0x200,0x1000,gr_enabled);
+                }
                 crate::serial_println!("GT710_GR_REFUSAL {}",error);
             }
             gr::interrupt_snapshot(&mut regs,&device,"after");

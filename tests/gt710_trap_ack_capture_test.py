@@ -52,6 +52,34 @@ class TrapAckCapture(unittest.TestCase):
                 self.assertEqual(capture['status'][2], 4)
             self.assertEqual(result.returncode, 0, 'production teardown failed its MMIO ordering assertions')
 
+    def test_outer_pmc_restore_preserves_retained_live_context(self):
+        source = (ROOT / 'kernel/src/gpu/gk208/mod.rs').read_text()
+        block = item(source, '            if let Err(error)=gr::probe(')
+        block = block[block.index('{') + 1:block.rindex('}')]
+        harness = r'''
+macro_rules! serial_println {($($arg:tt)*)=>{let _=format!($($arg)*);};}
+pub(crate) use serial_println;
+struct Registers {bind:u32,current:u32,pmc:u32,writes:usize}
+impl Registers {
+    fn read(&self,a:usize)->u32 {match a {0x800000=>self.bind,0x409b00=>self.current,_=>panic!("unexpected read")}}
+    fn mask(&mut self,a:usize,m:u32,v:u32){assert_eq!((a,m),(0x200,0x1000));self.pmc=(self.pmc&!m)|v;self.writes+=1;}
+}
+fn main(){
+    for bind in [0,0x80000300] {for current in [0,0x80123456] {for gr_enabled in [0,0x1000] {
+        let mut regs=Registers{bind,current,pmc:0x21100,writes:0};let error="refused";
+        BLOCK
+        if bind!=0||current!=0 {assert_eq!(regs.writes,0);assert_eq!(regs.pmc,0x21100);}
+        else {assert_eq!(regs.writes,1);assert_eq!(regs.pmc,(0x21100&!0x1000)|gr_enabled);}
+    }}}
+}
+'''.replace('BLOCK', block)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / 'restore.rs').write_text(harness)
+            priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
+            subprocess.run(priority + ['rustc', '--edition=2021', '-Dwarnings', str(path / 'restore.rs'), '-o', str(path / 'restore')], check=True)
+            subprocess.run([str(path / 'restore')], check=True)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -925,3 +925,14 @@ revision, MIT, Copyright (c) 2019 NVIDIA CORPORATION. Its notice remains
 in `gr/channel.rs` and `copy.rs`. Both source headers were rechecked for
 this step. Breenix supplies retained allocation ownership, staging,
 complementary snapshots, compressed rows and error-safe console return.
+
+## GK208B draw trap capture and acknowledgement (E23 M7 PR 7.4)
+
+`kernel/src/gpu/gk208/gr/binding.rs` adapts nouveau v6.8
+`nvkm/engine/gr/gf100.c:1235-1696` (MIT, Copyright 2012 Red Hat Inc.)
+for child-before-summary trap acknowledgement and FIFO resume, and
+`nvkm/engine/gr/gf100.h:41-45` (MIT, Copyright 2010 Red Hat Inc.)
+for GPC/TPC/ROP register addressing. Both file headers were read at
+`e8f897f4afef0031fe618a8e94127a0934896aba`; their copyright notices and
+permission grants remain in the adapted file. Breenix supplies the first
+capture, draw record, bounded preempt/reset fallback and ownership policy.

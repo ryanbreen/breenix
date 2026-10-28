@@ -81,6 +81,9 @@ fn run(trap:bool,stuck:bool,reset_fails:bool){
     assert!(pos(0x400100,0x100000)<pos(0x400500,0x10001));
     if trap {assert!(pos(0x400100,0x100000)<pos(0x404000,0xc0000000));assert!(pos(0x404000,0xc0000000)<pos(0x400108,1));assert!(pos(0x400108,1)<pos(0x400100,0x200000));}
     assert!(pos(0x400500,0x10001)<pos(0x2634,0));
+    if !stuck {
+        assert!(!log.iter().any(|&(a,v)|a==0x200&&v&0x1000==0),"acknowledged FECS preempt needed a reset");
+    }
     if reset_fails {
         assert!(result.is_err());
         // A failed reset may not free a live channel, but runlist removal,

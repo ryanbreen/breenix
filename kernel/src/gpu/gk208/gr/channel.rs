@@ -1007,55 +1007,59 @@ mod native {
             }
             Ok(())
         }
-        /// Leave FIFO and BAR1 safe before PGRAPH reset, including partial activation.
-        /// Failed waits retain the channel and its pinned backing for recovery.
+        /// Drain FIFO, with a GR reset fallback if FECS cannot finish preempt.
+        /// Cleanup errors retain backing, but do not skip unbind/restoration.
         pub(in crate::gk208::gr) fn quiesce(
             &mut self,
             regs: &mut Registers,
             total: u64,
         ) -> Result<(), &'static str> {
-            if self.quiesced {
-                return Ok(());
-            }
+            if self.quiesced { return Ok(()); }
             let c = self.report.identity;
+            let mut failure = None;
+            let mut gr_enable = None;
             if self.bound {
                 regs.mask(0x2630, 1 << c.runlist, 1 << c.runlist);
                 regs.mask(0x800004, 0x800, 0x800);
                 regs.write(0x2634, c.id);
-                register_wait(regs, 0x2634, 0x100000, 0, BOUND_US)?;
-                regs
-                    .write(0x2270, ((self.commands.range.start + RUNLIST) >> 12) as u32);
+                if register_wait(regs, 0x2634, 0x100000, 0, BOUND_US).is_err() {
+                    // The trap was captured/acknowledged by the suite thread.
+                    // A stuck FECS save must not strand the FIFO owner forever.
+                    gr_enable = Some(regs.read(0x200) & 0x1000);
+                    if let Err(error) = super::super::ctxctl::reset(regs).map_err(super::super::hardware_error) {
+                        failure = Some(error);
+                    }
+                }
+                regs.write(0x2270, ((self.commands.range.start + RUNLIST) >> 12) as u32);
                 regs.write(0x2274, c.runlist << 20);
-                register_wait(
-                    regs,
-                    0x2284 + c.runlist as usize * 8,
-                    0x100000,
-                    0,
-                    BOUND_US,
-                )?;
-                register_wait(regs, 0x3080 + self.pbdma * 4, 0xe000, 0, BOUND_US)?;
-                register_wait(
-                    regs,
-                    0x2640 + c.engine as usize * 8,
-                    0x80000000,
-                    0,
-                    100000,
-                )?;
+                for (address, mask, budget) in [
+                    (0x2284 + c.runlist as usize * 8, 0x100000, BOUND_US),
+                    (0x3080 + self.pbdma * 4, 0xe000, BOUND_US),
+                    (0x2640 + c.engine as usize * 8, 0x80000000, 100000),
+                ] {
+                    if let Err(error) = register_wait(regs, address, mask, 0, budget) {
+                        failure.get_or_insert(error);
+                    }
+                }
                 if let Some(copy) = &self.copy {
-                    register_wait(regs, 0x2640 + copy.engine as usize * 8, 0x80000000, 0, 100000)?;
+                    if let Err(error) = register_wait(regs, 0x2640 + copy.engine as usize * 8, 0x80000000, 0, 100000) {
+                        failure.get_or_insert(error);
+                    }
                 }
                 regs.write(0x800000, 0);
                 self.report.binding = regs.read(0x800000);
                 self.report.runlist_count = regs.read(0x2274) & 0xfffff;
                 if self.report.binding != 0 {
-                    return Err("GR unbind failed; backing retained");
+                    failure.get_or_insert("GR unbind failed; backing retained");
+                } else {
+                    self.bound = false;
                 }
-                self.bound = false;
             }
             if self.alias {
-                words(regs, total, self.pte, &[0, 0])?;
-                modeset::activate_bar1(regs, self.bar_inst, self.bar_dir)?;
-                self.alias = false;
+                let clear = words(regs, total, self.pte, &[0, 0])
+                    .and_then(|()| modeset::activate_bar1(regs, self.bar_inst, self.bar_dir));
+                if let Err(error) = clear { failure.get_or_insert(error); }
+                else { self.alias = false; }
             }
             let b = 0x40000 + self.pbdma * 0x2000;
             for (offset, value) in [0x13c, 0x10c, 0x14c, 0x12c].into_iter().zip(self.old_pbdma) {
@@ -1067,10 +1071,12 @@ mod native {
             regs.mask(0x2630, 1 << c.runlist, self.old[3] & (1 << c.runlist));
             regs.write(0x800004, self.old[4]);
             regs.mask(0x200, 0x100, self.old[5] & 0x100);
+            if let Some(enable) = gr_enable { regs.mask(0x200, 0x1000, enable); }
             if let Some(copy) = &self.copy {
                 regs.write(copy.base + 0x904, copy.old_irq);
                 regs.mask(0x200, 1 << copy.reset, copy.old_enable);
             }
+            if let Some(error) = failure { return Err(error); }
             self.quiesced = true;
             Ok(())
         }

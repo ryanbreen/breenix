@@ -22,6 +22,7 @@ mod draw {
     pub struct Draw { pub target_va:u64,pub pitch:u32,pub width:u32,pub height:u32,pub vertex_va:u64,pub vertex_program:u32,pub fragment_program:u32,pub report_va:u64,pub epoch:u64,pub nonce:u32 }
 }
 mod binding {
+    // TRAP_CAPTURE
     pub const TRAP_REGISTERS:[usize;4]=[0x400100,0x400108,0x400110,0x400118];
     pub struct Receipt {pub target:u64,pub epoch:u64,pub nonce:u32,pub before:[u32;4],pub after:[u32;4],pub observation:Option<super::channel::Observation>}
 }

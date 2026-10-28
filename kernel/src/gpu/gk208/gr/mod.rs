@@ -118,6 +118,11 @@ pub fn probe_static_inputs() -> Result<(), &'static str> {
 use super::{memory, Registers};
 use alloc::{format, string::String, vec::Vec};
 
+impl binding::TrapIo for Registers {
+    fn read(&mut self, address: usize) -> u32 { Registers::read(self, address) }
+    fn write(&mut self, address: usize, value: u32) { Registers::write(self, address, value); }
+}
+
 impl ctxctl::Access for Registers {
     fn read(&mut self, address: u32) -> u32 {
         Registers::read(self, address as usize)
@@ -327,7 +332,7 @@ fn probe_inner(
     };
     // From here, only Hardware::finish can certify that reset is safe.
     cleanup.fifo_quiesced = false;
-    let outcome = (|| {
+    let mut outcome = (|| {
         let shader_buffer = context::Io::allocate(&mut hardware, context::Spec {
             name: "shader-segment", bytes: shaders::SEGMENT_SIZE as u64, align: 4096,
         }).map_err(|e| e.reason)?;
@@ -380,6 +385,13 @@ fn probe_inner(
             let draw_result = draw_probe(&mut hardware, &mut graphics, shader_buffer.va, &mut draw_evidence);
             let draw_result = draw_result.and_then(|()|
                 present_probe(&mut hardware, &mut graphics, evo, &mut draw_evidence));
+            draw_evidence.trap_capture = binding::capture_trap(hardware.regs);
+            if let Some(capture) = &draw_evidence.trap_capture {
+                binding::acknowledge_trap(hardware.regs, capture);
+            }
+            let draw_result = if draw_evidence.trap_capture.is_some() {
+                draw_result.and(Err("draw PGRAPH trap/exception"))
+            } else { draw_result };
             hardware.graphics = Some(graphics);
             let draw_emit = draw_evidence.emit(draw_result.as_ref().err().copied());
             draw_result?;
@@ -399,6 +411,14 @@ fn probe_inner(
         let firmware_hashes = hardware.controller.readback_sha256;
         Ok::<_, &'static str>((generated, graphics, artifact, runnable_bytes, firmware_hashes))
     })();
+    // Earlier shader/context refusals also need a first capture before reset.
+    if let Some(capture) = binding::capture_trap(hardware.regs) {
+        binding::acknowledge_trap(hardware.regs, &capture);
+        let evidence = DrawEvidence { trap_capture: Some(capture), ..DrawEvidence::default() };
+        let error = outcome.as_ref().err().copied().unwrap_or("GR PGRAPH trap/exception");
+        let _ = evidence.emit(Some(error));
+        outcome = Err(error);
+    }
     // Run on closure errors too; the outer reset requires confirmed FIFO unwind.
     if let Err(error) = hardware.finish() {
         // Keep the failing FIFO words while GR is still accessible. The outer
@@ -794,6 +814,7 @@ fn present_probe(
 #[derive(Default)]
 struct DrawEvidence {
     draws: Vec<DrawCapture>,
+    trap_capture: Option<binding::TrapCapture>,
     target: Option<u64>,
     present_rows: String,
     present_readbacks: Vec<String>,
@@ -846,10 +867,13 @@ impl DrawEvidence {
             super::bulk::line(rows.trim_end_matches('\n').into())?;
             crate::serial_println!("GT710_DRAW_BULK {} {}", rows.len(), digest);
         }
+        let trap_capture = self.trap_capture.as_ref().map(|c| format!(
+            "{{\"registers\":{:?},\"values\":{:?},\"status\":{:?}}}", c.registers, c.values, c.status))
+            .unwrap_or_else(|| "null".into());
         let error = error.map(|e| format!("{:?}", e)).unwrap_or_else(|| "null".into());
         crate::serial_println!(
-            "GT710_DRAW {{\"schema\":1,\"class_id\":41367,\"readbacks\":[{}],\"releases\":[{}],\"trap_registers\":{:?},\"trap_before\":{:?},\"trap_after\":{:?},\"error\":{}}}",
-            readbacks.join(","), releases.join(","), binding::TRAP_REGISTERS, before, after, error);
+            "GT710_DRAW {{\"schema\":1,\"class_id\":41367,\"readbacks\":[{}],\"releases\":[{}],\"trap_registers\":{:?},\"trap_before\":{:?},\"trap_after\":{:?},\"trap_capture\":{},\"error\":{}}}",
+            readbacks.join(","), releases.join(","), binding::TRAP_REGISTERS, before, after, trap_capture, error);
         Ok(())
     }
 }

@@ -88,7 +88,15 @@ mod ctxctl {
         pub fn restore(&self, _: &mut Registers) -> Result<(), &'static str> { Ok(()) }
     }
     pub fn reset(r: &mut Registers) -> Result<(), &'static str> {
-        assert!(r.restored(), "reset under live or unrestored FIFO: {:x?}, VRAM={:x?}", r.values, r.vram);
+        if r.read(0x800000) != 0 {
+            // This unit explicitly permits reset after bounded FECS preempt.
+            assert!(r.stuck || INJECT.with(|i|i.borrow().target=="wait-2634-1"));
+            assert_ne!(r.read(0x2630)&2,0,"runlist not disabled before fallback");
+            assert_ne!(r.read(0x800004)&0x800,0,"channel not disabled before fallback");
+            r.stuck=false;
+        } else {
+            assert!(r.restored(), "reset under unrestored FIFO: {:x?}, VRAM={:x?}", r.values, r.vram);
+        }
         INJECT.with(|i| i.borrow_mut().resets+=1); Ok(())
     }
 }
@@ -131,6 +139,10 @@ impl ShaderEvidence {
 }
 struct ShaderUpload<'a,'b>{hardware:&'a mut Hardware<'b>,buffer:context::Buffer,evidence:&'a mut ShaderEvidence}
 mod binding {
+    pub struct TrapCapture;
+    pub fn capture_trap(_: &mut super::Registers)->Option<TrapCapture>{None}
+    pub fn acknowledge_trap(_: &mut super::Registers,_:&TrapCapture){}
+
     pub const TRAP_REGISTERS:[usize;4]=[0x400100,0x400108,0x400110,0x400118];
     pub fn check_traps(w:[u32;4])->Result<(),&'static str>{if w==[0;4] {Ok(())} else {Err("trap")}}
     pub fn commands(_:u64,_:u64,_:u64,_:u32,_:u32)->Result<Vec<u32>,&'static str>{Ok(vec![])}
@@ -147,8 +159,8 @@ impl Hardware<'_> {
     fn emit_images(&mut self) -> Result<(usize, usize), &'static str> { Ok((0,0)) }
     // FINISH
 }
-#[derive(Default)] struct DrawEvidence;
-impl DrawEvidence { fn emit(&self,_:Option<&str>)->Result<(),&'static str>{Ok(())} }
+#[derive(Default)] struct DrawEvidence {trap_capture:Option<binding::TrapCapture>}
+impl DrawEvidence { fn emit(&self,_:Option<&str>)->Result<(),&'static str>{let _=&self.trap_capture;Ok(())} }
 fn present_probe(_: &mut Hardware<'_>,_: &mut channel::Session,_:(),_:&mut DrawEvidence)->Result<(),&'static str>{Ok(())}
 fn draw_probe(_: &mut Hardware<'_>,_: &mut channel::Session,_:u64,_:&mut DrawEvidence)->Result<(),&'static str>{step("draw-probe")}
 mod channel {
@@ -200,7 +212,7 @@ fn live_errors_restore_fifo_alias_and_binding_before_reset() {
         INJECT.with(|i|*i.borrow_mut()=Injection{target:target.into(),..Injection::default()});
         let mut regs=Registers::new();
         let result=run(&mut regs,false);
-        assert!(result.is_err(),"not rejected: {target}");
+        assert_eq!(result.is_ok(),target=="wait-2634-1","wrong recovery result: {target}");
         INJECT.with(|i|assert!(i.borrow().reached,"not reached: {target}"));
         assert!(regs.restored(),"{target}: FIFO={:x?}, VRAM={:x?}",regs.values,regs.vram);
         INJECT.with(|i|assert!(i.borrow().resets>0,"no reset after safe unwind: {target}"));
@@ -217,13 +229,13 @@ fn rejected_channel_receipts_prevent_shader_submission() {
     }
 }
 #[test]
-fn clean_channel_restores_before_reset_and_failed_drain_forbids_reset() {
+fn clean_channel_restores_and_stuck_preempt_resets_before_reclaim() {
     INJECT.with(|i|*i.borrow_mut()=Injection::default());
     let mut regs=Registers::new(); assert!(run(&mut regs,false).is_ok()); assert!(regs.restored());
     INJECT.with(|i|*i.borrow_mut()=Injection{target:"issue-1".into(),..Injection::default()});
-    let mut regs=Registers::new(); assert_eq!(run(&mut regs,true),Err("stuck preempt"));
-    INJECT.with(|i| { let i=i.borrow();assert_eq!(i.resets,0);assert_eq!(i.releases,0); });
-    assert_ne!(regs.read(0x800000),0);
+    let mut regs=Registers::new(); assert_eq!(run(&mut regs,true),Err("injected"));
+    INJECT.with(|i| { let i=i.borrow();assert!(i.resets>0);assert!(i.releases>0); });
+    assert!(regs.restored());
 }
 mod ce {
     use super::*;

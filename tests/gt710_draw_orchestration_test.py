@@ -25,6 +25,7 @@ class DrawOrchestration(unittest.TestCase):
         for old, new in [('super::bulk', 'bulk'), ('super::hash', 'hash'), ('super::hex', 'hex')]:
             evidence = evidence.replace(old, new)
         fixture = (ROOT / 'tests/fixtures/gt710_draw_orchestration.rs').read_text()
+        fixture = fixture.replace('// TRAP_CAPTURE', item((ROOT / 'kernel/src/gpu/gk208/gr/binding.rs').read_text(), 'pub struct TrapCapture'))
         fixture = fixture.replace('// FLOW', flow).replace('// EVIDENCE', evidence).replace('// FINISH', finish)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
