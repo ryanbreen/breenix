@@ -17,6 +17,16 @@ m = existing.m
 
 
 class IdleTest(existing.StateTest):
+    def test_resting_requires_explicit_site_opt_in(self):
+        self.ready()
+        metal_persist.update_disk(layout=metal_persist.new_layout())
+        with patch.object(m, 'power_state', return_value='Off'), \
+             patch.object(existing.machine.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as start:
+            existing.machine.Machine({}).rest()
+            start.assert_not_called()
+            existing.machine.Machine({'BREENIX_METAL_RESTING': 'on'}).rest()
+            self.assertEqual(start.call_count, 1)
+
     def test_restoring_other_tools_disables_the_loaded_branch_policy(self):
         self.ready()
         metal_persist.update_disk(layout=metal_persist.new_layout())
