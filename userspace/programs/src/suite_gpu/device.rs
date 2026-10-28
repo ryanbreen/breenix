@@ -23,7 +23,8 @@ pub fn feature_negotiated() -> CaseResult {
         abi::backend::SVGA3D_DX => {
             ensure(c.features & abi::feature::DX_CONTEXT != 0, || format!("SVGA3D DX backend without the DX-context entry: features {:#x}", c.features))
         }
-        b => Err(fail_msg(format!("CAPS names backend {b}, neither 4 (VirGL) nor 5 (SVGA3D DX)"))),
+        abi::backend::GK208 => ensure(breenix_suite::suite_gpu_backend::native_classes(c.backend, c.features, &c.capset_ids[..c.capset_count.min(8) as usize]), || "native classes missing".to_string()),
+        b => Err(fail_msg(format!("CAPS names unknown backend {b}"))),
     }
 }
 
@@ -41,7 +42,10 @@ pub fn caps_parsed() -> CaseResult {
         // VirtIO 1.3 section 5.7.6.7: capability set 1 is VIRGL, 2 is VIRGL2.
         ensure(c.capset_id == 1 || c.capset_id == 2, || format!("the VirGL profile came from capability set {}", c.capset_id))?;
     }
-    ensure(c.capset_version >= 1, || format!("capability set version {}", c.capset_version))?;
+    if c.backend == abi::backend::GK208 {
+        ensure(c.capset_id == 0xa197, || format!("native graphics class {:#x}", c.capset_id))?;
+    }
+    ensure(if c.backend == abi::backend::GK208 { c.capset_version == 0 } else { c.capset_version >= 1 }, || format!("capability set version {}", c.capset_version))?;
     value("capability-sets", n as i64, "", Some((1, 8)));
     pass()
 }
@@ -64,7 +68,7 @@ pub fn profile_integer_ops() -> CaseResult {
     let c = caps()?;
     let need = abi::profile::INTEGER_OPS | abi::profile::TEXEL_FETCH | abi::profile::REGION_COPY;
     ensure(c.profile & need == need, || format!("profile bits {:#x}: integer ops, texel fetch and region copies need {need:#x}", c.profile))?;
-    ensure(c.shading_level > 0, || "the device reports no shading-language level".to_string())?;
+    ensure(if c.backend == abi::backend::GK208 { c.shading_level == 0 } else { c.shading_level > 0 }, || "invalid shading-language level".to_string())?;
     value("shading-level", c.shading_level as i64, "", None);
     pass()
 }
@@ -84,10 +88,12 @@ pub fn profile_record() -> CaseResult {
     ensure(u32_at(&b, 0) == 1, || format!("record version {}", u32_at(&b, 0)))?;
     ensure(u32_at(&b, 4) == 512, || format!("record size {}", u32_at(&b, 4)))?;
     ensure(u32_at(&b, 8) == abi::status::ADMITTED && u32_at(&b, 12) == 0, || "status and missing are not 0 for an admitted device".to_string())?;
-    ensure(matches!(u32_at(&b, 16), 4 | 5), || format!("backend at offset 16 is {}", u32_at(&b, 16)))?;
+    ensure(matches!(u32_at(&b, 16), 4 | 5 | 6), || format!("backend at offset 16 is {}", u32_at(&b, 16)))?;
     ensure(u32_at(&b, 108) == 1, || format!("catalogue version {}", u32_at(&b, 108)))?;
     ensure(u32_at(&b, 112) & 1 << pipeline::SOLID != 0, || "the pipeline mask lacks solid".to_string())?;
-    ensure(b[120..128].iter().all(|&x| x == 0), || "reserved bytes 120 to 127 are not zero".to_string())?;
+    ensure(if c.backend == abi::backend::GK208 {
+        u32_at(&b, 124) & !1 == 0 && (1..=abi::capability::LAST).all(|id| c.capability_origin(id) <= abi::capability_origin::EXECUTABLE_PROBE)
+    } else { b[120..128].iter().all(|&x| x == 0) }, || "invalid capability origins or reserved bytes".to_string())?;
     ensure(b[192..256].iter().all(|&x| x == 0), || "the reason is not empty for an admitted device".to_string())?;
     let renderer = &b[128..192];
     if let Some(nul) = renderer.iter().position(|&x| x == 0) {
@@ -203,6 +209,7 @@ pub fn backend_named() -> CaseResult {
             ensure(c.features & abi::feature::VIRGL != 0, || "backend 4 (VirGL) without the VirGL feature".to_string())
         }
         abi::backend::SVGA3D_DX => ensure(c.features & abi::feature::DX_CONTEXT != 0, || "backend 5 without the DX-context entry".to_string()),
+        abi::backend::GK208 => ensure(breenix_suite::suite_gpu_backend::native_classes(c.backend, c.features, &c.capset_ids[..c.capset_count.min(8) as usize]), || "native classes missing".to_string()),
         b => Err(fail_msg(format!("CAPS names backend {b}"))),
     }
 }
@@ -222,9 +229,10 @@ pub fn device_error_reported() -> CaseResult {
     let (low, high) = match caps()?.backend {
         abi::backend::VIRGL => (0x1200, 0x12ff),
         abi::backend::SVGA3D_DX => (3, 3), // SVGA_CB_STATUS_COMMAND_ERROR
+        abi::backend::GK208 => (0x60010000, 0x6001000f),
         b => return Err(fail_msg(format!("unknown backend {b}"))),
     };
-    ensure((low..=high).contains(&w.answer), || format!("the device's answer {:#x} is not its backend's error response", w.answer))?;
+    ensure(breenix_suite::suite_gpu_backend::device_error(caps()?.backend, w.answer), || format!("the device's answer {:#x} is not its backend's error response", w.answer))?;
     value("device-answer", w.answer as i64, "", Some((low as i64, high as i64)));
     pass()
 }

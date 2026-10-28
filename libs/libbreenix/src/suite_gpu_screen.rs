@@ -66,7 +66,8 @@ impl GpuScreen {
         graphics::take_over_display().map_err(|e| std::format!("display ownership: {e:?}"))?;
         let (r, p) = gpu::present(self.context, self.target);
         // The device's native success answer (gpu.md section 1.8, ruling 47).
-        let success = if gpu::caps().1.backend == abi::backend::SVGA3D_DX { 1 } else { 0x1100 };
+        let success = crate::suite_gpu_backend::backend_values(gpu::caps().1.backend)
+            .ok_or("unknown GPU backend")?.success;
         if r != 0 || p.answer != success {
             return Err(std::format!("present: errno {}, answer {:#x}", -r, p.answer));
         }

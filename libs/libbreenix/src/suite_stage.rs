@@ -1002,7 +1002,8 @@ impl Gpu {
         graphics::take_over_display().map_err(|e| std::format!("stage display ownership: {e:?}"))?;
         let (r, presented) = gpu::present(self.context, self.scanout[next]);
         // The device's native success answer (gpu.md section 1.8, ruling 47).
-        let success = if gpu::caps().1.backend == gpu::abi::backend::SVGA3D_DX { 1 } else { 0x1100 };
+        let success = crate::suite_gpu_backend::backend_values(gpu::caps().1.backend)
+            .ok_or("unknown GPU backend")?.success;
         if r != 0 || presented.answer != success {
             return Err(std::format!("stage present: errno {}, answer {:#x}", -r, presented.answer));
         }
@@ -1333,6 +1334,7 @@ impl Show {
             target: match self.observation.backend {
                 gpu::abi::backend::VIRGL => "VirGL",
                 gpu::abi::backend::SVGA3D_DX => "SVGA3D DX",
+                gpu::abi::backend::GK208 => "GK208B",
                 _ => "unknown display",
             },
             case_number: self.current + 1,
