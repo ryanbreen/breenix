@@ -19,7 +19,7 @@ class TwoChannels(unittest.TestCase):
         native = source[source.index('mod native {'):]
         methods = '\n'.join(item(native, marker) for marker in [
             'fn new(', 'fn new_channel(', 'fn open_second(', 'fn activate(',
-            'fn activate_channel(', 'fn quiesce(', 'fn quiesce_channel(',
+            'fn activate_regs(', 'fn activate_channel_regs(', 'fn quiesce(', 'fn quiesce_channel(',
             'fn finish(', 'fn finish_channel(',
         ])
         state = item(native, 'pub(in crate::gk208::gr) struct Session')

@@ -355,6 +355,8 @@ pub fn format_record(context_fields: &str, r: &Report) -> String {
 #[cfg(target_os = "none")]
 pub(super) use native::Session;
 #[cfg(target_os = "none")]
+pub(crate) use native::NativeChannel;
+#[cfg(target_os = "none")]
 mod native {
     use super::super::{context::Golden, Hardware};
     use super::*;
@@ -727,40 +729,43 @@ mod native {
             if self.report.identity.id != 0 || self.bound || self.quiesced {
                 return Err("GR runlist owner unavailable");
             }
+            h.device.enable_bus_master();
+            self.activate_regs(h.regs, h.total)
+        }
+        fn activate_regs(&mut self, regs: &mut Registers, total: u64) -> Result<(), &'static str> {
             let c = self.report.identity;
             // One BAR page, two distinct aliases at SLOT + CHID * 0x200.
             self.alias = true;
-            words(h.regs, h.total, self.pte,
+            words(regs, total, self.pte,
                 &[((self.userd >> 8) | 1) as u32, 0])?;
-            modeset::activate_bar1(h.regs, self.bar_inst, self.bar_dir)?;
-            h.device.enable_bus_master();
-            h.regs.write(0x2140, 0);
-            h.regs.mask(0x200, 0x100, 0x100);
-            h.regs.mask(0x204, 1 << self.pbdma, 1 << self.pbdma);
+            modeset::activate_bar1(regs, self.bar_inst, self.bar_dir)?;
+            regs.write(0x2140, 0);
+            regs.mask(0x200, 0x100, 0x100);
+            regs.mask(0x204, 1 << self.pbdma, 1 << self.pbdma);
             let b = 0x40000 + self.pbdma * 0x2000;
-            h.regs.mask(b + 0x13c, 0x10000100, 0);
+            regs.mask(b + 0x13c, 0x10000100, 0);
             for (offset, value) in [(0x108, u32::MAX), (0x10c, 0),
                 (0x148, u32::MAX), (0x14c, 0), (0x12c, 0xf4240)] {
-                h.regs.write(b + offset, value);
+                regs.write(b + offset, value);
             }
-            h.regs.write(0x2254, 0x10000000 | (SLOT >> 12) as u32);
-            h.regs.mask(0x2630, 1 << c.runlist, 1 << c.runlist);
-            self.activate_channel(h)?;
+            regs.write(0x2254, 0x10000000 | (SLOT >> 12) as u32);
+            regs.mask(0x2630, 1 << c.runlist, 1 << c.runlist);
+            self.activate_channel_regs(regs)?;
             let mut entries = alloc::vec![c.id, 0];
             if let Some(second) = self.second.as_mut() {
-                second.activate_channel(h)?;
+                second.activate_channel_regs(regs)?;
                 entries.extend([second.report.identity.id, 0]);
             }
             // MIT FIFO gk104.c:430-456: entries are {CHID, 0}; count
             // belongs to the runlist submission, not to an individual channel.
-            words(h.regs, h.total, self.commands.range.start + RUNLIST, &entries)?;
-            modeset::bar_flush(h.regs)?;
-            h.regs.write(0x2270, ((self.commands.range.start + RUNLIST) >> 12) as u32);
-            h.regs.write(0x2274, (c.runlist << 20) | (entries.len() as u32 / 2));
-            h.regs.mask(0x2630, 1 << c.runlist, 0);
-            register_wait(h.regs, 0x2284 + c.runlist as usize * 8, 0x100000, 0, BOUND_US)
+            words(regs, total, self.commands.range.start + RUNLIST, &entries)?;
+            modeset::bar_flush(regs)?;
+            regs.write(0x2270, ((self.commands.range.start + RUNLIST) >> 12) as u32);
+            regs.write(0x2274, (c.runlist << 20) | (entries.len() as u32 / 2));
+            regs.mask(0x2630, 1 << c.runlist, 0);
+            register_wait(regs, 0x2284 + c.runlist as usize * 8, 0x100000, 0, BOUND_US)
         }
-        fn activate_channel(&mut self, h: &mut Hardware<'_>) -> Result<(), &'static str> {
+        fn activate_channel_regs(&mut self, regs: &mut Registers) -> Result<(), &'static str> {
             let c = self.report.identity;
             self.quiesced = false;
             if !self.admitted {
@@ -769,10 +774,10 @@ mod native {
                 self.admitted = true;
             }
             let ch = c.id as usize * 8;
-            h.regs.mask(0x800004 + ch, 0xf0000, c.runlist << 16);
+            regs.mask(0x800004 + ch, 0xf0000, c.runlist << 16);
             self.bound = true;
-            h.regs.write(0x800000 + ch, 0x80000000 | (c.instance >> 12) as u32);
-            h.regs.mask(0x800004 + ch, 0x400, 0x400);
+            regs.write(0x800000 + ch, 0x80000000 | (c.instance >> 12) as u32);
+            regs.mask(0x800004 + ch, 0x400, 0x400);
             Ok(())
         }
         fn issue(
@@ -801,42 +806,15 @@ mod native {
                 ((self.pages.va(0) + 8) as *mut u32).write_volatile(0);
             }
             self.pages.publish();
-            if !self.bound || self.quiesced || !(1..512).contains(&sequence)
-                || command.is_empty() || command.len() * 4 > 16384 {
-                return Err("GR command slot unavailable");
-            }
-            // One immutable slot, reused only after the preceding stream was
-            // consumed and its engine receipt observed by the caller. A draw
-            // exceeds the old 256-byte stride; keep it beyond USERD/runlist.
-            let offset = 16384;
-            words(
-                h.regs,
-                h.total,
-                self.commands.range.start + offset,
-                &command,
-            )?;
-            words(
-                h.regs,
-                h.total,
-                self.commands.range.start + u64::from(sequence - 1) * 8,
-                &[
-                    (COMMAND + offset) as u32,
-                    ((command.len() as u32) << 10) | 0x100,
-                ],
-            )?;
-            modeset::bar_flush(h.regs)?;
-            // SAFETY: the owned USERD page's WC BAR1 alias is installed above.
-            unsafe {
-                ((self.bar + SLOT as usize + self.report.identity.id as usize * 512 + 0x8c) as *mut u32).write_volatile(sequence);
-            }
-            crate::gpu_cache::drain_wc();
-            let _ = h.regs.read(0x2254);
+            self.publish_words(h.regs, h.total, sequence, command, 16384, 16384)?;
             let mut monitor = Monitor {
                 session: self,
                 regs: h.regs,
                 total: h.total,
                 sequence,
                 stop_on_trap,
+                release_slot: 0,
+                queued_put: None,
             };
             if budget < BOUND_US {
                 // A cold context restore gets the normal engine bound before
@@ -854,6 +832,41 @@ mod native {
                 return Err("GR stream not consumed; backing retained");
             }
             Ok(sample)
+        }
+        fn publish_words(
+            &self, regs: &mut Registers, total: u64, sequence: u32,
+            command: &[u32], offset: u64, capacity: usize,
+        ) -> Result<(), &'static str> {
+            if !self.bound || self.quiesced || sequence == 0
+                || command.is_empty() || command.len() * 4 > capacity {
+                return Err("GR command slot unavailable");
+            }
+            // One immutable slot, reused only after the preceding stream was
+            // consumed and its engine receipt observed by the caller. A draw
+            // exceeds the old 256-byte stride; keep it beyond USERD/runlist.
+            words(
+                regs,
+                total,
+                self.commands.range.start + offset,
+                &command,
+            )?;
+            words(
+                regs,
+                total,
+                self.commands.range.start + u64::from(crate::gk208::queue::Queue::entry(sequence)) * 8,
+                &[
+                    (COMMAND + offset) as u32,
+                    ((command.len() as u32) << 10) | 0x100,
+                ],
+            )?;
+            modeset::bar_flush(regs)?;
+            // SAFETY: the owned USERD page's WC BAR1 alias is installed above.
+            unsafe {
+                ((self.bar + SLOT as usize + self.report.identity.id as usize * 512 + 0x8c) as *mut u32).write_volatile(sequence % 512);
+            }
+            crate::gpu_cache::drain_wc();
+            let _ = regs.read(0x2254);
+            Ok(())
         }
         pub(in crate::gk208::gr) fn bind_shaders(
             &mut self, h: &mut Hardware<'_>, code_address: u64,
@@ -1294,12 +1307,148 @@ mod native {
             Ok(())
         }
     }
+    /// Ownership bridge for the shared device boundary. Retained mappings and
+    /// DMA pages stay in Session across a failed reset or restart.
+    pub(crate) struct NativeChannel {
+        session: Session,
+        registers: usize,
+        total: u64,
+        mmu: [u64; 2],
+        _scratch: ManuallyDrop<[memory::allocator::Pin; 2]>,
+        topology: [[u32; 2]; 3],
+        initial: Vec<u8>,
+        put: u32,
+        confirmed: bool,
+    }
+    impl Session {
+        /// Native initialization hands over a fresh, unbound session after CE2
+        /// preparation. The following initialization unit owns this entrypoint.
+        #[allow(dead_code)] // Public integration API; device installation follows this unit.
+        pub(in crate::gk208::gr) fn into_native(
+            self, registers: usize, total: u64, mmu: [Allocation; 2],
+            allocator: &memory::allocator::Allocator,
+        ) -> Result<NativeChannel, &'static str> {
+            if self.bound || self.second.is_some() || self.copy.is_none() || self.quiesced {
+                return Err("native handoff requires fresh prepared channel");
+            }
+            let mut regs = Registers(registers);
+            let topology = [0x409604, 0x502608, 0x500c30].map(|a| [a, regs.read(a as usize)]);
+            let mut initial = Vec::with_capacity(self.image.range.size as usize);
+            for off in (0..self.image.range.size).step_by(4) {
+                initial.extend(read(&mut regs, total, self.image.range.start + off)?.to_le_bytes());
+            }
+            let scratch = ManuallyDrop::new([allocator.pin(mmu[0])?, allocator.pin(mmu[1])?]);
+            let mut native = NativeChannel { session: self, registers, total,
+                mmu: mmu.map(|a| a.range.start), _scratch: scratch, topology,
+                initial, put: 0, confirmed: false };
+            native.session.activate_regs(&mut regs, total)?;
+            Ok(native)
+        }
+    }
+    impl NativeChannel {
+        pub(crate) fn identity(&self) -> (u64, u64) {
+            let c = self.session.report.identity;
+            (c.instance, c.epoch)
+        }
+        pub(crate) fn healthy(&self) -> bool {
+            let mut monitor = Monitor { session: &self.session,
+                regs: &mut Registers(self.registers), total: self.total,
+                sequence: self.put.max(1), stop_on_trap: true, release_slot: 0,
+                queued_put: Some(self.put) };
+            monitor.snapshot().is_ok()
+        }
+        pub(crate) fn publish(
+            &mut self, sequence: u32, operation: &crate::gk208::adapter::Operation,
+        ) -> Result<(), &'static str> {
+            use crate::gk208::{adapter::Operation, queue::Queue};
+            let s = &self.session;
+            let slot = Queue::slot(sequence);
+            let report_va = TARGET + u64::from(slot) * 16;
+            let mut command = match *operation {
+                Operation::Copy(rect) => crate::gk208::copy::encode(rect, report_va, s.report.identity.epoch, sequence)?,
+                Operation::Draw(mut draw) => {
+                    draw.report_va = report_va;
+                    draw.epoch = s.report.identity.epoch;
+                    draw.nonce = sequence;
+                    super::super::draw::commands(draw)?
+                }
+            };
+            command.extend([0x20010014, sequence]);
+            if command.len() * 4 > 8192 { return Err("native command slot extent"); }
+            // Only this slot is poisoned; the other three may still be live.
+            unsafe { core::ptr::write_bytes((s.pages.va(0) + u64::from(slot) * 16) as *mut u8, 0, 16); }
+            s.pages.publish();
+            self.put = sequence;
+            s.publish_words(&mut Registers(self.registers), self.total, sequence, &command,
+                16384 + u64::from(slot) * 8192, 8192)
+        }
+        pub(crate) fn sample(&mut self, sequence: u32) -> Result<crate::gpu_completion::CeSample, &'static str> {
+            let mut regs = Registers(self.registers);
+            let mut monitor = Monitor { session: &self.session, regs: &mut regs, total: self.total,
+                sequence, stop_on_trap: true, release_slot: crate::gk208::queue::Queue::slot(sequence) as usize,
+                queued_put: Some(self.put) };
+            let (value, epoch, consumed) = monitor.snapshot()?;
+            let bound = regs.read(0x800000 + self.session.report.identity.id as usize * 8);
+            Ok(crate::gpu_completion::CeSample { context: u64::from(bound & 0x0fffffff) << 12,
+                epoch, sequence: value, consumed: if consumed { sequence } else { 0 },
+                healthy: bound & 0x80000000 != 0 })
+        }
+        pub(crate) fn reset(&mut self) -> Result<(), &'static str> {
+            let mut regs = Registers(self.registers);
+            let c = self.session.report.identity;
+            regs.mask(0x2630, 1 << c.runlist, 1 << c.runlist);
+            regs.mask(0x800004 + c.id as usize * 8, 0x800, 0x800);
+            // G9: reset and confirm before runlist removal/unbind/restoration.
+            super::super::ctxctl::reset(&mut regs).map_err(super::super::hardware_error)?;
+            if let Some(copy) = &self.session.copy {
+                crate::gk208::ce::reset_engine(&mut regs, copy.base, copy.reset)?;
+            }
+            self.session.quiesce(&mut regs, self.total)?;
+            if regs.read(0x259c) != 0 { return Err("native reset MMU fault; backing retained"); }
+            self.confirmed = true;
+            Ok(())
+        }
+        pub(crate) fn restart(&mut self) -> Result<(), &'static str> {
+            if !self.confirmed { return Err("native reset unconfirmed; backing retained"); }
+            let epoch = self.session.report.identity.epoch.checked_add(1).ok_or("native epoch exhausted")?;
+            self.confirmed = false;
+            let mut regs = Registers(self.registers);
+            let topology = super::super::topology::decode(&self.topology)?;
+            let mut controller = super::super::ctxctl::Controller::upload(&mut regs, &topology, self.mmu)
+                .map_err(super::super::hardware_error)?;
+            controller.start(&mut regs).map_err(super::super::hardware_error)?;
+            // Restore the original runnable context, not a half-saved image.
+            for (i, w) in self.initial.chunks_exact(4).enumerate() {
+                words(&mut regs, self.total, self.session.image.range.start + i as u64 * 4,
+                    &[u32::from_le_bytes(w.try_into().unwrap())])?;
+            }
+            words(&mut regs, self.total, self.session.userd + 0x88, &[0, 0])?;
+            words(&mut regs, self.total, self.session.report.identity.instance + 0x10, &[0])?;
+            modeset::bar_flush(&mut regs)?;
+            // Only the confirmed reset plus complete FIFO unwind permits this.
+            unsafe { self.session.context.confirm_reset(); }
+            self.session.admitted = false;
+            self.session.quiesced = false;
+            self.session.report.identity.epoch = epoch;
+            if let Some(copy) = &self.session.copy {
+                regs.mask(0x200, 1 << copy.reset, 1 << copy.reset);
+                regs.write(copy.base + 0x904, 0);
+                if regs.read(0x200) & (1 << copy.reset) == 0 { return Err("native CE restart not enabled"); }
+            }
+            self.session.activate_regs(&mut regs, self.total)?;
+            self.put = 0;
+            if !self.healthy() { return Err("native restart fault; backing retained"); }
+            Ok(())
+        }
+    }
     struct Monitor<'a> {
         session: &'a Session,
         regs: &'a mut Registers,
         total: u64,
         sequence: u32,
         stop_on_trap: bool,
+        release_slot: usize,
+        queued_put: Option<u32>,
     }
     impl Poll for Monitor<'_> {
         fn snapshot(&mut self) -> Result<(u32, u64, bool), &'static str> {
@@ -1317,7 +1466,7 @@ mod native {
             s.pages.observe();
             // SAFETY: coherent observation of the owned page's three words.
             let (value, lo, hi) = unsafe {
-                let p = s.pages.va(0) as *const u32;
+                let p = (s.pages.va(0) + self.release_slot as u64 * 16) as *const u32;
                 (
                     p.read_volatile(),
                     p.add(1).read_volatile(),
@@ -1331,9 +1480,14 @@ mod native {
             } else {
                 read(self.regs, self.total, s.userd + 0x88)?
             };
+            let progress = if let Some(put) = self.queued_put {
+                crate::gk208::queue::Queue::consumed(put, get).is_some_and(|n| n >= self.sequence)
+                    && self.regs.read(0x40028 + b) >= self.sequence
+            } else {
+                get == self.sequence && self.regs.read(0x40028 + b) == self.sequence
+            };
             let consumed = current
-                && get == self.sequence
-                && self.regs.read(0x40028 + b) == self.sequence
+                && progress
                 && self.regs.read(0x800000 + s.report.identity.id as usize * 8)
                     == 0x80000000 | (s.report.identity.instance >> 12) as u32;
             Ok((value, u64::from(lo) | (u64::from(hi) << 32), consumed))

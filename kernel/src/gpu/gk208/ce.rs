@@ -712,6 +712,7 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
 
 mod multi;
 mod recovery;
+pub(in crate::gk208) use recovery::reset_engine;
 mod process;
 pub(super) use process::{retain,proc_read};
 

@@ -1053,3 +1053,15 @@ The consumer's header retains their copyright and full MIT grant.
 
 Backend, boundary, feature, status tags and origin packing are Breenix ABI
 allocations; the source class/method/fault numbers retain their native meaning.
+
+## GK208 native completion adapter (M8.1 u4)
+
+`kernel/src/gpu/gk208/adapter.rs` is Breenix-owned dispatch and admission code.
+It calls the existing queue and opaque completion validator. The retained
+native channel in `kernel/src/gpu/gk208/gr/channel.rs` shares its existing
+publisher, receipt sampler and G9 unwind; it reuses the attributed A197/A0B5
+encoders and source-built context controller. The shared reset pulse remains
+in `kernel/src/gpu/gk208/ce/recovery.rs`, with its existing MIT nouveau
+`nvkm/engine/fifo/runl.c` and FIFO/CE notices above. No additional external
+source is imported. Original copyright notices and full MIT grants remain in
+the hardware implementation files. Native asset generation is unchanged.

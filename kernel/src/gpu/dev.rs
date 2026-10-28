@@ -91,7 +91,7 @@ impl Request {
             Request::Virgl(r) => r.tag,
             Request::Svga(r) => r.tag,
             #[cfg(target_arch = "x86_64")]
-            Request::Gk208(r) => match *r {},
+            Request::Gk208(r) => r.tag,
         }
     }
     pub fn set_tag(&mut self, tag: Tag) {
@@ -99,7 +99,7 @@ impl Request {
             Request::Virgl(r) => r.tag = tag,
             Request::Svga(r) => r.tag = tag,
             #[cfg(target_arch = "x86_64")]
-            Request::Gk208(r) => match *r {},
+            Request::Gk208(r) => r.tag = tag,
         }
     }
     pub fn fence(&self) -> Option<u64> {
@@ -107,7 +107,7 @@ impl Request {
             Request::Virgl(r) => r.fence,
             Request::Svga(r) => r.fence,
             #[cfg(target_arch = "x86_64")]
-            Request::Gk208(r) => match *r {},
+            Request::Gk208(r) => r.fence,
         }
     }
     /// Queue slots the request takes: descriptors on VirGL, one command buffer on SVGA3.
@@ -116,7 +116,7 @@ impl Request {
             Request::Virgl(r) => r.segment_count(),
             Request::Svga(_) => 1,
             #[cfg(target_arch = "x86_64")]
-            Request::Gk208(r) => match *r {},
+            Request::Gk208(_) => 1,
         }
     }
     /// An upload of a texture's contents, whose completion the core accounts.
@@ -125,7 +125,7 @@ impl Request {
             Request::Virgl(r) => r.command_type() == virgl::wire::cmd::TRANSFER_TO_HOST_3D,
             Request::Svga(r) => r.is_upload(),
             #[cfg(target_arch = "x86_64")]
-            Request::Gk208(r) => match *r {},
+            Request::Gk208(r) => r.is_upload(),
         }
     }
 }
@@ -136,7 +136,7 @@ impl Device {
             (Device::Virgl(d), Request::Virgl(r)) => d.send(r).map_err(Request::Virgl),
             (Device::Svga(d), Request::Svga(r)) => d.send(r).map_err(Request::Svga),
             #[cfg(target_arch = "x86_64")]
-            (Device::Gk208(d), _) => match *d {},
+            (Device::Gk208(d), Request::Gk208(r)) => d.send(r).map_err(Request::Gk208),
             (_, r) => Err(r),
         }
     }
@@ -151,7 +151,7 @@ impl Device {
                 }
             },
             #[cfg(target_arch = "x86_64")]
-            Device::Gk208(d) => match *d {},
+            Device::Gk208(d) => d.reap(),
             Device::Svga(d) => match d.reap() {
                 svga::Reap::Empty => Reap::Empty,
                 svga::Reap::Fault => Reap::Fault,
@@ -164,7 +164,7 @@ impl Device {
             Device::Virgl(d) => d.has_room(segments),
             Device::Svga(d) => d.has_room(segments),
             #[cfg(target_arch = "x86_64")]
-            Device::Gk208(d) => match *d {},
+            Device::Gk208(d) => d.has_room(segments),
         }
     }
     pub fn outstanding(&self) -> usize {
@@ -172,7 +172,7 @@ impl Device {
             Device::Virgl(d) => d.outstanding(),
             Device::Svga(d) => d.outstanding(),
             #[cfg(target_arch = "x86_64")]
-            Device::Gk208(d) => match *d {},
+            Device::Gk208(d) => d.outstanding(),
         }
     }
     pub fn queue_size(&self) -> usize {
@@ -180,7 +180,7 @@ impl Device {
             Device::Virgl(d) => d.queue_size(),
             Device::Svga(d) => d.queue_size(),
             #[cfg(target_arch = "x86_64")]
-            Device::Gk208(d) => match *d {},
+            Device::Gk208(d) => d.queue_size(),
         }
     }
     /// The VirGL device signals a fault through its status; the SVGA device's faults are
@@ -190,7 +190,7 @@ impl Device {
             Device::Virgl(d) => d.needs_reset(),
             Device::Svga(_) => false,
             #[cfg(target_arch = "x86_64")]
-            Device::Gk208(d) => match *d {},
+            Device::Gk208(d) => d.needs_reset(),
         }
     }
     pub fn begin_reset(&mut self) {
@@ -198,7 +198,7 @@ impl Device {
             Device::Virgl(d) => d.begin_reset(),
             Device::Svga(d) => d.begin_reset(),
             #[cfg(target_arch = "x86_64")]
-            Device::Gk208(d) => match *d {},
+            Device::Gk208(d) => d.begin_reset(),
         }
     }
     pub fn reset_done(&mut self) -> bool {
@@ -206,7 +206,7 @@ impl Device {
             Device::Virgl(d) => d.reset_done(),
             Device::Svga(d) => d.reset_done(),
             #[cfg(target_arch = "x86_64")]
-            Device::Gk208(d) => match *d {},
+            Device::Gk208(d) => d.reset_done(),
         }
     }
     pub fn restart(&mut self) -> (Vec<Request>, Result<(), &'static str>) {
@@ -216,7 +216,10 @@ impl Device {
                 (held.into_iter().map(Request::Virgl).collect(), up)
             }
             #[cfg(target_arch = "x86_64")]
-            Device::Gk208(d) => match *d {},
+            Device::Gk208(d) => {
+                let (held, up) = d.restart();
+                (held.into_iter().map(Request::Gk208).collect(), up)
+            },
             Device::Svga(d) => {
                 let (held, up) = d.restart();
                 (held.into_iter().map(Request::Svga).collect(), up)
@@ -230,7 +233,7 @@ impl Device {
             Device::Virgl(d) => d.doorbell(),
             Device::Svga(_) => 0,
             #[cfg(target_arch = "x86_64")]
-            Device::Gk208(d) => match *d {},
+            Device::Gk208(_) => 0,
         }
     }
 }

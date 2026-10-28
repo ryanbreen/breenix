@@ -105,13 +105,7 @@ fn fault_reset(
 ) -> Result<(u64, u32, u32), &'static str> {
     let start = timer::rdtsc();
     regs.mask(0x2630, 1 << e.run, 1 << e.run);
-    regs.mask(0x200, 1 << e.reset, 0);
-    let disabled = regs.read(0x200);
-    regs.delay_us(50);
-    regs.mask(0x200, 1 << e.reset, 1 << e.reset);
-    let enabled = regs.read(0x200);
-    regs.write(e.base + 0x908, 7);
-    regs.write(e.base + 0xf14, 0);
+    let (disabled, enabled) = reset_engine(regs, e.base, e.reset)?;
     regs.write(0x259c, mask);
     regs.write(0x2100, 0x10000000);
     words(regs, total, b.commands.range.start + RUNLIST, &[b.id, 0])?;
@@ -568,4 +562,23 @@ pub(super) fn probe(s: &mut super::process::Session) -> Result<String, &'static 
         return Err("native recovery baseline differs");
     }
     Ok(format!("GT710_RECOVERY {{\"schema\":1,\"seed\":{},\"worker\":true,\"poisons\":[85,170],\"baseline\":{},\"after\":{},\"firmware_writes\":{},\"fault\":{},\"watchdog\":{},\"active_reset\":{}}}\n",seed,stats(baseline),stats(s.layout.allocator.stats()),crate::firmware_writes::count(),fault,watchdog,active_record))
+}
+
+/// Shared CE reset pulse and read-back, also used for the GR-runlist CE2.
+/// Channel backing reclamation still requires the complete FIFO unwind.
+pub(in crate::gk208) fn reset_engine(
+    regs: &mut Registers, base: usize, reset: u32,
+) -> Result<(u32, u32), &'static str> {
+    regs.mask(0x200, 1 << reset, 0);
+    let disabled = regs.read(0x200);
+    regs.delay_us(50);
+    regs.mask(0x200, 1 << reset, 1 << reset);
+    let enabled = regs.read(0x200);
+    if disabled & (1 << reset) != 0 || enabled & (1 << reset) == 0 {
+        return Err("CE reset unconfirmed; backing retained");
+    }
+    regs.write(base + 0x908, 7);
+    regs.write(base + 0xf14, 0);
+    if regs.read(base + 0x908) & 7 != 0 { return Err("CE reset fault; backing retained"); }
+    Ok((disabled, enabled))
 }

@@ -56,6 +56,9 @@ class LiveUnwind(unittest.TestCase):
             Ok(Observation { value: if sequence == 1 || reject { poison } else { nonce }, epoch,
                 consumed: true, elapsed_us: 10, accepted: !reject && sequence != 1 && epoch == self.report.identity.epoch })
         }''')
+        # Command DMA remains substituted at the same boundary after extraction.
+        publisher = item(methods, '        fn publish_words(')
+        methods = methods.replace(publisher, '')
         # Draw transfer mechanics have their own production-slice check; keep
         # this harness focused on activation/binding and the FIFO unwind.
         draw_start = methods.index('        /// Append a fresh ordinary mapping')
