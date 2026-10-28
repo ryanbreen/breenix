@@ -29,6 +29,7 @@ class LiveUnwind(unittest.TestCase):
         gr = (ROOT / 'kernel/src/gpu/gk208/gr/mod.rs').read_text()
         channel = (ROOT / 'kernel/src/gpu/gk208/gr/channel.rs').read_text()
         session = item(channel, 'pub(in crate::gk208::gr) struct Session')
+        nonce = item(channel, 'pub fn receipt_nonce(')
         methods = item(channel, '    impl Session {')
         new = item(methods, 'pub(in crate::gk208::gr) fn new(')
         prelude = '''
@@ -49,8 +50,9 @@ class LiveUnwind(unittest.TestCase):
             let epoch = if sequence < 5 {u64::from(command[0]) | (u64::from(command[1])<<32)} else {self.report.identity.epoch};
             assert!(self.bound && !self.quiesced, "submission on a stopped graphics channel");
             step(&format!("issue-{sequence}"))?;
-            Ok(Observation { value: nonce, epoch,
-                consumed: true, elapsed_us: 10, accepted: epoch == self.report.identity.epoch })
+            let reject = INJECT.with(|i| i.borrow().target == format!("reject-{sequence}"));
+            Ok(Observation { value: if sequence == 1 || reject { poison } else { nonce }, epoch,
+                consumed: true, elapsed_us: 10, accepted: !reject && sequence != 1 && epoch == self.report.identity.epoch })
         }''')
         # Retain the actual issue wrapper/execute/bind/cleanup ordering.
         methods = methods.replace('super::super::binding', 'binding')
@@ -67,7 +69,7 @@ class LiveUnwind(unittest.TestCase):
         probe_finish = probe[probe.index('    // This also runs'):probe.rindex('}')]
         # Pre-live helpers are separate from the live operations under test.
         harness = (ROOT / 'tests/fixtures/gt710_gr_live_unwind.rs').read_text()
-        for key, value in [('SESSION', session + '\n' + methods), ('FLOW', flow),
+        for key, value in [('SESSION', nonce + '\n' + session + '\n' + methods), ('FLOW', flow),
                            ('FINISH', finish), ('PROBE_FINISH', probe_finish),
                            ('CLEANUP', gr[gr.index('struct ProbeCleanup'):gr.index('/// Capture startup')])]:
             harness = harness.replace('// ' + key, value)

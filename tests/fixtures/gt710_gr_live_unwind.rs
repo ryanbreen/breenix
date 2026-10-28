@@ -202,6 +202,16 @@ fn live_errors_restore_fifo_alias_and_binding_before_reset() {
     }
 }
 #[test]
+fn rejected_channel_receipts_prevent_shader_submission() {
+    for sequence in [2, 3, 4] {
+        INJECT.with(|i| *i.borrow_mut() = Injection { target: format!("reject-{sequence}"), ..Injection::default() });
+        let mut regs = Registers::new();
+        assert!(run(&mut regs, false).is_err());
+        INJECT.with(|i| assert!(!i.borrow().calls.iter().any(|call| call == "issue-5")));
+        assert!(regs.restored());
+    }
+}
+#[test]
 fn clean_channel_restores_before_reset_and_failed_drain_forbids_reset() {
     INJECT.with(|i|*i.borrow_mut()=Injection::default());
     let mut regs=Registers::new(); assert!(run(&mut regs,false).is_ok()); assert!(regs.restored());

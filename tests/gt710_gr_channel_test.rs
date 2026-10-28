@@ -63,6 +63,17 @@ fn a197_bind_and_one_word_release_match_the_published_bit_fields() {
     );
 }
 
+#[test]
+fn receipt_domains_do_not_collide_when_epoch_bits_are_set() {
+    for epoch in [1, 0x6000_0000, 0xffff_ffff, 0xffff_ffff_ffff_ffff] {
+        let channel = channel::receipt_nonce(epoch, false);
+        let binding = channel::receipt_nonce(epoch, true);
+        assert_ne!(channel, binding);
+        assert_eq!(channel & 0x6000_0000, 0x4000_0000);
+        assert_eq!(binding & 0x6000_0000, 0x2000_0000);
+    }
+}
+
 struct Mock {
     value: u32,
     epoch: u64,

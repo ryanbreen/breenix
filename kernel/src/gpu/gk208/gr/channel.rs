@@ -188,6 +188,11 @@ pub struct Observation {
     pub elapsed_us: u64,
     pub accepted: bool,
 }
+/// Distinct receipt domains prevent a delayed channel release from certifying binding.
+pub fn receipt_nonce(epoch: u64, binding: bool) -> u32 {
+    let mixed = (epoch as u32 ^ (epoch >> 32) as u32) & !0x6000_0000;
+    mixed | if binding { 0x2000_0000 } else { 0x4000_0000 }
+}
 pub trait Poll {
     fn snapshot(&mut self) -> Result<(u32, u64, bool), &'static str>;
     fn now_us(&mut self) -> u64;
@@ -706,7 +711,7 @@ mod native {
                     return Err("shader binding requires the active GR channel");
                 }
                 let epoch = self.report.identity.epoch;
-                let nonce = (epoch as u32 ^ (epoch >> 32) as u32) | 0x20000000;
+                let nonce = receipt_nonce(epoch, true);
                 receipt.target = TARGET;
                 receipt.epoch = epoch;
                 receipt.nonce = nonce;
@@ -727,8 +732,11 @@ mod native {
             h: &mut Hardware<'_>,
         ) -> Result<(), &'static str> {
             let epoch = self.report.identity.epoch;
-            let nonce = (epoch as u32 ^ (epoch >> 32) as u32) | 0x40000000;
+            let nonce = receipt_nonce(epoch, false);
             self.report.withheld.observation = self.issue(h, 1, 85, epoch, nonce, false, 10000)?;
+            if self.report.withheld.observation.accepted || self.report.withheld.observation.value != 85 {
+                return Err("GR withheld release control failed");
+            }
             let first = self.issue(h, 2, 85, epoch, nonce, true, BOUND_US)?;
             self.report.releases[0] = Release {
                 target: TARGET,
@@ -738,6 +746,9 @@ mod native {
                 epoch: first.epoch,
                 elapsed_us: first.elapsed_us,
             };
+            if !first.accepted {
+                return Err("GR first release not accepted");
+            }
             // Re-poison only after an engine-ordered receipt. On a missing
             // receipt retain the raw failure, stop submission and drain below;
             // a delayed old release must not satisfy the second poison pass.
@@ -747,8 +758,9 @@ mod native {
                     nonce,
                     observation: stale,
                 };
-                if stale.value == nonce && stale.epoch == epoch - 1 {
+                if !stale.accepted && stale.value == nonce && stale.epoch == epoch - 1 {
                     let second = self.issue(h, 4, 170, epoch, nonce, true, BOUND_US)?;
+                    if !second.accepted { return Err("GR second release not accepted"); }
                     self.report.releases[1] = Release {
                         target: TARGET,
                         poison: 170,
@@ -757,6 +769,8 @@ mod native {
                         epoch: second.epoch,
                         elapsed_us: second.elapsed_us,
                     };
+                } else {
+                    return Err("GR stale release control failed");
                 }
             }
             self.report.identity.bind = h.regs.read(0x800000);
