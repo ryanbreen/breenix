@@ -146,6 +146,8 @@ fn host_keys_requested() -> bool {
 pub fn arm_host_keys() {
     HOST_KEYS_ARMED.store(true, Ordering::Release);
     log::info!("[usb] host keys: serial BXKEY lines are replayed through the boot keyboard's interrupt-IN completions");
+    #[cfg(feature = "softirq_hostkey_test")]
+    crate::serial_println!("SOFTIRQ_HOSTKEY READY");
 }
 
 #[cfg(target_arch = "x86_64")]

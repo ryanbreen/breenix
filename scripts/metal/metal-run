@@ -323,7 +323,7 @@ def boot(args):
             in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'stop', boot_id)
             raise SystemExit('persistent preemption failed: ' + type(error).__name__)
     args.boot_id = boot_id
-    if args.mode == 'suite' and payload == 'image' and not getattr(args, 'resuming', False):
+    if args.mode == 'suite' and args.inject != 'softirq-hostkey' and payload == 'image' and not getattr(args, 'resuming', False):
         # Pin the commit before detaching, so branch movement cannot change a resumed boot.
         args.sha = sha
         with (logs / f'{boot_id}-sequence.log').open('w') as log:
