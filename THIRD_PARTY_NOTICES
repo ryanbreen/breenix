@@ -837,3 +837,12 @@ NVIDIA interface; its header carries that source's notice.
 The file-local grants were read for these sources. The excluded
 `nvc0_state_validate.c` is not an input. Source byte hashes and the serial/bulk
 record contract are in `docs/gui/provenance/gt710-shader-binding.md`.
+
+The M7.3 lifecycle repair in `kernel/src/gpu/gk208/gr/mod.rs` and its
+production-slice checks in `tests/gt710_gr_live_unwind_test.py` and
+`tests/fixtures/gt710_gr_live_unwind.rs` use the channel lifecycle and
+engine-status meanings from the MIT nouveau v6.8 FIFO gk104/gf100 sources
+listed above, and the retained-current-context behavior in the MIT
+`vendor/kepler/nouveau/hub.fuc` (Copyright 2011 Red Hat Inc.). The expanded
+read-only FIFO snapshot uses the already attributed MIT envytools
+`rnndb/fifo/gf100_pfifo.xml`; its copyright and grant remain in `gr/mod.rs`.

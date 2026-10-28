@@ -159,7 +159,7 @@ pub(super) fn interrupt_snapshot(
     // MIT rnndb bus/pmc.xml, fifo/gf100_pfifo.xml and gr/ctxctl.xml.
     let mut words: Vec<[u32; 2]> = [
         0x100, 0x140, 0x160, 0x200, 0x204, 0x2100, 0x2140, 0x2274,
-        0x2284, 0x2630, 0x2640, 0x2644, 0x400100, 0x400108, 0x40013c,
+        0x2284, 0x2630, 0x2634, 0x2640, 0x2644, 0x800000, 0x800004, 0x400100, 0x400108, 0x40013c,
         0x409008, 0x409018, 0x40901c, 0x409b00, 0x409b04, 0x409c18, 0x409c24,
     ]
     .into_iter()
@@ -168,7 +168,7 @@ pub(super) fn interrupt_snapshot(
     let enabled = words.iter().find(|w| w[0] == 0x204).unwrap()[1];
     for i in 0..3 {
         if enabled & (1 << i) != 0 {
-            for offset in [0x108, 0x10c, 0x13c, 0x148, 0x14c] {
+            for offset in [0x00, 0x14, 0x28, 0x108, 0x10c, 0x120, 0x13c, 0x148, 0x14c] {
                 let address = 0x40000 + i * 0x2000 + offset;
                 words.push([address, regs.read(address as usize)]);
             }
@@ -240,8 +240,8 @@ pub(super) fn probe(
     };
     let result = probe_inner(regs, device, layout, console, &mut cleanup);
     // This also runs after topology, allocation, upload and startup refusals.
-    cleanup.finish(regs, layout)?;
-    result
+    let unwind = cleanup.finish(regs, layout);
+    result.and(unwind)
 }
 
 fn probe_inner(
@@ -329,16 +329,6 @@ fn probe_inner(
             if let Some(reader) = hardware.reader.take() {
                 reader.finish(hardware.regs, hardware.layout)?;
             }
-            let mut graphics = channel::Session::new(&mut hardware, golden)?;
-            let result = graphics.activate(&mut hardware)
-                .and_then(|()| graphics.execute(&mut hardware));
-            let report = graphics.report();
-            // Retain ownership before propagating activation or execution errors.
-            hardware.graphics = Some(graphics);
-            result?;
-            // Observe the quiesced channel while GR registers remain accessible,
-            // before reset/gating makes PGRAPH reads return PRI error words.
-            interrupt_snapshot(hardware.regs, hardware.device, "channel-drained");
             hardware.reader = Some(super::ce::readback::Reader::new(
                 hardware.regs, hardware.device, hardware.layout, hardware.console, &hardware.backing,
             )?);
@@ -353,15 +343,26 @@ fn probe_inner(
             if let Some(reader) = hardware.reader.take() {
                 reader.finish(hardware.regs, hardware.layout)?;
             }
+            // Channel IDs remain owned by GR until reset, even after FIFO
+            // quiesce: FECS retains its current context. Finish CE before GR
+            // admission and keep GR active through the binding submission.
+            let mut graphics = channel::Session::new(&mut hardware, golden)?;
+            let result = graphics.activate(&mut hardware)
+                .and_then(|()| graphics.execute(&mut hardware));
+            // Retain ownership before propagating activation or execution errors.
+            hardware.graphics = Some(graphics);
+            result?;
             let mut graphics = hardware.graphics.take().ok_or("shader GR channel absent")?;
             let mut receipt = binding::Receipt {
                 target: 0, epoch: 0, nonce: 0, before: [0; 4], after: [0; 4], observation: None,
             };
             let result = graphics.bind_shaders(&mut hardware, shader_buffer.va, &mut receipt);
             // Keep ownership on trap/timeout so finish drains and resets before freeing.
+            let report = graphics.report();
             hardware.graphics = Some(graphics);
             evidence.emit(shader_buffer.va, &receipt, result.as_ref().err().copied())?;
             result?;
+            interrupt_snapshot(hardware.regs, hardware.device, "channel-drained");
             Some(report)
         } else {
             None
@@ -373,7 +374,12 @@ fn probe_inner(
         Ok::<_, &'static str>((generated, graphics, artifact, runnable_bytes, firmware_hashes))
     })();
     // Run on closure errors too; the outer reset requires confirmed FIFO unwind.
-    hardware.finish()?;
+    if let Err(error) = hardware.finish() {
+        // Keep the failing FIFO words while GR is still accessible. The outer
+        // cleanup must refuse reset here, but must not replace this cause.
+        interrupt_snapshot(regs, device, "unwind-failed");
+        return Err(error);
+    }
     cleanup.fifo_quiesced = true;
     cleanup.finish(regs, layout)?;
     let (generated, graphics, artifact, runnable_bytes, firmware_hashes) = outcome?;

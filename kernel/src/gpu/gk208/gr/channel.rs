@@ -677,7 +677,9 @@ mod native {
             receipt.before = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
             let result = (|| {
                 binding::check_traps(receipt.before)?;
-                self.activate(h)?;
+                if !self.bound || self.quiesced {
+                    return Err("shader binding requires the active GR channel");
+                }
                 let epoch = self.report.identity.epoch;
                 let nonce = (epoch as u32 ^ (epoch >> 32) as u32) | 0x20000000;
                 receipt.target = TARGET;
@@ -738,7 +740,7 @@ mod native {
             for pair in &mut self.report.faults {
                 pair[1] = h.regs.read(pair[0] as usize);
             }
-            self.quiesce(h.regs, h.total)
+            Ok(())
         }
         /// Leave FIFO and BAR1 safe before PGRAPH reset, including partial activation.
         /// Failed waits retain the channel and its pinned backing for recovery.
