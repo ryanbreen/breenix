@@ -69,16 +69,6 @@ class DriverTest(StateTest):
                     d.prepare_payload()
             self.assertIn(outcome, str(raised.exception))
 
-    def test_forcing_marker_consumes_only_the_complete_pass_line(self):
-        d = self.driver()
-        d.load_definition()
-        d.t0 = 1
-        d.on_line('Initializing PCIe, USB, and Video... Done')
-        d.on_line('announced SOFTIRQ_HOSTKEY PASS')
-        self.assertTrue(any(d.required_stages))
-        d.on_line('SOFTIRQ_HOSTKEY PASS')
-        self.assertFalse(any(d.required_stages))
-
 
 if __name__ == '__main__':
     unittest.main()

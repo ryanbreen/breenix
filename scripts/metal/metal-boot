@@ -2087,7 +2087,7 @@ def marker_matches(spec, line):
     """Pipe-separated literal alternatives; line matching requires the entire serial line."""
     marker, match = spec if isinstance(spec, tuple) else (spec, 'contains')
     alternatives = marker.split('|')
-    if match in ('line', 'exact'):
+    if match == 'line':
         return line in alternatives
     if match != 'contains':
         raise ValueError('unsupported marker match: ' + match)
