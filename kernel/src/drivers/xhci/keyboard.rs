@@ -153,7 +153,9 @@ impl Controller {
             return;
         };
         self.next_host_key = now + HOST_KEY_GAP_NS;
-        if let Err(error) = self.replay_key(&report) {
+        let result = self.replay_key(&report);
+        super::host_keys::REPLAY_MAX_NS.fetch_max(super::now().saturating_sub(now), Ordering::Relaxed);
+        if let Err(error) = result {
             // The rest of the line would act on a keyboard state this report did not make.
             let dropped = self.host_keys.len();
             self.host_keys.clear();
@@ -211,6 +213,8 @@ impl Controller {
             code << 24 | residual,
             (slot as u32) << 24 | (dci as u32) << 16,
         ));
+        self.host_key_event = Some((at, *report));
+        super::host_keys::REPLAYED.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -510,6 +514,13 @@ impl Controller {
                 } else {
                     Vec::new()
                 };
+                #[cfg(target_arch = "x86_64")]
+                if let Some((_, expected)) = self.host_key_event.take_if(|(at, _)| *at == event.parameter & !15) {
+                    super::host_keys::DISPATCHED.fetch_add(1, Ordering::Relaxed);
+                    if report.as_slice() != expected {
+                        super::host_keys::CHANGED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
                 let now = now();
                 let Controller {
                     devices, console, ..
