@@ -222,9 +222,18 @@ fn pause() -> Result<(), &'static str> {
         .saturating_mul(1_000_000_000)
         .saturating_add(n)
         .saturating_add(10_000_000);
+    // Prepared waits hold one PREEMPT level through publication and cleanup.
+    // The recovery kthread has no syscall-entry bracket to supply that level.
+    let unheld = crate::per_cpu::preempt_count() == 0;
+    if unheld {
+        crate::per_cpu::preempt_disable();
+    }
     let outcome = POLL.prepare_to_wait_checked(ThreadState::BlockedOnIO, Some(wake), || true);
-    crate::syscall::blocking_io::wait_prepared(&POLL, outcome)
-        .map_err(|_| "native recovery worker wait failed")
+    let result = crate::syscall::blocking_io::wait_prepared(&POLL, outcome);
+    if unheld {
+        crate::per_cpu::preempt_enable();
+    }
+    result.map_err(|_| "native recovery worker wait failed")
 }
 
 pub(super) fn probe(s: &mut super::process::Session) -> Result<String, &'static str> {
@@ -451,8 +460,8 @@ pub(super) fn probe(s: &mut super::process::Session) -> Result<String, &'static 
         ),
     ];
     regs.mask(0x2630, 1 << e.run, 1 << e.run);
-    // runl.c requests preemption before resetting the active engine. Asking
-    // afterwards can save the old PBDMA context into the reset engine.
+    // Finish preempting the resident channel before resetting its engine.
+    // A request alone can still overlap the reset with the old context save.
     regs.write(0x2634, b.id);
     budget_wait(&mut regs, reset_start, 0x2634, 0x100000)?;
     regs.mask(0x200, 1 << e.reset, 0);
