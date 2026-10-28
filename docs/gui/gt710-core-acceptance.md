@@ -77,6 +77,15 @@ by an ordinary copy through the same adapter. The requested final copy then
 runs normally. Draws and clean copies require the adapter's matching native
 context, epoch, sequence, stream consumption, health and Done fence.
 
+The native sequence also counts the surrounding diagnostic CE work, which
+is checked by the existing draw/readback cases. Successive draw rows differ
+by seven: two poisoned readbacks, four 4 KiB background-upload chunks, and
+the next draw. The first copy is three after the final draw: its two
+readbacks and the copy. The control/copy block then advances one per
+published request; the masked request is refused before publication and
+its clean successor reuses the planned sequence. The scorer requires these exact
+deltas, not arbitrary increasing gaps.
+
 - **Withheld release:** execute the CE transfer and epoch releases, omit the
   requested sequence release, and append a separate A0B5 engine release to
   the fourth word of the 16-byte receipt slot. The ordinary completion must

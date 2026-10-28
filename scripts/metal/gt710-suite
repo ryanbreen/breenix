@@ -1693,7 +1693,7 @@ def core_dispatch(serial):
             raise ValueError('core dispatch native identity')
         previous = None
         resources = {}
-        for r in records:
+        for index, r in enumerate(records):
             numeric = ('context','epoch','sequence','caller','resource','generation','kind','answer',
                        'observed_context','observed_epoch','observed_sequence','consumed','elapsed_us')
             if type(r['healthy']) is not bool or any(type(r[k]) is not int or not 0 <= r[k] < 1 << 64 for k in numeric):
@@ -1707,7 +1707,13 @@ def core_dispatch(serial):
             if resources.setdefault(draw,r['resource']) != r['resource']:
                 raise ValueError('core dispatch destination changed')
             planned = r['caller'] & 0xffffffff
-            if not planned or r['caller'] != (1 << 32) | planned or (previous is not None and planned != previous+1):
+            # The core rows select draws/copy from the shared native queue.
+            # draw_probe performs two readbacks then four 4 KiB background
+            # uploads between draws; the last draw has two readbacks before
+            # present's copy. See gr/mod.rs draw_probe and gr/channel.rs
+            # COPY_BYTES=4096, READBACK_BYTES=65536. Controls are consecutive.
+            step = 7 if 1 <= index <= 4 else 3 if index == 5 else 1
+            if not planned or r['caller'] != (1 << 32) | planned or (previous is not None and planned != previous+step):
                 raise ValueError('core dispatch caller/sequence order')
             if control == 'masked-class':
                 if (r['sequence'],r['answer'],r['observed_context'],r['observed_epoch'],
