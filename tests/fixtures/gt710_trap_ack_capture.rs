@@ -38,7 +38,7 @@ fn register_wait(r:&mut Registers,a:usize,_:u32,_:u32,_:u64)->Result<(),&'static
 }
 fn words(r:&mut Registers,_:u64,_:u64,_:&[u32])->Result<(),&'static str>{r.write(0xf00001,0);Ok(())}
 mod modeset {pub fn activate_bar1(_:&mut super::Registers,_:u64,_:u64)->Result<(),&'static str>{Ok(())}}
-#[derive(Clone,Copy)] struct Identity {epoch:u64,runlist:u32,id:u32,engine:u32}
+#[derive(Clone,Copy)] struct Identity {epoch:u64,runlist:u32,id:u32,engine:u32,instance:u64}
 struct Report {identity:Identity,binding:u32,runlist_count:u32}
 struct Range {start:u64}
 struct Allocation {range:Range}
@@ -71,7 +71,7 @@ fn run(trap:bool,stuck:bool,reset_fails:bool){
     LOG.with(|l|l.borrow_mut().clear());
     let mut regs=Registers{values:SAVED.into_iter().collect(),stuck,reset_fails};regs.values.insert(0x800000,0x80000300);
     let mut hardware=Hardware{regs:&mut regs,graphics:None};
-    let mut graphics=Session{report:Report{identity:Identity{epoch:1,runlist:0,id:0,engine:0},binding:0,runlist_count:1},next_sequence:7,bound:true,quiesced:false,commands:Allocation{range:Range{start:0x100000}},pbdma:0,copy:None,alias:true,pte:0,bar_inst:0,bar_dir:0,old:[0x123,0x456,7,0x14,0x10000,0x1100],old_pbdma:[1,2,3,4],trap};
+    let mut graphics=Session{report:Report{identity:Identity{epoch:1,runlist:0,id:0,engine:0,instance:0x851c000},binding:0,runlist_count:1},next_sequence:7,bound:true,quiesced:false,commands:Allocation{range:Range{start:0x100000}},pbdma:0,copy:None,alias:true,pte:0,bar_inst:0,bar_dir:0,old:[0x123,0x456,7,0x14,0x10000,0x1100],old_pbdma:[1,2,3,4],trap};
     let shader_buffer=ShaderBuffer{va:0x300000};let evo=&mut ();
     // FLOW
     assert!(draw_result.is_err());assert!(draw_emit.is_ok());assert!(draw_evidence.target.is_none());
