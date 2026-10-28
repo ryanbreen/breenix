@@ -936,3 +936,7 @@ for GPC/TPC/ROP register addressing. Both file headers were read at
 `e8f897f4afef0031fe618a8e94127a0934896aba`; their copyright notices and
 permission grants remain in the adapted file. Breenix supplies the first
 capture, draw record, bounded preempt/reset fallback and ownership policy.
+
+- envytools `f102b82381f3f11cee113d16374c87091db039d9`,
+  `rnndb/graph/gf100_3d.xml:217-222`, MIT (imported `rnndb/copyright.xml`,
+  copyright 2006 and authors listed in the consumer headers). Sample shading pass count.

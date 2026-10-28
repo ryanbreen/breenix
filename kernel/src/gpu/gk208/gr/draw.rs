@@ -1,3 +1,62 @@
+/*
+ * rnndb copyright 2006
+ * Artur Huillet
+ * Ben Skeggs
+ * B. R.
+ * Carlos Martin
+ * Christoph Bumiller
+ * Dawid Gajownik
+ * Dmitry Baryshkov
+ * Dmitry Eremin-Solenikov
+ * EdB
+ * Erik Waling
+ * Francisco Jerez
+ * Ilia Mirkin
+ * jb17bsome
+ * Jeremy Kolb
+ * Laurent Carlier
+ * Luca Barbieri
+ * Maarten Maathuis
+ * Marcelina Kościelnicka
+ * Mark Carey
+ * Matthieu Castet
+ * nvidiaman
+ * Patrice Mandin
+ * Pekka Paalanen
+ * Peter Popov
+ * Richard Hughes
+ * Rudi Cilibrasi
+ * Serge Martin
+ * Simon Raffeiner
+ * Stephane Loeuillet
+ * Stephane Marchesin
+ * sturmflut
+ * Sylvain Munaut
+ * Victor Stinner
+ * Wladmir van der Laan
+ * Younes Manton
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE COPYRIGHT OWNER(S) AND/OR ITS SUPPLIERS BE
+ * LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+ * OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 /*******************************************************************************
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 
@@ -161,7 +220,9 @@ pub fn commands(r: Draw) -> Result<Vec<u32>, &'static str> {
     emit(0x19c4, &[0]);
     emit(0x0f90, &[1]);
     emit(0x1a00, &[0x1111]);
-    for method in [0x1534, 0x15d0, 0x153c, 0x0754] { emit(method, &[0]); }
+    for method in [0x1534, 0x15d0, 0x153c] { emit(method, &[0]); }
+    // MIT envytools rnndb graph/gf100_3d.xml:217-222: one pass, sample shading disabled.
+    emit(0x0754, &[1]);
     emit(0x0fbc, &[0xffff; 4]);
     emit(0x15b8, &[0]);
     emit(0x19e0, &[0]);
