@@ -7,6 +7,24 @@
   "hostRunner": true,
   "categories": [
     {
+      "id": "shaders",
+      "title": "Triangle shader upload and binding (M7 PR 7.3)",
+      "cases": [
+        {
+          "id": "assets",
+          "title": "Committed triangle asset hashes and shader register counts match the manifest and metadata"
+        },
+        {
+          "id": "upload",
+          "title": "Complete complementary shader read-backs prove withheld and flipped controls and their clean next uploads"
+        },
+        {
+          "id": "binding",
+          "title": "A197 program binding completes with a release receipt and zero trap words; drawing remains pending"
+        }
+      ]
+    },
+    {
       "id": "graphics",
       "title": "Graphics engine and starting context (M7 PR 7.2)",
       "cases": [
