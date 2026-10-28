@@ -47,9 +47,10 @@ is refused.
 
 - `fecs.{code,data}.bin` and `gpccs.{code,data}.bin`: little-endian u32 words,
   separate IMEM/DMEM images. Code is aligned to 256 bytes by the upstream source.
-- 46 shader programs: 16 pipeline fragments, 25 `probe_int` variants, the shared
+- 47 shader programs: 16 pipeline fragments, 25 `probe_int` variants, the shared
   position vertex program, and diagnostic position/color vertex and interpolating
-  fragment programs, and two triangle stage controls. Pipeline IDs come from `libs/gpu-abi/src/lib.rs`.
+  fragment programs, two triangle stage controls, and a position-based gradient
+  fragment program. Pipeline IDs come from `libs/gpu-abi/src/lib.rs`.
 - Per program: `.bin` GK110 instructions including scheduling words, `.sph`
   80-byte program header, `.json` GPR/TLS/constant/texture/linkage information,
   and `.asm` inspection output from the pinned MIT decoder. An unknown encoding
@@ -72,6 +73,13 @@ records input/output byte addresses and component masks. The diagnostic color
 varying uses generic address 0x80 and linear interpolation; position uses 0x70.
 These are build artifacts for later integration, not a substitute for native
 resource, binding, completion or pixel evidence.
+
+`shaders/gradient.frag.tgsi` truncates fragment position x/y to unsigned integers
+and forms RGBA bytes `(2*(x+y), 4*y, 4*x, 255)` with integer addition and shifts.
+It converts the RGB bytes to floats and multiplies by binary32 `1/255`, with
+alpha 1, for the BGRA8 target in `docs/gui/provenance/gt710-contexts.json`.
+The 64×64 target keeps RGB byte values in 0..252. Its full-frame exact pixel
+check belongs to the hardware acceptance unit.
 
 ## Shared catalogue and frontend choice
 

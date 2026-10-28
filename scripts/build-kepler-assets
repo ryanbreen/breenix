@@ -49,7 +49,8 @@ def build(path):
     run(args, path.parent / (path.name + "-configure.log"))
     run(["cmake", "--build", path, "--target", "kepler-assets", "--parallel", "4"],
         path.parent / (path.name + "-build.log"))
-    print(f"Built {path.name}: FECS/GPCCS and 46 shaders", flush=True)
+    manifest = json.loads((path / "assets/manifest.json").read_text())
+    print(f"Built {path.name}: FECS/GPCCS and {len(manifest['shaders'])} shaders", flush=True)
 
 
 def main():

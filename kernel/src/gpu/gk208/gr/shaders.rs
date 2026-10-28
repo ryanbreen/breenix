@@ -40,6 +40,10 @@ pub const DROP_COLOUR_VERTEX_HEADER: &[u8; 80] =
     include_bytes!("../../../../assets/kepler/drop-colour-vertex.sph");
 pub const DROP_COLOUR_VERTEX_CODE: &[u8; 88] =
     include_bytes!("../../../../assets/kepler/drop-colour-vertex.bin");
+pub const GRADIENT_FRAGMENT_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/gradient-fragment.sph");
+pub const GRADIENT_FRAGMENT_CODE: &[u8; 152] =
+    include_bytes!("../../../../assets/kepler/gradient-fragment.bin");
 
 // Read the committed 7.1 metadata at compile time; no container toolchain runs.
 const fn asset_gprs(json: &str) -> u32 {
@@ -66,6 +70,7 @@ const fn asset_gprs(json: &str) -> u32 {
 }
 pub const VERTEX_GPRS: u32 = asset_gprs(include_str!("../../../../assets/kepler/diagnostic-triangle-vertex.json"));
 pub const FRAGMENT_GPRS: u32 = asset_gprs(include_str!("../../../../assets/kepler/diagnostic-triangle-fragment.json"));
+pub const GRADIENT_FRAGMENT_GPRS: u32 = asset_gprs(include_str!("../../../../assets/kepler/gradient-fragment.json"));
 
 const VERTEX_HEADER: &[u8; 80] =
     include_bytes!("../../../../assets/kepler/diagnostic-triangle-vertex.sph");

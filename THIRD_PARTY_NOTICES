@@ -791,8 +791,17 @@ were checked before use and remain in the header and `vendor/kepler/NOTICES`.
 `vendor/kepler/sources.json` records the upstream and vendored hashes.
 
 Consumer: `tests/gt710_sph_test.py` parses its field bit ranges to decode the
-committed diagnostic vertex/fragment SPHs independently of the compiler.
+committed diagnostic vertex/fragment and gradient fragment SPHs independently
+of the compiler.
 The header is a reference input, with no linked NVIDIA driver code.
+
+The M7.5 position-based gradient definition in
+`tools/kepler/shaders/gradient.frag.tgsi` is Breenix PolyForm Noncommercial code.
+Its committed `kernel/assets/kepler/gradient-fragment.{bin,sph,json,asm}` outputs
+use the same pinned MIT Mesa compiler, adapted `tools/kepler/compile.cpp` SPH
+logic and MIT envytools decoder listed above. The SPH keeps the Mesa MIT terms;
+the shader code and definition keep Breenix's terms. `kernel/src/gpu/gk208/gr/shaders.rs`
+exposes these bytes and their metadata GPR count with its existing MIT notice.
 
 ## Triangle stage dataflow reference and controls (M7.3)
 

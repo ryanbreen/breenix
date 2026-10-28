@@ -122,6 +122,26 @@
       "license": "MIT",
       "sha256": "67859e7b5e6e4002910d5ae94d2668828c867a7d0ef1787624dd97cc8839b405"
     },
+    "gradient-fragment.asm": {
+      "bytes": 1148,
+      "license": "PolyForm-Noncommercial-1.0.0",
+      "sha256": "5752b292bce61a3f7f32d47e882a89ffd8f365bd90cc9e649432dcc141991e38"
+    },
+    "gradient-fragment.bin": {
+      "bytes": 152,
+      "license": "PolyForm-Noncommercial-1.0.0",
+      "sha256": "7034c838ee98e309e806fd46631281c94084d3e7ad079fbfa9ce9ad6129faf8c"
+    },
+    "gradient-fragment.json": {
+      "bytes": 354,
+      "license": "PolyForm-Noncommercial-1.0.0",
+      "sha256": "8cf198fbc5385e3be7a7932bfffb8bdf25b03d0e17eed8aa0b1ab519d4410dee"
+    },
+    "gradient-fragment.sph": {
+      "bytes": 80,
+      "license": "MIT",
+      "sha256": "7d645cc2bf9ca77dc6120056b5825b64a2afc63f18f1283d52bcad277befa372"
+    },
     "pipeline-bitmap_text.asm": {
       "bytes": 13658,
       "license": "PolyForm-Noncommercial-1.0.0",
@@ -975,7 +995,7 @@
   "recipe_sha256": {
     "libs/gpu-abi/src/lib.rs": "122c9b6f6244ad31521f8e334337f87603b9fa1988e1803608b464fdb8e3e21b",
     "tools/kepler/CMakeLists.txt": "bb493a774b8cf0dde02a2e0bcd1829fa2bfbba2ef89b560b70e53a29734e941c",
-    "tools/kepler/assets.py": "712c67fff50186ee1120463bf4a3eed947ad1beb92360f704471e1c1b283aa50",
+    "tools/kepler/assets.py": "9dc8e1758285cb040d7e8f8c81e847454a6ac3a2d1da2083ad9d0457bf26e9f4",
     "tools/kepler/compile.cpp": "6ba5577b4a37d714517a1187a65ca5c280e863d2d20adb9a352a51b39b612754"
   },
   "schema": 1,
@@ -2501,6 +2521,39 @@
       "name": "diagnostic-triangle-fragment",
       "source": "tools/kepler/shaders/triangle.frag.tgsi",
       "source_sha256": "7800cf22acecf728b548fa70cca036303e3334d15605a18c83c9be169de51f07"
+    },
+    {
+      "asset": "gradient-fragment",
+      "metadata": {
+        "builtin_calls": 0,
+        "chipset": 262,
+        "code_bytes": 152,
+        "constant_buffer_bytes": 0,
+        "constant_buffer_slot": 0,
+        "fixups_applied": true,
+        "gprs": 4,
+        "input_slots": [
+          {
+            "address": 112,
+            "index": 0,
+            "mask": 3
+          }
+        ],
+        "output_slots": [
+          {
+            "address": 0,
+            "index": 0,
+            "mask": 15
+          }
+        ],
+        "relocations": 0,
+        "stage": "fragment",
+        "texture_mask": 0,
+        "tls_bytes": 0
+      },
+      "name": "gradient-fragment",
+      "source": "tools/kepler/shaders/gradient.frag.tgsi",
+      "source_sha256": "973cbade9a5fc2fed5f589ce65a67909a3880660ce0afaed23fdd8f91f8e44b8"
     },
     {
       "asset": "constant-colour-fragment",

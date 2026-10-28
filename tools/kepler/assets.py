@@ -71,7 +71,8 @@ def catalogue():
     result.extend((name, HERE / "shaders" / file, {"name": name}) for name, file in [
         ("catalogue-vertex", "catalogue.vert.tgsi"),
         ("diagnostic-triangle-vertex", "triangle.vert.tgsi"),
-        ("diagnostic-triangle-fragment", "triangle.frag.tgsi")])
+        ("diagnostic-triangle-fragment", "triangle.frag.tgsi"),
+        ("gradient-fragment", "gradient.frag.tgsi")])
     controls = ROOT / "tests/fixtures/gt710_shader_controls"
     for name in ("constant-colour-fragment", "drop-colour-vertex"):
         result.append((name, controls / (name + ".tgsi"), {"name": name}))
