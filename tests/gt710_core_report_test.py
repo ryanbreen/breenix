@@ -122,7 +122,7 @@ def stage(directory, rows=None):
 def gpu_boot():
     return dict(id='20261028T180000Z-metal', platform='metal', arch='x86_64', kind='boot',
                 evidenceEligible=True, mode='suite', suite='gpu', suites=['gpu'],
-                toolsCommit=SHA, bootedCommit=SHA)
+                toolsCommit=SHA, bootedCommit=SHA, build=dict(profile='production', features=[]))
 
 def gpu_serial():
     manifest = json.loads((ROOT / 'docs/suites/gpu.json').read_text())
@@ -254,7 +254,14 @@ class CoreReport(unittest.TestCase):
             files={'run.json':json.dumps(boot),'serial.txt':gpu_serial(),'events.jsonl':json.dumps(dict(event='final-marker',seconds=30))+'\n',
                    'ended':'1\n','exit-status':'1\n','dirty':'0\n','commit':SHA+'\n'}
             for name,text in files.items(): (companion/name).write_text(text)
-            serial=stage(path); producer=API['core_capture'](path,SHA)
+            diagnostic=path/'core-diagnostic'; diagnostic.mkdir()
+            diagnostic_boot=dict(gpu_boot(), id='20261028T160000Z-metal', mode='default',
+                                 suite=None, suites=None, gt710Category='core',
+                                 build=dict(profile='gpu-core', features=['gt710_core_probe']))
+            for name,text in dict(files, **{'run.json':json.dumps(diagnostic_boot),'exit-status':'0\n'}).items():
+                (diagnostic/name).write_text(text)
+            stage(diagnostic)
+            serial=''; producer=API['core_capture'](path,SHA)
             manifest=json.loads((ROOT/'docs/suites/gt710.json').read_text())
             effort=json.loads((ROOT/'docs/efforts/metal.json').read_text())
             cases=API['cases']('core',serial,producer)
@@ -281,10 +288,10 @@ class CoreReport(unittest.TestCase):
         with patch.dict(resolve.__globals__,in_build=in_build):
             self.assertEqual(resolve(dict(BUILD_REPO='checkout'),SHA,'gpu'),'gpu')
 
-    def test_native_suite_build_enables_core_evidence_without_testing_startup(self):
+    def test_native_suite_build_keeps_production_without_explicit_core_category(self):
         features = runpy.run_path(str(ROOT/'scripts/metal/metal-run'))['kernel_features']
-        for suites in ['console', 'gpu', 'gt710', 'smoke,console']:
-            self.assertEqual(features('suite', suites, None), ['--features', 'gt710_core_probe'])
+        for suites in ['console', 'gpu', 'gt710', 'smoke,console', 'all']:
+            self.assertEqual(features('suite', suites, None), [])
         self.assertEqual(features('tests', None, None), ['--features', 'testing'])
         self.assertEqual(features('suite', 'smoke', None), [])
         self.assertEqual(features('default', None, None), [])
