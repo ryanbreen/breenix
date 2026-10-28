@@ -127,7 +127,7 @@ def gpu_boot():
 def gpu_serial():
     manifest = json.loads((ROOT / 'docs/suites/gpu.json').read_text())
     names = [cat['id']+'/'+case['id'] for cat in manifest['categories'] for case in cat['cases']]
-    reason = 'missing the GPU core with a device admitted to the profile (G1): CAPS status 2 (missing b8g8r8a8-render)'
+    reason = 'missing the GPU core with a device admitted to the profile (G1): CAPS status 1 (no GPU core backend)'
     return ('SUITE gpu START cases=170\nSUITE gpu MEMORY before free=1000 heap_free_kb=500 user_pages=100\n' + ''.join(f'SUITE gpu CASE {name} FAIL ms=1 msg={reason}\n' for name in names)
             + 'SUITE gpu DONE passed=0 failed=170 skipped=0 total=170\nSUITE gpu MEMORY after free=1000 heap_free_kb=500 user_pages=100\nSUITE gpu MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=64\nSUITE gpu ELAPSED ms=210\nSUITE_SEQUENCE READY gpu\n')
 
@@ -227,7 +227,7 @@ class CoreReport(unittest.TestCase):
         API['core_producer'](gpu_serial(), API['core_row'](serial), gpu_boot())
         text=gpu_serial()
         changes=[text.replace(' FAIL ', ' SKIP ',1), text.replace(' FAIL ', ' PASS ',1),
-                 text.replace('b8g8r8a8-render','3d-feature'), text.replace('CAPS status 2','CAPS status 1'),
+                 text.replace('no GPU core backend','missing b8g8r8a8-render'), text.replace('CAPS status 1','CAPS status 2'),
                  text.replace('ms=1 msg=','ms=1 msg=another failure; ',1),
                  text.replace('SUITE gpu START cases=170\n',''), text.replace('SUITE gpu DONE','SUITE other DONE'),
                  text.replace('SUITE gpu ELAPSED ms=210\n',''), text.replace('ms=210','ms=900001'),

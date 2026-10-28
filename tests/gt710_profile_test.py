@@ -3,6 +3,7 @@ import itertools
 import json
 from pathlib import Path
 import runpy
+import subprocess
 from types import SimpleNamespace
 import tempfile
 import unittest
@@ -16,6 +17,31 @@ CORE = runpy.run_path(str(ROOT / 'tests/gt710_core_report_test.py'))
 
 
 class Profiles(unittest.TestCase):
+    def test_explicit_core_default_boot_reaches_probe(self):
+        source = (ROOT / 'kernel/src/gpu/gk208/native.rs').read_text()
+        start = source.index('pub fn suite_requested()')
+        function = source[start:source.index('\n}', start) + 2]
+        harness = '''
+mod boot {
+    pub mod intent { pub fn get() -> Option<&'static [u8]> { None } }
+    pub mod target {
+        pub struct Suite { pub id: String }
+        pub enum Target { Suite(Suite) }
+        pub fn parse(_: &str) -> Result<Target, ()> {
+            Ok(Target::Suite(Suite { id: "console".into() }))
+        }
+    }
+}
+fn main() { assert!(suite_requested(), "explicit core default boot must run the producer"); }
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path / 'probe.rs').write_text(function + harness)
+            subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021', '-Dwarnings',
+                            '--cfg', 'feature="gt710_core_probe"', str(path / 'probe.rs'),
+                            '-o', str(path / 'probe')], check=True)
+            subprocess.run([str(path / 'probe')], check=True)
+
     def test_suite_combinations_select_production(self):
         selections = ['all', None]
         names = ['console', 'gpu', 'gt710', 'smoke']
