@@ -1313,3 +1313,16 @@ NVIDIA open-gpu-doc 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
 classes/3d/cla197.h (MIT, Copyright 2020 NVIDIA CORPORATION): native
 program, vertex and constant-buffer method expectations. The full grant is
 retained in the test header.
+
+GT 710 native alpha encoder (milestone 8.3-u4, G14)
+--------------------------------------------------
+Consumers: kernel/src/gpu/gk208/encode.rs and tests/gt710_blend_encode_test.rs.
+The two-entry TIC/TSC pools reuse the MIT NVIDIA open-gpu-doc cla197.h
+at 9fdf5c4062007929d9f4e6cbad9c9771fe61b880 (maximum-index fields
+at 0x1564 and 0x157c), MIT envytools rnndb/graph/g80_texture.xml and
+g80_defs.xml at f102b82381f3f11cee113d16374c87091db039d9, and
+MIT Mesa 24.3.4 nvc0_tex.c at 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de
+(TIC/TSC descriptors and line 708's TIC | TSC << 20 handle encoding).
+File-local grants checked before use; original notices remain in these
+consumers. Scratch snapshots and constants follow Breenix gpu.md 1.3/1.5
+item 7 and its ARM encoder. The four committed alpha programs are unchanged.

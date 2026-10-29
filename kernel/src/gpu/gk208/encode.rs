@@ -208,6 +208,9 @@ pub struct Target {
 pub trait Bindings: Resolver {
     fn render_target(&self, handle: u64) -> Option<Target>;
     fn sampled_source(&self, handle: u64) -> Option<Target>;
+    /// Caller-owned destination snapshot for this format, retaining pixel
+    /// coordinates. Blended commands refuse if the required scratch is absent.
+    fn blend_scratch(&self, _format: u32) -> Option<Target> { None }
 }
 
 /// Warm the installed basic catalogue through the same encoder as client work.
@@ -387,6 +390,10 @@ pub fn pipeline_refusal(w: &(impl Words + ?Sized)) -> Option<stream::Refusal> {
                         | pipeline::COPY_SCALED
                         | pipeline::NEAREST_SCALED
                         | pipeline::BOX_FILTER
+                        | pipeline::OVER
+                        | pipeline::OVER_STRAIGHT
+                        | pipeline::COVERAGE
+                        | pipeline::BITMAP_TEXT
                 ) => {}
             _ => return Some(stream::Refusal { index, error: stream::error::BAD_PIPELINE }),
         }
@@ -416,6 +423,10 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
         pipeline::COPY_SCALED,
         pipeline::NEAREST_SCALED,
         pipeline::BOX_FILTER,
+        pipeline::OVER,
+        pipeline::OVER_STRAIGHT,
+        pipeline::COVERAGE,
+        pipeline::BITMAP_TEXT,
     ] {
         let (offset, header, code, _) = program(pipe);
         let fs = CODE + offset;
@@ -526,7 +537,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                     }
                     constants[16] = w.word(at + 3);
                     constants[17] = routine;
-                    quad(&mut f, t, r, clip, &constants, pipe, None);
+                    quad(&mut f, t, r, clip, &constants, pipe, None, None);
                 }
             }
             cmd::DRAW_SAMPLED | draw::COMMAND => {
@@ -567,7 +578,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                     continue;
                 };
                 let count = w.word(at + if legacy { 5 } else { 9 }) as usize;
-                for n in 0..count {
+                let instance = |n| {
                     let mut constants = [0; 32];
                     let r = if legacy {
                         let base = at + 6 + n * 6;
@@ -591,8 +602,35 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                     };
                     constants[24] = source.width;
                     constants[25] = source.height;
-                    if let Some(r) = r {
-                        quad(&mut f, t, r, clip, &constants, pipe, Some(source));
+                    r.map(|r| (constants, r))
+                };
+                let scratch = if draw::blended(pipe) {
+                    let union = (0..count).filter_map(|n| instance(n).map(|(_, r)| r))
+                        .fold(None, |u: Option<[u32; 4]>, r| Some(match u {
+                            None => r,
+                            Some(u) => [u[0].min(r[0]), u[1].min(r[1]),
+                                u[2].max(r[2]), u[3].max(r[3])],
+                        }));
+                    if let Some([x0, y0, x1, y1]) = union {
+                        let scratch = b.blend_scratch(t.format).ok_or("native blend scratch absent")?;
+                        texture_image_control(scratch)?;
+                        if scratch.format != t.format || scratch.width < x1 || scratch.height < y1
+                            || scratch.id == t.id || scratch.id == source.id
+                            || scratch.address == t.address || scratch.address == source.address {
+                            return Err("invalid native blend scratch");
+                        }
+                        // gpu.md 1.5 item 7: snapshot once per blended command,
+                        // after prior draws, at the same pixel coordinates.
+                        // Shared validation already refused intersecting writes.
+                        f.chunks.push(Chunk { command, target: scratch.id, source: Some(t.id),
+                            words: Vec::new(), relocations: Vec::new(),
+                            copy: Some((t.id, scratch.id, [x0, y0, x1-x0, y1-y0, x0, y0])) });
+                        Some(scratch)
+                    } else { None }
+                } else { None };
+                for n in 0..count {
+                    if let Some((constants, r)) = instance(n) {
+                        quad(&mut f, t, r, clip, &constants, pipe, Some(source), scratch);
                     }
                 }
             }
@@ -689,6 +727,30 @@ fn program(pipe: u32) -> (usize, &'static [u8; 80], &'static [u8], u32) {
             shaders::PIPELINE_BOX_FILTER_CODE,
             shaders::PIPELINE_BOX_FILTER_GPRS,
         ),
+        pipeline::OVER => (
+            shaders::PIPELINE_OVER_OFFSET,
+            shaders::PIPELINE_OVER_HEADER,
+            shaders::PIPELINE_OVER_CODE,
+            shaders::PIPELINE_OVER_GPRS,
+        ),
+        pipeline::OVER_STRAIGHT => (
+            shaders::PIPELINE_OVER_STRAIGHT_OFFSET,
+            shaders::PIPELINE_OVER_STRAIGHT_HEADER,
+            shaders::PIPELINE_OVER_STRAIGHT_CODE,
+            shaders::PIPELINE_OVER_STRAIGHT_GPRS,
+        ),
+        pipeline::COVERAGE => (
+            shaders::PIPELINE_COVERAGE_OFFSET,
+            shaders::PIPELINE_COVERAGE_HEADER,
+            shaders::PIPELINE_COVERAGE_CODE,
+            shaders::PIPELINE_COVERAGE_GPRS,
+        ),
+        pipeline::BITMAP_TEXT => (
+            shaders::PIPELINE_BITMAP_TEXT_OFFSET,
+            shaders::PIPELINE_BITMAP_TEXT_HEADER,
+            shaders::PIPELINE_BITMAP_TEXT_CODE,
+            shaders::PIPELINE_BITMAP_TEXT_GPRS,
+        ),
         // Mesa nvc0_program.c:775-799: first instruction follows the 80-byte
         // SPH at a 128-byte boundary, where Kepler expects scheduling words.
         PROBE_INTEGER => (
@@ -754,6 +816,7 @@ pub fn probe_frame(t: Target, source: Option<Target>) -> Frame {
             &[0; 4],
             pipe,
             Some(source),
+            None,
         );
     } else {
         let inputs = include_bytes!("caps/integer.inputs");
@@ -770,6 +833,7 @@ pub fn probe_frame(t: Target, source: Option<Target>) -> Frame {
                 &values,
                 pipe,
                 None,
+                None,
             );
         }
     }
@@ -782,7 +846,7 @@ fn corrupt_pixel(f: &mut Frame, t: Target) {
 fn solid(f: &mut Frame, t: Target, r: [u32; 4], scissor: [u32; 4], colour: u32) {
     let constants =
         [16, 8, 0, 24].map(|shift| gpu_abi::float::ratio_bits(colour >> shift & 255, 255));
-    quad(f, t, r, scissor, &constants, pipeline::SOLID, None);
+    quad(f, t, r, scissor, &constants, pipeline::SOLID, None, None);
 }
 fn quad(
     f: &mut Frame,
@@ -792,6 +856,7 @@ fn quad(
     constants: &[u32],
     pipe: u32,
     source: Option<Target>,
+    scratch: Option<Target>,
 ) {
     let uniform = f.data.len().next_multiple_of(256);
     let vertex = uniform + 256;
@@ -817,15 +882,21 @@ fn quad(
         // generic TSC0, this exact profile keeps sRGB conversion disabled.
         let sampler = [2 | (2 << 3) | (2 << 6), 1 | (1 << 4) | (1 << 6), 0, 0, 0, 0, 0, 0];
         // Validation above established this descriptor before any draw chunks.
-        for (offset, words) in [
-            (tic, texture_image_control(source).unwrap()),
-            (tsc, sampler),
-        ] {
-            for (k, v) in words.iter().enumerate() {
-                f.data[offset + k * 4..offset + k * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        for (slot, texture) in [Some(source), scratch].into_iter().enumerate() {
+            let Some(texture) = texture else { continue; };
+            for (offset, words) in [
+                (tic + slot * 32, texture_image_control(texture).unwrap()),
+                (tsc + slot * 32, sampler),
+            ] {
+                for (k, v) in words.iter().enumerate() {
+                    f.data[offset + k * 4..offset + k * 4 + 4].copy_from_slice(&v.to_le_bytes());
+                }
             }
+            // Mesa nvc0_tex.c:708: TIC | TSC << 20. The compiler selects
+            // CB15[slot] (texBindBase=0); u1's alpha assets use slots 0 and 1.
+            let handle = slot as u32 | (slot as u32) << 20;
+            f.data[handles + slot * 4..handles + slot * 4 + 4].copy_from_slice(&handle.to_le_bytes());
         }
-        // The compiler emits handle 0 in the texture CB. TIC 0 | TSC 0 is 0.
     }
     let [x0, y0, x1, y1] = r;
     for (i, [x, y]) in [[x0, y0], [x1, y0], [x1, y1], [x0, y0], [x1, y1], [x0, y1]]
@@ -976,8 +1047,9 @@ fn quad(
     c.relocations.push(c.words.len() - 2);
     c.emit(0x2490, &[1]);
     if source.is_some() {
-        c.address(0x1574, tic, &[0]);
-        c.address(0x155c, tsc, &[0]);
+        let maximum_index = u32::from(scratch.is_some());
+        c.address(0x1574, tic, &[maximum_index]);
+        c.address(0x155c, tsc, &[maximum_index]);
         c.emit(0x1334, &[0]);
         c.emit(0x1330, &[0]);
         c.emit(0x1338, &[0]);
@@ -1034,8 +1106,8 @@ pub(crate) fn prepare(
             let region = match method {
                 0x2380 => Some((u64::from(c.words[at+3]), 256, "constants")),
                 0x1c00 => Some((u64::from(c.words[at+3]), 256, "vertex")),
-                0x1574 => Some((u64::from(c.words[at+2]), 32, "texture-descriptor")),
-                0x155c => Some((u64::from(c.words[at+2]), 32, "sampler-descriptor")),
+                0x1574 => Some((u64::from(c.words[at+2]), (u64::from(c.words[at+3])+1)*32, "texture-descriptor")),
+                0x155c => Some((u64::from(c.words[at+2]), (u64::from(c.words[at+3])+1)*32, "sampler-descriptor")),
                 _ => None,
             };
             if let Some((start, bytes, name)) = region {
