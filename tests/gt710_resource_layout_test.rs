@@ -200,3 +200,46 @@ fn failed_console_vm_creation_keeps_its_pin_and_accounts_retained_tables() {
     assert_eq!(r.vram_bytes(),a.stats().charged-before);
     assert!(a.release(surface).is_err());
 }
+
+#[test]
+fn fault_owner_survives_release_without_retaining_backing() {
+    let mut a=Allocator::new(1<<30,&[]).unwrap(); let baseline=a.stats();
+    let mut io=Model::default(); let mut r=Resources::<Vec<u8>>::new();
+    r.create(&mut a,&mut io,41,3,0,8192,1).unwrap();
+    let backing=Arc::new(vec![0;8192]);
+    r.attach(&mut a,&mut io,41,backing.clone(),&[0x100000,0x101000],8192).unwrap();
+    let va=r.address(41).unwrap();
+    r.describe_frame(41,vec![resource::FrameRegion {start:4096,end:4352,name:"constants",command:7}]).unwrap();
+    let held=r.hold(41).unwrap();
+    r.unref(41).unwrap();r.collect(&mut a,&mut io).unwrap();
+    let owner=r.owner(va+4096).unwrap();
+    assert_eq!((owner.resource,owner.role,owner.region,owner.command),(41,"frame","constants",Some(7)));
+    assert!(owner.unref && owner.mapped && !owner.released);
+    drop(held);r.collect(&mut a,&mut io).unwrap();
+    let owner=r.owner(va+4096).unwrap();
+    assert_eq!((owner.resource,owner.region,owner.command),(41,"constants",Some(7)));
+    assert!(owner.unref && !owner.mapped && owner.released);
+    assert_eq!(Arc::strong_count(&backing),1);
+    assert_eq!(a.stats(),baseline);
+    assert!(r.owner(va-1).is_none());assert!(r.owner(va+8192).is_none());
+    // Reusing a resource ID must not relabel a retired address.
+    r.create(&mut a,&mut io,41,1,0,1,1).unwrap();
+    assert_eq!(r.owner(va+4096).unwrap().region,"constants");
+    assert_eq!(r.owner(r.address(41).unwrap()).unwrap().role,"target");
+}
+
+#[test]
+fn fault_owner_distinguishes_texture_and_transfer_backing() {
+    let mut a=Allocator::new(1<<30,&[]).unwrap();let mut io=Model::default();
+    let mut r=Resources::<Vec<u8>>::new();
+    r.create(&mut a,&mut io,9,2,2,8,8).unwrap();
+    let backing=Arc::new(vec![0;4096]);
+    r.attach(&mut a,&mut io,9,backing.clone(),&[],4096).unwrap();
+    let image=r.address(9).unwrap();
+    let upload=r.map_backing(&mut a,&mut io,9,&backing,&[0x100000],4096).unwrap();
+    assert_eq!(r.owner(image).unwrap().role,"texture");
+    assert_eq!(r.owner(upload).unwrap().region,"transfer-backing");
+    r.unref(9).unwrap();r.collect(&mut a,&mut io).unwrap();
+    assert!(r.owner(image).unwrap().released);
+    assert!(r.owner(upload).unwrap().released);
+}
