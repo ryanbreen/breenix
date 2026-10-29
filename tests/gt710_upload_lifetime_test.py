@@ -21,17 +21,15 @@ CORE = runpy.run_path(str(ROOT / 'tests/gt710_core_report_test.py'))
 
 
 class UploadLifetime(unittest.TestCase):
-    def test_suite_entry_points_upload_their_complete_evidence_once(self):
+    def test_suite_entry_points_capture_startup_before_the_one_use_upload(self):
         harness = r'''
 use std::sync::{Mutex, OnceLock};
 static EVENTS: Mutex<Vec<&str>> = Mutex::new(Vec::new());
 static LOGIN_CREDENTIALS: OnceLock<()> = OnceLock::new();
 fn login_credentials() {}
 pub mod libbreenix { pub mod gpu {
-    pub mod abi { pub mod backend { pub const GK208: u32 = 6; } }
-    pub struct Caps { pub backend: u32 }
-    pub fn caps() -> (i64, Caps) {
-        super::super::EVENTS.lock().unwrap().push("startup-row"); (0, Caps {backend: 6})
+    pub fn caps() -> (i64, ()) {
+        super::super::EVENTS.lock().unwrap().push("startup-row"); (0, ())
     }
 } }
 pub mod gt710_wait_probe {
@@ -42,28 +40,19 @@ pub mod gt710_wait_probe {
     }
 }
 pub mod gt710_artifacts {
-    pub fn upload(resources: Option<&super::libbreenix::gpu::Caps>) -> Result<(), &'static str> {
+    pub fn upload() -> Result<(), &'static str> {
         let mut events = super::EVENTS.lock().unwrap();
         assert!(events.contains(&"startup-row"), "one-use upload missed first-CAPS startup");
-        if resources.is_some() {
-            assert!(events.contains(&"runtime-reprobe"), "one-use upload missed runtime probe evidence");
-        }
         assert!(!events.contains(&"upload"), "upload route already consumed");
         events.push("upload"); Ok(())
     }
 }
 struct Suite;
 static SUITE: Suite = Suite;
-impl Suite {
-    #[allow(dead_code)] // Harness accepts either production entry-point API.
-    fn run(&self) -> ! { self.run_with_finalizer(|| {}) }
-    fn run_with_finalizer(&self, finalize: impl FnOnce()) -> ! {
-        EVENTS.lock().unwrap().push("runtime-reprobe");
-        finalize();
-        assert_eq!(EVENTS.lock().unwrap().iter().filter(|&&e| e == "upload").count(), 1);
-        std::process::exit(0)
-    }
-}
+impl Suite { fn run(&self) {
+    let events = EVENTS.lock().unwrap();
+    assert!(events.ends_with(&["startup-row", "upload"]), "suite starts without retained startup evidence: {events:?}");
+} }
 // ENTRY
 fn main() { producer_main(); }
 '''
@@ -73,7 +62,6 @@ fn main() { producer_main(); }
                 source = (ROOT / f'userspace/programs/src/suite_{name}.rs').read_text()
                 entry = item(source, 'fn main()').replace('fn main()', 'fn producer_main()')
                 entry = entry.replace('#[cfg(target_arch="x86_64")]', '')
-                entry = entry.replace('#[cfg(not(target_arch="x86_64"))]\n    SUITE.run()', '')
                 fixture = harness
                 if name == 'gpu':
                     # These items belong only to the console's entry point.
