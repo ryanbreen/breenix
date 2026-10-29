@@ -162,3 +162,16 @@ fn uncertain_backing_mapping_is_never_reused_or_bound() {
     assert!(r.collect(&mut a,&mut io).is_err());
     assert_eq!(a.stats(),used);assert_eq!(Arc::strong_count(&backing),2);
 }
+
+#[test]
+fn context_vertex_buffer_accepts_the_shared_r8_format() {
+    let mut a = Allocator::new(1 << 30, &[]).unwrap();
+    let mut io = Model::default(); let mut r = Resources::<Vec<u8>>::new();
+    r.create(&mut a, &mut io, 7, 3, 2, 128 * 1024, 1).unwrap();
+    assert_eq!(r.layout(7), None);
+    let backing = Arc::new(vec![0; 128 * 1024]);
+    let pages: Vec<_> = (0..32).map(|i| 0x100000 + i * 4096).collect();
+    r.attach(&mut a, &mut io, 7, backing, &pages, 128 * 1024).unwrap();
+    r.unref(7).unwrap(); r.collect(&mut a, &mut io).unwrap();
+    assert_eq!(r.vram_bytes(), 0);
+}
