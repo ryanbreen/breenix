@@ -3735,6 +3735,17 @@ struct Extra<'a> {
 /// `SUBMIT` of the stream `a` names for `tgid`: validate, translate and queue it. `out`
 /// publishes `a` to the caller: its validation diagnostics before a refusal, and its fence
 /// and estimate after queueing.
+/// Reserve the control across fallible preparation. An unsupported backend
+/// has executed no device command and must not count the one-shot as fired.
+fn prepare_device_error(extra: bool, tag: Tag, ctx: u32, fence: u64)
+    -> Result<(Option<Request>, Option<crate::test_control::Reservation<'static>>), i64> {
+    let point = if extra { None } else { crate::test_control::reserve(test_point::DEVICE_ERROR, 0) };
+    let request = if extra || point.is_some() {
+        Some(dev::undefined_command(tag, ctx, fence).ok_or(ENOSYS)?)
+    } else { None };
+    Ok((request, point))
+}
+
 fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, out: &dyn Fn(&abi::Submit) -> Result<(), i64>) -> Result<u64, i64> {
     let aliases: &[Alias] = extra.as_ref().map_or(&[], |e| e.aliases);
     let alias = |rid: &u32| aliases.iter().any(|x| x.id == *rid);
@@ -4265,10 +4276,12 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         // Test point 27, `device-error`: the chunks are followed by a fenced command of a
         // type VirtIO does not define, which the device can only refuse, and that command
         // carries the fence. Taken only once the submission is certain to be sent.
-        let forced = extra.as_ref().is_some_and(|e| e.device_error)
-            || crate::test_control::take(test_point::DEVICE_ERROR, 0).is_some();
         let serial = writer.serial;
         let fence = writer.fence;
+        let (error_request, error_point) = prepare_device_error(
+            extra.as_ref().is_some_and(|e| e.device_error),
+            Tag::Submit { ctx: id, serial, last: true }, id, fence)?;
+        let forced = error_request.is_some();
         let ctx = c.contexts.get_mut(&id).ok_or(EINVAL)?;
         // Test point 31's fence-depth mode: this context's next four answers are kept.
         if ctx.depth.is_none()
@@ -4312,9 +4325,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 }
             }
         }
-        if forced {
-            reqs.push(dev::undefined_command(Tag::Submit { ctx: id, serial, last: true }, id, fence).ok_or(EIO)?);
-        }
+        if let Some(request) = error_request { reqs.push(request); }
         let ctx = c.contexts.get_mut(&id).ok_or(EINVAL)?;
         if svga {
             ctx.dx = dx_objects;
@@ -4362,6 +4373,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         let epoch = c.epoch;
         c.backlog.extend(reqs.into_iter().map(|r| (epoch, r)));
         // No fallible preparation remains: these faults now affect a queued submission.
+        if let Some(point) = error_point { point.fire(); }
         if let Some(fault) = corruption { fault.fire(); }
         if let Some(fault) = suppression { fault.fire(); }
         if let Some(fault) = swapping { fault.fire(); }
