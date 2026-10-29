@@ -493,6 +493,16 @@
               "resources"
             ]
           }
+        },
+        {
+          "id": "alpha",
+          "title": "Score exact integer profile and alpha (M8 PR 8.3)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "alpha"
+            ]
+          }
         }
       ]
     }
