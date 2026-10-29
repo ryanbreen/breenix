@@ -85,7 +85,7 @@ fn native_formats_and_pinned_buffers_keep_their_storage_classes() {
         r.create(&mut a,&mut io,id,k,f,64,16).unwrap();
         assert!(r.layout(id).is_some());
         let va = r.address(id).unwrap(); let pte = r.pte_address(va).unwrap();
-        assert_eq!((io.words[&pte] >> 40) & 255, 0xfe, "uncompressed color kind");
+        assert_eq!((io.words[&pte] >> 36) & 255, 0xfe, "uncompressed color kind");
     }
     let used = a.stats(); let charge = r.vram_bytes();
     r.create(&mut a,&mut io,6,3,0,8192,1).unwrap();

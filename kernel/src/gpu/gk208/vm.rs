@@ -188,6 +188,14 @@ impl Space {
         backing: Range,
         flags: Flags,
     ) -> Result<(), &'static str> {
+        self.map_kind(a, io, va, backing, flags, 0)
+    }
+    /// Uncompressed storage kind, carried in GF100-family PTE bits 36..43
+    /// (MIT nouveau v6.8 vmmgf100.c:319). Existing linear callers use kind 0.
+    pub fn map_kind(
+        &mut self, a: &mut Allocator, io: &mut impl Io, va: u64,
+        backing: Range, flags: Flags, kind: u8,
+    ) -> Result<(), &'static str> {
         self.validate(va, backing)?;
         self.present(io, va, backing.size, false)?;
         let result = (|| {
@@ -209,7 +217,7 @@ impl Space {
                 )?;
                 self.tables.push((index, table));
             }
-            self.write_mapping(io, va, backing, flags)?;
+            self.write_mapping(io, va, backing, flags, kind)?;
             self.publish(io)
         })();
         if result.is_err() {
@@ -245,12 +253,13 @@ impl Space {
         va: u64,
         backing: Range,
         flags: Flags,
+        kind: u8,
     ) -> Result<(), &'static str> {
         for offset in (0..backing.size).step_by(PAGE as usize) {
             io.write(
                 self.pte_address(va + offset)
                     .ok_or("missing VM page table")?,
-                ((backing.start + offset) >> 8) | flags.bits(),
+                ((backing.start + offset) >> 8) | flags.bits() | (u64::from(kind) << 36),
             )?;
         }
         Ok(())
@@ -265,7 +274,7 @@ impl Space {
         self.validate(va, backing)?;
         self.present(io, va, backing.size, true)?;
         let result = self
-            .write_mapping(io, va, backing, flags)
+            .write_mapping(io, va, backing, flags, 0)
             .and_then(|()| self.publish(io));
         if result.is_err() {
             self.poisoned = true;

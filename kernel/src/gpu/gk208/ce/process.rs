@@ -14,7 +14,7 @@ static RECOVERY_WAITERS:WaitQueueHead=WaitQueueHead::new();
 static WAITING:AtomicBool=AtomicBool::new(false);
 static WAITERS:WaitQueueHead=WaitQueueHead::new();
 struct Work {a:Channel,b:Channel,ticket:Option<Ticket>,request:Request,seed:u32,baseline:memory::allocator::Stats,old:[u32;3],userd:Allocation,engine:Engine}
-pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,console:super::super::ConsoleSurface,work:Option<Work>}
+pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,console:super::super::ConsoleSurface,work:Option<Work>,resources:super::super::resource::Resources<crate::gpu::dma::Pages>}
 pub(in crate::gk208) fn test_ownership()->Result<(),&'static str> {
     if CORE_STARTED.load(Ordering::Acquire) {return Err("native GPU core owns FIFO");}
     Ok(())
@@ -24,7 +24,7 @@ pub(crate) fn retain(layout:memory::Layout,regs:usize,bar:usize,console:super::s
     let native=layout.objects[4].range.start;
     let s=layout.allocator.stats();
     *SESSION.lock()=Some(Session{layout,registers:regs,bar,bi:native+0x2000,bd:native+0x3000,
-        pte:native+0x4000+(SLOT/4096)*8,total:s.reserved+s.charged+s.free,console,work:None});
+        pte:native+0x4000+(SLOT/4096)*8,total:s.reserved+s.charged+s.free,console,work:None,resources:super::super::resource::Resources::new()});
     Ok(())
 }
 pub(in crate::gk208) fn initialize_core()->Result<(),&'static str> {
@@ -184,4 +184,24 @@ pub(crate) fn proc_read(op:u8)->Result<Vec<u8>,i32> {
     if op==2 {return s.drain().inspect_err(|e|crate::serial_println!("GT710_PROCESS_ERROR drain {}",e)).map(String::into_bytes).map_err(|_|-5);}
     if !WAITING.load(Ordering::Acquire) {return Ok(b"ready\n".to_vec());}
     s.status().map(String::into_bytes).map_err(|_|-5)
+}
+
+/// Borrow the allocator retained by the display/CE owner.
+/// The session lock serializes resource changes with CE ownership.
+pub(in crate::gk208) fn with_resources<R>(
+    f: impl FnOnce(&mut super::super::resource::Resources<crate::gpu::dma::Pages>,
+        &mut memory::allocator::Allocator, &mut VmIo<'_>) -> Result<R, &'static str>,
+) -> Result<R, &'static str> {
+    let mut owner = SESSION.lock();
+    let s = owner.as_mut().ok_or("native resource allocator unavailable")?;
+    if !CORE_STARTED.load(Ordering::Acquire) || s.work.is_some() {
+        return Err("native resource allocator not owned by core");
+    }
+    let before = s.resources.vram_bytes();
+    let result = f(&mut s.resources, &mut s.layout.allocator,
+        &mut VmIo { regs: &mut Registers(s.registers), total: s.total });
+    let after = s.resources.vram_bytes();
+    crate::tracing::providers::gpu::gauge(&crate::tracing::providers::gpu::GPU_VRAM_BYTES,
+        after as i64 - before as i64);
+    result
 }

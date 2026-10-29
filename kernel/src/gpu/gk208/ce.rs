@@ -715,6 +715,6 @@ mod multi;
 mod recovery;
 pub(in crate::gk208) use recovery::reset_engine;
 mod process;
-pub(super) use process::{retain,proc_read,initialize_core,test_ownership};
+pub(super) use process::{retain,proc_read,initialize_core,test_ownership,with_resources};
 
 pub(super) mod readback;

@@ -526,6 +526,7 @@ fn display_memory(
     Ok(layout)
 }
 
+pub mod resource;
 pub mod adapter;
 pub mod caps;
 

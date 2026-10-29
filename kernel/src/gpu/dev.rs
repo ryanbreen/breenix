@@ -257,6 +257,8 @@ pub fn ctx_attach(tag: Tag, ctx: u32, resource: u32) -> Option<Request> {
 /// an SVGA surface (a buffer gets no surface).
 pub fn resource_create(tag: Tag, id: u32, k: u32, f: u32, width: u32, height: u32, scanout: bool) -> Option<Request> {
     match backend() {
+        #[cfg(target_arch = "x86_64")]
+        backend::GK208 => return crate::gk208::resource::resource_create(tag, id, k, f, width, height).map(Request::Gk208),
         backend::SVGA3D_DX => return svga::resource_create(tag, id, k, f, width, height, scanout).map(Request::Svga),
         backend::VIRGL => {},
         _ => return None,
@@ -277,11 +279,17 @@ pub fn resource_create(tag: Tag, id: u32, k: u32, f: u32, width: u32, height: u3
 }
 
 pub fn attach_backing(tag: Tag, id: u32, backing: Arc<Pages>) -> Option<Request> {
-    match backend() { backend::SVGA3D_DX => svga::attach_backing(tag, id, backing).map(Request::Svga), backend::VIRGL => virgl::attach_backing(tag, id, backing).map(Request::Virgl), _ => None }
+    match backend() {
+        #[cfg(target_arch = "x86_64")]
+        backend::GK208 => crate::gk208::resource::attach_backing(tag, id, backing).map(Request::Gk208),
+        backend::SVGA3D_DX => svga::attach_backing(tag, id, backing).map(Request::Svga), backend::VIRGL => virgl::attach_backing(tag, id, backing).map(Request::Virgl), _ => None }
 }
 
 pub fn resource_unref(tag: Tag, id: u32, backing: Option<Arc<Pages>>) -> Option<Request> {
-    match backend() { backend::SVGA3D_DX => Some(Request::Svga(svga::resource_unref(tag, id, backing))), backend::VIRGL => Some(Request::Virgl(virgl::resource_unref(tag, id, backing))), _ => None }
+    match backend() {
+        #[cfg(target_arch = "x86_64")]
+        backend::GK208 => crate::gk208::resource::resource_unref(tag, id, backing).map(Request::Gk208),
+        backend::SVGA3D_DX => Some(Request::Svga(svga::resource_unref(tag, id, backing))), backend::VIRGL => Some(Request::Virgl(virgl::resource_unref(tag, id, backing))), _ => None }
 }
 
 /// An upload of the box `(x, y, w, h)` of resource `id`'s backing (at `offset`, `stride`

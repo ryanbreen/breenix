@@ -1114,3 +1114,24 @@ metadata described above. Their existing copyright headers and full MIT grants
 are retained. `kernel/src/gpu/gk208/ce/process.rs` and `kernel/src/gpu/mod.rs`
 supply Breenix-owned first-use registration and shared admission. No additional
 external source or generated asset is introduced by this repair.
+
+
+GT 710 native resource layout (milestone 8.2)
+--------------------------------------------
+Source: Mesa 24.3.4, commit 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de
+  src/gallium/drivers/nouveau/nvc0/nvc0_miptree.c
+  src/gallium/drivers/nouveau/nv50/nv50_miptree.c
+License: MIT; each file's full header checked before use.
+Copyright 2008 Ben Skeggs.
+Consumer: kernel/src/gpu/gk208/resource.rs (2D block-linear pitch, size and
+block-height selection). The original copyright and complete permission notice
+are retained in that file. No Gallium or DRM runtime is imported.
+Pinned source mirror:
+https://github.com/chaotic-cx/mesa-mirror/tree/769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de
+
+Source: nouveau in Linux v6.8, commit e8f897f4afef0031fe618a8e94127a0934896aba
+  drivers/gpu/drm/nouveau/nvkm/subdev/mmu/vmmgf100.c:319
+License: MIT; full file header checked before using the storage-kind field.
+Copyright 2017 Red Hat Inc.
+Consumer: kernel/src/gpu/gk208/vm.rs (uncompressed kind in PTE bits 36..43).
+That file already retains the original complete MIT notice from this source.

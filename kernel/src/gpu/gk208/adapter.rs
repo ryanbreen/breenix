@@ -1,6 +1,7 @@
 //! Native requests under the shared GPU core. Hardware mechanisms remain in
-//! the existing channel/CE/GR modules; only engine receipts can publish Done.
-use alloc::{collections::VecDeque, vec::Vec};
+//! the existing channel/CE/GR modules. Engine receipts publish fences; storage
+//! operations return unfenced acknowledgements after the VM owner completes them.
+use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 use crate::{gpu::dev::{Done, Reap, Tag}, gpu_completion};
 use super::{copy::Rect, gr::{channel::NativeChannel, draw::Draw}, queue::Queue};
 
@@ -10,7 +11,10 @@ pub enum Operation { Copy(Rect), Draw(Draw) }
 pub struct Request {
     pub tag: Tag,
     pub fence: Option<u64>,
-    operation: Operation,
+    operation: Option<Operation>,
+    /// CPU storage/VM acknowledgement, deliberately unfenced.
+    storage: bool,
+    _backing: Option<Arc<crate::gpu::dma::Pages>>,
     resource: u64,
     generation: u64,
     upload: bool,
@@ -20,12 +24,12 @@ pub struct Request {
 impl Request {
     /// Kernel builders resolve validated handles to GPU addresses before admission.
     pub fn copy(tag: Tag, caller: u64, resource: u64, generation: u64, rect: Rect) -> Self {
-        Self { tag, fence: Some(caller), operation: Operation::Copy(rect), resource, generation, upload: false,
+        Self { tag, fence: Some(caller), operation: Some(Operation::Copy(rect)), storage: false, _backing: None, resource, generation, upload: false,
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             control: super::core_record::Control::Clean }
     }
     pub fn draw(tag: Tag, caller: u64, resource: u64, generation: u64, draw: Draw) -> Self {
-        Self { tag, fence: Some(caller), operation: Operation::Draw(draw), resource, generation, upload: false,
+        Self { tag, fence: Some(caller), operation: Some(Operation::Draw(draw)), storage: false, _backing: None, resource, generation, upload: false,
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             control: super::core_record::Control::Clean }
     }
@@ -35,8 +39,16 @@ impl Request {
         request
     }
     pub fn is_upload(&self) -> bool { self.upload }
+    /// Actual allocation/map/unmap completed in the resource owner before this
+    /// receipt was constructed. This is not an engine completion or a fence.
+    pub(crate) fn storage(tag: Tag, backing: Option<Arc<crate::gpu::dma::Pages>>) -> Self {
+        Self { tag, fence: None, operation: None, storage: true, _backing: backing,
+            resource: 0, generation: 0, upload: false,
+            #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
+            control: super::core_record::Control::Clean }
+    }
 }
-struct Sent { request: Request, identity: gpu_completion::Request }
+struct Sent { request: Request, identity: Option<gpu_completion::Request> }
 
 pub struct Device {
     channel: NativeChannel,
@@ -65,6 +77,11 @@ impl Device {
     }
     pub fn send(&mut self, request: Request) -> Result<(), Request> {
         if !self.has_room(1) || self.pending.try_reserve(1).is_err() { return Err(request); }
+        if request.storage {
+            self.pending.push_back(Sent { request, identity: None });
+            return Ok(());
+        }
+        let Some(operation) = request.operation.as_ref() else { return Err(request) };
         let Ok(sequence) = self.queue.next() else { return Err(request) };
         let (context, epoch) = self.channel.identity();
         let caller = request.fence.unwrap_or(0);
@@ -74,12 +91,12 @@ impl Device {
         // Retain the request on uncertain publication: a failing doorbell or
         // BAR flush leaves backing in pending until confirmed recovery.
         #[cfg(not(any(feature = "testing", feature = "gt710_core_probe")))]
-        let result = self.channel.publish(sequence, &request.operation);
+        let result = self.channel.publish(sequence, operation);
         #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
         let result = if request.control == super::core_record::Control::Clean {
-            self.channel.publish(sequence, &request.operation)
-        } else { self.channel.publish_probe(sequence, &request.operation, request.control) };
-        self.pending.push_back(Sent { request, identity });
+            self.channel.publish(sequence, operation)
+        } else { self.channel.publish_probe(sequence, operation, request.control) };
+        self.pending.push_back(Sent { request, identity: Some(identity) });
         if result.is_err() || self.queue.publish(sequence).is_err() { self.fault = true; }
         Ok(())
     }
@@ -87,13 +104,18 @@ impl Device {
         if self.resetting.is_some() { return Reap::Empty; }
         if self.needs_reset() { return Reap::Fault; }
         let Some(front) = self.pending.front() else { return Reap::Empty };
-        let sample = match self.channel.sample(front.identity.sequence) {
+        let Some(identity) = front.identity else {
+            let sent = self.pending.pop_front().unwrap();
+            return Reap::Done(Done { tag: sent.request.tag, fence: None, native_fence: None,
+                answer: gpu_abi::gk208::SUCCESS, echoed: 0, fenced: false });
+        };
+        let sample = match self.channel.sample(identity.sequence) {
             Ok(sample) if sample.healthy => sample,
             _ => { self.fault = true; return Reap::Fault; }
         };
         // No caller fence, constant success tag, GET or host reference alone
         // can construct the opaque engine completion.
-        let Some(completed) = front.identity.complete(sample) else { return Reap::Empty };
+        let Some(completed) = identity.complete(sample) else { return Reap::Empty };
         let identity = completed.request();
         if self.queue.complete(identity.sequence).is_err() { self.fault = true; return Reap::Fault; }
         let sent = self.pending.pop_front().unwrap();
@@ -151,7 +173,7 @@ impl Device {
         if !matches!(sent.request.control, super::core_record::Control::WithheldRelease | super::core_record::Control::StaleEpoch) {
             return Err("core request is not a negative control");
         }
-        let identity = sent.identity;
+        let identity = sent.identity.ok_or("storage receipt is not an engine control")?;
         if !self.channel.probe_drained(identity.sequence)? { return Ok(None); }
         // Resample after the terminal release: an earlier observation could
         // have raced the engine while it was still writing the epoch words.

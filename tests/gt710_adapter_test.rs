@@ -3,6 +3,7 @@ extern crate alloc;
 use std::{cell::RefCell, rc::Rc};
 #[path = "../kernel/src/gpu/completion.rs"] pub mod gpu_completion;
 pub mod gpu {
+    pub mod dma { pub struct Pages; }
     pub mod dev {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Tag { Background, Sync(u64) }
@@ -117,4 +118,22 @@ fn send(d:&mut Device,caller:u64) {assert!(d.send(request(caller)).is_ok());}
     assert!(!matches!(d.reap(),Reap::Done(_)));
     s.borrow_mut().release=9;
     assert!(matches!(d.reap(),Reap::Done(_)));
+}
+
+#[test] fn storage_ack_is_unfenced_ordered_and_retains_backing_until_reaped() {
+    use std::sync::Arc;
+    let (mut d,s)=device();send(&mut d,9001);
+    let pages=Arc::new(gpu::dma::Pages);
+    let storage=Request::storage(Tag::Sync(99),Some(pages.clone()));
+    assert!(d.send(storage).is_ok());
+    assert_eq!(Arc::strong_count(&pages),2);
+    assert!(matches!(d.reap(),Reap::Empty));
+    assert_eq!(s.borrow().published,vec![1],"storage is not an engine packet");
+    s.borrow_mut().release=1;
+    let Reap::Done(draw)=d.reap() else {panic!("draw receipt absent")};
+    assert_eq!(draw.fence,Some(9001));assert_eq!(Arc::strong_count(&pages),2);
+    let Reap::Done(storage)=d.reap() else {panic!("storage receipt absent")};
+    assert_eq!(storage.tag,Tag::Sync(99));assert_eq!(storage.answer,gpu_abi::gk208::SUCCESS);
+    assert_eq!((storage.fence,storage.native_fence,storage.echoed,storage.fenced),(None,None,0,false));
+    assert_eq!(Arc::strong_count(&pages),1);
 }

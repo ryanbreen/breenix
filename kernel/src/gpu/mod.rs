@@ -3048,10 +3048,14 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
             if a.width == 0 || a.height == 0 || a.width > max || a.height > max || a.size != 0 {
                 return Err(EINVAL);
             }
-            // VirGL transfers use rows aligned to 256 bytes; VMware's version 1 surfaces keep
-            // packed rows (section 1.3, backing and row pitch).
+            // Guest staging stays linear. Native images use a GOB-wide row;
+            // block padding belongs to VRAM, not the guest-backing quota.
             let packed = a.width * format::bytes(a.format);
-            let pitch = if dev::is_svga() { packed } else { packed.next_multiple_of(256) };
+            let pitch = match dev::backend() {
+                abi::backend::SVGA3D_DX => packed,
+                abi::backend::GK208 => packed.next_multiple_of(64),
+                _ => packed.next_multiple_of(256),
+            };
             (pitch as u64 * a.height as u64, pitch)
         }
         kind::BUFFER => {
