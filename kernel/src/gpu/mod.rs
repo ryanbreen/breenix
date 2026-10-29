@@ -3965,9 +3965,22 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             let prepared = (|| {
                 // Reserve payload and bounded method storage before translating.
                 let bytes = crate::gk208::encode::DATA_START as u64 + 4096
-                    + plan.drawn.checked_add(plan.draws).ok_or(ENOMEM)?.max(1).checked_mul(4096).ok_or(ENOMEM)?;
+                    + plan.drawn.checked_add(plan.draws).and_then(|n| n.checked_add(u64::from(corrupt.is_some())))
+                        .ok_or(ENOMEM)?.max(1).checked_mul(4096).ok_or(ENOMEM)?;
                 let charge = Arc::new(Charge::new(tgid, bytes, true)?);
-                let frame = crate::gk208::encode::translate(&words, &resolved).map_err(|_| EINVAL)?;
+                let swap = match swap {
+                    Some((word, other)) => {
+                        let e = view.entries.iter().find(|e| e.id == other.id).ok_or(EINVAL)?;
+                        Some((word, crate::gk208::encode::target(e.id, e.format).ok_or(EINVAL)?))
+                    }
+                    None => None,
+                };
+                let frame = if corrupt.is_none() && suppress.is_none() && swap.is_none() {
+                    crate::gk208::encode::translate(&words, &resolved)
+                } else {
+                    crate::gk208::encode::translate_with_extras(&words, &resolved,
+                        crate::gk208::encode::Extras { corrupt, suppress, swap })
+                }.map_err(|_| EINVAL)?;
                 let backing = Arc::new(Pages::new(frame.data.len().div_ceil(PAGE)).ok_or(ENOMEM)?);
                 backing.write(0,&frame.data);
                 backing.maintain(0,frame.data.len(),false);
@@ -4614,7 +4627,8 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
     // as a completed one.
     let skip = crate::test_control::take(test_point::SKIP_UPLOAD_VISIBILITY, a.resource).is_some();
     let device_ctx = dev::context_id(ctx);
-    let sent = if skip {
+    let native = dev::backend() == abi::backend::GK208;
+    let sent = if skip && !native {
         with_core(|c| (c.serial(), 0, dev::success())).ok_or((ENODEV, 0))
     } else {
         match with_core(|c| (c.serial(), c.device_fence())) {
@@ -4622,15 +4636,25 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
             Some((serial, fence)) => {
                 match dev::transfer_to_host(Tag::Sync(serial), ctx, fence, id, backing.clone(), x as u32, y as u32, cw as u32, ch as u32, offset, pitch as u32) {
                     None => Err((EIO, 0)),
-                    Some(req) => match exec_req_why(serial, req, ctx, &[id], &[id]) {
-                        Ok(d) if dev::ok(d.answer) && d.matches_fence(fence) => {
-                            let recorded = if dev::backend() == abi::backend::GK208 { fence } else { d.echoed };
-                            Ok((serial, recorded, d.answer))
+                    Some(req) => {
+                        #[cfg(target_arch = "x86_64")]
+                        let req = {
+                            let mut req = req;
+                            if let Request::Gk208(request) = &mut req {
+                                request.transfer_controls(crate::gk208::copy::Extras { skip, stale_fence: false });
+                            }
+                            req
+                        };
+                        match exec_req_why(serial, req, ctx, &[id], &[id]) {
+                            Ok(d) if dev::ok(d.answer) && d.matches_fence(fence) => {
+                                let recorded = if native { fence } else { d.echoed };
+                                Ok((serial, recorded, d.answer))
+                            }
+                            Ok(_) => Err((EIO, serial)),
+                            Err((e @ (EIO | EINTR), _)) => Err((e, serial)),
+                            Err((e, _)) => Err((e, 0)),
                         }
-                        Ok(_) => Err((EIO, serial)),
-                        Err((e @ (EIO | EINTR), _)) => Err((e, serial)),
-                        Err((e, _)) => Err((e, 0)),
-                    },
+                    }
                 }
             }
         }
@@ -5240,9 +5264,8 @@ fn observe(
         }
         memory(b).maintain(at, (b.rows - 1) * stride + row, false);
         b.sent = None;
-        if crate::test_control::take(test_point::SKIP_TRANSFER, a.target).is_some() {
-            return Ok(());
-        }
+        let skip = crate::test_control::take(test_point::SKIP_TRANSFER, a.target).is_some();
+        if skip && dev::backend() != abi::backend::GK208 { return Ok(()); }
         let ty = (a.y as usize + b.by) as u32;
         let other = wrong_resource(tgid, id, pitch, a.x, ty, a.width, b.rows as u32, a.target);
         let other_id = other.as_ref().map(|(rid, _)| *rid);
@@ -5275,6 +5298,15 @@ fn observe(
                 }
             },
         };
+        #[cfg(target_arch = "x86_64")]
+        let req = {
+            let mut req = req;
+            if let Request::Gk208(request) = &mut req {
+                let stale_fence = crate::test_control::take(test_point::STALE_FENCE, a.target).is_some();
+                request.transfer_controls(crate::gk208::copy::Extras { skip, stale_fence });
+            }
+            req
+        };
         // The target, and the other resource when the transfer names one.
         let both = [id, named];
         let marks = if named == id { &both[..1] } else { &both[..] };
@@ -5294,7 +5326,8 @@ fn observe(
         release_other(s.other);
         let mut d = done.map_err(device_reason)?;
         // Test point 20, `stale-fence`: the answer is taken as echoing the next fence.
-        if crate::test_control::take(test_point::STALE_FENCE, a.target).is_some() {
+        if dev::backend() != abi::backend::GK208
+            && crate::test_control::take(test_point::STALE_FENCE, a.target).is_some() {
             d.echoed = d.echoed.wrapping_add(1);
         }
         if !dev::ok(d.answer) {

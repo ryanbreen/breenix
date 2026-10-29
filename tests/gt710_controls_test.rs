@@ -151,7 +151,9 @@
 extern crate alloc;
 #[allow(dead_code)] // Bring-up programs are used by the kernel, outside this harness.
 #[path = "../kernel/src/gpu/gk208/gr/shaders.rs"] mod shaders;
+#[allow(dead_code)] // Admission APIs have separate CAPS checks.
 #[path = "../kernel/src/gpu/gk208/caps.rs"] mod caps;
+#[allow(dead_code)] // Relocation and admission APIs have separate native encoder checks.
 #[path = "../kernel/src/gpu/gk208/encode.rs"] mod encode;
 #[allow(dead_code)] // The pitch-only and bring-up APIs have separate checks.
 #[path = "../kernel/src/gpu/gk208/copy.rs"] mod copy;

@@ -1226,3 +1226,13 @@ NVIDIA CORPORATION), classes/dma-copy/cla0b5.h (MIT, Copyright (c) 2019
 NVIDIA CORPORATION). TIC fields reuse the MIT rnndb g80_texture.xml and
 g80_defs.xml and Mesa nvc0_tex.c sources recorded for u5 above. The checked
 file-local grants and original notices accompany the check.
+
+The u7 implementation in kernel/src/gpu/gk208/encode.rs reuses those attributed
+A197 solid/TIC builders for an extra pixel draw, a dropped draw and an alternate
+texture binding. kernel/src/gpu/gk208/copy.rs uses its existing cla0b5.h MIT
+release methods to omit data launches or write a wrong sequence followed by a
+separate terminal drain. kernel/src/gpu/gk208/gr/channel.rs reads that report
+word from Breenix's existing 16-byte report slot; adapter.rs validates the
+channel/epoch/drain and returns the device's original echo. Existing source
+notices remain in the hardware consumers. No additional firmware, external
+runtime or shader asset is introduced.

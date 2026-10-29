@@ -150,6 +150,14 @@ pub trait Bindings: Resolver {
     fn render_target(&self, handle: u64) -> Option<Target>;
     fn sampled_source(&self, handle: u64) -> Option<Target>;
 }
+/// The shared core reserves these controls until device work is queued.
+/// Their effects are confined to this frame, as in the SVGA encoder.
+#[derive(Clone, Copy, Default)]
+pub struct Extras {
+    pub corrupt: Option<u64>,
+    pub suppress: Option<u64>,
+    pub swap: Option<(usize, Target)>,
+}
 pub struct Chunk {
     pub target: u32,
     pub words: Vec<u32>,
@@ -203,6 +211,10 @@ fn handle(w: &(impl Words + ?Sized), at: usize) -> u64 {
 /// Full validation precedes allocation or output; unsupported catalogue entries
 /// refuse the whole stream as well. Later units extend this same encoder.
 pub fn translate(w: &(impl Words + ?Sized), b: &impl Bindings) -> Result<Frame, &'static str> {
+    translate_with_extras(w, b, Extras::default())
+}
+pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras) -> Result<Frame, &'static str> {
+    let Extras { mut corrupt, mut suppress, swap } = x;
     stream::validate(w, b).map_err(|_| "invalid BGL draw stream")?;
     let mut at = 0;
     while at < w.len() {
@@ -241,14 +253,22 @@ pub fn translate(w: &(impl Words + ?Sized), b: &impl Bindings) -> Result<Frame, 
         f.data[fs + 80..fs + 80 + code.len()].copy_from_slice(code);
     }
     let mut target = None;
+    let mut current_handle = 0;
     let mut scissor = None;
     at = 0;
     while at < w.len() {
         let code = w.word(at);
         match code {
             cmd::BEGIN => {
+                if let Some(t) = target {
+                    if corrupt == Some(current_handle) {
+                        corrupt_pixel(&mut f, t);
+                        corrupt = None;
+                    }
+                }
+                current_handle = handle(w, at + 2);
                 let t = b
-                    .render_target(handle(w, at + 2))
+                    .render_target(current_handle)
                     .ok_or("native target absent")?;
                 if t.id == 0
                     || t.address == 0
@@ -269,6 +289,11 @@ pub fn translate(w: &(impl Words + ?Sized), b: &impl Bindings) -> Result<Frame, 
             }
             cmd::SCISSOR => scissor = Some([2, 3, 4, 5].map(|k| w.word(at + k) as i32)),
             cmd::CLEAR | cmd::DRAW | cmd::DRAW_BUFFER => {
+                if code != cmd::CLEAR && suppress == Some(current_handle) {
+                    suppress = None;
+                    at += w.word(at + 1) as usize;
+                    continue;
+                }
                 let t = target.ok_or("native target absent")?;
                 let clip = stream::clipped(
                     [0, 0, t.width as i32, t.height as i32],
@@ -313,6 +338,18 @@ pub fn translate(w: &(impl Words + ?Sized), b: &impl Bindings) -> Result<Frame, 
                 {
                     return Err("invalid native sampled source");
                 }
+                let source = match swap {
+                    Some((word, other)) if word == at => other,
+                    _ => source,
+                };
+                texture_image_control(source)?;
+                if source.id == t.id { return Err("native sampled source aliases target"); }
+                // Bound the substitute as well as the validated named texture.
+                let clipped_info = stream::SourceInfo {
+                    width: info.width.min(source.width),
+                    height: info.height.min(source.height),
+                    ..info
+                };
                 let Some(clip) = stream::clipped(
                     [0, 0, t.width as i32, t.height as i32],
                     t.width,
@@ -330,7 +367,7 @@ pub fn translate(w: &(impl Words + ?Sized), b: &impl Bindings) -> Result<Frame, 
                         let i = core::array::from_fn(|k| w.word(base + k) as i32);
                         constants[0] = (i[4] as u32).wrapping_sub(i[0] as u32);
                         constants[1] = (i[5] as u32).wrapping_sub(i[1] as u32);
-                        stream::sampled_clip(i, t.width, t.height, source.width, source.height)
+                        stream::sampled_clip(i, t.width, t.height, clipped_info.width, clipped_info.height)
                             .and_then(|r| {
                                 stream::clipped(r.map(|v| v as i32), t.width, t.height, scissor)
                             })
@@ -342,7 +379,7 @@ pub fn translate(w: &(impl Words + ?Sized), b: &impl Bindings) -> Result<Frame, 
                         };
                         constants[..16].copy_from_slice(&i.params);
                         constants[20] = w.word(at + 3);
-                        draw::source_clip(pipe, i, Some(info))
+                        draw::source_clip(pipe, i, Some(clipped_info))
                             .and_then(|i| draw::clip(pipe, i, t.width, t.height, scissor))
                     };
                     constants[24] = source.width;
@@ -355,6 +392,9 @@ pub fn translate(w: &(impl Words + ?Sized), b: &impl Bindings) -> Result<Frame, 
             _ => unreachable!(),
         }
         at += w.word(at + 1) as usize;
+    }
+    if let Some(t) = target {
+        if corrupt == Some(current_handle) { corrupt_pixel(&mut f, t); }
     }
     if f.chunks.is_empty() {
         let t = target.ok_or("native target absent")?;
@@ -501,6 +541,10 @@ pub fn probe_frame(t: Target, source: Option<Target>) -> Frame {
         }
     }
     f
+}
+/// Point 22 uses the solid shader at (0,0), outside the suite's draw/scissor.
+fn corrupt_pixel(f: &mut Frame, t: Target) {
+    solid(f, t, [0, 0, 1, 1], [0, 0, 1, 1], !0x3c5a_a5c3);
 }
 fn solid(f: &mut Frame, t: Target, r: [u32; 4], scissor: [u32; 4], colour: u32) {
     let constants =

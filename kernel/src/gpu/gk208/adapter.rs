@@ -61,16 +61,23 @@ impl Request {
         request.upload = true;
         request
     }
-    #[cfg(target_os = "none")]
     pub(in crate::gk208) fn transfer(tag: Tag, caller: u64, resource: u64,
-        plan: super::copy::Plan, upload: bool, hold: super::ce::readback::TransferHold,
+        plan: super::copy::Plan, upload: bool,
+        #[cfg(target_os = "none")] hold: super::ce::readback::TransferHold,
         backing: Option<Arc<crate::gpu::dma::Pages>>,
     ) -> Self {
         Self { tag, fence: Some(caller), operation: Some(Operation::Transfer(plan)), encoded: None,
-            storage: false, _backing: backing, _transfer_hold: Some(hold),
+            storage: false, _backing: backing,
+            #[cfg(target_os = "none")]
+            _transfer_hold: Some(hold),
             resource, generation: 1, upload,
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             control: super::core_record::Control::Clean }
+    }
+    pub(crate) fn transfer_controls(&mut self, extras: super::copy::Extras) {
+        if let Some(Operation::Transfer(plan)) = self.operation.as_mut() {
+            *plan = plan.with_extras(extras);
+        }
     }
     pub fn is_upload(&self) -> bool { self.upload }
     /// Actual allocation/map/unmap completed in the resource owner before this
@@ -154,13 +161,32 @@ impl Device {
             return Reap::Done(Done { tag: sent.request.tag, fence: None, native_fence: None,
                 answer: gpu_abi::gk208::SUCCESS, echoed: 0, fenced: false });
         };
-        let sample = match self.channel.sample(identity.sequence) {
+        let mut sample = match self.channel.sample(identity.sequence) {
             Ok(sample) if sample.healthy => sample,
             _ => { self.fault = true; return Reap::Fault; }
         };
         // No caller fence, constant success tag, GET or host reference alone
         // can construct the opaque engine completion.
-        let Some(completed) = identity.complete(sample) else { return Reap::Empty };
+        let completed = match identity.complete(sample) {
+            Some(completed) => completed,
+            None if matches!(front.request.operation, Some(Operation::Transfer(_))) => {
+                // A bad transfer echo may retire only behind an independent device
+                // drain with the same channel/epoch. No control flag certifies it.
+                let drain = match self.channel.transfer_drain(identity.sequence) {
+                    Ok(sample) if sample.healthy => sample,
+                    _ => { self.fault = true; return Reap::Fault; }
+                };
+                let Some(completed) = identity.complete(drain) else { return Reap::Empty };
+                // Re-read after the terminal release, rather than keeping an echo
+                // sampled while the CE was still writing this slot.
+                sample = match self.channel.sample(identity.sequence) {
+                    Ok(sample) if sample.healthy => sample,
+                    _ => { self.fault = true; return Reap::Fault; }
+                };
+                completed
+            }
+            None => return Reap::Empty,
+        };
         let identity = completed.request();
         if self.queue.complete(identity.sequence).is_err() { self.fault = true; return Reap::Fault; }
         let sent = self.pending.pop_front().unwrap();

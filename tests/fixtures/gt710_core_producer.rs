@@ -99,6 +99,9 @@ pub mod gk208 {
                     // A consumed stream can precede the engine release.
                     if self.drain==0 && self.polls<=3 {Ok(CeSample{sequence:0,..self.sample})} else {Ok(self.sample)}
                 }
+                pub fn transfer_drain(&mut self,sequence:u32)->Result<CeSample,&'static str>{
+                    let mut sample=self.sample(sequence)?;sample.sequence=self.drain;Ok(sample)
+                }
                 pub fn probe_drained(&mut self,sequence:u32)->Result<bool,&'static str>{if self.drain==sequence {if let Some(s)=self.final_sample.take(){self.sample=s;}Ok(true)} else {Ok(false)}}
                 pub fn reset(&mut self)->Result<(),&'static str>{Ok(())}
                 pub fn restart(&mut self)->Result<(),&'static str>{Ok(())}

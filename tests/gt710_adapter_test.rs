@@ -11,10 +11,11 @@ pub mod gpu {
         pub enum Reap {Empty,Done(Done),Fault}
     }
 }
+#[path = "../kernel/src/gpu/gk208"]
 pub mod gk208 {
-    #[path = "../../kernel/src/gpu/gk208/queue.rs"] pub mod queue;
+    #[path = "queue.rs"] pub mod queue;
     #[allow(dead_code)] // Only transfer request construction is needed by this fixture.
-    #[path = "../../kernel/src/gpu/gk208/copy.rs"] pub mod copy;
+    #[path = "copy.rs"] pub mod copy;
     pub fn transfer_request(caller: u64) -> adapter::Request {
         let image=copy::Image {address:1<<32,width:16,height:8,texel_bytes:4,pitch:64,block_height:2,bytes:1024};
         let backing=copy::Linear {address:2<<32,bytes:4096,offset:0,stride:64};
@@ -57,8 +58,8 @@ pub mod gk208 {
             }
         }
     }
-    #[path = "../../kernel/src/gpu/gk208/caps.rs"] pub mod caps;
-    #[path = "../../kernel/src/gpu/gk208/adapter.rs"] pub mod adapter;
+    #[path = "caps.rs"] pub mod caps;
+    #[path = "adapter.rs"] pub mod adapter;
 }
 use gpu::dev::{Reap,Tag};
 use gk208::{adapter::{Device,Request},copy::Rect,gr::channel::NativeChannel};

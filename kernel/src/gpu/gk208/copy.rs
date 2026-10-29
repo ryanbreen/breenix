@@ -143,7 +143,17 @@ enum Surface { Tiled(Image, [u32; 2]), Pitch(Linear) }
 struct Blit { src: Surface, dst: Surface, width: u32, height: u32, bpp: u32 }
 /// At most two non-pipelined launches. The sole completion follows both.
 #[derive(Clone, Copy)]
-pub struct Plan { copies: [Option<Blit>; 2] }
+pub struct Plan { copies: [Option<Blit>; 2], stale_fence: bool }
+#[derive(Clone, Copy, Default)]
+pub struct Extras { pub skip: bool, pub stale_fence: bool }
+impl Plan {
+    /// Apply one request's controls to its engine work before publication.
+    pub fn with_extras(mut self, x: Extras) -> Self {
+        if x.skip { self.copies = [None, None]; }
+        self.stale_fence = x.stale_fence;
+        self
+    }
+}
 impl Image {
     fn validate(self) -> Result<(), &'static str> {
         if self.width == 0 || self.height == 0 || self.width > 16384 || self.height > 16384
@@ -184,7 +194,7 @@ fn host_plan(image: Image, backing: Linear, r: [u32; 4], upload: bool) -> Result
     }
     let (tiled,pitch) = (Surface::Tiled(image,[x,y]),Surface::Pitch(backing));
     let (src,dst) = if upload { (pitch,tiled) } else { (tiled,pitch) };
-    Ok(Plan { copies: [Some(Blit { src,dst,width:w,height:h,bpp:image.texel_bytes }),None] })
+    Ok(Plan { stale_fence: false, copies: [Some(Blit { src,dst,width:w,height:h,bpp:image.texel_bytes }),None] })
 }
 pub fn upload(image: Image, backing: Linear, r: [u32; 4]) -> Result<Plan, &'static str> {
     host_plan(image,backing,r,true)
@@ -213,8 +223,8 @@ pub fn region(src: Image, dst: Image, r: [u32; 6], staging: Option<Image>) -> Re
             return Err("invalid CE overlap staging");
         }
         let t = Surface::Tiled(t,[0,0]);
-        Ok(Plan { copies:[Some(blit(s,t)),Some(blit(t,d))] })
-    } else { Ok(Plan { copies:[Some(blit(s,d)),None] }) }
+        Ok(Plan { stale_fence: false, copies:[Some(blit(s,t)),Some(blit(t,d))] })
+    } else { Ok(Plan { stale_fence: false, copies:[Some(blit(s,d)),None] }) }
 }
 fn surface(out: &mut Vec<u32>, s: Surface, source: bool) -> (u64,u32,u32) {
     match s {
@@ -229,7 +239,8 @@ fn surface(out: &mut Vec<u32>, s: Surface, source: bool) -> (u64,u32,u32) {
     }
 }
 pub fn encode_plan(plan: Plan, semaphore: u64, epoch: u64, sequence: u32) -> Result<Vec<u32>, &'static str> {
-    if semaphore % 4 != 0 || semaphore > (1<<40)-12 || epoch == 0 || sequence == 0 {
+    let record_bytes = if plan.stale_fence { 16 } else { 12 };
+    if semaphore % 4 != 0 || semaphore > (1<<40)-record_bytes || epoch == 0 || sequence == 0 {
         return Err("invalid CE completion record");
     }
     let mut out = vec![];
@@ -243,8 +254,13 @@ pub fn encode_plan(plan: Plan, semaphore: u64, epoch: u64, sequence: u32) -> Res
         method(&mut out,0x400,&[(s>>32) as u32,s as u32,(d>>32) as u32,d as u32,sp,dp,b.width,b.height]);
         method(&mut out,0x300,&[0x606 | sl | dl]);
     }
-    for (off,value) in [(4,epoch as u32),(8,(epoch>>32) as u32),(0,sequence)] {
+    let echo = if plan.stale_fence { sequence.wrapping_add(1) } else { sequence };
+    for (off,value) in [(4,epoch as u32),(8,(epoch>>32) as u32),(0,echo)] {
         release(&mut out,semaphore+off,value);
+    }
+    if plan.stale_fence {
+        // This distinct engine release certifies drain, not the bad fence echo.
+        release(&mut out,semaphore+12,sequence);
     }
     Ok(out)
 }

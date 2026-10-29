@@ -1516,6 +1516,16 @@ mod native {
             let drain = unsafe { ((self.session.pages.va(0) + offset) as *const u32).read_volatile() };
             Ok(sample.healthy && sample.consumed >= sequence && drain == sequence)
         }
+        /// The fourth report word is a separate CE release for transfer drain.
+        pub(crate) fn transfer_drain(&mut self, sequence: u32) -> Result<crate::gpu_completion::CeSample, &'static str> {
+            self.session.pages.observe();
+            let offset = u64::from(crate::gk208::queue::Queue::slot(sequence)) * 16 + 12;
+            // SAFETY: the coherent report page retains this request's 16-byte slot.
+            let drain = unsafe { ((self.session.pages.va(0) + offset) as *const u32).read_volatile() };
+            let mut sample = self.sample(sequence)?;
+            sample.sequence = drain;
+            Ok(sample)
+        }
         pub(crate) fn sample(&mut self, sequence: u32) -> Result<crate::gpu_completion::CeSample, &'static str> {
             let mut regs = Registers(self.registers);
             let mut monitor = Monitor { session: &self.session, regs: &mut regs, total: self.total,
