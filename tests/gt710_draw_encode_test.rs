@@ -230,3 +230,42 @@ fn parking_upload_is_complete_bounded_contiguous_and_stops_on_error() {
         }).is_err());
     }
 }
+
+#[test]
+fn shape_code_fits_parking_and_bounded_channel_uploads() {
+    let target = encode::Target { id: 1, address: 0x800000, width: 1, height: 1,
+        format: format::B8G8R8A8, tile_mode: 0 };
+    let source = encode::Target { id: 2, address: 0x801000, ..target };
+    let address = 0x3_0000_0000;
+    let bytes = encode::parking_bytes(target, source).unwrap();
+    let (data, _) = encode::parking_frame(target, source, address, 0xa00000).unwrap();
+    assert_eq!(data.len(), bytes);
+    let mut end = 0;
+    for (offset, header, code, gprs) in [
+        (shaders::PIPELINE_COVERAGE_SPANS_OFFSET, shaders::PIPELINE_COVERAGE_SPANS_HEADER, shaders::PIPELINE_COVERAGE_SPANS_CODE, shaders::PIPELINE_COVERAGE_SPANS_GPRS),
+        (shaders::PIPELINE_LINE_OFFSET, shaders::PIPELINE_LINE_HEADER, shaders::PIPELINE_LINE_CODE, shaders::PIPELINE_LINE_GPRS),
+        (shaders::PIPELINE_CIRCLE_FILL_OFFSET, shaders::PIPELINE_CIRCLE_FILL_HEADER, shaders::PIPELINE_CIRCLE_FILL_CODE, shaders::PIPELINE_CIRCLE_FILL_GPRS),
+        (shaders::PIPELINE_CIRCLE_OUTLINE_OFFSET, shaders::PIPELINE_CIRCLE_OUTLINE_HEADER, shaders::PIPELINE_CIRCLE_OUTLINE_CODE, shaders::PIPELINE_CIRCLE_OUTLINE_GPRS),
+        (shaders::PIPELINE_ROUNDED_RECT_OFFSET, shaders::PIPELINE_ROUNDED_RECT_HEADER, shaders::PIPELINE_ROUNDED_RECT_CODE, shaders::PIPELINE_ROUNDED_RECT_GPRS),
+        (shaders::PIPELINE_GRADIENT_V_OFFSET, shaders::PIPELINE_GRADIENT_V_HEADER, shaders::PIPELINE_GRADIENT_V_CODE, shaders::PIPELINE_GRADIENT_V_GPRS),
+        (shaders::PIPELINE_TRIANGLE_OFFSET, shaders::PIPELINE_TRIANGLE_HEADER, shaders::PIPELINE_TRIANGLE_CODE, shaders::PIPELINE_TRIANGLE_GPRS),
+    ] {
+        let program_end = offset + header.len() + code.len();
+        assert_eq!((offset + header.len()) % 128, 0);
+        assert!(end <= offset && program_end <= encode::DATA_START - (1 << 20));
+        assert!(program_end <= bytes, "parking allocation must retain shape code");
+        assert_eq!(&data[offset..offset + header.len()], header);
+        assert_eq!(&data[offset + header.len()..program_end], code);
+        assert!((4..=255).contains(&gprs));
+        end = program_end;
+    }
+    let mut uploaded = Vec::new();
+    encode::upload_parking(address, &data, |va, chunk| {
+        // gr/channel.rs Session::upload rejects empty or >16 KiB payloads.
+        assert!(!chunk.is_empty() && chunk.len() <= 16384);
+        assert_eq!(va, address + uploaded.len() as u64);
+        uploaded.extend_from_slice(chunk);
+        Ok(())
+    }).unwrap();
+    assert_eq!(uploaded, data);
+}
