@@ -149,3 +149,15 @@ fn frame_retirement_does_not_retire_the_channels_vab_area() {
         }
     }
 }
+
+#[test]
+fn fully_clipped_frame_keeps_its_fenced_noop_without_a_vab_binding() {
+    let mut words=Vec::new();
+    stream::encode::begin(&mut words,1);
+    words.extend([stream::cmd::SCISSOR,6,128,128,192,192]);
+    stream::encode::draw(&mut words,pipeline::SOLID,0xff123456,&[[0,0,64,64]]);
+    let f=encode::translate(words.as_slice(),&View(format::B8G8R8A8)).unwrap();
+    assert_eq!(f.chunks.len(),1);assert_eq!(f.chunks[0].target,19);
+    assert!(f.chunks[0].words.is_empty());
+    assert!(encode::channel_words(&f.chunks[0].words,0x1800_0000).unwrap().is_empty());
+}

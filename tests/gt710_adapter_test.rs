@@ -35,7 +35,7 @@ pub mod gk208 {
                 }
                 pub fn publish_draw(&mut self,sequence:u32,draw:&crate::gk208::adapter::EncodedDraw)->Result<(),&'static str> {
                     assert_eq!(draw.target,19);
-                    assert_eq!(draw.words,[0x20010367,0]);
+                    assert_eq!(draw.words,self.0.borrow().expected_draw);
                     if self.0.borrow().fail_publish {return Err("injected native publication failure");}
                     self.0.borrow_mut().published.push(sequence);Ok(())
                 }
@@ -66,11 +66,11 @@ use gpu::dev::{Reap,Tag};
 use gk208::{adapter::{Device,Request},copy::Rect,gr::channel::NativeChannel};
 pub struct State {
     epoch:u64,channel:u64,release_epoch:u64,release:u32,drain:u32,fault:bool,
-    fail_reset:bool,fail_unbind:bool,fail_publish:bool,stopped:bool,published:Vec<u32>,events:Vec<&'static str>,
+    fail_reset:bool,fail_unbind:bool,fail_publish:bool,stopped:bool,published:Vec<u32>,events:Vec<&'static str>,expected_draw:Vec<u32>,
 }
 fn device()->(Device,Rc<RefCell<State>>) {
     let s=Rc::new(RefCell::new(State{epoch:17,channel:0x123000,release_epoch:17,release:0,drain:0,fault:false,
-        fail_reset:false,fail_unbind:false,fail_publish:false,stopped:false,published:vec![],events:vec![]}));
+        fail_reset:false,fail_unbind:false,fail_publish:false,stopped:false,published:vec![],events:vec![],expected_draw:vec![0x20010367,0]}));
     (Device::new(NativeChannel(s.clone()),gk208::caps::BoardState::empty()),s)
 }
 fn request(caller:u64)->Request {
@@ -202,4 +202,18 @@ fn uncertain_draw_publication_preserves_the_first_native_error_and_backing() {
     assert_eq!(d.fault_reason(),Some("injected native publication failure"));
     s.borrow_mut().fail_reset=true;d.begin_reset();
     assert!(!d.reset_done());assert_eq!(d.outstanding(),1);
+}
+
+#[test]
+fn empty_draw_still_waits_for_a_fresh_engine_release() {
+    let (mut d,s)=device();s.borrow_mut().expected_draw.clear();
+    let draw=gk208::adapter::EncodedDraw {target:19,words:vec![]};
+    assert!(d.send(Request::draw(Tag::Sync(9001),9001,19,1,draw)).is_ok());
+    assert!(matches!(d.reap(),Reap::Empty));assert_eq!(d.outstanding(),1);
+    s.borrow_mut().release=1;s.borrow_mut().release_epoch=16;
+    assert!(matches!(d.reap(),Reap::Empty));
+    s.borrow_mut().release_epoch=17;
+    let Reap::Done(done)=d.reap() else {panic!("empty draw has no fresh release")};
+    assert_eq!((done.fence,done.native_fence,done.echoed),(Some(9001),Some(1),1));
+    assert!(done.fenced);
 }
