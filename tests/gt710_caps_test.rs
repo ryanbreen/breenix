@@ -148,8 +148,8 @@ fn exact_executed_probes_admit_and_publish_only_measured_caps() {
     }
     assert_eq!(a.formats.map(|f| f.flags), [3, 3, 1]);
     assert_eq!(a.profile, 7);
-    // Admission of arithmetic/format primitives does not claim the later catalogue.
-    assert_eq!(a.pipelines, 0);
+    // PR 8.2 advertises its five basic pipelines after executable admission.
+    assert_eq!(a.pipelines, 0x1f);
     for identity in [(0x124000,17), (0x123000,18)] {
         let stale = caps::Profile::from_board(&b, identity).record(None);
         assert_eq!(stale.capability_origin(c::REGION_COPY), o::UNPROBED);
