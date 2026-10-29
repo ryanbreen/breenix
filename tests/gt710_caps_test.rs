@@ -126,3 +126,70 @@ fn complete(sequence:u32, caller:u64) -> gpu_completion::CeCompletion {
     }
     assert!(observation::native_record(version,complete(1,9001),[complete(2,23),complete(3,42)], &[1,2,3,4], &[1,2,0,4]).is_err());
 }
+
+fn probed_board() -> caps::BoardState {
+    let mut b = board();
+    for id in c::BGRA_RENDER..=c::REGION_COPY {
+        let expected = caps::probe_expected(id).unwrap();
+        assert!(expected.len() > 512);
+        b.probes.record(id, true, expected, expected);
+    }
+    b
+}
+#[test]
+fn exact_executed_probes_admit_and_publish_only_measured_caps() {
+    let b = probed_board();
+    let p = caps::Profile::from_board(&b, b.channel);
+    let a = p.record(None);
+    assert_eq!((a.status, a.missing), (gpu_abi::status::ADMITTED, 0));
+    for id in c::BGRA_RENDER..=c::REGION_COPY {
+        assert_eq!(a.capability_origin(id), o::EXECUTABLE_PROBE);
+        assert_eq!(p.admission(Some(id)), Err((gpu_abi::status::MISSING_CAPABILITY, id)));
+    }
+    assert_eq!(a.formats.map(|f| f.flags), [3, 3, 1]);
+    assert_eq!(a.profile, 7);
+    // Admission of arithmetic/format primitives does not claim the later catalogue.
+    assert_eq!(a.pipelines, 0);
+    for identity in [(0x124000,17), (0x123000,18)] {
+        let stale = caps::Profile::from_board(&b, identity).record(None);
+        assert_eq!(stale.capability_origin(c::REGION_COPY), o::UNPROBED);
+    }
+}
+#[test]
+fn bad_swizzle_block_height_byte_or_missing_execution_refuses_its_capability() {
+    for id in c::BGRA_RENDER..=c::REGION_COPY {
+        let expected = caps::probe_expected(id).unwrap();
+        for fault in 0..6 {
+            let mut b = probed_board();
+            let mut bad = expected.to_vec();
+            match fault {
+                0 => for pixel in bad.chunks_exact_mut(4) { pixel.swap(0, 2); },
+                // Wrong block height exchanges GOB 1 in column 0 with GOB 0
+                // in column 1: rows 8..15 at x=0 versus rows 0..7 at x=16.
+                1 => for y in 0..8 { for x in 0..16 { for k in 0..4 {
+                    bad.swap(((y+8)*80+x)*4+k, (y*80+x+16)*4+k);
+                } } },
+                2 => bad[513] ^= 1,
+                3 => (), // Exact bytes alone do not prove this boot ran the probe.
+                4 => { bad.pop(); },
+                5 => bad.fill(0xaa),
+                _ => unreachable!(),
+            }
+            assert!(fault == 3 || bad != expected, "ineffective fault {fault}, capability {id}");
+            // Exercise both destinations independently, after an earlier pass:
+            // failed remeasurement must revoke any prior executable evidence.
+            for second in [false, true] {
+                let (a, z) = if second { (expected, bad.as_slice()) } else { (bad.as_slice(), expected) };
+                b.probes.record(id, fault != 3, a, z);
+                let a = caps::Profile::from_board(&b, b.channel).record(None);
+                assert_eq!((a.status, a.missing), (gpu_abi::status::MISSING_CAPABILITY, id));
+                assert_eq!(a.capability_origin(id), o::UNPROBED);
+                let reason = format!("missing {}\0", c::name(id));
+                assert!(a.reason.starts_with(reason.as_bytes()));
+                for other in c::BGRA_RENDER..=c::REGION_COPY {
+                    if other != id { assert_eq!(a.capability_origin(other), o::EXECUTABLE_PROBE); }
+                }
+            }
+        }
+    }
+}
