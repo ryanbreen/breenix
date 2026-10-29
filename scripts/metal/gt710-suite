@@ -2127,7 +2127,7 @@ def resources_capture(directory, sha):
         events = [json.loads(l) for l in read('events.jsonl').splitlines()]
         status = read('exit-status').strip()
         if (not read('ended').strip() or read('dirty').strip() != '0' or read('commit').strip() != sha
-                or status not in (('0', '1') if suite == 'gpu' else ('0',))
+                or status != '0'
                 or any(e.get('event') in ('console-gap', 'fatal') for e in events)
                 or sum(e.get('event') == 'final-marker' for e in events) != 1):
             raise ValueError('resources capture incomplete, dirty, gapped or unsuccessful')
