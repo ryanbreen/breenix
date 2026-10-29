@@ -503,6 +503,16 @@
               "alpha"
             ]
           }
+        },
+        {
+          "id": "shapes",
+          "title": "Score shapes and coverage spans (M8 PR 8.4)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "shapes"
+            ]
+          }
         }
       ]
     }

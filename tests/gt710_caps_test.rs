@@ -148,9 +148,9 @@ fn exact_executed_probes_admit_and_publish_only_measured_caps() {
     }
     assert_eq!(a.formats.map(|f| f.flags), [3, 3, 1]);
     assert_eq!(a.profile, 7);
-    // PR 8.3 adds alpha pipelines after executable admission; shapes wait for 8.4.
-    assert_eq!(a.pipelines, 0x2ff);
-    assert_eq!(a.pipelines & (1 << 16), 0);
+    // The shared row includes rendering IDs 0 through 15 and PROBE_INT.
+    assert_eq!(a.pipelines, (1 << gpu_abi::pipeline::COUNT) - 1);
+    assert_ne!(a.pipelines & (1 << gpu_abi::pipeline::PROBE_INT), 0);
     for identity in [(0x124000,17), (0x123000,18)] {
         let stale = caps::Profile::from_board(&b, identity).record(None);
         assert_eq!(stale.capability_origin(c::REGION_COPY), o::UNPROBED);

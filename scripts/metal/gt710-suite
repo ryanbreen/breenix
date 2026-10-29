@@ -108,6 +108,7 @@ CATEGORIES = {
     ),
     'resources': [('row', 'Production CAPS admits backend 6 with executable origins 3-10, native classes and live scanouts'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 8.2 step passing, reclaimed memory and its own time within 900 s'), ('console', 'A completed production console boot passes 88/88 within 330 s of handoff')],
     'alpha': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 77-case 8.3 step passing, reclaimed memory and its own time within 900 s')],
+    'shapes': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 90-case 8.4 step passing, reclaimed memory and its own time within 900 s')],
     'core': [('row', 'CAPS bytes match the native backend-6 row and the created board classes'), ('dispatch', 'Native draws and copies complete; copy controls reject withheld release, stale epoch and masked 3D admission and accept their clean successors'), ('producer', 'A named production GPU-suite boot reports 170 manifest-ordered unprobed-capability admission refusals without skips and reports its own time')],
     'device': (
         ('identity', 'The PCI report identifies 10de:128b with subsystem 1462:8c93 and its interrupt line'),
@@ -2015,7 +2016,7 @@ def resources_identity(boot, suite, sha=None):
         raise ValueError('resources requires a named production ' + suite + ' boot of the same kernel/build/tools')
 
 
-STEP_SELECTIONS = {'resources': 'gt710-step-8-2.json', 'alpha': 'gt710-step-8-3.json'}
+STEP_SELECTIONS = {'resources': 'gt710-step-8-2.json', 'alpha': 'gt710-step-8-3.json', 'shapes': 'gt710-step-8-4.json'}
 
 
 def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
@@ -2178,7 +2179,7 @@ def record_resources_capture(directory, sha, category='resources'):
 
 
 def check_case(category, case, serial, producer=None):
-    if category == 'alpha':
+    if category in ('alpha', 'shapes'):
         if producer is None or case != 'suite':
             raise ValueError('alpha needs named production GPU and console captures')
         gpu = producer['gpu']
@@ -2794,6 +2795,7 @@ def main():
     parser.add_argument('--sha')
     parser.add_argument('--gpu-boot', help='completed companion GPU-only suite boot for core/producer')
     parser.add_argument('--resources', action='store_true', help='score PR 8.2 from this console boot and --gpu-boot; retain core/* separately')
+    parser.add_argument('--shapes', action='store_true', help='score PR 8.4 shapes and preceding selections from the same captures')
     parser.add_argument('--alpha', action='store_true', help='score PR 8.3 alpha/suite and the unchanged PR 8.2 resources rows from the same captures')
     parser.add_argument('--acceptance-directory', type=Path, help='score a locally retained console capture and its resources-producer at the current PR head')
     parser.add_argument('--pr', type=int, help='open PR whose live head must match --sha for local alpha acceptance')
@@ -2848,11 +2850,11 @@ def main():
         raise ValueError('a completed, clean, successful boot of the requested commit is required')
     if any(json.loads(line).get('event') == 'console-gap' for line in read('events.jsonl').splitlines()):
         raise ValueError('capture has a console gap')
-    if args.resources or args.alpha:
+    if args.resources or args.alpha or args.shapes:
         if (args.core_boot or not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.gpu_boot or '')
                 or args.gpu_boot == args.boot):
             parser.error('--resources needs a distinct --gpu-boot and no --core-boot')
-        categories = ['resources', 'alpha'] if args.alpha else ['resources']
+        categories = ['resources', 'alpha', 'shapes'] if args.shapes else (['resources', 'alpha'] if args.alpha else ['resources'])
         companion = runner['STATE'] + '/boots/' + args.gpu_boot
         runner['in_metal'](env, 'python3', '-c',
             'import sys,shutil;from pathlib import Path;'
@@ -2869,7 +2871,7 @@ def main():
             'p=m.boot_dir(sys.argv[1]);v=metal_score.score(p);m.write_json(p/"milestone-verdict.json",v);'
             'rows=[(c,v["milestones"].get("metal-gt710/"+c,{})) for c in sys.argv[2].split(",")];'
             'passed=v.get("captureComplete") is True and all(r.get("passed") is True and '
-            'r.get("reached")==r.get("total")==({"resources":3,"alpha":1}[c]) for c,r in rows);'
+            'r.get("reached")==r.get("total")==({"resources":3,"alpha":1,"shapes":1}[c]) for c,r in rows);'
             '[print("metal-gt710/"+c,r,flush=True) for c,r in rows];'
             '\nwith m.locked("finished"):\n entries=[json.loads(l) for l in (m.STATE/"finished.jsonl").read_text().splitlines()];'
             'm.append_jsonl(m.STATE/"finished.jsonl",dict(id=p.name,seq=max(e["seq"] for e in entries)+1))'
