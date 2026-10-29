@@ -1490,7 +1490,13 @@ mod native {
             crate::gk208::ce::with_resources(|r,_,io| r.bind(io,
                 s.context.space().directory.range.start,s.report.identity.instance,s.report.identity.epoch))?;
             // Storage retains the uploaded code/inputs and the frame's target holds.
-            let mut command = crate::gk208::encode::channel_words(&draw.words, self.quarantine)?;
+            let payload = crate::gk208::encode::channel_words(&draw.words, self.quarantine)?;
+            // Restart reconstructs RAMFC without its old subchannel classes.
+            // SET_OBJECT must precede graphics state and release methods even
+            // when clipping leaves no draw (MIT cla197.h:34-36).
+            let mut command = super::bind().to_vec();
+            if payload.is_empty() { command.extend([0x20010044, 0]); }
+            command.extend(payload);
             // A completed draw does not revoke its persistent engine bindings.
             // Rebind code, stages, constants/handles, vertex start/limit, VAB,
             // TIC/TSC and RT to bootstrap-owned storage before releasing any
@@ -1499,7 +1505,6 @@ mod native {
             // Idle first, then publish state without launches, then idle again
             // before CB unbind/selector parking and the engine release reports.
             // MIT cla197.h defines these address methods and WAIT_FOR_IDLE.
-            if command.is_empty() { command.extend([0x20010044, 0]); }
             command.extend_from_slice(&self.parking);
             let sink = TARGET + 256;
             command.extend([0x2001043d, 0x100, 0x200308e0,
