@@ -37,9 +37,12 @@ fn main() {
  let mut moved=retained;
  unsafe {std::mem::ManuallyDrop::drop(&mut moved)};
  assert!(owner::census().contains("pages=0 allocations=0"));
+ // gpu.md's bounded-validation case snapshots 16 MiB in individual pages,
+ // while the native channel and runner already own allocations.
  let mut live=Vec::new();
- while let Some(a)=owner::Allocation::new(1,"bounded") {live.push(a);}
- assert!(!live.is_empty());
+ for _ in 0..4097 {live.push(owner::Allocation::new(1,"stream-snapshot").expect("diagnostic metadata refused the contract's stream"));}
+ let census=owner::census();
+ assert!(census.lines().count()<=4097,"owner census is not bounded");
  let n=live.len();drop(live.pop());
  live.push(owner::Allocation::new(2,"reused").unwrap());
  assert!(owner::census().contains(&format!("pages={} allocations={}",n+1,n)));
