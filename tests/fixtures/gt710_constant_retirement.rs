@@ -60,12 +60,16 @@ mod gk208 {
             pub struct Identity { pub instance: u64, pub epoch: u64 }
             pub struct Report { pub identity: Identity }
             pub struct Session { pub context: Context, pub report: Report }
-            pub struct NativeChannel { pub session: Session, pub quarantine: u64, pub sent: Vec<u32> }
+            pub struct NativeChannel { pub session: Session, pub quarantine: u64, pub sent: Vec<u32>, pub parking: Vec<u32> }
             impl NativeChannel {
                 pub fn new() -> Self {
+                    let t = crate::encode::Target { id: 1, address: 0x19200000, width: 1, height: 1,
+                        format: gpu_abi::format::B8G8R8A8, tile_mode: 0 };
+                    let (_, parking) = crate::encode::parking_frame(t,
+                        crate::encode::Target { id: 2, address: 0x19201000, ..t }, 0x19100000, 0x18000000).unwrap();
                     Self { session: Session { context: Context { space: Space { directory: Directory { range: Range { start: 0x100000 } } } },
                         report: Report { identity: Identity { instance: 0x851c000, epoch: 17 } } },
-                        quarantine: 0x18000000, sent: Vec::new() }
+                        quarantine: 0x18000000, sent: Vec::new(), parking }
                 }
                 // PUBLISH_DRAW
                 fn publish_encoded(&mut self, sequence: u32, command: &mut Vec<u32>) -> Result<(), &'static str> {

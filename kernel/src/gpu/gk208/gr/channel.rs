@@ -1368,7 +1368,7 @@ mod native {
             let session = self.session.take().unwrap();
             let channel = NativeChannel { session, registers: h.regs.0, total: h.total,
                 mmu: [0; 2], _scratch: None, topology: [[0; 2]; 3], initial: Vec::new(),
-                quarantine: 0, put: last, confirmed: false, _bootstrap: None };
+                quarantine: 0, parking: Vec::new(), put: last, confirmed: false, _bootstrap: None };
             let mut device = crate::gpu::dev::Device::Gk208(adapter::Device::probe(channel, board, last));
             let result = self.producer.run(&mut device, operation, name);
             let crate::gpu::dev::Device::Gk208(device) = device else { unreachable!() };
@@ -1413,6 +1413,7 @@ mod native {
         topology: [[u32; 2]; 3],
         initial: Vec<u8>,
         quarantine: u64,
+        parking: Vec<u32>,
         put: u32,
         confirmed: bool,
         _bootstrap: Option<ManuallyDrop<crate::gk208::lifetime::Context>>,
@@ -1421,7 +1422,7 @@ mod native {
         /// Transfer a drained live channel only after all fallible preparation.
         pub(in crate::gk208::gr) fn into_native(
             owner: &mut Option<Self>, registers: usize, total: u64, mmu: [Allocation; 2],
-            allocator: &memory::allocator::Allocator, quarantine: u64,
+            allocator: &memory::allocator::Allocator, quarantine: u64, parking: Vec<u32>,
         ) -> Result<NativeChannel, &'static str> {
             let session = owner.as_ref().ok_or("native channel owner absent")?;
             if !session.bound || session.second.is_some() || session.copy.is_none() || session.quiesced {
@@ -1437,7 +1438,7 @@ mod native {
             let put = session.next_sequence - 1;
             Ok(NativeChannel { session: owner.take().unwrap(), registers, total,
                 mmu: mmu.map(|a| a.range.start), _scratch: Some(scratch), topology,
-                initial, quarantine, put, confirmed: false, _bootstrap: None })
+                initial, quarantine, parking, put, confirmed: false, _bootstrap: None })
         }
     }
 
@@ -1483,20 +1484,22 @@ mod native {
         }
         pub(crate) fn publish_draw(&mut self, sequence: u32, draw: &crate::gk208::adapter::EncodedDraw)
             -> Result<(), &'static str> {
+            if self.parking.is_empty() { return Err("native frame parking absent"); }
             let s = &self.session;
             crate::gk208::ce::with_resources(|r,_,io| r.bind(io,
                 s.context.space().directory.range.start,s.report.identity.instance,s.report.identity.epoch))?;
             // Storage retains the uploaded code/inputs and the frame's target holds.
             let mut command = crate::gk208::encode::channel_words(&draw.words, self.quarantine)?;
-            // Encoded draws end in WAIT_FOR_IDLE; establish that boundary for
-            // a clipped no-op too. Before the release permits frame unmapping,
-            // drop its CB bindings and move SCC's selector to retained storage.
-            // 073949Z-metal faulted on released command-169 constants after
-            // later draws had already rebound the selector. A197 UNBIND_ALL
-            // bit 8 clears the bindings (MIT cla197.h:1309-1312); selector
-            // A..C are 0x2380..0x2388 (3732-3739). The 256-byte sink is in the
-            // channel's pinned report page, beyond its four 16-byte receipts.
+            // A completed draw does not revoke its persistent engine bindings.
+            // Rebind code, stages, constants/handles, vertex start/limit, VAB,
+            // TIC/TSC and RT to bootstrap-owned storage before releasing any
+            // frame or its target/source holds. The parked TIC names a retained
+            // image too. There is no index binding: quad uses DRAW_ARRAYS.
+            // Idle first, then publish state without launches, then idle again
+            // before CB unbind/selector parking and the engine release reports.
+            // MIT cla197.h defines these address methods and WAIT_FOR_IDLE.
             if command.is_empty() { command.extend([0x20010044, 0]); }
+            command.extend_from_slice(&self.parking);
             let sink = TARGET + 256;
             command.extend([0x2001043d, 0x100, 0x200308e0,
                 256, (sink >> 32) as u32, sink as u32]);

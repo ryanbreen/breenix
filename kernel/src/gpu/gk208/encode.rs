@@ -224,6 +224,34 @@ pub fn warm_frame(target: Target, source: Target, pipe: u32) -> Option<Frame> {
     translate(words.as_slice(), &View(target, source)).ok()
 }
 
+/// Build an inert channel state from the sampled encoder. Its
+/// code, constants, vertices and descriptors occupy retained bootstrap VRAM;
+/// its two images are separate retained pages. No draw launch is published.
+/// VAB remains in the channel's separate 1 MiB scratch allocation.
+pub fn parking_frame(target: Target, source: Target, address: u64, quarantine: u64)
+    -> Result<(Vec<u8>, Vec<u32>), &'static str> {
+    let mut frame = warm_frame(target, source, pipeline::COPY)
+        .ok_or("native parking frame refused")?;
+    // CODE is a 128 KiB multiple; omit the obsolete per-frame VAB reservation.
+    // channel_words redirects that one binding to channel-owned VAB storage.
+    frame.relocate(address.checked_sub(CODE as u64).ok_or("native parking VA underflow")?)?;
+    let mut parked = Vec::new();
+    for chunk in &frame.chunks {
+        let words = channel_words(&chunk.words, quarantine)?;
+        let mut at = 0;
+        while at < words.len() {
+            let count = ((words[at] >> 16) & 0x1fff) as usize;
+            // A197 BEGIN/END and the vertex array start/count packet launch work in
+            // quad(). Keep the complete state, including both program offsets.
+            if !matches!((words[at] & 0x1fff)*4, 0x1618 | 0xd74 | 0x1614) {
+                parked.extend_from_slice(&words[at..at+count+1]);
+            }
+            at += count+1;
+        }
+    }
+    Ok((frame.data.split_off(CODE), parked))
+}
+
 #[cfg(target_os = "none")]
 pub(crate) fn warm(target_id: u32, source_id: u32, pipe: u32) -> Option<Vec<super::adapter::EncodedDraw>> {
     let frame = warm_frame(target(target_id, format::B8G8R8A8)?,

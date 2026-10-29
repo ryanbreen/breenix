@@ -360,11 +360,23 @@ fn initialize_inner(
             if images[0] != images[1] { return Err("native startup CE readbacks differ"); }
             // VAB can still write during channel scheduling after a draw's
             // release. Keep it in the bootstrap residency through reset.
-            graphics.allocate_draw(&mut hardware, "native-vab", 1 << 20, 1 << 17).map(|b| b.va)
+            let quarantine = graphics.allocate_draw(&mut hardware, "native-vab", 1 << 20, 1 << 17)?.va;
+            // Park the complete draw state on channel-owned storage. Allocation
+            // and mapping use the bootstrap owner, retained through reset/unbind.
+            let images = graphics.allocate_draw(&mut hardware, "native-park-images", 8192, 4096)?;
+            let storage = graphics.allocate_draw(&mut hardware, "native-park-inputs", 16384, 1 << 17)?;
+            let target = super::encode::Target { id: 1, address: images.va, width: 1, height: 1,
+                format: gpu_abi::format::B8G8R8A8, tile_mode: 0 };
+            let source = super::encode::Target { id: 2, address: images.va+4096, ..target };
+            let (data, parking) = super::encode::parking_frame(target, source, storage.va, quarantine)?;
+            if data.len() as u64 > storage.spec.bytes { return Err("native parking storage extent"); }
+            graphics.upload(&mut hardware, images.va, &[0; 8192])?;
+            graphics.upload(&mut hardware, storage.va, &data)?;
+            Ok((quarantine, parking))
         })();
         let report = graphics.report();
         hardware.graphics = Some(graphics);
-        let quarantine = result?;
+        let (quarantine, parking) = result?;
         let mut board = super::caps::BoardState::empty();
         board.chipset = ((hardware.regs.read(0) >> 20) & 0x1ff) as u16;
         board.channel = (report.identity.instance, report.identity.epoch);
@@ -374,7 +386,7 @@ fn initialize_inner(
         board.scanouts[0] = super::caps_scanout(console)?;
         let last = hardware.graphics.as_ref().unwrap().last_sequence();
         let native = channel::Session::into_native(&mut hardware.graphics, hardware.regs.0,
-            total, mmu, &hardware.layout.allocator, quarantine)?;
+            total, mmu, &hardware.layout.allocator, quarantine, parking)?;
         Ok((native, board, last))
     })();
     match result {

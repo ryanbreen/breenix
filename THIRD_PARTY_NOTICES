@@ -1274,3 +1274,11 @@ classes/3d/cla197.h (MIT, Copyright (c) 2020 NVIDIA CORPORATION). Its complete
 file-local permission notice was checked and is retained in the consumer.
 The model enumerates the Breenix encoder's code, constants/handles, vertex,
 VAB, TIC/TSC and image bindings at the production publisher's release.
+
+The channel parking builder in kernel/src/gpu/gk208/encode.rs reuses its
+already attributed sampled encoder and retains its original source grants.
+Launch suppression and the parking publication in gr/channel.rs use the
+same pinned MIT NVIDIA cla197.h BEGIN/END, vertex array start/count,
+WAIT_FOR_IDLE and address methods. The original NVIDIA copyright and
+complete MIT grant remain in both files. gr/mod.rs allocates and uploads
+Breenix-owned parking storage through the existing bootstrap context.

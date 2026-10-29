@@ -116,6 +116,18 @@ fn frame_release_retires_every_bound_region_across_sampled_solid_and_clipped_fra
     let source = encode::Target { id: 20, address: 0x200100000, ..t };
     let mut channel = gk208::gr::channel::NativeChannel::new();
     assert!(!channel.parking.is_empty());
+    let parked_target = encode::Target { id: 1, address: IMAGE, width: 1, height: 1,
+        format: format::B8G8R8A8, tile_mode: 0 };
+    let parked_source = encode::Target { id: 2, address: IMAGE+4096, ..parked_target };
+    let (bytes, words) = encode::parking_frame(parked_target, parked_source,
+        PARK+(1<<20), channel.quarantine).unwrap();
+    assert!(bytes.len() <= 16384);
+    assert_eq!(words, channel.parking, "production parking must match the retained sampled state");
+    // The TIC in the retained input buffer points only at the retained image.
+    let tic = 8192+512;
+    let image_va = u64::from(u32::from_le_bytes(bytes[tic+4..tic+8].try_into().unwrap()))
+        | (u64::from(u32::from_le_bytes(bytes[tic+8..tic+12].try_into().unwrap()) & 0xff)<<32);
+    assert_eq!(image_va, IMAGE+4096);
     let (mut regs, mut bound) = (BTreeMap::<u32,u32>::new(), [false;16]);
     for (n, pipe) in [Some(pipeline::COPY), Some(pipeline::SOLID),
         Some(pipeline::NEAREST_SCALED), None].into_iter().enumerate() {
