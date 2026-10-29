@@ -129,3 +129,23 @@ fn invalid_tail_and_unsupported_pipeline_emit_nothing() {
     stream::encode::draw(&mut w, pipeline::OVER, 0, &[[0,0,4,4]]);
     assert!(encode::translate(w.as_slice(), &View(format::B8G8R8A8)).is_err());
 }
+
+#[test]
+fn frame_retirement_does_not_retire_the_channels_vab_area() {
+    let quarantine=0x1800_0000;
+    for base in [0x3_0000_0000,0x3_0020_0000] {
+        let mut f=encode::translate(frame().as_slice(),&View(format::B8G8R8A8)).unwrap();
+        f.relocate(base).unwrap();
+        for chunk in f.chunks {
+            let words=encode::channel_words(&chunk.words,quarantine).unwrap();
+            let packets=packets(&words);
+            let vab=packets.iter().find(|(m,_)|*m==0x17bc).unwrap();
+            assert_eq!(vab.1,[0,quarantine as u32,3]);
+            let code=packets.iter().find(|(m,_)|*m==0x1608).unwrap();
+            assert_eq!(u64::from(code.1[0])<<32|u64::from(code.1[1]),base+(1<<20));
+            assert!(encode::channel_words(&chunk.words,quarantine+4096).is_err());
+            assert!(encode::channel_words(&chunk.words,0).is_err());
+            assert!(encode::channel_words(&chunk.words[..chunk.words.len()-1],quarantine).is_err());
+        }
+    }
+}
