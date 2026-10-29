@@ -231,6 +231,20 @@ class ResourcesReport(unittest.TestCase):
             with self.subTest(case=name), self.assertRaises(ValueError):
                 API['resources_suite'](changed, boot())
 
+    def test_standard_wait_record_belongs_to_the_running_manifest_case(self):
+        text = transcript()
+        marker = 'SUITE gpu CASE submit/context-destroy '
+        wait = 'SUITE gpu WAIT submit/context-destroy until=66517 for=3000 result=freed-ms\n'
+        changed = text.replace(marker, wait + marker)
+        result = API['resources_suite'](changed, boot())
+        self.assertEqual(len(result['cases']), 170)
+        self.assertEqual(sum(c['result'] == 'PASS' for c in result['cases']), 53)
+        for bad in [changed.replace('WAIT submit/context-destroy', 'WAIT device/version'),
+                    changed.replace('until=66517', 'until=1'),
+                    wait + text, text + wait]:
+            with self.subTest(wait=bad[-100:]), self.assertRaises(ValueError):
+                API['resources_suite'](bad, boot())
+
     def test_incomplete_skipped_misordered_fatal_memory_and_time_fail(self):
         text = transcript()
         lines = text.splitlines(keepends=True); lines[2], lines[3] = lines[3], lines[2]
