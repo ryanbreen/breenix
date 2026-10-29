@@ -179,3 +179,23 @@ fn probe_batches_preserve_every_draw_and_relocation_with_one_vab_binding() {
         encode::channel_words(&c.words, 0x200000).unwrap();
     }
 }
+
+#[test]
+fn bootstrap_parking_storage_fits_the_encoded_catalogue_and_state() {
+    let target = encode::Target { id: 1, address: 0x800000, width: 1, height: 1,
+        format: format::B8G8R8A8, tile_mode: 0 };
+    let source = encode::Target { id: 2, address: 0x801000, ..target };
+    let bytes = encode::parking_bytes(target, source).unwrap();
+    for address in [0x200000, 0x3_0000_0000] {
+        let (data, words) = encode::parking_frame(target, source, address, 0xa00000).unwrap();
+        assert_eq!(bytes, data.len(), "bootstrap allocation must cover the actual parked frame");
+        let p = packets(&words);
+        assert!(!p.iter().any(|(m, _)| matches!(m, 0x1618 | 0xd74 | 0x1614)),
+            "parking must not launch a draw");
+        let code = &p.iter().find(|(m, _)| *m == 0x1608).unwrap().1;
+        assert_eq!((u64::from(code[0]) << 32) | u64::from(code[1]), address);
+        let cb = &p.iter().find(|(m, _)| *m == 0x2380).unwrap().1;
+        let cb_address = (u64::from(cb[1]) << 32) | u64::from(cb[2]);
+        assert!(cb_address >= address && cb_address + u64::from(cb[0]) <= address + bytes as u64);
+    }
+}
