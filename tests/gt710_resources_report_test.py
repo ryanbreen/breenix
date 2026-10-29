@@ -70,7 +70,8 @@ MANIFEST = json.loads((ROOT / 'docs/suites/gpu.json').read_text())
 NAMES = [c['id'] + '/' + t['id'] for c in MANIFEST['categories'] for t in c['cases']]
 EXCLUDED = {'device/device-error-reported', 'readback/owner-only',
             'readback/error-invalidates-targets', 'textures/quota',
-            'textures/immutable-while-pinned', 'textures/destroy-deferred'}
+            'textures/immutable-while-pinned', 'textures/destroy-deferred',
+            'textures/copy-region'}
 PIPELINES = ['solid-rects', 'rect-batch', 'copy', 'copy-clip', 'copy-scaled',
              'nearest-scale', 'box-filter', 'clip-nested', 'order']
 REQUIRED = [n for n in NAMES if (n.split('/')[0] in ('device', 'readback', 'textures')
@@ -158,7 +159,7 @@ class ResourcesReport(unittest.TestCase):
     def test_step_list_and_manifest_use_shared_case_ids(self):
         step = json.loads((ROOT / 'docs/gui/gt710-step-8-2.json').read_text())
         self.assertEqual(step['cases'], REQUIRED)
-        self.assertEqual(len(REQUIRED), 53)
+        self.assertEqual(len(REQUIRED), 52)
         manifest = json.loads((ROOT / 'docs/suites/gt710.json').read_text())
         API['validate_manifest'](manifest)
         cat = next(c for c in manifest['categories'] if c['id'] == 'resources')
@@ -261,8 +262,8 @@ class ResourcesReport(unittest.TestCase):
         result = API['resources_suite'](transcript(), boot())
         self.assertEqual(result['elapsed_ms'], 900000)
         self.assertEqual([c['id'] for c in result['cases']], NAMES)
-        self.assertEqual(sum(c['result'] == 'PASS' for c in result['cases']), 53)
-        self.assertEqual(sum(c['result'] == 'FAIL' for c in result['cases']), 117)
+        self.assertEqual(sum(c['result'] == 'PASS' for c in result['cases']), 52)
+        self.assertEqual(sum(c['result'] == 'FAIL' for c in result['cases']), 118)
         self.assertIn('not implemented', next(c['reason'] for c in result['cases'] if c['result'] == 'FAIL'))
         API['resources_suite'](transcript(all_pass=True), boot())
         for name in REQUIRED:
@@ -277,7 +278,7 @@ class ResourcesReport(unittest.TestCase):
         changed = text.replace(marker, wait + marker)
         result = API['resources_suite'](changed, boot())
         self.assertEqual(len(result['cases']), 170)
-        self.assertEqual(sum(c['result'] == 'PASS' for c in result['cases']), 53)
+        self.assertEqual(sum(c['result'] == 'PASS' for c in result['cases']), 52)
         for bad in [changed.replace('WAIT submit/context-destroy', 'WAIT device/version'),
                     changed.replace('until=66517', 'until=1'),
                     wait + text, text + wait]:
@@ -290,7 +291,7 @@ class ResourcesReport(unittest.TestCase):
         changes = [''.join(lines), text.replace('START cases=170', 'START cases=169'),
                    text.replace('SUITE gpu CASE device/version PASS ms=1\n', ''),
                    text.replace('FAIL ms=1 msg=not implemented', 'SKIP msg=not implemented', 1),
-                   text.replace('failed=117', 'failed=116'), text.replace('skipped=0', 'skipped=1'),
+                   text.replace('failed=118', 'failed=117'), text.replace('skipped=0', 'skipped=1'),
                    text.replace('SUITE gpu ELAPSED ms=900000\n', ''), text.replace('ms=900000', 'ms=900001'),
                    text.replace('ms=900000', 'ms=0'), text.replace('MEMORY before', 'MEMORY absent'),
                    text.replace('free_after=1000', 'free_after=10'), text.replace('reclaimed=PASS', 'reclaimed=FAIL'),

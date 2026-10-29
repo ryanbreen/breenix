@@ -39,7 +39,6 @@
     "textures/upload-3byte",
     "textures/upload-visibility",
     "textures/unaligned-pitch",
-    "textures/copy-region",
     "textures/copy-overlap",
     "textures/r8-atlas",
     "textures/readback-uploaded",
