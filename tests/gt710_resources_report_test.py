@@ -333,7 +333,7 @@ class ResourcesReport(unittest.TestCase):
                 serial = (path / 'serial.txt').read_text() if row else ''
                 (path / 'serial.txt').write_text(serial + transcript(suite))
                 for name, value in {'run.json': json.dumps(boot(suite)), 'commit': SHA,
-                                    'dirty': '0', 'exit-status': '1' if suite == 'gpu' else '0', 'ended': '1',
+                                    'dirty': '0', 'exit-status': '0', 'ended': '1',
                                     'events.jsonl': ''.join(json.dumps(e)+'\n' for e in events())}.items():
                     (path / name).write_text(value)
             producer = API['resources_capture'](d, SHA)
@@ -364,7 +364,7 @@ class ResourcesReport(unittest.TestCase):
             metal = runpy.run_path(str(ROOT/'scripts/metal/metal_score.py'))
             measured = metal['score'](d)['milestones']['metal-gt710/resources']
             self.assertEqual((measured['passed'], measured['reached'], measured['total']), (True, 3, 3))
-            for name, value in [('dirty', '1'), ('commit', 'b'*40), ('ended', ''), ('exit-status', '124'),
+            for name, value in [('dirty', '1'), ('commit', 'b'*40), ('ended', ''), ('exit-status', '1'), ('exit-status', '124'),
                                 ('events.jsonl', json.dumps(dict(event='console-gap'))+'\n')]:
                 old = (gpu/name).read_text(); (gpu/name).write_text(value)
                 with self.subTest(file=name), self.assertRaises(ValueError): API['resources_capture'](d, SHA)
