@@ -89,8 +89,13 @@ pub(super) fn describe(a: &mut abi::Modes) {
         a.console_resource = resource;
         a.handoff = 1;
         a.firmware_writes_after_handoff = writes;
-        a.binding_known = u32::from(bound);
-        a.scanout_resource = if bound { resource } else { 0 };
+        // A completed shared-core viewing copy has its own logical identity,
+        // also reported by READBACK(0). The reserved ID describes the console
+        // only while no shared-core scanout is bound.
+        if a.scanout_resource == 0 {
+            a.binding_known = u32::from(bound);
+            a.scanout_resource = if bound { resource } else { 0 };
+        }
     }
 }
 

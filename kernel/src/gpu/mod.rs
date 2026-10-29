@@ -1531,6 +1531,13 @@ impl Core {
         // Backing owns its charges, including through other CPU or device holds.
         if r.lost {
             // A confirmed reset ended the device's use of it.
+            // Native storage keeps its own mapping/backing registry across
+            // reset. Retire that pin too; the storage acknowledgement is
+            // unfenced and must not be queued to the replacement epoch.
+            #[cfg(target_arch = "x86_64")]
+            if dev::backend() == abi::backend::GK208 {
+                let _ = dev::resource_unref(Tag::Background, id, Some(r.backing));
+            }
             return None;
         }
         // The device may use the backing until it answers the unref, which keeps it.
@@ -2706,7 +2713,7 @@ fn op_caps(arg: u64, len: u64) -> Result<u64, i64> {
     Ok(0)
 }
 
-/// Claim startup under the core lock, then release it before initialize_core.
+/// Claim startup under the core lock, then run hardware work on a kernel worker.
 /// A competing first CAPS sleeps through publication, including startup failure.
 #[cfg(target_arch = "x86_64")]
 fn native_caps_startup() -> Result<(), i64> {
@@ -2722,12 +2729,26 @@ fn native_caps_startup() -> Result<(), i64> {
         }
     }).map_err(|_| EINTR)?;
     if start {
-        if let Err(error) = crate::gk208::initialize_core() {
-            with_core(|c| { c.status = abi::status::DEVICE_FAILED; c.reason = error; });
+        // Enabling IRQs does not release syscall entry's preemption hold.
+        // Firmware construction and executable probes must let a pinned timer
+        // window (and other work) run on the CPU performing initialization.
+        if crate::task::kthread::kthread_run(|| {
+            if let Err(error) = crate::gk208::initialize_core() {
+                with_core(|c| { c.status = abi::status::DEVICE_FAILED; c.reason = error; });
+            }
+            NATIVE_STARTING.store(false, Ordering::Release);
+            notify();
+        }, "kgpustart").is_err() {
+            with_core(|c| {
+                c.status = abi::status::DEVICE_FAILED;
+                c.reason = "native startup worker unavailable";
+            });
+            NATIVE_STARTING.store(false, Ordering::Release);
+            notify();
         }
-        NATIVE_STARTING.store(false, Ordering::Release);
-        notify();
     }
+    wait_for(None, true, |_| (!NATIVE_STARTING.load(Ordering::Acquire)).then_some(()))
+        .map_err(|_| EINTR)?;
     Ok(())
 }
 
