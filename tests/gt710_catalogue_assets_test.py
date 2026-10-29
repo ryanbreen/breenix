@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the 8.3 catalogue assets and their embedded code layout."""
+"""Check the native catalogue assets and their embedded code layout."""
 import hashlib
 import json
 from pathlib import Path
@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / 'kernel/assets/kepler'
 PIPELINES = {'pipeline-over': 5, 'pipeline-over_straight': 6,
              'pipeline-coverage': 7, 'pipeline-bitmap_text': 9}
-ROUTINES = tuple(range(12)) + (18, 19)
+ROUTINES = tuple(range(25))
 PROGRAMS = list(PIPELINES) + [f'probe-int-{n:02}' for n in ROUTINES]
 
 
@@ -37,6 +37,10 @@ class CatalogueAssets(unittest.TestCase):
                     self.assertEqual(digest, manifest['files'][filename]['sha256'])
                     self.assertEqual(len(data), manifest['files'][filename]['bytes'])
                 self.assertEqual(entry['metadata'], json.loads((ASSETS / f'{name}.json').read_text()))
+                self.assertEqual(entry['metadata']['relocations'], 0)
+                self.assertEqual(entry['metadata']['builtin_calls'], 0)
+                self.assertEqual(entry['source_sha256'], hashlib.sha256(
+                    (ROOT / entry['source']).read_bytes()).hexdigest())
                 self.assertEqual(entry['metadata']['code_bytes'], (ASSETS / f'{name}.bin').stat().st_size)
 
     def test_embedded_layout(self):
