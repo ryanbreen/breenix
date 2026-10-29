@@ -1,7 +1,17 @@
 //! Send actual compressed readback rows to the boot service; serial keeps their digest.
 use libbreenix::{crypto::sha256::sha256,dns,io::{self,PollFd,poll_events},socket,time};
-pub fn upload()->Result<(),String> {
-    let data=std::fs::read("/proc/gt710-pixels").unwrap_or_default();
+pub fn upload(resources: Option<&libbreenix::gpu::abi::Caps>)->Result<(),String> {
+    let mut data=std::fs::read("/proc/gt710-pixels").unwrap_or_default();
+    let resource_row = resources.map(|caps| {
+        // Caps implements Plain: repr(C), integer fields only, no padding.
+        // Retain the exact syscall bytes; do not reconstruct admission here.
+        let bytes = unsafe { core::slice::from_raw_parts(
+            (caps as *const libbreenix::gpu::abi::Caps).cast::<u8>(),
+            core::mem::size_of_val(caps)) };
+        let hex: String = bytes.iter().map(|v| format!("{v:02x}")).collect();
+        format!("GT710_RESOURCES {{\"schema\":1,\"type\":\"caps\",\"bytes\":512,\"hex\":\"{hex}\"}}\n")
+    });
+    if let Some(row) = &resource_row { data.extend_from_slice(row.as_bytes()); }
     if data.is_empty() {return Ok(());}
     if data.len()>2<<20 {return Err("native display artifact exceeds bound".into());}
     let target=std::fs::read_to_string("/etc/breenix/gt710-upload").map_err(|_|"native upload route absent")?;
@@ -49,6 +59,10 @@ pub fn upload()->Result<(),String> {
     result.map_err(str::to_string)?;
     let end=time::now_monotonic().map_err(|_|"native upload clock")?;
     let micros=|t:libbreenix::types::Timespec|t.tv_sec as i128*1_000_000+t.tv_nsec as i128/1000;
+    if let Some(row) = resource_row {
+        let row_digest: String = sha256(row.as_bytes()).iter().map(|b|format!("{b:02x}")).collect();
+        println!("GT710_RESOURCES_BULK {} {}", row.len(), row_digest);
+    }
     println!("GT710_BULK {} {}",data.len(),digest);
     println!("GT710_PROBE_TIME network-upload us={}",micros(end)-micros(start));
     Ok(())

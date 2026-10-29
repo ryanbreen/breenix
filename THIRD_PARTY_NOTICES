@@ -1236,3 +1236,21 @@ word from Breenix's existing 16-byte report slot; adapter.rs validates the
 channel/epoch/drain and returns the device's original echo. Existing source
 notices remain in the hardware consumers. No additional firmware, external
 runtime or shader asset is introduced.
+
+GT 710 resource report (milestone 8.2-u8)
+--------------------------------------
+
+`scripts/metal/gt710-suite` and `tests/gt710_resources_report_test.py` check
+Breenix's backend-6 CAPS ABI using the existing M8.1 source register:
+NVIDIA open-gpu-doc revision 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+`classes/display/cl927d.h`, `classes/host/cla06f.h`,
+`classes/dma-copy/cla0b5.h` and `classes/3d/cla197.h` (MIT, NVIDIA
+1993-2022, 2020 and 2019); nouveau Linux v6.8
+`nvkm/engine/fifo/gk208.c` (MIT, Copyright 2013 Red Hat Inc.); and Mesa
+24.3.4 `src/gallium/drivers/nouveau/nvc0/nvc0_screen.c` (MIT,
+Copyright 2010 Christoph Bumiller). The file-local license headers were
+checked; full grants and copyright notices remain in the consumers.
+The CAPS producer serializes Breenix's syscall result without external
+implementation code. Executable probe comparisons reuse the committed
+8.2-u6 expectations in `kernel/src/gpu/gk208/caps/`; the shared GPU suite
+and its expected pixels are unchanged.

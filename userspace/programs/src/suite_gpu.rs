@@ -283,8 +283,10 @@ fn main() {
     {
         // The view and cases also read CAPS; finish its first-use evidence
         // before consuming the lease-bound artifact route.
-        let _ = libbreenix::gpu::caps();
-        gt710_artifacts::upload().expect("native display artifact upload");
+        let (status, caps) = libbreenix::gpu::caps();
+        let resources = (status == 0 && caps.backend == libbreenix::gpu::abi::backend::GK208)
+            .then_some(&caps);
+        gt710_artifacts::upload(resources).expect("native display artifact upload");
     }
     SUITE.run()
 }
