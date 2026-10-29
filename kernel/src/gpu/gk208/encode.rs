@@ -143,6 +143,9 @@ pub fn channel_words(input: &[u32], quarantine: u64) -> Result<Vec<u32>, &'stati
         || quarantine.checked_add(1 << 20).is_none_or(|end| end > 1 << 40) {
         return Err("invalid channel VAB storage");
     }
+    // Fully clipped frames still receive the publisher's engine release,
+    // but have no draw packet that could bind or consume VAB storage.
+    if input.is_empty() { return Ok(Vec::new()); }
     let mut words = input.to_vec();
     let (mut at, mut found) = (0, false);
     while at < words.len() {
