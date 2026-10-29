@@ -1357,7 +1357,7 @@ mod native {
             let session = self.session.take().unwrap();
             let channel = NativeChannel { session, registers: h.regs.0, total: h.total,
                 mmu: [0; 2], _scratch: None, topology: [[0; 2]; 3], initial: Vec::new(),
-                put: last, confirmed: false, _bootstrap: None };
+                quarantine: 0, put: last, confirmed: false, _bootstrap: None };
             let mut device = crate::gpu::dev::Device::Gk208(adapter::Device::probe(channel, board, last));
             let result = self.producer.run(&mut device, operation, name);
             let crate::gpu::dev::Device::Gk208(device) = device else { unreachable!() };
@@ -1401,6 +1401,7 @@ mod native {
         _scratch: Option<ManuallyDrop<[memory::allocator::Pin; 2]>>,
         topology: [[u32; 2]; 3],
         initial: Vec<u8>,
+        quarantine: u64,
         put: u32,
         confirmed: bool,
         _bootstrap: Option<ManuallyDrop<crate::gk208::lifetime::Context>>,
@@ -1409,7 +1410,7 @@ mod native {
         /// Transfer a drained live channel only after all fallible preparation.
         pub(in crate::gk208::gr) fn into_native(
             owner: &mut Option<Self>, registers: usize, total: u64, mmu: [Allocation; 2],
-            allocator: &memory::allocator::Allocator,
+            allocator: &memory::allocator::Allocator, quarantine: u64,
         ) -> Result<NativeChannel, &'static str> {
             let session = owner.as_ref().ok_or("native channel owner absent")?;
             if !session.bound || session.second.is_some() || session.copy.is_none() || session.quiesced {
@@ -1425,7 +1426,7 @@ mod native {
             let put = session.next_sequence - 1;
             Ok(NativeChannel { session: owner.take().unwrap(), registers, total,
                 mmu: mmu.map(|a| a.range.start), _scratch: Some(scratch), topology,
-                initial, put, confirmed: false, _bootstrap: None })
+                initial, quarantine, put, confirmed: false, _bootstrap: None })
         }
     }
 
@@ -1473,7 +1474,7 @@ mod native {
             crate::gk208::ce::with_resources(|r,_,io| r.bind(io,
                 s.context.space().directory.range.start,s.report.identity.instance,s.report.identity.epoch))?;
             // Storage retains the uploaded code/inputs and the frame's target holds.
-            let mut command = draw.words.clone();
+            let mut command = crate::gk208::encode::channel_words(&draw.words, self.quarantine)?;
             let target = TARGET + u64::from(crate::gk208::queue::Queue::slot(sequence))*16;
             for (offset,value) in [(4,s.report.identity.epoch as u32),
                 (8,(s.report.identity.epoch>>32) as u32),(0,sequence)] {

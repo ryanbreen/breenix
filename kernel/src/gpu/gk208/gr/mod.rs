@@ -358,11 +358,13 @@ fn initialize_inner(
             // creation; complementary poison readbacks must agree.
             let images = graphics.readback(&mut hardware, shader.va, 4)?;
             if images[0] != images[1] { return Err("native startup CE readbacks differ"); }
-            Ok(())
+            // VAB can still write during channel scheduling after a draw's
+            // release. Keep it in the bootstrap residency through reset.
+            graphics.allocate_draw(&mut hardware, "native-vab", 1 << 20, 1 << 17).map(|b| b.va)
         })();
         let report = graphics.report();
         hardware.graphics = Some(graphics);
-        result?;
+        let quarantine = result?;
         let mut board = super::caps::BoardState::empty();
         board.chipset = ((hardware.regs.read(0) >> 20) & 0x1ff) as u16;
         board.channel = (report.identity.instance, report.identity.epoch);
@@ -372,7 +374,7 @@ fn initialize_inner(
         board.scanouts[0] = super::caps_scanout(console)?;
         let last = hardware.graphics.as_ref().unwrap().last_sequence();
         let native = channel::Session::into_native(&mut hardware.graphics, hardware.regs.0,
-            total, mmu, &hardware.layout.allocator)?;
+            total, mmu, &hardware.layout.allocator, quarantine)?;
         Ok((native, board, last))
     })();
     match result {

@@ -135,6 +135,36 @@ use gpu_abi::{
     stream::{self, cmd, Resolver, Words},
 };
 
+/// VAB scratch belongs to the channel, beyond a frame's draw release. Mesa's
+/// poly_cache is screen-owned (nvc0_screen.c:1274-1283); A197 0x17bc-0x17c4
+/// selects that area. Frame backing still owns shader and vertex inputs.
+pub fn channel_words(input: &[u32], quarantine: u64) -> Result<Vec<u32>, &'static str> {
+    if quarantine == 0 || quarantine & ((1 << 17) - 1) != 0
+        || quarantine.checked_add(1 << 20).is_none_or(|end| end > 1 << 40) {
+        return Err("invalid channel VAB storage");
+    }
+    let mut words = input.to_vec();
+    let (mut at, mut found) = (0, false);
+    while at < words.len() {
+        let header = words[at];
+        let count = ((header >> 16) & 0x1fff) as usize;
+        if header & 0xe0000000 != 0x20000000 || count == 0 || at + 1 + count > words.len() {
+            return Err("invalid native draw packet extent");
+        }
+        if (header & 0x1fff) * 4 == 0x17bc {
+            if found || count != 3 || words[at + 3] != 3 {
+                return Err("invalid native VAB binding");
+            }
+            words[at + 1] = (quarantine >> 32) as u32;
+            words[at + 2] = quarantine as u32;
+            found = true;
+        }
+        at += count + 1;
+    }
+    if !found { return Err("native draw lacks VAB binding"); }
+    Ok(words)
+}
+
 pub const DATA_START: usize = (1 << 20) + 8192;
 const CODE: usize = 1 << 20;
 #[derive(Clone, Copy)]
