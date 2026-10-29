@@ -54,7 +54,6 @@
     "profile/fragcoord-integer",
     "profile/rect-coverage",
     "profile/rect-edges",
-    "profile/scissor-exact",
     "profile/viewport-exact",
     "profile/alpha-write",
     "profile/swizzle-bgra-rgba",

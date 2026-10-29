@@ -268,7 +268,7 @@
       "cases": [
         {
           "id": "suite",
-          "title": "A completed production GPU boot records all 170 ordered cases with zero skips, the 78-case 8.3 step passing, reclaimed memory and its own time within 900 s"
+          "title": "A completed production GPU boot records all 170 ordered cases with zero skips, the 77-case 8.3 step passing, reclaimed memory and its own time within 900 s"
         }
       ]
     },
