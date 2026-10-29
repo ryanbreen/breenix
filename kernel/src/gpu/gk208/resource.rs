@@ -131,7 +131,6 @@ pub struct Resources<B> {
     entries: BTreeMap<u32, Entry<B>>,
     contexts: BTreeSet<u32>,
     space: Option<Space>,
-    next_va: u64,
     vram_bytes: u64,
     alias: Option<u64>,
     channel: u64,
@@ -143,7 +142,7 @@ pub struct Resources<B> {
 impl<B> Default for Resources<B> { fn default() -> Self { Self::new() } }
 impl<B> Resources<B> {
     pub const fn new() -> Self {
-        Self { entries: BTreeMap::new(), contexts: BTreeSet::new(), space: None, next_va: FIRST_VA, vram_bytes: 0, alias: None, channel: 0, incarnation: None, alias_indices: Vec::new(), temporary: u32::MAX - 1, retired: VecDeque::new() }
+        Self { entries: BTreeMap::new(), contexts: BTreeSet::new(), space: None, vram_bytes: 0, alias: None, channel: 0, incarnation: None, alias_indices: Vec::new(), temporary: u32::MAX - 1, retired: VecDeque::new() }
     }
     pub fn vram_bytes(&self) -> u64 { self.vram_bytes }
     pub fn layout(&self, id: u32) -> Option<Layout> { self.entries.get(&id)?.layout }
@@ -184,6 +183,25 @@ impl<B> Resources<B> {
         if self.space.is_none() { self.space = Some(Space::new(a, io)?); }
         Ok(self.space.as_mut().unwrap())
     }
+    /// Only live or uncertain entries reserve VA. Successfully retired ranges
+    /// can be reused even while the imported console keeps the address space alive.
+    fn vacant_va(&self, bytes: u64, alignment: u64) -> Result<u64, &'static str> {
+        let mut ranges: Vec<_> = self.entries.values().flat_map(|e| {
+            core::iter::once((e.va, e.bytes.next_multiple_of(4096)))
+                .chain(e.backing_va.map(|va| (va, e.backing_bytes)))
+        }).collect();
+        ranges.sort_unstable_by_key(|r| r.0);
+        let bytes = bytes.next_multiple_of(4096);
+        let mut va = FIRST_VA.next_multiple_of(alignment);
+        for (start, size) in ranges {
+            let end = va.checked_add(bytes).ok_or("native resource VA exhausted")?;
+            if end <= start { break; }
+            if va < start + size { va = (start + size).next_multiple_of(alignment); }
+        }
+        va.checked_add(bytes).filter(|&end| end <= vm::LIMIT)
+            .ok_or("native resource VA exhausted")?;
+        Ok(va)
+    }
     /// Import display-owned pitch-linear storage. The pin protects the original
     /// owner's allocation; collection removes this mapping without releasing it.
     pub fn import_linear(&mut self, a: &mut Allocator, io: &mut impl Io,
@@ -195,9 +213,7 @@ impl<B> Resources<B> {
             } else { Err("native display mapping uncertain") };
         }
         let bytes = allocation.range.size;
-        let va = self.next_va;
-        self.next_va = va.checked_add(bytes).filter(|&end| end <= vm::LIMIT)
-            .ok_or("native display VA exhausted")?;
+        let va = self.vacant_va(bytes, 4096)?;
         let pin = a.pin(allocation)?;
         self.entries.insert(id, Entry { role: "display", regions: Vec::new(), layout: None, bytes, va, allocation: None,
             pin: Some(pin), backing: None, mapped: false, dropped: false,
@@ -212,6 +228,11 @@ impl<B> Resources<B> {
     pub fn create(&mut self, a: &mut Allocator, io: &mut impl Io, id: u32,
         kind: u32, format: u32, width: u32, height: u32,
     ) -> Result<(), &'static str> {
+        self.create_aligned(a, io, id, kind, format, width, height, 4096)
+    }
+    fn create_aligned(&mut self, a: &mut Allocator, io: &mut impl Io, id: u32,
+        kind: u32, format: u32, width: u32, height: u32, alignment: u64,
+    ) -> Result<(), &'static str> {
         if id == 0 || self.entries.contains_key(&id) { return Err("duplicate native resource"); }
         let layout = match (kind, format) {
             (1 | 2, 0 | 1) => Some(Layout::new(width, height, 4)?),
@@ -220,10 +241,7 @@ impl<B> Resources<B> {
             _ => return Err("unsupported native resource format"),
         };
         let bytes = layout.map_or(u64::from(width), Layout::allocation_bytes);
-        let va = self.next_va;
-        let end = va.checked_add(bytes.next_multiple_of(4096)).filter(|v| *v <= vm::LIMIT)
-            .ok_or("native resource VA exhausted")?;
-        self.next_va = end;
+        let va = self.vacant_va(bytes, alignment)?;
         let before = a.stats().charged;
         let result = (|| {
             // Insert before publication so even a partial failed mapping keeps
@@ -287,8 +305,7 @@ impl<B> Resources<B> {
         if let Some(va) = e.backing_va {
             return if e.backing_mapped { Ok(va) } else { Err("native backing mapping uncertain") };
         }
-        let va = self.next_va;
-        self.next_va = va.checked_add(bytes).filter(|e| *e <= vm::LIMIT).ok_or("native backing VA exhausted")?;
+        let va = self.vacant_va(bytes, 4096)?;
         // Save the mapping address before PTE publication. A publication failure
         // leaves the backing and poisoned Space in this resource entry.
         self.entries.get_mut(&id).unwrap().backing_va = Some(va);
@@ -332,14 +349,12 @@ impl<B> Resources<B> {
         io.invalidate(directory)?;
         Ok(())
     }
-    #[cfg(target_os = "none")]
-    pub(in crate::gk208) fn draw_buffer(&mut self, a: &mut Allocator, io: &mut impl Io,
+    pub(super) fn draw_buffer(&mut self, a: &mut Allocator, io: &mut impl Io,
         bytes: u32,
     ) -> Result<u32, &'static str> {
         let id = self.temporary;
         self.temporary = id.checked_sub(1).ok_or("native staging IDs exhausted")?;
-        self.next_va = self.next_va.next_multiple_of(1<<17);
-        self.create(a,io,id,3,0,bytes,1)?;
+        self.create_aligned(a,io,id,3,0,bytes,1,1<<17)?;
         Ok(id)
     }
     pub fn staging(&mut self, a: &mut Allocator, io: &mut impl Io, format: u32,

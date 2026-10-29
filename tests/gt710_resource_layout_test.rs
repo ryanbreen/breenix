@@ -243,3 +243,30 @@ fn fault_owner_distinguishes_texture_and_transfer_backing() {
     assert!(r.owner(image).unwrap().released);
     assert!(r.owner(upload).unwrap().released);
 }
+
+#[test]
+fn repeated_draws_reuse_retired_va_with_a_live_console() {
+    let mut a=Allocator::new(1<<30,&[]).unwrap(); let mut io=Model::default();
+    let surface=a.allocate(5120*1024,65536,memory::allocator::Kind::Display).unwrap();
+    let mut r=Resources::<Vec<u8>>::new();
+    r.import_linear(&mut a,&mut io,u32::MAX,surface).unwrap();
+    let mut steady=None;
+    // Hold a frame across collection; its VA and backing cannot be reused.
+    let held_id=r.draw_buffer(&mut a,&mut io,128*1024).unwrap();
+    let held_va=r.address(held_id).unwrap(); let held=r.hold(held_id).unwrap();
+    r.unref(held_id).unwrap();
+    for _ in 0..2050 {
+        let id=r.draw_buffer(&mut a,&mut io,128*1024).unwrap();
+        let va=r.address(id).unwrap();
+        assert_eq!(va % (1<<17),0); assert_ne!(va,held_va);
+        let pages:Vec<_>=(0..32).map(|i|0x100000+i*4096).collect();
+        r.attach(&mut a,&mut io,id,Arc::new(vec![0;128*1024]),&pages,128*1024).unwrap();
+        let used=a.stats();
+        if let Some(previous)=steady { assert_eq!(used,previous,"draw VM charge must plateau"); }
+        steady=Some(used);
+        r.unref(id).unwrap(); r.collect(&mut a,&mut io).unwrap();
+    }
+    drop(held); r.collect(&mut a,&mut io).unwrap();
+    let id=r.draw_buffer(&mut a,&mut io,128*1024).unwrap();
+    assert_eq!(r.address(id),Some(held_va));
+}
