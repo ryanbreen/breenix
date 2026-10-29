@@ -11,6 +11,7 @@ class NativeConsoleRecord(unittest.TestCase):
     def test_live_geometry_binding_and_handoff_replace_arm_defaults(self):
         source = (ROOT / "kernel/src/gpu/console.rs").read_text()
         function = item(source, "pub(super) fn describe(").replace("pub(super)", "pub")
+        function = function.replace('#[cfg(target_arch = "x86_64")]', "")
         fixture = r'''
 #![allow(dead_code)] // Extracted diagnostics use controlled hardware/ARM boundaries.
 use std::sync::atomic::{AtomicU64,AtomicBool,Ordering};

@@ -274,3 +274,19 @@ fn admission_programs_bind_literal_inputs_and_keep_code_before_uniforms() {
         }
     }
 }
+
+#[test]
+fn basic_warm_frames_use_native_programs_and_refuse_later_pipelines() {
+    let target = encode::Bindings::render_target(&View(format::B8G8R8A8), 1).unwrap();
+    let source = encode::Bindings::sampled_source(&View(format::B8G8R8A8), 2).unwrap();
+    for (pipe, offset) in [(pipeline::SOLID, 0x1b0), (pipeline::COPY, 0x2b0),
+        (pipeline::COPY_SCALED, 0x430), (pipeline::NEAREST_SCALED, 0xa30),
+        (pipeline::BOX_FILTER, 0xf30)] {
+        let frame = encode::warm_frame(target, source, pipe).unwrap();
+        assert_eq!(frame.chunks.len(), 1);
+        let methods = packets(&frame.chunks[0].words);
+        assert!(methods.contains(&(0x2140, vec![0x51, offset])));
+        assert_eq!(frame.chunks[0].target, target.id);
+    }
+    assert!(encode::warm_frame(target, source, pipeline::OVER).is_none());
+}

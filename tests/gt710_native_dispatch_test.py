@@ -13,6 +13,7 @@ class NativeDispatch(unittest.TestCase):
         source = (ROOT / "kernel/src/gpu/dev.rs").read_text()
         functions = "\n".join(item(source, "pub fn " + name + "(") for name in
                               ["ctx_create", "ctx_destroy", "ctx_attach", "context_id", "resource_id"])
+        functions = functions.replace('#[cfg(target_arch = "x86_64")]', "")
         fixture = r'''
 #![allow(dead_code)] // Stub backends exercise the extracted production dispatch.
 mod backend {pub const VIRGL:u32=4;pub const SVGA3D_DX:u32=5;pub const GK208:u32=6;}
