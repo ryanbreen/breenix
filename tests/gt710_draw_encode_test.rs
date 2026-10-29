@@ -199,3 +199,34 @@ fn bootstrap_parking_storage_fits_the_encoded_catalogue_and_state() {
         assert!(cb_address >= address && cb_address + u64::from(cb[0]) <= address + bytes as u64);
     }
 }
+
+#[test]
+fn parking_upload_is_complete_bounded_contiguous_and_stops_on_error() {
+    let target = encode::Target { id: 1, address: 0x800000, width: 1, height: 1,
+        format: format::B8G8R8A8, tile_mode: 0 };
+    let source = encode::Target { id: 2, address: 0x801000, ..target };
+    let address = 0x3_0000_0000;
+    let (data, _) = encode::parking_frame(target, source, address, 0xa00000).unwrap();
+    let mut copied = Vec::new();
+    let mut calls = 0;
+    encode::upload_parking(address, &data, |va, bytes| {
+        assert!(!bytes.is_empty() && bytes.len() <= 16384);
+        assert_eq!(va, address + copied.len() as u64);
+        copied.extend_from_slice(bytes);
+        calls += 1;
+        Ok(())
+    }).unwrap();
+    assert_eq!(copied, data);
+    assert_eq!(calls, data.len().div_ceil(16384));
+    let mut calls = 0;
+    assert_eq!(encode::upload_parking(address, &vec![0x5a; 32769], |_, _| {
+        calls += 1;
+        if calls == 2 { Err("injected upload failure") } else { Ok(()) }
+    }), Err("injected upload failure"));
+    assert_eq!(calls, 2);
+    for (va, bytes) in [(address, &[][..]), (u64::MAX - 2, &[1, 2, 3, 4][..])] {
+        assert!(encode::upload_parking(va, bytes, |_, _| {
+            panic!("invalid upload reached hardware")
+        }).is_err());
+    }
+}
