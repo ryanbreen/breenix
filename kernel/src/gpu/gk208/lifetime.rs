@@ -71,6 +71,10 @@ impl Context {
     pub fn space(&self) -> &Space {
         self.space.as_ref().expect("retired context")
     }
+    pub fn mapping_at(&self, address: u64) -> Option<(u64, Allocation)> {
+        self.residency.mappings.iter().find(|m| address.checked_sub(m.va)
+            .is_some_and(|off| off < m.allocation.range.size)).map(|m| (m.va,m.allocation))
+    }
     fn mutable(&self) -> Result<(), &'static str> {
         if self.failed
             || self.device

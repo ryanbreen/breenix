@@ -23,7 +23,7 @@
 //! Native resource storage. Layout sizing adapts Mesa 24.3.4 nvc0_miptree.c
 //! and nv50_miptree.c (MIT); see THIRD_PARTY_NOTICES. Breenix owns allocation,
 //! mappings, pinned guest backing and retirement. No pixels are produced here.
-use alloc::{collections::{BTreeMap, BTreeSet}, sync::Arc, vec::Vec};
+use alloc::{collections::{BTreeMap, BTreeSet, VecDeque}, sync::Arc, vec::Vec};
 use super::{memory::allocator::{Allocation, Allocator, Kind, Pin}, vm::{self, Io, Space}};
 
 pub const GOB_WIDTH: u32 = 64;
@@ -76,7 +76,42 @@ impl Layout {
 /// Cloned by queued work, readback or scanout owners. An unref cannot unmap
 /// or recycle anything while one of these tokens survives.
 pub struct Hold { _reference: Arc<()> }
+#[derive(Clone, Debug)]
+pub struct FrameRegion {
+    pub start: u64,
+    pub end: u64,
+    pub name: &'static str,
+    pub command: u32,
+}
+#[derive(Debug)]
+pub struct VaOwner {
+    pub resource: u32,
+    pub base: u64,
+    pub bytes: u64,
+    pub offset: u64,
+    pub role: &'static str,
+    pub region: &'static str,
+    pub command: Option<u32>,
+    pub mapped: bool,
+    pub unref: bool,
+    pub released: bool,
+}
+struct Retired {
+    id: u32, va: u64, bytes: u64, backing_va: Option<u64>, backing_bytes: u64,
+    role: &'static str, regions: Vec<FrameRegion>,
+}
+fn owner_at(id: u32, va: u64, bytes: u64, role: &'static str, regions: &[FrameRegion],
+    address: u64, mapped: bool, unref: bool, released: bool,
+) -> Option<VaOwner> {
+    let offset = address.checked_sub(va).filter(|&off| off < bytes)?;
+    let span = regions.iter().find(|r| r.start <= offset && offset < r.end);
+    Some(VaOwner { resource: id, base: va, bytes, offset, role,
+        region: span.map_or(role, |r| r.name), command: span.map(|r| r.command),
+        mapped, unref, released })
+}
 struct Entry<B> {
+    role: &'static str,
+    regions: Vec<FrameRegion>,
     layout: Option<Layout>,
     bytes: u64,
     va: u64,
@@ -103,16 +138,44 @@ pub struct Resources<B> {
     incarnation: Option<(u64,u64)>,
     alias_indices: Vec<u64>,
     temporary: u32,
+    retired: VecDeque<Retired>,
 }
 impl<B> Default for Resources<B> { fn default() -> Self { Self::new() } }
 impl<B> Resources<B> {
     pub const fn new() -> Self {
-        Self { entries: BTreeMap::new(), contexts: BTreeSet::new(), space: None, next_va: FIRST_VA, vram_bytes: 0, alias: None, channel: 0, incarnation: None, alias_indices: Vec::new(), temporary: u32::MAX - 1 }
+        Self { entries: BTreeMap::new(), contexts: BTreeSet::new(), space: None, next_va: FIRST_VA, vram_bytes: 0, alias: None, channel: 0, incarnation: None, alias_indices: Vec::new(), temporary: u32::MAX - 1, retired: VecDeque::new() }
     }
     pub fn vram_bytes(&self) -> u64 { self.vram_bytes }
     pub fn layout(&self, id: u32) -> Option<Layout> { self.entries.get(&id)?.layout }
     pub fn address(&self, id: u32) -> Option<u64> { Some(self.entries.get(&id)?.va) }
     pub fn pte_address(&self, va: u64) -> Option<u64> { self.space.as_ref()?.pte_address(va) }
+    /// Released-address history stores metadata without backing or allocation pins.
+    pub fn owner(&self, address: u64) -> Option<VaOwner> {
+        for (&id, e) in &self.entries {
+            if let Some(o) = owner_at(id,e.va,e.bytes,e.role,&e.regions,address,e.mapped,e.dropped,false) { return Some(o); }
+            if let Some(va) = e.backing_va {
+                if let Some(o) = owner_at(id,va,e.backing_bytes,e.role,&[],address,e.backing_mapped,e.dropped,false) {
+                    return Some(VaOwner { region: "transfer-backing", ..o });
+                }
+            }
+        }
+        for e in self.retired.iter().rev() {
+            if let Some(o) = owner_at(e.id,e.va,e.bytes,e.role,&e.regions,address,false,true,true) { return Some(o); }
+            if let Some(va) = e.backing_va {
+                if let Some(o) = owner_at(e.id,va,e.backing_bytes,e.role,&[],address,false,true,true) {
+                    return Some(VaOwner { region: "transfer-backing", ..o });
+                }
+            }
+        }
+        None
+    }
+    pub fn describe_frame(&mut self, id: u32, regions: Vec<FrameRegion>) -> Result<(), &'static str> {
+        let e = self.entries.get_mut(&id).ok_or("native frame absent")?;
+        if regions.iter().any(|r| r.start >= r.end || r.end > e.bytes) { return Err("native frame region extent"); }
+        e.role = "frame";
+        e.regions = regions;
+        Ok(())
+    }
     fn account(&mut self, before: u64, after: u64) {
         if after >= before { self.vram_bytes += after - before; }
         else { self.vram_bytes -= before - after; }
@@ -136,7 +199,7 @@ impl<B> Resources<B> {
         self.next_va = va.checked_add(bytes).filter(|&end| end <= vm::LIMIT)
             .ok_or("native display VA exhausted")?;
         let pin = a.pin(allocation)?;
-        self.entries.insert(id, Entry { layout: None, bytes, va, allocation: None,
+        self.entries.insert(id, Entry { role: "display", regions: Vec::new(), layout: None, bytes, va, allocation: None,
             pin: Some(pin), backing: None, mapped: false, dropped: false,
             reference: Arc::new(()), backing_va: None, backing_bytes: 0, backing_mapped: false });
         let before = a.stats().charged;
@@ -167,7 +230,7 @@ impl<B> Resources<B> {
             // its allocation, backing and charge reachable for retention.
             let allocation = if layout.is_some() { Some(a.allocate(bytes, 4096, Kind::Engine)?) } else { None };
             let pin = allocation.map(|v| a.pin(v)).transpose()?;
-            self.entries.insert(id, Entry { layout, bytes, va, allocation, pin,
+            self.entries.insert(id, Entry { role: match kind { 1 => "target", 2 => "texture", _ => "buffer" }, regions: Vec::new(), layout, bytes, va, allocation, pin,
                 backing: None, mapped: false, dropped: false, reference: Arc::new(()), backing_va: None, backing_bytes: 0, backing_mapped: false });
             if let Some(allocation) = allocation {
                 self.space(a, io)?.map_kind(a, io, va, allocation.range, vm::Flags::default(), 0xfe)?;
@@ -315,6 +378,12 @@ impl<B> Resources<B> {
                 let mut e = self.entries.remove(&id).unwrap();
                 e.pin.take();
                 if let Some(allocation) = e.allocation { a.release(allocation)?; }
+                // Keep a bounded address history after successful invalidation
+                // and release, including subregions of transient draw storage.
+                if self.retired.len() == 128 { self.retired.pop_front(); }
+                self.retired.push_back(Retired { id, va: e.va, bytes: e.bytes,
+                    backing_va: e.backing_va, backing_bytes: e.backing_bytes,
+                    role: e.role, regions: e.regions });
             }
             if self.entries.is_empty() {
                 if let Some(directory) = self.alias {

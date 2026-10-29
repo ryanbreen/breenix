@@ -14,6 +14,8 @@ pub struct EncodedDraw {
     pub words: Vec<u32>,
     pub target: u32,
     #[cfg(target_os = "none")]
+    pub command: u32,
+    #[cfg(target_os = "none")]
     pub(in crate::gk208) _storage: Arc<super::encode::Storage>,
 }
 pub enum DrawWork { Triangle(Draw), Encoded(EncodedDraw) }
@@ -91,6 +93,13 @@ impl Request {
             control: super::core_record::Control::Clean }
     }
 }
+#[cfg(target_os = "none")]
+#[derive(Debug)]
+struct RequestTrace {
+    tag: Tag, channel: u64, epoch: u64, caller: u64, sequence: u32,
+    kind: &'static str, target: u64, frame: u32, address: u64, command: u32,
+}
+
 struct Sent { request: Request, identity: Option<gpu_completion::Request> }
 
 pub struct Device {
@@ -98,13 +107,17 @@ pub struct Device {
     board: super::caps::BoardState,
     queue: Queue,
     pending: VecDeque<Sent>,
+    #[cfg(target_os = "none")]
+    recent: VecDeque<RequestTrace>,
     fault: bool,
     first_error: Option<&'static str>,
     resetting: Option<Result<(), &'static str>>,
 }
 impl Device {
     pub(crate) fn new(channel: NativeChannel, board: super::caps::BoardState) -> Self {
-        Self { channel, board, queue: Queue::new(), pending: VecDeque::new(), fault: false, first_error: None, resetting: None }
+        Self { channel, board, queue: Queue::new(), pending: VecDeque::new(),
+            #[cfg(target_os = "none")]
+            recent: VecDeque::new(), fault: false, first_error: None, resetting: None }
     }
     pub(crate) fn registered(channel: NativeChannel, board: super::caps::BoardState, last: u32) -> Self {
         let mut device = Self::new(channel, board);
@@ -151,6 +164,15 @@ impl Device {
         };
         if result.is_err() && !self.channel.published(sequence) {
             return Err(request);
+        }
+        #[cfg(target_os = "none")]
+        {
+            let (kind, frame, address, command) = request.encoded.as_ref().map_or_else(
+                || (match request.operation { Some(Operation::Copy(_)) => "copy", Some(Operation::Transfer(_)) => "transfer", _ => "triangle" }, 0, 0, 0),
+                |d| ("encoded-draw", d._storage.resource, d._storage.address, d.command));
+            if self.recent.len() == 16 { self.recent.pop_front(); }
+            self.recent.push_back(RequestTrace { tag: request.tag, channel: context, epoch, caller, sequence,
+                kind, target: request.resource, frame, address, command });
         }
         self.pending.push_back(Sent { request, identity: Some(identity) });
         if let Err(error) = result.and_then(|()| self.queue.publish(sequence)) {
@@ -216,7 +238,14 @@ impl Device {
     pub fn begin_reset(&mut self) {
         if self.resetting.is_none() {
             #[cfg(target_os = "none")]
-            self.channel.record_fault(self.fault_reason().unwrap_or("native health check failed"));
+            {
+                self.channel.record_fault(self.fault_reason().unwrap_or("native health check failed"));
+                for t in &self.recent {
+                    let pending = self.pending.iter().any(|s| s.identity.is_some_and(|i| i.sequence == t.sequence && i.epoch == t.epoch));
+                    crate::serial_println!("GT710_NATIVE_REQUEST pending={} tag={:?} channel={:#x} epoch={} caller={} sequence={} kind={} target={} frame={} address={:#x} command={}",
+                        pending,t.tag,t.channel,t.epoch,t.caller,t.sequence,t.kind,t.target,t.frame,t.address,t.command);
+                }
+            }
             self.resetting = Some(self.channel.reset());
             #[cfg(target_os = "none")]
             if let Some(Err(error)) = self.resetting {

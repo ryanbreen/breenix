@@ -242,6 +242,7 @@ pub struct Extras {
     pub swap: Option<(usize, Target)>,
 }
 pub struct Chunk {
+    pub command: u32,
     pub target: u32,
     pub words: Vec<u32>,
     relocations: Vec<usize>,
@@ -347,7 +348,9 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
     let mut current_handle = 0;
     let mut scissor = None;
     let mut at = 0;
+    let mut command = 0;
     while at < w.len() {
+        let first_chunk = f.chunks.len();
         let code = w.word(at);
         match code {
             cmd::BEGIN => {
@@ -383,6 +386,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                 if code != cmd::CLEAR && suppress == Some(current_handle) {
                     suppress = None;
                     at += w.word(at + 1) as usize;
+                    command += 1;
                     continue;
                 }
                 let t = target.ok_or("native target absent")?;
@@ -448,6 +452,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                     scissor,
                 ) else {
                     at += w.word(at + 1) as usize;
+                    command += 1;
                     continue;
                 };
                 let count = w.word(at + if legacy { 5 } else { 9 }) as usize;
@@ -482,6 +487,8 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
             }
             _ => unreachable!(),
         }
+        for chunk in &mut f.chunks[first_chunk..] { chunk.command = command; }
+        command += 1;
         at += w.word(at + 1) as usize;
     }
     if let Some(t) = target {
@@ -490,6 +497,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
     if f.chunks.is_empty() {
         let t = target.ok_or("native target absent")?;
         f.chunks.push(Chunk {
+            command,
             target: t.id,
             words: Vec::new(),
             relocations: Vec::new(),
@@ -709,6 +717,7 @@ fn quad(
         }
     }
     let mut c = Chunk {
+        command: 0,
         target: t.id,
         words: Vec::new(),
         relocations: Vec::new(),
@@ -842,6 +851,8 @@ fn quad(
 pub(in crate::gk208) struct Storage {
     _backing: alloc::sync::Arc<crate::gpu::dma::Pages>,
     holds: Vec<super::resource::Hold>,
+    pub(in crate::gk208) resource: u32,
+    pub(in crate::gk208) address: u64,
 }
 #[cfg(target_os = "none")]
 impl Drop for Storage {
@@ -857,7 +868,29 @@ pub(crate) fn prepare(
 ) -> Result<Vec<super::adapter::EncodedDraw>, &'static str> {
     use alloc::sync::Arc;
     let pages: Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
-    let (address, holds) = super::ce::with_resources(|r, a, io| {
+    let mut regions = vec![
+        super::resource::FrameRegion { start: 0, end: CODE as u64, name: "frame-reserved", command: 0 },
+        super::resource::FrameRegion { start: CODE as u64, end: DATA_START as u64, name: "code", command: 0 },
+    ];
+    for c in &frame.chunks {
+        let mut at = 0;
+        while at < c.words.len() {
+            let count = ((c.words[at] >> 16) & 0x1fff) as usize;
+            let method = (c.words[at] & 0x1fff) * 4;
+            let region = match method {
+                0x2380 => Some((u64::from(c.words[at+3]), 256, "constants")),
+                0x1c00 => Some((u64::from(c.words[at+3]), 256, "vertex")),
+                0x1574 => Some((u64::from(c.words[at+2]), 32, "texture-descriptor")),
+                0x155c => Some((u64::from(c.words[at+2]), 32, "sampler-descriptor")),
+                _ => None,
+            };
+            if let Some((start, bytes, name)) = region {
+                regions.push(super::resource::FrameRegion { start, end: start+bytes, name, command: c.command });
+            }
+            at += count+1;
+        }
+    }
+    let (id, address, holds) = super::ce::with_resources(|r, a, io| {
         let mut holds = Vec::new();
         for c in &frame.chunks {
             holds.push(r.hold(c.target)?);
@@ -867,14 +900,17 @@ pub(crate) fn prepare(
         }
         let id = r.draw_buffer(a, io, backing.bytes() as u32)?;
         r.attach(a, io, id, backing.clone(), &pages, backing.bytes() as u64)?;
+        r.describe_frame(id, regions)?;
         let address = r.address(id).ok_or("native draw upload absent")?;
         holds.push(r.hold(id)?);
         r.unref(id)?;
-        Ok((address, holds))
+        Ok((id, address, holds))
     })?;
     let storage = Arc::new(Storage {
         _backing: backing,
         holds,
+        resource: id,
+        address,
     });
     frame.relocate(address)?;
     Ok(frame
@@ -882,6 +918,7 @@ pub(crate) fn prepare(
         .into_iter()
         .map(|c| super::adapter::EncodedDraw {
             target: c.target,
+            command: c.command,
             words: c.words,
             _storage: storage.clone(),
         })

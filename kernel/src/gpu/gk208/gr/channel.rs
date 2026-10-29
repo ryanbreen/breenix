@@ -1570,6 +1570,26 @@ mod native {
             for f in faults {
                 crate::serial_println!("GT710_NATIVE_MMU mask={:#x} unit={} instance={:#x} address={:#x} reason={} raw={:?}",
                     mask,f.unit,f.instance,f.address,f.reason,f.raw);
+                let _ = crate::gk208::ce::with_resources(|r,_,io| {
+                    if let Some(o) = r.owner(f.address) {
+                        let pte = r.pte_address(f.address).map(|p| (p,crate::gk208::vm::Io::read(io,p)));
+                        crate::serial_println!("GT710_NATIVE_VA resource={} base={:#x} bytes={} offset={:#x} role={} region={} command={:?} mapped={} unref={} released={} pte={:?}",
+                            o.resource,o.base,o.bytes,o.offset,o.role,o.region,o.command,o.mapped,o.unref,o.released,pte);
+                    } else if let Some((va,a)) = self.session.context.mapping_at(f.address) {
+                        let role = if a == self.session.commands { "channel-command" }
+                            else if a == self.session.image { "channel-context" }
+                            else if a == self.session.mmio { "channel-mmio" }
+                            else if va == self.quarantine { "channel-vab" }
+                            else { "channel-resident" };
+                        crate::serial_println!("GT710_NATIVE_VA role={} base={:#x} bytes={} physical={:#x} released=false",
+                            role,va,a.range.size,a.range.start);
+                    } else if (TARGET..TARGET+4096+READBACK_BYTES as u64).contains(&f.address) {
+                        crate::serial_println!("GT710_NATIVE_VA role=channel-report base={:#x} released=false",TARGET);
+                    } else {
+                        crate::serial_println!("GT710_NATIVE_VA role=unknown address={:#x}",f.address);
+                    }
+                    Ok(())
+                });
             }
         }
         pub(crate) fn reset(&mut self) -> Result<(), &'static str> {
