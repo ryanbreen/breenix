@@ -253,6 +253,14 @@ pub fn warm_frame(target: Target, source: Target, pipe: u32) -> Option<Frame> {
     translate(words.as_slice(), &View(target, source)).ok()
 }
 
+/// Exact bootstrap allocation for the COPY parking payload, including the
+/// committed catalogue and its per-draw constants, descriptors and vertices.
+pub fn parking_bytes(target: Target, source: Target) -> Result<usize, &'static str> {
+    warm_frame(target, source, pipeline::COPY)
+        .ok_or("native parking frame refused")?
+        .data.len().checked_sub(CODE).ok_or("native parking code extent")
+}
+
 /// Build an inert channel state from the sampled encoder. Its
 /// code, constants, vertices and descriptors occupy retained bootstrap VRAM;
 /// its two images are separate retained pages. No draw launch is published.
