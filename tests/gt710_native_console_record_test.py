@@ -21,7 +21,8 @@ static HANDOFF:AtomicBool=AtomicBool::new(false);
 fn active()->bool{false} fn caller()->Result<u64,()>{Ok(1)} fn firmware_hash()->u64{0}
 mod display {pub fn owner(_:u64)->bool{false}}
 mod arch {pub fn firmware_writes()->u64{29}}
-mod screen {pub fn describe()->(u64,u64){(0,0)}}
+static SCREEN:AtomicU64=AtomicU64::new(0);
+mod screen {pub fn describe()->(u64,u64){(super::SCREEN.load(super::Ordering::Acquire),0)}}
 mod gk208 {
  pub fn console_state()->Option<(gpu_abi::Mode,u64,bool,u64)>{
   Some((gpu_abi::Mode{width:1280,height:1024,scale:1,reserved:0},0xffff_ffff,true,0))
@@ -44,6 +45,16 @@ fn main(){
  assert_eq!(a.console_resource,0xffff_ffff);
  assert_eq!(a.scanout_resource,731,"MODES overwrote the completed client view identity");
  assert_eq!(a.binding_known,1);
+ // A restored shared-core console has a real device ID of its own.
+ SCREEN.store(732,Ordering::Release);a.scanout_resource=732;
+ console::describe(&mut a);
+ assert_eq!((a.console_resource,a.scanout_resource),(732,732),
+     "MODES replaced the restored core console identity with the native reservation");
+ // An allocated core screen alone is not a binding: the native console is
+ // still the fallback after a completed native repaint clears the client view.
+ a.scanout_resource=0;
+ console::describe(&mut a);
+ assert_eq!((a.console_resource,a.scanout_resource),(0xffff_ffff,0xffff_ffff));
 }
 '''.replace("// DESCRIBE",function)
         priority=["taskpolicy","-b"] if sys.platform=="darwin" else []
