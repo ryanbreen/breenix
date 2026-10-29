@@ -555,29 +555,38 @@ pub fn init() {
 /// Install the native owner only after hardware startup and channel receipts.
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn install_native(device: crate::gk208::adapter::Device) -> Result<(), &'static str> {
-    let caps = device.caps();
-    if device.needs_reset() || caps.backend != abi::backend::GK208 {
-        return Err("native core lacks live class evidence");
-    }
-    if caps.status == abi::status::MISSING_CAPABILITY {
-        // Installation needs the live engine and class evidence. The first
-        // unprobed format/profile capability is reported by CAPS/admission.
-        if matches!(caps.missing, capability::FEATURE_3D | capability::CAPABILITY_SET) {
-            return Err(capability::name(caps.missing));
+    let mut retained = Some(device);
+    let result = (|| {
+        let device = retained.as_ref().unwrap();
+        let caps = device.caps();
+        if device.needs_reset() || caps.backend != abi::backend::GK208 {
+            return Err("native core lacks live class evidence");
         }
-    } else if caps.status != abi::status::ADMITTED {
-        return Err("native core capability state invalid");
-    }
-    let surface = crate::gk208::console_surface().ok_or("native console surface absent")?;
-    native_console_backing(&surface)?;
-    with_core(|core| {
-        if core.dev.is_some() { return Err("GPU core already has a device"); }
-        core.queue_size = device.queue_size();
-        core.status = caps.status;
-        core.caps = caps;
-        core.dev = Some(Device::Gk208(device));
-        Ok(())
-    }).unwrap_or(Err("GPU core not initialized"))
+        if caps.status == abi::status::MISSING_CAPABILITY {
+            // Installation needs the live engine and class evidence. The first
+            // unprobed format/profile capability is reported by CAPS/admission.
+            if matches!(caps.missing, capability::FEATURE_3D | capability::CAPABILITY_SET) {
+                return Err(capability::name(caps.missing));
+            }
+        } else if caps.status != abi::status::ADMITTED {
+            return Err("native core capability state invalid");
+        }
+        let surface = crate::gk208::console_surface().ok_or("native console surface absent")?;
+        native_console_backing(&surface)?;
+        let queue_size = device.queue_size();
+        with_core(|core| {
+            if core.dev.is_some() { return Err("GPU core already has a device"); }
+            core.queue_size = queue_size;
+            core.status = caps.status;
+            core.caps = caps;
+            core.dev = Some(Device::Gk208(retained.take().unwrap()));
+            Ok(())
+        }).unwrap_or(Err("GPU core not initialized"))
+    })();
+    // Admission probes have already bound this channel. An installation error
+    // is not a DMA drain, so retain its pages just like probe failure does.
+    if let Some(device) = retained { core::mem::forget(device); }
+    result
 }
 
 /// Apply the capability control through shared admission while the early boot
