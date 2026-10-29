@@ -34,7 +34,11 @@ pub mod gk208 {
   pub struct Channel;
   impl Channel {pub fn identity(&self)->(u64,u64){(0x123000,18)}}
   pub struct Device {pub board:super::caps::BoardState,pub channel:Channel,pub fail_probe:bool}
-  impl Device {// METHOD
+  impl Device {
+   fn admission(&self,masked:Option<u32>)->Result<(),(u32,u32)> {
+    super::caps::Profile::from_board(&self.board,self.channel.identity()).admission(masked)
+   }
+   // METHOD
   }
  }
 }
@@ -52,7 +56,7 @@ fn main(){
   assert_eq!(Profile::from_board(&d.board,d.channel.identity()).admission(None).is_ok(),!fail_probe);
  }
 }
-'''.replace("CAPS", str(ROOT / "kernel/src/gpu/gk208/caps.rs")).replace("// METHOD", method)
+'''.replace('"CAPS"', '"' + str(ROOT / "kernel/src/gpu/gk208/caps.rs") + '"').replace("// METHOD", method)
         priority = ["taskpolicy", "-b"] if sys.platform == "darwin" else []
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)

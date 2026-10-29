@@ -2360,6 +2360,26 @@ fn reset_device(tid: u64) {
     }
     if dev.reset_done() {
         let (held, up) = dev.restart();
+        #[cfg(target_arch = "x86_64")]
+        let up = match (&mut dev, up) {
+            (Device::Gk208(device), Ok(())) => device.reprobe(),
+            (_, up) => up,
+        };
+        #[cfg(target_arch = "x86_64")]
+        if matches!(&dev, Device::Gk208(_)) {
+            if let Err(error) = up {
+                // A fresh native probe may already have published work. A
+                // reset of the old epoch cannot release that new backing.
+                crate::serial_println!("GT710_NATIVE_REPROBE_REFUSAL {}", error);
+                with_core(move |c| {
+                    let epoch = c.epoch;
+                    c.backlog.extend(held.into_iter().map(|r| (epoch, r)));
+                    c.reset_failed(dev);
+                    c.reason = error;
+                });
+                return;
+            }
+        }
         with_core(move |c| c.finish_reset(dev, held, up));
     } else {
         with_core(move |c| c.reset_failed(dev));

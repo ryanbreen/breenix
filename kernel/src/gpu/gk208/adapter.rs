@@ -222,6 +222,15 @@ impl Device {
         }
     }
     pub fn reset_done(&mut self) -> bool { matches!(self.resetting, Some(Ok(()))) }
+    /// Requalify the restored channel with new engine observations. The old
+    /// epoch's executable results cannot admit a replacement incarnation.
+    #[cfg(target_os = "none")]
+    pub(crate) fn reprobe(&mut self) -> Result<(), &'static str> {
+        self.board.channel = self.channel.identity();
+        self.board.probes = super::caps::ProbeResults::new();
+        super::caps::run(self)?;
+        self.admission(None).map_err(|(_, missing)| gpu_abi::capability::name(missing))
+    }
     pub fn restart(&mut self) -> (Vec<Request>, Result<(), &'static str>) {
         match self.resetting {
             Some(Ok(())) => (),
