@@ -83,7 +83,7 @@ def caps_bytes():
         struct.pack_into('<' + 'I' * len(words), data, offset, *words)
     put(0, 1, 512, 0, 0, 6, 512, 0xa197, 0, 4)
     put(36, 0x927d, 0xa06f, 0xa0b5, 0xa197)
-    put(68, 0, 3, 1, 3, 2, 2, 7, 0, 16384, 16384, 1, 0, 1)
+    put(68, 0, 3, 1, 3, 2, 1, 7, 0, 16384, 16384, 1, 0, 1)
     origins = [3, 1] + [4] * 8 + [2]
     struct.pack_into('<Q', data, 120, sum(o << (3 * i) for i, o in enumerate(origins)))
     data[128:134] = b'GK208B'
@@ -168,7 +168,7 @@ class ResourcesReport(unittest.TestCase):
             API['resources_row'](stage(d))
             for offset, value in [(8, 2), (12, 3), (16, 4), (20, 3), (24, 1),
                                   (28, 1), (32, 3), (36, 0), (52, 1), (72, 1),
-                                  (88, 3), (92, 3), (96, 330), (100, 32768),
+                                  (88, 0), (88, 2), (88, 3), (92, 3), (96, 330), (100, 32768),
                                   (108, 2), (116, 0), (256, 0), (260, 0), (268, 1), (272, 1)]:
                 data = caps_bytes(); struct.pack_into('<I', data, offset, value)
                 with self.subTest(offset=offset), self.assertRaises(ValueError):
