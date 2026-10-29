@@ -84,7 +84,7 @@ pub trait Io {
 pub struct Space {
     pub instance: Allocation,
     pub directory: Allocation,
-    tables: Vec<(u64, Allocation)>,
+    tables: Vec<(u64, Allocation, u32)>,
     total: u64,
     poisoned: bool,
     detached: bool,
@@ -128,10 +128,10 @@ impl Space {
     pub fn allocations(&self) -> impl Iterator<Item = Allocation> + '_ {
         core::iter::once(self.instance)
             .chain(core::iter::once(self.directory))
-            .chain(self.tables.iter().map(|(_, a)| *a))
+            .chain(self.tables.iter().map(|(_, a, _)| *a))
     }
     pub fn table_ranges(&self) -> impl Iterator<Item = (u64, Range)> + '_ {
-        self.tables.iter().map(|(i, a)| (*i, a.range))
+        self.tables.iter().map(|(i, a, _)| (*i, a.range))
     }
     pub fn pte_address(&self, va: u64) -> Option<u64> {
         if va >= LIMIT {
@@ -139,8 +139,8 @@ impl Space {
         }
         self.tables
             .iter()
-            .find(|(i, _)| *i == va / COVERAGE)
-            .map(|(_, a)| a.range.start + ((va % COVERAGE) / PAGE) * 8)
+            .find(|(i, _, _)| *i == va / COVERAGE)
+            .map(|(_, a, _)| a.range.start + ((va % COVERAGE) / PAGE) * 8)
     }
     fn validate(&self, va: u64, backing: Range) -> Result<(), &'static str> {
         if self.poisoned || self.detached {
@@ -202,7 +202,7 @@ impl Space {
         let result = (|| {
             let last = (va + backing.size - 1) / COVERAGE;
             for index in va / COVERAGE..=last {
-                if self.tables.iter().any(|(i, _)| *i == index) {
+                if self.tables.iter().any(|(i, _, _)| *i == index) {
                     continue;
                 }
                 self.tables
@@ -216,9 +216,10 @@ impl Space {
                     self.directory.range.start + index * 8,
                     ((table.range.start >> 8) | 1) << 32,
                 )?;
-                self.tables.push((index, table));
+                self.tables.push((index, table, 0));
             }
             self.write_mapping(io, va, backing, flags, kind)?;
+            self.account_pages(va, backing.size, true);
             self.publish(io)
         })();
         if result.is_err() {
@@ -289,12 +290,53 @@ impl Space {
             for v in (va..va + size).step_by(PAGE as usize) {
                 io.write(self.pte_address(v).ok_or("missing VM page table")?, 0)?;
             }
-            self.publish(io)
+            self.publish(io)?;
+            self.account_pages(va, size, false);
+            Ok(())
         })();
         if result.is_err() {
             self.poisoned = true;
         }
         result
+    }
+    fn account_pages(&mut self, va: u64, size: u64, add: bool) {
+        for (index, _, pages) in &mut self.tables {
+            let start = va.max(*index * COVERAGE);
+            let end = (va + size).min((*index + 1) * COVERAGE);
+            if start < end {
+                let count = ((end - start) / PAGE) as u32;
+                if add { *pages += count; } else { *pages -= count; }
+            }
+        }
+    }
+    /// Remove empty SPTs from this PDB and its channel alias before recycling.
+    /// An uncertain directory publication retains the table and its charge.
+    pub(super) fn reclaim_empty(&mut self, a: &mut Allocator, io: &mut impl Io,
+        alias: Option<u64>,
+    ) -> Result<Vec<u64>, &'static str> {
+        if !self.usable() { return Err("VM retained after uncertain device operation"); }
+        let empty: Vec<_> = self.tables.iter().filter(|(_, _, pages)| *pages == 0)
+            .map(|(index, _, _)| *index).collect();
+        if empty.is_empty() { return Ok(empty); }
+        let result = (|| {
+            for &index in &empty {
+                io.write(self.directory.range.start + index * 8, 0)?;
+                if let Some(alias) = alias { io.write(alias + index * 8, 0)?; }
+            }
+            self.publish(io)?;
+            if let Some(alias) = alias { io.invalidate(alias)?; }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.poisoned = true;
+            return Err(error);
+        }
+        for &index in &empty {
+            let at = self.tables.iter().position(|(i, _, _)| *i == index).unwrap();
+            a.release(self.tables[at].1)?;
+            self.tables.remove(at);
+        }
+        Ok(empty)
     }
     /// Detach while storage is still pinned. A failed invalidate retains it.
     pub(super) fn detach(&mut self, io: &mut impl Io) -> Result<(), &'static str> {
@@ -322,7 +364,7 @@ impl Space {
         if !self.detached {
             return Err("VM still attached");
         }
-        for (_, table) in self.tables {
+        for (_, table, _) in self.tables {
             a.release(table)?;
         }
         a.release(self.directory)?;

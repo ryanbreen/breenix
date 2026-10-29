@@ -400,6 +400,10 @@ impl<B> Resources<B> {
                     backing_va: e.backing_va, backing_bytes: e.backing_bytes,
                     role: e.role, regions: e.regions });
             }
+            if let Some(space) = self.space.as_mut() {
+                let removed = space.reclaim_empty(a, io, self.alias)?;
+                self.alias_indices.retain(|index| !removed.contains(index));
+            }
             if self.entries.is_empty() {
                 if let Some(directory) = self.alias {
                     for &index in &self.alias_indices { io.write(directory+index*8,0)?; }
