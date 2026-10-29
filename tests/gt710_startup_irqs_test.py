@@ -43,7 +43,7 @@ static GATE:Mutex<(bool,bool,bool)>=Mutex::new((false,false,false));
 static CHANGED:Condvar=Condvar::new();
 static FAIL:AtomicBool=AtomicBool::new(false);
 static INSTALL_EARLY:AtomicBool=AtomicBool::new(false);
-thread_local!{static IRQS:Cell<bool>=const{Cell::new(false)};static SECOND:Cell<bool>=const{Cell::new(false)};}
+thread_local!{static IRQS:Cell<bool>=const{Cell::new(false)};static SECOND:Cell<bool>=const{Cell::new(false)};static WORKER:Cell<bool>=const{Cell::new(false)};}
 pub fn arch_interrupts_enabled()->bool{IRQS.with(Cell::get)}
 pub unsafe fn arch_enable_interrupts(){IRQS.with(|i|i.set(true));}
 pub unsafe fn arch_disable_interrupts(){IRQS.with(|i|i.set(false));}
@@ -64,9 +64,18 @@ fn wait_for<T>(_:Option<u64>,_:bool,mut f:impl FnMut(&mut Core)->Option<T>)->Res
   let g=GATE.lock().unwrap();let _=CHANGED.wait_timeout(g,Duration::from_millis(1)).unwrap();
  }
 }
+mod task {pub mod kthread {
+ #[allow(dead_code)] pub fn kthread_run(f:impl FnOnce()+Send+'static,_:&str)->Result<(),()> {
+  std::thread::spawn(move||{
+   super::super::WORKER.with(|w|w.set(true));
+   unsafe{super::super::arch_enable_interrupts();}f();
+  });Ok(())
+ }
+}}
 mod gk208 {
  pub fn takeover_started()->bool{true}
  pub fn initialize_core()->Result<(),&'static str>{
+  assert!(super::WORKER.with(std::cell::Cell::get),"firmware startup held syscall preemption instead of running on a worker");
   super::CALLS.fetch_add(1,super::Ordering::AcqRel);
   // Substitute hardware only: upload, Falcon startup/mailbox waits, channel receipts.
   for phase in ["FECS upload","GPCCS upload","firmware wait","channel wait"] {

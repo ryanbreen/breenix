@@ -38,6 +38,12 @@ fn main(){
  assert_eq!(a.modes[1],abi::Mode::ZERO);
  assert_eq!((a.handoff,a.firmware_writes_after_handoff),(1,0));
  assert_eq!((a.console_resource,a.scanout_resource),(0xffff_ffff,0xffff_ffff));assert_eq!(a.binding_known,1);
+ // READBACK(0) and the core expose a client viewing-copy identity.
+ a.scanout_resource=731;a.binding_known=1;
+ console::describe(&mut a);
+ assert_eq!(a.console_resource,0xffff_ffff);
+ assert_eq!(a.scanout_resource,731,"MODES overwrote the completed client view identity");
+ assert_eq!(a.binding_known,1);
 }
 '''.replace("// DESCRIBE",function)
         priority=["taskpolicy","-b"] if sys.platform=="darwin" else []
