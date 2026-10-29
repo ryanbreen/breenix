@@ -255,7 +255,7 @@ fn repeated_draws_reuse_retired_va_with_a_live_console() {
     let held_id=r.draw_buffer(&mut a,&mut io,128*1024).unwrap();
     let held_va=r.address(held_id).unwrap(); let held=r.hold(held_id).unwrap();
     r.unref(held_id).unwrap();
-    for _ in 0..2050 {
+    for _ in 0..5000 {
         let id=r.draw_buffer(&mut a,&mut io,128*1024).unwrap();
         let va=r.address(id).unwrap();
         assert_eq!(va % (1<<17),0); assert_ne!(va,held_va);
@@ -269,4 +269,24 @@ fn repeated_draws_reuse_retired_va_with_a_live_console() {
     drop(held); r.collect(&mut a,&mut io).unwrap();
     let id=r.draw_buffer(&mut a,&mut io,128*1024).unwrap();
     assert_eq!(r.address(id),Some(held_va));
+}
+
+#[test]
+fn empty_tables_are_reclaimed_while_console_and_its_alias_remain_live() {
+    let mut a=Allocator::new(1<<30,&[]).unwrap(); let mut io=Model::default();
+    let surface=a.allocate(5120*1024,65536,memory::allocator::Kind::Display).unwrap();
+    let mut r=Resources::<Vec<u8>>::new();
+    r.import_linear(&mut a,&mut io,u32::MAX,surface).unwrap();
+    let baseline=a.stats(); let charge=r.vram_bytes();
+    let id=r.draw_buffer(&mut a,&mut io,128<<20).unwrap();
+    let va=r.address(id).unwrap(); let pages:Vec<_>=(0..32768).map(|i|0x100000+i*4096).collect();
+    r.attach(&mut a,&mut io,id,Arc::new(Vec::new()),&pages,128<<20).unwrap();
+    let high=(va+(128<<20)-1)/(1<<27); let directory=0x30000000;
+    r.bind(&mut io,directory,0x123000,17).unwrap();
+    assert_ne!(io.words[&(directory+high*8)],0);
+    r.unref(id).unwrap(); r.collect(&mut a,&mut io).unwrap();
+    assert_eq!(a.stats(),baseline,"an empty table must return its VRAM charge");
+    assert_eq!(r.vram_bytes(),charge);
+    assert_eq!(io.words[&(directory+high*8)],0,"channel alias must detach before table reuse");
+    assert!(r.pte_address(high*(1<<27)).is_none());
 }
