@@ -1089,7 +1089,6 @@ impl ProcessScheduler {
             scheduler::charge_current_cpu();
         }
         // Phase 1: Under PM lock — minimal work only
-        #[cfg(target_arch = "aarch64")]
         let mut gpu_owner = None;
         let phase1_result = {
             if let Some(ref mut manager) = *crate::process::manager() {
@@ -1216,7 +1215,6 @@ impl ProcessScheduler {
                     // per row: a signal death has already terminated the row
                     // (`already_terminated`), and this is still its first ask.
                     let orphaned_groups = manager.groups_orphaned_by_exit(pid, &children);
-                    #[cfg(target_arch = "aarch64")]
                     {
                         gpu_owner = crate::gpu::exited_locked(manager, pid);
                     }
@@ -1249,7 +1247,6 @@ impl ProcessScheduler {
                 None
             }
         }; // PM lock dropped here
-        #[cfg(target_arch = "aarch64")]
         if let Some(owner) = gpu_owner {
             crate::gpu::owner_ended(owner);
         }
