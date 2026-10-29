@@ -329,10 +329,14 @@ class ResourcesReport(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp); gpu = d / 'resources-producer'; gpu.mkdir()
             for path, suite in [(d, 'console'), (gpu, 'gpu')]:
+                # metal-run retains the SHA in commit; bootedCommit is derived
+                # by the capture reader, not written into run.json (G13).
+                raw_boot = boot(suite)
+                del raw_boot['bootedCommit']
                 row = stage(path) if suite == 'gpu' else ''
                 serial = (path / 'serial.txt').read_text() if row else ''
                 (path / 'serial.txt').write_text(serial + transcript(suite))
-                for name, value in {'run.json': json.dumps(boot(suite)), 'commit': SHA,
+                for name, value in {'run.json': json.dumps(raw_boot), 'commit': SHA,
                                     'dirty': '0', 'exit-status': '0', 'ended': '1',
                                     'events.jsonl': ''.join(json.dumps(e)+'\n' for e in events())}.items():
                     (path / name).write_text(value)
@@ -341,7 +345,9 @@ class ResourcesReport(unittest.TestCase):
             # G13: this step's unimplemented cases cause exit 1; completion,
             # selected cases and reclamation still decide acceptance.
             (gpu/'exit-status').write_text('1')
-            self.assertEqual(API['resources_capture'](d, SHA)['gpu']['exit_status'], 1)
+            completed = API['resources_capture'](d, SHA)['gpu']
+            self.assertEqual(completed['exit_status'], 1)
+            self.assertEqual(completed['boot']['bootedCommit'], SHA)
             original = (gpu/'serial.txt').read_text()
             for text in [original.replace('SUITE gpu DONE ', 'LOST DONE ', 1),
                          original.replace('reclaimed=PASS', 'reclaimed=FAIL'),
