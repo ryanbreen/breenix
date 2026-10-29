@@ -1265,3 +1265,12 @@ The CAPS producer serializes Breenix's syscall result without external
 implementation code. Executable probe comparisons reuse the committed
 8.2-u6 expectations in `kernel/src/gpu/gk208/caps/`; the shared GPU suite
 and its expected pixels are unchanged.
+
+GT 710 frame-binding retirement check
+
+Consumer: tests/fixtures/gt710_frame_retirement.rs. A197 address and release
+fields use NVIDIA open-gpu-doc 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+classes/3d/cla197.h (MIT, Copyright (c) 2020 NVIDIA CORPORATION). Its complete
+file-local permission notice was checked and is retained in the consumer.
+The model enumerates the Breenix encoder's code, constants/handles, vertex,
+VAB, TIC/TSC and image bindings at the production publisher's release.
