@@ -7,6 +7,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DividerControlFlow(unittest.TestCase):
+    def test_shape_kill_survives_native_compilation(self):
+        for name in ('line', 'circle_fill', 'circle_outline', 'rounded_rect', 'triangle', 'coverage_spans'):
+            with self.subTest(pipeline=name):
+                native = (ROOT / f'kernel/assets/kepler/pipeline-{name}.asm').read_text()
+                self.assertTrue(re.search(r'\bdiscard\b', native) is not None,
+                                'uncovered fragments must preserve the destination')
+
     def test_divider_break_has_no_fallthrough_reconvergence(self):
         # Shared routine 11 has one conditional, whose taken arm exits the loop.
         # MIT Mesa nv50_ir_from_nir.cpp:1605-1653 excludes that BRK from joins.
