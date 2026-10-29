@@ -211,6 +211,56 @@ pub trait Bindings: Resolver {
     /// Caller-owned destination snapshot for this format, retaining pixel
     /// coordinates. Blended commands refuse if the required scratch is absent.
     fn blend_scratch(&self, _format: u32) -> Option<Target> { None }
+    /// Frame-owned RGBA8 crossing tables, uploaded before preparation.
+    fn span_texture(&self) -> Option<Target> { None }
+}
+
+/// Shared coverage-spans words in little-endian RGBA8 texels with 0-filled row padding.
+pub struct Spans {
+    pub width: u32,
+    pub height: u32,
+    pub bytes: Vec<u8>,
+}
+/// The input has passed shared stream validation. Match VirGL's first-use order
+/// and maximum referenced extent per handle, including later commands' extents.
+fn span_tables(w: &(impl Words + ?Sized)) -> Vec<(u64, u32, u32)> {
+    let mut tables: Vec<(u64, u32, u32)> = Vec::new();
+    let mut at = 0;
+    while at < w.len() {
+        if w.word(at) == draw::COMMAND && w.word(at + 2) == pipeline::COVERAGE_SPANS {
+            let h = handle(w, at + 6);
+            let bytes = w.word(at + 8);
+            if let Some(entry) = tables.iter_mut().find(|e| e.0 == h) {
+                entry.1 = entry.1.max(bytes);
+            } else { tables.push((h, bytes, 0)); }
+        }
+        at += w.word(at + 1) as usize;
+    }
+    let mut base = 0;
+    for entry in &mut tables { entry.2 = base; base += entry.1 / 4; }
+    tables
+}
+/// Pack each named crossing buffer exactly once, from the validated snapshot.
+/// Width is the same power-of-two device limit supplied to the VirGL encoder.
+pub fn pack_spans(w: &(impl Words + ?Sized), b: &impl Bindings, width: u32)
+    -> Result<Option<Spans>, &'static str> {
+    if !width.is_power_of_two() || width > gpu_abi::gk208::MAX_2D_SIZE {
+        return Err("invalid native crossing texture width");
+    }
+    let tables = span_tables(w);
+    let Some(&(_, bytes, base)) = tables.last() else { return Ok(None); };
+    let height = (base + bytes / 4).div_ceil(width);
+    if height == 0 || height > gpu_abi::gk208::MAX_2D_SIZE {
+        return Err("invalid native crossing texture height");
+    }
+    let mut data = Spans { width, height, bytes: vec![0; width as usize * height as usize * 4] };
+    for (h, bytes, base) in tables {
+        for word in 0..bytes / 4 {
+            let at = (base + word) as usize * 4;
+            data.bytes[at..at + 4].copy_from_slice(&b.buffer_word(h, u64::from(word) * 4).to_le_bytes());
+        }
+    }
+    Ok(Some(data))
 }
 
 /// Warm the installed basic catalogue through the same encoder as client work.
@@ -425,6 +475,7 @@ pub fn pipeline_refusal(w: &(impl Words + ?Sized)) -> Option<stream::Refusal> {
                         | pipeline::ROUNDED_RECT
                         | pipeline::GRADIENT_V
                         | pipeline::TRIANGLE
+                        | pipeline::COVERAGE_SPANS
                 ) => {}
             _ => return Some(stream::Refusal { index, error: stream::error::BAD_PIPELINE }),
         }
@@ -469,6 +520,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
         f.data[fs..fs + 80].copy_from_slice(header);
         f.data[fs + 80..fs + 80 + code.len()].copy_from_slice(code);
     }
+    let tables = span_tables(w);
     let mut target = None;
     let mut current_handle = 0;
     let mut scissor = None;
@@ -573,7 +625,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                     }
                     constants[16] = w.word(at + 3);
                     constants[17] = routine;
-                    quad(&mut f, t, r, clip, &constants, pipe, None, None);
+                    quad(&mut f, t, r, clip, &constants, pipe, None, None, None);
                 }
             }
             draw::COMMAND if !draw::sampled(w.word(at + 2)) => {
@@ -585,22 +637,59 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                     command += 1;
                     continue;
                 };
-                for n in 0..w.word(at + 9) as usize {
+                let instance = |n| {
                     let base = at + draw::HEADER + n * draw::INSTANCE;
-                    let i = draw::Instance {
+                    draw::Instance {
                         rect: core::array::from_fn(|k| w.word(base + k) as i32),
                         params: core::array::from_fn(|k| w.word(base + 4 + k)),
-                    };
+                    }
+                };
+                let count = w.word(at + 9) as usize;
+                let data = if pipe == pipeline::COVERAGE_SPANS {
+                    let data = b.span_texture().ok_or("native crossing texture absent")?;
+                    texture_image_control(data)?;
+                    let words = tables.last().map_or(0, |e| e.2 + e.1 / 4);
+                    if data.format != format::R8G8B8A8 || !data.width.is_power_of_two()
+                        || data.height != words.div_ceil(data.width)
+                        || data.id == t.id || data.address == t.address {
+                        return Err("invalid native crossing texture");
+                    }
+                    Some(data)
+                } else { None };
+                let scratch = if let Some(data) = data {
+                    let union = (0..count).filter_map(|n| draw::source_clip(pipe, instance(n), None)
+                        .and_then(|i| draw::clip(pipe, i, t.width, t.height, scissor)))
+                        .fold(None, |u: Option<[u32; 4]>, r| Some(match u {
+                            None => r,
+                            Some(u) => [u[0].min(r[0]), u[1].min(r[1]), u[2].max(r[2]), u[3].max(r[3])],
+                        }));
+                    if let Some([x0, y0, x1, y1]) = union {
+                        let scratch = b.blend_scratch(t.format).ok_or("native blend scratch absent")?;
+                        texture_image_control(scratch)?;
+                        if scratch.format != t.format || scratch.width < x1 || scratch.height < y1
+                            || scratch.id == t.id || scratch.id == data.id
+                            || scratch.address == t.address || scratch.address == data.address {
+                            return Err("invalid native blend scratch");
+                        }
+                        f.chunks.push(Chunk { command, target: scratch.id, source: Some(t.id),
+                            words: Vec::new(), relocations: Vec::new(),
+                            copy: Some((t.id, scratch.id, [x0,y0,x1-x0,y1-y0,x0,y0])) });
+                        Some(scratch)
+                    } else { None }
+                } else { None };
+                for n in 0..count {
+                    let i = instance(n);
                     if let Some(r) = draw::source_clip(pipe, i, None)
                         .and_then(|i| draw::clip(pipe, i, t.width, t.height, scissor)) {
                         let mut constants = [0; 32];
                         constants[..16].copy_from_slice(&i.params);
-                        constants[27] = gpu_abi::gk208::MAX_2D_SIZE.trailing_zeros();
+                        constants[26] = tables.iter().find(|e| e.0 == handle(w, at + 6)).map_or(0, |e| e.2);
+                        constants[27] = data.map_or(gpu_abi::gk208::MAX_2D_SIZE.trailing_zeros(), |d| d.width.trailing_zeros());
                         let colour = w.word(at + 3);
-                        if pipe == pipeline::GRADIENT_V { constants[20] = colour; }
+                        if matches!(pipe, pipeline::GRADIENT_V | pipeline::COVERAGE_SPANS) { constants[20] = colour; }
                         else { constants[20..24].copy_from_slice(&[16, 8, 0, 24]
                             .map(|shift| gpu_abi::float::ratio_bits(colour >> shift & 255, 255))); }
-                        quad(&mut f, t, r, clip, &constants, pipe, None, None);
+                        quad(&mut f, t, r, clip, &constants, pipe, None, scratch, data);
                     }
                 }
             }
@@ -694,7 +783,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                 } else { None };
                 for n in 0..count {
                     if let Some((constants, r)) = instance(n) {
-                        quad(&mut f, t, r, clip, &constants, pipe, Some(source), scratch);
+                        quad(&mut f, t, r, clip, &constants, pipe, Some(source), scratch, None);
                     }
                 }
             }
@@ -815,6 +904,7 @@ fn program(pipe: u32) -> (usize, &'static [u8; 80], &'static [u8], u32) {
             shaders::PIPELINE_BITMAP_TEXT_CODE,
             shaders::PIPELINE_BITMAP_TEXT_GPRS,
         ),
+        pipeline::COVERAGE_SPANS => (shaders::PIPELINE_COVERAGE_SPANS_OFFSET, shaders::PIPELINE_COVERAGE_SPANS_HEADER, shaders::PIPELINE_COVERAGE_SPANS_CODE, shaders::PIPELINE_COVERAGE_SPANS_GPRS),
         pipeline::LINE => (shaders::PIPELINE_LINE_OFFSET, shaders::PIPELINE_LINE_HEADER, shaders::PIPELINE_LINE_CODE, shaders::PIPELINE_LINE_GPRS),
         pipeline::CIRCLE_FILL => (shaders::PIPELINE_CIRCLE_FILL_OFFSET, shaders::PIPELINE_CIRCLE_FILL_HEADER, shaders::PIPELINE_CIRCLE_FILL_CODE, shaders::PIPELINE_CIRCLE_FILL_GPRS),
         pipeline::CIRCLE_OUTLINE => (shaders::PIPELINE_CIRCLE_OUTLINE_OFFSET, shaders::PIPELINE_CIRCLE_OUTLINE_HEADER, shaders::PIPELINE_CIRCLE_OUTLINE_CODE, shaders::PIPELINE_CIRCLE_OUTLINE_GPRS),
@@ -898,6 +988,7 @@ pub fn probe_frame(t: Target, source: Option<Target>) -> Frame {
             pipe,
             Some(source),
             None,
+            None,
         );
     } else {
         let inputs = include_bytes!("caps/integer.inputs");
@@ -915,6 +1006,7 @@ pub fn probe_frame(t: Target, source: Option<Target>) -> Frame {
                 pipe,
                 None,
                 None,
+                None,
             );
         }
     }
@@ -927,7 +1019,7 @@ fn corrupt_pixel(f: &mut Frame, t: Target) {
 fn solid(f: &mut Frame, t: Target, r: [u32; 4], scissor: [u32; 4], colour: u32) {
     let constants =
         [16, 8, 0, 24].map(|shift| gpu_abi::float::ratio_bits(colour >> shift & 255, 255));
-    quad(f, t, r, scissor, &constants, pipeline::SOLID, None, None);
+    quad(f, t, r, scissor, &constants, pipeline::SOLID, None, None, None);
 }
 fn quad(
     f: &mut Frame,
@@ -938,14 +1030,16 @@ fn quad(
     pipe: u32,
     source: Option<Target>,
     scratch: Option<Target>,
+    data: Option<Target>,
 ) {
+    let sampled = source.is_some() || data.is_some();
     let uniform = f.data.len().next_multiple_of(256);
     let vertex = uniform + 256;
     let tic = vertex + 256;
     let tsc = tic + 256;
     let handles = tsc + 256;
     f.data.resize(
-        if source.is_some() {
+        if sampled {
             handles + 256
         } else {
             vertex + 256
@@ -955,7 +1049,7 @@ fn quad(
     for (k, v) in constants.iter().enumerate() {
         f.data[uniform + k * 4..uniform + k * 4 + 4].copy_from_slice(&v.to_le_bytes());
     }
-    if let Some(source) = source {
+    if sampled {
         // MIT cla197tex.h:509-536,547-574: clamp U/V/P to edge, no sRGB or
         // anisotropy; POINT mag/min, MIP_NONE. Integer texel fetches need no
         // hardware filtering, including the BOX_FILTER shader's explicit sum.
@@ -963,7 +1057,7 @@ fn quad(
         // generic TSC0, this exact profile keeps sRGB conversion disabled.
         let sampler = [2 | (2 << 3) | (2 << 6), 1 | (1 << 4) | (1 << 6), 0, 0, 0, 0, 0, 0];
         // Validation above established this descriptor before any draw chunks.
-        for (slot, texture) in [Some(source), scratch].into_iter().enumerate() {
+        for (slot, texture) in [source, scratch, data].into_iter().enumerate() {
             let Some(texture) = texture else { continue; };
             for (offset, words) in [
                 (tic + slot * 32, texture_image_control(texture).unwrap()),
@@ -1011,7 +1105,7 @@ fn quad(
         target: t.id,
         words: Vec::new(),
         relocations: Vec::new(),
-        source: source.map(|s| s.id),
+        source: source.or(data).map(|s| s.id),
         copy: None,
     };
     // IDXFETCH quarantine: 1 MiB, 128 KiB aligned (Mesa screen:1274-1283).
@@ -1127,8 +1221,8 @@ fn quad(
     c.emit(0x2380, &[256, 0, uniform as u32]);
     c.relocations.push(c.words.len() - 2);
     c.emit(0x2490, &[1]);
-    if source.is_some() {
-        let maximum_index = u32::from(scratch.is_some());
+    if sampled {
+        let maximum_index = if data.is_some() { 2 } else { u32::from(scratch.is_some()) };
         c.address(0x1574, tic, &[maximum_index]);
         c.address(0x155c, tsc, &[maximum_index]);
         c.emit(0x1334, &[0]);

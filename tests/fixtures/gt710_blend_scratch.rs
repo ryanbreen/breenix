@@ -132,7 +132,7 @@ fn spans_storage_and_charge_follow_the_actual_draw_release_and_publication() {
     native_spans(42,&mut scratch,&data).unwrap();
     let t=scratch.targets[2].unwrap();assert_eq!((t.width,t.height,t.format),(8,1,1));
     assert_eq!(CHARGED.load(Ordering::SeqCst),4096);
-    ce::with_resources(|r,_,io|{let pte=r.pte_address(t.address).unwrap();let physical=(io.words[&pte]&0xffffff00)<<8;
+    ce::with_resources(|r,_,io|{let pte=r.pte_address(t.address).unwrap();let physical=(io.words[&pte]&0xfffffff0)<<8;
         assert_eq!(io.words[&physical],0x8877665544332211);Ok(())}).unwrap();
     let draw=gk208::encoded(&[t.id]);
     assert!(d.send(Request::draw(Tag::Sync(9001),9001,19,1,draw)).is_ok());

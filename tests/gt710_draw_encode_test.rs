@@ -126,7 +126,13 @@ fn invalid_tail_and_unsupported_pipeline_emit_nothing() {
     let mut w = frame(); w.extend([0xffff, 2]);
     assert!(encode::translate(w.as_slice(), &View(format::B8G8R8A8)).is_err());
     let mut w = Vec::new(); stream::encode::begin(&mut w, 1);
-    stream::encode::draw(&mut w, pipeline::COVERAGE_SPANS, 0, &[[0,0,4,4]]);
+    // G16: catalogue IDs 0..16 are admitted; use the first unassigned ID.
+    stream::encode::draw(&mut w, 17, 0, &[[0,0,4,4]]);
+    assert_eq!(encode::pipeline_refusal(w.as_slice()), Some(stream::Refusal { index: 1, error: stream::error::BAD_PIPELINE }));
+    assert!(encode::translate(w.as_slice(), &View(format::B8G8R8A8)).is_err());
+    let mut w = Vec::new(); stream::encode::begin(&mut w, 1);
+    stream::encode::draw(&mut w, u32::MAX, 0, &[[0,0,4,4]]);
+    assert_eq!(encode::pipeline_refusal(w.as_slice()), Some(stream::Refusal { index: 1, error: stream::error::BAD_PIPELINE }));
     assert!(encode::translate(w.as_slice(), &View(format::B8G8R8A8)).is_err());
 }
 

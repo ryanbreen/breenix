@@ -382,6 +382,44 @@ impl<B> Resources<B> {
         }
         result.map(|()| id)
     }
+    /// Upload snapshot data through PRAMIN into the native tiled RGBA8 image.
+    /// This happens before draw request construction. Upload errors return without
+    /// publication; uncertain unmapping retains its allocation/charge.
+    pub fn upload_spans(&mut self, a: &mut Allocator, io: &mut impl Io,
+        width: u32, height: u32, bytes: &[u8], charge: Arc<dyn Send + Sync>,
+    ) -> Result<u32, &'static str> {
+        let layout = Layout::new(width, height, 4)?;
+        if !width.is_power_of_two() || bytes.is_empty() || bytes.len() % 4 != 0
+            || bytes.len() as u64 > u64::from(width) * u64::from(height) * 4 {
+            return Err("invalid native crossing upload");
+        }
+        let id = match self.charged_staging(a, io, 1, width, height, charge) {
+            Ok(id) => id,
+            Err(e) => { let _ = self.collect(a, io); return Err(e); }
+        };
+        let result = (|| {
+            let physical = self.entries[&id].allocation.ok_or("native crossing allocation absent")?.range.start;
+            for y in 0..height {
+                for x in (0..width).step_by(2) {
+                    let linear = (u64::from(y) * u64::from(width) + u64::from(x)) as usize * 4;
+                    let mut pair = [0; 8];
+                    let n = (width - x).min(2) as usize * 4;
+                    for (k, value) in pair[..n].iter_mut().enumerate() {
+                        *value = bytes.get(linear + k).copied().unwrap_or(0);
+                    }
+                    io.write(physical + layout.offset(x, y, 0).ok_or("native crossing offset")?, u64::from_le_bytes(pair))?;
+                }
+            }
+            io.flush()?;
+            Ok(())
+        })();
+        if let Err(e) = result {
+            self.unref(id)?;
+            let _ = self.collect(a, io);
+            return Err(e);
+        }
+        Ok(id)
+    }
     pub fn unref(&mut self, id: u32) -> Result<(), &'static str> {
         self.entries.get_mut(&id).ok_or("native resource absent")?.dropped = true;
         Ok(())
@@ -552,10 +590,24 @@ pub(crate) fn blend_staging(format: u32, width: u32, height: u32,
 /// Stop retaining a submission's snapshots. Device chunks still hold them if
 /// DMA has not ended; a failed collection keeps each entry and its reservation.
 #[cfg(target_os = "none")]
-pub(crate) fn retire_blend_staging(ids: [Option<u32>; 2], holds: &mut Vec<Hold>) {
+pub(crate) fn retire_blend_staging(ids: impl IntoIterator<Item = Option<u32>>, holds: &mut Vec<Hold>) {
     let _ = super::ce::with_resources(|r, a, io| {
         for id in ids.into_iter().flatten() { r.unref(id)?; }
         holds.clear();
         r.collect(a, io)
     });
+}
+
+/// Allocate and finish the crossing upload before exposing a sampleable target.
+#[cfg(target_os = "none")]
+pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + Sync>)
+    -> Result<(super::encode::Target, Hold), &'static str> {
+    super::ce::with_resources(|r, a, io| {
+        let id = r.upload_spans(a, io, data.width, data.height, &data.bytes, charge)?;
+        let layout = r.layout(id).ok_or("native crossing layout absent")?;
+        let target = super::encode::Target { id,
+            address: r.address(id).ok_or("native crossing address absent")?,
+            width: data.width, height: data.height, format: 1, tile_mode: layout.tile_mode };
+        Ok((target, r.hold(id)?))
+    })
 }

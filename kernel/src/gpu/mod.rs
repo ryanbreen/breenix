@@ -3577,7 +3577,7 @@ enum Chunks {
 /// chunks additionally retain these images across uncertain publication/reset.
 #[cfg(target_arch = "x86_64")]
 struct NativeScratch {
-    targets: [Option<crate::gk208::encode::Target>; 2],
+    targets: [Option<crate::gk208::encode::Target>; 3],
     holds: Vec<crate::gk208::resource::Hold>,
 }
 #[cfg(target_arch = "x86_64")]
@@ -3589,7 +3589,7 @@ impl Drop for NativeScratch {
 }
 #[cfg(target_arch = "x86_64")]
 fn native_blend_scratch(tgid: u64, sizes: [[u32; 2]; 2]) -> Result<NativeScratch, i64> {
-    let mut scratch = NativeScratch { targets: [None; 2], holds: Vec::new() };
+    let mut scratch = NativeScratch { targets: [None; 3], holds: Vec::new() };
     for (format, [width, height]) in sizes.into_iter().enumerate() {
         if width == 0 || height == 0 { continue; }
         let layout = crate::gk208::resource::Layout::new(width, height, 4).map_err(|_| ENOMEM)?;
@@ -3604,12 +3604,23 @@ fn native_blend_scratch(tgid: u64, sizes: [[u32; 2]; 2]) -> Result<NativeScratch
     Ok(scratch)
 }
 
+/// Use the same submission owner and fence holds as destination snapshots.
+#[cfg(target_arch = "x86_64")]
+fn native_spans(tgid: u64, scratch: &mut NativeScratch, data: &crate::gk208::encode::Spans) -> Result<(), i64> {
+    let layout = crate::gk208::resource::Layout::new(data.width, data.height, 4).map_err(|_| ENOMEM)?;
+    let charge = Arc::new(Charge::new(tgid, layout.allocation_bytes(), true)?);
+    let (target, hold) = crate::gk208::resource::span_staging(data, charge).map_err(|_| EIO)?;
+    scratch.targets[2] = Some(target);
+    scratch.holds.push(hold);
+    Ok(())
+}
+
 /// The view's handles with the snapshot's buffer contents.
 struct Resolved<'a> {
     view: &'a View,
     snap: &'a Snapshot,
     #[cfg(target_arch = "x86_64")]
-    native_scratch: core::cell::Cell<[Option<crate::gk208::encode::Target>; 2]>,
+    native_scratch: core::cell::Cell<[Option<crate::gk208::encode::Target>; 3]>,
 }
 
 /// The VirGL format of a BGL format.
@@ -3652,7 +3663,10 @@ impl crate::gk208::encode::Bindings for Resolved<'_> {
         crate::gk208::encode::target(e.id,e.format)
     }
     fn blend_scratch(&self, format: u32) -> Option<crate::gk208::encode::Target> {
-        self.native_scratch.get().into_iter().flatten().find(|t| t.format == format)
+        self.native_scratch.get()[..2].iter().copied().flatten().find(|t| t.format == format)
+    }
+    fn span_texture(&self) -> Option<crate::gk208::encode::Target> {
+        self.native_scratch.get()[2]
     }
     fn sampled_source(&self, handle: u64) -> Option<crate::gk208::encode::Target> {
         let e = self.view.get(handle)?;
@@ -3894,7 +3908,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         view: &view,
         snap: &snap,
         #[cfg(target_arch = "x86_64")]
-        native_scratch: core::cell::Cell::new([None; 2]),
+        native_scratch: core::cell::Cell::new([None; 3]),
     };
     // Test point 2, `irq-hold`: this validation holds IRQs masked for 2 ms, through the
     // primitive the gauge times (section 1.16).
@@ -4187,7 +4201,10 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 let charge = Arc::new(Charge::new(tgid, bytes, true)?);
                 // Native scratch uses the same validated per-format plan as the
                 // virtual encoders, with native layout and retirement ownership.
-                let scratch = native_blend_scratch(tgid, plan.scratch)?;
+                let mut scratch = native_blend_scratch(tgid, plan.scratch)?;
+                if let Some(data) = crate::gk208::encode::pack_spans(&words, &resolved, data_width).map_err(|_| EINVAL)? {
+                    native_spans(tgid, &mut scratch, &data)?;
+                }
                 resolved.native_scratch.set(scratch.targets);
                 native_scratch = Some(scratch);
                 let swap = match swap {

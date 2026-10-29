@@ -1369,3 +1369,18 @@ Copyright 2010 Christoph Bumiller and complete permission grant were read
 before using that layout. The SPH check reuses the existing decoder of
 MIT NVIDIA open-gpu-doc cla097sph.h at
 9fdf5c4062007929d9f4e6cbad9c9771fe61b880; its header was checked too.
+
+GT 710 crossing-table encoding (milestone 8.4-u4, G16)
+-----------------------------------------------------
+Consumers: kernel/src/gpu/gk208/encode.rs and tests/gt710_spans_encode_test.rs.
+Sampler 2 uses the same attributed TIC/TSC fields and texture handles as the
+8.2-u5 and 8.3-u4 entries above: NVIDIA open-gpu-doc cla197.h/cla197tex.h
+(MIT, pinned 9fdf5c4062007929d9f4e6cbad9c9771fe61b880), envytools
+rnndb/graph/g80_texture.xml and g80_defs.xml with copyright.xml (MIT, pinned
+f102b82381f3f11cee113d16374c87091db039d9), and Mesa nvc0_tex.c
+(MIT, pinned 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de). Their full
+copyright and permission notices remain in both consumers' headers.
+The crossing-table packing, constants and snapshot bounds follow Breenix's
+shared VirGL encoder under PolyForm Noncommercial 1.0.0. The upload in
+kernel/src/gpu/gk208/resource.rs reuses its existing attributed native Layout
+and VM/PRAMIN access; no additional external source or shader is imported.
