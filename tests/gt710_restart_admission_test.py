@@ -18,7 +18,8 @@ extern crate alloc;
 pub mod gk208 {
  pub mod caps {
   pub use crate::policy::*;
-  pub fn run(d:&mut super::adapter::Device)->Result<(),&'static str> {
+  pub fn run_reprobe(d:&mut super::adapter::Device,epoch:u64)->Result<(),&'static str> {
+   assert_eq!(epoch,18);
    assert_eq!(d.board.channel,(0x123000,18));
    assert_eq!(Profile::from_board(&d.board,d.channel.identity()).admission(None),
      Err((gpu_abi::status::MISSING_CAPABILITY,gpu_abi::capability::BGRA_RENDER)),

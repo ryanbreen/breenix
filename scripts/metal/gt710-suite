@@ -1968,7 +1968,23 @@ def resources_row(serial):
             raise ValueError('resources requires all eight executable probe images in order')
         files = ['colour.bgra', 'colour.bgra', 'colour.rgba', 'colour.bgra',
                  'r8.bgra', 'integer.bgra', 'colour.bgra', 'region.bgra']
-        for probe, name in zip(probes, files):
+        groups = [probes]
+        epoch = 0
+        for probe in [json.loads(line) for line in re.findall(r'^(\{.+\})$', serial, re.M)
+                      if json.loads(line).get('phase') == 'caps-reprobe']:
+            current = probe.get('epoch')
+            if type(current) is not int or not 0 < current < 1 << 64:
+                raise ValueError('resources invalid reprobe epoch')
+            if current != epoch:
+                if current <= epoch:
+                    raise ValueError('resources reprobe epoch regressed')
+                groups.append([])
+                epoch = current
+            groups[-1].append(probe)
+        for group in groups:
+            if [p.get('capability') for p in group] != list(range(3, 11)):
+                raise ValueError('resources requires eight ordered probes in each epoch')
+        for probe, name in [(p, name) for group in groups for p, name in zip(group, files)]:
             expected = (root / 'kernel/src/gpu/gk208/caps' / name).read_bytes()
             if (type(probe.get('schema')) is not int or probe['schema'] != 1
                     or type(probe.get('capability')) is not int
@@ -2391,10 +2407,11 @@ def capture_serial(directory):
     if contexts and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file()
                      or re.search(r'^GT710_CTX_IMAGE ', serial, re.M)):
         raise ValueError('graphics context image bulk missing or on serial')
-    probes = 'GT710_CAPS_PROBE id=' in serial
+    probes = bool(re.search(r'^GT710_CAPS_(?:PROBE|REPROBE) id=', serial, re.M))
     if probes and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file()):
         raise ValueError('executable CAPS probe bulk missing')
-    if any(line.startswith('{') and '"phase":"caps-probe"' in line for line in serial.splitlines()):
+    if any(line.startswith('{') and any('"phase":"' + phase + '"' in line
+           for phase in ('caps-probe', 'caps-reprobe')) for line in serial.splitlines()):
         raise ValueError('executable CAPS probe images must arrive in bulk')
     resources = 'GT710_RESOURCES_BULK ' in serial
     if resources and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file()):
@@ -2437,9 +2454,14 @@ def capture_serial(directory):
         elif fields[0]=='GT710_CTX_IMAGE': key=('gr-contexts',)
         elif line.startswith('{'):
             row = json.loads(line)
-            if row.get('phase') != 'caps-probe' or type(row.get('capability')) is not int:
+            if row.get('phase') not in ('caps-probe', 'caps-reprobe') or type(row.get('capability')) is not int:
                 raise ValueError('unexpected JSON artifact record')
-            key=('caps-probe', row['capability'])
+            if row['phase'] == 'caps-reprobe':
+                if type(row.get('epoch')) is not int or not 0 < row['epoch'] < 1 << 64:
+                    raise ValueError('invalid executable reprobe epoch')
+                key=('caps-reprobe', row['epoch'], row['capability'])
+            else:
+                key=('caps-probe', row['capability'])
         elif fields[0]=='GT710_RESOURCES': key=('resources',)
         elif fields[0]=='GT710_CORE': key=('core',)
         elif fields[0]=='GT710_CORE_STARTUP': key=('core-startup',)
@@ -2447,6 +2469,8 @@ def capture_serial(directory):
         if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
         groups.setdefault(key,[]).append(line);previous=key
     def report_key(line):
+        reprobe = re.fullmatch(r'GT710_CAPS_REPROBE id=(\d+) epoch=(\d+) sha256=([a-f0-9]{64})\n?', line)
+        if reprobe: return ('caps-reprobe', int(reprobe[2]), int(reprobe[1]))
         probe = re.fullmatch(r'GT710_CAPS_PROBE id=(\d+) sha256=([a-f0-9]{64})\n?', line)
         if probe: return ('caps-probe', int(probe[1]))
         if line.startswith('GT710_RESOURCES_BULK '): return ('resources',)
@@ -2469,10 +2493,10 @@ def capture_serial(directory):
     result=[]
     for line in serial.splitlines(keepends=True):
         key=report_key(line)
-        if key is not None and key[0] == 'caps-probe':
-            probe = re.fullmatch(r'GT710_CAPS_PROBE id=(\d+) sha256=([a-f0-9]{64})\n?', line)
-            if (len(groups[key]) != 1 or probe is None
-                    or hashlib.sha256(groups[key][0].removesuffix('\n').encode('ascii')).hexdigest() != probe[2]):
+        if key is not None and key[0] in ('caps-probe', 'caps-reprobe'):
+            digest = re.search(r'sha256=([a-f0-9]{64})', line)
+            if (len(groups[key]) != 1 or digest is None
+                    or hashlib.sha256(groups[key][0].removesuffix('\n').encode('ascii')).hexdigest() != digest[1]):
                 raise ValueError('executable CAPS probe differs from serial digest')
         if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',), ('core',), ('core-startup',), ('resources',)):
             record=''.join(groups[key]).encode('ascii')

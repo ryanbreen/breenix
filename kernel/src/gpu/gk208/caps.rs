@@ -185,4 +185,4 @@ impl ProbeResults {
 #[cfg(target_os = "none")]
 mod executable;
 #[cfg(target_os = "none")]
-pub(in crate::gk208) use executable::run;
+pub(in crate::gk208) use executable::{run, run_reprobe};

@@ -228,7 +228,8 @@ impl Device {
     pub(crate) fn reprobe(&mut self) -> Result<(), &'static str> {
         self.board.channel = self.channel.identity();
         self.board.probes = super::caps::ProbeResults::new();
-        super::caps::run(self)?;
+        let epoch = self.board.channel.1;
+        super::caps::run_reprobe(self, epoch)?;
         self.admission(None).map_err(|(_, missing)| gpu_abi::capability::name(missing))
     }
     pub fn restart(&mut self) -> (Vec<Request>, Result<(), &'static str>) {

@@ -232,6 +232,12 @@ impl encode::Bindings for View {
 }
 
 pub(in crate::gk208) fn run(device: &mut adapter::Device) -> Result<(), &'static str> {
+    run_epoch(device, None)
+}
+pub(in crate::gk208) fn run_reprobe(device: &mut adapter::Device, epoch: u64) -> Result<(), &'static str> {
+    run_epoch(device, Some(epoch))
+}
+fn run_epoch(device: &mut adapter::Device, epoch: Option<u64>) -> Result<(), &'static str> {
     let start = crate::arch_impl::x86_64::timer::rdtsc();
     let mut r = Runner {
         device,
@@ -310,13 +316,19 @@ pub(in crate::gk208) fn run(device: &mut adapter::Device) -> Result<(), &'static
         probes.record(id, completed, &first, &second);
         r.device.set_probe_results(probes);
         let expected = super::probe_expected(id).unwrap();
-        let row = format!(concat!("{{\"schema\":1,\"phase\":\"caps-probe\",\"capability\":{},\"width\":{},\"height\":{},",
+        let phase = if epoch.is_some() { "caps-reprobe" } else { "caps-probe" };
+        let incarnation = epoch.map(|e| format!(",\"epoch\":{e}")).unwrap_or_default();
+        let row = format!(concat!("{{\"schema\":1,\"phase\":\"{}\"{},\"capability\":{},\"width\":{},\"height\":{},",
             "\"completed\":{},\"exact\":{},\"error\":\"{}\",\"expected_sha256\":\"{}\",",
-            "\"first\":\"{}\",\"second\":\"{}\"}}"), id, W, H, completed,
+            "\"first\":\"{}\",\"second\":\"{}\"}}"), phase, incarnation, id, W, H, completed,
             completed && first == expected && second == expected, error, hash(expected), hex(&first), hex(&second));
         let digest = hash(row.as_bytes());
         bulk::line(row)?;
-        crate::serial_println!("GT710_CAPS_PROBE id={} sha256={}", id, digest);
+        if let Some(epoch) = epoch {
+            crate::serial_println!("GT710_CAPS_REPROBE id={} epoch={} sha256={}", id, epoch, digest);
+        } else {
+            crate::serial_println!("GT710_CAPS_PROBE id={} sha256={}", id, digest);
+        }
         if r.device.outstanding() != 0 || r.device.needs_reset() {
             return Err(c::name(id));
         }
@@ -326,9 +338,11 @@ pub(in crate::gk208) fn run(device: &mut adapter::Device) -> Result<(), &'static
         let (tag, _) = r.next();
         r.execute(dev::resource_unref(tag, image.id, Some(image.backing)))?;
     }
-    crate::serial_println!(
-        "GT710_CAPS_PROBE_TIME us={}",
-        crate::gk208::channel::elapsed(start)
-    );
+    let elapsed = crate::gk208::channel::elapsed(start);
+    if let Some(epoch) = epoch {
+        crate::serial_println!("GT710_CAPS_REPROBE_TIME epoch={} us={}", epoch, elapsed);
+    } else {
+        crate::serial_println!("GT710_CAPS_PROBE_TIME us={}", elapsed);
+    }
     Ok(())
 }
