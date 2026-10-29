@@ -1282,3 +1282,26 @@ same pinned MIT NVIDIA cla197.h BEGIN/END, vertex array start/count,
 WAIT_FOR_IDLE and address methods. The original NVIDIA copyright and
 complete MIT grant remain in both files. gr/mod.rs allocates and uploads
 Breenix-owned parking storage through the existing bootstrap context.
+
+
+GT 710 exact profile state (milestone 8.3-u2)
+--------------------------------------------
+Consumers: kernel/src/gpu/gk208/encode.rs and tests/gt710_profile_state_test.rs.
+Sources checked file by file under G1:
+- NVIDIA open-gpu-doc 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+  classes/3d/cla197.h:1807-1816,2119-2122,2381-2395,2521-2524,2551-2553,
+  MIT, Copyright (c) 2020 NVIDIA CORPORATION. All rights reserved.
+  Common blend state, RT0 blend disable, alpha-to-coverage dither footprint,
+  disabled anti-alias/alpha controls, single sample and linear color writes.
+- Same revision, classes/3d/cla197tex.h:161,509-574,
+  SPDX-License-Identifier: MIT; Copyright (c) 2001-2010 NVIDIA CORPORATION
+  & AFFILIATES. All rights reserved. TIC sRGB and TSC wrap/filter fields.
+- Mesa mesa-24.3.4 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de,
+  src/gallium/drivers/nouveau/nvc0/nvc0_state.c:130-146,182-189,235,
+  MIT, Copyright 2010 Christoph Bumiller: blend and multisample state.
+- Same Mesa revision and directory, nvc0_tex.c:335-338,743-751,
+  MIT, Copyright 2008 Ben Skeggs: TIC sRGB and full TSC upload.
+Original copyrights and complete grants are retained in both consumer headers.
+The 1x1 dither footprint is paired with disabled alpha-to-coverage; A197's
+header does not define a separate color-dither enable method. Samplers use
+point min/mag, no mip filtering, no anisotropy and no sRGB conversion.

@@ -1,4 +1,27 @@
 /*
+ * SPDX-FileCopyrightText: Copyright (c) 2001-2010 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: MIT
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ */
+
+/*
  * rnndb copyright 2006
  * Artur Huillet
  * Ben Skeggs
@@ -128,6 +151,8 @@
 //! fixed raster state: MIT Mesa 24.3.4 nvc0_{screen,state,vbo,surface}.c.
 //! Coordinates and colours retain the shared stream semantics. No pixels are
 //! generated here: data contains shader code, constants and vertex inputs.
+//! Profile references: open-gpu-doc 9fdf5c4062007929d9f4e6cbad9c9771fe61b880;
+//! Mesa mesa-24.3.4 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de (MIT).
 use super::shaders;
 use alloc::{vec, vec::Vec};
 use gpu_abi::{
@@ -742,10 +767,16 @@ fn quad(
         f.data[uniform + k * 4..uniform + k * 4 + 4].copy_from_slice(&v.to_le_bytes());
     }
     if let Some(source) = source {
+        // MIT cla197tex.h:509-536,547-574: clamp U/V/P to edge, no sRGB or
+        // anisotropy; POINT mag/min, MIP_NONE. Integer texel fetches need no
+        // hardware filtering, including the BOX_FILTER shader's explicit sum.
+        // Mesa nvc0_tex.c:743-751 uploads a full eight-word TSC; unlike its
+        // generic TSC0, this exact profile keeps sRGB conversion disabled.
+        let sampler = [2 | (2 << 3) | (2 << 6), 1 | (1 << 4) | (1 << 6), 0, 0, 0, 0, 0, 0];
         // Validation above established this descriptor before any draw chunks.
         for (offset, words) in [
             (tic, texture_image_control(source).unwrap()),
-            (tsc, [0x92, 0x51, 0, 0, 0, 0, 0, 0]),
+            (tsc, sampler),
         ] {
             for (k, v) in words.iter().enumerate() {
                 f.data[offset + k * 4..offset + k * 4 + 4].copy_from_slice(&v.to_le_bytes());
@@ -830,17 +861,32 @@ fn quad(
     c.emit(0x1510, &[0]);
     c.emit(0x1918, &[0]);
     c.emit(0x0dac, &[0x1b02, 0x1b02]);
+    // Exact profile is frame-owned, including after a context switch.
+    // MIT cla197.h:1813-1816; Mesa nvc0_state.c:143-146: common blend state.
+    c.emit(0x12e4, &[0]);
+    // MIT cla197.h:2119-2122; Mesa nvc0_state.c:130-146: SET_BLEND(0)=FALSE.
+    // Use the direct method; no Mesa MME blend-enable macro is installed.
     c.emit(0x1360, &[0]);
     c.emit(0x135c, &[0]);
     c.emit(0x19c4, &[0]);
     c.emit(0x0f90, &[1]);
     c.emit(0x1a00, &[0x1111]);
-    for method in [0x1534, 0x15d0, 0x153c] {
-        c.emit(method, &[0]);
-    }
+    // MIT cla197.h:1807-1811: 1x1 alpha-to-coverage dither footprint.
+    // This is a footprint selector, not a color-dither enable. Disable its
+    // alpha-to-coverage path explicitly below rather than inherit it.
+    c.emit(0x12e0, &[0]);
+    // MIT cla197.h:2381-2384; Mesa nvc0_state.c:235: anti-alias disabled.
+    c.emit(0x1534, &[0]);
+    // MIT cla197.h:2551-2553: MODE_1X1 (one sample).
+    c.emit(0x15d0, &[0]);
+    // MIT cla197.h:2389-2395; Mesa nvc0_state.c:182-189: neither alpha
+    // to coverage (including dithering) nor alpha to one may alter pixels.
+    c.emit(0x153c, &[0]);
     // MIT envytools rnndb graph/gf100_3d.xml:217-222: one pass, sample shading disabled.
     c.emit(0x0754, &[1]);
     c.emit(0x0fbc, &[0xffff; 4]);
+    // MIT cla197.h:2521-2524: SRGB_WRITE=FALSE. Sampled images likewise
+    // omit the TIC sRGB bit (Mesa nvc0_tex.c:335-338), and TSCs omit bit 13.
     c.emit(0x15b8, &[0]);
     c.emit(0x19e0, &[0]);
     c.emit(0x12d4, &[0x1d01]);
