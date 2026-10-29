@@ -6,6 +6,8 @@ import runpy
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
+import sys
 
 from gt710_alpha_report_test import retained_capture
 from gt710_resources_report_test import API, ROOT, SHA, NAMES
@@ -17,6 +19,19 @@ ADDED = {'profile/binary32-emulation', 'profile/large-coordinates'} | {
 
 
 class ShapesReport(unittest.TestCase):
+    def test_shapes_acceptance_cli_selects_shapes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            pr = dict(number=1, state='OPEN', headRefOid=SHA)
+            proof = dict(passed=True, boots=[], checks=[], selected=dict(passed=90, total=90),
+                         consoleHandoffToDoneMS=100, gpuElapsedMS=200)
+            with patch.object(sys, 'argv', ['gt710-suite', '--shapes', '--acceptance-directory', tmp,
+                                           '--sha', SHA, '--pr', '1']), \
+                 patch('subprocess.check_output', side_effect=[SHA, '', json.dumps(pr), json.dumps(pr)]), \
+                 patch.dict(API['main'].__globals__, alpha_acceptance=lambda *args: proof):
+                self.assertEqual(API['main'](), 0)
+            self.assertTrue(json.loads((directory / 'acceptance.json').read_text())['passed'])
+
     def test_selection_and_registration(self):
         alpha = json.loads((ROOT / 'docs/gui/gt710-step-8-3.json').read_text())['cases']
         step = json.loads((ROOT / 'docs/gui/gt710-step-8-4.json').read_text())

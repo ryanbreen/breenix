@@ -152,6 +152,11 @@ def stage(directory, record, body=None):
 
 
 class Graphics(unittest.TestCase):
+    def test_g6_rejects_poison_gap_inside_saved_extent(self):
+        # The acceptance brief explicitly requires [256,saved_end) equality.
+        with self.assertRaisesRegex(ValueError, 'complementary images bytes'):
+            self.check(fixture())
+
     def check(self, record):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
