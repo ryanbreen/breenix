@@ -2631,6 +2631,78 @@ def record_capture(directory, sha, producer_sha=None):
     return 0 if passed else 1
 
 
+def alpha_capture_proof(directory, sha, pr):
+    """Bind the step's two completed captures to the observed open PR head (G13)."""
+    if pr.get('state') != 'OPEN' or pr.get('headRefOid') != sha:
+        raise ValueError('alpha acceptance requires the current open PR head')
+    producer = resources_capture(directory, sha)
+    gpu = resources_suite(producer['gpu']['serial'], producer['gpu']['boot'], STEP_SELECTIONS['alpha'])
+    console_ms = resources_console(producer['console']['serial'], producer['console']['boot'],
+                                   producer['console']['events'])
+    proof = dict(head=sha, pr=pr, boots=[], consoleHandoffToDoneMS=console_ms,
+                 gpuElapsedMS=gpu['elapsed_ms'])
+    selected = json.loads((Path(__file__).resolve().parents[2] / 'docs/gui' / STEP_SELECTIONS['alpha']).read_text())['cases']
+    proof['selected'] = dict(passed=sum(c['id'] in selected and c['result'] == 'PASS' for c in gpu['cases']),
+                             total=len(selected))
+    for suite, capture in producer.items():
+        boot, serial, events = capture['boot'], capture['serial'], capture['events']
+        if boot.get('target', {}).get('branch', {}).get('name') != pr.get('headRefName'):
+            raise ValueError('alpha capture branch differs from PR head branch')
+        status = capture['exit_status']
+        done = one(r'^SUITE ' + suite + r' DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+)$',
+                   serial, 'alpha ' + suite + ' DONE')
+        tally = dict(zip(('passed', 'failed', 'skipped', 'total'), map(int, done.groups())))
+        # A nonzero result is attributable to case failures only when the driver
+        # first reached its final marker, powered off, and then applied the suite verdict.
+        expected = int(tally['failed'] != 0)
+        lifecycle = ('final-marker', 'decided', 'power-off', 'suite-verdict', 'closed')
+        rows = [e for e in events if e.get('event') in lifecycle]
+        if ([e['event'] for e in rows] != list(lifecycle) or status != expected
+                or rows[1].get('status') != 0 or rows[2].get('off') is not True
+                or rows[3].get('status') != expected or rows[4].get('status') != expected
+                or rows[4].get('endedBy') != 'driver'):
+            raise ValueError('alpha ' + suite + ' exit is not a completed driver/suite verdict')
+        path = Path(directory) / ('resources-producer' if suite == 'gpu' else '')
+        digests = {name: hashlib.sha256((path / name).read_bytes()).hexdigest()
+                   for name in ('serial.txt', 'events.jsonl', 'gt710-pixels.rle', 'gt710-final.rle')
+                   if (path / name).exists()}
+        proof['boots'].append(dict(id=boot['id'], suite=suite, commit=sha,
+            toolsCommit=boot['toolsCommit'], build=boot['build'], exitStatus=status,
+            exitReason='failed GPU cases outside step 8.3 (G13)' if status else 'passed suite',
+            done=tally, memory='PASS', captureComplete=True, lifecycle=rows, sha256=digests))
+    return proof
+
+
+def alpha_acceptance(directory, sha, pr):
+    """Score existing hardware cases and this step against the same pair of captures."""
+    proof = alpha_capture_proof(directory, sha, pr)
+    producer = resources_capture(directory, sha)
+    root = Path(__file__).resolve().parents[2]
+    manifest = json.loads((root / 'docs/suites/gt710.json').read_text())
+    effort = json.loads((root / 'docs/efforts/metal.json').read_text())
+    fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal'] + [r'KERNEL PANIC:']
+    proof['checks'] = []
+    for suite, capture in producer.items():
+        boot, serial = capture['boot'], capture['serial']
+        for category in capture_categories(boot):
+            # The coordinator binds the unchanged core/* rows to the retained 8.1 captures.
+            if category == 'core':
+                continue
+            records = dict(boot=boot['id'], commit=sha, milestone='metal-gt710/' + category,
+                           cases=cases(category, serial))
+            reason = score(manifest, effort, records, serial, boot, sha, fatal)
+            proof['checks'].append(dict(suite=suite, category=category, count=len(records['cases']), reason=reason))
+    for category in ('resources', 'alpha'):
+        if record_resources_capture(directory, sha, category) != 0:
+            raise ValueError(category + ' acceptance failed')
+        records = json.loads((Path(directory) / ('gt710-' + category + '.json')).read_text())
+        reason = score(manifest, effort, records, producer['console']['serial'], producer['console']['boot'],
+                       sha, fatal, producer)
+        proof['checks'].append(dict(suite='gpu', category=category, count=len(records['cases']), reason=reason))
+    proof['passed'] = True
+    return proof
+
+
 def acceptance_status(directory, verdict, producer_sha=None):
     """Require the retained boot status and every measured GT 710 aggregate."""
     directory = Path(directory)
@@ -2696,11 +2768,43 @@ def main():
     parser.add_argument('--gpu-boot', help='completed companion GPU-only suite boot for core/producer')
     parser.add_argument('--resources', action='store_true', help='score PR 8.2 from this console boot and --gpu-boot; retain core/* separately')
     parser.add_argument('--alpha', action='store_true', help='score PR 8.3 alpha/suite and the unchanged PR 8.2 resources rows from the same captures')
+    parser.add_argument('--acceptance-directory', type=Path, help='score a locally retained console capture and its resources-producer at the current PR head')
+    parser.add_argument('--pr', type=int, help='open PR whose live head must match --sha for local alpha acceptance')
     parser.add_argument('--core-boot', help='completed --gt710-category core diagnostic boot for row/dispatch')
     args = parser.parse_args()
     if args.check_manifest:
         validate_manifest(json.loads(args.check_manifest.read_text()))
         return 0
+    if args.acceptance_directory:
+        import subprocess
+        root = Path(__file__).resolve().parents[2]
+        if not args.alpha or not args.pr or not re.fullmatch('[a-f0-9]{40}', args.sha or ''):
+            parser.error('--acceptance-directory requires --alpha, --pr and --sha')
+        if (subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip() != args.sha
+                or subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=root, text=True).strip()):
+            raise ValueError('alpha scorer must run from the clean requested head')
+        def current_pr():
+            return json.loads(subprocess.check_output(['gh', 'pr', 'view', str(args.pr), '--json',
+                'number,state,headRefOid,headRefName,url'], cwd=root, text=True))
+        proof = dict(head=args.sha, passed=False)
+        try:
+            pr = current_pr()
+            proof = alpha_acceptance(args.acceptance_directory, args.sha, pr)
+            if current_pr() != pr:
+                raise ValueError('PR head or state changed during acceptance scoring')
+            for boot in proof['boots']:
+                print(f'{boot["suite"]} boot={boot["id"]} head={boot["commit"]} '
+                      f'tools={boot["toolsCommit"]} exit={boot["exitStatus"]} '
+                      f'reason={boot["exitReason"]} DONE={boot["done"]} memory={boot["memory"]}')
+            print(f'PR #{pr["number"]} current head={pr["headRefOid"]}; '
+                  f'console handoff-to-done={proof["consoleHandoffToDoneMS"]} ms; '
+                  f'GPU elapsed={proof["gpuElapsedMS"]} ms; selected={proof["selected"]}; '
+                  f'GT710 checks={sum(c["count"] for c in proof["checks"])} PASS')
+        except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+            proof.update(passed=False, error=str(error))
+            print('alpha acceptance FAIL: ' + str(error), flush=True)
+        (args.acceptance_directory / 'acceptance.json').write_text(json.dumps(proof, indent=2) + '\n')
+        return 0 if proof['passed'] else 1
     if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot or '') or not re.fullmatch('[a-f0-9]{40}', args.sha or ''):
         parser.error('--boot ID and --sha full commit required')
     runner = runpy.run_path(str(Path(__file__).with_name('metal-run')))
