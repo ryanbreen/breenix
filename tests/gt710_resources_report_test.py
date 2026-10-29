@@ -236,6 +236,27 @@ class ResourcesReport(unittest.TestCase):
                 with self.subTest(rows=len(rows)), self.assertRaises(ValueError):
                     API['resources_row'](stage(d, probe_rows=rows))
 
+    def test_reprobe_digests_resolve_to_uploaded_complete_images(self):
+        def references():
+            result = []
+            for p in probes():
+                p = dict(p, phase='caps-reprobe', epoch=18)
+                for side in ('first', 'second'):
+                    p[side + '_sha256'] = hashlib.sha256(bytes.fromhex(p.pop(side))).hexdigest()
+                result.append(p)
+            return result
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            joined = stage(d, probe_rows=probes() + references())
+            API['resources_row'](joined)
+            self.assertIn('"first":"' + probes()[0]['first'] + '"', joined)
+            for side in ('first', 'second'):
+                rows = references(); rows[0][side + '_sha256'] = '0' * 64
+                with self.subTest(side=side), self.assertRaises(ValueError):
+                    API['resources_row'](stage(d, probe_rows=probes() + rows))
+            with self.assertRaises(ValueError):
+                API['resources_row'](stage(d, probe_rows=references()))
+
     def test_suite_records_all_results_but_requires_only_step_passes(self):
         result = API['resources_suite'](transcript(), boot())
         self.assertEqual(result['elapsed_ms'], 900000)
