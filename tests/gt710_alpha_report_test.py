@@ -104,6 +104,54 @@ class AlphaReport(unittest.TestCase):
             with self.subTest(case=name):
                 self.assertEqual(API['cases']('alpha', '', producer)[0]['result'], 'FAIL')
 
+    def test_final_head_proof_binds_pr_and_driver_exit_cause(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            gpu = retained_capture(directory)
+            pr = dict(number=2578, state='OPEN', headRefOid=SHA,
+                      headRefName='metal-test/alpha')
+            for path, status in ((directory, 0), (gpu, 1)):
+                run = json.loads((path / 'run.json').read_text())
+                run['target'] = dict(branch=dict(name=pr['headRefName']))
+                (path / 'run.json').write_text(json.dumps(run))
+                lifecycle = events() + [
+                    dict(event='decided', status=0), dict(event='power-off', off=True),
+                    dict(event='suite-verdict', status=status),
+                    dict(event='closed', endedBy='driver', status=status)]
+                (path / 'events.jsonl').write_text(''.join(json.dumps(e) + '\n' for e in lifecycle))
+            proof = API['alpha_capture_proof'](directory, SHA, pr)
+            self.assertEqual(proof['head'], pr['headRefOid'])
+            self.assertEqual(proof['pr'], pr)
+            self.assertEqual(proof['consoleHandoffToDoneMS'], 330000)
+            self.assertEqual(proof['selected'], dict(passed=77, total=77))
+            self.assertEqual(proof['gpuElapsedMS'], 900000)
+            self.assertEqual([b['exitStatus'] for b in proof['boots']], [0, 1])
+            self.assertEqual(proof['boots'][1]['exitReason'], 'failed GPU cases outside step 8.3 (G13)')
+            self.assertEqual(proof['boots'][1]['done'], dict(passed=77, failed=93, skipped=0, total=170))
+            self.assertEqual(proof['boots'][1]['memory'], 'PASS')
+            self.assertEqual(proof['boots'][1]['toolsCommit'], SHA)
+            self.assertEqual(proof['boots'][1]['build']['commit'], SHA)
+            for changed in [dict(pr, headRefOid='b'*40), dict(pr, state='MERGED'),
+                            dict(pr, headRefName='other')]:
+                with self.subTest(pr=changed), self.assertRaises(ValueError):
+                    API['alpha_capture_proof'](directory, SHA, changed)
+            for path in (directory, gpu):
+                original = (path / 'events.jsonl').read_text()
+                mutations = [original.replace('"status": 0', '"status": 124', 1),
+                             original.replace('"endedBy": "driver"', '"endedBy": "reaper"'),
+                             original.replace('"off": true', '"off": false'),
+                             original.replace('"event": "closed"', '"event": "lost"'),
+                             original + json.dumps(dict(event='closed', endedBy='driver', status=1)) + '\n']
+                for text in mutations:
+                    (path / 'events.jsonl').write_text(text)
+                    with self.subTest(capture=path.name, events=text), self.assertRaises(ValueError):
+                        API['alpha_capture_proof'](directory, SHA, pr)
+                (path / 'events.jsonl').write_text(original)
+            (gpu / 'exit-status').write_text('0')
+            with self.assertRaises(ValueError):
+                API['alpha_capture_proof'](directory, SHA, pr)
+
+
     def test_retained_definition_scores_alpha_and_refuses_bad_evidence(self):
         metal = runpy.run_path(str(ROOT / 'scripts/metal/metal_score.py'))
         with tempfile.TemporaryDirectory() as tmp:
