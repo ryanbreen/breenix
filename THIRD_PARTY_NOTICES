@@ -166,6 +166,15 @@ file-local notices (including SPDX-only headers) are retained in each source fil
 | envytools | [f102b82381f3f11cee113d16374c87091db039d9](https://github.com/envytools/envytools/commit/f102b82381f3f11cee113d16374c87091db039d9) | Host `envyas` and `envydis` from `tools/kepler/CMakeLists.txt`; shader inspection output |
 | mesa | [769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de](https://gitlab.freedesktop.org/mesa/mesa/commit/769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de) | Host `kepler-compile`, `tools/kepler/compile.cpp` control flow/SPH adaptations and generated program headers |
 
+M8.2's `kernel/assets/kepler/pipeline-{solid,copy,copy_scaled,nearest_scaled,box_filter}`
+and `probe-{integer-ops,texel-fetch}` outputs use that same pinned MIT Mesa
+compiler and MIT envytools decoder. Generated SPHs retain the Mesa MIT grant
+in `tools/kepler/compile.cpp` and `vendor/kepler/NOTICES`; their kernel consumer,
+`kernel/src/gpu/gk208/gr/shaders.rs`, retains its original MIT header. The shared
+pipeline definitions and the two new Breenix probe definitions keep the root
+PolyForm Noncommercial terms, as do their generated instruction bytes. The
+upstream compiler/decoder sources and notices are unchanged in this unit.
+
 Paths below are relative to `vendor/kepler/`; each row identifies a checked MIT
 source. The retained file-local notices are in the linked file and in
 `vendor/kepler/NOTICES`; the upstream path/hash mapping is in `sources.json`.

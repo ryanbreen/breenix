@@ -961,6 +961,46 @@
       "bytes": 80,
       "license": "MIT",
       "sha256": "7d645cc2bf9ca77dc6120056b5825b64a2afc63f18f1283d52bcad277befa372"
+    },
+    "probe-integer-ops.asm": {
+      "bytes": 1591,
+      "license": "PolyForm-Noncommercial-1.0.0",
+      "sha256": "dd3a8f5a26279ca5f5569f951ae1bf01089135fd508d101ebf7cb647dbbf1572"
+    },
+    "probe-integer-ops.bin": {
+      "bytes": 216,
+      "license": "PolyForm-Noncommercial-1.0.0",
+      "sha256": "4467f251bab055f9701fdc1836cdffc7daa96fd7a664dec7d7d6a8074e1605a8"
+    },
+    "probe-integer-ops.json": {
+      "bytes": 322,
+      "license": "PolyForm-Noncommercial-1.0.0",
+      "sha256": "a62d43c49f7d4e1d0d858f919c26ea967249594d6790272da938e61b712e993f"
+    },
+    "probe-integer-ops.sph": {
+      "bytes": 80,
+      "license": "MIT",
+      "sha256": "15203e376bb888a2caaca69f60db03c7d328b9b9abfb730b0a7f77689203b542"
+    },
+    "probe-texel-fetch.asm": {
+      "bytes": 647,
+      "license": "PolyForm-Noncommercial-1.0.0",
+      "sha256": "a8e8cf666fc590ede6713bb6d83ef2a49fcfac8a1b698fcf7ce2e54ab31a0ef6"
+    },
+    "probe-texel-fetch.bin": {
+      "bytes": 80,
+      "license": "PolyForm-Noncommercial-1.0.0",
+      "sha256": "203abf61be467f82710b1438c5b84cba3637d17ea04ce77a5f262e51751c0005"
+    },
+    "probe-texel-fetch.json": {
+      "bytes": 353,
+      "license": "PolyForm-Noncommercial-1.0.0",
+      "sha256": "50a2c5a0ea259ae7a39141a8af9a70e49be5c0d090689b19eafa95bc3b6f2210"
+    },
+    "probe-texel-fetch.sph": {
+      "bytes": 80,
+      "license": "MIT",
+      "sha256": "7d645cc2bf9ca77dc6120056b5825b64a2afc63f18f1283d52bcad277befa372"
     }
   },
   "firmware": [
@@ -993,9 +1033,9 @@
     "texture_handle_base_bytes": 0
   },
   "recipe_sha256": {
-    "libs/gpu-abi/src/lib.rs": "122c9b6f6244ad31521f8e334337f87603b9fa1988e1803608b464fdb8e3e21b",
+    "libs/gpu-abi/src/lib.rs": "33169976dcf1fb04fbeb92686bf5e1c72460fd74393e419344fc47c58eb0fd6a",
     "tools/kepler/CMakeLists.txt": "bb493a774b8cf0dde02a2e0bcd1829fa2bfbba2ef89b560b70e53a29734e941c",
-    "tools/kepler/assets.py": "9dc8e1758285cb040d7e8f8c81e847454a6ac3a2d1da2083ad9d0457bf26e9f4",
+    "tools/kepler/assets.py": "f436fa9cc4bf631ef4f6e6d5359a93694fc345f2dcef0be5699ee22f1856969f",
     "tools/kepler/compile.cpp": "6ba5577b4a37d714517a1187a65ca5c280e863d2d20adb9a352a51b39b612754"
   },
   "schema": 1,
@@ -2554,6 +2594,66 @@
       "name": "gradient-fragment",
       "source": "tools/kepler/shaders/gradient.frag.tgsi",
       "source_sha256": "973cbade9a5fc2fed5f589ce65a67909a3880660ce0afaed23fdd8f91f8e44b8"
+    },
+    {
+      "asset": "probe-integer-ops",
+      "metadata": {
+        "builtin_calls": 0,
+        "chipset": 262,
+        "code_bytes": 216,
+        "constant_buffer_bytes": 16,
+        "constant_buffer_slot": 0,
+        "fixups_applied": false,
+        "gprs": 5,
+        "input_slots": [],
+        "output_slots": [
+          {
+            "address": 0,
+            "index": 0,
+            "mask": 15
+          }
+        ],
+        "relocations": 0,
+        "stage": "fragment",
+        "texture_mask": 0,
+        "tls_bytes": 0
+      },
+      "name": "probe-integer-ops",
+      "source": "tools/kepler/shaders/integer-ops.frag.tgsi",
+      "source_sha256": "abac2f52a96fe4d39e8553eee3c0a471206f6da201ad5ad807f4d742ab4c7d69"
+    },
+    {
+      "asset": "probe-texel-fetch",
+      "metadata": {
+        "builtin_calls": 0,
+        "chipset": 262,
+        "code_bytes": 80,
+        "constant_buffer_bytes": 8,
+        "constant_buffer_slot": 0,
+        "fixups_applied": true,
+        "gprs": 4,
+        "input_slots": [
+          {
+            "address": 112,
+            "index": 0,
+            "mask": 3
+          }
+        ],
+        "output_slots": [
+          {
+            "address": 0,
+            "index": 0,
+            "mask": 15
+          }
+        ],
+        "relocations": 0,
+        "stage": "fragment",
+        "texture_mask": 1,
+        "tls_bytes": 0
+      },
+      "name": "probe-texel-fetch",
+      "source": "tools/kepler/shaders/texel-fetch.frag.tgsi",
+      "source_sha256": "c948e2bb5d3e660d6c103ec308f07172f63563419395d2f86d0448c2f39861c5"
     },
     {
       "asset": "constant-colour-fragment",

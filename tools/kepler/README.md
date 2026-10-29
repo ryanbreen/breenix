@@ -47,10 +47,11 @@ is refused.
 
 - `fecs.{code,data}.bin` and `gpccs.{code,data}.bin`: little-endian u32 words,
   separate IMEM/DMEM images. Code is aligned to 256 bytes by the upstream source.
-- 47 shader programs: 16 pipeline fragments, 25 `probe_int` variants, the shared
+- 49 shader programs: 16 pipeline fragments, 25 `probe_int` variants, the shared
   position vertex program, and diagnostic position/color vertex and interpolating
   fragment programs, two triangle stage controls, and a position-based gradient
-  fragment program. Pipeline IDs come from `libs/gpu-abi/src/lib.rs`.
+  fragment program, and two native admission probes. Pipeline IDs come from
+  `libs/gpu-abi/src/lib.rs`.
 - Per program: `.bin` GK110 instructions including scheduling words, `.sph`
   80-byte program header, `.json` GPR/TLS/constant/texture/linkage information,
   and `.asm` inspection output from the pinned MIT decoder. An unknown encoding
@@ -80,6 +81,41 @@ It converts the RGB bytes to floats and multiplies by binary32 `1/255`, with
 alpha 1, for the BGRA8 target in `docs/gui/provenance/gt710-contexts.json`.
 The 64×64 target keeps RGB byte values in 0..252. Its full-frame exact pixel
 check belongs to the hardware acceptance unit.
+
+## Basic catalogue and admission probes (M8.2 u3)
+
+The committed kernel subset includes `pipeline-{solid,copy,copy_scaled,
+nearest_scaled,box_filter}.{bin,sph,json,asm}`. These compile the existing shared
+TGSI definitions in `kernel/src/gpu/virgl/pipelines/`, through this tool's Mesa
+nv50_ir frontend. There is no separate native formula or expected image.
+`solid` uses constant 0's RGBA; `copy` uses integer window coordinates plus its
+source offset. The scaled pipelines retain the shared parameter layout and
+multi-word arithmetic: integer replication by n, floor(xW/w) nearest mapping,
+and the half-up bin means of `docs/gui/gpu.md` and `docs/gui/breengel.md` §23.
+The sampling programs use TXF, with UNORM-to-byte conversion at the fetch
+boundary where arithmetic is needed; there is no filtered texture instruction.
+
+Two Breenix-authored fragment sources beside the diagnostic shaders provide
+executable native admission probes. They do not replace the shared suite's
+`probe_int` routine family or its literal expected results:
+
+- `integer-ops.frag.tgsi` (`probe-integer-ops`): constant 0 is four u32 words
+  `(a,b,l,r)`. In wrapping u32 arithmetic, compute
+  `q = ((a+b) XOR (a*b)) XOR ((a << (l&31)) OR (b >> (r&31))) XOR m`,
+  where m is 0xffffffff when unsigned a<b, otherwise 0. Output logical RGBA
+  bytes `(q>>16, q>>8, q, q>>24) & 255`, matching the shared integer probes'
+  byte packing. The only float operations convert those final bytes to UNORM.
+- `texel-fetch.frag.tgsi` (`probe-texel-fetch`): constant 0.xy is an integer
+  offset from the truncated fragment position. Fetch sampler 0 at that integer
+  texel and LOD 0; return its RGBA unchanged, including alpha. The caller binds
+  BGRA8, RGBA8 or R8 views and keeps the requested coordinates in bounds. This
+  allows the admission unit to check channel order and R8's `(r,0,0,255)` mapping
+  from device read-back, with no alpha override masking a fetch error.
+
+`gk208/gr/shaders.rs` embeds the seven programs' code, 80-byte SPHs and register
+counts from their committed metadata. G5 generation and the Python firmware
+test check their bytes and provenance; native execution remains the acceptance
+unit's work. No capability is admitted by compiling or embedding these assets.
 
 ## Shared catalogue and frontend choice
 

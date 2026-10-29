@@ -154,3 +154,49 @@ Generated manifest SHA-256:
 Source inventory SHA-256:
 `f00b06cfb8f8064ccae0dd93a3eb489f435a81516685d7966cf5a37ada7b459b`.
 This unit ran no device boot and supplies no rendered-pixel evidence.
+
+## Basic catalogue assets (M8.2 u3)
+
+`CARGO_BUILD_JOBS=4 taskpolicy -b cargo run -p xtask -- kepler-assets --check`
+passed with two fresh host-tool builds, 49 shaders and 204 byte-identical files.
+The Rust/C embedding and unsupported-opcode checks passed. The seven programs
+below are now included in the committed kernel subset, with the generated
+package manifest and SHA-256 inventory updated together.
+
+| Program | Code bytes | GPRs | TLS bytes |
+|---|---:|---:|---:|
+| `pipeline-solid` | 48 | 4 | 0 |
+| `pipeline-copy` | 104 | 4 | 0 |
+| `pipeline-copy_scaled` | 1336 | 13 | 0 |
+| `pipeline-nearest_scaled` | 1112 | 11 | 0 |
+| `pipeline-box_filter` | 3752 | 21 | 0 |
+| `probe-integer-ops` | 216 | 5 | 0 |
+| `probe-texel-fetch` | 80 | 4 | 0 |
+
+The five pipeline programs are compiled directly from the existing ARM/shared
+TGSI catalogue. Their code, SPH, metadata and disassembly hashes match the
+previous inventory. The two new probe sources are described in
+`tools/kepler/README.md`; they use the existing pinned MIT Mesa nv50_ir frontend
+and MIT envytools decoder, with no vendor source changes. The existing firmware
+and diagnostic program bytes also match the prior committed subset.
+
+Generated manifest SHA-256:
+`b97da2a938f4b40225a3f9426b9c96563ca49ac1542a5f17cb5a3c51ca2aab0e`.
+The changed previous hash entries are `manifest.json` and its Rust/C embedding
+files; the two new probes add eight entries. The complete generated package
+remains described by the manifest, while the kernel embeds the selected subset.
+
+`python3 tests/gt710_gr_firmware_test.py` passed 2/2 tests after failing on the
+absent seven assets in the check-first commit. It checks the committed bytes
+against the inventory and manifest, fragment SPH linkage, GPR metadata and
+kernel include paths. Missing/altered payloads and manifest are rejected by the
+Python-only build verifier, including the 28 new shader files. This supplies
+host asset evidence; capability admission and native pixels require execution
+in later units. This unit ran no device boot.
+
+The x86 production release build (`cargo build --release --bin qemu-uefi`)
+completed without warnings. The ARM64 release kernel build also completed
+without kernel warnings; Cargo repeated the pinned `core` future-incompatibility
+notice tracked by [#2353](https://github.com/ryanbreen/breenix/issues/2353).
+No warning suppression or unrelated toolchain change was made. Scoped Clippy
+on `gk208/gr/shaders.rs` passed with `-D warnings`.
