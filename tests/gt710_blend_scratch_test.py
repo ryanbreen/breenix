@@ -17,7 +17,7 @@ class BlendScratch(unittest.TestCase):
                       'native submit still skips plan.scratch')
         ownership = '\n'.join(item(core, marker) for marker in (
             'struct NativeScratch {', 'impl Drop for NativeScratch {',
-            'fn native_blend_scratch('))
+            'fn native_blend_scratch(', 'fn native_spans('))
         # Reuse the controlled native channel boundary; allocator/VM, adapter,
         # scratch preparation and submission retirement are production code.
         boundary = (ROOT / 'tests/gt710_adapter_test.rs').read_text().split('fn request(caller:')[0]
@@ -46,7 +46,7 @@ class BlendScratch(unittest.TestCase):
 ''')
         boundary = boundary.replace('copy::Rect,', '').replace('Device::new(NativeChannel(s.clone()),gk208::caps::BoardState::empty())', 'Device::registered(NativeChannel(s.clone()),gk208::caps::BoardState::empty(),0)')
         encode = (ROOT / 'kernel/src/gpu/gk208/encode.rs').read_text()
-        storage = '#[derive(Clone, Copy)]\n' + item(encode, 'pub struct Target {') + '\n' + item(encode, 'pub(in crate::gk208) struct Storage {') + '\n' + item(encode, 'impl Drop for Storage {')
+        storage = item(encode, 'pub struct Spans {') + '\n#[derive(Clone, Copy)]\n' + item(encode, 'pub struct Target {') + '\n' + item(encode, 'pub(in crate::gk208) struct Storage {') + '\n' + item(encode, 'impl Drop for Storage {')
         boundary = boundary.replace('// STORAGE', storage)
         adapter = (ROOT / 'kernel/src/gpu/gk208/adapter.rs').read_text()
         adapter = adapter.replace('    #[cfg(target_os = "none")]\n    pub(in crate::gk208) _storage:',
@@ -62,6 +62,7 @@ class BlendScratch(unittest.TestCase):
             resource = (ROOT / 'kernel/src/gpu/gk208/resource.rs').read_text()
             resource += '\n' + item(resource, 'pub(crate) fn blend_staging(')
             resource += '\n' + item(resource, 'pub(crate) fn retire_blend_staging(')
+            resource += '\n' + item(resource, 'pub(crate) fn span_staging(')
             (p / 'resource.rs').write_text(resource)
             harness = harness.replace('#[path = "resource.rs"]', f'#[path = "{p / "resource.rs"}"]')
             (p / 'adapter.rs').write_text(adapter)

@@ -5,10 +5,10 @@ use gk208::{ce, resource::Resources, memory::allocator::Allocator, vm};
 const ENOMEM: i64 = -12;
 const EIO: i64 = -5;
 #[derive(Default)]
-pub struct Model { words: BTreeMap<u64,u64>, fail: bool }
+pub struct Model { words: BTreeMap<u64,u64>, fail: bool, fail_upload: bool }
 impl vm::Io for Model {
     fn read(&mut self, at:u64)->Result<u64,&'static str>{Ok(*self.words.get(&at).unwrap_or(&0))}
-    fn write(&mut self, at:u64,v:u64)->Result<(),&'static str>{self.words.insert(at,v);Ok(())}
+    fn write(&mut self, at:u64,v:u64)->Result<(),&'static str>{if self.fail_upload && v == 0x8877665544332211 { return Err("injected upload failure"); } self.words.insert(at,v);Ok(())}
     fn flush(&mut self)->Result<(),&'static str>{Ok(())}
     fn invalidate(&mut self,_:u64)->Result<u32,&'static str>{if self.fail {Err("invalidation failed")}else{Ok(0)}}
     fn register(&mut self,_:usize)->u32{0}
@@ -110,4 +110,37 @@ fn failed_mapping_keeps_its_charge_and_unused_formats_allocate_nothing() {
     ce::with_resources(|_,_,io|{io.fail=true;Ok(())}).unwrap();
     assert!(native_blend_scratch(42,[[48,17],[0,0]]).is_err());
     assert_eq!(RELEASES.load(Ordering::SeqCst),0);assert_eq!(CHARGED.load(Ordering::SeqCst),8192);
+}
+
+#[test]
+fn spans_upload_failure_reclaims_charge_before_any_draw_reaches_the_ring() {
+    let baseline=fresh();let (mut d,s)=device();
+    ce::with_resources(|_,_,io|{io.fail_upload=true;Ok(())}).unwrap();
+    let mut scratch=native_blend_scratch(42,[[0,0];2]).unwrap();
+    let data=gk208::encode::Spans {width:8,height:1,bytes:vec![0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88]};
+    let result=native_spans(42,&mut scratch,&data);
+    assert_eq!(result,Err(EIO));assert!(scratch.targets.iter().all(Option::is_none));
+    drop(scratch);collect();assert_eq!(CHARGED.load(Ordering::SeqCst),0);assert_eq!(RELEASES.load(Ordering::SeqCst),1);
+    ce::with_resources(|_,a,_|{assert_eq!(a.stats().charged,baseline);Ok(())}).unwrap();
+    assert_eq!(d.outstanding(),0);assert!(matches!(d.reap(),Reap::Empty));assert!(s.borrow().published.is_empty());
+}
+#[test]
+fn spans_storage_and_charge_follow_the_actual_draw_release_and_publication() {
+    let baseline=fresh();let (mut d,s)=device();
+    let mut scratch=native_blend_scratch(42,[[0,0];2]).unwrap();
+    let data=gk208::encode::Spans {width:8,height:1,bytes:vec![0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88]};
+    native_spans(42,&mut scratch,&data).unwrap();
+    let t=scratch.targets[2].unwrap();assert_eq!((t.width,t.height,t.format),(8,1,1));
+    assert_eq!(CHARGED.load(Ordering::SeqCst),4096);
+    ce::with_resources(|r,_,io|{let pte=r.pte_address(t.address).unwrap();let physical=(io.words[&pte]&0xffffff00)<<8;
+        assert_eq!(io.words[&physical],0x8877665544332211);Ok(())}).unwrap();
+    let draw=gk208::encoded(&[t.id]);
+    assert!(d.send(Request::draw(Tag::Sync(9001),9001,19,1,draw)).is_ok());
+    let mut c=Core {subs:BTreeMap::from([(9,Sub{requests:1,published:false,held:vec![],ctx:1,writer:None,_scratch:scratch})]),contexts:BTreeMap::new()};
+    assert!(matches!(d.reap(),Reap::Empty));c.retire_if_done(9);collect();assert_eq!(RELEASES.load(Ordering::SeqCst),0);
+    s.borrow_mut().release=1;assert!(matches!(d.reap(),Reap::Done(_)));c.subs.get_mut(&9).unwrap().requests=0;
+    c.retire_if_done(9);collect();assert_eq!(RELEASES.load(Ordering::SeqCst),0);
+    c.subs.get_mut(&9).unwrap().published=true;c.retire_if_done(9);collect();
+    assert_eq!(CHARGED.load(Ordering::SeqCst),0);assert_eq!(RELEASES.load(Ordering::SeqCst),1);
+    ce::with_resources(|r,a,_|{assert!(r.address(t.id).is_none());assert_eq!(a.stats().charged,baseline);Ok(())}).unwrap();
 }
