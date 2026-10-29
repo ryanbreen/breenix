@@ -1345,3 +1345,27 @@ Program alignment uses Mesa's src/gallium/drivers/nouveau/nvc0/nvc0_program.c:
 The original complete grant remains in shaders.rs. The existing frontend and
 SPH adaptations and their notices are unchanged. No compiler source is added
 or modified by this unit.
+
+GT 710 shared shape fragments (milestone 8.4-u2)
+-----------------------------------------------
+Consumers: kernel/assets/kepler/pipeline-{coverage_spans,line,circle_fill,
+circle_outline,rounded_rect,gradient_v,triangle}.{asm,bin,json,sph},
+kernel/src/gpu/gk208/gr/shaders.rs and the retained native code upload.
+Inputs: the unchanged shared kernel/src/gpu/virgl/pipelines/{8,10..15}.tgsi,
+under PolyForm Noncommercial 1.0.0, also covering generated code, metadata
+and disassembly. Generated SPHs retain the MIT grant recorded above.
+
+The existing pinned MIT Mesa 24.3.4 compiler
+(769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de) and MIT envytools decoder
+(f102b82381f3f11cee113d16374c87091db039d9) produce these assets through
+scripts/build-kepler-assets --check. Original source notices remain in
+vendor/kepler/NOTICES and each vendored file's header; no compiler change
+is made here. The generated manifest and kepler-toolchain.sha256.json
+record the source, recipe and output hashes.
+
+Code offsets follow Mesa nvc0_program.c:775-799's instruction alignment,
+with its original full MIT header retained in shaders.rs. The file's
+Copyright 2010 Christoph Bumiller and complete permission grant were read
+before using that layout. The SPH check reuses the existing decoder of
+MIT NVIDIA open-gpu-doc cla097sph.h at
+9fdf5c4062007929d9f4e6cbad9c9771fe61b880; its header was checked too.

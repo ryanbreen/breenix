@@ -194,7 +194,7 @@ pub fn channel_words(input: &[u32], quarantine: u64) -> Result<Vec<u32>, &'stati
 }
 
 // Reserve the complete committed shader catalogue before per-draw data.
-pub const DATA_START: usize = (1 << 20) + 0xed00;
+pub const DATA_START: usize = (1 << 20) + shaders::CATALOGUE_CODE_SIZE;
 const CODE: usize = 1 << 20;
 #[derive(Clone, Copy)]
 pub struct Target {
@@ -454,6 +454,11 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
         pipeline::BITMAP_TEXT,
     ] {
         let (offset, header, code, _) = program(pipe);
+        let fs = CODE + offset;
+        f.data[fs..fs + 80].copy_from_slice(header);
+        f.data[fs + 80..fs + 80 + code.len()].copy_from_slice(code);
+    }
+    for &(offset, header, code, _) in shaders::SHAPE_PROGRAMS {
         let fs = CODE + offset;
         f.data[fs..fs + 80].copy_from_slice(header);
         f.data[fs + 80..fs + 80 + code.len()].copy_from_slice(code);

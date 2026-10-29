@@ -368,3 +368,67 @@ pub const PROBE_INT_24_CODE: &[u8] =
     include_bytes!("../../../../assets/kepler/probe-int-24.bin");
 pub const PROBE_INT_24_GPRS: u32 =
     asset_gprs(include_str!("../../../../assets/kepler/probe-int-24.json"));
+
+// Shared shape fragments reserved for milestone 8.4; admission follows separately.
+pub const PIPELINE_COVERAGE_SPANS_OFFSET: usize = 0xed30;
+pub const PIPELINE_COVERAGE_SPANS_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-coverage_spans.sph");
+pub const PIPELINE_COVERAGE_SPANS_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-coverage_spans.bin");
+pub const PIPELINE_COVERAGE_SPANS_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-coverage_spans.json"));
+pub const PIPELINE_LINE_OFFSET: usize = 0x129b0;
+pub const PIPELINE_LINE_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-line.sph");
+pub const PIPELINE_LINE_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-line.bin");
+pub const PIPELINE_LINE_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-line.json"));
+pub const PIPELINE_CIRCLE_FILL_OFFSET: usize = 0x13430;
+pub const PIPELINE_CIRCLE_FILL_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-circle_fill.sph");
+pub const PIPELINE_CIRCLE_FILL_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-circle_fill.bin");
+pub const PIPELINE_CIRCLE_FILL_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-circle_fill.json"));
+pub const PIPELINE_CIRCLE_OUTLINE_OFFSET: usize = 0x139b0;
+pub const PIPELINE_CIRCLE_OUTLINE_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-circle_outline.sph");
+pub const PIPELINE_CIRCLE_OUTLINE_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-circle_outline.bin");
+pub const PIPELINE_CIRCLE_OUTLINE_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-circle_outline.json"));
+pub const PIPELINE_ROUNDED_RECT_OFFSET: usize = 0x14230;
+pub const PIPELINE_ROUNDED_RECT_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-rounded_rect.sph");
+pub const PIPELINE_ROUNDED_RECT_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-rounded_rect.bin");
+pub const PIPELINE_ROUNDED_RECT_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-rounded_rect.json"));
+pub const PIPELINE_GRADIENT_V_OFFSET: usize = 0x14a30;
+pub const PIPELINE_GRADIENT_V_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-gradient_v.sph");
+pub const PIPELINE_GRADIENT_V_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-gradient_v.bin");
+pub const PIPELINE_GRADIENT_V_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-gradient_v.json"));
+pub const PIPELINE_TRIANGLE_OFFSET: usize = 0x161b0;
+pub const PIPELINE_TRIANGLE_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-triangle.sph");
+pub const PIPELINE_TRIANGLE_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-triangle.bin");
+pub const PIPELINE_TRIANGLE_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-triangle.json"));
+
+// Rounded to the code allocation unit after the final shape program.
+pub const CATALOGUE_CODE_SIZE: usize = 0x17e00;
+
+pub const SHAPE_PROGRAMS: &[(usize, &[u8; 80], &[u8], u32)] = &[
+    (PIPELINE_COVERAGE_SPANS_OFFSET, PIPELINE_COVERAGE_SPANS_HEADER, PIPELINE_COVERAGE_SPANS_CODE, PIPELINE_COVERAGE_SPANS_GPRS),
+    (PIPELINE_LINE_OFFSET, PIPELINE_LINE_HEADER, PIPELINE_LINE_CODE, PIPELINE_LINE_GPRS),
+    (PIPELINE_CIRCLE_FILL_OFFSET, PIPELINE_CIRCLE_FILL_HEADER, PIPELINE_CIRCLE_FILL_CODE, PIPELINE_CIRCLE_FILL_GPRS),
+    (PIPELINE_CIRCLE_OUTLINE_OFFSET, PIPELINE_CIRCLE_OUTLINE_HEADER, PIPELINE_CIRCLE_OUTLINE_CODE, PIPELINE_CIRCLE_OUTLINE_GPRS),
+    (PIPELINE_ROUNDED_RECT_OFFSET, PIPELINE_ROUNDED_RECT_HEADER, PIPELINE_ROUNDED_RECT_CODE, PIPELINE_ROUNDED_RECT_GPRS),
+    (PIPELINE_GRADIENT_V_OFFSET, PIPELINE_GRADIENT_V_HEADER, PIPELINE_GRADIENT_V_CODE, PIPELINE_GRADIENT_V_GPRS),
+    (PIPELINE_TRIANGLE_OFFSET, PIPELINE_TRIANGLE_HEADER, PIPELINE_TRIANGLE_CODE, PIPELINE_TRIANGLE_GPRS),
+];
