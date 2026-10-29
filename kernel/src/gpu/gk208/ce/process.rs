@@ -3,7 +3,7 @@
 use super::*;
 use core::sync::atomic::AtomicBool;
 use crate::task::{waitqueue::{WaitQueueHead,PrepareOutcome},thread::ThreadState};
-static SESSION:spin::Mutex<Option<Session>>=spin::Mutex::new(None);
+static SESSION:super::super::lock::Mutex<Option<Session>>=super::super::lock::Mutex::new(None);
 // Sticky through failed startup too: cleanup may retain channels/backing.
 // Keep this visible while initialize_core temporarily takes SESSION.
 static CORE_STARTED:AtomicBool=AtomicBool::new(false);
