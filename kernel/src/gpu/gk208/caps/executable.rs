@@ -318,10 +318,17 @@ fn run_epoch(device: &mut adapter::Device, epoch: Option<u64>) -> Result<(), &'s
         let expected = super::probe_expected(id).unwrap();
         let phase = if epoch.is_some() { "caps-reprobe" } else { "caps-probe" };
         let incarnation = epoch.map(|e| format!(",\"epoch\":{e}")).unwrap_or_default();
+        // Startup uploads the complete paired images. A fresh run hashes its
+        // actual readbacks; the host resolves both digests to those same bytes.
+        let images = if epoch.is_some() {
+            format!("\"first_sha256\":\"{}\",\"second_sha256\":\"{}\"", hash(&first), hash(&second))
+        } else {
+            format!("\"first\":\"{}\",\"second\":\"{}\"", hex(&first), hex(&second))
+        };
         let row = format!(concat!("{{\"schema\":1,\"phase\":\"{}\"{},\"capability\":{},\"width\":{},\"height\":{},",
-            "\"completed\":{},\"exact\":{},\"error\":\"{}\",\"expected_sha256\":\"{}\",",
-            "\"first\":\"{}\",\"second\":\"{}\"}}"), phase, incarnation, id, W, H, completed,
-            completed && first == expected && second == expected, error, hash(expected), hex(&first), hex(&second));
+            "\"completed\":{},\"exact\":{},\"error\":\"{}\",\"expected_sha256\":\"{}\",{}}}"),
+            phase, incarnation, id, W, H, completed,
+            completed && first == expected && second == expected, error, hash(expected), images);
         let digest = hash(row.as_bytes());
         bulk::line(row)?;
         if let Some(epoch) = epoch {

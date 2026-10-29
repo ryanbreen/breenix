@@ -2504,7 +2504,27 @@ def capture_serial(directory):
             if len(fields)!=3 or (key==('multi',) and len(groups[key])!=1) or len(record)!=int(fields[1]) or hashlib.sha256(record).hexdigest()!=fields[2]:
                 kind='concurrency' if key==('multi',) else 'graphics image'
                 raise ValueError(kind+' artifact differs from serial length/digest')
-        if key is not None: result.extend(groups[key])
+        if key is not None and key[0] == 'caps-reprobe':
+            row = json.loads(groups[key][0])
+            if any(side + '_sha256' in row for side in ('first', 'second')):
+                source = groups.get(('caps-probe', row['capability']), [])
+                if len(source) != 1 or any(side in row for side in ('first', 'second')):
+                    raise ValueError('reprobe needs complete uploaded source images')
+                source = json.loads(source[0])
+                for side in ('first', 'second'):
+                    pixels = source.get(side)
+                    digest = row.get(side + '_sha256')
+                    if (not isinstance(pixels, str) or len(pixels) % 2
+                            or re.fullmatch('[0-9a-f]*', pixels) is None
+                            or not isinstance(digest, str) or re.fullmatch('[0-9a-f]{64}', digest) is None
+                            or hashlib.sha256(bytes.fromhex(pixels)).hexdigest() != digest):
+                        raise ValueError('fresh reprobe digest differs from uploaded image')
+                    row[side] = pixels
+                result.append(json.dumps(row, separators=(',', ':')) + '\n')
+            else:
+                result.extend(groups[key])
+        elif key is not None:
+            result.extend(groups[key])
         result.append(line)
     joined = ''.join(result)
     if startup:
