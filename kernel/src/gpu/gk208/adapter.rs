@@ -149,6 +149,9 @@ impl Device {
                 self.channel.publish(sequence, operation)
             } else { self.channel.publish_probe(sequence, operation, request.control) } }
         };
+        if result.is_err() && !self.channel.published(sequence) {
+            return Err(request);
+        }
         self.pending.push_back(Sent { request, identity: Some(identity) });
         if let Err(error) = result.and_then(|()| self.queue.publish(sequence)) {
             self.first_error.get_or_insert(error);
@@ -208,7 +211,7 @@ impl Device {
     }
     pub fn outstanding(&self) -> usize { self.pending.len() }
     pub fn queue_size(&self) -> usize { 4 }
-    pub fn needs_reset(&self) -> bool { self.fault || !self.channel.healthy() }
+    pub fn needs_reset(&self) -> bool { self.fault || self.channel.healthy().is_err() }
     pub fn fault_reason(&self) -> Option<&'static str> { self.first_error }
     pub fn begin_reset(&mut self) {
         if self.resetting.is_none() {

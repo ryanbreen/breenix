@@ -50,7 +50,7 @@ pub mod gk208 {
                     let mut sample=self.sample(sequence)?;sample.sequence=self.0.borrow().drain;Ok(sample)
                 }
                 pub fn published(&self,sequence:u32)->bool {self.0.borrow().published.contains(&sequence)}
-                pub fn healthy(&self)->bool {!self.0.borrow().fault}
+                pub fn healthy(&self)->Result<(), &'static str> {if self.0.borrow().fault {Err("injected engine fault")} else {Ok(())}}
                 pub fn reset(&mut self)->Result<(),&'static str> {
                     let mut s=self.0.borrow_mut();s.events.push("reset");
                     if s.fail_reset {return Err("reset failed");}

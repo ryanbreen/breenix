@@ -143,8 +143,8 @@ pub fn channel_words(input: &[u32], quarantine: u64) -> Result<Vec<u32>, &'stati
         || quarantine.checked_add(1 << 20).is_none_or(|end| end > 1 << 40) {
         return Err("invalid channel VAB storage");
     }
-    // Fully clipped frames still receive the publisher's engine release,
-    // but have no draw packet that could bind or consume VAB storage.
+    // Frames with no draw packet still receive the publisher's engine release;
+    // they do not bind or consume VAB storage.
     if input.is_empty() { return Ok(Vec::new()); }
     let mut words = input.to_vec();
     let (mut at, mut found) = (0, false);
@@ -291,15 +291,11 @@ impl Chunk {
 fn handle(w: &(impl Words + ?Sized), at: usize) -> u64 {
     u64::from(w.word(at)) | u64::from(w.word(at + 1)) << 32
 }
-/// Full validation precedes allocation or output; unsupported catalogue entries
-/// refuse the whole stream as well. Later units extend this same encoder.
-pub fn translate(w: &(impl Words + ?Sized), b: &impl Bindings) -> Result<Frame, &'static str> {
-    translate_with_extras(w, b, Extras::default())
-}
-pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras) -> Result<Frame, &'static str> {
-    let Extras { mut corrupt, mut suppress, swap } = x;
-    stream::validate(w, b).map_err(|_| "invalid BGL draw stream")?;
+/// Catalogue preflight for a stream already accepted by shared validation.
+/// Return the ABI refusal at the unsupported command before reserving payloads.
+pub fn pipeline_refusal(w: &(impl Words + ?Sized)) -> Option<stream::Refusal> {
     let mut at = 0;
+    let mut index = 0;
     while at < w.len() {
         match w.word(at) {
             cmd::BEGIN | cmd::CLEAR | cmd::SCISSOR => (),
@@ -313,10 +309,22 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                         | pipeline::NEAREST_SCALED
                         | pipeline::BOX_FILTER
                 ) => {}
-            _ => return Err("native pipeline not implemented"),
+            _ => return Some(stream::Refusal { index, error: stream::error::BAD_PIPELINE }),
         }
         at += w.word(at + 1) as usize;
+        index += 1;
     }
+    None
+}
+/// Full validation precedes allocation or output; unsupported catalogue entries
+/// refuse the whole stream as well. Later units extend this same encoder.
+pub fn translate(w: &(impl Words + ?Sized), b: &impl Bindings) -> Result<Frame, &'static str> {
+    translate_with_extras(w, b, Extras::default())
+}
+pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras) -> Result<Frame, &'static str> {
+    let Extras { mut corrupt, mut suppress, swap } = x;
+    stream::validate(w, b).map_err(|_| "invalid BGL draw stream")?;
+    if pipeline_refusal(w).is_some() { return Err("native pipeline not implemented"); }
     let mut f = Frame {
         chunks: Vec::new(),
         data: vec![0; DATA_START],
@@ -338,7 +346,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
     let mut target = None;
     let mut current_handle = 0;
     let mut scissor = None;
-    at = 0;
+    let mut at = 0;
     while at < w.len() {
         let code = w.word(at);
         match code {

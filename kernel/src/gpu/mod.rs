@@ -1902,7 +1902,7 @@ fn post_hung(hung: &[Option<Hung>; HUNG_KEPT], accounts: u32, pending: &mut (u64
             if let Some(q) = q.filter(|q| q.entry != 0) { write!(t, " cmd {:#x}", q.cmd) } else { Ok(()) }
         });
         let Some(q) = q else {
-            post(&|t| write!(t, "[gpu]  SVGA command buffer quiet {} ms backlog {}", h.quiet_ms, h.backlog));
+            post(&|t| write!(t, "[gpu]  device queue quiet {} ms backlog {}", h.quiet_ms, h.backlog));
             continue;
         };
         let notified = match q.entry {
@@ -4074,6 +4074,10 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
     let native_chunks = if native {
         #[cfg(target_arch = "x86_64")]
         {
+            if let Some(r) = crate::gk208::encode::pipeline_refusal(&words) {
+                release_slot(false);
+                return refuse(a, r.index, r.error, EINVAL);
+            }
             let prepared = (|| {
                 // Reserve payload and bounded method storage before translating.
                 let bytes = crate::gk208::encode::DATA_START as u64 + 4096

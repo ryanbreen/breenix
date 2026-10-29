@@ -416,6 +416,35 @@ mod native {
         next_sequence: u32,
         copy: Option<DrawCopy>,
     }
+    /// Rebuild only FIFO-owned instance bytes; VM and GR bindings start at 0x200.
+    /// The RAMFC table is shared by initial construction and confirmed restart.
+    fn init_fifo(
+        regs: &mut Registers, total: u64, instance: u64, userd: u64, commands: u64, id: u32,
+    ) -> Result<(), &'static str> {
+        words(regs, total, instance, &[0; 0x200 / 4])?;
+        words(regs, total, userd, &[0; 0x200 / 4])?;
+        words(regs, total, commands, &[0; 4096 / 4])?;
+        for (offset, value) in [
+            (0x08, userd as u32),
+            (0x0c, (userd >> 32) as u32),
+            (0x10, 0xface),
+            (0x30, 0xfffff902),
+            (0x48, COMMAND as u32),
+            (0x4c, 9 << 16),
+            (0x84, 0x20400000),
+            (0x94, 0x30000fff),
+            (0x9c, 0x100),
+            (0xac, 0x1f),
+            (0xe4, 0x20),
+            (0xe8, id),
+            (0xb8, 0xf8000000),
+            (0xf8, 0x10003080),
+            (0xfc, 0x10000010),
+        ] {
+            words(regs, total, instance + offset, &[value])?;
+        }
+        Ok(())
+    }
     impl Session {
         pub(in crate::gk208::gr) fn new(
             h: &mut Hardware<'_>,
@@ -605,25 +634,7 @@ mod native {
                 // 0xe8 contains CHID, and USERD.size is 0x200.
                 let userd = userd.unwrap_or(commands.range.start + USERD);
                 let instance = context.space().instance.range.start;
-                for (offset, value) in [
-                    (0x08, userd as u32),
-                    (0x0c, (userd >> 32) as u32),
-                    (0x10, 0xface),
-                    (0x30, 0xfffff902),
-                    (0x48, COMMAND as u32),
-                    (0x4c, 9 << 16),
-                    (0x84, 0x20400000),
-                    (0x94, 0x30000fff),
-                    (0x9c, 0x100),
-                    (0xac, 0x1f),
-                    (0xe4, 0x20),
-                    (0xe8, id),
-                    (0xb8, 0xf8000000),
-                    (0xf8, 0x10003080),
-                    (0xfc, 0x10000010),
-                ] {
-                    words(h.regs, h.total, instance + offset, &[value])?;
-                }
+                init_fifo(h.regs, h.total, instance, userd, commands.range.start, id)?;
                 // gk104_ectx_bind selects 0x210 for GR and sets bit 2 in the VA.
                 words(
                     h.regs,
@@ -1438,13 +1449,15 @@ mod native {
             let c = self.session.report.identity;
             (c.instance, c.epoch)
         }
-        pub(crate) fn healthy(&self) -> bool {
+        pub(crate) fn healthy(&self) -> Result<(), &'static str> {
             let mut monitor = Monitor { session: &self.session,
                 regs: &mut Registers(self.registers), total: self.total,
                 sequence: self.put.max(1), stop_on_trap: true, release_slot: 0,
                 queued_put: Some(self.put) };
-            monitor.snapshot().is_ok()
+            monitor.snapshot().map(|_| ())
         }
+        /// True only after USERD GP_PUT publishes this sequence to the engine.
+        pub(crate) fn published(&self, sequence: u32) -> bool { self.put == sequence }
         pub(crate) fn publish(
             &mut self, sequence: u32, operation: &crate::gk208::adapter::Operation,
         ) -> Result<(), &'static str> {
@@ -1490,11 +1503,13 @@ mod native {
             // Only this slot is poisoned; the other three may still be live.
             unsafe { core::ptr::write_bytes((s.pages.va(0) + u64::from(slot) * 16) as *mut u8, 0, 16); }
             s.pages.publish();
-            self.put = sequence;
-            self.session.next_sequence = sequence.checked_add(1).ok_or("probe sequence exhausted")?;
-            let s = &self.session;
+            let next = sequence.checked_add(1).ok_or("probe sequence exhausted")?;
             s.publish_words(&mut Registers(self.registers), self.total, sequence, command,
-                16384 + u64::from(slot) * 8192, 8192)
+                16384 + u64::from(slot) * 8192, 8192)?;
+            // publish_words has crossed USERD GP_PUT and drained the WC write.
+            self.put = sequence;
+            self.session.next_sequence = next;
+            Ok(())
         }
         #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
         pub(crate) fn publish_probe(&mut self, sequence: u32, operation: &crate::gk208::adapter::Operation,
@@ -1600,8 +1615,12 @@ mod native {
                 words(&mut regs, self.total, self.session.image.range.start + i as u64 * 4,
                     &[u32::from_le_bytes(w.try_into().unwrap())])?;
             }
-            words(&mut regs, self.total, self.session.userd + 0x88, &[0, 0])?;
-            words(&mut regs, self.total, self.session.report.identity.instance + 0x10, &[0])?;
+            let c = self.session.report.identity;
+            init_fifo(&mut regs, self.total, c.instance, self.session.userd,
+                self.session.commands.range.start, c.id)?;
+            // SAFETY: confirmed reset and FIFO unwind stopped access to these receipts.
+            unsafe { core::ptr::write_bytes(self.session.pages.va(0) as *mut u8, 0, 4096); }
+            self.session.pages.publish();
             modeset::bar_flush(&mut regs)?;
             // Only the confirmed reset plus complete FIFO unwind permits this.
             unsafe { self.session.context.confirm_reset(); }
@@ -1615,7 +1634,11 @@ mod native {
             }
             self.session.activate_regs(&mut regs, self.total)?;
             self.put = 0;
-            if !self.healthy() { return Err("native restart fault; backing retained"); }
+            self.session.next_sequence = 1;
+            if let Err(error) = self.healthy() {
+                self.record_fault(error);
+                return Err(error);
+            }
             Ok(())
         }
     }

@@ -27,7 +27,7 @@ class TwoChannels(unittest.TestCase):
         state = state.replace('pub(in crate::gk208::gr)', 'pub(crate)')
         constants = native[native.index('    const COMMAND:'):native.index('    pub(in crate::gk208::gr) struct Session')]
         fixture = (ROOT / 'tests/fixtures/gt710_gr_two_channel.rs').read_text()
-        fixture = fixture.replace('ROOT', str(ROOT)).replace('// STATE', constants + state)
+        fixture = fixture.replace('ROOT', str(ROOT)).replace('// STATE', constants + state + '\n' + item(native, '    fn init_fifo('))
         fixture = fixture.replace('// METHODS', methods)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)

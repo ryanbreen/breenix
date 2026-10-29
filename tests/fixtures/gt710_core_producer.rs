@@ -74,7 +74,8 @@ pub mod gk208 {
             pub struct NativeChannel {pub sample:CeSample,pub drain:u32,pub ignore_control:bool,pub published:usize,pub final_sample:Option<CeSample>,pub polls:usize}
             impl NativeChannel {
                 pub fn identity(&self)->(u64,u64){(0x123000,17)}
-                pub fn healthy(&self)->bool{true}
+                pub fn healthy(&self)->Result<(), &'static str>{Ok(())}
+                pub fn published(&self,sequence:u32)->bool{self.sample.consumed==sequence}
                 pub fn publish(&mut self,sequence:u32,_:&Operation)->Result<(),&'static str>{self.published+=1;self.final_sample=None;self.polls=0;self.sample=CeSample{context:0x123000,epoch:17,sequence,consumed:sequence,healthy:true};self.drain=0;Ok(())}
                 pub fn publish_draw(&mut self,_:u32,_:&crate::gk208::adapter::EncodedDraw)->Result<(),&'static str>{
                     panic!("core producer fixture does not issue encoded BGL draws")
