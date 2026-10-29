@@ -142,7 +142,6 @@ pub enum Source {
     /// The backing of the GPU core's target bound to scanout 0, poisoned and
     /// then transferred back from the device after a present of the whole
     /// screen completed.
-    #[cfg(target_arch = "aarch64")]
     Device { resource: u32, flush: u64 },
 }
 
@@ -156,7 +155,6 @@ impl fmt::Display for Source {
                 "backing after flush {} of resource {} bound to scanout 0, at {:#x}",
                 flush, resource, phys
             ),
-            #[cfg(target_arch = "aarch64")]
             Source::Device { resource, flush } => write!(
                 f,
                 "backing after flush {} of resource {} bound to scanout 0, transferred back from the device",

@@ -225,3 +225,10 @@ pub(crate) fn console_state() -> Option<(gpu_abi::Mode, u64, bool, u64)> {
     Some((gpu_abi::Mode { width: s.width as u32, height: s.height as u32,
         scale: 1, reserved: 0 }, u64::from(u32::MAX), bound, writes))
 }
+
+pub(in crate::gk208) fn console_allocation() -> Option<(super::super::ConsoleSurface, Allocation)> {
+    let owner = SESSION.lock();
+    let s = owner.as_ref()?;
+    let allocation = s.layout.objects.iter().find(|o| o.range.start == s.console.vram)?.allocation;
+    Some((s.console, allocation))
+}

@@ -2083,6 +2083,48 @@ fn exec_ok(build: impl FnOnce(Tag) -> Option<Request>, ctx: u32, holds: &[u32]) 
     }
 }
 
+/// Observe the latched native console using two CE transfers through the shared
+/// queue. Early boot has no admitted device and continues its BAR observation.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn native_console_readback(surface: &crate::gk208::ConsoleSurface)
+    -> Result<Option<(Arc<Pages>, u64)>, &'static str> {
+    if dev::backend() != abi::backend::GK208
+        || !with_core(|c| c.status == abi::status::ADMITTED).unwrap_or(false) {
+        return Ok(None);
+    }
+    let bytes = surface.width.checked_mul(surface.height).and_then(|n| n.checked_mul(4))
+        .ok_or("native console extent overflow")?;
+    let backing = Arc::new(Pages::new(bytes.div_ceil(PAGE)).ok_or("native console readback allocation")?);
+    let mut first = alloc::vec![0; bytes];
+    let mut last = 0;
+    for (index, poison) in [0x55, 0xaa].into_iter().enumerate() {
+        let band = [poison; PAGE];
+        for at in (0..bytes).step_by(PAGE) { backing.write(at, &band[..PAGE.min(bytes-at)]); }
+        backing.maintain(0, bytes, false);
+        let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or("native console core absent")?;
+        let request = crate::gk208::console_readback(Tag::Sync(serial), fence, backing.clone())
+            .ok_or("native console CE request refused")?;
+        let done = exec_req(serial, Request::Gk208(request), 0, &[], &[])
+            .map_err(|_| "native console CE request failed")?;
+        if !dev::ok(done.answer) || !done.matches_fence(fence) {
+            return Err("native console CE completion mismatch");
+        }
+        backing.maintain(0, bytes, true);
+        if index == 0 { backing.read(0, &mut first); }
+        else {
+            let mut band = [0; PAGE];
+            for at in (0..bytes).step_by(PAGE) {
+                let count = PAGE.min(bytes-at);
+                backing.read(at, &mut band[..count]);
+                if band[..count] != first[at..at+count] { return Err("native console P/~P images differ"); }
+            }
+        }
+        crate::gk208::console_binding(surface)?;
+        last = fence;
+    }
+    Ok(Some((backing, last)))
+}
+
 /// Attach resources to device contexts, one synchronous `(context, resource)` command a
 /// pair, queued together in one batch so the device answers them back to back: a new
 /// context takes the process's resources, and a new resource the process's contexts, in

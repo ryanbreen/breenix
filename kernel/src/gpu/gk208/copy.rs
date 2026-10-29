@@ -202,6 +202,17 @@ pub fn upload(image: Image, backing: Linear, r: [u32; 4]) -> Result<Plan, &'stat
 pub fn readback(image: Image, backing: Linear, r: [u32; 4]) -> Result<Plan, &'static str> {
     host_plan(image,backing,r,false)
 }
+/// Pitch-linear display memory to pinned system backing, using the same
+/// non-pipelined CE launch and release as tiled resource observations.
+pub fn pitch(src: Linear, dst: Linear, width: u32, height: u32, bpp: u32) -> Result<Plan, &'static str> {
+    if !matches!(bpp, 1 | 4) { return Err("invalid CE component size"); }
+    src.validate(width, height, bpp)?;
+    dst.validate(width, height, bpp)?;
+    if src.address < dst.address + dst.bytes && dst.address < src.address + src.bytes {
+        return Err("CE pitch copy aliases backing");
+    }
+    Ok(Plan { copies: [Some(Blit { src: Surface::Pitch(src), dst: Surface::Pitch(dst), width, height, bpp }), None], stale_fence: false })
+}
 /// Clip both ends together and route aliased rectangles through staging.
 pub fn region(src: Image, dst: Image, r: [u32; 6], staging: Option<Image>) -> Result<Plan, &'static str> {
     let [sx,sy,w,h,dx,dy] = r;

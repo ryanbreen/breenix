@@ -107,7 +107,7 @@ pub struct Resources<B> {
 impl<B> Default for Resources<B> { fn default() -> Self { Self::new() } }
 impl<B> Resources<B> {
     pub const fn new() -> Self {
-        Self { entries: BTreeMap::new(), contexts: BTreeSet::new(), space: None, next_va: FIRST_VA, vram_bytes: 0, alias: None, channel: 0, incarnation: None, alias_indices: Vec::new(), temporary: u32::MAX }
+        Self { entries: BTreeMap::new(), contexts: BTreeSet::new(), space: None, next_va: FIRST_VA, vram_bytes: 0, alias: None, channel: 0, incarnation: None, alias_indices: Vec::new(), temporary: u32::MAX - 1 }
     }
     pub fn vram_bytes(&self) -> u64 { self.vram_bytes }
     pub fn layout(&self, id: u32) -> Option<Layout> { self.entries.get(&id)?.layout }
@@ -120,6 +120,31 @@ impl<B> Resources<B> {
     fn space(&mut self, a: &mut Allocator, io: &mut impl Io) -> Result<&mut Space, &'static str> {
         if self.space.is_none() { self.space = Some(Space::new(a, io)?); }
         Ok(self.space.as_mut().unwrap())
+    }
+    /// Import display-owned pitch-linear storage. The pin protects the original
+    /// owner's allocation; collection removes this mapping without releasing it.
+    pub fn import_linear(&mut self, a: &mut Allocator, io: &mut impl Io,
+        id: u32, allocation: Allocation,
+    ) -> Result<u64, &'static str> {
+        if let Some(e) = self.entries.get(&id) {
+            return if e.mapped && !e.dropped && e.bytes == allocation.range.size {
+                Ok(e.va)
+            } else { Err("native display mapping uncertain") };
+        }
+        let bytes = allocation.range.size;
+        let va = self.next_va;
+        self.next_va = va.checked_add(bytes).filter(|&end| end <= vm::LIMIT)
+            .ok_or("native display VA exhausted")?;
+        let pin = a.pin(allocation)?;
+        self.entries.insert(id, Entry { layout: None, bytes, va, allocation: None,
+            pin: Some(pin), backing: None, mapped: false, dropped: false,
+            reference: Arc::new(()), backing_va: None, backing_bytes: 0, backing_mapped: false });
+        let before = a.stats().charged;
+        let result = (|| self.space(a, io)?.map(a, io, va, allocation.range, vm::Flags::default()))();
+        self.account(before, a.stats().charged);
+        result?;
+        self.entries.get_mut(&id).unwrap().mapped = true;
+        Ok(va)
     }
     pub fn create(&mut self, a: &mut Allocator, io: &mut impl Io, id: u32,
         kind: u32, format: u32, width: u32, height: u32,

@@ -506,3 +506,28 @@ pub(crate) fn identities(id: u32) -> Option<(u32,u32)> {
         Ok((context,resource))
     }).ok()
 }
+
+pub(crate) fn console(tag: crate::gpu::dev::Tag, fence: u64,
+    backing: alloc::sync::Arc<crate::gpu::dma::Pages>,
+) -> Option<super::super::adapter::Request> {
+    let (surface, allocation) = super::console_allocation()?;
+    super::super::console_binding(&surface).ok()?;
+    let pages: Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
+    let (plan, holds) = super::with_resources(|r,a,io| {
+        let source = r.import_linear(a,io,u32::MAX,allocation)?;
+        let destination = r.draw_buffer(a,io,backing.bytes() as u32)?;
+        r.attach(a,io,destination,backing.clone(),&pages,backing.bytes() as u64)?;
+        let holds = vec![r.hold(u32::MAX)?,r.hold(destination)?];
+        let address = r.address(destination).ok_or("console readback mapping absent")?;
+        r.unref(destination)?;
+        let plan = super::super::copy::pitch(
+            super::super::copy::Linear { address: source, bytes: allocation.range.size,
+                offset: 0, stride: surface.pitch as u32 },
+            super::super::copy::Linear { address, bytes: backing.bytes() as u64,
+                offset: 0, stride: surface.width as u32 * 4 },
+            surface.width as u32, surface.height as u32, 4)?;
+        Ok((plan, holds))
+    }).ok()?;
+    Some(super::super::adapter::Request::transfer(tag,fence,u64::from(u32::MAX),plan,false,
+        TransferHold { resources: holds },Some(backing)))
+}
