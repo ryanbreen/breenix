@@ -1326,3 +1326,22 @@ MIT Mesa 24.3.4 nvc0_tex.c at 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de
 File-local grants checked before use; original notices remain in these
 consumers. Scratch snapshots and constants follow Breenix gpu.md 1.3/1.5
 item 7 and its ARM encoder. The four committed alpha programs are unchanged.
+
+GT 710 binary32 and shape probes (milestone 8.4-u1)
+-------------------------------------------------
+Consumers: kernel/assets/kepler/probe-int-{12..17,20..24}.{asm,bin,json,sph},
+kernel/src/gpu/gk208/gr/shaders.rs and the existing native encoder.
+The TGSI inputs are Breenix's unchanged kernel/src/gpu/virgl/profile/r12-r17
+and r20-r24 definitions, under PolyForm Noncommercial 1.0.0. The generated
+code, metadata and disassembly retain those terms; generated SPHs retain MIT.
+The pinned compiler and decoder are the previously inventoried MIT Mesa
+24.3.4 (769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de) and MIT envytools
+(f102b82381f3f11cee113d16374c87091db039d9) sources in vendor/kepler/sources.json.
+Their original notices remain in vendor/kepler/NOTICES and the source headers.
+The asset builder checks those headers and hashes before building.
+
+Program alignment uses Mesa's src/gallium/drivers/nouveau/nvc0/nvc0_program.c:
+775-799 (MIT, Copyright 2010 Christoph Bumiller), whose full header was read.
+The original complete grant remains in shaders.rs. The existing frontend and
+SPH adaptations and their notices are unchanged. No compiler source is added
+or modified by this unit.

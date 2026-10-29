@@ -194,7 +194,7 @@ pub fn channel_words(input: &[u32], quarantine: u64) -> Result<Vec<u32>, &'stati
 }
 
 // Reserve the complete committed shader catalogue before per-draw data.
-pub const DATA_START: usize = (1 << 20) + 0x5000;
+pub const DATA_START: usize = (1 << 20) + 0xed00;
 const CODE: usize = 1 << 20;
 #[derive(Clone, Copy)]
 pub struct Target {
@@ -407,7 +407,7 @@ pub fn pipeline_refusal(w: &(impl Words + ?Sized)) -> Option<stream::Refusal> {
             cmd::BEGIN | cmd::CLEAR | cmd::SCISSOR | cmd::COPY => (),
             cmd::DRAW | cmd::DRAW_BUFFER if w.word(at + 2) == pipeline::SOLID => (),
             cmd::DRAW_SAMPLED => (),
-            cmd::PROBE if matches!(w.word(at + 2), 0..=11 | 18 | 19) => (),
+            cmd::PROBE if matches!(w.word(at + 2), 0..=24) => (),
             draw::COMMAND
                 if matches!(
                     w.word(at + 2),
@@ -804,6 +804,17 @@ fn program(pipe: u32) -> (usize, &'static [u8; 80], &'static [u8], u32) {
                 9 => (shaders::PROBE_INT_09_OFFSET, shaders::PROBE_INT_09_HEADER, shaders::PROBE_INT_09_CODE, shaders::PROBE_INT_09_GPRS),
                 10 => (shaders::PROBE_INT_10_OFFSET, shaders::PROBE_INT_10_HEADER, shaders::PROBE_INT_10_CODE, shaders::PROBE_INT_10_GPRS),
                 11 => (shaders::PROBE_INT_11_OFFSET, shaders::PROBE_INT_11_HEADER, shaders::PROBE_INT_11_CODE, shaders::PROBE_INT_11_GPRS),
+                12 => (shaders::PROBE_INT_12_OFFSET, shaders::PROBE_INT_12_HEADER, shaders::PROBE_INT_12_CODE, shaders::PROBE_INT_12_GPRS),
+                13 => (shaders::PROBE_INT_13_OFFSET, shaders::PROBE_INT_13_HEADER, shaders::PROBE_INT_13_CODE, shaders::PROBE_INT_13_GPRS),
+                14 => (shaders::PROBE_INT_14_OFFSET, shaders::PROBE_INT_14_HEADER, shaders::PROBE_INT_14_CODE, shaders::PROBE_INT_14_GPRS),
+                15 => (shaders::PROBE_INT_15_OFFSET, shaders::PROBE_INT_15_HEADER, shaders::PROBE_INT_15_CODE, shaders::PROBE_INT_15_GPRS),
+                16 => (shaders::PROBE_INT_16_OFFSET, shaders::PROBE_INT_16_HEADER, shaders::PROBE_INT_16_CODE, shaders::PROBE_INT_16_GPRS),
+                17 => (shaders::PROBE_INT_17_OFFSET, shaders::PROBE_INT_17_HEADER, shaders::PROBE_INT_17_CODE, shaders::PROBE_INT_17_GPRS),
+                20 => (shaders::PROBE_INT_20_OFFSET, shaders::PROBE_INT_20_HEADER, shaders::PROBE_INT_20_CODE, shaders::PROBE_INT_20_GPRS),
+                21 => (shaders::PROBE_INT_21_OFFSET, shaders::PROBE_INT_21_HEADER, shaders::PROBE_INT_21_CODE, shaders::PROBE_INT_21_GPRS),
+                22 => (shaders::PROBE_INT_22_OFFSET, shaders::PROBE_INT_22_HEADER, shaders::PROBE_INT_22_CODE, shaders::PROBE_INT_22_GPRS),
+                23 => (shaders::PROBE_INT_23_OFFSET, shaders::PROBE_INT_23_HEADER, shaders::PROBE_INT_23_CODE, shaders::PROBE_INT_23_GPRS),
+                24 => (shaders::PROBE_INT_24_OFFSET, shaders::PROBE_INT_24_HEADER, shaders::PROBE_INT_24_CODE, shaders::PROBE_INT_24_GPRS),
                 18 => (shaders::PROBE_INT_18_OFFSET, shaders::PROBE_INT_18_HEADER, shaders::PROBE_INT_18_CODE, shaders::PROBE_INT_18_GPRS),
                 19 => (shaders::PROBE_INT_19_OFFSET, shaders::PROBE_INT_19_HEADER, shaders::PROBE_INT_19_CODE, shaders::PROBE_INT_19_GPRS),
                 _ => unreachable!(),
