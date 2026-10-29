@@ -362,6 +362,8 @@ struct Sub {
     present: Option<display::Presenting>,
     /// The charge for its translated device chunks, released when it retires.
     _charge: Option<alloc::sync::Arc<Charge>>,
+    #[cfg(target_arch = "x86_64")]
+    _native_scratch: Option<NativeScratch>,
 }
 
 /// A synchronous request a thread waits on.
@@ -3571,10 +3573,43 @@ enum Chunks {
     Gk208(Vec<crate::gk208::adapter::EncodedDraw>),
 }
 
+/// Submission-owned native snapshots. Storage references in prepared device
+/// chunks additionally retain these images across uncertain publication/reset.
+#[cfg(target_arch = "x86_64")]
+struct NativeScratch {
+    targets: [Option<crate::gk208::encode::Target>; 2],
+    holds: Vec<crate::gk208::resource::Hold>,
+}
+#[cfg(target_arch = "x86_64")]
+impl Drop for NativeScratch {
+    fn drop(&mut self) {
+        crate::gk208::resource::retire_blend_staging(
+            self.targets.map(|t| t.map(|t| t.id)), &mut self.holds);
+    }
+}
+#[cfg(target_arch = "x86_64")]
+fn native_blend_scratch(tgid: u64, sizes: [[u32; 2]; 2]) -> Result<NativeScratch, i64> {
+    let mut scratch = NativeScratch { targets: [None; 2], holds: Vec::new() };
+    for (format, [width, height]) in sizes.into_iter().enumerate() {
+        if width == 0 || height == 0 { continue; }
+        let layout = crate::gk208::resource::Layout::new(width, height, 4).map_err(|_| ENOMEM)?;
+        // Reserve before allocation. The registry keeps this guard even when
+        // mapping or later invalidation fails, independently of Sub's lifetime.
+        let charge = Arc::new(Charge::new(tgid, layout.allocation_bytes(), true)?);
+        let (target, hold) = crate::gk208::resource::blend_staging(
+            format as u32, width, height, charge).map_err(|_| EIO)?;
+        scratch.targets[format] = Some(target);
+        scratch.holds.push(hold);
+    }
+    Ok(scratch)
+}
+
 /// The view's handles with the snapshot's buffer contents.
 struct Resolved<'a> {
     view: &'a View,
     snap: &'a Snapshot,
+    #[cfg(target_arch = "x86_64")]
+    native_scratch: core::cell::Cell<[Option<crate::gk208::encode::Target>; 2]>,
 }
 
 /// The VirGL format of a BGL format.
@@ -3615,6 +3650,9 @@ impl crate::gk208::encode::Bindings for Resolved<'_> {
     fn render_target(&self, handle: u64) -> Option<crate::gk208::encode::Target> {
         let e = self.view.get(handle).filter(|e| !e.sample_only && e.kind == kind::TARGET)?;
         crate::gk208::encode::target(e.id,e.format)
+    }
+    fn blend_scratch(&self, format: u32) -> Option<crate::gk208::encode::Target> {
+        self.native_scratch.get().into_iter().flatten().find(|t| t.format == format)
     }
     fn sampled_source(&self, handle: u64) -> Option<crate::gk208::encode::Target> {
         let e = self.view.get(handle)?;
@@ -3855,6 +3893,8 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
     let resolved = Resolved {
         view: &view,
         snap: &snap,
+        #[cfg(target_arch = "x86_64")]
+        native_scratch: core::cell::Cell::new([None; 2]),
     };
     // Test point 2, `irq-hold`: this validation holds IRQs masked for 2 ms, through the
     // primitive the gauge times (section 1.16).
@@ -4005,6 +4045,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
     let vertex_buffer = vertex_range.map(|(rid, _, _)| rid);
     // The submission's scratch textures for copies within one target that overlap
     // (`docs/gui/gpu.md` section 1.3), one per target format, sized for its largest.
+    // Native plan.scratch is provisioned below through its resource owner.
     let mut copy_scratch = [0u32; 2];
     for (slot, [w, h]) in plan.scratch.into_iter().enumerate() {
         if w == 0 || h == 0 || svga || native {
@@ -4129,6 +4170,8 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
     let dx_extras = || svga::encode::Extras { scratch: plan.scratch, data_width, corrupt, suppress, swap };
     // Count surface bytes, then size the complete device buffers including the surfaces'
     // lifecycle packets. Reserve the charge before allocating their backing.
+    #[cfg(target_arch = "x86_64")]
+    let mut native_scratch = None;
     let native_chunks = if native {
         #[cfg(target_arch = "x86_64")]
         {
@@ -4142,6 +4185,11 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                     + plan.drawn.checked_add(plan.draws).and_then(|n| n.checked_add(u64::from(corrupt.is_some())))
                         .ok_or(ENOMEM)?.max(1).checked_mul(4096).ok_or(ENOMEM)?;
                 let charge = Arc::new(Charge::new(tgid, bytes, true)?);
+                // Native scratch uses the same validated per-format plan as the
+                // virtual encoders, with native layout and retirement ownership.
+                let scratch = native_blend_scratch(tgid, plan.scratch)?;
+                resolved.native_scratch.set(scratch.targets);
+                native_scratch = Some(scratch);
                 let swap = match swap {
                     Some((word, other)) => {
                         let e = view.entries.iter().find(|e| e.id == other.id).ok_or(EINVAL)?;
@@ -4445,6 +4493,8 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             held,
             present: None,
             _charge: Some(chunk_charge),
+            #[cfg(target_arch = "x86_64")]
+            _native_scratch: native_scratch,
         });
         let epoch = c.epoch;
         c.backlog.extend(reqs.into_iter().map(|r| (epoch, r)));

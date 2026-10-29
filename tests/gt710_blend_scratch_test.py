@@ -31,16 +31,22 @@ class BlendScratch(unittest.TestCase):
             crate::OWNER.with(|o| { let mut o=o.borrow_mut(); let (r,a,io)=&mut *o; f(r,a,io) })
         }
     }
+    pub fn encoded(ids: &[u32]) -> adapter::EncodedDraw {
+        let storage=encode::storage(ids);
+        assert_eq!((storage.resource,storage.address),(7,1<<32));
+        adapter::EncodedDraw { words:vec![0x20010367,0],target:19,transfer:None,_storage:storage }
+    }
     pub mod encode {
         // STORAGE
-        pub fn storage(ids: &[u32]) -> std::sync::Arc<Storage> {
+        pub(super) fn storage(ids: &[u32]) -> std::sync::Arc<Storage> {
             let holds=super::ce::with_resources(|r,_,_| ids.iter().map(|&id| r.hold(id)).collect()).unwrap();
             std::sync::Arc::new(Storage { _backing: std::sync::Arc::new(crate::gpu::dma::Pages), holds, resource: 7, address: 1<<32 })
         }
     }
 ''')
+        boundary = boundary.replace('copy::Rect,', '').replace('Device::new(NativeChannel(s.clone()),gk208::caps::BoardState::empty())', 'Device::registered(NativeChannel(s.clone()),gk208::caps::BoardState::empty(),0)')
         encode = (ROOT / 'kernel/src/gpu/gk208/encode.rs').read_text()
-        storage = item(encode, 'pub(in crate::gk208) struct Storage {') + '\n' + item(encode, 'impl Drop for Storage {')
+        storage = '#[derive(Clone, Copy)]\n' + item(encode, 'pub struct Target {') + '\n' + item(encode, 'pub(in crate::gk208) struct Storage {') + '\n' + item(encode, 'impl Drop for Storage {')
         boundary = boundary.replace('// STORAGE', storage)
         adapter = (ROOT / 'kernel/src/gpu/gk208/adapter.rs').read_text()
         adapter = adapter.replace('    #[cfg(target_os = "none")]\n    pub(in crate::gk208) _storage:',
@@ -53,6 +59,11 @@ class BlendScratch(unittest.TestCase):
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp)
+            resource = (ROOT / 'kernel/src/gpu/gk208/resource.rs').read_text()
+            resource += '\n' + item(resource, 'pub(crate) fn blend_staging(')
+            resource += '\n' + item(resource, 'pub(crate) fn retire_blend_staging(')
+            (p / 'resource.rs').write_text(resource)
+            harness = harness.replace('#[path = "resource.rs"]', f'#[path = "{p / "resource.rs"}"]')
             (p / 'adapter.rs').write_text(adapter)
             harness = harness.replace('// ADAPTER', f'#[path = "{p / "adapter.rs"}"] pub mod adapter;')
             (p / 'scratch.rs').write_text(harness)

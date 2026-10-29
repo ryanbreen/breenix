@@ -54,9 +54,11 @@ fn submit()->(Core,Device,Rc<RefCell<State>>,Vec<u32>,u64) {
         ce::with_resources(|r,_,_|{let l=r.layout(t.id).unwrap();assert_eq!(l.allocation_bytes(),bytes);assert_eq!(t.address,r.address(t.id).unwrap());Ok(())}).unwrap();
     }
     assert_eq!(CHARGED.load(Ordering::SeqCst),106496);
-    let storage=gk208::encode::storage(&ids);
     let (mut d,s)=device();
-    let draw=gk208::adapter::EncodedDraw { words:vec![0x20010367,0],target:19,transfer:None,_storage:storage };
+    let mut receipt=Request::storage(Tag::Background,None);
+    receipt.transfer_controls(gk208::copy::Extras {skip:false,stale_fence:false});
+    assert!(d.send(receipt).is_ok());assert!(matches!(d.reap(),Reap::Done(_)));
+    let draw=gk208::encoded(&ids);
     assert!(d.send(Request::draw(Tag::Sync(9001),9001,19,1,draw)).is_ok());
     let c=Core {subs:BTreeMap::from([(9,Sub{requests:1,published:false,held:vec![],ctx:1,writer:None,_scratch:scratch})]),contexts:BTreeMap::new()};
     (c,d,s,ids,baseline)
