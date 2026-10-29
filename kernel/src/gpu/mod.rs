@@ -276,7 +276,7 @@ struct Ctx {
     /// The 1x1 texture the warm-up's sampling draws read.
     scratch_texture: u32,
     /// The rendering pipelines whose warm-up step completed, one bit each
-    /// (`encode::ALL_WARM` when the catalogue's warm-up is complete).
+    /// (`catalogue_mask()` when the catalogue's warm-up is complete).
     warm: u32,
     /// Initial grace deadline; later resource creations do not postpone it.
     warm_after: u64,
@@ -300,6 +300,13 @@ struct VertexArena {
     ready: bool,
     accepted: bool,
     ranges: vertex_arena::Ranges,
+}
+
+/// Only installed rendering pipelines participate in a context's warm-up.
+fn catalogue_mask() -> u32 {
+    #[cfg(target_arch = "x86_64")]
+    if dev::backend() == abi::backend::GK208 { return 0x1f; }
+    encode::ALL_WARM
 }
 
 impl Ctx {
@@ -1691,7 +1698,7 @@ impl Core {
             .then(|| now + POLL_NS);
         // Grace deadlines are independent across processes.
         let grace = self.contexts.values()
-            .filter(|x| x.warm_catalogue && x.state == CtxState::Live && !x.dropped && x.warm != encode::ALL_WARM)
+            .filter(|x| x.warm_catalogue && x.state == CtxState::Live && !x.dropped && x.warm != catalogue_mask())
             .map(|x| x.warm_after).filter(|&g| g > now).min();
         let watchdog = hangs.chain(waits).chain(progress).min().map(|at| (at + limits::WATCHDOG_NS).min(now + EXAMINE_NS));
         watchdog.into_iter().chain(grace).chain(poll).min()
@@ -2337,7 +2344,7 @@ fn warm_next() -> Option<u64> {
             && !c.stalled
             && c.quarantined_at.is_none()
     };
-    let warming = |x: &Ctx| x.warm_catalogue && x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM && now_ns() >= x.warm_after;
+    let warming = |x: &Ctx| x.warm_catalogue && x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != catalogue_mask() && now_ns() >= x.warm_after;
     let due = with_core(|c| {
         if !(ready(c) && c.contexts.values().any(warming)) {
             c.warm_held = None;
@@ -2366,14 +2373,19 @@ fn warm_next() -> Option<u64> {
         }
         let ctx = c.contexts.values_mut().find(|x| warming(x) && !x.busy)?;
         ctx.busy = true;
-        let pipeline = (!ctx.warm).trailing_zeros();
+        let pipeline = (!ctx.warm & catalogue_mask()).trailing_zeros();
         Some((ctx.id, pipeline, ctx.objects.clone(), ctx.dx.clone(), [ctx.vb, ctx.scratch, ctx.scratch_texture]))
     })
     .flatten();
     let Some((id, pipeline, mut objects, mut dx_objects, internal)) = picked else { return None };
     let [vb, scratch, scratch_texture] = internal;
     // After an allocation failure no request is sent; the step is tried again later.
-    let chunks = if dev::is_svga() {
+    let chunks = if dev::backend() == abi::backend::GK208 {
+        #[cfg(target_arch = "x86_64")]
+        { crate::gk208::encode::warm(scratch, scratch_texture, pipeline).map(Chunks::Gk208) }
+        #[cfg(not(target_arch = "x86_64"))]
+        { None }
+    } else if dev::is_svga() {
         let target = encode::TargetRes {
             id: scratch,
             format: wire::format::B8G8R8A8_UNORM,
@@ -2741,7 +2753,7 @@ pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32>
         for id in p.contexts.values() {
             let Some(ctx) = c.contexts.get(id) else { continue; };
             if !ctx.warm_catalogue || ctx.dropped || ctx.state != CtxState::Live { continue; }
-            if ctx.warm != encode::ALL_WARM { return None; }
+            if ctx.warm != catalogue_mask() { return None; }
         }
         Some(Ok(()))
     }).map_err(|_| EINTR).and_then(|r| r);
@@ -2963,7 +2975,20 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
         }
     });
     attached?;
-    let chunks: Vec<Request> = if dev::is_svga() {
+    let chunks: Vec<Request> = if dev::backend() == abi::backend::GK208 {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let chunks = crate::gk208::encode::warm(scratch, scratch_texture, abi::pipeline::SOLID).ok_or(ENOMEM)?;
+            let mut requests = Vec::new();
+            for chunk in chunks {
+                let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
+                requests.push(dev::submit_gk208(Tag::Sync(serial), fence, chunk));
+            }
+            requests
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        { return Err(ENODEV); }
+    } else if dev::is_svga() {
         let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
         let chunk = svga::encode::chunk(svga::encode::warm_base()).ok_or(ENOMEM)?;
         alloc::vec![dev::submit_svga(Tag::Sync(serial), id, Some(fence), chunk).ok_or(EIO)?]
@@ -5492,7 +5517,7 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
                 // Contexts ready after catalogue setup: private clear/copy contexts have no
                 // catalogue work; rendering contexts require native completion of each step.
                 out.warmed = p.contexts.values()
-                    .filter(|id| c.contexts.get(*id).is_some_and(|x| x.state == CtxState::Live && (!x.warm_catalogue || x.warm == encode::ALL_WARM)))
+                    .filter(|id| c.contexts.get(*id).is_some_and(|x| x.state == CtxState::Live && (!x.warm_catalogue || x.warm == catalogue_mask())))
                     .count() as u64;
                 out.resources = p.resources.len() as u64;
                 out.resource_bytes = p.quota.resource_bytes();
@@ -5505,7 +5530,7 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
             out.state = match ctx.state {
                 CtxState::Quarantined => abi::context_state::QUARANTINED,
                 CtxState::Reset => abi::context_state::RESET,
-                _ if !ctx.warm_catalogue || ctx.warm == encode::ALL_WARM => abi::context_state::LIVE,
+                _ if !ctx.warm_catalogue || ctx.warm == catalogue_mask() => abi::context_state::LIVE,
                 _ => abi::context_state::WARMING,
             };
             out.warmed = ctx.warmed() as u64;

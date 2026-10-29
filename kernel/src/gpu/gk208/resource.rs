@@ -23,7 +23,7 @@
 //! Native resource storage. Layout sizing adapts Mesa 24.3.4 nvc0_miptree.c
 //! and nv50_miptree.c (MIT); see THIRD_PARTY_NOTICES. Breenix owns allocation,
 //! mappings, pinned guest backing and retirement. No pixels are produced here.
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{collections::{BTreeMap, BTreeSet}, sync::Arc, vec::Vec};
 use super::{memory::allocator::{Allocation, Allocator, Kind, Pin}, vm::{self, Io, Space}};
 
 pub const GOB_WIDTH: u32 = 64;
@@ -94,6 +94,7 @@ struct Entry<B> {
 /// the channel's private space. No userspace address or method is accepted.
 pub struct Resources<B> {
     entries: BTreeMap<u32, Entry<B>>,
+    contexts: BTreeSet<u32>,
     space: Option<Space>,
     next_va: u64,
     vram_bytes: u64,
@@ -106,7 +107,7 @@ pub struct Resources<B> {
 impl<B> Default for Resources<B> { fn default() -> Self { Self::new() } }
 impl<B> Resources<B> {
     pub const fn new() -> Self {
-        Self { entries: BTreeMap::new(), space: None, next_va: FIRST_VA, vram_bytes: 0, alias: None, channel: 0, incarnation: None, alias_indices: Vec::new(), temporary: u32::MAX }
+        Self { entries: BTreeMap::new(), contexts: BTreeSet::new(), space: None, next_va: FIRST_VA, vram_bytes: 0, alias: None, channel: 0, incarnation: None, alias_indices: Vec::new(), temporary: u32::MAX }
     }
     pub fn vram_bytes(&self) -> u64 { self.vram_bytes }
     pub fn layout(&self, id: u32) -> Option<Layout> { self.entries.get(&id)?.layout }
@@ -127,7 +128,7 @@ impl<B> Resources<B> {
         let layout = match (kind, format) {
             (1 | 2, 0 | 1) => Some(Layout::new(width, height, 4)?),
             (2, 2) => Some(Layout::new(width, height, 1)?),
-            (3, 0) if width != 0 && width <= 128 << 20 && height == 1 => None,
+            (3, 0 | 2) if width != 0 && width <= 128 << 20 && height == 1 => None,
             _ => return Err("unsupported native resource format"),
         };
         let bytes = layout.map_or(u64::from(width), Layout::allocation_bytes);
@@ -324,6 +325,41 @@ mod native {
     use crate::gpu::{dev::Tag, dma::Pages};
     use super::super::{adapter::Request, ce};
 
+    // These are logical core contexts on the installed native channel. Each draw
+    // restores its complete pipeline state; per-context hardware residency is
+    // still the isolation step's responsibility. These receipts acknowledge only
+    // registry mutations; engine work uses the separate release receipts.
+    pub fn ctx_create(tag: Tag, ctx: u32) -> Option<Request> {
+        ce::with_resources(|r, _, _| {
+            if ctx == 0 || !r.contexts.insert(ctx) { return Err("native context already registered"); }
+            Ok(())
+        }).ok()?;
+        Some(Request::storage(tag, None))
+    }
+    pub fn ctx_destroy(tag: Tag, ctx: u32) -> Option<Request> {
+        ce::with_resources(|r, _, _| { r.contexts.remove(&ctx); Ok(()) }).ok()?;
+        Some(Request::storage(tag, None))
+    }
+    pub fn ctx_attach(tag: Tag, ctx: u32, id: u32) -> Option<Request> {
+        ce::with_resources(|r, _, _| {
+            if !r.contexts.contains(&ctx) || r.identity(id).is_none() { return Err("native context attachment absent"); }
+            Ok(())
+        }).ok()?;
+        Some(Request::storage(tag, None))
+    }
+    pub fn context_id(ctx: u32) -> Option<u32> {
+        ce::with_resources(|r, _, _| {
+            if !r.contexts.contains(&ctx) || r.channel == 0 { return Err("native context identity absent"); }
+            u32::try_from(r.channel).map_err(|_| "native channel identity overflow")
+        }).ok()
+    }
+    pub fn resource_id(id: u32) -> Option<u32> {
+        ce::with_resources(|r, _, _| {
+            u32::try_from(r.identity(id).ok_or("native resource identity absent")?)
+                .map_err(|_| "native resource identity overflow")
+        }).ok()
+    }
+
     pub fn resource_create(tag: Tag, id: u32, kind: u32, format: u32,
         width: u32, height: u32,
     ) -> Option<Request> {
@@ -345,4 +381,4 @@ mod native {
     }
 }
 #[cfg(target_os = "none")]
-pub use native::{resource_create, attach_backing, resource_unref};
+pub use native::{resource_create, attach_backing, resource_unref, ctx_create, ctx_destroy, ctx_attach, context_id, resource_id};

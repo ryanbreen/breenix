@@ -150,6 +150,56 @@ pub trait Bindings: Resolver {
     fn render_target(&self, handle: u64) -> Option<Target>;
     fn sampled_source(&self, handle: u64) -> Option<Target>;
 }
+
+/// Warm the installed basic catalogue through the same encoder as client work.
+/// Completion is still the native draw release; compiling an asset is not warm-up.
+pub fn warm_frame(target: Target, source: Target, pipe: u32) -> Option<Frame> {
+    struct View(Target, Target);
+    impl Resolver for View {
+        fn buffer_size(&self, _: u64) -> Option<u64> { None }
+        fn buffer_rect(&self, _: u64, _: u64) -> [i32; 4] { [0; 4] }
+        fn target(&self, h: u64) -> Option<stream::TargetInfo> {
+            (h == 1).then_some(stream::TargetInfo { width: self.0.width, height: self.0.height,
+                format: self.0.format, invalid: false })
+        }
+        fn source(&self, h: u64) -> Option<stream::SourceInfo> {
+            (h == 2).then_some(stream::SourceInfo { width: self.1.width, height: self.1.height,
+                format: self.1.format, invalid: false })
+        }
+    }
+    impl Bindings for View {
+        fn render_target(&self, h: u64) -> Option<Target> { (h == 1).then_some(self.0) }
+        fn sampled_source(&self, h: u64) -> Option<Target> { (h == 2).then_some(self.1) }
+    }
+    let mut words = Vec::new();
+    stream::encode::begin(&mut words, 1);
+    if pipe == pipeline::SOLID {
+        stream::encode::draw(&mut words, pipe, 0xff123456, &[[0, 0, 1, 1]]);
+    } else {
+        let mut params = [0; 16];
+        match pipe {
+            pipeline::COPY => params[2] = 1,
+            pipeline::COPY_SCALED => { params[2] = 1; params[3] = 1; params[4] = 1; }
+            pipeline::NEAREST_SCALED | pipeline::BOX_FILTER => {
+                params[2] = 1; params[3] = 1; params[6] = 1; params[7] = 1;
+            }
+            _ => return None,
+        }
+        draw::encode(&mut words, pipe, 0xffffffff, 2, 0, 0,
+            &[draw::Instance { rect: [0, 0, 1, 1], params }]);
+    }
+    translate(words.as_slice(), &View(target, source)).ok()
+}
+
+#[cfg(target_os = "none")]
+pub(crate) fn warm(target_id: u32, source_id: u32, pipe: u32) -> Option<Vec<super::adapter::EncodedDraw>> {
+    let frame = warm_frame(target(target_id, format::B8G8R8A8)?,
+        target(source_id, format::B8G8R8A8)?, pipe)?;
+    let backing = alloc::sync::Arc::new(crate::gpu::dma::Pages::new(frame.data.len().div_ceil(4096))?);
+    backing.write(0, &frame.data);
+    backing.maintain(0, frame.data.len(), false);
+    prepare(frame, backing).ok()
+}
 /// The shared core reserves these controls until device work is queued.
 /// Their effects are confined to this frame, as in the SVGA encoder.
 #[derive(Clone, Copy, Default)]

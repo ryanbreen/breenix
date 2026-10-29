@@ -36,12 +36,18 @@ pub(crate) fn select_gk208() {
     BACKEND.store(backend::GK208, Ordering::Release);
 }
 
-/// Native identities are unavailable until the adapter implements them.
+/// The active backend's device identity, distinct from the public handle.
 pub fn context_id(ctx: u32) -> Option<u32> {
-    match backend() { backend::VIRGL => Some(ctx), backend::SVGA3D_DX => svga::cid_of(ctx), _ => None }
+    match backend() {
+        #[cfg(target_arch = "x86_64")]
+        backend::GK208 => crate::gk208::resource::context_id(ctx),
+        backend::VIRGL => Some(ctx), backend::SVGA3D_DX => svga::cid_of(ctx), _ => None }
 }
 pub fn resource_id(id: u32) -> Option<u32> {
-    match backend() { backend::VIRGL => Some(id), backend::SVGA3D_DX => svga::sid_of(id), _ => None }
+    match backend() {
+        #[cfg(target_arch = "x86_64")]
+        backend::GK208 => crate::gk208::resource::resource_id(id),
+        backend::VIRGL => Some(id), backend::SVGA3D_DX => svga::sid_of(id), _ => None }
 }
 pub fn success() -> u32 { crate::gpu_backend_answers::success(backend()).unwrap_or(0) }
 pub fn ok(answer: u32) -> bool { crate::gpu_backend_answers::ok(backend(), answer) }
@@ -249,15 +255,24 @@ impl Device {
 // could not reserve the ids or memory the request needs.
 
 pub fn ctx_create(tag: Tag, ctx: u32) -> Option<Request> {
-    match backend() { backend::SVGA3D_DX => svga::ctx_create(tag, ctx).map(Request::Svga), backend::VIRGL => Some(Request::Virgl(virgl::ctx_create(tag, ctx))), _ => None }
+    match backend() {
+        #[cfg(target_arch = "x86_64")]
+        backend::GK208 => crate::gk208::resource::ctx_create(tag, ctx).map(Request::Gk208),
+        backend::SVGA3D_DX => svga::ctx_create(tag, ctx).map(Request::Svga), backend::VIRGL => Some(Request::Virgl(virgl::ctx_create(tag, ctx))), _ => None }
 }
 
 pub fn ctx_destroy(tag: Tag, ctx: u32) -> Option<Request> {
-    match backend() { backend::SVGA3D_DX => Some(Request::Svga(svga::ctx_destroy(tag, ctx))), backend::VIRGL => Some(Request::Virgl(virgl::ctx_destroy(tag, ctx))), _ => None }
+    match backend() {
+        #[cfg(target_arch = "x86_64")]
+        backend::GK208 => crate::gk208::resource::ctx_destroy(tag, ctx).map(Request::Gk208),
+        backend::SVGA3D_DX => Some(Request::Svga(svga::ctx_destroy(tag, ctx))), backend::VIRGL => Some(Request::Virgl(virgl::ctx_destroy(tag, ctx))), _ => None }
 }
 
 pub fn ctx_attach(tag: Tag, ctx: u32, resource: u32) -> Option<Request> {
-    match backend() { backend::SVGA3D_DX => Some(Request::Svga(svga::ctx_attach(tag))), backend::VIRGL => Some(Request::Virgl(virgl::ctx_attach(tag, ctx, resource))), _ => None }
+    match backend() {
+        #[cfg(target_arch = "x86_64")]
+        backend::GK208 => crate::gk208::resource::ctx_attach(tag, ctx, resource).map(Request::Gk208),
+        backend::SVGA3D_DX => Some(Request::Svga(svga::ctx_attach(tag))), backend::VIRGL => Some(Request::Virgl(virgl::ctx_attach(tag, ctx, resource))), _ => None }
 }
 
 /// A resource of BGL kind `k` and format `f`: VirGL's target, format and bind for it, or

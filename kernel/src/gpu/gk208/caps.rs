@@ -117,6 +117,9 @@ impl Profile {
             (c::TEXEL_FETCH, abi::profile::TEXEL_FETCH), (c::REGION_COPY, abi::profile::REGION_COPY)] {
             if p.have[id as usize] { p.caps.profile |= bit; }
         }
+        // The installed 8.2 catalogue uses the executable format/integer/fetch
+        // primitives above. Whole-buffer suite checks judge each pipeline.
+        if p.admission(None).is_ok() { p.caps.pipelines = 0x1f; }
         p
     }
     fn set(&mut self, id: u32, have: bool, source: u32) {

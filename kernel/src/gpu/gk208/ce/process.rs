@@ -214,3 +214,14 @@ pub(in crate::gk208) fn with_resources<R>(
         after as i64 - before as i64);
     result
 }
+
+/// Observe the existing native console, independently of the shared renderer's
+/// resources. Its identifier is reserved, rather than its physical address.
+pub(crate) fn console_state() -> Option<(gpu_abi::Mode, u64, bool, u64)> {
+    let owner = SESSION.lock();
+    let s = &owner.as_ref()?.console;
+    let bound = super::super::console_binding(s).is_ok();
+    let writes = crate::firmware_writes::count().checked_sub(s.firmware_baseline)?;
+    Some((gpu_abi::Mode { width: s.width as u32, height: s.height as u32,
+        scale: 1, reserved: 0 }, u64::from(u32::MAX), bound, writes))
+}

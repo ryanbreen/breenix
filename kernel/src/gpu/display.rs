@@ -429,6 +429,8 @@ pub(super) fn current_mode(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EINVAL);
     }
     let mode = with_core(|c| MODES[c.display.mode as usize]).ok_or(ENODEV)?;
+    #[cfg(target_arch = "x86_64")]
+    let mode = crate::gk208::console_state().map_or(mode, |(native, _, _, _)| native);
     write_arg(arg, &mode)?;
     Ok(0)
 }
@@ -688,6 +690,13 @@ pub(super) fn ended(c: &mut Core, group: u64) {
 }
 
 pub(super) fn restore() -> Result<(), i64> {
+    #[cfg(target_arch = "x86_64")]
+    if let Some((_, _, bound, _)) = crate::gk208::console_state() {
+        // Basic offscreen pipelines cannot replace the native console binding.
+        // Confirm that binding, rather than asking the ARM screen owner to bind
+        // an ARM screen resource on this backend.
+        return if bound { Ok(()) } else { Err(EIO) };
+    }
     let owned = with_core(|c| !c.display.stack.is_empty()).unwrap_or(false);
     let Some(_presentation) = crate::console::vt::Presentation::begin(owned) else {
         // The foreground console retains scanout until the graphics VT returns.

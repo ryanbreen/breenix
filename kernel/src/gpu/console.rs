@@ -79,6 +79,19 @@ pub(super) fn describe(a: &mut abi::Modes) {
         0
     };
     a.firmware_writes_after_handoff = arch::firmware_writes();
+    #[cfg(target_arch = "x86_64")]
+    if let Some((mode, resource, bound, writes)) = crate::gk208::console_state() {
+        // Native display ownership predates shared-core registration. Report its
+        // measured geometry and binding even when the renderer has no scanout.
+        a.count = 1;
+        a.current = 0;
+        a.modes = [mode, abi::Mode::ZERO];
+        a.console_resource = resource;
+        a.handoff = 1;
+        a.firmware_writes_after_handoff = writes;
+        a.binding_known = u32::from(bound);
+        a.scanout_resource = if bound { resource } else { 0 };
+    }
 }
 
 /// Inspect the actual framebuffer memory while its writer lock is held.
