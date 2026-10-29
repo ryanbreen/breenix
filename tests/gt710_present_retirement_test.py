@@ -14,9 +14,11 @@ class PresentRetirement(unittest.TestCase):
         # at the old head it announces the VT frame but leaves the GPU view held.
         render=(ROOT/'kernel/src/console/mod.rs').read_text()
         completed=item(render,'            if screen.complete {\n                vt::drawn(')
+        completed=completed.replace('#[cfg(target_arch = "x86_64")]','')
         helper=(item(source,'pub(crate) fn native_repainted(')
                 if 'pub(crate) fn native_repainted(' in source else '')
         describe=item(source,'pub(super) fn describe(').replace('pub(super)','pub(crate)')
+        describe=describe.replace('#[cfg(target_arch = "x86_64")]','')
         method=item((ROOT/'kernel/src/gpu/display.rs').read_text(),
                     'fn native_console_restored(')
         harness=r'''
@@ -79,7 +81,7 @@ fn main(){
 
     def test_return_to_console_releases_copy_sources_but_preserves_pending_count(self):
         source=(ROOT/'kernel/src/gpu/display.rs').read_text()
-        method=item(source,'    fn native_console_restored(')
+        method=item(source,'fn native_console_restored(')
         restore=item(source,'pub(super) fn restore()')
         self.assertIn('native_console_restored()',restore)
         harness=r'''
