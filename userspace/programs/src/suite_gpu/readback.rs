@@ -397,7 +397,20 @@ pub fn large_target() -> CaseResult {
     let (ctx, t) = setup(format::B8G8R8A8, 2560, 1600)?;
     let rects = [([0, 0, 1, 1600], A), ([2559, 0, 2560, 1600], C), ([0, 1599, 2560, 1600], A), ([1279, 799, 1281, 801], C)];
     frame(ctx, &scene(t, B, &rects))?;
-    present(ctx, t)?;
+    let viewing = present_view(ctx, t)?;
+    let mut modes = abi::Modes::ZERO;
+    let result = gpu::call_with(abi::op::MODES, &mut modes);
+    ensure(result == 0, || format!("MODES: {}", errno(result)))?;
+    ensure(modes.current < modes.count && (modes.current as usize) < modes.modes.len(),
+        || "MODES: invalid current mode".to_string())?;
+    let mode = modes.modes[modes.current as usize];
+    // R53 (#1956), G11: oversized sources remain offscreen. When it fits,
+    // the viewing path must still return its completed present fence.
+    if 2560 > mode.width || 1600 > mode.height {
+        ensure(viewing.is_none(), || "oversized source returned a present fence".to_string())?;
+    } else {
+        viewing.ok_or_else(|| fail_msg("fitting source did not return a present fence".to_string()))?;
+    }
     expect(t, &scene_canvas(2560, 1600, B, &rects), "large target every pixel")?;
     // The staging charge must honor RLIMIT_AS, leave no charge or observation on
     // refusal, and be released after a successful read. Allocate outputs beforehand.

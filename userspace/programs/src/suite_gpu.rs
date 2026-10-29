@@ -239,7 +239,7 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("wait-no-spin", "CPU time while waiting on a fence is at most 5% of the wait", performance::wait_no_spin),
         case("present-rate-2560", "At least 60 presents per second alternating two full-screen 2560x1600 targets", performance::present_rate_2560),
     ]).idle_before(PERFORMANCE_IDLE_MS),
-]);
+]).with_finalizer(final_upload);
 
 /// The idle window before `performance`, the baseline of the Parallels host GPU time
 /// attestation (`docs/gui/gpu.md` section 1.6.5, `scripts/parallels/gpu-time.py`).
@@ -278,11 +278,20 @@ fn device_version() -> CaseResult {
     Ok(())
 }
 
+fn final_upload() {
+    #[cfg(target_arch="x86_64")]
+    {
+        let (status, caps) = libbreenix::gpu::caps();
+        let resources = (status == 0 && caps.backend == libbreenix::gpu::abi::backend::GK208)
+            .then_some(&caps);
+        gt710_artifacts::upload_slot(resources, true).expect("native final artifact upload");
+    }
+}
+
 fn main() {
     #[cfg(target_arch="x86_64")]
     {
-        // The view and cases also read CAPS; finish its first-use evidence
-        // before consuming the lease-bound artifact route.
+        // G12 keeps startup in its original slot, before suite entry.
         let _ = libbreenix::gpu::caps();
         gt710_artifacts::upload().expect("native display artifact upload");
     }

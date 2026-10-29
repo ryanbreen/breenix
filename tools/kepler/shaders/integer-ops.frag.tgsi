@@ -1,0 +1,26 @@
+FRAG
+DCL OUT[0], COLOR
+DCL CONST[0]
+DCL TEMP[0..3]
+IMM[0] UINT32 {31, 255, 8, 16}
+IMM[1] UINT32 {24, 0, 0, 0}
+IMM[2] FLT32 {0.003921568627450980392156862745098, 0.0, 0.0, 0.0}
+UADD TEMP[0].x, CONST[0].xxxx, CONST[0].yyyy
+UMUL TEMP[0].y, CONST[0].xxxx, CONST[0].yyyy
+XOR TEMP[0].x, TEMP[0].xxxx, TEMP[0].yyyy
+AND TEMP[1].x, CONST[0].zzzz, IMM[0].xxxx
+AND TEMP[1].y, CONST[0].wwww, IMM[0].xxxx
+SHL TEMP[1].x, CONST[0].xxxx, TEMP[1].xxxx
+USHR TEMP[1].y, CONST[0].yyyy, TEMP[1].yyyy
+OR TEMP[1].x, TEMP[1].xxxx, TEMP[1].yyyy
+XOR TEMP[0].x, TEMP[0].xxxx, TEMP[1].xxxx
+USLT TEMP[2].x, CONST[0].xxxx, CONST[0].yyyy
+XOR TEMP[0].x, TEMP[0].xxxx, TEMP[2].xxxx
+USHR TEMP[3].x, TEMP[0].xxxx, IMM[0].wwww
+USHR TEMP[3].y, TEMP[0].xxxx, IMM[0].zzzz
+MOV TEMP[3].z, TEMP[0].xxxx
+USHR TEMP[3].w, TEMP[0].xxxx, IMM[1].xxxx
+AND TEMP[3], TEMP[3], IMM[0].yyyy
+U2F TEMP[3], TEMP[3]
+MUL OUT[0], TEMP[3], IMM[2].xxxx
+END

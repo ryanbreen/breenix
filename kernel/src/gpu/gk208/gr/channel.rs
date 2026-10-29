@@ -416,6 +416,35 @@ mod native {
         next_sequence: u32,
         copy: Option<DrawCopy>,
     }
+    /// Rebuild only FIFO-owned instance bytes; VM and GR bindings start at 0x200.
+    /// The RAMFC table is shared by initial construction and confirmed restart.
+    fn init_fifo(
+        regs: &mut Registers, total: u64, instance: u64, userd: u64, commands: u64, id: u32,
+    ) -> Result<(), &'static str> {
+        words(regs, total, instance, &[0; 0x200 / 4])?;
+        words(regs, total, userd, &[0; 0x200 / 4])?;
+        words(regs, total, commands, &[0; 4096 / 4])?;
+        for (offset, value) in [
+            (0x08, userd as u32),
+            (0x0c, (userd >> 32) as u32),
+            (0x10, 0xface),
+            (0x30, 0xfffff902),
+            (0x48, COMMAND as u32),
+            (0x4c, 9 << 16),
+            (0x84, 0x20400000),
+            (0x94, 0x30000fff),
+            (0x9c, 0x100),
+            (0xac, 0x1f),
+            (0xe4, 0x20),
+            (0xe8, id),
+            (0xb8, 0xf8000000),
+            (0xf8, 0x10003080),
+            (0xfc, 0x10000010),
+        ] {
+            words(regs, total, instance + offset, &[value])?;
+        }
+        Ok(())
+    }
     impl Session {
         pub(in crate::gk208::gr) fn new(
             h: &mut Hardware<'_>,
@@ -565,6 +594,7 @@ mod native {
                     &system_dma::translation_status()?,
                 )?));
                 let dma = pages.as_ref().unwrap();
+                dma.identify("GR-channel", id);
                 context.map_system(
                     &mut h.layout.allocator,
                     &mut VmIo {
@@ -605,25 +635,7 @@ mod native {
                 // 0xe8 contains CHID, and USERD.size is 0x200.
                 let userd = userd.unwrap_or(commands.range.start + USERD);
                 let instance = context.space().instance.range.start;
-                for (offset, value) in [
-                    (0x08, userd as u32),
-                    (0x0c, (userd >> 32) as u32),
-                    (0x10, 0xface),
-                    (0x30, 0xfffff902),
-                    (0x48, COMMAND as u32),
-                    (0x4c, 9 << 16),
-                    (0x84, 0x20400000),
-                    (0x94, 0x30000fff),
-                    (0x9c, 0x100),
-                    (0xac, 0x1f),
-                    (0xe4, 0x20),
-                    (0xe8, id),
-                    (0xb8, 0xf8000000),
-                    (0xf8, 0x10003080),
-                    (0xfc, 0x10000010),
-                ] {
-                    words(h.regs, h.total, instance + offset, &[value])?;
-                }
+                init_fifo(h.regs, h.total, instance, userd, commands.range.start, id)?;
                 // gk104_ectx_bind selects 0x210 for GR and sets bit 2 in the VA.
                 words(
                     h.regs,
@@ -1357,7 +1369,7 @@ mod native {
             let session = self.session.take().unwrap();
             let channel = NativeChannel { session, registers: h.regs.0, total: h.total,
                 mmu: [0; 2], _scratch: None, topology: [[0; 2]; 3], initial: Vec::new(),
-                put: last, confirmed: false, _bootstrap: None };
+                quarantine: 0, parking: Vec::new(), put: last, confirmed: false, _bootstrap: None };
             let mut device = crate::gpu::dev::Device::Gk208(adapter::Device::probe(channel, board, last));
             let result = self.producer.run(&mut device, operation, name);
             let crate::gpu::dev::Device::Gk208(device) = device else { unreachable!() };
@@ -1401,6 +1413,8 @@ mod native {
         _scratch: Option<ManuallyDrop<[memory::allocator::Pin; 2]>>,
         topology: [[u32; 2]; 3],
         initial: Vec<u8>,
+        quarantine: u64,
+        parking: Vec<u32>,
         put: u32,
         confirmed: bool,
         _bootstrap: Option<ManuallyDrop<crate::gk208::lifetime::Context>>,
@@ -1409,7 +1423,7 @@ mod native {
         /// Transfer a drained live channel only after all fallible preparation.
         pub(in crate::gk208::gr) fn into_native(
             owner: &mut Option<Self>, registers: usize, total: u64, mmu: [Allocation; 2],
-            allocator: &memory::allocator::Allocator,
+            allocator: &memory::allocator::Allocator, quarantine: u64, parking: Vec<u32>,
         ) -> Result<NativeChannel, &'static str> {
             let session = owner.as_ref().ok_or("native channel owner absent")?;
             if !session.bound || session.second.is_some() || session.copy.is_none() || session.quiesced {
@@ -1425,7 +1439,7 @@ mod native {
             let put = session.next_sequence - 1;
             Ok(NativeChannel { session: owner.take().unwrap(), registers, total,
                 mmu: mmu.map(|a| a.range.start), _scratch: Some(scratch), topology,
-                initial, put, confirmed: false, _bootstrap: None })
+                initial, quarantine, parking, put, confirmed: false, _bootstrap: None })
         }
     }
 
@@ -1437,13 +1451,15 @@ mod native {
             let c = self.session.report.identity;
             (c.instance, c.epoch)
         }
-        pub(crate) fn healthy(&self) -> bool {
+        pub(crate) fn healthy(&self) -> Result<(), &'static str> {
             let mut monitor = Monitor { session: &self.session,
                 regs: &mut Registers(self.registers), total: self.total,
                 sequence: self.put.max(1), stop_on_trap: true, release_slot: 0,
                 queued_put: Some(self.put) };
-            monitor.snapshot().is_ok()
+            monitor.snapshot().map(|_| ())
         }
+        /// True only after USERD GP_PUT publishes this sequence to the engine.
+        pub(crate) fn published(&self, sequence: u32) -> bool { self.put == sequence }
         pub(crate) fn publish(
             &mut self, sequence: u32, operation: &crate::gk208::adapter::Operation,
         ) -> Result<(), &'static str> {
@@ -1453,6 +1469,11 @@ mod native {
             let report_va = TARGET + u64::from(slot) * 16;
             let mut command = match *operation {
                 Operation::Copy(rect) => crate::gk208::copy::encode(rect, report_va, s.report.identity.epoch, sequence)?,
+                Operation::Transfer(plan) => {
+                    crate::gk208::ce::with_resources(|r,_,io| r.bind(io,
+                        s.context.space().directory.range.start,s.report.identity.instance,s.report.identity.epoch))?;
+                    crate::gk208::copy::encode_plan(plan,report_va,s.report.identity.epoch,sequence)?
+                },
                 Operation::Draw(mut draw) => {
                     draw.report_va = report_va;
                     draw.epoch = s.report.identity.epoch;
@@ -1462,6 +1483,39 @@ mod native {
             };
             self.publish_encoded(sequence, &mut command)
         }
+        pub(crate) fn publish_draw(&mut self, sequence: u32, draw: &crate::gk208::adapter::EncodedDraw)
+            -> Result<(), &'static str> {
+            if self.parking.is_empty() { return Err("native frame parking absent"); }
+            let s = &self.session;
+            crate::gk208::ce::with_resources(|r,_,io| r.bind(io,
+                s.context.space().directory.range.start,s.report.identity.instance,s.report.identity.epoch))?;
+            // Storage retains the uploaded code/inputs and the frame's target holds.
+            let payload = crate::gk208::encode::channel_words(&draw.words, self.quarantine)?;
+            // Restart reconstructs RAMFC without its old subchannel classes.
+            // SET_OBJECT must precede graphics state and release methods even
+            // when clipping leaves no draw (MIT cla197.h:34-36).
+            let mut command = super::bind().to_vec();
+            if payload.is_empty() { command.extend([0x20010044, 0]); }
+            command.extend(payload);
+            // A completed draw does not revoke its persistent engine bindings.
+            // Rebind code, stages, constants/handles, vertex start/limit, VAB,
+            // TIC/TSC and RT to bootstrap-owned storage before releasing any
+            // frame or its target/source holds. The parked TIC names a retained
+            // image too. There is no index binding: quad uses DRAW_ARRAYS.
+            // Idle first, then publish state without launches, then idle again
+            // before CB unbind/selector parking and the engine release reports.
+            // MIT cla197.h defines these address methods and WAIT_FOR_IDLE.
+            command.extend_from_slice(&self.parking);
+            let sink = TARGET + 256;
+            command.extend([0x2001043d, 0x100, 0x200308e0,
+                256, (sink >> 32) as u32, sink as u32]);
+            let target = TARGET + u64::from(crate::gk208::queue::Queue::slot(sequence))*16;
+            for (offset,value) in [(4,s.report.identity.epoch as u32),
+                (8,(s.report.identity.epoch>>32) as u32),(0,sequence)] {
+                command.extend(super::report(target+offset,value)?);
+            }
+            self.publish_encoded(sequence,&mut command)
+        }
         fn publish_encoded(&mut self, sequence: u32, command: &mut Vec<u32>) -> Result<(), &'static str> {
             let s = &self.session;
             let slot = crate::gk208::queue::Queue::slot(sequence);
@@ -1470,11 +1524,13 @@ mod native {
             // Only this slot is poisoned; the other three may still be live.
             unsafe { core::ptr::write_bytes((s.pages.va(0) + u64::from(slot) * 16) as *mut u8, 0, 16); }
             s.pages.publish();
-            self.put = sequence;
-            self.session.next_sequence = sequence.checked_add(1).ok_or("probe sequence exhausted")?;
-            let s = &self.session;
+            let next = sequence.checked_add(1).ok_or("probe sequence exhausted")?;
             s.publish_words(&mut Registers(self.registers), self.total, sequence, command,
-                16384 + u64::from(slot) * 8192, 8192)
+                16384 + u64::from(slot) * 8192, 8192)?;
+            // publish_words has crossed USERD GP_PUT and drained the WC write.
+            self.put = sequence;
+            self.session.next_sequence = next;
+            Ok(())
         }
         #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
         pub(crate) fn publish_probe(&mut self, sequence: u32, operation: &crate::gk208::adapter::Operation,
@@ -1497,6 +1553,16 @@ mod native {
             let drain = unsafe { ((self.session.pages.va(0) + offset) as *const u32).read_volatile() };
             Ok(sample.healthy && sample.consumed >= sequence && drain == sequence)
         }
+        /// The fourth report word is a separate CE release for transfer drain.
+        pub(crate) fn transfer_drain(&mut self, sequence: u32) -> Result<crate::gpu_completion::CeSample, &'static str> {
+            self.session.pages.observe();
+            let offset = u64::from(crate::gk208::queue::Queue::slot(sequence)) * 16 + 12;
+            // SAFETY: the coherent report page retains this request's 16-byte slot.
+            let drain = unsafe { ((self.session.pages.va(0) + offset) as *const u32).read_volatile() };
+            let mut sample = self.sample(sequence)?;
+            sample.sequence = drain;
+            Ok(sample)
+        }
         pub(crate) fn sample(&mut self, sequence: u32) -> Result<crate::gpu_completion::CeSample, &'static str> {
             let mut regs = Registers(self.registers);
             let mut monitor = Monitor { session: &self.session, regs: &mut regs, total: self.total,
@@ -1508,15 +1574,67 @@ mod native {
                 epoch, sequence: value, consumed: if consumed { sequence } else { 0 },
                 healthy: bound & 0x80000000 != 0 })
         }
+        /// Retain bounded fault registers before reset clears their source.
+        /// Called on the GPU worker, outside interrupt and syscall entry paths.
+        pub(crate) fn record_fault(&self, reason: &str) {
+            let mut regs = Registers(self.registers);
+            let c = self.session.report.identity;
+            let b = self.session.pbdma * 0x2000;
+            let registers = [0x259c, 0x400100, 0x400108, 0x400700,
+                0x40108+b, 0x40148+b, 0x40120+b, 0x40014+b, 0x40028+b,
+                0x800000+c.id as usize*8, 0x800004+c.id as usize*8,
+                0x2630, 0x262c, 0x2634, 0x2284+c.runlist as usize*8]
+                .map(|r| (r, regs.read(r)));
+            crate::serial_println!("GT710_NATIVE_FAULT reason={} instance={:#x} epoch={} put={} registers={:?}",
+                reason,c.instance,c.epoch,self.put,registers);
+            let (mask, faults) = crate::gk208::vm::faults(&mut VmIo {regs:&mut regs,total:self.total});
+            for f in faults {
+                crate::serial_println!("GT710_NATIVE_MMU mask={:#x} unit={} instance={:#x} address={:#x} reason={} raw={:?}",
+                    mask,f.unit,f.instance,f.address,f.reason,f.raw);
+                let _ = crate::gk208::ce::with_resources(|r,_,io| {
+                    if let Some(o) = r.owner(f.address) {
+                        let pte = r.pte_address(f.address).map(|p| (p,crate::gk208::vm::Io::read(io,p)));
+                        crate::serial_println!("GT710_NATIVE_VA resource={} base={:#x} bytes={} offset={:#x} role={} region={} command={:?} mapped={} unref={} released={} pte={:?}",
+                            o.resource,o.base,o.bytes,o.offset,o.role,o.region,o.command,o.mapped,o.unref,o.released,pte);
+                    } else if let Some((va,a)) = self.session.context.mapping_at(f.address) {
+                        let role = if a == self.session.commands { "channel-command" }
+                            else if a == self.session.image { "channel-context" }
+                            else if a == self.session.mmio { "channel-mmio" }
+                            else if va == self.quarantine { "channel-vab" }
+                            else { "channel-resident" };
+                        crate::serial_println!("GT710_NATIVE_VA role={} base={:#x} bytes={} physical={:#x} released=false",
+                            role,va,a.range.size,a.range.start);
+                    } else if (TARGET..TARGET+4096+READBACK_BYTES as u64).contains(&f.address) {
+                        crate::serial_println!("GT710_NATIVE_VA role=channel-report base={:#x} released=false",TARGET);
+                    } else {
+                        crate::serial_println!("GT710_NATIVE_VA role=unknown address={:#x}",f.address);
+                    }
+                    Ok(())
+                });
+            }
+        }
         pub(crate) fn reset(&mut self) -> Result<(), &'static str> {
             let mut regs = Registers(self.registers);
             let c = self.session.report.identity;
             regs.mask(0x2630, 1 << c.runlist, 1 << c.runlist);
             regs.mask(0x800004 + c.id as usize * 8, 0x800, 0x800);
+            let (_, faults) = crate::gk208::vm::faults(&mut VmIo {regs:&mut regs,total:self.total});
+            // Only GR and its shared-runlist CE2 are stopped below. Preserve
+            // another instance's fault or a fault on an unstopped engine.
+            let owned = faults.iter().filter(|f| f.instance == c.instance && matches!(f.unit, 0 | 0x1b))
+                .fold(0u32, |mask, f| mask | 1u32 << f.unit);
             // G9: reset and confirm before runlist removal/unbind/restoration.
             super::super::ctxctl::reset(&mut regs).map_err(super::super::hardware_error)?;
             if let Some(copy) = &self.session.copy {
                 crate::gk208::ce::reset_engine(&mut regs, copy.base, copy.reset)?;
+            }
+            // MIT nouveau gf100.c/gk104.c: clear the attributed exception
+            // after the engine stop, then allow runlist removal to progress.
+            if owned != 0 { regs.write(0x259c, owned); }
+            if regs.read(0x259c) != 0 { return Err("native reset foreign MMU fault; backing retained"); }
+            if owned != 0 {
+                regs.write(0x2100, 0x10000000);
+                regs.write(0x262c, 1 << c.runlist);
             }
             self.session.quiesce(&mut regs, self.total)?;
             if regs.read(0x259c) != 0 { return Err("native reset MMU fault; backing retained"); }
@@ -1538,8 +1656,12 @@ mod native {
                 words(&mut regs, self.total, self.session.image.range.start + i as u64 * 4,
                     &[u32::from_le_bytes(w.try_into().unwrap())])?;
             }
-            words(&mut regs, self.total, self.session.userd + 0x88, &[0, 0])?;
-            words(&mut regs, self.total, self.session.report.identity.instance + 0x10, &[0])?;
+            let c = self.session.report.identity;
+            init_fifo(&mut regs, self.total, c.instance, self.session.userd,
+                self.session.commands.range.start, c.id)?;
+            // SAFETY: confirmed reset and FIFO unwind stopped access to these receipts.
+            unsafe { core::ptr::write_bytes(self.session.pages.va(0) as *mut u8, 0, 4096); }
+            self.session.pages.publish();
             modeset::bar_flush(&mut regs)?;
             // Only the confirmed reset plus complete FIFO unwind permits this.
             unsafe { self.session.context.confirm_reset(); }
@@ -1553,7 +1675,11 @@ mod native {
             }
             self.session.activate_regs(&mut regs, self.total)?;
             self.put = 0;
-            if !self.healthy() { return Err("native restart fault; backing retained"); }
+            self.session.next_sequence = 1;
+            if let Err(error) = self.healthy() {
+                self.record_fault(error);
+                return Err(error);
+            }
             Ok(())
         }
     }

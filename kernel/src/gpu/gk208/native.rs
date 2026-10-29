@@ -1080,6 +1080,7 @@ impl CoreProducer {
         let Device::Gk208(d) = &*device else { return Err("core producer backend mismatch") };
         let (context, epoch, sequence) = d.probe_identity()?;
         let (resource, kind) = match operation {
+            Operation::Transfer(_) => return Err("core producer uses explicit probe copies"),
             Operation::Copy(rect) => (rect.dst, gpu_abi::gk208::TRANSFER_RELEASE),
             Operation::Draw(draw) => (draw.target_va, gpu_abi::gk208::DRAW_RELEASE),
         };
@@ -1087,6 +1088,7 @@ impl CoreProducer {
         let caller = (1u64 << 32) | u64::from(sequence);
         let identity = crate::gpu_completion::Request { context, epoch, caller, sequence, resource, generation: 1 };
         let mut request = match operation {
+            Operation::Transfer(_) => return Err("core producer uses explicit probe copies"),
             Operation::Copy(rect) => Request::copy(Tag::Sync(caller), caller, resource, 1, rect),
             Operation::Draw(draw) => Request::draw(Tag::Sync(caller), caller, resource, 1, draw),
         };

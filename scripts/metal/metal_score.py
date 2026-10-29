@@ -104,7 +104,9 @@ def score(directory):
             reason = host['score'](manifest, read('definition/docs/efforts/' + effort), records,
                                    host['capture_serial'](directory) if suite=='gt710' else (directory / 'serial.txt').read_text(), run, sha, fatal,
                                    **({'producer': host['core_capture'](directory, sha)}
-                                      if suite == 'gt710' and category == 'core' else {}))
+                                      if suite == 'gt710' and category == 'core' else
+                                      {'producer': host['resources_capture'](directory, sha)}
+                                      if suite == 'gt710' and category == 'resources' else {}))
             total = len(host['CATEGORIES'][category])
             results[milestone] = dict(reached=total, total=total, passed=True, reason=reason)
         except (OSError, ValueError, KeyError, StopIteration, TypeError, AttributeError) as error:

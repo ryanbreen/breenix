@@ -483,6 +483,16 @@
               "core"
             ]
           }
+        },
+        {
+          "id": "resources",
+          "title": "Score native resources and basic pipelines (M8 PR 8.2)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "resources"
+            ]
+          }
         }
       ]
     }

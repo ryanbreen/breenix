@@ -301,6 +301,11 @@ impl Target {
                 let (serial,fence) = with_core(|c| (c.serial(),c.device_fence())).ok_or(ENODEV)?;
                 send(dev::submit_virgl(Tag::Sync(serial),ctx,Some(fence),chunk),serial,fence)?;
             },
+            #[cfg(target_arch = "x86_64")]
+            Chunks::Gk208(chunks) => for chunk in chunks {
+                let (serial,fence) = with_core(|c| (c.serial(),c.device_fence())).ok_or(ENODEV)?;
+                send(dev::submit_gk208(Tag::Sync(serial),fence,chunk),serial,fence)?;
+            },
             Chunks::Svga(chunks) => for chunk in chunks {
                 let (serial,fence) = with_core(|c| (c.serial(),c.device_fence())).ok_or(ENODEV)?;
                 send(dev::submit_svga(Tag::Sync(serial),ctx,Some(fence),chunk).ok_or(EIO)?,serial,fence)?;

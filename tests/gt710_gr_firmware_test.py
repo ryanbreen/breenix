@@ -20,6 +20,11 @@ CONTROLS = tuple(f'{name}.{extension}'
                  for name in ('constant-colour-fragment', 'drop-colour-vertex')
                  for extension in ('bin', 'sph', 'json', 'asm'))
 GRADIENT = tuple(f'gradient-fragment.{extension}' for extension in ('bin', 'sph', 'json', 'asm'))
+CATALOGUE_PROGRAMS = ('pipeline-solid', 'pipeline-copy', 'pipeline-copy_scaled',
+                      'pipeline-nearest_scaled', 'pipeline-box_filter',
+                      'probe-integer-ops', 'probe-texel-fetch')
+CATALOGUE = tuple(f'{name}.{extension}' for name in CATALOGUE_PROGRAMS
+                  for extension in ('bin', 'sph', 'json', 'asm'))
 RECIPE = 'cargo run -p xtask -- kepler-assets'
 
 
@@ -29,7 +34,7 @@ class Firmware(unittest.TestCase):
         source = (ROOT / 'kernel/src/gpu/gk208/gr/firmware.rs').read_text()
         constants = dict(re.findall(r'pub const (\w+)_SHA256: &str = "([0-9a-f]{64})";', source))
         assets = ROOT / 'kernel/assets/kepler'
-        self.assertEqual({p.name for p in assets.iterdir()}, set(NAMES + TRIANGLE + CONTROLS + GRADIENT) | {'manifest.json'})
+        self.assertEqual({p.name for p in assets.iterdir()}, set(NAMES + TRIANGLE + CONTROLS + GRADIENT + CATALOGUE) | {'manifest.json'})
         for name in NAMES:
             self.assertEqual(constants[name.replace('.', '_').upper()], expected[name])
             data = (assets / name).read_bytes()
@@ -37,7 +42,7 @@ class Firmware(unittest.TestCase):
             self.assertEqual(hashlib.sha256(data).hexdigest(), expected[name])
             self.assertIn(f'include_bytes!("../../../../assets/kepler/{name}")', source)
         manifest = json.loads((assets / 'manifest.json').read_text())
-        for name in TRIANGLE + CONTROLS + GRADIENT:
+        for name in TRIANGLE + CONTROLS + GRADIENT + CATALOGUE:
             data = (assets / name).read_bytes()
             self.assertEqual(hashlib.sha256(data).hexdigest(), expected[name], name)
             self.assertEqual(manifest['files'][name]['sha256'], expected[name], name)
@@ -58,7 +63,7 @@ class Firmware(unittest.TestCase):
             shutil.copy(ROOT / 'kernel/src/gpu/gk208/gr/firmware.rs', copy / 'kernel/src/gpu/gk208/gr')
             shutil.copy(ROOT / 'docs/gui/provenance/kepler-toolchain.sha256.json', copy / 'docs/gui/provenance')
             verify(copy)
-            for name in NAMES + TRIANGLE + CONTROLS + GRADIENT + ('manifest.json',):
+            for name in NAMES + TRIANGLE + CONTROLS + GRADIENT + CATALOGUE + ('manifest.json',):
                 path = copy / 'kernel/assets/kepler' / name
                 original = path.read_bytes()
                 for changed in (None, bytes([original[0] ^ 1]) + original[1:]):
@@ -75,6 +80,41 @@ class Firmware(unittest.TestCase):
                     self.assertIn(RECIPE, result.stderr)
                     path.write_bytes(original)
         print('PASS: committed assets and SHA-256 constants match 7.1; missing/altered images and manifest rejected')
+
+    def test_basic_catalogue_programs_have_embedded_code_sph_and_register_counts(self):
+        # Decode the literal SPHv3 fragment fields independently of compile.cpp.
+        from gt710_sph_test import Fields, check
+        fields = Fields()
+        assets = ROOT / 'kernel/assets/kepler'
+        source = (ROOT / 'kernel/src/gpu/gk208/gr/shaders.rs').read_text()
+        manifest = json.loads((assets / 'manifest.json').read_text())
+        entries = {entry['asset']: entry for entry in manifest['shaders']}
+        for name in CATALOGUE_PROGRAMS:
+            with self.subTest(program=name):
+                meta = json.loads((assets / f'{name}.json').read_text())
+                self.assertEqual(entries[name]['metadata'], meta)
+                self.assertEqual(meta['chipset'], 0x106)
+                self.assertEqual(meta['stage'], 'fragment')
+                self.assertGreaterEqual(meta['gprs'], 4)
+                self.assertLessEqual(meta['gprs'], 255)
+                self.assertEqual(meta['tls_bytes'], 0)
+                self.assertEqual(meta['builtin_calls'], 0)
+                self.assertEqual(meta['relocations'], 0)
+                self.assertEqual(meta['code_bytes'], (assets / f'{name}.bin').stat().st_size)
+                self.assertGreater(meta['code_bytes'], 0)
+                self.assertEqual(meta['code_bytes'] % 8, 0)
+                self.assertEqual(meta['texture_mask'], 0 if name in ('pipeline-solid', 'probe-integer-ops') else 1)
+                self.assertEqual(meta['output_slots'], [{'index': 0, 'address': 0, 'mask': 15}])
+                position = name not in ('pipeline-solid', 'probe-integer-ops')
+                self.assertEqual(meta['input_slots'], [{'index': 0, 'address': 0x70, 'mask': 3}] if position else [])
+                expected = [('SPH_TYPE', 0, 2), ('VERSION', 0, 3), ('SHADER_TYPE', 0, 5)]
+                expected += [(f'OMAP_{c}', 0, 1) for c in ('RED', 'GREEN', 'BLUE', 'ALPHA')]
+                expected += [(f'IMAP_POSITION_{c}', 0, int(position)) for c in 'XY']
+                check(fields, (assets / f'{name}.sph').read_bytes(), 2, expected)
+                for extension in ('bin', 'sph'):
+                    self.assertIn(f'include_bytes!("../../../../assets/kepler/{name}.{extension}")', source)
+                symbol = name.upper().replace('-', '_')
+                self.assertRegex(source, rf'pub const {symbol}_GPRS: u32\s*=\s*asset_gprs\(include_str!\("../../../../assets/kepler/{name}\.json"\)\)')
 
 
 if __name__ == '__main__':

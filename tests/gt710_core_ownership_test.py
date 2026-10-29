@@ -48,6 +48,9 @@ class CoreOwnership(unittest.TestCase):
 use std::sync::atomic::{AtomicBool,AtomicUsize,Ordering};
 static HARDWARE:AtomicUsize=AtomicUsize::new(0);
 static FAIL_START:AtomicBool=AtomicBool::new(false);
+static FAIL_PROBE:AtomicBool=AtomicBool::new(false);
+static INSTALLED:AtomicUsize=AtomicUsize::new(0);
+static DROPPED:AtomicUsize=AtomicUsize::new(0);
 fn hardware<T>()->Result<T,&'static str>{HARDWARE.fetch_add(1,Ordering::Relaxed);Err("injected hardware failure")}
 mod spin {
  pub struct Mutex<T>(std::sync::Mutex<T>);
@@ -69,11 +72,23 @@ mod syscall {pub mod blocking_io {
  pub fn wait_prepared(_:&crate::task::waitqueue::WaitQueueHead,_:())->Result<(),i32>{panic!("worker did not publish refusal")}
 }}
 mod drivers {pub mod pci {pub fn find_device(_:u16,_:u16)->Option<()>{Some(())}}}
-mod gpu {pub fn install_native(_:())->Result<(),&'static str>{Ok(())}}
+mod gpu {
+ pub mod dev { pub fn select_gk208(){ crate::gk208::ce::process::assert_probe_session(); } }
+ pub fn install_native(_:crate::gk208::gr::Owner)->Result<(),&'static str>{
+  crate::gk208::ce::process::assert_probe_session();
+  crate::INSTALLED.fetch_add(1,crate::Ordering::Relaxed); Ok(())
+ }
+}
 mod gk208 {
+ pub mod caps {pub fn run(_: &mut super::gr::Owner)->Result<(),&'static str>{
+  super::ce::process::assert_probe_session();
+  if crate::FAIL_PROBE.load(crate::Ordering::Acquire){Err("probe failure")}else{Ok(())}
+ }}
  pub mod gr {
-  pub fn initialize(_: &mut super::ce::Registers,_:&(),_:&mut [u64;4],_:&u64)->Result<(),&'static str>{
-   if crate::FAIL_START.load(crate::Ordering::Acquire){Err("startup failure")}else{Ok(())}
+  pub struct Owner;
+  impl Drop for Owner {fn drop(&mut self){crate::DROPPED.fetch_add(1,crate::Ordering::Relaxed);}}
+  pub fn initialize(_: &mut super::ce::Registers,_:&(),_:&mut [u64;4],_:&u64)->Result<Owner,&'static str>{
+   if crate::FAIL_START.load(crate::Ordering::Acquire){Err("startup failure")}else{Ok(Owner)}
   }
   pub fn probe()->Result<(),&'static str>{ GR_GUARD crate::hardware() }
  }
@@ -100,14 +115,24 @@ mod gk208 {
    INITIALIZE
    impl Session { METHODS }
    RECOVERY_READ
+   pub(crate) fn assert_probe_session(){
+    assert!(CORE_STARTED.load(Ordering::Acquire));
+    let session=SESSION.lock();let s=session.as_ref().expect("probe/install ran without allocator");
+    assert_eq!(s.layout,[11,22,33,44]);
+   }
    pub fn run(){
-    for fail in [false,true]{
+    for (fail,fail_probe) in [(false,false),(true,false),(false,true)]{
      CORE_STARTED.store(false,Ordering::Release);
      RECOVERY_STARTED.store(false,Ordering::Release);RECOVERY_READY.store(false,Ordering::Release);
      *RECOVERY_RESULT.lock()=None;
      *SESSION.lock()=Some(Session{registers:0x1234,layout:[11,22,33,44],console:55,CORE_INIT work:None});
      crate::FAIL_START.store(fail,Ordering::Release);
-     assert_eq!(initialize_core(),if fail{Err("startup failure")}else{Ok(())});
+     crate::FAIL_PROBE.store(fail_probe,Ordering::Release);
+     crate::INSTALLED.store(0,Ordering::Relaxed);crate::DROPPED.store(0,Ordering::Relaxed);
+     assert_eq!(initialize_core(),if fail{Err("startup failure")}else if fail_probe{Err("probe failure")}else{Ok(())});
+     let success=usize::from(!fail && !fail_probe);
+     assert_eq!(crate::INSTALLED.load(Ordering::Relaxed),success,"installed before probes passed");
+     assert_eq!(crate::DROPPED.load(Ordering::Relaxed),success,"failed probe dropped uncertain DMA owner");
      crate::HARDWARE.store(0,Ordering::Relaxed);
      let expected=Err("native GPU core owns FIFO");
      assert_eq!(recovery_read().unwrap(),b"GT710_RECOVERY_ERROR native GPU core owns FIFO\n");

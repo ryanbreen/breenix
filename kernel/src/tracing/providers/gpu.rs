@@ -30,6 +30,12 @@ pub static GPU_RESOURCES: TraceCounter = TraceCounter::new("gpu_resources", "GPU
 pub static GPU_RESOURCE_BYTES: TraceCounter =
     TraceCounter::new("gpu_resource_bytes", "Bytes charged to GPU memory quotas");
 
+/// Native resource VRAM, including its guards and VM tables. Guest backing
+/// continues to use GPU_RESOURCE_BYTES and the existing per-process quota.
+#[no_mangle]
+pub static GPU_VRAM_BYTES: TraceCounter =
+    TraceCounter::new("gpu_vram_bytes", "Native resource VRAM bytes retained");
+
 /// The longest IRQ-masked interval in the GPU paths, microseconds, since boot or the last
 /// `DISARM_ALL`.
 #[no_mangle]
@@ -45,7 +51,7 @@ pub static GPU_PRESENTS_SUSPENDED: TraceCounter =
 static GPU_PATH_THREADS: AtomicU32 = AtomicU32::new(0);
 
 pub fn init() {
-    for counter in [&GPU_CONTEXTS, &GPU_RESOURCES, &GPU_RESOURCE_BYTES, &GPU_IRQ_MASKED_MAX_US, &GPU_PRESENTS_SUSPENDED] {
+    for counter in [&GPU_CONTEXTS, &GPU_RESOURCES, &GPU_RESOURCE_BYTES, &GPU_VRAM_BYTES, &GPU_IRQ_MASKED_MAX_US, &GPU_PRESENTS_SUSPENDED] {
         assert!(register_counter(counter).is_some(), "trace counter registry overflow while registering the GPU gauges");
     }
 }

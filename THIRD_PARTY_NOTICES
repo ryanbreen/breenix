@@ -166,6 +166,15 @@ file-local notices (including SPDX-only headers) are retained in each source fil
 | envytools | [f102b82381f3f11cee113d16374c87091db039d9](https://github.com/envytools/envytools/commit/f102b82381f3f11cee113d16374c87091db039d9) | Host `envyas` and `envydis` from `tools/kepler/CMakeLists.txt`; shader inspection output |
 | mesa | [769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de](https://gitlab.freedesktop.org/mesa/mesa/commit/769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de) | Host `kepler-compile`, `tools/kepler/compile.cpp` control flow/SPH adaptations and generated program headers |
 
+M8.2's `kernel/assets/kepler/pipeline-{solid,copy,copy_scaled,nearest_scaled,box_filter}`
+and `probe-{integer-ops,texel-fetch}` outputs use that same pinned MIT Mesa
+compiler and MIT envytools decoder. Generated SPHs retain the Mesa MIT grant
+in `tools/kepler/compile.cpp` and `vendor/kepler/NOTICES`; their kernel consumer,
+`kernel/src/gpu/gk208/gr/shaders.rs`, retains its original MIT header. The shared
+pipeline definitions and the two new Breenix probe definitions keep the root
+PolyForm Noncommercial terms, as do their generated instruction bytes. The
+upstream compiler/decoder sources and notices are unchanged in this unit.
+
 Paths below are relative to `vendor/kepler/`; each row identifies a checked MIT
 source. The retained file-local notices are in the linked file and in
 `vendor/kepler/NOTICES`; the upstream path/hash mapping is in `sources.json`.
@@ -1114,3 +1123,162 @@ metadata described above. Their existing copyright headers and full MIT grants
 are retained. `kernel/src/gpu/gk208/ce/process.rs` and `kernel/src/gpu/mod.rs`
 supply Breenix-owned first-use registration and shared admission. No additional
 external source or generated asset is introduced by this repair.
+
+
+GT 710 native resource layout (milestone 8.2)
+--------------------------------------------
+Source: Mesa 24.3.4, commit 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de
+  src/gallium/drivers/nouveau/nvc0/nvc0_miptree.c
+  src/gallium/drivers/nouveau/nv50/nv50_miptree.c
+License: MIT; each file's full header checked before use.
+Copyright 2008 Ben Skeggs.
+Consumer: kernel/src/gpu/gk208/resource.rs (2D block-linear pitch, size and
+block-height selection). The original copyright and complete permission notice
+are retained in that file. No Gallium or DRM runtime is imported.
+Pinned source mirror:
+https://github.com/chaotic-cx/mesa-mirror/tree/769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de
+
+Source: nouveau in Linux v6.8, commit e8f897f4afef0031fe618a8e94127a0934896aba
+  drivers/gpu/drm/nouveau/nvkm/subdev/mmu/vmmgf100.c:319
+License: MIT; full file header checked before using the storage-kind field.
+Copyright 2017 Red Hat Inc.
+Consumer: kernel/src/gpu/gk208/vm.rs (uncompressed kind in PTE bits 36..43).
+That file already retains the original complete MIT notice from this source.
+
+
+GT 710 milestone 8.2 CE transfers
+-------------------------------
+NVIDIA open-gpu-doc, commit 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+classes/dma-copy/cla0b5.h (MIT, Copyright (c) 2019 NVIDIA CORPORATION):
+A0B5 remap component size/count, FERMI_8 block geometry, pixel origins,
+virtual pitch/block-linear launches and engine-ordered semaphore releases.
+Used by kernel/src/gpu/gk208/copy.rs, kernel/src/gpu/gk208/ce/readback.rs
+and tests/gt710_transfer_test.rs. The full original copyright and permission
+notice accompanies those files. Each source header was read before use.
+The existing cla06f.h packet-header attribution in copy.rs also applies.
+Breenix owns clipping, storage holds, directory aliases and staging policy;
+no external driver runtime or pixel oracle is imported.
+
+
+GT 710 native BGL draw encoding (milestone 8.2-u4)
+------------------------------------------------
+Consumers: kernel/src/gpu/gk208/encode.rs and tests/gt710_draw_encode_test.rs.
+The A197 method offsets, format codes, block-linear target fields, vertex
+fetch, constant-buffer and shader bindings use NVIDIA open-gpu-doc
+9fdf5c4062007929d9f4e6cbad9c9771fe61b880, classes/3d/cla197.h (MIT;
+Copyright (c) 2020 NVIDIA CORPORATION. All rights reserved.). The file's
+full license header was checked before use and is retained in both consumers.
+
+Fixed raster, vertex and surface state reuses the attributed native diagnostic
+encoder and adapts Mesa 24.3.4 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de:
+  src/gallium/drivers/nouveau/nvc0/nvc0_screen.c (MIT, Copyright 2010 Christoph Bumiller)
+  src/gallium/drivers/nouveau/nvc0/nvc0_state.c (MIT, Copyright 2010 Christoph Bumiller)
+  src/gallium/drivers/nouveau/nvc0/nvc0_vbo.c (MIT, Copyright 2010 Christoph Bumiller)
+  src/gallium/drivers/nouveau/nvc0/nvc0_surface.c (MIT, Copyright 2008 Ben Skeggs)
+Each full file-local grant was checked; encode.rs retains these notices and
+the diagnostic's inherited rnndb author list and MIT grant. No external
+runtime, expected picture or compiler dependency is added. The committed
+vertex and solid programs retain their existing source notices above.
+The pipeline-end releases in kernel/src/gpu/gk208/gr/channel.rs use that
+file's existing full MIT NVIDIA cla197.h notice and the same pinned methods.
+The constant-retirement packet check in
+tests/fixtures/gt710_constant_retirement.rs uses the same cla197.h methods
+(WAIT_FOR_IDLE, UNBIND_ALL and constant-buffer selector/binding). Its header
+retains NVIDIA's original copyright and full MIT grant, checked before use.
+The corresponding unbind and selector parking in
+kernel/src/gpu/gk208/gr/channel.rs reuse its existing full MIT NVIDIA notice
+and cla197.h source attribution. The sink uses Breenix-owned channel storage.
+
+
+GT 710 native sampled draws (milestone 8.2-u5)
+--------------------------------------------
+Consumers: kernel/src/gpu/gk208/encode.rs and tests/gt710_sampled_encode_test.rs.
+Sources: envytools f102b82381f3f11cee113d16374c87091db039d9:
+  rnndb/graph/g80_texture.xml (TIC/TSC words and fields)
+  rnndb/g80_defs.xml (component sources, UNORM types and texture kinds)
+Both import rnndb/copyright.xml, whose full MIT grant and author list were
+checked before use and are retained in both consumers' headers.
+https://github.com/envytools/envytools/tree/f102b82381f3f11cee113d16374c87091db039d9/rnndb
+
+Mesa 24.3.4 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de:
+  src/gallium/drivers/nouveau/nvc0/nvc0_tex.c:309-436
+License: MIT; Copyright 2008 Ben Skeggs. The file-local header was checked;
+its original copyright and complete permission notice remain in encode.rs.
+Adapted block-linear texture descriptor construction, not Gallium runtime.
+The existing MIT NVIDIA cla197.h notice also covers texture pool addresses,
+cache invalidation and bindless texture CB selection; the existing MIT Mesa
+nvc0_screen.c notice covers the Kepler slot-15 texture handle binding.
+The original notices accompany the new check too. Breenix retains shared
+source clipping and parameter layouts; u3's committed programs are unchanged.
+
+GT 710 executable admission (milestone 8.2-u6)
+---------------------------------------------
+The admission-only entries in kernel/src/gpu/gk208/encode.rs reuse its existing
+attributed A197 quad and TIC/TSC builders: NVIDIA cla197.h, MIT; Mesa 24.3.4
+nvc0_{screen,state,vbo,surface,tex}.c, MIT; envytools rnndb g80_texture.xml and
+g80_defs.xml with copyright.xml, MIT. The original grants remain in encode.rs.
+The admission program layout in encode.rs and its sampled-encoder check also
+use Mesa 24.3.4 nvc0_program.c:775-799 (MIT, Copyright 2010 Christoph
+Bumiller): Kepler instructions start on a 128-byte boundary after the 80-byte
+SPH. Its file-local grant was checked and the existing full Christoph Bumiller
+MIT notice is retained in both consumers. caps/executable.rs
+and caps/* input/oracle buffers are Breenix-authored orchestration and vectors;
+they use the existing resource/CE/GR mechanisms and unchanged u3 programs.
+The original u3 compiler and firmware notices above continue to apply.
+
+
+GT 710 native one-shot control checks (milestone 8.2-u7)
+------------------------------------------------------
+tests/gt710_controls_test.rs checks A197 draws/TIC bindings and A0B5 transfers
+and releases using the existing attributed builders. The literal methods use
+NVIDIA open-gpu-doc 9fdf5c4062007929d9f4e6cbad9c9771fe61b880:
+classes/3d/cla197.h and classes/host/cla06f.h (MIT, Copyright (c) 2020
+NVIDIA CORPORATION), classes/dma-copy/cla0b5.h (MIT, Copyright (c) 2019
+NVIDIA CORPORATION). TIC fields reuse the MIT rnndb g80_texture.xml and
+g80_defs.xml and Mesa nvc0_tex.c sources recorded for u5 above. The checked
+file-local grants and original notices accompany the check.
+
+The u7 implementation in kernel/src/gpu/gk208/encode.rs reuses those attributed
+A197 solid/TIC builders for an extra pixel draw, a dropped draw and an alternate
+texture binding. kernel/src/gpu/gk208/copy.rs uses its existing cla0b5.h MIT
+release methods to omit data launches or write a wrong sequence followed by a
+separate terminal drain. kernel/src/gpu/gk208/gr/channel.rs reads that report
+word from Breenix's existing 16-byte report slot; adapter.rs validates the
+channel/epoch/drain and returns the device's original echo. Existing source
+notices remain in the hardware consumers. No additional firmware, external
+runtime or shader asset is introduced.
+
+GT 710 resource report (milestone 8.2-u8)
+--------------------------------------
+
+`scripts/metal/gt710-suite` and `tests/gt710_resources_report_test.py` check
+Breenix's backend-6 CAPS ABI using the existing M8.1 source register:
+NVIDIA open-gpu-doc revision 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+`classes/display/cl927d.h`, `classes/host/cla06f.h`,
+`classes/dma-copy/cla0b5.h` and `classes/3d/cla197.h` (MIT, NVIDIA
+1993-2022, 2020 and 2019); nouveau Linux v6.8
+`nvkm/engine/fifo/gk208.c` (MIT, Copyright 2013 Red Hat Inc.); and Mesa
+24.3.4 `src/gallium/drivers/nouveau/nvc0/nvc0_screen.c` (MIT,
+Copyright 2010 Christoph Bumiller). The file-local license headers were
+checked; full grants and copyright notices remain in the consumers.
+The CAPS producer serializes Breenix's syscall result without external
+implementation code. Executable probe comparisons reuse the committed
+8.2-u6 expectations in `kernel/src/gpu/gk208/caps/`; the shared GPU suite
+and its expected pixels are unchanged.
+
+GT 710 frame-binding retirement check
+
+Consumer: tests/fixtures/gt710_frame_retirement.rs. A197 address and release
+fields use NVIDIA open-gpu-doc 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+classes/3d/cla197.h (MIT, Copyright (c) 2020 NVIDIA CORPORATION). Its complete
+file-local permission notice was checked and is retained in the consumer.
+The model enumerates the Breenix encoder's code, constants/handles, vertex,
+VAB, TIC/TSC and image bindings at the production publisher's release.
+
+The channel parking builder in kernel/src/gpu/gk208/encode.rs reuses its
+already attributed sampled encoder and retains its original source grants.
+Launch suppression and the parking publication in gr/channel.rs use the
+same pinned MIT NVIDIA cla197.h BEGIN/END, vertex array start/count,
+WAIT_FOR_IDLE and address methods. The original NVIDIA copyright and
+complete MIT grant remain in both files. gr/mod.rs allocates and uploads
+Breenix-owned parking storage through the existing bootstrap context.

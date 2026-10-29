@@ -25,6 +25,7 @@ mod installation {
     fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
         CORE.with(|c| c.borrow_mut().as_mut().map(f))
     }
+    fn native_console_backing(_: &())->Result<(), &'static str>{Ok(())}
     // INSTALL
     #[test] fn registration_requires_a_live_backend_and_retains_real_caps() {
         CORE.with(|c| *c.borrow_mut() = Some(Core { dev: None, queue_size: 0, status: abi::status::NO_DEVICE, caps: abi::Caps::ZERO }));
@@ -51,6 +52,7 @@ mod installation {
 }
 """
         fixture = fixture.replace('// INSTALL', install)
+        fixture = fixture.replace('pub mod gk208 {', 'pub mod gk208 { pub fn console_surface()->Option<()>{Some(())}')
         fixture = fixture.replace('pub enum Reap {Empty,Done(Done),Fault}',
             'pub enum Reap {Empty,Done(Done),Fault} pub enum Device { Gk208(crate::gk208::adapter::Device), Other }')
         fixture = fixture.replace('../../kernel/', str(ROOT / 'kernel') + '/').replace('../kernel/', str(ROOT / 'kernel') + '/')
@@ -93,6 +95,9 @@ thread_local! {
 }
 fn with_core<R>(f:impl FnOnce(&mut Core)->R)->Option<R>{Some(CORE.with(|c|f(&mut c.borrow_mut())))}
 fn write_arg(_:u64,c:&abi::Caps)->Result<(),i64>{OUTPUT.with(|o|o.set(*c));Ok(())}
+mod task {pub mod kthread {
+ #[allow(dead_code)] pub fn kthread_run(f:impl FnOnce()+Send+'static,_:&str)->Result<(),()>{f();Ok(())}
+}}
 mod gk208 {
  pub fn takeover_started()->bool{true}
  pub fn initialize_core()->Result<(),&'static str>{

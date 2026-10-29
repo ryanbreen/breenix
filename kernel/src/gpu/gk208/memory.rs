@@ -173,6 +173,9 @@ impl Layout {
     }
 }
 pub trait Access {
+    /// Hardware implementations serialize the shared selector and aperture.
+    /// Register models may execute the transaction directly.
+    fn with_pramin<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R where Self: Sized { f(self) }
     /// Read aligned storage; control registers use read().
     fn read_pair(&mut self, reg: usize) -> u64 {
         u64::from(self.read(reg)) | u64::from(self.read(reg + 4)) << 32
@@ -184,7 +187,6 @@ pub struct Pramin<'a, A: Access> {
     access: &'a mut A,
     total: u64,
     saved: u32,
-    bank: Option<u32>,
 }
 impl<'a, A: Access> Pramin<'a, A> {
     pub fn new(access: &'a mut A, total: u64) -> Self {
@@ -193,32 +195,36 @@ impl<'a, A: Access> Pramin<'a, A> {
             access,
             total,
             saved,
-            bank: None,
         }
     }
     pub(super) fn access(&mut self) -> &mut A { self.access }
-    fn window(&mut self, address: u64) -> Result<usize, &'static str> {
-        if address & 3 != 0 || address.checked_add(4).is_none_or(|e| e > self.total) {
+    fn window(access: &mut A, total: u64, address: u64) -> Result<usize, &'static str> {
+        if address & 3 != 0 || address.checked_add(4).is_none_or(|e| e > total) {
             return Err("PRAMIN address outside VRAM");
         }
         let bank = ((address & !0xfffff) >> 16) as u32;
-        if self.bank != Some(bank) {
-            self.access.write(0x1700, bank);
-            if self.access.read(0x1700) != bank {
+        if access.read(0x1700) != bank {
+            access.write(0x1700, bank);
+            if access.read(0x1700) != bank {
                 return Err("PRAMIN window did not latch");
             }
-            self.bank = Some(bank);
         }
         Ok(0x700000 + (address & 0xfffff) as usize)
     }
     pub fn read(&mut self, address: u64) -> Result<u32, &'static str> {
-        let r = self.window(address)?;
-        Ok(self.access.read(r))
+        let total = self.total;
+        self.access.with_pramin(|access| {
+            let r = Self::window(access, total, address)?;
+            Ok(access.read(r))
+        })
     }
     pub fn write(&mut self, address: u64, value: u32) -> Result<(), &'static str> {
-        let r = self.window(address)?;
-        self.access.write(r, value);
-        Ok(())
+        let total = self.total;
+        self.access.with_pramin(|access| {
+            let r = Self::window(access, total, address)?;
+            access.write(r, value);
+            Ok(())
+        })
     }
     fn read64(&mut self, address: u64) -> Result<u64, &'static str> {
         Ok(u64::from(self.read(address)?) | (u64::from(self.read(address + 4)?) << 32))
@@ -230,25 +236,32 @@ impl<'a, A: Access> Pramin<'a, A> {
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(range.size as usize).map_err(|_| "VRAM snapshot allocation failed")?;
         let end=range.end().filter(|&end|end<=self.total).ok_or("snapshot outside VRAM")?;
-        let mut address=range.start;
-        while address<end {
+        let total = self.total;
+        self.access.with_pramin(|access| {
+          let mut address=range.start;
+          while address<end {
             if address%8==0 && end-address>=8 {
                 // Eight-byte alignment also keeps the pair in one 1 MiB bank.
-                let reg=self.window(address)?;
-                bytes.extend_from_slice(&self.access.read_pair(reg).to_le_bytes());
+                let reg=Self::window(access,total,address)?;
+                bytes.extend_from_slice(&access.read_pair(reg).to_le_bytes());
                 address+=8;
             } else {
-                bytes.extend_from_slice(&self.read(address)?.to_le_bytes());
+                let reg=Self::window(access,total,address)?;
+                bytes.extend_from_slice(&access.read(reg).to_le_bytes());
                 address+=4;
             }
-        }
-        Ok(bytes)
+          }
+          Ok(bytes)
+        })
     }
 }
 impl<A: Access> Drop for Pramin<'_, A> {
     fn drop(&mut self) {
-        self.access.write(0x1700, self.saved);
-        let _ = self.access.read(0x1700);
+        let saved = self.saved;
+        self.access.with_pramin(|access| {
+            access.write(0x1700, saved);
+            let _ = access.read(0x1700);
+        });
     }
 }
 

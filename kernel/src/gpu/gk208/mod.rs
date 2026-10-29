@@ -99,6 +99,7 @@ mod ddc;
 mod edid;
 mod bulk;
 mod memory;
+mod lock;
 mod inventory;
 mod vm;
 mod lifetime;
@@ -109,8 +110,11 @@ use crate::gpu::dma_policy;
 pub(crate) mod system_dma;
 mod aperture_probe;
 mod channel;
-mod copy;
+pub(crate) mod copy;
 mod ce;
+pub(crate) use ce::readback::{transfer,region as copy_region,identities as transfer_identities};
+pub(crate) use ce::readback::console as console_readback;
+pub(crate) use ce::readback::{set_scanout,flush_resource};
 mod queue;
 mod recovery_policy;
 pub use system_dma::set_platform as set_dma_platform;
@@ -118,6 +122,10 @@ mod modeset;
 mod native;
 mod core_record;
 pub use native::{ConsoleSurface,console_binding,takeover_started,caps_scanout};
+pub(crate) use ce::console_state;
+pub(crate) fn console_surface() -> Option<ConsoleSurface> {
+    ce::console_allocation().map(|(surface, _)| surface)
+}
 mod rom;
 pub fn proc_pixels()->Vec<u8> {bulk::take()}
 pub fn proc_ce(op:u8)->Result<Vec<u8>,i32> {ce::proc_read(op)}
@@ -155,7 +163,18 @@ fn hash(data: &[u8]) -> String {
     hex(&crate::block::install::sha256::sha256(data))
 }
 
+// Command publication, VM access and display work have different owners but
+// share one physical PRAMIN selector. Keep interrupts enabled while serialized.
+static PRAMIN_LOCK: lock::Mutex<()> = lock::Mutex::new(());
 impl memory::Access for Registers {
+    fn with_pramin<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let _guard = PRAMIN_LOCK.lock();
+        let saved = self.read(0x1700);
+        let result = f(self);
+        self.write(0x1700, saved);
+        let _ = self.read(0x1700);
+        result
+    }
     fn read(&mut self, reg: usize) -> u32 {
         Registers::read(self, reg)
     }
@@ -526,6 +545,7 @@ fn display_memory(
     Ok(layout)
 }
 
+pub mod resource;
 pub mod adapter;
 pub mod caps;
 
@@ -539,3 +559,6 @@ pub(crate) fn initialize_core() -> Result<(), &'static str> {
     crate::serial_println!("{}", core_record::startup_anchor(row.as_bytes()));
     result
 }
+
+use gr::shaders;
+pub mod encode;

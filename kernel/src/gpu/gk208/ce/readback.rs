@@ -1,3 +1,26 @@
+/*******************************************************************************
+    Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in
+    all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+
+*******************************************************************************/
+
 /*
  * Copyright 2021 Red Hat Inc.
  *
@@ -405,4 +428,158 @@ impl Reader {
         layout.allocator.release(userd)?;
         Ok(())
     }
+}
+
+
+/// Per-request storage holds. Dropping an unsubmitted request or a completed
+/// receipt can collect; an uncertain published request stays in adapter::pending.
+pub(in crate::gk208) struct TransferHold {
+    resources: Vec<super::super::resource::Hold>,
+}
+impl Drop for TransferHold {
+    fn drop(&mut self) {
+        self.resources.clear();
+        // A failed unmap/invalidate keeps allocations and backing in Resources.
+        let _ = super::with_resources(|r,a,io| r.collect(a,io));
+    }
+}
+fn image(r: &super::super::resource::Resources<crate::gpu::dma::Pages>, id: u32)
+    -> Result<super::super::copy::Image, &'static str> {
+    let l = r.layout(id).ok_or("native image layout absent")?;
+    Ok(super::super::copy::Image { address:r.address(id).ok_or("native image absent")?,
+        width:l.width,height:l.height,texel_bytes:l.texel_bytes,pitch:l.pitch,
+        block_height:l.block_height,bytes:l.bytes })
+}
+/// The common core poisons each band before calling this builder, twice. Do
+/// not fill or synthesize pixels here: CE writes the caller's pinned backing.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn transfer(tag: crate::gpu::dev::Tag, fence: u64, id: u32,
+    backing: alloc::sync::Arc<crate::gpu::dma::Pages>, rectangle: [u32;4],
+    offset: u64, stride: u32, upload: bool,
+) -> Option<super::super::adapter::Request> {
+    use super::super::copy;
+    let pages: Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
+    let (plan,resource,hold) = super::with_resources(|r,a,io| {
+        let hold = r.hold(id)?;
+        let img = image(r,id)?;
+        let address = r.map_backing(a,io,id,&backing,&pages,backing.bytes() as u64)?;
+        let linear = copy::Linear { address,bytes:backing.bytes() as u64,offset,stride };
+        let plan = if upload { copy::upload(img,linear,rectangle)? }
+            else { copy::readback(img,linear,rectangle)? };
+        Ok((plan,r.identity(id).ok_or("native transfer identity absent")?,hold))
+    }).ok()?;
+    Some(super::super::adapter::Request::transfer(tag,fence,resource,plan,upload,
+        TransferHold { resources:vec![hold] },Some(backing)))
+}
+/// Build a byte-preserving target copy for the native stream encoder. Shared
+/// validation supplies handles/coordinates; overlapping storage uses VRAM first.
+pub(crate) fn region(tag: crate::gpu::dev::Tag, fence: u64, source: u32, destination: u32,
+    rectangle: [u32;6],
+) -> Option<super::super::adapter::Request> {
+    let (plan,resource,holds) = super::with_resources(|r,a,io| {
+        let (plan, holds) = region_plan(r,a,io,source,destination,rectangle)?;
+        Ok((plan,r.identity(destination).ok_or("native copy identity absent")?,holds))
+    }).ok()?;
+    Some(super::super::adapter::Request::transfer(tag,fence,resource,plan,true,
+        TransferHold { resources:holds },None))
+}
+/// Stream copies share the transfer planner and retain its staging until the
+/// CE release, including when the request survives an uncertain publication.
+pub(in crate::gk208) fn region_plan(
+    r: &mut super::super::resource::Resources<crate::gpu::dma::Pages>,
+    a: &mut memory::allocator::Allocator, io: &mut impl super::super::vm::Io,
+    source: u32, destination: u32, rectangle: [u32;6],
+) -> Result<(super::super::copy::Plan, Vec<super::super::resource::Hold>), &'static str> {
+    use super::super::copy;
+    let mut holds=vec![r.hold(source)?,r.hold(destination)?];
+    let (src,dst)=(image(r,source)?,image(r,destination)?);
+    if src.texel_bytes != dst.texel_bytes { return Err("native copy format size mismatch"); }
+    let staging = if src.address == dst.address {
+        let [sx,sy,w,h,dx,dy]=rectangle;
+        if sx>=src.width || sy>=src.height || dx>=dst.width || dy>=dst.height { return Err("empty native copy"); }
+        let (w,h)=(w.min(src.width-sx).min(dst.width-dx),h.min(src.height-sy).min(dst.height-dy));
+        let id=r.staging(a,io,if src.texel_bytes==1 {2} else {0},w,h)?;
+        let staged=image(r,id)?;
+        holds.push(r.hold(id)?);
+        r.unref(id)?;
+        Some(staged)
+    } else {None};
+    Ok((copy::region(src,dst,rectangle,staging)?,holds))
+}
+
+pub(crate) fn identities(id: u32) -> Option<(u32,u32)> {
+    super::with_resources(|r,_,_| {
+        let context=u32::try_from(r.channel()).map_err(|_| "native channel identity overflow")?;
+        if context==0 {return Err("native channel identity absent");}
+        let resource=u32::try_from(r.identity(id).ok_or("native identity absent")?)
+            .map_err(|_| "native resource identity overflow")?;
+        Ok((context,resource))
+    }).ok()
+}
+
+pub(crate) fn console(tag: crate::gpu::dev::Tag, fence: u64,
+    backing: alloc::sync::Arc<crate::gpu::dma::Pages>,
+) -> Option<super::super::adapter::Request> {
+    let (surface, allocation) = super::console_allocation()?;
+    super::super::console_binding(&surface).ok()?;
+    let pages: Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
+    let (plan, holds) = super::with_resources(|r,a,io| {
+        let source = r.import_linear(a,io,u32::MAX,allocation)?;
+        let destination = r.draw_buffer(a,io,backing.bytes() as u32)?;
+        r.attach(a,io,destination,backing.clone(),&pages,backing.bytes() as u64)?;
+        let holds = vec![r.hold(u32::MAX)?,r.hold(destination)?];
+        let address = r.address(destination).ok_or("console readback mapping absent")?;
+        r.unref(destination)?;
+        let plan = super::super::copy::pitch(
+            super::super::copy::Linear { address: source, bytes: allocation.range.size,
+                offset: 0, stride: surface.pitch as u32 },
+            super::super::copy::Linear { address, bytes: backing.bytes() as u64,
+                offset: 0, stride: surface.width as u32 * 4 },
+            surface.width as u32, surface.height as u32, 4)?;
+        Ok((plan, holds))
+    }).ok()?;
+    Some(super::super::adapter::Request::transfer(tag,fence,u64::from(u32::MAX),plan,false,
+        TransferHold { resources: holds },Some(backing)))
+}
+
+/// Native scanout is the display owner's retained pitch-linear surface. Bind
+/// validates the logical target; the following fenced flush performs the CE
+/// tiled-to-linear copy into that already latched surface.
+pub(crate) fn set_scanout(tag: crate::gpu::dev::Tag, ctx: u32, id: u32,
+    width: u32, height: u32,
+) -> Option<super::super::adapter::Request> {
+    super::super::resource::context_id(ctx)?;
+    let (surface, _) = super::console_allocation()?;
+    super::super::console_binding(&surface).ok()?;
+    super::with_resources(|r,_,_| {
+        let layout=r.layout(id).ok_or("native present target absent")?;
+        if layout.width != width || layout.height != height || layout.texel_bytes != 4
+            || width as usize > surface.width || height as usize > surface.height {
+            return Err("native present extent");
+        }
+        Ok(())
+    }).ok()?;
+    Some(super::super::adapter::Request::storage(tag,None))
+}
+pub(crate) fn flush_resource(tag: crate::gpu::dev::Tag, ctx: u32, fence: u64, id: u32,
+    width: u32, height: u32,
+) -> Option<super::super::adapter::Request> {
+    super::super::resource::context_id(ctx)?;
+    let (surface, allocation) = super::console_allocation()?;
+    super::super::console_binding(&surface).ok()?;
+    let (plan, resource, holds) = super::with_resources(|r,a,io| {
+        let source=image(r,id)?;
+        if source.width != width || source.height != height
+            || width as usize > surface.width || height as usize > surface.height {
+            return Err("native present extent");
+        }
+        let address=r.import_linear(a,io,u32::MAX,allocation)?;
+        let holds=vec![r.hold(id)?,r.hold(u32::MAX)?];
+        let plan=super::super::copy::readback(source,super::super::copy::Linear {
+            address,bytes:allocation.range.size,offset:0,stride:surface.pitch as u32,
+        },[0,0,width,height])?;
+        Ok((plan,r.identity(id).ok_or("native present target absent")?,holds))
+    }).ok()?;
+    Some(super::super::adapter::Request::transfer(tag,fence,resource,plan,false,
+        TransferHold { resources:holds },None).presenting())
 }

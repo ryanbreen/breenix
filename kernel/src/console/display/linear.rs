@@ -49,6 +49,8 @@ pub struct Linear {
     #[cfg(target_arch = "x86_64")]
     native: OnceCell<crate::gk208::ConsoleSurface>,
     #[cfg(target_arch = "x86_64")]
+    snapshot: spin::Mutex<Option<alloc::sync::Arc<crate::gpu::dma::Pages>>>,
+    #[cfg(target_arch = "x86_64")]
     disabled: AtomicBool,
 }
 
@@ -71,6 +73,8 @@ impl Linear {
             located: OnceCell::uninit(),
             #[cfg(target_arch = "x86_64")]
             native: OnceCell::uninit(),
+            #[cfg(target_arch = "x86_64")]
+            snapshot: spin::Mutex::new(None),
             #[cfg(target_arch = "x86_64")]
             disabled: AtomicBool::new(false),
         })
@@ -133,6 +137,10 @@ impl Linear {
             crate::gk208::console_binding(s).inspect_err(|error| {
                 crate::serial_println!("GT710_NATIVE_CONSOLE_REFUSAL {}",error);
             })?;
+            if let Some((backing, flush)) = crate::gpu::native_console_readback(s)? {
+                *self.snapshot.lock() = Some(backing);
+                return Ok(Source::Device { resource: u32::MAX, flush });
+            }
             return Ok(Source::Scanout {phys:s.phys,place});
         }
         Ok(Source::Scanout { phys, place })
@@ -140,6 +148,17 @@ impl Linear {
 
     pub fn read_line(&self, y: usize, out: &mut [u8]) {
         if !self.available() { out.fill(0); return; }
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut snapshot = self.snapshot.lock();
+            if let Some(backing) = snapshot.as_ref() {
+                backing.read(y * self.layout().width * 4, out);
+                // Screen::check consumes rows in order. End the snapshot's CPU
+                // hold with the last row, avoiding a new permanent DMA charge.
+                if y + 1 == self.layout().height { *snapshot = None; }
+                return;
+            }
+        }
         let start = self.layout().line(y).start;
         // The widest read the mapping allows: each read of video memory is a
         // bus transaction of its own. On x86 a whole 64-byte line where

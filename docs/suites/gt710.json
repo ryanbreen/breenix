@@ -243,6 +243,25 @@
       ]
     },
     {
+      "id": "resources",
+      "title": "Resources and basic pipelines (M8 PR 8.2)",
+      "hostRunner": true,
+      "cases": [
+        {
+          "id": "row",
+          "title": "Production CAPS admits backend 6 with executable origins 3-10, native classes and live scanouts"
+        },
+        {
+          "id": "suite",
+          "title": "A completed production GPU boot records all 170 ordered cases with zero skips, the 8.2 step passing, reclaimed memory and its own time within 900 s"
+        },
+        {
+          "id": "console",
+          "title": "A completed production console boot passes 88/88 within 330 s of handoff"
+        }
+      ]
+    },
+    {
       "id": "core",
       "title": "Shared GPU core and native evidence (M8 PR 8.1)",
       "hostRunner": true,

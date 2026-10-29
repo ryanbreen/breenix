@@ -3,7 +3,7 @@
 use super::*;
 use core::sync::atomic::AtomicBool;
 use crate::task::{waitqueue::{WaitQueueHead,PrepareOutcome},thread::ThreadState};
-static SESSION:spin::Mutex<Option<Session>>=spin::Mutex::new(None);
+static SESSION:super::super::lock::Mutex<Option<Session>>=super::super::lock::Mutex::new(None);
 // Sticky through failed startup too: cleanup may retain channels/backing.
 // Keep this visible while initialize_core temporarily takes SESSION.
 static CORE_STARTED:AtomicBool=AtomicBool::new(false);
@@ -14,7 +14,7 @@ static RECOVERY_WAITERS:WaitQueueHead=WaitQueueHead::new();
 static WAITING:AtomicBool=AtomicBool::new(false);
 static WAITERS:WaitQueueHead=WaitQueueHead::new();
 struct Work {a:Channel,b:Channel,ticket:Option<Ticket>,request:Request,seed:u32,baseline:memory::allocator::Stats,old:[u32;3],userd:Allocation,engine:Engine}
-pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,console:super::super::ConsoleSurface,work:Option<Work>}
+pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,console:super::super::ConsoleSurface,work:Option<Work>,resources:super::super::resource::Resources<crate::gpu::dma::Pages>}
 pub(in crate::gk208) fn test_ownership()->Result<(),&'static str> {
     if CORE_STARTED.load(Ordering::Acquire) {return Err("native GPU core owns FIFO");}
     Ok(())
@@ -24,7 +24,7 @@ pub(crate) fn retain(layout:memory::Layout,regs:usize,bar:usize,console:super::s
     let native=layout.objects[4].range.start;
     let s=layout.allocator.stats();
     *SESSION.lock()=Some(Session{layout,registers:regs,bar,bi:native+0x2000,bd:native+0x3000,
-        pte:native+0x4000+(SLOT/4096)*8,total:s.reserved+s.charged+s.free,console,work:None});
+        pte:native+0x4000+(SLOT/4096)*8,total:s.reserved+s.charged+s.free,console,work:None,resources:super::super::resource::Resources::new()});
     Ok(())
 }
 pub(in crate::gk208) fn initialize_core()->Result<(),&'static str> {
@@ -38,11 +38,20 @@ pub(in crate::gk208) fn initialize_core()->Result<(),&'static str> {
     };
     let result=(|| {
         let device=crate::drivers::pci::find_device(0x10de,0x128b).ok_or("native PCI device absent")?;
-        let native=super::super::gr::initialize(&mut Registers(s.registers),&device,&mut s.layout,&s.console)?;
-        crate::gpu::install_native(native)
+        super::super::gr::initialize(&mut Registers(s.registers),&device,&mut s.layout,&s.console)
     })();
+    // Builders borrow SESSION. Restore it before probing, without holding its
+    // lock across device submission/reaping or storage retirement.
     *SESSION.lock()=Some(s);
-    result
+    let mut native = result?;
+    crate::gpu::dev::select_gk208();
+    if let Err(error) = super::super::caps::run(&mut native) {
+        // Uncertain publication retains channel/request ownership. A caller's
+        // startup error does not establish DMA cessation.
+        core::mem::forget(native);
+        return Err(error);
+    }
+    crate::gpu::install_native(native)
 }
 
 impl Session {
@@ -184,4 +193,42 @@ pub(crate) fn proc_read(op:u8)->Result<Vec<u8>,i32> {
     if op==2 {return s.drain().inspect_err(|e|crate::serial_println!("GT710_PROCESS_ERROR drain {}",e)).map(String::into_bytes).map_err(|_|-5);}
     if !WAITING.load(Ordering::Acquire) {return Ok(b"ready\n".to_vec());}
     s.status().map(String::into_bytes).map_err(|_|-5)
+}
+
+/// Borrow the allocator retained by the display/CE owner.
+/// The session lock serializes resource changes with CE ownership.
+pub(in crate::gk208) fn with_resources<R>(
+    f: impl FnOnce(&mut super::super::resource::Resources<crate::gpu::dma::Pages>,
+        &mut memory::allocator::Allocator, &mut VmIo<'_>) -> Result<R, &'static str>,
+) -> Result<R, &'static str> {
+    let mut owner = SESSION.lock();
+    let s = owner.as_mut().ok_or("native resource allocator unavailable")?;
+    if !CORE_STARTED.load(Ordering::Acquire) || s.work.is_some() {
+        return Err("native resource allocator not owned by core");
+    }
+    let before = s.resources.vram_bytes();
+    let result = f(&mut s.resources, &mut s.layout.allocator,
+        &mut VmIo { regs: &mut Registers(s.registers), total: s.total });
+    let after = s.resources.vram_bytes();
+    crate::tracing::providers::gpu::gauge(&crate::tracing::providers::gpu::GPU_VRAM_BYTES,
+        after as i64 - before as i64);
+    result
+}
+
+/// Observe the existing native console, independently of the shared renderer's
+/// resources. Its identifier is reserved, rather than its physical address.
+pub(crate) fn console_state() -> Option<(gpu_abi::Mode, u64, bool, u64)> {
+    let owner = SESSION.lock();
+    let s = &owner.as_ref()?.console;
+    let bound = super::super::console_binding(s).is_ok();
+    let writes = crate::firmware_writes::count().checked_sub(s.firmware_baseline)?;
+    Some((gpu_abi::Mode { width: s.width as u32, height: s.height as u32,
+        scale: 1, reserved: 0 }, u64::from(u32::MAX), bound, writes))
+}
+
+pub(in crate::gk208) fn console_allocation() -> Option<(super::super::ConsoleSurface, Allocation)> {
+    let owner = SESSION.lock();
+    let s = owner.as_ref()?;
+    let allocation = s.layout.objects.iter().find(|o| o.range.start == s.console.vram)?.allocation;
+    Some((s.console, allocation))
 }

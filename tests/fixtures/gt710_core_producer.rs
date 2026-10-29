@@ -11,6 +11,7 @@ pub mod timer {
     pub fn frequency_hz() -> u64 { 3_000_000_000 }
 }
 pub mod gpu {
+    pub mod dma { pub struct Pages; }
     use gpu_abi::{self as abi, capability, test_point, Plain};
     use dev::Device;
     // Only the surrounding core storage and engine are fixtures. The gate and
@@ -62,6 +63,7 @@ pub mod gk208 {
     #[path = "../../kernel/src/gpu/gk208/core_record.rs"] pub mod core_record;
     #[path = "../../kernel/src/gpu/gk208/copy.rs"] pub mod copy;
     #[path = "../../kernel/src/gpu/gk208/caps.rs"] pub mod caps;
+    #[allow(dead_code)] // Producer harness omits the storage/VM acknowledgement path.
     #[path = "../../kernel/src/gpu/gk208/adapter.rs"] pub mod adapter;
     pub mod channel {pub fn elapsed(begin:u64)->u64 {crate::timer::rdtsc().wrapping_sub(begin)/(crate::timer::frequency_hz()/1_000_000)}}
     pub mod bulk {pub fn line(s:String)->Result<(),&'static str>{println!("{s}");Ok(())}}
@@ -72,8 +74,12 @@ pub mod gk208 {
             pub struct NativeChannel {pub sample:CeSample,pub drain:u32,pub ignore_control:bool,pub published:usize,pub final_sample:Option<CeSample>,pub polls:usize}
             impl NativeChannel {
                 pub fn identity(&self)->(u64,u64){(0x123000,17)}
-                pub fn healthy(&self)->bool{true}
+                pub fn healthy(&self)->Result<(), &'static str>{Ok(())}
+                pub fn published(&self,sequence:u32)->bool{self.sample.consumed==sequence}
                 pub fn publish(&mut self,sequence:u32,_:&Operation)->Result<(),&'static str>{self.published+=1;self.final_sample=None;self.polls=0;self.sample=CeSample{context:0x123000,epoch:17,sequence,consumed:sequence,healthy:true};self.drain=0;Ok(())}
+                pub fn publish_draw(&mut self,_:u32,_:&crate::gk208::adapter::EncodedDraw)->Result<(),&'static str>{
+                    panic!("core producer fixture does not issue encoded BGL draws")
+                }
                 pub fn publish_probe(&mut self,sequence:u32,op:&Operation,control:Control)->Result<(),&'static str>{
                     self.publish(sequence,op)?;
                     if self.ignore_control{return Ok(());}
@@ -93,6 +99,9 @@ pub mod gk208 {
                     self.polls+=1;
                     // A consumed stream can precede the engine release.
                     if self.drain==0 && self.polls<=3 {Ok(CeSample{sequence:0,..self.sample})} else {Ok(self.sample)}
+                }
+                pub fn transfer_drain(&mut self,sequence:u32)->Result<CeSample,&'static str>{
+                    let mut sample=self.sample(sequence)?;sample.sequence=self.drain;Ok(sample)
                 }
                 pub fn probe_drained(&mut self,sequence:u32)->Result<bool,&'static str>{if self.drain==sequence {if let Some(s)=self.final_sample.take(){self.sample=s;}Ok(true)} else {Ok(false)}}
                 pub fn reset(&mut self)->Result<(),&'static str>{Ok(())}

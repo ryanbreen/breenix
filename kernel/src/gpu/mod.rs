@@ -54,6 +54,8 @@ pub mod arch_rules;
 #[path = "gk208/dma_policy.rs"]
 pub mod dma_policy;
 pub mod dma;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod dma_owner;
 pub mod dev;
 pub mod virgl;
 pub mod svga;
@@ -276,7 +278,7 @@ struct Ctx {
     /// The 1x1 texture the warm-up's sampling draws read.
     scratch_texture: u32,
     /// The rendering pipelines whose warm-up step completed, one bit each
-    /// (`encode::ALL_WARM` when the catalogue's warm-up is complete).
+    /// (`catalogue_mask()` when the catalogue's warm-up is complete).
     warm: u32,
     /// Initial grace deadline; later resource creations do not postpone it.
     warm_after: u64,
@@ -300,6 +302,13 @@ struct VertexArena {
     ready: bool,
     accepted: bool,
     ranges: vertex_arena::Ranges,
+}
+
+/// Only installed rendering pipelines participate in a context's warm-up.
+fn catalogue_mask() -> u32 {
+    #[cfg(target_arch = "x86_64")]
+    if dev::backend() == abi::backend::GK208 { return 0x1f; }
+    encode::ALL_WARM
 }
 
 impl Ctx {
@@ -546,27 +555,38 @@ pub fn init() {
 /// Install the native owner only after hardware startup and channel receipts.
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn install_native(device: crate::gk208::adapter::Device) -> Result<(), &'static str> {
-    let caps = device.caps();
-    if device.needs_reset() || caps.backend != abi::backend::GK208 {
-        return Err("native core lacks live class evidence");
-    }
-    if caps.status == abi::status::MISSING_CAPABILITY {
-        // Installation needs the live engine and class evidence. The first
-        // unprobed format/profile capability is reported by CAPS/admission.
-        if matches!(caps.missing, capability::FEATURE_3D | capability::CAPABILITY_SET) {
-            return Err(capability::name(caps.missing));
+    let mut retained = Some(device);
+    let result = (|| {
+        let device = retained.as_ref().unwrap();
+        let caps = device.caps();
+        if device.needs_reset() || caps.backend != abi::backend::GK208 {
+            return Err("native core lacks live class evidence");
         }
-    } else if caps.status != abi::status::ADMITTED {
-        return Err("native core capability state invalid");
-    }
-    with_core(|core| {
-        if core.dev.is_some() { return Err("GPU core already has a device"); }
-        core.queue_size = device.queue_size();
-        core.status = caps.status;
-        core.caps = caps;
-        core.dev = Some(Device::Gk208(device));
-        Ok(())
-    }).unwrap_or(Err("GPU core not initialized"))
+        if caps.status == abi::status::MISSING_CAPABILITY {
+            // Installation needs the live engine and class evidence. The first
+            // unprobed format/profile capability is reported by CAPS/admission.
+            if matches!(caps.missing, capability::FEATURE_3D | capability::CAPABILITY_SET) {
+                return Err(capability::name(caps.missing));
+            }
+        } else if caps.status != abi::status::ADMITTED {
+            return Err("native core capability state invalid");
+        }
+        let surface = crate::gk208::console_surface().ok_or("native console surface absent")?;
+        native_console_backing(&surface)?;
+        let queue_size = device.queue_size();
+        with_core(|core| {
+            if core.dev.is_some() { return Err("GPU core already has a device"); }
+            core.queue_size = queue_size;
+            core.status = caps.status;
+            core.caps = caps;
+            core.dev = Some(Device::Gk208(retained.take().unwrap()));
+            Ok(())
+        }).unwrap_or(Err("GPU core not initialized"))
+    })();
+    // Admission probes have already bound this channel. An installation error
+    // is not a DMA drain, so retain its pages just like probe failure does.
+    if let Some(device) = retained { core::mem::forget(device); }
+    result
 }
 
 /// Apply the capability control through shared admission while the early boot
@@ -955,6 +975,8 @@ impl Core {
     }
 
     fn insert_res(&mut self, id: u32, r: Res) {
+        #[cfg(target_arch = "x86_64")]
+        r.backing.identify("core-resource", id, 0);
         if self.resources.insert(id, r).is_none() {
             gauge(&GPU_RESOURCES, 1);
         }
@@ -1352,7 +1374,9 @@ impl Core {
             if submitted && crate::test_control::take(test_point::STALE_FENCE, 0).is_some() {
                 done.echoed = done.native_fence.unwrap_or(0).wrapping_add(1);
             }
-            sub.native_fence = done.native_fence.unwrap_or(0);
+            sub.native_fence = if dev::backend() == abi::backend::GK208 {
+                done.fence.unwrap_or(0)
+            } else { done.native_fence.unwrap_or(0) };
             let withheld = if submitted {
                 crate::test_control::take_if(test_point::WITHHOLD_FENCE, 0, |p| p != test_point::WITHHOLD_DEPTH)
             } else { None };
@@ -1520,6 +1544,13 @@ impl Core {
         // Backing owns its charges, including through other CPU or device holds.
         if r.lost {
             // A confirmed reset ended the device's use of it.
+            // Native storage keeps its own mapping/backing registry across
+            // reset. Retire that pin too; the storage acknowledgement is
+            // unfenced and must not be queued to the replacement epoch.
+            #[cfg(target_arch = "x86_64")]
+            if dev::backend() == abi::backend::GK208 {
+                let _ = dev::resource_unref(Tag::Background, id, Some(r.backing));
+            }
             return None;
         }
         // The device may use the backing until it answers the unref, which keeps it.
@@ -1683,13 +1714,13 @@ impl Core {
         let hangs = self.subs.values().filter(|s| !s.published).filter_map(|s| s.sent_ns);
         let waits = self.syncs.values().filter(|s| !s.failed).filter_map(|s| s.sent_ns);
         let progress = self.quarantined_at.map(|q| q.max(self.last_progress));
-        // The SVGA3 device raises no interrupt here: while it holds requests, kgpu looks
+        // SVGA3 and the native channel have no completion interrupt here; kgpu looks
         // for their answers at POLL_NS intervals.
-        let poll = (dev::is_svga() && self.dev.as_ref().is_some_and(|d| d.outstanding() > 0) && !self.stalled)
+        let poll = (matches!(dev::backend(), abi::backend::SVGA3D_DX | abi::backend::GK208) && self.dev.as_ref().is_some_and(|d| d.outstanding() > 0) && !self.stalled)
             .then(|| now + POLL_NS);
         // Grace deadlines are independent across processes.
         let grace = self.contexts.values()
-            .filter(|x| x.warm_catalogue && x.state == CtxState::Live && !x.dropped && x.warm != encode::ALL_WARM)
+            .filter(|x| x.warm_catalogue && x.state == CtxState::Live && !x.dropped && x.warm != catalogue_mask())
             .map(|x| x.warm_after).filter(|&g| g > now).min();
         let watchdog = hangs.chain(waits).chain(progress).min().map(|at| (at + limits::WATCHDOG_NS).min(now + EXAMINE_NS));
         watchdog.into_iter().chain(grace).chain(poll).min()
@@ -1893,7 +1924,7 @@ fn post_hung(hung: &[Option<Hung>; HUNG_KEPT], accounts: u32, pending: &mut (u64
             if let Some(q) = q.filter(|q| q.entry != 0) { write!(t, " cmd {:#x}", q.cmd) } else { Ok(()) }
         });
         let Some(q) = q else {
-            post(&|t| write!(t, "[gpu]  SVGA command buffer quiet {} ms backlog {}", h.quiet_ms, h.backlog));
+            post(&|t| write!(t, "[gpu]  device queue quiet {} ms backlog {}", h.quiet_ms, h.backlog));
             continue;
         };
         let notified = match q.entry {
@@ -1944,7 +1975,7 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
         let (found, polled) = with_core(|c| {
             c.poll();
             // The device's answers reach this waiter only when someone looks for them.
-            let polled = dev::is_svga() && !c.stalled && c.dev.as_ref().is_some_and(|d| d.outstanding() > 0);
+            let polled = matches!(dev::backend(), abi::backend::SVGA3D_DX | abi::backend::GK208) && !c.stalled && c.dev.as_ref().is_some_and(|d| d.outstanding() > 0);
             let found = f(c);
             if found.is_none() { c.progress_readback(); }
             (found, polled)
@@ -2072,6 +2103,70 @@ fn exec_ok(build: impl FnOnce(Tag) -> Option<Request>, ctx: u32, holds: &[u32]) 
     } else {
         Err(EIO)
     }
+}
+
+// The render thread serializes console observations. Prepare this reusable
+// scratch before publishing admission, so background checks do not allocate a
+// scanout-sized DMA buffer across the suite's reclamation sample.
+#[cfg(target_arch = "x86_64")]
+static NATIVE_CONSOLE_BACKING: spin::Mutex<Option<Arc<Pages>>> = spin::Mutex::new(None);
+#[cfg(target_arch = "x86_64")]
+fn native_console_backing(surface: &crate::gk208::ConsoleSurface) -> Result<Arc<Pages>, &'static str> {
+    let bytes = surface.width.checked_mul(surface.height).and_then(|n| n.checked_mul(4))
+        .ok_or("native console extent overflow")?;
+    let mut storage = NATIVE_CONSOLE_BACKING.lock();
+    if let Some(backing) = storage.as_ref() {
+        if backing.bytes() != bytes.next_multiple_of(PAGE) {
+            return Err("native console readback geometry changed");
+        }
+        return Ok(backing.clone());
+    }
+    let backing = Arc::new(Pages::new(bytes.div_ceil(PAGE)).ok_or("native console readback allocation")?);
+    backing.identify("native-console-readback", 0, 0);
+    *storage = Some(backing.clone());
+    Ok(backing)
+}
+
+/// Observe the latched native console using two CE transfers through the shared
+/// queue. Early boot has no admitted device and continues its BAR observation.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn native_console_readback(surface: &crate::gk208::ConsoleSurface)
+    -> Result<Option<(Arc<Pages>, u64)>, &'static str> {
+    if dev::backend() != abi::backend::GK208
+        || !with_core(|c| c.status == abi::status::ADMITTED).unwrap_or(false) {
+        return Ok(None);
+    }
+    let bytes = surface.width.checked_mul(surface.height).and_then(|n| n.checked_mul(4))
+        .ok_or("native console extent overflow")?;
+    let backing = native_console_backing(surface)?;
+    let mut first = alloc::vec![0; bytes];
+    let mut last = 0;
+    for (index, poison) in [0x55, 0xaa].into_iter().enumerate() {
+        let band = [poison; PAGE];
+        for at in (0..bytes).step_by(PAGE) { backing.write(at, &band[..PAGE.min(bytes-at)]); }
+        backing.maintain(0, bytes, false);
+        let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or("native console core absent")?;
+        let request = crate::gk208::console_readback(Tag::Sync(serial), fence, backing.clone())
+            .ok_or("native console CE request refused")?;
+        let done = exec_req(serial, Request::Gk208(request), 0, &[], &[])
+            .map_err(|_| "native console CE request failed")?;
+        if !dev::ok(done.answer) || !done.matches_fence(fence) {
+            return Err("native console CE completion mismatch");
+        }
+        backing.maintain(0, bytes, true);
+        if index == 0 { backing.read(0, &mut first); }
+        else {
+            let mut band = [0; PAGE];
+            for at in (0..bytes).step_by(PAGE) {
+                let count = PAGE.min(bytes-at);
+                backing.read(at, &mut band[..count]);
+                if band[..count] != first[at..at+count] { return Err("native console P/~P images differ"); }
+            }
+        }
+        crate::gk208::console_binding(surface)?;
+        last = fence;
+    }
+    Ok(Some((backing, last)))
 }
 
 /// Attach resources to device contexts, one synchronous `(context, resource)` command a
@@ -2309,6 +2404,26 @@ fn reset_device(tid: u64) {
     }
     if dev.reset_done() {
         let (held, up) = dev.restart();
+        #[cfg(target_arch = "x86_64")]
+        let up = match (&mut dev, up) {
+            (Device::Gk208(device), Ok(())) => device.reprobe(),
+            (_, up) => up,
+        };
+        #[cfg(target_arch = "x86_64")]
+        if matches!(&dev, Device::Gk208(_)) {
+            if let Err(error) = up {
+                // A fresh native probe may already have published work. A
+                // reset of the old epoch cannot release that new backing.
+                crate::serial_println!("GT710_NATIVE_REPROBE_REFUSAL {}", error);
+                with_core(move |c| {
+                    let epoch = c.epoch;
+                    c.backlog.extend(held.into_iter().map(|r| (epoch, r)));
+                    c.reset_failed(dev);
+                    c.reason = error;
+                });
+                return;
+            }
+        }
         with_core(move |c| c.finish_reset(dev, held, up));
     } else {
         with_core(move |c| c.reset_failed(dev));
@@ -2335,7 +2450,7 @@ fn warm_next() -> Option<u64> {
             && !c.stalled
             && c.quarantined_at.is_none()
     };
-    let warming = |x: &Ctx| x.warm_catalogue && x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM && now_ns() >= x.warm_after;
+    let warming = |x: &Ctx| x.warm_catalogue && x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != catalogue_mask() && now_ns() >= x.warm_after;
     let due = with_core(|c| {
         if !(ready(c) && c.contexts.values().any(warming)) {
             c.warm_held = None;
@@ -2364,14 +2479,19 @@ fn warm_next() -> Option<u64> {
         }
         let ctx = c.contexts.values_mut().find(|x| warming(x) && !x.busy)?;
         ctx.busy = true;
-        let pipeline = (!ctx.warm).trailing_zeros();
+        let pipeline = (!ctx.warm & catalogue_mask()).trailing_zeros();
         Some((ctx.id, pipeline, ctx.objects.clone(), ctx.dx.clone(), [ctx.vb, ctx.scratch, ctx.scratch_texture]))
     })
     .flatten();
     let Some((id, pipeline, mut objects, mut dx_objects, internal)) = picked else { return None };
     let [vb, scratch, scratch_texture] = internal;
     // After an allocation failure no request is sent; the step is tried again later.
-    let chunks = if dev::is_svga() {
+    let chunks = if dev::backend() == abi::backend::GK208 {
+        #[cfg(target_arch = "x86_64")]
+        { crate::gk208::encode::warm(scratch, scratch_texture, pipeline).map(Chunks::Gk208) }
+        #[cfg(not(target_arch = "x86_64"))]
+        { None }
+    } else if dev::is_svga() {
         let target = encode::TargetRes {
             id: scratch,
             format: wire::format::B8G8R8A8_UNORM,
@@ -2402,12 +2522,19 @@ fn warm_next() -> Option<u64> {
                 let count = match &chunks {
                     Chunks::Virgl(v) => v.len(),
                     Chunks::Svga(v) => v.len(),
+                    #[cfg(target_arch = "x86_64")]
+                    Chunks::Gk208(v) => v.len(),
                 };
                 c.warm_step = Some(WarmStep { ctx: id, pipeline, left: count as u32, refused: false, lost: false });
                 let reqs: Vec<(u64, u64, Option<Request>)> = match chunks {
                     Chunks::Virgl(v) => v.into_iter().map(|words| {
                         let (serial, fence) = (c.serial(), c.device_fence());
                         (serial, fence, Some(dev::submit_virgl(Tag::Sync(serial), id, Some(fence), words)))
+                    }).collect(),
+                    #[cfg(target_arch = "x86_64")]
+                    Chunks::Gk208(v) => v.into_iter().map(|chunk| {
+                        let (serial,fence) = (c.serial(),c.device_fence());
+                        (serial,fence,Some(dev::submit_gk208(Tag::Sync(serial),fence,chunk)))
                     }).collect(),
                     Chunks::Svga(v) => v.into_iter().map(|chunk| {
                         let (serial, fence) = (c.serial(), c.device_fence());
@@ -2529,6 +2656,16 @@ fn hold_irqs_masked(ns: u64) {
     });
 }
 
+/// The native device leaves the core while its restored epoch is measured.
+/// Wait through that interval instead of exposing the empty fallback table.
+#[cfg(target_arch = "x86_64")]
+fn native_reset_barrier() -> Result<(), i64> {
+    if dev::backend() != abi::backend::GK208 { return Ok(()); }
+    arch::with_interrupts(|| wait_for(None, true, |c| {
+        (!c.reset_wanted && !c.resetting).then_some(())
+    })).map_err(|_| EINTR)
+}
+
 /// `gpu(op, arg, len)`.
 pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
     let _path = GpuPath::enter();
@@ -2538,6 +2675,10 @@ pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
         crate::serial_println!("BREENGEL-EMIT-DIAGNOSTIC-PAYLOAD");
     }
     let Ok(op) = u32::try_from(op) else { return result(Err(EINVAL)) };
+    #[cfg(target_arch = "x86_64")]
+    if op != abi::op::VERSION && op <= abi::op::LAST {
+        if let Err(error) = native_reset_barrier() { return result(Err(error)); }
+    }
     result(match op {
         abi::op::VERSION => {
             if len != 0 {
@@ -2586,7 +2727,7 @@ fn op_caps(arg: u64, len: u64) -> Result<u64, i64> {
     Ok(0)
 }
 
-/// Claim startup under the core lock, then release it before initialize_core.
+/// Claim startup under the core lock, then run hardware work on a kernel worker.
 /// A competing first CAPS sleeps through publication, including startup failure.
 #[cfg(target_arch = "x86_64")]
 fn native_caps_startup() -> Result<(), i64> {
@@ -2602,12 +2743,26 @@ fn native_caps_startup() -> Result<(), i64> {
         }
     }).map_err(|_| EINTR)?;
     if start {
-        if let Err(error) = crate::gk208::initialize_core() {
-            with_core(|c| { c.status = abi::status::DEVICE_FAILED; c.reason = error; });
+        // Enabling IRQs does not release syscall entry's preemption hold.
+        // Firmware construction and executable probes must let a pinned timer
+        // window (and other work) run on the CPU performing initialization.
+        if crate::task::kthread::kthread_run(|| {
+            if let Err(error) = crate::gk208::initialize_core() {
+                with_core(|c| { c.status = abi::status::DEVICE_FAILED; c.reason = error; });
+            }
+            NATIVE_STARTING.store(false, Ordering::Release);
+            notify();
+        }, "kgpustart").is_err() {
+            with_core(|c| {
+                c.status = abi::status::DEVICE_FAILED;
+                c.reason = "native startup worker unavailable";
+            });
+            NATIVE_STARTING.store(false, Ordering::Release);
+            notify();
         }
-        NATIVE_STARTING.store(false, Ordering::Release);
-        notify();
     }
+    wait_for(None, true, |_| (!NATIVE_STARTING.load(Ordering::Acquire)).then_some(()))
+        .map_err(|_| EINTR)?;
     Ok(())
 }
 
@@ -2732,7 +2887,7 @@ pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32>
         for id in p.contexts.values() {
             let Some(ctx) = c.contexts.get(id) else { continue; };
             if !ctx.warm_catalogue || ctx.dropped || ctx.state != CtxState::Live { continue; }
-            if ctx.warm != encode::ALL_WARM { return None; }
+            if ctx.warm != catalogue_mask() { return None; }
         }
         Some(Ok(()))
     }).map_err(|_| EINTR).and_then(|r| r);
@@ -2954,7 +3109,20 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
         }
     });
     attached?;
-    let chunks: Vec<Request> = if dev::is_svga() {
+    let chunks: Vec<Request> = if dev::backend() == abi::backend::GK208 {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let chunks = crate::gk208::encode::warm(scratch, scratch_texture, abi::pipeline::SOLID).ok_or(ENOMEM)?;
+            let mut requests = Vec::new();
+            for chunk in chunks {
+                let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
+                requests.push(dev::submit_gk208(Tag::Sync(serial), fence, chunk));
+            }
+            requests
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        { return Err(ENODEV); }
+    } else if dev::is_svga() {
         let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
         let chunk = svga::encode::chunk(svga::encode::warm_base()).ok_or(ENOMEM)?;
         alloc::vec![dev::submit_svga(Tag::Sync(serial), id, Some(fence), chunk).ok_or(EIO)?]
@@ -3048,10 +3216,14 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
             if a.width == 0 || a.height == 0 || a.width > max || a.height > max || a.size != 0 {
                 return Err(EINVAL);
             }
-            // VirGL transfers use rows aligned to 256 bytes; VMware's version 1 surfaces keep
-            // packed rows (section 1.3, backing and row pitch).
+            // Guest staging stays linear. Native images use a GOB-wide row;
+            // block padding belongs to VRAM, not the guest-backing quota.
             let packed = a.width * format::bytes(a.format);
-            let pitch = if dev::is_svga() { packed } else { packed.next_multiple_of(256) };
+            let pitch = match dev::backend() {
+                abi::backend::SVGA3D_DX => packed,
+                abi::backend::GK208 => packed.next_multiple_of(64),
+                _ => packed.next_multiple_of(256),
+            };
             (pitch as u64 * a.height as u64, pitch)
         }
         kind::BUFFER => {
@@ -3395,6 +3567,8 @@ impl Snapshot {
 enum Chunks {
     Virgl(Vec<WordBuf>),
     Svga(Vec<svga::encode::Chunk>),
+    #[cfg(target_arch = "x86_64")]
+    Gk208(Vec<crate::gk208::adapter::EncodedDraw>),
 }
 
 /// The view's handles with the snapshot's buffer contents.
@@ -3434,6 +3608,19 @@ impl Resolver for Resolved<'_> {
     }
 
     fn buffer_word(&self, handle:u64, offset:u64)->u32 { self.snap.word(handle,offset) }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl crate::gk208::encode::Bindings for Resolved<'_> {
+    fn render_target(&self, handle: u64) -> Option<crate::gk208::encode::Target> {
+        let e = self.view.get(handle).filter(|e| !e.sample_only && e.kind == kind::TARGET)?;
+        crate::gk208::encode::target(e.id,e.format)
+    }
+    fn sampled_source(&self, handle: u64) -> Option<crate::gk208::encode::Target> {
+        let e = self.view.get(handle)?;
+        if !matches!(e.kind, kind::TARGET | kind::TEXTURE) { return None; }
+        crate::gk208::encode::target(e.id,e.format)
+    }
 }
 
 impl encode::Bindings for Resolved<'_> {
@@ -3620,6 +3807,17 @@ struct Extra<'a> {
 /// `SUBMIT` of the stream `a` names for `tgid`: validate, translate and queue it. `out`
 /// publishes `a` to the caller: its validation diagnostics before a refusal, and its fence
 /// and estimate after queueing.
+/// Reserve the control across fallible preparation. An unsupported backend
+/// has executed no device command and must not count the one-shot as fired.
+fn prepare_device_error(extra: bool, tag: Tag, ctx: u32, fence: u64)
+    -> Result<(Option<Request>, Option<crate::test_control::Reservation<'static>>), i64> {
+    let point = if extra { None } else { crate::test_control::reserve(test_point::DEVICE_ERROR, 0) };
+    let request = if extra || point.is_some() {
+        Some(dev::undefined_command(tag, ctx, fence).ok_or(ENOSYS)?)
+    } else { None };
+    Ok((request, point))
+}
+
 fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, out: &dyn Fn(&abi::Submit) -> Result<(), i64>) -> Result<u64, i64> {
     let aliases: &[Alias] = extra.as_ref().map_or(&[], |e| e.aliases);
     let alias = |rid: &u32| aliases.iter().any(|x| x.id == *rid);
@@ -3792,11 +3990,12 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             corruption.is_some()
         });
     let svga = dev::is_svga();
+    let native = dev::backend() == abi::backend::GK208;
     // A viewport per rectangle costs more commands on large streams. Short Parallels
     // streams use immutable vertices; mutable data/copy scratch still needs completion.
     let fixed_quads = platform_config::is_parallels() && !svga && !FLIP_Y && plan.drawn <= 64;
     // The SVGA3D DX translation makes its own vertex, constant, data and scratch surfaces.
-    let vertex_range = match if svga || fixed_quads { Ok(None) } else { vertex_buffer_for(tgid, id, writer.serial, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) } {
+    let vertex_range = match if native || svga || fixed_quads { Ok(None) } else { vertex_buffer_for(tgid, id, writer.serial, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) } {
         Ok(vb) => vb,
         Err(e) => {
             release_slot(false);
@@ -3808,7 +4007,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
     // (`docs/gui/gpu.md` section 1.3), one per target format, sized for its largest.
     let mut copy_scratch = [0u32; 2];
     for (slot, [w, h]) in plan.scratch.into_iter().enumerate() {
-        if w == 0 || h == 0 || svga {
+        if w == 0 || h == 0 || svga || native {
             continue;
         }
         match scratch_for(tgid, id, slot as u32, w, h) {
@@ -3826,7 +4025,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
     }
     let data_width = with_core(|c| c.caps.max_width).unwrap_or(0).min(16384);
     let data_width = 1u32 << (31-data_width.leading_zeros());
-    let data_texture = if plan.data_bytes > 0 && !svga {
+    let data_texture = if plan.data_bytes > 0 && !svga && !native {
         match scratch_for(tgid, id, 2, data_width, (plan.data_bytes/4).div_ceil(data_width)) {
             Ok(rid)=>rid,
             Err(e)=>{
@@ -3930,7 +4129,49 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
     let dx_extras = || svga::encode::Extras { scratch: plan.scratch, data_width, corrupt, suppress, swap };
     // Count surface bytes, then size the complete device buffers including the surfaces'
     // lifecycle packets. Reserve the charge before allocating their backing.
-    let (chunk_charge, chunks) = if svga {
+    let native_chunks = if native {
+        #[cfg(target_arch = "x86_64")]
+        {
+            if let Some(r) = crate::gk208::encode::pipeline_refusal(&words) {
+                release_slot(false);
+                return refuse(a, r.index, r.error, EINVAL);
+            }
+            let prepared = (|| {
+                // Reserve payload and bounded method storage before translating.
+                let bytes = crate::gk208::encode::DATA_START as u64 + 4096
+                    + plan.drawn.checked_add(plan.draws).and_then(|n| n.checked_add(u64::from(corrupt.is_some())))
+                        .ok_or(ENOMEM)?.max(1).checked_mul(4096).ok_or(ENOMEM)?;
+                let charge = Arc::new(Charge::new(tgid, bytes, true)?);
+                let swap = match swap {
+                    Some((word, other)) => {
+                        let e = view.entries.iter().find(|e| e.id == other.id).ok_or(EINVAL)?;
+                        Some((word, crate::gk208::encode::target(e.id, e.format).ok_or(EINVAL)?))
+                    }
+                    None => None,
+                };
+                let frame = if corrupt.is_none() && suppress.is_none() && swap.is_none() {
+                    crate::gk208::encode::translate(&words, &resolved)
+                } else {
+                    crate::gk208::encode::translate_with_extras(&words, &resolved,
+                        crate::gk208::encode::Extras { corrupt, suppress, swap })
+                }.map_err(|_| EINVAL)?;
+                let backing = Arc::new(Pages::new(frame.data.len().div_ceil(PAGE)).ok_or(ENOMEM)?);
+                backing.write(0,&frame.data);
+                backing.maintain(0,frame.data.len(),false);
+                let chunks = crate::gk208::encode::prepare(frame,backing).map_err(|_| ENOMEM)?;
+                Ok::<_,i64>((charge,Some(Chunks::Gk208(chunks))))
+            })();
+            match prepared {
+                Ok(chunks) => Some(chunks),
+                Err(e) => { release_slot(false); return Err(e); }
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        { release_slot(false); return Err(ENODEV); }
+    } else { None };
+    let (chunk_charge, chunks) = if let Some(chunks) = native_chunks {
+        chunks
+    } else if svga {
         let sized = svga::encode::translate(&mut dx_objects.clone(), &stale, &words, &resolved, dx_extras(), None, None);
         let Some((sized, _)) = sized else {
             release_slot(false);
@@ -4040,7 +4281,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         (chunk_charge, chunks)
     };
     let made = (|| {
-        if svga {
+        if svga || native {
             return Ok(());
         }
         if let Some((rid, _, capacity)) = vertex_range.filter(|&(_, _, capacity)| capacity != 0) {
@@ -4111,10 +4352,12 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         // Test point 27, `device-error`: the chunks are followed by a fenced command of a
         // type VirtIO does not define, which the device can only refuse, and that command
         // carries the fence. Taken only once the submission is certain to be sent.
-        let forced = extra.as_ref().is_some_and(|e| e.device_error)
-            || crate::test_control::take(test_point::DEVICE_ERROR, 0).is_some();
         let serial = writer.serial;
         let fence = writer.fence;
+        let (error_request, error_point) = prepare_device_error(
+            extra.as_ref().is_some_and(|e| e.device_error),
+            Tag::Submit { ctx: id, serial, last: true }, id, fence)?;
+        let forced = error_request.is_some();
         let ctx = c.contexts.get_mut(&id).ok_or(EINVAL)?;
         // Test point 31's fence-depth mode: this context's next four answers are kept.
         if ctx.depth.is_none()
@@ -4142,6 +4385,14 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                     reqs.push(dev::submit_virgl(Tag::Submit { ctx: id, serial, last: true }, id, Some(fence), WordBuf::new()));
                 }
             }
+            #[cfg(target_arch = "x86_64")]
+            Chunks::Gk208(chunks) => {
+                let count = chunks.len();
+                for (i, chunk) in chunks.into_iter().enumerate() {
+                    let last = i+1 == count && !forced;
+                    reqs.push(dev::submit_gk208(Tag::Submit {ctx:id,serial,last},fence,chunk));
+                }
+            }
             Chunks::Svga(chunks) => {
                 let count = chunks.len();
                 for (i, chunk) in chunks.into_iter().enumerate() {
@@ -4150,9 +4401,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 }
             }
         }
-        if forced {
-            reqs.push(dev::undefined_command(Tag::Submit { ctx: id, serial, last: true }, id, fence).ok_or(EIO)?);
-        }
+        if let Some(request) = error_request { reqs.push(request); }
         let ctx = c.contexts.get_mut(&id).ok_or(EINVAL)?;
         if svga {
             ctx.dx = dx_objects;
@@ -4200,6 +4449,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         let epoch = c.epoch;
         c.backlog.extend(reqs.into_iter().map(|r| (epoch, r)));
         // No fallible preparation remains: these faults now affect a queued submission.
+        if let Some(point) = error_point { point.fire(); }
         if let Some(fault) = corruption { fault.fire(); }
         if let Some(fault) = suppression { fault.fire(); }
         if let Some(fault) = swapping { fault.fire(); }
@@ -4552,7 +4802,8 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
     // as a completed one.
     let skip = crate::test_control::take(test_point::SKIP_UPLOAD_VISIBILITY, a.resource).is_some();
     let device_ctx = dev::context_id(ctx);
-    let sent = if skip {
+    let native = dev::backend() == abi::backend::GK208;
+    let sent = if skip && !native {
         with_core(|c| (c.serial(), 0, dev::success())).ok_or((ENODEV, 0))
     } else {
         match with_core(|c| (c.serial(), c.device_fence())) {
@@ -4560,14 +4811,25 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
             Some((serial, fence)) => {
                 match dev::transfer_to_host(Tag::Sync(serial), ctx, fence, id, backing.clone(), x as u32, y as u32, cw as u32, ch as u32, offset, pitch as u32) {
                     None => Err((EIO, 0)),
-                    Some(req) => match exec_req_why(serial, req, ctx, &[id], &[id]) {
-                        Ok(d) if dev::ok(d.answer) && d.matches_fence(fence) => {
-                            Ok((serial, d.echoed, d.answer))
+                    Some(req) => {
+                        #[cfg(target_arch = "x86_64")]
+                        let req = {
+                            let mut req = req;
+                            if let Request::Gk208(request) = &mut req {
+                                request.transfer_controls(crate::gk208::copy::Extras { skip, stale_fence: false });
+                            }
+                            req
+                        };
+                        match exec_req_why(serial, req, ctx, &[id], &[id]) {
+                            Ok(d) if dev::ok(d.answer) && d.matches_fence(fence) => {
+                                let recorded = if native { fence } else { d.echoed };
+                                Ok((serial, recorded, d.answer))
+                            }
+                            Ok(_) => Err((EIO, serial)),
+                            Err((e @ (EIO | EINTR), _)) => Err((e, serial)),
+                            Err((e, _)) => Err((e, 0)),
                         }
-                        Ok(_) => Err((EIO, serial)),
-                        Err((e @ (EIO | EINTR), _)) => Err((e, serial)),
-                        Err((e, _)) => Err((e, 0)),
-                    },
+                    }
                 }
             }
         }
@@ -4864,8 +5126,15 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         let binding = display::binding(c, tgid, id, window)?;
         let s = c.next_obs;
         c.next_obs += 1;
-        let resource = dev::resource_id(id).ok_or(EIO)?;
-        let context = last.map_or(Some(0), |l| l.device_ctx).ok_or(EIO)?;
+        #[cfg(target_arch = "x86_64")]
+        let native = (dev::backend() == abi::backend::GK208)
+            .then(|| crate::gk208::transfer_identities(id)).flatten();
+        #[cfg(not(target_arch = "x86_64"))]
+        let native: Option<(u32,u32)> = None;
+        let (context,resource) = match native {
+            Some(identities) => identities,
+            None => (last.map_or(Some(0), |l| l.device_ctx).ok_or(EIO)?, dev::resource_id(id).ok_or(EIO)?),
+        };
         Ok((s, c.caps.renderer, binding, resource, context))
     })
     .ok_or(ENODEV)?;
@@ -4925,7 +5194,11 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     put64(&mut rec, record::READBACK_FENCE, transfer_fence);
     put32(&mut rec, record::READBACK_STATUS, transfer_answer);
     if dev::backend() == abi::backend::GK208 {
-        observation::write_backend_fields(&mut rec, transfer_answer);
+        observation::write_backend_fields(&mut rec, observation::BackendFields {
+            context:u64::from(device_context),resource:u64::from(device_resource),
+            writer:last.map(|l| (l.fence,l.kind,l.answer)),
+            transfer_fence,answer:transfer_answer,
+        });
     } else if dev::is_svga() {
         // The host copy into the readback surface answered as the readback did: both run
         // in the same command buffer, whose status is the answer.
@@ -5166,9 +5439,8 @@ fn observe(
         }
         memory(b).maintain(at, (b.rows - 1) * stride + row, false);
         b.sent = None;
-        if crate::test_control::take(test_point::SKIP_TRANSFER, a.target).is_some() {
-            return Ok(());
-        }
+        let skip = crate::test_control::take(test_point::SKIP_TRANSFER, a.target).is_some();
+        if skip && dev::backend() != abi::backend::GK208 { return Ok(()); }
         let ty = (a.y as usize + b.by) as u32;
         let other = wrong_resource(tgid, id, pitch, a.x, ty, a.width, b.rows as u32, a.target);
         let other_id = other.as_ref().map(|(rid, _)| *rid);
@@ -5190,10 +5462,25 @@ fn observe(
                 }
                 dev::Request::Svga(req)
             }
-            None => dev::Request::Virgl(virgl::transfer_from_host(
+            None => match dev::transfer_from_host(
                 Tag::Sync(serial), ctx, fence, named, written, a.x, ty,
                 a.width, b.rows as u32, at as u64, pitch,
-            )),
+            ) {
+                Some(request) => request,
+                None => {
+                    release_other(other_id);
+                    return Err((EIO,readback_reason::DEVICE_ERROR));
+                }
+            },
+        };
+        #[cfg(target_arch = "x86_64")]
+        let req = {
+            let mut req = req;
+            if let Request::Gk208(request) = &mut req {
+                let stale_fence = crate::test_control::take(test_point::STALE_FENCE, a.target).is_some();
+                request.transfer_controls(crate::gk208::copy::Extras { skip, stale_fence });
+            }
+            req
         };
         // The target, and the other resource when the transfer names one.
         let both = [id, named];
@@ -5214,7 +5501,8 @@ fn observe(
         release_other(s.other);
         let mut d = done.map_err(device_reason)?;
         // Test point 20, `stale-fence`: the answer is taken as echoing the next fence.
-        if crate::test_control::take(test_point::STALE_FENCE, a.target).is_some() {
+        if dev::backend() != abi::backend::GK208
+            && crate::test_control::take(test_point::STALE_FENCE, a.target).is_some() {
             d.echoed = d.echoed.wrapping_add(1);
         }
         if !dev::ok(d.answer) {
@@ -5224,7 +5512,8 @@ fn observe(
             return Err((EIO, readback_reason::FENCE_MISMATCH));
         }
         if first.is_none_or(|(order, _, _)| s.order < order) {
-            first = Some((s.order, d.echoed, d.answer));
+            let recorded = if dev::backend() == abi::backend::GK208 { s.fence } else { d.echoed };
+            first = Some((s.order, recorded, d.answer));
         }
         Ok(())
     };
@@ -5378,7 +5667,7 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
                 // Contexts ready after catalogue setup: private clear/copy contexts have no
                 // catalogue work; rendering contexts require native completion of each step.
                 out.warmed = p.contexts.values()
-                    .filter(|id| c.contexts.get(*id).is_some_and(|x| x.state == CtxState::Live && (!x.warm_catalogue || x.warm == encode::ALL_WARM)))
+                    .filter(|id| c.contexts.get(*id).is_some_and(|x| x.state == CtxState::Live && (!x.warm_catalogue || x.warm == catalogue_mask())))
                     .count() as u64;
                 out.resources = p.resources.len() as u64;
                 out.resource_bytes = p.quota.resource_bytes();
@@ -5391,7 +5680,7 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
             out.state = match ctx.state {
                 CtxState::Quarantined => abi::context_state::QUARANTINED,
                 CtxState::Reset => abi::context_state::RESET,
-                _ if !ctx.warm_catalogue || ctx.warm == encode::ALL_WARM => abi::context_state::LIVE,
+                _ if !ctx.warm_catalogue || ctx.warm == catalogue_mask() => abi::context_state::LIVE,
                 _ => abi::context_state::WARMING,
             };
             out.warmed = ctx.warmed() as u64;

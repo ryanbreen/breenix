@@ -72,6 +72,50 @@ pub const VERTEX_GPRS: u32 = asset_gprs(include_str!("../../../../assets/kepler/
 pub const FRAGMENT_GPRS: u32 = asset_gprs(include_str!("../../../../assets/kepler/diagnostic-triangle-fragment.json"));
 pub const GRADIENT_FRAGMENT_GPRS: u32 = asset_gprs(include_str!("../../../../assets/kepler/gradient-fragment.json"));
 
+// Basic catalogue and executable admission probes; G5 committed assets.
+pub const PIPELINE_SOLID_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-solid.sph");
+pub const PIPELINE_SOLID_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-solid.bin");
+pub const PIPELINE_SOLID_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-solid.json"));
+pub const PIPELINE_COPY_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-copy.sph");
+pub const PIPELINE_COPY_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-copy.bin");
+pub const PIPELINE_COPY_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-copy.json"));
+pub const PIPELINE_COPY_SCALED_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-copy_scaled.sph");
+pub const PIPELINE_COPY_SCALED_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-copy_scaled.bin");
+pub const PIPELINE_COPY_SCALED_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-copy_scaled.json"));
+pub const PIPELINE_NEAREST_SCALED_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-nearest_scaled.sph");
+pub const PIPELINE_NEAREST_SCALED_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-nearest_scaled.bin");
+pub const PIPELINE_NEAREST_SCALED_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-nearest_scaled.json"));
+pub const PIPELINE_BOX_FILTER_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-box_filter.sph");
+pub const PIPELINE_BOX_FILTER_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-box_filter.bin");
+pub const PIPELINE_BOX_FILTER_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-box_filter.json"));
+pub const PROBE_INTEGER_OPS_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-integer-ops.sph");
+pub const PROBE_INTEGER_OPS_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-integer-ops.bin");
+pub const PROBE_INTEGER_OPS_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-integer-ops.json"));
+pub const PROBE_TEXEL_FETCH_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-texel-fetch.sph");
+pub const PROBE_TEXEL_FETCH_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-texel-fetch.bin");
+pub const PROBE_TEXEL_FETCH_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-texel-fetch.json"));
+
 const VERTEX_HEADER: &[u8; 80] =
     include_bytes!("../../../../assets/kepler/diagnostic-triangle-vertex.sph");
 const VERTEX_CODE: &[u8; 160] =

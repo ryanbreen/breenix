@@ -11,9 +11,30 @@ gpu-abi = { path = "../../libs/gpu-abi", features = ["alloc"] }
 libfont = { path = "../../libs/libfont" }
 libgfx-ref = { path = "../../libs/libgfx-ref" }
 
+spin = "0.9"
+
 [lib]
 path = "tests.rs"
 
 [[bin]]
 name = "vertex-reuse"
 path = "vertex_reuse.rs"
+
+[[test]]
+name = "gt710_draw_encode"
+path = "../../tests/gt710_draw_encode_test.rs"
+
+[[test]]
+name = "gt710_sampled_encode"
+path = "../../tests/gt710_sampled_encode_test.rs"
+
+[[test]]
+name = "gt710_controls"
+path = "../../tests/gt710_controls_test.rs"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("testing", "gt710_core_probe"))'] }
+
+[[test]]
+name = "gt710_adapter"
+path = "../../tests/gt710_adapter_test.rs"

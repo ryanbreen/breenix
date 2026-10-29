@@ -16,7 +16,7 @@ class GT710ScoreMapping(unittest.TestCase):
         manifest = json.loads((ROOT / 'docs/suites/gt710.json').read_text())
         categories = {category['id']: category['cases'] for category in manifest['categories']}
         suite = {'CATEGORIES': categories, 'score': lambda *args, **kwargs: 'passed', 'core_capture': lambda *args: {},
-                 'capture_serial': lambda directory: ''}
+                 'capture_serial': lambda directory: '', 'resources_capture': lambda *args: {}}
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             def write(name, value):

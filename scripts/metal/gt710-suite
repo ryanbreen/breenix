@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # Hardware encodings from pinned MIT sources; see THIRD_PARTY_NOTICES.
+# Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # Copyright 2010 Christoph Bumiller
 # Copyright (c) 2019 NVIDIA CORPORATION. All rights reserved.
 # /*
@@ -105,6 +106,7 @@ CATEGORIES = {
     'console': (
         ('acceptance', 'The same GT 710 capture passes firmware ownership, display claim, screen read-back and the complete E16 console suite'),
     ),
+    'resources': [('row', 'Production CAPS admits backend 6 with executable origins 3-10, native classes and live scanouts'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 8.2 step passing, reclaimed memory and its own time within 900 s'), ('console', 'A completed production console boot passes 88/88 within 330 s of handoff')],
     'core': [('row', 'CAPS bytes match the native backend-6 row and the created board classes'), ('dispatch', 'Native draws and copies complete; copy controls reject withheld release, stale epoch and masked 3D admission and accept their clean successors'), ('producer', 'A named production GPU-suite boot reports 170 manifest-ordered unprobed-capability admission refusals without skips and reports its own time')],
     'device': (
         ('identity', 'The PCI report identifies 10de:128b with subsystem 1462:8c93 and its interrupt line'),
@@ -1917,7 +1919,269 @@ def core_console_verdict(serial):
         raise ValueError('core console producer: ' + reason)
 
 
+def resources_row(serial):
+    """Judge the exact production CAPS syscall bytes, separate from 8.1 core/*."""
+    import struct
+    try:
+        anchor = one(r'^GT710_RESOURCES_BULK (\d+) ([0-9a-f]{64})$', serial, 'resources anchor')
+        row = one(r'^GT710_RESOURCES (.+)$', serial, 'resources CAPS')
+        raw = ('GT710_RESOURCES ' + row[1] + '\n').encode('ascii')
+        if len(raw) != int(anchor[1]) or hashlib.sha256(raw).hexdigest() != anchor[2]:
+            raise ValueError('resources CAPS differs from bulk anchor')
+        record = json.loads(row[1])
+        if (type(record.get('schema')) is not int or record['schema'] != 1
+                or record.get('type') != 'caps' or record.get('bytes') != 512
+                or not re.fullmatch('[0-9a-f]{1024}', record.get('hex', ''))):
+            raise ValueError('resources CAPS schema or wire size')
+        data = bytes.fromhex(record['hex'])
+        words = struct.unpack('<128I', data)
+        expected = (1, 512, 0, 0, 6, 512, 0xa197, 0, 4,
+                    0x927d, 0xa06f, 0xa0b5, 0xa197, 0, 0, 0, 0,
+                    0, 3, 1, 3, 2, 1, 7, 0, 16384, 16384, 1)
+        # The pipeline mask describes implementation, not executable admission.
+        # 8.2 requires its five pipelines through shared-suite results below.
+        if words[:28] != expected or words[28] >> 17:
+            raise ValueError('resources CAPS admission, native classes, formats, profile or limits')
+        origins = [3, 1] + [4] * 8 + [2]
+        if int.from_bytes(data[120:128], 'little') != sum(o << (3*i) for i, o in enumerate(origins)):
+            raise ValueError('resources CAPS requires executable origins 3-10')
+        if data[128:192] != b'GK208B' + bytes(58) or data[192:256] != bytes(64):
+            raise ValueError('resources CAPS identity or admission reason')
+        count = words[29]
+        if not 1 <= count <= 16:
+            raise ValueError('resources CAPS scanout count')
+        active = 0
+        for i in range(16):
+            enabled, width, height, reserved = words[64+i*4:68+i*4]
+            if i >= count:
+                if (enabled, width, height, reserved) != (0, 0, 0, 0):
+                    raise ValueError('resources CAPS unused scanout')
+            elif reserved or enabled not in (0, 1) or not 0 < width <= 16384 or not 0 < height <= 16384:
+                raise ValueError('resources CAPS live scanout')
+            active += enabled
+        if not active:
+            raise ValueError('resources CAPS lacks active scanout')
+        root = Path(__file__).resolve().parents[2]
+        probes = [json.loads(line) for line in re.findall(r'^(\{.+\})$', serial, re.M)
+                  if json.loads(line).get('phase') == 'caps-probe']
+        if [p.get('capability') for p in probes] != list(range(3, 11)):
+            raise ValueError('resources requires all eight executable probe images in order')
+        files = ['colour.bgra', 'colour.bgra', 'colour.rgba', 'colour.bgra',
+                 'r8.bgra', 'integer.bgra', 'colour.bgra', 'region.bgra']
+        groups = [probes]
+        epoch = 0
+        for probe in [json.loads(line) for line in re.findall(r'^(\{.+\})$', serial, re.M)
+                      if json.loads(line).get('phase') == 'caps-reprobe']:
+            current = probe.get('epoch')
+            if type(current) is not int or not 0 < current < 1 << 64:
+                raise ValueError('resources invalid reprobe epoch')
+            if current != epoch:
+                if current <= epoch:
+                    raise ValueError('resources reprobe epoch regressed')
+                groups.append([])
+                epoch = current
+            groups[-1].append(probe)
+        for group in groups:
+            if [p.get('capability') for p in group] != list(range(3, 11)):
+                raise ValueError('resources requires eight ordered probes in each epoch')
+        for probe, name in [(p, name) for group in groups for p, name in zip(group, files)]:
+            expected = (root / 'kernel/src/gpu/gk208/caps' / name).read_bytes()
+            if (type(probe.get('schema')) is not int or probe['schema'] != 1
+                    or type(probe.get('capability')) is not int
+                    or (probe.get('width'), probe.get('height')) != (80, 16)
+                    or probe.get('completed') is not True or probe.get('exact') is not True
+                    or probe.get('error') != ''
+                    or probe.get('expected_sha256') != hashlib.sha256(expected).hexdigest()
+                    or probe.get('first') != expected.hex() or probe.get('second') != expected.hex()):
+                raise ValueError('resources executable probe failed or whole-buffer mismatch: ' + name)
+        return record
+    except (KeyError, TypeError, AttributeError, struct.error, json.JSONDecodeError) as error:
+        raise ValueError('malformed resources CAPS') from error
+
+
+def resources_identity(boot, suite, sha=None):
+    sha = boot.get('bootedCommit') if sha is None else sha
+    if (not re.fullmatch('[0-9a-f]{40}', sha or '')
+            or boot.get('bootedCommit', sha) != sha or boot.get('toolsCommit') != sha
+            or boot.get('kind') != 'boot' or boot.get('mode') != 'suite'
+            or boot.get('suite') != suite or boot.get('suites') not in (None, [suite])
+            or boot.get('platform') != 'metal' or boot.get('arch') != 'x86_64'
+            or boot.get('evidenceEligible') is not True or boot.get('inject')
+            or boot.get('build', {}).get('commit') != sha
+            or boot.get('build', {}).get('profile') != 'production'
+            or boot.get('build', {}).get('features') != []
+            or not re.fullmatch(r'\d{8}T\d{6}Z-metal', boot.get('id', ''))):
+        raise ValueError('resources requires a named production ' + suite + ' boot of the same kernel/build/tools')
+
+
+def resources_suite(serial, boot):
+    """Score the 8.2 step while recording every real result of the shared suite."""
+    resources_identity(boot, 'gpu')
+    root = Path(__file__).resolve().parents[2]
+    manifest = json.loads((root / 'docs/suites/gpu.json').read_text())
+    names = [c['id']+'/'+t['id'] for c in manifest['categories'] for t in c['cases']]
+    step = json.loads((root / 'docs/gui/gt710-step-8-2.json').read_text())
+    required = step['cases']
+    if (len(names) != 170 or len(manifest['categories']) != 9
+            or step.get('suite') != 'gpu' or not required
+            or required != [n for n in names if n in required]):
+        raise ValueError('resources step must select shared GPU cases in manifest order')
+    fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal']
+    if (not serial.endswith('\n') or any(re.search(p, serial) for p in
+            fatal + [r'KERNEL PANIC[:!]', r'GT710_GR_REFUSAL', r'SUITE_SEQUENCE (?:STALLED|FAIL)'])):
+        raise ValueError('resources GPU capture incomplete, fatal or stalled')
+    # These are the suite-verdict wire shapes, with the existing memory oracle.
+    shapes = {
+        'START': r'SUITE gpu START cases=(\d+)',
+        'PASS': r'SUITE gpu CASE ([a-z0-9/-]+) PASS ms=(\d+)(?: sha256=[0-9a-f]{64})?',
+        'FAIL': r'SUITE gpu CASE ([a-z0-9/-]+) FAIL ms=(\d+)(?: sha256=[0-9a-f]{64})? msg=(\S.*)',
+        'DONE': r'SUITE gpu DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+)',
+        'ELAPSED': r'SUITE gpu ELAPSED ms=(\d+)',
+        'MEMORY': r'SUITE gpu MEMORY (before|after) free=(\d+) heap_free_kb=\d+(?: [a-z_]+=\d+)+',
+        'RECLAIMED': r'SUITE gpu MEMORY reclaimed=(PASS|FAIL) free_before=(\d+) free_after=(\d+) allowance=(\d+)',
+        'VALUE': r'SUITE gpu VALUE ([a-z0-9/-]+) [a-z0-9-]+=(-?\d+(?:\.\d+)?)([a-z]*)(?: expect=(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)([a-z]*))?',
+        'WAIT': r'SUITE gpu WAIT ([a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*) until=(\d+) for=(\d+) result=[a-z0-9]+(?:-[a-z0-9]+)*',
+    }
+    parsed = []
+    for line in serial.splitlines():
+        if 'SUITE gpu ' not in line:
+            continue
+        for kind, shape in shapes.items():
+            match = re.fullmatch(shape, line)
+            if match:
+                parsed.append((kind, match, line))
+                break
+        else:
+            raise ValueError('resources malformed or skipped GPU record: ' + line[:180])
+    records = [(k, m, l) for k, m, l in parsed if k in ('START', 'PASS', 'FAIL', 'DONE', 'ELAPSED')]
+    if (len(records) != 173 or records[0][0] != 'START' or records[0][1][1] != '170'
+            or [k for k, _, _ in records[1:171] if k not in ('PASS', 'FAIL')]
+            or [m[1] for _, m, _ in records[1:171]] != names
+            or records[171][0] != 'DONE' or records[172][0] != 'ELAPSED'):
+        raise ValueError('resources requires manifest-ordered START/170 CASE/DONE/ELAPSED')
+    # Live WAIT measurements name the pending case; CASE still decides its result
+    # (docs/suites/README.md, live measurements).
+    completed, started, ended = 0, False, False
+    for kind, match, _ in parsed:
+        if kind == 'START': started = True
+        elif kind == 'DONE': ended = True
+        elif kind in ('PASS', 'FAIL'): completed += 1
+        elif kind == 'WAIT' and (not started or ended or completed >= len(names)
+                or match[1] != names[completed] or int(match[2]) < int(match[3])):
+            raise ValueError('resources WAIT outside its pending manifest case or before its duration')
+    cases = [dict(id=m[1], result=k, ms=int(m[2]), reason=m[3] if k == 'FAIL' else '')
+             for k, m, _ in records[1:171]]
+    for c in cases:
+        if c['id'] in required and c['result'] != 'PASS':
+            raise ValueError('resources step failed: ' + c['id'] + ': ' + c['reason'])
+    tally = (sum(c['result'] == 'PASS' for c in cases), sum(c['result'] == 'FAIL' for c in cases), 0, 170)
+    if tuple(map(int, records[171][1].groups())) != tally:
+        raise ValueError('resources DONE disagrees with cases or has skips')
+    elapsed = int(records[172][1][1])
+    if not 0 < elapsed <= 900000:
+        raise ValueError('resources GPU own ELAPSED exceeds 900 s or is absent')
+    lines = serial.splitlines()
+    ready = [i for i, l in enumerate(lines) if l == 'SUITE_SEQUENCE READY gpu']
+    if len(ready) != 1 or ready[0] <= lines.index(records[-1][2]):
+        raise ValueError('resources GPU requires READY after own ELAPSED')
+    start_at = next(i for i, (k, _, _) in enumerate(parsed) if k == 'START')
+    done_at = next(i for i, (k, _, _) in enumerate(parsed) if k == 'DONE')
+    for i, (kind, m, _) in enumerate(parsed):
+        if kind == 'VALUE' and (not start_at < i < done_at or m[1] not in names
+                               or (m[6] is not None and m[6] != m[3])):
+            raise ValueError('resources VALUE outside cases or with invalid unit')
+    ok, why = runpy.run_path(str(root / 'scripts/suite-verdict.py'))['memory_problem'](parsed)
+    if not ok:
+        raise ValueError('resources GPU ' + why)
+    return dict(elapsed_ms=elapsed, cases=cases)
+
+
+def resources_console(serial, boot, events):
+    import math
+    resources_identity(boot, 'console')
+    if re.search(r'SUITE_SEQUENCE (?:STALLED|FAIL)|KERNEL PANIC[:!]', serial):
+        raise ValueError('resources console fatal or stalled')
+    core_console_verdict(serial)
+    if any(e.get('event') in ('console-gap', 'fatal') for e in events):
+        raise ValueError('resources console capture gap or fatal')
+    handoff = [e.get('seconds') for e in events if e.get('event') == 'handoff']
+    done = [e.get('seconds') for e in events if e.get('event') == 'final-marker']
+    if (len(handoff) != 1 or len(done) != 1
+            or any(type(v) not in (int, float) or not math.isfinite(v) for v in handoff + done)
+            or not 0 < done[0] - handoff[0] <= 330):
+        raise ValueError('resources console requires handoff-to-DONE at most 330 s')
+    ready = one(r'^SUITE_SEQUENCE READY console$', serial, 'resources console READY')
+    last = one(r'^SUITE console ELAPSED ms=\d+$', serial, 'resources console ELAPSED')
+    if ready.start() <= last.start():
+        raise ValueError('resources console READY before suite completion')
+    return round((done[0] - handoff[0])*1000)
+
+
+def resources_capture(directory, sha):
+    """Console is primary; resources-producer is the completed GPU companion."""
+    directory = Path(directory)
+    def read_capture(path, suite):
+        read = lambda name: (path / name).read_text()
+        boot = json.loads(read('run.json'))
+        resources_identity(boot, suite, sha)
+        events = [json.loads(l) for l in read('events.jsonl').splitlines()]
+        status = read('exit-status').strip()
+        if (not read('ended').strip() or read('dirty').strip() != '0' or read('commit').strip() != sha
+                or status not in (('0','1') if suite == 'gpu' else ('0',))
+                or any(e.get('event') in ('console-gap', 'fatal') for e in events)
+                or sum(e.get('event') == 'final-marker' for e in events) != 1):
+            raise ValueError('resources capture incomplete, dirty, gapped or unsuccessful')
+        serial=capture_serial(path)
+        boot = dict(boot, bootedCommit=sha)
+        if status == '1':
+            measured=resources_suite(serial, boot)
+            if not any(c['result'] == 'FAIL' for c in measured['cases']):
+                raise ValueError('resources exit 1 without failed GPU cases')
+        return dict(boot=boot, serial=serial, events=events,
+                    exit_status=int(status))
+    console = read_capture(directory, 'console')
+    gpu = read_capture(directory / 'resources-producer', 'gpu')
+    if console['boot']['id'] == gpu['boot']['id']:
+        raise ValueError('resources requires distinct console and GPU captures')
+    return dict(console=console, gpu=gpu)
+
+
+def record_resources_capture(directory, sha):
+    directory = Path(directory)
+    producer = resources_capture(directory, sha)
+    gpu = producer['gpu']
+    results = cases('resources', producer['console']['serial'], producer)
+    report = dict(boot=producer['console']['boot']['id'], commit=sha,
+                  milestone='metal-gt710/resources', producerBoot=gpu['boot']['id'], cases=results)
+    # Retain all 170 outcomes even when a required case makes this step red.
+    report['gpuCaseLines'] = [l for l in gpu['serial'].splitlines() if l.startswith('SUITE gpu CASE ')]
+    try:
+        suite = resources_suite(gpu['serial'], gpu['boot'])
+        report.update(gpuCases=suite['cases'], gpuElapsedMS=suite['elapsed_ms'])
+    except ValueError as error:
+        report['gpuError'] = str(error)
+    try:
+        report['consoleHandoffToDoneMS'] = resources_console(
+            producer['console']['serial'], producer['console']['boot'], producer['console']['events'])
+    except ValueError as error:
+        report['consoleError'] = str(error)
+    for row in results:
+        print('SUITE gt710 CASE ' + row['id'] + ' ' + row['result'] + ' ms=0'
+              + (' msg=' + row['reason'] if row['reason'] else ''), flush=True)
+    (directory / 'gt710-resources.json').write_text(json.dumps(report, indent=2) + '\n')
+    return 0 if all(c['result'] == 'PASS' for c in results) else 1
+
+
 def check_case(category, case, serial, producer=None):
+    if category == 'resources':
+        if producer is None:
+            raise ValueError('resources needs named production GPU and console captures')
+        gpu, console = producer['gpu'], producer['console']
+        if case == 'row': resources_row(gpu['serial'])
+        elif case == 'suite': resources_suite(gpu['serial'], gpu['boot'])
+        elif case == 'console': resources_console(console['serial'], console['boot'], console['events'])
+        else: raise ValueError('unknown resources case')
+        return
     if category == 'core':
         if producer is not None and 'diagnostic' in producer:
             serial = producer['diagnostic']['serial']
@@ -2117,6 +2381,22 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns, pro
         require_profile(producer['diagnostic']['boot'], 'gpu-core')
         if records.get('producerBoot') != producer['boot']['id']:
             raise ValueError('core producer boot differs from retained companion')
+    if category == 'resources':
+        if producer is None or producer['console']['boot']['id'] != boot['id']:
+            raise ValueError('resources primary capture differs from report')
+        for capture, suite in [(producer['console'], 'console'), (producer['gpu'], 'gpu')]:
+            resources_identity(capture['boot'], suite, sha)
+        if producer['console']['boot']['id'] == producer['gpu']['boot']['id']:
+            raise ValueError('resources captures must be distinct')
+        suite = resources_suite(producer['gpu']['serial'], producer['gpu']['boot'])
+        console_ms = resources_console(producer['console']['serial'], producer['console']['boot'],
+                                       producer['console']['events'])
+        lines = [l for l in producer['gpu']['serial'].splitlines() if l.startswith('SUITE gpu CASE ')]
+        if (records.get('producerBoot') != producer['gpu']['boot']['id']
+                or records.get('gpuCases') != suite['cases'] or records.get('gpuCaseLines') != lines
+                or records.get('gpuElapsedMS') != suite['elapsed_ms']
+                or records.get('consoleHandoffToDoneMS') != console_ms):
+            raise ValueError('resources report differs from retained suite results or timing')
     if records.get('cases') != cases(category, serial, producer):
         raise ValueError('GT 710 results differ from the captured evidence')
     if any(c['result'] != 'PASS' for c in records['cases']):
@@ -2130,10 +2410,36 @@ def capture_serial(directory):
     # claim-lint:ok: normative bulk framing; tests/gt710_bulk_test.py and tests/gt710_contexts_report_test.py mutate anchors and bodies.
     serial=(Path(directory)/'serial.txt').read_text()
     matches=list(re.finditer(r'^GT710_BULK (\d+) ([a-f0-9]{64})$',serial,re.M))
+    finals=list(re.finditer(r'^GT710_FINAL_BULK (\d+) ([a-f0-9]{64})$',serial,re.M))
+    final_path=Path(directory)/'gt710-final.rle'
+    if len(finals)>1 or final_path.exists()!=bool(finals):
+        raise ValueError('final artifact slot missing or duplicated')
+    if finals:
+        start=list(re.finditer(r'^SUITE gpu START .*$',serial,re.M))
+        done=list(re.finditer(r'^SUITE gpu DONE .*$',serial,re.M))
+        memory=list(re.finditer(r'^SUITE gpu MEMORY reclaimed=.*$',serial,re.M))
+        ready=list(re.finditer(r'^SUITE_SEQUENCE READY gpu$',serial,re.M))
+        case_rows=list(re.finditer(r'^SUITE gpu CASE .*$',serial,re.M))
+        if (len(matches)!=1 or len(start)!=1 or len(done)!=1 or len(memory)!=1
+                or len(ready)!=1 or not case_rows
+                or not matches[0].end()<start[0].start()<case_rows[0].start()
+                or not case_rows[-1].end()<done[0].start()<memory[0].start()<finals[0].start()<ready[0].start()):
+            raise ValueError('final artifact slot outside completed GPU suite')
     contexts = 'GT710_CTX_BULK ' in serial or 'GT710_CONTEXTS ' in serial
     if contexts and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file()
                      or re.search(r'^GT710_CTX_IMAGE ', serial, re.M)):
         raise ValueError('graphics context image bulk missing or on serial')
+    probes = bool(re.search(r'^GT710_CAPS_(?:PROBE|REPROBE) id=', serial, re.M))
+    if probes and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file()):
+        raise ValueError('executable CAPS probe bulk missing')
+    if any(line.startswith('{') and any('"phase":"' + phase + '"' in line
+           for phase in ('caps-probe', 'caps-reprobe')) for line in serial.splitlines()):
+        raise ValueError('executable CAPS probe images must arrive in bulk')
+    resources = 'GT710_RESOURCES_BULK ' in serial
+    if resources and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file()):
+        raise ValueError('resources evidence bulk missing')
+    if re.search(r'^GT710_RESOURCES ', serial, re.M):
+        raise ValueError('resources CAPS must arrive in bulk')
     startup = 'GT710_CORE_STARTUP_BULK ' in serial
     core = 'GT710_CORE_BULK ' in serial or startup
     if core and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file()):
@@ -2156,9 +2462,17 @@ def capture_serial(directory):
     data=(Path(directory)/'gt710-pixels.rle').read_bytes()
     if len(data)!=int(matches[0][1]) or len(data)>2<<20 or hashlib.sha256(data).hexdigest()!=matches[0][2]:
         raise ValueError('display artifact differs from serial length/digest')
+    startup_bytes=len(data)
+    if finals:
+        final_data=final_path.read_bytes()
+        if (len(final_data)!=int(finals[0][1]) or len(final_data)>2<<20
+                or hashlib.sha256(final_data).hexdigest()!=finals[0][2]):
+            raise ValueError('final artifact differs from serial length/digest')
+        data+=final_data
     text=data.decode('ascii')
-    groups={};previous=None
+    groups={};group_slots={};previous=None;offset=0
     for line in text.splitlines(keepends=True):
+        slot=int(offset>=startup_bytes);offset+=len(line)
         fields=line.split()
         if fields[0]=='GT710_PIX': key=('native',)
         elif fields[0]=='GT710_SWITCH_PIX': key=('switch',int(fields[1]))
@@ -2168,12 +2482,31 @@ def capture_serial(directory):
         elif fields[0]=='GT710_SHADER_IMAGE': key=('shaders',)
         elif fields[0]=='GT710_DRAW_IMAGE': key=('draw',)
         elif fields[0]=='GT710_CTX_IMAGE': key=('gr-contexts',)
+        elif line.startswith('{'):
+            row = json.loads(line)
+            if row.get('phase') not in ('caps-probe', 'caps-reprobe') or type(row.get('capability')) is not int:
+                raise ValueError('unexpected JSON artifact record')
+            if row['phase'] == 'caps-reprobe':
+                if type(row.get('epoch')) is not int or not 0 < row['epoch'] < 1 << 64:
+                    raise ValueError('invalid executable reprobe epoch')
+                key=('caps-reprobe', row['epoch'], row['capability'])
+            else:
+                key=('caps-probe', row['capability'])
+        elif fields[0]=='GT710_RESOURCES': key=('resources',)
         elif fields[0]=='GT710_CORE': key=('core',)
         elif fields[0]=='GT710_CORE_STARTUP': key=('core-startup',)
         else: raise ValueError('unexpected display artifact record')
+        if key in group_slots and group_slots[key]!=slot:
+            raise ValueError('artifact record appears in both slots')
+        group_slots[key]=slot
         if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
         groups.setdefault(key,[]).append(line);previous=key
     def report_key(line):
+        reprobe = re.fullmatch(r'GT710_CAPS_REPROBE id=(\d+) epoch=(\d+) sha256=([a-f0-9]{64})\n?', line)
+        if reprobe: return ('caps-reprobe', int(reprobe[2]), int(reprobe[1]))
+        probe = re.fullmatch(r'GT710_CAPS_PROBE id=(\d+) sha256=([a-f0-9]{64})\n?', line)
+        if probe: return ('caps-probe', int(probe[1]))
+        if line.startswith('GT710_RESOURCES_BULK '): return ('resources',)
         if line.startswith('GT710_CORE_STARTUP_BULK '): return ('core-startup',)
         if line.startswith('GT710_CORE_BULK '): return ('core',)
         if line.startswith('GT710_CTX_BULK '): return ('gr-contexts',)
@@ -2191,15 +2524,47 @@ def capture_serial(directory):
     if len(order)!=len(set(order)) or list(groups)!=order:
         raise ValueError('display artifact blocks differ from update order')
     result=[]
+    serial_offset=0
     for line in serial.splitlines(keepends=True):
         key=report_key(line)
-        if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',), ('core',), ('core-startup',)):
+        if key is not None and finals:
+            lower=matches[0].end() if group_slots[key] else 0
+            upper=finals[0].start() if group_slots[key] else matches[0].start()
+            if not lower<=serial_offset<upper:
+                raise ValueError('artifact anchor outside its upload slot')
+        serial_offset+=len(line)
+        if key is not None and key[0] in ('caps-probe', 'caps-reprobe'):
+            digest = re.search(r'sha256=([a-f0-9]{64})', line)
+            if (len(groups[key]) != 1 or digest is None
+                    or hashlib.sha256(groups[key][0].removesuffix('\n').encode('ascii')).hexdigest() != digest[1]):
+                raise ValueError('executable CAPS probe differs from serial digest')
+        if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',), ('core',), ('core-startup',), ('resources',)):
             record=''.join(groups[key]).encode('ascii')
             fields=line.split()
             if len(fields)!=3 or (key==('multi',) and len(groups[key])!=1) or len(record)!=int(fields[1]) or hashlib.sha256(record).hexdigest()!=fields[2]:
                 kind='concurrency' if key==('multi',) else 'graphics image'
                 raise ValueError(kind+' artifact differs from serial length/digest')
-        if key is not None: result.extend(groups[key])
+        if key is not None and key[0] == 'caps-reprobe':
+            row = json.loads(groups[key][0])
+            if any(side + '_sha256' in row for side in ('first', 'second')):
+                source = groups.get(('caps-probe', row['capability']), [])
+                if len(source) != 1 or any(side in row for side in ('first', 'second')):
+                    raise ValueError('reprobe needs complete uploaded source images')
+                source = json.loads(source[0])
+                for side in ('first', 'second'):
+                    pixels = source.get(side)
+                    digest = row.get(side + '_sha256')
+                    if (not isinstance(pixels, str) or len(pixels) % 2
+                            or re.fullmatch('[0-9a-f]*', pixels) is None
+                            or not isinstance(digest, str) or re.fullmatch('[0-9a-f]{64}', digest) is None
+                            or hashlib.sha256(bytes.fromhex(pixels)).hexdigest() != digest):
+                        raise ValueError('fresh reprobe digest differs from uploaded image')
+                    row[side] = pixels
+                result.append(json.dumps(row, separators=(',', ':')) + '\n')
+            else:
+                result.extend(groups[key])
+        elif key is not None:
+            result.extend(groups[key])
         result.append(line)
     joined = ''.join(result)
     if startup:
@@ -2212,7 +2577,10 @@ CPU_MEMORY_CATEGORIES = {'inventory','vm','aperture','lifetime'}
 def capture_categories(boot):
     if boot.get('mode') == 'probe':
         return [c for c in CATEGORIES if c in CPU_MEMORY_CATEGORIES]
-    return [c for c in CATEGORIES if c not in CPU_MEMORY_CATEGORIES
+    return [c for c in CATEGORIES if c != 'resources' and c not in CPU_MEMORY_CATEGORIES
+            # The console entry runs CE kill/recovery before CAPS transfers FIFO
+            # ownership. The GPU entry starts with CAPS and cannot run those probes.
+            and not (boot.get('suite') == 'gpu' and c in ('recovery', 'contexts'))
             and (c != 'console' or (boot.get('mode') == 'suite' and boot.get('suite') == 'console'))]
 
 
@@ -2315,6 +2683,7 @@ def main():
     parser.add_argument('--boot')
     parser.add_argument('--sha')
     parser.add_argument('--gpu-boot', help='completed companion GPU-only suite boot for core/producer')
+    parser.add_argument('--resources', action='store_true', help='score PR 8.2 from this console boot and --gpu-boot; retain core/* separately')
     parser.add_argument('--core-boot', help='completed --gt710-category core diagnostic boot for row/dispatch')
     args = parser.parse_args()
     if args.check_manifest:
@@ -2336,6 +2705,30 @@ def main():
         raise ValueError('a completed, clean, successful boot of the requested commit is required')
     if any(json.loads(line).get('event') == 'console-gap' for line in read('events.jsonl').splitlines()):
         raise ValueError('capture has a console gap')
+    if args.resources:
+        if (args.core_boot or not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.gpu_boot or '')
+                or args.gpu_boot == args.boot):
+            parser.error('--resources needs a distinct --gpu-boot and no --core-boot')
+        companion = runner['STATE'] + '/boots/' + args.gpu_boot
+        runner['in_metal'](env, 'python3', '-c',
+            'import sys,shutil;from pathlib import Path;'
+            'p=Path(sys.argv[1]);q=Path(sys.argv[2]);d=p/"resources-producer";d.mkdir(exist_ok=True);'
+            '[shutil.copyfile(q/n,d/n) for n in ("run.json","serial.txt","events.jsonl","ended","exit-status","dirty","commit","gt710-pixels.rle")];[(shutil.copyfile(q/n,d/n) if (q/n).is_file() else (d/n).unlink(missing_ok=True)) for n in ("gt710-final.rle","native-final-upload.json")]',
+            directory, companion, check=True)
+        result = runner['in_metal'](env, 'python3', '-c',
+            'import runpy,sys;from pathlib import Path;'
+            'p=Path(sys.argv[1]);a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));'
+            'sys.exit(a["record_resources_capture"](p,sys.argv[2]))', directory, args.sha)
+        aggregate = runner['in_metal'](env, 'python3', '-c',
+            'import sys,json;sys.path.insert(0,"/opt/breenix-metal");import metal_score,metal_lib as m;'
+            'p=m.boot_dir(sys.argv[1]);v=metal_score.score(p);m.write_json(p/"milestone-verdict.json",v);'
+            'r=v["milestones"].get("metal-gt710/resources",{});'
+            'passed=v.get("captureComplete") is True and r.get("passed") is True and r.get("reached")==r.get("total")==3;'
+            'print("metal-gt710/resources",r,flush=True);'
+            '\nwith m.locked("finished"):\n entries=[json.loads(l) for l in (m.STATE/"finished.jsonl").read_text().splitlines()];'
+            'm.append_jsonl(m.STATE/"finished.jsonl",dict(id=p.name,seq=max(e["seq"] for e in entries)+1))'
+            '\nsys.exit(0 if passed else 1)', args.boot)
+        return 0 if result.returncode == aggregate.returncode == 0 else 1
     if args.core_boot:
         if (not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.core_boot)
                 or args.core_boot in (args.boot, args.gpu_boot)):
@@ -2345,7 +2738,7 @@ def main():
             'import runpy,sys,shutil;from pathlib import Path;'
             'p=Path(sys.argv[1]);q=Path(sys.argv[2]);a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));'
             'a["core_diagnostic_capture"](q,sys.argv[3]);d=p/"core-diagnostic";d.mkdir(exist_ok=True);'
-            '[shutil.copyfile(q/n,d/n) for n in ("run.json","serial.txt","events.jsonl","ended","exit-status","dirty","commit","gt710-pixels.rle")] ',
+            '[shutil.copyfile(q/n,d/n) for n in ("run.json","serial.txt","events.jsonl","ended","exit-status","dirty","commit","gt710-pixels.rle")];[(shutil.copyfile(q/n,d/n) if (q/n).is_file() else (d/n).unlink(missing_ok=True)) for n in ("gt710-final.rle","native-final-upload.json")] ',
             directory, diagnostic, args.sha, check=True)
     if args.gpu_boot:
         if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.gpu_boot) or args.gpu_boot == args.boot:
@@ -2355,7 +2748,7 @@ def main():
             'import runpy,sys,shutil;from pathlib import Path;'
             'p=Path(sys.argv[1]);q=Path(sys.argv[2]);a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));'
             'a["core_producer_capture"](q,sys.argv[3]);d=p/"core-producer";d.mkdir(exist_ok=True);'
-            '[shutil.copyfile(q/n,d/n) for n in ("run.json","serial.txt","events.jsonl","ended","exit-status","dirty","commit","gt710-pixels.rle")]',
+            '[shutil.copyfile(q/n,d/n) for n in ("run.json","serial.txt","events.jsonl","ended","exit-status","dirty","commit","gt710-pixels.rle")];[(shutil.copyfile(q/n,d/n) if (q/n).is_file() else (d/n).unlink(missing_ok=True)) for n in ("gt710-final.rle","native-final-upload.json")]',
             directory, companion, args.sha, check=True)
     result = runner['in_metal'](env, 'python3', '-c',
         'import runpy,sys;from pathlib import Path;'

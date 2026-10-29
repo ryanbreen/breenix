@@ -72,7 +72,9 @@ def catalogue():
         ("catalogue-vertex", "catalogue.vert.tgsi"),
         ("diagnostic-triangle-vertex", "triangle.vert.tgsi"),
         ("diagnostic-triangle-fragment", "triangle.frag.tgsi"),
-        ("gradient-fragment", "gradient.frag.tgsi")])
+        ("gradient-fragment", "gradient.frag.tgsi"),
+        ("probe-integer-ops", "integer-ops.frag.tgsi"),
+        ("probe-texel-fetch", "texel-fetch.frag.tgsi")])
     controls = ROOT / "tests/fixtures/gt710_shader_controls"
     for name in ("constant-colour-fragment", "drop-colour-vertex"):
         result.append((name, controls / (name + ".tgsi"), {"name": name}))

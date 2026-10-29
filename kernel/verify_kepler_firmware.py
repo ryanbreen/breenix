@@ -14,6 +14,11 @@ CONTROLS = tuple(f'{name}.{extension}'
                  for name in ('constant-colour-fragment', 'drop-colour-vertex')
                  for extension in ('bin', 'sph', 'json', 'asm'))
 GRADIENT = tuple(f'gradient-fragment.{extension}' for extension in ('bin', 'sph', 'json', 'asm'))
+CATALOGUE = tuple(f'{name}.{extension}'
+                  for name in ('pipeline-solid', 'pipeline-copy', 'pipeline-copy_scaled',
+                               'pipeline-nearest_scaled', 'pipeline-box_filter',
+                               'probe-integer-ops', 'probe-texel-fetch')
+                  for extension in ('bin', 'sph', 'json', 'asm'))
 REBUILD = 'regenerate with cargo run -p xtask -- kepler-assets --check and commit kernel/assets/kepler/'
 
 
@@ -23,7 +28,7 @@ def verify_assets(root):
     expected = json.loads((root / 'docs/gui/provenance/kepler-toolchain.sha256.json').read_text())
     source = (root / 'kernel/src/gpu/gk208/gr/firmware.rs').read_text()
     constants = dict(re.findall(r'pub const (\w+)_SHA256: &str = "([0-9a-f]{64})";', source))
-    for name in NAMES + TRIANGLE + CONTROLS + GRADIENT + ('manifest.json',):
+    for name in NAMES + TRIANGLE + CONTROLS + GRADIENT + CATALOGUE + ('manifest.json',):
         try:
             data = (assets / name).read_bytes()
         except FileNotFoundError as error:
@@ -39,7 +44,7 @@ def verify_assets(root):
     manifest = json.loads((assets / 'manifest.json').read_text())
     if (manifest['schema'], manifest['chipset'], manifest['byte_order']) != (1, 0x106, 'little'):
         raise ValueError(f'manifest.json: wrong firmware format; {REBUILD}')
-    for name in NAMES + TRIANGLE + CONTROLS + GRADIENT:
+    for name in NAMES + TRIANGLE + CONTROLS + GRADIENT + CATALOGUE:
         entry = manifest['files'][name]
         license_name = 'MIT' if name in NAMES or name.endswith('.sph') else 'PolyForm-Noncommercial-1.0.0'
         if entry != dict(bytes=(assets / name).stat().st_size, license=license_name, sha256=expected[name]):
