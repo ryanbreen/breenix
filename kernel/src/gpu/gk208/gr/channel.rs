@@ -1562,10 +1562,23 @@ mod native {
             let c = self.session.report.identity;
             regs.mask(0x2630, 1 << c.runlist, 1 << c.runlist);
             regs.mask(0x800004 + c.id as usize * 8, 0x800, 0x800);
+            let (_, faults) = crate::gk208::vm::faults(&mut VmIo {regs:&mut regs,total:self.total});
+            // Only GR and its shared-runlist CE2 are stopped below. Preserve
+            // another instance's fault or a fault on an unstopped engine.
+            let owned = faults.iter().filter(|f| f.instance == c.instance && matches!(f.unit, 0 | 0x1b))
+                .fold(0u32, |mask, f| mask | 1u32 << f.unit);
             // G9: reset and confirm before runlist removal/unbind/restoration.
             super::super::ctxctl::reset(&mut regs).map_err(super::super::hardware_error)?;
             if let Some(copy) = &self.session.copy {
                 crate::gk208::ce::reset_engine(&mut regs, copy.base, copy.reset)?;
+            }
+            // MIT nouveau gf100.c/gk104.c: clear the attributed exception
+            // after the engine stop, then allow runlist removal to progress.
+            if owned != 0 { regs.write(0x259c, owned); }
+            if regs.read(0x259c) != 0 { return Err("native reset foreign MMU fault; backing retained"); }
+            if owned != 0 {
+                regs.write(0x2100, 0x10000000);
+                regs.write(0x262c, 1 << c.runlist);
             }
             self.session.quiesce(&mut regs, self.total)?;
             if regs.read(0x259c) != 0 { return Err("native reset MMU fault; backing retained"); }
