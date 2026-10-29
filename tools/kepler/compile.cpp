@@ -192,7 +192,7 @@ class Frontend : public BuildUtil {
    }
    void instruction(const std::string &line) {
       auto space=line.find(' '); auto op=opName(line);
-      if (op=="KILL") { mkFlow(OP_DISCARD,NULL,CC_ALWAYS,NULL); discard=true; return; }
+      if (op=="KILL") { mkOp(OP_DISCARD,TYPE_NONE,NULL); discard=true; return; }
       if (op=="BRK") {
          require(!loopTails.empty(),"BRK outside loop");
          mkFlow(OP_BREAK,loopTails.back(),CC_ALWAYS,NULL);
