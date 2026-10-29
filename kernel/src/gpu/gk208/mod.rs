@@ -122,6 +122,9 @@ mod native;
 mod core_record;
 pub use native::{ConsoleSurface,console_binding,takeover_started,caps_scanout};
 pub(crate) use ce::console_state;
+pub(crate) fn console_surface() -> Option<ConsoleSurface> {
+    ce::console_allocation().map(|(surface, _)| surface)
+}
 mod rom;
 pub fn proc_pixels()->Vec<u8> {bulk::take()}
 pub fn proc_ce(op:u8)->Result<Vec<u8>,i32> {ce::proc_read(op)}

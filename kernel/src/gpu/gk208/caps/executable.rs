@@ -146,7 +146,7 @@ impl Runner<'_> {
         pages.write(0, &frame.data);
         pages.maintain(0, frame.data.len(), false);
         // Leave room for the publisher's parking state and release in its
-        // 2048-word slot. Every original probe draw still executes.
+        // 2048-word slot; batching retains the original draw packets.
         frame.batch_draws(1400);
         for chunk in encode::prepare(frame, pages)? {
             let (tag, fence) = self.next();

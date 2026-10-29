@@ -160,6 +160,18 @@ impl Core {
         }
     }
 
+    /// Native PRESENT copies into the display-owned console allocation. Returning
+    /// to that allocation ends logical scanout holds on copy sources. Pending
+    /// requests retain their separate engine/submission holds until completion.
+    #[cfg(target_arch = "x86_64")]
+    fn native_console_restored(&mut self) {
+        let held = core::mem::take(&mut self.display.holds);
+        self.display.binding = None;
+        self.display.latest_ok = true;
+        self.display.known = self.display.outstanding == 0;
+        for id in held { self.unhold(id); }
+    }
+
     /// A confirmed reset ended device access: the binding is cleared and marked known.
     pub(super) fn display_reset(&mut self) {
         let held = core::mem::take(&mut self.display.holds);
@@ -695,7 +707,9 @@ pub(super) fn restore() -> Result<(), i64> {
         // Basic offscreen pipelines cannot replace the native console binding.
         // Confirm that binding, rather than asking the ARM screen owner to bind
         // an ARM screen resource on this backend.
-        return if bound { Ok(()) } else { Err(EIO) };
+        if !bound { return Err(EIO); }
+        with_core(|c| c.native_console_restored()).ok_or(ENODEV)?;
+        return Ok(());
     }
     let owned = with_core(|c| !c.display.stack.is_empty()).unwrap_or(false);
     let Some(_presentation) = crate::console::vt::Presentation::begin(owned) else {

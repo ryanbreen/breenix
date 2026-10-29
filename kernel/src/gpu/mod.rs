@@ -566,6 +566,8 @@ pub(crate) fn install_native(device: crate::gk208::adapter::Device) -> Result<()
     } else if caps.status != abi::status::ADMITTED {
         return Err("native core capability state invalid");
     }
+    let surface = crate::gk208::console_surface().ok_or("native console surface absent")?;
+    native_console_backing(&surface)?;
     with_core(|core| {
         if core.dev.is_some() { return Err("GPU core already has a device"); }
         core.queue_size = device.queue_size();
@@ -2083,6 +2085,27 @@ fn exec_ok(build: impl FnOnce(Tag) -> Option<Request>, ctx: u32, holds: &[u32]) 
     }
 }
 
+// The render thread serializes console observations. Prepare this reusable
+// scratch before publishing admission, so background checks do not allocate a
+// scanout-sized DMA buffer across the suite's reclamation sample.
+#[cfg(target_arch = "x86_64")]
+static NATIVE_CONSOLE_BACKING: spin::Mutex<Option<Arc<Pages>>> = spin::Mutex::new(None);
+#[cfg(target_arch = "x86_64")]
+fn native_console_backing(surface: &crate::gk208::ConsoleSurface) -> Result<Arc<Pages>, &'static str> {
+    let bytes = surface.width.checked_mul(surface.height).and_then(|n| n.checked_mul(4))
+        .ok_or("native console extent overflow")?;
+    let mut storage = NATIVE_CONSOLE_BACKING.lock();
+    if let Some(backing) = storage.as_ref() {
+        if backing.bytes() != bytes.next_multiple_of(PAGE) {
+            return Err("native console readback geometry changed");
+        }
+        return Ok(backing.clone());
+    }
+    let backing = Arc::new(Pages::new(bytes.div_ceil(PAGE)).ok_or("native console readback allocation")?);
+    *storage = Some(backing.clone());
+    Ok(backing)
+}
+
 /// Observe the latched native console using two CE transfers through the shared
 /// queue. Early boot has no admitted device and continues its BAR observation.
 #[cfg(target_arch = "x86_64")]
@@ -2094,7 +2117,7 @@ pub(crate) fn native_console_readback(surface: &crate::gk208::ConsoleSurface)
     }
     let bytes = surface.width.checked_mul(surface.height).and_then(|n| n.checked_mul(4))
         .ok_or("native console extent overflow")?;
-    let backing = Arc::new(Pages::new(bytes.div_ceil(PAGE)).ok_or("native console readback allocation")?);
+    let backing = native_console_backing(surface)?;
     let mut first = alloc::vec![0; bytes];
     let mut last = 0;
     for (index, poison) in [0x55, 0xaa].into_iter().enumerate() {
