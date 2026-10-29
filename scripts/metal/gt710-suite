@@ -2631,15 +2631,34 @@ def record_capture(directory, sha, producer_sha=None):
     return 0 if passed else 1
 
 
+def alpha_capture_identity(directory, head):
+    """G13 retained boots may differ only by the authorized host scorer files."""
+    import subprocess
+    capture = (Path(directory) / 'commit').read_text().strip()
+    if not re.fullmatch('[a-f0-9]{40}', capture):
+        raise ValueError('alpha capture requires a full recorded commit')
+    changed = []
+    if capture != head:
+        root = Path(__file__).resolve().parents[2]
+        subprocess.check_output(['git', 'merge-base', '--is-ancestor', capture, head], cwd=root)
+        changed = subprocess.check_output(
+            ['git', 'diff', '--no-renames', '--name-only', '-z', capture, head], cwd=root).decode().split('\0')[:-1]
+        allowed = {'scripts/metal/gt710-suite', 'tests/gt710_alpha_report_test.py'}
+        if set(changed) - allowed:
+            raise ValueError('alpha retained capture differs in runtime or unauthorized files: ' + ', '.join(changed))
+    return capture, changed
+
+
 def alpha_capture_proof(directory, sha, pr):
     """Bind the step's two completed captures to the observed open PR head (G13)."""
     if pr.get('state') != 'OPEN' or pr.get('headRefOid') != sha:
         raise ValueError('alpha acceptance requires the current open PR head')
-    producer = resources_capture(directory, sha)
+    capture_sha, changed = alpha_capture_identity(directory, sha)
+    producer = resources_capture(directory, capture_sha)
     gpu = resources_suite(producer['gpu']['serial'], producer['gpu']['boot'], STEP_SELECTIONS['alpha'])
     console_ms = resources_console(producer['console']['serial'], producer['console']['boot'],
                                    producer['console']['events'])
-    proof = dict(head=sha, pr=pr, boots=[], consoleHandoffToDoneMS=console_ms,
+    proof = dict(head=sha, captureCommit=capture_sha, hostOnlyDiff=changed, pr=pr, boots=[], consoleHandoffToDoneMS=console_ms,
                  gpuElapsedMS=gpu['elapsed_ms'])
     selected = json.loads((Path(__file__).resolve().parents[2] / 'docs/gui' / STEP_SELECTIONS['alpha']).read_text())['cases']
     proof['selected'] = dict(passed=sum(c['id'] in selected and c['result'] == 'PASS' for c in gpu['cases']),
@@ -2666,7 +2685,7 @@ def alpha_capture_proof(directory, sha, pr):
         digests = {name: hashlib.sha256((path / name).read_bytes()).hexdigest()
                    for name in ('serial.txt', 'events.jsonl', 'gt710-pixels.rle', 'gt710-final.rle')
                    if (path / name).exists()}
-        proof['boots'].append(dict(id=boot['id'], suite=suite, commit=sha,
+        proof['boots'].append(dict(id=boot['id'], suite=suite, commit=capture_sha,
             toolsCommit=boot['toolsCommit'], build=boot['build'], exitStatus=status,
             exitReason='failed GPU cases outside step 8.3 (G13)' if status else 'passed suite',
             done=tally, memory='PASS', captureComplete=True, lifecycle=rows, sha256=digests))
@@ -2676,7 +2695,8 @@ def alpha_capture_proof(directory, sha, pr):
 def alpha_acceptance(directory, sha, pr):
     """Score existing hardware cases and this step against the same pair of captures."""
     proof = alpha_capture_proof(directory, sha, pr)
-    producer = resources_capture(directory, sha)
+    capture_sha = proof['captureCommit']
+    producer = resources_capture(directory, capture_sha)
     root = Path(__file__).resolve().parents[2]
     manifest = json.loads((root / 'docs/suites/gt710.json').read_text())
     effort = json.loads((root / 'docs/efforts/metal.json').read_text())
@@ -2688,16 +2708,16 @@ def alpha_acceptance(directory, sha, pr):
             # The coordinator binds the unchanged core/* rows to the retained 8.1 captures.
             if category == 'core':
                 continue
-            records = dict(boot=boot['id'], commit=sha, milestone='metal-gt710/' + category,
+            records = dict(boot=boot['id'], commit=capture_sha, milestone='metal-gt710/' + category,
                            cases=cases(category, serial))
-            reason = score(manifest, effort, records, serial, boot, sha, fatal)
+            reason = score(manifest, effort, records, serial, boot, capture_sha, fatal)
             proof['checks'].append(dict(suite=suite, category=category, count=len(records['cases']), reason=reason))
     for category in ('resources', 'alpha'):
-        if record_resources_capture(directory, sha, category) != 0:
+        if record_resources_capture(directory, capture_sha, category) != 0:
             raise ValueError(category + ' acceptance failed')
         records = json.loads((Path(directory) / ('gt710-' + category + '.json')).read_text())
         reason = score(manifest, effort, records, producer['console']['serial'], producer['console']['boot'],
-                       sha, fatal, producer)
+                       capture_sha, fatal, producer)
         proof['checks'].append(dict(suite='gpu', category=category, count=len(records['cases']), reason=reason))
     proof['passed'] = True
     return proof
@@ -2793,7 +2813,7 @@ def main():
             if current_pr() != pr:
                 raise ValueError('PR head or state changed during acceptance scoring')
             for boot in proof['boots']:
-                print(f'{boot["suite"]} boot={boot["id"]} head={boot["commit"]} '
+                print(f'{boot["suite"]} boot={boot["id"]} capture={boot["commit"]} '
                       f'tools={boot["toolsCommit"]} exit={boot["exitStatus"]} '
                       f'reason={boot["exitReason"]} DONE={boot["done"]} memory={boot["memory"]}')
             print(f'PR #{pr["number"]} current head={pr["headRefOid"]}; '

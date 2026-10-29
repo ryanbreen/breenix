@@ -6,6 +6,8 @@ import re
 import runpy
 import shutil
 import tempfile
+import subprocess
+from unittest.mock import patch
 import unittest
 
 from gt710_resources_report_test import API, ROOT, SHA, NAMES, REQUIRED, PROBE_FILES
@@ -131,6 +133,14 @@ class AlphaReport(unittest.TestCase):
             self.assertEqual(proof['boots'][1]['memory'], 'PASS')
             self.assertEqual(proof['boots'][1]['toolsCommit'], SHA)
             self.assertEqual(proof['boots'][1]['build']['commit'], SHA)
+            self.assertEqual([b['commit'] for b in proof['boots']], [SHA, SHA])
+            retained_pr = dict(pr, headRefOid='b' * 40)
+            with patch('subprocess.check_output', side_effect=[b'', b'scripts/metal/gt710-suite\0']):
+                retained = API['alpha_capture_proof'](directory, retained_pr['headRefOid'], retained_pr)
+            self.assertEqual(retained['head'], retained_pr['headRefOid'])
+            self.assertEqual(retained['captureCommit'], SHA)
+            self.assertEqual([b['commit'] for b in retained['boots']], [SHA, SHA])
+
             for changed in [dict(pr, headRefOid='b'*40), dict(pr, state='MERGED'),
                             dict(pr, headRefName='other')]:
                 with self.subTest(pr=changed), self.assertRaises(ValueError):
@@ -151,6 +161,27 @@ class AlphaReport(unittest.TestCase):
             with self.assertRaises(ValueError):
                 API['alpha_capture_proof'](directory, SHA, pr)
 
+
+    def test_retained_commit_allows_only_ancestor_host_scorer_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / 'commit').write_text(SHA)
+            head = 'b' * 40
+            changed = b'scripts/metal/gt710-suite\0tests/gt710_alpha_report_test.py\0'
+            with patch('subprocess.check_output', side_effect=[b'', changed]) as git:
+                self.assertEqual(API['alpha_capture_identity'](directory, head),
+                    (SHA, ['scripts/metal/gt710-suite', 'tests/gt710_alpha_report_test.py']))
+                self.assertEqual(git.call_args_list[0].args[0],
+                    ['git', 'merge-base', '--is-ancestor', SHA, head])
+                self.assertEqual(git.call_args_list[1].args[0],
+                    ['git', 'diff', '--no-renames', '--name-only', '-z', SHA, head])
+            for name in ('kernel/src/gpu/mod.rs', 'docs/gui/gt710-step-8-3.json', 'scripts/metal/metal-build'):
+                with patch('subprocess.check_output', side_effect=[b'', changed + name.encode() + b'\0']):
+                    with self.subTest(file=name), self.assertRaises(ValueError):
+                        API['alpha_capture_identity'](directory, head)
+            with patch('subprocess.check_output', side_effect=subprocess.CalledProcessError(1, 'git')):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    API['alpha_capture_identity'](directory, head)
 
     def test_retained_definition_scores_alpha_and_refuses_bad_evidence(self):
         metal = runpy.run_path(str(ROOT / 'scripts/metal/metal_score.py'))
