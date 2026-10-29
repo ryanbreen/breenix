@@ -97,3 +97,17 @@ fn overlap_has_only_source_to_vram_staging_then_staging_to_destination() {
     assert!(p.contains(&(0x400,vec![1,0,4,0,0,0,1,1])));
     assert!(copy::region(i,i,[2,3,20,10,4,5],Some(i)).is_err());
 }
+
+#[test]
+fn linear_console_readback_preserves_pitch_and_releases_after_copy() {
+    let src=Linear{address:0x1_0000_0000,bytes:5120*1024,offset:0,stride:5120};
+    let dst=Linear{address:0x2_0000_0000,bytes:5120*1024,offset:0,stride:5120};
+    let plan=copy::pitch(src,dst,1280,1024,4).unwrap();
+    let p=packets(&copy::encode_plan(plan,0x100000,17,23).unwrap());
+    assert!(p.contains(&(0x400,vec![1,0,2,0,5120,5120,1280,1024])));
+    assert!(p.contains(&(0x708,vec![0x30000])));
+    assert!(p.contains(&(0x300,vec![0x786])));
+    assert_eq!(p.last().unwrap(), &(0x300,vec![0x0c]));
+    assert!(copy::pitch(src,src,1280,1024,4).is_err());
+    assert!(copy::pitch(src,Linear{bytes:5120*1024-1,..dst},1280,1024,4).is_err());
+}

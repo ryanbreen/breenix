@@ -175,3 +175,28 @@ fn context_vertex_buffer_accepts_the_shared_r8_format() {
     r.unref(7).unwrap(); r.collect(&mut a, &mut io).unwrap();
     assert_eq!(r.vram_bytes(), 0);
 }
+
+#[test]
+fn native_console_mapping_pins_existing_linear_storage_without_owning_it() {
+    let mut a = Allocator::new(1 << 30, &[]).unwrap(); let mut io=Model::default();
+    let surface=a.allocate(5120*1024,65536,memory::allocator::Kind::Display).unwrap();
+    let baseline=a.stats(); let mut r=Resources::<Vec<u8>>::new();
+    let id=u32::MAX;
+    let va=r.import_linear(&mut a,&mut io,id,surface).unwrap();
+    assert_eq!(va,r.address(id).unwrap());assert!(r.layout(id).is_none());
+    assert_eq!(r.import_linear(&mut a,&mut io,id,surface).unwrap(),va);
+    assert!(a.release(surface).is_err(),"mapped scanout must remain pinned");
+    assert_eq!((a.stats().display,a.stats().charged-r.vram_bytes()),(baseline.display,baseline.charged));
+    r.unref(id).unwrap();r.collect(&mut a,&mut io).unwrap();
+    assert_eq!(a.stats(),baseline);a.release(surface).unwrap();
+}
+
+#[test]
+fn failed_console_vm_creation_keeps_its_pin_and_accounts_retained_tables() {
+    let mut a=Allocator::new(1<<30,&[]).unwrap();let mut io=Model{fail:true,..Model::default()};
+    let surface=a.allocate(5120*1024,65536,memory::allocator::Kind::Display).unwrap();
+    let before=a.stats().charged;let mut r=Resources::<Vec<u8>>::new();
+    assert!(r.import_linear(&mut a,&mut io,u32::MAX,surface).is_err());
+    assert_eq!(r.vram_bytes(),a.stats().charged-before);
+    assert!(a.release(surface).is_err());
+}
