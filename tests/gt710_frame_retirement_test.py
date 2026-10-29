@@ -15,8 +15,9 @@ class FrameRetirement(unittest.TestCase):
         source = (ROOT / 'kernel/src/gpu/gk208/gr/channel.rs').read_text()
         publisher = item(source, '        pub(crate) fn publish_draw(')
         report = item(source, 'pub fn report(')
+        bind = item(source, 'pub fn bind(')
         harness = (ROOT / 'tests/fixtures/gt710_frame_retirement.rs').read_text()
-        harness = harness.replace('// PUBLISH_DRAW', publisher).replace('// REPORT', report)
+        harness = harness.replace('// PUBLISH_DRAW', publisher).replace('// REPORT', report).replace('// BIND', bind)
         harness = harness.replace('ROOT/', str(ROOT) + '/')
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
         with tempfile.TemporaryDirectory() as tmp:

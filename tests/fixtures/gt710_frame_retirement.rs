@@ -49,6 +49,7 @@ mod gk208 {
     pub mod gr {
         const SUBCHANNEL: u32 = 0;
         const RELEASE: u32 = 0x1000f010;
+        // BIND
         // REPORT
         pub mod channel {
             const TARGET: u64 = 0x02000000;
@@ -102,6 +103,7 @@ fn retained_bindings() -> Vec<u32> {
 fn frame_release_retires_every_bound_region_across_sampled_solid_and_clipped_frames() {
     use std::collections::BTreeMap;
     use gpu_abi::{format, pipeline};
+    assert_eq!(gk208::gr::bind(), [0x20010000, 0xa197]);
     // Whole binding inventory from encode::quad and resource::Resources holds:
     // code and stage offsets; CB selector and slots 0/15 (constants and handles);
     // vertex start/limit; channel VAB; TIC/TSC pools; RT; sampled image via TIC.
@@ -138,12 +140,19 @@ fn frame_release_retires_every_bound_region_across_sampled_solid_and_clipped_fra
             frame.chunks.remove(0).words
         } else { Vec::new() };
         channel.publish_draw(6480+n as u32, &gk208::adapter::EncodedDraw { words }).unwrap();
+        // RAMFC reconstruction loses the old subchannel class. Each stream
+        // must bind A197 before any graphics method, including a clipped frame.
+        let mut class = None;
         let (mut at, mut reports, mut draws, mut idle, mut unbound) = (0,0,0,false,false);
         while at < channel.sent.len() {
             let words = &channel.sent;
             let count = ((words[at] >> 16) & 0x1fff) as usize;
             let method = (words[at]&0x1fff)*4;
             let data = &words[at+1..at+count+1];
+            if method == 0 { class = Some(data[0]); }
+            if method >= 0x100 {
+                assert_eq!(class, Some(0xa197), "graphics method {method:#x} before A197 bind after RAMFC reset");
+            }
             for (i, &v) in data.iter().enumerate() { regs.insert(method+4*i as u32,v); }
             assert!(!matches!(method, 0x17c8..=0x17d4), "non-indexed frame unexpectedly binds an index buffer");
             match method {
