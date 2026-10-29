@@ -419,6 +419,12 @@ pub fn pipeline_refusal(w: &(impl Words + ?Sized)) -> Option<stream::Refusal> {
                         | pipeline::OVER_STRAIGHT
                         | pipeline::COVERAGE
                         | pipeline::BITMAP_TEXT
+                        | pipeline::LINE
+                        | pipeline::CIRCLE_FILL
+                        | pipeline::CIRCLE_OUTLINE
+                        | pipeline::ROUNDED_RECT
+                        | pipeline::GRADIENT_V
+                        | pipeline::TRIANGLE
                 ) => {}
             _ => return Some(stream::Refusal { index, error: stream::error::BAD_PIPELINE }),
         }
@@ -568,6 +574,34 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                     constants[16] = w.word(at + 3);
                     constants[17] = routine;
                     quad(&mut f, t, r, clip, &constants, pipe, None, None);
+                }
+            }
+            draw::COMMAND if !draw::sampled(w.word(at + 2)) => {
+                let t = target.ok_or("native target absent")?;
+                let pipe = w.word(at + 2);
+                let Some(clip) = stream::clipped([0, 0, t.width as i32, t.height as i32],
+                    t.width, t.height, scissor) else {
+                    at += w.word(at + 1) as usize;
+                    command += 1;
+                    continue;
+                };
+                for n in 0..w.word(at + 9) as usize {
+                    let base = at + draw::HEADER + n * draw::INSTANCE;
+                    let i = draw::Instance {
+                        rect: core::array::from_fn(|k| w.word(base + k) as i32),
+                        params: core::array::from_fn(|k| w.word(base + 4 + k)),
+                    };
+                    if let Some(r) = draw::source_clip(pipe, i, None)
+                        .and_then(|i| draw::clip(pipe, i, t.width, t.height, scissor)) {
+                        let mut constants = [0; 32];
+                        constants[..16].copy_from_slice(&i.params);
+                        constants[27] = gpu_abi::gk208::MAX_2D_SIZE.trailing_zeros();
+                        let colour = w.word(at + 3);
+                        if pipe == pipeline::GRADIENT_V { constants[20] = colour; }
+                        else { constants[20..24].copy_from_slice(&[16, 8, 0, 24]
+                            .map(|shift| gpu_abi::float::ratio_bits(colour >> shift & 255, 255))); }
+                        quad(&mut f, t, r, clip, &constants, pipe, None, None);
+                    }
                 }
             }
             cmd::DRAW_SAMPLED | draw::COMMAND => {
@@ -781,6 +815,12 @@ fn program(pipe: u32) -> (usize, &'static [u8; 80], &'static [u8], u32) {
             shaders::PIPELINE_BITMAP_TEXT_CODE,
             shaders::PIPELINE_BITMAP_TEXT_GPRS,
         ),
+        pipeline::LINE => (shaders::PIPELINE_LINE_OFFSET, shaders::PIPELINE_LINE_HEADER, shaders::PIPELINE_LINE_CODE, shaders::PIPELINE_LINE_GPRS),
+        pipeline::CIRCLE_FILL => (shaders::PIPELINE_CIRCLE_FILL_OFFSET, shaders::PIPELINE_CIRCLE_FILL_HEADER, shaders::PIPELINE_CIRCLE_FILL_CODE, shaders::PIPELINE_CIRCLE_FILL_GPRS),
+        pipeline::CIRCLE_OUTLINE => (shaders::PIPELINE_CIRCLE_OUTLINE_OFFSET, shaders::PIPELINE_CIRCLE_OUTLINE_HEADER, shaders::PIPELINE_CIRCLE_OUTLINE_CODE, shaders::PIPELINE_CIRCLE_OUTLINE_GPRS),
+        pipeline::ROUNDED_RECT => (shaders::PIPELINE_ROUNDED_RECT_OFFSET, shaders::PIPELINE_ROUNDED_RECT_HEADER, shaders::PIPELINE_ROUNDED_RECT_CODE, shaders::PIPELINE_ROUNDED_RECT_GPRS),
+        pipeline::GRADIENT_V => (shaders::PIPELINE_GRADIENT_V_OFFSET, shaders::PIPELINE_GRADIENT_V_HEADER, shaders::PIPELINE_GRADIENT_V_CODE, shaders::PIPELINE_GRADIENT_V_GPRS),
+        pipeline::TRIANGLE => (shaders::PIPELINE_TRIANGLE_OFFSET, shaders::PIPELINE_TRIANGLE_HEADER, shaders::PIPELINE_TRIANGLE_CODE, shaders::PIPELINE_TRIANGLE_GPRS),
         // Mesa nvc0_program.c:775-799: first instruction follows the 80-byte
         // SPH at a 128-byte boundary, where Kepler expects scheduling words.
         PROBE_INTEGER => (
