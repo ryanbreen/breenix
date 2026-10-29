@@ -124,18 +124,18 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-//! Validated BGL solid draws for A197. Methods: MIT NVIDIA cla197.h;
+//! Validated BGL solid and sampled draws for A197. Methods: MIT NVIDIA cla197.h;
 //! fixed raster state: MIT Mesa 24.3.4 nvc0_{screen,state,vbo,surface}.c.
 //! Coordinates and colours retain the shared stream semantics. No pixels are
 //! generated here: data contains shader code, constants and vertex inputs.
 use super::shaders;
 use alloc::{vec, vec::Vec};
 use gpu_abi::{
-    format, pipeline,
+    draw, format, pipeline,
     stream::{self, cmd, Resolver, Words},
 };
 
-pub const DATA_START: usize = (1 << 20) + 4096;
+pub const DATA_START: usize = (1 << 20) + 8192;
 const CODE: usize = 1 << 20;
 #[derive(Clone, Copy)]
 pub struct Target {
@@ -148,11 +148,13 @@ pub struct Target {
 }
 pub trait Bindings: Resolver {
     fn render_target(&self, handle: u64) -> Option<Target>;
+    fn sampled_source(&self, handle: u64) -> Option<Target>;
 }
 pub struct Chunk {
     pub target: u32,
     pub words: Vec<u32>,
     relocations: Vec<usize>,
+    pub source: Option<u32>,
 }
 pub struct Frame {
     pub chunks: Vec<Chunk>,
@@ -207,6 +209,15 @@ pub fn translate(w: &(impl Words + ?Sized), b: &impl Bindings) -> Result<Frame, 
         match w.word(at) {
             cmd::BEGIN | cmd::CLEAR | cmd::SCISSOR => (),
             cmd::DRAW | cmd::DRAW_BUFFER if w.word(at + 2) == pipeline::SOLID => (),
+            cmd::DRAW_SAMPLED => (),
+            draw::COMMAND
+                if matches!(
+                    w.word(at + 2),
+                    pipeline::COPY
+                        | pipeline::COPY_SCALED
+                        | pipeline::NEAREST_SCALED
+                        | pipeline::BOX_FILTER
+                ) => {}
             _ => return Err("native pipeline not implemented"),
         }
         at += w.word(at + 1) as usize;
@@ -217,10 +228,18 @@ pub fn translate(w: &(impl Words + ?Sized), b: &impl Bindings) -> Result<Frame, 
     };
     let segment = shaders::triangle_segment();
     f.data[CODE..CODE + segment.len()].copy_from_slice(&segment);
-    let fs = CODE + shaders::FRAGMENT_OFFSET;
-    f.data[fs..fs + 80].copy_from_slice(shaders::PIPELINE_SOLID_HEADER);
-    f.data[fs + 80..fs + 80 + shaders::PIPELINE_SOLID_CODE.len()]
-        .copy_from_slice(shaders::PIPELINE_SOLID_CODE);
+    for pipe in [
+        pipeline::SOLID,
+        pipeline::COPY,
+        pipeline::COPY_SCALED,
+        pipeline::NEAREST_SCALED,
+        pipeline::BOX_FILTER,
+    ] {
+        let (offset, header, code, _) = program(pipe);
+        let fs = CODE + offset;
+        f.data[fs..fs + 80].copy_from_slice(header);
+        f.data[fs + 80..fs + 80 + code.len()].copy_from_slice(code);
+    }
     let mut target = None;
     let mut scissor = None;
     at = 0;
@@ -279,6 +298,60 @@ pub fn translate(w: &(impl Words + ?Sized), b: &impl Bindings) -> Result<Frame, 
                     }
                 }
             }
+            cmd::DRAW_SAMPLED | draw::COMMAND => {
+                let t = target.ok_or("native target absent")?;
+                let legacy = code == cmd::DRAW_SAMPLED;
+                let pipe = w.word(at + 2);
+                let h = handle(w, at + if legacy { 3 } else { 4 });
+                let info = b.source(h).ok_or("native source absent")?;
+                let source = b.sampled_source(h).ok_or("native source storage absent")?;
+                texture_image_control(source)?;
+                if source.id == t.id
+                    || source.width != info.width
+                    || source.height != info.height
+                    || source.format != info.format
+                {
+                    return Err("invalid native sampled source");
+                }
+                let Some(clip) = stream::clipped(
+                    [0, 0, t.width as i32, t.height as i32],
+                    t.width,
+                    t.height,
+                    scissor,
+                ) else {
+                    at += w.word(at + 1) as usize;
+                    continue;
+                };
+                let count = w.word(at + if legacy { 5 } else { 9 }) as usize;
+                for n in 0..count {
+                    let mut constants = [0; 32];
+                    let r = if legacy {
+                        let base = at + 6 + n * 6;
+                        let i = core::array::from_fn(|k| w.word(base + k) as i32);
+                        constants[0] = (i[4] as u32).wrapping_sub(i[0] as u32);
+                        constants[1] = (i[5] as u32).wrapping_sub(i[1] as u32);
+                        stream::sampled_clip(i, t.width, t.height, source.width, source.height)
+                            .and_then(|r| {
+                                stream::clipped(r.map(|v| v as i32), t.width, t.height, scissor)
+                            })
+                    } else {
+                        let base = at + draw::HEADER + n * draw::INSTANCE;
+                        let i = draw::Instance {
+                            rect: core::array::from_fn(|k| w.word(base + k) as i32),
+                            params: core::array::from_fn(|k| w.word(base + 4 + k)),
+                        };
+                        constants[..16].copy_from_slice(&i.params);
+                        constants[20] = w.word(at + 3);
+                        draw::source_clip(pipe, i, Some(info))
+                            .and_then(|i| draw::clip(pipe, i, t.width, t.height, scissor))
+                    };
+                    constants[24] = source.width;
+                    constants[25] = source.height;
+                    if let Some(r) = r {
+                        quad(&mut f, t, r, clip, &constants, pipe, Some(source));
+                    }
+                }
+            }
             _ => unreachable!(),
         }
         at += w.word(at + 1) as usize;
@@ -289,17 +362,122 @@ pub fn translate(w: &(impl Words + ?Sized), b: &impl Bindings) -> Result<Frame, 
             target: t.id,
             words: Vec::new(),
             relocations: Vec::new(),
+            source: None,
         });
     }
     Ok(f)
 }
+/// TIC v2, single-level block-linear 2D. MIT rnndb g80_texture.xml,
+/// g80_defs.xml and Mesa nvc0_tex.c:309-436. TXF consumes integer coordinates;
+/// swizzles expose logical RGBA, including R8 -> (r, 0, 0, 1).
+fn texture_image_control(t: Target) -> Result<[u32; 8], &'static str> {
+    if t.id == 0
+        || t.address == 0
+        || t.address & 4095 != 0
+        || t.address >= 1 << 40
+        || t.width == 0
+        || t.height == 0
+        || t.width > 16384
+        || t.height > 16384
+        || t.tile_mode & !0x70 != 0
+        || t.tile_mode > 0x40
+    {
+        return Err("invalid native texture layout");
+    }
+    let (size, swizzle) = match t.format {
+        format::B8G8R8A8 => (8, [4, 3, 2, 5]),
+        format::R8G8B8A8 => (8, [2, 3, 4, 5]),
+        format::R8 => (0x1d, [2, 0, 0, 7]),
+        _ => return Err("invalid native texture format"),
+    };
+    let types = (2 << 6) | (2 << 9) | (2 << 12) | (2 << 15); // UNORM
+    Ok([
+        size | types | swizzle[0] << 18 | swizzle[1] << 21 | swizzle[2] << 24 | swizzle[3] << 27,
+        t.address as u32,
+        (t.address >> 32) as u32 | 0x50005000 | (t.tile_mode << 18),
+        0x00300000,
+        0x80000000 | t.width,
+        0x10000 | t.height,
+        0x03000000,
+        0,
+    ])
+}
+fn program(pipe: u32) -> (usize, &'static [u8; 80], &'static [u8], u32) {
+    match pipe {
+        pipeline::SOLID => (
+            shaders::FRAGMENT_OFFSET,
+            shaders::PIPELINE_SOLID_HEADER,
+            shaders::PIPELINE_SOLID_CODE,
+            shaders::PIPELINE_SOLID_GPRS,
+        ),
+        pipeline::COPY => (
+            0x2b0,
+            shaders::PIPELINE_COPY_HEADER,
+            shaders::PIPELINE_COPY_CODE,
+            shaders::PIPELINE_COPY_GPRS,
+        ),
+        pipeline::COPY_SCALED => (
+            0x430,
+            shaders::PIPELINE_COPY_SCALED_HEADER,
+            shaders::PIPELINE_COPY_SCALED_CODE,
+            shaders::PIPELINE_COPY_SCALED_GPRS,
+        ),
+        pipeline::NEAREST_SCALED => (
+            0xa30,
+            shaders::PIPELINE_NEAREST_SCALED_HEADER,
+            shaders::PIPELINE_NEAREST_SCALED_CODE,
+            shaders::PIPELINE_NEAREST_SCALED_GPRS,
+        ),
+        pipeline::BOX_FILTER => (
+            0xf30,
+            shaders::PIPELINE_BOX_FILTER_HEADER,
+            shaders::PIPELINE_BOX_FILTER_CODE,
+            shaders::PIPELINE_BOX_FILTER_GPRS,
+        ),
+        _ => unreachable!(),
+    }
+}
 fn solid(f: &mut Frame, t: Target, r: [u32; 4], scissor: [u32; 4], colour: u32) {
+    let constants =
+        [16, 8, 0, 24].map(|shift| gpu_abi::float::ratio_bits(colour >> shift & 255, 255));
+    quad(f, t, r, scissor, &constants, pipeline::SOLID, None);
+}
+fn quad(
+    f: &mut Frame,
+    t: Target,
+    r: [u32; 4],
+    scissor: [u32; 4],
+    constants: &[u32],
+    pipe: u32,
+    source: Option<Target>,
+) {
     let uniform = f.data.len().next_multiple_of(256);
     let vertex = uniform + 256;
-    f.data.resize(vertex + 256, 0);
-    for (k, shift) in [16, 8, 0, 24].into_iter().enumerate() {
-        let v = gpu_abi::float::ratio_bits(colour >> shift & 255, 255).to_le_bytes();
-        f.data[uniform + k * 4..uniform + k * 4 + 4].copy_from_slice(&v);
+    let tic = vertex + 256;
+    let tsc = tic + 256;
+    let handles = tsc + 256;
+    f.data.resize(
+        if source.is_some() {
+            handles + 256
+        } else {
+            vertex + 256
+        },
+        0,
+    );
+    for (k, v) in constants.iter().enumerate() {
+        f.data[uniform + k * 4..uniform + k * 4 + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    if let Some(source) = source {
+        // Validation above established this descriptor before any draw chunks.
+        for (offset, words) in [
+            (tic, texture_image_control(source).unwrap()),
+            (tsc, [0x92, 0x51, 0, 0, 0, 0, 0, 0]),
+        ] {
+            for (k, v) in words.iter().enumerate() {
+                f.data[offset + k * 4..offset + k * 4 + 4].copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        // The compiler emits handle 0 in the texture CB. TIC 0 | TSC 0 is 0.
     }
     let [x0, y0, x1, y1] = r;
     for (i, [x, y]) in [[x0, y0], [x1, y0], [x1, y1], [x0, y0], [x1, y1], [x0, y1]]
@@ -332,6 +510,7 @@ fn solid(f: &mut Frame, t: Target, r: [u32; 4], scissor: [u32; 4], colour: u32) 
         target: t.id,
         words: Vec::new(),
         relocations: Vec::new(),
+        source: source.map(|s| s.id),
     };
     // IDXFETCH quarantine: 1 MiB, 128 KiB aligned (Mesa screen:1274-1283).
     c.address(0x17bc, 0, &[3]);
@@ -425,11 +604,23 @@ fn solid(f: &mut Frame, t: Target, r: [u32; 4], scissor: [u32; 4], colour: u32) 
     }
     c.emit(0x2040, &[0x11, shaders::VERTEX_OFFSET as u32]);
     c.emit(0x204c, &[shaders::VERTEX_GPRS]);
-    c.emit(0x2140, &[0x51, shaders::FRAGMENT_OFFSET as u32]);
-    c.emit(0x214c, &[shaders::PIPELINE_SOLID_GPRS]);
+    let (offset, _, _, gprs) = program(pipe);
+    c.emit(0x2140, &[0x51, offset as u32]);
+    c.emit(0x214c, &[gprs]);
     c.emit(0x2380, &[256, 0, uniform as u32]);
     c.relocations.push(c.words.len() - 2);
     c.emit(0x2490, &[1]);
+    if source.is_some() {
+        c.address(0x1574, tic, &[0]);
+        c.address(0x155c, tsc, &[0]);
+        c.emit(0x1334, &[0]);
+        c.emit(0x1330, &[0]);
+        c.emit(0x1338, &[0]);
+        c.emit(0x2608, &[15]);
+        c.emit(0x2380, &[256, 0, handles as u32]);
+        c.relocations.push(c.words.len() - 2);
+        c.emit(0x2490, &[0xf1]);
+    }
     c.emit(0x1930, &[1]);
     c.emit(0x1880, &[0]);
     c.emit(0x1c00, &[0x1020, 0, vertex as u32, 0]);
@@ -468,6 +659,9 @@ pub(crate) fn prepare(
         let mut holds = Vec::new();
         for c in &frame.chunks {
             holds.push(r.hold(c.target)?);
+            if let Some(source) = c.source {
+                holds.push(r.hold(source)?);
+            }
         }
         let id = r.draw_buffer(a, io, backing.bytes() as u32)?;
         r.attach(a, io, id, backing.clone(), &pages, backing.bytes() as u64)?;

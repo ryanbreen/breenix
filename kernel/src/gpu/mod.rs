@@ -3457,6 +3457,11 @@ impl crate::gk208::encode::Bindings for Resolved<'_> {
         let e = self.view.get(handle).filter(|e| !e.sample_only && e.kind == kind::TARGET)?;
         crate::gk208::encode::target(e.id,e.format)
     }
+    fn sampled_source(&self, handle: u64) -> Option<crate::gk208::encode::Target> {
+        let e = self.view.get(handle)?;
+        if !matches!(e.kind, kind::TARGET | kind::TEXTURE) { return None; }
+        crate::gk208::encode::target(e.id,e.format)
+    }
 }
 
 impl encode::Bindings for Resolved<'_> {

@@ -42,6 +42,7 @@ impl Resolver for View {
     fn buffer_rect(&self, _: u64, _: u64) -> [i32; 4] { panic!("no buffer") }
 }
 impl encode::Bindings for View {
+    fn sampled_source(&self, _: u64) -> Option<encode::Target> { None }
     fn render_target(&self, h: u64) -> Option<encode::Target> {
         self.target(h).map(|t| encode::Target { id: 19, address: 0x2_0000_0000,
             width: t.width, height: t.height, format: t.format, tile_mode: 0x30 })
@@ -81,6 +82,7 @@ fn three_solids_bind_native_layout_scissors_programs_and_instance_bytes() {
         let colours = [[0.,0.,1.,1.], [0.,1.,0.,1.], [1.,0.,0.,1.]];
         for (i, chunk) in f.chunks.iter().enumerate() {
             assert_eq!(chunk.target, 19);
+            assert_eq!(chunk.source, None);
             let p = packets(&chunk.words);
             assert!(p.contains(&(0x800, vec![2,0,64,64,code,0x30,1,0,0])));
             assert!(p.contains(&(0xa00, vec![0x42000000,0x42000000,0x3f800000,0x42000000,0x42000000,0])));

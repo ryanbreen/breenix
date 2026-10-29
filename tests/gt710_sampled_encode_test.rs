@@ -186,7 +186,7 @@ fn sampled_formats_and_pipelines_bind_exact_descriptors_programs_and_clipped_inp
         ] {
             let mut f=encode::translate(command(pipe,&params).as_slice(),&View(fmt)).unwrap();
             f.relocate(0x3_0000_0000).unwrap(); assert_eq!(f.chunks.len(),1);
-            let c=&f.chunks[0]; assert_eq!(c.target,19); let p=packets(&c.words);
+            let c=&f.chunks[0]; assert_eq!(c.target,19); assert_eq!(c.source,Some(23)); let p=packets(&c.words);
             assert!(p.contains(&(0x2140,vec![0x51,offset])));
             assert!(p.contains(&(0x214c,vec![gprs])));
             assert_eq!(&f.data[0x100000+offset as usize..0x100050+offset as usize],header);

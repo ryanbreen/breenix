@@ -1181,3 +1181,25 @@ runtime, expected picture or compiler dependency is added. The committed
 vertex and solid programs retain their existing source notices above.
 The pipeline-end releases in kernel/src/gpu/gk208/gr/channel.rs use that
 file's existing full MIT NVIDIA cla197.h notice and the same pinned methods.
+
+
+GT 710 native sampled draws (milestone 8.2-u5)
+--------------------------------------------
+Consumers: kernel/src/gpu/gk208/encode.rs and tests/gt710_sampled_encode_test.rs.
+Sources: envytools f102b82381f3f11cee113d16374c87091db039d9:
+  rnndb/graph/g80_texture.xml (TIC/TSC words and fields)
+  rnndb/g80_defs.xml (component sources, UNORM types and texture kinds)
+Both import rnndb/copyright.xml, whose full MIT grant and author list were
+checked before use and are retained in both consumers' headers.
+https://github.com/envytools/envytools/tree/f102b82381f3f11cee113d16374c87091db039d9/rnndb
+
+Mesa 24.3.4 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de:
+  src/gallium/drivers/nouveau/nvc0/nvc0_tex.c:309-436
+License: MIT; Copyright 2008 Ben Skeggs. The file-local header was checked;
+its original copyright and complete permission notice remain in encode.rs.
+Adapted block-linear texture descriptor construction, not Gallium runtime.
+The existing MIT NVIDIA cla197.h notice also covers texture pool addresses,
+cache invalidation and bindless texture CB selection; the existing MIT Mesa
+nvc0_screen.c notice covers the Kepler slot-15 texture handle binding.
+The original notices accompany the new check too. Breenix retains shared
+source clipping and parameter layouts; u3's committed programs are unchanged.
