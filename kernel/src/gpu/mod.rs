@@ -2612,6 +2612,16 @@ fn hold_irqs_masked(ns: u64) {
     });
 }
 
+/// The native device leaves the core while its restored epoch is measured.
+/// Wait through that interval instead of exposing the empty fallback table.
+#[cfg(target_arch = "x86_64")]
+fn native_reset_barrier() -> Result<(), i64> {
+    if dev::backend() != abi::backend::GK208 { return Ok(()); }
+    arch::with_interrupts(|| wait_for(None, true, |c| {
+        (!c.reset_wanted && !c.resetting).then_some(())
+    })).map_err(|_| EINTR)
+}
+
 /// `gpu(op, arg, len)`.
 pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
     let _path = GpuPath::enter();
@@ -2621,6 +2631,10 @@ pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
         crate::serial_println!("BREENGEL-EMIT-DIAGNOSTIC-PAYLOAD");
     }
     let Ok(op) = u32::try_from(op) else { return result(Err(EINVAL)) };
+    #[cfg(target_arch = "x86_64")]
+    if op != abi::op::VERSION && op <= abi::op::LAST {
+        if let Err(error) = native_reset_barrier() { return result(Err(error)); }
+    }
     result(match op {
         abi::op::VERSION => {
             if len != 0 {
