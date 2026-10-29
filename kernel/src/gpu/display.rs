@@ -164,7 +164,7 @@ impl Core {
     /// to that allocation ends logical scanout holds on copy sources. Pending
     /// requests retain their separate engine/submission holds until completion.
     #[cfg(target_arch = "x86_64")]
-    fn native_console_restored(&mut self) {
+    pub(super) fn native_console_restored(&mut self) {
         let held = core::mem::take(&mut self.display.holds);
         self.display.binding = None;
         self.display.latest_ok = true;

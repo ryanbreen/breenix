@@ -68,6 +68,28 @@ pub(super) fn restored_pending() {
     RESTORE.store(false, Ordering::Release);
 }
 
+/// The native linear console completed a frame while its presentation barrier
+/// still excludes a new display owner. Its drained CPU writes have replaced the
+/// client image copied into the retained scanout; end that logical binding too.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn native_repainted() {
+    if !crate::gk208::console_state().is_some_and(|(_, _, bound, _)| bound) {
+        return;
+    }
+    let changed = with_core(|c| {
+        if !c.display.stack.is_empty() || c.display.changing || c.display.outstanding != 0
+            || (c.display.binding.is_none() && c.display.holds.is_empty())
+        {
+            return false;
+        }
+        c.native_console_restored();
+        true
+    }).unwrap_or(false);
+    if changed {
+        notify();
+    }
+}
+
 pub(super) fn describe(a: &mut abi::Modes) {
     (a.console_resource, a.console_draws) = super::screen::describe();
     a.console_fixture_bytes = FIXTURE.load(Ordering::Acquire);
@@ -86,7 +108,12 @@ pub(super) fn describe(a: &mut abi::Modes) {
         a.count = 1;
         a.current = 0;
         a.modes = [mode, abi::Mode::ZERO];
-        a.console_resource = resource;
+        // A registered core screen keeps its device identity while a core
+        // binding is active. With no such binding, the native allocation is
+        // the console, even if an offscreen core screen has been allocated.
+        if a.console_resource == 0 || a.scanout_resource == 0 {
+            a.console_resource = resource;
+        }
         a.handoff = 1;
         a.firmware_writes_after_handoff = writes;
         // A completed shared-core viewing copy has its own logical identity,

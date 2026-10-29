@@ -1020,6 +1020,8 @@ fn render_thread(display: &'static Display, attached: Attached) {
             let drawn = screen.update(&snapshot);
             if screen.complete {
                 vt::drawn(snapshot.epoch);
+                #[cfg(target_arch = "x86_64")]
+                crate::gpu::console::native_repainted();
             }
             if !announced && screen.complete {
                 announced = true;
