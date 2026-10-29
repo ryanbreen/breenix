@@ -1305,3 +1305,11 @@ Original copyrights and complete grants are retained in both consumer headers.
 The 1x1 dither footprint is paired with disabled alpha-to-coverage; A197's
 header does not define a separate color-dither enable method. Samplers use
 point min/mag, no mip filtering, no anisotropy and no sRGB conversion.
+
+GT 710 integer probe encoding check (milestone 8.3-u3)
+-----------------------------------------------------
+Consumer: tests/gt710_probe_encode_test.rs.
+NVIDIA open-gpu-doc 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+classes/3d/cla197.h (MIT, Copyright 2020 NVIDIA CORPORATION): native
+program, vertex and constant-buffer method expectations. The full grant is
+retained in the test header.

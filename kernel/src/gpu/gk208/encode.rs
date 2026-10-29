@@ -193,7 +193,8 @@ pub fn channel_words(input: &[u32], quarantine: u64) -> Result<Vec<u32>, &'stati
     Ok(words)
 }
 
-pub const DATA_START: usize = (1 << 20) + 8192;
+// Reserve the complete committed shader catalogue before per-draw data.
+pub const DATA_START: usize = (1 << 20) + 0x5000;
 const CODE: usize = 1 << 20;
 #[derive(Clone, Copy)]
 pub struct Target {
@@ -378,6 +379,7 @@ pub fn pipeline_refusal(w: &(impl Words + ?Sized)) -> Option<stream::Refusal> {
             cmd::BEGIN | cmd::CLEAR | cmd::SCISSOR | cmd::COPY => (),
             cmd::DRAW | cmd::DRAW_BUFFER if w.word(at + 2) == pipeline::SOLID => (),
             cmd::DRAW_SAMPLED => (),
+            cmd::PROBE if matches!(w.word(at + 2), 0..=11 | 18 | 19) => (),
             draw::COMMAND
                 if matches!(
                     w.word(at + 2),
@@ -506,6 +508,27 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                     words: Vec::new(), relocations: Vec::new(),
                     copy: rectangle.map(|r| (source.id, destination.id, r)) });
             }
+            cmd::PROBE => {
+                let t = target.ok_or("native target absent")?;
+                let r = [4, 5, 6, 7].map(|k| w.word(at + k) as i32);
+                let clip = stream::clipped([0, 0, t.width as i32, t.height as i32],
+                    t.width, t.height, scissor);
+                if let (Some(r), Some(clip)) = (stream::clipped(r, t.width, t.height, scissor), clip) {
+                    let routine = w.word(at + 2);
+                    let pipe = PROBE_ROUTINE_BASE + routine;
+                    let (offset, header, code, _) = program(pipe);
+                    let fs = CODE + offset;
+                    f.data[fs..fs + 80].copy_from_slice(header);
+                    f.data[fs + 80..fs + 80 + code.len()].copy_from_slice(code);
+                    let mut constants = [0; 20];
+                    for (i, value) in constants[..16].iter_mut().enumerate() {
+                        *value = w.word(at + 8 + i);
+                    }
+                    constants[16] = w.word(at + 3);
+                    constants[17] = routine;
+                    quad(&mut f, t, r, clip, &constants, pipe, None);
+                }
+            }
             cmd::DRAW_SAMPLED | draw::COMMAND => {
                 let t = target.ok_or("native target absent")?;
                 let legacy = code == cmd::DRAW_SAMPLED;
@@ -630,6 +653,7 @@ fn texture_image_control(t: Target) -> Result<[u32; 8], &'static str> {
         0,
     ])
 }
+const PROBE_ROUTINE_BASE: u32 = 0x10000;
 const PROBE_INTEGER: u32 = u32::MAX - 1;
 const PROBE_TEXEL: u32 = u32::MAX;
 
@@ -679,6 +703,25 @@ fn program(pipe: u32) -> (usize, &'static [u8; 80], &'static [u8], u32) {
             shaders::PROBE_TEXEL_FETCH_CODE,
             shaders::PROBE_TEXEL_FETCH_GPRS,
         ),
+        p if (PROBE_ROUTINE_BASE..PROBE_ROUTINE_BASE + 25).contains(&p) => {
+            match p - PROBE_ROUTINE_BASE {
+                0 => (shaders::PROBE_INT_00_OFFSET, shaders::PROBE_INT_00_HEADER, shaders::PROBE_INT_00_CODE, shaders::PROBE_INT_00_GPRS),
+                1 => (shaders::PROBE_INT_01_OFFSET, shaders::PROBE_INT_01_HEADER, shaders::PROBE_INT_01_CODE, shaders::PROBE_INT_01_GPRS),
+                2 => (shaders::PROBE_INT_02_OFFSET, shaders::PROBE_INT_02_HEADER, shaders::PROBE_INT_02_CODE, shaders::PROBE_INT_02_GPRS),
+                3 => (shaders::PROBE_INT_03_OFFSET, shaders::PROBE_INT_03_HEADER, shaders::PROBE_INT_03_CODE, shaders::PROBE_INT_03_GPRS),
+                4 => (shaders::PROBE_INT_04_OFFSET, shaders::PROBE_INT_04_HEADER, shaders::PROBE_INT_04_CODE, shaders::PROBE_INT_04_GPRS),
+                5 => (shaders::PROBE_INT_05_OFFSET, shaders::PROBE_INT_05_HEADER, shaders::PROBE_INT_05_CODE, shaders::PROBE_INT_05_GPRS),
+                6 => (shaders::PROBE_INT_06_OFFSET, shaders::PROBE_INT_06_HEADER, shaders::PROBE_INT_06_CODE, shaders::PROBE_INT_06_GPRS),
+                7 => (shaders::PROBE_INT_07_OFFSET, shaders::PROBE_INT_07_HEADER, shaders::PROBE_INT_07_CODE, shaders::PROBE_INT_07_GPRS),
+                8 => (shaders::PROBE_INT_08_OFFSET, shaders::PROBE_INT_08_HEADER, shaders::PROBE_INT_08_CODE, shaders::PROBE_INT_08_GPRS),
+                9 => (shaders::PROBE_INT_09_OFFSET, shaders::PROBE_INT_09_HEADER, shaders::PROBE_INT_09_CODE, shaders::PROBE_INT_09_GPRS),
+                10 => (shaders::PROBE_INT_10_OFFSET, shaders::PROBE_INT_10_HEADER, shaders::PROBE_INT_10_CODE, shaders::PROBE_INT_10_GPRS),
+                11 => (shaders::PROBE_INT_11_OFFSET, shaders::PROBE_INT_11_HEADER, shaders::PROBE_INT_11_CODE, shaders::PROBE_INT_11_GPRS),
+                18 => (shaders::PROBE_INT_18_OFFSET, shaders::PROBE_INT_18_HEADER, shaders::PROBE_INT_18_CODE, shaders::PROBE_INT_18_GPRS),
+                19 => (shaders::PROBE_INT_19_OFFSET, shaders::PROBE_INT_19_HEADER, shaders::PROBE_INT_19_CODE, shaders::PROBE_INT_19_GPRS),
+                _ => unreachable!(),
+            }
+        }
         _ => unreachable!(),
     }
 }
