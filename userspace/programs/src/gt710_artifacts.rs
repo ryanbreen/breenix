@@ -9,7 +9,9 @@ pub fn upload(resources: Option<&libbreenix::gpu::abi::Caps>)->Result<(),String>
             (caps as *const libbreenix::gpu::abi::Caps).cast::<u8>(),
             core::mem::size_of_val(caps)) };
         let hex: String = bytes.iter().map(|v| format!("{v:02x}")).collect();
-        format!("GT710_RESOURCES {{\"schema\":1,\"type\":\"caps\",\"bytes\":512,\"hex\":\"{hex}\"}}\n")
+        let frames = std::fs::read_to_string("/proc/breenix/frames").unwrap_or_default();
+        let frame_census_hex: String = frames.as_bytes().iter().map(|v| format!("{v:02x}")).collect();
+        format!("GT710_RESOURCES {{\"schema\":1,\"type\":\"caps\",\"bytes\":512,\"hex\":\"{hex}\",\"frame_census_hex\":\"{frame_census_hex}\"}}\n")
     });
     if let Some(row) = &resource_row { data.extend_from_slice(row.as_bytes()); }
     if data.is_empty() {return Ok(());}

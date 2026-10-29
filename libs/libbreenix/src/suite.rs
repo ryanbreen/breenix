@@ -887,6 +887,12 @@ impl Suite {
     /// a one-case run stops before any suite sequence and is not full-suite
     /// evidence. An unknown case or unusable argv ends in a failed DONE. Does not return.
     pub fn run(&self) -> ! {
+        self.run_with_finalizer(|| {})
+    }
+
+    /// Finish a suite-owned evidence producer after the cases and memory verdict,
+    /// before publishing readiness to the boot driver or replacing this process.
+    pub fn run_with_finalizer(&self, finalize: impl FnOnce()) -> ! {
         let args: Vec<String> = std::env::args().skip(1).collect();
         let mut only = None;
         let mut method = None;
@@ -1066,6 +1072,7 @@ impl Suite {
         let verdict = if counts.failed == 0 && reclaimed { Verdict::Passed(&summary) } else { Verdict::Failed(&summary) };
         let ms = ms_since(suite_start);
         emit(&std::format!("SUITE {} ELAPSED ms={}", self.id, ms));
+        finalize();
         feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
         if self.defer_display { screen = Screen::open(false, self.id == "gpu"); }
         if !self.gui { screen.draw(self, &title, &subtitle, &states, verdict, &feed, only); }

@@ -281,12 +281,15 @@ fn device_version() -> CaseResult {
 fn main() {
     #[cfg(target_arch="x86_64")]
     {
-        // The view and cases also read CAPS; finish its first-use evidence
-        // before consuming the lease-bound artifact route.
+        // Preserve the initial admission row. Recovery during the cases appends
+        // fresh probe rows, so consume the one-use route only after they finish.
         let (status, caps) = libbreenix::gpu::caps();
         let resources = (status == 0 && caps.backend == libbreenix::gpu::abi::backend::GK208)
             .then_some(&caps);
-        gt710_artifacts::upload(resources).expect("native display artifact upload");
+        SUITE.run_with_finalizer(|| {
+            gt710_artifacts::upload(resources).expect("native display artifact upload");
+        })
     }
+    #[cfg(not(target_arch="x86_64"))]
     SUITE.run()
 }
