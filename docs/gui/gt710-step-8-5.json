@@ -1,6 +1,7 @@
 {
   "id": "gt710-step-8-5",
   "cases": [
-    "textures/copy-region"
+    "textures/copy-region",
+    "profile/scissor-exact"
   ]
 }

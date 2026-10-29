@@ -364,14 +364,16 @@ fn initialize_inner(
             // Park the complete draw state on channel-owned storage. Allocation
             // and mapping use the bootstrap owner, retained through reset/unbind.
             let images = graphics.allocate_draw(&mut hardware, "native-park-images", 8192, 4096)?;
-            let storage = graphics.allocate_draw(&mut hardware, "native-park-inputs", 16384, 1 << 17)?;
             let target = super::encode::Target { id: 1, address: images.va, width: 1, height: 1,
                 format: gpu_abi::format::B8G8R8A8, tile_mode: 0 };
             let source = super::encode::Target { id: 2, address: images.va+4096, ..target };
+            let bytes = super::encode::parking_bytes(target, source)?;
+            let storage = graphics.allocate_draw(&mut hardware, "native-park-inputs", bytes as u64, 1 << 17)?;
             let (data, parking) = super::encode::parking_frame(target, source, storage.va, quarantine)?;
             if data.len() as u64 > storage.spec.bytes { return Err("native parking storage extent"); }
             graphics.upload(&mut hardware, images.va, &[0; 8192])?;
-            graphics.upload(&mut hardware, storage.va, &data)?;
+            super::encode::upload_parking(storage.va, &data,
+                |va, bytes| graphics.upload(&mut hardware, va, bytes))?;
             Ok((quarantine, parking))
         })();
         let report = graphics.report();

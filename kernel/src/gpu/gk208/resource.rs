@@ -112,6 +112,9 @@ fn owner_at(id: u32, va: u64, bytes: u64, role: &'static str, regions: &[FrameRe
 struct Entry<B> {
     role: &'static str,
     regions: Vec<FrameRegion>,
+    // The process reservation follows storage, including a failed map/unmap.
+    // Only its Drop matters here; the resource owner does not interpret quotas.
+    _charge: Option<Arc<dyn Send + Sync>>,
     layout: Option<Layout>,
     bytes: u64,
     va: u64,
@@ -216,7 +219,7 @@ impl<B> Resources<B> {
         let va = self.vacant_va(bytes, 4096)?;
         let pin = a.pin(allocation)?;
         self.entries.insert(id, Entry { role: "display", regions: Vec::new(), layout: None, bytes, va, allocation: None,
-            pin: Some(pin), backing: None, mapped: false, dropped: false,
+            pin: Some(pin), _charge: None, backing: None, mapped: false, dropped: false,
             reference: Arc::new(()), backing_va: None, backing_bytes: 0, backing_mapped: false });
         let before = a.stats().charged;
         let result = (|| self.space(a, io)?.map(a, io, va, allocation.range, vm::Flags::default()))();
@@ -228,10 +231,11 @@ impl<B> Resources<B> {
     pub fn create(&mut self, a: &mut Allocator, io: &mut impl Io, id: u32,
         kind: u32, format: u32, width: u32, height: u32,
     ) -> Result<(), &'static str> {
-        self.create_aligned(a, io, id, kind, format, width, height, 4096)
+        self.create_aligned(a, io, id, kind, format, width, height, 4096, None)
     }
     fn create_aligned(&mut self, a: &mut Allocator, io: &mut impl Io, id: u32,
         kind: u32, format: u32, width: u32, height: u32, alignment: u64,
+        charge: Option<Arc<dyn Send + Sync>>,
     ) -> Result<(), &'static str> {
         if id == 0 || self.entries.contains_key(&id) { return Err("duplicate native resource"); }
         let layout = match (kind, format) {
@@ -249,7 +253,7 @@ impl<B> Resources<B> {
             let allocation = if layout.is_some() { Some(a.allocate(bytes, 4096, Kind::Engine)?) } else { None };
             let pin = allocation.map(|v| a.pin(v)).transpose()?;
             self.entries.insert(id, Entry { role: match kind { 1 => "target", 2 => "texture", _ => "buffer" }, regions: Vec::new(), layout, bytes, va, allocation, pin,
-                backing: None, mapped: false, dropped: false, reference: Arc::new(()), backing_va: None, backing_bytes: 0, backing_mapped: false });
+                _charge: charge, backing: None, mapped: false, dropped: false, reference: Arc::new(()), backing_va: None, backing_bytes: 0, backing_mapped: false });
             if let Some(allocation) = allocation {
                 self.space(a, io)?.map_kind(a, io, va, allocation.range, vm::Flags::default(), 0xfe)?;
                 self.entries.get_mut(&id).unwrap().mapped = true;
@@ -354,7 +358,7 @@ impl<B> Resources<B> {
     ) -> Result<u32, &'static str> {
         let id = self.temporary;
         self.temporary = id.checked_sub(1).ok_or("native staging IDs exhausted")?;
-        self.create_aligned(a,io,id,3,0,bytes,1,1<<17)?;
+        self.create_aligned(a,io,id,3,0,bytes,1,1<<17,None)?;
         Ok(id)
     }
     pub fn staging(&mut self, a: &mut Allocator, io: &mut impl Io, format: u32,
@@ -364,6 +368,19 @@ impl<B> Resources<B> {
         self.temporary = id.checked_sub(1).ok_or("native staging IDs exhausted")?;
         self.create(a,io,id,2,format,width,height)?;
         Ok(id)
+    }
+    /// Staging with its submitting process's reservation installed before any
+    /// PTE publication. A failed map/collect retains the charge with the entry.
+    pub fn charged_staging(&mut self, a: &mut Allocator, io: &mut impl Io, format: u32,
+        width: u32, height: u32, charge: Arc<dyn Send + Sync>,
+    ) -> Result<u32, &'static str> {
+        let id = self.temporary;
+        self.temporary = id.checked_sub(1).ok_or("native staging IDs exhausted")?;
+        let result = self.create_aligned(a,io,id,2,format,width,height,4096,Some(charge));
+        if result.is_err() {
+            if let Some(e) = self.entries.get_mut(&id) { e.dropped = true; }
+        }
+        result.map(|()| id)
     }
     pub fn unref(&mut self, id: u32) -> Result<(), &'static str> {
         self.entries.get_mut(&id).ok_or("native resource absent")?.dropped = true;
@@ -516,3 +533,29 @@ pub use native::{resource_create, attach_backing, resource_unref, ctx_create, ct
 
 #[cfg(target_os = "none")]
 pub(crate) use native::ownership_census;
+
+/// Provision a caller-charged destination snapshot through the native owner.
+#[cfg(target_os = "none")]
+pub(crate) fn blend_staging(format: u32, width: u32, height: u32,
+    charge: Arc<dyn Send + Sync>,
+) -> Result<(super::encode::Target, Hold), &'static str> {
+    super::ce::with_resources(|r, a, io| {
+        let id = r.charged_staging(a, io, format, width, height, charge)?;
+        let layout = r.layout(id).ok_or("native scratch layout absent")?;
+        let target = super::encode::Target { id,
+            address: r.address(id).ok_or("native scratch address absent")?,
+            width, height, format, tile_mode: layout.tile_mode };
+        Ok((target, r.hold(id)?))
+    })
+}
+
+/// Stop retaining a submission's snapshots. Device chunks still hold them if
+/// DMA has not ended; a failed collection keeps each entry and its reservation.
+#[cfg(target_os = "none")]
+pub(crate) fn retire_blend_staging(ids: [Option<u32>; 2], holds: &mut Vec<Hold>) {
+    let _ = super::ce::with_resources(|r, a, io| {
+        for id in ids.into_iter().flatten() { r.unref(id)?; }
+        holds.clear();
+        r.collect(a, io)
+    });
+}

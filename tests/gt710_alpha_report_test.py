@@ -1,0 +1,229 @@
+"""PR 8.3 selection and retained-capture scorer refusal checks."""
+import hashlib
+import json
+from pathlib import Path
+import re
+import runpy
+import shutil
+import tempfile
+import subprocess
+from unittest.mock import patch
+import unittest
+
+from gt710_resources_report_test import API, ROOT, SHA, NAMES, REQUIRED, PROBE_FILES
+from gt710_resources_report_test import boot, events, probes, stage, transcript
+
+ALPHA = {'pipelines/' + name for name in (
+    'over-premultiplied', 'over-straight', 'over-overlap',
+    'coverage-blend', 'coverage-lcd', 'bitmap-text')}
+SELECTED = [n for n in NAMES if n in REQUIRED or n in ALPHA or
+            (n.startswith('profile/') and n not in (
+                'profile/binary32-emulation', 'profile/large-coordinates',
+                'profile/scissor-exact'))]
+
+
+def alpha_transcript():
+    text = transcript()
+    for name in SELECTED:
+        text = text.replace(f'CASE {name} FAIL ms=1 msg=not implemented',
+                            f'CASE {name} PASS ms=1')
+    return text.replace('passed=52 failed=118', 'passed=77 failed=93')
+
+
+def retained_capture(directory):
+    gpu = directory / 'resources-producer'
+    gpu.mkdir()
+    for path, suite in ((directory, 'console'), (gpu, 'gpu')):
+        raw_boot = boot(suite)
+        del raw_boot['bootedCommit']
+        stage(path)
+        serial = (path / 'serial.txt').read_text() + transcript('console')
+        if suite == 'gpu':
+            serial = (path / 'serial.txt').read_text() + alpha_transcript()
+            # G12: real reprobe records are uploaded after the cases, with
+            # individual serial anchors and the final-slot digest.
+            rows = [dict(p, phase='caps-reprobe', epoch=17) for p in probes()]
+            body = b''
+            anchors = ''
+            for row in rows:
+                raw = json.dumps(row, separators=(',', ':')).encode()
+                body += raw + b'\n'
+                anchors += (f'GT710_CAPS_REPROBE id={row["capability"]} epoch=17 '
+                            f'sha256={hashlib.sha256(raw).hexdigest()}\n')
+            (path / 'gt710-final.rle').write_bytes(body)
+            final = f'GT710_FINAL_BULK {len(body)} {hashlib.sha256(body).hexdigest()}\n'
+            serial = serial.replace('SUITE gpu ELAPSED', anchors + final + 'SUITE gpu ELAPSED')
+        for name, value in {
+            'run.json': json.dumps(raw_boot), 'serial.txt': serial, 'commit': SHA,
+            'dirty': '0', 'exit-status': '1' if suite == 'gpu' else '0', 'ended': '1',
+            'events.jsonl': ''.join(json.dumps(e) + '\n' for e in events()),
+        }.items():
+            (path / name).write_text(value)
+    files = [
+        'docs/metal/boot-path.json', 'docs/boot-path.json', 'docs/efforts/metal.json',
+        'docs/suites/gt710.json', 'docs/suites/gpu.json', 'docs/suites/console.json',
+        'docs/gui/gt710-step-8-2.json', 'docs/gui/gt710-step-8-3.json',
+        'scripts/metal/gt710-suite', 'scripts/suite-verdict.py',
+        'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json',
+    ] + ['kernel/src/gpu/gk208/caps/' + name for name in set(PROBE_FILES)]
+    for name in files:
+        target = directory / 'definition' / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / name, target)
+    return gpu
+
+
+class AlphaReport(unittest.TestCase):
+    def test_selection_and_registered_row(self):
+        step = json.loads((ROOT / 'docs/gui/gt710-step-8-3.json').read_text())
+        self.assertEqual((step['id'], step['suite']), ('gt710-step-8-3', 'gpu'))
+        self.assertEqual(step['cases'], SELECTED)
+        self.assertEqual(len(SELECTED), 77)
+        # G15 keeps device-error production and its dependent cases in 8.5.
+        later = json.loads((ROOT / 'docs/gui/gt710-step-8-5.json').read_text())
+        self.assertIn('profile/scissor-exact', later['cases'])
+        self.assertIn('textures/copy-region', later['cases'])
+        self.assertFalse(set(step['cases']) & set(later['cases']))
+        manifest = json.loads((ROOT / 'docs/suites/gt710.json').read_text())
+        API['validate_manifest'](manifest)
+        category = next(c for c in manifest['categories'] if c['id'] == 'alpha')
+        self.assertTrue(category['hostRunner'])
+        self.assertEqual([c['id'] for c in category['cases']], ['suite'])
+        self.assertNotIn('alpha', API['capture_categories'](boot('console')))
+        self.assertIn('docs/gui/gt710-step-8-3.json',
+                      (ROOT / 'scripts/metal/metal-build').read_text())
+
+    def test_alpha_row_judges_each_selected_case(self):
+        producer = dict(gpu=dict(serial=alpha_transcript(), boot=boot()),
+                        console=dict(serial=transcript('console'), boot=boot('console'), events=events()))
+        result = API['cases']('alpha', '', producer)
+        self.assertEqual([(c['id'], c['result']) for c in result], [('alpha/suite', 'PASS')])
+        for name in SELECTED:
+            changed = alpha_transcript().replace(f'CASE {name} PASS ms=1',
+                                                f'CASE {name} FAIL ms=1 msg=broken')
+            changed = changed.replace('passed=77 failed=93', 'passed=76 failed=94')
+            producer['gpu']['serial'] = changed
+            with self.subTest(case=name):
+                self.assertEqual(API['cases']('alpha', '', producer)[0]['result'], 'FAIL')
+
+    def test_final_head_proof_binds_pr_and_driver_exit_cause(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            gpu = retained_capture(directory)
+            pr = dict(number=2578, state='OPEN', headRefOid=SHA,
+                      headRefName='metal-test/alpha')
+            for path, status in ((directory, 0), (gpu, 1)):
+                run = json.loads((path / 'run.json').read_text())
+                run['target'] = dict(branch=dict(name=pr['headRefName']))
+                (path / 'run.json').write_text(json.dumps(run))
+                lifecycle = events() + [
+                    dict(event='decided', status=0), dict(event='power-off', off=True),
+                    dict(event='suite-verdict', status=status),
+                    dict(event='closed', endedBy='driver', status=status)]
+                (path / 'events.jsonl').write_text(''.join(json.dumps(e) + '\n' for e in lifecycle))
+            proof = API['alpha_capture_proof'](directory, SHA, pr)
+            self.assertEqual(proof['head'], pr['headRefOid'])
+            self.assertEqual(proof['pr'], pr)
+            self.assertEqual(proof['consoleHandoffToDoneMS'], 330000)
+            self.assertEqual(proof['selected'], dict(passed=77, total=77))
+            self.assertEqual(proof['gpuElapsedMS'], 900000)
+            self.assertEqual([b['exitStatus'] for b in proof['boots']], [0, 1])
+            self.assertEqual(proof['boots'][1]['exitReason'], 'failed GPU cases outside step 8.3 (G13)')
+            self.assertEqual(proof['boots'][1]['done'], dict(passed=77, failed=93, skipped=0, total=170))
+            self.assertEqual(proof['boots'][1]['memory'], 'PASS')
+            self.assertEqual(proof['boots'][1]['toolsCommit'], SHA)
+            self.assertEqual(proof['boots'][1]['build']['commit'], SHA)
+            self.assertEqual([b['commit'] for b in proof['boots']], [SHA, SHA])
+            retained_pr = dict(pr, headRefOid='b' * 40)
+            with patch('subprocess.check_output', side_effect=[b'', b'scripts/metal/gt710-suite\0']):
+                retained = API['alpha_capture_proof'](directory, retained_pr['headRefOid'], retained_pr)
+            self.assertEqual(retained['head'], retained_pr['headRefOid'])
+            self.assertEqual(retained['captureCommit'], SHA)
+            self.assertEqual([b['commit'] for b in retained['boots']], [SHA, SHA])
+
+            for changed in [dict(pr, headRefOid='b'*40), dict(pr, state='MERGED'),
+                            dict(pr, headRefName='other')]:
+                with self.subTest(pr=changed), self.assertRaises(ValueError):
+                    API['alpha_capture_proof'](directory, SHA, changed)
+            for path in (directory, gpu):
+                original = (path / 'events.jsonl').read_text()
+                mutations = [original.replace('"status": 0', '"status": 124', 1),
+                             original.replace('"endedBy": "driver"', '"endedBy": "reaper"'),
+                             original.replace('"off": true', '"off": false'),
+                             original.replace('"event": "closed"', '"event": "lost"'),
+                             original + json.dumps(dict(event='closed', endedBy='driver', status=1)) + '\n']
+                for text in mutations:
+                    (path / 'events.jsonl').write_text(text)
+                    with self.subTest(capture=path.name, events=text), self.assertRaises(ValueError):
+                        API['alpha_capture_proof'](directory, SHA, pr)
+                (path / 'events.jsonl').write_text(original)
+            for path in (directory, gpu):
+                original = (path / 'serial.txt').read_text()
+                for changed in (original.replace('MEMORY reclaimed=PASS', 'MEMORY reclaimed=FAIL'),
+                                re.sub(r'^SUITE .* MEMORY reclaimed=.*\n', '', original, flags=re.M)):
+                    (path / 'serial.txt').write_text(changed)
+                    with self.subTest(capture=path.name), self.assertRaises(ValueError):
+                        API['alpha_capture_proof'](directory, SHA, pr)
+                # Even a stripped startup anchor cannot hide a missing artifact.
+                (path / 'serial.txt').write_text(re.sub(r'^GT710_.*\n', '', original, flags=re.M))
+                data = (path / 'gt710-pixels.rle').read_bytes()
+                (path / 'gt710-pixels.rle').unlink()
+                with self.subTest(capture=path.name), self.assertRaises(ValueError):
+                    API['alpha_capture_proof'](directory, SHA, pr)
+                (path / 'gt710-pixels.rle').write_bytes(data)
+                (path / 'serial.txt').write_text(original)
+            (gpu / 'exit-status').write_text('0')
+            with self.assertRaises(ValueError):
+                API['alpha_capture_proof'](directory, SHA, pr)
+
+
+    def test_retained_commit_allows_only_ancestor_host_scorer_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / 'commit').write_text(SHA)
+            head = 'b' * 40
+            changed = b'scripts/metal/gt710-suite\0tests/gt710_alpha_report_test.py\0'
+            with patch('subprocess.check_output', side_effect=[b'', changed]) as git:
+                self.assertEqual(API['alpha_capture_identity'](directory, head),
+                    (SHA, ['scripts/metal/gt710-suite', 'tests/gt710_alpha_report_test.py']))
+                self.assertEqual(git.call_args_list[0].args[0],
+                    ['git', 'merge-base', '--is-ancestor', SHA, head])
+                self.assertEqual(git.call_args_list[1].args[0],
+                    ['git', 'diff', '--no-renames', '--name-only', '-z', SHA, head])
+            for name in ('kernel/src/gpu/mod.rs', 'docs/gui/gt710-step-8-3.json', 'scripts/metal/metal-build'):
+                with patch('subprocess.check_output', side_effect=[b'', changed + name.encode() + b'\0']):
+                    with self.subTest(file=name), self.assertRaises(ValueError):
+                        API['alpha_capture_identity'](directory, head)
+            with patch('subprocess.check_output', side_effect=subprocess.CalledProcessError(1, 'git')):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    API['alpha_capture_identity'](directory, head)
+
+    def test_retained_definition_scores_alpha_and_refuses_bad_evidence(self):
+        metal = runpy.run_path(str(ROOT / 'scripts/metal/metal_score.py'))
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            gpu = retained_capture(directory)
+            self.assertEqual(API['record_resources_capture'](directory, SHA, 'alpha'), 0)
+            report = json.loads((directory / 'gt710-alpha.json').read_text())
+            self.assertEqual(sum(c['result'] == 'PASS' for c in report['gpuCases']), 77)
+            def score():
+                return metal['score'](directory)['milestones']['metal-gt710/alpha']
+            self.assertEqual(score(), dict(reached=1, total=1, passed=True, reason='alpha: 1 cases passed'))
+            original = (gpu / 'serial.txt').read_text()
+            changes = {
+                'selected failure': original.replace('CASE profile/wide-arithmetic PASS ms=1',
+                    'CASE profile/wide-arithmetic FAIL ms=1 msg=broken').replace(
+                        'passed=77 failed=93', 'passed=76 failed=94'),
+                'missing DONE': re.sub(r'^SUITE gpu DONE .*\n', '', original, flags=re.M),
+                'unmatched G12 anchor': original.replace('GT710_FINAL_BULK ',
+                    'GT710_CAPS_REPROBE id=3 epoch=18 sha256=' + '0'*64 + '\nGT710_FINAL_BULK '),
+            }
+            for reason, text in changes.items():
+                (gpu / 'serial.txt').write_text(text)
+                with self.subTest(reason=reason):
+                    self.assertFalse(score()['passed'])
+            (gpu / 'serial.txt').write_text(original)
+
+
+if __name__ == '__main__':
+    unittest.main()

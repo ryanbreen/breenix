@@ -19,6 +19,11 @@ CATALOGUE = tuple(f'{name}.{extension}'
                                'pipeline-nearest_scaled', 'pipeline-box_filter',
                                'probe-integer-ops', 'probe-texel-fetch')
                   for extension in ('bin', 'sph', 'json', 'asm'))
+CATALOGUE_83 = tuple(f'{name}.{extension}'
+                     for name in ('pipeline-over', 'pipeline-over_straight',
+                                  'pipeline-coverage', 'pipeline-bitmap_text',
+                                  *(f'probe-int-{n:02}' for n in (*range(12), 18, 19)))
+                     for extension in ('bin', 'sph', 'json', 'asm'))
 REBUILD = 'regenerate with cargo run -p xtask -- kepler-assets --check and commit kernel/assets/kepler/'
 
 
@@ -28,7 +33,7 @@ def verify_assets(root):
     expected = json.loads((root / 'docs/gui/provenance/kepler-toolchain.sha256.json').read_text())
     source = (root / 'kernel/src/gpu/gk208/gr/firmware.rs').read_text()
     constants = dict(re.findall(r'pub const (\w+)_SHA256: &str = "([0-9a-f]{64})";', source))
-    for name in NAMES + TRIANGLE + CONTROLS + GRADIENT + CATALOGUE + ('manifest.json',):
+    for name in NAMES + TRIANGLE + CONTROLS + GRADIENT + CATALOGUE + CATALOGUE_83 + ('manifest.json',):
         try:
             data = (assets / name).read_bytes()
         except FileNotFoundError as error:
@@ -44,7 +49,7 @@ def verify_assets(root):
     manifest = json.loads((assets / 'manifest.json').read_text())
     if (manifest['schema'], manifest['chipset'], manifest['byte_order']) != (1, 0x106, 'little'):
         raise ValueError(f'manifest.json: wrong firmware format; {REBUILD}')
-    for name in NAMES + TRIANGLE + CONTROLS + GRADIENT + CATALOGUE:
+    for name in NAMES + TRIANGLE + CONTROLS + GRADIENT + CATALOGUE + CATALOGUE_83:
         entry = manifest['files'][name]
         license_name = 'MIT' if name in NAMES or name.endswith('.sph') else 'PolyForm-Noncommercial-1.0.0'
         if entry != dict(bytes=(assets / name).stat().st_size, license=license_name, sha256=expected[name]):

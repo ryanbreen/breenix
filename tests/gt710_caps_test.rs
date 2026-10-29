@@ -148,8 +148,9 @@ fn exact_executed_probes_admit_and_publish_only_measured_caps() {
     }
     assert_eq!(a.formats.map(|f| f.flags), [3, 3, 1]);
     assert_eq!(a.profile, 7);
-    // PR 8.2 advertises its five basic pipelines after executable admission.
-    assert_eq!(a.pipelines, 0x1f);
+    // PR 8.3 adds alpha pipelines after executable admission; shapes wait for 8.4.
+    assert_eq!(a.pipelines, 0x2ff);
+    assert_eq!(a.pipelines & (1 << 16), 0);
     for identity in [(0x124000,17), (0x123000,18)] {
         let stale = caps::Profile::from_board(&b, identity).record(None);
         assert_eq!(stale.capability_origin(c::REGION_COPY), o::UNPROBED);
@@ -184,6 +185,7 @@ fn bad_swizzle_block_height_byte_or_missing_execution_refuses_its_capability() {
                 let a = caps::Profile::from_board(&b, b.channel).record(None);
                 assert_eq!((a.status, a.missing), (gpu_abi::status::MISSING_CAPABILITY, id));
                 assert_eq!(a.capability_origin(id), o::UNPROBED);
+                assert_eq!(a.pipelines, 0);
                 let reason = format!("missing {}\0", c::name(id));
                 assert!(a.reason.starts_with(reason.as_bytes()));
                 for other in c::BGRA_RENDER..=c::REGION_COPY {

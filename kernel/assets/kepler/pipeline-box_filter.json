@@ -1,7 +1,7 @@
 {
   "chipset": 262,
   "stage": "fragment",
-  "code_bytes": 3752,
+  "code_bytes": 3568,
   "gprs": 21,
   "tls_bytes": 0,
   "constant_buffer_slot": 0,

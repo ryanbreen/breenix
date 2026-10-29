@@ -1,4 +1,27 @@
 /*
+ * SPDX-FileCopyrightText: Copyright (c) 2001-2010 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: MIT
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ */
+
+/*
  * rnndb copyright 2006
  * Artur Huillet
  * Ben Skeggs
@@ -128,6 +151,8 @@
 //! fixed raster state: MIT Mesa 24.3.4 nvc0_{screen,state,vbo,surface}.c.
 //! Coordinates and colours retain the shared stream semantics. No pixels are
 //! generated here: data contains shader code, constants and vertex inputs.
+//! Profile references: open-gpu-doc 9fdf5c4062007929d9f4e6cbad9c9771fe61b880;
+//! Mesa mesa-24.3.4 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de (MIT).
 use super::shaders;
 use alloc::{vec, vec::Vec};
 use gpu_abi::{
@@ -168,7 +193,8 @@ pub fn channel_words(input: &[u32], quarantine: u64) -> Result<Vec<u32>, &'stati
     Ok(words)
 }
 
-pub const DATA_START: usize = (1 << 20) + 8192;
+// Reserve the complete committed shader catalogue before per-draw data.
+pub const DATA_START: usize = (1 << 20) + 0x5000;
 const CODE: usize = 1 << 20;
 #[derive(Clone, Copy)]
 pub struct Target {
@@ -182,6 +208,9 @@ pub struct Target {
 pub trait Bindings: Resolver {
     fn render_target(&self, handle: u64) -> Option<Target>;
     fn sampled_source(&self, handle: u64) -> Option<Target>;
+    /// Caller-owned destination snapshot for this format, retaining pixel
+    /// coordinates. Blended commands refuse if the required scratch is absent.
+    fn blend_scratch(&self, _format: u32) -> Option<Target> { None }
 }
 
 /// Warm the installed basic catalogue through the same encoder as client work.
@@ -222,6 +251,31 @@ pub fn warm_frame(target: Target, source: Target, pipe: u32) -> Option<Frame> {
             &[draw::Instance { rect: [0, 0, 1, 1], params }]);
     }
     translate(words.as_slice(), &View(target, source)).ok()
+}
+
+/// Exact bootstrap allocation for the COPY parking payload, including the
+/// committed catalogue and its per-draw constants, descriptors and vertices.
+pub fn parking_bytes(target: Target, source: Target) -> Result<usize, &'static str> {
+    warm_frame(target, source, pipeline::COPY)
+        .ok_or("native parking frame refused")?
+        .data.len().checked_sub(CODE).ok_or("native parking code extent")
+}
+
+/// Preserve the bootstrap channel's bounded upload contract for a catalogue
+/// spanning several calls. Validate the complete address span before writing.
+pub fn upload_parking(address: u64, data: &[u8],
+    mut upload: impl FnMut(u64, &[u8]) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    let bytes = u64::try_from(data.len()).map_err(|_| "native parking upload extent")?;
+    if bytes == 0 || address.checked_add(bytes).is_none() {
+        return Err("native parking upload extent");
+    }
+    let mut next = address;
+    for chunk in data.chunks(16384) {
+        upload(next, chunk)?;
+        next += chunk.len() as u64;
+    }
+    Ok(())
 }
 
 /// Build an inert channel state from the sampled encoder. Its
@@ -353,6 +407,7 @@ pub fn pipeline_refusal(w: &(impl Words + ?Sized)) -> Option<stream::Refusal> {
             cmd::BEGIN | cmd::CLEAR | cmd::SCISSOR | cmd::COPY => (),
             cmd::DRAW | cmd::DRAW_BUFFER if w.word(at + 2) == pipeline::SOLID => (),
             cmd::DRAW_SAMPLED => (),
+            cmd::PROBE if matches!(w.word(at + 2), 0..=11 | 18 | 19) => (),
             draw::COMMAND
                 if matches!(
                     w.word(at + 2),
@@ -360,6 +415,10 @@ pub fn pipeline_refusal(w: &(impl Words + ?Sized)) -> Option<stream::Refusal> {
                         | pipeline::COPY_SCALED
                         | pipeline::NEAREST_SCALED
                         | pipeline::BOX_FILTER
+                        | pipeline::OVER
+                        | pipeline::OVER_STRAIGHT
+                        | pipeline::COVERAGE
+                        | pipeline::BITMAP_TEXT
                 ) => {}
             _ => return Some(stream::Refusal { index, error: stream::error::BAD_PIPELINE }),
         }
@@ -389,6 +448,10 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
         pipeline::COPY_SCALED,
         pipeline::NEAREST_SCALED,
         pipeline::BOX_FILTER,
+        pipeline::OVER,
+        pipeline::OVER_STRAIGHT,
+        pipeline::COVERAGE,
+        pipeline::BITMAP_TEXT,
     ] {
         let (offset, header, code, _) = program(pipe);
         let fs = CODE + offset;
@@ -481,6 +544,27 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                     words: Vec::new(), relocations: Vec::new(),
                     copy: rectangle.map(|r| (source.id, destination.id, r)) });
             }
+            cmd::PROBE => {
+                let t = target.ok_or("native target absent")?;
+                let r = [4, 5, 6, 7].map(|k| w.word(at + k) as i32);
+                let clip = stream::clipped([0, 0, t.width as i32, t.height as i32],
+                    t.width, t.height, scissor);
+                if let (Some(r), Some(clip)) = (stream::clipped(r, t.width, t.height, scissor), clip) {
+                    let routine = w.word(at + 2);
+                    let pipe = PROBE_ROUTINE_BASE + routine;
+                    let (offset, header, code, _) = program(pipe);
+                    let fs = CODE + offset;
+                    f.data[fs..fs + 80].copy_from_slice(header);
+                    f.data[fs + 80..fs + 80 + code.len()].copy_from_slice(code);
+                    let mut constants = [0; 20];
+                    for (i, value) in constants[..16].iter_mut().enumerate() {
+                        *value = w.word(at + 8 + i);
+                    }
+                    constants[16] = w.word(at + 3);
+                    constants[17] = routine;
+                    quad(&mut f, t, r, clip, &constants, pipe, None, None);
+                }
+            }
             cmd::DRAW_SAMPLED | draw::COMMAND => {
                 let t = target.ok_or("native target absent")?;
                 let legacy = code == cmd::DRAW_SAMPLED;
@@ -519,7 +603,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                     continue;
                 };
                 let count = w.word(at + if legacy { 5 } else { 9 }) as usize;
-                for n in 0..count {
+                let instance = |n| {
                     let mut constants = [0; 32];
                     let r = if legacy {
                         let base = at + 6 + n * 6;
@@ -543,8 +627,35 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                     };
                     constants[24] = source.width;
                     constants[25] = source.height;
-                    if let Some(r) = r {
-                        quad(&mut f, t, r, clip, &constants, pipe, Some(source));
+                    r.map(|r| (constants, r))
+                };
+                let scratch = if draw::blended(pipe) {
+                    let union = (0..count).filter_map(|n| instance(n).map(|(_, r)| r))
+                        .fold(None, |u: Option<[u32; 4]>, r| Some(match u {
+                            None => r,
+                            Some(u) => [u[0].min(r[0]), u[1].min(r[1]),
+                                u[2].max(r[2]), u[3].max(r[3])],
+                        }));
+                    if let Some([x0, y0, x1, y1]) = union {
+                        let scratch = b.blend_scratch(t.format).ok_or("native blend scratch absent")?;
+                        texture_image_control(scratch)?;
+                        if scratch.format != t.format || scratch.width < x1 || scratch.height < y1
+                            || scratch.id == t.id || scratch.id == source.id
+                            || scratch.address == t.address || scratch.address == source.address {
+                            return Err("invalid native blend scratch");
+                        }
+                        // gpu.md 1.5 item 7: snapshot once per blended command,
+                        // after prior draws, at the same pixel coordinates.
+                        // Shared validation already refused intersecting writes.
+                        f.chunks.push(Chunk { command, target: scratch.id, source: Some(t.id),
+                            words: Vec::new(), relocations: Vec::new(),
+                            copy: Some((t.id, scratch.id, [x0, y0, x1-x0, y1-y0, x0, y0])) });
+                        Some(scratch)
+                    } else { None }
+                } else { None };
+                for n in 0..count {
+                    if let Some((constants, r)) = instance(n) {
+                        quad(&mut f, t, r, clip, &constants, pipe, Some(source), scratch);
                     }
                 }
             }
@@ -605,6 +716,7 @@ fn texture_image_control(t: Target) -> Result<[u32; 8], &'static str> {
         0,
     ])
 }
+const PROBE_ROUTINE_BASE: u32 = 0x10000;
 const PROBE_INTEGER: u32 = u32::MAX - 1;
 const PROBE_TEXEL: u32 = u32::MAX;
 
@@ -640,6 +752,30 @@ fn program(pipe: u32) -> (usize, &'static [u8; 80], &'static [u8], u32) {
             shaders::PIPELINE_BOX_FILTER_CODE,
             shaders::PIPELINE_BOX_FILTER_GPRS,
         ),
+        pipeline::OVER => (
+            shaders::PIPELINE_OVER_OFFSET,
+            shaders::PIPELINE_OVER_HEADER,
+            shaders::PIPELINE_OVER_CODE,
+            shaders::PIPELINE_OVER_GPRS,
+        ),
+        pipeline::OVER_STRAIGHT => (
+            shaders::PIPELINE_OVER_STRAIGHT_OFFSET,
+            shaders::PIPELINE_OVER_STRAIGHT_HEADER,
+            shaders::PIPELINE_OVER_STRAIGHT_CODE,
+            shaders::PIPELINE_OVER_STRAIGHT_GPRS,
+        ),
+        pipeline::COVERAGE => (
+            shaders::PIPELINE_COVERAGE_OFFSET,
+            shaders::PIPELINE_COVERAGE_HEADER,
+            shaders::PIPELINE_COVERAGE_CODE,
+            shaders::PIPELINE_COVERAGE_GPRS,
+        ),
+        pipeline::BITMAP_TEXT => (
+            shaders::PIPELINE_BITMAP_TEXT_OFFSET,
+            shaders::PIPELINE_BITMAP_TEXT_HEADER,
+            shaders::PIPELINE_BITMAP_TEXT_CODE,
+            shaders::PIPELINE_BITMAP_TEXT_GPRS,
+        ),
         // Mesa nvc0_program.c:775-799: first instruction follows the 80-byte
         // SPH at a 128-byte boundary, where Kepler expects scheduling words.
         PROBE_INTEGER => (
@@ -654,6 +790,25 @@ fn program(pipe: u32) -> (usize, &'static [u8; 80], &'static [u8], u32) {
             shaders::PROBE_TEXEL_FETCH_CODE,
             shaders::PROBE_TEXEL_FETCH_GPRS,
         ),
+        p if (PROBE_ROUTINE_BASE..PROBE_ROUTINE_BASE + 25).contains(&p) => {
+            match p - PROBE_ROUTINE_BASE {
+                0 => (shaders::PROBE_INT_00_OFFSET, shaders::PROBE_INT_00_HEADER, shaders::PROBE_INT_00_CODE, shaders::PROBE_INT_00_GPRS),
+                1 => (shaders::PROBE_INT_01_OFFSET, shaders::PROBE_INT_01_HEADER, shaders::PROBE_INT_01_CODE, shaders::PROBE_INT_01_GPRS),
+                2 => (shaders::PROBE_INT_02_OFFSET, shaders::PROBE_INT_02_HEADER, shaders::PROBE_INT_02_CODE, shaders::PROBE_INT_02_GPRS),
+                3 => (shaders::PROBE_INT_03_OFFSET, shaders::PROBE_INT_03_HEADER, shaders::PROBE_INT_03_CODE, shaders::PROBE_INT_03_GPRS),
+                4 => (shaders::PROBE_INT_04_OFFSET, shaders::PROBE_INT_04_HEADER, shaders::PROBE_INT_04_CODE, shaders::PROBE_INT_04_GPRS),
+                5 => (shaders::PROBE_INT_05_OFFSET, shaders::PROBE_INT_05_HEADER, shaders::PROBE_INT_05_CODE, shaders::PROBE_INT_05_GPRS),
+                6 => (shaders::PROBE_INT_06_OFFSET, shaders::PROBE_INT_06_HEADER, shaders::PROBE_INT_06_CODE, shaders::PROBE_INT_06_GPRS),
+                7 => (shaders::PROBE_INT_07_OFFSET, shaders::PROBE_INT_07_HEADER, shaders::PROBE_INT_07_CODE, shaders::PROBE_INT_07_GPRS),
+                8 => (shaders::PROBE_INT_08_OFFSET, shaders::PROBE_INT_08_HEADER, shaders::PROBE_INT_08_CODE, shaders::PROBE_INT_08_GPRS),
+                9 => (shaders::PROBE_INT_09_OFFSET, shaders::PROBE_INT_09_HEADER, shaders::PROBE_INT_09_CODE, shaders::PROBE_INT_09_GPRS),
+                10 => (shaders::PROBE_INT_10_OFFSET, shaders::PROBE_INT_10_HEADER, shaders::PROBE_INT_10_CODE, shaders::PROBE_INT_10_GPRS),
+                11 => (shaders::PROBE_INT_11_OFFSET, shaders::PROBE_INT_11_HEADER, shaders::PROBE_INT_11_CODE, shaders::PROBE_INT_11_GPRS),
+                18 => (shaders::PROBE_INT_18_OFFSET, shaders::PROBE_INT_18_HEADER, shaders::PROBE_INT_18_CODE, shaders::PROBE_INT_18_GPRS),
+                19 => (shaders::PROBE_INT_19_OFFSET, shaders::PROBE_INT_19_HEADER, shaders::PROBE_INT_19_CODE, shaders::PROBE_INT_19_GPRS),
+                _ => unreachable!(),
+            }
+        }
         _ => unreachable!(),
     }
 }
@@ -686,6 +841,7 @@ pub fn probe_frame(t: Target, source: Option<Target>) -> Frame {
             &[0; 4],
             pipe,
             Some(source),
+            None,
         );
     } else {
         let inputs = include_bytes!("caps/integer.inputs");
@@ -702,6 +858,7 @@ pub fn probe_frame(t: Target, source: Option<Target>) -> Frame {
                 &values,
                 pipe,
                 None,
+                None,
             );
         }
     }
@@ -714,7 +871,7 @@ fn corrupt_pixel(f: &mut Frame, t: Target) {
 fn solid(f: &mut Frame, t: Target, r: [u32; 4], scissor: [u32; 4], colour: u32) {
     let constants =
         [16, 8, 0, 24].map(|shift| gpu_abi::float::ratio_bits(colour >> shift & 255, 255));
-    quad(f, t, r, scissor, &constants, pipeline::SOLID, None);
+    quad(f, t, r, scissor, &constants, pipeline::SOLID, None, None);
 }
 fn quad(
     f: &mut Frame,
@@ -724,6 +881,7 @@ fn quad(
     constants: &[u32],
     pipe: u32,
     source: Option<Target>,
+    scratch: Option<Target>,
 ) {
     let uniform = f.data.len().next_multiple_of(256);
     let vertex = uniform + 256;
@@ -742,16 +900,28 @@ fn quad(
         f.data[uniform + k * 4..uniform + k * 4 + 4].copy_from_slice(&v.to_le_bytes());
     }
     if let Some(source) = source {
+        // MIT cla197tex.h:509-536,547-574: clamp U/V/P to edge, no sRGB or
+        // anisotropy; POINT mag/min, MIP_NONE. Integer texel fetches need no
+        // hardware filtering, including the BOX_FILTER shader's explicit sum.
+        // Mesa nvc0_tex.c:743-751 uploads a full eight-word TSC; unlike its
+        // generic TSC0, this exact profile keeps sRGB conversion disabled.
+        let sampler = [2 | (2 << 3) | (2 << 6), 1 | (1 << 4) | (1 << 6), 0, 0, 0, 0, 0, 0];
         // Validation above established this descriptor before any draw chunks.
-        for (offset, words) in [
-            (tic, texture_image_control(source).unwrap()),
-            (tsc, [0x92, 0x51, 0, 0, 0, 0, 0, 0]),
-        ] {
-            for (k, v) in words.iter().enumerate() {
-                f.data[offset + k * 4..offset + k * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        for (slot, texture) in [Some(source), scratch].into_iter().enumerate() {
+            let Some(texture) = texture else { continue; };
+            for (offset, words) in [
+                (tic + slot * 32, texture_image_control(texture).unwrap()),
+                (tsc + slot * 32, sampler),
+            ] {
+                for (k, v) in words.iter().enumerate() {
+                    f.data[offset + k * 4..offset + k * 4 + 4].copy_from_slice(&v.to_le_bytes());
+                }
             }
+            // Mesa nvc0_tex.c:708: TIC | TSC << 20. The compiler selects
+            // CB15[slot] (texBindBase=0); u1's alpha assets use slots 0 and 1.
+            let handle = slot as u32 | (slot as u32) << 20;
+            f.data[handles + slot * 4..handles + slot * 4 + 4].copy_from_slice(&handle.to_le_bytes());
         }
-        // The compiler emits handle 0 in the texture CB. TIC 0 | TSC 0 is 0.
     }
     let [x0, y0, x1, y1] = r;
     for (i, [x, y]) in [[x0, y0], [x1, y0], [x1, y1], [x0, y0], [x1, y1], [x0, y1]]
@@ -830,17 +1000,32 @@ fn quad(
     c.emit(0x1510, &[0]);
     c.emit(0x1918, &[0]);
     c.emit(0x0dac, &[0x1b02, 0x1b02]);
+    // Exact profile is frame-owned, including after a context switch.
+    // MIT cla197.h:1813-1816; Mesa nvc0_state.c:143-146: common blend state.
+    c.emit(0x12e4, &[0]);
+    // MIT cla197.h:2119-2122; Mesa nvc0_state.c:130-146: SET_BLEND(0)=FALSE.
+    // Use the direct method; no Mesa MME blend-enable macro is installed.
     c.emit(0x1360, &[0]);
     c.emit(0x135c, &[0]);
     c.emit(0x19c4, &[0]);
     c.emit(0x0f90, &[1]);
     c.emit(0x1a00, &[0x1111]);
-    for method in [0x1534, 0x15d0, 0x153c] {
-        c.emit(method, &[0]);
-    }
+    // MIT cla197.h:1807-1811: 1x1 alpha-to-coverage dither footprint.
+    // This is a footprint selector, not a color-dither enable. Disable its
+    // alpha-to-coverage path explicitly below rather than inherit it.
+    c.emit(0x12e0, &[0]);
+    // MIT cla197.h:2381-2384; Mesa nvc0_state.c:235: anti-alias disabled.
+    c.emit(0x1534, &[0]);
+    // MIT cla197.h:2551-2553: MODE_1X1 (one sample).
+    c.emit(0x15d0, &[0]);
+    // MIT cla197.h:2389-2395; Mesa nvc0_state.c:182-189: neither alpha
+    // to coverage (including dithering) nor alpha to one may alter pixels.
+    c.emit(0x153c, &[0]);
     // MIT envytools rnndb graph/gf100_3d.xml:217-222: one pass, sample shading disabled.
     c.emit(0x0754, &[1]);
     c.emit(0x0fbc, &[0xffff; 4]);
+    // MIT cla197.h:2521-2524: SRGB_WRITE=FALSE. Sampled images likewise
+    // omit the TIC sRGB bit (Mesa nvc0_tex.c:335-338), and TSCs omit bit 13.
     c.emit(0x15b8, &[0]);
     c.emit(0x19e0, &[0]);
     c.emit(0x12d4, &[0x1d01]);
@@ -887,8 +1072,9 @@ fn quad(
     c.relocations.push(c.words.len() - 2);
     c.emit(0x2490, &[1]);
     if source.is_some() {
-        c.address(0x1574, tic, &[0]);
-        c.address(0x155c, tsc, &[0]);
+        let maximum_index = u32::from(scratch.is_some());
+        c.address(0x1574, tic, &[maximum_index]);
+        c.address(0x155c, tsc, &[maximum_index]);
         c.emit(0x1334, &[0]);
         c.emit(0x1330, &[0]);
         c.emit(0x1338, &[0]);
@@ -945,8 +1131,8 @@ pub(crate) fn prepare(
             let region = match method {
                 0x2380 => Some((u64::from(c.words[at+3]), 256, "constants")),
                 0x1c00 => Some((u64::from(c.words[at+3]), 256, "vertex")),
-                0x1574 => Some((u64::from(c.words[at+2]), 32, "texture-descriptor")),
-                0x155c => Some((u64::from(c.words[at+2]), 32, "sampler-descriptor")),
+                0x1574 => Some((u64::from(c.words[at+2]), (u64::from(c.words[at+3])+1)*32, "texture-descriptor")),
+                0x155c => Some((u64::from(c.words[at+2]), (u64::from(c.words[at+3])+1)*32, "sampler-descriptor")),
                 _ => None,
             };
             if let Some((start, bytes, name)) = region {
