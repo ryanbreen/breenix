@@ -970,6 +970,7 @@ pub(crate) fn prepare(
             } else { None });
         }
         let id = r.draw_buffer(a, io, backing.bytes() as u32)?;
+        backing.identify("native-frame", id, r.channel() as u32);
         r.attach(a, io, id, backing.clone(), &pages, backing.bytes() as u64)?;
         r.describe_frame(id, regions)?;
         let address = r.address(id).ok_or("native draw upload absent")?;

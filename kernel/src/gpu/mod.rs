@@ -2113,6 +2113,7 @@ fn native_console_backing(surface: &crate::gk208::ConsoleSurface) -> Result<Arc<
         return Ok(backing.clone());
     }
     let backing = Arc::new(Pages::new(bytes.div_ceil(PAGE)).ok_or("native console readback allocation")?);
+    backing.identify("native-console-readback", 0, 0);
     *storage = Some(backing.clone());
     Ok(backing)
 }

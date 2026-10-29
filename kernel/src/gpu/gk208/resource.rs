@@ -455,7 +455,7 @@ mod native {
             use core::fmt::Write;
             let mut text = alloc::format!("native-registry entries={} contexts={} channel={}\n",
                 r.entries.len(), r.contexts.len(), r.channel);
-            for (&id, e) in &r.entries {
+            for (&id, e) in r.entries.iter().take(4096) {
                 let _ = writeln!(text, "native-registry resource={} role={} pages={} backing_refs={} device_refs={} dropped={} mapped={} backing_mapped={}",
                     id, e.role, e.backing.as_ref().map_or(0, |b| b.count()),
                     e.backing.as_ref().map_or(0, Arc::strong_count),
