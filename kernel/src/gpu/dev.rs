@@ -29,6 +29,13 @@ pub fn select_svga() {
     BACKEND.store(backend::SVGA3D_DX, Ordering::Release);
 }
 
+/// Select native builders after the sole startup owner has restored its
+/// allocator session. This does not install a device or grant admission.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn select_gk208() {
+    BACKEND.store(backend::GK208, Ordering::Release);
+}
+
 /// Native identities are unavailable until the adapter implements them.
 pub fn context_id(ctx: u32) -> Option<u32> {
     match backend() { backend::VIRGL => Some(ctx), backend::SVGA3D_DX => svga::cid_of(ctx), _ => None }

@@ -193,3 +193,29 @@ fn bad_swizzle_block_height_byte_or_missing_execution_refuses_its_capability() {
         }
     }
 }
+#[test]
+fn probe_literals_cover_unique_addresses_and_the_integer_program_formula() {
+    let colour = caps::probe_expected(c::BGRA_RENDER).unwrap();
+    let rgba = caps::probe_expected(c::RGBA_RENDER).unwrap();
+    let integers = caps::probe_expected(c::INTEGER_OPS).unwrap();
+    let r8 = caps::probe_expected(c::R8_SAMPLE).unwrap();
+    let inputs = include_bytes!("../kernel/src/gpu/gk208/caps/integer.inputs");
+    let mut comparisons = [0; 2];
+    let mut unique = std::collections::BTreeSet::new();
+    for n in 0..1280usize {
+        let p = [n as u8, (n>>8) as u8, (73*n+19) as u8, 128+(n%128) as u8];
+        assert_eq!(&colour[4*n..4*n+4], &p);
+        assert_eq!(&rgba[4*n..4*n+4], &[p[2],p[1],p[0],p[3]]);
+        assert_eq!(&r8[4*n..4*n+4], &[0,0,n as u8,255]);
+        let v = (37*(n>>8)+11) as u8;
+        assert_eq!(&r8[5120+4*n..5120+4*n+4], &[0,0,v,255]);
+        let [a,b,l,r]: [u32;4] = core::array::from_fn(|k|
+            u32::from_le_bytes(inputs[16*n+4*k..16*n+4*k+4].try_into().unwrap()));
+        comparisons[usize::from(a<b)] += 1;
+        let q = a.wrapping_add(b) ^ a.wrapping_mul(b)
+            ^ (a.wrapping_shl(l&31) | b.wrapping_shr(r&31)) ^ if a<b {u32::MAX} else {0};
+        assert_eq!(&integers[4*n..4*n+4], &q.to_le_bytes());
+        assert!(unique.insert(q), "integer pattern repeats a pixel");
+    }
+    assert!(comparisons.iter().all(|n| *n>0));
+}

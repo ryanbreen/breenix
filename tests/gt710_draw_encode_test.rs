@@ -29,7 +29,9 @@ extern crate alloc;
 #[path = "../kernel/src/gpu/gk208/gr/shaders.rs"]
 mod shaders;
 #[path = "../kernel/src/gpu/gk208/encode.rs"]
-mod encode;
+pub mod encode;
+#[path = "../kernel/src/gpu/gk208/caps.rs"]
+pub mod caps;
 use gpu_abi::{format, pipeline, stream::{self, Resolver, TargetInfo, SourceInfo}};
 
 struct View(u32);

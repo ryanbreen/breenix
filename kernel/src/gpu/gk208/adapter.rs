@@ -108,6 +108,10 @@ impl Device {
     pub fn caps(&self) -> gpu_abi::Caps {
         super::caps::Profile::from_board(&self.board, self.channel.identity()).record(None)
     }
+    #[cfg(target_os = "none")]
+    pub(in crate::gk208) fn set_probe_results(&mut self, probes: super::caps::ProbeResults) {
+        self.board.probes = probes;
+    }
     pub fn admission(&self, masked: Option<u32>) -> Result<(), (u32, u32)> {
         super::caps::Profile::from_board(&self.board, self.channel.identity()).admission(masked)
     }

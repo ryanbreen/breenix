@@ -41,6 +41,7 @@ use gpu_abi::{self as abi, capability as c, capability_origin as origin, Plain};
 #[derive(Clone, Copy)]
 pub struct BoardState {
     pub chipset: u16,
+    pub probes: ProbeResults,
     /// Bound native instance and reset epoch to which creation evidence belongs.
     pub channel: (u64, u64),
     /// Boot identity, enabled engine/runlist and graphics initialization succeeded.
@@ -54,7 +55,7 @@ pub struct BoardState {
 }
 impl BoardState {
     pub const fn empty() -> Self {
-        Self { chipset: 0, channel: (0, 0), graphics_ready: false,
+        Self { chipset: 0, probes: ProbeResults::new(), channel: (0, 0), graphics_ready: false,
             created_classes: [0; 4], scanout_count: 0,
             scanouts: [abi::ScanoutInfo { enabled: 0, width: 0, height: 0, reserved: 0 }; 16] }
     }
@@ -104,8 +105,18 @@ impl Profile {
         for (dst, src) in p.caps.scanouts.iter_mut().zip(board.scanouts.iter()).take(p.caps.scanout_count as usize) {
             *dst = abi::ScanoutInfo { enabled: u32::from(src.enabled != 0), width: src.width, height: src.height, reserved: 0 };
         }
-        // M8.2/8.3 own executable format, integer, texel and complete rectangle
-        // probes. M7's diagnostic triangle is not any of those probes.
+        for id in c::BGRA_RENDER..=c::REGION_COPY {
+            p.set(id, board.probes.passed(id), origin::EXECUTABLE_PROBE);
+        }
+        for (index, render, sample) in [(0, c::BGRA_RENDER, c::BGRA_SAMPLE),
+            (1, c::RGBA_RENDER, c::RGBA_SAMPLE), (2, 0, c::R8_SAMPLE)] {
+            p.caps.formats[index].flags = if render != 0 && p.have[render as usize] { abi::format_flag::RENDER } else { 0 }
+                | if p.have[sample as usize] { abi::format_flag::SAMPLE } else { 0 };
+        }
+        for (id, bit) in [(c::INTEGER_OPS, abi::profile::INTEGER_OPS),
+            (c::TEXEL_FETCH, abi::profile::TEXEL_FETCH), (c::REGION_COPY, abi::profile::REGION_COPY)] {
+            if p.have[id as usize] { p.caps.profile |= bit; }
+        }
         p
     }
     fn set(&mut self, id: u32, have: bool, source: u32) {
@@ -138,3 +149,37 @@ impl Profile {
         caps
     }
 }
+
+
+/// Literal, tightly packed device-output oracles. The runner consumes these
+/// only for comparison. See caps/README.md for input recipes.
+pub const PROBE_WIDTH: u32 = 80;
+pub const PROBE_HEIGHT: u32 = 16;
+pub const PROBE_BYTES: usize = PROBE_WIDTH as usize * PROBE_HEIGHT as usize * 4;
+pub fn probe_expected(id: u32) -> Option<&'static [u8]> {
+    match id {
+        c::BGRA_RENDER | c::BGRA_SAMPLE | c::TEXEL_FETCH => Some(include_bytes!("caps/colour.bgra")),
+        c::RGBA_RENDER => Some(include_bytes!("caps/colour.rgba")),
+        c::RGBA_SAMPLE => Some(include_bytes!("caps/colour.bgra")),
+        c::R8_SAMPLE => Some(include_bytes!("caps/r8.bgra")),
+        c::INTEGER_OPS => Some(include_bytes!("caps/integer.bgra")),
+        c::REGION_COPY => Some(include_bytes!("caps/region.bgra")),
+        _ => None,
+    }
+}
+#[derive(Clone, Copy)]
+pub struct ProbeResults { exact: u16 }
+impl ProbeResults {
+    pub const fn new() -> Self { Self { exact: 0 } }
+    pub fn record(&mut self, id: u32, completed: bool, first: &[u8], second: &[u8]) {
+        let Some(expected) = probe_expected(id) else { return };
+        let bit = 1 << id;
+        self.exact &= !bit;
+        if completed && first == expected && second == expected { self.exact |= bit; }
+    }
+    fn passed(self, id: u32) -> bool { self.exact & (1 << id) != 0 }
+}
+#[cfg(target_os = "none")]
+mod executable;
+#[cfg(target_os = "none")]
+pub(in crate::gk208) use executable::run;

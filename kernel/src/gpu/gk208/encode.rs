@@ -402,6 +402,9 @@ fn texture_image_control(t: Target) -> Result<[u32; 8], &'static str> {
         0,
     ])
 }
+const PROBE_INTEGER: u32 = u32::MAX - 1;
+const PROBE_TEXEL: u32 = u32::MAX;
+
 fn program(pipe: u32) -> (usize, &'static [u8; 80], &'static [u8], u32) {
     match pipe {
         pipeline::SOLID => (
@@ -434,8 +437,70 @@ fn program(pipe: u32) -> (usize, &'static [u8; 80], &'static [u8], u32) {
             shaders::PIPELINE_BOX_FILTER_CODE,
             shaders::PIPELINE_BOX_FILTER_GPRS,
         ),
+        PROBE_INTEGER => (
+            0x2000,
+            shaders::PROBE_INTEGER_OPS_HEADER,
+            shaders::PROBE_INTEGER_OPS_CODE,
+            shaders::PROBE_INTEGER_OPS_GPRS,
+        ),
+        PROBE_TEXEL => (
+            0x2400,
+            shaders::PROBE_TEXEL_FETCH_HEADER,
+            shaders::PROBE_TEXEL_FETCH_CODE,
+            shaders::PROBE_TEXEL_FETCH_GPRS,
+        ),
         _ => unreachable!(),
     }
+}
+/// Admission-only programs reuse the same u4/u5 quad, raster, TIC/TSC and
+/// relocation builders. They are not new public catalogue pipeline IDs.
+pub fn probe_frame(t: Target, source: Option<Target>) -> Frame {
+    use super::caps::{PROBE_HEIGHT as H, PROBE_WIDTH as W};
+    let pipe = if source.is_some() {
+        PROBE_TEXEL
+    } else {
+        PROBE_INTEGER
+    };
+    let mut f = Frame {
+        chunks: Vec::new(),
+        data: vec![0; DATA_START],
+    };
+    let segment = shaders::triangle_segment();
+    f.data[CODE..CODE + segment.len()].copy_from_slice(&segment);
+    let (offset, header, code, _) = program(pipe);
+    f.data
+        .resize(DATA_START.max(CODE + offset + 80 + code.len()), 0);
+    f.data[CODE + offset..CODE + offset + 80].copy_from_slice(header);
+    f.data[CODE + offset + 80..CODE + offset + 80 + code.len()].copy_from_slice(code);
+    if let Some(source) = source {
+        quad(
+            &mut f,
+            t,
+            [0, 0, W, H],
+            [0, 0, W, H],
+            &[0; 4],
+            pipe,
+            Some(source),
+        );
+    } else {
+        let inputs = include_bytes!("caps/integer.inputs");
+        for (n, input) in inputs.chunks_exact(16).enumerate() {
+            let values: [u32; 4] = core::array::from_fn(|k| {
+                u32::from_le_bytes(input[k * 4..k * 4 + 4].try_into().unwrap())
+            });
+            let (x, y) = (n as u32 % W, n as u32 / W);
+            quad(
+                &mut f,
+                t,
+                [x, y, x + 1, y + 1],
+                [0, 0, W, H],
+                &values,
+                pipe,
+                None,
+            );
+        }
+    }
+    f
 }
 fn solid(f: &mut Frame, t: Target, r: [u32; 4], scissor: [u32; 4], colour: u32) {
     let constants =

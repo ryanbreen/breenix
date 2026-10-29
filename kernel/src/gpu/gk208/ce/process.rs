@@ -38,11 +38,20 @@ pub(in crate::gk208) fn initialize_core()->Result<(),&'static str> {
     };
     let result=(|| {
         let device=crate::drivers::pci::find_device(0x10de,0x128b).ok_or("native PCI device absent")?;
-        let native=super::super::gr::initialize(&mut Registers(s.registers),&device,&mut s.layout,&s.console)?;
-        crate::gpu::install_native(native)
+        super::super::gr::initialize(&mut Registers(s.registers),&device,&mut s.layout,&s.console)
     })();
+    // Builders borrow SESSION. Restore it before probing, without holding its
+    // lock across device submission/reaping or storage retirement.
     *SESSION.lock()=Some(s);
-    result
+    let mut native = result?;
+    crate::gpu::dev::select_gk208();
+    if let Err(error) = super::super::caps::run(&mut native) {
+        // Uncertain publication retains channel/request ownership. A caller's
+        // startup error does not establish DMA cessation.
+        core::mem::forget(native);
+        return Err(error);
+    }
+    crate::gpu::install_native(native)
 }
 
 impl Session {
