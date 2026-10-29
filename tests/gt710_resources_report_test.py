@@ -338,6 +338,19 @@ class ResourcesReport(unittest.TestCase):
                     (path / name).write_text(value)
             producer = API['resources_capture'](d, SHA)
             self.assertEqual([c['result'] for c in API['cases']('resources', '', producer)], ['PASS']*3)
+            # G13: this step's unimplemented cases cause exit 1; completion,
+            # selected cases and reclamation still decide acceptance.
+            (gpu/'exit-status').write_text('1')
+            self.assertEqual(API['resources_capture'](d, SHA)['gpu']['exit_status'], 1)
+            original = (gpu/'serial.txt').read_text()
+            for text in [original.replace('SUITE gpu DONE ', 'LOST DONE ', 1),
+                         original.replace('reclaimed=PASS', 'reclaimed=FAIL'),
+                         original.replace('SUITE_SEQUENCE READY gpu', 'LOST READY'),
+                         original.replace(transcript(), transcript(all_pass=True))]:
+                (gpu/'serial.txt').write_text(text)
+                with self.assertRaises(ValueError): API['resources_capture'](d, SHA)
+            (gpu/'serial.txt').write_text(original)
+            (gpu/'exit-status').write_text('0')
             self.assertEqual(API['record_resources_capture'](d, SHA), 0)
             report = json.loads((d / 'gt710-resources.json').read_text())
             self.assertEqual(report['producerBoot'], boot()['id'])
@@ -364,7 +377,7 @@ class ResourcesReport(unittest.TestCase):
             metal = runpy.run_path(str(ROOT/'scripts/metal/metal_score.py'))
             measured = metal['score'](d)['milestones']['metal-gt710/resources']
             self.assertEqual((measured['passed'], measured['reached'], measured['total']), (True, 3, 3))
-            for name, value in [('dirty', '1'), ('commit', 'b'*40), ('ended', ''), ('exit-status', '1'), ('exit-status', '124'),
+            for name, value in [('dirty', '1'), ('commit', 'b'*40), ('ended', ''), ('exit-status', '2'), ('exit-status', '124'),
                                 ('events.jsonl', json.dumps(dict(event='console-gap'))+'\n')]:
                 old = (gpu/name).read_text(); (gpu/name).write_text(value)
                 with self.subTest(file=name), self.assertRaises(ValueError): API['resources_capture'](d, SHA)

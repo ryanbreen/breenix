@@ -53,7 +53,7 @@ fn main() { producer_main(); }
 '''
         entry = item(source, 'fn main()').replace('fn main()', 'fn producer_main()')
         entry = entry.replace('#[cfg(target_arch="x86_64")]', '')
-        fixture = fixture.replace('ENTRY', entry).replace('FINAL', item(source, 'fn final_upload()'))
+        fixture = fixture.replace('ENTRY', entry).replace('FINAL', item(source, 'fn final_upload()').replace('#[cfg(target_arch="x86_64")]', ''))
         fixture = fixture.replace('BUILDER', item(runner, 'pub const fn with_finalizer('))
         fixture = fixture.replace('RUN', item(runner, 'pub fn run(&self)'))
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
