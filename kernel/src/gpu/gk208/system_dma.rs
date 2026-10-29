@@ -4,6 +4,7 @@ use crate::memory::frame_allocator;
 use alloc::vec::Vec;
 use x86_64::structures::paging::PhysFrame;
 static PLATFORM: spin::Once<(Option<u64>, u64)> = spin::Once::new();
+static REMAPPING_REGISTERS: spin::Once<Result<Vec<usize>, &'static str>> = spin::Once::new();
 pub fn set_platform(rsdp: Option<u64>, offset: u64) {
     PLATFORM.call_once(|| (rsdp, offset));
 }
@@ -11,18 +12,23 @@ pub fn set_platform(rsdp: Option<u64>, offset: u64) {
 /// refused: this driver has no platform IOVA mapping service yet.
 pub fn translation_status() -> Result<Vec<u32>, &'static str> {
     let &(rsdp, offset) = PLATFORM.get().ok_or("DMA platform context unavailable")?;
-    let table = crate::arch_impl::x86_64::acpi::dma_remapping_table(rsdp, offset)?;
+    // DRHD bases are fixed platform data. Keep their UC mappings for the
+    // platform lifetime rather than leaking a new mapping for each DMA page.
+    // The status loop below samples GSTS independently of cached addresses.
+    let registers = REMAPPING_REGISTERS.call_once(|| {
+        let table = crate::arch_impl::x86_64::acpi::dma_remapping_table(rsdp, offset)?;
+        if table.is_empty() { return Ok(Vec::new()); }
+        dma_policy::dmar_units(&table)?.into_iter()
+            .map(|base| crate::memory::map_mmio(base, 4096)).collect()
+    }).as_ref().map_err(|error| *error)?;
     let mut statuses = Vec::new();
-    if !table.is_empty() {
-        for base in dma_policy::dmar_units(&table)? {
-            let mapped = crate::memory::map_mmio(base, 4096)?;
-            // SAFETY: UC mapping of the DRHD register page, GSTS at offset 1Ch.
-            let status = unsafe { ((mapped + 0x1c) as *const u32).read_volatile() };
-            if status == u32::MAX {
-                return Err("unreadable VT-d global status");
-            }
-            statuses.push(status);
+    for &mapped in registers {
+        // SAFETY: retained UC mapping of the DRHD page, GSTS at offset 1Ch.
+        let status = unsafe { ((mapped + 0x1c) as *const u32).read_volatile() };
+        if status == u32::MAX {
+            return Err("unreadable VT-d global status");
         }
+        statuses.push(status);
     }
     dma_policy::identity_page(4096, &statuses)?;
     Ok(statuses)
