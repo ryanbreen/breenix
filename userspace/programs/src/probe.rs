@@ -639,7 +639,7 @@ fn probe() {
         }
     }
     #[cfg(target_arch="x86_64")]
-    gt710_artifacts::upload(None).expect("native display artifact upload");
+    gt710_artifacts::upload().expect("native display artifact upload");
     println!("PROBE DONE passed={} failed={}", passed, count - passed);
     println!("\x1b[1mProbe complete: {} passed, {} failed\x1b[0m", passed, count - passed);
     reap_forever();
