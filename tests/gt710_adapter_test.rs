@@ -36,7 +36,11 @@ pub mod gk208 {
                 pub fn publish_draw(&mut self,sequence:u32,draw:&crate::gk208::adapter::EncodedDraw)->Result<(),&'static str> {
                     assert_eq!(draw.target,19);
                     assert_eq!(draw.words,self.0.borrow().expected_draw);
-                    if self.0.borrow().fail_publish {return Err("injected native publication failure");}
+                    if self.0.borrow().refuse_publish {return Err("injected prepublication refusal");}
+                    if self.0.borrow().fail_publish {
+                        self.0.borrow_mut().published.push(sequence);
+                        return Err("injected native publication failure");
+                    }
                     self.0.borrow_mut().published.push(sequence);Ok(())
                 }
                 pub fn sample(&mut self,sequence:u32)->Result<CeSample,&'static str> {
@@ -45,6 +49,7 @@ pub mod gk208 {
                 pub fn transfer_drain(&mut self,sequence:u32)->Result<CeSample,&'static str> {
                     let mut sample=self.sample(sequence)?;sample.sequence=self.0.borrow().drain;Ok(sample)
                 }
+                pub fn published(&self,sequence:u32)->bool {self.0.borrow().published.contains(&sequence)}
                 pub fn healthy(&self)->bool {!self.0.borrow().fault}
                 pub fn reset(&mut self)->Result<(),&'static str> {
                     let mut s=self.0.borrow_mut();s.events.push("reset");
@@ -66,11 +71,11 @@ use gpu::dev::{Reap,Tag};
 use gk208::{adapter::{Device,Request},copy::Rect,gr::channel::NativeChannel};
 pub struct State {
     epoch:u64,channel:u64,release_epoch:u64,release:u32,drain:u32,fault:bool,
-    fail_reset:bool,fail_unbind:bool,fail_publish:bool,stopped:bool,published:Vec<u32>,events:Vec<&'static str>,expected_draw:Vec<u32>,
+    fail_reset:bool,fail_unbind:bool,fail_publish:bool,refuse_publish:bool,stopped:bool,published:Vec<u32>,events:Vec<&'static str>,expected_draw:Vec<u32>,
 }
 fn device()->(Device,Rc<RefCell<State>>) {
     let s=Rc::new(RefCell::new(State{epoch:17,channel:0x123000,release_epoch:17,release:0,drain:0,fault:false,
-        fail_reset:false,fail_unbind:false,fail_publish:false,stopped:false,published:vec![],events:vec![],expected_draw:vec![0x20010367,0]}));
+        fail_reset:false,fail_unbind:false,fail_publish:false,refuse_publish:false,stopped:false,published:vec![],events:vec![],expected_draw:vec![0x20010367,0]}));
     (Device::new(NativeChannel(s.clone()),gk208::caps::BoardState::empty()),s)
 }
 fn request(caller:u64)->Request {
@@ -216,4 +221,20 @@ fn empty_draw_still_waits_for_a_fresh_engine_release() {
     let Reap::Done(done)=d.reap() else {panic!("empty draw has no fresh release")};
     assert_eq!((done.fence,done.native_fence,done.echoed),(Some(9001),Some(1),1));
     assert!(done.fenced);
+}
+
+#[test]
+fn refusal_before_publication_returns_request_and_keeps_the_next_sequence_clean() {
+    let (mut d,s)=device();s.borrow_mut().refuse_publish=true;
+    let draw=gk208::adapter::EncodedDraw {target:19,words:vec![0x20010367,0]};
+    let returned=d.send(Request::draw(Tag::Sync(9001),9001,19,1,draw));
+    let Err(request)=returned else {panic!("software refusal escalated instead of returning the request")};
+    assert_eq!(request.tag,Tag::Sync(9001));assert_eq!(request.fence,Some(9001));
+    assert!(!d.needs_reset());assert_eq!(d.fault_reason(),None);
+    assert_eq!(d.outstanding(),0);assert!(matches!(d.reap(),Reap::Empty));
+    assert!(s.borrow().published.is_empty());assert!(s.borrow().events.is_empty());
+    s.borrow_mut().refuse_publish=false;
+    send(&mut d,23);assert_eq!(s.borrow().published,[1]);
+    s.borrow_mut().release=1;
+    assert!(matches!(d.reap(),Reap::Done(_)));
 }
