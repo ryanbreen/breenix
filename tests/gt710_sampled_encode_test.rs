@@ -306,6 +306,7 @@ fn stream_copy_accepts_viewing_and_self_copy_without_changing_draw_target() {
         assert_eq!(f.chunks.len(),2);
         assert_eq!(f.chunks[1].command,3);
         assert_eq!(f.chunks[1].target,19);
+        assert_eq!(f.chunks[1].copy,Some((if source==1 {19} else {23},19,[1,2,7,5,3,4])));
         assert_eq!(f.chunks[1].source,Some(if source==1 {19} else {23}));
         assert!(f.chunks[1].words.is_empty(),"byte copies use CE, not a shaded quad");
     }

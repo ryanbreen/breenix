@@ -476,27 +476,37 @@ pub(crate) fn transfer(tag: crate::gpu::dev::Tag, fence: u64, id: u32,
 pub(crate) fn region(tag: crate::gpu::dev::Tag, fence: u64, source: u32, destination: u32,
     rectangle: [u32;6],
 ) -> Option<super::super::adapter::Request> {
-    use super::super::copy;
     let (plan,resource,holds) = super::with_resources(|r,a,io| {
-        let mut holds=vec![r.hold(source)?,r.hold(destination)?];
-        let (src,dst)=(image(r,source)?,image(r,destination)?);
-        if src.texel_bytes != dst.texel_bytes { return Err("native copy format size mismatch"); }
-        let staging = if src.address == dst.address {
-            let [sx,sy,w,h,dx,dy]=rectangle;
-            if sx>=src.width || sy>=src.height || dx>=dst.width || dy>=dst.height { return Err("empty native copy"); }
-            let (w,h)=(w.min(src.width-sx).min(dst.width-dx),h.min(src.height-sy).min(dst.height-dy));
-            let id=r.staging(a,io,if src.texel_bytes==1 {2} else {0},w,h)?;
-            let staged=image(r,id)?;
-            holds.push(r.hold(id)?);
-            r.unref(id)?;
-            Some(staged)
-        } else {None};
-        let plan=copy::region(src,dst,rectangle,staging)?;
+        let (plan, holds) = region_plan(r,a,io,source,destination,rectangle)?;
         Ok((plan,r.identity(destination).ok_or("native copy identity absent")?,holds))
     }).ok()?;
     Some(super::super::adapter::Request::transfer(tag,fence,resource,plan,true,
         TransferHold { resources:holds },None))
 }
+/// Stream copies share the transfer planner and retain its staging until the
+/// CE release, including when the request survives an uncertain publication.
+pub(in crate::gk208) fn region_plan(
+    r: &mut super::super::resource::Resources<crate::gpu::dma::Pages>,
+    a: &mut memory::allocator::Allocator, io: &mut impl super::super::vm::Io,
+    source: u32, destination: u32, rectangle: [u32;6],
+) -> Result<(super::super::copy::Plan, Vec<super::super::resource::Hold>), &'static str> {
+    use super::super::copy;
+    let mut holds=vec![r.hold(source)?,r.hold(destination)?];
+    let (src,dst)=(image(r,source)?,image(r,destination)?);
+    if src.texel_bytes != dst.texel_bytes { return Err("native copy format size mismatch"); }
+    let staging = if src.address == dst.address {
+        let [sx,sy,w,h,dx,dy]=rectangle;
+        if sx>=src.width || sy>=src.height || dx>=dst.width || dy>=dst.height { return Err("empty native copy"); }
+        let (w,h)=(w.min(src.width-sx).min(dst.width-dx),h.min(src.height-sy).min(dst.height-dy));
+        let id=r.staging(a,io,if src.texel_bytes==1 {2} else {0},w,h)?;
+        let staged=image(r,id)?;
+        holds.push(r.hold(id)?);
+        r.unref(id)?;
+        Some(staged)
+    } else {None};
+    Ok((copy::region(src,dst,rectangle,staging)?,holds))
+}
+
 pub(crate) fn identities(id: u32) -> Option<(u32,u32)> {
     super::with_resources(|r,_,_| {
         let context=u32::try_from(r.channel()).map_err(|_| "native channel identity overflow")?;

@@ -158,7 +158,18 @@ fn hash(data: &[u8]) -> String {
     hex(&crate::block::install::sha256::sha256(data))
 }
 
+// Command publication, VM access and display work have different owners but
+// share one physical PRAMIN selector. Keep interrupts enabled while serialized.
+static PRAMIN_LOCK: spin::Mutex<()> = spin::Mutex::new(());
 impl memory::Access for Registers {
+    fn with_pramin<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let _guard = PRAMIN_LOCK.lock();
+        let saved = self.read(0x1700);
+        let result = f(self);
+        self.write(0x1700, saved);
+        let _ = self.read(0x1700);
+        result
+    }
     fn read(&mut self, reg: usize) -> u32 {
         Registers::read(self, reg)
     }

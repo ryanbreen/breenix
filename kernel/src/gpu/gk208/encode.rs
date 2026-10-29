@@ -275,6 +275,8 @@ pub struct Chunk {
     pub words: Vec<u32>,
     relocations: Vec<usize>,
     pub source: Option<u32>,
+    /// Byte-preserving CE work, resolved and retained during prepare().
+    pub copy: Option<(u32, u32, [u32; 6])>,
 }
 pub struct Frame {
     pub chunks: Vec<Chunk>,
@@ -327,7 +329,7 @@ pub fn pipeline_refusal(w: &(impl Words + ?Sized)) -> Option<stream::Refusal> {
     let mut index = 0;
     while at < w.len() {
         match w.word(at) {
-            cmd::BEGIN | cmd::CLEAR | cmd::SCISSOR => (),
+            cmd::BEGIN | cmd::CLEAR | cmd::SCISSOR | cmd::COPY => (),
             cmd::DRAW | cmd::DRAW_BUFFER if w.word(at + 2) == pipeline::SOLID => (),
             cmd::DRAW_SAMPLED => (),
             draw::COMMAND
@@ -446,6 +448,18 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                     }
                 }
             }
+            cmd::COPY => {
+                let source = b.sampled_source(handle(w, at + 2)).ok_or("native copy source absent")?;
+                let destination = b.render_target(handle(w, at + 8)).ok_or("native copy destination absent")?;
+                let rectangle = stream::copy_clip(
+                    [4, 5, 6, 7, 10, 11].map(|k| w.word(at + k)),
+                    [source.width, source.height], [destination.width, destination.height]);
+                // COPY names its own destination and is independent of BEGIN's
+                // target and scissor. Empty copies still publish a fenced no-op.
+                f.chunks.push(Chunk { command, target: destination.id, source: Some(source.id),
+                    words: Vec::new(), relocations: Vec::new(),
+                    copy: rectangle.map(|r| (source.id, destination.id, r)) });
+            }
             cmd::DRAW_SAMPLED | draw::COMMAND => {
                 let t = target.ok_or("native target absent")?;
                 let legacy = code == cmd::DRAW_SAMPLED;
@@ -530,6 +544,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
             words: Vec::new(),
             relocations: Vec::new(),
             source: None,
+            copy: None,
         });
     }
     Ok(f)
@@ -750,6 +765,7 @@ fn quad(
         words: Vec::new(),
         relocations: Vec::new(),
         source: source.map(|s| s.id),
+        copy: None,
     };
     // IDXFETCH quarantine: 1 MiB, 128 KiB aligned (Mesa screen:1274-1283).
     c.address(0x17bc, 0, &[3]);
@@ -918,13 +934,19 @@ pub(crate) fn prepare(
             at += count+1;
         }
     }
-    let (id, address, holds) = super::ce::with_resources(|r, a, io| {
+    let (id, address, holds, transfers) = super::ce::with_resources(|r, a, io| {
         let mut holds = Vec::new();
+        let mut transfers = Vec::new();
         for c in &frame.chunks {
             holds.push(r.hold(c.target)?);
             if let Some(source) = c.source {
                 holds.push(r.hold(source)?);
             }
+            transfers.push(if let Some((source, destination, rectangle)) = c.copy {
+                let (plan, retained) = super::ce::readback::region_plan(r, a, io, source, destination, rectangle)?;
+                holds.extend(retained);
+                Some(plan)
+            } else { None });
         }
         let id = r.draw_buffer(a, io, backing.bytes() as u32)?;
         r.attach(a, io, id, backing.clone(), &pages, backing.bytes() as u64)?;
@@ -932,7 +954,7 @@ pub(crate) fn prepare(
         let address = r.address(id).ok_or("native draw upload absent")?;
         holds.push(r.hold(id)?);
         r.unref(id)?;
-        Ok((id, address, holds))
+        Ok((id, address, holds, transfers))
     })?;
     let storage = Arc::new(Storage {
         _backing: backing,
@@ -944,10 +966,12 @@ pub(crate) fn prepare(
     Ok(frame
         .chunks
         .into_iter()
-        .map(|c| super::adapter::EncodedDraw {
+        .zip(transfers)
+        .map(|(c, transfer)| super::adapter::EncodedDraw {
             target: c.target,
             command: c.command,
             words: c.words,
+            transfer,
             _storage: storage.clone(),
         })
         .collect())

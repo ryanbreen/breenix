@@ -13,6 +13,7 @@ pub enum Operation { Copy(Rect), Transfer(super::copy::Plan), Draw(Draw) }
 pub struct EncodedDraw {
     pub words: Vec<u32>,
     pub target: u32,
+    pub transfer: Option<super::copy::Plan>,
     #[cfg(target_os = "none")]
     pub command: u32,
     #[cfg(target_os = "none")]
@@ -152,7 +153,11 @@ impl Device {
         // Retain the request on uncertain publication: a failing doorbell or
         // BAR flush leaves backing in pending until confirmed recovery.
         let result = if let Some(draw) = request.encoded.as_ref() {
-            self.channel.publish_draw(sequence, draw)
+            if let Some(plan) = draw.transfer {
+                self.channel.publish(sequence, &Operation::Transfer(plan))
+            } else {
+                self.channel.publish_draw(sequence, draw)
+            }
         } else {
             let operation = request.operation.as_ref().unwrap();
             #[cfg(not(any(feature = "testing", feature = "gt710_core_probe")))]
