@@ -13,9 +13,13 @@ pub mod gpu {
 }
 pub mod gk208 {
     #[path = "../../kernel/src/gpu/gk208/queue.rs"] pub mod queue;
-    pub mod copy {
-        #[derive(Clone, Copy)] pub struct Plan;
-        #[derive(Clone, Copy)] pub struct Rect {pub src:u64,pub dst:u64,pub width:u32,pub height:u32,pub src_pitch:u32,pub dst_pitch:u32}
+    #[allow(dead_code)] // Only transfer request construction is needed by this fixture.
+    #[path = "../../kernel/src/gpu/gk208/copy.rs"] pub mod copy;
+    pub fn transfer_request(caller: u64) -> adapter::Request {
+        let image=copy::Image {address:1<<32,width:16,height:8,texel_bytes:4,pitch:64,block_height:2,bytes:1024};
+        let backing=copy::Linear {address:2<<32,bytes:4096,offset:0,stride:64};
+        let plan=copy::readback(image,backing,[0,0,16,8]).unwrap();
+        adapter::Request::transfer(crate::Tag::Sync(caller),caller,0x456000,plan,false,None)
     }
     pub mod gr {
         pub mod draw {#[derive(Clone, Copy)] pub struct Draw;}
@@ -35,6 +39,9 @@ pub mod gk208 {
                 }
                 pub fn sample(&mut self,sequence:u32)->Result<CeSample,&'static str> {
                     let s=self.0.borrow();Ok(CeSample{context:s.channel,epoch:s.release_epoch,sequence:s.release,consumed:sequence,healthy:!s.fault})
+                }
+                pub fn transfer_drain(&mut self,sequence:u32)->Result<CeSample,&'static str> {
+                    let mut sample=self.sample(sequence)?;sample.sequence=self.0.borrow().drain;Ok(sample)
                 }
                 pub fn healthy(&self)->bool {!self.0.borrow().fault}
                 pub fn reset(&mut self)->Result<(),&'static str> {
@@ -56,11 +63,11 @@ pub mod gk208 {
 use gpu::dev::{Reap,Tag};
 use gk208::{adapter::{Device,Request},copy::Rect,gr::channel::NativeChannel};
 pub struct State {
-    epoch:u64,channel:u64,release_epoch:u64,release:u32,fault:bool,
+    epoch:u64,channel:u64,release_epoch:u64,release:u32,drain:u32,fault:bool,
     fail_reset:bool,fail_unbind:bool,stopped:bool,published:Vec<u32>,events:Vec<&'static str>,
 }
 fn device()->(Device,Rc<RefCell<State>>) {
-    let s=Rc::new(RefCell::new(State{epoch:17,channel:0x123000,release_epoch:17,release:0,fault:false,
+    let s=Rc::new(RefCell::new(State{epoch:17,channel:0x123000,release_epoch:17,release:0,drain:0,fault:false,
         fail_reset:false,fail_unbind:false,stopped:false,published:vec![],events:vec![]}));
     (Device::new(NativeChannel(s.clone()),gk208::caps::BoardState::empty()),s)
 }
@@ -157,4 +164,27 @@ fn encoded_draw_requires_its_engine_release_and_epoch_before_caller_fence() {
     let Reap::Done(done)=d.reap() else {panic!("released draw did not complete")};
     assert_eq!(done.fence,Some(9001));assert_eq!(done.native_fence,Some(1));
     assert_eq!(done.echoed,1);assert!(done.fenced);
+}
+
+#[test]
+fn stale_transfer_returns_device_echo_only_after_terminal_drain_then_next_request_is_clean() {
+    let (mut d,s)=device();
+    let mut request=gk208::transfer_request(9001);
+    request.transfer_controls(gk208::copy::Extras {skip:false,stale_fence:true});
+    assert!(d.send(request).is_ok());
+    s.borrow_mut().release=2;
+    assert!(matches!(d.reap(),Reap::Empty));assert_eq!(d.outstanding(),1);
+    s.borrow_mut().drain=1;s.borrow_mut().release_epoch=16;
+    assert!(matches!(d.reap(),Reap::Empty));assert_eq!(d.outstanding(),1);
+    s.borrow_mut().release_epoch=17;s.borrow_mut().channel=0x124000;
+    assert!(matches!(d.reap(),Reap::Empty));assert_eq!(d.outstanding(),1);
+    s.borrow_mut().channel=0x123000;
+    let Reap::Done(done)=d.reap() else {panic!("terminal drain not reaped")};
+    assert_eq!((done.fence,done.native_fence,done.echoed),(Some(9001),Some(1),2));
+    assert!(!gpu_completion::matches_echo(done.fence,done.native_fence,done.echoed,done.fenced,9001));
+    assert_eq!(d.outstanding(),0);
+    assert!(d.send(gk208::transfer_request(23)).is_ok());
+    let Reap::Done(done)=d.reap() else {panic!("clean next transfer not reaped")};
+    assert!(gpu_completion::matches_echo(done.fence,done.native_fence,done.echoed,done.fenced,23));
+    assert_eq!(s.borrow().epoch,17);assert!(s.borrow().events.is_empty());
 }

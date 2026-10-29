@@ -1214,3 +1214,15 @@ No additional external hardware implementation is adapted. caps/executable.rs
 and caps/* input/oracle buffers are Breenix-authored orchestration and vectors;
 they use the existing resource/CE/GR mechanisms and unchanged u3 programs.
 The original u3 compiler and firmware notices above continue to apply.
+
+
+GT 710 native one-shot control checks (milestone 8.2-u7)
+------------------------------------------------------
+tests/gt710_controls_test.rs checks A197 draws/TIC bindings and A0B5 transfers
+and releases using the existing attributed builders. The literal methods use
+NVIDIA open-gpu-doc 9fdf5c4062007929d9f4e6cbad9c9771fe61b880:
+classes/3d/cla197.h and classes/host/cla06f.h (MIT, Copyright (c) 2020
+NVIDIA CORPORATION), classes/dma-copy/cla0b5.h (MIT, Copyright (c) 2019
+NVIDIA CORPORATION). TIC fields reuse the MIT rnndb g80_texture.xml and
+g80_defs.xml and Mesa nvc0_tex.c sources recorded for u5 above. The checked
+file-local grants and original notices accompany the check.
