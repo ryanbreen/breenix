@@ -1210,7 +1210,11 @@ The admission-only entries in kernel/src/gpu/gk208/encode.rs reuse its existing
 attributed A197 quad and TIC/TSC builders: NVIDIA cla197.h, MIT; Mesa 24.3.4
 nvc0_{screen,state,vbo,surface,tex}.c, MIT; envytools rnndb g80_texture.xml and
 g80_defs.xml with copyright.xml, MIT. The original grants remain in encode.rs.
-No additional external hardware implementation is adapted. caps/executable.rs
+The admission program layout in encode.rs and its sampled-encoder check also
+use Mesa 24.3.4 nvc0_program.c:775-799 (MIT, Copyright 2010 Christoph
+Bumiller): Kepler instructions start on a 128-byte boundary after the 80-byte
+SPH. Its file-local grant was checked and the existing full Christoph Bumiller
+MIT notice is retained in both consumers. caps/executable.rs
 and caps/* input/oracle buffers are Breenix-authored orchestration and vectors;
 they use the existing resource/CE/GR mechanisms and unchanged u3 programs.
 The original u3 compiler and firmware notices above continue to apply.

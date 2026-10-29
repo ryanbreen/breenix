@@ -477,14 +477,16 @@ fn program(pipe: u32) -> (usize, &'static [u8; 80], &'static [u8], u32) {
             shaders::PIPELINE_BOX_FILTER_CODE,
             shaders::PIPELINE_BOX_FILTER_GPRS,
         ),
+        // Mesa nvc0_program.c:775-799: first instruction follows the 80-byte
+        // SPH at a 128-byte boundary, where Kepler expects scheduling words.
         PROBE_INTEGER => (
-            0x2000,
+            0x2030,
             shaders::PROBE_INTEGER_OPS_HEADER,
             shaders::PROBE_INTEGER_OPS_CODE,
             shaders::PROBE_INTEGER_OPS_GPRS,
         ),
         PROBE_TEXEL => (
-            0x2400,
+            0x2430,
             shaders::PROBE_TEXEL_FETCH_HEADER,
             shaders::PROBE_TEXEL_FETCH_CODE,
             shaders::PROBE_TEXEL_FETCH_GPRS,
