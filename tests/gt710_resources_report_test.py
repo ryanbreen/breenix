@@ -115,7 +115,10 @@ def stage(directory, data=None, probe_rows=None):
     for probe in rows:
         raw = json.dumps(probe, separators=(',', ':')).encode()
         body += raw + b'\n'
-        markers += f'GT710_CAPS_PROBE id={probe["capability"]} sha256={hashlib.sha256(raw).hexdigest()}\n'
+        if probe['phase'] == 'caps-reprobe':
+            markers += f'GT710_CAPS_REPROBE id={probe["capability"]} epoch={probe["epoch"]} sha256={hashlib.sha256(raw).hexdigest()}\n'
+        else:
+            markers += f'GT710_CAPS_PROBE id={probe["capability"]} sha256={hashlib.sha256(raw).hexdigest()}\n'
     body += row
     (directory / 'gt710-pixels.rle').write_bytes(body)
     (directory / 'serial.txt').write_text(markers + 'GT710_RESOURCES_BULK ' + anchor
@@ -217,6 +220,21 @@ class ResourcesReport(unittest.TestCase):
             digest = serial.splitlines()[0].split('sha256=')[1]
             (d/'serial.txt').write_text(serial.replace(digest, '0'*64, 1))
             with self.assertRaises(ValueError): API['capture_serial'](d)
+
+    def test_restarted_epochs_keep_complete_exact_probe_groups(self):
+        def fresh(epoch):
+            return [dict(p, phase='caps-reprobe', epoch=epoch) for p in probes()]
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            rows = probes() + fresh(18) + fresh(19)
+            API['resources_row'](stage(d, probe_rows=rows))
+            bad = [probes() + fresh(18)[:-1], probes() + fresh(18) + fresh(17),
+                   probes() + fresh(0), probes() + fresh(18) + fresh(18)]
+            changed = fresh(18); changed[0]['second'] = '00'; bad.append(probes() + changed)
+            changed = fresh(18); changed[0]['completed'] = False; bad.append(probes() + changed)
+            for rows in bad:
+                with self.subTest(rows=len(rows)), self.assertRaises(ValueError):
+                    API['resources_row'](stage(d, probe_rows=rows))
 
     def test_suite_records_all_results_but_requires_only_step_passes(self):
         result = API['resources_suite'](transcript(), boot())
