@@ -44,6 +44,11 @@ pub mod gk208 {
                     }
                     self.0.borrow_mut().published.push(sequence);Ok(())
                 }
+                pub fn device_error(&mut self)->Result<u32,&'static str> {
+                    let mut state=self.0.borrow_mut();
+                    state.events.push("observe-mmu-fault-and-local-stop");
+                    state.device_error
+                }
                 pub fn sample(&mut self,sequence:u32)->Result<CeSample,&'static str> {
                     let s=self.0.borrow();Ok(CeSample{context:s.channel,epoch:s.release_epoch,sequence:s.release,consumed:sequence,healthy:!s.fault})
                 }
@@ -72,11 +77,11 @@ use gpu::dev::{Reap,Tag};
 use gk208::{adapter::{Device,Request},copy::Rect,gr::channel::NativeChannel};
 pub struct State {
     epoch:u64,channel:u64,release_epoch:u64,release:u32,drain:u32,fault:bool,
-    fail_reset:bool,fail_unbind:bool,fail_publish:bool,refuse_publish:bool,stopped:bool,operations:Vec<&'static str>,published:Vec<u32>,events:Vec<&'static str>,expected_draw:Vec<u32>,
+    device_error:Result<u32,&'static str>,fail_reset:bool,fail_unbind:bool,fail_publish:bool,refuse_publish:bool,stopped:bool,operations:Vec<&'static str>,published:Vec<u32>,events:Vec<&'static str>,expected_draw:Vec<u32>,
 }
 fn device()->(Device,Rc<RefCell<State>>) {
     let s=Rc::new(RefCell::new(State{epoch:17,channel:0x123000,release_epoch:17,release:0,drain:0,fault:false,
-        fail_reset:false,fail_unbind:false,fail_publish:false,refuse_publish:false,stopped:false,operations:vec![],published:vec![],events:vec![],expected_draw:vec![0x20010367,0]}));
+        device_error:Ok(gpu_abi::gk208::MMU_FAULT_PTE),fail_reset:false,fail_unbind:false,fail_publish:false,refuse_publish:false,stopped:false,operations:vec![],published:vec![],events:vec![],expected_draw:vec![0x20010367,0]}));
     (Device::new(NativeChannel(s.clone()),gk208::caps::BoardState::empty()),s)
 }
 fn request(caller:u64)->Request {
@@ -252,4 +257,38 @@ fn encoded_stream_copy_uses_ce_completion_and_keeps_the_caller_fence() {
     s.borrow_mut().release=1;
     let Reap::Done(done)=d.reap() else {panic!("CE release must retire the copy");};
     assert_eq!(done.fence,Some(8123));assert_eq!(done.native_fence,Some(1));
+}
+
+#[test] fn native_device_error_waits_for_prior_work_and_preserves_graphics_sequence() {
+    let (mut d,s)=device();
+    send(&mut d,11);
+    let fault=Request::device_error(Tag::Sync(12),12);
+    let fault=d.send(fault).err().expect("fault must wait for prior work");
+    assert!(s.borrow().events.is_empty());
+    s.borrow_mut().release=1;
+    assert!(matches!(d.reap(),Reap::Done(_)));
+    assert!(d.send(fault).is_ok());
+    assert_eq!(s.borrow().events,["observe-mmu-fault-and-local-stop"]);
+    let Reap::Done(done)=d.reap() else {panic!("observed error not returned")};
+    assert_eq!(done.tag,Tag::Sync(12));
+    assert_eq!(done.fence,Some(12));
+    assert_eq!(done.answer,gpu_abi::gk208::MMU_FAULT_PTE);
+    assert!(!done.fenced,"an MMU fault is not a successful engine fence");
+    assert_eq!(done.native_fence,None);
+    assert!(!d.needs_reset());
+    send(&mut d,13);
+    assert_eq!(s.borrow().published,[1,2],"private fault must not consume a GR release slot");
+    s.borrow_mut().release=2;
+    let Reap::Done(done)=d.reap() else {panic!("clean successor not completed")};
+    assert_eq!(done.answer,gpu_abi::gk208::SUCCESS);
+    assert!(done.fenced);
+}
+#[test] fn native_device_error_keeps_uncertain_or_non_mmu_results_for_recovery() {
+    for answer in [Err("fault or stop unconfirmed"),Ok(gpu_abi::gk208::SUCCESS),Ok(3)] {
+        let (mut d,s)=device();s.borrow_mut().device_error=answer;
+        assert!(d.send(Request::device_error(Tag::Sync(12),12)).is_ok());
+        assert!(matches!(d.reap(),Reap::Fault));
+        assert_eq!(d.outstanding(),1,"uncertain request ownership must survive");
+        assert!(d.send(request(13)).is_err());
+    }
 }
