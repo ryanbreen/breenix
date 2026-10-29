@@ -1181,6 +1181,10 @@ runtime, expected picture or compiler dependency is added. The committed
 vertex and solid programs retain their existing source notices above.
 The pipeline-end releases in kernel/src/gpu/gk208/gr/channel.rs use that
 file's existing full MIT NVIDIA cla197.h notice and the same pinned methods.
+The constant-retirement packet check in
+tests/fixtures/gt710_constant_retirement.rs uses the same cla197.h methods
+(WAIT_FOR_IDLE, UNBIND_ALL and constant-buffer selector/binding). Its header
+retains NVIDIA's original copyright and full MIT grant, checked before use.
 
 
 GT 710 native sampled draws (milestone 8.2-u5)
