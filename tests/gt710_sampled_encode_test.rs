@@ -243,11 +243,17 @@ fn admission_programs_bind_literal_inputs_and_keep_code_before_uniforms() {
     let t = encode::Target { id: 31, address: 0x2_0000_0000, width: 80,
         height: 16, format: format::B8G8R8A8, tile_mode: 0x10 };
     for (source, count, offset, header, code, gprs) in [
-        (None, 1280, 0x2000, &shaders::PROBE_INTEGER_OPS_HEADER[..], shaders::PROBE_INTEGER_OPS_CODE, 5),
-        (Some(encode::Target {id: 32, ..t}), 1, 0x2400, &shaders::PROBE_TEXEL_FETCH_HEADER[..], shaders::PROBE_TEXEL_FETCH_CODE, 4),
+        (None, 1280, 0x2030, &shaders::PROBE_INTEGER_OPS_HEADER[..], shaders::PROBE_INTEGER_OPS_CODE, 5),
+        (Some(encode::Target {id: 32, ..t}), 1, 0x2430, &shaders::PROBE_TEXEL_FETCH_HEADER[..], shaders::PROBE_TEXEL_FETCH_CODE, 4),
     ] {
         let mut f = encode::probe_frame(t, source);
         f.relocate(0x3_0000_0000).unwrap();
+        // Mesa nvc0_program.c:782-805: an 80-byte SPH precedes code aligned to 128 bytes.
+        for chunk in &f.chunks {
+            let p = packets(&chunk.words);
+            let start = p.iter().find(|(m,_)| *m == 0x2140).unwrap().1[1];
+            assert_eq!((start + 80) % 128, 0, "Kepler instruction alignment");
+        }
         assert_eq!(f.chunks.len(), count);
         assert_eq!(&f.data[0x100000+offset..0x100050+offset], header);
         assert_eq!(&f.data[0x100050+offset..0x100050+offset+code.len()], code);
