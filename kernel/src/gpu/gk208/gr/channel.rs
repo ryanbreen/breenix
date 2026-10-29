@@ -1488,6 +1488,18 @@ mod native {
                 s.context.space().directory.range.start,s.report.identity.instance,s.report.identity.epoch))?;
             // Storage retains the uploaded code/inputs and the frame's target holds.
             let mut command = crate::gk208::encode::channel_words(&draw.words, self.quarantine)?;
+            // Encoded draws end in WAIT_FOR_IDLE; establish that boundary for
+            // a clipped no-op too. Before the release permits frame unmapping,
+            // drop its CB bindings and move SCC's selector to retained storage.
+            // 073949Z-metal faulted on released command-169 constants after
+            // later draws had already rebound the selector. A197 UNBIND_ALL
+            // bit 8 clears the bindings (MIT cla197.h:1309-1312); selector
+            // A..C are 0x2380..0x2388 (3732-3739). The 256-byte sink is in the
+            // channel's pinned report page, beyond its four 16-byte receipts.
+            if command.is_empty() { command.extend([0x20010044, 0]); }
+            let sink = TARGET + 256;
+            command.extend([0x2001043d, 0x100, 0x200308e0,
+                256, (sink >> 32) as u32, sink as u32]);
             let target = TARGET + u64::from(crate::gk208::queue::Queue::slot(sequence))*16;
             for (offset,value) in [(4,s.report.identity.epoch as u32),
                 (8,(s.report.identity.epoch>>32) as u32),(0,sequence)] {

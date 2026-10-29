@@ -1185,6 +1185,9 @@ The constant-retirement packet check in
 tests/fixtures/gt710_constant_retirement.rs uses the same cla197.h methods
 (WAIT_FOR_IDLE, UNBIND_ALL and constant-buffer selector/binding). Its header
 retains NVIDIA's original copyright and full MIT grant, checked before use.
+The corresponding unbind and selector parking in
+kernel/src/gpu/gk208/gr/channel.rs reuse its existing full MIT NVIDIA notice
+and cla197.h source attribution. The sink uses Breenix-owned channel storage.
 
 
 GT 710 native sampled draws (milestone 8.2-u5)
