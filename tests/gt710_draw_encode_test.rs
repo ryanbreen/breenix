@@ -126,7 +126,7 @@ fn invalid_tail_and_unsupported_pipeline_emit_nothing() {
     let mut w = frame(); w.extend([0xffff, 2]);
     assert!(encode::translate(w.as_slice(), &View(format::B8G8R8A8)).is_err());
     let mut w = Vec::new(); stream::encode::begin(&mut w, 1);
-    stream::encode::draw(&mut w, pipeline::GRADIENT_V, 0, &[[0,0,4,4]]);
+    stream::encode::draw(&mut w, pipeline::COVERAGE_SPANS, 0, &[[0,0,4,4]]);
     assert!(encode::translate(w.as_slice(), &View(format::B8G8R8A8)).is_err());
 }
 
