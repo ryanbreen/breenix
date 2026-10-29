@@ -261,6 +261,23 @@ pub fn parking_bytes(target: Target, source: Target) -> Result<usize, &'static s
         .data.len().checked_sub(CODE).ok_or("native parking code extent")
 }
 
+/// Preserve the bootstrap channel's bounded upload contract for a catalogue
+/// spanning several calls. Validate the complete address span before writing.
+pub fn upload_parking(address: u64, data: &[u8],
+    mut upload: impl FnMut(u64, &[u8]) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    let bytes = u64::try_from(data.len()).map_err(|_| "native parking upload extent")?;
+    if bytes == 0 || address.checked_add(bytes).is_none() {
+        return Err("native parking upload extent");
+    }
+    let mut next = address;
+    for chunk in data.chunks(16384) {
+        upload(next, chunk)?;
+        next += chunk.len() as u64;
+    }
+    Ok(())
+}
+
 /// Build an inert channel state from the sampled encoder. Its
 /// code, constants, vertices and descriptors occupy retained bootstrap VRAM;
 /// its two images are separate retained pages. No draw launch is published.

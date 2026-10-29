@@ -372,7 +372,8 @@ fn initialize_inner(
             let (data, parking) = super::encode::parking_frame(target, source, storage.va, quarantine)?;
             if data.len() as u64 > storage.spec.bytes { return Err("native parking storage extent"); }
             graphics.upload(&mut hardware, images.va, &[0; 8192])?;
-            graphics.upload(&mut hardware, storage.va, &data)?;
+            super::encode::upload_parking(storage.va, &data,
+                |va, bytes| graphics.upload(&mut hardware, va, bytes))?;
             Ok((quarantine, parking))
         })();
         let report = graphics.report();
