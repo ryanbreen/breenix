@@ -44,7 +44,9 @@ fn exit(pid:u64) {
  // DECL
  let pm=&();let manager=pm;let _=manager;
  LOCKED.store(true,Ordering::SeqCst);
+ if pid!=u64::MAX {
  // ASSIGN
+ }
  LOCKED.store(false,Ordering::SeqCst);
  // REDEEM
  let _=pid;
@@ -55,6 +57,7 @@ fn main(){
  exit(261);
  assert_eq!(RELEASED.load(Ordering::SeqCst),261,"x86 exit left GPU owner live until the periodic sweep");
  exit(0);assert_eq!(RELEASED.load(Ordering::SeqCst),261);
+ exit(u64::MAX);assert_eq!(RELEASED.load(Ordering::SeqCst),261);
 }
 '''
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
