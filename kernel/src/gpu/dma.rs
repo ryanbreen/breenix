@@ -59,10 +59,12 @@ impl Drop for DmaBox {
 
 impl DmaBox {
     /// Allocate pinned storage; fail closed on allocation or address admission.
+    #[track_caller]
     pub fn new(len: usize) -> DmaBox {
         Self::try_new(len).expect("GPU DMA allocation or address admission failed")
     }
 
+    #[track_caller]
     pub fn try_new(len: usize) -> Option<DmaBox> {
         #[cfg(target_arch = "aarch64")]
         {
@@ -90,7 +92,7 @@ impl DmaBox {
             let count = len.max(1).div_ceil(PAGE);
             let bytes_len = count.checked_mul(PAGE)?;
             let statuses = crate::gk208::system_dma::translation_status().ok()?;
-            let mut frames = FrameRun { frames: Vec::new() };
+            let mut frames = FrameRun { frames: Vec::new(), owner: None };
             frames.frames.try_reserve_exact(count).ok()?;
             frames.frames.resize(count, None);
             let first = frame_allocator::allocate_contiguous_frames(count, &mut frames.frames)?;
@@ -105,6 +107,7 @@ impl DmaBox {
             let bytes = NonNull::new(frame_va(&first) as *mut u8)?;
             // SAFETY: checked contiguous fresh frames in the WB direct map.
             unsafe { core::ptr::write_bytes(bytes.as_ptr(), 0, bytes_len) };
+            frames.owner = Some(super::dma_owner::Allocation::new(count, "DmaBox")?);
             Some(DmaBox { bytes, _frames: frames, len, address })
         }
     }
@@ -161,6 +164,7 @@ impl DmaBox {
 #[cfg(target_arch = "x86_64")]
 struct FrameRun {
     frames: Vec<Option<PhysFrame>>,
+    owner: Option<super::dma_owner::Allocation>,
 }
 #[cfg(target_arch = "x86_64")]
 impl Drop for FrameRun {
@@ -173,6 +177,8 @@ impl Drop for FrameRun {
 
 /// Whole frames, in order, owned until dropped.
 pub struct Pages {
+    #[cfg(target_arch = "x86_64")]
+    owner: Option<super::dma_owner::Allocation>,
     frames: Vec<PhysFrame>,
     /// RLIMIT_AS charge follows the backing through requests and confirmed reset.
     charge: Option<Arc<crate::process::limits::Limits>>,
@@ -184,8 +190,12 @@ pub struct Pages {
 impl Pages {
     /// `count` zeroed frames, or `None` (with every frame taken returned) when the
     /// allocator runs out.
+    #[track_caller]
     pub fn new(count: usize) -> Option<Pages> {
-        let mut pages = Pages { frames: Vec::new(), charge: None, _quota_charge: None, _copy_charge: None };
+        let mut pages = Pages {
+            #[cfg(target_arch = "x86_64")]
+            owner: None,
+            frames: Vec::new(), charge: None, _quota_charge: None, _copy_charge: None };
         if pages.frames.try_reserve_exact(count).is_err() {
             return None;
         }
@@ -204,12 +214,22 @@ impl Pages {
             unsafe { core::ptr::write_bytes(frame_va(&frame) as *mut u8, 0, PAGE) };
             pages.frames.push(frame);
         }
+        #[cfg(target_arch = "x86_64")]
+        if count != 0 { pages.owner = Some(super::dma_owner::Allocation::new(count, "Pages")?); }
         Some(pages)
     }
 
     /// No frames: for a resource the device keeps without guest backing.
     pub fn none() -> Pages {
-        Pages { frames: Vec::new(), charge: None, _quota_charge: None, _copy_charge: None }
+        Pages {
+            #[cfg(target_arch = "x86_64")]
+            owner: None,
+            frames: Vec::new(), charge: None, _quota_charge: None, _copy_charge: None }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn identify(&self, owner: &'static str, resource: u32, context: u32) {
+        if let Some(tag) = &self.owner { tag.identify(owner, resource, context); }
     }
 
     /// Adopt a reservation already made under PROCESS_MANAGER.

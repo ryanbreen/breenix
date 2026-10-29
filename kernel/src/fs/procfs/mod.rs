@@ -1046,6 +1046,11 @@ fn generate_frames() -> Result<String, i32> {
     use core::fmt::Write;
 
     let mut text = crate::memory::frame_allocator::frame_census()?;
+    #[cfg(target_arch = "x86_64")]
+    {
+        text.push_str(&crate::gpu::dma_owner::census());
+        text.push_str(&crate::gk208::resource::ownership_census());
+    }
     let (pending, parked) = crate::task::process_task::reclaim_queue_lengths();
     let _ = write!(
         text,

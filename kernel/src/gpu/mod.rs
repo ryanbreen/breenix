@@ -54,6 +54,8 @@ pub mod arch_rules;
 #[path = "gk208/dma_policy.rs"]
 pub mod dma_policy;
 pub mod dma;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod dma_owner;
 pub mod dev;
 pub mod virgl;
 pub mod svga;
@@ -964,6 +966,8 @@ impl Core {
     }
 
     fn insert_res(&mut self, id: u32, r: Res) {
+        #[cfg(target_arch = "x86_64")]
+        r.backing.identify("core-resource", id, 0);
         if self.resources.insert(id, r).is_none() {
             gauge(&GPU_RESOURCES, 1);
         }

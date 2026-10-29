@@ -35,14 +35,16 @@ pub fn translation_status() -> Result<Vec<u32>, &'static str> {
 }
 pub struct Pages {
     frames: Vec<PhysFrame>,
+    owner: Option<crate::gpu::dma_owner::Allocation>,
 }
 impl Pages {
+    #[track_caller]
     pub fn new(count: usize, statuses: &[u32]) -> Result<Self, &'static str> {
         if count == 0 || count > 256 {
             return Err("bounded DMA page request required");
         }
         dma_policy::identity_page(4096, statuses)?;
-        let mut pages = Self { frames: Vec::new() };
+        let mut pages = Self { frames: Vec::new(), owner: None };
         pages
             .frames
             .try_reserve_exact(count)
@@ -60,7 +62,12 @@ impl Pages {
                 core::ptr::write_bytes(pages.va(pages.frames.len() - 1) as *mut u8, 0, 4096);
             }
         }
+        pages.owner = Some(crate::gpu::dma_owner::Allocation::new(count, "system-dma")
+            .ok_or("native DMA owner table full")?);
         Ok(pages)
+    }
+    pub fn identify(&self, owner: &'static str, context: u32) {
+        if let Some(tag) = &self.owner { tag.identify(owner, 0, context); }
     }
     pub fn address(&self, index: usize) -> u64 {
         self.frames[index].start_address().as_u64()

@@ -594,6 +594,7 @@ mod native {
                     &system_dma::translation_status()?,
                 )?));
                 let dma = pages.as_ref().unwrap();
+                dma.identify("GR-channel", id);
                 context.map_system(
                     &mut h.layout.allocator,
                     &mut VmIo {

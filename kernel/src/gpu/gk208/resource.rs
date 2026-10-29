@@ -437,6 +437,9 @@ mod native {
     pub fn ctx_attach(tag: Tag, ctx: u32, id: u32) -> Option<Request> {
         ce::with_resources(|r, _, _| {
             if !r.contexts.contains(&ctx) || r.identity(id).is_none() { return Err("native context attachment absent"); }
+            if let Some(backing) = r.entries.get(&id).and_then(|e| e.backing.as_ref()) {
+                backing.identify("native-resource", id, ctx);
+            }
             Ok(())
         }).ok()?;
         Some(Request::storage(tag, None))
@@ -446,6 +449,20 @@ mod native {
             if !r.contexts.contains(&ctx) || r.channel == 0 { return Err("native context identity absent"); }
             u32::try_from(r.channel).map_err(|_| "native channel identity overflow")
         }).ok()
+    }
+    pub(crate) fn ownership_census() -> alloc::string::String {
+        ce::with_resources(|r, _, _| {
+            use core::fmt::Write;
+            let mut text = alloc::format!("native-registry entries={} contexts={} channel={}\n",
+                r.entries.len(), r.contexts.len(), r.channel);
+            for (&id, e) in &r.entries {
+                let _ = writeln!(text, "native-registry resource={} role={} pages={} backing_refs={} device_refs={} dropped={} mapped={} backing_mapped={}",
+                    id, e.role, e.backing.as_ref().map_or(0, |b| b.count()),
+                    e.backing.as_ref().map_or(0, Arc::strong_count),
+                    Arc::strong_count(&e.reference), e.dropped, e.mapped, e.backing_mapped);
+            }
+            Ok(text)
+        }).unwrap_or_else(|e| alloc::format!("native-registry unavailable={}\n", e))
     }
     pub fn resource_id(id: u32) -> Option<u32> {
         ce::with_resources(|r, _, _| {
@@ -461,6 +478,7 @@ mod native {
         Some(Request::storage(tag, None))
     }
     pub fn attach_backing(tag: Tag, id: u32, backing: Arc<Pages>) -> Option<Request> {
+        backing.identify("native-resource", id, 0);
         let pages: alloc::vec::Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
         ce::with_resources(|r, a, io| r.attach(a, io, id, backing.clone(), &pages, backing.bytes() as u64)).ok()?;
         Some(Request::storage(tag, Some(backing)))
@@ -476,3 +494,6 @@ mod native {
 }
 #[cfg(target_os = "none")]
 pub use native::{resource_create, attach_backing, resource_unref, ctx_create, ctx_destroy, ctx_attach, context_id, resource_id};
+
+#[cfg(target_os = "none")]
+pub(crate) use native::ownership_census;

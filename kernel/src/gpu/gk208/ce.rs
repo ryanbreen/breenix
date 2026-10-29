@@ -293,6 +293,7 @@ impl Channel {
             context.map(&mut layout.allocator,&mut io,va,a,flags())?;
         }
         let pages=ManuallyDrop::new(system_dma::Pages::new(2,status)?);
+        pages.identify("CE-channel", id);
         context.map_system(&mut layout.allocator,&mut io,SYSTEM,&[pages.address(0),pages.address(1)])?;
         for off in (0..65536).step_by(4096) {words(regs,total,commands.range.start+off,&[0;1024])?;}
         let instance=context.space().instance.range.start;
