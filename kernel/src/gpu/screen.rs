@@ -232,7 +232,7 @@ pub fn open() -> Option<(usize, usize)> {
     let pages = BACKING.try_get_or_init(|| Arc::new(Pages::new((PITCH * HEIGHT as usize).div_ceil(PAGE)).unwrap_or_else(Pages::none)));
     pages.ok().filter(|p| p.bytes() >= PITCH * HEIGHT as usize)?;
     // The pointer moves over this screen, not the firmware framebuffer it replaced.
-    crate::input::pointer::set_screen(WIDTH, HEIGHT);
+    super::arch::set_screen(WIDTH, HEIGHT);
     Some((WIDTH as usize, HEIGHT as usize))
 }
 
@@ -378,7 +378,7 @@ pub(super) fn observation_context(id: u32) -> Result<u32, i64> {
     let mut lease = Lease::take();
     let context = lease.ensure()?.context;
     if with_core(|c| c.resources.get(&id).map(|r| r.observed_in)).flatten().ok_or(EIO)? != context {
-        exec_ok(|t| Some(dev::ctx_attach(t, context, id)), context, &[id])?;
+        exec_ok(|t| dev::ctx_attach(t, context, id), context, &[id])?;
         with_core(|c| {
             if let Some(r) = c.resources.get_mut(&id) {
                 r.observed_in = context;

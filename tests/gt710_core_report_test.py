@@ -1,0 +1,352 @@
+# Hardware encodings from pinned MIT sources; see THIRD_PARTY_NOTICES.
+# Copyright 2010 Christoph Bumiller
+# Copyright (c) 2019 NVIDIA CORPORATION. All rights reserved.
+# /*
+#  * Copyright 2010 Red Hat Inc.
+#  * Copyright 2013 Red Hat Inc.
+#  * Copyright 2011 Red Hat Inc.
+#  * Copyright 2012 Red Hat Inc.
+#  * Copyright 2016 Red Hat Inc.
+#  *
+#  * Permission is hereby granted, free of charge, to any person obtaining a
+#  * copy of this software and associated documentation files (the "Software"),
+#  * to deal in the Software without restriction, including without limitation
+#  * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+#  * and/or sell copies of the Software, and to permit persons to whom the
+#  * Software is furnished to do so, subject to the following conditions:
+#  *
+#  * The above copyright notice and this permission notice shall be included in
+#  * all copies or substantial portions of the Software.
+# claim-lint:ok: MIT license condition; source inventory in vendor/kepler/sources.json.
+#  *
+#  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+#  * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+#  * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+#  * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+#  * OTHER DEALINGS IN THE SOFTWARE.
+#  *
+#  * Authors: Ben Skeggs
+#  */
+# /*******************************************************************************
+#     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+#
+#     Permission is hereby granted, free of charge, to any person obtaining a
+#     copy of this software and associated documentation files (the "Software"),
+#     to deal in the Software without restriction, including without limitation
+#     the rights to use, copy, modify, merge, publish, distribute, sublicense,
+#     and/or sell copies of the Software, and to permit persons to whom the
+#     Software is furnished to do so, subject to the following conditions:
+#
+#     The above copyright notice and this permission notice shall be included in
+#     all copies or substantial portions of the Software.
+# claim-lint:ok: MIT license condition; G1 source policy in tools/kepler/README.md.
+#
+#     THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#     IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#     FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+#     THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#     LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+#     FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+#     DEALINGS IN THE SOFTWARE.
+#
+# *******************************************************************************/
+"""M8.1 host scoring: native evidence, negative controls and a named refusal boot."""
+import hashlib
+from contextlib import redirect_stdout
+from io import StringIO
+import json
+from pathlib import Path
+import runpy
+import struct
+from types import SimpleNamespace
+from unittest.mock import patch
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+API = runpy.run_path(str(ROOT / 'scripts/metal/gt710-suite'))
+SEQUENCE = runpy.run_path(str(ROOT / 'scripts/suite-sequence.py'))
+SHA = 'a' * 40
+
+def caps_bytes():
+    data = bytearray(512)
+    def put(offset, *words): struct.pack_into('<' + 'I' * len(words), data, offset, *words)
+    put(0, 1, 512, 2, 3, 6, 512, 0xa197, 0, 4)
+    put(36, 0x927d, 0xa06f, 0xa0b5, 0xa197)
+    put(68, 0, 0, 1, 0, 2, 0, 0, 0, 16384, 16384, 1, 0, 1)
+    struct.pack_into('<Q', data, 120, 3 | (1 << 3) | (2 << 30))
+    data[128:134] = b'GK208B'
+    reason = b'missing b8g8r8a8-render'
+    data[192:192+len(reason)] = reason
+    put(256, 1, 1280, 1024, 0)
+    return data
+
+def records():
+    result = [dict(schema=1, type='caps', bytes=512, hex=caps_bytes().hex())]
+    sequence = 5
+    def add(case, control='clean'):
+        nonlocal sequence
+        sequence += 1
+        masked = control == 'masked-class'
+        r = dict(schema=1, type='completion', case=case, control=control,
+                 context=0x123000, epoch=17, sequence=0 if masked else sequence,
+                 caller=(1 << 32) | sequence, resource=0x456000 if case == 'triangle' else 0x800000,
+                 generation=1, kind=0xa1971b0c if case == 'triangle' else 0xa0b50300,
+                 answer=0x60000000 if control == 'clean' else 0,
+                 observed_context=0 if masked else 0x123000,
+                 observed_epoch=0 if masked else (16 if control == 'stale-epoch' else 17),
+                 observed_sequence=0 if masked or control == 'withheld-release' else sequence,
+                 consumed=0 if masked else sequence, healthy=not masked, elapsed_us=100,
+                 outcome='done' if control == 'clean' else ('refused' if masked else 'rejected'))
+        result.append(r)
+        if masked: sequence -= 1
+    for index in range(5):
+        if index: sequence += 6  # two readbacks + four 4 KiB upload chunks
+        add('triangle')
+    sequence += 2  # final triangle's two-poison readback
+    for control, after in [('withheld-release','after-withheld'), ('stale-epoch','after-stale'), ('masked-class','after-mask')]:
+        add('copy', control); add(after)
+    add('copy')
+    return result
+
+def stage(directory, rows=None):
+    rows = records() if rows is None else rows
+    body = ''.join('GT710_CORE ' + json.dumps(row, separators=(',',':')) + '\n' for row in rows).encode()
+    anchor = f'{len(body)} {hashlib.sha256(body).hexdigest()}\n'
+    (directory / 'gt710-pixels.rle').write_bytes(body)
+    (directory / 'serial.txt').write_text('GT710_CORE_BULK ' + anchor + 'GT710_BULK ' + anchor)
+    return API['capture_serial'](directory)
+
+def gpu_boot():
+    return dict(id='20261028T180000Z-metal', platform='metal', arch='x86_64', kind='boot',
+                evidenceEligible=True, mode='suite', suite='gpu', suites=['gpu'],
+                toolsCommit=SHA, bootedCommit=SHA, build=dict(commit=SHA, profile='production', features=[]))
+
+def gpu_serial():
+    manifest = json.loads((ROOT / 'docs/suites/gpu.json').read_text())
+    names = [cat['id']+'/'+case['id'] for cat in manifest['categories'] for case in cat['cases']]
+    reason = 'missing the GPU core with a device admitted to the profile (G1): CAPS status 2 (missing b8g8r8a8-render)'
+    return ('SUITE gpu START cases=170\nSUITE gpu MEMORY before free=1000 heap_free_kb=500 user_pages=100\n' + ''.join(f'SUITE gpu CASE {name} FAIL ms=1 msg={reason}\n' for name in names)
+            + 'SUITE gpu DONE passed=0 failed=170 skipped=0 total=170\nSUITE gpu MEMORY after free=1000 heap_free_kb=500 user_pages=100\nSUITE gpu MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=64\nSUITE gpu ELAPSED ms=210\nSUITE_SEQUENCE READY gpu\n')
+
+def console_serial():
+    manifest = json.loads((ROOT / 'docs/suites/console.json').read_text())
+    names = [c['id'] + '/' + case['id'] for c in manifest['categories'] for case in c['cases']]
+    return ('SUITE console START cases=88\n'
+            + 'SUITE console MEMORY before free=1000 heap_free_kb=500 user_pages=100\n'
+            + ''.join(f'SUITE console CASE {name} PASS ms=1\n' for name in names)
+            + 'SUITE console DONE passed=88 failed=0 skipped=0 total=88\n'
+            + 'SUITE console MEMORY after free=1000 heap_free_kb=500 user_pages=100\n'
+            + 'SUITE console MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=48\n'
+            + 'SUITE console ELAPSED ms=210\nSUITE_SEQUENCE READY console\n')
+
+class CoreReport(unittest.TestCase):
+    def test_acceptance_requires_successful_console_and_complete_aggregate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            boot = dict(gpu_boot(), suite='console', suites=['console'])
+            (path / 'run.json').write_text(json.dumps(boot))
+            (path / 'exit-status').write_text('0\n')
+            milestones = {
+                'metal-gt710/' + ('gpu-core' if c == 'core' else c):
+                    dict(passed=True, reached=len(API['CATEGORIES'][c]), total=len(API['CATEGORIES'][c]))
+                for c in API['capture_categories'](boot)
+            }
+            verdict = dict(captureComplete=True, milestones=milestones)
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertTrue(API['acceptance_status'](path, verdict))
+            self.assertIn('console exit 0', output.getvalue())
+            self.assertIn('metal-gt710/gpu-core PASS 3/3', output.getvalue())
+            core = milestones['metal-gt710/gpu-core']
+            for field, value in [('passed', False), ('reached', 2), ('total', 4)]:
+                changed = dict(verdict, milestones=dict(milestones))
+                changed['milestones']['metal-gt710/gpu-core'] = dict(core, **{field: value})
+                with self.subTest(field=field), redirect_stdout(StringIO()):
+                    self.assertFalse(API['acceptance_status'](path, changed))
+            missing = dict(milestones)
+            del missing['metal-gt710/gpu-core']
+            with redirect_stdout(StringIO()):
+                self.assertFalse(API['acceptance_status'](path, dict(verdict, milestones=missing)))
+                self.assertFalse(API['acceptance_status'](path, dict(verdict, captureComplete=False)))
+                (path / 'exit-status').write_text('1\n')
+                self.assertFalse(API['acceptance_status'](path, verdict))
+
+    def joined(self, rows=None):
+        with tempfile.TemporaryDirectory() as tmp: return stage(Path(tmp), rows)
+
+    def test_native_row_and_dispatch_pass(self):
+        serial = self.joined()
+        API['core_row'](serial)
+        API['core_dispatch'](serial)
+
+    def test_wire_row_rejects_virtual_or_invented_capabilities(self):
+        mutations = [(16,4), (16,5), (20,3), (24,1), (28,1), (32,3), (40,0xa16f),
+                     (52,1), (72,3), (92,7), (96,330), (100,32768), (108,2), (112,1),
+                     (120,7), (124,2), (256+12,1), (272,1), (8,0)]
+        for offset, value in mutations:
+            with self.subTest(offset=offset, value=value):
+                rows=records(); data=caps_bytes(); struct.pack_into('<I', data, offset, value)
+                rows[0]['hex']=data.hex()
+                with self.assertRaises(ValueError): API['core_row'](self.joined(rows))
+        for offset in [134,215,511]:
+            rows=records(); data=caps_bytes(); data[offset]=1; rows[0]['hex']=data.hex()
+            with self.subTest(offset=offset), self.assertRaises(ValueError): API['core_row'](self.joined(rows))
+
+    def test_dispatch_requires_the_source_defined_intervening_transfers(self):
+        rows = records()
+        for index in [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
+            for delta in [-1, 1]:
+                changed = [dict(row) for row in rows]
+                row = changed[index]
+                row['caller'] += delta
+                if row['control'] != 'masked-class':
+                    row['sequence'] += delta
+                    row['consumed'] += delta
+                    if row['control'] != 'withheld-release': row['observed_sequence'] += delta
+                with self.subTest(index=index, delta=delta), self.assertRaises(ValueError):
+                    API['core_dispatch'](self.joined(changed))
+
+    def test_controls_virtual_answers_and_identity_fail(self):
+        changes = [(6,'outcome','done'), (6,'answer',0x60000000), (6,'observed_sequence',11),
+                   (8,'observed_epoch',17), (10,'sequence',15), (10,'outcome','done'),
+                   (7,'answer',0), (9,'outcome','rejected'), (11,'healthy',False),
+                   (1,'answer',0x1100), (1,'answer',0), (1,'kind',0x0200),
+                   (1,'kind',1141), (12,'kind',0x0205), (12,'kind',1102),
+                   (2,'caller',7), (3,'observed_context',0x124000), (4,'observed_epoch',16),
+                   (5,'consumed',0), (12,'elapsed_us',2000001)]
+        for index,key,value in changes:
+            rows=records(); rows[index][key]=value
+            with self.subTest(index=index,key=key), self.assertRaises(ValueError): API['core_dispatch'](self.joined(rows))
+        for index in [1,6,7,8,9,10,11,12]:
+            rows=records(); rows.pop(index)
+            with self.subTest(missing=index), self.assertRaises(ValueError): API['core_dispatch'](self.joined(rows))
+
+    def test_missing_or_changed_bulk_anchor_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp); stage(path)
+            original=(path/'serial.txt').read_text()
+            for changed in [original.replace('GT710_CORE_BULK','REMOVED'), original.replace('GT710_BULK','REMOVED'),
+                            original.replace(original.split()[2], '0'*64), original+original.splitlines()[0]+'\n']:
+                (path/'serial.txt').write_text(changed)
+                with self.assertRaises(ValueError): API['core_row'](API['capture_serial'](path))
+
+    def test_named_producer_requires_complete_refusals_in_manifest_order(self):
+        serial=self.joined()
+        API['core_producer'](gpu_serial(), API['core_row'](serial), gpu_boot())
+        text=gpu_serial()
+        changes=[text.replace(' FAIL ', ' SKIP ',1), text.replace(' FAIL ', ' PASS ',1),
+                 text.replace('CAPS status 2 (missing b8g8r8a8-render)', 'CAPS status 1 (no GPU core backend)'),
+                 text.replace('CAPS status 2','CAPS status 1'), text.replace('b8g8r8a8-render','feature-3d'),
+                 text.replace('ms=1 msg=','ms=1 msg=another failure; ',1),
+                 text.replace('SUITE gpu START cases=170\n',''), text.replace('SUITE gpu DONE','SUITE other DONE'),
+                 text.replace('SUITE gpu ELAPSED ms=210\n',''), text.replace('ms=210','ms=900001'),
+                 text.replace('SUITE_SEQUENCE READY gpu\n',''), text+'KERNEL PANIC: broken\n',
+                 text+'SUITE_SEQUENCE STALLED gpu cases=170/170\n',
+                 text.replace('MEMORY before','MEMORY lost'),text.replace('free_after=1000','free_after=10')]
+        lines=text.splitlines(keepends=True); lines[2],lines[3]=lines[3],lines[2]; changes.append(''.join(lines))
+        for changed in changes:
+            with self.subTest(capture=changed[:100]), self.assertRaises(ValueError):
+                API['core_producer'](changed, API['core_row'](serial), gpu_boot())
+        for field,value in [('suite','console'), ('mode','persistent'), ('toolsCommit','b'*40), ('evidenceEligible',False)]:
+            boot=gpu_boot();boot[field]=value
+            with self.subTest(field=field),self.assertRaises(ValueError): API['core_producer'](text,API['core_row'](serial),boot)
+
+    def test_retained_companion_binds_boot_commit_timing_and_milestone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp); companion=path/'core-producer'; companion.mkdir()
+            primary=dict(gpu_boot(),id='20261028T170000Z-metal',suite='console',suites=['console'])
+            (path/'run.json').write_text(json.dumps(primary))
+            events=[dict(event='handoff',seconds=10),dict(event='final-marker',seconds=340)]
+            (path/'events.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in events))
+            # Ordinary RAM-disk run.json has no bootedCommit; the retained commit file is authoritative.
+            boot=gpu_boot(); del boot['bootedCommit']
+            files={'run.json':json.dumps(boot),'serial.txt':gpu_serial(),'events.jsonl':json.dumps(dict(event='final-marker',seconds=30))+'\n',
+                   'ended':'1\n','exit-status':'1\n','dirty':'0\n','commit':SHA+'\n'}
+            startup = b'GT710_CORE_STARTUP {"schema":1,"irq_masked_max_us":37,"ready":true}\n'
+            anchor = f'{len(startup)} {hashlib.sha256(startup).hexdigest()}\n'
+            files['serial.txt'] = 'GT710_CORE_STARTUP_BULK ' + anchor + 'GT710_BULK ' + anchor + files['serial.txt']
+            for name,text in files.items(): (companion/name).write_text(text)
+            (companion/'gt710-pixels.rle').write_bytes(startup)
+            diagnostic=path/'core-diagnostic'; diagnostic.mkdir()
+            diagnostic_boot=dict(gpu_boot(), id='20261028T160000Z-metal', mode='probe',
+                                 suite=None, suites=None, gt710Category='core',
+                                 build=dict(commit=SHA, profile='gpu-core', features=['gt710_core_probe']))
+            for name,text in dict(files, **{'run.json':json.dumps(diagnostic_boot),'exit-status':'0\n'}).items():
+                (diagnostic/name).write_text(text)
+            stage(diagnostic)
+            for name, text in {'ended': '1', 'exit-status': '0', 'dirty': '0', 'commit': SHA}.items():
+                (path / name).write_text(text)
+            (path / 'serial.txt').write_text('GT710_CORE_STARTUP_BULK ' + anchor + 'GT710_BULK ' + anchor + console_serial())
+            (path / 'gt710-pixels.rle').write_bytes(startup)
+            serial=''; producer=API['core_capture'](path,SHA)
+            manifest=json.loads((ROOT/'docs/suites/gt710.json').read_text())
+            effort=json.loads((ROOT/'docs/efforts/metal.json').read_text())
+            cases=API['cases']('core',serial,producer)
+            self.assertEqual([c['result'] for c in cases],['PASS']*3)
+            report=dict(boot=primary['id'],commit=SHA,milestone='metal-gt710/gpu-core',producerBoot=boot['id'],cases=cases)
+            self.assertIn('3 cases passed',API['score'](manifest,effort,report,serial,primary,SHA,[],producer))
+            for name,text in [('commit','b'*40),('dirty','1'),('ended',''),('exit-status','124'),
+                              ('events.jsonl',json.dumps(dict(event='console-gap'))+'\n')]:
+                (companion/name).write_text(text)
+                with self.subTest(name=name),self.assertRaises(ValueError): API['core_capture'](path,SHA)
+                (companion/name).write_text(files[name])
+            for profile in [None, 'gpu-core']:
+                (path/'run.json').write_text(json.dumps(dict(primary, build=dict(profile=profile))))
+                with self.subTest(console_profile=profile), self.assertRaisesRegex(ValueError, 'production.*build.profile'):
+                    API['core_capture'](path,SHA)
+            (path/'run.json').write_text(json.dumps(primary))
+            events[1]['seconds']=340.001
+            (path/'events.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in events))
+            with self.assertRaisesRegex(ValueError,'330'): API['core_capture'](path,SHA)
+
+    def test_metal_launcher_resolves_gpu_using_the_target_3d_capability(self):
+        launcher=runpy.run_path(str(ROOT/'scripts/metal/metal-run'))
+        resolve=launcher['resolve_suites']
+        def in_build(env,*args,**kwargs):
+            if 'show' in args:
+                path=ROOT/args[-1].split(':',1)[1]
+                return SimpleNamespace(returncode=0,stdout=path.read_text())
+            return SimpleNamespace(returncode=0,stdout='')
+        with patch.dict(resolve.__globals__,in_build=in_build):
+            self.assertEqual(resolve(dict(BUILD_REPO='checkout'),SHA,'gpu'),'gpu')
+
+    def test_native_suite_build_keeps_production_without_explicit_core_category(self):
+        features = runpy.run_path(str(ROOT/'scripts/metal/metal-run'))['kernel_features']
+        for suites in ['console', 'gpu', 'gt710', 'smoke,console', 'all']:
+            self.assertEqual(features('suite', suites, None), [])
+        self.assertEqual(features('tests', None, None), ['--features', 'testing'])
+        self.assertEqual(features('suite', 'smoke', None), [])
+        self.assertEqual(features('default', None, None), [])
+        self.assertEqual(features('suite', 'console', 'xhci-short-read'),
+                         ['--features', 'xhci_fault_inject'])
+
+    def test_native_suite_profile_matches_driver_provenance(self):
+        driver = runpy.run_path(str(ROOT/'scripts/metal/metal-boot'))['kernel_profile']
+        launcher = runpy.run_path(str(ROOT/'scripts/metal/metal-run'))['kernel_features']
+        builder = runpy.run_path(str(ROOT/'scripts/metal/metal-build'))['PROFILES']
+        for mode, suite, inject in [('suite','console',None), ('suite','gpu',None),
+                                   ('suite','gt710',None), ('suite','smoke',None),
+                                   ('tests',None,None), ('default',None,None),
+                                   ('suite','console','xhci-short-read')]:
+            args = SimpleNamespace(mode=mode, suite=suite, inject=inject)
+            selected = launcher(mode, suite, inject)[1:]
+            self.assertEqual(driver(args), (selected, builder[''.join(selected)]))
+
+    def test_core_manifest_runner_and_effort_mapping(self):
+        manifest=json.loads((ROOT/'docs/suites/gt710.json').read_text()); API['validate_manifest'](manifest)
+        category=next(c for c in manifest['categories'] if c['id']=='core')
+        self.assertEqual([c['id'] for c in category['cases']],['row','dispatch','producer'])
+        self.assertEqual(category.get('hostRunner'),True)
+        effort=json.loads((ROOT/'docs/efforts/metal.json').read_text())
+        milestone=next(m for e in effort['efforts'] if e['id']=='metal-gt710' for m in e['milestones'] if m['id']=='gpu-core')
+        self.assertEqual(milestone['measure'],dict(suite='gt710',categories=['core']))
+        self.assertTrue(SEQUENCE['gpu_3d']('x86-metal'))
+        self.assertEqual(SEQUENCE['resolve']('gpu','x86-metal',SEQUENCE['gpu_3d']('x86-metal'))[0],['gpu'])
+        # The build's producer list and the actual image placement rule, on both architectures.
+        self.assertIn('"suite-gpu"',(ROOT/'userspace/programs/build.sh').read_text())
+        self.assertEqual(next(line.split()[2] for line in (ROOT/'libs/libbreenix/src/layout.tsv').read_text().splitlines() if line.startswith('bin suite-* ')), 'sbin')
+
+if __name__ == '__main__': unittest.main()

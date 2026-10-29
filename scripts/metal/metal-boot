@@ -90,6 +90,25 @@ def input_kind(args):
     return getattr(args, 'input', None)
 
 
+
+def kernel_profile(args):
+    """Expected build identity for this boot's requested mode and suite."""
+    category = getattr(args, 'gt710_category', None)
+    if category is not None:
+        if category != 'core' or args.mode not in ('default', 'probe') or getattr(args, 'suite', None) or args.inject:
+            raise ValueError('gt710 core diagnostic needs a default/probe boot without suites or injection')
+        return ['gt710_core_probe'], 'gpu-core'
+    features = (['watchdog_fault_inject'] if args.inject in WATCHDOG_FAULTS else
+                ['xhci_fault_inject'] if xhci_fault(args) else
+                ['block_fence_inject'] if args.inject == FENCE_FAULT else
+                ['server_reboot_fault'] if args.inject == 'panic-reboot' else
+                ['testing'] if args.mode == 'tests' else [])
+    profile = {'watchdog_fault_inject': 'fault-test', 'xhci_fault_inject': 'fault-test',
+               'block_fence_inject': 'fault-test', 'server_reboot_fault': 'fault-test',
+               'testing': 'testing', 'gt710_core_probe': 'gpu-core'}.get(''.join(features), 'production')
+    return features, profile
+
+
 def xhci_fault(args):
     value = getattr(args, 'inject', None)
     return {'xhci-reset-device': 'reset-device', 'xhci-short-read': 'short-read'}.get(value)
@@ -288,6 +307,7 @@ class Driver:
                # `suite` names the one suite of a single-suite boot; `suites` every suite the boot runs, in order.
                'suite': suites(self.args)[0] if len(suites(self.args)) == 1 else None, 'suites': suites(self.args) or None,
                'milestone': getattr(self.args, 'milestone', None),
+               'gt710Category': getattr(self.args, 'gt710_category', None),
                'sourceBoot': getattr(self.args, 'source_boot', None),
                'disk': 'persistent' if persistent(self.args) else getattr(self.args, 'disk', None),
                'toolsCommit': tools_commit(),
@@ -455,11 +475,7 @@ class Driver:
             self.event('linux-payload-ready', sha256=expected['sha256'], size=expected['size'])
             return
         build = m.read_json(inputs / 'build.json', {})
-        # Only an xHCI fault boot takes a fault-test kernel and only a tests boot the testing kernel; neither takes another.
-        features = (['watchdog_fault_inject'] if self.args.inject in WATCHDOG_FAULTS else ['xhci_fault_inject'] if xhci_fault(self.args) else ['block_fence_inject'] if self.args.inject == FENCE_FAULT
-                    else ['server_reboot_fault'] if self.args.inject == 'panic-reboot' else ['testing'] if self.args.mode == 'tests' else [])
-        profile = {'watchdog_fault_inject': 'fault-test', 'xhci_fault_inject': 'fault-test', 'block_fence_inject': 'fault-test', 'server_reboot_fault': 'fault-test',
-                   'testing': 'testing'}.get(''.join(features), 'production')
+        features, profile = kernel_profile(self.args)
         if build.get('commit') != self.args.commit or build.get('profile') != profile or build.get('features') != features:
             raise Finish(m.EXIT_CANCELLED, f'build provenance differs from the requested {profile} commit')
         tests = inputs / 'test-binaries.img'
@@ -468,6 +484,9 @@ class Driver:
         if build.get('suite') != (getattr(self.args, 'suite', None) if self.args.mode == 'suite' else None):
             raise Finish(m.EXIT_CANCELLED, 'the build staged fixtures for a different suite')
         self.delivery['build'] = build
+        run = m.read_json(self.dir / 'run.json', {})
+        run['build'] = {key: build[key] for key in ('commit', 'profile', 'features')}
+        m.write_json(self.dir / 'run.json', run)
         self.event('build-delivered', commit=build.get('commit'), guard=build.get('guardTarget'))
         if (inputs / 'definition').is_dir():
             shutil.copytree(inputs / 'definition', self.dir / 'definition')
@@ -862,6 +881,12 @@ class Driver:
 
     def score_suite(self, disk=None):
         """Run the commit's scorer after power-off, without site files or management access."""
+        try:
+            metal_score.require_suite_profile(m.read_json(self.dir / 'run.json', {}))
+        except ValueError as error:
+            self.event('suite-verdict', status=1, reason=str(error))
+            m.write_text(self.dir / 'suite-verdict.txt', 'FAIL: ' + str(error) + '\n')
+            return False
         definition = self.dir / 'definition'
         with tempfile.TemporaryDirectory(prefix='metal-verdict-') as temporary:
             root = Path(temporary)
@@ -2193,6 +2218,7 @@ def main():
         p.add_argument('--session', action='store_true', help='hold the console for operator input, without scoring')
         p.add_argument('--idle-minutes', type=int, default=30, help='session input idle limit (1 through 240; default 30)')
         p.add_argument('--suite')
+        p.add_argument('--gt710-category', choices=('core',))
         p.add_argument('--milestone')
         p.add_argument('--source-boot')
         p.add_argument('--commit', default='')
@@ -2228,10 +2254,15 @@ def main():
     sub.add_parser('status')
     args, _ = parser.parse_known_args()
     if args.command in ('launch', 'run'):
+        if args.gt710_category and args.mode == 'default':
+            args.mode = 'probe'
         if args.payload == 'disk-readback' and not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.source_boot or ''):
             parser.error('disk-readback needs --source-boot ID')
         try:
             validate_xhci_fault(args)
+            kernel_profile(args)
+            if args.gt710_category and (args.payload != 'image' or session(args)):
+                raise ValueError('--gt710-category needs an automated image boot')
         except ValueError as error:
             parser.error(str(error))
         if args.mode == 'suite':

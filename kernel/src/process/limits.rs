@@ -195,13 +195,11 @@ impl Process {
             self.thread_group_id.unwrap_or(self.id.as_u64()),
             &self.vmas,
         ));
-        #[cfg(target_arch = "aarch64")]
         let bytes = bytes.saturating_add(self.limits.gpu_bytes.load(Ordering::Acquire));
         bytes
     }
 
     /// Reserve backing under the same process lock as mmap, brk and stack growth.
-    #[cfg(target_arch = "aarch64")]
     pub fn reserve_gpu_bytes(&self, bytes: u64) -> bool {
         if self.mapped_bytes().saturating_add(bytes) > self.limits.get(AS).soft {
             return false;
@@ -248,12 +246,10 @@ pub struct Limits {
     ticks: AtomicU64,
     next: AtomicU64,
     pending: AtomicU32,
-    #[cfg(target_arch = "aarch64")]
     gpu_bytes: AtomicU64,
 }
 
 impl Limits {
-    #[cfg(target_arch = "aarch64")]
     pub fn release_gpu_bytes(&self, bytes: u64) {
         self.gpu_bytes.fetch_sub(bytes, Ordering::AcqRel);
     }
@@ -272,7 +268,6 @@ impl Limits {
             ticks: AtomicU64::new(0),
             next: AtomicU64::new(0),
             pending: AtomicU32::new(0),
-            #[cfg(target_arch = "aarch64")]
             gpu_bytes: AtomicU64::new(0),
         })
     }

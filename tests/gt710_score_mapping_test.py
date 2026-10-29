@@ -15,7 +15,7 @@ class GT710ScoreMapping(unittest.TestCase):
     def test_every_manifest_category_uses_its_record_milestone(self):
         manifest = json.loads((ROOT / 'docs/suites/gt710.json').read_text())
         categories = {category['id']: category['cases'] for category in manifest['categories']}
-        suite = {'CATEGORIES': categories, 'score': lambda *args: 'passed',
+        suite = {'CATEGORIES': categories, 'score': lambda *args, **kwargs: 'passed', 'core_capture': lambda *args: {},
                  'capture_serial': lambda directory: ''}
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -33,12 +33,12 @@ class GT710ScoreMapping(unittest.TestCase):
                                 ('ended', ''), ('exit-status', '0'), ('dirty', '0')]:
                 (directory / name).write_text(value)
             for category in categories:
-                write('gt710-' + category + '.json', {'milestone': 'metal-gt710/' + category})
+                write('gt710-' + category + '.json', {'milestone': 'metal-gt710/' + ('gpu-core' if category == 'core' else category)})
             with patch.object(metal_score.runpy, 'run_path', return_value=suite):
                 results = metal_score.score(directory)['milestones']
             for category in categories:
                 with self.subTest(category=category):
-                    self.assertTrue(results['metal-gt710/' + category]['passed'])
+                    self.assertTrue(results['metal-gt710/' + ('gpu-core' if category == 'core' else category)]['passed'])
 
 
 if __name__ == '__main__':

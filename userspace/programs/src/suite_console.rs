@@ -1368,9 +1368,14 @@ fn getty_independent_sessions() -> CaseResult {
 mod gt710_wait_probe;
 fn main() {
     #[cfg(target_arch="x86_64")]
-    gt710_artifacts::upload().expect("native display artifact upload");
-    #[cfg(target_arch="x86_64")]
     gt710_wait_probe::run();
+    #[cfg(target_arch="x86_64")]
+    {
+        // Finish the CE checks before CAPS transfers their owner to the core.
+        // Its startup row must join the one-use upload before the suite starts.
+        let _ = libbreenix::gpu::caps();
+        gt710_artifacts::upload().expect("native display artifact upload");
+    }
     let args: Vec<_> = std::env::args().collect();
     let selected = args.windows(2).find_map(|pair| (pair[0] == "--case").then_some(pair[1].as_str()));
     if selected.is_none_or(|case| case == "getty" || case.starts_with("getty/")) {

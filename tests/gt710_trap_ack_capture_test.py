@@ -24,7 +24,8 @@ class TrapAckCapture(unittest.TestCase):
         evidence = evidence.replace('super::bulk', 'bulk').replace('super::hex', 'hex').replace('super::hash', 'hash')
         methods = '\n'.join(item(channel, m) for m in [
             '        fn sequence(', '        pub(in crate::gk208::gr) fn draw(',
-            '        pub(in crate::gk208::gr) fn quiesce('])
+            '        pub(in crate::gk208::gr) fn quiesce(',
+            '        fn quiesce_channel('])
         methods = methods.replace('pub(in crate::gk208::gr)', 'pub(crate)').replace('super::super::', 'crate::')
         harness = (ROOT / 'tests/fixtures/gt710_trap_ack_capture.rs').read_text()
         # Use the production MMIO adapter when it exists; the first red tree
@@ -45,6 +46,7 @@ class TrapAckCapture(unittest.TestCase):
             self.assertEqual(len(reports), 4)
             for report in reports:
                 self.assertIsNotNone(report['error'], 'acknowledging a trap must not accept the draw')
+                self.assertEqual(report['readbacks'], [], 'failed draw must not report rendered pixels')
                 capture = report.get('trap_capture')
                 self.assertIsNotNone(capture, 'missing pre-ack GR method/error capture')
                 self.assertEqual(capture['registers'], [0x400704, 0x400708, 0x40070c, 0x400500, 0x409b00, 0x404208])

@@ -23,6 +23,7 @@ pub(crate) mod emergency;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+#[cfg(target_arch = "aarch64")]
 use crate::drivers::pci;
 use crate::drivers::virtio::pci_transport::VirtioPciDevice;
 use crate::gpu::dma::{DmaBox, Pages, WordBuf};
@@ -239,55 +240,17 @@ const CONFIG_VECTOR: u16 = 1;
 const WANTED: u64 = wire::F_VIRGL | wire::F_VERSION_1;
 
 /// The modern virtio-gpu PCI device id (0x1040 + device type 16).
+#[cfg(target_arch = "aarch64")]
 const GPU_PCI_ID: u16 = 0x1050;
 
-/// The GIC interrupt id of PCI device `slot`'s INTx pin `pin` (1 = INTA) on QEMU's
-/// `virt` machine: its device tree's `interrupt-map` routes pin `p` of slot `s` to SPI
-/// `3 + (s + p - 1) mod 4`, level-high, and SPI `n` is GIC interrupt `32 + n`.
-fn qemu_virt_intx(slot: u8, pin: u8) -> u32 {
-    32 + 3 + ((slot as u32 + pin as u32 - 1) % 4)
-}
-
-/// Route the device's interrupts: INTx on QEMU's `virt` machine, MSI-X through the GICv2m
-/// doorbell on Parallels. The MSI-X table entries live in the function's BAR and survive a
-/// device reset; the virtio vector registers do not, so [`Device::enable_queue`] writes them.
-fn route(pci_dev: &pci::Device) -> Result<Irq, &'static str> {
-    if crate::platform_config::is_qemu() {
-        let pin = pci::pci_read_config_byte(pci_dev.bus, pci_dev.device, pci_dev.function, 0x3D);
-        if pin == 0 || pin > 4 {
-            return Err("the virtio-gpu PCI device has no INTx pin");
-        }
-        // Command register bit 10 masks INTx; the transport needs it clear.
-        let command = pci::pci_read_config_word(pci_dev.bus, pci_dev.device, pci_dev.function, 0x04);
-        pci::pci_write_config_word(pci_dev.bus, pci_dev.device, pci_dev.function, 0x04, command & !(1 << 10));
-        return Ok(Irq::Intx(qemu_virt_intx(pci_dev.device, pin)));
-    }
-    if !crate::platform_config::is_parallels() {
-        return Err("the GPU core drives virtio-gpu on QEMU and Parallels only");
-    }
-    let cap = pci_dev.find_msix_capability().ok_or("the virtio-gpu PCI device has no MSI-X capability")?;
-    if pci_dev.msix_table_size(cap) <= CONFIG_VECTOR {
-        return Err("the virtio-gpu MSI-X table has fewer than two vectors");
-    }
-    let doorbell = crate::platform_config::gicv2m_doorbell().ok_or("no GICv2m frame for virtio-gpu MSI-X")?;
-    let queue = crate::platform_config::allocate_msi_spi();
-    let config = crate::platform_config::allocate_msi_spi();
-    if queue == 0 || config == 0 {
-        return Err("no GICv2m SPI left for virtio-gpu MSI-X");
-    }
-    pci_dev.configure_msix_entry(cap, QUEUE_VECTOR, doorbell, queue);
-    pci_dev.configure_msix_entry(cap, CONFIG_VECTOR, doorbell, config);
-    pci_dev.enable_msix(cap);
-    pci_dev.disable_intx();
-    Ok(Irq::Msix { queue, config })
-}
 
 impl Device {
     /// Find, reset and initialise the device; read its display information and
     /// capability sets with polled commands. Interrupts are not enabled yet.
+    #[cfg(target_arch = "aarch64")]
     pub fn probe() -> Result<Device, &'static str> {
         let pci_dev = pci::find_device(pci::VIRTIO_VENDOR_ID, GPU_PCI_ID).ok_or("no virtio-gpu PCI device")?;
-        let irq = route(&pci_dev)?;
+        let irq = super::arch::route(&pci_dev)?;
         let mut pci = VirtioPciDevice::probe(pci_dev).ok_or("virtio-gpu PCI capabilities missing")?;
         let isr = pci.isr_address().ok_or("virtio-gpu PCI ISR capability missing")?;
         let size = Self::start(&mut pci)?;
@@ -360,6 +323,7 @@ impl Device {
     }
 
     /// Display information and capability sets, polled.
+    #[cfg(target_arch = "aarch64")]
     fn read_info(&mut self) -> Result<(), &'static str> {
         self.info.num_scanouts = self.pci.read_config_u32(wire::CFG_NUM_SCANOUTS);
         let num_capsets = self.pci.read_config_u32(wire::CFG_NUM_CAPSETS);
@@ -408,6 +372,7 @@ impl Device {
     }
 
     /// Send one request and spin until the device returns it (initialisation only).
+    #[cfg(target_arch = "aarch64")]
     fn exec_polled(&mut self, req: Request) -> Result<Done, &'static str> {
         self.send(req).map_err(|_| "control queue full")?;
         self.pci.notify_queue_fast(0);

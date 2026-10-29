@@ -195,6 +195,15 @@ fn present_probe(_: &mut Hardware<'_>,_: &mut channel::Session,_:(),_:&mut DrawE
 fn contexts_probe(_: &mut Hardware<'_>,_: &mut channel::Session,_:u64)->Result<(),&'static str>{step("contexts-probe")}
 fn draw_probe(_: &mut Hardware<'_>,_: &mut channel::Session,_:u64,_:&mut DrawEvidence)->Result<(),&'static str>{step("draw-probe")}
 mod channel {
+    pub(crate) struct DrawSession(Session);
+    impl DrawSession {
+        pub fn new(session: Session) -> Self { assert!(session.last_sequence() >= 5); Self(session) }
+        pub fn into_session(self) -> Session { self.0 }
+        pub fn emit_core(&self) -> Result<(), &'static str> { Ok(()) }
+    }
+    impl core::ops::Deref for DrawSession { type Target = Session; fn deref(&self)->&Session { &self.0 } }
+    impl core::ops::DerefMut for DrawSession { fn deref_mut(&mut self)->&mut Session { &mut self.0 } }
+
     struct DrawCopy { base:usize,engine:u32,reset:u32,old_irq:u32,old_enable:u32 }
     use super::*;
     const BOUND_US: u64 = 2_000_000;
@@ -285,6 +294,8 @@ fn stuck_preempt_with_failed_reset_or_unbind_retains_backing() {
 }
 mod ce {
     use super::*;
+    use std::sync::atomic::Ordering;
+    thread_local! { static CORE_STARTED: std::sync::atomic::AtomicBool = const { std::sync::atomic::AtomicBool::new(false) }; }
     // CE_HELPER
     struct Engine { base:usize, pbdma:usize }
     fn discover(_: &mut Registers) -> Result<Engine,&'static str> { step("discover")?;Ok(Engine{base:0x104000,pbdma:0}) }
@@ -298,6 +309,16 @@ mod ce {
     }
     fn constructor(regs:&mut Registers,id:u32) -> Result<(),&'static str> {
         // CE_CONSTRUCTOR
+    }
+    #[test]
+    fn core_ownership_refuses_ce_before_register_writes() {
+        let mut regs=Registers::new();
+        let before=regs.values.clone();
+        CORE_STARTED.with(|s| s.store(true, Ordering::Release));
+        let mut s=Session{registers:&mut regs as *mut _ as usize,work:None};
+        assert_eq!(s.begin(),Err("native GPU core owns FIFO"));
+        assert_eq!(regs.values,before);
+        CORE_STARTED.with(|s| s.store(false, Ordering::Release));
     }
     #[test]
     fn bound_channels_are_refused_before_fifo_writes_or_construction() {

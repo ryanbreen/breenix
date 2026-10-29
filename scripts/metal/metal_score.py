@@ -14,7 +14,7 @@ HOST_MILESTONES = {'users-operator.json': 'users/operator-login'}
 def host_milestone(name):
     suite, category = name.removesuffix('.json').split('-', 1)
     if suite == 'gt710':
-        return 'metal-gt710/' + category
+        return 'metal-gt710/' + ('gpu-core' if category == 'core' else category)
     return HOST_MILESTONES.get(name, suite + '/' + category)
 
 
@@ -28,10 +28,19 @@ def measures(milestone, shape, mode):
             and ('bootModes' not in milestone or mode in milestone['bootModes']))
 
 
+def require_suite_profile(run):
+    """Console bounds and GPU cases measure the shipped kernel."""
+    suites = run.get('suites') or (run.get('suite') or '').split(',')
+    if (run.get('mode') == 'suite' and {'console', 'gpu'}.intersection(suites)
+            and run.get('build', {}).get('profile') != 'production'):
+        raise ValueError('console and GPU suites require production build.profile')
+
+
 def score(directory):
     directory = Path(directory)
     read = lambda name: json.loads((directory / name).read_text())
     run = read('run.json')
+    require_suite_profile(run)
     if run.get('kind') == 'fault-test' or run.get('inject') in ('xhci-reset-device', 'xhci-short-read'):
         raise ValueError('fault tests are never milestone evidence')
     if run.get('kind') == 'console-session':
@@ -93,7 +102,9 @@ def score(directory):
                     or (directory / 'dirty').read_text().strip() != '0' or 'console-gap' in events):
                 raise ValueError('GT 710 cases need a completed clean successful capture')
             reason = host['score'](manifest, read('definition/docs/efforts/' + effort), records,
-                                   host['capture_serial'](directory) if suite=='gt710' else (directory / 'serial.txt').read_text(), run, sha, fatal)
+                                   host['capture_serial'](directory) if suite=='gt710' else (directory / 'serial.txt').read_text(), run, sha, fatal,
+                                   **({'producer': host['core_capture'](directory, sha)}
+                                      if suite == 'gt710' and category == 'core' else {}))
             total = len(host['CATEGORIES'][category])
             results[milestone] = dict(reached=total, total=total, passed=True, reason=reason)
         except (OSError, ValueError, KeyError, StopIteration, TypeError, AttributeError) as error:

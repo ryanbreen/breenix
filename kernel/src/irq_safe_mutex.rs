@@ -15,7 +15,6 @@ struct IrqState {
     #[cfg(target_arch = "aarch64")]
     daif: u64,
     /// The interval's start when it is timed for `gpu_irq_masked_max_us`, else 0.
-    #[cfg(target_arch = "aarch64")]
     gauge: u64,
     #[cfg(target_arch = "x86_64")]
     interrupts_were_enabled: bool,
@@ -42,15 +41,16 @@ impl IrqState {
             }
             Self {
                 interrupts_were_enabled,
+                gauge: crate::tracing::providers::gpu::masked_begin(if interrupts_were_enabled { 0 } else { 1 << 7 }),
             }
         }
     }
 
     #[inline(always)]
     fn restore(&self) {
+        crate::tracing::providers::gpu::masked_end(self.gauge);
         #[cfg(target_arch = "aarch64")]
         {
-            crate::tracing::providers::gpu::masked_end(self.gauge);
             unsafe {
                 crate::arch_impl::aarch64::irq_mask_account::restoring(self.daif);
                 core::arch::asm!("msr daif, {}", in(reg) self.daif, options(nomem, nostack));

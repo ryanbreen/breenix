@@ -1,3 +1,39 @@
+<!--
+Native interface constants derived from NVIDIA open-gpu-doc at
+9fdf5c4062007929d9f4e6cbad9c9771fe61b880:
+classes/{host/cla06f.h,3d/cla197.h}:
+Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+classes/dma-copy/cla0b5.h:
+Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
+classes/display/cl927d.h:
+Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Fault reasons from nouveau nvkm/engine/fifo/gk104.c (Linux v6.8):
+Copyright 2012 Red Hat Inc.
+Class selection from nouveau nvkm/engine/fifo/gk208.c (Linux v6.8):
+Copyright 2013 Red Hat Inc.
+2D limit from Mesa 24.3.4 src/gallium/drivers/nouveau/nvc0/nvc0_screen.c:
+Copyright 2010 Christoph Bumiller
+
+MIT License
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+claim-lint:ok: Retained MIT license condition; source mapping in libs/gpu-abi/tests/gk208_contract.rs.
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+-->
 # Syscall 416: argument layouts, the BGL stream and its codes
 
 `docs/gui/gpu.md` section 1.4 fixes syscall 416's ops, their errno rules and what each op does. This
@@ -9,7 +45,8 @@ libbreenix share; the suite checks the layouts at the offsets given here.
 
 Every structure is little-endian with the offsets shown. `len` must equal the structure's size;
 reserved fields and output fields are zero on the way in (EINVAL otherwise) and the kernel writes
-reserved fields zero. `VERSION` takes no argument (`len` 0).
+reserved fields zero. CAPS bytes 120–127 are capability origins on backend 6,
+reserved zero on backends 4/5. `VERSION` takes no argument (`len` 0).
 
 **EFAULT, as far as the kernel can guarantee it.** A fault reading the argument, or anything else the op
 reads from the caller, returns EFAULT before the op has done anything. Results are written back after the
@@ -56,17 +93,41 @@ refused arms the point before each.
 |---|---|
 | 0 | `version: u32` (1), `size: u32` (512) |
 | 8 | `status: u32`: 0 admitted, 1 no device, 2 missing capability, 3 device failed; `missing: u32` at 12, the capability id |
-| 16 | `backend: u32` (4 VirGL, 5 SVGA3D DX); `features: u32` at 20: bit 0 VirGL negotiated, bit 1 VERSION_1 negotiated, bit 8 SVGA3D DX context |
-| 24 | `capset_id: u32`, `capset_version: u32`: the capability set the profile was read from |
-| 32 | `capset_count: u32`; `capset_ids: [u32; 8]` at 36: the distinct ids the device lists, ascending, zero after the count |
+| 16 | `backend: u32` (4 VirGL, 5 SVGA3D DX, 6 native GK208B); `features: u32` at 20: bit 0 VirGL negotiated, bit 1 VERSION_1 negotiated, bit 8 SVGA3D DX context, bit 9 native classes discovered |
+| 24 | `capset_id: u32`, `capset_version: u32`: virtual profile capset/version; backend 6 uses graphics class 0xA197 and version 0 |
+| 32 | `capset_count: u32`; `capset_ids: [u32; 8]` at 36: the distinct discovered capset/class ids, ascending, zero after the count; native required list 0x927D, 0xA06F, 0xA0B5, 0xA197 | <!-- claim-lint:ok: Normative backend-6 row in docs/gui/gpu.md section 1.8; layout/constants check libs/gpu-abi/tests/gk208_contract.rs. -->
 | 68 | `formats: [(format: u32, flags: u32); 3]`: B8G8R8A8 (0), R8G8B8A8 (1), R8 (2); flags bit 0 sampleable, bit 1 renderable |
 | 92 | `profile: u32`: bit 0 integer operations, bit 1 integer texel fetch, bit 2 region copies; `shading_level: u32` at 96 |
 | 100 | `max_width: u32`, `max_height: u32`: the device's 2D maximum, capped at 16,384 |
 | 108 | `catalogue_version: u32` (1); `pipelines: u32` at 112: bit `n` set when catalogue pipeline `n` is built |
-| 116 | `scanout_count: u32`; reserved to 128 |
-| 128 | `renderer: [u8; 64]`: the capability set's renderer string, NUL-padded |
+| 116 | `scanout_count: u32` |
+| 120 | `capability_origins: [u32; 2]`: backend 6 provenance bits, low word first; reserved zero on backends 4/5 |
+| 128 | `renderer: [u8; 64]`: the capability set's renderer string or checked native chip identity, NUL-padded |
 | 192 | `reason: [u8; 64]`: empty when admitted, else `missing <name>` or the failure, NUL-padded |
 | 256 | `scanouts: [(enabled: u32, width: u32, height: u32, reserved: u32); 16]`, zero after the count |
+
+**Backend 6 capability origins (CAPS v1).** No layout or version change is needed:
+bytes 120–127 were reserved and can carry the eleven origins. Treat the two words
+as a little-endian u64. Capability id `n` (1 through 11) occupies bits
+`3*(n-1)` through `3*(n-1)+2`; bits 33–63 stay zero. Codes are **0 unprobed,
+1 class table, 2 chip limit, 3 hardware read, 4 executable probe**; 5–7 are invalid.
+The ABI's `Caps::capability_origin` decodes them; they describe how the associated
+capability was established, not a replacement for its value. Backend 4/5 producers
+keep these words zero and their existing admission rules. Native producers leave
+an unsupported or not-yet-verified capability unprobed and refuse admission at
+the first missing id. Mask-capability retains its one-shot missing-capability
+behavior and must not manufacture a new hardware origin.
+
+The backend-6 admission table is `gpu.md` section 1.6.4: id 1 hardware read;
+id 2 class table; ids 3–10 executable probes; id 11 chip limit. Live scanout
+metadata is hardware-read, with display status and EDID in the evidence bundle.
+Discovered classes do not imply successful format or arithmetic probes. Backend 6
+sets only feature bit 9, capset id 0xA197/version 0, the four ascending class ids,
+and shading_level 0. Its documented maximum is 16,384 in each dimension; format,
+profile and pipeline support is conditional on established native evidence.
+Source symbols, pinned MIT links, and the distinction between source numbers and
+Breenix allocations are in `gpu.md` section 1.8; licenses are retained here and in
+`THIRD_PARTY_NOTICES`. The ABI declaration itself does not advertise admission.
 
 Pipelines are numbered in the catalogue table's order (`docs/gui/gpu.md` section 1.3): `solid` 0,
 `copy` 1, `copy_scaled` 2, `nearest_scaled` 3, `box_filter` 4, `over` 5, `over_straight` 6, `coverage` 7,
@@ -198,7 +259,7 @@ complete only when every earlier fence of its context is.
 | `status` | Meaning |
 |---|---|
 | 0 OK | the device completed the submission |
-| 1 DEVICE_ERROR | the device answered with an error; `answer` is its response type. Two consecutive DEVICE_ERROR completions on one context quarantine that context only (`COUNTERS` state 1); the device is not reset |
+| 1 DEVICE_ERROR | the device answered with an error; `answer` is its virtual response type or backend-6 tagged native fault. Two consecutive DEVICE_ERROR completions on one context quarantine that context only (`COUNTERS` state 1); the device is not reset |
 | 2 DEVICE_HUNG | the watchdog found it outstanding 2 s after it was sent and quarantined its context |
 | 3 DEVICE_RESET | the device was reset with it outstanding; resets happen only for a device fault or the watchdog's no-progress condition (`docs/gui/gpu.md` section 1.4.1) |
 | 4 FENCE_MISMATCH | the device's answer carried another submission's fence |
@@ -219,7 +280,7 @@ bytes (record `canonical` 1); the other formats read back as canonical BGRA, fou
 target's last submission: `context` is the upload's device context, `render_serial` its serial (numbered as
 a submission's), `render_fence` the fence its transfer carried, `render_status` the device's answer and
 `render_kind` `TRANSFER_TO_HOST_3D` (0x0205) on backend 4 or `UPDATE_GB_SURFACE` (1102)
-on backend 5; they are 0 before its first upload. Successful statuses and readback/copy identities
+on backend 5 or A0B5 `TRANSFER_RELEASE` (0xA0B50300) on backend 6; they are 0 before its first upload. Successful statuses and readback/copy identities
 use the backend-specific values in `gpu.md` section 1.8 (ruling 47); they must never be
 normalized to another backend's values.
 Temporary whole-rectangle staging uses guest-backing frames, charged to the process's 192 MiB
@@ -402,6 +463,33 @@ reports state 0; its 10 ms bound and work-estimate weights are unchanged. Ruling
 of `textures/upload-visibility`'s 10 s window until its contexts report state 0;
 other case deadlines are unchanged.
 A clear counts as one draw of one instance covering the target.
+
+## Native observation row (backend 6)
+
+ObservationRecord remains v2, 1,024 bytes with the section-1.8 offsets. Native
+boundary is 5: GPU device memory plus display status, with external light outside
+observation. Successful native status is **0x60000000**, a Breenix evidence tag
+requiring matched engine release/latch and no relevant engine faults, never a
+virtual reply. Kinds are class-qualified `(class << 16) | completion_method`: <!-- claim-lint:ok: Normative backend-6 row in docs/gui/gpu.md section 1.8; layout/constants check libs/gpu-abi/tests/gk208_contract.rs. -->
+
+| Operation / record field | Native kind | Required native evidence |
+|---|---|---|
+| Draw / render_kind | 0xA1971B0C | A197 SET_REPORT_SEMAPHORE_D RELEASE after preceding writes, pipeline ALL | <!-- claim-lint:ok: Normative backend-6 row in docs/gui/gpu.md section 1.8; layout/constants check libs/gpu-abi/tests/gk208_contract.rs. -->
+| Upload / render_kind | 0xA0B50300 | A0B5 LAUNCH_DMA transfer and engine semaphore release |
+| Readback / readback_kind | 0xA0B50300 | CE release after actual resource-to-pinned-system transfer, twice under complementary poisons |
+| Copy / copy_kind | 0xA0B50300 | The actual CE copy into readback staging; copy_status uses native success |
+| Present / implicit kind | 0x927D0080 | EVO UPDATE notifier and confirmed active latch/counter progress; present_status uses native success |
+
+These three class namespaces, success and fault tags are disjoint from VirGL and
+SVGA values. `readback_surface` and `readback_mob` are 0, since they are VMware
+identities. PRESENT already carries its context fence and status; its EVO kind is
+implicit in backend 6, so no record field is added. Context/resource identities
+refer to the actual native objects without exposing addresses. Fresh context
+incarnation/fence namespaces after reset reject stale epochs. The evidence bundle
+maps ids, generation, observation serial and context fences to channel/instance,
+native sequence and reset epoch. Preserve atomic pixels/metadata, binding pins,
+both poisons, zero unwritten bytes and genuine fences. The full source/encoding
+and forced-fault rules are in `gpu.md` section 1.8; a tag alone is not completion. <!-- claim-lint:ok: Normative backend-6 row in docs/gui/gpu.md section 1.8; layout/constants check libs/gpu-abi/tests/gk208_contract.rs. -->
 
 ## Terminal panic boundary
 
@@ -613,7 +701,7 @@ defined; the ones G1 builds:
 |---|---|---|
 | 20 | `stale-fence` | the next submission's answer is taken as carrying the next fence; it completes `FENCE_MISMATCH` and no other submission completes by it |
 | 23 | `mask-capability` | the next admission decision counts the capability id in `param` as absent; one-shot (above) |
-| 27 | `device-error` | the next submission ends with an invalid device command (fenced type `0x02FF` on VirGL), answered with its native error: VirtIO 0x1200 through 0x12ff on backend 4, `SVGA_CB_STATUS_COMMAND_ERROR` 3 on backend 5. Armed before each of two consecutive submissions of one context, it quarantines that context only, as two ordinary device errors do; it does not reset the device |
+| 27 | `device-error` | the next submission ends with an invalid device command (fenced type `0x02FF` on VirGL), answered with its native error: VirtIO 0x1200 through 0x12ff on backend 4, `SVGA_CB_STATUS_COMMAND_ERROR` 3 on backend 5; on backend 6 an actual attributed unmapped-address MMU fault (PDE 0x60010000 or PTE 0x60010002), from the source-defined reason range 0x60010000–0x6001000F (`gpu.md` section 1.8). Armed before each of two consecutive submissions of one context, it quarantines that context only, as two ordinary device errors do; it does not reset the device |
 | 31 | `withhold-fence` | `param` 0: the next submission's completion is ignored, so the watchdog finds it hung; `param` 1: no completion is taken from the device until it is reset; `param` 2, fence depth: the answers to the next context's first four submissions are taken and kept unpublished, so their fences stay incomplete, until a fifth `SUBMIT` on that context waits at the four-in-flight limit; then the four are published in fence order and the fifth is admitted. No completion is invented and no watchdog deadline changes |
 
 G3 builds two more. `target` is the texture handle the point is armed for, 0 for any:
@@ -799,4 +887,4 @@ Op 22 errors: EPERM for an unauthorized observer; EINVAL for layout/reserved/len
 
 **ObservationRecord stays exactly core v2, 1,024 bytes.** In particular: version/size 0/4; observation serial 8; backend/boundary 16/20; flags/format 24/28; rectangle 32; target size 48; stride/canonical 56/60; device context 64; target handle 72; actual device resource 80; target generation 88; render serial/fence 96/104 and native status/kind 112/116; readback fence/status/kind 120/128/132; VMware surface/MOB 136/144 and copy kind/status 152/156; poison/unwritten 160/164; commit/composite serial 168/176; present context fence/status/count 184/192/196; sixteen 32-byte window entries at 200 (`window, commit, native render fence, sampled target generation`); renderer bytes at 712; reserved 776–1023 zero. Unused window entries are zero. For privileged scanout observation target is 0, never a foreign handle. Window pixel_gen remains in COMPOSITE_RECORD, not substituted for the core's sampled resource generation.
 
-Flags are exactly 3 for a composed scanout. Backend 4 requires native draw/readback kinds 0x207/0x206 and success 0x1100, VMware-only fields zero. Backend 5 requires draw 1152, readback 1104, copy 1042 and success 1, with dedicated nonzero readback surface/MOB distinct from the judged resource. Boundary is 4; unwritten is zero; render/readback/present fences are genuine and nonzero for a rendered composite. No legacy 512-byte record is accepted. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+Flags are exactly 3 for a composed scanout. Backend 4 requires native draw/readback kinds 0x207/0x206 and success 0x1100, VMware-only fields zero. Backend 5 requires draw 1152, readback 1104, copy 1042 and success 1, with dedicated nonzero readback surface/MOB distinct from the judged resource. Backend 6 requires draw 0xA1971B0C, readback/copy 0xA0B50300, success 0x60000000 and boundary 5, with VMware-only identities zero. Boundary is 4 for backends 4/5; unwritten is zero; render/readback/present fences are genuine and nonzero for a rendered composite. No legacy 512-byte record is accepted. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->

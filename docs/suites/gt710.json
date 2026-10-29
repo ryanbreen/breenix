@@ -243,6 +243,25 @@
       ]
     },
     {
+      "id": "core",
+      "title": "Shared GPU core and native evidence (M8 PR 8.1)",
+      "hostRunner": true,
+      "cases": [
+        {
+          "id": "row",
+          "title": "CAPS bytes match the native backend-6 row and the created board classes"
+        },
+        {
+          "id": "dispatch",
+          "title": "Native draws and copies complete; copy controls reject withheld release, stale epoch and masked 3D admission and accept their clean successors"
+        },
+        {
+          "id": "producer",
+          "title": "A named production GPU-suite boot reports 170 manifest-ordered unprobed-capability admission refusals without skips and reports its own time"
+        }
+      ]
+    },
+    {
       "id": "device",
       "title": "PCI display device",
       "cases": [

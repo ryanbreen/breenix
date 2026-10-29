@@ -66,6 +66,7 @@ mod native {use super::*;
 mod copy {pub struct Rect {pub src:u64,pub dst:u64,pub width:u32,pub height:u32,pub src_pitch:u32,pub dst_pitch:u32}}
 struct Hardware<'a>{regs:&'a mut Registers,total:u64,console:&'a ConsoleSurface}
 mod channel {
+ pub type DrawSession = Session;
  use super::*;
  pub struct Session;
  impl Session {

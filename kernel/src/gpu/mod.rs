@@ -44,9 +44,15 @@ use crate::gpu_observation as observation;
 mod quota;
 mod staging;
 mod vertex_arena;
+#[cfg(target_arch = "aarch64")]
 mod compose;
 use quota::{Charge, Quota, QuotaCharge};
 use staging::Staging;
+mod arch;
+use arch as platform_config;
+pub mod arch_rules;
+#[path = "gk208/dma_policy.rs"]
+pub mod dma_policy;
 pub mod dma;
 pub mod dev;
 pub mod virgl;
@@ -103,6 +109,8 @@ const WARM_GRACE_NS: u64 = 20_000_000;
 /// steps also spaces their starts by at least `WARM_GRACE_NS` (#2103, #2111).
 const WARM_QUIET_NS: u64 = 2_000_000;
 static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
+#[cfg(target_arch = "x86_64")]
+static NATIVE_STARTING: AtomicBool = AtomicBool::new(false);
 /// Counts interrupts and the state changes waiters wait for; a waiter sleeps only while it
 /// is unchanged.
 static EVENTS: AtomicU64 = AtomicU64::new(0);
@@ -147,6 +155,8 @@ fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
                 Device::Virgl(d) => Some(d.made()),
                 // SVGA submits command buffers directly, without a deferred doorbell.
                 Device::Svga(_) => None,
+                #[cfg(target_arch = "x86_64")]
+                Device::Gk208(_) => None,
             })
         }).flatten();
         (r, kick)
@@ -412,7 +422,16 @@ struct Res {
     observed_in: u32,
     /// The window composition whose transport wrote this scanout target, with the
     /// generation that write produced; a later write of the target ends it.
-    composition: Option<Arc<compose::Provenance>>,
+    composition: Option<Arc<Composition>>,
+}
+
+/// A composition's provenance, kept on the scanout target with the generation its transport
+/// produced: the composite serial and, in stacking order, each window's id, commit, native
+/// render fence and sampled target generation (record v2 offsets 176, 196 and 200).
+struct Composition {
+    pub generation: u64,
+    pub serial: u64,
+    pub windows: Vec<[u64; 4]>,
 }
 
 struct Core {
@@ -480,6 +499,7 @@ struct Core {
 /// a core that refuses its ops naming why.
 pub fn init() {
     let mut core = Core::empty();
+    #[cfg(target_arch = "aarch64")]
     match virgl::Device::probe() {
         Ok(dev) => {
             core.profile(&dev);
@@ -504,23 +524,7 @@ pub fn init() {
                 );
             }
             DOORBELL.store(dev.doorbell(), Ordering::Release);
-            use crate::arch_impl::aarch64::gic;
-            match dev.irq {
-                virgl::Irq::Intx(intid) => {
-                    ISR.store(dev.isr, Ordering::Release);
-                    INTID.store(intid, Ordering::Release);
-                    gic::configure_spi_level_triggered(intid);
-                }
-                virgl::Irq::Msix { queue, config } => {
-                    crate::serial_println!("[gpu] MSI-X: queue SPI {} config SPI {}", queue, config);
-                    INTID.store(queue, Ordering::Release);
-                    CONFIG_INTID.store(config, Ordering::Release);
-                    for spi in [queue, config] {
-                        gic::configure_spi_edge_triggered(spi);
-                        gic::clear_spi_pending(spi);
-                    }
-                }
-            }
+            arch::configure_irq(&dev);
             core.queue_size = dev.queue_size();
             core.dev = Some(Device::Virgl(dev));
         }
@@ -530,20 +534,73 @@ pub fn init() {
             crate::serial_println!("[gpu] no GPU core device: {}", e);
         }
     }
-    let counter: u64;
-    // SAFETY: the virtual counter is readable at EL1.
-    unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) counter, options(nomem, nostack)) };
+    let counter = arch::counter();
     core.key = counter ^ 0x9E37_79B9_7F4A_7C15;
     *CORE.lock() = Some(core);
+    #[cfg(target_arch = "aarch64")]
     compose::register();
     #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     panic::initialized();
+}
+
+/// Install the native owner only after hardware startup and channel receipts.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn install_native(device: crate::gk208::adapter::Device) -> Result<(), &'static str> {
+    let caps = device.caps();
+    if device.needs_reset() || caps.backend != abi::backend::GK208 {
+        return Err("native core lacks live class evidence");
+    }
+    if caps.status == abi::status::MISSING_CAPABILITY {
+        // Installation needs the live engine and class evidence. The first
+        // unprobed format/profile capability is reported by CAPS/admission.
+        if matches!(caps.missing, capability::FEATURE_3D | capability::CAPABILITY_SET) {
+            return Err(capability::name(caps.missing));
+        }
+    } else if caps.status != abi::status::ADMITTED {
+        return Err("native core capability state invalid");
+    }
+    with_core(|core| {
+        if core.dev.is_some() { return Err("GPU core already has a device"); }
+        core.queue_size = device.queue_size();
+        core.status = caps.status;
+        core.caps = caps;
+        core.dev = Some(Device::Gk208(device));
+        Ok(())
+    }).unwrap_or(Err("GPU core not initialized"))
+}
+
+/// Apply the capability control through shared admission while the early boot
+/// probe still owns the channel. This does not alter the userspace control latch
+/// or install a device whose format/profile probes have not run yet.
+#[cfg(all(target_arch = "x86_64", any(feature = "testing", feature = "gt710_core_probe")))]
+pub(crate) fn probe_native_admission(device: &Device, masked: bool) -> Result<(), (u32, u32)> {
+    Core::empty().admission_on(Some(device), |point, target| {
+        (masked && point == test_point::MASK_CAPABILITY && target == 0)
+            .then_some(u64::from(capability::FEATURE_3D))
+    })
+}
+
+/// Retain measured capability facts after a testing probe, without retaining its
+/// channel. This snapshot can only refuse admission until native installation.
+#[cfg(all(target_arch = "x86_64", any(feature = "testing", feature = "gt710_core_probe")))]
+pub(crate) fn record_native_refusal(caps: abi::Caps) {
+    if caps.backend != abi::backend::GK208 || caps.status != abi::status::MISSING_CAPABILITY
+        || caps.missing != capability::BGRA_RENDER || caps.capability_origin(caps.missing) != 0 {
+        return;
+    }
+    if let Some(core) = CORE.lock().as_mut() {
+        if core.dev.is_none() && core.status == abi::status::NO_DEVICE {
+            core.status = caps.status;
+            core.caps = caps;
+        }
+    }
 }
 
 /// Find and initialise VMware's SVGA3 device for the SVGA3D DX backend, read its profile
 /// from the device-capability entries, and take its programs. The device raises no
 /// interrupt this kernel can take, so `kgpu` polls it while work is outstanding. An absent
 /// or failing device leaves a core that refuses its ops, naming why.
+#[cfg(target_arch = "aarch64")]
 pub fn init_vmware() {
     console::retire_firmware();
     let mut core = Core::empty();
@@ -583,11 +640,10 @@ pub fn init_vmware() {
             }
         }
     }
-    let counter: u64;
-    // SAFETY: the virtual counter is readable at EL1.
-    unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) counter, options(nomem, nostack)) };
+    let counter = arch::counter();
     core.key = counter ^ 0x9E37_79B9_7F4A_7C15;
     *CORE.lock() = Some(core);
+    #[cfg(target_arch = "aarch64")]
     compose::register();
 }
 
@@ -603,7 +659,7 @@ impl Core {
             queue_size: 0,
             wedged: None,
             status: abi::status::NO_DEVICE,
-            reason: "no virtio-gpu device",
+            reason: "no GPU core backend",
             have: [false; capability::LAST as usize + 1],
             caps,
             procs: BTreeMap::new(),
@@ -639,6 +695,7 @@ impl Core {
 
     /// Read the profile from the device's capability set (`docs/gui/gpu.md` section 1.5,
     /// item 8) into the CAPS record and the capability table.
+    #[cfg(target_arch = "aarch64")]
     fn profile(&mut self, dev: &virgl::Device) {
         let c = &mut self.caps;
         c.backend = abi::backend::VIRGL;
@@ -730,6 +787,7 @@ impl Core {
     /// into the CAPS record and the capability table. The device has no capability set of
     /// VirGL's kind: its capability entries are the set the profile is read from, recorded
     /// as set 1 version 1, and its renderer string is empty.
+    #[cfg(target_arch = "aarch64")]
     fn profile_svga(&mut self, dev: &svga::Device) {
         use svga::wire::cap::{RENDER, SAMPLE, SUPPORTED};
         let p = dev.profile;
@@ -800,12 +858,25 @@ impl Core {
     /// (`device/missing-capability-fails`), and the decision after it sees the device's
     /// real capabilities.
     fn admission(&self) -> Result<(), (u32, u32)> {
-        if self.dev.is_none() && !self.resetting {
-            return Err((if self.status == abi::status::ADMITTED { abi::status::DEVICE_FAILED } else { self.status }, 0));
+        self.admission_on(self.dev.as_ref(), crate::test_control::take)
+    }
+
+    /// The boot probe borrows its device and supplies a scoped one-shot at the
+    /// same take point; ordinary admissions use the suite-latched control table.
+    fn admission_on(&self, device: Option<&Device>,
+        take: impl FnOnce(u32, u64) -> Option<u64>,
+    ) -> Result<(), (u32, u32)> {
+        if device.is_none() && !self.resetting {
+            return Err((if self.status == abi::status::ADMITTED { abi::status::DEVICE_FAILED } else { self.status },
+                if self.status == abi::status::MISSING_CAPABILITY { self.caps.missing } else { 0 }));
         }
-        let masked = crate::test_control::take(test_point::MASK_CAPABILITY, 0)
+        let masked = take(test_point::MASK_CAPABILITY, 0)
             .map(|p| p as u32)
             .filter(|&c| (1..=capability::LAST).contains(&c));
+        #[cfg(target_arch = "x86_64")]
+        if let Some(Device::Gk208(device)) = device {
+            return device.admission(masked);
+        }
         match self.first_missing(masked) {
             Some(missing) => Err((abi::status::MISSING_CAPABILITY, missing)),
             None => Ok(()),
@@ -814,6 +885,8 @@ impl Core {
 
     fn caps_record(&self) -> abi::Caps {
         let mut c = self.caps;
+        #[cfg(target_arch = "x86_64")]
+        if let Some(Device::Gk208(device)) = &self.dev { c = device.caps(); }
         c.status = abi::status::ADMITTED;
         c.missing = capability::NONE;
         c.reason = [0; 64];
@@ -1040,7 +1113,7 @@ impl Core {
     fn progress_readback(&mut self) {
         let reaper = REAPER.load(Ordering::Acquire);
         if reaper == 0 || crate::per_cpu::current_thread().is_none_or(|t| t.id == reaper) { return; }
-        if !crate::platform_config::is_qemu() || dev::is_svga() || self.reset_wanted || self.resetting || self.stalled
+        if !platform_config::is_qemu() || dev::is_svga() || self.reset_wanted || self.resetting || self.stalled
             || !self.backlog.is_empty() { return; }
         let target = self.subs.values().filter(|s| !s.published && s.requests > 0 && s.sent_ns.is_some())
             .find_map(|s| s.written.iter().find_map(|rid| {
@@ -1451,7 +1524,7 @@ impl Core {
         }
         // The device may use the backing until it answers the unref, which keeps it.
         let epoch = r.epoch;
-        let req = dev::resource_unref(Tag::Background, id, Some(r.backing));
+        let req = dev::resource_unref(Tag::Background, id, Some(r.backing))?;
         self.background_in(epoch, req)
     }
 
@@ -1468,8 +1541,7 @@ impl Core {
         }
         let dropped = c.dropped;
         if destroy {
-            let req = dev::ctx_destroy(Tag::Background, id);
-            self.background(req);
+            if let Some(req) = dev::ctx_destroy(Tag::Background, id) { self.background(req); }
         }
         if dropped {
             if let Some(c) = self.contexts.remove(&id) {
@@ -1553,6 +1625,8 @@ impl Core {
             })),
             // SVGA has command buffers, not a VirtIO descriptor/used ring.
             Device::Svga(_) => None,
+            #[cfg(target_arch = "x86_64")]
+            Device::Gk208(_) => None,
         };
         let (oldest_serial, oldest_sent) = match q.and_then(|q| q.oldest_tag) {
             Some(Tag::Sync(s)) => (s, self.syncs.get(&s).and_then(|x| x.sent_ns)),
@@ -2017,13 +2091,13 @@ fn attach_all(pairs: &[(u32, u32)]) -> Vec<Result<(), i64>> {
     let Some(serials) = with_core(|c| pairs.iter().map(|_| c.serial()).collect::<Vec<u64>>()) else {
         return alloc::vec![Err(ENODEV); pairs.len()];
     };
-    let reqs: Vec<Request> =
+    let reqs: Vec<Option<Request>> =
         pairs.iter().zip(&serials).map(|(&(ctx, id), &serial)| dev::ctx_attach(Tag::Sync(serial), ctx, id)).collect();
     // A pair that could not be queued has its outcome already.
     let mut out: Vec<Option<Result<(), i64>>> = with_core(|c| {
         reqs.into_iter()
             .zip(pairs.iter().zip(&serials))
-            .map(|(req, (&(ctx, _), &serial))| c.start_sync(serial, req, ctx, &[], &[], None).err().map(Err))
+            .map(|(req, (&(ctx, _), &serial))| match req { Some(req) => c.start_sync(serial, req, ctx, &[], &[], None).err().map(Err), None => Some(Err(EIO)) })
             .collect()
     })
     .unwrap_or_else(|| alloc::vec![Some(Err(ENODEV)); pairs.len()]);
@@ -2079,8 +2153,9 @@ pub fn config_irq() -> Option<u32> {
 pub fn handle_interrupt() {
     let start = crate::tracing::providers::gpu::interrupt_begin();
     if ISR.load(Ordering::Acquire) != 0 {
+        #[cfg(target_arch = "aarch64")]
         if let Some(id) = irq() {
-            crate::arch_impl::aarch64::gic::disable_spi(id);
+            arch::mask_irq(id);
         }
         IRQ_PENDING.store(true, Ordering::Release);
     }
@@ -2118,8 +2193,9 @@ fn acknowledge_interrupt() {
     if status & 2 != 0 {
         CONFIG_CHANGED.store(true, Ordering::Release);
     }
+    #[cfg(target_arch = "aarch64")]
     if let Some(id) = irq() {
-        crate::arch_impl::aarch64::gic::unmask_spi(id);
+        arch::unmask_irq(id);
     }
 }
 
@@ -2133,8 +2209,9 @@ fn ensure_reaper() -> bool {
             let started = match crate::task::kthread::kthread_run(reaper, "kgpu") {
                 Ok(handle) => {
                     REAPER.store(handle.tid(), Ordering::Release);
+                    #[cfg(target_arch = "aarch64")]
                     for id in [irq(), config_irq()].into_iter().flatten() {
-                        crate::arch_impl::aarch64::gic::enable_spi_on_cpu(id, 0);
+                        arch::enable_irq(id);
                     }
                     true
                 }
@@ -2186,8 +2263,11 @@ fn reaper() {
             (c.next_deadline(now), !c.procs.is_empty(), c.reset_wanted, c.take_hung(), SENT.load(Ordering::Acquire))
         })
         .unwrap_or((None, false, false, ([None; HUNG_KEPT], 0), SENT.load(Ordering::Acquire)));
-        crate::window::scene::invalidate_stale();
-        crate::window::ops::publish_ready();
+        #[cfg(target_arch = "aarch64")]
+        {
+            crate::window::scene::invalidate_stale();
+            crate::window::ops::publish_ready();
+        }
         post_hung(&hung.0, hung.1, &mut hung_losses);
         if reset {
             reset_device(tid);
@@ -2302,7 +2382,7 @@ fn warm_next() -> Option<u64> {
     } else {
         let mut enc = encode::Enc::new();
         encode::warm_pipeline(&mut enc, &mut objects, vb, scratch, scratch_texture, wire::format::B8G8R8A8_UNORM, FLIP_Y, pipeline);
-        if crate::platform_config::is_parallels() { enc.completion_read(scratch, 256); }
+        if platform_config::is_parallels() { enc.completion_read(scratch, 256); }
         enc.finish().filter(|v| !v.is_empty()).map(Chunks::Virgl)
     };
     with_core(|c| {
@@ -2495,9 +2575,40 @@ fn op_caps(arg: u64, len: u64) -> Result<u64, i64> {
     if len != core::mem::size_of::<abi::Caps>() as u64 {
         return Err(EINVAL);
     }
+    #[cfg(target_arch = "x86_64")]
+    if crate::gk208::takeover_started()
+        && with_core(|c| NATIVE_STARTING.load(Ordering::Acquire)
+            || (c.dev.is_none() && c.status == abi::status::NO_DEVICE)).unwrap_or(false) {
+        arch::with_interrupts(native_caps_startup)?;
+    }
     let caps = with_core(|c| c.caps_record()).unwrap_or_else(|| Core::empty().caps_record());
     write_arg(arg, &caps)?;
     Ok(0)
+}
+
+/// Claim startup under the core lock, then release it before initialize_core.
+/// A competing first CAPS sleeps through publication, including startup failure.
+#[cfg(target_arch = "x86_64")]
+fn native_caps_startup() -> Result<(), i64> {
+    let start = wait_for(None, true, |c| {
+        if NATIVE_STARTING.load(Ordering::Acquire) {
+            None
+        } else if c.dev.is_some() || c.status != abi::status::NO_DEVICE {
+            Some(false)
+        } else if !NATIVE_STARTING.swap(true, Ordering::AcqRel) {
+            Some(true)
+        } else {
+            None
+        }
+    }).map_err(|_| EINTR)?;
+    if start {
+        if let Err(error) = crate::gk208::initialize_core() {
+            with_core(|c| { c.status = abi::status::DEVICE_FAILED; c.reason = error; });
+        }
+        NATIVE_STARTING.store(false, Ordering::Release);
+        notify();
+    }
+    Ok(())
 }
 
 /// Serialize a process's context/resource creation through device attachment and
@@ -2597,7 +2708,7 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
 /// of the first frame's path. The prepared context is counted as an ordinary process context;
 /// CONTEXT_CREATE transfers its existing handle to the caller, and exit retires it normally.
 pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32> {
-    if !crate::platform_config::is_parallels() { return Ok(()); }
+    if !platform_config::is_parallels() { return Ok(()); }
     let needs_context = with_core(|c| {
         let Some(p) = c.procs.get(&tgid) else { return true; };
         p.contexts.len() < limits::CONTEXTS && p.prepared_context.is_none() && (reserve_next || !p.contexts.values().any(|id|
@@ -2808,12 +2919,12 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
     }
     exec_ok(|t| dev::resource_create(t, vb, kind::BUFFER, format::R8, encode::VERTEX_BUFFER_BYTES, 1, false), 0, &[])?;
     exec_ok(|t| dev::attach_backing(t, vb, vb_pages.clone()), 0, &[])?;
-    exec_ok(|t| Some(dev::ctx_attach(t, id, vb)), id, &[])?;
+    exec_ok(|t| dev::ctx_attach(t, id, vb), id, &[])?;
     exec_ok(|t| dev::resource_create(t, scratch, kind::TARGET, format::B8G8R8A8, 1, 1, false), 0, &[])?;
     exec_ok(|t| dev::attach_backing(t, scratch, scratch_pages.clone()), 0, &[])?;
-    exec_ok(|t| Some(dev::ctx_attach(t, id, scratch)), id, &[])?;
+    exec_ok(|t| dev::ctx_attach(t, id, scratch), id, &[])?;
     exec_ok(|t| dev::resource_create(t, scratch_texture, kind::TEXTURE, format::B8G8R8A8, 1, 1, false), 0, &[])?;
-    exec_ok(|t| Some(dev::ctx_attach(t, id, scratch_texture)), id, &[])?;
+    exec_ok(|t| dev::ctx_attach(t, id, scratch_texture), id, &[])?;
     // The process's live resources, held so none is freed before it is attached.
     let theirs: Vec<u32> = with_core(|c| {
         let ids: Vec<u32> = c
@@ -3683,7 +3794,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
     let svga = dev::is_svga();
     // A viewport per rectangle costs more commands on large streams. Short Parallels
     // streams use immutable vertices; mutable data/copy scratch still needs completion.
-    let fixed_quads = crate::platform_config::is_parallels() && !svga && !FLIP_Y && plan.drawn <= 64;
+    let fixed_quads = platform_config::is_parallels() && !svga && !FLIP_Y && plan.drawn <= 64;
     // The SVGA3D DX translation makes its own vertex, constant, data and scratch surfaces.
     let vertex_range = match if svga || fixed_quads { Ok(None) } else { vertex_buffer_for(tgid, id, writer.serial, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) } {
         Ok(vb) => vb,
@@ -3809,7 +3920,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             swap,
         }, if fixed_quads { encode::FIXED_QUAD_OFFSET } else { vertex_range.map_or(0, |(_, offset, _)| offset) });
         // Immutable geometry does not protect the reused coverage and copy textures.
-        if crate::platform_config::is_parallels()
+        if platform_config::is_parallels()
             && (!fixed_quads || data_texture != 0 || copy_scratch.iter().any(|&rid| rid != 0)) {
             if let Some(target) = last_written.and_then(|id| view.entries.iter().find(|e| e.id == id)) {
                 enc.completion_read(target.id, (target.width * 4).next_multiple_of(256));
@@ -4254,7 +4365,7 @@ fn scratch_for(tgid: u64, ctx: u32, class: u32, w: u32, h: u32) -> Result<u32, i
 fn create_private(ctx: u32, id: u32, target: u32, vformat: u32, bind: u32, w: u32, h: u32) -> Result<(), i64> {
     with_core(|c| { if let Some(r) = c.resources.get_mut(&id) { r.lost = false; } });
     exec_ok(|t| Some(dev::Request::Virgl(virgl::resource_create(t, id, target, vformat, bind, w, h))), 0, &[id])?;
-    exec_ok(|t| Some(dev::ctx_attach(t, ctx, id)), ctx, &[id])?;
+    exec_ok(|t| dev::ctx_attach(t, ctx, id), ctx, &[id])?;
     Ok(())
 }
 
@@ -4813,7 +4924,9 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     }
     put64(&mut rec, record::READBACK_FENCE, transfer_fence);
     put32(&mut rec, record::READBACK_STATUS, transfer_answer);
-    if dev::is_svga() {
+    if dev::backend() == abi::backend::GK208 {
+        observation::write_backend_fields(&mut rec, transfer_answer);
+    } else if dev::is_svga() {
         // The host copy into the readback surface answered as the readback did: both run
         // in the same command buffer, whose status is the answer.
         put32(&mut rec, record::READBACK_KIND, svga::wire::cmd::READBACK_SURFACE);
@@ -5325,6 +5438,7 @@ pub fn display_active() -> bool {
 }
 
 /// Whether the admitted device's boot-owned console allocations have finished.
+#[cfg(target_arch = "aarch64")]
 pub(crate) fn boot_settled() -> bool {
     with_core(|c| c.status != abi::status::ADMITTED || console::preparation_settled(c.epoch))
         .unwrap_or(true)

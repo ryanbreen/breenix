@@ -51,6 +51,26 @@ WATCHDOG_FAULTS = ('watchdog-feeder-hang', 'watchdog-health-hang')
 TESTING_FEATURE = 'testing'
 
 
+
+def kernel_features(mode, suites, inject, gt710_category=None):
+    """Keep native suite evidence independent of the testing startup path."""
+    if gt710_category is not None:
+        if gt710_category != 'core' or mode not in ('default', 'probe') or suites or inject:
+            raise ValueError('gt710 core diagnostic needs a default/probe boot without suites or injection')
+        return ['--features', 'gt710_core_probe']
+    if inject in WATCHDOG_FAULTS:
+        return ['--features', 'watchdog_fault_inject']
+    if inject in XHCI_FAULTS:
+        return ['--features', FAULT_FEATURE]
+    if inject == FENCE_FAULT:
+        return ['--features', FENCE_FEATURE]
+    if inject == 'panic-reboot':
+        return ['--features', PANIC_FEATURE]
+    if mode == 'tests':
+        return ['--features', TESTING_FEATURE]
+    return []
+
+
 def host_env():
     path = Path(os.environ.get('BREENIX_METAL_HOST_ENV', Path.home() / '.config/breenix-metal/host.env'))
     values = {}
@@ -112,7 +132,8 @@ def resolve_suites(env, sha, spec):
     # Deployed, the resolver sits beside metal-run; in a checkout it is in scripts/.
     source = HERE / 'suite-sequence.py' if (HERE / 'suite-sequence.py').exists() else HERE.parent / 'suite-sequence.py'
     try:
-        ids, skipped = runpy.run_path(str(source))['resolve'](spec, 'x86-metal', False, read)
+        sequence = runpy.run_path(str(source))
+        ids, skipped = sequence['resolve'](spec, 'x86-metal', sequence['gpu_3d']('x86-metal'), read)
     except ValueError as error:
         raise SystemExit(f'--suite: {error}') from None
     for suite, why in skipped:
@@ -190,6 +211,16 @@ def boot(args):
         args.mode = 'suite'
     if getattr(args, 'persistent', False):
         args.payload, args.mode = 'persistent', 'persistent'
+    category = getattr(args, 'gt710_category', None)
+    if category and args.mode == 'default':
+        # The existing automated probe uploads bulk evidence before exiting.
+        args.mode = 'probe'
+    try:
+        kernel_features(args.mode, args.suite, args.inject, category)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
+    if category and (args.payload != 'image' or getattr(args, 'session', False)):
+        raise SystemExit('--gt710-category needs an automated image boot')
     if (getattr(args, 'run', None) or getattr(args, 'verify', False) or getattr(args, 'entry', None)) and args.payload != 'persistent':
         raise SystemExit('--run, --verify and --entry need --persistent')
     if getattr(args, 'inject', None) == FENCE_FAULT and (args.payload != 'image' or args.mode != 'default' or args.disk == 'install'):
@@ -250,6 +281,8 @@ def boot(args):
         command += ['--source-boot', args.source_boot]
     if args.suite:
         command += ['--suite', args.suite]
+    if category:
+        command += ['--gt710-category', category]
     if milestone:
         command += ['--milestone', milestone]
     if sha:
@@ -297,13 +330,7 @@ def boot(args):
         logs = Path.home() / '.local/state/breenix-metal'
         logs.mkdir(parents=True, exist_ok=True)
         with (logs / f'{boot_id}.log').open('w') as log:
-            # An xHCI fault boot gets a fault-test kernel, a tests boot the testing kernel; every other boot the
-            # production one.
-            features = (['--features', 'watchdog_fault_inject'] if args.inject in WATCHDOG_FAULTS else
-                        ['--features', FAULT_FEATURE] if args.inject in XHCI_FAULTS else
-                        ['--features', FENCE_FEATURE] if args.inject == FENCE_FAULT else
-                        ['--features', PANIC_FEATURE] if args.inject == 'panic-reboot' else
-                        ['--features', TESTING_FEATURE] if args.mode == 'tests' else [])
+            features = kernel_features(args.mode, args.suite, args.inject, category)
             # A suite boot's build stages the suite's host-side fixtures (the SDK suite's results).
             suite = ['--suite', args.suite] if args.suite else []
             tools_only = {'disk-readback': ['--tools-profile', 'disk-readback'],
@@ -432,6 +459,8 @@ def main():
     p.add_argument('--disk', choices=('install', 'root'),
                    help='physical disk root (default), or an explicit recovery install')
     p.add_argument('--suite')
+    p.add_argument('--gt710-category', choices=('core',),
+                   help='run the named native diagnostic on a separate automated probe boot')
     p.add_argument('--milestone', help='score the effort/milestone category set from the boot commit')
     p.add_argument('--source-boot', help='completed disk suite boot to read after a cold power cycle')
     p.add_argument('--sha')
@@ -455,7 +484,7 @@ def main():
     p = sub.add_parser('_build')
     p.add_argument('id')
     p.add_argument('sha')
-    p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, PANIC_FEATURE, TESTING_FEATURE, 'watchdog_fault_inject'))
+    p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, PANIC_FEATURE, TESTING_FEATURE, 'gt710_core_probe', 'watchdog_fault_inject'))
     p.add_argument('--suite')
     p.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager'))
     p.add_argument('--catchup', action='store_true')

@@ -1,5 +1,8 @@
 // Host substitutes for fallible startup operations; reset/restore are production code.
 extern crate alloc;
+// These unwind cases run before the ownership transfer; its refusal has a
+// separate production-slice harness in gt710_core_ownership_test.py.
+mod ce { pub fn test_ownership() -> Result<(), &'static str> { Ok(()) } }
 use std::{cell::RefCell, collections::BTreeMap};
 #[path = "ROOT/libs/libbreenix/src/crypto/sha256.rs"]
 pub mod sha256;

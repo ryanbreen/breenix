@@ -270,6 +270,7 @@ pub(super) fn probe(
     console: &super::ConsoleSurface,
     evo: &mut super::native::Evo,
 ) -> Result<(), &'static str> {
+    super::ce::test_ownership()?;
     probe_static_inputs()?;
     let mut cleanup = ProbeCleanup {
         state: ctxctl::SavedState::capture(regs).map_err(hardware_error)?,
@@ -281,6 +282,112 @@ pub(super) fn probe(
     // This also runs after topology, allocation, upload and startup refusals.
     let unwind = cleanup.finish(regs, layout);
     result.and(unwind)
+}
+
+/// First-use production startup. The core owns the channel after successful
+/// receipts; the existing CE owner retains the allocator and its charges.
+pub(super) fn initialize(
+    regs: &mut Registers,
+    device: &crate::drivers::pci::Device,
+    layout: &mut memory::Layout,
+    console: &super::ConsoleSurface,
+) -> Result<super::adapter::Device, &'static str> {
+    probe_static_inputs()?;
+    let mut cleanup = ProbeCleanup {
+        state: ctxctl::SavedState::capture(regs).map_err(hardware_error)?,
+        scratch: Vec::new(), finished: false, fifo_quiesced: true,
+    };
+    let result = initialize_inner(regs, device, layout, console, &mut cleanup);
+    if result.is_err() { cleanup.finish(regs, layout)?; }
+    result
+}
+
+fn initialize_inner(
+    regs: &mut Registers,
+    device: &crate::drivers::pci::Device,
+    layout: &mut memory::Layout,
+    console: &super::ConsoleSurface,
+    cleanup: &mut ProbeCleanup,
+) -> Result<super::adapter::Device, &'static str> {
+    ctxctl::reset(regs).map_err(hardware_error)?;
+    cleanup.state.capture_gr(regs).map_err(hardware_error)?;
+    let raw = [0x409604, 0x502608, 0x500c30].map(|a| [a, regs.read(a as usize)]);
+    let topology = topology::decode(&raw)?;
+    let stats = layout.allocator.stats();
+    let total = stats.reserved + stats.charged + stats.free;
+    let bytes = 1u64 << if regs.read(0x100c80) & 1 != 0 { 16 } else { 17 };
+    let mut mmu = Vec::new();
+    for _ in 0..2 {
+        let allocation = layout.allocator.allocate(bytes, 4096, memory::allocator::Kind::Engine)?;
+        cleanup.scratch.push(allocation);
+        mmu.push(allocation);
+        let mut aperture = memory::Pramin::new(regs, total);
+        for offset in (0..bytes).step_by(4) { aperture.write(allocation.range.start + offset, 0)?; }
+    }
+    let mmu = [mmu[0], mmu[1]];
+    let mut controller = ctxctl::Controller::upload(regs, &topology, mmu.map(|a| a.range.start))
+        .map_err(hardware_error)?;
+    let ready = controller.start(regs).map_err(hardware_error)?;
+    let context = super::lifetime::Context::new(&mut layout.allocator, &mut super::channel::VmIo { regs, total })?;
+    let mut hardware = Hardware { regs, layout, device, console, total, context, controller,
+        backing: Vec::new(), next_va: 0x10000000, admitted: false, reader: None,
+        graphics: None, captures: Vec::new(), runnable_header: Vec::new() };
+    cleanup.fifo_quiesced = false;
+    let result = (|| {
+        let shader = context::Io::allocate(&mut hardware, context::Spec {
+            name: "shader-segment", bytes: shaders::SEGMENT_SIZE as u64, align: 4096,
+        }).map_err(|e| e.reason)?;
+        let golden = context::generate(&mut hardware, &topology, ready.size).map_err(|e| e.reason)?;
+        if let Some(reader) = hardware.reader.as_mut() { reader.quiesce(hardware.regs, hardware.layout)?; }
+        if let Some(reader) = hardware.reader.take() { reader.finish(hardware.regs, hardware.layout)?; }
+        hardware.reader = Some(super::ce::readback::Reader::new(
+            hardware.regs, hardware.device, hardware.layout, hardware.console, &hardware.backing)?);
+        let mut evidence = ShaderEvidence::default();
+        shaders::exercise_uploads(&mut ShaderUpload { hardware: &mut hardware, buffer: shader, evidence: &mut evidence })?;
+        if let Some(reader) = hardware.reader.as_mut() { reader.quiesce(hardware.regs, hardware.layout)?; }
+        if let Some(reader) = hardware.reader.take() { reader.finish(hardware.regs, hardware.layout)?; }
+        hardware.graphics = Some(channel::Session::new(&mut hardware, &golden, shader.va)?);
+        let mut graphics = hardware.graphics.take().ok_or("native GR channel absent")?;
+        let result = (|| {
+            graphics.activate(&mut hardware)?;
+            graphics.execute(&mut hardware)?;
+            let mut receipt = binding::Receipt { target: 0, epoch: 0, nonce: 0,
+                before: [0; 4], after: [0; 4], observation: None };
+            graphics.bind_shaders(&mut hardware, shader.va, &mut receipt)?;
+            // A real CE2 transfer on this same channel establishes A0B5
+            // creation; complementary poison readbacks must agree.
+            let images = graphics.readback(&mut hardware, shader.va, 4)?;
+            if images[0] != images[1] { return Err("native startup CE readbacks differ"); }
+            Ok(())
+        })();
+        let report = graphics.report();
+        hardware.graphics = Some(graphics);
+        result?;
+        let mut board = super::caps::BoardState::empty();
+        board.chipset = ((hardware.regs.read(0) >> 20) & 0x1ff) as u16;
+        board.channel = (report.identity.instance, report.identity.epoch);
+        board.graphics_ready = true;
+        board.created_classes = gpu_abi::gk208::CAPSET_IDS;
+        board.scanout_count = 1;
+        board.scanouts[0] = super::caps_scanout(console)?;
+        let last = hardware.graphics.as_ref().unwrap().last_sequence();
+        let native = channel::Session::into_native(&mut hardware.graphics, hardware.regs.0,
+            total, mmu, &hardware.layout.allocator)?;
+        Ok((native, board, last))
+    })();
+    match result {
+        Ok((mut native, board, last)) => {
+            // Both contexts map the global buffers. Retain the bootstrap VM
+            // too, including allocations not mapped into the runnable VM.
+            native.retain_bootstrap(hardware.context);
+            Ok(super::adapter::Device::registered(native, board, last))
+        }
+        Err(error) => {
+            hardware.finish()?;
+            cleanup.fifo_quiesced = true;
+            Err(error)
+        }
+    }
 }
 
 fn probe_inner(
@@ -402,7 +509,8 @@ fn probe_inner(
             hardware.graphics = Some(graphics);
             evidence.emit(shader_buffer.va, &receipt, result.as_ref().err().copied())?;
             result?;
-            let mut graphics = hardware.graphics.take().ok_or("draw GR channel absent")?;
+            let graphics = hardware.graphics.take().ok_or("draw GR channel absent")?;
+            let mut graphics = channel::DrawSession::new(graphics);
             let mut draw_evidence = DrawEvidence::default();
             let draw_result = draw_probe(&mut hardware, &mut graphics, shader_buffer.va, &mut draw_evidence);
             let draw_result = draw_result.and_then(|()|
@@ -414,10 +522,13 @@ fn probe_inner(
             let draw_result = if draw_evidence.trap_capture.is_some() {
                 draw_result.and(Err("draw PGRAPH trap/exception"))
             } else { draw_result };
+            let core_emit = graphics.emit_core();
+            let graphics = graphics.into_session();
             hardware.graphics = Some(graphics);
             let draw_emit = draw_evidence.emit(draw_result.as_ref().err().copied());
             draw_result?;
             draw_emit?;
+            core_emit?;
             // Emit the existing draw block before adding context rows: its
             // unchanged guard reserves space for the pending golden saves.
             let mut graphics = hardware.graphics.take().ok_or("context GR channel absent")?;
@@ -719,7 +830,7 @@ impl ShaderEvidence {
 /// Five draws on the session that bound the shader code. Transfers are checked
 /// for byte equality; only the host scorer interprets rendered colours.
 fn draw_probe(
-    hardware: &mut Hardware<'_>, graphics: &mut channel::Session,
+    hardware: &mut Hardware<'_>, graphics: &mut channel::DrawSession,
     code_address: u64, evidence: &mut DrawEvidence,
 ) -> Result<(), &'static str> {
     let target = graphics.allocate_draw(hardware, "draw-target", 64 * 256, 4096)?;
@@ -895,7 +1006,7 @@ fn contexts_sequence(
 
 /// Present the final clean target without teaching EVO another method.
 fn present_probe(
-    hardware: &mut Hardware<'_>, graphics: &mut channel::Session,
+    hardware: &mut Hardware<'_>, graphics: &mut channel::DrawSession,
     evo: &mut super::native::Evo, evidence: &mut DrawEvidence,
 ) -> Result<(), &'static str> {
     use core::fmt::Write;

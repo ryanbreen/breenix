@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import runpy
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -21,6 +23,24 @@ def skeleton(suite):
 
 
 class ResolveTests(unittest.TestCase):
+    def test_metal_all_excludes_gpu_until_native_admission(self):
+        result = subprocess.run([sys.executable, str(ROOT / "scripts/suite-sequence.py"),
+                                 "resolve", "all", "--target", "x86-metal"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("console", result.stdout.strip().split(","))
+        self.assertNotIn("gpu", result.stdout.strip().split(","))
+        self.assertIn("leaving out gpu: native GPU backend is not ADMITTED", result.stderr)
+        self.assertIn("--suite gpu", result.stderr)
+
+    def test_metal_named_gpu_remains_runnable_before_admission(self):
+        result = subprocess.run([sys.executable, str(ROOT / "scripts/suite-sequence.py"),
+                                 "resolve", "gpu", "--target", "x86-metal"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "gpu")
+        self.assertEqual(result.stderr, "")
+
     def reader(self, manifests, efforts=()):
         files = {f"docs/suites/{suite}.json": text for suite, text in manifests.items()}
         files["docs/efforts/path.json"] = json.dumps(dict(efforts=[dict(id=e, suite=e, targets=["arm64-qemu"]) for e in efforts]))

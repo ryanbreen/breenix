@@ -46,6 +46,7 @@ impl Hardware<'_> { // FINISH
 mod channel {
     use super::*;
     #[derive(Clone,Copy)] pub struct Observation {pub value:u32,pub epoch:u64,pub consumed:bool,pub accepted:bool,pub elapsed_us:u64}
+    pub type DrawSession = Session;
     pub struct Session {pub next:u32,pub uploads:Vec<(u64,Vec<u8>)>}
     impl Session {
         pub fn allocate_draw(&mut self,_:&mut Hardware<'_>,name:&'static str,bytes:u64,align:u64)->Result<context::Buffer,&'static str>{event(name);assert_eq!((bytes,align),match name {"draw-target"=>(16384,4096),"draw-vertices"=>(96,4096),"draw-quarantine"=>(1<<20,1<<17),_=>panic!("unknown draw allocation")});Ok(context::Buffer{va:match name {"draw-vertices"=>0x20000,"draw-quarantine"=>0x60000,_=>0x10000}})}

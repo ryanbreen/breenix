@@ -21,7 +21,7 @@ pub struct ResourceVersion {
     pub generation: u64,
 }
 
-/// Internal native evidence, before M8's public ABI extension. No virtual
+/// Validated native evidence for M8's public ABI row. No virtual
 /// response status is manufactured for a native engine release.
 pub struct NativeRecord {
     pub version: ResourceVersion,
@@ -63,4 +63,44 @@ pub fn differing(a: &[u8], b: &[u8]) -> u32 {
         if d != 0 { count += d.to_le_bytes().iter().filter(|&&b| b != 0).count() as u32; }
     }
     count
+}
+
+impl NativeRecord {
+    /// Map validated native receipts into record v2. The common observation
+    /// owner supplies geometry, render serial, pixels, binding and publication;
+    /// no scanout flag or present completion is inferred from a CE transfer.
+    pub fn write_backend_fields(&self, out: &mut [u8; gpu_abi::record::SIZE], upload: bool) {
+        use gpu_abi::{gk208, record as r};
+        let put32 = |out: &mut [u8], off: usize, value: u32| out[off..off + 4].copy_from_slice(&value.to_le_bytes());
+        let put64 = |out: &mut [u8], off: usize, value: u64| out[off..off + 8].copy_from_slice(&value.to_le_bytes());
+        write_backend_fields(out, gk208::SUCCESS);
+        put64(out, r::CONTEXT, self.version.context);
+        put64(out, r::RESOURCE, self.version.resource);
+        put64(out, r::GENERATION, self.version.generation);
+        put64(out, r::RENDER_FENCE, self.writer.request().caller);
+        put64(out, r::READBACK_FENCE, self.transfers[1].request().caller);
+        put32(out, r::RENDER_KIND, if upload { gk208::TRANSFER_RELEASE } else { gk208::DRAW_RELEASE });
+        put32(out, r::RENDER_STATUS, gk208::SUCCESS);
+        put32(out, r::UNWRITTEN, self.unwritten);
+    }
+}
+
+/// Encode the native readback boundary after the common observation owner has
+/// checked the transfers. Preserve its actual answer, writer, identities,
+/// geometry and binding; a serializer cannot manufacture successful completion.
+pub fn write_backend_fields(out: &mut [u8; gpu_abi::record::SIZE], answer: u32) {
+    use gpu_abi::{backend, gk208, record as r};
+    for (at, value) in [
+        (r::BACKEND, backend::GK208),
+        (r::BOUNDARY, r::BOUNDARY_NATIVE),
+        (r::READBACK_KIND, gk208::TRANSFER_RELEASE),
+        (r::COPY_KIND, gk208::TRANSFER_RELEASE),
+        (r::READBACK_STATUS, answer),
+        (r::COPY_STATUS, answer),
+    ] {
+        out[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    for at in [r::READBACK_SURFACE, r::READBACK_MOB] {
+        out[at..at + 8].fill(0);
+    }
 }

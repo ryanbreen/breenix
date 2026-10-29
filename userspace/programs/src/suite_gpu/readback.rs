@@ -160,7 +160,7 @@ pub fn record_fields() -> CaseResult {
     want(17, 9, B).matches(&shown, "source pixels at display origin")?;
     want(17, 9, B).matches(&px, "record's pixels")?;
     let native = observation_backend(&rec)?;
-    for (at, v) in [(0, 2), (4, 1024), (16, caps()?.backend), (20, 4), (24, 0), (28, 0), (32, 0), (36, 0),
+    for (at, v) in [(0, 2), (4, 1024), (16, caps()?.backend), (20, native.boundary), (24, 0), (28, 0), (32, 0), (36, 0),
         (40, 17), (44, 9), (48, 17), (52, 9), (56, 68), (60, 0), (112, native.success), (116, native.draw),
         (128, native.success), (132, native.readback), (160, A), (164, 0), (192, 0), (196, 0)] {
         ensure(u32_at(&rec, at) == v, || format!("record[{at}]={} expected {v}", u32_at(&rec, at)))?;

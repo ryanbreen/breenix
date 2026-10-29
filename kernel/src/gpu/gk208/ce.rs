@@ -567,6 +567,7 @@ fn run_case(regs:&mut Registers,total:u64,e:&Engine,bar:usize,c:&mut Channel,id:
     Ok(format!("{{\"id\":{},\"name\":\"{}\",\"channel\":{},\"epoch\":{},\"sequence\":{},\"writer_sequence\":{},\"size\":{},\"seed\":{},\"width\":{},\"height\":{},\"src_pitch\":{},\"dst_pitch\":{},\"src_offset\":{},\"dst_offset\":{},\"fill\":204,\"overlap\":{},\"upload\":{},\"poisons\":[85,170],\"releases\":{:?},\"elapsed_us\":{},\"source\":{},\"dest\":{},\"instance\":{},\"directory\":{},\"src_va\":{},\"refilled\":{}}}",id,k.name,c.id,c.epoch,c.put,writer.request().sequence,SIZE,seed,k.width,k.height,k.sp,k.dp,k.src_offset,k.dst_offset,k.overlap,k.upload,releases,transfer_us,c.source.range.start,c.dest.range.start,c.context.space().instance.range.start,c.context.space().directory.range.start,submitted.src,refilled))
 }
 pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,console:&super::ConsoleSurface)->Result<(),&'static str> {
+    test_ownership()?;
     let probe_start=timer::rdtsc();
     let baseline=layout.allocator.stats();let total=baseline.reserved+baseline.charged+baseline.free;
     let e=discover(regs)?;
@@ -712,7 +713,8 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
 
 mod multi;
 mod recovery;
+pub(in crate::gk208) use recovery::reset_engine;
 mod process;
-pub(super) use process::{retain,proc_read};
+pub(super) use process::{retain,proc_read,initialize_core,test_ownership};
 
 pub(super) mod readback;

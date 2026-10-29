@@ -448,6 +448,9 @@ Source revision: nouveau in Linux v6.8,
 - `nvkm/subdev/mmu/gk104.c` and `nvkm/subdev/mmu/vmmgf100.c`,
   Copyright 2017 Red Hat Inc., MIT: `kernel/src/gpu/gk208/dma_policy.rs`
   uses the 40-bit DMA limit and coherent HOST/volatile PTE fields.
+  The shared GPU DMA allocator (`kernel/src/gpu/dma.rs`) and pure span
+  admission (`kernel/src/gpu/arch_rules.rs`) call this policy in E24 M8.1;
+  the original policy file and its MIT header remain the source consumer.
 - `nvkm/engine/fifo/gf100.c`, Copyright 2012 Red Hat Inc., MIT:
   `kernel/src/gpu/gk208/aperture_probe.rs` reads pending fault records.
 
@@ -1028,3 +1031,86 @@ revision, MIT, Copyright (c) 2019 NVIDIA CORPORATION. Both file headers
 were read for this unit; the full original grants remain in gr/draw.rs and
 gk208/copy.rs. Control orchestration and epoch-to-pixel selection are
 Breenix-owned; no additional external implementation is imported.
+
+## Native GPU ABI contract (M8.1 unit 1)
+
+`libs/gpu-abi/src/lib.rs`, `libs/gpu-abi/tests/gk208_contract.rs`,
+`docs/gui/gpu.md` and `docs/gui/gpu-abi.md` derive class/method constants and
+fault/limit expectations from the following individually checked MIT files.
+The consumer's header retains their copyright and full MIT grant.
+
+- NVIDIA open-gpu-doc, revision `9fdf5c4062007929d9f4e6cbad9c9771fe61b880`:
+  `classes/host/cla06f.h`, `classes/3d/cla197.h` (Copyright (c) 2020 NVIDIA
+  CORPORATION); `classes/dma-copy/cla0b5.h` (Copyright (c) 2019 NVIDIA
+  CORPORATION); `classes/display/cl927d.h` (Copyright (c) 1993-2022 NVIDIA
+  CORPORATION & AFFILIATES). MIT, including cl927d.h's explicit SPDX line.
+- Nouveau in Linux v6.8, revision `e8f897f4afef0031fe618a8e94127a0934896aba`:
+  `drivers/gpu/drm/nouveau/nvkm/engine/fifo/gk104.c` (Copyright 2012 Red Hat
+  Inc.) and `gk208.c` (Copyright 2013 Red Hat Inc.). Both full MIT headers.
+- Mesa 24.3.4, revision `769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de`:
+  `src/gallium/drivers/nouveau/nvc0/nvc0_screen.c` (Copyright 2010 Christoph
+  Bumiller). Full MIT header; `PIPE_CAP_MAX_TEXTURE_2D_SIZE` is 16384.
+
+Backend, boundary, feature, status tags and origin packing are Breenix ABI
+allocations; the source class/method/fault numbers retain their native meaning.
+
+## GK208 native completion adapter (M8.1 u4)
+
+`kernel/src/gpu/gk208/adapter.rs` is Breenix-owned dispatch and admission code.
+It calls the existing queue and opaque completion validator. The retained
+native channel in `kernel/src/gpu/gk208/gr/channel.rs` shares its existing
+publisher, receipt sampler and G9 unwind; it reuses the attributed A197/A0B5
+encoders and source-built context controller. The shared reset pulse remains
+in `kernel/src/gpu/gk208/ce/recovery.rs`, with its existing MIT nouveau
+`nvkm/engine/fifo/runl.c` and FIFO/CE notices above. No additional external
+source is imported. Original copyright notices and full MIT grants remain in
+the hardware implementation files. Native asset generation is unchanged.
+
+## GK208 CAPS and native observation mapping (M8.1 u5)
+
+`kernel/src/gpu/gk208/caps.rs` and `tests/gt710_caps_test.rs` use the
+MIT sources listed in the M8.1 u1 ABI notice above, with the same pinned
+revisions. Additional checked MIT chip/class dispatch sources are nouveau
+`nvkm/engine/device/base.c` and `nvkm/engine/disp/gk110.c` (Copyright 2012
+Red Hat Inc.), `nvkm/engine/ce/gk104.c` (Copyright 2012 Red Hat Inc.) and
+`nvkm/engine/gr/gk208.c` (Copyright 2013 Red Hat Inc.), Linux v6.8 revision
+`e8f897f4afef0031fe618a8e94127a0934896aba`. Full MIT grants and original
+copyright notices are retained in the consumer headers. `cla197.h` supplies
+encoding bounds, while MIT Mesa `nvc0_screen.c:123-124` supplies the narrower
+16384 chip limit; no format or arithmetic probe is inferred from either.
+The existing native display-state reader in `kernel/src/gpu/gk208/native.rs`
+supplies active geometry under its existing MIT display/register notices.
+`kernel/src/gpu/observation.rs` maps Breenix's validated receipts to the
+existing u1 ABI constants; no external implementation is copied there.
+
+M8.1's testing producer reuses the existing attributed A197/A0B5 channel and
+copy mechanisms. `kernel/src/gpu/gk208/copy.rs::probe_encode` uses NVIDIA
+open-gpu-doc 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+`classes/dma-copy/cla0b5.h` (MIT, Copyright (c) 2019 NVIDIA CORPORATION)
+for the ordered semaphore releases and separate control drain word.
+The packet encoding uses `classes/host/cla06f.h` at that revision (MIT,
+Copyright (c) 2020 NVIDIA CORPORATION). The original full grants remain in
+`copy.rs`; the existing A197 and FIFO/context notices remain in
+`kernel/src/gpu/gk208/gr/channel.rs`. The producer and record encoder use
+Breenix's existing shared device and ABI types, with no external runtime.
+
+M8.1 u8's `scripts/metal/gt710-suite` core scorer and
+`tests/gt710_core_report_test.py` compare the attributed backend-6 ABI row
+above (NVIDIA open-gpu-doc, nouveau and Mesa, MIT). Their headers retain
+the original owners and MIT grants. The explicit G6 header check and
+`tests/gt710_graphics_report_test.py` use the pinned MIT nouveau
+`nvkm/engine/gr/fuc/hub.fuc` (Copyright 2011 Red Hat Inc.) and
+`nvkm/engine/gr/gf100.c` (Copyright 2012 Red Hat Inc.): the save leaves the
+256-byte header poisoned, while runnable count/address are CPU-filled.
+G7's firmware-derived section map and G8's measured terminal padding rule
+continue to classify the rest of each image.
+
+## GK208 production core registration (M8.1 repair)
+
+Production startup in `kernel/src/gpu/gk208/gr/mod.rs` and the ownership bridge
+in `gr/channel.rs` reuse their existing attributed MIT nouveau GF100/GK208
+context/controller/FIFO mechanisms, NVIDIA A197/A0B5 methods and Mesa shader
+metadata described above. Their existing copyright headers and full MIT grants
+are retained. `kernel/src/gpu/gk208/ce/process.rs` and `kernel/src/gpu/mod.rs`
+supply Breenix-owned first-use registration and shared admission. No additional
+external source or generated asset is introduced by this repair.

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # Hardware encodings from pinned MIT sources; see THIRD_PARTY_NOTICES.
+# Copyright 2010 Christoph Bumiller
+# Copyright (c) 2019 NVIDIA CORPORATION. All rights reserved.
 # /*
 #  * Copyright 2010 Red Hat Inc.
 #  * Copyright 2013 Red Hat Inc.
@@ -103,6 +105,7 @@ CATEGORIES = {
     'console': (
         ('acceptance', 'The same GT 710 capture passes firmware ownership, display claim, screen read-back and the complete E16 console suite'),
     ),
+    'core': [('row', 'CAPS bytes match the native backend-6 row and the created board classes'), ('dispatch', 'Native draws and copies complete; copy controls reject withheld release, stale epoch and masked 3D admission and accept their clean successors'), ('producer', 'A named production GPU-suite boot reports 170 manifest-ordered unprobed-capability admission refusals without skips and reports its own time')],
     'device': (
         ('identity', 'The PCI report identifies 10de:128b with subsystem 1462:8c93 and its interrupt line'),
         ('bars-link', 'The PCI report lists the display BARs and the negotiated PCIe link from its capability registers'),
@@ -738,6 +741,10 @@ def graphics_engine(serial, case=None):
                  'saved size words')
             for save in saves:
                 image = images[save['poison']]
+                # G6: hub.fuc:134-153,285-294,585-592,686-690 leaves
+                # the 256-byte header poisoned; gf100.c:336-338 fills a runnable header.
+                need(image[:256] == bytes([save['poison']]) * 256,
+                     'save changed poison outside data: header')
                 need(all(image[start:end] == bytes(end - start) for start, end in terminals),
                      'save terminal padding is not zero')
                 data = bytes(v for v, used in zip(image, written) if used)
@@ -1613,7 +1620,316 @@ def graphics_contexts_gate(serial, case):
         raise ValueError('malformed graphics context evidence') from error
 
 
-def check_case(category, case, serial):
+CORE_NAMES = ('3d-feature', 'capability-set', 'b8g8r8a8-render', 'b8g8r8a8-sample',
+              'r8g8b8a8-render', 'r8g8b8a8-sample', 'r8-sample', 'integer-ops',
+              'texel-fetch', 'region-copy', 'target-size')
+
+
+def core_startup(serial):
+    """First-CAPS startup-window gauge, under its 500 us bound, not GPU syscalls."""
+    anchor = one(r'^GT710_CORE_STARTUP_BULK (\d+) ([0-9a-f]{64})$', serial, 'core startup anchor')
+    line = one(r'^GT710_CORE_STARTUP (.+)$', serial, 'core startup row')
+    raw = ('GT710_CORE_STARTUP ' + line[1] + '\n').encode('ascii')
+    if len(raw) != int(anchor[1]) or hashlib.sha256(raw).hexdigest() != anchor[2]:
+        raise ValueError('core startup differs from bulk anchor')
+    row = json.loads(line[1])
+    if (type(row) is not dict or type(row.get('schema')) is not int or row['schema'] != 1
+            or row.get('ready') is not True or type(row.get('irq_masked_max_us')) is not int
+            or not 0 <= row['irq_masked_max_us'] <= 500):
+        raise ValueError('core startup failed or startup-window IRQ-masked maximum exceeds 500 us')
+    return row['irq_masked_max_us']
+
+
+def core_records(serial):
+    anchor = one(r'^GT710_CORE_BULK (\d+) ([0-9a-f]{64})$', serial, 'core bulk anchor')
+    rows = re.findall(r'^GT710_CORE (.+)\n', serial, re.M)
+    raw = ''.join('GT710_CORE ' + row + '\n' for row in rows).encode('ascii')
+    if not rows or len(raw) != int(anchor[1]) or hashlib.sha256(raw).hexdigest() != anchor[2]:
+        raise ValueError('core records differ from their bulk anchor')
+    try:
+        records = [json.loads(row) for row in rows]
+        if any(type(r) is not dict or type(r.get('schema')) is not int or r['schema'] != 1 for r in records):
+            raise ValueError('core record schema')
+        if records[0].get('type') != 'caps' or any(r.get('type') != 'completion' for r in records[1:]):
+            raise ValueError('core record order/types')
+        return records
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ValueError('malformed core records') from error
+
+
+def core_row(serial):
+    """The 8.1 row deliberately has no executable format/profile probes."""
+    import struct
+    try:
+        record = core_records(serial)[0]
+        if record['bytes'] != 512 or not re.fullmatch('[0-9a-f]{1024}', record['hex']):
+            raise ValueError('core CAPS wire size/encoding')
+        data = bytes.fromhex(record['hex'])
+        words = struct.unpack('<128I', data)
+        expected = (1, 512, 2, 3, 6, 512, 0xa197, 0, 4,
+                    0x927d, 0xa06f, 0xa0b5, 0xa197, 0, 0, 0, 0,
+                    0, 0, 1, 0, 2, 0, 0, 0, 16384, 16384, 1, 0)
+        if words[:29] != expected or int.from_bytes(data[120:128], 'little') != 3 | (1 << 3) | (2 << 30):
+            raise ValueError('core CAPS backend-6 classes, origins, limits or unprobed support')
+        reason = b'missing b8g8r8a8-render'
+        if data[128:192] != b'GK208B' + bytes(58) or data[192:256] != reason + bytes(64-len(reason)):
+            raise ValueError('core CAPS identity or admission reason')
+        count = words[29]
+        if not 1 <= count <= 16:
+            raise ValueError('core CAPS scanout count')
+        active = 0
+        for i in range(16):
+            enabled, width, height, reserved = words[64+i*4:68+i*4]
+            if i >= count:
+                if (enabled, width, height, reserved) != (0,0,0,0):
+                    raise ValueError('core CAPS unused scanout')
+            elif reserved or enabled not in (0,1) or not 0 < width <= 16384 or not 0 < height <= 16384:
+                raise ValueError('core CAPS live scanout')
+            active += enabled
+        if not active:
+            raise ValueError('core CAPS lacks an active scanout')
+        return dict(hex=record['hex'], missing=3, name=CORE_NAMES[2], commit=None)
+    except (KeyError, TypeError, struct.error) as error:
+        raise ValueError('malformed core CAPS') from error
+
+
+def core_dispatch(serial):
+    core_row(serial)
+    records = core_records(serial)[1:]
+    expected = [('triangle','clean')] * 5 + [
+        ('copy','withheld-release'), ('after-withheld','clean'),
+        ('copy','stale-epoch'), ('after-stale','clean'),
+        ('copy','masked-class'), ('after-mask','clean'), ('copy','clean')]
+    try:
+        if [(r['case'],r['control']) for r in records] != expected:
+            raise ValueError('core dispatch controls/clean successors or draw/copy order')
+        context, epoch = records[0]['context'], records[0]['epoch']
+        if type(context) is not int or not 0 < context < 1 << 40 or type(epoch) is not int or not 1 < epoch < 1 << 64:
+            raise ValueError('core dispatch native identity')
+        previous = None
+        resources = {}
+        for index, r in enumerate(records):
+            numeric = ('context','epoch','sequence','caller','resource','generation','kind','answer',
+                       'observed_context','observed_epoch','observed_sequence','consumed','elapsed_us')
+            if type(r['healthy']) is not bool or any(type(r[k]) is not int or not 0 <= r[k] < 1 << 64 for k in numeric):
+                raise ValueError('core dispatch unsigned fields')
+            control = r['control']
+            draw = r['case'] == 'triangle'
+            if (r['context'] != context or r['epoch'] != epoch or r['generation'] != 1
+                    or not 0 < r['resource'] < 1 << 40 or r['elapsed_us'] > 2000000
+                    or r['kind'] != (0xa1971b0c if draw else 0xa0b50300)):
+                raise ValueError('core dispatch identity, native kind or wait bound')
+            if resources.setdefault(draw,r['resource']) != r['resource']:
+                raise ValueError('core dispatch destination changed')
+            planned = r['caller'] & 0xffffffff
+            # The core rows select draws/copy from the shared native queue.
+            # draw_probe performs two readbacks then four 4 KiB background
+            # uploads between draws; the last draw has two readbacks before
+            # present's copy. See gr/mod.rs draw_probe and gr/channel.rs
+            # COPY_BYTES=4096, READBACK_BYTES=65536. Controls are consecutive.
+            step = 7 if 1 <= index <= 4 else 3 if index == 5 else 1
+            if not planned or r['caller'] != (1 << 32) | planned or (previous is not None and planned != previous+step):
+                raise ValueError('core dispatch caller/sequence order')
+            if control == 'masked-class':
+                if (r['sequence'],r['answer'],r['observed_context'],r['observed_epoch'],
+                        r['observed_sequence'],r['consumed'],r['healthy'],r['outcome']) != (0,0,0,0,0,0,False,'refused'):
+                    raise ValueError('core dispatch masked class published or completed')
+                continue
+            if (r['sequence'] != planned or r['observed_context'] != context or r['consumed'] != planned
+                    or r['healthy'] is not True):
+                raise ValueError('core dispatch native completion/consumption')
+            previous = planned
+            observed = (r['observed_epoch'],r['observed_sequence'],r['answer'],r['outcome'])
+            want = {'clean': (epoch,planned,0x60000000,'done'),
+                    'withheld-release': (epoch,0,0,'rejected'),
+                    'stale-epoch': (epoch-1,planned,0,'rejected')}[control]
+            if observed != want:
+                raise ValueError('core dispatch native answer or negative receipt')
+    except (KeyError, TypeError, IndexError) as error:
+        raise ValueError('malformed core dispatch') from error
+
+
+def require_profile(boot, profile):
+    if boot.get('build', {}).get('profile') != profile:
+        raise ValueError(profile + ' build.profile required for this capture')
+
+
+def core_producer(serial, caps, boot):
+    require_profile(boot, 'production')
+    sha = boot.get('bootedCommit')
+    if (not re.fullmatch('[0-9a-f]{40}', sha or '') or boot.get('toolsCommit') != sha
+            or boot.get('kind') != 'boot' or boot.get('mode') != 'suite' or boot.get('suite') != 'gpu'
+            or boot.get('suites') not in (None, ['gpu']) or boot.get('platform') != 'metal'
+            or boot.get('arch') != 'x86_64' or boot.get('evidenceEligible') is not True
+            or not re.fullmatch(r'\d{8}T\d{6}Z-metal', boot.get('id',''))):
+        raise ValueError('core producer needs a named eligible GPU-only boot of the same kernel/tools')
+    if caps.get('commit') not in (None, sha):
+        raise ValueError('core producer commit differs from core evidence')
+    root = Path(__file__).resolve().parents[2]
+    manifest = json.loads((root / 'docs/suites/gpu.json').read_text())
+    names = [c['id']+'/'+case['id'] for c in manifest['categories'] for case in c['cases']]
+    if len(names) != 170 or len(manifest['categories']) != 9:
+        raise ValueError('core producer manifest is not the shared 170-case GPU suite')
+    fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal']
+    if (any(re.search(p,serial) for p in fatal + [r'KERNEL PANIC[:!]',r'GT710_GR_REFUSAL',r'SUITE_SEQUENCE STALLED'])
+            or re.search(r'^SUITE gpu (?:ERROR|MEMORY reclaimed=FAIL)', serial, re.M)):
+        raise ValueError('core producer fatal, stalled or other suite failure')
+    if not serial.endswith('\n'):
+        raise ValueError('core producer incomplete line')
+    lines = serial.splitlines()
+    records = [line for line in lines if re.match(r'^SUITE gpu (?:START|CASE|DONE|ELAPSED)\b',line)]
+    # Production must register the native backend and refuse the unprobed format.
+    reason = 'missing the GPU core with a device admitted to the profile (G1): CAPS status 2 (missing b8g8r8a8-render)'
+    if len(records) != 173 or records[0] != 'SUITE gpu START cases=170':
+        raise ValueError('core producer START/CASE/DONE/time count')
+    for line, name in zip(records[1:171], names):
+        if not re.fullmatch(r'SUITE gpu CASE '+re.escape(name)+r' FAIL ms=\d+ msg='+re.escape(reason),line):
+            raise ValueError('core producer case not refused solely at unprobed admission in manifest order')
+    if records[171] != 'SUITE gpu DONE passed=0 failed=170 skipped=0 total=170':
+        raise ValueError('core producer DONE count or skip')
+    elapsed = re.fullmatch(r'SUITE gpu ELAPSED ms=(\d+)',records[172])
+    if not elapsed or not 0 < int(elapsed[1]) <= 900000:
+        raise ValueError('core producer missing suite time or 900 s bound')
+    ready = [i for i,line in enumerate(lines) if line == 'SUITE_SEQUENCE READY gpu']
+    if len(ready) != 1 or ready[0] <= lines.index(records[-1]):
+        raise ValueError('core producer missing READY after suite time')
+    # Apply the ordinary memory rule even though this admission-only boot is red.
+    shapes = {
+        'START': r'^SUITE gpu START cases=170$',
+        'FAIL': r'^SUITE gpu CASE .+ FAIL .+$',
+        'DONE': r'^SUITE gpu DONE .+$',
+        'MEMORY': r'^SUITE gpu MEMORY (before|after) free=(\d+) heap_free_kb=\d+(?: [a-z_]+=\d+)+$',
+        'RECLAIMED': r'^SUITE gpu MEMORY reclaimed=(PASS|FAIL) free_before=(\d+) free_after=(\d+) allowance=(\d+)$',
+    }
+    memory_records = []
+    for line in lines:
+        for kind, pattern in shapes.items():
+            match = re.fullmatch(pattern, line)
+            if match:
+                memory_records.append((kind,match,line))
+                break
+    memory = runpy.run_path(str(root / 'scripts/suite-verdict.py'))['memory_problem'](memory_records)
+    if not memory[0]:
+        raise ValueError('core producer ' + memory[1])
+    return int(elapsed[1])
+
+
+def core_producer_capture(directory, sha):
+    """Read a completed companion; exit 1 is expected for 170 honest refusals."""
+    directory = Path(directory)
+    read = lambda name: (directory / name).read_text()
+    boot = json.loads(read('run.json'))
+    require_profile(boot, 'production')
+    events = [json.loads(line) for line in read('events.jsonl').splitlines()]
+    if (not read('ended').strip() or read('exit-status').strip() not in ('0','1')
+            or read('dirty').strip() != '0' or read('commit').strip() != sha
+            or boot.get('bootedCommit', sha) != sha or boot.get('toolsCommit') != sha
+            or boot.get('build', {}).get('commit') != sha
+            or boot.get('build', {}).get('features') != []
+            or any(e['event'] in ('console-gap','fatal') for e in events)
+            or not any(e['event'] == 'final-marker' for e in events)):
+        raise ValueError('core producer capture incomplete, dirty, gapped or wrong commit')
+    serial = capture_serial(directory)
+    core_startup(serial)
+    return dict(boot=dict(boot, bootedCommit=sha), serial=serial)
+
+
+def core_diagnostic_capture(directory, sha):
+    """Only a separately requested core diagnostic supplies row/dispatch data."""
+    directory = Path(directory)
+    read = lambda name: (directory / name).read_text()
+    boot = json.loads(read('run.json'))
+    require_profile(boot, 'gpu-core')
+    events = [json.loads(line) for line in read('events.jsonl').splitlines()]
+    if (boot.get('gt710Category') != 'core' or boot.get('mode') != 'probe'
+            or boot.get('suite') or boot.get('suites') or boot.get('kind') != 'boot'
+            or boot.get('platform') != 'metal' or boot.get('arch') != 'x86_64'
+            or boot.get('evidenceEligible') is not True
+            or boot.get('build', {}).get('features') != ['gt710_core_probe']
+            or boot.get('build', {}).get('commit') != sha
+            or boot.get('toolsCommit') != sha or boot.get('bootedCommit', sha) != sha
+            or not re.fullmatch(r'\d{8}T\d{6}Z-metal', boot.get('id', ''))
+            or not read('ended').strip() or read('exit-status').strip() != '0'
+            or read('dirty').strip() != '0' or read('commit').strip() != sha
+            or any(e['event'] in ('console-gap', 'fatal') for e in events)
+            or not any(e['event'] == 'final-marker' for e in events)):
+        raise ValueError('core diagnostic capture incomplete, dirty, gapped or wrong identity')
+    serial = capture_serial(directory)
+    root = Path(__file__).resolve().parents[2]
+    fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal'] + [r'KERNEL PANIC[:!]']
+    if any(re.search(pattern, serial) for pattern in fatal):
+        raise ValueError('core diagnostic fatal kernel output')
+    return dict(boot=boot, serial=serial)
+
+
+def core_capture(directory, sha, producer_sha=None):
+    directory = Path(directory)
+    read = lambda name: (directory / name).read_text()
+    boot = json.loads(read('run.json'))
+    require_profile(boot, 'production')
+    events = [json.loads(line) for line in read('events.jsonl').splitlines()]
+    if (boot.get('mode') != 'suite' or boot.get('suite') != 'console'
+            or boot.get('suites') not in (None, ['console']) or boot.get('kind') != 'boot'
+            or boot.get('platform') != 'metal' or boot.get('arch') != 'x86_64'
+            or boot.get('evidenceEligible') is not True or boot.get('inject')
+            or boot.get('toolsCommit') != sha or boot.get('bootedCommit', sha) != sha
+            or boot.get('build', {}).get('commit') != sha
+            or boot.get('build', {}).get('features') != []
+            or not read('ended').strip() or read('exit-status').strip() != '0'
+            or read('dirty').strip() != '0' or read('commit').strip() != sha
+            or any(e['event'] in ('console-gap', 'fatal') for e in events)):
+        raise ValueError('core needs a completed clean console boot of the requested kernel/build/tools')
+    handoff = [e['seconds'] for e in events if e['event'] == 'handoff']
+    done = [e['seconds'] for e in events if e['event'] == 'final-marker']
+    if (len(handoff) != 1 or len(done) != 1
+            or any(type(v) not in (int,float) for v in handoff+done)
+            or not 0 < done[0]-handoff[0] <= 330):
+        raise ValueError('core console handoff-to-done exceeds 330 s or lacks timing')
+    serial = capture_serial(directory)
+    maximum = core_startup(serial)
+    if not (directory / 'core-producer').is_dir():
+        raise ValueError('core producer requires a named production GPU-suite capture')
+    # An explicit producer SHA permits the coordinator's retained console/core
+    # evidence when the review fix changes only userspace, docs and scoring.
+    # The caller checks that source scope; each capture keeps its own identity.
+    producer_sha = sha if producer_sha is None else producer_sha
+    producer = core_producer_capture(directory / 'core-producer', producer_sha)
+    producer.update(commit=producer_sha, console_ms=round((done[0]-handoff[0])*1000),
+                    startup_irq_masked_max_us=maximum)
+    diagnostic = core_diagnostic_capture(directory / 'core-diagnostic', sha)
+    if diagnostic['boot']['id'] in (boot['id'], producer['boot']['id']):
+        raise ValueError('core diagnostic must be distinct from its production boot')
+    producer['diagnostic'] = diagnostic
+    core_console_verdict(serial)
+    return producer
+
+
+def core_console_verdict(serial):
+    """The retained console must still satisfy its ordinary suite verdict."""
+    root = Path(__file__).resolve().parents[2]
+    manifest = json.loads((root / 'docs/suites/console.json').read_text())
+    verdict = runpy.run_path(str(root / 'scripts/suite-verdict.py'))['verdict']
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'serial.txt'
+        path.write_text(serial)
+        passed, reason = verdict(manifest, path, [path])
+    if not passed:
+        raise ValueError('core console producer: ' + reason)
+
+
+def check_case(category, case, serial, producer=None):
+    if category == 'core':
+        if producer is not None and 'diagnostic' in producer:
+            serial = producer['diagnostic']['serial']
+        if case == 'row': core_row(serial)
+        elif case == 'dispatch': core_dispatch(serial)
+        elif case == 'producer':
+            if producer is None: raise ValueError('missing named production and core diagnostic captures')
+            caps = core_row(serial)
+            caps['commit'] = producer.get('commit')
+            core_producer(producer['serial'], caps, producer['boot'])
+        else: raise ValueError('unknown core case')
+        return
     # claim-lint:ok: normative category dispatch; tests/gt710_contexts_report_test.py exercises gr-contexts through cases().
     if category == 'gr-contexts':
         graphics_contexts_gate(serial, case)
@@ -1754,11 +2070,11 @@ def check_case(category, case, serial):
         raise ValueError('unknown category')
 
 
-def cases(category, serial):
+def cases(category, serial, producer=None):
     results = []
     for name, title in CATEGORIES[category]:
         try:
-            check_case(category, name, serial)
+            check_case(category, name, serial, producer)
             result, reason = 'PASS', ''
         except ValueError as error:
             result, reason = 'FAIL', str(error)
@@ -1773,13 +2089,14 @@ def validate_manifest(manifest):
         raise ValueError('GT 710 case table differs from its manifest')
 
 
-def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
+def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns, producer=None):
     validate_manifest(manifest)
-    category = records.get('milestone', '').removeprefix('metal-gt710/')
-    if category not in CATEGORIES or records.get('milestone') != 'metal-gt710/' + category:
+    milestone = records.get('milestone', '').removeprefix('metal-gt710/')
+    category = 'core' if milestone == 'gpu-core' else milestone
+    if category not in CATEGORIES or records.get('milestone') != 'metal-gt710/' + milestone:
         raise ValueError('unknown GT 710 milestone')
     measures = [m['measure'] for e in effort_path['efforts'] if e['id'] == 'metal-gt710'
-                for m in e['milestones'] if m['id'] == category]
+                for m in e['milestones'] if m['id'] == milestone]
     if measures != [dict(suite='gt710', categories=[category])]:
         raise ValueError('milestone must measure its complete populated category')
     if (not re.fullmatch('[0-9a-f]{40}', sha or '') or boot.get('toolsCommit') != sha
@@ -1790,7 +2107,17 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
         raise ValueError('GT 710 evidence needs this kernel and tools in an eligible metal boot')
     if records.get('boot') != boot.get('id') or records.get('commit') != sha:
         raise ValueError('GT 710 records belong to another boot or commit')
-    if records.get('cases') != cases(category, serial):
+    if category in ('console', 'core'):
+        require_profile(boot, 'production')
+    if category == 'core':
+        if (producer is None or producer['boot']['id'] == boot['id']
+                or not 0 < producer.get('console_ms', 0) <= 330000
+                or 'diagnostic' not in producer):
+            raise ValueError('core needs its named production and diagnostic captures')
+        require_profile(producer['diagnostic']['boot'], 'gpu-core')
+        if records.get('producerBoot') != producer['boot']['id']:
+            raise ValueError('core producer boot differs from retained companion')
+    if records.get('cases') != cases(category, serial, producer):
         raise ValueError('GT 710 results differ from the captured evidence')
     if any(c['result'] != 'PASS' for c in records['cases']):
         raise ValueError('one or more ' + category + ' cases failed')
@@ -1807,6 +2134,12 @@ def capture_serial(directory):
     if contexts and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file()
                      or re.search(r'^GT710_CTX_IMAGE ', serial, re.M)):
         raise ValueError('graphics context image bulk missing or on serial')
+    startup = 'GT710_CORE_STARTUP_BULK ' in serial
+    core = 'GT710_CORE_BULK ' in serial or startup
+    if core and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file()):
+        raise ValueError('core evidence bulk missing')
+    if re.search(r'^GT710_CORE(?:_STARTUP)? ', serial, re.M):
+        raise ValueError('core records must arrive in bulk')
     draw = 'GT710_DRAW_BULK ' in serial or 'GT710_DRAW ' in serial
     if draw and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file() or re.search(r'^GT710_DRAW_IMAGE ', serial, re.M)):
         raise ValueError('draw image bulk missing or on serial')
@@ -1835,10 +2168,14 @@ def capture_serial(directory):
         elif fields[0]=='GT710_SHADER_IMAGE': key=('shaders',)
         elif fields[0]=='GT710_DRAW_IMAGE': key=('draw',)
         elif fields[0]=='GT710_CTX_IMAGE': key=('gr-contexts',)
+        elif fields[0]=='GT710_CORE': key=('core',)
+        elif fields[0]=='GT710_CORE_STARTUP': key=('core-startup',)
         else: raise ValueError('unexpected display artifact record')
         if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
         groups.setdefault(key,[]).append(line);previous=key
     def report_key(line):
+        if line.startswith('GT710_CORE_STARTUP_BULK '): return ('core-startup',)
+        if line.startswith('GT710_CORE_BULK '): return ('core',)
         if line.startswith('GT710_CTX_BULK '): return ('gr-contexts',)
         if line.startswith('GT710_DRAW_BULK '): return ('draw',)
         if line.startswith('GT710_SHADER_BULK '): return ('shaders',)
@@ -1856,7 +2193,7 @@ def capture_serial(directory):
     result=[]
     for line in serial.splitlines(keepends=True):
         key=report_key(line)
-        if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',)):
+        if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',), ('core',), ('core-startup',)):
             record=''.join(groups[key]).encode('ascii')
             fields=line.split()
             if len(fields)!=3 or (key==('multi',) and len(groups[key])!=1) or len(record)!=int(fields[1]) or hashlib.sha256(record).hexdigest()!=fields[2]:
@@ -1864,7 +2201,10 @@ def capture_serial(directory):
                 raise ValueError(kind+' artifact differs from serial length/digest')
         if key is not None: result.extend(groups[key])
         result.append(line)
-    return ''.join(result)
+    joined = ''.join(result)
+    if startup:
+        core_startup(joined)
+    return joined
 
 
 CPU_MEMORY_CATEGORIES = {'inventory','vm','aperture','lifetime'}
@@ -1876,23 +2216,28 @@ def capture_categories(boot):
             and (c != 'console' or (boot.get('mode') == 'suite' and boot.get('suite') == 'console'))]
 
 
-def record_capture(directory, sha):
-    """Recompute using the scorer and E16 files retained beside this capture."""
+def record_capture(directory, sha, producer_sha=None):
+    """Apply this scorer's manifest to retained capture facts and identities."""
     directory = Path(directory)
     read = lambda name: json.loads((directory / name).read_text())
     boot = read('run.json')
     serial = capture_serial(directory)
-    manifest = read('definition/docs/suites/gt710.json')
-    effort = read('definition/docs/efforts/metal.json')
-    fatal = read('definition/docs/boot-path.json')['fatal'] + [r'KERNEL PANIC:']
+    root = Path(__file__).resolve().parents[2]
+    manifest = json.loads((root / 'docs/suites/gt710.json').read_text())
+    effort = json.loads((root / 'docs/efforts/metal.json').read_text())
+    fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal'] + [r'KERNEL PANIC:']
+    producer = None
+    if (directory / 'core-diagnostic').is_dir():
+        producer = core_capture(directory, sha, producer_sha)
     passed = True
     for category in capture_categories(boot):
-        records = dict(boot=boot['id'], commit=sha, milestone='metal-gt710/' + category,
-                       cases=cases(category, serial))
+        records = dict(boot=boot['id'], commit=sha, milestone='metal-gt710/' + ('gpu-core' if category == 'core' else category),
+                       cases=cases(category, serial, producer))
+        if category == 'core': records['producerBoot'] = producer['boot']['id'] if producer else None
         for c in records['cases']:
             print('SUITE gt710 CASE ' + c['id'] + ' ' + c['result'] + ' ms=0' + (' msg=' + c['reason'] if c['reason'] else ''), flush=True)
         try:
-            score(manifest, effort, records, serial, boot, sha, fatal)
+            score(manifest, effort, records, serial, boot, sha, fatal, producer)
         except ValueError as error:
             passed = False
             print(str(error), flush=True)
@@ -1907,6 +2252,58 @@ def record_capture(directory, sha):
     return 0 if passed else 1
 
 
+def acceptance_status(directory, verdict, producer_sha=None):
+    """Require the retained boot status and every measured GT 710 aggregate."""
+    directory = Path(directory)
+    boot = json.loads((directory / 'run.json').read_text())
+    status = (directory / 'exit-status').read_text().strip()
+    print(f'{boot.get("suite", boot["mode"])} exit {status}', flush=True)
+    passed = status == '0' and verdict.get('captureComplete') is True
+    for category in capture_categories(boot):
+        name = 'metal-gt710/' + ('gpu-core' if category == 'core' else category)
+        result = verdict.get('milestones', {}).get(name, {})
+        count = len(CATEGORIES[category])
+        complete = (result.get('passed') is True
+                    and result.get('reached') == count and result.get('total') == count)
+        print(f'{name} {"PASS" if complete else "FAIL"} '
+              f'{result.get("reached", 0)}/{result.get("total", count)}', flush=True)
+        passed = passed and complete
+    if (directory / 'core-diagnostic').is_dir():
+        sha = (directory / 'commit').read_text().strip()
+        producer = core_capture(directory, sha, producer_sha)
+        core = cases('core', capture_serial(directory), producer)
+        checks = {c['id']: c['result'] for c in core}
+        checks['masked-capability'] = checks['core/dispatch']
+        passed = passed and all(result == 'PASS' for result in checks.values())
+        captures = []
+        for path in [directory, directory / 'core-diagnostic', directory / 'core-producer']:
+            run = json.loads((path / 'run.json').read_text())
+            capture = dict(id=run['id'], commit=(path / 'commit').read_text().strip(),
+                           toolsCommit=run['toolsCommit'], build=run['build'],
+                           exitStatus=int((path / 'exit-status').read_text()),
+                           serialSHA256=hashlib.sha256((path / 'serial.txt').read_bytes()).hexdigest(),
+                           bulkSHA256=hashlib.sha256((path / 'gt710-pixels.rle').read_bytes()).hexdigest())
+            captures.append(capture)
+            print(f'boot {capture["id"]} commit={capture["commit"]} '
+                  f'toolsCommit={capture["toolsCommit"]} build.commit={capture["build"]["commit"]} '
+                  f'profile={capture["build"]["profile"]} exit={capture["exitStatus"]}', flush=True)
+        for name, result in checks.items():
+            print(f'{name} {result}', flush=True)
+        print(f'console handoff-to-done ms={producer["console_ms"]} '
+              f'startup-window ready=true irq_masked_max_us={producer["startup_irq_masked_max_us"]}', flush=True)
+        gpu_ms = core_producer(producer['serial'], dict(commit=producer['commit']), producer['boot'])
+        print(f'GPU producer {producer["boot"]["id"]} elapsed_ms={gpu_ms}', flush=True)
+        proof = dict(commit=producer['commit'], retainedCommit=sha, passed=passed,
+                     producerBoot=producer['boot']['id'], gpuElapsedMS=gpu_ms,
+                     boots=captures, coreChecks=checks,
+                     consoleHandoffToDoneMS=producer['console_ms'],
+                     startupIRQMaskedMaxUS=producer['startup_irq_masked_max_us'],
+                     milestones=verdict['milestones'])
+        (directory / 'acceptance.json').write_text(json.dumps(proof, indent=2) + '\n')
+
+    return passed
+
+
 def main():
     import argparse
     import json
@@ -1917,6 +2314,8 @@ def main():
     parser.add_argument('--check-manifest', type=Path)
     parser.add_argument('--boot')
     parser.add_argument('--sha')
+    parser.add_argument('--gpu-boot', help='completed companion GPU-only suite boot for core/producer')
+    parser.add_argument('--core-boot', help='completed --gt710-category core diagnostic boot for row/dispatch')
     args = parser.parse_args()
     if args.check_manifest:
         validate_manifest(json.loads(args.check_manifest.read_text()))
@@ -1937,19 +2336,44 @@ def main():
         raise ValueError('a completed, clean, successful boot of the requested commit is required')
     if any(json.loads(line).get('event') == 'console-gap' for line in read('events.jsonl').splitlines()):
         raise ValueError('capture has a console gap')
+    if args.core_boot:
+        if (not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.core_boot)
+                or args.core_boot in (args.boot, args.gpu_boot)):
+            parser.error('--core-boot must name a distinct metal boot')
+        diagnostic = runner['STATE'] + '/boots/' + args.core_boot
+        runner['in_metal'](env, 'python3', '-c',
+            'import runpy,sys,shutil;from pathlib import Path;'
+            'p=Path(sys.argv[1]);q=Path(sys.argv[2]);a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));'
+            'a["core_diagnostic_capture"](q,sys.argv[3]);d=p/"core-diagnostic";d.mkdir(exist_ok=True);'
+            '[shutil.copyfile(q/n,d/n) for n in ("run.json","serial.txt","events.jsonl","ended","exit-status","dirty","commit","gt710-pixels.rle")] ',
+            directory, diagnostic, args.sha, check=True)
+    if args.gpu_boot:
+        if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.gpu_boot) or args.gpu_boot == args.boot:
+            parser.error('--gpu-boot must name a distinct metal boot')
+        companion = runner['STATE'] + '/boots/' + args.gpu_boot
+        runner['in_metal'](env, 'python3', '-c',
+            'import runpy,sys,shutil;from pathlib import Path;'
+            'p=Path(sys.argv[1]);q=Path(sys.argv[2]);a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));'
+            'a["core_producer_capture"](q,sys.argv[3]);d=p/"core-producer";d.mkdir(exist_ok=True);'
+            '[shutil.copyfile(q/n,d/n) for n in ("run.json","serial.txt","events.jsonl","ended","exit-status","dirty","commit","gt710-pixels.rle")]',
+            directory, companion, args.sha, check=True)
     result = runner['in_metal'](env, 'python3', '-c',
         'import runpy,sys;from pathlib import Path;'
         'p=Path(sys.argv[1]);a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));'
         'sys.exit(a["record_capture"](p,sys.argv[2]))', directory, args.sha)
     passed = result.returncode == 0
     # Rescore the retained facts, without executing another boot or suite.
-    runner['in_metal'](env, 'python3', '-c',
+    aggregate = runner['in_metal'](env, 'python3', '-c',
         'import sys,json;sys.path.insert(0,"/opt/breenix-metal");import metal_score,metal_lib as m;'
-        'p=m.boot_dir(sys.argv[1]);m.write_json(p/"milestone-verdict.json",metal_score.score(p));'
+        'import runpy;p=m.boot_dir(sys.argv[1]);v=metal_score.score(p);'
+        'm.write_json(p/"milestone-verdict.json",v);'
+        'a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));'
+        'passed=a["acceptance_status"](p,v);'
         '\nwith m.locked("finished"):\n entries=[json.loads(l) for l in (m.STATE/"finished.jsonl").read_text().splitlines()];'
-        'm.append_jsonl(m.STATE/"finished.jsonl",dict(id=p.name,seq=max(e["seq"] for e in entries)+1))',
-        args.boot, check=True)
-    return 0 if passed else 1
+        'm.append_jsonl(m.STATE/"finished.jsonl",dict(id=p.name,seq=max(e["seq"] for e in entries)+1))'
+        '\nsys.exit(0 if passed else 1)',
+        args.boot)
+    return 0 if passed and aggregate.returncode == 0 else 1
 
 
 if __name__ == '__main__':

@@ -43,7 +43,13 @@ impl CpuOps for X86Cpu {
     where
         F: FnOnce() -> R,
     {
-        // Delegate to the x86_64 crate's implementation
-        x86_64::instructions::interrupts::without_interrupts(f)
+        let enabled = Self::interrupts_enabled();
+        x86_64::instructions::interrupts::without_interrupts(|| {
+            // masked_begin uses the architecture-neutral saved IRQ-mask bit.
+            let gauge = crate::tracing::providers::gpu::masked_begin(if enabled { 0 } else { 1 << 7 });
+            let result = f();
+            crate::tracing::providers::gpu::masked_end(gauge);
+            result
+        })
     }
 }

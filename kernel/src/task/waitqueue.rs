@@ -217,7 +217,6 @@ impl WaitQueueHead {
 
     /// Try a bounded wake from hard IRQ context, where IRQs are already masked.
     /// Contention leaves the queue for the completion publisher in task context.
-    #[cfg(target_arch = "aarch64")]
     pub(crate) fn try_wake_up_n_from_irq(&self, max: u32) -> u32 {
         let Some(mut waiters) = self.waiters.try_lock() else {
             return 0;
@@ -253,7 +252,6 @@ impl WaitQueueHead {
     /// Take up to `out.len()` waiters off the queue, oldest first, without waking
     /// them, for a caller that wakes them after the queue's lock is released (the
     /// GPU core, whose waiters publish their own wait as `add_waiter` describes).
-    #[cfg(target_arch = "aarch64")]
     pub(crate) fn take_waiters(&self, out: &mut [u64]) -> usize {
         self.with_waiters(|waiters| {
             let mut taken = 0;

@@ -1020,6 +1020,13 @@ impl Suite {
                 }
                 match &outcome { Outcome::Pass { .. } => counts.passed += 1, Outcome::Fail { .. } => counts.failed += 1, Outcome::Skip { .. } => counts.skipped += 1 }
                 emit(&line);
+                // GPU tiles consume only status. Serial already owns the reason;
+                // keep its allocation only for a current or deferred text panel.
+                if !self.gui && screen.fb.is_none() && !self.defer_display {
+                    if let Outcome::Fail { msg, .. } | Outcome::Skip { msg } = &mut outcome {
+                        *msg = String::new();
+                    }
+                }
                 states[c][k] = State::Done(outcome);
                 done += 1;
                 if place.is_some() { sequence::progress_after(done); }
@@ -1058,6 +1065,7 @@ impl Suite {
         if !reclaimed { summary.push_str("; memory not reclaimed"); }
         let verdict = if counts.failed == 0 && reclaimed { Verdict::Passed(&summary) } else { Verdict::Failed(&summary) };
         let ms = ms_since(suite_start);
+        emit(&std::format!("SUITE {} ELAPSED ms={}", self.id, ms));
         feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
         if self.defer_display { screen = Screen::open(false, self.id == "gpu"); }
         if !self.gui { screen.draw(self, &title, &subtitle, &states, verdict, &feed, only); }
@@ -1806,6 +1814,16 @@ impl Screen {
             // each case's own process takes it while the case runs.
             let stage_error = graphics::take_over_display().err().map(|e| std::format!("initialize GUI display: {e}"));
             return Screen { gui, stage_error, ..Screen::empty() };
+        }
+        if gpu {
+            let (result, caps) = crate::gpu::caps();
+            if result == 0 && caps.backend == crate::gpu::abi::backend::GK208
+                && caps.status == crate::gpu::abi::status::MISSING_CAPABILITY
+                && caps.missing != 0 && caps.capability_origin(caps.missing) == 0 {
+                // Admission-only native boot: no view context or display ownership
+                // was acquired. Leave the owned native console in place.
+                return Screen::empty();
+            }
         }
         if gpu || cfg!(target_arch = "aarch64") {
             return Screen { gpu: Some(gpu_screen::GpuScreen::new()), ..Screen::empty() };

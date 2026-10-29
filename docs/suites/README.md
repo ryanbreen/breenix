@@ -359,8 +359,13 @@ tests/suite_sequence_test.py exercises it. -->
 `scripts/suite-sequence.py resolve` turns the argument into the list, checked before the
 boot: known, distinct suite ids, each with a manifest. `all` is every suite of
 `docs/efforts/path.json` the target runs (on x86-metal every main-path effort's), in path order,
-leaving out those with no manifest yet or planned categories and, on a target without a 3D GPU (x86-metal; ARM64
-QEMU without `--gpu-gl`), those whose manifest says `"needs3dGpu": true`. Two suites cannot
+leaving out those with no manifest yet or planned categories and, on a target without a 3D GPU (ARM64
+QEMU without `--gpu-gl`), those whose manifest says `"needs3dGpu": true`.
+On x86-metal, `all` also explicitly leaves out `gpu` while the native backend is not `ADMITTED`;
+the resolver prints that reason and directs the caller to `--suite gpu`.
+The native card satisfies the hardware selection check, so a named GPU suite remains runnable for
+admission diagnostics and category development. Lift the aggregate exclusion only after native CAPS
+reports `ADMITTED` at milestone 8.7. Two suites cannot
 share a boot anywhere but at one end, and their manifests say so with `"sequence"`:
 `console` (`"first"`) needs the kernel's own console on screen, and nothing gives the
 console back once a suite has taken the display; `files-io` (`"last"`) has host disk checks,
@@ -1633,8 +1638,14 @@ scripts/boot-interactive.sh --mode suite --suite breengel
 `docs/gui/gpu.md`: one category per milestone, in build order, `device` (12), `submit` (22),
 `readback` (19), `textures` (19), `profile` (22), `pipelines` (26), `isolation` (25),
 `present` (16) and `performance` (9), 170 cases. Its targets are ARM64 QEMU, Parallels and
-VMware; x86-64 joins when a dedicated Breenix hardware box replaces the current x86 gate host
-(`docs/gui/gpu.md` section 1.6.4), so there is no x86-64 boot of it.
+VMware and native x86-metal (`docs/gui/gpu.md` section 1.6.4). The metal image
+installs the same `/sbin/suite-gpu`. M8.1's `gt710/core` host category measures
+its initial admission-only producer separately from full GPU acceptance;
+see `docs/gui/gt710-core-acceptance.md`.
+
+<!-- claim-lint:ok: the flag names are checked by tests/suite_sequence_test.py. -->
+Select it by name with `--suite gpu` on x86-metal; `--suite all` excludes it with an explicit
+admission reason until native CAPS reports `ADMITTED` at milestone 8.7.
 
 The suite is written ahead of the layers it measures. Each case names the layer it needs and
 the build step that supplies it, asks syscall 416's VERSION op, and until that layer exists

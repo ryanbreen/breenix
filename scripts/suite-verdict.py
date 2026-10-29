@@ -112,6 +112,7 @@ def verdict(manifest, records_log, logs, only=None, categories=None):
         "FAIL": re.compile(rf"^SUITE {suite} CASE {name} FAIL ms=\d+{picture} msg=\S.*$"),
         "SKIP": re.compile(rf"^SUITE {suite} CASE {name} SKIP msg=\S.*$"),
         "DONE": re.compile(rf"^SUITE {suite} DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+){suffix}$"),
+        "ELAPSED": re.compile(rf"^SUITE {suite} ELAPSED ms=(\d+)$"),
         "VALUE": re.compile(rf"^SUITE {suite} VALUE {name} [a-z0-9]+(?:-[a-z0-9]+)*=(-?\d+(?:\.\d+)?)([a-z]*)"
                             r"(?: expect=(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)([a-z]*))?$"),
         "WAIT": re.compile(rf"^SUITE {suite} WAIT {name} until=\d+ for=\d+ result=[a-z0-9]+(?:-[a-z0-9]+)*$"),
@@ -152,8 +153,12 @@ def verdict(manifest, records_log, logs, only=None, categories=None):
             return False, f"a VALUE record's expected range is in another unit: {line[:200]}"
         if not any(k == "START" for k, _, _ in records[:index]) or any(k == "DONE" for k, _, _ in records[:index]):
             return False, f"a {kind} record is outside START..DONE: {line[:200]}"
+    elapsed = [i for i, (kind, _, _) in enumerate(records) if kind == "ELAPSED"]
+    done = [i for i, (kind, _, _) in enumerate(records) if kind == "DONE"]
+    if elapsed and (len(elapsed) != 1 or len(done) != 1 or elapsed[0] <= done[0]):
+        return False, "ELAPSED needs one record after DONE"
     memory = None if only else memory_problem(records)
-    records = [record for record in records if record[0] not in LIVE + MEMORY]
+    records = [record for record in records if record[0] not in LIVE + MEMORY + ("ELAPSED",)]
     if not records:
         return False, "the records do not begin with exactly one START line"
     kind, match, line = records[0]

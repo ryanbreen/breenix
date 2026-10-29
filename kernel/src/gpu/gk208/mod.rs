@@ -105,8 +105,8 @@ mod lifetime;
 mod vm_control;
 mod vm_probe;
 mod aperture;
-mod dma_policy;
-mod system_dma;
+use crate::gpu::dma_policy;
+pub(crate) mod system_dma;
 mod aperture_probe;
 mod channel;
 mod copy;
@@ -116,7 +116,8 @@ mod recovery_policy;
 pub use system_dma::set_platform as set_dma_platform;
 mod modeset;
 mod native;
-pub use native::{ConsoleSurface,console_binding,takeover_started};
+mod core_record;
+pub use native::{ConsoleSurface,console_binding,takeover_started,caps_scanout};
 mod rom;
 pub fn proc_pixels()->Vec<u8> {bulk::take()}
 pub fn proc_ce(op:u8)->Result<Vec<u8>,i32> {ce::proc_read(op)}
@@ -139,7 +140,8 @@ impl Registers {
         let _ = self.read(reg); // drain the posted MMIO write
     }
     fn mask(&self, reg: usize, mask: u32, value: u32) {
-        self.write(reg, (self.read(reg) & !mask) | value);
+        // Only this read/modify/write is indivisible; uploads and polls stay IRQ-on.
+        crate::arch_without_interrupts(|| self.write(reg, (self.read(reg) & !mask) | value));
     }
 }
 fn hex(data: &[u8]) -> String {
@@ -252,6 +254,7 @@ fn sink(
     Ok((data, modes))
 }
 fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
+    ce::test_ownership()?;
     let bar = device.bars[0];
     if bar.address == 0 || bar.size < 0x1000000 || bar.is_io || bar.prefetchable {
         return Err("BAR0 is not an assigned register aperture");
@@ -362,7 +365,7 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
             crate::serial_println!("GT710_PROBE_TIME graphics us={}",channel::elapsed(start));
         }
         let (_,displacement,_)=modeset::bar1_view(layout.objects[0].range.start,layout.objects[0].range.size,device.bars[1].size,17)?;
-        ce::retain(layout,regs.0,console.pointer-displacement)?;
+        ce::retain(layout,regs.0,console.pointer-displacement,console)?;
         return Ok(console);
     }
     Err("no active board-routed TMDS sink responded to live DDC")
@@ -521,4 +524,18 @@ fn display_memory(
         protected_bytes,protected_before,protected_after,guard_bytes,guard_before,guard_after,objects,verified);
     crate::serial_println!("GT710_MEMORY {}", report);
     Ok(layout)
+}
+
+pub mod adapter;
+pub mod caps;
+
+/// Serialize first-use native startup with the existing allocator/CE owner.
+pub(crate) fn initialize_core() -> Result<(), &'static str> {
+    let result = ce::initialize_core();
+    let longest = crate::tracing::providers::gpu::GPU_IRQ_MASKED_MAX_US.per_cpu[0].value.load(core::sync::atomic::Ordering::Relaxed);
+    let row = core_record::startup(longest, result.is_ok());
+    // Keep the measured startup row with bulk evidence, only its digest on serial.
+    bulk::line(row.trim_end_matches('\n').into())?;
+    crate::serial_println!("{}", core_record::startup_anchor(row.as_bytes()));
+    result
 }

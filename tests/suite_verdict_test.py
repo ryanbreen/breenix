@@ -41,6 +41,18 @@ EXPECTATIONS = {
 
 
 class SuiteVerdictTests(unittest.TestCase):
+    def test_elapsed_follows_done_without_replacing_case_or_memory_evidence(self):
+        original=(FIXTURES/'all-pass.txt').read_text()
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'serial.txt'
+            path.write_text(original+'SUITE fixture ELAPSED ms=42\n')
+            self.assertTrue(SCORER.verdict(MANIFEST,path,[path])[0])
+            for text in ['SUITE fixture ELAPSED ms=42\n'+original,
+                         original+'SUITE fixture ELAPSED ms=42\n'*2,
+                         original.replace('CASE first/two PASS ms=1','CASE first/two FAIL ms=1 msg=bad')+'SUITE fixture ELAPSED ms=42\n']:
+                path.write_text(text)
+                self.assertFalse(SCORER.verdict(MANIFEST,path,[path])[0])
+
     def test_planned_categories_block_full_suite_acceptance(self):
         serial = FIXTURES / "all-pass.txt"
         for categories in (

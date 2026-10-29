@@ -13,6 +13,7 @@ opt-level = 3
 server_reboot_fault = ["kernel/server_reboot_fault"]
 force_cpu_accounting_delay = ["kernel/force_cpu_accounting_delay"]
 testing = ["kernel/testing"]
+gt710_core_probe = ["kernel/gt710_core_probe"]
 boot_tests = ["kernel/boot_tests"]  # Parallel boot test framework
 force_eret_dispatch_596 = ["boot_tests", "kernel/force_eret_dispatch_596"]  # #596 forced-repro knob
 ret_zero_pc_oracle = ["boot_tests", "kernel/ret_zero_pc_oracle"]
@@ -94,6 +95,7 @@ kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
 bootloader = { git = "https://github.com/rust-osdev/bootloader.git", rev = "707db11201b19541b7cfef84037866ee03aa0927", default-features = false, features = ["uefi"] }
 
 [dev-dependencies]
+gpu-abi = { path = "libs/gpu-abi" }
 breengel-abi = { path = "libs/breengel-abi" }
 toml = "0.8"
 noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "size_20", "size_24", "size_32", "regular", "bold", "unicode-basic-latin", "unicode-latin-1-supplement", "unicode-latin-extended-a", "unicode-specials"] }

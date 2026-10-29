@@ -58,7 +58,7 @@ impl Queue {
         // The interrupted producer may have published idx before claiming its kick.
         // VirtIO section 4.1.4.4: notify queue 0 of those already-published buffers.
         unsafe { core::ptr::write_volatile(self.doorbell as *mut u16, 0) };
-        while crate::arch_impl::aarch64::timer::rdtsc() < deadline {
+        while crate::gpu::arch::counter() < deadline {
             dma::invalidate(self.used, PAGE);
             let used = unsafe { core::ptr::read_volatile((self.used + 2) as *const u16) };
             if used == avail {
@@ -119,7 +119,7 @@ impl Queue {
         dma::clean(self.avail, PAGE);
         fence(Ordering::SeqCst);
         unsafe { core::ptr::write_volatile(self.doorbell as *mut u16, 0) };
-        while crate::arch_impl::aarch64::timer::rdtsc() < deadline {
+        while crate::gpu::arch::counter() < deadline {
             dma::invalidate(self.used, PAGE);
             let end = unsafe { core::ptr::read_volatile((self.used + 2) as *const u16) };
             fence(Ordering::SeqCst);

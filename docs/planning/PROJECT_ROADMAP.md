@@ -16,6 +16,12 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+Native GK208B milestone 8 step 8.1 registers the shared GPU core and native
+completion evidence in [PR #2562](https://github.com/ryanbreen/breenix/pull/2562)
+([acceptance contract](../gui/gt710-core-acceptance.md)). Formats remain unprobed
+until step 8.2; the GPU producer must report 170 ordered admission refusals.
+The PR records the review fixes, hardware acceptance and landing status.
+
 Native GK208B milestone 6 PR 6.4 adds concurrent CE contexts and retained
 ownership across a killed waiter. Hardware acceptance and landing are recorded
 in [PR #2528](https://github.com/ryanbreen/breenix/pull/2528)

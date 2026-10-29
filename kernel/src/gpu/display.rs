@@ -593,6 +593,7 @@ pub(super) fn take(group: u64, pid: u64, vt: usize) -> Result<(), i64> {
 /// binding and backing stay on the stack; no compositor claim moves with the display. The
 /// target is resolved once to its live thread group, so a later process given the same
 /// number is not the owner.
+#[cfg(target_arch = "aarch64")]
 pub(super) fn give(giver: u64, pid: u32) -> Result<(), i64> {
     const ESRCH: i64 = 3;
     let target = crate::process::with_process_manager(|m| {
