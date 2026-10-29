@@ -16,7 +16,8 @@ ALPHA = {'pipelines/' + name for name in (
     'coverage-blend', 'coverage-lcd', 'bitmap-text')}
 SELECTED = [n for n in NAMES if n in REQUIRED or n in ALPHA or
             (n.startswith('profile/') and n not in (
-                'profile/binary32-emulation', 'profile/large-coordinates'))]
+                'profile/binary32-emulation', 'profile/large-coordinates',
+                'profile/scissor-exact'))]
 
 
 def alpha_transcript():
@@ -24,7 +25,7 @@ def alpha_transcript():
     for name in SELECTED:
         text = text.replace(f'CASE {name} FAIL ms=1 msg=not implemented',
                             f'CASE {name} PASS ms=1')
-    return text.replace('passed=52 failed=118', 'passed=78 failed=92')
+    return text.replace('passed=52 failed=118', 'passed=77 failed=93')
 
 
 def retained_capture(directory):
@@ -75,7 +76,12 @@ class AlphaReport(unittest.TestCase):
         step = json.loads((ROOT / 'docs/gui/gt710-step-8-3.json').read_text())
         self.assertEqual((step['id'], step['suite']), ('gt710-step-8-3', 'gpu'))
         self.assertEqual(step['cases'], SELECTED)
-        self.assertEqual(len(SELECTED), 78)
+        self.assertEqual(len(SELECTED), 77)
+        # G15 keeps device-error production and its dependent cases in 8.5.
+        later = json.loads((ROOT / 'docs/gui/gt710-step-8-5.json').read_text())
+        self.assertIn('profile/scissor-exact', later['cases'])
+        self.assertIn('textures/copy-region', later['cases'])
+        self.assertFalse(set(step['cases']) & set(later['cases']))
         manifest = json.loads((ROOT / 'docs/suites/gt710.json').read_text())
         API['validate_manifest'](manifest)
         category = next(c for c in manifest['categories'] if c['id'] == 'alpha')
@@ -93,7 +99,7 @@ class AlphaReport(unittest.TestCase):
         for name in SELECTED:
             changed = alpha_transcript().replace(f'CASE {name} PASS ms=1',
                                                 f'CASE {name} FAIL ms=1 msg=broken')
-            changed = changed.replace('passed=78 failed=92', 'passed=77 failed=93')
+            changed = changed.replace('passed=77 failed=93', 'passed=76 failed=94')
             producer['gpu']['serial'] = changed
             with self.subTest(case=name):
                 self.assertEqual(API['cases']('alpha', '', producer)[0]['result'], 'FAIL')
@@ -105,7 +111,7 @@ class AlphaReport(unittest.TestCase):
             gpu = retained_capture(directory)
             self.assertEqual(API['record_resources_capture'](directory, SHA, 'alpha'), 0)
             report = json.loads((directory / 'gt710-alpha.json').read_text())
-            self.assertEqual(sum(c['result'] == 'PASS' for c in report['gpuCases']), 78)
+            self.assertEqual(sum(c['result'] == 'PASS' for c in report['gpuCases']), 77)
             def score():
                 return metal['score'](directory)['milestones']['metal-gt710/alpha']
             self.assertEqual(score(), dict(reached=1, total=1, passed=True, reason='alpha: 1 cases passed'))
@@ -113,7 +119,7 @@ class AlphaReport(unittest.TestCase):
             changes = {
                 'selected failure': original.replace('CASE profile/wide-arithmetic PASS ms=1',
                     'CASE profile/wide-arithmetic FAIL ms=1 msg=broken').replace(
-                        'passed=78 failed=92', 'passed=77 failed=93'),
+                        'passed=77 failed=93', 'passed=76 failed=94'),
                 'missing DONE': re.sub(r'^SUITE gpu DONE .*\n', '', original, flags=re.M),
                 'unmatched G12 anchor': original.replace('GT710_FINAL_BULK ',
                     'GT710_CAPS_REPROBE id=3 epoch=18 sha256=' + '0'*64 + '\nGT710_FINAL_BULK '),
