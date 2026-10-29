@@ -1537,6 +1537,25 @@ mod native {
                 epoch, sequence: value, consumed: if consumed { sequence } else { 0 },
                 healthy: bound & 0x80000000 != 0 })
         }
+        /// Retain bounded fault registers before reset clears their source.
+        /// Called on the GPU worker, outside interrupt and syscall entry paths.
+        pub(crate) fn record_fault(&self, reason: &str) {
+            let mut regs = Registers(self.registers);
+            let c = self.session.report.identity;
+            let b = self.session.pbdma * 0x2000;
+            let registers = [0x259c, 0x400100, 0x400108, 0x400700,
+                0x40108+b, 0x40148+b, 0x40120+b, 0x40014+b, 0x40028+b,
+                0x800000+c.id as usize*8, 0x800004+c.id as usize*8,
+                0x2630, 0x262c, 0x2634, 0x2284+c.runlist as usize*8]
+                .map(|r| (r, regs.read(r)));
+            crate::serial_println!("GT710_NATIVE_FAULT reason={} instance={:#x} epoch={} put={} registers={:?}",
+                reason,c.instance,c.epoch,self.put,registers);
+            let (mask, faults) = crate::gk208::vm::faults(&mut VmIo {regs:&mut regs,total:self.total});
+            for f in faults {
+                crate::serial_println!("GT710_NATIVE_MMU mask={:#x} unit={} instance={:#x} address={:#x} reason={} raw={:?}",
+                    mask,f.unit,f.instance,f.address,f.reason,f.raw);
+            }
+        }
         pub(crate) fn reset(&mut self) -> Result<(), &'static str> {
             let mut regs = Registers(self.registers);
             let c = self.session.report.identity;

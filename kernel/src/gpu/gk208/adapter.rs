@@ -99,11 +99,12 @@ pub struct Device {
     queue: Queue,
     pending: VecDeque<Sent>,
     fault: bool,
+    first_error: Option<&'static str>,
     resetting: Option<Result<(), &'static str>>,
 }
 impl Device {
     pub(crate) fn new(channel: NativeChannel, board: super::caps::BoardState) -> Self {
-        Self { channel, board, queue: Queue::new(), pending: VecDeque::new(), fault: false, resetting: None }
+        Self { channel, board, queue: Queue::new(), pending: VecDeque::new(), fault: false, first_error: None, resetting: None }
     }
     pub(crate) fn registered(channel: NativeChannel, board: super::caps::BoardState, last: u32) -> Self {
         let mut device = Self::new(channel, board);
@@ -149,7 +150,10 @@ impl Device {
             } else { self.channel.publish_probe(sequence, operation, request.control) } }
         };
         self.pending.push_back(Sent { request, identity: Some(identity) });
-        if result.is_err() || self.queue.publish(sequence).is_err() { self.fault = true; }
+        if let Err(error) = result.and_then(|()| self.queue.publish(sequence)) {
+            self.first_error.get_or_insert(error);
+            self.fault = true;
+        }
         Ok(())
     }
     pub fn reap(&mut self) -> Reap {
@@ -163,7 +167,11 @@ impl Device {
         };
         let mut sample = match self.channel.sample(identity.sequence) {
             Ok(sample) if sample.healthy => sample,
-            _ => { self.fault = true; return Reap::Fault; }
+            result => {
+                self.first_error.get_or_insert(result.err().unwrap_or("native completion binding lost"));
+                self.fault = true;
+                return Reap::Fault;
+            }
         };
         // No caller fence, constant success tag, GET or host reference alone
         // can construct the opaque engine completion.
@@ -201,8 +209,17 @@ impl Device {
     pub fn outstanding(&self) -> usize { self.pending.len() }
     pub fn queue_size(&self) -> usize { 4 }
     pub fn needs_reset(&self) -> bool { self.fault || !self.channel.healthy() }
+    pub fn fault_reason(&self) -> Option<&'static str> { self.first_error }
     pub fn begin_reset(&mut self) {
-        if self.resetting.is_none() { self.resetting = Some(self.channel.reset()); }
+        if self.resetting.is_none() {
+            #[cfg(target_os = "none")]
+            self.channel.record_fault(self.fault_reason().unwrap_or("native health check failed"));
+            self.resetting = Some(self.channel.reset());
+            #[cfg(target_os = "none")]
+            if let Some(Err(error)) = self.resetting {
+                crate::serial_println!("GT710_NATIVE_RESET_REFUSAL {}", error);
+            }
+        }
     }
     pub fn reset_done(&mut self) -> bool { matches!(self.resetting, Some(Ok(()))) }
     pub fn restart(&mut self) -> (Vec<Request>, Result<(), &'static str>) {
@@ -220,6 +237,7 @@ impl Device {
         let held = self.pending.drain(..).map(|sent| sent.request).collect();
         self.queue = Queue::new();
         self.fault = false;
+        self.first_error = None;
         self.resetting = None;
         (held, Ok(()))
     }
