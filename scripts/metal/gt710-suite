@@ -2682,13 +2682,20 @@ def alpha_capture_proof(directory, sha, pr):
                 or rows[4].get('endedBy') != 'driver'):
             raise ValueError('alpha ' + suite + ' exit is not a completed driver/suite verdict')
         path = Path(directory) / ('resources-producer' if suite == 'gpu' else '')
-        digests = {name: hashlib.sha256((path / name).read_bytes()).hexdigest()
-                   for name in ('serial.txt', 'events.jsonl', 'gt710-pixels.rle', 'gt710-final.rle')
-                   if (path / name).exists()}
+        artifacts = ['serial.txt', 'events.jsonl', 'gt710-pixels.rle']
+        if any(not (path / name).is_file() for name in artifacts):
+            raise ValueError('alpha ' + suite + ' requires retained serial, events and startup artifact')
+        if (path / 'gt710-final.rle').exists():
+            artifacts.append('gt710-final.rle')
+        digests = {name: hashlib.sha256((path / name).read_bytes()).hexdigest() for name in artifacts}
+        memory = one(r'^SUITE ' + suite + r' MEMORY reclaimed=(PASS|FAIL) free_before=\d+ free_after=\d+ allowance=\d+$',
+                     serial, 'alpha ' + suite + ' memory')[1]
+        if memory != 'PASS':
+            raise ValueError('alpha ' + suite + ' memory was not reclaimed')
         proof['boots'].append(dict(id=boot['id'], suite=suite, commit=capture_sha,
             toolsCommit=boot['toolsCommit'], build=boot['build'], exitStatus=status,
             exitReason='failed GPU cases outside step 8.3 (G13)' if status else 'passed suite',
-            done=tally, memory='PASS', captureComplete=True, lifecycle=rows, sha256=digests))
+            done=tally, memory=memory, captureComplete=True, lifecycle=rows, sha256=digests))
     return proof
 
 

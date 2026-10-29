@@ -36,9 +36,9 @@ def retained_capture(directory):
     for path, suite in ((directory, 'console'), (gpu, 'gpu')):
         raw_boot = boot(suite)
         del raw_boot['bootedCommit']
-        serial = transcript('console')
+        stage(path)
+        serial = (path / 'serial.txt').read_text() + transcript('console')
         if suite == 'gpu':
-            stage(path)
             serial = (path / 'serial.txt').read_text() + alpha_transcript()
             # G12: real reprobe records are uploaded after the cases, with
             # individual serial anchors and the final-slot digest.
@@ -157,6 +157,21 @@ class AlphaReport(unittest.TestCase):
                     with self.subTest(capture=path.name, events=text), self.assertRaises(ValueError):
                         API['alpha_capture_proof'](directory, SHA, pr)
                 (path / 'events.jsonl').write_text(original)
+            for path in (directory, gpu):
+                original = (path / 'serial.txt').read_text()
+                for changed in (original.replace('MEMORY reclaimed=PASS', 'MEMORY reclaimed=FAIL'),
+                                re.sub(r'^SUITE .* MEMORY reclaimed=.*\n', '', original, flags=re.M)):
+                    (path / 'serial.txt').write_text(changed)
+                    with self.subTest(capture=path.name), self.assertRaises(ValueError):
+                        API['alpha_capture_proof'](directory, SHA, pr)
+                # Even a stripped startup anchor cannot hide a missing artifact.
+                (path / 'serial.txt').write_text(re.sub(r'^GT710_.*\n', '', original, flags=re.M))
+                data = (path / 'gt710-pixels.rle').read_bytes()
+                (path / 'gt710-pixels.rle').unlink()
+                with self.subTest(capture=path.name), self.assertRaises(ValueError):
+                    API['alpha_capture_proof'](directory, SHA, pr)
+                (path / 'gt710-pixels.rle').write_bytes(data)
+                (path / 'serial.txt').write_text(original)
             (gpu / 'exit-status').write_text('0')
             with self.assertRaises(ValueError):
                 API['alpha_capture_proof'](directory, SHA, pr)
