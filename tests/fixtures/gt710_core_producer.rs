@@ -73,8 +73,6 @@ pub mod gk208 {
             use crate::{gpu_completion::CeSample,gk208::{adapter::Operation,core_record::Control}};
             pub struct NativeChannel {pub sample:CeSample,pub drain:u32,pub ignore_control:bool,pub published:usize,pub final_sample:Option<CeSample>,pub polls:usize}
             impl NativeChannel {
-                pub fn device_error(&mut self)->Result<u32,&'static str>{Err("not a device-error fixture")}
-
                 pub fn identity(&self)->(u64,u64){(0x123000,17)}
                 pub fn healthy(&self)->Result<(), &'static str>{Ok(())}
                 pub fn published(&self,sequence:u32)->bool{self.sample.consumed==sequence}

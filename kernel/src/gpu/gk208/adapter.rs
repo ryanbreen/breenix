@@ -30,7 +30,6 @@ pub struct Request {
     encoded: Option<EncodedDraw>,
     /// CPU storage/VM acknowledgement, deliberately unfenced.
     storage: bool,
-    device_error: bool,
     _backing: Option<Arc<crate::gpu::dma::Pages>>,
     #[cfg(target_os = "none")]
     _transfer_hold: Option<super::ce::readback::TransferHold>,
@@ -45,7 +44,7 @@ pub struct Request {
 impl Request {
     /// Kernel builders resolve validated handles to GPU addresses before admission.
     pub fn copy(tag: Tag, caller: u64, resource: u64, generation: u64, rect: Rect) -> Self {
-        Self { tag, fence: Some(caller), operation: Some(Operation::Copy(rect)), encoded: None, storage: false, device_error: false, _backing: None,
+        Self { tag, fence: Some(caller), operation: Some(Operation::Copy(rect)), encoded: None, storage: false, _backing: None,
             #[cfg(target_os = "none")]
             _transfer_hold: None, resource, generation, upload: false,
             #[cfg(target_os = "none")]
@@ -58,7 +57,7 @@ impl Request {
             DrawWork::Triangle(draw) => (Some(Operation::Draw(draw)),None),
             DrawWork::Encoded(draw) => (None,Some(draw)),
         };
-        Self { tag, fence: Some(caller), operation, encoded, storage: false, device_error: false, _backing: None,
+        Self { tag, fence: Some(caller), operation, encoded, storage: false, _backing: None,
             #[cfg(target_os = "none")]
             _transfer_hold: None, resource, generation, upload: false,
             #[cfg(target_os = "none")]
@@ -77,7 +76,7 @@ impl Request {
         backing: Option<Arc<crate::gpu::dma::Pages>>,
     ) -> Self {
         Self { tag, fence: Some(caller), operation: Some(Operation::Transfer(plan)), encoded: None,
-            storage: false, device_error: false, _backing: backing,
+            storage: false, _backing: backing,
             #[cfg(target_os = "none")]
             _transfer_hold: Some(hold),
             resource, generation: 1, upload,
@@ -93,18 +92,11 @@ impl Request {
     }
     #[cfg(target_os = "none")]
     pub(in crate::gk208) fn presenting(mut self) -> Self { self.scanout = true; self }
-    pub(crate) fn device_error(tag: Tag, caller: u64) -> Self {
-        let mut request = Self::storage(tag, None);
-        request.storage = false;
-        request.device_error = true;
-        request.fence = Some(caller);
-        request
-    }
     pub fn is_upload(&self) -> bool { self.upload }
     /// Actual allocation/map/unmap completed in the resource owner before this
     /// receipt was constructed. This is not an engine completion or a fence.
     pub(crate) fn storage(tag: Tag, backing: Option<Arc<crate::gpu::dma::Pages>>) -> Self {
-        Self { tag, fence: None, operation: None, encoded: None, storage: true, device_error: false, _backing: backing,
+        Self { tag, fence: None, operation: None, encoded: None, storage: true, _backing: backing,
             #[cfg(target_os = "none")]
             _transfer_hold: None,
             resource: 0, generation: 0, upload: false,
@@ -121,7 +113,7 @@ struct RequestTrace {
     kind: &'static str, target: u64, frame: u32, address: u64, command: u32,
 }
 
-struct Sent { request: Request, identity: Option<gpu_completion::Request>, error: Option<u32> }
+struct Sent { request: Request, identity: Option<gpu_completion::Request> }
 
 pub struct Device {
     channel: NativeChannel,
@@ -159,26 +151,8 @@ impl Device {
     }
     pub fn send(&mut self, request: Request) -> Result<(), Request> {
         if !self.has_room(1) || self.pending.try_reserve(1).is_err() { return Err(request); }
-        if request.device_error {
-            // The isolated CE fault must follow completed graphics work. It does
-            // not consume or synthesize a release in the graphics sequence.
-            if !self.pending.is_empty() || self.queue.outstanding() != 0
-                || request.fence == Some(0) { return Err(request); }
-            let result = self.channel.device_error().and_then(|answer| {
-                if (gpu_abi::gk208::MMU_FAULT_FIRST..=gpu_abi::gk208::MMU_FAULT_LAST).contains(&answer) {
-                    Ok(answer)
-                } else { Err("native control did not observe an MMU fault") }
-            });
-            let error = match result {
-                Ok(answer) => Some(answer),
-                Err(reason) => { self.first_error.get_or_insert(reason); self.fault = true; None }
-            };
-            // Uncertain publication/retirement retains this request for reset.
-            self.pending.push_back(Sent { request, identity: None, error });
-            return Ok(());
-        }
         if request.storage {
-            self.pending.push_back(Sent { request, identity: None, error: None });
+            self.pending.push_back(Sent { request, identity: None });
             return Ok(());
         }
         if request.operation.is_none() && request.encoded.is_none() { return Err(request); }
@@ -217,7 +191,7 @@ impl Device {
             self.recent.push_back(RequestTrace { tag: request.tag, channel: context, epoch, caller, sequence,
                 kind, target: request.resource, frame, address, command });
         }
-        self.pending.push_back(Sent { request, identity: Some(identity), error: None });
+        self.pending.push_back(Sent { request, identity: Some(identity) });
         if let Err(error) = result.and_then(|()| self.queue.publish(sequence)) {
             self.first_error.get_or_insert(error);
             self.fault = true;
@@ -228,13 +202,6 @@ impl Device {
         if self.resetting.is_some() { return Reap::Empty; }
         if self.needs_reset() { return Reap::Fault; }
         let Some(front) = self.pending.front() else { return Reap::Empty };
-        if let Some(answer) = front.error {
-            let sent = self.pending.pop_front().unwrap();
-            // This is an attributed device error after confirmed local stop,
-            // not a successful engine release or an echoed graphics fence.
-            return Reap::Done(Done { tag: sent.request.tag, fence: sent.request.fence,
-                native_fence: None, answer, echoed: 0, fenced: false });
-        }
         let Some(identity) = front.identity else {
             let sent = self.pending.pop_front().unwrap();
             return Reap::Done(Done { tag: sent.request.tag, fence: None, native_fence: None,

@@ -277,19 +277,13 @@ fn ensure_unbound(regs: &mut Registers, id: u32) -> Result<(), &'static str> {
     Ok(())
 }
 struct Channel {
-    id:u32, context:Context, commands:Allocation,userd:Allocation,userd_base:u64,source:Allocation,dest:Allocation,stage:Allocation,
+    id:u32, context:Context, commands:Allocation,userd:Allocation,source:Allocation,dest:Allocation,stage:Allocation,
     pages:ManuallyDrop<system_dma::Pages>, epoch:u64, put:u32, active:bool, generation:u64, queue:super::queue::Queue, shared:bool, failure:Option<&'static str>,
 }
 fn flags()->Flags {Flags{volatile:true,..Flags::default()}}
 impl Channel {
     fn new(regs:&mut Registers,layout:&mut memory::Layout,total:u64,id:u32,status:&[u32],userd:Allocation)->Result<Self,&'static str> {
-        Self::new_shared(regs,layout,total,id,status,userd,userd.range.start)
-    }
-    fn new_shared(regs:&mut Registers,layout:&mut memory::Layout,total:u64,id:u32,status:&[u32],userd:Allocation,userd_base:u64)->Result<Self,&'static str> {
         ensure_unbound(regs, id)?;
-        if userd_base.checked_add(u64::from(id+1)*512).is_none_or(|end| end>userd.range.start+userd.range.size) {
-            return Err("CE shared USERD extent");
-        }
         let mut io=VmIo{regs,total};let mut context=Context::new(&mut layout.allocator,&mut io)?;
         let commands=layout.allocator.allocate(65536,4096,Kind::Engine)?;
         let source=layout.allocator.allocate(SIZE as u64,4096,Kind::Engine)?;
@@ -303,7 +297,7 @@ impl Channel {
         context.map_system(&mut layout.allocator,&mut io,SYSTEM,&[pages.address(0),pages.address(1)])?;
         for off in (0..65536).step_by(4096) {words(regs,total,commands.range.start+off,&[0;1024])?;}
         let instance=context.space().instance.range.start;
-        let userd_address=userd_base+u64::from(id)*512;
+        let userd_address=userd.range.start+u64::from(id)*512;
         words(regs,total,userd_address,&[0;128])?;
         for (offset,value) in [(0x08,userd_address as u32),(0x0c,(userd_address>>32) as u32),(0x10,0xface),
             (0x30,0xfffff902),(0x48,COMMAND as u32),(0x4c,9<<16),(0x84,0x20400000),
@@ -312,7 +306,7 @@ impl Channel {
             words(regs,total,instance+offset,&[value])?;
         }
         words(regs,total,commands.range.start+RUNLIST,&[id,0])?;
-        Ok(Self{id,context,commands,userd,userd_base,source,dest,stage,pages,epoch:timer::rdtsc()|1,put:0,active:false,generation:0,queue:super::queue::Queue::new(),shared:false,failure:None})
+        Ok(Self{id,context,commands,userd,source,dest,stage,pages,epoch:timer::rdtsc()|1,put:0,active:false,generation:0,queue:super::queue::Queue::new(),shared:false,failure:None})
     }
     fn activate(&mut self,regs:&mut Registers,total:u64,e:&Engine,bar_inst:u64,bar_dir:u64,pte:u64)->Result<(),&'static str> {
         if self.active {return Ok(());}
@@ -329,18 +323,6 @@ impl Channel {
         wait(regs,0x2284+e.run as usize*8,0x100000,0,2_000_000)?;
         self.active=true;
         Ok(())
-    }
-    fn activate_shared(&mut self,regs:&mut Registers,e:&Engine)->Result<(),&'static str> {
-        unsafe {self.context.admit_device()?;}
-        self.active=true;
-        let ch=self.id as usize*8;
-        regs.mask(0x800004+ch,0xf0000,e.run<<16);
-        regs.write(0x800000+ch,0x80000000|(self.context.space().instance.range.start>>12) as u32);
-        regs.mask(0x800004+ch,0x400,0x400);
-        regs.mask(0x2630,1<<e.run,0);
-        regs.write(0x2270,((self.commands.range.start+RUNLIST)>>12) as u32);
-        regs.write(0x2274,(e.run<<20)|1);
-        wait(regs,0x2284+e.run as usize*8,0x100000,0,100_000)
     }
     fn submit(&mut self,regs:&mut Registers,total:u64,bar:usize,rect:Rect,publish:bool)->Result<u32,&'static str> {
         let seq=self.queue.next()?;
@@ -385,7 +367,7 @@ impl Channel {
             // A06F's read-only GPGet belongs to this channel's private USERD.
             // While loaded, PBDMA has the current value; otherwise use its saved USERD.
             let get=if current {regs.read(0x40014+p)} else {
-                read(regs,total,self.userd_base+u64::from(self.id)*512+0x88)?
+                read(regs,total,self.userd.range.start+u64::from(self.id)*512+0x88)?
             };
             let consumed=super::queue::Queue::consumed(self.put,get);
             let sample=CeSample{context:u64::from(bound&0x0fffffff)<<12,epoch,sequence:value,
@@ -736,18 +718,6 @@ pub(in crate::gk208) use recovery::reset_engine;
 mod process;
 pub(super) use process::{retain,proc_read,initialize_core,test_ownership,with_resources};
 pub(crate) use process::console_state;
-pub(in crate::gk208) use process::{console_allocation,device_error};
-
-/// The graphics owner lends retained packed USERD storage; the fault VM is private.
-pub(in crate::gk208) struct FaultPeer {
-    pub commands: Allocation,
-    pub userd: u64,
-    pub id: u32,
-    pub instance: u64,
-    pub epoch: u64,
-    pub runlist: u32,
-    pub pbdma: usize,
-    pub reset_mask: u32,
-}
+pub(in crate::gk208) use process::console_allocation;
 
 pub(crate) mod readback;

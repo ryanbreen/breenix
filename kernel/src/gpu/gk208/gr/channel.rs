@@ -1460,18 +1460,6 @@ mod native {
         }
         /// True only after USERD GP_PUT publishes this sequence to the engine.
         pub(crate) fn published(&self, sequence: u32) -> bool { self.put == sequence }
-        pub(crate) fn device_error(&mut self) -> Result<u32, &'static str> {
-            self.healthy()?;
-            let s=&self.session;
-            let c=&s.report.identity;
-            let copy=s.copy.as_ref().ok_or("native copy owner absent")?;
-            let answer=crate::gk208::ce::device_error(crate::gk208::ce::FaultPeer {
-                commands:s.commands,userd:s.userd,id:c.id,instance:c.instance,epoch:c.epoch,
-                runlist:c.runlist,pbdma:s.pbdma,reset_mask:1 | (1<<copy.reset),
-            })?;
-            self.healthy()?;
-            Ok(answer)
-        }
         pub(crate) fn publish(
             &mut self, sequence: u32, operation: &crate::gk208::adapter::Operation,
         ) -> Result<(), &'static str> {
