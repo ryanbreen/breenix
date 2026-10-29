@@ -859,13 +859,19 @@ pub struct Suite {
     pub case_limit_ms: u64,
     pub gui: bool,
     defer_display: bool,
+    finalizer: Option<fn()>,
 }
 
 pub const fn suite(id: &'static str, title: &'static str, categories: &'static [Category]) -> Suite {
-    Suite { id, title, categories, case_limit_ms: DEFAULT_CASE_LIMIT_MS, gui: false, defer_display: false }
+    Suite { id, title, categories, case_limit_ms: DEFAULT_CASE_LIMIT_MS, gui: false, defer_display: false, finalizer: None }
 }
 
 impl Suite {
+    /// Upload suite-owned evidence after cases and reclamation, before readiness.
+    pub const fn with_finalizer(self, finalize: fn()) -> Suite {
+        Suite { finalizer: Some(finalize), ..self }
+    }
+
     /// Hand the display to each isolated case; draw only between measured windows.
     pub const fn gui(self)->Suite {Suite{gui:true,..self}}
 
@@ -887,7 +893,9 @@ impl Suite {
     /// a one-case run stops before any suite sequence and is not full-suite
     /// evidence. An unknown case or unusable argv ends in a failed DONE. Does not return.
     pub fn run(&self) -> ! {
-        self.run_with_finalizer(|| {})
+        self.run_with_finalizer(|| {
+            if let Some(finalize) = self.finalizer { finalize(); }
+        })
     }
 
     /// Finish a suite-owned evidence producer after the cases and memory verdict,

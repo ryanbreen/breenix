@@ -19,11 +19,16 @@ def receive(handler):
     with m.locked('gt710-upload'):
         intent=m.read_json(m.STATE/'gt710-upload.json',{})
         lease=m.read_lease() or {}
-        if (not intent or urlsplit(handler.path).path!=intent.get('route') or intent.get('complete')
+        route=urlsplit(handler.path).path
+        final=bool(intent) and route==intent.get('route','')+'/final'
+        if (not intent or (route!=intent.get('route') and not final)
+                or (intent.get('finalComplete') if final else intent.get('complete'))
+                or (final and not intent.get('complete'))
                 or lease.get('id')!=intent.get('id') or lease.get('state')!='powered'):
             handler.send_error(404);return
         directory=m.boot_dir(intent['id'])
-        temporary=directory/'gt710-pixels.rle.partial'
+        filename='gt710-final.rle' if final else 'gt710-pixels.rle'
+        temporary=directory/(filename+'.partial')
         try:
             length=int(handler.headers.get('Content-Length','-1'))
             expected=handler.headers.get('X-Content-SHA256','')
@@ -39,9 +44,14 @@ def receive(handler):
                     out.write(chunk);digest.update(chunk);remaining-=len(chunk)
                 out.flush();os.fsync(out.fileno())
             if digest.hexdigest()!=expected:raise ValueError('display artifact digest differs')
-            temporary.replace(directory/'gt710-pixels.rle')
-            intent.update(complete=True,bytes=length,sha256=expected,receivedAt=m.now())
-            m.write_json(directory/'native-upload.json',intent)
+            temporary.replace(directory/filename)
+            receipt=dict(id=intent['id'],route=route,complete=True,bytes=length,
+                         sha256=expected,receivedAt=m.now())
+            if final:
+                intent['finalComplete']=True
+            else:
+                intent.update(receipt)
+            m.write_json(directory/('native-final-upload.json' if final else 'native-upload.json'),receipt)
             m.write_json(m.STATE/'gt710-upload.json',intent)
             handler.send_response(200);handler.send_header('Content-Length','0')
             handler.send_header('Connection','close');handler.end_headers();handler.close_connection=True

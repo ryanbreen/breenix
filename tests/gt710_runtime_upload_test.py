@@ -28,7 +28,8 @@ mod gt710_artifacts {
         assert_eq!(*super::EVENTS.lock().unwrap(), vec!["caps"]);
         super::EVENTS.lock().unwrap().push("startup-upload");Ok(())
     }
-    pub fn upload_final(resources:Option<&super::libbreenix::gpu::Caps>)->Result<(), &'static str> {
+    pub fn upload_slot(resources:Option<&super::libbreenix::gpu::Caps>, final_slot:bool)->Result<(), &'static str> {
+        assert!(final_slot);
         assert!(resources.is_some());
         assert_eq!(*super::EVENTS.lock().unwrap(), vec!["caps","startup-upload","cases","reclaim","caps"]);
         super::EVENTS.lock().unwrap().push("final-upload");Ok(())

@@ -1,6 +1,7 @@
 //! Send actual compressed readback rows to the boot service; serial keeps their digest.
 use libbreenix::{crypto::sha256::sha256,dns,io::{self,PollFd,poll_events},socket,time};
-pub fn upload(resources: Option<&libbreenix::gpu::abi::Caps>)->Result<(),String> {
+pub fn upload()->Result<(),String> { upload_slot(None, false) }
+pub(super) fn upload_slot(resources: Option<&libbreenix::gpu::abi::Caps>, final_slot: bool)->Result<(),String> {
     let mut data=std::fs::read("/proc/gt710-pixels").unwrap_or_default();
     let resource_row = resources.map(|caps| {
         // Caps implements Plain: repr(C), integer fields only, no padding.
@@ -16,7 +17,8 @@ pub fn upload(resources: Option<&libbreenix::gpu::abi::Caps>)->Result<(),String>
     if let Some(row) = &resource_row { data.extend_from_slice(row.as_bytes()); }
     if data.is_empty() {return Ok(());}
     if data.len()>2<<20 {return Err("native display artifact exceeds bound".into());}
-    let target=std::fs::read_to_string("/etc/breenix/gt710-upload").map_err(|_|"native upload route absent")?;
+    let mut target=std::fs::read_to_string("/etc/breenix/gt710-upload").map_err(|_|"native upload route absent")?.trim().to_string();
+    if final_slot { target.push_str("/final"); }
     let rest=target.trim().strip_prefix("http://").ok_or("native upload needs HTTP")?;
     let (authority,path)=rest.split_once('/').ok_or("native upload path absent")?;
     let (host,port)=authority.rsplit_once(':').map_or((authority,80),|(h,p)|(h,p.parse().unwrap_or(0)));
@@ -65,7 +67,8 @@ pub fn upload(resources: Option<&libbreenix::gpu::abi::Caps>)->Result<(),String>
         let row_digest: String = sha256(row.as_bytes()).iter().map(|b|format!("{b:02x}")).collect();
         println!("GT710_RESOURCES_BULK {} {}", row.len(), row_digest);
     }
-    println!("GT710_BULK {} {}",data.len(),digest);
+    let anchor=if final_slot {"GT710_FINAL_BULK"} else {"GT710_BULK"};
+    println!("{} {} {}",anchor,data.len(),digest);
     println!("GT710_PROBE_TIME network-upload us={}",micros(end)-micros(start));
     Ok(())
 }

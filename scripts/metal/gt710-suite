@@ -2127,11 +2127,16 @@ def resources_capture(directory, sha):
         events = [json.loads(l) for l in read('events.jsonl').splitlines()]
         status = read('exit-status').strip()
         if (not read('ended').strip() or read('dirty').strip() != '0' or read('commit').strip() != sha
-                or status != '0'
+                or status not in (('0','1') if suite == 'gpu' else ('0',))
                 or any(e.get('event') in ('console-gap', 'fatal') for e in events)
                 or sum(e.get('event') == 'final-marker' for e in events) != 1):
             raise ValueError('resources capture incomplete, dirty, gapped or unsuccessful')
-        return dict(boot=dict(boot, bootedCommit=sha), serial=capture_serial(path), events=events,
+        serial=capture_serial(path)
+        if status == '1':
+            measured=resources_suite(serial, boot)
+            if not any(c['result'] == 'FAIL' for c in measured['cases']):
+                raise ValueError('resources exit 1 without failed GPU cases')
+        return dict(boot=dict(boot, bootedCommit=sha), serial=serial, events=events,
                     exit_status=int(status))
     console = read_capture(directory, 'console')
     gpu = read_capture(directory / 'resources-producer', 'gpu')
@@ -2403,6 +2408,21 @@ def capture_serial(directory):
     # claim-lint:ok: normative bulk framing; tests/gt710_bulk_test.py and tests/gt710_contexts_report_test.py mutate anchors and bodies.
     serial=(Path(directory)/'serial.txt').read_text()
     matches=list(re.finditer(r'^GT710_BULK (\d+) ([a-f0-9]{64})$',serial,re.M))
+    finals=list(re.finditer(r'^GT710_FINAL_BULK (\d+) ([a-f0-9]{64})$',serial,re.M))
+    final_path=Path(directory)/'gt710-final.rle'
+    if len(finals)>1 or final_path.exists()!=bool(finals):
+        raise ValueError('final artifact slot missing or duplicated')
+    if finals:
+        start=list(re.finditer(r'^SUITE gpu START .*$',serial,re.M))
+        done=list(re.finditer(r'^SUITE gpu DONE .*$',serial,re.M))
+        memory=list(re.finditer(r'^SUITE gpu MEMORY reclaimed=.*$',serial,re.M))
+        ready=list(re.finditer(r'^SUITE_SEQUENCE READY gpu$',serial,re.M))
+        case_rows=list(re.finditer(r'^SUITE gpu CASE .*$',serial,re.M))
+        if (len(matches)!=1 or len(start)!=1 or len(done)!=1 or len(memory)!=1
+                or len(ready)!=1 or not case_rows
+                or not matches[0].end()<start[0].start()<case_rows[0].start()
+                or not case_rows[-1].end()<done[0].start()<memory[0].start()<finals[0].start()<ready[0].start()):
+            raise ValueError('final artifact slot outside completed GPU suite')
     contexts = 'GT710_CTX_BULK ' in serial or 'GT710_CONTEXTS ' in serial
     if contexts and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file()
                      or re.search(r'^GT710_CTX_IMAGE ', serial, re.M)):
@@ -2440,9 +2460,17 @@ def capture_serial(directory):
     data=(Path(directory)/'gt710-pixels.rle').read_bytes()
     if len(data)!=int(matches[0][1]) or len(data)>2<<20 or hashlib.sha256(data).hexdigest()!=matches[0][2]:
         raise ValueError('display artifact differs from serial length/digest')
+    startup_bytes=len(data)
+    if finals:
+        final_data=final_path.read_bytes()
+        if (len(final_data)!=int(finals[0][1]) or len(final_data)>2<<20
+                or hashlib.sha256(final_data).hexdigest()!=finals[0][2]):
+            raise ValueError('final artifact differs from serial length/digest')
+        data+=final_data
     text=data.decode('ascii')
-    groups={};previous=None
+    groups={};group_slots={};previous=None;offset=0
     for line in text.splitlines(keepends=True):
+        slot=int(offset>=startup_bytes);offset+=len(line)
         fields=line.split()
         if fields[0]=='GT710_PIX': key=('native',)
         elif fields[0]=='GT710_SWITCH_PIX': key=('switch',int(fields[1]))
@@ -2466,6 +2494,9 @@ def capture_serial(directory):
         elif fields[0]=='GT710_CORE': key=('core',)
         elif fields[0]=='GT710_CORE_STARTUP': key=('core-startup',)
         else: raise ValueError('unexpected display artifact record')
+        if key in group_slots and group_slots[key]!=slot:
+            raise ValueError('artifact record appears in both slots')
+        group_slots[key]=slot
         if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
         groups.setdefault(key,[]).append(line);previous=key
     def report_key(line):
@@ -2491,8 +2522,15 @@ def capture_serial(directory):
     if len(order)!=len(set(order)) or list(groups)!=order:
         raise ValueError('display artifact blocks differ from update order')
     result=[]
+    serial_offset=0
     for line in serial.splitlines(keepends=True):
         key=report_key(line)
+        if key is not None and finals:
+            lower=matches[0].end() if group_slots[key] else 0
+            upper=finals[0].start() if group_slots[key] else matches[0].start()
+            if not lower<=serial_offset<upper:
+                raise ValueError('artifact anchor outside its upload slot')
+        serial_offset+=len(line)
         if key is not None and key[0] in ('caps-probe', 'caps-reprobe'):
             digest = re.search(r'sha256=([a-f0-9]{64})', line)
             if (len(groups[key]) != 1 or digest is None
@@ -2538,6 +2576,9 @@ def capture_categories(boot):
     if boot.get('mode') == 'probe':
         return [c for c in CATEGORIES if c in CPU_MEMORY_CATEGORIES]
     return [c for c in CATEGORIES if c != 'resources' and c not in CPU_MEMORY_CATEGORIES
+            # The console entry runs CE kill/recovery before CAPS transfers FIFO
+            # ownership. The GPU entry starts with CAPS and cannot run those probes.
+            and not (boot.get('suite') == 'gpu' and c in ('recovery', 'contexts'))
             and (c != 'console' or (boot.get('mode') == 'suite' and boot.get('suite') == 'console'))]
 
 
@@ -2670,7 +2711,7 @@ def main():
         runner['in_metal'](env, 'python3', '-c',
             'import sys,shutil;from pathlib import Path;'
             'p=Path(sys.argv[1]);q=Path(sys.argv[2]);d=p/"resources-producer";d.mkdir(exist_ok=True);'
-            '[shutil.copyfile(q/n,d/n) for n in ("run.json","serial.txt","events.jsonl","ended","exit-status","dirty","commit","gt710-pixels.rle")]',
+            '[shutil.copyfile(q/n,d/n) for n in ("run.json","serial.txt","events.jsonl","ended","exit-status","dirty","commit","gt710-pixels.rle")];[(shutil.copyfile(q/n,d/n) if (q/n).is_file() else (d/n).unlink(missing_ok=True)) for n in ("gt710-final.rle","native-final-upload.json")]',
             directory, companion, check=True)
         result = runner['in_metal'](env, 'python3', '-c',
             'import runpy,sys;from pathlib import Path;'
@@ -2695,7 +2736,7 @@ def main():
             'import runpy,sys,shutil;from pathlib import Path;'
             'p=Path(sys.argv[1]);q=Path(sys.argv[2]);a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));'
             'a["core_diagnostic_capture"](q,sys.argv[3]);d=p/"core-diagnostic";d.mkdir(exist_ok=True);'
-            '[shutil.copyfile(q/n,d/n) for n in ("run.json","serial.txt","events.jsonl","ended","exit-status","dirty","commit","gt710-pixels.rle")] ',
+            '[shutil.copyfile(q/n,d/n) for n in ("run.json","serial.txt","events.jsonl","ended","exit-status","dirty","commit","gt710-pixels.rle")];[(shutil.copyfile(q/n,d/n) if (q/n).is_file() else (d/n).unlink(missing_ok=True)) for n in ("gt710-final.rle","native-final-upload.json")] ',
             directory, diagnostic, args.sha, check=True)
     if args.gpu_boot:
         if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.gpu_boot) or args.gpu_boot == args.boot:
@@ -2705,7 +2746,7 @@ def main():
             'import runpy,sys,shutil;from pathlib import Path;'
             'p=Path(sys.argv[1]);q=Path(sys.argv[2]);a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));'
             'a["core_producer_capture"](q,sys.argv[3]);d=p/"core-producer";d.mkdir(exist_ok=True);'
-            '[shutil.copyfile(q/n,d/n) for n in ("run.json","serial.txt","events.jsonl","ended","exit-status","dirty","commit","gt710-pixels.rle")]',
+            '[shutil.copyfile(q/n,d/n) for n in ("run.json","serial.txt","events.jsonl","ended","exit-status","dirty","commit","gt710-pixels.rle")];[(shutil.copyfile(q/n,d/n) if (q/n).is_file() else (d/n).unlink(missing_ok=True)) for n in ("gt710-final.rle","native-final-upload.json")]',
             directory, companion, args.sha, check=True)
     result = runner['in_metal'](env, 'python3', '-c',
         'import runpy,sys;from pathlib import Path;'
