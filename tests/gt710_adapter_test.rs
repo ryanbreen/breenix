@@ -28,6 +28,11 @@ pub mod gk208 {
                 pub fn publish(&mut self,sequence:u32,_:&crate::gk208::adapter::Operation)->Result<(),&'static str> {
                     self.0.borrow_mut().published.push(sequence);Ok(())
                 }
+                pub fn publish_draw(&mut self,sequence:u32,draw:&crate::gk208::adapter::EncodedDraw)->Result<(),&'static str> {
+                    assert_eq!(draw.target,19);
+                    assert_eq!(draw.words,[0x20010367,0]);
+                    self.0.borrow_mut().published.push(sequence);Ok(())
+                }
                 pub fn sample(&mut self,sequence:u32)->Result<CeSample,&'static str> {
                     let s=self.0.borrow();Ok(CeSample{context:s.channel,epoch:s.release_epoch,sequence:s.release,consumed:sequence,healthy:!s.fault})
                 }
@@ -137,4 +142,19 @@ fn send(d:&mut Device,caller:u64) {assert!(d.send(request(caller)).is_ok());}
     assert_eq!(storage.tag,Tag::Sync(99));assert_eq!(storage.answer,gpu_abi::gk208::SUCCESS);
     assert_eq!((storage.fence,storage.native_fence,storage.echoed,storage.fenced),(None,None,0,false));
     assert_eq!(Arc::strong_count(&pages),1);
+}
+
+#[test]
+fn encoded_draw_requires_its_engine_release_and_epoch_before_caller_fence() {
+    let (mut d,s)=device();
+    let draw=gk208::adapter::EncodedDraw {target:19,words:vec![0x20010367,0]};
+    assert!(d.send(Request::draw(Tag::Sync(9001),9001,19,1,draw)).is_ok());
+    assert_eq!(s.borrow().published,[1]);
+    assert!(matches!(d.reap(),Reap::Empty));
+    s.borrow_mut().release=1;s.borrow_mut().release_epoch=16;
+    assert!(matches!(d.reap(),Reap::Empty));
+    s.borrow_mut().release_epoch=17;
+    let Reap::Done(done)=d.reap() else {panic!("released draw did not complete")};
+    assert_eq!(done.fence,Some(9001));assert_eq!(done.native_fence,Some(1));
+    assert_eq!(done.echoed,1);assert!(done.fenced);
 }

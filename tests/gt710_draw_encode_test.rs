@@ -1,3 +1,26 @@
+/*******************************************************************************
+    Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in
+    all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+
+*******************************************************************************/
+
 //! Literal A197 packets from MIT open-gpu-doc cla197.h at
 //! 9fdf5c4062007929d9f4e6cbad9c9771fe61b880: RT 0x800, viewport 0xa00,
 //! scissor 0xe00, vertex fetch 0x1c00, programs 0x2040/0x2140, CB 0x2380.
@@ -55,7 +78,7 @@ fn three_solids_bind_native_layout_scissors_programs_and_instance_bytes() {
         assert_eq!(f.chunks.len(), 3);
         let scissors = [[0,0,64,64], [16,20,40,44], [8,12,48,56]];
         let rectangles = [[0,0,32,32], [16,20,40,44], [32,32,48,56]];
-        let colours = [[1.,0.,0.,1.], [0.,1.,0.,1.], [0.,0.,1.,1.]];
+        let colours = [[0.,0.,1.,1.], [0.,1.,0.,1.], [1.,0.,0.,1.]];
         for (i, chunk) in f.chunks.iter().enumerate() {
             assert_eq!(chunk.target, 19);
             let p = packets(&chunk.words);
@@ -67,6 +90,9 @@ fn three_solids_bind_native_layout_scissors_programs_and_instance_bytes() {
             assert!(p.contains(&(0x2040, vec![0x11,0x30])));
             assert!(p.contains(&(0x2140, vec![0x51,0x1b0])));
             assert!(p.contains(&(0x214c, vec![4])));
+            for method in [0x1538,0x12cc,0x12e8,0x1380,0x1594,0x19bc] {
+                assert!(p.contains(&(method,vec![0])));
+            }
             assert!(p.contains(&(0x2490, vec![1]))); // fragment constant slot 0
             assert!(p.contains(&(0xd74, vec![0,6])));
             let vb = p.iter().find(|(m,_)| *m == 0x1c00).unwrap().1.clone();

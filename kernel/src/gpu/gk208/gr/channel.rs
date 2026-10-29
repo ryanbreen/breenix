@@ -1467,6 +1467,20 @@ mod native {
             };
             self.publish_encoded(sequence, &mut command)
         }
+        pub(crate) fn publish_draw(&mut self, sequence: u32, draw: &crate::gk208::adapter::EncodedDraw)
+            -> Result<(), &'static str> {
+            let s = &self.session;
+            crate::gk208::ce::with_resources(|r,_,io| r.bind(io,
+                s.context.space().directory.range.start,s.report.identity.instance,s.report.identity.epoch))?;
+            // Storage retains the uploaded code/inputs and the frame's target holds.
+            let mut command = draw.words.clone();
+            let target = TARGET + u64::from(crate::gk208::queue::Queue::slot(sequence))*16;
+            for (offset,value) in [(4,s.report.identity.epoch as u32),
+                (8,(s.report.identity.epoch>>32) as u32),(0,sequence)] {
+                command.extend(super::report(target+offset,value)?);
+            }
+            self.publish_encoded(sequence,&mut command)
+        }
         fn publish_encoded(&mut self, sequence: u32, command: &mut Vec<u32>) -> Result<(), &'static str> {
             let s = &self.session;
             let slot = crate::gk208::queue::Queue::slot(sequence);

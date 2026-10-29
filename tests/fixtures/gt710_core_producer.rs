@@ -76,6 +76,9 @@ pub mod gk208 {
                 pub fn identity(&self)->(u64,u64){(0x123000,17)}
                 pub fn healthy(&self)->bool{true}
                 pub fn publish(&mut self,sequence:u32,_:&Operation)->Result<(),&'static str>{self.published+=1;self.final_sample=None;self.polls=0;self.sample=CeSample{context:0x123000,epoch:17,sequence,consumed:sequence,healthy:true};self.drain=0;Ok(())}
+                pub fn publish_draw(&mut self,_:u32,_:&crate::gk208::adapter::EncodedDraw)->Result<(),&'static str>{
+                    panic!("core producer fixture does not issue encoded BGL draws")
+                }
                 pub fn publish_probe(&mut self,sequence:u32,op:&Operation,control:Control)->Result<(),&'static str>{
                     self.publish(sequence,op)?;
                     if self.ignore_control{return Ok(());}

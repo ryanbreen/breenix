@@ -541,3 +541,6 @@ pub(crate) fn initialize_core() -> Result<(), &'static str> {
     crate::serial_println!("{}", core_record::startup_anchor(row.as_bytes()));
     result
 }
+
+use gr::shaders;
+pub mod encode;

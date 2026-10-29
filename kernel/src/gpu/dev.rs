@@ -355,3 +355,10 @@ pub fn copy_region(tag: Tag, fence: u64, source: u32, destination: u32, rectangl
     (backend()==backend::GK208).then(|| crate::gk208::copy_region(tag,fence,source,destination,rectangle))?
         .map(Request::Gk208)
 }
+
+/// Native chunks retain their own uploaded program/instance storage; the shared
+/// core still owns their admission, resource holds and publication order.
+#[cfg(target_arch = "x86_64")]
+pub fn submit_gk208(tag: Tag, fence: u64, chunk: crate::gk208::adapter::EncodedDraw) -> Request {
+    Request::Gk208(crate::gk208::adapter::Request::draw(tag,fence,u64::from(chunk.target),1,chunk))
+}

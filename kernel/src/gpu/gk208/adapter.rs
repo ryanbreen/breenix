@@ -8,10 +8,23 @@ use super::{copy::Rect, gr::{channel::NativeChannel, draw::Draw}, queue::Queue};
 #[derive(Clone, Copy)]
 pub enum Operation { Copy(Rect), Transfer(super::copy::Plan), Draw(Draw) }
 
+/// Commands originate only in the validated kernel encoder. The owned storage
+/// stays held by pending requests on uncertain publication or failed reset.
+pub struct EncodedDraw {
+    pub words: Vec<u32>,
+    pub target: u32,
+    #[cfg(target_os = "none")]
+    pub(in crate::gk208) _storage: Arc<super::encode::Storage>,
+}
+pub enum DrawWork { Triangle(Draw), Encoded(EncodedDraw) }
+impl From<Draw> for DrawWork { fn from(d: Draw) -> Self { Self::Triangle(d) } }
+impl From<EncodedDraw> for DrawWork { fn from(d: EncodedDraw) -> Self { Self::Encoded(d) } }
+
 pub struct Request {
     pub tag: Tag,
     pub fence: Option<u64>,
     operation: Option<Operation>,
+    encoded: Option<EncodedDraw>,
     /// CPU storage/VM acknowledgement, deliberately unfenced.
     storage: bool,
     _backing: Option<Arc<crate::gpu::dma::Pages>>,
@@ -26,14 +39,18 @@ pub struct Request {
 impl Request {
     /// Kernel builders resolve validated handles to GPU addresses before admission.
     pub fn copy(tag: Tag, caller: u64, resource: u64, generation: u64, rect: Rect) -> Self {
-        Self { tag, fence: Some(caller), operation: Some(Operation::Copy(rect)), storage: false, _backing: None,
+        Self { tag, fence: Some(caller), operation: Some(Operation::Copy(rect)), encoded: None, storage: false, _backing: None,
             #[cfg(target_os = "none")]
             _transfer_hold: None, resource, generation, upload: false,
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             control: super::core_record::Control::Clean }
     }
-    pub fn draw(tag: Tag, caller: u64, resource: u64, generation: u64, draw: Draw) -> Self {
-        Self { tag, fence: Some(caller), operation: Some(Operation::Draw(draw)), storage: false, _backing: None,
+    pub fn draw(tag: Tag, caller: u64, resource: u64, generation: u64, draw: impl Into<DrawWork>) -> Self {
+        let (operation, encoded) = match draw.into() {
+            DrawWork::Triangle(draw) => (Some(Operation::Draw(draw)),None),
+            DrawWork::Encoded(draw) => (None,Some(draw)),
+        };
+        Self { tag, fence: Some(caller), operation, encoded, storage: false, _backing: None,
             #[cfg(target_os = "none")]
             _transfer_hold: None, resource, generation, upload: false,
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
@@ -49,7 +66,7 @@ impl Request {
         plan: super::copy::Plan, upload: bool, hold: super::ce::readback::TransferHold,
         backing: Option<Arc<crate::gpu::dma::Pages>>,
     ) -> Self {
-        Self { tag, fence: Some(caller), operation: Some(Operation::Transfer(plan)),
+        Self { tag, fence: Some(caller), operation: Some(Operation::Transfer(plan)), encoded: None,
             storage: false, _backing: backing, _transfer_hold: Some(hold),
             resource, generation: 1, upload,
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
@@ -59,7 +76,7 @@ impl Request {
     /// Actual allocation/map/unmap completed in the resource owner before this
     /// receipt was constructed. This is not an engine completion or a fence.
     pub(crate) fn storage(tag: Tag, backing: Option<Arc<crate::gpu::dma::Pages>>) -> Self {
-        Self { tag, fence: None, operation: None, storage: true, _backing: backing,
+        Self { tag, fence: None, operation: None, encoded: None, storage: true, _backing: backing,
             #[cfg(target_os = "none")]
             _transfer_hold: None,
             resource: 0, generation: 0, upload: false,
@@ -100,7 +117,7 @@ impl Device {
             self.pending.push_back(Sent { request, identity: None });
             return Ok(());
         }
-        let Some(operation) = request.operation.as_ref() else { return Err(request) };
+        if request.operation.is_none() && request.encoded.is_none() { return Err(request); }
         let Ok(sequence) = self.queue.next() else { return Err(request) };
         let (context, epoch) = self.channel.identity();
         let caller = request.fence.unwrap_or(0);
@@ -109,12 +126,17 @@ impl Device {
             resource: request.resource, generation: request.generation };
         // Retain the request on uncertain publication: a failing doorbell or
         // BAR flush leaves backing in pending until confirmed recovery.
-        #[cfg(not(any(feature = "testing", feature = "gt710_core_probe")))]
-        let result = self.channel.publish(sequence, operation);
-        #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
-        let result = if request.control == super::core_record::Control::Clean {
-            self.channel.publish(sequence, operation)
-        } else { self.channel.publish_probe(sequence, operation, request.control) };
+        let result = if let Some(draw) = request.encoded.as_ref() {
+            self.channel.publish_draw(sequence, draw)
+        } else {
+            let operation = request.operation.as_ref().unwrap();
+            #[cfg(not(any(feature = "testing", feature = "gt710_core_probe")))]
+            { self.channel.publish(sequence, operation) }
+            #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
+            { if request.control == super::core_record::Control::Clean {
+                self.channel.publish(sequence, operation)
+            } else { self.channel.publish_probe(sequence, operation, request.control) } }
+        };
         self.pending.push_back(Sent { request, identity: Some(identity) });
         if result.is_err() || self.queue.publish(sequence).is_err() { self.fault = true; }
         Ok(())

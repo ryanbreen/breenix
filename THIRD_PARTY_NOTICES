@@ -1158,3 +1158,26 @@ notice accompanies those files. Each source header was read before use.
 The existing cla06f.h packet-header attribution in copy.rs also applies.
 Breenix owns clipping, storage holds, directory aliases and staging policy;
 no external driver runtime or pixel oracle is imported.
+
+
+GT 710 native BGL draw encoding (milestone 8.2-u4)
+------------------------------------------------
+Consumers: kernel/src/gpu/gk208/encode.rs and tests/gt710_draw_encode_test.rs.
+The A197 method offsets, format codes, block-linear target fields, vertex
+fetch, constant-buffer and shader bindings use NVIDIA open-gpu-doc
+9fdf5c4062007929d9f4e6cbad9c9771fe61b880, classes/3d/cla197.h (MIT;
+Copyright (c) 2020 NVIDIA CORPORATION. All rights reserved.). The file's
+full license header was checked before use and is retained in both consumers.
+
+Fixed raster, vertex and surface state reuses the attributed native diagnostic
+encoder and adapts Mesa 24.3.4 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de:
+  src/gallium/drivers/nouveau/nvc0/nvc0_screen.c (MIT, Copyright 2010 Christoph Bumiller)
+  src/gallium/drivers/nouveau/nvc0/nvc0_state.c (MIT, Copyright 2010 Christoph Bumiller)
+  src/gallium/drivers/nouveau/nvc0/nvc0_vbo.c (MIT, Copyright 2010 Christoph Bumiller)
+  src/gallium/drivers/nouveau/nvc0/nvc0_surface.c (MIT, Copyright 2008 Ben Skeggs)
+Each full file-local grant was checked; encode.rs retains these notices and
+the diagnostic's inherited rnndb author list and MIT grant. No external
+runtime, expected picture or compiler dependency is added. The committed
+vertex and solid programs retain their existing source notices above.
+The pipeline-end releases in kernel/src/gpu/gk208/gr/channel.rs use that
+file's existing full MIT NVIDIA cla197.h notice and the same pinned methods.

@@ -2404,12 +2404,19 @@ fn warm_next() -> Option<u64> {
                 let count = match &chunks {
                     Chunks::Virgl(v) => v.len(),
                     Chunks::Svga(v) => v.len(),
+                    #[cfg(target_arch = "x86_64")]
+                    Chunks::Gk208(v) => v.len(),
                 };
                 c.warm_step = Some(WarmStep { ctx: id, pipeline, left: count as u32, refused: false, lost: false });
                 let reqs: Vec<(u64, u64, Option<Request>)> = match chunks {
                     Chunks::Virgl(v) => v.into_iter().map(|words| {
                         let (serial, fence) = (c.serial(), c.device_fence());
                         (serial, fence, Some(dev::submit_virgl(Tag::Sync(serial), id, Some(fence), words)))
+                    }).collect(),
+                    #[cfg(target_arch = "x86_64")]
+                    Chunks::Gk208(v) => v.into_iter().map(|chunk| {
+                        let (serial,fence) = (c.serial(),c.device_fence());
+                        (serial,fence,Some(dev::submit_gk208(Tag::Sync(serial),fence,chunk)))
                     }).collect(),
                     Chunks::Svga(v) => v.into_iter().map(|chunk| {
                         let (serial, fence) = (c.serial(), c.device_fence());
@@ -3401,6 +3408,8 @@ impl Snapshot {
 enum Chunks {
     Virgl(Vec<WordBuf>),
     Svga(Vec<svga::encode::Chunk>),
+    #[cfg(target_arch = "x86_64")]
+    Gk208(Vec<crate::gk208::adapter::EncodedDraw>),
 }
 
 /// The view's handles with the snapshot's buffer contents.
@@ -3440,6 +3449,14 @@ impl Resolver for Resolved<'_> {
     }
 
     fn buffer_word(&self, handle:u64, offset:u64)->u32 { self.snap.word(handle,offset) }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl crate::gk208::encode::Bindings for Resolved<'_> {
+    fn render_target(&self, handle: u64) -> Option<crate::gk208::encode::Target> {
+        let e = self.view.get(handle).filter(|e| !e.sample_only && e.kind == kind::TARGET)?;
+        crate::gk208::encode::target(e.id,e.format)
+    }
 }
 
 impl encode::Bindings for Resolved<'_> {
@@ -3798,11 +3815,12 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             corruption.is_some()
         });
     let svga = dev::is_svga();
+    let native = dev::backend() == abi::backend::GK208;
     // A viewport per rectangle costs more commands on large streams. Short Parallels
     // streams use immutable vertices; mutable data/copy scratch still needs completion.
     let fixed_quads = platform_config::is_parallels() && !svga && !FLIP_Y && plan.drawn <= 64;
     // The SVGA3D DX translation makes its own vertex, constant, data and scratch surfaces.
-    let vertex_range = match if svga || fixed_quads { Ok(None) } else { vertex_buffer_for(tgid, id, writer.serial, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) } {
+    let vertex_range = match if native || svga || fixed_quads { Ok(None) } else { vertex_buffer_for(tgid, id, writer.serial, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) } {
         Ok(vb) => vb,
         Err(e) => {
             release_slot(false);
@@ -3814,7 +3832,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
     // (`docs/gui/gpu.md` section 1.3), one per target format, sized for its largest.
     let mut copy_scratch = [0u32; 2];
     for (slot, [w, h]) in plan.scratch.into_iter().enumerate() {
-        if w == 0 || h == 0 || svga {
+        if w == 0 || h == 0 || svga || native {
             continue;
         }
         match scratch_for(tgid, id, slot as u32, w, h) {
@@ -3832,7 +3850,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
     }
     let data_width = with_core(|c| c.caps.max_width).unwrap_or(0).min(16384);
     let data_width = 1u32 << (31-data_width.leading_zeros());
-    let data_texture = if plan.data_bytes > 0 && !svga {
+    let data_texture = if plan.data_bytes > 0 && !svga && !native {
         match scratch_for(tgid, id, 2, data_width, (plan.data_bytes/4).div_ceil(data_width)) {
             Ok(rid)=>rid,
             Err(e)=>{
@@ -3936,7 +3954,32 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
     let dx_extras = || svga::encode::Extras { scratch: plan.scratch, data_width, corrupt, suppress, swap };
     // Count surface bytes, then size the complete device buffers including the surfaces'
     // lifecycle packets. Reserve the charge before allocating their backing.
-    let (chunk_charge, chunks) = if svga {
+    let native_chunks = if native {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let prepared = (|| {
+                // Reserve payload and bounded method storage before translating.
+                let bytes = crate::gk208::encode::DATA_START as u64 + 4096
+                    + plan.drawn.checked_add(plan.draws).ok_or(ENOMEM)?.max(1).checked_mul(4096).ok_or(ENOMEM)?;
+                let charge = Arc::new(Charge::new(tgid, bytes, true)?);
+                let frame = crate::gk208::encode::translate(&words, &resolved).map_err(|_| EINVAL)?;
+                let backing = Arc::new(Pages::new(frame.data.len().div_ceil(PAGE)).ok_or(ENOMEM)?);
+                backing.write(0,&frame.data);
+                backing.maintain(0,frame.data.len(),false);
+                let chunks = crate::gk208::encode::prepare(frame,backing).map_err(|_| ENOMEM)?;
+                Ok::<_,i64>((charge,Some(Chunks::Gk208(chunks))))
+            })();
+            match prepared {
+                Ok(chunks) => Some(chunks),
+                Err(e) => { release_slot(false); return Err(e); }
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        { release_slot(false); return Err(ENODEV); }
+    } else { None };
+    let (chunk_charge, chunks) = if let Some(chunks) = native_chunks {
+        chunks
+    } else if svga {
         let sized = svga::encode::translate(&mut dx_objects.clone(), &stale, &words, &resolved, dx_extras(), None, None);
         let Some((sized, _)) = sized else {
             release_slot(false);
@@ -4046,7 +4089,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         (chunk_charge, chunks)
     };
     let made = (|| {
-        if svga {
+        if svga || native {
             return Ok(());
         }
         if let Some((rid, _, capacity)) = vertex_range.filter(|&(_, _, capacity)| capacity != 0) {
@@ -4146,6 +4189,14 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 if reqs.is_empty() && !forced {
                     // An empty translation still needs a fenced command to complete in order.
                     reqs.push(dev::submit_virgl(Tag::Submit { ctx: id, serial, last: true }, id, Some(fence), WordBuf::new()));
+                }
+            }
+            #[cfg(target_arch = "x86_64")]
+            Chunks::Gk208(chunks) => {
+                let count = chunks.len();
+                for (i, chunk) in chunks.into_iter().enumerate() {
+                    let last = i+1 == count && !forced;
+                    reqs.push(dev::submit_gk208(Tag::Submit {ctx:id,serial,last},fence,chunk));
                 }
             }
             Chunks::Svga(chunks) => {

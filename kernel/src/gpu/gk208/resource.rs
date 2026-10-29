@@ -243,6 +243,16 @@ impl<B> Resources<B> {
         io.invalidate(directory)?;
         Ok(())
     }
+    #[cfg(target_os = "none")]
+    pub(in crate::gk208) fn draw_buffer(&mut self, a: &mut Allocator, io: &mut impl Io,
+        bytes: u32,
+    ) -> Result<u32, &'static str> {
+        let id = self.temporary;
+        self.temporary = id.checked_sub(1).ok_or("native staging IDs exhausted")?;
+        self.next_va = self.next_va.next_multiple_of(1<<17);
+        self.create(a,io,id,3,0,bytes,1)?;
+        Ok(id)
+    }
     pub fn staging(&mut self, a: &mut Allocator, io: &mut impl Io, format: u32,
         width: u32, height: u32,
     ) -> Result<u32, &'static str> {
