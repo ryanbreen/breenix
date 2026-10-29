@@ -12,7 +12,7 @@ class NativeDispatch(unittest.TestCase):
     def test_context_builders_and_native_identities(self):
         source = (ROOT / "kernel/src/gpu/dev.rs").read_text()
         functions = "\n".join(item(source, "pub fn " + name + "(") for name in
-                              ["ctx_create", "ctx_destroy", "ctx_attach", "context_id", "resource_id"])
+                              ["ctx_create", "ctx_destroy", "ctx_attach", "context_id", "resource_id", "set_scanout", "flush_resource"])
         functions = functions.replace('#[cfg(target_arch = "x86_64")]', "")
         fixture = r'''
 #![allow(dead_code)] // Stub backends exercise the extracted production dispatch.
@@ -25,15 +25,22 @@ mod svga {
  pub fn ctx_create(_:Tag,_:u32)->Option<u32>{panic!("SVGA context")}
  pub fn ctx_destroy(_:Tag,_:u32)->u32{panic!("SVGA context")}
  pub fn ctx_attach(_:Tag)->u32{panic!("SVGA attachment")}
+ pub fn set_scanout(_:Tag,_:u32,_:u32,_:u32)->Option<u32>{panic!("SVGA scanout")}
+ pub fn flush_resource(_:Tag,_:u32,_:u64,_:u32,_:u32)->Option<u32>{panic!("SVGA flush")}
  pub fn cid_of(_:u32)->Option<u32>{None} pub fn sid_of(_:u32)->Option<u32>{None}
 }
 mod virgl {
  use super::Tag;
+ pub fn set_scanout(_:Tag,_:u32,_:u32,_:u32,_:u32)->u32{panic!("VirGL scanout")}
+ pub fn flush_resource(_:Tag,_:u32,_:u64,_:u32,_:u32,_:u32)->u32{panic!("VirGL flush")}
  pub fn ctx_create(_:Tag,_:u32)->u32{panic!("VirGL context")}
  pub fn ctx_destroy(_:Tag,_:u32)->u32{panic!("VirGL context")}
  pub fn ctx_attach(_:Tag,_:u32,_:u32)->u32{panic!("VirGL attachment")}
 }
-mod gk208 {pub mod resource {
+mod gk208 {
+ pub fn set_scanout(_:crate::Tag,c:u32,r:u32,w:u32,h:u32)->Option<u32>{assert_eq!((c,r,w,h),(7,19,1280,1024));Some(300)}
+ pub fn flush_resource(_:crate::Tag,c:u32,f:u64,r:u32,w:u32,h:u32)->Option<u32>{assert_eq!((c,f,r,w,h),(7,91,19,1280,1024));Some(400)}
+ pub mod resource {
  use crate::Tag;
  pub fn ctx_create(_:Tag,c:u32)->Option<u32>{Some(c+100)}
  pub fn ctx_destroy(_:Tag,c:u32)->Option<u32>{Some(c+200)}
@@ -43,6 +50,8 @@ mod gk208 {pub mod resource {
 }}
 // FUNCTIONS
 fn main(){
+ assert_eq!(set_scanout(Tag,7,19,1280,1024),Some(Request::Gk208(300)));
+ assert_eq!(flush_resource(Tag,7,91,19,1280,1024),Some(Request::Gk208(400)));
  assert_eq!(ctx_create(Tag,7),Some(Request::Gk208(107)));
  assert_eq!(ctx_attach(Tag,7,19),Some(Request::Gk208(26)));
  assert_eq!(ctx_destroy(Tag,7),Some(Request::Gk208(207)));

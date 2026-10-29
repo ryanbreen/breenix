@@ -161,3 +161,21 @@ fn fully_clipped_frame_keeps_its_fenced_noop_without_a_vab_binding() {
     assert!(f.chunks[0].words.is_empty());
     assert!(encode::channel_words(&f.chunks[0].words,0x1800_0000).unwrap().is_empty());
 }
+
+#[test]
+fn probe_batches_preserve_every_draw_and_relocation_with_one_vab_binding() {
+    let mut f = encode::translate(frame().as_slice(), &View(format::B8G8R8A8)).unwrap();
+    f.relocate(0x3_0000_0000).unwrap();
+    let expected: Vec<_> = f.chunks.iter().flat_map(|c| packets(&c.words)).filter(|(m,_)| *m != 0x17bc).collect();
+    let mut batched = encode::translate(frame().as_slice(), &View(format::B8G8R8A8)).unwrap();
+    batched.batch_draws(1400);
+    assert!(batched.chunks.len() < 3);
+    batched.relocate(0x3_0000_0000).unwrap();
+    let actual: Vec<_> = batched.chunks.iter().flat_map(|c| packets(&c.words)).filter(|(m,_)| *m != 0x17bc).collect();
+    assert_eq!(actual, expected);
+    for c in &batched.chunks {
+        assert!(c.words.len() <= 1400);
+        assert_eq!(packets(&c.words).iter().filter(|(m,_)| *m == 0x17bc).count(), 1);
+        encode::channel_words(&c.words, 0x200000).unwrap();
+    }
+}
