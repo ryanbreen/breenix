@@ -54,7 +54,7 @@ mod virgl {
         pub struct Enc;
         impl Enc { pub fn new() -> Self { Self } pub fn finish(self) -> Option<Vec<super::Words>> {
             (!crate::OOM.with(std::cell::Cell::get)).then(|| vec![super::Words])
-        } }
+        } pub fn completion_read(&mut self, _:u32, _:u32) { panic!("unexpected Parallels completion read") } }
         pub fn warm_pipeline(_: &mut Enc, _: &mut (), _: u32, _: u32, _: u32, _: u32, _: bool, _: u32) {}
         pub struct TargetRes { pub id: u32, pub format: u32, pub info: super::super::TargetInfo }
         pub struct SourceRes { pub id: u32, pub format: u32, pub width: u32, pub height: u32 }
@@ -86,9 +86,10 @@ thread_local! { static SVGA: std::cell::Cell<bool> = const { std::cell::Cell::ne
 mod dev {
     use super::*;
     pub fn is_svga() -> bool { SVGA.with(|s| s.get()) }
+    pub fn backend() -> u32 { if is_svga() { 5 } else { 4 } }
     pub fn ok(answer: u32) -> bool { if is_svga() { svga::ok(answer) } else { virgl::ok(answer) } }
-    pub fn ctx_attach(tag: Tag, ctx: u32, id: u32) -> Request {
-        if is_svga() { svga::ctx_attach(tag) } else { virgl::ctx_attach(tag, ctx, id) }
+    pub fn ctx_attach(tag: Tag, ctx: u32, id: u32) -> Option<Request> {
+        Some(if is_svga() { svga::ctx_attach(tag) } else { virgl::ctx_attach(tag, ctx, id) })
     }
     pub fn submit_virgl(tag: Tag, ctx: u32, fence: Option<u64>, words: Words) -> Request {
         assert!(!is_svga());
@@ -97,6 +98,21 @@ mod dev {
     pub fn submit_svga(tag: Tag, ctx: u32, fence: Option<u64>, chunk: svga::encode::Chunk) -> Option<Request> {
         assert!(is_svga());
         svga::submit(tag, ctx, fence, chunk)
+    }
+    #[cfg(target_arch = "x86_64")]
+    pub fn submit_gk208(_:Tag, _:u64, _:crate::gk208::adapter::EncodedDraw) -> Request {
+        panic!("virtual-backend fixture submitted native work")
+    }
+}
+mod abi { pub mod backend { pub const GK208:u32=6; } }
+mod platform_config { pub fn is_parallels()->bool { false } }
+#[cfg(target_arch = "x86_64")]
+mod gk208 {
+    pub mod adapter { pub struct EncodedDraw; }
+    pub mod encode {
+        pub fn warm(_:u32, _:u32, _:u32)->Option<Vec<super::adapter::EncodedDraw>> {
+            panic!("virtual-backend fixture warmed native work")
+        }
     }
 }
 mod format { pub const B8G8R8A8: u32 = 2; }
@@ -174,7 +190,7 @@ fn wait_for<T>(_: Option<u64>, interruptible: bool, mut f: impl FnMut(&mut Core)
         chunks = re.search(r"(?m)^enum Chunks \{[^}]*\}\n", CORE)
         if chunks is None:
             raise AssertionError("production enum Chunks is missing")
-        harness += interval + chunks.group(0) + function("attach_all") + function("warm_next")
+        harness += interval + chunks.group(0) + function("catalogue_mask") + function("attach_all") + function("warm_next")
         readiness = re.search(r"out\.warmed = p\.contexts\.values\(\).*?\.count\(\) as u64;", CORE, re.S)
         self.assertIsNotNone(readiness, "missing process catalogue readiness count")
         harness += """
