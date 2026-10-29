@@ -1326,3 +1326,12 @@ MIT Mesa 24.3.4 nvc0_tex.c at 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de
 File-local grants checked before use; original notices remain in these
 consumers. Scratch snapshots and constants follow Breenix gpu.md 1.3/1.5
 item 7 and its ARM encoder. The four committed alpha programs are unchanged.
+
+### GT 710 suite device-error producer (8.3 acceptance)
+
+`kernel/src/gpu/gk208/ce/recovery.rs` reuses its attributed MIT Nouveau
+GK104 channel stop/preempt/runlist and CE engine reset ordering for the
+suite's unmapped-address control. The existing MIT grants and Red Hat
+copyrights remain in that file. The request uses the existing native CE
+owner and a private VM while retaining the graphics channel and packed
+USERD page; it does not import a second driver framework.

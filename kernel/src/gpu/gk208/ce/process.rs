@@ -215,6 +215,17 @@ pub(in crate::gk208) fn with_resources<R>(
     result
 }
 
+/// Runtime ownership differs from privileged bring-up: retain the live graphics
+/// channel and its USERD mapping while faulting only a private CE0 VM.
+pub(in crate::gk208) fn device_error(peer: FaultPeer) -> Result<u32, &'static str> {
+    let mut owner = SESSION.lock();
+    let s = owner.as_mut().ok_or("native fault allocator unavailable")?;
+    if !CORE_STARTED.load(Ordering::Acquire) || s.work.is_some() {
+        return Err("native fault channel not owned by core");
+    }
+    super::recovery::device_error(s, peer)
+}
+
 /// Observe the existing native console, independently of the shared renderer's
 /// resources. Its identifier is reserved, rather than its physical address.
 pub(crate) fn console_state() -> Option<(gpu_abi::Mode, u64, bool, u64)> {

@@ -230,6 +230,105 @@ fn pause() -> Result<(), &'static str> {
     result.map_err(|_| "native recovery worker wait failed")
 }
 
+/// Test point 27 uses the existing CE owner with a private VM on CE0's
+/// separate runlist. The live GR/CE2 channel is idle and remains bound. Its
+/// retained packed USERD page is borrowed without changing BAR1 or 0x2254.
+pub(super) fn device_error(s: &mut super::process::Session, peer: FaultPeer) -> Result<u32, &'static str> {
+    let mut regs=Registers(s.registers);
+    let e=discover(&mut regs)?;
+    let peer_register=0x800000+peer.id as usize*8;
+    let peer_binding=0x80000000 | (peer.instance>>12) as u32;
+    if e.run==peer.runlist || peer.reset_mask&(1<<e.reset)!=0 || e.fault>=32
+        || regs.read(peer_register)!=peer_binding || regs.read(0x259c)!=0
+        || regs.read(0x2254)!=0x10000000 | (SLOT>>12) as u32
+        || read(&mut regs,s.total,s.pte)?!=((peer.userd>>8)|1) as u32
+        || regs.read(0x2640+e.engine as usize*8)&0xc0000000!=0
+        || regs.read(0x2284+e.run as usize*8)&0x100000!=0 {
+        return Err("native isolated fault ownership differs");
+    }
+    ensure_unbound(&mut regs,2)?;
+    let old=[regs.read(0x200),regs.read(0x204),regs.read(e.base+0x904)];
+    let baseline=s.layout.allocator.stats();
+    let status=system_dma::translation_status()?;
+    let mut a=Channel::new_shared(&mut regs,&mut s.layout,s.total,2,&status,peer.commands,peer.userd)?;
+    let result=(|| {
+        regs.mask(0x200,1<<e.reset,1<<e.reset);
+        if regs.read(0x200)&(1<<e.reset)==0 {return Err("native fault CE enable refused");}
+        regs.mask(0x204,1<<e.pbdma,1<<e.pbdma);
+        regs.write(e.base+0x904,0);
+        a.activate_shared(&mut regs,&e)?;
+        let invalid=SOURCE+SIZE as u64+4096;
+        let held=a.context.hold(Consumer::Queued)?;
+        let seq=a.submit(&mut regs,s.total,s.bar,rect(invalid,DEST,1,1,1,1),true)?;
+        let request=a.request(seq,a.dest.range.start,1);
+        let start=timer::rdtsc();
+        while regs.read(0x259c)==0 {
+            if elapsed(start)>=100_000 {return Err("native requested MMU fault absent");}
+            regs.delay_us(10);
+        }
+        let (mask,faults)=super::super::vm::faults(&mut VmIo {regs:&mut regs,total:s.total});
+        let f=faults.iter().find(|f|u32::from(f.unit)==e.fault).ok_or("native requested MMU unit absent")?;
+        if mask!=1<<e.fault || faults.len()!=1 || f.instance!=request.context
+            || f.address!=invalid || f.reason!=2 || f.write || a.epoch!=request.epoch
+            || !a.context.attribute(f)
+            || a.hardware_completed(&mut regs,s.total,&e,request,0)?.0.is_some() {
+            return Err("native requested MMU fault attribution differs");
+        }
+        let (instance,epoch,raw)=(f.instance,a.epoch,f.raw);
+        // Reuse the existing local CE recovery ordering, with an empty CE0
+        // runlist rather than a surviving CE0 peer. GR's runlist is untouched.
+        let stop=timer::rdtsc();
+        regs.mask(0x2630,1<<e.run,1<<e.run);
+        regs.mask(0x800004+a.id as usize*8,0x800,0x800);
+        let (disabled,enabled)=reset_engine(&mut regs,e.base,e.reset)?;
+        regs.write(0x259c,mask);
+        regs.write(0x2100,0x10000000);
+        regs.write(0x2270,((a.commands.range.start+RUNLIST)>>12) as u32);
+        regs.write(0x2274,e.run<<20);
+        regs.write(0x262c,1<<e.run);
+        regs.mask(0x2630,1<<e.run,0);
+        budget_wait(&mut regs,stop,0x2284+e.run as usize*8,0x100000)?;
+        regs.write(0x2634,a.id);
+        budget_wait(&mut regs,stop,0x2634,0x100000)?;
+        budget_wait(&mut regs,stop,0x3080+e.pbdma*4,0xe000)?;
+        budget_wait(&mut regs,stop,0x2640+e.engine as usize*8,0xc0000000)?;
+        regs.write(0x800000+a.id as usize*8,0);
+        let gp=peer.pbdma*0x2000;
+        if disabled&(1<<e.reset)!=0 || enabled&(1<<e.reset)==0
+            || regs.read(0x259c)!=0 || regs.read(0x800000+a.id as usize*8)!=0
+            || regs.read(peer_register)!=peer_binding
+            || regs.read(0x40108+gp)!=0 || regs.read(0x40148+gp)!=0
+            || regs.read(0x200)&peer.reset_mask!=old[0]&peer.reset_mask
+            || elapsed(stop)>100_000 {
+            return Err("native MMU local stop unconfirmed; backing retained");
+        }
+        // SAFETY: the faulting CE alone was reset, removed, preempted and
+        // unbound with no surviving MMU error. Its private DMA has stopped.
+        unsafe {a.context.confirm_reset();}
+        a.active=false;
+        drop(held);
+        crate::serial_println!("GT710_NATIVE_DEVICE_ERROR peer={:#x} peer_epoch={} instance={:#x} epoch={} sequence={} reason=2 raw={:?} local_stop_us={}",
+            peer.instance,peer.epoch,instance,epoch,seq,raw,elapsed(stop));
+        Ok(gpu_abi::gk208::MMU_FAULT_PTE)
+    })();
+    match result {
+        Ok(answer)=>{
+            a.retire(&mut regs,&mut s.layout,s.total)?;
+            regs.write(e.base+0x904,old[2]);
+            regs.mask(0x204,1<<e.pbdma,old[1]&(1<<e.pbdma));
+            regs.mask(0x200,1<<e.reset,old[0]&(1<<e.reset));
+            if s.layout.allocator.stats()!=baseline {return Err("native MMU fault backing not reclaimed");}
+            Ok(answer)
+        }
+        Err(reason)=>{
+            // This includes uncertain activation or failed local recovery. Keep
+            // private storage and its pin on the borrowed GR USERD allocation.
+            core::mem::forget(a);
+            Err(reason)
+        }
+    }
+}
+
 pub(super) fn probe(s: &mut super::process::Session) -> Result<String, &'static str> {
     super::process::test_ownership()?;
     let mut regs = Registers(s.registers);
