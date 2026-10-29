@@ -163,3 +163,131 @@ pub fn exercise_uploads<I: UploadIo>(io: &mut I) -> Result<(), I::Error> {
     io.upload(&clean)?;
     io.readback(UploadCase::AfterFlipped, &clean)
 }
+
+// Shared catalogue programs reserved for milestone 8.3.
+pub const PIPELINE_OVER_OFFSET: usize = 0x2530;
+pub const PIPELINE_OVER_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-over.sph");
+pub const PIPELINE_OVER_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-over.bin");
+pub const PIPELINE_OVER_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-over.json"));
+pub const PIPELINE_OVER_STRAIGHT_OFFSET: usize = 0x2930;
+pub const PIPELINE_OVER_STRAIGHT_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-over_straight.sph");
+pub const PIPELINE_OVER_STRAIGHT_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-over_straight.bin");
+pub const PIPELINE_OVER_STRAIGHT_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-over_straight.json"));
+pub const PIPELINE_COVERAGE_OFFSET: usize = 0x2d30;
+pub const PIPELINE_COVERAGE_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-coverage.sph");
+pub const PIPELINE_COVERAGE_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-coverage.bin");
+pub const PIPELINE_COVERAGE_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-coverage.json"));
+pub const PIPELINE_BITMAP_TEXT_OFFSET: usize = 0x3130;
+pub const PIPELINE_BITMAP_TEXT_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-bitmap_text.sph");
+pub const PIPELINE_BITMAP_TEXT_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-bitmap_text.bin");
+pub const PIPELINE_BITMAP_TEXT_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-bitmap_text.json"));
+pub const PROBE_INT_00_OFFSET: usize = 0x3930;
+pub const PROBE_INT_00_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-00.sph");
+pub const PROBE_INT_00_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-00.bin");
+pub const PROBE_INT_00_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-00.json"));
+pub const PROBE_INT_01_OFFSET: usize = 0x3a30;
+pub const PROBE_INT_01_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-01.sph");
+pub const PROBE_INT_01_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-01.bin");
+pub const PROBE_INT_01_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-01.json"));
+pub const PROBE_INT_02_OFFSET: usize = 0x3b30;
+pub const PROBE_INT_02_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-02.sph");
+pub const PROBE_INT_02_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-02.bin");
+pub const PROBE_INT_02_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-02.json"));
+pub const PROBE_INT_03_OFFSET: usize = 0x3c30;
+pub const PROBE_INT_03_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-03.sph");
+pub const PROBE_INT_03_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-03.bin");
+pub const PROBE_INT_03_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-03.json"));
+pub const PROBE_INT_04_OFFSET: usize = 0x3d30;
+pub const PROBE_INT_04_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-04.sph");
+pub const PROBE_INT_04_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-04.bin");
+pub const PROBE_INT_04_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-04.json"));
+pub const PROBE_INT_05_OFFSET: usize = 0x3e30;
+pub const PROBE_INT_05_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-05.sph");
+pub const PROBE_INT_05_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-05.bin");
+pub const PROBE_INT_05_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-05.json"));
+pub const PROBE_INT_06_OFFSET: usize = 0x3fb0;
+pub const PROBE_INT_06_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-06.sph");
+pub const PROBE_INT_06_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-06.bin");
+pub const PROBE_INT_06_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-06.json"));
+pub const PROBE_INT_07_OFFSET: usize = 0x40b0;
+pub const PROBE_INT_07_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-07.sph");
+pub const PROBE_INT_07_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-07.bin");
+pub const PROBE_INT_07_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-07.json"));
+pub const PROBE_INT_08_OFFSET: usize = 0x41b0;
+pub const PROBE_INT_08_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-08.sph");
+pub const PROBE_INT_08_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-08.bin");
+pub const PROBE_INT_08_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-08.json"));
+pub const PROBE_INT_09_OFFSET: usize = 0x42b0;
+pub const PROBE_INT_09_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-09.sph");
+pub const PROBE_INT_09_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-09.bin");
+pub const PROBE_INT_09_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-09.json"));
+pub const PROBE_INT_10_OFFSET: usize = 0x44b0;
+pub const PROBE_INT_10_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-10.sph");
+pub const PROBE_INT_10_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-10.bin");
+pub const PROBE_INT_10_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-10.json"));
+pub const PROBE_INT_11_OFFSET: usize = 0x47b0;
+pub const PROBE_INT_11_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-11.sph");
+pub const PROBE_INT_11_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-11.bin");
+pub const PROBE_INT_11_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-11.json"));
+pub const PROBE_INT_18_OFFSET: usize = 0x4cb0;
+pub const PROBE_INT_18_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-18.sph");
+pub const PROBE_INT_18_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-18.bin");
+pub const PROBE_INT_18_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-18.json"));
+pub const PROBE_INT_19_OFFSET: usize = 0x4db0;
+pub const PROBE_INT_19_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-19.sph");
+pub const PROBE_INT_19_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-19.bin");
+pub const PROBE_INT_19_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-19.json"));
