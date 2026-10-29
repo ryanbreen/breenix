@@ -2132,11 +2132,12 @@ def resources_capture(directory, sha):
                 or sum(e.get('event') == 'final-marker' for e in events) != 1):
             raise ValueError('resources capture incomplete, dirty, gapped or unsuccessful')
         serial=capture_serial(path)
+        boot = dict(boot, bootedCommit=sha)
         if status == '1':
             measured=resources_suite(serial, boot)
             if not any(c['result'] == 'FAIL' for c in measured['cases']):
                 raise ValueError('resources exit 1 without failed GPU cases')
-        return dict(boot=dict(boot, bootedCommit=sha), serial=serial, events=events,
+        return dict(boot=boot, serial=serial, events=events,
                     exit_status=int(status))
     console = read_capture(directory, 'console')
     gpu = read_capture(directory / 'resources-producer', 'gpu')
@@ -2388,7 +2389,8 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns, pro
         if producer['console']['boot']['id'] == producer['gpu']['boot']['id']:
             raise ValueError('resources captures must be distinct')
         suite = resources_suite(producer['gpu']['serial'], producer['gpu']['boot'])
-        console_ms = resources_console(producer['console']['serial'], boot, producer['console']['events'])
+        console_ms = resources_console(producer['console']['serial'], producer['console']['boot'],
+                                       producer['console']['events'])
         lines = [l for l in producer['gpu']['serial'].splitlines() if l.startswith('SUITE gpu CASE ')]
         if (records.get('producerBoot') != producer['gpu']['boot']['id']
                 or records.get('gpuCases') != suite['cases'] or records.get('gpuCaseLines') != lines
