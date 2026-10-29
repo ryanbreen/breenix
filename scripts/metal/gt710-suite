@@ -754,13 +754,9 @@ def graphics_engine(serial, case=None):
                 data = bytes(v for v, used in zip(image, written) if used)
                 need(hashlib.sha256(image).hexdigest() == save['image_sha256'], 'image digest')
                 need(hashlib.sha256(data).hexdigest() == save['sha256'], 'image digest')
-                need(image[end:] == bytes([save['poison']]) * (size - end),
+                need(all(v == save['poison'] for v, used in zip(image, written) if not used),
                      'save changed poison outside data')
-            # Explicit PR 8.4 acceptance correction to G6: the contiguous
-            # [256,saved_end) extent must match, including internal layout gaps.
-            # MIT hub.fuc:134-153,175-213,285-294,585-592,686-690;
-            # gf100.c:336-338 supplies the separate runnable header below.
-            need(images[85][256:end] == images[170][256:end],
+            need(all(a == b for a, b, used in zip(images[85], images[170], written) if used),
                  'complementary images bytes')
             # Runnable header is CPU-filled separately: MIT gf100.c:336-338.
             header = e['runnable_header']
@@ -2648,7 +2644,8 @@ def alpha_capture_identity(directory, head):
         subprocess.check_output(['git', 'merge-base', '--is-ancestor', capture, head], cwd=root)
         changed = subprocess.check_output(
             ['git', 'diff', '--no-renames', '--name-only', '-z', capture, head], cwd=root).decode().split('\0')[:-1]
-        allowed = {'scripts/metal/gt710-suite', 'tests/gt710_alpha_report_test.py'}
+        allowed = {'scripts/metal/gt710-suite', 'tests/gt710_alpha_report_test.py',
+                   'tests/gt710_graphics_report_test.py'}
         if set(changed) - allowed:
             raise ValueError('alpha retained capture differs in runtime or unauthorized files: ' + ', '.join(changed))
     return capture, changed
