@@ -141,6 +141,7 @@ impl Resolver for View {
         (h == 1).then_some(TargetInfo { width: 64, height: 64, format: format::B8G8R8A8, invalid: false })
     }
     fn source(&self, h: u64) -> Option<SourceInfo> {
+        if h == 1 { return self.target(h).map(|t|SourceInfo {width:t.width,height:t.height,format:t.format,invalid:false}); }
         (h == 2).then_some(SourceInfo { width: 13, height: 9, format: self.0, invalid: false })
     }
     fn buffer_size(&self, _: u64) -> Option<u64> { None }
@@ -152,6 +153,7 @@ impl encode::Bindings for View {
             width: t.width, height: t.height, format: t.format, tile_mode: 0x30 })
     }
     fn sampled_source(&self, h: u64) -> Option<encode::Target> {
+        if h == 1 { return self.render_target(h); }
         self.source(h).map(|t| encode::Target { id: 23, address: 0x4_1234_5000,
             width: t.width, height: t.height, format: t.format, tile_mode: 0x10 })
     }
@@ -289,4 +291,22 @@ fn basic_warm_frames_use_native_programs_and_refuse_later_pipelines() {
         assert_eq!(frame.chunks[0].target, target.id);
     }
     assert!(encode::warm_frame(target, source, pipeline::OVER).is_none());
+}
+
+#[test]
+fn stream_copy_accepts_viewing_and_self_copy_without_changing_draw_target() {
+    for (source, destination) in [(2,1),(1,1)] {
+        let mut w=Vec::new(); stream::encode::begin(&mut w,1);
+        stream::encode::clear(&mut w,0x12345678);
+        // COPY has its own endpoints and ignores the current draw scissor.
+        w.extend([stream::cmd::SCISSOR,6,50,50,51,51]);
+        stream::encode::copy(&mut w,source,[1,2,7,5],destination,[3,4]);
+        let f=encode::translate(w.as_slice(),&View(format::B8G8R8A8))
+            .expect("8.2 byte COPY must pass native preflight and translation");
+        assert_eq!(f.chunks.len(),2);
+        assert_eq!(f.chunks[1].command,3);
+        assert_eq!(f.chunks[1].target,19);
+        assert_eq!(f.chunks[1].source,Some(if source==1 {19} else {23}));
+        assert!(f.chunks[1].words.is_empty(),"byte copies use CE, not a shaded quad");
+    }
 }
