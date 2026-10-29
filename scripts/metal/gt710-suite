@@ -2024,6 +2024,7 @@ def resources_suite(serial, boot):
         'MEMORY': r'SUITE gpu MEMORY (before|after) free=(\d+) heap_free_kb=\d+(?: [a-z_]+=\d+)+',
         'RECLAIMED': r'SUITE gpu MEMORY reclaimed=(PASS|FAIL) free_before=(\d+) free_after=(\d+) allowance=(\d+)',
         'VALUE': r'SUITE gpu VALUE ([a-z0-9/-]+) [a-z0-9-]+=(-?\d+(?:\.\d+)?)([a-z]*)(?: expect=(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)([a-z]*))?',
+        'WAIT': r'SUITE gpu WAIT ([a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*) until=(\d+) for=(\d+) result=[a-z0-9]+(?:-[a-z0-9]+)*',
     }
     parsed = []
     for line in serial.splitlines():
@@ -2042,6 +2043,16 @@ def resources_suite(serial, boot):
             or [m[1] for _, m, _ in records[1:171]] != names
             or records[171][0] != 'DONE' or records[172][0] != 'ELAPSED'):
         raise ValueError('resources requires manifest-ordered START/170 CASE/DONE/ELAPSED')
+    # Live WAIT measurements name the pending case; CASE still decides its result
+    # (docs/suites/README.md, live measurements).
+    completed, started, ended = 0, False, False
+    for kind, match, _ in parsed:
+        if kind == 'START': started = True
+        elif kind == 'DONE': ended = True
+        elif kind in ('PASS', 'FAIL'): completed += 1
+        elif kind == 'WAIT' and (not started or ended or completed >= len(names)
+                or match[1] != names[completed] or int(match[2]) < int(match[3])):
+            raise ValueError('resources WAIT outside its pending manifest case or before its duration')
     cases = [dict(id=m[1], result=k, ms=int(m[2]), reason=m[3] if k == 'FAIL' else '')
              for k, m, _ in records[1:171]]
     for c in cases:
