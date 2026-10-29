@@ -338,11 +338,17 @@ pub fn submit_svga(tag: Tag, ctx: u32, fence: Option<u64>, chunk: svga::encode::
 }
 
 pub fn set_scanout(tag: Tag, ctx: u32, resource: u32, width: u32, height: u32) -> Option<Request> {
-    match backend() { backend::SVGA3D_DX => svga::set_scanout(tag, resource, width, height).map(Request::Svga), backend::VIRGL => Some(Request::Virgl(virgl::set_scanout(tag, ctx, resource, width, height))), _ => None }
+    match backend() {
+        #[cfg(target_arch = "x86_64")]
+        backend::GK208 => crate::gk208::set_scanout(tag,ctx,resource,width,height).map(Request::Gk208),
+        backend::SVGA3D_DX => svga::set_scanout(tag, resource, width, height).map(Request::Svga), backend::VIRGL => Some(Request::Virgl(virgl::set_scanout(tag, ctx, resource, width, height))), _ => None }
 }
 
 pub fn flush_resource(tag: Tag, ctx: u32, fence: u64, resource: u32, width: u32, height: u32) -> Option<Request> {
-    match backend() { backend::SVGA3D_DX => svga::flush_resource(tag, ctx, fence, width, height).map(Request::Svga), backend::VIRGL => Some(Request::Virgl(virgl::flush_resource(tag, ctx, fence, resource, width, height))), _ => None }
+    match backend() {
+        #[cfg(target_arch = "x86_64")]
+        backend::GK208 => crate::gk208::flush_resource(tag,ctx,fence,resource,width,height).map(Request::Gk208),
+        backend::SVGA3D_DX => svga::flush_resource(tag, ctx, fence, width, height).map(Request::Svga), backend::VIRGL => Some(Request::Virgl(virgl::flush_resource(tag, ctx, fence, resource, width, height))), _ => None }
 }
 
 /// Read a BGRA kernel screen rectangle. VirGL transfers into its attached backing;

@@ -36,6 +36,8 @@ pub struct Request {
     resource: u64,
     generation: u64,
     upload: bool,
+    #[cfg(target_os = "none")]
+    scanout: bool,
     #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
     pub(crate) control: super::core_record::Control,
 }
@@ -45,6 +47,8 @@ impl Request {
         Self { tag, fence: Some(caller), operation: Some(Operation::Copy(rect)), encoded: None, storage: false, _backing: None,
             #[cfg(target_os = "none")]
             _transfer_hold: None, resource, generation, upload: false,
+            #[cfg(target_os = "none")]
+            scanout: false,
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             control: super::core_record::Control::Clean }
     }
@@ -56,6 +60,8 @@ impl Request {
         Self { tag, fence: Some(caller), operation, encoded, storage: false, _backing: None,
             #[cfg(target_os = "none")]
             _transfer_hold: None, resource, generation, upload: false,
+            #[cfg(target_os = "none")]
+            scanout: false,
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             control: super::core_record::Control::Clean }
     }
@@ -74,6 +80,8 @@ impl Request {
             #[cfg(target_os = "none")]
             _transfer_hold: Some(hold),
             resource, generation: 1, upload,
+            #[cfg(target_os = "none")]
+            scanout: false,
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             control: super::core_record::Control::Clean }
     }
@@ -82,6 +90,8 @@ impl Request {
             *plan = plan.with_extras(extras);
         }
     }
+    #[cfg(target_os = "none")]
+    pub(in crate::gk208) fn presenting(mut self) -> Self { self.scanout = true; self }
     pub fn is_upload(&self) -> bool { self.upload }
     /// Actual allocation/map/unmap completed in the resource owner before this
     /// receipt was constructed. This is not an engine completion or a fence.
@@ -90,6 +100,8 @@ impl Request {
             #[cfg(target_os = "none")]
             _transfer_hold: None,
             resource: 0, generation: 0, upload: false,
+            #[cfg(target_os = "none")]
+            scanout: false,
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             control: super::core_record::Control::Clean }
     }
@@ -225,6 +237,12 @@ impl Device {
             }
             None => return Reap::Empty,
         };
+        #[cfg(target_os = "none")]
+        if front.request.scanout && !super::ce::console_state().is_some_and(|(_,_,bound,_)| bound) {
+            self.first_error.get_or_insert("native present binding lost");
+            self.fault = true;
+            return Reap::Fault;
+        }
         let identity = completed.request();
         if self.queue.complete(identity.sequence).is_err() { self.fault = true; return Reap::Fault; }
         let sent = self.pending.pop_front().unwrap();
@@ -244,7 +262,8 @@ impl Device {
         if self.resetting.is_none() {
             #[cfg(target_os = "none")]
             {
-                self.channel.record_fault(self.fault_reason().unwrap_or("native health check failed"));
+                self.channel.record_fault(self.fault_reason().or_else(|| self.channel.healthy().err())
+                    .unwrap_or("shared core requested reset"));
                 for t in &self.recent {
                     let pending = self.pending.iter().any(|s| s.identity.is_some_and(|i| i.sequence == t.sequence && i.epoch == t.epoch));
                     crate::serial_println!("GT710_NATIVE_REQUEST pending={} tag={:?} channel={:#x} epoch={} caller={} sequence={} kind={} target={} frame={} address={:#x} command={}",

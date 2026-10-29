@@ -113,6 +113,7 @@ pub(crate) mod copy;
 mod ce;
 pub(crate) use ce::readback::{transfer,region as copy_region,identities as transfer_identities};
 pub(crate) use ce::readback::console as console_readback;
+pub(crate) use ce::readback::{set_scanout,flush_resource};
 mod queue;
 mod recovery_policy;
 pub use system_dma::set_platform as set_dma_platform;

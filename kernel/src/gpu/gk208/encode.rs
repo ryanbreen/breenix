@@ -283,6 +283,27 @@ pub struct Frame {
     pub data: Vec<u8>,
 }
 impl Frame {
+    /// Pack adjacent draws from this frame into bounded channel submissions.
+    /// Each draw retains its state and relocations; only repeated channel VAB
+    /// selection is omitted. Transfers remain separate and ordered.
+    pub fn batch_draws(&mut self, limit: usize) {
+        let mut batches: Vec<Chunk> = Vec::new();
+        for mut chunk in core::mem::take(&mut self.chunks) {
+            let prefix = chunk.words.first() == Some(&0x200305ef);
+            if let Some(last) = batches.last_mut().filter(|last|
+                prefix && chunk.copy.is_none() && last.copy.is_none()
+                    && last.target == chunk.target && last.source == chunk.source
+                    && last.words.len() + chunk.words.len() - 4 <= limit) {
+                let shift = last.words.len() - 4;
+                last.relocations.extend(chunk.relocations.drain(..).filter(|&i| i >= 4).map(|i| i + shift));
+                last.words.extend_from_slice(&chunk.words[4..]);
+            } else {
+                batches.push(chunk);
+            }
+        }
+        self.chunks = batches;
+    }
+
     /// Addresses in a fresh frame are relative to one retained system buffer.
     /// Relocation is called once, after its complete mapping has succeeded.
     pub fn relocate(&mut self, base: u64) -> Result<(), &'static str> {

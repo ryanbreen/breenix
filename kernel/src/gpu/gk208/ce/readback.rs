@@ -541,3 +541,45 @@ pub(crate) fn console(tag: crate::gpu::dev::Tag, fence: u64,
     Some(super::super::adapter::Request::transfer(tag,fence,u64::from(u32::MAX),plan,false,
         TransferHold { resources: holds },Some(backing)))
 }
+
+/// Native scanout is the display owner's retained pitch-linear surface. Bind
+/// validates the logical target; the following fenced flush performs the CE
+/// tiled-to-linear copy into that already latched surface.
+pub(crate) fn set_scanout(tag: crate::gpu::dev::Tag, ctx: u32, id: u32,
+    width: u32, height: u32,
+) -> Option<super::super::adapter::Request> {
+    super::super::resource::context_id(ctx)?;
+    let (surface, _) = super::console_allocation()?;
+    super::super::console_binding(&surface).ok()?;
+    super::with_resources(|r,_,_| {
+        let layout=r.layout(id).ok_or("native present target absent")?;
+        if layout.width != width || layout.height != height || layout.texel_bytes != 4
+            || width as usize > surface.width || height as usize > surface.height {
+            return Err("native present extent");
+        }
+        Ok(())
+    }).ok()?;
+    Some(super::super::adapter::Request::storage(tag,None))
+}
+pub(crate) fn flush_resource(tag: crate::gpu::dev::Tag, ctx: u32, fence: u64, id: u32,
+    width: u32, height: u32,
+) -> Option<super::super::adapter::Request> {
+    super::super::resource::context_id(ctx)?;
+    let (surface, allocation) = super::console_allocation()?;
+    super::super::console_binding(&surface).ok()?;
+    let (plan, resource, holds) = super::with_resources(|r,a,io| {
+        let source=image(r,id)?;
+        if source.width != width || source.height != height
+            || width as usize > surface.width || height as usize > surface.height {
+            return Err("native present extent");
+        }
+        let address=r.import_linear(a,io,u32::MAX,allocation)?;
+        let holds=vec![r.hold(id)?,r.hold(u32::MAX)?];
+        let plan=super::super::copy::readback(source,super::super::copy::Linear {
+            address,bytes:allocation.range.size,offset:0,stride:surface.pitch as u32,
+        },[0,0,width,height])?;
+        Ok((plan,r.identity(id).ok_or("native present target absent")?,holds))
+    }).ok()?;
+    Some(super::super::adapter::Request::transfer(tag,fence,resource,plan,false,
+        TransferHold { resources:holds },None).presenting())
+}

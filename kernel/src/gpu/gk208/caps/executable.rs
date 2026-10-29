@@ -138,13 +138,16 @@ impl Runner<'_> {
         }
         Ok(images)
     }
-    fn draw(&mut self, frame: encode::Frame) -> Result<(), &'static str> {
+    fn draw(&mut self, mut frame: encode::Frame) -> Result<(), &'static str> {
         let pages = Arc::new(
             Pages::new(frame.data.len().div_ceil(4096))
                 .ok_or("native CAPS draw backing exhausted")?,
         );
         pages.write(0, &frame.data);
         pages.maintain(0, frame.data.len(), false);
+        // Leave room for the publisher's parking state and release in its
+        // 2048-word slot. Every original probe draw still executes.
+        frame.batch_draws(1400);
         for chunk in encode::prepare(frame, pages)? {
             let (tag, fence) = self.next();
             self.execute(Some(dev::submit_gk208(tag, fence, chunk)))?;
