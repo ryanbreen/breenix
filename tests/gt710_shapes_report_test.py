@@ -28,9 +28,23 @@ class ShapesReport(unittest.TestCase):
             with patch.object(sys, 'argv', ['gt710-suite', '--shapes', '--acceptance-directory', tmp,
                                            '--sha', SHA, '--pr', '1']), \
                  patch('subprocess.check_output', side_effect=[SHA, '', json.dumps(pr), json.dumps(pr)]), \
-                 patch.dict(API['main'].__globals__, alpha_acceptance=lambda *args: proof):
+                 patch.dict(API['main'].__globals__, alpha_acceptance=lambda *args: proof if args[-1] == 'shapes' else {}):
                 self.assertEqual(API['main'](), 0)
             self.assertTrue(json.loads((directory / 'acceptance.json').read_text())['passed'])
+
+    def test_shapes_acceptance_scores_all_three_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            def record(path, sha, category):
+                (path / ('gt710-' + category + '.json')).write_text(json.dumps(dict(cases=[dict(id=category)])))
+                return 0
+            producer = dict(console=dict(boot=dict(id='console'), serial=''))
+            with patch.dict(API['alpha_acceptance'].__globals__,
+                    alpha_capture_proof=lambda *a: dict(captureCommit=SHA),
+                    resources_capture=lambda *a: producer, capture_categories=lambda *a: ['graphics'],
+                    cases=lambda *a: [], score=lambda *a: None, record_resources_capture=record):
+                proof = API['alpha_acceptance'](directory, SHA, {}, 'shapes')
+            self.assertEqual([c['category'] for c in proof['checks']], ['graphics', 'resources', 'alpha', 'shapes'])
 
     def test_selection_and_registration(self):
         alpha = json.loads((ROOT / 'docs/gui/gt710-step-8-3.json').read_text())['cases']

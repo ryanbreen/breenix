@@ -73,6 +73,7 @@ RANGES = [(256,384),(512,640),(768,896),(1024,1152)]
 DATA = bytes((i * 31 + i // 7) & 255 for i in range(512))
 def make_image(poison):
     image = bytearray([poison]) * 1280
+    image[256:1152] = bytes(896)
     for n,(start,end) in enumerate(RANGES):
         image[start:end] = DATA[n*128:(n+1)*128]
     return bytes(image)
@@ -154,8 +155,16 @@ def stage(directory, record, body=None):
 class Graphics(unittest.TestCase):
     def test_g6_rejects_poison_gap_inside_saved_extent(self):
         # The acceptance brief explicitly requires [256,saved_end) equality.
-        with self.assertRaisesRegex(ValueError, 'complementary images bytes'):
-            self.check(fixture())
+        with tempfile.TemporaryDirectory() as temporary:
+            record = fixture()
+            images = [bytearray(image) for image in IMAGES]
+            for save, image in zip(record['saves'], images):
+                image[400] = save['poison']
+                save['image_sha256'] = hashlib.sha256(image).hexdigest()
+            directory = Path(temporary)
+            stage(directory, record, image_rows(images))
+            with self.assertRaisesRegex(ValueError, 'complementary images bytes'):
+                API['graphics_engine'](API['capture_serial'](directory))
 
     def check(self, record):
         with tempfile.TemporaryDirectory() as temporary:

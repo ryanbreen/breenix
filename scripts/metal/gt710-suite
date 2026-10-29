@@ -754,9 +754,13 @@ def graphics_engine(serial, case=None):
                 data = bytes(v for v, used in zip(image, written) if used)
                 need(hashlib.sha256(image).hexdigest() == save['image_sha256'], 'image digest')
                 need(hashlib.sha256(data).hexdigest() == save['sha256'], 'image digest')
-                need(all(v == save['poison'] for v, used in zip(image, written) if not used),
+                need(image[end:] == bytes([save['poison']]) * (size - end),
                      'save changed poison outside data')
-            need(all(a == b for a, b, used in zip(images[85], images[170], written) if used),
+            # Explicit PR 8.4 acceptance correction to G6: the contiguous
+            # [256,saved_end) extent must match, including internal layout gaps.
+            # MIT hub.fuc:134-153,175-213,285-294,585-592,686-690;
+            # gf100.c:336-338 supplies the separate runnable header below.
+            need(images[85][256:end] == images[170][256:end],
                  'complementary images bytes')
             # Runnable header is CPU-filled separately: MIT gf100.c:336-338.
             header = e['runnable_header']
@@ -2650,18 +2654,18 @@ def alpha_capture_identity(directory, head):
     return capture, changed
 
 
-def alpha_capture_proof(directory, sha, pr):
+def alpha_capture_proof(directory, sha, pr, category='alpha'):
     """Bind the step's two completed captures to the observed open PR head (G13)."""
     if pr.get('state') != 'OPEN' or pr.get('headRefOid') != sha:
         raise ValueError('alpha acceptance requires the current open PR head')
     capture_sha, changed = alpha_capture_identity(directory, sha)
     producer = resources_capture(directory, capture_sha)
-    gpu = resources_suite(producer['gpu']['serial'], producer['gpu']['boot'], STEP_SELECTIONS['alpha'])
+    gpu = resources_suite(producer['gpu']['serial'], producer['gpu']['boot'], STEP_SELECTIONS[category])
     console_ms = resources_console(producer['console']['serial'], producer['console']['boot'],
                                    producer['console']['events'])
     proof = dict(head=sha, captureCommit=capture_sha, hostOnlyDiff=changed, pr=pr, boots=[], consoleHandoffToDoneMS=console_ms,
                  gpuElapsedMS=gpu['elapsed_ms'])
-    selected = json.loads((Path(__file__).resolve().parents[2] / 'docs/gui' / STEP_SELECTIONS['alpha']).read_text())['cases']
+    selected = json.loads((Path(__file__).resolve().parents[2] / 'docs/gui' / STEP_SELECTIONS[category]).read_text())['cases']
     proof['selected'] = dict(passed=sum(c['id'] in selected and c['result'] == 'PASS' for c in gpu['cases']),
                              total=len(selected))
     for suite, capture in producer.items():
@@ -2695,14 +2699,15 @@ def alpha_capture_proof(directory, sha, pr):
             raise ValueError('alpha ' + suite + ' memory was not reclaimed')
         proof['boots'].append(dict(id=boot['id'], suite=suite, commit=capture_sha,
             toolsCommit=boot['toolsCommit'], build=boot['build'], exitStatus=status,
-            exitReason='failed GPU cases outside step 8.3 (G13)' if status else 'passed suite',
+            exitReason=('failed GPU cases outside step ' + ('8.4' if category == 'shapes' else '8.3') + ' (G13)') if status else 'passed suite',
             done=tally, memory=memory, captureComplete=True, lifecycle=rows, sha256=digests))
     return proof
 
 
-def alpha_acceptance(directory, sha, pr):
+def alpha_acceptance(directory, sha, pr, category='alpha'):
     """Score existing hardware cases and this step against the same pair of captures."""
-    proof = alpha_capture_proof(directory, sha, pr)
+    step_categories = ('resources', 'alpha', 'shapes') if category == 'shapes' else ('resources', 'alpha')
+    proof = alpha_capture_proof(directory, sha, pr, category)
     capture_sha = proof['captureCommit']
     producer = resources_capture(directory, capture_sha)
     root = Path(__file__).resolve().parents[2]
@@ -2720,7 +2725,7 @@ def alpha_acceptance(directory, sha, pr):
                            cases=cases(category, serial))
             reason = score(manifest, effort, records, serial, boot, capture_sha, fatal)
             proof['checks'].append(dict(suite=suite, category=category, count=len(records['cases']), reason=reason))
-    for category in ('resources', 'alpha'):
+    for category in step_categories:
         if record_resources_capture(directory, capture_sha, category) != 0:
             raise ValueError(category + ' acceptance failed')
         records = json.loads((Path(directory) / ('gt710-' + category + '.json')).read_text())
@@ -2807,8 +2812,8 @@ def main():
     if args.acceptance_directory:
         import subprocess
         root = Path(__file__).resolve().parents[2]
-        if not args.alpha or not args.pr or not re.fullmatch('[a-f0-9]{40}', args.sha or ''):
-            parser.error('--acceptance-directory requires --alpha, --pr and --sha')
+        if not (args.alpha or args.shapes) or not args.pr or not re.fullmatch('[a-f0-9]{40}', args.sha or ''):
+            parser.error('--acceptance-directory requires --alpha or --shapes, --pr and --sha')
         if (subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip() != args.sha
                 or subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=root, text=True).strip()):
             raise ValueError('alpha scorer must run from the clean requested head')
@@ -2818,7 +2823,7 @@ def main():
         proof = dict(head=args.sha, passed=False)
         try:
             pr = current_pr()
-            proof = alpha_acceptance(args.acceptance_directory, args.sha, pr)
+            proof = alpha_acceptance(args.acceptance_directory, args.sha, pr, 'shapes') if args.shapes else alpha_acceptance(args.acceptance_directory, args.sha, pr)
             if current_pr() != pr:
                 raise ValueError('PR head or state changed during acceptance scoring')
             for boot in proof['boots']:
