@@ -12,7 +12,7 @@ from gt710_gr_live_unwind_test import item
 
 class ResetRetirement(unittest.TestCase):
     def test_lost_native_resource_releases_its_registry_pin(self):
-        retire = item((ROOT / 'kernel/src/gpu/mod.rs').read_text(), '    fn retire_if_unused(')
+        retire = item((ROOT / 'kernel/src/gpu/mod.rs').read_text(), '    fn retire_if_unused(').replace('#[cfg(target_arch = "x86_64")]', '')
         harness = r'''
 use std::{collections::BTreeMap,sync::{Arc,Mutex,atomic::{AtomicU32,Ordering}}};
 mod abi {pub mod backend {pub const GK208:u32=6;}}
