@@ -73,6 +73,7 @@ fn main() { producer_main(); }
                 source = (ROOT / f'userspace/programs/src/suite_{name}.rs').read_text()
                 entry = item(source, 'fn main()').replace('fn main()', 'fn producer_main()')
                 entry = entry.replace('#[cfg(target_arch="x86_64")]', '')
+                entry = entry.replace('#[cfg(not(target_arch="x86_64"))]\n    SUITE.run()', '')
                 fixture = harness
                 if name == 'gpu':
                     # These items belong only to the console's entry point.
