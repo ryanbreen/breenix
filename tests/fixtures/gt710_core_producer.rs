@@ -11,6 +11,7 @@ pub mod timer {
     pub fn frequency_hz() -> u64 { 3_000_000_000 }
 }
 pub mod gpu {
+    pub mod dma { pub struct Pages; }
     use gpu_abi::{self as abi, capability, test_point, Plain};
     use dev::Device;
     // Only the surrounding core storage and engine are fixtures. The gate and
@@ -62,6 +63,7 @@ pub mod gk208 {
     #[path = "../../kernel/src/gpu/gk208/core_record.rs"] pub mod core_record;
     #[path = "../../kernel/src/gpu/gk208/copy.rs"] pub mod copy;
     #[path = "../../kernel/src/gpu/gk208/caps.rs"] pub mod caps;
+    #[allow(dead_code)] // Producer harness omits the storage/VM acknowledgement path.
     #[path = "../../kernel/src/gpu/gk208/adapter.rs"] pub mod adapter;
     pub mod channel {pub fn elapsed(begin:u64)->u64 {crate::timer::rdtsc().wrapping_sub(begin)/(crate::timer::frequency_hz()/1_000_000)}}
     pub mod bulk {pub fn line(s:String)->Result<(),&'static str>{println!("{s}");Ok(())}}

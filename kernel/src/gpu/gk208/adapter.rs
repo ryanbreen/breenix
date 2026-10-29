@@ -6,7 +6,7 @@ use crate::{gpu::dev::{Done, Reap, Tag}, gpu_completion};
 use super::{copy::Rect, gr::{channel::NativeChannel, draw::Draw}, queue::Queue};
 
 #[derive(Clone, Copy)]
-pub enum Operation { Copy(Rect), Draw(Draw) }
+pub enum Operation { Copy(Rect), Transfer(super::copy::Plan), Draw(Draw) }
 
 pub struct Request {
     pub tag: Tag,
@@ -15,6 +15,8 @@ pub struct Request {
     /// CPU storage/VM acknowledgement, deliberately unfenced.
     storage: bool,
     _backing: Option<Arc<crate::gpu::dma::Pages>>,
+    #[cfg(target_os = "none")]
+    _transfer_hold: Option<super::ce::readback::TransferHold>,
     resource: u64,
     generation: u64,
     upload: bool,
@@ -24,12 +26,16 @@ pub struct Request {
 impl Request {
     /// Kernel builders resolve validated handles to GPU addresses before admission.
     pub fn copy(tag: Tag, caller: u64, resource: u64, generation: u64, rect: Rect) -> Self {
-        Self { tag, fence: Some(caller), operation: Some(Operation::Copy(rect)), storage: false, _backing: None, resource, generation, upload: false,
+        Self { tag, fence: Some(caller), operation: Some(Operation::Copy(rect)), storage: false, _backing: None,
+            #[cfg(target_os = "none")]
+            _transfer_hold: None, resource, generation, upload: false,
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             control: super::core_record::Control::Clean }
     }
     pub fn draw(tag: Tag, caller: u64, resource: u64, generation: u64, draw: Draw) -> Self {
-        Self { tag, fence: Some(caller), operation: Some(Operation::Draw(draw)), storage: false, _backing: None, resource, generation, upload: false,
+        Self { tag, fence: Some(caller), operation: Some(Operation::Draw(draw)), storage: false, _backing: None,
+            #[cfg(target_os = "none")]
+            _transfer_hold: None, resource, generation, upload: false,
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             control: super::core_record::Control::Clean }
     }
@@ -38,11 +44,24 @@ impl Request {
         request.upload = true;
         request
     }
+    #[cfg(target_os = "none")]
+    pub(in crate::gk208) fn transfer(tag: Tag, caller: u64, resource: u64,
+        plan: super::copy::Plan, upload: bool, hold: super::ce::readback::TransferHold,
+        backing: Option<Arc<crate::gpu::dma::Pages>>,
+    ) -> Self {
+        Self { tag, fence: Some(caller), operation: Some(Operation::Transfer(plan)),
+            storage: false, _backing: backing, _transfer_hold: Some(hold),
+            resource, generation: 1, upload,
+            #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
+            control: super::core_record::Control::Clean }
+    }
     pub fn is_upload(&self) -> bool { self.upload }
     /// Actual allocation/map/unmap completed in the resource owner before this
     /// receipt was constructed. This is not an engine completion or a fence.
     pub(crate) fn storage(tag: Tag, backing: Option<Arc<crate::gpu::dma::Pages>>) -> Self {
         Self { tag, fence: None, operation: None, storage: true, _backing: backing,
+            #[cfg(target_os = "none")]
+            _transfer_hold: None,
             resource: 0, generation: 0, upload: false,
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             control: super::core_record::Control::Clean }

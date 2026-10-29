@@ -73,14 +73,13 @@ impl NativeRecord {
         use gpu_abi::{gk208, record as r};
         let put32 = |out: &mut [u8], off: usize, value: u32| out[off..off + 4].copy_from_slice(&value.to_le_bytes());
         let put64 = |out: &mut [u8], off: usize, value: u64| out[off..off + 8].copy_from_slice(&value.to_le_bytes());
-        write_backend_fields(out, gk208::SUCCESS);
-        put64(out, r::CONTEXT, self.version.context);
-        put64(out, r::RESOURCE, self.version.resource);
+        write_backend_fields(out, BackendFields {
+            context:self.version.context, resource:self.version.resource,
+            writer:Some((self.writer.request().caller,
+                if upload { gk208::TRANSFER_RELEASE } else { gk208::DRAW_RELEASE },gk208::SUCCESS)),
+            transfer_fence:self.transfers[1].request().caller, answer:gk208::SUCCESS,
+        });
         put64(out, r::GENERATION, self.version.generation);
-        put64(out, r::RENDER_FENCE, self.writer.request().caller);
-        put64(out, r::READBACK_FENCE, self.transfers[1].request().caller);
-        put32(out, r::RENDER_KIND, if upload { gk208::TRANSFER_RELEASE } else { gk208::DRAW_RELEASE });
-        put32(out, r::RENDER_STATUS, gk208::SUCCESS);
         put32(out, r::UNWRITTEN, self.unwritten);
     }
 }
@@ -88,17 +87,34 @@ impl NativeRecord {
 /// Encode the native readback boundary after the common observation owner has
 /// checked the transfers. Preserve its actual answer, writer, identities,
 /// geometry and binding; a serializer cannot manufacture successful completion.
-pub fn write_backend_fields(out: &mut [u8; gpu_abi::record::SIZE], answer: u32) {
+pub struct BackendFields {
+    pub context: u64,
+    pub resource: u64,
+    /// Completed writer: actual native fence, kind and answer.
+    pub writer: Option<(u64,u32,u32)>,
+    pub transfer_fence: u64,
+    pub answer: u32,
+}
+pub fn write_backend_fields(out: &mut [u8; gpu_abi::record::SIZE], fields: BackendFields) {
     use gpu_abi::{backend, gk208, record as r};
     for (at, value) in [
         (r::BACKEND, backend::GK208),
         (r::BOUNDARY, r::BOUNDARY_NATIVE),
         (r::READBACK_KIND, gk208::TRANSFER_RELEASE),
         (r::COPY_KIND, gk208::TRANSFER_RELEASE),
-        (r::READBACK_STATUS, answer),
-        (r::COPY_STATUS, answer),
+        (r::READBACK_STATUS, fields.answer),
+        (r::COPY_STATUS, fields.answer),
     ] {
         out[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    for (at,value) in [(r::CONTEXT,fields.context),(r::RESOURCE,fields.resource),
+        (r::READBACK_FENCE,fields.transfer_fence)] {
+        out[at..at+8].copy_from_slice(&value.to_le_bytes());
+    }
+    if let Some((fence,kind,answer)) = fields.writer {
+        out[r::RENDER_FENCE..r::RENDER_FENCE+8].copy_from_slice(&fence.to_le_bytes());
+        out[r::RENDER_KIND..r::RENDER_KIND+4].copy_from_slice(&kind.to_le_bytes());
+        out[r::RENDER_STATUS..r::RENDER_STATUS+4].copy_from_slice(&answer.to_le_bytes());
     }
     for at in [r::READBACK_SURFACE, r::READBACK_MOB] {
         out[at..at + 8].fill(0);

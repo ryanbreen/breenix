@@ -86,6 +86,9 @@ struct Entry<B> {
     mapped: bool,
     dropped: bool,
     reference: Arc<()>,
+    backing_va: Option<u64>,
+    backing_bytes: u64,
+    backing_mapped: bool,
 }
 /// One native storage address space; channel attachment may retain aliases in
 /// the channel's private space. No userspace address or method is accepted.
@@ -94,11 +97,16 @@ pub struct Resources<B> {
     space: Option<Space>,
     next_va: u64,
     vram_bytes: u64,
+    alias: Option<u64>,
+    channel: u64,
+    incarnation: Option<(u64,u64)>,
+    alias_indices: Vec<u64>,
+    temporary: u32,
 }
 impl<B> Default for Resources<B> { fn default() -> Self { Self::new() } }
 impl<B> Resources<B> {
     pub const fn new() -> Self {
-        Self { entries: BTreeMap::new(), space: None, next_va: FIRST_VA, vram_bytes: 0 }
+        Self { entries: BTreeMap::new(), space: None, next_va: FIRST_VA, vram_bytes: 0, alias: None, channel: 0, incarnation: None, alias_indices: Vec::new(), temporary: u32::MAX }
     }
     pub fn vram_bytes(&self) -> u64 { self.vram_bytes }
     pub fn layout(&self, id: u32) -> Option<Layout> { self.entries.get(&id)?.layout }
@@ -134,7 +142,7 @@ impl<B> Resources<B> {
             let allocation = if layout.is_some() { Some(a.allocate(bytes, 4096, Kind::Engine)?) } else { None };
             let pin = allocation.map(|v| a.pin(v)).transpose()?;
             self.entries.insert(id, Entry { layout, bytes, va, allocation, pin,
-                backing: None, mapped: false, dropped: false, reference: Arc::new(()) });
+                backing: None, mapped: false, dropped: false, reference: Arc::new(()), backing_va: None, backing_bytes: 0, backing_mapped: false });
             if let Some(allocation) = allocation {
                 self.space(a, io)?.map_kind(a, io, va, allocation.range, vm::Flags::default(), 0xfe)?;
                 self.entries.get_mut(&id).unwrap().mapped = true;
@@ -177,6 +185,72 @@ impl<B> Resources<B> {
         let e = self.entries.get(&id).filter(|e| !e.dropped).ok_or("native resource absent")?;
         Ok(Hold { _reference: e.reference.clone() })
     }
+    /// Map the attached, caller-retained backing once, separately from VRAM.
+    pub fn map_backing(&mut self, a: &mut Allocator, io: &mut impl Io, id: u32,
+        backing: &Arc<B>, pages: &[u64], bytes: u64,
+    ) -> Result<u64, &'static str> {
+        let e = self.entries.get(&id).filter(|e| !e.dropped).ok_or("native resource absent")?;
+        if !e.backing.as_ref().is_some_and(|b| Arc::ptr_eq(b,backing))
+            || pages.len() as u64 * 4096 != bytes || pages.is_empty() {
+            return Err("native transfer backing mismatch");
+        }
+        if e.layout.is_none() { return Ok(e.va); }
+        if let Some(va) = e.backing_va {
+            return if e.backing_mapped { Ok(va) } else { Err("native backing mapping uncertain") };
+        }
+        let va = self.next_va;
+        self.next_va = va.checked_add(bytes).filter(|e| *e <= vm::LIMIT).ok_or("native backing VA exhausted")?;
+        // Save the mapping address before PTE publication. A publication failure
+        // leaves the backing and poisoned Space in this resource entry.
+        self.entries.get_mut(&id).unwrap().backing_va = Some(va);
+        self.entries.get_mut(&id).unwrap().backing_bytes = bytes;
+        let before = a.stats().charged;
+        let result = (|| {
+            for (i,band) in pages.chunks(256).enumerate() {
+                self.space(a,io)?.map_system(a,io,va+i as u64*256*4096,band)?;
+            }
+            self.entries.get_mut(&id).unwrap().backing_mapped = true;
+            Ok(va)
+        })();
+        self.account(before,a.stats().charged);
+        result
+    }
+    pub fn channel(&self) -> u64 { self.channel }
+    pub fn identity(&self, id: u32) -> Option<u64> {
+        self.entries.get(&id).filter(|e| !e.dropped).map(|_| u64::from(id))
+    }
+    /// Share only this owner's high-VA SPTs with the existing native channel.
+    /// Tables stay in this owner; collection invalidates the two directories
+    /// before release. Low channel/bootstrap mappings stay private.
+    pub fn bind(&mut self, io: &mut impl Io, directory: u64, instance: u64, epoch: u64) -> Result<(), &'static str> {
+        if self.alias.is_some_and(|old| old != directory) { return Err("native resource channel changed"); }
+        let Some(space) = self.space.as_ref() else { return Err("native resource VM absent"); };
+        if !space.usable() { return Err("native resource VM uncertain"); }
+        self.alias = Some(directory);
+        if self.incarnation != Some((instance,epoch)) {
+            self.channel = self.channel.checked_add(1).filter(|id| *id < 1<<32)
+                .ok_or("native public context namespace exhausted")?;
+            self.incarnation = Some((instance,epoch));
+        }
+        for (index,_) in space.table_ranges() {
+            let value = io.read(space.directory.range.start + index*8)?;
+            let old = io.read(directory+index*8)?;
+            if old != 0 && old != value { return Err("native resource PDE alias occupied"); }
+            if !self.alias_indices.contains(&index) { self.alias_indices.push(index); }
+            io.write(directory+index*8,value)?;
+        }
+        io.flush()?;
+        io.invalidate(directory)?;
+        Ok(())
+    }
+    pub fn staging(&mut self, a: &mut Allocator, io: &mut impl Io, format: u32,
+        width: u32, height: u32,
+    ) -> Result<u32, &'static str> {
+        let id = self.temporary;
+        self.temporary = id.checked_sub(1).ok_or("native staging IDs exhausted")?;
+        self.create(a,io,id,2,format,width,height)?;
+        Ok(id)
+    }
     pub fn unref(&mut self, id: u32) -> Result<(), &'static str> {
         self.entries.get_mut(&id).ok_or("native resource absent")?.dropped = true;
         Ok(())
@@ -196,11 +270,24 @@ impl<B> Resources<B> {
                     // Retain the allocation and pinned backing on this uncertain result.
                     return Err("native resource mapping uncertain; storage retained");
                 }
+                if let Some(va) = e.backing_va {
+                    // Arc<B> is retained until both PDB invalidations complete.
+                    let bytes = e.backing_bytes;
+                    self.space.as_mut().unwrap().unmap(io,va,bytes)?;
+                }
+                if let Some(directory) = self.alias { io.invalidate(directory)?; }
                 let mut e = self.entries.remove(&id).unwrap();
                 e.pin.take();
                 if let Some(allocation) = e.allocation { a.release(allocation)?; }
             }
             if self.entries.is_empty() {
+                if let Some(directory) = self.alias {
+                    for &index in &self.alias_indices { io.write(directory+index*8,0)?; }
+                    io.flush()?;
+                    io.invalidate(directory)?;
+                    self.alias = None;
+                    self.alias_indices.clear();
+                }
                 if let Some(space) = self.space.as_mut() { space.detach(io)?; }
                 if let Some(space) = self.space.take() { space.reclaim(a)?; }
             }

@@ -297,7 +297,10 @@ pub fn resource_unref(tag: Tag, id: u32, backing: Option<Arc<Pages>>) -> Option<
 /// from its MOB, which the backing is.
 #[allow(clippy::too_many_arguments)]
 pub fn transfer_to_host(tag: Tag, ctx: u32, fence: u64, id: u32, backing: Arc<Pages>, x: u32, y: u32, w: u32, h: u32, offset: u64, stride: u32) -> Option<Request> {
-    match backend() { backend::SVGA3D_DX => svga::upload(tag, ctx, fence, id, backing).map(Request::Svga), backend::VIRGL => Some(Request::Virgl(virgl::transfer_to_host(tag, ctx, fence, id, backing, x, y, w, h, offset, stride))), _ => None }
+    match backend() {
+        #[cfg(target_arch = "x86_64")]
+        backend::GK208 => crate::gk208::transfer(tag,fence,id,backing,[x,y,w,h],offset,stride,true).map(Request::Gk208),
+        backend::SVGA3D_DX => svga::upload(tag, ctx, fence, id, backing).map(Request::Svga), backend::VIRGL => Some(Request::Virgl(virgl::transfer_to_host(tag, ctx, fence, id, backing, x, y, w, h, offset, stride))), _ => None }
 }
 
 pub fn undefined_command(tag: Tag, ctx: u32, fence: u64) -> Option<Request> {
@@ -326,6 +329,8 @@ pub fn flush_resource(tag: Tag, ctx: u32, fence: u64, resource: u32, width: u32,
 #[allow(clippy::too_many_arguments)]
 pub fn transfer_from_host(tag: Tag, ctx: u32, fence: u64, id: u32, backing: Arc<Pages>, x: u32, y: u32, w: u32, h: u32, offset: u64, stride: u32) -> Option<Request> {
     match backend() {
+        #[cfg(target_arch = "x86_64")]
+        backend::GK208 => crate::gk208::transfer(tag,fence,id,backing,[x,y,w,h],offset,stride,false).map(Request::Gk208),
         backend::SVGA3D_DX => {
         if offset != 0 || u64::from(stride) != u64::from(w) * 4 {
             return None;
@@ -341,4 +346,12 @@ pub fn transfer_from_host(tag: Tag, ctx: u32, fence: u64, id: u32, backing: Arc<
 #[allow(clippy::too_many_arguments)]
 pub fn flush_rect(tag: Tag, ctx: u32, fence: u64, id: u32, x: u32, y: u32, w: u32, h: u32) -> Option<Request> {
     match backend() { backend::SVGA3D_DX => svga::flush_rect(tag, ctx, fence, x, y, w, h).map(Request::Svga), backend::VIRGL => Some(Request::Virgl(virgl::flush_rect(tag, ctx, fence, id, x, y, w, h))), _ => None }
+}
+
+/// A native byte-preserving region copy, including overlap staging. The fixed
+/// pipeline encoder uses this after the common stream validator resolves IDs.
+#[cfg(target_arch = "x86_64")]
+pub fn copy_region(tag: Tag, fence: u64, source: u32, destination: u32, rectangle: [u32;6]) -> Option<Request> {
+    (backend()==backend::GK208).then(|| crate::gk208::copy_region(tag,fence,source,destination,rectangle))?
+        .map(Request::Gk208)
 }

@@ -1135,3 +1135,17 @@ License: MIT; full file header checked before using the storage-kind field.
 Copyright 2017 Red Hat Inc.
 Consumer: kernel/src/gpu/gk208/vm.rs (uncompressed kind in PTE bits 36..43).
 That file already retains the original complete MIT notice from this source.
+
+
+GT 710 milestone 8.2 CE transfers
+-------------------------------
+NVIDIA open-gpu-doc, commit 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+classes/dma-copy/cla0b5.h (MIT, Copyright (c) 2019 NVIDIA CORPORATION):
+A0B5 remap component size/count, FERMI_8 block geometry, pixel origins,
+virtual pitch/block-linear launches and engine-ordered semaphore releases.
+Used by kernel/src/gpu/gk208/copy.rs, kernel/src/gpu/gk208/ce/readback.rs
+and tests/gt710_transfer_test.rs. The full original copyright and permission
+notice accompanies those files. Each source header was read before use.
+The existing cla06f.h packet-header attribution in copy.rs also applies.
+Breenix owns clipping, storage holds, directory aliases and staging policy;
+no external driver runtime or pixel oracle is imported.

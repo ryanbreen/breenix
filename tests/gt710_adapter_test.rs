@@ -14,6 +14,7 @@ pub mod gpu {
 pub mod gk208 {
     #[path = "../../kernel/src/gpu/gk208/queue.rs"] pub mod queue;
     pub mod copy {
+        #[derive(Clone, Copy)] pub struct Plan;
         #[derive(Clone, Copy)] pub struct Rect {pub src:u64,pub dst:u64,pub width:u32,pub height:u32,pub src_pitch:u32,pub dst_pitch:u32}
     }
     pub mod gr {

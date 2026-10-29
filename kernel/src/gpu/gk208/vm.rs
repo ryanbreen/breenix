@@ -124,6 +124,7 @@ impl Space {
             detached: false,
         })
     }
+    pub fn usable(&self) -> bool { !self.poisoned && !self.detached }
     pub fn allocations(&self) -> impl Iterator<Item = Allocation> + '_ {
         core::iter::once(self.instance)
             .chain(core::iter::once(self.directory))

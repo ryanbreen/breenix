@@ -1352,7 +1352,9 @@ impl Core {
             if submitted && crate::test_control::take(test_point::STALE_FENCE, 0).is_some() {
                 done.echoed = done.native_fence.unwrap_or(0).wrapping_add(1);
             }
-            sub.native_fence = done.native_fence.unwrap_or(0);
+            sub.native_fence = if dev::backend() == abi::backend::GK208 {
+                done.fence.unwrap_or(0)
+            } else { done.native_fence.unwrap_or(0) };
             let withheld = if submitted {
                 crate::test_control::take_if(test_point::WITHHOLD_FENCE, 0, |p| p != test_point::WITHHOLD_DEPTH)
             } else { None };
@@ -4566,7 +4568,8 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
                     None => Err((EIO, 0)),
                     Some(req) => match exec_req_why(serial, req, ctx, &[id], &[id]) {
                         Ok(d) if dev::ok(d.answer) && d.matches_fence(fence) => {
-                            Ok((serial, d.echoed, d.answer))
+                            let recorded = if dev::backend() == abi::backend::GK208 { fence } else { d.echoed };
+                            Ok((serial, recorded, d.answer))
                         }
                         Ok(_) => Err((EIO, serial)),
                         Err((e @ (EIO | EINTR), _)) => Err((e, serial)),
@@ -4868,8 +4871,15 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         let binding = display::binding(c, tgid, id, window)?;
         let s = c.next_obs;
         c.next_obs += 1;
-        let resource = dev::resource_id(id).ok_or(EIO)?;
-        let context = last.map_or(Some(0), |l| l.device_ctx).ok_or(EIO)?;
+        #[cfg(target_arch = "x86_64")]
+        let native = (dev::backend() == abi::backend::GK208)
+            .then(|| crate::gk208::transfer_identities(id)).flatten();
+        #[cfg(not(target_arch = "x86_64"))]
+        let native: Option<(u32,u32)> = None;
+        let (context,resource) = match native {
+            Some(identities) => identities,
+            None => (last.map_or(Some(0), |l| l.device_ctx).ok_or(EIO)?, dev::resource_id(id).ok_or(EIO)?),
+        };
         Ok((s, c.caps.renderer, binding, resource, context))
     })
     .ok_or(ENODEV)?;
@@ -4929,7 +4939,11 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     put64(&mut rec, record::READBACK_FENCE, transfer_fence);
     put32(&mut rec, record::READBACK_STATUS, transfer_answer);
     if dev::backend() == abi::backend::GK208 {
-        observation::write_backend_fields(&mut rec, transfer_answer);
+        observation::write_backend_fields(&mut rec, observation::BackendFields {
+            context:u64::from(device_context),resource:u64::from(device_resource),
+            writer:last.map(|l| (l.fence,l.kind,l.answer)),
+            transfer_fence,answer:transfer_answer,
+        });
     } else if dev::is_svga() {
         // The host copy into the readback surface answered as the readback did: both run
         // in the same command buffer, whose status is the answer.
@@ -5194,10 +5208,16 @@ fn observe(
                 }
                 dev::Request::Svga(req)
             }
-            None => dev::Request::Virgl(virgl::transfer_from_host(
+            None => match dev::transfer_from_host(
                 Tag::Sync(serial), ctx, fence, named, written, a.x, ty,
                 a.width, b.rows as u32, at as u64, pitch,
-            )),
+            ) {
+                Some(request) => request,
+                None => {
+                    release_other(other_id);
+                    return Err((EIO,readback_reason::DEVICE_ERROR));
+                }
+            },
         };
         // The target, and the other resource when the transfer names one.
         let both = [id, named];
@@ -5228,7 +5248,8 @@ fn observe(
             return Err((EIO, readback_reason::FENCE_MISMATCH));
         }
         if first.is_none_or(|(order, _, _)| s.order < order) {
-            first = Some((s.order, d.echoed, d.answer));
+            let recorded = if dev::backend() == abi::backend::GK208 { s.fence } else { d.echoed };
+            first = Some((s.order, recorded, d.answer));
         }
         Ok(())
     };

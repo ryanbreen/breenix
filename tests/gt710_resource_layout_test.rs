@@ -112,3 +112,53 @@ fn failed_unmap_retains_storage_and_all_charges() {
     assert!(r.collect(&mut a,&mut io).is_err());
     assert_eq!(a.stats(),before); assert_eq!(r.vram_bytes(),charged);
 }
+
+#[test]
+fn transfer_backing_alias_and_staging_stay_pinned_until_completion() {
+    let mut a=Allocator::new(1<<30,&[]).unwrap(); let baseline=a.stats();
+    let mut io=Model::default(); let mut r=Resources::<Vec<u8>>::new();
+    r.create(&mut a,&mut io,7,1,1,48,17).unwrap();
+    let backing=Arc::new(vec![0;8192]);
+    r.attach(&mut a,&mut io,7,backing.clone(),&[],8192).unwrap();
+    let va=r.map_backing(&mut a,&mut io,7,&backing,&[0x12345000,0x812345000],8192).unwrap();
+    assert_eq!(io.words[&r.pte_address(va).unwrap()],(0x12345000>>8)|1|(1<<32)|(2<<33));
+    assert_eq!(io.words[&r.pte_address(va+4096).unwrap()],(0x812345000u64>>8)|1|(1<<32)|(2<<33));
+    let used=a.stats();
+    assert_eq!(r.map_backing(&mut a,&mut io,7,&backing,&[0x12345000,0x812345000],8192).unwrap(),va);
+    assert_eq!(a.stats(),used);
+    assert!(r.map_backing(&mut a,&mut io,7,&Arc::new(vec![0;8192]),&[0,4096],8192).is_err());
+    let staged=r.staging(&mut a,&mut io,1,20,10).unwrap();
+    let held=[r.hold(7).unwrap(),r.hold(staged).unwrap()];
+    let directory=0x30000000;
+    r.bind(&mut io,directory,0x123000,17).unwrap();
+    assert_eq!(r.channel(),1);assert_eq!(r.identity(7),Some(7));
+    r.bind(&mut io,directory,0x123000,18).unwrap();
+    assert_eq!(r.channel(),2,"a reset mints a fresh opaque incarnation");
+    let pde=directory+(va/(1<<27))*8;
+    assert_ne!(io.words[&pde],0);
+    r.unref(7).unwrap();r.unref(staged).unwrap();
+    let used=a.stats();let writes=io.writes;
+    r.collect(&mut a,&mut io).unwrap();
+    assert_eq!(a.stats(),used);assert_eq!(io.writes,writes);
+    assert_eq!(Arc::strong_count(&backing),2);
+    drop(held);r.collect(&mut a,&mut io).unwrap();
+    assert_eq!(a.stats(),baseline);assert_eq!(r.vram_bytes(),0);
+    assert_eq!(io.words[&pde],0);assert_eq!(Arc::strong_count(&backing),1);
+}
+
+#[test]
+fn uncertain_backing_mapping_is_never_reused_or_bound() {
+    let mut a=Allocator::new(1<<30,&[]).unwrap();let mut io=Model::default();
+    let mut r=Resources::<Vec<u8>>::new();
+    r.create(&mut a,&mut io,7,1,1,1,1).unwrap();
+    let backing=Arc::new(vec![0;4096]);
+    r.attach(&mut a,&mut io,7,backing.clone(),&[],4096).unwrap();
+    io.fail=true;
+    assert!(r.map_backing(&mut a,&mut io,7,&backing,&[0x12345000],4096).is_err());
+    io.fail=false;
+    assert!(r.map_backing(&mut a,&mut io,7,&backing,&[0x12345000],4096).is_err());
+    assert!(r.bind(&mut io,0x30000000,0x123000,17).is_err());
+    let used=a.stats();r.unref(7).unwrap();
+    assert!(r.collect(&mut a,&mut io).is_err());
+    assert_eq!(a.stats(),used);assert_eq!(Arc::strong_count(&backing),2);
+}

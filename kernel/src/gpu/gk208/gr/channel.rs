@@ -1453,6 +1453,11 @@ mod native {
             let report_va = TARGET + u64::from(slot) * 16;
             let mut command = match *operation {
                 Operation::Copy(rect) => crate::gk208::copy::encode(rect, report_va, s.report.identity.epoch, sequence)?,
+                Operation::Transfer(plan) => {
+                    crate::gk208::ce::with_resources(|r,_,io| r.bind(io,
+                        s.context.space().directory.range.start,s.report.identity.instance,s.report.identity.epoch))?;
+                    crate::gk208::copy::encode_plan(plan,report_va,s.report.identity.epoch,sequence)?
+                },
                 Operation::Draw(mut draw) => {
                     draw.report_va = report_va;
                     draw.epoch = s.report.identity.epoch;
