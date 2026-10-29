@@ -1692,9 +1692,9 @@ impl Core {
         let hangs = self.subs.values().filter(|s| !s.published).filter_map(|s| s.sent_ns);
         let waits = self.syncs.values().filter(|s| !s.failed).filter_map(|s| s.sent_ns);
         let progress = self.quarantined_at.map(|q| q.max(self.last_progress));
-        // The SVGA3 device raises no interrupt here: while it holds requests, kgpu looks
+        // SVGA3 and the native channel have no completion interrupt here; kgpu looks
         // for their answers at POLL_NS intervals.
-        let poll = (dev::is_svga() && self.dev.as_ref().is_some_and(|d| d.outstanding() > 0) && !self.stalled)
+        let poll = (matches!(dev::backend(), abi::backend::SVGA3D_DX | abi::backend::GK208) && self.dev.as_ref().is_some_and(|d| d.outstanding() > 0) && !self.stalled)
             .then(|| now + POLL_NS);
         // Grace deadlines are independent across processes.
         let grace = self.contexts.values()
@@ -1953,7 +1953,7 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
         let (found, polled) = with_core(|c| {
             c.poll();
             // The device's answers reach this waiter only when someone looks for them.
-            let polled = dev::is_svga() && !c.stalled && c.dev.as_ref().is_some_and(|d| d.outstanding() > 0);
+            let polled = matches!(dev::backend(), abi::backend::SVGA3D_DX | abi::backend::GK208) && !c.stalled && c.dev.as_ref().is_some_and(|d| d.outstanding() > 0);
             let found = f(c);
             if found.is_none() { c.progress_readback(); }
             (found, polled)
