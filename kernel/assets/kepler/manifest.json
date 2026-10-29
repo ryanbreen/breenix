@@ -143,19 +143,19 @@
       "sha256": "7d645cc2bf9ca77dc6120056b5825b64a2afc63f18f1283d52bcad277befa372"
     },
     "pipeline-bitmap_text.asm": {
-      "bytes": 13658,
+      "bytes": 13328,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "7d3417865fad96b8e782f0a82ce04664f792be905787afca2eec75d3d7537aac"
+      "sha256": "c3c1c05ff81e275d77888042f5a9d916101fb6efc6168a3ea6d6376d393d6ead"
     },
     "pipeline-bitmap_text.bin": {
-      "bytes": 1912,
+      "bytes": 1856,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "27ea2eddeaab35103620a791e022988a7baf18c9c77d1d9bcdf249ab825bf2d2"
+      "sha256": "6e0ec244ef752a8475e3e84823ad391cc1eca584117f52ae6a28081aff65cfac"
     },
     "pipeline-bitmap_text.json": {
       "bytes": 358,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "d2a4157a7d5b61cf1d0b86f642a8f015e4792a7e4f710658b651c2ead8c629af"
+      "sha256": "f02faecd7fcefcf5b09b53e8e0f21ac8f2123e1f35106775622fb05761e8d28e"
     },
     "pipeline-bitmap_text.sph": {
       "bytes": 80,
@@ -163,19 +163,19 @@
       "sha256": "5c81caff8fffd19d5062678601a61b98bc6ae1c585dcedc42933dee308cb0eae"
     },
     "pipeline-box_filter.asm": {
-      "bytes": 26066,
+      "bytes": 24988,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "08e08d1c3359f8ee6798c8c607861ab378abc6b834cc62e3396f87fceee6e5b7"
+      "sha256": "52b14c89eb1b90e8169312ded5bd4428e5dc1221d92067682c75688c603a404b"
     },
     "pipeline-box_filter.bin": {
-      "bytes": 3752,
+      "bytes": 3568,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "94c65a49aefd2e1ab0f8760a40ec1dd476f10ece0b946e1ef672791ac0717fe3"
+      "sha256": "11fe35201214417e75f6ea601e1caea0dece1f0cb0ceafa9adf816078a77fee6"
     },
     "pipeline-box_filter.json": {
       "bytes": 358,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "1bf224a6f818098985179da18c4dab05c526d582d961ffb55a649eed768a0ce4"
+      "sha256": "b0adc33180b3ab4cd0c1e6761a58e0b068e8a7380592f82f2205880d2c626b2c"
     },
     "pipeline-box_filter.sph": {
       "bytes": 80,
@@ -243,19 +243,19 @@
       "sha256": "7d645cc2bf9ca77dc6120056b5825b64a2afc63f18f1283d52bcad277befa372"
     },
     "pipeline-copy_scaled.asm": {
-      "bytes": 9638,
+      "bytes": 9462,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "58481ce906e0f7fbe25eec5e9d32b7dc35c5d9f80892158fe829af0405366f65"
+      "sha256": "71eb7966b29977fdaa92fcc33898fe1207ded0f5d013cb2cdf7fc1f3980a2aaf"
     },
     "pipeline-copy_scaled.bin": {
-      "bytes": 1336,
+      "bytes": 1304,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "1c3c8c735bec44769a696ef79977f2e9230b5506fe3835546e0d7abba252c29f"
+      "sha256": "a178d845068b4cbe5a95dcaca66e74e61ab7d69407ccf75fc2edd54a7e1b9541"
     },
     "pipeline-copy_scaled.json": {
       "bytes": 358,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "d08d3c1a27445be4f75824a2c67b7723e80dd54b5228cde5e1b8fd3efc664244"
+      "sha256": "ac2cd0715a6e9dd0cacb3270a6c6100d1b7414502ad49be9a2520d06cbcfc7be"
     },
     "pipeline-copy_scaled.sph": {
       "bytes": 80,
@@ -283,19 +283,19 @@
       "sha256": "5c81caff8fffd19d5062678601a61b98bc6ae1c585dcedc42933dee308cb0eae"
     },
     "pipeline-coverage_spans.asm": {
-      "bytes": 112219,
+      "bytes": 111846,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "715c5323d679f6cc3804f207b103880740c1285f2fc9b21de2dcdaacb61a7fbb"
+      "sha256": "93406ccf8591b2519c6dd6ad9d3c2648e58e096161e608f39f1d61d4f9e4e3ed"
     },
     "pipeline-coverage_spans.bin": {
-      "bytes": 15448,
+      "bytes": 15384,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "84ec1c1044eda0ae2e172061a146c398a52cd1d1ddf4b675b465eac65c930df2"
+      "sha256": "ba47cf118eaa7e2f6348557606241ab4f94fbd46de0c14018c1a6cb11ca68a94"
     },
     "pipeline-coverage_spans.json": {
       "bytes": 359,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "193b686704251c4f6beddf8e7e72f32b54b147f270a1f2bc8bf576bf511c6f6d"
+      "sha256": "13d3ef0c28d1508af3e8dd1e9f8f2318e87838e6b4e6e1bd3a5c9232be52b2b2"
     },
     "pipeline-coverage_spans.sph": {
       "bytes": 80,
@@ -303,19 +303,19 @@
       "sha256": "5c81caff8fffd19d5062678601a61b98bc6ae1c585dcedc42933dee308cb0eae"
     },
     "pipeline-gradient_v.asm": {
-      "bytes": 42481,
+      "bytes": 42251,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "f5d0fccea901c86454653ca83d101693f0c7a6e7d89e222be06df5aeed16d38f"
+      "sha256": "dbea9918b2f76c42ac54265c6f6c8b153d1e5bf329b17359fcd59977edeab635"
     },
     "pipeline-gradient_v.bin": {
-      "bytes": 5856,
+      "bytes": 5816,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "f8b50132151a8a6b0c60d0711438cb987b0f9eb9059565a06a026a3088ae905a"
+      "sha256": "a4ae2e20351653e37b4df80c3f1ed12f0ddf773ae6120b2cab370f36dc64f0ce"
     },
     "pipeline-gradient_v.json": {
       "bytes": 357,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "05bc235dda7f2a50711c910fc788ca6c62d9afea8d1a801eaea2d6be514401e8"
+      "sha256": "0944833c3646bdcef200b3746e94fc1396b7c6f2537c2b4b0f9b117145307cdb"
     },
     "pipeline-gradient_v.sph": {
       "bytes": 80,
@@ -323,19 +323,19 @@
       "sha256": "7d645cc2bf9ca77dc6120056b5825b64a2afc63f18f1283d52bcad277befa372"
     },
     "pipeline-line.asm": {
-      "bytes": 17928,
+      "bytes": 17887,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "6167932beab685ddf29e05efac75098a89cc891aa4a158d1ab963b7d8602f94e"
+      "sha256": "f38cad495bb0c3d4f0d7de98672547dcd2e505d07ffd160d2f7c4e74e4ccbb89"
     },
     "pipeline-line.bin": {
-      "bytes": 2496,
+      "bytes": 2488,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "e01cb6ef9214e77abb4ee6cda8a2a1ccc8e96f778b938af1a4cabbef44cdb0a7"
+      "sha256": "bb2cdbac7b26f10883526857ca19dd26de066d824dce630a93085e0ffc1e3d2d"
     },
     "pipeline-line.json": {
       "bytes": 357,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "fe4ac123a41ba9c381fe5f1e1383e712c8fa581e21fdf5de177f1a0b64f87204"
+      "sha256": "49c2aa0498815e5c6697e340233e61209c02dea3705d1fa5481b6a1641c67396"
     },
     "pipeline-line.sph": {
       "bytes": 80,
@@ -343,19 +343,19 @@
       "sha256": "5c81caff8fffd19d5062678601a61b98bc6ae1c585dcedc42933dee308cb0eae"
     },
     "pipeline-nearest_scaled.asm": {
-      "bytes": 7929,
+      "bytes": 7687,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "7020f914b2bc9702fcb31f5602d7cafe95258958ff2c7c17287363b005376a41"
+      "sha256": "a337c2233f27d4553d0a4c3787a90729551a452a9396f39bf87bbc2596f4133b"
     },
     "pipeline-nearest_scaled.bin": {
-      "bytes": 1112,
+      "bytes": 1072,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "c75240989e647d92b538187edff55d916ecce7c2cec904ec87a5041fc7eae059"
+      "sha256": "0ca718df37f1035c99b94256a400e89c0a77f8d8fc7c27d37fdb4c9fdc326fb4"
     },
     "pipeline-nearest_scaled.json": {
       "bytes": 358,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "12e3af002dcdf69400cb66b0f99f832b9860e5505d0f5d932f0dd237940d7414"
+      "sha256": "5cb056d6b0ff45b5b50c7dadfc05e4f75fee6a3b60e3f73a3599ed1e696ef18e"
     },
     "pipeline-nearest_scaled.sph": {
       "bytes": 80,
@@ -443,19 +443,19 @@
       "sha256": "15203e376bb888a2caaca69f60db03c7d328b9b9abfb730b0a7f77689203b542"
     },
     "pipeline-triangle.asm": {
-      "bytes": 51327,
+      "bytes": 51172,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "0859c0fca2cc2033540172b2598fa9985aae91b63e5e3cbc041ebeb7ab1227dd"
+      "sha256": "1664dec00b5e844de59addd2208f82bb5d8f8cc71127efe67360d26ecb7a7aee"
     },
     "pipeline-triangle.bin": {
-      "bytes": 7000,
+      "bytes": 6976,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "896a295d32b8281b4da67210db6553a4ee8034cf5b3923c5718aa53fbb970ea8"
+      "sha256": "72b0672fd7c9e4f978cc830e856423009ba6149cf1a1b54519d43c48e002a6af"
     },
     "pipeline-triangle.json": {
       "bytes": 357,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "4f271dd47864df3470e9f141cbb41675a8a125ccf2a67d94eee21213559752ce"
+      "sha256": "956b48837eb5b806efa8af398e756c1d33a21cd01a7c691f77b41b1a326e7df8"
     },
     "pipeline-triangle.sph": {
       "bytes": 80,
@@ -683,19 +683,19 @@
       "sha256": "7d645cc2bf9ca77dc6120056b5825b64a2afc63f18f1283d52bcad277befa372"
     },
     "probe-int-11.asm": {
-      "bytes": 8203,
+      "bytes": 8162,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "7463a271b421e761d740f030b409cb49be840b6f5774d8fd15c51de7d80e79c9"
+      "sha256": "73d5f4fa87f2b20121a73e2da09e7d4a2b9e51066ed3f5a0583522bc5c6276ab"
     },
     "probe-int-11.bin": {
-      "bytes": 1144,
+      "bytes": 1136,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "e6d50144f4369a8326c49dc212c7d960e3cf29ca3c2f8a596aeb4963a847392a"
+      "sha256": "b5559a6c3d0b8d19a225630c3c4ae645aec239eaa876a2515b25fa923bb56c04"
     },
     "probe-int-11.json": {
       "bytes": 358,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "effb7cf21a7472d0f824041c14144d8d923b377e096a6e31d5a3f959953766e6"
+      "sha256": "8c4dbb7780ae6fcc928d1407e5095a0a388ec8b84ebd9475dad94eeb320bdd88"
     },
     "probe-int-11.sph": {
       "bytes": 80,
@@ -943,19 +943,19 @@
       "sha256": "7d645cc2bf9ca77dc6120056b5825b64a2afc63f18f1283d52bcad277befa372"
     },
     "probe-int-24.asm": {
-      "bytes": 17699,
+      "bytes": 17658,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "347a93fbb8c65e193b49a6f1423f58a9a9d9490b9bacae4267aed92324c398d0"
+      "sha256": "173b416a0ca4baff311caf5595920a7877b8e8aff3bc30935984851426655bac"
     },
     "probe-int-24.bin": {
-      "bytes": 2464,
+      "bytes": 2456,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "95bcaf6a862f56383cb0ca49a1b23d6ab268e630dc9cc6fc1d65249c1c4045ef"
+      "sha256": "f2f630f96ba37cc37886671ed27be726c88c8276bf9c35c1bc33f47b026c52e3"
     },
     "probe-int-24.json": {
       "bytes": 358,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "629263c1e42dad28ec59bc3ce4f841094c83545db407203d84ccd4282385ac53"
+      "sha256": "c32a144a14ed2a27c97a4aa5fb18b3c46b9be9129ce19caff582173b617b4828"
     },
     "probe-int-24.sph": {
       "bytes": 80,
@@ -1036,7 +1036,7 @@
     "libs/gpu-abi/src/lib.rs": "33169976dcf1fb04fbeb92686bf5e1c72460fd74393e419344fc47c58eb0fd6a",
     "tools/kepler/CMakeLists.txt": "bb493a774b8cf0dde02a2e0bcd1829fa2bfbba2ef89b560b70e53a29734e941c",
     "tools/kepler/assets.py": "f436fa9cc4bf631ef4f6e6d5359a93694fc345f2dcef0be5699ee22f1856969f",
-    "tools/kepler/compile.cpp": "6ba5577b4a37d714517a1187a65ca5c280e863d2d20adb9a352a51b39b612754"
+    "tools/kepler/compile.cpp": "af2abca456429d14281ee1b8607f42415494fe9d932f3dfca0e5ef2ecac724ca"
   },
   "schema": 1,
   "shaders": [
@@ -1107,7 +1107,7 @@
       "metadata": {
         "builtin_calls": 0,
         "chipset": 262,
-        "code_bytes": 1336,
+        "code_bytes": 1304,
         "constant_buffer_bytes": 104,
         "constant_buffer_slot": 0,
         "fixups_applied": true,
@@ -1141,7 +1141,7 @@
       "metadata": {
         "builtin_calls": 0,
         "chipset": 262,
-        "code_bytes": 1112,
+        "code_bytes": 1072,
         "constant_buffer_bytes": 104,
         "constant_buffer_slot": 0,
         "fixups_applied": true,
@@ -1175,7 +1175,7 @@
       "metadata": {
         "builtin_calls": 0,
         "chipset": 262,
-        "code_bytes": 3752,
+        "code_bytes": 3568,
         "constant_buffer_bytes": 104,
         "constant_buffer_slot": 0,
         "fixups_applied": true,
@@ -1311,7 +1311,7 @@
       "metadata": {
         "builtin_calls": 0,
         "chipset": 262,
-        "code_bytes": 15448,
+        "code_bytes": 15384,
         "constant_buffer_bytes": 112,
         "constant_buffer_slot": 0,
         "fixups_applied": true,
@@ -1345,7 +1345,7 @@
       "metadata": {
         "builtin_calls": 0,
         "chipset": 262,
-        "code_bytes": 1912,
+        "code_bytes": 1856,
         "constant_buffer_bytes": 104,
         "constant_buffer_slot": 0,
         "fixups_applied": true,
@@ -1379,7 +1379,7 @@
       "metadata": {
         "builtin_calls": 0,
         "chipset": 262,
-        "code_bytes": 2496,
+        "code_bytes": 2488,
         "constant_buffer_bytes": 96,
         "constant_buffer_slot": 0,
         "fixups_applied": true,
@@ -1515,7 +1515,7 @@
       "metadata": {
         "builtin_calls": 0,
         "chipset": 262,
-        "code_bytes": 5856,
+        "code_bytes": 5816,
         "constant_buffer_bytes": 84,
         "constant_buffer_slot": 0,
         "fixups_applied": true,
@@ -1549,7 +1549,7 @@
       "metadata": {
         "builtin_calls": 0,
         "chipset": 262,
-        "code_bytes": 7000,
+        "code_bytes": 6976,
         "constant_buffer_bytes": 96,
         "constant_buffer_slot": 0,
         "fixups_applied": true,
@@ -1968,7 +1968,7 @@
       "metadata": {
         "builtin_calls": 0,
         "chipset": 262,
-        "code_bytes": 1144,
+        "code_bytes": 1136,
         "constant_buffer_bytes": 76,
         "constant_buffer_slot": 0,
         "fixups_applied": false,
@@ -2423,7 +2423,7 @@
       "metadata": {
         "builtin_calls": 0,
         "chipset": 262,
-        "code_bytes": 2464,
+        "code_bytes": 2456,
         "constant_buffer_bytes": 76,
         "constant_buffer_slot": 0,
         "fixups_applied": false,

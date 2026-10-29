@@ -156,15 +156,25 @@ class Frontend : public BuildUtil {
       mkFlow(OP_BRA,no,CC_EQ,condition)->setType(TYPE_U32);
       setPosition(yes,true);
       sequence(); branch(tail);
+      const auto converges = [tail](BasicBlock *arm) {
+         Instruction *exit = arm->getExit();
+         return exit && exit->op==OP_BRA && exit->asFlow()->target.bb==tail;
+      };
+      bool insertJoins=converges(getBB());
       require(cursor<lines.size(),"unterminated UIF");
       if (opName(lines[cursor])=="ELSE") {
          ++cursor; setPosition(no,true); sequence(); branch(tail);
       } else { setPosition(no,true); branch(tail); }
+      insertJoins=insertJoins && converges(getBB());
       require(cursor<lines.size() && lines[cursor]=="ENDIF","missing ENDIF"); ++cursor;
-      // Match Mesa's reconvergence insertion: JOINAT precedes the branch.
-      setPosition(head->getExit(),false);
-      head->joinAt=mkFlow(OP_JOINAT,tail,CC_ALWAYS,NULL);
-      setPosition(tail,true); mkFlow(OP_JOIN,NULL,CC_ALWAYS,NULL)->fixed=1;
+      // MIT nv50_ir_from_nir.cpp:1605-1653: a BRK arm does not converge
+      // with the fallthrough arm. Do not join that loop-exit path.
+      if (insertJoins) {
+         setPosition(head->getExit(),false);
+         head->joinAt=mkFlow(OP_JOINAT,tail,CC_ALWAYS,NULL);
+      }
+      setPosition(tail,true);
+      if (insertJoins) mkFlow(OP_JOIN,NULL,CC_ALWAYS,NULL)->fixed=1;
    }
    void loop() {
       BasicBlock *body=block(), *tail=block();
