@@ -6,9 +6,86 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tests'))
+from gt710_gr_live_unwind_test import item
 
 
 class StallSnapshot(unittest.TestCase):
+    def test_two_engine_faults_and_forced_reset_capture_once_outside_core(self):
+        adapter = (ROOT / 'kernel/src/gpu/gk208/adapter.rs').read_text()
+        # Run the health-fault path, stopping before completion sampling, and
+        # the complete reset entry with its native diagnostics enabled.
+        reap = item(adapter, '    pub fn reap(')
+        reap = reap[:reap.index('        let Some(front)')] + '        Reap::Empty\n    }'
+        begin = item(adapter, '    pub fn begin_reset(')
+        methods = '\n'.join([reap, begin, item(adapter, '    pub fn fault_reason(')])
+        methods = methods.replace('#[cfg(target_os = "none")]', '')
+        harness = r'''
+use std::{cell::RefCell, rc::Rc};
+macro_rules! serial_println {($($arg:tt)*)=>{let _=format_args!($($arg)*);};}
+pub(crate) use serial_println;
+enum Reap { Empty, Fault }
+#[derive(Default)]
+struct State { in_core:bool, records:Vec<(u64,u32,bool,String)>, resets:usize }
+struct Channel { state:Rc<RefCell<State>>, epoch:u64, put:u32, fault:bool }
+impl Channel {
+    fn healthy(&self)->Result<(), &'static str> {
+        if self.fault { Err("injected engine fault") } else { Ok(()) }
+    }
+    fn record_fault(&self, reason:&str) {
+        let mut s=self.state.borrow_mut();
+        let locked=s.in_core;
+        s.records.push((self.epoch,self.put,locked,reason.into()));
+    }
+    fn reset(&mut self)->Result<(), &'static str> {
+        let mut s=self.state.borrow_mut();
+        assert_eq!(s.records.last().map(|r|(r.0,r.1)),Some((self.epoch,self.put)),
+                   "capture must precede hardware reset");
+        s.resets+=1;Ok(())
+    }
+}
+#[derive(Clone,Copy)] struct Identity { sequence:u32, epoch:u64 }
+struct Sent { identity:Option<Identity> }
+struct Trace {
+    sequence:u32,epoch:u64,tag:u32,channel:u64,caller:u64,kind:&'static str,
+    target:u64,frame:u32,address:u64,command:u32,
+}
+struct Device {
+    channel:Channel,fault:bool,first_error:Option<&'static str>,
+    resetting:Option<Result<(), &'static str>>,recent:Vec<Trace>,pending:Vec<Sent>,
+}
+impl Device { // METHODS
+}
+fn main() {
+    let state=Rc::new(RefCell::new(State::default()));
+    for (epoch,put,fault) in [(17,23,true),(18,23,true),(19,24,false)] {
+        let mut d=Device { channel:Channel {state:state.clone(),epoch,put,fault},
+            fault:false,first_error:None,resetting:None,recent:vec![],pending:vec![] };
+        state.borrow_mut().in_core=true;
+        for _ in 0..2 {
+            assert_eq!(matches!(d.reap(),Reap::Fault),fault);
+        }
+        state.borrow_mut().in_core=false;
+        d.begin_reset();
+        d.begin_reset();
+    }
+    let s=state.borrow();
+    assert_eq!(s.records.iter().map(|r|(r.0,r.1)).collect::<Vec<_>>(),
+               [(17,23),(18,23),(19,24)],"one pre-reset record per (epoch, put)");
+    assert!(s.records.iter().all(|r|!r.2),"capture ran under CORE");
+    assert_eq!(s.records.iter().map(|r|r.3.as_str()).collect::<Vec<_>>(),
+               ["injected engine fault","injected engine fault","shared core requested reset"]);
+    assert_eq!(s.resets,3);
+}
+'''.replace('// METHODS', methods)
+        priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / 'faults.rs').write_text(harness)
+            subprocess.run(priority + ['rustc', '--edition=2021', '-Dwarnings',
+                           str(path / 'faults.rs'), '-o', str(path / 'faults')], check=True)
+            subprocess.run([str(path / 'faults')], check=True)
+
     def test_stall_bulk_record_requires_its_exact_serial_anchor(self):
         import hashlib
         import runpy
