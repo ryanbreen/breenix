@@ -20,11 +20,17 @@ class NativeQueue(unittest.TestCase):
         registers = traps[traps.index('pub const TRAP_REGISTERS'):traps.index('];', traps.index('pub const TRAP_REGISTERS')) + 2]
         harness = r'''
 extern crate alloc;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap,VecDeque};
 #[path="ROOT/kernel/src/gpu/gk208/queue.rs"] pub mod queue;
 const SLOT:u64=(8<<20)-4096;const COMMAND:u64=0x01000000;
-#[derive(Default)] struct Registers {values:BTreeMap<usize,u32>,vram:BTreeMap<u64,u32>}
-impl Registers {fn read(&mut self,a:usize)->u32{*self.values.get(&a).unwrap_or(&0)} fn delay_us(&mut self,_:u64){}}
+#[derive(Default)] struct Registers {values:BTreeMap<usize,u32>,vram:BTreeMap<u64,u32>,
+ scripted:BTreeMap<usize,VecDeque<u32>>,reads:BTreeMap<usize,usize>,now:u64,refusals:Vec<[u32;4]>}
+impl Registers {
+ fn read(&mut self,a:usize)->u32{*self.reads.entry(a).or_default()+=1;
+  self.scripted.get_mut(&a).and_then(VecDeque::pop_front).unwrap_or_else(||*self.values.get(&a).unwrap_or(&0))}
+ fn delay_us(&mut self,us:u64){self.now+=us;}
+}
+fn save_refusal(r:&mut Registers,words:[u32;4]){r.refusals.push(words);}
 fn read(r:&mut Registers,_:u64,a:u64)->Result<u32,&'static str>{Ok(*r.vram.get(&a).unwrap_or(&0))}
 fn words(r:&mut Registers,_:u64,a:u64,words:&[u32])->Result<(),&'static str>{for(i,v)in words.iter().enumerate(){r.vram.insert(a+i as u64*4,*v);}Ok(())}
 fn elapsed(_:u64)->u64{0}
@@ -50,6 +56,32 @@ fn session(bar:usize)->Session {Session{pages:Pages(Box::new([0;1024])),commands
  r.values.insert(0x40014,4);
  for a in binding::TRAP_REGISTERS.into_iter().chain([0x259c,0x40108,0x40148,0x106908]) {r.values.insert(a,1);assert!(sample(&mut r,0).is_err(),"fault {a:x} accepted");r.values.insert(a,0);}
  let mut m=Monitor{session:&s,regs:&mut r,total:1<<24,sequence:1,stop_on_trap:true,release_slot:0,queued_put:Some(4)};assert_eq!(m.now_us(),0);m.relax();
+}
+fn sample(r:&mut Registers)->Result<(u32,u64,bool),&'static str>{
+ let s=session(0);Monitor{session:&s,regs:r,total:1<<24,sequence:1,stop_on_trap:true,release_slot:0,queued_put:Some(4)}.snapshot()
+}
+#[test]fn transient_pri_is_retried_without_refusal(){
+ for address in binding::TRAP_REGISTERS {
+  let mut r=Registers::default();r.scripted.insert(address,VecDeque::from([0xbadf1201,0]));
+  assert!(sample(&mut r).is_ok(),"transient PRI at {address:x} was treated as a trap");
+  assert!(r.refusals.is_empty());assert!((1..=1000).contains(&r.now));
+  assert_eq!(r.reads[&address],2);
+ }
+}
+#[test]fn persistent_pri_refuses_within_one_millisecond(){
+ let mut r=Registers::default();r.values.insert(0x400100,0xbadf1201);
+ assert_eq!(sample(&mut r),Err("GR PRI unreachable"));
+ assert!((1..=1000).contains(&r.now));assert_eq!(r.refusals,vec![[0xbadf1201,0,0,0]]);
+ assert!(r.reads[&0x400100]>1);
+}
+#[test]fn real_trap_is_never_retried_even_alongside_pri(){
+ for pri in [false,true] {
+  let mut r=Registers::default();r.scripted.insert(0x400100,VecDeque::from([0x00200000,0]));
+  if pri {r.values.insert(0x400108,0xbadf1200);}
+  assert_eq!(sample(&mut r),Err("shader binding PGRAPH trap/exception"));
+  assert_eq!(r.now,0);assert_eq!(r.reads[&0x400100],1);assert_eq!(r.refusals.len(),1);
+  assert_eq!(r.refusals[0][0],0x00200000);
+ }
 }
 #[test]fn four_immutable_stream_slots_and_descriptor_wrap(){
  let mut bar=vec![0u32;2<<20];let s=session(bar.as_mut_ptr() as usize);let mut r=Registers::default();
