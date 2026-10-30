@@ -520,6 +520,7 @@ pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
         || regs.read(0x61c030+evo.sor as usize*0x800)&0x10000000 != 0 {
         return Err("native present lost display health");
     }
+    super::display_evidence::record(regs, head, surface, &receipt);
     Ok(receipt)
 }
 

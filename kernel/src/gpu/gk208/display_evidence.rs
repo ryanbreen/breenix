@@ -1,0 +1,58 @@
+//! Bounded post-update EVO snapshots for the two G20 logical modes.
+//! Register semantics are the in-tree native/modeset encodings; no new hardware
+//! methods are introduced. Formatting and digest output run at upload time.
+use super::{present::{Receipt, Surface}, Registers};
+use alloc::{format, string::String, vec::Vec};
+use core::sync::atomic::{AtomicU64, Ordering};
+
+static BASELINE: AtomicU64 = AtomicU64::new(u64::MAX);
+static STATE: spin::Mutex<State> = spin::Mutex::new(State { sequence: 0, modes: [None, None] });
+struct State { sequence: u64, modes: [Option<Snapshot>; 2] }
+#[derive(Clone, Copy)]
+struct Snapshot {
+    sequence: u64, mode: usize, resource: u32, requested: u64, head: u32,
+    pitch: u32, block_height: u32, format: u32, notifier: u32, active: [u32; 5], armed: [u32; 5],
+    viewport_active: [u32; 8], viewport_armed: [u32; 8], raster: [u32; 2],
+    firmware_writes: u64,
+}
+
+pub(super) fn baseline(value: u64) { BASELINE.store(value, Ordering::Release); }
+
+/// Called after native::present confirmed completion, both banks and output health.
+pub(super) fn record(regs: &mut Registers, head: u32, surface: Surface, receipt: &Receipt) {
+    let mode = match (surface.width, surface.height) {
+        (1280, 800) => 0, (2560, 1600) => 1, _ => return,
+    };
+    let h = head as usize * 0x300;
+    let methods = [0x42c, 0x494, 0x4b0, 0x4b8, 0x4bc, 0x4c0, 0x4c4, 0x4c8];
+    let viewport_active = methods.map(|m| regs.read(0x640000 + m + h));
+    let viewport_armed = methods.map(|m| regs.read(0x660000 + m + h));
+    let raster = [regs.read(0x64041c + h), regs.read(0x640420 + h)];
+    let firmware_writes = crate::firmware_writes::count()
+        .checked_sub(BASELINE.load(Ordering::Acquire)).unwrap_or(u64::MAX);
+    let mut state = STATE.lock();
+    state.sequence += 1;
+    state.modes[mode] = Some(Snapshot { sequence: state.sequence, mode,
+        resource: surface.resource, requested: surface.address, head,
+        pitch: surface.pitch, block_height: surface.block_height, format: surface.format,
+        notifier: receipt.notifier, active: receipt.active, armed: receipt.armed,
+        viewport_active, viewport_armed, raster, firmware_writes });
+}
+
+pub(super) fn export() -> Vec<(String, String)> {
+    let snapshots = core::mem::take(&mut STATE.lock().modes);
+    let mut rows: Vec<_> = snapshots.into_iter().flatten().collect();
+    rows.sort_by_key(|r| r.sequence);
+    rows.into_iter().map(|r| {
+        let row = format!(concat!("GT710_DISPLAY_V1 {{\"schema\":1,\"sequence\":{},\"mode\":{},",
+            "\"resource\":{},\"requested\":{},\"head\":{},\"pitch\":{},\"block_height\":{},\"format\":{},\"notifier\":{},",
+            "\"active\":{:?},\"armed\":{:?},\"viewport_active\":{:?},\"viewport_armed\":{:?},",
+            "\"raster\":{:?},\"firmware_writes\":{}}}"), r.sequence, r.mode,
+            r.resource, r.requested, r.head, r.pitch, r.block_height, r.format, r.notifier, r.active, r.armed,
+            r.viewport_active, r.viewport_armed, r.raster, r.firmware_writes);
+        let digest = crate::block::install::sha256::sha256(row.as_bytes());
+        let anchor = format!("GT710_DISPLAY_BULK sequence={} bytes={} sha256={}",
+            r.sequence, row.len(), super::hex(&digest));
+        (row, anchor)
+    }).collect()
+}

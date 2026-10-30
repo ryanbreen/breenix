@@ -22,6 +22,7 @@ pub(in crate::gk208) fn test_ownership()->Result<(),&'static str> {
 pub(crate) fn retain(mut layout:memory::Layout,regs:usize,bar:usize,console:super::super::ConsoleSurface,mut evo:super::super::native::Evo)->Result<super::super::ConsoleSurface,&'static str> {
     test_ownership()?;
     let device=crate::drivers::pci::find_device(0x10de,0x128b).ok_or("native PCI device absent")?;
+    super::super::display_evidence::baseline(console.firmware_baseline);
     let console=super::super::native::logical_console(&mut Registers(regs),&mut layout,
         &mut evo,console,bar,device.bars[1].size)?;
     let native=layout.objects[4].range.start;

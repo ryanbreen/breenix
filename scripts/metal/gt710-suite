@@ -109,7 +109,7 @@ CATEGORIES = {
     'resources': [('row', 'Production CAPS admits backend 6 with executable origins 3-10, native classes and live scanouts'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 8.2 step passing, reclaimed memory and its own time within 900 s'), ('console', 'A completed production console boot passes 88/88 within 330 s of handoff')],
     'alpha': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 77-case 8.3 step passing, reclaimed memory and its own time within 900 s')],
     'shapes': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 90-case 8.4 step passing, reclaimed memory and its own time within 900 s')],
-    'presentation': [('panic', 'A separate terminal PANIC capture proves bound diagnostics under both poisons with firmware_writes=0 and no LOCKUP'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 161-case 8.6 selection passing, reclaimed memory and its own time within 900 s')],
+    'presentation': [('display', 'Runtime EVO snapshots prove both G20 viewports, the DDC preferred raster, latched surfaces and zero firmware writes'), ('panic', 'A separate terminal PANIC capture proves bound diagnostics under both poisons with firmware_writes=0 and no LOCKUP'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 161-case 8.6 selection passing, reclaimed memory and its own time within 900 s')],
     'isolation': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 140-case 8.5 selection passing, reclaimed memory and its own time within 900 s')],
     'core': [('row', 'CAPS bytes match the native backend-6 row and the created board classes'), ('dispatch', 'Native draws and copies complete; copy controls reject withheld release, stale epoch and masked 3D admission and accept their clean successors'), ('producer', 'A named production GPU-suite boot reports 170 manifest-ordered unprobed-capability admission refusals without skips and reports its own time')],
     'device': (
@@ -2219,7 +2219,49 @@ def panic_capture(serial, boot):
         raise ValueError(detail)
 
 
+def runtime_display(serial, preferred):
+    if 'GT710_DISPLAY_EVIDENCE_ERROR' in serial: raise ValueError('runtime display evidence storage failed')
+    rows = [json.loads(m[1]) for m in re.finditer(r'^GT710_DISPLAY_V1 (.+)$', serial, re.M)]
+    if not rows or {r.get('mode') for r in rows} != {0, 1}:
+        raise ValueError('runtime display needs both G20 logical modes')
+    sequences = []
+    for r in rows:
+        try:
+            mode = r['mode']
+            w, h = ((1280, 800), (2560, 1600))[mode]
+            pitch, bh, fmt = r['pitch'], r['block_height'], r['format']
+            if (type(pitch) is not int or pitch != w * 4 or bh not in (0, 1, 2, 4, 8, 16, 32) or fmt not in (0, 1)):
+                raise ValueError('invalid runtime display storage')
+            storage = (0x1000000 | pitch) if bh == 0 else ((pitch // 64) << 8) | (bh.bit_length() - 1)
+            arrays = [('active', 5), ('armed', 5), ('viewport_active', 8), ('viewport_armed', 8), ('raster', 2)]
+            if (r['schema'] != 1 or type(mode) is not int
+                    or any(type(r[k]) is not list or len(r[k]) != n
+                           or any(type(v) is not int or not 0 <= v < 1 << 32 for v in r[k]) for k, n in arrays)
+                    or any(type(r[k]) is not int or r[k] <= 0 for k in ('sequence', 'resource', 'requested'))
+                    or r['head'] not in range(4) or r['notifier'] & 1 != 1
+                    or r['active'] != r['armed'] or r['active'][0] << 8 != r['requested']
+                    or r['active'][1] != w | h << 16 or r['active'][4] == 0
+                    or r['active'][2] != storage or r['active'][3] != (0xcf00 if fmt == 0 else 0xd500)
+                    or r['viewport_active'] != [0, 0, 0, w | h << 16, 0, 1280 | 800 << 16, 1280 | 800 << 16, 1280 | 800 << 16]
+                    or r['viewport_armed'] != r['viewport_active'] or r['firmware_writes'] != 0):
+                raise ValueError('runtime display latch, viewport, completion or firmware writes differ')
+            blank, end = r['raster']
+            if ((end & 0xffff) - (blank & 0xffff), (end >> 16) - (blank >> 16)) != tuple(preferred):
+                raise ValueError('runtime raster differs from the DDC preferred timing')
+            sequences.append(r['sequence'])
+        except (KeyError, TypeError, IndexError) as error:
+            raise ValueError('malformed runtime display evidence') from error
+    if sequences != sorted(set(sequences)):
+        raise ValueError('runtime display sequence is duplicated or unordered')
+    return rows
+
+
 def check_case(category, case, serial, producer=None):
+    if category == 'presentation' and case == 'display':
+        if producer is None: raise ValueError('presentation needs named GPU and console captures')
+        preferred, _ = native_mode(producer['console']['serial'])
+        runtime_display(producer['gpu']['serial'], (preferred['width'], preferred['height']))
+        return
     if category == 'presentation' and case == 'panic':
         if producer is None or 'panic' not in producer:
             raise ValueError('presentation needs a named panic capture')
@@ -2530,6 +2572,8 @@ def capture_serial(directory):
         raise ValueError('graphics image rows must arrive in bulk')
     if spans and not matches:
         raise ValueError('spans evidence bulk missing')
+    if re.search(r'^GT710_DISPLAY_V1 ', serial, re.M):
+        raise ValueError('runtime display records must arrive in bulk')
     if re.search(r'^GT710_SPANS_V1 ', serial, re.M):
         raise ValueError('spans records must arrive in bulk')
     if stalls and not matches:
@@ -2608,6 +2652,11 @@ def capture_serial(directory):
                     or row.get('answer') != 0x60010000 | (raw[3] & 15)):
                 raise ValueError('inconsistent attributed MMU write record')
             key=('mmu-error', row['epoch'], row['sequence'])
+        elif fields[0]=='GT710_DISPLAY_V1':
+            row = json.loads(line.removeprefix('GT710_DISPLAY_V1 '))
+            if type(row.get('sequence')) is not int or row['sequence'] <= 0:
+                raise ValueError('invalid runtime display sequence')
+            key=('display-state', row['sequence'])
         elif fields[0]=='GT710_STALL_V1':
             stall = re.fullmatch(r'GT710_STALL_V1 instance=(\d+) epoch=(\d+) put=(\d+) registers=\[.*\]\n?', line)
             if stall is None: raise ValueError('invalid stall record')
@@ -2632,6 +2681,9 @@ def capture_serial(directory):
         if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
         groups.setdefault(key,[]).append(line);previous=key
     def report_key(line):
+        display = re.fullmatch(r'GT710_DISPLAY_BULK sequence=([1-9]\d*) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
+        if display: return ('display-state', int(display[1]))
+        if line.startswith('GT710_DISPLAY_BULK '): raise ValueError('invalid runtime display anchor')
         refusal = re.fullmatch(r'GT710_GR_REFUSAL_BULK bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
         if refusal: return ('gr-refusal', refusal[2])
         if line.startswith('GT710_GR_REFUSAL_BULK '): raise ValueError('invalid GR refusal anchor')
@@ -2678,6 +2730,11 @@ def capture_serial(directory):
             if not lower<=serial_offset<upper:
                 raise ValueError('artifact anchor outside its upload slot')
         serial_offset+=len(line)
+        if key is not None and key[0] == 'display-state':
+            anchor = re.fullmatch(r'GT710_DISPLAY_BULK sequence=([1-9]\d*) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
+            record = groups[key][0].removesuffix('\n').encode('ascii')
+            if len(groups[key]) != 1 or len(record) != int(anchor[2]) or hashlib.sha256(record).hexdigest() != anchor[3]:
+                raise ValueError('runtime display record differs from serial length/digest')
         if key is not None and key[0] == 'gr-refusal':
             anchor = re.fullmatch(r'GT710_GR_REFUSAL_BULK bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
             record = groups[key][0].removesuffix('\n').encode('ascii')

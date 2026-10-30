@@ -11,7 +11,7 @@ from gt710_gr_live_unwind_test import item
 class LogicalModePath(unittest.TestCase):
     def test_viewport_is_in_the_notified_update_and_high_console_avoids_userd(self):
         native=(ROOT/'kernel/src/gpu/gk208/native.rs').read_text()
-        present=item(native,'pub(in crate::gk208) fn present(').replace('pub(in crate::gk208)','').replace('super::present::','present::')
+        present=item(native,'pub(in crate::gk208) fn present(').replace('pub(in crate::gk208)','').replace('super::present::','present::').replace('super::display_evidence::','display_evidence::')
         console=item(native,'pub(super) fn logical_console(').replace('pub(super)','').replace('crate::memory::map_mmio','host_map').replace('crate::console::display::linear::map_native_write_combining','host_wc').replace('super::present::','present::').replace('super::vm::TABLE_BYTES','vm::TABLE_BYTES')
         binding=item(native,'pub fn console_binding(').replace('pub fn','fn').replace('surface: &ConsoleSurface','surface: &ConsoleSurface, regs: &mut Registers').replace('    let mut regs = Registers(surface.regs);','').replace('view.verify(&mut regs,','view.verify(regs,')
         fixture=r'''
@@ -41,6 +41,7 @@ impl memory::Access for Registers {
  fn read(&mut self,r:usize)->u32 {Registers::read(self,r)}
  fn write(&mut self,r:usize,v:u32){Registers::write(self,r,v)}
 }
+mod display_evidence {pub fn record(_: &mut super::Registers,_:u32,_:super::present::Surface,_:&super::present::Receipt){}}
 struct Evo {head:u32,sor:u32,total:u64,push:u64,put:u32,notifier:u64,limits:(),coefficients:(),scripts:[Vec<modeset::Op>;4]}
 #[derive(Clone,Copy)] struct ConsoleSurface {pointer:usize,bytes:usize,width:usize,height:usize,pitch:usize,vram:u64,phys:u64,regs:usize,head:u32,firmware_baseline:u64}
 fn host_map(_:u64,n:usize)->Result<usize,&'static str>{assert_eq!(n,32<<20);Ok(Box::leak(vec![0u32;n/4].into_boxed_slice()).as_mut_ptr() as usize)}
