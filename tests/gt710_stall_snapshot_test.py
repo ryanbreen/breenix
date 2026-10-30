@@ -18,7 +18,8 @@ class StallSnapshot(unittest.TestCase):
         reap = item(adapter, '    pub fn reap(')
         reap = reap[:reap.index('        let Some(front)')] + '        Reap::Empty\n    }'
         begin = item(adapter, '    pub fn begin_reset(')
-        methods = '\n'.join([reap, begin, item(adapter, '    pub fn fault_reason(')])
+        methods = '\n'.join([reap, begin, item(adapter, '    pub fn fault_reason('),
+                             item(adapter, '    fn retry_error_trap(')])
         methods = methods.replace('#[cfg(target_os = "none")]', '')
         harness = r'''
 use std::{cell::RefCell, rc::Rc};
@@ -54,7 +55,14 @@ struct Device {
     channel:Channel,fault:bool,first_error:Option<&'static str>,
     resetting:Option<Result<(), &'static str>>,recent:Vec<Trace>,pending:Vec<Sent>,
 }
-impl Device { // METHODS
+impl Device {
+    // This fixture injects generic channel health failures, with no submitted
+    // undefined method. The adapter lifecycle harness covers attributed traps.
+    fn retire_error_trap(&mut self)->Result<bool, &'static str> {
+        assert!(self.pending.is_empty(), "generic fault fixture queued work");
+        Ok(false)
+    }
+    // METHODS
 }
 fn main() {
     let state=Rc::new(RefCell::new(State::default()));
