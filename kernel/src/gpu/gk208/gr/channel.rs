@@ -1580,7 +1580,9 @@ mod native {
             let mut regs = Registers(self.registers);
             let c = self.session.report.identity;
             let b = self.session.pbdma * 0x2000;
-            let registers = [0x259c, 0x400100, 0x400108, 0x400700,
+            let registers = [0x259c, 0x400100, 0x400108, 0x400110, 0x400118,
+                0x400700, 0x400704, 0x400708, 0x40070c,
+                0x504648, 0x504650,
                 0x40108+b, 0x40148+b, 0x40120+b, 0x40014+b, 0x40028+b,
                 0x800000+c.id as usize*8, 0x800004+c.id as usize*8,
                 0x2630, 0x262c, 0x2634, 0x2284+c.runlist as usize*8]

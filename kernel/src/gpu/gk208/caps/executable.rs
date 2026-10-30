@@ -47,7 +47,7 @@ impl Runner<'_> {
                     }
                     return Ok(());
                 }
-                Reap::Fault => return Err("native CAPS engine fault"),
+                Reap::Fault => return Err(self.device.fault_reason().unwrap_or("native CAPS engine fault")),
                 Reap::Empty => (),
             }
             if crate::gk208::channel::elapsed(start) > 2_000_000 {

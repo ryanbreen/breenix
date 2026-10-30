@@ -200,7 +200,14 @@ impl Device {
     }
     pub fn reap(&mut self) -> Reap {
         if self.resetting.is_some() { return Reap::Empty; }
-        if self.needs_reset() { return Reap::Fault; }
+        if self.fault { return Reap::Fault; }
+        if let Err(reason) = self.channel.healthy() {
+            self.first_error.get_or_insert(reason);
+            self.fault = true;
+            #[cfg(target_os = "none")]
+            self.channel.record_fault(reason);
+            return Reap::Fault;
+        }
         let Some(front) = self.pending.front() else { return Reap::Empty };
         let Some(identity) = front.identity else {
             let sent = self.pending.pop_front().unwrap();
