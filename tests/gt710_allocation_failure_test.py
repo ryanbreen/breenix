@@ -187,4 +187,30 @@ fn shadow()->Option<Shadow>{let layout=ScreenLayout;CODE
             fixture+=FRAMES
             run(fixture,'frame_allocation_failure_preserves_previous_bytes',[0])
         run(fixture,'shadow_uses_system_frames_when_heap_is_full',[0])
+    def test_prepared_terminal_stream_allocation_is_fallible(self):
+        fixture=(ROOT/'tests/gt710_panic_prepared_test.rs').read_text().replace('"../kernel/','"'+str(ROOT/'kernel')+'/')
+        fixture+=ALLOC+r'''
+trait CheckedStream{fn checked(self)->bool;}
+impl CheckedStream for Vec<u32>{fn checked(self)->bool{false}}
+impl CheckedStream for Result<Vec<u32>,&'static str>{fn checked(self)->bool{self.is_err()}}
+#[test]fn prepared_stream_allocation_is_a_refusal(){
+ arm();let refused=prepared::text_stream(42,43,8).checked();ARMED.store(false,Ordering::Relaxed);
+ assert!(HIT.load(Ordering::Relaxed));assert!(refused);
+}
+'''
+        run(fixture,'prepared_stream_allocation_is_a_refusal',range(2))
+
+    def test_draw_channel_readback_allocations_are_fallible(self):
+        source=item((ROOT/'kernel/src/gpu/gk208/gr/channel.rs').read_text(),'pub(in crate::gk208::gr) fn readback(')
+        code=source[source.index('            let mut images'):source.index('            for (index, poison)')]
+        fixture=ALLOC+r'''
+fn snapshots(bytes:usize)->Result<[Vec<u8>;2],&'static str>{CODE
+ images[0][0]=1;Ok(images)}
+#[test]fn channel_readback_allocation_is_a_refusal(){
+ arm();let result=snapshots(16<<20);ARMED.store(false,Ordering::Relaxed);
+ assert!(result.is_err(),"draw-channel readback must return allocation failure");
+}
+'''.replace('CODE',code)
+        run(fixture,'channel_readback_allocation_is_a_refusal',range(2))
+
 if __name__=='__main__':unittest.main()
