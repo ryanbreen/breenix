@@ -263,3 +263,33 @@ fn short_crossing_tables_do_not_allocate_a_device_limit_width_row() {
     assert!(packed.bytes[expected.len()..].iter().all(|&b| b==0));
     assert_eq!(packed.bytes.len(),128);
 }
+
+
+// Reject the reported heap-sized image without asking the host for that memory.
+struct SpanAllocator;
+static REFUSE_SPAN_IMAGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[global_allocator]
+static SPAN_ALLOCATOR: SpanAllocator = SpanAllocator;
+unsafe impl std::alloc::GlobalAlloc for SpanAllocator {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        if layout.size() == 64 << 20 && REFUSE_SPAN_IMAGE.load(std::sync::atomic::Ordering::Relaxed) {
+            return std::ptr::null_mut();
+        }
+        unsafe { std::alloc::GlobalAlloc::alloc(&std::alloc::System, layout) }
+    }
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: std::alloc::Layout) {
+        unsafe { std::alloc::GlobalAlloc::dealloc(&std::alloc::System, pointer, layout) }
+    }
+}
+#[test]
+fn heap_sized_crossing_allocation_returns_no_memory_without_reading_the_snapshot() {
+    let v=View {reads:Default::default()};
+    let mut w=Vec::new();stream::encode::begin(&mut w,1);
+    draw::encode(&mut w,pipeline::COVERAGE_SPANS,0,0,3,64<<20,
+        &[draw::Instance {rect:[0,0,1,1],params:[0;16]}]);
+    REFUSE_SPAN_IMAGE.store(true,std::sync::atomic::Ordering::Relaxed);
+    let result=native::pack_spans(w.as_slice(),&v,16384);
+    REFUSE_SPAN_IMAGE.store(false,std::sync::atomic::Ordering::Relaxed);
+    assert!(matches!(result,Err("native crossing allocation")));
+    assert!(v.reads.borrow().is_empty());
+}

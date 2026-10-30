@@ -295,7 +295,11 @@ pub fn pack_spans(w: &(impl Words + ?Sized), b: &impl Bindings, width: u32)
     if height == 0 || height > gpu_abi::gk208::MAX_2D_SIZE {
         return Err("invalid native crossing texture height");
     }
-    let mut data = Spans { width, height, bytes: vec![0; width as usize * height as usize * 4] };
+    let size = width as usize * height as usize * 4;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(size).map_err(|_| "native crossing allocation")?;
+    bytes.resize(size, 0);
+    let mut data = Spans { width, height, bytes };
     for (h, bytes, base) in tables {
         for word in 0..bytes / 4 {
             let at = (base + word) as usize * 4;

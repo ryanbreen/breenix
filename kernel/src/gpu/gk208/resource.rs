@@ -597,15 +597,13 @@ pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + S
     let preparing = super::timing::phase(101);
     let bytes = data.width as usize * data.height as usize * 4;
     if data.bytes.len() > bytes { return Err("oversized native packed spans"); }
-    let mut expected = data.bytes.clone();
-    expected.resize(bytes, 0);
     let layout = Layout::new(data.width, data.height, 4)?;
     let backing_bytes = layout.pitch as usize * data.height as usize;
     let backing = Arc::new(crate::gpu::dma::Pages::new(backing_bytes.div_ceil(4096))
         .ok_or("native crossing upload backing allocation")?);
     backing.identify("native-spans-upload", 0, 0);
     let row_bytes = data.width as usize * 4;
-    for (y, row) in expected.chunks_exact(row_bytes).enumerate() {
+    for (y, row) in data.bytes.chunks(row_bytes).enumerate() {
         backing.write(y * layout.pitch as usize, row);
     }
     backing.maintain(0, backing_bytes, false);
@@ -637,6 +635,7 @@ pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + S
         crate::gpu::native_spans_upload(target.id, plan, backing.clone())?;
         #[cfg(feature = "gt710_core_probe")]
         {
+        let expected = &data.bytes;
         let images = crate::gpu::native_spans_readback(target.id, data.width, data.height, backing)?;
         let mismatch = super::spans_diagnostic::compare(&expected, &images[0], &images[1])?;
         use core::sync::atomic::{AtomicU64, Ordering};

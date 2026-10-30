@@ -4249,10 +4249,19 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 let mut scratch = native_blend_scratch(tgid, plan.scratch)?;
                 #[cfg(feature = "gt710_core_probe")]
                 if plan.data_bytes > 0 { crate::gk208::timing::begin_draw(tgid); }
+                // The packed heap copy is temporary; reserve its padded extent
+                // before allocation, separately from the retained device storage.
+                let _span_copy_charge = if plan.data_bytes > 0 {
+                    let words = plan.data_bytes / 4;
+                    let width = data_width.min(words.checked_next_power_of_two().ok_or(ENOMEM)?);
+                    let bytes = u64::from(width) * u64::from(words.div_ceil(width)) * 4;
+                    Some(Charge::new(tgid, bytes, true)?)
+                } else { None };
                 let data = {
                     #[cfg(feature = "gt710_core_probe")]
                     let _timing = crate::gk208::timing::phase(100);
-                    crate::gk208::encode::pack_spans(&words, &resolved, data_width).map_err(|_| EINVAL)?
+                    crate::gk208::encode::pack_spans(&words, &resolved, data_width)
+                        .map_err(|e| if e == "native crossing allocation" { ENOMEM } else { EINVAL })?
                 };
                 if let Some(data) = data {
                     native_spans(tgid, &mut scratch, &data)?;
