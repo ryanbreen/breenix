@@ -65,11 +65,12 @@ impl enc::Bindings for Bindings<'_> {
 pub(super) fn prepare() -> Result<(), i64> {
     let c = console::Console::new()?;
     let words = prepared::text_stream(c.target, c.atlas, c.glyph_width);
-    let mut frame = enc::translate(words.as_slice(), &Bindings(&c)).map_err(|_| EIO)?;
+    let mut frame = enc::translate(words.as_slice(), &Bindings(&c))
+        .map_err(|e| if e == enc::NO_MEMORY { ENOMEM } else { EIO })?;
     let glyphs = prepared::glyph_offsets(
         frame.chunks.iter().filter(|c| c.source.is_some() && c.copy.is_none())
             .map(|c| c.words.as_slice()), frame.data.len()).map_err(|_| EIO)?;
-    frame.batch_draws(1400);
+    frame.batch_draws(1400).map_err(|_| ENOMEM)?;
     let backing = Arc::new(Pages::new(frame.data.len().div_ceil(PAGE)).ok_or(ENOMEM)?);
     backing.write(0, &frame.data);
     backing.maintain(0, backing.bytes(), false);

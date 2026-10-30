@@ -175,6 +175,31 @@ impl Drop for FrameRun {
     }
 }
 
+/// CPU-only contiguous staging storage. It exposes no device address: an IOMMU
+/// may forbid identity DMA while the CPU can still use the physical direct map.
+#[cfg(target_arch = "x86_64")]
+pub(crate) struct CpuBox {
+    block: DmaBox,
+}
+#[cfg(target_arch = "x86_64")]
+impl CpuBox {
+    pub(crate) fn try_new(len: usize) -> Option<Self> {
+        let count = len.max(1).div_ceil(PAGE);
+        let bytes_len = count.checked_mul(PAGE)?;
+        let mut frames = FrameRun { frames: Vec::new(), owner: None };
+        frames.frames.try_reserve_exact(count).ok()?;
+        frames.frames.resize(count, None);
+        let first = frame_allocator::allocate_contiguous_frames(count, &mut frames.frames)?;
+        let bytes = NonNull::new(frame_va(&first) as *mut u8)?;
+        // SAFETY: this owned contiguous run is writable through the CPU direct map.
+        unsafe { core::ptr::write_bytes(bytes.as_ptr(), 0, bytes_len) };
+        Some(Self { block: DmaBox { bytes, _frames: frames, address: 0, len } })
+    }
+    pub(crate) fn len(&self) -> usize { self.block.len() }
+    pub(crate) fn as_ref(&self) -> &[u8] { self.block.as_ref() }
+    pub(crate) fn as_mut(&mut self) -> &mut [u8] { self.block.as_mut() }
+}
+
 /// Whole frames, in order, owned until dropped.
 pub struct Pages {
     #[cfg(target_arch = "x86_64")]

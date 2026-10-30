@@ -154,11 +154,44 @@
 //! Profile references: open-gpu-doc 9fdf5c4062007929d9f4e6cbad9c9771fe61b880;
 //! Mesa mesa-24.3.4 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de (MIT).
 use super::shaders;
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 use gpu_abi::{
     draw, format, pipeline,
     stream::{self, cmd, Resolver, Words},
 };
+
+pub const NO_MEMORY: &str = "native encoder allocation failed";
+#[cfg(target_os = "none")]
+type FrameBytes = crate::gpu::byte_buffer::Bytes;
+#[cfg(not(target_os = "none"))]
+type FrameBytes = Vec<u8>;
+fn new_data(len: usize) -> Result<FrameBytes, &'static str> {
+    #[cfg(target_os = "none")]
+    { FrameBytes::new(len).map_err(|_| NO_MEMORY) }
+    #[cfg(not(target_os = "none"))]
+    {
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(len).map_err(|_| NO_MEMORY)?;
+        bytes.resize(len, 0);
+        Ok(bytes)
+    }
+}
+fn resize_data(bytes: &mut FrameBytes, len: usize) -> Result<(), &'static str> {
+    #[cfg(target_os = "none")]
+    { bytes.resize(len).map_err(|_| NO_MEMORY) }
+    #[cfg(not(target_os = "none"))]
+    {
+        bytes.try_reserve(len.saturating_sub(bytes.len())).map_err(|_| NO_MEMORY)?;
+        bytes.resize(len, 0);
+        Ok(())
+    }
+}
+fn copy_bytes(bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(bytes.len()).map_err(|_| NO_MEMORY)?;
+    copy.extend_from_slice(bytes);
+    Ok(copy)
+}
 
 /// VAB scratch belongs to the channel, beyond a frame's draw release. Mesa's
 /// poly_cache is screen-owned (nvc0_screen.c:1274-1283); A197 0x17bc-0x17c4
@@ -171,7 +204,9 @@ pub fn channel_words(input: &[u32], quarantine: u64) -> Result<Vec<u32>, &'stati
     // Frames with no draw packet still receive the publisher's engine release;
     // they do not bind or consume VAB storage.
     if input.is_empty() { return Ok(Vec::new()); }
-    let mut words = input.to_vec();
+    let mut words = Vec::new();
+    words.try_reserve_exact(input.len()).map_err(|_| NO_MEMORY)?;
+    words.extend_from_slice(input);
     let (mut at, mut found) = (0, false);
     while at < words.len() {
         let header = words[at];
@@ -284,11 +319,11 @@ pub trait Bindings: Resolver {
 pub struct Spans {
     pub width: u32,
     pub height: u32,
-    pub bytes: Vec<u8>,
+    pub bytes: FrameBytes,
 }
 /// The input has passed shared stream validation. Match VirGL's first-use order
 /// and maximum referenced extent per handle, including later commands' extents.
-fn span_tables(w: &(impl Words + ?Sized)) -> Vec<(u64, u32, u32)> {
+fn span_tables(w: &(impl Words + ?Sized)) -> Result<Vec<(u64, u32, u32)>, &'static str> {
     let mut tables: Vec<(u64, u32, u32)> = Vec::new();
     let mut at = 0;
     while at < w.len() {
@@ -297,13 +332,16 @@ fn span_tables(w: &(impl Words + ?Sized)) -> Vec<(u64, u32, u32)> {
             let bytes = w.word(at + 8);
             if let Some(entry) = tables.iter_mut().find(|e| e.0 == h) {
                 entry.1 = entry.1.max(bytes);
-            } else { tables.push((h, bytes, 0)); }
+            } else {
+                tables.try_reserve(1).map_err(|_| NO_MEMORY)?;
+                tables.push((h, bytes, 0));
+            }
         }
         at += w.word(at + 1) as usize;
     }
     let mut base = 0;
     for entry in &mut tables { entry.2 = base; base += entry.1 / 4; }
-    tables
+    Ok(tables)
 }
 /// Pack each named crossing buffer exactly once, from the validated snapshot.
 /// The supplied power-of-two limit bounds the row; short tables use only the
@@ -313,7 +351,7 @@ pub fn pack_spans(w: &(impl Words + ?Sized), b: &impl Bindings, width: u32)
     if !width.is_power_of_two() || width > gpu_abi::gk208::MAX_2D_SIZE {
         return Err("invalid native crossing texture width");
     }
-    let tables = span_tables(w);
+    let tables = span_tables(w)?;
     let Some(&(_, bytes, base)) = tables.last() else { return Ok(None); };
     let words = base + bytes / 4;
     let width = width.min(words.checked_next_power_of_two().ok_or("native crossing size overflow")?);
@@ -322,9 +360,7 @@ pub fn pack_spans(w: &(impl Words + ?Sized), b: &impl Bindings, width: u32)
         return Err("invalid native crossing texture height");
     }
     let size = width as usize * height as usize * 4;
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(size).map_err(|_| "native crossing allocation")?;
-    bytes.resize(size, 0);
+    let bytes = new_data(size).map_err(|_| "native crossing allocation")?;
     let mut data = Spans { width, height, bytes };
     for (h, bytes, base) in tables {
         for word in 0..bytes / 4 {
@@ -346,12 +382,12 @@ const WARM_SPANS: [u32; 41] = [
 ];
 
 /// The crossing texture is uploaded through CE before its warm draw is prepared.
-pub fn warm_spans() -> Spans {
-    let mut bytes = vec![0; 64 * 4];
+pub fn warm_spans() -> Result<Spans, &'static str> {
+    let mut bytes = new_data(64 * 4)?;
     for (word, value) in WARM_SPANS.iter().enumerate() {
         bytes[word * 4..word * 4 + 4].copy_from_slice(&value.to_le_bytes());
     }
-    Spans { width: 64, height: 1, bytes }
+    Ok(Spans { width: 64, height: 1, bytes })
 }
 
 /// Warm each rendering pipeline through validation and the client encoder.
@@ -470,12 +506,13 @@ pub fn parking_frame(target: Target, source: Target, address: u64, quarantine: u
             // A197 BEGIN/END and the vertex array start/count packet launch work in
             // quad(). Keep the complete state, including both program offsets.
             if !matches!((words[at] & 0x1fff)*4, 0x1618 | 0xd74 | 0x1614) {
+                parked.try_reserve(count+1).map_err(|_| NO_MEMORY)?;
                 parked.extend_from_slice(&words[at..at+count+1]);
             }
             at += count+1;
         }
     }
-    Ok((frame.data.split_off(CODE), parked))
+    Ok((copy_bytes(&frame.data[CODE..])?, parked))
 }
 
 #[cfg(target_os = "none")]
@@ -509,7 +546,7 @@ pub struct Frame {
     /// Routines with an actual PROBE draw, for completion-based readiness.
     pub probe_mask: u32,
     pub chunks: Vec<Chunk>,
-    pub data: Vec<u8>,
+    pub data: FrameBytes,
     removed_prefix: usize,
 }
 impl Frame {
@@ -520,10 +557,10 @@ impl Frame {
         if self.removed_prefix == DATA_START { return Ok(()); }
         if self.data.len() < DATA_START { return Err("native frame prefix absent"); }
         for c in &mut self.chunks {
-            let mut shifted = Vec::with_capacity(c.relocations.len());
-            for &i in &c.relocations {
+            let mut kept = 0;
+            for n in 0..c.relocations.len() {
+                let i = c.relocations[n];
                 if i > 0 && matches!(c.words[i-1], 0x200305ef | 0x20020582) {
-                    // channel_words/channel_programs supply retained storage at publication.
                     c.words[i] = 0;
                     c.words[i+1] = 0;
                     continue;
@@ -532,21 +569,25 @@ impl Frame {
                 let offset = offset.checked_sub(DATA_START as u64).ok_or("native frame address in removed prefix")?;
                 c.words[i] = (offset >> 32) as u32;
                 c.words[i+1] = offset as u32;
-                shifted.push(i);
+                c.relocations[kept] = i;
+                kept += 1;
             }
-            c.relocations = shifted;
+            c.relocations.truncate(kept);
         }
-        self.data = self.data.split_off(DATA_START);
-        // CE-only frames still use the common retained frame-buffer owner.
-        if self.data.is_empty() { self.data.push(0); }
+        #[cfg(target_os = "none")]
+        self.data.remove_prefix(DATA_START);
+        #[cfg(not(target_os = "none"))]
+        { self.data.drain(..DATA_START); }
+        if self.data.is_empty() { resize_data(&mut self.data, 1)?; }
         self.removed_prefix = DATA_START;
         Ok(())
     }
     /// Pack adjacent draws from this frame into bounded channel submissions.
     /// Each draw retains its state and relocations; only repeated channel VAB
     /// selection is omitted. Transfers remain separate and ordered.
-    pub fn batch_draws(&mut self, limit: usize) {
+    pub fn batch_draws(&mut self, limit: usize) -> Result<(), &'static str> {
         let mut batches: Vec<Chunk> = Vec::new();
+        batches.try_reserve_exact(self.chunks.len()).map_err(|_| NO_MEMORY)?;
         for mut chunk in core::mem::take(&mut self.chunks) {
             let prefix = chunk.words.first() == Some(&0x200305ef);
             if let Some(last) = batches.last_mut().filter(|last|
@@ -554,6 +595,8 @@ impl Frame {
                     && last.target == chunk.target && last.source == chunk.source
                     && last.words.len() + chunk.words.len() - 4 <= limit) {
                 let shift = last.words.len() - 4;
+                last.relocations.try_reserve(chunk.relocations.len()).map_err(|_| NO_MEMORY)?;
+                last.words.try_reserve(chunk.words.len() - 4).map_err(|_| NO_MEMORY)?;
                 last.relocations.extend(chunk.relocations.drain(..).filter(|&i| i >= 4).map(|i| i + shift));
                 last.words.extend_from_slice(&chunk.words[4..]);
             } else {
@@ -561,6 +604,7 @@ impl Frame {
             }
         }
         self.chunks = batches;
+        Ok(())
     }
 
     /// Addresses in a fresh frame are relative to one retained system buffer.
@@ -587,16 +631,21 @@ impl Frame {
     }
 }
 impl Chunk {
-    fn emit(&mut self, method: u32, data: &[u32]) {
+    fn emit(&mut self, method: u32, data: &[u32]) -> Result<(), &'static str> {
+        self.words.try_reserve(data.len() + 1).map_err(|_| NO_MEMORY)?;
         self.words
             .push(0x20000000 | ((data.len() as u32) << 16) | (method / 4));
         self.words.extend_from_slice(data);
+        Ok(())
     }
-    fn address(&mut self, method: u32, offset: usize, tail: &[u32]) {
+    fn address(&mut self, method: u32, offset: usize, tail: &[u32]) -> Result<(), &'static str> {
+        self.relocations.try_reserve(1).map_err(|_| NO_MEMORY)?;
         self.relocations.push(self.words.len() + 1);
-        let mut data = vec![(offset as u64 >> 32) as u32, offset as u32];
+        let mut data = Vec::new();
+        data.try_reserve_exact(tail.len() + 2).map_err(|_| NO_MEMORY)?;
+        data.extend_from_slice(&[(offset as u64 >> 32) as u32, offset as u32]);
         data.extend_from_slice(tail);
-        self.emit(method, &data);
+        self.emit(method, &data)
     }
 }
 fn handle(w: &(impl Words + ?Sized), at: usize) -> u64 {
@@ -651,7 +700,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
     let mut f = Frame {
         probe_mask: 0,
         chunks: Vec::new(),
-        data: vec![0; DATA_START],
+        data: new_data(DATA_START)?,
         removed_prefix: 0,
     };
     let segment = shaders::triangle_segment();
@@ -677,7 +726,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
         f.data[fs..fs + 80].copy_from_slice(header);
         f.data[fs + 80..fs + 80 + code.len()].copy_from_slice(code);
     }
-    let tables = span_tables(w);
+    let tables = span_tables(w)?;
     let mut target = None;
     let mut current_handle = 0;
     let mut scissor = None;
@@ -690,7 +739,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
             cmd::BEGIN => {
                 if let Some(t) = target {
                     if corrupt == Some(current_handle) {
-                        corrupt_pixel(&mut f, t);
+                        corrupt_pixel(&mut f, t)?;
                         corrupt = None;
                     }
                 }
@@ -748,7 +797,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                     if let (Some(r), Some(s)) =
                         (stream::clipped(r, t.width, t.height, scissor), clip)
                     {
-                        solid(&mut f, t, r, s, colour);
+                        solid(&mut f, t, r, s, colour)?;
                     }
                 }
             }
@@ -760,6 +809,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                     [source.width, source.height], [destination.width, destination.height]);
                 // COPY names its own destination and is independent of BEGIN's
                 // target and scissor. Empty copies still publish a fenced no-op.
+                f.chunks.try_reserve(1).map_err(|_| NO_MEMORY)?;
                 f.chunks.push(Chunk { command, target: destination.id, source: Some(source.id),
                     words: Vec::new(), relocations: Vec::new(),
                     copy: rectangle.map(|r| (source.id, destination.id, r)) });
@@ -782,7 +832,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                     }
                     constants[16] = w.word(at + 3);
                     constants[17] = routine;
-                    quad(&mut f, t, r, clip, &constants, pipe, None, None, None);
+                    quad(&mut f, t, r, clip, &constants, pipe, None, None, None)?;
                     f.probe_mask |= 1 << routine;
                 }
             }
@@ -829,7 +879,8 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                             || scratch.address == t.address || scratch.address == data.address {
                             return Err("invalid native blend scratch");
                         }
-                        f.chunks.push(Chunk { command, target: scratch.id, source: Some(t.id),
+                        f.chunks.try_reserve(1).map_err(|_| NO_MEMORY)?;
+                f.chunks.push(Chunk { command, target: scratch.id, source: Some(t.id),
                             words: Vec::new(), relocations: Vec::new(),
                             copy: Some((t.id, scratch.id, [x0,y0,x1-x0,y1-y0,x0,y0])) });
                         Some(scratch)
@@ -847,7 +898,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                         if matches!(pipe, pipeline::GRADIENT_V | pipeline::COVERAGE_SPANS) { constants[20] = colour; }
                         else { constants[20..24].copy_from_slice(&[16, 8, 0, 24]
                             .map(|shift| gpu_abi::float::ratio_bits(colour >> shift & 255, 255))); }
-                        quad(&mut f, t, r, clip, &constants, pipe, None, scratch, data);
+                        quad(&mut f, t, r, clip, &constants, pipe, None, scratch, data)?;
                     }
                 }
             }
@@ -933,7 +984,8 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                         // gpu.md 1.5 item 7: snapshot once per blended command,
                         // after prior draws, at the same pixel coordinates.
                         // Shared validation already refused intersecting writes.
-                        f.chunks.push(Chunk { command, target: scratch.id, source: Some(t.id),
+                        f.chunks.try_reserve(1).map_err(|_| NO_MEMORY)?;
+                f.chunks.push(Chunk { command, target: scratch.id, source: Some(t.id),
                             words: Vec::new(), relocations: Vec::new(),
                             copy: Some((t.id, scratch.id, [x0, y0, x1-x0, y1-y0, x0, y0])) });
                         Some(scratch)
@@ -941,7 +993,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                 } else { None };
                 for n in 0..count {
                     if let Some((constants, r)) = instance(n) {
-                        quad(&mut f, t, r, clip, &constants, pipe, Some(source), scratch, None);
+                        quad(&mut f, t, r, clip, &constants, pipe, Some(source), scratch, None)?;
                     }
                 }
             }
@@ -952,10 +1004,11 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
         at += w.word(at + 1) as usize;
     }
     if let Some(t) = target {
-        if corrupt == Some(current_handle) { corrupt_pixel(&mut f, t); }
+        if corrupt == Some(current_handle) { corrupt_pixel(&mut f, t)?; }
     }
     if f.chunks.is_empty() {
         let t = target.ok_or("native target absent")?;
+        f.chunks.try_reserve(1).map_err(|_| NO_MEMORY)?;
         f.chunks.push(Chunk {
             command,
             target: t.id,
@@ -1118,7 +1171,7 @@ fn program(pipe: u32) -> (usize, &'static [u8; 80], &'static [u8], u32) {
 }
 /// Admission-only programs reuse the same u4/u5 quad, raster, TIC/TSC and
 /// relocation builders. They are not new public catalogue pipeline IDs.
-pub fn probe_frame(t: Target, source: Option<Target>) -> Frame {
+pub fn probe_frame(t: Target, source: Option<Target>) -> Result<Frame, &'static str> {
     use super::caps::{PROBE_HEIGHT as H, PROBE_WIDTH as W};
     let pipe = if source.is_some() {
         PROBE_TEXEL
@@ -1128,14 +1181,13 @@ pub fn probe_frame(t: Target, source: Option<Target>) -> Frame {
     let mut f = Frame {
         probe_mask: 0,
         chunks: Vec::new(),
-        data: vec![0; DATA_START],
+        data: new_data(DATA_START)?,
         removed_prefix: 0,
     };
     let segment = shaders::triangle_segment();
     f.data[CODE..CODE + segment.len()].copy_from_slice(&segment);
     let (offset, header, code, _) = program(pipe);
-    f.data
-        .resize(DATA_START.max(CODE + offset + 80 + code.len()), 0);
+    resize_data(&mut f.data, DATA_START.max(CODE + offset + 80 + code.len()))?;
     f.data[CODE + offset..CODE + offset + 80].copy_from_slice(header);
     f.data[CODE + offset + 80..CODE + offset + 80 + code.len()].copy_from_slice(code);
     if let Some(source) = source {
@@ -1149,7 +1201,7 @@ pub fn probe_frame(t: Target, source: Option<Target>) -> Frame {
             Some(source),
             None,
             None,
-        );
+        )?;
     } else {
         let inputs = include_bytes!("caps/integer.inputs");
         for (n, input) in inputs.chunks_exact(16).enumerate() {
@@ -1167,19 +1219,19 @@ pub fn probe_frame(t: Target, source: Option<Target>) -> Frame {
                 None,
                 None,
                 None,
-            );
+            )?;
         }
     }
-    f
+    Ok(f)
 }
 /// Point 22 uses the solid shader at (0,0), outside the suite's draw/scissor.
-fn corrupt_pixel(f: &mut Frame, t: Target) {
-    solid(f, t, [0, 0, 1, 1], [0, 0, 1, 1], !0x3c5a_a5c3);
+fn corrupt_pixel(f: &mut Frame, t: Target) -> Result<(), &'static str> {
+    solid(f, t, [0, 0, 1, 1], [0, 0, 1, 1], !0x3c5a_a5c3)
 }
-fn solid(f: &mut Frame, t: Target, r: [u32; 4], scissor: [u32; 4], colour: u32) {
+fn solid(f: &mut Frame, t: Target, r: [u32; 4], scissor: [u32; 4], colour: u32) -> Result<(), &'static str> {
     let constants =
         [16, 8, 0, 24].map(|shift| gpu_abi::float::ratio_bits(colour >> shift & 255, 255));
-    quad(f, t, r, scissor, &constants, pipeline::SOLID, None, None, None);
+    quad(f, t, r, scissor, &constants, pipeline::SOLID, None, None, None)
 }
 fn quad(
     f: &mut Frame,
@@ -1191,21 +1243,20 @@ fn quad(
     source: Option<Target>,
     scratch: Option<Target>,
     data: Option<Target>,
-) {
+) -> Result<(), &'static str> {
     let sampled = source.is_some() || data.is_some();
     let uniform = f.data.len().next_multiple_of(256);
     let vertex = uniform + 256;
     let tic = vertex + 256;
     let tsc = tic + 256;
     let handles = tsc + 256;
-    f.data.resize(
+    resize_data(&mut f.data,
         if sampled {
             handles + 256
         } else {
             vertex + 256
         },
-        0,
-    );
+    )?;
     for (k, v) in constants.iter().enumerate() {
         f.data[uniform + k * 4..uniform + k * 4 + 4].copy_from_slice(&v.to_le_bytes());
     }
@@ -1269,7 +1320,7 @@ fn quad(
         copy: None,
     };
     // IDXFETCH quarantine: 1 MiB, 128 KiB aligned (Mesa screen:1274-1283).
-    c.address(0x17bc, 0, &[3]);
+    c.address(0x17bc, 0, &[3])?;
     c.emit(
         0x800,
         &[
@@ -1287,125 +1338,130 @@ fn quad(
             0,
             0,
         ],
-    );
-    c.emit(0x121c, &[1]);
+    )?;
+    c.emit(0x121c, &[1])?;
     for method in [0x1538, 0x12cc, 0x12e8, 0x1380, 0x1594, 0x19bc] {
-        c.emit(method, &[0]);
+        c.emit(method, &[0])?;
     }
     let halfw = gpu_abi::float::scaled_int_bits(i64::from(t.width), 1);
     let halfh = gpu_abi::float::scaled_int_bits(i64::from(t.height), 1);
-    c.emit(0xa00, &[halfw, halfh, 0x3f800000, halfw, halfh, 0]);
-    c.emit(0xc00, &[t.width << 16, t.height << 16, 0, 0x3f800000]);
+    c.emit(0xa00, &[halfw, halfh, 0x3f800000, halfw, halfh, 0])?;
+    c.emit(0xc00, &[t.width << 16, t.height << 16, 0, 0x3f800000])?;
     let [sx0, sy0, sx1, sy1] = scissor;
-    c.emit(0xe00, &[1, sx0 | sx1 << 16, sy0 | sy1 << 16]);
-    c.emit(0xff4, &[t.width << 16, t.height << 16]);
-    c.emit(0xd00, &[t.width << 16, t.height << 16]);
-    c.emit(0x194c, &[1]);
-    c.emit(0x1950, &[0]);
-    c.emit(0x0df8, &[0, 0]);
-    c.emit(0x13ac, &[0]);
-    c.emit(0x1924, &[0]);
-    c.emit(0x192c, &[1]);
-    c.emit(0x193c, &[2]);
-    c.emit(0x1510, &[0]);
-    c.emit(0x1918, &[0]);
-    c.emit(0x0dac, &[0x1b02, 0x1b02]);
+    c.emit(0xe00, &[1, sx0 | sx1 << 16, sy0 | sy1 << 16])?;
+    c.emit(0xff4, &[t.width << 16, t.height << 16])?;
+    c.emit(0xd00, &[t.width << 16, t.height << 16])?;
+    c.emit(0x194c, &[1])?;
+    c.emit(0x1950, &[0])?;
+    c.emit(0x0df8, &[0, 0])?;
+    c.emit(0x13ac, &[0])?;
+    c.emit(0x1924, &[0])?;
+    c.emit(0x192c, &[1])?;
+    c.emit(0x193c, &[2])?;
+    c.emit(0x1510, &[0])?;
+    c.emit(0x1918, &[0])?;
+    c.emit(0x0dac, &[0x1b02, 0x1b02])?;
     // Exact profile is frame-owned, including after a context switch.
     // MIT cla197.h:1813-1816; Mesa nvc0_state.c:143-146: common blend state.
-    c.emit(0x12e4, &[0]);
+    c.emit(0x12e4, &[0])?;
     // MIT cla197.h:2119-2122; Mesa nvc0_state.c:130-146: SET_BLEND(0)=FALSE.
     // Use the direct method; no Mesa MME blend-enable macro is installed.
-    c.emit(0x1360, &[0]);
-    c.emit(0x135c, &[0]);
-    c.emit(0x19c4, &[0]);
-    c.emit(0x0f90, &[1]);
-    c.emit(0x1a00, &[0x1111]);
+    c.emit(0x1360, &[0])?;
+    c.emit(0x135c, &[0])?;
+    c.emit(0x19c4, &[0])?;
+    c.emit(0x0f90, &[1])?;
+    c.emit(0x1a00, &[0x1111])?;
     // MIT cla197.h:1807-1811: 1x1 alpha-to-coverage dither footprint.
     // This is a footprint selector, not a color-dither enable. Disable its
     // alpha-to-coverage path explicitly below rather than inherit it.
-    c.emit(0x12e0, &[0]);
+    c.emit(0x12e0, &[0])?;
     // MIT cla197.h:2381-2384; Mesa nvc0_state.c:235: anti-alias disabled.
-    c.emit(0x1534, &[0]);
+    c.emit(0x1534, &[0])?;
     // MIT cla197.h:2551-2553: MODE_1X1 (one sample).
-    c.emit(0x15d0, &[0]);
+    c.emit(0x15d0, &[0])?;
     // MIT cla197.h:2389-2395; Mesa nvc0_state.c:182-189: neither alpha
     // to coverage (including dithering) nor alpha to one may alter pixels.
-    c.emit(0x153c, &[0]);
+    c.emit(0x153c, &[0])?;
     // MIT envytools rnndb graph/gf100_3d.xml:217-222: one pass, sample shading disabled.
-    c.emit(0x0754, &[1]);
-    c.emit(0x0fbc, &[0xffff; 4]);
+    c.emit(0x0754, &[1])?;
+    c.emit(0x0fbc, &[0xffff; 4])?;
     // MIT cla197.h:2521-2524: SRGB_WRITE=FALSE. Sampled images likewise
     // omit the TIC sRGB bit (Mesa nvc0_tex.c:335-338), and TSCs omit bit 13.
-    c.emit(0x15b8, &[0]);
-    c.emit(0x19e0, &[0]);
-    c.emit(0x12d4, &[0x1d01]);
-    c.emit(0x12ec, &[0]);
-    c.emit(0x037c, &[1]);
-    c.emit(0x0fac, &[1]);
-    c.emit(0x1558, &[1]);
-    c.emit(0x1644, &[0]);
-    c.emit(0x15e4, &[1]);
+    c.emit(0x15b8, &[0])?;
+    c.emit(0x19e0, &[0])?;
+    c.emit(0x12d4, &[0x1d01])?;
+    c.emit(0x12ec, &[0])?;
+    c.emit(0x037c, &[1])?;
+    c.emit(0x0fac, &[1])?;
+    c.emit(0x1558, &[1])?;
+    c.emit(0x1644, &[0])?;
+    c.emit(0x15e4, &[1])?;
     // Mesa screen:688-761, Kepler branch; no MME macros are installed or used.
-    c.emit(0x10cc, &[0xff]);
-    c.emit(0x10e0, &[0xff, 0xff]);
-    c.emit(0x10ec, &[0xff, 0xff]);
-    c.emit(0x074c, &[0x3f]);
-    c.emit(0x16a8, &[0x30003]);
-    c.emit(0x1794, &[0x20002]);
-    c.emit(0x12ac, &[0]);
-    c.emit(0x0218, &[0x10]);
-    c.emit(0x10fc, &[0x10]);
-    c.emit(0x1290, &[0x10]);
-    c.emit(0x12d8, &[0x10, 0x10]);
-    c.emit(0x1140, &[0x10]);
-    c.emit(0x1610, &[0xe]);
-    c.emit(0x161c, &[0]);
-    c.emit(0x030c, &[0]);
-    c.emit(0x0300, &[3]);
-    c.emit(0x02d0, &[0x3fffff]);
-    c.emit(0x0fdc, &[1]);
-    c.emit(0x19c0, &[1]);
-    c.emit(0x075c, &[3]);
-    c.emit(0x07fc, &[1]);
+    c.emit(0x10cc, &[0xff])?;
+    c.emit(0x10e0, &[0xff, 0xff])?;
+    c.emit(0x10ec, &[0xff, 0xff])?;
+    c.emit(0x074c, &[0x3f])?;
+    c.emit(0x16a8, &[0x30003])?;
+    c.emit(0x1794, &[0x20002])?;
+    c.emit(0x12ac, &[0])?;
+    c.emit(0x0218, &[0x10])?;
+    c.emit(0x10fc, &[0x10])?;
+    c.emit(0x1290, &[0x10])?;
+    c.emit(0x12d8, &[0x10, 0x10])?;
+    c.emit(0x1140, &[0x10])?;
+    c.emit(0x1610, &[0xe])?;
+    c.emit(0x161c, &[0])?;
+    c.emit(0x030c, &[0])?;
+    c.emit(0x0300, &[3])?;
+    c.emit(0x02d0, &[0x3fffff])?;
+    c.emit(0x0fdc, &[1])?;
+    c.emit(0x19c0, &[1])?;
+    c.emit(0x075c, &[3])?;
+    c.emit(0x07fc, &[1])?;
 
-    c.address(0x1608, CODE, &[]);
-    c.emit(0x021c, &[0x1011]); // invalidate instruction cache, all graphics stages
+    c.address(0x1608, CODE, &[])?;
+    c.emit(0x021c, &[0x1011])?; // invalidate instruction cache, all graphics stages
     for slot in [0, 2, 3, 4] {
-        c.emit(0x2000 + slot * 64, &[slot << 4]);
+        c.emit(0x2000 + slot * 64, &[slot << 4])?;
     }
-    c.emit(0x2040, &[0x11, shaders::VERTEX_OFFSET as u32]);
-    c.emit(0x204c, &[shaders::VERTEX_GPRS]);
+    c.emit(0x2040, &[0x11, shaders::VERTEX_OFFSET as u32])?;
+    c.emit(0x204c, &[shaders::VERTEX_GPRS])?;
     let (offset, _, _, gprs) = program(pipe);
-    c.emit(0x2140, &[0x51, offset as u32]);
-    c.emit(0x214c, &[gprs]);
-    c.emit(0x2380, &[256, 0, uniform as u32]);
+    c.emit(0x2140, &[0x51, offset as u32])?;
+    c.emit(0x214c, &[gprs])?;
+    c.emit(0x2380, &[256, 0, uniform as u32])?;
+    c.relocations.try_reserve(1).map_err(|_| NO_MEMORY)?;
     c.relocations.push(c.words.len() - 2);
-    c.emit(0x2490, &[1]);
+    c.emit(0x2490, &[1])?;
     if sampled {
         let maximum_index = if data.is_some() { 2 } else { u32::from(scratch.is_some()) };
-        c.address(0x1574, tic, &[maximum_index]);
-        c.address(0x155c, tsc, &[maximum_index]);
-        c.emit(0x1334, &[0]);
-        c.emit(0x1330, &[0]);
-        c.emit(0x1338, &[0]);
-        c.emit(0x2608, &[15]);
-        c.emit(0x2380, &[256, 0, handles as u32]);
-        c.relocations.push(c.words.len() - 2);
-        c.emit(0x2490, &[0xf1]);
+        c.address(0x1574, tic, &[maximum_index])?;
+        c.address(0x155c, tsc, &[maximum_index])?;
+        c.emit(0x1334, &[0])?;
+        c.emit(0x1330, &[0])?;
+        c.emit(0x1338, &[0])?;
+        c.emit(0x2608, &[15])?;
+        c.emit(0x2380, &[256, 0, handles as u32])?;
+        c.relocations.try_reserve(1).map_err(|_| NO_MEMORY)?;
+    c.relocations.push(c.words.len() - 2);
+        c.emit(0x2490, &[0xf1])?;
     }
-    c.emit(0x1930, &[1]);
-    c.emit(0x1880, &[0]);
-    c.emit(0x1c00, &[0x1020, 0, vertex as u32, 0]);
+    c.emit(0x1930, &[1])?;
+    c.emit(0x1880, &[0])?;
+    c.emit(0x1c00, &[0x1020, 0, vertex as u32, 0])?;
+    c.relocations.try_reserve(1).map_err(|_| NO_MEMORY)?;
     c.relocations.push(c.words.len() - 3);
-    c.address(0x1f00, vertex + 191, &[]);
-    c.emit(0x1160, &[0x38200000, 0x38200800]);
-    c.emit(0x142c, &[0]);
-    c.emit(0x21c, &[1]);
-    c.emit(0x1618, &[4]);
-    c.emit(0xd74, &[0, 6]);
-    c.emit(0x1614, &[0]);
-    c.emit(0x110, &[0]);
+    c.address(0x1f00, vertex + 191, &[])?;
+    c.emit(0x1160, &[0x38200000, 0x38200800])?;
+    c.emit(0x142c, &[0])?;
+    c.emit(0x21c, &[1])?;
+    c.emit(0x1618, &[4])?;
+    c.emit(0xd74, &[0, 6])?;
+    c.emit(0x1614, &[0])?;
+    c.emit(0x110, &[0])?;
+    f.chunks.try_reserve(1).map_err(|_| NO_MEMORY)?;
     f.chunks.push(c);
+    Ok(())
 }
 
 #[cfg(target_os = "none")]
@@ -1428,8 +1484,13 @@ pub(crate) fn prepare(
     backing: alloc::sync::Arc<crate::gpu::dma::Pages>,
 ) -> Result<Vec<super::adapter::EncodedDraw>, &'static str> {
     use alloc::sync::Arc;
-    let pages: Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
+    let mut pages = Vec::new();
+    pages.try_reserve_exact(backing.count()).map_err(|_| NO_MEMORY)?;
+    pages.extend((0..backing.count()).map(|i| backing.page_addr(i)));
     let mut regions = Vec::new();
+    regions.try_reserve(2).map_err(|_| NO_MEMORY)?;
+    let mut draws = Vec::new();
+    draws.try_reserve_exact(frame.chunks.len()).map_err(|_| NO_MEMORY)?;
     if frame.removed_prefix == 0 {
         regions.push(super::resource::FrameRegion {
             start: CODE as u64, end: DATA_START as u64, name: "code", command: 0,
@@ -1450,6 +1511,7 @@ pub(crate) fn prepare(
                 _ => None,
             };
             if let Some((start, bytes, name)) = region {
+                regions.try_reserve(1).map_err(|_| NO_MEMORY)?;
                 regions.push(super::resource::FrameRegion { start, end: start+bytes, name, command: c.command });
             }
             at += count+1;
@@ -1458,6 +1520,9 @@ pub(crate) fn prepare(
     let (id, address, holds, transfers) = super::ce::with_resources(|r, a, io| {
         let mut holds = Vec::new();
         let mut transfers = Vec::new();
+        holds.try_reserve_exact(frame.chunks.len().checked_mul(4).and_then(|n|n.checked_add(1)).ok_or(NO_MEMORY)?)
+            .map_err(|_| NO_MEMORY)?;
+        transfers.try_reserve_exact(frame.chunks.len()).map_err(|_| NO_MEMORY)?;
         for c in &frame.chunks {
             holds.push(r.hold(c.target)?);
             if let Some(source) = c.source {
@@ -1465,6 +1530,7 @@ pub(crate) fn prepare(
             }
             transfers.push(if let Some((source, destination, rectangle)) = c.copy {
                 let (plan, retained) = super::ce::readback::region_plan(r, a, io, source, destination, rectangle)?;
+                holds.try_reserve(retained.len()).map_err(|_| NO_MEMORY)?;
                 holds.extend(retained);
                 Some(plan)
             } else { None });
@@ -1485,7 +1551,7 @@ pub(crate) fn prepare(
         address,
     });
     frame.relocate(address)?;
-    Ok(frame
+    draws.extend(frame
         .chunks
         .into_iter()
         .zip(transfers)
@@ -1495,8 +1561,8 @@ pub(crate) fn prepare(
             words: c.words,
             transfer,
             _storage: storage.clone(),
-        })
-        .collect())
+        }));
+    Ok(draws)
 }
 
 #[cfg(target_os = "none")]

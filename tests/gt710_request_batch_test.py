@@ -11,8 +11,9 @@ class Batch(unittest.TestCase):
         fixture=(ROOT/'tests/gt710_draw_encode_test.rs').read_text()
         fixture=fixture.replace('"../kernel/', '"'+str(ROOT/'kernel')+'/')
         fixture+=r'''
+mod gk208{pub use crate::encode;}
 fn core_prepare(mut frame:encode::Frame)->Result<encode::Frame,i64>{
- const EINVAL:i64=22;let native_probe_mask;
+ const EINVAL:i64=22;const ENOMEM:i64=12;let native_probe_mask;
  CODE
  assert_eq!(native_probe_mask,0);Ok(frame)
 }
@@ -32,7 +33,7 @@ fn core_prepare(mut frame:encode::Frame)->Result<encode::Frame,i64>{
         priority=['taskpolicy','-b'] if sys.platform=='darwin' else []
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp);(p/'batch.rs').write_text(fixture)
-            subprocess.run(priority+['rustc','--edition=2021','--crate-name','gpu_abi','--crate-type','rlib',str(ROOT/'libs/gpu-abi/src/lib.rs'),'-o',str(p/'libgpu_abi.rlib')],check=True)
+            subprocess.run(priority+['rustc','--edition=2021','--crate-name','gpu_abi','--cfg','feature="alloc"','--crate-type','rlib',str(ROOT/'libs/gpu-abi/src/lib.rs'),'-o',str(p/'libgpu_abi.rlib')],check=True)
             subprocess.run(priority+['rustc','--edition=2021','--test','-Dwarnings','--extern',f'gpu_abi={p/"libgpu_abi.rlib"}',str(p/'batch.rs'),'-o',str(p/'batch')],check=True)
             subprocess.run([str(p/'batch'),'normal_submit_batches_valid_ten_thousand_rectangles','--exact','--nocapture'],check=True)
 if __name__=='__main__':unittest.main()

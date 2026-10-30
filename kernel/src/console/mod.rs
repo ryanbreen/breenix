@@ -141,10 +141,15 @@ static DISPLAY_TAKEN: AtomicBool = AtomicBool::new(false);
 /// Read-backs of the GPU core's screen target in progress (`hold_canvas`).
 static CANVAS_HOLDS: AtomicU32 = AtomicU32::new(0);
 
+#[cfg(target_arch = "x86_64")]
+type Shadow = crate::gpu::byte_buffer::Bytes;
+#[cfg(target_arch = "aarch64")]
+type Shadow = Vec<u8>;
+
 /// What `attach` set up: the shadow and the splash drawn in it, which the boot
 /// thread keeps up to date until the render thread takes them.
 struct Attached {
-    shadow: Vec<u8>,
+    shadow: Shadow,
     splash: SplashRun,
     #[cfg(target_arch = "x86_64")]
     write_combining: Result<crate::arch_impl::x86_64::pagewalk::Report, &'static str>,
@@ -259,12 +264,21 @@ fn prepare(
         return;
     };
     let layout = display.layout();
-    let mut shadow = Vec::new();
-    if shadow.try_reserve_exact(layout.bytes()).is_err() {
-        say!(warn, "{} no screen console: no memory for a {} byte shadow", TAG, layout.bytes());
+    #[cfg(target_arch = "x86_64")]
+    let Ok(shadow) = Shadow::new(layout.bytes()) else {
+        say!(warn, "{} no screen console: no frames for a {} byte shadow", TAG, layout.bytes());
         return;
-    }
-    shadow.resize(layout.bytes(), 0);
+    };
+    #[cfg(target_arch = "aarch64")]
+    let shadow = {
+        let mut shadow = Vec::new();
+        if shadow.try_reserve_exact(layout.bytes()).is_err() {
+            say!(warn, "{} no screen console: no memory for a {} byte shadow", TAG, layout.bytes());
+            return;
+        }
+        shadow.resize(layout.bytes(), 0);
+        shadow
+    };
     size_terminals(&layout);
     let font = layout.font;
     say!(
@@ -839,7 +853,7 @@ struct Shown {
 struct Screen {
     display: &'static Display,
     layout: Layout,
-    shadow: Vec<u8>,
+    shadow: Shadow,
     /// What each text row of the screen shows, once it is drawn.
     shown: Vec<Option<Shown>>,
     cleared: bool,

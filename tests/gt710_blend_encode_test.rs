@@ -278,7 +278,7 @@ fn successive_blended_commands_take_fresh_snapshots_and_batching_keeps_copy_orde
     assert_eq!(f.chunks.iter().map(|c|c.copy.is_some()).collect::<Vec<_>>(),[true,false,false,true,false]);
     assert_eq!(f.chunks.iter().map(|c|c.command).collect::<Vec<_>>(),[2,2,2,3,3]);
     assert_eq!(f.chunks[3].copy,Some((19,29,[4,6,13,9,4,6])));
-    f.batch_draws(4096);
+    f.batch_draws(4096).unwrap();
     assert_eq!(f.chunks.iter().map(|c|c.copy.is_some()).collect::<Vec<_>>(),[true,false,true,false]);
     f.relocate(0x3_0000_0000).unwrap();
 }

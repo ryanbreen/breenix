@@ -54,6 +54,8 @@ pub mod arch_rules;
 pub mod dma_policy;
 pub mod dma;
 #[cfg(target_arch = "x86_64")]
+pub(crate) mod byte_buffer;
+#[cfg(target_arch = "x86_64")]
 pub(crate) mod dma_owner;
 pub mod dev;
 pub mod virgl;
@@ -2190,7 +2192,8 @@ pub(crate) fn native_console_readback(surface: &crate::gk208::ConsoleSurface)
     let bytes = surface.width.checked_mul(surface.height).and_then(|n| n.checked_mul(4))
         .ok_or("native console extent overflow")?;
     let backing = native_console_backing(surface)?;
-    let mut first = alloc::vec![0; bytes];
+    let mut first = crate::gpu::byte_buffer::Bytes::new(bytes)
+        .map_err(|_| "native console snapshot allocation failed")?;
     let mut last = 0;
     for (index, poison) in [0x55, 0xaa].into_iter().enumerate() {
         let band = [poison; PAGE];
@@ -2243,7 +2246,11 @@ pub(crate) fn native_spans_readback(id: u32, width: u32, height: u32, backing: A
     let bytes = (width as usize).checked_mul(height as usize).and_then(|n| n.checked_mul(4))
         .ok_or("native spans readback extent overflow")?;
     if backing.bytes() < bytes { return Err("native spans readback backing too small"); }
-    let mut images = [alloc::vec![0; bytes], alloc::vec![0; bytes]];
+    let mut images = [Vec::new(), Vec::new()];
+    for image in &mut images {
+        image.try_reserve_exact(bytes).map_err(|_| "native spans readback allocation failed")?;
+        image.resize(bytes, 0);
+    }
     for (index, poison) in [0x55, 0xaa].into_iter().enumerate() {
         let band = [poison; PAGE];
         for at in (0..bytes).step_by(PAGE) { backing.write(at, &band[..PAGE.min(bytes-at)]); }
@@ -3789,7 +3796,7 @@ fn native_warm_scratch(tgid: u64) -> Result<NativeScratch, i64> {
     let (mask, hold) = resource::blend_staging(format::R8, 1, 1, charge).map_err(|_| EIO)?;
     scratch.targets[1] = Some(mask);
     scratch.holds.push(hold);
-    native_spans(tgid, &mut scratch, &native::warm_spans())?;
+    native_spans(tgid, &mut scratch, &native::warm_spans().map_err(|_| ENOMEM)?)?;
     Ok(scratch)
 }
 
@@ -4409,7 +4416,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                     #[cfg(feature = "gt710_core_probe")]
                     let _timing = crate::gk208::timing::phase(100);
                     crate::gk208::encode::pack_spans(&words, &resolved, data_width)
-                        .map_err(|e| if e == "native crossing allocation" { ENOMEM } else { EINVAL })?
+                        .map_err(|e| if e == "native crossing allocation" || e == crate::gk208::encode::NO_MEMORY { ENOMEM } else { EINVAL })?
                 };
                 if let Some(data) = data {
                     native_spans(tgid, &mut scratch, &data)?;
@@ -4430,10 +4437,10 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 } else {
                     crate::gk208::encode::translate_with_extras(&words, &resolved,
                         crate::gk208::encode::Extras { corrupt, suppress, swap })
-                }.map_err(|_| EINVAL)?;
+                }.map_err(|e| if e == crate::gk208::encode::NO_MEMORY { ENOMEM } else { EINVAL })?;
                 native_probe_mask = frame.probe_mask;
-                frame.compact().map_err(|_| EINVAL)?;
-                frame.batch_draws(1400);
+                frame.compact().map_err(|e| if e == crate::gk208::encode::NO_MEMORY { ENOMEM } else { EINVAL })?;
+                frame.batch_draws(1400).map_err(|_| ENOMEM)?;
                 #[cfg(feature = "gt710_core_probe")]
                 drop(translating);
                 #[cfg(feature = "gt710_core_probe")]
@@ -4637,8 +4644,9 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         let mut reqs: Vec<Request> = Vec::new();
         #[cfg(target_arch = "x86_64")]
         if let Chunks::Gk208(chunks) = &chunks {
-            reqs.try_reserve_exact(chunks.len().checked_add(1).ok_or(ENOMEM)?)
-                .map_err(|_| ENOMEM)?;
+            let count = chunks.len().checked_add(1).ok_or(ENOMEM)?;
+            reqs.try_reserve_exact(count).map_err(|_| ENOMEM)?;
+            c.backlog.try_reserve(count).map_err(|_| ENOMEM)?;
         }
         // Test point 27, `device-error`: the chunks are followed by a fenced command of a
         // type VirtIO does not define, which the device can only refuse, and that command

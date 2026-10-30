@@ -343,7 +343,11 @@ impl Reader {
         if bytes == 0 || bytes > 1 << 20 {
             return Err("invalid context readback extent");
         }
-        let mut snapshots = [vec![0; bytes], vec![0; bytes]];
+        let mut snapshots = [Vec::new(), Vec::new()];
+        for snapshot in &mut snapshots {
+            snapshot.try_reserve_exact(bytes).map_err(|_| "context readback allocation failed")?;
+            snapshot.resize(bytes, 0);
+        }
         for (n, poison) in [0x55, 0xaa].into_iter().enumerate() {
             for start in (0..bytes).step_by(SIZE) {
                 let count = SIZE.min(bytes - start);
