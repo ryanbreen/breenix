@@ -109,10 +109,13 @@
 use alloc::vec::Vec;
 
 // The final 128 MiB PDE is checked absent in this channel before publication.
+// Faults in the retained G18 capture report page addresses, so use one page
+// token per sequence modulo 32768. Four in-flight sequences cannot alias; the
+// adapter matches the token to a retained request in the current incarnation.
 const FAULT_BASE: u64 = (1 << 40) - (1 << 27);
 pub fn address(sequence: u32) -> Result<u64, &'static str> {
-    if sequence == 0 || sequence >= 1 << 25 { return Err("MMU control sequence extent"); }
-    Ok(FAULT_BASE + u64::from(sequence) * 4)
+    if sequence == 0 { return Err("MMU control sequence extent"); }
+    Ok(FAULT_BASE + u64::from(sequence % 32768) * 4096)
 }
 
 /// The first ordered report writes to an unmapped VA. The following reports
@@ -137,7 +140,7 @@ pub trait Io {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Trap {
     pub instance: u64,
-    pub sequence: u32,
+    pub page: u32,
     pub status: u32,
     pub raw: [u32; 4],
 }
@@ -153,14 +156,14 @@ pub fn capture(io: &mut impl Io) -> Result<Option<Trap>, &'static str> {
     if mask != 1 { return Err("foreign MMU fault; backing retained"); }
     let raw = core::array::from_fn(|n| io.read(0x2800 + n * 4));
     let va = u64::from(raw[1]) | u64::from(raw[2]) << 32;
-    let sequence = va.checked_sub(FAULT_BASE).and_then(|v| u32::try_from(v / 4).ok())
+    let page = va.checked_sub(FAULT_BASE).and_then(|v| u32::try_from(v / 4096).ok())
         .ok_or("unexpected MMU address; backing retained")?;
     let reason = raw[3] & 15;
-    if raw[0] == 0 || va != address(sequence)? || raw[3] & 0x80 == 0 || !matches!(reason, 0 | 2) {
+    if raw[0] == 0 || page >= 32768 || va != FAULT_BASE + u64::from(page) * 4096 || raw[3] & 0x80 == 0 || !matches!(reason, 0 | 2) {
         return Err("unexpected MMU write/reason; backing retained");
     }
     Ok(Some(Trap { instance: u64::from(raw[0]) << 12,
-        sequence, status: 0x60010000 | reason, raw }))
+        page, status: 0x60010000 | reason, raw }))
 }
 /// The adapter first matches instance, sequence and epoch and retains raw
 /// evidence. Resume scheduling without certifying a completion: only the later

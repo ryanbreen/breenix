@@ -296,9 +296,9 @@ impl Device {
         let sent = self.pending.iter_mut().find(|sent| {
             matches!(sent.request.operation, Some(Operation::Undefined)) && sent.answer.is_none()
                 && sent.identity.is_some_and(|i| i.context == context && i.epoch == epoch
-                    && trap.instance == i.context && trap.sequence == i.sequence)
+                    && trap.instance == i.context && trap.page == i.sequence % 32768)
         }).ok_or("unattributed MMU write; backing retained")?;
-        self.channel.acknowledge_error(trap)?;
+        self.channel.acknowledge_error(trap, sent.identity.unwrap().sequence)?;
         sent.answer = Some(trap.status);
         Ok(true)
     }

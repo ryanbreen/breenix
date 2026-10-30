@@ -1461,15 +1461,15 @@ mod native {
         pub(crate) fn error_trap(&self) -> Result<Option<super::super::error::Trap>, &'static str> {
             super::super::error::capture(&mut ErrorIo(Registers(self.registers)))
         }
-        pub(crate) fn acknowledge_error(&mut self, trap: super::super::error::Trap) -> Result<(), &'static str> {
+        pub(crate) fn acknowledge_error(&mut self, trap: super::super::error::Trap, sequence: u32) -> Result<(), &'static str> {
             let epoch = self.session.report.identity.epoch;
             let text = format!("GT710_MMU_ERROR_V1 {{\"instance\":{},\"epoch\":{},\"sequence\":{},\"unit\":0,\"raw\":{:?},\"answer\":{}}}",
-                trap.instance, epoch, trap.sequence, trap.raw, trap.status);
+                trap.instance, epoch, sequence, trap.raw, trap.status);
             let digest = crate::gk208::hash(text.as_bytes());
             let bytes = text.len();
             crate::gk208::bulk::line(text)?;
             crate::serial_println!("GT710_MMU_ERROR_BULK epoch={} sequence={} bytes={} sha256={}",
-                epoch, trap.sequence, bytes, digest);
+                epoch, sequence, bytes, digest);
             super::super::error::acknowledge(&mut ErrorIo(Registers(self.registers)), trap)
         }
         /// True only after USERD GP_PUT publishes this sequence to the engine.

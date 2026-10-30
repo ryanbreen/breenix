@@ -57,7 +57,8 @@ pub mod gk208 {
                 pub fn error_trap(&self)->Result<Option<crate::gk208::gr::error::Trap>,&'static str> {
                     crate::gk208::gr::error::capture(&mut *self.0.borrow_mut())
                 }
-                pub fn acknowledge_error(&mut self,trap:crate::gk208::gr::error::Trap)->Result<(),&'static str> {
+                pub fn acknowledge_error(&mut self,trap:crate::gk208::gr::error::Trap,sequence:u32)->Result<(),&'static str> {
+                    assert_eq!(trap.page,sequence % 32768);
                     crate::gk208::gr::error::acknowledge(&mut *self.0.borrow_mut(),trap)
                 }
                 pub fn transfer_drain(&mut self,sequence:u32)->Result<CeSample,&'static str> {

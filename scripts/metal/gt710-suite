@@ -2532,8 +2532,8 @@ def capture_serial(directory):
                     for k in ('instance', 'epoch', 'sequence'))
                     or row.get('unit') != 0 or not isinstance(raw, list) or len(raw) != 4
                     or any(type(v) is not int or not 0 <= v < 1 << 32 for v in raw)
-                    or row['instance'] != raw[0] << 12 or not 0 < row['sequence'] < 1 << 25
-                    or (raw[1] | raw[2] << 32) != (1 << 40) - (1 << 27) + row['sequence'] * 4
+                    or row['instance'] != raw[0] << 12 or not 0 < row['sequence'] < 1 << 32
+                    or (raw[1] | raw[2] << 32) != (1 << 40) - (1 << 27) + (row['sequence'] % 32768) * 4096
                     or not raw[3] & 0x80 or raw[3] & 15 not in (0, 2)
                     or row.get('answer') != 0x60010000 | (raw[3] & 15)):
                 raise ValueError('inconsistent attributed MMU write record')
