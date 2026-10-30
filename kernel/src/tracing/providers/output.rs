@@ -20,5 +20,11 @@ pub fn init() {
 
 #[inline]
 pub fn count_unattributed(bytes: u64) {
+    // Early x86 output precedes GS setup; the BSP is the only running CPU.
+    #[cfg(target_arch = "x86_64")]
+    if !crate::per_cpu::is_initialized() {
+        KERNEL_OUTPUT_UNATTRIBUTED.add_cpu(0, bytes);
+        return;
+    }
     KERNEL_OUTPUT_UNATTRIBUTED.add(bytes);
 }
