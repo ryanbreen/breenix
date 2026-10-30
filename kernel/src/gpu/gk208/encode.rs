@@ -241,7 +241,8 @@ fn span_tables(w: &(impl Words + ?Sized)) -> Vec<(u64, u32, u32)> {
     tables
 }
 /// Pack each named crossing buffer exactly once, from the validated snapshot.
-/// Width is the same power-of-two device limit supplied to the VirGL encoder.
+/// The supplied power-of-two limit bounds the row; short tables use only the
+/// next power of two covering their words. The shader receives the actual width.
 pub fn pack_spans(w: &(impl Words + ?Sized), b: &impl Bindings, width: u32)
     -> Result<Option<Spans>, &'static str> {
     if !width.is_power_of_two() || width > gpu_abi::gk208::MAX_2D_SIZE {
@@ -249,7 +250,9 @@ pub fn pack_spans(w: &(impl Words + ?Sized), b: &impl Bindings, width: u32)
     }
     let tables = span_tables(w);
     let Some(&(_, bytes, base)) = tables.last() else { return Ok(None); };
-    let height = (base + bytes / 4).div_ceil(width);
+    let words = base + bytes / 4;
+    let width = width.min(words.checked_next_power_of_two().ok_or("native crossing size overflow")?);
+    let height = words.div_ceil(width);
     if height == 0 || height > gpu_abi::gk208::MAX_2D_SIZE {
         return Err("invalid native crossing texture height");
     }
@@ -358,8 +361,9 @@ pub fn parking_frame(target: Target, source: Target, address: u64, quarantine: u
 
 #[cfg(target_os = "none")]
 pub(crate) fn warm(target_id: u32, source_id: u32, pipe: u32) -> Option<Vec<super::adapter::EncodedDraw>> {
-    let frame = warm_frame(target(target_id, format::B8G8R8A8)?,
+    let mut frame = warm_frame(target(target_id, format::B8G8R8A8)?,
         target(source_id, format::B8G8R8A8)?, pipe)?;
+    frame.compact().ok()?;
     let backing = alloc::sync::Arc::new(crate::gpu::dma::Pages::new(frame.data.len().div_ceil(4096))?);
     backing.write(0, &frame.data);
     backing.maintain(0, frame.data.len(), false);
@@ -385,8 +389,36 @@ pub struct Chunk {
 pub struct Frame {
     pub chunks: Vec<Chunk>,
     pub data: Vec<u8>,
+    removed_prefix: usize,
 }
 impl Frame {
+    /// VAB is channel-owned (channel_words), so its obsolete reservation need
+    /// not be allocated, mapped or invalidated by frame preparation.
+    /// Keep catalogue offsets and payload bytes, shifting only buffer addresses.
+    pub fn compact(&mut self) -> Result<(), &'static str> {
+        if self.removed_prefix == CODE { return Ok(()); }
+        if self.data.len() < CODE { return Err("native frame prefix absent"); }
+        for c in &mut self.chunks {
+            let mut shifted = Vec::with_capacity(c.relocations.len());
+            for &i in &c.relocations {
+                if i > 0 && c.words[i-1] == 0x200305ef {
+                    // channel_words supplies the retained VAB before publication.
+                    c.words[i] = 0;
+                    c.words[i+1] = 0;
+                    continue;
+                }
+                let offset = (u64::from(c.words[i]) << 32) | u64::from(c.words[i+1]);
+                let offset = offset.checked_sub(CODE as u64).ok_or("native frame address in removed prefix")?;
+                c.words[i] = (offset >> 32) as u32;
+                c.words[i+1] = offset as u32;
+                shifted.push(i);
+            }
+            c.relocations = shifted;
+        }
+        self.data = self.data.split_off(CODE);
+        self.removed_prefix = CODE;
+        Ok(())
+    }
     /// Pack adjacent draws from this frame into bounded channel submissions.
     /// Each draw retains its state and relocations; only repeated channel VAB
     /// selection is omitted. Transfers remain separate and ordered.
@@ -496,6 +528,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
     let mut f = Frame {
         chunks: Vec::new(),
         data: vec![0; DATA_START],
+        removed_prefix: 0,
     };
     let segment = shaders::triangle_segment();
     f.data[CODE..CODE + segment.len()].copy_from_slice(&segment);
@@ -970,6 +1003,7 @@ pub fn probe_frame(t: Target, source: Option<Target>) -> Frame {
     let mut f = Frame {
         chunks: Vec::new(),
         data: vec![0; DATA_START],
+        removed_prefix: 0,
     };
     let segment = shaders::triangle_segment();
     f.data[CODE..CODE + segment.len()].copy_from_slice(&segment);
@@ -1269,10 +1303,14 @@ pub(crate) fn prepare(
 ) -> Result<Vec<super::adapter::EncodedDraw>, &'static str> {
     use alloc::sync::Arc;
     let pages: Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
-    let mut regions = vec![
-        super::resource::FrameRegion { start: 0, end: CODE as u64, name: "frame-reserved", command: 0 },
-        super::resource::FrameRegion { start: CODE as u64, end: DATA_START as u64, name: "code", command: 0 },
-    ];
+    let mut regions = vec![super::resource::FrameRegion {
+        start: (CODE - frame.removed_prefix) as u64,
+        end: (DATA_START - frame.removed_prefix) as u64, name: "code", command: 0,
+    }];
+    if frame.removed_prefix == 0 {
+        regions.push(super::resource::FrameRegion { start: 0, end: CODE as u64,
+            name: "frame-reserved", command: 0 });
+    }
     for c in &frame.chunks {
         let mut at = 0;
         while at < c.words.len() {

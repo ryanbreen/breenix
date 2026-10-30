@@ -2188,7 +2188,7 @@ pub(crate) fn native_spans_upload(id: u32, plan: crate::gk208::copy::Plan, backi
 
 /// Diagnostic transfer through the admitted core queue and its watchdog. The
 /// span registry owns the attached backing until its image can be collected.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", feature = "gt710_core_probe"))]
 pub(crate) fn native_spans_readback(id: u32, width: u32, height: u32, backing: Arc<Pages>)
     -> Result<[Vec<u8>; 2], &'static str> {
     let bytes = (width as usize).checked_mul(height as usize).and_then(|n| n.checked_mul(4))
@@ -4256,12 +4256,13 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                     }
                     None => None,
                 };
-                let frame = if corrupt.is_none() && suppress.is_none() && swap.is_none() {
+                let mut frame = if corrupt.is_none() && suppress.is_none() && swap.is_none() {
                     crate::gk208::encode::translate(&words, &resolved)
                 } else {
                     crate::gk208::encode::translate_with_extras(&words, &resolved,
                         crate::gk208::encode::Extras { corrupt, suppress, swap })
                 }.map_err(|_| EINVAL)?;
+                frame.compact().map_err(|_| EINVAL)?;
                 let backing = Arc::new(Pages::new(frame.data.len().div_ceil(PAGE)).ok_or(ENOMEM)?);
                 backing.write(0,&frame.data);
                 backing.maintain(0,frame.data.len(),false);

@@ -625,6 +625,8 @@ pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + S
     })?;
     let result = (|| {
         crate::gpu::native_spans_upload(target.id, plan, backing.clone())?;
+        #[cfg(feature = "gt710_core_probe")]
+        {
         let images = crate::gpu::native_spans_readback(target.id, data.width, data.height, backing)?;
         let mismatch = super::spans_diagnostic::compare(&expected, &images[0], &images[1])?;
         use core::sync::atomic::{AtomicU64, Ordering};
@@ -640,6 +642,7 @@ pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + S
         let bytes = text.len();
         super::bulk::line(text)?;
         crate::serial_println!("GT710_SPANS_BULK id={} bytes={} sha256={}",id,bytes,digest);
+        }
         Ok(())
     })();
     if let Err(error) = result {

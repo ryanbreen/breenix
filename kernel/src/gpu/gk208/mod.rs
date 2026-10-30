@@ -547,6 +547,7 @@ fn display_memory(
 }
 
 pub mod resource;
+#[cfg(feature = "gt710_core_probe")]
 mod spans_diagnostic;
 pub mod adapter;
 pub mod caps;
