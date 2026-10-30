@@ -1277,6 +1277,9 @@ mod native {
                         regs.mask(0x2630, 1 << c.runlist, 0);
                     }
                 }
+                // G19(a): fallback cleanup does not confirm the refused
+                // preempt. Keep the session unquiesced and retain its backing.
+                return Err(error);
             }
             Ok(())
         }
@@ -1669,6 +1672,8 @@ mod native {
             }
         }
         pub(crate) fn reset(&mut self) -> Result<(), &'static str> {
+            // Revoke the preceding attempt's confirmation before touching the channel.
+            self.confirmed = false;
             let mut regs = Registers(self.registers);
             let c = self.session.report.identity;
             regs.mask(0x2630, 1 << c.runlist, 1 << c.runlist);
