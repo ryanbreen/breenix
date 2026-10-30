@@ -4312,9 +4312,8 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             }
             let prepared = (|| {
                 // Reserve payload and bounded method storage before translating.
-                let bytes = crate::gk208::encode::DATA_START as u64 + 4096
-                    + plan.drawn.checked_add(plan.draws).and_then(|n| n.checked_add(u64::from(corrupt.is_some())))
-                        .ok_or(ENOMEM)?.max(1).checked_mul(4096).ok_or(ENOMEM)?;
+                let bytes = crate::gk208::encode::reservation_bytes(&words, &plan, corrupt.is_some())
+                    .ok_or(ENOMEM)?;
                 let charge = Arc::new(Charge::new(tgid, bytes, true)?);
                 // Native scratch uses the same validated per-format plan as the
                 // virtual encoders, with native layout and retirement ownership.

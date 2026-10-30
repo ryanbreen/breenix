@@ -1442,3 +1442,12 @@ MIT grant in rnndb/copyright.xml); Mesa nvc0_program.c at
 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de (Copyright 2010 Christoph
 Bumiller, MIT). The shared core owns asynchronous scheduling, charging and
 native-release accounting. G5's committed assets are unchanged.
+
+### GT 710 native stream reservation (8.5-u4)
+
+The storage bound in kernel/src/gpu/gk208/encode.rs is Breenix-owned quota
+policy over the existing native quad/copy encoder. NVIDIA open-gpu-doc
+classes/3d/cla197.h at 9fdf5c4062007929d9f4e6cbad9c9771fe61b880
+(Copyright 2020 NVIDIA Corporation, MIT) defines its vertex-array commands;
+the original copyright and full grant remain in the encoder header.
+No additional external implementation or generated asset is incorporated.

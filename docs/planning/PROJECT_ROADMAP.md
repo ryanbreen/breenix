@@ -16,6 +16,12 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+Native GK208B milestone 8 step 8.5 continues isolation, warm-up and recovery
+through the shared GPU core. Unit 8.5-u4 adds native stream-limit checks and
+sizes native reservations from encoded work; its host checks are in
+[gt710_stream_overflow_test.py](../../../tests/gt710_stream_overflow_test.py).
+The acceptance unit supplies the hardware gate; this unit performs no boot.
+
 Native GK208B milestone 8 step 8.1 registers the shared GPU core and native
 completion evidence in [PR #2562](https://github.com/ryanbreen/breenix/pull/2562)
 ([acceptance contract](../gui/gt710-core-acceptance.md)). Formats remain unprobed

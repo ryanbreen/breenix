@@ -51,18 +51,19 @@ impl Ring {
     fn new()->Self { Self { frames:vec![],allocations:0,pictures:core::array::from_fn(|i|
         Picture {generation:17+i as u64,bytes:vec![0x55+i as u8;16*16*4]}) } }
     fn submit(&mut self,words:&[u32],a:&mut abi::Submit)->Result<u64,i64> {
-        let validation=Words(words);
+        let words=Words(words);
+        let validation=Words(words.0);
         let resolved=View;
         let injection:Option<(usize,u32,Point)>=None;
         let refuse=|a:&mut abi::Submit,index,error,errno| { a.error_index=index;a.error=error;Err(errno) };
         // VALIDATION
-        assert_eq!(native::pipeline_refusal(words),None);
+        assert_eq!(native::pipeline_refusal(&words),None);
         let corrupt:Option<u64>=None;
         let tgid=1;
         // RESERVATION
         assert!(charge.bytes()>0,"native backing must remain charged");
         self.allocations+=1;
-        let frame=native::translate(words,&resolved).unwrap();
+        let frame=native::translate(&words,&resolved).unwrap();
         let emitted=frame.data.len() as u64+frame.chunks.iter().map(|c|
             (c.words.len()*4) as u64).sum::<u64>();
         assert!(charge.bytes()>=emitted,"reservation must cover native payload and methods");
