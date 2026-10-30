@@ -8,6 +8,11 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 class NativeAdapter(unittest.TestCase):
+    def test_native_device_error_dispatch(self):
+        source = (ROOT / 'kernel/src/gpu/dev.rs').read_text()
+        function = source.split('pub fn undefined_command(', 1)[1].split('\npub fn ', 1)[0]
+        self.assertIn('backend::GK208 =>', function)
+
     def test_native_completion_and_room(self):
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
         with tempfile.TemporaryDirectory() as directory:

@@ -23,6 +23,7 @@ pub mod gk208 {
         adapter::Request::transfer(crate::Tag::Sync(caller),caller,0x456000,plan,false,None)
     }
     pub mod gr {
+        #[path = "error.rs"] pub mod error;
         pub mod draw {#[derive(Clone, Copy)] pub struct Draw;}
         pub mod channel {
             use crate::{State,gpu_completion::CeSample};
@@ -46,6 +47,12 @@ pub mod gk208 {
                 }
                 pub fn sample(&mut self,sequence:u32)->Result<CeSample,&'static str> {
                     let s=self.0.borrow();Ok(CeSample{context:s.channel,epoch:s.release_epoch,sequence:s.release,consumed:sequence,healthy:!s.fault})
+                }
+                pub fn error_trap(&self)->Result<Option<crate::gk208::gr::error::Trap>,&'static str> {
+                    crate::gk208::gr::error::capture(&mut *self.0.borrow_mut())
+                }
+                pub fn acknowledge_error(&mut self,trap:crate::gk208::gr::error::Trap)->Result<(),&'static str> {
+                    crate::gk208::gr::error::acknowledge(&mut *self.0.borrow_mut(),trap)
                 }
                 pub fn transfer_drain(&mut self,sequence:u32)->Result<CeSample,&'static str> {
                     let mut sample=self.sample(sequence)?;sample.sequence=self.0.borrow().drain;Ok(sample)
@@ -72,11 +79,12 @@ use gpu::dev::{Reap,Tag};
 use gk208::{adapter::{Device,Request},copy::Rect,gr::channel::NativeChannel};
 pub struct State {
     epoch:u64,channel:u64,release_epoch:u64,release:u32,drain:u32,fault:bool,
+    registers:std::collections::BTreeMap<usize,u32>,writes:Vec<(usize,u32)>,
     fail_reset:bool,fail_unbind:bool,fail_publish:bool,refuse_publish:bool,stopped:bool,operations:Vec<&'static str>,published:Vec<u32>,events:Vec<&'static str>,expected_draw:Vec<u32>,
 }
 fn device()->(Device,Rc<RefCell<State>>) {
     let s=Rc::new(RefCell::new(State{epoch:17,channel:0x123000,release_epoch:17,release:0,drain:0,fault:false,
-        fail_reset:false,fail_unbind:false,fail_publish:false,refuse_publish:false,stopped:false,operations:vec![],published:vec![],events:vec![],expected_draw:vec![0x20010367,0]}));
+        registers:Default::default(),writes:vec![],fail_reset:false,fail_unbind:false,fail_publish:false,refuse_publish:false,stopped:false,operations:vec![],published:vec![],events:vec![],expected_draw:vec![0x20010367,0]}));
     (Device::new(NativeChannel(s.clone()),gk208::caps::BoardState::empty()),s)
 }
 fn request(caller:u64)->Request {
@@ -258,4 +266,86 @@ fn encoded_stream_copy_uses_ce_completion_and_keeps_the_caller_fence() {
     s.borrow_mut().release=1;
     let Reap::Done(done)=d.reap() else {panic!("CE release must retire the copy");};
     assert_eq!(done.fence,Some(8123));assert_eq!(done.native_fence,Some(1));
+}
+
+// The model exposes actual PGRAPH status/identity/method registers to the
+// production decoder. Acknowledgement does not invent the engine's release.
+impl gk208::gr::error::Io for State {
+    fn read(&mut self,address:usize)->u32 {*self.registers.get(&address).unwrap_or(&0)}
+    fn write(&mut self,address:usize,value:u32) {
+        self.writes.push((address,value));
+        if address==0x400100 { *self.registers.entry(address).or_default() &= !value; }
+        else {self.registers.insert(address,value);}
+    }
+}
+fn illegal_method(s:&Rc<RefCell<State>>,sequence:u32) {
+    s.borrow_mut().registers.extend([(0x400100,0x10),(0x409b00,0x123),
+        (0x400704,0x148),(0x400708,sequence),(0x404200,0xa197)]);
+}
+#[test]
+fn undefined_method_is_not_a197_and_release_follows_the_trap() {
+    let words=gk208::gr::error::commands(0x100000000,17,3).unwrap();
+    assert_eq!(&words[..6],&[0x20010000,0xa197,0x20010044,0,0x20010052,3]);
+    // Ordered A197 semaphore writes come after the illegal method, so ack
+    // alone cannot certify DMA cessation or release a held request.
+    assert_eq!(words.len(),21);
+    assert_eq!(words[6],0x200406c0);
+    assert_eq!(&words[17..],&[1,0,3,0x1000f010]);
+}
+#[test]
+fn illegal_method_retires_only_its_fence_after_release_and_keeps_other_context_live() {
+    use std::sync::Arc;
+    let (mut d,s)=device();
+    let bad=Request::undefined_command(Tag::Sync(9001),7,9001).unwrap();
+    assert!(d.send(bad).is_ok());
+    send(&mut d,23); // another core context's request on the shared native channel
+    let pages=Arc::new(gpu::dma::Pages);
+    assert!(d.send(Request::storage(Tag::Sync(24),Some(pages.clone()))).is_ok());
+    illegal_method(&s,1);
+    assert!(matches!(d.reap(),Reap::Empty));
+    assert_eq!(s.borrow().writes,[(0x400100,0x10),(0x400500,0x10001)]);
+    assert_eq!(d.outstanding(),3);assert_eq!(Arc::strong_count(&pages),2);
+    assert!(!d.needs_reset());
+    s.borrow_mut().release=1;
+    let Reap::Done(done)=d.reap() else {panic!("illegal-method receipt absent")};
+    assert_eq!((done.tag,done.fence,done.native_fence,done.answer,done.echoed,done.fenced),
+        (Tag::Sync(9001),Some(9001),Some(1),0x10,1,true));
+    assert_ne!(done.answer,gpu_abi::gk208::SUCCESS); // shared core maps this to DEVICE_ERROR
+    assert_eq!(d.outstanding(),2);assert_eq!(Arc::strong_count(&pages),2);
+    assert!(matches!(d.reap(),Reap::Empty));
+    s.borrow_mut().release=2;
+    let Reap::Done(done)=d.reap() else {panic!("surviving context did not finish")};
+    assert_eq!((done.fence,done.answer),(Some(23),gpu_abi::gk208::SUCCESS));
+    assert!(matches!(d.reap(),Reap::Done(_)));assert_eq!(Arc::strong_count(&pages),1);
+    assert!(s.borrow().events.is_empty(),"a recoverable illegal method must not reset peers");
+}
+#[test]
+fn foreign_or_unexpected_trap_never_retires_or_acknowledges_and_failed_reset_retains_holds() {
+    use std::sync::Arc;
+    for (address,value) in [(0x409b00,0x124),(0x400708,2),(0x400704,0x150),
+        (0x400704,0x10148),(0x404200,0xa097),(0x400100,0x100010),(0x400108,1)] {
+        let (mut d,s)=device();
+        assert!(d.send(Request::undefined_command(Tag::Sync(9001),7,9001).unwrap()).is_ok());
+        let pages=Arc::new(gpu::dma::Pages);
+        assert!(d.send(Request::storage(Tag::Sync(23),Some(pages.clone()))).is_ok());
+        illegal_method(&s,1);s.borrow_mut().registers.insert(address,value);
+        s.borrow_mut().release=1;
+        assert!(matches!(d.reap(),Reap::Fault),"foreign trap {address:x}={value:x}");
+        assert_eq!(d.outstanding(),2);assert!(s.borrow().writes.is_empty());
+        s.borrow_mut().fail_reset=true;d.begin_reset();assert!(!d.reset_done());
+        let (held,result)=d.restart();assert!(held.is_empty());assert!(result.is_err());
+        assert_eq!(Arc::strong_count(&pages),2);assert_eq!(d.outstanding(),2);
+    }
+}
+#[test]
+fn later_illegal_method_does_not_mark_an_earlier_clean_request_failed() {
+    let (mut d,s)=device();send(&mut d,23);
+    assert!(d.send(Request::undefined_command(Tag::Sync(9001),7,9001).unwrap()).is_ok());
+    illegal_method(&s,2);s.borrow_mut().release=1;
+    let Reap::Done(done)=d.reap() else {panic!("earlier clean receipt absent")};
+    assert_eq!((done.fence,done.answer),(Some(23),gpu_abi::gk208::SUCCESS));
+    assert!(matches!(d.reap(),Reap::Empty));
+    s.borrow_mut().release=2;
+    let Reap::Done(done)=d.reap() else {panic!("error receipt absent")};
+    assert_eq!((done.fence,done.answer),(Some(9001),0x10));
 }
