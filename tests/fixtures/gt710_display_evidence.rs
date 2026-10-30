@@ -24,7 +24,12 @@ fn hex(b:&[u8])->String{b.iter().map(|v|format!("{v:02x}")).collect()}
   let receipt=present::Receipt{notifier:1,active:[0x20000,2,3,4,5],armed:[0x20000,2,3,4,5]};
   display_evidence::record(&mut regs,0,surface,&receipt);
  }
- let exported=display_evidence::export();assert_eq!(exported.len(),2);
+ display_evidence::sample(0,64,0x12345678,0xdeadbeef);
+ display_evidence::sample(0,128,0,0); // Preserve the first mismatch.
+ display_evidence::sample(1,256,0xaabbccdd,0x11223344);
+ let exported=display_evidence::export();assert_eq!(exported.len(),4);
+ assert!(exported[2].0.contains("\"stage\":0,\"offset\":64,\"expected\":305419896,\"actual\":3735928559"));
+ assert!(exported[3].0.contains("\"stage\":1,\"offset\":256,\"expected\":2864434397,\"actual\":287454020"));
  for ((text,anchor),seq) in exported.iter().zip([499,500]) {
   assert!(text.contains(&format!("\"sequence\":{seq}")));
   assert!(text.contains("\"requested\":16777216"));assert!(text.contains("\"active\":[131072, 2, 3, 4, 5]"));
