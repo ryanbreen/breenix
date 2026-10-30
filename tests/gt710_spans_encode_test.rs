@@ -252,3 +252,14 @@ fn spans_constants_match_virgl_and_sampler_two_has_its_own_tic_tsc() {
     }
     f.relocate(0x600000000).unwrap();
 }
+
+#[test]
+fn short_crossing_tables_do_not_allocate_a_device_limit_width_row() {
+    let v=View{reads:Default::default()};let w=words();
+    let packed=native::pack_spans(w.as_slice(),&v,16384).unwrap().unwrap();
+    assert_eq!((packed.width,packed.height),(32,1));
+    let expected:Vec<u8>=table(3).into_iter().chain(table(4)).flat_map(u32::to_le_bytes).collect();
+    assert_eq!(&packed.bytes[..expected.len()],expected);
+    assert!(packed.bytes[expected.len()..].iter().all(|&b| b==0));
+    assert_eq!(packed.bytes.len(),128);
+}

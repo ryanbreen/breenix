@@ -275,3 +275,22 @@ fn shape_code_fits_parking_and_bounded_channel_uploads() {
     }).unwrap();
     assert_eq!(uploaded, data);
 }
+
+#[test]
+fn compact_frame_preserves_payload_and_every_live_address() {
+    let mut original = encode::translate(frame().as_slice(), &View(format::B8G8R8A8)).unwrap();
+    let mut compact = encode::translate(frame().as_slice(), &View(format::B8G8R8A8)).unwrap();
+    let code = 1 << 20;
+    let expected = original.data[code..].to_vec();
+    compact.compact().unwrap();
+    assert_eq!(compact.data, expected);
+    assert!(compact.data.len() < 128 * 1024);
+    let base = 0x3_0000_0000;
+    original.relocate(base - code as u64).unwrap();
+    compact.relocate(base).unwrap();
+    for (a, b) in original.chunks.iter().zip(&compact.chunks) {
+        // channel_words replaces only VAB with its retained channel allocation.
+        assert_eq!(encode::channel_words(&a.words, 0x4_0000_0000).unwrap(),
+                   encode::channel_words(&b.words, 0x4_0000_0000).unwrap());
+    }
+}

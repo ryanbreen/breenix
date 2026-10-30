@@ -55,6 +55,7 @@ class BlendScratch(unittest.TestCase):
     }
     pub fn native_spans_readback(_: u32, width: u32, height: u32, backing: std::sync::Arc<dma::Pages>)
         -> Result<[Vec<u8>;2], &'static str> {
+        crate::SPAN_DIAGNOSTICS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let mut image=vec![0;width as usize*height as usize*4];
         let layout=crate::gk208::resource::Layout::new(width,height,4)?;
         for (y,row) in image.chunks_exact_mut(width as usize*4).enumerate() {

@@ -15,6 +15,7 @@ impl vm::Io for Model {
 }
 thread_local! { static OWNER: RefCell<(Resources<gpu::dma::Pages>,Allocator,Model)> =
     RefCell::new((Resources::new(),Allocator::new(1<<30,&[]).unwrap(),Model::default())); }
+static SPAN_DIAGNOSTICS: AtomicU64=AtomicU64::new(0);
 static CHARGED: AtomicU64=AtomicU64::new(0);
 static RELEASES: AtomicU64=AtomicU64::new(0);
 struct Charge { bytes:u64 }
@@ -130,6 +131,7 @@ fn spans_storage_and_charge_follow_the_actual_draw_release_and_publication() {
     let mut scratch=native_blend_scratch(42,[[0,0];2]).unwrap();
     let data=gk208::encode::Spans {width:8,height:1,bytes:vec![0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88]};
     native_spans(42,&mut scratch,&data).unwrap();
+    assert_eq!(SPAN_DIAGNOSTICS.load(Ordering::SeqCst),0, "production span preparation must not execute diagnostic readbacks");
     let t=scratch.targets[2].unwrap();assert_eq!((t.width,t.height,t.format),(8,1,1));
     assert_eq!(CHARGED.load(Ordering::SeqCst),4096);
     ce::with_resources(|r,_,io|{let pte=r.pte_address(t.address).unwrap();let physical=(io.words[&pte]&0xfffffff0)<<8;
