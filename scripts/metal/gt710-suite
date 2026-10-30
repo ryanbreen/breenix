@@ -2486,6 +2486,10 @@ def capture_serial(directory):
         raise ValueError('stall records must arrive in bulk')
     if timings and not matches: raise ValueError('timing evidence bulk missing')
     if re.search(r'^GT710_TIMING_V1 ', serial, re.M): raise ValueError('timing records must arrive in bulk')
+    if re.search(r'^GT710_GR_REFUSAL_V1 ', serial, re.M):
+        raise ValueError('GR refusal records must arrive in bulk')
+    if 'GT710_GR_REFUSAL_BULK ' in serial and not matches:
+        raise ValueError('GR refusal evidence bulk missing')
     if not matches: return serial
     if len(matches)!=1: raise ValueError('duplicate display artifact digest')
     data=(Path(directory)/'gt710-pixels.rle').read_bytes()
@@ -2525,6 +2529,14 @@ def capture_serial(directory):
                            or any(type(v) is not int or v < 0 for v in r) for r in row['rows'])):
                 raise ValueError('invalid timing record')
             key=('timing', row['batch'])
+        elif fields[0]=='GT710_GR_REFUSAL_V1':
+            row = json.loads(line.removeprefix('GT710_GR_REFUSAL_V1 '))
+            if (row.get('registers') != [0x400704, 0x400708, 0x400700, 0x409c18, 0x2634, 0x2640, 0x262c]
+                    or any(not isinstance(row.get(k), list) or len(row[k]) != n
+                           or any(type(v) is not int or not 0 <= v < 1 << 32 for v in row[k])
+                           for k, n in [('status', 4), ('values', 7)])):
+                raise ValueError('invalid GR refusal record')
+            key=('gr-refusal', hashlib.sha256(line.removesuffix('\n').encode('ascii')).hexdigest())
         elif fields[0]=='GT710_MMU_ERROR_V1':
             row = json.loads(line.removeprefix('GT710_MMU_ERROR_V1 '))
             raw = row.get('raw')
@@ -2562,6 +2574,9 @@ def capture_serial(directory):
         if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
         groups.setdefault(key,[]).append(line);previous=key
     def report_key(line):
+        refusal = re.fullmatch(r'GT710_GR_REFUSAL_BULK bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
+        if refusal: return ('gr-refusal', refusal[2])
+        if line.startswith('GT710_GR_REFUSAL_BULK '): raise ValueError('invalid GR refusal anchor')
         timing = re.fullmatch(r'GT710_TIMING_BULK batch=(\d+) bytes=(\d+) sha256=([a-f0-9]{64})\n?', line)
         if timing: return ('timing', int(timing[1]))
         if line.startswith('GT710_TIMING_BULK '): raise ValueError('invalid timing anchor')
@@ -2605,6 +2620,11 @@ def capture_serial(directory):
             if not lower<=serial_offset<upper:
                 raise ValueError('artifact anchor outside its upload slot')
         serial_offset+=len(line)
+        if key is not None and key[0] == 'gr-refusal':
+            anchor = re.fullmatch(r'GT710_GR_REFUSAL_BULK bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
+            record = groups[key][0].removesuffix('\n').encode('ascii')
+            if len(groups[key]) != 1 or len(record) != int(anchor[1]) or hashlib.sha256(record).hexdigest() != anchor[2]:
+                raise ValueError('GR refusal record differs from serial length/digest')
         if key is not None and key[0] == 'timing':
             anchor = re.fullmatch(r'GT710_TIMING_BULK batch=(\d+) bytes=(\d+) sha256=([a-f0-9]{64})\n?', line)
             record = groups[key][0].removesuffix('\n').encode('ascii')
