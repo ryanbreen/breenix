@@ -98,6 +98,7 @@ mod board;
 mod ddc;
 mod edid;
 mod bulk;
+pub(crate) mod timing;
 mod memory;
 mod lock;
 mod inventory;

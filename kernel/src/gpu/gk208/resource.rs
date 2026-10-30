@@ -593,6 +593,7 @@ pub(crate) fn retire_blend_staging(ids: impl IntoIterator<Item = Option<u32>>, h
 #[cfg(target_os = "none")]
 pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + Sync>)
     -> Result<(super::encode::Target, Hold), &'static str> {
+    let preparing = super::timing::phase(101);
     let bytes = data.width as usize * data.height as usize * 4;
     if data.bytes.len() > bytes { return Err("oversized native packed spans"); }
     let mut expected = data.bytes.clone();
@@ -608,6 +609,8 @@ pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + S
     }
     backing.maintain(0, backing_bytes, false);
     let pages: Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
+    drop(preparing);
+    let mapping = super::timing::phase(102);
     let (target, hold, plan) = super::ce::with_resources(|r, a, io| {
         let id = r.upload_spans(a, io, data.width, data.height, &data.bytes, charge)?;
         let layout = r.layout(id).ok_or("native crossing layout absent")?;
@@ -623,7 +626,9 @@ pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + S
             }
         }
     })?;
+    drop(mapping);
     let result = (|| {
+        let _timing = super::timing::phase(103);
         crate::gpu::native_spans_upload(target.id, plan, backing.clone())?;
         #[cfg(feature = "gt710_core_probe")]
         {

@@ -2662,7 +2662,7 @@ pub fn owner_ended(tgid: u64) {
 // ---------------------------------------------------------------------------------------
 // The system call.
 
-fn caller() -> Result<u64, i64> {
+pub(crate) fn caller() -> Result<u64, i64> {
     let tid = crate::task::scheduler::current_thread_id().ok_or(EINVAL)?;
     crate::process::with_process_manager(|m| {
         m.find_process_by_thread(tid).map(|(row, p)| p.thread_group_id.unwrap_or(row.as_u64()))
@@ -2713,6 +2713,9 @@ fn native_reset_barrier() -> Result<(), i64> {
 /// `gpu(op, arg, len)`.
 pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
     let _path = GpuPath::enter();
+    #[cfg(target_arch = "x86_64")]
+    let _timing = (dev::backend() == abi::backend::GK208)
+        .then(|| crate::gk208::timing::Guard::new(caller().unwrap_or(0), op));
     // Test point 3, `emit-diagnostic`: this call writes BreenGL's diagnostic payload, the
     // only kernel output any syscall 416 path makes (section 1.16).
     if crate::test_control::take(test_point::EMIT_DIAGNOSTIC, 0).is_some() {
@@ -4244,7 +4247,12 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 // Native scratch uses the same validated per-format plan as the
                 // virtual encoders, with native layout and retirement ownership.
                 let mut scratch = native_blend_scratch(tgid, plan.scratch)?;
-                if let Some(data) = crate::gk208::encode::pack_spans(&words, &resolved, data_width).map_err(|_| EINVAL)? {
+                if plan.data_bytes > 0 { crate::gk208::timing::begin_draw(tgid); }
+                let data = {
+                    let _timing = crate::gk208::timing::phase(100);
+                    crate::gk208::encode::pack_spans(&words, &resolved, data_width).map_err(|_| EINVAL)?
+                };
+                if let Some(data) = data {
                     native_spans(tgid, &mut scratch, &data)?;
                 }
                 resolved.native_scratch.set(scratch.targets);
@@ -4256,6 +4264,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                     }
                     None => None,
                 };
+                let translating = crate::gk208::timing::phase(110);
                 let mut frame = if corrupt.is_none() && suppress.is_none() && swap.is_none() {
                     crate::gk208::encode::translate(&words, &resolved)
                 } else {
@@ -4263,6 +4272,8 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                         crate::gk208::encode::Extras { corrupt, suppress, swap })
                 }.map_err(|_| EINVAL)?;
                 frame.compact().map_err(|_| EINVAL)?;
+                drop(translating);
+                let _timing = crate::gk208::timing::phase(111);
                 let backing = Arc::new(Pages::new(frame.data.len().div_ceil(PAGE)).ok_or(ENOMEM)?);
                 backing.write(0,&frame.data);
                 backing.maintain(0,frame.data.len(),false);

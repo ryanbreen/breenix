@@ -7,6 +7,13 @@ pub(super) fn line(text:String)->Result<(),&'static str> {
     rows.try_reserve(text.len()+1).map_err(|_|"display artifact storage exhausted")?;
     rows.extend_from_slice(text.as_bytes());rows.push(b'\n');Ok(())
 }
-pub(super) fn take()->Vec<u8> {core::mem::take(&mut *ROWS.lock())}
+pub(super) fn take()->Vec<u8> {
+    if let Some((text, anchor)) = super::timing::export() {
+        // A transport overflow leaves a missing record, which the decoder rejects.
+        let _ = line(text);
+        crate::serial_println!("{}", anchor);
+    }
+    core::mem::take(&mut *ROWS.lock())
+}
 
 pub(super) fn used() -> usize { ROWS.lock().len() }
