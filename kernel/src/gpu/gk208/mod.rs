@@ -546,6 +546,7 @@ fn display_memory(
 }
 
 pub mod resource;
+mod spans_diagnostic;
 pub mod adapter;
 pub mod caps;
 

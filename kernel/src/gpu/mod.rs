@@ -2171,6 +2171,35 @@ pub(crate) fn native_console_readback(surface: &crate::gk208::ConsoleSurface)
     Ok(Some((backing, last)))
 }
 
+/// Diagnostic transfer through the admitted core queue and its watchdog. The
+/// span registry owns the attached backing until its image can be collected.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn native_spans_readback(id: u32, width: u32, height: u32)
+    -> Result<[Vec<u8>; 2], &'static str> {
+    let bytes = (width as usize).checked_mul(height as usize).and_then(|n| n.checked_mul(4))
+        .ok_or("native spans readback extent overflow")?;
+    let backing = Arc::new(Pages::new(bytes.div_ceil(PAGE)).ok_or("native spans readback allocation")?);
+    backing.identify("native-spans-readback", id, 0);
+    crate::gk208::resource::attach_spans_readback(id, backing.clone())?;
+    let mut images = [alloc::vec![0; bytes], alloc::vec![0; bytes]];
+    for (index, poison) in [0x55, 0xaa].into_iter().enumerate() {
+        let band = [poison; PAGE];
+        for at in (0..bytes).step_by(PAGE) { backing.write(at, &band[..PAGE.min(bytes-at)]); }
+        backing.maintain(0, bytes, false);
+        let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or("native spans core absent")?;
+        let request = crate::gk208::transfer(Tag::Sync(serial), fence, id, backing.clone(),
+            [0,0,width,height], 0, width*4, false).ok_or("native spans CE readback refused")?;
+        let done = exec_req(serial, Request::Gk208(request), 0, &[], &[])
+            .map_err(|_| "native spans CE readback failed")?;
+        if !dev::ok(done.answer) || !done.matches_fence(fence) {
+            return Err("native spans CE completion mismatch");
+        }
+        backing.maintain(0, bytes, true);
+        backing.read(0, &mut images[index]);
+    }
+    Ok(images)
+}
+
 /// Attach resources to device contexts, one synchronous `(context, resource)` command a
 /// pair, queued together in one batch so the device answers them back to back: a new
 /// context takes the process's resources, and a new resource the process's contexts, in

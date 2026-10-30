@@ -602,12 +602,45 @@ pub(crate) fn retire_blend_staging(ids: impl IntoIterator<Item = Option<u32>>, h
 #[cfg(target_os = "none")]
 pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + Sync>)
     -> Result<(super::encode::Target, Hold), &'static str> {
-    super::ce::with_resources(|r, a, io| {
+    let (target, hold) = super::ce::with_resources(|r, a, io| {
         let id = r.upload_spans(a, io, data.width, data.height, &data.bytes, charge)?;
         let layout = r.layout(id).ok_or("native crossing layout absent")?;
         let target = super::encode::Target { id,
             address: r.address(id).ok_or("native crossing address absent")?,
             width: data.width, height: data.height, format: 1, tile_mode: layout.tile_mode };
         Ok((target, r.hold(id)?))
-    })
+    })?;
+    let result = (|| {
+        let images = crate::gpu::native_spans_readback(target.id, data.width, data.height)?;
+        let mismatch = super::spans_diagnostic::compare(&data.bytes, &images[0], &images[1])?;
+        use core::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let (offset, expected, actual) = mismatch.map_or_else(
+            || (alloc::string::String::from("null"), alloc::string::String::from("null"), alloc::string::String::from("null")),
+            |(at,e,a)| (alloc::format!("{}",at),alloc::format!("{}",e),alloc::format!("{}",a)));
+        let text = alloc::format!("GT710_SPANS_V1 {{\"id\":{},\"resource\":{},\"width\":{},\"height\":{},\"bytes\":{},\"first_mismatch\":{},\"expected\":{},\"actual\":{},\"expected_sha256\":\"{}\",\"first_sha256\":\"{}\",\"second_sha256\":\"{}\"}}",
+            id,target.id,data.width,data.height,data.bytes.len(),offset,expected,actual,
+            super::hash(&data.bytes),super::hash(&images[0]),super::hash(&images[1]));
+        let digest = super::hash(text.as_bytes());
+        let bytes = text.len();
+        super::bulk::line(text)?;
+        crate::serial_println!("GT710_SPANS_BULK id={} bytes={} sha256={}",id,bytes,digest);
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let mut holds = alloc::vec![hold];
+        retire_blend_staging([Some(target.id)], &mut holds);
+        return Err(error);
+    }
+    Ok((target, hold))
+}
+
+/// Attach the diagnostic's pinned linear destination to the span-image owner.
+#[cfg(target_os = "none")]
+pub(crate) fn attach_spans_readback(id: u32, backing: Arc<crate::gpu::dma::Pages>)
+    -> Result<(), &'static str> {
+    let pages: Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
+    super::ce::with_resources(|r,a,io|
+        r.attach(a,io,id,backing.clone(),&pages,backing.bytes() as u64))
 }
