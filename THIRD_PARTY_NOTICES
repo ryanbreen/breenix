@@ -1402,3 +1402,27 @@ before reset and its SHA-256 anchor is printed separately.
 NVIDIA open-gpu-doc cla197.h at 9fdf5c4062007929d9f4e6cbad9c9771fe61b880
 (MIT, Copyright 2020 NVIDIA CORPORATION) was read to cross-check method
 0x1614 as END; no header code is adapted by this diagnostic.
+
+GT 710 device-error producer and retirement (milestone 8.5-u2, G15)
+----------------------------------------------------------------
+Consumers: kernel/src/gpu/gk208/gr/error.rs and its adapter/channel callers;
+kernel/src/gpu/gk208/encode.rs selects the kernel-only control for dev.rs.
+Source headers and the rnndb imported grant were checked before use:
+- nouveau nvkm/engine/gr/gf100.c at Linux v6.8,
+  e8f897f4afef0031fe618a8e94127a0934896aba: MIT, Copyright 2012 Red Hat Inc.
+  Lines 1613-1652 attribute ILLEGAL_MTHD to instance/subchannel/class/method
+  and data; line 1693 resumes PGRAPH after W1C acknowledgement.
+- NVIDIA open-gpu-doc classes/3d/cla197.h at
+  9fdf5c4062007929d9f4e6cbad9c9771fe61b880: MIT,
+  Copyright (c) 2020 NVIDIA CORPORATION. A197 has no method at 0x0148
+  between PM_TRIGGER_WFI 0x0144 and instrumentation header 0x0150.
+  SET_OBJECT, WAIT_FOR_IDLE and ordered report methods bracket the control.
+- envytools rnndb/graph/gf100_pgraph/pgraph.xml at
+  f102b82381f3f11cee113d16374c87091db039d9: MIT through its imported
+  rnndb/copyright.xml, Copyright 2006 rnndb authors. INTR bit 4 is
+  ILLEGAL_MTHD; INTR is write-one-to-clear; trapped method/data identify it.
+The original copyright notices and complete MIT grants are retained in
+error.rs; the existing NVIDIA/rnndb notices in encode.rs and the native
+channel remain. Breenix owns request matching, holds and fence retirement.
+The host model does not certify execution on the card; that remains the
+acceptance unit's hardware gate.

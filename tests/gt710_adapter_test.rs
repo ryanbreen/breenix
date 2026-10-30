@@ -6,7 +6,7 @@ pub mod gpu {
     pub mod dma { pub struct Pages; }
     pub mod dev {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub enum Tag { Background, Sync(u64) }
+        pub enum Tag { Background, Sync(u64), Submit { ctx:u32, serial:u64, last:bool } }
         pub struct Done {pub tag:Tag,pub fence:Option<u64>,pub native_fence:Option<u64>,pub answer:u32,pub echoed:u64,pub fenced:bool}
         pub enum Reap {Empty,Done(Done),Fault}
     }
@@ -46,7 +46,13 @@ pub mod gk208 {
                     self.0.borrow_mut().published.push(sequence);Ok(())
                 }
                 pub fn sample(&mut self,sequence:u32)->Result<CeSample,&'static str> {
-                    let s=self.0.borrow();Ok(CeSample{context:s.channel,epoch:s.release_epoch,sequence:s.release,consumed:sequence,healthy:!s.fault})
+                    let mut s=self.0.borrow_mut();
+                    if s.trap_after_samples>0 {s.trap_after_samples-=1;}
+                    if s.trap_at_sample || s.trap_after_samples==0 && s.delayed_trap_sequence!=0 {
+                        s.trap_at_sample=false;let sequence=s.delayed_trap_sequence.max(1);
+                        s.delayed_trap_sequence=0;s.plant_illegal(sequence);return Err("PGRAPH trap during sample");
+                    }
+                    Ok(CeSample{context:s.channel,epoch:s.release_epoch,sequence:s.release,consumed:sequence,healthy:!s.fault})
                 }
                 pub fn error_trap(&self)->Result<Option<crate::gk208::gr::error::Trap>,&'static str> {
                     crate::gk208::gr::error::capture(&mut *self.0.borrow_mut())
@@ -58,7 +64,13 @@ pub mod gk208 {
                     let mut sample=self.sample(sequence)?;sample.sequence=self.0.borrow().drain;Ok(sample)
                 }
                 pub fn published(&self,sequence:u32)->bool {self.0.borrow().published.contains(&sequence)}
-                pub fn healthy(&self)->Result<(), &'static str> {if self.0.borrow().fault {Err("injected engine fault")} else {Ok(())}}
+                pub fn healthy(&self)->Result<(), &'static str> {
+                    let mut s=self.0.borrow_mut();
+                    if s.trap_at_health {s.trap_at_health=false;s.plant_illegal(1);}
+                    if s.fault {Err("injected engine fault")}
+                    else if s.registers.get(&0x400100).copied().unwrap_or(0)!=0 {Err("PGRAPH trap during health")}
+                    else {Ok(())}
+                }
                 pub fn reset(&mut self)->Result<(),&'static str> {
                     let mut s=self.0.borrow_mut();s.events.push("reset");
                     if s.fail_reset {return Err("reset failed");}
@@ -80,13 +92,31 @@ use gk208::{adapter::{Device,Request},copy::Rect,gr::channel::NativeChannel};
 pub struct State {
     epoch:u64,channel:u64,release_epoch:u64,release:u32,drain:u32,fault:bool,
     registers:std::collections::BTreeMap<usize,u32>,writes:Vec<(usize,u32)>,
+    trap_at_health:bool,trap_at_sample:bool,fail_ack:bool,trap_after_samples:u32,delayed_trap_sequence:u32,
     fail_reset:bool,fail_unbind:bool,fail_publish:bool,refuse_publish:bool,stopped:bool,operations:Vec<&'static str>,published:Vec<u32>,events:Vec<&'static str>,expected_draw:Vec<u32>,
 }
 fn device()->(Device,Rc<RefCell<State>>) {
     let s=Rc::new(RefCell::new(State{epoch:17,channel:0x123000,release_epoch:17,release:0,drain:0,fault:false,
-        registers:Default::default(),writes:vec![],fail_reset:false,fail_unbind:false,fail_publish:false,refuse_publish:false,stopped:false,operations:vec![],published:vec![],events:vec![],expected_draw:vec![0x20010367,0]}));
+        registers:Default::default(),writes:vec![],trap_at_health:false,trap_at_sample:false,fail_ack:false,trap_after_samples:0,delayed_trap_sequence:0,fail_reset:false,fail_unbind:false,fail_publish:false,refuse_publish:false,stopped:false,operations:vec![],published:vec![],events:vec![],expected_draw:vec![0x20010367,0]}));
     (Device::new(NativeChannel(s.clone()),gk208::caps::BoardState::empty()),s)
 }
+// The model exposes actual PGRAPH status/identity/method registers to the
+// production decoder. Acknowledgement does not invent the engine's release.
+impl gk208::gr::error::Io for State {
+    fn read(&mut self,address:usize)->u32 {*self.registers.get(&address).unwrap_or(&0)}
+    fn write(&mut self,address:usize,value:u32) {
+        self.writes.push((address,value));
+        if address==0x400100 { if !self.fail_ack {*self.registers.entry(address).or_default() &= !value;} }
+        else {self.registers.insert(address,value);}
+    }
+}
+impl State {
+    fn plant_illegal(&mut self,sequence:u32) {
+        self.registers.extend([(0x400100,0x10),(0x409b00,0x123),
+            (0x400704,0x148),(0x400708,sequence),(0x404200,0xa197)]);
+    }
+}
+
 fn request(caller:u64)->Request {
     Request::copy(Tag::Sync(caller),caller,0x456000,9,
         Rect{src:0x100000,dst:0x200000,width:4,height:1,src_pitch:4,dst_pitch:4})
@@ -268,19 +298,8 @@ fn encoded_stream_copy_uses_ce_completion_and_keeps_the_caller_fence() {
     assert_eq!(done.fence,Some(8123));assert_eq!(done.native_fence,Some(1));
 }
 
-// The model exposes actual PGRAPH status/identity/method registers to the
-// production decoder. Acknowledgement does not invent the engine's release.
-impl gk208::gr::error::Io for State {
-    fn read(&mut self,address:usize)->u32 {*self.registers.get(&address).unwrap_or(&0)}
-    fn write(&mut self,address:usize,value:u32) {
-        self.writes.push((address,value));
-        if address==0x400100 { *self.registers.entry(address).or_default() &= !value; }
-        else {self.registers.insert(address,value);}
-    }
-}
 fn illegal_method(s:&Rc<RefCell<State>>,sequence:u32) {
-    s.borrow_mut().registers.extend([(0x400100,0x10),(0x409b00,0x123),
-        (0x400704,0x148),(0x400708,sequence),(0x404200,0xa197)]);
+    s.borrow_mut().plant_illegal(sequence);
 }
 #[test]
 fn undefined_method_is_not_a197_and_release_follows_the_trap() {
@@ -296,9 +315,11 @@ fn undefined_method_is_not_a197_and_release_follows_the_trap() {
 fn illegal_method_retires_only_its_fence_after_release_and_keeps_other_context_live() {
     use std::sync::Arc;
     let (mut d,s)=device();
-    let bad=Request::undefined_command(Tag::Sync(9001),7,9001).unwrap();
+    let bad_tag=Tag::Submit {ctx:7,serial:9001,last:true};
+    let bad=Request::undefined_command(bad_tag,7,9001).unwrap();
     assert!(d.send(bad).is_ok());
-    send(&mut d,23); // another core context's request on the shared native channel
+    let mut peer=request(23);peer.tag=Tag::Submit {ctx:8,serial:23,last:true};
+    assert!(d.send(peer).is_ok());
     let pages=Arc::new(gpu::dma::Pages);
     assert!(d.send(Request::storage(Tag::Sync(24),Some(pages.clone()))).is_ok());
     illegal_method(&s,1);
@@ -309,7 +330,7 @@ fn illegal_method_retires_only_its_fence_after_release_and_keeps_other_context_l
     s.borrow_mut().release=1;
     let Reap::Done(done)=d.reap() else {panic!("illegal-method receipt absent")};
     assert_eq!((done.tag,done.fence,done.native_fence,done.answer,done.echoed,done.fenced),
-        (Tag::Sync(9001),Some(9001),Some(1),0x10,1,true));
+        (bad_tag,Some(9001),Some(1),0x10,1,true));
     assert_ne!(done.answer,gpu_abi::gk208::SUCCESS); // shared core maps this to DEVICE_ERROR
     assert_eq!(d.outstanding(),2);assert_eq!(Arc::strong_count(&pages),2);
     assert!(matches!(d.reap(),Reap::Empty));
@@ -348,4 +369,51 @@ fn later_illegal_method_does_not_mark_an_earlier_clean_request_failed() {
     s.borrow_mut().release=2;
     let Reap::Done(done)=d.reap() else {panic!("error receipt absent")};
     assert_eq!((done.fence,done.answer),(Some(9001),0x10));
+}
+
+#[test]
+fn trap_arriving_during_health_or_sample_is_acknowledged_without_resetting_peers() {
+    for during_sample in [false,true] {
+        let (mut d,s)=device();
+        assert!(d.send(Request::undefined_command(Tag::Sync(9001),7,9001).unwrap()).is_ok());
+        send(&mut d,23);
+        s.borrow_mut().trap_at_sample=during_sample;
+        s.borrow_mut().trap_at_health=!during_sample;
+        assert!(matches!(d.reap(),Reap::Empty));
+        assert_eq!(s.borrow().writes,[(0x400100,0x10),(0x400500,0x10001)]);
+        assert_eq!(d.outstanding(),2);assert!(!d.needs_reset());
+        s.borrow_mut().release=1;
+        let Reap::Done(done)=d.reap() else {panic!("racing trap did not retire")};
+        assert_eq!((done.fence,done.answer),(Some(9001),0x10));
+        assert_eq!(d.outstanding(),1);assert!(s.borrow().events.is_empty());
+    }
+}
+#[test]
+fn missing_trap_or_failed_ack_never_returns_a_successful_error_control() {
+    for missing_trap in [false,true] {
+        let (mut d,s)=device();
+        assert!(d.send(Request::undefined_command(Tag::Sync(9001),7,9001).unwrap()).is_ok());
+        if !missing_trap {illegal_method(&s,1);s.borrow_mut().fail_ack=true;}
+        s.borrow_mut().release=1;
+        assert!(matches!(d.reap(),Reap::Fault));assert_eq!(d.outstanding(),1);
+    }
+}
+
+#[test]
+fn later_illegal_method_during_transfer_drain_keeps_both_requests_live() {
+    for sample_number in [2,3] {
+        let (mut d,s)=device();assert!(d.send(gk208::transfer_request(23)).is_ok());
+        assert!(d.send(Request::undefined_command(Tag::Sync(9001),7,9001).unwrap()).is_ok());
+        {let mut s=s.borrow_mut();s.release=3;s.drain=1;s.trap_after_samples=sample_number;s.delayed_trap_sequence=2;}
+        assert!(matches!(d.reap(),Reap::Empty));assert_eq!(d.outstanding(),2);
+        assert_eq!(s.borrow().writes,[(0x400100,0x10),(0x400500,0x10001)]);
+        assert!(!d.needs_reset());
+        s.borrow_mut().release=1;
+        let Reap::Done(done)=d.reap() else {panic!("transfer did not survive the later trap")};
+        assert_eq!((done.fence,done.answer),(Some(23),gpu_abi::gk208::SUCCESS));
+        assert!(matches!(d.reap(),Reap::Empty));s.borrow_mut().release=2;
+        let Reap::Done(done)=d.reap() else {panic!("error control did not retire")};
+        assert_eq!((done.fence,done.answer),(Some(9001),0x10));
+        assert!(s.borrow().events.is_empty());
+    }
 }

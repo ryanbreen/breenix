@@ -68,12 +68,15 @@ pub mod gk208 {
     pub mod channel {pub fn elapsed(begin:u64)->u64 {crate::timer::rdtsc().wrapping_sub(begin)/(crate::timer::frequency_hz()/1_000_000)}}
     pub mod bulk {pub fn line(s:String)->Result<(),&'static str>{println!("{s}");Ok(())}}
     pub mod gr {
+        #[path = "../../kernel/src/gpu/gk208/gr/error.rs"] pub mod error;
         pub mod draw {#[derive(Clone,Copy)] pub struct Draw {pub target_va:u64}}
         pub mod channel {
             use crate::{gpu_completion::CeSample,gk208::{adapter::Operation,core_record::Control}};
             pub struct NativeChannel {pub sample:CeSample,pub drain:u32,pub ignore_control:bool,pub published:usize,pub final_sample:Option<CeSample>,pub polls:usize}
             impl NativeChannel {
                 pub fn identity(&self)->(u64,u64){(0x123000,17)}
+                pub fn error_trap(&self)->Result<Option<super::error::Trap>, &'static str>{Ok(None)}
+                pub fn acknowledge_error(&mut self,_:super::error::Trap)->Result<(), &'static str>{panic!("producer does not inject PGRAPH traps")}
                 pub fn healthy(&self)->Result<(), &'static str>{Ok(())}
                 pub fn published(&self,sequence:u32)->bool{self.sample.consumed==sequence}
                 pub fn publish(&mut self,sequence:u32,_:&Operation)->Result<(),&'static str>{self.published+=1;self.final_sample=None;self.polls=0;self.sample=CeSample{context:0x123000,epoch:17,sequence,consumed:sequence,healthy:true};self.drain=0;Ok(())}

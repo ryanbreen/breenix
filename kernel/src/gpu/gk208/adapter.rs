@@ -6,7 +6,7 @@ use crate::{gpu::dev::{Done, Reap, Tag}, gpu_completion};
 use super::{copy::Rect, gr::{channel::NativeChannel, draw::Draw}, queue::Queue};
 
 #[derive(Clone, Copy)]
-pub enum Operation { Copy(Rect), Transfer(super::copy::Plan), Draw(Draw) }
+pub enum Operation { Copy(Rect), Transfer(super::copy::Plan), Draw(Draw), Undefined }
 
 /// Commands originate only in the validated kernel encoder. The owned storage
 /// stays held by pending requests on uncertain publication or failed reset.
@@ -65,6 +65,20 @@ impl Request {
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             control: super::core_record::Control::Clean }
     }
+    /// The control names a live logical context, but allocates no image.
+    /// Its report uses the channel's retained receipt page and native sequence.
+    pub fn undefined_command(tag: Tag, ctx: u32, caller: u64) -> Option<Self> {
+        if ctx == 0 || caller == 0 { return None; }
+        Some(Self { tag, fence: Some(caller), operation: Some(Operation::Undefined),
+            encoded: None, storage: false, _backing: None,
+            #[cfg(target_os = "none")]
+            _transfer_hold: None,
+            resource: u64::from(ctx), generation: 1, upload: false,
+            #[cfg(target_os = "none")]
+            scanout: false,
+            #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
+            control: super::core_record::Control::Clean })
+    }
     pub fn upload(tag: Tag, caller: u64, resource: u64, generation: u64, rect: Rect) -> Self {
         let mut request = Self::copy(tag, caller, resource, generation, rect);
         request.upload = true;
@@ -113,7 +127,7 @@ struct RequestTrace {
     kind: &'static str, target: u64, frame: u32, address: u64, command: u32,
 }
 
-struct Sent { request: Request, identity: Option<gpu_completion::Request> }
+struct Sent { request: Request, identity: Option<gpu_completion::Request>, answer: Option<u32> }
 
 pub struct Device {
     channel: NativeChannel,
@@ -152,7 +166,7 @@ impl Device {
     pub fn send(&mut self, request: Request) -> Result<(), Request> {
         if !self.has_room(1) || self.pending.try_reserve(1).is_err() { return Err(request); }
         if request.storage {
-            self.pending.push_back(Sent { request, identity: None });
+            self.pending.push_back(Sent { request, identity: None, answer: None });
             return Ok(());
         }
         if request.operation.is_none() && request.encoded.is_none() { return Err(request); }
@@ -185,13 +199,13 @@ impl Device {
         #[cfg(target_os = "none")]
         {
             let (kind, frame, address, command) = request.encoded.as_ref().map_or_else(
-                || (match request.operation { Some(Operation::Copy(_)) => "copy", Some(Operation::Transfer(_)) => "transfer", _ => "triangle" }, 0, 0, 0),
+                || (match request.operation { Some(Operation::Copy(_)) => "copy", Some(Operation::Transfer(_)) => "transfer", Some(Operation::Undefined) => "undefined-method", _ => "triangle" }, 0, 0, 0),
                 |d| ("encoded-draw", d._storage.resource, d._storage.address, d.command));
             if self.recent.len() == 16 { self.recent.pop_front(); }
             self.recent.push_back(RequestTrace { tag: request.tag, channel: context, epoch, caller, sequence,
                 kind, target: request.resource, frame, address, command });
         }
-        self.pending.push_back(Sent { request, identity: Some(identity) });
+        self.pending.push_back(Sent { request, identity: Some(identity), answer: None });
         if let Err(error) = result.and_then(|()| self.queue.publish(sequence)) {
             self.first_error.get_or_insert(error);
             self.fault = true;
@@ -201,10 +215,15 @@ impl Device {
     pub fn reap(&mut self) -> Reap {
         if self.resetting.is_some() { return Reap::Empty; }
         if self.fault { return Reap::Fault; }
-        if let Err(reason) = self.channel.healthy() {
+        // Handle an attributed event before checking health or sampling
+        // earlier work on the channel. IRQ top halves do not call this reaper.
+        if let Err(reason) = self.retire_error_trap() {
             self.first_error.get_or_insert(reason);
             self.fault = true;
             return Reap::Fault;
+        }
+        if let Err(reason) = self.channel.healthy() {
+            return self.retry_error_trap(reason);
         }
         let Some(front) = self.pending.front() else { return Reap::Empty };
         let Some(identity) = front.identity else {
@@ -215,9 +234,7 @@ impl Device {
         let mut sample = match self.channel.sample(identity.sequence) {
             Ok(sample) if sample.healthy => sample,
             result => {
-                self.first_error.get_or_insert(result.err().unwrap_or("native completion binding lost"));
-                self.fault = true;
-                return Reap::Fault;
+                return self.retry_error_trap(result.err().unwrap_or("native completion binding lost"));
             }
         };
         // No caller fence, constant success tag, GET or host reference alone
@@ -229,19 +246,24 @@ impl Device {
                 // drain with the same channel/epoch. No control flag certifies it.
                 let drain = match self.channel.transfer_drain(identity.sequence) {
                     Ok(sample) if sample.healthy => sample,
-                    _ => { self.fault = true; return Reap::Fault; }
+                    result => return self.retry_error_trap(result.err().unwrap_or("native transfer binding lost")),
                 };
                 let Some(completed) = identity.complete(drain) else { return Reap::Empty };
                 // Re-read after the terminal release, rather than keeping an echo
                 // sampled while the CE was still writing this slot.
                 sample = match self.channel.sample(identity.sequence) {
                     Ok(sample) if sample.healthy => sample,
-                    _ => { self.fault = true; return Reap::Fault; }
+                    result => return self.retry_error_trap(result.err().unwrap_or("native transfer binding lost")),
                 };
                 completed
             }
             None => return Reap::Empty,
         };
+        if matches!(front.request.operation, Some(Operation::Undefined)) && front.answer.is_none() {
+            self.first_error.get_or_insert("undefined method completed without a native trap");
+            self.fault = true;
+            return Reap::Fault;
+        }
         #[cfg(target_os = "none")]
         if front.request.scanout && !super::ce::console_state().is_some_and(|(_,_,bound,_)| bound) {
             self.first_error.get_or_insert("native present binding lost");
@@ -252,8 +274,33 @@ impl Device {
         if self.queue.complete(identity.sequence).is_err() { self.fault = true; return Reap::Fault; }
         let sent = self.pending.pop_front().unwrap();
         Reap::Done(Done { tag: sent.request.tag, fence: Some(identity.caller),
-            native_fence: Some(u64::from(identity.sequence)), answer: gpu_abi::gk208::SUCCESS,
+            native_fence: Some(u64::from(identity.sequence)), answer: sent.answer.unwrap_or(gpu_abi::gk208::SUCCESS),
             echoed: u64::from(sample.sequence), fenced: true })
+    }
+    // A trap can arrive between capture and the health/completion MMIO reads.
+    // Acknowledging that attributed event defers sampling to the next poll;
+    // other health failures retain the original confirmed-reset path.
+    fn retry_error_trap(&mut self, reason: &'static str) -> Reap {
+        match self.retire_error_trap() {
+            Ok(true) => Reap::Empty,
+            result => {
+                self.first_error.get_or_insert(result.err().unwrap_or(reason));
+                self.fault = true;
+                Reap::Fault
+            }
+        }
+    }
+    fn retire_error_trap(&mut self) -> Result<bool, &'static str> {
+        let Some(trap) = self.channel.error_trap()? else { return Ok(false); };
+        let (context, epoch) = self.channel.identity();
+        let sent = self.pending.iter_mut().find(|sent| {
+            matches!(sent.request.operation, Some(Operation::Undefined)) && sent.answer.is_none()
+                && sent.identity.is_some_and(|i| i.context == context && i.epoch == epoch
+                    && trap.instance == i.context && trap.sequence == i.sequence)
+        }).ok_or("unattributed PGRAPH illegal method; backing retained")?;
+        self.channel.acknowledge_error(trap)?;
+        sent.answer = Some(trap.status);
+        Ok(true)
     }
     pub fn has_room(&self, segments: usize) -> bool {
         !self.needs_reset() && self.resetting.is_none() && segments <= 4

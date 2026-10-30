@@ -1442,3 +1442,12 @@ pub(crate) fn target(id: u32, format: u32) -> Option<Target> {
     })
     .ok()
 }
+
+/// Native device-error control: validate logical context residency before the
+/// worker assigns a sequence and publishes the A197 undefined method.
+#[cfg(target_os = "none")]
+pub(crate) fn undefined_command(tag: crate::gpu::dev::Tag, ctx: u32, fence: u64)
+    -> Option<super::adapter::Request> {
+    super::resource::context_id(ctx)?;
+    super::adapter::Request::undefined_command(tag, ctx, fence)
+}

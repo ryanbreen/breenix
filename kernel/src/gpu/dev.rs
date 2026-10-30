@@ -326,7 +326,11 @@ pub fn transfer_to_host(tag: Tag, ctx: u32, fence: u64, id: u32, backing: Arc<Pa
 }
 
 pub fn undefined_command(tag: Tag, ctx: u32, fence: u64) -> Option<Request> {
-    match backend() { backend::SVGA3D_DX => svga::undefined_command(tag, ctx, fence).map(Request::Svga), backend::VIRGL => Some(Request::Virgl(virgl::undefined_command(tag, ctx, fence))), _ => None }
+    match backend() {
+        #[cfg(target_arch = "x86_64")]
+        backend::GK208 => crate::gk208::encode::undefined_command(tag, ctx, fence).map(Request::Gk208),
+        backend::SVGA3D_DX => svga::undefined_command(tag, ctx, fence).map(Request::Svga),
+        backend::VIRGL => Some(Request::Virgl(virgl::undefined_command(tag, ctx, fence))), _ => None }
 }
 
 pub fn submit_virgl(tag: Tag, ctx: u32, fence: Option<u64>, words: WordBuf) -> Request {

@@ -1458,6 +1458,12 @@ mod native {
                 queued_put: Some(self.put) };
             monitor.snapshot().map(|_| ())
         }
+        pub(crate) fn error_trap(&self) -> Result<Option<super::super::error::Trap>, &'static str> {
+            super::super::error::capture(&mut ErrorIo(Registers(self.registers)))
+        }
+        pub(crate) fn acknowledge_error(&mut self, trap: super::super::error::Trap) -> Result<(), &'static str> {
+            super::super::error::acknowledge(&mut ErrorIo(Registers(self.registers)), trap)
+        }
         /// True only after USERD GP_PUT publishes this sequence to the engine.
         pub(crate) fn published(&self, sequence: u32) -> bool { self.put == sequence }
         pub(crate) fn publish(
@@ -1474,6 +1480,7 @@ mod native {
                         s.context.space().directory.range.start,s.report.identity.instance,s.report.identity.epoch))?;
                     crate::gk208::copy::encode_plan(plan,report_va,s.report.identity.epoch,sequence)?
                 },
+                Operation::Undefined => super::super::error::commands(report_va, s.report.identity.epoch, sequence)?,
                 Operation::Draw(mut draw) => {
                     draw.report_va = report_va;
                     draw.epoch = s.report.identity.epoch;
@@ -1699,6 +1706,11 @@ mod native {
             }
             Ok(())
         }
+    }
+    struct ErrorIo(Registers);
+    impl super::super::error::Io for ErrorIo {
+        fn read(&mut self, address: usize) -> u32 { self.0.read(address) }
+        fn write(&mut self, address: usize, value: u32) { self.0.write(address, value); }
     }
     struct Monitor<'a> {
         session: &'a Session,

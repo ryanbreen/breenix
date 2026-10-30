@@ -106,6 +106,7 @@ pub mod channel;
 pub mod context;
 pub mod ctxctl;
 pub mod draw;
+pub mod error;
 pub mod firmware;
 pub mod shaders;
 pub mod tables;
