@@ -173,7 +173,6 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
             for p in POINT_TABLE.iter() {
                 p.disarm();
             }
-            #[cfg(target_arch = "aarch64")]
             // A case's measurements start clean: the IRQ-masked gauges restart at 0.
             crate::tracing::providers::gpu::reset_irq_masked();
             crate::tracing::providers::window::reset_irq_masked();
