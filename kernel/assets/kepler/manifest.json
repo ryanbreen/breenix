@@ -143,19 +143,19 @@
       "sha256": "7d645cc2bf9ca77dc6120056b5825b64a2afc63f18f1283d52bcad277befa372"
     },
     "pipeline-bitmap_text.asm": {
-      "bytes": 13278,
+      "bytes": 13476,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "cf957e7cc0c07f9d370c85b36ed683af5d766cb5e1c17521c0ad735a660f9626"
+      "sha256": "b966add4cdfad7f387e4b7784511cb03707608e47a11522ee1d23850928a7d27"
     },
     "pipeline-bitmap_text.bin": {
-      "bytes": 1848,
+      "bytes": 1880,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "825d2d949906fabd3a0b1bc500e4fd0fd5f517478bb0b4cabf4f51f6faaf6b60"
+      "sha256": "2c3987f85e10ca2bc03ddd86921454f2058eb5e353a3f90d507ac7d382938d7d"
     },
     "pipeline-bitmap_text.json": {
       "bytes": 358,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "10caea05efedff162abb839ad58d58c6434dd6308acbff0065489fe69877287f"
+      "sha256": "5421ad11d2326cba68b1821fea4254ee27705b2cbc62e1116523a7a3a6c274d5"
     },
     "pipeline-bitmap_text.sph": {
       "bytes": 80,
@@ -163,19 +163,19 @@
       "sha256": "5c81caff8fffd19d5062678601a61b98bc6ae1c585dcedc42933dee308cb0eae"
     },
     "pipeline-box_filter.asm": {
-      "bytes": 24605,
+      "bytes": 25177,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "b69df110f9f37cb006ee847a10be6c078b2fdffeb1075c30dd60a19de9796ce3"
+      "sha256": "7225b2ef7f37a0dc82a5c2fd4c70e767059779c17da9bb76463f3a4f74375f23"
     },
     "pipeline-box_filter.bin": {
-      "bytes": 3504,
+      "bytes": 3600,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "741611eebd2e793f239a4cb42b488cb2658cc30f0c5535f66a2f3633d58448ff"
+      "sha256": "6330d3548d72542c424801ab8d9e680cc157833aa7db8f90e786ff6ad4576160"
     },
     "pipeline-box_filter.json": {
       "bytes": 358,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "74f6dda43721eab58ab077cbe391c727bb2bd4ba3880273683104ee11f991b15"
+      "sha256": "f76f5141a210d5e2b7f834f6b0b230b44fa2d8c30499d81b6b23771490cb470e"
     },
     "pipeline-box_filter.sph": {
       "bytes": 80,
@@ -243,19 +243,19 @@
       "sha256": "7d645cc2bf9ca77dc6120056b5825b64a2afc63f18f1283d52bcad277befa372"
     },
     "pipeline-copy_scaled.asm": {
-      "bytes": 9415,
+      "bytes": 9503,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "81bb27dac60129e55d7fc9d4934c3268a5080f0f351cc31d696bc906370f2a75"
+      "sha256": "8c7dab0ed034e1d9eb63d06e4d606e4a7943fa7548f36b0220261b05c77e1296"
     },
     "pipeline-copy_scaled.bin": {
-      "bytes": 1296,
+      "bytes": 1312,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "b74987eb56bfa3019d4bb9a1edbd1efd3d4e3bff477b4242fb022d9b792e0c34"
+      "sha256": "e44b8553fe86552c416e1b426442917bc055891bce1d1feb16d02c1d12dc4abd"
     },
     "pipeline-copy_scaled.json": {
       "bytes": 358,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "759cd0e212174cd950fb0688aa216388cb496d0e679172f4d8cdf4b14acbc9cd"
+      "sha256": "5ff4865c034de65ec6800f6804aeff21f665279c97347b56d925e79476cf6240"
     },
     "pipeline-copy_scaled.sph": {
       "bytes": 80,
@@ -283,19 +283,19 @@
       "sha256": "5c81caff8fffd19d5062678601a61b98bc6ae1c585dcedc42933dee308cb0eae"
     },
     "pipeline-coverage_spans.asm": {
-      "bytes": 113947,
+      "bytes": 111876,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "aaa0d0864be6a4182f02847e62469f5dce10351fff7750fa4b06df301e02bc67"
+      "sha256": "2a7b574e88fcc8ad70c547a0fdd00eac16781d85367bd27ed6cffb53b98e7059"
     },
     "pipeline-coverage_spans.bin": {
-      "bytes": 15648,
+      "bytes": 15392,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "78b1a07691429cc14d08ff9fc080dfb26f59e275496f3bb00ff6ab879cee4e61"
+      "sha256": "aac7886e2a45fe89d78533e0dab85c4422db87891368b249eb0d9c3b43ad482e"
     },
     "pipeline-coverage_spans.json": {
       "bytes": 359,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "9d81c294b666a2b46940bf4c6afcd18a4c01137674036ed85da1245ea7f746ad"
+      "sha256": "89aa29b6f5f3642b1b5d63933b7b3ac809c07afe8770ed77e8a585198c9a5501"
     },
     "pipeline-coverage_spans.sph": {
       "bytes": 80,
@@ -343,19 +343,19 @@
       "sha256": "5c81caff8fffd19d5062678601a61b98bc6ae1c585dcedc42933dee308cb0eae"
     },
     "pipeline-nearest_scaled.asm": {
-      "bytes": 7681,
+      "bytes": 7769,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "a75df22cbb0fbd49fe04f3510207b8baa4efb08508b0a08286bcf72bcd851084"
+      "sha256": "501a74faba7e89f54318ebbb6824f24358b192b5e686557f2f35c8558cecb39f"
     },
     "pipeline-nearest_scaled.bin": {
-      "bytes": 1072,
+      "bytes": 1088,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "b7514f9c6f56282ad096dc573edc90c27b0c1b9d629233b4136fcbe227fc4501"
+      "sha256": "1f2a5ef035838f786cbb4097c856d93040dd3d585a12331c2a5e9bec60c85e07"
     },
     "pipeline-nearest_scaled.json": {
       "bytes": 358,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "5cb056d6b0ff45b5b50c7dadfc05e4f75fee6a3b60e3f73a3599ed1e696ef18e"
+      "sha256": "72fae514e2bdf1811c440f01c5a5d45c8cbf352d31baa00eeb5d1b0f74232f86"
     },
     "pipeline-nearest_scaled.sph": {
       "bytes": 80,
@@ -443,19 +443,19 @@
       "sha256": "15203e376bb888a2caaca69f60db03c7d328b9b9abfb730b0a7f77689203b542"
     },
     "pipeline-triangle.asm": {
-      "bytes": 51178,
+      "bytes": 51289,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "8443e785dd22d5494b017a37251a5f04e4a1bd23153004dde33286668542b2ff"
+      "sha256": "43afc7b0c135d58d70571d29ad8f9a64b17b6a3cd54200b8ae116798409c06db"
     },
     "pipeline-triangle.bin": {
-      "bytes": 6976,
+      "bytes": 6992,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "c63f21ba6a29ae723a5e0cfeff0b63a353374e16d87032ff984d960e6eb73b71"
+      "sha256": "0b27c63adff44a75eaa46cd162602b27d0ff2bede9554b7b492125d17f02208d"
     },
     "pipeline-triangle.json": {
       "bytes": 357,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "956b48837eb5b806efa8af398e756c1d33a21cd01a7c691f77b41b1a326e7df8"
+      "sha256": "62928e987665e1c45a8ba3c9d7e3eef887b2dec58e9b45fc492a5703305a7ade"
     },
     "pipeline-triangle.sph": {
       "bytes": 80,
@@ -1036,7 +1036,7 @@
     "libs/gpu-abi/src/lib.rs": "33169976dcf1fb04fbeb92686bf5e1c72460fd74393e419344fc47c58eb0fd6a",
     "tools/kepler/CMakeLists.txt": "bb493a774b8cf0dde02a2e0bcd1829fa2bfbba2ef89b560b70e53a29734e941c",
     "tools/kepler/assets.py": "f436fa9cc4bf631ef4f6e6d5359a93694fc345f2dcef0be5699ee22f1856969f",
-    "tools/kepler/compile.cpp": "347ddc864ed379fd925ce8ccacb1d6fa887b8012bdebbc159111a9017deba5a4"
+    "tools/kepler/compile.cpp": "7860bb4d115e459501562d16c38eb7e67a09a5fd900b07b6c6a49c667df810d2"
   },
   "schema": 1,
   "shaders": [
@@ -1107,7 +1107,7 @@
       "metadata": {
         "builtin_calls": 0,
         "chipset": 262,
-        "code_bytes": 1296,
+        "code_bytes": 1312,
         "constant_buffer_bytes": 104,
         "constant_buffer_slot": 0,
         "fixups_applied": true,
@@ -1141,7 +1141,7 @@
       "metadata": {
         "builtin_calls": 0,
         "chipset": 262,
-        "code_bytes": 1072,
+        "code_bytes": 1088,
         "constant_buffer_bytes": 104,
         "constant_buffer_slot": 0,
         "fixups_applied": true,
@@ -1175,7 +1175,7 @@
       "metadata": {
         "builtin_calls": 0,
         "chipset": 262,
-        "code_bytes": 3504,
+        "code_bytes": 3600,
         "constant_buffer_bytes": 104,
         "constant_buffer_slot": 0,
         "fixups_applied": true,
@@ -1311,11 +1311,11 @@
       "metadata": {
         "builtin_calls": 0,
         "chipset": 262,
-        "code_bytes": 15648,
+        "code_bytes": 15392,
         "constant_buffer_bytes": 112,
         "constant_buffer_slot": 0,
         "fixups_applied": true,
-        "gprs": 62,
+        "gprs": 34,
         "input_slots": [
           {
             "address": 112,
@@ -1345,7 +1345,7 @@
       "metadata": {
         "builtin_calls": 0,
         "chipset": 262,
-        "code_bytes": 1848,
+        "code_bytes": 1880,
         "constant_buffer_bytes": 104,
         "constant_buffer_slot": 0,
         "fixups_applied": true,
@@ -1549,7 +1549,7 @@
       "metadata": {
         "builtin_calls": 0,
         "chipset": 262,
-        "code_bytes": 6976,
+        "code_bytes": 6992,
         "constant_buffer_bytes": 96,
         "constant_buffer_slot": 0,
         "fixups_applied": true,

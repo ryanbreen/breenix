@@ -1384,16 +1384,3 @@ The crossing-table packing, constants and snapshot bounds follow Breenix's
 shared VirGL encoder under PolyForm Noncommercial 1.0.0. The upload in
 kernel/src/gpu/gk208/resource.rs reuses its existing attributed native Layout
 and VM/PRAMIN access; no additional external source or shader is imported.
-
-GT 710 combined control-depth budget (milestone 8.4 repair)
-----------------------------------------------------------
-Consumers: tools/kepler/compile.cpp and tests/gt710_probe_flow_test.py.
-The existing pinned Mesa 24.3.4 nvc0_program.c:723-730 (MIT, Copyright
-2010 Christoph Bumiller) describes a conservative two-entry control-depth
-budget against 16 entries before local spill storage. The native frontend
-reserves loop depth when limiting explicit joins in its no-CRS catalogue.
-The file-local MIT grant was checked; its complete notice remains in the
-frontend header. NVIDIA open-gpu-doc cla097sph.h:437 (MIT, pinned above)
-defines the fragment header's CRS size field used by the host check.
-This host budget does not establish the cause of a device stall; the
-shared suite on the card supplies execution and pixel acceptance.
