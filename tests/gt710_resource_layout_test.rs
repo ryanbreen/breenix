@@ -4,6 +4,7 @@ extern crate alloc;
 #[path = "../kernel/src/gpu/gk208/memory.rs"] mod memory;
 #[path = "../kernel/src/gpu/gk208/vm.rs"] mod vm;
 #[path = "../kernel/src/gpu/gk208/resource.rs"] mod resource;
+#[path = "../kernel/src/gpu/gk208/copy.rs"] mod copy;
 use memory::allocator::Allocator;
 use resource::{Layout, Resources};
 use std::{collections::BTreeMap, sync::Arc};
@@ -289,4 +290,48 @@ fn empty_tables_are_reclaimed_while_console_and_its_alias_remain_live() {
     assert_eq!(r.vram_bytes(),charge);
     assert_eq!(io.words[&(directory+high*8)],0,"channel alias must detach before table reuse");
     assert!(r.pte_address(high*(1<<27)).is_none());
+}
+
+#[test]
+fn span_image_contents_are_never_written_through_pramin() {
+    let mut a=Allocator::new(1<<30,&[]).unwrap(); let mut io=Model::default();
+    let mut r=Resources::<Vec<u8>>::new();
+    let bytes: Vec<_>=(0..64*17*4).map(|i| (i*37) as u8).collect();
+    let id=r.upload_spans(&mut a,&mut io,64,17,&bytes,Arc::new(())).unwrap();
+    let va=r.address(id).unwrap();
+    let physical=(io.words[&r.pte_address(va).unwrap()] & 0xfffffff0)<<8;
+    let layout=r.layout(id).unwrap();
+    assert!(io.words.range(physical..physical+layout.allocation_bytes()).next().is_none(),
+        "CPU wrote into the kind-0xfe span image instead of CE uploading it");
+}
+
+#[test]
+fn span_ce_upload_geometry_matches_the_sampled_image() {
+    let mut a=Allocator::new(1<<30,&[]).unwrap(); let mut io=Model::default();
+    let mut r=Resources::<Vec<u8>>::new();
+    for (width,height) in [(16384,1),(64,17),(128,129)] {
+        let bytes=vec![7;width as usize*height as usize*4];
+        let id=r.upload_spans(&mut a,&mut io,width,height,&bytes,Arc::new(())).unwrap();
+        let l=r.layout(id).unwrap(); let address=r.address(id).unwrap();
+        let size=(u64::from(l.pitch)*u64::from(height)).next_multiple_of(4096);
+        let pages:Vec<_>=(0..size/4096).map(|i|0x12345000+i*4096).collect();
+        let plan=r.span_upload_plan(&mut a,&mut io,id,Arc::new(vec![0;size as usize]),&pages,size).unwrap();
+        let words=copy::encode_plan(plan,0x1000,17,23).unwrap();
+        let mut packets=BTreeMap::new();let mut at=0;
+        while at<words.len() {
+            let h=words[at];let n=((h>>16)&0x1fff) as usize;
+            packets.insert((h&0x1fff)*4,words[at+1..at+1+n].to_vec());at+=n+1;
+        }
+        // A197's TIC encodes tile_mode in word 2 and dimensions in words 4/5.
+        // The sampleable Target returned by span_staging takes these from l.
+        let tic=[0x2c692488,address as u32,(address>>32) as u32|0x50005000|(l.tile_mode<<18),
+            0x00300000,0x80000000|width,0x10000|height,0x03000000,0];
+        let ce=&packets[&0x70c];
+        assert_eq!(ce,&[0x1000|((tic[2]>>18)&0x70),tic[4]&0xffff,tic[5]&0xffff,1,0,0]);
+        assert_eq!(1 << ((ce[0]>>4)&7),l.block_height);
+        let transfer=&packets[&0x400];
+        assert_eq!((transfer[2],transfer[3]),((address>>32) as u32,address as u32));
+        assert_eq!(&transfer[4..],&[l.pitch,0,width,height]);
+        r.unref(id).unwrap();r.collect(&mut a,&mut io).unwrap();
+    }
 }

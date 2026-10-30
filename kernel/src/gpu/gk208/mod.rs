@@ -98,6 +98,8 @@ mod board;
 mod ddc;
 mod edid;
 mod bulk;
+#[cfg(feature = "gt710_core_probe")]
+pub(crate) mod timing;
 mod memory;
 mod lock;
 mod inventory;
@@ -114,6 +116,7 @@ pub(crate) mod copy;
 mod ce;
 pub(crate) use ce::readback::{transfer,region as copy_region,identities as transfer_identities};
 pub(crate) use ce::readback::console as console_readback;
+pub(crate) use ce::readback::span_upload;
 pub(crate) use ce::readback::{set_scanout,flush_resource};
 mod queue;
 mod recovery_policy;
@@ -180,6 +183,15 @@ impl memory::Access for Registers {
     }
     fn write(&mut self, reg: usize, value: u32) {
         Registers::write(self, reg, value)
+    }
+    fn write_words(&mut self, reg: usize, words: &[u32]) {
+        for (i, &word) in words.iter().enumerate() {
+            // SAFETY: Pramin validated this contiguous span inside BAR0's aperture.
+            unsafe { ((self.0 + reg + i * 4) as *mut u32).write_volatile(word); }
+        }
+        // Drain the posted data before with_pramin restores the selector, and
+        // before the publisher flushes BAR traffic and rings USERD GP_PUT.
+        if !words.is_empty() { let _ = self.read(reg + (words.len() - 1) * 4); }
     }
 }
 impl rom::Access for Registers {
@@ -546,6 +558,8 @@ fn display_memory(
 }
 
 pub mod resource;
+#[cfg(feature = "gt710_core_probe")]
+mod spans_diagnostic;
 pub mod adapter;
 pub mod caps;
 

@@ -182,6 +182,11 @@ pub trait Access {
     }
     fn read(&mut self, reg: usize) -> u32;
     fn write(&mut self, reg: usize, value: u32);
+    /// A contiguous aperture span, drained before return. Register models may
+    /// retain individual writes; hardware can drain posted writes once per span.
+    fn write_words(&mut self, reg: usize, words: &[u32]) {
+        for (i, &word) in words.iter().enumerate() { self.write(reg + i * 4, word); }
+    }
 }
 pub struct Pramin<'a, A: Access> {
     access: &'a mut A,
@@ -223,6 +228,28 @@ impl<'a, A: Access> Pramin<'a, A> {
         self.access.with_pramin(|access| {
             let r = Self::window(access, total, address)?;
             access.write(r, value);
+            Ok(())
+        })
+    }
+    /// Publish at most 16 KiB under one selector hold. Validate the complete
+    /// extent first, then select once per 1 MiB bank and drain each data span.
+    pub fn write_words(&mut self, address: u64, words: &[u32]) -> Result<(), &'static str> {
+        if words.is_empty() { return Ok(()); }
+        let bytes = (words.len() as u64).checked_mul(4).ok_or("PRAMIN span overflow")?;
+        if address & 3 != 0 || bytes > 16384
+            || address.checked_add(bytes).is_none_or(|end| end > self.total) {
+            return Err("PRAMIN span outside bound or VRAM");
+        }
+        let total = self.total;
+        self.access.with_pramin(|access| {
+            let mut done = 0;
+            while done < words.len() {
+                let at = address + done as u64 * 4;
+                let count = words.len().saturating_sub(done).min(((0x100000 - (at & 0xfffff)) / 4) as usize);
+                let reg = Self::window(access, total, at)?;
+                access.write_words(reg, &words[done..done + count]);
+                done += count;
+            }
             Ok(())
         })
     }

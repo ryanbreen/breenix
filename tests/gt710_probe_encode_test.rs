@@ -132,9 +132,42 @@ fn profile_vectors_bind_per_routine_program_constants_and_clipped_rectangle() {
     }
 }
 #[test]
-fn deferred_routines_refuse_at_the_probe_command() {
-    for routine in (12..=17).chain(20..=24) {
-        let w=command(routine,0,&[]);
-        assert_eq!(encode::pipeline_refusal(w.as_slice()),Some(stream::Refusal {index:2,error:stream::error::BAD_PIPELINE}));
+fn all_probe_routines_bind_their_own_code_and_literal_constant_words() {
+    let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../kernel/assets/kepler");
+    // Literal inputs within gpu-abi/src/probe.rs's per-routine domains.
+    let vectors: [&[u32]; 25] = [
+        &[0xffffffff, 1], &[0x80000000, 1], &[0xffffffff, 0xffffffff],
+        &[1, 31], &[0x80000000, 31], &[0x80000000, 31],
+        &[0x80000000, 0x7fffffff], &[0xffffffff, 0], &[65025],
+        &[0xffffffff, 0xffffffff], &[0xffffffff, 0xffffffff, 0xffffffff],
+        &[0xffffffff, 0xffffffff, 0xffffffff, 0, 0, 0x80000000],
+        &[0x3f800001, 0x33800000], &[0x3f800001, 0x3f800000],
+        &[0x800000, 0x3f000000], &[0xcf000000], &[0xbdcccccd],
+        &[0xbf800000, 0], &[], &[],
+        &[0x7fffffff, 0x80000000, 0x80000000, 0x80000000, 0x7fffffff],
+        &[0x80000001, 0x80000000, 0x80000000, 0x80000000, 0],
+        &[0x80000000, 0xbfffffff, 0x80000000, 0x80000000, 0x7fffffff, 0x7fffffff, 0x7fffffff],
+        &[0xfffffffe, 0xfffffffe, 0x80000000, 0x80000000, 0x80000000, 0x7fffffff, 0x7fffffff, 0x80000000],
+        &[0, 0, 0x80000000, 0, 0x7fffffff, 0],
+    ];
+    for (routine, inputs) in vectors.into_iter().enumerate() {
+        let routine = routine as u32;
+        let w = command(routine, 0, inputs);
+        assert_eq!(encode::pipeline_refusal(w.as_slice()), None, "routine {routine}");
+        let f = encode::translate(w.as_slice(), &View(format::B8G8R8A8)).unwrap();
+        let p = packets(&f.chunks[0].words);
+        let program = &p.iter().find(|(m,_)| *m == 0x2140).unwrap().1;
+        let offset = program[1] as usize;
+        for (ext, at) in [("sph", 0x100000 + offset), ("bin", 0x100000 + offset + 80)] {
+            let bytes = std::fs::read(assets.join(format!("probe-int-{routine:02}.{ext}"))).unwrap();
+            assert_eq!(&f.data[at..at + bytes.len()], bytes, "routine {routine} {ext}");
+        }
+        let cb = &p.iter().find(|(m,_)| *m == 0x2380).unwrap().1;
+        let mut expected = [0; 20];
+        expected[..inputs.len()].copy_from_slice(inputs);
+        expected[17] = routine;
+        let bytes: Vec<_> = expected.into_iter().flat_map(u32::to_le_bytes).collect();
+        assert_eq!(&f.data[cb[2] as usize..cb[2] as usize + 80], bytes, "routine {routine}");
     }
 }

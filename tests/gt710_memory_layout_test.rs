@@ -219,3 +219,39 @@ fn dma_disabled_post_status_preserves_physical_page_zero() {
         d.regs.insert(0x610490+i*16,0x40000088);
     }
 }
+
+#[test]
+fn command_spans_select_each_bank_once_and_validate_before_any_write() {
+    struct Counted { bank:u32, selects:usize, data:BTreeMap<u64,u32>, holds:usize, batches:usize }
+    impl memory::Access for Counted {
+        fn with_pramin<R>(&mut self,f:impl FnOnce(&mut Self)->R)->R {self.holds+=1;f(self)}
+        fn read(&mut self,reg:usize)->u32 {assert_eq!(reg,0x1700);self.selects+=1;self.bank}
+        fn write(&mut self,reg:usize,v:u32) {
+            if reg==0x1700 {self.bank=v;} else {
+                assert!((0x700000..0x800000).contains(&reg));
+                self.data.insert((u64::from(self.bank)<<16)+(reg-0x700000) as u64,v);
+            }
+        }
+        fn write_words(&mut self,reg:usize,words:&[u32]) {
+            self.batches+=1;
+            for (i,&v) in words.iter().enumerate(){self.write(reg+i*4,v);}
+        }
+    }
+    let mut io=Counted {bank:0x1234,selects:0,data:BTreeMap::new(),holds:0,batches:0};
+    let values:Vec<u32>=(0..1024).map(|n|n^0x8badf00d).collect();
+    {
+        let mut p=memory::Pramin::new(&mut io,32<<20);
+        // Cross a 1 MiB window boundary without changing the physical words.
+        p.write_words(0x1ff800,&values).unwrap();
+        assert!(p.write_words((32<<20)-4,&[1,2]).is_err());
+        assert!(p.write_words(3,&[1]).is_err());
+        assert!(p.write_words(u64::MAX-3,&[1,2]).is_err());
+        assert!(p.write_words(0,&vec![1;4097]).is_err());
+    }
+    assert_eq!(io.bank,0x1234);
+    assert_eq!(io.holds,2,"one hold for the span, one for Pramin drop");
+    assert!(io.selects<=6,"selector reads must scale with banks, not words: {}",io.selects);
+    assert_eq!(io.batches,2);
+    assert_eq!(io.data.len(),values.len(),"invalid extents must not partially publish");
+    for (i,v) in values.iter().enumerate(){assert_eq!(io.data[&(0x1ff800+i as u64*4)],*v);}
+}

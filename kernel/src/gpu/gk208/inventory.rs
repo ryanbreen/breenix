@@ -50,7 +50,13 @@ pub(super) fn digest(regs:&mut Registers,total:u64,ranges:&[Range])->Result<(u64
 }
 pub(super) fn words(regs:&mut Registers,total:u64,address:u64,words:&[u32])->Result<(),&'static str> {
     let mut p=memory::Pramin::new(regs,total);
-    for (i,word) in words.iter().enumerate() {p.write(address+i as u64*4,*word)?;}
+    let bytes = (words.len() as u64).checked_mul(4).ok_or("PRAMIN upload overflow")?;
+    if address & 3 != 0 || address.checked_add(bytes).is_none_or(|end| end > total) {
+        return Err("PRAMIN upload outside VRAM");
+    }
+    for (i, band) in words.chunks(4096).enumerate() {
+        p.write_words(address + i as u64 * 16384, band)?;
+    }
     Ok(())
 }
 fn faults(regs:&mut Registers)->(u32,String) {

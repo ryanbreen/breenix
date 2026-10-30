@@ -291,3 +291,144 @@ pub const PROBE_INT_19_CODE: &[u8] =
     include_bytes!("../../../../assets/kepler/probe-int-19.bin");
 pub const PROBE_INT_19_GPRS: u32 =
     asset_gprs(include_str!("../../../../assets/kepler/probe-int-19.json"));
+pub const PROBE_INT_12_OFFSET: usize = 0x4f30;
+pub const PROBE_INT_12_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-12.sph");
+pub const PROBE_INT_12_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-12.bin");
+pub const PROBE_INT_12_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-12.json"));
+pub const PROBE_INT_13_OFFSET: usize = 0x63b0;
+pub const PROBE_INT_13_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-13.sph");
+pub const PROBE_INT_13_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-13.bin");
+pub const PROBE_INT_13_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-13.json"));
+pub const PROBE_INT_14_OFFSET: usize = 0x7830;
+pub const PROBE_INT_14_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-14.sph");
+pub const PROBE_INT_14_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-14.bin");
+pub const PROBE_INT_14_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-14.json"));
+pub const PROBE_INT_15_OFFSET: usize = 0x91b0;
+pub const PROBE_INT_15_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-15.sph");
+pub const PROBE_INT_15_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-15.bin");
+pub const PROBE_INT_15_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-15.json"));
+pub const PROBE_INT_16_OFFSET: usize = 0x9430;
+pub const PROBE_INT_16_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-16.sph");
+pub const PROBE_INT_16_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-16.bin");
+pub const PROBE_INT_16_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-16.json"));
+pub const PROBE_INT_17_OFFSET: usize = 0x9730;
+pub const PROBE_INT_17_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-17.sph");
+pub const PROBE_INT_17_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-17.bin");
+pub const PROBE_INT_17_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-17.json"));
+pub const PROBE_INT_20_OFFSET: usize = 0x9930;
+pub const PROBE_INT_20_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-20.sph");
+pub const PROBE_INT_20_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-20.bin");
+pub const PROBE_INT_20_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-20.json"));
+pub const PROBE_INT_21_OFFSET: usize = 0x9eb0;
+pub const PROBE_INT_21_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-21.sph");
+pub const PROBE_INT_21_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-21.bin");
+pub const PROBE_INT_21_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-21.json"));
+pub const PROBE_INT_22_OFFSET: usize = 0xa6b0;
+pub const PROBE_INT_22_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-22.sph");
+pub const PROBE_INT_22_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-22.bin");
+pub const PROBE_INT_22_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-22.json"));
+pub const PROBE_INT_23_OFFSET: usize = 0xaeb0;
+pub const PROBE_INT_23_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-23.sph");
+pub const PROBE_INT_23_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-23.bin");
+pub const PROBE_INT_23_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-23.json"));
+pub const PROBE_INT_24_OFFSET: usize = 0xe2b0;
+pub const PROBE_INT_24_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/probe-int-24.sph");
+pub const PROBE_INT_24_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/probe-int-24.bin");
+pub const PROBE_INT_24_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/probe-int-24.json"));
+
+// Shared shape fragments reserved for milestone 8.4; admission follows separately.
+pub const PIPELINE_COVERAGE_SPANS_OFFSET: usize = 0xed30;
+pub const PIPELINE_COVERAGE_SPANS_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-coverage_spans.sph");
+pub const PIPELINE_COVERAGE_SPANS_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-coverage_spans.bin");
+pub const PIPELINE_COVERAGE_SPANS_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-coverage_spans.json"));
+pub const PIPELINE_LINE_OFFSET: usize = 0x129b0;
+pub const PIPELINE_LINE_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-line.sph");
+pub const PIPELINE_LINE_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-line.bin");
+pub const PIPELINE_LINE_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-line.json"));
+pub const PIPELINE_CIRCLE_FILL_OFFSET: usize = 0x13430;
+pub const PIPELINE_CIRCLE_FILL_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-circle_fill.sph");
+pub const PIPELINE_CIRCLE_FILL_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-circle_fill.bin");
+pub const PIPELINE_CIRCLE_FILL_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-circle_fill.json"));
+pub const PIPELINE_CIRCLE_OUTLINE_OFFSET: usize = 0x139b0;
+pub const PIPELINE_CIRCLE_OUTLINE_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-circle_outline.sph");
+pub const PIPELINE_CIRCLE_OUTLINE_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-circle_outline.bin");
+pub const PIPELINE_CIRCLE_OUTLINE_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-circle_outline.json"));
+pub const PIPELINE_ROUNDED_RECT_OFFSET: usize = 0x14230;
+pub const PIPELINE_ROUNDED_RECT_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-rounded_rect.sph");
+pub const PIPELINE_ROUNDED_RECT_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-rounded_rect.bin");
+pub const PIPELINE_ROUNDED_RECT_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-rounded_rect.json"));
+pub const PIPELINE_GRADIENT_V_OFFSET: usize = 0x14a30;
+pub const PIPELINE_GRADIENT_V_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-gradient_v.sph");
+pub const PIPELINE_GRADIENT_V_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-gradient_v.bin");
+pub const PIPELINE_GRADIENT_V_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-gradient_v.json"));
+pub const PIPELINE_TRIANGLE_OFFSET: usize = 0x161b0;
+pub const PIPELINE_TRIANGLE_HEADER: &[u8; 80] =
+    include_bytes!("../../../../assets/kepler/pipeline-triangle.sph");
+pub const PIPELINE_TRIANGLE_CODE: &[u8] =
+    include_bytes!("../../../../assets/kepler/pipeline-triangle.bin");
+pub const PIPELINE_TRIANGLE_GPRS: u32 =
+    asset_gprs(include_str!("../../../../assets/kepler/pipeline-triangle.json"));
+
+// Rounded to the code allocation unit after the final shape program.
+pub const CATALOGUE_CODE_SIZE: usize = 0x17e00;
+
+pub const SHAPE_PROGRAMS: &[(usize, &[u8; 80], &[u8], u32)] = &[
+    (PIPELINE_COVERAGE_SPANS_OFFSET, PIPELINE_COVERAGE_SPANS_HEADER, PIPELINE_COVERAGE_SPANS_CODE, PIPELINE_COVERAGE_SPANS_GPRS),
+    (PIPELINE_LINE_OFFSET, PIPELINE_LINE_HEADER, PIPELINE_LINE_CODE, PIPELINE_LINE_GPRS),
+    (PIPELINE_CIRCLE_FILL_OFFSET, PIPELINE_CIRCLE_FILL_HEADER, PIPELINE_CIRCLE_FILL_CODE, PIPELINE_CIRCLE_FILL_GPRS),
+    (PIPELINE_CIRCLE_OUTLINE_OFFSET, PIPELINE_CIRCLE_OUTLINE_HEADER, PIPELINE_CIRCLE_OUTLINE_CODE, PIPELINE_CIRCLE_OUTLINE_GPRS),
+    (PIPELINE_ROUNDED_RECT_OFFSET, PIPELINE_ROUNDED_RECT_HEADER, PIPELINE_ROUNDED_RECT_CODE, PIPELINE_ROUNDED_RECT_GPRS),
+    (PIPELINE_GRADIENT_V_OFFSET, PIPELINE_GRADIENT_V_HEADER, PIPELINE_GRADIENT_V_CODE, PIPELINE_GRADIENT_V_GPRS),
+    (PIPELINE_TRIANGLE_OFFSET, PIPELINE_TRIANGLE_HEADER, PIPELINE_TRIANGLE_CODE, PIPELINE_TRIANGLE_GPRS),
+];

@@ -98,6 +98,12 @@ fn send(d:&mut Device,caller:u64) {assert!(d.send(request(caller)).is_ok());}
 #[test] fn faulted_engine_never_returns_success() {
     let (mut d,s)=device();send(&mut d,9001);s.borrow_mut().release=1;s.borrow_mut().fault=true;
     assert!(d.needs_reset());assert!(matches!(d.reap(),Reap::Fault));assert_eq!(d.outstanding(),1);
+    assert_eq!(d.fault_reason(),Some("injected engine fault"),
+        "the health fast path must retain the producing error before reprobe reports it");
+    s.borrow_mut().fault=false;
+    assert!(d.needs_reset(),"a transient healthy read cannot clear the captured fault");
+    assert!(matches!(d.reap(),Reap::Fault));
+    assert_eq!(d.fault_reason(),Some("injected engine fault"));
 }
 #[test] fn four_in_flight_leave_no_room_and_caller_is_not_native_sequence() {
     let (mut d,s)=device();

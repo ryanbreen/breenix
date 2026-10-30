@@ -382,6 +382,35 @@ impl<B> Resources<B> {
         }
         result.map(|()| id)
     }
+    /// Reserve the caller-charged tiled span image. Its contents are populated
+    /// by span_upload_plan and a completed CE release before it is sampled.
+    pub fn upload_spans(&mut self, a: &mut Allocator, io: &mut impl Io,
+        width: u32, height: u32, bytes: &[u8], charge: Arc<dyn Send + Sync>,
+    ) -> Result<u32, &'static str> {
+        Layout::new(width, height, 4)?;
+        if !width.is_power_of_two() || bytes.is_empty() || bytes.len() % 4 != 0
+            || bytes.len() as u64 > u64::from(width) * u64::from(height) * 4 {
+            return Err("invalid native crossing upload");
+        }
+        match self.charged_staging(a, io, 1, width, height, charge) {
+            Ok(id) => Ok(id),
+            Err(e) => { let _ = self.collect(a, io); Err(e) }
+        }
+    }
+    /// Map the pinned linear source and describe the same tiled image the TIC
+    /// samples. No CPU aperture write is used for the image's contents.
+    pub fn span_upload_plan(&mut self, a: &mut Allocator, io: &mut impl Io,
+        id: u32, backing: Arc<B>, pages: &[u64], bytes: u64,
+    ) -> Result<super::copy::Plan, &'static str> {
+        let l = self.layout(id).ok_or("native crossing layout absent")?;
+        let image = super::copy::Image { address: self.address(id).ok_or("native crossing address absent")?,
+            width: l.width, height: l.height, texel_bytes: l.texel_bytes,
+            pitch: l.pitch, block_height: l.block_height, bytes: l.bytes };
+        self.attach(a, io, id, backing.clone(), pages, bytes)?;
+        let address = self.map_backing(a, io, id, &backing, pages, bytes)?;
+        super::copy::upload(image, super::copy::Linear { address, bytes, offset: 0, stride: l.pitch },
+            [0, 0, l.width, l.height])
+    }
     pub fn unref(&mut self, id: u32) -> Result<(), &'static str> {
         self.entries.get_mut(&id).ok_or("native resource absent")?.dropped = true;
         Ok(())
@@ -552,10 +581,83 @@ pub(crate) fn blend_staging(format: u32, width: u32, height: u32,
 /// Stop retaining a submission's snapshots. Device chunks still hold them if
 /// DMA has not ended; a failed collection keeps each entry and its reservation.
 #[cfg(target_os = "none")]
-pub(crate) fn retire_blend_staging(ids: [Option<u32>; 2], holds: &mut Vec<Hold>) {
+pub(crate) fn retire_blend_staging(ids: impl IntoIterator<Item = Option<u32>>, holds: &mut Vec<Hold>) {
     let _ = super::ce::with_resources(|r, a, io| {
         for id in ids.into_iter().flatten() { r.unref(id)?; }
         holds.clear();
         r.collect(a, io)
     });
+}
+
+/// Allocate and finish the crossing upload before exposing a sampleable target.
+#[cfg(target_os = "none")]
+pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + Sync>)
+    -> Result<(super::encode::Target, Hold), &'static str> {
+    #[cfg(feature = "gt710_core_probe")]
+    let preparing = super::timing::phase(101);
+    let bytes = data.width as usize * data.height as usize * 4;
+    if data.bytes.len() > bytes { return Err("oversized native packed spans"); }
+    let layout = Layout::new(data.width, data.height, 4)?;
+    let backing_bytes = layout.pitch as usize * data.height as usize;
+    let backing = Arc::new(crate::gpu::dma::Pages::new(backing_bytes.div_ceil(4096))
+        .ok_or("native crossing upload backing allocation")?);
+    backing.identify("native-spans-upload", 0, 0);
+    let row_bytes = data.width as usize * 4;
+    for (y, row) in data.bytes.chunks(row_bytes).enumerate() {
+        backing.write(y * layout.pitch as usize, row);
+    }
+    backing.maintain(0, backing_bytes, false);
+    let pages: Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
+    #[cfg(feature = "gt710_core_probe")]
+    drop(preparing);
+    #[cfg(feature = "gt710_core_probe")]
+    let mapping = super::timing::phase(102);
+    let (target, hold, plan) = super::ce::with_resources(|r, a, io| {
+        let id = r.upload_spans(a, io, data.width, data.height, &data.bytes, charge)?;
+        let layout = r.layout(id).ok_or("native crossing layout absent")?;
+        let target = super::encode::Target { id,
+            address: r.address(id).ok_or("native crossing address absent")?,
+            width: data.width, height: data.height, format: 1, tile_mode: layout.tile_mode };
+        match r.span_upload_plan(a, io, id, backing.clone(), &pages, backing.bytes() as u64) {
+            Ok(plan) => Ok((target, r.hold(id)?, plan)),
+            Err(error) => {
+                r.unref(id)?;
+                let _ = r.collect(a, io);
+                Err(error)
+            }
+        }
+    })?;
+    #[cfg(feature = "gt710_core_probe")]
+    drop(mapping);
+    let result = (|| {
+        #[cfg(feature = "gt710_core_probe")]
+        let _timing = super::timing::phase(103);
+        crate::gpu::native_spans_upload(target.id, plan, backing.clone())?;
+        #[cfg(feature = "gt710_core_probe")]
+        {
+        let expected = &data.bytes;
+        let images = crate::gpu::native_spans_readback(target.id, data.width, data.height, backing)?;
+        let mismatch = super::spans_diagnostic::compare(&expected, &images[0], &images[1])?;
+        use core::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let (offset, expected_byte, actual) = mismatch.map_or_else(
+            || (alloc::string::String::from("null"), alloc::string::String::from("null"), alloc::string::String::from("null")),
+            |(at,e,a)| (alloc::format!("{}",at),alloc::format!("{}",e),alloc::format!("{}",a)));
+        let text = alloc::format!("GT710_SPANS_V1 {{\"id\":{},\"resource\":{},\"width\":{},\"height\":{},\"bytes\":{},\"first_mismatch\":{},\"expected\":{},\"actual\":{},\"expected_sha256\":\"{}\",\"first_sha256\":\"{}\",\"second_sha256\":\"{}\"}}",
+            id,target.id,data.width,data.height,images[0].len(),offset,expected_byte,actual,
+            super::hash(&expected),super::hash(&images[0]),super::hash(&images[1]));
+        let digest = super::hash(text.as_bytes());
+        let bytes = text.len();
+        super::bulk::line(text)?;
+        crate::serial_println!("GT710_SPANS_BULK id={} bytes={} sha256={}",id,bytes,digest);
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let mut holds = alloc::vec![hold];
+        retire_blend_staging([Some(target.id)], &mut holds);
+        return Err(error);
+    }
+    Ok((target, hold))
 }

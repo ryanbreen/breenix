@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""Check the 8.3 catalogue assets and their embedded code layout."""
+"""Check the native catalogue assets and their embedded code layout."""
 import hashlib
 import json
 from pathlib import Path
 import re
 import unittest
 
+from gt710_sph_test import Fields, check
+
 ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / 'kernel/assets/kepler'
 PIPELINES = {'pipeline-over': 5, 'pipeline-over_straight': 6,
-             'pipeline-coverage': 7, 'pipeline-bitmap_text': 9}
-ROUTINES = tuple(range(12)) + (18, 19)
+             'pipeline-coverage': 7, 'pipeline-bitmap_text': 9,
+             'pipeline-coverage_spans': 8, 'pipeline-line': 10,
+             'pipeline-circle_fill': 11, 'pipeline-circle_outline': 12,
+             'pipeline-rounded_rect': 13, 'pipeline-gradient_v': 14,
+             'pipeline-triangle': 15}
+ROUTINES = tuple(range(25))
 PROGRAMS = list(PIPELINES) + [f'probe-int-{n:02}' for n in ROUTINES]
 
 
@@ -37,6 +43,30 @@ class CatalogueAssets(unittest.TestCase):
                     self.assertEqual(digest, manifest['files'][filename]['sha256'])
                     self.assertEqual(len(data), manifest['files'][filename]['bytes'])
                 self.assertEqual(entry['metadata'], json.loads((ASSETS / f'{name}.json').read_text()))
+                metadata = entry['metadata']
+                self.assertEqual(metadata['chipset'], 0x106)
+                self.assertEqual(metadata['stage'], 'fragment')
+                self.assertGreaterEqual(metadata['gprs'], 4)
+                self.assertLessEqual(metadata['gprs'], 255)
+                assembly = (ASSETS / f'{name}.asm').read_text()
+                registers = {int(n) for n in re.findall(r'\$r([0-9]+)\b', assembly)} - {255}
+                self.assertLess(max(registers), metadata['gprs'])
+                sph = (ASSETS / f'{name}.sph').read_bytes()
+                check(Fields(), sph, '2', (
+                    ('SPH_TYPE', 0, 2), ('VERSION', 0, 3), ('SHADER_TYPE', 0, 5),
+                    ('MRT_ENABLE', 0, 1),
+                    ('KILLS_PIXELS', 0, int(name in {
+                        'pipeline-over', 'pipeline-over_straight', 'pipeline-coverage',
+                        'pipeline-bitmap_text', 'pipeline-coverage_spans', 'pipeline-line', 'pipeline-circle_fill',
+                        'pipeline-circle_outline', 'pipeline-rounded_rect', 'pipeline-triangle'})),
+                    ('IMAP_POSITION_X', 0, 1), ('IMAP_POSITION_Y', 0, 1),
+                    ('OMAP_RED', 0, 1), ('OMAP_GREEN', 0, 1),
+                    ('OMAP_BLUE', 0, 1), ('OMAP_ALPHA', 0, 1),
+                ))
+                self.assertEqual(entry['metadata']['relocations'], 0)
+                self.assertEqual(entry['metadata']['builtin_calls'], 0)
+                self.assertEqual(entry['source_sha256'], hashlib.sha256(
+                    (ROOT / entry['source']).read_bytes()).hexdigest())
                 self.assertEqual(entry['metadata']['code_bytes'], (ASSETS / f'{name}.bin').stat().st_size)
 
     def test_embedded_layout(self):

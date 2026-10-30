@@ -2171,6 +2171,48 @@ pub(crate) fn native_console_readback(surface: &crate::gk208::ConsoleSurface)
     Ok(Some((backing, last)))
 }
 
+/// Finish a packed span upload on the shared queue before exposing its texture.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn native_spans_upload(id: u32, plan: crate::gk208::copy::Plan, backing: Arc<Pages>)
+    -> Result<(), &'static str> {
+    let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or("native spans core absent")?;
+    let request = crate::gk208::span_upload(Tag::Sync(serial), fence, id, plan, backing)
+        .ok_or("native spans CE upload refused")?;
+    let done = exec_req(serial, Request::Gk208(request), 0, &[], &[])
+        .map_err(|_| "native spans CE upload failed")?;
+    if !dev::ok(done.answer) || !done.matches_fence(fence) {
+        return Err("native spans CE upload completion mismatch");
+    }
+    Ok(())
+}
+
+/// Diagnostic transfer through the admitted core queue and its watchdog. The
+/// span registry owns the attached backing until its image can be collected.
+#[cfg(all(target_arch = "x86_64", feature = "gt710_core_probe"))]
+pub(crate) fn native_spans_readback(id: u32, width: u32, height: u32, backing: Arc<Pages>)
+    -> Result<[Vec<u8>; 2], &'static str> {
+    let bytes = (width as usize).checked_mul(height as usize).and_then(|n| n.checked_mul(4))
+        .ok_or("native spans readback extent overflow")?;
+    if backing.bytes() < bytes { return Err("native spans readback backing too small"); }
+    let mut images = [alloc::vec![0; bytes], alloc::vec![0; bytes]];
+    for (index, poison) in [0x55, 0xaa].into_iter().enumerate() {
+        let band = [poison; PAGE];
+        for at in (0..bytes).step_by(PAGE) { backing.write(at, &band[..PAGE.min(bytes-at)]); }
+        backing.maintain(0, bytes, false);
+        let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or("native spans core absent")?;
+        let request = crate::gk208::transfer(Tag::Sync(serial), fence, id, backing.clone(),
+            [0,0,width,height], 0, width*4, false).ok_or("native spans CE readback refused")?;
+        let done = exec_req(serial, Request::Gk208(request), 0, &[], &[])
+            .map_err(|_| "native spans CE readback failed")?;
+        if !dev::ok(done.answer) || !done.matches_fence(fence) {
+            return Err("native spans CE completion mismatch");
+        }
+        backing.maintain(0, bytes, true);
+        backing.read(0, &mut images[index]);
+    }
+    Ok(images)
+}
+
 /// Attach resources to device contexts, one synchronous `(context, resource)` command a
 /// pair, queued together in one batch so the device answers them back to back: a new
 /// context takes the process's resources, and a new resource the process's contexts, in
@@ -2620,7 +2662,7 @@ pub fn owner_ended(tgid: u64) {
 // ---------------------------------------------------------------------------------------
 // The system call.
 
-fn caller() -> Result<u64, i64> {
+pub(crate) fn caller() -> Result<u64, i64> {
     let tid = crate::task::scheduler::current_thread_id().ok_or(EINVAL)?;
     crate::process::with_process_manager(|m| {
         m.find_process_by_thread(tid).map(|(row, p)| p.thread_group_id.unwrap_or(row.as_u64()))
@@ -2671,6 +2713,9 @@ fn native_reset_barrier() -> Result<(), i64> {
 /// `gpu(op, arg, len)`.
 pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
     let _path = GpuPath::enter();
+    #[cfg(all(target_arch = "x86_64", feature = "gt710_core_probe"))]
+    let _timing = (dev::backend() == abi::backend::GK208)
+        .then(|| crate::gk208::timing::Guard::new(caller().unwrap_or(0), op));
     // Test point 3, `emit-diagnostic`: this call writes BreenGL's diagnostic payload, the
     // only kernel output any syscall 416 path makes (section 1.16).
     if crate::test_control::take(test_point::EMIT_DIAGNOSTIC, 0).is_some() {
@@ -3577,7 +3622,7 @@ enum Chunks {
 /// chunks additionally retain these images across uncertain publication/reset.
 #[cfg(target_arch = "x86_64")]
 struct NativeScratch {
-    targets: [Option<crate::gk208::encode::Target>; 2],
+    targets: [Option<crate::gk208::encode::Target>; 3],
     holds: Vec<crate::gk208::resource::Hold>,
 }
 #[cfg(target_arch = "x86_64")]
@@ -3589,7 +3634,7 @@ impl Drop for NativeScratch {
 }
 #[cfg(target_arch = "x86_64")]
 fn native_blend_scratch(tgid: u64, sizes: [[u32; 2]; 2]) -> Result<NativeScratch, i64> {
-    let mut scratch = NativeScratch { targets: [None; 2], holds: Vec::new() };
+    let mut scratch = NativeScratch { targets: [None; 3], holds: Vec::new() };
     for (format, [width, height]) in sizes.into_iter().enumerate() {
         if width == 0 || height == 0 { continue; }
         let layout = crate::gk208::resource::Layout::new(width, height, 4).map_err(|_| ENOMEM)?;
@@ -3604,12 +3649,28 @@ fn native_blend_scratch(tgid: u64, sizes: [[u32; 2]; 2]) -> Result<NativeScratch
     Ok(scratch)
 }
 
+/// Use the same submission owner and fence holds as destination snapshots.
+#[cfg(target_arch = "x86_64")]
+fn native_spans(tgid: u64, scratch: &mut NativeScratch, data: &crate::gk208::encode::Spans) -> Result<(), i64> {
+    let layout = crate::gk208::resource::Layout::new(data.width, data.height, 4).map_err(|_| ENOMEM)?;
+    // The registry retains both the tiled image and its attached DMA source.
+    // Their combined reservation follows the same fence/reset holds.
+    let backing_bytes = (u64::from(layout.pitch) * u64::from(data.height)).next_multiple_of(PAGE as u64);
+    let bytes = layout.allocation_bytes().checked_add(backing_bytes).ok_or(ENOMEM)?;
+    let charge = Arc::new(Charge::new(tgid, bytes, true)?);
+    let (target, hold) = crate::gk208::resource::span_staging(data, charge)
+        .map_err(|e| if e == "native crossing upload backing allocation" { ENOMEM } else { EIO })?;
+    scratch.targets[2] = Some(target);
+    scratch.holds.push(hold);
+    Ok(())
+}
+
 /// The view's handles with the snapshot's buffer contents.
 struct Resolved<'a> {
     view: &'a View,
     snap: &'a Snapshot,
     #[cfg(target_arch = "x86_64")]
-    native_scratch: core::cell::Cell<[Option<crate::gk208::encode::Target>; 2]>,
+    native_scratch: core::cell::Cell<[Option<crate::gk208::encode::Target>; 3]>,
 }
 
 /// The VirGL format of a BGL format.
@@ -3652,7 +3713,10 @@ impl crate::gk208::encode::Bindings for Resolved<'_> {
         crate::gk208::encode::target(e.id,e.format)
     }
     fn blend_scratch(&self, format: u32) -> Option<crate::gk208::encode::Target> {
-        self.native_scratch.get().into_iter().flatten().find(|t| t.format == format)
+        self.native_scratch.get()[..2].iter().copied().flatten().find(|t| t.format == format)
+    }
+    fn span_texture(&self) -> Option<crate::gk208::encode::Target> {
+        self.native_scratch.get()[2]
     }
     fn sampled_source(&self, handle: u64) -> Option<crate::gk208::encode::Target> {
         let e = self.view.get(handle)?;
@@ -3894,7 +3958,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         view: &view,
         snap: &snap,
         #[cfg(target_arch = "x86_64")]
-        native_scratch: core::cell::Cell::new([None; 2]),
+        native_scratch: core::cell::Cell::new([None; 3]),
     };
     // Test point 2, `irq-hold`: this validation holds IRQs masked for 2 ms, through the
     // primitive the gauge times (section 1.16).
@@ -4187,7 +4251,26 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 let charge = Arc::new(Charge::new(tgid, bytes, true)?);
                 // Native scratch uses the same validated per-format plan as the
                 // virtual encoders, with native layout and retirement ownership.
-                let scratch = native_blend_scratch(tgid, plan.scratch)?;
+                let mut scratch = native_blend_scratch(tgid, plan.scratch)?;
+                #[cfg(feature = "gt710_core_probe")]
+                if plan.data_bytes > 0 { crate::gk208::timing::begin_draw(tgid); }
+                // The packed heap copy is temporary; reserve its padded extent
+                // before allocation, separately from the retained device storage.
+                let _span_copy_charge = if plan.data_bytes > 0 {
+                    let words = plan.data_bytes / 4;
+                    let width = data_width.min(words.checked_next_power_of_two().ok_or(ENOMEM)?);
+                    let bytes = u64::from(width) * u64::from(words.div_ceil(width)) * 4;
+                    Some(Charge::new(tgid, bytes, true)?)
+                } else { None };
+                let data = {
+                    #[cfg(feature = "gt710_core_probe")]
+                    let _timing = crate::gk208::timing::phase(100);
+                    crate::gk208::encode::pack_spans(&words, &resolved, data_width)
+                        .map_err(|e| if e == "native crossing allocation" { ENOMEM } else { EINVAL })?
+                };
+                if let Some(data) = data {
+                    native_spans(tgid, &mut scratch, &data)?;
+                }
                 resolved.native_scratch.set(scratch.targets);
                 native_scratch = Some(scratch);
                 let swap = match swap {
@@ -4197,12 +4280,19 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                     }
                     None => None,
                 };
-                let frame = if corrupt.is_none() && suppress.is_none() && swap.is_none() {
+                #[cfg(feature = "gt710_core_probe")]
+                let translating = crate::gk208::timing::phase(110);
+                let mut frame = if corrupt.is_none() && suppress.is_none() && swap.is_none() {
                     crate::gk208::encode::translate(&words, &resolved)
                 } else {
                     crate::gk208::encode::translate_with_extras(&words, &resolved,
                         crate::gk208::encode::Extras { corrupt, suppress, swap })
                 }.map_err(|_| EINVAL)?;
+                frame.compact().map_err(|_| EINVAL)?;
+                #[cfg(feature = "gt710_core_probe")]
+                drop(translating);
+                #[cfg(feature = "gt710_core_probe")]
+                let _timing = crate::gk208::timing::phase(111);
                 let backing = Arc::new(Pages::new(frame.data.len().div_ceil(PAGE)).ok_or(ENOMEM)?);
                 backing.write(0,&frame.data);
                 backing.maintain(0,frame.data.len(),false);

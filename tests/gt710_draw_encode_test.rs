@@ -126,7 +126,13 @@ fn invalid_tail_and_unsupported_pipeline_emit_nothing() {
     let mut w = frame(); w.extend([0xffff, 2]);
     assert!(encode::translate(w.as_slice(), &View(format::B8G8R8A8)).is_err());
     let mut w = Vec::new(); stream::encode::begin(&mut w, 1);
-    stream::encode::draw(&mut w, pipeline::GRADIENT_V, 0, &[[0,0,4,4]]);
+    // G16: catalogue IDs 0..16 are admitted; use the first unassigned ID.
+    stream::encode::draw(&mut w, 17, 0, &[[0,0,4,4]]);
+    assert_eq!(encode::pipeline_refusal(w.as_slice()), Some(stream::Refusal { index: 1, error: stream::error::BAD_PIPELINE }));
+    assert!(encode::translate(w.as_slice(), &View(format::B8G8R8A8)).is_err());
+    let mut w = Vec::new(); stream::encode::begin(&mut w, 1);
+    stream::encode::draw(&mut w, u32::MAX, 0, &[[0,0,4,4]]);
+    assert_eq!(encode::pipeline_refusal(w.as_slice()), Some(stream::Refusal { index: 1, error: stream::error::BAD_PIPELINE }));
     assert!(encode::translate(w.as_slice(), &View(format::B8G8R8A8)).is_err());
 }
 
@@ -228,5 +234,148 @@ fn parking_upload_is_complete_bounded_contiguous_and_stops_on_error() {
         assert!(encode::upload_parking(va, bytes, |_, _| {
             panic!("invalid upload reached hardware")
         }).is_err());
+    }
+}
+
+#[test]
+fn shape_code_fits_parking_and_bounded_channel_uploads() {
+    let target = encode::Target { id: 1, address: 0x800000, width: 1, height: 1,
+        format: format::B8G8R8A8, tile_mode: 0 };
+    let source = encode::Target { id: 2, address: 0x801000, ..target };
+    let address = 0x3_0000_0000;
+    let bytes = encode::parking_bytes(target, source).unwrap();
+    let (data, _) = encode::parking_frame(target, source, address, 0xa00000).unwrap();
+    assert_eq!(data.len(), bytes);
+    let mut end = 0;
+    for (offset, header, code, gprs) in [
+        (shaders::PIPELINE_COVERAGE_SPANS_OFFSET, shaders::PIPELINE_COVERAGE_SPANS_HEADER, shaders::PIPELINE_COVERAGE_SPANS_CODE, shaders::PIPELINE_COVERAGE_SPANS_GPRS),
+        (shaders::PIPELINE_LINE_OFFSET, shaders::PIPELINE_LINE_HEADER, shaders::PIPELINE_LINE_CODE, shaders::PIPELINE_LINE_GPRS),
+        (shaders::PIPELINE_CIRCLE_FILL_OFFSET, shaders::PIPELINE_CIRCLE_FILL_HEADER, shaders::PIPELINE_CIRCLE_FILL_CODE, shaders::PIPELINE_CIRCLE_FILL_GPRS),
+        (shaders::PIPELINE_CIRCLE_OUTLINE_OFFSET, shaders::PIPELINE_CIRCLE_OUTLINE_HEADER, shaders::PIPELINE_CIRCLE_OUTLINE_CODE, shaders::PIPELINE_CIRCLE_OUTLINE_GPRS),
+        (shaders::PIPELINE_ROUNDED_RECT_OFFSET, shaders::PIPELINE_ROUNDED_RECT_HEADER, shaders::PIPELINE_ROUNDED_RECT_CODE, shaders::PIPELINE_ROUNDED_RECT_GPRS),
+        (shaders::PIPELINE_GRADIENT_V_OFFSET, shaders::PIPELINE_GRADIENT_V_HEADER, shaders::PIPELINE_GRADIENT_V_CODE, shaders::PIPELINE_GRADIENT_V_GPRS),
+        (shaders::PIPELINE_TRIANGLE_OFFSET, shaders::PIPELINE_TRIANGLE_HEADER, shaders::PIPELINE_TRIANGLE_CODE, shaders::PIPELINE_TRIANGLE_GPRS),
+    ] {
+        let program_end = offset + header.len() + code.len();
+        assert_eq!((offset + header.len()) % 128, 0);
+        assert!(end <= offset && program_end <= encode::DATA_START - (1 << 20));
+        assert!(program_end <= bytes, "parking allocation must retain shape code");
+        assert_eq!(&data[offset..offset + header.len()], header);
+        assert_eq!(&data[offset + header.len()..program_end], code);
+        assert!((4..=255).contains(&gprs));
+        end = program_end;
+    }
+    let mut uploaded = Vec::new();
+    encode::upload_parking(address, &data, |va, chunk| {
+        // gr/channel.rs Session::upload rejects empty or >16 KiB payloads.
+        assert!(!chunk.is_empty() && chunk.len() <= 16384);
+        assert_eq!(va, address + uploaded.len() as u64);
+        uploaded.extend_from_slice(chunk);
+        Ok(())
+    }).unwrap();
+    assert_eq!(uploaded, data);
+}
+
+#[test]
+fn compact_frame_preserves_payload_and_every_live_address() {
+    let original = encode::translate(frame().as_slice(), &View(format::B8G8R8A8)).unwrap();
+    let mut compact = encode::translate(frame().as_slice(), &View(format::B8G8R8A8)).unwrap();
+    let removed = encode::DATA_START;
+    let expected = original.data[removed..].to_vec();
+    compact.compact().unwrap();
+    assert_eq!(compact.data, expected, "frame must retain inputs, without a per-submit catalogue copy");
+    let once = compact.data.clone();
+    compact.compact().unwrap();
+    assert_eq!(compact.data, once);
+    let base = 0x3_0000_0000;
+    compact.relocate(base).unwrap();
+    for (a, b) in original.chunks.iter().zip(&compact.chunks) {
+        let a = packets(&a.words);
+        let b = packets(&b.words);
+        assert_eq!(a.len(), b.len());
+        for ((method, before), (other, after)) in a.iter().zip(&b) {
+            assert_eq!(method, other);
+            let mut expected = before.clone();
+            match *method {
+                0x17bc | 0x1608 => expected[..2].fill(0),
+                0x2380 | 0x1c00 => {
+                    let address = base + u64::from(before[2]) - removed as u64;
+                    expected[1] = (address >> 32) as u32;
+                    expected[2] = address as u32;
+                }
+                0x1f00 | 0x1574 | 0x155c => {
+                    let address = base + u64::from(before[1]) - removed as u64;
+                    expected[0] = (address >> 32) as u32;
+                    expected[1] = address as u32;
+                }
+                _ => (),
+            }
+            assert_eq!(*after, expected, "method {method:#x}");
+        }
+    }
+}
+
+#[test]
+fn frame_code_binding_uses_only_the_retained_channel_catalogue() {
+    let target = encode::Target { id: 1, address: 0x800000, width: 1, height: 1,
+        format: format::B8G8R8A8, tile_mode: 0 };
+    let source = encode::Target { id: 2, address: 0x801000, ..target };
+    let code = 0x3_0000_0000;
+    let (_, parking) = encode::parking_frame(target, source, code, 0xa00000).unwrap();
+    let mut f = encode::translate(frame().as_slice(), &View(format::B8G8R8A8)).unwrap();
+    f.compact().unwrap();
+    f.relocate(0x4_0000_0000).unwrap();
+    f.batch_draws(1400);
+    for c in &mut f.chunks {
+        let before = packets(&c.words);
+        encode::channel_programs(&mut c.words, &parking).unwrap();
+        for ((m, a), (n, b)) in before.into_iter().zip(packets(&c.words)) {
+            assert_eq!(m, n);
+            if m == 0x1608 { assert_eq!(b, vec![(code >> 32) as u32, code as u32]); }
+            else { assert_eq!(a, b); }
+        }
+    }
+    assert!(encode::channel_programs(&mut f.chunks[0].words, &[]).is_err());
+    assert!(encode::channel_programs(&mut [0x20020600, 0], &parking).is_err());
+    encode::channel_programs(&mut [], &parking).unwrap();
+}
+
+#[test]
+fn retained_catalogue_contains_each_probe_variant() {
+    let target = encode::Target { id: 1, address: 0x800000, width: 1, height: 1,
+        format: format::B8G8R8A8, tile_mode: 0 };
+    let source = encode::Target { id: 2, address: 0x801000, ..target };
+    let (data, _) = encode::parking_frame(target, source, 0x3_0000_0000, 0xa00000).unwrap();
+    for (offset, header, code) in [
+        (0x2030, shaders::PROBE_INTEGER_OPS_HEADER, shaders::PROBE_INTEGER_OPS_CODE),
+        (0x2430, shaders::PROBE_TEXEL_FETCH_HEADER, shaders::PROBE_TEXEL_FETCH_CODE),
+        (shaders::PROBE_INT_00_OFFSET, shaders::PROBE_INT_00_HEADER, shaders::PROBE_INT_00_CODE),
+        (shaders::PROBE_INT_01_OFFSET, shaders::PROBE_INT_01_HEADER, shaders::PROBE_INT_01_CODE),
+        (shaders::PROBE_INT_02_OFFSET, shaders::PROBE_INT_02_HEADER, shaders::PROBE_INT_02_CODE),
+        (shaders::PROBE_INT_03_OFFSET, shaders::PROBE_INT_03_HEADER, shaders::PROBE_INT_03_CODE),
+        (shaders::PROBE_INT_04_OFFSET, shaders::PROBE_INT_04_HEADER, shaders::PROBE_INT_04_CODE),
+        (shaders::PROBE_INT_05_OFFSET, shaders::PROBE_INT_05_HEADER, shaders::PROBE_INT_05_CODE),
+        (shaders::PROBE_INT_06_OFFSET, shaders::PROBE_INT_06_HEADER, shaders::PROBE_INT_06_CODE),
+        (shaders::PROBE_INT_07_OFFSET, shaders::PROBE_INT_07_HEADER, shaders::PROBE_INT_07_CODE),
+        (shaders::PROBE_INT_08_OFFSET, shaders::PROBE_INT_08_HEADER, shaders::PROBE_INT_08_CODE),
+        (shaders::PROBE_INT_09_OFFSET, shaders::PROBE_INT_09_HEADER, shaders::PROBE_INT_09_CODE),
+        (shaders::PROBE_INT_10_OFFSET, shaders::PROBE_INT_10_HEADER, shaders::PROBE_INT_10_CODE),
+        (shaders::PROBE_INT_11_OFFSET, shaders::PROBE_INT_11_HEADER, shaders::PROBE_INT_11_CODE),
+        (shaders::PROBE_INT_12_OFFSET, shaders::PROBE_INT_12_HEADER, shaders::PROBE_INT_12_CODE),
+        (shaders::PROBE_INT_13_OFFSET, shaders::PROBE_INT_13_HEADER, shaders::PROBE_INT_13_CODE),
+        (shaders::PROBE_INT_14_OFFSET, shaders::PROBE_INT_14_HEADER, shaders::PROBE_INT_14_CODE),
+        (shaders::PROBE_INT_15_OFFSET, shaders::PROBE_INT_15_HEADER, shaders::PROBE_INT_15_CODE),
+        (shaders::PROBE_INT_16_OFFSET, shaders::PROBE_INT_16_HEADER, shaders::PROBE_INT_16_CODE),
+        (shaders::PROBE_INT_17_OFFSET, shaders::PROBE_INT_17_HEADER, shaders::PROBE_INT_17_CODE),
+        (shaders::PROBE_INT_18_OFFSET, shaders::PROBE_INT_18_HEADER, shaders::PROBE_INT_18_CODE),
+        (shaders::PROBE_INT_19_OFFSET, shaders::PROBE_INT_19_HEADER, shaders::PROBE_INT_19_CODE),
+        (shaders::PROBE_INT_20_OFFSET, shaders::PROBE_INT_20_HEADER, shaders::PROBE_INT_20_CODE),
+        (shaders::PROBE_INT_21_OFFSET, shaders::PROBE_INT_21_HEADER, shaders::PROBE_INT_21_CODE),
+        (shaders::PROBE_INT_22_OFFSET, shaders::PROBE_INT_22_HEADER, shaders::PROBE_INT_22_CODE),
+        (shaders::PROBE_INT_23_OFFSET, shaders::PROBE_INT_23_HEADER, shaders::PROBE_INT_23_CODE),
+        (shaders::PROBE_INT_24_OFFSET, shaders::PROBE_INT_24_HEADER, shaders::PROBE_INT_24_CODE),
+    ] {
+        assert_eq!(&data[offset..offset+80], header, "probe header at {offset:#x}");
+        assert_eq!(&data[offset+80..offset+80+code.len()], code, "probe code at {offset:#x}");
     }
 }

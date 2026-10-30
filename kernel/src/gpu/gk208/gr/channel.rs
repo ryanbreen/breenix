@@ -1489,8 +1489,9 @@ mod native {
             let s = &self.session;
             crate::gk208::ce::with_resources(|r,_,io| r.bind(io,
                 s.context.space().directory.range.start,s.report.identity.instance,s.report.identity.epoch))?;
-            // Storage retains the uploaded code/inputs and the frame's target holds.
-            let payload = crate::gk208::encode::channel_words(&draw.words, self.quarantine)?;
+            // Storage retains frame inputs and target holds; parking owns the code.
+            let mut payload = crate::gk208::encode::channel_words(&draw.words, self.quarantine)?;
+            crate::gk208::encode::channel_programs(&mut payload, &self.parking)?;
             // Restart reconstructs RAMFC without its old subchannel classes.
             // SET_OBJECT must precede graphics state and release methods even
             // when clipping leaves no draw (MIT cla197.h:34-36).
@@ -1580,13 +1581,29 @@ mod native {
             let mut regs = Registers(self.registers);
             let c = self.session.report.identity;
             let b = self.session.pbdma * 0x2000;
-            let registers = [0x259c, 0x400100, 0x400108, 0x400700,
+            let registers = [0x259c, 0x400100, 0x400108, 0x400110, 0x400118,
+                0x400700, 0x400704, 0x400708, 0x40070c,
+                0x504648, 0x504650,
                 0x40108+b, 0x40148+b, 0x40120+b, 0x40014+b, 0x40028+b,
                 0x800000+c.id as usize*8, 0x800004+c.id as usize*8,
                 0x2630, 0x262c, 0x2634, 0x2284+c.runlist as usize*8]
                 .map(|r| (r, regs.read(r)));
             crate::serial_println!("GT710_NATIVE_FAULT reason={} instance={:#x} epoch={} put={} registers={:?}",
                 reason,c.instance,c.epoch,self.put,registers);
+            match super::super::stall::capture(&self.topology, self.session.pbdma as u32,
+                |address| regs.read(address as usize)) {
+                Ok(snapshot) => {
+                    let text = format!("GT710_STALL_V1 instance={} epoch={} put={} registers={:?}",
+                        c.instance,c.epoch,self.put,snapshot);
+                    let digest = crate::gk208::hash(text.as_bytes());
+                    let bytes = text.len();
+                    match crate::gk208::bulk::line(text) {
+                        Ok(()) => crate::serial_println!("GT710_STALL_BULK epoch={} put={} bytes={} sha256={}",c.epoch,self.put,bytes,digest),
+                        Err(error) => crate::serial_println!("GT710_STALL_REFUSAL {}",error),
+                    }
+                }
+                Err(error) => crate::serial_println!("GT710_STALL_REFUSAL {}",error),
+            }
             let (mask, faults) = crate::gk208::vm::faults(&mut VmIo {regs:&mut regs,total:self.total});
             for f in faults {
                 crate::serial_println!("GT710_NATIVE_MMU mask={:#x} unit={} instance={:#x} address={:#x} reason={} raw={:?}",

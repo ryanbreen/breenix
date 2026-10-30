@@ -1325,4 +1325,80 @@ MIT Mesa 24.3.4 nvc0_tex.c at 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de
 (TIC/TSC descriptors and line 708's TIC | TSC << 20 handle encoding).
 File-local grants checked before use; original notices remain in these
 consumers. Scratch snapshots and constants follow Breenix gpu.md 1.3/1.5
-item 7 and its ARM encoder. The four committed alpha programs are unchanged.
+item 7 and its ARM encoder. Milestone 8.4 regenerates pipeline-over,
+pipeline-over_straight, pipeline-coverage and pipeline-bitmap_text, together
+with pipeline-copy_scaled, pipeline-nearest_scaled and pipeline-box_filter.
+
+GT 710 binary32 and shape probes (milestone 8.4-u1)
+-------------------------------------------------
+Consumers: kernel/assets/kepler/probe-int-{12..17,20..24}.{asm,bin,json,sph},
+kernel/src/gpu/gk208/gr/shaders.rs and the existing native encoder.
+The TGSI inputs are Breenix's unchanged kernel/src/gpu/virgl/profile/r12-r17
+and r20-r24 definitions, under PolyForm Noncommercial 1.0.0. The generated
+code, metadata and disassembly retain those terms; generated SPHs retain MIT.
+The pinned compiler and decoder are the previously inventoried MIT Mesa
+24.3.4 (769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de) and MIT envytools
+(f102b82381f3f11cee113d16374c87091db039d9) sources in vendor/kepler/sources.json.
+Their original notices remain in vendor/kepler/NOTICES and the source headers.
+The asset builder checks those headers and hashes before building.
+
+Program alignment uses Mesa's src/gallium/drivers/nouveau/nvc0/nvc0_program.c:
+775-799 (MIT, Copyright 2010 Christoph Bumiller), whose full header was read.
+The original complete grant remains in shaders.rs. The frontend and SPH
+adaptations retain their notices. Milestone 8.4 also
+changes tools/kepler/compile.cpp to track ifDepth and lower KILL as OP_DISCARD,
+using the pinned MIT Mesa compiler interfaces.
+
+GT 710 shared shape fragments (milestone 8.4-u2)
+-----------------------------------------------
+Consumers: kernel/assets/kepler/pipeline-{coverage_spans,line,circle_fill,
+circle_outline,rounded_rect,gradient_v,triangle}.{asm,bin,json,sph},
+kernel/src/gpu/gk208/gr/shaders.rs and the retained native code upload.
+Inputs: the unchanged shared kernel/src/gpu/virgl/pipelines/{8,10..15}.tgsi,
+under PolyForm Noncommercial 1.0.0, also covering generated code, metadata
+and disassembly. Generated SPHs retain the MIT grant recorded above.
+
+The existing pinned MIT Mesa 24.3.4 compiler
+(769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de) and MIT envytools decoder
+(f102b82381f3f11cee113d16374c87091db039d9) produce these assets through
+scripts/build-kepler-assets --check. Original source notices remain in
+vendor/kepler/NOTICES and each vendored file's header. The milestone 8.4
+compiler frontend changes are described in the preceding probe entry. The
+generated manifest and kepler-toolchain.sha256.json record the source, recipe
+and output hashes.
+
+Code offsets follow Mesa nvc0_program.c:775-799's instruction alignment,
+with its original full MIT header retained in shaders.rs. The file's
+Copyright 2010 Christoph Bumiller and complete permission grant were read
+before using that layout. The SPH check reuses the existing decoder of
+MIT NVIDIA open-gpu-doc cla097sph.h at
+9fdf5c4062007929d9f4e6cbad9c9771fe61b880; its header was checked too.
+
+GT 710 crossing-table encoding (milestone 8.4-u4, G16)
+-----------------------------------------------------
+Consumers: kernel/src/gpu/gk208/encode.rs and tests/gt710_spans_encode_test.rs.
+Sampler 2 uses the same attributed TIC/TSC fields and texture handles as the
+8.2-u5 and 8.3-u4 entries above: NVIDIA open-gpu-doc cla197.h/cla197tex.h
+(MIT, pinned 9fdf5c4062007929d9f4e6cbad9c9771fe61b880), envytools
+rnndb/graph/g80_texture.xml and g80_defs.xml with copyright.xml (MIT, pinned
+f102b82381f3f11cee113d16374c87091db039d9), and Mesa nvc0_tex.c
+(MIT, pinned 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de). Their full
+copyright and permission notices remain in both consumers' headers.
+The crossing-table packing, constants and snapshot bounds follow Breenix's
+shared VirGL encoder under PolyForm Noncommercial 1.0.0. The upload in
+kernel/src/gpu/gk208/resource.rs reuses its existing attributed native Layout
+and VM/PRAMIN access; no additional external source or shader is imported.
+
+GT 710 read-only stall snapshots (milestone 8.4 diagnostic)
+---------------------------------------------------------
+Consumer: kernel/src/gpu/gk208/gr/stall.rs and its channel fault caller.
+Register facts come from envytools f102b82381f3f11cee113d16374c87091db039d9
+rnndb/graph/gf100_pgraph/{pgraph,gpc,tpc}.xml and rnndb/fifo/gf100_pfifo.xml.
+Their imported rnndb/copyright.xml MIT grant and author list were read
+before use and are retained in stall.rs. The collector reads status,
+warp masks and error registers for each topology-selected TPC plus live
+PBDMA state; it writes no debug selector. The bulk record is captured
+before reset and its SHA-256 anchor is printed separately.
+NVIDIA open-gpu-doc cla197.h at 9fdf5c4062007929d9f4e6cbad9c9771fe61b880
+(MIT, Copyright 2020 NVIDIA CORPORATION) was read to cross-check method
+0x1614 as END; no header code is adapted by this diagnostic.

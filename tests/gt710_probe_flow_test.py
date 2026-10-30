@@ -7,6 +7,24 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DividerControlFlow(unittest.TestCase):
+    def test_shape_kill_survives_native_compilation(self):
+        for name in ('line', 'circle_fill', 'circle_outline', 'rounded_rect', 'triangle', 'coverage_spans'):
+            with self.subTest(pipeline=name):
+                native = (ROOT / f'kernel/assets/kepler/pipeline-{name}.asm').read_text()
+                self.assertTrue(re.search(r'\bdiscard\b', native) is not None,
+                                'uncovered fragments must preserve the destination')
+
+    def test_coverage_spans_limits_live_join_nesting(self):
+        # Pinned MIT Mesa nv50_ir_from_nir.cpp:1640-1642 suppresses joins
+        # beyond conditional depth six. Spans adds two enclosing loop entries.
+        native = (ROOT / 'kernel/assets/kepler/pipeline-coverage_spans.asm').read_text()
+        joins = [(int(m[1], 16), int(m[2], 16)) for m in re.finditer(
+            r'^([0-9a-f]{8}):[^\n]*\bjoinat (0x[0-9a-f]+)', native, re.M)]
+        self.assertTrue(joins)
+        for pc, _ in joins:
+            self.assertLessEqual(sum(start <= pc < end for start, end in joins), 6,
+                                 f'too many live reconvergence entries at {pc:#x}')
+
     def test_divider_break_has_no_fallthrough_reconvergence(self):
         # Shared routine 11 has one conditional, whose taken arm exits the loop.
         # MIT Mesa nv50_ir_from_nir.cpp:1605-1653 excludes that BRK from joins.

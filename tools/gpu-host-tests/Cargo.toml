@@ -42,3 +42,11 @@ path = "../../tests/gt710_adapter_test.rs"
 [[test]]
 name = "gt710_probe_encode"
 path = "../../tests/gt710_probe_encode_test.rs"
+
+[[test]]
+name = "gt710_shape_encode"
+path = "../../tests/gt710_shape_encode_test.rs"
+
+[[test]]
+name = "gt710_spans_encode"
+path = "../../tests/gt710_spans_encode_test.rs"

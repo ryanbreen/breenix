@@ -193,8 +193,47 @@ pub fn channel_words(input: &[u32], quarantine: u64) -> Result<Vec<u32>, &'stati
     Ok(words)
 }
 
+/// Bind each draw's unchanged program offsets to the catalogue retained by the
+/// channel's parking state. Frame retirement cannot revoke this code storage.
+pub fn channel_programs(input: &mut [u32], parking: &[u32]) -> Result<(), &'static str> {
+    let mut code = None;
+    let mut at = 0;
+    while at < parking.len() {
+        let header = parking[at];
+        let count = ((header >> 16) & 0x1fff) as usize;
+        if header & 0xe0000000 != 0x20000000 || count == 0 || at + count >= parking.len() {
+            return Err("invalid native parking packet extent");
+        }
+        if (header & 0x1fff) * 4 == 0x1608 {
+            if count != 2 || code.is_some() { return Err("invalid native parked code binding"); }
+            let address = u64::from(parking[at+1]) << 32 | u64::from(parking[at+2]);
+            if address == 0 || address & ((1 << 17) - 1) != 0
+                || address.checked_add(shaders::CATALOGUE_CODE_SIZE as u64).is_none_or(|end| end > 1 << 40) {
+                return Err("invalid native parked code address");
+            }
+            code = Some([parking[at+1], parking[at+2]]);
+        }
+        at += count + 1;
+    }
+    let code = code.ok_or("native channel catalogue absent")?;
+    at = 0;
+    while at < input.len() {
+        let header = input[at];
+        let count = ((header >> 16) & 0x1fff) as usize;
+        if header & 0xe0000000 != 0x20000000 || count == 0 || at + count >= input.len() {
+            return Err("invalid native draw packet extent");
+        }
+        if (header & 0x1fff) * 4 == 0x1608 {
+            if count != 2 { return Err("invalid native frame code binding"); }
+            input[at+1..at+3].copy_from_slice(&code);
+        }
+        at += count + 1;
+    }
+    Ok(())
+}
+
 // Reserve the complete committed shader catalogue before per-draw data.
-pub const DATA_START: usize = (1 << 20) + 0x5000;
+pub const DATA_START: usize = (1 << 20) + shaders::CATALOGUE_CODE_SIZE;
 const CODE: usize = 1 << 20;
 #[derive(Clone, Copy)]
 pub struct Target {
@@ -211,6 +250,63 @@ pub trait Bindings: Resolver {
     /// Caller-owned destination snapshot for this format, retaining pixel
     /// coordinates. Blended commands refuse if the required scratch is absent.
     fn blend_scratch(&self, _format: u32) -> Option<Target> { None }
+    /// Frame-owned RGBA8 crossing tables, uploaded before preparation.
+    fn span_texture(&self) -> Option<Target> { None }
+}
+
+/// Shared coverage-spans words in little-endian RGBA8 texels with 0-filled row padding.
+pub struct Spans {
+    pub width: u32,
+    pub height: u32,
+    pub bytes: Vec<u8>,
+}
+/// The input has passed shared stream validation. Match VirGL's first-use order
+/// and maximum referenced extent per handle, including later commands' extents.
+fn span_tables(w: &(impl Words + ?Sized)) -> Vec<(u64, u32, u32)> {
+    let mut tables: Vec<(u64, u32, u32)> = Vec::new();
+    let mut at = 0;
+    while at < w.len() {
+        if w.word(at) == draw::COMMAND && w.word(at + 2) == pipeline::COVERAGE_SPANS {
+            let h = handle(w, at + 6);
+            let bytes = w.word(at + 8);
+            if let Some(entry) = tables.iter_mut().find(|e| e.0 == h) {
+                entry.1 = entry.1.max(bytes);
+            } else { tables.push((h, bytes, 0)); }
+        }
+        at += w.word(at + 1) as usize;
+    }
+    let mut base = 0;
+    for entry in &mut tables { entry.2 = base; base += entry.1 / 4; }
+    tables
+}
+/// Pack each named crossing buffer exactly once, from the validated snapshot.
+/// The supplied power-of-two limit bounds the row; short tables use only the
+/// next power of two covering their words. The shader receives the actual width.
+pub fn pack_spans(w: &(impl Words + ?Sized), b: &impl Bindings, width: u32)
+    -> Result<Option<Spans>, &'static str> {
+    if !width.is_power_of_two() || width > gpu_abi::gk208::MAX_2D_SIZE {
+        return Err("invalid native crossing texture width");
+    }
+    let tables = span_tables(w);
+    let Some(&(_, bytes, base)) = tables.last() else { return Ok(None); };
+    let words = base + bytes / 4;
+    let width = width.min(words.checked_next_power_of_two().ok_or("native crossing size overflow")?);
+    let height = words.div_ceil(width);
+    if height == 0 || height > gpu_abi::gk208::MAX_2D_SIZE {
+        return Err("invalid native crossing texture height");
+    }
+    let size = width as usize * height as usize * 4;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(size).map_err(|_| "native crossing allocation")?;
+    bytes.resize(size, 0);
+    let mut data = Spans { width, height, bytes };
+    for (h, bytes, base) in tables {
+        for word in 0..bytes / 4 {
+            let at = (base + word) as usize * 4;
+            data.bytes[at..at + 4].copy_from_slice(&b.buffer_word(h, u64::from(word) * 4).to_le_bytes());
+        }
+    }
+    Ok(Some(data))
 }
 
 /// Warm the installed basic catalogue through the same encoder as client work.
@@ -286,6 +382,15 @@ pub fn parking_frame(target: Target, source: Target, address: u64, quarantine: u
     -> Result<(Vec<u8>, Vec<u32>), &'static str> {
     let mut frame = warm_frame(target, source, pipeline::COPY)
         .ok_or("native parking frame refused")?;
+    // Runtime frames use this retained code base for both rendering and the
+    // 25 integer probe variants. The admission programs share that same layout.
+    for pipe in [PROBE_INTEGER, PROBE_TEXEL].into_iter()
+        .chain(PROBE_ROUTINE_BASE..PROBE_ROUTINE_BASE + 25) {
+        let (offset, header, code, _) = program(pipe);
+        let at = CODE + offset;
+        frame.data[at..at + 80].copy_from_slice(header);
+        frame.data[at + 80..at + 80 + code.len()].copy_from_slice(code);
+    }
     // CODE is a 128 KiB multiple; omit the obsolete per-frame VAB reservation.
     // channel_words redirects that one binding to channel-owned VAB storage.
     frame.relocate(address.checked_sub(CODE as u64).ok_or("native parking VA underflow")?)?;
@@ -308,8 +413,9 @@ pub fn parking_frame(target: Target, source: Target, address: u64, quarantine: u
 
 #[cfg(target_os = "none")]
 pub(crate) fn warm(target_id: u32, source_id: u32, pipe: u32) -> Option<Vec<super::adapter::EncodedDraw>> {
-    let frame = warm_frame(target(target_id, format::B8G8R8A8)?,
+    let mut frame = warm_frame(target(target_id, format::B8G8R8A8)?,
         target(source_id, format::B8G8R8A8)?, pipe)?;
+    frame.compact().ok()?;
     let backing = alloc::sync::Arc::new(crate::gpu::dma::Pages::new(frame.data.len().div_ceil(4096))?);
     backing.write(0, &frame.data);
     backing.maintain(0, frame.data.len(), false);
@@ -335,8 +441,38 @@ pub struct Chunk {
 pub struct Frame {
     pub chunks: Vec<Chunk>,
     pub data: Vec<u8>,
+    removed_prefix: usize,
 }
 impl Frame {
+    /// VAB and the immutable catalogue are channel-owned. Keep only frame
+    /// inputs; publication supplies both retained bindings before any launch.
+    /// Program offsets remain relative to the unchanged channel catalogue.
+    pub fn compact(&mut self) -> Result<(), &'static str> {
+        if self.removed_prefix == DATA_START { return Ok(()); }
+        if self.data.len() < DATA_START { return Err("native frame prefix absent"); }
+        for c in &mut self.chunks {
+            let mut shifted = Vec::with_capacity(c.relocations.len());
+            for &i in &c.relocations {
+                if i > 0 && matches!(c.words[i-1], 0x200305ef | 0x20020582) {
+                    // channel_words/channel_programs supply retained storage at publication.
+                    c.words[i] = 0;
+                    c.words[i+1] = 0;
+                    continue;
+                }
+                let offset = (u64::from(c.words[i]) << 32) | u64::from(c.words[i+1]);
+                let offset = offset.checked_sub(DATA_START as u64).ok_or("native frame address in removed prefix")?;
+                c.words[i] = (offset >> 32) as u32;
+                c.words[i+1] = offset as u32;
+                shifted.push(i);
+            }
+            c.relocations = shifted;
+        }
+        self.data = self.data.split_off(DATA_START);
+        // CE-only frames still use the common retained frame-buffer owner.
+        if self.data.is_empty() { self.data.push(0); }
+        self.removed_prefix = DATA_START;
+        Ok(())
+    }
     /// Pack adjacent draws from this frame into bounded channel submissions.
     /// Each draw retains its state and relocations; only repeated channel VAB
     /// selection is omitted. Transfers remain separate and ordered.
@@ -407,7 +543,7 @@ pub fn pipeline_refusal(w: &(impl Words + ?Sized)) -> Option<stream::Refusal> {
             cmd::BEGIN | cmd::CLEAR | cmd::SCISSOR | cmd::COPY => (),
             cmd::DRAW | cmd::DRAW_BUFFER if w.word(at + 2) == pipeline::SOLID => (),
             cmd::DRAW_SAMPLED => (),
-            cmd::PROBE if matches!(w.word(at + 2), 0..=11 | 18 | 19) => (),
+            cmd::PROBE if matches!(w.word(at + 2), 0..=24) => (),
             draw::COMMAND
                 if matches!(
                     w.word(at + 2),
@@ -419,6 +555,13 @@ pub fn pipeline_refusal(w: &(impl Words + ?Sized)) -> Option<stream::Refusal> {
                         | pipeline::OVER_STRAIGHT
                         | pipeline::COVERAGE
                         | pipeline::BITMAP_TEXT
+                        | pipeline::LINE
+                        | pipeline::CIRCLE_FILL
+                        | pipeline::CIRCLE_OUTLINE
+                        | pipeline::ROUNDED_RECT
+                        | pipeline::GRADIENT_V
+                        | pipeline::TRIANGLE
+                        | pipeline::COVERAGE_SPANS
                 ) => {}
             _ => return Some(stream::Refusal { index, error: stream::error::BAD_PIPELINE }),
         }
@@ -439,6 +582,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
     let mut f = Frame {
         chunks: Vec::new(),
         data: vec![0; DATA_START],
+        removed_prefix: 0,
     };
     let segment = shaders::triangle_segment();
     f.data[CODE..CODE + segment.len()].copy_from_slice(&segment);
@@ -458,6 +602,12 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
         f.data[fs..fs + 80].copy_from_slice(header);
         f.data[fs + 80..fs + 80 + code.len()].copy_from_slice(code);
     }
+    for &(offset, header, code, _) in shaders::SHAPE_PROGRAMS {
+        let fs = CODE + offset;
+        f.data[fs..fs + 80].copy_from_slice(header);
+        f.data[fs + 80..fs + 80 + code.len()].copy_from_slice(code);
+    }
+    let tables = span_tables(w);
     let mut target = None;
     let mut current_handle = 0;
     let mut scissor = None;
@@ -562,7 +712,72 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                     }
                     constants[16] = w.word(at + 3);
                     constants[17] = routine;
-                    quad(&mut f, t, r, clip, &constants, pipe, None, None);
+                    quad(&mut f, t, r, clip, &constants, pipe, None, None, None);
+                }
+            }
+            draw::COMMAND if !draw::sampled(w.word(at + 2)) => {
+                let t = target.ok_or("native target absent")?;
+                let pipe = w.word(at + 2);
+                let Some(clip) = stream::clipped([0, 0, t.width as i32, t.height as i32],
+                    t.width, t.height, scissor) else {
+                    at += w.word(at + 1) as usize;
+                    command += 1;
+                    continue;
+                };
+                let instance = |n| {
+                    let base = at + draw::HEADER + n * draw::INSTANCE;
+                    draw::Instance {
+                        rect: core::array::from_fn(|k| w.word(base + k) as i32),
+                        params: core::array::from_fn(|k| w.word(base + 4 + k)),
+                    }
+                };
+                let count = w.word(at + 9) as usize;
+                let data = if pipe == pipeline::COVERAGE_SPANS {
+                    let data = b.span_texture().ok_or("native crossing texture absent")?;
+                    texture_image_control(data)?;
+                    let words = tables.last().map_or(0, |e| e.2 + e.1 / 4);
+                    if data.format != format::R8G8B8A8 || !data.width.is_power_of_two()
+                        || data.height != words.div_ceil(data.width)
+                        || data.id == t.id || data.address == t.address {
+                        return Err("invalid native crossing texture");
+                    }
+                    Some(data)
+                } else { None };
+                let scratch = if let Some(data) = data {
+                    let union = (0..count).filter_map(|n| draw::source_clip(pipe, instance(n), None)
+                        .and_then(|i| draw::clip(pipe, i, t.width, t.height, scissor)))
+                        .fold(None, |u: Option<[u32; 4]>, r| Some(match u {
+                            None => r,
+                            Some(u) => [u[0].min(r[0]), u[1].min(r[1]), u[2].max(r[2]), u[3].max(r[3])],
+                        }));
+                    if let Some([x0, y0, x1, y1]) = union {
+                        let scratch = b.blend_scratch(t.format).ok_or("native blend scratch absent")?;
+                        texture_image_control(scratch)?;
+                        if scratch.format != t.format || scratch.width < x1 || scratch.height < y1
+                            || scratch.id == t.id || scratch.id == data.id
+                            || scratch.address == t.address || scratch.address == data.address {
+                            return Err("invalid native blend scratch");
+                        }
+                        f.chunks.push(Chunk { command, target: scratch.id, source: Some(t.id),
+                            words: Vec::new(), relocations: Vec::new(),
+                            copy: Some((t.id, scratch.id, [x0,y0,x1-x0,y1-y0,x0,y0])) });
+                        Some(scratch)
+                    } else { None }
+                } else { None };
+                for n in 0..count {
+                    let i = instance(n);
+                    if let Some(r) = draw::source_clip(pipe, i, None)
+                        .and_then(|i| draw::clip(pipe, i, t.width, t.height, scissor)) {
+                        let mut constants = [0; 32];
+                        constants[..16].copy_from_slice(&i.params);
+                        constants[26] = tables.iter().find(|e| e.0 == handle(w, at + 6)).map_or(0, |e| e.2);
+                        constants[27] = data.map_or(gpu_abi::gk208::MAX_2D_SIZE.trailing_zeros(), |d| d.width.trailing_zeros());
+                        let colour = w.word(at + 3);
+                        if matches!(pipe, pipeline::GRADIENT_V | pipeline::COVERAGE_SPANS) { constants[20] = colour; }
+                        else { constants[20..24].copy_from_slice(&[16, 8, 0, 24]
+                            .map(|shift| gpu_abi::float::ratio_bits(colour >> shift & 255, 255))); }
+                        quad(&mut f, t, r, clip, &constants, pipe, None, scratch, data);
+                    }
                 }
             }
             cmd::DRAW_SAMPLED | draw::COMMAND => {
@@ -655,7 +870,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                 } else { None };
                 for n in 0..count {
                     if let Some((constants, r)) = instance(n) {
-                        quad(&mut f, t, r, clip, &constants, pipe, Some(source), scratch);
+                        quad(&mut f, t, r, clip, &constants, pipe, Some(source), scratch, None);
                     }
                 }
             }
@@ -776,6 +991,13 @@ fn program(pipe: u32) -> (usize, &'static [u8; 80], &'static [u8], u32) {
             shaders::PIPELINE_BITMAP_TEXT_CODE,
             shaders::PIPELINE_BITMAP_TEXT_GPRS,
         ),
+        pipeline::COVERAGE_SPANS => (shaders::PIPELINE_COVERAGE_SPANS_OFFSET, shaders::PIPELINE_COVERAGE_SPANS_HEADER, shaders::PIPELINE_COVERAGE_SPANS_CODE, shaders::PIPELINE_COVERAGE_SPANS_GPRS),
+        pipeline::LINE => (shaders::PIPELINE_LINE_OFFSET, shaders::PIPELINE_LINE_HEADER, shaders::PIPELINE_LINE_CODE, shaders::PIPELINE_LINE_GPRS),
+        pipeline::CIRCLE_FILL => (shaders::PIPELINE_CIRCLE_FILL_OFFSET, shaders::PIPELINE_CIRCLE_FILL_HEADER, shaders::PIPELINE_CIRCLE_FILL_CODE, shaders::PIPELINE_CIRCLE_FILL_GPRS),
+        pipeline::CIRCLE_OUTLINE => (shaders::PIPELINE_CIRCLE_OUTLINE_OFFSET, shaders::PIPELINE_CIRCLE_OUTLINE_HEADER, shaders::PIPELINE_CIRCLE_OUTLINE_CODE, shaders::PIPELINE_CIRCLE_OUTLINE_GPRS),
+        pipeline::ROUNDED_RECT => (shaders::PIPELINE_ROUNDED_RECT_OFFSET, shaders::PIPELINE_ROUNDED_RECT_HEADER, shaders::PIPELINE_ROUNDED_RECT_CODE, shaders::PIPELINE_ROUNDED_RECT_GPRS),
+        pipeline::GRADIENT_V => (shaders::PIPELINE_GRADIENT_V_OFFSET, shaders::PIPELINE_GRADIENT_V_HEADER, shaders::PIPELINE_GRADIENT_V_CODE, shaders::PIPELINE_GRADIENT_V_GPRS),
+        pipeline::TRIANGLE => (shaders::PIPELINE_TRIANGLE_OFFSET, shaders::PIPELINE_TRIANGLE_HEADER, shaders::PIPELINE_TRIANGLE_CODE, shaders::PIPELINE_TRIANGLE_GPRS),
         // Mesa nvc0_program.c:775-799: first instruction follows the 80-byte
         // SPH at a 128-byte boundary, where Kepler expects scheduling words.
         PROBE_INTEGER => (
@@ -804,6 +1026,17 @@ fn program(pipe: u32) -> (usize, &'static [u8; 80], &'static [u8], u32) {
                 9 => (shaders::PROBE_INT_09_OFFSET, shaders::PROBE_INT_09_HEADER, shaders::PROBE_INT_09_CODE, shaders::PROBE_INT_09_GPRS),
                 10 => (shaders::PROBE_INT_10_OFFSET, shaders::PROBE_INT_10_HEADER, shaders::PROBE_INT_10_CODE, shaders::PROBE_INT_10_GPRS),
                 11 => (shaders::PROBE_INT_11_OFFSET, shaders::PROBE_INT_11_HEADER, shaders::PROBE_INT_11_CODE, shaders::PROBE_INT_11_GPRS),
+                12 => (shaders::PROBE_INT_12_OFFSET, shaders::PROBE_INT_12_HEADER, shaders::PROBE_INT_12_CODE, shaders::PROBE_INT_12_GPRS),
+                13 => (shaders::PROBE_INT_13_OFFSET, shaders::PROBE_INT_13_HEADER, shaders::PROBE_INT_13_CODE, shaders::PROBE_INT_13_GPRS),
+                14 => (shaders::PROBE_INT_14_OFFSET, shaders::PROBE_INT_14_HEADER, shaders::PROBE_INT_14_CODE, shaders::PROBE_INT_14_GPRS),
+                15 => (shaders::PROBE_INT_15_OFFSET, shaders::PROBE_INT_15_HEADER, shaders::PROBE_INT_15_CODE, shaders::PROBE_INT_15_GPRS),
+                16 => (shaders::PROBE_INT_16_OFFSET, shaders::PROBE_INT_16_HEADER, shaders::PROBE_INT_16_CODE, shaders::PROBE_INT_16_GPRS),
+                17 => (shaders::PROBE_INT_17_OFFSET, shaders::PROBE_INT_17_HEADER, shaders::PROBE_INT_17_CODE, shaders::PROBE_INT_17_GPRS),
+                20 => (shaders::PROBE_INT_20_OFFSET, shaders::PROBE_INT_20_HEADER, shaders::PROBE_INT_20_CODE, shaders::PROBE_INT_20_GPRS),
+                21 => (shaders::PROBE_INT_21_OFFSET, shaders::PROBE_INT_21_HEADER, shaders::PROBE_INT_21_CODE, shaders::PROBE_INT_21_GPRS),
+                22 => (shaders::PROBE_INT_22_OFFSET, shaders::PROBE_INT_22_HEADER, shaders::PROBE_INT_22_CODE, shaders::PROBE_INT_22_GPRS),
+                23 => (shaders::PROBE_INT_23_OFFSET, shaders::PROBE_INT_23_HEADER, shaders::PROBE_INT_23_CODE, shaders::PROBE_INT_23_GPRS),
+                24 => (shaders::PROBE_INT_24_OFFSET, shaders::PROBE_INT_24_HEADER, shaders::PROBE_INT_24_CODE, shaders::PROBE_INT_24_GPRS),
                 18 => (shaders::PROBE_INT_18_OFFSET, shaders::PROBE_INT_18_HEADER, shaders::PROBE_INT_18_CODE, shaders::PROBE_INT_18_GPRS),
                 19 => (shaders::PROBE_INT_19_OFFSET, shaders::PROBE_INT_19_HEADER, shaders::PROBE_INT_19_CODE, shaders::PROBE_INT_19_GPRS),
                 _ => unreachable!(),
@@ -824,6 +1057,7 @@ pub fn probe_frame(t: Target, source: Option<Target>) -> Frame {
     let mut f = Frame {
         chunks: Vec::new(),
         data: vec![0; DATA_START],
+        removed_prefix: 0,
     };
     let segment = shaders::triangle_segment();
     f.data[CODE..CODE + segment.len()].copy_from_slice(&segment);
@@ -842,6 +1076,7 @@ pub fn probe_frame(t: Target, source: Option<Target>) -> Frame {
             pipe,
             Some(source),
             None,
+            None,
         );
     } else {
         let inputs = include_bytes!("caps/integer.inputs");
@@ -859,6 +1094,7 @@ pub fn probe_frame(t: Target, source: Option<Target>) -> Frame {
                 pipe,
                 None,
                 None,
+                None,
             );
         }
     }
@@ -871,7 +1107,7 @@ fn corrupt_pixel(f: &mut Frame, t: Target) {
 fn solid(f: &mut Frame, t: Target, r: [u32; 4], scissor: [u32; 4], colour: u32) {
     let constants =
         [16, 8, 0, 24].map(|shift| gpu_abi::float::ratio_bits(colour >> shift & 255, 255));
-    quad(f, t, r, scissor, &constants, pipeline::SOLID, None, None);
+    quad(f, t, r, scissor, &constants, pipeline::SOLID, None, None, None);
 }
 fn quad(
     f: &mut Frame,
@@ -882,14 +1118,16 @@ fn quad(
     pipe: u32,
     source: Option<Target>,
     scratch: Option<Target>,
+    data: Option<Target>,
 ) {
+    let sampled = source.is_some() || data.is_some();
     let uniform = f.data.len().next_multiple_of(256);
     let vertex = uniform + 256;
     let tic = vertex + 256;
     let tsc = tic + 256;
     let handles = tsc + 256;
     f.data.resize(
-        if source.is_some() {
+        if sampled {
             handles + 256
         } else {
             vertex + 256
@@ -899,7 +1137,7 @@ fn quad(
     for (k, v) in constants.iter().enumerate() {
         f.data[uniform + k * 4..uniform + k * 4 + 4].copy_from_slice(&v.to_le_bytes());
     }
-    if let Some(source) = source {
+    if sampled {
         // MIT cla197tex.h:509-536,547-574: clamp U/V/P to edge, no sRGB or
         // anisotropy; POINT mag/min, MIP_NONE. Integer texel fetches need no
         // hardware filtering, including the BOX_FILTER shader's explicit sum.
@@ -907,7 +1145,7 @@ fn quad(
         // generic TSC0, this exact profile keeps sRGB conversion disabled.
         let sampler = [2 | (2 << 3) | (2 << 6), 1 | (1 << 4) | (1 << 6), 0, 0, 0, 0, 0, 0];
         // Validation above established this descriptor before any draw chunks.
-        for (slot, texture) in [Some(source), scratch].into_iter().enumerate() {
+        for (slot, texture) in [source, scratch, data].into_iter().enumerate() {
             let Some(texture) = texture else { continue; };
             for (offset, words) in [
                 (tic + slot * 32, texture_image_control(texture).unwrap()),
@@ -955,7 +1193,7 @@ fn quad(
         target: t.id,
         words: Vec::new(),
         relocations: Vec::new(),
-        source: source.map(|s| s.id),
+        source: source.or(data).map(|s| s.id),
         copy: None,
     };
     // IDXFETCH quarantine: 1 MiB, 128 KiB aligned (Mesa screen:1274-1283).
@@ -1071,8 +1309,8 @@ fn quad(
     c.emit(0x2380, &[256, 0, uniform as u32]);
     c.relocations.push(c.words.len() - 2);
     c.emit(0x2490, &[1]);
-    if source.is_some() {
-        let maximum_index = u32::from(scratch.is_some());
+    if sampled {
+        let maximum_index = if data.is_some() { 2 } else { u32::from(scratch.is_some()) };
         c.address(0x1574, tic, &[maximum_index]);
         c.address(0x155c, tsc, &[maximum_index]);
         c.emit(0x1334, &[0]);
@@ -1119,10 +1357,14 @@ pub(crate) fn prepare(
 ) -> Result<Vec<super::adapter::EncodedDraw>, &'static str> {
     use alloc::sync::Arc;
     let pages: Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
-    let mut regions = vec![
-        super::resource::FrameRegion { start: 0, end: CODE as u64, name: "frame-reserved", command: 0 },
-        super::resource::FrameRegion { start: CODE as u64, end: DATA_START as u64, name: "code", command: 0 },
-    ];
+    let mut regions = Vec::new();
+    if frame.removed_prefix == 0 {
+        regions.push(super::resource::FrameRegion {
+            start: CODE as u64, end: DATA_START as u64, name: "code", command: 0,
+        });
+        regions.push(super::resource::FrameRegion { start: 0, end: CODE as u64,
+            name: "frame-reserved", command: 0 });
+    }
     for c in &frame.chunks {
         let mut at = 0;
         while at < c.words.len() {
