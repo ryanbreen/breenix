@@ -2525,6 +2525,19 @@ def capture_serial(directory):
                            or any(type(v) is not int or v < 0 for v in r) for r in row['rows'])):
                 raise ValueError('invalid timing record')
             key=('timing', row['batch'])
+        elif fields[0]=='GT710_MMU_ERROR_V1':
+            row = json.loads(line.removeprefix('GT710_MMU_ERROR_V1 '))
+            raw = row.get('raw')
+            if (any(type(row.get(k)) is not int or row[k] <= 0
+                    for k in ('instance', 'epoch', 'sequence'))
+                    or row.get('unit') != 0 or not isinstance(raw, list) or len(raw) != 4
+                    or any(type(v) is not int or not 0 <= v < 1 << 32 for v in raw)
+                    or row['instance'] != raw[0] << 12 or not 0 < row['sequence'] < 1 << 25
+                    or (raw[1] | raw[2] << 32) != (1 << 40) - (1 << 27) + row['sequence'] * 4
+                    or not raw[3] & 0x80 or raw[3] & 15 not in (0, 2)
+                    or row.get('answer') != 0x60010000 | (raw[3] & 15)):
+                raise ValueError('inconsistent attributed MMU write record')
+            key=('mmu-error', row['epoch'], row['sequence'])
         elif fields[0]=='GT710_STALL_V1':
             stall = re.fullmatch(r'GT710_STALL_V1 instance=(\d+) epoch=(\d+) put=(\d+) registers=\[.*\]\n?', line)
             if stall is None: raise ValueError('invalid stall record')
@@ -2555,6 +2568,9 @@ def capture_serial(directory):
         spans = re.fullmatch(r'GT710_SPANS_BULK id=(\d+) bytes=(\d+) sha256=([a-f0-9]{64})\n?', line)
         if spans: return ('spans', int(spans[1]))
         if line.startswith('GT710_SPANS_BULK '): raise ValueError('invalid spans anchor')
+        mmu = re.fullmatch(r'GT710_MMU_ERROR_BULK epoch=(\d+) sequence=(\d+) bytes=(\d+) sha256=([a-f0-9]{64})\n?', line)
+        if mmu: return ('mmu-error', int(mmu[1]), int(mmu[2]))
+        if line.startswith('GT710_MMU_ERROR_BULK '): raise ValueError('invalid MMU error anchor')
         stall = re.fullmatch(r'GT710_STALL_BULK epoch=(\d+) put=(\d+) bytes=(\d+) sha256=([a-f0-9]{64})\n?', line)
         if stall: return ('stall', int(stall[1]), int(stall[2]))
         if line.startswith('GT710_STALL_BULK '): raise ValueError('invalid stall anchor')
@@ -2599,6 +2615,11 @@ def capture_serial(directory):
             record = groups[key][0].removesuffix('\n').encode('ascii')
             if len(groups[key]) != 1 or len(record) != int(anchor[2]) or hashlib.sha256(record).hexdigest() != anchor[3]:
                 raise ValueError('spans record differs from serial length/digest')
+        if key is not None and key[0] == 'mmu-error':
+            anchor = re.fullmatch(r'GT710_MMU_ERROR_BULK epoch=(\d+) sequence=(\d+) bytes=(\d+) sha256=([a-f0-9]{64})\n?', line)
+            record = groups[key][0].removesuffix('\n').encode('ascii')
+            if len(groups[key]) != 1 or str(len(record)) != anchor[3] or hashlib.sha256(record).hexdigest() != anchor[4]:
+                raise ValueError('MMU error record differs from serial length/digest')
         if key is not None and key[0] == 'stall':
             anchor = re.fullmatch(r'GT710_STALL_BULK epoch=(\d+) put=(\d+) bytes=(\d+) sha256=([a-f0-9]{64})\n?', line)
             record = groups[key][0].removesuffix('\n').encode('ascii')

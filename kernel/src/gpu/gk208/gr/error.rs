@@ -103,23 +103,26 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-//! Worker-side handling of an attributed PGRAPH illegal method.
-//! Hardware facts: nouveau v6.8 gf100.c:1613-1652,1693 (MIT), NVIDIA
-//! cla197.h (MIT), and envytools rnndb gf100_pgraph/pgraph.xml (MIT).
+//! Worker-side attribution of the control's real unmapped-address write.
+//! MMU fields/ack: MIT nouveau v6.8 fifo/gf100.c:696-729; reasons:
+//! fifo/gk104.c:504-522. Ordered writes: MIT NVIDIA cla197.h.
 use alloc::vec::Vec;
 
-pub const ILLEGAL_METHOD: u32 = 0x10;
-// A197 leaves 0x0148 undefined, between PM_TRIGGER_WFI (0x0144) and
-// SET_INSTRUMENTATION_METHOD_HEADER (0x0150). It is not an MME method.
-const UNDEFINED_METHOD: u32 = 0x148;
+// The final 128 MiB PDE is checked absent in this channel before publication.
+const FAULT_BASE: u64 = (1 << 40) - (1 << 27);
+pub fn address(sequence: u32) -> Result<u64, &'static str> {
+    if sequence == 0 || sequence >= 1 << 25 { return Err("MMU control sequence extent"); }
+    Ok(FAULT_BASE + u64::from(sequence) * 4)
+}
 
-/// A197 waits for preceding work, then faults with the request sequence as
-/// data. The ordered releases can execute only after the worker resumes FIFO.
+/// The first ordered report writes to an unmapped VA. The following reports
+/// are valid retained receipts; the MMU event alone cannot release backing.
 pub fn commands(target: u64, epoch: u64, sequence: u32) -> Result<Vec<u32>, &'static str> {
     if target == 0 || target & 3 != 0 || target.checked_add(12).is_none_or(|end| end > 1 << 40)
-        || epoch == 0 || sequence == 0 { return Err("invalid illegal-method receipt"); }
+        || epoch == 0 { return Err("invalid MMU-error receipt"); }
+    let invalid = address(sequence)?;
     let mut words = alloc::vec![0x20010000, 0xa197, 0x20010044, 0,
-        0x20010000 | (UNDEFINED_METHOD >> 2), sequence];
+        0x200406c0, (invalid >> 32) as u32, invalid as u32, sequence, 0x1000f010];
     for (offset, value) in [(4, epoch as u32), (8, (epoch >> 32) as u32), (0, sequence)] {
         let address = target + offset;
         words.extend([0x200406c0, (address >> 32) as u32, address as u32, value, 0x1000f010]);
@@ -136,34 +139,39 @@ pub struct Trap {
     pub instance: u64,
     pub sequence: u32,
     pub status: u32,
+    pub raw: [u32; 4],
 }
-/// Read before W1C. Unknown or combined faults go to confirmed reset instead
-/// of acknowledging another engine's state or manufacturing a completion.
+/// Read before W1C. Foreign engines, PGRAPH exceptions, unexpected addresses
+/// and non-PDE/PTE faults retain the confirmed-reset path.
 pub fn capture(io: &mut impl Io) -> Result<Option<Trap>, &'static str> {
-    let status = io.read(0x400100);
-    let summary = io.read(0x400108);
-    let gpcs = io.read(0x400118);
-    if status == 0 && summary == 0 && gpcs == 0 { return Ok(None); }
-    if status != ILLEGAL_METHOD || summary != 0 || gpcs != 0 {
+    if [0x400100, 0x400108, 0x400110, 0x400118].into_iter().any(|r| io.read(r) != 0) {
         return Err("unhandled PGRAPH fault; backing retained");
     }
-    let address = io.read(0x400704);
-    if address & 0x3ffc != UNDEFINED_METHOD || (address >> 16) & 7 != 0
-        || io.read(0x404200) != 0xa197 {
-        return Err("unexpected PGRAPH method/class; backing retained");
+    let mask = io.read(0x259c);
+    if mask == 0 { return Ok(None); }
+    // Only GR unit 0 can produce this A197 report write.
+    if mask != 1 { return Err("foreign MMU fault; backing retained"); }
+    let raw = core::array::from_fn(|n| io.read(0x2800 + n * 4));
+    let va = u64::from(raw[1]) | u64::from(raw[2]) << 32;
+    let sequence = va.checked_sub(FAULT_BASE).and_then(|v| u32::try_from(v / 4).ok())
+        .ok_or("unexpected MMU address; backing retained")?;
+    let reason = raw[3] & 15;
+    if raw[0] == 0 || va != address(sequence)? || raw[3] & 0x80 == 0 || !matches!(reason, 0 | 2) {
+        return Err("unexpected MMU write/reason; backing retained");
     }
-    Ok(Some(Trap { instance: u64::from(io.read(0x409b00) & 0x0fff_ffff) << 12,
-        sequence: io.read(0x400708), status }))
+    Ok(Some(Trap { instance: u64::from(raw[0]) << 12,
+        sequence, status: 0x60010000 | reason, raw }))
 }
-/// Called only after the adapter finds this sequence on this channel/epoch.
-/// The trap itself is not a release: request backing remains held until the
-/// following semaphore and FIFO consumption, or the existing confirmed reset.
+/// The adapter first matches instance, sequence and epoch and retains raw
+/// evidence. Resume scheduling without certifying a completion: only the later
+/// ordered receipt and FIFO consumption can retire this request. Failure to
+/// progress still reaches the existing watchdog and confirmed reset.
 pub fn acknowledge(io: &mut impl Io, trap: Trap) -> Result<(), &'static str> {
-    if capture(io)? != Some(trap) { return Err("PGRAPH trap changed; backing retained"); }
-    io.write(0x400100, trap.status);
-    io.write(0x400500, 0x00010001);
-    if io.read(0x400100) != 0 || io.read(0x400108) != 0 || io.read(0x400118) != 0 {
-        return Err("PGRAPH acknowledgement failed; backing retained");
-    }
+    if capture(io)? != Some(trap) { return Err("MMU fault changed; backing retained"); }
+    io.write(0x259c, 1);
+    io.write(0x2100, 0x10000000);
+    let disabled = io.read(0x262c);
+    io.write(0x262c, disabled);
+    if io.read(0x259c) != 0 { return Err("MMU acknowledgement failed; backing retained"); }
     Ok(())
 }

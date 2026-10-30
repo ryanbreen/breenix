@@ -1462,6 +1462,14 @@ mod native {
             super::super::error::capture(&mut ErrorIo(Registers(self.registers)))
         }
         pub(crate) fn acknowledge_error(&mut self, trap: super::super::error::Trap) -> Result<(), &'static str> {
+            let epoch = self.session.report.identity.epoch;
+            let text = format!("GT710_MMU_ERROR_V1 {{\"instance\":{},\"epoch\":{},\"sequence\":{},\"unit\":0,\"raw\":{:?},\"answer\":{}}}",
+                trap.instance, epoch, trap.sequence, trap.raw, trap.status);
+            let digest = crate::gk208::hash(text.as_bytes());
+            let bytes = text.len();
+            crate::gk208::bulk::line(text)?;
+            crate::serial_println!("GT710_MMU_ERROR_BULK epoch={} sequence={} bytes={} sha256={}",
+                epoch, trap.sequence, bytes, digest);
             super::super::error::acknowledge(&mut ErrorIo(Registers(self.registers)), trap)
         }
         /// True only after USERD GP_PUT publishes this sequence to the engine.
@@ -1480,7 +1488,16 @@ mod native {
                         s.context.space().directory.range.start,s.report.identity.instance,s.report.identity.epoch))?;
                     crate::gk208::copy::encode_plan(plan,report_va,s.report.identity.epoch,sequence)?
                 },
-                Operation::Undefined => super::super::error::commands(report_va, s.report.identity.epoch, sequence)?,
+                Operation::Undefined => {
+                    let address = super::super::error::address(sequence)?;
+                    let pde = s.context.space().directory.range.start + address / (1 << 27) * 8;
+                    let mut regs = Registers(self.registers);
+                    if read(&mut regs, self.total, pde)? != 0
+                        || read(&mut regs, self.total, pde + 4)? != 0 {
+                        return Err("device-error control PDE is mapped");
+                    }
+                    super::super::error::commands(report_va, s.report.identity.epoch, sequence)?
+                },
                 Operation::Draw(mut draw) => {
                     draw.report_va = report_va;
                     draw.epoch = s.report.identity.epoch;

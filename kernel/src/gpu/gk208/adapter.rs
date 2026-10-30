@@ -199,7 +199,7 @@ impl Device {
         #[cfg(target_os = "none")]
         {
             let (kind, frame, address, command) = request.encoded.as_ref().map_or_else(
-                || (match request.operation { Some(Operation::Copy(_)) => "copy", Some(Operation::Transfer(_)) => "transfer", Some(Operation::Undefined) => "undefined-method", _ => "triangle" }, 0, 0, 0),
+                || (match request.operation { Some(Operation::Copy(_)) => "copy", Some(Operation::Transfer(_)) => "transfer", Some(Operation::Undefined) => "unmapped-write", _ => "triangle" }, 0, 0, 0),
                 |d| ("encoded-draw", d._storage.resource, d._storage.address, d.command));
             if self.recent.len() == 16 { self.recent.pop_front(); }
             self.recent.push_back(RequestTrace { tag: request.tag, channel: context, epoch, caller, sequence,
@@ -260,7 +260,7 @@ impl Device {
             None => return Reap::Empty,
         };
         if matches!(front.request.operation, Some(Operation::Undefined)) && front.answer.is_none() {
-            self.first_error.get_or_insert("undefined method completed without a native trap");
+            self.first_error.get_or_insert("unmapped write completed without an MMU fault");
             self.fault = true;
             return Reap::Fault;
         }
@@ -297,7 +297,7 @@ impl Device {
             matches!(sent.request.operation, Some(Operation::Undefined)) && sent.answer.is_none()
                 && sent.identity.is_some_and(|i| i.context == context && i.epoch == epoch
                     && trap.instance == i.context && trap.sequence == i.sequence)
-        }).ok_or("unattributed PGRAPH illegal method; backing retained")?;
+        }).ok_or("unattributed MMU write; backing retained")?;
         self.channel.acknowledge_error(trap)?;
         sent.answer = Some(trap.status);
         Ok(true)
