@@ -24,7 +24,10 @@ class BlendScratch(unittest.TestCase):
         boundary = boundary.replace('pub mod dma { pub struct Pages; }', r'''pub mod dma {
         pub struct Pages(std::cell::RefCell<Vec<u8>>);
         impl Pages {
-            pub fn new(count: usize) -> Option<Self> { Some(Self(std::cell::RefCell::new(vec![0;count*4096]))) }
+            pub fn new(count: usize) -> Option<Self> {
+                if crate::FAIL_BACKING.load(std::sync::atomic::Ordering::SeqCst) { return None; }
+                Some(Self(std::cell::RefCell::new(vec![0;count*4096])))
+            }
             pub fn count(&self) -> usize { self.bytes()/4096 }
             pub fn bytes(&self) -> usize { self.0.borrow().len() }
             pub fn page_addr(&self, i: usize) -> u64 { 0x12345000+i as u64*4096 }

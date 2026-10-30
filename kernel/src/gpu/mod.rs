@@ -3653,8 +3653,13 @@ fn native_blend_scratch(tgid: u64, sizes: [[u32; 2]; 2]) -> Result<NativeScratch
 #[cfg(target_arch = "x86_64")]
 fn native_spans(tgid: u64, scratch: &mut NativeScratch, data: &crate::gk208::encode::Spans) -> Result<(), i64> {
     let layout = crate::gk208::resource::Layout::new(data.width, data.height, 4).map_err(|_| ENOMEM)?;
-    let charge = Arc::new(Charge::new(tgid, layout.allocation_bytes(), true)?);
-    let (target, hold) = crate::gk208::resource::span_staging(data, charge).map_err(|_| EIO)?;
+    // The registry retains both the tiled image and its attached DMA source.
+    // Their combined reservation follows the same fence/reset holds.
+    let backing_bytes = (u64::from(layout.pitch) * u64::from(data.height)).next_multiple_of(PAGE as u64);
+    let bytes = layout.allocation_bytes().checked_add(backing_bytes).ok_or(ENOMEM)?;
+    let charge = Arc::new(Charge::new(tgid, bytes, true)?);
+    let (target, hold) = crate::gk208::resource::span_staging(data, charge)
+        .map_err(|e| if e == "native crossing upload backing allocation" { ENOMEM } else { EIO })?;
     scratch.targets[2] = Some(target);
     scratch.holds.push(hold);
     Ok(())
