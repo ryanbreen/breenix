@@ -311,3 +311,30 @@ fn stream_copy_accepts_viewing_and_self_copy_without_changing_draw_target() {
         assert!(f.chunks[1].words.is_empty(),"byte copies use CE, not a shaded quad");
     }
 }
+
+#[test]
+fn warm_draws_cover_the_manifest_rendering_catalogue() {
+    let manifest = include_str!("../kernel/assets/kepler/manifest.json");
+    let shaders = manifest.split("\"shaders\": [").nth(1).unwrap()
+        .split("\"source_lock_sha256\"").next().unwrap();
+    let names: Vec<_> = shaders.lines().filter_map(|line| {
+        line.trim().strip_prefix("\"name\": \"").and_then(|s| s.split('"').next())
+    }).take_while(|name| *name != "probe_int").collect();
+    assert_eq!(names.len(), pipeline::PROBE_INT as usize);
+    let target = encode::Bindings::render_target(&View(format::B8G8R8A8), 1).unwrap();
+    let source = encode::Bindings::sampled_source(&View(format::B8G8R8A8), 2).unwrap();
+    for (pipe, name) in names.iter().enumerate() {
+        let frame = encode::warm_frame(target, source, pipe as u32)
+            .unwrap_or_else(|| panic!("warm draw refused {name}"));
+        assert_eq!(frame.chunks.len(), 1, "{name}");
+        let methods = packets(&frame.chunks[0].words);
+        assert!(methods.iter().any(|(m, _)| *m == 0x1618), "no native draw for {name}");
+        let offset = methods.iter().find(|(m, _)| *m == 0x2140).unwrap().1[1] as usize;
+        let code = std::fs::read(format!("{}/../../kernel/assets/kepler/pipeline-{name}.bin", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        assert_eq!(&frame.data[0x100000 + offset + 80..][..code.len()], code, "{name}");
+    }
+    assert!(encode::warm_frame(target, source, pipeline::PROBE_INT).is_none());
+    let core = include_str!("../kernel/src/gpu/mod.rs");
+    let mask = core.split("fn catalogue_mask() -> u32 {").nth(1).unwrap().split("\n}").next().unwrap();
+    assert!(!mask.contains("0x1f"), "native catalogue mask omits rendering programs");
+}
