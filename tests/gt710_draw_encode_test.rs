@@ -278,19 +278,64 @@ fn shape_code_fits_parking_and_bounded_channel_uploads() {
 
 #[test]
 fn compact_frame_preserves_payload_and_every_live_address() {
-    let mut original = encode::translate(frame().as_slice(), &View(format::B8G8R8A8)).unwrap();
+    let original = encode::translate(frame().as_slice(), &View(format::B8G8R8A8)).unwrap();
     let mut compact = encode::translate(frame().as_slice(), &View(format::B8G8R8A8)).unwrap();
-    let code = 1 << 20;
-    let expected = original.data[code..].to_vec();
+    let removed = encode::DATA_START;
+    let expected = original.data[removed..].to_vec();
     compact.compact().unwrap();
-    assert_eq!(compact.data, expected);
-    assert!(compact.data.len() < 128 * 1024);
+    assert_eq!(compact.data, expected, "frame must retain inputs, without a per-submit catalogue copy");
+    let once = compact.data.clone();
+    compact.compact().unwrap();
+    assert_eq!(compact.data, once);
     let base = 0x3_0000_0000;
-    original.relocate(base - code as u64).unwrap();
     compact.relocate(base).unwrap();
     for (a, b) in original.chunks.iter().zip(&compact.chunks) {
-        // channel_words replaces only VAB with its retained channel allocation.
-        assert_eq!(encode::channel_words(&a.words, 0x4_0000_0000).unwrap(),
-                   encode::channel_words(&b.words, 0x4_0000_0000).unwrap());
+        let a = packets(&a.words);
+        let b = packets(&b.words);
+        assert_eq!(a.len(), b.len());
+        for ((method, before), (other, after)) in a.iter().zip(&b) {
+            assert_eq!(method, other);
+            let mut expected = before.clone();
+            match *method {
+                0x17bc | 0x1608 => expected[..2].fill(0),
+                0x2380 | 0x1c00 => {
+                    let address = base + u64::from(before[2]) - removed as u64;
+                    expected[1] = (address >> 32) as u32;
+                    expected[2] = address as u32;
+                }
+                0x1f00 | 0x1574 | 0x155c => {
+                    let address = base + u64::from(before[1]) - removed as u64;
+                    expected[0] = (address >> 32) as u32;
+                    expected[1] = address as u32;
+                }
+                _ => (),
+            }
+            assert_eq!(*after, expected, "method {method:#x}");
+        }
     }
+}
+
+#[test]
+fn frame_code_binding_uses_only_the_retained_channel_catalogue() {
+    let target = encode::Target { id: 1, address: 0x800000, width: 1, height: 1,
+        format: format::B8G8R8A8, tile_mode: 0 };
+    let source = encode::Target { id: 2, address: 0x801000, ..target };
+    let code = 0x3_0000_0000;
+    let (_, parking) = encode::parking_frame(target, source, code, 0xa00000).unwrap();
+    let mut f = encode::translate(frame().as_slice(), &View(format::B8G8R8A8)).unwrap();
+    f.compact().unwrap();
+    f.relocate(0x4_0000_0000).unwrap();
+    f.batch_draws(1400);
+    for c in &mut f.chunks {
+        let before = packets(&c.words);
+        encode::channel_programs(&mut c.words, &parking).unwrap();
+        for ((m, a), (n, b)) in before.into_iter().zip(packets(&c.words)) {
+            assert_eq!(m, n);
+            if m == 0x1608 { assert_eq!(b, vec![(code >> 32) as u32, code as u32]); }
+            else { assert_eq!(a, b); }
+        }
+    }
+    assert!(encode::channel_programs(&mut f.chunks[0].words, &[]).is_err());
+    assert!(encode::channel_programs(&mut [0x20020600, 0], &parking).is_err());
+    encode::channel_programs(&mut [], &parking).unwrap();
 }
