@@ -50,7 +50,7 @@ mod direct_caps {
         let (mut device, state) = crate::device();
         let mut runner = Runner {device: &mut device};
         {let mut s = state.borrow_mut();
-            s.transient_trap = true;
+            s.pri_ready_at = 10;
             s.registers.insert(0x400100, 0xbadf1201);
         }
         let request = adapter::Request::storage(crate::Tag::Sync(42), None);

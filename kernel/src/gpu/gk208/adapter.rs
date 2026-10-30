@@ -138,6 +138,7 @@ pub struct Device {
     attributed: Option<(super::gr::error::Trap, u32)>,
     #[cfg(target_os = "none")]
     recent: VecDeque<RequestTrace>,
+    pri_pending: bool,
     fault: bool,
     first_error: Option<&'static str>,
     resetting: Option<Result<(), &'static str>>,
@@ -147,7 +148,7 @@ impl Device {
         Self { channel, board, queue: Queue::new(), pending: VecDeque::new(),
             retired: VecDeque::new(), attributed: None,
             #[cfg(target_os = "none")]
-            recent: VecDeque::new(), fault: false, first_error: None, resetting: None }
+            recent: VecDeque::new(), pri_pending: false, fault: false, first_error: None, resetting: None }
     }
     pub(crate) fn registered(channel: NativeChannel, board: super::caps::BoardState, last: u32) -> Self {
         let mut device = Self::new(channel, board);
@@ -224,11 +225,12 @@ impl Device {
                 None => Reap::Reset(request.tag),
             };
         }
-        if self.attributed.is_some() { return Reap::Empty; }
+        if self.attributed.is_some() || self.pri_pending { return Reap::Empty; }
         if self.fault { return Reap::Fault; }
         // Handle an attributed event before checking health or sampling
         // earlier work on the channel. IRQ top halves do not call this reaper.
         if let Err(reason) = self.retire_error_trap() {
+            if reason == "GR PRI pending" { self.pri_pending = true; return Reap::Empty; }
             self.first_error.get_or_insert(reason);
             self.fault = true;
             return Reap::Fault;
@@ -293,8 +295,10 @@ impl Device {
     // Acknowledging that attributed event defers sampling to the next poll;
     // other health failures retain the original confirmed-reset path.
     fn retry_error_trap(&mut self, reason: &'static str) -> Reap {
+        if reason == "GR PRI pending" { self.pri_pending = true; return Reap::Empty; }
         match self.retire_error_trap() {
             Ok(true) => Reap::Empty,
+            Err("GR PRI pending") => { self.pri_pending = true; Reap::Empty }
             result => {
                 self.first_error.get_or_insert(result.err().unwrap_or(reason));
                 self.fault = true;
@@ -315,19 +319,34 @@ impl Device {
         Ok(true)
     }
     pub fn has_room(&self, segments: usize) -> bool {
-        !self.needs_reset() && self.attributed.is_none() && self.retired.is_empty()
+        !self.pri_pending && !self.needs_reset() && self.attributed.is_none() && self.retired.is_empty()
             && self.resetting.is_none() && segments <= 4
             && self.pending.len() + segments <= 4 && self.queue.next().is_ok()
     }
     pub fn outstanding(&self) -> usize { self.pending.len() + self.retired.len() }
     pub fn queue_size(&self) -> usize { 4 }
-    pub fn needs_reset(&self) -> bool { self.fault || (self.attributed.is_none() && self.channel.healthy().is_err()) }
-    pub(crate) fn recovery_pending(&self) -> bool { self.attributed.is_some() && self.resetting.is_none() }
+    pub fn needs_reset(&self) -> bool {
+        self.fault || (!self.pri_pending && self.attributed.is_none()
+            && matches!(self.channel.healthy(), Err(reason) if reason != "GR PRI pending"))
+    }
+    pub(crate) fn recovery_pending(&self) -> bool {
+        (self.pri_pending || self.attributed.is_some()) && self.resetting.is_none()
+    }
+    /// Called only after kgpu has borrowed this adapter outside CORE.
+    pub(crate) fn retry_pri(&mut self) {
+        if !self.pri_pending { return; }
+        self.pri_pending = false;
+        if let Err(reason) = self.channel.wait_pri() {
+            self.first_error.get_or_insert(reason);
+            self.fault = true;
+        }
+    }
     pub fn fault_reason(&self) -> Option<&'static str> { self.first_error }
     /// The worker owns the device outside CORE here. Capture once before the
     /// reset, rather than from reap(), which runs while CORE is locked.
     pub fn begin_reset(&mut self) {
         if self.resetting.is_none() {
+            self.pri_pending = false;
             #[cfg(target_os = "none")]
             if self.attributed.is_none() {
                 self.channel.record_fault(self.fault_reason().or_else(|| self.channel.healthy().err())
@@ -402,6 +421,12 @@ impl Device {
     #[cfg(target_os = "none")]
     pub(crate) fn recover_fault(&mut self) -> Result<(), &'static str> {
         if !self.recovery_pending() { return Err("native attributed recovery absent"); }
+        if self.pri_pending {
+            self.retry_pri();
+            // Restore the adapter to CORE before its normal reaper observes
+            // a persistent refusal and requests confirmed reset.
+            return Ok(());
+        }
         self.begin_reset();
         let (held, result) = self.restart();
         debug_assert!(held.is_empty());
@@ -429,7 +454,8 @@ impl Device {
         Ok((context, epoch, self.queue.next()?))
     }
     pub(crate) fn probe_sample(&mut self, sequence: u32) -> Result<gpu_completion::CeSample, &'static str> {
-        self.channel.sample(sequence)
+        self.retry_pri();
+        self.channel.sample_wait(sequence)
     }
     /// Negative requests retire without Done only after the separate CE drain
     /// release and FIFO consumption, while their owner retains the mappings.
@@ -442,7 +468,7 @@ impl Device {
         if !self.channel.probe_drained(identity.sequence)? { return Ok(None); }
         // Resample after the terminal release: an earlier observation could
         // have raced the engine while it was still writing the epoch words.
-        let sample = self.channel.sample(identity.sequence)?;
+        let sample = self.channel.sample_wait(identity.sequence)?;
         if identity.complete(sample).is_some() { return Err("core control completed successfully"); }
         let expected = match sent.request.control {
             super::core_record::Control::WithheldRelease => sample.sequence == 0 && sample.epoch == identity.epoch,

@@ -108,13 +108,13 @@ pub mod gk208 {
 use gpu::dev::{Reap,Tag};
 use gk208::{adapter::{Device,Request},copy::Rect,gr::channel::NativeChannel};
 pub struct State {
-    core_locked:bool,now:u64,epoch:u64,channel:u64,release_epoch:u64,release:u32,drain:u32,fault:bool,
+    core_locked:bool,pri_ready_at:u64,now:u64,epoch:u64,channel:u64,release_epoch:u64,release:u32,drain:u32,fault:bool,
     transient_trap:bool,refusals:Vec<[u32;4]>,registers:std::collections::BTreeMap<usize,u32>,writes:Vec<(usize,u32)>,
     trap_at_health:bool,trap_at_sample:bool,fail_ack:bool,trap_after_samples:u32,delayed_trap_sequence:u32,
     fail_reset:bool,fail_unbind:bool,fail_publish:bool,refuse_publish:bool,stopped:bool,operations:Vec<&'static str>,published:Vec<u32>,events:Vec<&'static str>,expected_draw:Vec<u32>,
 }
 fn device()->(Device,Rc<RefCell<State>>) {
-    let s=Rc::new(RefCell::new(State{core_locked:false,now:0,epoch:17,channel:0x123000,release_epoch:17,release:0,drain:0,fault:false,
+    let s=Rc::new(RefCell::new(State{core_locked:false,pri_ready_at:0,now:0,epoch:17,channel:0x123000,release_epoch:17,release:0,drain:0,fault:false,
         transient_trap:false,refusals:vec![],registers:Default::default(),writes:vec![],trap_at_health:false,trap_at_sample:false,fail_ack:false,trap_after_samples:0,delayed_trap_sequence:0,fail_reset:false,fail_unbind:false,fail_publish:false,refuse_publish:false,stopped:false,operations:vec![],published:vec![],events:vec![],expected_draw:vec![0x20010367,0]}));
     (Device::new(NativeChannel(s.clone()),gk208::caps::BoardState::empty()),s)
 }
@@ -127,7 +127,9 @@ impl gk208::gr::error::Io for State {
         assert_ne!(words,[0;4]);self.refusals.push(words);self.events.push("trap-record");Ok(())
     }
     fn read(&mut self,address:usize)->u32 {
-        let value=*self.registers.get(&address).unwrap_or(&0);
+        let value=if address==0x400100 && self.pri_ready_at!=0 {
+            if self.now < self.pri_ready_at {0xbadf1201} else {0}
+        } else {*self.registers.get(&address).unwrap_or(&0)};
         if self.transient_trap && [0x400100,0x400108,0x400110,0x400118].contains(&address) {self.registers.remove(&address);}
         value
     }

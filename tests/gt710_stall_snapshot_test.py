@@ -79,7 +79,7 @@ struct Trace {
     target:u64,frame:u32,address:u64,command:u32,
 }
 struct Device {
-    retired:VecDeque<(Request,Option<u32>)>,attributed:Option<((),u32)>,channel:Channel,fault:bool,first_error:Option<&'static str>,
+    retired:VecDeque<(Request,Option<u32>)>,attributed:Option<((),u32)>,channel:Channel,pri_pending:bool,fault:bool,first_error:Option<&'static str>,
     resetting:Option<Result<(), &'static str>>,recent:Vec<Trace>,pending:Vec<Sent>,
 }
 impl Device {
@@ -95,7 +95,7 @@ fn main() {
     let state=Rc::new(RefCell::new(State::default()));
     for (epoch,put,fault) in [(17,23,true),(18,23,true),(19,24,false)] {
         let mut d=Device { retired:VecDeque::new(),attributed:None,channel:Channel {state:state.clone(),epoch,put,fault},
-            fault:false,first_error:None,resetting:None,recent:vec![],pending:vec![] };
+            pri_pending:false,fault:false,first_error:None,resetting:None,recent:vec![],pending:vec![] };
         state.borrow_mut().in_core=true;
         for _ in 0..2 {
             assert_eq!(matches!(d.reap(),Reap::Fault),fault);

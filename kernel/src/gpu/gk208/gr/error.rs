@@ -152,6 +152,14 @@ pub struct Trap {
 /// Retry only that condition; retain any genuine nonzero word immediately.
 /// The wall-clock deadline and poll-count cap both bound the worker wait.
 pub fn read_traps(io: &mut impl Io, initial: Option<[u32; 4]>) -> Result<[u32; 4], &'static str> {
+    read_traps_with(io, initial, true)
+}
+/// CORE-side sampling does no retry or delay. The adapter keeps its holds
+/// and asks kgpu to retry with the device borrowed outside the spin lock.
+pub fn read_traps_now(io: &mut impl Io, initial: Option<[u32; 4]>) -> Result<[u32; 4], &'static str> {
+    read_traps_with(io, initial, false)
+}
+fn read_traps_with(io: &mut impl Io, initial: Option<[u32; 4]>, retry: bool) -> Result<[u32; 4], &'static str> {
     let start = io.now_us();
     let registers = [0x400100, 0x400108, 0x400110, 0x400118];
     let mut words = initial.unwrap_or_else(|| registers.map(|r| io.read(r)));
@@ -161,6 +169,7 @@ pub fn read_traps(io: &mut impl Io, initial: Option<[u32; 4]>) -> Result<[u32; 4
             return Err("shader binding PGRAPH trap/exception");
         }
         if words == [0; 4] { return Ok(words); }
+        if !retry { return Err("GR PRI pending"); }
         let elapsed = io.now_us().saturating_sub(start);
         if elapsed >= 1000 || poll == 100 {
             io.refuse_trap(words)?;
@@ -174,7 +183,14 @@ pub fn read_traps(io: &mut impl Io, initial: Option<[u32; 4]>) -> Result<[u32; 4
 /// Read before W1C. Foreign engines, PGRAPH exceptions, unexpected addresses
 /// and non-PDE/PTE faults retain the confirmed-reset path.
 pub fn capture(io: &mut impl Io) -> Result<Option<Trap>, &'static str> {
-    read_traps(io, None).map_err(|reason| if reason == "GR PRI unreachable" { reason }
+    capture_with(io, true)
+}
+/// Nonblocking attribution for adapter calls made while CORE is locked.
+pub fn capture_now(io: &mut impl Io) -> Result<Option<Trap>, &'static str> {
+    capture_with(io, false)
+}
+fn capture_with(io: &mut impl Io, retry: bool) -> Result<Option<Trap>, &'static str> {
+    read_traps_with(io, None, retry).map_err(|reason| if matches!(reason, "GR PRI unreachable" | "GR PRI pending") { reason }
         else { "unhandled PGRAPH fault; backing retained" })?;
     let mask = io.read(0x259c);
     if mask == 0 { return Ok(None); }

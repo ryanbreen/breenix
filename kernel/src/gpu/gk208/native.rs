@@ -1077,7 +1077,9 @@ impl CoreProducer {
         use super::{adapter::{Operation, Request}, core_record::{Completion, Control}};
         use crate::gpu::{dev::{Reap, Request as DevRequest, Tag}, dev::Device};
         use crate::gpu_completion::CeSample;
-        let Device::Gk208(d) = &*device else { return Err("core producer backend mismatch") };
+        let Device::Gk208(d) = &mut *device else { return Err("core producer backend mismatch") };
+        // The producer borrows the adapter outside CORE, as CAPS does.
+        d.retry_pri();
         let (context, epoch, sequence) = d.probe_identity()?;
         let (resource, kind) = match operation {
             Operation::Transfer(_) | Operation::Undefined => return Err("core producer uses explicit probe copies"),

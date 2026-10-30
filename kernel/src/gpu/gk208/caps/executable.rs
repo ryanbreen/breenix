@@ -37,6 +37,8 @@ impl Runner<'_> {
         }
         let start = crate::arch_impl::x86_64::timer::rdtsc();
         loop {
+            // This startup/reprobe runner owns the adapter outside CORE.
+            self.device.retry_pri();
             match self.device.reap() {
                 Reap::Done(done) => {
                     if done.answer != gpu_abi::gk208::SUCCESS

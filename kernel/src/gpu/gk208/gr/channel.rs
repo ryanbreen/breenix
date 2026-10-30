@@ -827,6 +827,7 @@ mod native {
                 total: h.total,
                 sequence,
                 stop_on_trap,
+                retry_traps: true,
                 release_slot: 0,
                 queued_put: None,
             };
@@ -1456,15 +1457,20 @@ mod native {
             let c = self.session.report.identity;
             (c.instance, c.epoch)
         }
-        pub(crate) fn healthy(&self) -> Result<(), &'static str> {
+        pub(crate) fn healthy(&self) -> Result<(), &'static str> { self.health(false) }
+        fn health(&self, retry_traps: bool) -> Result<(), &'static str> {
             let mut monitor = Monitor { session: &self.session,
                 regs: &mut Registers(self.registers), total: self.total,
-                sequence: self.put.max(1), stop_on_trap: true, release_slot: 0,
+                sequence: self.put.max(1), stop_on_trap: true, retry_traps, release_slot: 0,
                 queued_put: Some(self.put) };
             monitor.snapshot().map(|_| ())
         }
         pub(crate) fn error_trap(&self) -> Result<Option<super::super::error::Trap>, &'static str> {
-            super::super::error::capture(&mut Registers(self.registers))
+            super::super::error::capture_now(&mut Registers(self.registers))
+        }
+        /// kgpu borrows the device outside CORE for this bounded retry.
+        pub(crate) fn wait_pri(&self) -> Result<(), &'static str> {
+            super::super::error::read_traps(&mut Registers(self.registers), None).map(|_| ())
         }
         pub(crate) fn record_refusal(&self) -> Result<(), &'static str> {
             if let Some((status, values, pri)) = take_refusal() { return emit_refusal(status, values, pri); }
@@ -1588,7 +1594,7 @@ mod native {
         }
         #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
         pub(crate) fn probe_drained(&mut self, sequence: u32) -> Result<bool, &'static str> {
-            let sample = self.sample(sequence)?;
+            let sample = self.sample_wait(sequence)?;
             self.session.pages.observe();
             let offset = u64::from(crate::gk208::queue::Queue::slot(sequence)) * 16 + 12;
             // SAFETY: the retained coherent release page contains this slot.
@@ -1606,9 +1612,16 @@ mod native {
             Ok(sample)
         }
         pub(crate) fn sample(&mut self, sequence: u32) -> Result<crate::gpu_completion::CeSample, &'static str> {
+            self.sample_with(sequence, false)
+        }
+        #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
+        pub(crate) fn sample_wait(&mut self, sequence: u32) -> Result<crate::gpu_completion::CeSample, &'static str> {
+            self.sample_with(sequence, true)
+        }
+        fn sample_with(&mut self, sequence: u32, retry_traps: bool) -> Result<crate::gpu_completion::CeSample, &'static str> {
             let mut regs = Registers(self.registers);
             let mut monitor = Monitor { session: &self.session, regs: &mut regs, total: self.total,
-                sequence, stop_on_trap: true, release_slot: crate::gk208::queue::Queue::slot(sequence) as usize,
+                sequence, stop_on_trap: true, retry_traps, release_slot: crate::gk208::queue::Queue::slot(sequence) as usize,
                 queued_put: Some(self.put) };
             let (value, epoch, consumed) = monitor.snapshot()?;
             let bound = regs.read(0x800000 + self.session.report.identity.id as usize * 8);
@@ -1770,7 +1783,7 @@ mod native {
             self.session.activate_regs(&mut regs, self.total)?;
             self.put = 0;
             self.session.next_sequence = 1;
-            if let Err(error) = self.healthy() {
+            if let Err(error) = self.health(true) {
                 self.record_fault(error);
                 return Err(error);
             }
@@ -1843,13 +1856,18 @@ mod native {
         total: u64,
         sequence: u32,
         stop_on_trap: bool,
+        retry_traps: bool,
         release_slot: usize,
         queued_put: Option<u32>,
     }
     impl Poll for Monitor<'_> {
         fn snapshot(&mut self) -> Result<(u32, u64, bool), &'static str> {
             if self.stop_on_trap {
-                let words = super::super::error::read_traps(self.regs, None)?;
+                let words = if self.retry_traps {
+                    super::super::error::read_traps(self.regs, None)?
+                } else {
+                    super::super::error::read_traps_now(self.regs, None)?
+                };
                 super::super::binding::check_traps(words)?;
                 let p = self.session.pbdma * 0x2000;
                 if self.regs.read(0x259c) != 0 || self.regs.read(0x40108 + p) != 0
