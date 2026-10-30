@@ -109,6 +109,7 @@ CATEGORIES = {
     'resources': [('row', 'Production CAPS admits backend 6 with executable origins 3-10, native classes and live scanouts'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 8.2 step passing, reclaimed memory and its own time within 900 s'), ('console', 'A completed production console boot passes 88/88 within 330 s of handoff')],
     'alpha': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 77-case 8.3 step passing, reclaimed memory and its own time within 900 s')],
     'shapes': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 90-case 8.4 step passing, reclaimed memory and its own time within 900 s')],
+    'presentation': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 161-case 8.6 selection passing, reclaimed memory and its own time within 900 s')],
     'isolation': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 140-case 8.5 selection passing, reclaimed memory and its own time within 900 s')],
     'core': [('row', 'CAPS bytes match the native backend-6 row and the created board classes'), ('dispatch', 'Native draws and copies complete; copy controls reject withheld release, stale epoch and masked 3D admission and accept their clean successors'), ('producer', 'A named production GPU-suite boot reports 170 manifest-ordered unprobed-capability admission refusals without skips and reports its own time')],
     'device': (
@@ -2017,7 +2018,7 @@ def resources_identity(boot, suite, sha=None):
         raise ValueError('resources requires a named production ' + suite + ' boot of the same kernel/build/tools')
 
 
-STEP_SELECTIONS = {'resources': 'gt710-step-8-2.json', 'alpha': 'gt710-step-8-3.json', 'shapes': 'gt710-step-8-4.json', 'isolation': 'gt710-step-8-5.json'}
+STEP_SELECTIONS = {'resources': 'gt710-step-8-2.json', 'alpha': 'gt710-step-8-3.json', 'shapes': 'gt710-step-8-4.json', 'isolation': 'gt710-step-8-5.json', 'presentation': 'gt710-step-8-6.json'}
 
 
 def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
@@ -2032,9 +2033,10 @@ def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
             or step.get('suite') != 'gpu' or not required
             or required != [n for n in names if n in required]):
         raise ValueError('resources step must select shared GPU cases in manifest order')
-    if selection == STEP_SELECTIONS['isolation']:
-        prior = json.loads((root / 'docs/gui' / STEP_SELECTIONS['shapes']).read_text())['cases']
-        required = [n for n in names if n in set(prior) | set(required)]
+    if selection in (STEP_SELECTIONS['isolation'], STEP_SELECTIONS['presentation']):
+        prior_steps = ('shapes',) if selection == STEP_SELECTIONS['isolation'] else ('resources', 'alpha', 'shapes', 'isolation')
+        prior = set().union(*(set(json.loads((root / 'docs/gui' / STEP_SELECTIONS[key]).read_text())['cases']) for key in prior_steps))
+        required = [n for n in names if n in prior | set(required)]
     fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal']
     if (not serial.endswith('\n') or any(re.search(p, serial) for p in
             fatal + [r'KERNEL PANIC[:!]', r'GT710_GR_REFUSAL', r'SUITE_SEQUENCE (?:STALLED|FAIL)'])):
@@ -2183,7 +2185,7 @@ def record_resources_capture(directory, sha, category='resources'):
 
 
 def check_case(category, case, serial, producer=None):
-    if category in ('alpha', 'shapes', 'isolation'):
+    if category in ('alpha', 'shapes', 'isolation', 'presentation'):
         if producer is None or case != 'suite':
             raise ValueError(f'{category} needs named production GPU and console captures')
         gpu = producer['gpu']

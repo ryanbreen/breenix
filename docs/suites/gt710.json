@@ -284,6 +284,17 @@
       ]
     },
     {
+      "id": "presentation",
+      "title": "Presentation and scanout isolation (M8 PR 8.6)",
+      "hostRunner": true,
+      "cases": [
+        {
+          "id": "suite",
+          "title": "A completed production GPU boot records all 170 ordered cases with zero skips, the 161-case 8.6 selection passing, reclaimed memory and its own time within 900 s"
+        }
+      ]
+    },
+    {
       "id": "isolation",
       "title": "Isolation, warm-up and recovery (M8 PR 8.5)",
       "hostRunner": true,
