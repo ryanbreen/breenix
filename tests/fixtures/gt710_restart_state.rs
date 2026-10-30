@@ -2,9 +2,9 @@
 // Hardware substitutes for the production restart and constructor FIFO writes.
 use std::{cell::RefCell, collections::BTreeMap};
 const COMMAND: u64 = 0x1000000;
-struct State { vram: BTreeMap<u64,u32>, health: Result<(u32,u64,bool), &'static str>, reasons: Vec<String> }
+struct State { vram: BTreeMap<u64,u32>, health: Result<(u32,u64,bool), &'static str>, reasons: Vec<String>, accessible: bool, refuse_access: bool }
 thread_local! { static STATE: RefCell<State> = RefCell::new(State {
-    vram: BTreeMap::new(), health: Ok((0,0,false)), reasons: vec![] }); }
+    vram: BTreeMap::new(), health: Ok((0,0,false)), reasons: vec![], accessible:false, refuse_access:false }); }
 struct Registers(usize);
 impl Registers {
     fn mask(&mut self, _:usize, _:u32, _:u32) { assert_eq!(self.0, 7); }
@@ -18,9 +18,13 @@ fn word(address:u64)->u32 { STATE.with(|s| *s.borrow().vram.get(&address).unwrap
 mod modeset { pub fn bar_flush(_: &mut super::Registers)->Result<(), &'static str> { Ok(()) } }
 mod topology { pub fn decode(_: &[[u32;2];3])->Result<(), &'static str> { Ok(()) } }
 mod ctxctl {
+    pub fn enable(_: &mut super::Registers)->Result<(), &'static str> {
+        super::STATE.with(|s| {let mut s=s.borrow_mut();
+            if s.refuse_access {Err("GR PRI inaccessible")} else {s.accessible=true;Ok(())}})
+    }
     pub struct Controller;
     impl Controller {
-        pub fn upload(_: &mut super::Registers, _: &(), _: [u64;2])->Result<Self, &'static str> { Ok(Self) }
+        pub fn upload(_: &mut super::Registers, _: &(), _: [u64;2])->Result<Self, &'static str> { super::STATE.with(|s|assert!(s.borrow().accessible,"firmware upload before GR accessibility confirmation")); Ok(Self) }
         pub fn start(&mut self, _: &mut super::Registers)->Result<(), &'static str> { Ok(()) }
     }
 }
@@ -108,4 +112,13 @@ fn constructor(c:&NativeChannel)->Result<(), &'static str> {
     STATE.with(|s|s.borrow_mut().health=Err("injected post-restart health failure"));
     assert_eq!(c.restart(),Err("injected post-restart health failure"));
     STATE.with(|s|assert_eq!(s.borrow().reasons,["injected post-restart health failure"]));
+}
+
+#[test] fn inaccessible_gr_forbids_firmware_upload_and_channel_restart() {
+    let mut c=channel();
+    STATE.with(|s| s.borrow_mut().refuse_access=true);
+    assert_eq!(c.restart(),Err("GR PRI inaccessible"));
+    assert_eq!(c.session.report.identity.epoch,17);
+    assert!(c.session.quiesced);
+    assert_eq!(c.put,6481);
 }

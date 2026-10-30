@@ -1,4 +1,4 @@
-"""Exercise G19 quarantine and error precedence in the production shared core."""
+"""Exercise Corrected G19 logical-context survival and error precedence in the production shared core."""
 from pathlib import Path
 import subprocess
 import sys
@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT / 'tests'))
 from gt710_gr_live_unwind_test import item
 
 class FaultIsolation(unittest.TestCase):
-    def test_only_offender_dies_and_mmu_error_survives_chunk_reset(self):
+    def test_logical_context_survives_and_mmu_error_survives_chunk_reset(self):
         core = (ROOT / 'kernel/src/gpu/mod.rs').read_text()
         methods = '\n'.join(item(core, marker) for marker in (
             '    fn returned(', '    fn ended(', '    fn ended_tag('))
@@ -52,11 +52,12 @@ fn main(){
   backlog:VecDeque::from([(17,Request(Tag::Submit{ctx:7,serial:9001,last:false})),(17,Request(Tag::Submit{ctx:8,serial:23,last:true}))]),
   traffic_ns:0,faults:0,settled:vec![],results:vec![],epoch:17,resources:BTreeMap::from([(7,123),(8,456)])};
  c.returned(Done{tag:Tag::Submit{ctx:7,serial:9001,last:true},answer:0x60010002});
- assert_eq!(c.contexts[&7].state,CtxState::Quarantined);assert_eq!(c.contexts[&7].depth,None);
+ assert_eq!(c.contexts[&7].state,CtxState::Live);assert_eq!(c.contexts[&7].depth,Some(()));
  assert_eq!(c.contexts[&8].state,CtxState::Live);assert_eq!(c.contexts[&8].depth,Some(()));
- assert_eq!(c.backlog.len(),1);assert_eq!(c.backlog[0].1.tag(),Tag::Submit{ctx:8,serial:23,last:true});
+ assert_eq!(c.backlog.len(),2,"logical-context queued requests survive channel recovery");
+ let (_, request)=c.backlog.pop_front().unwrap();c.ended(request);
  assert_eq!(c.results,[(9001,fence_status::DEVICE_ERROR,0x60010002)]);
- assert_eq!(c.settled,[7]);assert_eq!(c.epoch,17);assert_eq!(c.resources,BTreeMap::from([(7,123),(8,456)]));
+ assert!(c.settled.is_empty());assert_eq!(c.epoch,17);assert_eq!(c.resources,BTreeMap::from([(7,123),(8,456)]));
  assert_eq!(c.faults,0,"an attributed fault must not request whole-device reset");assert_eq!(c.traffic_ns,42);
  c.syncs.insert(24,Sync{ctx:8,warm:None});c.returned(Done{tag:Tag::Sync(24),answer:1});
  c.returned(Done{tag:Tag::Background,answer:1});

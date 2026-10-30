@@ -38,6 +38,20 @@ pub mod gpu {
         }), Err((abi::status::MISSING_CAPABILITY, capability::FEATURE_3D)));
         assert_eq!(core.admission_on(Some(&device), |_, _| None), Ok(()));
     }
+    #[test] fn detached_native_recovery_uses_the_measured_admission_snapshot() {
+        let mut core = Core::empty();
+        core.resetting = true;
+        core.status = abi::status::ADMITTED;
+        core.caps.backend = abi::backend::GK208;
+        core.caps.status = abi::status::ADMITTED;
+        assert_eq!(core.admission_on(None, |_, _| None), Ok(()),
+            "a worker detaching an admitted device must not expose empty virtual capability bits");
+        assert_eq!(core.admission_on(None, |_, _| Some(u64::from(capability::FEATURE_3D))),
+            Err((abi::status::MISSING_CAPABILITY, capability::FEATURE_3D)));
+        core.resetting = false;
+        assert_eq!(core.admission_on(None, |_, _| panic!("failed device consumed mask")),
+            Err((abi::status::DEVICE_FAILED, 0)));
+    }
     pub fn record_native_refusal(caps: gpu_abi::Caps) {
         assert_eq!(caps.backend, gpu_abi::backend::GK208);
         assert_eq!(caps.status, gpu_abi::status::MISSING_CAPABILITY);

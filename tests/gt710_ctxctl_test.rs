@@ -105,7 +105,7 @@ struct Mock {
     regs: BTreeMap<u32,u32>, memory: BTreeMap<(u32,bool,u32),u32>,
     index: BTreeMap<(u32,bool),u32>, events: Vec<Event>,
     now: u64, frozen: bool, fast_clock: bool, ticks: u64, record: bool, corrupt: Option<(u32,bool,u32)>,
-    ready: bool, gpc_ready: bool, reply: bool, pgob_stuck: bool,
+    ready: bool, gpc_ready: bool, reply: bool, pgob_stuck: bool, pri_ready_at: u64,
 }
 impl Mock {
     fn new() -> Self {
@@ -113,7 +113,7 @@ impl Mock {
                 (0x502608,2), (0x500c30,3), (0x409108,0x20040), (0x502108,0x20040),
                 (0x120074,1), (0x100800,1)]), memory: BTreeMap::new(),
             index: BTreeMap::new(), events: vec![], now:0, frozen:false, fast_clock:false, ticks:0, record:true,
-            corrupt:None, ready:true, gpc_ready:true, reply:true, pgob_stuck:false }
+            corrupt:None, ready:true, gpc_ready:true, reply:true, pgob_stuck:false, pri_ready_at:0 }
     }
     fn port(a:u32) -> Option<(u32,bool,bool)> {
         let base=a & !0xfff;
@@ -133,6 +133,8 @@ impl Access for Mock {
             if self.corrupt==Some((b,c,offset)) { v^=1; }
             if index & 0x02000000!=0 { self.index.insert((b,c),index+4); }
             v
+        } else if a == 0x400100 && (self.regs[&0x200] & 0x1000 == 0 || self.now < self.pri_ready_at) {
+            0xbadf1201
         } else if a == 0x400500 && self.regs[&0x200] & 0x1000 == 0 {
             // Measured cold-boot PRI response while PMC disables PGRAPH.
             0xbadf1201
@@ -402,4 +404,20 @@ fn sparse_tpc_mask_uses_logical_register_index() {
     Controller::upload(&mut m, &t, [0x100000, 0x101000]).unwrap();
     assert!(m.events.contains(&Event::Write(0x504508, u32::MAX)));
     assert!(!m.events.contains(&Event::Write(0x504d08, u32::MAX)));
+}
+
+#[test]
+fn reset_waits_for_accessible_pgraph_and_refuses_missing_pri_response() {
+    let mut delayed = Mock::new();
+    delayed.pri_ready_at = 65_000;
+    ctxctl::reset(&mut delayed).unwrap();
+    assert!(delayed.events.contains(&Event::Read(0x400100, 0)),
+        "PMC enable alone does not confirm a PGRAPH PRI response before restart");
+    assert!(delayed.now >= delayed.pri_ready_at);
+    let mut absent = Mock::new();
+    absent.pri_ready_at = u64::MAX;
+    let error = ctxctl::reset(&mut absent).unwrap_err();
+    assert_eq!(error.address, 0x400100);
+    assert_eq!(error.value, 0xbadf1201);
+    assert!(error.elapsed_us >= BOUND_US);
 }
