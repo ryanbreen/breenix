@@ -147,10 +147,127 @@ class Frontend : public BuildUtil {
          imms[o.index]=words;
       } else throw std::runtime_error("invalid declaration: "+line);
    }
+   bool boundedArithmeticLoop(unsigned begin, unsigned &breakAt) {
+      unsigned end=begin+1;
+      while (end<lines.size() && lines[end]!="ENDLOOP") {
+         if (opName(lines[end])=="BGNLOOP") return false;
+         ++end;
+      }
+      if (begin<2 || end>=lines.size() || end<begin+8 ||
+          lines[end-3]!="ELSE" || lines[end-2]!="BRK" || lines[end-1]!="ENDIF") return false;
+      const auto args = [this](unsigned at, const std::string &op) {
+         return opName(lines[at])==op ? split(lines[at].substr(op.size()+1),',') : std::vector<std::string>{};
+      };
+      auto limit=args(begin-2,"UADD"), initial=args(begin-1,"UADD");
+      auto step=args(end-6,"UADD"), test=args(end-5,"USLT"), guard=args(end-4,"UIF");
+      if (limit.size()!=3 || initial.size()!=3 || step.size()!=3 || test.size()!=3 || guard.size()!=1)
+         return false;
+      const auto same = [](const std::string &a, const std::string &b) {
+         Operand x(a), y(b);
+         return x.file==y.file && x.index==y.index && !x.swizzle.empty() && !y.swizzle.empty() &&
+            x.swizzle.find_first_not_of(x.swizzle[0])==std::string::npos &&
+            y.swizzle.find_first_not_of(y.swizzle[0])==std::string::npos && x.swizzle[0]==y.swizzle[0];
+      };
+      const auto immediate = [this](const std::string &s, unsigned expected) {
+         Operand o(s);
+         return o.file=="IMM" && imms.count(o.index) && !o.swizzle.empty() &&
+            o.swizzle.find_first_not_of(o.swizzle[0])==std::string::npos &&
+            imms.at(o.index)[std::string("xyzw").find(o.swizzle[0])]==expected;
+      };
+      if (Operand(initial[1]).file!="CONST" || !same(limit[1],initial[1]) ||
+          !immediate(limit[2],2) || !immediate(initial[2],0) || !immediate(step[2],1) ||
+          !same(initial[0],step[0]) || !same(initial[0],step[1]) ||
+          !same(initial[0],test[1]) || !same(limit[0],test[2]) || !same(test[0],guard[0])) return false;
+      Operand counter(initial[0]), bound(limit[0]);
+      if (counter.file!="TEMP" || bound.file!="TEMP" || same(initial[0],limit[0])) return false;
+      for (unsigned at=begin+1;at<end-6;++at) {
+         auto op=opName(lines[at]);
+         if (op=="UIF" || op=="ELSE" || op=="ENDIF") continue;
+         if (op=="BRK" || op=="KILL" || op=="TXF") return false;
+         auto operands=split(lines[at].substr(lines[at].find(' ')+1),',');
+         Operand dst(operands[0]);
+         auto sw=dst.swizzle.empty()?std::string("xyzw"):dst.swizzle;
+         if (dst.file=="TEMP" && ((dst.index==counter.index && sw.find(counter.swizzle[0])!=std::string::npos) ||
+             (dst.index==bound.index && sw.find(bound.swizzle[0])!=std::string::npos))) return false;
+      }
+      breakAt=end-2;
+      return true;
+   }
    void conditional(const std::string &line) {
       ++ifDepth;
       Operand src(trim(line.substr(4)));
       Value *condition=read(src,0);
+      const bool breakOnTrue=cursor+1<lines.size() && lines[cursor]=="BRK" && lines[cursor+1]=="ENDIF";
+      const bool breakOnFalse=cursor+2<lines.size() && lines[cursor]=="ELSE" &&
+         lines[cursor+1]=="BRK" && lines[cursor+2]=="ENDIF";
+      if (breakOnTrue || breakOnFalse) {
+         require(!loopTails.empty(),"BRK outside loop");
+         BasicBlock *head=getBB(), *tail=block();
+         head->cfg.attach(&loopTails.back()->cfg,Graph::Edge::CROSS);
+         head->cfg.attach(&tail->cfg,Graph::Edge::FORWARD);
+         mkFlow(OP_BREAK,loopTails.back(),breakOnTrue?CC_NE:CC_EQ,condition)->setType(TYPE_U32);
+         cursor+=breakOnTrue?2:3;
+         setPosition(tail,true);
+         --ifDepth;
+         return;
+      }
+      // Keep arithmetic-only nested choices off the control stack. Evaluating
+      // both arms requires arithmetic only, with statically bounded loops.
+      unsigned depth=1, scan=cursor;
+      unsigned arithmeticBreak=0;
+      bool pure=true;
+      for (; scan<lines.size() && depth; ++scan) {
+         auto op=opName(lines[scan]);
+         if (op=="UIF") ++depth;
+         else if (op=="ENDIF") --depth;
+         else if (op=="BGNLOOP") pure=boundedArithmeticLoop(scan,arithmeticBreak) && pure;
+         else if (op=="TXF" || (op=="BRK" && scan!=arithmeticBreak) || op=="KILL" || op=="END") pure=false;
+      }
+      if (pure && depth==0 && ifDepth+loopDepth>6) {
+         std::map<unsigned,unsigned> tempWrites, outputWrites;
+         for (unsigned at=cursor;at<scan;++at) {
+            auto op=opName(lines[at]);
+            if (op=="UIF" || op=="ELSE" || op=="ENDIF" || op=="BGNLOOP" || op=="ENDLOOP" || op=="BRK") continue;
+            Operand dst(split(lines[at].substr(lines[at].find(' ')+1),',')[0]);
+            unsigned mask=0;
+            for (char c:dst.swizzle.empty()?std::string("xyzw"):dst.swizzle)
+               mask|=1u<<std::string("xyzw").find(c);
+            (dst.file=="OUT"?outputWrites:tempWrites)[dst.index]|=mask;
+         }
+         auto *pred=getSSA(1,FILE_PREDICATE);
+         mkCmp(OP_SET,CC_NE,TYPE_U8,pred,TYPE_U32,condition,mkImm(0));
+         auto initialTemps=temps, initialOutputs=outputs;
+         const auto copy = [this](const std::map<unsigned,Vec> &source) {
+            std::map<unsigned,Vec> result;
+            for (auto [index,values]:source) for (unsigned c=0;c<4;++c)
+               result[index][c]=mkMov(getScratch(),values[c])->getDef(0);
+            return result;
+         };
+         temps=copy(initialTemps); outputs=copy(initialOutputs);
+         sequence();
+         auto yesTemps=temps, yesOutputs=outputs;
+         temps=copy(initialTemps); outputs=copy(initialOutputs);
+         if (cursor<lines.size() && lines[cursor]=="ELSE") { ++cursor; sequence(); }
+         auto noTemps=temps, noOutputs=outputs;
+         require(cursor<lines.size() && lines[cursor]=="ENDIF","missing ENDIF"); ++cursor;
+         temps=initialTemps; outputs=initialOutputs;
+         const auto merge = [this,pred](std::map<unsigned,Vec> &result,
+                     const std::map<unsigned,Vec> &yes, const std::map<unsigned,Vec> &no,
+                     const std::map<unsigned,unsigned> &writes) {
+            for (auto [index,mask]:writes) {
+               Vec &dst=reg(result,index);
+               for (unsigned c=0;c<4;++c) if (mask&(1u<<c)) {
+                  Value *a=yes.count(index)?yes.at(index)[c]:dst[c];
+                  Value *b=no.count(index)?no.at(index)[c]:dst[c];
+                  mkOp3(OP_SELP,TYPE_U32,dst[c],a,b,pred);
+               }
+            }
+         };
+         merge(temps,yesTemps,noTemps,tempWrites);
+         merge(outputs,yesOutputs,noOutputs,outputWrites);
+         --ifDepth;
+         return;
+      }
       BasicBlock *head=getBB(), *yes=block(), *no=block(), *tail=block();
       head->cfg.attach(&yes->cfg,Graph::Edge::TREE);
       head->cfg.attach(&no->cfg,Graph::Edge::TREE);
@@ -171,12 +288,15 @@ class Frontend : public BuildUtil {
       // MIT nv50_ir_from_nir.cpp:1605-1653: a BRK arm does not converge
       // with the fallthrough arm. Do not join that loop-exit path.
       // MIT nv50_ir_from_nir.cpp:1640-1642 bounds explicit join nesting.
-      if (insertJoins && ifDepth<=6) {
+      // nvc0_program.c:723-730 also budgets control stack depth before
+      // spilling. Reserve loop entries within this no-CRS catalogue's bound.
+      const bool boundedJoin=insertJoins && ifDepth+loopDepth<=6;
+      if (boundedJoin) {
          setPosition(head->getExit(),false);
          head->joinAt=mkFlow(OP_JOINAT,tail,CC_ALWAYS,NULL);
       }
       setPosition(tail,true);
-      if (insertJoins && ifDepth<=6) mkFlow(OP_JOIN,NULL,CC_ALWAYS,NULL)->fixed=1;
+      if (boundedJoin) mkFlow(OP_JOIN,NULL,CC_ALWAYS,NULL)->fixed=1;
       --ifDepth;
    }
    void loop() {
