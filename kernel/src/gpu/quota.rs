@@ -72,11 +72,11 @@ impl Drop for QuotaCharge {
     }
 }
 
-/// Bytes charged to an owner's GPU quota and, for a process, its `RLIMIT_AS`.
-/// Owner 0 is the kernel console: it has a GPU quota but no process address space.
+/// Bytes charged to process `tgid`'s quota and its `RLIMIT_AS`, released when dropped: staging,
+/// and `SUBMIT`'s private copies and device vertex storage.
 pub(super) struct Charge {
     _quota: QuotaCharge,
-    limits: Option<Arc<crate::process::limits::Limits>>,
+    limits: Arc<crate::process::limits::Limits>,
     bytes: u64,
 }
 
@@ -86,22 +86,20 @@ impl Charge {
     pub(super) fn new(tgid: u64, bytes: u64, copy: bool) -> Result<Charge, i64> {
         let quota = with_core(|c| c.proc_mut(tgid).quota.clone()).ok_or(ENODEV)?;
         let charged = QuotaCharge::try_new(&quota, bytes, copy).ok_or(ENOMEM)?;
-        let limits = if tgid == 0 { None } else { Some(crate::process::with_process_manager(|m| {
+        let limits = crate::process::with_process_manager(|m| {
             let p = m.get_process(crate::process::ProcessId::new(tgid)).ok_or(EINVAL)?;
             if !p.reserve_gpu_bytes(bytes) {
                 return Err(ENOMEM);
             }
             Ok(p.limits.clone())
         })
-        .unwrap_or(Err(EINVAL))?) };
+        .unwrap_or(Err(EINVAL))?;
         Ok(Charge { _quota: charged, limits, bytes })
     }
 }
 
 impl Drop for Charge {
     fn drop(&mut self) {
-        if let Some(limits) = &self.limits {
-            limits.release_gpu_bytes(self.bytes);
-        }
+        self.limits.release_gpu_bytes(self.bytes);
     }
 }

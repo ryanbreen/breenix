@@ -154,21 +154,3 @@ fn copy_release_cannot_inflate_the_resource_baseline() {
     assert_eq!(quota.resource_bytes(), 0);
     assert_eq!(quota.held.load(Ordering::Acquire), 0);
 }
-
-#[test]
-fn kernel_console_scratch_has_a_quota_without_a_process_address_limit() {
-    setup(0, 0);
-    let quota = with_core(|c| c.proc_mut(0).quota.clone()).unwrap();
-    let charge = quota::Charge::new(0, PAGE as u64, true)
-        .unwrap_or_else(|e| panic!("kernel console scratch refused without process 0: errno {e}"));
-    assert_eq!(quota.held.load(Ordering::Acquire), PAGE as u64);
-    assert_eq!(quota.copies.load(Ordering::Acquire), PAGE as u64);
-    assert_eq!(LIMITS.with(|l| l.held.get()), 0);
-    assert!(matches!(quota::Charge::new(2, 1, true), Err(EINVAL)),
-        "an absent userspace process must remain refused");
-    assert!(matches!(quota::Charge::new(0, MEMORY_QUOTA, true), Err(ENOMEM)),
-        "kernel ownership still obeys the GPU quota");
-    drop(charge);
-    assert_eq!(quota.held.load(Ordering::Acquire), 0);
-    assert_eq!(quota.copies.load(Ordering::Acquire), 0);
-}
