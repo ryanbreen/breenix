@@ -133,11 +133,15 @@ impl Access for Mock {
             if self.corrupt==Some((b,c,offset)) { v^=1; }
             if index & 0x02000000!=0 { self.index.insert((b,c),index+4); }
             v
+        } else if a == 0x400500 && self.regs[&0x200] & 0x1000 == 0 {
+            // Measured cold-boot PRI response while PMC disables PGRAPH.
+            0xbadf1201
         } else { *self.regs.get(&a).unwrap_or(&0) };
         if self.record { self.events.push(Event::Read(a,v)); } v
     }
     fn write(&mut self,a:u32,v:u32) {
         if self.record { self.events.push(Event::Write(a,v)); }
+        if a == 0x400500 && self.regs[&0x200] & 0x1000 == 0 { return; }
         if let Some((b,c,data))=Self::port(a) {
             let bases=if b==0x41a000 { vec![0x502000] } else { vec![b] };
             for b in bases {
@@ -297,6 +301,7 @@ fn ctxctl_bad_size_caps_and_busy_engine_are_errors() {
 #[test]
 fn ctxctl_power_on_exits_pgob_before_topology_without_resetting_fifo_or_ce() {
     let mut m = Mock::new();
+    m.regs.entry(0x200).and_modify(|v| *v |= 0x1000);
     m.regs.insert(0x400500, 3);
     ctxctl::reset(&mut m).unwrap();
     assert_eq!(m.regs[&0x400500], 2);
@@ -325,6 +330,19 @@ fn ctxctl_power_on_exits_pgob_before_topology_without_resetting_fifo_or_ce() {
         let pos = m.events.iter().position(|e| *e == Event::Write(a,v)).unwrap();
         assert_eq!(m.events[pos+1], Event::Read(a,v & 0x7fffffff));
     }
+}
+
+#[test]
+fn ctxctl_cold_reset_does_not_access_disabled_pgraph() {
+    let mut m = Mock::new();
+    assert_eq!(m.regs[&0x200] & 0x1000, 0);
+    ctxctl::reset(&mut m).unwrap();
+    let enable = m.events.iter().position(|e| matches!(e,
+        Event::Write(0x200, v) if v & 0x1000 != 0)).unwrap();
+    assert!(!m.events[..enable].iter().any(|e| matches!(e,
+        Event::Read(0x400500, _) | Event::Write(0x400500, _))),
+        "disabled GR cannot accept FIFO accesses");
+    assert_eq!(m.regs[&0x200] & 0x1000, 0x1000);
 }
 
 #[test]
