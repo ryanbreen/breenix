@@ -2880,8 +2880,14 @@ def main():
                 raise ValueError('PR head or state changed during acceptance scoring')
             for boot in proof['boots']:
                 print(f'{boot["suite"]} boot={boot["id"]} capture={boot["commit"]} '
-                      f'tools={boot["toolsCommit"]} exit={boot["exitStatus"]} '
-                      f'reason={boot["exitReason"]} DONE={boot["done"]} memory={boot["memory"]}')
+                      f'tools={boot["toolsCommit"]} build={boot["build"]["commit"]} '
+                      f'profile={boot["build"]["profile"]} features={boot["build"]["features"]} '
+                      f'exit={boot["exitStatus"]} reason={boot["exitReason"]} '
+                      f'DONE={boot["done"]} memory={boot["memory"]} '
+                      f'captureComplete={json.dumps(boot["captureComplete"])}')
+            for check in proof['checks']:
+                print(f'scorer {check["suite"]}/{check["category"]} '
+                      f'PASS {check["count"]}/{check["count"]}: {check["reason"]}')
             print(f'PR #{pr["number"]} current head={pr["headRefOid"]}; '
                   f'console handoff-to-done={proof["consoleHandoffToDoneMS"]} ms; '
                   f'GPU elapsed={proof["gpuElapsedMS"]} ms; selected={proof["selected"]}; '
@@ -2890,6 +2896,8 @@ def main():
             proof.update(passed=False, error=str(error))
             print('alpha acceptance FAIL: ' + str(error), flush=True)
         (args.acceptance_directory / 'acceptance.json').write_text(json.dumps(proof, indent=2) + '\n')
+        if proof['passed']:
+            print('acceptance proof=' + str(args.acceptance_directory / 'acceptance.json'), flush=True)
         return 0 if proof['passed'] else 1
     if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot or '') or not re.fullmatch('[a-f0-9]{40}', args.sha or ''):
         parser.error('--boot ID and --sha full commit required')
