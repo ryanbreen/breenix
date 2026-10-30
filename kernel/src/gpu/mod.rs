@@ -2713,7 +2713,7 @@ fn native_reset_barrier() -> Result<(), i64> {
 /// `gpu(op, arg, len)`.
 pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
     let _path = GpuPath::enter();
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", feature = "gt710_core_probe"))]
     let _timing = (dev::backend() == abi::backend::GK208)
         .then(|| crate::gk208::timing::Guard::new(caller().unwrap_or(0), op));
     // Test point 3, `emit-diagnostic`: this call writes BreenGL's diagnostic payload, the
@@ -4247,8 +4247,10 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 // Native scratch uses the same validated per-format plan as the
                 // virtual encoders, with native layout and retirement ownership.
                 let mut scratch = native_blend_scratch(tgid, plan.scratch)?;
+                #[cfg(feature = "gt710_core_probe")]
                 if plan.data_bytes > 0 { crate::gk208::timing::begin_draw(tgid); }
                 let data = {
+                    #[cfg(feature = "gt710_core_probe")]
                     let _timing = crate::gk208::timing::phase(100);
                     crate::gk208::encode::pack_spans(&words, &resolved, data_width).map_err(|_| EINVAL)?
                 };
@@ -4264,6 +4266,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                     }
                     None => None,
                 };
+                #[cfg(feature = "gt710_core_probe")]
                 let translating = crate::gk208::timing::phase(110);
                 let mut frame = if corrupt.is_none() && suppress.is_none() && swap.is_none() {
                     crate::gk208::encode::translate(&words, &resolved)
@@ -4272,7 +4275,9 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                         crate::gk208::encode::Extras { corrupt, suppress, swap })
                 }.map_err(|_| EINVAL)?;
                 frame.compact().map_err(|_| EINVAL)?;
+                #[cfg(feature = "gt710_core_probe")]
                 drop(translating);
+                #[cfg(feature = "gt710_core_probe")]
                 let _timing = crate::gk208::timing::phase(111);
                 let backing = Arc::new(Pages::new(frame.data.len().div_ceil(PAGE)).ok_or(ENOMEM)?);
                 backing.write(0,&frame.data);

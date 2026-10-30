@@ -1489,8 +1489,9 @@ mod native {
             let s = &self.session;
             crate::gk208::ce::with_resources(|r,_,io| r.bind(io,
                 s.context.space().directory.range.start,s.report.identity.instance,s.report.identity.epoch))?;
-            // Storage retains the uploaded code/inputs and the frame's target holds.
-            let payload = crate::gk208::encode::channel_words(&draw.words, self.quarantine)?;
+            // Storage retains frame inputs and target holds; parking owns the code.
+            let mut payload = crate::gk208::encode::channel_words(&draw.words, self.quarantine)?;
+            crate::gk208::encode::channel_programs(&mut payload, &self.parking)?;
             // Restart reconstructs RAMFC without its old subchannel classes.
             // SET_OBJECT must precede graphics state and release methods even
             // when clipping leaves no draw (MIT cla197.h:34-36).

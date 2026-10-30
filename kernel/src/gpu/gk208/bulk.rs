@@ -8,6 +8,7 @@ pub(super) fn line(text:String)->Result<(),&'static str> {
     rows.extend_from_slice(text.as_bytes());rows.push(b'\n');Ok(())
 }
 pub(super) fn take()->Vec<u8> {
+    #[cfg(feature = "gt710_core_probe")]
     if let Some((text, anchor)) = super::timing::export() {
         // A transport overflow leaves a missing record, which the decoder rejects.
         let _ = line(text);

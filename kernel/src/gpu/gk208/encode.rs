@@ -193,6 +193,45 @@ pub fn channel_words(input: &[u32], quarantine: u64) -> Result<Vec<u32>, &'stati
     Ok(words)
 }
 
+/// Bind each draw's unchanged program offsets to the catalogue retained by the
+/// channel's parking state. Frame retirement cannot revoke this code storage.
+pub fn channel_programs(input: &mut [u32], parking: &[u32]) -> Result<(), &'static str> {
+    let mut code = None;
+    let mut at = 0;
+    while at < parking.len() {
+        let header = parking[at];
+        let count = ((header >> 16) & 0x1fff) as usize;
+        if header & 0xe0000000 != 0x20000000 || count == 0 || at + count >= parking.len() {
+            return Err("invalid native parking packet extent");
+        }
+        if (header & 0x1fff) * 4 == 0x1608 {
+            if count != 2 || code.is_some() { return Err("invalid native parked code binding"); }
+            let address = u64::from(parking[at+1]) << 32 | u64::from(parking[at+2]);
+            if address == 0 || address & ((1 << 17) - 1) != 0
+                || address.checked_add(shaders::CATALOGUE_CODE_SIZE as u64).is_none_or(|end| end > 1 << 40) {
+                return Err("invalid native parked code address");
+            }
+            code = Some([parking[at+1], parking[at+2]]);
+        }
+        at += count + 1;
+    }
+    let code = code.ok_or("native channel catalogue absent")?;
+    at = 0;
+    while at < input.len() {
+        let header = input[at];
+        let count = ((header >> 16) & 0x1fff) as usize;
+        if header & 0xe0000000 != 0x20000000 || count == 0 || at + count >= input.len() {
+            return Err("invalid native draw packet extent");
+        }
+        if (header & 0x1fff) * 4 == 0x1608 {
+            if count != 2 { return Err("invalid native frame code binding"); }
+            input[at+1..at+3].copy_from_slice(&code);
+        }
+        at += count + 1;
+    }
+    Ok(())
+}
+
 // Reserve the complete committed shader catalogue before per-draw data.
 pub const DATA_START: usize = (1 << 20) + shaders::CATALOGUE_CODE_SIZE;
 const CODE: usize = 1 << 20;
@@ -339,6 +378,15 @@ pub fn parking_frame(target: Target, source: Target, address: u64, quarantine: u
     -> Result<(Vec<u8>, Vec<u32>), &'static str> {
     let mut frame = warm_frame(target, source, pipeline::COPY)
         .ok_or("native parking frame refused")?;
+    // Runtime frames use this retained code base for both rendering and the
+    // 25 integer probe variants. The admission programs share that same layout.
+    for pipe in [PROBE_INTEGER, PROBE_TEXEL].into_iter()
+        .chain(PROBE_ROUTINE_BASE..PROBE_ROUTINE_BASE + 25) {
+        let (offset, header, code, _) = program(pipe);
+        let at = CODE + offset;
+        frame.data[at..at + 80].copy_from_slice(header);
+        frame.data[at + 80..at + 80 + code.len()].copy_from_slice(code);
+    }
     // CODE is a 128 KiB multiple; omit the obsolete per-frame VAB reservation.
     // channel_words redirects that one binding to channel-owned VAB storage.
     frame.relocate(address.checked_sub(CODE as u64).ok_or("native parking VA underflow")?)?;
@@ -392,31 +440,33 @@ pub struct Frame {
     removed_prefix: usize,
 }
 impl Frame {
-    /// VAB is channel-owned (channel_words), so its obsolete reservation need
-    /// not be allocated, mapped or invalidated by frame preparation.
-    /// Keep catalogue offsets and payload bytes, shifting only buffer addresses.
+    /// VAB and the immutable catalogue are channel-owned. Keep only frame
+    /// inputs; publication supplies both retained bindings before any launch.
+    /// Program offsets remain relative to the unchanged channel catalogue.
     pub fn compact(&mut self) -> Result<(), &'static str> {
-        if self.removed_prefix == CODE { return Ok(()); }
-        if self.data.len() < CODE { return Err("native frame prefix absent"); }
+        if self.removed_prefix == DATA_START { return Ok(()); }
+        if self.data.len() < DATA_START { return Err("native frame prefix absent"); }
         for c in &mut self.chunks {
             let mut shifted = Vec::with_capacity(c.relocations.len());
             for &i in &c.relocations {
-                if i > 0 && c.words[i-1] == 0x200305ef {
-                    // channel_words supplies the retained VAB before publication.
+                if i > 0 && matches!(c.words[i-1], 0x200305ef | 0x20020582) {
+                    // channel_words/channel_programs supply retained storage at publication.
                     c.words[i] = 0;
                     c.words[i+1] = 0;
                     continue;
                 }
                 let offset = (u64::from(c.words[i]) << 32) | u64::from(c.words[i+1]);
-                let offset = offset.checked_sub(CODE as u64).ok_or("native frame address in removed prefix")?;
+                let offset = offset.checked_sub(DATA_START as u64).ok_or("native frame address in removed prefix")?;
                 c.words[i] = (offset >> 32) as u32;
                 c.words[i+1] = offset as u32;
                 shifted.push(i);
             }
             c.relocations = shifted;
         }
-        self.data = self.data.split_off(CODE);
-        self.removed_prefix = CODE;
+        self.data = self.data.split_off(DATA_START);
+        // CE-only frames still use the common retained frame-buffer owner.
+        if self.data.is_empty() { self.data.push(0); }
+        self.removed_prefix = DATA_START;
         Ok(())
     }
     /// Pack adjacent draws from this frame into bounded channel submissions.
@@ -1303,10 +1353,12 @@ pub(crate) fn prepare(
 ) -> Result<Vec<super::adapter::EncodedDraw>, &'static str> {
     use alloc::sync::Arc;
     let pages: Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
-    let mut regions = vec![super::resource::FrameRegion {
-        start: (CODE - frame.removed_prefix) as u64,
-        end: (DATA_START - frame.removed_prefix) as u64, name: "code", command: 0,
-    }];
+    let mut regions = Vec::new();
+    if frame.removed_prefix == 0 {
+        regions.push(super::resource::FrameRegion {
+            start: CODE as u64, end: DATA_START as u64, name: "code", command: 0,
+        });
+    }
     if frame.removed_prefix == 0 {
         regions.push(super::resource::FrameRegion { start: 0, end: CODE as u64,
             name: "frame-reserved", command: 0 });
