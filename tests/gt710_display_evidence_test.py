@@ -68,6 +68,24 @@ class DisplayEvidence(unittest.TestCase):
                 (p/'serial.txt').write_text(bad)
                 with self.assertRaises(ValueError):API['capture_serial'](p)
 
+    def test_console_samples_recorded_after_startup_use_the_final_slot(self):
+        lines=['GT710_CONSOLE_SAMPLE_V1 '+json.dumps(dict(stage=i,offset=64,expected=7,actual=8),separators=(',',':')) for i in range(2)]
+        bodies=[(l+'\n').encode() for l in lines]
+        anchors=[f'GT710_CONSOLE_SAMPLE_BULK stage={i} bytes={len(l)} sha256={hashlib.sha256(l.encode()).hexdigest()}\n' for i,l in enumerate(lines)]
+        serial=(anchors[0]+f'GT710_BULK {len(bodies[0])} {hashlib.sha256(bodies[0]).hexdigest()}\n'
+            +'SUITE console START cases=1\nSUITE console CASE screen/test PASS ms=1\n'
+            +'SUITE console DONE passed=1 failed=0 skipped=0 total=1\n'
+            +'SUITE console MEMORY reclaimed=PASS free_before=1 free_after=1 allowance=0\n'
+            +anchors[1]+f'GT710_FINAL_BULK {len(bodies[1])} {hashlib.sha256(bodies[1]).hexdigest()}\n'
+            +'SUITE_SEQUENCE READY console\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp);(p/'serial.txt').write_text(serial)
+            (p/'gt710-pixels.rle').write_bytes(bodies[0]);(p/'gt710-final.rle').write_bytes(bodies[1])
+            self.assertIn(lines[1],API['capture_serial'](p))
+            for bad in [serial.replace('reclaimed=PASS','reclaimed=FAIL'),serial.replace('SUITE_SEQUENCE READY console','SUITE_SEQUENCE READY gpu')]:
+                (p/'serial.txt').write_text(bad)
+                with self.assertRaises(ValueError):API['capture_serial'](p)
+
     def test_upload_digest_anchors_are_required(self):
         records=[row(0),row(1)];body=text(records).encode()
         anchors=''.join(f'GT710_DISPLAY_BULK sequence={r["sequence"]} bytes={len(line.encode())} sha256={hashlib.sha256(line.encode()).hexdigest()}\n'
