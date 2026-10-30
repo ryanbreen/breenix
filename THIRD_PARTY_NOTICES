@@ -1480,3 +1480,28 @@ copyright and full MIT grant remain in both consumers. The sentinel
 classification, bounded polling and refusal storage are Breenix code;
 the red-switch explanation is an inference from the recorded race, not
 a hardware acceptance result. Firmware bytes are unchanged.
+
+## GK208B target scanout (E24 M8 PR 8.6)
+
+`kernel/src/gpu/gk208/present.rs` adapts the NV927D surface method fields,
+notifier completion, and physical display DMA descriptors from:
+
+- NVIDIA open-gpu-doc at `9fdf5c4062007929d9f4e6cbad9c9771fe61b880`,
+  `classes/display/cl927d.h`, SPDX-License-Identifier: MIT,
+  Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES.
+- Nouveau in Linux v6.8 at `e8f897f4afef0031fe618a8e94127a0934896aba`,
+  `dispnv50/head907d.c` (surface method sequence) and `dispnv50/wndw.c`
+  (block-linear pitch in 64-byte blocks, lines 296-308): full MIT headers,
+  Copyright 2018 Red Hat Inc.
+- The same nouveau revision, `nvkm/engine/dma/usergf119.c`: full MIT header,
+  Copyright 2012 Red Hat Inc.; the descriptor stores kind in bits 27:20,
+  small-page selection in bit 6, and physical VRAM target 9.
+
+`kernel/src/gpu/gk208/native.rs` uses that surface encoder through its existing
+retained EVO channel, including NV927D's DMA jump-to-zero encoding when the
+consumed push storage wraps. The active/assembly surface register banks use
+`nvkm/engine/disp/gf119.c` from the same nouveau revision (full MIT header,
+Copyright 2012 Red Hat Inc.), specifically `gf119_head_state` and
+`gf119_disp_core_mthd_head`. The original copyright and full MIT grants are
+retained in the consumers. Every listed file's local header was checked for
+this adaptation under ruling G1. No Linux runtime integration is imported.

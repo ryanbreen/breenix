@@ -28,7 +28,7 @@ fn scanout_allocation_has_display_geometry_and_retains_its_own_vram() {
     let baseline=a.stats();let mut io=Memory::default();let mut r=resource::Resources::<()>::new();
     r.create_scanout(&mut a,&mut io,71,0,129,17).unwrap();
     let surface=r.scanout(71).unwrap();let l=r.layout(71).unwrap();
-    assert_eq!((l.width,l.height,l.pitch,l.block_height),(129,17,768,4));
+    assert_eq!((l.width,l.height,l.pitch,l.block_height),(129,17,576,4));
     assert_eq!(surface.resource,71);assert_eq!(surface.address%65536,0);
     assert_eq!(surface.dma,3);assert_eq!(surface.dma_words(1<<30).unwrap()[0],0x0fe00049);
     assert_ne!(surface.address,r.address(71).unwrap(),"EVO needs physical VRAM, not the GR VA");

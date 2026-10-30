@@ -160,8 +160,8 @@ impl Core {
         }
     }
 
-    /// Native PRESENT copies into the display-owned console allocation. Returning
-    /// to that allocation ends logical scanout holds on copy sources. Pending
+    /// Returning to the display-owned native console allocation ends the prior
+    /// target's scanout hold after a confirmed EVO update. Pending
     /// requests retain their separate engine/submission holds until completion.
     #[cfg(target_arch = "x86_64")]
     pub(super) fn native_console_restored(&mut self) {
@@ -708,10 +708,7 @@ pub(super) fn ended(c: &mut Core, group: u64) {
 pub(super) fn restore() -> Result<(), i64> {
     #[cfg(target_arch = "x86_64")]
     if let Some((_, _, bound, _)) = crate::gk208::console_state() {
-        // Basic offscreen pipelines cannot replace the native console binding.
-        // Confirm that binding, rather than asking the ARM screen owner to bind
-        // an ARM screen resource on this backend.
-        if !bound { return Err(EIO); }
+        if !bound { crate::gk208::restore_console().map_err(|_|EIO)?; }
         with_core(|c| c.native_console_restored()).ok_or(ENODEV)?;
         return Ok(());
     }

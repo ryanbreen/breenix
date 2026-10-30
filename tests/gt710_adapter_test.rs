@@ -14,6 +14,13 @@ pub mod gpu {
 #[path = "../kernel/src/gpu/gk208"]
 pub mod gk208 {
     #[path = "queue.rs"] pub mod queue;
+    #[allow(dead_code)] // The native display boundary is mocked in this fixture.
+    #[path = "present.rs"] pub mod present;
+    pub fn present_request(caller:u64) -> adapter::Request {
+        adapter::Request::present(crate::Tag::Sync(caller),caller,present::Surface {
+            resource:71,address:0x12340000,width:1280,height:1024,pitch:5120,
+            block_height:16,format:0,dma:3})
+    }
     #[allow(dead_code)] // Only transfer request construction is needed by this fixture.
     #[path = "copy.rs"] pub mod copy;
     pub fn transfer_request(caller: u64) -> adapter::Request {
@@ -34,6 +41,11 @@ pub mod gk208 {
                 pub fn publish(&mut self,sequence:u32,operation:&crate::gk208::adapter::Operation)->Result<(),&'static str> {
                     self.0.borrow_mut().operations.push(match operation {crate::gk208::adapter::Operation::Transfer(_)=>"transfer",_=>"other"});
                     self.0.borrow_mut().published.push(sequence);Ok(())
+                }
+                pub fn present(&mut self, surface:crate::gk208::present::Surface)->Result<(),&'static str> {
+                    let mut s=self.0.borrow_mut();
+                    assert_eq!(surface.resource,71);s.events.push("display-update");
+                    if s.fail_display {Err("display did not latch target")} else {Ok(())}
                 }
                 pub fn publish_draw(&mut self,sequence:u32,draw:&crate::gk208::adapter::EncodedDraw)->Result<(),&'static str> {
                     assert_eq!(draw.target,19);
@@ -108,13 +120,13 @@ pub mod gk208 {
 use gpu::dev::{Reap,Tag};
 use gk208::{adapter::{Device,Request},copy::Rect,gr::channel::NativeChannel};
 pub struct State {
-    core_locked:bool,pri_ready_at:u64,now:u64,epoch:u64,channel:u64,release_epoch:u64,release:u32,drain:u32,fault:bool,
+    fail_display:bool,core_locked:bool,pri_ready_at:u64,now:u64,epoch:u64,channel:u64,release_epoch:u64,release:u32,drain:u32,fault:bool,
     transient_trap:bool,refusals:Vec<[u32;4]>,registers:std::collections::BTreeMap<usize,u32>,writes:Vec<(usize,u32)>,
     trap_at_health:bool,trap_at_sample:bool,fail_ack:bool,trap_after_samples:u32,delayed_trap_sequence:u32,
     fail_reset:bool,fail_unbind:bool,fail_publish:bool,refuse_publish:bool,stopped:bool,operations:Vec<&'static str>,published:Vec<u32>,events:Vec<&'static str>,expected_draw:Vec<u32>,
 }
 fn device()->(Device,Rc<RefCell<State>>) {
-    let s=Rc::new(RefCell::new(State{core_locked:false,pri_ready_at:0,now:0,epoch:17,channel:0x123000,release_epoch:17,release:0,drain:0,fault:false,
+    let s=Rc::new(RefCell::new(State{fail_display:false,core_locked:false,pri_ready_at:0,now:0,epoch:17,channel:0x123000,release_epoch:17,release:0,drain:0,fault:false,
         transient_trap:false,refusals:vec![],registers:Default::default(),writes:vec![],trap_at_health:false,trap_at_sample:false,fail_ack:false,trap_after_samples:0,delayed_trap_sequence:0,fail_reset:false,fail_unbind:false,fail_publish:false,refuse_publish:false,stopped:false,operations:vec![],published:vec![],events:vec![],expected_draw:vec![0x20010367,0]}));
     (Device::new(NativeChannel(s.clone()),gk208::caps::BoardState::empty()),s)
 }
@@ -555,5 +567,27 @@ fn core_pri_sampling_defers_bounded_retry_without_retiring_holds() {
             assert_eq!(Arc::strong_count(&pages),1);
         }
         assert!(s.borrow().writes.is_empty(),"PRI retry must not acknowledge or reset hardware");
+    }
+}
+
+#[test]
+fn present_fence_follows_earlier_release_and_confirmed_display_update() {
+    for fail in [false,true] {
+        let (mut d,s)=device();send(&mut d,9001);
+        assert!(d.send(gk208::present_request(9002)).is_ok());
+        assert!(matches!(d.reap(),Reap::Empty));
+        assert!(!s.borrow().events.contains(&"display-update"));
+        s.borrow_mut().release=1;
+        let Reap::Done(first)=d.reap() else {panic!("earlier fence missing")};
+        assert_eq!(first.fence,Some(9001));
+        assert!(matches!(d.reap(),Reap::Empty));
+        assert!(!s.borrow().events.contains(&"display-update"));
+        s.borrow_mut().release=2;s.borrow_mut().fail_display=fail;
+        let answer=d.reap();
+        if fail {assert!(matches!(answer,Reap::Fault));assert_eq!(d.outstanding(),1);}
+        else {let Reap::Done(done)=answer else {panic!("present fence missing")};
+            assert_eq!(done.fence,Some(9002));assert_eq!(done.native_fence,Some(2));
+            assert!(done.fenced);assert_eq!(d.outstanding(),0);}
+        assert_eq!(s.borrow().events.last(),Some(&"display-update"));
     }
 }

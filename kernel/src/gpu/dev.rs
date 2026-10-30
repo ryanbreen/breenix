@@ -283,7 +283,7 @@ pub fn ctx_attach(tag: Tag, ctx: u32, resource: u32) -> Option<Request> {
 pub fn resource_create(tag: Tag, id: u32, k: u32, f: u32, width: u32, height: u32, scanout: bool) -> Option<Request> {
     match backend() {
         #[cfg(target_arch = "x86_64")]
-        backend::GK208 => return crate::gk208::resource::resource_create(tag, id, k, f, width, height).map(Request::Gk208),
+        backend::GK208 => return crate::gk208::resource::resource_create(tag, id, k, f, width, height, scanout).map(Request::Gk208),
         backend::SVGA3D_DX => return svga::resource_create(tag, id, k, f, width, height, scanout).map(Request::Svga),
         backend::VIRGL => {},
         _ => return None,

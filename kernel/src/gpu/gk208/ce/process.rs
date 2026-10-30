@@ -14,17 +14,17 @@ static RECOVERY_WAITERS:WaitQueueHead=WaitQueueHead::new();
 static WAITING:AtomicBool=AtomicBool::new(false);
 static WAITERS:WaitQueueHead=WaitQueueHead::new();
 struct Work {a:Channel,b:Channel,ticket:Option<Ticket>,request:Request,seed:u32,baseline:memory::allocator::Stats,old:[u32;3],userd:Allocation,engine:Engine}
-pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,console:super::super::ConsoleSurface,work:Option<Work>,resources:super::super::resource::Resources<crate::gpu::dma::Pages>}
+pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,console:super::super::ConsoleSurface,evo:super::super::native::Evo,scanout:Vec<super::super::resource::Hold>,work:Option<Work>,resources:super::super::resource::Resources<crate::gpu::dma::Pages>}
 pub(in crate::gk208) fn test_ownership()->Result<(),&'static str> {
     if CORE_STARTED.load(Ordering::Acquire) {return Err("native GPU core owns FIFO");}
     Ok(())
 }
-pub(crate) fn retain(layout:memory::Layout,regs:usize,bar:usize,console:super::super::ConsoleSurface)->Result<(),&'static str> {
+pub(crate) fn retain(layout:memory::Layout,regs:usize,bar:usize,console:super::super::ConsoleSurface,evo:super::super::native::Evo)->Result<(),&'static str> {
     test_ownership()?;
     let native=layout.objects[4].range.start;
     let s=layout.allocator.stats();
     *SESSION.lock()=Some(Session{layout,registers:regs,bar,bi:native+0x2000,bd:native+0x3000,
-        pte:native+0x4000+(SLOT/4096)*8,total:s.reserved+s.charged+s.free,console,work:None,resources:super::super::resource::Resources::new()});
+        pte:native+0x4000+(SLOT/4096)*8,total:s.reserved+s.charged+s.free,console,evo,scanout:Vec::new(),work:None,resources:super::super::resource::Resources::new()});
     Ok(())
 }
 pub(in crate::gk208) fn initialize_core()->Result<(),&'static str> {
@@ -231,4 +231,39 @@ pub(in crate::gk208) fn console_allocation() -> Option<(super::super::ConsoleSur
     let s = owner.as_ref()?;
     let allocation = s.layout.objects.iter().find(|o| o.range.start == s.console.vram)?.allocation;
     Some((s.console, allocation))
+}
+
+/// Invoked only after the adapter's in-order native release has completed.
+/// Retain the active target independently of requests until another surface is
+/// confirmed. An uncertain update retains its request hold in the adapter.
+pub(in crate::gk208) fn present(surface:super::super::present::Surface)
+    -> Result<(), &'static str> {
+    let mut owner=SESSION.lock();
+    let s=owner.as_mut().ok_or("native display owner absent")?;
+    let hold=s.resources.hold(surface.resource)?;
+    // An error can follow an actual latch. Keep possible display readers
+    // pinned through GR reset; only a confirmed later update can release it.
+    s.scanout.push(hold);
+    let receipt=super::super::native::present(&mut s.evo,&mut Registers(s.registers),surface)?;
+    if receipt.notifier&1!=1 || receipt.active!=receipt.armed {
+        return Err("native present receipt mismatch");
+    }
+    let active=s.scanout.pop().unwrap();
+    s.scanout.clear();
+    s.scanout.push(active);
+    Ok(())
+}
+pub(crate) fn restore_console() -> Result<(), &'static str> {
+    let mut owner=SESSION.lock();
+    let s=owner.as_mut().ok_or("native display owner absent")?;
+    if super::super::console_binding(&s.console).is_err() {
+        let c=s.console;
+        let surface=super::super::present::Surface {resource:u32::MAX,address:c.vram,
+            width:c.width as u32,height:c.height as u32,pitch:c.pitch as u32,
+            block_height:0,format:0,dma:1};
+        super::super::native::present(&mut s.evo,&mut Registers(s.registers),surface)?;
+        super::super::console_binding(&s.console)?;
+    }
+    s.scanout.clear();
+    Ok(())
 }

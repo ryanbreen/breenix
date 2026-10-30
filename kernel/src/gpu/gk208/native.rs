@@ -1,4 +1,25 @@
 /*
+ * Copyright 2018 Red Hat Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ */
+/*
  * SPDX-FileCopyrightText: Copyright (c) 1993-2014 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
@@ -414,6 +435,53 @@ fn flip(
         active_register,active_value,raster_before,raster_after,underflow,errors,power,link })
 }
 
+/// Same-mode target update through the retained 927D core channel. Unlike the
+/// bring-up flip, this binds the target's size, storage, format and DMA kind.
+/// No console copy, framebuffer writes or fixed raster delay is involved.
+pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
+    surface: super::present::Surface,
+) -> Result<super::present::Receipt, &'static str> {
+    struct Update<'a> { evo:&'a mut Evo, regs:&'a mut Registers }
+    impl super::present::Io for Update<'_> {
+        fn clear_notifier(&mut self) -> Result<(), &'static str> {
+            modeset::wait(self.regs,0x640004,u32::MAX,self.evo.put)?;
+            write_words(self.regs,self.evo.total,self.evo.notifier,&[0,0,0,0])?;
+            if read_word(self.regs,self.evo.total,self.evo.notifier)? != 0 {
+                return Err("native present notifier did not clear");
+            }
+            Ok(())
+        }
+        fn submit(&mut self, methods:&[(u32,u32)]) -> Result<(), &'static str> {
+            // NV927D_DMA_OPCODE_JUMP, offset 0. Prior GET was drained above;
+            // reserve the final word for the jump before reusing command bytes.
+            if self.evo.put as usize + methods.len()*8 > 2044 {
+                write_words(self.regs,self.evo.total,
+                    self.evo.push+u64::from(self.evo.put),&[0x20000000])?;
+                modeset::publish(self.regs,0)?;
+                modeset::wait(self.regs,0x640004,u32::MAX,0)?;
+                self.evo.put=0;
+            }
+            submit(self.regs,self.evo.total,self.evo.push,&mut self.evo.put,methods)
+        }
+        fn complete(&mut self) -> Result<u32, &'static str> {
+            let e=&self.evo;
+            let value=complete(self.regs,e.total,e.notifier,&e.limits,&e.coefficients,
+                (e.head,e.sor,true,true),&e.scripts)?;
+            modeset::wait(self.regs,0x640004,u32::MAX,e.put)?;
+            Ok(value)
+        }
+        fn read(&mut self, register:usize) -> u32 {self.regs.read(register)}
+    }
+    let head=evo.head;
+    let receipt=super::present::flush(&mut Update{evo,regs},head,surface)?;
+    if regs.read(0x61009c) != 0 || regs.read(0x616308+head as usize*0x800)&0x111 != 1
+        || regs.read(0x61c004+evo.sor as usize*0x800)&0x80000001 != 1
+        || regs.read(0x61c030+evo.sor as usize*0x800)&0x10000000 != 0 {
+        return Err("native present lost display health");
+    }
+    Ok(receipt)
+}
+
 pub fn takeover(
     regs: &mut Registers,
     device: &pci::Device,
@@ -548,6 +616,10 @@ pub fn takeover(
         instance + modeset::ramht_slot(2, 0),
         &[2, (0x1020 << 9) | 1],
     )?;
+    let color = super::present::Surface {resource:1,address:0,width:1,height:1,
+        pitch:256,block_height:1,format:0,dma:3}.dma_words(total)?;
+    write_words(regs,total,instance+0x1040,&color)?;
+    write_words(regs,total,instance+modeset::ramht_slot(3,0),&[3,(0x1040<<9)|1])?;
     modeset::bar_flush(regs)?;
     regs.write(0x610010, (instance >> 8) as u32 | 9);
     modeset::prepare_disabled_core(regs,evo)?;
@@ -1015,8 +1087,10 @@ pub fn console_binding(surface: &ConsoleSurface) -> Result<(), &'static str> {
 /// CAPS observes the owned native scanout, whose dimensions were selected from
 /// live DDC/EDID during takeover. Refuse stale/lost native bindings.
 pub fn caps_scanout(surface: &ConsoleSurface) -> Result<gpu_abi::ScanoutInfo, &'static str> {
-    console_binding(surface)?;
     let regs = Registers(surface.regs);
+    if regs.read(0x61009c)!=0 || regs.read(0x616308+surface.head as usize*0x800)&0x111!=1 {
+        return Err("native CAPS display unhealthy");
+    }
     // The active ISO surface size shadows EVO method 0x468, not the
     // timing-total method 0x414 (modeset.rs:276,305).
     let size = regs.read(0x640468 + surface.head as usize * 0x300);
@@ -1082,6 +1156,7 @@ impl CoreProducer {
         d.retry_pri();
         let (context, epoch, sequence) = d.probe_identity()?;
         let (resource, kind) = match operation {
+            Operation::Present => return Err("core producer present requires a retained scanout target"),
             Operation::Transfer(_) | Operation::Undefined => return Err("core producer uses explicit probe copies"),
             Operation::Copy(rect) => (rect.dst, gpu_abi::gk208::TRANSFER_RELEASE),
             Operation::Draw(draw) => (draw.target_va, gpu_abi::gk208::DRAW_RELEASE),
@@ -1090,6 +1165,7 @@ impl CoreProducer {
         let caller = (1u64 << 32) | u64::from(sequence);
         let identity = crate::gpu_completion::Request { context, epoch, caller, sequence, resource, generation: 1 };
         let mut request = match operation {
+            Operation::Present => return Err("core producer present requires a retained scanout target"),
             Operation::Transfer(_) | Operation::Undefined => return Err("core producer uses explicit probe copies"),
             Operation::Copy(rect) => Request::copy(Tag::Sync(caller), caller, resource, 1, rect),
             Operation::Draw(draw) => Request::draw(Tag::Sync(caller), caller, resource, 1, draw),

@@ -1495,6 +1495,11 @@ mod native {
             let c = self.session.report.identity;
             super::super::error::acknowledge(&mut Registers(self.registers), trap, c.id, c.runlist)
         }
+        /// Confirm a native surface update after the adapter orders its release.
+        pub(crate) fn present(&mut self, surface:crate::gk208::present::Surface)
+            -> Result<(), &'static str> {
+            crate::gk208::ce::present(surface)
+        }
         /// True only after USERD GP_PUT publishes this sequence to the engine.
         pub(crate) fn published(&self, sequence: u32) -> bool { self.put == sequence }
         pub(crate) fn publish(
@@ -1510,6 +1515,12 @@ mod native {
                     crate::gk208::ce::with_resources(|r,_,io| r.bind(io,
                         s.context.space().directory.range.start,s.report.identity.instance,s.report.identity.epoch))?;
                     crate::gk208::copy::encode_plan(plan,report_va,s.report.identity.epoch,sequence)?
+                },
+                Operation::Present => {
+                    // A197 PIPELINE_END releases follow earlier engine writes.
+                    // The adapter waits for this receipt in queue order before
+                    // submitting EVO, and withholds its fence until EVO agrees.
+                    super::commands(report_va,s.report.identity.epoch,sequence,true,sequence)?
                 },
                 Operation::Undefined => {
                     let address = super::super::error::address(sequence)?;

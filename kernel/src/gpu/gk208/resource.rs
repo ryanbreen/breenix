@@ -23,6 +23,8 @@
 //! Native resource storage. Layout sizing adapts Mesa 24.3.4 nvc0_miptree.c
 //! and nv50_miptree.c (MIT); see THIRD_PARTY_NOTICES. Breenix owns allocation,
 //! mappings, pinned guest backing and retirement. No pixels are produced here.
+#[path = "present.rs"]
+pub mod present;
 use alloc::{collections::{BTreeMap, BTreeSet, VecDeque}, sync::Arc, vec::Vec};
 use super::{memory::allocator::{Allocation, Allocator, Kind, Pin}, vm::{self, Io, Space}};
 
@@ -116,6 +118,7 @@ struct Entry<B> {
     // Only its Drop matters here; the resource owner does not interpret quotas.
     _charge: Option<Arc<dyn Send + Sync>>,
     layout: Option<Layout>,
+    scanout: Option<present::Surface>,
     bytes: u64,
     va: u64,
     allocation: Option<Allocation>,
@@ -218,7 +221,7 @@ impl<B> Resources<B> {
         let bytes = allocation.range.size;
         let va = self.vacant_va(bytes, 4096)?;
         let pin = a.pin(allocation)?;
-        self.entries.insert(id, Entry { role: "display", regions: Vec::new(), layout: None, bytes, va, allocation: None,
+        self.entries.insert(id, Entry { role: "display", regions: Vec::new(), layout: None, scanout: None, bytes, va, allocation: None,
             pin: Some(pin), _charge: None, backing: None, mapped: false, dropped: false,
             reference: Arc::new(()), backing_va: None, backing_bytes: 0, backing_mapped: false });
         let before = a.stats().charged;
@@ -231,11 +234,21 @@ impl<B> Resources<B> {
     pub fn create(&mut self, a: &mut Allocator, io: &mut impl Io, id: u32,
         kind: u32, format: u32, width: u32, height: u32,
     ) -> Result<(), &'static str> {
-        self.create_aligned(a, io, id, kind, format, width, height, 4096, None)
+        self.create_aligned(a, io, id, kind, format, width, height, 4096, None, false)
+    }
+    pub fn scanout(&self, id: u32) -> Option<present::Surface> {
+        let e=self.entries.get(&id)?;
+        if e.dropped || !e.mapped {return None;}
+        e.scanout
+    }
+    pub fn create_scanout(&mut self, a: &mut Allocator, io: &mut impl Io,
+        id:u32, format:u32, width:u32, height:u32,
+    ) -> Result<(), &'static str> {
+        self.create_aligned(a,io,id,1,format,width,height,65536,None,true)
     }
     fn create_aligned(&mut self, a: &mut Allocator, io: &mut impl Io, id: u32,
         kind: u32, format: u32, width: u32, height: u32, alignment: u64,
-        charge: Option<Arc<dyn Send + Sync>>,
+        charge: Option<Arc<dyn Send + Sync>>, scanout: bool,
     ) -> Result<(), &'static str> {
         if id == 0 || self.entries.contains_key(&id) { return Err("duplicate native resource"); }
         let layout = match (kind, format) {
@@ -244,15 +257,21 @@ impl<B> Resources<B> {
             (3, 0 | 2) if width != 0 && width <= 128 << 20 && height == 1 => None,
             _ => return Err("unsupported native resource format"),
         };
+        if scanout && kind!=1 {return Err("scanout requires a target");}
         let bytes = layout.map_or(u64::from(width), Layout::allocation_bytes);
         let va = self.vacant_va(bytes, alignment)?;
         let before = a.stats().charged;
         let result = (|| {
             // Insert before publication so even a partial failed mapping keeps
             // its allocation, backing and charge reachable for retention.
-            let allocation = if layout.is_some() { Some(a.allocate(bytes, 4096, Kind::Engine)?) } else { None };
+            let allocation = if layout.is_some() { Some(a.allocate(bytes, alignment, Kind::Engine)?) } else { None };
+            let scanout = if scanout {
+                let l=layout.unwrap();
+                Some(present::Surface {resource:id,address:allocation.unwrap().range.start,
+                    width,height,pitch:l.pitch,block_height:l.block_height,format,dma:3})
+            } else {None};
             let pin = allocation.map(|v| a.pin(v)).transpose()?;
-            self.entries.insert(id, Entry { role: match kind { 1 => "target", 2 => "texture", _ => "buffer" }, regions: Vec::new(), layout, bytes, va, allocation, pin,
+            self.entries.insert(id, Entry { role: match kind { 1 => "target", 2 => "texture", _ => "buffer" }, regions: Vec::new(), layout, scanout, bytes, va, allocation, pin,
                 _charge: charge, backing: None, mapped: false, dropped: false, reference: Arc::new(()), backing_va: None, backing_bytes: 0, backing_mapped: false });
             if let Some(allocation) = allocation {
                 self.space(a, io)?.map_kind(a, io, va, allocation.range, vm::Flags::default(), 0xfe)?;
@@ -358,7 +377,7 @@ impl<B> Resources<B> {
     ) -> Result<u32, &'static str> {
         let id = self.temporary;
         self.temporary = id.checked_sub(1).ok_or("native staging IDs exhausted")?;
-        self.create_aligned(a,io,id,3,0,bytes,1,1<<17,None)?;
+        self.create_aligned(a,io,id,3,0,bytes,1,1<<17,None,false)?;
         Ok(id)
     }
     pub fn staging(&mut self, a: &mut Allocator, io: &mut impl Io, format: u32,
@@ -376,7 +395,7 @@ impl<B> Resources<B> {
     ) -> Result<u32, &'static str> {
         let id = self.temporary;
         self.temporary = id.checked_sub(1).ok_or("native staging IDs exhausted")?;
-        let result = self.create_aligned(a,io,id,2,format,width,height,4096,Some(charge));
+        let result = self.create_aligned(a,io,id,2,format,width,height,4096,Some(charge),false);
         if result.is_err() {
             if let Some(e) = self.entries.get_mut(&id) { e.dropped = true; }
         }
@@ -537,9 +556,12 @@ mod native {
     }
 
     pub fn resource_create(tag: Tag, id: u32, kind: u32, format: u32,
-        width: u32, height: u32,
+        width: u32, height: u32, scanout: bool,
     ) -> Option<Request> {
-        ce::with_resources(|r, a, io| r.create(a, io, id, kind, format, width, height)).ok()?;
+        ce::with_resources(|r, a, io| if scanout && kind==1 {
+            r.create_scanout(a,io,id,format,width,height)
+        } else if scanout {Err("scanout requires a target")}
+        else {r.create(a, io, id, kind, format, width, height)}).ok()?;
         Some(Request::storage(tag, None))
     }
     pub fn attach_backing(tag: Tag, id: u32, backing: Arc<Pages>) -> Option<Request> {

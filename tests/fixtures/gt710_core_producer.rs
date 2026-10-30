@@ -73,6 +73,7 @@ pub mod gpu {
     }
 }
 pub mod gk208 {
+    #[path = "../../kernel/src/gpu/gk208/present.rs"] pub mod present;
     #[path = "../../kernel/src/gpu/gk208/queue.rs"] pub mod queue;
     #[path = "../../kernel/src/gpu/gk208/core_record.rs"] pub mod core_record;
     #[path = "../../kernel/src/gpu/gk208/copy.rs"] pub mod copy;
@@ -94,6 +95,9 @@ pub mod gk208 {
                 pub fn healthy(&self)->Result<(), &'static str>{Ok(())}
                 pub fn published(&self,sequence:u32)->bool{self.sample.consumed==sequence}
                 pub fn publish(&mut self,sequence:u32,_:&Operation)->Result<(),&'static str>{self.published+=1;self.final_sample=None;self.polls=0;self.sample=CeSample{context:0x123000,epoch:17,sequence,consumed:sequence,healthy:true};self.drain=0;Ok(())}
+                pub fn present(&mut self,_:crate::gk208::present::Surface)->Result<(),&'static str>{
+                    panic!("core producer does not bind a scanout")
+                }
                 pub fn publish_draw(&mut self,_:u32,_:&crate::gk208::adapter::EncodedDraw)->Result<(),&'static str>{
                     panic!("core producer fixture does not issue encoded BGL draws")
                 }

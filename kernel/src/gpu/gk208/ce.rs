@@ -717,7 +717,8 @@ mod recovery;
 pub(in crate::gk208) use recovery::reset_engine;
 mod process;
 pub(super) use process::{retain,proc_read,initialize_core,test_ownership,with_resources};
-pub(crate) use process::console_state;
+pub(crate) use process::{console_state,restore_console};
+pub(in crate::gk208) use process::present;
 pub(in crate::gk208) use process::console_allocation;
 
 pub(crate) mod readback;
