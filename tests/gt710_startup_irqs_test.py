@@ -72,9 +72,18 @@ mod task {pub mod kthread {
   });Ok(())
  }
 }}
+mod tracing {pub mod providers {pub mod gpu {pub fn syscall_mask_first_enable(){}}}}
+mod console {
+ pub struct Canvas;
+ pub fn hold_canvas()->Canvas{super::CANVAS.store(true,super::Ordering::Release);Canvas}
+ impl Drop for Canvas{fn drop(&mut self){super::CANVAS.store(false,super::Ordering::Release);}}
+}
+static CANVAS:AtomicBool=AtomicBool::new(false);
+static RACED:AtomicBool=AtomicBool::new(false);
 mod gk208 {
  pub fn takeover_started()->bool{true}
  pub fn initialize_core()->Result<(),&'static str>{
+  super::RACED.store(!super::CANVAS.load(super::Ordering::Acquire),super::Ordering::Release);
   assert!(super::WORKER.with(std::cell::Cell::get),"firmware startup held syscall preemption instead of running on a worker");
   super::CALLS.fetch_add(1,super::Ordering::AcqRel);
   // Substitute hardware only: upload, Falcon startup/mailbox waits, channel receipts.
@@ -91,6 +100,7 @@ mod gk208 {
 STARTUP
 // INSERT_CAPS
 #[test]fn first_caps_enables_irqs_for_upload_and_waits_and_restores_on_errors(){
+ let _ = console::hold_canvas as fn()->console::Canvas;
  for fail in [false,true] {
   *CORE.lock().unwrap()=Core::empty();*GATE.lock().unwrap()=(false,true,false);
   NATIVE_STARTING.store(false,Ordering::Release);FAIL.store(fail,Ordering::Release);
@@ -98,6 +108,8 @@ STARTUP
    IRQS.with(|i|i.set(entry_enabled));
    assert_eq!(op_caps(0,core::mem::size_of::<abi::Caps>() as u64),Ok(0));
    assert_eq!(arch_interrupts_enabled(),entry_enabled,"CAPS changed caller IRQ state");
+   assert!(!CANVAS.load(Ordering::Acquire),"startup retained the console hold");
+   assert!(!RACED.load(Ordering::Acquire),"native startup raced console BAR access");
   }
  }
 }
@@ -118,6 +130,8 @@ STARTUP
  g.1=true;CHANGED.notify_all();drop(g);
  assert_eq!(a.join().unwrap(),Ok(0));assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(),Ok(0));b.join().unwrap();
  assert_eq!(CALLS.load(Ordering::Acquire),1);
+ assert!(!RACED.load(Ordering::Acquire),"native startup raced console BAR access");
+ assert!(!CANVAS.load(Ordering::Acquire));
  }
  INSTALL_EARLY.store(false,Ordering::Release);
 }
