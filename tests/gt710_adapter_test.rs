@@ -112,7 +112,7 @@ impl gk208::gr::error::Io for State {
 }
 impl State {
     fn plant_mmu(&mut self,sequence:u32) {
-        let address=0xfff8000000u64+u64::from(sequence)*4;
+        let address=0xfff8000000u64+u64::from(sequence % 32768)*4096;
         self.registers.extend([(0x259c,1),(0x2800,0x123),
             (0x2804,address as u32),(0x2808,(address>>32) as u32),(0x280c,0xc0),(0x262c,1)]);
     }
@@ -307,7 +307,7 @@ fn unmapped_write_and_release_follows_the_fault() {
     let words=gk208::gr::error::commands(0x100000000,17,3).unwrap();
     // The first engine-ordered write is to the absent final 128 MiB PDE.
     assert_eq!(&words[..9],&[0x20010000,0xa197,0x20010044,0,
-        0x200406c0,0xff,0xf800000c,3,0x1000f010]);
+        0x200406c0,0xff,0xf8003000,3,0x1000f010]);
     // The three valid receipt words follow; a fault flag alone cannot retire backing.
     assert_eq!(words.len(),24);
     assert_eq!(&words[9..14],&[0x200406c0,1,4,17,0x1000f010]);
@@ -417,5 +417,29 @@ fn later_mmu_fault_during_transfer_drain_keeps_both_requests_live() {
         let Reap::Done(done)=d.reap() else {panic!("error control did not retire")};
         assert_eq!((done.fence,done.answer),(Some(9001),0x60010000));
         assert!(s.borrow().events.is_empty());
+    }
+}
+
+#[test]
+fn mmu_control_pages_survive_hardware_alignment_and_sequence_wrap() {
+    for sequence in [1, 893, 2837, 3735, 4328, 32767, 32768, 32769, u32::MAX] {
+        let address = gk208::gr::error::address(sequence).unwrap();
+        assert_eq!(address, 0xfff8000000 + u64::from(sequence % 32768) * 4096);
+        assert_eq!(address & 4095, 0);
+        assert_eq!(address / (1 << 27), 8191);
+        let (_,s) = device();
+        let mut d = Device::registered(NativeChannel(s.clone()), gk208::caps::BoardState::empty(), sequence-1);
+        assert!(d.send(Request::undefined_command(Tag::Sync(9001),7,9001).unwrap()).is_ok());
+        mmu_fault(&s,sequence);
+        assert!(matches!(d.reap(),Reap::Empty));
+        assert_eq!(d.outstanding(),1);
+        s.borrow_mut().release=sequence;
+        let Reap::Done(done)=d.reap() else {panic!("page-aligned fault lost its pending identity")};
+        assert_eq!((done.native_fence,done.answer),(Some(u64::from(sequence)),0x60010000));
+    }
+    for sequence in [32766,32767,32768] {
+        let pages: std::collections::BTreeSet<_> = (sequence..sequence+4)
+            .map(|s|gk208::gr::error::address(s).unwrap()).collect();
+        assert_eq!(pages.len(),4,"four native requests must have distinct tokens");
     }
 }

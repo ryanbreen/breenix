@@ -14,7 +14,7 @@ class MmuErrorReport(unittest.TestCase):
     def test_raw_fault_and_anchor_are_required_and_consistent(self):
         startup = b'GT710_PIX 0 1:ff003039\n'
         row = dict(instance=0x123000, epoch=17, sequence=3, unit=0,
-                   raw=[0x123, 0xf800000c, 0xff, 0xc0], answer=0x60010000)
+                   raw=[0x123, 0xf8003000, 0xff, 0xc0], answer=0x60010000)
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp)
             (p / 'gt710-pixels.rle').write_bytes(startup)
@@ -39,8 +39,8 @@ class MmuErrorReport(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     capture(row, change)
             for field, value in [('instance', 0x124000), ('sequence', 2), ('unit', 1),
-                                 ('raw', [0x123, 0xf800000c, 0xff, 0x40]),
-                                 ('raw', [0x123, 0xf800000c, 0xff, 0xc5]),
+                                 ('raw', [0x123, 0xf8003000, 0xff, 0x40]),
+                                 ('raw', [0x123, 0xf8003000, 0xff, 0xc5]),
                                  ('answer', 0x10), ('answer', 0x60010002)]:
                 with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                     capture(dict(row, **{field: value}))
