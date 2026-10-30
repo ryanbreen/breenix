@@ -2171,16 +2171,29 @@ pub(crate) fn native_console_readback(surface: &crate::gk208::ConsoleSurface)
     Ok(Some((backing, last)))
 }
 
+/// Finish a packed span upload on the shared queue before exposing its texture.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn native_spans_upload(id: u32, plan: crate::gk208::copy::Plan, backing: Arc<Pages>)
+    -> Result<(), &'static str> {
+    let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or("native spans core absent")?;
+    let request = crate::gk208::span_upload(Tag::Sync(serial), fence, id, plan, backing)
+        .ok_or("native spans CE upload refused")?;
+    let done = exec_req(serial, Request::Gk208(request), 0, &[], &[])
+        .map_err(|_| "native spans CE upload failed")?;
+    if !dev::ok(done.answer) || !done.matches_fence(fence) {
+        return Err("native spans CE upload completion mismatch");
+    }
+    Ok(())
+}
+
 /// Diagnostic transfer through the admitted core queue and its watchdog. The
 /// span registry owns the attached backing until its image can be collected.
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn native_spans_readback(id: u32, width: u32, height: u32)
+pub(crate) fn native_spans_readback(id: u32, width: u32, height: u32, backing: Arc<Pages>)
     -> Result<[Vec<u8>; 2], &'static str> {
     let bytes = (width as usize).checked_mul(height as usize).and_then(|n| n.checked_mul(4))
         .ok_or("native spans readback extent overflow")?;
-    let backing = Arc::new(Pages::new(bytes.div_ceil(PAGE)).ok_or("native spans readback allocation")?);
-    backing.identify("native-spans-readback", id, 0);
-    crate::gk208::resource::attach_spans_readback(id, backing.clone())?;
+    if backing.bytes() < bytes { return Err("native spans readback backing too small"); }
     let mut images = [alloc::vec![0; bytes], alloc::vec![0; bytes]];
     for (index, poison) in [0x55, 0xaa].into_iter().enumerate() {
         let band = [poison; PAGE];

@@ -471,6 +471,15 @@ pub(crate) fn transfer(tag: crate::gpu::dev::Tag, fence: u64, id: u32,
     Some(super::super::adapter::Request::transfer(tag,fence,resource,plan,upload,
         TransferHold { resources:vec![hold] },Some(backing)))
 }
+/// The resource owner has mapped this source and built the upload plan. Retain
+/// both image and backing through the CE release, including uncertain requests.
+pub(crate) fn span_upload(tag: crate::gpu::dev::Tag, fence: u64, id: u32,
+    plan: super::super::copy::Plan, backing: alloc::sync::Arc<crate::gpu::dma::Pages>,
+) -> Option<super::super::adapter::Request> {
+    let hold = super::with_resources(|r,_,_| r.hold(id)).ok()?;
+    Some(super::super::adapter::Request::transfer(tag,fence,u64::from(id),plan,true,
+        TransferHold { resources:vec![hold] },Some(backing)))
+}
 /// Build a byte-preserving target copy for the native stream encoder. Shared
 /// validation supplies handles/coordinates; overlapping storage uses VRAM first.
 pub(crate) fn region(tag: crate::gpu::dev::Tag, fence: u64, source: u32, destination: u32,

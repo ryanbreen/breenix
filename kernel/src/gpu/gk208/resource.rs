@@ -382,43 +382,34 @@ impl<B> Resources<B> {
         }
         result.map(|()| id)
     }
-    /// Upload snapshot data through PRAMIN into the native tiled RGBA8 image.
-    /// This happens before draw request construction. Upload errors return without
-    /// publication; uncertain unmapping retains its allocation/charge.
+    /// Reserve the caller-charged tiled span image. Its contents are populated
+    /// by span_upload_plan and a completed CE release before it is sampled.
     pub fn upload_spans(&mut self, a: &mut Allocator, io: &mut impl Io,
         width: u32, height: u32, bytes: &[u8], charge: Arc<dyn Send + Sync>,
     ) -> Result<u32, &'static str> {
-        let layout = Layout::new(width, height, 4)?;
+        Layout::new(width, height, 4)?;
         if !width.is_power_of_two() || bytes.is_empty() || bytes.len() % 4 != 0
             || bytes.len() as u64 > u64::from(width) * u64::from(height) * 4 {
             return Err("invalid native crossing upload");
         }
-        let id = match self.charged_staging(a, io, 1, width, height, charge) {
-            Ok(id) => id,
-            Err(e) => { let _ = self.collect(a, io); return Err(e); }
-        };
-        let result = (|| {
-            let physical = self.entries[&id].allocation.ok_or("native crossing allocation absent")?.range.start;
-            for y in 0..height {
-                for x in (0..width).step_by(2) {
-                    let linear = (u64::from(y) * u64::from(width) + u64::from(x)) as usize * 4;
-                    let mut pair = [0; 8];
-                    let n = (width - x).min(2) as usize * 4;
-                    for (k, value) in pair[..n].iter_mut().enumerate() {
-                        *value = bytes.get(linear + k).copied().unwrap_or(0);
-                    }
-                    io.write(physical + layout.offset(x, y, 0).ok_or("native crossing offset")?, u64::from_le_bytes(pair))?;
-                }
-            }
-            io.flush()?;
-            Ok(())
-        })();
-        if let Err(e) = result {
-            self.unref(id)?;
-            let _ = self.collect(a, io);
-            return Err(e);
+        match self.charged_staging(a, io, 1, width, height, charge) {
+            Ok(id) => Ok(id),
+            Err(e) => { let _ = self.collect(a, io); Err(e) }
         }
-        Ok(id)
+    }
+    /// Map the pinned linear source and describe the same tiled image the TIC
+    /// samples. No CPU aperture write is used for the image's contents.
+    pub fn span_upload_plan(&mut self, a: &mut Allocator, io: &mut impl Io,
+        id: u32, backing: Arc<B>, pages: &[u64], bytes: u64,
+    ) -> Result<super::copy::Plan, &'static str> {
+        let l = self.layout(id).ok_or("native crossing layout absent")?;
+        let image = super::copy::Image { address: self.address(id).ok_or("native crossing address absent")?,
+            width: l.width, height: l.height, texel_bytes: l.texel_bytes,
+            pitch: l.pitch, block_height: l.block_height, bytes: l.bytes };
+        self.attach(a, io, id, backing.clone(), pages, bytes)?;
+        let address = self.map_backing(a, io, id, &backing, pages, bytes)?;
+        super::copy::upload(image, super::copy::Linear { address, bytes, offset: 0, stride: l.pitch },
+            [0, 0, l.width, l.height])
     }
     pub fn unref(&mut self, id: u32) -> Result<(), &'static str> {
         self.entries.get_mut(&id).ok_or("native resource absent")?.dropped = true;
@@ -602,26 +593,49 @@ pub(crate) fn retire_blend_staging(ids: impl IntoIterator<Item = Option<u32>>, h
 #[cfg(target_os = "none")]
 pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + Sync>)
     -> Result<(super::encode::Target, Hold), &'static str> {
-    let (target, hold) = super::ce::with_resources(|r, a, io| {
+    let bytes = data.width as usize * data.height as usize * 4;
+    if data.bytes.len() > bytes { return Err("oversized native packed spans"); }
+    let mut expected = data.bytes.clone();
+    expected.resize(bytes, 0);
+    let layout = Layout::new(data.width, data.height, 4)?;
+    let backing_bytes = layout.pitch as usize * data.height as usize;
+    let backing = Arc::new(crate::gpu::dma::Pages::new(backing_bytes.div_ceil(4096))
+        .ok_or("native crossing upload backing allocation")?);
+    backing.identify("native-spans-upload", 0, 0);
+    let row_bytes = data.width as usize * 4;
+    for (y, row) in expected.chunks_exact(row_bytes).enumerate() {
+        backing.write(y * layout.pitch as usize, row);
+    }
+    backing.maintain(0, backing_bytes, false);
+    let pages: Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
+    let (target, hold, plan) = super::ce::with_resources(|r, a, io| {
         let id = r.upload_spans(a, io, data.width, data.height, &data.bytes, charge)?;
         let layout = r.layout(id).ok_or("native crossing layout absent")?;
         let target = super::encode::Target { id,
             address: r.address(id).ok_or("native crossing address absent")?,
             width: data.width, height: data.height, format: 1, tile_mode: layout.tile_mode };
-        Ok((target, r.hold(id)?))
+        match r.span_upload_plan(a, io, id, backing.clone(), &pages, backing.bytes() as u64) {
+            Ok(plan) => Ok((target, r.hold(id)?, plan)),
+            Err(error) => {
+                r.unref(id)?;
+                let _ = r.collect(a, io);
+                Err(error)
+            }
+        }
     })?;
     let result = (|| {
-        let images = crate::gpu::native_spans_readback(target.id, data.width, data.height)?;
-        let mismatch = super::spans_diagnostic::compare(&data.bytes, &images[0], &images[1])?;
+        crate::gpu::native_spans_upload(target.id, plan, backing.clone())?;
+        let images = crate::gpu::native_spans_readback(target.id, data.width, data.height, backing)?;
+        let mismatch = super::spans_diagnostic::compare(&expected, &images[0], &images[1])?;
         use core::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        let (offset, expected, actual) = mismatch.map_or_else(
+        let (offset, expected_byte, actual) = mismatch.map_or_else(
             || (alloc::string::String::from("null"), alloc::string::String::from("null"), alloc::string::String::from("null")),
             |(at,e,a)| (alloc::format!("{}",at),alloc::format!("{}",e),alloc::format!("{}",a)));
         let text = alloc::format!("GT710_SPANS_V1 {{\"id\":{},\"resource\":{},\"width\":{},\"height\":{},\"bytes\":{},\"first_mismatch\":{},\"expected\":{},\"actual\":{},\"expected_sha256\":\"{}\",\"first_sha256\":\"{}\",\"second_sha256\":\"{}\"}}",
-            id,target.id,data.width,data.height,data.bytes.len(),offset,expected,actual,
-            super::hash(&data.bytes),super::hash(&images[0]),super::hash(&images[1]));
+            id,target.id,data.width,data.height,images[0].len(),offset,expected_byte,actual,
+            super::hash(&expected),super::hash(&images[0]),super::hash(&images[1]));
         let digest = super::hash(text.as_bytes());
         let bytes = text.len();
         super::bulk::line(text)?;
@@ -634,13 +648,4 @@ pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + S
         return Err(error);
     }
     Ok((target, hold))
-}
-
-/// Attach the diagnostic's pinned linear destination to the span-image owner.
-#[cfg(target_os = "none")]
-pub(crate) fn attach_spans_readback(id: u32, backing: Arc<crate::gpu::dma::Pages>)
-    -> Result<(), &'static str> {
-    let pages: Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
-    super::ce::with_resources(|r,a,io|
-        r.attach(a,io,id,backing.clone(),&pages,backing.bytes() as u64))
 }
