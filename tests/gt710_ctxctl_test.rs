@@ -105,6 +105,7 @@ struct Mock {
     regs: BTreeMap<u32,u32>, memory: BTreeMap<(u32,bool,u32),u32>,
     index: BTreeMap<(u32,bool),u32>, events: Vec<Event>,
     now: u64, frozen: bool, fast_clock: bool, ticks: u64, record: bool, corrupt: Option<(u32,bool,u32)>,
+    fifo_reads: std::collections::VecDeque<u32>, fifo_refuses: bool,
     ready: bool, gpc_ready: bool, reply: bool, pgob_stuck: bool, pri_ready_at: u64,
 }
 impl Mock {
@@ -113,6 +114,7 @@ impl Mock {
                 (0x502608,2), (0x500c30,3), (0x409108,0x20040), (0x502108,0x20040),
                 (0x120074,1), (0x100800,1)]), memory: BTreeMap::new(),
             index: BTreeMap::new(), events: vec![], now:0, frozen:false, fast_clock:false, ticks:0, record:true,
+            fifo_reads: Default::default(), fifo_refuses: false,
             corrupt:None, ready:true, gpc_ready:true, reply:true, pgob_stuck:false, pri_ready_at:0 }
     }
     fn port(a:u32) -> Option<(u32,bool,bool)> {
@@ -126,7 +128,9 @@ impl Mock {
 }
 impl Access for Mock {
     fn read(&mut self,a:u32)->u32 {
-        let v=if let Some((b,c,true))=Self::port(a) {
+        let v=if a == 0x400500 && !self.fifo_reads.is_empty() {
+            self.fifo_reads.pop_front().unwrap()
+        } else if let Some((b,c,true))=Self::port(a) {
             let index=*self.index.get(&(b,c)).unwrap_or(&0);
             let offset=index & 0xffff;
             let mut v=*self.memory.get(&(b,c,offset)).unwrap_or(&0);
@@ -143,7 +147,7 @@ impl Access for Mock {
     }
     fn write(&mut self,a:u32,v:u32) {
         if self.record { self.events.push(Event::Write(a,v)); }
-        if a == 0x400500 && self.regs[&0x200] & 0x1000 == 0 { return; }
+        if a == 0x400500 && (self.regs[&0x200] & 0x1000 == 0 || self.fifo_refuses) { return; }
         if let Some((b,c,data))=Self::port(a) {
             let bases=if b==0x41a000 { vec![0x502000] } else { vec![b] };
             for b in bases {
@@ -420,4 +424,34 @@ fn reset_waits_for_accessible_pgraph_and_refuses_missing_pri_response() {
     assert_eq!(error.address, 0x400100);
     assert_eq!(error.value, 0xbadf1201);
     assert!(error.elapsed_us >= BOUND_US);
+}
+
+#[test]
+fn active_reset_never_writes_a_pri_sentinel_or_calls_it_fifo_refusal() {
+    for sentinel in [0xbadf1201, 0xbadf0000, 0xbadfffff] {
+        for after_write in [false, true] {
+            let mut m = Mock::new();
+            m.regs.insert(0x200, 0x1100);
+            m.regs.insert(0x400500, 0x10001);
+            m.fifo_reads = if after_write {vec![0x10001, sentinel, 0x10000]} else {vec![sentinel, 0x10001]}.into();
+            reset(&mut m).unwrap();
+            assert!(m.events.contains(&Event::Write(0x400500, 0x10000)));
+            assert!(!m.events.iter().any(|e| matches!(e, Event::Write(0x400500, v) if *v >> 16 == 0xbadf)));
+        }
+        let mut m = Mock::new();
+        m.regs.insert(0x200, 0x1100);
+        m.regs.insert(0x400500, sentinel);
+        let error = reset(&mut m).unwrap_err();
+        assert_ne!(error.reason, "GR FIFO disable refused");
+        assert_eq!((error.address, error.value), (0x400500, sentinel));
+        assert!(!m.events.iter().any(|e| matches!(e, Event::Write(0x400500, _))));
+    }
+    let mut m = Mock::new();
+    m.regs.insert(0x200, 0x1100);
+    m.regs.insert(0x400500, 0x10001);
+    m.fifo_refuses = true;
+    let error = reset(&mut m).unwrap_err();
+    assert_eq!(error.reason, "GR FIFO disable refused");
+    assert_eq!(error.value, 0x10001);
+    assert!(!m.events.iter().any(|e| matches!(e, Event::Write(0x200, v) if *v & 0x1000 == 0)));
 }
