@@ -97,9 +97,12 @@ impl Surface {
         let params = match self.format { 0 => 0xcf00, 1 => 0xd500,
             _ => return Err("unsupported native scanout format") };
         let h=head*0x300;
-        Ok(alloc::vec![(0x460+h,(self.address>>8) as u32),
+        let mut methods = Vec::new();
+        methods.try_reserve_exact(7).map_err(|_| "native surface method allocation")?;
+        methods.extend([(0x460+h,(self.address>>8) as u32),
             (0x468+h,self.width | self.height<<16),(0x46c+h,storage),
-            (0x470+h,params),(0x474+h,self.dma),(0x84,0x80000000),(0x80,0)])
+            (0x470+h,params),(0x474+h,self.dma),(0x84,0x80000000),(0x80,0)]);
+        Ok(methods)
     }
     /// GF119 display DMA: physical VRAM, small pages, uncompressed color kind
     /// 0xfe for tiled targets; kind 0 for the pitch-linear console. Absolute

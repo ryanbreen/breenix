@@ -406,7 +406,10 @@ impl Evo {
             .ok_or("invalid terminal raster")?, surface.width, surface.height)?;
         let surface_methods = surface.methods(self.head)?;
         let view_methods = view.methods(self.head)?;
-        let mut methods = surface_methods[..5].to_vec();
+        let mut methods = Vec::new();
+        methods.try_reserve_exact(surface_methods.len() + view_methods.len())
+            .map_err(|_| "terminal EVO method allocation")?;
+        methods.extend_from_slice(&surface_methods[..5]);
         methods.extend_from_slice(&view_methods);
         methods.extend_from_slice(&surface_methods[5..]);
         // NV927D_SET_NOTIFIER_CONTROL_OFFSET[11:2]: keep terminal
@@ -416,7 +419,9 @@ impl Evo {
         // Ordinary EVO packets stay below 2048; the second half of this
         // already-owned 4096-byte push page is terminal-only (NV927D JUMP).
         if methods.len() * 8 > 2048 { return Err("terminal EVO packet extent"); }
-        let words: Vec<_> = methods.iter().flat_map(|&(m, v)| [0x40000 | m, v]).collect();
+        let mut words = Vec::new();
+        words.try_reserve_exact(methods.len() * 2).map_err(|_| "terminal EVO packet allocation")?;
+        words.extend(methods.iter().flat_map(|&(m, v)| [0x40000 | m, v]));
         write_words(&mut Registers(registers), self.total, self.push + 2048, &words)?;
         modeset::bar_flush(&mut Registers(registers))?;
         Ok(super::emergency::Display { registers, total: self.total,
@@ -493,7 +498,9 @@ pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
             let head=&methods[..methods.len()-2];
             let same=head.iter().all(|&(m,v)| self.regs.read(0x640000+m as usize)==v
                 && self.regs.read(0x660000+m as usize)==v);
-            let mut words=if same { Vec::new() } else { head.to_vec() };
+            let mut words=Vec::new();
+            words.try_reserve_exact(head.len() + 10).map_err(|_| "native UPDATE allocation")?;
+            if !same { words.extend_from_slice(head); }
             if self.view.verify(self.regs,self.evo.head).is_err() {
                 words.extend(self.view.methods(self.evo.head)?);
             }

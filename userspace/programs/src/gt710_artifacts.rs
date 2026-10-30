@@ -2,6 +2,9 @@
 use libbreenix::{crypto::sha256::sha256,dns,io::{self,PollFd,poll_events},socket,time};
 pub fn upload()->Result<(),String> { upload_slot(None, false) }
 pub(super) fn upload_slot(resources: Option<&libbreenix::gpu::abi::Caps>, final_slot: bool)->Result<(),String> {
+    upload_slot_with(resources, final_slot, &[])
+}
+pub(super) fn upload_slot_with(resources: Option<&libbreenix::gpu::abi::Caps>, final_slot: bool, extra: &[u8])->Result<(),String> {
     let resource_row = resources.map(|caps| {
         // Caps implements Plain: repr(C), integer fields only, no padding.
         // Retain the exact syscall bytes; do not reconstruct admission here.
@@ -17,6 +20,11 @@ pub(super) fn upload_slot(resources: Option<&libbreenix::gpu::abi::Caps>, final_
     });
     let mut data=std::fs::read("/proc/gt710-pixels").unwrap_or_default();
     if let Some(row) = &resource_row { data.extend_from_slice(row.as_bytes()); }
+    if !extra.is_empty() {
+        if !final_slot { return Err("case heap evidence requires the final upload slot".into()); }
+        data.try_reserve_exact(extra.len()).map_err(|_| "native final artifact allocation")?;
+        data.extend_from_slice(extra);
+    }
     if data.is_empty() {return Ok(());}
     if data.len()>2<<20 {return Err("native display artifact exceeds bound".into());}
     let mut target=std::fs::read_to_string("/etc/breenix/gt710-upload").map_err(|_|"native upload route absent")?.trim().to_string();

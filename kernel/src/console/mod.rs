@@ -146,6 +146,18 @@ type Shadow = crate::gpu::byte_buffer::Bytes;
 #[cfg(target_arch = "aarch64")]
 type Shadow = Vec<u8>;
 
+#[cfg(target_arch="x86_64")]
+static TERMINAL_HEAP_BYTES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+#[cfg(target_arch="x86_64")]
+static SNAPSHOT_HEAP_BYTES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+#[cfg(target_arch="x86_64")]
+static SHOWN_HEAP_BYTES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+#[cfg(target_arch="x86_64")]
+pub(crate) fn heap_footprint() -> [usize; 2] {
+    [TERMINAL_HEAP_BYTES.load(Ordering::Relaxed),
+        SNAPSHOT_HEAP_BYTES.load(Ordering::Relaxed) + SHOWN_HEAP_BYTES.load(Ordering::Relaxed)]
+}
+
 /// What `attach` set up: the shadow and the splash drawn in it, which the boot
 /// thread keeps up to date until the render thread takes them.
 struct Attached {
@@ -244,6 +256,8 @@ fn size_terminals(layout: &Layout) {
     // Plan Q10: what the heap gave, measured, beside what the sizes add up to.
     let cell = core::mem::size_of::<grid::Cell>();
     let calculated = (vt::VT_COUNT - 1) * (2 * size + grid::HISTORY_LINES * layout.cols()) * cell;
+    #[cfg(target_arch="x86_64")]
+    TERMINAL_HEAP_BYTES.store(free_before.saturating_sub(crate::memory::heap::free_bytes()), Ordering::Relaxed);
     say!(
         info,
         "[console] terminals: tty2 to tty6 took {} KiB of the kernel heap, measured (calculated: {} KiB for two screens and {} scrollback lines each; tty1's are static); heap high-water {} KiB of {} KiB",
@@ -936,22 +950,32 @@ fn render_thread(display: &'static Display, attached: Attached) {
     display::linear::report_write_combining(attached.write_combining);
     let layout = display.layout();
     let (cols, rows) = with_grid(|console| (console.vts[0].grid.cols(), console.vts[0].grid.rows())).unwrap_or((0, 0));
+    let mut cells = Vec::new();
+    let mut shown = Vec::new();
+    if cells.try_reserve_exact(cols * rows).is_err() || shown.try_reserve_exact(rows).is_err() {
+        say!(error, "{} renderer metadata allocation failed", TAG);
+        return;
+    }
+    cells.resize(cols * rows, grid::BLANK);
+    shown.resize_with(rows, || None);
     let mut snapshot = Snapshot {
         cols,
         rows,
-        cells: alloc::vec![grid::BLANK; cols * rows],
+        cells,
         cursor: (0, 0),
         cursor_visible: true,
         generation: u64::MAX,
         fg: usize::MAX,
         epoch: u64::MAX,
     };
+    #[cfg(target_arch="x86_64")]
+    SNAPSHOT_HEAP_BYTES.store(snapshot.cells.capacity() * core::mem::size_of::<grid::Cell>(), Ordering::Relaxed);
     let mut splash_run = attached.splash;
     let mut screen = Screen {
         display,
         layout,
         shadow: attached.shadow,
-        shown: alloc::vec![None; rows],
+        shown,
         cleared: false,
         frames: 0,
         complete: false,
@@ -1352,9 +1376,20 @@ impl Screen {
         let mut dirty: Option<core::ops::Range<usize>> = None;
         for row in 0..snapshot.rows {
             let (cursor_row, cursor_col) = snapshot.cursor;
+            let cursor = (snapshot.cursor_visible && cursor_row == row).then_some(cursor_col);
+            if self.shown[row].as_ref().is_some_and(|s| s.cursor == cursor && s.text == snapshot.row(row)) {
+                continue;
+            }
+            let mut text = Vec::new();
+            if text.try_reserve_exact(snapshot.cols).is_err() {
+                self.last_failure = Some("console row allocation");
+                failed = true;
+                continue;
+            }
+            text.extend_from_slice(snapshot.row(row));
             let wanted = Shown {
-                text: snapshot.row(row).to_vec(),
-                cursor: (snapshot.cursor_visible && cursor_row == row).then_some(cursor_col),
+                text,
+                cursor,
             };
             if self.shown[row].as_ref() == Some(&wanted) {
                 continue;
@@ -1396,6 +1431,9 @@ impl Screen {
             self.last_failure = None;
             self.frames += 1;
         }
+        #[cfg(target_arch="x86_64")]
+        SHOWN_HEAP_BYTES.store(self.shown.capacity() * core::mem::size_of::<Option<Shown>>()
+            + self.shown.iter().flatten().map(|r| r.text.capacity() * core::mem::size_of::<grid::Cell>()).sum::<usize>(), Ordering::Relaxed);
         drawn
     }
 
@@ -1405,8 +1443,11 @@ impl Screen {
         let layout = self.layout;
         let bpp = layout.bytes_per_pixel;
         let font = layout.font;
-        let source = if may_draw() { self.display.settle() } else { Err(DISPLAY_OWNED) };
-        let mut line = alloc::vec![0u8; layout.width * bpp];
+        let mut source = if may_draw() { self.display.settle() } else { Err(DISPLAY_OWNED) };
+        let mut line = Vec::new();
+        if line.try_reserve_exact(layout.width * bpp).is_err() {
+            source = Err("console check row allocation");
+        } else { line.resize(layout.width * bpp, 0); }
         let mut differing_lines = 0;
         let mut first_difference = None;
         let mut font_mismatches = 0;
@@ -1450,19 +1491,25 @@ impl Screen {
                 }
             }
         }
-        let shown: Vec<&Shown> = self.shown.iter().flatten().collect();
-        let glyph_cells = shown
-            .iter()
+        let glyph_cells = self.shown.iter().flatten()
             .map(|row| row.text.iter().filter(|&&cell| cell.glyph != b' ' as u16).count())
             .sum();
-        let rows = shown
-            .iter()
-            .map(|row| {
+        let mut rows = Vec::new();
+        if rows.try_reserve_exact(self.shown.len()).is_err() {
+            source = Err("console check text allocation");
+        } else {
+            for row in self.shown.iter().flatten() {
                 let end = row.text.iter().rposition(|&cell| cell.glyph != b' ' as u16).map_or(0, |last| last + 1);
-                row.text[..end].to_vec()
-            })
-            .filter(|text| !text.is_empty())
-            .collect();
+                if end == 0 { continue; }
+                let mut text = Vec::new();
+                if text.try_reserve_exact(end).is_err() {
+                    source = Err("console check text allocation");
+                    break;
+                }
+                text.extend_from_slice(&row.text[..end]);
+                rows.push(text);
+            }
+        }
         Check {
             fg,
             layout,

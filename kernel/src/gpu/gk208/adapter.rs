@@ -147,6 +147,13 @@ pub struct Device {
     resetting: Option<Result<(), &'static str>>,
 }
 impl Device {
+    #[cfg(target_os="none")]
+    pub(crate) fn heap_footprint(&self) -> [usize; 4] {
+        let channel = self.channel.heap_footprint();
+        [self.pending.capacity() * core::mem::size_of::<Sent>()
+            + self.recent.capacity() * core::mem::size_of::<RequestTrace>(),
+            self.retired.capacity() * core::mem::size_of::<(Request, Option<u32>)>(), channel[0], channel[1]]
+    }
     pub(crate) fn new(channel: NativeChannel, board: super::caps::BoardState) -> Self {
         Self { channel, board, queue: Queue::new(), pending: VecDeque::new(),
             retired: VecDeque::new(), attributed: None,
@@ -181,6 +188,8 @@ impl Device {
     }
     pub fn send(&mut self, request: Request) -> Result<(), Request> {
         if !self.has_room(1) || self.pending.try_reserve(1).is_err() { return Err(request); }
+        #[cfg(target_os = "none")]
+        if self.recent.len() < 16 && self.recent.try_reserve(1).is_err() { return Err(request); }
         if request.storage {
             self.pending.push_back(Sent { request, identity: None, answer: None });
             return Ok(());
@@ -403,6 +412,10 @@ impl Device {
         if self.attributed.is_some() && self.retired.try_reserve(self.pending.len()).is_err() {
             return (Vec::new(), Err("native retirement allocation; backing retained"));
         }
+        let mut held = Vec::new();
+        if self.attributed.is_none() && held.try_reserve_exact(self.pending.len()).is_err() {
+            return (held, Err("native restart allocation; backing retained"));
+        }
         // A restart refusal retains requests as well as channel backing.
         if let Err(error) = self.channel.restart() {
             self.resetting = Some(Err(error));
@@ -423,7 +436,7 @@ impl Device {
                 self.retired.push_back((sent.request, answer));
             }
             Vec::new()
-        } else { self.pending.drain(..).map(|sent| sent.request).collect() };
+        } else { held.extend(self.pending.drain(..).map(|sent| sent.request)); held };
         self.queue = Queue::new();
         self.fault = false;
         self.first_error = None;

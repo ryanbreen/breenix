@@ -26,6 +26,7 @@ mod heap{SOURCE
  use super::*;
  fn sample()->[u64;wire::WORDS]{let mut a=[0;wire::WORDS];a[0]=1;a[1]=32*1024*1024;a}
  #[test]fn all_manifest_boundaries_are_retained_in_order(){
+  let _=boundary as fn(usize,usize,&str);assert!(super::encode().is_err());
   let mut s=Store::new();s.record(0,170,"",Ok(sample()));
   for n in 1..=170{s.record(n,170,"present/owner",Ok(sample()));}
   let encoded=s.encode().unwrap();let text=std::str::from_utf8(&encoded).unwrap();

@@ -53,6 +53,8 @@ pub mod arch_rules;
 #[path = "gk208/dma_policy.rs"]
 pub mod dma_policy;
 pub mod dma;
+#[cfg(target_arch="x86_64")]
+pub(crate) mod heap;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod byte_buffer;
 #[cfg(target_arch = "x86_64")]
@@ -1103,6 +1105,10 @@ impl Core {
             self.unsendable(req);
             return None;
         }
+        if self.backlog.try_reserve(1).is_err() {
+            self.unsendable(req);
+            return None;
+        }
         let serial = self.serial();
         req.set_tag(Tag::Sync(serial));
         self.syncs.insert(serial, SyncReq {
@@ -1118,7 +1124,10 @@ impl Core {
     /// still use memory it names was never confirmed reset.
     fn unsendable(&mut self, req: Request) {
         match self.wedged.as_mut() {
-            Some((_, keep)) => keep.push(req),
+            Some((_, keep)) => {
+                if keep.try_reserve(1).is_ok() { keep.push(req); }
+                else { core::mem::forget(req); } // uncertain DMA remains pinned
+            },
             None => drop(req),
         }
     }
@@ -1140,6 +1149,13 @@ impl Core {
         if holds.iter().any(|id| self.resources.get(id).is_none_or(|r| r.epoch != self.epoch || r.lost)) {
             return Err(EIO);
         }
+        let mut held = Vec::new();
+        let mut readers = Vec::new();
+        held.try_reserve_exact(holds.len()).map_err(|_| ENOMEM)?;
+        readers.try_reserve_exact(reading.len()).map_err(|_| ENOMEM)?;
+        self.backlog.try_reserve(1).map_err(|_| ENOMEM)?;
+        held.extend_from_slice(holds);
+        readers.extend_from_slice(reading);
         for id in holds {
             if let Some(r) = self.resources.get_mut(id) {
                 r.holds += 1;
@@ -1147,7 +1163,7 @@ impl Core {
         }
         let upload = req.is_upload().then(|| holds.first().copied().zip(req.fence())).flatten();
         self.syncs.insert(serial, SyncReq {
-            upload, ctx, sent_ns: None, holds: holds.to_vec(), reading: reading.to_vec(), abandoned: warm.is_some(), failed: false,
+            upload, ctx, sent_ns: None, holds: held, reading: readers, abandoned: warm.is_some(), failed: false,
             why: 0, warm,
         });
         self.backlog.push_back((self.epoch, req));
@@ -1798,8 +1814,7 @@ impl Core {
             c.device_alive = false;
             c.depth = None;
         }
-        let pending: Vec<u64> = self.subs.iter().filter(|(_, s)| !s.published).map(|(&k, _)| k).collect();
-        for serial in pending {
+        while let Some(serial) = self.subs.iter().find(|(_, s)| !s.published).map(|(&k, _)| k) {
             self.publish(serial, fence_status::DEVICE_RESET, 0);
         }
         for s in self.syncs.values_mut() {
@@ -1819,8 +1834,9 @@ impl Core {
             self.ended(req);
         }
         let epoch = self.epoch;
-        let queued: Vec<(u64, Request)> = self.backlog.drain(..).collect();
-        for (at, req) in queued {
+        let queued = self.backlog.len();
+        for _ in 0..queued {
+            let (at, req) = self.backlog.pop_front().unwrap();
             if at < epoch {
                 self.ended(req);
             } else {
@@ -1845,16 +1861,18 @@ impl Core {
                 drop(dev);
                 self.status = abi::status::DEVICE_FAILED;
                 self.reason = e;
-                let queued: Vec<(u64, Request)> = self.backlog.drain(..).collect();
-                for (_, req) in queued {
+                while let Some((_, req)) = self.backlog.pop_front() {
                     self.ended(req);
                 }
             }
         }
         self.last_progress = now_ns();
         self.flush();
-        let ids: Vec<u32> = self.contexts.keys().copied().collect();
-        for id in ids {
+        let mut previous = None;
+        loop {
+            let next = self.contexts.keys().copied().find(|id| previous.is_none_or(|p| *id > p));
+            let Some(id) = next else { break };
+            previous = Some(id);
             self.settle(id);
         }
         notify();

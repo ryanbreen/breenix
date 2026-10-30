@@ -22,3 +22,6 @@ pub(super) fn take()->Vec<u8> {
 }
 
 pub(super) fn used() -> usize { ROWS.lock().len() }
+
+#[cfg(target_os="none")]
+pub(super) fn capacity() -> usize { ROWS.lock().capacity() }

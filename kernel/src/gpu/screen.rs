@@ -16,7 +16,6 @@
 //! spin lock only moves it in and out, and device waits run without it.
 
 use super::*;
-use alloc::vec;
 use core::ops::Range;
 use display::Binding;
 
@@ -333,12 +332,19 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
     #[cfg(target_arch = "x86_64")]
     let mut difference = None;
     #[cfg(target_arch = "x86_64")]
-    let mut observed = if sample { vec![0; PITCH] } else { Vec::new() };
+    let mut observed = Vec::new();
+    #[cfg(target_arch = "x86_64")]
+    if sample {
+        observed.try_reserve_exact(PITCH).map_err(|_| "screen sample allocation")?;
+        observed.resize(PITCH, 0);
+    }
     let mut y = 0;
     while y < HEIGHT {
         let rows = band.min(HEIGHT - y);
         let (offset, len) = (y as usize * PITCH, rows as usize * PITCH);
-        let mut row = vec![0; PITCH];
+        let mut row = Vec::new();
+        row.try_reserve_exact(PITCH).map_err(|_| "screen readback row allocation")?;
+        row.resize(PITCH, 0);
         // Only a transfer into the backing itself poisons it: keep its band until that succeeds.
         let saved = match &readback {
             Some(_) => None,

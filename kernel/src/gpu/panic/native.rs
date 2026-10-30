@@ -64,7 +64,7 @@ impl enc::Bindings for Bindings<'_> {
 
 pub(super) fn prepare() -> Result<(), i64> {
     let c = console::Console::new()?;
-    let words = prepared::text_stream(c.target, c.atlas, c.glyph_width);
+    let words = prepared::text_stream(c.target, c.atlas, c.glyph_width).map_err(|_| ENOMEM)?;
     let mut frame = enc::translate(words.as_slice(), &Bindings(&c))
         .map_err(|e| if e == enc::NO_MEMORY { ENOMEM } else { EIO })?;
     let glyphs = prepared::glyph_offsets(

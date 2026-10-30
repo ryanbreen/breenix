@@ -216,7 +216,9 @@ impl SaveLayout {
         })
     }
     pub fn written(&self, size: u32) -> Result<Vec<bool>, Error> {
-        let mut written = vec![false; size as usize];
+        let mut written = Vec::new();
+        written.try_reserve_exact(size as usize).map_err(|_| Error::from("GR saved-data mask allocation"))?;
+        written.resize(size as usize, false);
         let mut cursor = 256u64;
         if self.units.len() != 2 {
             return Err("invalid saved-data size words".into());

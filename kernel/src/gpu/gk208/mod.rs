@@ -588,3 +588,11 @@ pub(crate) fn ce_terminal_display(id:u32)->Result<emergency::Display, &'static s
     let surface=ce::with_resources(|r,_,_|r.scanout(id).ok_or("terminal scanout absent"))?;
     emergency::Display::prepare(surface)
 }
+
+#[cfg(target_os="none")]
+pub(crate) fn heap_footprint() -> [usize; 8] {
+    let mut values = [0; 8];
+    values[..7].copy_from_slice(&ce::with_resources(|r,_,_| Ok(r.heap_footprint())).unwrap_or([0;7]));
+    values[7] = bulk::capacity();
+    values
+}

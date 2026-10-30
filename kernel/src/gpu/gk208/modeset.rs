@@ -352,8 +352,11 @@ impl Viewport {
         let output=self.output.0|self.output.1<<16;
         // POINT_OUT_ADJUST=0 leaves hardware centring intact; base colour is
         // black. OUT/MIN/MAX are identical, as in MIT head907d_view.
-        Ok(vec![(0x42c+h,0),(0x494+h,0),(0x4b0+h,0),(0x4b8+h,input),
-            (0x4bc+h,0),(0x4c0+h,output),(0x4c4+h,output),(0x4c8+h,output)])
+        let mut methods = Vec::new();
+        methods.try_reserve_exact(8).map_err(|_| "native viewport method allocation")?;
+        methods.extend([(0x42c+h,0),(0x494+h,0),(0x4b0+h,0),(0x4b8+h,input),
+            (0x4bc+h,0),(0x4c0+h,output),(0x4c4+h,output),(0x4c8+h,output)]);
+        Ok(methods)
     }
     /// Both banks must name this mode after its fresh UPDATE notifier.
     pub fn verify(self,io:&mut impl Io,head:u32)->Result<(), &'static str> {

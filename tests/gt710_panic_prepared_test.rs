@@ -123,7 +123,7 @@ impl encode::Bindings for Bindings {
 }
 #[test]
 fn prepared_stream_uses_the_shared_bitmap_catalogue_and_patchable_glyphs() {
-    let words=prepared::text_stream(42,43,8);
+    let words=prepared::text_stream(42,43,8).unwrap();
     let frame=encode::translate(words.as_slice(),&Bindings).unwrap();
     let offsets=prepared::glyph_offsets(frame.chunks.iter().filter(|c|c.source.is_some() && c.copy.is_none())
         .map(|c|c.words.as_slice()),frame.data.len()).unwrap();

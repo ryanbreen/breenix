@@ -150,6 +150,16 @@ impl<B> Resources<B> {
     pub const fn new() -> Self {
         Self { entries: BTreeMap::new(), contexts: BTreeSet::new(), space: None, vram_bytes: 0, alias: None, channel: 0, incarnation: None, alias_indices: Vec::new(), temporary: u32::MAX - 1, retired: VecDeque::new() }
     }
+    #[cfg(target_os="none")]
+    pub(in crate::gk208) fn heap_footprint(&self) -> [usize; 7] {
+        let region_bytes = |v: &Vec<FrameRegion>| v.capacity() * core::mem::size_of::<FrameRegion>();
+        [self.entries.len(), self.retired.len(),
+            self.retired.capacity() * core::mem::size_of::<Retired>()
+                + self.retired.iter().map(|r| region_bytes(&r.regions)).sum::<usize>(),
+            self.entries.values().map(|e| region_bytes(&e.regions)).sum(),
+            self.space.as_ref().map_or(0, |s| s.heap_vector_bytes()), self.contexts.len(),
+            self.alias_indices.capacity() * core::mem::size_of::<u64>()]
+    }
     pub fn vram_bytes(&self) -> u64 { self.vram_bytes }
     pub fn layout(&self, id: u32) -> Option<Layout> { self.entries.get(&id)?.layout }
     pub fn address(&self, id: u32) -> Option<u64> { Some(self.entries.get(&id)?.va) }
@@ -192,10 +202,13 @@ impl<B> Resources<B> {
     /// Only live or uncertain entries reserve VA. Successfully retired ranges
     /// can be reused even while the imported console keeps the address space alive.
     fn vacant_va(&self, bytes: u64, alignment: u64) -> Result<u64, &'static str> {
-        let mut ranges: Vec<_> = self.entries.values().flat_map(|e| {
+        let mut ranges = Vec::new();
+        ranges.try_reserve_exact(self.entries.len().checked_mul(2).ok_or("native VA scratch extent")?)
+            .map_err(|_| "native VA scratch allocation")?;
+        ranges.extend(self.entries.values().flat_map(|e| {
             core::iter::once((e.va, e.bytes.next_multiple_of(4096)))
                 .chain(e.backing_va.map(|va| (va, e.backing_bytes)))
-        }).collect();
+        }));
         ranges.sort_unstable_by_key(|r| r.0);
         let bytes = bytes.next_multiple_of(4096);
         let mut va = FIRST_VA.next_multiple_of(alignment);
@@ -453,8 +466,12 @@ impl<B> Resources<B> {
     pub fn collect(&mut self, a: &mut Allocator, io: &mut impl Io) -> Result<(), &'static str> {
         let before = a.stats().charged;
         let result = (|| {
-            let ready: Vec<_> = self.entries.iter().filter(|(_,e)| e.dropped && Arc::strong_count(&e.reference) == 1)
-                .map(|(id,_)| *id).collect();
+            let mut ready = Vec::new();
+            ready.try_reserve_exact(self.entries.len()).map_err(|_| "native retirement scratch allocation")?;
+            ready.extend(self.entries.iter().filter(|(_,e)| e.dropped && Arc::strong_count(&e.reference) == 1)
+                .map(|(id,_)| *id));
+            let additional = ready.len().min(128usize.saturating_sub(self.retired.len()));
+            self.retired.try_reserve(additional).map_err(|_| "native retirement history allocation")?;
             for id in ready {
                 let e = &self.entries[&id];
                 if e.mapped {
@@ -582,7 +599,9 @@ mod native {
     }
     pub fn attach_backing(tag: Tag, id: u32, backing: Arc<Pages>) -> Option<Request> {
         backing.identify("native-resource", id, 0);
-        let pages: alloc::vec::Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
+        let mut pages = alloc::vec::Vec::new();
+        pages.try_reserve_exact(backing.count()).ok()?;
+        pages.extend((0..backing.count()).map(|i| backing.page_addr(i)));
         ce::with_resources(|r, a, io| r.attach(a, io, id, backing.clone(), &pages, backing.bytes() as u64)).ok()?;
         Some(Request::storage(tag, Some(backing)))
     }
@@ -645,7 +664,9 @@ pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + S
         backing.write(y * layout.pitch as usize, row);
     }
     backing.maintain(0, backing_bytes, false);
-    let pages: Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
+    let mut pages = Vec::new();
+    pages.try_reserve_exact(backing.count()).map_err(|_| "native crossing page vector allocation")?;
+    pages.extend((0..backing.count()).map(|i| backing.page_addr(i)));
     #[cfg(feature = "gt710_core_probe")]
     drop(preparing);
     #[cfg(feature = "gt710_core_probe")]
@@ -693,7 +714,13 @@ pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + S
         Ok(())
     })();
     if let Err(error) = result {
-        let mut holds = alloc::vec![hold];
+        let mut holds = Vec::new();
+        if holds.try_reserve_exact(1).is_err() {
+            // Preserve uncertain DMA ownership when cleanup metadata is unavailable.
+            core::mem::forget(hold);
+            return Err(error);
+        }
+        holds.push(hold);
         retire_blend_staging([Some(target.id)], &mut holds);
         return Err(error);
     }

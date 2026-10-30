@@ -912,3 +912,5 @@ const _: () = {
     assert!(core::mem::offset_of!(Modes, firmware_writes_after_handoff) == 120);
     assert!(core::mem::size_of::<SetMode>() == 16);
 };
+
+pub mod heap_trace;

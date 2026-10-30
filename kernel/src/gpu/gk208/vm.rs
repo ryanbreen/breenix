@@ -96,6 +96,10 @@ fn clear(io: &mut impl Io, r: Range) -> Result<(), &'static str> {
     Ok(())
 }
 impl Space {
+    #[cfg(target_os="none")]
+    pub(super) fn heap_vector_bytes(&self) -> usize {
+        self.tables.capacity() * core::mem::size_of::<(u64, Allocation, u32)>()
+    }
     pub fn new(a: &mut Allocator, io: &mut impl Io) -> Result<Self, &'static str> {
         let stats = a.stats();
         let total = stats.reserved + stats.charged + stats.free;
@@ -315,8 +319,10 @@ impl Space {
         alias: Option<u64>,
     ) -> Result<Vec<u64>, &'static str> {
         if !self.usable() { return Err("VM retained after uncertain device operation"); }
-        let empty: Vec<_> = self.tables.iter().filter(|(_, _, pages)| *pages == 0)
-            .map(|(index, _, _)| *index).collect();
+        let mut empty = Vec::new();
+        empty.try_reserve_exact(self.tables.len()).map_err(|_| "VM reclamation scratch allocation")?;
+        empty.extend(self.tables.iter().filter(|(_, _, pages)| *pages == 0)
+            .map(|(index, _, _)| *index));
         if empty.is_empty() { return Ok(empty); }
         let result = (|| {
             for &index in &empty {

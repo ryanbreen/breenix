@@ -30,11 +30,14 @@ pub(crate) const COLS: usize = 80;
 pub(crate) const ROWS: usize = 32;
 pub(crate) const CELLS: usize = COLS * ROWS;
 
-pub(crate) fn text_stream(target: u32, atlas: u32, glyph_width: u32) -> Vec<u32> {
+pub(crate) fn text_stream(target: u32, atlas: u32, glyph_width: u32) -> Result<Vec<u32>, &'static str> {
     let mut words = Vec::new();
+    words.try_reserve_exact(7 + draw::HEADER + draw::INSTANCE * CELLS)
+        .map_err(|_| "terminal stream allocation")?;
     stream::encode::begin(&mut words, u64::from(target));
     stream::encode::clear(&mut words, 0xff6e1216);
-    let mut instances = Vec::with_capacity(CELLS);
+    let mut instances = Vec::new();
+    instances.try_reserve_exact(CELLS).map_err(|_| "terminal instance allocation")?;
     for row in 0..ROWS {
         for col in 0..COLS {
             let x = 40 + col as u32 * glyph_width * 2;
@@ -48,14 +51,15 @@ pub(crate) fn text_stream(target: u32, atlas: u32, glyph_width: u32) -> Vec<u32>
         }
     }
     draw::encode(&mut words, pipeline::BITMAP_TEXT, 0xffffebeb, u64::from(atlas), 0, 0, &instances);
-    words
+    Ok(words)
 }
 
 /// The encoder's CB0 address selects each immutable quad's parameters. Only
 /// param[2] (atlas x) is mutable. Validate packet and backing extents now.
 pub(crate) fn glyph_offsets<'a>(chunks: impl IntoIterator<Item = &'a [u32]>, bytes: usize)
     -> Result<Vec<usize>, &'static str> {
-    let mut offsets = Vec::with_capacity(CELLS);
+    let mut offsets = Vec::new();
+    offsets.try_reserve_exact(CELLS).map_err(|_| "terminal selector allocation")?;
     for words in chunks {
         let (mut at, mut selector, mut binding) = (0, None, None);
         while at < words.len() {
@@ -79,6 +83,7 @@ pub(crate) fn glyph_offsets<'a>(chunks: impl IntoIterator<Item = &'a [u32]>, byt
             }
             at += 1 + count;
         }
+        if offsets.len() == CELLS { return Err("terminal glyph count"); }
         offsets.push(selector.ok_or("terminal glyph selector absent")?);
     }
     if offsets.len() != CELLS { return Err("terminal glyph count"); }

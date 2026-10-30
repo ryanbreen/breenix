@@ -469,7 +469,9 @@ pub(crate) fn transfer(tag: crate::gpu::dev::Tag, fence: u64, id: u32,
     offset: u64, stride: u32, upload: bool,
 ) -> Option<super::super::adapter::Request> {
     use super::super::copy;
-    let pages: Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
+    let mut pages = Vec::new();
+    pages.try_reserve_exact(backing.count()).ok()?;
+    pages.extend((0..backing.count()).map(|i| backing.page_addr(i)));
     let (plan,resource,hold) = super::with_resources(|r,a,io| {
         let hold = r.hold(id)?;
         let img = image(r,id)?;
@@ -479,8 +481,9 @@ pub(crate) fn transfer(tag: crate::gpu::dev::Tag, fence: u64, id: u32,
             else { copy::readback(img,linear,rectangle)? };
         Ok((plan,r.identity(id).ok_or("native transfer identity absent")?,hold))
     }).ok()?;
+    let mut holds = Vec::new(); holds.try_reserve_exact(1).ok()?; holds.push(hold);
     Some(super::super::adapter::Request::transfer(tag,fence,resource,plan,upload,
-        TransferHold { resources:vec![hold] },Some(backing)))
+        TransferHold { resources:holds },Some(backing)))
 }
 /// The resource owner has mapped this source and built the upload plan. Retain
 /// both image and backing through the CE release, including uncertain requests.
@@ -488,8 +491,9 @@ pub(crate) fn span_upload(tag: crate::gpu::dev::Tag, fence: u64, id: u32,
     plan: super::super::copy::Plan, backing: alloc::sync::Arc<crate::gpu::dma::Pages>,
 ) -> Option<super::super::adapter::Request> {
     let hold = super::with_resources(|r,_,_| r.hold(id)).ok()?;
+    let mut holds = Vec::new(); holds.try_reserve_exact(1).ok()?; holds.push(hold);
     Some(super::super::adapter::Request::transfer(tag,fence,u64::from(id),plan,true,
-        TransferHold { resources:vec![hold] },Some(backing)))
+        TransferHold { resources:holds },Some(backing)))
 }
 /// Build a byte-preserving target copy for the native stream encoder. Shared
 /// validation supplies handles/coordinates; overlapping storage uses VRAM first.
@@ -511,7 +515,9 @@ pub(in crate::gk208) fn region_plan(
     source: u32, destination: u32, rectangle: [u32;6],
 ) -> Result<(super::super::copy::Plan, Vec<super::super::resource::Hold>), &'static str> {
     use super::super::copy;
-    let mut holds=vec![r.hold(source)?,r.hold(destination)?];
+    let mut holds=Vec::new();
+    holds.try_reserve_exact(3).map_err(|_| "native copy hold allocation")?;
+    holds.extend([r.hold(source)?,r.hold(destination)?]);
     let (src,dst)=(image(r,source)?,image(r,destination)?);
     if src.texel_bytes != dst.texel_bytes { return Err("native copy format size mismatch"); }
     let staging = if src.address == dst.address {
@@ -542,12 +548,16 @@ pub(crate) fn console(tag: crate::gpu::dev::Tag, fence: u64,
 ) -> Option<super::super::adapter::Request> {
     let (surface, allocation) = super::console_allocation()?;
     super::super::console_binding(&surface).ok()?;
-    let pages: Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
+    let mut pages = Vec::new();
+    pages.try_reserve_exact(backing.count()).ok()?;
+    pages.extend((0..backing.count()).map(|i| backing.page_addr(i)));
     let (plan, holds) = super::with_resources(|r,a,io| {
         let source = r.import_linear(a,io,u32::MAX,allocation)?;
         let destination = r.draw_buffer(a,io,backing.bytes() as u32)?;
         r.attach(a,io,destination,backing.clone(),&pages,backing.bytes() as u64)?;
-        let holds = vec![r.hold(u32::MAX)?,r.hold(destination)?];
+        let mut holds = Vec::new();
+        holds.try_reserve_exact(2).map_err(|_| "console readback hold allocation")?;
+        holds.extend([r.hold(u32::MAX)?,r.hold(destination)?]);
         let address = r.address(destination).ok_or("console readback mapping absent")?;
         r.unref(destination)?;
         let plan = super::super::copy::pitch(
@@ -586,8 +596,9 @@ pub(crate) fn flush_resource(tag:crate::gpu::dev::Tag,ctx:u32,fence:u64,id:u32,
     super::super::resource::context_id(ctx)?;
     let surface=scanout(id,width,height)?;
     let hold=super::with_resources(|r,_,_|r.hold(id)).ok()?;
+    let mut holds = Vec::new(); holds.try_reserve_exact(1).ok()?; holds.push(hold);
     Some(super::super::adapter::Request::present(tag,fence,surface,
-        TransferHold{resources:vec![hold]}))
+        TransferHold{resources:holds}))
 }
 
 /// CPU console damage was uploaded by CE already. EVO has no dirty-rectangle

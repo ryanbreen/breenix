@@ -602,6 +602,9 @@ mod native {
                 )?));
                 let dma = pages.as_ref().unwrap();
                 dma.identify("GR-channel", id);
+                let mut dma_pages = Vec::new();
+                dma_pages.try_reserve_exact(1 + READBACK_BYTES / 4096).map_err(|_| "GR page vector allocation")?;
+                dma_pages.extend((0..1 + READBACK_BYTES / 4096).map(|i| dma.address(i)));
                 context.map_system(
                     &mut h.layout.allocator,
                     &mut VmIo {
@@ -609,7 +612,7 @@ mod native {
                         total: h.total,
                     },
                     TARGET,
-                    &(0..1 + READBACK_BYTES / 4096).map(|i| dma.address(i)).collect::<Vec<_>>(),
+                    &dma_pages,
                 )?;
                 for offset in (0..65536).step_by(4096) {
                     words(h.regs, h.total, commands.range.start + offset, &[0; 1024])?;
@@ -625,7 +628,9 @@ mod native {
                 }
                 // gf100_gr_chan_bind (MIT gf100.c:331-338) copies the golden bytes and fills only the
                 // internal-firmware header: count and MMIO VA >> 8 at offsets 0/4.
-                let mut data = golden.runnable.clone();
+                let mut data = Vec::new();
+                data.try_reserve_exact(golden.runnable.len()).map_err(|_| "GR template allocation")?;
+                data.extend_from_slice(&golden.runnable);
                 data[..256].fill(0);
                 data[..4].copy_from_slice(&(golden.patches.len() as u32).to_le_bytes());
                 data[4..8].copy_from_slice(&((golden.buffers[3].va >> 8) as u32).to_le_bytes());
@@ -771,7 +776,9 @@ mod native {
             regs.write(0x2254, 0x10000000 | (SLOT >> 12) as u32);
             regs.mask(0x2630, 1 << c.runlist, 1 << c.runlist);
             self.activate_channel_regs(regs)?;
-            let mut entries = alloc::vec![c.id, 0];
+            let mut entries = Vec::new();
+            entries.try_reserve_exact(4).map_err(|_| "GR runlist allocation")?;
+            entries.extend([c.id, 0]);
             if let Some(second) = self.second.as_mut() {
                 second.activate_channel_regs(regs)?;
                 entries.extend([second.report.identity.id, 0]);
@@ -1052,7 +1059,11 @@ mod native {
             &mut self, h: &mut Hardware<'_>, va: u64, bytes: usize,
         ) -> Result<[Vec<u8>; 2], &'static str> {
             if bytes == 0 || bytes > 16 << 20 { return Err("draw readback extent"); }
-            let mut images = [alloc::vec![0; bytes], alloc::vec![0; bytes]];
+            let mut images = [Vec::new(), Vec::new()];
+            for image in &mut images {
+                image.try_reserve_exact(bytes).map_err(|_| "draw readback allocation")?;
+                image.resize(bytes, 0);
+            }
             for (index, poison) in [0x55, 0xaa].into_iter().enumerate() {
                 for start in (0..bytes).step_by(READBACK_BYTES) {
                     let count = READBACK_BYTES.min(bytes - start);
@@ -1456,7 +1467,9 @@ mod native {
             // Retain the constructor's golden image and unconsumed MMIO
             // header. Firmware clears the patch count on first load; a live
             // handoff snapshot is therefore not a cold-start template (G19).
-            let initial = session.pristine.clone();
+            let mut initial = Vec::new();
+            initial.try_reserve_exact(session.pristine.len()).map_err(|_| "native template allocation")?;
+            initial.extend_from_slice(&session.pristine);
             let scratch = ManuallyDrop::new([allocator.pin(mmu[0])?, allocator.pin(mmu[1])?]);
             let put = session.next_sequence - 1;
             Ok(NativeChannel { session: owner.take().unwrap(), registers, total,
@@ -1466,6 +1479,10 @@ mod native {
     }
 
     impl NativeChannel {
+        pub(crate) fn heap_footprint(&self) -> [usize; 2] {
+            [self.initial.capacity(), self.parking.capacity() * core::mem::size_of::<u32>()]
+        }
+
         pub(in crate::gk208::gr) fn retain_bootstrap(&mut self, context: crate::gk208::lifetime::Context) {
             self._bootstrap = Some(ManuallyDrop::new(context));
         }
@@ -1484,6 +1501,9 @@ mod native {
                     self.session.report.identity.instance, self.session.report.identity.epoch)?;
                 r.bind_terminal(io, s.context.space().directory.range.start)
             })?;
+            let mut parking = Vec::new();
+            parking.try_reserve_exact(self.parking.len()).map_err(|_| "terminal parking allocation")?;
+            parking.extend_from_slice(&self.parking);
             Ok(crate::gk208::emergency::Queue {
                 registers: self.registers, total: self.total,
                 ring: s.commands.range.start, userd: s.userd, pbdma: s.pbdma,
@@ -1491,7 +1511,7 @@ mod native {
                 channel: s.report.identity.id, instance: s.report.identity.instance,
                 report: s.pages.va(0) + 512, report_va: TARGET + 512,
                 epoch: s.report.identity.epoch, quarantine: self.terminal_quarantine,
-                parking: self.parking.clone(),
+                parking,
             })
         }
         pub(crate) fn identity(&self) -> (u64, u64) {
@@ -1594,7 +1614,10 @@ mod native {
             // Restart reconstructs RAMFC without its old subchannel classes.
             // SET_OBJECT must precede graphics state and release methods even
             // when clipping leaves no draw (MIT cla197.h:34-36).
-            let mut command = super::bind().to_vec();
+            let mut command = Vec::new();
+            command.try_reserve_exact(super::bind().len() + payload.len() + self.parking.len() + 64)
+                .map_err(|_| "native channel packet allocation")?;
+            command.extend_from_slice(&super::bind());
             if payload.is_empty() { command.extend([0x20010044, 0]); }
             command.extend(payload);
             // A completed draw does not revoke its persistent engine bindings.
@@ -1619,6 +1642,7 @@ mod native {
         fn publish_encoded(&mut self, sequence: u32, command: &mut Vec<u32>) -> Result<(), &'static str> {
             let s = &self.session;
             let slot = crate::gk208::queue::Queue::slot(sequence);
+            command.try_reserve(2).map_err(|_| "native release packet allocation")?;
             command.extend([0x20010014, sequence]);
             if command.len() * 4 > 8192 { return Err("native command slot extent"); }
             // Only this slot is poisoned; the other three may still be live.
