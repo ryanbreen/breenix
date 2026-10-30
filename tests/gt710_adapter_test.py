@@ -13,6 +13,16 @@ class NativeAdapter(unittest.TestCase):
         function = source.split('pub fn undefined_command(', 1)[1].split('\npub fn ', 1)[0]
         self.assertIn('backend::GK208 =>', function)
 
+    def test_control_checks_its_own_directory_before_publication(self):
+        source = (ROOT / 'kernel/src/gpu/gk208/gr/channel.rs').read_text()
+        arm = source.split('Operation::Undefined =>', 1)[1].split('Operation::Draw', 1)[0]
+        self.assertIn('error::address(sequence)?', arm)
+        self.assertIn('s.context.space().directory.range.start', arm)
+        self.assertIn('address / (1 << 27) * 8', arm)
+        self.assertIn('read(&mut regs, self.total, pde)? != 0', arm)
+        self.assertIn('read(&mut regs, self.total, pde + 4)? != 0', arm)
+        self.assertIn('return Err("device-error control PDE is mapped")', arm)
+
     def test_native_completion_and_room(self):
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
         with tempfile.TemporaryDirectory() as directory:
