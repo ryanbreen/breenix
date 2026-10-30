@@ -283,14 +283,14 @@
       "sha256": "5c81caff8fffd19d5062678601a61b98bc6ae1c585dcedc42933dee308cb0eae"
     },
     "pipeline-coverage_spans.asm": {
-      "bytes": 111887,
+      "bytes": 111876,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "97bc65fc1583c0176e833181c3db38bf956f2fe8c5722668dd9732a914712246"
+      "sha256": "2a7b574e88fcc8ad70c547a0fdd00eac16781d85367bd27ed6cffb53b98e7059"
     },
     "pipeline-coverage_spans.bin": {
       "bytes": 15392,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "3dd3f917fb01d7ffff16235f1b2b527fb0bf7663f9364cb3ea44064bd10729c5"
+      "sha256": "aac7886e2a45fe89d78533e0dab85c4422db87891368b249eb0d9c3b43ad482e"
     },
     "pipeline-coverage_spans.json": {
       "bytes": 359,
@@ -1036,7 +1036,7 @@
     "libs/gpu-abi/src/lib.rs": "33169976dcf1fb04fbeb92686bf5e1c72460fd74393e419344fc47c58eb0fd6a",
     "tools/kepler/CMakeLists.txt": "bb493a774b8cf0dde02a2e0bcd1829fa2bfbba2ef89b560b70e53a29734e941c",
     "tools/kepler/assets.py": "f436fa9cc4bf631ef4f6e6d5359a93694fc345f2dcef0be5699ee22f1856969f",
-    "tools/kepler/compile.cpp": "5259d497cdb0d80d80971d8e237f9129cc1118521690bddb3d8c5f3e381571cf"
+    "tools/kepler/compile.cpp": "7860bb4d115e459501562d16c38eb7e67a09a5fd900b07b6c6a49c667df810d2"
   },
   "schema": 1,
   "shaders": [

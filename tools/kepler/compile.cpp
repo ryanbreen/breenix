@@ -69,7 +69,7 @@ class Frontend : public BuildUtil {
    std::vector<std::string> lines;
    unsigned cursor=0;
    BasicBlock *exitBlock;
-   unsigned loopDepth=0;
+   unsigned loopDepth=0, ifDepth=0;
    std::vector<BasicBlock *> loopTails;
    bool vertex, discard=false;
    unsigned samplers=0, cbBytes=0;
@@ -148,6 +148,7 @@ class Frontend : public BuildUtil {
       } else throw std::runtime_error("invalid declaration: "+line);
    }
    void conditional(const std::string &line) {
+      ++ifDepth;
       Operand src(trim(line.substr(4)));
       Value *condition=read(src,0);
       BasicBlock *head=getBB(), *yes=block(), *no=block(), *tail=block();
@@ -169,12 +170,14 @@ class Frontend : public BuildUtil {
       require(cursor<lines.size() && lines[cursor]=="ENDIF","missing ENDIF"); ++cursor;
       // MIT nv50_ir_from_nir.cpp:1605-1653: a BRK arm does not converge
       // with the fallthrough arm. Do not join that loop-exit path.
-      if (insertJoins) {
+      // MIT nv50_ir_from_nir.cpp:1640-1642 bounds explicit join nesting.
+      if (insertJoins && ifDepth<=6) {
          setPosition(head->getExit(),false);
          head->joinAt=mkFlow(OP_JOINAT,tail,CC_ALWAYS,NULL);
       }
       setPosition(tail,true);
-      if (insertJoins) mkFlow(OP_JOIN,NULL,CC_ALWAYS,NULL)->fixed=1;
+      if (insertJoins && ifDepth<=6) mkFlow(OP_JOIN,NULL,CC_ALWAYS,NULL)->fixed=1;
+      --ifDepth;
    }
    void loop() {
       BasicBlock *body=block(), *tail=block();
