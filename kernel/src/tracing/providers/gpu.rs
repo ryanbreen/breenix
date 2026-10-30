@@ -9,10 +9,13 @@
 //! path, kept in CPU 0's slot by `fetch_max`. A thread is in a GPU path while it holds a
 //! [`GpuPath`]; the IRQ-masking primitives (`without_interrupts` and `IrqSafeMutex`) time
 //! the intervals they open on such a thread, and the GPU interrupt handler times itself.
-//! On x86, primitive scopes inside an inherited syscall mask are also sampled: they are
-//! measured portions of that masked interval, without assuming its entry timestamp.
+//! On x86, syscall 416 also times its inherited mask from dispatch through the first
+//! interrupt enable, or dispatch return with the inherited mask intact. Primitive scopes continue
+//! to sample later masked work independently.
 
 use core::sync::atomic::{AtomicU32, Ordering};
+#[cfg(target_arch = "x86_64")]
+use core::sync::atomic::AtomicU64;
 
 use alloc::sync::Arc;
 
@@ -80,6 +83,55 @@ fn record_since(start: u64) {
     let ticks = counter_now().wrapping_sub(start);
     let us = crate::arch_ticks_to_nanos(ticks) / 1_000;
     GPU_IRQ_MASKED_MAX_US.per_cpu[0].value.fetch_max(us, Ordering::Relaxed);
+}
+
+// Only the owning CPU accesses an open interval: syscall entry has IF clear and
+// preemption held. Clear the slot before enabling IRQs, when blocking/migration
+// becomes possible. No thread lookup, lock or allocation is needed at either end.
+#[cfg(target_arch = "x86_64")]
+static SYSCALL_MASK_START: [AtomicU64; crate::task::scheduler::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::task::scheduler::MAX_CPUS];
+
+/// Cover syscall 416's inherited mask, including work before CORE is acquired.
+#[cfg(target_arch = "x86_64")]
+pub struct X86SyscallMask {
+    cpu: usize,
+    start: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl X86SyscallMask {
+    #[inline]
+    pub fn enter() -> Self {
+        let cpu = crate::per_cpu::cpu_id();
+        let start = if crate::arch_interrupts_enabled() { 0 } else { counter_now().max(1) };
+        SYSCALL_MASK_START[cpu].store(start, Ordering::Relaxed);
+        Self { cpu, start }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Drop for X86SyscallMask {
+    #[inline]
+    fn drop(&mut self) {
+        // After an enable this syscall may have slept and migrated. Close only
+        // this syscall's interval on the original CPU at dispatch return.
+        if self.start != 0 && SYSCALL_MASK_START[self.cpu]
+            .compare_exchange(self.start, 0, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+        {
+            record_since(self.start);
+        }
+    }
+}
+
+/// Close the inherited span immediately before the GPU seam first sets IF.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn syscall_mask_first_enable() {
+    let start = SYSCALL_MASK_START[crate::per_cpu::cpu_id()].swap(0, Ordering::Relaxed);
+    if start != 0 {
+        record_since(start);
+    }
 }
 
 /// Called just after a primitive masks IRQs, with its saved mask (bit 7 set if masked).

@@ -76,7 +76,7 @@ mod gpu {
   crate::SyscallResult::Ok(7)
  }
 }
-fn dispatch(a:[u64;6])->SyscallResult {ARM}
+fn dispatch(a:[u64;6])->SyscallResult {DISPATCH_ARM}
 fn maximum()->u64 {
  tracing::providers::gpu::GPU_IRQ_MASKED_MAX_US.per_cpu[0].value.load(Ordering::Relaxed)
 }
@@ -89,8 +89,17 @@ fn maximum()->u64 {
   assert!(!arch_interrupts_enabled());
  }
  tracing::providers::gpu::reset_irq_masked();assert_eq!(maximum(),0);
+ // A has enabled and migrated; its eventual return must leave B's new
+ // inherited interval on A's original CPU intact.
+ let a=tracing::providers::gpu::X86SyscallMask::enter();
+ advance(12);gpu_arch::with_interrupts(||());
+ let b=tracing::providers::gpu::X86SyscallMask::enter();
+ CPU.with(|c|c.set(1));drop(a);
+ CPU.with(|c|c.set(0));advance(800);drop(b);
+ assert_eq!(maximum(),800,"a migrated return must not consume another syscall's start");
+ tracing::providers::gpu::reset_irq_masked();assert_eq!(maximum(),0);
 }
-'''.replace('PROVIDER', provider).replace('ENABLE', enable).replace('ARM', arm)
+'''.replace('DISPATCH_ARM', arm).replace('ENABLE', enable).replace('PROVIDER', provider)
         # Execute the x86 production selection on either host architecture.
         fixture = fixture.replace('target_arch = "x86_64"', 'all()')
         fixture = fixture.replace('target_arch = "aarch64"', 'any()')

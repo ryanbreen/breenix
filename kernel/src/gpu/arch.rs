@@ -6,6 +6,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_arch = "x86_64")]
 pub(super) fn with_interrupts<R>(f: impl FnOnce() -> R) -> R {
     let enabled = crate::arch_interrupts_enabled();
+    crate::tracing::providers::gpu::syscall_mask_first_enable();
     // SAFETY: called outside the core/session locks, with syscall preemption held.
     unsafe { crate::arch_enable_interrupts(); }
     let result = f();

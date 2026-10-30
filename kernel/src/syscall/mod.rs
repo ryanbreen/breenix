@@ -986,7 +986,11 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
         #[cfg(target_arch = "aarch64")]
         breengel_abi::SYS_WINDOW => window::sys_window(a[0], a[1], a[2]),
         gpu_abi::SYS_TEST_CONTROL => crate::test_control::sys_test_control(a[0], a[1], a[2]),
-        gpu_abi::SYS_GPU => crate::gpu::sys_gpu(a[0], a[1], a[2]),
+        gpu_abi::SYS_GPU => {
+            #[cfg(target_arch = "x86_64")]
+            let _masked = crate::tracing::providers::gpu::X86SyscallMask::enter();
+            crate::gpu::sys_gpu(a[0], a[1], a[2])
+        },
         _ => return None,
     })
 }
