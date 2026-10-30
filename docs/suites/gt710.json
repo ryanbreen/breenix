@@ -284,6 +284,17 @@
       ]
     },
     {
+      "id": "isolation",
+      "title": "Isolation, warm-up and recovery (M8 PR 8.5)",
+      "hostRunner": true,
+      "cases": [
+        {
+          "id": "suite",
+          "title": "A completed production GPU boot records all 170 ordered cases with zero skips, the 141-case 8.5 selection passing, reclaimed memory and its own time within 900 s"
+        }
+      ]
+    },
+    {
       "id": "core",
       "title": "Shared GPU core and native evidence (M8 PR 8.1)",
       "hostRunner": true,

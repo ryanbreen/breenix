@@ -109,6 +109,7 @@ CATEGORIES = {
     'resources': [('row', 'Production CAPS admits backend 6 with executable origins 3-10, native classes and live scanouts'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 8.2 step passing, reclaimed memory and its own time within 900 s'), ('console', 'A completed production console boot passes 88/88 within 330 s of handoff')],
     'alpha': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 77-case 8.3 step passing, reclaimed memory and its own time within 900 s')],
     'shapes': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 90-case 8.4 step passing, reclaimed memory and its own time within 900 s')],
+    'isolation': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 141-case 8.5 selection passing, reclaimed memory and its own time within 900 s')],
     'core': [('row', 'CAPS bytes match the native backend-6 row and the created board classes'), ('dispatch', 'Native draws and copies complete; copy controls reject withheld release, stale epoch and masked 3D admission and accept their clean successors'), ('producer', 'A named production GPU-suite boot reports 170 manifest-ordered unprobed-capability admission refusals without skips and reports its own time')],
     'device': (
         ('identity', 'The PCI report identifies 10de:128b with subsystem 1462:8c93 and its interrupt line'),
@@ -2016,7 +2017,7 @@ def resources_identity(boot, suite, sha=None):
         raise ValueError('resources requires a named production ' + suite + ' boot of the same kernel/build/tools')
 
 
-STEP_SELECTIONS = {'resources': 'gt710-step-8-2.json', 'alpha': 'gt710-step-8-3.json', 'shapes': 'gt710-step-8-4.json'}
+STEP_SELECTIONS = {'resources': 'gt710-step-8-2.json', 'alpha': 'gt710-step-8-3.json', 'shapes': 'gt710-step-8-4.json', 'isolation': 'gt710-step-8-5.json'}
 
 
 def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
@@ -2031,6 +2032,9 @@ def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
             or step.get('suite') != 'gpu' or not required
             or required != [n for n in names if n in required]):
         raise ValueError('resources step must select shared GPU cases in manifest order')
+    if selection == STEP_SELECTIONS['isolation']:
+        prior = json.loads((root / 'docs/gui' / STEP_SELECTIONS['shapes']).read_text())['cases']
+        required = [n for n in names if n in set(prior) | set(required)]
     fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal']
     if (not serial.endswith('\n') or any(re.search(p, serial) for p in
             fatal + [r'KERNEL PANIC[:!]', r'GT710_GR_REFUSAL', r'SUITE_SEQUENCE (?:STALLED|FAIL)'])):
@@ -2179,7 +2183,7 @@ def record_resources_capture(directory, sha, category='resources'):
 
 
 def check_case(category, case, serial, producer=None):
-    if category in ('alpha', 'shapes'):
+    if category in ('alpha', 'shapes', 'isolation'):
         if producer is None or case != 'suite':
             raise ValueError(f'{category} needs named production GPU and console captures')
         gpu = producer['gpu']
@@ -2718,6 +2722,9 @@ def alpha_capture_proof(directory, sha, pr, category='alpha'):
     proof = dict(head=sha, captureCommit=capture_sha, hostOnlyDiff=changed, pr=pr, boots=[], consoleHandoffToDoneMS=console_ms,
                  gpuElapsedMS=gpu['elapsed_ms'])
     selected = json.loads((Path(__file__).resolve().parents[2] / 'docs/gui' / STEP_SELECTIONS[category]).read_text())['cases']
+    if category == 'isolation':
+        prior = json.loads((Path(__file__).resolve().parents[2] / 'docs/gui' / STEP_SELECTIONS['shapes']).read_text())['cases']
+        selected = list(set(selected) | set(prior))
     proof['selected'] = dict(passed=sum(c['id'] in selected and c['result'] == 'PASS' for c in gpu['cases']),
                              total=len(selected))
     for suite, capture in producer.items():
@@ -2751,14 +2758,14 @@ def alpha_capture_proof(directory, sha, pr, category='alpha'):
             raise ValueError('alpha ' + suite + ' memory was not reclaimed')
         proof['boots'].append(dict(id=boot['id'], suite=suite, commit=capture_sha,
             toolsCommit=boot['toolsCommit'], build=boot['build'], exitStatus=status,
-            exitReason=('failed GPU cases outside step ' + ('8.4' if category == 'shapes' else '8.3') + ' (G13)') if status else 'passed suite',
+            exitReason=('failed GPU cases outside step ' + ({'isolation': '8.5', 'shapes': '8.4'}.get(category, '8.3')) + ' (G13)') if status else 'passed suite',
             done=tally, memory=memory, captureComplete=True, lifecycle=rows, sha256=digests))
     return proof
 
 
 def alpha_acceptance(directory, sha, pr, category='alpha'):
     """Score existing hardware cases and this step against the same pair of captures."""
-    step_categories = ('resources', 'alpha', 'shapes') if category == 'shapes' else ('resources', 'alpha')
+    step_categories = ('resources', 'alpha', 'shapes', 'isolation') if category == 'isolation' else (('resources', 'alpha', 'shapes') if category == 'shapes' else ('resources', 'alpha'))
     proof = alpha_capture_proof(directory, sha, pr, category)
     capture_sha = proof['captureCommit']
     producer = resources_capture(directory, capture_sha)
@@ -2852,6 +2859,7 @@ def main():
     parser.add_argument('--sha')
     parser.add_argument('--gpu-boot', help='completed companion GPU-only suite boot for core/producer')
     parser.add_argument('--resources', action='store_true', help='score PR 8.2 from this console boot and --gpu-boot; retain core/* separately')
+    parser.add_argument('--isolation', action='store_true', help='score PR 8.5 isolation and preceding selections from the same captures')
     parser.add_argument('--shapes', action='store_true', help='score PR 8.4 shapes and preceding selections from the same captures')
     parser.add_argument('--alpha', action='store_true', help='score PR 8.3 alpha/suite and the unchanged PR 8.2 resources rows from the same captures')
     parser.add_argument('--acceptance-directory', type=Path, help='score a locally retained console capture and its resources-producer at the current PR head')
@@ -2864,8 +2872,8 @@ def main():
     if args.acceptance_directory:
         import subprocess
         root = Path(__file__).resolve().parents[2]
-        if not (args.alpha or args.shapes) or not args.pr or not re.fullmatch('[a-f0-9]{40}', args.sha or ''):
-            parser.error('--acceptance-directory requires --alpha or --shapes, --pr and --sha')
+        if not (args.alpha or args.shapes or args.isolation) or not args.pr or not re.fullmatch('[a-f0-9]{40}', args.sha or ''):
+            parser.error('--acceptance-directory requires --alpha, --shapes or --isolation, --pr and --sha')
         if (subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip() != args.sha
                 or subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=root, text=True).strip()):
             raise ValueError('alpha scorer must run from the clean requested head')
@@ -2875,7 +2883,7 @@ def main():
         proof = dict(head=args.sha, passed=False)
         try:
             pr = current_pr()
-            proof = alpha_acceptance(args.acceptance_directory, args.sha, pr, 'shapes') if args.shapes else alpha_acceptance(args.acceptance_directory, args.sha, pr)
+            proof = alpha_acceptance(args.acceptance_directory, args.sha, pr, 'isolation' if args.isolation else 'shapes' if args.shapes else 'alpha')
             if current_pr() != pr:
                 raise ValueError('PR head or state changed during acceptance scoring')
             for boot in proof['boots']:
@@ -2915,11 +2923,11 @@ def main():
         raise ValueError('a completed, clean, successful boot of the requested commit is required')
     if any(json.loads(line).get('event') == 'console-gap' for line in read('events.jsonl').splitlines()):
         raise ValueError('capture has a console gap')
-    if args.resources or args.alpha or args.shapes:
+    if args.resources or args.alpha or args.shapes or args.isolation:
         if (args.core_boot or not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.gpu_boot or '')
                 or args.gpu_boot == args.boot):
             parser.error('--resources needs a distinct --gpu-boot and no --core-boot')
-        categories = ['resources', 'alpha', 'shapes'] if args.shapes else (['resources', 'alpha'] if args.alpha else ['resources'])
+        categories = ['resources', 'alpha', 'shapes', 'isolation'] if args.isolation else (['resources', 'alpha', 'shapes'] if args.shapes else (['resources', 'alpha'] if args.alpha else ['resources']))
         companion = runner['STATE'] + '/boots/' + args.gpu_boot
         runner['in_metal'](env, 'python3', '-c',
             'import sys,shutil;from pathlib import Path;'
@@ -2936,7 +2944,7 @@ def main():
             'p=m.boot_dir(sys.argv[1]);v=metal_score.score(p);m.write_json(p/"milestone-verdict.json",v);'
             'rows=[(c,v["milestones"].get("metal-gt710/"+c,{})) for c in sys.argv[2].split(",")];'
             'passed=v.get("captureComplete") is True and all(r.get("passed") is True and '
-            'r.get("reached")==r.get("total")==({"resources":3,"alpha":1,"shapes":1}[c]) for c,r in rows);'
+            'r.get("reached")==r.get("total")==({"resources":3,"alpha":1,"shapes":1,"isolation":1}[c]) for c,r in rows);'
             '[print("metal-gt710/"+c,r,flush=True) for c,r in rows];'
             '\nwith m.locked("finished"):\n entries=[json.loads(l) for l in (m.STATE/"finished.jsonl").read_text().splitlines()];'
             'm.append_jsonl(m.STATE/"finished.jsonl",dict(id=p.name,seq=max(e["seq"] for e in entries)+1))'

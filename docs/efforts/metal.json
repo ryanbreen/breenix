@@ -513,6 +513,16 @@
               "shapes"
             ]
           }
+        },
+        {
+          "id": "isolation",
+          "title": "Score isolation, warm-up and recovery (M8 PR 8.5)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "isolation"
+            ]
+          }
         }
       ]
     }
