@@ -17,7 +17,7 @@ class CatalogueWarmup(unittest.TestCase):
 use std::collections::BTreeMap;
 mod encode { pub const ALL_WARM:u32=(1<<16)-1; }
 #[derive(PartialEq)] enum CtxState { Live, Quarantined }
-struct Ctx { state:CtxState, warm:u32, warm_failures:u32 }
+struct Ctx { state:CtxState, warm:u32, warm_failures:u32, native_warm_scratch:Option<()> }
 struct WarmStep { ctx:u32, pipeline:u32, left:u32, refused:bool, lost:bool }
 struct Core { contexts:BTreeMap<u32,Ctx>, warm_step:Option<WarmStep> }
 fn notify() {}
@@ -27,7 +27,7 @@ impl Core {
  // RETURNED
 }
 fn main() {
- let mut c=Core { contexts:BTreeMap::from([(1,Ctx { state:CtxState::Live, warm:0, warm_failures:0 })]),warm_step:None };
+ let mut c=Core { contexts:BTreeMap::from([(1,Ctx { state:CtxState::Live, warm:0, warm_failures:0, native_warm_scratch:Some(()) })]),warm_step:None };
  assert_eq!(catalogue_mask(),(1<<gpu_abi::pipeline::PROBE_INT)-1);
  for pipe in 0..gpu_abi::pipeline::PROBE_INT {
   let snapshot=gpu_abi::draw::blended(pipe);
@@ -42,6 +42,7 @@ fn main() {
   assert!(c.warm_step.is_none());
  }
  assert_eq!(2*c.contexts[&1].warm.count_ones(),32);
+ assert!(c.contexts[&1].native_warm_scratch.is_none(),"completed warm-up must release its scratch charge");
  assert_eq!(c.contexts[&1].warm & (1<<gpu_abi::pipeline::PROBE_INT),0);
  for result in [None,Some(false)] {
   c.contexts.get_mut(&1).unwrap().warm=0;
@@ -52,7 +53,8 @@ fn main() {
  }
 }
 '''.replace('// MASK', item(source, 'fn catalogue_mask(')).replace(
-            '// RETURNED', item(source, '    fn warm_returned('))
+            '// RETURNED', item(source, '    fn warm_returned(').replace(
+                '#[cfg(target_arch = "x86_64")]', ''))
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
@@ -69,7 +71,7 @@ fn main() {
 
     def test_native_first_probe_adds_only_its_completed_program_pair(self):
         source = (ROOT / 'kernel/src/gpu/mod.rs').read_text()
-        fixture = r''' 
+        fixture = r'''
 #![allow(dead_code)] // Ctx exposes only the fields used by its extracted method.
 mod abi { pub mod backend { pub const GK208:u32=6; } }
 mod dev { pub fn is_svga()->bool { false } pub fn backend()->u32 { 6 } }
@@ -88,7 +90,9 @@ fn main() {
  ctx.native_probe_mask|=1<<24;
  assert_eq!(ctx.warmed(),36);
 }
-'''.replace('// WARMED', item(source, '    fn warmed('))
+'''.replace('// WARMED', item(source, '    fn warmed(').replace(
+            '#[cfg(target_arch = "x86_64")]', ''))
+        # Exercise the native branch even when the test host is an ARM Mac.
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'probe.rs'

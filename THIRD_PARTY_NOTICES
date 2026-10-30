@@ -1426,3 +1426,19 @@ error.rs; the existing NVIDIA/rnndb notices in encode.rs and the native
 channel remain. Breenix owns request matching, holds and fence retirement.
 The host model does not certify execution on the card; that remains the
 acceptance unit's hardware gate.
+
+### GT 710 complete rendering-catalogue warm-up (8.5-u3)
+
+Consumers: kernel/src/gpu/gk208/encode.rs and
+tests/gt710_sampled_encode_test.rs. The new warm-up inputs use Breenix's
+shared pipeline parameter contract and client encoder; no external routine,
+shader asset or firmware is added. The existing packet and program layout
+continues to use the checked MIT sources and preserved header notices:
+NVIDIA open-gpu-doc classes/3d/cla197.h and cla197tex.h at
+9fdf5c4062007929d9f4e6cbad9c9771fe61b880 (NVIDIA Corporation);
+envytools rnndb/graph/gf100_3d.xml, graph/g80_texture.xml and g80_defs.xml
+at f102b82381f3f11cee113d16374c87091db039d9 (rnndb authors,
+MIT grant in rnndb/copyright.xml); Mesa nvc0_program.c at
+769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de (Copyright 2010 Christoph
+Bumiller, MIT). The shared core owns asynchronous scheduling, charging and
+native-release accounting. G5's committed assets are unchanged.

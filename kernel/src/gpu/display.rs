@@ -382,6 +382,8 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
                 _charge: None,
                 #[cfg(target_arch = "x86_64")]
                 _native_scratch: None,
+                #[cfg(target_arch = "x86_64")]
+                native_probe_mask: 0,
             },
         );
         let epoch = c.epoch;

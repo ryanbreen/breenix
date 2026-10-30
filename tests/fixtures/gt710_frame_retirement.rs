@@ -85,7 +85,7 @@ const IMAGE: u64 = 0x19200000;
 fn retained_bindings() -> Vec<u32> {
     let t = encode::Target { id: 1, address: IMAGE, width: 1, height: 1,
         format: gpu_abi::format::B8G8R8A8, tile_mode: 0 };
-    let mut frame = encode::warm_frame(t, encode::Target { id: 2, address: IMAGE+4096, ..t }, gpu_abi::pipeline::COPY).unwrap();
+    let mut frame = encode::warm_frame(t, encode::Target { id: 2, address: IMAGE+4096, ..t }, None, None, gpu_abi::pipeline::COPY).unwrap();
     frame.relocate(PARK).unwrap();
     let words = encode::channel_words(&frame.chunks[0].words, 0x18000000).unwrap();
     let (mut at, mut parked) = (0, Vec::new());
@@ -135,7 +135,7 @@ fn frame_release_retires_every_bound_region_across_sampled_solid_and_clipped_fra
         Some(pipeline::NEAREST_SCALED), None].into_iter().enumerate() {
         let base = 0x105a20000 + n as u64 * 0x120000;
         let words = if let Some(pipe) = pipe {
-            let mut frame = encode::warm_frame(t, source, pipe).unwrap();
+            let mut frame = encode::warm_frame(t, source, None, None, pipe).unwrap();
             frame.relocate(base).unwrap();
             frame.chunks.remove(0).words
         } else { Vec::new() };

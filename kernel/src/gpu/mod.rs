@@ -277,6 +277,12 @@ struct Ctx {
     scratch: u32,
     /// The 1x1 texture the warm-up's sampling draws read.
     scratch_texture: u32,
+    /// Native one-pixel mask, destination snapshot and uploaded crossing inputs.
+    #[cfg(target_arch = "x86_64")]
+    native_warm_scratch: Option<NativeScratch>,
+    /// Native PROBE routines whose actual draw release completed successfully.
+    #[cfg(target_arch = "x86_64")]
+    native_probe_mask: u32,
     /// The rendering pipelines whose warm-up step completed, one bit each
     /// (`catalogue_mask()` when the catalogue's warm-up is complete).
     warm: u32,
@@ -306,8 +312,6 @@ struct VertexArena {
 
 /// Only installed rendering pipelines participate in a context's warm-up.
 fn catalogue_mask() -> u32 {
-    #[cfg(target_arch = "x86_64")]
-    if dev::backend() == abi::backend::GK208 { return 0x1f; }
     encode::ALL_WARM
 }
 
@@ -315,6 +319,10 @@ impl Ctx {
     /// Programs whose warm-up completed: two per warmed rendering pipeline, and each
     /// `probe_int` routine's pair from its first PROBE.
     fn warmed(&self) -> u32 {
+        #[cfg(target_arch = "x86_64")]
+        if dev::backend() == abi::backend::GK208 {
+            return 2 * (self.warm.count_ones() + self.native_probe_mask.count_ones());
+        }
         2 * self.warm.count_ones() + if dev::is_svga() { self.dx.probe_programs() } else { self.objects.probe_programs() }
     }
 }
@@ -364,6 +372,8 @@ struct Sub {
     _charge: Option<alloc::sync::Arc<Charge>>,
     #[cfg(target_arch = "x86_64")]
     _native_scratch: Option<NativeScratch>,
+    #[cfg(target_arch = "x86_64")]
+    native_probe_mask: u32,
 }
 
 /// A synchronous request a thread waits on.
@@ -1198,6 +1208,8 @@ impl Core {
             } else if !step.lost {
                 ctx.warm |= 1 << step.pipeline;
                 ctx.warm_failures = 0;
+                #[cfg(target_arch = "x86_64")]
+                if ctx.warm == catalogue_mask() { ctx.native_warm_scratch = None; }
             }
         }
         self.settle(step.ctx);
@@ -1425,6 +1437,8 @@ impl Core {
         let whole = core::mem::take(&mut sub.whole);
         let ok = status == fence_status::OK;
         if let Some(ctx) = self.contexts.get_mut(&ctx_id) {
+            #[cfg(target_arch = "x86_64")]
+            if ok { ctx.native_probe_mask |= sub.native_probe_mask; }
             if !ok {
                 ctx.outcomes.insert(n, (status, answer));
             }
@@ -2532,7 +2546,7 @@ fn warm_next() -> Option<u64> {
     // After an allocation failure no request is sent; the step is tried again later.
     let chunks = if dev::backend() == abi::backend::GK208 {
         #[cfg(target_arch = "x86_64")]
-        { crate::gk208::encode::warm(scratch, scratch_texture, pipeline).map(Chunks::Gk208) }
+        { native_warm(id, scratch, scratch_texture, pipeline).ok().map(Chunks::Gk208) }
         #[cfg(not(target_arch = "x86_64"))]
         { None }
     } else if dev::is_svga() {
@@ -3040,6 +3054,10 @@ fn create_context_with_catalogue(tgid: u64, warm_catalogue: bool) -> Result<(u64
                 private_scratch: Vec::new(),
                 scratch,
                 scratch_texture,
+                #[cfg(target_arch = "x86_64")]
+                native_warm_scratch: None,
+                #[cfg(target_arch = "x86_64")]
+                native_probe_mask: 0,
                 warm: 0,
                 warm_after: 0,
                 warm_failures: 0,
@@ -3159,7 +3177,9 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
     let chunks: Vec<Request> = if dev::backend() == abi::backend::GK208 {
         #[cfg(target_arch = "x86_64")]
         {
-            let chunks = crate::gk208::encode::warm(scratch, scratch_texture, abi::pipeline::SOLID).ok_or(ENOMEM)?;
+            let target = crate::gk208::encode::target(scratch, format::B8G8R8A8).ok_or(EIO)?;
+            let source = crate::gk208::encode::target(scratch_texture, format::B8G8R8A8).ok_or(EIO)?;
+            let chunks = crate::gk208::encode::warm(target, source, None, None, abi::pipeline::SOLID).ok_or(ENOMEM)?;
             let mut requests = Vec::new();
             for chunk in chunks {
                 let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
@@ -3202,6 +3222,21 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
         if !dev::ok(d.answer) || !fence.is_some_and(|f| d.matches_fence(f)) {
             return Err(EIO);
         }
+    }
+    #[cfg(target_arch = "x86_64")]
+    if dev::backend() == abi::backend::GK208 {
+        let catalogue = with_core(|c| c.contexts.get(&id).is_some_and(|ctx| ctx.warm_catalogue)).ok_or(ENODEV)?;
+        // A tiny CE upload is fixed input setup, not catalogue warm-up. Do it on
+        // the creating caller's killable wait; kgpu must never wait on itself.
+        let inputs = if catalogue { Some(native_warm_scratch(tgid)?) } else { None };
+        with_core(|c| {
+            let ctx = c.contexts.get_mut(&id).ok_or(EIO)?;
+            if ctx.state != CtxState::Creating || !ctx.device_alive { return Err(EIO); }
+            ctx.native_warm_scratch = inputs;
+            // The base SOLID draw has already returned its native release.
+            ctx.warm |= 1 << abi::pipeline::SOLID;
+            Ok(())
+        }).ok_or(ENODEV)??;
     }
     Ok(())
 }
@@ -3663,6 +3698,36 @@ fn native_spans(tgid: u64, scratch: &mut NativeScratch, data: &crate::gk208::enc
     scratch.targets[2] = Some(target);
     scratch.holds.push(hold);
     Ok(())
+}
+
+/// Fixed native warm-up inputs owned by the context. Use the same charged
+/// scratch allocator and CE upload as client work, under the creating caller's
+/// interruptible waits. No rendering or PROBE_INT program is warmed here.
+#[cfg(target_arch = "x86_64")]
+fn native_warm_scratch(tgid: u64) -> Result<NativeScratch, i64> {
+    use crate::gk208::{encode as native, resource};
+    let mut scratch = native_blend_scratch(tgid, [[1, 1], [0, 0]])?;
+    let layout = resource::Layout::new(1, 1, 1).map_err(|_| ENOMEM)?;
+    let charge = Arc::new(Charge::new(tgid, layout.allocation_bytes(), true)?);
+    let (mask, hold) = resource::blend_staging(format::R8, 1, 1, charge).map_err(|_| EIO)?;
+    scratch.targets[1] = Some(mask);
+    scratch.holds.push(hold);
+    native_spans(tgid, &mut scratch, &native::warm_spans())?;
+    Ok(scratch)
+}
+
+/// One asynchronous native catalogue step. The prepared chunks retain every
+/// input through both the destination copy and the native draw release.
+#[cfg(target_arch = "x86_64")]
+fn native_warm(ctx: u32, target: u32, source: u32, pipe: u32)
+    -> Result<Vec<crate::gk208::adapter::EncodedDraw>, i64> {
+    use crate::gk208::encode as native;
+    let target = native::target(target, format::B8G8R8A8).ok_or(EIO)?;
+    let source = native::target(source, format::B8G8R8A8).ok_or(EIO)?;
+    let inputs = with_core(|c| c.contexts.get(&ctx)?.native_warm_scratch.as_ref().map(|s| s.targets))
+        .flatten().ok_or(EIO)?;
+    let source = if pipe == abi::pipeline::BITMAP_TEXT { inputs[1].ok_or(EIO)? } else { source };
+    native::warm(target, source, inputs[0], inputs[2], pipe).ok_or(ENOMEM)
 }
 
 /// The view's handles with the snapshot's buffer contents.
@@ -4236,6 +4301,8 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
     // lifecycle packets. Reserve the charge before allocating their backing.
     #[cfg(target_arch = "x86_64")]
     let mut native_scratch = None;
+    #[cfg(target_arch = "x86_64")]
+    let mut native_probe_mask = 0;
     let native_chunks = if native {
         #[cfg(target_arch = "x86_64")]
         {
@@ -4288,6 +4355,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                     crate::gk208::encode::translate_with_extras(&words, &resolved,
                         crate::gk208::encode::Extras { corrupt, suppress, swap })
                 }.map_err(|_| EINVAL)?;
+                native_probe_mask = frame.probe_mask;
                 frame.compact().map_err(|_| EINVAL)?;
                 #[cfg(feature = "gt710_core_probe")]
                 drop(translating);
@@ -4585,6 +4653,8 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             _charge: Some(chunk_charge),
             #[cfg(target_arch = "x86_64")]
             _native_scratch: native_scratch,
+            #[cfg(target_arch = "x86_64")]
+            native_probe_mask,
         });
         let epoch = c.epoch;
         c.backlog.extend(reqs.into_iter().map(|r| (epoch, r)));

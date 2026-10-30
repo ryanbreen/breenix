@@ -156,6 +156,7 @@ fn all_probe_routines_bind_their_own_code_and_literal_constant_words() {
         let w = command(routine, 0, inputs);
         assert_eq!(encode::pipeline_refusal(w.as_slice()), None, "routine {routine}");
         let f = encode::translate(w.as_slice(), &View(format::B8G8R8A8)).unwrap();
+        assert_eq!(f.probe_mask, 1 << routine, "only an encoded PROBE becomes ready");
         let p = packets(&f.chunks[0].words);
         let program = &p.iter().find(|(m,_)| *m == 0x2140).unwrap().1;
         let offset = program[1] as usize;
@@ -170,4 +171,16 @@ fn all_probe_routines_bind_their_own_code_and_literal_constant_words() {
         let bytes: Vec<_> = expected.into_iter().flat_map(u32::to_le_bytes).collect();
         assert_eq!(&f.data[cb[2] as usize..cb[2] as usize + 80], bytes, "routine {routine}");
     }
+}
+
+#[test]
+fn clipped_probe_does_not_claim_a_warm_program() {
+    let mut w = command(0, 0, &[1, 2]);
+    // The command's rectangle has no intersection with its target/scissor.
+    let mut at = 0;
+    while w[at] != stream::cmd::PROBE { at += w[at + 1] as usize; }
+    w[at + 4..at + 8].copy_from_slice(&[100, 100, 101, 101]);
+    let f = encode::translate(w.as_slice(), &View(format::B8G8R8A8)).unwrap();
+    assert_eq!(f.probe_mask, 0);
+    assert!(f.chunks.iter().all(|c| c.words.is_empty()));
 }

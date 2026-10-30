@@ -309,13 +309,40 @@ pub fn pack_spans(w: &(impl Words + ?Sized), b: &impl Bindings, width: u32)
     Ok(Some(data))
 }
 
-/// Warm the installed basic catalogue through the same encoder as client work.
+// One covered pixel: eight subpixel rows, each with crossings at x=0 and x=1.
+// These are inputs to the same coverage-spans encoder and shader as client data.
+const WARM_SPANS: [u32; 41] = [
+    0, 2, 4, 6, 8, 10, 12, 14, 16,
+    0, 1, 0x3f800000, u32::MAX, 0, 1, 0x3f800000, u32::MAX,
+    0, 1, 0x3f800000, u32::MAX, 0, 1, 0x3f800000, u32::MAX,
+    0, 1, 0x3f800000, u32::MAX, 0, 1, 0x3f800000, u32::MAX,
+    0, 1, 0x3f800000, u32::MAX, 0, 1, 0x3f800000, u32::MAX,
+];
+
+/// The crossing texture is uploaded through CE before its warm draw is prepared.
+pub fn warm_spans() -> Spans {
+    let mut bytes = vec![0; 64 * 4];
+    for (word, value) in WARM_SPANS.iter().enumerate() {
+        bytes[word * 4..word * 4 + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    Spans { width: 64, height: 1, bytes }
+}
+
+/// Warm each rendering pipeline through validation and the client encoder.
 /// Completion is still the native draw release; compiling an asset is not warm-up.
-pub fn warm_frame(target: Target, source: Target, pipe: u32) -> Option<Frame> {
-    struct View(Target, Target);
+/// `source` is R8 for BITMAP_TEXT, BGRA8 otherwise. Blends require a separate
+/// destination snapshot, and COVERAGE_SPANS additionally requires uploaded data.
+pub fn warm_frame(target: Target, source: Target, snapshot: Option<Target>,
+    spans: Option<Target>, pipe: u32) -> Option<Frame> {
+    struct View(Target, Target, Option<Target>, Option<Target>);
     impl Resolver for View {
-        fn buffer_size(&self, _: u64) -> Option<u64> { None }
+        fn buffer_size(&self, h: u64) -> Option<u64> {
+            (h == 3).then_some((WARM_SPANS.len() * 4) as u64)
+        }
         fn buffer_rect(&self, _: u64, _: u64) -> [i32; 4] { [0; 4] }
+        fn buffer_word(&self, h: u64, offset: u64) -> u32 {
+            if h == 3 { WARM_SPANS[offset as usize / 4] } else { 0 }
+        }
         fn target(&self, h: u64) -> Option<stream::TargetInfo> {
             (h == 1).then_some(stream::TargetInfo { width: self.0.width, height: self.0.height,
                 format: self.0.format, invalid: false })
@@ -328,6 +355,10 @@ pub fn warm_frame(target: Target, source: Target, pipe: u32) -> Option<Frame> {
     impl Bindings for View {
         fn render_target(&self, h: u64) -> Option<Target> { (h == 1).then_some(self.0) }
         fn sampled_source(&self, h: u64) -> Option<Target> { (h == 2).then_some(self.1) }
+        fn blend_scratch(&self, format: u32) -> Option<Target> {
+            self.2.filter(|s| s.format == format)
+        }
+        fn span_texture(&self) -> Option<Target> { self.3 }
     }
     let mut words = Vec::new();
     stream::encode::begin(&mut words, 1);
@@ -335,24 +366,34 @@ pub fn warm_frame(target: Target, source: Target, pipe: u32) -> Option<Frame> {
         stream::encode::draw(&mut words, pipe, 0xff123456, &[[0, 0, 1, 1]]);
     } else {
         let mut params = [0; 16];
-        match pipe {
-            pipeline::COPY => params[2] = 1,
-            pipeline::COPY_SCALED => { params[2] = 1; params[3] = 1; params[4] = 1; }
-            pipeline::NEAREST_SCALED | pipeline::BOX_FILTER => {
-                params[2] = 1; params[3] = 1; params[6] = 1; params[7] = 1;
-            }
-            _ => return None,
-        }
-        draw::encode(&mut words, pipe, 0xffffffff, 2, 0, 0,
+        let inputs: &[u32] = match pipe {
+            pipeline::COPY => &[0, 0, 1],
+            pipeline::COPY_SCALED => &[0, 0, 0, 0, 1],
+            pipeline::NEAREST_SCALED | pipeline::BOX_FILTER => &[0, 0, 1, 1, 0, 0, 1, 1],
+            pipeline::OVER | pipeline::OVER_STRAIGHT | pipeline::LINE
+                | pipeline::CIRCLE_FILL | pipeline::CIRCLE_OUTLINE => &[],
+            pipeline::COVERAGE => &[0, 0, 0, 0, 1],
+            pipeline::BITMAP_TEXT => &[0, 0, 0, 0, 1, 1, 1, 1],
+            pipeline::COVERAGE_SPANS => &[0, 0, 1, 1, 0],
+            pipeline::ROUNDED_RECT => &[0, 0, 1, 1, 0],
+            pipeline::GRADIENT_V => &[0, 1, 0xff654321],
+            pipeline::TRIANGLE => &[0, 0, 1, 0, 0, 1],
+            _ => return None, // PROBE_INT remains first-PROBE work.
+        };
+        params[..inputs.len()].copy_from_slice(inputs);
+        let (buffer, bytes) = if pipe == pipeline::COVERAGE_SPANS {
+            (3, (WARM_SPANS.len() * 4) as u32)
+        } else { (0, 0) };
+        draw::encode(&mut words, pipe, 0xffffffff, if draw::sampled(pipe) { 2 } else { 0 }, buffer, bytes,
             &[draw::Instance { rect: [0, 0, 1, 1], params }]);
     }
-    translate(words.as_slice(), &View(target, source)).ok()
+    translate(words.as_slice(), &View(target, source, snapshot, spans)).ok()
 }
 
 /// Exact bootstrap allocation for the COPY parking payload, including the
 /// committed catalogue and its per-draw constants, descriptors and vertices.
 pub fn parking_bytes(target: Target, source: Target) -> Result<usize, &'static str> {
-    warm_frame(target, source, pipeline::COPY)
+    warm_frame(target, source, None, None, pipeline::COPY)
         .ok_or("native parking frame refused")?
         .data.len().checked_sub(CODE).ok_or("native parking code extent")
 }
@@ -380,7 +421,7 @@ pub fn upload_parking(address: u64, data: &[u8],
 /// VAB remains in the channel's separate 1 MiB scratch allocation.
 pub fn parking_frame(target: Target, source: Target, address: u64, quarantine: u64)
     -> Result<(Vec<u8>, Vec<u32>), &'static str> {
-    let mut frame = warm_frame(target, source, pipeline::COPY)
+    let mut frame = warm_frame(target, source, None, None, pipeline::COPY)
         .ok_or("native parking frame refused")?;
     // Runtime frames use this retained code base for both rendering and the
     // 25 integer probe variants. The admission programs share that same layout.
@@ -412,9 +453,9 @@ pub fn parking_frame(target: Target, source: Target, address: u64, quarantine: u
 }
 
 #[cfg(target_os = "none")]
-pub(crate) fn warm(target_id: u32, source_id: u32, pipe: u32) -> Option<Vec<super::adapter::EncodedDraw>> {
-    let mut frame = warm_frame(target(target_id, format::B8G8R8A8)?,
-        target(source_id, format::B8G8R8A8)?, pipe)?;
+pub(crate) fn warm(target: Target, source: Target, snapshot: Option<Target>,
+    spans: Option<Target>, pipe: u32) -> Option<Vec<super::adapter::EncodedDraw>> {
+    let mut frame = warm_frame(target, source, snapshot, spans, pipe)?;
     frame.compact().ok()?;
     let backing = alloc::sync::Arc::new(crate::gpu::dma::Pages::new(frame.data.len().div_ceil(4096))?);
     backing.write(0, &frame.data);
@@ -439,6 +480,8 @@ pub struct Chunk {
     pub copy: Option<(u32, u32, [u32; 6])>,
 }
 pub struct Frame {
+    /// Routines with an actual PROBE draw, for completion-based readiness.
+    pub probe_mask: u32,
     pub chunks: Vec<Chunk>,
     pub data: Vec<u8>,
     removed_prefix: usize,
@@ -580,6 +623,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
     stream::validate(w, b).map_err(|_| "invalid BGL draw stream")?;
     if pipeline_refusal(w).is_some() { return Err("native pipeline not implemented"); }
     let mut f = Frame {
+        probe_mask: 0,
         chunks: Vec::new(),
         data: vec![0; DATA_START],
         removed_prefix: 0,
@@ -713,6 +757,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                     constants[16] = w.word(at + 3);
                     constants[17] = routine;
                     quad(&mut f, t, r, clip, &constants, pipe, None, None, None);
+                    f.probe_mask |= 1 << routine;
                 }
             }
             draw::COMMAND if !draw::sampled(w.word(at + 2)) => {
@@ -1055,6 +1100,7 @@ pub fn probe_frame(t: Target, source: Option<Target>) -> Frame {
         PROBE_INTEGER
     };
     let mut f = Frame {
+        probe_mask: 0,
         chunks: Vec::new(),
         data: vec![0; DATA_START],
         removed_prefix: 0,

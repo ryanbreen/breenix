@@ -120,7 +120,7 @@ fn retired_solid_and_sampled_frames_leave_no_constant_binding_for_the_next_conte
     let mut channel = gk208::gr::channel::NativeChannel::new();
     for (n, pipe) in [pipeline::COPY, pipeline::SOLID, pipeline::NEAREST_SCALED].into_iter().enumerate() {
         let base = 0x105a20000 + n as u64 * 0x120000;
-        let mut frame = encode::warm_frame(target, source, pipe).unwrap();
+        let mut frame = encode::warm_frame(target, source, None, None, pipe).unwrap();
         frame.relocate(base).unwrap();
         for chunk in frame.chunks {
             let draw = gk208::adapter::EncodedDraw { words: chunk.words };
