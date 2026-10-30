@@ -8,10 +8,11 @@ class Reuse(unittest.TestCase):
     def test_recycled_pages_and_failed_mapping_teardown(self):
         dma=(ROOT/'kernel/src/gpu/dma.rs').read_text()
         start=dma.index('/// CPU-only contiguous staging storage.') if '/// CPU-only contiguous staging storage.' in dma else dma.index('/// CPU-only virtually contiguous staging storage.')
-        code=x86(dma[start:dma.index('/// Whole frames, in order, owned until dropped.',start)])
+        code=x86(dma[start:dma.index('/// Whole frames, in order, owned until dropped.',start)]).replace('pub(super)', 'pub(crate)')
         fixture=r'''
 #![allow(dead_code)] // Complete mock APIs cover the old and repaired allocation paths.
 use std::{collections::{BTreeMap,BTreeSet},ptr::NonNull,sync::{Mutex,OnceLock,atomic::{AtomicU64,Ordering}}};
+mod spin { pub type Mutex<T> = std::sync::Mutex<T>; }
 const PAGE:usize=4096;const LIMIT:usize=64;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]struct PhysFrame(usize);
 struct PhysAddr(u64);impl PhysAddr{fn as_u64(&self)->u64{self.0}}
