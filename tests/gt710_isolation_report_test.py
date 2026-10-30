@@ -15,7 +15,7 @@ EXTRA = {
     'textures/destroy-deferred', 'textures/quota', 'profile/scissor-exact',
 }
 EXCLUDED = {'isolation/display-context-unreachable', 'isolation/no-addresses',
-            'isolation/client-cannot-scanout'}
+            'isolation/client-cannot-scanout', 'isolation/irq-masked-bound'}
 ADDED = {n for n in NAMES if n.startswith('submit/') or
          (n.startswith('isolation/') and n not in EXCLUDED)} | EXTRA
 
@@ -23,12 +23,17 @@ ADDED = {n for n in NAMES if n.startswith('submit/') or
 class IsolationReport(unittest.TestCase):
     def test_selection_and_registration(self):
         step = json.loads((ROOT / 'docs/gui/gt710-step-8-5.json').read_text())
-        self.assertEqual(len(ADDED), 51)
+        self.assertEqual(len(ADDED), 50)
         self.assertEqual((step['id'], step['suite'], step['cases']),
                          ('gt710-step-8-5', 'gpu', [n for n in NAMES if n in ADDED]))
         previous = json.loads((ROOT / 'docs/gui/gt710-step-8-4.json').read_text())['cases']
         self.assertFalse(set(previous) & ADDED)
-        self.assertEqual(len(set(previous) | ADDED), 141)
+        self.assertEqual(len(set(previous) | ADDED), 140)
+        # Coordinator 2026-10-30 14:14Z: the full-size native present path
+        # belongs to plan milestone 8 PR order 8.6; keep its suite check intact.
+        later = json.loads((ROOT / 'docs/gui/gt710-step-8-6.json').read_text())
+        self.assertIn('isolation/irq-masked-bound', later['cases'])
+        self.assertFalse(set(step['cases']) & set(later['cases']))
         manifest = json.loads((ROOT / 'docs/suites/gt710.json').read_text())
         API['validate_manifest'](manifest)
         category = next(c for c in manifest['categories'] if c['id'] == 'isolation')
@@ -66,14 +71,14 @@ class IsolationReport(unittest.TestCase):
             selected = set(json.loads((ROOT / 'docs/gui/gt710-step-8-4.json').read_text())['cases']) | ADDED
             for name in selected:
                 serial = serial.replace(f'CASE {name} FAIL ms=1 msg=not implemented', f'CASE {name} PASS ms=1')
-            serial = serial.replace('passed=77 failed=93', 'passed=141 failed=29')
+            serial = serial.replace('passed=77 failed=93', 'passed=140 failed=30')
             (gpu / 'serial.txt').write_text(serial)
             self.assertEqual(API['record_resources_capture'](directory, SHA, 'isolation'), 0)
             def score():
                 return metal['score'](directory)['milestones']['metal-gt710/isolation']['passed']
             self.assertTrue(score())
             for name in selected:
-                bad = serial.replace(f'CASE {name} PASS ms=1', f'CASE {name} FAIL ms=1 msg=broken').replace('passed=141 failed=29', 'passed=140 failed=30')
+                bad = serial.replace(f'CASE {name} PASS ms=1', f'CASE {name} FAIL ms=1 msg=broken').replace('passed=140 failed=30', 'passed=139 failed=31')
                 (gpu / 'serial.txt').write_text(bad)
                 with self.subTest(case=name):
                     self.assertFalse(score())
