@@ -269,12 +269,12 @@ fn rejected_channel_receipts_prevent_shader_submission() {
     }
 }
 #[test]
-fn clean_channel_restores_and_stuck_preempt_resets_before_reclaim() {
+fn clean_channel_restores_and_refused_preempt_retains_after_fallback_reset() {
     INJECT.with(|i|*i.borrow_mut()=Injection::default());
     let mut regs=Registers::new(); assert!(run(&mut regs,false).is_ok()); assert!(regs.restored());
     INJECT.with(|i|*i.borrow_mut()=Injection{target:"issue-1".into(),..Injection::default()});
     let mut regs=Registers::new(); assert_eq!(run(&mut regs,true),Err("injected"));
-    INJECT.with(|i| { let i=i.borrow();assert!(i.resets>0);assert!(i.releases>0); });
+    INJECT.with(|i| { let i=i.borrow();assert!(i.resets>0);assert_eq!(i.releases,0,"G19: fallback reset must not hide refused preempt"); });
     assert!(regs.restored());
 }
 #[test]

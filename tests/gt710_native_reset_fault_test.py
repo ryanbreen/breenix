@@ -60,12 +60,13 @@ fn main(){
  let mut regs=Registers(0);regs.write(0x259c,0);
  let (_,faults)=gk208::vm::faults(&mut VmIo{regs:&mut regs,total:1<<30});
  assert!(faults.iter().all(|f|f.unit<32&&f.instance!=0));
+ for previously_confirmed in [false,true] {
  for (mask,fail_gr,fail_preempt,fail_unbind,okay,remaining) in [(1,false,false,false,true,0),(3,false,false,false,false,2),(1,true,false,false,false,1),(1<<0x15,false,false,false,false,1<<0x15),(1,false,true,false,false,1),(1,false,false,true,false,0)] {
   STATE.with(|s|*s.borrow_mut()=State{mask,fail_gr,fail_preempt,fail_unbind,writes:vec![],events:vec![]});
-  let mut c=NativeChannel{registers:0,total:1<<30,confirmed:false,session:Session{
+  let mut c=NativeChannel{registers:0,total:1<<30,confirmed:previously_confirmed,session:Session{
    report:Report{identity:Identity{runlist:0,id:0,instance:0x123000,engine:0}},commands:Allocation{range:Range{start:0x100000}},pbdma:0,bound:true,copy:Some(Copy{base:0x106000,reset:22,engine:2})}};
   assert_eq!(c.session.report.identity.instance,0x123000);
-  assert_eq!(c.reset().is_ok(),okay);assert_eq!(c.confirmed,okay);
+  assert_eq!(c.reset().is_ok(),okay);assert_eq!(c.confirmed,okay,"a refused reset must revoke an earlier confirmation (G19)");
   STATE.with(|s|{let s=s.borrow();assert_eq!(s.mask,remaining);
    if okay {assert_eq!(s.events,["gr-stop","ce-stop","ack","quiesce"]);}
    if fail_gr {assert_eq!(s.events,["gr-stop"]);}
@@ -78,6 +79,7 @@ fn main(){
    }
   });
  }
+}
 }
 '''.replace('// RESET',reset)
         priority=['taskpolicy','-b'] if sys.platform=='darwin' else []
