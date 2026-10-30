@@ -64,7 +64,7 @@ impl NativeChannel {
     fn record_fault(&self, error:&str) { STATE.with(|s|s.borrow_mut().reasons.push(error.into())); }
 }
 fn channel()->NativeChannel {
-    NativeChannel { confirmed:true, initial:vec![0;16], registers:7, total:1<<30, topology:[[0;2];3], mmu:[0;2], put:6481,
+    NativeChannel { confirmed:true, initial:[5u32,0x1234,0,0].into_iter().flat_map(u32::to_le_bytes).collect(), registers:7, total:1<<30, topology:[[0;2];3], mmu:[0;2], put:6481,
         session:Session { image:Allocation {range:Range {start:0x400000}}, commands:Allocation {range:Range {start:0x100000}},
             userd:0x102200, report:Report {identity:Identity {instance:0x300000,epoch:17,id:1}}, context:Context,
             admitted:true, quiesced:true, copy:Some(Copy {base:0x106000,reset:22}), next_sequence:6482, pages:Pages(Box::new([85;4096])) } }
@@ -86,8 +86,14 @@ fn constructor(c:&NativeChannel)->Result<(), &'static str> {
         for off in (0..0x200).step_by(4) {s.vram.insert(instance+off,0xdeadbeef);s.vram.insert(c.session.userd+off,0xdeadbeef);}
         for off in (0..4096).step_by(4) {s.vram.insert(c.session.commands.range.start+off,0xdeadbeef);}
         s.vram.insert(instance+0x200,0x12345001);s.vram.insert(instance+0x210,0x76543004);
+        // FECS consumed the live image's MMIO header. Restart must use the
+        // pristine golden template, not preserve this zero count (G19).
+        s.vram.insert(c.session.image.range.start,0);
+        s.vram.insert(c.session.image.range.start+4,0);
     });
     assert_eq!(c.restart(),Ok(()));
+    assert_eq!(word(c.session.image.range.start),5);
+    assert_eq!(word(c.session.image.range.start+4),0x1234);
     assert_eq!(word(instance+0x10),0xface,"restart must preserve the RAMFC signature");
     assert_eq!((0..0x200).step_by(4).map(|off|word(instance+off)).collect::<Vec<_>>(),expected);
     assert_eq!(word(instance+0x200),0x12345001);assert_eq!(word(instance+0x210),0x76543004);

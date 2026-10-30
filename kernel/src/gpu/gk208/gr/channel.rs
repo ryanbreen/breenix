@@ -46,7 +46,7 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 /*
- * Copyright 2012 Red Hat Inc.
+ * Copyright 2012, 2021 Red Hat Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -397,6 +397,7 @@ mod native {
         commands: Allocation,
         image: Allocation,
         mmio: Allocation,
+        pristine: Vec<u8>,
         userd: u64,
         pub(in crate::gk208::gr) second: Option<Box<Session>>,
         pages: ManuallyDrop<system_dma::Pages>,
@@ -644,10 +645,10 @@ mod native {
                     &[(IMAGE | 4) as u32, (IMAGE >> 32) as u32],
                 )?;
                 words(h.regs, h.total, commands.range.start + RUNLIST, &[id, 0])?;
-                Ok((commands, image, mmio, userd, instance))
+                Ok((commands, image, mmio, userd, instance, data))
 
             })();
-            let (commands, image, mmio, userd, instance) = match built {
+            let (commands, image, mmio, userd, instance, pristine) = match built {
                 Ok(parts) => parts,
                 Err(error) => {
                     // No binding/admission has occurred. Cancel partial VM
@@ -693,6 +694,7 @@ mod native {
                 commands,
                 image,
                 mmio,
+                pristine,
                 userd,
                 second: None,
                 pages,
@@ -887,7 +889,7 @@ mod native {
             use super::super::binding;
             receipt.before = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
             let result = (|| {
-                binding::check_traps(receipt.before)?;
+                checked_traps(h.regs, receipt.before)?;
                 if !self.bound || self.quiesced {
                     return Err("shader binding requires the active GR channel");
                 }
@@ -904,7 +906,7 @@ mod native {
             })();
             // Read even after a submission error, before quiesce/reset.
             receipt.after = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
-            binding::check_traps(receipt.after)?;
+            checked_traps(h.regs, receipt.after)?;
             result
         }
         /// Append a fresh ordinary mapping after bind_shaders' receipt. The
@@ -1058,7 +1060,7 @@ mod native {
             use super::super::{binding, draw as encoder};
             receipt.before = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
             let result = (|| {
-                binding::check_traps(receipt.before)?;
+                checked_traps(h.regs, receipt.before)?;
                 let (sequence, nonce) = self.sequence()?;
                 draw.report_va = TARGET; draw.epoch = self.report.identity.epoch; draw.nonce = nonce;
                 receipt.target = TARGET; receipt.epoch = draw.epoch; receipt.nonce = nonce;
@@ -1070,7 +1072,7 @@ mod native {
                 Ok(())
             })();
             receipt.after = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
-            binding::check_traps(receipt.after)?;
+            checked_traps(h.regs, receipt.after)?;
             result
         }
         /// Physical allocation identities for the context evidence. Shader and
@@ -1099,7 +1101,7 @@ mod native {
                 if !selected.accepted { return Err("context activation release not observed"); }
                 current[0] = h.regs.read(0x409b00);
                 receipt.before = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
-                binding::check_traps(receipt.before)?;
+                checked_traps(h.regs, receipt.before)?;
                 let (sequence, nonce) = self.sequence()?;
                 request.nonce = nonce;
                 receipt.target = self.pages.address(0);
@@ -1118,7 +1120,7 @@ mod native {
             })();
             current[1] = h.regs.read(0x409b00);
             receipt.after = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
-            binding::check_traps(receipt.after)?;
+            checked_traps(h.regs, receipt.after)?;
             result?;
             let expected = 0x80000000 | (self.report.identity.instance >> 12) as u32;
             if *current != [expected; 2] { return Err("context draw FECS binding mismatch"); }
@@ -1429,12 +1431,12 @@ mod native {
             if !session.bound || session.second.is_some() || session.copy.is_none() || session.quiesced {
                 return Err("native handoff requires live prepared channel");
             }
-            let mut regs = Registers(registers);
+            let regs = Registers(registers);
             let topology = [0x409604, 0x502608, 0x500c30].map(|a| [a, regs.read(a as usize)]);
-            let mut initial = Vec::with_capacity(session.image.range.size as usize);
-            for off in (0..session.image.range.size).step_by(4) {
-                initial.extend(read(&mut regs, total, session.image.range.start + off)?.to_le_bytes());
-            }
+            // Retain the constructor's golden image and unconsumed MMIO
+            // header. Firmware clears the patch count on first load; a live
+            // handoff snapshot is therefore not a cold-start template (G19).
+            let initial = session.pristine.clone();
             let scratch = ManuallyDrop::new([allocator.pin(mmu[0])?, allocator.pin(mmu[1])?]);
             let put = session.next_sequence - 1;
             Ok(NativeChannel { session: owner.take().unwrap(), registers, total,
@@ -1461,6 +1463,12 @@ mod native {
         pub(crate) fn error_trap(&self) -> Result<Option<super::super::error::Trap>, &'static str> {
             super::super::error::capture(&mut ErrorIo(Registers(self.registers)))
         }
+        pub(crate) fn record_refusal(&self) -> Result<(), &'static str> {
+            if let Some((status, values)) = take_refusal() { return emit_refusal(status, values); }
+            let mut regs = Registers(self.registers);
+            let words = super::super::binding::TRAP_REGISTERS.map(|a| regs.read(a));
+            record_trap(&mut regs, words)
+        }
         pub(crate) fn acknowledge_error(&mut self, trap: super::super::error::Trap, sequence: u32) -> Result<(), &'static str> {
             let epoch = self.session.report.identity.epoch;
             let text = format!("GT710_MMU_ERROR_V1 {{\"instance\":{},\"epoch\":{},\"sequence\":{},\"unit\":0,\"raw\":{:?},\"answer\":{}}}",
@@ -1470,7 +1478,8 @@ mod native {
             crate::gk208::bulk::line(text)?;
             crate::serial_println!("GT710_MMU_ERROR_BULK epoch={} sequence={} bytes={} sha256={}",
                 epoch, sequence, bytes, digest);
-            super::super::error::acknowledge(&mut ErrorIo(Registers(self.registers)), trap)
+            let c = self.session.report.identity;
+            super::super::error::acknowledge(&mut ErrorIo(Registers(self.registers)), trap, c.id, c.runlist)
         }
         /// True only after USERD GP_PUT publishes this sequence to the engine.
         pub(crate) fn published(&self, sequence: u32) -> bool { self.put == sequence }
@@ -1602,6 +1611,11 @@ mod native {
         /// Retain bounded fault registers before reset clears their source.
         /// Called on the GPU worker, outside interrupt and syscall entry paths.
         pub(crate) fn record_fault(&self, reason: &str) {
+            if let Some((status, values)) = take_refusal() {
+                if let Err(error) = emit_refusal(status, values) {
+                    crate::serial_println!("GT710_GR_REFUSAL_CAPTURE_FAILED {}", error);
+                }
+            }
             let mut regs = Registers(self.registers);
             let c = self.session.report.identity;
             let b = self.session.pbdma * 0x2000;
@@ -1664,19 +1678,39 @@ mod native {
             // another instance's fault or a fault on an unstopped engine.
             let owned = faults.iter().filter(|f| f.instance == c.instance && matches!(f.unit, 0 | 0x1b))
                 .fold(0u32, |mask, f| mask | 1u32 << f.unit);
-            // G9: reset and confirm before runlist removal/unbind/restoration.
+            // G19: the old FECS must finish preempt BEFORE its firmware is
+            // reset. A refused preempt cannot certify cessation or free holds.
+            regs.write(0x2634, c.id);
+            register_wait(&mut regs, 0x2634, 0x100000, 0, BOUND_US)?;
             super::super::ctxctl::reset(&mut regs).map_err(super::super::hardware_error)?;
             if let Some(copy) = &self.session.copy {
                 crate::gk208::ce::reset_engine(&mut regs, copy.base, copy.reset)?;
             }
-            // MIT nouveau gf100.c/gk104.c: clear the attributed exception
-            // after the engine stop, then allow runlist removal to progress.
             if owned != 0 { regs.write(0x259c, owned); }
             if regs.read(0x259c) != 0 { return Err("native reset foreign MMU fault; backing retained"); }
-            if owned != 0 {
-                regs.write(0x2100, 0x10000000);
-                regs.write(0x262c, 1 << c.runlist);
+            // MIT FIFO runl.c:120-128, gk104.c:404-447. Commit the
+            // surviving (empty) hardware runlist before clearing/unblocking.
+            // Logical peer VMs/resources are retained by the native owner.
+            regs.write(0x2270, ((self.session.commands.range.start + RUNLIST) >> 12) as u32);
+            regs.write(0x2274, c.runlist << 20);
+            regs.write(0x262c, 1 << c.runlist);
+            regs.mask(0x2630, 1 << c.runlist, 0);
+            for (address, mask) in [
+                (0x2284 + c.runlist as usize * 8, 0x100000),
+                (0x2634, 0x100000),
+                (0x3080 + self.session.pbdma * 4, 0xe000),
+                (0x2640 + c.engine as usize * 8, 0xc0000000),
+            ] { register_wait(&mut regs, address, mask, 0, BOUND_US)?; }
+            if let Some(copy) = &self.session.copy {
+                register_wait(&mut regs, 0x2640 + copy.engine as usize * 8, 0xc0000000, 0, BOUND_US)?;
             }
+            regs.write(0x800000 + c.id as usize * 8, 0);
+            if regs.read(0x800000 + c.id as usize * 8) != 0 {
+                return Err("GR unbind failed; backing retained");
+            }
+            self.session.bound = false;
+            // With the old channel unbound, quiesce restores FIFO/alias state
+            // without issuing any preempt against the reset FECS.
             self.session.quiesce(&mut regs, self.total)?;
             if regs.read(0x259c) != 0 { return Err("native reset MMU fault; backing retained"); }
             self.confirmed = true;
@@ -1728,6 +1762,51 @@ mod native {
     impl super::super::error::Io for ErrorIo {
         fn read(&mut self, address: usize) -> u32 { self.0.read(address) }
         fn write(&mut self, address: usize, value: u32) { self.0.write(address, value); }
+        fn refuse_trap(&mut self, words: [u32; 4]) -> Result<(), &'static str> {
+            save_refusal(&mut self.0, words);
+            Ok(())
+        }
+    }
+    const REFUSAL_REGISTERS: [usize; 7] = [0x400704, 0x400708, 0x400700, 0x409c18, 0x2634, 0x2640, 0x262c];
+    // One native owner. 0 = empty, 1 = being copied, 2 = captured. The first
+    // refusing read survives later zero reads; no allocation or upload in CORE.
+    static REFUSAL_STATE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    static REFUSAL_WORDS: [core::sync::atomic::AtomicU32; 11] = [const { core::sync::atomic::AtomicU32::new(0) }; 11];
+    fn save_refusal(regs: &mut Registers, status: [u32; 4]) {
+        use core::sync::atomic::Ordering;
+        if REFUSAL_STATE.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() { return; }
+        let values = REFUSAL_REGISTERS.map(|a| regs.read(a));
+        for (slot, value) in REFUSAL_WORDS.iter().zip(status.into_iter().chain(values)) {
+            slot.store(value, Ordering::Relaxed);
+        }
+        REFUSAL_STATE.store(2, Ordering::Release);
+    }
+    fn take_refusal() -> Option<([u32; 4], [u32; 7])> {
+        use core::sync::atomic::Ordering;
+        if REFUSAL_STATE.compare_exchange(2, 1, Ordering::Acquire, Ordering::Relaxed).is_err() { return None; }
+        let status = core::array::from_fn(|i| REFUSAL_WORDS[i].load(Ordering::Relaxed));
+        let values = core::array::from_fn(|i| REFUSAL_WORDS[i + 4].load(Ordering::Relaxed));
+        REFUSAL_STATE.store(0, Ordering::Release);
+        Some((status, values))
+    }
+    /// Keep the words from the failing read, even if a second read is zero.
+    /// G19 diagnostics are worker/suite-thread records, never IRQ diagnostics.
+    fn record_trap(regs: &mut Registers, status: [u32; 4]) -> Result<(), &'static str> {
+        let values = REFUSAL_REGISTERS.map(|a| regs.read(a));
+        emit_refusal(status, values)
+    }
+    fn emit_refusal(status: [u32; 4], values: [u32; 7]) -> Result<(), &'static str> {
+        let text = format!("GT710_GR_REFUSAL_V1 {{\"status\":{:?},\"registers\":{:?},\"values\":{:?}}}",
+            status, REFUSAL_REGISTERS, values);
+        let bytes = text.len();
+        let digest = crate::gk208::hash(text.as_bytes());
+        crate::gk208::bulk::line(text)?;
+        crate::serial_println!("GT710_GR_REFUSAL_BULK bytes={} sha256={}", bytes, digest);
+        Ok(())
+    }
+    fn checked_traps(regs: &mut Registers, words: [u32; 4]) -> Result<(), &'static str> {
+        if words != [0; 4] { record_trap(regs, words)?; }
+        super::super::binding::check_traps(words)
     }
     struct Monitor<'a> {
         session: &'a Session,
@@ -1742,6 +1821,7 @@ mod native {
         fn snapshot(&mut self) -> Result<(u32, u64, bool), &'static str> {
             if self.stop_on_trap {
                 let words = super::super::binding::TRAP_REGISTERS.map(|a| self.regs.read(a));
+                if words != [0; 4] { save_refusal(self.regs, words); }
                 super::super::binding::check_traps(words)?;
                 let p = self.session.pbdma * 0x2000;
                 if self.regs.read(0x259c) != 0 || self.regs.read(0x40108 + p) != 0

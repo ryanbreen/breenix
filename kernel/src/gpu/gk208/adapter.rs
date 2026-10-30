@@ -134,6 +134,8 @@ pub struct Device {
     board: super::caps::BoardState,
     queue: Queue,
     pending: VecDeque<Sent>,
+    retired: VecDeque<(Request, Option<u32>)>,
+    attributed: Option<(super::gr::error::Trap, u32)>,
     #[cfg(target_os = "none")]
     recent: VecDeque<RequestTrace>,
     fault: bool,
@@ -143,6 +145,7 @@ pub struct Device {
 impl Device {
     pub(crate) fn new(channel: NativeChannel, board: super::caps::BoardState) -> Self {
         Self { channel, board, queue: Queue::new(), pending: VecDeque::new(),
+            retired: VecDeque::new(), attributed: None,
             #[cfg(target_os = "none")]
             recent: VecDeque::new(), fault: false, first_error: None, resetting: None }
     }
@@ -214,6 +217,14 @@ impl Device {
     }
     pub fn reap(&mut self) -> Reap {
         if self.resetting.is_some() { return Reap::Empty; }
+        if let Some((request, answer)) = self.retired.pop_front() {
+            return match answer {
+                Some(answer) => Reap::Done(Done { tag: request.tag, fence: None,
+                    native_fence: None, answer, echoed: 0, fenced: false }),
+                None => Reap::Reset(request.tag),
+            };
+        }
+        if self.attributed.is_some() { return Reap::Empty; }
         if self.fault { return Reap::Fault; }
         // Handle an attributed event before checking health or sampling
         // earlier work on the channel. IRQ top halves do not call this reaper.
@@ -222,6 +233,7 @@ impl Device {
             self.fault = true;
             return Reap::Fault;
         }
+        if self.attributed.is_some() { return Reap::Empty; }
         if let Err(reason) = self.channel.healthy() {
             return self.retry_error_trap(reason);
         }
@@ -298,24 +310,26 @@ impl Device {
                 && sent.identity.is_some_and(|i| i.context == context && i.epoch == epoch
                     && trap.instance == i.context && trap.page == i.sequence % 32768)
         }).ok_or("unattributed MMU write; backing retained")?;
-        self.channel.acknowledge_error(trap, sent.identity.unwrap().sequence)?;
         sent.answer = Some(trap.status);
+        self.attributed = Some((trap, sent.identity.unwrap().sequence));
         Ok(true)
     }
     pub fn has_room(&self, segments: usize) -> bool {
-        !self.needs_reset() && self.resetting.is_none() && segments <= 4
+        !self.needs_reset() && self.attributed.is_none() && self.retired.is_empty()
+            && self.resetting.is_none() && segments <= 4
             && self.pending.len() + segments <= 4 && self.queue.next().is_ok()
     }
-    pub fn outstanding(&self) -> usize { self.pending.len() }
+    pub fn outstanding(&self) -> usize { self.pending.len() + self.retired.len() }
     pub fn queue_size(&self) -> usize { 4 }
-    pub fn needs_reset(&self) -> bool { self.fault || self.channel.healthy().is_err() }
+    pub fn needs_reset(&self) -> bool { self.fault || (self.attributed.is_none() && self.channel.healthy().is_err()) }
+    pub(crate) fn recovery_pending(&self) -> bool { self.attributed.is_some() && self.resetting.is_none() }
     pub fn fault_reason(&self) -> Option<&'static str> { self.first_error }
     /// The worker owns the device outside CORE here. Capture once before the
     /// reset, rather than from reap(), which runs while CORE is locked.
     pub fn begin_reset(&mut self) {
         if self.resetting.is_none() {
             #[cfg(target_os = "none")]
-            {
+            if self.attributed.is_none() {
                 self.channel.record_fault(self.fault_reason().or_else(|| self.channel.healthy().err())
                     .unwrap_or("shared core requested reset"));
                 for t in &self.recent {
@@ -324,7 +338,11 @@ impl Device {
                         pending,t.tag,t.channel,t.epoch,t.caller,t.sequence,t.kind,t.target,t.frame,t.address,t.command);
                 }
             }
-            self.resetting = Some(self.channel.reset());
+            self.resetting = Some(match self.attributed {
+                Some((trap, sequence)) => self.channel.acknowledge_error(trap, sequence)
+                    .and_then(|()| self.channel.reset()),
+                None => self.channel.reset(),
+            });
             #[cfg(target_os = "none")]
             if let Some(Err(error)) = self.resetting {
                 crate::serial_println!("GT710_NATIVE_RESET_REFUSAL {}", error);
@@ -339,8 +357,10 @@ impl Device {
         self.board.channel = self.channel.identity();
         self.board.probes = super::caps::ProbeResults::new();
         let epoch = self.board.channel.1;
-        super::caps::run_reprobe(self, epoch)?;
-        self.admission(None).map_err(|(_, missing)| gpu_abi::capability::name(missing))
+        let result = super::caps::run_reprobe(self, epoch)
+            .and_then(|()| self.admission(None).map_err(|(_, missing)| gpu_abi::capability::name(missing)));
+        if result.is_err() { self.channel.record_refusal()?; }
+        result
     }
     pub fn restart(&mut self) -> (Vec<Request>, Result<(), &'static str>) {
         match self.resetting {
@@ -348,18 +368,54 @@ impl Device {
             Some(Err(error)) => return (Vec::new(), Err(error)),
             None => return (Vec::new(), Err("native reset not confirmed; backing retained")),
         }
+        if self.attributed.is_some() && self.retired.try_reserve(self.pending.len()).is_err() {
+            return (Vec::new(), Err("native retirement allocation; backing retained"));
+        }
         // A restart refusal retains requests as well as channel backing.
         if let Err(error) = self.channel.restart() {
             self.resetting = Some(Err(error));
             self.fault = true;
             return (Vec::new(), Err(error));
         }
-        let held = self.pending.drain(..).map(|sent| sent.request).collect();
+        let held = if let Some((_, sequence)) = self.attributed.take() {
+            // Publish the producing error before reset outcomes for earlier
+            // chunks of the same submission can obscure it in the core.
+            let index = self.pending.iter().position(|s| s.identity.is_some_and(|i| i.sequence == sequence))
+                .expect("retained attributed request");
+            let sent = self.pending.remove(index).unwrap();
+            self.retired.push_back((sent.request, sent.answer));
+            for sent in self.pending.drain(..) {
+                // No replay of potentially executed peer writes. Only storage
+                // acknowledgements and the attributed error have an answer.
+                let answer = sent.answer.or_else(|| sent.request.storage.then_some(gpu_abi::gk208::SUCCESS));
+                self.retired.push_back((sent.request, answer));
+            }
+            Vec::new()
+        } else { self.pending.drain(..).map(|sent| sent.request).collect() };
         self.queue = Queue::new();
         self.fault = false;
         self.first_error = None;
         self.resetting = None;
         (held, Ok(()))
+    }
+    /// kgpu owns the adapter outside CORE for the entire engine recovery.
+    #[cfg(target_os = "none")]
+    pub(crate) fn recover_fault(&mut self) -> Result<(), &'static str> {
+        if !self.recovery_pending() { return Err("native attributed recovery absent"); }
+        self.begin_reset();
+        let (held, result) = self.restart();
+        debug_assert!(held.is_empty());
+        if let Err(error) = result {
+            self.channel.record_refusal()?;
+            return Err(error);
+        }
+        // Fresh capability probes must consume only their own receipts. Keep
+        // old terminal requests held until restart AND requalification finish.
+        let mut retired = core::mem::take(&mut self.retired);
+        let result = self.reprobe();
+        retired.append(&mut self.retired);
+        self.retired = retired;
+        result
     }
 }
 

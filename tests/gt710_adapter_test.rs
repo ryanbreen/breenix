@@ -59,7 +59,7 @@ pub mod gk208 {
                 }
                 pub fn acknowledge_error(&mut self,trap:crate::gk208::gr::error::Trap,sequence:u32)->Result<(),&'static str> {
                     assert_eq!(trap.page,sequence % 32768);
-                    crate::gk208::gr::error::acknowledge(&mut *self.0.borrow_mut(),trap)
+                    crate::gk208::gr::error::acknowledge(&mut *self.0.borrow_mut(),trap,0,0)
                 }
                 pub fn transfer_drain(&mut self,sequence:u32)->Result<CeSample,&'static str> {
                     let mut sample=self.sample(sequence)?;sample.sequence=self.0.borrow().drain;Ok(sample)
@@ -106,19 +106,26 @@ use gpu::dev::{Reap,Tag};
 use gk208::{adapter::{Device,Request},copy::Rect,gr::channel::NativeChannel};
 pub struct State {
     epoch:u64,channel:u64,release_epoch:u64,release:u32,drain:u32,fault:bool,
-    registers:std::collections::BTreeMap<usize,u32>,writes:Vec<(usize,u32)>,
+    transient_trap:bool,refusals:Vec<[u32;4]>,registers:std::collections::BTreeMap<usize,u32>,writes:Vec<(usize,u32)>,
     trap_at_health:bool,trap_at_sample:bool,fail_ack:bool,trap_after_samples:u32,delayed_trap_sequence:u32,
     fail_reset:bool,fail_unbind:bool,fail_publish:bool,refuse_publish:bool,stopped:bool,operations:Vec<&'static str>,published:Vec<u32>,events:Vec<&'static str>,expected_draw:Vec<u32>,
 }
 fn device()->(Device,Rc<RefCell<State>>) {
     let s=Rc::new(RefCell::new(State{epoch:17,channel:0x123000,release_epoch:17,release:0,drain:0,fault:false,
-        registers:Default::default(),writes:vec![],trap_at_health:false,trap_at_sample:false,fail_ack:false,trap_after_samples:0,delayed_trap_sequence:0,fail_reset:false,fail_unbind:false,fail_publish:false,refuse_publish:false,stopped:false,operations:vec![],published:vec![],events:vec![],expected_draw:vec![0x20010367,0]}));
+        transient_trap:false,refusals:vec![],registers:Default::default(),writes:vec![],trap_at_health:false,trap_at_sample:false,fail_ack:false,trap_after_samples:0,delayed_trap_sequence:0,fail_reset:false,fail_unbind:false,fail_publish:false,refuse_publish:false,stopped:false,operations:vec![],published:vec![],events:vec![],expected_draw:vec![0x20010367,0]}));
     (Device::new(NativeChannel(s.clone()),gk208::caps::BoardState::empty()),s)
 }
 // The model exposes actual PFIFO MMU status/instance/address registers to the
 // production decoder. Acknowledgement does not invent the engine's release.
 impl gk208::gr::error::Io for State {
-    fn read(&mut self,address:usize)->u32 {*self.registers.get(&address).unwrap_or(&0)}
+    fn refuse_trap(&mut self, words:[u32;4])->Result<(),&'static str> {
+        assert_ne!(words,[0;4]);self.refusals.push(words);self.events.push("trap-record");Ok(())
+    }
+    fn read(&mut self,address:usize)->u32 {
+        let value=*self.registers.get(&address).unwrap_or(&0);
+        if self.transient_trap && [0x400100,0x400108,0x400110,0x400118].contains(&address) {self.registers.remove(&address);}
+        value
+    }
     fn write(&mut self,address:usize,value:u32) {
         self.writes.push((address,value));
         if address==0x259c { if !self.fail_ack {*self.registers.entry(address).or_default() &= !value;} }
@@ -317,6 +324,12 @@ fn encoded_stream_copy_uses_ce_completion_and_keeps_the_caller_fence() {
 fn mmu_fault(s:&Rc<RefCell<State>>,sequence:u32) {
     s.borrow_mut().plant_mmu(sequence);
 }
+fn recover(d:&mut Device) {
+    assert!(d.recovery_pending());
+    d.begin_reset();assert!(d.reset_done());
+    let (held,result)=d.restart();assert!(result.is_ok());assert!(held.is_empty());
+}
+
 #[test]
 fn g19_mmu_fault_without_release_stops_offender_and_retires_inside_adapter() {
     use std::sync::Arc;
@@ -369,34 +382,24 @@ fn unmapped_write_and_release_follows_the_fault() {
     assert_eq!(&words[19..],&[0x200406c0,1,0,3,0x1000f010]);
 }
 #[test]
-fn mmu_fault_retires_only_its_fence_after_release_and_keeps_other_context_live() {
+fn g19_failed_ack_reset_or_unbind_retains_all_requests_and_holds() {
     use std::sync::Arc;
-    let (mut d,s)=device();
-    let bad_tag=Tag::Submit {ctx:7,serial:9001,last:true};
-    let bad=Request::undefined_command(bad_tag,7,9001).unwrap();
-    assert!(d.send(bad).is_ok());
-    let mut peer=request(23);peer.tag=Tag::Submit {ctx:8,serial:23,last:true};
-    assert!(d.send(peer).is_ok());
-    let pages=Arc::new(gpu::dma::Pages);
-    assert!(d.send(Request::storage(Tag::Sync(24),Some(pages.clone()))).is_ok());
-    mmu_fault(&s,1);
-    assert!(matches!(d.reap(),Reap::Empty));
-    assert_eq!(s.borrow().writes,[(0x259c,1),(0x2100,0x10000000),(0x262c,1)]);
-    assert_eq!(d.outstanding(),3);assert_eq!(Arc::strong_count(&pages),2);
-    assert!(!d.needs_reset());
-    s.borrow_mut().release=1;
-    let Reap::Done(done)=d.reap() else {panic!("MMU-fault receipt absent")};
-    assert_eq!((done.tag,done.fence,done.native_fence,done.answer,done.echoed,done.fenced),
-        (bad_tag,Some(9001),Some(1),0x60010000,1,true));
-    assert_ne!(done.answer,gpu_abi::gk208::SUCCESS); // shared core maps this to DEVICE_ERROR
-    assert_eq!(d.outstanding(),2);assert_eq!(Arc::strong_count(&pages),2);
-    assert!(matches!(d.reap(),Reap::Empty));
-    s.borrow_mut().release=2;
-    let Reap::Done(done)=d.reap() else {panic!("surviving context did not finish")};
-    assert_eq!((done.fence,done.answer),(Some(23),gpu_abi::gk208::SUCCESS));
-    assert!(matches!(d.reap(),Reap::Done(_)));assert_eq!(Arc::strong_count(&pages),1);
-    assert!(s.borrow().events.is_empty(),"a recoverable MMU fault must not reset peers");
+    for failure in 0..3 {
+        let (mut d,s)=device();
+        assert!(d.send(Request::undefined_command(Tag::Submit {ctx:7,serial:9001,last:true},7,9001).unwrap()).is_ok());
+        let pages=Arc::new(gpu::dma::Pages);
+        assert!(d.send(Request::storage(Tag::Sync(24),Some(pages.clone()))).is_ok());
+        mmu_fault(&s,1);
+        assert!(matches!(d.reap(),Reap::Empty));
+        {let mut s=s.borrow_mut();s.fail_ack=failure==0;s.fail_reset=failure==1;s.fail_unbind=failure==2;}
+        d.begin_reset();assert!(!d.reset_done());
+        let (held,result)=d.restart();assert!(result.is_err());assert!(held.is_empty());
+        assert_eq!(d.outstanding(),2);assert_eq!(Arc::strong_count(&pages),2);
+        assert!(matches!(d.reap(),Reap::Empty));assert!(!d.has_room(1));
+        assert_eq!(s.borrow().release,0);
+    }
 }
+
 #[test]
 fn foreign_or_unexpected_trap_never_retires_or_acknowledges_and_failed_reset_retains_holds() {
     use std::sync::Arc;
@@ -416,35 +419,31 @@ fn foreign_or_unexpected_trap_never_retires_or_acknowledges_and_failed_reset_ret
     }
 }
 #[test]
-fn later_mmu_fault_does_not_mark_an_earlier_clean_request_failed() {
+fn g19_uncertain_earlier_peer_reports_reset_instead_of_replaying() {
     let (mut d,s)=device();send(&mut d,23);
     assert!(d.send(Request::undefined_command(Tag::Sync(9001),7,9001).unwrap()).is_ok());
-    mmu_fault(&s,2);s.borrow_mut().release=1;
-    let Reap::Done(done)=d.reap() else {panic!("earlier clean receipt absent")};
-    assert_eq!((done.fence,done.answer),(Some(23),gpu_abi::gk208::SUCCESS));
-    assert!(matches!(d.reap(),Reap::Empty));
-    s.borrow_mut().release=2;
-    let Reap::Done(done)=d.reap() else {panic!("error receipt absent")};
-    assert_eq!((done.fence,done.answer),(Some(9001),0x60010000));
+    mmu_fault(&s,2);
+    assert!(matches!(d.reap(),Reap::Empty));recover(&mut d);
+    assert!(matches!(d.reap(),Reap::Done(done) if done.answer==0x60010000 && done.tag==Tag::Sync(9001)));
+    assert!(matches!(d.reap(),Reap::Reset(Tag::Sync(23))));
+    assert_eq!(d.outstanding(),0);
 }
 
 #[test]
-fn trap_arriving_during_health_or_sample_is_acknowledged_without_resetting_peers() {
+fn g19_trap_arriving_during_health_or_sample_recovers_outside_reap() {
     for during_sample in [false,true] {
         let (mut d,s)=device();
-        assert!(d.send(Request::undefined_command(Tag::Sync(9001),7,9001).unwrap()).is_ok());
-        send(&mut d,23);
-        s.borrow_mut().trap_at_sample=during_sample;
-        s.borrow_mut().trap_at_health=!during_sample;
+        assert!(d.send(Request::undefined_command(Tag::Sync(9001),7,9001).unwrap()).is_ok());send(&mut d,23);
+        s.borrow_mut().trap_at_sample=during_sample;s.borrow_mut().trap_at_health=!during_sample;
         assert!(matches!(d.reap(),Reap::Empty));
-        assert_eq!(s.borrow().writes,[(0x259c,1),(0x2100,0x10000000),(0x262c,1)]);
-        assert_eq!(d.outstanding(),2);assert!(!d.needs_reset());
-        s.borrow_mut().release=1;
-        let Reap::Done(done)=d.reap() else {panic!("racing trap did not retire")};
-        assert_eq!((done.fence,done.answer),(Some(9001),0x60010000));
-        assert_eq!(d.outstanding(),1);assert!(s.borrow().events.is_empty());
+        assert!(s.borrow().writes.is_empty(),"CORE reaping must not reset or wait on hardware");
+        assert_eq!(d.outstanding(),2);assert!(!d.needs_reset());recover(&mut d);
+        assert!(matches!(d.reap(),Reap::Done(done) if done.tag==Tag::Sync(9001) && done.answer==0x60010000));
+        assert!(matches!(d.reap(),Reap::Reset(Tag::Sync(23))));
+        assert_eq!(s.borrow().release,0);
     }
 }
+
 #[test]
 fn missing_trap_or_failed_ack_never_returns_a_successful_error_control() {
     for missing_trap in [false,true] {
@@ -452,26 +451,26 @@ fn missing_trap_or_failed_ack_never_returns_a_successful_error_control() {
         assert!(d.send(Request::undefined_command(Tag::Sync(9001),7,9001).unwrap()).is_ok());
         if !missing_trap {mmu_fault(&s,1);s.borrow_mut().fail_ack=true;}
         s.borrow_mut().release=1;
-        assert!(matches!(d.reap(),Reap::Fault));assert_eq!(d.outstanding(),1);
+        if missing_trap {assert!(matches!(d.reap(),Reap::Fault));}
+        else {
+            assert!(matches!(d.reap(),Reap::Empty));d.begin_reset();assert!(!d.reset_done());
+            assert!(d.restart().1.is_err());assert!(matches!(d.reap(),Reap::Empty));
+        }
+        assert_eq!(d.outstanding(),1);
     }
 }
 
 #[test]
-fn later_mmu_fault_during_transfer_drain_keeps_both_requests_live() {
+fn g19_later_mmu_fault_during_transfer_drain_reports_uncertain_peer_reset() {
     for sample_number in [2,3] {
         let (mut d,s)=device();assert!(d.send(gk208::transfer_request(23)).is_ok());
         assert!(d.send(Request::undefined_command(Tag::Sync(9001),7,9001).unwrap()).is_ok());
         {let mut s=s.borrow_mut();s.release=3;s.drain=1;s.trap_after_samples=sample_number;s.delayed_trap_sequence=2;}
         assert!(matches!(d.reap(),Reap::Empty));assert_eq!(d.outstanding(),2);
-        assert_eq!(s.borrow().writes,[(0x259c,1),(0x2100,0x10000000),(0x262c,1)]);
-        assert!(!d.needs_reset());
-        s.borrow_mut().release=1;
-        let Reap::Done(done)=d.reap() else {panic!("transfer did not survive the later trap")};
-        assert_eq!((done.fence,done.answer),(Some(23),gpu_abi::gk208::SUCCESS));
-        assert!(matches!(d.reap(),Reap::Empty));s.borrow_mut().release=2;
-        let Reap::Done(done)=d.reap() else {panic!("error control did not retire")};
-        assert_eq!((done.fence,done.answer),(Some(9001),0x60010000));
-        assert!(s.borrow().events.is_empty());
+        assert!(s.borrow().writes.is_empty());assert!(!d.needs_reset());recover(&mut d);
+        assert!(matches!(d.reap(),Reap::Done(done) if done.tag==Tag::Sync(9001) && done.answer==0x60010000));
+        assert!(matches!(d.reap(),Reap::Reset(Tag::Sync(23))));
+        assert_eq!(d.outstanding(),0);
     }
 }
 
@@ -488,13 +487,25 @@ fn mmu_control_pages_survive_hardware_alignment_and_sequence_wrap() {
         mmu_fault(&s,sequence);
         assert!(matches!(d.reap(),Reap::Empty));
         assert_eq!(d.outstanding(),1);
-        s.borrow_mut().release=sequence;
+        recover(&mut d);
         let Reap::Done(done)=d.reap() else {panic!("page-aligned fault lost its pending identity")};
-        assert_eq!((done.native_fence,done.answer),(Some(u64::from(sequence)),0x60010000));
+        assert_eq!((done.tag,done.answer),(Tag::Sync(9001),0x60010000));
+        assert!(!done.fenced);assert_eq!(done.native_fence,None);
     }
     for sequence in [32766,32767,32768] {
         let pages: std::collections::BTreeSet<_> = (sequence..sequence+4)
             .map(|s|gk208::gr::error::address(s).unwrap()).collect();
         assert_eq!(pages.len(),4,"four native requests must have distinct tokens");
     }
+}
+
+#[test]
+fn g19_refusal_keeps_all_four_transient_pgraph_words() {
+    let (_,s)=device();let mut s=s.borrow_mut();
+    s.transient_trap=true;
+    s.registers.extend([(0x400100,1),(0x400108,2),(0x400110,3),(0x400118,4)]);
+    assert!(gk208::gr::error::capture(&mut *s).is_err());
+    assert_eq!(s.refusals,[[1,2,3,4]]);
+    assert_eq!(gk208::gr::error::capture(&mut *s),Ok(None));
+    assert_eq!(s.refusals,[[1,2,3,4]]);
 }

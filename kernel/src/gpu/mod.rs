@@ -1254,6 +1254,19 @@ impl Core {
                     self.fault();
                     break;
                 }
+                #[cfg(target_arch = "x86_64")]
+                Reap::Reset(tag) => {
+                    any = true;
+                    self.last_progress = now_ns();
+                    if let Tag::Sync(serial) = tag {
+                        if let Some((id, _)) = self.syncs.get(&serial).and_then(|s| s.upload) {
+                            if let Some(r) = self.resources.get_mut(&id) {
+                                completion::finish_write(&mut r.invalid, &mut r.invalidated_by, serial, false, false);
+                            }
+                        }
+                    }
+                    self.ended_tag(tag);
+                }
                 Reap::Done(d) => {
                     any = true;
                     self.last_progress = now_ns();
@@ -1291,6 +1304,19 @@ impl Core {
 
     /// The device returned a request.
     fn returned(&mut self, d: Done) {
+        #[cfg(target_arch = "x86_64")]
+        let killed = if dev::backend() == abi::backend::GK208 && d.answer & !15 == 0x60010000 {
+            let ctx = match d.tag {
+                Tag::Submit { ctx, .. } => Some(ctx),
+                Tag::Sync(serial) => self.syncs.get(&serial).map(|s| s.ctx),
+                Tag::Background => None,
+            };
+            if let Some(ctx) = ctx.and_then(|id| self.contexts.get_mut(&id)) {
+                ctx.state = CtxState::Quarantined;
+                ctx.depth = None;
+            }
+            ctx
+        } else { None };
         let warm = matches!(d.tag, Tag::Sync(serial) if self.syncs.get(&serial).is_some_and(|s| s.warm.is_some()));
         if !warm {
             self.traffic_ns = now_ns();
@@ -1304,23 +1330,50 @@ impl Core {
                 }
             }
         }
+        #[cfg(target_arch = "x86_64")]
+        if let Some(id) = killed {
+            // The faulted context never resumes, including work queued in
+            // CORE before its MMU error arrived. Peers retain their objects.
+            let mut queued = core::mem::take(&mut self.backlog);
+            while let Some((epoch, req)) = queued.pop_front() {
+                let owner = match req.tag() {
+                    Tag::Submit { ctx, .. } => Some(ctx),
+                    Tag::Sync(serial) => self.syncs.get(&serial).map(|s| s.ctx),
+                    Tag::Background => None,
+                };
+                if owner == Some(id) { self.ended(req); }
+                else { self.backlog.push_back((epoch, req)); }
+            }
+            self.settle(id);
+        }
     }
 
     /// A request the device will never answer: never sent before a confirmed reset, or
     /// held by the device across one.
     fn ended(&mut self, req: Request) {
-        match req.tag() {
+        self.ended_tag(req.tag());
+        drop(req);
+    }
+    fn ended_tag(&mut self, tag: Tag) {
+        match tag {
             Tag::Sync(serial) => self.sync_ended(serial, None),
             Tag::Submit { serial, .. } => {
                 if let Some(s) = self.subs.get_mut(&serial) {
                     s.requests = s.requests.saturating_sub(1);
                 }
-                self.publish(serial, fence_status::DEVICE_RESET, 0);
+                // G19's producing MMU error wins over the reset outcome of
+                // other chunks in that same submission.
+                #[cfg(target_arch = "x86_64")]
+                let mmu = self.subs.get(&serial).and_then(|s| s.error)
+                    .filter(|answer| dev::backend() == abi::backend::GK208 && answer & !15 == 0x60010000);
+                #[cfg(not(target_arch = "x86_64"))]
+                let mmu: Option<u32> = None;
+                let (status, answer) = mmu.map_or((fence_status::DEVICE_RESET, 0), |answer| (fence_status::DEVICE_ERROR, answer));
+                self.publish(serial, status, answer);
                 self.retire_if_done(serial);
             }
             Tag::Background => {}
         }
-        drop(req);
     }
 
     /// Synchronous request `serial` is over: with the device's answer, or without one
@@ -2426,6 +2479,8 @@ fn reaper() {
             reset_device(tid);
             continue;
         }
+        #[cfg(target_arch = "x86_64")]
+        if recover_native_fault() { continue; }
         if busy && now >= next_sweep {
             sweep();
             next_sweep = now + 1_000_000_000;
@@ -2486,6 +2541,34 @@ fn reset_device(tid: u64) {
     } else {
         with_core(move |c| c.reset_failed(dev));
     }
+}
+
+/// An attributed native MMU fault is an adapter recovery, not a core reset.
+/// No core epoch advance, resource loss, display reset or peer-context death.
+#[cfg(target_arch = "x86_64")]
+fn recover_native_fault() -> bool {
+    let Some(mut dev) = with_core(|c| {
+        if c.dev.as_ref().is_some_and(|d| matches!(d, Device::Gk208(d) if d.recovery_pending())) {
+            c.resetting = true;
+            c.dev.take()
+        } else { None }
+    }).flatten() else { return false; };
+    let Device::Gk208(native) = &mut dev else { unreachable!() };
+    let result = native.recover_fault();
+    with_core(move |c| match result {
+        Ok(()) => {
+            c.dev = Some(dev);
+            c.resetting = false;
+            c.last_progress = now_ns();
+            c.reap_all();
+            notify();
+        }
+        Err(error) => {
+            c.reset_failed(dev);
+            c.reason = error;
+        }
+    });
+    true
 }
 
 /// On `kgpu`: send the next step of the fixed rendering catalogue's warm-up (ruling 33,

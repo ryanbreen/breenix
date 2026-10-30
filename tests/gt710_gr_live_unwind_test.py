@@ -40,6 +40,7 @@ class LiveUnwind(unittest.TestCase):
             let context = Context;
             let commands = Allocation::at(0x100000);
             let image = Allocation::at(0x200000);
+            let pristine = vec![0;256];
             let pages = ManuallyDrop::new(system_dma::Pages);
             let (pbdma, bar_inst, bar_dir, pte, displacement) = (0, 0, 0, 0x900000, 0);
             let top = [0; 64]; let (engine, runlist, enabled, instance) = (0, 1, h.regs.read(0x204), 0x300000 + u64::from(id) * 4096);
@@ -49,6 +50,7 @@ class LiveUnwind(unittest.TestCase):
         issue = item(methods, '        fn issue_words(')
         methods = methods.replace(issue, issue[:issue.index('{') + 1] + '''
             let _ = (h, poison, budget, stop_on_trap, self.bar, USERD, self.next_sequence);
+            assert_eq!(self.pristine.len(),256);
             let epoch = if sequence < 5 {u64::from(command[0]) | (u64::from(command[1])<<32)} else {self.report.identity.epoch};
             assert!(self.bound && !self.quiesced, "submission on a stopped graphics channel");
             step(&format!("issue-{sequence}"))?;
@@ -79,7 +81,8 @@ class LiveUnwind(unittest.TestCase):
         probe_finish = probe[probe.index('    // This also runs'):probe.rindex('}')]
         # Pre-live helpers are separate from the live operations under test.
         harness = (ROOT / 'tests/fixtures/gt710_gr_live_unwind.rs').read_text()
-        for key, value in [('SESSION', nonce + '\n' + session + '\n' + methods), ('FLOW', flow),
+        checked = 'fn checked_traps(_: &mut Registers, words:[u32;4])->Result<(), &\'static str>{binding::check_traps(words)}'
+        for key, value in [('SESSION', checked + '\n' + nonce + '\n' + session + '\n' + methods), ('FLOW', flow),
                            ('FINISH', finish), ('PROBE_FINISH', probe_finish),
                            ('CLEANUP', gr[gr.index('struct ProbeCleanup'):gr.index('/// Capture startup')])]:
             harness = harness.replace('// ' + key, value)

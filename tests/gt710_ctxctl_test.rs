@@ -297,7 +297,12 @@ fn ctxctl_bad_size_caps_and_busy_engine_are_errors() {
 #[test]
 fn ctxctl_power_on_exits_pgob_before_topology_without_resetting_fifo_or_ce() {
     let mut m = Mock::new();
+    m.regs.insert(0x400500, 3);
     ctxctl::reset(&mut m).unwrap();
+    assert_eq!(m.regs[&0x400500], 2);
+    let stop = m.events.iter().position(|e| *e == Event::Write(0x400500, 2)).unwrap();
+    let pulse = m.events.iter().position(|e| matches!(e, Event::Write(0x200, _))).unwrap();
+    assert!(stop < pulse, "GR FIFO access must stop before PMC reset (G19)");
     let sequence: Vec<_> = m.events.iter().filter_map(|event| match event {
         Event::Write(a @ (0x20520 | 0x20524 | 0x20528 | 0x2052c | 0x20530), v) => Some((*a, *v)),
         _ => None,

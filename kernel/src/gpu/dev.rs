@@ -96,6 +96,9 @@ pub enum Reap {
     Empty,
     Done(Done),
     Fault,
+    /// A native engine reset ended this request without losing peer objects.
+    #[cfg(target_arch = "x86_64")]
+    Reset(Tag),
 }
 
 impl Request {

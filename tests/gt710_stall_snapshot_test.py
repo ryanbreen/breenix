@@ -11,6 +11,30 @@ from gt710_gr_live_unwind_test import item
 
 
 class StallSnapshot(unittest.TestCase):
+    def test_first_refusing_registers_survive_zero_reads_until_worker_takes_them(self):
+        source = (ROOT / 'kernel/src/gpu/gk208/gr/channel.rs').read_text()
+        capture = source[source.index('    const REFUSAL_REGISTERS:'):source.index('    /// Keep the words')]
+        harness = r'''
+struct Registers([u32;7]);
+impl Registers {fn read(&mut self,r:usize)->u32 {self.0[REFUSAL_REGISTERS.iter().position(|&v|v==r).unwrap()]}}
+// CAPTURE
+fn main(){
+ let mut regs=Registers([10,11,12,13,14,15,16]);
+ save_refusal(&mut regs,[1,2,3,4]);
+ regs.0=[0;7];save_refusal(&mut regs,[0;4]);
+ assert_eq!(take_refusal(),Some(([1,2,3,4],[10,11,12,13,14,15,16])));
+ assert_eq!(take_refusal(),None);
+ regs.0=[20;7];save_refusal(&mut regs,[5,6,7,8]);
+ assert_eq!(take_refusal(),Some(([5,6,7,8],[20;7])));
+}
+'''.replace('// CAPTURE', capture)
+        priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / 'capture.rs').write_text(harness)
+            subprocess.run(priority + ['rustc', '--edition=2021', '-Dwarnings', str(path / 'capture.rs'), '-o', str(path / 'capture')], check=True)
+            subprocess.run([str(path / 'capture')], check=True)
+
     def test_two_engine_faults_and_forced_reset_capture_once_outside_core(self):
         adapter = (ROOT / 'kernel/src/gpu/gk208/adapter.rs').read_text()
         # Run the health-fault path, stopping before completion sampling, and
@@ -22,10 +46,12 @@ class StallSnapshot(unittest.TestCase):
                              item(adapter, '    fn retry_error_trap(')])
         methods = methods.replace('#[cfg(target_os = "none")]', '')
         harness = r'''
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, collections::VecDeque};
 macro_rules! serial_println {($($arg:tt)*)=>{let _=format_args!($($arg)*);};}
 pub(crate) use serial_println;
-enum Reap { Empty, Fault }
+pub struct Done {pub tag:u32,pub fence:Option<u64>,pub native_fence:Option<u64>,pub answer:u32,pub echoed:u64,pub fenced:bool}
+pub enum Reap { Empty, Fault, Done(Done), Reset(u32) }
+struct Request {tag:u32}
 #[derive(Default)]
 struct State { in_core:bool, records:Vec<(u64,u32,bool,String)>, resets:usize }
 struct Channel { state:Rc<RefCell<State>>, epoch:u64, put:u32, fault:bool }
@@ -38,6 +64,7 @@ impl Channel {
         let locked=s.in_core;
         s.records.push((self.epoch,self.put,locked,reason.into()));
     }
+    fn acknowledge_error(&mut self,_:(),_:u32)->Result<(), &'static str>{panic!("generic health test has no attributed MMU fault")}
     fn reset(&mut self)->Result<(), &'static str> {
         let mut s=self.state.borrow_mut();
         assert_eq!(s.records.last().map(|r|(r.0,r.1)),Some((self.epoch,self.put)),
@@ -52,7 +79,7 @@ struct Trace {
     target:u64,frame:u32,address:u64,command:u32,
 }
 struct Device {
-    channel:Channel,fault:bool,first_error:Option<&'static str>,
+    retired:VecDeque<(Request,Option<u32>)>,attributed:Option<((),u32)>,channel:Channel,fault:bool,first_error:Option<&'static str>,
     resetting:Option<Result<(), &'static str>>,recent:Vec<Trace>,pending:Vec<Sent>,
 }
 impl Device {
@@ -67,7 +94,7 @@ impl Device {
 fn main() {
     let state=Rc::new(RefCell::new(State::default()));
     for (epoch,put,fault) in [(17,23,true),(18,23,true),(19,24,false)] {
-        let mut d=Device { channel:Channel {state:state.clone(),epoch,put,fault},
+        let mut d=Device { retired:VecDeque::new(),attributed:None,channel:Channel {state:state.clone(),epoch,put,fault},
             fault:false,first_error:None,resetting:None,recent:vec![],pending:vec![] };
         state.borrow_mut().in_core=true;
         for _ in 0..2 {

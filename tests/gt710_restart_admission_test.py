@@ -33,7 +33,10 @@ pub mod gk208 {
  }
  pub mod adapter {
   pub struct Channel;
-  impl Channel {pub fn identity(&self)->(u64,u64){(0x123000,18)}}
+  impl Channel {
+   pub fn identity(&self)->(u64,u64){(0x123000,18)}
+   pub fn record_refusal(&self)->Result<(),&'static str>{Ok(())}
+  }
   pub struct Device {pub board:super::caps::BoardState,pub channel:Channel,pub fail_probe:bool}
   impl Device {
    fn admission(&self,masked:Option<u32>)->Result<(),(u32,u32)> {

@@ -1422,8 +1422,9 @@ The original copyright notices and complete MIT grants remain in error.rs
 and the native channel. The earlier rnndb notice remains in error.rs from
 this PR's superseded PGRAPH producer. Breenix owns sequence-bearing fault
 addresses, raw-record retention, MMU ABI tags, matching and lifetime rules.
-Hardware acceptance must observe the fault and subsequent ordered receipt;
-the host model cannot certify device execution or resumed scheduling.
+G19 supersedes acknowledgement-and-resume: hardware acceptance must observe
+the fault, confirmed GR cessation and a fresh peer completion. The host model
+cannot certify device execution or recovery timing.
 
 ### GT 710 complete rendering-catalogue warm-up (8.5-u3)
 
@@ -1449,3 +1450,22 @@ classes/3d/cla197.h at 9fdf5c4062007929d9f4e6cbad9c9771fe61b880
 (Copyright 2020 NVIDIA Corporation, MIT) defines its vertex-array commands;
 the original copyright and full grant remain in the encoder header.
 No additional external implementation or generated asset is incorporated.
+
+### GT 710 attributed MMU recovery (8.5, G19)
+
+Consumers: kernel/src/gpu/gk208/gr/{error,channel,ctxctl}.rs; the native
+adapter and shared core retain Breenix ownership and reset-epoch policy.
+Checked file headers in nouveau at Linux v6.8 / e8f897f4afef0031fe618a8e94127a0934896aba:
+- nvkm/engine/fifo/runl.c: MIT, Copyright 2021 Red Hat Inc.; lines 58-141,
+  block, channel removal, attached-engine reset, runlist commit and unblock.
+- nvkm/engine/fifo/gk104.c: MIT, Copyright 2012 Red Hat Inc.; lines 39-45
+  and 404-447, channel disable and runlist register operations.
+- nvkm/engine/fifo/gk110.c: MIT, Copyright 2016 Red Hat Inc.; lines 80-91,
+  GK208's runlist operations (no runlist-wide preempt).
+- nvkm/engine/fifo/gf100.c: MIT, Copyright 2012 Red Hat Inc.; lines 696-731,
+  fault capture and acknowledgement.
+- nvkm/engine/gr/gf100.c: MIT, Copyright 2012 Red Hat Inc.; lines 331-338
+  and 2322-2338, pristine context/header and FIFO disable before reset.
+The full MIT grants and original notices are retained in the adapted files.
+G19 adds the pre-reset channel preempt confirmation and retains all backing
+when it refuses. No external source is added to the shared GPU policy layer.

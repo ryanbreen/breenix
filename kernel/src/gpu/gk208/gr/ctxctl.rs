@@ -363,6 +363,11 @@ impl SavedState {
 /// Reset PGRAPH and leave its power-gated units accessible before discovery.
 /// PFIFO/CE and display enables are outside the masks used here.
 pub fn reset(io: &mut impl Access) -> Result<(), Fault> {
+    // MIT nouveau gr/gf100.c:2328: stop GR FIFO access before the PMC pulse.
+    mask(io, 0x400500, 1, 0);
+    if io.read(0x400500) & 1 != 0 {
+        return Err(fault("GR FIFO disable refused", 0x400500, io.read(0x400500)));
+    }
     let temporary = io.read(0x200) & 0x08000000;
     mask(io, 0x200, 0x1000, 0);
     if io.read(0x200) & 0x1000 != 0 {

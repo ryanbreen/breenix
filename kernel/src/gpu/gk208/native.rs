@@ -1135,6 +1135,7 @@ impl CoreProducer {
                         return Ok(());
                     }
                     Reap::Fault => return Err("core adapter engine fault"),
+                    Reap::Reset(_) => return Err("core adapter request ended by engine reset"),
                     Reap::Empty => (),
                 }
                 let Device::Gk208(d) = &mut *device else { unreachable!() };

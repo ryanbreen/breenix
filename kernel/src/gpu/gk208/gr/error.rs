@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 Red Hat Inc.
+ * Copyright 2012, 2021 Red Hat Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -136,6 +136,7 @@ pub fn commands(target: u64, epoch: u64, sequence: u32) -> Result<Vec<u32>, &'st
 pub trait Io {
     fn read(&mut self, address: usize) -> u32;
     fn write(&mut self, address: usize, value: u32);
+    fn refuse_trap(&mut self, words: [u32; 4]) -> Result<(), &'static str>;
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Trap {
@@ -147,7 +148,9 @@ pub struct Trap {
 /// Read before W1C. Foreign engines, PGRAPH exceptions, unexpected addresses
 /// and non-PDE/PTE faults retain the confirmed-reset path.
 pub fn capture(io: &mut impl Io) -> Result<Option<Trap>, &'static str> {
-    if [0x400100, 0x400108, 0x400110, 0x400118].into_iter().any(|r| io.read(r) != 0) {
+    let words = [0x400100, 0x400108, 0x400110, 0x400118].map(|r| io.read(r));
+    if words != [0; 4] {
+        io.refuse_trap(words)?;
         return Err("unhandled PGRAPH fault; backing retained");
     }
     let mask = io.read(0x259c);
@@ -165,16 +168,19 @@ pub fn capture(io: &mut impl Io) -> Result<Option<Trap>, &'static str> {
     Ok(Some(Trap { instance: u64::from(raw[0]) << 12,
         page, status: 0x60010000 | reason, raw }))
 }
-/// The adapter first matches instance, sequence and epoch and retains raw
-/// evidence. Resume scheduling without certifying a completion: only the later
-/// ordered receipt and FIFO consumption can retire this request. Failure to
-/// progress still reaches the existing watchdog and confirmed reset.
-pub fn acknowledge(io: &mut impl Io, trap: Trap) -> Result<(), &'static str> {
+/// G19: MIT nouveau v6.8 fifo/runl.c:58-141 and gk104.c:39-45,
+/// 404-419. Block before acknowledging; never resume a faulted GR channel.
+/// The caller must reset GR and commit the surviving runlist before clearing
+/// the scheduler exception and unblocking. This alone releases no backing.
+pub fn acknowledge(io: &mut impl Io, trap: Trap, channel: u32, runlist: u32) -> Result<(), &'static str> {
+    if channel >= 1024 || runlist >= 32 { return Err("MMU recovery channel/runlist extent"); }
     if capture(io)? != Some(trap) { return Err("MMU fault changed; backing retained"); }
+    let blocked = io.read(0x2630) | (1 << runlist);
+    io.write(0x2630, blocked);
     io.write(0x259c, 1);
-    io.write(0x2100, 0x10000000);
-    let disabled = io.read(0x262c);
-    io.write(0x262c, disabled);
+    let address = 0x800004 + channel as usize * 8;
+    let disabled = io.read(address) | 0x800;
+    io.write(address, disabled);
     if io.read(0x259c) != 0 { return Err("MMU acknowledgement failed; backing retained"); }
     Ok(())
 }

@@ -47,7 +47,7 @@ pub mod gpu {
         #[derive(Clone, Copy)] pub enum Tag { Sync(u64) }
         pub struct Done {pub tag:Tag,pub fence:Option<u64>,pub native_fence:Option<u64>,pub answer:u32,pub echoed:u64,pub fenced:bool}
         impl Done {pub fn matches_fence(&self,f:u64)->bool {crate::gpu_completion::matches_echo(self.fence,self.native_fence,self.echoed,self.fenced,f)}}
-        pub enum Reap {Empty,Done(Done),Fault}
+        pub enum Reap {Empty,Done(Done),Fault,Reset(Tag)}
         pub enum Request {Gk208(crate::gk208::adapter::Request),Other}
         pub enum Device {Gk208(crate::gk208::adapter::Device),Other}
         impl Device {
@@ -76,7 +76,7 @@ pub mod gk208 {
             impl NativeChannel {
                 pub fn identity(&self)->(u64,u64){(0x123000,17)}
                 pub fn error_trap(&self)->Result<Option<super::error::Trap>, &'static str>{Ok(None)}
-                pub fn acknowledge_error(&mut self,_:super::error::Trap)->Result<(), &'static str>{panic!("producer does not inject PGRAPH traps")}
+                pub fn acknowledge_error(&mut self,_:super::error::Trap,_:u32)->Result<(), &'static str>{panic!("producer does not inject PGRAPH traps")}
                 pub fn healthy(&self)->Result<(), &'static str>{Ok(())}
                 pub fn published(&self,sequence:u32)->bool{self.sample.consumed==sequence}
                 pub fn publish(&mut self,sequence:u32,_:&Operation)->Result<(),&'static str>{self.published+=1;self.final_sample=None;self.polls=0;self.sample=CeSample{context:0x123000,epoch:17,sequence,consumed:sequence,healthy:true};self.drain=0;Ok(())}
