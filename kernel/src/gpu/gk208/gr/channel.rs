@@ -1589,6 +1589,20 @@ mod native {
                 .map(|r| (r, regs.read(r)));
             crate::serial_println!("GT710_NATIVE_FAULT reason={} instance={:#x} epoch={} put={} registers={:?}",
                 reason,c.instance,c.epoch,self.put,registers);
+            match super::super::stall::capture(&self.topology, self.session.pbdma as u32,
+                |address| regs.read(address as usize)) {
+                Ok(snapshot) => {
+                    let text = format!("GT710_STALL_V1 instance={} epoch={} put={} registers={:?}",
+                        c.instance,c.epoch,self.put,snapshot);
+                    let digest = crate::gk208::hash(text.as_bytes());
+                    let bytes = text.len();
+                    match crate::gk208::bulk::line(text) {
+                        Ok(()) => crate::serial_println!("GT710_STALL_BULK epoch={} put={} bytes={} sha256={}",c.epoch,self.put,bytes,digest),
+                        Err(error) => crate::serial_println!("GT710_STALL_REFUSAL {}",error),
+                    }
+                }
+                Err(error) => crate::serial_println!("GT710_STALL_REFUSAL {}",error),
+            }
             let (mask, faults) = crate::gk208::vm::faults(&mut VmIo {regs:&mut regs,total:self.total});
             for f in faults {
                 crate::serial_println!("GT710_NATIVE_MMU mask={:#x} unit={} instance={:#x} address={:#x} reason={} raw={:?}",

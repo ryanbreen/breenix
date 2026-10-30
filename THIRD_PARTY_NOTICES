@@ -1384,3 +1384,17 @@ The crossing-table packing, constants and snapshot bounds follow Breenix's
 shared VirGL encoder under PolyForm Noncommercial 1.0.0. The upload in
 kernel/src/gpu/gk208/resource.rs reuses its existing attributed native Layout
 and VM/PRAMIN access; no additional external source or shader is imported.
+
+GT 710 read-only stall snapshots (milestone 8.4 diagnostic)
+---------------------------------------------------------
+Consumer: kernel/src/gpu/gk208/gr/stall.rs and its channel fault caller.
+Register facts come from envytools f102b82381f3f11cee113d16374c87091db039d9
+rnndb/graph/gf100_pgraph/{pgraph,gpc,tpc}.xml and rnndb/fifo/gf100_pfifo.xml.
+Their imported rnndb/copyright.xml MIT grant and author list were read
+before use and are retained in stall.rs. The collector reads status,
+warp masks and error registers for each topology-selected TPC plus live
+PBDMA state; it writes no debug selector. The bulk record is captured
+before reset and its SHA-256 anchor is printed separately.
+NVIDIA open-gpu-doc cla197.h at 9fdf5c4062007929d9f4e6cbad9c9771fe61b880
+(MIT, Copyright 2020 NVIDIA CORPORATION) was read to cross-check method
+0x1614 as END; no header code is adapted by this diagnostic.

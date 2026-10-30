@@ -110,6 +110,7 @@ pub mod firmware;
 pub mod shaders;
 pub mod tables;
 pub mod topology;
+pub mod stall;
 
 /// Verify committed inputs before touching Falcon memory.
 pub fn probe_static_inputs() -> Result<(), &'static str> {

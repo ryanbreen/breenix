@@ -2421,6 +2421,7 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns, pro
 def capture_serial(directory):
     # claim-lint:ok: normative bulk framing; tests/gt710_bulk_test.py and tests/gt710_contexts_report_test.py mutate anchors and bodies.
     serial=(Path(directory)/'serial.txt').read_text()
+    stalls = bool(re.search(r'^GT710_STALL_BULK ', serial, re.M))
     matches=list(re.finditer(r'^GT710_BULK (\d+) ([a-f0-9]{64})$',serial,re.M))
     finals=list(re.finditer(r'^GT710_FINAL_BULK (\d+) ([a-f0-9]{64})$',serial,re.M))
     final_path=Path(directory)/'gt710-final.rle'
@@ -2469,6 +2470,10 @@ def capture_serial(directory):
         raise ValueError('graphics image bulk missing')
     if graphics and re.search(r'^GT710_GR_IMAGE ', serial, re.M):
         raise ValueError('graphics image rows must arrive in bulk')
+    if stalls and not matches:
+        raise ValueError('stall evidence bulk missing')
+    if re.search(r'^GT710_STALL_V1 ', serial, re.M):
+        raise ValueError('stall records must arrive in bulk')
     if not matches: return serial
     if len(matches)!=1: raise ValueError('duplicate display artifact digest')
     data=(Path(directory)/'gt710-pixels.rle').read_bytes()
@@ -2494,6 +2499,10 @@ def capture_serial(directory):
         elif fields[0]=='GT710_SHADER_IMAGE': key=('shaders',)
         elif fields[0]=='GT710_DRAW_IMAGE': key=('draw',)
         elif fields[0]=='GT710_CTX_IMAGE': key=('gr-contexts',)
+        elif fields[0]=='GT710_STALL_V1':
+            stall = re.fullmatch(r'GT710_STALL_V1 instance=(\d+) epoch=(\d+) put=(\d+) registers=\[.*\]\n?', line)
+            if stall is None: raise ValueError('invalid stall record')
+            key=('stall', int(stall[2]), int(stall[3]))
         elif line.startswith('{'):
             row = json.loads(line)
             if row.get('phase') not in ('caps-probe', 'caps-reprobe') or type(row.get('capability')) is not int:
@@ -2514,6 +2523,9 @@ def capture_serial(directory):
         if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
         groups.setdefault(key,[]).append(line);previous=key
     def report_key(line):
+        stall = re.fullmatch(r'GT710_STALL_BULK epoch=(\d+) put=(\d+) bytes=(\d+) sha256=([a-f0-9]{64})\n?', line)
+        if stall: return ('stall', int(stall[1]), int(stall[2]))
+        if line.startswith('GT710_STALL_BULK '): raise ValueError('invalid stall anchor')
         reprobe = re.fullmatch(r'GT710_CAPS_REPROBE id=(\d+) epoch=(\d+) sha256=([a-f0-9]{64})\n?', line)
         if reprobe: return ('caps-reprobe', int(reprobe[2]), int(reprobe[1]))
         probe = re.fullmatch(r'GT710_CAPS_PROBE id=(\d+) sha256=([a-f0-9]{64})\n?', line)
@@ -2545,6 +2557,11 @@ def capture_serial(directory):
             if not lower<=serial_offset<upper:
                 raise ValueError('artifact anchor outside its upload slot')
         serial_offset+=len(line)
+        if key is not None and key[0] == 'stall':
+            anchor = re.fullmatch(r'GT710_STALL_BULK epoch=(\d+) put=(\d+) bytes=(\d+) sha256=([a-f0-9]{64})\n?', line)
+            record = groups[key][0].removesuffix('\n').encode('ascii')
+            if len(groups[key]) != 1 or len(record) != int(anchor[3]) or hashlib.sha256(record).hexdigest() != anchor[4]:
+                raise ValueError('stall record differs from serial length/digest')
         if key is not None and key[0] in ('caps-probe', 'caps-reprobe'):
             digest = re.search(r'sha256=([a-f0-9]{64})', line)
             if (len(groups[key]) != 1 or digest is None
