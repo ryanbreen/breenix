@@ -30,8 +30,12 @@ CATALOGUE_83 = tuple(f'{name}.{extension}'
                                   'pipeline-coverage', 'pipeline-bitmap_text',
                                   *(f'probe-int-{n:02}' for n in (*range(12), 18, 19)))
                      for extension in ('bin', 'sph', 'json', 'asm'))
-CATALOGUE_84 = tuple(f'probe-int-{n:02}.{extension}'
-                     for n in (*range(12, 18), *range(20, 25))
+CATALOGUE_84 = tuple(f'{name}.{extension}'
+                     for name in ('pipeline-coverage_spans', 'pipeline-line',
+                                  'pipeline-circle_fill', 'pipeline-circle_outline',
+                                  'pipeline-rounded_rect', 'pipeline-gradient_v',
+                                  'pipeline-triangle',
+                                  *(f'probe-int-{n:02}' for n in (*range(12, 18), *range(20, 25))))
                      for extension in ('bin', 'sph', 'json', 'asm'))
 RECIPE = 'cargo run -p xtask -- kepler-assets'
 
