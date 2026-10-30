@@ -205,3 +205,15 @@ fn readback_denied(tgid:u64,a:&abi::Readback,observer:Observer)->Result<(),Refus
  assert!(!events().iter().any(|&(name,_)|name=="legacy-restore"));
  assert!(events().iter().filter(|&&(name,_)|name=="upload").count()>=3);
 }
+
+#[test] fn changed_owner_mode_does_not_change_the_saved_frame_extent(){
+ reset();with_core(|c|{
+  c.display.stack.truncate(1);c.display.stack[0].mode=0;
+  c.display.stack[0].last=Some(display::Binding{id:11,fence:7,answer:0x60000000});
+  c.display.binding=Some(display::Binding{id:22,fence:8,answer:0x60000000});c.display.known=true;
+ });
+ display::restore().unwrap();
+ assert!(events().contains(&("mode",1)),"restore used the owner's later mode rather than the retained high frame");
+ assert_eq!(with_core(|c|c.display.stack[0].mode),Some(0));
+ assert_eq!(with_core(|c|c.display.binding.unwrap().id),Some(11));
+}
