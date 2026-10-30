@@ -287,7 +287,9 @@ impl Reader {
             .range
             .start;
         let (bar_inst, bar_dir) = (native + 0x2000, native + 0x3000);
-        let pte = native + 0x4000 + (SLOT / 4096) * 8;
+        let table = layout.objects.iter().find(|o| o.name == "bar1-table")
+            .map_or(native + 0x4000, |o| o.range.start);
+        let pte = table + (SLOT / 4096) * 8;
         if read(regs, total, pte)? != 0 || read(regs, total, pte + 4)? != 0 {
             return Err("context readback USERD BAR alias occupied");
         }
@@ -297,7 +299,12 @@ impl Reader {
             device.bars[1].size,
             17,
         )?;
-        let bar = console.pointer - displacement;
+        let console_offset = if (console.width, console.height) == (2560, 1600) {
+            16 << 20
+        } else {
+            displacement
+        };
+        let bar = console.pointer - console_offset;
         let old = [
             regs.read(0x2254),
             regs.read(0x2140),
