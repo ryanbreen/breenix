@@ -488,8 +488,15 @@ pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
             Ok(())
         }
         fn submit(&mut self, methods:&[(u32,u32)]) -> Result<(), &'static str> {
-            let mut words=methods[..methods.len()-2].to_vec();
-            words.extend(self.view.methods(self.evo.head)?);
+            // Keep fresh UPDATE/notifier completion for PRESENT, without
+            // dirtying already latched head state and pacing copies to vblank.
+            let head=&methods[..methods.len()-2];
+            let same=head.iter().all(|&(m,v)| self.regs.read(0x640000+m as usize)==v
+                && self.regs.read(0x660000+m as usize)==v);
+            let mut words=if same { Vec::new() } else { head.to_vec() };
+            if self.view.verify(self.regs,self.evo.head).is_err() {
+                words.extend(self.view.methods(self.evo.head)?);
+            }
             words.extend_from_slice(&methods[methods.len()-2..]);
             let methods=words.as_slice();
             // NV927D_DMA_OPCODE_JUMP, offset 0. Prior GET was drained above;
