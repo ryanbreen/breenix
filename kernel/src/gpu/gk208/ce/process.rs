@@ -285,3 +285,11 @@ pub(in crate::gk208) fn mode_extent()->Option<(u32,u32)> {
     let owner=SESSION.lock();
     Some(if owner.as_ref()?.mode==0 {(1280,800)} else {(2560,1600)})
 }
+
+/// Prepare a disjoint terminal command packet while the display owner is live.
+pub(in crate::gk208) fn terminal_display(surface: super::super::present::Surface)
+    -> Result<super::super::emergency::Display, &'static str> {
+    let owner = SESSION.lock();
+    let s = owner.as_ref().ok_or("terminal display owner absent")?;
+    s.evo.terminal_display(s.registers, surface)
+}

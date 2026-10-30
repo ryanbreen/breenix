@@ -1566,3 +1566,18 @@ mechanism already attributed in the target scanout section above: NVIDIA open-gp
 v6.8 `e8f897f4afef0031fe618a8e94127a0934896aba`.
 The full original notices are retained in the adapter and surface encoder.
 The ownership routing and console policy use Breenix's shared implementation.
+
+Prepared GT 710 terminal diagnostics (milestone 8 PR 8.6)
+------------------------------------------------------
+The terminal transport in kernel/src/gpu/gk208/emergency.rs uses the same
+native channel, PRAMIN and display mechanisms as the existing GK208 backend.
+NVIDIA open-gpu-doc revision 9fdf5c4062007929d9f4e6cbad9c9771fe61b880:
+classes/host/cla06f.h (MIT, Copyright (c) 2020 NVIDIA CORPORATION),
+classes/3d/cla197.h (MIT, Copyright (c) 2020 NVIDIA CORPORATION),
+classes/dma-copy/cla0b5.h (MIT, Copyright (c) 2019 NVIDIA CORPORATION), and
+classes/display/cl927d.h (MIT, Copyright (c) 1993-2022 NVIDIA CORPORATION &
+AFFILIATES) define USERD/GPFIFO, ordered engine releases and EVO methods.
+Their original notices and permission texts are retained in emergency.rs.
+The existing notices for gr/channel.rs, native.rs and ce/readback.rs continue
+to cover their preparation helpers and the reused normal encoders. No new
+firmware or shader asset is introduced by this path.

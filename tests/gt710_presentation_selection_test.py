@@ -26,7 +26,7 @@ class PresentationSelection(unittest.TestCase):
         API['validate_manifest'](manifest)
         category = next(c for c in manifest['categories'] if c['id'] == 'presentation')
         self.assertTrue(category['hostRunner'])
-        self.assertEqual([c['id'] for c in category['cases']], ['suite'])
+        self.assertEqual([c['id'] for c in category['cases']], ['panic', 'suite'])
         self.assertEqual(API['STEP_SELECTIONS']['presentation'], 'gt710-step-8-6.json')
 
     def test_missing_or_failed_selected_case_rejected(self):

@@ -189,6 +189,8 @@ pub fn trace_irq_exit(vector: u8) {
 #[inline(always)]
 #[allow(dead_code)]
 pub fn trace_timer_tick(tick_count: u64) {
+    #[cfg(target_arch = "x86_64")]
+    crate::gpu::panic::stop_if_terminal();
     // Unconditionally increment the counter (single atomic add, ~3 cycles)
     TIMER_TICK_TOTAL.increment();
 
@@ -218,8 +220,8 @@ pub fn trace_timer_tick(tick_count: u64) {
     unfiltered_ring_span_self_check::observe(tick_count);
 
     // The BXCAP `edge=PANIC` oracle (failure-capture PR-4). Behind
-    // `capture_panic_oracle`, which no gate builds with, so a gated or
-    // shipped kernel does not compile this line at all.
+    // `capture_panic_oracle`, selected only by explicit diagnostic builds;
+    // a production kernel does not compile this line.
     #[cfg(feature = "capture_panic_oracle")]
     crate::capture_oracle::observe(tick_count);
 }

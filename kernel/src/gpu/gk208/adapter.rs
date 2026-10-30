@@ -160,6 +160,11 @@ impl Device {
     }
     /// Recheck snapshot identity against the channel when querying CAPS. Restart's
     /// new epoch cannot silently inherit old object-creation evidence.
+    #[cfg(target_os = "none")]
+    pub(crate) fn terminal_queue(&self) -> Result<super::emergency::Queue, &'static str> {
+        if self.needs_reset() { return Err("terminal channel needs reset"); }
+        self.channel.terminal_queue()
+    }
     pub fn caps(&self) -> gpu_abi::Caps {
         super::caps::Profile::from_board(&self.board, self.channel.identity()).record(None)
     }

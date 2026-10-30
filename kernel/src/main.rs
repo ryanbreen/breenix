@@ -2963,6 +2963,8 @@ use core::panic::PanicInfo;
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     kernel::output_accounting::panicking();
+    let mut recent = [0u8; 4096];
+    let recent_len = kernel::log_buffer::copy_tail(&mut recent);
     // Try to output panic info if possible
     serial_println!("KERNEL PANIC: {}", info.message());
     log::error!("KERNEL PANIC: {}", info.message());
@@ -2990,6 +2992,10 @@ fn panic(info: &PanicInfo) -> ! {
         None => (0, 0),
     };
     kernel::capture::emit(kernel::capture::Edge::Panic, panic_line, panic_column);
+    if kernel::gpu::console::active() {
+        kernel::gpu::panic::show_panic(info, &recent[..recent_len]);
+        kernel::gpu::panic::park();
+    }
 
     // In testing/CI builds, request QEMU to exit with failure for deterministic CI signal
     #[cfg(feature = "testing")]

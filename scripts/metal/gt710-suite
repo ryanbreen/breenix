@@ -109,7 +109,7 @@ CATEGORIES = {
     'resources': [('row', 'Production CAPS admits backend 6 with executable origins 3-10, native classes and live scanouts'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 8.2 step passing, reclaimed memory and its own time within 900 s'), ('console', 'A completed production console boot passes 88/88 within 330 s of handoff')],
     'alpha': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 77-case 8.3 step passing, reclaimed memory and its own time within 900 s')],
     'shapes': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 90-case 8.4 step passing, reclaimed memory and its own time within 900 s')],
-    'presentation': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 161-case 8.6 selection passing, reclaimed memory and its own time within 900 s')],
+    'presentation': [('panic', 'A separate terminal PANIC capture proves bound diagnostics under both poisons with firmware_writes=0 and no LOCKUP'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 161-case 8.6 selection passing, reclaimed memory and its own time within 900 s')],
     'isolation': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 140-case 8.5 selection passing, reclaimed memory and its own time within 900 s')],
     'core': [('row', 'CAPS bytes match the native backend-6 row and the created board classes'), ('dispatch', 'Native draws and copies complete; copy controls reject withheld release, stale epoch and masked 3D admission and accept their clean successors'), ('producer', 'A named production GPU-suite boot reports 170 manifest-ordered unprobed-capability admission refusals without skips and reports its own time')],
     'device': (
@@ -2157,9 +2157,33 @@ def resources_capture(directory, sha):
     return dict(console=console, gpu=gpu)
 
 
+def read_panic_capture(directory, sha):
+    path = Path(directory)
+    read = lambda name: (path / name).read_text()
+    boot = json.loads(read('run.json'))
+    events = [json.loads(l) for l in read('events.jsonl').splitlines()]
+    if (not re.fullmatch(r'\d{8}T\d{6}Z-metal', boot.get('id', ''))
+            or boot.get('kind') != 'boot' or boot.get('platform') != 'metal' or boot.get('arch') != 'x86_64'
+            or boot.get('commit') != sha or boot.get('toolsCommit') != sha
+            or boot.get('build', {}).get('commit') != sha or boot.get('inject')
+            or boot.get('evidenceEligible') is not True or not read('ended').strip()
+            or read('dirty').strip() != '0' or read('commit').strip() != sha
+            or read('exit-status').strip() != '1'
+            or any(e.get('event') == 'console-gap' for e in events)
+            or not any(e.get('event') == 'power-off' and e.get('off') is True for e in events)
+            or not events or events[-1].get('event') != 'closed'
+            or events[-1].get('status') != 1 or events[-1].get('endedBy') != 'driver'):
+        raise ValueError('panic companion requires a complete, clean, ungapped driver-stopped fatal capture of this build/tools')
+    serial = read('serial.txt')
+    panic_capture(serial, boot)
+    return dict(boot=boot, serial=serial, events=events, exit_status=1)
+
+
 def record_resources_capture(directory, sha, category='resources'):
     directory = Path(directory)
     producer = resources_capture(directory, sha)
+    if category == 'presentation':
+        producer['panic'] = read_panic_capture(directory / 'panic-producer', sha)
     gpu = producer['gpu']
     selection = STEP_SELECTIONS[category]
     results = cases(category, producer['console']['serial'], producer)
@@ -2184,7 +2208,23 @@ def record_resources_capture(directory, sha, category='resources'):
     return 0 if all(c['result'] == 'PASS' for c in results) else 1
 
 
+def panic_capture(serial, boot):
+    if (boot.get('gt710Category') != 'panic' or boot.get('mode') != 'probe'
+            or boot.get('suite') or boot.get('build', {}).get('profile') != 'gpu-panic'
+            or boot.get('build', {}).get('features') != ['capture_panic_oracle']):
+        raise ValueError('panic requires the separate capture_panic_oracle diagnostic build')
+    root = Path(__file__).resolve().parents[2]
+    ok, detail = runpy.run_path(str(root / 'scripts/check-gpu-panic.py'))['check_native'](serial)
+    if not ok:
+        raise ValueError(detail)
+
+
 def check_case(category, case, serial, producer=None):
+    if category == 'presentation' and case == 'panic':
+        if producer is None or 'panic' not in producer:
+            raise ValueError('presentation needs a named panic capture')
+        panic_capture(producer['panic']['serial'], producer['panic']['boot'])
+        return
     if category in ('alpha', 'shapes', 'isolation', 'presentation'):
         if producer is None or case != 'suite':
             raise ValueError(f'{category} needs named production GPU and console captures')
@@ -2415,6 +2455,16 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns, pro
                 or records.get('gpuElapsedMS') != suite['elapsed_ms']
                 or records.get('consoleHandoffToDoneMS') != console_ms):
             raise ValueError('resources report differs from retained suite results or timing')
+    if category == 'presentation':
+        if producer is None or 'panic' not in producer:
+            raise ValueError('presentation needs a separate panic-producer capture')
+        panic = producer['panic']
+        pb = panic['boot']
+        if (pb.get('id') in (producer['gpu']['boot']['id'], producer['console']['boot']['id'])
+                or pb.get('commit') != sha or pb.get('toolsCommit') != sha
+                or pb.get('build', {}).get('commit') != sha):
+            raise ValueError('panic companion differs from this build/tools or reuses a suite boot')
+        panic_capture(panic['serial'], pb)
     if records.get('cases') != cases(category, serial, producer):
         raise ValueError('GT 710 results differ from the captured evidence')
     if any(c['result'] != 'PASS' for c in records['cases']):

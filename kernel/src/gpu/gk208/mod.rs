@@ -119,6 +119,7 @@ pub(crate) use ce::readback::console as console_readback;
 pub(crate) use ce::readback::span_upload;
 pub(crate) use ce::readback::{set_scanout,flush_resource,flush_rect};
 mod queue;
+pub(crate) mod emergency;
 mod recovery_policy;
 pub use system_dma::set_platform as set_dma_platform;
 mod modeset;
@@ -577,3 +578,8 @@ pub(crate) fn initialize_core() -> Result<(), &'static str> {
 
 use gr::shaders;
 pub mod encode;
+
+pub(crate) fn ce_terminal_display(id:u32)->Result<emergency::Display, &'static str> {
+    let surface=ce::with_resources(|r,_,_|r.scanout(id).ok_or("terminal scanout absent"))?;
+    emergency::Display::prepare(surface)
+}

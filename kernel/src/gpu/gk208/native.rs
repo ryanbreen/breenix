@@ -395,6 +395,26 @@ pub struct FlipSnapshot {
     pub link: u32,
 }
 impl Evo {
+    pub(in crate::gk208) fn terminal_display(&self, registers: usize, surface: super::present::Surface)
+        -> Result<super::emergency::Display, &'static str> {
+        let regs = Registers(registers);
+        let h = self.head as usize * 0x300;
+        let blank = regs.read(0x64041c+h);
+        let end = regs.read(0x640420+h);
+        let view = modeset::Viewport::for_raster((end&0xffff).checked_sub(blank&0xffff)
+            .ok_or("invalid terminal raster")?, (end>>16).checked_sub(blank>>16)
+            .ok_or("invalid terminal raster")?, surface.width, surface.height)?;
+        let surface_methods = surface.methods(self.head)?;
+        let view_methods = view.methods(self.head)?;
+        let mut methods = surface_methods[..5].to_vec();
+        methods.extend_from_slice(&view_methods);
+        methods.extend_from_slice(&surface_methods[5..]);
+        Ok(super::emergency::Display { registers, total: self.total,
+            push: self.push, notifier: self.notifier, head: self.head, sor: self.sor,
+            methods,
+            #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
+            target: surface.resource })
+    }
     pub fn flip(&mut self, regs: &mut Registers, address: u64) -> Result<FlipSnapshot, &'static str> {
         if !self.surfaces.iter().any(|s| s.start == address) {
             return Err("flip outside private scanouts");

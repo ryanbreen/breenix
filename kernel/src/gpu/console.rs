@@ -500,6 +500,13 @@ impl encode::Bindings for Console {
 /// after the kernel's screen was first shown, and makes the restores ended owners asked for.
 pub fn pump() {
     let _path = GpuPath::enter();
+    // Diagnostic-only boot has no userspace CAPS caller to start the native
+    // core. Use the same worker/admission route before waiting for handoff.
+    #[cfg(all(target_arch = "x86_64", feature = "capture_panic_oracle"))]
+    if !display::active() {
+        let _ = super::native_caps_startup();
+        if display::active() { crate::console::give_back_display(); }
+    }
     if !display::active() {
         return;
     }

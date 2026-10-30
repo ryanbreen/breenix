@@ -55,9 +55,9 @@ TESTING_FEATURE = 'testing'
 def kernel_features(mode, suites, inject, gt710_category=None):
     """Keep native suite evidence independent of the testing startup path."""
     if gt710_category is not None:
-        if gt710_category != 'core' or mode not in ('default', 'probe') or suites or inject:
-            raise ValueError('gt710 core diagnostic needs a default/probe boot without suites or injection')
-        return ['--features', 'gt710_core_probe']
+        if gt710_category not in ('core', 'panic') or mode not in ('default', 'probe') or suites or inject:
+            raise ValueError('gt710 diagnostic needs a default/probe boot without suites or injection')
+        return ['--features', 'capture_panic_oracle' if gt710_category == 'panic' else 'gt710_core_probe']
     if inject in WATCHDOG_FAULTS:
         return ['--features', 'watchdog_fault_inject']
     if inject in XHCI_FAULTS:
@@ -459,7 +459,7 @@ def main():
     p.add_argument('--disk', choices=('install', 'root'),
                    help='physical disk root (default), or an explicit recovery install')
     p.add_argument('--suite')
-    p.add_argument('--gt710-category', choices=('core',),
+    p.add_argument('--gt710-category', choices=('core', 'panic'),
                    help='run the named native diagnostic on a separate automated probe boot')
     p.add_argument('--milestone', help='score the effort/milestone category set from the boot commit')
     p.add_argument('--source-boot', help='completed disk suite boot to read after a cold power cycle')
@@ -484,7 +484,7 @@ def main():
     p = sub.add_parser('_build')
     p.add_argument('id')
     p.add_argument('sha')
-    p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, PANIC_FEATURE, TESTING_FEATURE, 'gt710_core_probe', 'watchdog_fault_inject'))
+    p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, PANIC_FEATURE, TESTING_FEATURE, 'capture_panic_oracle', 'gt710_core_probe', 'watchdog_fault_inject'))
     p.add_argument('--suite')
     p.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager'))
     p.add_argument('--catchup', action='store_true')

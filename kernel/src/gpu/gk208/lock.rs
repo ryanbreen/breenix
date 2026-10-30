@@ -5,12 +5,15 @@ pub(super) struct Mutex<T>(spin::Mutex<T>);
 impl<T> Mutex<T> {
     pub const fn new(value: T) -> Self { Self(spin::Mutex::new(value)) }
     pub fn lock(&self) -> Guard<'_, T> {
-        crate::per_cpu::preempt_disable();
-        Guard { inner: Some(self.0.lock()) }
+        let access = crate::gpu::panic::Access::enter();
+        Guard { inner: Some(self.0.lock()), _access: access }
     }
 }
 
-pub(super) struct Guard<'a, T> { inner: Option<spin::MutexGuard<'a, T>> }
+pub(super) struct Guard<'a, T> {
+    inner: Option<spin::MutexGuard<'a, T>>,
+    _access: crate::gpu::panic::Access,
+}
 impl<T> Deref for Guard<'_, T> {
     type Target = T;
     fn deref(&self) -> &T { self.inner.as_ref().unwrap() }
@@ -22,6 +25,6 @@ impl<T> Drop for Guard<'_, T> {
     fn drop(&mut self) {
         // Unlock before reenabling scheduling, including on early returns.
         drop(self.inner.take());
-        crate::per_cpu::preempt_enable();
+        // Access drops after unlocking and releases its preemption hold.
     }
 }

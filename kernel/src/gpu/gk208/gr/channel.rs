@@ -1459,6 +1459,24 @@ mod native {
         pub(in crate::gk208::gr) fn retain_bootstrap(&mut self, context: crate::gk208::lifetime::Context) {
             self._bootstrap = Some(ManuallyDrop::new(context));
         }
+        /// Snapshot only pinned transport state; terminal ownership excludes its normal writer.
+        pub(crate) fn terminal_queue(&self) -> Result<crate::gk208::emergency::Queue, &'static str> {
+            let s = &self.session;
+            if !s.bound || s.quiesced || self.parking.is_empty() {
+                return Err("terminal channel is not live");
+            }
+            crate::gk208::ce::with_resources(|r,_,io| r.bind(io,
+                s.context.space().directory.range.start, s.report.identity.instance, s.report.identity.epoch))?;
+            Ok(crate::gk208::emergency::Queue {
+                registers: self.registers, total: self.total,
+                ring: s.commands.range.start, userd: s.userd, pbdma: s.pbdma,
+                ce_error: s.copy.as_ref().ok_or("terminal CE absent")?.base + 0x908,
+                channel: s.report.identity.id, instance: s.report.identity.instance,
+                report: s.pages.va(0) + 512, report_va: TARGET + 512,
+                epoch: s.report.identity.epoch, quarantine: self.quarantine,
+                parking: self.parking.clone(),
+            })
+        }
         pub(crate) fn identity(&self) -> (u64, u64) {
             let c = self.session.report.identity;
             (c.instance, c.epoch)
