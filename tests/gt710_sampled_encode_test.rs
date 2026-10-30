@@ -278,7 +278,7 @@ fn admission_programs_bind_literal_inputs_and_keep_code_before_uniforms() {
 }
 
 #[test]
-fn basic_warm_frames_use_native_programs_and_refuse_later_pipelines() {
+fn basic_warm_frames_use_native_programs_and_refuse_probe_and_unassigned_pipelines() {
     let target = encode::Bindings::render_target(&View(format::B8G8R8A8), 1).unwrap();
     let source = encode::Bindings::sampled_source(&View(format::B8G8R8A8), 2).unwrap();
     for (pipe, offset) in [(pipeline::SOLID, 0x1b0), (pipeline::COPY, 0x2b0),
@@ -290,7 +290,9 @@ fn basic_warm_frames_use_native_programs_and_refuse_later_pipelines() {
         assert!(methods.contains(&(0x2140, vec![0x51, offset])));
         assert_eq!(frame.chunks[0].target, target.id);
     }
-    assert!(encode::warm_frame(target, source, pipeline::OVER).is_none());
+    for pipe in [pipeline::PROBE_INT, pipeline::PROBE_INT + 1, u32::MAX] {
+        assert!(encode::warm_frame(target, source, pipe).is_none());
+    }
 }
 
 #[test]
@@ -326,9 +328,24 @@ fn warm_draws_cover_the_manifest_rendering_catalogue() {
     for (pipe, name) in names.iter().enumerate() {
         let frame = encode::warm_frame(target, source, pipe as u32)
             .unwrap_or_else(|| panic!("warm draw refused {name}"));
-        assert_eq!(frame.chunks.len(), 1, "{name}");
-        let methods = packets(&frame.chunks[0].words);
-        assert!(methods.iter().any(|(m, _)| *m == 0x1618), "no native draw for {name}");
+        let draws: Vec<_> = frame.chunks.iter().enumerate().filter(|(_, c)|
+            packets(&c.words).iter().any(|(m, _)| *m == 0x1618)).collect();
+        assert_eq!(draws.len(), 1, "one native draw for {name}");
+        let blended = matches!(pipe as u32, pipeline::OVER | pipeline::OVER_STRAIGHT
+            | pipeline::COVERAGE | pipeline::COVERAGE_SPANS | pipeline::BITMAP_TEXT);
+        assert_eq!(frame.chunks.len(), 1 + usize::from(blended), "{name}");
+        assert_eq!(draws[0].0, usize::from(blended), "snapshot precedes draw for {name}");
+        assert_eq!(draws[0].1.target, target.id);
+        assert!(draws[0].1.copy.is_none());
+        if blended {
+            let snapshot = &frame.chunks[0];
+            assert!(snapshot.words.is_empty());
+            assert_eq!(snapshot.source, Some(target.id));
+            assert_ne!(snapshot.target, target.id);
+            assert_eq!(snapshot.copy, Some((target.id, snapshot.target, [0, 0, 1, 1, 0, 0])));
+        }
+        let methods = packets(&draws[0].1.words);
+        assert!(methods.contains(&(0xd74, vec![0, 6])), "one quad for {name}");
         let offset = methods.iter().find(|(m, _)| *m == 0x2140).unwrap().1[1] as usize;
         let code = std::fs::read(format!("{}/../../kernel/assets/kepler/pipeline-{name}.bin", env!("CARGO_MANIFEST_DIR"))).unwrap();
         assert_eq!(&frame.data[0x100000 + offset + 80..][..code.len()], code, "{name}");
