@@ -580,3 +580,16 @@ pub(crate) fn flush_resource(tag:crate::gpu::dev::Tag,ctx:u32,fence:u64,id:u32,
     Some(super::super::adapter::Request::present(tag,fence,surface,
         TransferHold{resources:vec![hold]}))
 }
+
+/// CPU console damage was uploaded by CE already. EVO has no dirty-rectangle
+/// flush: confirm a fresh whole-surface UPDATE through the same ordered native
+/// present as a client, retaining the actual resource until its latch completes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn flush_rect(tag: crate::gpu::dev::Tag, ctx: u32, fence: u64, id: u32,
+    x: u32, y: u32, width: u32, height: u32,
+) -> Option<super::super::adapter::Request> {
+    let surface = super::with_resources(|r,_,_| r.scanout(id).ok_or("native console target absent")).ok()?;
+    if width == 0 || height == 0 || x.checked_add(width)? > surface.width
+        || y.checked_add(height)? > surface.height { return None; }
+    flush_resource(tag, ctx, fence, id, surface.width, surface.height)
+}

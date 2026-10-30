@@ -117,7 +117,7 @@ mod ce;
 pub(crate) use ce::readback::{transfer,region as copy_region,identities as transfer_identities};
 pub(crate) use ce::readback::console as console_readback;
 pub(crate) use ce::readback::span_upload;
-pub(crate) use ce::readback::{set_scanout,flush_resource};
+pub(crate) use ce::readback::{set_scanout,flush_resource,flush_rect};
 mod queue;
 mod recovery_policy;
 pub use system_dma::set_platform as set_dma_platform;
@@ -126,7 +126,7 @@ mod native;
 pub(crate) use resource::present;
 mod core_record;
 pub use native::{ConsoleSurface,console_binding,takeover_started,caps_scanout};
-pub(crate) use ce::{console_state,restore_console,set_mode};
+pub(crate) use ce::{console_state,set_mode};
 pub(crate) fn console_surface() -> Option<ConsoleSurface> {
     ce::console_allocation().map(|(surface, _)| surface)
 }

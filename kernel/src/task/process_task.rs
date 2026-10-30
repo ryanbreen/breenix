@@ -1068,7 +1068,6 @@ impl ProcessScheduler {
         // before Phase 1 makes the row a zombie its parent can reap.
         crate::ipc::sysv::thread_exit(thread_id);
         // So are its windows destroyed, when it is the group's last running thread.
-        #[cfg(target_arch = "aarch64")]
         crate::window::thread_exit(thread_id);
         // So is the working directory released: rmdir refuses a directory
         // that is anyone's working directory, and a reaped row stays resident

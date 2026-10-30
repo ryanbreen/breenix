@@ -11,7 +11,6 @@ use x86_64::structures::paging::{PhysFrame, Size4KiB};
 
 /// A page frame of a shared object, as `frame_at` returns it and `release_frame` takes it
 /// (for the window interface, `crate::window`).
-#[cfg(target_arch = "aarch64")]
 pub(crate) type Frame = PhysFrame<Size4KiB>;
 
 static NEXT_INO: AtomicU64 = AtomicU64::new(0x100000);

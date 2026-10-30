@@ -260,22 +260,6 @@ pub(in crate::gk208) fn present(surface:super::super::present::Surface)
     s.scanout.push(active);
     Ok(())
 }
-pub(crate) fn restore_console() -> Result<(), &'static str> {
-    let mut owner=SESSION.lock();
-    let s=owner.as_mut().ok_or("native display owner absent")?;
-    if super::super::console_binding(&s.console).is_err() {
-        let c=s.console;
-        let surface=super::super::present::Surface {resource:u32::MAX,address:c.vram,
-            width:c.width as u32,height:c.height as u32,pitch:c.pitch as u32,
-            block_height:0,format:0,dma:1};
-        super::super::native::present(&mut s.evo,&mut Registers(s.registers),surface)?;
-        super::super::console_binding(&s.console)?;
-    }
-    s.scanout.clear();
-    s.mode=1;
-    Ok(())
-}
-
 /// Serialize a logical mode switch with client display readers through the
 /// shared ownership transition. No core spin lock is held across EVO waits.
 pub(crate) fn set_mode(index:u32)->Result<(), &'static str> {

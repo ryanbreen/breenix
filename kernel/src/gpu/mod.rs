@@ -44,7 +44,6 @@ use crate::gpu_observation as observation;
 mod quota;
 mod staging;
 mod vertex_arena;
-#[cfg(target_arch = "aarch64")]
 mod compose;
 use quota::{Charge, Quota, QuotaCharge};
 use staging::Staging;
@@ -598,6 +597,7 @@ pub(crate) fn install_native(device: crate::gk208::adapter::Device) -> Result<()
     // Admission probes have already bound this channel. An installation error
     // is not a DMA drain, so retain its pages just like probe failure does.
     if let Some(device) = retained { core::mem::forget(device); }
+    if result.is_ok() { compose::register(); }
     result
 }
 
@@ -2448,7 +2448,6 @@ fn reaper() {
             (c.next_deadline(now), !c.procs.is_empty(), c.reset_wanted, c.take_hung(), SENT.load(Ordering::Acquire))
         })
         .unwrap_or((None, false, false, ([None; HUNG_KEPT], 0), SENT.load(Ordering::Acquire)));
-        #[cfg(target_arch = "aarch64")]
         {
             crate::window::scene::invalidate_stale();
             crate::window::ops::publish_ready();
@@ -5992,7 +5991,7 @@ pub fn present_records() -> alloc::string::String {
     out
 }
 
-/// Whether the clean-room device owns this ARM64 display path.
+/// Whether the admitted GPU core owns the display path.
 pub fn display_active() -> bool {
     display::active()
 }
@@ -6006,6 +6005,13 @@ pub(crate) fn boot_settled() -> bool {
 
 pub fn take_display(vt: usize) -> SyscallResult {
     let _path = GpuPath::enter();
+    #[cfg(target_arch = "x86_64")]
+    if crate::gk208::takeover_started() {
+        // Takeover may be the first GPU call, before CAPS. Initialize its
+        // shared ownership stack before installing the display owner.
+        if let Err(e) = arch::with_interrupts(native_caps_startup) { return result(Err(e)); }
+        if !display::active() { return result(Err(ENODEV)); }
+    }
     let tid = match crate::task::scheduler::current_thread_id() {
         Some(t) => t,
         None => return result(Err(EINVAL)),
@@ -6040,7 +6046,12 @@ pub fn take_display(vt: usize) -> SyscallResult {
 }
 pub fn give_display() -> SyscallResult {
     let _path = GpuPath::enter();
-    result(caller().and_then(display::back).map(|()| 0))
+    let restore = || caller().and_then(display::back).map(|()| 0);
+    #[cfg(target_arch = "x86_64")]
+    let outcome = arch::with_interrupts(restore);
+    #[cfg(target_arch = "aarch64")]
+    let outcome = restore();
+    result(outcome)
 }
 
 /// A graphics terminal returned to the foreground: restore its latest retained GPU frame.

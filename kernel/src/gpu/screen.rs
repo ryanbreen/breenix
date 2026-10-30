@@ -169,6 +169,18 @@ impl Target {
     /// Show the kernel's screen: bind it, the first time ending the firmware framebuffer's
     /// part (`console::retire_firmware`, then `console::handed_off` once a frame is shown).
     fn show(&self) -> Result<(), i64> {
+        #[cfg(target_arch = "x86_64")]
+        if crate::gk208::console_state().is_some_and(|(mode, _, _, _)| {
+            (mode.width, mode.height) != (WIDTH, HEIGHT)
+        }) {
+            // A released graphics VT may have left the low logical mode active.
+            // The foreground text VT still draws the shared high-mode screen.
+            if super::arch::with_interrupts(|| crate::gk208::set_mode(display::KERNEL_MODE as u32)).is_err() {
+                with_core(|c| c.display.known = false);
+                return Err(EIO);
+            }
+            with_core(|c| c.native_console_restored()).ok_or(ENODEV)?;
+        }
         console::retire_firmware();
         self.bind(Binding { id: self.id, fence: 0, answer: 0 })?;
         console::handed_off();
@@ -353,7 +365,9 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
 /// Show the kernel's screen as it was left, inside a transition.
 pub(super) fn show() -> Result<(), i64> {
     let mut lease = Lease::take();
-    lease.ensure()?.show()?;
+    let target = lease.ensure()?;
+    target.upload(0..HEIGHT)?;
+    target.show()?;
     PRESENTS.fetch_add(1, Ordering::AcqRel);
     Ok(())
 }

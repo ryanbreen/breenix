@@ -620,7 +620,6 @@ pub(super) fn take(group: u64, pid: u64, vt: usize) -> Result<(), i64> {
 /// binding and backing stay on the stack; no compositor claim moves with the display. The
 /// target is resolved once to its live thread group, so a later process given the same
 /// number is not the owner.
-#[cfg(target_arch = "aarch64")]
 pub(super) fn give(giver: u64, pid: u32) -> Result<(), i64> {
     const ESRCH: i64 = 3;
     let target = crate::process::with_process_manager(|m| {
@@ -715,12 +714,6 @@ pub(super) fn ended(c: &mut Core, group: u64) {
 }
 
 pub(super) fn restore() -> Result<(), i64> {
-    #[cfg(target_arch = "x86_64")]
-    if let Some((_, _, bound, _)) = crate::gk208::console_state() {
-        if !bound { crate::gk208::restore_console().map_err(|_|EIO)?; }
-        with_core(|c| c.native_console_restored()).ok_or(ENODEV)?;
-        return Ok(());
-    }
     let owned = with_core(|c| !c.display.stack.is_empty()).unwrap_or(false);
     let Some(_presentation) = crate::console::vt::Presentation::begin(owned) else {
         // The foreground console retains scanout until the graphics VT returns.
@@ -733,11 +726,26 @@ pub(super) fn restore() -> Result<(), i64> {
         (c.display.stack.iter().rev().find_map(|o| o.last), current, !c.display.stack.is_empty())
     })
     .unwrap_or((None, None, false));
+    if saved.is_some_and(|b| current.is_some_and(|c| c.id == b.id)) {
+        return Ok(());
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Restore the displaced owner's logical mode before binding its target.
+        // With no retained frame, the kernel screen uses its high logical mode.
+        // SET_MODE confirms an interim native allocation before its old scanout
+        // holds can end; the following shared bind publishes the final resource.
+        let mode = with_core(|c| {
+            if saved.is_some() { c.display.stack.last().map_or(KERNEL_MODE as u32, |o| o.mode) }
+            else { KERNEL_MODE as u32 }
+        }).ok_or(ENODEV)?;
+        if super::arch::with_interrupts(|| crate::gk208::set_mode(mode)).is_err() {
+            with_core(|c| c.display.known = false);
+            return Err(EIO);
+        }
+        with_core(|c| c.native_console_restored()).ok_or(ENODEV)?;
+    }
     match saved {
-        // The top owner presented after the exit that asked for this restore, and that
-        // frame is already bound and complete. Binding it again would only make the
-        // binding unknown meanwhile, refusing the owner's readbacks with reason 10.
-        Some(b) if current.is_some_and(|c| c.id == b.id) => Ok(()),
         Some(b) => super::screen::bind_saved(b),
         // No owner on the stack has presented: the kernel's screen as it was left.
         None if owned => super::screen::show(),

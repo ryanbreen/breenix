@@ -39,16 +39,25 @@ mod console {
 }
 mod arch {pub fn with_interrupts<R>(f:impl FnOnce()->R)->R{f()}}
 mod gk208 {
- pub fn console_state()->Option<((),u64,bool,u64)>{Some(((),u32::MAX.into(),true,0))}
+ pub fn console_state()->Option<(crate::abi::Mode,u64,bool,u64)>{
+  let low=crate::HOST.with(|h|h.borrow().mode==0);
+  Some((crate::abi::Mode{width:if low{1280}else{2560},height:if low{800}else{1600},scale:if low{1}else{2},reserved:0},u32::MAX.into(),true,0))
+ }
  pub fn restore_console()->Result<(),&'static str>{crate::event("legacy-restore",0);Ok(())}
  pub struct ConsoleSurface{pub pointer:usize,pub width:usize,pub height:usize,pub pitch:usize}
  pub fn set_mode(index:u32)->Result<(),&'static str>{crate::HOST.with(|h|h.borrow_mut().mode=index);crate::event("mode",index);Ok(())}
- pub fn flush_rect(_:crate::Tag,_:u32,fence:u64,id:u32,x:u32,y:u32,w:u32,h:u32)->Option<crate::Request>{
-  crate::with_core(|c|{let r=c.resources.get(&id)?; (w>0 && h>0 && x.checked_add(w)?<=r.width && y.checked_add(h)?<=r.height).then_some(())})??;
-  Some(crate::Request::Gk208(crate::Command{kind:"flush",id,fence}))
+ struct Surface{width:u32,height:u32}
+ struct Resources;
+ impl Resources {fn scanout(&self,id:u32)->Option<Surface>{crate::with_core(|c|c.resources.get(&id).map(|r|Surface{width:r.width,height:r.height})).flatten()}}
+ fn with_resources<R>(f:impl FnOnce(&mut Resources,&mut (),&mut ())->Result<R,&'static str>)->Result<R,&'static str>{f(&mut Resources,&mut (),&mut ())}
+ fn flush_resource(_:crate::Tag,_:u32,fence:u64,id:u32,w:u32,h:u32)->Option<crate::Command>{
+  crate::with_core(|c|{let r=c.resources.get(&id).unwrap();assert_eq!((w,h),(r.width,r.height));});
+  Some(crate::Command{kind:"flush",id,fence})
  }
+ // NATIVE_FLUSH_RECT
+
 }
-mod gpu {pub fn display_active()->bool{true}}
+mod gpu {pub fn display_active()->bool{true}pub mod console{pub fn active()->bool{false}}}
 mod raster {
  #[derive(Clone,Copy)] pub struct Font;
  impl Font {pub fn for_display(_:usize,_:usize)->Self{Self}}
@@ -162,6 +171,10 @@ fn events()->Vec<(&'static str,u32)>{HOST.with(|h|h.borrow().events.clone())}
  assert_eq!(u64::from_ne_bytes(bytes[80..88].try_into().unwrap()),modes.console_draws);
  screen::repaint_rows().expect("native rectangular console flush missing");
  assert!(events().contains(&("flush",50)));
+ // A text VT also uses the high kernel screen while a low-mode graphics
+ // owner is temporarily released, before that owner's saved mode resumes.
+ HOST.with(|h|h.borrow_mut().mode=0);screen::show().unwrap();
+ assert_eq!(HOST.with(|h|h.borrow().mode),1);
 }
 #[derive(PartialEq)] enum Observer{Window,Owner}
 enum Refused{Errno(i64)}impl From<i64> for Refused{fn from(e:i64)->Self{Self::Errno(e)}}

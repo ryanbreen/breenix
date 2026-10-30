@@ -2313,6 +2313,10 @@ pub fn sys_execv_with_frame(
                 break result;
             }
         };
+        // The old image's windows also end after a committed exec, outside PM.
+        if matches!(result, SyscallResult::Ok(0)) {
+            crate::window::exec_done_current();
+        }
         // Exec, like exit, drops the old image's GPU handles outside the manager lock.
         if matches!(result, SyscallResult::Ok(0)) {
             crate::gpu::owner_ended(old_gpu_owner);
@@ -2497,6 +2501,10 @@ pub fn sys_execv_with_frame(
                 break result;
             }
         };
+        // The old image's windows also end after a committed exec, outside PM.
+        if matches!(result, SyscallResult::Ok(0)) {
+            crate::window::exec_done_current();
+        }
         // Exec, like exit, drops the old image's GPU handles outside the manager lock.
         if matches!(result, SyscallResult::Ok(0)) {
             crate::gpu::owner_ended(old_gpu_owner);
@@ -3581,7 +3589,10 @@ pub fn sys_take_over_display() -> SyscallResult {
     // The boot splash gives way before the new owner's first frame (bounded).
     #[cfg(target_arch = "aarch64")]
     crate::console::await_splash();
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(target_arch = "x86_64")]
+    if crate::gk208::takeover_started() {
+        return crate::gpu::take_display(vt);
+    }
     if crate::gpu::display_active() {
         return crate::gpu::take_display(vt);
     }
@@ -3621,7 +3632,6 @@ pub fn sys_take_over_display() -> SyscallResult {
 /// Called by init when BWM crashes so the kernel can resume rendering.
 pub fn sys_give_back_display() -> SyscallResult {
     // The core restores the previous owner's frame, or the kernel's screen and console.
-    #[cfg(target_arch = "aarch64")]
     if crate::gpu::display_active() {
         return crate::gpu::give_display();
     }
@@ -3650,7 +3660,6 @@ pub(crate) fn console_owner_exited(group: u64) {
     if crate::console::vt::process_exited(group) {
         // The core's ownership stack publishes the next owner and restores the screen
         // (`gpu::owner_ended`).
-        #[cfg(target_arch = "aarch64")]
         if crate::gpu::display_active() {
             return;
         }

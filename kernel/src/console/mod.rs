@@ -565,8 +565,7 @@ fn may_draw() -> bool {
     }
     // A process holds the GPU core's display and its terminal is in the
     // foreground: the core shows that process's frames, not the kernel's.
-    #[cfg(target_arch = "aarch64")]
-    if matches!(DISPLAY.get(), Some(Display::GpuCore(_)))
+    if crate::gpu::display_active()
         && crate::syscall::display::DISPLAY_OWNER_GROUP.load(Ordering::Acquire) != u64::MAX
         && !vt::presentation_suspended()
     {
@@ -946,6 +945,9 @@ fn render_thread(display: &'static Display, attached: Attached) {
     let mut announced = false;
     let mut last_session = false;
     while !crate::task::kthread::kthread_should_stop() {
+        // x86 has no ARM graphics render task to service owner-exit restores.
+        #[cfg(target_arch = "x86_64")]
+        crate::gpu::console::pump();
         deliver_replies();
         crate::tty::driver::drain_keyboard_input();
         // The `/proc/console/check` this pass may answer: one asked for before

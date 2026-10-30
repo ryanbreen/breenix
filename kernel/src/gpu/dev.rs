@@ -380,7 +380,10 @@ pub fn transfer_from_host(tag: Tag, ctx: u32, fence: u64, id: u32, backing: Arc<
 
 #[allow(clippy::too_many_arguments)]
 pub fn flush_rect(tag: Tag, ctx: u32, fence: u64, id: u32, x: u32, y: u32, w: u32, h: u32) -> Option<Request> {
-    match backend() { backend::SVGA3D_DX => svga::flush_rect(tag, ctx, fence, x, y, w, h).map(Request::Svga), backend::VIRGL => Some(Request::Virgl(virgl::flush_rect(tag, ctx, fence, id, x, y, w, h))), _ => None }
+    match backend() {
+        #[cfg(target_arch = "x86_64")]
+        backend::GK208 => crate::gk208::flush_rect(tag, ctx, fence, id, x, y, w, h).map(Request::Gk208),
+        backend::SVGA3D_DX => svga::flush_rect(tag, ctx, fence, x, y, w, h).map(Request::Svga), backend::VIRGL => Some(Request::Virgl(virgl::flush_rect(tag, ctx, fence, id, x, y, w, h))), _ => None }
 }
 
 /// A native byte-preserving region copy, including overlap staging. The fixed

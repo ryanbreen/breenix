@@ -28,7 +28,6 @@
 //! the GPU core that backing is first poisoned and then transferred back from
 //! the device, so it holds what the device scans out.
 
-#[cfg(target_arch = "aarch64")]
 pub mod gpu_core;
 pub mod linear;
 #[cfg(target_arch = "aarch64")]
@@ -195,6 +194,11 @@ impl Display {
     /// The GPU core's presents wait on the device, which only a thread the
     /// scheduler can block may do.
     pub fn boot_drawable(&self) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let Display::Linear(display) = self;
+            if display.uses_gpu() { return false; }
+        }
         #[cfg(target_arch = "aarch64")]
         if let Display::GpuCore(_) = self {
             return false;
@@ -224,7 +228,7 @@ impl Display {
             return Ok(());
         }
         match self {
-            Display::Linear(_) => Ok(()),
+            Display::Linear(display) => display.flush(lines),
             #[cfg(target_arch = "aarch64")]
             Display::Virtio2d(display) => display.flush(lines),
             #[cfg(target_arch = "aarch64")]

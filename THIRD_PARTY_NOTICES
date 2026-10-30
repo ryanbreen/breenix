@@ -1552,3 +1552,17 @@ method offset, with 0x20000 selecting assembly state; its core method
 table lists the scaler and viewport registers at 0x660494 and
 0x6604b0/4b8/4bc/4c0/4c4/4c8 with a 0x300 head stride. The file-local
 MIT grant was read again; both consumers retain its original notice.
+
+
+## GK208B console rectangular flush (E24 M8 PR 8.6 unit 24.6-u5)
+
+`kernel/src/gpu/gk208/ce/readback.rs` adds Breenix console-damage glue calling
+the existing whole-surface present and retained-resource receipt. Hardware
+encoding remains in `present.rs` and `native.rs`, using the surface UPDATE
+mechanism already attributed in the target scanout section above: NVIDIA open-gpu-doc `classes/display/cl927d.h`
+(MIT SPDX, Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES) at
+`9fdf5c4062007929d9f4e6cbad9c9771fe61b880`, and nouveau
+`dispnv50/head907d.c` (full MIT grant, Copyright 2018 Red Hat Inc.) at Linux
+v6.8 `e8f897f4afef0031fe618a8e94127a0934896aba`.
+The full original notices are retained in the adapter and surface encoder.
+The ownership routing and console policy use Breenix's shared implementation.

@@ -21,6 +21,7 @@ class DisplayRestore(unittest.TestCase):
         device = (ROOT / 'kernel/src/gpu/dev.rs').read_text()
         source = (ROOT / 'kernel/src/gpu/mod.rs').read_text()
         linear = (ROOT / 'kernel/src/console/display/linear.rs').read_text()
+        native = (ROOT / 'kernel/src/gpu/gk208/ce/readback.rs').read_text()
         fixture = (ROOT / 'tests/fixtures/gt710_display_restore.rs').read_text()
         definitions = display[display.index('pub(super) const MODES:'):display.index('#[derive(Clone, Copy)]')]
         definitions += '\n#[derive(Clone, Copy)]\n' + item(display, 'pub(super) struct Binding')
@@ -55,9 +56,13 @@ class DisplayRestore(unittest.TestCase):
             '// DISPLAY_FUNCTIONS': functions, '// SCREEN_METHODS': screen_methods,
             '// SCREEN_FUNCTIONS': screen_functions,
             '// FLUSH_RECT': item(device, 'pub fn flush_rect('),
+            '// NATIVE_FLUSH_RECT': item(native, 'pub(crate) fn flush_rect(')
+                .replace('super::super::adapter::Request', 'crate::Command')
+                .replace('super::with_resources', 'with_resources')
+                .replace('crate::gpu::dev::Tag', 'crate::Tag'),
             '// LINEAR_METHODS': '\n'.join([item(linear, marker) for marker in [
                 'pub fn layout(', 'fn buffer(', 'pub fn available(', 'pub fn write(',
-            ]] + ([item(linear, 'fn gpu(')] if 'fn gpu(' in linear else [])),
+            ]] + ([item(linear, 'pub fn uses_gpu('), item(linear, 'fn gpu(')] if 'fn gpu(' in linear else [])),
             '// PRESENT_PERMISSION': present, '// MODE_PERMISSION': mode,
             '// READBACK_PERMISSION': readback,
         }
