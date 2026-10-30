@@ -4433,6 +4433,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 }.map_err(|_| EINVAL)?;
                 native_probe_mask = frame.probe_mask;
                 frame.compact().map_err(|_| EINVAL)?;
+                frame.batch_draws(1400);
                 #[cfg(feature = "gt710_core_probe")]
                 drop(translating);
                 #[cfg(feature = "gt710_core_probe")]
@@ -4631,6 +4632,14 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 return Err(ENOMEM);
             }
         }
+        // Reserve native request metadata before consuming controls or admitting work.
+        // Large valid streams must return ENOMEM instead of growing an infallible Vec.
+        let mut reqs: Vec<Request> = Vec::new();
+        #[cfg(target_arch = "x86_64")]
+        if let Chunks::Gk208(chunks) = &chunks {
+            reqs.try_reserve_exact(chunks.len().checked_add(1).ok_or(ENOMEM)?)
+                .map_err(|_| ENOMEM)?;
+        }
         // Test point 27, `device-error`: the chunks are followed by a fenced command of a
         // type VirtIO does not define, which the device can only refuse, and that command
         // carries the fence. Taken only once the submission is certain to be sent.
@@ -4654,7 +4663,6 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             d.left -= 1;
             d.kept.push(serial);
         }
-        let mut reqs: Vec<Request> = Vec::new();
         match chunks {
             Chunks::Virgl(chunks) => {
                 let count = chunks.len();
