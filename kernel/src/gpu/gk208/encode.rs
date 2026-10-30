@@ -1358,8 +1358,6 @@ pub(crate) fn prepare(
         regions.push(super::resource::FrameRegion {
             start: CODE as u64, end: DATA_START as u64, name: "code", command: 0,
         });
-    }
-    if frame.removed_prefix == 0 {
         regions.push(super::resource::FrameRegion { start: 0, end: CODE as u64,
             name: "frame-reserved", command: 0 });
     }

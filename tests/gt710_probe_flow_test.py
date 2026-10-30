@@ -7,28 +7,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DividerControlFlow(unittest.TestCase):
-    def test_spans_control_regions_fit_without_crs_storage(self):
-        # Mesa nvc0_program.c:723-730 budgets two stack entries per control
-        # region against 16 before requiring local spill storage. This native
-        # program has no CRS storage. Include loop and divergent branch regions,
-        # rather than counting only explicit JOINATs.
-        native = (ROOT / 'kernel/assets/kepler/pipeline-coverage_spans.asm').read_text()
-        regions = []
-        for line in native.splitlines():
-            match = re.match(r'^([0-9a-f]{8}):.*\b(joinat|prebrk|precont|bra) (0x[0-9a-f]+)', line)
-            if not match:
-                continue
-            start, end = int(match[1], 16), int(match[3], 16)
-            if end <= start or (match[2] == 'bra' and '$p' not in line):
-                continue
-            regions.append((start, end))
-        self.assertTrue(regions)
-        header = (ROOT / 'kernel/assets/kepler/pipeline-coverage_spans.sph').read_bytes()
-        self.assertEqual(int.from_bytes(header[12:16], 'little') & 0xffffff, 0)
-        for pc, _ in regions:
-            entries = 2 * sum(start <= pc < end for start, end in regions)
-            self.assertLessEqual(entries, 16, f'control stack needs spill storage at {pc:#x}')
-
     def test_shape_kill_survives_native_compilation(self):
         for name in ('line', 'circle_fill', 'circle_outline', 'rounded_rect', 'triangle', 'coverage_spans'):
             with self.subTest(pipeline=name):

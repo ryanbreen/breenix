@@ -204,8 +204,6 @@ impl Device {
         if let Err(reason) = self.channel.healthy() {
             self.first_error.get_or_insert(reason);
             self.fault = true;
-            #[cfg(target_os = "none")]
-            self.channel.record_fault(reason);
             return Reap::Fault;
         }
         let Some(front) = self.pending.front() else { return Reap::Empty };
@@ -265,6 +263,8 @@ impl Device {
     pub fn queue_size(&self) -> usize { 4 }
     pub fn needs_reset(&self) -> bool { self.fault || self.channel.healthy().is_err() }
     pub fn fault_reason(&self) -> Option<&'static str> { self.first_error }
+    /// The worker owns the device outside CORE here. Capture once before the
+    /// reset, rather than from reap(), which runs while CORE is locked.
     pub fn begin_reset(&mut self) {
         if self.resetting.is_none() {
             #[cfg(target_os = "none")]

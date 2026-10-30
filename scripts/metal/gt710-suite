@@ -2181,7 +2181,7 @@ def record_resources_capture(directory, sha, category='resources'):
 def check_case(category, case, serial, producer=None):
     if category in ('alpha', 'shapes'):
         if producer is None or case != 'suite':
-            raise ValueError('alpha needs named production GPU and console captures')
+            raise ValueError(f'{category} needs named production GPU and console captures')
         gpu = producer['gpu']
         resources_suite(gpu['serial'], gpu['boot'], STEP_SELECTIONS[category])
         return
