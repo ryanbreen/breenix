@@ -2536,6 +2536,12 @@ def capture_serial(directory):
                            or any(type(v) is not int or not 0 <= v < 1 << 32 for v in row[k])
                            for k, n in [('status', 4), ('values', 7)])):
                 raise ValueError('invalid GR refusal record')
+            if 'pri_registers' in row or 'pri_values' in row:
+                pri = row.get('pri_values')
+                if (row.get('pri_registers') != [0x400100, 0x200, 0x409614, 0x404170]
+                        or not isinstance(pri, list) or len(pri) != 4
+                        or any(type(v) is not int or not 0 <= v < 1 << 32 for v in pri)):
+                    raise ValueError('invalid GR PRI refusal diagnostics')
             key=('gr-refusal', hashlib.sha256(line.removesuffix('\n').encode('ascii')).hexdigest())
         elif fields[0]=='GT710_MMU_ERROR_V1':
             row = json.loads(line.removeprefix('GT710_MMU_ERROR_V1 '))

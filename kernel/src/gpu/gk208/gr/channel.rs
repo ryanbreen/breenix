@@ -889,7 +889,7 @@ mod native {
             use super::super::binding;
             receipt.before = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
             let result = (|| {
-                checked_traps(h.regs, receipt.before)?;
+                checked_traps(h.regs, &mut receipt.before)?;
                 if !self.bound || self.quiesced {
                     return Err("shader binding requires the active GR channel");
                 }
@@ -906,7 +906,7 @@ mod native {
             })();
             // Read even after a submission error, before quiesce/reset.
             receipt.after = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
-            checked_traps(h.regs, receipt.after)?;
+            checked_traps(h.regs, &mut receipt.after)?;
             result
         }
         /// Append a fresh ordinary mapping after bind_shaders' receipt. The
@@ -1060,7 +1060,7 @@ mod native {
             use super::super::{binding, draw as encoder};
             receipt.before = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
             let result = (|| {
-                checked_traps(h.regs, receipt.before)?;
+                checked_traps(h.regs, &mut receipt.before)?;
                 let (sequence, nonce) = self.sequence()?;
                 draw.report_va = TARGET; draw.epoch = self.report.identity.epoch; draw.nonce = nonce;
                 receipt.target = TARGET; receipt.epoch = draw.epoch; receipt.nonce = nonce;
@@ -1072,7 +1072,7 @@ mod native {
                 Ok(())
             })();
             receipt.after = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
-            checked_traps(h.regs, receipt.after)?;
+            checked_traps(h.regs, &mut receipt.after)?;
             result
         }
         /// Physical allocation identities for the context evidence. Shader and
@@ -1101,7 +1101,7 @@ mod native {
                 if !selected.accepted { return Err("context activation release not observed"); }
                 current[0] = h.regs.read(0x409b00);
                 receipt.before = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
-                checked_traps(h.regs, receipt.before)?;
+                checked_traps(h.regs, &mut receipt.before)?;
                 let (sequence, nonce) = self.sequence()?;
                 request.nonce = nonce;
                 receipt.target = self.pages.address(0);
@@ -1120,7 +1120,7 @@ mod native {
             })();
             current[1] = h.regs.read(0x409b00);
             receipt.after = binding::TRAP_REGISTERS.map(|a| h.regs.read(a));
-            checked_traps(h.regs, receipt.after)?;
+            checked_traps(h.regs, &mut receipt.after)?;
             result?;
             let expected = 0x80000000 | (self.report.identity.instance >> 12) as u32;
             if *current != [expected; 2] { return Err("context draw FECS binding mismatch"); }
@@ -1464,13 +1464,18 @@ mod native {
             monitor.snapshot().map(|_| ())
         }
         pub(crate) fn error_trap(&self) -> Result<Option<super::super::error::Trap>, &'static str> {
-            super::super::error::capture(&mut ErrorIo(Registers(self.registers)))
+            super::super::error::capture(&mut Registers(self.registers))
         }
         pub(crate) fn record_refusal(&self) -> Result<(), &'static str> {
-            if let Some((status, values)) = take_refusal() { return emit_refusal(status, values); }
+            if let Some((status, values, pri)) = take_refusal() { return emit_refusal(status, values, pri); }
             let mut regs = Registers(self.registers);
-            let words = super::super::binding::TRAP_REGISTERS.map(|a| regs.read(a));
-            record_trap(&mut regs, words)
+            match super::super::error::read_traps(&mut regs, None) {
+                Ok(words) => record_trap(&mut regs, words),
+                Err(_) => {
+                    let (status, values, pri) = take_refusal().ok_or("GR refusal capture missing")?;
+                    emit_refusal(status, values, pri)
+                }
+            }
         }
         pub(crate) fn acknowledge_error(&mut self, trap: super::super::error::Trap, sequence: u32) -> Result<(), &'static str> {
             let epoch = self.session.report.identity.epoch;
@@ -1482,7 +1487,7 @@ mod native {
             crate::serial_println!("GT710_MMU_ERROR_BULK epoch={} sequence={} bytes={} sha256={}",
                 epoch, sequence, bytes, digest);
             let c = self.session.report.identity;
-            super::super::error::acknowledge(&mut ErrorIo(Registers(self.registers)), trap, c.id, c.runlist)
+            super::super::error::acknowledge(&mut Registers(self.registers), trap, c.id, c.runlist)
         }
         /// True only after USERD GP_PUT publishes this sequence to the engine.
         pub(crate) fn published(&self, sequence: u32) -> bool { self.put == sequence }
@@ -1614,8 +1619,8 @@ mod native {
         /// Retain bounded fault registers before reset clears their source.
         /// Called on the GPU worker, outside interrupt and syscall entry paths.
         pub(crate) fn record_fault(&self, reason: &str) {
-            if let Some((status, values)) = take_refusal() {
-                if let Err(error) = emit_refusal(status, values) {
+            if let Some((status, values, pri)) = take_refusal() {
+                if let Err(error) = emit_refusal(status, values, pri) {
                     crate::serial_println!("GT710_GR_REFUSAL_CAPTURE_FAILED {}", error);
                 }
             }
@@ -1764,55 +1769,65 @@ mod native {
             Ok(())
         }
     }
-    struct ErrorIo(Registers);
-    impl super::super::error::Io for ErrorIo {
-        fn read(&mut self, address: usize) -> u32 { self.0.read(address) }
-        fn write(&mut self, address: usize, value: u32) { self.0.write(address, value); }
+    impl super::super::error::Io for Registers {
+        fn read(&mut self, address: usize) -> u32 { Registers::read(self, address) }
+        fn write(&mut self, address: usize, value: u32) { Registers::write(self, address, value); }
+        fn now_us(&mut self) -> u64 { elapsed(0) }
+        fn delay_us(&mut self, us: u64) { modeset::Io::delay_us(self, us as u32); }
         fn refuse_trap(&mut self, words: [u32; 4]) -> Result<(), &'static str> {
-            save_refusal(&mut self.0, words);
+            save_refusal(self, words);
             Ok(())
         }
     }
     const REFUSAL_REGISTERS: [usize; 7] = [0x400704, 0x400708, 0x400700, 0x409c18, 0x2634, 0x2640, 0x262c];
+    const PRI_REGISTERS: [usize; 4] = [0x400100, 0x200, 0x409614, 0x404170];
     // One native owner. 0 = empty, 1 = being copied, 2 = captured. The first
     // refusing read is retained until the worker takes it for upload.
     static REFUSAL_STATE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-    static REFUSAL_WORDS: [core::sync::atomic::AtomicU32; 11] = [const { core::sync::atomic::AtomicU32::new(0) }; 11];
+    static REFUSAL_WORDS: [core::sync::atomic::AtomicU32; 15] = [const { core::sync::atomic::AtomicU32::new(0) }; 15];
     fn save_refusal(regs: &mut Registers, status: [u32; 4]) {
         use core::sync::atomic::Ordering;
         if REFUSAL_STATE.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() { return; }
         let values = REFUSAL_REGISTERS.map(|a| regs.read(a));
-        for (slot, value) in REFUSAL_WORDS.iter().zip(status.into_iter().chain(values)) {
+        let pri = PRI_REGISTERS.map(|a| regs.read(a));
+        for (slot, value) in REFUSAL_WORDS.iter().zip(status.into_iter().chain(values).chain(pri)) {
             slot.store(value, Ordering::Relaxed);
         }
         REFUSAL_STATE.store(2, Ordering::Release);
     }
-    fn take_refusal() -> Option<([u32; 4], [u32; 7])> {
+    fn take_refusal() -> Option<([u32; 4], [u32; 7], [u32; 4])> {
         use core::sync::atomic::Ordering;
         if REFUSAL_STATE.compare_exchange(2, 1, Ordering::Acquire, Ordering::Relaxed).is_err() { return None; }
         let status = core::array::from_fn(|i| REFUSAL_WORDS[i].load(Ordering::Relaxed));
         let values = core::array::from_fn(|i| REFUSAL_WORDS[i + 4].load(Ordering::Relaxed));
+        let pri = core::array::from_fn(|i| REFUSAL_WORDS[i + 11].load(Ordering::Relaxed));
         REFUSAL_STATE.store(0, Ordering::Release);
-        Some((status, values))
+        Some((status, values, pri))
     }
     /// Keep the words from the failing read for the bulk refusal record.
     /// G19 emits this record from the worker or suite thread.
     fn record_trap(regs: &mut Registers, status: [u32; 4]) -> Result<(), &'static str> {
         let values = REFUSAL_REGISTERS.map(|a| regs.read(a));
-        emit_refusal(status, values)
+        let pri = PRI_REGISTERS.map(|a| regs.read(a));
+        emit_refusal(status, values, pri)
     }
-    fn emit_refusal(status: [u32; 4], values: [u32; 7]) -> Result<(), &'static str> {
-        let text = format!("GT710_GR_REFUSAL_V1 {{\"status\":{:?},\"registers\":{:?},\"values\":{:?}}}",
-            status, REFUSAL_REGISTERS, values);
+    fn emit_refusal(status: [u32; 4], values: [u32; 7], pri: [u32; 4]) -> Result<(), &'static str> {
+        let text = format!("GT710_GR_REFUSAL_V1 {{\"status\":{:?},\"registers\":{:?},\"values\":{:?},\"pri_registers\":{:?},\"pri_values\":{:?}}}",
+            status, REFUSAL_REGISTERS, values, PRI_REGISTERS, pri);
         let bytes = text.len();
         let digest = crate::gk208::hash(text.as_bytes());
         crate::gk208::bulk::line(text)?;
         crate::serial_println!("GT710_GR_REFUSAL_BULK bytes={} sha256={}", bytes, digest);
         Ok(())
     }
-    fn checked_traps(regs: &mut Registers, words: [u32; 4]) -> Result<(), &'static str> {
-        if words != [0; 4] { record_trap(regs, words)?; }
-        super::super::binding::check_traps(words)
+    fn checked_traps(regs: &mut Registers, words: &mut [u32; 4]) -> Result<(), &'static str> {
+        match super::super::error::read_traps(regs, Some(*words)) {
+            Ok(readable) => { *words = readable; super::super::binding::check_traps(readable) }
+            Err(reason) => {
+                if let Some((status, values, pri)) = take_refusal() { emit_refusal(status, values, pri)?; }
+                Err(reason)
+            }
+        }
     }
     struct Monitor<'a> {
         session: &'a Session,
@@ -1826,8 +1841,7 @@ mod native {
     impl Poll for Monitor<'_> {
         fn snapshot(&mut self) -> Result<(u32, u64, bool), &'static str> {
             if self.stop_on_trap {
-                let words = super::super::binding::TRAP_REGISTERS.map(|a| self.regs.read(a));
-                if words != [0; 4] { save_refusal(self.regs, words); }
+                let words = super::super::error::read_traps(self.regs, None)?;
                 super::super::binding::check_traps(words)?;
                 let p = self.session.pbdma * 0x2000;
                 if self.regs.read(0x259c) != 0 || self.regs.read(0x40108 + p) != 0

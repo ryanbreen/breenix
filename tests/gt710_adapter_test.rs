@@ -105,19 +105,21 @@ pub mod gk208 {
 use gpu::dev::{Reap,Tag};
 use gk208::{adapter::{Device,Request},copy::Rect,gr::channel::NativeChannel};
 pub struct State {
-    epoch:u64,channel:u64,release_epoch:u64,release:u32,drain:u32,fault:bool,
+    now:u64,epoch:u64,channel:u64,release_epoch:u64,release:u32,drain:u32,fault:bool,
     transient_trap:bool,refusals:Vec<[u32;4]>,registers:std::collections::BTreeMap<usize,u32>,writes:Vec<(usize,u32)>,
     trap_at_health:bool,trap_at_sample:bool,fail_ack:bool,trap_after_samples:u32,delayed_trap_sequence:u32,
     fail_reset:bool,fail_unbind:bool,fail_publish:bool,refuse_publish:bool,stopped:bool,operations:Vec<&'static str>,published:Vec<u32>,events:Vec<&'static str>,expected_draw:Vec<u32>,
 }
 fn device()->(Device,Rc<RefCell<State>>) {
-    let s=Rc::new(RefCell::new(State{epoch:17,channel:0x123000,release_epoch:17,release:0,drain:0,fault:false,
+    let s=Rc::new(RefCell::new(State{now:0,epoch:17,channel:0x123000,release_epoch:17,release:0,drain:0,fault:false,
         transient_trap:false,refusals:vec![],registers:Default::default(),writes:vec![],trap_at_health:false,trap_at_sample:false,fail_ack:false,trap_after_samples:0,delayed_trap_sequence:0,fail_reset:false,fail_unbind:false,fail_publish:false,refuse_publish:false,stopped:false,operations:vec![],published:vec![],events:vec![],expected_draw:vec![0x20010367,0]}));
     (Device::new(NativeChannel(s.clone()),gk208::caps::BoardState::empty()),s)
 }
 // The model exposes actual PFIFO MMU status/instance/address registers to the
 // production decoder. Acknowledgement does not invent the engine's release.
 impl gk208::gr::error::Io for State {
+    fn now_us(&mut self)->u64 {self.now}
+    fn delay_us(&mut self,us:u64) {self.now+=us;}
     fn refuse_trap(&mut self, words:[u32;4])->Result<(),&'static str> {
         assert_ne!(words,[0;4]);self.refusals.push(words);self.events.push("trap-record");Ok(())
     }
@@ -508,4 +510,18 @@ fn g19_refusal_keeps_all_four_transient_pgraph_words() {
     assert_eq!(s.refusals,[[1,2,3,4]]);
     assert_eq!(gk208::gr::error::capture(&mut *s),Ok(None));
     assert_eq!(s.refusals,[[1,2,3,4]]);
+}
+
+#[test]
+fn pri_sampling_precedes_mmu_attribution_and_retains_persistent_failure() {
+    let (_,s)=device();let mut s=s.borrow_mut();
+    s.plant_mmu(1);s.transient_trap=true;
+    s.registers.insert(0x400100,0xbadf1201);
+    let trap=gk208::gr::error::capture(&mut *s).unwrap().unwrap();
+    assert_eq!(trap.status,0x60010000);assert_eq!(s.now,10);assert!(s.refusals.is_empty());
+    s.transient_trap=false;s.registers.insert(0x400100,0xbadf1201);
+    let start=s.now;
+    assert_eq!(gk208::gr::error::capture(&mut *s),Err("GR PRI unreachable"));
+    assert_eq!(s.now-start,1000);assert_eq!(s.refusals,[[0xbadf1201,0,0,0]]);
+    assert!(s.writes.is_empty(),"PRI sampling must not acknowledge the MMU fault");
 }

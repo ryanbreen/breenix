@@ -81,7 +81,7 @@ class LiveUnwind(unittest.TestCase):
         probe_finish = probe[probe.index('    // This also runs'):probe.rindex('}')]
         # Pre-live helpers are separate from the live operations under test.
         harness = (ROOT / 'tests/fixtures/gt710_gr_live_unwind.rs').read_text()
-        checked = 'fn checked_traps(_: &mut Registers, words:[u32;4])->Result<(), &\'static str>{binding::check_traps(words)}'
+        checked = 'fn checked_traps(_: &mut Registers, words:&mut [u32;4])->Result<(), &\'static str>{binding::check_traps(*words)}'
         for key, value in [('SESSION', checked + '\n' + nonce + '\n' + session + '\n' + methods), ('FLOW', flow),
                            ('FINISH', finish), ('PROBE_FINISH', probe_finish),
                            ('CLEANUP', gr[gr.index('struct ProbeCleanup'):gr.index('/// Capture startup')])]:

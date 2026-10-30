@@ -35,6 +35,13 @@ class GrRefusalReport(unittest.TestCase):
                     'SUITE_SEQUENCE READY gpu\n')
                 return API['capture_serial'](p)
             self.assertIn('GT710_GR_REFUSAL_V1 ' + json.dumps(row), capture(row))
+            pri = dict(row, pri_registers=[0x400100, 0x200, 0x409614, 0x404170],
+                       pri_values=[0xbadf1201, 0xe011316d, 0x270, 0x10])
+            self.assertIn('GT710_GR_REFUSAL_V1 ' + json.dumps(pri), capture(pri))
+            for field, value in [('pri_registers', [0x400100]), ('pri_values', [0]*3),
+                                 ('pri_values', [True, 0, 0, 0]), ('pri_values', [-1]*4)]:
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    capture(dict(pri, **{field: value}))
             for change in [lambda a: '', lambda a: a + a,
                            lambda a: a.replace('bytes=', 'bytes=0'),
                            lambda a: a.replace('sha256=', 'sha256=0')]:

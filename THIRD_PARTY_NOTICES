@@ -1469,3 +1469,14 @@ Checked file headers in nouveau at Linux v6.8 / e8f897f4afef0031fe618a8e94127a09
 The full MIT grants and original notices are retained in the adapted files.
 G19 adds the pre-reset channel preempt confirmation and retains all backing
 when it refuses. No external source is added to the shared GPU policy layer.
+
+GT 710 PRI-aware trap sampling (milestone 8.5)
+--------------------------------------------
+Consumers: kernel/src/gpu/gk208/gr/{error,channel}.rs.
+The context-load red-switch explanation uses the checked MIT header in
+vendor/kepler/nouveau/hub.fuc:432-445 (Copyright 2011 Red Hat Inc.),
+from Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba. The original
+copyright and full MIT grant remain in both consumers. The sentinel
+classification, bounded polling and refusal storage are Breenix code;
+the red-switch explanation is an inference from the recorded race, not
+a hardware acceptance result. Firmware bytes are unchanged.

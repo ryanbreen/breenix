@@ -1,5 +1,5 @@
 /*
- * Copyright 2012, 2021 Red Hat Inc.
+ * Copyright 2011, 2012, 2021 Red Hat Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -136,6 +136,8 @@ pub fn commands(target: u64, epoch: u64, sequence: u32) -> Result<Vec<u32>, &'st
 pub trait Io {
     fn read(&mut self, address: usize) -> u32;
     fn write(&mut self, address: usize, value: u32);
+    fn now_us(&mut self) -> u64;
+    fn delay_us(&mut self, us: u64);
     fn refuse_trap(&mut self, words: [u32; 4]) -> Result<(), &'static str>;
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,14 +147,35 @@ pub struct Trap {
     pub status: u32,
     pub raw: [u32; 4],
 }
+/// A FECS context load can temporarily make a PGRAPH PRI read unavailable
+/// (MIT nouveau hub.fuc:432-445 red-switch). A PRI sentinel is not trap bits.
+/// Retry only that condition; retain any genuine nonzero word immediately.
+/// The wall-clock deadline and poll-count cap both bound the worker wait.
+pub fn read_traps(io: &mut impl Io, initial: Option<[u32; 4]>) -> Result<[u32; 4], &'static str> {
+    let start = io.now_us();
+    let registers = [0x400100, 0x400108, 0x400110, 0x400118];
+    let mut words = initial.unwrap_or_else(|| registers.map(|r| io.read(r)));
+    for poll in 0..=100 {
+        if words.iter().any(|&word| word != 0 && word >> 16 != 0xbadf) {
+            io.refuse_trap(words)?;
+            return Err("shader binding PGRAPH trap/exception");
+        }
+        if words == [0; 4] { return Ok(words); }
+        let elapsed = io.now_us().saturating_sub(start);
+        if elapsed >= 1000 || poll == 100 {
+            io.refuse_trap(words)?;
+            return Err("GR PRI unreachable");
+        }
+        io.delay_us((1000 - elapsed).min(10));
+        words = registers.map(|r| io.read(r));
+    }
+    unreachable!()
+}
 /// Read before W1C. Foreign engines, PGRAPH exceptions, unexpected addresses
 /// and non-PDE/PTE faults retain the confirmed-reset path.
 pub fn capture(io: &mut impl Io) -> Result<Option<Trap>, &'static str> {
-    let words = [0x400100, 0x400108, 0x400110, 0x400118].map(|r| io.read(r));
-    if words != [0; 4] {
-        io.refuse_trap(words)?;
-        return Err("unhandled PGRAPH fault; backing retained");
-    }
+    read_traps(io, None).map_err(|reason| if reason == "GR PRI unreachable" { reason }
+        else { "unhandled PGRAPH fault; backing retained" })?;
     let mask = io.read(0x259c);
     if mask == 0 { return Ok(None); }
     // Only GR unit 0 can produce this A197 report write.
