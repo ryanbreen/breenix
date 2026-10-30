@@ -322,8 +322,9 @@ fn run_epoch(device: &mut adapter::Device, epoch: Option<u64>) -> Result<(), &'s
         let phase = if epoch.is_some() { "caps-reprobe" } else { "caps-probe" };
         let incarnation = epoch.map(|e| format!(",\"epoch\":{e}")).unwrap_or_default();
         // Startup uploads the complete paired images. A fresh run hashes its
-        // actual readbacks; the host resolves both digests to those same bytes.
-        let images = if epoch.is_some() {
+        // actual readbacks; only exact images can reference those startup bytes.
+        // Failed or inexact observations retain their own bytes for diagnosis.
+        let images = if epoch.is_some() && first == expected && second == expected {
             format!("\"first_sha256\":\"{}\",\"second_sha256\":\"{}\"", hash(&first), hash(&second))
         } else {
             format!("\"first\":\"{}\",\"second\":\"{}\"", hex(&first), hex(&second))
