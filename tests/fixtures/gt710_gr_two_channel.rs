@@ -66,7 +66,7 @@ impl Context {
 }
 mod system_dma {
     pub struct Pages;
-    impl Pages {pub fn new(n:usize,_:&())->Result<Self,&'static str>{assert_eq!(n,17);Ok(Self)}pub fn address(&self,i:usize)->u64{0x80000000+i as u64*4096}}
+    impl Pages {pub fn new(n:usize,_:&())->Result<Self,&'static str>{assert_eq!(n,17);Ok(Self)}pub fn address(&self,i:usize)->u64{0x80000000+i as u64*4096}pub fn identify(&self,_:&'static str,_:u32){}}
     pub fn translation_status()->Result<(),&'static str>{Ok(())}
 }
 mod modeset {
@@ -108,6 +108,7 @@ fn assert_pair(s:&Session,h:&Hardware<'_>,g:&Golden){
         assert_eq!(h.regs.vram[&(inst+0x210)],0x3000004);
         let header=[h.regs.vram[&c.image.range.start],h.regs.vram[&(c.image.range.start+4)]];
         assert_eq!(header,[2,0x100300]);
+        for (i, bytes) in c.pristine.chunks_exact(4).enumerate() {assert_eq!(h.regs.vram[&(c.image.range.start+i as u64*4)],u32::from_le_bytes(bytes.try_into().unwrap()));}
         for off in (8..256).step_by(4) {assert_eq!(h.regs.vram[&(c.image.range.start+off)],0);}
         for off in (256..4096).step_by(4) {assert_eq!(h.regs.vram[&(c.image.range.start+off)],u32::from_le_bytes(g.runnable[off as usize..off as usize+4].try_into().unwrap()));}
         for (i,p) in g.patches.iter().enumerate(){for j in 0..2 {assert_eq!(h.regs.vram[&(c.mmio.range.start+i as u64*8+j as u64*4)],p[j]);}}

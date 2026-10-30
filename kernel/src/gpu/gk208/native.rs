@@ -1077,10 +1077,12 @@ impl CoreProducer {
         use super::{adapter::{Operation, Request}, core_record::{Completion, Control}};
         use crate::gpu::{dev::{Reap, Request as DevRequest, Tag}, dev::Device};
         use crate::gpu_completion::CeSample;
-        let Device::Gk208(d) = &*device else { return Err("core producer backend mismatch") };
+        let Device::Gk208(d) = &mut *device else { return Err("core producer backend mismatch") };
+        // The producer borrows the adapter outside CORE, as CAPS does.
+        d.retry_pri();
         let (context, epoch, sequence) = d.probe_identity()?;
         let (resource, kind) = match operation {
-            Operation::Transfer(_) => return Err("core producer uses explicit probe copies"),
+            Operation::Transfer(_) | Operation::Undefined => return Err("core producer uses explicit probe copies"),
             Operation::Copy(rect) => (rect.dst, gpu_abi::gk208::TRANSFER_RELEASE),
             Operation::Draw(draw) => (draw.target_va, gpu_abi::gk208::DRAW_RELEASE),
         };
@@ -1088,7 +1090,7 @@ impl CoreProducer {
         let caller = (1u64 << 32) | u64::from(sequence);
         let identity = crate::gpu_completion::Request { context, epoch, caller, sequence, resource, generation: 1 };
         let mut request = match operation {
-            Operation::Transfer(_) => return Err("core producer uses explicit probe copies"),
+            Operation::Transfer(_) | Operation::Undefined => return Err("core producer uses explicit probe copies"),
             Operation::Copy(rect) => Request::copy(Tag::Sync(caller), caller, resource, 1, rect),
             Operation::Draw(draw) => Request::draw(Tag::Sync(caller), caller, resource, 1, draw),
         };
@@ -1135,6 +1137,7 @@ impl CoreProducer {
                         return Ok(());
                     }
                     Reap::Fault => return Err("core adapter engine fault"),
+                    Reap::Reset(_) => return Err("core adapter request ended by engine reset"),
                     Reap::Empty => (),
                 }
                 let Device::Gk208(d) = &mut *device else { unreachable!() };

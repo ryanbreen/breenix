@@ -2,9 +2,9 @@
 // Hardware substitutes for the production restart and constructor FIFO writes.
 use std::{cell::RefCell, collections::BTreeMap};
 const COMMAND: u64 = 0x1000000;
-struct State { vram: BTreeMap<u64,u32>, health: Result<(u32,u64,bool), &'static str>, reasons: Vec<String> }
+struct State { vram: BTreeMap<u64,u32>, health: Result<(u32,u64,bool), &'static str>, reasons: Vec<String>, accessible: bool, refuse_access: bool }
 thread_local! { static STATE: RefCell<State> = RefCell::new(State {
-    vram: BTreeMap::new(), health: Ok((0,0,false)), reasons: vec![] }); }
+    vram: BTreeMap::new(), health: Ok((0,0,false)), reasons: vec![], accessible:false, refuse_access:false }); }
 struct Registers(usize);
 impl Registers {
     fn mask(&mut self, _:usize, _:u32, _:u32) { assert_eq!(self.0, 7); }
@@ -18,9 +18,13 @@ fn word(address:u64)->u32 { STATE.with(|s| *s.borrow().vram.get(&address).unwrap
 mod modeset { pub fn bar_flush(_: &mut super::Registers)->Result<(), &'static str> { Ok(()) } }
 mod topology { pub fn decode(_: &[[u32;2];3])->Result<(), &'static str> { Ok(()) } }
 mod ctxctl {
+    pub fn enable(_: &mut super::Registers)->Result<(), &'static str> {
+        super::STATE.with(|s| {let mut s=s.borrow_mut();
+            if s.refuse_access {Err("GR PRI inaccessible")} else {s.accessible=true;Ok(())}})
+    }
     pub struct Controller;
     impl Controller {
-        pub fn upload(_: &mut super::Registers, _: &(), _: [u64;2])->Result<Self, &'static str> { Ok(Self) }
+        pub fn upload(_: &mut super::Registers, _: &(), _: [u64;2])->Result<Self, &'static str> { super::STATE.with(|s|assert!(s.borrow().accessible,"firmware upload before GR accessibility confirmation")); Ok(Self) }
         pub fn start(&mut self, _: &mut super::Registers)->Result<(), &'static str> { Ok(()) }
     }
 }
@@ -64,7 +68,7 @@ impl NativeChannel {
     fn record_fault(&self, error:&str) { STATE.with(|s|s.borrow_mut().reasons.push(error.into())); }
 }
 fn channel()->NativeChannel {
-    NativeChannel { confirmed:true, initial:vec![0;16], registers:7, total:1<<30, topology:[[0;2];3], mmu:[0;2], put:6481,
+    NativeChannel { confirmed:true, initial:[5u32,0x1234,0,0].into_iter().flat_map(u32::to_le_bytes).collect(), registers:7, total:1<<30, topology:[[0;2];3], mmu:[0;2], put:6481,
         session:Session { image:Allocation {range:Range {start:0x400000}}, commands:Allocation {range:Range {start:0x100000}},
             userd:0x102200, report:Report {identity:Identity {instance:0x300000,epoch:17,id:1}}, context:Context,
             admitted:true, quiesced:true, copy:Some(Copy {base:0x106000,reset:22}), next_sequence:6482, pages:Pages(Box::new([85;4096])) } }
@@ -86,8 +90,14 @@ fn constructor(c:&NativeChannel)->Result<(), &'static str> {
         for off in (0..0x200).step_by(4) {s.vram.insert(instance+off,0xdeadbeef);s.vram.insert(c.session.userd+off,0xdeadbeef);}
         for off in (0..4096).step_by(4) {s.vram.insert(c.session.commands.range.start+off,0xdeadbeef);}
         s.vram.insert(instance+0x200,0x12345001);s.vram.insert(instance+0x210,0x76543004);
+        // FECS consumed the live image's MMIO header. Restart must use the
+        // pristine golden template and restore its count (G19).
+        s.vram.insert(c.session.image.range.start,0);
+        s.vram.insert(c.session.image.range.start+4,0);
     });
     assert_eq!(c.restart(),Ok(()));
+    assert_eq!(word(c.session.image.range.start),5);
+    assert_eq!(word(c.session.image.range.start+4),0x1234);
     assert_eq!(word(instance+0x10),0xface,"restart must preserve the RAMFC signature");
     assert_eq!((0..0x200).step_by(4).map(|off|word(instance+off)).collect::<Vec<_>>(),expected);
     assert_eq!(word(instance+0x200),0x12345001);assert_eq!(word(instance+0x210),0x76543004);
@@ -102,4 +112,13 @@ fn constructor(c:&NativeChannel)->Result<(), &'static str> {
     STATE.with(|s|s.borrow_mut().health=Err("injected post-restart health failure"));
     assert_eq!(c.restart(),Err("injected post-restart health failure"));
     STATE.with(|s|assert_eq!(s.borrow().reasons,["injected post-restart health failure"]));
+}
+
+#[test] fn inaccessible_gr_forbids_firmware_upload_and_channel_restart() {
+    let mut c=channel();
+    STATE.with(|s| s.borrow_mut().refuse_access=true);
+    assert_eq!(c.restart(),Err("GR PRI inaccessible"));
+    assert_eq!(c.session.report.identity.epoch,17);
+    assert!(c.session.quiesced);
+    assert_eq!(c.put,6481);
 }

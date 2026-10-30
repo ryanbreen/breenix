@@ -2962,6 +2962,7 @@ use core::panic::PanicInfo;
 #[cfg(target_arch = "x86_64")]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
+    kernel::output_accounting::panicking();
     // Try to output panic info if possible
     serial_println!("KERNEL PANIC: {}", info.message());
     log::error!("KERNEL PANIC: {}", info.message());

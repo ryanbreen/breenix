@@ -842,6 +842,7 @@ pub fn write_bytes_atomic(writer: Writer, bytes: &[u8]) {
     }
     // Terminal text belongs to its reader, not the persistent kernel log.
     if writer == Writer::Kernel {
+        crate::output_accounting::count(bytes.len(), true);
         crate::log_buffer::capture_bytes(lead.iter().chain(bytes));
     }
     if let Some(&last) = bytes.last() {
@@ -872,6 +873,9 @@ impl fmt::Write for Unit<'_> {
         let Some(&last) = s.as_bytes().last() else {
             return Ok(());
         };
+        if self.writer == Writer::Kernel {
+            crate::output_accounting::count(s.len(), true);
+        }
         for &byte in crate::serial_writer::lead(self.writer, s.as_bytes()).iter().chain(s.as_bytes()) {
             queue_byte(self.queue, byte, self.writer);
         }
@@ -1111,6 +1115,7 @@ pub fn emergency_print(args: fmt::Arguments) -> Result<(), ()> {
 
     impl fmt::Write for EmergencySerial {
         fn write_str(&mut self, s: &str) -> fmt::Result {
+            crate::output_accounting::count(s.len(), false);
             for byte in s.bytes() {
                 unsafe {
                     // Direct port I/O to COM1
@@ -1219,6 +1224,22 @@ pub fn _log_print(args: fmt::Arguments) {
 /// can, waiting on the UART with interrupts as the caller has them. The
 /// reserve makes that a last resort.
 pub(crate) fn enqueue_log(args: fmt::Arguments) -> u64 {
+    use core::fmt::Write;
+    struct Count(usize);
+    impl fmt::Write for Count {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            self.0 += s.len();
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    let _ = count.write_fmt(args);
+    crate::output_accounting::count(count.0, true);
+    enqueue_log_unaccounted(args)
+}
+
+// Posted notices were counted at their producer, not at the drain.
+fn enqueue_log_unaccounted(args: fmt::Arguments) -> u64 {
     loop {
         let appended = crate::arch_without_interrupts(|| {
             let mut ring = LOG_RING.lock();
@@ -1246,7 +1267,7 @@ pub fn write_notices() {
     crate::arch_without_interrupts(|| {
         crate::log_notice::take(|line| {
             let text = core::str::from_utf8(line).unwrap_or("[log: notice is not UTF-8]\n");
-            enqueue_log(format_args!("{}", text));
+            enqueue_log_unaccounted(format_args!("{}", text));
         })
     });
 }

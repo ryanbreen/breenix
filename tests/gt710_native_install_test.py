@@ -53,8 +53,8 @@ mod installation {
 """
         fixture = fixture.replace('// INSTALL', install)
         fixture = fixture.replace('pub mod gk208 {', 'pub mod gk208 { pub fn console_surface()->Option<()>{Some(())}')
-        fixture = fixture.replace('pub enum Reap {Empty,Done(Done),Fault}',
-            'pub enum Reap {Empty,Done(Done),Fault} pub enum Device { Gk208(crate::gk208::adapter::Device), Other }')
+        fixture = fixture.replace('pub enum Reap {Empty,Done(Done),Fault,Reset(Tag)}',
+            'pub enum Reap {Empty,Done(Done),Fault,Reset(Tag)} pub enum Device { Gk208(crate::gk208::adapter::Device), Other }')
         fixture = fixture.replace('../../kernel/', str(ROOT / 'kernel') + '/').replace('../kernel/', str(ROOT / 'kernel') + '/')
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
         with tempfile.TemporaryDirectory() as tmp:

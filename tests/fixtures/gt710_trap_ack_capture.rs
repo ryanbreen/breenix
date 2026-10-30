@@ -31,6 +31,7 @@ mod ctxctl {
     }
 }
 fn hardware_error(s:&'static str)->&'static str{s}
+fn checked_traps(_:&mut Registers, words:[u32;4])->Result<(),&'static str>{binding::check_traps(words)}
 fn register_wait(r:&mut Registers,a:usize,_:u32,_:u32,_:u64)->Result<(),&'static str>{
     r.write(0xf00000+a,0);
     if a==0x2634 && (r.stuck || r.read(0x400100)!=0 || r.read(0x400500)!=0x10001) {return Err("preempt timeout");}

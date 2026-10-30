@@ -105,7 +105,8 @@ struct Mock {
     regs: BTreeMap<u32,u32>, memory: BTreeMap<(u32,bool,u32),u32>,
     index: BTreeMap<(u32,bool),u32>, events: Vec<Event>,
     now: u64, frozen: bool, fast_clock: bool, ticks: u64, record: bool, corrupt: Option<(u32,bool,u32)>,
-    ready: bool, gpc_ready: bool, reply: bool, pgob_stuck: bool,
+    fifo_reads: std::collections::VecDeque<u32>, fifo_refuses: bool,
+    ready: bool, gpc_ready: bool, reply: bool, pgob_stuck: bool, pri_ready_at: u64,
 }
 impl Mock {
     fn new() -> Self {
@@ -113,7 +114,8 @@ impl Mock {
                 (0x502608,2), (0x500c30,3), (0x409108,0x20040), (0x502108,0x20040),
                 (0x120074,1), (0x100800,1)]), memory: BTreeMap::new(),
             index: BTreeMap::new(), events: vec![], now:0, frozen:false, fast_clock:false, ticks:0, record:true,
-            corrupt:None, ready:true, gpc_ready:true, reply:true, pgob_stuck:false }
+            fifo_reads: Default::default(), fifo_refuses: false,
+            corrupt:None, ready:true, gpc_ready:true, reply:true, pgob_stuck:false, pri_ready_at:0 }
     }
     fn port(a:u32) -> Option<(u32,bool,bool)> {
         let base=a & !0xfff;
@@ -126,18 +128,26 @@ impl Mock {
 }
 impl Access for Mock {
     fn read(&mut self,a:u32)->u32 {
-        let v=if let Some((b,c,true))=Self::port(a) {
+        let v=if a == 0x400500 && !self.fifo_reads.is_empty() {
+            self.fifo_reads.pop_front().unwrap()
+        } else if let Some((b,c,true))=Self::port(a) {
             let index=*self.index.get(&(b,c)).unwrap_or(&0);
             let offset=index & 0xffff;
             let mut v=*self.memory.get(&(b,c,offset)).unwrap_or(&0);
             if self.corrupt==Some((b,c,offset)) { v^=1; }
             if index & 0x02000000!=0 { self.index.insert((b,c),index+4); }
             v
+        } else if a == 0x400100 && (self.regs[&0x200] & 0x1000 == 0 || self.now < self.pri_ready_at) {
+            0xbadf1201
+        } else if a == 0x400500 && self.regs[&0x200] & 0x1000 == 0 {
+            // Measured cold-boot PRI response while PMC disables PGRAPH.
+            0xbadf1201
         } else { *self.regs.get(&a).unwrap_or(&0) };
         if self.record { self.events.push(Event::Read(a,v)); } v
     }
     fn write(&mut self,a:u32,v:u32) {
         if self.record { self.events.push(Event::Write(a,v)); }
+        if a == 0x400500 && (self.regs[&0x200] & 0x1000 == 0 || self.fifo_refuses) { return; }
         if let Some((b,c,data))=Self::port(a) {
             let bases=if b==0x41a000 { vec![0x502000] } else { vec![b] };
             for b in bases {
@@ -297,7 +307,13 @@ fn ctxctl_bad_size_caps_and_busy_engine_are_errors() {
 #[test]
 fn ctxctl_power_on_exits_pgob_before_topology_without_resetting_fifo_or_ce() {
     let mut m = Mock::new();
+    m.regs.entry(0x200).and_modify(|v| *v |= 0x1000);
+    m.regs.insert(0x400500, 3);
     ctxctl::reset(&mut m).unwrap();
+    assert_eq!(m.regs[&0x400500], 2);
+    let stop = m.events.iter().position(|e| *e == Event::Write(0x400500, 2)).unwrap();
+    let pulse = m.events.iter().position(|e| matches!(e, Event::Write(0x200, _))).unwrap();
+    assert!(stop < pulse, "GR FIFO access must stop before PMC reset (G19)");
     let sequence: Vec<_> = m.events.iter().filter_map(|event| match event {
         Event::Write(a @ (0x20520 | 0x20524 | 0x20528 | 0x2052c | 0x20530), v) => Some((*a, *v)),
         _ => None,
@@ -320,6 +336,19 @@ fn ctxctl_power_on_exits_pgob_before_topology_without_resetting_fifo_or_ce() {
         let pos = m.events.iter().position(|e| *e == Event::Write(a,v)).unwrap();
         assert_eq!(m.events[pos+1], Event::Read(a,v & 0x7fffffff));
     }
+}
+
+#[test]
+fn ctxctl_cold_reset_does_not_access_disabled_pgraph() {
+    let mut m = Mock::new();
+    assert_eq!(m.regs[&0x200] & 0x1000, 0);
+    ctxctl::reset(&mut m).unwrap();
+    let enable = m.events.iter().position(|e| matches!(e,
+        Event::Write(0x200, v) if v & 0x1000 != 0)).unwrap();
+    assert!(!m.events[..enable].iter().any(|e| matches!(e,
+        Event::Read(0x400500, _) | Event::Write(0x400500, _))),
+        "disabled GR cannot accept FIFO accesses");
+    assert_eq!(m.regs[&0x200] & 0x1000, 0x1000);
 }
 
 #[test]
@@ -379,4 +408,50 @@ fn sparse_tpc_mask_uses_logical_register_index() {
     Controller::upload(&mut m, &t, [0x100000, 0x101000]).unwrap();
     assert!(m.events.contains(&Event::Write(0x504508, u32::MAX)));
     assert!(!m.events.contains(&Event::Write(0x504d08, u32::MAX)));
+}
+
+#[test]
+fn reset_waits_for_accessible_pgraph_and_refuses_missing_pri_response() {
+    let mut delayed = Mock::new();
+    delayed.pri_ready_at = 65_000;
+    ctxctl::reset(&mut delayed).unwrap();
+    assert!(delayed.events.contains(&Event::Read(0x400100, 0)),
+        "PMC enable alone does not confirm a PGRAPH PRI response before restart");
+    assert!(delayed.now >= delayed.pri_ready_at);
+    let mut absent = Mock::new();
+    absent.pri_ready_at = u64::MAX;
+    let error = ctxctl::reset(&mut absent).unwrap_err();
+    assert_eq!(error.address, 0x400100);
+    assert_eq!(error.value, 0xbadf1201);
+    assert!(error.elapsed_us >= BOUND_US);
+}
+
+#[test]
+fn active_reset_never_writes_a_pri_sentinel_or_calls_it_fifo_refusal() {
+    for sentinel in [0xbadf1201, 0xbadf0000, 0xbadfffff] {
+        for after_write in [false, true] {
+            let mut m = Mock::new();
+            m.regs.insert(0x200, 0x1100);
+            m.regs.insert(0x400500, 0x10001);
+            m.fifo_reads = if after_write {vec![0x10001, sentinel, 0x10000]} else {vec![sentinel, 0x10001]}.into();
+            reset(&mut m).unwrap();
+            assert!(m.events.contains(&Event::Write(0x400500, 0x10000)));
+            assert!(!m.events.iter().any(|e| matches!(e, Event::Write(0x400500, v) if *v >> 16 == 0xbadf)));
+        }
+        let mut m = Mock::new();
+        m.regs.insert(0x200, 0x1100);
+        m.regs.insert(0x400500, sentinel);
+        let error = reset(&mut m).unwrap_err();
+        assert_ne!(error.reason, "GR FIFO disable refused");
+        assert_eq!((error.address, error.value), (0x400500, sentinel));
+        assert!(!m.events.iter().any(|e| matches!(e, Event::Write(0x400500, _))));
+    }
+    let mut m = Mock::new();
+    m.regs.insert(0x200, 0x1100);
+    m.regs.insert(0x400500, 0x10001);
+    m.fifo_refuses = true;
+    let error = reset(&mut m).unwrap_err();
+    assert_eq!(error.reason, "GR FIFO disable refused");
+    assert_eq!(error.value, 0x10001);
+    assert!(!m.events.iter().any(|e| matches!(e, Event::Write(0x200, v) if *v & 0x1000 == 0)));
 }

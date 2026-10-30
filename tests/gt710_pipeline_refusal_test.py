@@ -22,7 +22,13 @@ fn main() {
  assert_eq!(pipeline_refusal(words.as_slice()),None);
  let mut params=[0;16];params[..3].copy_from_slice(&[0,0xffffffff,4]);
  draw::encode(&mut words,pipeline::GRADIENT_V,0,0,0,0,&[draw::Instance {rect:[0,0,4,4],params}]);
- assert_eq!(pipeline_refusal(words.as_slice()),Some(stream::Refusal {index:3,error:stream::error::BAD_PIPELINE}));
+ assert_eq!(pipeline_refusal(words.as_slice()),None);
+ // G16/G17: catalogue IDs 0..16 are admitted; refusals use unassigned IDs.
+ for id in [17,u32::MAX] {
+  let mut invalid=words.clone();
+  stream::encode::draw(&mut invalid,id,0,&[[0,0,4,4]]);
+  assert_eq!(pipeline_refusal(invalid.as_slice()),Some(stream::Refusal {index:4,error:stream::error::BAD_PIPELINE}));
+ }
 }
 '''.replace('// METHOD', method)
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []

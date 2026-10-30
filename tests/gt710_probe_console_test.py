@@ -65,8 +65,9 @@ mod channel {
 mod ce {
     use super::*;
     pub fn probe(_: &mut Registers, _: &Device, _: &mut Layout, _: &Console) -> Result<(), &'static str> { Ok(()) }
-    pub fn retain(layout: Layout, regs: usize, bar: usize) -> Result<(), &'static str> {
+    pub fn retain(layout: Layout, regs: usize, bar: usize, console: Console) -> Result<(), &'static str> {
         assert_eq!((layout.objects[0].range.start, regs, bar), (4096, 8192, 16384));
+        assert_eq!(console.pointer, 16640);
         RETAINED.store(true, Ordering::SeqCst); Ok(())
     }
 }

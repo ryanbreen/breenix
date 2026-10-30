@@ -16,6 +16,16 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+Native GK208B milestone 8 step 8.5 adds isolation, warm-up and MMU recovery
+through the shared GPU core in [PR #2587](https://github.com/ryanbreen/breenix/pull/2587).
+Its acceptance record reports console 88/88 and GPU 140/140 selected cases at
+`9267f979`, with memory reclaimed on both production captures. The full GPU
+suite reports 149/170; the remaining cases belong to steps 8.6 and 8.7.
+Native stream-limit checks are in
+[gt710_stream_overflow_test.py](../../tests/gt710_stream_overflow_test.py).
+The PR records hardware acceptance and landing status; remaining review
+follow-ups are tracked in [#2590](https://github.com/ryanbreen/breenix/issues/2590).
+
 Native GK208B milestone 8 step 8.1 registers the shared GPU core and native
 completion evidence in [PR #2562](https://github.com/ryanbreen/breenix/pull/2562)
 ([acceptance contract](../gui/gt710-core-acceptance.md)). Formats remain unprobed

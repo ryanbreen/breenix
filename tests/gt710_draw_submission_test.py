@@ -60,6 +60,7 @@ const TARGET:u64=0x600000;
 struct Registers;
 impl Registers {fn read(&self,_:usize)->u32 {0}}
 struct Hardware<'a> {regs:&'a mut Registers}
+fn checked_traps(_: &mut Registers,words:[u32;4])->Result<(),&'static str>{binding::check_traps(words)}
 struct Identity {epoch:u64}
 struct Report {identity:Identity}
 struct Session {report:Report,next_sequence:u32,prepared:bool,accept:bool,stream:Vec<u32>}

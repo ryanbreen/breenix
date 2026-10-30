@@ -37,6 +37,8 @@ impl Runner<'_> {
         }
         let start = crate::arch_impl::x86_64::timer::rdtsc();
         loop {
+            // This startup/reprobe runner owns the adapter outside CORE.
+            self.device.retry_pri();
             match self.device.reap() {
                 Reap::Done(done) => {
                     if done.answer != gpu_abi::gk208::SUCCESS
@@ -48,6 +50,7 @@ impl Runner<'_> {
                     return Ok(());
                 }
                 Reap::Fault => return Err(self.device.fault_reason().unwrap_or("native CAPS engine fault")),
+                Reap::Reset(_) => return Err("native CAPS request ended by engine reset"),
                 Reap::Empty => (),
             }
             if crate::gk208::channel::elapsed(start) > 2_000_000 {
@@ -322,8 +325,9 @@ fn run_epoch(device: &mut adapter::Device, epoch: Option<u64>) -> Result<(), &'s
         let phase = if epoch.is_some() { "caps-reprobe" } else { "caps-probe" };
         let incarnation = epoch.map(|e| format!(",\"epoch\":{e}")).unwrap_or_default();
         // Startup uploads the complete paired images. A fresh run hashes its
-        // actual readbacks; the host resolves both digests to those same bytes.
-        let images = if epoch.is_some() {
+        // actual readbacks; only exact images can reference those startup bytes.
+        // Failed or inexact observations retain their own bytes for diagnosis.
+        let images = if epoch.is_some() && first == expected && second == expected {
             format!("\"first_sha256\":\"{}\",\"second_sha256\":\"{}\"", hash(&first), hash(&second))
         } else {
             format!("\"first\":\"{}\",\"second\":\"{}\"", hex(&first), hex(&second))

@@ -1,0 +1,7 @@
+{
+  "id": "gt710-step-8-6",
+  "suite": "gpu",
+  "cases": [
+    "isolation/irq-masked-bound"
+  ]
+}

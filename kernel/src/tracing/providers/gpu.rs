@@ -9,6 +9,8 @@
 //! path, kept in CPU 0's slot by `fetch_max`. A thread is in a GPU path while it holds a
 //! [`GpuPath`]; the IRQ-masking primitives (`without_interrupts` and `IrqSafeMutex`) time
 //! the intervals they open on such a thread, and the GPU interrupt handler times itself.
+//! On x86, primitive scopes inside an inherited syscall mask are also sampled: they are
+//! measured portions of that masked interval, without assuming its entry timestamp.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -80,13 +82,17 @@ fn record_since(start: u64) {
     GPU_IRQ_MASKED_MAX_US.per_cpu[0].value.fetch_max(us, Ordering::Relaxed);
 }
 
-/// Called by a masking primitive just after it masks IRQs, with the DAIF it saved: the
-/// counter value to time the interval from, or 0 when the interval is not timed (IRQs were
-/// already masked, so this call opens no interval, or the current thread is in no GPU path).
+/// Called just after a primitive masks IRQs, with its saved mask (bit 7 set if masked).
+/// Return a timestamp for a GPU-path thread, or 0 outside one. ARM times only intervals
+/// the primitive opens. x86 also times scopes under an inherited mask: syscall entry
+/// clears IF before GpuPath is entered, so excluding those scopes hides IRQ_HOLD and
+/// native critical sections. Overlapping samples contribute to the maximum via fetch_max.
 #[inline(always)]
 pub fn masked_begin(saved_daif: u64) -> u64 {
     const DAIF_I: u64 = 1 << 7;
-    if saved_daif & DAIF_I != 0 || GPU_PATH_THREADS.load(Ordering::Relaxed) == 0 {
+    if (saved_daif & DAIF_I != 0 && !cfg!(target_arch = "x86_64"))
+        || GPU_PATH_THREADS.load(Ordering::Relaxed) == 0
+    {
         return 0;
     }
     masked_begin_thread()
