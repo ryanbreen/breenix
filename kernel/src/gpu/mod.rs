@@ -3227,7 +3227,7 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
     if dev::backend() == abi::backend::GK208 {
         let catalogue = with_core(|c| c.contexts.get(&id).is_some_and(|ctx| ctx.warm_catalogue)).ok_or(ENODEV)?;
         // A tiny CE upload is fixed input setup, not catalogue warm-up. Do it on
-        // the creating caller's killable wait; kgpu must never wait on itself.
+        // the creating caller's killable wait, avoiding a kgpu self-wait.
         let inputs = if catalogue { Some(native_warm_scratch(tgid)?) } else { None };
         with_core(|c| {
             let ctx = c.contexts.get_mut(&id).ok_or(EIO)?;
@@ -3716,8 +3716,8 @@ fn native_warm_scratch(tgid: u64) -> Result<NativeScratch, i64> {
     Ok(scratch)
 }
 
-/// One asynchronous native catalogue step. The prepared chunks retain every
-/// input through both the destination copy and the native draw release.
+/// One asynchronous native catalogue step. Prepared chunks retain their inputs
+/// through the destination copy and native draw release.
 #[cfg(target_arch = "x86_64")]
 fn native_warm(ctx: u32, target: u32, source: u32, pipe: u32)
     -> Result<Vec<crate::gk208::adapter::EncodedDraw>, i64> {
