@@ -301,6 +301,7 @@ class Driver:
                 else 'console-session' if session(self.args)
                 else {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test'))
         run = {'id': self.id, 'platform': 'metal', 'arch': 'x86_64', 'mode': self.args.mode, 'target': target,
+               'commit': self.args.commit,
                'catchup': bool(getattr(self.args, 'catchup', False)),
                'taskName': self.args.task or self.id, 'watch': False, 'display': False, 'startedAt': m.now(),
                'payload': self.args.payload, 'kind': kind, 'inject': self.args.inject or None,
