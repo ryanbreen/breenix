@@ -73,6 +73,8 @@ pub(super) fn restored_pending() {
 /// client image copied into the retained scanout; end that logical binding too.
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn native_repainted() {
+    // Once admitted, screen::present owns the completed binding and its holds.
+    if display::active() { return; }
     if !crate::gk208::console_state().is_some_and(|(_, _, bound, _)| bound) {
         return;
     }

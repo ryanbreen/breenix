@@ -84,6 +84,20 @@ class DrawReport(unittest.TestCase):
             broken = rows.replace('GT710_DRAW_IMAGE '+name+' ', 'GT710_DRAW_IMAGE missing ')
             self.assertEqual(results(r=broken)[1], 'FAIL')
 
+    def test_requested_address_cannot_replace_latched_surface(self):
+        draw, present, rows = fixture()
+        self.assertEqual(API['cases']('draw', capture(draw, present, rows))[2]['result'], 'PASS')
+        # The requested second surface stays in the report. The actual EVO
+        # active-register value still names the first surface: reporting the
+        # requested address as active must not substitute for the latch read.
+        wrong = copy.deepcopy(present)
+        wrong['active_value'] = 0x400000 >> 8
+        self.assertEqual(wrong['active_address'], wrong['second_address'])
+        self.assertEqual(API['cases']('draw', capture(draw, wrong, rows))[2]['result'], 'FAIL')
+        written = copy.deepcopy(present)
+        written['firmware_writes'] = 1
+        self.assertEqual(API['cases']('draw', capture(draw, written, rows))[2]['result'], 'FAIL')
+
     def test_matching_poison_mutations_and_controls(self):
         draw, present, rows = fixture()
         lines = rows.splitlines(keepends=True)

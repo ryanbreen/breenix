@@ -539,6 +539,12 @@ impl Drop for CanvasHold {
     }
 }
 
+/// Invalidate cached rows after the display storage changes, including GPU admission.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn request_repaint() {
+    REDRAW.store(true, Ordering::Release);
+}
+
 /// Return the display to the retained terminal, repainting even unchanged rows.
 pub fn give_back_display() {
     vt::give_back_display();

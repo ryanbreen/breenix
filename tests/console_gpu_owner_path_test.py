@@ -22,7 +22,7 @@ class ConsoleGpuOwner(unittest.TestCase):
         functions = source[start:end].replace('#[cfg(target_arch = "x86_64")]', '#[cfg(all())]').replace('#[cfg(target_arch = "aarch64")]', '#[cfg(any())]')
         fixture = (ROOT / 'tests/fixtures/console_gpu_owner.rs').read_text()
         # Keep the production x86 cfg selection. The shared gpu_display query is
-        # injected as admitted; all paint/read operations execute production code.
+        # injected as admitted; paint/read operations execute production code.
         fixture = fixture.replace('// OWNER_FUNCTIONS', functions)
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
         with tempfile.TemporaryDirectory() as tmp:

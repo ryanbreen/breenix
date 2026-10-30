@@ -597,7 +597,10 @@ pub(crate) fn install_native(device: crate::gk208::adapter::Device) -> Result<()
     // Admission probes have already bound this channel. An installation error
     // is not a DMA drain, so retain its pages just like probe failure does.
     if let Some(device) = retained { core::mem::forget(device); }
-    if result.is_ok() { compose::register(); }
+    if result.is_ok() {
+        compose::register();
+        crate::console::request_repaint();
+    }
     result
 }
 
