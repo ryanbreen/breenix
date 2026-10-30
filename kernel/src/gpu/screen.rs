@@ -31,6 +31,8 @@ static TARGET: crate::irq_safe_mutex::IrqSafeMutex<Option<Target>> = crate::irq_
 static RESOURCE: AtomicU64 = AtomicU64::new(0);
 /// Completed presents of the kernel's screen, for MODES' `console_draws`.
 static PRESENTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "x86_64")]
+static SAMPLED_READBACK: AtomicBool = AtomicBool::new(false);
 
 /// The target in the device: the private context it was created in, in one reset epoch.
 struct Target {
@@ -315,6 +317,12 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
         Some(Arc::new(Pages::new((band as usize * PITCH).div_ceil(PAGE))
             .ok_or("no frames for the screen's read-back surface")?))
     } else { None };
+    #[cfg(target_arch = "x86_64")]
+    let sample = !SAMPLED_READBACK.swap(true, Ordering::AcqRel);
+    #[cfg(target_arch = "x86_64")]
+    let mut difference = None;
+    #[cfg(target_arch = "x86_64")]
+    let mut observed = if sample { vec![0; PITCH] } else { Vec::new() };
     let mut y = 0;
     while y < HEIGHT {
         let rows = band.min(HEIGHT - y);
@@ -351,6 +359,22 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
             }
             return Err("the device did not transfer the screen back");
         }
+        #[cfg(target_arch = "x86_64")]
+        if sample && difference.is_none() {
+            if let Some(saved) = &saved {
+                for n in 0..rows as usize {
+                    saved.read(n * PITCH, &mut row);
+                    pages.read(offset + n * PITCH, &mut observed);
+                    if let Some(x) = row.chunks_exact(4).zip(observed.chunks_exact(4)).position(|(a, b)| a != b) {
+                        let at = x * 4;
+                        difference = Some((offset + n * PITCH + at,
+                            u32::from_le_bytes(row[at..at + 4].try_into().unwrap()),
+                            u32::from_le_bytes(observed[at..at + 4].try_into().unwrap())));
+                        break;
+                    }
+                }
+            }
+        }
         if readback.is_some() {
             for n in 0..rows as usize {
                 backing.read(n * PITCH, &mut row);
@@ -358,6 +382,11 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
             }
         }
         y += rows;
+    }
+    #[cfg(target_arch = "x86_64")]
+    if sample {
+        let (offset, expected, actual) = difference.unwrap_or((usize::MAX, 0, 0));
+        crate::gk208::console_sample(0, offset, expected, actual);
     }
     Ok((dev::resource_id(target.id).ok_or("the screen has no device resource")?, flush))
 }

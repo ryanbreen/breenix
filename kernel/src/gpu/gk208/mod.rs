@@ -134,6 +134,9 @@ pub(crate) fn console_surface() -> Option<ConsoleSurface> {
     ce::console_allocation().map(|(surface, _)| surface)
 }
 mod rom;
+pub(crate) fn console_sample(stage: usize, offset: usize, expected: u32, actual: u32) {
+    display_evidence::sample(stage, offset, expected, actual);
+}
 pub fn proc_pixels()->Vec<u8> {bulk::take()}
 pub fn proc_ce(op:u8)->Result<Vec<u8>,i32> {ce::proc_read(op)}
 use crate::arch_impl::x86_64::timer;

@@ -6,8 +6,10 @@ use alloc::{format, string::String, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 static BASELINE: AtomicU64 = AtomicU64::new(u64::MAX);
-static STATE: spin::Mutex<State> = spin::Mutex::new(State { sequence: 0, modes: [None, None] });
-struct State { sequence: u64, modes: [Option<Snapshot>; 2] }
+static STATE: spin::Mutex<State> = spin::Mutex::new(State { sequence: 0, modes: [None, None], samples: [None, None], sampled: [false; 2] });
+struct State { sequence: u64, modes: [Option<Snapshot>; 2], samples: [Option<Sample>; 2], sampled: [bool; 2] }
+#[derive(Clone, Copy)]
+struct Sample { offset: usize, expected: u32, actual: u32 }
 #[derive(Clone, Copy)]
 struct Snapshot {
     sequence: u64, mode: usize, resource: u32, requested: u64, head: u32,
@@ -39,11 +41,22 @@ pub(super) fn record(regs: &mut Registers, head: u32, surface: Surface, receipt:
         viewport_active, viewport_armed, raster, firmware_writes });
 }
 
+pub(super) fn sample(stage: usize, offset: usize, expected: u32, actual: u32) {
+    let mut state = STATE.lock();
+    if stage < state.samples.len() && !state.sampled[stage] {
+        state.samples[stage] = Some(Sample { offset, expected, actual });
+        state.sampled[stage] = true;
+    }
+}
+
 pub(super) fn export() -> Vec<(String, String)> {
-    let snapshots = core::mem::take(&mut STATE.lock().modes);
+    let (snapshots, samples) = {
+        let mut state = STATE.lock();
+        (core::mem::take(&mut state.modes), core::mem::take(&mut state.samples))
+    };
     let mut rows: Vec<_> = snapshots.into_iter().flatten().collect();
     rows.sort_by_key(|r| r.sequence);
-    rows.into_iter().map(|r| {
+    let mut result: Vec<_> = rows.into_iter().map(|r| {
         let row = format!(concat!("GT710_DISPLAY_V1 {{\"schema\":1,\"sequence\":{},\"mode\":{},",
             "\"resource\":{},\"requested\":{},\"head\":{},\"pitch\":{},\"block_height\":{},\"format\":{},\"notifier\":{},",
             "\"active\":{:?},\"armed\":{:?},\"viewport_active\":{:?},\"viewport_armed\":{:?},",
@@ -54,5 +67,15 @@ pub(super) fn export() -> Vec<(String, String)> {
         let anchor = format!("GT710_DISPLAY_BULK sequence={} bytes={} sha256={}",
             r.sequence, row.len(), super::hex(&digest));
         (row, anchor)
-    }).collect()
+    }).collect();
+    for (stage, sample) in samples.into_iter().enumerate() {
+        if let Some(s) = sample {
+            let row = format!("GT710_CONSOLE_SAMPLE_V1 {{\"stage\":{},\"offset\":{},\"expected\":{},\"actual\":{}}}",
+                stage, s.offset, s.expected, s.actual);
+            let digest = crate::block::install::sha256::sha256(row.as_bytes());
+            let anchor = format!("GT710_CONSOLE_SAMPLE_BULK stage={} bytes={} sha256={}", stage, row.len(), super::hex(&digest));
+            result.push((row, anchor));
+        }
+    }
+    result
 }

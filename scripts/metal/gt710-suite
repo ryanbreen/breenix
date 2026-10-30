@@ -2572,6 +2572,8 @@ def capture_serial(directory):
         raise ValueError('graphics image rows must arrive in bulk')
     if spans and not matches:
         raise ValueError('spans evidence bulk missing')
+    if re.search(r'^GT710_CONSOLE_SAMPLE_V1 ', serial, re.M):
+        raise ValueError('console samples must arrive in bulk')
     if re.search(r'^GT710_DISPLAY_V1 ', serial, re.M):
         raise ValueError('runtime display records must arrive in bulk')
     if re.search(r'^GT710_SPANS_V1 ', serial, re.M):
@@ -2652,6 +2654,10 @@ def capture_serial(directory):
                     or row.get('answer') != 0x60010000 | (raw[3] & 15)):
                 raise ValueError('inconsistent attributed MMU write record')
             key=('mmu-error', row['epoch'], row['sequence'])
+        elif fields[0]=='GT710_CONSOLE_SAMPLE_V1':
+            row = json.loads(line.removeprefix('GT710_CONSOLE_SAMPLE_V1 '))
+            if row.get('stage') not in (0, 1): raise ValueError('invalid console sample stage')
+            key=('console-sample', row['stage'])
         elif fields[0]=='GT710_DISPLAY_V1':
             row = json.loads(line.removeprefix('GT710_DISPLAY_V1 '))
             if type(row.get('sequence')) is not int or row['sequence'] <= 0:
@@ -2681,6 +2687,9 @@ def capture_serial(directory):
         if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
         groups.setdefault(key,[]).append(line);previous=key
     def report_key(line):
+        sample = re.fullmatch(r'GT710_CONSOLE_SAMPLE_BULK stage=([01]) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
+        if sample: return ('console-sample', int(sample[1]))
+        if line.startswith('GT710_CONSOLE_SAMPLE_BULK '): raise ValueError('invalid console sample anchor')
         display = re.fullmatch(r'GT710_DISPLAY_BULK sequence=([1-9]\d*) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
         if display: return ('display-state', int(display[1]))
         if line.startswith('GT710_DISPLAY_BULK '): raise ValueError('invalid runtime display anchor')
@@ -2730,6 +2739,11 @@ def capture_serial(directory):
             if not lower<=serial_offset<upper:
                 raise ValueError('artifact anchor outside its upload slot')
         serial_offset+=len(line)
+        if key is not None and key[0] == 'console-sample':
+            anchor = re.fullmatch(r'GT710_CONSOLE_SAMPLE_BULK stage=([01]) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
+            record = groups[key][0].removesuffix('\n').encode('ascii')
+            if len(groups[key]) != 1 or len(record) != int(anchor[2]) or hashlib.sha256(record).hexdigest() != anchor[3]:
+                raise ValueError('console sample differs from serial length/digest')
         if key is not None and key[0] == 'display-state':
             anchor = re.fullmatch(r'GT710_DISPLAY_BULK sequence=([1-9]\d*) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
             record = groups[key][0].removesuffix('\n').encode('ascii')

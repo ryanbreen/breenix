@@ -37,5 +37,6 @@ fn hex(b:&[u8])->String{b.iter().map(|v|format!("{v:02x}")).collect()}
   assert!(text.contains("\"raster\":[123, 456]"));assert!(text.contains("\"firmware_writes\":1"));
   assert_eq!(anchor,&format!("GT710_DISPLAY_BULK sequence={seq} bytes={} sha256={}",text.len(),hex(&block::install::sha256::sha256(text.as_bytes()))));
  }
- assert!(display_evidence::export().is_empty());
+ display_evidence::sample(0,999,0,0);display_evidence::sample(1,999,0,0);
+ assert!(display_evidence::export().is_empty(),"sample repeated in the final upload slot");
 }

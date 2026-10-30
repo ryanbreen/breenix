@@ -56,6 +56,18 @@ class DisplayEvidence(unittest.TestCase):
             subprocess.run(priority+['rustc','--edition=2021','--test','-Dwarnings',str(p/'display.rs'),'-o',str(p/'display')],check=True)
             subprocess.run([str(p/'display'),'--nocapture'],check=True)
 
+    def test_console_sample_transport_keeps_raw_mismatch_bytes_authenticated(self):
+        line='GT710_CONSOLE_SAMPLE_V1 '+json.dumps(dict(stage=0,offset=64,expected=0x12345678,actual=0xdeadbeef),separators=(',',':'))
+        body=(line+'\n').encode();digest=hashlib.sha256(line.encode()).hexdigest()
+        anchor=f'GT710_CONSOLE_SAMPLE_BULK stage=0 bytes={len(line)} sha256={digest}\n'
+        serial=anchor+f'GT710_BULK {len(body)} {hashlib.sha256(body).hexdigest()}\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp);(p/'gt710-pixels.rle').write_bytes(body);(p/'serial.txt').write_text(serial)
+            self.assertIn(line,API['capture_serial'](p))
+            for bad in [serial.replace(digest,'0'*64),serial+line+'\n',serial.replace(anchor,'')]:
+                (p/'serial.txt').write_text(bad)
+                with self.assertRaises(ValueError):API['capture_serial'](p)
+
     def test_upload_digest_anchors_are_required(self):
         records=[row(0),row(1)];body=text(records).encode()
         anchors=''.join(f'GT710_DISPLAY_BULK sequence={r["sequence"]} bytes={len(line.encode())} sha256={hashlib.sha256(line.encode()).hexdigest()}\n'

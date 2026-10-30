@@ -1389,6 +1389,13 @@ impl Screen {
                         let shadow = &self.shadow[bytes];
                         let x = line.chunks_exact(bpp).zip(shadow.chunks_exact(bpp)).position(|(a, b)| a != b);
                         first_difference = Some((x.unwrap_or(0), y));
+                        #[cfg(target_arch = "x86_64")]
+                        if bpp == 4 && crate::gpu::display_active() {
+                            let at = x.unwrap_or(0) * bpp;
+                            crate::gk208::console_sample(1, y * layout.stride_bytes + at,
+                                u32::from_le_bytes(shadow[at..at + 4].try_into().unwrap()),
+                                u32::from_le_bytes(line[at..at + 4].try_into().unwrap()));
+                        }
                     }
                 }
                 let row = y / font.line_height();
