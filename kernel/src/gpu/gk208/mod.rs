@@ -126,7 +126,7 @@ mod native;
 pub(crate) use resource::present;
 mod core_record;
 pub use native::{ConsoleSurface,console_binding,takeover_started,caps_scanout};
-pub(crate) use ce::{console_state,restore_console};
+pub(crate) use ce::{console_state,restore_console,set_mode};
 pub(crate) fn console_surface() -> Option<ConsoleSurface> {
     ce::console_allocation().map(|(surface, _)| surface)
 }
@@ -397,7 +397,7 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
             crate::serial_println!("GT710_PROBE_TIME graphics us={}",channel::elapsed(start));
         }
         let (_,displacement,_)=modeset::bar1_view(layout.objects[0].range.start,layout.objects[0].range.size,device.bars[1].size,17)?;
-        ce::retain(layout,regs.0,console.pointer-displacement,console,evo)?;
+        let console=ce::retain(layout,regs.0,console.pointer-displacement,console,evo)?;
         return Ok(console);
     }
     Err("no active board-routed TMDS sink responded to live DDC")

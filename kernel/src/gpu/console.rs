@@ -102,12 +102,9 @@ pub(super) fn describe(a: &mut abi::Modes) {
     };
     a.firmware_writes_after_handoff = arch::firmware_writes();
     #[cfg(target_arch = "x86_64")]
-    if let Some((mode, resource, bound, writes)) = crate::gk208::console_state() {
-        // Native display ownership predates shared-core registration. Report its
-        // measured geometry and binding even when the renderer has no scanout.
-        a.count = 1;
-        a.current = 0;
-        a.modes = [mode, abi::Mode::ZERO];
+    if let Some((_, resource, bound, writes)) = crate::gk208::console_state() {
+        // G20 logical modes and current ownership come from the shared core;
+        // native diagnostics add measured console binding and write counts.
         // A registered core screen keeps its device identity while a core
         // binding is active. With no such binding, the native allocation is
         // the console, even if an offscreen core screen has been allocated.

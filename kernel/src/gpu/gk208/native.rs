@@ -441,7 +441,13 @@ fn flip(
 pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface,
 ) -> Result<super::present::Receipt, &'static str> {
-    struct Update<'a> { evo:&'a mut Evo, regs:&'a mut Registers }
+    let h=evo.head as usize*0x300;
+    let blank=regs.read(0x64041c+h);
+    let end=regs.read(0x640420+h);
+    let view=modeset::Viewport::for_raster((end&0xffff).checked_sub(blank&0xffff)
+        .ok_or("invalid native raster width")?,(end>>16).checked_sub(blank>>16)
+        .ok_or("invalid native raster height")?,surface.width,surface.height)?;
+    struct Update<'a> { evo:&'a mut Evo, regs:&'a mut Registers, view:modeset::Viewport }
     impl super::present::Io for Update<'_> {
         fn clear_notifier(&mut self) -> Result<(), &'static str> {
             modeset::wait(self.regs,0x640004,u32::MAX,self.evo.put)?;
@@ -452,6 +458,10 @@ pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
             Ok(())
         }
         fn submit(&mut self, methods:&[(u32,u32)]) -> Result<(), &'static str> {
+            let mut words=methods[..methods.len()-2].to_vec();
+            words.extend(self.view.methods(self.evo.head)?);
+            words.extend_from_slice(&methods[methods.len()-2..]);
+            let methods=words.as_slice();
             // NV927D_DMA_OPCODE_JUMP, offset 0. Prior GET was drained above;
             // reserve the final word for the jump before reusing command bytes.
             if self.evo.put as usize + methods.len()*8 > 2044 {
@@ -473,7 +483,8 @@ pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
         fn read(&mut self, register:usize) -> u32 {self.regs.read(register)}
     }
     let head=evo.head;
-    let receipt=super::present::flush(&mut Update{evo,regs},head,surface)?;
+    let receipt=super::present::flush(&mut Update{evo,regs,view},head,surface)?;
+    view.verify(regs,head)?;
     if regs.read(0x61009c) != 0 || regs.read(0x616308+head as usize*0x800)&0x111 != 1
         || regs.read(0x61c004+evo.sor as usize*0x800)&0x80000001 != 1
         || regs.read(0x61c030+evo.sor as usize*0x800)&0x10000000 != 0 {
@@ -522,13 +533,14 @@ pub fn takeover(
     let total = memory::discover(regs, device.bars[1].size)?.total;
     let page = modeset::bar1_page(regs)?;
     let (base,displacement,pages)=modeset::bar1_view(surface.start,surface.size,device.bars[1].size,page)?;
-    let methods = modeset::head_methods(
+    let methods = modeset::logical_head_methods(
         t,
         head,
         u32::from(route.sor),
         protocol,
         surface.start,
         layout.pitch,
+        t.width,t.height,
     )?;
     // Decode each selected mode's board scripts before the takeover boundary.
     let prepared = (|| {
@@ -1059,6 +1071,54 @@ pub fn takeover(
         }))
 }
 
+/// Install the permanent G20 console outside the bring-up BAR window and its
+/// USERD page. A GK208 SPT covers 128 MiB (MIT vmmgk104.c; vm::TABLE_BYTES).
+/// Preserve the first 8 MiB PTEs and map the high surface at BAR1 offset 16 MiB.
+pub(super) fn logical_console(regs:&mut Registers,layout:&mut memory::Layout,
+    evo:&mut Evo,old:ConsoleSurface,bar:usize,bar_bytes:u64)
+    ->Result<ConsoleSurface, &'static str> {
+    const OFFSET:u64=16<<20;
+    const BYTES:u64=2560*1600*4;
+    if bar_bytes<32<<20 {return Err("native logical console needs 32 MiB BAR1");}
+    let allocation=layout.allocator.allocate(BYTES,65536,memory::allocator::Kind::Display)?;
+    // Permanent display allocations stay charged after a partial publication.
+    layout.objects.push(memory::Object{name:"logical-console",range:allocation.range,
+        align:65536,allocation});
+    let table=layout.allocator.allocate(super::vm::TABLE_BYTES,4096,memory::allocator::Kind::Display)?;
+    layout.objects.push(memory::Object{name:"bar1-table",range:table.range,align:4096,allocation:table});
+    let instance=layout.objects[4].range.start;
+    let mut words=alloc::vec![0u32;super::vm::TABLE_BYTES as usize/4];
+    {
+        let mut p=memory::Pramin::new(regs,evo.total);
+        for (i,word) in words[..modeset::BAR1_WINDOW/4096*2].iter_mut().enumerate() {
+            *word=p.read(instance+0x4000+i as u64*4)?;
+        }
+        for i in 0..BYTES/4096 {
+            let entry=((allocation.range.start+i*4096)>>8)|1;
+            let at=((OFFSET/4096+i)*2) as usize;
+            words[at]=entry as u32;words[at+1]=(entry>>32) as u32;
+        }
+        for (i,chunk) in words.chunks(4096).enumerate() {
+            p.write_words(table.range.start+i as u64*16384,chunk)?;
+        }
+    }
+    write_words(regs,evo.total,instance+0x3000,&[0,(table.range.start>>8) as u32|1])?;
+    write_words(regs,evo.total,instance+0x2208,&[(32<<20)-1,0])?;
+    modeset::activate_bar1(regs,instance+0x2000,instance+0x3000)?;
+    let alias=crate::memory::map_mmio(old.phys-(old.pointer-bar) as u64,32<<20)?;
+    let pointer=alias+OFFSET as usize;
+    crate::console::display::linear::map_native_write_combining(
+        old.phys-(old.pointer-bar) as u64,bar_bytes)?;
+    // Clear through the owned CPU aperture before making this surface visible.
+    for n in 0..BYTES as usize/4 {unsafe {((pointer+n*4) as *mut u32).write_volatile(0xff000000);}}
+    modeset::bar_flush(regs)?;
+    let surface=super::present::Surface{resource:u32::MAX,address:allocation.range.start,
+        width:2560,height:1600,pitch:10240,block_height:0,format:0,dma:1};
+    present(evo,regs,surface)?;
+    Ok(ConsoleSurface{pointer,bytes:BYTES as usize,width:2560,height:1600,pitch:10240,
+        vram:allocation.range.start,phys:old.phys-(old.pointer-bar) as u64+OFFSET,..old})
+}
+
 fn active_snapshot(regs: &Registers, head: u32, sor: u32) -> String {
     let h=head as usize*0x300;
     let mut result=String::new();
@@ -1073,9 +1133,16 @@ fn active_snapshot(regs: &Registers, head: u32, sor: u32) -> String {
 }
 
 pub fn console_binding(surface: &ConsoleSurface) -> Result<(), &'static str> {
-    let regs = Registers(surface.regs);
+    let mut regs = Registers(surface.regs);
     let h = surface.head as usize * 0x300;
+    let blank=regs.read(0x64041c+h);
+    let end=regs.read(0x640420+h);
+    let view=modeset::Viewport::for_raster((end&0xffff).checked_sub(blank&0xffff)
+        .ok_or("invalid console raster width")?,(end>>16).checked_sub(blank>>16)
+        .ok_or("invalid console raster height")?,surface.width as u32,surface.height as u32)?;
+    view.verify(&mut regs,surface.head)?;
     if u64::from(regs.read(0x640460 + h)) << 8 != surface.vram
+        || regs.read(0x640468+h)!=(surface.width as u32|((surface.height as u32)<<16))
         || regs.read(0x61009c) != 0
         || regs.read(0x616308 + surface.head as usize * 0x800) & 0x111 != 1
     {
@@ -1084,8 +1151,8 @@ pub fn console_binding(surface: &ConsoleSurface) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// CAPS observes the owned native scanout, whose dimensions were selected from
-/// live DDC/EDID during takeover. Refuse stale/lost native bindings.
+/// CAPS observes the owned logical scanout; its physical raster remains the
+/// timing selected from live DDC/EDID. Refuse stale/lost native bindings.
 pub fn caps_scanout(surface: &ConsoleSurface) -> Result<gpu_abi::ScanoutInfo, &'static str> {
     let regs = Registers(surface.regs);
     if regs.read(0x61009c)!=0 || regs.read(0x616308+surface.head as usize*0x800)&0x111!=1 {
@@ -1097,7 +1164,7 @@ pub fn caps_scanout(surface: &ConsoleSurface) -> Result<gpu_abi::ScanoutInfo, &'
     let width = size & 0xffff;
     let height = size >> 16;
     if width as usize != surface.width || height as usize != surface.height {
-        return Err("native CAPS active dimensions differ from EDID mode");
+        return Err("native CAPS active dimensions differ from console surface");
     }
     Ok(gpu_abi::ScanoutInfo { enabled: 1, width, height, reserved: 0 })
 }

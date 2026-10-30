@@ -523,7 +523,9 @@ mod native {
                 .range
                 .start;
             let (bar_inst, bar_dir) = (native + 0x2000, native + 0x3000);
-            let pte = native + 0x4000 + (SLOT / 4096) * 8;
+            let table=h.layout.objects.iter().find(|o|o.name=="bar1-table")
+                .map_or(native+0x4000,|o|o.range.start);
+            let pte = table + (SLOT / 4096) * 8;
             if read(h.regs, h.total, pte)? != 0 || read(h.regs, h.total, pte + 4)? != 0 {
                 return Err("GR USERD BAR alias occupied");
             }
@@ -533,7 +535,11 @@ mod native {
                 h.device.bars[1].size,
                 17,
             )?;
-            if displacement + h.console.bytes > SLOT as usize {
+            let console_offset=if (h.console.width,h.console.height)==(2560,1600) {
+                16<<20
+            } else {displacement};
+            if console_offset < SLOT as usize+4096
+                && console_offset+h.console.bytes > SLOT as usize {
                 return Err("GR USERD overlaps console");
             }
             let mut context = Context::new(
@@ -699,7 +705,7 @@ mod native {
                 second: None,
                 pages,
                 pbdma,
-                bar: h.console.pointer - displacement,
+                bar: h.console.pointer - console_offset,
                 bar_inst,
                 bar_dir,
                 pte,

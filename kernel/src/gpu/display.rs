@@ -445,8 +445,6 @@ pub(super) fn current_mode(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EINVAL);
     }
     let mode = with_core(|c| MODES[c.display.mode as usize]).ok_or(ENODEV)?;
-    #[cfg(target_arch = "x86_64")]
-    let mode = crate::gk208::console_state().map_or(mode, |(native, _, _, _)| native);
     write_arg(arg, &mode)?;
     Ok(0)
 }
@@ -495,10 +493,21 @@ pub(super) fn set_mode(arg: u64, len: u64) -> Result<u64, i64> {
     if a.index > 1 || a.reserved != [0; 3] {
         return Err(EINVAL);
     }
+    #[cfg(target_arch = "x86_64")]
+    let _transition=Transition::for_observation(tgid)?;
+    #[cfg(target_arch = "x86_64")]
+    if super::arch::with_interrupts(|| crate::gk208::set_mode(a.index)).is_err() {
+        // A refused UPDATE may already have changed what the head reads.
+        // Preserve possible readers, but do not report the old binding as known.
+        with_core(|c| c.display.known=false);
+        return Err(EIO);
+    }
     with_core(|c| {
         if !owner(tgid) {
             return Err(EPERM);
         }
+        #[cfg(target_arch = "x86_64")]
+        c.native_console_restored();
         c.display.mode = a.index;
         if let Some(o) = c.display.stack.last_mut() {
             o.mode = a.index;

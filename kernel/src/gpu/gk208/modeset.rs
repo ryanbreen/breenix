@@ -322,6 +322,66 @@ pub fn head_methods(
     m.shrink_to_fit();
     Ok(m)
 }
+/// NV927D viewport fields are 15 bits (cl927d.h:1417-1434). The two
+/// logical modes use only unity and exact 2:1 reduction. This is a deliberate
+/// admission subset, not a claim about an undocumented general ratio limit.
+/// MIT nouveau head.c:180-218 permits input larger than output and centres
+/// aspect-preserving output; head907d.c:378-409 selects one-tap/no-bias scaling.
+#[derive(Clone, Copy)]
+pub struct Viewport { input: (u32,u32), output: (u32,u32) }
+impl Viewport {
+    pub fn new(t: &Timing, width:u32, height:u32) -> Result<Self, &'static str> {
+        Self::for_raster(t.width,t.height,width,height)
+    }
+    pub fn for_raster(rw:u32,rh:u32,width:u32,height:u32) -> Result<Self, &'static str> {
+        let output = match (width,height) {
+            (1280,800) | (2560,1600) if rw>=1280 && rh>=800 => (1280,800),
+            // Existing EDID-sized bring-up probes retain their 1:1 viewport.
+            _ if (width,height)==(rw,rh) => (rw,rh),
+            _ => return Err("unadmitted native scaler ratio"),
+        };
+        if [rw,rh,width,height].iter().any(|&v|v==0 || v>0x7fff) {
+            return Err("native viewport exceeds 15-bit fields");
+        }
+        Ok(Self{input:(width,height),output})
+    }
+    pub fn methods(self,head:u32) -> Result<Vec<(u32,u32)>, &'static str> {
+        if head>=4 {return Err("invalid native viewport head");}
+        let h=head*0x300;
+        let input=self.input.0|self.input.1<<16;
+        let output=self.output.0|self.output.1<<16;
+        // POINT_OUT_ADJUST=0 leaves hardware centring intact; base colour is
+        // black. OUT/MIN/MAX are identical, as in MIT head907d_view.
+        Ok(vec![(0x42c+h,0),(0x494+h,0),(0x4b0+h,0),(0x4b8+h,input),
+            (0x4bc+h,0),(0x4c0+h,output),(0x4c4+h,output),(0x4c8+h,output)])
+    }
+    /// Both banks must name this mode after its fresh UPDATE notifier.
+    pub fn verify(self,io:&mut impl Io,head:u32)->Result<(), &'static str> {
+        for (method,expected) in self.methods(head)? {
+            for bank in [0x640000,0x660000] {
+                if io.read(bank+method as usize)!=expected {
+                    return Err("native active or armed viewport differs from selected mode");
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn logical_head_methods(t:&Timing,head:u32,sor:u32,protocol:u32,
+    address:u64,pitch:u64,width:u32,height:u32)->Result<Vec<(u32,u32)>, &'static str> {
+    let view=Viewport::new(t,width,height)?;
+    if pitch<u64::from(width)*4 {return Err("native logical pitch too small");}
+    let mut methods=head_methods(t,head,sor,protocol,address,pitch)?;
+    let size=0x468+head*0x300;
+    methods.iter_mut().find(|(r,_)|*r==size).unwrap().1=width|height<<16;
+    for (method,value) in view.methods(head)? {
+        if let Some((_,v))=methods.iter_mut().find(|(r,_)|*r==method) {*v=value;}
+        else {methods.push((method,value));}
+    }
+    Ok(methods)
+}
+
 pub fn dma_object(start: u64, size: u64) -> Result<[u32; 6], &'static str> {
     if start & 255 != 0
         || size == 0
