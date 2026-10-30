@@ -28,8 +28,8 @@ FRAMES=r'''
 mod gpu{
  pub mod dma{
   use std::alloc::{GlobalAlloc,Layout,System};
-  pub struct DmaBox(Vec<u8>);
-  impl DmaBox{
+  pub struct CpuBox(Vec<u8>);
+  impl CpuBox{
    pub fn try_new(len:usize)->Option<Self>{
     if crate::PAGE_FAIL.load(crate::Ordering::Relaxed){return None;}
     let p=unsafe{System.alloc_zeroed(Layout::array::<u8>(len.max(1)).ok()?)};
@@ -40,10 +40,26 @@ mod gpu{
    pub fn as_ref(&self)->&[u8]{&self.0}
    pub fn as_mut(&mut self)->&mut[u8]{&mut self.0}
   }
+  pub struct DmaBox(CpuBox);
+  impl DmaBox{
+   pub fn try_new(len:usize)->Option<Self>{
+    if crate::DMA_TRANSLATED.load(crate::Ordering::Relaxed){None}else{CpuBox::try_new(len).map(Self)}
+   }
+   pub fn len(&self)->usize{self.0.len()}
+   pub fn as_ref(&self)->&[u8]{self.0.as_ref()}
+   pub fn as_mut(&mut self)->&mut[u8]{self.0.as_mut()}
+  }
  }
  #[path="BUFFER"]pub mod byte_buffer;
 }
 static PAGE_FAIL:AtomicBool=AtomicBool::new(false);
+static DMA_TRANSLATED:AtomicBool=AtomicBool::new(false);
+#[test]fn fixture_dma_admission_is_independent_of_cpu_frames(){
+ let mut dma=gpu::dma::DmaBox::try_new(1).unwrap();assert_eq!(dma.len(),1);
+ dma.as_mut()[0]=1;assert_eq!(dma.as_ref(),&[1]);
+ DMA_TRANSLATED.store(true,Ordering::Relaxed);assert!(gpu::dma::DmaBox::try_new(1).is_none());
+ assert!(gpu::dma::CpuBox::try_new(1).is_some());DMA_TRANSLATED.store(false,Ordering::Relaxed);
+}
 #[test]fn frame_allocation_failure_preserves_previous_bytes(){
  let mut b=gpu::byte_buffer::Bytes::new(4).unwrap();b.copy_from_slice(&[1,2,3,4]);
  PAGE_FAIL.store(true,Ordering::Relaxed);assert!(b.resize(2560*1600*4).is_err());
@@ -98,6 +114,17 @@ fn prepare(c:&mut Core,chunks:Chunks)->Result<usize,i64>{CODE
 }
 '''.replace('CODE',code)
         run(fixture,'native_queue_allocation_is_a_refusal',range(2))
+
+    def test_cpu_shadow_is_independent_of_dma_translation(self):
+        fixture=ALLOC+FRAMES+r'''
+#[test]fn cpu_shadow_survives_active_dma_translation(){
+ arm();DMA_TRANSLATED.store(true,Ordering::Relaxed);
+ let shadow=gpu::byte_buffer::Bytes::new(2560*1600*4);
+ DMA_TRANSLATED.store(false,Ordering::Relaxed);ARMED.store(false,Ordering::Relaxed);
+ assert!(shadow.is_ok(),"CPU-only shadow depends on GPU DMA admission");
+}
+'''
+        run(fixture,'cpu_shadow_survives_active_dma_translation',[0])
 
     def test_native_console_readback_uses_frames_when_heap_is_full(self):
         source=item((ROOT/'kernel/src/gpu/mod.rs').read_text(),'pub(crate) fn native_console_readback(')
