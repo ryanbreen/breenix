@@ -69,9 +69,22 @@ fn prepare(c:&mut Core,chunks:Chunks)->Result<usize,i64>{CODE
 '''.replace('CODE',code)
         run(fixture,'native_queue_allocation_is_a_refusal',range(2))
 
+    def test_context_readback_allocations_are_fallible(self):
+        source=item((ROOT/'kernel/src/gpu/gk208/ce/readback.rs').read_text(),'pub(in crate::gk208) fn image(')
+        code=source[source.index('        let mut snapshots'):source.index('        for (n, poison)')]
+        fixture=ALLOC+r'''
+fn snapshots(bytes:usize)->Result<[Vec<u8>;2],&'static str>{CODE
+ snapshots[0][0]=1;Ok(snapshots)}
+#[test]fn readback_allocation_is_a_refusal(){
+ arm();let result=snapshots(1<<20);ARMED.store(false,Ordering::Relaxed);
+ assert!(result.is_err(),"readback allocation failure was accepted");
+}
+'''.replace('CODE',code)
+        run(fixture,'readback_allocation_is_a_refusal',range(2))
+
     def test_console_shadow_does_not_require_a_large_heap_allocation(self):
         source=(ROOT/'kernel/src/console/mod.rs').read_text();prepare=item(source,'fn prepare(')
-        code=x86(prepare[prepare.index('    let mut shadow =') if '    let mut shadow =' in prepare else prepare.index('    #[cfg(target_arch = "x86_64")]\n    let'):prepare.index('    size_terminals(')]).replace('return;','return None;')
+        code=x86(prepare[prepare.index('    let layout = display.layout();')+len('    let layout = display.layout();'):prepare.index('    size_terminals(')]).replace('return;','return None;')
         # The buffer type is taken from the actual retained console state.
         retained=item(source,'struct Attached');typ=retained.split('shadow:',1)[1].split(',',1)[0].strip()
         fixture=ALLOC+r'''
@@ -88,5 +101,35 @@ fn shadow()->Option<Shadow>{let layout=ScreenLayout;CODE
 '''.replace('CODE',code).replace('TYPE','type Shadow='+typ+';')
         if typ=='Shadow':
             fixture=fixture.replace('type Shadow=Shadow;',x86(source[source.index('#[cfg(target_arch = "x86_64")]\ntype Shadow'):source.index('/// What `attach` set up:')]))
+        if (ROOT/'kernel/src/gpu/byte_buffer.rs').exists():
+            fixture+=r'''
+mod gpu{
+ pub mod dma{
+  use std::alloc::{GlobalAlloc,Layout,System};
+  pub struct DmaBox(Vec<u8>);
+  impl DmaBox{
+   pub fn try_new(len:usize)->Option<Self>{
+    if crate::PAGE_FAIL.load(crate::Ordering::Relaxed){return None;}
+    let p=unsafe{System.alloc_zeroed(Layout::array::<u8>(len.max(1)).ok()?)};
+    if p.is_null(){return None;}
+    Some(Self(unsafe{Vec::from_raw_parts(p,len,len.max(1))}))
+   }
+   pub fn len(&self)->usize{self.0.len()}
+   pub fn as_ref(&self)->&[u8]{&self.0}
+   pub fn as_mut(&mut self)->&mut[u8]{&mut self.0}
+  }
+ }
+ #[path="BUFFER"]pub mod byte_buffer;
+}
+static PAGE_FAIL:AtomicBool=AtomicBool::new(false);
+#[test]fn frame_allocation_failure_preserves_previous_bytes(){
+ let mut b=gpu::byte_buffer::Bytes::new(4).unwrap();b.copy_from_slice(&[1,2,3,4]);
+ PAGE_FAIL.store(true,Ordering::Relaxed);assert!(b.resize(2560*1600*4).is_err());
+ assert_eq!(&*b,&[1,2,3,4]);PAGE_FAIL.store(false,Ordering::Relaxed);
+ b.resize(8).unwrap();assert_eq!(&*b,&[1,2,3,4,0,0,0,0]);
+ b.remove_prefix(2);assert_eq!(&*b,&[3,4,0,0,0,0]);
+}
+'''.replace('BUFFER',str(ROOT/'kernel/src/gpu/byte_buffer.rs'))
+            run(fixture,'frame_allocation_failure_preserves_previous_bytes',[0])
         run(fixture,'shadow_uses_system_frames_when_heap_is_full',[0])
 if __name__=='__main__':unittest.main()
