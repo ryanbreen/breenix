@@ -2872,9 +2872,13 @@ fn native_caps_startup() -> Result<(), i64> {
         // Firmware construction and executable probes must let a pinned timer
         // window (and other work) run on the CPU performing initialization.
         if crate::task::kthread::kthread_run(|| {
+            // Native startup changes BAR/channel state while the boot console
+            // still uses the CPU surface. Finish that pass before takeover.
+            let canvas = crate::console::hold_canvas();
             if let Err(error) = crate::gk208::initialize_core() {
                 with_core(|c| { c.status = abi::status::DEVICE_FAILED; c.reason = error; });
             }
+            drop(canvas);
             NATIVE_STARTING.store(false, Ordering::Release);
             notify();
         }, "kgpustart").is_err() {

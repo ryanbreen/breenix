@@ -9,6 +9,7 @@ impl Registers {fn read(&self,r:usize)->u32{self.0[&r]}}
 #[path="@ROOT@/kernel/src/gpu/gk208/present.rs"] mod present;
 #[path="@ROOT@/kernel/src/gpu/gk208/display_evidence.rs"] mod display_evidence;
 mod block {pub mod install {#[path="@ROOT@/libs/libbreenix/src/crypto/sha256.rs"] pub mod sha256;}}
+mod gpu {pub fn display_active()->bool{true}pub mod console {pub fn active()->bool{true}}}
 mod firmware_writes {pub fn count()->u64{51}}
 fn hex(b:&[u8])->String{b.iter().map(|v|format!("{v:02x}")).collect()}
 #[test] fn retain_latest_two_modes_and_export_raw_registers_with_matching_digests(){

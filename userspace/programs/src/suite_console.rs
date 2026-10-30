@@ -1375,7 +1375,16 @@ fn main() {
         // Finish the CE checks before CAPS transfers their owner to the core.
         // Its startup row must join the one-use upload before the suite starts.
         let _ = libbreenix::gpu::caps();
-        gt710_artifacts::upload().expect("native display artifact upload");
+        // Let the admitted console finish a pass before exporting startup
+        // evidence; retain the actual CAPS response with the upload.
+        let _ = std::fs::read_to_string("/proc/console/check");
+        let (result, caps) = libbreenix::gpu::caps();
+        let uploaded = if result == 0 {
+            gt710_artifacts::upload_slot(Some(&caps), false)
+        } else {
+            gt710_artifacts::upload()
+        };
+        uploaded.expect("native display artifact upload");
     }
     let args: Vec<_> = std::env::args().collect();
     let selected = args.windows(2).find_map(|pair| (pair[0] == "--case").then_some(pair[1].as_str()));

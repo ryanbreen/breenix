@@ -40,6 +40,11 @@ pub mod gt710_wait_probe {
     }
 }
 pub mod gt710_artifacts {
+    pub fn upload_slot(caps: Option<&()>, final_slot: bool) -> Result<(), &'static str> {
+        assert!(caps.is_some());
+        assert!(!final_slot);
+        upload()
+    }
     pub fn upload() -> Result<(), &'static str> {
         let mut events = super::EVENTS.lock().unwrap();
         assert!(events.contains(&"startup-row"), "one-use upload missed first-CAPS startup");

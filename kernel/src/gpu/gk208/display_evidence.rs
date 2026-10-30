@@ -56,13 +56,15 @@ pub(super) fn export() -> Vec<(String, String)> {
     };
     let mut rows: Vec<_> = snapshots.into_iter().flatten().collect();
     rows.sort_by_key(|r| r.sequence);
+    let gpu_active = crate::gpu::display_active();
+    let retired = crate::gpu::console::active();
     let mut result: Vec<_> = rows.into_iter().map(|r| {
         let row = format!(concat!("GT710_DISPLAY_V1 {{\"schema\":1,\"sequence\":{},\"mode\":{},",
             "\"resource\":{},\"requested\":{},\"head\":{},\"pitch\":{},\"block_height\":{},\"format\":{},\"notifier\":{},",
             "\"active\":{:?},\"armed\":{:?},\"viewport_active\":{:?},\"viewport_armed\":{:?},",
-            "\"raster\":{:?},\"firmware_writes\":{}}}"), r.sequence, r.mode,
+            "\"raster\":{:?},\"firmware_writes\":{},\"gpu_active\":{},\"retired\":{}}}"), r.sequence, r.mode,
             r.resource, r.requested, r.head, r.pitch, r.block_height, r.format, r.notifier, r.active, r.armed,
-            r.viewport_active, r.viewport_armed, r.raster, r.firmware_writes);
+            r.viewport_active, r.viewport_armed, r.raster, r.firmware_writes, gpu_active, retired);
         let digest = crate::block::install::sha256::sha256(row.as_bytes());
         let anchor = format!("GT710_DISPLAY_BULK sequence={} bytes={} sha256={}",
             r.sequence, row.len(), super::hex(&digest));

@@ -2,7 +2,6 @@
 use libbreenix::{crypto::sha256::sha256,dns,io::{self,PollFd,poll_events},socket,time};
 pub fn upload()->Result<(),String> { upload_slot(None, false) }
 pub(super) fn upload_slot(resources: Option<&libbreenix::gpu::abi::Caps>, final_slot: bool)->Result<(),String> {
-    let mut data=std::fs::read("/proc/gt710-pixels").unwrap_or_default();
     let resource_row = resources.map(|caps| {
         // Caps implements Plain: repr(C), integer fields only, no padding.
         // Retain the exact syscall bytes; do not reconstruct admission here.
@@ -12,8 +11,11 @@ pub(super) fn upload_slot(resources: Option<&libbreenix::gpu::abi::Caps>, final_
         let hex: String = bytes.iter().map(|v| format!("{v:02x}")).collect();
         let frames = std::fs::read_to_string("/proc/breenix/frames").unwrap_or_default();
         let frame_census_hex: String = frames.as_bytes().iter().map(|v| format!("{v:02x}")).collect();
-        format!("GT710_RESOURCES {{\"schema\":1,\"type\":\"caps\",\"bytes\":512,\"hex\":\"{hex}\",\"frame_census_hex\":\"{frame_census_hex}\"}}\n")
+        let check = std::fs::read_to_string("/proc/console/check").unwrap_or_default();
+        let console_check_hex: String = check.as_bytes().iter().map(|v| format!("{v:02x}")).collect();
+        format!("GT710_RESOURCES {{\"schema\":1,\"type\":\"caps\",\"bytes\":512,\"hex\":\"{hex}\",\"frame_census_hex\":\"{frame_census_hex}\",\"console_check_hex\":\"{console_check_hex}\"}}\n")
     });
+    let mut data=std::fs::read("/proc/gt710-pixels").unwrap_or_default();
     if let Some(row) = &resource_row { data.extend_from_slice(row.as_bytes()); }
     if data.is_empty() {return Ok(());}
     if data.len()>2<<20 {return Err("native display artifact exceeds bound".into());}
