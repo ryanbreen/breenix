@@ -2973,6 +2973,15 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
     Ok(0)
 }
 
+/// Kernel renderers compile only the commands they use. Native client warm-up
+/// owns process-charged scratch and cannot run for the kernel's owner 0.
+fn create_kernel_context() -> Result<(u64, u32), i64> {
+    #[cfg(target_arch = "x86_64")]
+    { create_context_with_catalogue(0, false) }
+    #[cfg(target_arch = "aarch64")]
+    { create_context(0) }
+}
+
 fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
     let prepared = with_core(|c| {
         let handle = c.procs.get_mut(&tgid)?.prepared_context.take()?;
@@ -5233,6 +5242,10 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         if !window && !display::owner(tgid) {
             return Err(Refused::Errno(abi::errno::EPERM));
         }
+        #[cfg(target_arch = "x86_64")]
+        if window && with_core(|c| c.display.stack.is_empty()).unwrap_or(false) {
+            screen::await_binding()?;
+        }
         wait_for(None, true, |c| {
             (!console::restoring(c.display.owner_sequence)).then_some(c.display.known)
         })
@@ -6038,6 +6051,12 @@ pub fn take_display(vt: usize) -> SyscallResult {
     };
     if uid != 0 {
         return result(Err(abi::errno::EPERM));
+    }
+    #[cfg(target_arch = "x86_64")]
+    if with_core(|c| c.display.stack.is_empty()).unwrap_or(false) {
+        if let Err(error) = arch::with_interrupts(|| screen::await_binding()) {
+            return result(Err(error));
+        }
     }
     let outcome = display::take(group, pid, vt);
     if outcome.is_ok() {

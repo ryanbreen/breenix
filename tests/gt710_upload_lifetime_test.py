@@ -41,8 +41,14 @@ pub mod gt710_wait_probe {
 }
 pub mod gt710_artifacts {
     pub fn upload_slot(caps: Option<&()>, final_slot: bool) -> Result<(), &'static str> {
+        if final_slot {
+            assert!(caps.is_none());
+            let mut events = super::EVENTS.lock().unwrap();
+            assert_eq!(events.last(),Some(&"cases-and-memory"));
+            assert!(!events.contains(&"final-upload"));
+            events.push("final-upload");return Ok(());
+        }
         assert!(caps.is_some());
-        assert!(!final_slot);
         upload()
     }
     pub fn upload() -> Result<(), &'static str> {
@@ -57,7 +63,12 @@ static SUITE: Suite = Suite;
 impl Suite { fn run(&self) {
     let events = EVENTS.lock().unwrap();
     assert!(events.ends_with(&["startup-row", "upload"]), "suite starts without retained startup evidence: {events:?}");
-} }
+}
+ fn run_with_finalizer(&self,f:impl FnOnce()) {
+    self.run();EVENTS.lock().unwrap().push("cases-and-memory");f();
+    assert_eq!(EVENTS.lock().unwrap().last(),Some(&"final-upload"));
+ }
+}
 // ENTRY
 fn main() { producer_main(); }
 '''
@@ -66,9 +77,10 @@ fn main() { producer_main(); }
             with self.subTest(suite=name), tempfile.TemporaryDirectory() as tmp:
                 source = (ROOT / f'userspace/programs/src/suite_{name}.rs').read_text()
                 entry = item(source, 'fn main()').replace('fn main()', 'fn producer_main()')
-                entry = entry.replace('#[cfg(target_arch="x86_64")]', '')
+                entry = entry.replace('#[cfg(target_arch="x86_64")]', '').replace('#[cfg(target_arch="aarch64")]', '#[cfg(any())]')
                 fixture = harness
                 if name == 'gpu':
+                    fixture = fixture.replace(item(fixture,' fn run_with_finalizer('), '')
                     # These items belong only to the console's entry point.
                     fixture = fixture.replace('use std::sync::{Mutex, OnceLock};', 'use std::sync::Mutex;')
                     fixture = fixture.replace('static LOGIN_CREDENTIALS: OnceLock<()> = OnceLock::new();\nfn login_credentials() {}\n', '')

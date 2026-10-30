@@ -47,7 +47,7 @@ impl Target {
     fn new() -> Result<Target, i64> {
         open().ok_or(ENOMEM)?;
         let pages = BACKING.get().ok_or(ENODEV)?.clone();
-        let (handle, _) = create_context(0)?;
+        let (handle, _) = create_kernel_context()?;
         let (context, epoch) = match with_core(|c| Some((c.ctx_of(0, handle)?, c.epoch))).flatten() {
             Some(found) => found,
             None => {
@@ -248,6 +248,17 @@ pub fn open() -> Option<(usize, usize)> {
     // The pointer moves over this screen, not the firmware framebuffer it replaced.
     super::arch::set_screen(WIDTH, HEIGHT);
     Some((WIDTH as usize, HEIGHT as usize))
+}
+
+/// The first native owner/observer must inherit a completed core resource,
+/// rather than the unregistered bootstrap allocation used before admission.
+#[cfg(target_arch = "x86_64")]
+pub(super) fn await_binding() -> Result<(), i64> {
+    if dev::backend() != abi::backend::GK208 { return Ok(()); }
+    crate::console::await_repaint();
+    with_core(|c| c.display.known && c.display.binding.is_some_and(|b|
+        c.resources.get(&b.id).is_some_and(|r| !r.lost && r.kind == kind::TARGET)))
+        .filter(|&ready| ready).map(|_| ()).ok_or(EIO)
 }
 
 /// Copy `bytes` into the backing at byte `offset` (rows laid out `WIDTH * 4` bytes apart).

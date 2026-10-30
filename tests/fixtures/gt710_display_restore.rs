@@ -76,7 +76,7 @@ mod console_display {
  }
  pub mod linear {
   use crate::{Ordering,raster::Layout};use std::{ops::Range,sync::{OnceLock,atomic::AtomicBool}};
-  pub struct Linear {pub buffer:*mut u8,pub layout:Layout,pub native:OnceLock<crate::gk208::ConsoleSurface>,pub disabled:AtomicBool}
+  pub struct Linear {pub buffer:*mut u8,pub layout:Layout,pub native:OnceLock<crate::gk208::ConsoleSurface>,pub disabled:AtomicBool,pub gpu_active:AtomicBool}
   unsafe fn write_bands(p:*mut u8,l:&Layout,shadow:&[u8],_:Range<usize>,allowed:fn()->bool)->bool{
    if !allowed(){return false;}unsafe{std::ptr::copy_nonoverlapping(shadow.as_ptr(),p,l.bytes());}true
   }
@@ -193,7 +193,8 @@ fn readback_denied(tgid:u64,a:&abi::Readback,observer:Observer)->Result<(),Refus
  reset();with_core(|c|{c.display.stack.clear();});
  let mut firmware=[0x5a;32];let mut native=[0xaa;32];
  let cell=std::sync::OnceLock::new();cell.set(gk208::ConsoleSurface{pointer:native.as_mut_ptr() as usize,width:4,height:2,pitch:16}).ok().unwrap();
- let linear=console_display::linear::Linear{buffer:firmware.as_mut_ptr(),layout:raster::Layout{width:4,height:2,stride_bytes:16,bytes_per_pixel:4,reserved:0,bgr:true,font:raster::Font},native:cell,disabled:std::sync::atomic::AtomicBool::new(false)};
+ let linear=console_display::linear::Linear{buffer:firmware.as_mut_ptr(),layout:raster::Layout{width:4,height:2,stride_bytes:16,bytes_per_pixel:4,reserved:0,bgr:true,font:raster::Font},native:cell,disabled:std::sync::atomic::AtomicBool::new(false),gpu_active:std::sync::atomic::AtomicBool::new(false)};
+ assert!(linear.begin_pass());
  for _ in 0..3 {
   assert!(linear.write(&[0x33;32],0..2,||true));
   display::restore().unwrap();screen::repaint_rows().unwrap();

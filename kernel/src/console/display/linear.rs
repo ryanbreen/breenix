@@ -49,6 +49,8 @@ pub struct Linear {
     #[cfg(target_arch = "x86_64")]
     native: OnceCell<crate::gk208::ConsoleSurface>,
     #[cfg(target_arch = "x86_64")]
+    gpu_active: AtomicBool,
+    #[cfg(target_arch = "x86_64")]
     snapshot: spin::Mutex<Option<alloc::sync::Arc<crate::gpu::dma::Pages>>>,
     #[cfg(target_arch = "x86_64")]
     disabled: AtomicBool,
@@ -74,6 +76,8 @@ impl Linear {
             #[cfg(target_arch = "x86_64")]
             native: OnceCell::uninit(),
             #[cfg(target_arch = "x86_64")]
+            gpu_active: AtomicBool::new(false),
+            #[cfg(target_arch = "x86_64")]
             snapshot: spin::Mutex::new(None),
             #[cfg(target_arch = "x86_64")]
             disabled: AtomicBool::new(false),
@@ -89,8 +93,18 @@ impl Linear {
     /// keep the wrapper but route rows and observations through the shared core.
     #[cfg(target_arch = "x86_64")]
     pub fn uses_gpu(&self) -> bool {
-        self.native.get().is_some()
-            && (crate::gpu::display_active() || crate::gpu::console::active())
+        self.gpu_active.load(Ordering::Acquire)
+    }
+
+    /// Only the render thread changes routing, between complete passes. A
+    /// reset or failed allocation keeps routing on the GPU.
+    #[cfg(target_arch = "x86_64")]
+    pub fn begin_pass(&self) -> bool {
+        if self.native.get().is_some()
+            && (crate::gpu::display_active() || crate::gpu::console::active()) {
+            return !self.gpu_active.swap(true, Ordering::AcqRel);
+        }
+        false
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -102,7 +116,7 @@ impl Linear {
         #[cfg(target_arch = "x86_64")]
         if let Some(s)=self.native.get() {
             return Layout {width:s.width,height:s.height,stride_bytes:s.pitch,bytes_per_pixel:4,
-                reserved:0,bgr:true,font:super::super::raster::Font::for_display(s.width,s.height)};
+                reserved:0xff,bgr:true,font:super::super::raster::Font::for_display(s.width,s.height)};
         }
         self.layout
     }

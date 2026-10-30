@@ -62,7 +62,7 @@ class DisplayRestore(unittest.TestCase):
                 .replace('crate::gpu::dev::Tag', 'crate::Tag'),
             '// LINEAR_METHODS': '\n'.join([item(linear, marker) for marker in [
                 'pub fn layout(', 'fn buffer(', 'pub fn available(', 'pub fn write(',
-            ]] + ([item(linear, 'pub fn uses_gpu('), item(linear, 'fn gpu(')] if 'fn gpu(' in linear else [])),
+            ]] + ([item(linear, 'pub fn uses_gpu('), item(linear, 'pub fn begin_pass('), item(linear, 'fn gpu(')] if 'fn gpu(' in linear else [])),
             '// PRESENT_PERMISSION': present, '// MODE_PERMISSION': mode,
             '// READBACK_PERMISSION': readback,
         }

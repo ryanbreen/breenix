@@ -104,23 +104,11 @@ pub(super) fn describe(a: &mut abi::Modes) {
     };
     a.firmware_writes_after_handoff = arch::firmware_writes();
     #[cfg(target_arch = "x86_64")]
-    if let Some((_, resource, bound, writes)) = crate::gk208::console_state() {
-        // G20 logical modes and current ownership come from the shared core;
-        // native diagnostics add measured console binding and write counts.
-        // A registered core screen keeps its device identity while a core
-        // binding is active. With no such binding, the native allocation is
-        // the console, even if an offscreen core screen has been allocated.
-        if a.console_resource == 0 || a.scanout_resource == 0 {
-            a.console_resource = resource;
-        }
+    if let Some((_, _, _, writes)) = crate::gk208::console_state() {
         a.handoff = 1;
         a.firmware_writes_after_handoff = writes;
-        // A completed shared-core viewing copy has its own logical identity,
-        // also reported by READBACK(0). The reserved ID describes the console
-        // only while no shared-core scanout is bound.
         if a.scanout_resource == 0 {
-            a.binding_known = u32::from(bound);
-            a.scanout_resource = if bound { resource } else { 0 };
+            a.binding_known = 0;
         }
     }
 }
@@ -259,7 +247,7 @@ impl Drop for Console {
 
 impl Console {
     pub(super) fn new() -> Result<Self, i64> {
-        let (handle, _) = create_context(0)?;
+        let (handle, _) = create_kernel_context()?;
         let mut build = Building {
             ids: Vec::new(),
             armed: true,

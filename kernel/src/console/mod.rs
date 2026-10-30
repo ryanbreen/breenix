@@ -847,6 +847,7 @@ struct Screen {
     frames: u64,
     /// The last pass wrote and flushed each row it drew, and left no row undrawn.
     complete: bool,
+    last_failure: Option<&'static str>,
     /// The boot stage ribbon the rows under its band show (section 23.7 of the BreenGL
     /// contract), once worked out, and whether the full repaint that started it took test
     /// point 15 (`ribbon-drop-stage`).
@@ -940,6 +941,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
         cleared: false,
         frames: 0,
         complete: false,
+        last_failure: None,
         #[cfg(target_arch = "aarch64")]
         ribbon: None,
         #[cfg(target_arch = "aarch64")]
@@ -965,6 +967,8 @@ fn render_thread(display: &'static Display, attached: Attached) {
         vt::tick();
         if splash::is_up() {
             PRESENTING.store(true, Ordering::SeqCst);
+            #[cfg(target_arch = "x86_64")]
+            if may_draw() && display.begin_pass() { REDRAW.store(true, Ordering::Release); }
             splash_run.pass(display, &mut screen.shadow);
             answer_checks(Err(Absent::NotYet), false, asked);
             end_pass();
@@ -979,6 +983,8 @@ fn render_thread(display: &'static Display, attached: Attached) {
         // Publish before checking ownership. A taker either observes this
         // pass and waits, or this pass observes the take and submits no frame.
         PRESENTING.store(true, Ordering::SeqCst);
+        #[cfg(target_arch = "x86_64")]
+        if may_draw() && display.begin_pass() { REDRAW.store(true, Ordering::Release); }
         if !may_draw() {
             // A completed text acquisition can change KD mode before this pass.
             // Record an unavailable read-back verdict rather than strand the next switch.
@@ -1068,7 +1074,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
                 vt::checked(shown);
             }
         }
-        if announced {
+        if announced || screen.last_failure.is_some() {
             answer_checks(Ok((&screen, snapshot.fg)), true, asked);
         }
         end_pass();
@@ -1313,9 +1319,15 @@ impl Screen {
     fn update(&mut self, snapshot: &Snapshot) -> usize {
         if !self.cleared {
             raster::clear(&mut self.shadow, &self.layout);
-            self.cleared = self.display.write(&self.shadow, 0..self.layout.height, may_draw)
-                && may_draw()
-                && self.display.flush(0..self.layout.height).is_ok();
+            let result = if !self.display.write(&self.shadow, 0..self.layout.height, may_draw) {
+                Err("the screen clear could not write its backing")
+            } else if !may_draw() {
+                Err("the display changed owners during screen clear")
+            } else {
+                self.display.flush(0..self.layout.height)
+            };
+            self.last_failure = result.err();
+            self.cleared = result.is_ok();
             if !self.cleared {
                 self.complete = false;
                 return 0;
@@ -1348,11 +1360,15 @@ impl Screen {
                 });
             } else {
                 self.shown[row] = None;
+                self.last_failure = Some("the screen band could not write its backing");
                 failed = true;
             }
         }
         if let Some(lines) = dirty {
-            if !may_draw() || self.display.flush(lines.clone()).is_err() {
+            let flushed = if may_draw() { self.display.flush(lines.clone()) }
+                else { Err("the display changed owners before screen flush") };
+            if let Err(error) = flushed {
+                self.last_failure = Some(error);
                 // The rows are drawn and flushed again on the next pass.
                 let line_height = self.layout.font.line_height();
                 for shown in &mut self.shown[lines.start / line_height..lines.end.div_ceil(line_height)] {
@@ -1363,6 +1379,7 @@ impl Screen {
         }
         self.complete = !failed && self.shown.iter().all(Option::is_some);
         if self.complete {
+            self.last_failure = None;
             self.frames += 1;
         }
         drawn
@@ -1439,6 +1456,7 @@ impl Screen {
             source,
             frames: self.frames,
             complete: self.complete,
+            last_failure: self.last_failure,
             pixel_lines: layout.height,
             differing_lines,
             first_difference,
@@ -1466,6 +1484,7 @@ struct Check {
     /// the last did.
     frames: u64,
     complete: bool,
+    last_failure: Option<&'static str>,
     pixel_lines: usize,
     /// Pixel rows of the screen that differ from the shadow, and the first
     /// pixel that does.
@@ -1677,6 +1696,9 @@ pub fn proc_console_check() -> Result<String, i32> {
                 layout.rows()
             );
             let _ = writeln!(text, "console logo scale: {}", splash::logo_scale(&font));
+            if let Some(error) = check.last_failure {
+                let _ = writeln!(text, "console last failure: {}", error);
+            }
             match &check.source {
                 Ok(source) => {
                     let _ = writeln!(text, "console scanout: {}", source);

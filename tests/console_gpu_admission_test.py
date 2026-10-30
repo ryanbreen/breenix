@@ -13,7 +13,7 @@ def run(source):
         subprocess.run([str(p/'check'),'--nocapture','--test-threads=1'],check=True)
 
 def x86(source):
-    return source.replace('#[cfg(target_arch = "x86_64")]','').replace('#[cfg(target_arch = "aarch64")]','#[cfg(any())]').replace('cfg!(target_arch = "x86_64")','true')
+    return source.replace('#[cfg(target_arch = "x86_64")]','#[cfg(all())]').replace('#[cfg(target_arch = "aarch64")]','#[cfg(any())]').replace('cfg!(target_arch = "x86_64")','true')
 
 class Admission(unittest.TestCase):
     def test_kernel_contexts_do_not_warm_client_catalogues(self):
@@ -36,14 +36,14 @@ HELPER
     def test_backend_changes_only_at_a_pass_boundary_and_layout_is_opaque(self):
         source=(ROOT/'kernel/src/console/display/linear.rs').read_text()
         self.assertTrue('pub fn begin_pass(' in source,'linear backend is selected independently for each row')
-        functions=x86('\n'.join(item(source,m) for m in ('pub fn uses_gpu(','pub fn begin_pass(','pub fn layout(')))
+        functions=x86('\n'.join(item(source,m) for m in ('pub fn uses_gpu(','pub fn begin_pass(','pub fn layout('))).replace('super::super::raster','crate::raster')
         kind=x86(item((ROOT/'kernel/src/console/display/mod.rs').read_text(),'pub fn kind('))
         run("""
 use std::sync::{OnceLock,atomic::{AtomicBool,Ordering}};
 static ADMITTED:AtomicBool=AtomicBool::new(false);
 mod gpu {pub fn display_active()->bool{crate::ADMITTED.load(crate::Ordering::Acquire)}pub mod console {pub fn active()->bool{false}}}
-mod raster {pub struct Font;impl Font{pub fn for_display(_:usize,_:usize)->Self{Self}}}
-struct Layout{width:usize,height:usize,stride_bytes:usize,bytes_per_pixel:usize,reserved:u8,bgr:bool,font:raster::Font}
+mod raster {#[derive(Clone,Copy)]pub struct Font;impl Font{pub fn for_display(_:usize,_:usize)->Self{Self}}}
+#[derive(Clone,Copy)]struct Layout{width:usize,height:usize,stride_bytes:usize,bytes_per_pixel:usize,reserved:u8,bgr:bool,font:raster::Font}
 struct Surface{width:usize,height:usize,pitch:usize}
 struct Linear{native:OnceLock<Surface>,gpu_active:AtomicBool,layout:Layout}
 impl Linear{FUNCTIONS}

@@ -2528,16 +2528,17 @@ def capture_serial(directory):
     if len(finals)>1 or final_path.exists()!=bool(finals):
         raise ValueError('final artifact slot missing or duplicated')
     if finals:
-        start=list(re.finditer(r'^SUITE gpu START .*$',serial,re.M))
-        done=list(re.finditer(r'^SUITE gpu DONE .*$',serial,re.M))
-        memory=list(re.finditer(r'^SUITE gpu MEMORY reclaimed=.*$',serial,re.M))
-        ready=list(re.finditer(r'^SUITE_SEQUENCE READY gpu$',serial,re.M))
-        case_rows=list(re.finditer(r'^SUITE gpu CASE .*$',serial,re.M))
+        suite=one(r'^SUITE (gpu|console) START .*$',serial,'final-slot suite')[1]
+        start=list(re.finditer(r'^SUITE '+suite+r' START .*$',serial,re.M))
+        done=list(re.finditer(r'^SUITE '+suite+r' DONE .*$',serial,re.M))
+        memory=list(re.finditer(r'^SUITE '+suite+r' MEMORY reclaimed=PASS .*$',serial,re.M))
+        ready=list(re.finditer(r'^SUITE_SEQUENCE READY '+suite+'$',serial,re.M))
+        case_rows=list(re.finditer(r'^SUITE '+suite+r' CASE .*$',serial,re.M))
         if (len(matches)!=1 or len(start)!=1 or len(done)!=1 or len(memory)!=1
                 or len(ready)!=1 or not case_rows
                 or not matches[0].end()<start[0].start()<case_rows[0].start()
                 or not case_rows[-1].end()<done[0].start()<memory[0].start()<finals[0].start()<ready[0].start()):
-            raise ValueError('final artifact slot outside completed GPU suite')
+            raise ValueError('final artifact slot outside completed suite')
     contexts = 'GT710_CTX_BULK ' in serial or 'GT710_CONTEXTS ' in serial
     if contexts and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file()
                      or re.search(r'^GT710_CTX_IMAGE ', serial, re.M)):

@@ -157,7 +157,7 @@ fn measured(run: impl FnOnce() -> Verdict) -> CaseResult {
             }
             // HOSTKEY requests may consume the case's record budget. Keep the
             // measured counters first in its capped failure message as well.
-            result = result.map_err(|reason| format!("q={} r={} d={} changed={} maxns={} {reason}", replay[0], replay[1], replay[2], replay[3], replay[4]));
+            result = result.map_err(|reason| format!("{reason} q={} r={} d={} changed={} maxns={}", replay[0], replay[1], replay[2], replay[3], replay[4]));
         }
     }
     result.map_err(breenix_suite::suite::CaseError::Fail)
@@ -175,9 +175,16 @@ fn screen_check() -> Verdict<String> {
     std::fs::read_to_string("/proc/console/check").map_err(|e| format!("console check: {e}"))
 }
 
+fn check_failure(text: &str) -> String {
+    ["console check:", "console last failure:", "console frame:", "console scanout:"]
+        .into_iter().flat_map(|prefix| text.lines().filter(move |line| line.starts_with(prefix)))
+        .collect::<Vec<_>>().join(" ")
+}
+
 fn identical(text: &str) -> Verdict {
-    require(text.lines().any(|line| line == "console check: shadow and screen identical"), text)?;
-    require(text.lines().any(|line| line.starts_with("console frame: ") && line.ends_with(" complete")), text)
+    let diagnostic = check_failure(text);
+    require(text.lines().any(|line| line == "console check: shadow and screen identical"), &diagnostic)?;
+    require(text.lines().any(|line| line.starts_with("console frame: ") && line.ends_with(" complete")), &diagnostic)
 }
 
 fn wait_for_row(marker: &str) -> Verdict<String> {
@@ -1391,5 +1398,10 @@ fn main() {
     if selected.is_none_or(|case| case == "getty" || case.starts_with("getty/")) {
         LOGIN_CREDENTIALS.get_or_init(login_credentials);
     }
+    #[cfg(target_arch="x86_64")]
+    SUITE.run_with_finalizer(|| {
+        gt710_artifacts::upload_slot(None, true).expect("final native console artifact upload");
+    });
+    #[cfg(target_arch="aarch64")]
     SUITE.run()
 }

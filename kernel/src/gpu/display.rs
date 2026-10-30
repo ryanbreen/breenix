@@ -454,6 +454,10 @@ pub(super) fn modes(arg: u64, len: u64) -> Result<u64, i64> {
     if input != abi::Modes::ZERO {
         return Err(EINVAL);
     }
+    #[cfg(target_arch = "x86_64")]
+    if with_core(|c| c.display.stack.is_empty()).unwrap_or(false) {
+        arch::with_interrupts(super::screen::await_binding)?;
+    }
     // A display hand-back the render thread has yet to restore reports the restored binding,
     // as an observation does; a restore still owed after 1 s reports the binding as it is.
     let deadline = now_ns().saturating_add(1_000_000_000);

@@ -164,6 +164,12 @@ impl fmt::Display for Source {
 }
 
 impl Display {
+    #[cfg(target_arch = "x86_64")]
+    pub fn begin_pass(&self) -> bool {
+        let Display::Linear(display) = self;
+        display.begin_pass()
+    }
+
     pub fn layout(&self) -> Layout {
         match self {
             Display::Linear(display) => display.layout(),
@@ -179,6 +185,8 @@ impl Display {
     /// What drives the screen, for the log.
     pub fn kind(&self) -> &'static str {
         match self {
+            #[cfg(target_arch = "x86_64")]
+            Display::Linear(display) if display.uses_gpu() => "GPU core scanout target",
             Display::Linear(_) if cfg!(target_arch = "x86_64") => "firmware framebuffer",
             Display::Linear(_) => "GOP framebuffer",
             #[cfg(target_arch = "aarch64")]
