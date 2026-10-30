@@ -158,6 +158,10 @@ impl Device {
         device.queue = Queue::drained(last);
         device
     }
+    #[cfg(target_os = "none")]
+    pub(crate) fn terminal_identity(&self) -> Option<(u64, u64)> {
+        (!self.needs_reset()).then(|| self.channel.terminal_identity()).flatten()
+    }
     /// Recheck snapshot identity against the channel when querying CAPS. Restart's
     /// new epoch cannot silently inherit old object-creation evidence.
     #[cfg(target_os = "none")]

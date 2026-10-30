@@ -409,8 +409,18 @@ impl Evo {
         let mut methods = surface_methods[..5].to_vec();
         methods.extend_from_slice(&view_methods);
         methods.extend_from_slice(&surface_methods[5..]);
+        // NV927D_SET_NOTIFIER_CONTROL_OFFSET[11:2]: keep terminal
+        // completion in a disjoint 16-byte slot of the owned notifier page.
+        methods.iter_mut().find(|(m, _)| *m == 0x84)
+            .ok_or("terminal notifier control absent")?.1 |= 16;
+        // Ordinary EVO packets stay below 2048; the second half of this
+        // already-owned 4096-byte push page is terminal-only (NV927D JUMP).
+        if methods.len() * 8 > 2048 { return Err("terminal EVO packet extent"); }
+        let words: Vec<_> = methods.iter().flat_map(|&(m, v)| [0x40000 | m, v]).collect();
+        write_words(&mut Registers(registers), self.total, self.push + 2048, &words)?;
+        modeset::bar_flush(&mut Registers(registers))?;
         Ok(super::emergency::Display { registers, total: self.total,
-            push: self.push, notifier: self.notifier, head: self.head, sor: self.sor,
+            push: self.push, notifier: self.notifier + 16, head: self.head, sor: self.sor,
             methods,
             #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
             target: surface.resource })

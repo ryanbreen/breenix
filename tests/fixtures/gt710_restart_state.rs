@@ -1,6 +1,7 @@
 #![allow(dead_code)] // Hardware stand-ins cover baseline and repaired restart dependencies.
 // Hardware substitutes for the production restart and constructor FIFO writes.
 use std::{cell::RefCell, collections::BTreeMap};
+mod gpu {pub mod panic {pub struct Access;impl Access {pub fn enter()->Self{Self}}}}
 const COMMAND: u64 = 0x1000000;
 struct State { vram: BTreeMap<u64,u32>, health: Result<(u32,u64,bool), &'static str>, reasons: Vec<String>, accessible: bool, refuse_access: bool }
 thread_local! { static STATE: RefCell<State> = RefCell::new(State {
@@ -39,6 +40,7 @@ struct Copy { base:usize, reset:u32 }
 struct Pages(Box<[u8;4096]>);
 impl Pages { fn va(&self,_:usize)->u64 { self.0.as_ptr() as u64 } fn publish(&self) {} }
 struct Session {
+    second:Option<Box<Session>>, pristine:Vec<u8>,
     image:Allocation, commands:Allocation, userd:u64, report:Report, context:Context,
     admitted:bool, quiesced:bool, copy:Option<Copy>, next_sequence:u32, pages:Pages,
 }
@@ -53,11 +55,11 @@ struct NativeChannel {
 }
 struct Monitor<'a> {
     session:&'a Session, regs:&'a mut Registers, total:u64, sequence:u32,
-    stop_on_trap:bool, release_slot:usize, queued_put:Option<u32>,
+    stop_on_trap:bool, retry_traps:bool, release_slot:usize, queued_put:Option<u32>,
 }
 impl Monitor<'_> {
     fn snapshot(&mut self)->Result<(u32,u64,bool), &'static str> {
-        let _=(self.session,self.regs.0,self.total,self.sequence,self.stop_on_trap,self.release_slot,self.queued_put);
+        let _=(self.session,self.regs.0,self.total,self.sequence,self.stop_on_trap,self.retry_traps,self.release_slot,self.queued_put);
         STATE.with(|s| s.borrow().health)
     }
 }
@@ -69,7 +71,7 @@ impl NativeChannel {
 }
 fn channel()->NativeChannel {
     NativeChannel { confirmed:true, initial:[5u32,0x1234,0,0].into_iter().flat_map(u32::to_le_bytes).collect(), registers:7, total:1<<30, topology:[[0;2];3], mmu:[0;2], put:6481,
-        session:Session { image:Allocation {range:Range {start:0x400000}}, commands:Allocation {range:Range {start:0x100000}},
+        session:Session { second:None, pristine:vec![], image:Allocation {range:Range {start:0x400000}}, commands:Allocation {range:Range {start:0x100000}},
             userd:0x102200, report:Report {identity:Identity {instance:0x300000,epoch:17,id:1}}, context:Context,
             admitted:true, quiesced:true, copy:Some(Copy {base:0x106000,reset:22}), next_sequence:6482, pages:Pages(Box::new([85;4096])) } }
 }
@@ -121,4 +123,25 @@ fn constructor(c:&NativeChannel)->Result<(), &'static str> {
     assert_eq!(c.session.report.identity.epoch,17);
     assert!(c.session.quiesced);
     assert_eq!(c.put,6481);
+}
+
+#[test] fn reserved_terminal_channel_restarts_with_its_own_cold_image_and_receipts() {
+    let mut c=channel();
+    let mut terminal=channel().session;
+    terminal.report.identity.id=1;
+    terminal.report.identity.instance=0x600000;
+    terminal.userd=0x102400;
+    terminal.commands.range.start=0x700000;
+    terminal.image.range.start=0x800000;
+    terminal.pristine=[7u32,0x9876,0,0].into_iter().flat_map(u32::to_le_bytes).collect();
+    c.session.second=Some(Box::new(terminal));
+    assert_eq!(c.restart(),Ok(()));
+    let t=c.session.second.as_ref().unwrap();
+    assert_eq!(word(t.image.range.start),7);
+    assert_eq!(word(t.image.range.start+4),0x9876);
+    assert_eq!(word(t.report.identity.instance+0xe8),1);
+    assert_eq!(t.report.identity.epoch,c.session.report.identity.epoch);
+    assert!(t.pages.0.iter().all(|&b|b==0));
+    for off in (0..0x200).step_by(4) {assert_eq!(word(t.userd+off),0);}
+    for off in (0..4096).step_by(4) {assert_eq!(word(t.commands.range.start+off),0);}
 }

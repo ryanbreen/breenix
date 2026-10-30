@@ -937,6 +937,15 @@ mod native {
                     &mut VmIo { regs: h.regs, total: h.total }, va, allocation,
                     Flags { volatile: true, ..Flags::default() })?;
             }
+            // Retain late bootstrap catalogue/VAB mappings in the empty
+            // reserved channel before terminal publication.
+            if let Some(second) = self.second.as_mut() {
+                unsafe {
+                    second.context.map_idle(&mut h.layout.allocator,
+                        &mut VmIo { regs: h.regs, total: h.total }, va, allocation,
+                        Flags { volatile: true, ..Flags::default() })?;
+                }
+            }
             Ok(super::super::context::Buffer {
                 spec: super::super::context::Spec { name, bytes, align: alignment }, va,
             })
@@ -1381,7 +1390,7 @@ mod native {
             let session = self.session.take().unwrap();
             let channel = NativeChannel { session, registers: h.regs.0, total: h.total,
                 mmu: [0; 2], _scratch: None, topology: [[0; 2]; 3], initial: Vec::new(),
-                quarantine: 0, parking: Vec::new(), put: last, confirmed: false, _bootstrap: None };
+                quarantine: 0, terminal_quarantine: 0, parking: Vec::new(), put: last, confirmed: false, _bootstrap: None };
             let mut device = crate::gpu::dev::Device::Gk208(adapter::Device::probe(channel, board, last));
             let result = self.producer.run(&mut device, operation, name);
             let crate::gpu::dev::Device::Gk208(device) = device else { unreachable!() };
@@ -1426,6 +1435,7 @@ mod native {
         topology: [[u32; 2]; 3],
         initial: Vec<u8>,
         quarantine: u64,
+        terminal_quarantine: u64,
         parking: Vec<u32>,
         put: u32,
         confirmed: bool,
@@ -1435,10 +1445,10 @@ mod native {
         /// Transfer a drained live channel only after all fallible preparation.
         pub(in crate::gk208::gr) fn into_native(
             owner: &mut Option<Self>, registers: usize, total: u64, mmu: [Allocation; 2],
-            allocator: &memory::allocator::Allocator, quarantine: u64, parking: Vec<u32>,
+            allocator: &memory::allocator::Allocator, quarantine: u64, terminal_quarantine: u64, parking: Vec<u32>,
         ) -> Result<NativeChannel, &'static str> {
             let session = owner.as_ref().ok_or("native channel owner absent")?;
-            if !session.bound || session.second.is_some() || session.copy.is_none() || session.quiesced {
+            if !session.bound || session.copy.is_none() || session.quiesced {
                 return Err("native handoff requires live prepared channel");
             }
             let regs = Registers(registers);
@@ -1451,7 +1461,7 @@ mod native {
             let put = session.next_sequence - 1;
             Ok(NativeChannel { session: owner.take().unwrap(), registers, total,
                 mmu: mmu.map(|a| a.range.start), _scratch: Some(scratch), topology,
-                initial, quarantine, parking, put, confirmed: false, _bootstrap: None })
+                initial, quarantine, terminal_quarantine, parking, put, confirmed: false, _bootstrap: None })
         }
     }
 
@@ -1459,21 +1469,28 @@ mod native {
         pub(in crate::gk208::gr) fn retain_bootstrap(&mut self, context: crate::gk208::lifetime::Context) {
             self._bootstrap = Some(ManuallyDrop::new(context));
         }
-        /// Snapshot only pinned transport state; terminal ownership excludes its normal writer.
+        pub(crate) fn terminal_identity(&self) -> Option<(u64, u64)> {
+            let s = self.session.second.as_ref()?;
+            (s.bound && !s.quiesced).then_some((s.report.identity.instance, s.report.identity.epoch))
+        }
+        /// Snapshot channel 1's reserved transport after preparation.
         pub(crate) fn terminal_queue(&self) -> Result<crate::gk208::emergency::Queue, &'static str> {
-            let s = &self.session;
+            let s = self.session.second.as_ref().ok_or("reserved terminal channel absent")?;
             if !s.bound || s.quiesced || self.parking.is_empty() {
                 return Err("terminal channel is not live");
             }
-            crate::gk208::ce::with_resources(|r,_,io| r.bind(io,
-                s.context.space().directory.range.start, s.report.identity.instance, s.report.identity.epoch))?;
+            crate::gk208::ce::with_resources(|r,_,io| {
+                r.bind(io, self.session.context.space().directory.range.start,
+                    self.session.report.identity.instance, self.session.report.identity.epoch)?;
+                r.bind_terminal(io, s.context.space().directory.range.start)
+            })?;
             Ok(crate::gk208::emergency::Queue {
                 registers: self.registers, total: self.total,
                 ring: s.commands.range.start, userd: s.userd, pbdma: s.pbdma,
-                ce_error: s.copy.as_ref().ok_or("terminal CE absent")?.base + 0x908,
+                ce_error: self.session.copy.as_ref().ok_or("terminal CE absent")?.base + 0x908,
                 channel: s.report.identity.id, instance: s.report.identity.instance,
                 report: s.pages.va(0) + 512, report_va: TARGET + 512,
-                epoch: s.report.identity.epoch, quarantine: self.quarantine,
+                epoch: s.report.identity.epoch, quarantine: self.terminal_quarantine,
                 parking: self.parking.clone(),
             })
         }
@@ -1725,6 +1742,9 @@ mod native {
             }
         }
         pub(crate) fn reset(&mut self) -> Result<(), &'static str> {
+            let _access = crate::gpu::panic::Access::enter();
+            // Revoke prepared panic work before touching either channel.
+            crate::gpu::panic::native_reset();
             // Revoke the preceding attempt's confirmation before touching the channel.
             self.confirmed = false;
             let mut regs = Registers(self.registers);
@@ -1740,7 +1760,14 @@ mod native {
             // requires stopping GR. Keep its error: cleanup cannot certify
             // backing release when that preempt was refused.
             regs.write(0x2634, c.id);
-            let preempt = register_wait(&mut regs, 0x2634, 0x100000, 0, BOUND_US);
+            let mut preempt = register_wait(&mut regs, 0x2634, 0x100000, 0, BOUND_US);
+            if let Some(second) = self.session.second.as_ref() {
+                let id = second.report.identity.id;
+                regs.mask(0x800004 + id as usize * 8, 0x800, 0x800);
+                regs.write(0x2634, id);
+                let result = register_wait(&mut regs, 0x2634, 0x100000, 0, BOUND_US);
+                if preempt.is_ok() { preempt = result; }
+            }
             let stopped = (|| {
                 super::super::ctxctl::reset(&mut regs).map_err(super::super::hardware_error)?;
                 if let Some(copy) = &self.session.copy {
@@ -1774,6 +1801,12 @@ mod native {
                 return Err("GR unbind failed; backing retained");
             }
             self.session.bound = false;
+            if let Some(second) = self.session.second.as_mut() {
+                let address = 0x800000 + second.report.identity.id as usize * 8;
+                regs.write(address, 0);
+                if regs.read(address) != 0 { return Err("terminal unbind failed; backing retained"); }
+                second.bound = false;
+            }
             // With the old channel unbound, quiesce restores FIFO/alias state
             // without issuing any preempt against the reset FECS.
             self.session.quiesce(&mut regs, self.total)?;
@@ -1783,6 +1816,7 @@ mod native {
             Ok(())
         }
         pub(crate) fn restart(&mut self) -> Result<(), &'static str> {
+            let _access = crate::gpu::panic::Access::enter();
             if !self.confirmed { return Err("native reset unconfirmed; backing retained"); }
             if self.initial.is_empty() { return Err("probe session returns to its original teardown"); }
             let epoch = self.session.report.identity.epoch.checked_add(1).ok_or("native epoch exhausted")?;
@@ -1814,6 +1848,25 @@ mod native {
                 regs.mask(0x200, 1 << copy.reset, 1 << copy.reset);
                 regs.write(copy.base + 0x904, 0);
                 if regs.read(0x200) & (1 << copy.reset) == 0 { return Err("native CE restart not enabled"); }
+            }
+            if let Some(second) = self.session.second.as_mut() {
+                // No terminal request can survive reset as valid preparation.
+                // Rebuild its untouched cold context and private receipt/ring.
+                for (i, w) in second.pristine.chunks_exact(4).enumerate() {
+                    words(&mut regs, self.total, second.image.range.start + i as u64 * 4,
+                        &[u32::from_le_bytes(w.try_into().unwrap())])?;
+                }
+                let c = second.report.identity;
+                init_fifo(&mut regs, self.total, c.instance, second.userd,
+                    second.commands.range.start, c.id)?;
+                unsafe {
+                    core::ptr::write_bytes(second.pages.va(0) as *mut u8, 0, 4096);
+                    second.context.confirm_reset();
+                }
+                second.pages.publish();
+                second.admitted = false;
+                second.quiesced = false;
+                second.report.identity.epoch = epoch;
             }
             self.session.activate_regs(&mut regs, self.total)?;
             self.put = 0;

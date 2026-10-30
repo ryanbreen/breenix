@@ -2,14 +2,17 @@ use std::{cell::RefCell, collections::BTreeMap};
 thread_local! {static DEVICE:RefCell<Device>=RefCell::new(Device::default());}
 #[derive(Default)]
 struct Device { registers:BTreeMap<usize,u32>, vram:BTreeMap<u64,u32>, ticks:u64,
-    release:u64, nonce:u32, epoch:u64, withheld:bool }
+    release:u64, nonce:u32, epoch:u64, withheld:bool, withheld_flip:bool }
 mod arch {pub fn counter()->u64 {super::DEVICE.with(|d|{let mut d=d.borrow_mut();d.ticks+=1;d.ticks})}}
 struct Registers(usize);
 impl Registers {
     fn read(&self,r:usize)->u32 {assert_eq!(self.0,0);DEVICE.with(|d|*d.borrow().registers.get(&r).unwrap_or(&0))}
     fn write(&self,r:usize,v:u32) {assert_eq!(self.0,0);DEVICE.with(|d|{
         let mut d=d.borrow_mut();d.registers.insert(r,if r==0x70000 {0}else{v});
-        if r==0x640000 {d.registers.insert(0x640004,v);}
+        if r==0x640000 {
+            d.registers.insert(0x640004,v);
+            if v>2048 && !d.withheld_flip {d.vram.insert(0x4010,1);}
+        }
     });}
 }
 mod memory {
@@ -85,4 +88,28 @@ fn every_binding_word_and_display_health_is_observed() {
     }
     // An expired terminal deadline cannot publish even a healthy binding.
     assert!(!d.show(0));
+}
+
+#[test]
+fn flip_uses_preencoded_reserved_half_page_and_waits_for_notifier() {
+    for withheld in [false,true] {
+        let mut report=[0;4];let _q=setup(&mut report);
+        let d=Display {registers:0,total:1<<24,push:0x3000,notifier:0x4010,head:0,sor:0,
+            methods:vec![(0x460,55),(0x468,99),(0x84,0x80000010),(0x80,0)],target:42};
+        let prepared:Vec<_>=d.methods.iter().flat_map(|&(m,v)|[0x40000|m,v]).collect();
+        DEVICE.with(|r|{let mut r=r.borrow_mut();r.withheld_flip=withheld;
+            // Ordinary EVO GET is behind PUT; terminal publication must not
+            // wait for that queue before appending its prepared flip.
+            r.registers.insert(0x640000,24);r.registers.insert(0x640004,0);
+            for (i,&v) in prepared.iter().enumerate(){r.vram.insert(d.push+2048+i as u64*4,v);}
+            r.registers.extend([(0x640460,55),(0x660460,55),(0x640468,99),(0x660468,99),
+                (0x616308,1),(0x61c004,1)]);
+        });
+        assert_eq!(d.show(200),!withheld);
+        DEVICE.with(|r|{let r=r.borrow();
+            assert_eq!(r.vram[&(d.push+24)],0x20000800);
+            assert_eq!(r.registers[&0x640000],2048+d.methods.len() as u32*8);
+            for (i,&v) in prepared.iter().enumerate(){assert_eq!(r.vram[&(d.push+2048+i as u64*4)],v);}
+        });
+    }
 }

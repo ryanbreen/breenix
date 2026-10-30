@@ -1581,3 +1581,17 @@ Their original notices and permission texts are retained in emergency.rs.
 The existing notices for gr/channel.rs, native.rs and ce/readback.rs continue
 to cover their preparation helpers and the reused normal encoders. No new
 firmware or shader asset is introduced by this path.
+
+The reserved terminal channel and reset preparation in gr/mod.rs and
+gr/channel.rs reuse nouveau v6.8 nvkm/engine/fifo/gk104.c (MIT, Copyright
+2012 Red Hat Inc.) and nvkm/engine/gr/gf100.c (MIT, Copyright 2012 Red Hat
+Inc.), at e8f897f4afef0031fe618a8e94127a0934896aba. Both full grants were
+rechecked and remain in the consumer headers. The reserved EVO half-page
+in native.rs/emergency.rs uses NV927D_DMA_JUMP_OFFSET and the disjoint
+SET_NOTIFIER_CONTROL_OFFSET (both bits 11:2), with the
+existing methods from the MIT cl927d.h revision above; its full notice
+remains in both files. prepared.rs recognizes the encoder's A197 constant-buffer selectors and
+slot-0 versus slot-15 binding from the same MIT cla197.h; the NVIDIA 2020
+copyright and full grant accompany that parser. panic/native.rs sequences
+Breenix's validated bitmap_text encoder and retained requests. No new
+shader assets are introduced.

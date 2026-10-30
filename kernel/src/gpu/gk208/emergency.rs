@@ -469,42 +469,21 @@ impl Display {
         let r = Registers(self.registers);
         let mut io = Terminal(self.registers);
         let put = r.read(0x640000);
-        if put > 2044 || !poll(deadline, || r.read(0x640004) == put) {
+        if put > 2044 || arch::counter() >= deadline {
             return false;
         }
-        // Drain, then jump to the beginning of the owned EVO ring. The
-        // precomputed packet includes G20 viewport/scaler and a fresh notifier.
-        if !write(&mut io, self.total, self.push + u64::from(put), 0x20000000)
-            || !flush(&r, deadline)
-        {
-            return false;
-        }
-        r.write(0x640000, 0);
-        if !poll(deadline, || r.read(0x640004) == 0) {
-            return false;
-        }
+        // Append the prepared flip at the hardware-published cursor. A
+        // stranded CPU's unpublished bytes are replaceable; prior methods
+        // precede the jump. Do not wait on the ordinary EVO queue.
         for n in 0..4 {
             if !write(&mut io, self.total, self.notifier + n * 4, 0) {
                 return false;
             }
         }
-        for (i, &(method, value)) in self.methods.iter().enumerate() {
-            if arch::counter() >= deadline
-                || !write(
-                    &mut io,
-                    self.total,
-                    self.push + i as u64 * 8,
-                    0x40000 | method,
-                )
-                || !write(&mut io, self.total, self.push + i as u64 * 8 + 4, value)
-            {
-                return false;
-            }
-        }
-        if !flush(&r, deadline) {
-            return false;
-        }
-        let end = self.methods.len() as u32 * 8;
+        if !write(&mut io, self.total, self.push + u64::from(put), 0x20000800)
+            || !flush(&r, deadline) { return false; }
+        // Methods were encoded into the reserved half-page at preparation.
+        let end = 2048 + self.methods.len() as u32 * 8;
         r.write(0x640000, end);
         poll(deadline, || {
             read(&mut io, self.total, self.notifier).is_some_and(|v| v & 1 == 1)

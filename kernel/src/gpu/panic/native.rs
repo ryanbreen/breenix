@@ -1,6 +1,6 @@
 //! Prepared GK208 diagnostics under the shared panic latch and text layout.
 use super::*;
-use crate::gk208::{self, emergency, encode as enc};
+use crate::gk208::{self, emergency, encode as enc, prepared};
 
 static NATIVE: AtomicPtr<Screen> = AtomicPtr::new(core::ptr::null_mut());
 struct Screen {
@@ -64,61 +64,11 @@ impl enc::Bindings for Bindings<'_> {
 
 pub(super) fn prepare() -> Result<(), i64> {
     let c = console::Console::new()?;
-    let mut words = Vec::new();
-    stream::encode::begin(&mut words, u64::from(c.target));
-    stream::encode::clear(&mut words, BG);
-    let mut instances = Vec::with_capacity(CELLS);
-    for row in 0..ROWS {
-        for col in 0..COLS {
-            let x = 40 + col as u32 * c.glyph_width * 2;
-            let y = 32 + row as u32 * 46;
-            let mut params = [0; 16];
-            params[..8].copy_from_slice(&[x, y, 0, 0, c.glyph_width, 16, 2, 1]);
-            instances.push(abi::draw::Instance {
-                rect: [
-                    x as i32,
-                    y as i32,
-                    (x + c.glyph_width * 2) as i32,
-                    (y + 32) as i32,
-                ],
-                params,
-            });
-        }
-    }
-    abi::draw::encode(
-        &mut words,
-        abi::pipeline::BITMAP_TEXT,
-        FG,
-        u64::from(c.atlas),
-        0,
-        0,
-        &instances,
-    );
+    let words = prepared::text_stream(c.target, c.atlas, c.glyph_width);
     let mut frame = enc::translate(words.as_slice(), &Bindings(&c)).map_err(|_| EIO)?;
-    let mut glyphs = Vec::with_capacity(CELLS);
-    // Each bitmap quad has one CB0 selector (size, high address, low address).
-    // Patch only param[2], the atlas x origin, in that quad's input data.
-    // CLEAR and the GPU destination snapshot precede these chunks.
-    for chunk in frame
-        .chunks
-        .iter()
-        .filter(|c| c.source.is_some() && c.copy.is_none())
-    {
-        let mut at = 0;
-        while at < chunk.words.len() {
-            let count = ((chunk.words[at] >> 16) & 0x1fff) as usize;
-            if chunk.words[at] & 0x1fff == 0x2380 / 4 && count == 3 {
-                let offset = ((u64::from(chunk.words[at + 2]) << 32)
-                    | u64::from(chunk.words[at + 3])) as usize;
-                glyphs.push(offset + 8);
-                break;
-            }
-            at += 1 + count;
-        }
-    }
-    if glyphs.len() != CELLS {
-        return Err(EIO);
-    }
+    let glyphs = prepared::glyph_offsets(
+        frame.chunks.iter().filter(|c| c.source.is_some() && c.copy.is_none())
+            .map(|c| c.words.as_slice()), frame.data.len()).map_err(|_| EIO)?;
     frame.batch_draws(1400);
     let backing = Arc::new(Pages::new(frame.data.len().div_ceil(PAGE)).ok_or(ENOMEM)?);
     backing.write(0, &frame.data);
@@ -214,7 +164,11 @@ pub(super) fn prepare() -> Result<(), i64> {
         reads,
     }));
     let old = with_core(|core| {
-        if core.epoch != unsafe { (*screen).console.epoch } {
+        let prepared = unsafe { &*screen };
+        if core.epoch != prepared.console.epoch
+            || !matches!(core.dev.as_ref(), Some(dev::Device::Gk208(d))
+                if d.terminal_identity() == Some((prepared.queue.instance, prepared.queue.epoch)))
+        {
             return None;
         }
         let _access = Access::enter();
@@ -242,50 +196,67 @@ pub(super) fn ready() -> bool {
     console::active() && VALID.load(Ordering::Acquire) && !NATIVE.load(Ordering::Acquire).is_null()
 }
 pub(super) fn show(
-    title: &str,
-    headline: &str,
-    details: &[(&str, &str)],
-    stage: &str,
-    log: &[u8],
-    deadline: u64,
-) -> bool {
-    let screen = NATIVE.load(Ordering::Acquire);
-    if screen.is_null() {
-        return false;
+    title: &str, headline: &str, details: &[(&str, &str)], stage: &str, log: &[u8],
+) {
+    let mut runtime = Runtime { title, headline, details, stage, log, used: false };
+    let outcome = prepared::attempt(&mut runtime);
+    #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
+    if runtime.used { runtime.screen().report(outcome); }
+    #[cfg(not(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance")))]
+    let _ = outcome;
+}
+
+struct Runtime<'a> {
+    title: &'a str, headline: &'a str, details: &'a [(&'a str, &'a str)],
+    stage: &'a str, log: &'a [u8], used: bool,
+}
+impl Runtime<'_> {
+    fn screen(&self) -> &Screen {
+        // SAFETY: only called after terminal latching, peer drain and ready().
+        // No producer can replace/free the published screen after that point.
+        unsafe { &*NATIVE.load(Ordering::Acquire) }
     }
-    // SAFETY: shared terminal latch and Access drain exclude preparation/reset.
-    let s = unsafe { &*screen };
-    layout(
-        |row, text| {
+}
+impl prepared::Terminal for Runtime<'_> {
+    fn counter(&self) -> u64 { arch::counter() }
+    fn frequency(&self) -> u64 { arch::frequency_hz() }
+    fn latch(&mut self) -> bool { !TERMINAL.swap(true, Ordering::SeqCst) }
+    fn peers_idle(&self) -> bool {
+        let cpu = arch::cpu_id();
+        USERS.iter().enumerate().all(|(i, n)| i == cpu || n.load(Ordering::SeqCst) == 0)
+    }
+    fn ready(&self) -> bool {
+        VALID.load(Ordering::Acquire) && !NATIVE.load(Ordering::Acquire).is_null()
+    }
+    fn patch(&mut self, deadline: u64) -> bool {
+        self.used = true;
+        let s = self.screen();
+        layout(|row, text| {
             for (col, &byte) in text.iter().take(COLS).enumerate() {
-                let glyph = if (32..=126).contains(&byte) {
-                    byte
-                } else {
-                    b'?'
-                };
-                s.frame.write(
-                    s.glyphs[row * COLS + col],
-                    &((glyph - 32) as u32 * s.console.glyph_width).to_le_bytes(),
-                );
+                if arch::counter() >= deadline { return; }
+                let glyph = if (32..=126).contains(&byte) { byte } else { b'?' };
+                s.frame.write(s.glyphs[row * COLS + col],
+                    &((glyph - 32) as u32 * s.console.glyph_width).to_le_bytes());
                 #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
                 SHOWN[row * COLS + col].store(glyph, Ordering::Relaxed);
             }
-        },
-        title,
-        headline,
-        details,
-        stage,
-        log,
-    );
-    s.frame.maintain(0, s.frame.bytes(), false);
-    let shown = s.queue.drain(deadline)
-        && s.packets.iter().all(|c| s.queue.exec(c, deadline))
-        && s.display.show(deadline);
-    #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
-    s.report(shown, deadline);
-    #[cfg(not(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance")))]
-    let _ = shown;
-    true
+        }, self.title, self.headline, self.details, self.stage, self.log);
+        s.frame.maintain(0, s.frame.bytes(), false);
+        arch::counter() < deadline
+    }
+    fn drain(&mut self, deadline: u64) -> bool { self.screen().queue.drain(deadline) }
+    fn draws(&self) -> usize { self.screen().packets.len() }
+    fn draw(&mut self, index: usize, deadline: u64) -> bool {
+        let s = self.screen();
+        s.queue.exec(&s.packets[index], deadline)
+    }
+    fn flip(&mut self, deadline: u64) -> bool { self.screen().display.show(deadline) }
+    fn observe(&mut self, deadline: u64) -> Option<u64> {
+        #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
+        { self.screen().observe(deadline) }
+        #[cfg(not(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance")))]
+        { let _ = deadline; None }
+    }
 }
 #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 impl Screen {
@@ -342,8 +313,8 @@ impl Screen {
         }
         (arch::counter() < deadline && self.display.bound()).then_some(mismatches)
     }
-    fn report(&self, shown: bool, deadline: u64) {
-        let result = if shown { self.observe(deadline) } else { None };
+    fn report(&self, outcome: prepared::Outcome) {
+        let prepared::Outcome { shown, observation: result } = outcome;
         let mut line = crate::capture::record::Writer::new();
         line.text("[GPU_PANIC_SCREEN shown=");
         line.dec(shown as u64);

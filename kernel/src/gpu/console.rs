@@ -496,6 +496,16 @@ impl encode::Bindings for Console {
     }
 }
 
+/// Retry preparation after the native adapter rebuilds its reserved channel.
+#[cfg(target_arch = "x86_64")]
+pub(super) fn native_panic_reset() {
+    PANIC_EPOCH.store(u64::MAX, Ordering::Release);
+    PANIC_ATTEMPT_EPOCH.store(u64::MAX, Ordering::Release);
+    PANIC_ATTEMPTS.store(0, Ordering::Release);
+    #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
+    super::panic::preparation_finished_reset();
+}
+
 /// Called on the render thread once the core owns the display: prepares the panic screen
 /// after the kernel's screen was first shown, and makes the restores ended owners asked for.
 pub fn pump() {

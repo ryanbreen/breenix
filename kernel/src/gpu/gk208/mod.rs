@@ -120,6 +120,7 @@ pub(crate) use ce::readback::span_upload;
 pub(crate) use ce::readback::{set_scanout,flush_resource,flush_rect};
 mod queue;
 pub(crate) mod emergency;
+pub(crate) mod prepared;
 mod recovery_policy;
 pub use system_dma::set_platform as set_dma_platform;
 mod modeset;

@@ -5,12 +5,12 @@ use prepared::{attempt, Outcome, Terminal};
 use std::cell::Cell;
 
 struct Device {
-    ticks: Cell<u64>, latched: bool, valid: bool, peer_until: u64,
+    ticks: Cell<u64>, hz: u64, latched: bool, valid: bool, peer_until: u64,
     fail: Option<&'static str>, cost: u64, calls: Vec<(&'static str, u64)>,
     pinned: usize,
 }
 impl Device {
-    fn new() -> Self { Self {ticks: Cell::new(0), latched: false, valid: true,
+    fn new() -> Self { Self {ticks: Cell::new(0), hz: 1000, latched: false, valid: true,
         peer_until: 0, fail: None, cost: 1, calls: vec![], pinned: 5} }
     fn step(&mut self, name: &'static str, deadline: u64) -> bool {
         self.calls.push((name, deadline));
@@ -20,7 +20,7 @@ impl Device {
 }
 impl Terminal for Device {
     fn counter(&self) -> u64 { let n=self.ticks.get(); self.ticks.set(n+1); n }
-    fn frequency(&self) -> u64 { 1000 }
+    fn frequency(&self) -> u64 { self.hz }
     fn latch(&mut self) -> bool { let first=!self.latched; self.latched=true; first }
     fn peers_idle(&self) -> bool { self.ticks.get() >= self.peer_until }
     fn ready(&self) -> bool { self.valid }
@@ -87,6 +87,9 @@ fn wrapping_counter_and_missing_frequency_refuse_without_submission() {
     let mut d=Device::new();d.ticks.set(u64::MAX-10);
     assert_eq!(attempt(&mut d),Outcome {shown:false,observation:None});
     assert!(d.calls.is_empty());
+    let mut d=Device::new();d.hz=0;
+    assert_eq!(attempt(&mut d),Outcome {shown:false,observation:None});
+    assert!(d.calls.is_empty());
 }
 
 extern crate alloc;
@@ -96,9 +99,10 @@ mod shaders;
 #[allow(dead_code)] // Other native capability rows have independent callers.
 #[path = "../kernel/src/gpu/gk208/caps.rs"]
 mod caps;
+#[allow(dead_code)] // Full encoder APIs used by production, beyond this stream check.
 #[path = "../kernel/src/gpu/gk208/encode.rs"]
 mod encode;
-use gpu_abi::{format, stream::{self, Resolver, SourceInfo, TargetInfo}};
+use gpu_abi::{format, stream::{Resolver, SourceInfo, TargetInfo}};
 struct Bindings;
 impl Resolver for Bindings {
     fn target(&self,h:u64)->Option<TargetInfo> {(h==42).then_some(TargetInfo {width:2560,height:1600,format:format::B8G8R8A8,invalid:false})}

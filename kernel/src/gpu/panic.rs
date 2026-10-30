@@ -138,6 +138,14 @@ pub(super) fn invalidate() {
     VALID.store(false, Ordering::Release);
 }
 
+/// Adapter-local recovery also revokes prepared requests, even when the
+/// shared core epoch survives the attributed submission error.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn native_reset() {
+    invalidate();
+    console::native_panic_reset();
+}
+
 struct Screen {
     #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     observed: AtomicBool,
@@ -552,6 +560,11 @@ pub fn show(title: &str, headline: &str, details: &[(&str, &str)], stage: &str, 
     // The fatal x86 caller leaves IRQs masked and parks after the attempt.
     #[cfg(target_arch = "x86_64")]
     unsafe { crate::arch_disable_interrupts(); }
+    #[cfg(target_arch = "x86_64")]
+    if dev::backend() == abi::backend::GK208 {
+        native::show(title, headline, details, stage, log);
+        return;
+    }
     if TERMINAL.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -569,10 +582,6 @@ pub fn show(title: &str, headline: &str, details: &[(&str, &str)], stage: &str, 
         core::hint::spin_loop();
     }
     if !VALID.load(Ordering::Acquire) {
-        return;
-    }
-    #[cfg(target_arch = "x86_64")]
-    if native::show(title, headline, details, stage, log, arch::counter() + frequency * 2) {
         return;
     }
     let screen = STATE.load(Ordering::Acquire);
@@ -658,6 +667,11 @@ pub fn test_with_locks(f: impl FnOnce()) {
 #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 pub(super) fn preparation_finished() {
     PREPARATION_FINISHED.store(true, Ordering::Release);
+}
+
+#[cfg(all(target_arch = "x86_64", any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance")))]
+pub(super) fn preparation_finished_reset() {
+    PREPARATION_FINISHED.store(false, Ordering::Release);
 }
 
 /// The x86 fatal caller has already emitted its authoritative serial capture.

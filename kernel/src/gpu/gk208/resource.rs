@@ -372,6 +372,22 @@ impl<B> Resources<B> {
         io.invalidate(directory)?;
         Ok(())
     }
+    /// Preparation only. Share this owner's high-VA tables with the empty
+    /// reserved channel without changing the ordinary identity.
+    /// The prepared screen holds its images, commands and VM until terminal stop.
+    #[cfg(target_os = "none")]
+    pub(crate) fn bind_terminal(&self, io: &mut impl Io, directory: u64) -> Result<(), &'static str> {
+        let space = self.space.as_ref().filter(|s| s.usable()).ok_or("terminal VM unavailable")?;
+        for (index, _) in space.table_ranges() {
+            let value = io.read(space.directory.range.start + index * 8)?;
+            let old = io.read(directory + index * 8)?;
+            if old != 0 && old != value { return Err("terminal resource PDE occupied"); }
+            io.write(directory + index * 8, value)?;
+        }
+        io.flush()?;
+        io.invalidate(directory)?;
+        Ok(())
+    }
     pub(super) fn draw_buffer(&mut self, a: &mut Allocator, io: &mut impl Io,
         bytes: u32,
     ) -> Result<u32, &'static str> {
