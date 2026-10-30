@@ -55,7 +55,10 @@ pub mod gk208 {
                     Ok(CeSample{context:s.channel,epoch:s.release_epoch,sequence:s.release,consumed:sequence,healthy:!s.fault})
                 }
                 pub fn error_trap(&self)->Result<Option<crate::gk208::gr::error::Trap>,&'static str> {
-                    crate::gk208::gr::error::capture(&mut *self.0.borrow_mut())
+                    crate::gk208::gr::error::capture_now(&mut *self.0.borrow_mut())
+                }
+                pub fn wait_pri(&self)->Result<(),&'static str> {
+                    crate::gk208::gr::error::read_traps(&mut *self.0.borrow_mut(),None).map(|_|())
                 }
                 pub fn acknowledge_error(&mut self,trap:crate::gk208::gr::error::Trap,sequence:u32)->Result<(),&'static str> {
                     assert_eq!(trap.page,sequence % 32768);
@@ -105,13 +108,13 @@ pub mod gk208 {
 use gpu::dev::{Reap,Tag};
 use gk208::{adapter::{Device,Request},copy::Rect,gr::channel::NativeChannel};
 pub struct State {
-    now:u64,epoch:u64,channel:u64,release_epoch:u64,release:u32,drain:u32,fault:bool,
+    core_locked:bool,now:u64,epoch:u64,channel:u64,release_epoch:u64,release:u32,drain:u32,fault:bool,
     transient_trap:bool,refusals:Vec<[u32;4]>,registers:std::collections::BTreeMap<usize,u32>,writes:Vec<(usize,u32)>,
     trap_at_health:bool,trap_at_sample:bool,fail_ack:bool,trap_after_samples:u32,delayed_trap_sequence:u32,
     fail_reset:bool,fail_unbind:bool,fail_publish:bool,refuse_publish:bool,stopped:bool,operations:Vec<&'static str>,published:Vec<u32>,events:Vec<&'static str>,expected_draw:Vec<u32>,
 }
 fn device()->(Device,Rc<RefCell<State>>) {
-    let s=Rc::new(RefCell::new(State{now:0,epoch:17,channel:0x123000,release_epoch:17,release:0,drain:0,fault:false,
+    let s=Rc::new(RefCell::new(State{core_locked:false,now:0,epoch:17,channel:0x123000,release_epoch:17,release:0,drain:0,fault:false,
         transient_trap:false,refusals:vec![],registers:Default::default(),writes:vec![],trap_at_health:false,trap_at_sample:false,fail_ack:false,trap_after_samples:0,delayed_trap_sequence:0,fail_reset:false,fail_unbind:false,fail_publish:false,refuse_publish:false,stopped:false,operations:vec![],published:vec![],events:vec![],expected_draw:vec![0x20010367,0]}));
     (Device::new(NativeChannel(s.clone()),gk208::caps::BoardState::empty()),s)
 }
@@ -119,7 +122,7 @@ fn device()->(Device,Rc<RefCell<State>>) {
 // production decoder. Acknowledgement does not invent the engine's release.
 impl gk208::gr::error::Io for State {
     fn now_us(&mut self)->u64 {self.now}
-    fn delay_us(&mut self,us:u64) {self.now+=us;}
+    fn delay_us(&mut self,us:u64) {assert!(!self.core_locked,"PRI retry delayed while CORE is held");self.now+=us;}
     fn refuse_trap(&mut self, words:[u32;4])->Result<(),&'static str> {
         assert_ne!(words,[0;4]);self.refusals.push(words);self.events.push("trap-record");Ok(())
     }
@@ -524,4 +527,31 @@ fn pri_sampling_precedes_mmu_attribution_and_retains_persistent_failure() {
     assert_eq!(gk208::gr::error::capture(&mut *s),Err("GR PRI unreachable"));
     assert_eq!(s.now-start,1000);assert_eq!(s.refusals,[[0xbadf1201,0,0,0]]);
     assert!(s.writes.is_empty(),"PRI sampling must not acknowledge the MMU fault");
+}
+
+#[test]
+fn core_pri_sampling_defers_bounded_retry_without_retiring_holds() {
+    use std::sync::Arc;
+    for persistent in [false, true] {
+        let (mut d,s)=device();
+        let pages=Arc::new(gpu::dma::Pages);
+        assert!(d.send(Request::storage(Tag::Sync(24),Some(pages.clone()))).is_ok());
+        {let mut s=s.borrow_mut();s.registers.insert(0x400100,0xbadf1201);s.core_locked=true;}
+        assert!(matches!(d.reap(),Reap::Empty));
+        assert!(d.recovery_pending());assert!(!d.needs_reset());assert!(!d.has_room(1));
+        assert_eq!(s.borrow().now,0);assert_eq!(d.outstanding(),1);assert_eq!(Arc::strong_count(&pages),2);
+        {let mut s=s.borrow_mut();s.core_locked=false;s.transient_trap=!persistent;}
+        d.retry_pri();
+        assert!(!d.recovery_pending());
+        if persistent {
+            assert_eq!(s.borrow().now,1000);assert_eq!(s.borrow().refusals,[[0xbadf1201,0,0,0]]);
+            assert!(d.needs_reset());assert!(matches!(d.reap(),Reap::Fault));
+            assert_eq!(d.outstanding(),1);assert_eq!(Arc::strong_count(&pages),2);
+        } else {
+            assert_eq!(s.borrow().now,10);assert!(s.borrow().refusals.is_empty());
+            assert!(!d.needs_reset());assert!(matches!(d.reap(),Reap::Done(_)));
+            assert_eq!(Arc::strong_count(&pages),1);
+        }
+        assert!(s.borrow().writes.is_empty(),"PRI retry must not acknowledge or reset hardware");
+    }
 }
