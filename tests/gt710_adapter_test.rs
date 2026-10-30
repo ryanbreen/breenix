@@ -344,7 +344,7 @@ fn g19_mmu_fault_without_release_stops_offender_and_retires_inside_adapter() {
     mmu_fault(&s,1);
     assert!(matches!(d.reap(),Reap::Empty));
     // kgpu drives the adapter's existing reset/restart boundary outside CORE.
-    // An MMU acknowledgement never supplies the missing post-fault release.
+    // An MMU acknowledgement is followed by confirmed reset, not a post-fault release.
     assert_eq!(s.borrow().release,0);
     d.begin_reset();assert!(d.reset_done());
     let (held,result)=d.restart();assert!(result.is_ok());

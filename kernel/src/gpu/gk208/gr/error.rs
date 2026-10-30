@@ -169,7 +169,7 @@ pub fn capture(io: &mut impl Io) -> Result<Option<Trap>, &'static str> {
         page, status: 0x60010000 | reason, raw }))
 }
 /// G19: MIT nouveau v6.8 fifo/runl.c:58-141 and gk104.c:39-45,
-/// 404-419. Block before acknowledging; never resume a faulted GR channel.
+/// 404-419. Block before acknowledging; rebuild the faulted GR channel.
 /// The caller must reset GR and commit the surviving runlist before clearing
 /// the scheduler exception and unblocking. This alone releases no backing.
 pub fn acknowledge(io: &mut impl Io, trap: Trap, channel: u32, runlist: u32) -> Result<(), &'static str> {

@@ -1727,6 +1727,7 @@ mod native {
             let epoch = self.session.report.identity.epoch.checked_add(1).ok_or("native epoch exhausted")?;
             self.confirmed = false;
             let mut regs = Registers(self.registers);
+            super::super::ctxctl::enable(&mut regs).map_err(super::super::hardware_error)?;
             let topology = super::super::topology::decode(&self.topology)?;
             let mut controller = super::super::ctxctl::Controller::upload(&mut regs, &topology, self.mmu)
                 .map_err(super::super::hardware_error)?;
@@ -1774,7 +1775,7 @@ mod native {
     }
     const REFUSAL_REGISTERS: [usize; 7] = [0x400704, 0x400708, 0x400700, 0x409c18, 0x2634, 0x2640, 0x262c];
     // One native owner. 0 = empty, 1 = being copied, 2 = captured. The first
-    // refusing read survives later zero reads; no allocation or upload in CORE.
+    // refusing read is retained until the worker takes it for upload.
     static REFUSAL_STATE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
     static REFUSAL_WORDS: [core::sync::atomic::AtomicU32; 11] = [const { core::sync::atomic::AtomicU32::new(0) }; 11];
     fn save_refusal(regs: &mut Registers, status: [u32; 4]) {
@@ -1794,8 +1795,8 @@ mod native {
         REFUSAL_STATE.store(0, Ordering::Release);
         Some((status, values))
     }
-    /// Keep the words from the failing read, even if a second read is zero.
-    /// G19 diagnostics are worker/suite-thread records, never IRQ diagnostics.
+    /// Keep the words from the failing read for the bulk refusal record.
+    /// G19 emits this record from the worker or suite thread.
     fn record_trap(regs: &mut Registers, status: [u32; 4]) -> Result<(), &'static str> {
         let values = REFUSAL_REGISTERS.map(|a| regs.read(a));
         emit_refusal(status, values)

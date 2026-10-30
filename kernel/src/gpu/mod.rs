@@ -909,6 +909,14 @@ impl Core {
         if let Some(Device::Gk208(device)) = device {
             return device.admission(masked);
         }
+        // The worker borrows the native device during recovery. Its saved
+        // admitted profile keeps concurrent callers from seeing Core::empty's
+        // virtual capability bits; a failed recovery clears resetting instead.
+        #[cfg(target_arch = "x86_64")]
+        if device.is_none() && self.resetting && self.caps.backend == abi::backend::GK208
+            && self.caps.status == abi::status::ADMITTED {
+            return masked.map_or(Ok(()), |missing| Err((abi::status::MISSING_CAPABILITY, missing)));
+        }
         match self.first_missing(masked) {
             Some(missing) => Err((abi::status::MISSING_CAPABILITY, missing)),
             None => Ok(()),
@@ -1304,19 +1312,6 @@ impl Core {
 
     /// The device returned a request.
     fn returned(&mut self, d: Done) {
-        #[cfg(target_arch = "x86_64")]
-        let killed = if dev::backend() == abi::backend::GK208 && d.answer & !15 == 0x60010000 {
-            let ctx = match d.tag {
-                Tag::Submit { ctx, .. } => Some(ctx),
-                Tag::Sync(serial) => self.syncs.get(&serial).map(|s| s.ctx),
-                Tag::Background => None,
-            };
-            if let Some(ctx) = ctx.and_then(|id| self.contexts.get_mut(&id)) {
-                ctx.state = CtxState::Quarantined;
-                ctx.depth = None;
-            }
-            ctx
-        } else { None };
         let warm = matches!(d.tag, Tag::Sync(serial) if self.syncs.get(&serial).is_some_and(|s| s.warm.is_some()));
         if !warm {
             self.traffic_ns = now_ns();
@@ -1329,22 +1324,6 @@ impl Core {
                     self.fault();
                 }
             }
-        }
-        #[cfg(target_arch = "x86_64")]
-        if let Some(id) = killed {
-            // The faulted context never resumes, including work queued in
-            // CORE before its MMU error arrived. Peers retain their objects.
-            let mut queued = core::mem::take(&mut self.backlog);
-            while let Some((epoch, req)) = queued.pop_front() {
-                let owner = match req.tag() {
-                    Tag::Submit { ctx, .. } => Some(ctx),
-                    Tag::Sync(serial) => self.syncs.get(&serial).map(|s| s.ctx),
-                    Tag::Background => None,
-                };
-                if owner == Some(id) { self.ended(req); }
-                else { self.backlog.push_back((epoch, req)); }
-            }
-            self.settle(id);
         }
     }
 

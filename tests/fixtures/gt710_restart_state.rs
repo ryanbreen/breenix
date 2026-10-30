@@ -91,7 +91,7 @@ fn constructor(c:&NativeChannel)->Result<(), &'static str> {
         for off in (0..4096).step_by(4) {s.vram.insert(c.session.commands.range.start+off,0xdeadbeef);}
         s.vram.insert(instance+0x200,0x12345001);s.vram.insert(instance+0x210,0x76543004);
         // FECS consumed the live image's MMIO header. Restart must use the
-        // pristine golden template, not preserve this zero count (G19).
+        // pristine golden template and restore its count (G19).
         s.vram.insert(c.session.image.range.start,0);
         s.vram.insert(c.session.image.range.start+4,0);
     });
