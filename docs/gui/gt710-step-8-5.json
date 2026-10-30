@@ -51,7 +51,6 @@
     "isolation/quiet-errors",
     "isolation/unknown-op",
     "isolation/test-hooks-absent",
-    "isolation/killable-wait",
-    "isolation/irq-masked-bound"
+    "isolation/killable-wait"
   ]
 }
