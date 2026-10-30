@@ -269,6 +269,9 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
         if r.last.is_none() {
             return Some(Err(EINVAL));
         }
+        if c.stalled {
+            return None;
+        }
         // Count admitted display work across the device wait. A VT switch waits
         // for these presentations before drawing its foreground console.
         let Some(presentation) = crate::console::vt::Presentation::begin(true) else {
@@ -735,13 +738,15 @@ pub(super) fn restore() -> Result<(), i64> {
     }
     #[cfg(target_arch = "x86_64")]
     {
-        // Restore the displaced owner's logical mode before binding its target.
+        // Restore the retained frame's extent. The owner's requested logical mode
+        // may have changed after presenting that frame, and remains independent.
         // With no retained frame, the kernel screen uses its high logical mode.
         // SET_MODE confirms an interim native allocation before its old scanout
         // holds can end; the following shared bind publishes the final resource.
         let mode = with_core(|c| {
-            if saved.is_some() { c.display.stack.last().map_or(KERNEL_MODE as u32, |o| o.mode) }
-            else { KERNEL_MODE as u32 }
+            saved.and_then(|b| c.resources.get(&b.id))
+                .and_then(|r| MODES.iter().position(|m| (m.width, m.height) == (r.width, r.height)))
+                .map_or(KERNEL_MODE as u32, |mode| mode as u32)
         }).ok_or(ENODEV)?;
         if super::arch::with_interrupts(|| crate::gk208::set_mode(mode)).is_err() {
             with_core(|c| c.display.known = false);

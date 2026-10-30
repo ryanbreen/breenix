@@ -568,12 +568,10 @@ pub(crate) fn set_scanout(tag: crate::gpu::dev::Tag, ctx:u32, id:u32,
     Some(super::super::adapter::Request::storage(tag,None))
 }
 fn scanout(id:u32,width:u32,height:u32) -> Option<super::super::present::Surface> {
-    let extent=super::process::mode_extent()?;
     super::with_resources(|r,_,_| {
         let surface=r.scanout(id).ok_or("native scanout target absent")?;
-        if surface.width!=width || surface.height!=height
-            || (width,height)!=extent {
-            return Err("native present extent differs from active mode");
+        if surface.width!=width || surface.height!=height {
+            return Err("native present extent differs from its resource");
         }
         Ok(surface)
     }).ok()
