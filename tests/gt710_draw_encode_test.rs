@@ -339,3 +339,43 @@ fn frame_code_binding_uses_only_the_retained_channel_catalogue() {
     assert!(encode::channel_programs(&mut [0x20020600, 0], &parking).is_err());
     encode::channel_programs(&mut [], &parking).unwrap();
 }
+
+#[test]
+fn retained_catalogue_contains_each_probe_variant() {
+    let target = encode::Target { id: 1, address: 0x800000, width: 1, height: 1,
+        format: format::B8G8R8A8, tile_mode: 0 };
+    let source = encode::Target { id: 2, address: 0x801000, ..target };
+    let (data, _) = encode::parking_frame(target, source, 0x3_0000_0000, 0xa00000).unwrap();
+    for (offset, header, code) in [
+        (0x2030, shaders::PROBE_INTEGER_OPS_HEADER, shaders::PROBE_INTEGER_OPS_CODE),
+        (0x2430, shaders::PROBE_TEXEL_FETCH_HEADER, shaders::PROBE_TEXEL_FETCH_CODE),
+        (shaders::PROBE_INT_00_OFFSET, shaders::PROBE_INT_00_HEADER, shaders::PROBE_INT_00_CODE),
+        (shaders::PROBE_INT_01_OFFSET, shaders::PROBE_INT_01_HEADER, shaders::PROBE_INT_01_CODE),
+        (shaders::PROBE_INT_02_OFFSET, shaders::PROBE_INT_02_HEADER, shaders::PROBE_INT_02_CODE),
+        (shaders::PROBE_INT_03_OFFSET, shaders::PROBE_INT_03_HEADER, shaders::PROBE_INT_03_CODE),
+        (shaders::PROBE_INT_04_OFFSET, shaders::PROBE_INT_04_HEADER, shaders::PROBE_INT_04_CODE),
+        (shaders::PROBE_INT_05_OFFSET, shaders::PROBE_INT_05_HEADER, shaders::PROBE_INT_05_CODE),
+        (shaders::PROBE_INT_06_OFFSET, shaders::PROBE_INT_06_HEADER, shaders::PROBE_INT_06_CODE),
+        (shaders::PROBE_INT_07_OFFSET, shaders::PROBE_INT_07_HEADER, shaders::PROBE_INT_07_CODE),
+        (shaders::PROBE_INT_08_OFFSET, shaders::PROBE_INT_08_HEADER, shaders::PROBE_INT_08_CODE),
+        (shaders::PROBE_INT_09_OFFSET, shaders::PROBE_INT_09_HEADER, shaders::PROBE_INT_09_CODE),
+        (shaders::PROBE_INT_10_OFFSET, shaders::PROBE_INT_10_HEADER, shaders::PROBE_INT_10_CODE),
+        (shaders::PROBE_INT_11_OFFSET, shaders::PROBE_INT_11_HEADER, shaders::PROBE_INT_11_CODE),
+        (shaders::PROBE_INT_12_OFFSET, shaders::PROBE_INT_12_HEADER, shaders::PROBE_INT_12_CODE),
+        (shaders::PROBE_INT_13_OFFSET, shaders::PROBE_INT_13_HEADER, shaders::PROBE_INT_13_CODE),
+        (shaders::PROBE_INT_14_OFFSET, shaders::PROBE_INT_14_HEADER, shaders::PROBE_INT_14_CODE),
+        (shaders::PROBE_INT_15_OFFSET, shaders::PROBE_INT_15_HEADER, shaders::PROBE_INT_15_CODE),
+        (shaders::PROBE_INT_16_OFFSET, shaders::PROBE_INT_16_HEADER, shaders::PROBE_INT_16_CODE),
+        (shaders::PROBE_INT_17_OFFSET, shaders::PROBE_INT_17_HEADER, shaders::PROBE_INT_17_CODE),
+        (shaders::PROBE_INT_18_OFFSET, shaders::PROBE_INT_18_HEADER, shaders::PROBE_INT_18_CODE),
+        (shaders::PROBE_INT_19_OFFSET, shaders::PROBE_INT_19_HEADER, shaders::PROBE_INT_19_CODE),
+        (shaders::PROBE_INT_20_OFFSET, shaders::PROBE_INT_20_HEADER, shaders::PROBE_INT_20_CODE),
+        (shaders::PROBE_INT_21_OFFSET, shaders::PROBE_INT_21_HEADER, shaders::PROBE_INT_21_CODE),
+        (shaders::PROBE_INT_22_OFFSET, shaders::PROBE_INT_22_HEADER, shaders::PROBE_INT_22_CODE),
+        (shaders::PROBE_INT_23_OFFSET, shaders::PROBE_INT_23_HEADER, shaders::PROBE_INT_23_CODE),
+        (shaders::PROBE_INT_24_OFFSET, shaders::PROBE_INT_24_HEADER, shaders::PROBE_INT_24_CODE),
+    ] {
+        assert_eq!(&data[offset..offset+80], header, "probe header at {offset:#x}");
+        assert_eq!(&data[offset+80..offset+80+code.len()], code, "probe code at {offset:#x}");
+    }
+}
