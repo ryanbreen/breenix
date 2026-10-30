@@ -366,9 +366,21 @@ pub fn reset(io: &mut impl Access) -> Result<(), Fault> {
     // MIT nouveau gr/gf100.c:2328: stop active GR FIFO access before the PMC pulse.
     // Cold startup has GR disabled; its PRI registers are inaccessible then.
     if io.read(0x200) & 0x1000 != 0 {
-        mask(io, 0x400500, 1, 0);
-        if io.read(0x400500) & 1 != 0 {
-            return Err(fault("GR FIFO disable refused", 0x400500, io.read(0x400500)));
+        // A red-switch PRI sentinel is neither a FIFO word to mask nor a
+        // refusal. Sample both sides of the write within a short reset bound.
+        let fifo_word = |io: &mut _| {
+            let mut value = 0;
+            poll(io, 1000, "GR FIFO PRI inaccessible", |io| {
+                value = io.read(0x400500);
+                (value >> 16 != 0xbadf, 0x400500, value)
+            })?;
+            Ok::<u32, Fault>(value)
+        };
+        let before = fifo_word(io)?;
+        io.write(0x400500, before & !1);
+        let after = fifo_word(io)?;
+        if after & 1 != 0 {
+            return Err(fault("GR FIFO disable refused", 0x400500, after));
         }
     }
     let temporary = io.read(0x200) & 0x08000000;

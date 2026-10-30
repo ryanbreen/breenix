@@ -1688,23 +1688,30 @@ mod native {
             // another instance's fault or a fault on an unstopped engine.
             let owned = faults.iter().filter(|f| f.instance == c.instance && matches!(f.unit, 0 | 0x1b))
                 .fold(0u32, |mask, f| mask | 1u32 << f.unit);
-            // G19: the old FECS must finish preempt BEFORE its firmware is
-            // reset. A refused preempt cannot certify cessation or free holds.
+            // G9/G19: attempt preempt before reset, but a timeout still
+            // requires stopping GR. Keep its error: cleanup cannot certify
+            // backing release when that preempt was refused.
             regs.write(0x2634, c.id);
-            register_wait(&mut regs, 0x2634, 0x100000, 0, BOUND_US)?;
-            super::super::ctxctl::reset(&mut regs).map_err(super::super::hardware_error)?;
-            if let Some(copy) = &self.session.copy {
-                crate::gk208::ce::reset_engine(&mut regs, copy.base, copy.reset)?;
-            }
-            if owned != 0 { regs.write(0x259c, owned); }
-            if regs.read(0x259c) != 0 { return Err("native reset foreign MMU fault; backing retained"); }
-            // MIT FIFO runl.c:120-128, gk104.c:404-447. Commit the
-            // surviving (empty) hardware runlist before clearing/unblocking.
-            // Logical peer VMs/resources are retained by the native owner.
-            regs.write(0x2270, ((self.session.commands.range.start + RUNLIST) >> 12) as u32);
-            regs.write(0x2274, c.runlist << 20);
+            let preempt = register_wait(&mut regs, 0x2634, 0x100000, 0, BOUND_US);
+            let stopped = (|| {
+                super::super::ctxctl::reset(&mut regs).map_err(super::super::hardware_error)?;
+                if let Some(copy) = &self.session.copy {
+                    crate::gk208::ce::reset_engine(&mut regs, copy.base, copy.reset)?;
+                }
+                if owned != 0 { regs.write(0x259c, owned); }
+                if regs.read(0x259c) != 0 { return Err("native reset foreign MMU fault; backing retained"); }
+                // MIT FIFO runl.c:120-128, gk104.c:404-447. Commit the
+                // surviving (empty) hardware runlist before clearing/unblocking.
+                // Logical peer VMs/resources are retained by the native owner.
+                regs.write(0x2270, ((self.session.commands.range.start + RUNLIST) >> 12) as u32);
+                regs.write(0x2274, c.runlist << 20);
+                Ok(())
+            })();
+            // Unblock scheduling on refusal for the next
+            // recovery attempt. The channel stays disabled and backing held.
             regs.write(0x262c, 1 << c.runlist);
             regs.mask(0x2630, 1 << c.runlist, 0);
+            stopped?;
             for (address, mask) in [
                 (0x2284 + c.runlist as usize * 8, 0x100000),
                 (0x2634, 0x100000),
@@ -1723,6 +1730,7 @@ mod native {
             // without issuing any preempt against the reset FECS.
             self.session.quiesce(&mut regs, self.total)?;
             if regs.read(0x259c) != 0 { return Err("native reset MMU fault; backing retained"); }
+            preempt?;
             self.confirmed = true;
             Ok(())
         }
