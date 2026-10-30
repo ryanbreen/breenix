@@ -1,5 +1,7 @@
 """PR 8.4 selection and retained GPU evidence checks."""
 import json
+import contextlib
+import io
 from pathlib import Path
 import re
 import runpy
@@ -23,14 +25,43 @@ class ShapesReport(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             pr = dict(number=1, state='OPEN', headRefOid=SHA)
-            proof = dict(passed=True, boots=[], checks=[], selected=dict(passed=90, total=90),
+            boots = [dict(suite=suite, id=bid, commit=SHA, toolsCommit=SHA,
+                          build=dict(commit=SHA, profile='production', features=[]),
+                          exitStatus=status, exitReason=reason,
+                          done=dict(passed=passed, failed=failed, skipped=0, total=total),
+                          memory='PASS', captureComplete=True)
+                     for suite, bid, status, reason, passed, failed, total in (
+                         ('console', '20261030T051940Z-metal', 0, 'passed suite', 88, 0, 88),
+                         ('gpu', '20261030T053020Z-metal', 1,
+                          'failed GPU cases outside step 8.4 (G13)', 139, 31, 170))]
+            checks = [dict(suite='gpu', category=category, count=count,
+                           reason=f'{category}: {count} cases passed')
+                      for category, count in (('graphics', 3), ('shapes', 1))]
+            proof = dict(passed=True, boots=boots, checks=checks, selected=dict(passed=90, total=90),
                          consoleHandoffToDoneMS=100, gpuElapsedMS=200)
+            output = io.StringIO()
             with patch.object(sys, 'argv', ['gt710-suite', '--shapes', '--acceptance-directory', tmp,
                                            '--sha', SHA, '--pr', '1']), \
                  patch('subprocess.check_output', side_effect=[SHA, '', json.dumps(pr), json.dumps(pr)]), \
-                 patch.dict(API['main'].__globals__, alpha_acceptance=lambda *args: proof if args[-1] == 'shapes' else {}):
+                 patch.dict(API['main'].__globals__, alpha_acceptance=lambda *args: proof if args[-1] == 'shapes' else {}), \
+                 contextlib.redirect_stdout(output):
                 self.assertEqual(API['main'](), 0)
             self.assertTrue(json.loads((directory / 'acceptance.json').read_text())['passed'])
+            report = output.getvalue()
+            for boot in boots:
+                line = next(line for line in report.splitlines()
+                            if line.startswith(boot['suite'] + ' boot='))
+                self.assertIn('boot=' + boot['id'], line)
+                self.assertIn('build=' + SHA + ' profile=production features=[]', line)
+                self.assertIn('captureComplete=true', line)
+                self.assertIn('DONE=' + str(boot['done']), line)
+                self.assertIn('memory=PASS', line)
+                self.assertIn('exit=' + str(boot['exitStatus']), line)
+            self.assertIn('reason=failed GPU cases outside step 8.4 (G13)', report)
+            self.assertIn('scorer gpu/graphics PASS 3/3', report)
+            self.assertIn('scorer gpu/shapes PASS 1/1', report)
+            self.assertIn('GT710 checks=4 PASS', report)
+            self.assertIn('acceptance proof=' + str(directory / 'acceptance.json'), report)
 
     def test_shapes_acceptance_scores_all_three_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
