@@ -8,7 +8,7 @@ pub mod gpu {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Tag { Background, Sync(u64), Submit { ctx:u32, serial:u64, last:bool } }
         pub struct Done {pub tag:Tag,pub fence:Option<u64>,pub native_fence:Option<u64>,pub answer:u32,pub echoed:u64,pub fenced:bool}
-        pub enum Reap {Empty,Done(Done),Fault}
+        pub enum Reap {Empty,Done(Done),Fault,Reset(Tag)}
     }
 }
 #[path = "../kernel/src/gpu/gk208"]
@@ -75,6 +75,9 @@ pub mod gk208 {
                 pub fn reset(&mut self)->Result<(),&'static str> {
                     let mut s=self.0.borrow_mut();s.events.push("reset");
                     if s.fail_reset {return Err("reset failed");}
+                    // Native boundary: a confirmed GR stop, empty runlist,
+                    // scheduler-error clear and unblock. No engine release.
+                    gk208_reset(&mut s);
                     s.events.extend(["confirm","remove","unbind"]);
                     if s.fail_unbind {return Err("unbind failed");}
                     s.events.push("restore");s.stopped=true;Ok(())
@@ -82,6 +85,17 @@ pub mod gk208 {
                 pub fn restart(&mut self)->Result<(),&'static str> {
                     let mut s=self.0.borrow_mut();assert!(s.stopped);s.epoch+=1;s.release=0;s.fault=false;s.stopped=false;Ok(())
                 }
+            }
+            fn gk208_reset(s:&mut State) {
+                use crate::gk208::gr::error::Io;
+                s.write(0x400500,0);
+                s.write(0x200,0);
+                s.write(0x200,0x1000);
+                s.write(0x2270,0x456);
+                s.write(0x2274,0);
+                s.write(0x262c,1);
+                s.write(0x2630,0);
+                s.registers.insert(0x2640,0);
             }
         }
     }
@@ -302,6 +316,46 @@ fn encoded_stream_copy_uses_ce_completion_and_keeps_the_caller_fence() {
 
 fn mmu_fault(s:&Rc<RefCell<State>>,sequence:u32) {
     s.borrow_mut().plant_mmu(sequence);
+}
+#[test]
+fn g19_mmu_fault_without_release_stops_offender_and_retires_inside_adapter() {
+    use std::sync::Arc;
+    let (mut d,s)=device();
+    let bad_tag=Tag::Submit {ctx:7,serial:9001,last:true};
+    assert!(d.send(Request::undefined_command(bad_tag,7,9001).unwrap()).is_ok());
+    let peer_tag=Tag::Submit {ctx:8,serial:23,last:true};
+    let mut peer=request(23);peer.tag=peer_tag;
+    assert!(d.send(peer).is_ok());
+    let pages=Arc::new(gpu::dma::Pages);
+    assert!(d.send(Request::storage(Tag::Sync(24),Some(pages.clone()))).is_ok());
+    mmu_fault(&s,1);
+    assert!(matches!(d.reap(),Reap::Empty));
+    // kgpu drives the adapter's existing reset/restart boundary outside CORE.
+    // An MMU acknowledgement never supplies the missing post-fault release.
+    assert_eq!(s.borrow().release,0);
+    d.begin_reset();assert!(d.reset_done());
+    let (held,result)=d.restart();assert!(result.is_ok());
+    assert!(held.is_empty(),"attributed faults must retire locally, without whole-device reset");
+    assert_eq!(&s.borrow().writes[..3],&[(0x2630,1),(0x259c,1),(0x800004,0x800)],
+        "block, acknowledge, disable before GR reset");
+    {let state=s.borrow();let writes=&state.writes;
+    let reset=writes.iter().position(|w| *w==(0x200,0)).unwrap();
+    let commit=writes.iter().position(|w| *w==(0x2274,0)).unwrap();
+    let clear=writes.iter().position(|w| *w==(0x262c,1)).unwrap();
+    let unblock=writes.iter().position(|w| *w==(0x2630,0)).unwrap();
+    assert!(reset<commit && commit<clear && clear<unblock);}
+    let Reap::Done(done)=d.reap() else {panic!("fault must retire without a later engine release")};
+    assert_eq!((done.tag,done.answer),(bad_tag,0x60010000));
+    assert_ne!(done.answer,gpu_abi::gk208::SUCCESS);
+    assert!(matches!(d.reap(),Reap::Reset(tag) if tag==peer_tag),
+        "unconfirmed peer work must report the reset epoch, never fabricated success");
+    assert!(matches!(d.reap(),Reap::Done(_)));assert_eq!(Arc::strong_count(&pages),1);
+    assert_eq!(d.outstanding(),0);assert!(!d.needs_reset());
+    // The peer keeps its resources/VM; fresh work requires the new epoch.
+    send(&mut d,25);s.borrow_mut().release=1;
+    assert!(matches!(d.reap(),Reap::Empty));
+    s.borrow_mut().release_epoch=18;
+    assert!(matches!(d.reap(),Reap::Done(done) if done.answer==gpu_abi::gk208::SUCCESS));
 }
 #[test]
 fn unmapped_write_and_release_follows_the_fault() {
