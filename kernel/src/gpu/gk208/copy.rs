@@ -1,3 +1,31 @@
+/*
+ * Copyright 2007 Dave Airlied
+ * All Rights Reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * VA LINUX SYSTEMS AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ */
+/*
+ * Authors: Dave Airlied <airlied@linux.ie>
+ *	    Ben Skeggs   <darktama@iinet.net.au>
+ *	    Jeremy Kolb  <jkolb@brandeis.edu>
+ */
 /*******************************************************************************
     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
 
@@ -237,14 +265,15 @@ pub fn region(src: Image, dst: Image, r: [u32; 6], staging: Option<Image>) -> Re
         Ok(Plan { stale_fence: false, copies:[Some(blit(s,t)),Some(blit(t,d))] })
     } else { Ok(Plan { stale_fence: false, copies:[Some(blit(s,d)),None] }) }
 }
-fn surface(out: &mut Vec<u32>, s: Surface, source: bool) -> (u64,u32,u32) {
+fn surface(out: &mut Vec<u32>, s: Surface, source: bool, byte_mode: bool) -> (u64,u32,u32) {
     match s {
         Surface::Pitch(l) => (l.address+l.offset,l.stride,if source {1<<7} else {1<<8}),
         Surface::Tiled(i,[x,y]) => {
-            // cla0b5.h: FERMI_8 GOB height, one-GOB width/depth, pixel
-            // dimensions/origins when REMAP_ENABLE supplies component size.
+            // cla0b5.h: FERMI_8 GOB height, one-GOB width/depth. Without
+            // REMAP, X and width use bytes; the original remap path uses pixels.
+            let unit = if byte_mode { i.texel_bytes } else { 1 };
             method(out,if source {0x728} else {0x70c},
-                &[0x1000 | (i.block_height.trailing_zeros()<<4),i.width,i.height,1,0,x | (y<<16)]);
+                &[0x1000 | (i.block_height.trailing_zeros()<<4),i.width*unit,i.height,1,0,x*unit | (y<<16)]);
             (i.address,0,0)
         }
     }
@@ -257,13 +286,29 @@ pub fn encode_plan(plan: Plan, semaphore: u64, epoch: u64, sequence: u32) -> Res
     let mut out = vec![];
     method(&mut out,0,&[0xa0b5]);
     for b in plan.copies.into_iter().flatten() {
-        let (s,sp,sl) = surface(&mut out,b.src,true);
-        let (d,dp,dl) = surface(&mut out,b.dst,false);
-        // One component per pixel, identity SRC_X -> DST_X. Component size
-        // is bytes minus one; line length/origins are therefore in pixels.
-        method(&mut out,0x708,&[(b.bpp-1)<<16]);
-        method(&mut out,0x400,&[(s>>32) as u32,s as u32,(d>>32) as u32,d as u32,sp,dp,b.width,b.height]);
-        method(&mut out,0x300,&[0x606 | sl | dl]);
+        // Whole, tightly packed tiled rows need no component remapping. Keep
+        // the established pixel-mode path for small images, subrectangles
+        // and padded rows.
+        let full_row = |s| match s {
+            Surface::Tiled(i, [x, _]) => x == 0 && b.width == i.width && i.pitch == i.width*b.bpp,
+            Surface::Pitch(_) => true,
+        };
+        let tiled = matches!(b.src, Surface::Tiled(..)) || matches!(b.dst, Surface::Tiled(..));
+        let bulk = u64::from(b.width) * u64::from(b.height) * u64::from(b.bpp) >= 1 << 20;
+        let byte_mode = tiled && bulk && b.bpp == 4 && b.width >= 256 && full_row(b.src) && full_row(b.dst);
+        let (s,sp,sl) = surface(&mut out,b.src,true,byte_mode);
+        let (d,dp,dl) = surface(&mut out,b.dst,false,byte_mode);
+        let (width, launch) = if byte_mode {
+            // NON_PIPELINED | FLUSH | MULTI_LINE, REMAP disabled, as in
+            // MIT nouveau nouveau_boa0b5.c; keep PTE-selected L2 behaviour.
+            (b.width*b.bpp, 0x206)
+        } else {
+            // Identity SRC_X -> DST_X, one component per pixel.
+            method(&mut out,0x708,&[(b.bpp-1)<<16]);
+            (b.width, 0x606)
+        };
+        method(&mut out,0x400,&[(s>>32) as u32,s as u32,(d>>32) as u32,d as u32,sp,dp,width,b.height]);
+        method(&mut out,0x300,&[launch | sl | dl]);
     }
     let echo = if plan.stale_fence { sequence.wrapping_add(1) } else { sequence };
     for (off,value) in [(4,epoch as u32),(8,(epoch>>32) as u32),(0,echo)] {

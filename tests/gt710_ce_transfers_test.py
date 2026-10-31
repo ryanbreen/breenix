@@ -29,8 +29,8 @@ class Transfers(unittest.TestCase):
 
     def test_upload_cpu_passes_and_exact_bytes(self):
         core = (ROOT / 'kernel/src/gpu/mod.rs').read_text().split('fn op_upload(', 1)[1]
-        stage = core[core.index('    let stage = Staging::new('):core.index('    // The backing is the upload')]
-        convert = core[core.index('    // Rows into the backing'):core.index('    let offset = y * pitch')]
+        stage = core[core.index('    // Stage the clipped source rows'):core.index('    // The backing is the upload')]
+        convert = core[core.index('    // Rows into the backing'):core.index('    // Test point 30')]
         self.run_rust(r'''
 #![allow(dead_code)] // The fixture supplies both the converting and identity paths.
 use std::{cell::{Cell, UnsafeCell}, sync::Arc};
@@ -53,6 +53,7 @@ struct Pages(UnsafeCell<Vec<u8>>);
 impl Pages {
     fn new(n:usize)->Self { Self(UnsafeCell::new(vec![0;n])) }
     fn read(&self,at:usize,out:&mut[u8]) { touch(out.len()); unsafe { out.copy_from_slice(&(&*self.0.get())[at..at+out.len()]); } }
+    fn maintain(&self,_:usize,_:usize,cpu:bool) {assert!(!cpu);}
     fn write(&self,at:usize,src:&[u8]) { touch(src.len()); unsafe { (&mut *self.0.get())[at..at+src.len()].copy_from_slice(src); } }
     fn try_spans<E>(&self,at:usize,n:usize,mut f:impl FnMut(usize,*mut u8,usize)->Result<(),E>)->Result<(),E> {
         let mut done=0;
@@ -71,7 +72,8 @@ mod syscall { pub mod userptr {
 mod dev {pub fn backend()->u32 {6}}
 mod gk208 {pub mod cost {
     pub enum Slot { UserCopy, UploadConvert }
-    pub fn phase(_:Slot)->Option<()> {None}
+    pub struct Guard;
+    pub fn phase(_:Slot)->Option<Guard> {None}
 }}
 fn upload(source:u32,fmt:u32,cw:u64,ch:u64,stride:u64,x:u64,y:u64,pitch:u64,data:&[u8],backing:&Arc<Pages>)->Result<(),i64>{
     let tgid=1;

@@ -2753,6 +2753,10 @@ def capture_serial(directory):
         'span_prep_n', 'span_prep_ns', 'span_map_n', 'span_map_ns',
         'span_upload_n', 'span_upload_ns', 'translate_n', 'translate_ns',
         'frame_prep_n', 'frame_prep_ns', 'evo_n', 'evo_ns',
+        'user_copy_n', 'user_copy_ns', 'read_prepare_n', 'read_prepare_ns',
+        'upload_convert_n', 'upload_convert_ns', 'poison_n', 'poison_ns',
+        'transfer_map_n', 'transfer_map_ns', 'ce_n', 'ce_ns',
+        'compare_n', 'compare_ns', 'copy_out_n', 'copy_out_ns',
     }
     spans = bool(re.search(r'^GT710_SPANS_BULK ', serial, re.M))
     stalls = bool(re.search(r'^GT710_STALL_BULK ', serial, re.M))

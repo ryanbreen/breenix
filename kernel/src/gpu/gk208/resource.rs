@@ -331,6 +331,13 @@ impl<B> Resources<B> {
         let e = self.entries.get(&id).filter(|e| !e.dropped).ok_or("native resource absent")?;
         Ok(Hold { _reference: e.reference.clone() })
     }
+    /// Reuse a confirmed mapping only for the identical retained backing.
+    pub fn mapped_backing(&self, id: u32, backing: &Arc<B>) -> Option<u64> {
+        let e = self.entries.get(&id).filter(|e| !e.dropped)?;
+        if !e.backing.as_ref().is_some_and(|b| Arc::ptr_eq(b, backing)) { return None; }
+        if e.layout.is_none() { return e.mapped.then_some(e.va); }
+        e.backing_mapped.then_some(e.backing_va).flatten()
+    }
     /// Map the attached, caller-retained backing once, separately from VRAM.
     pub fn map_backing(&mut self, a: &mut Allocator, io: &mut impl Io, id: u32,
         backing: &Arc<B>, pages: &[u64], bytes: u64,

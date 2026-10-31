@@ -1,22 +1,29 @@
 //! Fixed native phase costs, armed by an explicit case-metrics observation.
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-pub const NAMES: [&str; 24] = [
+pub const NAMES: [&str; 40] = [
     "submit_n", "submit_ns", "wait_n", "wait_ns", "read_n", "read_ns",
     "present_n", "present_ns", "upload_n", "upload_ns", "pack_n", "pack_ns",
     "span_prep_n", "span_prep_ns", "span_map_n", "span_map_ns",
     "span_upload_n", "span_upload_ns", "translate_n", "translate_ns",
     "frame_prep_n", "frame_prep_ns", "evo_n", "evo_ns",
+    "user_copy_n", "user_copy_ns", "read_prepare_n", "read_prepare_ns",
+    "upload_convert_n", "upload_convert_ns", "poison_n", "poison_ns",
+    "transfer_map_n", "transfer_map_ns", "ce_n", "ce_ns",
+    "compare_n", "compare_ns", "copy_out_n", "copy_out_ns",
 ];
 pub const WORDS: usize = NAMES.len();
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum Slot { Submit, Wait, Read, Present, Upload, Pack, SpanPrepare, SpanMap,
-    SpanUpload, Translate, FramePrepare, Evo }
+    SpanUpload, Translate, FramePrepare, Evo, UserCopy, ReadPrepare, UploadConvert,
+    Poison, TransferMap, Ce, Compare, CopyOut }
 impl Slot {
-    const ALL: [Self; 12] = [Self::Submit, Self::Wait, Self::Read, Self::Present,
+    const ALL: [Self; 20] = [Self::Submit, Self::Wait, Self::Read, Self::Present,
         Self::Upload, Self::Pack, Self::SpanPrepare, Self::SpanMap, Self::SpanUpload,
-        Self::Translate, Self::FramePrepare, Self::Evo];
+        Self::Translate, Self::FramePrepare, Self::Evo, Self::UserCopy,
+        Self::ReadPrepare, Self::UploadConvert, Self::Poison, Self::TransferMap,
+        Self::Ce, Self::Compare, Self::CopyOut];
 }
 pub fn slot_for_op(op: u64) -> Option<Slot> {
     let op = u32::try_from(op).ok()?;
@@ -68,4 +75,4 @@ mod runtime {
     pub fn snapshot() -> [u64; WORDS] { DATA.snapshot() }
 }
 #[cfg(target_os = "none")]
-pub use runtime::{for_op, phase, snapshot};
+pub use runtime::{for_op, phase, snapshot, Guard};

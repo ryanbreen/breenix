@@ -469,13 +469,19 @@ pub(crate) fn transfer(tag: crate::gpu::dev::Tag, fence: u64, id: u32,
     offset: u64, stride: u32, upload: bool,
 ) -> Option<super::super::adapter::Request> {
     use super::super::copy;
-    let mut pages = Vec::new();
-    pages.try_reserve_exact(backing.count()).ok()?;
-    pages.extend((0..backing.count()).map(|i| backing.page_addr(i)));
+    let _cost = super::super::cost::phase(super::super::cost::Slot::TransferMap);
     let (plan,resource,hold) = super::with_resources(|r,a,io| {
         let hold = r.hold(id)?;
         let img = image(r,id)?;
-        let address = r.map_backing(a,io,id,&backing,&pages,backing.bytes() as u64)?;
+        let address = match r.mapped_backing(id, &backing) {
+            Some(address) => address,
+            None => {
+                let mut pages = Vec::new();
+                pages.try_reserve_exact(backing.count()).map_err(|_| "native transfer page list")?;
+                pages.extend((0..backing.count()).map(|i| backing.page_addr(i)));
+                r.map_backing(a,io,id,&backing,&pages,backing.bytes() as u64)?
+            }
+        };
         let linear = copy::Linear { address,bytes:backing.bytes() as u64,offset,stride };
         let plan = if upload { copy::upload(img,linear,rectangle)? }
             else { copy::readback(img,linear,rectangle)? };

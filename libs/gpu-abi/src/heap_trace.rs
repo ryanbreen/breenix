@@ -1,5 +1,5 @@
 //! Fixed, address-free diagnostic snapshot for the native suite's case boundaries.
-pub const WORDS: usize = 56;
+pub const WORDS: usize = 72;
 pub const SIZE: usize = WORDS * 8;
 pub const NAMES: [&str; WORDS] = [
     "schema", "heap_free", "heap_high_water", "frame_frontier", "frame_freelist_bytes",
@@ -16,6 +16,10 @@ pub const NAMES: [&str; WORDS] = [
     "span_prep_n", "span_prep_ns", "span_map_n", "span_map_ns",
     "span_upload_n", "span_upload_ns", "translate_n", "translate_ns",
     "frame_prep_n", "frame_prep_ns", "evo_n", "evo_ns",
+    "user_copy_n", "user_copy_ns", "read_prepare_n", "read_prepare_ns",
+    "upload_convert_n", "upload_convert_ns", "poison_n", "poison_ns",
+    "transfer_map_n", "transfer_map_ns", "ce_n", "ce_ns",
+    "compare_n", "compare_ns", "copy_out_n", "copy_out_ns",
 ];
 pub fn decode(bytes: &[u8]) -> Option<[u64; WORDS]> {
     if bytes.len() != SIZE { return None; }

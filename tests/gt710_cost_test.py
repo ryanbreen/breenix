@@ -17,6 +17,11 @@ fn main(){{
  assert_eq!(cost::slot_for_op(0),None);assert_eq!(cost::slot_for_op(u64::MAX),None);
  assert_eq!(gpu_abi::heap_trace::WORDS,32+cost::WORDS);
  assert_eq!(&gpu_abi::heap_trace::NAMES[32..],&cost::NAMES);
+ for (i,slot) in [Slot::UserCopy,Slot::ReadPrepare,Slot::UploadConvert,Slot::Poison,
+     Slot::TransferMap,Slot::Ce,Slot::Compare,Slot::CopyOut].into_iter().enumerate(){{
+   r.record(slot,1000,1010+i as u64);
+   assert_eq!(&r.snapshot()[24+2*i..26+2*i],&[1,10+i as u64]);
+ }}
 }}
 '''
   priority=['taskpolicy','-b'] if sys.platform=='darwin' else []
