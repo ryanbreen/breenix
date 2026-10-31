@@ -2994,6 +2994,7 @@ fn panic(info: &PanicInfo) -> ! {
     kernel::capture::emit(kernel::capture::Edge::Panic, panic_line, panic_column);
     if kernel::gpu::console::active() {
         kernel::gpu::panic::show_panic(info, &recent[..recent_len]);
+        #[cfg(feature = "capture_panic_oracle")]
         kernel::gpu::panic::park();
     }
 
