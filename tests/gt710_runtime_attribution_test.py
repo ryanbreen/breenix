@@ -18,6 +18,13 @@ class RuntimeAttribution(unittest.TestCase):
   with tempfile.TemporaryDirectory() as tmp:
    p=Path(tmp);(p/'commit').write_text(subprocess.check_output(['git','rev-parse','becddfad'],cwd=ROOT,text=True).strip())
    with self.assertRaises(ValueError):API['alpha_capture_identity'](p,PANIC_PROFILE)
+ def test_later_terminal_repairs_are_not_covered_by_the_profile_ruling(self):
+  # The coordinator retained 92484cc0 only through 26b26b6c. The UART
+  # and USERD repairs after that ruling change runtime files, not host files.
+  with tempfile.TemporaryDirectory() as tmp:
+   p=Path(tmp);(p/'commit').write_text(PRODUCTION)
+   with self.assertRaisesRegex(ValueError, 'runtime or unauthorized files'):
+    API['alpha_capture_identity'](p,'ce2e92175c26d39f66429c4cb489502f0ac31981')
  def test_presentation_joins_exact_identities_without_relabeling(self):
   import sys,copy
   sys.path.insert(0,str(ROOT/'tests'))
