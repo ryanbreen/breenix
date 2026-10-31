@@ -1177,7 +1177,10 @@ pub(super) fn logical_console(regs:&mut Registers,layout:&mut memory::Layout,
     let table=layout.allocator.allocate(super::vm::TABLE_BYTES,4096,memory::allocator::Kind::Display)?;
     layout.objects.push(memory::Object{name:"bar1-table",range:table.range,align:4096,allocation:table});
     let instance=layout.objects[4].range.start;
-    let mut words=alloc::vec![0u32;super::vm::TABLE_BYTES as usize/4];
+    let mut words=Vec::new();
+    words.try_reserve_exact(super::vm::TABLE_BYTES as usize/4)
+        .map_err(|_| "logical console BAR table allocation")?;
+    words.resize(super::vm::TABLE_BYTES as usize/4,0u32);
     {
         let mut p=memory::Pramin::new(regs,evo.total);
         for (i,word) in words[..modeset::BAR1_WINDOW/4096*2].iter_mut().enumerate() {
