@@ -14,6 +14,17 @@ class RuntimeAttribution(unittest.TestCase):
    self.assertEqual(runtime,PRODUCTION)
    self.assertEqual(set(changed),{'kernel/src/gpu/gk208/native.rs','tests/gt710_panic_probe_route_test.py'})
    self.assertEqual((p/'commit').read_text(),PRODUCTION)
+ def test_coordinator_fixture_repairs_preserve_the_retained_runtime(self):
+  capture='bc422f5c3c070e9335f4e669c75431db325ad494'
+  head='f'*40
+  paths=['tests/gt710_isolation_report_test.py',
+         'tests/gt710_shapes_report_test.py', 'tests/gt710_logical_mode_path_test.py']
+  def git_output(command, **kwargs):
+   return ('\0'.join(paths)+'\0').encode() if command[1]=='diff' else b''
+  with patch('subprocess.check_output',side_effect=git_output):
+   runtime,changed=API['alpha_runtime_identity'](capture,head)
+  self.assertEqual(runtime,capture)
+  self.assertEqual(changed,paths)
  def test_prior_runtime_changes_are_not_covered_by_the_profile_ruling(self):
   with tempfile.TemporaryDirectory() as tmp:
    p=Path(tmp);(p/'commit').write_text(subprocess.check_output(['git','rev-parse','becddfad'],cwd=ROOT,text=True).strip())
