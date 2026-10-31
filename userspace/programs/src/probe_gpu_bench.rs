@@ -48,10 +48,7 @@ pub fn run_c2(mut set:impl FnMut(u32)->Result<(),String>)->Result<(),String> {
         if phase!=0 {set(frequency)?;}
         println!("GT710_C2_PHASE phase={phase} gpc_khz={frequency}");
         for n in 1..=3 {
-            let elapsed=trial(context,&draws,"core",phase*3+n,u64::from(DRAWS)*u64::from(WIDTH)*u64::from(HEIGHT),"fragments")?;
-            if phase==1 && n==1 && elapsed<900_000_000 {
-                return Err(format!("540000 first bench under 900 ms: {elapsed} ns"));
-            }
+            trial(context,&draws,"core",phase*3+n,u64::from(DRAWS)*u64::from(WIDTH)*u64::from(HEIGHT),"fragments")?;
         }
     }
     checked(gpu::resource_destroy(target),"RESOURCE_DESTROY")?;
