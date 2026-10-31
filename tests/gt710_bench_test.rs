@@ -14,7 +14,7 @@ pub mod time {
     pub fn now_monotonic()->Result<Stamp,&'static str> {
         Ok(crate::STATE.with_borrow_mut(|s| {s.clocks+=1;
             let end=s.clocks%2==0;
-            let duration=if s.submits>=4 && s.submits<=6 && !s.low_too_fast {1_070_000_000}else{716_000_000};
+            let duration=if s.submits>=10 && s.submits<=12 && !s.low_too_fast {1_070_000_000}else{716_000_000};
             Stamp(((s.clocks-1) as i128/2)*2_000_000_000+if end {duration}else{0})}))
     }
     pub fn sleep_ms(_:u64)->Result<(), &'static str> { Ok(()) }
@@ -63,7 +63,7 @@ pub mod gpu {
                     assert_eq!(&d[4..],&[1,0,0,2560,1600]);
                 }
                 assert_eq!(plan.drawn,200);assert_eq!(plan.estimate,819_200_000);
-            assert_eq!(s.sets,match s.submits {0..=2=>vec![],3..=5=>vec![540_000],_=>vec![540_000,810_000]});
+            assert_eq!(s.sets,match s.submits {0..=8=>vec![],9..=11=>vec![540_000],_=>vec![540_000,810_000]});
             s.submits+=1;s.pending=true;
             let mut a=abi::Submit::ZERO;a.fence=s.submits as u64;(0,a)
         })
@@ -78,10 +78,10 @@ pub mod gpu {
 }
 
 #[test]
-fn nine_trials_use_real_validated_streams_with_down_and_up_between_waits() {
+fn fifteen_trials_use_real_validated_streams_with_down_and_up_between_waits() {
     STATE.with_borrow_mut(|s|*s=State::default());
     probe_gpu_bench::run_c2(phase).unwrap();
-    STATE.with_borrow(|s| {assert_eq!((s.submits,s.waits,s.clocks),(9,9,18));assert!(!s.pending)});
+    STATE.with_borrow(|s| {assert_eq!((s.submits,s.waits,s.clocks),(15,15,30));assert!(!s.pending)});
 }
 
 #[test]
@@ -98,7 +98,7 @@ fn phase(phase:probe_gpu_bench::ClockPhase)->Result<(),String> {
     },ClockPhase::Low=>540_000,ClockPhase::Restore=>810_000};
     STATE.with_borrow_mut(|s| {
         assert!(!s.pending);assert_eq!(s.clocks%2,0);
-        assert_eq!(s.submits,if khz==540_000 {3}else{6});
+        assert_eq!(s.submits,if khz==540_000 {9}else{12});
         s.sets.push(khz);
     });Ok(())
 }
@@ -106,7 +106,7 @@ fn phase(phase:probe_gpu_bench::ClockPhase)->Result<(),String> {
 fn low_trial_under_900_ms_completes_all_trials_and_restores_clock() {
     STATE.with_borrow_mut(|s|*s=State {low_too_fast:true,..State::default()});
     probe_gpu_bench::run_c2(phase).unwrap();
-    STATE.with_borrow(|s|{assert_eq!((s.submits,s.waits),(9,9));assert_eq!(s.sets,[540_000,810_000]);});
+    STATE.with_borrow(|s|{assert_eq!((s.submits,s.waits),(15,15));assert_eq!(s.sets,[540_000,810_000]);});
 }
 
 #[test]

@@ -109,7 +109,7 @@ fn snapshot_covers_inactive_paths_and_restore_reinstates_post_pll() {
     d.writes.clear();assert!(restore(&mut d,&missing).is_err());assert!(d.writes.is_empty());
 }
 
-struct Counter { regs:BTreeMap<u32,u32>, writes:Vec<(u32,u32)>, ns:u64, khz:u32, stalled:bool }
+struct Counter { regs:BTreeMap<u32,u32>, writes:Vec<(u32,u32)>, ns:u64, khz:u32, stalled:bool, records:Vec<(String,Vec<(u32,u32)>)> }
 impl Access for Counter {
     fn read(&mut self,a:u32)->u32 {
         self.ns+=10_000;
@@ -117,7 +117,7 @@ impl Access for Counter {
             0x9400=>if self.stalled {0}else{self.ns as u32},
             0x9410=>if self.stalled {0}else{(self.ns>>32) as u32},
             0x1800a8 if self.regs[&0x18009c]&7==2=>
-                (self.ns*u64::from(self.khz)/1_000_000) as u32,
+                (u64::from(*self.regs.get(&a).unwrap_or(&0)) + self.ns*u64::from(self.khz)/1_000_000) as u32,
             _=>*self.regs.get(&a).unwrap_or(&0),
         }
     }
@@ -127,20 +127,39 @@ impl Access for Counter {
     }
     fn wait(&mut self,_:u32,_:u32,_:u32)->Result<(),&'static str> {unreachable!()}
 }
-impl c2::observe::CounterAccess for Counter {fn monotonic_ns(&mut self)->u64 {self.ns}}
+impl c2::observe::CounterAccess for Counter {
+    fn monotonic_ns(&mut self)->u64 {self.ns}
+    fn record(&mut self,stage:&str,raw:&[(u32,u32)]) {self.records.push((stage.into(),raw.to_vec()));}
+}
 #[test]
 fn independent_counter_tracks_cycles_across_ptimer_and_restores_on_timeout() {
     use c2::observe::measure;
     for khz in [540_000,810_000] {
         let original=BTreeMap::from([(0x18009c,0),(0x180044,0x1234),(0x1800a8,99)]);
-        let mut d=Counter {regs:original.clone(),writes:Vec::new(),ns:4_290_000_000,khz,stalled:false};
+        let mut d=Counter {regs:original.clone(),writes:Vec::new(),ns:4_290_000_000,khz,stalled:false,records:Vec::new()};
         let m=measure(&mut d).unwrap();
         assert!(m.khz.abs_diff(khz)<1000,"{} versus {khz}",m.khz);
         assert!(m.ptimer_ns>=20_000_000);assert!(m.cycles>0);
         assert!(m.bracket_ns<=m.ptimer_ns/100);
         assert_eq!(d.regs,original);
         d.stalled=true;d.writes.clear();assert!(measure(&mut d).is_err());assert_eq!(d.regs,original);
-        d.regs.insert(0x18009c,2);d.writes.clear();
-        assert!(measure(&mut d).is_err());assert!(d.writes.is_empty(),"must not disturb an active counter");
+        // C2c explicitly authorizes restored setup of the inherited active state.
+        d.stalled=false;d.regs.insert(0x18009c,0x40002);d.writes.clear();d.records.clear();
+        let saved=d.regs.clone();
+        let m=measure(&mut d).unwrap();
+        assert!(m.khz.abs_diff(khz)<1000);
+        assert_eq!(d.regs[&0x18009c],saved[&0x18009c]);
+        assert_eq!(d.regs[&0x180044],saved[&0x180044]);
+        assert_eq!(d.writes.first(),Some(&(0x18009c,0)),"halt inherited mode before changing PRE");
+        let restored=d.records.iter().find(|r|r.0=="restore-halted").unwrap();
+        let saved_record=d.records.iter().find(|r|r.0=="saved").unwrap();
+        let saved_count=saved_record.1.iter().find(|r|r.0==0x1800a8).unwrap().1;
+        assert!(restored.1.contains(&(0x1800a8,saved_count)));
+        assert_eq!(d.writes.last(),Some(&(0x18009c,0x40002)));
+        assert!(d.records.iter().any(|r|r.0=="restored" && r.1.contains(&(0x18009c,0x40002))));
+        d.stalled=true;d.writes.clear();
+        assert!(measure(&mut d).is_err());
+        assert_eq!(d.regs[&0x18009c],0x40002);
+        assert_eq!(d.regs[&0x180044],saved[&0x180044]);
     }
 }

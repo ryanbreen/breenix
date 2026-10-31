@@ -20,10 +20,10 @@ class Baseline(unittest.TestCase):
             result = subprocess.run([str(out / 'bench'), '--nocapture', '--test-threads=1'], text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             import json
-            # Both C2 sequences complete nine trials, including a low-clock
+            # Both C2 sequences complete fifteen trials, including a low-clock
             # trial below 900 ms. Failed completion contributes no trial.
             rows = [json.loads(line.split('GT710_BENCH ', 1)[1]) for line in result.stdout.splitlines() if 'GT710_BENCH ' in line]
-            self.assertEqual(len(rows), 18)
+            self.assertEqual(len(rows), 30)
             self.assertTrue(all(row['kind']=='core' and row['work']==819200000 and row['completion'] for row in rows))
 
 
