@@ -513,18 +513,19 @@ fn absent_75hz_or_a_different_preferred_size_keeps_the_preferred_dtd() {
 
 #[test]
 fn underflow_window_starts_after_settle_and_preserves_fresh_faults() {
-    struct Underflow { value:u32, events:Vec<(char,u32)> }
+    struct Underflow { value:u32, events:Vec<(char,u32)>, fresh_on_pause:bool }
     impl modeset::Io for Underflow {
         fn read(&mut self,r:usize)->u32 {assert_eq!(r,0x616308);self.value}
         fn write(&mut self,r:usize,v:u32) {
             assert_eq!(r,0x616308);self.events.push(('w',v));
             let sticky=if v&16!=0 {0} else {self.value&16};
             self.value=(v&!16)|sticky;
+            if v&0x111==0 && self.fresh_on_pause {self.value|=16;self.fresh_on_pause=false;}
         }
         fn delay_us(&mut self,us:u32){self.events.push(('d',us));self.value|=16;}
     }
     // A transitional sticky bit is cleared only after two preferred-raster periods.
-    let mut io=Underflow{value:16,events:Vec::new()};
+    let mut io=Underflow{value:16,events:Vec::new(),fresh_on_pause:false};
     assert_eq!(modeset::arm_underflow(&mut io,0).unwrap(),16);
     assert_eq!(io.value,1);
     assert_eq!(io.events,vec![('d',40000),('w',16),('w',1)]);
@@ -535,4 +536,7 @@ fn underflow_window_starts_after_settle_and_preserves_fresh_faults() {
     modeset::pause_underflow(&mut io,0).unwrap();
     assert_eq!(io.value,0);
     assert_eq!(io.events,vec![('w',0)]);
+    io.value=1;io.events.clear();io.fresh_on_pause=true;
+    assert!(modeset::pause_underflow(&mut io,0).is_err(),"fault arriving during pause was lost");
+    assert_eq!(io.value,16,"pause must retain the racing sticky bit");
 }
