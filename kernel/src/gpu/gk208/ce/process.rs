@@ -166,7 +166,7 @@ fn recovery_read()->Result<Vec<u8>,i32> {
 }
 pub(crate) fn proc_read(op:u8)->Result<Vec<u8>,i32> {
     #[cfg(feature = "gt710_clock_probe")]
-    if op==0 {return Ok(b"memx-intermediate-probe\n".to_vec());}
+    if op==0 {return Ok(b"memx-memory-probe\n".to_vec());}
     if !crate::test_control::enabled() {return Err(-38);}
     if op==3 {return recovery_read();}
     if op==1 {

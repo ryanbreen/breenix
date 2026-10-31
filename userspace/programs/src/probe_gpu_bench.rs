@@ -173,7 +173,14 @@ pub fn run_c3(mut observe:impl FnMut(&str,u32)->Result<(),String>)->Result<(),St
 }
 
 /// C4 runs the existing two workloads after source-defined PMU ring readiness.
-pub fn run_c4(mut observe:impl FnMut(&str,u32)->Result<(),String>)->Result<(),String> {
+pub fn run_c4(observe:impl FnMut(&str,u32)->Result<(),String>)->Result<(),String> {
+    run_clock_workloads(observe,&["post"])
+}
+/// K5 uses the identical workloads at baseline, target and restored memory.
+pub fn run_c5e(observe:impl FnMut(&str,u32)->Result<(),String>)->Result<(),String> {
+    run_clock_workloads(observe,&["baseline","target","return"])
+}
+fn run_clock_workloads(mut observe:impl FnMut(&str,u32)->Result<(),String>,stages:&[&str])->Result<(),String> {
     let context=gpu::context_create().map_err(|e|format!("CONTEXT_CREATE: {e}"))?;
     let mut warmed=false;
     for _ in 0..6000 {
@@ -200,37 +207,40 @@ pub fn run_c4(mut observe:impl FnMut(&str,u32)->Result<(),String>)->Result<(),St
             &[gpu::abi::draw::Instance {rect:[0,0,64,64],params}]);
     }
     observe("pmu",0)?;
-    observe("post",0)?;
-    for n in 1..=3 {
-        observe("core",n)?;
-        trial(context,&draws,"core",n,u64::from(DRAWS)*u64::from(WIDTH)*u64::from(HEIGHT),"fragments")?;
+    for &stage in stages {
+        println!("GT710_CLOCK_BENCH_STAGE phase={stage}");
+        observe(stage,0)?;
+        for n in 1..=3 {
+            observe(stage,n)?;
+            trial(context,&draws,"core",n,u64::from(DRAWS)*u64::from(WIDTH)*u64::from(HEIGHT),"fragments")?;
+        }
+        for n in 4..=6 {
+            observe(stage,n)?;
+            trial(context,&gpc,"gpc",n,8*16*64*64,"fragments")?;
+        }
+        observe(stage,7)?;
     }
-    for n in 4..=6 {
-        observe("gpc",n)?;
-        trial(context,&gpc,"gpc",n,8*16*64*64,"fragments")?;
-    }
-    observe("done",7)?;
     checked(gpu::resource_destroy(gpc_target),"GPC RESOURCE_DESTROY")?;
     checked(gpu::resource_destroy(target),"RESOURCE_DESTROY")?;
     checked(gpu::context_destroy(context),"CONTEXT_DESTROY")
 }
 
 /// Fresh console output plus the production native shadow/screen readback.
-pub fn console_c5d()->Result<(),String> {
+pub fn console_c5e(phase:&str)->Result<(),String> {
     use std::io::Write;
-    let marker="GT710-C5D-FRESH-CONSOLE-Wm09";
+    let marker=format!("GT710-C5E-{phase}-FRESH-Wm09");
     let mut console=std::fs::OpenOptions::new().write(true).open("/dev/console").map_err(|e|format!("console open: {e}"))?;
     console.write_all(format!("\r\n{marker}\r\n").as_bytes()).map_err(|e|format!("console write: {e}"))?;
     for _ in 0..20 {
         let text=std::fs::read_to_string("/proc/console/check").map_err(|e|format!("native console readback: {e}"))?;
-        if text.lines().any(|s|s.starts_with("console row: ") && s.contains(marker)) {
-            for row in text.lines().filter(|s|s.starts_with("console check:") || s.starts_with("console frame:") || s.starts_with("console scanout:") || s.contains(marker)) {println!("GT710_C5D_CONSOLE {row}");}
+        if text.lines().any(|s|s.starts_with("console row: ") && s.contains(&marker)) {
+            for row in text.lines().filter(|s|s.starts_with("console check:") || s.starts_with("console frame:") || s.starts_with("console scanout:") || s.contains(&marker)) {println!("GT710_C5E_CONSOLE phase={phase} {row}");}
             if !text.lines().any(|s|s=="console check: shadow and screen identical") || !text.lines().any(|s|s.starts_with("console frame: ") && s.ends_with(" complete")) {
-                return Err("C5d console readback mismatch".into());
+                return Err("C5e console readback mismatch".into());
             }
-            println!("GT710_C5D_CONSOLE_OK fresh=true identical=true");return Ok(());
+            println!("GT710_C5E_CONSOLE_OK phase={phase} fresh=true identical=true");return Ok(());
         }
         time::sleep_ms(100).map_err(|e|format!("console flush wait: {e:?}"))?;
     }
-    Err("C5d fresh console row absent from native readback".into())
+    Err("C5e fresh console row absent from native readback".into())
 }

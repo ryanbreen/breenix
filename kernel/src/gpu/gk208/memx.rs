@@ -96,10 +96,10 @@
  * SOFTWARE.
  */
 // SPDX-License-Identifier: MIT
-//! C5d probe-only live DDR3 intermediate calculation and PMU memx transport.
+//! Probe-only live DDR3 calculation and PMU memx transport.
 //! Adapted from checked MIT nouveau v6.8 bios/{rammap,timing,ramcfg,M0203,pll,gpio}.c,
 //! clk/pllgt215.c, fb/{ramgk104,sddr3}.c, ramfuc.h, pmu/{memx,gt215}.c and fuc/os.h.
-//! Only the 405000 kHz xition is executable here; no target pass is generated.
+//! K5 bounds execution to 405000 -> 900000 -> 405000 kHz, in mode 1.
 use alloc::{collections::BTreeMap, vec::Vec};
 use super::modeset;
 type Config = BTreeMap<&'static str,u32>;
@@ -305,9 +305,21 @@ fn prog(t:&Tables,c:&Config,read:&mut impl FnMut(u32)->u32)->Vec<(u32,u32)> {
 /// Current register values are read through the caller at calculation time.
 pub fn calculate(r:&[u8],strap:u32,current:u32,read:&mut impl FnMut(u32)->u32)->Result<Plan,&'static str> {
  if current.abs_diff(405000)>4050 {return Err("outside C5d intermediate envelope");}
- let t=tables(r,strap)?;let mut c=select(&t,current)?;let target=select(&t,900000)?;
- for name in ["ramcfg_11_02_04","ramcfg_11_02_03","timing_20_30_07"] {c.insert(name,target[name]);}
- let coefficients=pll(&t.pll,405000)?;
+ calculate_pass(r,strap,405000,900000,true,read)
+}
+/// One nouveau calc_xits pass, reading hardware anew after the prior EXEC.
+/// The descending transition uses target config plus the former's three
+/// transition fields, then calculates the final target in a separate pass.
+pub fn calculate_pass(r:&[u8],strap:u32,former:u32,target:u32,intermediate:bool,read:&mut impl FnMut(u32)->u32)->Result<Plan,&'static str> {
+ if !matches!((former,target),(405000,900000)|(900000,405000)) {return Err("outside C5e memory envelope");}
+ let t=tables(r,strap)?;
+ let freq=if intermediate {former.min(target)}else{target};
+ let mut c=select(&t,freq)?;
+ if intermediate {
+  let other=select(&t,former.max(target))?;
+  for name in ["ramcfg_11_02_04","ramcfg_11_02_03","timing_20_30_07"] {c.insert(name,other[name]);}
+ }
+ let coefficients=pll(&t.pll,freq)?;
  let [m,n,p,fn_]=coefficients;let rcoef=(p<<16)|(n<<8)|m;
  let mut s=Script {read,state:BTreeMap::new(),ops:Vec::new()};
  let cl=c["t1"]&31;let cwl=(c["t1"]&0xf80)>>7;let wr=(c["t2"]&0x7f0000)>>16;
@@ -372,7 +384,7 @@ pub fn calculate(r:&[u8],strap:u32,current:u32,read:&mut impl FnMut(u32)->u32)->
  s.m(0x10f200,0x80000000,0x80000000);s.w(0x10f318,1);s.m(0x10f200,0x80000000,0);s.ns(1000);
  s.cmd(2,&[]);s.w(0x62c000,0x0f0f0f00);s.m(0x10f200,0x800,c["rammap_11_08_01"]<<11);
  let ops=s.ops;
- let cpu_before=prog(&t,&select(&t,1000)?,read);let cpu_after=prog(&t,&select(&t,405000)?,read);
+ let cpu_before=prog(&t,&select(&t,1000)?,read);let cpu_after=prog(&t,&select(&t,freq)?,read);
  Ok(Plan {ops,cpu_before,cpu_after,coefficients})
 }
 /// Single synchronous caller, serialized by the existing GPU owner. Polling
