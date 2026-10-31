@@ -447,6 +447,9 @@ struct Res {
     /// The window composition whose transport wrote this scanout target, with the
     /// generation that write produced; a later write of the target ends it.
     composition: Option<Arc<Composition>>,
+    /// Native destination snapshots live with the target, not a submission.
+    #[cfg(target_arch = "x86_64")]
+    native_blend_scratch: Vec<Arc<NativeScratch>>,
 }
 
 /// A composition's provenance, kept on the scanout target with the generation its transport
@@ -2987,6 +2990,8 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
         window_sealed: false,
         observed_in: 0,
         composition: None,
+        #[cfg(target_arch = "x86_64")]
+        native_blend_scratch: Vec::new(),
     }
 }
 
@@ -3763,23 +3768,28 @@ enum Chunks {
     Gk208(Vec<crate::gk208::adapter::EncodedDraw>),
 }
 
-/// Submission-owned native snapshots. Storage references in prepared device
-/// chunks additionally retain these images across uncertain publication/reset.
+/// Native destination snapshots and submission-owned crossing inputs. Storage
+/// references in device chunks retain these images across uncertain publication/reset.
 #[cfg(target_arch = "x86_64")]
 struct NativeScratch {
     targets: [Option<crate::gk208::encode::Target>; 3],
     holds: Vec<crate::gk208::resource::Hold>,
+    cached: Vec<Arc<NativeScratch>>,
 }
 #[cfg(target_arch = "x86_64")]
 impl Drop for NativeScratch {
     fn drop(&mut self) {
-        crate::gk208::resource::retire_blend_staging(
-            self.targets.map(|t| t.map(|t| t.id)), &mut self.holds);
+        let owned = self.targets.map(|t| t.map(|t| t.id).filter(|id|
+            !self.cached.iter().any(|s| s.targets.iter().flatten().any(|t| t.id == *id))));
+        if owned.iter().any(Option::is_some) || !self.holds.is_empty() {
+            crate::gk208::resource::retire_blend_staging(owned, &mut self.holds);
+        }
     }
 }
 #[cfg(target_arch = "x86_64")]
 fn native_blend_scratch(tgid: u64, sizes: [[u32; 2]; 2]) -> Result<NativeScratch, i64> {
-    let mut scratch = NativeScratch { targets: [None; 3], holds: Vec::new() };
+    let _cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::ScratchPrepare);
+    let mut scratch = NativeScratch { targets: [None; 3], holds: Vec::new(), cached: Vec::new() };
     for (format, [width, height]) in sizes.into_iter().enumerate() {
         if width == 0 || height == 0 { continue; }
         let layout = crate::gk208::resource::Layout::new(width, height, 4).map_err(|_| ENOMEM)?;
@@ -3790,6 +3800,52 @@ fn native_blend_scratch(tgid: u64, sizes: [[u32; 2]; 2]) -> Result<NativeScratch
             format as u32, width, height, charge).map_err(|_| EIO)?;
         scratch.targets[format] = Some(target);
         scratch.holds.push(hold);
+    }
+    Ok(scratch)
+}
+
+/// Reuse destination storage at the target's size. Submission references and
+/// device holds keep an old snapshot alive if a larger plan replaces it.
+#[cfg(target_arch = "x86_64")]
+fn native_cached_blend_scratch(tgid: u64, sizes: [[u32; 2]; 2], written: &[u32]) -> Result<NativeScratch, i64> {
+    let mut scratch = NativeScratch { targets: [None; 3], holds: Vec::new(), cached: Vec::new() };
+    for (slot, [width, height]) in sizes.into_iter().enumerate() {
+        if width == 0 || height == 0 { continue; }
+        let (id, width, height, cached) = with_core(|c| {
+            let id = *written.iter().find(|id| c.resources.get(id).is_some_and(|r| r.format == slot as u32)).ok_or(EIO)?;
+            let r = c.resources.get(&id).ok_or(EIO)?;
+            let width = width.max(r.width);
+            let height = height.max(r.height);
+            let cached = r.native_blend_scratch.iter().find(|s| s.targets[slot]
+                .is_some_and(|t| t.width >= width && t.height >= height)).cloned();
+            Ok::<_, i64>((id, width, height, cached))
+        }).ok_or(EIO)??;
+        let cached = match cached {
+            Some(s) => s,
+            None => {
+                let mut sizes = [[0; 2]; 2];
+                sizes[slot] = [width, height];
+                let new = Arc::new(native_blend_scratch(tgid, sizes)?);
+                let mut replacement = Vec::new();
+                replacement.try_reserve_exact(1).map_err(|_| ENOMEM)?;
+                replacement.push(new.clone());
+                // Allocation and quota reservation run outside the core lock.
+                let (chosen, old) = with_core(|c| {
+                    let r = c.resources.get_mut(&id).ok_or(EIO)?;
+                    if let Some(s) = r.native_blend_scratch.iter().find(|s| s.targets[slot]
+                        .is_some_and(|t| t.width >= width && t.height >= height)) {
+                        return Ok((s.clone(), Vec::new()));
+                    }
+                    let old = core::mem::replace(&mut r.native_blend_scratch, replacement);
+                    Ok::<_, i64>((new.clone(), old))
+                }).ok_or(EIO)??;
+                drop(old);
+                chosen
+            }
+        };
+        scratch.cached.try_reserve(1).map_err(|_| ENOMEM)?;
+        scratch.targets[slot] = cached.targets[slot];
+        scratch.cached.push(cached);
     }
     Ok(scratch)
 }
@@ -4427,7 +4483,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 let charge = Arc::new(Charge::new(tgid, bytes, true)?);
                 // Native scratch uses the same validated per-format plan as the
                 // virtual encoders, with native layout and retirement ownership.
-                let mut scratch = native_blend_scratch(tgid, plan.scratch)?;
+                let mut scratch = native_cached_blend_scratch(tgid, plan.scratch, &written)?;
                 if plan.data_bytes > 0 { crate::gk208::timing::begin_draw(tgid); }
                 // The packed heap copy is temporary; reserve its padded extent
                 // before allocation, separately from the retained device storage.
@@ -4458,9 +4514,9 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 let cost_translate = crate::gk208::cost::phase(crate::gk208::cost::Slot::Translate);
                 let translating = crate::gk208::timing::phase(110);
                 let mut frame = if corrupt.is_none() && suppress.is_none() && swap.is_none() {
-                    crate::gk208::encode::translate(&words, &resolved)
+                    crate::gk208::encode::translate_resident(&words, &resolved)
                 } else {
-                    crate::gk208::encode::translate_with_extras(&words, &resolved,
+                    crate::gk208::encode::translate_resident_with_extras(&words, &resolved,
                         crate::gk208::encode::Extras { corrupt, suppress, swap })
                 }.map_err(|e| if e == crate::gk208::encode::NO_MEMORY { ENOMEM } else { EINVAL })?;
                 native_probe_mask = frame.probe_mask;
@@ -5044,21 +5100,26 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
     };
     // Stage the clipped source rows before changing any backing or sending a request.
     // Frames count against both guest-backing quota and RLIMIT_AS for this call.
+    #[cfg(target_arch = "x86_64")]
+    let cost_user = crate::gk208::cost::phase(crate::gk208::cost::Slot::UserCopy);
+    #[cfg(target_arch = "x86_64")]
+    let cost_stage = crate::gk208::cost::phase(crate::gk208::cost::Slot::UploadStage);
     let stage = Staging::new(tgid, (row * ch) as usize)?;
-    let mut input = [0u8; UPLOAD_CHUNK];
+    #[cfg(target_arch = "x86_64")]
+    drop(cost_stage);
     for j in 0..ch {
-        let mut done = 0usize;
-        while done < row as usize {
-            let n = (row as usize - done).min(UPLOAD_CHUNK);
-            crate::syscall::userptr::read_user_bytes(input.as_mut_ptr(), a.pixels + j * stride + done as u64, n)
-                .map_err(|_| EFAULT)?;
-            stage.pages.write(j as usize * row as usize + done, &input[..n]);
-            done += n;
-        }
+        stage.pages.try_spans((j * row) as usize, row as usize, |done, ptr, n| {
+            crate::syscall::userptr::read_user_bytes(ptr, a.pixels + j * stride + done as u64, n)
+                .map_err(|_| EFAULT)
+        })?;
     }
+    #[cfg(target_arch = "x86_64")]
+    drop(cost_user);
     // The backing is the upload's alone until its transfer has ended. Submissions of other
     // contexts that name the texture finish first: the device states no order between
     // contexts. This context's own earlier commands are ahead of the transfer in its queue.
+    #[cfg(target_arch = "x86_64")]
+    let cost_acquire = crate::gk208::cost::phase(crate::gk208::cost::Slot::UploadAcquire);
     let taken = wait_for(None, true, |c| {
         if c.res_of(tgid, a.resource) != Some(id) {
             return Some(Err(EINVAL));
@@ -5070,6 +5131,8 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
         c.resources.get_mut(&id)?.reading = true;
         Some(Ok(()))
     });
+    #[cfg(target_arch = "x86_64")]
+    drop(cost_acquire);
     match taken {
         Ok(Ok(())) => {}
         Ok(Err(e)) => return Err(e),
@@ -5101,30 +5164,52 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
         return Ok(0);
     }
     // Rows into the backing at its pitch, converted into the texture's format by channel.
+    #[cfg(target_arch = "x86_64")]
+    let cost_convert = crate::gk208::cost::phase(crate::gk208::cost::Slot::UploadConvert);
     let tbpp = format::bytes(fmt) as u64;
-    let per = (UPLOAD_CHUNK as u64 / bpp).min(cw);
-    let mut output = [0u8; UPLOAD_CHUNK * 4 / 3 + 4];
-    for j in 0..ch {
-        let mut px = 0u64;
-        while px < cw {
-            let n = per.min(cw - px);
-            stage.pages.read((j * row + px * bpp) as usize, &mut input[..(n * bpp) as usize]);
-            for k in 0..n as usize {
-                let at = k * bpp as usize;
-                if fmt == format::R8 {
-                    output[k] = input[at];
-                } else {
-                    let [b, g, r, al] = abi::upload_source::channels(a.source, &input[at..]);
-                    let out = if fmt == format::R8G8B8A8 { [r, g, b, al] } else { [b, g, r, al] };
-                    output[k * 4..k * 4 + 4].copy_from_slice(&out);
+    let identity = matches!((a.source, fmt),
+        (abi::upload_source::B8G8R8A8, format::B8G8R8A8)
+        | (abi::upload_source::R8G8B8A8, format::R8G8B8A8)
+        | (abi::upload_source::R8, format::R8));
+    if identity {
+        for j in 0..ch {
+            backing.try_spans(((y + j) * pitch + x * tbpp) as usize, row as usize, |done, dst, n| {
+                stage.pages.try_spans((j * row) as usize + done, n, |at, src, count| {
+                    // SAFETY: charged staging and resource backing are disjoint;
+                    // each callback bounds both ends to their owned page.
+                    unsafe { core::ptr::copy_nonoverlapping(src, dst.add(at), count) };
+                    Ok::<(), i64>(())
+                })
+            })?;
+        }
+    } else {
+        let mut input = [0u8; UPLOAD_CHUNK];
+        let per = (UPLOAD_CHUNK as u64 / bpp).min(cw);
+        let mut output = [0u8; UPLOAD_CHUNK * 4 / 3 + 4];
+        for j in 0..ch {
+            let mut px = 0u64;
+            while px < cw {
+                let n = per.min(cw - px);
+                stage.pages.read((j * row + px * bpp) as usize, &mut input[..(n * bpp) as usize]);
+                for k in 0..n as usize {
+                    let at = k * bpp as usize;
+                    if fmt == format::R8 {
+                        output[k] = input[at];
+                    } else {
+                        let [b, g, r, al] = abi::upload_source::channels(a.source, &input[at..]);
+                        let out = if fmt == format::R8G8B8A8 { [r, g, b, al] } else { [b, g, r, al] };
+                        output[k * 4..k * 4 + 4].copy_from_slice(&out);
+                    }
                 }
+                backing.write(((y + j) * pitch + (x + px) * tbpp) as usize, &output[..(n * tbpp) as usize]);
+                px += n;
             }
-            backing.write(((y + j) * pitch + (x + px) * tbpp) as usize, &output[..(n * tbpp) as usize]);
-            px += n;
         }
     }
     let offset = y * pitch + x * tbpp;
     backing.maintain(offset as usize, ((ch - 1) * pitch + cw * tbpp) as usize, false);
+    #[cfg(target_arch = "x86_64")]
+    drop(cost_convert);
     // Test point 30, `skip-upload-visibility`: the transfer is not sent; the upload returns
     // as a completed one.
     let skip = crate::test_control::take(test_point::SKIP_UPLOAD_VISIBILITY, a.resource).is_some();
@@ -5147,6 +5232,8 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
                             }
                             req
                         };
+                        #[cfg(target_arch = "x86_64")]
+                        let _cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::Ce);
                         match exec_req_why(serial, req, ctx, &[id], &[id]) {
                             Ok(d) if dev::ok(d.answer) && d.matches_fence(fence) => {
                                 let recorded = if native { fence } else { d.echoed };
@@ -5268,6 +5355,8 @@ impl From<i64> for Refused {
 /// the record, and return the observation serial. `arg`, when given, is READBACK's argument,
 /// checked writable before any device work.
 fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u64>) -> Result<u64, Refused> {
+    #[cfg(target_arch = "x86_64")]
+    let cost_prepare = crate::gk208::cost::phase(crate::gk208::cost::Slot::ReadPrepare);
     let window = observer == Observer::Window;
     // Count owner observation with presentation so a VT release cannot expose the
     // next foreground terminal while readback holds the current binding.
@@ -5375,6 +5464,8 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         Err(e) => return Err(Refused::Errno(e)),
     }
     let staging = Staging::new(tgid, (row * h) as usize)?;
+    #[cfg(target_arch = "x86_64")]
+    drop(cost_prepare);
     // Wait for the target's accepted writes to complete, then take it for reading.
     // The handle is looked up each time: one destroyed meanwhile is target-dropped.
     let taken = wait_for(None, true, |c| {
@@ -5546,6 +5637,8 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     rec[record::RENDERER..record::RENDERER + 64].copy_from_slice(&renderer);
     // Publish pixels after the complete rectangle passed both observations.
     let output = (|| {
+        #[cfg(target_arch = "x86_64")]
+        let _cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::CopyOut);
         if unwritten == 0 {
             let row = row as usize;
             for ry in 0..h as usize {
@@ -5657,18 +5750,18 @@ fn wrong_resource(tgid: u64, id: u32, pitch: u32, x: u32, y: u32, w: u32, h: u32
 
 /// A transfer of [`observe`] the device has: the request, the fence it carries, its place
 /// in band-then-pass order, and test point 21's other resource when it names one.
-#[derive(Clone, Copy)]
 struct Sent {
     serial: u64,
     fence: u64,
     order: usize,
     other: Option<u32>,
+    #[cfg(target_arch = "x86_64")]
+    cost: Option<crate::gk208::cost::Guard>,
 }
 
 /// A band of [`observe`]'s rectangle: its first row and row count, the pass it is on
 /// (0 the poison, 1 its complement) and that pass's transfer, unless test point 22
 /// skipped it.
-#[derive(Clone, Copy)]
 struct Band {
     index: usize,
     by: usize,
@@ -5741,7 +5834,10 @@ fn observe(
     let height = a.height as usize;
     let svga = dev::is_svga();
     let stride = if svga { row } else { pitch as usize };
-    let band_rows = (READBACK_BAND / stride).max(1).min(height);
+    // Native full-mode observations fit in one band per poison, without more
+    // storage: both passes still use the resource's existing pinned backing.
+    let band_bytes = if dev::backend() == abi::backend::GK208 { 16 << 20 } else { READBACK_BAND };
+    let band_rows = (band_bytes / stride).max(1).min(height);
     // Each in-flight SVGA band has its own GPU-copy readback backing.
     let readbacks = if svga {
         Some([
@@ -5763,12 +5859,16 @@ fn observe(
     // Poison band `b` with its pass's pattern and send its transfer, unless test point 22
     // skips it.
     let start = |b: &mut Band| -> Result<(), (i64, u32)> {
+        #[cfg(target_arch = "x86_64")]
+        let cost_poison = crate::gk208::cost::phase(crate::gk208::cost::Slot::Poison);
         let pattern = if b.pass == 0 { POISON } else { !POISON };
         let at = offset(b);
         for r in 0..b.rows {
             memory(b).fill(at + r * stride, row, pattern);
         }
         memory(b).maintain(at, (b.rows - 1) * stride + row, false);
+        #[cfg(target_arch = "x86_64")]
+        drop(cost_poison);
         b.sent = None;
         let skip = crate::test_control::take(test_point::SKIP_TRANSFER, a.target).is_some();
         if skip && dev::backend() != abi::backend::GK208 { return Ok(()); }
@@ -5816,12 +5916,17 @@ fn observe(
         // The target, and the other resource when the transfer names one.
         let both = [id, named];
         let marks = if named == id { &both[..1] } else { &both[..] };
+        #[cfg(target_arch = "x86_64")]
+        let cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::Ce);
         let sent = send_sync(serial, req, ctx, marks, marks);
         if sent.is_err() {
             release_other(other_id);
         }
         sent.map_err(device_reason)?;
-        b.sent = Some(Sent { serial, fence, order: 2 * b.index + b.pass, other: other_id });
+        b.sent = Some(Sent { serial, fence, order: 2 * b.index + b.pass, other: other_id,
+            #[cfg(target_arch = "x86_64")]
+            cost,
+        });
         Ok(())
     };
     let mut first: Option<(usize, u64, u32)> = None;
@@ -5829,6 +5934,8 @@ fn observe(
     let mut finish = |b: &mut Band| -> Result<(), (i64, u32)> {
         let Some(s) = b.sent.take() else { return Ok(()) };
         let done = await_sync(s.serial);
+        #[cfg(target_arch = "x86_64")]
+        drop(s.cost);
         release_other(s.other);
         let mut d = done.map_err(device_reason)?;
         // Test point 20, `stale-fence`: the answer is taken as echoing the next fence.
@@ -5849,11 +5956,12 @@ fn observe(
         Ok(())
     };
     let mut seen = [0u8; PAGE];
-    let mut chunk = [0u8; STAGING_CHUNK];
     let mut unwritten = 0u32;
     // The first observation lands straight in the staging; the second is compared with it
     // a frame at a time.
     let mut read = |b: &Band| {
+        #[cfg(target_arch = "x86_64")]
+        let _cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::Compare);
         let at = offset(b);
         for r in 0..b.rows {
             let src = at + r * stride;
@@ -5863,7 +5971,10 @@ fn observe(
                 let kept = unsafe { core::slice::from_raw_parts_mut(ptr, n) };
                 if b.pass == 0 {
                     observation::read(memory(b), src + done, kept);
+                } else if n > 64 {
+                    unwritten += observation::compare(memory(b), src + done, kept);
                 } else {
+                    // Tiny edge spans can use the same scratch as before.
                     observation::read(memory(b), src + done, &mut seen[..n]);
                     unwritten += observation::differing(&seen[..n], kept);
                 }
@@ -5900,19 +6011,16 @@ fn observe(
                     continue;
                 }
                 if fmt == format::R8G8B8A8 {
+                    #[cfg(target_arch = "x86_64")]
+                    let _cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::Compare);
                     // Canonical bytes are BGRA (record v2's `canonical` 0).
-                    let bytes = b.rows * row;
-                    let mut done = 0;
-                    while done < bytes {
-                        let n = (bytes - done).min(STAGING_CHUNK);
-                        let at = b.by * row + done;
-                        staging.read(at, &mut chunk[..n]);
-                        for px in chunk[..n].chunks_exact_mut(4) {
-                            px.swap(0, 2);
-                        }
-                        staging.write(at, &chunk[..n]);
-                        done += n;
-                    }
+                    let _ = staging.try_spans(b.by * row, b.rows * row, |_, ptr, n| {
+                        // SAFETY: canonicalization owns staging after both passes;
+                        // four-byte rows and page boundaries preserve pixel alignment.
+                        let pixels = unsafe { core::slice::from_raw_parts_mut(ptr, n) };
+                        for px in pixels.chunks_exact_mut(4) { px.swap(0, 2); }
+                        Ok::<(), ()>(())
+                    });
                 }
                 *lane = None;
                 open(lane)?;

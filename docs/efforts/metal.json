@@ -533,6 +533,16 @@
               "presentation"
             ]
           }
+        },
+        {
+          "id": "performance",
+          "title": "Score the full GPU suite (M8 PR 8.7)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "performance"
+            ]
+          }
         }
       ]
     }

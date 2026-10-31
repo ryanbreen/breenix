@@ -4,11 +4,27 @@
 pub trait Memory {
     fn invalidate(&self, offset: usize, length: usize);
     fn copy(&self, offset: usize, out: &mut [u8]);
+    /// Compare a CPU-visible span; page-backed implementations can avoid scratch.
+    fn compare(&self, offset: usize, expected: &[u8]) -> u32 {
+        let mut scratch = [0; 4096];
+        let mut count = 0;
+        for (i, chunk) in expected.chunks(scratch.len()).enumerate() {
+            self.copy(offset + i * 4096, &mut scratch[..chunk.len()]);
+            count += differing(&scratch[..chunk.len()], chunk);
+        }
+        count
+    }
 }
 
 pub fn read(memory: &impl Memory, offset: usize, out: &mut [u8]) {
     memory.invalidate(offset, out.len());
     memory.copy(offset, out);
+}
+
+/// The second poisoned observation must invalidate just as the first does.
+pub fn compare(memory: &impl Memory, offset: usize, expected: &[u8]) -> u32 {
+    memory.invalidate(offset, expected.len());
+    memory.compare(offset, expected)
 }
 
 use crate::gpu_completion::CeCompletion;

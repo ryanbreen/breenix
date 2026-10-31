@@ -469,13 +469,20 @@ pub(crate) fn transfer(tag: crate::gpu::dev::Tag, fence: u64, id: u32,
     offset: u64, stride: u32, upload: bool,
 ) -> Option<super::super::adapter::Request> {
     use super::super::copy;
-    let mut pages = Vec::new();
-    pages.try_reserve_exact(backing.count()).ok()?;
-    pages.extend((0..backing.count()).map(|i| backing.page_addr(i)));
+    let _cost = super::super::cost::phase(super::super::cost::Slot::TransferMap);
     let (plan,resource,hold) = super::with_resources(|r,a,io| {
         let hold = r.hold(id)?;
         let img = image(r,id)?;
-        let address = r.map_backing(a,io,id,&backing,&pages,backing.bytes() as u64)?;
+        let address = match r.mapped_backing(id, &backing) {
+            Some(address) => address,
+            None => {
+                let [x,y,w,h] = rectangle;
+                let width = img.width.checked_sub(x).ok_or("empty native transfer")?.min(w);
+                let height = img.height.checked_sub(y).ok_or("empty native transfer")?.min(h);
+                r.map_backing_rows(a,io,id,&backing,backing.bytes() as u64,
+                    |i| backing.page_addr(i),offset,stride,width*img.texel_bytes,height)?
+            }
+        };
         let linear = copy::Linear { address,bytes:backing.bytes() as u64,offset,stride };
         let plan = if upload { copy::upload(img,linear,rectangle)? }
             else { copy::readback(img,linear,rectangle)? };

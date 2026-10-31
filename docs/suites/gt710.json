@@ -194,7 +194,7 @@
       "cases": [
         {
           "id": "preferred",
-          "title": "The preferred EDID mode completes on owned native scanout with advancing raster and full pixel read-back"
+          "title": "The selected EDID mode completes on owned native scanout with advancing raster and full pixel read-back"
         }
       ]
     },
@@ -290,7 +290,7 @@
       "cases": [
         {
           "id": "display",
-          "title": "Runtime EVO snapshots prove both G20 viewports, the DDC preferred raster, latched surfaces and zero firmware writes"
+          "title": "Runtime EVO snapshots prove both G20 viewports, the selected DDC raster, latched surfaces and zero firmware writes"
         },
         {
           "id": "panic",
@@ -347,6 +347,17 @@
         {
           "id": "claimed",
           "title": "Display discovery and the firmware framebuffer claim name the same GT 710 function"
+        }
+      ]
+    },
+    {
+      "id": "performance",
+      "title": "Full GPU suite and performance (M8 PR 8.7)",
+      "hostRunner": true,
+      "cases": [
+        {
+          "id": "suite",
+          "title": "A completed production GPU boot passes all 170 cases and performance bounds with per-case native cost evidence"
         }
       ]
     }

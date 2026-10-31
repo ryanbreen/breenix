@@ -432,3 +432,118 @@ fn bar1_small_pages_use_the_spt_half_and_bound_each_linear_page() {
         assert!(modeset::bar1_small_pages(base,span,table).is_err());
     }
 }
+
+// 24.7-raster-75hz: captured sink bytes, independent DMT 1.13 ID 24h values.
+fn captured_sink() -> Vec<u8> {
+    let hex = include_str!("fixtures/gt710-edid/lcd17-19.hex").trim();
+    (0..hex.len()).step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i+2], 16).unwrap()).collect()
+}
+fn dmt_75() -> Timing {
+    Timing {width:1280,height:1024,clock_khz:135000,hsync_start:1296,
+        hsync_end:1440,htotal:1688,vsync_start:1025,vsync_end:1028,vtotal:1066,flags:30}
+}
+fn fix_edid_checksum(raw: &mut [u8]) {
+    raw[127] = 0;
+    raw[127] = 0u8.wrapping_sub(raw.iter().fold(0u8, |a,b| a.wrapping_add(*b)));
+}
+#[test]
+fn captured_sink_selects_preferred_detailed_timing_despite_faster_established_mode() {
+    let modes = edid::parse(&captured_sink()).unwrap();
+    assert_eq!(modes[0], preferred());
+    assert!(modes.contains(&dmt_75()));
+    assert_eq!(*edid::native_raster(&modes).unwrap(), preferred());
+    assert_eq!(modeset::switch_sequence(&modes).unwrap()[1], preferred());
+}
+#[test]
+fn captured_sink_uses_preferred_raster_and_exact_fractional_pll() {
+    let raw = captured_sink();
+    let modes = edid::parse(&raw).unwrap();
+    assert_eq!(modes[0], preferred(), "inventory must retain the preferred DTD");
+    assert_eq!(modes.iter().filter(|t| **t == dmt_75()).count(), 1,
+        "the established 75 Hz timing must be decoded exactly once");
+    let t = modeset::switch_sequence(&modes).unwrap()[1];
+    assert_eq!(t, preferred(), "takeover and the high switch must select the preferred DTD");
+    // Explicit host limits, not a claim about uncaptured VBIOS limit bytes.
+    let limits=modeset::PllLimits {reg:0x614100,reference:27000,min_vco:500000,max_vco:1000000,
+        min_input:1000,max_input:27000,min_m:1,max_m:255,min_n:1,max_n:255,min_p:1,max_p:63};
+    let p=modeset::pll(&limits,t.clock_khz).unwrap();
+    assert_eq!((p.m,p.n,p.p,p.fraction),(2,71,9,4096));
+    assert_eq!(p.p<<16|p.n<<8|p.m,0x094702);
+    assert_eq!(27000u64*(u64::from(p.n)*8192+4096+u64::from(p.fraction)),
+        108000u64*u64::from(p.m)*u64::from(p.p)*8192);
+    let m:std::collections::BTreeMap<_,_>=modeset::head_methods(&t,0,0,1,0x08010000,5120)
+        .unwrap().into_iter().collect();
+    for (method,value) in [(0x414,1066<<16|1688),(0x418,2<<16|111),
+        (0x41c,40<<16|359),(0x420,1064<<16|1639),(0x450,108000000)] {
+        assert_eq!(m[&method],value);
+    }
+    assert_eq!(m[&0x404]&0x3d8,0x140);
+    // Verify G20 logical viewports against the preferred raster.
+    struct ViewRegs(std::collections::BTreeMap<usize,u32>);
+    impl modeset::Io for ViewRegs {
+        fn read(&mut self,r:usize)->u32 {*self.0.get(&r).unwrap_or(&0)}
+        fn write(&mut self,r:usize,v:u32) {self.0.insert(r,v);}
+        fn delay_us(&mut self,_:u32) {}
+    }
+    for (w,h) in [(1280,800),(2560,1600)] {
+        let view=modeset::Viewport::new(&t,w,h).unwrap();
+        let methods=view.methods(0).unwrap();
+        assert_eq!(methods,modeset::Viewport::new(&preferred(),w,h).unwrap().methods(0).unwrap());
+        let logical:std::collections::BTreeMap<_,_>=modeset::logical_head_methods(
+            &t,0,0,1,0x08010000,u64::from(w)*4,w,h).unwrap().into_iter().collect();
+        assert_eq!(logical[&0x450],108000000);
+        assert_eq!(logical[&0x468],w|h<<16);
+        let mut regs=ViewRegs(Default::default());
+        for (method,value) in methods {for bank in [0x640000,0x660000] {
+            modeset::Io::write(&mut regs,bank+method as usize,value);
+        }}
+        view.verify(&mut regs,0).unwrap();
+    }
+}
+#[test]
+fn absent_75hz_or_a_different_preferred_size_keeps_the_preferred_dtd() {
+    let mut raw=captured_sink(); raw[36]&=!1; fix_edid_checksum(&mut raw);
+    let modes=edid::parse(&raw).unwrap();
+    assert!(!modes.contains(&dmt_75()));
+    assert_eq!(modeset::switch_sequence(&modes).unwrap()[1],preferred());
+    let limits=modeset::PllLimits {reg:0x614100,reference:27000,min_vco:500000,max_vco:1000000,
+        min_input:1000,max_input:27000,min_m:1,max_m:255,min_n:1,max_n:255,min_p:1,max_p:63};
+    let p=modeset::pll(&limits,modes[0].clock_khz).unwrap();
+    assert_eq!((p.m,p.n,p.p,p.fraction),(2,71,9,4096));
+    // A 75 Hz advertisement at another size is not permission to retime it.
+    let mut other=preferred();other.width=1920;other.height=1200;
+    let low=Timing {width:1024,height:768,clock_khz:65000,hsync_start:1048,
+        hsync_end:1184,htotal:1344,vsync_start:771,vsync_end:777,vtotal:806,flags:24};
+    assert_eq!(modeset::switch_sequence(&[other,low,dmt_75()]).unwrap()[1],other);
+}
+
+#[test]
+fn underflow_window_starts_after_settle_and_preserves_fresh_faults() {
+    struct Underflow { value:u32, events:Vec<(char,u32)>, fresh_on_pause:bool }
+    impl modeset::Io for Underflow {
+        fn read(&mut self,r:usize)->u32 {assert_eq!(r,0x616308);self.value}
+        fn write(&mut self,r:usize,v:u32) {
+            assert_eq!(r,0x616308);self.events.push(('w',v));
+            let sticky=if v&16!=0 {0} else {self.value&16};
+            self.value=(v&!16)|sticky;
+            if v&0x111==0 && self.fresh_on_pause {self.value|=16;self.fresh_on_pause=false;}
+        }
+        fn delay_us(&mut self,us:u32){self.events.push(('d',us));self.value|=16;}
+    }
+    // A transitional sticky bit is cleared only after two preferred-raster periods.
+    let mut io=Underflow{value:16,events:Vec::new(),fresh_on_pause:false};
+    assert_eq!(modeset::arm_underflow(&mut io,0).unwrap(),16);
+    assert_eq!(io.value,1);
+    assert_eq!(io.events,vec![('d',40000),('w',16),('w',1)]);
+    io.events.clear();io.value=17;
+    assert!(modeset::pause_underflow(&mut io,0).is_err());
+    assert!(io.events.is_empty(),"a fresh fault must be refused before clearing");
+    io.value=1;
+    modeset::pause_underflow(&mut io,0).unwrap();
+    assert_eq!(io.value,0);
+    assert_eq!(io.events,vec![('w',0)]);
+    io.value=1;io.events.clear();io.fresh_on_pause=true;
+    assert!(modeset::pause_underflow(&mut io,0).is_err(),"fault arriving during pause was lost");
+    assert_eq!(io.value,16,"pause must retain the racing sticky bit");
+}

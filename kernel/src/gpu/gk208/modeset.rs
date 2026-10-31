@@ -220,7 +220,7 @@ use super::edid::Timing;
 use alloc::{vec, vec::Vec};
 
 pub fn switch_sequence(modes: &[Timing]) -> Result<[Timing; 3], &'static str> {
-    let high = *modes.first().ok_or("missing preferred EDID timing")?;
+    let high = *super::edid::native_raster(modes)?;
     let low = modes.iter().filter(|t| t.width < high.width && t.height <= high.height
         && t.clock_khz < high.clock_khz && t.flags & 0x98 == 0x18)
         .max_by_key(|t| u64::from(t.width)*u64::from(t.height))
@@ -585,6 +585,32 @@ pub trait Io {
     fn write(&mut self, reg: usize, value: u32);
     fn delay_us(&mut self, us: u32);
 }
+
+/// Pause measurement only while the prior window is healthy (G25).
+/// REPORT_UNDERFLOW: MIT rnndb g80_pdisplay.xml NV_HEAD_STAT, bits 0/4/8.
+pub fn pause_underflow(io: &mut impl Io, head: u32) -> Result<(), &'static str> {
+    if head >= 4 { return Err("invalid underflow head"); }
+    let reg = 0x616308 + head as usize * 0x800;
+    if io.read(reg) & 0x111 != 1 { return Err("fresh native display underflow before modeset"); }
+    mask(io, reg, 0x111, 0);
+    if io.read(reg) & 0x110 != 0 { return Err("fresh native display underflow during pause"); }
+    Ok(())
+}
+
+/// Call after the modeset notifier has completed, with reporting paused.
+/// Settle for two 60 Hz periods before clearing W1C bit 4 and arming bit 0.
+pub fn arm_underflow(io: &mut impl Io, head: u32) -> Result<u32, &'static str> {
+    if head >= 4 { return Err("invalid underflow head"); }
+    let reg = 0x616308 + head as usize * 0x800;
+    if io.read(reg) & 1 != 0 { return Err("underflow measurement already armed"); }
+    io.delay_us(40000);
+    let before = io.read(reg);
+    mask(io, reg, 0x111, 0x10);
+    mask(io, reg, 0x111, 1);
+    if io.read(reg) & 0x111 != 1 { return Err("fresh native display underflow after arm"); }
+    Ok(before)
+}
+
 fn mask(a: &mut impl Io, r: usize, m: u32, v: u32) {
     let old = a.read(r);
     a.write(r, (old & !m) | v);

@@ -1211,6 +1211,24 @@ nvc0_screen.c notice covers the Kepler slot-15 texture handle binding.
 The original notices accompany the new check too. Breenix retains shared
 source clipping and parameter layouts; u3's committed programs are unchanged.
 
+GT 710 rectangle batching (milestone 8.7)
+----------------------------------------
+Consumer: kernel/src/gpu/gk208/encode.rs. Sources at Mesa 24.3.4,
+769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de:
+
+- src/gallium/drivers/nouveau/nvc0/nvc0_vbo.c:358-376,592-597 (MIT,
+  Copyright 2010 Christoph Bumiller): vertex fetch, inclusive buffer limit,
+  triangle-list begin, array first/count and end. Rectangles within a solid
+  BGL command share one constant block and one contiguous vertex buffer.
+- src/gallium/drivers/nouveau/nvc0/nvc0_screen.c:920-939 (MIT,
+  Copyright 2010 Christoph Bumiller): conditional SERIALIZE before changing
+  live constant storage, CB size/address and stage binding. Idle waits remain
+  at graphics-to-CE dependencies and before/after retained-state parking.
+
+Both file-local MIT headers were read for this adaptation. Their original
+copyright and complete grant are already retained in encode.rs above its
+implementation. No shaders or shared expected pixels change in this unit.
+
 GT 710 executable admission (milestone 8.2-u6)
 ---------------------------------------------
 The admission-only entries in kernel/src/gpu/gk208/encode.rs reuse its existing
@@ -1629,3 +1647,101 @@ slot-0 versus slot-15 binding from the same MIT cla197.h; the NVIDIA 2020
 copyright and full grant accompany that parser. panic/native.rs sequences
 Breenix's validated bitmap_text encoder and retained requests. No new
 shader assets are introduced.
+
+## GT 710 read-only clock and thermal records (M8 PR 8.7)
+
+Source: nouveau in Linux v6.8, commit
+`e8f897f4afef0031fe618a8e94127a0934896aba`, under
+`drivers/gpu/drm/nouveau/nvkm/`. Each named file's full MIT grant was checked
+before adaptation. The decoder and scorer retain the grant in their headers.
+
+| Source | Original copyright | Consumers |
+|---|---|---|
+| `subdev/clk/gk104.c` (`read_vco`, `read_pll`, `read_div`, `read_mem`, `read_clk`, `gk104_clk_read`) | Copyright 2013 Red Hat Inc. | `kernel/src/gpu/gk208/clock.rs`, `scripts/metal/gt710-suite`, `tests/gt710_clock_test.py`, `tests/gt710_clock_report_test.py` |
+| `engine/device/base.c` (crystal straps) | Copyright 2012 Red Hat Inc. | Same consumers |
+| `subdev/therm/g84.c` (`g84_temp_get`) | Copyright 2012 Red Hat Inc. | Same consumers |
+| `subdev/fuse/gf100.c` (`gf100_fuse_read` access gates and address) | Copyright 2014 Martin Peres | Same consumers |
+
+The record reads the fuse only when both existing access bits are enabled;
+otherwise temperature is explicitly unavailable with the observed gate words.
+A fuse value other than 1 is also unavailable, as in `g84_temp_get`.
+No fuse-enable or sensor-setup writes are adapted. Host clock is explicitly
+`nv_clk_src_href`, the 100000 kHz host reference in `gk104_clk_read`; it does
+not claim a measured PFIFO or hub clock. GPC and memory rates are decoded from
+the retained register words, including the fractional memory PLL and dividers.
+
+Native full-row CE transfers (milestone 8 PR 8.7)
+-----------------------------------------------
+NVIDIA open-gpu-doc 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+classes/dma-copy/cla0b5.h (MIT, Copyright (c) 2019 NVIDIA CORPORATION):
+kernel/src/gpu/gk208/copy.rs uses REMAP_ENABLE=FALSE with byte widths
+and origins for full tiled rows and preserves non-pipelined ordered releases.
+Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba,
+drivers/gpu/drm/nouveau/nouveau_boa0b5.c (MIT, Copyright 2007 Dave Airlied):
+copy.rs follows the byte-count non-pipelined, flushed, multiline launch with
+remapping disabled and PTE-selected L2 behaviour. Both file-local grants were
+read before adaptation; their complete notices remain in copy.rs. No Linux
+memory-management code is imported. CPU staging and band policy are Breenix code.
+
+Native full-layout blend snapshots (milestone 8 PR 8.7)
+-----------------------------------------------------
+NVIDIA open-gpu-doc 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+classes/dma-copy/cla0b5.h (MIT, Copyright (c) 2019 NVIDIA CORPORATION):
+Consumers: kernel/src/gpu/gk208/copy.rs and tests/gt710_coverage_cost_test.rs.
+Identically tiled whole allocations use byte counts, pitch source/destination,
+REMAP disabled and the existing non-pipelined flush and epoch releases. The
+file-local grant was read; its copyright and full grant remain in both files.
+Runtime input compaction and phase observations are Breenix code.
+
+GK208B advertised 75 Hz raster (24.7-raster-75hz)
+-----------------------------------------------
+Consumers: `kernel/src/gpu/gk208/edid.rs` and `scripts/metal/gt710-suite`.
+The DMT 24h tuple and established-timing bit association are adapted from
+`drivers/gpu/drm/drm_edid.c` at Linux v6.8,
+`e8f897f4afef0031fe618a8e94127a0934896aba`, specifically `drm_dmt_modes`
+(ID 0x24) and `edid_est_modes`/`add_established_modes` (byte 36 bit 0).
+This file's own permissive MIT grant was checked before use; no GPL DRM
+integration code is imported. The original full notice is retained in each
+consumer's header, including its non-infringement disclaimer.
+
+Copyright (c) 2006 Luc Verhaegen (quirks list); Copyright (c) 2007-2008
+Intel Corporation (Jesse Barnes); Copyright 2010 Red Hat, Inc.; DDC probing
+Copyright (C) 2006 Dennis Munsie.
+Source SHA-256: `56812b85c42571b1fbf2cd61c2743ea02ccbe8bf20f7acb8cb01d324878c4c43`.
+Source: https://github.com/torvalds/linux/blob/e8f897f4afef0031fe618a8e94127a0934896aba/drivers/gpu/drm/drm_edid.c
+
+The unchanged fractional PLL mechanism in `modeset.rs` remains attributed to
+MIT nouveau `nvkm/subdev/clk/pllgt215.c` in the native preferred-mode section
+above. Its file-local grant was rechecked for this unit (Copyright 2010
+Red Hat Inc.; SHA-256 `71cc116d01df5ca95223afc0c07b634594e412c1bd9aa5b2e4348773ff3b2950`).
+The check executes that production code under explicit host PLL limits;
+these limits are not represented as captured VBIOS data.
+
+## GT 710 VBIOS performance table (G24, 24.7)
+
+`kernel/src/gpu/gk208/perf.rs`, the performance-table decoder in
+`scripts/metal/gt710-suite`, and synthetic layout vectors in
+`tests/gt710_vbios_perf_test.py` follow these
+individually checked MIT files from nouveau in Linux v6.8, revision
+`e8f897f4afef0031fe618a8e94127a0934896aba`, relative to
+`drivers/gpu/drm/nouveau/nvkm/`:
+
+- `subdev/bios/perf.c`: Copyright 2012 Nouveau Community, Author Martin Peres.
+- `subdev/bios/bit.c`: Copyright 2012 Red Hat Inc., Author Ben Skeggs.
+- `subdev/clk/gk104.c` and `subdev/clk/base.c`: Copyright 2013 Red Hat Inc.,
+  Author Ben Skeggs.
+
+The adapted files retain the full MIT permission and warranty notice in their
+headers. `perf.rs` is used by `kernel/src/gpu/gk208/clock.rs`; its runtime
+export is exercised by `tests/gt710_clock_test.py`.
+The fixture is constructed from the documented layout; it contains no board ROM.
+
+G25 settled underflow measurement window
+---------------------------------------
+`kernel/src/gpu/gk208/modeset.rs` and `native.rs` use REPORT_UNDERFLOW
+bits 0 (enable), 4 (sticky W1C status) and 8 (repeat/red mode) from
+MIT envytools rnndb/display/g80_pdisplay.xml, NV_HEAD_STAT, at revision
+f102b82381f3f11cee113d16374c87091db039d9. The file imports the MIT grant
+and author list in rnndb/copyright.xml. Those original notices are retained
+in both consumer headers. G25 defines the post-modeset measurement window;
+the 40 ms settle and fresh-fault refusal are Breenix policy.

@@ -644,4 +644,15 @@ impl super::observation::Memory for Pages {
     fn copy(&self, offset: usize, out: &mut [u8]) {
         self.read(offset, out);
     }
+    fn compare(&self, offset: usize, expected: &[u8]) -> u32 {
+        let mut count = 0;
+        let _ = self.try_spans(offset, expected.len(), |done, ptr, n| {
+            // SAFETY: the observation boundary invalidated this completed DMA
+            // span. Its read hold excludes writers while these bytes are read.
+            let actual = unsafe { core::slice::from_raw_parts(ptr, n) };
+            count += super::observation::differing(actual, &expected[done..done + n]);
+            Ok::<(), ()>(())
+        });
+        count
+    }
 }

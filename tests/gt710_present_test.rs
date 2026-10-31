@@ -89,3 +89,20 @@ fn flush_requires_a_fresh_notifier_and_both_target_surface_reads() {
     let mut d=Display::default();present::flush(&mut d,0,s).unwrap();
     d.skip=true;assert!(present::flush(&mut d,0,s).is_err(),"old same-surface state cannot replace a flush");
 }
+
+#[test]
+fn notifier_wait_observes_completion_promptly_and_keeps_timeout() {
+    struct Clock { elapsed: u64, ready_at: Option<u64> }
+    impl present::NotifierWait for Clock {
+        fn poll(&mut self) -> Result<u32, &'static str> {
+            Ok(u32::from(self.ready_at.is_some_and(|ready| self.elapsed >= ready)))
+        }
+        fn delay_us(&mut self, us: u32) { self.elapsed += u64::from(us); }
+    }
+    let mut complete = Clock { elapsed: 0, ready_at: Some(150) };
+    assert_eq!(present::wait_notifier(&mut complete), Ok(1));
+    assert!(complete.elapsed <= 250, "completion observed at {} us", complete.elapsed);
+    let mut missing = Clock { elapsed: 0, ready_at: None };
+    assert_eq!(present::wait_notifier(&mut missing), Err("native update notifier did not complete"));
+    assert_eq!(missing.elapsed, 2_000_000);
+}

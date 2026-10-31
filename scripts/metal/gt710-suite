@@ -1,12 +1,43 @@
 #!/usr/bin/env python3
+# /*
+#  * Copyright (c) 2006 Luc Verhaegen (quirks list)
+#  * Copyright (c) 2007-2008 Intel Corporation
+#  *   Jesse Barnes <jesse.barnes@intel.com>
+#  * Copyright 2010 Red Hat, Inc.
+#  *
+#  * DDC probing routines (drm_ddc_read & drm_do_probe_ddc_edid) originally from
+#  * FB layer.
+#  *   Copyright (C) 2006 Dennis Munsie <dmunsie@cecropia.com>
+#  *
+#  * Permission is hereby granted, free of charge, to any person obtaining a
+#  * copy of this software and associated documentation files (the "Software"),
+#  * to deal in the Software without restriction, including without limitation
+#  * the rights to use, copy, modify, merge, publish, distribute, sub license,
+#  * and/or sell copies of the Software, and to permit persons to whom the
+#  * Software is furnished to do so, subject to the following conditions:
+#  *
+#  * The above copyright notice and this permission notice (including the
+#  * next paragraph) shall be included in all copies or substantial portions
+#  * of the Software.
+#  *
+#  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
+#  * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+#  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+#  * DEALINGS IN THE SOFTWARE.
+#  */
 # Hardware encodings from pinned MIT sources; see THIRD_PARTY_NOTICES.
 # Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# Copyright 2014 Martin Peres
 # Copyright 2010 Christoph Bumiller
 # Copyright (c) 2019 NVIDIA CORPORATION. All rights reserved.
 # /*
 #  * Copyright 2010 Red Hat Inc.
 #  * Copyright 2013 Red Hat Inc.
 #  * Copyright 2011 Red Hat Inc.
+#  * Copyright 2012 Nouveau Community
 #  * Copyright 2012 Red Hat Inc.
 #  * Copyright 2016 Red Hat Inc.
 #  *
@@ -29,7 +60,7 @@
 #  * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 #  * OTHER DEALINGS IN THE SOFTWARE.
 #  *
-#  * Authors: Ben Skeggs
+#  * Authors: Ben Skeggs, Martin Peres
 #  */
 # /*******************************************************************************
 #     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
@@ -92,7 +123,7 @@ CATEGORIES = {
     'inventory': [('allocator', 'VRAM charges and reusable guarded allocations preserve reserved storage across independent nonce-bearing PRAMIN/BAR views; engine translation remains pending')],
     'flips': [('aba-handoff', 'Both EDID modes latch private A-B-A surfaces with complete pixels, suppressed-update recovery and native console handoff')],
     'switching': [('low-high-low', 'A second advertised EDID mode switches low-high-low with latched timings, link state and complete unique-pixel read-back')],
-    'native': [('preferred', 'The preferred EDID mode completes on owned native scanout with advancing raster and full pixel read-back')],
+    'native': [('preferred', 'The selected EDID mode completes on owned native scanout with advancing raster and full pixel read-back')],
     'memory': (
         ('carveout', 'Private display allocations preserve inherited VRAM and pass complete complementary physical read-back without aliasing'),
     ),
@@ -109,7 +140,7 @@ CATEGORIES = {
     'resources': [('row', 'Production CAPS admits backend 6 with executable origins 3-10, native classes and live scanouts'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 8.2 step passing, reclaimed memory and its own time within 900 s'), ('console', 'A completed production console boot passes 88/88 within 330 s of handoff')],
     'alpha': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 77-case 8.3 step passing, reclaimed memory and its own time within 900 s')],
     'shapes': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 90-case 8.4 step passing, reclaimed memory and its own time within 900 s')],
-    'presentation': [('display', 'Runtime EVO snapshots prove both G20 viewports, the DDC preferred raster, latched surfaces and zero firmware writes'), ('panic', 'A separate terminal PANIC capture proves bound diagnostics under both poisons with firmware_writes=0 and no LOCKUP'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 161-case 8.6 selection passing, reclaimed memory and its own time within 900 s')],
+    'presentation': [('display', 'Runtime EVO snapshots prove both G20 viewports, the selected DDC raster, latched surfaces and zero firmware writes'), ('panic', 'A separate terminal PANIC capture proves bound diagnostics under both poisons with firmware_writes=0 and no LOCKUP'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 161-case 8.6 selection passing, reclaimed memory and its own time within 900 s')],
     'isolation': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 140-case 8.5 selection passing, reclaimed memory and its own time within 900 s')],
     'core': [('row', 'CAPS bytes match the native backend-6 row and the created board classes'), ('dispatch', 'Native draws and copies complete; copy controls reject withheld release, stale epoch and masked 3D admission and accept their clean successors'), ('producer', 'A named production GPU-suite boot reports 170 manifest-ordered unprobed-capability admission refusals without skips and reports its own time')],
     'device': (
@@ -117,6 +148,7 @@ CATEGORIES = {
         ('bars-link', 'The PCI report lists the display BARs and the negotiated PCIe link from its capability registers'),
         ('claimed', 'Display discovery and the firmware framebuffer claim name the same GT 710 function'),
     ),
+    'performance': [('suite', 'A completed production GPU boot passes all 170 cases and performance bounds with per-case native cost evidence')],
 }
 BDF = r'[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]'
 HEX = r'0x[0-9a-f]+'
@@ -175,6 +207,12 @@ def edid_timings(raw):
                       hsync_end=1184,htotal=1344,vsync_start=771,vsync_end=777,vtotal=806,flags=24)
         if timing not in timings:
             timings.append(timing)
+    # E-EDID A2 table 3.18 byte 36 bit 0; MIT drm_edid.c, DMT 24h / established.
+    if raw[36] & 1:
+        timing = dict(width=1280,height=1024,clock_khz=135000,hsync_start=1296,
+                      hsync_end=1440,htotal=1688,vsync_start=1025,vsync_end=1028,vtotal=1066,flags=30)
+        if timing not in timings:
+            timings.append(timing)
     for i in range(128,len(raw),128):
         b = raw[i:i+128]
         if b[0] == 2 and b[2]:
@@ -183,6 +221,12 @@ def edid_timings(raw):
             for offset in range(b[2],110,18):
                 detailed(b[offset:offset+18])
     return timings
+
+
+def native_raster(board):
+    """G25 fallback after a fresh 75 Hz underflow: the preferred detailed timing."""
+    return board['modes'][0]
+
 
 
 def board_inventory(serial):
@@ -1105,7 +1149,7 @@ def console_evidence(serial, board, memory):
                 or re.search(r'^GT710_NATIVE_CONSOLE .* latch=', serial, re.M)):
             raise ValueError('logical console allocation and handoff evidence missing')
         return {}
-    preferred = board['modes'][0]
+    preferred = native_raster(board)
     display_snapshots(rows, (preferred['width'], preferred['height']))
     console = rows[0].get('console')
     def extent(r):
@@ -1180,11 +1224,11 @@ def native_mode(serial):
         def need(ok, why):
             if not ok: raise ValueError(why)
         need('GT710_NATIVE_CONSOLE_REFUSAL' not in serial, 'native console reported lost binding or health')
-        t = board['modes'][0]
+        t = native_raster(board)
         surface = memory['objects'][0]['start']
         need(e['schema']==1 and e['phase']=='native' and e['bdf']==board['bdf']
              and e['head']==board['head'] and e['sor']==board['sor'] and e['timing']==t,
-             'native timing differs from the live preferred EDID route')
+             'native timing differs from the selected live EDID raster')
         need(e['surface']==surface and e['pitch']==memory['pitch']
              and e['instance']==memory['objects'][4]['start'] and e['push']==memory['objects'][2]['start'],
              'native display uses foreign storage')
@@ -1235,7 +1279,7 @@ def native_mode(serial):
         numerator=e['pll_reference']*(n*8192+4096+fraction)
         denominator=m*p*8192
         need(abs(numerator-t['clock_khz']*denominator)*1000000<=t['clock_khz']*denominator*250,
-             'native pixel PLL frequency differs from preferred timing')
+             'native pixel PLL frequency differs from selected timing')
         end=one(r'^GT710_MODE (.+)$',serial,'native mode evidence').end()
         native_console_receipts(serial, end, surface)
         rows=list(re.finditer(r'^GT710_PIX (\d+) ([0-9a-f:,]+)$',serial,re.M))
@@ -1280,9 +1324,9 @@ def native_switches(serial):
                  and e['bdf']==board['bdf'] and e['head']==board['head'] and e['sor']==board['sor'],
                  'switch identity or order mismatch')
             need(t in board['modes'] and t['flags']&0x98==0x18, 'switch timing not advertised by live sink')
-            high = board['modes'][0]
+            high = native_raster(board)
             if step==1:
-                need(t==high, 'middle switch must use preferred EDID mode')
+                need(t==high, 'middle switch must use selected EDID raster')
             else:
                 need(t['width']<high['width'] and t['height']<=high['height']
                      and t['clock_khz']<high['clock_khz'], 'switch needs a lower EDID mode')
@@ -2096,7 +2140,7 @@ def resources_identity(boot, suite, sha=None):
         raise ValueError('resources requires a named production ' + suite + ' boot of the same kernel/build/tools')
 
 
-STEP_SELECTIONS = {'resources': 'gt710-step-8-2.json', 'alpha': 'gt710-step-8-3.json', 'shapes': 'gt710-step-8-4.json', 'isolation': 'gt710-step-8-5.json', 'presentation': 'gt710-step-8-6.json'}
+STEP_SELECTIONS = {'resources': 'gt710-step-8-2.json', 'alpha': 'gt710-step-8-3.json', 'shapes': 'gt710-step-8-4.json', 'isolation': 'gt710-step-8-5.json', 'presentation': 'gt710-step-8-6.json', 'performance': 'gt710-step-8-7.json'}
 
 
 def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
@@ -2160,9 +2204,9 @@ def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
             raise ValueError('resources WAIT outside its pending manifest case or before its duration')
     cases = [dict(id=m[1], result=k, ms=int(m[2]), reason=m[3] if k == 'FAIL' else '')
              for k, m, _ in records[1:171]]
-    for c in cases:
-        if c['id'] in required and c['result'] != 'PASS':
-            raise ValueError('resources step failed: ' + c['id'] + ': ' + c['reason'])
+    failures = [c['id'] + ': ' + c['reason'] for c in cases if c['id'] in required and c['result'] != 'PASS']
+    if failures:
+        raise ValueError('resources step failed: ' + '; '.join(failures))
     tally = (sum(c['result'] == 'PASS' for c in cases), sum(c['result'] == 'FAIL' for c in cases), 0, 170)
     if tuple(map(int, records[171][1].groups())) != tally:
         raise ValueError('resources DONE disagrees with cases or has skips')
@@ -2182,8 +2226,185 @@ def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
     ok, why = runpy.run_path(str(root / 'scripts/suite-verdict.py'))['memory_problem'](parsed)
     if not ok:
         raise ValueError('resources GPU ' + why)
+    if selection == STEP_SELECTIONS['performance']:
+        performance_evidence(serial, parsed, names, required, manifest)
     return dict(elapsed_ms=elapsed, cases=cases)
 
+
+
+
+def performance_record(perf, gpc, memory):
+    """BIT P v40 layout: MIT nouveau bios/perf.c; domain indices clk/gk104.c.
+
+    Sources and full MIT notice: THIRD_PARTY_NOTICES and gk208/perf.rs.
+    """
+    reasons = {'not-initialized', 'table-overflow', 'table-outside-rom', 'bit-missing',
+               'bit-header', 'duplicate-bit-p', 'bit-p-version-size', 'performance-table-missing',
+               'bit-p-missing', 'performance-version', 'performance-geometry', 'duplicate-pstate'}
+    if isinstance(perf, dict) and set(perf) == {'status'} and isinstance(perf['status'], str) and perf['status'] in reasons:
+        return perf
+    def need(ok):
+        if not ok: raise ValueError('invalid VBIOS performance evidence')
+    need(isinstance(perf, dict) and set(perf) == {'status', 'bit_version', 'offset', 'raw', 'levels', 'current'})
+    need(perf['status'] == 'ok' and type(perf['bit_version']) is int and perf['bit_version'] in (1, 2)
+         and type(perf['offset']) is int and 0 < perf['offset'] < 256 * 1024
+         and isinstance(perf['raw'], str) and 12 <= len(perf['raw']) <= 512 * 1024
+         and len(perf['raw']) % 2 == 0 and re.fullmatch('[0-9a-f]+', perf['raw']) is not None)
+    raw = bytes.fromhex(perf['raw'])
+    version, header, base, size, count, levels = raw[:6]
+    need(version == 0x40 and header >= 6 and base >= 12 and size >= 2 and count >= 4 and levels > 0)
+    stride = base + size * count
+    need(len(raw) == header + levels * stride and perf['offset'] + len(raw) <= 256 * 1024)
+    decoded = []
+    for i in range(levels):
+        p = header + i * stride
+        pstate = raw[p]
+        if pstate == 255: continue
+        need(pstate not in [l['pstate'] for l in decoded])
+        g = (int.from_bytes(raw[p+base:p+base+2], 'little') & 0x3fff) * 1000
+        m = (int.from_bytes(raw[p+base+3*size:p+base+3*size+2], 'little') & 0x3fff) * 1000
+        decoded.append(dict(pstate=pstate, gpc_khz=g, core_khz=g//2, memory_khz=m))
+    need(isinstance(perf['levels'], list) and perf['levels'] == decoded
+         and all(isinstance(l, dict) and all(type(v) is int for v in l.values()) for l in perf['levels']))
+    matches = [l['pstate'] for l in decoded if l['gpc_khz'] == gpc['value'] and l['memory_khz'] == memory['value']]
+    if gpc['status'] != 'ok' or memory['status'] != 'ok': current = dict(pstate=None, status='clock-unavailable')
+    elif not matches: current = dict(pstate=None, status='unmatched-clocks')
+    elif len(matches) > 1: current = dict(pstate=None, status='ambiguous-clocks')
+    else: current = dict(pstate=matches[0], status='matched-clocks')
+    need(perf['current'] == current and isinstance(perf['current'], dict)
+         and (perf['current']['pstate'] is None or type(perf['current']['pstate']) is int))
+    return perf
+
+
+def clock_record(row):
+    """Independently decode the captured words using the pinned MIT read paths."""
+    if (not isinstance(row, dict) or set(row) - {'performance'} != {'schema', 'phase', 'host_source', 'raw', 'gpc_khz', 'memory_khz', 'host_khz', 'temperature_c'}
+            or type(row['schema']) is not int or row['schema'] != 1
+            or row['phase'] not in ('startup', 'final') or row['host_source'] != 'href'
+            or not isinstance(row['raw'], list) or not 1 <= len(row['raw']) <= 32
+            or any(not isinstance(r, list) or len(r) != 2 or any(type(v) is not int or not 0 <= v < 1 << 32 for v in r) for r in row['raw'])):
+        raise ValueError('invalid clock record schema')
+    raw = dict(row['raw'])
+    if len(raw) != len(row['raw']): raise ValueError('duplicate clock register')
+    used = set()
+    def reg(address):
+        if address not in raw: raise ValueError('missing clock register: ' + hex(address))
+        used.add(address)
+        return raw[address]
+    class Unavailable(Exception): pass
+    crystal = {0: 13500, 0x40: 14318, 0x400000: 27000, 0x400040: 25000}[reg(0x101000) & 0x400040]
+    def pll(address):
+        if address not in (0xe800, 0xe820, 0x132000, 0x132020, 0x137000): raise Unavailable('unknown-pll')
+        ctrl, coef = reg(address), reg(address + 4)
+        if not ctrl & 1: raise Unavailable('pll-disabled')
+        m, n, p = coef & 255, (coef >> 8) & 255, (coef >> 16) & 63
+        if not m: raise Unavailable('zero-pll-divisor')
+        fractional = 0xf000
+        if address in (0xe800, 0xe820): source, p = crystal, 1
+        elif address == 0x132000: source, p = pll(0x132020), 2 if coef & 0x10000000 else 1
+        elif address == 0x132020: source, fractional = div(0x137320, 0x137330), reg(0x132030) >> 16
+        else: source = div(0x137120, 0x137140)
+        result = (source * n + ((((fractional + 4096) & 65535) * source) >> 13)) // (m * (p or 1))
+        if result >= 1 << 32: raise Unavailable('clock-overflow')
+        return result
+    def div(source_address, control_address):
+        src, ctl = reg(source_address), reg(control_address)
+        mode = src & 3
+        if mode == 0: return 108000 if src & 0x30000 == 0x30000 else crystal
+        if mode == 2: return 100000
+        if mode != 3: raise Unavailable('unknown-divider-source')
+        frequency = pll(0xe820 if src & 0x100 else 0xe800)
+        return frequency * 2 // ((ctl & 63) + 2) if ctl & 0x80000000 else frequency
+    def gpc():
+        ctl, selected = reg(0x137250), reg(0x137100) & 1
+        frequency = pll(0x137000) if selected else div(0x137160, 0x1371d0)
+        return frequency * 2 // (((ctl >> 8 if selected else ctl) & 63) + 2) if ctl & 0x80000000 else frequency
+    def memory():
+        mode = reg(0x1373f4) & 15
+        if mode not in (1, 2): raise Unavailable('unknown-memory-mode')
+        return pll(0x132020 if mode == 1 else 0x132000)
+    def temperature():
+        enable, access = reg(0x22400), reg(0x21000)
+        if not enable & 0x800 or not access & 1: raise Unavailable('fuse-access-disabled')
+        if reg(0x212a8) != 1: raise Unavailable('sensor-unavailable')
+        value = reg(0x20400)
+        if value > 0x7fffffff: raise Unavailable('sensor-read-error')
+        return value
+    for name, decode in [('gpc_khz', gpc), ('memory_khz', memory), ('host_khz', lambda: 100000), ('temperature_c', temperature)]:
+        try: expected = dict(value=decode(), status='ok')
+        except Unavailable as reason: expected = dict(value=None, status=str(reason))
+        reading = row[name]
+        if (not isinstance(reading, dict) or set(reading) != {'value', 'status'}
+                or reading != expected or type(reading['value']) is bool):
+            raise ValueError('clock reading differs from raw registers: ' + name)
+    if used != set(raw): raise ValueError('unexpected clock register read')
+    if 'performance' in row:
+        performance_record(row['performance'], row['gpc_khz'], row['memory_khz'])
+    return row
+
+
+def clock_evidence(serial):
+    rows = [clock_record(json.loads(m)) for m in re.findall(r'^GT710_CLOCK_V1 (.+)$', serial, re.M)]
+    if [r['phase'] for r in rows] != ['startup', 'final']:
+        raise ValueError('performance requires startup and final clock records')
+    print('phase gpc_khz memory_khz host_reference_khz temperature_c')
+    for row in rows:
+        if any(row[k]['status'] != 'ok' or row[k]['value'] == 0 for k in ('gpc_khz', 'memory_khz', 'host_khz')):
+            raise ValueError('performance clock unavailable: ' + row['phase'])
+        print(row['phase'] + ' ' + ' '.join(str(row[k]['value']) if row[k]['status'] == 'ok' else 'unavailable:' + row[k]['status']
+              for k in ('gpc_khz', 'memory_khz', 'host_khz', 'temperature_c')))
+        if 'performance' in row:
+            perf = row['performance']
+            if perf['status'] != 'ok': print(row['phase'] + ' VBIOS performance unavailable:' + perf['status'])
+            else:
+                for level in perf['levels']:
+                    print(row['phase'] + ' VBIOS pstate={pstate} core_khz={core_khz} memory_khz={memory_khz} gpc_khz={gpc_khz}'.format(**level))
+                print(row['phase'] + ' VBIOS current=' + perf['current']['status'] + ' pstate=' + str(perf['current']['pstate']))
+
+
+def performance_evidence(serial, parsed, names, required, manifest):
+    if required != names or [len(c['cases']) for c in manifest['categories']] != [12,22,19,19,22,26,25,16,9]:
+        raise ValueError('performance requires all 170 cases and the nine category counts')
+    clock_evidence(serial)
+    from decimal import Decimal
+    expected = {
+        'clear-rate-2560': ['clears-per-second'], 'rect-throughput': ['submission-us'],
+        'submit-latency': ['median-us', 'max-us'], 'first-draw-latency': ['slowest-us'],
+        'readback-time-2560': ['readback-us'], 'upload-bandwidth': ['upload-us'],
+        'coverage-throughput': ['coverage-us'], 'wait-no-spin': ['wait-us', 'cpu-us'],
+        'present-rate-2560': ['presents-per-second'],
+    }
+    seen = {key: [] for key in expected}
+    values = []
+    current = 0
+    for kind, match, line in parsed:
+        if kind in ('PASS', 'FAIL'):
+            current += 1
+        elif kind == 'VALUE' and match[1].startswith('performance/'):
+            case = match[1].split('/')[1]
+            if current >= len(names) or names[current] != match[1] or case not in seen:
+                raise ValueError('performance VALUE outside its case: ' + match[1])
+            key = line.split(' ', 4)[4].split('=', 1)[0]
+            seen[case].append(key)
+            values.append(line.removeprefix('SUITE gpu VALUE '))
+            if key != 'wait-us':
+                if match[4] is None or not Decimal(match[4]) <= Decimal(match[2]) <= Decimal(match[5]):
+                    raise ValueError('performance VALUE missing range or outside range: ' + match[1] + ' ' + key)
+            elif match[4] is not None and not Decimal(match[4]) <= Decimal(match[2]) <= Decimal(match[5]):
+                raise ValueError('performance VALUE outside range: ' + match[1])
+    if seen != expected:
+        raise ValueError('performance VALUE records missing, duplicated or reordered')
+    rows = [json.loads(line.removeprefix('GT710_CASE_HEAP ')) for line in serial.splitlines() if line.startswith('GT710_CASE_HEAP ')]
+    if len(rows) != 171 or [r.get('boundary') for r in rows] != list(range(171)) or [r.get('case') for r in rows] != [''] + names:
+        raise ValueError('performance requires all ordered case-heap boundaries')
+    fields = sorted(k for k in rows[0]['values'] if k.startswith('native_') or k.endswith(('_n', '_ns')))
+    if any(set(r['values']) != CASE_HEAP_FIELDS for r in rows):
+        raise ValueError('performance case-heap cost slots missing')
+    print('performance values (suite units and bounds)')
+    for line in values: print(line)
+    print('case ' + ' '.join(fields))
+    for i, name in enumerate(names):
+        print(name + ' ' + ' '.join(str(rows[i+1]['values'][k] - rows[i]['values'][k]) for k in fields))
 
 def resources_console(serial, boot, events):
     import math
@@ -2354,7 +2575,7 @@ def check_case(category, case, serial, producer=None):
             raise ValueError('presentation needs a named panic capture')
         panic_capture(producer['panic']['serial'], producer['panic']['boot'])
         return
-    if category in ('alpha', 'shapes', 'isolation', 'presentation'):
+    if category in ('alpha', 'shapes', 'isolation', 'presentation', 'performance'):
         if producer is None or case != 'suite':
             raise ValueError(f'{category} needs named production GPU and console captures')
         gpu = producer['gpu']
@@ -2608,25 +2829,106 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns, pro
     return category + ': ' + str(len(CATEGORIES[category])) + ' cases passed'
 
 
+# costs_v1 has the fixed order in gpu_abi::heap_trace::NAMES[32..].
+CASE_COST_FIELDS = (
+    'submit_n',
+    'submit_ns',
+    'wait_n',
+    'wait_ns',
+    'read_n',
+    'read_ns',
+    'present_n',
+    'present_ns',
+    'upload_n',
+    'upload_ns',
+    'pack_n',
+    'pack_ns',
+    'span_prep_n',
+    'span_prep_ns',
+    'span_map_n',
+    'span_map_ns',
+    'span_upload_n',
+    'span_upload_ns',
+    'translate_n',
+    'translate_ns',
+    'frame_prep_n',
+    'frame_prep_ns',
+    'evo_n',
+    'evo_ns',
+    'user_copy_n',
+    'user_copy_ns',
+    'read_prepare_n',
+    'read_prepare_ns',
+    'upload_convert_n',
+    'upload_convert_ns',
+    'poison_n',
+    'poison_ns',
+    'transfer_map_n',
+    'transfer_map_ns',
+    'ce_n',
+    'ce_ns',
+    'compare_n',
+    'compare_ns',
+    'copy_out_n',
+    'copy_out_ns',
+    'scratch_prepare_n',
+    'scratch_prepare_ns',
+    'scratch_copy_n',
+    'scratch_copy_ns',
+    'draw_execute_n',
+    'draw_execute_ns',
+    'native_submit_n',
+    'native_submit_ns',
+    'upload_stage_n',
+    'upload_stage_ns',
+    'upload_acquire_n',
+    'upload_acquire_ns',
+)
+
+
+def expand_case_heap(row):
+    if isinstance(row, dict) and isinstance(row.get('values'), dict) and 'costs_v1' in row['values']:
+        values = row['values'].copy()
+        costs = values.pop('costs_v1')
+        if (not isinstance(costs, list) or len(costs) != len(CASE_COST_FIELDS)
+                or any(type(v) is not int or not 0 <= v < 1 << 64 for v in costs)
+                or any(k in values for k in CASE_COST_FIELDS)):
+            raise ValueError('invalid compact case costs')
+        values.update(zip(CASE_COST_FIELDS, costs))
+        row = dict(row, values=values)
+    return row
+
+CASE_HEAP_FIELDS = {
+    'schema', 'heap_free', 'heap_high_water', 'frame_frontier',
+    'frame_freelist_bytes', 'frame_ledger_bytes', 'cpu_stage_slots', 'cpu_stage_metadata_bytes',
+    'cpu_stage_pages', 'core_contexts', 'core_resources', 'core_submissions',
+    'core_syncs', 'core_backlog', 'core_backlog_bytes', 'core_backing_meta_sum',
+    'core_context_vector_bytes', 'native_resources', 'native_retired', 'native_retired_vector_bytes',
+    'native_active_region_bytes', 'native_vm_table_bytes', 'native_queue_vector_bytes', 'native_retired_requests_bytes',
+    'native_channel_initial_bytes', 'native_channel_parking_bytes', 'native_bulk_capacity_bytes', 'console_terminal_bytes',
+    'console_renderer_vector_bytes', 'heap_total', 'native_contexts', 'native_alias_indices_bytes',
+    'submit_n', 'submit_ns', 'wait_n', 'wait_ns',
+    'read_n', 'read_ns', 'present_n', 'present_ns',
+    'upload_n', 'upload_ns', 'pack_n', 'pack_ns',
+    'span_prep_n', 'span_prep_ns', 'span_map_n', 'span_map_ns',
+    'span_upload_n', 'span_upload_ns', 'translate_n', 'translate_ns',
+    'frame_prep_n', 'frame_prep_ns', 'evo_n', 'evo_ns',
+    'user_copy_n', 'user_copy_ns', 'read_prepare_n', 'read_prepare_ns',
+    'upload_convert_n', 'upload_convert_ns', 'poison_n', 'poison_ns',
+    'transfer_map_n', 'transfer_map_ns', 'ce_n', 'ce_ns',
+    'compare_n', 'compare_ns', 'copy_out_n', 'copy_out_ns',
+    'scratch_prepare_n', 'scratch_prepare_ns', 'scratch_copy_n', 'scratch_copy_ns',
+    'draw_execute_n', 'draw_execute_ns', 'native_submit_n', 'native_submit_ns',
+    'upload_stage_n', 'upload_stage_ns', 'upload_acquire_n', 'upload_acquire_ns',
+}
+# The retained 8.6 negative control predates the costs after the first 24. Decode
+# its exact layout without inventing costs; a passing 8.7 gate still requires
+# every current slot in performance_evidence.
+LEGACY_CASE_HEAP_FIELDS = CASE_HEAP_FIELDS - set(CASE_COST_FIELDS[24:])
+
 def capture_serial(directory):
     # claim-lint:ok: normative bulk framing; tests/gt710_bulk_test.py and tests/gt710_contexts_report_test.py mutate anchors and bodies.
     serial=(Path(directory)/'serial.txt').read_text()
-    heap_fields = {
-        'schema', 'heap_free', 'heap_high_water', 'frame_frontier',
-        'frame_freelist_bytes', 'frame_ledger_bytes', 'cpu_stage_slots', 'cpu_stage_metadata_bytes',
-        'cpu_stage_pages', 'core_contexts', 'core_resources', 'core_submissions',
-        'core_syncs', 'core_backlog', 'core_backlog_bytes', 'core_backing_meta_sum',
-        'core_context_vector_bytes', 'native_resources', 'native_retired', 'native_retired_vector_bytes',
-        'native_active_region_bytes', 'native_vm_table_bytes', 'native_queue_vector_bytes', 'native_retired_requests_bytes',
-        'native_channel_initial_bytes', 'native_channel_parking_bytes', 'native_bulk_capacity_bytes', 'console_terminal_bytes',
-        'console_renderer_vector_bytes', 'heap_total', 'native_contexts', 'native_alias_indices_bytes',
-        'submit_n', 'submit_ns', 'wait_n', 'wait_ns',
-        'read_n', 'read_ns', 'present_n', 'present_ns',
-        'upload_n', 'upload_ns', 'pack_n', 'pack_ns',
-        'span_prep_n', 'span_prep_ns', 'span_map_n', 'span_map_ns',
-        'span_upload_n', 'span_upload_ns', 'translate_n', 'translate_ns',
-        'frame_prep_n', 'frame_prep_ns', 'evo_n', 'evo_ns',
-    }
     spans = bool(re.search(r'^GT710_SPANS_BULK ', serial, re.M))
     stalls = bool(re.search(r'^GT710_STALL_BULK ', serial, re.M))
     timings = bool(re.search(r'^GT710_TIMING_BULK ', serial, re.M))
@@ -2697,6 +2999,8 @@ def capture_serial(directory):
         raise ValueError('stall records must arrive in bulk')
     if timings and not matches: raise ValueError('timing evidence bulk missing')
     if re.search(r'^GT710_TIMING_V1 ', serial, re.M): raise ValueError('timing records must arrive in bulk')
+    if re.search(r'^GT710_CLOCK_V1 ', serial, re.M): raise ValueError('clock records must arrive in bulk')
+    if 'GT710_CLOCK_BULK ' in serial and not matches: raise ValueError('clock evidence bulk missing')
     if re.search(r'^GT710_GR_REFUSAL_V1 ', serial, re.M):
         raise ValueError('GR refusal records must arrive in bulk')
     if 'GT710_GR_REFUSAL_BULK ' in serial and not matches:
@@ -2732,17 +3036,22 @@ def capture_serial(directory):
                 raise ValueError('invalid spans record')
             key=('spans', row['id'])
         elif fields[0]=='GT710_CASE_HEAP':
-            row = json.loads(line.removeprefix('GT710_CASE_HEAP '))
+            row = expand_case_heap(json.loads(line.removeprefix('GT710_CASE_HEAP ')))
             if (not isinstance(row, dict) or set(row) != {'schema','boundary','case','values'}
                     or type(row['schema']) is not int or row['schema'] != 1
                     or type(row['boundary']) is not int or not 0 <= row['boundary'] <= 170
                     or not isinstance(row['case'], str) or len(row['case']) > 80
                     or re.fullmatch(r'[A-Za-z0-9_./-]*', row['case']) is None
-                    or not isinstance(row['values'], dict) or set(row['values']) != heap_fields
+                    or not isinstance(row['values'], dict) or set(row['values']) not in (CASE_HEAP_FIELDS, LEGACY_CASE_HEAP_FIELDS)
                     or any(type(v) is not int or not 0 <= v < 1 << 64 for v in row['values'].values())
                     or row['values']['schema'] != 1):
                 raise ValueError('invalid case heap record')
             key=('case-heap',)
+        elif fields[0]=='GT710_CLOCK_V1':
+            row = clock_record(json.loads(line.removeprefix('GT710_CLOCK_V1 ')))
+            if slot != int(row['phase'] == 'final'):
+                raise ValueError('clock record in wrong upload slot')
+            key=('clock', row['phase'])
         elif fields[0]=='GT710_TIMING_V1':
             row = json.loads(line.removeprefix('GT710_TIMING_V1 '))
             if (type(row.get('batch')) is not int or row['batch'] <= 0
@@ -2824,6 +3133,9 @@ def capture_serial(directory):
                 or [row['case'] for row in measured] != names):
             raise ValueError('case heap boundaries differ from the completed GPU cases')
     def report_key(line):
+        clock = re.fullmatch(r'GT710_CLOCK_BULK phase=(startup|final) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
+        if clock: return ('clock', clock[1])
+        if line.startswith('GT710_CLOCK_BULK '): raise ValueError('invalid clock anchor')
         heap = re.fullmatch(r'GT710_CASE_HEAP_BULK ([1-9]\d*) ([a-f0-9]{64})\n?', line)
         if heap: return ('case-heap',)
         if line.startswith('GT710_CASE_HEAP_BULK '): raise ValueError('invalid case heap anchor')
@@ -2881,6 +3193,8 @@ def capture_serial(directory):
             upper=finals[0].start() if group_slots[key] else matches[0].start()
             if not lower<=serial_offset<upper:
                 raise ValueError('artifact anchor outside its upload slot')
+            if key == ('clock', 'final') and serial_offset <= done[0].end():
+                raise ValueError('final clock record before the last case completed')
         serial_offset+=len(line)
         if key is not None and key[0] == 'console-sample':
             anchor = re.fullmatch(r'GT710_CONSOLE_SAMPLE_BULK stage=([01]) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
@@ -2902,6 +3216,11 @@ def capture_serial(directory):
             record = groups[key][0].removesuffix('\n').encode('ascii')
             if len(groups[key]) != 1 or len(record) != int(anchor[1]) or hashlib.sha256(record).hexdigest() != anchor[2]:
                 raise ValueError('GR refusal record differs from serial length/digest')
+        if key is not None and key[0] == 'clock':
+            anchor = re.fullmatch(r'GT710_CLOCK_BULK phase=(startup|final) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
+            record = groups[key][0].removesuffix('\n').encode('ascii')
+            if len(groups[key]) != 1 or len(record) != int(anchor[2]) or hashlib.sha256(record).hexdigest() != anchor[3]:
+                raise ValueError('clock record differs from serial length/digest')
         if key is not None and key[0] == 'timing':
             anchor = re.fullmatch(r'GT710_TIMING_BULK batch=(\d+) bytes=(\d+) sha256=([a-f0-9]{64})\n?', line)
             record = groups[key][0].removesuffix('\n').encode('ascii')
@@ -2952,6 +3271,10 @@ def capture_serial(directory):
                 result.append(json.dumps(row, separators=(',', ':')) + '\n')
             else:
                 result.extend(groups[key])
+        elif key == ('case-heap',):
+            for record in groups[key]:
+                row = expand_case_heap(json.loads(record.removeprefix('GT710_CASE_HEAP ')))
+                result.append('GT710_CASE_HEAP ' + json.dumps(row, separators=(',', ':')) + '\n')
         elif key is not None:
             result.extend(groups[key])
         result.append(line)
@@ -3116,8 +3439,8 @@ def alpha_capture_proof(directory, sha, pr, category='alpha'):
 
 def alpha_acceptance(directory, sha, pr, category='alpha'):
     """Score existing hardware cases and this step against the same pair of captures."""
-    step_categories = ('resources', 'alpha', 'shapes', 'isolation', 'presentation') if category == 'presentation' else ('resources', 'alpha', 'shapes', 'isolation') if category == 'isolation' else (('resources', 'alpha', 'shapes') if category == 'shapes' else ('resources', 'alpha'))
-    presentation = category == 'presentation'
+    step_categories = ('resources', 'alpha', 'shapes', 'isolation', 'presentation', 'performance') if category == 'performance' else ('resources', 'alpha', 'shapes', 'isolation', 'presentation') if category == 'presentation' else ('resources', 'alpha', 'shapes', 'isolation') if category == 'isolation' else (('resources', 'alpha', 'shapes') if category == 'shapes' else ('resources', 'alpha'))
+    presentation = category in ('presentation', 'performance')
     proof = alpha_capture_proof(directory, sha, pr, category)
     capture_sha = proof['captureCommit']
     producer = resources_capture(directory, capture_sha)
@@ -3219,6 +3542,7 @@ def main():
     parser.add_argument('--resources', action='store_true', help='score PR 8.2 from this console boot and --gpu-boot; retain core/* separately')
     parser.add_argument('--isolation', action='store_true', help='score PR 8.5 isolation and preceding selections from the same captures')
     parser.add_argument('--shapes', action='store_true', help='score PR 8.4 shapes and preceding selections from the same captures')
+    parser.add_argument('--performance', action='store_true', help='score PR 8.7 full GPU suite')
     parser.add_argument('--presentation', action='store_true', help='score PR 8.6 with retained production captures and a final-head panic companion')
     parser.add_argument('--alpha', action='store_true', help='score PR 8.3 alpha/suite and the unchanged PR 8.2 resources rows from the same captures')
     parser.add_argument('--acceptance-directory', type=Path, help='score a locally retained console capture and its resources-producer at the current PR head')
@@ -3231,7 +3555,7 @@ def main():
     if args.acceptance_directory:
         import subprocess
         root = Path(__file__).resolve().parents[2]
-        if not (args.alpha or args.shapes or args.isolation or args.presentation) or not args.pr or not re.fullmatch('[a-f0-9]{40}', args.sha or ''):
+        if not (args.alpha or args.shapes or args.isolation or args.presentation or args.performance) or not args.pr or not re.fullmatch('[a-f0-9]{40}', args.sha or ''):
             parser.error('--acceptance-directory requires --alpha, --shapes, --isolation or --presentation, --pr and --sha')
         if (subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip() != args.sha
                 or subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=root, text=True).strip()):
@@ -3242,7 +3566,7 @@ def main():
         proof = dict(head=args.sha, passed=False)
         try:
             pr = current_pr()
-            proof = alpha_acceptance(args.acceptance_directory, args.sha, pr, 'presentation' if args.presentation else 'isolation' if args.isolation else 'shapes' if args.shapes else 'alpha')
+            proof = alpha_acceptance(args.acceptance_directory, args.sha, pr, 'performance' if args.performance else 'presentation' if args.presentation else 'isolation' if args.isolation else 'shapes' if args.shapes else 'alpha')
             if current_pr() != pr:
                 raise ValueError('PR head or state changed during acceptance scoring')
             for boot in proof['boots']:
