@@ -1586,9 +1586,10 @@ impl fmt::Display for Hex<'_> {
 
 /// Answer the checks asked for: on the render thread, after a pass, so the
 /// screen is what `shown` says it is. The idle read-back waits for a pass that
-/// may answer it (`idle_allowed`): it reads the console's text, not the splash.
+/// may answer it (`idle_allowed`) and has the console: a temporary display owner
+/// must not consume the boot's one-shot pixel/font read-back request.
 fn answer_checks(screen: Result<(&Screen, usize), Absent>, idle_allowed: bool, asked: u32) {
-    let idle = idle_allowed && IDLE_CHECK.swap(false, Ordering::AcqRel);
+    let idle = idle_allowed && screen.is_ok() && IDLE_CHECK.swap(false, Ordering::AcqRel);
     let token = match asked {
         0 => 0,
         asked => PROC_CHECK.compare_exchange(asked, 0, Ordering::AcqRel, Ordering::Acquire).map_or(0, |_| asked),
