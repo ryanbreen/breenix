@@ -28,6 +28,10 @@ class PresentationSelection(unittest.TestCase):
         self.assertTrue(category['hostRunner'])
         self.assertEqual([c['id'] for c in category['cases']], ['display', 'panic', 'suite'])
         self.assertEqual(API['STEP_SELECTIONS']['presentation'], 'gt710-step-8-6.json')
+        effort = json.loads((ROOT / 'docs/efforts/metal.json').read_text())
+        measurement = next(m['measure'] for e in effort['efforts'] for m in e['milestones']
+                           if m['id'] == 'presentation')
+        self.assertEqual(measurement, dict(suite='gt710', categories=['presentation']))
 
     def test_missing_or_failed_selected_case_rejected(self):
         selected = set().union(*(set(json.loads((ROOT / f'docs/gui/gt710-step-8-{i}.json').read_text())['cases']) for i in range(2, 7)))
