@@ -114,3 +114,33 @@ pub fn temperature_record(text:&str,phase:&str,trial:u32)->Result<(),String> {
     if c.is_some_and(|c|c>=down) {return Err(format!("down-clock temperature reached: {} >= {down} C",c.unwrap()));}
     Ok(())
 }
+
+/// C3-1: settle at POST for six trials, then PLL A/B/C and exact restore D.
+/// The observer sets and verifies at n=0 and reads temperature before each trial.
+pub fn run_c3(mut observe:impl FnMut(&str,u32)->Result<(),String>)->Result<(),String> {
+    let context=gpu::context_create().map_err(|e|format!("CONTEXT_CREATE: {e}"))?;
+    let mut warmed=false;
+    for _ in 0..6000 {
+        let (result,counters)=gpu::counters(context);checked(result,"COUNTERS")?;
+        match counters.state {
+            context_state::LIVE=>{warmed=true;break;}
+            context_state::WARMING=>time::sleep_ms(5).map_err(|e|format!("warm-up sleep: {e:?}"))?,
+            state=>return Err(format!("context left warm-up with state {state}")),
+        }
+    }
+    if !warmed {return Err(String::from("catalogue warm-up timeout"));}
+    let target=gpu::target_create(format::B8G8R8A8,WIDTH,HEIGHT).map_err(|e|format!("draw target: {e}"))?;
+    let mut draws=Vec::new();encode::begin(&mut draws,target);
+    for draw in 0..DRAWS {encode::draw(&mut draws,pipeline::SOLID,0xff000000|draw,&[[0,0,WIDTH as i32,HEIGHT as i32]]);}
+    let mut n=0;
+    for stage in ["post","A","B","C","D"] {
+        observe(stage,0)?;
+        println!("GT710_C3_STAGE stage={stage}");
+        for _ in 0..if stage=="post" {6}else{3} {
+            n+=1;observe(stage,n)?;
+            trial(context,&draws,"core",n,u64::from(DRAWS)*u64::from(WIDTH)*u64::from(HEIGHT),"fragments")?;
+        }
+    }
+    checked(gpu::resource_destroy(target),"RESOURCE_DESTROY")?;
+    checked(gpu::context_destroy(context),"CONTEXT_DESTROY")
+}

@@ -1924,3 +1924,15 @@ rnndb/{gf100_pcounter.xml,pm/gf100_pclock.xml,copyright.xml} at the C2 pin
 f102b82381f3f11cee113d16374c87091db039d9. No counter programming code is
 adapted by C3-0; its source comparison leaves the observed factor of 16
 unresolved. No board ROM bytes are redistributed.
+
+C3-1 GPC PLL-only probe
+----------------------
+`kernel/src/gpu/gk208/c2.rs`, `c2/runtime.rs` and
+`tests/gt710_c2_test.rs` extend the C2 mechanism with a bounded PLL-only
+plan and lock-sequence checks. Sources remain nouveau Linux v6.8 commit
+ e8f897f4afef0031fe618a8e94127a0934896aba:
+- nvkm/subdev/clk/gk104.c:259-280,356-473, Copyright 2013 Red Hat Inc., MIT;
+- nvkm/subdev/clk/pllgt215.c:31-100, Copyright 2010 Red Hat Inc., MIT;
+- nvkm/subdev/bios/pll.c:352-365, Copyright 2005-2006 Erik Waling,
+  Copyright 2006 Stephane Marchesin, Copyright 2007-2009 Stuart Bennett, MIT.
+The full original grants and notices remain in c2.rs and the C oracle.

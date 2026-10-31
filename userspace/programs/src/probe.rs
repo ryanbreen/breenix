@@ -602,10 +602,38 @@ fn probe() {
     #[cfg(target_arch="x86_64")]
     let gt710_probe=std::fs::read_to_string("/proc/gt710-ce");
     #[cfg(target_arch="x86_64")]
-    if gt710_probe.as_ref().is_ok_and(|s|s=="clock-probe\n" || s=="thermal-probe\n") {
+    if gt710_probe.as_ref().is_ok_and(|s|s=="clock-probe\n" || s=="thermal-probe\n" || s=="pll-probe\n") {
         // Inventory has retained the C1/VBIOS records already. Upload them
         // before CAPS starts GR, even if native startup fails.
         gt710_artifacts::upload().expect("C1 private artifact upload");
+        if gt710_probe.as_ref().is_ok_and(|s|s=="pll-probe\n") {
+            let temperature=|phase:&str,n|->Result<(),String> {
+                let status=std::fs::read_to_string("/proc/gt710-clock").map_err(|e|format!("sensor read: {e}"))?;
+                probe_gpu_bench::temperature_record(&status,phase,n)?;
+                let sensor=status.lines().find(|r|r.starts_with("GT710_SENSOR ")).ok_or("sensor missing")?;
+                let c=sensor.split_whitespace().find_map(|s|s.strip_prefix("celsius=")).ok_or("temperature missing")?
+                    .parse::<u32>().map_err(|_|"temperature unavailable")?;
+                if c>=85 || !sensor.split_whitespace().any(|f|f=="status=ok") {return Err("C3 sensor invalid or at least 85 C".into());}
+                Ok(())
+            };
+            if let Err(e)=temperature("startup",0) {println!("GT710_C3_ERROR {e}");reap_forever();}
+            let (status,caps)=libbreenix::gpu::caps();
+            if status!=0 || caps.backend!=libbreenix::gpu::abi::backend::GK208 || caps.status!=libbreenix::gpu::abi::status::ADMITTED {
+                println!("GT710_C3_ERROR CAPS result={} backend={} status={}",status,caps.backend,caps.status);reap_forever();
+            }
+            let observe=|stage:&str,n|->Result<(),String> {
+                if n==0 {
+                    use std::io::Write;
+                    temperature("before-set",0)?;
+                    let command=match stage {"post"=>"c3 post","A"=>"pll 810000","B"=>"pll 1080000","C"=>"pll 1307000","D"=>"c3-restore post",_=>return Err("invalid C3 stage".into())};
+                    let mut file=std::fs::OpenOptions::new().write(true).open("/proc/gt710-clock").map_err(|e|format!("clock open: {e}"))?;
+                    file.write_all(command.as_bytes()).map_err(|e|format!("clock control write: {e}"))?;
+                }
+                temperature(stage,n)
+            };
+            if let Err(e)=probe_gpu_bench::run_c3(observe) {println!("GT710_C3_ERROR {e}");reap_forever();}
+            println!("GT710_C3_DONE");reap_forever();
+        }
         if gt710_probe.as_ref().is_ok_and(|s|s=="thermal-probe\n") {
             let observe=|phase:&str,trial:u32|->Result<(),String> {
                 let status=std::fs::read_to_string("/proc/gt710-clock").map_err(|e|format!("sensor read: {e}"))?;

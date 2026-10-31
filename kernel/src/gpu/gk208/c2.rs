@@ -133,6 +133,16 @@ pub fn plan(domain:&str,requested:u32,post:u32,l:&Limits,reference:u32,vco:u32)-
     }
     Ok(Plan {khz:divided,pll_selected:false,source_divider:div,coefficient:0})
 }
+/// K2: force GPC's own PLL even at 810000; leave C2's divider planner intact.
+pub fn pll_plan(domain:&str,requested:u32,l:&Limits,reference:u32)->Result<Plan,&'static str> {
+    if domain!="gpc" {return Err("GPC-only");}
+    if requested==0 || requested>1_307_000 {return Err("outside K2 PLL envelope");}
+    let p=pll(l,reference,requested)?;
+    if p.khz>1_307_000 || requested.abs_diff(p.khz)>requested/100 {
+        return Err("PLL result outside K2 envelope/tolerance");
+    }
+    Ok(Plan {khz:p.khz,pll_selected:true,source_divider:0,coefficient:p.coefficient})
+}
 pub trait Access {
     fn read(&mut self,address:u32)->u32;
     fn write(&mut self,address:u32,value:u32);

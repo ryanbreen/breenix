@@ -4,7 +4,7 @@ use crate::gk208::{Registers,clock};
 use alloc::{format,sync::Arc,vec::Vec};
 use observe::CounterAccess;
 
-struct State {base:usize,post:u32,limits:Limits,failed:bool,snapshot:Vec<(u32,u32)>,phase:u8}
+struct State {base:usize,post:u32,limits:Limits,failed:bool,snapshot:Vec<(u32,u32)>,phase:u8,c3:bool}
 static STATE:spin::Mutex<Option<State>>=spin::Mutex::new(None);
 pub(in crate::gk208) fn initialize(regs:&Registers,rom:&[u8])->Result<(),&'static str> {
     let l=limits(rom)?;
@@ -17,7 +17,7 @@ pub(in crate::gk208) fn initialize(regs:&Registers,rom:&[u8])->Result<(),&'stati
     io.record("post-inventory",&counters);
     let pmc=io.read(0x200);
     io.record("pm-post-inventory",&[(0x200,pmc)]);
-    *STATE.lock()=Some(State {base:regs.0,post,limits:l,failed:false,snapshot,phase:0});Ok(())
+    *STATE.lock()=Some(State {base:regs.0,post,limits:l,failed:false,snapshot,phase:0,c3:false});Ok(())
 }
 struct Io(Registers);
 impl Access for Io {
@@ -63,19 +63,23 @@ fn snapshot_records(s:&State,io:&mut Io,phase:&str)->Result<(),&'static str> {
     crate::serial_println!("GT710_CLOCK_DIFF_DONE phase={} count={}",phase,diffs.len());
     Ok(())
 }
-fn measure_record(io:&mut Io,phase:&str)->Result<(),&'static str> {
-    // Keep ownership failures fatal, but a failed counter never stops C2d.
+fn measure_record(io:&mut Io,phase:&str,target:Option<u32>)->Result<(),&'static str> {
+    // C3 requires a valid counter within 1% of the K2 observed /16 ratio.
     // Cleanup and its readbacks are emitted by measure on either result.
     let measured=crate::gk208::ce::with_resources(|_,_,_|Ok(observe::measure(io)))?;
     let m=match measured {
         Ok(m)=>m,
         Err(reason)=>{
             crate::serial_println!("GT710_CLOCK_MEASURED {{\"phase\":\"{}\",\"domain\":\"gpc\",\"status\":\"unmeasured\",\"khz\":null,\"reason\":\"{}\"}}",phase,reason);
-            return Ok(());
+            return if target.is_some() {Err(reason)}else{Ok(())};
         }
     };
     crate::serial_println!("GT710_CLOCK_MEASURED {{\"phase\":\"{}\",\"domain\":\"gpc\",\"status\":\"ok\",\"khz\":{},\"method\":\"gpc0-pre-counter-ptimer\",\"cycles\":{},\"interval_ns\":{},\"ptimer_ns\":{},\"bracket_ns\":{},\"counter_restored\":true}}",
         phase,m.khz,m.cycles,m.ptimer_ns,m.ptimer_ns,m.bracket_ns);
+    if let Some(target)=target {
+        let expected=target.div_ceil(16);
+        if m.khz.abs_diff(expected)>expected/100 {return Err("GPC counter differs from target/16 by over 1 percent");}
+    }
     Ok(())
 }
 pub fn read_status()->Result<Vec<u8>,i32> {
@@ -90,25 +94,34 @@ fn set(bytes:&[u8])->Result<(),&'static str> {
     let text=core::str::from_utf8(bytes).map_err(|_|"invalid request")?;
     let fields:Vec<_>=text.split_whitespace().collect();
     if fields.len()!=2 {return Err("request needs two fields");}
-    let phase=match (fields[0],fields[1]) {
-        ("observe","post")=>0,("gpc","540000")=>1,("restore","post")=>2,
-        _=>return Err("C2c requires observe post, gpc 540000, restore post"),
+    let (phase,requested,c3,name)=match (fields[0],fields[1]) {
+        ("observe","post")=>(0,810_000,false,"post"),
+        ("gpc","540000")=>(1,540_000,false,"low"),
+        ("restore","post")=>(2,810_000,false,"restored"),
+        ("c3","post")=>(0,810_000,true,"post"),
+        ("pll","810000")=>(1,810_000,true,"A"),
+        ("pll","1080000")=>(2,1_080_000,true,"B"),
+        ("pll","1307000")=>(3,1_307_000,true,"C"),
+        ("c3-restore","post")=>(4,810_000,true,"D"),
+        _=>return Err("unsupported clock phase"),
     };
-    let requested=if phase==1 {540_000}else{810_000};
     let mut state=STATE.lock();let s=state.as_mut().ok_or("C2 not initialized")?;
     if s.failed {return Err("C2 stopped after failure");}
     if phase!=s.phase {return Err("C2c phase out of order");}
+    if phase==0 {s.c3=c3;}else if s.c3!=c3 {return Err("clock sequence changed");}
     let mut io=Io(Registers(s.base));
     let result=(|| {
+        if c3 && io.read(0x20400)>=85 {return Err("C3 temperature unavailable or at least 85 C");}
         if phase==0 {return Ok(());}
-        if phase==2 {
+        if (!c3 && phase==2) || (c3 && phase==4) {
             return crate::gk208::ce::with_resources(|_,_,_|observe::restore(&mut io,&s.snapshot));
         }
-        if requested>s.post.min(810_000) || requested<540_000 {return Err("outside C2 POST envelope");}
+        if !c3 && (requested>s.post.min(810_000) || requested<540_000) {return Err("outside C2 POST envelope");}
         let refclk=clock::gpc_reference(|a|io.read(a))?;
         let vco=clock::gpc_vco(|a|io.read(a))?;
-        let p=plan("gpc",requested,s.post,&s.limits,refclk,vco)?;
-        if p.khz>s.post || p.khz>810_000 {return Err("calculated clock above POST");}
+        let p=if c3 {pll_plan("gpc",requested,&s.limits,refclk)?}
+            else {plan("gpc",requested,s.post,&s.limits,refclk,vco)?};
+        if !c3 && (p.khz>s.post || p.khz>810_000) {return Err("calculated clock above POST");}
         let ctrl=io.read(0x137250);
         if ctrl&0x80000000!=0 && ctrl&0x3f3f!=0 {return Err("POST final divider not unity");}
         // The caller's final GPU WAIT precedes the write. Serialize with the
@@ -121,12 +134,23 @@ fn set(bytes:&[u8])->Result<(),&'static str> {
     let readback=sample.gpc_khz;
     let step=clock::gpc_pll_step(|a|io.read(a)).unwrap_or(1);
     let result=result.and_then(|()| {
-        if readback?!=requested {Err("readback-mismatch")}else{Ok(())}
+        let actual=readback?;
+        if if c3 {actual.abs_diff(requested)>requested/100}else{actual!=requested} {
+            return Err("readback-mismatch");
+        }
+        if c3 && (1..=3).contains(&phase) && (io.read(0x137100)&1!=1 || io.read(0x137000)&0x20015!=0x20015) {
+            return Err("GPC PLL lost lock or source");
+        }
+        Ok(())
     });
-    let name=match phase {0=>"post",1=>"low",_=>"restored"};
     // Retain the actual register differences even when restoration refuses.
-    let snapshots=snapshot_records(s,&mut io,name);
-    let result=result.and(snapshots).and_then(|()|measure_record(&mut io,name));
+    let snapshots=snapshot_records(s,&mut io,name).and_then(|()| {
+        if c3 && (phase==0 || phase==4) && !observe::differences(&s.snapshot,&observe::capture(&mut io))?.is_empty() {
+            return Err("C3 POST snapshot differs");
+        }
+        Ok(())
+    });
+    let result=result.and(snapshots).and_then(|()|measure_record(&mut io,name,if c3 {Some(requested)}else{None}));
     let status=result.as_ref().err().copied().unwrap_or("ok");
     crate::serial_println!("GT710_CLOCK_SET {{\"domain\":\"gpc\",\"requested_khz\":{},\"readback_khz\":{},\"status\":\"{}\",\"step_khz\":{}}}",
         requested,readback.map_or_else(|_|alloc::string::String::from("null"),|v|format!("{v}")),status,step);
