@@ -56,7 +56,7 @@ impl<F: FnMut(u32) -> u32> Reader<F> {
         self.pll(pll)
     }
     fn pll(&mut self, address: u32) -> Result<u32, &'static str> {
-        if !matches!(address, 0xe800 | 0xe820 | 0x132000 | 0x132020 | 0x137000) {
+        if !matches!(address, 0xe800 | 0xe820 | 0x132000 | 0x132020 | 0x137000 | 0x137020 | 0x137040 | 0x1370e0) {
             return Err("unknown-pll");
         }
         let ctrl = self.reg(address);
@@ -75,7 +75,7 @@ impl<F: FnMut(u32) -> u32> Reader<F> {
                 fractional = (self.reg(address + 0x10) >> 16) as u16;
                 source
             }
-            0x137000 => self.div(0, 0x137120, 0x137140)?,
+            0x137000 | 0x137020 | 0x137040 | 0x1370e0 => self.div((address & 0xff) / 0x20, 0x137120, 0x137140)?,
             _ => return Err("unknown-pll"),
         };
         if p == 0 { p = 1; }
@@ -99,13 +99,22 @@ impl<F: FnMut(u32) -> u32> Reader<F> {
             _ => Err("unknown-divider-source"),
         }
     }
-    fn gpc(&mut self) -> Result<u32, &'static str> {
-        let control = self.reg(0x137250);
-        let pll = self.reg(0x137100) & 1 != 0;
-        let frequency = if pll { self.pll(0x137000)? } else { self.div(0, 0x137160, 0x1371d0)? };
+    fn clk(&mut self, index: u32) -> Result<u32, &'static str> {
+        let control = self.reg(0x137250 + index * 4);
+        let (frequency, high) = if index < 7 {
+            let selected = self.reg(0x137100) & (1 << index) != 0;
+            (if selected { self.pll(0x137000 + index * 0x20)? }
+                else { self.div(index, 0x137160, 0x1371d0)? }, selected)
+        } else {
+            let source = self.reg(0x137160 + index * 4);
+            let mut frequency = self.div(index, 0x137160, 0x1371d0)?;
+            let high = source & 3 == 3 && source & 0x100 != 0;
+            if high && source & 0x40000000 != 0 { frequency = self.pll(0x1370e0)?; }
+            (frequency, high)
+        };
         Ok(if control & 0x80000000 != 0 {
-            let div = if pll { (control >> 8) & 0x3f } else { control & 0x3f };
-            frequency * 2 / (div + 2)
+            let divisor = if high { (control >> 8) & 0x3f } else { control & 0x3f };
+            frequency * 2 / (divisor + 2)
         } else { frequency })
     }
     fn memory(&mut self) -> Result<u32, &'static str> {
@@ -134,10 +143,30 @@ pub fn sample(read: impl FnMut(u32) -> u32) -> Sample {
     reader.crystal = match reader.reg(0x101000) & 0x400040 {
         0 => 13500, 0x40 => 14318, 0x400000 => 27000, _ => 25000,
     };
-    let gpc_khz = reader.gpc();
+    let gpc_khz = reader.clk(0);
     let memory_khz = reader.memory();
     let temperature_c = reader.temperature();
     Sample { raw: reader.raw, gpc_khz, memory_khz, host_khz: Ok(100000), temperature_c }
+}
+
+/// C1: sources exposed by gk104_clk_read plus both memory PLLs.
+/// MIT clk/gk104.c:46-220; raw words and computed kHz share one snapshot.
+#[cfg(any(feature = "gt710_clock_probe", test))]
+pub fn sample_domains(read: impl FnMut(u32) -> u32)
+    -> (Vec<(u32, u32)>, Vec<(&'static str, Result<u32, &'static str>)>) {
+    let mut r = Reader { read, raw: Vec::new(), crystal: 0 };
+    r.crystal = match r.reg(0x101000) & 0x400040 {
+        0 => 13500, 0x40 => 14318, 0x400000 => 27000, _ => 25000,
+    };
+    let mut domains = alloc::vec![("crystal", Ok(r.crystal)), ("href", Ok(100000))];
+    for (name, index) in [("gpc",0), ("rop",1), ("hubk07",2), ("hubk06",7),
+        ("hubk01",8), ("pmu",12), ("vdec",14)] {
+        domains.push((name,r.clk(index)));
+    }
+    domains.push(("memory", r.memory()));
+    domains.push(("mpll", r.pll(0x132000)));
+    domains.push(("mpll_ref", r.pll(0x132020)));
+    (r.raw, domains)
 }
 
 #[cfg(target_os = "none")]

@@ -1745,3 +1745,35 @@ f102b82381f3f11cee113d16374c87091db039d9. The file imports the MIT grant
 and author list in rnndb/copyright.xml. Those original notices are retained
 in both consumer headers. G25 defines the post-modeset measurement window;
 the 40 ms settle and fresh-fault refusal are Breenix policy.
+
+## GT 710 C1 clock baseline (K1, G1)
+
+Sources are pinned to nouveau in Linux v6.8
+(e8f897f4afef0031fe618a8e94127a0934896aba), individually checked MIT headers:
+
+- nvkm/subdev/clk/gk104.c: Copyright 2013 Red Hat Inc.; clock read paths
+  in kernel/src/gpu/gk208/clock.rs and scripts/metal/gt710_clock.py.
+- nvkm/subdev/therm/g84.c: Copyright 2012 Red Hat Inc.;
+  nvkm/subdev/fuse/gf100.c: Copyright 2014 Martin Peres;
+  restore-only sensor helper in kernel/src/gpu/gk208/sensor.rs and capture
+  in kernel/src/gpu/gk208/c1.rs; validation in scripts/metal/gt710_clock.py.
+- nvkm/subdev/bios/{perf,volt,vmap,therm}.c: Copyright 2012 Nouveau Community;
+  nvkm/subdev/bios/{cstep,boost,timing,rammap}.c: Copyright 2013 Red Hat Inc.;
+  nvkm/subdev/bios/gpio.c: Copyright 2012 Red Hat Inc.; bounded offline
+  layouts in scripts/metal/gt710_clock.py and tests/gt710_c1_test.py.
+- nvkm/subdev/volt/gpio.c and volt/base.c: Copyright 2013 Red Hat Inc.;
+  nvkm/subdev/volt/gk104.c: Copyright 2015 Martin Peres;
+  nvkm/subdev/gpio/gf119.c: Copyright 2012 Red Hat Inc.;
+  nvkm/subdev/gpio/base.c: Copyright 2011 Red Hat Inc.; VID/polarity and
+  PWM readback decoding in scripts/metal/gt710_clock.py, with GPIO words
+  captured by kernel/src/gpu/gk208/c1.rs.
+- nvkm/subdev/timer/nv04.c: Copyright 2012 Red Hat Inc.;
+  nvkm/subdev/timer/regsnv04.h: SPDX-License-Identifier MIT; PTIMER
+  high/low/high readback in kernel/src/gpu/gk208/c1.rs.
+
+The complete MIT grants and original copyrights are retained in the adapted
+Rust/Python files. Clock/domain and restore-only sensor vectors in
+tests/gt710_c1_test.py use the same sources. No GPL implementation or
+proprietary driver/firmware material is used. Sources, exact line citations
+and supported layouts are documented in docs/gui/gt710-c1.md. Board ROM
+bytes are private runtime artifacts and are not redistributed in this tree.

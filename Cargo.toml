@@ -13,6 +13,7 @@ opt-level = 3
 server_reboot_fault = ["kernel/server_reboot_fault"]
 force_cpu_accounting_delay = ["kernel/force_cpu_accounting_delay"]
 testing = ["kernel/testing"]
+gt710_clock_probe = ["kernel/gt710_clock_probe"]
 gt710_core_probe = ["kernel/gt710_core_probe"]
 boot_tests = ["kernel/boot_tests"]  # Parallel boot test framework
 force_eret_dispatch_596 = ["boot_tests", "kernel/force_eret_dispatch_596"]  # #596 forced-repro knob

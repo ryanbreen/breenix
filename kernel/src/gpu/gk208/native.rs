@@ -221,7 +221,7 @@ pub fn suite_requested() -> bool {
 pub fn memory_requested()->bool {
     // The terminal oracle uses probe transport, but needs normal display/core
     // startup before its deliberate panic, not the CPU VRAM experiments.
-    if cfg!(feature = "capture_panic_oracle") { return false; }
+    if cfg!(any(feature = "capture_panic_oracle", feature = "gt710_clock_probe")) { return false; }
     crate::boot::intent::get()
         .and_then(|bytes| core::str::from_utf8(bytes).ok())
         .and_then(|text| crate::boot::target::parse(text).ok())

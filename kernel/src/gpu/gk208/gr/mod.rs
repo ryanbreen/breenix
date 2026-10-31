@@ -380,6 +380,8 @@ fn initialize_inner(
             graphics.upload(&mut hardware, images.va, &[0; 8192])?;
             super::encode::upload_parking(storage.va, &data,
                 |va, bytes| graphics.upload(&mut hardware, va, bytes))?;
+            #[cfg(feature = "gt710_clock_probe")]
+            graphics.clock_benchmarks(&mut hardware).inspect_err(|e|crate::serial_println!("GT710_C1_ERROR {}",e))?;
             Ok((quarantine, terminal_quarantine, parking))
         })();
         let report = graphics.report();

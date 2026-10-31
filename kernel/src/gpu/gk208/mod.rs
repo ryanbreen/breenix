@@ -315,6 +315,8 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
     let rom = rom::read(&mut regs)?;
     let board = board::parse(&rom)?;
     clock::initialize_performance(&rom);
+    #[cfg(feature = "gt710_clock_probe")]
+    c1::startup(&mut regs,&device)?;
     for route in &board.routes {
         let state = regs.read(0x640200 + route.sor as usize * 0x20);
         if !matches!((state >> 8) & 15, 1 | 2 | 5)
@@ -567,6 +569,10 @@ fn display_memory(
     Ok(layout)
 }
 
+#[cfg(feature = "gt710_clock_probe")]
+mod sensor;
+#[cfg(feature = "gt710_clock_probe")]
+mod c1;
 pub mod resource;
 #[cfg(feature = "gt710_core_probe")]
 mod spans_diagnostic;
@@ -576,6 +582,8 @@ pub mod caps;
 /// Serialize first-use native startup with the existing allocator/CE owner.
 pub(crate) fn initialize_core() -> Result<(), &'static str> {
     let result = ce::initialize_core();
+    #[cfg(feature = "gt710_clock_probe")]
+    if let Err(e)=result {crate::serial_println!("GT710_C1_ERROR {}",e);}
     let longest = crate::tracing::providers::gpu::GPU_IRQ_MASKED_MAX_US.per_cpu[0].value.load(core::sync::atomic::Ordering::Relaxed);
     let row = core_record::startup(longest, result.is_ok());
     // Keep the measured startup row with bulk evidence, only its digest on serial.

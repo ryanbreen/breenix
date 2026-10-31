@@ -95,9 +95,9 @@ def kernel_profile(args):
     """Expected build identity for this boot's requested mode and suite."""
     category = getattr(args, 'gt710_category', None)
     if category is not None:
-        if category not in ('core', 'panic') or args.mode not in ('default', 'probe') or getattr(args, 'suite', None) or args.inject:
+        if category not in ('core', 'panic', 'clocks') or args.mode not in ('default', 'probe') or getattr(args, 'suite', None) or args.inject:
             raise ValueError('gt710 diagnostic needs a default/probe boot without suites or injection')
-        return (['capture_panic_oracle'], 'gpu-panic') if category == 'panic' else (['gt710_core_probe'], 'gpu-core')
+        return {'panic':(['capture_panic_oracle'],'gpu-panic'),'core':(['gt710_core_probe'],'gpu-core'),'clocks':(['gt710_clock_probe'],'gpu-clock')}[category]
     features = (['watchdog_fault_inject'] if args.inject in WATCHDOG_FAULTS else
                 ['xhci_fault_inject'] if xhci_fault(args) else
                 ['block_fence_inject'] if args.inject == FENCE_FAULT else
@@ -2219,7 +2219,7 @@ def main():
         p.add_argument('--session', action='store_true', help='hold the console for operator input, without scoring')
         p.add_argument('--idle-minutes', type=int, default=30, help='session input idle limit (1 through 240; default 30)')
         p.add_argument('--suite')
-        p.add_argument('--gt710-category', choices=('core', 'panic'))
+        p.add_argument('--gt710-category', choices=('core', 'panic', 'clocks'))
         p.add_argument('--milestone')
         p.add_argument('--source-boot')
         p.add_argument('--commit', default='')

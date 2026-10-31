@@ -55,9 +55,9 @@ TESTING_FEATURE = 'testing'
 def kernel_features(mode, suites, inject, gt710_category=None):
     """Keep native suite evidence independent of the testing startup path."""
     if gt710_category is not None:
-        if gt710_category not in ('core', 'panic') or mode not in ('default', 'probe') or suites or inject:
+        if gt710_category not in ('core', 'panic', 'clocks') or mode not in ('default', 'probe') or suites or inject:
             raise ValueError('gt710 diagnostic needs a default/probe boot without suites or injection')
-        return ['--features', 'capture_panic_oracle' if gt710_category == 'panic' else 'gt710_core_probe']
+        return ['--features', {'panic':'capture_panic_oracle','core':'gt710_core_probe','clocks':'gt710_clock_probe'}[gt710_category]]
     if inject in WATCHDOG_FAULTS:
         return ['--features', 'watchdog_fault_inject']
     if inject in XHCI_FAULTS:
@@ -459,7 +459,7 @@ def main():
     p.add_argument('--disk', choices=('install', 'root'),
                    help='physical disk root (default), or an explicit recovery install')
     p.add_argument('--suite')
-    p.add_argument('--gt710-category', choices=('core', 'panic'),
+    p.add_argument('--gt710-category', choices=('core', 'panic', 'clocks'),
                    help='run the named native diagnostic on a separate automated probe boot')
     p.add_argument('--milestone', help='score the effort/milestone category set from the boot commit')
     p.add_argument('--source-boot', help='completed disk suite boot to read after a cold power cycle')
