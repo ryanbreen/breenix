@@ -8,6 +8,7 @@ import tempfile
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 API = runpy.run_path(str(ROOT / 'scripts/metal/gt710-suite'))
@@ -26,6 +27,20 @@ def text(rows):
     return ''.join('GT710_DISPLAY_V1 '+json.dumps(r,separators=(',',':'))+'\n' for r in rows)
 
 class DisplayEvidence(unittest.TestCase):
+    def test_presentation_uses_the_native_modeset_timing_for_the_raster(self):
+        # native_mode returns the MODE record, whose dimensions are in timing.
+        # Keep the real runtime validator so the join still rejects a raster
+        # that differs from the native DDC timing.
+        mode = dict(timing=dict(width=1280, height=1024))
+        producer = dict(console=dict(serial='native console capture'),
+                        gpu=dict(serial=text([row(0), row(1)])))
+        with patch.dict(API['check_case'].__globals__,
+                        native_mode=lambda serial: (mode, b'')):
+            API['check_case']('presentation', 'display', '', producer)
+            mode['timing']['height'] = 800
+            with self.assertRaisesRegex(ValueError, 'runtime raster differs'):
+                API['check_case']('presentation', 'display', '', producer)
+
     def test_both_modes_and_independent_latched_address_are_required(self):
         self.assertTrue('runtime_display' in API,'runtime display proof is absent')
         check=API['runtime_display'];good=[row(0),row(1)]
