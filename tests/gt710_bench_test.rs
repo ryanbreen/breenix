@@ -9,13 +9,13 @@ struct State { images: Vec<(u32,u32,u32)>, submits: usize, waits: usize, clocks:
     warming: bool, pending: bool, fail_wait: bool, low_too_fast:bool, sets:Vec<u32> }
 
 pub mod time {
-    pub struct Stamp(u64);
-    impl Stamp { pub fn as_nanos(&self)->u64 { self.0 } }
+    pub struct Stamp(i128);
+    impl Stamp { pub fn as_nanos(&self)->i128 { self.0 } }
     pub fn now_monotonic()->Result<Stamp,&'static str> {
         Ok(crate::STATE.with_borrow_mut(|s| {s.clocks+=1;
             let end=s.clocks%2==0;
             let duration=if s.submits>=4 && s.submits<=6 && !s.low_too_fast {1_070_000_000}else{716_000_000};
-            Stamp(((s.clocks-1) as u64/2)*2_000_000_000+if end {duration}else{0})}))
+            Stamp(((s.clocks-1) as i128/2)*2_000_000_000+if end {duration}else{0})}))
     }
     pub fn sleep_ms(_:u64)->Result<(), &'static str> { Ok(()) }
 }
