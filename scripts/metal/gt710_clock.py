@@ -332,23 +332,25 @@ def c1_record(row):
     reads=row['sensor_raw'];writes=row['sensor_writes']
     allowed={0x22400,0x21000,0x212a8,0x20008,0x2000c,0x20400}
     need(all(isinstance(r,list) and len(r)==2 and r[0] in allowed and type(r[1]) is int and 0<=r[1]<1<<32 for r in reads),'invalid sensor reads')
-    first={};last={}
-    for a,v in reads:first.setdefault(a,v);last[a]=v
-    need({0x22400,0x21000,0x212a8}<=set(first),'sensor gates/fuse absent')
-    expected=[]
-    for a,mask in [(0x22400,0x800),(0x21000,1)]:
-        if not first[a]&mask:expected.append([a,first[a]|mask])
-    for a,mask in [(0x21000,1),(0x22400,0x800)]:
-        if not first[a]&mask:expected.append([a,first[a]])
-    if first[0x212a8]==1:
-        need({0x20008,0x2000c,0x20400}<=set(first),'sensor setup/read absent')
-        a,b=first[0x20008],first[0x2000c]
+    need(writes==[],'C1 sensor writes are forbidden')
+    at=0
+    def read(address):
+        nonlocal at
+        need(at<len(reads) and reads[at][0]==address,'sensor read sequence differs')
+        value=reads[at][1];at+=1;return value
+    enable,access=read(0x22400),read(0x21000)
+    if not enable&0x800 or not access&1:
+        reading=dict(value=None,status='needs-setup')
+    elif read(0x212a8)!=1:
+        reading=dict(value=None,status='sensor-unavailable')
+    else:
+        a,b=read(0x20008),read(0x2000c)
         if a&0x80008000!=0x80000000 or b&0x80000003:
-            expected += [[0x20008,(a&~0x80008000)|0x80000000],[0x2000c,b&~0x80000003],[0x2000c,b],[0x20008,a]]
-        v=first[0x20400];reading=dict(value=v,status='ok') if v<=0x7fffffff else dict(value=None,status='sensor-read-error')
-    else:reading=dict(value=None,status='sensor-unavailable')
-    need(writes==expected and row['temperature']==reading,'sensor setup or reading differs')
-    need(all(last[a]==first[a] for a in [0x22400,0x21000]+([0x20008,0x2000c] if first[0x212a8]==1 else [])),'sensor restore differs')
+            reading=dict(value=None,status='needs-setup')
+        else:
+            v=read(0x20400)
+            reading=dict(value=v,status='ok') if v<=0x7fffffff else dict(value=None,status='sensor-read-error')
+    need(at==len(reads) and row['temperature']==reading,'sensor readback differs')
     ports=row['pcie'];need(len(ports)==2 and ports[0]['bdf']=='01:00.0' and ports[0]['bdf']!=ports[1]['bdf'],'endpoint/upstream PCIe pair')
     for p in ports:
         need(0x40<=p['cap_offset']<=0xdc and p['cap_offset']%4==0,'PCIe capability offset')
@@ -368,20 +370,37 @@ def link(p):
                 slot_power_controller=None if slot is None else bool(slot&2))
 
 
+def startup_payload(path,serial):
+    # C1 measures before CAPS finishes. Authenticate its independent early
+    # upload rather than requiring unrelated, later core/display artifacts.
+    uploads=list(re.finditer(r'^GT710_BULK ([1-9]\d*) ([a-f0-9]{64})$',serial,re.M))
+    need(len(uploads)==1,'C1 bulk missing or repeated')
+    upload=uploads[0];data=(path/'gt710-pixels.rle').read_bytes()
+    need(len(data)==int(upload[1]) and len(data)<=2<<20 and hashlib.sha256(data).hexdigest()==upload[2],'C1 bulk length/digest differs')
+    text=data.decode('ascii');rows={}
+    for kind,prefix in [('C1','GT710_CLOCK_C1'),('VBIOS','GT710_VBIOS_V1')]:
+        need(not re.search('^'+prefix+' ',serial,re.M),'C1 records must arrive in bulk')
+        bodies=re.findall('^'+prefix+' (.+)$',text,re.M)
+        anchors=list(re.finditer(r'^GT710_'+kind+r'_BULK bytes=([1-9]\d*) sha256=([a-f0-9]{64})$',serial,re.M))
+        need(len(bodies)==len(anchors)==1,'C1 record/anchor missing or repeated')
+        body=(prefix+' '+bodies[0]).encode('ascii');anchor=anchors[0]
+        need(anchor.start()<upload.start() and len(body)==int(anchor[1]) and hashlib.sha256(body).hexdigest()==anchor[2],'C1 record differs from serial anchor')
+        rows[kind]=json.loads(bodies[0])
+    trials=list(re.finditer(r'^GT710_BENCH ',serial,re.M))
+    need(trials and upload.end()<trials[0].start(),'C1 upload must precede benchmarks')
+    return rows
+
+
 def capture(directory):
-    import runpy
     path=Path(directory);boot=json.loads((path/'run.json').read_text())
     need(boot['toolsCommit']==boot['commit']==boot['build']['commit'],'C1 tools/build/head differ')
     need(boot['build']['profile']=='gpu-clock' and boot['build']['features']==['gt710_clock_probe'] and not boot.get('suites') and not boot.get('suite'),'C1 diagnostic profile required')
-    api=runpy.run_path(str(Path(__file__).with_name('gt710-suite')),run_name='c1_scorer')
-    serial=api['capture_serial'](path)
-    def one(prefix):
-        found=re.findall('^'+prefix+' (.+)$',serial,re.M);need(len(found)==1,'missing or repeated '+prefix);return json.loads(found[0])
-    row=c1_record(one('GT710_CLOCK_C1'));rom=one('GT710_VBIOS_V1');raw=bytes.fromhex(rom['hex'])
+    serial=(path/'serial.txt').read_text()
+    rows=startup_payload(path,serial)
+    row=c1_record(rows['C1']);rom=rows['VBIOS'];raw=bytes.fromhex(rom['hex'])
     need(len(raw)==rom['bytes'] and hashlib.sha256(raw).hexdigest()==rom['sha256'],'VBIOS digest differs')
     decoded=decode_image(raw)
     times=benchmarks([json.loads(m) for m in re.findall(r'^GT710_BENCH (.+)$',serial,re.M)])
-    need('GT710_C1_DONE' in serial,'C1 upload completion absent')
     need(not re.search(r'^GT710_C1_ERROR|^GT710_.*ERROR|^LOCKUP|^PANIC',serial,re.M),'C1/card failure in capture')
     for n,f in row['domains'].items():
         need(f"GT710_CLOCK domain={n} khz={f['value'] if f['value'] is not None else 'null'} status={f['status']}" in serial,'clock serial summary differs')

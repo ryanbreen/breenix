@@ -23,35 +23,26 @@
  * Authors: Ben Skeggs
  * 	    Martin Peres
  */
-//! Restore-only C1 sensor read: MIT therm/g84.c:29-52, fuse/gf100.c:27-45.
-//! K1 permits this bounded setup without alarm/fan/clock programming.
-pub trait Io {
-    fn read(&mut self, address: u32) -> u32;
-    fn write(&mut self, address: u32, value: u32);
-    fn stabilize(&mut self);
-}
+//! Read-only C1 sensor observation: MIT therm/g84.c:29-52, fuse/gf100.c:27-45.
+//! C1 r3 defers setup to a later step; the callback cannot write registers.
 pub struct Reading { pub value: Result<u32, &'static str>, pub restored: bool }
-pub fn temperature(io: &mut impl Io) -> Reading {
-    let enable = io.read(0x22400);
-    let access = io.read(0x21000);
-    if enable & 0x800 == 0 { io.write(0x22400, enable | 0x800); }
-    if access & 1 == 0 { io.write(0x21000, access | 1); }
-    let present = io.read(0x212a8) == 1;
-    if access & 1 == 0 { io.write(0x21000, access); }
-    if enable & 0x800 == 0 { io.write(0x22400, enable); }
-    let mut restored = io.read(0x21000) == access && io.read(0x22400) == enable;
-    let value = if present {
-        let a = io.read(0x20008); let b = io.read(0x2000c);
-        let setup = a & 0x80008000 != 0x80000000 || b & 0x80000003 != 0;
-        if setup {
-            io.write(0x20008, (a & !0x80008000) | 0x80000000);
-            io.write(0x2000c, b & !0x80000003);
-            io.stabilize();
+pub fn temperature(mut read: impl FnMut(u32) -> u32) -> Reading {
+    let enable = read(0x22400);
+    let access = read(0x21000);
+    let value = if enable & 0x800 == 0 || access & 1 == 0 {
+        Err("needs-setup")
+    } else if read(0x212a8) != 1 {
+        Err("sensor-unavailable")
+    } else {
+        let a = read(0x20008);
+        let b = read(0x2000c);
+        if a & 0x80008000 != 0x80000000 || b & 0x80000003 != 0 {
+            Err("needs-setup")
+        } else {
+            let temperature = read(0x20400);
+            if temperature > i32::MAX as u32 { Err("sensor-read-error") } else { Ok(temperature) }
         }
-        let temperature = io.read(0x20400);
-        if setup { io.write(0x2000c,b); io.write(0x20008,a); }
-        restored &= io.read(0x20008) == a && io.read(0x2000c) == b;
-        if temperature > i32::MAX as u32 { Err("sensor-read-error") } else { Ok(temperature) }
-    } else { Err("sensor-unavailable") };
-    Reading { value: if restored { value } else { Err("sensor-restore-failed") }, restored }
+    };
+    // Retain the schema-1 field for the read-only observation.
+    Reading { value, restored: true }
 }

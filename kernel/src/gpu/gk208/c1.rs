@@ -25,18 +25,9 @@
  */
 //! C1 startup measurements. No clock/PLL/voltage/timing writes.
 use alloc::{format, string::String, vec::Vec};
-use super::{Registers, rom::Access};
+use super::Registers;
 use crate::drivers::pci;
 
-struct Sensor<'a> { regs: &'a mut Registers, raw: Vec<(u32,u32)>, writes: Vec<(u32,u32)> }
-impl super::sensor::Io for Sensor<'_> {
-    fn read(&mut self,a:u32)->u32 {let v=self.regs.read(a as usize);self.raw.push((a,v));v}
-    fn write(&mut self,a:u32,v:u32) {self.regs.write(a as usize,v);self.writes.push((a,v));}
-    fn stabilize(&mut self) {
-        let start=crate::arch_impl::x86_64::timer::rdtsc();
-        while super::channel::elapsed(start)<20_000 { core::hint::spin_loop(); }
-    }
-}
 fn pairs(raw:&[(u32,u32)])->String { raw.iter().map(|(a,v)|format!("[{a},{v}]")).collect::<Vec<_>>().join(",") }
 fn reading(v:Result<u32,&'static str>)->String {
     match v {Ok(v)=>format!("{{\"value\":{v},\"status\":\"ok\"}}"),Err(e)=>format!("{{\"value\":null,\"status\":\"{e}\"}}")}
@@ -73,10 +64,12 @@ pub(super) fn startup(regs:&mut Registers,device:&pci::Device)->Result<(),&'stat
     for (n,f) in &domains {
         match f {Ok(v)=>crate::serial_println!("GT710_CLOCK domain={} khz={} status=ok",n,v),Err(e)=>crate::serial_println!("GT710_CLOCK domain={} khz=null status={}",n,e)}
     }
-    let mut sensor=Sensor {regs,raw:Vec::new(),writes:Vec::new()};
-    let temp=super::sensor::temperature(&mut sensor);
+    let mut sensor_raw=Vec::new();
+    let temp=super::sensor::temperature(|a| {
+        let v=regs.read(a as usize);sensor_raw.push((a,v));v
+    });
     crate::serial_println!("GT710_TEMPERATURE reading={} restored={}",reading(temp.value),temp.restored);
-    let sensor_raw=pairs(&sensor.raw);let sensor_writes=pairs(&sensor.writes);
+    let sensor_raw=pairs(&sensor_raw);
     let mut voltage_raw:Vec<_>=(0..32).map(|n|{let a=0xd610+n*4;(a,regs.read(a as usize))}).collect();
     for a in [0x20340,0x20344] {voltage_raw.push((a,regs.read(a as usize)));}
     let mut ports=alloc::vec![pcie(device)?];
@@ -88,8 +81,7 @@ pub(super) fn startup(regs:&mut Registers,device:&pci::Device)->Result<(),&'stat
     if bridges.len()!=1 {return Err("GPU upstream port ambiguous or absent");}
     ports.push(pcie(&bridges[0])?);
     let ds=domains.iter().map(|(n,f)|format!("\"{}\":{}",n,reading(*f))).collect::<Vec<_>>().join(",");
-    publish("C1",format!("GT710_CLOCK_C1 {{\"schema\":1,\"phase\":\"startup\",\"raw\":[{}],\"domains\":{{{}}},\"temperature\":{},\"sensor_restored\":{},\"sensor_raw\":[{}],\"sensor_writes\":[{}],\"voltage_raw\":[{}],\"pcie\":[{}]}}",pairs(&raw),ds,reading(temp.value),temp.restored,sensor_raw,sensor_writes,pairs(&voltage_raw),ports.join(",")))?;
-    if !temp.restored {return Err("C1 sensor restoration failed");}
+    publish("C1",format!("GT710_CLOCK_C1 {{\"schema\":1,\"phase\":\"startup\",\"raw\":[{}],\"domains\":{{{}}},\"temperature\":{},\"sensor_restored\":{},\"sensor_raw\":[{}],\"sensor_writes\":[{}],\"voltage_raw\":[{}],\"pcie\":[{}]}}",pairs(&raw),ds,reading(temp.value),temp.restored,sensor_raw,"",pairs(&voltage_raw),ports.join(",")))?;
     Ok(())
 }
 /// Nouveau timer/nv04.c:42-54 and MIT regsnv04.h: TIME_0/1, nanoseconds.

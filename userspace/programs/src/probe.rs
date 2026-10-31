@@ -599,10 +599,12 @@ fn reap_forever() -> ! {
 fn probe() {
     #[cfg(target_arch="x86_64")]
     if std::fs::read_to_string("/proc/gt710-ce").is_ok_and(|s|s=="clock-probe\n") {
+        // Inventory has retained the C1/VBIOS records already. Upload them
+        // before CAPS starts GR and the timed workloads, even if startup fails.
+        gt710_artifacts::upload().expect("C1 private artifact upload");
         let (status,caps)=libbreenix::gpu::caps();
         assert_eq!(status,0,"C1 native startup");
         assert_eq!(caps.backend,libbreenix::gpu::abi::backend::GK208,"C1 native backend");
-        gt710_artifacts::upload().expect("C1 private artifact upload");
         println!("GT710_C1_DONE");
         reap_forever();
     }

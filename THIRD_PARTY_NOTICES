@@ -1755,7 +1755,7 @@ Sources are pinned to nouveau in Linux v6.8
   in kernel/src/gpu/gk208/clock.rs and scripts/metal/gt710_clock.py.
 - nvkm/subdev/therm/g84.c: Copyright 2012 Red Hat Inc.;
   nvkm/subdev/fuse/gf100.c: Copyright 2014 Martin Peres;
-  restore-only sensor helper in kernel/src/gpu/gk208/sensor.rs and capture
+  read-only sensor helper in kernel/src/gpu/gk208/sensor.rs and capture
   in kernel/src/gpu/gk208/c1.rs; validation in scripts/metal/gt710_clock.py.
 - nvkm/subdev/bios/{perf,volt,vmap,therm}.c: Copyright 2012 Nouveau Community;
   nvkm/subdev/bios/{cstep,boost,timing,rammap}.c: Copyright 2013 Red Hat Inc.;
@@ -1772,7 +1772,7 @@ Sources are pinned to nouveau in Linux v6.8
   high/low/high readback in kernel/src/gpu/gk208/c1.rs.
 
 The complete MIT grants and original copyrights are retained in the adapted
-Rust/Python files. Clock/domain and restore-only sensor vectors in
+Rust/Python files. Clock/domain and read-only sensor vectors in
 tests/gt710_c1_test.py use the same sources. No GPL implementation or
 proprietary driver/firmware material is used. Sources, exact line citations
 and supported layouts are documented in docs/gui/gt710-c1.md. Board ROM
