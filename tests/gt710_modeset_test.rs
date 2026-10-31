@@ -448,6 +448,14 @@ fn fix_edid_checksum(raw: &mut [u8]) {
     raw[127] = 0u8.wrapping_sub(raw.iter().fold(0u8, |a,b| a.wrapping_add(*b)));
 }
 #[test]
+fn captured_sink_selects_preferred_detailed_timing_despite_faster_established_mode() {
+    let modes = edid::parse(&captured_sink()).unwrap();
+    assert_eq!(modes[0], preferred());
+    assert!(modes.contains(&dmt_75()));
+    assert_eq!(*edid::native_raster(&modes).unwrap(), preferred());
+    assert_eq!(modeset::switch_sequence(&modes).unwrap()[1], preferred());
+}
+#[test]
 fn captured_sink_uses_advertised_75hz_raster_and_exact_fractional_pll() {
     let raw = captured_sink();
     let modes = edid::parse(&raw).unwrap();
