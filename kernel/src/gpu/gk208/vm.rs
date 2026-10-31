@@ -76,6 +76,15 @@ impl Flags {
 pub trait Io {
     fn read(&mut self, address: u64) -> Result<u64, &'static str>;
     fn write(&mut self, address: u64, value: u64) -> Result<(), &'static str>;
+    /// Contiguous table payload, bounded to 256 entries per aperture hold.
+    /// Models may preserve individual writes; hardware drains the span once.
+    fn write_batch(&mut self, address: u64, values: &[u64]) -> Result<(), &'static str> {
+        if values.len() > 256 { return Err("VM publication batch exceeds bound"); }
+        for (i, &value) in values.iter().enumerate() {
+            self.write(address + i as u64 * 8, value)?;
+        }
+        Ok(())
+    }
     fn flush(&mut self) -> Result<(), &'static str>;
     fn invalidate(&mut self, directory: u64) -> Result<u32, &'static str>;
     fn register(&mut self, offset: usize) -> u32;
@@ -90,8 +99,11 @@ pub struct Space {
     detached: bool,
 }
 fn clear(io: &mut impl Io, r: Range) -> Result<(), &'static str> {
-    for a in (r.start..r.end().ok_or("VM extent overflow")?).step_by(8) {
-        io.write(a, 0)?;
+    let end = r.end().ok_or("VM extent overflow")?;
+    let zeros = [0; 256];
+    for address in (r.start..end).step_by(zeros.len() * 8) {
+        let count = ((end - address) / 8).min(zeros.len() as u64) as usize;
+        io.write_batch(address, &zeros[..count])?;
     }
     Ok(())
 }
@@ -244,10 +256,11 @@ impl Space {
         // is admitted while these temporary VRAM entries are being replaced.
         self.map(a, io, va, Range { start: 0, size }, Flags::default())?;
         let result = (|| {
-            for (i, p) in pages.iter().enumerate() {
-                io.write(self.pte_address(va + i as u64 * PAGE).ok_or("missing system PTE")?,
-                    (p >> 8) | 1 | (1 << 32) | (2 << 33))?;
+            let mut values = [0; 256];
+            for (value, p) in values.iter_mut().zip(pages) {
+                *value = (p >> 8) | 1 | (1 << 32) | (2 << 33);
             }
+            self.write_ptes(io, va, &values[..pages.len()])?;
             self.publish(io)
         })();
         if result.is_err() { self.poisoned = true; }
@@ -261,12 +274,27 @@ impl Space {
         flags: Flags,
         kind: u8,
     ) -> Result<(), &'static str> {
-        for offset in (0..backing.size).step_by(PAGE as usize) {
-            io.write(
-                self.pte_address(va + offset)
-                    .ok_or("missing VM page table")?,
-                ((backing.start + offset) >> 8) | flags.bits() | (u64::from(kind) << 36),
-            )?;
+        let mut values = [0; 256];
+        for offset in (0..backing.size).step_by(values.len() * PAGE as usize) {
+            let count = ((backing.size - offset) / PAGE).min(values.len() as u64) as usize;
+            for (i, value) in values[..count].iter_mut().enumerate() {
+                *value = ((backing.start + offset + i as u64 * PAGE) >> 8)
+                    | flags.bits() | (u64::from(kind) << 36);
+            }
+            self.write_ptes(io, va + offset, &values[..count])?;
+        }
+        Ok(())
+    }
+    /// Split a batch at an SPT boundary, where adjacent virtual pages live in
+    /// separate physical tables.
+    fn write_ptes(&self, io: &mut impl Io, va: u64, values: &[u64]) -> Result<(), &'static str> {
+        let mut done = 0;
+        while done < values.len() {
+            let at = va + done as u64 * PAGE;
+            let count = (values.len() - done).min(((COVERAGE - at % COVERAGE) / PAGE) as usize);
+            io.write_batch(self.pte_address(at).ok_or("missing VM page table")?,
+                &values[done..done + count])?;
+            done += count;
         }
         Ok(())
     }

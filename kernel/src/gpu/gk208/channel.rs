@@ -197,6 +197,14 @@ impl vm::Io for VmIo<'_> {
     fn write(&mut self, a: u64, v: u64) -> Result<(), &'static str> {
         words(self.regs, self.total, a, &[v as u32, (v >> 32) as u32])
     }
+    fn write_batch(&mut self, address: u64, values: &[u64]) -> Result<(), &'static str> {
+        if values.len() > 256 { return Err("VM publication batch exceeds bound"); }
+        let mut payload = [0; 512];
+        for (pair, value) in payload.chunks_exact_mut(2).zip(values) {
+            pair.copy_from_slice(&[*value as u32, (*value >> 32) as u32]);
+        }
+        words(self.regs, self.total, address, &payload[..values.len() * 2])
+    }
     fn flush(&mut self) -> Result<(), &'static str> {
         modeset::bar_flush(self.regs)
     }
