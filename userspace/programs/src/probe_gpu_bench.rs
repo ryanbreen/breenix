@@ -101,8 +101,16 @@ pub fn temperature_record(text:&str,phase:&str,trial:u32)->Result<(),String> {
     let c=number("celsius=")?;let raw=number("raw=")?;let down=number("down_clock=")?.ok_or("threshold missing")?;
     let status=field("status=")?;
     if !status.bytes().all(|c|c.is_ascii_alphanumeric() || c==b'-') {return Err("invalid sensor status".into());}
+    let mut registers=Vec::new();
+    for pair in field("registers=")?.split(',') {
+        let (a,v)=pair.split_once(':').ok_or("malformed sensor register")?;
+        let a=a.parse::<u32>().map_err(|_|"invalid sensor register address")?;
+        let v=v.parse::<u32>().map_err(|_|"invalid sensor register value")?;
+        registers.push(format!("[{a},{v}]"));
+    }
+    let registers=registers.join(",");
     let json=|v:Option<u32>|v.map_or_else(||String::from("null"),|v|v.to_string());
-    println!("GT710_TEMPERATURE {{\"phase\":\"{phase}\",\"trial\":{trial},\"celsius\":{},\"raw\":{},\"status\":\"{status}\",\"down_clock_c\":{down}}}",json(c),json(raw));
+    println!("GT710_TEMPERATURE {{\"phase\":\"{phase}\",\"trial\":{trial},\"celsius\":{},\"raw\":{},\"status\":\"{status}\",\"down_clock_c\":{down},\"registers\":[{registers}]}}",json(c),json(raw));
     if c.is_some_and(|c|c>=down) {return Err(format!("down-clock temperature reached: {} >= {down} C",c.unwrap()));}
     Ok(())
 }

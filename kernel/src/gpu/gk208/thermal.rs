@@ -2,6 +2,7 @@
  * Copyright 2012 Red Hat Inc.
  * Copyright 2014 Martin Peres
  * Copyright 2012 Nouveau Community
+ * Copyright 2018 Red Hat Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -24,7 +25,7 @@
  * Authors: Ben Skeggs
  * 	    Martin Peres
  */
-//! C3a sensor mechanism: MIT nouveau v6.8 therm/g84.c:29-51,
+//! C3b sensor mechanism: MIT nouveau v6.8 therm/g84.c:29-51,
 //! fuse/gf100.c:27-45; BIOS threshold lookup: bios/therm.c:27-60,75-106.
 //! GK104 selects gf119 init and g84_temp_get (therm/gk104.c:93-102).
 //! No clock, voltage, fan, alarm or calibration-coefficient writes.
@@ -36,6 +37,7 @@ pub trait Access {
     fn read(&mut self,address:u32)->u32;
     fn write(&mut self,address:u32,value:u32);
     fn record(&mut self,write:Write);
+    fn fuse_note(&mut self,result:Result<u32,&'static str>);
     fn sleep_ms(&mut self,milliseconds:u32);
 }
 fn write(io:&mut impl Access,address:u32,value:u32,retained:bool)->u32 {
@@ -45,18 +47,19 @@ fn write(io:&mut impl Access,address:u32,value:u32,retained:bool)->u32 {
 fn fuse(io:&mut impl Access)->Result<u32,&'static str> {
     let enable=io.read(0x22400);let access=io.read(0x21000);
     if [enable,access].iter().any(|v|*v==u32::MAX || *v==0xbadf1201) {return Err("fuse-access-unavailable");}
-    let a=write(io,0x22400,enable|0x800,false);
-    let b=write(io,0x21000,access|1,false);
+    write(io,0x22400,enable|0x800,false);
+    write(io,0x21000,access|1,false);
     let value=io.read(0x212a8);
     // Always restore both access words, including after a refused enable.
     let restored_access=write(io,0x21000,access,false);
     let restored_enable=write(io,0x22400,enable,false);
     if restored_access!=access || restored_enable!=enable {return Err("fuse-restore-failed");}
-    if a!=(enable|0x800) || b!=(access|1) {return Err("fuse-enable-failed");}
     Ok(value)
 }
 pub fn setup(io:&mut impl Access)->Result<(),&'static str> {
-    if fuse(io)?!=1 {return Err("sensor-unavailable");}
+    // C3b: availability is diagnostic only. Hardware calibration does not
+    // depend on software fuse coefficients; a non-echoing access bit is valid.
+    let note=fuse(io);io.fuse_note(note);
     let a=io.read(0x20008);let b=io.read(0x2000c);
     if [a,b].iter().any(|v|*v==u32::MAX || *v==0xbadf1201) {return Err("sensor-control-unavailable");}
     // Nouveau leaves these controls in place for continuous hardware readings.
@@ -67,12 +70,13 @@ pub fn setup(io:&mut impl Access)->Result<(),&'static str> {
     Ok(())
 }
 pub fn temperature(io:&mut impl Access)->Result<u32,&'static str> {
-    if fuse(io)?!=1 {return Err("sensor-unavailable");}
     // G84+ is already hardware-calibrated: g84_temp_get returns this register
     // as integer Celsius, without applying the older NV40 BIOS slope/offset.
     let raw=io.read(0x20400);
     if raw>i32::MAX as u32 {Err("sensor-read-error")}else{Ok(raw)}
 }
+#[path="thermal/status.rs"] mod status;
+pub use status::read as status;
 fn bytes(r:&[u8],p:usize,n:usize)->Result<&[u8],&'static str> {
     r.get(p..p.checked_add(n).ok_or("thermal-table-overflow")?).ok_or("thermal-table-outside-ROM")
 }

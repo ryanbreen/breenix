@@ -1881,3 +1881,21 @@ author list/grant at envytools revision
 `f102b82381f3f11cee113d16374c87091db039d9` for ADC and hardware/software
 calibration field meanings. This is a reference in docs/gui/gt710-c3a.md;
 no XML implementation or register-generation code is adapted.
+
+## GT 710 C3b ADC and read-only slowdown capture
+
+The C3a MIT sources above also supply C3b's non-echo-gated fuse read,
+hardware-calibration ADC masks and raw alarm register addresses in
+`kernel/src/gpu/gk208/thermal.rs`, `thermal/runtime.rs`, and
+`thermal/status.rs`. C3b intentionally enables/reads the ADC independently
+of the availability fuse, as the coordinator directs; this is not claimed
+as nouveau's availability policy. The original MIT copyright/grant remains.
+
+`thermal/status.rs` additionally adapts raw register addresses from MIT
+nouveau v6.8 `nvkm/subdev/therm/gk104.c` (Copyright 2018 Red Hat Inc.)
+and the individually checked MIT envytools `rnndb/pm/ptherm.xml` at
+`f102b82381f3f11cee113d16374c87091db039d9`, which imports the full
+MIT grant and author list from `rnndb/copyright.xml`. The complete original
+author list and grant accompany the register list in that file. XML is
+used only for raw register addresses; no unknown fields are decoded as a
+proven cause of slowdown. No alarm, clock-gating or slowdown control is written.
