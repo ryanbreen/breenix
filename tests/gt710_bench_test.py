@@ -23,6 +23,9 @@ class Baseline(unittest.TestCase):
             # Both C2 sequences complete fifteen trials, including a low-clock
             # trial below 900 ms. Failed completion contributes no trial.
             rows = [json.loads(line.split('GT710_BENCH ', 1)[1]) for line in result.stdout.splitlines() if 'GT710_BENCH ' in line]
+            temperatures = [json.loads(line.split('GT710_TEMPERATURE ', 1)[1]) for line in result.stdout.splitlines() if 'GT710_TEMPERATURE ' in line]
+            self.assertEqual(len(temperatures), 5)
+            self.assertTrue(all(row['registers']==[[512,3760267629]] for row in temperatures))
             self.assertEqual(len(rows), 44)
             self.assertTrue(all(row['kind']=='core' and row['work']==819200000 and row['completion'] for row in rows))
 

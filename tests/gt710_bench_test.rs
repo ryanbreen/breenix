@@ -151,10 +151,17 @@ fn c3a_failed_completion_or_hot_reading_stops_new_work() {
 #[test]
 fn c3a_sensor_errors_continue_and_the_decoded_threshold_stops_at_equality() {
     use probe_gpu_bench::temperature_record as record;
-    assert!(record("GT710_SENSOR celsius=null raw=null down_clock=85 status=sensor-unavailable\n","post",0).is_ok());
-    assert!(record("GT710_SENSOR celsius=84 raw=84 down_clock=85 status=ok\n","bench",1).is_ok());
-    assert!(record("GT710_SENSOR celsius=85 raw=85 down_clock=85 status=ok\n","bench",2).is_err());
-    assert!(record("GT710_SENSOR celsius=94 raw=94 down_clock=95 status=ok\n","bench",3).is_ok());
-    assert!(record("GT710_SENSOR celsius=95 raw=95 down_clock=95 status=ok\n","bench",4).is_err());
+    assert!(record("GT710_SENSOR celsius=null raw=null down_clock=85 status=sensor-unavailable registers=512:3760267629\n","post",0).is_ok());
+    assert!(record("GT710_SENSOR celsius=84 raw=84 down_clock=85 status=ok registers=512:3760267629\n","bench",1).is_ok());
+    assert!(record("GT710_SENSOR celsius=85 raw=85 down_clock=85 status=ok registers=512:3760267629\n","bench",2).is_err());
+    assert!(record("GT710_SENSOR celsius=94 raw=94 down_clock=95 status=ok registers=512:3760267629\n","bench",3).is_ok());
+    assert!(record("GT710_SENSOR celsius=95 raw=95 down_clock=95 status=ok registers=512:3760267629\n","bench",4).is_err());
     assert!(record("malformed","post",0).is_err());
+}
+
+#[test] fn c3b_rejects_lost_or_malformed_raw_state() {
+    use probe_gpu_bench::temperature_record as record;
+    for bad in ["", " registers=bad", " registers=512:bad", " registers=512:1:2"] {
+        assert!(record(&format!("GT710_SENSOR celsius=47 raw=47 down_clock=85 status=ok{bad}\n"),"bench",1).is_err());
+    }
 }
