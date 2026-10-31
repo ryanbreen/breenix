@@ -99,7 +99,6 @@ mod ddc;
 mod edid;
 mod bulk;
 mod display_evidence;
-#[cfg(feature = "gt710_core_probe")]
 pub(crate) mod timing;
 pub(crate) mod cost;
 mod memory;

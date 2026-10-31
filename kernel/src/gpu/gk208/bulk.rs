@@ -12,7 +12,6 @@ pub(super) fn take()->Vec<u8> {
         if line(row).is_ok() { crate::serial_println!("{}", anchor); }
         else { crate::serial_println!("GT710_DISPLAY_EVIDENCE_ERROR upload storage exhausted"); }
     }
-    #[cfg(feature = "gt710_core_probe")]
     if let Some((text, anchor)) = super::timing::export() {
         // A transport overflow leaves a missing record, which the decoder rejects.
         let _ = line(text);

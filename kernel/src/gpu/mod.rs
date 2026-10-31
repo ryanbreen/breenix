@@ -2824,8 +2824,8 @@ pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
     let _path = GpuPath::enter();
     #[cfg(target_arch = "x86_64")]
     let _cost = (dev::backend() == abi::backend::GK208).then(|| crate::gk208::cost::for_op(op));
-    #[cfg(all(target_arch = "x86_64", feature = "gt710_core_probe"))]
-    let _timing = (dev::backend() == abi::backend::GK208)
+    #[cfg(target_arch = "x86_64")]
+    let _timing = (dev::backend() == abi::backend::GK208 && crate::gk208::timing::enabled())
         .then(|| crate::gk208::timing::Guard::new(caller().unwrap_or(0), op));
     // Test point 3, `emit-diagnostic`: this call writes BreenGL's diagnostic payload, the
     // only kernel output any syscall 416 path makes (section 1.16).
@@ -4428,7 +4428,6 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 // Native scratch uses the same validated per-format plan as the
                 // virtual encoders, with native layout and retirement ownership.
                 let mut scratch = native_blend_scratch(tgid, plan.scratch)?;
-                #[cfg(feature = "gt710_core_probe")]
                 if plan.data_bytes > 0 { crate::gk208::timing::begin_draw(tgid); }
                 // The packed heap copy is temporary; reserve its padded extent
                 // before allocation, separately from the retained device storage.
@@ -4440,7 +4439,6 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 } else { None };
                 let data = {
                     let _cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::Pack);
-                    #[cfg(feature = "gt710_core_probe")]
                     let _timing = crate::gk208::timing::phase(100);
                     crate::gk208::encode::pack_spans(&words, &resolved, data_width)
                         .map_err(|e| if e == "native crossing allocation" || e == crate::gk208::encode::NO_MEMORY { ENOMEM } else { EINVAL })?
@@ -4458,7 +4456,6 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                     None => None,
                 };
                 let cost_translate = crate::gk208::cost::phase(crate::gk208::cost::Slot::Translate);
-                #[cfg(feature = "gt710_core_probe")]
                 let translating = crate::gk208::timing::phase(110);
                 let mut frame = if corrupt.is_none() && suppress.is_none() && swap.is_none() {
                     crate::gk208::encode::translate(&words, &resolved)
@@ -4469,11 +4466,9 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 native_probe_mask = frame.probe_mask;
                 frame.compact().map_err(|e| if e == crate::gk208::encode::NO_MEMORY { ENOMEM } else { EINVAL })?;
                 frame.batch_draws(1400).map_err(|_| ENOMEM)?;
-                #[cfg(feature = "gt710_core_probe")]
                 drop(translating);
                 drop(cost_translate);
                 let _cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::FramePrepare);
-                #[cfg(feature = "gt710_core_probe")]
                 let _timing = crate::gk208::timing::phase(111);
                 let backing = Arc::new(Pages::new(frame.data.len().div_ceil(PAGE)).ok_or(ENOMEM)?);
                 backing.write(0,&frame.data);
