@@ -602,10 +602,23 @@ fn probe() {
     #[cfg(target_arch="x86_64")]
     let gt710_probe=std::fs::read_to_string("/proc/gt710-ce");
     #[cfg(target_arch="x86_64")]
-    if gt710_probe.as_ref().is_ok_and(|s|s=="clock-probe\n" || s=="thermal-probe\n" || s=="pll-probe\n" || s=="pmu-probe\n") {
+    if gt710_probe.as_ref().is_ok_and(|s|s=="clock-probe\n" || s=="thermal-probe\n" || s=="pll-probe\n" || s=="pmu-probe\n" || s=="memx-inputs-probe\n") {
         // Inventory has retained the C1/VBIOS records already. Upload them
         // before CAPS starts GR, even if native startup fails.
         gt710_artifacts::upload().expect("C1 private artifact upload");
+        if gt710_probe.as_ref().is_ok_and(|s|s=="memx-inputs-probe\n") {
+            let (status,caps)=libbreenix::gpu::caps();
+            if status!=0 || caps.backend!=libbreenix::gpu::abi::backend::GK208 || caps.status!=libbreenix::gpu::abi::status::ADMITTED {
+                println!("GT710_C5B_ERROR CAPS result={} backend={} status={}",status,caps.backend,caps.status);reap_forever();
+            }
+            let capture=||->Result<(),String> {
+                use std::io::Write;
+                let mut file=std::fs::OpenOptions::new().write(true).open("/proc/gt710-clock").map_err(|e|format!("PMU open: {e}"))?;
+                file.write_all(b"pmu memx-inputs").map_err(|e|format!("MEMX input capture: {e}"))
+            };
+            if let Err(e)=capture() {println!("GT710_C5B_ERROR {e}");reap_forever();}
+            println!("GT710_C5B_DONE");reap_forever();
+        }
         if gt710_probe.as_ref().is_ok_and(|s|s=="pmu-probe\n") {
             let observe=|phase:&str,n|->Result<(),String> {
                 if phase=="pmu" {

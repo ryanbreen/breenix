@@ -579,6 +579,8 @@ mod c1;
 pub(crate) mod c2;
 #[cfg(feature = "gt710_clock_probe")]
 mod pmu;
+#[cfg(feature = "gt710_clock_probe")]
+mod memx_inputs;
 pub mod resource;
 #[cfg(feature = "gt710_core_probe")]
 mod spans_diagnostic;

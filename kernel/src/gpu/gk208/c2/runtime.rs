@@ -142,10 +142,16 @@ impl crate::gk208::pmu::Access for Io {
         crate::serial_println!("GT710_PMU_WAIT name={} raw={:#010x} elapsed_us={} matched={}",name,raw,us,matched);
     }
 }
-fn pmu_start(s:&mut State)->Result<(),&'static str> {
+fn memx_inputs(io:&mut Io,phase:&str) {
+    let raw=crate::gk208::memx_inputs::capture(|a|Access::read(io,a));
+    let pairs:Vec<_>=raw.iter().map(|(a,v)|format!("[{a},{v}]")).collect();
+    crate::serial_println!("GT710_MEMX_INPUTS {{\"phase\":\"{}\",\"raw\":[{}]}}",phase,pairs.join(","));
+}
+fn pmu_start(s:&mut State,capture_inputs:bool)->Result<(),&'static str> {
     if s.pmu_started || s.failed {return Err("PMU diagnostic already attempted");}
     s.pmu_started=true;
     let mut io=Io(Registers(s.base));
+    if capture_inputs {memx_inputs(&mut io,"startup");}
     if Access::read(&mut io,0x20400)>=85 {s.failed=true;return Err("C4 temperature unavailable or at least 85 C");}
     let before:Vec<_>=[0x200,0x10a008,0x10a010,0x10a01c,0x10a04c,0x10a100,0x10a104,0x10a10c,0x10a110,0x10a168,0x10a16c,0x10a4d0,0x10a4dc].into_iter().map(|a|(a,Access::read(&mut io,a))).collect();
     print_snapshot("pmu-before-reset",&before);
@@ -156,14 +162,21 @@ fn pmu_start(s:&mut State)->Result<(),&'static str> {
         let rings=crate::gk208::pmu::start(&mut io,code,data)?;
         crate::serial_println!("GT710_PMU_READY send={:#010x} send_base={} send_size={} recv={:#010x} recv_base={} recv_size={}",rings.send,rings.send&65535,rings.send>>16,rings.recv,rings.recv&65535,rings.recv>>16);
         Ok(())
-    }).and_then(|()|measure_record(&mut io,"pmu-post",Some(810_000)));
+    }).and_then(|()| {
+        if capture_inputs {
+            // Capture immediately at readiness; no counter setup, clock request
+            // or PMU command is needed for this read-only C5b observation.
+            memx_inputs(&mut io,"pmu-ready");
+            Ok(())
+        } else {measure_record(&mut io,"pmu-post",Some(810_000))}
+    });
     if result.is_err() {s.failed=true;}
     result
 }
 fn set(bytes:&[u8])->Result<(),&'static str> {
-    if bytes==b"pmu start" {
+    if bytes==b"pmu start" || bytes==b"pmu memx-inputs" {
         let mut state=STATE.lock();
-        return pmu_start(state.as_mut().ok_or("C4 not initialized")?);
+        return pmu_start(state.as_mut().ok_or("C4 not initialized")?,bytes==b"pmu memx-inputs");
     }
     let text=core::str::from_utf8(bytes).map_err(|_|"invalid request")?;
     let fields:Vec<_>=text.split_whitespace().collect();
