@@ -240,6 +240,21 @@ pub(in crate::gk208) fn console_allocation() -> Option<(super::super::ConsoleSur
     Some((s.console, allocation))
 }
 
+/// Refuse unadmitted viewport shapes before a request enters the adapter.
+/// This reads the fixed raster without changing the selected logical mode.
+pub(super) fn presentable(width:u32,height:u32)->Result<(), &'static str> {
+    let owner=SESSION.lock();
+    let s=owner.as_ref().ok_or("native display owner absent")?;
+    let regs=Registers(s.registers);
+    let h=s.evo.head as usize*0x300;
+    let blank=regs.read(0x64041c+h);
+    let end=regs.read(0x640420+h);
+    super::super::modeset::Viewport::for_raster(
+        (end&0xffff).checked_sub(blank&0xffff).ok_or("invalid native raster width")?,
+        (end>>16).checked_sub(blank>>16).ok_or("invalid native raster height")?,
+        width,height).map(|_| ())
+}
+
 /// Invoked only after the adapter's in-order native release has completed.
 /// Retain the active target independently of requests until another surface is
 /// confirmed. An uncertain update retains its request hold in the adapter.

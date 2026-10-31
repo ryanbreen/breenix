@@ -582,13 +582,15 @@ pub(crate) fn set_scanout(tag: crate::gpu::dev::Tag, ctx:u32, id:u32,
     Some(super::super::adapter::Request::storage(tag,None))
 }
 fn scanout(id:u32,width:u32,height:u32) -> Option<super::super::present::Surface> {
-    super::with_resources(|r,_,_| {
+    let surface=super::with_resources(|r,_,_| {
         let surface=r.scanout(id).ok_or("native scanout target absent")?;
         if surface.width!=width || surface.height!=height {
             return Err("native present extent differs from its resource");
         }
         Ok(surface)
-    }).ok()
+    }).ok()?;
+    super::process::presentable(width,height).ok()?;
+    Some(surface)
 }
 pub(crate) fn flush_resource(tag:crate::gpu::dev::Tag,ctx:u32,fence:u64,id:u32,
     width:u32,height:u32,
