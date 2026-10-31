@@ -158,10 +158,7 @@ const DMT_1280_1024_75: Timing = Timing {
     vsync_start: 1025, vsync_end: 1028, vtotal: 1066, flags: 30,
 };
 
-/// G25 diagnostic: select the advertised DMT 24h at the preferred size;
-/// otherwise retain the preferred DTD. The inventory retains its DTD order.
+/// Select the sink's preferred detailed timing for the physical raster (G3/G20/G25 fallback).
 pub fn native_raster(modes: &[Timing]) -> Result<&Timing, &'static str> {
-    let preferred = modes.first().ok_or("no preferred sink timing")?;
-    Ok(modes.iter().find(|t| t.width == preferred.width && t.height == preferred.height
-        && **t == DMT_1280_1024_75).unwrap_or(preferred))
+    modes.first().ok_or("no preferred sink timing")
 }

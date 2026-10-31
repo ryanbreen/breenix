@@ -224,14 +224,9 @@ def edid_timings(raw):
 
 
 def native_raster(board):
-    """G25 diagnostic: advertised DMT 24h at the preferred size, else DTD."""
-    preferred = board['modes'][0]
-    fast = dict(width=1280,height=1024,clock_khz=135000,hsync_start=1296,
-                hsync_end=1440,htotal=1688,vsync_start=1025,vsync_end=1028,vtotal=1066,flags=30)
-    if ((preferred['width'],preferred['height']) == (fast['width'],fast['height'])
-            and fast in board['modes']):
-        return fast
-    return preferred
+    """G25 fallback after a fresh 75 Hz underflow: the preferred detailed timing."""
+    return board['modes'][0]
+
 
 
 def board_inventory(serial):

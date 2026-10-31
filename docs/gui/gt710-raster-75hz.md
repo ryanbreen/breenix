@@ -1,12 +1,12 @@
-G25 follow-up (2026-10-31): the coordinator authorized one new 75 Hz
-console/GPU diagnostic with underflow status cleared and armed after the
-modeset has completed and settled. The prior measurement window began
-before the modeset; its sticky status therefore did not distinguish a
-transition from steady scanout. The diagnostic keeps the 60 Hz fallback
-when DMT 24h is absent. A fresh post-arm underflow still fails, including
-one racing the pause before the next modeset. Acceptance of this retry is
-pending the card captures; G25 requires returning to the preferred raster
-if they show a fresh underflow.
+G25 diagnostic result (2026-10-31): capture `20261031T123318Z-metal`
+at `0a12e2fc` armed reporting at `0x1` after completion and 40 ms settling
+(`GT710_UNDERFLOW_ARM phase=takeover before=0x0 armed=0x1`). The native
+mode record at serial line 539 then reports `underflow=17`, and line 540
+refuses the next modeset because that fresh fault is still latched.
+The diagnostic was stopped through the boot loop after the first console
+case failed; it is failed diagnostic evidence, not a completed console gate.
+Under G25 the selector and scorer return to the preferred 108 MHz raster.
+The post-settle measurement window and fresh-fault checks remain.
 
 # Advertised 75 Hz raster (24.7-raster-75hz)
 
