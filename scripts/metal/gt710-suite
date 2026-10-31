@@ -2354,7 +2354,7 @@ def performance_evidence(serial, parsed, names, required, manifest):
     if len(rows) != 171 or [r.get('boundary') for r in rows] != list(range(171)) or [r.get('case') for r in rows] != [''] + names:
         raise ValueError('performance requires all ordered case-heap boundaries')
     fields = sorted(k for k in rows[0]['values'] if k.startswith('native_') or k.endswith(('_n', '_ns')))
-    if not fields or any(set(fields) - set(r['values']) for r in rows):
+    if any(set(r['values']) != CASE_HEAP_FIELDS for r in rows):
         raise ValueError('performance case-heap cost slots missing')
     print('performance values (suite units and bounds)')
     for line in values: print(line)
@@ -2785,94 +2785,101 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns, pro
     return category + ': ' + str(len(CATEGORIES[category])) + ' cases passed'
 
 
+# costs_v1 has the fixed order in gpu_abi::heap_trace::NAMES[32..].
+CASE_COST_FIELDS = (
+    'submit_n',
+    'submit_ns',
+    'wait_n',
+    'wait_ns',
+    'read_n',
+    'read_ns',
+    'present_n',
+    'present_ns',
+    'upload_n',
+    'upload_ns',
+    'pack_n',
+    'pack_ns',
+    'span_prep_n',
+    'span_prep_ns',
+    'span_map_n',
+    'span_map_ns',
+    'span_upload_n',
+    'span_upload_ns',
+    'translate_n',
+    'translate_ns',
+    'frame_prep_n',
+    'frame_prep_ns',
+    'evo_n',
+    'evo_ns',
+    'user_copy_n',
+    'user_copy_ns',
+    'read_prepare_n',
+    'read_prepare_ns',
+    'upload_convert_n',
+    'upload_convert_ns',
+    'poison_n',
+    'poison_ns',
+    'transfer_map_n',
+    'transfer_map_ns',
+    'ce_n',
+    'ce_ns',
+    'compare_n',
+    'compare_ns',
+    'copy_out_n',
+    'copy_out_ns',
+    'scratch_prepare_n',
+    'scratch_prepare_ns',
+    'scratch_copy_n',
+    'scratch_copy_ns',
+    'draw_execute_n',
+    'draw_execute_ns',
+    'native_submit_n',
+    'native_submit_ns',
+)
+
+
 def expand_case_heap(row):
-    # costs_v1 has the fixed order in gpu_abi::heap_trace::NAMES[32..].
-    fields = (
-        'submit_n',
-        'submit_ns',
-        'wait_n',
-        'wait_ns',
-        'read_n',
-        'read_ns',
-        'present_n',
-        'present_ns',
-        'upload_n',
-        'upload_ns',
-        'pack_n',
-        'pack_ns',
-        'span_prep_n',
-        'span_prep_ns',
-        'span_map_n',
-        'span_map_ns',
-        'span_upload_n',
-        'span_upload_ns',
-        'translate_n',
-        'translate_ns',
-        'frame_prep_n',
-        'frame_prep_ns',
-        'evo_n',
-        'evo_ns',
-        'user_copy_n',
-        'user_copy_ns',
-        'read_prepare_n',
-        'read_prepare_ns',
-        'upload_convert_n',
-        'upload_convert_ns',
-        'poison_n',
-        'poison_ns',
-        'transfer_map_n',
-        'transfer_map_ns',
-        'ce_n',
-        'ce_ns',
-        'compare_n',
-        'compare_ns',
-        'copy_out_n',
-        'copy_out_ns',
-        'scratch_prepare_n',
-        'scratch_prepare_ns',
-        'scratch_copy_n',
-        'scratch_copy_ns',
-        'draw_execute_n',
-        'draw_execute_ns',
-        'native_submit_n',
-        'native_submit_ns',
-    )
     if isinstance(row, dict) and isinstance(row.get('values'), dict) and 'costs_v1' in row['values']:
         values = row['values'].copy()
         costs = values.pop('costs_v1')
-        if (not isinstance(costs, list) or len(costs) != len(fields)
+        if (not isinstance(costs, list) or len(costs) != len(CASE_COST_FIELDS)
                 or any(type(v) is not int or not 0 <= v < 1 << 64 for v in costs)
-                or any(k in values for k in fields)):
+                or any(k in values for k in CASE_COST_FIELDS)):
             raise ValueError('invalid compact case costs')
-        values.update(zip(fields, costs))
+        values.update(zip(CASE_COST_FIELDS, costs))
         row = dict(row, values=values)
     return row
+
+CASE_HEAP_FIELDS = {
+    'schema', 'heap_free', 'heap_high_water', 'frame_frontier',
+    'frame_freelist_bytes', 'frame_ledger_bytes', 'cpu_stage_slots', 'cpu_stage_metadata_bytes',
+    'cpu_stage_pages', 'core_contexts', 'core_resources', 'core_submissions',
+    'core_syncs', 'core_backlog', 'core_backlog_bytes', 'core_backing_meta_sum',
+    'core_context_vector_bytes', 'native_resources', 'native_retired', 'native_retired_vector_bytes',
+    'native_active_region_bytes', 'native_vm_table_bytes', 'native_queue_vector_bytes', 'native_retired_requests_bytes',
+    'native_channel_initial_bytes', 'native_channel_parking_bytes', 'native_bulk_capacity_bytes', 'console_terminal_bytes',
+    'console_renderer_vector_bytes', 'heap_total', 'native_contexts', 'native_alias_indices_bytes',
+    'submit_n', 'submit_ns', 'wait_n', 'wait_ns',
+    'read_n', 'read_ns', 'present_n', 'present_ns',
+    'upload_n', 'upload_ns', 'pack_n', 'pack_ns',
+    'span_prep_n', 'span_prep_ns', 'span_map_n', 'span_map_ns',
+    'span_upload_n', 'span_upload_ns', 'translate_n', 'translate_ns',
+    'frame_prep_n', 'frame_prep_ns', 'evo_n', 'evo_ns',
+    'user_copy_n', 'user_copy_ns', 'read_prepare_n', 'read_prepare_ns',
+    'upload_convert_n', 'upload_convert_ns', 'poison_n', 'poison_ns',
+    'transfer_map_n', 'transfer_map_ns', 'ce_n', 'ce_ns',
+    'compare_n', 'compare_ns', 'copy_out_n', 'copy_out_ns',
+    'scratch_prepare_n', 'scratch_prepare_ns', 'scratch_copy_n', 'scratch_copy_ns',
+    'draw_execute_n', 'draw_execute_ns', 'native_submit_n', 'native_submit_ns',
+}
+# The retained 8.6 negative control predates the last 24 cost slots. Decode
+# its exact layout without inventing costs; a passing 8.7 gate still requires
+# every current slot in performance_evidence.
+LEGACY_CASE_HEAP_FIELDS = CASE_HEAP_FIELDS - set(CASE_COST_FIELDS[24:])
 
 def capture_serial(directory):
     # claim-lint:ok: normative bulk framing; tests/gt710_bulk_test.py and tests/gt710_contexts_report_test.py mutate anchors and bodies.
     serial=(Path(directory)/'serial.txt').read_text()
-    heap_fields = {
-        'schema', 'heap_free', 'heap_high_water', 'frame_frontier',
-        'frame_freelist_bytes', 'frame_ledger_bytes', 'cpu_stage_slots', 'cpu_stage_metadata_bytes',
-        'cpu_stage_pages', 'core_contexts', 'core_resources', 'core_submissions',
-        'core_syncs', 'core_backlog', 'core_backlog_bytes', 'core_backing_meta_sum',
-        'core_context_vector_bytes', 'native_resources', 'native_retired', 'native_retired_vector_bytes',
-        'native_active_region_bytes', 'native_vm_table_bytes', 'native_queue_vector_bytes', 'native_retired_requests_bytes',
-        'native_channel_initial_bytes', 'native_channel_parking_bytes', 'native_bulk_capacity_bytes', 'console_terminal_bytes',
-        'console_renderer_vector_bytes', 'heap_total', 'native_contexts', 'native_alias_indices_bytes',
-        'submit_n', 'submit_ns', 'wait_n', 'wait_ns',
-        'read_n', 'read_ns', 'present_n', 'present_ns',
-        'upload_n', 'upload_ns', 'pack_n', 'pack_ns',
-        'span_prep_n', 'span_prep_ns', 'span_map_n', 'span_map_ns',
-        'span_upload_n', 'span_upload_ns', 'translate_n', 'translate_ns',
-        'frame_prep_n', 'frame_prep_ns', 'evo_n', 'evo_ns',
-        'user_copy_n', 'user_copy_ns', 'read_prepare_n', 'read_prepare_ns',
-        'upload_convert_n', 'upload_convert_ns', 'poison_n', 'poison_ns',
-        'transfer_map_n', 'transfer_map_ns', 'ce_n', 'ce_ns',
-        'compare_n', 'compare_ns', 'copy_out_n', 'copy_out_ns',
-        'scratch_prepare_n', 'scratch_prepare_ns', 'scratch_copy_n', 'scratch_copy_ns',
-        'draw_execute_n', 'draw_execute_ns', 'native_submit_n', 'native_submit_ns',
-    }
     spans = bool(re.search(r'^GT710_SPANS_BULK ', serial, re.M))
     stalls = bool(re.search(r'^GT710_STALL_BULK ', serial, re.M))
     timings = bool(re.search(r'^GT710_TIMING_BULK ', serial, re.M))
@@ -2986,7 +2993,7 @@ def capture_serial(directory):
                     or type(row['boundary']) is not int or not 0 <= row['boundary'] <= 170
                     or not isinstance(row['case'], str) or len(row['case']) > 80
                     or re.fullmatch(r'[A-Za-z0-9_./-]*', row['case']) is None
-                    or not isinstance(row['values'], dict) or set(row['values']) != heap_fields
+                    or not isinstance(row['values'], dict) or set(row['values']) not in (CASE_HEAP_FIELDS, LEGACY_CASE_HEAP_FIELDS)
                     or any(type(v) is not int or not 0 <= v < 1 << 64 for v in row['values'].values())
                     or row['values']['schema'] != 1):
                 raise ValueError('invalid case heap record')
