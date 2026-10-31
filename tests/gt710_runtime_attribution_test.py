@@ -30,7 +30,7 @@ class RuntimeAttribution(unittest.TestCase):
   sys.path.insert(0,str(ROOT/'tests'))
   from gt710_resources_report_test import boot
   from gt710_panic_report_test import VALID
-  head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
+  head=PANIC_PROFILE
   console,gpu=boot('console'),boot('gpu')
   for b in (console,gpu):
    b.update(commit=PRODUCTION,bootedCommit=PRODUCTION,toolsCommit=PRODUCTION)
