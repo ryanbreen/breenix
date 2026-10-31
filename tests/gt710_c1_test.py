@@ -249,20 +249,34 @@ use std::collections::BTreeMap;
 
     def test_vbios_upload_precedes_native_startup_and_benchmarks(self):
         source=(ROOT/'userspace/programs/src/probe.rs').read_text()
-        start=source.index('    if std::fs::read_to_string("/proc/gt710-ce")')
-        block=source[start:source.index('    let mut states',start)]
-        block=block.replace('std::fs::read_to_string("/proc/gt710-ce")','Ok::<_, ()>(String::from("clock-probe\\n"))')
+        start=source.index('    let gt710_probe=')
+        block=source[start:source.index('    let mut states',start)].replace('#[cfg(target_arch="x86_64")]','')
+        block=block.replace('std::fs::read_to_string("/proc/gt710-ce")','Ok::<_, ()>(String::from("thermal-probe\\n"))')
+        block=block.replace('std::fs::read_to_string("/proc/gt710-clock")','Ok::<_, std::io::Error>(String::from("sensor"))')
         harness=r'''use std::sync::atomic::{AtomicBool,Ordering};
 static CAPS:AtomicBool=AtomicBool::new(false);
+static POST:AtomicBool=AtomicBool::new(false);
 mod libbreenix {pub mod gpu {
  pub mod abi {pub mod backend {pub const GK208:u32=6;}pub mod status {pub const ADMITTED:u32=0;}}
  pub struct Caps {pub backend:u32,pub status:u32}
- pub fn caps()->(i32,Caps) {crate::CAPS.store(true,crate::Ordering::SeqCst);(0,Caps{backend:6,status:0})}
+ pub fn caps()->(i32,Caps) {assert!(crate::POST.load(crate::Ordering::SeqCst));crate::CAPS.store(true,crate::Ordering::SeqCst);(0,Caps{backend:6,status:0})}
 }}
 mod gt710_artifacts {pub fn upload()->Result<(),String> {
  assert!(!crate::CAPS.load(crate::Ordering::SeqCst),"VBIOS upload waited for native startup/benchmarks");Ok(())
 }}
-mod probe_gpu_bench {pub fn run()->Result<(),String> {assert!(crate::CAPS.load(crate::Ordering::SeqCst));Ok(())}}
+mod probe_gpu_bench {
+ pub enum ClockPhase {Post,Low,Restore}
+ pub fn run_c2(mut observe:impl FnMut(ClockPhase)->Result<(),String>)->Result<(),String> {
+  for p in [ClockPhase::Post,ClockPhase::Low,ClockPhase::Restore] {observe(p)?;}Ok(())
+ }
+ pub fn temperature_record(_: &str,phase:&str,_:u32)->Result<(),String> {
+  if phase=="post" {assert!(!crate::CAPS.load(crate::Ordering::SeqCst));crate::POST.store(true,crate::Ordering::SeqCst);}
+  else {assert!(crate::CAPS.load(crate::Ordering::SeqCst));}Ok(())
+ }
+ pub fn run_c3a(mut observe:impl FnMut(&str,u32)->Result<(),String>)->Result<(),String> {
+  assert!(crate::CAPS.load(crate::Ordering::SeqCst));observe("post",0)?;observe("bench",1)
+ }
+}
 fn reap_forever()->! {assert!(CAPS.load(Ordering::SeqCst));std::process::exit(0)}
 fn main() {BLOCK}
 '''.replace('BLOCK',block)

@@ -147,3 +147,14 @@ fn c3a_failed_completion_or_hot_reading_stops_new_work() {
     assert!(probe_gpu_bench::run_c3a(|p,n|if p=="bench" && n==3 {Err("hot".into())}else{Ok(())}).is_err());
     STATE.with_borrow(|s|assert_eq!((s.submits,s.waits),(2,2)));
 }
+
+#[test]
+fn c3a_sensor_errors_continue_and_the_decoded_threshold_stops_at_equality() {
+    use probe_gpu_bench::temperature_record as record;
+    assert!(record("GT710_SENSOR celsius=null raw=null down_clock=85 status=sensor-unavailable\n","post",0).is_ok());
+    assert!(record("GT710_SENSOR celsius=84 raw=84 down_clock=85 status=ok\n","bench",1).is_ok());
+    assert!(record("GT710_SENSOR celsius=85 raw=85 down_clock=85 status=ok\n","bench",2).is_err());
+    assert!(record("GT710_SENSOR celsius=94 raw=94 down_clock=95 status=ok\n","bench",3).is_ok());
+    assert!(record("GT710_SENSOR celsius=95 raw=95 down_clock=95 status=ok\n","bench",4).is_err());
+    assert!(record("malformed","post",0).is_err());
+}
