@@ -237,8 +237,6 @@
  *
  * Authors: Ben Skeggs
  */
-//! Bounded context-image readback through the M6.2 channel and CE release path.
-//! This wrapper reuses Channel::execute and its engine-ordered completion.
 /*
  * SPDX-FileCopyrightText: Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
