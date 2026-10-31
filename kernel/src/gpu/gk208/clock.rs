@@ -30,6 +30,9 @@
 //! therm/g84.c:29-38 and fuse/gf100.c:27-45. Full paths in THIRD_PARTY_NOTICES.
 //! Host means nv_clk_src_href (host reference), not an inferred hub clock.
 use alloc::vec::Vec;
+#[cfg(target_os = "none")]
+#[path = "perf.rs"]
+mod perf;
 
 pub struct Sample {
     pub raw: Vec<(u32, u32)>,
@@ -140,11 +143,20 @@ pub fn sample(read: impl FnMut(u32) -> u32) -> Sample {
 #[cfg(target_os = "none")]
 mod runtime {
     use super::*;
-    use alloc::{format, string::String};
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use alloc::{boxed::Box, format, string::String};
+    use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
     static BAR: AtomicUsize = AtomicUsize::new(0);
     static SLOT: AtomicUsize = AtomicUsize::new(0);
 
+    // One immutable bounded decode, published once; the ROM image is not retained.
+    static PERFORMANCE: AtomicPtr<Result<perf::Table, &'static str>> = AtomicPtr::new(core::ptr::null_mut());
+    pub fn initialize_performance(rom: &[u8]) {
+        let table = Box::into_raw(Box::new(perf::decode(rom)));
+        if PERFORMANCE.compare_exchange(core::ptr::null_mut(), table, Ordering::Release, Ordering::Relaxed).is_err() {
+            // SAFETY: compare_exchange refused publication; this run retains sole ownership.
+            unsafe { drop(Box::from_raw(table)); }
+        }
+    }
     pub fn initialize(base: usize) { BAR.store(base, Ordering::Release); }
     fn reading(value: Result<u32, &'static str>) -> String {
         match value {
@@ -162,11 +174,18 @@ mod runtime {
             unsafe { core::ptr::read_volatile((base + address as usize) as *const u32) }
         });
         let raw: Vec<_> = sample.raw.iter().map(|(a, v)| format!("[{},{}]", a, v)).collect();
-        let row = format!("GT710_CLOCK_V1 {{\"schema\":1,\"phase\":\"{}\",\"host_source\":\"href\",\"raw\":[{}],\"gpc_khz\":{},\"memory_khz\":{},\"host_khz\":{},\"temperature_c\":{}}}",
-            phase, raw.join(","), reading(sample.gpc_khz), reading(sample.memory_khz), reading(sample.host_khz), reading(sample.temperature_c));
+        let table = PERFORMANCE.load(Ordering::Acquire);
+        let table = if table.is_null() { Err("not-initialized") } else {
+            // SAFETY: the successful publication retains its immutable allocation
+            // for the device lifetime. No path mutates or releases it.
+            unsafe { (&*table).as_ref().map_err(|e| *e) }
+        };
+        let performance = perf::record(table, sample.gpc_khz, sample.memory_khz);
+        let row = format!("GT710_CLOCK_V1 {{\"schema\":1,\"phase\":\"{}\",\"host_source\":\"href\",\"raw\":[{}],\"gpc_khz\":{},\"memory_khz\":{},\"host_khz\":{},\"temperature_c\":{},\"performance\":{}}}",
+            phase, raw.join(","), reading(sample.gpc_khz), reading(sample.memory_khz), reading(sample.host_khz), reading(sample.temperature_c), performance);
         let anchor = format!("GT710_CLOCK_BULK phase={} bytes={} sha256={}", phase, row.len(), super::super::hash(row.as_bytes()));
         Some((row, anchor))
     }
 }
 #[cfg(target_os = "none")]
-pub use runtime::{initialize, export};
+pub use runtime::{initialize, initialize_performance, export};

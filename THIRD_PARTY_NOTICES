@@ -1719,7 +1719,9 @@ these limits are not represented as captured VBIOS data.
 
 ## GT 710 VBIOS performance table (G24, 24.7)
 
-Synthetic layout vectors in `tests/gt710_vbios_perf_test.py` follow these
+`kernel/src/gpu/gk208/perf.rs`, the performance-table decoder in
+`scripts/metal/gt710-suite`, and synthetic layout vectors in
+`tests/gt710_vbios_perf_test.py` follow these
 individually checked MIT files from nouveau in Linux v6.8, revision
 `e8f897f4afef0031fe618a8e94127a0934896aba`, relative to
 `drivers/gpu/drm/nouveau/nvkm/`:
@@ -1729,5 +1731,7 @@ individually checked MIT files from nouveau in Linux v6.8, revision
 - `subdev/clk/gk104.c` and `subdev/clk/base.c`: Copyright 2013 Red Hat Inc.,
   Author Ben Skeggs.
 
-The test retains the full MIT permission and warranty notice in its header.
+The adapted files retain the full MIT permission and warranty notice in their
+headers. `perf.rs` is used by `kernel/src/gpu/gk208/clock.rs`; its runtime
+export is exercised by `tests/gt710_clock_test.py`.
 The fixture is constructed from the documented layout; it contains no board ROM.

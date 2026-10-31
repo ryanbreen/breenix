@@ -12,7 +12,7 @@
 #  *
 #  * The above copyright notice and this permission notice shall be included in
 #  * all copies or substantial portions of the Software.
-#  * claim-lint:ok: MIT grant; pinned sources listed below.
+# claim-lint:ok: MIT grant; sources in docs/gui/gt710-clock-record.md.
 #  *
 #  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 #  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -85,6 +85,8 @@ fn rom()->Vec<u8> { vec![ROM] }
     let r=rom(); let t=perf::decode(&r).unwrap();
     assert_eq!((t.bit_version,t.offset),(2,256));
     assert_eq!(t.raw,&r[256..346]);
+    assert!(perf::record(Ok(&t),Ok(810000),Ok(405000)).contains("matched-clocks"));
+    assert!(perf::record(Err("bit-p-missing"),Ok(0),Ok(0)).contains("bit-p-missing"));
     assert_eq!(t.levels.iter().map(|l|(l.pstate,l.gpc_khz,l.core_khz,l.memory_khz)).collect::<Vec<_>>(),
                vec![(15,202000,101000,540000),(5,810000,405000,405000),(0,1908000,954000,900000)]);
     assert_eq!(t.current(Ok(810000),Ok(405000)),(Some(5),"matched-clocks"));
@@ -120,6 +122,7 @@ fn rom()->Vec<u8> { vec![ROM] }
             bad=copy.deepcopy(data);bad['performance']['levels'][0][key]+=1;bads.append(bad)
         bad=copy.deepcopy(data);bad['performance']['current']=dict(pstate=5,status='matched-clocks');bads.append(bad)
         bad=copy.deepcopy(data);bad['performance']['raw']=bad['performance']['raw'][:-2];bads.append(bad)
+        bad=copy.deepcopy(data);bad['performance']={'status': []};bads.append(bad)
         for bad in bads:
             with self.assertRaises(ValueError):API['clock_record'](bad)
         with contextlib.redirect_stdout(io.StringIO()) as output:

@@ -37,6 +37,7 @@
 #  * Copyright 2010 Red Hat Inc.
 #  * Copyright 2013 Red Hat Inc.
 #  * Copyright 2011 Red Hat Inc.
+#  * Copyright 2012 Nouveau Community
 #  * Copyright 2012 Red Hat Inc.
 #  * Copyright 2016 Red Hat Inc.
 #  *
@@ -59,7 +60,7 @@
 #  * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 #  * OTHER DEALINGS IN THE SOFTWARE.
 #  *
-#  * Authors: Ben Skeggs
+#  * Authors: Ben Skeggs, Martin Peres
 #  */
 # /*******************************************************************************
 #     Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
@@ -2231,9 +2232,52 @@ def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
 
 
 
+def performance_record(perf, gpc, memory):
+    """BIT P v40 layout: MIT nouveau bios/perf.c; domain indices clk/gk104.c.
+
+    Sources and full MIT notice: THIRD_PARTY_NOTICES and gk208/perf.rs.
+    """
+    reasons = {'not-initialized', 'table-overflow', 'table-outside-rom', 'bit-missing',
+               'bit-header', 'duplicate-bit-p', 'bit-p-version-size', 'performance-table-missing',
+               'bit-p-missing', 'performance-version', 'performance-geometry', 'duplicate-pstate'}
+    if isinstance(perf, dict) and set(perf) == {'status'} and isinstance(perf['status'], str) and perf['status'] in reasons:
+        return perf
+    def need(ok):
+        if not ok: raise ValueError('invalid VBIOS performance evidence')
+    need(isinstance(perf, dict) and set(perf) == {'status', 'bit_version', 'offset', 'raw', 'levels', 'current'})
+    need(perf['status'] == 'ok' and type(perf['bit_version']) is int and perf['bit_version'] in (1, 2)
+         and type(perf['offset']) is int and 0 < perf['offset'] < 256 * 1024
+         and isinstance(perf['raw'], str) and 12 <= len(perf['raw']) <= 512 * 1024
+         and len(perf['raw']) % 2 == 0 and re.fullmatch('[0-9a-f]+', perf['raw']) is not None)
+    raw = bytes.fromhex(perf['raw'])
+    version, header, base, size, count, levels = raw[:6]
+    need(version == 0x40 and header >= 6 and base >= 12 and size >= 2 and count >= 4 and levels > 0)
+    stride = base + size * count
+    need(len(raw) == header + levels * stride and perf['offset'] + len(raw) <= 256 * 1024)
+    decoded = []
+    for i in range(levels):
+        p = header + i * stride
+        pstate = raw[p]
+        if pstate == 255: continue
+        need(pstate not in [l['pstate'] for l in decoded])
+        g = (int.from_bytes(raw[p+base:p+base+2], 'little') & 0x3fff) * 1000
+        m = (int.from_bytes(raw[p+base+3*size:p+base+3*size+2], 'little') & 0x3fff) * 1000
+        decoded.append(dict(pstate=pstate, gpc_khz=g, core_khz=g//2, memory_khz=m))
+    need(isinstance(perf['levels'], list) and perf['levels'] == decoded
+         and all(isinstance(l, dict) and all(type(v) is int for v in l.values()) for l in perf['levels']))
+    matches = [l['pstate'] for l in decoded if l['gpc_khz'] == gpc['value'] and l['memory_khz'] == memory['value']]
+    if gpc['status'] != 'ok' or memory['status'] != 'ok': current = dict(pstate=None, status='clock-unavailable')
+    elif not matches: current = dict(pstate=None, status='unmatched-clocks')
+    elif len(matches) > 1: current = dict(pstate=None, status='ambiguous-clocks')
+    else: current = dict(pstate=matches[0], status='matched-clocks')
+    need(perf['current'] == current and isinstance(perf['current'], dict)
+         and (perf['current']['pstate'] is None or type(perf['current']['pstate']) is int))
+    return perf
+
+
 def clock_record(row):
     """Independently decode the captured words using the pinned MIT read paths."""
-    if (not isinstance(row, dict) or set(row) != {'schema', 'phase', 'host_source', 'raw', 'gpc_khz', 'memory_khz', 'host_khz', 'temperature_c'}
+    if (not isinstance(row, dict) or set(row) - {'performance'} != {'schema', 'phase', 'host_source', 'raw', 'gpc_khz', 'memory_khz', 'host_khz', 'temperature_c'}
             or type(row['schema']) is not int or row['schema'] != 1
             or row['phase'] not in ('startup', 'final') or row['host_source'] != 'href'
             or not isinstance(row['raw'], list) or not 1 <= len(row['raw']) <= 32
@@ -2293,6 +2337,8 @@ def clock_record(row):
                 or reading != expected or type(reading['value']) is bool):
             raise ValueError('clock reading differs from raw registers: ' + name)
     if used != set(raw): raise ValueError('unexpected clock register read')
+    if 'performance' in row:
+        performance_record(row['performance'], row['gpc_khz'], row['memory_khz'])
     return row
 
 
@@ -2306,6 +2352,13 @@ def clock_evidence(serial):
             raise ValueError('performance clock unavailable: ' + row['phase'])
         print(row['phase'] + ' ' + ' '.join(str(row[k]['value']) if row[k]['status'] == 'ok' else 'unavailable:' + row[k]['status']
               for k in ('gpc_khz', 'memory_khz', 'host_khz', 'temperature_c')))
+        if 'performance' in row:
+            perf = row['performance']
+            if perf['status'] != 'ok': print(row['phase'] + ' VBIOS performance unavailable:' + perf['status'])
+            else:
+                for level in perf['levels']:
+                    print(row['phase'] + ' VBIOS pstate={pstate} core_khz={core_khz} memory_khz={memory_khz} gpc_khz={gpc_khz}'.format(**level))
+                print(row['phase'] + ' VBIOS current=' + perf['current']['status'] + ' pstate=' + str(perf['current']['pstate']))
 
 
 def performance_evidence(serial, parsed, names, required, manifest):

@@ -107,6 +107,7 @@ fn main() {
     def test_runtime_exports_two_read_only_records_accepted_by_scorer(self):
         import json
         from gt710_clock_report_test import API, anchor
+        from gt710_vbios_perf_test import synthetic_rom
         source = r'''extern crate alloc;
 #[path="SHA"] mod sha;
 #[path="CLOCK"] mod clock;
@@ -119,6 +120,9 @@ fn main() {
                   (0x132030,0xf0000000),(0x22400,0x800),(0x21000,1),(0x212a8,1),(0x20400,47)] {bar[a/4]=v;}
     let before=bar.clone();
     clock::initialize(bar.as_ptr() as usize);
+    let rom=vec![ROM];let original=rom.clone();
+    clock::initialize_performance(&rom);
+    assert_eq!(rom,original);
     for _ in 0..2 {
         let (row,anchor)=clock::export().unwrap();println!("{}\n{}",row,anchor);
     }
@@ -130,7 +134,9 @@ fn main() {
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp)
             module = (ROOT/'kernel/src/gpu/gk208/clock.rs').read_text().replace('#[cfg(target_os = "none")]\n','')
+            module = module.replace('path = \"perf.rs\"', 'path = \"'+str(ROOT/'kernel/src/gpu/gk208/perf.rs')+'\"')
             (p/'module.rs').write_text(module)
+            source = source.replace('ROM',','.join(map(str,synthetic_rom())))
             source = source.replace('SHA',str(ROOT/'libs/libbreenix/src/crypto/sha256.rs')).replace('CLOCK',str(p/'module.rs'))
             (p/'runtime.rs').write_text(source)
             subprocess.run(priority + ['rustc','--edition=2021','-Dwarnings',str(p/'runtime.rs'),'-o',str(p/'runtime')],check=True)
@@ -141,6 +147,8 @@ fn main() {
             data = API['clock_record'](json.loads(row.split(' ',1)[1]))
             self.assertEqual(data['phase'],phase)
             self.assertEqual(data['temperature_c']['value'],47)
+            self.assertEqual(data['performance']['levels'][1]['core_khz'],405000)
+            self.assertEqual(data['performance']['current'],dict(pstate=None,status='unmatched-clocks'))
 
 
 if __name__ == '__main__': unittest.main()

@@ -314,6 +314,7 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
     clock::initialize(regs.0);
     let rom = rom::read(&mut regs)?;
     let board = board::parse(&rom)?;
+    clock::initialize_performance(&rom);
     for route in &board.routes {
         let state = regs.read(0x640200 + route.sor as usize * 0x20);
         if !matches!((state >> 8) & 15, 1 | 2 | 5)
