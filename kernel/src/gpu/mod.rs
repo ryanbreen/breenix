@@ -5102,7 +5102,11 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
     // Frames count against both guest-backing quota and RLIMIT_AS for this call.
     #[cfg(target_arch = "x86_64")]
     let cost_user = crate::gk208::cost::phase(crate::gk208::cost::Slot::UserCopy);
+    #[cfg(target_arch = "x86_64")]
+    let cost_stage = crate::gk208::cost::phase(crate::gk208::cost::Slot::UploadStage);
     let stage = Staging::new(tgid, (row * ch) as usize)?;
+    #[cfg(target_arch = "x86_64")]
+    drop(cost_stage);
     for j in 0..ch {
         stage.pages.try_spans((j * row) as usize, row as usize, |done, ptr, n| {
             crate::syscall::userptr::read_user_bytes(ptr, a.pixels + j * stride + done as u64, n)
@@ -5114,6 +5118,8 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
     // The backing is the upload's alone until its transfer has ended. Submissions of other
     // contexts that name the texture finish first: the device states no order between
     // contexts. This context's own earlier commands are ahead of the transfer in its queue.
+    #[cfg(target_arch = "x86_64")]
+    let cost_acquire = crate::gk208::cost::phase(crate::gk208::cost::Slot::UploadAcquire);
     let taken = wait_for(None, true, |c| {
         if c.res_of(tgid, a.resource) != Some(id) {
             return Some(Err(EINVAL));
@@ -5125,6 +5131,8 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
         c.resources.get_mut(&id)?.reading = true;
         Some(Ok(()))
     });
+    #[cfg(target_arch = "x86_64")]
+    drop(cost_acquire);
     match taken {
         Ok(Ok(())) => {}
         Ok(Err(e)) => return Err(e),

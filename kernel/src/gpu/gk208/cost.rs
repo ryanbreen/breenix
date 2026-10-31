@@ -1,7 +1,7 @@
 //! Fixed native phase costs, armed by an explicit case-metrics observation.
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-pub const NAMES: [&str; 48] = [
+pub const NAMES: [&str; 52] = [
     "submit_n", "submit_ns", "wait_n", "wait_ns", "read_n", "read_ns",
     "present_n", "present_ns", "upload_n", "upload_ns", "pack_n", "pack_ns",
     "span_prep_n", "span_prep_ns", "span_map_n", "span_map_ns",
@@ -13,20 +13,22 @@ pub const NAMES: [&str; 48] = [
     "compare_n", "compare_ns", "copy_out_n", "copy_out_ns",
     "scratch_prepare_n", "scratch_prepare_ns", "scratch_copy_n", "scratch_copy_ns",
     "draw_execute_n", "draw_execute_ns", "native_submit_n", "native_submit_ns",
+    "upload_stage_n", "upload_stage_ns", "upload_acquire_n", "upload_acquire_ns",
 ];
 pub const WORDS: usize = NAMES.len();
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum Slot { Submit, Wait, Read, Present, Upload, Pack, SpanPrepare, SpanMap,
     SpanUpload, Translate, FramePrepare, Evo, UserCopy, ReadPrepare, UploadConvert,
-    Poison, TransferMap, Ce, Compare, CopyOut, ScratchPrepare, ScratchCopy, DrawExecute, NativeSubmit }
+    Poison, TransferMap, Ce, Compare, CopyOut, ScratchPrepare, ScratchCopy, DrawExecute, NativeSubmit,
+    UploadStage, UploadAcquire }
 impl Slot {
-    const ALL: [Self; 24] = [Self::Submit, Self::Wait, Self::Read, Self::Present,
+    const ALL: [Self; 26] = [Self::Submit, Self::Wait, Self::Read, Self::Present,
         Self::Upload, Self::Pack, Self::SpanPrepare, Self::SpanMap, Self::SpanUpload,
         Self::Translate, Self::FramePrepare, Self::Evo, Self::UserCopy,
         Self::ReadPrepare, Self::UploadConvert, Self::Poison, Self::TransferMap,
         Self::Ce, Self::Compare, Self::CopyOut, Self::ScratchPrepare, Self::ScratchCopy,
-        Self::DrawExecute, Self::NativeSubmit];
+        Self::DrawExecute, Self::NativeSubmit, Self::UploadStage, Self::UploadAcquire];
 }
 pub fn slot_for_op(op: u64) -> Option<Slot> {
     let op = u32::try_from(op).ok()?;
