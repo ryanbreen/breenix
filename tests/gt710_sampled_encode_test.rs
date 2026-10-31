@@ -248,7 +248,7 @@ fn admission_programs_bind_literal_inputs_and_keep_code_before_uniforms() {
         (None, 1280, 0x2030, &shaders::PROBE_INTEGER_OPS_HEADER[..], shaders::PROBE_INTEGER_OPS_CODE, 5),
         (Some(encode::Target {id: 32, ..t}), 1, 0x2430, &shaders::PROBE_TEXEL_FETCH_HEADER[..], shaders::PROBE_TEXEL_FETCH_CODE, 4),
     ] {
-        let mut f = encode::probe_frame(t, source);
+        let mut f = encode::probe_frame(t, source).unwrap();
         f.relocate(0x3_0000_0000).unwrap();
         // Mesa nvc0_program.c:782-805: an 80-byte SPH precedes code aligned to 128 bytes.
         for chunk in &f.chunks {
@@ -327,7 +327,7 @@ fn warm_draws_cover_the_manifest_rendering_catalogue() {
     let source = encode::Bindings::sampled_source(&View(format::B8G8R8A8), 2).unwrap();
     let target = encode::Target { width: 1, height: 1, ..target };
     let source = encode::Target { width: 1, height: 1, ..source };
-    let crossing = encode::warm_spans();
+    let crossing = encode::warm_spans().unwrap();
     assert_eq!((crossing.width, crossing.height, crossing.bytes.len()), (64, 1, 256));
     assert_eq!(words(&crossing.bytes, 0, 9), [0, 2, 4, 6, 8, 10, 12, 14, 16]);
     for row in 0..8 {

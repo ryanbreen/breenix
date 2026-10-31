@@ -14,7 +14,7 @@ class RestartState(unittest.TestCase):
     def test_restart_rebuilds_constructor_fifo_state_and_preserves_health_error(self):
         source = (ROOT / 'kernel/src/gpu/gk208/gr/channel.rs').read_text()
         restart = item(source, '        pub(crate) fn restart(&mut self)')
-        health = item(source, '        pub(crate) fn healthy(&self)')
+        health = item(source, '        fn health(&self,')
         for old, new in [('super::super::topology', 'topology'),
                          ('super::super::ctxctl', 'ctxctl'),
                          ('super::super::hardware_error', 'hardware_error')]:

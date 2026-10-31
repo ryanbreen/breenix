@@ -150,7 +150,7 @@ impl Runner<'_> {
         pages.maintain(0, frame.data.len(), false);
         // Leave room for the publisher's parking state and release in its
         // 2048-word slot; batching retains the original draw packets.
-        frame.batch_draws(1400);
+        frame.batch_draws(1400)?;
         for chunk in encode::prepare(frame, pages)? {
             let (tag, fence) = self.next();
             self.execute(Some(dev::submit_gk208(tag, fence, chunk)))?;
@@ -293,13 +293,13 @@ fn run_epoch(device: &mut adapter::Device, epoch: Option<u64>) -> Result<(), &'s
                 r.upload(&output, &vec![0x3d; BYTES])?;
                 let target = encode::target(OUTPUT, f::B8G8R8A8)
                     .ok_or("native CAPS integer target absent")?;
-                r.draw(encode::probe_frame(target, None))?;
+                r.draw(encode::probe_frame(target, None)?)?;
                 r.read(&output)
             }
             c::TEXEL_FETCH => {
                 r.upload(&output, &vec![0x3d; BYTES])?;
                 let view = View::new(&output, Some(&bgra))?;
-                r.draw(encode::probe_frame(view.target, view.source))?;
+                r.draw(encode::probe_frame(view.target, view.source)?)?;
                 r.read(&output)
             }
             c::REGION_COPY => {

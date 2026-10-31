@@ -157,7 +157,7 @@ fn measured(run: impl FnOnce() -> Verdict) -> CaseResult {
             }
             // HOSTKEY requests may consume the case's record budget. Keep the
             // measured counters first in its capped failure message as well.
-            result = result.map_err(|reason| format!("q={} r={} d={} changed={} maxns={} {reason}", replay[0], replay[1], replay[2], replay[3], replay[4]));
+            result = result.map_err(|reason| format!("{reason} q={} r={} d={} changed={} maxns={}", replay[0], replay[1], replay[2], replay[3], replay[4]));
         }
     }
     result.map_err(breenix_suite::suite::CaseError::Fail)
@@ -175,9 +175,16 @@ fn screen_check() -> Verdict<String> {
     std::fs::read_to_string("/proc/console/check").map_err(|e| format!("console check: {e}"))
 }
 
+fn check_failure(text: &str) -> String {
+    ["console check:", "console last failure:", "console frame:", "console scanout:"]
+        .into_iter().flat_map(|prefix| text.lines().filter(move |line| line.starts_with(prefix)))
+        .collect::<Vec<_>>().join(" ")
+}
+
 fn identical(text: &str) -> Verdict {
-    require(text.lines().any(|line| line == "console check: shadow and screen identical"), text)?;
-    require(text.lines().any(|line| line.starts_with("console frame: ") && line.ends_with(" complete")), text)
+    let diagnostic = check_failure(text);
+    require(text.lines().any(|line| line == "console check: shadow and screen identical"), &diagnostic)?;
+    require(text.lines().any(|line| line.starts_with("console frame: ") && line.ends_with(" complete")), &diagnostic)
 }
 
 fn wait_for_row(marker: &str) -> Verdict<String> {
@@ -485,13 +492,13 @@ impl Drop for DisplayOwner {
 
 /// What the display owner painted: the whole screen in 0x3c3c3c.
 #[cfg(target_arch = "x86_64")]
-struct Painted {
+struct LegacyPainted {
     width: u32,
     height: u32,
 }
 
 #[cfg(target_arch = "x86_64")]
-fn paint_owner() -> Verdict<Painted> {
+fn paint_legacy_owner() -> Verdict<LegacyPainted> {
     let info = libbreenix::graphics::fbinfo().map_err(|e| format!("fbinfo: {e}"))?;
     let (pixels, width) = libbreenix::graphics::fb_mmap_pane().map_err(|e| format!("fb_mmap: {e}"))?;
     require(width == info.width, "display owner did not map the whole screen")?;
@@ -499,12 +506,11 @@ fn paint_owner() -> Verdict<Painted> {
     // The mapping holds the whole screen, using the reported pane stride.
     unsafe { core::ptr::write_bytes(pixels, 0x3c, bytes); }
     libbreenix::graphics::fb_flush().map_err(|e| format!("fb_flush: {e}"))?;
-    Ok(Painted { width: info.width as u32, height: info.height as u32 })
+    Ok(LegacyPainted { width: info.width as u32, height: info.height as u32 })
 }
 
 /// What the display owner painted on the GPU core: a scanout target of the display's mode,
 /// cleared to 0x3c3c3c and presented, kept while the owner holds the display.
-#[cfg(target_arch = "aarch64")]
 struct Painted {
     width: u32,
     height: u32,
@@ -512,17 +518,22 @@ struct Painted {
     target: u64,
 }
 
-#[cfg(target_arch = "aarch64")]
 impl Drop for Painted {
     fn drop(&mut self) {
+        #[cfg(target_arch = "x86_64")]
+        if self.context == 0 { return; }
         let _ = libbreenix::gpu::resource_destroy(self.target);
         let _ = libbreenix::gpu::context_destroy(self.context);
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 fn paint_owner() -> Verdict<Painted> {
     use libbreenix::gpu::{self, abi::{self, stream::encode}};
+    #[cfg(target_arch = "x86_64")]
+    if gpu_display()?.is_none() {
+        let legacy = paint_legacy_owner()?;
+        return Ok(Painted { width: legacy.width, height: legacy.height, context: 0, target: 0 });
+    }
     let (width, height) = display_size()?;
     let context = gpu::context_create().map_err(|e| format!("GPU context: errno {}", -e))?;
     let target = match gpu::scanout_target_create(abi::format::B8G8R8A8, width, height) {
@@ -546,7 +557,6 @@ fn paint_owner() -> Verdict<Painted> {
 }
 
 /// The GPU core's current display mode.
-#[cfg(target_arch = "aarch64")]
 fn display_size() -> Verdict<(u32, u32)> {
     let (r, modes) = libbreenix::gpu::modes();
     require(r == 0, &format!("MODES: errno {}", -r))?;
@@ -555,7 +565,6 @@ fn display_size() -> Verdict<(u32, u32)> {
 
 /// The displayed screen, read back from the device by the display owner: the scanout's
 /// pixels as 0xRRGGBB words, row after row.
-#[cfg(target_arch = "aarch64")]
 fn read_screen() -> Verdict<(Vec<u32>, usize)> {
     use libbreenix::gpu::{self, abi};
     let (width, height) = display_size()?;
@@ -570,13 +579,14 @@ fn read_screen() -> Verdict<(Vec<u32>, usize)> {
 /// The displayed pixels at each `(x, y)`, as 0xRRGGBB, read from the display's memory or
 /// backing rather than the owner's staging mapping.
 #[cfg(target_arch = "x86_64")]
-fn displayed(points: &[(i32, i32)]) -> Verdict<Vec<u32>> {
+fn displayed_legacy(points: &[(i32, i32)]) -> Verdict<Vec<u32>> {
     points.iter().map(|&(x, y)| libbreenix::graphics::fb_read_pixel(x, y).map_err(|e| format!("read pixel: {e}"))).collect()
 }
 
 /// The displayed pixels at each `(x, y)`, as 0xRRGGBB, read back from the device's scanout.
-#[cfg(target_arch = "aarch64")]
 fn displayed(points: &[(i32, i32)]) -> Verdict<Vec<u32>> {
+    #[cfg(target_arch = "x86_64")]
+    if gpu_display()?.is_none() { return displayed_legacy(points); }
     let (screen, width) = read_screen()?;
     Ok(points.iter().map(|&(x, y)| screen[y as usize * width + x as usize]).collect())
 }
@@ -629,7 +639,6 @@ struct Terminal {
     cw: usize,
     ch: usize,
     /// The screen as the display owner last read it back, until the next write.
-    #[cfg(target_arch = "aarch64")]
     screen: core::cell::RefCell<Option<(Vec<u32>, usize)>>,
 }
 
@@ -657,7 +666,6 @@ impl Terminal {
         let (cols, _) = pair(grid)?;
         let terminal = Self {
             fd, original, cols, cw, ch,
-            #[cfg(target_arch = "aarch64")]
             screen: core::cell::RefCell::new(None),
         };
         terminal.write(b"\x1bc")?;
@@ -665,7 +673,6 @@ impl Terminal {
     }
 
     fn write(&self, mut bytes: &[u8]) -> Verdict {
-        #[cfg(target_arch = "aarch64")]
         self.screen.replace(None);
         while !bytes.is_empty() {
             let n = io::write(self.fd, bytes).map_err(|e| format!("console write: {e}"))?;
@@ -697,14 +704,15 @@ impl Terminal {
     /// The displayed pixel at `(x, y)` (the cases read pixels after taking the display,
     /// which keeps the console's completed frame on the screen).
     #[cfg(target_arch = "x86_64")]
-    fn displayed(&self, x: i32, y: i32) -> Verdict<u32> {
+    fn displayed_legacy(&self, x: i32, y: i32) -> Verdict<u32> {
         libbreenix::graphics::fb_read_pixel(x, y).map_err(|e| format!("pixel read: {e}"))
     }
 
     /// The displayed pixel at `(x, y)`: the device's scanout, read back once by the display
     /// owner the cases became and kept until the terminal is written again.
-    #[cfg(target_arch = "aarch64")]
     fn displayed(&self, x: i32, y: i32) -> Verdict<u32> {
+        #[cfg(target_arch = "x86_64")]
+        if gpu_display()?.is_none() { return self.displayed_legacy(x, y); }
         if self.screen.borrow().is_none() {
             self.screen.replace(Some(read_screen()?));
         }
@@ -1374,12 +1382,26 @@ fn main() {
         // Finish the CE checks before CAPS transfers their owner to the core.
         // Its startup row must join the one-use upload before the suite starts.
         let _ = libbreenix::gpu::caps();
-        gt710_artifacts::upload().expect("native display artifact upload");
+        // Let the admitted console finish a pass before exporting startup
+        // evidence; retain the actual CAPS response with the upload.
+        let _ = std::fs::read_to_string("/proc/console/check");
+        let (result, caps) = libbreenix::gpu::caps();
+        let uploaded = if result == 0 {
+            gt710_artifacts::upload_slot(Some(&caps), false)
+        } else {
+            gt710_artifacts::upload()
+        };
+        uploaded.expect("native display artifact upload");
     }
     let args: Vec<_> = std::env::args().collect();
     let selected = args.windows(2).find_map(|pair| (pair[0] == "--case").then_some(pair[1].as_str()));
     if selected.is_none_or(|case| case == "getty" || case.starts_with("getty/")) {
         LOGIN_CREDENTIALS.get_or_init(login_credentials);
     }
+    #[cfg(target_arch="x86_64")]
+    SUITE.run_with_finalizer(|| {
+        gt710_artifacts::upload_slot(None, true).expect("final native console artifact upload");
+    });
+    #[cfg(target_arch="aarch64")]
     SUITE.run()
 }

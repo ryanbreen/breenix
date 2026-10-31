@@ -17,7 +17,6 @@ pub use namespace::{
     virtual_entry,
 };
 pub(crate) use object::release_frame;
-#[cfg(target_arch = "aarch64")]
 pub(crate) use object::Frame;
 pub use object::{page_count, MappingOrigin, ShmMapping, ShmObject};
 #[cfg(target_arch = "x86_64")]

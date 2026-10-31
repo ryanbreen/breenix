@@ -523,6 +523,16 @@
               "isolation"
             ]
           }
+        },
+        {
+          "id": "presentation",
+          "title": "Score presentation, console restoration and panic (M8 PR 8.6)",
+          "measure": {
+            "suite": "gt710",
+            "categories": [
+              "presentation"
+            ]
+          }
         }
       ]
     }

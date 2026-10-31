@@ -16,7 +16,6 @@
 //! spin lock only moves it in and out, and device waits run without it.
 
 use super::*;
-use alloc::vec;
 use core::ops::Range;
 use display::Binding;
 
@@ -31,6 +30,8 @@ static TARGET: crate::irq_safe_mutex::IrqSafeMutex<Option<Target>> = crate::irq_
 static RESOURCE: AtomicU64 = AtomicU64::new(0);
 /// Completed presents of the kernel's screen, for MODES' `console_draws`.
 static PRESENTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "x86_64")]
+static SAMPLED_READBACK: AtomicBool = AtomicBool::new(false);
 
 /// The target in the device: the private context it was created in, in one reset epoch.
 struct Target {
@@ -45,7 +46,7 @@ impl Target {
     fn new() -> Result<Target, i64> {
         open().ok_or(ENOMEM)?;
         let pages = BACKING.get().ok_or(ENODEV)?.clone();
-        let (handle, _) = create_context(0)?;
+        let (handle, _) = create_kernel_context()?;
         let (context, epoch) = match with_core(|c| Some((c.ctx_of(0, handle)?, c.epoch))).flatten() {
             Some(found) => found,
             None => {
@@ -169,6 +170,18 @@ impl Target {
     /// Show the kernel's screen: bind it, the first time ending the firmware framebuffer's
     /// part (`console::retire_firmware`, then `console::handed_off` once a frame is shown).
     fn show(&self) -> Result<(), i64> {
+        #[cfg(target_arch = "x86_64")]
+        if crate::gk208::console_state().is_some_and(|(mode, _, _, _)| {
+            (mode.width, mode.height) != (WIDTH, HEIGHT)
+        }) {
+            // A released graphics VT may have left the low logical mode active.
+            // The foreground text VT still draws the shared high-mode screen.
+            if super::arch::with_interrupts(|| crate::gk208::set_mode(display::KERNEL_MODE as u32)).is_err() {
+                with_core(|c| c.display.known = false);
+                return Err(EIO);
+            }
+            with_core(|c| c.native_console_restored()).ok_or(ENODEV)?;
+        }
         console::retire_firmware();
         self.bind(Binding { id: self.id, fence: 0, answer: 0 })?;
         console::handed_off();
@@ -234,6 +247,17 @@ pub fn open() -> Option<(usize, usize)> {
     // The pointer moves over this screen, not the firmware framebuffer it replaced.
     super::arch::set_screen(WIDTH, HEIGHT);
     Some((WIDTH as usize, HEIGHT as usize))
+}
+
+/// The first native owner/observer must inherit a completed core resource,
+/// rather than the unregistered bootstrap allocation used before admission.
+#[cfg(target_arch = "x86_64")]
+pub(super) fn await_binding() -> Result<(), i64> {
+    if dev::backend() != abi::backend::GK208 { return Ok(()); }
+    crate::console::await_repaint();
+    with_core(|c| c.display.known && c.display.binding.is_some_and(|b|
+        c.resources.get(&b.id).is_some_and(|r| !r.lost && r.kind == kind::TARGET)))
+        .filter(|&ready| ready).map(|_| ()).ok_or(EIO)
 }
 
 /// Copy `bytes` into the backing at byte `offset` (rows laid out `WIDTH * 4` bytes apart).
@@ -303,11 +327,24 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
         Some(Arc::new(Pages::new((band as usize * PITCH).div_ceil(PAGE))
             .ok_or("no frames for the screen's read-back surface")?))
     } else { None };
+    #[cfg(target_arch = "x86_64")]
+    let sample = !SAMPLED_READBACK.swap(true, Ordering::AcqRel);
+    #[cfg(target_arch = "x86_64")]
+    let mut difference = None;
+    #[cfg(target_arch = "x86_64")]
+    let mut observed = Vec::new();
+    #[cfg(target_arch = "x86_64")]
+    if sample {
+        observed.try_reserve_exact(PITCH).map_err(|_| "screen sample allocation")?;
+        observed.resize(PITCH, 0);
+    }
     let mut y = 0;
     while y < HEIGHT {
         let rows = band.min(HEIGHT - y);
         let (offset, len) = (y as usize * PITCH, rows as usize * PITCH);
-        let mut row = vec![0; PITCH];
+        let mut row = Vec::new();
+        row.try_reserve_exact(PITCH).map_err(|_| "screen readback row allocation")?;
+        row.resize(PITCH, 0);
         // Only a transfer into the backing itself poisons it: keep its band until that succeeds.
         let saved = match &readback {
             Some(_) => None,
@@ -339,6 +376,22 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
             }
             return Err("the device did not transfer the screen back");
         }
+        #[cfg(target_arch = "x86_64")]
+        if sample && difference.is_none() {
+            if let Some(saved) = &saved {
+                for n in 0..rows as usize {
+                    saved.read(n * PITCH, &mut row);
+                    pages.read(offset + n * PITCH, &mut observed);
+                    if let Some(x) = row.chunks_exact(4).zip(observed.chunks_exact(4)).position(|(a, b)| a != b) {
+                        let at = x * 4;
+                        difference = Some((offset + n * PITCH + at,
+                            u32::from_le_bytes(row[at..at + 4].try_into().unwrap()),
+                            u32::from_le_bytes(observed[at..at + 4].try_into().unwrap())));
+                        break;
+                    }
+                }
+            }
+        }
         if readback.is_some() {
             for n in 0..rows as usize {
                 backing.read(n * PITCH, &mut row);
@@ -347,13 +400,20 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
         }
         y += rows;
     }
+    #[cfg(target_arch = "x86_64")]
+    if sample {
+        let (offset, expected, actual) = difference.unwrap_or((usize::MAX, 0, 0));
+        crate::gk208::console_sample(0, offset, expected, actual);
+    }
     Ok((dev::resource_id(target.id).ok_or("the screen has no device resource")?, flush))
 }
 
 /// Show the kernel's screen as it was left, inside a transition.
 pub(super) fn show() -> Result<(), i64> {
     let mut lease = Lease::take();
-    lease.ensure()?.show()?;
+    let target = lease.ensure()?;
+    target.upload(0..HEIGHT)?;
+    target.show()?;
     PRESENTS.fetch_add(1, Ordering::AcqRel);
     Ok(())
 }

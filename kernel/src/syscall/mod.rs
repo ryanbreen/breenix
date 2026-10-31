@@ -48,7 +48,6 @@ pub mod futex_timeout_record;
 pub mod graphics;
 #[cfg(target_arch = "aarch64")]
 pub mod pointer;
-#[cfg(target_arch = "aarch64")]
 pub mod window;
 pub mod handlers;
 pub mod resource;
@@ -983,10 +982,13 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
         SETRESGID_SYSCALL_NUMBER => handlers::sys_setresgid(a[0] as u32, a[1] as u32, a[2] as u32),
         GETRESGID_SYSCALL_NUMBER => handlers::sys_getresgid(a[0], a[1], a[2]),
         VHANGUP_SYSCALL_NUMBER => session::sys_vhangup(),
-        #[cfg(target_arch = "aarch64")]
         breengel_abi::SYS_WINDOW => window::sys_window(a[0], a[1], a[2]),
         gpu_abi::SYS_TEST_CONTROL => crate::test_control::sys_test_control(a[0], a[1], a[2]),
-        gpu_abi::SYS_GPU => crate::gpu::sys_gpu(a[0], a[1], a[2]),
+        gpu_abi::SYS_GPU => {
+            #[cfg(target_arch = "x86_64")]
+            let _masked = crate::tracing::providers::gpu::X86SyscallMask::enter();
+            crate::gpu::sys_gpu(a[0], a[1], a[2])
+        },
         _ => return None,
     })
 }

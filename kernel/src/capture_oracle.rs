@@ -1,7 +1,7 @@
 //! The deterministic `edge=PANIC` terminal-edge oracle.
 //!
-//! Behind `--features capture_panic_oracle`, which no gate builds with, so
-//! this module is not compiled into a shipped or gated kernel. Its purpose
+//! Behind `--features capture_panic_oracle`, excluded from production kernels.
+//! The metal panic diagnostic explicitly selects it. Its purpose
 //! is to make PR-4's claim -- "a kernel panic emits a complete `BXCAP`
 //! record" -- testable on demand, on both architectures, instead of waiting
 //! for a real panic.
@@ -61,13 +61,15 @@ pub fn observe(tick_count: u64) {
         return;
     }
     #[cfg(target_arch = "aarch64")]
-    if elapsed_ms < 30_000 && !crate::gpu::panic::test_ready() {
+    let preparation_deadline = 30_000;
+    #[cfg(target_arch = "x86_64")]
+    let preparation_deadline = 180_000;
+    if elapsed_ms < preparation_deadline && !crate::gpu::panic::test_ready() {
         return;
     }
-    #[cfg(target_arch = "aarch64")]
     // Give handoff and preparation a bounded opportunity. If admission,
     // takeover, preparation or lock acquisition fails, still exercise serial.
-    if elapsed_ms < 30_000 && crate::gpu::console::active() {
+    if elapsed_ms < preparation_deadline && crate::gpu::console::active() {
         crate::gpu::panic::test_with_locks(|| {
             if !FIRED.swap(true, Ordering::AcqRel) {
                 fire(elapsed_ms, tick_count);

@@ -35,14 +35,16 @@ fn arch_ticks_to_nanos(ticks:u64)->u64{ticks*1_000}
 fn advance(us:u64){CLOCK.with(|c|c.set(c.get()+us));}
 fn arch_without_interrupts<R>(f:impl FnOnce()->R)->R{Cpu::without_interrupts(f)}
 mod signal {pub struct ThreadSignals{pub gpu_path:crate::AtomicU32}}
-struct Thread{signals:Arc<signal::ThreadSignals>}
+pub mod task {pub mod scheduler {pub const MAX_CPUS:usize=1;}}
+pub struct Thread{signals:Arc<signal::ThreadSignals>}
 static THREAD:OnceLock<Thread>=OnceLock::new();
-mod per_cpu {
+pub mod per_cpu {
+ pub fn cpu_id()->usize{0}
  pub fn is_initialized()->bool{crate::INITIALIZED.with(std::cell::Cell::get)}
  pub fn in_interrupt()->bool{crate::IN_INTERRUPT.with(std::cell::Cell::get)}
  pub fn current_thread()->Option<&'static crate::Thread>{crate::THREAD.get()}
 }
-mod tracing {
+pub mod tracing {
  pub mod counter {
   use std::sync::atomic::AtomicU64;
   pub struct Slot{pub value:AtomicU64}

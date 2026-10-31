@@ -190,7 +190,6 @@ impl Process {
         // Window remnants this process holds as an evidence holder, and window memory it
         // owns but has unmapped (docs/gui/breengel.md sections 17.2 and 17.3), count
         // against its address-space limit too.
-        #[cfg(target_arch = "aarch64")]
         let bytes = bytes.saturating_add(crate::window::charged_bytes(
             self.thread_group_id.unwrap_or(self.id.as_u64()),
             &self.vmas,

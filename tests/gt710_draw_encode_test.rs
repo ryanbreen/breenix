@@ -174,7 +174,7 @@ fn probe_batches_preserve_every_draw_and_relocation_with_one_vab_binding() {
     f.relocate(0x3_0000_0000).unwrap();
     let expected: Vec<_> = f.chunks.iter().flat_map(|c| packets(&c.words)).filter(|(m,_)| *m != 0x17bc).collect();
     let mut batched = encode::translate(frame().as_slice(), &View(format::B8G8R8A8)).unwrap();
-    batched.batch_draws(1400);
+    batched.batch_draws(1400).unwrap();
     assert!(batched.chunks.len() < 3);
     batched.relocate(0x3_0000_0000).unwrap();
     let actual: Vec<_> = batched.chunks.iter().flat_map(|c| packets(&c.words)).filter(|(m,_)| *m != 0x17bc).collect();
@@ -325,7 +325,7 @@ fn frame_code_binding_uses_only_the_retained_channel_catalogue() {
     let mut f = encode::translate(frame().as_slice(), &View(format::B8G8R8A8)).unwrap();
     f.compact().unwrap();
     f.relocate(0x4_0000_0000).unwrap();
-    f.batch_draws(1400);
+    f.batch_draws(1400).unwrap();
     for c in &mut f.chunks {
         let before = packets(&c.words);
         encode::channel_programs(&mut c.words, &parking).unwrap();

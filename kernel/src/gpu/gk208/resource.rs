@@ -23,6 +23,8 @@
 //! Native resource storage. Layout sizing adapts Mesa 24.3.4 nvc0_miptree.c
 //! and nv50_miptree.c (MIT); see THIRD_PARTY_NOTICES. Breenix owns allocation,
 //! mappings, pinned guest backing and retirement. No pixels are produced here.
+#[path = "present.rs"]
+pub mod present;
 use alloc::{collections::{BTreeMap, BTreeSet, VecDeque}, sync::Arc, vec::Vec};
 use super::{memory::allocator::{Allocation, Allocator, Kind, Pin}, vm::{self, Io, Space}};
 
@@ -116,6 +118,7 @@ struct Entry<B> {
     // Only its Drop matters here; the resource owner does not interpret quotas.
     _charge: Option<Arc<dyn Send + Sync>>,
     layout: Option<Layout>,
+    scanout: Option<present::Surface>,
     bytes: u64,
     va: u64,
     allocation: Option<Allocation>,
@@ -146,6 +149,16 @@ impl<B> Default for Resources<B> { fn default() -> Self { Self::new() } }
 impl<B> Resources<B> {
     pub const fn new() -> Self {
         Self { entries: BTreeMap::new(), contexts: BTreeSet::new(), space: None, vram_bytes: 0, alias: None, channel: 0, incarnation: None, alias_indices: Vec::new(), temporary: u32::MAX - 1, retired: VecDeque::new() }
+    }
+    #[cfg(target_os="none")]
+    pub(in crate::gk208) fn heap_footprint(&self) -> [usize; 7] {
+        let region_bytes = |v: &Vec<FrameRegion>| v.capacity() * core::mem::size_of::<FrameRegion>();
+        [self.entries.len(), self.retired.len(),
+            self.retired.capacity() * core::mem::size_of::<Retired>()
+                + self.retired.iter().map(|r| region_bytes(&r.regions)).sum::<usize>(),
+            self.entries.values().map(|e| region_bytes(&e.regions)).sum(),
+            self.space.as_ref().map_or(0, |s| s.heap_vector_bytes()), self.contexts.len(),
+            self.alias_indices.capacity() * core::mem::size_of::<u64>()]
     }
     pub fn vram_bytes(&self) -> u64 { self.vram_bytes }
     pub fn layout(&self, id: u32) -> Option<Layout> { self.entries.get(&id)?.layout }
@@ -189,10 +202,13 @@ impl<B> Resources<B> {
     /// Only live or uncertain entries reserve VA. Successfully retired ranges
     /// can be reused even while the imported console keeps the address space alive.
     fn vacant_va(&self, bytes: u64, alignment: u64) -> Result<u64, &'static str> {
-        let mut ranges: Vec<_> = self.entries.values().flat_map(|e| {
+        let mut ranges = Vec::new();
+        ranges.try_reserve_exact(self.entries.len().checked_mul(2).ok_or("native VA scratch extent")?)
+            .map_err(|_| "native VA scratch allocation")?;
+        ranges.extend(self.entries.values().flat_map(|e| {
             core::iter::once((e.va, e.bytes.next_multiple_of(4096)))
                 .chain(e.backing_va.map(|va| (va, e.backing_bytes)))
-        }).collect();
+        }));
         ranges.sort_unstable_by_key(|r| r.0);
         let bytes = bytes.next_multiple_of(4096);
         let mut va = FIRST_VA.next_multiple_of(alignment);
@@ -218,7 +234,7 @@ impl<B> Resources<B> {
         let bytes = allocation.range.size;
         let va = self.vacant_va(bytes, 4096)?;
         let pin = a.pin(allocation)?;
-        self.entries.insert(id, Entry { role: "display", regions: Vec::new(), layout: None, bytes, va, allocation: None,
+        self.entries.insert(id, Entry { role: "display", regions: Vec::new(), layout: None, scanout: None, bytes, va, allocation: None,
             pin: Some(pin), _charge: None, backing: None, mapped: false, dropped: false,
             reference: Arc::new(()), backing_va: None, backing_bytes: 0, backing_mapped: false });
         let before = a.stats().charged;
@@ -231,11 +247,24 @@ impl<B> Resources<B> {
     pub fn create(&mut self, a: &mut Allocator, io: &mut impl Io, id: u32,
         kind: u32, format: u32, width: u32, height: u32,
     ) -> Result<(), &'static str> {
-        self.create_aligned(a, io, id, kind, format, width, height, 4096, None)
+        self.create_aligned(a, io, id, kind, format, width, height, 4096, None, false)
+    }
+    pub fn scanout_allocation(&self, id: u32) -> Option<super::memory::Range> {
+        Some(self.entries.get(&id)?.allocation?.range)
+    }
+    pub fn scanout(&self, id: u32) -> Option<present::Surface> {
+        let e=self.entries.get(&id)?;
+        if e.dropped || !e.mapped {return None;}
+        e.scanout
+    }
+    pub fn create_scanout(&mut self, a: &mut Allocator, io: &mut impl Io,
+        id:u32, format:u32, width:u32, height:u32,
+    ) -> Result<(), &'static str> {
+        self.create_aligned(a,io,id,1,format,width,height,65536,None,true)
     }
     fn create_aligned(&mut self, a: &mut Allocator, io: &mut impl Io, id: u32,
         kind: u32, format: u32, width: u32, height: u32, alignment: u64,
-        charge: Option<Arc<dyn Send + Sync>>,
+        charge: Option<Arc<dyn Send + Sync>>, scanout: bool,
     ) -> Result<(), &'static str> {
         if id == 0 || self.entries.contains_key(&id) { return Err("duplicate native resource"); }
         let layout = match (kind, format) {
@@ -244,15 +273,21 @@ impl<B> Resources<B> {
             (3, 0 | 2) if width != 0 && width <= 128 << 20 && height == 1 => None,
             _ => return Err("unsupported native resource format"),
         };
+        if scanout && kind!=1 {return Err("scanout requires a target");}
         let bytes = layout.map_or(u64::from(width), Layout::allocation_bytes);
         let va = self.vacant_va(bytes, alignment)?;
         let before = a.stats().charged;
         let result = (|| {
             // Insert before publication so even a partial failed mapping keeps
             // its allocation, backing and charge reachable for retention.
-            let allocation = if layout.is_some() { Some(a.allocate(bytes, 4096, Kind::Engine)?) } else { None };
+            let allocation = if layout.is_some() { Some(a.allocate(bytes, alignment, Kind::Engine)?) } else { None };
+            let scanout = if scanout {
+                let l=layout.unwrap();
+                Some(present::Surface {resource:id,address:allocation.unwrap().range.start,
+                    width,height,pitch:l.pitch,block_height:l.block_height,format,dma:3})
+            } else {None};
             let pin = allocation.map(|v| a.pin(v)).transpose()?;
-            self.entries.insert(id, Entry { role: match kind { 1 => "target", 2 => "texture", _ => "buffer" }, regions: Vec::new(), layout, bytes, va, allocation, pin,
+            self.entries.insert(id, Entry { role: match kind { 1 => "target", 2 => "texture", _ => "buffer" }, regions: Vec::new(), layout, scanout, bytes, va, allocation, pin,
                 _charge: charge, backing: None, mapped: false, dropped: false, reference: Arc::new(()), backing_va: None, backing_bytes: 0, backing_mapped: false });
             if let Some(allocation) = allocation {
                 self.space(a, io)?.map_kind(a, io, va, allocation.range, vm::Flags::default(), 0xfe)?;
@@ -353,12 +388,28 @@ impl<B> Resources<B> {
         io.invalidate(directory)?;
         Ok(())
     }
+    /// Preparation only. Share this owner's high-VA tables with the empty
+    /// reserved channel without changing the ordinary identity.
+    /// The prepared screen holds its images, commands and VM until terminal stop.
+    #[cfg(target_os = "none")]
+    pub(crate) fn bind_terminal(&self, io: &mut impl Io, directory: u64) -> Result<(), &'static str> {
+        let space = self.space.as_ref().filter(|s| s.usable()).ok_or("terminal VM unavailable")?;
+        for (index, _) in space.table_ranges() {
+            let value = io.read(space.directory.range.start + index * 8)?;
+            let old = io.read(directory + index * 8)?;
+            if old != 0 && old != value { return Err("terminal resource PDE occupied"); }
+            io.write(directory + index * 8, value)?;
+        }
+        io.flush()?;
+        io.invalidate(directory)?;
+        Ok(())
+    }
     pub(super) fn draw_buffer(&mut self, a: &mut Allocator, io: &mut impl Io,
         bytes: u32,
     ) -> Result<u32, &'static str> {
         let id = self.temporary;
         self.temporary = id.checked_sub(1).ok_or("native staging IDs exhausted")?;
-        self.create_aligned(a,io,id,3,0,bytes,1,1<<17,None)?;
+        self.create_aligned(a,io,id,3,0,bytes,1,1<<17,None,false)?;
         Ok(id)
     }
     pub fn staging(&mut self, a: &mut Allocator, io: &mut impl Io, format: u32,
@@ -376,7 +427,7 @@ impl<B> Resources<B> {
     ) -> Result<u32, &'static str> {
         let id = self.temporary;
         self.temporary = id.checked_sub(1).ok_or("native staging IDs exhausted")?;
-        let result = self.create_aligned(a,io,id,2,format,width,height,4096,Some(charge));
+        let result = self.create_aligned(a,io,id,2,format,width,height,4096,Some(charge),false);
         if result.is_err() {
             if let Some(e) = self.entries.get_mut(&id) { e.dropped = true; }
         }
@@ -418,8 +469,12 @@ impl<B> Resources<B> {
     pub fn collect(&mut self, a: &mut Allocator, io: &mut impl Io) -> Result<(), &'static str> {
         let before = a.stats().charged;
         let result = (|| {
-            let ready: Vec<_> = self.entries.iter().filter(|(_,e)| e.dropped && Arc::strong_count(&e.reference) == 1)
-                .map(|(id,_)| *id).collect();
+            let mut ready = Vec::new();
+            ready.try_reserve_exact(self.entries.len()).map_err(|_| "native retirement scratch allocation")?;
+            ready.extend(self.entries.iter().filter(|(_,e)| e.dropped && Arc::strong_count(&e.reference) == 1)
+                .map(|(id,_)| *id));
+            let additional = ready.len().min(128usize.saturating_sub(self.retired.len()));
+            self.retired.try_reserve(additional).map_err(|_| "native retirement history allocation")?;
             for id in ready {
                 let e = &self.entries[&id];
                 if e.mapped {
@@ -537,14 +592,19 @@ mod native {
     }
 
     pub fn resource_create(tag: Tag, id: u32, kind: u32, format: u32,
-        width: u32, height: u32,
+        width: u32, height: u32, scanout: bool,
     ) -> Option<Request> {
-        ce::with_resources(|r, a, io| r.create(a, io, id, kind, format, width, height)).ok()?;
+        ce::with_resources(|r, a, io| if scanout && kind==1 {
+            r.create_scanout(a,io,id,format,width,height)
+        } else if scanout {Err("scanout requires a target")}
+        else {r.create(a, io, id, kind, format, width, height)}).ok()?;
         Some(Request::storage(tag, None))
     }
     pub fn attach_backing(tag: Tag, id: u32, backing: Arc<Pages>) -> Option<Request> {
         backing.identify("native-resource", id, 0);
-        let pages: alloc::vec::Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
+        let mut pages = alloc::vec::Vec::new();
+        pages.try_reserve_exact(backing.count()).ok()?;
+        pages.extend((0..backing.count()).map(|i| backing.page_addr(i)));
         ce::with_resources(|r, a, io| r.attach(a, io, id, backing.clone(), &pages, backing.bytes() as u64)).ok()?;
         Some(Request::storage(tag, Some(backing)))
     }
@@ -593,8 +653,8 @@ pub(crate) fn retire_blend_staging(ids: impl IntoIterator<Item = Option<u32>>, h
 #[cfg(target_os = "none")]
 pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + Sync>)
     -> Result<(super::encode::Target, Hold), &'static str> {
-    #[cfg(feature = "gt710_core_probe")]
     let preparing = super::timing::phase(101);
+    let cost_prepare = super::cost::phase(super::cost::Slot::SpanPrepare);
     let bytes = data.width as usize * data.height as usize * 4;
     if data.bytes.len() > bytes { return Err("oversized native packed spans"); }
     let layout = Layout::new(data.width, data.height, 4)?;
@@ -607,10 +667,12 @@ pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + S
         backing.write(y * layout.pitch as usize, row);
     }
     backing.maintain(0, backing_bytes, false);
-    let pages: Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
-    #[cfg(feature = "gt710_core_probe")]
+    let mut pages = Vec::new();
+    pages.try_reserve_exact(backing.count()).map_err(|_| "native crossing page vector allocation")?;
+    pages.extend((0..backing.count()).map(|i| backing.page_addr(i)));
     drop(preparing);
-    #[cfg(feature = "gt710_core_probe")]
+    drop(cost_prepare);
+    let cost_mapping = super::cost::phase(super::cost::Slot::SpanMap);
     let mapping = super::timing::phase(102);
     let (target, hold, plan) = super::ce::with_resources(|r, a, io| {
         let id = r.upload_spans(a, io, data.width, data.height, &data.bytes, charge)?;
@@ -627,11 +689,11 @@ pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + S
             }
         }
     })?;
-    #[cfg(feature = "gt710_core_probe")]
     drop(mapping);
+    drop(cost_mapping);
     let result = (|| {
-        #[cfg(feature = "gt710_core_probe")]
         let _timing = super::timing::phase(103);
+        let _cost = super::cost::phase(super::cost::Slot::SpanUpload);
         crate::gpu::native_spans_upload(target.id, plan, backing.clone())?;
         #[cfg(feature = "gt710_core_probe")]
         {
@@ -655,7 +717,13 @@ pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + S
         Ok(())
     })();
     if let Err(error) = result {
-        let mut holds = alloc::vec![hold];
+        let mut holds = Vec::new();
+        if holds.try_reserve_exact(1).is_err() {
+            // Preserve uncertain DMA ownership when cleanup metadata is unavailable.
+            core::mem::forget(hold);
+            return Err(error);
+        }
+        holds.push(hold);
         retire_blend_staging([Some(target.id)], &mut holds);
         return Err(error);
     }

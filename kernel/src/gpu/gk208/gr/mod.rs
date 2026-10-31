@@ -351,6 +351,9 @@ fn initialize_inner(
         hardware.graphics = Some(channel::Session::new(&mut hardware, &golden, shader.va)?);
         let mut graphics = hardware.graphics.take().ok_or("native GR channel absent")?;
         let result = (|| {
+            // Reserve the existing second native channel for terminal output.
+            // It stays empty throughout normal production rendering.
+            graphics.open_second(&mut hardware, &golden, shader.va)?;
             graphics.activate(&mut hardware)?;
             graphics.execute(&mut hardware)?;
             let mut receipt = binding::Receipt { target: 0, epoch: 0, nonce: 0,
@@ -363,6 +366,7 @@ fn initialize_inner(
             // VAB can still write during channel scheduling after a draw's
             // release. Keep it in the bootstrap residency through reset.
             let quarantine = graphics.allocate_draw(&mut hardware, "native-vab", 1 << 20, 1 << 17)?.va;
+            let terminal_quarantine = graphics.allocate_draw(&mut hardware, "terminal-vab", 1 << 20, 1 << 17)?.va;
             // Park the complete draw state on channel-owned storage. Allocation
             // and mapping use the bootstrap owner, retained through reset/unbind.
             let images = graphics.allocate_draw(&mut hardware, "native-park-images", 8192, 4096)?;
@@ -376,11 +380,11 @@ fn initialize_inner(
             graphics.upload(&mut hardware, images.va, &[0; 8192])?;
             super::encode::upload_parking(storage.va, &data,
                 |va, bytes| graphics.upload(&mut hardware, va, bytes))?;
-            Ok((quarantine, parking))
+            Ok((quarantine, terminal_quarantine, parking))
         })();
         let report = graphics.report();
         hardware.graphics = Some(graphics);
-        let (quarantine, parking) = result?;
+        let (quarantine, terminal_quarantine, parking) = result?;
         let mut board = super::caps::BoardState::empty();
         board.chipset = ((hardware.regs.read(0) >> 20) & 0x1ff) as u16;
         board.channel = (report.identity.instance, report.identity.epoch);
@@ -390,7 +394,7 @@ fn initialize_inner(
         board.scanouts[0] = super::caps_scanout(console)?;
         let last = hardware.graphics.as_ref().unwrap().last_sequence();
         let native = channel::Session::into_native(&mut hardware.graphics, hardware.regs.0,
-            total, mmu, &hardware.layout.allocator, quarantine, parking)?;
+            total, mmu, &hardware.layout.allocator, quarantine, terminal_quarantine, parking)?;
         Ok((native, board, last))
     })();
     match result {

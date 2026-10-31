@@ -6,7 +6,7 @@ use crate::{gpu::dev::{Done, Reap, Tag}, gpu_completion};
 use super::{copy::Rect, gr::{channel::NativeChannel, draw::Draw}, queue::Queue};
 
 #[derive(Clone, Copy)]
-pub enum Operation { Copy(Rect), Transfer(super::copy::Plan), Draw(Draw), Undefined }
+pub enum Operation { Copy(Rect), Transfer(super::copy::Plan), Draw(Draw), Present, Undefined }
 
 /// Commands originate only in the validated kernel encoder. The owned storage
 /// stays held by pending requests on uncertain publication or failed reset.
@@ -36,8 +36,7 @@ pub struct Request {
     resource: u64,
     generation: u64,
     upload: bool,
-    #[cfg(target_os = "none")]
-    scanout: bool,
+    scanout: Option<super::present::Surface>,
     #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
     pub(crate) control: super::core_record::Control,
 }
@@ -47,8 +46,7 @@ impl Request {
         Self { tag, fence: Some(caller), operation: Some(Operation::Copy(rect)), encoded: None, storage: false, _backing: None,
             #[cfg(target_os = "none")]
             _transfer_hold: None, resource, generation, upload: false,
-            #[cfg(target_os = "none")]
-            scanout: false,
+            scanout: None,
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             control: super::core_record::Control::Clean }
     }
@@ -60,8 +58,7 @@ impl Request {
         Self { tag, fence: Some(caller), operation, encoded, storage: false, _backing: None,
             #[cfg(target_os = "none")]
             _transfer_hold: None, resource, generation, upload: false,
-            #[cfg(target_os = "none")]
-            scanout: false,
+            scanout: None,
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             control: super::core_record::Control::Clean }
     }
@@ -74,8 +71,7 @@ impl Request {
             #[cfg(target_os = "none")]
             _transfer_hold: None,
             resource: u64::from(ctx), generation: 1, upload: false,
-            #[cfg(target_os = "none")]
-            scanout: false,
+            scanout: None,
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             control: super::core_record::Control::Clean })
     }
@@ -94,8 +90,7 @@ impl Request {
             #[cfg(target_os = "none")]
             _transfer_hold: Some(hold),
             resource, generation: 1, upload,
-            #[cfg(target_os = "none")]
-            scanout: false,
+            scanout: None,
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             control: super::core_record::Control::Clean }
     }
@@ -104,8 +99,17 @@ impl Request {
             *plan = plan.with_extras(extras);
         }
     }
-    #[cfg(target_os = "none")]
-    pub(in crate::gk208) fn presenting(mut self) -> Self { self.scanout = true; self }
+    pub(in crate::gk208) fn present(tag:Tag, caller:u64, surface:super::present::Surface,
+        #[cfg(target_os = "none")] hold:super::ce::readback::TransferHold,
+    ) -> Self {
+        Self {tag,fence:Some(caller),operation:Some(Operation::Present),encoded:None,
+            storage:false,_backing:None,
+            #[cfg(target_os = "none")]
+            _transfer_hold:Some(hold),
+            resource:u64::from(surface.resource),generation:1,upload:false,scanout:Some(surface),
+            #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
+            control:super::core_record::Control::Clean}
+    }
     pub fn is_upload(&self) -> bool { self.upload }
     /// Actual allocation/map/unmap completed in the resource owner before this
     /// receipt was constructed. This is not an engine completion or a fence.
@@ -114,8 +118,7 @@ impl Request {
             #[cfg(target_os = "none")]
             _transfer_hold: None,
             resource: 0, generation: 0, upload: false,
-            #[cfg(target_os = "none")]
-            scanout: false,
+            scanout: None,
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             control: super::core_record::Control::Clean }
     }
@@ -144,6 +147,13 @@ pub struct Device {
     resetting: Option<Result<(), &'static str>>,
 }
 impl Device {
+    #[cfg(target_os="none")]
+    pub(crate) fn heap_footprint(&self) -> [usize; 4] {
+        let channel = self.channel.heap_footprint();
+        [self.pending.capacity() * core::mem::size_of::<Sent>()
+            + self.recent.capacity() * core::mem::size_of::<RequestTrace>(),
+            self.retired.capacity() * core::mem::size_of::<(Request, Option<u32>)>(), channel[0], channel[1]]
+    }
     pub(crate) fn new(channel: NativeChannel, board: super::caps::BoardState) -> Self {
         Self { channel, board, queue: Queue::new(), pending: VecDeque::new(),
             retired: VecDeque::new(), attributed: None,
@@ -155,8 +165,17 @@ impl Device {
         device.queue = Queue::drained(last);
         device
     }
+    #[cfg(target_os = "none")]
+    pub(crate) fn terminal_identity(&self) -> Option<(u64, u64)> {
+        (!self.needs_reset()).then(|| self.channel.terminal_identity()).flatten()
+    }
     /// Recheck snapshot identity against the channel when querying CAPS. Restart's
     /// new epoch cannot silently inherit old object-creation evidence.
+    #[cfg(target_os = "none")]
+    pub(crate) fn terminal_queue(&self) -> Result<super::emergency::Queue, &'static str> {
+        if self.needs_reset() { return Err("terminal channel needs reset"); }
+        self.channel.terminal_queue()
+    }
     pub fn caps(&self) -> gpu_abi::Caps {
         super::caps::Profile::from_board(&self.board, self.channel.identity()).record(None)
     }
@@ -169,6 +188,8 @@ impl Device {
     }
     pub fn send(&mut self, request: Request) -> Result<(), Request> {
         if !self.has_room(1) || self.pending.try_reserve(1).is_err() { return Err(request); }
+        #[cfg(target_os = "none")]
+        if self.recent.len() < 16 && self.recent.try_reserve(1).is_err() { return Err(request); }
         if request.storage {
             self.pending.push_back(Sent { request, identity: None, answer: None });
             return Ok(());
@@ -203,7 +224,7 @@ impl Device {
         #[cfg(target_os = "none")]
         {
             let (kind, frame, address, command) = request.encoded.as_ref().map_or_else(
-                || (match request.operation { Some(Operation::Copy(_)) => "copy", Some(Operation::Transfer(_)) => "transfer", Some(Operation::Undefined) => "unmapped-write", _ => "triangle" }, 0, 0, 0),
+                || (match request.operation { Some(Operation::Copy(_)) => "copy", Some(Operation::Transfer(_)) => "transfer", Some(Operation::Undefined) => "unmapped-write", Some(Operation::Present) => "present", _ => "triangle" }, 0, 0, 0),
                 |d| ("encoded-draw", d._storage.resource, d._storage.address, d.command));
             if self.recent.len() == 16 { self.recent.pop_front(); }
             self.recent.push_back(RequestTrace { tag: request.tag, channel: context, epoch, caller, sequence,
@@ -278,11 +299,12 @@ impl Device {
             self.fault = true;
             return Reap::Fault;
         }
-        #[cfg(target_os = "none")]
-        if front.request.scanout && !super::ce::console_state().is_some_and(|(_,_,bound,_)| bound) {
-            self.first_error.get_or_insert("native present binding lost");
-            self.fault = true;
-            return Reap::Fault;
+        if let Some(surface) = front.request.scanout {
+            if let Err(reason) = self.channel.present(surface) {
+                self.first_error.get_or_insert(reason);
+                self.fault = true;
+                return Reap::Fault;
+            }
         }
         let identity = completed.request();
         if self.queue.complete(identity.sequence).is_err() { self.fault = true; return Reap::Fault; }
@@ -390,6 +412,10 @@ impl Device {
         if self.attributed.is_some() && self.retired.try_reserve(self.pending.len()).is_err() {
             return (Vec::new(), Err("native retirement allocation; backing retained"));
         }
+        let mut held = Vec::new();
+        if self.attributed.is_none() && held.try_reserve_exact(self.pending.len()).is_err() {
+            return (held, Err("native restart allocation; backing retained"));
+        }
         // A restart refusal retains requests as well as channel backing.
         if let Err(error) = self.channel.restart() {
             self.resetting = Some(Err(error));
@@ -410,7 +436,7 @@ impl Device {
                 self.retired.push_back((sent.request, answer));
             }
             Vec::new()
-        } else { self.pending.drain(..).map(|sent| sent.request).collect() };
+        } else { held.extend(self.pending.drain(..).map(|sent| sent.request)); held };
         self.queue = Queue::new();
         self.fault = false;
         self.first_error = None;

@@ -141,10 +141,27 @@ static DISPLAY_TAKEN: AtomicBool = AtomicBool::new(false);
 /// Read-backs of the GPU core's screen target in progress (`hold_canvas`).
 static CANVAS_HOLDS: AtomicU32 = AtomicU32::new(0);
 
+#[cfg(target_arch = "x86_64")]
+type Shadow = crate::gpu::byte_buffer::Bytes;
+#[cfg(target_arch = "aarch64")]
+type Shadow = Vec<u8>;
+
+#[cfg(target_arch="x86_64")]
+static TERMINAL_HEAP_BYTES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+#[cfg(target_arch="x86_64")]
+static SNAPSHOT_HEAP_BYTES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+#[cfg(target_arch="x86_64")]
+static SHOWN_HEAP_BYTES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+#[cfg(target_arch="x86_64")]
+pub(crate) fn heap_footprint() -> [usize; 2] {
+    [TERMINAL_HEAP_BYTES.load(Ordering::Relaxed),
+        SNAPSHOT_HEAP_BYTES.load(Ordering::Relaxed) + SHOWN_HEAP_BYTES.load(Ordering::Relaxed)]
+}
+
 /// What `attach` set up: the shadow and the splash drawn in it, which the boot
 /// thread keeps up to date until the render thread takes them.
 struct Attached {
-    shadow: Vec<u8>,
+    shadow: Shadow,
     splash: SplashRun,
     #[cfg(target_arch = "x86_64")]
     write_combining: Result<crate::arch_impl::x86_64::pagewalk::Report, &'static str>,
@@ -239,6 +256,8 @@ fn size_terminals(layout: &Layout) {
     // Plan Q10: what the heap gave, measured, beside what the sizes add up to.
     let cell = core::mem::size_of::<grid::Cell>();
     let calculated = (vt::VT_COUNT - 1) * (2 * size + grid::HISTORY_LINES * layout.cols()) * cell;
+    #[cfg(target_arch="x86_64")]
+    TERMINAL_HEAP_BYTES.store(free_before.saturating_sub(crate::memory::heap::free_bytes()), Ordering::Relaxed);
     say!(
         info,
         "[console] terminals: tty2 to tty6 took {} KiB of the kernel heap, measured (calculated: {} KiB for two screens and {} scrollback lines each; tty1's are static); heap high-water {} KiB of {} KiB",
@@ -259,12 +278,21 @@ fn prepare(
         return;
     };
     let layout = display.layout();
-    let mut shadow = Vec::new();
-    if shadow.try_reserve_exact(layout.bytes()).is_err() {
-        say!(warn, "{} no screen console: no memory for a {} byte shadow", TAG, layout.bytes());
+    #[cfg(target_arch = "x86_64")]
+    let Ok(shadow) = Shadow::new(layout.bytes()) else {
+        say!(warn, "{} no screen console: no frames for a {} byte shadow", TAG, layout.bytes());
         return;
-    }
-    shadow.resize(layout.bytes(), 0);
+    };
+    #[cfg(target_arch = "aarch64")]
+    let shadow = {
+        let mut shadow = Vec::new();
+        if shadow.try_reserve_exact(layout.bytes()).is_err() {
+            say!(warn, "{} no screen console: no memory for a {} byte shadow", TAG, layout.bytes());
+            return;
+        }
+        shadow.resize(layout.bytes(), 0);
+        shadow
+    };
     size_terminals(&layout);
     let font = layout.font;
     say!(
@@ -539,6 +567,12 @@ impl Drop for CanvasHold {
     }
 }
 
+/// Invalidate cached rows after the display storage changes, including GPU admission.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn request_repaint() {
+    REDRAW.store(true, Ordering::Release);
+}
+
 /// Return the display to the retained terminal, repainting even unchanged rows.
 pub fn give_back_display() {
     vt::give_back_display();
@@ -565,8 +599,7 @@ fn may_draw() -> bool {
     }
     // A process holds the GPU core's display and its terminal is in the
     // foreground: the core shows that process's frames, not the kernel's.
-    #[cfg(target_arch = "aarch64")]
-    if matches!(DISPLAY.get(), Some(Display::GpuCore(_)))
+    if crate::gpu::display_active()
         && crate::syscall::display::DISPLAY_OWNER_GROUP.load(Ordering::Acquire) != u64::MAX
         && !vt::presentation_suspended()
     {
@@ -834,7 +867,7 @@ struct Shown {
 struct Screen {
     display: &'static Display,
     layout: Layout,
-    shadow: Vec<u8>,
+    shadow: Shadow,
     /// What each text row of the screen shows, once it is drawn.
     shown: Vec<Option<Shown>>,
     cleared: bool,
@@ -842,6 +875,7 @@ struct Screen {
     frames: u64,
     /// The last pass wrote and flushed each row it drew, and left no row undrawn.
     complete: bool,
+    last_failure: Option<&'static str>,
     /// The boot stage ribbon the rows under its band show (section 23.7 of the BreenGL
     /// contract), once worked out, and whether the full repaint that started it took test
     /// point 15 (`ribbon-drop-stage`).
@@ -916,25 +950,36 @@ fn render_thread(display: &'static Display, attached: Attached) {
     display::linear::report_write_combining(attached.write_combining);
     let layout = display.layout();
     let (cols, rows) = with_grid(|console| (console.vts[0].grid.cols(), console.vts[0].grid.rows())).unwrap_or((0, 0));
+    let mut cells = Vec::new();
+    let mut shown = Vec::new();
+    if cells.try_reserve_exact(cols * rows).is_err() || shown.try_reserve_exact(rows).is_err() {
+        say!(error, "{} renderer metadata allocation failed", TAG);
+        return;
+    }
+    cells.resize(cols * rows, grid::BLANK);
+    shown.resize_with(rows, || None);
     let mut snapshot = Snapshot {
         cols,
         rows,
-        cells: alloc::vec![grid::BLANK; cols * rows],
+        cells,
         cursor: (0, 0),
         cursor_visible: true,
         generation: u64::MAX,
         fg: usize::MAX,
         epoch: u64::MAX,
     };
+    #[cfg(target_arch="x86_64")]
+    SNAPSHOT_HEAP_BYTES.store(snapshot.cells.capacity() * core::mem::size_of::<grid::Cell>(), Ordering::Relaxed);
     let mut splash_run = attached.splash;
     let mut screen = Screen {
         display,
         layout,
         shadow: attached.shadow,
-        shown: alloc::vec![None; rows],
+        shown,
         cleared: false,
         frames: 0,
         complete: false,
+        last_failure: None,
         #[cfg(target_arch = "aarch64")]
         ribbon: None,
         #[cfg(target_arch = "aarch64")]
@@ -946,6 +991,9 @@ fn render_thread(display: &'static Display, attached: Attached) {
     let mut announced = false;
     let mut last_session = false;
     while !crate::task::kthread::kthread_should_stop() {
+        // x86 has no ARM graphics render task to service owner-exit restores.
+        #[cfg(target_arch = "x86_64")]
+        crate::gpu::console::pump();
         deliver_replies();
         crate::tty::driver::drain_keyboard_input();
         // The `/proc/console/check` this pass may answer: one asked for before
@@ -957,6 +1005,8 @@ fn render_thread(display: &'static Display, attached: Attached) {
         vt::tick();
         if splash::is_up() {
             PRESENTING.store(true, Ordering::SeqCst);
+            #[cfg(target_arch = "x86_64")]
+            if may_draw() && display.begin_pass() { REDRAW.store(true, Ordering::Release); }
             splash_run.pass(display, &mut screen.shadow);
             answer_checks(Err(Absent::NotYet), false, asked);
             end_pass();
@@ -971,6 +1021,8 @@ fn render_thread(display: &'static Display, attached: Attached) {
         // Publish before checking ownership. A taker either observes this
         // pass and waits, or this pass observes the take and submits no frame.
         PRESENTING.store(true, Ordering::SeqCst);
+        #[cfg(target_arch = "x86_64")]
+        if may_draw() && display.begin_pass() { REDRAW.store(true, Ordering::Release); }
         if !may_draw() {
             // A completed text acquisition can change KD mode before this pass.
             // Record an unavailable read-back verdict rather than strand the next switch.
@@ -1060,7 +1112,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
                 vt::checked(shown);
             }
         }
-        if announced {
+        if announced || screen.last_failure.is_some() {
             answer_checks(Ok((&screen, snapshot.fg)), true, asked);
         }
         end_pass();
@@ -1305,9 +1357,15 @@ impl Screen {
     fn update(&mut self, snapshot: &Snapshot) -> usize {
         if !self.cleared {
             raster::clear(&mut self.shadow, &self.layout);
-            self.cleared = self.display.write(&self.shadow, 0..self.layout.height, may_draw)
-                && may_draw()
-                && self.display.flush(0..self.layout.height).is_ok();
+            let result = if !self.display.write(&self.shadow, 0..self.layout.height, may_draw) {
+                Err("the screen clear could not write its backing")
+            } else if !may_draw() {
+                Err("the display changed owners during screen clear")
+            } else {
+                self.display.flush(0..self.layout.height)
+            };
+            self.last_failure = result.err();
+            self.cleared = result.is_ok();
             if !self.cleared {
                 self.complete = false;
                 return 0;
@@ -1318,9 +1376,20 @@ impl Screen {
         let mut dirty: Option<core::ops::Range<usize>> = None;
         for row in 0..snapshot.rows {
             let (cursor_row, cursor_col) = snapshot.cursor;
+            let cursor = (snapshot.cursor_visible && cursor_row == row).then_some(cursor_col);
+            if self.shown[row].as_ref().is_some_and(|s| s.cursor == cursor && s.text == snapshot.row(row)) {
+                continue;
+            }
+            let mut text = Vec::new();
+            if text.try_reserve_exact(snapshot.cols).is_err() {
+                self.last_failure = Some("console row allocation");
+                failed = true;
+                continue;
+            }
+            text.extend_from_slice(snapshot.row(row));
             let wanted = Shown {
-                text: snapshot.row(row).to_vec(),
-                cursor: (snapshot.cursor_visible && cursor_row == row).then_some(cursor_col),
+                text,
+                cursor,
             };
             if self.shown[row].as_ref() == Some(&wanted) {
                 continue;
@@ -1340,11 +1409,15 @@ impl Screen {
                 });
             } else {
                 self.shown[row] = None;
+                self.last_failure = Some("the screen band could not write its backing");
                 failed = true;
             }
         }
         if let Some(lines) = dirty {
-            if !may_draw() || self.display.flush(lines.clone()).is_err() {
+            let flushed = if may_draw() { self.display.flush(lines.clone()) }
+                else { Err("the display changed owners before screen flush") };
+            if let Err(error) = flushed {
+                self.last_failure = Some(error);
                 // The rows are drawn and flushed again on the next pass.
                 let line_height = self.layout.font.line_height();
                 for shown in &mut self.shown[lines.start / line_height..lines.end.div_ceil(line_height)] {
@@ -1355,8 +1428,12 @@ impl Screen {
         }
         self.complete = !failed && self.shown.iter().all(Option::is_some);
         if self.complete {
+            self.last_failure = None;
             self.frames += 1;
         }
+        #[cfg(target_arch="x86_64")]
+        SHOWN_HEAP_BYTES.store(self.shown.capacity() * core::mem::size_of::<Option<Shown>>()
+            + self.shown.iter().flatten().map(|r| r.text.capacity() * core::mem::size_of::<grid::Cell>()).sum::<usize>(), Ordering::Relaxed);
         drawn
     }
 
@@ -1366,8 +1443,11 @@ impl Screen {
         let layout = self.layout;
         let bpp = layout.bytes_per_pixel;
         let font = layout.font;
-        let source = if may_draw() { self.display.settle() } else { Err(DISPLAY_OWNED) };
-        let mut line = alloc::vec![0u8; layout.width * bpp];
+        let mut source = if may_draw() { self.display.settle() } else { Err(DISPLAY_OWNED) };
+        let mut line = Vec::new();
+        if line.try_reserve_exact(layout.width * bpp).is_err() {
+            source = Err("console check row allocation");
+        } else { line.resize(layout.width * bpp, 0); }
         let mut differing_lines = 0;
         let mut first_difference = None;
         let mut font_mismatches = 0;
@@ -1381,6 +1461,13 @@ impl Screen {
                         let shadow = &self.shadow[bytes];
                         let x = line.chunks_exact(bpp).zip(shadow.chunks_exact(bpp)).position(|(a, b)| a != b);
                         first_difference = Some((x.unwrap_or(0), y));
+                        #[cfg(target_arch = "x86_64")]
+                        if bpp == 4 && crate::gpu::display_active() {
+                            let at = x.unwrap_or(0) * bpp;
+                            crate::gk208::console_sample(1, y * layout.stride_bytes + at,
+                                u32::from_le_bytes(shadow[at..at + 4].try_into().unwrap()),
+                                u32::from_le_bytes(line[at..at + 4].try_into().unwrap()));
+                        }
                     }
                 }
                 let row = y / font.line_height();
@@ -1404,19 +1491,25 @@ impl Screen {
                 }
             }
         }
-        let shown: Vec<&Shown> = self.shown.iter().flatten().collect();
-        let glyph_cells = shown
-            .iter()
+        let glyph_cells = self.shown.iter().flatten()
             .map(|row| row.text.iter().filter(|&&cell| cell.glyph != b' ' as u16).count())
             .sum();
-        let rows = shown
-            .iter()
-            .map(|row| {
+        let mut rows = Vec::new();
+        if rows.try_reserve_exact(self.shown.len()).is_err() {
+            source = Err("console check text allocation");
+        } else {
+            for row in self.shown.iter().flatten() {
                 let end = row.text.iter().rposition(|&cell| cell.glyph != b' ' as u16).map_or(0, |last| last + 1);
-                row.text[..end].to_vec()
-            })
-            .filter(|text| !text.is_empty())
-            .collect();
+                if end == 0 { continue; }
+                let mut text = Vec::new();
+                if text.try_reserve_exact(end).is_err() {
+                    source = Err("console check text allocation");
+                    break;
+                }
+                text.extend_from_slice(&row.text[..end]);
+                rows.push(text);
+            }
+        }
         Check {
             fg,
             layout,
@@ -1424,6 +1517,7 @@ impl Screen {
             source,
             frames: self.frames,
             complete: self.complete,
+            last_failure: self.last_failure,
             pixel_lines: layout.height,
             differing_lines,
             first_difference,
@@ -1451,6 +1545,7 @@ struct Check {
     /// the last did.
     frames: u64,
     complete: bool,
+    last_failure: Option<&'static str>,
     pixel_lines: usize,
     /// Pixel rows of the screen that differ from the shadow, and the first
     /// pixel that does.
@@ -1491,9 +1586,10 @@ impl fmt::Display for Hex<'_> {
 
 /// Answer the checks asked for: on the render thread, after a pass, so the
 /// screen is what `shown` says it is. The idle read-back waits for a pass that
-/// may answer it (`idle_allowed`): it reads the console's text, not the splash.
+/// may answer it (`idle_allowed`) and has the console: a temporary display owner
+/// must not consume the boot's one-shot pixel/font read-back request.
 fn answer_checks(screen: Result<(&Screen, usize), Absent>, idle_allowed: bool, asked: u32) {
-    let idle = idle_allowed && IDLE_CHECK.swap(false, Ordering::AcqRel);
+    let idle = idle_allowed && screen.is_ok() && IDLE_CHECK.swap(false, Ordering::AcqRel);
     let token = match asked {
         0 => 0,
         asked => PROC_CHECK.compare_exchange(asked, 0, Ordering::AcqRel, Ordering::Acquire).map_or(0, |_| asked),
@@ -1662,6 +1758,9 @@ pub fn proc_console_check() -> Result<String, i32> {
                 layout.rows()
             );
             let _ = writeln!(text, "console logo scale: {}", splash::logo_scale(&font));
+            if let Some(error) = check.last_failure {
+                let _ = writeln!(text, "console last failure: {}", error);
+            }
             match &check.source {
                 Ok(source) => {
                     let _ = writeln!(text, "console scanout: {}", source);

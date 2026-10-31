@@ -287,7 +287,9 @@ impl Reader {
             .range
             .start;
         let (bar_inst, bar_dir) = (native + 0x2000, native + 0x3000);
-        let pte = native + 0x4000 + (SLOT / 4096) * 8;
+        let table = layout.objects.iter().find(|o| o.name == "bar1-table")
+            .map_or(native + 0x4000, |o| o.range.start);
+        let pte = table + (SLOT / 4096) * 8;
         if read(regs, total, pte)? != 0 || read(regs, total, pte + 4)? != 0 {
             return Err("context readback USERD BAR alias occupied");
         }
@@ -297,7 +299,12 @@ impl Reader {
             device.bars[1].size,
             17,
         )?;
-        let bar = console.pointer - displacement;
+        let console_offset = if (console.width, console.height) == (2560, 1600) {
+            16 << 20
+        } else {
+            displacement
+        };
+        let bar = console.pointer - console_offset;
         let old = [
             regs.read(0x2254),
             regs.read(0x2140),
@@ -336,7 +343,11 @@ impl Reader {
         if bytes == 0 || bytes > 1 << 20 {
             return Err("invalid context readback extent");
         }
-        let mut snapshots = [vec![0; bytes], vec![0; bytes]];
+        let mut snapshots = [Vec::new(), Vec::new()];
+        for snapshot in &mut snapshots {
+            snapshot.try_reserve_exact(bytes).map_err(|_| "context readback allocation failed")?;
+            snapshot.resize(bytes, 0);
+        }
         for (n, poison) in [0x55, 0xaa].into_iter().enumerate() {
             for start in (0..bytes).step_by(SIZE) {
                 let count = SIZE.min(bytes - start);
@@ -458,7 +469,9 @@ pub(crate) fn transfer(tag: crate::gpu::dev::Tag, fence: u64, id: u32,
     offset: u64, stride: u32, upload: bool,
 ) -> Option<super::super::adapter::Request> {
     use super::super::copy;
-    let pages: Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
+    let mut pages = Vec::new();
+    pages.try_reserve_exact(backing.count()).ok()?;
+    pages.extend((0..backing.count()).map(|i| backing.page_addr(i)));
     let (plan,resource,hold) = super::with_resources(|r,a,io| {
         let hold = r.hold(id)?;
         let img = image(r,id)?;
@@ -468,8 +481,9 @@ pub(crate) fn transfer(tag: crate::gpu::dev::Tag, fence: u64, id: u32,
             else { copy::readback(img,linear,rectangle)? };
         Ok((plan,r.identity(id).ok_or("native transfer identity absent")?,hold))
     }).ok()?;
+    let mut holds = Vec::new(); holds.try_reserve_exact(1).ok()?; holds.push(hold);
     Some(super::super::adapter::Request::transfer(tag,fence,resource,plan,upload,
-        TransferHold { resources:vec![hold] },Some(backing)))
+        TransferHold { resources:holds },Some(backing)))
 }
 /// The resource owner has mapped this source and built the upload plan. Retain
 /// both image and backing through the CE release, including uncertain requests.
@@ -477,8 +491,9 @@ pub(crate) fn span_upload(tag: crate::gpu::dev::Tag, fence: u64, id: u32,
     plan: super::super::copy::Plan, backing: alloc::sync::Arc<crate::gpu::dma::Pages>,
 ) -> Option<super::super::adapter::Request> {
     let hold = super::with_resources(|r,_,_| r.hold(id)).ok()?;
+    let mut holds = Vec::new(); holds.try_reserve_exact(1).ok()?; holds.push(hold);
     Some(super::super::adapter::Request::transfer(tag,fence,u64::from(id),plan,true,
-        TransferHold { resources:vec![hold] },Some(backing)))
+        TransferHold { resources:holds },Some(backing)))
 }
 /// Build a byte-preserving target copy for the native stream encoder. Shared
 /// validation supplies handles/coordinates; overlapping storage uses VRAM first.
@@ -500,7 +515,9 @@ pub(in crate::gk208) fn region_plan(
     source: u32, destination: u32, rectangle: [u32;6],
 ) -> Result<(super::super::copy::Plan, Vec<super::super::resource::Hold>), &'static str> {
     use super::super::copy;
-    let mut holds=vec![r.hold(source)?,r.hold(destination)?];
+    let mut holds=Vec::new();
+    holds.try_reserve_exact(3).map_err(|_| "native copy hold allocation")?;
+    holds.extend([r.hold(source)?,r.hold(destination)?]);
     let (src,dst)=(image(r,source)?,image(r,destination)?);
     if src.texel_bytes != dst.texel_bytes { return Err("native copy format size mismatch"); }
     let staging = if src.address == dst.address {
@@ -531,12 +548,16 @@ pub(crate) fn console(tag: crate::gpu::dev::Tag, fence: u64,
 ) -> Option<super::super::adapter::Request> {
     let (surface, allocation) = super::console_allocation()?;
     super::super::console_binding(&surface).ok()?;
-    let pages: Vec<_> = (0..backing.count()).map(|i| backing.page_addr(i)).collect();
+    let mut pages = Vec::new();
+    pages.try_reserve_exact(backing.count()).ok()?;
+    pages.extend((0..backing.count()).map(|i| backing.page_addr(i)));
     let (plan, holds) = super::with_resources(|r,a,io| {
         let source = r.import_linear(a,io,u32::MAX,allocation)?;
         let destination = r.draw_buffer(a,io,backing.bytes() as u32)?;
         r.attach(a,io,destination,backing.clone(),&pages,backing.bytes() as u64)?;
-        let holds = vec![r.hold(u32::MAX)?,r.hold(destination)?];
+        let mut holds = Vec::new();
+        holds.try_reserve_exact(2).map_err(|_| "console readback hold allocation")?;
+        holds.extend([r.hold(u32::MAX)?,r.hold(destination)?]);
         let address = r.address(destination).ok_or("console readback mapping absent")?;
         r.unref(destination)?;
         let plan = super::super::copy::pitch(
@@ -551,44 +572,46 @@ pub(crate) fn console(tag: crate::gpu::dev::Tag, fence: u64,
         TransferHold { resources: holds },Some(backing)))
 }
 
-/// Native scanout is the display owner's retained pitch-linear surface. Bind
-/// validates the logical target; the following fenced flush performs the CE
-/// tiled-to-linear copy into that already latched surface.
-pub(crate) fn set_scanout(tag: crate::gpu::dev::Tag, ctx: u32, id: u32,
-    width: u32, height: u32,
+/// The bind validates only. It cannot latch or complete without the following
+/// flush, including the shared skipped-flush negative control.
+pub(crate) fn set_scanout(tag: crate::gpu::dev::Tag, ctx:u32, id:u32,
+    width:u32, height:u32,
 ) -> Option<super::super::adapter::Request> {
     super::super::resource::context_id(ctx)?;
-    let (surface, _) = super::console_allocation()?;
-    super::super::console_binding(&surface).ok()?;
-    super::with_resources(|r,_,_| {
-        let layout=r.layout(id).ok_or("native present target absent")?;
-        if layout.width != width || layout.height != height || layout.texel_bytes != 4
-            || width as usize > surface.width || height as usize > surface.height {
-            return Err("native present extent");
-        }
-        Ok(())
-    }).ok()?;
+    scanout(id,width,height)?;
     Some(super::super::adapter::Request::storage(tag,None))
 }
-pub(crate) fn flush_resource(tag: crate::gpu::dev::Tag, ctx: u32, fence: u64, id: u32,
-    width: u32, height: u32,
+fn scanout(id:u32,width:u32,height:u32) -> Option<super::super::present::Surface> {
+    let surface=super::with_resources(|r,_,_| {
+        let surface=r.scanout(id).ok_or("native scanout target absent")?;
+        if surface.width!=width || surface.height!=height {
+            return Err("native present extent differs from its resource");
+        }
+        Ok(surface)
+    }).ok()?;
+    super::process::presentable(width,height).ok()?;
+    Some(surface)
+}
+pub(crate) fn flush_resource(tag:crate::gpu::dev::Tag,ctx:u32,fence:u64,id:u32,
+    width:u32,height:u32,
 ) -> Option<super::super::adapter::Request> {
     super::super::resource::context_id(ctx)?;
-    let (surface, allocation) = super::console_allocation()?;
-    super::super::console_binding(&surface).ok()?;
-    let (plan, resource, holds) = super::with_resources(|r,a,io| {
-        let source=image(r,id)?;
-        if source.width != width || source.height != height
-            || width as usize > surface.width || height as usize > surface.height {
-            return Err("native present extent");
-        }
-        let address=r.import_linear(a,io,u32::MAX,allocation)?;
-        let holds=vec![r.hold(id)?,r.hold(u32::MAX)?];
-        let plan=super::super::copy::readback(source,super::super::copy::Linear {
-            address,bytes:allocation.range.size,offset:0,stride:surface.pitch as u32,
-        },[0,0,width,height])?;
-        Ok((plan,r.identity(id).ok_or("native present target absent")?,holds))
-    }).ok()?;
-    Some(super::super::adapter::Request::transfer(tag,fence,resource,plan,false,
-        TransferHold { resources:holds },None).presenting())
+    let surface=scanout(id,width,height)?;
+    let hold=super::with_resources(|r,_,_|r.hold(id)).ok()?;
+    let mut holds = Vec::new(); holds.try_reserve_exact(1).ok()?; holds.push(hold);
+    Some(super::super::adapter::Request::present(tag,fence,surface,
+        TransferHold{resources:holds}))
+}
+
+/// CPU console damage was uploaded by CE already. EVO has no dirty-rectangle
+/// flush: confirm a fresh whole-surface UPDATE through the same ordered native
+/// present as a client, retaining the actual resource until its latch completes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn flush_rect(tag: crate::gpu::dev::Tag, ctx: u32, fence: u64, id: u32,
+    x: u32, y: u32, width: u32, height: u32,
+) -> Option<super::super::adapter::Request> {
+    let surface = super::with_resources(|r,_,_| r.scanout(id).ok_or("native console target absent")).ok()?;
+    if width == 0 || height == 0 || x.checked_add(width)? > surface.width
+        || y.checked_add(height)? > surface.height { return None; }
+    flush_resource(tag, ctx, fence, id, surface.width, surface.height)
 }

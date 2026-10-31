@@ -1,4 +1,25 @@
 /*
+ * Copyright 2018 Red Hat Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ */
+/*
  * SPDX-FileCopyrightText: Copyright (c) 1993-2014 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  *
@@ -198,6 +219,9 @@ pub fn suite_requested() -> bool {
 }
 /// CPU-only memory evidence has a separate, bounded probe boot route.
 pub fn memory_requested()->bool {
+    // The terminal oracle uses probe transport, but needs normal display/core
+    // startup before its deliberate panic, not the CPU VRAM experiments.
+    if cfg!(feature = "capture_panic_oracle") { return false; }
     crate::boot::intent::get()
         .and_then(|bytes| core::str::from_utf8(bytes).ok())
         .and_then(|text| crate::boot::target::parse(text).ok())
@@ -242,13 +266,19 @@ fn submit(
     put: &mut u32,
     methods: &[(u32, u32)],
 ) -> Result<(), &'static str> {
-    if *put as usize + methods.len() * 8 > 2048 {
+    // MIT nouveau core507d_update scopes NOTIFY to one UPDATE: arm it,
+    // issue UPDATE, then disable it before any subsequent core method.
+    let disarm = methods.last().is_some_and(|&(method, _)| method == 0x80);
+    let count = methods.len() + usize::from(disarm);
+    if *put as usize + count * 8 > 2048 {
         return Err("native core push storage exhausted");
     }
     let mut words = Vec::new();
+    words.try_reserve_exact(count * 2).map_err(|_| "native core command allocation")?;
     for (method, value) in methods {
         words.extend([0x00040000 | method, *value]);
     }
+    if disarm { words.extend([0x00040084, 0]); }
     write_words(regs, total, push + u64::from(*put), &words)?;
     *put += words.len() as u32 * 4;
     modeset::publish(regs, *put)
@@ -374,6 +404,41 @@ pub struct FlipSnapshot {
     pub link: u32,
 }
 impl Evo {
+    pub(in crate::gk208) fn terminal_display(&self, registers: usize, surface: super::present::Surface)
+        -> Result<super::emergency::Display, &'static str> {
+        let regs = Registers(registers);
+        let h = self.head as usize * 0x300;
+        let blank = regs.read(0x64041c+h);
+        let end = regs.read(0x640420+h);
+        let view = modeset::Viewport::for_raster((end&0xffff).checked_sub(blank&0xffff)
+            .ok_or("invalid terminal raster")?, (end>>16).checked_sub(blank>>16)
+            .ok_or("invalid terminal raster")?, surface.width, surface.height)?;
+        let surface_methods = surface.methods(self.head)?;
+        let view_methods = view.methods(self.head)?;
+        let mut methods = Vec::new();
+        methods.try_reserve_exact(surface_methods.len() + view_methods.len())
+            .map_err(|_| "terminal EVO method allocation")?;
+        methods.extend_from_slice(&surface_methods[..5]);
+        methods.extend_from_slice(&view_methods);
+        methods.extend_from_slice(&surface_methods[5..]);
+        // NV927D_SET_NOTIFIER_CONTROL_OFFSET[11:2]: keep terminal
+        // completion in a disjoint 16-byte slot of the owned notifier page.
+        methods.iter_mut().find(|(m, _)| *m == 0x84)
+            .ok_or("terminal notifier control absent")?.1 |= 16;
+        // Ordinary EVO packets stay below 2048; the second half of this
+        // already-owned 4096-byte push page is terminal-only (NV927D JUMP).
+        if methods.len() * 8 > 2048 { return Err("terminal EVO packet extent"); }
+        let mut words = Vec::new();
+        words.try_reserve_exact(methods.len() * 2).map_err(|_| "terminal EVO packet allocation")?;
+        words.extend(methods.iter().flat_map(|&(m, v)| [0x40000 | m, v]));
+        write_words(&mut Registers(registers), self.total, self.push + 2048, &words)?;
+        modeset::bar_flush(&mut Registers(registers))?;
+        Ok(super::emergency::Display { registers, total: self.total,
+            push: self.push, notifier: self.notifier + 16, head: self.head, sor: self.sor,
+            methods,
+            #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
+            target: surface.resource })
+    }
     pub fn flip(&mut self, regs: &mut Registers, address: u64) -> Result<FlipSnapshot, &'static str> {
         if !self.surfaces.iter().any(|s| s.start == address) {
             return Err("flip outside private scanouts");
@@ -412,6 +477,110 @@ fn flip(
     }
     Ok(FlipSnapshot { notifier_before,notifier_after,put:*put,get:regs.read(0x640004),
         active_register,active_value,raster_before,raster_after,underflow,errors,power,link })
+}
+
+/// A fresh core-channel acknowledgement without relatching unchanged head
+/// state. MIT core507d_read_caps/core907d_caps_init and cl927d.h define
+/// GET_CAPABILITIES and CAPABILITIES_4.DONE at byte offset 16. The report's
+/// 0x150 bytes at offset 0x200 stay disjoint from ordinary and terminal slots.
+fn acknowledge(evo: &mut Evo, regs: &mut Registers) -> Result<u32, &'static str> {
+    let report = evo.notifier + 0x200;
+    modeset::wait(regs, 0x640004, u32::MAX, evo.put)?;
+    write_words(regs, evo.total, report + 16, &[0])?;
+    if read_word(regs, evo.total, report + 16)? != 0 {
+        return Err("native retained notifier did not clear");
+    }
+    let methods = [(0x84, 0x80000200), (0x8c, 0), (0x84, 0)];
+    if evo.put as usize + methods.len() * 8 > 2044 {
+        write_words(regs, evo.total, evo.push + u64::from(evo.put), &[0x20000000])?;
+        modeset::publish(regs, 0)?;
+        modeset::wait(regs, 0x640004, u32::MAX, 0)?;
+        evo.put = 0;
+    }
+    submit(regs, evo.total, evo.push, &mut evo.put, &methods)?;
+    let value = complete(regs, evo.total, report + 16, &evo.limits,
+        &evo.coefficients, (evo.head, evo.sor, true, true), &evo.scripts)?;
+    modeset::wait(regs, 0x640004, u32::MAX, evo.put)?;
+    Ok(value)
+}
+
+/// Same-mode target update through the retained 927D core channel. Unlike the
+/// bring-up flip, this binds the target's size, storage, format and DMA kind.
+/// No console copy, framebuffer writes or fixed raster delay is involved.
+pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
+    surface: super::present::Surface,
+) -> Result<super::present::Receipt, &'static str> {
+    let _cost = super::cost::phase(super::cost::Slot::Evo);
+    let h=evo.head as usize*0x300;
+    let blank=regs.read(0x64041c+h);
+    let end=regs.read(0x640420+h);
+    let view=modeset::Viewport::for_raster((end&0xffff).checked_sub(blank&0xffff)
+        .ok_or("invalid native raster width")?,(end>>16).checked_sub(blank>>16)
+        .ok_or("invalid native raster height")?,surface.width,surface.height)?;
+    struct Update<'a> { evo:&'a mut Evo, regs:&'a mut Registers, view:modeset::Viewport }
+    impl super::present::Io for Update<'_> {
+        fn clear_notifier(&mut self) -> Result<(), &'static str> {
+            modeset::wait(self.regs,0x640004,u32::MAX,self.evo.put)?;
+            write_words(self.regs,self.evo.total,self.evo.notifier,&[0,0,0,0])?;
+            if read_word(self.regs,self.evo.total,self.evo.notifier)? != 0 {
+                return Err("native present notifier did not clear");
+            }
+            Ok(())
+        }
+        fn submit(&mut self, methods:&[(u32,u32)]) -> Result<(), &'static str> {
+            // Keep fresh UPDATE/notifier completion for PRESENT, without
+            // dirtying already latched head state and pacing copies to vblank.
+            let head=&methods[..methods.len()-2];
+            let same=head.iter().all(|&(m,v)| self.regs.read(0x640000+m as usize)==v
+                && self.regs.read(0x660000+m as usize)==v);
+            let mut words=Vec::new();
+            words.try_reserve_exact(head.len() + 10).map_err(|_| "native UPDATE allocation")?;
+            if !same { words.extend_from_slice(head); }
+            if self.view.verify(self.regs,self.evo.head).is_err() {
+                words.extend(self.view.methods(self.evo.head)?);
+            }
+            words.extend_from_slice(&methods[methods.len()-2..]);
+            let methods=words.as_slice();
+            // NV927D_DMA_OPCODE_JUMP, offset 0. Prior GET was drained above;
+            // reserve the final word for the jump before reusing command bytes.
+            if self.evo.put as usize + (methods.len()+1)*8 > 2044 {
+                write_words(self.regs,self.evo.total,
+                    self.evo.push+u64::from(self.evo.put),&[0x20000000])?;
+                modeset::publish(self.regs,0)?;
+                modeset::wait(self.regs,0x640004,u32::MAX,0)?;
+                self.evo.put=0;
+            }
+            submit(self.regs,self.evo.total,self.evo.push,&mut self.evo.put,methods)
+        }
+        fn complete(&mut self) -> Result<u32, &'static str> {
+            let e=&self.evo;
+            let value=complete(self.regs,e.total,e.notifier,&e.limits,&e.coefficients,
+                (e.head,e.sor,true,true),&e.scripts)?;
+            modeset::wait(self.regs,0x640004,u32::MAX,e.put)?;
+            Ok(value)
+        }
+        fn read(&mut self, register:usize) -> u32 {self.regs.read(register)}
+    }
+    let head=evo.head;
+    let receipt = {
+        let mut update = Update { evo, regs, view };
+        let retained = if view.verify(update.regs, head).is_ok() {
+            super::present::retained(&mut update, head, surface,
+                |u| acknowledge(u.evo, u.regs))?
+        } else { None };
+        match retained {
+            Some(receipt) => receipt,
+            None => super::present::flush(&mut update, head, surface)?,
+        }
+    };
+    view.verify(regs,head)?;
+    if regs.read(0x61009c) != 0 || regs.read(0x616308+head as usize*0x800)&0x111 != 1
+        || regs.read(0x61c004+evo.sor as usize*0x800)&0x80000001 != 1
+        || regs.read(0x61c030+evo.sor as usize*0x800)&0x10000000 != 0 {
+        return Err("native present lost display health");
+    }
+    super::display_evidence::record(regs, head, surface, &receipt);
+    Ok(receipt)
 }
 
 pub fn takeover(
@@ -454,13 +623,14 @@ pub fn takeover(
     let total = memory::discover(regs, device.bars[1].size)?.total;
     let page = modeset::bar1_page(regs)?;
     let (base,displacement,pages)=modeset::bar1_view(surface.start,surface.size,device.bars[1].size,page)?;
-    let methods = modeset::head_methods(
+    let methods = modeset::logical_head_methods(
         t,
         head,
         u32::from(route.sor),
         protocol,
         surface.start,
         layout.pitch,
+        t.width,t.height,
     )?;
     // Decode each selected mode's board scripts before the takeover boundary.
     let prepared = (|| {
@@ -548,6 +718,10 @@ pub fn takeover(
         instance + modeset::ramht_slot(2, 0),
         &[2, (0x1020 << 9) | 1],
     )?;
+    let color = super::present::Surface {resource:1,address:0,width:1,height:1,
+        pitch:256,block_height:1,format:0,dma:3}.dma_words(total)?;
+    write_words(regs,total,instance+0x1040,&color)?;
+    write_words(regs,total,instance+modeset::ramht_slot(3,0),&[3,(0x1040<<9)|1])?;
     modeset::bar_flush(regs)?;
     regs.write(0x610010, (instance >> 8) as u32 | 9);
     modeset::prepare_disabled_core(regs,evo)?;
@@ -987,6 +1161,63 @@ pub fn takeover(
         }))
 }
 
+/// Install the permanent G20 console outside the bring-up BAR window and its
+/// USERD page. A GK208 SPT covers 128 MiB (MIT vmmgk104.c; vm::TABLE_BYTES).
+/// Preserve the first 8 MiB PTEs and map the high surface at BAR1 offset 16 MiB.
+pub(super) fn logical_console(regs:&mut Registers,layout:&mut memory::Layout,
+    evo:&mut Evo,old:ConsoleSurface,bar:usize,bar_bytes:u64)
+    ->Result<ConsoleSurface, &'static str> {
+    const OFFSET:u64=16<<20;
+    const BYTES:u64=2560*1600*4;
+    if bar_bytes<32<<20 {return Err("native logical console needs 32 MiB BAR1");}
+    let allocation=layout.allocator.allocate(BYTES,65536,memory::allocator::Kind::Display)?;
+    // Permanent display allocations stay charged after a partial publication.
+    layout.objects.push(memory::Object{name:"logical-console",range:allocation.range,
+        align:65536,allocation});
+    let table=layout.allocator.allocate(super::vm::TABLE_BYTES,4096,memory::allocator::Kind::Display)?;
+    layout.objects.push(memory::Object{name:"bar1-table",range:table.range,align:4096,allocation:table});
+    let instance=layout.objects[4].range.start;
+    let mut words=Vec::new();
+    words.try_reserve_exact(super::vm::TABLE_BYTES as usize/4)
+        .map_err(|_| "logical console BAR table allocation")?;
+    words.resize(super::vm::TABLE_BYTES as usize/4,0u32);
+    {
+        let mut p=memory::Pramin::new(regs,evo.total);
+        for (i,word) in words[..modeset::BAR1_WINDOW/4096*2].iter_mut().enumerate() {
+            *word=p.read(instance+0x4000+i as u64*4)?;
+        }
+        for i in 0..BYTES/4096 {
+            let entry=((allocation.range.start+i*4096)>>8)|1;
+            let at=((OFFSET/4096+i)*2) as usize;
+            words[at]=entry as u32;words[at+1]=(entry>>32) as u32;
+        }
+        for (i,chunk) in words.chunks(4096).enumerate() {
+            p.write_words(table.range.start+i as u64*16384,chunk)?;
+        }
+    }
+    write_words(regs,evo.total,instance+0x3000,&[0,(table.range.start>>8) as u32|1])?;
+    write_words(regs,evo.total,instance+0x2208,&[(32<<20)-1,0])?;
+    modeset::activate_bar1(regs,instance+0x2000,instance+0x3000)?;
+    let alias=crate::memory::map_mmio(old.phys-(old.pointer-bar) as u64,32<<20)?;
+    let pointer=alias+OFFSET as usize;
+    crate::console::display::linear::map_native_write_combining(
+        old.phys-(old.pointer-bar) as u64,bar_bytes)?;
+    // Clear through the owned CPU aperture before making this surface visible.
+    for n in 0..BYTES as usize/4 {unsafe {((pointer+n*4) as *mut u32).write_volatile(0xff000000);}}
+    modeset::bar_flush(regs)?;
+    let surface=super::present::Surface{resource:u32::MAX,address:allocation.range.start,
+        width:2560,height:1600,pitch:10240,block_height:0,format:0,dma:1};
+    let receipt=present(evo,regs,surface)?;
+    let latch=super::display_evidence::transition(regs,evo.head,surface,&receipt,
+        [allocation.range.start,allocation.range.size],[allocation.range.start,allocation.range.size],"handoff")?;
+    crate::serial_println!("GT710_NATIVE_HANDOFF latch={}",latch);
+    layout.objects.try_reserve(1).map_err(|_| "logical low-mode object allocation")?;
+    let low=layout.allocator.allocate(1280*800*4,65536,memory::allocator::Kind::Display)?;
+    layout.objects.push(memory::Object{name:"logical-low",range:low.range,align:65536,allocation:low});
+    Ok(ConsoleSurface{pointer,bytes:BYTES as usize,width:2560,height:1600,pitch:10240,
+        vram:allocation.range.start,phys:old.phys-(old.pointer-bar) as u64+OFFSET,..old})
+}
+
 fn active_snapshot(regs: &Registers, head: u32, sor: u32) -> String {
     let h=head as usize*0x300;
     let mut result=String::new();
@@ -1000,10 +1231,33 @@ fn active_snapshot(regs: &Registers, head: u32, sor: u32) -> String {
     result
 }
 
+pub(super) fn console_receipt(evo: &Evo, regs: &mut Registers, console: ConsoleSurface,
+    allocation: memory::Range) -> Result<u64, &'static str> {
+    console_binding(&console)?;
+    let h=evo.head as usize*0x300;
+    let methods=[0x460,0x468,0x46c,0x470,0x474];
+    let receipt=super::present::Receipt {
+        notifier:read_word(regs,evo.total,evo.notifier)?,
+        active:methods.map(|m|regs.read(0x640000+m+h)),
+        armed:methods.map(|m|regs.read(0x660000+m+h)),
+    };
+    let surface=super::present::Surface {resource:u32::MAX,address:console.vram,
+        width:2560,height:1600,pitch:10240,block_height:0,format:0,dma:1};
+    super::display_evidence::transition(regs,evo.head,surface,&receipt,
+        [allocation.start,allocation.size],[allocation.start,allocation.size],"receipt")
+}
+
 pub fn console_binding(surface: &ConsoleSurface) -> Result<(), &'static str> {
-    let regs = Registers(surface.regs);
+    let mut regs = Registers(surface.regs);
     let h = surface.head as usize * 0x300;
+    let blank=regs.read(0x64041c+h);
+    let end=regs.read(0x640420+h);
+    let view=modeset::Viewport::for_raster((end&0xffff).checked_sub(blank&0xffff)
+        .ok_or("invalid console raster width")?,(end>>16).checked_sub(blank>>16)
+        .ok_or("invalid console raster height")?,surface.width as u32,surface.height as u32)?;
+    view.verify(&mut regs,surface.head)?;
     if u64::from(regs.read(0x640460 + h)) << 8 != surface.vram
+        || regs.read(0x640468+h)!=(surface.width as u32|((surface.height as u32)<<16))
         || regs.read(0x61009c) != 0
         || regs.read(0x616308 + surface.head as usize * 0x800) & 0x111 != 1
     {
@@ -1012,18 +1266,20 @@ pub fn console_binding(surface: &ConsoleSurface) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// CAPS observes the owned native scanout, whose dimensions were selected from
-/// live DDC/EDID during takeover. Refuse stale/lost native bindings.
+/// CAPS observes the owned logical scanout; its physical raster remains the
+/// timing selected from live DDC/EDID. Refuse stale/lost native bindings.
 pub fn caps_scanout(surface: &ConsoleSurface) -> Result<gpu_abi::ScanoutInfo, &'static str> {
-    console_binding(surface)?;
     let regs = Registers(surface.regs);
+    if regs.read(0x61009c)!=0 || regs.read(0x616308+surface.head as usize*0x800)&0x111!=1 {
+        return Err("native CAPS display unhealthy");
+    }
     // The active ISO surface size shadows EVO method 0x468, not the
     // timing-total method 0x414 (modeset.rs:276,305).
     let size = regs.read(0x640468 + surface.head as usize * 0x300);
     let width = size & 0xffff;
     let height = size >> 16;
     if width as usize != surface.width || height as usize != surface.height {
-        return Err("native CAPS active dimensions differ from EDID mode");
+        return Err("native CAPS active dimensions differ from console surface");
     }
     Ok(gpu_abi::ScanoutInfo { enabled: 1, width, height, reserved: 0 })
 }
@@ -1082,6 +1338,7 @@ impl CoreProducer {
         d.retry_pri();
         let (context, epoch, sequence) = d.probe_identity()?;
         let (resource, kind) = match operation {
+            Operation::Present => return Err("core producer present requires a retained scanout target"),
             Operation::Transfer(_) | Operation::Undefined => return Err("core producer uses explicit probe copies"),
             Operation::Copy(rect) => (rect.dst, gpu_abi::gk208::TRANSFER_RELEASE),
             Operation::Draw(draw) => (draw.target_va, gpu_abi::gk208::DRAW_RELEASE),
@@ -1090,6 +1347,7 @@ impl CoreProducer {
         let caller = (1u64 << 32) | u64::from(sequence);
         let identity = crate::gpu_completion::Request { context, epoch, caller, sequence, resource, generation: 1 };
         let mut request = match operation {
+            Operation::Present => return Err("core producer present requires a retained scanout target"),
             Operation::Transfer(_) | Operation::Undefined => return Err("core producer uses explicit probe copies"),
             Operation::Copy(rect) => Request::copy(Tag::Sync(caller), caller, resource, 1, rect),
             Operation::Draw(draw) => Request::draw(Tag::Sync(caller), caller, resource, 1, draw),

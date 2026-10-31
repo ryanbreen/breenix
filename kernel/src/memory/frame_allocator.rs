@@ -1485,3 +1485,15 @@ unsafe impl FrameAllocator<Size4KiB> for GlobalFrameAllocator {
         allocate_frame()
     }
 }
+
+/// Heap metadata retained by the physical allocator, sampled without allocation.
+#[cfg(target_arch="x86_64")]
+pub(crate) fn heap_footprint() -> [usize; 3] {
+    let bytes = FRAME_LEDGER.get().map_or(0, |ledger| {
+        ledger.chunks.len() * core::mem::size_of::<spin::Once<&[FrameLedgerSlot]>>()
+            + ledger.chunks.iter().filter_map(spin::Once::get)
+                .map(|slots| core::mem::size_of_val(*slots)).sum::<usize>()
+    });
+    [NEXT_FREE_FRAME.load(Ordering::Acquire),
+        FREE_FRAME_CAPACITY.load(Ordering::Acquire) * core::mem::size_of::<PhysFrame>(), bytes]
+}

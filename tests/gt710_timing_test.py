@@ -13,6 +13,8 @@ class Timing(unittest.TestCase):
         source = f'''extern crate alloc;
 #[path="{ROOT / 'kernel/src/gpu/gk208/timing.rs'}"] mod timing;
 fn main() {{
+ assert!(!timing::collecting(false,false));
+ assert!(timing::collecting(false,true));assert!(timing::collecting(true,false));assert!(timing::collecting(true,true));
  let mut r=timing::Recorder::new();
  r.finish(42,0,7,10,20);
  assert!(r.drain(1).is_none());
@@ -33,6 +35,21 @@ fn main() {{
             p=Path(d);(p/'timing.rs').write_text(source)
             subprocess.run(priority+['rustc','--edition=2021','-Dwarnings',str(p/'timing.rs'),'-o',str(p/'timing')],check=True)
             subprocess.run([str(p/'timing')],check=True)
+
+    def test_large_timing_export_refuses_allocation_failure_and_retains_rows(self):
+        sys.path.insert(0,str(ROOT/'tests'))
+        from gt710_allocation_failure_test import ALLOC,run
+        fixture=f'#[path="{ROOT / "kernel/src/gpu/gk208/timing.rs"}"] mod timing;\n'+ALLOC+r'''
+#[test]fn timing_export_allocation_is_a_refusal(){
+ assert!(!timing::collecting(false,false));let mut r=timing::Recorder::new();r.begin_draw(42);
+ for n in 0..20000{r.finish(42,1,7,n,n+1);}
+ arm();let refused=r.drain(7);ARMED.store(false,Ordering::Relaxed);
+ assert!(HIT.load(Ordering::Relaxed));assert!(refused.is_none());
+ let row=r.drain(8).unwrap();assert!(row.contains("\"dropped\":3616"));
+ assert!(row.contains("[42,1,7,0,1]"));assert!(row.contains("[42,1,7,16383,1]"));
+}
+'''
+        run(fixture,'timing_export_allocation_is_a_refusal',[0])
 
     def test_timing_bulk_requires_exact_anchor_and_length(self):
         sys.path.insert(0,str(ROOT/'scripts/metal'))

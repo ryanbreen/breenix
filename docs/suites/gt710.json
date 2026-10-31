@@ -284,6 +284,25 @@
       ]
     },
     {
+      "id": "presentation",
+      "title": "Presentation and scanout isolation (M8 PR 8.6)",
+      "hostRunner": true,
+      "cases": [
+        {
+          "id": "display",
+          "title": "Runtime EVO snapshots prove both G20 viewports, the DDC preferred raster, latched surfaces and zero firmware writes"
+        },
+        {
+          "id": "panic",
+          "title": "A separate terminal PANIC capture proves bound diagnostics under both poisons with firmware_writes=0 and no LOCKUP"
+        },
+        {
+          "id": "suite",
+          "title": "A completed production GPU boot records all 170 ordered cases with zero skips, the 161-case 8.6 selection passing, reclaimed memory and its own time within 900 s"
+        }
+      ]
+    },
+    {
       "id": "isolation",
       "title": "Isolation, warm-up and recovery (M8 PR 8.5)",
       "hostRunner": true,

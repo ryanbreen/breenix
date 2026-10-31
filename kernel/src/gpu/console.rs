@@ -73,6 +73,8 @@ pub(super) fn restored_pending() {
 /// client image copied into the retained scanout; end that logical binding too.
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn native_repainted() {
+    // Once admitted, screen::present owns the completed binding and its holds.
+    if display::active() { return; }
     if !crate::gk208::console_state().is_some_and(|(_, _, bound, _)| bound) {
         return;
     }
@@ -102,26 +104,11 @@ pub(super) fn describe(a: &mut abi::Modes) {
     };
     a.firmware_writes_after_handoff = arch::firmware_writes();
     #[cfg(target_arch = "x86_64")]
-    if let Some((mode, resource, bound, writes)) = crate::gk208::console_state() {
-        // Native display ownership predates shared-core registration. Report its
-        // measured geometry and binding even when the renderer has no scanout.
-        a.count = 1;
-        a.current = 0;
-        a.modes = [mode, abi::Mode::ZERO];
-        // A registered core screen keeps its device identity while a core
-        // binding is active. With no such binding, the native allocation is
-        // the console, even if an offscreen core screen has been allocated.
-        if a.console_resource == 0 || a.scanout_resource == 0 {
-            a.console_resource = resource;
-        }
+    if let Some((_, _, _, writes)) = crate::gk208::console_state() {
         a.handoff = 1;
         a.firmware_writes_after_handoff = writes;
-        // A completed shared-core viewing copy has its own logical identity,
-        // also reported by READBACK(0). The reserved ID describes the console
-        // only while no shared-core scanout is bound.
         if a.scanout_resource == 0 {
-            a.binding_known = u32::from(bound);
-            a.scanout_resource = if bound { resource } else { 0 };
+            a.binding_known = 0;
         }
     }
 }
@@ -260,7 +247,7 @@ impl Drop for Console {
 
 impl Console {
     pub(super) fn new() -> Result<Self, i64> {
-        let (handle, _) = create_context(0)?;
+        let (handle, _) = create_kernel_context()?;
         let mut build = Building {
             ids: Vec::new(),
             armed: true,
@@ -499,10 +486,27 @@ impl encode::Bindings for Console {
     }
 }
 
+/// Retry preparation after the native adapter rebuilds its reserved channel.
+#[cfg(target_arch = "x86_64")]
+pub(super) fn native_panic_reset() {
+    PANIC_EPOCH.store(u64::MAX, Ordering::Release);
+    PANIC_ATTEMPT_EPOCH.store(u64::MAX, Ordering::Release);
+    PANIC_ATTEMPTS.store(0, Ordering::Release);
+    #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
+    super::panic::preparation_finished_reset();
+}
+
 /// Called on the render thread once the core owns the display: prepares the panic screen
 /// after the kernel's screen was first shown, and makes the restores ended owners asked for.
 pub fn pump() {
     let _path = GpuPath::enter();
+    // Diagnostic-only boot has no userspace CAPS caller to start the native
+    // core. Use the same worker/admission route before waiting for handoff.
+    #[cfg(all(target_arch = "x86_64", feature = "capture_panic_oracle"))]
+    if !display::active() {
+        let _ = super::native_caps_startup();
+        if display::active() { crate::console::give_back_display(); }
+    }
     if !display::active() {
         return;
     }

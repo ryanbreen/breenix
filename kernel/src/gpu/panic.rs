@@ -10,6 +10,8 @@ use core::sync::atomic::AtomicU8;
 #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 use noto_sans_mono_bitmap::{get_raster, FontWeight, RasterHeight};
 use virgl::emergency::{Command, Queue};
+#[cfg(target_arch = "x86_64")]
+mod native;
 
 const COLS: usize = 80;
 const ROWS: usize = 32;
@@ -31,7 +33,6 @@ pub fn terminal() -> bool {
 
 /// Stop a peer at its next timer interrupt after its raw device access drains.
 /// Let an interrupted Access finish before parking its CPU.
-#[cfg(target_arch = "aarch64")]
 pub(crate) fn stop_if_terminal() {
     if !terminal() {
         return;
@@ -47,7 +48,7 @@ static STATE: AtomicPtr<Screen> = AtomicPtr::new(core::ptr::null_mut());
 static USERS: [AtomicUsize; arch::MAX_CPUS] =
     [const { AtomicUsize::new(0) }; arch::MAX_CPUS];
 
-pub(crate) fn park() -> ! {
+pub fn park() -> ! {
     arch::park()
 }
 
@@ -137,6 +138,14 @@ pub(super) fn invalidate() {
     VALID.store(false, Ordering::Release);
 }
 
+/// Adapter-local recovery also revokes prepared requests, even when the
+/// shared core epoch survives the attributed submission error.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn native_reset() {
+    invalidate();
+    console::native_panic_reset();
+}
+
 struct Screen {
     #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     observed: AtomicBool,
@@ -183,6 +192,10 @@ pub(super) fn prepare() -> Result<(), i64> {
     }
     if with_core(|core| matches!(core.dev, Some(dev::Device::Svga(_)))).ok_or(EIO)? {
         return keep_svga_atlas();
+    }
+    #[cfg(target_arch = "x86_64")]
+    if dev::backend() == abi::backend::GK208 {
+        return native::prepare();
     }
     let queue = with_core(|core| match core.dev.as_ref()? {
         dev::Device::Virgl(device) => Some(device.terminal_queue()),
@@ -386,37 +399,7 @@ impl Screen {
         log: &[u8],
         deadline: u64,
     ) -> bool {
-        self.line(0, title.as_bytes());
-        for (i, chunk) in headline.as_bytes().chunks(COLS).take(3).enumerate() {
-            self.line(2 + i, chunk);
-        }
-        for (i, (label, value)) in details.iter().take(3).enumerate() {
-            let mut line = Line::new();
-            let _ = core::fmt::write(&mut line, format_args!("{label}: {value}"));
-            self.line(6 + i, line.as_str().as_bytes());
-        }
-        self.line(10, stage.as_bytes());
-        self.line(11, b"Recent kernel log (serial is the panic record):");
-        // Match the diagnostics screen's tail selection without allocating strings.
-        let mut end = log.len();
-        while end > 0 && matches!(log[end - 1], b'\n' | b'\r') {
-            end -= 1;
-        }
-        let mut start = end;
-        let mut lines = 1;
-        while start > 0 {
-            start -= 1;
-            if log[start] == b'\n' {
-                if lines == 20 {
-                    start += 1;
-                    break;
-                }
-                lines += 1;
-            }
-        }
-        for (i, line) in log[start..end].split(|b| *b == b'\n').take(20).enumerate() {
-            self.line(12 + i, line);
-        }
+        layout(|row, text| self.line(row, text), title, headline, details, stage, log);
         self.draws.iter().all(|c| self.queue.exec(c, deadline))
             && self.queue.exec(&self.bind, deadline)
             && self.queue.exec(&self.flush, deadline)
@@ -425,26 +408,9 @@ impl Screen {
     /// coverage-blended (gpu.md section 2) like the suite's console check.
     #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     fn expected(&self, x: usize, y: usize) -> u32 {
-        let gw = self.console.glyph_width as usize;
-        if x < 40 || y < 32 {
-            return BG;
-        }
-        let (column, row) = ((x - 40) / (gw * 2), (y - 32) / 46);
-        let (dx, dy) = ((x - 40) % (gw * 2) / 2, (y - 32) % 46 / 2);
-        if column >= COLS || row >= ROWS || dy >= 16 {
-            return BG;
-        }
-        let glyph = SHOWN[row * COLS + column].load(Ordering::Relaxed);
-        let a = get_raster(glyph as char, FontWeight::Regular, RasterHeight::Size16)
-            .and_then(|r| r.raster().get(dy).and_then(|l| l.get(dx)).copied())
-            .unwrap_or(0) as u32;
-        let (f, b) = (FG.to_le_bytes(), BG.to_le_bytes());
-        let mut out = [0u8; 4];
-        for i in 0..4 {
-            out[i] = ((f[i] as u32 * a + b[i] as u32 * (255 - a) + 127) / 255) as u8;
-        }
-        u32::from_le_bytes(out)
+        expected(self.console.glyph_width, x, y)
     }
+
     /// Device readback of the bound panic target (gpu-abi.md, READBACK's two-poison
     /// observation), then each of the target's pixels against `expected`. Returns the
     /// mismatch count and the first mismatch when the two reads agree.
@@ -502,15 +468,75 @@ impl Screen {
         (arch::counter() < deadline).then_some((mismatches, first))
     }
 }
+fn layout(mut emit: impl FnMut(usize, &[u8]), title: &str, headline: &str,
+    details: &[(&str, &str)], stage: &str, log: &[u8]) {
+    emit(0, title.as_bytes());
+    for (i, chunk) in headline.as_bytes().chunks(COLS).take(3).enumerate() {
+        emit(2 + i, chunk);
+    }
+    for (i, (label, value)) in details.iter().take(3).enumerate() {
+        let mut line = Line::new();
+        let _ = core::fmt::write(&mut line, format_args!("{label}: {value}"));
+        emit(6 + i, line.as_str().as_bytes());
+    }
+    emit(10, stage.as_bytes());
+    emit(11, b"Recent kernel log (serial is the panic record):");
+    // Match the diagnostics screen's tail selection without allocating strings.
+    let mut end = log.len();
+    while end > 0 && matches!(log[end - 1], b'\n' | b'\r') {
+        end -= 1;
+    }
+    let mut start = end;
+    let mut lines = 1;
+    while start > 0 {
+        start -= 1;
+        if log[start] == b'\n' {
+            if lines == 20 {
+                start += 1;
+                break;
+            }
+            lines += 1;
+        }
+    }
+    for (i, line) in log[start..end].split(|b| *b == b'\n').take(20).enumerate() {
+        emit(12 + i, line);
+    }
+}
+
+#[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
+fn expected(glyph_width: u32, x: usize, y: usize) -> u32 {
+    let gw = glyph_width as usize;
+    if x < 40 || y < 32 {
+        return BG;
+    }
+    let (column, row) = ((x - 40) / (gw * 2), (y - 32) / 46);
+    let (dx, dy) = ((x - 40) % (gw * 2) / 2, (y - 32) % 46 / 2);
+    if column >= COLS || row >= ROWS || dy >= 16 {
+        return BG;
+    }
+    let glyph = SHOWN[row * COLS + column].load(Ordering::Relaxed);
+    let a = get_raster(glyph as char, FontWeight::Regular, RasterHeight::Size16)
+        .and_then(|r| r.raster().get(dy).and_then(|l| l.get(dx)).copied())
+        .unwrap_or(0) as u32;
+    let (f, b) = (FG.to_le_bytes(), BG.to_le_bytes());
+    let mut out = [0u8; 4];
+    for i in 0..4 {
+        out[i] = ((f[i] as u32 * a + b[i] as u32 * (255 - a) + 127) / 255) as u8;
+    }
+    u32::from_le_bytes(out)
+}
+
 struct Line {
-    bytes: [u8; COLS],
+    bytes: [u8; COLS * 3],
     len: usize,
+    limit: usize,
 }
 impl Line {
     fn new() -> Self {
         Self {
-            bytes: [0; COLS],
+            bytes: [0; COLS * 3],
             len: 0,
+            limit: COLS,
         }
     }
     fn as_str(&self) -> &str {
@@ -519,7 +545,7 @@ impl Line {
 }
 impl core::fmt::Write for Line {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        for b in s.bytes().take(COLS - self.len) {
+        for b in s.bytes().take(self.limit - self.len) {
             self.bytes[self.len] = if b.is_ascii() { b } else { b'?' };
             self.len += 1;
         }
@@ -530,6 +556,15 @@ impl core::fmt::Write for Line {
 /// Terminal, single-owner path. A failed or unresponsive device leaves serial as
 /// the record; resources and requests remain pinned, including after a timeout.
 pub fn show(title: &str, headline: &str, details: &[(&str, &str)], stage: &str, log: &[u8]) {
+    // Terminal ownership cannot be preempted by the peer-parking tick hook.
+    // The fatal x86 caller leaves IRQs masked and parks after the attempt.
+    #[cfg(target_arch = "x86_64")]
+    unsafe { crate::arch_disable_interrupts(); }
+    #[cfg(target_arch = "x86_64")]
+    if dev::backend() == abi::backend::GK208 {
+        native::show(title, headline, details, stage, log);
+        return;
+    }
     if TERMINAL.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -571,7 +606,10 @@ pub fn show(title: &str, headline: &str, details: &[(&str, &str)], stage: &str, 
 fn report(s: &Screen, shown: bool, deadline: u64) {
     let result = if shown { s.observe(deadline) } else { None };
     s.observed.store(result.is_some(), Ordering::Release);
+    #[cfg(target_arch = "aarch64")]
     let mut line = crate::serial_line::Line::unattributed();
+    #[cfg(target_arch = "x86_64")]
+    let mut line = crate::capture::record::Writer::new();
     line.text("[GPU_PANIC_SCREEN shown=");
     line.dec(shown as u64);
     line.text(" observed=");
@@ -587,21 +625,33 @@ fn report(s: &Screen, shown: bool, deadline: u64) {
             line.text(",");
             line.dec(y as u64);
             line.text(" got=");
+            #[cfg(target_arch = "aarch64")]
             line.hex32(got);
+            #[cfg(target_arch = "x86_64")]
+            line.hex(u64::from(got));
             line.text(" want=");
+            #[cfg(target_arch = "aarch64")]
             line.hex32(want);
+            #[cfg(target_arch = "x86_64")]
+            line.hex(u64::from(want));
         }
     }
     line.text("]");
+    #[cfg(target_arch = "aarch64")]
     line.newline();
+    #[cfg(target_arch = "x86_64")]
+    line.text("\r\n");
 }
 
 #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 pub fn test_ready() -> bool {
-    !arch::is_qemu()
+    #[cfg(target_arch = "x86_64")]
+    { return native::ready(); }
+    #[cfg(target_arch = "aarch64")]
+    { !arch::is_qemu()
         || (INITIALIZED.load(Ordering::Acquire)
             && (DOORBELL.load(Ordering::Acquire) == 0
-                || (console::active() && PREPARATION_FINISHED.load(Ordering::Acquire))))
+                || (console::active() && PREPARATION_FINISHED.load(Ordering::Acquire)))) }
 }
 
 #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
@@ -617,4 +667,23 @@ pub fn test_with_locks(f: impl FnOnce()) {
 #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 pub(super) fn preparation_finished() {
     PREPARATION_FINISHED.store(true, Ordering::Release);
+}
+
+#[cfg(all(target_arch = "x86_64", any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance")))]
+pub(super) fn preparation_finished_reset() {
+    PREPARATION_FINISHED.store(false, Ordering::Release);
+}
+
+/// The x86 fatal caller has already emitted its authoritative serial capture.
+#[cfg(target_arch = "x86_64")]
+pub fn show_panic(info: &core::panic::PanicInfo, recent: &[u8]) {
+    let mut headline = Line::new();
+    headline.limit = COLS * 3;
+    let _ = core::fmt::write(&mut headline, format_args!("{}", info.message()));
+    let mut location = Line::new();
+    if let Some(at) = info.location() {
+        let _ = core::fmt::write(&mut location, format_args!("{}:{}:{}", at.file(), at.line(), at.column()));
+    }
+    show("KERNEL PANIC", headline.as_str(), &[("Location", location.as_str())],
+        crate::console::splash::current_stage_name(), recent);
 }

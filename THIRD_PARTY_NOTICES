@@ -1480,3 +1480,152 @@ copyright and full MIT grant remain in both consumers. The sentinel
 classification, bounded polling and refusal storage are Breenix code;
 the red-switch explanation is an inference from the recorded race, not
 a hardware acceptance result. Firmware bytes are unchanged.
+
+## GK208B target scanout (E24 M8 PR 8.6)
+
+`kernel/src/gpu/gk208/present.rs` adapts the NV927D surface method fields,
+notifier completion, and physical display DMA descriptors from:
+
+- NVIDIA open-gpu-doc at `9fdf5c4062007929d9f4e6cbad9c9771fe61b880`,
+  `classes/display/cl927d.h`, SPDX-License-Identifier: MIT,
+  Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES.
+- Nouveau in Linux v6.8 at `e8f897f4afef0031fe618a8e94127a0934896aba`,
+  `dispnv50/head907d.c` (surface method sequence) and `dispnv50/wndw.c`
+  (block-linear pitch in 64-byte blocks, lines 296-308): full MIT headers,
+  Copyright 2018 Red Hat Inc.
+- The same nouveau revision, `nvkm/engine/dma/usergf119.c`: full MIT header,
+  Copyright 2012 Red Hat Inc.; the descriptor stores kind in bits 27:20,
+  small-page selection in bit 6, and physical VRAM target 9.
+
+`kernel/src/gpu/gk208/native.rs` uses that surface encoder through its existing
+retained EVO channel, including NV927D's DMA jump-to-zero encoding when the
+consumed push storage wraps. The active/assembly surface register banks use
+`nvkm/engine/disp/gf119.c` from the same nouveau revision (full MIT header,
+Copyright 2012 Red Hat Inc.), specifically `gf119_head_state` and
+`gf119_disp_core_mthd_head`. The original copyright and full MIT grants are
+retained in the consumers. Every listed file's local header was checked for
+this adaptation under ruling G1. No Linux runtime integration is imported.
+
+## GK208B logical viewports and permanent console (E24 M8 PR 8.6, G20)
+
+`kernel/src/gpu/gk208/modeset.rs` and `native.rs` use NVIDIA open-gpu-doc
+at `9fdf5c4062007929d9f4e6cbad9c9771fe61b880`,
+`classes/display/cl927d.h` (MIT SPDX, Copyright (c) 1993-2022 NVIDIA
+CORPORATION & AFFILIATES), for HEAD_SET_DEFAULT_BASE_COLOR (0x42c),
+HEAD_SET_CONTROL_OUTPUT_SCALER (0x494), VIEWPORT_POINT_IN (0x4b0),
+VIEWPORT_SIZE_IN (0x4b8), VIEWPORT_POINT_OUT_ADJUST (0x4bc), and
+VIEWPORT_SIZE_OUT/MIN/MAX (0x4c0/0x4c4/0x4c8), with a 0x300 head stride.
+The viewport dimensions are 15-bit fields. Each file retains the original
+copyright and full MIT grant in its header.
+
+The same consumers use Linux v6.8 nouveau, commit
+`e8f897f4afef0031fe618a8e94127a0934896aba`,
+`drivers/gpu/drm/nouveau/dispnv50/head907d.c:378-409` (MIT, Copyright 2018
+Red Hat Inc.): one-tap horizontal/vertical scaling, response bias 0,
+and equal output, minimum and maximum extents. The aspect-preserving
+centred viewport follows that revision's `dispnv50/head.c:180-218` (MIT,
+Copyright 2018 Red Hat Inc.), which explicitly permits an input larger
+than its output. POINT_OUT_ADJUST stays 0; the hardware's centred
+viewport and black default base provide the borders. Both file-local MIT
+grants were read before use; the retained 2018 notice covers these consumers.
+
+These sources do not publish a numeric scaler ratio range. The backend
+therefore admits only G20's 1:1 and exact 2:1 logical configurations, plus
+the existing identity viewport for EDID-sized bring-up probes. This is an
+admission restriction, not a measured claim about general hardware limits.
+Physical confirmation of the selected modes remains the native acceptance
+unit's job; host method encoding does not establish card execution.
+
+The permanent console BAR view in `native.rs` reuses the existing audited
+GK208 small-page encoding, preserving the first 8 MiB's PTEs and mapping
+the console at BAR offset 16 MiB in one larger SPT. Nouveau at the same
+revision, `nvkm/subdev/mmu/vmmgk104.c:39-43`, defines 15 SPT index bits for
+4 KiB pages with the 128 KiB big-page configuration: 128 MiB per PDE,
+32768 entries of 8 bytes. Its full MIT header (Copyright 2017 Red Hat Inc.)
+was checked again and remains in the consumer. Breenix's `vm::TABLE_BYTES`
+is reused for that table allocation; no Linux VM runtime is imported.
+
+The active/armed checks in `modeset.rs` and `native.rs` also use that
+nouveau revision's `nvkm/engine/disp/gf119.c:423-446,861-900` (MIT,
+Copyright 2012 Red Hat Inc.): head state is read at 0x640000 plus the
+method offset, with 0x20000 selecting assembly state; its core method
+table lists the scaler and viewport registers at 0x660494 and
+0x6604b0/4b8/4bc/4c0/4c4/4c8 with a 0x300 head stride. The file-local
+MIT grant was read again; both consumers retain its original notice.
+
+
+## GK208B console rectangular flush (E24 M8 PR 8.6 unit 24.6-u5)
+
+`kernel/src/gpu/gk208/ce/readback.rs` adds Breenix console-damage glue calling
+the existing whole-surface present and retained-resource receipt. Hardware
+encoding remains in `present.rs` and `native.rs`, using the surface UPDATE
+mechanism already attributed in the target scanout section above: NVIDIA open-gpu-doc `classes/display/cl927d.h`
+(MIT SPDX, Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES) at
+`9fdf5c4062007929d9f4e6cbad9c9771fe61b880`, and nouveau
+`dispnv50/head907d.c` (full MIT grant, Copyright 2018 Red Hat Inc.) at Linux
+v6.8 `e8f897f4afef0031fe618a8e94127a0934896aba`.
+The full original notices are retained in the adapter and surface encoder.
+The ownership routing and console policy use Breenix's shared implementation.
+
+The native EVO publisher also follows `dispnv50/core507d.c:34-58` at that
+same nouveau v6.8 revision (MIT, Copyright 2018 Red Hat Inc.): enable
+notification, issue UPDATE, and disable notification before later methods.
+The file-local MIT grant was checked before this use; the original 2018
+copyright and full grant remain in `native.rs`. The method fields are
+defined by the same MIT `cl927d.h` revision listed above.
+
+For an already latched surface, `native.rs` obtains a fresh EVO
+GET_CAPABILITIES acknowledgement without a redundant head UPDATE. Its
+notifier sequence and CAPABILITIES_4.DONE location use that revision's
+`dispnv50/core507d.c:80-100` and `dispnv50/core907d.c:32-58`, both with
+file-local MIT grants, Copyright 2018 Red Hat Inc., checked before use.
+`cl927d.h` at the same open-gpu-doc revision defines the 0x150-byte report,
+byte-16 DONE field, GET_CAPABILITIES and notifier offset. The original full
+MIT notices remain in the consumer. Breenix requires the ordered render
+release and exact active/armed surface and viewport before/after this
+acknowledgement; changed bindings still use UPDATE.
+
+Prepared GT 710 terminal diagnostics (milestone 8 PR 8.6)
+------------------------------------------------------
+The terminal transport in kernel/src/gpu/gk208/emergency.rs uses the same
+native channel, PRAMIN and display mechanisms as the existing GK208 backend.
+NVIDIA open-gpu-doc revision 9fdf5c4062007929d9f4e6cbad9c9771fe61b880:
+classes/host/cla06f.h (MIT, Copyright (c) 2020 NVIDIA CORPORATION),
+classes/3d/cla197.h (MIT, Copyright (c) 2020 NVIDIA CORPORATION),
+classes/dma-copy/cla0b5.h (MIT, Copyright (c) 2019 NVIDIA CORPORATION), and
+classes/display/cl927d.h (MIT, Copyright (c) 1993-2022 NVIDIA CORPORATION &
+AFFILIATES) define USERD/GPFIFO, ordered engine releases and EVO methods.
+Their original notices and permission texts are retained in emergency.rs.
+The emergency consumer also retains the full MIT grants for its reused
+normal-channel register and method definitions:
+- nouveau at Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba:
+  nvkm/engine/fifo/runl.c (Copyright 2021 Red Hat Inc.),
+  nvkm/engine/fifo/gk104.c and gf100.c, and nvkm/engine/gr/gf100.c
+  (Copyright 2012 Red Hat Inc.), nvkm/engine/fifo/gk208.c
+  (Copyright 2013 Red Hat Inc.), and nvkm/engine/fifo/gk110.c and
+  nvkm/subdev/top/gk104.c (Copyright 2016 Red Hat Inc.). These cover
+  runlist/channel state, engine/runlist enumeration, fault status,
+  engine reset and completion monitoring.
+- envytools revision f102b82381f3f11cee113d16374c87091db039d9:
+  rnndb/graph/gf100_3d.xml, graph/g80_texture.xml and g80_defs.xml;
+  rnndb/copyright.xml carries the MIT grant and complete rnndb authors
+  list, reproduced in emergency.rs. These cover the reused GR definitions.
+The terminal ownership, bounded polls, epoch/nonce receipts and pinned
+packet policy are Breenix code. No new external implementation is added.
+The existing notices for gr/channel.rs, native.rs and ce/readback.rs continue
+to cover their preparation helpers and the reused normal encoders. No new
+firmware or shader asset is introduced by this path.
+
+The reserved terminal channel and reset preparation in gr/mod.rs and
+gr/channel.rs reuse nouveau v6.8 nvkm/engine/fifo/gk104.c (MIT, Copyright
+2012 Red Hat Inc.) and nvkm/engine/gr/gf100.c (MIT, Copyright 2012 Red Hat
+Inc.), at e8f897f4afef0031fe618a8e94127a0934896aba. Both full grants were
+rechecked and remain in the consumer headers. The reserved EVO half-page
+in native.rs/emergency.rs uses NV927D_DMA_JUMP_OFFSET and the disjoint
+SET_NOTIFIER_CONTROL_OFFSET (both bits 11:2), with the
+existing methods from the MIT cl927d.h revision above; its full notice
+remains in both files. prepared.rs recognizes the encoder's A197 constant-buffer selectors and
+slot-0 versus slot-15 binding from the same MIT cla197.h; the NVIDIA 2020
+copyright and full grant accompany that parser. panic/native.rs sequences
+Breenix's validated bitmap_text encoder and retained requests. No new
+shader assets are introduced.

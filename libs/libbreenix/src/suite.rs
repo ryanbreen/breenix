@@ -860,16 +860,22 @@ pub struct Suite {
     pub gui: bool,
     defer_display: bool,
     finalizer: Option<fn()>,
+    case_observer: Option<fn(usize, usize, &str)>,
 }
 
 pub const fn suite(id: &'static str, title: &'static str, categories: &'static [Category]) -> Suite {
-    Suite { id, title, categories, case_limit_ms: DEFAULT_CASE_LIMIT_MS, gui: false, defer_display: false, finalizer: None }
+    Suite { id, title, categories, case_limit_ms: DEFAULT_CASE_LIMIT_MS, gui: false, defer_display: false, finalizer: None, case_observer: None }
 }
 
 impl Suite {
     /// Upload suite-owned evidence after cases and reclamation, before readiness.
     pub const fn with_finalizer(self, finalize: fn()) -> Suite {
         Suite { finalizer: Some(finalize), ..self }
+    }
+
+    /// Observe the parent at the initial boundary and after each completed case.
+    pub const fn with_case_observer(self, observe: fn(usize, usize, &str)) -> Suite {
+        Suite { case_observer: Some(observe), ..self }
     }
 
     /// Hand the display to each isolated case; draw only between measured windows.
@@ -983,6 +989,7 @@ impl Suite {
             crate::suite_stage::init(self);
             screen.prepare();
         }
+        if let Some(observe) = self.case_observer { observe(0, total, ""); }
         let mut done = 0;
         for (c, category) in self.categories.iter().enumerate() {
             if only.is_none() && category.idle_before_ms > 0 {
@@ -1043,6 +1050,7 @@ impl Suite {
                 }
                 states[c][k] = State::Done(outcome);
                 done += 1;
+                if let Some(observe) = self.case_observer { observe(done, total, &name); }
                 if place.is_some() { sequence::progress_after(done); }
             }
         }

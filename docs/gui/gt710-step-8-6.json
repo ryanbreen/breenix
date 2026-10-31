@@ -2,6 +2,26 @@
   "id": "gt710-step-8-6",
   "suite": "gpu",
   "cases": [
-    "isolation/irq-masked-bound"
+    "readback/owner-only",
+    "isolation/display-context-unreachable",
+    "isolation/no-addresses",
+    "isolation/client-cannot-scanout",
+    "isolation/irq-masked-bound",
+    "present/modes-listed",
+    "present/mode-1280x800",
+    "present/mode-2560x1600",
+    "present/scale-reported",
+    "present/scanout-bind",
+    "present/flip",
+    "present/present-completion",
+    "present/present-owner-only",
+    "present/readback-presented",
+    "present/takeover-giveback",
+    "present/ownership-stack",
+    "present/console-restored",
+    "present/firmware-handoff",
+    "present/mode-change-content",
+    "present/fault-skip-flush",
+    "present/fault-wrong-scanout"
   ]
 }

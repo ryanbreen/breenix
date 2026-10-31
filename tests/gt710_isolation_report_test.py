@@ -48,7 +48,7 @@ class IsolationReport(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             producer = dict(console=dict(boot=dict(id='console'), serial=''))
-            def record(path, sha, category):
+            def record(path, sha, category, acceptance_head):
                 (path / ('gt710-' + category + '.json')).write_text(json.dumps(dict(cases=[dict(id=category)])))
                 return 0
             with patch.dict(API['alpha_acceptance'].__globals__,

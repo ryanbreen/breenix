@@ -42,7 +42,7 @@ class LiveUnwind(unittest.TestCase):
             let image = Allocation::at(0x200000);
             let pristine = vec![0;256];
             let pages = ManuallyDrop::new(system_dma::Pages);
-            let (pbdma, bar_inst, bar_dir, pte, displacement) = (0, 0, 0, 0x900000, 0);
+            let (pbdma, bar_inst, bar_dir, pte, console_offset) = (0, 0, 0, 0x900000, 0);
             let top = [0; 64]; let (engine, runlist, enabled, instance) = (0, 1, h.regs.read(0x204), 0x300000 + u64::from(id) * 4096);
 '''
         start = new.index('{') + 1

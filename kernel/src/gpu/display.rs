@@ -160,8 +160,8 @@ impl Core {
         }
     }
 
-    /// Native PRESENT copies into the display-owned console allocation. Returning
-    /// to that allocation ends logical scanout holds on copy sources. Pending
+    /// Returning to the display-owned native console allocation ends the prior
+    /// target's scanout hold after a confirmed EVO update. Pending
     /// requests retain their separate engine/submission holds until completion.
     #[cfg(target_arch = "x86_64")]
     pub(super) fn native_console_restored(&mut self) {
@@ -268,6 +268,9 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
         // A target without a completed write has no contents to show.
         if r.last.is_none() {
             return Some(Err(EINVAL));
+        }
+        if c.stalled {
+            return None;
         }
         // Count admitted display work across the device wait. A VT switch waits
         // for these presentations before drawing its foreground console.
@@ -445,8 +448,6 @@ pub(super) fn current_mode(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EINVAL);
     }
     let mode = with_core(|c| MODES[c.display.mode as usize]).ok_or(ENODEV)?;
-    #[cfg(target_arch = "x86_64")]
-    let mode = crate::gk208::console_state().map_or(mode, |(native, _, _, _)| native);
     write_arg(arg, &mode)?;
     Ok(0)
 }
@@ -455,6 +456,10 @@ pub(super) fn modes(arg: u64, len: u64) -> Result<u64, i64> {
     let input: abi::Modes = read_arg(arg, len)?;
     if input != abi::Modes::ZERO {
         return Err(EINVAL);
+    }
+    #[cfg(target_arch = "x86_64")]
+    if with_core(|c| c.display.stack.is_empty()).unwrap_or(false) {
+        arch::with_interrupts(super::screen::await_binding)?;
     }
     // A display hand-back the render thread has yet to restore reports the restored binding,
     // as an observation does; a restore still owed after 1 s reports the binding as it is.
@@ -495,10 +500,21 @@ pub(super) fn set_mode(arg: u64, len: u64) -> Result<u64, i64> {
     if a.index > 1 || a.reserved != [0; 3] {
         return Err(EINVAL);
     }
+    #[cfg(target_arch = "x86_64")]
+    let _transition=Transition::for_observation(tgid)?;
+    #[cfg(target_arch = "x86_64")]
+    if super::arch::with_interrupts(|| crate::gk208::set_mode(a.index)).is_err() {
+        // A refused UPDATE may already have changed what the head reads.
+        // Preserve possible readers, but do not report the old binding as known.
+        with_core(|c| c.display.known=false);
+        return Err(EIO);
+    }
     with_core(|c| {
         if !owner(tgid) {
             return Err(EPERM);
         }
+        #[cfg(target_arch = "x86_64")]
+        c.native_console_restored();
         c.display.mode = a.index;
         if let Some(o) = c.display.stack.last_mut() {
             o.mode = a.index;
@@ -611,7 +627,6 @@ pub(super) fn take(group: u64, pid: u64, vt: usize) -> Result<(), i64> {
 /// binding and backing stay on the stack; no compositor claim moves with the display. The
 /// target is resolved once to its live thread group, so a later process given the same
 /// number is not the owner.
-#[cfg(target_arch = "aarch64")]
 pub(super) fn give(giver: u64, pid: u32) -> Result<(), i64> {
     const ESRCH: i64 = 3;
     let target = crate::process::with_process_manager(|m| {
@@ -706,15 +721,6 @@ pub(super) fn ended(c: &mut Core, group: u64) {
 }
 
 pub(super) fn restore() -> Result<(), i64> {
-    #[cfg(target_arch = "x86_64")]
-    if let Some((_, _, bound, _)) = crate::gk208::console_state() {
-        // Basic offscreen pipelines cannot replace the native console binding.
-        // Confirm that binding, rather than asking the ARM screen owner to bind
-        // an ARM screen resource on this backend.
-        if !bound { return Err(EIO); }
-        with_core(|c| c.native_console_restored()).ok_or(ENODEV)?;
-        return Ok(());
-    }
     let owned = with_core(|c| !c.display.stack.is_empty()).unwrap_or(false);
     let Some(_presentation) = crate::console::vt::Presentation::begin(owned) else {
         // The foreground console retains scanout until the graphics VT returns.
@@ -727,11 +733,28 @@ pub(super) fn restore() -> Result<(), i64> {
         (c.display.stack.iter().rev().find_map(|o| o.last), current, !c.display.stack.is_empty())
     })
     .unwrap_or((None, None, false));
+    if saved.is_some_and(|b| current.is_some_and(|c| c.id == b.id)) {
+        return Ok(());
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Restore the retained frame's extent. The owner's requested logical mode
+        // may have changed after presenting that frame, and remains independent.
+        // With no retained frame, the kernel screen uses its high logical mode.
+        // SET_MODE confirms an interim native allocation before its old scanout
+        // holds can end; the following shared bind publishes the final resource.
+        let mode = with_core(|c| {
+            saved.and_then(|b| c.resources.get(&b.id))
+                .and_then(|r| MODES.iter().position(|m| (m.width, m.height) == (r.width, r.height)))
+                .map_or(KERNEL_MODE as u32, |mode| mode as u32)
+        }).ok_or(ENODEV)?;
+        if super::arch::with_interrupts(|| crate::gk208::set_mode(mode)).is_err() {
+            with_core(|c| c.display.known = false);
+            return Err(EIO);
+        }
+        with_core(|c| c.native_console_restored()).ok_or(ENODEV)?;
+    }
     match saved {
-        // The top owner presented after the exit that asked for this restore, and that
-        // frame is already bound and complete. Binding it again would only make the
-        // binding unknown meanwhile, refusing the owner's readbacks with reason 10.
-        Some(b) if current.is_some_and(|c| c.id == b.id) => Ok(()),
         Some(b) => super::screen::bind_saved(b),
         // No owner on the stack has presented: the kernel's screen as it was left.
         None if owned => super::screen::show(),

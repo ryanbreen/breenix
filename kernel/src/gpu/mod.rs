@@ -44,7 +44,6 @@ use crate::gpu_observation as observation;
 mod quota;
 mod staging;
 mod vertex_arena;
-#[cfg(target_arch = "aarch64")]
 mod compose;
 use quota::{Charge, Quota, QuotaCharge};
 use staging::Staging;
@@ -54,6 +53,10 @@ pub mod arch_rules;
 #[path = "gk208/dma_policy.rs"]
 pub mod dma_policy;
 pub mod dma;
+#[cfg(target_arch="x86_64")]
+pub(crate) mod heap;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod byte_buffer;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod dma_owner;
 pub mod dev;
@@ -598,6 +601,10 @@ pub(crate) fn install_native(device: crate::gk208::adapter::Device) -> Result<()
     // Admission probes have already bound this channel. An installation error
     // is not a DMA drain, so retain its pages just like probe failure does.
     if let Some(device) = retained { core::mem::forget(device); }
+    if result.is_ok() {
+        compose::register();
+        crate::console::request_repaint();
+    }
     result
 }
 
@@ -1098,6 +1105,10 @@ impl Core {
             self.unsendable(req);
             return None;
         }
+        if self.backlog.try_reserve(1).is_err() {
+            self.unsendable(req);
+            return None;
+        }
         let serial = self.serial();
         req.set_tag(Tag::Sync(serial));
         self.syncs.insert(serial, SyncReq {
@@ -1113,7 +1124,10 @@ impl Core {
     /// still use memory it names was never confirmed reset.
     fn unsendable(&mut self, req: Request) {
         match self.wedged.as_mut() {
-            Some((_, keep)) => keep.push(req),
+            Some((_, keep)) => {
+                if keep.try_reserve(1).is_ok() { keep.push(req); }
+                else { core::mem::forget(req); } // uncertain DMA remains pinned
+            },
             None => drop(req),
         }
     }
@@ -1135,6 +1149,13 @@ impl Core {
         if holds.iter().any(|id| self.resources.get(id).is_none_or(|r| r.epoch != self.epoch || r.lost)) {
             return Err(EIO);
         }
+        let mut held = Vec::new();
+        let mut readers = Vec::new();
+        held.try_reserve_exact(holds.len()).map_err(|_| ENOMEM)?;
+        readers.try_reserve_exact(reading.len()).map_err(|_| ENOMEM)?;
+        self.backlog.try_reserve(1).map_err(|_| ENOMEM)?;
+        held.extend_from_slice(holds);
+        readers.extend_from_slice(reading);
         for id in holds {
             if let Some(r) = self.resources.get_mut(id) {
                 r.holds += 1;
@@ -1142,7 +1163,7 @@ impl Core {
         }
         let upload = req.is_upload().then(|| holds.first().copied().zip(req.fence())).flatten();
         self.syncs.insert(serial, SyncReq {
-            upload, ctx, sent_ns: None, holds: holds.to_vec(), reading: reading.to_vec(), abandoned: warm.is_some(), failed: false,
+            upload, ctx, sent_ns: None, holds: held, reading: readers, abandoned: warm.is_some(), failed: false,
             why: 0, warm,
         });
         self.backlog.push_back((self.epoch, req));
@@ -1623,6 +1644,12 @@ impl Core {
             if let Some(req) = dev::ctx_destroy(Tag::Background, id) { self.background(req); }
         }
         if dropped {
+            // Native contexts are logical registry entries. A reset cleared
+            // device_alive, so the ordinary destroy above did not retire this ID.
+            #[cfg(target_arch = "x86_64")]
+            if !destroy && dev::backend() == abi::backend::GK208 {
+                let _ = dev::ctx_destroy(Tag::Background, id);
+            }
             if let Some(c) = self.contexts.remove(&id) {
                 gauge(&GPU_CONTEXTS, -1);
                 if let Some(arena) = c.vertex_arena { self.unhold(arena.id); }
@@ -1793,8 +1820,7 @@ impl Core {
             c.device_alive = false;
             c.depth = None;
         }
-        let pending: Vec<u64> = self.subs.iter().filter(|(_, s)| !s.published).map(|(&k, _)| k).collect();
-        for serial in pending {
+        while let Some(serial) = self.subs.iter().find(|(_, s)| !s.published).map(|(&k, _)| k) {
             self.publish(serial, fence_status::DEVICE_RESET, 0);
         }
         for s in self.syncs.values_mut() {
@@ -1814,8 +1840,9 @@ impl Core {
             self.ended(req);
         }
         let epoch = self.epoch;
-        let queued: Vec<(u64, Request)> = self.backlog.drain(..).collect();
-        for (at, req) in queued {
+        let queued = self.backlog.len();
+        for _ in 0..queued {
+            let (at, req) = self.backlog.pop_front().unwrap();
             if at < epoch {
                 self.ended(req);
             } else {
@@ -1840,16 +1867,18 @@ impl Core {
                 drop(dev);
                 self.status = abi::status::DEVICE_FAILED;
                 self.reason = e;
-                let queued: Vec<(u64, Request)> = self.backlog.drain(..).collect();
-                for (_, req) in queued {
+                while let Some((_, req)) = self.backlog.pop_front() {
                     self.ended(req);
                 }
             }
         }
         self.last_progress = now_ns();
         self.flush();
-        let ids: Vec<u32> = self.contexts.keys().copied().collect();
-        for id in ids {
+        let mut previous = None;
+        loop {
+            let next = self.contexts.keys().copied().find(|id| previous.is_none_or(|p| *id > p));
+            let Some(id) = next else { break };
+            previous = Some(id);
             self.settle(id);
         }
         notify();
@@ -2187,7 +2216,8 @@ pub(crate) fn native_console_readback(surface: &crate::gk208::ConsoleSurface)
     let bytes = surface.width.checked_mul(surface.height).and_then(|n| n.checked_mul(4))
         .ok_or("native console extent overflow")?;
     let backing = native_console_backing(surface)?;
-    let mut first = alloc::vec![0; bytes];
+    let mut first = crate::gpu::byte_buffer::Bytes::new(bytes)
+        .map_err(|_| "native console snapshot allocation failed")?;
     let mut last = 0;
     for (index, poison) in [0x55, 0xaa].into_iter().enumerate() {
         let band = [poison; PAGE];
@@ -2240,7 +2270,11 @@ pub(crate) fn native_spans_readback(id: u32, width: u32, height: u32, backing: A
     let bytes = (width as usize).checked_mul(height as usize).and_then(|n| n.checked_mul(4))
         .ok_or("native spans readback extent overflow")?;
     if backing.bytes() < bytes { return Err("native spans readback backing too small"); }
-    let mut images = [alloc::vec![0; bytes], alloc::vec![0; bytes]];
+    let mut images = [Vec::new(), Vec::new()];
+    for image in &mut images {
+        image.try_reserve_exact(bytes).map_err(|_| "native spans readback allocation failed")?;
+        image.resize(bytes, 0);
+    }
     for (index, poison) in [0x55, 0xaa].into_iter().enumerate() {
         let band = [poison; PAGE];
         for at in (0..bytes).step_by(PAGE) { backing.write(at, &band[..PAGE.min(bytes-at)]); }
@@ -2448,7 +2482,6 @@ fn reaper() {
             (c.next_deadline(now), !c.procs.is_empty(), c.reset_wanted, c.take_hung(), SENT.load(Ordering::Acquire))
         })
         .unwrap_or((None, false, false, ([None; HUNG_KEPT], 0), SENT.load(Ordering::Acquire)));
-        #[cfg(target_arch = "aarch64")]
         {
             crate::window::scene::invalidate_stale();
             crate::window::ops::publish_ready();
@@ -2789,8 +2822,10 @@ fn native_reset_barrier() -> Result<(), i64> {
 /// `gpu(op, arg, len)`.
 pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
     let _path = GpuPath::enter();
-    #[cfg(all(target_arch = "x86_64", feature = "gt710_core_probe"))]
-    let _timing = (dev::backend() == abi::backend::GK208)
+    #[cfg(target_arch = "x86_64")]
+    let _cost = (dev::backend() == abi::backend::GK208).then(|| crate::gk208::cost::for_op(op));
+    #[cfg(target_arch = "x86_64")]
+    let _timing = (dev::backend() == abi::backend::GK208 && crate::gk208::timing::enabled())
         .then(|| crate::gk208::timing::Guard::new(caller().unwrap_or(0), op));
     // Test point 3, `emit-diagnostic`: this call writes BreenGL's diagnostic payload, the
     // only kernel output any syscall 416 path makes (section 1.16).
@@ -2870,9 +2905,13 @@ fn native_caps_startup() -> Result<(), i64> {
         // Firmware construction and executable probes must let a pinned timer
         // window (and other work) run on the CPU performing initialization.
         if crate::task::kthread::kthread_run(|| {
+            // Native startup changes BAR/channel state while the boot console
+            // still uses the CPU surface. Finish that pass before takeover.
+            let canvas = crate::console::hold_canvas();
             if let Err(error) = crate::gk208::initialize_core() {
                 with_core(|c| { c.status = abi::status::DEVICE_FAILED; c.reason = error; });
             }
+            drop(canvas);
             NATIVE_STARTING.store(false, Ordering::Release);
             notify();
         }, "kgpustart").is_err() {
@@ -2965,6 +3004,15 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(e);
     }
     Ok(0)
+}
+
+/// Kernel renderers compile only the commands they use. Native client warm-up
+/// owns process-charged scratch and cannot run for the kernel's owner 0.
+fn create_kernel_context() -> Result<(u64, u32), i64> {
+    #[cfg(target_arch = "x86_64")]
+    { create_context_with_catalogue(0, false) }
+    #[cfg(target_arch = "aarch64")]
+    { create_context(0) }
 }
 
 fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
@@ -3774,7 +3822,7 @@ fn native_warm_scratch(tgid: u64) -> Result<NativeScratch, i64> {
     let (mask, hold) = resource::blend_staging(format::R8, 1, 1, charge).map_err(|_| EIO)?;
     scratch.targets[1] = Some(mask);
     scratch.holds.push(hold);
-    native_spans(tgid, &mut scratch, &native::warm_spans())?;
+    native_spans(tgid, &mut scratch, &native::warm_spans().map_err(|_| ENOMEM)?)?;
     Ok(scratch)
 }
 
@@ -4380,7 +4428,6 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 // Native scratch uses the same validated per-format plan as the
                 // virtual encoders, with native layout and retirement ownership.
                 let mut scratch = native_blend_scratch(tgid, plan.scratch)?;
-                #[cfg(feature = "gt710_core_probe")]
                 if plan.data_bytes > 0 { crate::gk208::timing::begin_draw(tgid); }
                 // The packed heap copy is temporary; reserve its padded extent
                 // before allocation, separately from the retained device storage.
@@ -4391,10 +4438,10 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                     Some(Charge::new(tgid, bytes, true)?)
                 } else { None };
                 let data = {
-                    #[cfg(feature = "gt710_core_probe")]
+                    let _cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::Pack);
                     let _timing = crate::gk208::timing::phase(100);
                     crate::gk208::encode::pack_spans(&words, &resolved, data_width)
-                        .map_err(|e| if e == "native crossing allocation" { ENOMEM } else { EINVAL })?
+                        .map_err(|e| if e == "native crossing allocation" || e == crate::gk208::encode::NO_MEMORY { ENOMEM } else { EINVAL })?
                 };
                 if let Some(data) = data {
                     native_spans(tgid, &mut scratch, &data)?;
@@ -4408,19 +4455,20 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                     }
                     None => None,
                 };
-                #[cfg(feature = "gt710_core_probe")]
+                let cost_translate = crate::gk208::cost::phase(crate::gk208::cost::Slot::Translate);
                 let translating = crate::gk208::timing::phase(110);
                 let mut frame = if corrupt.is_none() && suppress.is_none() && swap.is_none() {
                     crate::gk208::encode::translate(&words, &resolved)
                 } else {
                     crate::gk208::encode::translate_with_extras(&words, &resolved,
                         crate::gk208::encode::Extras { corrupt, suppress, swap })
-                }.map_err(|_| EINVAL)?;
+                }.map_err(|e| if e == crate::gk208::encode::NO_MEMORY { ENOMEM } else { EINVAL })?;
                 native_probe_mask = frame.probe_mask;
-                frame.compact().map_err(|_| EINVAL)?;
-                #[cfg(feature = "gt710_core_probe")]
+                frame.compact().map_err(|e| if e == crate::gk208::encode::NO_MEMORY { ENOMEM } else { EINVAL })?;
+                frame.batch_draws(1400).map_err(|_| ENOMEM)?;
                 drop(translating);
-                #[cfg(feature = "gt710_core_probe")]
+                drop(cost_translate);
+                let _cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::FramePrepare);
                 let _timing = crate::gk208::timing::phase(111);
                 let backing = Arc::new(Pages::new(frame.data.len().div_ceil(PAGE)).ok_or(ENOMEM)?);
                 backing.write(0,&frame.data);
@@ -4616,6 +4664,15 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 return Err(ENOMEM);
             }
         }
+        // Reserve native request metadata before consuming controls or admitting work.
+        // Large valid streams must return ENOMEM instead of growing an infallible Vec.
+        let mut reqs: Vec<Request> = Vec::new();
+        #[cfg(target_arch = "x86_64")]
+        if let Chunks::Gk208(chunks) = &chunks {
+            let count = chunks.len().checked_add(1).ok_or(ENOMEM)?;
+            reqs.try_reserve_exact(count).map_err(|_| ENOMEM)?;
+            c.backlog.try_reserve(count).map_err(|_| ENOMEM)?;
+        }
         // Test point 27, `device-error`: the chunks are followed by a fenced command of a
         // type VirtIO does not define, which the device can only refuse, and that command
         // carries the fence. Taken only once the submission is certain to be sent.
@@ -4639,7 +4696,6 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             d.left -= 1;
             d.kept.push(serial);
         }
-        let mut reqs: Vec<Request> = Vec::new();
         match chunks {
             Chunks::Virgl(chunks) => {
                 let count = chunks.len();
@@ -5226,6 +5282,10 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     let _scanout = if a.target == 0 {
         if !window && !display::owner(tgid) {
             return Err(Refused::Errno(abi::errno::EPERM));
+        }
+        #[cfg(target_arch = "x86_64")]
+        if window && with_core(|c| c.display.stack.is_empty()).unwrap_or(false) {
+            screen::await_binding()?;
         }
         wait_for(None, true, |c| {
             (!console::restoring(c.display.owner_sequence)).then_some(c.display.known)
@@ -5992,7 +6052,7 @@ pub fn present_records() -> alloc::string::String {
     out
 }
 
-/// Whether the clean-room device owns this ARM64 display path.
+/// Whether the admitted GPU core owns the display path.
 pub fn display_active() -> bool {
     display::active()
 }
@@ -6006,6 +6066,13 @@ pub(crate) fn boot_settled() -> bool {
 
 pub fn take_display(vt: usize) -> SyscallResult {
     let _path = GpuPath::enter();
+    #[cfg(target_arch = "x86_64")]
+    if crate::gk208::takeover_started() {
+        // Takeover may be the first GPU call, before CAPS. Initialize its
+        // shared ownership stack before installing the display owner.
+        if let Err(e) = arch::with_interrupts(native_caps_startup) { return result(Err(e)); }
+        if !display::active() { return result(Err(ENODEV)); }
+    }
     let tid = match crate::task::scheduler::current_thread_id() {
         Some(t) => t,
         None => return result(Err(EINVAL)),
@@ -6026,6 +6093,12 @@ pub fn take_display(vt: usize) -> SyscallResult {
     if uid != 0 {
         return result(Err(abi::errno::EPERM));
     }
+    #[cfg(target_arch = "x86_64")]
+    if with_core(|c| c.display.stack.is_empty()).unwrap_or(false) {
+        if let Err(error) = arch::with_interrupts(|| screen::await_binding()) {
+            return result(Err(error));
+        }
+    }
     let outcome = display::take(group, pid, vt);
     if outcome.is_ok() {
         crate::process::with_process_manager(|m| {
@@ -6040,7 +6113,12 @@ pub fn take_display(vt: usize) -> SyscallResult {
 }
 pub fn give_display() -> SyscallResult {
     let _path = GpuPath::enter();
-    result(caller().and_then(display::back).map(|()| 0))
+    let restore = || caller().and_then(display::back).map(|()| 0);
+    #[cfg(target_arch = "x86_64")]
+    let outcome = arch::with_interrupts(restore);
+    #[cfg(target_arch = "aarch64")]
+    let outcome = restore();
+    result(outcome)
 }
 
 /// A graphics terminal returned to the foreground: restore its latest retained GPU frame.

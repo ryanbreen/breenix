@@ -30,7 +30,7 @@ def capture(seeds=None):
         for step,address in enumerate([a,b,a]):
             e = copy.deepcopy(template)
             e.update(phase='flip',mode=mode,step=step,surface=address,before_active=before,
-                     put_before=previous,put=previous+24,get=previous+24,
+                     put_before=previous,put=previous+32,get=previous+32,
                      seed=(seeds[mode][step==1] if seeds else
                            0x123450+mode*0x34567+(0x789ab if step==1 else 0)),
                      notifier_before=0,notifier_after=1)
@@ -49,6 +49,87 @@ def capture(seeds=None):
 
 
 class Flips(unittest.TestCase):
+    def test_g22_requires_exactly_32_bytes_and_fresh_completion(self):
+        serial = capture()
+        self.assertEqual(len(API['native_flips'](serial)), 6)
+        line = next(l for l in serial.splitlines(keepends=True) if l.startswith('GT710_FLIP '))
+        original = json.loads(line.split(' ', 1)[1])
+        for size in [0, 8, 16, 24, 28, 36, 40]:
+            bad = dict(original, put=original['put_before']+size, get=original['put_before']+size)
+            with self.subTest(size=size), self.assertRaises(ValueError):
+                API['native_flips'](serial.replace(line, 'GT710_FLIP '+json.dumps(bad)+'\n'))
+        for field, value in [('notifier_before', 1), ('notifier_after', 0),
+                             ('get', original['put']-4)]:
+            bad = dict(original, **{field: value})
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                API['native_flips'](serial.replace(line, 'GT710_FLIP '+json.dumps(bad)+'\n'))
+
+    def test_g22_production_flip_emits_offset_enable_update_disable_in_order(self):
+        # The retained E19 record has no method dump. Execute its production
+        # flip + submit functions and check eight words, separately from the
+        # scorer's observed PUT/GET and fresh-notifier checks.
+        import subprocess
+        import sys
+        import tempfile
+        sys.path.insert(0, str(ROOT/'tests'))
+        from gt710_gr_live_unwind_test import item
+        source = (ROOT/'kernel/src/gpu/gk208/native.rs').read_text()
+        code = '\n'.join(item(source, marker) for marker in
+                         ('\nfn submit(', '\nfn flip(', 'pub struct FlipSnapshot'))
+        fixture = r'''
+struct Registers { words: Vec<u32>, put: u32, head: u32, address: u32, raster: u32 }
+impl Registers {
+    fn read(&self, reg: usize) -> u32 {
+        match reg {
+            0x640004 => self.put,
+            r if r == 0x640460 + self.head as usize * 0x300 => self.address,
+            r if r == 0x616340 + self.head as usize * 0x800 => self.raster << 16,
+            0x61009c => 0,
+            r if r == 0x616308 + self.head as usize * 0x800 => 1,
+            r if r == 0x61c004 + self.head as usize * 0x800 => 1,
+            r if r == 0x61c030 + self.head as usize * 0x800 => 0,
+            _ => panic!("unexpected register"),
+        }
+    }
+    fn delay_us(&mut self, _: u32) { self.raster += 1; }
+}
+fn write_words(r: &mut Registers, _: u64, address: u64, words: &[u32]) -> Result<(), &'static str> {
+    if address >= 4096 { r.words.extend_from_slice(words); }
+    Ok(())
+}
+fn read_word(_: &mut Registers, _: u64, _: u64) -> Result<u32, &'static str> { Ok(0) }
+mod modeset {
+    pub struct PllLimits; pub struct Pll; pub struct Op;
+    pub fn publish(r: &mut super::Registers, put: u32) -> Result<(), &'static str> { r.put=put; Ok(()) }
+    pub fn wait(r: &mut super::Registers, reg: usize, _: u32, value: u32) -> Result<(), &'static str> {
+        assert_eq!(r.read(reg), value); Ok(())
+    }
+}
+fn complete(_: &mut Registers, _: u64, _: u64, _: &modeset::PllLimits,
+            _: &modeset::Pll, _: (u32,u32,bool,bool), _: &[Vec<modeset::Op>;4])
+            -> Result<u32, &'static str> { Ok(1) }
+CODE
+#[test] fn exact_flip_packet() {
+    for head in 0..2 {
+        let address=0x8000000u64; let mut put=1376;
+        let mut r=Registers {words:vec![], put, head, address:(address>>8) as u32, raster:1};
+        let snapshot=flip(&mut r, 1<<30, 4096, &mut put, 0, head, head,
+            &modeset::PllLimits, &modeset::Pll, &std::array::from_fn(|_| vec![]), address).unwrap();
+        assert_eq!(r.words, [0x40460+head*0x300, (address>>8) as u32,
+            0x40084, 0x80000000, 0x40080, 0, 0x40084, 0]);
+        assert_eq!((put,snapshot.put,snapshot.get), (1408,1408,1408));
+        assert_eq!((snapshot.notifier_before,snapshot.notifier_after), (0,1));
+    }
+}
+'''.replace('CODE', code)
+        with tempfile.TemporaryDirectory() as directory:
+            p = Path(directory)
+            (p/'flip.rs').write_text(fixture)
+            priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
+            subprocess.run(priority+['rustc', '--edition=2021', '--test', '-Dwarnings',
+                                    str(p/'flip.rs'), '-o', str(p/'flip')], check=True)
+            subprocess.run([str(p/'flip')], check=True)
+
     def test_flips_have_a_measured_effort_and_suite_case(self):
         manifest=json.loads((ROOT/'docs/suites/gt710.json').read_text())
         self.assertEqual(next(c for c in manifest['categories'] if c['id']=='flips')['cases'][0]['id'],'aba-handoff')

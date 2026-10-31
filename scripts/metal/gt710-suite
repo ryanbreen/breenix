@@ -109,6 +109,7 @@ CATEGORIES = {
     'resources': [('row', 'Production CAPS admits backend 6 with executable origins 3-10, native classes and live scanouts'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 8.2 step passing, reclaimed memory and its own time within 900 s'), ('console', 'A completed production console boot passes 88/88 within 330 s of handoff')],
     'alpha': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 77-case 8.3 step passing, reclaimed memory and its own time within 900 s')],
     'shapes': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 90-case 8.4 step passing, reclaimed memory and its own time within 900 s')],
+    'presentation': [('display', 'Runtime EVO snapshots prove both G20 viewports, the DDC preferred raster, latched surfaces and zero firmware writes'), ('panic', 'A separate terminal PANIC capture proves bound diagnostics under both poisons with firmware_writes=0 and no LOCKUP'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 161-case 8.6 selection passing, reclaimed memory and its own time within 900 s')],
     'isolation': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 140-case 8.5 selection passing, reclaimed memory and its own time within 900 s')],
     'core': [('row', 'CAPS bytes match the native backend-6 row and the created board classes'), ('dispatch', 'Native draws and copies complete; copy controls reject withheld release, stale epoch and masked 3D admission and accept their clean successors'), ('producer', 'A named production GPU-suite boot reports 170 manifest-ordered unprobed-capability admission refusals without skips and reports its own time')],
     'device': (
@@ -328,6 +329,7 @@ def display_memory(serial):
             expected.append(digest.hexdigest())
         require(o['sha256']==expected, 'complete complementary physical read-back mismatch')
     require(e['guard_bytes']==12*4096 and e['verified_bytes']==2*sum(s[1] for s in specs), 'short guard or allocation read-back')
+    console_evidence(serial, board_inventory(serial), e)
     return e
 
 
@@ -1091,6 +1093,85 @@ def cpu_apertures(serial):
         raise ValueError('malformed CPU aperture evidence') from error
 
 
+def console_evidence(serial, board, memory):
+    """G20/G21: exact display-owned extents, raw latches and the handoff join."""
+    if 'GT710_DISPLAY_EVIDENCE_ERROR' in serial:
+        raise ValueError('console evidence storage failed')
+    rows = [json.loads(m[1]) for m in re.finditer(r'^GT710_CONSOLE_V1 (.+)$', serial, re.M)]
+    logical = [json.loads(m[1]) for m in re.finditer(r'^GT710_DISPLAY_V1 (.+)$', serial, re.M)]
+    if not rows:
+        if (any(r.get('resource') == 0xffffffff for r in logical)
+                or 'GT710_NATIVE_HANDOFF ' in serial
+                or re.search(r'^GT710_NATIVE_CONSOLE .* latch=', serial, re.M)):
+            raise ValueError('logical console allocation and handoff evidence missing')
+        return {}
+    preferred = board['modes'][0]
+    display_snapshots(rows, (preferred['width'], preferred['height']))
+    console = rows[0].get('console')
+    def extent(r):
+        return (type(r) is list and len(r) == 2
+                and all(type(v) is int and v > 0 for v in r)
+                and r[0] % 65536 == 0 and sum(r) <= memory['total'])
+    if not extent(console) or console[1] != 2560*1600*4:
+        raise ValueError('logical console allocation is not exactly sized')
+    marker = one(r'^GT710_NATIVE_HANDOFF latch=([1-9]\d*)$', serial, 'logical handoff boundary')
+    if rows[0].get('event') != 'handoff' or rows[0]['mode'] != 1 or rows[0]['sequence'] != int(marker[1]):
+        raise ValueError('logical console handoff missing')
+    fixed = {}
+    occupied = memory['reserved'] + [[o['start'], o['size']] for o in memory['objects']]
+    for r in rows:
+        allocation = r.get('allocation')
+        w, h = ((1280,800),(2560,1600))[r['mode']]
+        rows_per_block = 1 if r['block_height'] == 0 else 8*r['block_height']
+        size = (r['pitch']*((h+rows_per_block-1)//rows_per_block*rows_per_block)+4095)//4096*4096
+        if (not extent(allocation) or allocation != [r['requested'], size]
+                or r.get('console') != console or r['head'] != board['head']
+                or r.get('event') not in ('handoff','mode','flip','receipt')
+                or any(a < sum(allocation) and allocation[0] < a+b for a,b in occupied)):
+            raise ValueError('logical allocation, event or display route mismatch')
+        if r['resource'] == 0xffffffff:
+            if r['block_height'] != 0 or r['format'] != 0:
+                raise ValueError('logical display-owned storage differs')
+            previous = fixed.setdefault(r['mode'], allocation)
+            if previous != allocation or (r['mode'] == 1 and allocation != console):
+                raise ValueError('logical mode allocation changed')
+        if r['event'] in ('handoff','receipt') and (r['mode'] != 1 or allocation != console or r['resource'] != 0xffffffff):
+            raise ValueError('console event does not name its logical allocation')
+        if allocation != console and allocation[0] < sum(console) and console[0] < sum(allocation):
+            raise ValueError('logical surface aliases console allocation')
+    return {r['sequence']: r for r in rows}
+
+
+def native_console_receipts(serial, start, bringup):
+    rows = {r['sequence']: r for r in (json.loads(m[1]) for m in re.finditer(r'^GT710_CONSOLE_V1 (.+)$', serial, re.M))}
+    handoff = re.search(r'^GT710_NATIVE_HANDOFF |^GT710_CONSOLE_V1 |^GT710_DISPLAY_V1 .*"resource"\s*:\s*4294967295', serial, re.M)
+    receipts = list(re.finditer(r'^GT710_NATIVE_CONSOLE surface=(\d+) firmware_writes=(\d+)(?: latch=(\d+))?$', serial, re.M))
+    if not any(r.start() >= start for r in receipts):
+        raise ValueError('native console receipt missing')
+    if len(receipts) != len(re.findall(r'^GT710_NATIVE_CONSOLE ', serial, re.M)):
+        raise ValueError('malformed native console receipt')
+    logical_started = False
+    used = set()
+    previous = 0
+    for r in receipts:
+        if r.start() < start: continue
+        if r[3] is not None:
+            latch = rows.get(int(r[3]))
+            if (latch is None or latch['event'] != 'receipt' or int(r[3]) <= previous
+                    or latch['mode'] != 1 or latch['resource'] != 0xffffffff
+                    or latch['requested'] != int(r[1]) or latch['allocation'] != latch['console']):
+                raise ValueError('native console receipt differs from measured logical latch')
+            logical_started = True
+            used.add(int(r[3])); previous = int(r[3])
+        elif logical_started or (handoff and r.start() > handoff.start()) or int(r[1]) != bringup:
+            raise ValueError('native console receipt does not name the latched console')
+        if int(r[2]) != 0:
+            raise ValueError('native console wrote firmware framebuffer')
+    expected = {r['sequence'] for r in rows.values() if r['event'] == 'receipt'}
+    if start == one(r'^GT710_MODE (.+)$',serial,'native mode evidence').end() and used != expected:
+        raise ValueError('measured console receipt has no serial receipt')
+
+
 def native_mode(serial):
     try:
         board = board_inventory(serial)
@@ -1156,9 +1237,7 @@ def native_mode(serial):
         need(abs(numerator-t['clock_khz']*denominator)*1000000<=t['clock_khz']*denominator*250,
              'native pixel PLL frequency differs from preferred timing')
         end=one(r'^GT710_MODE (.+)$',serial,'native mode evidence').end()
-        receipts=list(re.finditer(r'^GT710_NATIVE_CONSOLE surface=(\d+) firmware_writes=(\d+)$',serial[end:],re.M))
-        need(receipts and all(int(r[1])==surface and int(r[2])==0 for r in receipts),
-             'native console binding or firmware-write evidence missing or wrong')
+        native_console_receipts(serial, end, surface)
         rows=list(re.finditer(r'^GT710_PIX (\d+) ([0-9a-f:,]+)$',serial,re.M))
         need(len(rows)==t['height'], 'incomplete native full-screen read-back')
         import struct
@@ -1283,10 +1362,7 @@ def native_switches(serial):
              'preferred return binding, completion, clock or output fault')
         need(0<((restored['raster_after']>>16)-(restored['raster_before']>>16))&65535<100,
              'preferred return raster did not advance')
-        receipts=list(re.finditer(r'^GT710_NATIVE_CONSOLE surface=(\d+) firmware_writes=(\d+)$',
-                                 serial[returned[0].end():],re.M))
-        need(receipts and all(int(r[1])==previous['surface'] and int(r[2])==0 for r in receipts),
-             'console return after final low mode is missing or faulted')
+        native_console_receipts(serial, returned[0].end(), previous['surface'])
         return frames
     except (KeyError,TypeError,IndexError,OverflowError,json.JSONDecodeError) as error:
         raise ValueError('malformed native switching evidence') from error
@@ -1331,7 +1407,11 @@ def native_flips(serial):
                 next(r for r in active if r[0]==0x640460+h)[1]=address>>8
                 need(e['surface']==address and e['before_active']==previous and e['active']==active,
                      'flip did not latch the expected private surface')
-                need(e['put_before']==cursor and e['put']==cursor+24<=2048 and e['get']==e['put']
+                # G22: OFFSET, NOTIFY-enable, UPDATE, NOTIFY-disable, four
+                # method/value pairs. MIT nouveau core507d.c:34-58 scopes
+                # notification to the UPDATE; gt710_flip_report_test executes
+                # the production encoder and checks every word in order.
+                need(e['put_before']==cursor and e['put']==cursor+32<=2048 and e['get']==e['put']
                      and e['notifier_before']==0 and e['notifier_after']&1, 'flip completion missing or stale')
                 need(e['errors']==0 and e['underflow']&0x111==1 and e['power']&0x80000001==1
                      and not e['power_status']&0x10000000 and e['firmware_writes']==0, 'flip output fault or firmware write')
@@ -1368,8 +1448,7 @@ def native_flips(serial):
                 need(boundary<returned.start() and cursor<restored['put'], 'preferred return precedes low flips')
         need(len(re.findall(r'^GT710_FLIP_PIX ',serial,re.M))==sum(e['timing']['height'] for e,_ in frames),
              'unassociated flip pixels')
-        receipts=list(re.finditer(r'^GT710_NATIVE_CONSOLE surface=(\d+) firmware_writes=(\d+)$',serial[reports[-1].end():],re.M))
-        need(receipts and all(int(r[1])==a and int(r[2])==0 for r in receipts), 'console handoff after flips missing or faulted')
+        native_console_receipts(serial, reports[-1].end(), a)
         return frames
     except (KeyError,TypeError,IndexError,StopIteration,OverflowError,json.JSONDecodeError) as error:
         raise ValueError('malformed native flip evidence') from error
@@ -2017,7 +2096,7 @@ def resources_identity(boot, suite, sha=None):
         raise ValueError('resources requires a named production ' + suite + ' boot of the same kernel/build/tools')
 
 
-STEP_SELECTIONS = {'resources': 'gt710-step-8-2.json', 'alpha': 'gt710-step-8-3.json', 'shapes': 'gt710-step-8-4.json', 'isolation': 'gt710-step-8-5.json'}
+STEP_SELECTIONS = {'resources': 'gt710-step-8-2.json', 'alpha': 'gt710-step-8-3.json', 'shapes': 'gt710-step-8-4.json', 'isolation': 'gt710-step-8-5.json', 'presentation': 'gt710-step-8-6.json'}
 
 
 def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
@@ -2032,9 +2111,10 @@ def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
             or step.get('suite') != 'gpu' or not required
             or required != [n for n in names if n in required]):
         raise ValueError('resources step must select shared GPU cases in manifest order')
-    if selection == STEP_SELECTIONS['isolation']:
-        prior = json.loads((root / 'docs/gui' / STEP_SELECTIONS['shapes']).read_text())['cases']
-        required = [n for n in names if n in set(prior) | set(required)]
+    if selection in (STEP_SELECTIONS['isolation'], STEP_SELECTIONS['presentation']):
+        prior_steps = ('shapes',) if selection == STEP_SELECTIONS['isolation'] else ('resources', 'alpha', 'shapes', 'isolation')
+        prior = set().union(*(set(json.loads((root / 'docs/gui' / STEP_SELECTIONS[key]).read_text())['cases']) for key in prior_steps))
+        required = [n for n in names if n in prior | set(required)]
     fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal']
     if (not serial.endswith('\n') or any(re.search(p, serial) for p in
             fatal + [r'KERNEL PANIC[:!]', r'GT710_GR_REFUSAL', r'SUITE_SEQUENCE (?:STALLED|FAIL)'])):
@@ -2155,9 +2235,38 @@ def resources_capture(directory, sha):
     return dict(console=console, gpu=gpu)
 
 
-def record_resources_capture(directory, sha, category='resources'):
+def read_panic_capture(directory, sha):
+    path = Path(directory)
+    read = lambda name: (path / name).read_text()
+    # The host-only G22 re-score retains this companion too. Compare all
+    # runtime/build/tools fields with its real commit, after the same bounded
+    # host-diff validation as the production console/GPU captures.
+    capture_sha = read('commit').strip()
+    alpha_runtime_identity(capture_sha, sha)
+    boot = json.loads(read('run.json'))
+    events = [json.loads(l) for l in read('events.jsonl').splitlines()]
+    if (not re.fullmatch(r'\d{8}T\d{6}Z-metal', boot.get('id', ''))
+            or boot.get('kind') != 'boot' or boot.get('platform') != 'metal' or boot.get('arch') != 'x86_64'
+            or boot.get('commit') != capture_sha or boot.get('toolsCommit') != capture_sha
+            or boot.get('build', {}).get('commit') != capture_sha or boot.get('inject')
+            or boot.get('evidenceEligible') is not True or not read('ended').strip()
+            or read('dirty').strip() != '0'
+            or read('exit-status').strip() != '1'
+            or any(e.get('event') == 'console-gap' for e in events)
+            or not any(e.get('event') == 'power-off' and e.get('off') is True for e in events)
+            or not events or events[-1].get('event') != 'closed'
+            or events[-1].get('status') != 1 or events[-1].get('endedBy') != 'driver'):
+        raise ValueError('panic companion requires a complete, clean, ungapped driver-stopped fatal capture of this build/tools')
+    serial = read('serial.txt')
+    panic_capture(serial, boot)
+    return dict(boot=boot, serial=serial, events=events, exit_status=1)
+
+
+def record_resources_capture(directory, sha, category='resources', acceptance_head=None):
     directory = Path(directory)
     producer = resources_capture(directory, sha)
+    if category == 'presentation':
+        producer['panic'] = read_panic_capture(directory / 'panic-producer', acceptance_head or sha)
     gpu = producer['gpu']
     selection = STEP_SELECTIONS[category]
     results = cases(category, producer['console']['serial'], producer)
@@ -2182,8 +2291,70 @@ def record_resources_capture(directory, sha, category='resources'):
     return 0 if all(c['result'] == 'PASS' for c in results) else 1
 
 
+def panic_capture(serial, boot):
+    if (boot.get('gt710Category') != 'panic' or boot.get('mode') != 'probe'
+            or boot.get('suite') or boot.get('build', {}).get('profile') != 'gpu-panic'
+            or boot.get('build', {}).get('features') != ['capture_panic_oracle']):
+        raise ValueError('panic requires the separate capture_panic_oracle diagnostic build')
+    root = Path(__file__).resolve().parents[2]
+    ok, detail = runpy.run_path(str(root / 'scripts/check-gpu-panic.py'))['check_native'](serial)
+    if not ok:
+        raise ValueError(detail)
+
+
+def runtime_display(serial, preferred):
+    if 'GT710_DISPLAY_EVIDENCE_ERROR' in serial: raise ValueError('runtime display evidence storage failed')
+    rows = [json.loads(m[1]) for m in re.finditer(r'^GT710_DISPLAY_V1 (.+)$', serial, re.M)]
+    if not rows or {r.get('mode') for r in rows} != {0, 1}:
+        raise ValueError('runtime display needs both G20 logical modes')
+    return display_snapshots(rows, preferred)
+
+
+def display_snapshots(rows, preferred):
+    sequences = []
+    for r in rows:
+        try:
+            mode = r['mode']
+            w, h = ((1280, 800), (2560, 1600))[mode]
+            pitch, bh, fmt = r['pitch'], r['block_height'], r['format']
+            if (type(pitch) is not int or pitch != w * 4 or bh not in (0, 1, 2, 4, 8, 16, 32) or fmt not in (0, 1)):
+                raise ValueError('invalid runtime display storage')
+            storage = (0x1000000 | pitch) if bh == 0 else ((pitch // 64) << 8) | (bh.bit_length() - 1)
+            arrays = [('active', 5), ('armed', 5), ('viewport_active', 8), ('viewport_armed', 8), ('raster', 2)]
+            if (r['schema'] != 1 or type(mode) is not int
+                    or any(type(r[k]) is not list or len(r[k]) != n
+                           or any(type(v) is not int or not 0 <= v < 1 << 32 for v in r[k]) for k, n in arrays)
+                    or any(type(r[k]) is not int or r[k] <= 0 for k in ('sequence', 'resource', 'requested'))
+                    or r['head'] not in range(4) or r['notifier'] & 1 != 1
+                    or r['active'] != r['armed'] or r['active'][0] << 8 != r['requested']
+                    or r['active'][1] != w | h << 16 or r['active'][4] == 0
+                    or r['active'][2] != storage or r['active'][3] != (0xcf00 if fmt == 0 else 0xd500)
+                    or r['viewport_active'] != [0, 0, 0, w | h << 16, 0, 1280 | 800 << 16, 1280 | 800 << 16, 1280 | 800 << 16]
+                    or r['viewport_armed'] != r['viewport_active'] or r['firmware_writes'] != 0):
+                raise ValueError('runtime display latch, viewport, completion or firmware writes differ')
+            blank, end = r['raster']
+            if ((end & 0xffff) - (blank & 0xffff), (end >> 16) - (blank >> 16)) != tuple(preferred):
+                raise ValueError('runtime raster differs from the DDC preferred timing')
+            sequences.append(r['sequence'])
+        except (KeyError, TypeError, IndexError) as error:
+            raise ValueError('malformed runtime display evidence') from error
+    if sequences != sorted(set(sequences)):
+        raise ValueError('runtime display sequence is duplicated or unordered')
+    return rows
+
+
 def check_case(category, case, serial, producer=None):
-    if category in ('alpha', 'shapes', 'isolation'):
+    if category == 'presentation' and case == 'display':
+        if producer is None: raise ValueError('presentation needs named GPU and console captures')
+        preferred, _ = native_mode(producer['console']['serial'])
+        runtime_display(producer['gpu']['serial'], (preferred['timing']['width'], preferred['timing']['height']))
+        return
+    if category == 'presentation' and case == 'panic':
+        if producer is None or 'panic' not in producer:
+            raise ValueError('presentation needs a named panic capture')
+        panic_capture(producer['panic']['serial'], producer['panic']['boot'])
+        return
+    if category in ('alpha', 'shapes', 'isolation', 'presentation'):
         if producer is None or case != 'suite':
             raise ValueError(f'{category} needs named production GPU and console captures')
         gpu = producer['gpu']
@@ -2369,7 +2540,7 @@ def validate_manifest(manifest):
         raise ValueError('GT 710 case table differs from its manifest')
 
 
-def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns, producer=None):
+def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns, producer=None, acceptance_head=None):
     validate_manifest(manifest)
     milestone = records.get('milestone', '').removeprefix('metal-gt710/')
     category = 'core' if milestone == 'gpu-core' else milestone
@@ -2413,6 +2584,21 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns, pro
                 or records.get('gpuElapsedMS') != suite['elapsed_ms']
                 or records.get('consoleHandoffToDoneMS') != console_ms):
             raise ValueError('resources report differs from retained suite results or timing')
+    if category == 'presentation':
+        if producer is None or 'panic' not in producer:
+            raise ValueError('presentation needs a separate panic-producer capture')
+        scorer_sha = acceptance_head or sha
+        if scorer_sha != sha:
+            alpha_runtime_identity(sha, scorer_sha)
+        panic = producer['panic']
+        pb = panic['boot']
+        panic_sha = pb.get('commit', '')
+        alpha_runtime_identity(panic_sha, scorer_sha)
+        if (pb.get('id') in (producer['gpu']['boot']['id'], producer['console']['boot']['id'])
+                or pb.get('commit') != panic_sha or pb.get('toolsCommit') != panic_sha
+                or pb.get('build', {}).get('commit') != panic_sha):
+            raise ValueError('panic companion differs from this build/tools or reuses a suite boot')
+        panic_capture(panic['serial'], pb)
     if records.get('cases') != cases(category, serial, producer):
         raise ValueError('GT 710 results differ from the captured evidence')
     if any(c['result'] != 'PASS' for c in records['cases']):
@@ -2425,6 +2611,22 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns, pro
 def capture_serial(directory):
     # claim-lint:ok: normative bulk framing; tests/gt710_bulk_test.py and tests/gt710_contexts_report_test.py mutate anchors and bodies.
     serial=(Path(directory)/'serial.txt').read_text()
+    heap_fields = {
+        'schema', 'heap_free', 'heap_high_water', 'frame_frontier',
+        'frame_freelist_bytes', 'frame_ledger_bytes', 'cpu_stage_slots', 'cpu_stage_metadata_bytes',
+        'cpu_stage_pages', 'core_contexts', 'core_resources', 'core_submissions',
+        'core_syncs', 'core_backlog', 'core_backlog_bytes', 'core_backing_meta_sum',
+        'core_context_vector_bytes', 'native_resources', 'native_retired', 'native_retired_vector_bytes',
+        'native_active_region_bytes', 'native_vm_table_bytes', 'native_queue_vector_bytes', 'native_retired_requests_bytes',
+        'native_channel_initial_bytes', 'native_channel_parking_bytes', 'native_bulk_capacity_bytes', 'console_terminal_bytes',
+        'console_renderer_vector_bytes', 'heap_total', 'native_contexts', 'native_alias_indices_bytes',
+        'submit_n', 'submit_ns', 'wait_n', 'wait_ns',
+        'read_n', 'read_ns', 'present_n', 'present_ns',
+        'upload_n', 'upload_ns', 'pack_n', 'pack_ns',
+        'span_prep_n', 'span_prep_ns', 'span_map_n', 'span_map_ns',
+        'span_upload_n', 'span_upload_ns', 'translate_n', 'translate_ns',
+        'frame_prep_n', 'frame_prep_ns', 'evo_n', 'evo_ns',
+    }
     spans = bool(re.search(r'^GT710_SPANS_BULK ', serial, re.M))
     stalls = bool(re.search(r'^GT710_STALL_BULK ', serial, re.M))
     timings = bool(re.search(r'^GT710_TIMING_BULK ', serial, re.M))
@@ -2434,16 +2636,17 @@ def capture_serial(directory):
     if len(finals)>1 or final_path.exists()!=bool(finals):
         raise ValueError('final artifact slot missing or duplicated')
     if finals:
-        start=list(re.finditer(r'^SUITE gpu START .*$',serial,re.M))
-        done=list(re.finditer(r'^SUITE gpu DONE .*$',serial,re.M))
-        memory=list(re.finditer(r'^SUITE gpu MEMORY reclaimed=.*$',serial,re.M))
-        ready=list(re.finditer(r'^SUITE_SEQUENCE READY gpu$',serial,re.M))
-        case_rows=list(re.finditer(r'^SUITE gpu CASE .*$',serial,re.M))
+        suite=one(r'^SUITE (gpu|console) START .*$',serial,'final-slot suite')[1]
+        start=list(re.finditer(r'^SUITE '+suite+r' START .*$',serial,re.M))
+        done=list(re.finditer(r'^SUITE '+suite+r' DONE .*$',serial,re.M))
+        memory=list(re.finditer(r'^SUITE '+suite+r' MEMORY reclaimed=PASS .*$',serial,re.M))
+        ready=list(re.finditer(r'^SUITE_SEQUENCE READY '+suite+'$',serial,re.M))
+        case_rows=list(re.finditer(r'^SUITE '+suite+r' CASE .*$',serial,re.M))
         if (len(matches)!=1 or len(start)!=1 or len(done)!=1 or len(memory)!=1
                 or len(ready)!=1 or not case_rows
                 or not matches[0].end()<start[0].start()<case_rows[0].start()
                 or not case_rows[-1].end()<done[0].start()<memory[0].start()<finals[0].start()<ready[0].start()):
-            raise ValueError('final artifact slot outside completed GPU suite')
+            raise ValueError('final artifact slot outside completed suite')
     contexts = 'GT710_CTX_BULK ' in serial or 'GT710_CONTEXTS ' in serial
     if contexts and (not matches or not (Path(directory)/'gt710-pixels.rle').is_file()
                      or re.search(r'^GT710_CTX_IMAGE ', serial, re.M)):
@@ -2478,6 +2681,14 @@ def capture_serial(directory):
         raise ValueError('graphics image rows must arrive in bulk')
     if spans and not matches:
         raise ValueError('spans evidence bulk missing')
+    if re.search(r'^GT710_CASE_HEAP ', serial, re.M):
+        raise ValueError('case heap records must arrive in bulk')
+    if re.search(r'^GT710_CONSOLE_SAMPLE_V1 ', serial, re.M):
+        raise ValueError('console samples must arrive in bulk')
+    if re.search(r'^GT710_CONSOLE_V1 ', serial, re.M):
+        raise ValueError('console latch records must arrive in bulk')
+    if re.search(r'^GT710_DISPLAY_V1 ', serial, re.M):
+        raise ValueError('runtime display records must arrive in bulk')
     if re.search(r'^GT710_SPANS_V1 ', serial, re.M):
         raise ValueError('spans records must arrive in bulk')
     if stalls and not matches:
@@ -2520,6 +2731,18 @@ def capture_serial(directory):
             if type(row.get('id')) is not int or row['id'] <= 0:
                 raise ValueError('invalid spans record')
             key=('spans', row['id'])
+        elif fields[0]=='GT710_CASE_HEAP':
+            row = json.loads(line.removeprefix('GT710_CASE_HEAP '))
+            if (not isinstance(row, dict) or set(row) != {'schema','boundary','case','values'}
+                    or type(row['schema']) is not int or row['schema'] != 1
+                    or type(row['boundary']) is not int or not 0 <= row['boundary'] <= 170
+                    or not isinstance(row['case'], str) or len(row['case']) > 80
+                    or re.fullmatch(r'[A-Za-z0-9_./-]*', row['case']) is None
+                    or not isinstance(row['values'], dict) or set(row['values']) != heap_fields
+                    or any(type(v) is not int or not 0 <= v < 1 << 64 for v in row['values'].values())
+                    or row['values']['schema'] != 1):
+                raise ValueError('invalid case heap record')
+            key=('case-heap',)
         elif fields[0]=='GT710_TIMING_V1':
             row = json.loads(line.removeprefix('GT710_TIMING_V1 '))
             if (type(row.get('batch')) is not int or row['batch'] <= 0
@@ -2556,6 +2779,20 @@ def capture_serial(directory):
                     or row.get('answer') != 0x60010000 | (raw[3] & 15)):
                 raise ValueError('inconsistent attributed MMU write record')
             key=('mmu-error', row['epoch'], row['sequence'])
+        elif fields[0]=='GT710_CONSOLE_SAMPLE_V1':
+            row = json.loads(line.removeprefix('GT710_CONSOLE_SAMPLE_V1 '))
+            if row.get('stage') not in (0, 1): raise ValueError('invalid console sample stage')
+            key=('console-sample', row['stage'])
+        elif fields[0]=='GT710_CONSOLE_V1':
+            row = json.loads(line.removeprefix('GT710_CONSOLE_V1 '))
+            if type(row.get('sequence')) is not int or row['sequence'] <= 0:
+                raise ValueError('invalid console latch sequence')
+            key=('console-state', row['sequence'])
+        elif fields[0]=='GT710_DISPLAY_V1':
+            row = json.loads(line.removeprefix('GT710_DISPLAY_V1 '))
+            if type(row.get('sequence')) is not int or row['sequence'] <= 0:
+                raise ValueError('invalid runtime display sequence')
+            key=('display-state', row['sequence'])
         elif fields[0]=='GT710_STALL_V1':
             stall = re.fullmatch(r'GT710_STALL_V1 instance=(\d+) epoch=(\d+) put=(\d+) registers=\[.*\]\n?', line)
             if stall is None: raise ValueError('invalid stall record')
@@ -2579,7 +2816,26 @@ def capture_serial(directory):
         group_slots[key]=slot
         if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
         groups.setdefault(key,[]).append(line);previous=key
+    if ('case-heap',) in groups:
+        measured = [json.loads(row.removeprefix('GT710_CASE_HEAP ')) for row in groups[('case-heap',)]]
+        names = [''] + re.findall(r'^SUITE gpu CASE (\S+) (?:PASS|FAIL|SKIP) ', serial, re.M)
+        if (group_slots[('case-heap',)] != 1 or len(measured) != len(names)
+                or [row['boundary'] for row in measured] != list(range(len(names)))
+                or [row['case'] for row in measured] != names):
+            raise ValueError('case heap boundaries differ from the completed GPU cases')
     def report_key(line):
+        heap = re.fullmatch(r'GT710_CASE_HEAP_BULK ([1-9]\d*) ([a-f0-9]{64})\n?', line)
+        if heap: return ('case-heap',)
+        if line.startswith('GT710_CASE_HEAP_BULK '): raise ValueError('invalid case heap anchor')
+        sample = re.fullmatch(r'GT710_CONSOLE_SAMPLE_BULK stage=([01]) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
+        if sample: return ('console-sample', int(sample[1]))
+        if line.startswith('GT710_CONSOLE_SAMPLE_BULK '): raise ValueError('invalid console sample anchor')
+        console = re.fullmatch(r'GT710_CONSOLE_BULK sequence=([1-9]\d*) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
+        if console: return ('console-state', int(console[1]))
+        if line.startswith('GT710_CONSOLE_BULK '): raise ValueError('invalid console latch anchor')
+        display = re.fullmatch(r'GT710_DISPLAY_BULK sequence=([1-9]\d*) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
+        if display: return ('display-state', int(display[1]))
+        if line.startswith('GT710_DISPLAY_BULK '): raise ValueError('invalid runtime display anchor')
         refusal = re.fullmatch(r'GT710_GR_REFUSAL_BULK bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
         if refusal: return ('gr-refusal', refusal[2])
         if line.startswith('GT710_GR_REFUSAL_BULK '): raise ValueError('invalid GR refusal anchor')
@@ -2626,6 +2882,21 @@ def capture_serial(directory):
             if not lower<=serial_offset<upper:
                 raise ValueError('artifact anchor outside its upload slot')
         serial_offset+=len(line)
+        if key is not None and key[0] == 'console-sample':
+            anchor = re.fullmatch(r'GT710_CONSOLE_SAMPLE_BULK stage=([01]) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
+            record = groups[key][0].removesuffix('\n').encode('ascii')
+            if len(groups[key]) != 1 or len(record) != int(anchor[2]) or hashlib.sha256(record).hexdigest() != anchor[3]:
+                raise ValueError('console sample differs from serial length/digest')
+        if key is not None and key[0] == 'console-state':
+            anchor = re.fullmatch(r'GT710_CONSOLE_BULK sequence=([1-9]\d*) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
+            record = groups[key][0].removesuffix('\n').encode('ascii')
+            if len(groups[key]) != 1 or len(record) != int(anchor[2]) or hashlib.sha256(record).hexdigest() != anchor[3]:
+                raise ValueError('console latch differs from serial length/digest')
+        if key is not None and key[0] == 'display-state':
+            anchor = re.fullmatch(r'GT710_DISPLAY_BULK sequence=([1-9]\d*) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
+            record = groups[key][0].removesuffix('\n').encode('ascii')
+            if len(groups[key]) != 1 or len(record) != int(anchor[2]) or hashlib.sha256(record).hexdigest() != anchor[3]:
+                raise ValueError('runtime display record differs from serial length/digest')
         if key is not None and key[0] == 'gr-refusal':
             anchor = re.fullmatch(r'GT710_GR_REFUSAL_BULK bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
             record = groups[key][0].removesuffix('\n').encode('ascii')
@@ -2656,7 +2927,7 @@ def capture_serial(directory):
             if (len(groups[key]) != 1 or digest is None
                     or hashlib.sha256(groups[key][0].removesuffix('\n').encode('ascii')).hexdigest() != digest[1]):
                 raise ValueError('executable CAPS probe differs from serial digest')
-        if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',), ('core',), ('core-startup',), ('resources',)):
+        if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',), ('core',), ('core-startup',), ('resources',), ('case-heap',)):
             record=''.join(groups[key]).encode('ascii')
             fields=line.split()
             if len(fields)!=3 or (key==('multi',) and len(groups[key])!=1) or len(record)!=int(fields[1]) or hashlib.sha256(record).hexdigest()!=fields[2]:
@@ -2739,21 +3010,49 @@ def record_capture(directory, sha, producer_sha=None):
 
 
 def alpha_capture_identity(directory, head):
-    """G13 retained boots may differ only by the authorized host scorer files."""
+    return alpha_runtime_identity((Path(directory) / 'commit').read_text().strip(), head)
+
+
+def alpha_runtime_identity(capture, head):
+    """Keep real runtime IDs; refuse changes beyond reviewed terminal snapshots."""
     import subprocess
-    capture = (Path(directory) / 'commit').read_text().strip()
     if not re.fullmatch('[a-f0-9]{40}', capture):
         raise ValueError('alpha capture requires a full recorded commit')
     changed = []
     if capture != head:
         root = Path(__file__).resolve().parents[2]
-        subprocess.check_output(['git', 'merge-base', '--is-ancestor', capture, head], cwd=root)
-        changed = subprocess.check_output(
-            ['git', 'diff', '--no-renames', '--name-only', '-z', capture, head], cwd=root).decode().split('\0')[:-1]
+        def ancestor(a):
+            subprocess.check_output(['git', 'merge-base', '--is-ancestor', a, head], cwd=root)
+        def diff(a):
+            return subprocess.check_output(
+                ['git', 'diff', '--no-renames', '--name-only', '-z', a, head], cwd=root).decode().split('\0')[:-1]
+        ancestor(capture)
+        changed = diff(capture)
         allowed = {'scripts/metal/gt710-suite', 'tests/gt710_alpha_report_test.py',
-                   'tests/gt710_graphics_report_test.py'}
+                   'tests/gt710_graphics_report_test.py', 'tests/gt710_runtime_attribution_test.py',
+                   'tests/gt710_flip_report_test.py',  # G22 exact footprint check.
+                   # Coordinator 24.6: these host fixture repairs need no boot.
+                   'tests/gt710_isolation_report_test.py', 'tests/gt710_shapes_report_test.py',
+                   'tests/gt710_logical_mode_path_test.py'}
         if set(changed) - allowed:
-            raise ValueError('alpha retained capture differs in runtime or unauthorized files: ' + ', '.join(changed))
+            # Coordinator 2026-10-31 02:47 UTC retains these exact production
+            # captures across the panic-profile fix only. Later UART and USERD
+            # runtime changes have no retention ruling. Pin the authorized
+            # runtime snapshot, not a mutable file-name exception.
+            # Any subsequent runtime change still requires new evidence.
+            snapshots = ('26b26b6c89ab756b1f7ba386d52859f4ec4df0da',)
+            retained = False
+            if capture == '92484cc052c5e992ed1d1d4b7f8e990ab2d1118e':
+                for snapshot in snapshots:
+                    try:
+                        ancestor(snapshot)
+                    except subprocess.CalledProcessError:
+                        continue
+                    if not set(diff(snapshot)) - allowed:
+                        retained = True
+                        break
+            if not retained:
+                raise ValueError('alpha retained capture differs in runtime or unauthorized files: ' + ', '.join(changed))
     return capture, changed
 
 
@@ -2766,12 +3065,17 @@ def alpha_capture_proof(directory, sha, pr, category='alpha'):
     gpu = resources_suite(producer['gpu']['serial'], producer['gpu']['boot'], STEP_SELECTIONS[category])
     console_ms = resources_console(producer['console']['serial'], producer['console']['boot'],
                                    producer['console']['events'])
-    proof = dict(head=sha, captureCommit=capture_sha, hostOnlyDiff=changed, pr=pr, boots=[], consoleHandoffToDoneMS=console_ms,
+    proof = dict(head=sha, captureCommit=capture_sha, retainedRuntimeDiff=changed, pr=pr, boots=[], consoleHandoffToDoneMS=console_ms,
                  gpuElapsedMS=gpu['elapsed_ms'])
+    proof['hostOnlyDiff'] = [name for name in changed if name.startswith(('scripts/', 'tests/'))]
     selected = json.loads((Path(__file__).resolve().parents[2] / 'docs/gui' / STEP_SELECTIONS[category]).read_text())['cases']
     if category == 'isolation':
         prior = json.loads((Path(__file__).resolve().parents[2] / 'docs/gui' / STEP_SELECTIONS['shapes']).read_text())['cases']
         selected = list(set(selected) | set(prior))
+    if category == 'presentation':
+        gui = Path(__file__).resolve().parents[2] / 'docs/gui'
+        selected = list(set().union(*(set(json.loads((gui / ('gt710-step-8-' + str(i) + '.json')).read_text())['cases'])
+                                     for i in range(2, 7))))
     proof['selected'] = dict(passed=sum(c['id'] in selected and c['result'] == 'PASS' for c in gpu['cases']),
                              total=len(selected))
     for suite, capture in producer.items():
@@ -2805,14 +3109,15 @@ def alpha_capture_proof(directory, sha, pr, category='alpha'):
             raise ValueError('alpha ' + suite + ' memory was not reclaimed')
         proof['boots'].append(dict(id=boot['id'], suite=suite, commit=capture_sha,
             toolsCommit=boot['toolsCommit'], build=boot['build'], exitStatus=status,
-            exitReason=('failed GPU cases outside step ' + ({'isolation': '8.5', 'shapes': '8.4'}.get(category, '8.3')) + ' (G13)') if status else 'passed suite',
+            exitReason=('failed GPU cases outside step ' + ({'presentation': '8.6', 'isolation': '8.5', 'shapes': '8.4'}.get(category, '8.3')) + ' (G13)') if status else 'passed suite',
             done=tally, memory=memory, captureComplete=True, lifecycle=rows, sha256=digests))
     return proof
 
 
 def alpha_acceptance(directory, sha, pr, category='alpha'):
     """Score existing hardware cases and this step against the same pair of captures."""
-    step_categories = ('resources', 'alpha', 'shapes', 'isolation') if category == 'isolation' else (('resources', 'alpha', 'shapes') if category == 'shapes' else ('resources', 'alpha'))
+    step_categories = ('resources', 'alpha', 'shapes', 'isolation', 'presentation') if category == 'presentation' else ('resources', 'alpha', 'shapes', 'isolation') if category == 'isolation' else (('resources', 'alpha', 'shapes') if category == 'shapes' else ('resources', 'alpha'))
+    presentation = category == 'presentation'
     proof = alpha_capture_proof(directory, sha, pr, category)
     capture_sha = proof['captureCommit']
     producer = resources_capture(directory, capture_sha)
@@ -2831,12 +3136,18 @@ def alpha_acceptance(directory, sha, pr, category='alpha'):
                            cases=cases(category, serial))
             reason = score(manifest, effort, records, serial, boot, capture_sha, fatal)
             proof['checks'].append(dict(suite=suite, category=category, count=len(records['cases']), reason=reason))
+    if presentation:
+        producer['panic'] = read_panic_capture(Path(directory) / 'panic-producer', sha)
+        panic = producer['panic']
+        proof['panicBoot'] = dict(id=panic['boot']['id'], commit=panic['boot']['commit'],
+            toolsCommit=panic['boot']['toolsCommit'], build=panic['boot']['build'],
+            exitStatus=panic['exit_status'], serialSHA256=hashlib.sha256(panic['serial'].encode()).hexdigest())
     for category in step_categories:
-        if record_resources_capture(directory, capture_sha, category) != 0:
+        if record_resources_capture(directory, capture_sha, category, sha if presentation else None) != 0:
             raise ValueError(category + ' acceptance failed')
         records = json.loads((Path(directory) / ('gt710-' + category + '.json')).read_text())
         reason = score(manifest, effort, records, producer['console']['serial'], producer['console']['boot'],
-                       capture_sha, fatal, producer)
+                       capture_sha, fatal, producer, sha if presentation else None)
         proof['checks'].append(dict(suite='gpu', category=category, count=len(records['cases']), reason=reason))
     proof['passed'] = True
     return proof
@@ -2908,6 +3219,7 @@ def main():
     parser.add_argument('--resources', action='store_true', help='score PR 8.2 from this console boot and --gpu-boot; retain core/* separately')
     parser.add_argument('--isolation', action='store_true', help='score PR 8.5 isolation and preceding selections from the same captures')
     parser.add_argument('--shapes', action='store_true', help='score PR 8.4 shapes and preceding selections from the same captures')
+    parser.add_argument('--presentation', action='store_true', help='score PR 8.6 with retained production captures and a final-head panic companion')
     parser.add_argument('--alpha', action='store_true', help='score PR 8.3 alpha/suite and the unchanged PR 8.2 resources rows from the same captures')
     parser.add_argument('--acceptance-directory', type=Path, help='score a locally retained console capture and its resources-producer at the current PR head')
     parser.add_argument('--pr', type=int, help='open PR whose live head must match --sha for local alpha acceptance')
@@ -2919,8 +3231,8 @@ def main():
     if args.acceptance_directory:
         import subprocess
         root = Path(__file__).resolve().parents[2]
-        if not (args.alpha or args.shapes or args.isolation) or not args.pr or not re.fullmatch('[a-f0-9]{40}', args.sha or ''):
-            parser.error('--acceptance-directory requires --alpha, --shapes or --isolation, --pr and --sha')
+        if not (args.alpha or args.shapes or args.isolation or args.presentation) or not args.pr or not re.fullmatch('[a-f0-9]{40}', args.sha or ''):
+            parser.error('--acceptance-directory requires --alpha, --shapes, --isolation or --presentation, --pr and --sha')
         if (subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip() != args.sha
                 or subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=root, text=True).strip()):
             raise ValueError('alpha scorer must run from the clean requested head')
@@ -2930,7 +3242,7 @@ def main():
         proof = dict(head=args.sha, passed=False)
         try:
             pr = current_pr()
-            proof = alpha_acceptance(args.acceptance_directory, args.sha, pr, 'isolation' if args.isolation else 'shapes' if args.shapes else 'alpha')
+            proof = alpha_acceptance(args.acceptance_directory, args.sha, pr, 'presentation' if args.presentation else 'isolation' if args.isolation else 'shapes' if args.shapes else 'alpha')
             if current_pr() != pr:
                 raise ValueError('PR head or state changed during acceptance scoring')
             for boot in proof['boots']:

@@ -1815,3 +1815,22 @@ The earlier populated-system refusal is replaced by the [generation protocol](#i
 publishes a new tree beside the current one, and the kernel slot selects its matching tree by install ID. Existing
 flat paths, shared data directories and published generations are retained for rollback. The protocol's hardware
 validation remains deferred until after review (#2114).
+
+### Prepared native panic capture
+
+The diagnostic command `metal-run boot --branch BRANCH --gt710-category panic`
+selects `capture_panic_oracle` and the `gpu-panic` build profile on an automated
+probe boot. This feature is excluded from production console/GPU suite builds.
+The oracle starts the native core through the existing admission worker, waits
+up to 180 seconds for handoff and preparation, then deliberately panics while
+holding the normal core and screen locks. It retains the serial panic capture
+whether or not GPU output succeeds. The driver retains its ordinary fatal
+exit status; this diagnostic does not become a successful suite boot.
+
+Check the stopped serial with `python3 scripts/check-gpu-panic.py --native
+SERIAL`. The `presentation/panic` host case requires the PANIC record, bound
+panic target, complementary readbacks, exact diagnostics, firmware_writes=0
+and no LOCKUP. A timeout is a failed check. For cumulative presentation scoring,
+retain this boot under `panic-producer/` beside the production console capture
+and its `resources-producer/` GPU companion; `record_resources_capture` with
+category `presentation` checks their separate identities and build/tools commit.

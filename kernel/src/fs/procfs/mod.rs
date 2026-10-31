@@ -126,6 +126,8 @@ pub enum ProcEntryType {
     /// /proc/console - screen console directory
     #[cfg(target_arch="x86_64")]
     Gt710Pixels,
+    #[cfg(target_arch="x86_64")]
+    Gt710CaseHeap,
     ConsoleDir,
     /// /proc/console/check - the screen read back against the console's shadow
     /// and font, where it was read, and the text rows it shows
@@ -212,6 +214,8 @@ impl ProcEntryType {
             ProcEntryType::NetTcp => "tcp",
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Pixels => "gt710-pixels",
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710CaseHeap => "gt710-case-heap",
             ProcEntryType::ConsoleDir => "console",
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Ce => "gt710-ce",
@@ -282,6 +286,8 @@ impl ProcEntryType {
             ProcEntryType::NetTcp => "/proc/net/tcp",
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Pixels => "/proc/gt710-pixels",
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710CaseHeap => "/proc/gt710-case-heap",
             ProcEntryType::ConsoleDir => "/proc/console",
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Ce => "/proc/gt710-ce",
@@ -357,6 +363,8 @@ impl ProcEntryType {
             ProcEntryType::FbconCheck => 501,
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Pixels => 507,
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710CaseHeap => 509,
             ProcEntryType::ConsoleDir => 502,
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Ce => 504,
@@ -512,6 +520,8 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetTcp));
     #[cfg(target_arch="x86_64")]
     procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Pixels));
+    #[cfg(target_arch="x86_64")]
+    procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710CaseHeap));
 
     // Register the screen console's directories and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::ConsoleDir));
@@ -902,6 +912,8 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::NetTcp => crate::net::tcp::proc_net_tcp().map(String::into_bytes),
         #[cfg(target_arch="x86_64")]
         ProcEntryType::Gt710Pixels => require(Operation::Trace).map(|()|crate::gk208::proc_pixels()),
+        #[cfg(target_arch="x86_64")]
+        ProcEntryType::Gt710CaseHeap => require(Operation::Trace).and_then(|()|crate::gpu::heap::record()),
         ProcEntryType::ConsoleDir => text(String::from("check\n")),
         #[cfg(target_arch="x86_64")]
         ProcEntryType::Gt710Ce => require(Operation::Trace).and_then(|()|crate::gk208::proc_ce(0)),

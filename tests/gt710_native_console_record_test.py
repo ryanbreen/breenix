@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 from gt710_gr_live_unwind_test import item
 class NativeConsoleRecord(unittest.TestCase):
-    def test_live_geometry_binding_and_handoff_replace_arm_defaults(self):
+    def test_g20_logical_modes_keep_live_binding_and_handoff(self):
         source = (ROOT / "kernel/src/gpu/console.rs").read_text()
         function = item(source, "pub(super) fn describe(").replace("pub(super)", "pub")
         function = function.replace('#[cfg(target_arch = "x86_64")]', "")
@@ -35,8 +35,10 @@ fn main(){
  let mut a=abi::Modes::ZERO;a.count=2;a.current=1;
  a.modes=[abi::Mode{width:1280,height:800,scale:1,reserved:0},abi::Mode{width:2560,height:1600,scale:2,reserved:0}];
  console::describe(&mut a);
- assert_eq!((a.count,a.current),(1,0));assert_eq!((a.modes[0].width,a.modes[0].height),(1280,1024));
- assert_eq!(a.modes[1],abi::Mode::ZERO);
+ // G20 supersedes the old single EDID-sized logical mode expectation.
+ assert_eq!((a.count,a.current),(2,1));
+ assert_eq!((a.modes[0].width,a.modes[0].height,a.modes[0].scale),(1280,800,1));
+ assert_eq!((a.modes[1].width,a.modes[1].height,a.modes[1].scale),(2560,1600,2));
  assert_eq!((a.handoff,a.firmware_writes_after_handoff),(1,0));
  assert_eq!((a.console_resource,a.scanout_resource),(0xffff_ffff,0xffff_ffff));assert_eq!(a.binding_known,1);
  // READBACK(0) and the core expose a client viewing-copy identity.

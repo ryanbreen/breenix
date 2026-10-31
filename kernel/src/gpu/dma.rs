@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 #[cfg(target_arch = "aarch64")]
 use crate::memory::arch_stub::PhysFrame;
 #[cfg(target_arch = "x86_64")]
-use x86_64::structures::paging::PhysFrame;
+use x86_64::{VirtAddr, structures::paging::{PhysFrame, PageTableFlags}};
 use crate::memory::frame_allocator;
 
 pub const PAGE: usize = 4096;
@@ -175,6 +175,154 @@ impl Drop for FrameRun {
     }
 }
 
+/// CPU-only virtually contiguous staging storage. Physical pages come from the
+/// normal recycling allocator; no identity DMA address is exposed.
+#[cfg(target_arch = "x86_64")]
+const CPU_BUFFER_SLOT_BYTES: usize = 128 * 1024 * 1024;
+#[cfg(target_arch = "x86_64")]
+static CPU_MAPPINGS: spin::Mutex<()> = spin::Mutex::new(());
+#[cfg(target_arch = "x86_64")]
+static CPU_BUFFER_SLOTS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+#[cfg(target_arch = "x86_64")]
+static CPU_METADATA_BYTES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+#[cfg(target_arch = "x86_64")]
+static CPU_LIVE_PAGES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+#[cfg(target_arch = "x86_64")]
+pub(super) fn cpu_heap_footprint() -> [usize; 3] {
+    use core::sync::atomic::Ordering;
+    [CPU_BUFFER_SLOTS.load(Ordering::Acquire).count_ones() as usize,
+        CPU_METADATA_BYTES.load(Ordering::Acquire) as usize,
+        CPU_LIVE_PAGES.load(Ordering::Acquire) as usize]
+}
+
+// One recurring frame-sized mapping, also exercised during native startup.
+// Larger allocations and small crossing tables retain their ordinary lifetimes.
+#[cfg(target_arch = "x86_64")]
+const CPU_REUSE_MIN: usize = 1 << 20;
+#[cfg(target_arch = "x86_64")]
+const CPU_REUSE_BYTES: usize = 2 << 20;
+#[cfg(target_arch = "x86_64")]
+static CPU_BUFFER_CACHE: spin::Mutex<Option<CpuStorage>> = spin::Mutex::new(None);
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) struct CpuBox { storage: Option<CpuStorage> }
+#[cfg(target_arch = "x86_64")]
+impl CpuBox {
+    pub(crate) fn try_new(len: usize) -> Option<Self> {
+        let storage = if (CPU_REUSE_MIN..=CPU_REUSE_BYTES).contains(&len) {
+            let cached = CPU_BUFFER_CACHE.lock().take();
+            match cached {
+                Some(mut storage) => { storage.as_mut().fill(0); storage }
+                None => CpuStorage::try_new(CPU_REUSE_BYTES)?,
+            }
+        } else { CpuStorage::try_new(len)? };
+        Some(Self { storage: Some(storage) })
+    }
+    pub(crate) fn len(&self) -> usize { self.storage.as_ref().unwrap().len() }
+    pub(crate) fn as_ref(&self) -> &[u8] { self.storage.as_ref().unwrap().as_ref() }
+    pub(crate) fn as_mut(&mut self) -> &mut [u8] { self.storage.as_mut().unwrap().as_mut() }
+}
+#[cfg(target_arch = "x86_64")]
+impl Drop for CpuBox {
+    fn drop(&mut self) {
+        let Some(storage) = self.storage.take() else { return };
+        if storage.len() == CPU_REUSE_BYTES {
+            let mut cache = CPU_BUFFER_CACHE.lock();
+            if cache.is_none() { *cache = Some(storage); return; }
+        }
+        drop(storage);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+struct CpuStorage {
+    block: DmaBox,
+    base: VirtAddr,
+    mapped: usize,
+    slot: u32,
+}
+#[cfg(target_arch = "x86_64")]
+impl CpuStorage {
+    pub(crate) fn try_new(len: usize) -> Option<Self> {
+        use core::sync::atomic::Ordering;
+        let count = len.max(1).div_ceil(PAGE);
+        let bytes_len = count.checked_mul(PAGE)?;
+        if bytes_len > CPU_BUFFER_SLOT_BYTES { return None; }
+        let mut frames = FrameRun { frames: Vec::new(), owner: None };
+        frames.frames.try_reserve_exact(count).ok()?;
+        let mut used = CPU_BUFFER_SLOTS.load(Ordering::Acquire);
+        let slot = loop {
+            let slot = (!used).trailing_zeros();
+            if slot == 64 { return None; }
+            match CPU_BUFFER_SLOTS.compare_exchange_weak(used, used | (1u64 << slot),
+                Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => break slot,
+                Err(now) => used = now,
+            }
+        };
+        let base = VirtAddr::new(crate::memory::layout::KERNEL_BUFFER_REGION_BASE
+            + u64::from(slot) * CPU_BUFFER_SLOT_BYTES as u64);
+        // SAFETY: base starts at KERNEL_BUFFER_REGION_BASE in the high half.
+        let bytes = unsafe { NonNull::new_unchecked(base.as_mut_ptr()) };
+        let mut buffer = Self { block: DmaBox { bytes, _frames: frames, address: 0, len },
+            base, mapped: 0, slot };
+        CPU_METADATA_BYTES.fetch_add((buffer.block._frames.frames.capacity()
+            * core::mem::size_of::<Option<PhysFrame>>()) as u64, Ordering::Relaxed);
+        for index in 0..count {
+            let frame = frame_allocator::allocate_frame()?;
+            CPU_LIVE_PAGES.fetch_add(1, Ordering::Relaxed);
+            buffer.block._frames.frames.push(Some(frame));
+            // SAFETY: the leased virtual slot is disjoint, in the shared kernel
+            // hierarchy, and this frame remains owned through unmap/shootdown.
+            let mapped = {
+                // Slots can share intermediate tables; serialize their creation.
+                let _mapping = CPU_MAPPINGS.lock();
+                unsafe { crate::memory::kernel_page_table::map_kernel_page(
+                    base + (index * PAGE) as u64, frame.start_address(),
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE,
+                ) }
+            };
+            mapped.ok()?;
+            buffer.mapped += 1;
+        }
+        // SAFETY: the full owned mapping is now installed on recycled pages.
+        unsafe { core::ptr::write_bytes(bytes.as_ptr(), 0, bytes_len) };
+        Some(buffer)
+    }
+    pub(crate) fn len(&self) -> usize { self.block.len() }
+    pub(crate) fn as_ref(&self) -> &[u8] { self.block.as_ref() }
+    pub(crate) fn as_mut(&mut self) -> &mut [u8] { self.block.as_mut() }
+}
+#[cfg(target_arch = "x86_64")]
+impl Drop for CpuStorage {
+    fn drop(&mut self) {
+        let mut safe = true;
+        for index in 0..self.mapped {
+            // SAFETY: no caller can use this uniquely owned buffer after Drop.
+            let unmapped = {
+                let _mapping = CPU_MAPPINGS.lock();
+                unsafe { crate::memory::kernel_page_table::unmap_kernel_page(
+                    self.base + (index * PAGE) as u64,
+                ) }
+            };
+            if unmapped.ok().flatten() != self.block._frames.frames[index] { safe = false; }
+        }
+        if self.mapped != 0 { crate::memory::tlb::flush_all(); }
+        if safe {
+            CPU_METADATA_BYTES.fetch_sub((self.block._frames.frames.capacity()
+                * core::mem::size_of::<Option<PhysFrame>>()) as u64, core::sync::atomic::Ordering::Relaxed);
+            CPU_LIVE_PAGES.fetch_sub(self.block._frames.frames.len() as u64, core::sync::atomic::Ordering::Relaxed);
+            for frame in self.block._frames.frames.drain(..).flatten() {
+                frame_allocator::deallocate_frame(frame);
+            }
+            CPU_BUFFER_SLOTS.fetch_and(!(1u64 << self.slot), core::sync::atomic::Ordering::AcqRel);
+        } else {
+            // A failed unmap retains both physical ownership and the virtual slot.
+            core::mem::forget(core::mem::take(&mut self.block._frames.frames));
+        }
+    }
+}
+
 /// Whole frames, in order, owned until dropped.
 pub struct Pages {
     #[cfg(target_arch = "x86_64")]
@@ -249,6 +397,11 @@ impl Pages {
 
     pub fn count(&self) -> usize {
         self.frames.len()
+    }
+
+    #[cfg(target_arch="x86_64")]
+    pub(super) fn metadata_heap_bytes(&self) -> usize {
+        self.frames.capacity() * core::mem::size_of::<PhysFrame>()
     }
 
     pub fn bytes(&self) -> usize {

@@ -14,18 +14,24 @@ static RECOVERY_WAITERS:WaitQueueHead=WaitQueueHead::new();
 static WAITING:AtomicBool=AtomicBool::new(false);
 static WAITERS:WaitQueueHead=WaitQueueHead::new();
 struct Work {a:Channel,b:Channel,ticket:Option<Ticket>,request:Request,seed:u32,baseline:memory::allocator::Stats,old:[u32;3],userd:Allocation,engine:Engine}
-pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,console:super::super::ConsoleSurface,work:Option<Work>,resources:super::super::resource::Resources<crate::gpu::dma::Pages>}
+pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,console:super::super::ConsoleSurface,mode:u32,evo:super::super::native::Evo,scanout:Vec<super::super::resource::Hold>,work:Option<Work>,resources:super::super::resource::Resources<crate::gpu::dma::Pages>}
 pub(in crate::gk208) fn test_ownership()->Result<(),&'static str> {
     if CORE_STARTED.load(Ordering::Acquire) {return Err("native GPU core owns FIFO");}
     Ok(())
 }
-pub(crate) fn retain(layout:memory::Layout,regs:usize,bar:usize,console:super::super::ConsoleSurface)->Result<(),&'static str> {
+pub(crate) fn retain(mut layout:memory::Layout,regs:usize,bar:usize,console:super::super::ConsoleSurface,mut evo:super::super::native::Evo)->Result<super::super::ConsoleSurface,&'static str> {
     test_ownership()?;
+    let device=crate::drivers::pci::find_device(0x10de,0x128b).ok_or("native PCI device absent")?;
+    super::super::display_evidence::baseline(console.firmware_baseline);
+    let console=super::super::native::logical_console(&mut Registers(regs),&mut layout,
+        &mut evo,console,bar,device.bars[1].size)?;
     let native=layout.objects[4].range.start;
+    let table=layout.objects.iter().find(|o|o.name=="bar1-table")
+        .ok_or("logical console BAR table absent")?.range.start;
     let s=layout.allocator.stats();
     *SESSION.lock()=Some(Session{layout,registers:regs,bar,bi:native+0x2000,bd:native+0x3000,
-        pte:native+0x4000+(SLOT/4096)*8,total:s.reserved+s.charged+s.free,console,work:None,resources:super::super::resource::Resources::new()});
-    Ok(())
+        pte:table+(SLOT/4096)*8,total:s.reserved+s.charged+s.free,console,mode:1,evo,scanout:Vec::new(),work:None,resources:super::super::resource::Resources::new()});
+    Ok(console)
 }
 pub(in crate::gk208) fn initialize_core()->Result<(),&'static str> {
     let mut s={
@@ -219,11 +225,12 @@ pub(in crate::gk208) fn with_resources<R>(
 /// resources. Its identifier is reserved, rather than its physical address.
 pub(crate) fn console_state() -> Option<(gpu_abi::Mode, u64, bool, u64)> {
     let owner = SESSION.lock();
-    let s = &owner.as_ref()?.console;
+    let session=owner.as_ref()?;
+    let s = &session.console;
     let bound = super::super::console_binding(s).is_ok();
     let writes = crate::firmware_writes::count().checked_sub(s.firmware_baseline)?;
-    Some((gpu_abi::Mode { width: s.width as u32, height: s.height as u32,
-        scale: 1, reserved: 0 }, u64::from(u32::MAX), bound, writes))
+    let (width,height,scale)=if session.mode==0 {(1280,800,1)} else {(2560,1600,2)};
+    Some((gpu_abi::Mode { width, height, scale, reserved: 0 }, u64::from(u32::MAX), bound, writes))
 }
 
 pub(in crate::gk208) fn console_allocation() -> Option<(super::super::ConsoleSurface, Allocation)> {
@@ -231,4 +238,83 @@ pub(in crate::gk208) fn console_allocation() -> Option<(super::super::ConsoleSur
     let s = owner.as_ref()?;
     let allocation = s.layout.objects.iter().find(|o| o.range.start == s.console.vram)?.allocation;
     Some((s.console, allocation))
+}
+
+/// Refuse unadmitted viewport shapes before a request enters the adapter.
+/// This reads the fixed raster without changing the selected logical mode.
+pub(super) fn presentable(width:u32,height:u32)->Result<(), &'static str> {
+    let owner=SESSION.lock();
+    let s=owner.as_ref().ok_or("native display owner absent")?;
+    let regs=Registers(s.registers);
+    let h=s.evo.head as usize*0x300;
+    let blank=regs.read(0x64041c+h);
+    let end=regs.read(0x640420+h);
+    super::super::modeset::Viewport::for_raster(
+        (end&0xffff).checked_sub(blank&0xffff).ok_or("invalid native raster width")?,
+        (end>>16).checked_sub(blank>>16).ok_or("invalid native raster height")?,
+        width,height).map(|_| ())
+}
+
+/// Invoked only after the adapter's in-order native release has completed.
+/// Retain the active target independently of requests until another surface is
+/// confirmed. An uncertain update retains its request hold in the adapter.
+pub(in crate::gk208) fn present(surface:super::super::present::Surface)
+    -> Result<(), &'static str> {
+    let mut owner=SESSION.lock();
+    let s=owner.as_mut().ok_or("native display owner absent")?;
+    let hold=s.resources.hold(surface.resource)?;
+    // An error can follow an actual latch. Keep possible display readers
+    // pinned through GR reset; only a confirmed later update can release it.
+    s.scanout.push(hold);
+    let receipt=super::super::native::present(&mut s.evo,&mut Registers(s.registers),surface)?;
+    let allocation=s.resources.scanout_allocation(surface.resource).ok_or("scanout allocation absent")?;
+    super::super::display_evidence::transition(&mut Registers(s.registers),s.evo.head,surface,&receipt,
+        [allocation.start,allocation.size],[s.console.vram,s.console.bytes as u64],"flip")?;
+    if receipt.notifier&1!=1 || receipt.active!=receipt.armed {
+        return Err("native present receipt mismatch");
+    }
+    let active=s.scanout.pop().unwrap();
+    s.scanout.clear();
+    s.scanout.push(active);
+    Ok(())
+}
+/// Serialize a logical mode switch with client display readers through the
+/// shared ownership transition. No core spin lock is held across EVO waits.
+pub(crate) fn set_mode(index:u32)->Result<(), &'static str> {
+    if index>1 {return Err("invalid native logical mode");}
+    let mut owner=SESSION.lock();
+    let s=owner.as_mut().ok_or("native display owner absent")?;
+    let surface=if index==1 {
+        let c=s.console;
+        super::super::present::Surface{resource:u32::MAX,address:c.vram,
+            width:2560,height:1600,pitch:10240,block_height:0,format:0,dma:1}
+    } else {
+        let range=s.layout.objects.iter().find(|o|o.name=="logical-low")
+            .ok_or("logical low-mode allocation absent")?.range;
+        super::super::present::Surface{resource:u32::MAX,address:range.start,
+            width:1280,height:800,pitch:5120,block_height:0,format:0,dma:1}
+    };
+    let receipt=super::super::native::present(&mut s.evo,&mut Registers(s.registers),surface)?;
+    let allocation=s.layout.objects.iter().find(|o|o.range.start==surface.address)
+        .ok_or("logical mode allocation absent")?.range;
+    super::super::display_evidence::transition(&mut Registers(s.registers),s.evo.head,surface,&receipt,
+        [allocation.start,allocation.size],[s.console.vram,s.console.bytes as u64],"mode")?;
+    s.mode=index;
+    s.scanout.clear();
+    Ok(())
+}
+/// Prepare a disjoint terminal command packet while the display owner is live.
+pub(in crate::gk208) fn terminal_display(surface: super::super::present::Surface)
+    -> Result<super::super::emergency::Display, &'static str> {
+    let owner = SESSION.lock();
+    let s = owner.as_ref().ok_or("terminal display owner absent")?;
+    s.evo.terminal_display(s.registers, surface)
+}
+
+pub(crate) fn console_receipt() -> Result<u64, &'static str> {
+    let owner=SESSION.lock();
+    let s=owner.as_ref().ok_or("native display owner absent")?;
+    let allocation=s.layout.objects.iter().find(|o|o.range.start==s.console.vram)
+        .ok_or("logical console allocation absent")?.range;
+    super::super::native::console_receipt(&s.evo,&mut Registers(s.registers),s.console,allocation)
 }

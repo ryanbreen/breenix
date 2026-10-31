@@ -234,6 +234,11 @@ pub const PERCPU_STACK_REGION_SIZE: usize = aarch64_const::PERCPU_STACK_REGION_S
 /// - 0x30000000..0x40000000 (256 MiB): TLS blocks
 pub const KERNEL_TLS_REGION_BASE: u64 = PERCPU_STACK_REGION_BASE + 0x3000_0000; // +768 MiB
 
+/// CPU staging mappings use a separate 8 GiB window in the existing shared
+/// PML4[402] hierarchy, beyond the stack and TLS ranges above.
+#[cfg(target_arch = "x86_64")]
+pub(crate) const KERNEL_BUFFER_REGION_BASE: u64 = PERCPU_STACK_REGION_BASE + 0x1_0000_0000;
+
 /// Calculate the virtual address for a specific CPU's stack region
 ///
 /// Returns the base address of the stack region for the given CPU.

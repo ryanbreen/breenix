@@ -98,8 +98,9 @@ mod board;
 mod ddc;
 mod edid;
 mod bulk;
-#[cfg(feature = "gt710_core_probe")]
+mod display_evidence;
 pub(crate) mod timing;
+pub(crate) mod cost;
 mod memory;
 mod lock;
 mod inventory;
@@ -117,19 +118,25 @@ mod ce;
 pub(crate) use ce::readback::{transfer,region as copy_region,identities as transfer_identities};
 pub(crate) use ce::readback::console as console_readback;
 pub(crate) use ce::readback::span_upload;
-pub(crate) use ce::readback::{set_scanout,flush_resource};
+pub(crate) use ce::readback::{set_scanout,flush_resource,flush_rect};
 mod queue;
+pub(crate) mod emergency;
+pub(crate) mod prepared;
 mod recovery_policy;
 pub use system_dma::set_platform as set_dma_platform;
 mod modeset;
 mod native;
+pub(crate) use resource::present;
 mod core_record;
 pub use native::{ConsoleSurface,console_binding,takeover_started,caps_scanout};
-pub(crate) use ce::console_state;
+pub(crate) use ce::{console_state,set_mode,console_receipt};
 pub(crate) fn console_surface() -> Option<ConsoleSurface> {
     ce::console_allocation().map(|(surface, _)| surface)
 }
 mod rom;
+pub(crate) fn console_sample(stage: usize, offset: usize, expected: u32, actual: u32) {
+    display_evidence::sample(stage, offset, expected, actual);
+}
 pub fn proc_pixels()->Vec<u8> {bulk::take()}
 pub fn proc_ce(op:u8)->Result<Vec<u8>,i32> {ce::proc_read(op)}
 use crate::arch_impl::x86_64::timer;
@@ -396,7 +403,7 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
             crate::serial_println!("GT710_PROBE_TIME graphics us={}",channel::elapsed(start));
         }
         let (_,displacement,_)=modeset::bar1_view(layout.objects[0].range.start,layout.objects[0].range.size,device.bars[1].size,17)?;
-        ce::retain(layout,regs.0,console.pointer-displacement,console)?;
+        let console=ce::retain(layout,regs.0,console.pointer-displacement,console,evo)?;
         return Ok(console);
     }
     Err("no active board-routed TMDS sink responded to live DDC")
@@ -576,3 +583,16 @@ pub(crate) fn initialize_core() -> Result<(), &'static str> {
 
 use gr::shaders;
 pub mod encode;
+
+pub(crate) fn ce_terminal_display(id:u32)->Result<emergency::Display, &'static str> {
+    let surface=ce::with_resources(|r,_,_|r.scanout(id).ok_or("terminal scanout absent"))?;
+    emergency::Display::prepare(surface)
+}
+
+#[cfg(target_os="none")]
+pub(crate) fn heap_footprint() -> [usize; 8] {
+    let mut values = [0; 8];
+    values[..7].copy_from_slice(&ce::with_resources(|r,_,_| Ok(r.heap_footprint())).unwrap_or([0;7]));
+    values[7] = bulk::capacity();
+    values
+}

@@ -30,6 +30,7 @@ class ProgressReadback(unittest.TestCase):
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 const EIO: i64 = -5;
+const ENOMEM: i64 = -12;
 static REAPER: AtomicU64 = AtomicU64::new(1);
 mod platform_config { pub fn is_qemu() -> bool { true } }
 mod dev { pub fn is_svga() -> bool { false } }

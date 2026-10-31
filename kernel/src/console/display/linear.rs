@@ -49,6 +49,8 @@ pub struct Linear {
     #[cfg(target_arch = "x86_64")]
     native: OnceCell<crate::gk208::ConsoleSurface>,
     #[cfg(target_arch = "x86_64")]
+    gpu_active: AtomicBool,
+    #[cfg(target_arch = "x86_64")]
     snapshot: spin::Mutex<Option<alloc::sync::Arc<crate::gpu::dma::Pages>>>,
     #[cfg(target_arch = "x86_64")]
     disabled: AtomicBool,
@@ -74,6 +76,8 @@ impl Linear {
             #[cfg(target_arch = "x86_64")]
             native: OnceCell::uninit(),
             #[cfg(target_arch = "x86_64")]
+            gpu_active: AtomicBool::new(false),
+            #[cfg(target_arch = "x86_64")]
             snapshot: spin::Mutex::new(None),
             #[cfg(target_arch = "x86_64")]
             disabled: AtomicBool::new(false),
@@ -85,11 +89,34 @@ impl Linear {
         let _ = self.located.try_init_once(|| (phys, place));
     }
 
+    /// Admission happens after the boot console was installed. From then on,
+    /// keep the wrapper but route rows and observations through the shared core.
+    #[cfg(target_arch = "x86_64")]
+    pub fn uses_gpu(&self) -> bool {
+        self.gpu_active.load(Ordering::Acquire)
+    }
+
+    /// Only the render thread changes routing, between complete passes. A
+    /// reset or failed allocation keeps routing on the GPU.
+    #[cfg(target_arch = "x86_64")]
+    pub fn begin_pass(&self) -> bool {
+        if self.native.get().is_some()
+            && (crate::gpu::display_active() || crate::gpu::console::active()) {
+            return !self.gpu_active.swap(true, Ordering::AcqRel);
+        }
+        false
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn gpu(&self) -> Option<super::gpu_core::GpuCore> {
+        if self.uses_gpu() { super::gpu_core::GpuCore::new() } else { None }
+    }
+
     pub fn layout(&self) -> Layout {
         #[cfg(target_arch = "x86_64")]
         if let Some(s)=self.native.get() {
             return Layout {width:s.width,height:s.height,stride_bytes:s.pitch,bytes_per_pixel:4,
-                reserved:0,bgr:true,font:super::super::raster::Font::for_display(s.width,s.height)};
+                reserved:0xff,bgr:true,font:super::super::raster::Font::for_display(s.width,s.height)};
         }
         self.layout
     }
@@ -121,18 +148,38 @@ impl Linear {
 
     pub fn write(&self, shadow: &[u8], lines: Range<usize>, allowed: fn() -> bool) -> bool {
         if !self.available() { return false; }
+        #[cfg(target_arch = "x86_64")]
+        if let Some(gpu) = self.gpu() { return gpu.write(shadow, lines, allowed); }
+        // Once admitted, allocation failure must not resume CPU BAR writes.
+        #[cfg(target_arch = "x86_64")]
+        if self.uses_gpu() { return false; }
         // SAFETY: the mapping holds at least `layout.bytes()` bytes (`new`).
         unsafe { write_bands(self.buffer(), &self.layout(), shadow, lines, allowed) }
     }
 
+    pub fn flush(&self, lines: Range<usize>) -> Result<(), &'static str> {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(gpu) = self.gpu() { return gpu.flush(lines); }
+        #[cfg(target_arch = "x86_64")]
+        if self.uses_gpu() { return Err("the GPU console backing is unavailable"); }
+        #[cfg(target_arch = "aarch64")]
+        let _ = lines;
+        Ok(())
+    }
+
     pub fn settle(&self) -> Result<Source, &'static str> {
         if !self.available() { return Err("display disabled after native takeover failure"); }
+        #[cfg(target_arch = "x86_64")]
+        if let Some(gpu) = self.gpu() { return gpu.settle(); }
+        #[cfg(target_arch = "x86_64")]
+        if self.uses_gpu() { return Err("the GPU console backing is unavailable"); }
         drain_writes();
         let &(phys, place) = self.located.get().ok_or("the framebuffer's physical address is not known")?;
         #[cfg(target_arch = "x86_64")]
         if let Some(s)=self.native.get() {
             let writes=crate::firmware_writes::count().checked_sub(s.firmware_baseline).ok_or("firmware write counter reversed")?;
-            crate::serial_println!("GT710_NATIVE_CONSOLE surface={} firmware_writes={}",s.vram,writes);
+            let latch=crate::gk208::console_receipt()?;
+            crate::serial_println!("GT710_NATIVE_CONSOLE surface={} firmware_writes={} latch={}",s.vram,writes,latch);
             if writes!=0 {return Err("firmware writes after native handoff");}
             crate::gk208::console_binding(s).inspect_err(|error| {
                 crate::serial_println!("GT710_NATIVE_CONSOLE_REFUSAL {}",error);
@@ -148,6 +195,10 @@ impl Linear {
 
     pub fn read_line(&self, y: usize, out: &mut [u8]) {
         if !self.available() { out.fill(0); return; }
+        #[cfg(target_arch = "x86_64")]
+        if let Some(gpu) = self.gpu() { gpu.read_line(y, out); return; }
+        #[cfg(target_arch = "x86_64")]
+        if self.uses_gpu() { out.fill(0); return; }
         #[cfg(target_arch = "x86_64")]
         {
             let mut snapshot = self.snapshot.lock();
@@ -205,7 +256,7 @@ impl Linear {
         rows: Range<usize>,
         columns: Range<usize>,
     ) -> bool {
-        if !self.available() { return false; }
+        if !self.available() || self.uses_gpu() { return false; }
         let layout = self.layout();
         let bpp = layout.bytes_per_pixel;
         let columns = columns.start.min(layout.width)..columns.end.min(layout.width);

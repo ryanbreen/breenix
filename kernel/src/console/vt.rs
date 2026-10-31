@@ -209,7 +209,6 @@ pub(super) struct Effects {
     /// The foreground changed, and with it the lock state keyboards show.
     leds: bool,
     /// Restore the display owner after its terminal returns to the foreground.
-    #[cfg(target_arch = "aarch64")]
     restore_display: bool,
 }
 
@@ -248,7 +247,6 @@ impl Effects {
                 Note::OwnerGone { vt } => log::info!("[console] tty{} owner gone: mode reset", vt + 1),
             }
         }
-        #[cfg(target_arch = "aarch64")]
         if self.restore_display { crate::gpu::vt_resumed(); }
         if self.redraw {
             super::REDRAW.store(true, Ordering::Release);
@@ -391,8 +389,7 @@ impl Terminals<'_> {
         });
         self.sw.fg = to;
         effects.leds = true;
-        #[cfg(target_arch = "aarch64")]
-        { effects.restore_display = !text && self.sw.display_owner.is_some_and(|(_, vt)| vt == to); }
+        effects.restore_display = !text && self.sw.display_owner.is_some_and(|(_, vt)| vt == to);
         // The screen goes to `to`: a process drawing on it is no longer shown.
         if text {
             super::DISPLAY_TAKEN.store(false, Ordering::SeqCst);
