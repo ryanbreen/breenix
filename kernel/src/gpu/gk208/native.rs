@@ -219,6 +219,9 @@ pub fn suite_requested() -> bool {
 }
 /// CPU-only memory evidence has a separate, bounded probe boot route.
 pub fn memory_requested()->bool {
+    // The terminal oracle uses probe transport, but needs normal display/core
+    // startup before its deliberate panic, not the CPU VRAM experiments.
+    if cfg!(feature = "capture_panic_oracle") { return false; }
     crate::boot::intent::get()
         .and_then(|bytes| core::str::from_utf8(bytes).ok())
         .and_then(|text| crate::boot::target::parse(text).ok())
