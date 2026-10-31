@@ -448,30 +448,38 @@ fn fix_edid_checksum(raw: &mut [u8]) {
     raw[127] = 0u8.wrapping_sub(raw.iter().fold(0u8, |a,b| a.wrapping_add(*b)));
 }
 #[test]
-fn captured_sink_uses_advertised_75hz_raster_and_exact_fractional_pll() {
+fn captured_sink_selects_preferred_detailed_timing_despite_faster_established_mode() {
+    let modes = edid::parse(&captured_sink()).unwrap();
+    assert_eq!(modes[0], preferred());
+    assert!(modes.contains(&dmt_75()));
+    assert_eq!(*edid::native_raster(&modes).unwrap(), preferred());
+    assert_eq!(modeset::switch_sequence(&modes).unwrap()[1], preferred());
+}
+#[test]
+fn captured_sink_uses_preferred_raster_and_exact_fractional_pll() {
     let raw = captured_sink();
     let modes = edid::parse(&raw).unwrap();
     assert_eq!(modes[0], preferred(), "inventory must retain the preferred DTD");
     assert_eq!(modes.iter().filter(|t| **t == dmt_75()).count(), 1,
         "the established 75 Hz timing must be decoded exactly once");
     let t = modeset::switch_sequence(&modes).unwrap()[1];
-    assert_eq!(t, dmt_75(), "takeover and the high switch must select DMT 24h");
+    assert_eq!(t, preferred(), "takeover and the high switch must select the preferred DTD");
     // Explicit host limits, not a claim about uncaptured VBIOS limit bytes.
     let limits=modeset::PllLimits {reg:0x614100,reference:27000,min_vco:500000,max_vco:1000000,
         min_input:1000,max_input:27000,min_m:1,max_m:255,min_n:1,max_n:255,min_p:1,max_p:63};
     let p=modeset::pll(&limits,t.clock_khz).unwrap();
-    assert_eq!((p.m,p.n,p.p,p.fraction),(2,69,7,4096));
-    assert_eq!(p.p<<16|p.n<<8|p.m,0x074502);
+    assert_eq!((p.m,p.n,p.p,p.fraction),(2,71,9,4096));
+    assert_eq!(p.p<<16|p.n<<8|p.m,0x094702);
     assert_eq!(27000u64*(u64::from(p.n)*8192+4096+u64::from(p.fraction)),
-        135000u64*u64::from(p.m)*u64::from(p.p)*8192);
+        108000u64*u64::from(p.m)*u64::from(p.p)*8192);
     let m:std::collections::BTreeMap<_,_>=modeset::head_methods(&t,0,0,1,0x08010000,5120)
         .unwrap().into_iter().collect();
-    for (method,value) in [(0x414,1066<<16|1688),(0x418,2<<16|143),
-        (0x41c,40<<16|391),(0x420,1064<<16|1671),(0x450,135000000)] {
+    for (method,value) in [(0x414,1066<<16|1688),(0x418,2<<16|111),
+        (0x41c,40<<16|359),(0x420,1064<<16|1639),(0x450,108000000)] {
         assert_eq!(m[&method],value);
     }
     assert_eq!(m[&0x404]&0x3d8,0x140);
-    // Compare G20's two logical viewports across the raster change.
+    // Verify G20 logical viewports against the preferred raster.
     struct ViewRegs(std::collections::BTreeMap<usize,u32>);
     impl modeset::Io for ViewRegs {
         fn read(&mut self,r:usize)->u32 {*self.0.get(&r).unwrap_or(&0)}
@@ -484,7 +492,7 @@ fn captured_sink_uses_advertised_75hz_raster_and_exact_fractional_pll() {
         assert_eq!(methods,modeset::Viewport::new(&preferred(),w,h).unwrap().methods(0).unwrap());
         let logical:std::collections::BTreeMap<_,_>=modeset::logical_head_methods(
             &t,0,0,1,0x08010000,u64::from(w)*4,w,h).unwrap().into_iter().collect();
-        assert_eq!(logical[&0x450],135000000);
+        assert_eq!(logical[&0x450],108000000);
         assert_eq!(logical[&0x468],w|h<<16);
         let mut regs=ViewRegs(Default::default());
         for (method,value) in methods {for bank in [0x640000,0x660000] {
@@ -509,7 +517,6 @@ fn absent_75hz_or_a_different_preferred_size_keeps_the_preferred_dtd() {
         hsync_end:1184,htotal:1344,vsync_start:771,vsync_end:777,vtotal:806,flags:24};
     assert_eq!(modeset::switch_sequence(&[other,low,dmt_75()]).unwrap()[1],other);
 }
-
 
 #[test]
 fn underflow_window_starts_after_settle_and_preserves_fresh_faults() {
