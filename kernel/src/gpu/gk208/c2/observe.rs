@@ -103,6 +103,7 @@ fn value(snapshot: &[(u32, u32)], address: u32) -> Result<u32, &'static str> {
     Ok(word)
 }
 
+#[cfg(any(feature="gt710_clock_probe", test))]
 pub fn differences(post: &[(u32, u32)], now: &[(u32, u32)])
     -> Result<Vec<(u32, u32, u32)>, &'static str> {
     if post.len() != now.len() { return Err("snapshot geometry changed"); }

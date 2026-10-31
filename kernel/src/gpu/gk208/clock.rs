@@ -170,12 +170,10 @@ pub fn sample_domains(read: impl FnMut(u32) -> u32)
 }
 
 // These helpers decode register observations through C1's reader.
-#[cfg(feature = "gt710_clock_probe")]
 fn probe_reader(read:impl FnMut(u32)->u32)->Reader<impl FnMut(u32)->u32> {
     let mut r=Reader {read,raw:Vec::new(),crystal:0};
     r.crystal=match r.reg(0x101000)&0x400040 {0=>13500,0x40=>14318,0x400000=>27000,_=>25000};r
 }
-#[cfg(feature = "gt710_clock_probe")]
 pub fn gpc_reference(read:impl FnMut(u32)->u32)->Result<u32,&'static str> {
     probe_reader(read).div(0,0x137120,0x137140)
 }

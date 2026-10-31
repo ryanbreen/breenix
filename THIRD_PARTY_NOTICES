@@ -2055,3 +2055,16 @@ clk/pllgt215.c, fb/ramgk104.c and PMU sources listed above remain the
 hardware sources; no new hardware sequence or third-party source is added.
 `native.rs` emits the existing C5f health terms during the load interval.
 The original notices and grants remain in their adapted files.
+
+## GT 710 production clock startup (C7 / K8)
+
+`kernel/src/gpu/gk208/production.rs` orchestrates the existing checked MIT
+mechanisms in `c2.rs`, `c2/observe.rs`, `thermal.rs`, `pmu.rs`, `ram_init.rs`,
+`memx.rs` and `memx_display.rs`. Their original per-file grants remain in
+those files. The production wrapper retains the Red Hat 2010/2013 MIT grant.
+Sources are nouveau Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba:
+`nvkm/subdev/clk/{gk104,pllgt215}.c`, `bios/pll.c`,
+`fb/ramgk104.c`, `pmu/{gt215,memx}.c`, and `therm/g84.c`.
+The sensor, RAM script, PMU firmware and counter dependency notices and pinned
+source manifests listed above continue to apply to the shared helpers.
+`production_policy.rs` is Breenix policy, with no imported hardware mechanism.

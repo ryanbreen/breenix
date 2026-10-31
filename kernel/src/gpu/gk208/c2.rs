@@ -114,10 +114,12 @@ pub fn pll(l:&Limits,reference:u32,requested:u32)->Result<Pll,&'static str> {
 }
 #[derive(Debug)]
 pub struct Plan {pub khz:u32,pub pll_selected:bool,pub source_divider:u32,pub coefficient:u32}
+#[cfg(any(feature="gt710_clock_probe", test))]
 fn divide(reference:u32,requested:u32)->(u32,u32) {
     let d=(reference.saturating_mul(2)/requested).clamp(2,65);
     (reference*2/d,d-2)
 }
+#[cfg(any(feature="gt710_clock_probe", test))]
 pub fn plan(domain:&str,requested:u32,post:u32,l:&Limits,reference:u32,vco:u32)->Result<Plan,&'static str> {
     if domain!="gpc" {return Err("GPC-only");}
     if requested==0 || requested>post.min(810_000) {return Err("above-POST-or-zero");}
@@ -171,9 +173,9 @@ pub fn program(io:&mut impl Access,p:&Plan)->Result<(),&'static str> {
 #[path = "c2/observe.rs"]
 pub mod observe;
 
-#[cfg(target_os="none")]
+#[cfg(all(target_os="none", feature="gt710_clock_probe"))]
 mod runtime;
-#[cfg(target_os="none")]
+#[cfg(all(target_os="none", feature="gt710_clock_probe"))]
 pub use runtime::{read_status,descriptor};
-#[cfg(target_os="none")]
+#[cfg(all(target_os="none", feature="gt710_clock_probe"))]
 pub(super) use runtime::initialize;

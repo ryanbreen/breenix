@@ -75,12 +75,17 @@ pub fn temperature(io:&mut impl Access)->Result<u32,&'static str> {
     let raw=io.read(0x20400);
     if raw>i32::MAX as u32 {Err("sensor-read-error")}else{Ok(raw)}
 }
+#[cfg(any(feature="gt710_clock_probe",test))]
 #[path="thermal/status.rs"] mod status;
+#[cfg(any(feature="gt710_clock_probe",test))]
 pub use status::read as status;
+#[cfg(any(feature="gt710_clock_probe",test))]
 fn bytes(r:&[u8],p:usize,n:usize)->Result<&[u8],&'static str> {
     r.get(p..p.checked_add(n).ok_or("thermal-table-overflow")?).ok_or("thermal-table-outside-ROM")
 }
+#[cfg(any(feature="gt710_clock_probe",test))]
 fn word(r:&[u8],p:usize)->Result<usize,&'static str> {Ok(u16::from_le_bytes(bytes(r,p,2)?.try_into().unwrap()) as usize)}
+#[cfg(any(feature="gt710_clock_probe",test))]
 pub fn down_clock(r:&[u8])->Result<u32,&'static str> {
     let bit=r.windows(6).position(|s|s==b"\xff\xb8BIT\0").ok_or("thermal-BIT-missing")?;
     let h=bytes(r,bit,12)?;
@@ -104,7 +109,7 @@ pub fn down_clock(r:&[u8])->Result<u32,&'static str> {
     }
     down.filter(|v|*v>0).ok_or("thermal-downclock-missing")
 }
-#[cfg(target_os="none")]
+#[cfg(all(target_os="none", feature="gt710_clock_probe"))]
 mod runtime;
-#[cfg(target_os="none")]
+#[cfg(all(target_os="none", feature="gt710_clock_probe"))]
 pub(super) use runtime::{initialize,read_status};

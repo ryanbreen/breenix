@@ -571,22 +571,20 @@ fn display_memory(
 
 #[cfg(feature = "gt710_clock_probe")]
 mod sensor;
-#[cfg(feature = "gt710_clock_probe")]
 mod thermal;
 #[cfg(feature = "gt710_clock_probe")]
 mod c1;
-#[cfg(feature = "gt710_clock_probe")]
 pub(crate) mod c2;
-#[cfg(feature = "gt710_clock_probe")]
 mod pmu;
 #[cfg(feature = "gt710_clock_probe")]
 mod memx_inputs;
-#[cfg(feature = "gt710_clock_probe")]
 mod memx;
-#[cfg(feature = "gt710_clock_probe")]
 mod memx_display;
-#[cfg(feature = "gt710_clock_probe")]
 mod ram_init;
+#[cfg(not(feature = "gt710_clock_probe"))]
+mod production;
+#[cfg(not(feature = "gt710_clock_probe"))]
+mod production_policy;
 pub mod resource;
 #[cfg(feature = "gt710_core_probe")]
 mod spans_diagnostic;
@@ -596,6 +594,8 @@ pub mod caps;
 /// Serialize first-use native startup with the existing allocator/CE owner.
 pub(crate) fn initialize_core() -> Result<(), &'static str> {
     let result = ce::initialize_core();
+    #[cfg(not(feature = "gt710_clock_probe"))]
+    if result.is_ok() { production::initialize(); }
     #[cfg(feature = "gt710_clock_probe")]
     if let Err(e)=result {crate::serial_println!("GT710_C1_ERROR {}",e);}
     let longest = crate::tracing::providers::gpu::GPU_IRQ_MASKED_MAX_US.per_cpu[0].value.load(core::sync::atomic::Ordering::Relaxed);

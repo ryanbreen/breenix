@@ -376,12 +376,9 @@ fn complete(
 }
 // Probe-only route and one pending first-present observation. The CE owner
 // serializes these EXEC boundaries against native publication.
-#[cfg(feature = "gt710_clock_probe")]
 static MEMX_ROUTE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(u32::MAX);
-#[cfg(feature = "gt710_clock_probe")]
 static MEMX_PRESENT_PHASE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
-#[cfg(feature = "gt710_clock_probe")]
 fn memx_health_record(phase: &str, point: &str, head: u32, sor: u32,
     health: super::memx_display::Health,
 ) {
@@ -389,7 +386,6 @@ fn memx_health_record(phase: &str, point: &str, head: u32, sor: u32,
         phase,point,head,sor,0x61009c,health.errors,0x616308+head*0x800,health.underflow,
         0x61c004+sor*0x800,health.power,0x61c030+sor*0x800,health.link,health.check().is_ok());
 }
-#[cfg(feature = "gt710_clock_probe")]
 pub(in crate::gk208) fn clock_display_check(regs: &Registers, phase: &str) -> Result<(), &'static str> {
     let route=MEMX_ROUTE.load(core::sync::atomic::Ordering::Acquire);
     if route==u32::MAX {return Err("C6 native display route absent");}
@@ -398,7 +394,6 @@ pub(in crate::gk208) fn clock_display_check(regs: &Registers, phase: &str) -> Re
     memx_health_record(phase,"clock-check",head,sor,health);
     health.check()
 }
-#[cfg(feature = "gt710_clock_probe")]
 pub(in crate::gk208) fn memx_display_guard(regs: &Registers) -> Result<(), &'static str> {
     let route=MEMX_ROUTE.load(core::sync::atomic::Ordering::Acquire);
     if route==u32::MAX {return Err("C5f native display route absent");}
@@ -411,7 +406,6 @@ pub(in crate::gk208) fn memx_display_guard(regs: &Registers) -> Result<(), &'sta
     }
     result
 }
-#[cfg(feature = "gt710_clock_probe")]
 pub(in crate::gk208) fn memx_display_boundary(regs: &mut Registers, phase: &str,
     after_reply: bool,
 ) -> Result<(), &'static str> {
@@ -583,7 +577,6 @@ pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface,
 ) -> Result<super::present::Receipt, &'static str> {
     let _cost = super::cost::phase(super::cost::Slot::Evo);
-    #[cfg(feature = "gt710_clock_probe")]
     {
         let phase=MEMX_PRESENT_PHASE.swap(0,core::sync::atomic::Ordering::AcqRel);
         if phase!=0 {
@@ -934,7 +927,6 @@ pub fn takeover(
         regs: regs.0, head, phys: device.bars[1].address + displacement as u64,
         firmware_baseline,
     };
-    #[cfg(feature = "gt710_clock_probe")]
     MEMX_ROUTE.store(head | (u32::from(route.sor)<<8),core::sync::atomic::Ordering::Release);
     if !measuring() {
         crate::serial_println!("GT710_MODE_STAGE console-ready diagnostics=off");

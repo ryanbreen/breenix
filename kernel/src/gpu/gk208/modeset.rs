@@ -831,7 +831,6 @@ pub fn script(
 }
 /// RAM init uses the same opcode interpreter with RAM-restriction context.
 /// MIT nouveau bios/init.c:1976-2011; the caller caches the strap-derived index.
-#[cfg(any(feature = "gt710_clock_probe", test))]
 pub fn ram_script(r:&[u8], pointer:usize, groups:u8, index:u8)->Result<Vec<Op>,ScriptError> {
     script_decode(r, pointer, (0,0,1), Some((groups,index)))
 }
