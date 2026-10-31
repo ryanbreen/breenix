@@ -129,7 +129,7 @@ class C1(unittest.TestCase):
         r=bytearray(image()); r[0x60+48:0x60+56]=bytes(8); r[-1]=0; r[-1]=-sum(r)&255
         d=a.decode_image(bytes(r)); self.assertEqual(d['boost']['status'],'absent'); self.assertEqual(d['cstep']['status'],'absent')
 
-    def test_extended_read_tree_and_restore_only_sensor(self):
+    def test_extended_read_tree_and_read_only_sensor(self):
         source=r'''extern crate alloc;
 #[path="CLOCK"] mod clock;
 #[path="SENSOR"] mod sensor;
@@ -146,17 +146,23 @@ use std::collections::BTreeMap;
  assert_eq!(clock::sample_domains(|a|*r.get(&a).unwrap_or(&0)).1.iter().find(|v|v.0=="hubk06").unwrap().1,Ok(270000));
  let s=clock::sample(|a|*r.get(&a).unwrap_or(&0)); let _=(s.raw,s.gpc_khz,s.memory_khz,s.host_khz,s.temperature_c);
 }
-struct Io {r:BTreeMap<u32,u32>, writes:Vec<u32>,waits:u32}
-impl sensor::Io for Io {
- fn read(&mut self,a:u32)->u32 {*self.r.get(&a).unwrap_or(&0)}
- fn write(&mut self,a:u32,v:u32) {assert!([0x22400,0x21000,0x20008,0x2000c].contains(&a));self.writes.push(a);self.r.insert(a,v);}
- fn stabilize(&mut self) {self.waits+=1;}
+#[test] fn sensor_reads_only() {
+ let mut r=BTreeMap::from([(0x22400,0x800),(0x21000,1),(0x212a8,1),(0x20400,49),(0x20008,0x80000000),(0x2000c,0)]);
+ for (address,value,status,expected) in [
+  (0x22400,0x800,"ok",Some(49)),(0x22400,0,"needs-setup",None),
+  (0x21000,0,"needs-setup",None),(0x212a8,0,"sensor-unavailable",None),
+  (0x20008,0x8000,"needs-setup",None),(0x2000c,3,"needs-setup",None),
+  (0x20400,0xffffffff,"sensor-read-error",None)] {
+  let original=r.insert(address,value); let before=r.clone();let mut reads=vec![];
+  let s=sensor::temperature(|a| {reads.push(a);*r.get(&a).expect("unexpected sensor address")});
+  assert_eq!(s.value,expected.ok_or(status));assert!(s.restored);assert_eq!(r,before);
+  assert_eq!(&reads[..2],&[0x22400,0x21000]);
+  if status=="needs-setup" {assert!(!reads.contains(&0x20400));}
+  if address==0x22400 && value==0 || address==0x21000 {assert_eq!(reads.len(),2);}
+  r.insert(address,original.unwrap());
+ }
 }
-#[test] fn sensor_restores() {
- let mut i=Io{r:BTreeMap::from([(0x22400,0x40),(0x21000,0x20),(0x212a8,1),(0x20400,49),(0x20008,0x8000),(0x2000c,3)]),writes:vec![],waits:0};
- let original=i.r.clone(); let s=sensor::temperature(&mut i);assert_eq!(s.value,Ok(49));assert!(s.restored); assert_eq!(i.r,original);assert_eq!(i.waits,1);assert_eq!(i.writes.len(),8);
- i.r.insert(0x212a8,0); let original=i.r.clone();let s=sensor::temperature(&mut i);assert_eq!(s.value,Err("sensor-unavailable"));assert!(s.restored);assert_eq!(i.r,original);
-}
+
 '''.replace('CLOCK',str(ROOT/'kernel/src/gpu/gk208/clock.rs')).replace('SENSOR',str(ROOT/'kernel/src/gpu/gk208/sensor.rs'))
         with tempfile.TemporaryDirectory() as t:
             p=Path(t); (p/'c.rs').write_text(source)
@@ -190,7 +196,7 @@ impl sensor::Io for Io {
         raw=list(map(list,vals.items()))
         port=dict(bdf='01:00.0',cap_offset=0x60,flags=2,device_cap=0,link_cap=2+(8<<4),link_control=0,link_status=2+(8<<4),slot_cap=None)
         upstream=dict(port,bdf='00:01.0',flags=0x142,slot_cap=75<<7)
-        sensor=[[0x22400,0x800],[0x21000,1],[0x212a8,1],[0x21000,1],[0x22400,0x800],[0x20008,0x80000000],[0x2000c,0],[0x20400,49],[0x20008,0x80000000],[0x2000c,0]]
+        sensor=[[0x22400,0x800],[0x21000,1],[0x212a8,1],[0x20008,0x80000000],[0x2000c,0],[0x20400,49]]
         row=dict(schema=1,phase='startup',raw=raw,domains=a.domains(raw),temperature=dict(value=49,status='ok'),sensor_restored=True,sensor_raw=sensor,sensor_writes=[],voltage_raw=[[0xd610+4*i,0] for i in range(32)]+[[0x20340,0],[0x20344,0]],pcie=[port,upstream])
         self.assertEqual(a.c1_record(row),row)
         self.assertEqual(a.link(upstream)['slot_power_limit_w'],75)
@@ -198,6 +204,18 @@ impl sensor::Io for Io {
         with self.assertRaises(ValueError):a.c1_record(b)
         b=copy.deepcopy(row);b['sensor_writes']=[[0x137000,1]]
         with self.assertRaises(ValueError):a.c1_record(b)
+        for reads,status in [
+            ([[0x22400,0],[0x21000,0]],'needs-setup'),
+            (sensor[:2]+[[0x212a8,0]],'sensor-unavailable'),
+            (sensor[:3]+[[0x20008,0x8000],[0x2000c,3]],'needs-setup'),
+            (sensor[:-1]+[[0x20400,0xffffffff]],'sensor-read-error')]:
+            b=copy.deepcopy(row);b.update(sensor_raw=reads,temperature=dict(value=None,status=status))
+            self.assertEqual(a.c1_record(b),b)
+            b['temperature']['status']='ok'
+            with self.assertRaises(ValueError):a.c1_record(b)
+        for reads in [sensor+[[0x20400,50]],sensor[:2]+sensor[3:],sensor[:-1]]:
+            b=copy.deepcopy(row);b['sensor_raw']=reads
+            with self.assertRaises(ValueError):a.c1_record(b)
         import runpy
         api=runpy.run_path(str(ROOT/'scripts/metal/gt710-suite'),run_name='c1_transport')
         vbios=dict(bytes=len(image()),sha256=hashlib.sha256(image()).hexdigest(),hex=image().hex())
@@ -213,6 +231,29 @@ impl sensor::Io for Io {
                 with self.assertRaises(ValueError):api['capture_serial'](p)
             (p/'serial.txt').write_text(serial);(p/'gt710-pixels.rle').write_bytes(data.replace(b'49',b'48',1))
             with self.assertRaises(ValueError):api['capture_serial'](p)
+
+    def test_vbios_upload_precedes_native_startup_and_benchmarks(self):
+        source=(ROOT/'userspace/programs/src/probe.rs').read_text()
+        start=source.index('    if std::fs::read_to_string("/proc/gt710-ce")')
+        block=source[start:source.index('    let mut states',start)]
+        block=block.replace('std::fs::read_to_string("/proc/gt710-ce")','Ok::<_, ()>(String::from("clock-probe\\n"))')
+        harness=r'''use std::sync::atomic::{AtomicBool,Ordering};
+static CAPS:AtomicBool=AtomicBool::new(false);
+mod libbreenix {pub mod gpu {
+ pub mod abi {pub mod backend {pub const GK208:u32=6;}}
+ pub struct Caps {pub backend:u32}
+ pub fn caps()->(i32,Caps) {crate::CAPS.store(true,crate::Ordering::SeqCst);(0,Caps{backend:6})}
+}}
+mod gt710_artifacts {pub fn upload()->Result<(),String> {
+ assert!(!crate::CAPS.load(crate::Ordering::SeqCst),"VBIOS upload waited for native startup/benchmarks");Ok(())
+}}
+fn reap_forever()->! {assert!(CAPS.load(Ordering::SeqCst));std::process::exit(0)}
+fn main() {BLOCK}
+'''.replace('BLOCK',block)
+        with tempfile.TemporaryDirectory() as t:
+            p=Path(t);(p/'order.rs').write_text(harness)
+            subprocess.run((['taskpolicy','-b'] if sys.platform=='darwin' else [])+['rustc','--edition=2021','-Dwarnings',str(p/'order.rs'),'-o',str(p/'order')],check=True)
+            subprocess.run([str(p/'order')],check=True)
 
     def test_boot_route_has_no_suite(self):
         import runpy
