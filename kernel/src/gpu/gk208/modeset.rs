@@ -220,7 +220,7 @@ use super::edid::Timing;
 use alloc::{vec, vec::Vec};
 
 pub fn switch_sequence(modes: &[Timing]) -> Result<[Timing; 3], &'static str> {
-    let high = *modes.first().ok_or("missing preferred EDID timing")?;
+    let high = *super::edid::native_raster(modes)?;
     let low = modes.iter().filter(|t| t.width < high.width && t.height <= high.height
         && t.clock_khz < high.clock_khz && t.flags & 0x98 == 0x18)
         .max_by_key(|t| u64::from(t.width)*u64::from(t.height))

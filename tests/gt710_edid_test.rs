@@ -22,6 +22,7 @@ fn requires_complete_live_edid_blocks_and_exact_supported_timings() {
     let low = modes.iter().find(|m| m.width == 1280 && m.height == 800).unwrap();
     assert_eq!((low.clock_khz, low.htotal, low.vtotal), (83500, 1680, 831));
     let high = modes.iter().find(|m| m.width == 2560 && m.height == 1600).unwrap();
+    assert_eq!(edid::native_raster(&modes).unwrap(), high);
     assert_eq!((high.clock_khz, high.hsync_start, high.hsync_end, high.htotal,
                 high.vsync_start, high.vsync_end, high.vtotal), (268500,2608,2640,2720,1603,1609,1646));
     for n in 0..e.len() { assert!(edid::parse(&e[..n]).is_err()); }

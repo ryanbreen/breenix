@@ -592,7 +592,7 @@ pub fn takeover(
     head: u32,
     layout: &memory::Layout,
 ) -> Result<(ConsoleSurface, Evo), &'static str> {
-    let t = modes.first().ok_or("no preferred sink timing")?;
+    let t = edid::native_raster(modes)?;
     let limits = modeset::board_pll(rom, head)?;
     let pll_record = modeset::board_pll_record(rom,head)?;
     let coefficients = modeset::pll(&limits, t.clock_khz)?;

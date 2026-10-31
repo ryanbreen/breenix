@@ -1692,3 +1692,27 @@ Identically tiled whole allocations use byte counts, pitch source/destination,
 REMAP disabled and the existing non-pipelined flush and epoch releases. The
 file-local grant was read; its copyright and full grant remain in both files.
 Runtime input compaction and phase observations are Breenix code.
+
+GK208B advertised 75 Hz raster (24.7-raster-75hz)
+-----------------------------------------------
+Consumers: `kernel/src/gpu/gk208/edid.rs` and `scripts/metal/gt710-suite`.
+The DMT 24h tuple and established-timing bit association are adapted from
+`drivers/gpu/drm/drm_edid.c` at Linux v6.8,
+`e8f897f4afef0031fe618a8e94127a0934896aba`, specifically `drm_dmt_modes`
+(ID 0x24) and `edid_est_modes`/`add_established_modes` (byte 36 bit 0).
+This file's own permissive MIT grant was checked before use; no GPL DRM
+integration code is imported. The original full notice is retained in each
+consumer's header, including its non-infringement disclaimer.
+
+Copyright (c) 2006 Luc Verhaegen (quirks list); Copyright (c) 2007-2008
+Intel Corporation (Jesse Barnes); Copyright 2010 Red Hat, Inc.; DDC probing
+Copyright (C) 2006 Dennis Munsie.
+Source SHA-256: `56812b85c42571b1fbf2cd61c2743ea02ccbe8bf20f7acb8cb01d324878c4c43`.
+Source: https://github.com/torvalds/linux/blob/e8f897f4afef0031fe618a8e94127a0934896aba/drivers/gpu/drm/drm_edid.c
+
+The unchanged fractional PLL mechanism in `modeset.rs` remains attributed to
+MIT nouveau `nvkm/subdev/clk/pllgt215.c` in the native preferred-mode section
+above. Its file-local grant was rechecked for this unit (Copyright 2010
+Red Hat Inc.; SHA-256 `71cc116d01df5ca95223afc0c07b634594e412c1bd9aa5b2e4348773ff3b2950`).
+The check executes that production code under explicit host PLL limits;
+these limits are not represented as captured VBIOS data.

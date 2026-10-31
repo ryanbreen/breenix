@@ -1,3 +1,32 @@
+/*
+ * Copyright (c) 2006 Luc Verhaegen (quirks list)
+ * Copyright (c) 2007-2008 Intel Corporation
+ *   Jesse Barnes <jesse.barnes@intel.com>
+ * Copyright 2010 Red Hat, Inc.
+ *
+ * DDC probing routines (drm_ddc_read & drm_do_probe_ddc_edid) originally from
+ * FB layer.
+ *   Copyright (C) 2006 Dennis Munsie <dmunsie@cecropia.com>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sub license,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial portions
+ * of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ */
 //! VESA E-EDID A2 detailed timings and the required DMT standard timing.
 extern crate alloc;
 use alloc::vec::Vec;
@@ -103,6 +132,12 @@ pub fn parse(e: &[u8]) -> Result<Vec<Timing>, &'static str> {
             vsync_start:771,vsync_end:777,vtotal:806,flags:24 };
         if !modes.contains(&low) { modes.push(low); }
     }
+    // E-EDID A2 table 3.18: byte 36 bit 0; VESA DMT 1.13 ID 24h.
+    // The tuple is also in MIT drm_edid.c (Linux v6.8), drm_dmt_modes
+    // and edid_est_modes; the original permission notice is above.
+    if e[36] & 1 != 0 && !modes.contains(&DMT_1280_1024_75) {
+        modes.push(DMT_1280_1024_75);
+    }
     for b in e[128..].chunks_exact(128) {
         if b[0] == 2 && b[2] != 0 {
             let start = b[2] as usize;
@@ -115,4 +150,19 @@ pub fn parse(e: &[u8]) -> Result<Vec<Timing>, &'static str> {
         }
     }
     Ok(modes)
+}
+
+const DMT_1280_1024_75: Timing = Timing {
+    width: 1280, height: 1024, clock_khz: 135000,
+    hsync_start: 1296, hsync_end: 1440, htotal: 1688,
+    vsync_start: 1025, vsync_end: 1028, vtotal: 1066, flags: 30,
+};
+
+/// 24.7-raster-75hz (G23 in the unit brief), authorized directly by the
+/// operator: select the advertised DMT at the preferred size; otherwise
+/// retain the preferred DTD. Inventory order and G20 viewports are unchanged.
+pub fn native_raster(modes: &[Timing]) -> Result<&Timing, &'static str> {
+    let preferred = modes.first().ok_or("no preferred sink timing")?;
+    Ok(modes.iter().find(|t| t.width == preferred.width && t.height == preferred.height
+        && **t == DMT_1280_1024_75).unwrap_or(preferred))
 }
