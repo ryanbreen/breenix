@@ -40,4 +40,24 @@ fn hex(b:&[u8])->String{b.iter().map(|v|format!("{v:02x}")).collect()}
  }
  display_evidence::sample(0,999,0,0);display_evidence::sample(1,999,0,0);
  assert!(display_evidence::export().is_empty(),"sample repeated in the final upload slot");
+ let surface=present::Surface{resource:u32::MAX,address:0x30000000,width:2560,height:1600,pitch:10240,block_height:0,format:0,dma:1};
+ let receipt=present::Receipt{notifier:1,active:[0x300000,2,3,4,5],armed:[0x400000,2,3,4,5]};
+ for event in ["handoff","mode","flip","receipt"] {
+  assert!(display_evidence::transition(&mut regs,0,surface,&receipt,[0x30000000,16384000],[0x30000000,16384000],event).is_ok());
+ }
+ let events=display_evidence::export();assert_eq!(events.len(),4);
+ for ((text,anchor),event) in events.iter().zip(["handoff","mode","flip","receipt"]) {
+  assert!(text.starts_with("GT710_CONSOLE_V1 "));
+  assert!(text.contains(&format!("\"event\":\"{event}\"")));
+  assert!(text.contains("\"allocation\":[805306368, 16384000]"));
+  assert!(text.contains("\"console\":[805306368, 16384000]"));
+  assert!(text.contains("\"active\":[3145728, 2, 3, 4, 5]"));
+  assert!(text.contains("\"armed\":[4194304, 2, 3, 4, 5]"));
+  assert!(anchor.ends_with(&format!("bytes={} sha256={}",text.len(),hex(&block::install::sha256::sha256(text.as_bytes())))));
+ }
+ for _ in 0..2048 {
+  display_evidence::transition(&mut regs,0,surface,&receipt,[0x30000000,16384000],[0x30000000,16384000],"flip").unwrap();
+ }
+ assert!(display_evidence::transition(&mut regs,0,surface,&receipt,[0x30000000,16384000],[0x30000000,16384000],"flip").is_err());
+
 }
