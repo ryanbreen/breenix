@@ -11,7 +11,7 @@ from gt710_gr_live_unwind_test import item
 class LogicalModePath(unittest.TestCase):
     def test_viewport_is_in_the_notified_update_and_high_console_avoids_userd(self):
         native=(ROOT/'kernel/src/gpu/gk208/native.rs').read_text()
-        present=item(native,'pub(in crate::gk208) fn present(').replace('pub(in crate::gk208)','').replace('super::present::','present::').replace('super::display_evidence::','display_evidence::')
+        present=item(native,'pub(in crate::gk208) fn present(').replace('pub(in crate::gk208)','').replace('super::present::','present::').replace('super::display_evidence::','display_evidence::').replace('super::cost::','cost::')
         console=item(native,'pub(super) fn logical_console(').replace('pub(super)','').replace('crate::memory::map_mmio','host_map').replace('crate::console::display::linear::map_native_write_combining','host_wc').replace('super::present::','present::').replace('super::vm::TABLE_BYTES','vm::TABLE_BYTES').replace('super::display_evidence::','display_evidence::')
         binding=item(native,'pub fn console_binding(').replace('pub fn','fn').replace('surface: &ConsoleSurface','surface: &ConsoleSurface, regs: &mut Registers').replace('    let mut regs = Registers(surface.regs);','').replace('view.verify(&mut regs,','view.verify(regs,')
         fixture=r'''
@@ -42,6 +42,12 @@ impl memory::Access for Registers {
  fn read(&mut self,r:usize)->u32 {Registers::read(self,r)}
  fn write(&mut self,r:usize,v:u32){Registers::write(self,r,v)}
 }
+mod cost {
+ pub enum Slot { Evo }
+ pub fn phase(_:Slot) {}
+}
+// Retained same-mode updates use a separate capabilities acknowledgement.
+fn acknowledge(_: &mut Evo, _: &mut Registers)->Result<u32,&'static str>{Ok(1)}
 mod display_evidence {
  pub fn record(_: &mut super::Registers,_:u32,_:super::present::Surface,_:&super::present::Receipt){}
  pub fn transition(_: &mut super::Registers,_:u32,s:super::present::Surface,r:&super::present::Receipt,
