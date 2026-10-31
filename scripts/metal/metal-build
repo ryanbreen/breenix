@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Builds one x86-metal boot's inputs in the metal build container (docs/metal/README.md, "Build").
 
-  metal-build --id ID --sha SHA --repo DIR --rust-fork DIR --cache DIR --root DIR --stub DIR [--features xhci_fault_inject|block_fence_inject|testing]
+  metal-build --id ID --sha SHA --repo DIR --rust-fork DIR --cache DIR --root DIR --stub DIR
+              [--features xhci_fault_inject|block_fence_inject|server_reboot_fault|watchdog_fault_inject|testing|capture_panic_oracle|gt710_core_probe|gt710_clock_probe]
               [--suite ID[,ID...]]
   metal-build ... --stub-only --tools-profile disk-readback|boot-manager
 

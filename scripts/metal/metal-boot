@@ -105,7 +105,8 @@ def kernel_profile(args):
                 ['testing'] if args.mode == 'tests' else [])
     profile = {'watchdog_fault_inject': 'fault-test', 'xhci_fault_inject': 'fault-test',
                'block_fence_inject': 'fault-test', 'server_reboot_fault': 'fault-test',
-               'testing': 'testing', 'gt710_core_probe': 'gpu-core'}.get(''.join(features), 'production')
+               'testing': 'testing', 'gt710_core_probe': 'gpu-core',
+               'gt710_clock_probe': 'gpu-clock'}.get(''.join(features), 'production')
     return features, profile
 
 
