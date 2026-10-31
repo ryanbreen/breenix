@@ -652,6 +652,7 @@ pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + S
     -> Result<(super::encode::Target, Hold), &'static str> {
     #[cfg(feature = "gt710_core_probe")]
     let preparing = super::timing::phase(101);
+    let cost_prepare = super::cost::phase(super::cost::Slot::SpanPrepare);
     let bytes = data.width as usize * data.height as usize * 4;
     if data.bytes.len() > bytes { return Err("oversized native packed spans"); }
     let layout = Layout::new(data.width, data.height, 4)?;
@@ -669,6 +670,8 @@ pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + S
     pages.extend((0..backing.count()).map(|i| backing.page_addr(i)));
     #[cfg(feature = "gt710_core_probe")]
     drop(preparing);
+    drop(cost_prepare);
+    let cost_mapping = super::cost::phase(super::cost::Slot::SpanMap);
     #[cfg(feature = "gt710_core_probe")]
     let mapping = super::timing::phase(102);
     let (target, hold, plan) = super::ce::with_resources(|r, a, io| {
@@ -688,9 +691,11 @@ pub(crate) fn span_staging(data: &super::encode::Spans, charge: Arc<dyn Send + S
     })?;
     #[cfg(feature = "gt710_core_probe")]
     drop(mapping);
+    drop(cost_mapping);
     let result = (|| {
         #[cfg(feature = "gt710_core_probe")]
         let _timing = super::timing::phase(103);
+        let _cost = super::cost::phase(super::cost::Slot::SpanUpload);
         crate::gpu::native_spans_upload(target.id, plan, backing.clone())?;
         #[cfg(feature = "gt710_core_probe")]
         {

@@ -2822,6 +2822,8 @@ fn native_reset_barrier() -> Result<(), i64> {
 /// `gpu(op, arg, len)`.
 pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
     let _path = GpuPath::enter();
+    #[cfg(target_arch = "x86_64")]
+    let _cost = (dev::backend() == abi::backend::GK208).then(|| crate::gk208::cost::for_op(op));
     #[cfg(all(target_arch = "x86_64", feature = "gt710_core_probe"))]
     let _timing = (dev::backend() == abi::backend::GK208)
         .then(|| crate::gk208::timing::Guard::new(caller().unwrap_or(0), op));
@@ -4437,6 +4439,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                     Some(Charge::new(tgid, bytes, true)?)
                 } else { None };
                 let data = {
+                    let _cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::Pack);
                     #[cfg(feature = "gt710_core_probe")]
                     let _timing = crate::gk208::timing::phase(100);
                     crate::gk208::encode::pack_spans(&words, &resolved, data_width)
@@ -4454,6 +4457,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                     }
                     None => None,
                 };
+                let cost_translate = crate::gk208::cost::phase(crate::gk208::cost::Slot::Translate);
                 #[cfg(feature = "gt710_core_probe")]
                 let translating = crate::gk208::timing::phase(110);
                 let mut frame = if corrupt.is_none() && suppress.is_none() && swap.is_none() {
@@ -4467,6 +4471,8 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 frame.batch_draws(1400).map_err(|_| ENOMEM)?;
                 #[cfg(feature = "gt710_core_probe")]
                 drop(translating);
+                drop(cost_translate);
+                let _cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::FramePrepare);
                 #[cfg(feature = "gt710_core_probe")]
                 let _timing = crate::gk208::timing::phase(111);
                 let backing = Arc::new(Pages::new(frame.data.len().div_ceil(PAGE)).ok_or(ENOMEM)?);

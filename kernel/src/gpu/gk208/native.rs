@@ -476,6 +476,7 @@ fn flip(
 pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface,
 ) -> Result<super::present::Receipt, &'static str> {
+    let _cost = super::cost::phase(super::cost::Slot::Evo);
     let h=evo.head as usize*0x300;
     let blank=regs.read(0x64041c+h);
     let end=regs.read(0x640420+h);
