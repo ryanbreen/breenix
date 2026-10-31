@@ -10,7 +10,7 @@ fn checked(result: i64, operation: &str) -> Result<(), String> {
     if result == 0 { Ok(()) } else { Err(format!("{operation}: {result}")) }
 }
 
-fn trial(context: u64, words: &[u32], kind: &str, trial: u32, work: u64, unit: &str) -> Result<u64, String> {
+fn trial(context: u64, words: &[u32], kind: &str, trial: u32, work: u64, unit: &str) -> Result<i128, String> {
     let begin = time::now_monotonic().map_err(|e| format!("monotonic begin: {e:?}"))?.as_nanos();
     let (result, submit) = gpu::submit(context, words);
     checked(result, "SUBMIT")?;
