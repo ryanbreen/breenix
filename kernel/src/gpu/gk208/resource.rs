@@ -130,6 +130,7 @@ struct Entry<B> {
     backing_va: Option<u64>,
     backing_bytes: u64,
     backing_mapped: bool,
+    backing_pages: Vec<bool>,
 }
 /// One native storage address space; channel attachment may retain aliases in
 /// the channel's private space. No userspace address or method is accepted.
@@ -156,7 +157,7 @@ impl<B> Resources<B> {
         [self.entries.len(), self.retired.len(),
             self.retired.capacity() * core::mem::size_of::<Retired>()
                 + self.retired.iter().map(|r| region_bytes(&r.regions)).sum::<usize>(),
-            self.entries.values().map(|e| region_bytes(&e.regions)).sum(),
+            self.entries.values().map(|e| region_bytes(&e.regions) + e.backing_pages.capacity()).sum(),
             self.space.as_ref().map_or(0, |s| s.heap_vector_bytes()), self.contexts.len(),
             self.alias_indices.capacity() * core::mem::size_of::<u64>()]
     }
@@ -169,7 +170,9 @@ impl<B> Resources<B> {
         for (&id, e) in &self.entries {
             if let Some(o) = owner_at(id,e.va,e.bytes,e.role,&e.regions,address,e.mapped,e.dropped,false) { return Some(o); }
             if let Some(va) = e.backing_va {
-                if let Some(o) = owner_at(id,va,e.backing_bytes,e.role,&[],address,e.backing_mapped,e.dropped,false) {
+                let page = (address.saturating_sub(va)/4096) as usize;
+                let mapped = e.backing_mapped && e.backing_pages.get(page).copied().unwrap_or(false);
+                if let Some(o) = owner_at(id,va,e.backing_bytes,e.role,&[],address,mapped,e.dropped,false) {
                     return Some(VaOwner { region: "transfer-backing", ..o });
                 }
             }
@@ -236,7 +239,7 @@ impl<B> Resources<B> {
         let pin = a.pin(allocation)?;
         self.entries.insert(id, Entry { role: "display", regions: Vec::new(), layout: None, scanout: None, bytes, va, allocation: None,
             pin: Some(pin), _charge: None, backing: None, mapped: false, dropped: false,
-            reference: Arc::new(()), backing_va: None, backing_bytes: 0, backing_mapped: false });
+            reference: Arc::new(()), backing_va: None, backing_bytes: 0, backing_mapped: false, backing_pages: Vec::new() });
         let before = a.stats().charged;
         let result = (|| self.space(a, io)?.map(a, io, va, allocation.range, vm::Flags::default()))();
         self.account(before, a.stats().charged);
@@ -288,7 +291,7 @@ impl<B> Resources<B> {
             } else {None};
             let pin = allocation.map(|v| a.pin(v)).transpose()?;
             self.entries.insert(id, Entry { role: match kind { 1 => "target", 2 => "texture", _ => "buffer" }, regions: Vec::new(), layout, scanout, bytes, va, allocation, pin,
-                _charge: charge, backing: None, mapped: false, dropped: false, reference: Arc::new(()), backing_va: None, backing_bytes: 0, backing_mapped: false });
+                _charge: charge, backing: None, mapped: false, dropped: false, reference: Arc::new(()), backing_va: None, backing_bytes: 0, backing_mapped: false, backing_pages: Vec::new() });
             if let Some(allocation) = allocation {
                 self.space(a, io)?.map_kind(a, io, va, allocation.range, vm::Flags::default(), 0xfe)?;
                 self.entries.get_mut(&id).unwrap().mapped = true;
@@ -336,30 +339,83 @@ impl<B> Resources<B> {
         let e = self.entries.get(&id).filter(|e| !e.dropped)?;
         if !e.backing.as_ref().is_some_and(|b| Arc::ptr_eq(b, backing)) { return None; }
         if e.layout.is_none() { return e.mapped.then_some(e.va); }
-        e.backing_mapped.then_some(e.backing_va).flatten()
+        (e.backing_mapped && e.backing_pages.iter().all(|&mapped| mapped))
+            .then_some(e.backing_va).flatten()
     }
-    /// Map the attached, caller-retained backing once, separately from VRAM.
+    /// Map the complete attached backing for whole-image consumers.
     pub fn map_backing(&mut self, a: &mut Allocator, io: &mut impl Io, id: u32,
         backing: &Arc<B>, pages: &[u64], bytes: u64,
     ) -> Result<u64, &'static str> {
-        let e = self.entries.get(&id).filter(|e| !e.dropped).ok_or("native resource absent")?;
-        if !e.backing.as_ref().is_some_and(|b| Arc::ptr_eq(b,backing))
-            || pages.len() as u64 * 4096 != bytes || pages.is_empty() {
+        if pages.len() as u64 * 4096 != bytes {
             return Err("native transfer backing mismatch");
         }
-        if e.layout.is_none() { return Ok(e.va); }
-        if let Some(va) = e.backing_va {
-            return if e.backing_mapped { Ok(va) } else { Err("native backing mapping uncertain") };
+        let row = u32::try_from(bytes).map_err(|_| "native transfer backing extent")?;
+        self.map_backing_rows(a, io, id, backing, bytes, |i| pages[i], 0, row, row, 1)
+    }
+    /// Reserve one backing VA for the resource's life; publish only row pages.
+    /// Confirmed row pages are reused for overlapping requests.
+    /// On publication failure the entry retains backing and uncertain PTEs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn map_backing_rows(&mut self, a: &mut Allocator, io: &mut impl Io, id: u32,
+        backing: &Arc<B>, bytes: u64, mut page: impl FnMut(usize) -> u64,
+        offset: u64, stride: u32, row_bytes: u32, rows: u32,
+    ) -> Result<u64, &'static str> {
+        let e = self.entries.get(&id).filter(|e| !e.dropped).ok_or("native resource absent")?;
+        if !e.backing.as_ref().is_some_and(|b| Arc::ptr_eq(b,backing))
+            || bytes == 0 || bytes % 4096 != 0 || rows == 0 || row_bytes == 0
+            || row_bytes > stride
+            || offset.checked_add(u64::from(rows.saturating_sub(1)) * u64::from(stride))
+                .and_then(|v| v.checked_add(u64::from(row_bytes))).is_none_or(|v| v > bytes) {
+            return Err("native transfer backing mismatch");
         }
-        let va = self.vacant_va(bytes, 4096)?;
-        // Save the mapping address before PTE publication. A publication failure
-        // leaves the backing and poisoned Space in this resource entry.
-        self.entries.get_mut(&id).unwrap().backing_va = Some(va);
-        self.entries.get_mut(&id).unwrap().backing_bytes = bytes;
+        if e.layout.is_none() {
+            return if e.mapped { Ok(e.va) } else { Err("native buffer mapping uncertain") };
+        }
+        let va = if let Some(va) = e.backing_va {
+            if !e.backing_mapped || e.backing_bytes != bytes { return Err("native backing mapping uncertain"); }
+            va
+        } else {
+            let va = self.vacant_va(bytes, 4096)?;
+            let mut mapped = Vec::new();
+            mapped.try_reserve_exact((bytes/4096) as usize).map_err(|_| "native backing page metadata")?;
+            mapped.resize((bytes/4096) as usize, false);
+            let e = self.entries.get_mut(&id).unwrap();
+            e.backing_pages = mapped;
+            e.backing_va = Some(va);
+            e.backing_bytes = bytes;
+            va
+        };
+        self.entries.get_mut(&id).unwrap().backing_mapped = false;
         let before = a.stats().charged;
         let result = (|| {
-            for (i,band) in pages.chunks(256).enumerate() {
-                self.space(a,io)?.map_system(a,io,va+i as u64*256*4096,band)?;
+            let mut y = 0;
+            while y < rows {
+                let start = offset + u64::from(y)*u64::from(stride);
+                let mut end = ((start + u64::from(row_bytes)).div_ceil(4096)) as usize;
+                let mut at = (start/4096) as usize;
+                y += 1;
+                // Coalesce adjacent/overlapping row pages so a full image still
+                // uses 256-page publications rather than one per row.
+                while y < rows {
+                    let next = offset + u64::from(y)*u64::from(stride);
+                    if (next/4096) as usize > end { break; }
+                    end = ((next + u64::from(row_bytes)).div_ceil(4096)) as usize;
+                    y += 1;
+                }
+                while at < end {
+                    if self.entries[&id].backing_pages[at] { at += 1; continue; }
+                    // Bound each VM publication as before, without allocating a
+                    // page list for the untouched part of a large target.
+                    let mut pages = [0;256];
+                    let mut n = 0;
+                    while at+n < end && n < pages.len() && !self.entries[&id].backing_pages[at+n] {
+                        pages[n] = page(at+n);
+                        n += 1;
+                    }
+                    self.space(a,io)?.map_system(a,io,va+at as u64*4096,&pages[..n])?;
+                    self.entries.get_mut(&id).unwrap().backing_pages[at..at+n].fill(true);
+                    at += n;
+                }
             }
             self.entries.get_mut(&id).unwrap().backing_mapped = true;
             Ok(va)
@@ -494,8 +550,14 @@ impl<B> Resources<B> {
                 }
                 if let Some(va) = e.backing_va {
                     // Arc<B> is retained until both PDB invalidations complete.
-                    let bytes = e.backing_bytes;
-                    self.space.as_mut().unwrap().unmap(io,va,bytes)?;
+                    if !e.backing_mapped { return Err("native backing mapping uncertain; storage retained"); }
+                    let mut at = 0;
+                    while at < e.backing_pages.len() {
+                        if !e.backing_pages[at] { at += 1; continue; }
+                        let start = at;
+                        while at < e.backing_pages.len() && e.backing_pages[at] { at += 1; }
+                        self.space.as_mut().unwrap().unmap(io,va+start as u64*4096,(at-start) as u64*4096)?;
+                    }
                 }
                 if let Some(directory) = self.alias { io.invalidate(directory)?; }
                 let mut e = self.entries.remove(&id).unwrap();
