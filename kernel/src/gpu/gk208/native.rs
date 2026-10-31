@@ -292,75 +292,87 @@ fn complete(
     route: (u32, u32, bool, bool),
     scripts: &[Vec<modeset::Op>; 4],
 ) -> Result<u32, &'static str> {
-    let (head, sor, attached, attaching) = route;
-    let h = head as usize * 0x800;
-    for _ in 0..2000 {
-        let errors = regs.read(0x61009c);
-        if errors != 0 {
-            return Err("native display method error");
-        }
-        let pending = regs.read(0x6100ac) & 7;
-        if pending != 0 {
-            let phase = if pending & 1 != 0 {
-                1
-            } else if pending & 2 != 0 {
-                2
-            } else {
-                4
-            };
-            let state = regs.read(0x6101d4 + h);
-            regs.write(0x6100ac, phase);
-            if state & 0x1000 != 0 {
-                if phase == 1 && attached {
-                    modeset::execute_ops(regs, &scripts[0]);
-                }
-                if phase == 2 && attached {
-                    modeset::execute_ops(regs, &scripts[1]);
-                }
-                if phase == 4 && attaching {
-                    modeset::execute_ops(regs, &scripts[3]);
-                }
-            }
-            if phase == 2 && state & 0x10000 != 0 {
-                let r = limits.reg as usize;
-                regs.mask(r + 12, 0, 0x100);
-                regs.write(
-                    r + 4,
-                    coefficients.p << 16 | coefficients.n << 8 | coefficients.m,
-                );
-                regs.write(r + 16, u32::from(coefficients.fraction) << 16);
-            }
-            // Release power for an outgoing attachment; gate incoming scripts
-            // separately from the outgoing configuration.
-            if phase == 2 && state & 0x1000 != 0 && attached && !attaching {
-                let s = sor as usize * 0x800;
-                modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
-                regs.mask(0x61c004 + s, 0x80000001, 0x80000000);
-                modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
-                modeset::wait(regs, 0x61c030 + s, 0x10000000, 0)?;
-            }
-            if phase == 2 && state & 0x1000 != 0 && attaching {
-                modeset::execute_ops(regs, &scripts[2]);
-                regs.mask(0x612200 + h, 15, 0);
-                let s = sor as usize * 0x800;
-                regs.mask(0x612300 + s, 0x007c0707, 0x0a << 18);
-                modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
-                regs.mask(0x61c004 + s, 0x80000001, 0x80000001);
-                modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
-                modeset::wait(regs, 0x61c030 + s, 0x10000000, 0)?;
-            }
-            for i in 0..4 {
-                regs.write(0x6101d4 + i * 0x800, 0);
-            }
-            regs.write(0x6101d0, 0x80000000);
-        }
-        let value = read_word(regs, total, notifier)?;
-        if value & 1 != 0 {
-            return Ok(value);
-        }
-        regs.delay_us(1000);
+    struct Wait<'a> {
+        regs: &'a mut Registers,
+        total: u64,
+        notifier: u64,
+        limits: &'a modeset::PllLimits,
+        coefficients: &'a modeset::Pll,
+        route: (u32, u32, bool, bool),
+        scripts: &'a [Vec<modeset::Op>; 4],
     }
-    Err("native update notifier did not complete")
+    impl super::present::NotifierWait for Wait<'_> {
+        fn poll(&mut self) -> Result<u32, &'static str> {
+            let Self { regs, total, notifier, limits, coefficients, route, scripts } = self;
+            let regs = &mut **regs;
+            let (head, sor, attached, attaching) = *route;
+            let h = head as usize * 0x800;
+            let errors = regs.read(0x61009c);
+            if errors != 0 {
+                return Err("native display method error");
+            }
+            let pending = regs.read(0x6100ac) & 7;
+            if pending != 0 {
+                let phase = if pending & 1 != 0 {
+                    1
+                } else if pending & 2 != 0 {
+                    2
+                } else {
+                    4
+                };
+                let state = regs.read(0x6101d4 + h);
+                regs.write(0x6100ac, phase);
+                if state & 0x1000 != 0 {
+                    if phase == 1 && attached {
+                        modeset::execute_ops(regs, &scripts[0]);
+                    }
+                    if phase == 2 && attached {
+                        modeset::execute_ops(regs, &scripts[1]);
+                    }
+                    if phase == 4 && attaching {
+                        modeset::execute_ops(regs, &scripts[3]);
+                    }
+                }
+                if phase == 2 && state & 0x10000 != 0 {
+                    let r = limits.reg as usize;
+                    regs.mask(r + 12, 0, 0x100);
+                    regs.write(
+                        r + 4,
+                        coefficients.p << 16 | coefficients.n << 8 | coefficients.m,
+                    );
+                    regs.write(r + 16, u32::from(coefficients.fraction) << 16);
+                }
+                // Release power for an outgoing attachment; gate incoming scripts
+                // separately from the outgoing configuration.
+                if phase == 2 && state & 0x1000 != 0 && attached && !attaching {
+                    let s = sor as usize * 0x800;
+                    modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
+                    regs.mask(0x61c004 + s, 0x80000001, 0x80000000);
+                    modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
+                    modeset::wait(regs, 0x61c030 + s, 0x10000000, 0)?;
+                }
+                if phase == 2 && state & 0x1000 != 0 && attaching {
+                    modeset::execute_ops(regs, &scripts[2]);
+                    regs.mask(0x612200 + h, 15, 0);
+                    let s = sor as usize * 0x800;
+                    regs.mask(0x612300 + s, 0x007c0707, 0x0a << 18);
+                    modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
+                    regs.mask(0x61c004 + s, 0x80000001, 0x80000001);
+                    modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
+                    modeset::wait(regs, 0x61c030 + s, 0x10000000, 0)?;
+                }
+                for i in 0..4 {
+                    regs.write(0x6101d4 + i * 0x800, 0);
+                }
+                regs.write(0x6101d0, 0x80000000);
+            }
+            read_word(regs, *total, *notifier)
+        }
+        fn delay_us(&mut self, us: u32) { self.regs.delay_us(us); }
+    }
+    super::present::wait_notifier(&mut Wait {
+        regs, total, notifier, limits, coefficients, route, scripts,
+    })
 }
 #[derive(Clone, Copy)]
 pub struct ConsoleSurface {
