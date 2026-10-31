@@ -255,9 +255,9 @@ use std::collections::BTreeMap;
         harness=r'''use std::sync::atomic::{AtomicBool,Ordering};
 static CAPS:AtomicBool=AtomicBool::new(false);
 mod libbreenix {pub mod gpu {
- pub mod abi {pub mod backend {pub const GK208:u32=6;}}
- pub struct Caps {pub backend:u32}
- pub fn caps()->(i32,Caps) {crate::CAPS.store(true,crate::Ordering::SeqCst);(0,Caps{backend:6})}
+ pub mod abi {pub mod backend {pub const GK208:u32=6;}pub mod status {pub const ADMITTED:u32=0;}}
+ pub struct Caps {pub backend:u32,pub status:u32}
+ pub fn caps()->(i32,Caps) {crate::CAPS.store(true,crate::Ordering::SeqCst);(0,Caps{backend:6,status:0})}
 }}
 mod gt710_artifacts {pub fn upload()->Result<(),String> {
  assert!(!crate::CAPS.load(crate::Ordering::SeqCst),"VBIOS upload waited for native startup/benchmarks");Ok(())

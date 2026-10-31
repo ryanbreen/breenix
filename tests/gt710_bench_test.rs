@@ -18,6 +18,7 @@ pub mod time {
 }
 pub mod gpu {
     pub use gpu_abi as abi;
+    use abi::Plain;
     use crate::STATE;
     pub fn context_create()->Result<u64,i64> {Ok(91)}
     pub fn context_destroy(c:u64)->i64 {assert_eq!(c,91);0}
@@ -37,12 +38,12 @@ pub mod gpu {
         STATE.with_borrow_mut(|s| {
             assert!(!s.pending,"previous benchmark was not completed");
             assert_eq!(s.clocks%2,1,"submission must be inside the timed interval");
-            assert_eq!(s.images,vec![(1,2560,1600),(1,4096,4096),(1,4096,4096)]);
+            assert_eq!(s.images,vec![(0,2560,1600),(0,4096,4096),(0,4096,4096)]);
             struct View;
             impl abi::stream::Resolver for View {
                 fn target(&self,h:u64)->Option<abi::stream::TargetInfo> {
                     let (width,height)=match h {1=>(2560,1600),2|3=>(4096,4096),_=>return None};
-                    Some(abi::stream::TargetInfo {width,height,format:1,invalid:false})
+                    Some(abi::stream::TargetInfo {width,height,format:0,invalid:false})
                 }
                 fn source(&self,h:u64)->Option<abi::stream::SourceInfo> {
                     let t=self.target(h)?;Some(abi::stream::SourceInfo {width:t.width,height:t.height,format:t.format,invalid:false})

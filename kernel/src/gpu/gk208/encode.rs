@@ -452,39 +452,6 @@ pub fn warm_frame(target: Target, source: Target, snapshot: Option<Target>,
     translate(words.as_slice(), &View(target, source, snapshot, spans)).ok()
 }
 
-/// K1 C1 fixed ALU workload: 16 full 512-square TRIANGLE profile draws.
-/// The integer triangle shader evaluates its 96-bit edges for each fragment.
-#[cfg(feature = "gt710_clock_probe")]
-pub fn clock_frame(target: Target) -> Result<Frame, &'static str> {
-    struct View(Target);
-    impl Resolver for View {
-        fn buffer_size(&self,_:u64)->Option<u64>{None}
-        fn buffer_rect(&self,_:u64,_:u64)->[i32;4]{[0;4]}
-        fn target(&self,h:u64)->Option<stream::TargetInfo>{(h==1).then_some(stream::TargetInfo {
-            width:512,height:512,format:self.0.format,invalid:false})}
-        fn source(&self,_:u64)->Option<stream::SourceInfo>{None}
-    }
-    impl Bindings for View {
-        fn render_target(&self,h:u64)->Option<Target>{(h==1).then_some(self.0)}
-        fn sampled_source(&self,_:u64)->Option<Target>{None}
-    }
-    let mut words=Vec::new();stream::encode::begin(&mut words,1);
-    let mut params=[0;16];params[..6].copy_from_slice(&[0,0,512,0,0,512]);
-    draw::encode(&mut words,pipeline::TRIANGLE,0xff123456,0,0,0,
-        &[draw::Instance{rect:[0,0,512,512],params}]);
-    let mut frame=translate(words.as_slice(),&View(target))?;
-    // One draw is below the unchanged BGL work cap. The benchmark issues
-    // 16 separate submissions, reusing its immutable validated inputs.
-    if frame.chunks.len()!=1 {return Err("C1 expected one validated draw");}
-    for _ in 1..16 {
-        let c=&frame.chunks[0];
-        let chunk=Chunk {command:c.command,target:c.target,words:c.words.clone(),
-            relocations:c.relocations.clone(),source:c.source,copy:c.copy};
-        frame.chunks.push(chunk);
-    }
-    Ok(frame)
-}
-
 /// Exact bootstrap allocation for the COPY parking payload, including the
 /// committed catalogue and its per-draw constants, descriptors and vertices.
 pub fn parking_bytes(target: Target, source: Target) -> Result<usize, &'static str> {

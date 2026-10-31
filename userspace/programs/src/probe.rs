@@ -4,6 +4,8 @@ mod probe_signal;
 mod probe_metal;
 #[cfg(target_arch="x86_64")]
 mod gt710_artifacts;
+#[cfg(target_arch="x86_64")]
+mod probe_gpu_bench;
 mod probe_panel;
 #[cfg(target_arch = "x86_64")]
 mod probe_framebuffer;
@@ -600,11 +602,18 @@ fn probe() {
     #[cfg(target_arch="x86_64")]
     if std::fs::read_to_string("/proc/gt710-ce").is_ok_and(|s|s=="clock-probe\n") {
         // Inventory has retained the C1/VBIOS records already. Upload them
-        // before CAPS starts GR and the timed workloads, even if startup fails.
+        // before CAPS starts GR, even if native startup fails.
         gt710_artifacts::upload().expect("C1 private artifact upload");
         let (status,caps)=libbreenix::gpu::caps();
-        assert_eq!(status,0,"C1 native startup");
-        assert_eq!(caps.backend,libbreenix::gpu::abi::backend::GK208,"C1 native backend");
+        if status != 0 || caps.backend != libbreenix::gpu::abi::backend::GK208 ||
+            caps.status != libbreenix::gpu::abi::status::ADMITTED {
+            println!("GT710_C1_ERROR CAPS result={} backend={} status={}",status,caps.backend,caps.status);
+            reap_forever();
+        }
+        if let Err(error) = probe_gpu_bench::run() {
+            println!("GT710_C1_ERROR {}",error);
+            reap_forever();
+        }
         println!("GT710_C1_DONE");
         reap_forever();
     }

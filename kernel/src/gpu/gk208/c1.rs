@@ -84,18 +84,3 @@ pub(super) fn startup(regs:&mut Registers,device:&pci::Device)->Result<(),&'stat
     publish("C1",format!("GT710_CLOCK_C1 {{\"schema\":1,\"phase\":\"startup\",\"raw\":[{}],\"domains\":{{{}}},\"temperature\":{},\"sensor_restored\":{},\"sensor_raw\":[{}],\"sensor_writes\":[{}],\"voltage_raw\":[{}],\"pcie\":[{}]}}",pairs(&raw),ds,reading(temp.value),temp.restored,sensor_raw,"",pairs(&voltage_raw),ports.join(",")))?;
     Ok(())
 }
-/// Nouveau timer/nv04.c:42-54 and MIT regsnv04.h: TIME_0/1, nanoseconds.
-/// PTIMER configuration is captured without writes.
-pub(in crate::gk208) fn ptimer(regs:&mut Registers)->Result<u64,&'static str> {
-    for _ in 0..16 {
-        let hi=regs.read(0x9410);let lo=regs.read(0x9400);
-        if hi==regs.read(0x9410) {return Ok((u64::from(hi)<<32)|u64::from(lo));}
-    }
-    Err("PTIMER unstable")
-}
-pub(in crate::gk208) fn benchmark(kind:&str,trial:u32,begin:u64,end:u64)->Result<(),&'static str> {
-    let elapsed=end.checked_sub(begin).filter(|v|*v>0 && *v<2_000_000_000).ok_or("invalid PTIMER benchmark interval")?;
-    let (work,unit)=if kind=="core" {(16*512*512,"fragments")}else{(64<<20,"bytes")};
-    crate::serial_println!("GT710_BENCH {{\"kind\":\"{}\",\"trial\":{},\"begin_ns\":{},\"end_ns\":{},\"elapsed_ns\":{},\"work\":{},\"unit\":\"{}\",\"completion\":true}}",kind,trial,begin,end,elapsed,work,unit);
-    Ok(())
-}

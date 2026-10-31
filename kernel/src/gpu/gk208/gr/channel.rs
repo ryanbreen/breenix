@@ -1153,44 +1153,6 @@ mod native {
             if *current != [expected; 2] { return Err("context draw FECS binding mismatch"); }
             Ok(())
         }
-        /// C1 runs before publication to the common core, on this owned channel.
-        #[cfg(feature = "gt710_clock_probe")]
-        pub(in crate::gk208::gr) fn clock_benchmarks(&mut self,h:&mut Hardware<'_>) -> Result<(),&'static str> {
-            use crate::gk208::{c1,encode};
-            let target=self.allocate_draw(h,"clock-alu-target",512*512*4,4096)?;
-            let quarantine=self.allocate_draw(h,"clock-alu-vab",1<<20,1<<17)?;
-            let mut frame=encode::clock_frame(encode::Target {id:1,address:target.va,
-                width:512,height:512,format:gpu_abi::format::B8G8R8A8,tile_mode:0})?;
-            let storage=self.allocate_draw(h,"clock-alu-inputs",frame.data.len() as u64,1<<17)?;
-            for (i,data) in frame.data.chunks(16384).enumerate() {
-                self.upload(h,storage.va+(i*16384) as u64,data)?;
-            }
-            frame.relocate(storage.va)?;
-            let streams:Vec<_>=frame.chunks.iter().map(|c|encode::channel_words(&c.words,quarantine.va)).collect::<Result<_,_>>()?;
-            crate::serial_println!("GT710_PTIMER numerator={} denominator={}",h.regs.read(0x9200),h.regs.read(0x9210));
-            for trial in 1..=2 {
-                let begin=c1::ptimer(h.regs)?;
-                for stream in &streams {
-                    let (sequence,nonce)=self.sequence()?;
-                    let mut command=stream.clone();
-                    command.extend(commands(TARGET,self.report.identity.epoch,nonce,true,sequence)?);
-                    let sample=self.issue_words(h,sequence,85,nonce,BOUND_US,&command,true)?;
-                    if !sample.accepted {return Err("C1 ALU completion absent");}
-                }
-                let end=c1::ptimer(h.regs)?;c1::benchmark("core",trial,begin,end)?;
-            }
-            // Two disjoint, pitch-linear, uncompressed 64 MiB regions. No CPU
-            // mapping/upload/readback lies in either timed interval.
-            let source=self.allocate_draw(h,"clock-copy-source",64<<20,4096)?;
-            let dest=self.allocate_draw(h,"clock-copy-dest",64<<20,4096)?;
-            for trial in 1..=2 {
-                let begin=c1::ptimer(h.regs)?;
-                self.copy_rect(h,crate::gk208::copy::Rect {src:source.va,dst:dest.va,
-                    width:16384,height:4096,src_pitch:16384,dst_pitch:16384})?;
-                let end=c1::ptimer(h.regs)?;c1::benchmark("memory",trial,begin,end)?;
-            }
-            Ok(())
-        }
         pub(in crate::gk208::gr) fn execute(
             &mut self,
             h: &mut Hardware<'_>,

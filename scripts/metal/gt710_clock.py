@@ -264,13 +264,13 @@ def voltage_state(d,raw):
 
 
 def benchmarks(rows):
-    expected=[('core',1),('core',2),('memory',1),('memory',2)]
-    need([(r.get('kind'),r.get('trial')) for r in rows]==expected,'four ordered benchmark trials required')
+    expected=[(kind,trial) for kind in ('core','memory') for trial in (1,2,3)]
+    need([(r.get('kind'),r.get('trial')) for r in rows]==expected,'six ordered benchmark trials required')
     for r in rows:
         need(r.get('completion') is True,'benchmark completion missing')
         need(all(type(r.get(k)) is int and 0<=r[k]<1<<64 for k in ('begin_ns','end_ns','elapsed_ns','work')),'benchmark integer fields')
-        need(0<r['elapsed_ns']==r['end_ns']-r['begin_ns']<2_000_000_000,'benchmark PTIMER interval')
-        work,unit=(16*512*512,'fragments') if r['kind']=='core' else (64<<20,'bytes')
+        need(0<r['elapsed_ns']==r['end_ns']-r['begin_ns'],'benchmark monotonic interval')
+        work,unit=(200*2560*1600,'fragments') if r['kind']=='core' else (64<<20,'bytes')
         need(r['work']==work and r.get('unit')==unit,'benchmark work differs')
     return rows
 
@@ -396,6 +396,7 @@ def capture(directory):
     need(boot['toolsCommit']==boot['commit']==boot['build']['commit'],'C1 tools/build/head differ')
     need(boot['build']['profile']=='gpu-clock' and boot['build']['features']==['gt710_clock_probe'] and not boot.get('suites') and not boot.get('suite'),'C1 diagnostic profile required')
     serial=(path/'serial.txt').read_text()
+    need(len(re.findall(r'^GT710_C1_DONE$',serial,re.M))==1,'C1 completion missing or repeated')
     rows=startup_payload(path,serial)
     row=c1_record(rows['C1']);rom=rows['VBIOS'];raw=bytes.fromhex(rom['hex'])
     need(len(raw)==rom['bytes'] and hashlib.sha256(raw).hexdigest()==rom['sha256'],'VBIOS digest differs')

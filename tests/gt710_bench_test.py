@@ -17,7 +17,8 @@ class Baseline(unittest.TestCase):
                                    str(ROOT / 'libs/gpu-abi/src/lib.rs'), '-o', str(out / 'libgpu_abi.rlib')], check=True)
             subprocess.run(rustc + ['--test', str(ROOT / 'tests/gt710_bench_test.rs'),
                                    '--extern', f'gpu_abi={out}/libgpu_abi.rlib', '-o', str(out / 'bench')], check=True)
-            result = subprocess.run([str(out / 'bench'), '--nocapture', '--test-threads=1'], check=True, text=True, capture_output=True)
+            result = subprocess.run([str(out / 'bench'), '--nocapture', '--test-threads=1'], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             import importlib.util
             spec = importlib.util.spec_from_file_location('clock', ROOT / 'scripts/metal/gt710_clock.py')
             clock = importlib.util.module_from_spec(spec)
