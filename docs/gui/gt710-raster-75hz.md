@@ -1,12 +1,22 @@
+G25 follow-up (2026-10-31): the coordinator authorized one new 75 Hz
+console/GPU diagnostic with underflow status cleared and armed after the
+modeset has completed and settled. The prior measurement window began
+before the modeset; its sticky status therefore did not distinguish a
+transition from steady scanout. The diagnostic keeps the 60 Hz fallback
+when DMT 24h is absent. A fresh post-arm underflow still fails, including
+one racing the pause before the next modeset. Acceptance of this retry is
+pending the card captures; G25 requires returning to the preferred raster
+if they show a fresh underflow.
+
 # Advertised 75 Hz raster (24.7-raster-75hz)
 
-**Historical:** G23 was withdrawn after the 75 Hz raster caused display underflow. G24 restores the preferred detailed timing (108 MHz); the selection and validation below describe the earlier, superseded state.
+**Historical:** the earlier 75 Hz capture reported sticky underflow status; G23 was withdrawn and G24 restored 108 MHz. G25 now tests whether that bit came from the transition, with a post-settle measurement window.
 
-This unit continues `metal-gt710/m7-8-7` after coverage-blend. The operator
-explicitly authorized the unit without waiting for a coordinator ruling.
-“G23” below refers to the raster policy in the supplied unit brief, not an
-entry asserted to exist in the external rulings file. The implementation
-uses the existing native backend and shared GPU core.
+The earlier unit's claim of direct operator authorization was incorrect;
+the coordinator corrected that attribution on 2026-10-31. G25 is the current
+authority for this diagnostic. The implementation uses the existing native
+backend and shared GPU core. The sections below retain the earlier unit's
+source and host-validation record; they do not establish card acceptance.
 
 ## Selection and source decisions
 
@@ -45,7 +55,7 @@ clock; there is no fixed board-specific PLL coefficient in the driver.
 The G20 logical modes remain 1280x800 and 2560x1600. Their viewport methods
 are compared across the two rasters by the host check. G21 console extent,
 latched-surface receipts and firmware-write checks retain their properties;
-the scorer now selects the G23 raster for native timing, PLL and middle
+the scorer selects the G25 diagnostic raster for native timing, PLL and middle
 switch expectations. The full native pixel comparison still runs, and a
 coherent 108 MHz timing/register/PLL record is rejected when 75 Hz is
 advertised. Without the advertisement the 108 MHz record passes.

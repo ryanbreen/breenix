@@ -1735,3 +1735,13 @@ The adapted files retain the full MIT permission and warranty notice in their
 headers. `perf.rs` is used by `kernel/src/gpu/gk208/clock.rs`; its runtime
 export is exercised by `tests/gt710_clock_test.py`.
 The fixture is constructed from the documented layout; it contains no board ROM.
+
+G25 settled underflow measurement window
+---------------------------------------
+`kernel/src/gpu/gk208/modeset.rs` and `native.rs` use REPORT_UNDERFLOW
+bits 0 (enable), 4 (sticky W1C status) and 8 (repeat/red mode) from
+MIT envytools rnndb/display/g80_pdisplay.xml, NV_HEAD_STAT, at revision
+f102b82381f3f11cee113d16374c87091db039d9. The file imports the MIT grant
+and author list in rnndb/copyright.xml. Those original notices are retained
+in both consumer headers. G25 defines the post-modeset measurement window;
+the 40 ms settle and fresh-fault refusal are Breenix policy.

@@ -772,8 +772,6 @@ pub fn takeover(
             }
         }
     }
-    // Enable sticky reporting in repeat mode for the native measurement window.
-    regs.mask(0x616308 + head as usize * 0x800, 0x111, 0x11);
     // The measured update has a fresh completion epoch after empty bootstrap.
     write_words(regs,total,notifier,&[0,0,0,0])?;
     let notifier_before = read_word(regs, total, notifier)?;
@@ -792,6 +790,9 @@ pub fn takeover(
         (head, u32::from(route.sor), inherited_attached, true),
         &scripts,
     )?;
+    let transitional_underflow = modeset::arm_underflow(regs, head)?;
+    crate::serial_println!("GT710_UNDERFLOW_ARM phase=takeover before={:#x} armed={:#x}",
+        transitional_underflow, regs.read(0x616308 + head as usize * 0x800));
     crate::firmware_writes::handoff();
     let h = head as usize * 0x300;
     let skipped_address = u64::from(regs.read(0x640460 + h)) << 8;
@@ -1034,6 +1035,7 @@ pub fn takeover(
         let put_before = put;
         let (prior_pll,prior_ops) = if step==0 {(&coefficients,&scripts)}
             else {(&switches[step-1].3,&switches[step-1].4)};
+        modeset::pause_underflow(regs, head)?;
         crate::serial_println!("GT710_MODE_STAGE switch={} detach clock={}",step,timing.clock_khz);
         write_words(regs,total,notifier,&[0,0,0,0])?;
         let mut detach = modeset::detach_methods(head,u32::from(route.sor))?.to_vec();
@@ -1067,6 +1069,9 @@ pub fn takeover(
         submit(regs,total,evo,&mut put,&attach)?;
         let notifier_after = complete(regs,total,notifier,&limits,pll,(head,u32::from(route.sor),false,true),ops)?;
         modeset::wait(regs,0x640004,u32::MAX,put)?;
+        let transitional_underflow = modeset::arm_underflow(regs, head)?;
+        crate::serial_println!("GT710_UNDERFLOW_ARM phase=switch-{} before={:#x} armed={:#x}",
+            step, transitional_underflow, regs.read(0x616308 + head as usize * 0x800));
         let mut digest = crate::block::install::sha256::Sha256::new();
         for y in 0..timing.height {
             let mut runs: Vec<(usize,u32)> = Vec::new();
@@ -1126,6 +1131,7 @@ pub fn takeover(
         crate::serial_println!("GT710_SWITCH_REFUSAL runtime={}",reason);
     }
     if !switches.is_empty() {
+        modeset::pause_underflow(regs, head)?;
         // A switch failure must not discard the native console. Re-establish
         // the known-good preferred mode through a bounded detach/attach, also
         // returning successful measurements to preferred console geometry.
@@ -1147,6 +1153,9 @@ pub fn takeover(
         let completion=complete(regs,total,notifier,&limits,&coefficients,
             (head,u32::from(route.sor),false,true),&scripts)?;
         modeset::wait(regs,0x640004,u32::MAX,put)?;
+        let transitional_underflow = modeset::arm_underflow(regs, head)?;
+        crate::serial_println!("GT710_UNDERFLOW_ARM phase=return before={:#x} armed={:#x}",
+            transitional_underflow, regs.read(0x616308 + head as usize * 0x800));
         console.width=t.width as usize;
         console.height=t.height as usize;
         console.pitch=layout.pitch as usize;

@@ -194,7 +194,7 @@
       "cases": [
         {
           "id": "preferred",
-          "title": "The preferred EDID mode completes on owned native scanout with advancing raster and full pixel read-back"
+          "title": "The selected EDID mode completes on owned native scanout with advancing raster and full pixel read-back"
         }
       ]
     },
@@ -290,7 +290,7 @@
       "cases": [
         {
           "id": "display",
-          "title": "Runtime EVO snapshots prove both G20 viewports, the DDC preferred raster, latched surfaces and zero firmware writes"
+          "title": "Runtime EVO snapshots prove both G20 viewports, the selected DDC raster, latched surfaces and zero firmware writes"
         },
         {
           "id": "panic",

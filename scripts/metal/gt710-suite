@@ -123,7 +123,7 @@ CATEGORIES = {
     'inventory': [('allocator', 'VRAM charges and reusable guarded allocations preserve reserved storage across independent nonce-bearing PRAMIN/BAR views; engine translation remains pending')],
     'flips': [('aba-handoff', 'Both EDID modes latch private A-B-A surfaces with complete pixels, suppressed-update recovery and native console handoff')],
     'switching': [('low-high-low', 'A second advertised EDID mode switches low-high-low with latched timings, link state and complete unique-pixel read-back')],
-    'native': [('preferred', 'The preferred EDID mode completes on owned native scanout with advancing raster and full pixel read-back')],
+    'native': [('preferred', 'The selected EDID mode completes on owned native scanout with advancing raster and full pixel read-back')],
     'memory': (
         ('carveout', 'Private display allocations preserve inherited VRAM and pass complete complementary physical read-back without aliasing'),
     ),
@@ -140,7 +140,7 @@ CATEGORIES = {
     'resources': [('row', 'Production CAPS admits backend 6 with executable origins 3-10, native classes and live scanouts'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 8.2 step passing, reclaimed memory and its own time within 900 s'), ('console', 'A completed production console boot passes 88/88 within 330 s of handoff')],
     'alpha': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 77-case 8.3 step passing, reclaimed memory and its own time within 900 s')],
     'shapes': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 90-case 8.4 step passing, reclaimed memory and its own time within 900 s')],
-    'presentation': [('display', 'Runtime EVO snapshots prove both G20 viewports, the DDC preferred raster, latched surfaces and zero firmware writes'), ('panic', 'A separate terminal PANIC capture proves bound diagnostics under both poisons with firmware_writes=0 and no LOCKUP'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 161-case 8.6 selection passing, reclaimed memory and its own time within 900 s')],
+    'presentation': [('display', 'Runtime EVO snapshots prove both G20 viewports, the selected DDC raster, latched surfaces and zero firmware writes'), ('panic', 'A separate terminal PANIC capture proves bound diagnostics under both poisons with firmware_writes=0 and no LOCKUP'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 161-case 8.6 selection passing, reclaimed memory and its own time within 900 s')],
     'isolation': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 140-case 8.5 selection passing, reclaimed memory and its own time within 900 s')],
     'core': [('row', 'CAPS bytes match the native backend-6 row and the created board classes'), ('dispatch', 'Native draws and copies complete; copy controls reject withheld release, stale epoch and masked 3D admission and accept their clean successors'), ('producer', 'A named production GPU-suite boot reports 170 manifest-ordered unprobed-capability admission refusals without skips and reports its own time')],
     'device': (
@@ -224,8 +224,14 @@ def edid_timings(raw):
 
 
 def native_raster(board):
-    """The physical raster uses the live EDID's preferred detailed timing (G24)."""
-    return board['modes'][0]
+    """G25 diagnostic: advertised DMT 24h at the preferred size, else DTD."""
+    preferred = board['modes'][0]
+    fast = dict(width=1280,height=1024,clock_khz=135000,hsync_start=1296,
+                hsync_end=1440,htotal=1688,vsync_start=1025,vsync_end=1028,vtotal=1066,flags=30)
+    if ((preferred['width'],preferred['height']) == (fast['width'],fast['height'])
+            and fast in board['modes']):
+        return fast
+    return preferred
 
 
 def board_inventory(serial):
@@ -1227,7 +1233,7 @@ def native_mode(serial):
         surface = memory['objects'][0]['start']
         need(e['schema']==1 and e['phase']=='native' and e['bdf']==board['bdf']
              and e['head']==board['head'] and e['sor']==board['sor'] and e['timing']==t,
-             'native timing differs from the live preferred EDID route')
+             'native timing differs from the selected live EDID raster')
         need(e['surface']==surface and e['pitch']==memory['pitch']
              and e['instance']==memory['objects'][4]['start'] and e['push']==memory['objects'][2]['start'],
              'native display uses foreign storage')
@@ -1278,7 +1284,7 @@ def native_mode(serial):
         numerator=e['pll_reference']*(n*8192+4096+fraction)
         denominator=m*p*8192
         need(abs(numerator-t['clock_khz']*denominator)*1000000<=t['clock_khz']*denominator*250,
-             'native pixel PLL frequency differs from preferred timing')
+             'native pixel PLL frequency differs from selected timing')
         end=one(r'^GT710_MODE (.+)$',serial,'native mode evidence').end()
         native_console_receipts(serial, end, surface)
         rows=list(re.finditer(r'^GT710_PIX (\d+) ([0-9a-f:,]+)$',serial,re.M))
@@ -1325,7 +1331,7 @@ def native_switches(serial):
             need(t in board['modes'] and t['flags']&0x98==0x18, 'switch timing not advertised by live sink')
             high = native_raster(board)
             if step==1:
-                need(t==high, 'middle switch must use preferred EDID mode')
+                need(t==high, 'middle switch must use selected EDID raster')
             else:
                 need(t['width']<high['width'] and t['height']<=high['height']
                      and t['clock_khz']<high['clock_khz'], 'switch needs a lower EDID mode')
