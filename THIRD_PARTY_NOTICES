@@ -1601,9 +1601,11 @@ normal-channel register and method definitions:
 - nouveau at Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba:
   nvkm/engine/fifo/runl.c (Copyright 2021 Red Hat Inc.),
   nvkm/engine/fifo/gk104.c and gf100.c, and nvkm/engine/gr/gf100.c
-  (Copyright 2012 Red Hat Inc.), and nvkm/engine/fifo/gk110.c
-  (Copyright 2016 Red Hat Inc.). These cover runlist/channel state,
-  fault status, engine reset and completion monitoring.
+  (Copyright 2012 Red Hat Inc.), nvkm/engine/fifo/gk208.c
+  (Copyright 2013 Red Hat Inc.), and nvkm/engine/fifo/gk110.c and
+  nvkm/subdev/top/gk104.c (Copyright 2016 Red Hat Inc.). These cover
+  runlist/channel state, engine/runlist enumeration, fault status,
+  engine reset and completion monitoring.
 - envytools revision f102b82381f3f11cee113d16374c87091db039d9:
   rnndb/graph/gf100_3d.xml, graph/g80_texture.xml and g80_defs.xml;
   rnndb/copyright.xml carries the MIT grant and complete rnndb authors
