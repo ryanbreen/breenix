@@ -1938,3 +1938,32 @@ plan and lock-sequence checks. Sources remain nouveau Linux v6.8 commit
 The full original grants and notices remain in c2.rs and the C oracle.
 C3-1 r2 uses gk104.c:397-406 for the lock-test window and post-sync
 validation in c2/runtime.rs, whose header also retains the full MIT grant.
+
+C4 PMU firmware and loader (K1 / corrected C4 brief)
+------------------------------------------------
+Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba, MIT, from
+https://github.com/torvalds/linux/tree/e8f897f4afef0031fe618a8e94127a0934896aba/drivers/gpu/drm/nouveau/nvkm/subdev/
+
+Firmware: pmu/fuc/gk208.fuc5, macros.fuc, os.h, kernel.fuc, arith.fuc,
+host.fuc, memx.fuc, perf.fuc, i2c_.fuc, test.fuc, idle.fuc.
+Consumers: vendor/kepler/nouveau-pmu/ (unchanged, original MIT notices),
+tools/kepler/assets.py, kernel/assets/kepler/pmu.{code,data}.bin and
+kernel/src/gpu/gk208/c2/runtime.rs. Complete notices are also retained in
+vendor/kepler/NOTICES; individual source hashes are in vendor/kepler/sources.json.
+Copyright 2013 Red Hat Inc.; arith.fuc Copyright 2014 Martin Peres.
+os.h declares SPDX-License-Identifier: MIT.
+
+Loader sequence: pmu/gk208.c, gf100.c, gt215.c, base.c; mc/base.c,
+gk104.c and nv04.c. Consumers: kernel/src/gpu/gk208/pmu.rs and
+kernel/src/gpu/gk208/c2/runtime.rs. MIT notices retained in the adapted
+module header (Copyright 2012/2013 Red Hat Inc.).
+pmu/gk110.c (Copyright 2015 Red Hat Inc., MIT) was read to distinguish
+PGOB from the loader; its existing consumer remains gr/ctxctl.rs.
+pmu/gk208.c SHA-256 a28cccfaa35ed74eddc961173b9ca34f43eb4a5029849d281e1a4302e6e501ae
+pmu/gf100.c SHA-256 459bcd9a396dbc27b0c6a9bcc9cae6cd5cc158ed17cac7dce1ec9ca0bb413baa
+pmu/gt215.c SHA-256 6f89bca71e1059afbc4c852443ff679bb38e974461b505c6fb2cf254635ea455
+pmu/base.c SHA-256 822bc80f760a5e329bde3cff7460e3f6647d080ba6d1d7f1ba6daf2a6518fcaa
+pmu/gk110.c SHA-256 55ce3a1aa3468664da5ddf1eb8e86cdb975147d3d074e58a40281e1ff27dc4f6
+mc/base.c SHA-256 aca570e3b6d297b7d0bf7997aac8c6766c09d531da47f066d814540088a81171
+mc/gk104.c SHA-256 15dd9fd27d86890a2d5cb9278903a3f95267b3d2743c626e59f6351c95ea8d7a
+mc/nv04.c SHA-256 bdf95057dc095b6e0f09fee47ab8d461b0b60b3af153edd4c3325955a5fc84e2

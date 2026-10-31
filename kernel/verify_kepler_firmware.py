@@ -7,6 +7,7 @@ import re
 import sys
 
 NAMES = ('fecs.code.bin', 'fecs.data.bin', 'gpccs.code.bin', 'gpccs.data.bin')
+PMU = ('pmu.code.bin', 'pmu.data.bin')
 TRIANGLE = tuple(f'diagnostic-triangle-{stage}.{extension}'
                  for stage in ('vertex', 'fragment')
                  for extension in ('bin', 'sph', 'json', 'asm'))
@@ -39,7 +40,7 @@ def verify_assets(root):
     expected = json.loads((root / 'docs/gui/provenance/kepler-toolchain.sha256.json').read_text())
     source = (root / 'kernel/src/gpu/gk208/gr/firmware.rs').read_text()
     constants = dict(re.findall(r'pub const (\w+)_SHA256: &str = "([0-9a-f]{64})";', source))
-    for name in NAMES + TRIANGLE + CONTROLS + GRADIENT + CATALOGUE + CATALOGUE_83 + CATALOGUE_84 + ('manifest.json',):
+    for name in NAMES + PMU + TRIANGLE + CONTROLS + GRADIENT + CATALOGUE + CATALOGUE_83 + CATALOGUE_84 + ('manifest.json',):
         try:
             data = (assets / name).read_bytes()
         except FileNotFoundError as error:
@@ -55,9 +56,9 @@ def verify_assets(root):
     manifest = json.loads((assets / 'manifest.json').read_text())
     if (manifest['schema'], manifest['chipset'], manifest['byte_order']) != (1, 0x106, 'little'):
         raise ValueError(f'manifest.json: wrong firmware format; {REBUILD}')
-    for name in NAMES + TRIANGLE + CONTROLS + GRADIENT + CATALOGUE + CATALOGUE_83 + CATALOGUE_84:
+    for name in NAMES + PMU + TRIANGLE + CONTROLS + GRADIENT + CATALOGUE + CATALOGUE_83 + CATALOGUE_84:
         entry = manifest['files'][name]
-        license_name = 'MIT' if name in NAMES or name.endswith('.sph') else 'PolyForm-Noncommercial-1.0.0'
+        license_name = 'MIT' if name in NAMES + PMU or name.endswith('.sph') else 'PolyForm-Noncommercial-1.0.0'
         if entry != dict(bytes=(assets / name).stat().st_size, license=license_name, sha256=expected[name]):
             raise ValueError(f'manifest.json: inconsistent {name}; {REBUILD}')
 

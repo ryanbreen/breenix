@@ -577,6 +577,8 @@ mod thermal;
 mod c1;
 #[cfg(feature = "gt710_clock_probe")]
 pub(crate) mod c2;
+#[cfg(feature = "gt710_clock_probe")]
+mod pmu;
 pub mod resource;
 #[cfg(feature = "gt710_core_probe")]
 mod spans_diagnostic;

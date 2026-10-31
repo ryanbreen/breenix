@@ -171,3 +171,46 @@ pub fn run_c3(mut observe:impl FnMut(&str,u32)->Result<(),String>)->Result<(),St
     checked(gpu::resource_destroy(target),"RESOURCE_DESTROY")?;
     checked(gpu::context_destroy(context),"CONTEXT_DESTROY")
 }
+
+/// C4 runs the existing two workloads after source-defined PMU ring readiness.
+pub fn run_c4(mut observe:impl FnMut(&str,u32)->Result<(),String>)->Result<(),String> {
+    let context=gpu::context_create().map_err(|e|format!("CONTEXT_CREATE: {e}"))?;
+    let mut warmed=false;
+    for _ in 0..6000 {
+        let (result,counters)=gpu::counters(context);checked(result,"COUNTERS")?;
+        match counters.state {
+            context_state::LIVE=>{warmed=true;break;}
+            context_state::WARMING=>time::sleep_ms(5).map_err(|e|format!("warm-up sleep: {e:?}"))?,
+            state=>return Err(format!("context left warm-up with state {state}")),
+        }
+    }
+    if !warmed {return Err(String::from("catalogue warm-up timeout"));}
+    let target=gpu::target_create(format::B8G8R8A8,WIDTH,HEIGHT).map_err(|e|format!("draw target: {e}"))?;
+    let mut draws=Vec::new();encode::begin(&mut draws,target);
+    for draw in 0..DRAWS {encode::draw(&mut draws,pipeline::SOLID,0xff000000|draw,&[[0,0,WIDTH as i32,HEIGHT as i32]]);}
+    // GRADIENT_V executes four fixed-step wide integer divisions per fragment.
+    // The small target has 16 KiB of colour storage; the shader has no textures
+    // or local-memory spills. Sixteen draws exactly fill the per-submit WORK
+    // bound (65536 fragments * 32768). Eight batches amortize host overhead.
+    let gpc_target=gpu::target_create(format::B8G8R8A8,64,64).map_err(|e|format!("GPC target: {e}"))?;
+    let mut gpc=Vec::new();encode::begin(&mut gpc,gpc_target);
+    let mut params=[0;16];params[..3].copy_from_slice(&[0,64,0xffe0c080]);
+    for _ in 0..16 {
+        gpu::abi::draw::encode(&mut gpc,pipeline::GRADIENT_V,0xff204080,0,0,0,
+            &[gpu::abi::draw::Instance {rect:[0,0,64,64],params}]);
+    }
+    observe("pmu",0)?;
+    observe("post",0)?;
+    for n in 1..=3 {
+        observe("core",n)?;
+        trial(context,&draws,"core",n,u64::from(DRAWS)*u64::from(WIDTH)*u64::from(HEIGHT),"fragments")?;
+    }
+    for n in 4..=6 {
+        observe("gpc",n)?;
+        trial(context,&gpc,"gpc",n,8*16*64*64,"fragments")?;
+    }
+    observe("done",7)?;
+    checked(gpu::resource_destroy(gpc_target),"GPC RESOURCE_DESTROY")?;
+    checked(gpu::resource_destroy(target),"RESOURCE_DESTROY")?;
+    checked(gpu::context_destroy(context),"CONTEXT_DESTROY")
+}

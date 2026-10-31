@@ -23,6 +23,11 @@
       "commit": "9fdf5c4062007929d9f4e6cbad9c9771fe61b880",
       "url": "https://github.com/NVIDIA/open-gpu-doc",
       "prefix": ""
+    },
+    "nouveau-pmu": {
+      "commit": "e8f897f4afef0031fe618a8e94127a0934896aba",
+      "url": "https://github.com/torvalds/linux",
+      "prefix": "drivers/gpu/drm/nouveau/nvkm/subdev/pmu/fuc/"
     }
   },
   "files": [
@@ -1060,6 +1065,116 @@
       "upstream_path": "classes/3d/cla097sph.h",
       "adapted": false,
       "reference_only": true
+    },
+    {
+      "project": "nouveau-pmu",
+      "path": "arith.fuc",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2014 Martin Peres <martin.peres@free.fr>\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the folloing conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Martin Peres\n */",
+      "upstream_sha256": "8d356557131aed4be339a452eef75b68c5221ac12281dd121f5226aff62254df",
+      "vendored_sha256": "8d356557131aed4be339a452eef75b68c5221ac12281dd121f5226aff62254df",
+      "upstream_path": "arith.fuc",
+      "adapted": false
+    },
+    {
+      "project": "nouveau-pmu",
+      "path": "gk208.fuc5",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs\n */",
+      "upstream_sha256": "434818f6dcb289a2f743226c0d7900b399b7f7a93ee47ecf5a63ea977b48eca2",
+      "vendored_sha256": "434818f6dcb289a2f743226c0d7900b399b7f7a93ee47ecf5a63ea977b48eca2",
+      "upstream_path": "gk208.fuc5",
+      "adapted": false
+    },
+    {
+      "project": "nouveau-pmu",
+      "path": "host.fuc",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs\n */",
+      "upstream_sha256": "ec9c3709f865d3712ffaaa1b41857db06b2e61a86ace9317a56028d75e0a2ca8",
+      "vendored_sha256": "ec9c3709f865d3712ffaaa1b41857db06b2e61a86ace9317a56028d75e0a2ca8",
+      "upstream_path": "host.fuc",
+      "adapted": false
+    },
+    {
+      "project": "nouveau-pmu",
+      "path": "i2c_.fuc",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs\n */",
+      "upstream_sha256": "f0ffe507865a2e6d1caf998a1ed9a5affb2bd10b4f7be97c591721ea57bb2447",
+      "vendored_sha256": "f0ffe507865a2e6d1caf998a1ed9a5affb2bd10b4f7be97c591721ea57bb2447",
+      "upstream_path": "i2c_.fuc",
+      "adapted": false
+    },
+    {
+      "project": "nouveau-pmu",
+      "path": "idle.fuc",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs\n */",
+      "upstream_sha256": "db96dbdd69ce99c75108cab9393c1f36735ba5c54c32d146f642b3d924db6c93",
+      "vendored_sha256": "db96dbdd69ce99c75108cab9393c1f36735ba5c54c32d146f642b3d924db6c93",
+      "upstream_path": "idle.fuc",
+      "adapted": false
+    },
+    {
+      "project": "nouveau-pmu",
+      "path": "kernel.fuc",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs\n */",
+      "upstream_sha256": "18a2ece7443ec1444261f1d5246ff7b7861ad2aa318ecb1a632481fdd856b103",
+      "vendored_sha256": "18a2ece7443ec1444261f1d5246ff7b7861ad2aa318ecb1a632481fdd856b103",
+      "upstream_path": "kernel.fuc",
+      "adapted": false
+    },
+    {
+      "project": "nouveau-pmu",
+      "path": "macros.fuc",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs\n */",
+      "upstream_sha256": "ab7faace60c11d151626353a64aa185e03695dcb11ec1177efc83a9a6ab29b89",
+      "vendored_sha256": "ab7faace60c11d151626353a64aa185e03695dcb11ec1177efc83a9a6ab29b89",
+      "upstream_path": "macros.fuc",
+      "adapted": false
+    },
+    {
+      "project": "nouveau-pmu",
+      "path": "memx.fuc",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs\n */",
+      "upstream_sha256": "8683173f58dde006e6064ad45894309ea4f8cfd30147638613ed5b03ecdeb610",
+      "vendored_sha256": "8683173f58dde006e6064ad45894309ea4f8cfd30147638613ed5b03ecdeb610",
+      "upstream_path": "memx.fuc",
+      "adapted": false
+    },
+    {
+      "project": "nouveau-pmu",
+      "path": "os.h",
+      "license": "MIT",
+      "notice": "/* SPDX-License-Identifier: MIT */",
+      "upstream_sha256": "c58ed3cc2c45673796d8bf56720da082e8772750de0ba585859d221568561fed",
+      "vendored_sha256": "c58ed3cc2c45673796d8bf56720da082e8772750de0ba585859d221568561fed",
+      "upstream_path": "os.h",
+      "adapted": false
+    },
+    {
+      "project": "nouveau-pmu",
+      "path": "perf.fuc",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs\n */",
+      "upstream_sha256": "f480a205f7b865c1be8923da78248f81a7bf38af1dbf037b71979c33b2b9d5b0",
+      "vendored_sha256": "f480a205f7b865c1be8923da78248f81a7bf38af1dbf037b71979c33b2b9d5b0",
+      "upstream_path": "perf.fuc",
+      "adapted": false
+    },
+    {
+      "project": "nouveau-pmu",
+      "path": "test.fuc",
+      "license": "MIT",
+      "notice": "/*\n * Copyright 2013 Red Hat Inc.\n *\n * Permission is hereby granted, free of charge, to any person obtaining a\n * copy of this software and associated documentation files (the \"Software\"),\n * to deal in the Software without restriction, including without limitation\n * the rights to use, copy, modify, merge, publish, distribute, sublicense,\n * and/or sell copies of the Software, and to permit persons to whom the\n * Software is furnished to do so, subject to the following conditions:\n *\n * The above copyright notice and this permission notice shall be included in\n * all copies or substantial portions of the Software.\n *\n * THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL\n * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR\n * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,\n * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR\n * OTHER DEALINGS IN THE SOFTWARE.\n *\n * Authors: Ben Skeggs\n */",
+      "upstream_sha256": "d122693f7583d6cc50f90a8e957f34718b65f142b21f952de5f36257e28e1ff0",
+      "vendored_sha256": "d122693f7583d6cc50f90a8e957f34718b65f142b21f952de5f36257e28e1ff0",
+      "upstream_path": "test.fuc",
+      "adapted": false
     }
   ]
 }

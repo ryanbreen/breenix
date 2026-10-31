@@ -207,9 +207,9 @@ fn c3_failed_stage_or_completion_does_not_advance() {
 
 #[test]
 fn c4_runs_only_three_core_and_three_gpc_after_handshake() {
-    STATE.with_borrow_mut(|s|*s=State {c4:true,..State::default()});
+    STATE.with_borrow_mut(|s|*s=State {c4:true,thermal:true,..State::default()});
     let mut phases=Vec::new();
     probe_gpu_bench::run_c4(|phase,n| {phases.push((phase.to_string(),n));Ok(())}).unwrap();
     assert_eq!(phases,[("pmu",0),("post",0),("core",1),("core",2),("core",3),("gpc",4),("gpc",5),("gpc",6),("done",7)].map(|(s,n)|(s.to_string(),n)));
-    STATE.with_borrow(|s| {assert_eq!(s.submits,27);assert_eq!(s.waits,27);assert_eq!(s.clocks,12);});
+    STATE.with_borrow(|s| {assert_eq!(s.submits,27);assert_eq!(s.waits,27);assert_eq!(s.clocks,12);assert!(s.sets.is_empty());});
 }

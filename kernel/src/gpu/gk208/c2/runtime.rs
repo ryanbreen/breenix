@@ -29,7 +29,7 @@ use crate::gk208::{Registers,clock};
 use alloc::{format,sync::Arc,vec::Vec};
 use observe::CounterAccess;
 
-struct State {base:usize,post:u32,limits:Limits,failed:bool,snapshot:Vec<(u32,u32)>,phase:u8,c3:bool}
+struct State {base:usize,post:u32,limits:Limits,failed:bool,snapshot:Vec<(u32,u32)>,phase:u8,c3:bool,pmu_started:bool}
 static STATE:spin::Mutex<Option<State>>=spin::Mutex::new(None);
 pub(in crate::gk208) fn initialize(regs:&Registers,rom:&[u8])->Result<(),&'static str> {
     let l=limits(rom)?;
@@ -42,7 +42,7 @@ pub(in crate::gk208) fn initialize(regs:&Registers,rom:&[u8])->Result<(),&'stati
     io.record("post-inventory",&counters);
     let pmc=io.read(0x200);
     io.record("pm-post-inventory",&[(0x200,pmc)]);
-    *STATE.lock()=Some(State {base:regs.0,post,limits:l,failed:false,snapshot,phase:0,c3:false});Ok(())
+    *STATE.lock()=Some(State {base:regs.0,post,limits:l,failed:false,snapshot,phase:0,c3:false,pmu_started:false});Ok(())
 }
 struct Io(Registers);
 impl Access for Io {
@@ -120,9 +120,51 @@ pub fn read_status()->Result<Vec<u8>,i32> {
     let khz=sample.gpc_khz.map_err(|_|-5)?;
     let mut status=format!("GT710_CLOCK_READ {{\"domain\":\"gpc\",\"readback_khz\":{khz},\"post_khz\":{},\"status\":\"ok\"}}\n",s.post).into_bytes();
     status.extend(crate::gk208::thermal::read_status());
+    if s.pmu_started {
+        let regs=Registers(s.base);
+        let disp=regs.read(0x10a01c);let intr=regs.read(0x10a008)&disp&!(disp>>16);
+        let uas=regs.read(0x10a16c);let address=regs.read(0x10a168);
+        status.extend(format!("GT710_PMU_STATE intr={intr:#010x} disp={disp:#010x} uas={uas:#010x} address={address:#010x}\n").bytes());
+        // MIT gt215.c:147-174: UAS and unexpected pending interrupts are faults;
+        // host receive/debug notifications (0x40/0x80) are not fault predicates.
+        if intr&!0xc0!=0 {
+            crate::serial_println!("GT710_C4_ERROR PMU fault intr={:#x} uas={:#x} address={:#x}",intr,uas,address);
+            return Err(-5);
+        }
+    }
     Ok(status)
 }
+impl crate::gk208::pmu::Access for Io {
+    fn read(&mut self,a:u32)->u32 {self.0.read(a as usize)}
+    fn write(&mut self,a:u32,v:u32) {self.0.write(a as usize,v)}
+    fn now_us(&mut self)->u64 {self.monotonic_ns()/1000}
+    fn waited(&mut self,name:&'static str,raw:u32,us:u64,matched:bool) {
+        crate::serial_println!("GT710_PMU_WAIT name={} raw={:#010x} elapsed_us={} matched={}",name,raw,us,matched);
+    }
+}
+fn pmu_start(s:&mut State)->Result<(),&'static str> {
+    if s.pmu_started || s.failed {return Err("PMU diagnostic already attempted");}
+    s.pmu_started=true;
+    let mut io=Io(Registers(s.base));
+    if Access::read(&mut io,0x20400)>=85 {s.failed=true;return Err("C4 temperature unavailable or at least 85 C");}
+    let before:Vec<_>=[0x200,0x10a008,0x10a010,0x10a01c,0x10a04c,0x10a100,0x10a104,0x10a10c,0x10a110,0x10a168,0x10a16c,0x10a4d0,0x10a4dc].into_iter().map(|a|(a,Access::read(&mut io,a))).collect();
+    print_snapshot("pmu-before-reset",&before);
+    let code=include_bytes!("../../../../assets/kepler/pmu.code.bin");
+    let data=include_bytes!("../../../../assets/kepler/pmu.data.bin");
+    crate::serial_println!("GT710_PMU_UPLOAD code_bytes={} code_sha256={} data_bytes={} data_sha256={}",code.len(),crate::gk208::hash(code),data.len(),crate::gk208::hash(data));
+    let result=crate::gk208::ce::with_resources(|_,_,_| {
+        let rings=crate::gk208::pmu::start(&mut io,code,data)?;
+        crate::serial_println!("GT710_PMU_READY send={:#010x} send_base={} send_size={} recv={:#010x} recv_base={} recv_size={}",rings.send,rings.send&65535,rings.send>>16,rings.recv,rings.recv&65535,rings.recv>>16);
+        Ok(())
+    }).and_then(|()|measure_record(&mut io,"pmu-post",Some(810_000)));
+    if result.is_err() {s.failed=true;}
+    result
+}
 fn set(bytes:&[u8])->Result<(),&'static str> {
+    if bytes==b"pmu start" {
+        let mut state=STATE.lock();
+        return pmu_start(state.as_mut().ok_or("C4 not initialized")?);
+    }
     let text=core::str::from_utf8(bytes).map_err(|_|"invalid request")?;
     let fields:Vec<_>=text.split_whitespace().collect();
     if fields.len()!=2 {return Err("request needs two fields");}
