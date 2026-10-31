@@ -12,11 +12,12 @@ class LogicalModePath(unittest.TestCase):
     def test_viewport_is_in_the_notified_update_and_high_console_avoids_userd(self):
         native=(ROOT/'kernel/src/gpu/gk208/native.rs').read_text()
         present=item(native,'pub(in crate::gk208) fn present(').replace('pub(in crate::gk208)','').replace('super::present::','present::').replace('super::display_evidence::','display_evidence::')
-        console=item(native,'pub(super) fn logical_console(').replace('pub(super)','').replace('crate::memory::map_mmio','host_map').replace('crate::console::display::linear::map_native_write_combining','host_wc').replace('super::present::','present::').replace('super::vm::TABLE_BYTES','vm::TABLE_BYTES')
+        console=item(native,'pub(super) fn logical_console(').replace('pub(super)','').replace('crate::memory::map_mmio','host_map').replace('crate::console::display::linear::map_native_write_combining','host_wc').replace('super::present::','present::').replace('super::vm::TABLE_BYTES','vm::TABLE_BYTES').replace('super::display_evidence::','display_evidence::')
         binding=item(native,'pub fn console_binding(').replace('pub fn','fn').replace('surface: &ConsoleSurface','surface: &ConsoleSurface, regs: &mut Registers').replace('    let mut regs = Registers(surface.regs);','').replace('view.verify(&mut regs,','view.verify(regs,')
         fixture=r'''
 #![allow(dead_code)] // Production modules include hardware APIs outside this fixture.
 extern crate alloc;
+#[macro_export] macro_rules! serial_println {($($arg:tt)*)=>{let _=format!($($arg)*);};}
 use std::collections::BTreeMap;
 #[path="@ROOT@/kernel/src/gpu/gk208/edid.rs"] mod edid;
 #[path="@ROOT@/kernel/src/gpu/gk208/modeset.rs"] mod modeset;
@@ -41,7 +42,14 @@ impl memory::Access for Registers {
  fn read(&mut self,r:usize)->u32 {Registers::read(self,r)}
  fn write(&mut self,r:usize,v:u32){Registers::write(self,r,v)}
 }
-mod display_evidence {pub fn record(_: &mut super::Registers,_:u32,_:super::present::Surface,_:&super::present::Receipt){}}
+mod display_evidence {
+ pub fn record(_: &mut super::Registers,_:u32,_:super::present::Surface,_:&super::present::Receipt){}
+ pub fn transition(_: &mut super::Registers,_:u32,s:super::present::Surface,r:&super::present::Receipt,
+  allocation:[u64;2],console:[u64;2],event:&'static str)->Result<u64,&'static str>{
+  assert_eq!(event,"handoff");assert_eq!(allocation,console);assert_eq!(allocation,[s.address,16384000]);
+  assert_eq!(r.active,r.armed);Ok(1)
+ }
+}
 struct Evo {head:u32,sor:u32,total:u64,push:u64,put:u32,notifier:u64,limits:(),coefficients:(),scripts:[Vec<modeset::Op>;4]}
 #[derive(Clone,Copy)] struct ConsoleSurface {pointer:usize,bytes:usize,width:usize,height:usize,pitch:usize,vram:u64,phys:u64,regs:usize,head:u32,firmware_baseline:u64}
 fn host_map(_:u64,n:usize)->Result<usize,&'static str>{assert_eq!(n,32<<20);Ok(Box::leak(vec![0u32;n/4].into_boxed_slice()).as_mut_ptr() as usize)}
@@ -77,6 +85,8 @@ fn main(){
  let slot=instance+0x4000+(((8<<20)-4096)/4096)*8;r.vram.insert(slot,0x1234);
  let high=logical_console(&mut r,&mut layout,&mut e,old,0x10000000,128<<20).unwrap();
  assert_eq!((high.width,high.height,high.pitch,high.bytes),(2560,1600,10240,16384000));
+ let low=layout.objects.iter().find(|o|o.name=="logical-low").unwrap().range;
+ assert_eq!(low.size,1280*800*4);assert_ne!(low.start,layout.objects[1].range.start);
  assert_eq!(high.phys,0x21000000);assert_eq!(high.firmware_baseline,9);
  console_binding(&high,&mut r).unwrap();
  r.r.insert(0x6604b8,1280|800<<16);

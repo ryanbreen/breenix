@@ -45,7 +45,7 @@ fn hex(b:&[u8])->String{b.iter().map(|v|format!("{v:02x}")).collect()}
  for event in ["handoff","mode","flip","receipt"] {
   assert!(display_evidence::transition(&mut regs,0,surface,&receipt,[0x30000000,16384000],[0x30000000,16384000],event).is_ok());
  }
- let events=display_evidence::export();assert_eq!(events.len(),4);
+ let events=display_evidence::export_transitions().unwrap();assert_eq!(events.len(),4);
  for ((text,anchor),event) in events.iter().zip(["handoff","mode","flip","receipt"]) {
   assert!(text.starts_with("GT710_CONSOLE_V1 "));
   assert!(text.contains(&format!("\"event\":\"{event}\"")));

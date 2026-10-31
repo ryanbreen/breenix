@@ -329,6 +329,7 @@ def display_memory(serial):
             expected.append(digest.hexdigest())
         require(o['sha256']==expected, 'complete complementary physical read-back mismatch')
     require(e['guard_bytes']==12*4096 and e['verified_bytes']==2*sum(s[1] for s in specs), 'short guard or allocation read-back')
+    console_evidence(serial, board_inventory(serial), e)
     return e
 
 
@@ -1092,6 +1093,85 @@ def cpu_apertures(serial):
         raise ValueError('malformed CPU aperture evidence') from error
 
 
+def console_evidence(serial, board, memory):
+    """G20/G21: exact display-owned extents, raw latches and the handoff join."""
+    if 'GT710_DISPLAY_EVIDENCE_ERROR' in serial:
+        raise ValueError('console evidence storage failed')
+    rows = [json.loads(m[1]) for m in re.finditer(r'^GT710_CONSOLE_V1 (.+)$', serial, re.M)]
+    logical = [json.loads(m[1]) for m in re.finditer(r'^GT710_DISPLAY_V1 (.+)$', serial, re.M)]
+    if not rows:
+        if (any(r.get('resource') == 0xffffffff for r in logical)
+                or 'GT710_NATIVE_HANDOFF ' in serial
+                or re.search(r'^GT710_NATIVE_CONSOLE .* latch=', serial, re.M)):
+            raise ValueError('logical console allocation and handoff evidence missing')
+        return {}
+    preferred = board['modes'][0]
+    display_snapshots(rows, (preferred['width'], preferred['height']))
+    console = rows[0].get('console')
+    def extent(r):
+        return (type(r) is list and len(r) == 2
+                and all(type(v) is int and v > 0 for v in r)
+                and r[0] % 65536 == 0 and sum(r) <= memory['total'])
+    if not extent(console) or console[1] != 2560*1600*4:
+        raise ValueError('logical console allocation is not exactly sized')
+    marker = one(r'^GT710_NATIVE_HANDOFF latch=([1-9]\d*)$', serial, 'logical handoff boundary')
+    if rows[0].get('event') != 'handoff' or rows[0]['mode'] != 1 or rows[0]['sequence'] != int(marker[1]):
+        raise ValueError('logical console handoff missing')
+    fixed = {}
+    occupied = memory['reserved'] + [[o['start'], o['size']] for o in memory['objects']]
+    for r in rows:
+        allocation = r.get('allocation')
+        w, h = ((1280,800),(2560,1600))[r['mode']]
+        rows_per_block = 1 if r['block_height'] == 0 else 8*r['block_height']
+        size = (r['pitch']*((h+rows_per_block-1)//rows_per_block*rows_per_block)+4095)//4096*4096
+        if (not extent(allocation) or allocation != [r['requested'], size]
+                or r.get('console') != console or r['head'] != board['head']
+                or r.get('event') not in ('handoff','mode','flip','receipt')
+                or any(a < sum(allocation) and allocation[0] < a+b for a,b in occupied)):
+            raise ValueError('logical allocation, event or display route mismatch')
+        if r['resource'] == 0xffffffff:
+            if r['block_height'] != 0 or r['format'] != 0:
+                raise ValueError('logical display-owned storage differs')
+            previous = fixed.setdefault(r['mode'], allocation)
+            if previous != allocation or (r['mode'] == 1 and allocation != console):
+                raise ValueError('logical mode allocation changed')
+        if r['event'] in ('handoff','receipt') and (r['mode'] != 1 or allocation != console or r['resource'] != 0xffffffff):
+            raise ValueError('console event does not name its logical allocation')
+        if allocation != console and allocation[0] < sum(console) and console[0] < sum(allocation):
+            raise ValueError('logical surface aliases console allocation')
+    return {r['sequence']: r for r in rows}
+
+
+def native_console_receipts(serial, start, bringup):
+    rows = {r['sequence']: r for r in (json.loads(m[1]) for m in re.finditer(r'^GT710_CONSOLE_V1 (.+)$', serial, re.M))}
+    handoff = re.search(r'^GT710_NATIVE_HANDOFF |^GT710_CONSOLE_V1 |^GT710_DISPLAY_V1 .*"resource"\s*:\s*4294967295', serial, re.M)
+    receipts = list(re.finditer(r'^GT710_NATIVE_CONSOLE surface=(\d+) firmware_writes=(\d+)(?: latch=(\d+))?$', serial, re.M))
+    if not any(r.start() >= start for r in receipts):
+        raise ValueError('native console receipt missing')
+    if len(receipts) != len(re.findall(r'^GT710_NATIVE_CONSOLE ', serial, re.M)):
+        raise ValueError('malformed native console receipt')
+    logical_started = False
+    used = set()
+    previous = 0
+    for r in receipts:
+        if r.start() < start: continue
+        if r[3] is not None:
+            latch = rows.get(int(r[3]))
+            if (latch is None or latch['event'] != 'receipt' or int(r[3]) <= previous
+                    or latch['mode'] != 1 or latch['resource'] != 0xffffffff
+                    or latch['requested'] != int(r[1]) or latch['allocation'] != latch['console']):
+                raise ValueError('native console receipt differs from measured logical latch')
+            logical_started = True
+            used.add(int(r[3])); previous = int(r[3])
+        elif logical_started or (handoff and r.start() > handoff.start()) or int(r[1]) != bringup:
+            raise ValueError('native console receipt does not name the latched console')
+        if int(r[2]) != 0:
+            raise ValueError('native console wrote firmware framebuffer')
+    expected = {r['sequence'] for r in rows.values() if r['event'] == 'receipt'}
+    if start == one(r'^GT710_MODE (.+)$',serial,'native mode evidence').end() and used != expected:
+        raise ValueError('measured console receipt has no serial receipt')
+
+
 def native_mode(serial):
     try:
         board = board_inventory(serial)
@@ -1157,9 +1237,7 @@ def native_mode(serial):
         need(abs(numerator-t['clock_khz']*denominator)*1000000<=t['clock_khz']*denominator*250,
              'native pixel PLL frequency differs from preferred timing')
         end=one(r'^GT710_MODE (.+)$',serial,'native mode evidence').end()
-        receipts=list(re.finditer(r'^GT710_NATIVE_CONSOLE surface=(\d+) firmware_writes=(\d+)$',serial[end:],re.M))
-        need(receipts and all(int(r[1])==surface and int(r[2])==0 for r in receipts),
-             'native console binding or firmware-write evidence missing or wrong')
+        native_console_receipts(serial, end, surface)
         rows=list(re.finditer(r'^GT710_PIX (\d+) ([0-9a-f:,]+)$',serial,re.M))
         need(len(rows)==t['height'], 'incomplete native full-screen read-back')
         import struct
@@ -1284,10 +1362,7 @@ def native_switches(serial):
              'preferred return binding, completion, clock or output fault')
         need(0<((restored['raster_after']>>16)-(restored['raster_before']>>16))&65535<100,
              'preferred return raster did not advance')
-        receipts=list(re.finditer(r'^GT710_NATIVE_CONSOLE surface=(\d+) firmware_writes=(\d+)$',
-                                 serial[returned[0].end():],re.M))
-        need(receipts and all(int(r[1])==previous['surface'] and int(r[2])==0 for r in receipts),
-             'console return after final low mode is missing or faulted')
+        native_console_receipts(serial, returned[0].end(), previous['surface'])
         return frames
     except (KeyError,TypeError,IndexError,OverflowError,json.JSONDecodeError) as error:
         raise ValueError('malformed native switching evidence') from error
@@ -1369,8 +1444,7 @@ def native_flips(serial):
                 need(boundary<returned.start() and cursor<restored['put'], 'preferred return precedes low flips')
         need(len(re.findall(r'^GT710_FLIP_PIX ',serial,re.M))==sum(e['timing']['height'] for e,_ in frames),
              'unassociated flip pixels')
-        receipts=list(re.finditer(r'^GT710_NATIVE_CONSOLE surface=(\d+) firmware_writes=(\d+)$',serial[reports[-1].end():],re.M))
-        need(receipts and all(int(r[1])==a and int(r[2])==0 for r in receipts), 'console handoff after flips missing or faulted')
+        native_console_receipts(serial, reports[-1].end(), a)
         return frames
     except (KeyError,TypeError,IndexError,StopIteration,OverflowError,json.JSONDecodeError) as error:
         raise ValueError('malformed native flip evidence') from error
@@ -2224,6 +2298,10 @@ def runtime_display(serial, preferred):
     rows = [json.loads(m[1]) for m in re.finditer(r'^GT710_DISPLAY_V1 (.+)$', serial, re.M)]
     if not rows or {r.get('mode') for r in rows} != {0, 1}:
         raise ValueError('runtime display needs both G20 logical modes')
+    return display_snapshots(rows, preferred)
+
+
+def display_snapshots(rows, preferred):
     sequences = []
     for r in rows:
         try:
@@ -2596,6 +2674,8 @@ def capture_serial(directory):
         raise ValueError('case heap records must arrive in bulk')
     if re.search(r'^GT710_CONSOLE_SAMPLE_V1 ', serial, re.M):
         raise ValueError('console samples must arrive in bulk')
+    if re.search(r'^GT710_CONSOLE_V1 ', serial, re.M):
+        raise ValueError('console latch records must arrive in bulk')
     if re.search(r'^GT710_DISPLAY_V1 ', serial, re.M):
         raise ValueError('runtime display records must arrive in bulk')
     if re.search(r'^GT710_SPANS_V1 ', serial, re.M):
@@ -2692,6 +2772,11 @@ def capture_serial(directory):
             row = json.loads(line.removeprefix('GT710_CONSOLE_SAMPLE_V1 '))
             if row.get('stage') not in (0, 1): raise ValueError('invalid console sample stage')
             key=('console-sample', row['stage'])
+        elif fields[0]=='GT710_CONSOLE_V1':
+            row = json.loads(line.removeprefix('GT710_CONSOLE_V1 '))
+            if type(row.get('sequence')) is not int or row['sequence'] <= 0:
+                raise ValueError('invalid console latch sequence')
+            key=('console-state', row['sequence'])
         elif fields[0]=='GT710_DISPLAY_V1':
             row = json.loads(line.removeprefix('GT710_DISPLAY_V1 '))
             if type(row.get('sequence')) is not int or row['sequence'] <= 0:
@@ -2734,6 +2819,9 @@ def capture_serial(directory):
         sample = re.fullmatch(r'GT710_CONSOLE_SAMPLE_BULK stage=([01]) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
         if sample: return ('console-sample', int(sample[1]))
         if line.startswith('GT710_CONSOLE_SAMPLE_BULK '): raise ValueError('invalid console sample anchor')
+        console = re.fullmatch(r'GT710_CONSOLE_BULK sequence=([1-9]\d*) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
+        if console: return ('console-state', int(console[1]))
+        if line.startswith('GT710_CONSOLE_BULK '): raise ValueError('invalid console latch anchor')
         display = re.fullmatch(r'GT710_DISPLAY_BULK sequence=([1-9]\d*) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
         if display: return ('display-state', int(display[1]))
         if line.startswith('GT710_DISPLAY_BULK '): raise ValueError('invalid runtime display anchor')
@@ -2788,6 +2876,11 @@ def capture_serial(directory):
             record = groups[key][0].removesuffix('\n').encode('ascii')
             if len(groups[key]) != 1 or len(record) != int(anchor[2]) or hashlib.sha256(record).hexdigest() != anchor[3]:
                 raise ValueError('console sample differs from serial length/digest')
+        if key is not None and key[0] == 'console-state':
+            anchor = re.fullmatch(r'GT710_CONSOLE_BULK sequence=([1-9]\d*) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
+            record = groups[key][0].removesuffix('\n').encode('ascii')
+            if len(groups[key]) != 1 or len(record) != int(anchor[2]) or hashlib.sha256(record).hexdigest() != anchor[3]:
+                raise ValueError('console latch differs from serial length/digest')
         if key is not None and key[0] == 'display-state':
             anchor = re.fullmatch(r'GT710_DISPLAY_BULK sequence=([1-9]\d*) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
             record = groups[key][0].removesuffix('\n').encode('ascii')

@@ -178,7 +178,8 @@ impl Linear {
         #[cfg(target_arch = "x86_64")]
         if let Some(s)=self.native.get() {
             let writes=crate::firmware_writes::count().checked_sub(s.firmware_baseline).ok_or("firmware write counter reversed")?;
-            crate::serial_println!("GT710_NATIVE_CONSOLE surface={} firmware_writes={}",s.vram,writes);
+            let latch=crate::gk208::console_receipt()?;
+            crate::serial_println!("GT710_NATIVE_CONSOLE surface={} firmware_writes={} latch={}",s.vram,writes,latch);
             if writes!=0 {return Err("firmware writes after native handoff");}
             crate::gk208::console_binding(s).inspect_err(|error| {
                 crate::serial_println!("GT710_NATIVE_CONSOLE_REFUSAL {}",error);

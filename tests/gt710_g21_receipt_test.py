@@ -2,6 +2,8 @@
 import copy
 from functools import lru_cache
 import json
+import hashlib
+import tempfile
 from pathlib import Path
 import runpy
 import unittest
@@ -36,6 +38,8 @@ def console_event(sequence=1, event='handoff', mode=1):
                console=[0x30000000, 2560*1600*4])
     row['active'][0] = row['armed'][0] = row['requested'] >> 8
     row['allocation'] = [row['requested'], row['pitch'] * (1600 if mode else 800)]
+    timing = MEMORY['board']['modes'][0]
+    row['raster'] = [0, timing['width'] | timing['height'] << 16]
     return row
 
 
@@ -68,10 +72,11 @@ class G21Receipts(unittest.TestCase):
             API['display_memory'](serial)
 
     def test_logical_console_receipts_require_exact_allocations_and_measured_latches(self):
-        serial = capture('mode')
+        serial = capture('mode') + 'GT710_NATIVE_HANDOFF latch=1\n'
         good = console_event()
-        receipt = f'GT710_NATIVE_CONSOLE surface={good["requested"]} firmware_writes=0 latch=1\n'
-        API['native_mode'](serial + event_text([good]) + receipt)
+        measured = console_event(2, 'receipt')
+        receipt = f'GT710_NATIVE_CONSOLE surface={good["requested"]} firmware_writes=0 latch=2\n'
+        API['native_mode'](serial + event_text([good, measured]) + receipt)
         for mutate in [lambda r:r['allocation'].__setitem__(1,r['allocation'][1]+4096),
                        lambda r:r['allocation'].__setitem__(1,r['allocation'][1]-4096),
                        lambda r:r['console'].__setitem__(1,r['console'][1]+4096),
@@ -79,14 +84,14 @@ class G21Receipts(unittest.TestCase):
                        lambda r:r['armed'].__setitem__(0,r['armed'][0]+16),
                        lambda r:r['viewport_active'].__setitem__(3,1280|800<<16),
                        lambda r:r.update(firmware_writes=1)]:
-            bad = copy.deepcopy(good); mutate(bad)
+            bad = copy.deepcopy(measured); mutate(bad)
             with self.subTest(mutation=mutate), self.assertRaises(ValueError):
-                API['native_mode'](serial + event_text([bad]) + receipt)
-        for bad in [receipt.replace('latch=1','latch=2'),
+                API['native_mode'](serial + event_text([good, bad]) + receipt)
+        for bad in [receipt.replace('latch=2','latch=1'),
                     receipt.replace(str(good['requested']),str(good['requested']+4096)),
                     receipt.replace('firmware_writes=0','firmware_writes=1')]:
             with self.subTest(receipt=bad), self.assertRaises(ValueError):
-                API['native_mode'](serial + event_text([good]) + bad)
+                API['native_mode'](serial + event_text([good, measured]) + bad)
         # The logical low surface has its own exact allocation; a larger EDID
         # bring-up allocation cannot serve as its extent evidence.
         low = console_event(2, 'mode', 0)
@@ -94,6 +99,31 @@ class G21Receipts(unittest.TestCase):
         low['allocation'][1] += 4096
         with self.assertRaises(ValueError):
             API['display_memory'](serial + event_text([good, low]))
+
+    def test_console_latches_use_digest_checked_startup_and_final_upload_slots(self):
+        rows = [console_event(), console_event(2, 'receipt')]
+        lines = [event_text([r]).rstrip('\n') for r in rows]
+        bodies = [(line+'\n').encode() for line in lines]
+        anchors = [f'GT710_CONSOLE_BULK sequence={r["sequence"]} bytes={len(line)} sha256={hashlib.sha256(line.encode()).hexdigest()}\n'
+                   for r, line in zip(rows, lines)]
+        serial = (anchors[0] + f'GT710_BULK {len(bodies[0])} {hashlib.sha256(bodies[0]).hexdigest()}\n'
+                  + 'SUITE console START cases=1\nSUITE console CASE screen/test PASS ms=1\n'
+                  + 'SUITE console DONE passed=1 failed=0 skipped=0 total=1\n'
+                  + 'SUITE console MEMORY reclaimed=PASS free_before=1 free_after=1 allowance=0\n'
+                  + anchors[1] + f'GT710_FINAL_BULK {len(bodies[1])} {hashlib.sha256(bodies[1]).hexdigest()}\n'
+                  + 'SUITE_SEQUENCE READY console\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p/'gt710-pixels.rle').write_bytes(bodies[0])
+            (p/'gt710-final.rle').write_bytes(bodies[1])
+            (p/'serial.txt').write_text(serial)
+            joined = API['capture_serial'](p)
+            self.assertTrue(all(line in joined for line in lines))
+            for bad in [serial.replace(anchors[0], ''), serial.replace('sha256=', 'sha256=0', 1),
+                        serial + lines[1] + '\n', serial.replace(anchors[1], anchors[0])]:
+                (p/'serial.txt').write_text(bad)
+                with self.subTest(serial=bad), self.assertRaises(ValueError):
+                    API['capture_serial'](p)
 
     def test_bringup_allocation_sizes_stay_exact(self):
         good = MEMORY['evidence']()

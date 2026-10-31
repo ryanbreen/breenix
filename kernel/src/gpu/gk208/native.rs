@@ -1204,7 +1204,13 @@ pub(super) fn logical_console(regs:&mut Registers,layout:&mut memory::Layout,
     modeset::bar_flush(regs)?;
     let surface=super::present::Surface{resource:u32::MAX,address:allocation.range.start,
         width:2560,height:1600,pitch:10240,block_height:0,format:0,dma:1};
-    present(evo,regs,surface)?;
+    let receipt=present(evo,regs,surface)?;
+    let latch=super::display_evidence::transition(regs,evo.head,surface,&receipt,
+        [allocation.range.start,allocation.range.size],[allocation.range.start,allocation.range.size],"handoff")?;
+    crate::serial_println!("GT710_NATIVE_HANDOFF latch={}",latch);
+    layout.objects.try_reserve(1).map_err(|_| "logical low-mode object allocation")?;
+    let low=layout.allocator.allocate(1280*800*4,65536,memory::allocator::Kind::Display)?;
+    layout.objects.push(memory::Object{name:"logical-low",range:low.range,align:65536,allocation:low});
     Ok(ConsoleSurface{pointer,bytes:BYTES as usize,width:2560,height:1600,pitch:10240,
         vram:allocation.range.start,phys:old.phys-(old.pointer-bar) as u64+OFFSET,..old})
 }
@@ -1220,6 +1226,22 @@ fn active_snapshot(regs: &Registers, head: u32, sor: u32) -> String {
     let r=0x640200+sor as usize*32;
     let _=write!(result,",[{},{}]",r,regs.read(r));
     result
+}
+
+pub(super) fn console_receipt(evo: &Evo, regs: &mut Registers, console: ConsoleSurface,
+    allocation: memory::Range) -> Result<u64, &'static str> {
+    console_binding(&console)?;
+    let h=evo.head as usize*0x300;
+    let methods=[0x460,0x468,0x46c,0x470,0x474];
+    let receipt=super::present::Receipt {
+        notifier:read_word(regs,evo.total,evo.notifier)?,
+        active:methods.map(|m|regs.read(0x640000+m+h)),
+        armed:methods.map(|m|regs.read(0x660000+m+h)),
+    };
+    let surface=super::present::Surface {resource:u32::MAX,address:console.vram,
+        width:2560,height:1600,pitch:10240,block_height:0,format:0,dma:1};
+    super::display_evidence::transition(regs,evo.head,surface,&receipt,
+        [allocation.start,allocation.size],[allocation.start,allocation.size],"receipt")
 }
 
 pub fn console_binding(surface: &ConsoleSurface) -> Result<(), &'static str> {

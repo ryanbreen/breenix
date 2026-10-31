@@ -252,6 +252,9 @@ pub(in crate::gk208) fn present(surface:super::super::present::Surface)
     // pinned through GR reset; only a confirmed later update can release it.
     s.scanout.push(hold);
     let receipt=super::super::native::present(&mut s.evo,&mut Registers(s.registers),surface)?;
+    let allocation=s.resources.scanout_allocation(surface.resource).ok_or("scanout allocation absent")?;
+    super::super::display_evidence::transition(&mut Registers(s.registers),s.evo.head,surface,&receipt,
+        [allocation.start,allocation.size],[s.console.vram,s.console.bytes as u64],"flip")?;
     if receipt.notifier&1!=1 || receipt.active!=receipt.armed {
         return Err("native present receipt mismatch");
     }
@@ -272,12 +275,16 @@ pub(crate) fn set_mode(index:u32)->Result<(), &'static str> {
         super::super::present::Surface{resource:u32::MAX,address:c.vram,
             width:2560,height:1600,pitch:10240,block_height:0,format:0,dma:1}
     } else {
-        let range=s.layout.objects[1].range;
-        if range.size<1280*800*4 {return Err("native low-mode surface too small");}
+        let range=s.layout.objects.iter().find(|o|o.name=="logical-low")
+            .ok_or("logical low-mode allocation absent")?.range;
         super::super::present::Surface{resource:u32::MAX,address:range.start,
             width:1280,height:800,pitch:5120,block_height:0,format:0,dma:1}
     };
-    super::super::native::present(&mut s.evo,&mut Registers(s.registers),surface)?;
+    let receipt=super::super::native::present(&mut s.evo,&mut Registers(s.registers),surface)?;
+    let allocation=s.layout.objects.iter().find(|o|o.range.start==surface.address)
+        .ok_or("logical mode allocation absent")?.range;
+    super::super::display_evidence::transition(&mut Registers(s.registers),s.evo.head,surface,&receipt,
+        [allocation.start,allocation.size],[s.console.vram,s.console.bytes as u64],"mode")?;
     s.mode=index;
     s.scanout.clear();
     Ok(())
@@ -288,4 +295,12 @@ pub(in crate::gk208) fn terminal_display(surface: super::super::present::Surface
     let owner = SESSION.lock();
     let s = owner.as_ref().ok_or("terminal display owner absent")?;
     s.evo.terminal_display(s.registers, surface)
+}
+
+pub(crate) fn console_receipt() -> Result<u64, &'static str> {
+    let owner=SESSION.lock();
+    let s=owner.as_ref().ok_or("native display owner absent")?;
+    let allocation=s.layout.objects.iter().find(|o|o.range.start==s.console.vram)
+        .ok_or("logical console allocation absent")?.range;
+    super::super::native::console_receipt(&s.evo,&mut Registers(s.registers),s.console,allocation)
 }

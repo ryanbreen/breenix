@@ -249,6 +249,9 @@ impl<B> Resources<B> {
     ) -> Result<(), &'static str> {
         self.create_aligned(a, io, id, kind, format, width, height, 4096, None, false)
     }
+    pub fn scanout_allocation(&self, id: u32) -> Option<super::memory::Range> {
+        Some(self.entries.get(&id)?.allocation?.range)
+    }
     pub fn scanout(&self, id: u32) -> Option<present::Surface> {
         let e=self.entries.get(&id)?;
         if e.dropped || !e.mapped {return None;}
