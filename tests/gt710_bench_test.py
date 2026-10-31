@@ -13,7 +13,7 @@ class Baseline(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             rustc = (['taskpolicy', '-b'] if sys.platform == 'darwin' else []) + ['rustc', '--edition=2021', '-Dwarnings']
-            subprocess.run(rustc + ['--crate-name', 'gpu_abi', '--crate-type', 'rlib',
+            subprocess.run(rustc + ['--crate-name', 'gpu_abi', '--crate-type', 'rlib', '--cfg', 'feature="alloc"',
                                    str(ROOT / 'libs/gpu-abi/src/lib.rs'), '-o', str(out / 'libgpu_abi.rlib')], check=True)
             subprocess.run(rustc + ['--test', str(ROOT / 'tests/gt710_bench_test.rs'),
                                    '--extern', f'gpu_abi={out}/libgpu_abi.rlib', '-o', str(out / 'bench')], check=True)
@@ -26,8 +26,13 @@ class Baseline(unittest.TestCase):
             temperatures = [json.loads(line.split('GT710_TEMPERATURE ', 1)[1]) for line in result.stdout.splitlines() if 'GT710_TEMPERATURE ' in line]
             self.assertEqual(len(temperatures), 5)
             self.assertTrue(all(row['registers']==[[512,3760267629]] for row in temperatures))
-            self.assertEqual(len(rows), 71)
-            self.assertTrue(all(row['kind']=='core' and row['work']==819200000 and row['completion'] for row in rows))
+            self.assertEqual(len(rows), 83)
+            self.assertTrue(all(row['completion'] for row in rows))
+            core = [row for row in rows if row['kind']=='core']
+            gpc = [row for row in rows if row['kind']=='gpc']
+            self.assertEqual((len(core),len(gpc)), (59,24))
+            self.assertTrue(all(row['work']==819200000 for row in core))
+            self.assertTrue(all(row['work']==524288 and row['batches']==8 for row in gpc))
 
 
 

@@ -9,6 +9,30 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class LockWindow(unittest.TestCase):
+    def test_c3_low_routes_to_the_existing_divider_target(self):
+        runtime = (ROOT / 'kernel/src/gpu/gk208/c2/runtime.rs').read_text()
+        dispatch = runtime.split('let (phase,requested,c3,name)=match (fields[0],fields[1]) {',1)[1].split('\n    };',1)[0]
+        source = """
+fn request(fields:[&str;2])->Result<(u8,u32,bool,&'static str),&'static str> {
+    Ok(match (fields[0],fields[1]) {DISPATCH})
+}
+fn main() {
+    assert_eq!(request(["c3-low","540000"]),Ok((1,540000,true,"low")));
+    for (fields,expected) in [
+        (["c3","post"],(0,810000,true,"post")),
+        (["pll","810000"],(1,810000,true,"A")),
+        (["pll","1307000"],(3,1307000,true,"C")),
+        (["c3-restore","post"],(4,810000,true,"D")),
+    ] {assert_eq!(request(fields),Ok(expected));}
+    assert!(request(["c3-low","1307000"]).is_err());
+}
+""".replace('DISPATCH',dispatch)
+        priority = ['taskpolicy','-b'] if sys.platform=='darwin' else []
+        with tempfile.TemporaryDirectory() as directory:
+            p=Path(directory);(p/'route.rs').write_text(source)
+            subprocess.run(priority+['rustc','--edition=2021','-Dwarnings',str(p/'route.rs'),'-o',str(p/'route')],check=True)
+            subprocess.run([str(p/'route')],check=True)
+
     def test_post_sync_status_and_frequency_guards(self):
         runtime = (ROOT / 'kernel/src/gpu/gk208/c2/runtime.rs').read_text()
         # Compile the actual runtime validation, including its source/control

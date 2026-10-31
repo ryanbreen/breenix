@@ -6,7 +6,7 @@ use std::cell::RefCell;
 thread_local! { static STATE: RefCell<State> = RefCell::new(State::default()); }
 #[derive(Default)]
 struct State { images: Vec<(u32,u32,u32)>, submits: usize, waits: usize, clocks: usize,
-    warming: bool, pending: bool, fail_wait: bool, low_too_fast:bool, sets:Vec<u32>, thermal:bool, samples:Vec<(String,u32)>, idle_sleeps:u32 }
+    warming: bool, pending: bool, fail_wait: bool, low_too_fast:bool, sets:Vec<u32>, thermal:bool, samples:Vec<(String,u32)>, idle_sleeps:u32, c3:bool }
 
 pub mod time {
     pub struct Stamp(i128);
@@ -43,11 +43,11 @@ pub mod gpu {
         STATE.with_borrow_mut(|s| {
             assert!(!s.pending,"previous benchmark was not completed");
             assert_eq!(s.clocks%2,1,"submission must be inside the timed interval");
-            assert_eq!(s.images,vec![(0,2560,1600)]);
+            if !s.c3 {assert_eq!(s.images,vec![(0,2560,1600)]);}
             struct View;
             impl abi::stream::Resolver for View {
                 fn target(&self,h:u64)->Option<abi::stream::TargetInfo> {
-                    let (width,height)=match h {1=>(2560,1600),2|3=>(4096,4096),_=>return None};
+                    let (width,height)=match h {1=>(2560,1600),2=>(64,64),3=>(4096,4096),_=>return None};
                     Some(abi::stream::TargetInfo {width,height,format:0,invalid:false})
                 }
                 fn source(&self,h:u64)->Option<abi::stream::SourceInfo> {
@@ -57,6 +57,17 @@ pub mod gpu {
                 fn buffer_rect(&self,_:u64,_:u64)->[i32;4]{panic!("no CPU pixel/buffer input")}
             }
             let plan=abi::stream::validate(words,&View).expect("production validator");
+            let gpc=s.c3 && (6..30).contains(&s.submits) || s.c3 && (30..102).contains(&s.submits) || s.c3 && s.submits>=105;
+            if gpc {
+                assert_eq!(&words[..4],&[1,4,2,0]);
+                assert_eq!(words.len(),4+16*30);
+                for d in words[4..].chunks_exact(30) {
+                    assert_eq!(&d[..10],&[9,30,abi::pipeline::GRADIENT_V,0xff204080,0,0,0,0,0,1]);
+                    assert_eq!(&d[10..17],&[0,0,64,64,0,64,0xffe0c080]);
+                    assert!(d[17..].iter().all(|v|*v==0));
+                }
+                assert_eq!(plan.drawn,16);assert_eq!(plan.estimate,1<<31);
+            } else {
                 assert_eq!(&words[..4],&[1,4,1,0]);
                 assert_eq!(words.len(),4+200*9);
                 for (i,d) in words[4..].chunks_exact(9).enumerate() {
@@ -65,6 +76,7 @@ pub mod gpu {
                     assert_eq!(&d[4..],&[1,0,0,2560,1600]);
                 }
                 assert_eq!(plan.drawn,200);assert_eq!(plan.estimate,819_200_000);
+            }
             if !s.thermal {assert_eq!(s.sets,match s.submits {0..=8=>vec![],9..=11=>vec![540_000],_=>vec![540_000,810_000]});}
             s.submits+=1;s.pending=true;
             let mut a=abi::Submit::ZERO;a.fence=s.submits as u64;(0,a)
@@ -167,27 +179,28 @@ fn c3a_sensor_errors_continue_and_the_decoded_threshold_stops_at_equality() {
 }
 
 #[test]
-fn c3_six_controls_then_three_trials_per_pll_stage_and_restore() {
-    STATE.with_borrow_mut(|s|*s=State {thermal:true,..State::default()});
+fn c3_six_controls_then_gpc_trials_at_post_low_a_c_and_restore() {
+    STATE.with_borrow_mut(|s|*s=State {thermal:true,c3:true,..State::default()});
     let mut stages=Vec::new();
     probe_gpu_bench::run_c3(|stage,n| {
         STATE.with_borrow(|s| {
             assert!(!s.pending);
-            let before=match stage {"post"=>0,"A"=>6,"B"=>9,"C"=>12,"D"=>15,_=>panic!("stage")};
-            if n==0 {assert_eq!(s.submits,before);}else{assert_eq!(s.submits,n as usize-1);}
+            let before=match stage {"post"=>0,"low"=>30,"A"=>54,"C"=>78,"D"=>105,_=>panic!("stage")};
+            if n==0 {assert_eq!(s.submits,before);}
         });
         stages.push((stage.to_string(),n));Ok(())
     }).unwrap();
-    STATE.with_borrow(|s|assert_eq!((s.submits,s.waits),(18,18)));
-    assert_eq!(stages.iter().filter(|p|p.1==0).map(|p|p.0.as_str()).collect::<Vec<_>>(),["post","A","B","C","D"]);
+    STATE.with_borrow(|s|assert_eq!((s.submits,s.waits),(129,129)));
+    assert_eq!(stages.iter().filter(|p|p.1==0).map(|p|p.0.as_str()).collect::<Vec<_>>(),["post","low","A","C","D"]);
+    assert_eq!(stages.iter().filter(|p|p.1!=0).map(|p|p.1).collect::<Vec<_>>(),(1..=24).collect::<Vec<_>>());
 }
 
 #[test]
 fn c3_failed_stage_or_completion_does_not_advance() {
-    STATE.with_borrow_mut(|s|*s=State {thermal:true,..State::default()});
-    assert!(probe_gpu_bench::run_c3(|stage,_|if stage=="B" {Err("counter mismatch".into())}else{Ok(())}).is_err());
-    STATE.with_borrow(|s|assert_eq!((s.submits,s.waits),(9,9)));
-    STATE.with_borrow_mut(|s|*s=State {thermal:true,fail_wait:true,..State::default()});
+    STATE.with_borrow_mut(|s|*s=State {thermal:true,c3:true,..State::default()});
+    assert!(probe_gpu_bench::run_c3(|stage,_|if stage=="C" {Err("counter mismatch".into())}else{Ok(())}).is_err());
+    STATE.with_borrow(|s|assert_eq!((s.submits,s.waits),(78,78)));
+    STATE.with_borrow_mut(|s|*s=State {thermal:true,c3:true,fail_wait:true,..State::default()});
     assert!(probe_gpu_bench::run_c3(|_,_|Ok(())).is_err());
     STATE.with_borrow(|s|assert_eq!((s.submits,s.waits),(1,1)));
 }
