@@ -195,15 +195,54 @@ pub(super) fn cpu_heap_footprint() -> [usize; 3] {
         CPU_LIVE_PAGES.load(Ordering::Acquire) as usize]
 }
 
+// One recurring frame-sized mapping, also exercised during native startup.
+// Larger allocations and small crossing tables retain their ordinary lifetimes.
 #[cfg(target_arch = "x86_64")]
-pub(crate) struct CpuBox {
+const CPU_REUSE_MIN: usize = 1 << 20;
+#[cfg(target_arch = "x86_64")]
+const CPU_REUSE_BYTES: usize = 2 << 20;
+#[cfg(target_arch = "x86_64")]
+static CPU_BUFFER_CACHE: spin::Mutex<Option<CpuStorage>> = spin::Mutex::new(None);
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) struct CpuBox { storage: Option<CpuStorage> }
+#[cfg(target_arch = "x86_64")]
+impl CpuBox {
+    pub(crate) fn try_new(len: usize) -> Option<Self> {
+        let storage = if (CPU_REUSE_MIN..=CPU_REUSE_BYTES).contains(&len) {
+            let cached = CPU_BUFFER_CACHE.lock().take();
+            match cached {
+                Some(mut storage) => { storage.as_mut().fill(0); storage }
+                None => CpuStorage::try_new(CPU_REUSE_BYTES)?,
+            }
+        } else { CpuStorage::try_new(len)? };
+        Some(Self { storage: Some(storage) })
+    }
+    pub(crate) fn len(&self) -> usize { self.storage.as_ref().unwrap().len() }
+    pub(crate) fn as_ref(&self) -> &[u8] { self.storage.as_ref().unwrap().as_ref() }
+    pub(crate) fn as_mut(&mut self) -> &mut [u8] { self.storage.as_mut().unwrap().as_mut() }
+}
+#[cfg(target_arch = "x86_64")]
+impl Drop for CpuBox {
+    fn drop(&mut self) {
+        let Some(storage) = self.storage.take() else { return };
+        if storage.len() == CPU_REUSE_BYTES {
+            let mut cache = CPU_BUFFER_CACHE.lock();
+            if cache.is_none() { *cache = Some(storage); return; }
+        }
+        drop(storage);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+struct CpuStorage {
     block: DmaBox,
     base: VirtAddr,
     mapped: usize,
     slot: u32,
 }
 #[cfg(target_arch = "x86_64")]
-impl CpuBox {
+impl CpuStorage {
     pub(crate) fn try_new(len: usize) -> Option<Self> {
         use core::sync::atomic::Ordering;
         let count = len.max(1).div_ceil(PAGE);
@@ -255,7 +294,7 @@ impl CpuBox {
     pub(crate) fn as_mut(&mut self) -> &mut [u8] { self.block.as_mut() }
 }
 #[cfg(target_arch = "x86_64")]
-impl Drop for CpuBox {
+impl Drop for CpuStorage {
     fn drop(&mut self) {
         let mut safe = true;
         for index in 0..self.mapped {

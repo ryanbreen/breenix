@@ -48,6 +48,8 @@ mod memory{
 struct FrameRun{frames:Vec<Option<PhysFrame>>,owner:Option<()>}
 impl Drop for FrameRun{fn drop(&mut self){let _=self.owner.take();for f in self.frames.iter_mut().filter_map(Option::take){frame_allocator::deallocate_frame(f);}}}
 struct DmaBox{bytes:NonNull<u8>,_frames:FrameRun,address:u64,len:usize}
+// Match the production owner's Send contract; every mock mapping is unique.
+unsafe impl Send for DmaBox {}
 impl DmaBox{
  fn len(&self)->usize{assert_eq!(self.address,0);self.len}
  fn as_ref(&self)->&[u8]{unsafe{std::slice::from_raw_parts(self.bytes.as_ptr(),self.len)}}
@@ -66,6 +68,14 @@ CODE
   b.as_mut()[0]=9;drop(b);
  }
  let mapped=state(|s|s.map_count);assert_eq!(mapped,512,"repeated frame preparation recreated page tables instead of reusing a bounded staging mapping");
+}
+#[test]fn cache_retains_only_one_mapping_and_reuses_clean_bytes(){
+ reset();let request=(1<<20)+64*1024;
+ let mut a=CpuBox::try_new(request).unwrap();let b=CpuBox::try_new(request).unwrap();a.as_mut()[7]=17;
+ drop(a);drop(b);
+ let held=state(|s|(s.maps.len(),s.live.len(),s.map_count));assert_eq!(held,(512,512,1024));
+ let c=CpuBox::try_new(request).unwrap();assert_eq!(c.as_ref()[7],0);drop(c);
+ let held=state(|s|(s.maps.len(),s.live.len(),s.map_count));assert_eq!(held,(512,512,1024));
 }
 #[test]fn failed_mapping_unmaps_and_flushes_before_releasing_frames(){
  reset();state(|s|s.fail_map=Some(2));assert!(CpuBox::try_new(PAGE*4).is_none());
