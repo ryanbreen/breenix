@@ -58,6 +58,7 @@ fn pcie(device:&pci::Device)->Result<String,&'static str> {
 pub(super) fn startup(regs:&mut Registers,device:&pci::Device)->Result<(),&'static str> {
     // The full 256 KiB PROM window is private bulk data (docs/gui/gt710-c1.md).
     let rom=super::rom::read_full(regs)?;
+    super::c2::initialize(regs,&rom)?;
     let row=format!("GT710_VBIOS_V1 {{\"bytes\":{},\"sha256\":\"{}\",\"hex\":\"{}\"}}",rom.len(),super::hash(&rom),super::hex(&rom));
     publish("VBIOS",row)?;
     let (raw,domains)=super::clock::sample_domains(|a|regs.read(a as usize));

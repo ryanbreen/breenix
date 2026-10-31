@@ -169,6 +169,28 @@ pub fn sample_domains(read: impl FnMut(u32) -> u32)
     (r.raw, domains)
 }
 
+// These helpers decode register observations through C1's reader.
+#[cfg(feature = "gt710_clock_probe")]
+fn probe_reader(read:impl FnMut(u32)->u32)->Reader<impl FnMut(u32)->u32> {
+    let mut r=Reader {read,raw:Vec::new(),crystal:0};
+    r.crystal=match r.reg(0x101000)&0x400040 {0=>13500,0x40=>14318,0x400000=>27000,_=>25000};r
+}
+#[cfg(feature = "gt710_clock_probe")]
+pub fn gpc_reference(read:impl FnMut(u32)->u32)->Result<u32,&'static str> {
+    probe_reader(read).div(0,0x137120,0x137140)
+}
+#[cfg(feature = "gt710_clock_probe")]
+pub fn gpc_vco(read:impl FnMut(u32)->u32)->Result<u32,&'static str> {
+    probe_reader(read).vco(0x137160)
+}
+#[cfg(feature = "gt710_clock_probe")]
+pub fn gpc_pll_step(read:impl FnMut(u32)->u32)->Result<u32,&'static str> {
+    let mut r=probe_reader(read);let c=r.reg(0x137004);
+    let denominator=(c&255)*((c>>16)&63).max(1);
+    if denominator==0 {return Err("zero PLL step divisor");}
+    Ok(r.div(0,0x137120,0x137140)?.div_ceil(denominator).max(1))
+}
+
 #[cfg(target_os = "none")]
 mod runtime {
     use super::*;

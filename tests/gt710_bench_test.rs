@@ -6,13 +6,16 @@ use std::cell::RefCell;
 thread_local! { static STATE: RefCell<State> = RefCell::new(State::default()); }
 #[derive(Default)]
 struct State { images: Vec<(u32,u32,u32)>, submits: usize, waits: usize, clocks: usize,
-    warming: bool, pending: bool, fail_wait: bool }
+    warming: bool, pending: bool, fail_wait: bool, low_too_fast:bool, sets:Vec<u32> }
 
 pub mod time {
     pub struct Stamp(u64);
     impl Stamp { pub fn as_nanos(&self)->u64 { self.0 } }
     pub fn now_monotonic()->Result<Stamp,&'static str> {
-        Ok(crate::STATE.with_borrow_mut(|s| {s.clocks+=1;Stamp(s.clocks as u64*1000)}))
+        Ok(crate::STATE.with_borrow_mut(|s| {s.clocks+=1;
+            let end=s.clocks%2==0;
+            let duration=if s.submits>=4 && s.submits<=6 && !s.low_too_fast {1_070_000_000}else{716_000_000};
+            Stamp(((s.clocks-1) as u64/2)*2_000_000_000+if end {duration}else{0})}))
     }
     pub fn sleep_ms(_:u64)->Result<(), &'static str> { Ok(()) }
 }
@@ -38,7 +41,7 @@ pub mod gpu {
         STATE.with_borrow_mut(|s| {
             assert!(!s.pending,"previous benchmark was not completed");
             assert_eq!(s.clocks%2,1,"submission must be inside the timed interval");
-            assert_eq!(s.images,vec![(0,2560,1600),(0,4096,4096),(0,4096,4096)]);
+            assert_eq!(s.images,vec![(0,2560,1600)]);
             struct View;
             impl abi::stream::Resolver for View {
                 fn target(&self,h:u64)->Option<abi::stream::TargetInfo> {
@@ -52,7 +55,6 @@ pub mod gpu {
                 fn buffer_rect(&self,_:u64,_:u64)->[i32;4]{panic!("no CPU pixel/buffer input")}
             }
             let plan=abi::stream::validate(words,&View).expect("production validator");
-            if s.submits<3 {
                 assert_eq!(&words[..4],&[1,4,1,0]);
                 assert_eq!(words.len(),4+200*9);
                 for (i,d) in words[4..].chunks_exact(9).enumerate() {
@@ -61,10 +63,7 @@ pub mod gpu {
                     assert_eq!(&d[4..],&[1,0,0,2560,1600]);
                 }
                 assert_eq!(plan.drawn,200);assert_eq!(plan.estimate,819_200_000);
-            } else {
-                assert_eq!(words,&[5,12,2,0,0,0,4096,4096,3,0,0,0]);
-                assert_eq!(plan.estimate,16_777_216);
-            }
+            assert_eq!(s.sets,match s.submits {0..=2=>vec![],3..=5=>vec![540_000],_=>vec![540_000,810_000]});
             s.submits+=1;s.pending=true;
             let mut a=abi::Submit::ZERO;a.fence=s.submits as u64;(0,a)
         })
@@ -79,15 +78,29 @@ pub mod gpu {
 }
 
 #[test]
-fn six_trials_use_real_validated_streams_and_one_wait_each() {
+fn nine_trials_use_real_validated_streams_with_down_and_up_between_waits() {
     STATE.with_borrow_mut(|s|*s=State::default());
-    probe_gpu_bench::run().unwrap();
-    STATE.with_borrow(|s| {assert_eq!((s.submits,s.waits,s.clocks),(6,6,12));assert!(!s.pending)});
+    probe_gpu_bench::run_c2(set).unwrap();
+    STATE.with_borrow(|s| {assert_eq!((s.submits,s.waits,s.clocks),(9,9,18));assert!(!s.pending)});
 }
 
 #[test]
 fn failed_completion_aborts_without_a_successful_trial() {
     STATE.with_borrow_mut(|s|*s=State {fail_wait:true,..State::default()});
-    assert!(probe_gpu_bench::run().is_err());
+    assert!(probe_gpu_bench::run_c2(set).is_err());
     STATE.with_borrow(|s|assert_eq!((s.submits,s.waits,s.clocks),(1,1,1)));
+}
+
+fn set(khz:u32)->Result<(),String> {
+    STATE.with_borrow_mut(|s| {
+        assert!(!s.pending);assert_eq!(s.clocks%2,0);
+        assert_eq!(s.submits,if khz==540_000 {3}else{6});
+        s.sets.push(khz);
+    });Ok(())
+}
+#[test]
+fn low_trial_under_900_ms_aborts_before_more_work_or_restore() {
+    STATE.with_borrow_mut(|s|*s=State {low_too_fast:true,..State::default()});
+    assert!(probe_gpu_bench::run_c2(set).unwrap_err().contains("under 900 ms"));
+    STATE.with_borrow(|s|{assert_eq!((s.submits,s.waits),(4,4));assert_eq!(s.sets,[540_000]);});
 }

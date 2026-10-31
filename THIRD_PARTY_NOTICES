@@ -1783,3 +1783,22 @@ e8f897f4afef0031fe618a8e94127a0934896aba,
 `drivers/gpu/drm/nouveau/nvkm/subdev/clk/pllgt215.c:31-100`.
 Copyright 2010 Red Hat Inc.; MIT grant retained in the fixture header.
 The surrounding host declarations replace kernel dependencies for the oracle.
+
+### C2 bounded GPC control (MIT)
+
+`kernel/src/gpu/gk208/c2.rs` adapts these individually inspected MIT files
+at Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba, relative to
+`drivers/gpu/drm/nouveau/nvkm/`:
+
+- `subdev/clk/gk104.c:222-335,356-473`: integer divider/PLL selection and
+  GPC index-0 source switching/programming; Copyright 2013 Red Hat Inc.
+- `subdev/clk/pllgt215.c:31-100`: integer PLL coefficient calculation;
+  Copyright 2010 Red Hat Inc.
+- `subdev/bios/pll.c:81-107,142-159,352-365`: BIT C and v40 GPC PLL limits;
+  Copyright 2005-2006 Erik Waling, 2006 Stephane Marchesin,
+  2007-2009 Stuart Bennett.
+
+The original copyright and full MIT grants are retained in `c2.rs`.
+`c2/runtime.rs` supplies Breenix descriptor and MMIO integration;
+`clock.rs` supplies the existing MIT C1 decoder and GPC reference/step
+queries. No memory, voltage, thermal, or other domain programming is adapted.

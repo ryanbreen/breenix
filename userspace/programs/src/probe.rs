@@ -610,11 +610,22 @@ fn probe() {
             println!("GT710_C1_ERROR CAPS result={} backend={} status={}",status,caps.backend,caps.status);
             reap_forever();
         }
-        if let Err(error) = probe_gpu_bench::run() {
-            println!("GT710_C1_ERROR {}",error);
-            reap_forever();
+        // This path exists only in the C2 feature kernel; a production probe
+        // does not create the writable control node.
+        match std::fs::read_to_string("/proc/gt710-clock") {
+            Ok(status)=>print!("{}",status),
+            Err(error)=>{println!("GT710_C2_ERROR initial clock read: {error}");reap_forever();}
         }
-        println!("GT710_C1_DONE");
+        let set=|khz|->Result<(),String> {
+            use std::io::Write;
+            let mut file=std::fs::OpenOptions::new().write(true).open("/proc/gt710-clock")
+                .map_err(|e|format!("clock control open: {e}"))?;
+            file.write_all(format!("gpc {khz}\n").as_bytes()).map_err(|e|format!("clock control write: {e}"))
+        };
+        if let Err(error)=probe_gpu_bench::run_c2(set) {
+            println!("GT710_C2_ERROR {error}");reap_forever();
+        }
+        println!("GT710_C2_DONE");
         reap_forever();
     }
 

@@ -34,6 +34,8 @@ struct nvbios_pll { u32 refclk; int min_p, max_p; struct {
 #define min(a,b) ((a)<(b)?(a):(b))
 #define max(a,b) ((a)>(b)?(a):(b))
 #define unlikely(a) (a)
+// Linux abs casts the subtraction to its signed type; preserve that on the host.
+#define abs(x) ((int32_t)(x) < 0 ? -(int32_t)(x) : (int32_t)(x))
 #define EINVAL 22
 #define nvkm_error(subdev, message) ((void)(subdev))
 int
@@ -61,10 +63,10 @@ gt215_pll_calc(struct nvkm_subdev *subdev, struct nvbios_pll *info,
 		fN = tmp % info->refclk;
 
 		if (!pfN) {
-			if (fN >= info->refclk / 2)
+			if (fN >= (int)(info->refclk / 2))
 				N++;
 		} else {
-			if (fN <  info->refclk / 2)
+			if (fN <  (int)(info->refclk / 2))
 				N--;
 			fN = tmp - (N * info->refclk);
 		}
@@ -88,7 +90,7 @@ gt215_pll_calc(struct nvkm_subdev *subdev, struct nvbios_pll *info,
 		}
 	}
 
-	if (unlikely(best_err == ~0)) {
+	if (unlikely(best_err == ~0U)) {
 		nvkm_error(subdev, "unable to find matching pll values\n");
 		return -EINVAL;
 	}

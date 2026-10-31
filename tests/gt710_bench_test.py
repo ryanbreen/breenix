@@ -19,13 +19,13 @@ class Baseline(unittest.TestCase):
                                    '--extern', f'gpu_abi={out}/libgpu_abi.rlib', '-o', str(out / 'bench')], check=True)
             result = subprocess.run([str(out / 'bench'), '--nocapture', '--test-threads=1'], text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            import importlib.util
-            spec = importlib.util.spec_from_file_location('clock', ROOT / 'scripts/metal/gt710_clock.py')
-            clock = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(clock)
             import json
+            # One completed C2 test contributes nine ordered core trials. The
+            # failure cases contribute their completed prefix.
             rows = [json.loads(line.split('GT710_BENCH ', 1)[1]) for line in result.stdout.splitlines() if 'GT710_BENCH ' in line]
-            self.assertEqual(len(clock.benchmarks(rows)), 6)
+            self.assertEqual(len(rows), 13)
+            self.assertTrue(all(row['kind']=='core' and row['work']==819200000 and row['completion'] for row in rows))
+
 
 
 if __name__ == '__main__':

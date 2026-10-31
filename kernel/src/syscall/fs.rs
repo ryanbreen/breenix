@@ -2857,6 +2857,14 @@ fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
         position: 0,
         owner: crate::fs::procfs::owner(path),
     };
+    // C2 has one probe-only writable object, using the existing descriptor I/O
+    // boundary. Production kernels retain the ordinary read-only procfs path.
+    #[cfg(all(target_arch="x86_64",feature="gt710_clock_probe"))]
+    let fd_kind = if normalized=="/proc/gt710-clock" && flags&3!=0 {
+        match crate::gk208::c2::descriptor() {
+            Ok(file)=>FdKind::Ipc(file),Err(e)=>return SyscallResult::Err(e),
+        }
+    } else {fd_kind};
     let fd_entry = match FileDescriptor::try_opened(fd_kind, flags) {
         Ok(entry) => entry,
         Err(e) => return SyscallResult::Err(e),
