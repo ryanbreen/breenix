@@ -1,5 +1,6 @@
 # /*
 #  * Copyright 2012 Nouveau Community
+#  * Copyright 2011 Red Hat Inc.
 #  * Copyright 2012 Red Hat Inc.
 #  * Copyright 2013 Red Hat Inc.
 #  *

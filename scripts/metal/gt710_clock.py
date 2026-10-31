@@ -225,44 +225,177 @@ def gpio(r):
     return dict(status='ok',version=v,entries=rows)
 
 
-def voltage_state(d,raw):
-    v=d['voltage'];now=None;reason='voltage-table-absent'
-    if v['status']=='ok':
-        if v['type']=='pwm':
-            if any(g['function']==0x81 for g in d['gpio']['entries']):
-                divisor=raw.get(0x20340,0);duty=raw.get(0x20344,0)&0x7fffffff
-                if divisor:now=v['base_uv']+v['pwm_range_uv']*duty//divisor
-                reason='pwm-divisor-zero' if not divisor else 'pwm-readback'
-            else:reason='pwm-gpio-absent'
+def voltage_requirement(d, voltage_id, temperature_c=None, speedo=None):
+    """MIT nouveau volt/base.c: map/clamp each term, add links, round VID up.
+
+    Missing inputs retain the BIOS clamps. Constant clamps/zero coefficients
+    can resolve a term without a fuse value; this is offline algebra, not a
+    claim that nouveau initialized its voltage subdevice without speedo.
+    """
+    need(temperature_c is None or type(temperature_c) is int and 0 <= temperature_c <= 255,
+         'temperature outside vmap u8 input')
+    need(speedo is None or type(speedo) is int and 0 <= speedo < 1 << 31,
+         'invalid speedo input')
+    vm = d['voltage_map']
+
+    def trunc(n, divisor):
+        return (1 if n >= 0 else -1) * (abs(n) // divisor)
+
+    def mapped(idx, seen):
+        need(type(idx) is int and 0 <= idx <= 255, 'invalid voltage ID')
+        if vm['status'] != 'ok' or idx >= len(vm['entries']):
+            return (idx*10000, idx*10000, [], [idx]) if idx else (None, None, ['voltage_map'], [idx])
+        need(idx not in seen, 'cyclic voltage map')
+        e = vm['entries'][idx]
+        lo, hi = e['min_uv'], e['max_uv']
+        need(0 <= lo <= hi, 'invalid voltage map bounds')
+        a = e['args']; mode = e['mode']; missing = []
+        if lo != hi:
+            polynomial = vm['version'] == 0x10 or mode == 0
+            if polynomial:
+                if speedo is None and any(a[1:3]): missing.append('speedo')
+                if not missing:
+                    s = speedo or 0
+                    value = trunc(a[0], 10) + trunc(a[1]*s, 10) + trunc(a[2]*s*s, 100000)
+            elif mode == 1:
+                if speedo is None and any(a[i] for i in (1, 3, 4)): missing.append('speedo')
+                if temperature_c is None and any(a[i] for i in (2, 3, 5)): missing.append('temperature_c')
+                if not missing:
+                    s, t = speedo or 0, temperature_c or 0
+                    value = ((a[0]*15625) >> 18) + ((a[1]*s*15625) >> 18)
+                    value += ((a[2]*t*15625) >> 10) + ((a[3]*s*t*15625) >> 18)
+                    value += ((a[4]*s*s*15625) >> 30) + ((a[5]*t*t*15625) >> 18)
+            else:
+                value = (lo+hi)//2 if mode == 3 else lo
+            if not missing: lo = hi = min(max(value, lo), hi)
+        path = [idx]
+        if e['link'] != 255:
+            llo, lhi, absent, linked_path = mapped(e['link'], seen | {idx})
+            missing += absent; path += linked_path
+            if llo is None: return None, None, sorted(set(missing)), path
+            lo += llo; hi += lhi
+        return lo, hi, sorted(set(missing)), path
+
+    lo, hi, missing, path = mapped(voltage_id, set())
+    return requirement_selection(d, lo, hi, missing, path)
+
+
+def requirement_selection(d, lo, hi, missing, path):
+    entries = d['voltage'].get('entries', [])
+    def select(uv):
+        candidates = [e for e in entries if uv is not None and e['uv'] >= uv]
+        return min(candidates, key=lambda e: e['uv']) if candidates else None
+    lower, upper = select(lo), select(hi)
+    exact = lo is not None and lo == hi
+    return dict(min_uv=lo, max_uv=hi, requested_uv=lo if exact else None,
+                selected_min_uv=lower['uv'] if lower else None,
+                selected_max_uv=upper['uv'] if upper else None,
+                selected_uv=lower['uv'] if exact and lower else None,
+                selected_vid=lower['vid'] if exact and lower else None,
+                missing=[] if exact else sorted(set(missing)), vmap_path=path)
+
+
+def voltage_state(d, raw, temperature_c=None, speedo=None):
+    v = d['voltage']; now = current_vid = None; reason = 'voltage-table-absent'
+    pins = []; mask = 0
+    if v['status'] == 'ok':
+        if v['type'] == 'pwm':
+            if any(g['function'] == 0x81 for g in d['gpio']['entries']):
+                divisor = raw.get(0x20340, 0); duty = raw.get(0x20344, 0) & 0x7fffffff
+                if divisor: now = v['base_uv'] + v['pwm_range_uv']*duty//divisor
+                reason = 'pwm-divisor-zero' if not divisor else 'pwm-readback'
+            else: reason = 'pwm-gpio-absent'
         else:
-            vid=0;valid=True
-            for i,tag in enumerate([4,5,6,0x1a,0x73,0x74,0x75,0x76]):
-                if not v['vidmask']&(1<<i):continue
-                pins=[g for g in d['gpio']['entries'] if g['function']==tag]
-                # Missing BIOS tags are masked by nouveau volt/gpio.c:init.
-                if not pins:continue
-                g=pins[0];a=0xd610+4*g['line']
-                if a not in raw:valid=False;break
-                vid|=int(bool(raw[a]&0x4000)==bool(g['log1']&1))<<i
-            matches=[e['uv'] for e in v['entries'] if e['vid']==vid]
-            if valid and len(matches)==1:now=matches[0]
-            reason='gpio-readback' if now is not None else 'gpio-vid-unresolved'
-    vm=d['voltage_map'];levels=[]
-    def bounds(idx,seen):
-        if vm['status']!='ok' or idx>=len(vm['entries']):return (idx*10000,idx*10000) if idx else (None,None)
-        need(idx not in seen,'cyclic voltage map');e=vm['entries'][idx];lo,hi=e['min_uv'],e['max_uv']
-        if e['link']!=255:
-            a,b=bounds(e['link'],seen|{idx});return (None,None) if a is None else (lo+a,hi+b)
-        return lo,hi
-    for l in d['performance'].get('levels',[]):
-        lo,hi=bounds(l['voltage_id'],set())
-        more=None if now is None or lo is None else True if lo>now else False if hi<=now else None
-        levels.append(dict(pstate=l['pstate'],voltage_id=l['voltage_id'],min_uv=lo,max_uv=hi,needs_more_voltage=more))
-    points=[]
-    for i,point in enumerate(d['cstep'].get('points',[])):
-        lo,hi=bounds(point['voltage_id'],set())
-        points.append(dict(index=i,frequency_khz=point['frequency_khz'],voltage_id=point['voltage_id'],min_uv=lo,max_uv=hi))
-    return dict(method=v.get('type'),current_uv=now,status=reason,levels=levels,boost_points=points)
+            vid = 0; valid = True
+            for i, tag in enumerate([4, 5, 6, 0x1a, 0x73, 0x74, 0x75, 0x76]):
+                if not v['vidmask'] & (1 << i): continue
+                matches = [g for g in d['gpio']['entries'] if g['function'] == tag]
+                need(len(matches) <= 1, 'duplicate VID GPIO function')
+                if not matches:
+                    pins.append(dict(bit=i, function=tag, status='gpio-absent-masked'))
+                    continue
+                mask |= 1 << i
+                g = matches[0]; address = 0xd610 + 4*g['line']; word = raw.get(address)
+                readable = word is not None and word >> 16 != 0xbadf
+                sense = int(bool(word & 0x4000)) if readable else None
+                logical = int(sense == (g['log1'] & 1)) if readable else None
+                pins.append(dict(bit=i, function=tag, line=g['line'], log0=g['log0'], log1=g['log1'],
+                                 address=address, raw=word, sense=sense, logical=logical,
+                                 status='ok' if readable else 'unmeasured'))
+                if readable: vid |= logical << i
+                else: valid = False
+            matches = [e['uv'] for e in v['entries'] if e['vid'] == vid]
+            if valid and mask and len(matches) == 1: now, current_vid = matches[0], vid
+            reason = 'gpio-readback' if now is not None else 'gpio-vid-unresolved'
+
+    def requirement(idx):
+        return voltage_requirement(d, idx, temperature_c, speedo)
+
+    def floor(point, base):
+        if point['min_uv'] is None or base['min_uv'] is None:
+            return requirement_selection(d, None, None, point['missing']+base['missing'],
+                                         point['vmap_path']+base['vmap_path'])
+        return requirement_selection(d, max(point['min_uv'], base['min_uv']),
+                                     max(point['max_uv'], base['max_uv']), point['missing']+base['missing'],
+                                     point['vmap_path']+base['vmap_path'])
+
+    levels = []; csteps = []; boosts = []; used = set(); candidates = []
+    points = d['cstep'].get('points', [])
+    for level in d['performance'].get('levels', []):
+        base = requirement(level['voltage_id']); lo, hi = base['min_uv'], base['max_uv']
+        more = None if now is None or lo is None else True if lo > now else False if hi <= now else None
+        levels.append(dict(pstate=level['pstate'], voltage_id=level['voltage_id'],
+                           gpc_khz=level['gpc_khz'], memory_khz=level['memory_khz'],
+                           min_uv=lo, max_uv=hi, needs_more_voltage=more, requirement=base))
+        candidates.append((level['gpc_khz'], base))
+        boost_level = next((b for b in d['boost'].get('levels', []) if b['pstate'] == level['pstate']), None)
+
+        def adjust(f):
+            # clk/base.c:44-74: global boost clamp, then BIOS domain 0 (GPC).
+            if boost_level is not None:
+                f = min(max(f, boost_level['min_khz']), boost_level['max_khz'])
+                domain = next((s for s in boost_level['domains'] if s['domain'] == 0), None)
+                if domain:
+                    f = min(max(f*domain['percent']//100, domain['min_khz']), domain['max_khz'])
+            return f
+
+        membership = next((e for e in d['cstep'].get('levels', []) if e['pstate'] == level['pstate']), None)
+        resolved = []
+        if membership:
+            need(membership['index'] < len(points), 'cstep index outside points')
+            for index in range(membership['index']+1):
+                p = points[index]
+                if not p['frequency_khz']: continue
+                used.add(index); point = requirement(p['voltage_id']); combined = floor(point, base)
+                f = adjust(p['frequency_khz'])
+                resolved.append(dict(index=index, raw_gpc_khz=p['frequency_khz'], gpc_khz=f,
+                                     core_khz=f//2, memory_khz=level['memory_khz'], voltage_id=p['voltage_id'],
+                                     point_requirement=point, requirement=combined))
+                candidates.append((f, combined))
+            csteps.append(dict(pstate=level['pstate'], maximum_index=membership['index'], points=resolved))
+        if boost_level:
+            boosts.append(dict(**boost_level, memory_khz=level['memory_khz'],
+                               voltage_source='cstep-and-performance',
+                               cstep_indices=[p['index'] for p in resolved]))
+    legacy_points = []
+    for i, p in enumerate(points):
+        q = requirement(p['voltage_id']) if p['frequency_khz'] else None
+        legacy_points.append(dict(index=i, frequency_khz=p['frequency_khz'], voltage_id=p['voltage_id'],
+                                  min_uv=q['min_uv'] if q else None, max_uv=q['max_uv'] if q else None,
+                                  requirement=q, active=bool(p['frequency_khz'])))
+    guaranteed = []; possible = []
+    if now is not None:
+        for f, q in candidates:
+            if q['selected_min_uv'] is not None and q['selected_min_uv'] <= now: possible.append(f)
+            if q['selected_max_uv'] is not None and q['selected_max_uv'] <= now: guaranteed.append(f)
+    low, high = max(guaranteed, default=None), max(possible, default=None)
+    return dict(method=v.get('type'), current_uv=now, current_vid=current_vid, status=reason,
+                effective_vidmask=mask, vid_pins=pins, temperature_c=temperature_c, speedo=speedo,
+                levels=levels, boost_points=legacy_points, cstep_levels=csteps, boost_levels=boosts,
+                unused_cstep_indices=[i for i in range(len(points)) if i not in used],
+                highest_at_current_uv=dict(guaranteed_gpc_khz=low, possible_gpc_khz=high,
+                                           exact=low is not None and low == high))
+
 
 
 def benchmarks(rows):
@@ -393,7 +526,7 @@ def startup_payload(path,serial):
     return rows
 
 
-def capture(directory):
+def capture(directory, temperature_c=None, speedo=None):
     path=Path(directory);boot=json.loads((path/'run.json').read_text())
     need(boot['toolsCommit']==boot['commit']==boot['build']['commit'],'C1 tools/build/head differ')
     need(boot['build']['profile']=='gpu-clock' and boot['build']['features']==['gt710_clock_probe'] and not boot.get('suites') and not boot.get('suite'),'C1 diagnostic profile required')
@@ -408,13 +541,16 @@ def capture(directory):
     for n,f in row['domains'].items():
         need(f"GT710_CLOCK domain={n} khz={f['value'] if f['value'] is not None else 'null'} status={f['status']}" in serial,'clock serial summary differs')
     need(all(row['domains'][n]['status']=='ok' and row['domains'][n]['value']>0 for n in ['gpc','rop','hubk07','hubk06','hubk01','memory']),'required hardware clock unavailable')
-    return dict(boot=boot['id'],commit=boot['commit'],clock=row,benchmarks=times,links=[link(p) for p in row['pcie']],vbios=decoded,voltage=voltage_state(decoded,dict(row['voltage_raw'])))
+    return dict(boot=boot['id'],commit=boot['commit'],clock=row,benchmarks=times,links=[link(p) for p in row['pcie']],vbios=decoded,voltage=voltage_state(decoded,dict(row['voltage_raw']),temperature_c,speedo))
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--rom',type=Path);p.add_argument('--capture',type=Path);p.add_argument('--output',type=Path)
+    p.add_argument('--temperature-c',type=int,help='explicit vmap temperature input; never inferred from POST voltage')
+    p.add_argument('--speedo',type=int,help='explicit captured speedo fuse value; never inferred from VID')
     a=p.parse_args();need(bool(a.rom)!=bool(a.capture),'choose --rom or --capture')
-    report=decode_image(a.rom.read_bytes()) if a.rom else capture(a.capture)
+    report=decode_image(a.rom.read_bytes()) if a.rom else capture(a.capture,a.temperature_c,a.speedo)
+    if a.rom:report['voltage_analysis']=voltage_state(report,{},a.temperature_c,a.speedo)
     text=json.dumps(report,indent=2)+'\n'
     if a.output:a.output.write_text(text)
     else:print(text,end='')

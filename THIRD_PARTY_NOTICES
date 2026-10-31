@@ -1899,3 +1899,28 @@ MIT grant and author list from `rnndb/copyright.xml`. The complete original
 author list and grant accompany the register list in that file. XML is
 used only for raw register addresses; no unknown fields are decoded as a
 proven cause of slowdown. No alarm, clock-gating or slowdown control is written.
+
+### C3-0 offline VID and clock-voltage joins (K1, G1)
+
+Consumers: scripts/metal/gt710_clock.py, tests/gt710_c3_voltage_test.py;
+source and interpretation references: docs/gui/gt710-c3-0.md.
+Nouveau sources remain pinned to Linux v6.8
+(e8f897f4afef0031fe618a8e94127a0934896aba), individually checked MIT:
+
+- nvkm/subdev/volt/base.c, volt/gpio.c and clk/base.c: Copyright 2013
+  Red Hat Inc.; linked vmap arithmetic, upward VID rounding, pstate voltage
+  floor, cstep inheritance and boost clamps.
+- nvkm/subdev/bios/{volt,vmap,perf,gpio}.c: Copyright 2012 Nouveau Community
+  for volt/vmap/perf, Copyright 2012 Red Hat Inc. for gpio;
+  nvkm/subdev/bios/{cstep,boost}.c: Copyright 2013 Red Hat Inc.; table layouts.
+- nvkm/subdev/gpio/base.c: Copyright 2011 Red Hat Inc.;
+  nvkm/subdev/gpio/gf119.c: Copyright 2012 Red Hat Inc.; VID polarity/sense.
+- include/nvkm/subdev/bios/gpio.h: SPDX-License-Identifier: MIT; DCB VID tags.
+
+The original copyrights and complete MIT grant are retained in both Python
+headers. The C3-0 report also cites the already-noticed MIT volt/gk104.c,
+clk/gk104.c, engine/pm/gf100.c, envytools nva/nvatiming.c and
+rnndb/{gf100_pcounter.xml,pm/gf100_pclock.xml,copyright.xml} at the C2 pin
+f102b82381f3f11cee113d16374c87091db039d9. No counter programming code is
+adapted by C3-0; its source comparison leaves the observed factor of 16
+unresolved. No board ROM bytes are redistributed.
