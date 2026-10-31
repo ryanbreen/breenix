@@ -13,6 +13,8 @@ class Timing(unittest.TestCase):
         source = f'''extern crate alloc;
 #[path="{ROOT / 'kernel/src/gpu/gk208/timing.rs'}"] mod timing;
 fn main() {{
+ assert!(!timing::collecting(false,false));
+ assert!(timing::collecting(false,true));assert!(timing::collecting(true,false));assert!(timing::collecting(true,true));
  let mut r=timing::Recorder::new();
  r.finish(42,0,7,10,20);
  assert!(r.drain(1).is_none());
