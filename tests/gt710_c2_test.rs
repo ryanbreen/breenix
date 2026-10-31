@@ -71,3 +71,75 @@ fn bounded_v40_limits_decode_and_truncation_refusal() {
     assert_eq!(c2::limits(&rom).unwrap(),limits());
     for n in [0,11,17,41,67,78,109] {assert!(c2::limits(&rom[..n]).is_err());}
 }
+
+#[test]
+fn snapshot_covers_inactive_paths_and_restore_reinstates_post_pll() {
+    use c2::observe::{capture, differences, restore};
+    let mut d=Device::default();
+    for (a,v) in [(0x137100,0x85),(0x137000,0x30015),(0x137004,0x20412),
+                  (0x137160,0x103),(0x1371d0,0x80000b02)] {d.regs.insert(a,v);}
+    let post=capture(&mut d);
+    for a in [0xe800,0xe804,0xe820,0xe824,0x101000,0x132000,0x132004,0x132020,
+              0x132024,0x132030,0x137000,0x137004,0x137008,0x137100,0x137320,0x137330,0x1373f4] {
+        assert!(post.iter().any(|p|p.0==a),"missing {a:x}");
+    }
+    for i in 0..16 {for base in [0x137160,0x1371d0,0x137250] {
+        assert!(post.iter().any(|p|p.0==base+i*4));
+    }}
+    for i in [0,1,2,7] {for base in [0x137000,0x137004,0x137008] {
+        assert!(post.iter().any(|p|p.0==base+i*0x20));
+    }}
+    for i in 0..8 {for base in [0x137120,0x137140] {
+        assert!(post.iter().any(|p|p.0==base+i*4));
+    }}
+    let p=c2::plan("gpc",540_000,810_000,&limits(),1_620_000,1_620_000).unwrap();
+    c2::program(&mut d,&p).unwrap();d.writes.clear();
+    restore(&mut d,&post).unwrap();
+    assert_eq!(d.writes[0],(0x137100,0x84));
+    let coef=d.writes.iter().position(|p|*p==(0x137004,0x20412)).unwrap();
+    let source=d.writes.iter().position(|p|*p==(0x137100,0x85)).unwrap();
+    assert!(coef>0 && coef<source);
+    assert!(d.writes.iter().position(|p|*p==(0x1371d0,0x80000b02)).unwrap()>source,
+            "restore inactive alternate path only after PLL is selected");
+    assert!(differences(&post,&capture(&mut d)).unwrap().is_empty());
+    d.stuck=true;d.regs.insert(0x137100,0x85);d.writes.clear();
+    assert!(restore(&mut d,&post).is_err());
+    assert_eq!(d.writes,[(0x137100,0x84)],"failed source switch must stop before PLL writes");
+    let mut missing=post.clone();missing.retain(|p|p.0!=0x137004);
+    d.writes.clear();assert!(restore(&mut d,&missing).is_err());assert!(d.writes.is_empty());
+}
+
+struct Counter { regs:BTreeMap<u32,u32>, writes:Vec<(u32,u32)>, ns:u64, khz:u32, stalled:bool }
+impl Access for Counter {
+    fn read(&mut self,a:u32)->u32 {
+        self.ns+=10_000;
+        match a {
+            0x9400=>if self.stalled {0}else{self.ns as u32},
+            0x9410=>if self.stalled {0}else{(self.ns>>32) as u32},
+            0x1800a8 if self.regs[&0x18009c]&7==2=>
+                (self.ns*u64::from(self.khz)/1_000_000) as u32,
+            _=>*self.regs.get(&a).unwrap_or(&0),
+        }
+    }
+    fn write(&mut self,a:u32,v:u32) {
+        assert!(matches!(a,0x18009c|0x180044|0x1800a8));
+        self.writes.push((a,v));self.regs.insert(a,v);
+    }
+    fn wait(&mut self,_:u32,_:u32,_:u32)->Result<(),&'static str> {unreachable!()}
+}
+impl c2::observe::CounterAccess for Counter {fn monotonic_ns(&mut self)->u64 {self.ns}}
+#[test]
+fn independent_counter_tracks_cycles_across_ptimer_and_restores_on_timeout() {
+    use c2::observe::measure;
+    for khz in [540_000,810_000] {
+        let original=BTreeMap::from([(0x18009c,0),(0x180044,0x1234),(0x1800a8,99)]);
+        let mut d=Counter {regs:original.clone(),writes:Vec::new(),ns:4_290_000_000,khz,stalled:false};
+        let m=measure(&mut d).unwrap();
+        assert!(m.khz.abs_diff(khz)<1000,"{} versus {khz}",m.khz);
+        assert!(m.ptimer_ns>=20_000_000);assert!(m.cycles>0);
+        assert_eq!(d.regs,original);
+        d.stalled=true;d.writes.clear();assert!(measure(&mut d).is_err());assert_eq!(d.regs,original);
+        d.regs.insert(0x18009c,2);d.writes.clear();
+        assert!(measure(&mut d).is_err());assert!(d.writes.is_empty(),"must not disturb an active counter");
+    }
+}

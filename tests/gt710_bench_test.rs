@@ -80,18 +80,22 @@ pub mod gpu {
 #[test]
 fn nine_trials_use_real_validated_streams_with_down_and_up_between_waits() {
     STATE.with_borrow_mut(|s|*s=State::default());
-    probe_gpu_bench::run_c2(set).unwrap();
+    probe_gpu_bench::run_c2(phase).unwrap();
     STATE.with_borrow(|s| {assert_eq!((s.submits,s.waits,s.clocks),(9,9,18));assert!(!s.pending)});
 }
 
 #[test]
 fn failed_completion_aborts_without_a_successful_trial() {
     STATE.with_borrow_mut(|s|*s=State {fail_wait:true,..State::default()});
-    assert!(probe_gpu_bench::run_c2(set).is_err());
+    assert!(probe_gpu_bench::run_c2(phase).is_err());
     STATE.with_borrow(|s|assert_eq!((s.submits,s.waits,s.clocks),(1,1,1)));
 }
 
-fn set(khz:u32)->Result<(),String> {
+fn phase(phase:probe_gpu_bench::ClockPhase)->Result<(),String> {
+    use probe_gpu_bench::ClockPhase;
+    let khz=match phase {ClockPhase::Post=>{
+        STATE.with_borrow(|s|assert_eq!(s.submits,0));return Ok(());
+    },ClockPhase::Low=>540_000,ClockPhase::Restore=>810_000};
     STATE.with_borrow_mut(|s| {
         assert!(!s.pending);assert_eq!(s.clocks%2,0);
         assert_eq!(s.submits,if khz==540_000 {3}else{6});
@@ -101,6 +105,13 @@ fn set(khz:u32)->Result<(),String> {
 #[test]
 fn low_trial_under_900_ms_completes_all_trials_and_restores_clock() {
     STATE.with_borrow_mut(|s|*s=State {low_too_fast:true,..State::default()});
-    probe_gpu_bench::run_c2(set).unwrap();
+    probe_gpu_bench::run_c2(phase).unwrap();
     STATE.with_borrow(|s|{assert_eq!((s.submits,s.waits),(9,9));assert_eq!(s.sets,[540_000,810_000]);});
+}
+
+#[test]
+fn measurement_failure_stops_before_any_benchmark() {
+    STATE.with_borrow_mut(|s|*s=State::default());
+    assert!(probe_gpu_bench::run_c2(|_|Err(String::from("counter stalled"))).is_err());
+    STATE.with_borrow(|s|assert_eq!((s.submits,s.waits,s.clocks),(0,0,0)));
 }
