@@ -11,19 +11,22 @@ fn checked(result: i64, operation: &str) -> Result<(), String> {
 }
 
 fn trial(context: u64, words: &[u32], kind: &str, trial: u32, work: u64, unit: &str) -> Result<i128, String> {
+    let batches=if kind=="gpc" {8}else{1};
     let begin = time::now_monotonic().map_err(|e| format!("monotonic begin: {e:?}"))?.as_nanos();
+    for _ in 0..batches {
     let (result, submit) = gpu::submit(context, words);
     checked(result, "SUBMIT")?;
     if submit.fence == 0 { return Err(String::from("SUBMIT returned no fence")); }
-    // Each trial is one validated submission. No per-draw wait or readback.
+    // Each bounded batch uses the production fence. No per-draw wait or readback.
     let (result, wait) = gpu::wait(context, submit.fence, 30_000_000_000);
     checked(result, "WAIT")?;
     if wait.status != fence_status::OK {
         return Err(format!("WAIT status={} answer={:#x}", wait.status, wait.answer));
     }
+    }
     let end = time::now_monotonic().map_err(|e| format!("monotonic end: {e:?}"))?.as_nanos();
     let elapsed = end.checked_sub(begin).filter(|v| *v > 0).ok_or("monotonic interval did not advance")?;
-    println!("GT710_BENCH {{\"kind\":\"{kind}\",\"trial\":{trial},\"begin_ns\":{begin},\"end_ns\":{end},\"elapsed_ns\":{elapsed},\"work\":{work},\"unit\":\"{unit}\",\"completion\":true}}");
+    println!("GT710_BENCH {{\"kind\":\"{kind}\",\"trial\":{trial},\"begin_ns\":{begin},\"end_ns\":{end},\"elapsed_ns\":{elapsed},\"work\":{work},\"batches\":{batches},\"unit\":\"{unit}\",\"completion\":true}}");
     Ok(elapsed)
 }
 
@@ -115,7 +118,7 @@ pub fn temperature_record(text:&str,phase:&str,trial:u32)->Result<(),String> {
     Ok(())
 }
 
-/// C3-1: settle at POST for six trials, then PLL A/B/C and exact restore D.
+/// C3-2: settled solid control and shader-heavy gradient at POST/low/A/C/D.
 /// The observer sets and verifies at n=0 and reads temperature before each trial.
 pub fn run_c3(mut observe:impl FnMut(&str,u32)->Result<(),String>)->Result<(),String> {
     let context=gpu::context_create().map_err(|e|format!("CONTEXT_CREATE: {e}"))?;
@@ -132,15 +135,39 @@ pub fn run_c3(mut observe:impl FnMut(&str,u32)->Result<(),String>)->Result<(),St
     let target=gpu::target_create(format::B8G8R8A8,WIDTH,HEIGHT).map_err(|e|format!("draw target: {e}"))?;
     let mut draws=Vec::new();encode::begin(&mut draws,target);
     for draw in 0..DRAWS {encode::draw(&mut draws,pipeline::SOLID,0xff000000|draw,&[[0,0,WIDTH as i32,HEIGHT as i32]]);}
+    // GRADIENT_V executes four fixed-step wide integer divisions per fragment.
+    // The small target has 16 KiB of colour storage; the shader has no textures
+    // or local-memory spills. Sixteen draws exactly fill the per-submit WORK
+    // bound (65536 fragments * 32768). Eight batches amortize host overhead.
+    let gpc_target=gpu::target_create(format::B8G8R8A8,64,64).map_err(|e|format!("GPC target: {e}"))?;
+    let mut gpc=Vec::new();encode::begin(&mut gpc,gpc_target);
+    let mut params=[0;16];params[..3].copy_from_slice(&[0,64,0xffe0c080]);
+    for _ in 0..16 {
+        gpu::abi::draw::encode(&mut gpc,pipeline::GRADIENT_V,0xff204080,0,0,0,
+            &[gpu::abi::draw::Instance {rect:[0,0,64,64],params}]);
+    }
     let mut n=0;
-    for stage in ["post","A","B","C","D"] {
+    for stage in ["post","low","A","C","D"] {
         observe(stage,0)?;
         println!("GT710_C3_STAGE stage={stage}");
-        for _ in 0..if stage=="post" {6}else{3} {
+        if stage=="post" {
+            for _ in 0..6 {
+                n+=1;observe(stage,n)?;
+                trial(context,&draws,"core",n,u64::from(DRAWS)*u64::from(WIDTH)*u64::from(HEIGHT),"fragments")?;
+            }
+        }
+        for _ in 0..3 {
             n+=1;observe(stage,n)?;
-            trial(context,&draws,"core",n,u64::from(DRAWS)*u64::from(WIDTH)*u64::from(HEIGHT),"fragments")?;
+            trial(context,&gpc,"gpc",n,8*16*64*64,"fragments")?;
+        }
+        if stage=="C" {
+            for _ in 0..3 {
+                n+=1;observe(stage,n)?;
+                trial(context,&draws,"core",n,u64::from(DRAWS)*u64::from(WIDTH)*u64::from(HEIGHT),"fragments")?;
+            }
         }
     }
+    checked(gpu::resource_destroy(gpc_target),"GPC RESOURCE_DESTROY")?;
     checked(gpu::resource_destroy(target),"RESOURCE_DESTROY")?;
     checked(gpu::context_destroy(context),"CONTEXT_DESTROY")
 }

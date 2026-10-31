@@ -625,7 +625,7 @@ fn probe() {
                 if n==0 {
                     use std::io::Write;
                     temperature("before-set",0)?;
-                    let command=match stage {"post"=>"c3 post","A"=>"pll 810000","B"=>"pll 1080000","C"=>"pll 1307000","D"=>"c3-restore post",_=>return Err("invalid C3 stage".into())};
+                    let command=match stage {"post"=>"c3 post","low"=>"c3-low 540000","A"=>"pll 810000","B"=>"pll 1080000","C"=>"pll 1307000","D"=>"c3-restore post",_=>return Err("invalid C3 stage".into())};
                     let mut file=std::fs::OpenOptions::new().write(true).open("/proc/gt710-clock").map_err(|e|format!("clock open: {e}"))?;
                     file.write_all(command.as_bytes()).map_err(|e|format!("clock control write: {e}"))?;
                 }

@@ -131,6 +131,7 @@ fn set(bytes:&[u8])->Result<(),&'static str> {
         ("gpc","540000")=>(1,540_000,false,"low"),
         ("restore","post")=>(2,810_000,false,"restored"),
         ("c3","post")=>(0,810_000,true,"post"),
+        ("c3-low","540000")=>(1,540_000,true,"low"),
         ("pll","810000")=>(1,810_000,true,"A"),
         ("pll","1080000")=>(2,1_080_000,true,"B"),
         ("pll","1307000")=>(3,1_307_000,true,"C"),
@@ -139,7 +140,9 @@ fn set(bytes:&[u8])->Result<(),&'static str> {
     };
     let mut state=STATE.lock();let s=state.as_mut().ok_or("C2 not initialized")?;
     if s.failed {return Err("C2 stopped after failure");}
-    if phase!=s.phase {return Err("C2c phase out of order");}
+    // C3-2 inserts the existing divider path before A and omits B.
+    let divider=c3 && name=="low";
+    if phase!=s.phase && !(c3 && phase==3 && s.phase==2) {return Err("C2c phase out of order");}
     if phase==0 {s.c3=c3;}else if s.c3!=c3 {return Err("clock sequence changed");}
     let mut io=Io(Registers(s.base));
     let result=(|| {
@@ -151,7 +154,7 @@ fn set(bytes:&[u8])->Result<(),&'static str> {
         if !c3 && (requested>s.post.min(810_000) || requested<540_000) {return Err("outside C2 POST envelope");}
         let refclk=clock::gpc_reference(|a|io.read(a))?;
         let vco=clock::gpc_vco(|a|io.read(a))?;
-        let p=if c3 {pll_plan("gpc",requested,&s.limits,refclk)?}
+        let p=if c3 && !divider {pll_plan("gpc",requested,&s.limits,refclk)?}
             else {plan("gpc",requested,s.post,&s.limits,refclk,vco)?};
         if !c3 && (p.khz>s.post || p.khz>810_000) {return Err("calculated clock above POST");}
         let ctrl=io.read(0x137250);
@@ -180,7 +183,7 @@ fn set(bytes:&[u8])->Result<(),&'static str> {
         }
         // MIT gk104.c:397-406 tests bit17 only with bit4 clear. Once sync is
         // enabled, retain source/enable/sync checks without re-testing bit17.
-        if c3 && (1..=3).contains(&phase) && (io.read(0x137100)&1!=1 || io.read(0x137000)&0x15!=0x15) {
+        if c3 && requested>=810_000 && (1..=3).contains(&phase) && (io.read(0x137100)&1!=1 || io.read(0x137000)&0x15!=0x15) {
             return Err("GPC PLL control or source mismatch");
         }
         Ok(())
@@ -198,7 +201,7 @@ fn set(bytes:&[u8])->Result<(),&'static str> {
         requested,readback.map_or_else(|_|alloc::string::String::from("null"),|v|format!("{v}")),status,step);
     let raw:Vec<_>=sample.raw.iter().map(|(a,v)|format!("[{a},{v}]")).collect();
     crate::serial_println!("GT710_CLOCK_SET_RAW [{}]",raw.join(","));
-    if result.is_err() {s.failed=true;}else{s.phase+=1;}
+    if result.is_err() {s.failed=true;}else if !divider {s.phase=phase+1;}
     result
 }
 #[derive(Debug)]
