@@ -263,13 +263,19 @@ fn submit(
     put: &mut u32,
     methods: &[(u32, u32)],
 ) -> Result<(), &'static str> {
-    if *put as usize + methods.len() * 8 > 2048 {
+    // MIT nouveau core507d_update scopes NOTIFY to one UPDATE: arm it,
+    // issue UPDATE, then disable it before any subsequent core method.
+    let disarm = methods.last().is_some_and(|&(method, _)| method == 0x80);
+    let count = methods.len() + usize::from(disarm);
+    if *put as usize + count * 8 > 2048 {
         return Err("native core push storage exhausted");
     }
     let mut words = Vec::new();
+    words.try_reserve_exact(count * 2).map_err(|_| "native core command allocation")?;
     for (method, value) in methods {
         words.extend([0x00040000 | method, *value]);
     }
+    if disarm { words.extend([0x00040084, 0]); }
     write_words(regs, total, push + u64::from(*put), &words)?;
     *put += words.len() as u32 * 4;
     modeset::publish(regs, *put)
@@ -509,7 +515,7 @@ pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
             let methods=words.as_slice();
             // NV927D_DMA_OPCODE_JUMP, offset 0. Prior GET was drained above;
             // reserve the final word for the jump before reusing command bytes.
-            if self.evo.put as usize + methods.len()*8 > 2044 {
+            if self.evo.put as usize + (methods.len()+1)*8 > 2044 {
                 write_words(self.regs,self.evo.total,
                     self.evo.push+u64::from(self.evo.put),&[0x20000000])?;
                 modeset::publish(self.regs,0)?;

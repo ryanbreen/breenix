@@ -1567,6 +1567,13 @@ v6.8 `e8f897f4afef0031fe618a8e94127a0934896aba`.
 The full original notices are retained in the adapter and surface encoder.
 The ownership routing and console policy use Breenix's shared implementation.
 
+The native EVO publisher also follows `dispnv50/core507d.c:34-58` at that
+same nouveau v6.8 revision (MIT, Copyright 2018 Red Hat Inc.): enable
+notification, issue UPDATE, and disable notification before later methods.
+The file-local MIT grant was checked before this use; the original 2018
+copyright and full grant remain in `native.rs`. The method fields are
+defined by the same MIT `cl927d.h` revision listed above.
+
 Prepared GT 710 terminal diagnostics (milestone 8 PR 8.6)
 ------------------------------------------------------
 The terminal transport in kernel/src/gpu/gk208/emergency.rs uses the same
