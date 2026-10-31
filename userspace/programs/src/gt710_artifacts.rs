@@ -77,6 +77,10 @@ pub(super) fn upload_slot_with(resources: Option<&libbreenix::gpu::abi::Caps>, f
         let row_digest: String = sha256(row.as_bytes()).iter().map(|b|format!("{b:02x}")).collect();
         println!("GT710_RESOURCES_BULK {} {}", row.len(), row_digest);
     }
+    if !extra.is_empty() {
+        let extra_digest: String = sha256(extra).iter().map(|b|format!("{b:02x}")).collect();
+        println!("GT710_CASE_HEAP_BULK {} {}", extra.len(), extra_digest);
+    }
     let anchor=if final_slot {"GT710_FINAL_BULK"} else {"GT710_BULK"};
     println!("{} {} {}",anchor,data.len(),digest);
     println!("GT710_PROBE_TIME network-upload us={}",micros(end)-micros(start));

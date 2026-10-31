@@ -2519,6 +2519,22 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns, pro
 def capture_serial(directory):
     # claim-lint:ok: normative bulk framing; tests/gt710_bulk_test.py and tests/gt710_contexts_report_test.py mutate anchors and bodies.
     serial=(Path(directory)/'serial.txt').read_text()
+    heap_fields = {
+        'schema', 'heap_free', 'heap_high_water', 'frame_frontier',
+        'frame_freelist_bytes', 'frame_ledger_bytes', 'cpu_stage_slots', 'cpu_stage_metadata_bytes',
+        'cpu_stage_pages', 'core_contexts', 'core_resources', 'core_submissions',
+        'core_syncs', 'core_backlog', 'core_backlog_bytes', 'core_backing_meta_sum',
+        'core_context_vector_bytes', 'native_resources', 'native_retired', 'native_retired_vector_bytes',
+        'native_active_region_bytes', 'native_vm_table_bytes', 'native_queue_vector_bytes', 'native_retired_requests_bytes',
+        'native_channel_initial_bytes', 'native_channel_parking_bytes', 'native_bulk_capacity_bytes', 'console_terminal_bytes',
+        'console_renderer_vector_bytes', 'heap_total', 'native_contexts', 'native_alias_indices_bytes',
+        'submit_n', 'submit_ns', 'wait_n', 'wait_ns',
+        'read_n', 'read_ns', 'present_n', 'present_ns',
+        'upload_n', 'upload_ns', 'pack_n', 'pack_ns',
+        'span_prep_n', 'span_prep_ns', 'span_map_n', 'span_map_ns',
+        'span_upload_n', 'span_upload_ns', 'translate_n', 'translate_ns',
+        'frame_prep_n', 'frame_prep_ns', 'evo_n', 'evo_ns',
+    }
     spans = bool(re.search(r'^GT710_SPANS_BULK ', serial, re.M))
     stalls = bool(re.search(r'^GT710_STALL_BULK ', serial, re.M))
     timings = bool(re.search(r'^GT710_TIMING_BULK ', serial, re.M))
@@ -2573,6 +2589,8 @@ def capture_serial(directory):
         raise ValueError('graphics image rows must arrive in bulk')
     if spans and not matches:
         raise ValueError('spans evidence bulk missing')
+    if re.search(r'^GT710_CASE_HEAP ', serial, re.M):
+        raise ValueError('case heap records must arrive in bulk')
     if re.search(r'^GT710_CONSOLE_SAMPLE_V1 ', serial, re.M):
         raise ValueError('console samples must arrive in bulk')
     if re.search(r'^GT710_DISPLAY_V1 ', serial, re.M):
@@ -2619,6 +2637,18 @@ def capture_serial(directory):
             if type(row.get('id')) is not int or row['id'] <= 0:
                 raise ValueError('invalid spans record')
             key=('spans', row['id'])
+        elif fields[0]=='GT710_CASE_HEAP':
+            row = json.loads(line.removeprefix('GT710_CASE_HEAP '))
+            if (not isinstance(row, dict) or set(row) != {'schema','boundary','case','values'}
+                    or type(row['schema']) is not int or row['schema'] != 1
+                    or type(row['boundary']) is not int or not 0 <= row['boundary'] <= 170
+                    or not isinstance(row['case'], str) or len(row['case']) > 80
+                    or re.fullmatch(r'[A-Za-z0-9_./-]*', row['case']) is None
+                    or not isinstance(row['values'], dict) or set(row['values']) != heap_fields
+                    or any(type(v) is not int or not 0 <= v < 1 << 64 for v in row['values'].values())
+                    or row['values']['schema'] != 1):
+                raise ValueError('invalid case heap record')
+            key=('case-heap',)
         elif fields[0]=='GT710_TIMING_V1':
             row = json.loads(line.removeprefix('GT710_TIMING_V1 '))
             if (type(row.get('batch')) is not int or row['batch'] <= 0
@@ -2687,7 +2717,17 @@ def capture_serial(directory):
         group_slots[key]=slot
         if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
         groups.setdefault(key,[]).append(line);previous=key
+    if ('case-heap',) in groups:
+        measured = [json.loads(row.removeprefix('GT710_CASE_HEAP ')) for row in groups[('case-heap',)]]
+        names = [''] + re.findall(r'^SUITE gpu CASE (\S+) (?:PASS|FAIL|SKIP) ', serial, re.M)
+        if (group_slots[('case-heap',)] != 1 or len(measured) != len(names)
+                or [row['boundary'] for row in measured] != list(range(len(names)))
+                or [row['case'] for row in measured] != names):
+            raise ValueError('case heap boundaries differ from the completed GPU cases')
     def report_key(line):
+        heap = re.fullmatch(r'GT710_CASE_HEAP_BULK ([1-9]\d*) ([a-f0-9]{64})\n?', line)
+        if heap: return ('case-heap',)
+        if line.startswith('GT710_CASE_HEAP_BULK '): raise ValueError('invalid case heap anchor')
         sample = re.fullmatch(r'GT710_CONSOLE_SAMPLE_BULK stage=([01]) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
         if sample: return ('console-sample', int(sample[1]))
         if line.startswith('GT710_CONSOLE_SAMPLE_BULK '): raise ValueError('invalid console sample anchor')
@@ -2780,7 +2820,7 @@ def capture_serial(directory):
             if (len(groups[key]) != 1 or digest is None
                     or hashlib.sha256(groups[key][0].removesuffix('\n').encode('ascii')).hexdigest() != digest[1]):
                 raise ValueError('executable CAPS probe differs from serial digest')
-        if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',), ('core',), ('core-startup',), ('resources',)):
+        if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',), ('core',), ('core-startup',), ('resources',), ('case-heap',)):
             record=''.join(groups[key]).encode('ascii')
             fields=line.split()
             if len(fields)!=3 or (key==('multi',) and len(groups[key])!=1) or len(record)!=int(fields[1]) or hashlib.sha256(record).hexdigest()!=fields[2]:
