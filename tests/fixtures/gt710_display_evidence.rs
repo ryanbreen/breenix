@@ -12,6 +12,23 @@ mod block {pub mod install {#[path="@ROOT@/libs/libbreenix/src/crypto/sha256.rs"
 mod gpu {pub fn display_active()->bool{true}pub mod console {pub fn active()->bool{true}}}
 mod firmware_writes {pub fn count()->u64{51}}
 fn hex(b:&[u8])->String{b.iter().map(|v|format!("{v:02x}")).collect()}
+struct Allocation {start:u64,size:u64}
+struct Resources;
+impl Resources {
+ fn hold(&mut self,r:u32)->Result<u32,&'static str>{Ok(r)}
+ fn scanout_allocation(&self,_:u32)->Option<Allocation>{Some(Allocation{start:0x30000000,size:16384000})}
+}
+struct Evo {head:u32}
+struct Console {vram:u64,bytes:usize}
+struct Session {resources:Resources,evo:Evo,console:Console,scanout:Vec<u32>,mode:u32}
+static SESSION:Mutex<Option<Session>>=Mutex::new(None);
+mod native {
+ pub fn present(_: &mut super::Evo,_:&mut super::Registers,_:super::present::Surface)
+ ->Result<super::present::Receipt,&'static str>{
+  Ok(super::present::Receipt{notifier:1,active:[0;5],armed:[0;5]})
+ }
+}
+// PROCESS_PRESENT
 #[test] fn retain_latest_two_modes_and_export_raw_registers_with_matching_digests(){
  display_evidence::baseline(50);
  let mut regs=Registers(BTreeMap::new());
@@ -55,9 +72,20 @@ fn hex(b:&[u8])->String{b.iter().map(|v|format!("{v:02x}")).collect()}
   assert!(text.contains("\"armed\":[4194304, 2, 3, 4, 5]"));
   assert!(anchor.ends_with(&format!("bytes={} sha256={}",text.len(),hex(&block::install::sha256::sha256(text.as_bytes())))));
  }
- for _ in 0..2048 {
-  display_evidence::transition(&mut regs,0,surface,&receipt,[0x30000000,16384000],[0x30000000,16384000],"flip").unwrap();
+ // Coordinator C1: 4097/4097 presents succeed without an observer drain.
+ *SESSION.lock()=Some(Session{resources:Resources,evo:Evo{head:0},
+  console:Console{vram:0x30000000,bytes:16384000},scanout:vec![],mode:0});
+ for _ in 0..4097 {
+  process_present(surface,&mut regs).unwrap();
  }
- assert!(display_evidence::transition(&mut regs,0,surface,&receipt,[0x30000000,16384000],[0x30000000,16384000],"flip").is_err());
+ assert_eq!(SESSION.lock().as_ref().unwrap().mode,0,"present changed the owner's chosen mode");
+ let small=present::Surface{width:1024,height:768,pitch:4096,..surface};
+ process_present(small,&mut regs).unwrap();
+ assert_eq!(SESSION.lock().as_ref().unwrap().mode,0);
+ let ring=display_evidence::export_transitions().unwrap();assert_eq!(ring.len(),2048);
+ assert!(ring[0].0.contains("\"sequence\":2554"));
+ assert!(ring[2047].0.contains("\"sequence\":4601"));
+ assert!(ring[2047].0.contains("\"dropped\":2049"));
+ assert!(display_evidence::export_transitions().unwrap().is_empty());
 
 }

@@ -65,6 +65,13 @@ class DisplayEvidence(unittest.TestCase):
 
     def test_kernel_snapshots_are_bounded_and_do_not_reconstruct_latches(self):
         source=(ROOT/'tests/fixtures/gt710_display_evidence.rs').read_text().replace('@ROOT@',str(ROOT))
+        from gt710_gr_live_unwind_test import item
+        process=item((ROOT/'kernel/src/gpu/gk208/ce/process.rs').read_text(),
+                     'pub(in crate::gk208) fn present(')
+        process=process.replace('pub(in crate::gk208) fn present(', 'fn process_present(')
+        process=process.replace('super::super::','').replace('&mut Registers(s.registers)','regs')
+        process=process.replace('surface:present::Surface)', 'surface:present::Surface, regs:&mut Registers)')
+        source=source.replace('// PROCESS_PRESENT',process)
         priority=['taskpolicy','-b'] if sys.platform=='darwin' else []
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp);(p/'display.rs').write_text(source)
