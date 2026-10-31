@@ -69,7 +69,7 @@
  * OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-//! C2b: inactive-path snapshots, exact POST restore, and GPC counter/PTIMER.
+//! C2c: inactive-path snapshots, exact POST restore, and GPC counter/PTIMER.
 //! MIT sources and exact revisions are listed in docs/gui/gt710-c2.md.
 use super::Access;
 use alloc::vec::Vec;
@@ -154,7 +154,14 @@ pub fn restore(io: &mut impl Access, post: &[(u32, u32)]) -> Result<(), &'static
     Ok(())
 }
 
-pub trait CounterAccess: Access { fn monotonic_ns(&mut self) -> u64; }
+pub trait CounterAccess: Access {
+    fn monotonic_ns(&mut self) -> u64;
+    fn record(&mut self, stage: &str, raw: &[(u32, u32)]);
+}
+/// The five sampler registers, including both PTIMER time words.
+pub fn counter_snapshot(io: &mut impl Access) -> [(u32, u32); 5] {
+    [0x18009c, 0x180044, 0x1800a8, 0x9400, 0x9410].map(|a| (a, io.read(a)))
+}
 pub struct Measurement {
     pub khz: u32,
     pub cycles: u32,
@@ -181,12 +188,16 @@ pub fn measure(io: &mut impl CounterAccess) -> Result<Measurement, &'static str>
     // envytools nvatiming.c:171-242, GPC[0] PRE with constant-true logic.
     // rnndb gf100_pcounter.xml: PRE_OP, CTRL and CTR_PRE_NEXT at 0x180000.
     // No signal routing, clocks or PTIMER configuration is written.
-    let ctrl = io.read(0x18009c);
-    let pre = io.read(0x180044);
-    let count = io.read(0x1800a8);
-    if ctrl & 7 != 0 { return Err("GPC counter already active"); }
+    let saved = counter_snapshot(io);
+    io.record("saved", &saved);
+    let [(_, ctrl), (_, pre), (_, count), _, _] = saved;
+    // C2c: inherited MODE is power-on state, not evidence of another owner.
+    // Halt it before replacing PRE_OP; restore each written word on either path.
+    io.write(0x18009c, 0);
     io.write(0x180044, 0xffff);
     io.write(0x18009c, 0x40002);
+    let configured = counter_snapshot(io);
+    io.record("configured", &configured);
     let result = (|| {
         let start = io.monotonic_ns();
         let (t0, c0, b0) = point(io)?;
@@ -210,8 +221,16 @@ pub fn measure(io: &mut impl CounterAccess) -> Result<Measurement, &'static str>
     io.write(0x18009c, 0);
     io.write(0x1800a8, count);
     io.write(0x180044, pre);
+    // Verify the saved accumulator while halted: resuming an inherited active
+    // counter can immediately advance it. The resumed raw value is logged too.
+    let halted = counter_snapshot(io);
+    io.record("restore-halted", &halted);
+    let halted_ok = halted[..3] == [(0x18009c, 0), (0x180044, pre), (0x1800a8, count)];
     io.write(0x18009c, ctrl);
-    if io.read(0x180044) != pre || io.read(0x18009c) != ctrl || io.read(0x1800a8) != count {
+    let restored = counter_snapshot(io);
+    io.record("restored", &restored);
+    if !halted_ok || restored[0].1 != ctrl || restored[1].1 != pre
+        || (ctrl & 7 == 0 && restored[2].1 != count) {
         return Err("GPC counter restore mismatch");
     }
     result

@@ -50,8 +50,10 @@ pub fn run_c2(mut observe:impl FnMut(ClockPhase)->Result<(),String>)->Result<(),
         let frequency=if phase==1 {540_000}else{810_000};
         observe(match phase {0=>ClockPhase::Post,1=>ClockPhase::Low,_=>ClockPhase::Restore})?;
         println!("GT710_C2_PHASE phase={phase} gpc_khz={frequency}");
-        for n in 1..=3 {
-            trial(context,&draws,"core",phase*3+n,u64::from(DRAWS)*u64::from(WIDTH)*u64::from(HEIGHT),"fragments")?;
+        let trials=if phase==0 {9}else{3};
+        let first=match phase {0=>0,1=>9,_=>12};
+        for n in 1..=trials {
+            trial(context,&draws,"core",first+n,u64::from(DRAWS)*u64::from(WIDTH)*u64::from(HEIGHT),"fragments")?;
         }
     }
     checked(gpu::resource_destroy(target),"RESOURCE_DESTROY")?;

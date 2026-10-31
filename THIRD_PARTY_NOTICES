@@ -1803,7 +1803,7 @@ The original copyright and full MIT grants are retained in `c2.rs`.
 `clock.rs` supplies the existing MIT C1 decoder and GPC reference/step
 queries. No memory, voltage, thermal, or other domain programming is adapted.
 
-## C2b clock snapshots and independent measurement
+## C2b/C2c clock snapshots and independent measurement
 
 `kernel/src/gpu/gk208/c2/observe.rs` adapts the following individually checked
 MIT sources; their copyright and full permission notices are in its header:
@@ -1823,3 +1823,9 @@ MIT sources; their copyright and full permission notices are in its header:
   adapted file. The files identify the counter, PLL, divider and PTIMER fields.
 - Nouveau `nvkm/subdev/timer/nv04.c:43-55` (Copyright 2012 Red Hat Inc.),
   same Linux v6.8 revision, MIT, for high/low/high PTIMER sampling.
+
+C2c rechecks the same MIT `nva/nvatiming.c`, `rnndb/gf100_pcounter.xml`,
+`rnndb/bus/ptimer.xml` and imported `rnndb/copyright.xml` at the pinned
+envytools revision above. `c2/observe.rs` uses CTRL.MODE=HALTED while saving
+and reinstating the PRE sampler, with halted and resumed restore readbacks.
+No additional source or license is introduced.

@@ -2,6 +2,7 @@
 use super::*;
 use crate::gk208::{Registers,clock};
 use alloc::{format,sync::Arc,vec::Vec};
+use observe::CounterAccess;
 
 struct State {base:usize,post:u32,limits:Limits,failed:bool,snapshot:Vec<(u32,u32)>,phase:u8}
 static STATE:spin::Mutex<Option<State>>=spin::Mutex::new(None);
@@ -11,12 +12,18 @@ pub(in crate::gk208) fn initialize(regs:&Registers,rom:&[u8])->Result<(),&'stati
     if post!=810_000 {return Err("C2 requires measured POST GPC 810000");}
     let snapshot=observe::capture(&mut Io(Registers(regs.0)));
     print_snapshot("post-inventory",&snapshot);
+    let mut io=Io(Registers(regs.0));
+    let counters=observe::counter_snapshot(&mut io);
+    io.record("post-inventory",&counters);
     *STATE.lock()=Some(State {base:regs.0,post,limits:l,failed:false,snapshot,phase:0});Ok(())
 }
 struct Io(Registers);
 impl Access for Io {
     fn read(&mut self,a:u32)->u32 {self.0.read(a as usize)}
-    fn write(&mut self,a:u32,v:u32) {self.0.write(a as usize,v)}
+    fn write(&mut self,a:u32,v:u32) {
+        crate::serial_println!("GT710_CLOCK_WRITE {{\"address\":{},\"value\":{}}}",a,v);
+        self.0.write(a as usize,v)
+    }
     fn wait(&mut self,a:u32,mask:u32,value:u32)->Result<(),&'static str> {
         let start=crate::time::get_monotonic_time_ns();
         loop {
@@ -30,6 +37,10 @@ impl Access for Io {
     }
 }
 impl observe::CounterAccess for Io {
+    fn record(&mut self,stage:&str,raw:&[(u32,u32)]) {
+        let raw:Vec<_>=raw.iter().map(|(a,v)|format!("[{a},{v}]")).collect();
+        crate::serial_println!("GT710_COUNTER {{\"stage\":\"{}\",\"raw\":[{}]}}",stage,raw.join(","));
+    }
     fn monotonic_ns(&mut self)->u64 {
         let (seconds,nanos)=crate::time::get_monotonic_time_ns();
         seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
@@ -51,8 +62,8 @@ fn snapshot_records(s:&State,io:&mut Io,phase:&str)->Result<(),&'static str> {
 }
 fn measure_record(io:&mut Io,phase:&str)->Result<(),&'static str> {
     let m=crate::gk208::ce::with_resources(|_,_,_|observe::measure(io))?;
-    crate::serial_println!("GT710_CLOCK_MEASURED {{\"phase\":\"{}\",\"domain\":\"gpc\",\"khz\":{},\"method\":\"gpc0-pre-counter-ptimer\",\"cycles\":{},\"ptimer_ns\":{},\"bracket_ns\":{},\"counter_restored\":true}}",
-        phase,m.khz,m.cycles,m.ptimer_ns,m.bracket_ns);
+    crate::serial_println!("GT710_CLOCK_MEASURED {{\"phase\":\"{}\",\"domain\":\"gpc\",\"khz\":{},\"method\":\"gpc0-pre-counter-ptimer\",\"cycles\":{},\"interval_ns\":{},\"ptimer_ns\":{},\"bracket_ns\":{},\"counter_restored\":true}}",
+        phase,m.khz,m.cycles,m.ptimer_ns,m.ptimer_ns,m.bracket_ns);
     Ok(())
 }
 pub fn read_status()->Result<Vec<u8>,i32> {
@@ -67,12 +78,12 @@ fn set(bytes:&[u8])->Result<(),&'static str> {
     if fields.len()!=2 {return Err("request needs two fields");}
     let phase=match (fields[0],fields[1]) {
         ("observe","post")=>0,("gpc","540000")=>1,("restore","post")=>2,
-        _=>return Err("C2b requires observe post, gpc 540000, restore post"),
+        _=>return Err("C2c requires observe post, gpc 540000, restore post"),
     };
     let requested=if phase==1 {540_000}else{810_000};
     let mut state=STATE.lock();let s=state.as_mut().ok_or("C2 not initialized")?;
     if s.failed {return Err("C2 stopped after failure");}
-    if phase!=s.phase {return Err("C2b phase out of order");}
+    if phase!=s.phase {return Err("C2c phase out of order");}
     let mut io=Io(Registers(s.base));
     let result=(|| {
         if phase==0 {return Ok(());}
