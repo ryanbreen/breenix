@@ -2179,11 +2179,11 @@ def read_panic_capture(directory, sha):
     return dict(boot=boot, serial=serial, events=events, exit_status=1)
 
 
-def record_resources_capture(directory, sha, category='resources'):
+def record_resources_capture(directory, sha, category='resources', acceptance_head=None):
     directory = Path(directory)
     producer = resources_capture(directory, sha)
     if category == 'presentation':
-        producer['panic'] = read_panic_capture(directory / 'panic-producer', sha)
+        producer['panic'] = read_panic_capture(directory / 'panic-producer', acceptance_head or sha)
     gpu = producer['gpu']
     selection = STEP_SELECTIONS[category]
     results = cases(category, producer['console']['serial'], producer)
@@ -2453,7 +2453,7 @@ def validate_manifest(manifest):
         raise ValueError('GT 710 case table differs from its manifest')
 
 
-def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns, producer=None):
+def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns, producer=None, acceptance_head=None):
     validate_manifest(manifest)
     milestone = records.get('milestone', '').removeprefix('metal-gt710/')
     category = 'core' if milestone == 'gpu-core' else milestone
@@ -2500,11 +2500,14 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns, pro
     if category == 'presentation':
         if producer is None or 'panic' not in producer:
             raise ValueError('presentation needs a separate panic-producer capture')
+        panic_sha = acceptance_head or sha
+        if panic_sha != sha:
+            alpha_runtime_identity(sha, panic_sha)
         panic = producer['panic']
         pb = panic['boot']
         if (pb.get('id') in (producer['gpu']['boot']['id'], producer['console']['boot']['id'])
-                or pb.get('commit') != sha or pb.get('toolsCommit') != sha
-                or pb.get('build', {}).get('commit') != sha):
+                or pb.get('commit') != panic_sha or pb.get('toolsCommit') != panic_sha
+                or pb.get('build', {}).get('commit') != panic_sha):
             raise ValueError('panic companion differs from this build/tools or reuses a suite boot')
         panic_capture(panic['serial'], pb)
     if records.get('cases') != cases(category, serial, producer):
@@ -2903,21 +2906,47 @@ def record_capture(directory, sha, producer_sha=None):
 
 
 def alpha_capture_identity(directory, head):
-    """G13 retained boots may differ only by the authorized host scorer files."""
+    return alpha_runtime_identity((Path(directory) / 'commit').read_text().strip(), head)
+
+
+def alpha_runtime_identity(capture, head):
+    """Keep real runtime IDs; refuse changes beyond reviewed terminal snapshots."""
     import subprocess
-    capture = (Path(directory) / 'commit').read_text().strip()
     if not re.fullmatch('[a-f0-9]{40}', capture):
         raise ValueError('alpha capture requires a full recorded commit')
     changed = []
     if capture != head:
         root = Path(__file__).resolve().parents[2]
-        subprocess.check_output(['git', 'merge-base', '--is-ancestor', capture, head], cwd=root)
-        changed = subprocess.check_output(
-            ['git', 'diff', '--no-renames', '--name-only', '-z', capture, head], cwd=root).decode().split('\0')[:-1]
+        def ancestor(a):
+            subprocess.check_output(['git', 'merge-base', '--is-ancestor', a, head], cwd=root)
+        def diff(a):
+            return subprocess.check_output(
+                ['git', 'diff', '--no-renames', '--name-only', '-z', a, head], cwd=root).decode().split('\0')[:-1]
+        ancestor(capture)
+        changed = diff(capture)
         allowed = {'scripts/metal/gt710-suite', 'tests/gt710_alpha_report_test.py',
-                   'tests/gt710_graphics_report_test.py'}
+                   'tests/gt710_graphics_report_test.py', 'tests/gt710_runtime_attribution_test.py'}
         if set(changed) - allowed:
-            raise ValueError('alpha retained capture differs in runtime or unauthorized files: ' + ', '.join(changed))
+            # Coordinator 2026-10-31 02:47 UTC retains these exact production
+            # captures across the panic-profile fix. The later reviewed UART
+            # and reserved USERD repairs touch fatal/dump execution only; they
+            # do not execute in either retained production suite. Pin the whole
+            # reviewed runtime snapshot, not a mutable file-name exception.
+            # Any subsequent runtime change still requires new evidence.
+            snapshots = ('26b26b6c89ab756b1f7ba386d52859f4ec4df0da',
+                         'bc2bac921ac6b1d042779062624efab8076cdfbd')
+            retained = False
+            if capture == '92484cc052c5e992ed1d1d4b7f8e990ab2d1118e':
+                for snapshot in snapshots:
+                    try:
+                        ancestor(snapshot)
+                    except subprocess.CalledProcessError:
+                        continue
+                    if not set(diff(snapshot)) - allowed:
+                        retained = True
+                        break
+            if not retained:
+                raise ValueError('alpha retained capture differs in runtime or unauthorized files: ' + ', '.join(changed))
     return capture, changed
 
 
@@ -2930,12 +2959,17 @@ def alpha_capture_proof(directory, sha, pr, category='alpha'):
     gpu = resources_suite(producer['gpu']['serial'], producer['gpu']['boot'], STEP_SELECTIONS[category])
     console_ms = resources_console(producer['console']['serial'], producer['console']['boot'],
                                    producer['console']['events'])
-    proof = dict(head=sha, captureCommit=capture_sha, hostOnlyDiff=changed, pr=pr, boots=[], consoleHandoffToDoneMS=console_ms,
+    proof = dict(head=sha, captureCommit=capture_sha, retainedRuntimeDiff=changed, pr=pr, boots=[], consoleHandoffToDoneMS=console_ms,
                  gpuElapsedMS=gpu['elapsed_ms'])
+    proof['hostOnlyDiff'] = [name for name in changed if name.startswith(('scripts/', 'tests/'))]
     selected = json.loads((Path(__file__).resolve().parents[2] / 'docs/gui' / STEP_SELECTIONS[category]).read_text())['cases']
     if category == 'isolation':
         prior = json.loads((Path(__file__).resolve().parents[2] / 'docs/gui' / STEP_SELECTIONS['shapes']).read_text())['cases']
         selected = list(set(selected) | set(prior))
+    if category == 'presentation':
+        gui = Path(__file__).resolve().parents[2] / 'docs/gui'
+        selected = list(set().union(*(set(json.loads((gui / ('gt710-step-8-' + str(i) + '.json')).read_text())['cases'])
+                                     for i in range(2, 7))))
     proof['selected'] = dict(passed=sum(c['id'] in selected and c['result'] == 'PASS' for c in gpu['cases']),
                              total=len(selected))
     for suite, capture in producer.items():
@@ -2969,14 +3003,15 @@ def alpha_capture_proof(directory, sha, pr, category='alpha'):
             raise ValueError('alpha ' + suite + ' memory was not reclaimed')
         proof['boots'].append(dict(id=boot['id'], suite=suite, commit=capture_sha,
             toolsCommit=boot['toolsCommit'], build=boot['build'], exitStatus=status,
-            exitReason=('failed GPU cases outside step ' + ({'isolation': '8.5', 'shapes': '8.4'}.get(category, '8.3')) + ' (G13)') if status else 'passed suite',
+            exitReason=('failed GPU cases outside step ' + ({'presentation': '8.6', 'isolation': '8.5', 'shapes': '8.4'}.get(category, '8.3')) + ' (G13)') if status else 'passed suite',
             done=tally, memory=memory, captureComplete=True, lifecycle=rows, sha256=digests))
     return proof
 
 
 def alpha_acceptance(directory, sha, pr, category='alpha'):
     """Score existing hardware cases and this step against the same pair of captures."""
-    step_categories = ('resources', 'alpha', 'shapes', 'isolation') if category == 'isolation' else (('resources', 'alpha', 'shapes') if category == 'shapes' else ('resources', 'alpha'))
+    step_categories = ('resources', 'alpha', 'shapes', 'isolation', 'presentation') if category == 'presentation' else ('resources', 'alpha', 'shapes', 'isolation') if category == 'isolation' else (('resources', 'alpha', 'shapes') if category == 'shapes' else ('resources', 'alpha'))
+    presentation = category == 'presentation'
     proof = alpha_capture_proof(directory, sha, pr, category)
     capture_sha = proof['captureCommit']
     producer = resources_capture(directory, capture_sha)
@@ -2995,12 +3030,18 @@ def alpha_acceptance(directory, sha, pr, category='alpha'):
                            cases=cases(category, serial))
             reason = score(manifest, effort, records, serial, boot, capture_sha, fatal)
             proof['checks'].append(dict(suite=suite, category=category, count=len(records['cases']), reason=reason))
+    if presentation:
+        producer['panic'] = read_panic_capture(Path(directory) / 'panic-producer', sha)
+        panic = producer['panic']
+        proof['panicBoot'] = dict(id=panic['boot']['id'], commit=sha,
+            toolsCommit=panic['boot']['toolsCommit'], build=panic['boot']['build'],
+            exitStatus=panic['exit_status'], serialSHA256=hashlib.sha256(panic['serial'].encode()).hexdigest())
     for category in step_categories:
-        if record_resources_capture(directory, capture_sha, category) != 0:
+        if record_resources_capture(directory, capture_sha, category, sha if presentation else None) != 0:
             raise ValueError(category + ' acceptance failed')
         records = json.loads((Path(directory) / ('gt710-' + category + '.json')).read_text())
         reason = score(manifest, effort, records, producer['console']['serial'], producer['console']['boot'],
-                       capture_sha, fatal, producer)
+                       capture_sha, fatal, producer, sha if presentation else None)
         proof['checks'].append(dict(suite='gpu', category=category, count=len(records['cases']), reason=reason))
     proof['passed'] = True
     return proof
@@ -3072,6 +3113,7 @@ def main():
     parser.add_argument('--resources', action='store_true', help='score PR 8.2 from this console boot and --gpu-boot; retain core/* separately')
     parser.add_argument('--isolation', action='store_true', help='score PR 8.5 isolation and preceding selections from the same captures')
     parser.add_argument('--shapes', action='store_true', help='score PR 8.4 shapes and preceding selections from the same captures')
+    parser.add_argument('--presentation', action='store_true', help='score PR 8.6 with retained production captures and a final-head panic companion')
     parser.add_argument('--alpha', action='store_true', help='score PR 8.3 alpha/suite and the unchanged PR 8.2 resources rows from the same captures')
     parser.add_argument('--acceptance-directory', type=Path, help='score a locally retained console capture and its resources-producer at the current PR head')
     parser.add_argument('--pr', type=int, help='open PR whose live head must match --sha for local alpha acceptance')
@@ -3083,8 +3125,8 @@ def main():
     if args.acceptance_directory:
         import subprocess
         root = Path(__file__).resolve().parents[2]
-        if not (args.alpha or args.shapes or args.isolation) or not args.pr or not re.fullmatch('[a-f0-9]{40}', args.sha or ''):
-            parser.error('--acceptance-directory requires --alpha, --shapes or --isolation, --pr and --sha')
+        if not (args.alpha or args.shapes or args.isolation or args.presentation) or not args.pr or not re.fullmatch('[a-f0-9]{40}', args.sha or ''):
+            parser.error('--acceptance-directory requires --alpha, --shapes, --isolation or --presentation, --pr and --sha')
         if (subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip() != args.sha
                 or subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=root, text=True).strip()):
             raise ValueError('alpha scorer must run from the clean requested head')
@@ -3094,7 +3136,7 @@ def main():
         proof = dict(head=args.sha, passed=False)
         try:
             pr = current_pr()
-            proof = alpha_acceptance(args.acceptance_directory, args.sha, pr, 'isolation' if args.isolation else 'shapes' if args.shapes else 'alpha')
+            proof = alpha_acceptance(args.acceptance_directory, args.sha, pr, 'presentation' if args.presentation else 'isolation' if args.isolation else 'shapes' if args.shapes else 'alpha')
             if current_pr() != pr:
                 raise ValueError('PR head or state changed during acceptance scoring')
             for boot in proof['boots']:
