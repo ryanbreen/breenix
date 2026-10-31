@@ -2084,6 +2084,7 @@ def resources_row(serial):
 def resources_identity(boot, suite, sha=None):
     sha = boot.get('bootedCommit') if sha is None else sha
     if (not re.fullmatch('[0-9a-f]{40}', sha or '')
+            or boot.get('commit', sha) != sha
             or boot.get('bootedCommit', sha) != sha or boot.get('toolsCommit') != sha
             or boot.get('kind') != 'boot' or boot.get('mode') != 'suite'
             or boot.get('suite') != suite or boot.get('suites') not in (None, [suite])
@@ -2206,22 +2207,25 @@ def resources_console(serial, boot, events):
     return round((done[0] - handoff[0])*1000)
 
 
-def resources_capture(directory, sha):
+def resources_capture(directory, sha, acceptance_head=None):
     """Console is primary; resources-producer is the completed GPU companion."""
     directory = Path(directory)
     def read_capture(path, suite):
         read = lambda name: (path / name).read_text()
+        capture_sha = read('commit').strip() if acceptance_head else sha
+        if acceptance_head:
+            alpha_runtime_identity(capture_sha, acceptance_head)
         boot = json.loads(read('run.json'))
-        resources_identity(boot, suite, sha)
+        resources_identity(boot, suite, capture_sha)
         events = [json.loads(l) for l in read('events.jsonl').splitlines()]
         status = read('exit-status').strip()
-        if (not read('ended').strip() or read('dirty').strip() != '0' or read('commit').strip() != sha
+        if (not read('ended').strip() or read('dirty').strip() != '0' or read('commit').strip() != capture_sha
                 or status not in (('0','1') if suite == 'gpu' else ('0',))
                 or any(e.get('event') in ('console-gap', 'fatal') for e in events)
                 or sum(e.get('event') == 'final-marker' for e in events) != 1):
             raise ValueError('resources capture incomplete, dirty, gapped or unsuccessful')
         serial=capture_serial(path)
-        boot = dict(boot, bootedCommit=sha)
+        boot = dict(boot, bootedCommit=capture_sha)
         if status == '1':
             measured=resources_suite(serial, boot)
             if not any(c['result'] == 'FAIL' for c in measured['cases']):
@@ -2229,6 +2233,8 @@ def resources_capture(directory, sha):
         return dict(boot=boot, serial=serial, events=events,
                     exit_status=int(status))
     console = read_capture(directory, 'console')
+    if console['boot']['bootedCommit'] != sha:
+        raise ValueError('resources primary commit differs from report')
     gpu = read_capture(directory / 'resources-producer', 'gpu')
     if console['boot']['id'] == gpu['boot']['id']:
         raise ValueError('resources requires distinct console and GPU captures')
@@ -2264,7 +2270,7 @@ def read_panic_capture(directory, sha):
 
 def record_resources_capture(directory, sha, category='resources', acceptance_head=None):
     directory = Path(directory)
-    producer = resources_capture(directory, sha)
+    producer = resources_capture(directory, sha, acceptance_head)
     if category == 'presentation':
         producer['panic'] = read_panic_capture(directory / 'panic-producer', acceptance_head or sha)
     gpu = producer['gpu']
@@ -2572,7 +2578,10 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns, pro
         if producer is None or producer['console']['boot']['id'] != boot['id']:
             raise ValueError('resources primary capture differs from report')
         for capture, suite in [(producer['console'], 'console'), (producer['gpu'], 'gpu')]:
-            resources_identity(capture['boot'], suite, sha)
+            capture_sha = capture['boot'].get('bootedCommit') if acceptance_head else sha
+            if acceptance_head:
+                alpha_runtime_identity(capture_sha, acceptance_head)
+            resources_identity(capture['boot'], suite, capture_sha)
         if producer['console']['boot']['id'] == producer['gpu']['boot']['id']:
             raise ValueError('resources captures must be distinct')
         suite = resources_suite(producer['gpu']['serial'], producer['gpu']['boot'], STEP_SELECTIONS[category])
@@ -3041,8 +3050,13 @@ def alpha_runtime_identity(capture, head):
             # runtime snapshot, not a mutable file-name exception.
             # Any subsequent runtime change still requires new evidence.
             snapshots = ('26b26b6c89ab756b1f7ba386d52859f4ec4df0da',)
+            # Coordinator 24.6 retains the console across this exact host
+            # receiver repair. Later receiver/runtime edits are not exempt.
+            if capture == '43d5f3cc9369b71e787114f36f6787b4b1e7a4c7':
+                snapshots = ('f4cb57064d2e849928d9f329b0b3146566369ff0',)
             retained = False
-            if capture == '92484cc052c5e992ed1d1d4b7f8e990ab2d1118e':
+            if capture in ('92484cc052c5e992ed1d1d4b7f8e990ab2d1118e',
+                           '43d5f3cc9369b71e787114f36f6787b4b1e7a4c7'):
                 for snapshot in snapshots:
                     try:
                         ancestor(snapshot)
@@ -3061,7 +3075,7 @@ def alpha_capture_proof(directory, sha, pr, category='alpha'):
     if pr.get('state') != 'OPEN' or pr.get('headRefOid') != sha:
         raise ValueError('alpha acceptance requires the current open PR head')
     capture_sha, changed = alpha_capture_identity(directory, sha)
-    producer = resources_capture(directory, capture_sha)
+    producer = resources_capture(directory, capture_sha, sha)
     gpu = resources_suite(producer['gpu']['serial'], producer['gpu']['boot'], STEP_SELECTIONS[category])
     console_ms = resources_console(producer['console']['serial'], producer['console']['boot'],
                                    producer['console']['events'])
@@ -3107,7 +3121,7 @@ def alpha_capture_proof(directory, sha, pr, category='alpha'):
                      serial, 'alpha ' + suite + ' memory')[1]
         if memory != 'PASS':
             raise ValueError('alpha ' + suite + ' memory was not reclaimed')
-        proof['boots'].append(dict(id=boot['id'], suite=suite, commit=capture_sha,
+        proof['boots'].append(dict(id=boot['id'], suite=suite, commit=boot['bootedCommit'],
             toolsCommit=boot['toolsCommit'], build=boot['build'], exitStatus=status,
             exitReason=('failed GPU cases outside step ' + ({'presentation': '8.6', 'isolation': '8.5', 'shapes': '8.4'}.get(category, '8.3')) + ' (G13)') if status else 'passed suite',
             done=tally, memory=memory, captureComplete=True, lifecycle=rows, sha256=digests))
@@ -3120,7 +3134,7 @@ def alpha_acceptance(directory, sha, pr, category='alpha'):
     presentation = category == 'presentation'
     proof = alpha_capture_proof(directory, sha, pr, category)
     capture_sha = proof['captureCommit']
-    producer = resources_capture(directory, capture_sha)
+    producer = resources_capture(directory, capture_sha, sha)
     root = Path(__file__).resolve().parents[2]
     manifest = json.loads((root / 'docs/suites/gt710.json').read_text())
     effort = json.loads((root / 'docs/efforts/metal.json').read_text())
@@ -3128,13 +3142,14 @@ def alpha_acceptance(directory, sha, pr, category='alpha'):
     proof['checks'] = []
     for suite, capture in producer.items():
         boot, serial = capture['boot'], capture['serial']
+        boot_sha = boot['bootedCommit']
         for category in capture_categories(boot):
             # The coordinator binds the unchanged core/* rows to the retained 8.1 captures.
             if category == 'core':
                 continue
-            records = dict(boot=boot['id'], commit=capture_sha, milestone='metal-gt710/' + category,
+            records = dict(boot=boot['id'], commit=boot_sha, milestone='metal-gt710/' + category,
                            cases=cases(category, serial))
-            reason = score(manifest, effort, records, serial, boot, capture_sha, fatal)
+            reason = score(manifest, effort, records, serial, boot, boot_sha, fatal)
             proof['checks'].append(dict(suite=suite, category=category, count=len(records['cases']), reason=reason))
     if presentation:
         producer['panic'] = read_panic_capture(Path(directory) / 'panic-producer', sha)
@@ -3143,11 +3158,11 @@ def alpha_acceptance(directory, sha, pr, category='alpha'):
             toolsCommit=panic['boot']['toolsCommit'], build=panic['boot']['build'],
             exitStatus=panic['exit_status'], serialSHA256=hashlib.sha256(panic['serial'].encode()).hexdigest())
     for category in step_categories:
-        if record_resources_capture(directory, capture_sha, category, sha if presentation else None) != 0:
+        if record_resources_capture(directory, capture_sha, category, sha) != 0:
             raise ValueError(category + ' acceptance failed')
         records = json.loads((Path(directory) / ('gt710-' + category + '.json')).read_text())
         reason = score(manifest, effort, records, producer['console']['serial'], producer['console']['boot'],
-                       capture_sha, fatal, producer, sha if presentation else None)
+                       capture_sha, fatal, producer, sha)
         proof['checks'].append(dict(suite='gpu', category=category, count=len(records['cases']), reason=reason))
     proof['passed'] = True
     return proof

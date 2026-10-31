@@ -7,6 +7,40 @@ API=runpy.run_path(str(ROOT/'scripts/metal/gt710-suite'))
 PRODUCTION='92484cc052c5e992ed1d1d4b7f8e990ab2d1118e'
 PANIC_PROFILE='26b26b6c89ab756b1f7ba386d52859f4ec4df0da'
 class RuntimeAttribution(unittest.TestCase):
+ def test_246_console_survives_only_the_pinned_receiver_repair(self):
+  capture='43d5f3cc9369b71e787114f36f6787b4b1e7a4c7'
+  repaired='f4cb57064d2e849928d9f329b0b3146566369ff0'
+  self.assertEqual(API['alpha_runtime_identity'](capture,repaired),
+    (capture,['scripts/metal/gt710_upload.py','tests/gt710_final_upload_test.py']))
+  def changed_again(command, **kwargs):
+   return b'scripts/metal/gt710_upload.py\0' if command[1]=='diff' else b''
+  with patch('subprocess.check_output',side_effect=changed_again):
+   with self.assertRaises(ValueError):API['alpha_runtime_identity'](capture,'f'*40)
+ def test_246_companions_keep_their_individual_build_and_tools_commits(self):
+  import json,copy,sys
+  sys.path.insert(0,str(ROOT/'tests'))
+  from gt710_alpha_report_test import retained_capture
+  from gt710_resources_report_test import SHA
+  gpu_sha='f'*40
+  with tempfile.TemporaryDirectory() as tmp:
+   p=Path(tmp);gpu=retained_capture(p)
+   boot=json.loads((gpu/'run.json').read_text())
+   boot.update(commit=gpu_sha,toolsCommit=gpu_sha);boot['build']['commit']=gpu_sha
+   (gpu/'run.json').write_text(json.dumps(boot));(gpu/'commit').write_text(gpu_sha)
+   identities=[]
+   def identity(actual,head):
+    self.assertEqual(head,gpu_sha);identities.append(actual);return actual,[]
+   with patch.dict(API['resources_capture'].__globals__,alpha_runtime_identity=identity):
+    captures=API['resources_capture'](p,SHA,gpu_sha)
+    self.assertEqual(captures['console']['boot']['bootedCommit'],SHA)
+    self.assertEqual(captures['gpu']['boot']['bootedCommit'],gpu_sha)
+    self.assertEqual(set(identities),{SHA,gpu_sha})
+    for field in ('commit','toolsCommit','build'):
+     bad=copy.deepcopy(boot);bad[field]=dict(boot['build'],commit=SHA) if field=='build' else SHA
+     (gpu/'run.json').write_text(json.dumps(bad))
+     with self.subTest(field=field),self.assertRaises(ValueError):API['resources_capture'](p,SHA,gpu_sha)
+    (gpu/'run.json').write_text(json.dumps(boot))
+   with self.assertRaises(ValueError):API['resources_capture'](p,SHA)
  def test_authorized_profile_change_preserves_the_runtime_commit(self):
   with tempfile.TemporaryDirectory() as tmp:
    p=Path(tmp);(p/'commit').write_text(PRODUCTION)
@@ -76,6 +110,8 @@ class RuntimeAttribution(unittest.TestCase):
   for b in (console,gpu):
    b.update(commit=PRODUCTION,bootedCommit=PRODUCTION,toolsCommit=PRODUCTION)
    b['build']['commit']=PRODUCTION
+  gpu.update(commit=head,bootedCommit=head,toolsCommit=head)
+  gpu['build']['commit']=head
   panic=dict(id='20261031T000003Z-metal',commit=head,toolsCommit=head,
     build=dict(commit=head,profile='gpu-panic',features=['capture_panic_oracle']),
     gt710Category='panic',mode='probe',suite=[])
@@ -90,6 +126,11 @@ class RuntimeAttribution(unittest.TestCase):
     resources_console=lambda *a:1,cases=lambda *a:rows)
   with patch.dict(API['score'].__globals__,replacements):
    self.assertEqual(API['score']({},effort,records,'',console,PRODUCTION,[],producer,head),'presentation: 3 cases passed')
+   for field in ('commit','toolsCommit','build'):
+    broken=copy.deepcopy(producer)
+    broken['gpu']['boot'][field]=dict(gpu['build'],commit=PRODUCTION) if field=='build' else PRODUCTION
+    with self.subTest(gpu_field=field),self.assertRaises(ValueError):
+     API['score']({},effort,records,'',console,PRODUCTION,[],broken,head)
    for field in ('commit','toolsCommit'):
     broken=copy.deepcopy(producer);broken['panic']['boot'][field]=PRODUCTION
     with self.subTest(field=field),self.assertRaises(ValueError):
