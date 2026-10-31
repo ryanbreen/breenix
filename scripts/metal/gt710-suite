@@ -3018,7 +3018,10 @@ def alpha_runtime_identity(capture, head):
         ancestor(capture)
         changed = diff(capture)
         allowed = {'scripts/metal/gt710-suite', 'tests/gt710_alpha_report_test.py',
-                   'tests/gt710_graphics_report_test.py', 'tests/gt710_runtime_attribution_test.py'}
+                   'tests/gt710_graphics_report_test.py', 'tests/gt710_runtime_attribution_test.py',
+                   # Coordinator 24.6: these host fixture repairs need no boot.
+                   'tests/gt710_isolation_report_test.py', 'tests/gt710_shapes_report_test.py',
+                   'tests/gt710_logical_mode_path_test.py'}
         if set(changed) - allowed:
             # Coordinator 2026-10-31 02:47 UTC retains these exact production
             # captures across the panic-profile fix only. Later UART and USERD
