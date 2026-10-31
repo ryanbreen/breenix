@@ -258,7 +258,6 @@ pub(in crate::gk208) fn present(surface:super::super::present::Surface)
     if receipt.notifier&1!=1 || receipt.active!=receipt.armed {
         return Err("native present receipt mismatch");
     }
-    s.mode=if surface.width==1280 {0} else {1};
     let active=s.scanout.pop().unwrap();
     s.scanout.clear();
     s.scanout.push(active);

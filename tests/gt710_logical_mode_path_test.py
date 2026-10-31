@@ -78,10 +78,12 @@ fn hardware()->(Registers,Evo){
  (r,Evo{head:0,sor:0,total:1<<30,push:0x10000,put:0,notifier:0x11000,limits:(),coefficients:(),scripts:std::array::from_fn(|_|vec![])})
 }
 fn main(){
- for (w,h) in [(1280,800),(2560,1600)] {
+ for (w,h) in [(1280,800),(2560,1600),(1024,768),(640,480)] {
   let (mut r,mut e)=hardware();let s=present::Surface{resource:1,address:0x1000000,width:w,height:h,pitch:w*4,block_height:0,format:0,dma:1};
   present(&mut e,&mut r,s).unwrap();assert_eq!(r.updates,1);
-  assert_eq!(r.read(0x6604b8),w|h<<16);assert_eq!(r.read(0x6604c0),1280|800<<16);
+  assert_eq!(r.read(0x6604b8),w|h<<16);
+  let out=if w==1280||w==2560 {1280|800<<16}else{w|h<<16};
+  assert_eq!(r.read(0x6604c0),out);
   assert_eq!(r.read(0x640420),1639|1064<<16); // raster untouched
   let (mut r,mut e)=hardware();r.stale=true;assert!(present(&mut e,&mut r,s).is_err());
  }

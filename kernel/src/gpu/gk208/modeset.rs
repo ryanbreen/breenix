@@ -323,7 +323,8 @@ pub fn head_methods(
     Ok(m)
 }
 /// NV927D viewport fields are 15 bits (cl927d.h:1417-1434). The two
-/// logical modes use only unity and exact 2:1 reduction. This is a deliberate
+/// logical modes use only unity and exact 2:1 reduction; fitting client targets
+/// use unity. This is a deliberate
 /// admission subset, not a claim about an undocumented general ratio limit.
 /// MIT nouveau head.c:180-218 permits input larger than output and centres
 /// aspect-preserving output; head907d.c:378-409 selects one-tap/no-bias scaling.
@@ -336,8 +337,8 @@ impl Viewport {
     pub fn for_raster(rw:u32,rh:u32,width:u32,height:u32) -> Result<Self, &'static str> {
         let output = match (width,height) {
             (1280,800) | (2560,1600) if rw>=1280 && rh>=800 => (1280,800),
-            // Existing EDID-sized bring-up probes retain their 1:1 viewport.
-            _ if (width,height)==(rw,rh) => (rw,rh),
+            // Smaller client targets need no new scaler ratio: centre at 1:1.
+            _ if width<=rw && height<=rh => (width,height),
             _ => return Err("unadmitted native scaler ratio"),
         };
         if [rw,rh,width,height].iter().any(|&v|v==0 || v>0x7fff) {
