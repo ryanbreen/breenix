@@ -497,7 +497,12 @@ pub fn parking_frame(target: Target, source: Target, address: u64, quarantine: u
     // CODE is a 128 KiB multiple; omit the obsolete per-frame VAB reservation.
     // channel_words redirects that one binding to channel-owned VAB storage.
     frame.relocate(address.checked_sub(CODE as u64).ok_or("native parking VA underflow")?)?;
+    // Mesa nvc0_screen.c:920-925 serializes before changing live CB state.
+    // The publisher appends this retained state after a bounded draw batch.
+    // Drain that batch before replacing any of its input bindings.
     let mut parked = Vec::new();
+    parked.try_reserve(2).map_err(|_| NO_MEMORY)?;
+    parked.extend([0x20010044, 0]); // SERIALIZE / WAIT_FOR_IDLE (0x110)
     for chunk in &frame.chunks {
         let words = channel_words(&chunk.words, quarantine)?;
         let mut at = 0;
@@ -512,6 +517,9 @@ pub fn parking_frame(target: Target, source: Target, address: u64, quarantine: u
             at += count+1;
         }
     }
+    // Drain the parked state before the publisher unbinds CBs and releases.
+    parked.try_reserve(2).map_err(|_| NO_MEMORY)?;
+    parked.extend([0x20010044, 0]);
     Ok((copy_bytes(&frame.data[CODE..])?, parked))
 }
 
@@ -785,7 +793,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                 } else {
                     w.word(at + if code == cmd::DRAW { 4 } else { 7 })
                 };
-                for i in 0..n as usize {
+                let rectangles = (0..n as usize).filter_map(|i| {
                     let r = match code {
                         cmd::CLEAR => [0, 0, t.width as i32, t.height as i32],
                         cmd::DRAW => core::array::from_fn(|k| w.word(at + 5 + 4 * i + k) as i32),
@@ -794,11 +802,12 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                             u64::from(w.word(at + 6)) + 16 * i as u64,
                         ),
                     };
-                    if let (Some(r), Some(s)) =
-                        (stream::clipped(r, t.width, t.height, scissor), clip)
-                    {
-                        solid(&mut f, t, r, s, colour)?;
-                    }
+                    stream::clipped(r, t.width, t.height, scissor)
+                });
+                if let Some(clip) = clip {
+                    let constants = [16, 8, 0, 24]
+                        .map(|shift| gpu_abi::float::ratio_bits(colour >> shift & 255, 255));
+                    quads(&mut f, t, rectangles, clip, &constants, pipeline::SOLID, None, None, None)?;
                 }
             }
             cmd::COPY => {
@@ -1005,6 +1014,15 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
     }
     if let Some(t) = target {
         if corrupt == Some(current_handle) { corrupt_pixel(&mut f, t)?; }
+    }
+    // Mesa nvc0_vbo.c:592-597 ends ordinary draws without SERIALIZE.
+    // Keep it at a graphics-to-CE dependency (including blend snapshots),
+    // rather than between rectangles. Native publication also drains before
+    // parking/releasing this frame's bindings in parking_frame().
+    for i in 1..f.chunks.len() {
+        if f.chunks[i].copy.is_some() && !f.chunks[i - 1].words.is_empty() {
+            f.chunks[i - 1].emit(0x110, &[0])?;
+        }
     }
     if f.chunks.is_empty() {
         let t = target.ok_or("native target absent")?;
@@ -1244,17 +1262,38 @@ fn quad(
     scratch: Option<Target>,
     data: Option<Target>,
 ) -> Result<(), &'static str> {
+    quads(f, t, core::iter::once(r), scissor, constants, pipe, source, scratch, data)
+}
+/// One BGL command's rectangles share uniforms and state. Preserve rectangle
+/// order and six vertices per rectangle; no instancing or shader change.
+fn quads(
+    f: &mut Frame,
+    t: Target,
+    rectangles: impl Iterator<Item = [u32; 4]> + Clone,
+    scissor: [u32; 4],
+    constants: &[u32],
+    pipe: u32,
+    source: Option<Target>,
+    scratch: Option<Target>,
+    data: Option<Target>,
+) -> Result<(), &'static str> {
+    let count = rectangles.clone().count();
+    if count == 0 { return Ok(()); }
+    let vertices = count.checked_mul(6).ok_or("native vertex count overflow")?;
+    let vertex_bytes = vertices.checked_mul(32).ok_or("native vertex extent overflow")?;
+    let vertices = u32::try_from(vertices).map_err(|_| "native vertex count overflow")?;
     let sampled = source.is_some() || data.is_some();
     let uniform = f.data.len().next_multiple_of(256);
     let vertex = uniform + 256;
-    let tic = vertex + 256;
+    let end = vertex.checked_add(vertex_bytes).ok_or("native vertex extent overflow")?;
+    let tic = end.next_multiple_of(256);
     let tsc = tic + 256;
     let handles = tsc + 256;
     resize_data(&mut f.data,
         if sampled {
             handles + 256
         } else {
-            vertex + 256
+            tic
         },
     )?;
     for (k, v) in constants.iter().enumerate() {
@@ -1284,31 +1323,33 @@ fn quad(
             f.data[handles + slot * 4..handles + slot * 4 + 4].copy_from_slice(&handle.to_le_bytes());
         }
     }
-    let [x0, y0, x1, y1] = r;
-    for (i, [x, y]) in [[x0, y0], [x1, y0], [x1, y1], [x0, y0], [x1, y1], [x0, y1]]
-        .into_iter()
-        .enumerate()
-    {
-        let coord = |p: u32, size: u32| {
-            let n = i64::from(p) * 2 - i64::from(size);
-            gpu_abi::float::ratio_bits(n.unsigned_abs() as u32, size)
-                | if n < 0 { 1 << 31 } else { 0 }
-        };
-        for (k, v) in [
-            coord(x, t.width),
-            coord(y, t.height),
-            0,
-            0x3f800000,
-            0,
-            0,
-            0,
-            0,
-        ]
-        .into_iter()
-        .enumerate()
+    for (rectangle, [x0, y0, x1, y1]) in rectangles.enumerate() {
+        for (i, [x, y]) in [[x0, y0], [x1, y0], [x1, y1], [x0, y0], [x1, y1], [x0, y1]]
+            .into_iter()
+            .enumerate()
         {
-            f.data[vertex + i * 32 + k * 4..vertex + i * 32 + k * 4 + 4]
-                .copy_from_slice(&v.to_le_bytes());
+            let coord = |p: u32, size: u32| {
+                let n = i64::from(p) * 2 - i64::from(size);
+                gpu_abi::float::ratio_bits(n.unsigned_abs() as u32, size)
+                    | if n < 0 { 1 << 31 } else { 0 }
+            };
+            for (k, v) in [
+                coord(x, t.width),
+                coord(y, t.height),
+                0,
+                0x3f800000,
+                0,
+                0,
+                0,
+                0,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let at = vertex + rectangle * 192 + i * 32 + k * 4;
+                f.data[at..at + 4]
+                    .copy_from_slice(&v.to_le_bytes());
+            }
         }
     }
     let mut c = Chunk {
@@ -1429,6 +1470,8 @@ fn quad(
     let (offset, _, _, gprs) = program(pipe);
     c.emit(0x2140, &[0x51, offset as u32])?;
     c.emit(0x214c, &[gprs])?;
+    // MIT Mesa nvc0_screen.c:933-939: CB_SIZE, CB_ADDRESS_HIGH/LOW,
+    // CB_BIND(stage). One immutable block supplies this command's colour.
     c.emit(0x2380, &[256, 0, uniform as u32])?;
     c.relocations.try_reserve(1).map_err(|_| NO_MEMORY)?;
     c.relocations.push(c.words.len() - 2);
@@ -1448,17 +1491,21 @@ fn quad(
     }
     c.emit(0x1930, &[1])?;
     c.emit(0x1880, &[0])?;
+    // MIT Mesa nvc0_vbo.c:358-376: VERTEX_ARRAY_FETCH and the inclusive
+    // VERTEX_ARRAY_LIMIT_HIGH/LOW bound the complete 32-byte-stride buffer.
     c.emit(0x1c00, &[0x1020, 0, vertex as u32, 0])?;
     c.relocations.try_reserve(1).map_err(|_| NO_MEMORY)?;
     c.relocations.push(c.words.len() - 3);
-    c.address(0x1f00, vertex + 191, &[])?;
+    c.address(0x1f00, end - 1, &[])?;
     c.emit(0x1160, &[0x38200000, 0x38200800])?;
     c.emit(0x142c, &[0])?;
     c.emit(0x21c, &[1])?;
+    // MIT Mesa nvc0_vbo.c:592-597: VERTEX_BEGIN_GL,
+    // VERTEX_BUFFER_FIRST/COUNT, VERTEX_END_GL. A single triangle-list draw
+    // consumes 6 * count vertices; ordinary draws need no trailing SERIALIZE.
     c.emit(0x1618, &[4])?;
-    c.emit(0xd74, &[0, 6])?;
+    c.emit(0xd74, &[0, vertices])?;
     c.emit(0x1614, &[0])?;
-    c.emit(0x110, &[0])?;
     f.chunks.try_reserve(1).map_err(|_| NO_MEMORY)?;
     f.chunks.push(c);
     Ok(())
@@ -1500,12 +1547,23 @@ pub(crate) fn prepare(
     }
     for c in &frame.chunks {
         let mut at = 0;
+        let mut vertex_start = None;
         while at < c.words.len() {
             let count = ((c.words[at] >> 16) & 0x1fff) as usize;
             let method = (c.words[at] & 0x1fff) * 4;
             let region = match method {
                 0x2380 => Some((u64::from(c.words[at+3]), 256, "constants")),
-                0x1c00 => Some((u64::from(c.words[at+3]), 256, "vertex")),
+                0x1c00 => {
+                    vertex_start = Some(u64::from(c.words[at+2]) << 32 | u64::from(c.words[at+3]));
+                    None
+                }
+                0x1f00 => {
+                    let start = vertex_start.take().ok_or("native vertex start absent")?;
+                    let end = (u64::from(c.words[at+1]) << 32 | u64::from(c.words[at+2]))
+                        .checked_add(1).ok_or("native vertex extent overflow")?;
+                    let bytes = end.checked_sub(start).ok_or("native vertex limit before start")?;
+                    Some((start, bytes, "vertex"))
+                }
                 0x1574 => Some((u64::from(c.words[at+2]), (u64::from(c.words[at+3])+1)*32, "texture-descriptor")),
                 0x155c => Some((u64::from(c.words[at+2]), (u64::from(c.words[at+3])+1)*32, "sampler-descriptor")),
                 _ => None,

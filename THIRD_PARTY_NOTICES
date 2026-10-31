@@ -1211,6 +1211,24 @@ nvc0_screen.c notice covers the Kepler slot-15 texture handle binding.
 The original notices accompany the new check too. Breenix retains shared
 source clipping and parameter layouts; u3's committed programs are unchanged.
 
+GT 710 rectangle batching (milestone 8.7)
+----------------------------------------
+Consumer: kernel/src/gpu/gk208/encode.rs. Sources at Mesa 24.3.4,
+769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de:
+
+- src/gallium/drivers/nouveau/nvc0/nvc0_vbo.c:358-376,592-597 (MIT,
+  Copyright 2010 Christoph Bumiller): vertex fetch, inclusive buffer limit,
+  triangle-list begin, array first/count and end. Rectangles within a solid
+  BGL command share one constant block and one contiguous vertex buffer.
+- src/gallium/drivers/nouveau/nvc0/nvc0_screen.c:920-939 (MIT,
+  Copyright 2010 Christoph Bumiller): conditional SERIALIZE before changing
+  live constant storage, CB size/address and stage binding. Idle waits remain
+  at graphics-to-CE dependencies and before/after retained-state parking.
+
+Both file-local MIT headers were read for this adaptation. Their original
+copyright and complete grant are already retained in encode.rs above its
+implementation. No shaders or shared expected pixels change in this unit.
+
 GT 710 executable admission (milestone 8.2-u6)
 ---------------------------------------------
 The admission-only entries in kernel/src/gpu/gk208/encode.rs reuse its existing
