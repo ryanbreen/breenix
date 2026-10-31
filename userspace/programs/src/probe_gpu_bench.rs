@@ -214,3 +214,23 @@ pub fn run_c4(mut observe:impl FnMut(&str,u32)->Result<(),String>)->Result<(),St
     checked(gpu::resource_destroy(target),"RESOURCE_DESTROY")?;
     checked(gpu::context_destroy(context),"CONTEXT_DESTROY")
 }
+
+/// Fresh console output plus the production native shadow/screen readback.
+pub fn console_c5d()->Result<(),String> {
+    use std::io::Write;
+    let marker="GT710-C5D-FRESH-CONSOLE-Wm09";
+    let mut console=std::fs::OpenOptions::new().write(true).open("/dev/console").map_err(|e|format!("console open: {e}"))?;
+    console.write_all(format!("\r\n{marker}\r\n").as_bytes()).map_err(|e|format!("console write: {e}"))?;
+    for _ in 0..20 {
+        let text=std::fs::read_to_string("/proc/console/check").map_err(|e|format!("native console readback: {e}"))?;
+        if text.lines().any(|s|s.starts_with("console row: ") && s.contains(marker)) {
+            for row in text.lines().filter(|s|s.starts_with("console check:") || s.starts_with("console frame:") || s.starts_with("console scanout:") || s.contains(marker)) {println!("GT710_C5D_CONSOLE {row}");}
+            if !text.lines().any(|s|s=="console check: shadow and screen identical") || !text.lines().any(|s|s.starts_with("console frame: ") && s.ends_with(" complete")) {
+                return Err("C5d console readback mismatch".into());
+            }
+            println!("GT710_C5D_CONSOLE_OK fresh=true identical=true");return Ok(());
+        }
+        time::sleep_ms(100).map_err(|e|format!("console flush wait: {e:?}"))?;
+    }
+    Err("C5d fresh console row absent from native readback".into())
+}

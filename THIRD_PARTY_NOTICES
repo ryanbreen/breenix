@@ -2003,3 +2003,17 @@ The interpretation follows the MIT nouveau files at Linux v6.8
 fb/ramgk104.c (Copyright 2013 Red Hat Inc.), bios/M0203.c (Copyright 2014
 Red Hat Inc.). Source hashes: docs/gui/provenance/gt710-c5c-sources.json.
 The adapted modeset.rs and ram_init.rs retain the original MIT grants.
+
+C5d live intermediate memory reclock (MIT)
+-----------------------------------------
+`kernel/src/gpu/gk208/memx.rs` adapts the C5a/C5b live-table calculation from
+nouveau Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba:
+`nvkm/subdev/bios/{bit,gpio,ramcfg,M0203,rammap,timing,pll}.c`,
+`nvkm/subdev/clk/pllgt215.c`, `nvkm/subdev/fb/{ramgk104,sddr3}.c`,
+`nvkm/subdev/fb/ramfuc.h`, `nvkm/subdev/pmu/{memx,gt215}.c`, and
+`nvkm/subdev/pmu/fuc/os.h`. Each source's MIT header/SPDX was checked;
+original copyrights and permission grants are retained in the adapted file.
+The callback integration in `kernel/src/gpu/gk208/c2/runtime.rs` follows the
+same MIT calc/prog sequence. The source hashes for the calculator are in
+`docs/gui/provenance/gt710-c5a-sources.json`; C5d's additional transport hash
+is in `docs/gui/provenance/gt710-c5d-sources.json`.

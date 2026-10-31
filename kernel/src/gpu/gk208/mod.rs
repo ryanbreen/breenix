@@ -582,6 +582,8 @@ mod pmu;
 #[cfg(feature = "gt710_clock_probe")]
 mod memx_inputs;
 #[cfg(feature = "gt710_clock_probe")]
+mod memx;
+#[cfg(feature = "gt710_clock_probe")]
 mod ram_init;
 pub mod resource;
 #[cfg(feature = "gt710_core_probe")]

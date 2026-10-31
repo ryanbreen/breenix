@@ -29,7 +29,7 @@ use crate::gk208::{Registers,clock};
 use alloc::{format,sync::Arc,vec::Vec};
 use observe::CounterAccess;
 
-struct State {base:usize,post:u32,limits:Limits,failed:bool,snapshot:Vec<(u32,u32)>,phase:u8,c3:bool,pmu_started:bool,ram_started:bool,ram_scripts:Vec<Vec<crate::gk208::modeset::Op>>,memory_post:u32,strap:u32}
+struct State {base:usize,post:u32,limits:Limits,failed:bool,snapshot:Vec<(u32,u32)>,phase:u8,c3:bool,pmu_started:bool,ram_started:bool,ram_scripts:Vec<Vec<crate::gk208::modeset::Op>>,memory_post:u32,strap:u32,rom:Vec<u8>,memx_started:bool}
 static STATE:spin::Mutex<Option<State>>=spin::Mutex::new(None);
 pub(in crate::gk208) fn initialize(regs:&Registers,rom:&[u8])->Result<(),&'static str> {
     let l=limits(rom)?;
@@ -45,7 +45,7 @@ pub(in crate::gk208) fn initialize(regs:&Registers,rom:&[u8])->Result<(),&'stati
     io.record("post-inventory",&counters);
     let pmc=io.read(0x200);
     io.record("pm-post-inventory",&[(0x200,pmc)]);
-    *STATE.lock()=Some(State {base:regs.0,post,limits:l,failed:false,snapshot,phase:0,c3:false,pmu_started:false,ram_started:false,ram_scripts,memory_post,strap});Ok(())
+    *STATE.lock()=Some(State {base:regs.0,post,limits:l,failed:false,snapshot,phase:0,c3:false,pmu_started:false,ram_started:false,ram_scripts,memory_post,strap,rom:rom.to_vec(),memx_started:false});Ok(())
 }
 struct Io(Registers);
 impl Access for Io {
@@ -125,7 +125,9 @@ pub fn read_status()->Result<Vec<u8>,i32> {
     let memory=sample.memory_khz.map_err(|_|-5)?;
     status.extend(format!("GT710_MEMORY_READ {{\"readback_khz\":{memory},\"post_khz\":{},\"status\":\"ok\"}}\n",s.memory_post).bytes());
     status.extend(crate::gk208::thermal::read_status());
-    if s.ram_started {
+    if s.memx_started {
+        memx_guard(&Registers(s.base),s.strap).map_err(|_|-5)?;
+    } else if s.ram_started {
         ram_guard(&Registers(s.base),s.strap,s.memory_post).map_err(|_|-5)?;
     }
     if s.pmu_started {
@@ -236,7 +238,96 @@ fn ram_start(s:&mut State)->Result<(),&'static str> {
     }
     result
 }
+impl crate::gk208::memx::Access for Io {
+    fn read(&mut self,a:u32)->u32 {self.0.read(a as usize)}
+    fn write(&mut self,a:u32,v:u32) {self.0.write(a as usize,v)}
+    fn now_us(&mut self)->u64 {self.monotonic_ns()/1000}
+}
+fn memx_guard(regs:&Registers,strap:u32)->Result<(),&'static str> {
+    let sample=clock::sample(|a|if a==0x101000 {strap}else{regs.read(a as usize)});
+    if sample.memory_khz?.abs_diff(405000)>4050 {return Err("C5d memory outside 405000 kHz plus/minus 1 percent");}
+    if regs.read(0x20400)>=85 {return Err("C5d temperature at least 85 C");}
+    let disp=regs.read(0x10a01c);let intr=regs.read(0x10a008)&disp&!(disp>>16);
+    if intr&!0xc0!=0 || regs.read(0x259c)!=0 || regs.read(0x400100)!=0 {return Err("C5d GPU or PMU fault");}
+    Ok(())
+}
+fn memory_record(regs:&Registers,strap:u32,phase:&str)->Result<u32,&'static str> {
+    let sample=clock::sample(|a|if a==0x101000 {strap}else{regs.read(a as usize)});
+    print_snapshot(phase,&sample.raw);
+    let memory=sample.memory_khz?;
+    crate::serial_println!("GT710_C5D_MEMORY phase={} readback_khz={} source={:#x} mpll_control={:#x} mpll_coef={:#x} ref_control={:#x} ref_coef={:#x} ref_frac={:#x}",
+        phase,memory,regs.read(0x1373f4),regs.read(0x132000),regs.read(0x132004),regs.read(0x132020),regs.read(0x132024),regs.read(0x132034));
+    Ok(memory)
+}
+fn memx_compare(plan:&crate::gk208::memx::Plan) {
+    // The text supplies expected operations to compare with the live plan.
+    let text=include_str!("../../../../../docs/gui/gt710-c5b-memx.txt");
+    let mut words=Vec::new();let mut in_words=false;
+    for row in text.lines() {
+        if row.starts_with("## target:") {break;}
+        if row.starts_with("PMU words (headers") {in_words=true;continue;}
+        if in_words {if let Some((_,v))=row.split_once(": ") {if let Ok(v)=u32::from_str_radix(v,16) {words.push(v);}}}
+    }
+    let mut expected=Vec::new();let mut p=0;
+    while p<words.len() {
+        let h=words[p];p+=1;let end=p+(h>>16) as usize;
+        let stride=match h&65535 {3=>2,4=>4,5=>1,_=>0};
+        if stride==0 {expected.push(crate::gk208::memx::Op {code:h&65535,args:Vec::new()});}
+        else {for args in words[p..end].chunks_exact(stride) {expected.push(crate::gk208::memx::Op {code:h&65535,args:args.to_vec()});}}
+        p=end;
+    }
+    let mut differences=0;
+    for i in 0..plan.ops.len().max(expected.len()) {
+        let actual=plan.ops.get(i);let offline=expected.get(i);
+        if let Some(op)=actual {crate::serial_println!("GT710_MEMX_OP ordinal={} code={} args={:?}",i+1,op.code,op.args);}
+        if actual!=offline {
+            differences+=1;
+            crate::serial_println!("GT710_MEMX_DIFF ordinal={} live={:?} offline={:?}",i+1,actual,offline);
+        }
+    }
+    crate::serial_println!("GT710_MEMX_DIFF_DONE live_ops={} offline_ops={} differences={} live_words={} offline_words={} coefficients={:?}",plan.ops.len(),expected.len(),differences,plan.words().len(),words.len(),plan.coefficients);
+}
+fn memx_start(s:&mut State)->Result<(),&'static str> {
+    if !s.ram_started || s.memx_started || s.failed {return Err("C5d requires RAM init and one attempt");}
+    s.memx_started=true;
+    let mut io=Io(Registers(s.base));
+    let result=crate::gk208::ce::with_resources(|_,_,_| {
+        memx_guard(&io.0,s.strap)?;
+        let session=crate::gk208::memx::Session::init(&mut io)?;
+        crate::serial_println!("GT710_MEMX_INIT base={:#x} size={}",session.base,session.size);
+        let current=memory_record(&io.0,s.strap,"memx-before")?;
+        let plan=match crate::gk208::memx::calculate(&s.rom,s.strap,current,&mut |a|Access::read(&mut io,a)) {
+            Ok(plan)=>plan,Err(e)=>{io.0.write(0x10a580,0);return Err(e);}
+        };
+        memx_compare(&plan);
+        let words=plan.words();
+        session.load(&mut io,&words)?;
+        for &(a,v) in &plan.cpu_before {
+            io.0.write(a as usize,v);
+            crate::serial_println!("GT710_MEMX_CPU phase=before address={:#x} value={:#x}",a,v);
+        }
+        crate::serial_println!("GT710_MEMX_EXEC_BEGIN frequency_khz=405000 words={}",words.len());
+        // EXEC reply[0] is pause nanoseconds; reply[1] is PMU_IN, not status.
+        let reply=session.exec(&mut io)?;
+        crate::serial_println!("GT710_MEMX_EXEC_REPLY status=0 pause_ns={} pmu_input={:#010x}",reply[0],reply[1]);
+        for &(a,v) in &plan.cpu_after {
+            io.0.write(a as usize,v);
+            crate::serial_println!("GT710_MEMX_CPU phase=after address={:#x} value={:#x}",a,v);
+        }
+        memory_record(&io.0,s.strap,"memx-after")?;
+        memx_guard(&io.0,s.strap)
+    }).and_then(|()|measure_record(&mut io,"memx-post",Some(810_000)));
+    if let Err(reason)=result {
+        s.failed=true;
+        crate::serial_println!("GT710_C5D_ERROR status=-1 reason={}",reason);
+    }
+    result
+}
 fn set(bytes:&[u8])->Result<(),&'static str> {
+    if bytes==b"memx intermediate" {
+        let mut state=STATE.lock();
+        return memx_start(state.as_mut().ok_or("C5d not initialized")?);
+    }
     if bytes==b"ram init" {
         let mut state=STATE.lock();
         return ram_start(state.as_mut().ok_or("C5c not initialized")?);
