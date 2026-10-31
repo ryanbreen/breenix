@@ -6,7 +6,7 @@ use std::cell::RefCell;
 thread_local! { static STATE: RefCell<State> = RefCell::new(State::default()); }
 #[derive(Default)]
 struct State { images: Vec<(u32,u32,u32)>, submits: usize, waits: usize, clocks: usize,
-    warming: bool, pending: bool, fail_wait: bool, low_too_fast:bool, sets:Vec<u32>, thermal:bool, samples:Vec<(String,u32)>, idle_sleeps:u32, c3:bool }
+    warming: bool, pending: bool, fail_wait: bool, low_too_fast:bool, sets:Vec<u32>, thermal:bool, samples:Vec<(String,u32)>, idle_sleeps:u32, c3:bool, c4:bool }
 
 pub mod time {
     pub struct Stamp(i128);
@@ -43,7 +43,7 @@ pub mod gpu {
         STATE.with_borrow_mut(|s| {
             assert!(!s.pending,"previous benchmark was not completed");
             assert_eq!(s.clocks%2,1,"submission must be inside the timed interval");
-            if !s.c3 {assert_eq!(s.images,vec![(0,2560,1600)]);}
+            if !s.c3 && !s.c4 {assert_eq!(s.images,vec![(0,2560,1600)]);}
             struct View;
             impl abi::stream::Resolver for View {
                 fn target(&self,h:u64)->Option<abi::stream::TargetInfo> {
@@ -57,7 +57,7 @@ pub mod gpu {
                 fn buffer_rect(&self,_:u64,_:u64)->[i32;4]{panic!("no CPU pixel/buffer input")}
             }
             let plan=abi::stream::validate(words,&View).expect("production validator");
-            let gpc=s.c3 && (6..30).contains(&s.submits) || s.c3 && (30..102).contains(&s.submits) || s.c3 && s.submits>=105;
+            let gpc=(s.c4 && s.submits>=3) || s.c3 && (6..30).contains(&s.submits) || s.c3 && (30..102).contains(&s.submits) || s.c3 && s.submits>=105;
             if gpc {
                 assert_eq!(&words[..4],&[1,4,2,0]);
                 assert_eq!(words.len(),4+16*30);
@@ -203,4 +203,13 @@ fn c3_failed_stage_or_completion_does_not_advance() {
     STATE.with_borrow_mut(|s|*s=State {thermal:true,c3:true,fail_wait:true,..State::default()});
     assert!(probe_gpu_bench::run_c3(|_,_|Ok(())).is_err());
     STATE.with_borrow(|s|assert_eq!((s.submits,s.waits),(1,1)));
+}
+
+#[test]
+fn c4_runs_only_three_core_and_three_gpc_after_handshake() {
+    STATE.with_borrow_mut(|s|*s=State {c4:true,..State::default()});
+    let mut phases=Vec::new();
+    probe_gpu_bench::run_c4(|phase,n| {phases.push((phase.to_string(),n));Ok(())}).unwrap();
+    assert_eq!(phases,[("pmu",0),("post",0),("core",1),("core",2),("core",3),("gpc",4),("gpc",5),("gpc",6),("done",7)].map(|(s,n)|(s.to_string(),n)));
+    STATE.with_borrow(|s| {assert_eq!(s.submits,27);assert_eq!(s.waits,27);assert_eq!(s.clocks,12);});
 }
