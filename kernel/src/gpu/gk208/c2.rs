@@ -158,6 +158,9 @@ pub fn program(io:&mut impl Access,p:&Plan)->Result<(),&'static str> {
     Ok(())
 }
 
+#[path = "c2/observe.rs"]
+pub mod observe;
+
 #[cfg(target_os="none")]
 mod runtime;
 #[cfg(target_os="none")]

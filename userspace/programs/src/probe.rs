@@ -616,13 +616,15 @@ fn probe() {
             Ok(status)=>print!("{}",status),
             Err(error)=>{println!("GT710_C2_ERROR initial clock read: {error}");reap_forever();}
         }
-        let set=|khz|->Result<(),String> {
+        let observe=|phase|->Result<(),String> {
+            use probe_gpu_bench::ClockPhase;
+            let command=match phase {ClockPhase::Post=>"observe post",ClockPhase::Low=>"gpc 540000",ClockPhase::Restore=>"restore post"};
             use std::io::Write;
             let mut file=std::fs::OpenOptions::new().write(true).open("/proc/gt710-clock")
                 .map_err(|e|format!("clock control open: {e}"))?;
-            file.write_all(format!("gpc {khz}\n").as_bytes()).map_err(|e|format!("clock control write: {e}"))
+            file.write_all(command.as_bytes()).map_err(|e|format!("clock control write: {e}"))
         };
-        if let Err(error)=probe_gpu_bench::run_c2(set) {
+        if let Err(error)=probe_gpu_bench::run_c2(observe) {
             println!("GT710_C2_ERROR {error}");reap_forever();
         }
         println!("GT710_C2_DONE");

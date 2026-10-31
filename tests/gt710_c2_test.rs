@@ -137,6 +137,7 @@ fn independent_counter_tracks_cycles_across_ptimer_and_restores_on_timeout() {
         let m=measure(&mut d).unwrap();
         assert!(m.khz.abs_diff(khz)<1000,"{} versus {khz}",m.khz);
         assert!(m.ptimer_ns>=20_000_000);assert!(m.cycles>0);
+        assert!(m.bracket_ns<=m.ptimer_ns/100);
         assert_eq!(d.regs,original);
         d.stalled=true;d.writes.clear();assert!(measure(&mut d).is_err());assert_eq!(d.regs,original);
         d.regs.insert(0x18009c,2);d.writes.clear();

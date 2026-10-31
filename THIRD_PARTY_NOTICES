@@ -1802,3 +1802,24 @@ The original copyright and full MIT grants are retained in `c2.rs`.
 `c2/runtime.rs` supplies Breenix descriptor and MMIO integration;
 `clock.rs` supplies the existing MIT C1 decoder and GPC reference/step
 queries. No memory, voltage, thermal, or other domain programming is adapted.
+
+## C2b clock snapshots and independent measurement
+
+`kernel/src/gpu/gk208/c2/observe.rs` adapts the following individually checked
+MIT sources; their copyright and full permission notices are in its header:
+
+- Nouveau `nvkm/subdev/clk/gk104.c` (Copyright 2013 Red Hat Inc.), at Linux
+  v6.8 `e8f897f4afef0031fe618a8e94127a0934896aba`, for source/PLL ordering
+  and the complete inactive/shared register set.
+- Nouveau `nvkm/engine/pm/gf100.c` (Copyright 2013 Red Hat Inc.), same revision,
+  identifies the GPC counter base and cycle sampler. `pm/gk104.c` was checked
+  as MIT for the inherited GF100 counter functions; no code is copied from it.
+- Envytools `nva/nvatiming.c` (Copyright 2011 Martin Peres and Marcelina
+  Kościelnicka), at `f102b82381f3f11cee113d16374c87091db039d9`, for the
+  GPC PRE constant-true cycle-count method.
+- Envytools `rnndb/gf100_pcounter.xml`, `rnndb/pm/gf100_pclock.xml`, and
+  `rnndb/bus/ptimer.xml`, at that revision. Each imports the MIT
+  `rnndb/copyright.xml`; its 2006 author list and grant are retained in the
+  adapted file. The files identify the counter, PLL, divider and PTIMER fields.
+- Nouveau `nvkm/subdev/timer/nv04.c:43-55` (Copyright 2012 Red Hat Inc.),
+  same Linux v6.8 revision, MIT, for high/low/high PTIMER sampling.

@@ -27,8 +27,11 @@ fn trial(context: u64, words: &[u32], kind: &str, trial: u32, work: u64, unit: &
     Ok(elapsed)
 }
 
+#[derive(Clone, Copy)]
+pub enum ClockPhase { Post, Low, Restore }
+
 /// C2 reuses C1's 200 shaded draws and completion boundary at each frequency.
-pub fn run_c2(mut set:impl FnMut(u32)->Result<(),String>)->Result<(),String> {
+pub fn run_c2(mut observe:impl FnMut(ClockPhase)->Result<(),String>)->Result<(),String> {
     let context=gpu::context_create().map_err(|e|format!("CONTEXT_CREATE: {e}"))?;
     let mut warmed=false;
     for _ in 0..6000 {
@@ -45,7 +48,7 @@ pub fn run_c2(mut set:impl FnMut(u32)->Result<(),String>)->Result<(),String> {
     for draw in 0..DRAWS {encode::draw(&mut draws,pipeline::SOLID,0xff000000|draw,&[[0,0,WIDTH as i32,HEIGHT as i32]]);}
     for phase in 0..3 {
         let frequency=if phase==1 {540_000}else{810_000};
-        if phase!=0 {set(frequency)?;}
+        observe(match phase {0=>ClockPhase::Post,1=>ClockPhase::Low,_=>ClockPhase::Restore})?;
         println!("GT710_C2_PHASE phase={phase} gpc_khz={frequency}");
         for n in 1..=3 {
             trial(context,&draws,"core",phase*3+n,u64::from(DRAWS)*u64::from(WIDTH)*u64::from(HEIGHT),"fragments")?;
