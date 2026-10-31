@@ -18,13 +18,43 @@ class RuntimeAttribution(unittest.TestCase):
   capture='bc422f5c3c070e9335f4e669c75431db325ad494'
   head='f'*40
   paths=['tests/gt710_isolation_report_test.py',
-         'tests/gt710_shapes_report_test.py', 'tests/gt710_logical_mode_path_test.py']
+         'tests/gt710_shapes_report_test.py', 'tests/gt710_logical_mode_path_test.py',
+         'tests/gt710_flip_report_test.py']
   def git_output(command, **kwargs):
    return ('\0'.join(paths)+'\0').encode() if command[1]=='diff' else b''
   with patch('subprocess.check_output',side_effect=git_output):
    runtime,changed=API['alpha_runtime_identity'](capture,head)
   self.assertEqual(runtime,capture)
   self.assertEqual(changed,paths)
+ def test_g22_retained_panic_keeps_its_own_build_and_tools_identity(self):
+  import json,copy,sys
+  sys.path.insert(0,str(ROOT/'tests'))
+  from gt710_panic_report_test import VALID
+  capture='bc422f5c3c070e9335f4e669c75431db325ad494'; head='f'*40
+  boot=dict(id='20261031T043900Z-metal',kind='boot',platform='metal',arch='x86_64',
+    commit=capture,toolsCommit=capture,build=dict(commit=capture,profile='gpu-panic',
+    features=['capture_panic_oracle']),inject=None,evidenceEligible=True,
+    gt710Category='panic',mode='probe',suite=[])
+  events=[dict(event='power-off',off=True),dict(event='closed',status=1,endedBy='driver')]
+  with tempfile.TemporaryDirectory() as tmp:
+   p=Path(tmp)
+   for name,value in {'run.json':json.dumps(boot),'commit':capture,'dirty':'0','ended':'yes',
+     'events.jsonl':'\n'.join(map(json.dumps,events)),'exit-status':'1','serial.txt':VALID}.items():
+    (p/name).write_text(value)
+   with patch.dict(API['read_panic_capture'].__globals__,
+       alpha_runtime_identity=lambda actual,scorer: (actual,[]) if (actual,scorer)==(capture,head) else
+       (_ for _ in ()).throw(ValueError('unauthorized runtime'))):
+    result=API['read_panic_capture'](p,head)
+    self.assertEqual(result['boot'],boot)
+    self.assertEqual((p/'commit').read_text(),capture)
+    for field in ('commit','toolsCommit','build'):
+     bad=copy.deepcopy(boot);bad[field]=dict(boot['build'],commit=head) if field=='build' else head
+     (p/'run.json').write_text(json.dumps(bad))
+     with self.subTest(field=field),self.assertRaises(ValueError):API['read_panic_capture'](p,head)
+    (p/'run.json').write_text(json.dumps(boot))
+   with patch.dict(API['read_panic_capture'].__globals__,
+       alpha_runtime_identity=lambda *a: (_ for _ in ()).throw(ValueError('unauthorized runtime'))):
+    with self.assertRaisesRegex(ValueError,'unauthorized runtime'):API['read_panic_capture'](p,head)
  def test_prior_runtime_changes_are_not_covered_by_the_profile_ruling(self):
   with tempfile.TemporaryDirectory() as tmp:
    p=Path(tmp);(p/'commit').write_text(subprocess.check_output(['git','rev-parse','becddfad'],cwd=ROOT,text=True).strip())
