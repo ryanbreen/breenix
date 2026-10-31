@@ -35,6 +35,65 @@ def anchor(prefix, body):
 
 
 class FinalUpload(unittest.TestCase):
+    def test_verified_payload_is_acknowledged_before_bookkeeping_sync(self):
+        # A blocked receipt fsync must not consume the guest's response window.
+        # The artifact itself must already be synced, renamed and digest-checked.
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            boot = state / 'boots/sample'
+            boot.mkdir(parents=True)
+            route = '/gt710-upload/' + 'a' * 64
+            (state / 'gt710-upload.json').write_text(json.dumps(
+                dict(id='sample', route=route, complete=True)))
+            body = b'late evidence\n'
+            handler = Handler(route + '/final', body)
+            events = []
+            real_sync = upload.os.fsync
+            real_write = upload.m.write_json
+
+            def synced(fd):
+                real_sync(fd)
+                events.append('sync')
+
+            def bookkeeping(path, value):
+                self.assertEqual(handler.code, 200,
+                                 'bookkeeping delayed the HTTP acceptance')
+                self.assertTrue(handler.close_connection)
+                self.assertEqual((boot / 'gt710-final.rle').read_bytes(), body)
+                self.assertEqual(events, ['sync'])
+                real_write(path, value)
+                # Ignore the bookkeeping's own fsync; only the payload's
+                # durability is a prerequisite of the response.
+                events[:] = ['sync']
+
+            with patch.object(upload.m, 'STATE', state), \
+                 patch.object(upload.m, 'read_lease', return_value=dict(id='sample', state='powered')), \
+                 patch.object(upload.os, 'fsync', side_effect=synced), \
+                 patch.object(upload.m, 'write_json', side_effect=bookkeeping):
+                upload.receive(handler)
+            self.assertEqual(handler.code, 200)
+            self.assertTrue(upload.m.read_json(boot / 'native-final-upload.json')['complete'])
+            self.assertTrue(upload.m.read_json(state / 'gt710-upload.json')['finalComplete'])
+
+    def test_published_payload_consumes_slot_even_before_bookkeeping_finishes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            boot = state / 'boots/sample'
+            boot.mkdir(parents=True)
+            route = '/gt710-upload/' + 'a' * 64
+            for final in (False, True):
+                with self.subTest(final=final):
+                    (state / 'gt710-upload.json').write_text(json.dumps(
+                        dict(id='sample', route=route, complete=final)))
+                    name = 'gt710-final.rle' if final else 'gt710-pixels.rle'
+                    (boot / name).write_bytes(b'accepted evidence\n')
+                    handler = Handler(route + ('/final' if final else ''), b'replacement\n')
+                    with patch.object(upload.m, 'STATE', state), \
+                         patch.object(upload.m, 'read_lease', return_value=dict(id='sample', state='powered')):
+                        upload.receive(handler)
+                    self.assertEqual(handler.code, 404)
+                    self.assertEqual((boot / name).read_bytes(), b'accepted evidence\n')
+
     def test_slots_are_independent_once_ordered_and_bound_to_the_powered_lease(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp)
