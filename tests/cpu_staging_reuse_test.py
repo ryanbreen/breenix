@@ -12,15 +12,15 @@ class Reuse(unittest.TestCase):
         fixture=r'''
 #![allow(dead_code)] // Complete mock APIs cover the old and repaired allocation paths.
 use std::{collections::{BTreeMap,BTreeSet},ptr::NonNull,sync::{Mutex,OnceLock,atomic::{AtomicU64,Ordering}}};
-mod spin { pub type Mutex<T> = std::sync::Mutex<T>; }
-const PAGE:usize=4096;const LIMIT:usize=64;
+mod spin { pub struct Mutex<T>(std::sync::Mutex<T>); impl<T> Mutex<T> { pub const fn new(v:T)->Self {Self(std::sync::Mutex::new(v))} pub fn lock(&self)->std::sync::MutexGuard<'_,T> {self.0.lock().unwrap()} } }
+const PAGE:usize=4096;const LIMIT:usize=1024;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]struct PhysFrame(usize);
 struct PhysAddr(u64);impl PhysAddr{fn as_u64(&self)->u64{self.0}}
 impl PhysFrame{fn start_address(self)->PhysAddr{PhysAddr((self.0 as u64+1)*PAGE as u64)}}
 #[derive(Clone,Copy)]struct VirtAddr(u64);
 impl VirtAddr{
  fn new(v:u64)->Self{Self(v)}fn as_u64(self)->u64{self.0}
- fn as_mut_ptr<T>(self)->*mut T{let slot=((self.0-memory::layout::KERNEL_BUFFER_REGION_BASE)/(128*1024*1024))as usize;unsafe{ram().add(slot*PAGE*4)as *mut T}}
+ fn as_mut_ptr<T>(self)->*mut T{let slot=((self.0-memory::layout::KERNEL_BUFFER_REGION_BASE)/(128*1024*1024))as usize;unsafe{ram().add(slot*(2<<20))as *mut T}}
 }
 impl std::ops::Add<u64> for VirtAddr{type Output=Self;fn add(self,v:u64)->Self{Self(self.0+v)}}
 struct PageTableFlags;impl PageTableFlags{const PRESENT:Self=Self;const WRITABLE:Self=Self;const NO_EXECUTE:Self=Self;}
@@ -29,8 +29,8 @@ impl std::ops::BitOr for PageTableFlags{type Output=Self;fn bitor(self,_:Self)->
 static STATE:Mutex<Option<State>>=Mutex::new(None);
 fn state<R>(f:impl FnOnce(&mut State)->R)->R{f(STATE.lock().unwrap().as_mut().unwrap())}
 static MOCK_EPOCH:AtomicU64=AtomicU64::new(0);
-fn reset(){MOCK_EPOCH.store(0,Ordering::Relaxed);*STATE.lock().unwrap()=Some(State::default());}
-fn ram()->*mut u8{static RAM:OnceLock<usize>=OnceLock::new();*RAM.get_or_init(||Box::into_raw(vec![0u8;PAGE*4*64].into_boxed_slice())as *mut u8 as usize)as *mut u8}
+fn reset(){CACHE_RESET MOCK_EPOCH.store(0,Ordering::Relaxed);*STATE.lock().unwrap()=Some(State::default());}
+fn ram()->*mut u8{static RAM:OnceLock<usize>=OnceLock::new();*RAM.get_or_init(||Box::into_raw(vec![0u8;(2<<20)*64].into_boxed_slice())as *mut u8 as usize)as *mut u8}
 fn frame_va(f:&PhysFrame)->u64{unsafe{ram().add(f.0*PAGE)as u64}}
 mod frame_allocator{
  pub fn allocate_frame()->Option<super::PhysFrame>{super::state(|s|{let f=if let Some(f)=s.free.pop(){f}else{if s.next==super::LIMIT{return None;}let f=super::PhysFrame(s.next);s.next+=1;f};assert!(s.live.insert(f.0));Some(f)})}
@@ -58,12 +58,21 @@ CODE
  reset();for n in 0..128{let mut b=CpuBox::try_new(PAGE*4).unwrap_or_else(||panic!("allocation {n} exhausted the frontier despite returned pages"));assert_eq!(b.len(),PAGE*4);assert!(b.as_ref().iter().all(|&v|v==0));b.as_mut()[0]=1;drop(b);}
  state(|s|{assert!(s.live.is_empty());assert!(s.maps.is_empty());assert!(s.next<=8,"physical frontier grew to {}",s.next);});
 }
+#[test]fn repeated_frame_preparation_reuses_one_bounded_mapping(){
+ reset();let request=(1<<20)+64*1024;
+ for _ in 0..128 {
+  let mut b=CpuBox::try_new(request).unwrap();
+  assert!(b.len()>=request);assert!(b.as_ref()[..request].iter().all(|&v|v==0));
+  b.as_mut()[0]=9;drop(b);
+ }
+ let mapped=state(|s|s.map_count);assert_eq!(mapped,512,"repeated frame preparation recreated page tables instead of reusing a bounded staging mapping");
+}
 #[test]fn failed_mapping_unmaps_and_flushes_before_releasing_frames(){
  reset();state(|s|s.fail_map=Some(2));assert!(CpuBox::try_new(PAGE*4).is_none());
  state(|s|{assert!(s.live.is_empty());assert!(s.maps.is_empty());let f=s.events.iter().position(|v|*v=="flush").unwrap();let r=s.events.iter().position(|v|*v=="free").unwrap();assert!(f<r);});
  state(|s|s.fail_map=None);let b=CpuBox::try_new(PAGE*4).expect("failed map leaked a slot");drop(b);
 }
-'''.replace('CODE',code)
+'''.replace('CODE',code).replace('CACHE_RESET', 'drop(CPU_BUFFER_CACHE.lock().take());' if 'static CPU_BUFFER_CACHE:' in code else '')
         priority=['taskpolicy','-b'] if sys.platform=='darwin' else []
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp);(p/'reuse.rs').write_text(fixture)
