@@ -1574,6 +1574,17 @@ The file-local MIT grant was checked before this use; the original 2018
 copyright and full grant remain in `native.rs`. The method fields are
 defined by the same MIT `cl927d.h` revision listed above.
 
+For an already latched surface, `native.rs` obtains a fresh EVO
+GET_CAPABILITIES acknowledgement without a redundant head UPDATE. Its
+notifier sequence and CAPABILITIES_4.DONE location use that revision's
+`dispnv50/core507d.c:80-100` and `dispnv50/core907d.c:32-58`, both with
+file-local MIT grants, Copyright 2018 Red Hat Inc., checked before use.
+`cl927d.h` at the same open-gpu-doc revision defines the 0x150-byte report,
+byte-16 DONE field, GET_CAPABILITIES and notifier offset. The original full
+MIT notices remain in the consumer. Breenix requires the ordered render
+release and exact active/armed surface and viewport before/after this
+acknowledgement; changed bindings still use UPDATE.
+
 Prepared GT 710 terminal diagnostics (milestone 8 PR 8.6)
 ------------------------------------------------------
 The terminal transport in kernel/src/gpu/gk208/emergency.rs uses the same

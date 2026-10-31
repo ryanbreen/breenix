@@ -130,7 +130,29 @@ pub fn flush(io: &mut impl Io, head:u32, surface:Surface) -> Result<Receipt, &'s
     io.clear_notifier()?;
     io.submit(&methods)?;
     let notifier=io.complete()?;
+    receipt(io, head, surface, notifier)
+}
+
+/// An already latched surface needs no new head state. Its content release is
+/// still followed by a fresh EVO acknowledgement and both-bank observations.
+pub fn retained<T: Io>(io: &mut T, head: u32, surface: Surface,
+    acknowledge: impl FnOnce(&mut T) -> Result<u32, &'static str>,
+) -> Result<Option<Receipt>, &'static str> {
+    if surface_state(io, head, surface).is_err() { return Ok(None); }
+    let notifier = acknowledge(io)?;
+    receipt(io, head, surface, notifier).map(Some)
+}
+
+fn receipt(io: &mut impl Io, head: u32, surface: Surface, notifier: u32)
+    -> Result<Receipt, &'static str> {
     if notifier & 1 != 1 { return Err("native present update not complete"); }
+    let (active, armed) = surface_state(io, head, surface)?;
+    Ok(Receipt{notifier,active,armed})
+}
+
+fn surface_state(io: &mut impl Io, head: u32, surface: Surface)
+    -> Result<([u32; 5], [u32; 5]), &'static str> {
+    let methods = surface.methods(head)?;
     let mut active=[0;5];let mut armed=[0;5];
     for (i,&(method,expected)) in methods[..5].iter().enumerate() {
         active[i]=io.read(0x640000+method as usize);
@@ -139,5 +161,5 @@ pub fn flush(io: &mut impl Io, head:u32, surface:Surface) -> Result<Receipt, &'s
             return Err("native present latched a different surface");
         }
     }
-    Ok(Receipt{notifier,active,armed})
+    Ok((active,armed))
 }

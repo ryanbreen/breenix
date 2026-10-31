@@ -476,6 +476,31 @@ fn flip(
         active_register,active_value,raster_before,raster_after,underflow,errors,power,link })
 }
 
+/// A fresh core-channel acknowledgement without relatching unchanged head
+/// state. MIT core507d_read_caps/core907d_caps_init and cl927d.h define
+/// GET_CAPABILITIES and CAPABILITIES_4.DONE at byte offset 16. The report's
+/// 0x150 bytes at offset 0x200 stay disjoint from ordinary and terminal slots.
+fn acknowledge(evo: &mut Evo, regs: &mut Registers) -> Result<u32, &'static str> {
+    let report = evo.notifier + 0x200;
+    modeset::wait(regs, 0x640004, u32::MAX, evo.put)?;
+    write_words(regs, evo.total, report + 16, &[0])?;
+    if read_word(regs, evo.total, report + 16)? != 0 {
+        return Err("native retained notifier did not clear");
+    }
+    let methods = [(0x84, 0x80000200), (0x8c, 0), (0x84, 0)];
+    if evo.put as usize + methods.len() * 8 > 2044 {
+        write_words(regs, evo.total, evo.push + u64::from(evo.put), &[0x20000000])?;
+        modeset::publish(regs, 0)?;
+        modeset::wait(regs, 0x640004, u32::MAX, 0)?;
+        evo.put = 0;
+    }
+    submit(regs, evo.total, evo.push, &mut evo.put, &methods)?;
+    let value = complete(regs, evo.total, report + 16, &evo.limits,
+        &evo.coefficients, (evo.head, evo.sor, true, true), &evo.scripts)?;
+    modeset::wait(regs, 0x640004, u32::MAX, evo.put)?;
+    Ok(value)
+}
+
 /// Same-mode target update through the retained 927D core channel. Unlike the
 /// bring-up flip, this binds the target's size, storage, format and DMA kind.
 /// No console copy, framebuffer writes or fixed raster delay is involved.
@@ -534,7 +559,17 @@ pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
         fn read(&mut self, register:usize) -> u32 {self.regs.read(register)}
     }
     let head=evo.head;
-    let receipt=super::present::flush(&mut Update{evo,regs,view},head,surface)?;
+    let receipt = {
+        let mut update = Update { evo, regs, view };
+        let retained = if view.verify(update.regs, head).is_ok() {
+            super::present::retained(&mut update, head, surface,
+                |u| acknowledge(u.evo, u.regs))?
+        } else { None };
+        match retained {
+            Some(receipt) => receipt,
+            None => super::present::flush(&mut update, head, surface)?,
+        }
+    };
     view.verify(regs,head)?;
     if regs.read(0x61009c) != 0 || regs.read(0x616308+head as usize*0x800)&0x111 != 1
         || regs.read(0x61c004+evo.sor as usize*0x800)&0x80000001 != 1
