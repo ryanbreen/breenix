@@ -2260,7 +2260,7 @@ def check_case(category, case, serial, producer=None):
     if category == 'presentation' and case == 'display':
         if producer is None: raise ValueError('presentation needs named GPU and console captures')
         preferred, _ = native_mode(producer['console']['serial'])
-        runtime_display(producer['gpu']['serial'], (preferred['width'], preferred['height']))
+        runtime_display(producer['gpu']['serial'], (preferred['timing']['width'], preferred['timing']['height']))
         return
     if category == 'presentation' and case == 'panic':
         if producer is None or 'panic' not in producer:
@@ -2928,13 +2928,11 @@ def alpha_runtime_identity(capture, head):
                    'tests/gt710_graphics_report_test.py', 'tests/gt710_runtime_attribution_test.py'}
         if set(changed) - allowed:
             # Coordinator 2026-10-31 02:47 UTC retains these exact production
-            # captures across the panic-profile fix. The later reviewed UART
-            # and reserved USERD repairs touch fatal/dump execution only; they
-            # do not execute in either retained production suite. Pin the whole
-            # reviewed runtime snapshot, not a mutable file-name exception.
+            # captures across the panic-profile fix only. Later UART and USERD
+            # runtime changes have no retention ruling. Pin the authorized
+            # runtime snapshot, not a mutable file-name exception.
             # Any subsequent runtime change still requires new evidence.
-            snapshots = ('26b26b6c89ab756b1f7ba386d52859f4ec4df0da',
-                         'bc2bac921ac6b1d042779062624efab8076cdfbd')
+            snapshots = ('26b26b6c89ab756b1f7ba386d52859f4ec4df0da',)
             retained = False
             if capture == '92484cc052c5e992ed1d1d4b7f8e990ab2d1118e':
                 for snapshot in snapshots:
