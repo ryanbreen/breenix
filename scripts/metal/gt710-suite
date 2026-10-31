@@ -1407,7 +1407,11 @@ def native_flips(serial):
                 next(r for r in active if r[0]==0x640460+h)[1]=address>>8
                 need(e['surface']==address and e['before_active']==previous and e['active']==active,
                      'flip did not latch the expected private surface')
-                need(e['put_before']==cursor and e['put']==cursor+24<=2048 and e['get']==e['put']
+                # G22: OFFSET, NOTIFY-enable, UPDATE, NOTIFY-disable, four
+                # method/value pairs. MIT nouveau core507d.c:34-58 scopes
+                # notification to the UPDATE; gt710_flip_report_test executes
+                # the production encoder and checks every word in order.
+                need(e['put_before']==cursor and e['put']==cursor+32<=2048 and e['get']==e['put']
                      and e['notifier_before']==0 and e['notifier_after']&1, 'flip completion missing or stale')
                 need(e['errors']==0 and e['underflow']&0x111==1 and e['power']&0x80000001==1
                      and not e['power_status']&0x10000000 and e['firmware_writes']==0, 'flip output fault or firmware write')
@@ -2234,14 +2238,19 @@ def resources_capture(directory, sha):
 def read_panic_capture(directory, sha):
     path = Path(directory)
     read = lambda name: (path / name).read_text()
+    # The host-only G22 re-score retains this companion too. Compare all
+    # runtime/build/tools fields with its real commit, after the same bounded
+    # host-diff validation as the production console/GPU captures.
+    capture_sha = read('commit').strip()
+    alpha_runtime_identity(capture_sha, sha)
     boot = json.loads(read('run.json'))
     events = [json.loads(l) for l in read('events.jsonl').splitlines()]
     if (not re.fullmatch(r'\d{8}T\d{6}Z-metal', boot.get('id', ''))
             or boot.get('kind') != 'boot' or boot.get('platform') != 'metal' or boot.get('arch') != 'x86_64'
-            or boot.get('commit') != sha or boot.get('toolsCommit') != sha
-            or boot.get('build', {}).get('commit') != sha or boot.get('inject')
+            or boot.get('commit') != capture_sha or boot.get('toolsCommit') != capture_sha
+            or boot.get('build', {}).get('commit') != capture_sha or boot.get('inject')
             or boot.get('evidenceEligible') is not True or not read('ended').strip()
-            or read('dirty').strip() != '0' or read('commit').strip() != sha
+            or read('dirty').strip() != '0'
             or read('exit-status').strip() != '1'
             or any(e.get('event') == 'console-gap' for e in events)
             or not any(e.get('event') == 'power-off' and e.get('off') is True for e in events)
@@ -2578,11 +2587,13 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns, pro
     if category == 'presentation':
         if producer is None or 'panic' not in producer:
             raise ValueError('presentation needs a separate panic-producer capture')
-        panic_sha = acceptance_head or sha
-        if panic_sha != sha:
-            alpha_runtime_identity(sha, panic_sha)
+        scorer_sha = acceptance_head or sha
+        if scorer_sha != sha:
+            alpha_runtime_identity(sha, scorer_sha)
         panic = producer['panic']
         pb = panic['boot']
+        panic_sha = pb.get('commit', '')
+        alpha_runtime_identity(panic_sha, scorer_sha)
         if (pb.get('id') in (producer['gpu']['boot']['id'], producer['console']['boot']['id'])
                 or pb.get('commit') != panic_sha or pb.get('toolsCommit') != panic_sha
                 or pb.get('build', {}).get('commit') != panic_sha):
@@ -3019,6 +3030,7 @@ def alpha_runtime_identity(capture, head):
         changed = diff(capture)
         allowed = {'scripts/metal/gt710-suite', 'tests/gt710_alpha_report_test.py',
                    'tests/gt710_graphics_report_test.py', 'tests/gt710_runtime_attribution_test.py',
+                   'tests/gt710_flip_report_test.py',  # G22 exact footprint check.
                    # Coordinator 24.6: these host fixture repairs need no boot.
                    'tests/gt710_isolation_report_test.py', 'tests/gt710_shapes_report_test.py',
                    'tests/gt710_logical_mode_path_test.py'}
@@ -3127,7 +3139,7 @@ def alpha_acceptance(directory, sha, pr, category='alpha'):
     if presentation:
         producer['panic'] = read_panic_capture(Path(directory) / 'panic-producer', sha)
         panic = producer['panic']
-        proof['panicBoot'] = dict(id=panic['boot']['id'], commit=sha,
+        proof['panicBoot'] = dict(id=panic['boot']['id'], commit=panic['boot']['commit'],
             toolsCommit=panic['boot']['toolsCommit'], build=panic['boot']['build'],
             exitStatus=panic['exit_status'], serialSHA256=hashlib.sha256(panic['serial'].encode()).hexdigest())
     for category in step_categories:

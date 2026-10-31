@@ -66,7 +66,7 @@ class Flips(unittest.TestCase):
 
     def test_g22_production_flip_emits_offset_enable_update_disable_in_order(self):
         # The retained E19 record has no method dump. Execute its production
-        # flip + submit functions and check all words, separately from the
+        # flip + submit functions and check eight words, separately from the
         # scorer's observed PUT/GET and fresh-notifier checks.
         import subprocess
         import sys
