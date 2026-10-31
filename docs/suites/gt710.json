@@ -349,6 +349,17 @@
           "title": "Display discovery and the firmware framebuffer claim name the same GT 710 function"
         }
       ]
+    },
+    {
+      "id": "performance",
+      "title": "Full GPU suite and performance (M8 PR 8.7)",
+      "hostRunner": true,
+      "cases": [
+        {
+          "id": "suite",
+          "title": "A completed production GPU boot passes all 170 cases and performance bounds with per-case native cost evidence"
+        }
+      ]
     }
   ]
 }

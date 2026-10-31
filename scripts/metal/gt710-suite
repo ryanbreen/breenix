@@ -117,6 +117,7 @@ CATEGORIES = {
         ('bars-link', 'The PCI report lists the display BARs and the negotiated PCIe link from its capability registers'),
         ('claimed', 'Display discovery and the firmware framebuffer claim name the same GT 710 function'),
     ),
+    'performance': [('suite', 'A completed production GPU boot passes all 170 cases and performance bounds with per-case native cost evidence')],
 }
 BDF = r'[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]'
 HEX = r'0x[0-9a-f]+'
@@ -2096,7 +2097,7 @@ def resources_identity(boot, suite, sha=None):
         raise ValueError('resources requires a named production ' + suite + ' boot of the same kernel/build/tools')
 
 
-STEP_SELECTIONS = {'resources': 'gt710-step-8-2.json', 'alpha': 'gt710-step-8-3.json', 'shapes': 'gt710-step-8-4.json', 'isolation': 'gt710-step-8-5.json', 'presentation': 'gt710-step-8-6.json'}
+STEP_SELECTIONS = {'resources': 'gt710-step-8-2.json', 'alpha': 'gt710-step-8-3.json', 'shapes': 'gt710-step-8-4.json', 'isolation': 'gt710-step-8-5.json', 'presentation': 'gt710-step-8-6.json', 'performance': 'gt710-step-8-7.json'}
 
 
 def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
@@ -2160,9 +2161,9 @@ def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
             raise ValueError('resources WAIT outside its pending manifest case or before its duration')
     cases = [dict(id=m[1], result=k, ms=int(m[2]), reason=m[3] if k == 'FAIL' else '')
              for k, m, _ in records[1:171]]
-    for c in cases:
-        if c['id'] in required and c['result'] != 'PASS':
-            raise ValueError('resources step failed: ' + c['id'] + ': ' + c['reason'])
+    failures = [c['id'] + ': ' + c['reason'] for c in cases if c['id'] in required and c['result'] != 'PASS']
+    if failures:
+        raise ValueError('resources step failed: ' + '; '.join(failures))
     tally = (sum(c['result'] == 'PASS' for c in cases), sum(c['result'] == 'FAIL' for c in cases), 0, 170)
     if tuple(map(int, records[171][1].groups())) != tally:
         raise ValueError('resources DONE disagrees with cases or has skips')
@@ -2182,8 +2183,50 @@ def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
     ok, why = runpy.run_path(str(root / 'scripts/suite-verdict.py'))['memory_problem'](parsed)
     if not ok:
         raise ValueError('resources GPU ' + why)
+    if selection == STEP_SELECTIONS['performance']:
+        performance_evidence(serial, parsed, names, required, manifest)
     return dict(elapsed_ms=elapsed, cases=cases)
 
+
+
+def performance_evidence(serial, parsed, names, required, manifest):
+    if required != names or [len(c['cases']) for c in manifest['categories']] != [12,22,19,19,22,26,25,16,9]:
+        raise ValueError('performance requires all 170 cases and the nine category counts')
+    from decimal import Decimal
+    expected = {
+        'clear-rate-2560': ['clears-per-second'], 'rect-throughput': ['submission-us'],
+        'submit-latency': ['median-us', 'max-us'], 'first-draw-latency': ['slowest-us'],
+        'readback-time-2560': ['readback-us'], 'upload-bandwidth': ['upload-us'],
+        'coverage-throughput': ['coverage-us'], 'wait-no-spin': ['wait-us', 'cpu-us'],
+        'present-rate-2560': ['presents-per-second'],
+    }
+    seen = {key: [] for key in expected}
+    current = 0
+    for kind, match, line in parsed:
+        if kind in ('PASS', 'FAIL'):
+            current += 1
+        elif kind == 'VALUE' and match[1].startswith('performance/'):
+            case = match[1].split('/')[1]
+            if current >= len(names) or names[current] != match[1] or case not in seen:
+                raise ValueError('performance VALUE outside its case: ' + match[1])
+            key = line.split(' ', 4)[4].split('=', 1)[0]
+            seen[case].append(key)
+            if key != 'wait-us':
+                if match[4] is None or not Decimal(match[4]) <= Decimal(match[2]) <= Decimal(match[5]):
+                    raise ValueError('performance VALUE missing range or outside range: ' + match[1] + ' ' + key)
+            elif match[4] is not None and not Decimal(match[4]) <= Decimal(match[2]) <= Decimal(match[5]):
+                raise ValueError('performance VALUE outside range: ' + match[1])
+    if seen != expected:
+        raise ValueError('performance VALUE records missing, duplicated or reordered')
+    rows = [json.loads(line.removeprefix('GT710_CASE_HEAP ')) for line in serial.splitlines() if line.startswith('GT710_CASE_HEAP ')]
+    if len(rows) != 171 or [r.get('boundary') for r in rows] != list(range(171)) or [r.get('case') for r in rows] != [''] + names:
+        raise ValueError('performance requires all ordered case-heap boundaries')
+    fields = sorted(k for k in rows[0]['values'] if k.startswith('native_') or k.endswith(('_n', '_ns')))
+    if not fields or any(set(fields) - set(r['values']) for r in rows):
+        raise ValueError('performance case-heap cost slots missing')
+    print('case ' + ' '.join(fields))
+    for i, name in enumerate(names):
+        print(name + ' ' + ' '.join(str(rows[i+1]['values'][k] - rows[i]['values'][k]) for k in fields))
 
 def resources_console(serial, boot, events):
     import math
@@ -2354,7 +2397,7 @@ def check_case(category, case, serial, producer=None):
             raise ValueError('presentation needs a named panic capture')
         panic_capture(producer['panic']['serial'], producer['panic']['boot'])
         return
-    if category in ('alpha', 'shapes', 'isolation', 'presentation'):
+    if category in ('alpha', 'shapes', 'isolation', 'presentation', 'performance'):
         if producer is None or case != 'suite':
             raise ValueError(f'{category} needs named production GPU and console captures')
         gpu = producer['gpu']
@@ -3116,8 +3159,8 @@ def alpha_capture_proof(directory, sha, pr, category='alpha'):
 
 def alpha_acceptance(directory, sha, pr, category='alpha'):
     """Score existing hardware cases and this step against the same pair of captures."""
-    step_categories = ('resources', 'alpha', 'shapes', 'isolation', 'presentation') if category == 'presentation' else ('resources', 'alpha', 'shapes', 'isolation') if category == 'isolation' else (('resources', 'alpha', 'shapes') if category == 'shapes' else ('resources', 'alpha'))
-    presentation = category == 'presentation'
+    step_categories = ('resources', 'alpha', 'shapes', 'isolation', 'presentation', 'performance') if category == 'performance' else ('resources', 'alpha', 'shapes', 'isolation', 'presentation') if category == 'presentation' else ('resources', 'alpha', 'shapes', 'isolation') if category == 'isolation' else (('resources', 'alpha', 'shapes') if category == 'shapes' else ('resources', 'alpha'))
+    presentation = category in ('presentation', 'performance')
     proof = alpha_capture_proof(directory, sha, pr, category)
     capture_sha = proof['captureCommit']
     producer = resources_capture(directory, capture_sha)
@@ -3219,6 +3262,7 @@ def main():
     parser.add_argument('--resources', action='store_true', help='score PR 8.2 from this console boot and --gpu-boot; retain core/* separately')
     parser.add_argument('--isolation', action='store_true', help='score PR 8.5 isolation and preceding selections from the same captures')
     parser.add_argument('--shapes', action='store_true', help='score PR 8.4 shapes and preceding selections from the same captures')
+    parser.add_argument('--performance', action='store_true', help='score PR 8.7 full GPU suite')
     parser.add_argument('--presentation', action='store_true', help='score PR 8.6 with retained production captures and a final-head panic companion')
     parser.add_argument('--alpha', action='store_true', help='score PR 8.3 alpha/suite and the unchanged PR 8.2 resources rows from the same captures')
     parser.add_argument('--acceptance-directory', type=Path, help='score a locally retained console capture and its resources-producer at the current PR head')
@@ -3231,7 +3275,7 @@ def main():
     if args.acceptance_directory:
         import subprocess
         root = Path(__file__).resolve().parents[2]
-        if not (args.alpha or args.shapes or args.isolation or args.presentation) or not args.pr or not re.fullmatch('[a-f0-9]{40}', args.sha or ''):
+        if not (args.alpha or args.shapes or args.isolation or args.presentation or args.performance) or not args.pr or not re.fullmatch('[a-f0-9]{40}', args.sha or ''):
             parser.error('--acceptance-directory requires --alpha, --shapes, --isolation or --presentation, --pr and --sha')
         if (subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip() != args.sha
                 or subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=root, text=True).strip()):
@@ -3242,7 +3286,7 @@ def main():
         proof = dict(head=args.sha, passed=False)
         try:
             pr = current_pr()
-            proof = alpha_acceptance(args.acceptance_directory, args.sha, pr, 'presentation' if args.presentation else 'isolation' if args.isolation else 'shapes' if args.shapes else 'alpha')
+            proof = alpha_acceptance(args.acceptance_directory, args.sha, pr, 'performance' if args.performance else 'presentation' if args.presentation else 'isolation' if args.isolation else 'shapes' if args.shapes else 'alpha')
             if current_pr() != pr:
                 raise ValueError('PR head or state changed during acceptance scoring')
             for boot in proof['boots']:
