@@ -109,10 +109,14 @@ fn snapshot_covers_inactive_paths_and_restore_reinstates_post_pll() {
     d.writes.clear();assert!(restore(&mut d,&missing).is_err());assert!(d.writes.is_empty());
 }
 
-struct Counter { regs:BTreeMap<u32,u32>, writes:Vec<(u32,u32)>, ns:u64, khz:u32, stalled:bool, records:Vec<(String,Vec<(u32,u32)>)> }
+struct Counter { regs:BTreeMap<u32,u32>, writes:Vec<(u32,u32)>, ns:u64, khz:u32, stalled:bool, inaccessible:bool, records:Vec<(String,Vec<(u32,u32)>)> }
 impl Access for Counter {
     fn read(&mut self,a:u32)->u32 {
         self.ns+=10_000;
+        if matches!(a,0x18009c|0x180044|0x1800a8)
+            && (self.inaccessible || self.regs.get(&0x200).copied().unwrap_or(0)&0x10000000==0) {
+            return 0xbadf1201;
+        }
         match a {
             0x9400=>if self.stalled {0}else{self.ns as u32},
             0x9410=>if self.stalled {0}else{(self.ns>>32) as u32},
@@ -122,7 +126,13 @@ impl Access for Counter {
         }
     }
     fn write(&mut self,a:u32,v:u32) {
-        assert!(matches!(a,0x18009c|0x180044|0x1800a8));
+        assert!(matches!(a,0x200|0x18009c|0x180044|0x1800a8));
+        if a==0x200 {
+            assert_eq!((self.regs[&a]^v)&!0x10000000,0,"only the PM bit may change");
+        } else {
+            assert_ne!(self.regs[&0x200]&0x10000000,0,"enable PM before touching counters");
+            assert!(!self.inaccessible,"never write a no-PRI-response counter");
+        }
         self.writes.push((a,v));self.regs.insert(a,v);
     }
     fn wait(&mut self,_:u32,_:u32,_:u32)->Result<(),&'static str> {unreachable!()}
@@ -135,8 +145,8 @@ impl c2::observe::CounterAccess for Counter {
 fn independent_counter_tracks_cycles_across_ptimer_and_restores_on_timeout() {
     use c2::observe::measure;
     for khz in [540_000,810_000] {
-        let original=BTreeMap::from([(0x18009c,0),(0x180044,0x1234),(0x1800a8,99)]);
-        let mut d=Counter {regs:original.clone(),writes:Vec::new(),ns:4_290_000_000,khz,stalled:false,records:Vec::new()};
+        let original=BTreeMap::from([(0x200,0x40501100),(0x18009c,0),(0x180044,0x1234),(0x1800a8,99)]);
+        let mut d=Counter {regs:original.clone(),writes:Vec::new(),ns:4_290_000_000,khz,stalled:false,inaccessible:false,records:Vec::new()};
         let m=measure(&mut d).unwrap();
         assert!(m.khz.abs_diff(khz)<1000,"{} versus {khz}",m.khz);
         assert!(m.ptimer_ns>=20_000_000);assert!(m.cycles>0);
@@ -150,16 +160,40 @@ fn independent_counter_tracks_cycles_across_ptimer_and_restores_on_timeout() {
         assert!(m.khz.abs_diff(khz)<1000);
         assert_eq!(d.regs[&0x18009c],saved[&0x18009c]);
         assert_eq!(d.regs[&0x180044],saved[&0x180044]);
-        assert_eq!(d.writes.first(),Some(&(0x18009c,0)),"halt inherited mode before changing PRE");
+        assert_eq!(d.writes.iter().find(|w|w.0!=0x200),Some(&(0x18009c,0)),"halt inherited mode before changing PRE");
         let restored=d.records.iter().find(|r|r.0=="restore-halted").unwrap();
         let saved_record=d.records.iter().find(|r|r.0=="saved").unwrap();
         let saved_count=saved_record.1.iter().find(|r|r.0==0x1800a8).unwrap().1;
         assert!(restored.1.contains(&(0x1800a8,saved_count)));
-        assert_eq!(d.writes.last(),Some(&(0x18009c,0x40002)));
+        assert_eq!(d.writes.iter().rfind(|w|w.0!=0x200),Some(&(0x18009c,0x40002)));
         assert!(d.records.iter().any(|r|r.0=="restored" && r.1.contains(&(0x18009c,0x40002))));
         d.stalled=true;d.writes.clear();
         assert!(measure(&mut d).is_err());
         assert_eq!(d.regs[&0x18009c],0x40002);
         assert_eq!(d.regs[&0x180044],saved[&0x180044]);
+    }
+}
+
+#[test]
+fn pm_is_enabled_before_sampling_and_restored_after_counter_cleanup() {
+    for (pm,stalled,inaccessible) in [(0x40501100,false,false),(0x50501100,false,false),
+                                      (0x40501100,true,false),(0x40501100,false,true)] {
+        let original=BTreeMap::from([(0x200,pm),(0x18009c,0),(0x180044,0x1234),(0x1800a8,99)]);
+        let mut d=Counter {regs:original.clone(),writes:Vec::new(),ns:0,khz:810_000,
+            stalled,inaccessible,records:Vec::new()};
+        let result=c2::observe::measure(&mut d);
+        if stalled || inaccessible {assert!(result.is_err());}else{
+            assert!(result.as_ref().unwrap().khz.abs_diff(810_000)<1000);
+        }
+        assert_eq!(d.regs,original,"restore all touched state even on sampling failure");
+        assert_eq!(d.writes.first(),Some(&(0x200,pm|0x10000000)));
+        assert_eq!(d.writes.last(),Some(&(0x200,pm)));
+        assert!(d.records.iter().any(|r|r.0=="pm-before" && r.1.contains(&(0x200,pm))));
+        assert!(d.records.iter().any(|r|r.0=="pm-enabled" && r.1.contains(&(0x200,pm|0x10000000))));
+        assert!(d.records.iter().any(|r|r.0=="pm-restored" && r.1.contains(&(0x200,pm))));
+        if inaccessible {
+            assert_eq!(result.err(),Some("GPC counter has no PRI response after PM enable"));
+            assert_eq!(d.writes.len(),2,"unresponsive counters must not be written");
+        }
     }
 }
