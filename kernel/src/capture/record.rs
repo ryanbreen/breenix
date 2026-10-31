@@ -7,7 +7,7 @@
 //! # What this writer may use, and why
 //!
 //! On x86_64, only `crate::tracing::output::raw_serial_char`, which is a
-//! single port write. On aarch64, only a `crate::serial_line::Line` held in
+//! bounded transmit-ready poll followed by one port write. On aarch64, only a `crate::serial_line::Line` held in
 //! the writer, which assembles the record on the stack and writes it while
 //! owning the UART. Neither takes a lock or allocates. The code above it here
 //! is integer arithmetic over a stack array. That is the reason the capture
@@ -144,11 +144,17 @@ impl Writer {
             }
             self.remaining -= 1;
         }
-        self.bytes = self.bytes.saturating_add(1);
         #[cfg(target_arch = "x86_64")]
-        raw_serial_char(byte);
+        if !raw_serial_char(byte) {
+            // A busy UART must not turn missing bytes into a complete record.
+            // Stop section content; the unbudgeted END can report truncation.
+            self.remaining = 0;
+            self.truncated = true;
+            return false;
+        }
         #[cfg(target_arch = "aarch64")]
         self.line.char(byte);
+        self.bytes = self.bytes.saturating_add(1);
         true
     }
 

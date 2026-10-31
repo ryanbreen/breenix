@@ -145,16 +145,26 @@ pub static mut TRACE_DUMP_COUNT: u64 = 0;
 /// Write a single character to serial output without any locks.
 ///
 /// This is safe to call from panic handlers and interrupt contexts.
-/// Uses direct port I/O on x86-64, UART on ARM64.
+/// Uses direct x86 port I/O with at most 1024 transmit-ready polls. Returns
+/// false without a data write if the UART remains busy; no lock is taken.
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn raw_serial_char(c: u8) {
-    #[cfg(target_arch = "x86_64")]
+pub(crate) fn raw_serial_char(c: u8) -> bool {
+    // 16550 LSR bit 5 (THRE) permits a new byte. Unpaced port writes lose
+    // bytes on a finite hardware FIFO even when an emulator accepts them.
     unsafe {
         use x86_64::instructions::port::Port;
-        let mut port: Port<u8> = Port::new(0x3F8); // COM1 data port
-        port.write(c);
+        let mut status: Port<u8> = Port::new(0x3FD);
+        let mut data: Port<u8> = Port::new(0x3F8);
+        for _ in 0..1024 {
+            if status.read() & 0x20 != 0 {
+                data.write(c);
+                return true;
+            }
+            core::hint::spin_loop();
+        }
     }
+    false
 }
 
 /// Write a string to serial output without any locks.
