@@ -174,13 +174,17 @@ pub fn run_c3(mut observe:impl FnMut(&str,u32)->Result<(),String>)->Result<(),St
 
 /// C4 runs the existing two workloads after source-defined PMU ring readiness.
 pub fn run_c4(observe:impl FnMut(&str,u32)->Result<(),String>)->Result<(),String> {
-    run_clock_workloads(observe,&["post"])
+    run_clock_workloads(observe,&["post"],false)
 }
 /// K5 uses the identical workloads at baseline, target and restored memory.
 pub fn run_c5e(observe:impl FnMut(&str,u32)->Result<(),String>)->Result<(),String> {
-    run_clock_workloads(observe,&["baseline","target","return"])
+    run_clock_workloads(observe,&["baseline","target","return"],false)
 }
-fn run_clock_workloads(mut observe:impl FnMut(&str,u32)->Result<(),String>,stages:&[&str])->Result<(),String> {
+/// K7 composes the existing workloads and clock controls at both full clocks.
+pub fn run_c6(observe:impl FnMut(&str,u32)->Result<(),String>)->Result<(),String> {
+    run_clock_workloads(observe,&["baseline","full","return"],true)
+}
+fn run_clock_workloads(mut observe:impl FnMut(&str,u32)->Result<(),String>,stages:&[&str],c6:bool)->Result<(),String> {
     let context=gpu::context_create().map_err(|e|format!("CONTEXT_CREATE: {e}"))?;
     let mut warmed=false;
     for _ in 0..6000 {
@@ -209,16 +213,37 @@ fn run_clock_workloads(mut observe:impl FnMut(&str,u32)->Result<(),String>,stage
     observe("pmu",0)?;
     for &stage in stages {
         println!("GT710_CLOCK_BENCH_STAGE phase={stage}");
+        if c6 {println!("GT710_C6_STAGE phase={stage}");}
         observe(stage,0)?;
-        for n in 1..=3 {
+        let count=if c6 && stage=="full" {6}else{3};
+        for n in 1..=count {
             observe(stage,n)?;
             trial(context,&draws,"core",n,u64::from(DRAWS)*u64::from(WIDTH)*u64::from(HEIGHT),"fragments")?;
         }
-        for n in 4..=6 {
+        for n in count+1..=count*2 {
             observe(stage,n)?;
             trial(context,&gpc,"gpc",n,8*16*64*64,"fragments")?;
         }
-        observe(stage,7)?;
+        observe(stage,count*2+1)?;
+        if c6 && stage=="full" {
+            let begin=time::now_monotonic().map_err(|e|format!("soak begin: {e:?}"))?.as_nanos();
+            let mut next=5_000_000_000i128;
+            let mut n=0;
+            println!("GT710_C6_SOAK_BEGIN duration_ns=60000000000");
+            loop {
+                n+=1;
+                trial(context,&draws,"core-soak",n,u64::from(DRAWS)*u64::from(WIDTH)*u64::from(HEIGHT),"fragments")?;
+                let elapsed=time::now_monotonic().map_err(|e|format!("soak clock: {e:?}"))?.as_nanos()-begin;
+                if elapsed>=next {
+                    println!("GT710_C6_SOAK_SAMPLE elapsed_ns={elapsed} scheduled_s={}",next/1_000_000_000);
+                    observe("soak",(next/1_000_000_000) as u32)?;
+                    next+=5_000_000_000;
+                }
+                if elapsed>=60_000_000_000 {
+                    println!("GT710_C6_SOAK_DONE elapsed_ns={elapsed} trials={n}");break;
+                }
+            }
+        }
     }
     checked(gpu::resource_destroy(gpc_target),"GPC RESOURCE_DESTROY")?;
     checked(gpu::resource_destroy(target),"RESOURCE_DESTROY")?;

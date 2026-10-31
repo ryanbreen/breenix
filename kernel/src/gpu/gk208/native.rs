@@ -390,6 +390,15 @@ fn memx_health_record(phase: &str, point: &str, head: u32, sor: u32,
         0x61c004+sor*0x800,health.power,0x61c030+sor*0x800,health.link,health.check().is_ok());
 }
 #[cfg(feature = "gt710_clock_probe")]
+pub(in crate::gk208) fn clock_display_check(regs: &Registers, phase: &str) -> Result<(), &'static str> {
+    let route=MEMX_ROUTE.load(core::sync::atomic::Ordering::Acquire);
+    if route==u32::MAX {return Err("C6 native display route absent");}
+    let (head,sor)=(route&255,route>>8);
+    let health=super::memx_display::Health::read(&mut Registers(regs.0),head,sor);
+    memx_health_record(phase,"clock-check",head,sor,health);
+    health.check()
+}
+#[cfg(feature = "gt710_clock_probe")]
 pub(in crate::gk208) fn memx_display_guard(regs: &Registers) -> Result<(), &'static str> {
     let route=MEMX_ROUTE.load(core::sync::atomic::Ordering::Acquire);
     if route==u32::MAX {return Err("C5f native display route absent");}

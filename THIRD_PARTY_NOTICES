@@ -2046,3 +2046,12 @@ adapted in modeset.rs under G25 (0a12e2fc). K6 defines the one-time
 post-EXEC exception; subsequent display samples retain the native predicate.
 `native.rs` records the four existing health terms at the EXEC boundary
 and the first following present. Memory programming and PMU code are unchanged.
+
+GT 710 C6 composed clock diagnostic
+----------------------------------
+`c2/runtime.rs` composes the existing C3 PLL and exact GPC restore with the
+existing C5f memory EXEC/health paths. The MIT nouveau clk/gk104.c,
+clk/pllgt215.c, fb/ramgk104.c and PMU sources listed above remain the
+hardware sources; no new hardware sequence or third-party source is added.
+`native.rs` emits the existing C5f health terms during the load interval.
+The original notices and grants remain in their adapted files.

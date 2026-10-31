@@ -29,7 +29,7 @@ use crate::gk208::{Registers,clock};
 use alloc::{format,sync::Arc,vec::Vec};
 use observe::CounterAccess;
 
-struct State {base:usize,post:u32,limits:Limits,failed:bool,snapshot:Vec<(u32,u32)>,phase:u8,c3:bool,pmu_started:bool,ram_started:bool,ram_scripts:Vec<Vec<crate::gk208::modeset::Op>>,memory_post:u32,strap:u32,rom:Vec<u8>,memx_started:bool,memx_phase:u8,memory_target:u32}
+struct State {base:usize,post:u32,limits:Limits,failed:bool,snapshot:Vec<(u32,u32)>,phase:u8,c3:bool,c6:bool,pmu_started:bool,ram_started:bool,ram_scripts:Vec<Vec<crate::gk208::modeset::Op>>,memory_post:u32,strap:u32,rom:Vec<u8>,memx_started:bool,memx_phase:u8,memory_target:u32}
 static STATE:spin::Mutex<Option<State>>=spin::Mutex::new(None);
 pub(in crate::gk208) fn initialize(regs:&Registers,rom:&[u8])->Result<(),&'static str> {
     let l=limits(rom)?;
@@ -45,7 +45,7 @@ pub(in crate::gk208) fn initialize(regs:&Registers,rom:&[u8])->Result<(),&'stati
     io.record("post-inventory",&counters);
     let pmc=io.read(0x200);
     io.record("pm-post-inventory",&[(0x200,pmc)]);
-    *STATE.lock()=Some(State {base:regs.0,post,limits:l,failed:false,snapshot,phase:0,c3:false,pmu_started:false,ram_started:false,ram_scripts,memory_post,strap,rom:rom.to_vec(),memx_started:false,memx_phase:0,memory_target:memory_post});Ok(())
+    *STATE.lock()=Some(State {base:regs.0,post,limits:l,failed:false,snapshot,phase:0,c3:false,c6:false,pmu_started:false,ram_started:false,ram_scripts,memory_post,strap,rom:rom.to_vec(),memx_started:false,memx_phase:0,memory_target:memory_post});Ok(())
 }
 struct Io(Registers);
 impl Access for Io {
@@ -125,6 +125,7 @@ pub fn read_status()->Result<Vec<u8>,i32> {
     let memory=sample.memory_khz.map_err(|_|-5)?;
     status.extend(format!("GT710_MEMORY_READ {{\"readback_khz\":{memory},\"post_khz\":{},\"status\":\"ok\"}}\n",s.memory_post).bytes());
     status.extend(crate::gk208::thermal::read_status());
+    if s.c6 {crate::gk208::native::clock_display_check(&Registers(s.base),"status").map_err(|_|-5)?;}
     if s.memx_started {
         memx_guard(&Registers(s.base),s.strap,s.memory_target).map_err(|_|-5)?;
     } else if s.ram_started {
@@ -363,10 +364,14 @@ fn set(bytes:&[u8])->Result<(),&'static str> {
     let text=core::str::from_utf8(bytes).map_err(|_|"invalid request")?;
     let fields:Vec<_>=text.split_whitespace().collect();
     if fields.len()!=2 {return Err("request needs two fields");}
+    let c6=fields[0]=="c6";
     let (phase,requested,c3,name)=match (fields[0],fields[1]) {
         ("observe","post")=>(0,810_000,false,"post"),
         ("gpc","540000")=>(1,540_000,false,"low"),
         ("restore","post")=>(2,810_000,false,"restored"),
+        ("c6","post")=>(0,810_000,true,"post"),
+        ("c6","full")=>(3,1_307_000,true,"C"),
+        ("c6","restore")=>(4,810_000,true,"D"),
         ("c3","post")=>(0,810_000,true,"post"),
         ("c3-low","540000")=>(1,540_000,true,"low"),
         ("pll","810000")=>(1,810_000,true,"A"),
@@ -379,8 +384,8 @@ fn set(bytes:&[u8])->Result<(),&'static str> {
     if s.failed {return Err("C2 stopped after failure");}
     // C3-2 inserts the existing divider path before A and omits B.
     let divider=c3 && name=="low";
-    if phase!=s.phase && !(c3 && phase==3 && s.phase==2) {return Err("C2c phase out of order");}
-    if phase==0 {s.c3=c3;}else if s.c3!=c3 {return Err("clock sequence changed");}
+    if phase!=s.phase && !(c3 && phase==3 && (s.phase==2 || (c6 && s.phase==1))) {return Err("C2c phase out of order");}
+    if phase==0 {s.c3=c3;s.c6=c6;}else if s.c3!=c3 || s.c6!=c6 {return Err("clock sequence changed");}
     let mut io=Io(Registers(s.base));
     let result=(|| {
         if c3 && io.read(0x20400)>=85 {return Err("C3 temperature unavailable or at least 85 C");}
@@ -427,7 +432,10 @@ fn set(bytes:&[u8])->Result<(),&'static str> {
     });
     // Retain the actual register differences even when restoration refuses.
     let snapshots=snapshot_records(s,&mut io,name).and_then(|()| {
-        if c3 && (phase==0 || phase==4) && !observe::differences(&s.snapshot,&observe::capture(&mut io))?.is_empty() {
+        // C6 restores the same five GPC words through observe::restore's
+        // exact readback check while memory deliberately remains at 900 MHz.
+        // C3 keeps its whole-inventory check unchanged.
+        if c3 && (phase==0 || phase==4) && !(c6 && phase==4) && !observe::differences(&s.snapshot,&observe::capture(&mut io))?.is_empty() {
             return Err("C3 POST snapshot differs");
         }
         Ok(())
