@@ -99,8 +99,8 @@ fn set(khz:u32)->Result<(),String> {
     });Ok(())
 }
 #[test]
-fn low_trial_under_900_ms_aborts_before_more_work_or_restore() {
+fn low_trial_under_900_ms_completes_all_trials_and_restores_clock() {
     STATE.with_borrow_mut(|s|*s=State {low_too_fast:true,..State::default()});
-    assert!(probe_gpu_bench::run_c2(set).unwrap_err().contains("under 900 ms"));
-    STATE.with_borrow(|s|{assert_eq!((s.submits,s.waits),(4,4));assert_eq!(s.sets,[540_000]);});
+    probe_gpu_bench::run_c2(set).unwrap();
+    STATE.with_borrow(|s|{assert_eq!((s.submits,s.waits),(9,9));assert_eq!(s.sets,[540_000,810_000]);});
 }
